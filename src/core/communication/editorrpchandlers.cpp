@@ -114,6 +114,16 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.edit(params); });
     });
+    server.setHandler("set_prefab_parameter",
+                      [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc(
+            [&] { return editor_rpc.setPrefabParameter(params); });
+    });
+    server.setHandler("unset_prefab_parameter",
+                      [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc(
+            [&] { return editor_rpc.unsetPrefabParameter(params); });
+    });
     server.setHandler("undo", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.undo(params); });
     });

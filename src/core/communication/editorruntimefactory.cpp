@@ -577,6 +577,20 @@ std::string operationSceneId(const nlohmann::ordered_json &operation,
     return std::string{fallback};
 }
 
+std::string prefabOperationSceneId(const EditorRuntimeModules &modules,
+                                   AuthoringObjectId object_id) {
+    for (const auto &scene : modules.project_config.resolvedScene().scenes()) {
+        if (std::any_of(scene.objects.begin(), scene.objects.end(),
+                        [&](const auto &object) {
+                            return object.authoring_object_id == object_id;
+                        })) {
+            return scene.scene_id;
+        }
+    }
+    throw std::runtime_error(
+        "prefab parameter edit target is absent from resolved scene");
+}
+
 void requireEditorRuntimeBinding(
     const EditorRuntimeModules &modules,
     std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings,
@@ -767,6 +781,7 @@ EditorProjectionResult executeEditorProjection(
     std::set<std::string> camera_scenes;
     std::set<std::string> light_scenes;
     std::set<std::string> collider_scenes;
+    std::set<std::string> prefab_scenes;
     const auto fallback_scene = modules.scene_loader.currentScene();
 
     const auto addLifecycle = [&](AuthoringObjectId object_id,
@@ -783,7 +798,22 @@ EditorProjectionResult executeEditorProjection(
     for (std::size_t index = 0; index < request.operations.size(); ++index) {
         const auto &operation = request.operations[index];
         const auto op = operation.at("op").get<std::string>();
-        const auto scene_id = operationSceneId(operation, fallback_scene);
+        auto scene_id = operationSceneId(operation, fallback_scene);
+        if (op == "set_prefab_parameter" ||
+            op == "unset_prefab_parameter") {
+            const auto object_id = AuthoringObjectId{
+                operation.at("object").get<std::uint64_t>()};
+            scene_id = prefabOperationSceneId(modules, object_id);
+            if (scene_id == fallback_scene) {
+                prefab_scenes.insert(scene_id);
+                ecs_codec_scenes.insert(scene_id);
+                renderer_scenes.insert(scene_id);
+                camera_scenes.insert(scene_id);
+                light_scenes.insert(scene_id);
+                collider_scenes.insert(scene_id);
+            }
+            continue;
+        }
         if (op == "spawn") {
             addLifecycle(AuthoringObjectId{
                              operation.at("object_id").get<std::uint64_t>()},
@@ -950,7 +980,8 @@ EditorProjectionResult executeEditorProjection(
     }
 
     std::unique_ptr<BehaviorProjectionJunctionState> behavior_state;
-    if (!behavior_edits.empty() && lifecycle_updates.empty()) {
+    if (!behavior_edits.empty() && lifecycle_updates.empty() &&
+        prefab_scenes.empty()) {
         behavior_state = std::make_unique<BehaviorProjectionJunctionState>(
             BehaviorProjectionJunctionState{
                 .arena = modules.behavior_arena,
@@ -964,6 +995,14 @@ EditorProjectionResult executeEditorProjection(
             &BehaviorProjectionJunctionState::finish);
         adapters.push_back(
             std::make_unique<EditorProjectionCallbackAdapter>(std::move(junction)));
+    }
+    if (lifecycle_updates.empty()) {
+        for (const auto &scene_id : prefab_scenes) {
+            adapters.push_back(
+                std::make_unique<BehaviorSceneProjectionAdapter>(
+                    modules.behavior_arena, scene_id, runtime_bindings,
+                    std::vector<SceneObjectProjectionAdapter *>{}));
+        }
     }
     if (!lifecycle_updates.empty()) {
         const auto &scene_id = lifecycle_updates.front().scene_id;
@@ -1685,6 +1724,10 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 return runtime->modules.project_config.resolvedScene()
                     .bindableProvider();
             },
+            .closure_generation = [runtime] {
+                return runtime->modules.project_config.resolvedScene()
+                    .prefabClosure().generation;
+            },
         },
         .preview = EditorPreviewServiceDependencies{
             .document = [runtime]() -> const AuthoringSceneDocument & {
@@ -1724,6 +1767,27 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             next_runtime_bindings =
                                 collectEditorRuntimeBindings(runtime->modules);
                         });
+                runtime->runtime_bindings.swap(next_runtime_bindings);
+                runtime->runtime_bindings_epoch =
+                    runtime->modules.scene_loader.runtimeSceneEpoch();
+                return revision;
+            },
+        .import_scene_snapshot_versioned =
+            [runtime](std::string_view bytes,
+                      std::string_view current_scene_id,
+                      std::uint64_t schema_version) {
+                std::vector<EditorProjectionRuntimeObjectBinding>
+                    next_runtime_bindings;
+                const auto revision =
+                    runtime->modules.project_config.importSceneDocument(
+                        bytes,
+                        [&] {
+                            runtime->modules.scene_loader.load(
+                                std::string{current_scene_id});
+                            next_runtime_bindings =
+                                collectEditorRuntimeBindings(runtime->modules);
+                        },
+                        schema_version);
                 runtime->runtime_bindings.swap(next_runtime_bindings);
                 runtime->runtime_bindings_epoch =
                     runtime->modules.scene_loader.runtimeSceneEpoch();

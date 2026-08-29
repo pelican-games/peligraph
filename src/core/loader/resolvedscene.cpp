@@ -3,9 +3,14 @@
 #include "authoringsceneauthority.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
 
+#include <picosha2.h>
+
 #include <algorithm>
+#include <bit>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -65,6 +70,62 @@ void SceneProjectionState::swap(SceneProjectionState &other) noexcept {
 }
 
 namespace {
+
+void appendLe32(std::vector<unsigned char> &bytes, std::uint32_t value) {
+    for (unsigned shift = 0; shift != 32; shift += 8) {
+        bytes.push_back(static_cast<unsigned char>((value >> shift) & 0xffU));
+    }
+}
+
+void appendLp(std::vector<unsigned char> &bytes, std::string_view value) {
+    if (value.size() > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::length_error("resolver input field name exceeds u32 length");
+    }
+    appendLe32(bytes, static_cast<std::uint32_t>(value.size()));
+    bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+void appendResolverFloat(std::vector<unsigned char> &bytes,
+                         std::string_view field, float value) {
+    appendLp(bytes, field);
+    if (std::isnan(value)) {
+        throw PrefabError{
+            PrefabErrorCode::PrefabDependencyMismatch,
+            "resolver input cannot contain NaN: " + std::string{field},
+            {.json_pointer = "/resolver_inputs/" + std::string{field}}};
+    }
+    if (value == 0.0F) value = 0.0F;
+    appendLe32(bytes, std::bit_cast<std::uint32_t>(value));
+}
+
+void appendResolverOptionalFloat(std::vector<unsigned char> &bytes,
+                                 std::string_view field,
+                                 const std::optional<float> &value) {
+    appendLp(bytes, field);
+    bytes.push_back(value ? 0x01U : 0x00U);
+    if (!value) return;
+    auto scalar = *value;
+    if (std::isnan(scalar)) {
+        throw PrefabError{
+            PrefabErrorCode::PrefabDependencyMismatch,
+            "resolver input cannot contain NaN: " + std::string{field},
+            {.json_pointer = "/resolver_inputs/" + std::string{field}}};
+    }
+    if (scalar == 0.0F) scalar = 0.0F;
+    appendLe32(bytes, std::bit_cast<std::uint32_t>(scalar));
+}
+
+template <class Enum>
+void appendResolverEnum(std::vector<unsigned char> &bytes,
+                        std::string_view field, Enum value) {
+    static_assert(std::is_enum_v<Enum>);
+    appendLp(bytes, field);
+    appendLe32(bytes, static_cast<std::uint32_t>(value));
+}
+
+std::string sha256(std::string_view bytes) {
+    return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
+}
 
 bool requestsGeneratedComponent(const nlohmann::json &component) {
     const auto generated = component.find("generated");
@@ -299,6 +360,38 @@ struct PendingScene {
 
 } // namespace
 
+bool PrefabResolutionClosure::sameWireIdentity(
+    const PrefabResolutionClosure &other) const noexcept {
+    return scenes == other.scenes && prefabs == other.prefabs &&
+           behaviors == other.behaviors &&
+           provider_fingerprint_sha256 == other.provider_fingerprint_sha256 &&
+           resolver_inputs_fingerprint_sha256 ==
+               other.resolver_inputs_fingerprint_sha256;
+}
+
+std::string resolverInputsFingerprint(
+    const ResolverInputSnapshotV1 &snapshot) {
+    // These exact-size structured bindings are the compile-time mirror guard:
+    // adding a member anywhere in the input aggregates requires updating the
+    // canonical encoder in this same change.
+    const auto &[projection, sprite] = snapshot;
+    const auto &[kind, yfov, znear, zfar, aspect, xmag, ymag] = projection;
+    const auto &[pixel_perfect, sort] = sprite;
+
+    std::vector<unsigned char> bytes;
+    appendLp(bytes, "pelican.resolver.inputs.v1");
+    appendResolverEnum(bytes, "camera_projection.kind", kind);
+    appendResolverFloat(bytes, "camera_projection.yfov", yfov);
+    appendResolverFloat(bytes, "camera_projection.znear", znear);
+    appendResolverFloat(bytes, "camera_projection.zfar", zfar);
+    appendResolverOptionalFloat(bytes, "camera_projection.aspect", aspect);
+    appendResolverFloat(bytes, "camera_projection.xmag", xmag);
+    appendResolverFloat(bytes, "camera_projection.ymag", ymag);
+    appendResolverEnum(bytes, "camera_sprite.pixel_perfect", pixel_perfect);
+    appendResolverEnum(bytes, "camera_sprite.sort", sort);
+    return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
+}
+
 ResolvedScene ResolvedSceneResolver::resolve(
     const AuthoringSceneDocument &document,
     SceneResolverGeneration generation, ResolvedSceneDefaults defaults,
@@ -532,7 +625,7 @@ ResolvedScene ResolvedSceneResolver::resolve(
                 ResolvedPrefabInstance instance{
                     .ref = pending_object.prefab->ref,
                     .instance_id = pending_object.prefab->instance_id,
-                    .closure_generation = result.prefab_registry_.generation(),
+                    .closure_generation = generation.value,
                     .provider_generation = result.bindable_provider_.generation(),
                 };
                 instance.parameters.reserve(pending_object.prefab->parameters.size());
@@ -575,6 +668,81 @@ ResolvedScene ResolvedSceneResolver::resolve(
             scene.objects.push_back(std::move(object));
         }
         result.scenes_.push_back(std::move(scene));
+    }
+
+    result.prefab_closure_.generation = generation.value;
+    result.prefab_closure_.registry_generation =
+        result.prefab_registry_.generation();
+    result.prefab_closure_.provider_generation =
+        result.bindable_provider_.generation();
+    result.prefab_closure_.provider_fingerprint_sha256 =
+        std::string{result.bindable_provider_.fingerprint()};
+    result.prefab_closure_.resolver_inputs_fingerprint_sha256 =
+        resolverInputsFingerprint(defaults);
+
+    result.prefab_closure_.scenes.reserve(authoring_scenes.size());
+    for (const auto &scene : authoring_scenes) {
+        result.prefab_closure_.scenes.push_back(
+            {.scene_id = scene.scene_id,
+             .digest_sha256 = sha256(scene.authoredJson().dump())});
+    }
+    std::sort(result.prefab_closure_.scenes.begin(),
+              result.prefab_closure_.scenes.end(),
+              [](const auto &lhs, const auto &rhs) {
+                  return lhs.scene_id < rhs.scene_id;
+              });
+
+    for (const auto &scene : pending_scenes) {
+        for (const auto &object : scene.objects) {
+            if (object.prefab_record == nullptr) continue;
+            result.prefab_closure_.prefabs.push_back(
+                {.name = object.prefab_record->name,
+                 .digest_sha256 = object.prefab_record->digest_sha256});
+        }
+    }
+    std::sort(result.prefab_closure_.prefabs.begin(),
+              result.prefab_closure_.prefabs.end(),
+              [](const auto &lhs, const auto &rhs) {
+                  return lhs.name < rhs.name;
+              });
+    result.prefab_closure_.prefabs.erase(
+        std::unique(result.prefab_closure_.prefabs.begin(),
+                    result.prefab_closure_.prefabs.end(),
+                    [](const auto &lhs, const auto &rhs) {
+                        return lhs.name == rhs.name;
+                    }),
+        result.prefab_closure_.prefabs.end());
+
+    std::vector<std::string> behavior_names;
+    behavior_names.reserve(result.behavior_reload_sources_.size());
+    for (const auto &source : result.behavior_reload_sources_) {
+        behavior_names.push_back(source.stable_name);
+    }
+    std::sort(behavior_names.begin(), behavior_names.end());
+    behavior_names.erase(
+        std::unique(behavior_names.begin(), behavior_names.end()),
+        behavior_names.end());
+    const auto dependencies = result.bindable_provider_.behaviorDependencies();
+    // Legacy V1 callers historically resolve authored behaviors without an
+    // explicit provider snapshot. Preserve that non-persistence path; every
+    // production SnapshotV2/prefab route supplies a non-zero pinned snapshot.
+    if (result.bindable_provider_.generation() == 0) behavior_names.clear();
+    for (const auto &name : behavior_names) {
+        const auto found = std::lower_bound(
+            dependencies.begin(), dependencies.end(), name,
+            [](const auto &dependency, std::string_view stable_name) {
+                return dependency.stable_name < stable_name;
+            });
+        if (found == dependencies.end() || found->stable_name != name) {
+            throw PrefabError{
+                PrefabErrorCode::PrefabProviderStale,
+                "behavior dependency is absent from provider snapshot: " + name,
+                {.json_pointer = "/prefab_closure/behaviors"}};
+        }
+        result.prefab_closure_.behaviors.push_back(
+            {.stable_name = found->stable_name,
+             .schema_version = found->schema_version,
+             .params_schema_fingerprint = found->params_schema_fingerprint});
     }
     return result;
 }

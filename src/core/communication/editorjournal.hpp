@@ -54,6 +54,11 @@ enum class EditorEditErrorCode : std::uint8_t {
     not_editable,
     schema_violation,
     prefab_instance_id_collision,
+    prefab_dependency_mismatch,
+    prefab_provider_stale,
+    prefab_parameter_required,
+    prefab_parameter_unknown,
+    prefab_parameter_type,
     unknown_component_type,
     duplicate_component,
     missing_component,
@@ -81,6 +86,9 @@ struct EditorMutationRequestAst {
     std::optional<SceneRevision> base_revision;
     std::optional<std::string> ticket;
     std::optional<std::string> coalesce_key;
+    std::optional<std::uint64_t> closure_generation;
+    std::optional<std::uint64_t> provider_generation;
+    bool prefab_mutation = false;
     nlohmann::json operations;
     std::vector<EditorGeneratedSelectorAst> generated_selectors;
 };
@@ -175,6 +183,7 @@ struct EditorEditRuntimeDependencies {
     bool install_commit_hook = false;
     std::function<PrefabRegistrySnapshot()> prefab_registry;
     std::function<BindableProviderSnapshot()> bindable_provider;
+    std::function<std::uint64_t()> closure_generation;
 };
 
 // Owns the session-issued actor identity, the accepted ticket queue and

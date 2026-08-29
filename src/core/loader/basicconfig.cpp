@@ -360,6 +360,51 @@ std::string stableDiskDigest(const std::filesystem::path &path) {
                          "failed to read scene source digest"};
 }
 
+ScenePersistenceBaseline scenePersistenceBaseline(
+    std::string scene_digest, const ResolvedScene &resolved) {
+    ScenePersistenceBaseline result{
+        .scene_digest_sha256 = std::move(scene_digest)};
+    result.prefab_read_set.reserve(resolved.prefabClosure().prefabs.size());
+    for (const auto &dependency : resolved.prefabClosure().prefabs) {
+        const auto *record = resolved.prefabRegistry().find(dependency.name);
+        if (record == nullptr) {
+            throw std::logic_error(
+                "resolved prefab closure is absent from its registry snapshot");
+        }
+        result.prefab_read_set.push_back({
+            .name = dependency.name,
+            .path = record->path,
+            .digest_sha256 = dependency.digest_sha256,
+        });
+    }
+    return result;
+}
+
+void verifyPrefabBaseline(const ScenePersistenceBaseline &baseline,
+                          std::string_view phase) {
+    for (const auto &entry : baseline.prefab_read_set) {
+        try {
+            const auto actual = stableDiskDigest(sceneFilePath(entry.path));
+            if (actual == entry.digest_sha256) continue;
+        } catch (const PrefabError &) {
+            throw;
+        } catch (const std::exception &error) {
+            throw PrefabError{
+                PrefabErrorCode::PrefabDependencyMismatch,
+                "prefab dependency changed " + std::string{phase} +
+                    " scene save: " + entry.name + " (" + error.what() + ")",
+                {.prefab = entry.name,
+                 .json_pointer = "/prefab_closure/prefabs/" + entry.name}};
+        }
+        throw PrefabError{
+            PrefabErrorCode::PrefabDependencyMismatch,
+            "prefab dependency changed " + std::string{phase} +
+                " scene save: " + entry.name,
+            {.prefab = entry.name,
+             .json_pointer = "/prefab_closure/prefabs/" + entry.name}};
+    }
+}
+
 std::string readSceneFile(const std::filesystem::path &path) {
     std::ifstream input{path, std::ios::binary};
     if (!input.is_open()) {
@@ -609,7 +654,8 @@ const SceneProjectionState &ProjectBasicConfig::sceneProjectionState() const {
         auto bytes = GET_MODULE(PathResolver).loadText(scene_data_json_ref);
         auto baseline = sceneBytesDigest(bytes);
         publishSceneDocument(bytes);
-        scene_baseline_digest = std::move(baseline);
+        scene_persistence_baseline = scenePersistenceBaseline(
+            std::move(baseline), scene_projection->resolved());
     }
     return *scene_projection;
 }
@@ -620,11 +666,12 @@ void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
 
 void ProjectBasicConfig::invalidateSceneDocument() noexcept {
     scene_projection.reset();
-    scene_baseline_digest.reset();
+    scene_persistence_baseline.reset();
 }
 
 SceneRevision ProjectBasicConfig::importSceneDocument(
-    std::string_view scene_v1_bytes, const std::function<void()> &reload) {
+    std::string_view scene_v1_bytes, const std::function<void()> &reload,
+    std::uint64_t snapshot_schema_version) {
     if (!reload) {
         throw std::invalid_argument("scene snapshot import requires a reload callback");
     }
@@ -642,8 +689,13 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
     auto candidate_document = AuthoringSceneDocument::load(
         scene_v1_bytes, SceneRevision{next_scene_revision},
         next_authoring_object_id);
-    if (candidate_document.formatVersion() != 1 ||
-        candidate_document.usesPrefabs()) {
+    if (snapshot_schema_version != 1 && snapshot_schema_version != 2) {
+        throw PrefabError{PrefabErrorCode::PrefabPersistenceUnsupported,
+                          "unsupported scene snapshot persistence version"};
+    }
+    if (snapshot_schema_version == 1 &&
+        (candidate_document.formatVersion() != 1 ||
+         candidate_document.usesPrefabs())) {
         throw PrefabError{
             PrefabErrorCode::PrefabPersistenceUnsupported,
             "scene snapshot import accepts only formatVersion 1 without prefabs"};
@@ -658,6 +710,9 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
         SceneResolverGeneration{next_scene_resolver_generation},
         ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite},
         prefab_registry, candidate_provider);
+    auto next_persistence_baseline = scenePersistenceBaseline(
+        scene_persistence_baseline->scene_digest_sha256,
+        candidate.resolved());
     const auto committed_revision = candidate.revision();
     const auto previous_next_revision = next_scene_revision;
     const auto previous_next_generation = next_scene_resolver_generation;
@@ -690,6 +745,7 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
         prefab_provider = std::move(candidate_provider);
         ++next_prefab_provider_generation;
     }
+    *scene_persistence_baseline = std::move(next_persistence_baseline);
     return committed_revision;
 }
 
@@ -731,15 +787,14 @@ void ProjectBasicConfig::refreshResolvedScene(
 
 SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     const auto &source = sceneDocument();
-    if (source.usesPrefabs()) {
-        throw PrefabError{
-            PrefabErrorCode::PrefabPersistenceUnsupported,
-            "saving a scene that uses prefabs is unavailable until WP362"};
-    }
-    if (!scene_baseline_digest) {
+    if (!scene_persistence_baseline) {
         throw SceneSaveError{SceneSaveErrorCode::Unavailable,
                              "scene source has no baseline disk digest"};
     }
+    // Capture scene bytes and the prefab read-set as one immutable baseline
+    // before any save-side I/O. Neither half is refreshed during the attempt.
+    const auto save_baseline = scenePersistenceBaseline(
+        scene_persistence_baseline->scene_digest_sha256, resolvedScene());
     if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
@@ -752,6 +807,7 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     // below consumes these exact semantic bytes.
     auto semantic_bytes = AuthoringSceneAuthority::encodeSemantic(source);
     const auto inject = [&](SceneSaveFaultPoint point) {
+        if (scene_save_hook) scene_save_hook(point);
         if (scene_save_fault == point) {
             throw std::runtime_error("injected scene save fault at " +
                                      std::to_string(static_cast<unsigned>(point)));
@@ -761,12 +817,13 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
 
     const auto destination = sceneFilePath(scene_data_json_ref);
     const auto disk_digest = stableDiskDigest(destination);
-    if (disk_digest != *scene_baseline_digest) {
+    if (disk_digest != save_baseline.scene_digest_sha256) {
         throw SceneSaveError{
             SceneSaveErrorCode::ExternalModification,
             "scene source changed outside the editor (external_modification)",
         };
     }
+    verifyPrefabBaseline(save_baseline, "before");
     inject(SceneSaveFaultPoint::AfterDiskDigest);
 
     TemporarySceneFile temporary{temporaryScenePath(destination)};
@@ -797,23 +854,26 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
         scene_projection->resolved().prefabRegistry(),
         scene_projection->resolved().bindableProvider());
     const auto committed_revision = next_state.revision();
-    auto next_baseline_digest = sceneBytesDigest(semantic_bytes);
+    auto next_baseline = scenePersistenceBaseline(
+        sceneBytesDigest(semantic_bytes), next_state.resolved());
     SceneSaveResult result{
         .scene_revision = committed_revision,
-        .digest = next_baseline_digest,
+        .digest = next_baseline.scene_digest_sha256,
         .byte_count = semantic_bytes.size(),
     };
     inject(SceneSaveFaultPoint::AfterCachePrepare);
 
-    // Close the practical TOCTOU window made by temporary preparation. The
-    // final fault point is after this check and immediately before replace.
-    if (stableDiskDigest(destination) != *scene_baseline_digest) {
+    // Close the practical TOCTOU window made by temporary preparation for
+    // both members of the composite baseline. The testing hook runs before
+    // this last check so a BeforeReplace dependency mutation is observable.
+    inject(SceneSaveFaultPoint::BeforeReplace);
+    if (stableDiskDigest(destination) != save_baseline.scene_digest_sha256) {
         throw SceneSaveError{
             SceneSaveErrorCode::ExternalModification,
             "scene source changed during save (external_modification)",
         };
     }
-    inject(SceneSaveFaultPoint::BeforeReplace);
+    verifyPrefabBaseline(save_baseline, "during");
 
     replaceSceneFileAtomically(temporary.path(), destination);
 
@@ -821,7 +881,7 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     // and ImGui call SAVE0 on the engine thread, so no reader can enter this
     // short no-throw interval and observe a mixed file/cache/revision state.
     publishPreparedSceneState(next_state);
-    scene_baseline_digest->swap(next_baseline_digest);
+    *scene_persistence_baseline = std::move(next_baseline);
     return result;
 }
 

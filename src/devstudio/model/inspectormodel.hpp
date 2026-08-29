@@ -62,6 +62,13 @@ struct InspectorComponentSnapshot {
     nlohmann::json generated_source;
 };
 
+struct InspectorPrefabParameterSnapshot {
+    std::string name;
+    nlohmann::json value_resolved;
+    std::string source;
+    std::optional<nlohmann::json> value_authored;
+};
+
 struct InspectorObjectSnapshot {
     std::string scene_id;
     std::uint64_t scene_revision = 0;
@@ -70,6 +77,7 @@ struct InspectorObjectSnapshot {
     std::optional<std::string> name;
     std::vector<InspectorComponentSnapshot> components;
     std::optional<nlohmann::json> prefab_instance;
+    std::vector<InspectorPrefabParameterSnapshot> prefab_parameters;
 };
 
 enum class InspectorNoticeKind : std::uint8_t {

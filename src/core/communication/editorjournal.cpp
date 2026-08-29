@@ -523,6 +523,186 @@ std::uint64_t internalIdentityValue(const Json &operation,
     return found == operation.end() ? 0 : exactUnsigned(*found, context, nonzero);
 }
 
+[[noreturn]] void throwPrefabEditFailure(const PrefabError &error,
+                                         AuthoringObjectId object_id,
+                                         std::string_view parameter) {
+    auto code = EditorEditErrorCode::schema_violation;
+    switch (error.code()) {
+    case PrefabErrorCode::PrefabDependencyMismatch:
+    case PrefabErrorCode::PrefabNotFound:
+        code = EditorEditErrorCode::prefab_dependency_mismatch;
+        break;
+    case PrefabErrorCode::PrefabProviderStale:
+        code = EditorEditErrorCode::prefab_provider_stale;
+        break;
+    case PrefabErrorCode::PrefabParameterRequired:
+        code = EditorEditErrorCode::prefab_parameter_required;
+        break;
+    case PrefabErrorCode::PrefabParameterUnknown:
+        code = EditorEditErrorCode::prefab_parameter_unknown;
+        break;
+    case PrefabErrorCode::PrefabParameterType:
+        code = EditorEditErrorCode::prefab_parameter_type;
+        break;
+    default: break;
+    }
+    editFailure(code,
+                {{"object", object_id.value},
+                 {"parameter", parameter},
+                 {"prefab_error", prefabErrorCodeName(error.code())},
+                 {"field_path",
+                  error.context().json_pointer
+                      ? OrderedJson(*error.context().json_pointer)
+                      : OrderedJson(nullptr)}},
+                error.what());
+}
+
+EditorProjectionCommand makePrefabParameterCommand(
+    const ObjectLocation &object, std::string parameter,
+    std::optional<Json> value) {
+    return EditorProjectionCommand{
+        .object_path = "/authoring_objects/" +
+                       std::to_string(object.object_id.value) +
+                       "/prefab/parameters/" + parameter,
+        .apply = [scene_id = object.scene_id,
+                  object_index = object.object_index,
+                  parameter = std::move(parameter),
+                  value = std::move(value)](Json &document) {
+            auto &object_json = document.at("scenes").at(scene_id).at("objects")
+                                    .at(object_index);
+            auto &prefab = object_json.at("prefab");
+            if (value) {
+                if (!prefab.contains("parameters")) {
+                    prefab["parameters"] = Json::object();
+                }
+                prefab.at("parameters")[parameter] = *value;
+            } else if (const auto parameters = prefab.find("parameters");
+                       parameters != prefab.end()) {
+                parameters->erase(parameter);
+                if (parameters->empty()) prefab.erase("parameters");
+            }
+        },
+    };
+}
+
+PreparedOperation preparePrefabParameter(
+    const Json &raw, const AuthoringSceneDocument &document,
+    const PrefabRegistrySnapshot &registry, bool unset) {
+    const auto op = unset ? std::string{"unset_prefab_parameter"}
+                          : std::string{"set_prefab_parameter"};
+    const auto object_id = AuthoringObjectId{
+        exactUnsigned(raw.at("object"), op + " object", true)};
+    const auto parameter = requireString(raw, "parameter", op);
+    const auto object = requireObjectLocation(document, object_id);
+    const auto prefab = object.authored.find("prefab");
+    if (prefab == object.authored.end() || !prefab->is_object()) {
+        editFailure(EditorEditErrorCode::closure_unresolvable,
+                    {{"object", object_id.value},
+                     {"parameter", parameter},
+                     {"object_path", "/authoring_objects/" +
+                                         std::to_string(object_id.value) +
+                                         "/prefab"}},
+                    "authoring object is not a prefab instance");
+    }
+
+    PrefabInstanceDeclaration previous;
+    try {
+        previous = resolvePrefabInstance(
+            *prefab, registry,
+            {.scene_id = object.scene_id,
+             .parameter = parameter,
+             .json_pointer = "/prefab/parameters/" + parameter});
+    } catch (const PrefabError &error) {
+        throwPrefabEditFailure(error, object_id, parameter);
+    }
+    const auto *record = registry.find(previous.ref);
+    if (record == nullptr) {
+        editFailure(EditorEditErrorCode::prefab_dependency_mismatch,
+                    {{"object", object_id.value}, {"parameter", parameter}},
+                    "prefab dependency disappeared from the registry snapshot");
+    }
+    const auto declaration = std::find_if(
+        record->document->parameters.begin(),
+        record->document->parameters.end(), [&](const auto &candidate) {
+            return candidate.name == parameter;
+        });
+    if (declaration == record->document->parameters.end()) {
+        editFailure(EditorEditErrorCode::prefab_parameter_unknown,
+                    {{"object", object_id.value}, {"parameter", parameter}},
+                    "unknown prefab parameter: " + parameter);
+    }
+    const auto old = std::find_if(
+        previous.parameters.begin(), previous.parameters.end(),
+        [&](const auto &candidate) { return candidate.name == parameter; });
+    if (old == previous.parameters.end()) {
+        throw std::logic_error("resolved prefab lost its parameter declaration");
+    }
+    if (unset && !declaration->default_value) {
+        editFailure(EditorEditErrorCode::prefab_parameter_required,
+                    {{"object", object_id.value}, {"parameter", parameter}},
+                    "required prefab parameter cannot be unset");
+    }
+
+    auto next_prefab = *prefab;
+    if (unset) {
+        if (const auto parameters = next_prefab.find("parameters");
+            parameters != next_prefab.end()) {
+            parameters->erase(parameter);
+            if (parameters->empty()) next_prefab.erase("parameters");
+        }
+    } else {
+        if (!next_prefab.contains("parameters")) {
+            next_prefab["parameters"] = Json::object();
+        }
+        next_prefab.at("parameters")[parameter] = raw.at("value");
+    }
+    try {
+        (void)resolvePrefabInstance(
+            next_prefab, registry,
+            {.scene_id = object.scene_id,
+             .instance_id = previous.instance_id,
+             .prefab = previous.ref,
+             .parameter = parameter,
+             .json_pointer = "/prefab/parameters/" + parameter});
+    } catch (const PrefabError &error) {
+        throwPrefabEditFailure(error, object_id, parameter);
+    }
+
+    OrderedJson forward{{"op", op},
+                        {"object", object_id.value},
+                        {"parameter", parameter}};
+    if (!unset) forward["value"] = raw.at("value");
+    OrderedJson inverse;
+    if (old->is_override) {
+        inverse = {{"op", "set_prefab_parameter"},
+                   {"object", object_id.value},
+                   {"parameter", parameter},
+                   {"value", *old->value_authored}};
+    } else {
+        inverse = {{"op", "unset_prefab_parameter"},
+                   {"object", object_id.value},
+                   {"parameter", parameter}};
+    }
+    const auto target = "/authoring_objects/" +
+                        std::to_string(object_id.value) +
+                        "/prefab/parameters/" + parameter;
+    return PreparedOperation{
+        .commands = {makePrefabParameterCommand(
+            object, parameter,
+            unset ? std::optional<Json>{}
+                  : std::optional<Json>{raw.at("value")})},
+        .forward = std::move(forward),
+        .inverse = std::move(inverse),
+        .affected = {object_id},
+        .stable_target = target,
+        .read_set = {target},
+        .write_set = {target},
+        .structural_domain = {{"kind", "prefab_parameter"},
+                              {"object", object_id.value},
+                              {"parameter", parameter}},
+    };
+}
+
 PreparedOperation prepareSet(const Json &raw,
                              const AuthoringSceneDocument &document) {
     constexpr auto context = "set_component_value";
@@ -1135,7 +1315,8 @@ PreparedOperation prepareReparent(const Json &raw,
 
 PreparedOperation prepareRpcOperation(const Json &raw,
                                       const AuthoringSceneDocument &document,
-                                      std::string_view current_scene) {
+                                      std::string_view current_scene,
+                                      const PrefabRegistrySnapshot &registry) {
     requireObject(raw, "edit operation");
     const auto op = requireString(raw, "op", "edit operation");
     if (op == "set_component_value") return prepareSet(raw, document);
@@ -1144,6 +1325,10 @@ PreparedOperation prepareRpcOperation(const Json &raw,
     if (op == "spawn") return prepareSpawn(raw, document, current_scene);
     if (op == "destroy") return prepareDestroy(raw, document);
     if (op == "reparent") return prepareReparent(raw, document);
+    if (op == "set_prefab_parameter")
+        return preparePrefabParameter(raw, document, registry, false);
+    if (op == "unset_prefab_parameter")
+        return preparePrefabParameter(raw, document, registry, true);
     editFailure(EditorEditErrorCode::method_unavailable,
                 {{"method", op}, {"adapter", "editor_operation"}},
                 "unknown editor operation");
@@ -1156,14 +1341,36 @@ EditFailure projectionFailure(const EditorProjectionResult &result,
     const auto path = result.error ? result.error->object_path : std::string{"/"};
     const auto message = result.error ? result.error->message
                                       : std::string{"projection transaction failed"};
-    if (result.error &&
-        result.error->prefab_error_code ==
-            PrefabErrorCode::PrefabInstanceIdCollision) {
+    if (result.error && result.error->prefab_error_code) {
+        const auto prefab_code = *result.error->prefab_error_code;
+        auto edit_code = EditorEditErrorCode::schema_violation;
+        switch (prefab_code) {
+        case PrefabErrorCode::PrefabInstanceIdCollision:
+            edit_code = EditorEditErrorCode::prefab_instance_id_collision;
+            break;
+        case PrefabErrorCode::PrefabDependencyMismatch:
+        case PrefabErrorCode::PrefabNotFound:
+            edit_code = EditorEditErrorCode::prefab_dependency_mismatch;
+            break;
+        case PrefabErrorCode::PrefabProviderStale:
+            edit_code = EditorEditErrorCode::prefab_provider_stale;
+            break;
+        case PrefabErrorCode::PrefabParameterRequired:
+            edit_code = EditorEditErrorCode::prefab_parameter_required;
+            break;
+        case PrefabErrorCode::PrefabParameterUnknown:
+            edit_code = EditorEditErrorCode::prefab_parameter_unknown;
+            break;
+        case PrefabErrorCode::PrefabParameterType:
+            edit_code = EditorEditErrorCode::prefab_parameter_type;
+            break;
+        default: break;
+        }
         return EditFailure{
-            EditorEditErrorCode::prefab_instance_id_collision,
+            edit_code,
             OrderedJson{{"method", method},
                         {"object_path", path},
-                        {"prefab_error", "prefab_instance_id_collision"}},
+                        {"prefab_error", prefabErrorCodeName(prefab_code)}},
             message};
     }
     switch (code) {
@@ -1317,8 +1524,9 @@ PreparedBatch prepareBatch(const Json &raw_operations,
     PreparedBatch batch;
     batch.operations.reserve(raw_operations.size());
     for (const auto &raw : raw_operations) {
-        auto prepared = prepareRpcOperation(raw, local.projectionDocument(),
-                                            current_scene);
+        auto prepared = prepareRpcOperation(
+            raw, local.projectionDocument(), current_scene,
+            local.projectionResolvedScene().prefabRegistry());
         EditorProjectionTransaction transaction{local,
                                                 local.projectionDocument().revision()};
         std::vector<EditorProjectionAdapter *> adapters;
@@ -1369,6 +1577,18 @@ PreparedBatch prepareBatch(const Json &raw_operations,
 EditorProjectionCommand commandFromCanonical(const Json &operation,
                                               const AuthoringSceneDocument &document) {
     const auto op = requireString(operation, "op", "journal operation");
+    if (op == "set_prefab_parameter" ||
+        op == "unset_prefab_parameter") {
+        const auto object_id = AuthoringObjectId{exactUnsigned(
+            operation.at("object"), "journal prefab object", true)};
+        const auto object = requireObjectLocation(document, object_id);
+        const auto parameter = requireString(operation, "parameter", op);
+        return makePrefabParameterCommand(
+            object, parameter,
+            op == "set_prefab_parameter"
+                ? std::optional<Json>{operation.at("value")}
+                : std::optional<Json>{});
+    }
     if (op == "set_component_value") {
         const auto object_id = AuthoringObjectId{exactUnsigned(
             operation.at("object_id"), "journal object_id", true)};
@@ -1518,7 +1738,9 @@ OrderedJson targetState(const Json &operations,
         return result;
     }
     const auto &operation = operations.front();
-    if (const auto id = operation.find("object_id"); id != operation.end()) {
+    auto id = operation.find("object_id");
+    if (id == operation.end()) id = operation.find("object");
+    if (id != operation.end()) {
         const auto object_id = AuthoringObjectId{exactUnsigned(*id, "edit object_id", true)};
         result["object_id"] = object_id.value;
         try {
@@ -1530,6 +1752,25 @@ OrderedJson targetState(const Json &operations,
             result["parent"] = object.parent ? OrderedJson(*object.parent)
                                               : OrderedJson(nullptr);
             const auto op = operation.value("op", std::string{});
+            if (op == "set_prefab_parameter" ||
+                op == "unset_prefab_parameter") {
+                const auto parameter = operation.at("parameter").get<std::string>();
+                result["parameter"] = parameter;
+                bool overridden = false;
+                if (const auto prefab = object.authored.find("prefab");
+                    prefab != object.authored.end() && prefab->is_object()) {
+                    if (const auto parameters = prefab->find("parameters");
+                        parameters != prefab->end() &&
+                        parameters->is_object()) {
+                        if (const auto value = parameters->find(parameter);
+                            value != parameters->end()) {
+                            overridden = true;
+                            result["value_authored"] = *value;
+                        }
+                    }
+                }
+                result["source"] = overridden ? "override" : "default";
+            }
             if (op == "spawn") result["authored_object"] = object.authored;
             if (op == "reparent" && hasComponent(object, "transform")) {
                 result["authored_transform"] =
@@ -1802,13 +2043,31 @@ EditorMutationRequestAst parseEditorMutationRequest(
     EditorMutationRequestAst result;
     if (method == "edit") {
         requireOnly(params,
-                    {"actor_id", "base_revision", "operations",
-                     "coalesce_key"},
+                    {"actor_id", "base_revision", "scene_revision",
+                     "closure_generation", "provider_generation",
+                     "operations", "coalesce_key"},
                     context);
         result.actor_id = EditorActorId{
             exactUnsigned(params.at("actor_id"), "edit actor_id", true)};
+        const bool has_base = params.contains("base_revision");
+        const bool has_scene = params.contains("scene_revision");
+        if (has_base == has_scene) {
+            throw std::invalid_argument(
+                "edit requires exactly one of base_revision and scene_revision");
+        }
+        const auto revision_field = has_scene ? "scene_revision" : "base_revision";
         result.base_revision = SceneRevision{exactUnsigned(
-            params.at("base_revision"), "edit base_revision")};
+            params.at(revision_field), "edit " + std::string{revision_field})};
+        if (const auto found = params.find("closure_generation");
+            found != params.end()) {
+            result.closure_generation = exactUnsigned(
+                *found, "edit closure_generation", true);
+        }
+        if (const auto found = params.find("provider_generation");
+            found != params.end()) {
+            result.provider_generation = exactUnsigned(
+                *found, "edit provider_generation", true);
+        }
         result.coalesce_key = optionalString(params, "coalesce_key", context);
     } else if (method == "open_preview") {
         requireOnly(params, {"actor_id", "operations"}, context);
@@ -1835,6 +2094,24 @@ EditorMutationRequestAst parseEditorMutationRequest(
     for (const auto &operation : *operations) {
         requireObject(operation, "edit operation");
         const auto op = requireString(operation, "op", "edit operation");
+        if (op == "set_prefab_parameter" ||
+            op == "unset_prefab_parameter") {
+            result.prefab_mutation = true;
+            if (op == "set_prefab_parameter") {
+                requireOnly(operation,
+                            {"op", "object", "parameter", "value"}, op);
+                if (!operation.contains("value")) {
+                    throw std::invalid_argument(
+                        "set_prefab_parameter value is required");
+                }
+            } else {
+                requireOnly(operation, {"op", "object", "parameter"}, op);
+            }
+            (void)exactUnsigned(operation.at("object"),
+                                op + " object", true);
+            (void)requireString(operation, "parameter", op);
+            continue;
+        }
         if (op != "set_component_value") continue;
         const bool has_slot = operation.contains("component_slot");
         const bool has_generated = operation.contains("generated_id");
@@ -1877,7 +2154,26 @@ EditorMutationRequestAst parseEditorMutationRequest(
         selector.field_path = field_path;
         result.generated_selectors.push_back(std::move(selector));
     }
+    if (method == "edit" && result.prefab_mutation) {
+        if (!params.contains("scene_revision")) {
+            throw std::invalid_argument(
+                "prefab parameter edits require scene_revision");
+        }
+        if (!result.closure_generation || !result.provider_generation) {
+            throw std::invalid_argument(
+                "prefab parameter edits require closure_generation and provider_generation");
+        }
+    }
     return result;
+}
+
+bool operationsUsePrefabParameters(
+    std::span<const OrderedJson> operations) {
+    return std::any_of(operations.begin(), operations.end(), [](const auto &op) {
+        const auto name = op.value("op", std::string{});
+        return name == "set_prefab_parameter" ||
+               name == "unset_prefab_parameter";
+    });
 }
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
@@ -1893,6 +2189,16 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::schema_violation: return "schema_violation";
     case EditorEditErrorCode::prefab_instance_id_collision:
         return "prefab_instance_id_collision";
+    case EditorEditErrorCode::prefab_dependency_mismatch:
+        return "prefab_dependency_mismatch";
+    case EditorEditErrorCode::prefab_provider_stale:
+        return "prefab_provider_stale";
+    case EditorEditErrorCode::prefab_parameter_required:
+        return "prefab_parameter_required";
+    case EditorEditErrorCode::prefab_parameter_unknown:
+        return "prefab_parameter_unknown";
+    case EditorEditErrorCode::prefab_parameter_type:
+        return "prefab_parameter_type";
     case EditorEditErrorCode::unknown_component_type: return "unknown_component_type";
     case EditorEditErrorCode::duplicate_component: return "duplicate_component";
     case EditorEditErrorCode::missing_component: return "missing_component";
@@ -1966,6 +2272,9 @@ struct EditorEditCoordinator::Impl {
         Json raw_operations;
         std::optional<std::string> source_transaction_id;
         std::optional<std::string> coalesce_key;
+        std::optional<std::uint64_t> expected_closure_generation;
+        std::optional<std::uint64_t> expected_provider_generation;
+        bool prefab_cas = false;
         std::uint64_t accepted_gate_epoch = 0;
         std::uint64_t accepted_transition_epoch = 0;
         std::string accepted_scene_id;
@@ -2048,6 +2357,44 @@ struct EditorEditCoordinator::Impl {
         return dependencies.bindable_provider
                    ? dependencies.bindable_provider()
                    : BindableProviderSnapshot{};
+    }
+    std::uint64_t closureGeneration() const {
+        return dependencies.closure_generation
+                   ? dependencies.closure_generation()
+                   : 0;
+    }
+    std::uint64_t providerGeneration() const {
+        return bindableProvider().generation();
+    }
+
+    std::optional<EditFailure> prefabCasFailure(
+        const Ticket &ticket) const {
+        if (!ticket.prefab_cas) return std::nullopt;
+        const auto closure = closureGeneration();
+        if (!ticket.expected_closure_generation ||
+            *ticket.expected_closure_generation != closure) {
+            return EditFailure{
+                EditorEditErrorCode::prefab_dependency_mismatch,
+                OrderedJson{{"expected_closure_generation",
+                             ticket.expected_closure_generation
+                                 ? OrderedJson(*ticket.expected_closure_generation)
+                                 : OrderedJson(nullptr)},
+                            {"current_closure_generation", closure}},
+                "prefab resolution closure is stale"};
+        }
+        const auto provider = providerGeneration();
+        if (!ticket.expected_provider_generation ||
+            *ticket.expected_provider_generation != provider) {
+            return EditFailure{
+                EditorEditErrorCode::prefab_provider_stale,
+                OrderedJson{{"expected_provider_generation",
+                             ticket.expected_provider_generation
+                                 ? OrderedJson(*ticket.expected_provider_generation)
+                                 : OrderedJson(nullptr)},
+                            {"current_provider_generation", provider}},
+                "prefab provider generation is stale"};
+        }
+        return std::nullopt;
     }
 
     EditorGateSnapshot gateSnapshot() {
@@ -2737,6 +3084,14 @@ struct EditorEditCoordinator::Impl {
                     completed.push_back(ticket.result);
                     continue;
                 }
+                if (const auto failure = prefabCasFailure(ticket)) {
+                    ticket.result = rejected(ticket.id, ticket.actor_id,
+                                             ticket.base_revision, *failure);
+                    ticket.result["status"] = "failed";
+                    results[ticket.id] = ticket.result;
+                    completed.push_back(ticket.result);
+                    continue;
+                }
 
                 PreparedBatch batch;
                 std::optional<EditorJournalRecord> revert_source;
@@ -2992,6 +3347,32 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         impl_->results[ticket] = result;
         return result;
     }
+    if (request.prefab_mutation) {
+        const auto current_closure = impl_->closureGeneration();
+        if (*request.closure_generation != current_closure) {
+            const EditFailure failure{
+                EditorEditErrorCode::prefab_dependency_mismatch,
+                OrderedJson{{"expected_closure_generation",
+                             *request.closure_generation},
+                            {"current_closure_generation", current_closure}},
+                "prefab resolution closure is stale"};
+            auto result = impl_->rejected(ticket, actor, base, failure);
+            impl_->results[ticket] = result;
+            return result;
+        }
+        const auto current_provider = impl_->providerGeneration();
+        if (*request.provider_generation != current_provider) {
+            const EditFailure failure{
+                EditorEditErrorCode::prefab_provider_stale,
+                OrderedJson{{"expected_provider_generation",
+                             *request.provider_generation},
+                            {"current_provider_generation", current_provider}},
+                "prefab provider generation is stale"};
+            auto result = impl_->rejected(ticket, actor, base, failure);
+            impl_->results[ticket] = result;
+            return result;
+        }
+    }
     Json normalized_operations;
     try {
         normalized_operations = normalizeBehaviorAttachmentIdentities(
@@ -3014,6 +3395,9 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         .base_revision = base,
         .raw_operations = std::move(normalized_operations),
         .coalesce_key = coalesce,
+        .expected_closure_generation = request.closure_generation,
+        .expected_provider_generation = request.provider_generation,
+        .prefab_cas = request.prefab_mutation,
         .accepted_gate_epoch = gate.epoch,
         .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
@@ -3031,13 +3415,37 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
                                                   bool redo) {
     auto &impl = *impl_;
     const auto method = redo ? "redo" : "undo";
-    requireOnly(params, {"actor_id", "base_revision", "transaction_id"},
+    requireOnly(params,
+                {"actor_id", "base_revision", "scene_revision",
+                 "closure_generation", "provider_generation",
+                 "transaction_id"},
                 method);
     const auto actor = EditorActorId{exactUnsigned(
         params.at("actor_id"), std::string{method} + " actor_id", true)};
     (void)impl.requireBound(actor);
+    const bool has_base = params.contains("base_revision");
+    const bool has_scene = params.contains("scene_revision");
+    if (has_base == has_scene) {
+        throw std::invalid_argument(
+            std::string{method} +
+            " requires exactly one of base_revision and scene_revision");
+    }
+    const auto revision_field = has_scene ? "scene_revision" : "base_revision";
     const auto base = SceneRevision{exactUnsigned(
-        params.at("base_revision"), std::string{method} + " base_revision")};
+        params.at(revision_field),
+        std::string{method} + " " + revision_field)};
+    std::optional<std::uint64_t> expected_closure;
+    std::optional<std::uint64_t> expected_provider;
+    if (const auto found = params.find("closure_generation");
+        found != params.end()) {
+        expected_closure = exactUnsigned(
+            *found, std::string{method} + " closure_generation", true);
+    }
+    if (const auto found = params.find("provider_generation");
+        found != params.end()) {
+        expected_provider = exactUnsigned(
+            *found, std::string{method} + " provider_generation", true);
+    }
     const auto requested = optionalString(params, "transaction_id", method);
     const auto ticket_id = impl.allocateTicket();
     const auto gate = impl.gateSnapshot();
@@ -3091,6 +3499,29 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
                 source.transaction_id, impl.document().revision());
         }
         const auto &source = impl.requireJournal(source_id);
+        const bool prefab_cas =
+            operationsUsePrefabParameters(source.ordered_forward) ||
+            operationsUsePrefabParameters(source.ordered_inverse);
+        if (prefab_cas &&
+            (!has_scene || !expected_closure || !expected_provider)) {
+            throw std::invalid_argument(
+                std::string{method} +
+                " of a prefab parameter edit requires scene_revision, closure_generation, and provider_generation");
+        }
+        if (prefab_cas && *expected_closure != impl.closureGeneration()) {
+            return reject(EditFailure{
+                EditorEditErrorCode::prefab_dependency_mismatch,
+                {{"expected_closure_generation", *expected_closure},
+                 {"current_closure_generation", impl.closureGeneration()}},
+                "prefab resolution closure is stale"});
+        }
+        if (prefab_cas && *expected_provider != impl.providerGeneration()) {
+            return reject(EditFailure{
+                EditorEditErrorCode::prefab_provider_stale,
+                {{"expected_provider_generation", *expected_provider},
+                 {"current_provider_generation", impl.providerGeneration()}},
+                "prefab provider generation is stale"});
+        }
         impl.requireRevertPreconditions(source);
         impl.requireNoLeaseOverlap(source.write_set, source.structural_domain);
         (void)commandsFromCanonical(source.ordered_inverse, impl.document(),
@@ -3102,6 +3533,9 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
             .actor_id = actor,
             .base_revision = base,
             .source_transaction_id = source_id,
+            .expected_closure_generation = expected_closure,
+            .expected_provider_generation = expected_provider,
+            .prefab_cas = prefab_cas,
             .accepted_gate_epoch = gate.epoch,
             .accepted_transition_epoch = impl.observed_transition_epoch,
             .accepted_scene_id = impl.dependencies.current_scene_id(),

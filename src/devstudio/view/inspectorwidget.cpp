@@ -3,6 +3,7 @@
 #include "../model/inspectormodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
 
+#include <QAbstractItemView>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
@@ -10,6 +11,7 @@
 #include <QFormLayout>
 #include <QFrame>
 #include <QGroupBox>
+#include <QHeaderView>
 #include <QHash>
 #include <QHBoxLayout>
 #include <QJsonDocument>
@@ -23,6 +25,7 @@
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
+#include <QTableWidget>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -462,6 +465,45 @@ struct InspectorWidget::Impl {
                 instance->setObjectName(
                     QStringLiteral("pelican.inspectorPrefabInstance"));
                 layout->addWidget(instance);
+                auto *parameters = new QTableWidget(
+                    static_cast<int>(model.snapshot()->prefab_parameters.size()),
+                    3, contents);
+                parameters->setObjectName(
+                    QStringLiteral("pelican.inspectorPrefabParameters"));
+                parameters->setHorizontalHeaderLabels(
+                    {owner.tr("Parameter"), owner.tr("Resolved value"),
+                     owner.tr("Source")});
+                parameters->setEditTriggers(
+                    QAbstractItemView::NoEditTriggers);
+                parameters->setSelectionMode(
+                    QAbstractItemView::NoSelection);
+                parameters->verticalHeader()->setVisible(false);
+                parameters->horizontalHeader()->setStretchLastSection(true);
+                parameters->horizontalHeader()->setSectionResizeMode(
+                    0, QHeaderView::ResizeToContents);
+                parameters->horizontalHeader()->setSectionResizeMode(
+                    1, QHeaderView::Stretch);
+                parameters->horizontalHeader()->setSectionResizeMode(
+                    2, QHeaderView::ResizeToContents);
+                for (std::size_t row = 0;
+                     row < model.snapshot()->prefab_parameters.size(); ++row) {
+                    const auto &parameter =
+                        model.snapshot()->prefab_parameters[row];
+                    parameters->setItem(
+                        static_cast<int>(row), 0,
+                        new QTableWidgetItem(
+                            QString::fromStdString(parameter.name)));
+                    parameters->setItem(
+                        static_cast<int>(row), 1,
+                        new QTableWidgetItem(QString::fromStdString(
+                            parameter.value_resolved.dump())));
+                    parameters->setItem(
+                        static_cast<int>(row), 2,
+                        new QTableWidgetItem(
+                            QString::fromStdString(parameter.source)));
+                }
+                parameters->resizeRowsToContents();
+                layout->addWidget(parameters);
             }
             for (const InspectorComponentSnapshot &component :
                  model.snapshot()->components) {

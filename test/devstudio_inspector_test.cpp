@@ -440,7 +440,11 @@ TEST_CASE("WP361 Studio ingests the real generated union without mutation widget
           {"parameters",
            Json::array({{{"name", "tint"},
                          {"value_resolved", {1, 1, 1, 1}},
-                         {"source", "default"}}})}}},
+                         {"source", "default"}},
+                        {{"name", "hp"},
+                         {"value_resolved", 55},
+                         {"source", "override"},
+                         {"value_authored", 55}}})}}},
         {"components",
          Json::array({
              {{"generated",
@@ -465,6 +469,20 @@ TEST_CASE("WP361 Studio ingests the real generated union without mutation widget
 
     REQUIRE(harness.model.snapshot());
     REQUIRE(harness.model.snapshot()->prefab_instance);
+    REQUIRE(harness.model.snapshot()->prefab_parameters.size() == 2);
+    const auto &default_parameter =
+        harness.model.snapshot()->prefab_parameters.at(0);
+    REQUIRE(default_parameter.name == "tint");
+    REQUIRE(default_parameter.source == "default");
+    REQUIRE(default_parameter.value_resolved == Json::array({1, 1, 1, 1}));
+    REQUIRE_FALSE(default_parameter.value_authored);
+    const auto &override_parameter =
+        harness.model.snapshot()->prefab_parameters.at(1);
+    REQUIRE(override_parameter.name == "hp");
+    REQUIRE(override_parameter.source == "override");
+    REQUIRE(override_parameter.value_resolved == 55);
+    REQUIRE(override_parameter.value_authored);
+    REQUIRE(*override_parameter.value_authored == 55);
     REQUIRE(harness.model.snapshot()->components.size() == 1);
     const auto &generated = harness.model.snapshot()->components.front();
     REQUIRE(generated.generated);

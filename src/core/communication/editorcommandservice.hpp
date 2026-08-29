@@ -40,6 +40,7 @@ enum class EditorCommandErrorCode : std::uint8_t {
     SaveFailed,
     PrefabPersistenceUnsupported,
     PrefabGeneratedReadOnly,
+    PrefabDependencyMismatch,
 };
 
 std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcept;
@@ -149,11 +150,35 @@ struct ExportSceneSnapshotResponseV1 {
     std::uint64_t preview_epoch = 0;
 };
 
+struct ExportSceneSnapshotRequestV2 {
+    std::uint64_t schema_version = 2;
+    bool allow_pending = false;
+};
+
+struct ExportSceneSnapshotResponseV2 {
+    std::uint64_t schema_version = 2;
+    SceneRevision scene_revision{};
+    std::string current_scene_id;
+    std::string semantic_scene_bytes;
+    DigestV1 digest;
+    std::vector<std::string> pending_ticket_ids;
+    std::uint64_t preview_epoch = 0;
+    PrefabResolutionClosure prefab_closure;
+};
+
 struct ImportSceneSnapshotRequestV1 {
     std::uint64_t schema_version = 1;
     std::string semantic_scene_bytes;
     DigestV1 digest;
     std::string current_scene_id;
+};
+
+struct ImportSceneSnapshotRequestV2 {
+    std::uint64_t schema_version = 2;
+    std::string semantic_scene_bytes;
+    DigestV1 digest;
+    std::string current_scene_id;
+    PrefabResolutionClosure prefab_closure;
 };
 
 struct ImportSceneSnapshotResult {
@@ -227,6 +252,9 @@ struct EditorCommandServiceDependencies {
     std::shared_ptr<RenderConfigEditorService> render_config_editor;
     std::function<SceneRevision(std::string_view, std::string_view)>
         import_scene_snapshot;
+    std::function<SceneRevision(std::string_view, std::string_view,
+                                std::uint64_t)>
+        import_scene_snapshot_versioned;
     std::function<SaveSceneResult()> save_scene;
 };
 
@@ -276,8 +304,12 @@ class EditorCommandService {
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const;
+    ExportSceneSnapshotResponseV2 exportSceneSnapshotV2(
+        const ExportSceneSnapshotRequestV2 &request) const;
     ImportSceneSnapshotResult importSceneSnapshot(
         const ImportSceneSnapshotRequestV1 &request);
+    ImportSceneSnapshotResult importSceneSnapshotV2(
+        const ImportSceneSnapshotRequestV2 &request);
     SaveSceneResult saveScene();
 
     nlohmann::ordered_json openEditorSession(const nlohmann::json &params);
@@ -341,6 +373,10 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json evalPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json renderPreview(const nlohmann::json &params) const;
     nlohmann::ordered_json edit(const nlohmann::json &params) const;
+    nlohmann::ordered_json setPrefabParameter(
+        const nlohmann::json &params) const;
+    nlohmann::ordered_json unsetPrefabParameter(
+        const nlohmann::json &params) const;
     nlohmann::ordered_json undo(const nlohmann::json &params) const;
     nlohmann::ordered_json redo(const nlohmann::json &params) const;
     nlohmann::ordered_json openPreview(const nlohmann::json &params) const;
@@ -403,6 +439,7 @@ nlohmann::ordered_json editorQueryJson(const EditorObjectQueryResult &object);
 nlohmann::ordered_json editorQueryJson(const EditorSceneTreeResult &scene);
 nlohmann::ordered_json editorQueryJson(const EditorListAssetsResult &assets);
 nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot);
+nlohmann::ordered_json editorQueryJson(const ExportSceneSnapshotResponseV2 &snapshot);
 nlohmann::ordered_json editorQueryJson(const ImportSceneSnapshotResult &snapshot);
 nlohmann::ordered_json editorQueryJson(const SaveSceneResult &save);
 

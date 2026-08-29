@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <limits>
 #include <picosha2.h>
 #include <type_traits>
 #include <utility>
@@ -145,6 +146,210 @@ ExportSceneSnapshotRequestV1 parseExportSceneSnapshotRequest(const Json &params)
     return request;
 }
 
+ExportSceneSnapshotRequestV2 parseExportSceneSnapshotRequestV2(
+    const Json &params) {
+    const auto common = parseExportSceneSnapshotRequest(params);
+    if (common.schema_version != 2) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " +
+                std::to_string(common.schema_version)};
+    }
+    return {.schema_version = common.schema_version,
+            .allow_pending = common.allow_pending};
+}
+
+DigestV1 parseClosureDigest(const Json &value, std::string_view path,
+                            bool require_sha256 = true) {
+    if (!value.is_object()) {
+        invalidParams(std::string{path} + " must be an object");
+    }
+    requireOnlyFields(value, {"algorithm", "hex"}, path);
+    const auto algorithm = value.find("algorithm");
+    const auto hex = value.find("hex");
+    if (algorithm == value.end() || !algorithm->is_string() ||
+        hex == value.end() || !hex->is_string()) {
+        invalidParams(std::string{path} +
+                      " requires string algorithm and hex fields");
+    }
+    if (require_sha256 &&
+        algorithm->get_ref<const std::string &>() != "sha256") {
+        invalidParams(std::string{path} + " algorithm must be sha256");
+    }
+    return {.algorithm = algorithm->get<std::string>(),
+            .hex = hex->get<std::string>()};
+}
+
+std::string requiredClosureString(const Json &value, std::string_view field,
+                                  std::string_view path) {
+    const auto found = value.find(field);
+    if (found == value.end() || !found->is_string() ||
+        found->get_ref<const std::string &>().empty()) {
+        invalidParams(std::string{path} + "/" + std::string{field} +
+                      " must be a non-empty string");
+    }
+    return found->get<std::string>();
+}
+
+PrefabResolutionClosure parsePrefabClosure(const Json &value) {
+    constexpr auto root = "import_scene_snapshot prefab_closure";
+    if (!value.is_object()) invalidParams(std::string{root} + " must be an object");
+    requireOnlyFields(value,
+                      {"scenes", "prefabs", "behaviors",
+                       "provider_fingerprint", "resolver_inputs_fingerprint"},
+                      root);
+    for (const auto field : {"scenes", "prefabs", "behaviors"}) {
+        const auto found = value.find(field);
+        if (found == value.end() || !found->is_array()) {
+            invalidParams(std::string{root} + "/" + field +
+                          " must be an array");
+        }
+    }
+    const auto provider = value.find("provider_fingerprint");
+    const auto resolver = value.find("resolver_inputs_fingerprint");
+    if (provider == value.end() || resolver == value.end()) {
+        invalidParams(std::string{root} +
+                      " requires both fingerprint fields");
+    }
+
+    PrefabResolutionClosure closure;
+    std::string previous;
+    for (std::size_t index = 0; index < value.at("scenes").size(); ++index) {
+        const auto &entry = value.at("scenes").at(index);
+        const auto path = std::string{root} + "/scenes/" +
+                          std::to_string(index);
+        if (!entry.is_object()) invalidParams(path + " must be an object");
+        requireOnlyFields(entry, {"scene_id", "digest"}, path);
+        auto scene_id = requiredClosureString(entry, "scene_id", path);
+        const auto digest = entry.find("digest");
+        if (digest == entry.end()) invalidParams(path + "/digest is required");
+        if (!previous.empty() && previous >= scene_id) {
+            invalidParams(std::string{root} +
+                          "/scenes must be strictly sorted by scene_id");
+        }
+        previous = scene_id;
+        closure.scenes.push_back(
+            {.scene_id = std::move(scene_id),
+             .digest_sha256 = parseClosureDigest(*digest, path + "/digest").hex});
+    }
+
+    previous.clear();
+    for (std::size_t index = 0; index < value.at("prefabs").size(); ++index) {
+        const auto &entry = value.at("prefabs").at(index);
+        const auto path = std::string{root} + "/prefabs/" +
+                          std::to_string(index);
+        if (!entry.is_object()) invalidParams(path + " must be an object");
+        requireOnlyFields(entry, {"name", "digest"}, path);
+        auto name = requiredClosureString(entry, "name", path);
+        const auto digest = entry.find("digest");
+        if (digest == entry.end()) invalidParams(path + "/digest is required");
+        if (!previous.empty() && previous >= name) {
+            invalidParams(std::string{root} +
+                          "/prefabs must be strictly sorted by name");
+        }
+        previous = name;
+        closure.prefabs.push_back(
+            {.name = std::move(name),
+             .digest_sha256 = parseClosureDigest(*digest, path + "/digest").hex});
+    }
+
+    previous.clear();
+    for (std::size_t index = 0; index < value.at("behaviors").size(); ++index) {
+        const auto &entry = value.at("behaviors").at(index);
+        const auto path = std::string{root} + "/behaviors/" +
+                          std::to_string(index);
+        if (!entry.is_object()) invalidParams(path + " must be an object");
+        requireOnlyFields(entry,
+                          {"stable_name", "schema_version",
+                           "params_schema_fingerprint"},
+                          path);
+        auto stable_name = requiredClosureString(entry, "stable_name", path);
+        const auto version = entry.find("schema_version");
+        if (version == entry.end()) {
+            invalidParams(path + "/schema_version is required");
+        }
+        const auto schema_version = exactUnsignedInteger(
+            *version, path + "/schema_version");
+        if (schema_version > std::numeric_limits<std::uint32_t>::max()) {
+            invalidParams(path + "/schema_version exceeds u32");
+        }
+        auto fingerprint = requiredClosureString(
+            entry, "params_schema_fingerprint", path);
+        if (!previous.empty() && previous >= stable_name) {
+            invalidParams(std::string{root} +
+                          "/behaviors must be strictly sorted by stable_name");
+        }
+        previous = stable_name;
+        closure.behaviors.push_back(
+            {.stable_name = std::move(stable_name),
+             .schema_version = static_cast<std::uint32_t>(schema_version),
+             .params_schema_fingerprint = std::move(fingerprint)});
+    }
+    closure.provider_fingerprint_sha256 =
+        parseClosureDigest(*provider,
+                           std::string{root} + "/provider_fingerprint")
+            .hex;
+    closure.resolver_inputs_fingerprint_sha256 =
+        parseClosureDigest(*resolver,
+                           std::string{root} +
+                               "/resolver_inputs_fingerprint")
+            .hex;
+    return closure;
+}
+
+std::optional<std::string> closureMismatchDetail(
+    const PrefabResolutionClosure &expected,
+    const PrefabResolutionClosure &actual) {
+    if (expected.scenes.size() != actual.scenes.size())
+        return "/prefab_closure/scenes/" +
+               std::to_string(std::min(expected.scenes.size(),
+                                       actual.scenes.size()));
+    for (std::size_t index = 0; index < expected.scenes.size(); ++index) {
+        const auto root = "/prefab_closure/scenes/" + std::to_string(index);
+        if (expected.scenes[index].scene_id != actual.scenes[index].scene_id)
+            return root + "/scene_id";
+        if (expected.scenes[index].digest_sha256 !=
+            actual.scenes[index].digest_sha256)
+            return root + "/digest";
+    }
+    if (expected.prefabs.size() != actual.prefabs.size())
+        return "/prefab_closure/prefabs/" +
+               std::to_string(std::min(expected.prefabs.size(),
+                                       actual.prefabs.size()));
+    for (std::size_t index = 0; index < expected.prefabs.size(); ++index) {
+        const auto root = "/prefab_closure/prefabs/" + std::to_string(index);
+        if (expected.prefabs[index].name != actual.prefabs[index].name)
+            return root + "/name";
+        if (expected.prefabs[index].digest_sha256 !=
+            actual.prefabs[index].digest_sha256)
+            return root + "/digest";
+    }
+    if (expected.behaviors.size() != actual.behaviors.size())
+        return "/prefab_closure/behaviors/" +
+               std::to_string(std::min(expected.behaviors.size(),
+                                       actual.behaviors.size()));
+    for (std::size_t index = 0; index < expected.behaviors.size(); ++index) {
+        const auto root = "/prefab_closure/behaviors/" +
+                          std::to_string(index);
+        if (expected.behaviors[index].stable_name !=
+            actual.behaviors[index].stable_name)
+            return root + "/stable_name";
+        if (expected.behaviors[index].schema_version !=
+            actual.behaviors[index].schema_version)
+            return root + "/schema_version";
+        if (expected.behaviors[index].params_schema_fingerprint !=
+            actual.behaviors[index].params_schema_fingerprint)
+            return root + "/params_schema_fingerprint";
+    }
+    if (expected.provider_fingerprint_sha256 !=
+        actual.provider_fingerprint_sha256)
+        return "/prefab_closure/provider_fingerprint";
+    if (expected.resolver_inputs_fingerprint_sha256 !=
+        actual.resolver_inputs_fingerprint_sha256)
+        return "/prefab_closure/resolver_inputs_fingerprint";
+    return std::nullopt;
+}
+
 ImportSceneSnapshotRequestV1 parseImportSceneSnapshotRequest(const Json &params) {
     constexpr auto method = "import_scene_snapshot";
     requireObjectParams(params, method);
@@ -206,6 +411,60 @@ ImportSceneSnapshotRequestV1 parseImportSceneSnapshotRequest(const Json &params)
     };
 }
 
+ImportSceneSnapshotRequestV2 parseImportSceneSnapshotRequestV2(
+    const Json &params) {
+    constexpr auto method = "import_scene_snapshot";
+    requireObjectParams(params, method);
+    const auto version = params.find("schema_version");
+    if (version == params.end()) {
+        invalidParams("import_scene_snapshot schema_version is required");
+    }
+    const auto schema_version =
+        exactUnsignedInteger(*version, "import_scene_snapshot schema_version");
+    if (schema_version != 2) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " +
+                std::to_string(schema_version)};
+    }
+    requireOnlyFields(params,
+                      {"schema_version", "semantic_scene_bytes", "digest",
+                       "current_scene_id", "prefab_closure"},
+                      method);
+    const auto bytes = params.find("semantic_scene_bytes");
+    if (bytes == params.end() || !bytes->is_string()) {
+        invalidParams(
+            "import_scene_snapshot semantic_scene_bytes must be a string");
+    }
+    if (bytes->get_ref<const std::string &>().size() > maxSceneSnapshotBytes) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
+                                 "snapshot exceeds 64 MiB"};
+    }
+    const auto digest = params.find("digest");
+    if (digest == params.end()) {
+        invalidParams("import_scene_snapshot digest is required");
+    }
+    // DigestV1's algorithm is gate 3, not request-shape validation. This is
+    // the V1 parser behavior and preserves the five-gate error precedence.
+    const auto parsed_digest = parseClosureDigest(
+        *digest, "import_scene_snapshot digest", false);
+    const auto current_scene = optionalString(params, "current_scene_id", method);
+    if (!current_scene) {
+        invalidParams("import_scene_snapshot current_scene_id is required");
+    }
+    const auto closure = params.find("prefab_closure");
+    if (closure == params.end()) {
+        invalidParams("import_scene_snapshot prefab_closure is required");
+    }
+    return ImportSceneSnapshotRequestV2{
+        .schema_version = schema_version,
+        .semantic_scene_bytes = bytes->get<std::string>(),
+        .digest = parsed_digest,
+        .current_scene_id = *current_scene,
+        .prefab_closure = parsePrefabClosure(*closure),
+    };
+}
+
 void validateSaveSceneRequest(const Json &params) {
     constexpr auto method = "save_scene";
     requireObjectParams(params, method);
@@ -250,6 +509,8 @@ std::string_view editorCommandErrorCodeName(EditorCommandErrorCode code) noexcep
         return "prefab_persistence_unsupported";
     case EditorCommandErrorCode::PrefabGeneratedReadOnly:
         return "prefab_generated_read_only";
+    case EditorCommandErrorCode::PrefabDependencyMismatch:
+        return "prefab_dependency_mismatch";
     }
     return "unknown_editor_error";
 }
@@ -560,6 +821,66 @@ EditorCommandService::exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &re
     };
 }
 
+ExportSceneSnapshotResponseV2
+EditorCommandService::exportSceneSnapshotV2(
+    const ExportSceneSnapshotRequestV2 &request) const {
+    if (request.schema_version != 2) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " +
+                std::to_string(request.schema_version)};
+    }
+    auto snapshot_state = dependencies_.snapshot_state
+                              ? dependencies_.snapshot_state()
+                              : EditorSnapshotState{};
+    if (edit_) {
+        auto pending = edit_->pendingTicketIds();
+        snapshot_state.pending_ticket_ids.insert(
+            snapshot_state.pending_ticket_ids.end(), pending.begin(),
+            pending.end());
+        snapshot_state.open_preview_lease =
+            snapshot_state.open_preview_lease || edit_->hasOpenPreviewLease();
+        snapshot_state.preview_epoch =
+            std::max(snapshot_state.preview_epoch, edit_->previewEpoch());
+    }
+    if (snapshot_state.preview_epoch > maxExactEditorJsonInteger) {
+        throw std::overflow_error("preview_epoch exceeds 2^53-1");
+    }
+    if (!request.allow_pending &&
+        (!snapshot_state.pending_ticket_ids.empty() ||
+         snapshot_state.open_preview_lease)) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotBusy,
+                                 "snapshot export is busy"};
+    }
+
+    const auto &source = document();
+    const auto &projection = resolved();
+    if (source.revision().value > maxExactEditorJsonInteger) {
+        throw std::overflow_error("SceneRevision exceeds 2^53-1");
+    }
+    const auto current_scene = dependencies_.current_scene_id();
+    if (projection.findScene(current_scene) == nullptr) {
+        throw EditorCommandError{EditorCommandErrorCode::SceneNotFound,
+                                 "scene not found: " + current_scene};
+    }
+    auto bytes = internal::encodeAuthoringSceneSemantic(source);
+    if (bytes.size() > maxSceneSnapshotBytes) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
+                                 "snapshot exceeds 64 MiB"};
+    }
+    auto digest = picosha2::hash256_hex_string(bytes.begin(), bytes.end());
+    return ExportSceneSnapshotResponseV2{
+        .schema_version = 2,
+        .scene_revision = source.revision(),
+        .current_scene_id = current_scene,
+        .semantic_scene_bytes = std::move(bytes),
+        .digest = {.algorithm = "sha256", .hex = std::move(digest)},
+        .pending_ticket_ids = snapshot_state.pending_ticket_ids,
+        .preview_epoch = snapshot_state.preview_epoch,
+        .prefab_closure = projection.prefabClosure(),
+    };
+}
+
 ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
     const ImportSceneSnapshotRequestV1 &request) {
     if (document().formatVersion() != 1 || document().usesPrefabs()) {
@@ -646,12 +967,111 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
     }
 }
 
-SaveSceneResult EditorCommandService::saveScene() {
-    if (document().usesPrefabs()) {
+ImportSceneSnapshotResult EditorCommandService::importSceneSnapshotV2(
+    const ImportSceneSnapshotRequestV2 &request) {
+    // SnapshotV2 retains SNAPSHOT0's five gates and inserts closure matching
+    // after parse/semantic validation but before current-scene selection.
+    if (request.schema_version != 2) {
         throw EditorCommandError{
-            EditorCommandErrorCode::PrefabPersistenceUnsupported,
-            "prefab_persistence_unsupported: scene save is unavailable for prefab scenes"};
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " +
+                std::to_string(request.schema_version)};
     }
+    if (request.semantic_scene_bytes.size() > maxSceneSnapshotBytes) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotTooLarge,
+                                 "snapshot exceeds 64 MiB"};
+    }
+    const auto actual_digest = picosha2::hash256_hex_string(
+        request.semantic_scene_bytes.begin(),
+        request.semantic_scene_bytes.end());
+    if (request.digest.algorithm != "sha256" ||
+        request.digest.hex != actual_digest) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::DigestMismatch,
+            "snapshot digest does not match semantic_scene_bytes"};
+    }
+
+    AuthoringSceneDocument validated;
+    ResolvedScene validated_projection;
+    try {
+        validated = AuthoringSceneDocument::load(
+            request.semantic_scene_bytes, SceneRevision{1});
+        const auto &live = resolved();
+        validated_projection = ResolvedSceneResolver::resolve(
+            validated, SceneResolverGeneration{1}, live.defaults(),
+            live.prefabRegistry(), live.bindableProvider());
+    } catch (const PrefabError &error) {
+        // Resolution participates in gate 4 (parse/semantic validation), but
+        // it also needs the receiving project's registry/provider in order to
+        // construct the closure checked by gate 5'. Keep payload violations
+        // at snapshot_invalid; only failures whose missing input belongs to
+        // the receiving project are dependency mismatches.
+        const bool dependency_failure =
+            error.code() == PrefabErrorCode::PrefabNotFound ||
+            error.code() == PrefabErrorCode::PrefabBindingNotBindable ||
+            error.code() == PrefabErrorCode::PrefabBindingInactive ||
+            error.code() == PrefabErrorCode::PrefabProviderStale ||
+            error.code() == PrefabErrorCode::PrefabDependencyMismatch;
+        const auto detail = error.context().json_pointer.value_or(
+            dependency_failure ? std::string{"/prefab_closure"}
+                               : std::string{"/prefab"});
+        throw EditorCommandError{
+            dependency_failure
+                ? EditorCommandErrorCode::PrefabDependencyMismatch
+                : EditorCommandErrorCode::SnapshotInvalid,
+            dependency_failure
+                ? "prefab_dependency_mismatch: snapshot dependencies cannot be resolved"
+                : "snapshot prefab semantic validation failed",
+            detail};
+    } catch (const EditorCommandError &) {
+        throw;
+    } catch (const std::exception &error) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::SnapshotInvalid,
+            "snapshot parse or semantic validation failed", error.what()};
+    }
+    if (const auto detail = closureMismatchDetail(
+            request.prefab_closure, validated_projection.prefabClosure())) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::PrefabDependencyMismatch,
+            "prefab_dependency_mismatch: snapshot closure differs from the current project",
+            *detail};
+    }
+    if (!internal::authoringSceneContains(validated,
+                                          request.current_scene_id)) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::SceneNotFound,
+            "scene not found: " + request.current_scene_id};
+    }
+    if (!dependencies_.import_scene_snapshot_versioned) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::SnapshotInvalid,
+            "snapshot import is unavailable",
+            "runtime SnapshotV2 import surface is unavailable"};
+    }
+    try {
+        const auto revision = dependencies_.import_scene_snapshot_versioned(
+            request.semantic_scene_bytes, request.current_scene_id, 2);
+        if (revision.value > maxExactEditorJsonInteger) {
+            throw std::overflow_error("SceneRevision exceeds 2^53-1");
+        }
+        return {.scene_revision = revision,
+                .current_scene_id = request.current_scene_id};
+    } catch (const EditorCommandError &) {
+        throw;
+    } catch (const PrefabError &error) {
+        throw EditorCommandError{
+            error.code() == PrefabErrorCode::PrefabDependencyMismatch
+                ? EditorCommandErrorCode::PrefabDependencyMismatch
+                : EditorCommandErrorCode::SnapshotInvalid,
+            error.what(), error.context().json_pointer};
+    } catch (const std::exception &error) {
+        throw EditorCommandError{EditorCommandErrorCode::SnapshotInvalid,
+                                 "snapshot reload failed", error.what()};
+    }
+}
+
+SaveSceneResult EditorCommandService::saveScene() {
     auto state = dependencies_.snapshot_state ? dependencies_.snapshot_state()
                                                : EditorSnapshotState{};
     if (edit_) {
@@ -676,6 +1096,15 @@ SaveSceneResult EditorCommandService::saveScene() {
             throw std::overflow_error("SceneRevision exceeds 2^53-1");
         }
         return result;
+    } catch (const PrefabError &error) {
+        if (error.code() == PrefabErrorCode::PrefabDependencyMismatch) {
+            throw EditorCommandError{
+                EditorCommandErrorCode::PrefabDependencyMismatch,
+                error.what(), error.context().json_pointer};
+        }
+        throw EditorCommandError{EditorCommandErrorCode::SaveFailed,
+                                 error.what(),
+                                 error.context().json_pointer};
     } catch (const SceneSaveError &error) {
         switch (error.code()) {
         case SceneSaveErrorCode::ExternalModification:
@@ -1204,6 +1633,53 @@ OrderedJson editorQueryJson(const ExportSceneSnapshotResponseV1 &snapshot) {
     };
 }
 
+OrderedJson prefabClosureJson(const PrefabResolutionClosure &closure) {
+    OrderedJson result;
+    result["scenes"] = OrderedJson::array();
+    for (const auto &scene : closure.scenes) {
+        result["scenes"].push_back(
+            OrderedJson{{"scene_id", scene.scene_id},
+                        {"digest", OrderedJson{{"algorithm", "sha256"},
+                                               {"hex", scene.digest_sha256}}}});
+    }
+    result["prefabs"] = OrderedJson::array();
+    for (const auto &prefab : closure.prefabs) {
+        result["prefabs"].push_back(
+            OrderedJson{{"name", prefab.name},
+                        {"digest", OrderedJson{{"algorithm", "sha256"},
+                                               {"hex", prefab.digest_sha256}}}});
+    }
+    result["behaviors"] = OrderedJson::array();
+    for (const auto &behavior : closure.behaviors) {
+        result["behaviors"].push_back(OrderedJson{
+            {"stable_name", behavior.stable_name},
+            {"schema_version", behavior.schema_version},
+            {"params_schema_fingerprint",
+             behavior.params_schema_fingerprint}});
+    }
+    result["provider_fingerprint"] =
+        OrderedJson{{"algorithm", "sha256"},
+                    {"hex", closure.provider_fingerprint_sha256}};
+    result["resolver_inputs_fingerprint"] =
+        OrderedJson{{"algorithm", "sha256"},
+                    {"hex", closure.resolver_inputs_fingerprint_sha256}};
+    return result;
+}
+
+OrderedJson editorQueryJson(const ExportSceneSnapshotResponseV2 &snapshot) {
+    return OrderedJson{
+        {"schema_version", snapshot.schema_version},
+        {"scene_revision", snapshot.scene_revision.value},
+        {"current_scene_id", snapshot.current_scene_id},
+        {"semantic_scene_bytes", snapshot.semantic_scene_bytes},
+        {"digest", OrderedJson{{"algorithm", snapshot.digest.algorithm},
+                                {"hex", snapshot.digest.hex}}},
+        {"pending_ticket_ids", snapshot.pending_ticket_ids},
+        {"preview_epoch", snapshot.preview_epoch},
+        {"prefab_closure", prefabClosureJson(snapshot.prefab_closure)},
+    };
+}
+
 OrderedJson editorQueryJson(const ImportSceneSnapshotResult &snapshot) {
     return OrderedJson{
         {"status", "imported"},
@@ -1257,11 +1733,38 @@ OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {
 }
 
 OrderedJson EditorCommandRpcAdapter::exportSceneSnapshot(const Json &params) const {
-    return editorQueryJson(service_.exportSceneSnapshot(parseExportSceneSnapshotRequest(params)));
+    const auto request = parseExportSceneSnapshotRequest(params);
+    if (request.schema_version == 1) {
+        return editorQueryJson(service_.exportSceneSnapshot(request));
+    }
+    if (request.schema_version == 2) {
+        return editorQueryJson(
+            service_.exportSceneSnapshotV2(parseExportSceneSnapshotRequestV2(params)));
+    }
+    throw EditorCommandError{
+        EditorCommandErrorCode::UnsupportedSnapshotVersion,
+        "unsupported snapshot version: " +
+            std::to_string(request.schema_version)};
 }
 
 OrderedJson EditorCommandRpcAdapter::importSceneSnapshot(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    requireObjectParams(params, "import_scene_snapshot");
+    const auto version_field = params.find("schema_version");
+    if (version_field == params.end()) {
+        invalidParams("import_scene_snapshot schema_version is required");
+    }
+    const auto version = exactUnsignedInteger(
+        *version_field, "import_scene_snapshot schema_version");
+    if (version == 2) {
+        return editorQueryJson(mutable_service_->importSceneSnapshotV2(
+            parseImportSceneSnapshotRequestV2(params)));
+    }
+    if (version != 1) {
+        throw EditorCommandError{
+            EditorCommandErrorCode::UnsupportedSnapshotVersion,
+            "unsupported snapshot version: " + std::to_string(version)};
+    }
     if (params.is_object()) {
         const auto bytes = params.find("semantic_scene_bytes");
         if (bytes != params.end() && bytes->is_string()) {
@@ -1278,15 +1781,6 @@ OrderedJson EditorCommandRpcAdapter::importSceneSnapshot(const Json &params) con
                 // The ordinary request/parser gates retain ownership of
                 // malformed JSON and malformed request fields.
             }
-        }
-    }
-    if (service_.usesPrefabs() && params.is_object()) {
-        const auto version = params.find("schema_version");
-        if (version != params.end() && version->is_number_integer() &&
-            !version->is_number_float() && version->get<std::int64_t>() == 2) {
-            throw EditorCommandError{
-                EditorCommandErrorCode::PrefabPersistenceUnsupported,
-                "prefab_persistence_unsupported: SnapshotV2 import is unavailable for prefab scenes"};
         }
     }
     return editorQueryJson(mutable_service_->importSceneSnapshot(
@@ -1332,6 +1826,88 @@ OrderedJson EditorCommandRpcAdapter::renderPreview(const Json &params) const {
 OrderedJson EditorCommandRpcAdapter::edit(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
     return mutable_service_->edit(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::setPrefabParameter(
+    const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    constexpr auto method = "set_prefab_parameter";
+    requireObjectParams(params, method);
+    requireOnlyFields(params,
+                      {"actor_id", "scene_revision", "closure_generation",
+                       "provider_generation", "object", "parameter", "value"},
+                      method);
+    for (const auto field : {"actor_id", "scene_revision",
+                             "closure_generation", "provider_generation",
+                             "object"}) {
+        if (!params.contains(field)) {
+            invalidParams(std::string{method} + " " + field + " is required");
+        }
+    }
+    const auto parameter = optionalString(params, "parameter", method);
+    if (!parameter || !params.contains("value")) {
+        invalidParams(
+            "set_prefab_parameter requires parameter and value");
+    }
+    return mutable_service_->edit(
+        Json{{"actor_id", exactUnsignedInteger(params.at("actor_id"),
+                                                "set_prefab_parameter actor_id")},
+             {"scene_revision",
+              exactUnsignedInteger(params.at("scene_revision"),
+                                   "set_prefab_parameter scene_revision")},
+             {"closure_generation",
+              exactUnsignedInteger(params.at("closure_generation"),
+                                   "set_prefab_parameter closure_generation")},
+             {"provider_generation",
+              exactUnsignedInteger(params.at("provider_generation"),
+                                   "set_prefab_parameter provider_generation")},
+             {"operations",
+              Json::array({Json{{"op", method},
+                                {"object", exactUnsignedInteger(
+                                               params.at("object"),
+                                               "set_prefab_parameter object")},
+                                {"parameter", *parameter},
+                                {"value", params.at("value")}}})}});
+}
+
+OrderedJson EditorCommandRpcAdapter::unsetPrefabParameter(
+    const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    constexpr auto method = "unset_prefab_parameter";
+    requireObjectParams(params, method);
+    requireOnlyFields(params,
+                      {"actor_id", "scene_revision", "closure_generation",
+                       "provider_generation", "object", "parameter"},
+                      method);
+    for (const auto field : {"actor_id", "scene_revision",
+                             "closure_generation", "provider_generation",
+                             "object"}) {
+        if (!params.contains(field)) {
+            invalidParams(std::string{method} + " " + field + " is required");
+        }
+    }
+    const auto parameter = optionalString(params, "parameter", method);
+    if (!parameter) {
+        invalidParams("unset_prefab_parameter parameter is required");
+    }
+    return mutable_service_->edit(
+        Json{{"actor_id", exactUnsignedInteger(params.at("actor_id"),
+                                                "unset_prefab_parameter actor_id")},
+             {"scene_revision",
+              exactUnsignedInteger(params.at("scene_revision"),
+                                   "unset_prefab_parameter scene_revision")},
+             {"closure_generation",
+              exactUnsignedInteger(params.at("closure_generation"),
+                                   "unset_prefab_parameter closure_generation")},
+             {"provider_generation",
+              exactUnsignedInteger(params.at("provider_generation"),
+                                   "unset_prefab_parameter provider_generation")},
+             {"operations",
+              Json::array({Json{{"op", method},
+                                {"object", exactUnsignedInteger(
+                                               params.at("object"),
+                                               "unset_prefab_parameter object")},
+                                {"parameter", *parameter}}})}});
 }
 
 OrderedJson EditorCommandRpcAdapter::undo(const Json &params) const {

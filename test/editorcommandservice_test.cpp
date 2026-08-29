@@ -304,7 +304,7 @@ TEST_CASE("ExportSceneSnapshot V1 validates strict request fields and pending st
     REQUIRE(allowed.at("pending_ticket_ids") == nlohmann::ordered_json::array({"ticket-7"}));
     REQUIRE(allowed.at("preview_epoch") == 9);
 
-    REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 2}}); }) ==
+    REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 3}}); }) ==
             EditorCommandErrorCode::UnsupportedSnapshotVersion);
     REQUIRE(errorCode([&] { (void)rpc.exportSceneSnapshot({{"schema_version", 1.0}}); }) ==
             EditorCommandErrorCode::InvalidParams);
@@ -498,7 +498,7 @@ TEST_CASE("ImportSceneSnapshot V1 enforces five ordered gates without publicatio
     // Adapter ordering is also fixed: version and size gates do not inspect
     // later required fields.
     REQUIRE(errorCode([&] {
-                (void)rpc.importSceneSnapshot({{"schema_version", 2}});
+                (void)rpc.importSceneSnapshot({{"schema_version", 3}});
             }) == EditorCommandErrorCode::UnsupportedSnapshotVersion);
     REQUIRE(errorCode([&] {
                 (void)rpc.importSceneSnapshot(

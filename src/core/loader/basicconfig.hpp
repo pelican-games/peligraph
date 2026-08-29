@@ -11,6 +11,8 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 namespace Pelican {
 
@@ -51,6 +53,17 @@ struct SceneSaveResult {
     std::size_t byte_count = 0;
 };
 
+struct ScenePrefabBaselineEntry {
+    std::string name;
+    std::string path;
+    std::string digest_sha256;
+};
+
+struct ScenePersistenceBaseline {
+    std::string scene_digest_sha256;
+    std::vector<ScenePrefabBaselineEntry> prefab_read_set;
+};
+
 DECLARE_MODULE(ProjectBasicConfig) {
     friend class ProjectBasicConfigProjectionTarget;
   public:
@@ -87,11 +100,12 @@ DECLARE_MODULE(ProjectBasicConfig) {
     mutable std::uint64_t next_prefab_provider_generation = 1;
 
     mutable std::optional<SceneProjectionState> scene_projection;
-    mutable std::optional<std::string> scene_baseline_digest;
+    mutable std::optional<ScenePersistenceBaseline> scene_persistence_baseline;
     mutable std::uint64_t next_scene_revision = 1;
     mutable std::uint64_t next_scene_resolver_generation = 1;
     mutable std::uint64_t next_authoring_object_id = 1;
     std::optional<SceneSaveFaultPoint> scene_save_fault;
+    std::function<void(SceneSaveFaultPoint)> scene_save_hook;
     std::optional<SceneImportFaultPoint> scene_import_fault;
     mutable std::optional<std::string> asset_data_json;
     mutable std::optional<std::string> rendering_config_json;
@@ -121,12 +135,17 @@ DECLARE_MODULE(ProjectBasicConfig) {
     void updateSceneDocument(std::string_view scene_v1_bytes);
     void invalidateSceneDocument() noexcept;
     SceneRevision importSceneDocument(std::string_view scene_v1_bytes,
-                                      const std::function<void()> &reload);
+                                      const std::function<void()> &reload,
+                                      std::uint64_t snapshot_schema_version = 1);
     void refreshResolvedScene(const std::function<void()> &reload);
     SceneSaveResult saveSceneDocument();
     void setSceneSaveFaultForTesting(
         std::optional<SceneSaveFaultPoint> fault) noexcept {
         scene_save_fault = fault;
+    }
+    void setSceneSaveHookForTesting(
+        std::function<void(SceneSaveFaultPoint)> hook) {
+        scene_save_hook = std::move(hook);
     }
     void setSceneImportFaultForTesting(
         std::optional<SceneImportFaultPoint> fault) noexcept {

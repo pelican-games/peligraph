@@ -912,6 +912,43 @@ struct InspectorModel::Impl {
                 throw std::runtime_error("get_components prefab_instance must be an object");
             }
             object.prefab_instance = *instance;
+            const auto parameters = instance->find("parameters");
+            if (parameters == instance->end() || !parameters->is_array()) {
+                throw std::runtime_error(
+                    "get_components prefab_instance parameters must be an array");
+            }
+            object.prefab_parameters.reserve(parameters->size());
+            for (const auto &parameter : *parameters) {
+                if (!parameter.is_object()) {
+                    throw std::runtime_error(
+                        "prefab parameter entry must be an object");
+                }
+                InspectorPrefabParameterSnapshot parsed{
+                    .name = requiredString(parameter, "name",
+                                           "prefab parameter"),
+                    .value_resolved = requiredField(
+                        parameter, "value_resolved", "prefab parameter"),
+                    .source = requiredString(parameter, "source",
+                                             "prefab parameter"),
+                };
+                if (parsed.source != "default" &&
+                    parsed.source != "override") {
+                    throw std::runtime_error(
+                        "prefab parameter source must be default or override");
+                }
+                const auto authored = parameter.find("value_authored");
+                if (parsed.source == "override") {
+                    if (authored == parameter.end()) {
+                        throw std::runtime_error(
+                            "override prefab parameter requires value_authored");
+                    }
+                    parsed.value_authored = *authored;
+                } else if (authored != parameter.end()) {
+                    throw std::runtime_error(
+                        "default prefab parameter forbids value_authored");
+                }
+                object.prefab_parameters.push_back(std::move(parsed));
+            }
         }
 
         const Json &components =

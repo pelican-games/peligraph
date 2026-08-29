@@ -60,6 +60,56 @@ struct ResolvedSceneDefaults {
     CameraSpritePolicySpec camera_sprite;
 };
 
+// SnapshotV2's resolver-input wire type is deliberately an alias instead of a
+// second aggregate: its field set and declaration order are therefore exactly
+// those of ResolvedSceneDefaults. Camera up and window dimensions are drawing
+// inputs, not resolver inputs, and remain outside the snapshot contract.
+using ResolverInputSnapshotV1 = ResolvedSceneDefaults;
+
+// SnapshotV2's immutable dependency closure. Generation values are CAS tokens
+// for an in-process publication; the remaining fields are the portable wire
+// identity and deliberately exclude unused registry entries.
+struct PrefabClosureScene {
+    std::string scene_id;
+    std::string digest_sha256;
+    friend bool operator==(const PrefabClosureScene &,
+                           const PrefabClosureScene &) = default;
+};
+
+struct PrefabClosureEntry {
+    std::string name;
+    std::string digest_sha256;
+    friend bool operator==(const PrefabClosureEntry &,
+                           const PrefabClosureEntry &) = default;
+};
+
+struct PrefabClosureBehavior {
+    std::string stable_name;
+    std::uint32_t schema_version = 0;
+    std::string params_schema_fingerprint;
+    friend bool operator==(const PrefabClosureBehavior &,
+                           const PrefabClosureBehavior &) = default;
+};
+
+struct PrefabResolutionClosure {
+    std::uint64_t generation = 0;
+    std::uint64_t registry_generation = 0;
+    std::uint64_t provider_generation = 0;
+    std::vector<PrefabClosureScene> scenes;
+    std::vector<PrefabClosureEntry> prefabs;
+    std::vector<PrefabClosureBehavior> behaviors;
+    std::string provider_fingerprint_sha256;
+    std::string resolver_inputs_fingerprint_sha256;
+
+    bool sameWireIdentity(const PrefabResolutionClosure &other) const noexcept;
+};
+
+// Canonical ResolverInputSnapshotV1 fingerprint. Its implementation mirrors
+// every aggregate member with structured bindings, so adding an unencoded
+// member is a compile-time failure.
+std::string resolverInputsFingerprint(
+    const ResolverInputSnapshotV1 &snapshot);
+
 struct AuthoredComponentOrigin {
     std::size_t authoring_component_index = 0;
 };
@@ -151,6 +201,7 @@ class ResolvedScene {
     ResolvedSceneDefaults defaults_;
     PrefabRegistrySnapshot prefab_registry_;
     BindableProviderSnapshot bindable_provider_;
+    PrefabResolutionClosure prefab_closure_;
 
     friend class ResolvedSceneResolver;
 
@@ -171,6 +222,9 @@ class ResolvedScene {
     }
     const BindableProviderSnapshot &bindableProvider() const noexcept {
         return bindable_provider_;
+    }
+    const PrefabResolutionClosure &prefabClosure() const noexcept {
+        return prefab_closure_;
     }
 
     const ResolvedSceneView *findScene(std::string_view scene_id) const noexcept;

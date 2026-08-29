@@ -30,10 +30,14 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <optional>
 #include <picosha2.h>
 #include <sstream>
 #include <string>
@@ -41,6 +45,7 @@
 #include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace Pelican {
 namespace {
@@ -172,6 +177,18 @@ class Wp361TemporaryProject final {
             throw std::runtime_error("could not flush WP361a fixture");
         }
     }
+    std::string read(std::string_view relative) const {
+        std::ifstream input{root_ / relative, std::ios_base::binary};
+        if (!input.is_open()) {
+            throw std::runtime_error("could not read WP362 fixture");
+        }
+        std::ostringstream bytes;
+        bytes << input.rdbuf();
+        if (!input.eof() && input.fail()) {
+            throw std::runtime_error("could not read WP362 fixture bytes");
+        }
+        return bytes.str();
+    }
 };
 
 Json prefabFixture(std::string_view shape = "capsule") {
@@ -296,6 +313,15 @@ class PrefabProjectionTarget final : public EditorProjectionDocumentTarget {
     void publishProjectionState(SceneProjectionState &candidate) noexcept override {
         state_.swap(candidate);
     }
+
+    void refreshDependencies(PrefabRegistrySnapshot registry,
+                             BindableProviderSnapshot provider) {
+        auto candidate = ResolvedSceneResolver::prepare(
+            state_.authoring(), nextProjectionResolverGeneration(),
+            state_.resolved().defaults(), std::move(registry),
+            std::move(provider));
+        publishProjectionState(candidate);
+    }
 };
 
 PreparedFixture prepareFixture(Json scene = sceneFixture()) {
@@ -411,6 +437,79 @@ std::string independentGid(std::string_view instance, std::string_view key) {
         result.push_back(hex[digest[index] & 15]);
     }
     return result;
+}
+
+void appendWp362Le32(std::vector<unsigned char> &bytes, std::uint32_t value) {
+    for (unsigned shift = 0; shift != 32; shift += 8) {
+        bytes.push_back(static_cast<unsigned char>((value >> shift) & 0xffU));
+    }
+}
+
+void appendWp362Lp(std::vector<unsigned char> &bytes, std::string_view value) {
+    appendWp362Le32(bytes, static_cast<std::uint32_t>(value.size()));
+    bytes.insert(bytes.end(), value.begin(), value.end());
+}
+
+void appendWp362Float(std::vector<unsigned char> &bytes, std::string_view name,
+                      float value) {
+    appendWp362Lp(bytes, name);
+    if (value == 0.0F) value = 0.0F;
+    appendWp362Le32(bytes, std::bit_cast<std::uint32_t>(value));
+}
+
+template <class Enum>
+void appendWp362Enum(std::vector<unsigned char> &bytes, std::string_view name,
+                     Enum value) {
+    appendWp362Lp(bytes, name);
+    appendWp362Le32(bytes, static_cast<std::uint32_t>(value));
+}
+
+std::string independentResolverInputsFingerprint(
+    const ResolvedSceneDefaults &defaults) {
+    std::vector<unsigned char> bytes;
+    appendWp362Lp(bytes, "pelican.resolver.inputs.v1");
+    appendWp362Enum(bytes, "camera_projection.kind",
+                    defaults.camera_projection.kind);
+    appendWp362Float(bytes, "camera_projection.yfov",
+                     defaults.camera_projection.yfov);
+    appendWp362Float(bytes, "camera_projection.znear",
+                     defaults.camera_projection.znear);
+    appendWp362Float(bytes, "camera_projection.zfar",
+                     defaults.camera_projection.zfar);
+    appendWp362Lp(bytes, "camera_projection.aspect");
+    bytes.push_back(defaults.camera_projection.aspect ? 0x01U : 0x00U);
+    if (defaults.camera_projection.aspect) {
+        auto value = *defaults.camera_projection.aspect;
+        if (value == 0.0F) value = 0.0F;
+        appendWp362Le32(bytes, std::bit_cast<std::uint32_t>(value));
+    }
+    appendWp362Float(bytes, "camera_projection.xmag",
+                     defaults.camera_projection.xmag);
+    appendWp362Float(bytes, "camera_projection.ymag",
+                     defaults.camera_projection.ymag);
+    appendWp362Enum(bytes, "camera_sprite.pixel_perfect",
+                    defaults.camera_sprite.pixel_perfect);
+    appendWp362Enum(bytes, "camera_sprite.sort",
+                    defaults.camera_sprite.sort);
+    return picosha2::hash256_hex_string(bytes.begin(), bytes.end());
+}
+
+PrefabRegistrySnapshot registryWithUnused(const Json &used) {
+    auto unused = used;
+    unused["name"] = "unused";
+    unused["parameters"] = Json::array();
+    unused["components"] = Json::array(
+        {{{"name", "sprite_view"}, {"texture", "white"}}});
+    const auto used_bytes = used.dump();
+    const auto unused_bytes = unused.dump();
+    const std::vector<PrefabRegistryEntry> entries{
+        {"unused", "prefabs/unused.json"},
+        {"unit", "prefabs/unit.json"},
+    };
+    return buildPrefabRegistrySnapshot(
+        entries, [used_bytes, unused_bytes](std::string_view path) {
+            return path == "prefabs/unit.json" ? used_bytes : unused_bytes;
+        }, 99);
 }
 
 } // namespace
@@ -588,7 +687,7 @@ TEST_CASE("WP361 resolver expands authored then generated and preserves camera-e
     REQUIRE(object.components[5].origin.generated()->component_key == "logic_target");
     REQUIRE(generatedByKey(object, "sprite").effective_json.at("texture") == "white");
     REQUIRE(generatedByKey(object, "hit").effective_json.at("radius") == 0.4F);
-    REQUIRE(object.prefab_instance->closure_generation == 3);
+    REQUIRE(object.prefab_instance->closure_generation == 12);
     REQUIRE(object.prefab_instance->provider_generation == 7);
     REQUIRE(object.prefab_instance->parameters[0].name == "hp");
     REQUIRE_FALSE(object.prefab_instance->parameters[0].is_override);
@@ -1704,7 +1803,7 @@ TEST_CASE("WP361 journal preserves generated identity and records prefab spawn a
 }
 
 #if PELICAN_WITH_RPC
-TEST_CASE("WP361 real RpcServer exposes generated wire and rejects mutation and persistence",
+TEST_CASE("WP361 real RpcServer exposes generated wire and preserves V1 gates",
           "[wp361][prefab][rpc][readonly][persistence]") {
     auto rpc_scene = sceneFixture(false, true);
     rpc_scene["scenes"]["main"]["objects"].push_back(
@@ -1872,10 +1971,16 @@ TEST_CASE("WP361 real RpcServer exposes generated wire and rejects mutation and 
     REQUIRE(generated->at("generated").at("source").at("component_key") == "sprite");
     REQUIRE(parsed[1].at("error").at("data").at("code") ==
             "prefab_generated_read_only");
-    for (std::size_t index = 2; index <= 6; ++index) {
-        REQUIRE(parsed[index].at("error").at("data").at("code") ==
-                "prefab_persistence_unsupported");
-    }
+    REQUIRE(parsed[2].at("error").at("data").at("code") ==
+            "save_unavailable");
+    REQUIRE(parsed[3].at("error").at("data").at("code") ==
+            "prefab_persistence_unsupported");
+    REQUIRE(parsed[4].at("result").at("schema_version") == 2);
+    REQUIRE(parsed[4].at("result").contains("prefab_closure"));
+    REQUIRE(parsed[5].at("error").at("data").at("code") ==
+            "prefab_persistence_unsupported");
+    REQUIRE(parsed[6].at("error").at("data").at("code") ==
+            "invalid_params");
     REQUIRE(parsed[7].at("error").at("data").at("code") ==
             "invalid_params");
     REQUIRE(parsed[8].at("error").at("data").at("code") ==
@@ -1889,10 +1994,10 @@ TEST_CASE("WP361 real RpcServer exposes generated wire and rejects mutation and 
     REQUIRE(default_hp.at("value_resolved") == 30);
     REQUIRE(default_hp.at("source") == "default");
     REQUIRE_FALSE(default_hp.contains("value_authored"));
-    REQUIRE(parsed[11].at("error").at("code") ==
-            JsonRpcErrorCodes::methodNotFound);
-    REQUIRE(parsed[12].at("error").at("code") ==
-            JsonRpcErrorCodes::methodNotFound);
+    REQUIRE(parsed[11].at("error").at("data").at("code") ==
+            "invalid_params");
+    REQUIRE(parsed[12].at("error").at("data").at("code") ==
+            "invalid_params");
     REQUIRE(parsed[13].at("error").at("data").at("code") ==
             "invalid_params");
     REQUIRE(parsed[14].at("error").at("data").at("code") ==
@@ -1950,7 +2055,8 @@ TEST_CASE("WP361a SnapshotV1 and lower import gates reject every prefab persiste
     const auto resolved_v1 = ResolvedSceneResolver::resolve(
         live_v1, SceneResolverGeneration{1}, {}, {}, {});
     auto service_v1 = make_service(live_v1, resolved_v1);
-    REQUIRE(service_v1.exportSceneSnapshot({.schema_version = 1})
+    REQUIRE(service_v1.exportSceneSnapshot(
+                          ExportSceneSnapshotRequestV1{.schema_version = 1})
                 .schema_version == 1);
 
     auto plain_v2_json = plain_scene;
@@ -1961,7 +2067,8 @@ TEST_CASE("WP361a SnapshotV1 and lower import gates reject every prefab persiste
         live_v2, SceneResolverGeneration{1}, {}, {}, {});
     auto service_v2 = make_service(live_v2, resolved_v2);
     try {
-        (void)service_v2.exportSceneSnapshot({.schema_version = 1});
+        (void)service_v2.exportSceneSnapshot(
+            ExportSceneSnapshotRequestV1{.schema_version = 1});
         FAIL("SnapshotV1 accepted a formatVersion 2 document without prefabs");
     } catch (const EditorCommandError &error) {
         REQUIRE(error.code() ==
@@ -2044,7 +2151,7 @@ TEST_CASE("WP361 authored detector remains and ImGui never creates generated mut
                       ResolvedSceneError);
 }
 
-TEST_CASE("WP361 v4 JSON examples remain parse gates while WP362 routing stays unsupported",
+TEST_CASE("WP361 and WP362 v4 JSON examples remain syntax parse gates",
           "[wp361][prefab][json-examples]") {
     const std::vector<std::string> examples{
         R"json({"generated":{"stable_generated_id":"gid_0123456789abcdef0123456789abcdef","source":{"prefab":"enemy_grunt","instance_id":"gi_7f3a","component_key":"sprite_view","digest":{"algorithm":"sha256","hex":"0f9c2a4b8d6e13577531fedcba9876543210abcdef0123456789abcdef012345"}},"resolved_json":{"name":"sprite_view","texture":"white"},"editable":false}})json",
@@ -2055,6 +2162,1071 @@ TEST_CASE("WP361 v4 JSON examples remain parse gates while WP362 routing stays u
         R"json({"op":"unset_prefab_parameter","object":12,"parameter":"hp"})json",
     };
     for (const auto example : examples) REQUIRE_NOTHROW(Json::parse(example));
+}
+
+TEST_CASE("WP362 resolver input bytes and dependency closure are complete",
+          "[wp362][snapshot-v2][closure][fingerprint]") {
+    ensureBehavior();
+    ResolvedSceneDefaults defaults;
+    REQUIRE(resolverInputsFingerprint(defaults) ==
+            independentResolverInputsFingerprint(defaults));
+
+    const auto baseline = resolverInputsFingerprint(defaults);
+    REQUIRE(baseline ==
+            "e36e95129b8b130f625c0d104e4a75563d74812fdcd9cebbf3b658c160a624a0");
+    const auto require_changed = [&](const auto &mutate) {
+        auto candidate = defaults;
+        mutate(candidate);
+        REQUIRE(resolverInputsFingerprint(candidate) != baseline);
+        REQUIRE(resolverInputsFingerprint(candidate) ==
+                independentResolverInputsFingerprint(candidate));
+    };
+    require_changed([](auto &value) {
+        value.camera_projection.kind = CameraProjectionKind::Orthographic;
+    });
+    require_changed([](auto &value) { value.camera_projection.yfov += 0.125F; });
+    require_changed([](auto &value) { value.camera_projection.znear += 0.125F; });
+    require_changed([](auto &value) { value.camera_projection.zfar += 1.0F; });
+    require_changed([](auto &value) { value.camera_projection.aspect = 1.25F; });
+    require_changed([](auto &value) { value.camera_projection.xmag += 0.25F; });
+    require_changed([](auto &value) { value.camera_projection.ymag += 0.25F; });
+    require_changed([](auto &value) {
+        value.camera_sprite.pixel_perfect = CameraPixelPerfectMode::strict;
+    });
+    require_changed([](auto &value) {
+        value.camera_sprite.sort = CameraSpriteSortPolicy::declaration;
+    });
+
+    auto positive_zero = defaults;
+    positive_zero.camera_projection.aspect = 0.0F;
+    auto negative_zero = positive_zero;
+    negative_zero.camera_projection.aspect = -0.0F;
+    REQUIRE(resolverInputsFingerprint(positive_zero) ==
+            resolverInputsFingerprint(negative_zero));
+    positive_zero.camera_projection.xmag = 0.0F;
+    negative_zero.camera_projection.xmag = -0.0F;
+    REQUIRE(resolverInputsFingerprint(positive_zero) ==
+            resolverInputsFingerprint(negative_zero));
+
+    auto nan = defaults;
+    nan.camera_projection.znear = std::numeric_limits<float>::quiet_NaN();
+    requirePrefabError(PrefabErrorCode::PrefabDependencyMismatch, [&] {
+        (void)resolverInputsFingerprint(nan);
+    });
+    nan = defaults;
+    nan.camera_projection.aspect =
+        std::numeric_limits<float>::quiet_NaN();
+    requirePrefabError(PrefabErrorCode::PrefabDependencyMismatch, [&] {
+        (void)resolverInputsFingerprint(nan);
+    });
+
+    auto scene = sceneFixture();
+    scene["scenes"]["inactive"] = scene["scenes"]["main"];
+    scene["scenes"]["main"] = {
+        {"objects", Json::array({
+             {{"name", "OnlyActive"},
+              {"components", Json::array({transform()})}}
+         })}};
+    const auto document = AuthoringSceneDocument::load(
+        scene.dump(), SceneRevision{31});
+    const auto provider = buildProductionBindableProviderSnapshot(41);
+    const auto used_registry = registryFor(prefabFixture());
+    const auto used = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{51}, defaults, used_registry,
+        provider);
+    REQUIRE(used.prefabClosure().scenes.size() == 2);
+    REQUIRE(used.prefabClosure().scenes[0].scene_id == "inactive");
+    REQUIRE(used.prefabClosure().scenes[1].scene_id == "main");
+    REQUIRE(used.prefabClosure().prefabs.size() == 1);
+    REQUIRE(used.prefabClosure().prefabs[0].name == "unit");
+    REQUIRE(used.prefabClosure().behaviors.size() == 1);
+    REQUIRE(used.prefabClosure().behaviors[0].stable_name ==
+            "wp361_behavior");
+    REQUIRE(used.prefabClosure().provider_fingerprint_sha256.size() == 64);
+    REQUIRE(used.prefabClosure().resolver_inputs_fingerprint_sha256 ==
+            baseline);
+
+    for (const auto &authored_scene : AuthoringSceneAuthority::query(document)) {
+        const auto scene_bytes = authored_scene.authoredJson().dump();
+        const auto expected = picosha2::hash256_hex_string(
+            scene_bytes.begin(), scene_bytes.end());
+        const auto found = std::find_if(
+            used.prefabClosure().scenes.begin(),
+            used.prefabClosure().scenes.end(), [&](const auto &candidate) {
+                return candidate.scene_id == authored_scene.scene_id;
+            });
+        REQUIRE(found != used.prefabClosure().scenes.end());
+        REQUIRE(found->digest_sha256 == expected);
+    }
+
+    const auto with_unused = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{52}, defaults,
+        registryWithUnused(prefabFixture()), provider);
+    REQUIRE(used.prefabClosure().sameWireIdentity(
+        with_unused.prefabClosure()));
+    REQUIRE(with_unused.prefabClosure().prefabs.size() == 1);
+
+    std::vector<BindableDescriptor> changed_descriptors(
+        provider.descriptors().begin(), provider.descriptors().end());
+    const auto defaulted_descriptor = std::find_if(
+        changed_descriptors.begin(), changed_descriptors.end(),
+        [](const auto &descriptor) {
+            return descriptor.provider_name == "collider" &&
+                   descriptor.json_pointer == "/radius" &&
+                   descriptor.canonical_default.has_value();
+        });
+    REQUIRE(defaulted_descriptor != changed_descriptors.end());
+    defaulted_descriptor->canonical_default = OJson(0.75);
+    const BindableProviderSnapshot changed_provider{
+        42, std::move(changed_descriptors),
+        std::vector<BehaviorDependencyDescriptor>(
+            provider.behaviorDependencies().begin(),
+            provider.behaviorDependencies().end())};
+    REQUIRE(std::string{changed_provider.fingerprint()} !=
+            std::string{provider.fingerprint()});
+}
+
+TEST_CASE("WP362 SnapshotV2 routes all four wire shapes and checks closure before scene selection",
+          "[wp362][snapshot-v2][rpc][parse-gate]") {
+    ensureBehavior();
+    const auto document = AuthoringSceneDocument::load(
+        sceneFixture().dump(), SceneRevision{61});
+    auto defaults = ResolvedSceneDefaults{};
+    const auto registry = registryFor(prefabFixture());
+    const auto provider = buildProductionBindableProviderSnapshot(71);
+    const auto resolved = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{81}, defaults, registry, provider);
+    bool imported = false;
+    EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = [&]() -> const ResolvedScene & { return resolved; },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .import_scene_snapshot_versioned =
+            [&](std::string_view bytes, std::string_view scene_id,
+                std::uint64_t version) {
+                REQUIRE(std::string{bytes} ==
+                        AuthoringSceneAuthority::encodeSemantic(document));
+                REQUIRE(std::string{scene_id} == "main");
+                REQUIRE(version == 2);
+                imported = true;
+                return SceneRevision{62};
+            },
+    }};
+    EditorCommandRpcAdapter adapter{service};
+
+    const auto export_request = Json::parse(
+        R"json({"schema_version":2,"allow_pending":false})json");
+    const auto exported = adapter.exportSceneSnapshot(export_request);
+    REQUIRE(exported.at("schema_version") == 2);
+    REQUIRE(exported.at("prefab_closure").at("scenes").size() == 1);
+    REQUIRE(exported.at("prefab_closure").at("prefabs")[0].at("name") ==
+            "unit");
+    const auto reparsed_export_response = Json::parse(exported.dump());
+    REQUIRE(reparsed_export_response == exported);
+
+    Json import_request{
+        {"schema_version", 2},
+        {"semantic_scene_bytes", exported.at("semantic_scene_bytes")},
+        {"digest", exported.at("digest")},
+        {"current_scene_id", "main"},
+        {"prefab_closure", exported.at("prefab_closure")},
+    };
+
+    const auto require_import_code = [&](Json request,
+                                         EditorCommandErrorCode code) {
+        try {
+            (void)adapter.importSceneSnapshot(request);
+            FAIL("SnapshotV2 validation gate accepted invalid input");
+        } catch (const EditorCommandError &error) {
+            REQUIRE(error.code() == code);
+        }
+    };
+    auto unsupported = import_request;
+    unsupported["schema_version"] = 3;
+    require_import_code(std::move(unsupported),
+                        EditorCommandErrorCode::UnsupportedSnapshotVersion);
+    auto oversized = import_request;
+    oversized["semantic_scene_bytes"] =
+        std::string(maxSceneSnapshotBytes + 1U, 'x');
+    require_import_code(std::move(oversized),
+                        EditorCommandErrorCode::SnapshotTooLarge);
+    auto bad_digest = import_request;
+    bad_digest["digest"]["algorithm"] = "sha512";
+    require_import_code(std::move(bad_digest),
+                        EditorCommandErrorCode::DigestMismatch);
+    auto malformed = import_request;
+    malformed["semantic_scene_bytes"] = "{not-json";
+    malformed["digest"]["hex"] = picosha2::hash256_hex_string(
+        malformed.at("semantic_scene_bytes").get_ref<const std::string &>());
+    require_import_code(std::move(malformed),
+                        EditorCommandErrorCode::SnapshotInvalid);
+
+    const auto import_result = adapter.importSceneSnapshot(import_request);
+    REQUIRE(imported);
+    REQUIRE(import_result == OJson::parse(
+        R"json({"status":"imported","scene_revision":62,"current_scene_id":"main"})json"));
+
+    auto invalid_scene = Json::parse(
+        exported.at("semantic_scene_bytes").get<std::string>());
+    invalid_scene["scenes"]["main"]["objects"][1]["prefab"]
+                 ["parameters"]["hp"] = "not-an-i32";
+    auto invalid_request = import_request;
+    invalid_request["semantic_scene_bytes"] = invalid_scene.dump();
+    invalid_request["digest"]["hex"] = picosha2::hash256_hex_string(
+        invalid_request.at("semantic_scene_bytes").get_ref<const std::string &>());
+    // The changed scene also makes the supplied closure stale. Gate 4 must
+    // win over closure gate 5', proving the inherited V1 ordering.
+    try {
+        (void)adapter.importSceneSnapshot(invalid_request);
+        FAIL("invalid prefab payload reached closure comparison");
+    } catch (const EditorCommandError &error) {
+        REQUIRE(error.code() == EditorCommandErrorCode::SnapshotInvalid);
+        REQUIRE(error.detail() ==
+                std::optional<std::string>{"/prefab/parameters/hp"});
+    }
+
+    const auto require_dependency_detail = [&](Json request,
+                                               std::string_view detail) {
+        try {
+            (void)adapter.importSceneSnapshot(request);
+            FAIL("mismatched closure element was accepted");
+        } catch (const EditorCommandError &error) {
+            REQUIRE(error.code() ==
+                    EditorCommandErrorCode::PrefabDependencyMismatch);
+            REQUIRE(error.detail() ==
+                    std::optional<std::string>{std::string{detail}});
+        }
+    };
+    auto scene_mismatch = import_request;
+    scene_mismatch["prefab_closure"]["scenes"][0]["digest"]["hex"] =
+        std::string(64, '0');
+    require_dependency_detail(
+        std::move(scene_mismatch), "/prefab_closure/scenes/0/digest");
+    auto prefab_mismatch = import_request;
+    prefab_mismatch["prefab_closure"]["prefabs"][0]["digest"]["hex"] =
+        std::string(64, '0');
+    require_dependency_detail(
+        std::move(prefab_mismatch), "/prefab_closure/prefabs/0/digest");
+    auto behavior_mismatch = import_request;
+    behavior_mismatch["prefab_closure"]["behaviors"][0]
+                     ["schema_version"] =
+        behavior_mismatch["prefab_closure"]["behaviors"][0]
+                         ["schema_version"].get<std::uint64_t>() + 1U;
+    require_dependency_detail(
+        std::move(behavior_mismatch),
+        "/prefab_closure/behaviors/0/schema_version");
+    auto provider_mismatch = import_request;
+    provider_mismatch["prefab_closure"]["provider_fingerprint"]["hex"] =
+        std::string(64, '0');
+    require_dependency_detail(
+        std::move(provider_mismatch),
+        "/prefab_closure/provider_fingerprint");
+    auto missing_prefab = import_request;
+    missing_prefab["prefab_closure"]["prefabs"] = Json::array();
+    require_dependency_detail(
+        std::move(missing_prefab), "/prefab_closure/prefabs/0");
+
+    const auto unused_resolved = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{82}, defaults,
+        registryWithUnused(prefabFixture()), provider);
+    EditorCommandService unused_service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = [&]() -> const ResolvedScene & {
+            return unused_resolved;
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .import_scene_snapshot_versioned =
+            [](std::string_view, std::string_view, std::uint64_t) {
+                return SceneRevision{63};
+            },
+    }};
+    EditorCommandRpcAdapter unused_adapter{unused_service};
+    REQUIRE(unused_adapter.importSceneSnapshot(import_request).at("status") ==
+            "imported");
+
+    auto other_defaults = defaults;
+    other_defaults.camera_projection.yfov += 0.25F;
+    const auto other_resolved = ResolvedSceneResolver::resolve(
+        document, SceneResolverGeneration{83}, other_defaults, registry,
+        provider);
+    EditorCommandService other_service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & { return document; },
+        .resolved_scene = [&]() -> const ResolvedScene & {
+            return other_resolved;
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .import_scene_snapshot_versioned =
+            [](std::string_view, std::string_view, std::uint64_t) {
+                FAIL("closure mismatch reached the import publication callback");
+                return SceneRevision{0};
+            },
+    }};
+    EditorCommandRpcAdapter other_adapter{other_service};
+    auto wrong_scene = import_request;
+    wrong_scene["current_scene_id"] = "missing";
+    try {
+        (void)other_adapter.importSceneSnapshot(wrong_scene);
+        FAIL("camera-only dependency change was accepted");
+    } catch (const EditorCommandError &error) {
+        REQUIRE(error.code() ==
+                EditorCommandErrorCode::PrefabDependencyMismatch);
+        REQUIRE(error.detail() ==
+                std::optional<std::string>{
+                    "/prefab_closure/resolver_inputs_fingerprint"});
+    }
+    auto absent_scene = import_request;
+    absent_scene["current_scene_id"] = "missing";
+    require_import_code(std::move(absent_scene),
+                        EditorCommandErrorCode::SceneNotFound);
+
+    const auto set_ast = parseEditorMutationRequest(
+        {{"actor_id", 1}, {"scene_revision", 61},
+         {"closure_generation", 81}, {"provider_generation", 71},
+         {"operations", Json::array({Json::parse(
+              R"json({"op":"set_prefab_parameter","object":12,"parameter":"hp","value":55})json")})}},
+        "edit");
+    REQUIRE(set_ast.prefab_mutation);
+    const auto unset_ast = parseEditorMutationRequest(
+        {{"actor_id", 1}, {"scene_revision", 61},
+         {"closure_generation", 81}, {"provider_generation", 71},
+         {"operations", Json::array({Json::parse(
+              R"json({"op":"unset_prefab_parameter","object":12,"parameter":"hp"})json")})}},
+        "edit");
+    REQUIRE(unset_ast.prefab_mutation);
+}
+
+TEST_CASE("WP362 real RpcServer run edits prefab parameters with three-token CAS and journal replay",
+          "[wp362][prefab-edit][rpc][cas][undo-redo]") {
+    ensureBehavior();
+    auto fixture = prepareFixture();
+    PrefabProjectionTarget target{fixture.document, fixture.registry,
+                                  fixture.provider};
+    EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & {
+            return target.projectionDocument();
+        },
+        .resolved_scene = [&]() -> const ResolvedScene & {
+            return target.projectionResolvedScene();
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .edit = EditorEditRuntimeDependencies{
+            .document = [&]() -> const AuthoringSceneDocument & {
+                return target.projectionDocument();
+            },
+            .current_scene_id = [] { return std::string{"main"}; },
+            .execute = [&](const EditorEditExecutionRequest &request) {
+                EditorProjectionTransaction transaction{target,
+                                                        request.base_revision};
+                std::vector<EditorProjectionAdapter *> adapters;
+                return transaction.commit(request.commands, adapters);
+            },
+            .gate = [] { return EditorGateObservation{}; },
+            .prefab_registry = [&] {
+                return target.projectionResolvedScene().prefabRegistry();
+            },
+            .bindable_provider = [&] {
+                return target.projectionResolvedScene().bindableProvider();
+            },
+            .closure_generation = [&] {
+                return target.projectionResolvedScene()
+                    .prefabClosure().generation;
+            },
+        },
+    }};
+    EditorCommandRpcAdapter adapter{service};
+    std::uint64_t request_id = 1;
+    const auto run_rpc = [&](std::string method, Json params) {
+        const Json request{{"jsonrpc", "2.0"}, {"id", request_id++},
+                           {"method", std::move(method)},
+                           {"params", std::move(params)}};
+        std::istringstream input{request.dump() + "\n"};
+        std::ostringstream output;
+        RpcServer server{input, output};
+        configureEditorRpcHandlers(
+            server, adapter,
+            {.snapshot_imported = [] {},
+             .save_busy = [] { return false; }});
+        server.run();
+        std::string line;
+        std::istringstream response_lines{output.str()};
+        REQUIRE(std::getline(response_lines, line));
+        REQUIRE_FALSE(line.empty());
+        return Json::parse(line);
+    };
+
+    const auto session = run_rpc(
+        "open_editor_session", {{"display_name", "wp362 rpc"}});
+    const auto actor = session.at("result").at("actor_id").get<std::uint64_t>();
+    const auto object_id =
+        instanceObject(target.projectionResolvedScene()).authoring_object_id.value;
+    const auto tokens = [&] {
+        const auto &resolved = target.projectionResolvedScene();
+        return Json{{"actor_id", actor},
+                    {"scene_revision",
+                     target.projectionDocument().revision().value},
+                    {"closure_generation",
+                     resolved.prefabClosure().generation},
+                    {"provider_generation",
+                     resolved.bindableProvider().generation()},
+                    {"object", object_id},
+                    {"parameter", "hp"}};
+    };
+    const auto commit_ticket = [&](const Json &accepted_response) {
+        const auto &accepted = accepted_response.at("result");
+        REQUIRE(accepted.at("status") == "accepted");
+        const auto ticket = accepted.at("ticket").get<std::string>();
+        service.commitPendingEdits();
+        return run_rpc("get_edit_result", {{"ticket", ticket}}).at("result");
+    };
+    const auto parameter = [&](std::string_view name) -> Json {
+        const auto queried = run_rpc(
+            "get_components", {{"authoring_object_id", object_id}});
+        const auto &parameters = queried.at("result")
+                                     .at("prefab_instance")
+                                     .at("parameters");
+        const auto found = std::find_if(
+            parameters.begin(), parameters.end(), [&](const auto &candidate) {
+                return candidate.at("name").template get<std::string>() ==
+                       name;
+            });
+        REQUIRE(found != parameters.end());
+        return *found;
+    };
+
+    auto set_params = tokens();
+    set_params["value"] = 55;
+    const auto set = commit_ticket(run_rpc("set_prefab_parameter", set_params));
+    REQUIRE(set.at("status") == "committed");
+    REQUIRE(parameter("hp").at("value_resolved") == 55);
+    REQUIRE(parameter("hp").at("source") == "override");
+    const auto &set_record = service.editCoordinator()->journal().back();
+    REQUIRE(set_record.ordered_forward == std::vector<OJson>{
+        OJson{{"op", "set_prefab_parameter"}, {"object", object_id},
+              {"parameter", "hp"}, {"value", 55}}});
+    REQUIRE(set_record.ordered_inverse == std::vector<OJson>{
+        OJson{{"op", "unset_prefab_parameter"}, {"object", object_id},
+              {"parameter", "hp"}}});
+
+    auto undo_params = tokens();
+    undo_params.erase("object");
+    undo_params.erase("parameter");
+    undo_params["transaction_id"] = set.at("transaction_id");
+    const auto undone = commit_ticket(run_rpc("undo", undo_params));
+    REQUIRE(undone.at("status") == "committed");
+    REQUIRE(parameter("hp").at("value_resolved") == 30);
+    REQUIRE(parameter("hp").at("source") == "default");
+
+    auto redo_params = tokens();
+    redo_params.erase("object");
+    redo_params.erase("parameter");
+    redo_params["transaction_id"] = undone.at("transaction_id");
+    const auto redone = commit_ticket(run_rpc("redo", redo_params));
+    REQUIRE(redone.at("status") == "committed");
+    REQUIRE(parameter("hp").at("value_resolved") == 55);
+    REQUIRE(parameter("hp").at("source") == "override");
+
+    auto stale_scene = tokens();
+    stale_scene["scene_revision"] =
+        target.projectionDocument().revision().value - 1U;
+    stale_scene["value"] = 56;
+    REQUIRE(run_rpc("set_prefab_parameter", stale_scene)
+                .at("result").at("error").at("code") == "stale_revision");
+
+    auto stale_closure = tokens();
+    stale_closure["closure_generation"] =
+        target.projectionResolvedScene().prefabClosure().generation - 1U;
+    stale_closure["value"] = 56;
+    REQUIRE(run_rpc("set_prefab_parameter", stale_closure)
+                .at("result").at("error").at("code") ==
+            "prefab_dependency_mismatch");
+
+    auto stale_provider = tokens();
+    stale_provider["provider_generation"] =
+        target.projectionResolvedScene().bindableProvider().generation() - 1U;
+    stale_provider["value"] = 56;
+    REQUIRE(run_rpc("set_prefab_parameter", stale_provider)
+                .at("result").at("error").at("code") ==
+            "prefab_provider_stale");
+
+    auto required_unset = tokens();
+    required_unset["parameter"] = "target";
+    REQUIRE(run_rpc("unset_prefab_parameter", required_unset)
+                .at("result").at("error").at("code") ==
+            "prefab_parameter_required");
+
+    const auto unset =
+        commit_ticket(run_rpc("unset_prefab_parameter", tokens()));
+    REQUIRE(unset.at("status") == "committed");
+    REQUIRE(parameter("hp").at("value_resolved") == 30);
+    REQUIRE(parameter("hp").at("source") == "default");
+    const auto &unset_record = service.editCoordinator()->journal().back();
+    REQUIRE(unset_record.ordered_forward == std::vector<OJson>{
+        OJson{{"op", "unset_prefab_parameter"}, {"object", object_id},
+              {"parameter", "hp"}}});
+    REQUIRE(unset_record.ordered_inverse == std::vector<OJson>{
+        OJson{{"op", "set_prefab_parameter"}, {"object", object_id},
+              {"parameter", "hp"}, {"value", 55}}});
+}
+
+TEST_CASE("WP362 closure CAS closes kind-object indirect prefab dependencies",
+          "[wp362][prefab-edit][cas][indirect]") {
+    ensureBehavior();
+    auto a = prefabFixture();
+    a["parameters"][1]["required_components"] =
+        Json::array({"sprite_view"});
+    Json b{{"schema", "pelican.prefab"}, {"version", 1},
+           {"name", "targetunit"},
+           {"components", Json::array({
+                {{"name", "sprite_view"}, {"id", "target_sprite"},
+                 {"texture", "white"}}
+            })}};
+    const auto make_registry = [&](const Json &target_prefab,
+                                   std::uint64_t generation) {
+        const auto a_bytes = a.dump();
+        const auto b_bytes = target_prefab.dump();
+        return buildPrefabRegistrySnapshot(
+            std::vector<PrefabRegistryEntry>{
+                {"unit", "a.json"}, {"targetunit", "b.json"}},
+            [a_bytes, b_bytes](std::string_view path) {
+                return path == "a.json" ? a_bytes : b_bytes;
+            }, generation);
+    };
+    const Json scene{
+        {"schema", "pelican.scene"}, {"version", 2},
+        {"scenes", {{"main", {{"objects", Json::array({
+             {{"name", "Target"}, {"components", Json::array({transform()})},
+              {"prefab", {{"ref", "targetunit"},
+                          {"instance_id", "gi_target"}}}},
+             prefabObject("Instance", "gi_a", "Target")
+         })}}}}}};
+    auto registry = make_registry(b, 101);
+    auto provider = buildProductionBindableProviderSnapshot(102);
+    auto document = AuthoringSceneDocument::load(scene.dump(), SceneRevision{103});
+    PrefabProjectionTarget target{document, registry, provider};
+    const auto old_generation =
+        target.projectionResolvedScene().prefabClosure().generation;
+    const auto old_a_digest =
+        target.projectionResolvedScene().prefabRegistry().find("unit")
+            ->digest_sha256;
+
+    b["components"][0]["color"] = {0.25, 0.5, 0.75, 1.0};
+    target.refreshDependencies(make_registry(b, 104), provider);
+    REQUIRE(target.projectionResolvedScene().prefabRegistry().find("unit")
+                ->digest_sha256 == old_a_digest);
+    REQUIRE(target.projectionResolvedScene().prefabClosure().generation !=
+            old_generation);
+
+    EditorEditCoordinator edits{EditorEditRuntimeDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & {
+            return target.projectionDocument();
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .execute = [&](const EditorEditExecutionRequest &request) {
+            EditorProjectionTransaction transaction{target,
+                                                    request.base_revision};
+            std::vector<EditorProjectionAdapter *> adapters;
+            return transaction.commit(request.commands, adapters);
+        },
+        .gate = [] { return EditorGateObservation{}; },
+        .prefab_registry = [&] {
+            return target.projectionResolvedScene().prefabRegistry();
+        },
+        .bindable_provider = [&] {
+            return target.projectionResolvedScene().bindableProvider();
+        },
+        .closure_generation = [&] {
+            return target.projectionResolvedScene().prefabClosure().generation;
+        },
+    }};
+    const auto actor = edits.openSession({{"display_name", "indirect"}})
+                           .at("actor_id").get<std::uint64_t>();
+    const auto instance = instanceObject(target.projectionResolvedScene());
+    const auto rejected = edits.enqueue(
+        {{"actor_id", actor},
+         {"scene_revision", target.projectionDocument().revision().value},
+         {"closure_generation", old_generation},
+         {"provider_generation", provider.generation()},
+         {"operations", Json::array({
+              {{"op", "set_prefab_parameter"},
+               {"object", instance.authoring_object_id.value},
+               {"parameter", "hp"}, {"value", 44}}
+          })}});
+    REQUIRE(rejected.at("status") == "rejected");
+    REQUIRE(rejected.at("error").at("code") ==
+            "prefab_dependency_mismatch");
+}
+
+TEST_CASE("WP362 save baseline rejects prefab changes before and throughout SAVE0",
+          "[wp362][save][prefab-baseline][fault]") {
+    ensureBehavior();
+    ensureWp361Logger();
+    const std::array<std::optional<SceneSaveFaultPoint>, 7> points{
+        std::nullopt,
+        SceneSaveFaultPoint::AfterEncode,
+        SceneSaveFaultPoint::AfterDiskDigest,
+        SceneSaveFaultPoint::AfterTemporaryWrite,
+        SceneSaveFaultPoint::AfterTemporaryValidation,
+        SceneSaveFaultPoint::AfterCachePrepare,
+        SceneSaveFaultPoint::BeforeReplace,
+    };
+    for (const auto point : points) {
+        const auto section_name =
+            point ? "save fault point " +
+                        std::to_string(static_cast<unsigned>(*point))
+                  : std::string{"prefab changed before save"};
+        DYNAMIC_SECTION(section_name) {
+            Wp361TemporaryProject temporary;
+            const auto scene_bytes = sceneFixture().dump();
+            const auto prefab_bytes = prefabFixture().dump();
+            const auto changed_prefab_bytes = prefab_bytes + "\n";
+            temporary.write("scene.json", scene_bytes);
+            temporary.write("unit.prefab.json", prefab_bytes);
+            const Json project{
+                {"schema", "pelican.project"}, {"version", 1},
+                {"name", "wp362-save"}, {"engine_min_version", "0.1.0"},
+                {"prefabs", Json::array({
+                     {{"name", "unit"}, {"path", "unit.prefab.json"}}
+                 })},
+                {"basic_config", {{"default_scene_id", "main"},
+                                  {"scene_data_json", "scene.json"}}}};
+
+            FastModuleContainer modules;
+            GET_MODULE(PathResolver).setup(temporary.root(), false);
+            GET_MODULE(ProjectSource).setProjectData(project.dump());
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            const auto &old_state = config.sceneProjectionState();
+            const auto *old_document_address = &old_state.authoring();
+            const auto old_semantic =
+                AuthoringSceneAuthority::encodeSemantic(old_state.authoring());
+            const auto old_revision = old_state.revision();
+            const auto old_resolver_generation =
+                old_state.resolverGeneration();
+            const auto old_closure = old_state.resolved().prefabClosure();
+            const auto old_registry_generation =
+                old_state.resolved().prefabRegistry().generation();
+            const auto old_provider_generation =
+                old_state.resolved().bindableProvider().generation();
+
+            bool mutation_ran = false;
+            if (!point) {
+                temporary.write("unit.prefab.json", changed_prefab_bytes);
+                mutation_ran = true;
+            } else {
+                config.setSceneSaveHookForTesting(
+                    [&](SceneSaveFaultPoint observed) {
+                        if (!mutation_ran && observed == *point) {
+                            temporary.write("unit.prefab.json",
+                                            changed_prefab_bytes);
+                            mutation_ran = true;
+                        }
+                    });
+            }
+            EditorCommandService service{EditorCommandServiceDependencies{
+                .document = [&]() -> const AuthoringSceneDocument & {
+                    return config.sceneDocument();
+                },
+                .resolved_scene = [&]() -> const ResolvedScene & {
+                    return config.resolvedScene();
+                },
+                .current_scene_id = [] { return std::string{"main"}; },
+                .save_scene = [&] {
+                    const auto saved = config.saveSceneDocument();
+                    return SaveSceneResult{
+                        .scene_revision = saved.scene_revision,
+                        .digest = {.algorithm = "sha256",
+                                   .hex = saved.digest},
+                        .byte_count = saved.byte_count,
+                        .scene_hot_reload = false,
+                    };
+                },
+            }};
+            try {
+                (void)service.saveScene();
+                FAIL("SAVE0 accepted a changed prefab dependency");
+            } catch (const EditorCommandError &error) {
+                REQUIRE(error.code() ==
+                        EditorCommandErrorCode::PrefabDependencyMismatch);
+                REQUIRE(error.detail().has_value());
+            }
+            REQUIRE(mutation_ran);
+            REQUIRE(temporary.read("scene.json") == scene_bytes);
+            REQUIRE(temporary.read("unit.prefab.json") ==
+                    changed_prefab_bytes);
+            REQUIRE(&config.sceneDocument() == old_document_address);
+            REQUIRE(config.sceneDocument().revision() == old_revision);
+            REQUIRE(config.resolvedScene().resolverGeneration() ==
+                    old_resolver_generation);
+            REQUIRE(AuthoringSceneAuthority::encodeSemantic(
+                        config.sceneDocument()) == old_semantic);
+            REQUIRE(config.resolvedScene().prefabClosure().generation ==
+                    old_closure.generation);
+            REQUIRE(config.resolvedScene().prefabClosure().sameWireIdentity(
+                old_closure));
+            REQUIRE(config.resolvedScene().prefabRegistry().generation() ==
+                    old_registry_generation);
+            REQUIRE(config.resolvedScene().bindableProvider().generation() ==
+                    old_provider_generation);
+        }
+    }
+}
+
+TEST_CASE("WP362 prefab set unset undo redo roll back every projection fault point",
+          "[wp362][prefab-edit][fault][atomic][ecs][arena]") {
+    ensureBehavior();
+    ensureWp361Logger();
+    enum class Action : std::uint8_t { Set, Unset, Undo, Redo };
+    const std::array actions{Action::Set, Action::Unset, Action::Undo,
+                             Action::Redo};
+    const std::array fault_points{
+        EditorProjectionFaultPoint::Prepare,
+        EditorProjectionFaultPoint::Publish,
+        EditorProjectionFaultPoint::AfterPublication,
+    };
+    const auto action_name = [](Action action) {
+        switch (action) {
+        case Action::Set: return "set";
+        case Action::Unset: return "unset";
+        case Action::Undo: return "undo";
+        case Action::Redo: return "redo";
+        }
+        return "unknown";
+    };
+
+    for (const auto action : actions) {
+        for (const auto point : fault_points) {
+            const auto section_name =
+                std::string{action_name(action)} + " point " +
+                std::to_string(static_cast<unsigned>(point));
+            DYNAMIC_SECTION(section_name) {
+                const Json prefab{
+                    {"schema", "pelican.prefab"}, {"version", 1},
+                    {"name", "unit"},
+                    {"parameters", Json::array({
+                         {{"name", "mode"}, {"type", "enum"},
+                          {"enum_values", Json::array(
+                               {"none", "y_axis", "full"})},
+                          {"default", "none"}}
+                     })},
+                    {"components", Json::array({
+                         {{"name", "sprite_view"}, {"id", "sprite"},
+                          {"texture", "white"},
+                          {"billboard", tagged("mode")}},
+                         {{"name", "behavior"}, {"id", "logic"},
+                          {"type", "wp361_behavior"},
+                          {"params", {{"mode", tagged("mode")}}}}
+                     })}};
+                const Json scene{
+                    {"schema", "pelican.scene"}, {"version", 2},
+                    {"scenes", {{"main", {{"objects", Json::array({
+                         {{"name", "Instance"},
+                          {"components", Json::array({transform()})},
+                          {"prefab", {{"ref", "unit"},
+                                      {"instance_id", "gi_atomic"}}}}
+                     })}}}}}};
+                auto registry = registryFor(prefab);
+                auto provider = buildProductionBindableProviderSnapshot(202);
+                auto document = AuthoringSceneDocument::load(
+                    scene.dump(), SceneRevision{201});
+                PrefabProjectionTarget target{document, registry, provider};
+
+                FastModuleContainer modules;
+                GET_MODULE(ECSPredefinedRegistration).reg();
+                auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+                auto &arena = GET_MODULE(BehaviorAttachmentArena);
+                const auto &object =
+                    instanceObject(target.projectionResolvedScene());
+                const auto authoring_object_id = object.authoring_object_id;
+                const auto &resolved_sprite = generatedByKey(object, "sprite");
+                const auto initial_sprite =
+                    std::any_cast<const SpriteViewComponent &>(
+                        resolved_sprite.requireRuntimeValue());
+                const std::array component_ids{
+                    ComponentIdByType<SpriteViewComponent>::value};
+                const auto entity = GameObjects::createWithComponents(
+                    component_ids, [&](std::span<void *> components) {
+                        *static_cast<SpriteViewComponent *>(components[0]) =
+                            initial_sprite;
+                    });
+                const std::vector<EditorProjectionRuntimeObjectBinding> bindings{
+                    {.authoring_object_id = authoring_object_id,
+                     .entity = entity}};
+                auto prepared = prepareResolvedSceneBehaviorAttachments(
+                    target.projectionResolvedScene()
+                        .findScene("main")->objects,
+                    BehaviorRegistryAvailability::active);
+                std::vector<BoundSceneBehaviorAttachment> desired;
+                for (auto &attachment : prepared) {
+                    desired.push_back({.prepared = std::move(attachment),
+                                       .entity = entity});
+                }
+                arena.publishSceneAttachments(std::move(desired));
+                arena.activatePublished();
+
+                struct OneFault final : EditorProjectionFaultInjector {
+                    EditorProjectionFaultPoint point =
+                        EditorProjectionFaultPoint::Prepare;
+                    std::string adapter;
+                    bool armed = false;
+                    bool fired = false;
+                    bool shouldFail(EditorProjectionFaultPoint observed,
+                                    std::string_view name) noexcept override {
+                        if (!armed || fired || observed != point ||
+                            name != adapter) {
+                            return false;
+                        }
+                        fired = true;
+                        armed = false;
+                        return true;
+                    }
+                } fault;
+                fault.point = point;
+                fault.adapter =
+                    point == EditorProjectionFaultPoint::AfterPublication
+                        ? "scene_pair"
+                        : "behavior.scene.main";
+
+                EditorEditCoordinator edits{EditorEditRuntimeDependencies{
+                    .document = [&]() -> const AuthoringSceneDocument & {
+                        return target.projectionDocument();
+                    },
+                    .current_scene_id = [] { return std::string{"main"}; },
+                    .execute = [&](const EditorEditExecutionRequest &request) {
+                        EcsCodecProjectionAdapter ecs_adapter{
+                            ecs, "main", bindings};
+                        BehaviorSceneProjectionAdapter behavior_adapter{
+                            arena, "main", bindings, {}};
+                        std::array<EditorProjectionAdapter *, 2> adapters{
+                            &ecs_adapter, &behavior_adapter};
+                        EditorProjectionTransaction transaction{
+                            target, request.base_revision, &fault};
+                        return transaction.commit(request.commands, adapters);
+                    },
+                    .gate = [] { return EditorGateObservation{}; },
+                    .prefab_registry = [&] {
+                        return target.projectionResolvedScene()
+                            .prefabRegistry();
+                    },
+                    .bindable_provider = [&] {
+                        return target.projectionResolvedScene()
+                            .bindableProvider();
+                    },
+                    .closure_generation = [&] {
+                        return target.projectionResolvedScene()
+                            .prefabClosure().generation;
+                    },
+                }};
+                const auto actor =
+                    edits.openSession({{"display_name", "fault"}})
+                        .at("actor_id").get<std::uint64_t>();
+                const auto cas = [&] {
+                    const auto &resolved = target.projectionResolvedScene();
+                    return Json{
+                        {"actor_id", actor},
+                        {"scene_revision",
+                         target.projectionDocument().revision().value},
+                        {"closure_generation",
+                         resolved.prefabClosure().generation},
+                        {"provider_generation",
+                         resolved.bindableProvider().generation()},
+                    };
+                };
+                const auto commit = [&](Json request,
+                                        bool revert = false,
+                                        bool redo = false) {
+                    const auto accepted =
+                        revert ? (redo ? edits.enqueueRedo(request)
+                                       : edits.enqueueUndo(request))
+                               : edits.enqueue(request);
+                    REQUIRE(accepted.at("status") == "accepted");
+                    edits.commitPending();
+                    return edits.getResult(
+                        {{"ticket", accepted.at("ticket")}});
+                };
+                const auto set_mode = [&] {
+                    auto request = cas();
+                    request["operations"] = Json::array({
+                        {{"op", "set_prefab_parameter"},
+                         {"object", authoring_object_id.value},
+                         {"parameter", "mode"}, {"value", "full"}}
+                    });
+                    return commit(std::move(request));
+                };
+                const auto undo = [&] {
+                    return commit(cas(), true, false);
+                };
+
+                if (action != Action::Set) {
+                    REQUIRE(set_mode().at("status") == "committed");
+                }
+                if (action == Action::Redo) {
+                    REQUIRE(undo().at("status") == "committed");
+                }
+
+                const auto snapshot = [&] {
+                    Json result{
+                        {"authoring", AuthoringSceneAuthority::encodeSemantic(
+                                          target.projectionDocument())},
+                        {"revision",
+                         target.projectionDocument().revision().value},
+                        {"resolver_generation",
+                         target.projectionResolvedScene()
+                             .resolverGeneration().value},
+                    };
+                    Json projection = Json::array();
+                    for (const auto &scene_view :
+                         target.projectionResolvedScene().scenes()) {
+                        for (const auto &resolved_object : scene_view.objects) {
+                            for (const auto &component :
+                                 resolved_object.components) {
+                                Json origin;
+                                if (const auto *generated =
+                                        component.origin.generated()) {
+                                    origin = {{"generated",
+                                               generated->stable_generated_id},
+                                              {"prefab", generated->prefab},
+                                              {"key",
+                                               generated->component_key}};
+                                } else {
+                                    origin = {{"authored",
+                                               component.origin.authored()
+                                                   ->authoring_component_index}};
+                                }
+                                projection.push_back(
+                                    {{"scene", scene_view.scene_id},
+                                     {"object",
+                                      resolved_object.authoring_object_id.value},
+                                     {"index",
+                                      component.merged_component_index},
+                                     {"origin", std::move(origin)},
+                                     {"effective", component.effective_json}});
+                            }
+                        }
+                    }
+                    result["projection"] = std::move(projection);
+                    const auto &resolved_state =
+                        target.projectionResolvedScene();
+                    const auto &closure = resolved_state.prefabClosure();
+                    result["registry_generation"] =
+                        resolved_state.prefabRegistry().generation();
+                    result["provider_snapshot_generation"] =
+                        resolved_state.bindableProvider().generation();
+                    result["provider_snapshot_fingerprint"] =
+                        std::string{
+                            resolved_state.bindableProvider().fingerprint()};
+                    result["closure"] = {
+                        {"generation", closure.generation},
+                        {"registry_generation",
+                         closure.registry_generation},
+                        {"provider_generation",
+                         closure.provider_generation},
+                        {"provider_fingerprint",
+                         closure.provider_fingerprint_sha256},
+                        {"resolver_fingerprint",
+                         closure.resolver_inputs_fingerprint_sha256},
+                    };
+                    for (const auto &entry : closure.scenes) {
+                        result["closure"]["scenes"].push_back(
+                            {{"id", entry.scene_id},
+                             {"digest", entry.digest_sha256}});
+                    }
+                    for (const auto &entry : closure.prefabs) {
+                        result["closure"]["prefabs"].push_back(
+                            {{"name", entry.name},
+                             {"digest", entry.digest_sha256}});
+                    }
+                    for (const auto &entry : closure.behaviors) {
+                        result["closure"]["behaviors"].push_back(
+                            {{"name", entry.stable_name},
+                             {"version", entry.schema_version},
+                             {"fingerprint",
+                              entry.params_schema_fingerprint}});
+                    }
+                    const auto *runtime_sprite =
+                        ecs.tryComponent<SpriteViewComponent>(entity);
+                    REQUIRE(runtime_sprite != nullptr);
+                    result["ecs"] = requireComponentCodec("sprite_view")
+                        .encodeCanonical(requireComponentCodec("sprite_view")
+                                             .projectRuntime(runtime_sprite));
+                    Json arena_json = Json::array();
+                    for (const auto &attachment : arena.snapshot()) {
+                        Json origin;
+                        if (const auto *generated =
+                                attachment.component_origin.generated()) {
+                            origin = {{"generated",
+                                       generated->stable_generated_id}};
+                        } else {
+                            origin = {{"authored",
+                                       attachment.component_origin.authored()
+                                           ->authoring_component_index}};
+                        }
+                        arena_json.push_back(
+                            {{"handle", attachment.handle.value},
+                             {"seq", attachment.attachment_seq},
+                             {"entity_index", attachment.entity.index},
+                             {"entity_generation",
+                              attachment.entity.generation},
+                             {"component_index",
+                              attachment.component_index},
+                             {"scene_object_index",
+                              attachment.scene_object_index},
+                             {"origin", std::move(origin)},
+                             {"name", attachment.stable_name},
+                             {"params", attachment.canonical_params},
+                             {"owner", attachment.owner},
+                             {"pending", attachment.pending},
+                             {"active", attachment.active},
+                             {"activation_failed",
+                              attachment.activation_failed},
+                             {"activation_error",
+                              attachment.activation_error}});
+                    }
+                    result["arena"] = std::move(arena_json);
+                    const auto isolation = arena.isolationState();
+                    result["arena_isolation"] = {
+                        {"next_handle", isolation.next_handle},
+                        {"next_attachment_seq",
+                         isolation.next_attachment_seq},
+                        {"deferred", isolation.deferred_mutation_count},
+                        {"callback_depth", isolation.callback_depth},
+                        {"callback_owner", isolation.callback_owner},
+                    };
+                    return result;
+                };
+
+                const auto before = snapshot();
+                fault.armed = true;
+                OJson failed;
+                if (action == Action::Set) {
+                    auto request = cas();
+                    request["operations"] = Json::array({
+                        {{"op", "set_prefab_parameter"},
+                         {"object", authoring_object_id.value},
+                         {"parameter", "mode"},
+                         {"value", "y_axis"}}
+                    });
+                    failed = commit(std::move(request));
+                } else if (action == Action::Unset) {
+                    auto request = cas();
+                    request["operations"] = Json::array({
+                        {{"op", "unset_prefab_parameter"},
+                         {"object", authoring_object_id.value},
+                         {"parameter", "mode"}}
+                    });
+                    failed = commit(std::move(request));
+                } else if (action == Action::Undo) {
+                    failed = commit(cas(), true, false);
+                } else {
+                    failed = commit(cas(), true, true);
+                }
+                REQUIRE(fault.fired);
+                REQUIRE(failed.at("status") == "failed");
+                REQUIRE(snapshot() == before);
+
+                arena.deactivateAll();
+                REQUIRE(GameObjects::remove(entity));
+            }
+        }
+    }
 }
 
 } // namespace Pelican

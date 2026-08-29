@@ -313,13 +313,18 @@ struct BindableProviderSnapshot::Data {
     std::uint64_t generation = 0;
     std::string fingerprint;
     std::vector<BindableDescriptor> descriptors;
+    std::vector<BehaviorDependencyDescriptor> behavior_dependencies;
 };
 
-BindableProviderSnapshot::BindableProviderSnapshot()
-    : data_{std::make_shared<const Data>()} {}
+BindableProviderSnapshot::BindableProviderSnapshot() {
+    auto data = std::make_shared<Data>();
+    data->fingerprint = descriptorFingerprint(data->descriptors);
+    data_ = std::move(data);
+}
 
 BindableProviderSnapshot::BindableProviderSnapshot(
-    std::uint64_t generation, std::vector<BindableDescriptor> descriptors) {
+    std::uint64_t generation, std::vector<BindableDescriptor> descriptors,
+    std::vector<BehaviorDependencyDescriptor> behavior_dependencies) {
     if (generation == 0) throw std::invalid_argument("provider generation must be non-zero");
     std::sort(descriptors.begin(), descriptors.end(), [](const auto &lhs,
                                                          const auto &rhs) {
@@ -328,6 +333,20 @@ BindableProviderSnapshot::BindableProviderSnapshot(
     auto data = std::make_shared<Data>();
     data->generation = generation;
     data->descriptors = std::move(descriptors);
+    std::sort(behavior_dependencies.begin(), behavior_dependencies.end(),
+              [](const auto &lhs, const auto &rhs) {
+                  return lhs.stable_name < rhs.stable_name;
+              });
+    const auto duplicate = std::adjacent_find(
+        behavior_dependencies.begin(), behavior_dependencies.end(),
+        [](const auto &lhs, const auto &rhs) {
+            return lhs.stable_name == rhs.stable_name;
+        });
+    if (duplicate != behavior_dependencies.end()) {
+        throw std::invalid_argument(
+            "provider behavior dependency stable names must be unique");
+    }
+    data->behavior_dependencies = std::move(behavior_dependencies);
     data->fingerprint = descriptorFingerprint(data->descriptors);
     data_ = std::move(data);
 }
@@ -335,6 +354,10 @@ BindableProviderSnapshot::BindableProviderSnapshot(
 std::uint64_t BindableProviderSnapshot::generation() const noexcept { return data_->generation; }
 std::string_view BindableProviderSnapshot::fingerprint() const noexcept { return data_->fingerprint; }
 std::span<const BindableDescriptor> BindableProviderSnapshot::descriptors() const noexcept { return data_->descriptors; }
+std::span<const BehaviorDependencyDescriptor>
+BindableProviderSnapshot::behaviorDependencies() const noexcept {
+    return data_->behavior_dependencies;
+}
 
 const BindableDescriptor *BindableProviderSnapshot::find(
     std::string_view provider_name, std::string_view json_pointer) const noexcept {
@@ -379,7 +402,14 @@ BindableProviderSnapshot buildProductionBindableProviderSnapshot(
     std::uint64_t generation) {
     auto descriptors = codecDescriptors();
     const auto &registrations = internal::getBehaviorRegisterer().registeredBehaviors();
+    std::vector<BehaviorDependencyDescriptor> behavior_dependencies;
+    behavior_dependencies.reserve(registrations.size());
     for (const auto &registration : registrations) {
+        behavior_dependencies.push_back({
+            .stable_name = registration.stable_name,
+            .schema_version = registration.schema_version,
+            .params_schema_fingerprint = registration.params_schema_fingerprint,
+        });
         nlohmann::json defaults = nlohmann::json::object();
         if (registration.canonicalize_params != nullptr) {
             try {
@@ -422,7 +452,8 @@ BindableProviderSnapshot buildProductionBindableProviderSnapshot(
             });
         }
     }
-    return BindableProviderSnapshot{generation, std::move(descriptors)};
+    return BindableProviderSnapshot{generation, std::move(descriptors),
+                                    std::move(behavior_dependencies)};
 }
 
 } // namespace Pelican
