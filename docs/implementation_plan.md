@@ -14357,86 +14357,88 @@ fingerprint への影響を確認(vec default を持つ behavior が存在しな
 受け入れ: 修正前に Vec2 default 付き typed 登録が実際に落ちる再現 / 修正後の全 17 型往復 /
 WP358 fixture 群の不変。依存: WP358。見積: 小。
 
-### WP360(= リファクタ R3): scene の読者を単一の解決済み投影に載せ替える(第 2 版)
+### WP360(= リファクタ R3): scene の読者を単一の解決済み投影に載せ替える(第 3 版)
 
-**§4 規則 11 の上段。仕様レビューで 1 度不合格(9 指摘)。処方箋を採り、ここで打ち切り。**
+**§4 規則 11 の上段。レビュー 2 巡(9 + 11 指摘)。**
+**v3 の判断: Generated を本 WP から完全に落とす(identity 保存のみ)。**
+v2 の 11 指摘中 5 件は Generated の契約(wire union / stable_id の undo 再現 /
+arena seq / Generated behavior の sentinel 意味論)に付随しており、
+**その契約は実利用者であるプレファブ(WP361)で固める。**
+resolver は Generated の要求に対し名前付き `generated_component_unsupported` を返す
+(暗黙除外にしない)。仕様レビューはここで打ち切り、残余は §10。
 
-#### v1 の中心欠陥: 契約なしの sentinel は添字系を壊す
-
-合成 component には正直な authored index が無い。現行 RPC は全 component に
-`component_index` / `authored_json` を必須とし、behavior の `attachment_seq` は
-`(object_index, component_index)` を符号化し、editor journal は raw slot を編集する。
-**resolved 添字を漏らすと編集が別の component を書く。**
-
-#### 契約(実装より先に固定する)
+#### 契約(identity 保存版)
 
 ```
 ResolvedComponent {
-  resolved_index,
-  provenance = Authored { authoring_component_index }
-             | Generated { stable_generated_id, source },
-  canonical_json }
+  authoring_component_index,          // wire に見える添字は authored のまま
+  source_json_exact,                  // 親版 RPC bytes の源(v2 指摘 1)
+  effective_json }                    // codec 補完済みの解決値。既定値の所在は resolver 一箇所
 ```
 
-- **RPC の `component_index` / `attachment_index` / `attachment_seq` は authored 添字のまま**
-- Generated は別 identity で **read-only**。mutation API は Authored のみ受理し、
-  Generated への編集は名前付きエラー
-- **raw アクセスの allowlist**(「seam 内のみ」は literal に不成立のため):
-  authoring authority(parse / validate / edit / serialize)は raw 可 /
-  **resolver が runtime lowering の唯一の raw reader** /
-  runtime・projector・query は ResolvedScene のみ。
-  **grep でなく、`scenesJson()` の可視性の私有化または依存境界テストで強制**
+- **二表現は両方必須**: `canonical_json` 一個では「親版 authored bytes の保存」と
+  「解決値の単一所在」を同時に満たせない(補完すると bytes が変わり、
+  生のままだと下流が再解決して既定値の所在が散る)
+- **raw authority の分離は型で強制**(grep でも可視性でもなく):
+  raw JSON view を返す型を別 target/interface に隔離し、
+  resolver と authoring authority 以外からは**取得不能**。
+  許可 target / 拒否 target を名指しした compile-negative テストを置く
+  (`scenesJson()` を私有化しても `rawJson()` 迂回が残る、が v2 の実証)
+- **原子的所有**: `{AuthoringSceneDocument, ResolvedScene, revision, resolver_generation}`
+  を不変 pair とし、editor transaction / snapshot import / update / invalidate /
+  DLL reload の全経路で prepare→publish→rollback を一体化。
+  **`AfterPublication` fault point で失敗させ、全読者の revision と固有値が
+  旧版へ戻る**ことを検査(Authoring だけ戻って Resolved が新版のまま、を塞ぐ)
+- **SDK 境界**: validator の scan は core-private adapter へ移し、
+  中立 DTO(`source_params` + provenance)を渡す。candidate 側が一度だけ canonicalize
+  (active 側の canonicalize 済み値を渡すと default 変更で誤拒否する、が v2 の実証)。
+  **public 登録 layout は不変 = `userpublic` diff 0**(WP358 の流儀。
+  staged SDK 基盤の新設はしない —— その価格は WP358 v2 の台帳に記録済み)
 
 #### やること
 
-1. 契約どおりの `ResolvedScene` seam(provenance 付き)
-2. **全束縛点の載せ替え**(レビューが列挙した): `SceneLoader::load` / 初期 behavior
-   attachment / 実 DLL reload / editor set・add・remove・reparent transaction 後 /
-   Camera・Light・Collider projection adapter / preview projection・capture /
-   production editor RPC query
-3. **behavior validator の SDK 境界**: staged SDK header に core-private 型を持ち込まない。
-   scan を core-private adapter に移し、registrar へは中立 DTO
-   (`ResolvedBehaviorUse` 相当)を渡す
+1. 契約どおりの seam + 全束縛点の載せ替え(SceneLoader / 初期 behavior attachment /
+   実 DLL reload / editor transaction 後 / Camera・Light・Collider projection /
+   preview / production RPC query)
+2. **旧 raw 経路の物理削除**: `gamelogicreload.cpp:181` の `scenesJson()` 渡し等を
+   resolved 経由に置換し、旧経路を残さない(compile-negative が再発を塞ぐ)
 
 #### 受け入れ条件
 
-**等価(注入なし):** 親版 RPC bytes 一致(後方互換)+
-**production 配線の RPC fixture を別に**(`EditorRuntimeFactory` / SceneLoader / ECS /
-BehaviorArena を実接続。v1 の capture は runtime_query 未接続で添字 join を検査できなかった)
+**等価:** 親版 RPC bytes(**WP358 の流儀で固定**: named SHA / shared clone /
+実 `RpcServer::run` / 出所ファイル / 実装側の再生成禁止)+
+**production 配線 fixture**(`EditorRuntimeFactory` / SceneLoader / ECS / BehaviorArena
+実接続。v1 の capture は runtime_query 未接続で添字 join を検査できなかった)+
+golden / trace / 全数 2 回
 
-**sentinel(契約に基づく形で):**
+**配線の証明(Generated 抜きで):**
 
-- **authored の前・間に Generated を挿入**し、同時に検査:
-  authored の bytes/添字は親版の同 component と一致 / runtime 値は正しい authored
-  provenance に join / Generated は別 identity + read-only / Generated への編集は名前付き拒否
-- **behavior は実 schema version bump の sentinel**(同版は scene を読まず continue するため
-  「例外が出ない」は観測でない)。名前付き `schema_incompatible` + scene/object/component
-  identity を検査
-- Camera / Light / behavior / editor query は**件数でなく実際に解決された固有値**を検査
-- **本番 caller の呼び出し削除変異でも同じテストが落ちる**(ヘルパ直叩きは配線証明でない)
-- behavior 編集 round-trip 後、**raw slot の正しい 1 箇所だけ**が変わること
+- **compile-negative**: 拒否 target(Camera / reload / query)から raw view 型が
+  取得できないこと
+- **本番 caller の呼び出し削除変異**: resolved 経由の呼び出しを外すと
+  既存 WP162 系 harness(authored schema bump の検出)が落ちること
+  —— 旧 raw 経路は物理削除済みなので、外せば検証は何も読まなくなる
+- Camera / Light / editor query は**実際に解決された固有値**を検査(件数でない)
+- behavior 編集 round-trip 後、raw slot の正しい 1 箇所だけが変わること
 
-**構成と fixture:**
-
-- **physics ON/OFF**(OFF では collider が名前付きエラー、ON では実 runtime 値)/
-  preview / ImGui ON/OFF / SKIP_DEVSTUDIO 両構成
-- **出荷 4 scene は behavior 0 件**のため、behavior + interleaved Generated の
-  **専用 fixture を必須**(出荷 corpus では中心欠陥が観測不能)
-- **staged SDK での 4 project code build** を受け入れに含める(境界 3 の証明)
-- 全数 2 回 / doclink 緑 / GPU 直列可
+**構成:** physics ON/OFF(OFF は collider の名前付きエラー)/ **RPC ON/OFF**
+(OFF は named feature-disabled + server 非生成、共有 query model は両方でビルド)/
+preview / ImGui ON/OFF / SKIP_DEVSTUDIO 両構成 / doclink 緑 / GPU 直列可
 
 #### やらないこと
 
-プレファブ本体(WP361)。ただし Generated provenance の契約は本 WP で固定される
-(プレファブはその最初の本番利用者になる)。
+- **Generated 一切**(契約・注入・wire union・stable_id・arena variant は WP361 で。
+  resolver の `generated_component_unsupported` だけ本 WP)
+- staged SDK 基盤(価格は WP358 v2 に記録済み)
 
-#### v1 の 9 指摘(記録)
+#### レビュー記録(2 巡 20 指摘の要約)
 
-束縛点列挙の不足 / **provenance・添字契約の不在(中心)** / 親版 capture が
-runtime_query 未接続 / 観測の定義が弱い(同版 behavior は scene を読まない)/
-「seam 内のみ」の literal 不成立 → allowlist / physics 等の構成不足 /
-出荷 scene に behavior 0 件 → 専用 fixture / SDK header への core 型持ち込み禁止 →
-中立 DTO / sentinel は authored の前・間に。
-壊せなかった: 親版 bytes 一致の実現可能性 / D0 / XR・compiler 分岐の不在。
+v1: 契約なしの sentinel が添字系を壊す(中心)/ 束縛点不足 / 観測定義 / allowlist /
+構成 / SDK 境界。v2: canonical_json 一個の矛盾 / Generated の wire・undo・arena
+(→ WP361 へ)/ raw scanner のままで通る sentinel(→ 旧経路の物理削除で置換)/
+DLL fixture 経路と ABI 条件 / staged SDK 不在(→ 落とした)/ rawJson 迂回(→ 型で強制)/
+原子的所有の欠落 / oracle 未固定 / RPC 行。
+壊せなかった: 親版 bytes 一致の実現可能性 / D0 / XR・compiler 分岐の不在 /
+出荷 4 scene の behavior 0 件(実測確認)。
 
-依存: 無し。見積: 大(契約と SDK 境界の分)。
+依存: 無し。見積: 大。
