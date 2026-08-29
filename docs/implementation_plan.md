@@ -14442,3 +14442,50 @@ DLL fixture 経路と ABI 条件 / staged SDK 不在(→ 落とした)/ rawJson 
 出荷 4 scene の behavior 0 件(実測確認)。
 
 依存: 無し。見積: 大。
+
+#### コードレビュー(0bec09b = WP360)の仕分け
+
+**削除 94 分岐の全数照合。実害 6(いずれも出荷 scene では未発火を実測確認)+
+第二パーサ残存 4 + テスト感度 6。壊せなかった: first-camera 継承順序 / physics OFF /
+AfterPublication rollback / 親版 fixture 一致 / D0 / 決定性。**
+
+### WP360a: seam レビューの締め(実害 6 + 感度 + 第二パーサ残)
+
+**§0 上段の締め。連鎖はここで打ち切り(次レビューの指摘は台帳行き)。**
+
+**実害(各、旧版比較の再現 → 修正 → 変異で閉じる):**
+
+1. **target なし orbit camera**: 旧受理 / 新拒否。旧意味論に戻す(controller の
+   target optionality が resolver codec と Camera で食い違う二重解析も解消)
+2. **rotation 省略時の up ベクトル**: project up=-Y + pos のみ transform で
+   旧 -Y / 新 +Y(rotation-presence 分岐の喪失)。旧意味論に戻し、
+   **rotation 省略 + 非既定 up の対照を追加**(出荷は全 camera rotation 明示のため未発火)
+3. **preview の override 後検証の喪失**: yfov 文字列 override が旧 schema error /
+   新受理。codec 検証を override 後に復元
+4. **marker 衝突**: 外部 component の `generated:false` が project 全体を拒否。
+   `generated` は boolean true のみ要求 / `origin` は型検査 + 厳密一致 /
+   予約スキーマを明示 / **false・null・外部 component の否定対照**(現テストは true のみ)
+5. **camera 既定値が 3 箇所**(codec 内部既定 / cameradefinition / default_config)。
+   znear=5000 + project zfar=10000 の有効入力が内部既定 1000 との比較で誤拒否。
+   presence-aware optional + resolver での一度だけの cross-field 検証
+   (「既定値の所在は resolver 一箇所」の契約完遂)
+6. **behavior の canonicalize が inactive-scene エラー保持の外**:
+   無効な inactive scene が起動全体を拒否(旧は active のみ)。
+   解決エラーを保持し、active attachment 時に名前付きで要求
+
+**第二パーサの残り(R3 の完遂):**
+
+- preview camera query の `effective_json` 再 decode → typed resolved value 直接受け
+- LightContainer の JSON 再解析と既定値重複(1.0/12.5/17.5)→ typed handoff
+- **Studio outliner の scene ファイル直読み** → RPC `scene_tree` から構築・更新
+  (snapshot import / 構造編集後の乖離を対照に)
+
+**テスト感度:**
+
+- `EditorCommandService::resolved()` の**自前 fallback を削除または禁止**
+  (provider 配線を消しても fallback が同じ bytes を作るため変異が素通り)
+- production fixture の camera / light に **resolver でしか出ない固有値**を持たせる
+- `PELican_WP360_SKIP_DEVSTUDIO` 出力に assertion を付ける
+- caller deletion mutation を behavior 以外(Camera / query)にも
+
+依存: WP360。見積: 中〜大。
