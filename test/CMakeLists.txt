@@ -242,7 +242,7 @@ add_test(
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_schema_leaf_consumer.cmake
 )
 
-pelican_define_test(schema_rpc_test pelican_core pelican_schema_core_adapter)
+pelican_define_test(schema_rpc_test pelican_core pelican_schema_core_adapter picosha2)
 target_compile_definitions(pelican_test_schema_rpc_test PRIVATE
   PELICAN_WP358_RPC_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp358/get_components.pre_wp358.ndjson"
 )

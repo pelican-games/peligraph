@@ -318,17 +318,17 @@ nlohmann::ordered_json encodeStructPolicyField(const Owner &value, const PolicyF
         return member;
     } else if constexpr (std::same_as<Member, vec2>) {
         for (const float component : {member.x, member.y}) {
-            (void)validateStructFloating(StructJson{component}, schema, path, true);
+            (void)validateStructFloating(StructJson(component), schema, path, true);
         }
         return nlohmann::ordered_json::array({member.x, member.y});
     } else if constexpr (std::same_as<Member, vec3>) {
         for (const float component : {member.x, member.y, member.z}) {
-            (void)validateStructFloating(StructJson{component}, schema, path, true);
+            (void)validateStructFloating(StructJson(component), schema, path, true);
         }
         return nlohmann::ordered_json::array({member.x, member.y, member.z});
     } else if constexpr (std::same_as<Member, vec4> || std::same_as<Member, quat>) {
         for (const float component : {member.x, member.y, member.z, member.w}) {
-            (void)validateStructFloating(StructJson{component}, schema, path, true);
+            (void)validateStructFloating(StructJson(component), schema, path, true);
         }
         return nlohmann::ordered_json::array({member.x, member.y, member.z, member.w});
     } else {

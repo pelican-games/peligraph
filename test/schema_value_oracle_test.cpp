@@ -64,6 +64,23 @@ struct FloatingCorpusParams {
             2.5));
 };
 
+struct VectorCorpusParams {
+    Pelican::vec2 vec2{};
+    Pelican::vec3 vec3{};
+    Pelican::vec4 vec4{};
+    Pelican::quat quat{};
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::behaviorParamsPolicy,
+        Pelican::defaulted(Pelican::field<&VectorCorpusParams::vec2>("vec2"),
+                           Pelican::vec2{1.0F, 2.0F}),
+        Pelican::defaulted(Pelican::field<&VectorCorpusParams::vec3>("vec3"),
+                           Pelican::vec3{1.0F, 2.0F, 3.0F}),
+        Pelican::defaulted(Pelican::field<&VectorCorpusParams::vec4>("vec4"),
+                           Pelican::vec4{1.0F, 2.0F, 3.0F, 4.0F}),
+        Pelican::defaulted(Pelican::field<&VectorCorpusParams::quat>("quat"),
+                           Pelican::quat{0.0F, 0.0F, 0.0F, 1.0F}));
+};
+
 struct OtherCorpusParams {
     std::string string;
     bool boolean{};
@@ -90,6 +107,7 @@ class CorpusBehavior final : public Pelican::Behavior {
 
 using IntegerCorpusBehavior = CorpusBehavior<IntegerCorpusParams>;
 using FloatingCorpusBehavior = CorpusBehavior<FloatingCorpusParams>;
+using VectorCorpusBehavior = CorpusBehavior<VectorCorpusParams>;
 using OtherCorpusBehavior = CorpusBehavior<OtherCorpusParams>;
 
 struct EventCorpus {
@@ -147,8 +165,8 @@ struct EventCorpus {
     }
 };
 
-class ScalarBehaviorRegistration {
-    std::array<Pelican::internal::RegistrationToken, 3> tokens_;
+class TypedBehaviorRegistration {
+    std::array<Pelican::internal::RegistrationToken, 4> tokens_;
 
     static const Pelican::internal::BehaviorRegistration &get(
         std::string_view name) {
@@ -159,7 +177,7 @@ class ScalarBehaviorRegistration {
     }
 
   public:
-    ScalarBehaviorRegistration()
+    TypedBehaviorRegistration()
         : tokens_{
               Pelican::internal::getBehaviorRegisterer()
                   .registerBehavior<IntegerCorpusBehavior>(
@@ -168,10 +186,13 @@ class ScalarBehaviorRegistration {
                   .registerBehavior<FloatingCorpusBehavior>(
                       "wp358_floating_value_corpus", 1, {}),
               Pelican::internal::getBehaviorRegisterer()
+                  .registerBehavior<VectorCorpusBehavior>(
+                      "wp358_vector_value_corpus", 1, {}),
+              Pelican::internal::getBehaviorRegisterer()
                   .registerBehavior<OtherCorpusBehavior>(
                       "wp358_other_value_corpus", 1, {})} {}
 
-    ~ScalarBehaviorRegistration() {
+    ~TypedBehaviorRegistration() {
         for (auto token = tokens_.rbegin(); token != tokens_.rend(); ++token) {
             Pelican::internal::unregisterBehavior(*token);
         }
@@ -180,6 +201,7 @@ class ScalarBehaviorRegistration {
     OrderedJson canonicalize(const Json &payload) const {
         Json integers = Json::object();
         Json floating = Json::object();
+        Json vectors = Json::object();
         Json other = Json::object();
         for (auto item = payload.begin(); item != payload.end(); ++item) {
             if (item.key() == "i8" || item.key() == "i16" ||
@@ -189,21 +211,27 @@ class ScalarBehaviorRegistration {
                 integers[item.key()] = *item;
             } else if (item.key() == "f32" || item.key() == "f64") {
                 floating[item.key()] = *item;
+            } else if (item.key() == "vec2" || item.key() == "vec3" ||
+                       item.key() == "vec4" || item.key() == "quat") {
+                vectors[item.key()] = *item;
             } else if (item.key() == "string" || item.key() == "bool" ||
                        item.key() == "enum") {
                 other[item.key()] = *item;
             } else {
-                throw std::logic_error("unknown scalar corpus field");
+                throw std::logic_error("unknown typed corpus field");
             }
         }
         auto result = OrderedJson::object();
         for (const auto name : {"wp358_integer_value_corpus",
                                 "wp358_floating_value_corpus",
+                                "wp358_vector_value_corpus",
                                 "wp358_other_value_corpus"}) {
             const Json &part = name == std::string_view{"wp358_integer_value_corpus"}
                                    ? integers
                                : name == std::string_view{"wp358_floating_value_corpus"}
                                    ? floating
+                               : name == std::string_view{"wp358_vector_value_corpus"}
+                                   ? vectors
                                    : other;
             const auto canonical =
                 OrderedJson::parse(get(name).canonicalize_params(part));
@@ -231,7 +259,7 @@ Pelican::Schema::FieldDeclaration leafField(
     return result;
 }
 
-std::vector<Pelican::Schema::FieldDeclaration> scalarLeafFields() {
+std::vector<Pelican::Schema::FieldDeclaration> behaviorLeafFields() {
     return {
         leafField(LeafType::I8, -8),
         leafField(LeafType::I16, -16),
@@ -243,6 +271,10 @@ std::vector<Pelican::Schema::FieldDeclaration> scalarLeafFields() {
         leafField(LeafType::U64, 64),
         leafField(LeafType::F32, 1.25),
         leafField(LeafType::F64, 2.5),
+        leafField(LeafType::Vec2, Json::array({1.0, 2.0})),
+        leafField(LeafType::Vec3, Json::array({1.0, 2.0, 3.0})),
+        leafField(LeafType::Vec4, Json::array({1.0, 2.0, 3.0, 4.0})),
+        leafField(LeafType::Quat, Json::array({0.0, 0.0, 0.0, 1.0})),
         leafField(LeafType::String, "fixture"),
         leafField(LeafType::Bool, true, "bool"),
         leafField(LeafType::Enum, "idle", "enum"),
@@ -340,14 +372,14 @@ std::vector<InvalidValueCase> invalidCases() {
         {"f64", 5.0, LeafError::OutOfRange, CoreError::OutOfRange,
          EventError::OutOfRange},
         {"vec2", Json::array({1.0}), LeafError::TypeMismatch,
-         CoreError::TypeMismatch, EventError::TypeMismatch, false, true},
+         CoreError::TypeMismatch, EventError::TypeMismatch},
         {"vec3", Json::array({1.0, 2.0}), LeafError::TypeMismatch,
-         CoreError::TypeMismatch, EventError::TypeMismatch, false, true},
+         CoreError::TypeMismatch, EventError::TypeMismatch},
         {"vec4", Json::array({1.0, 2.0, 3.0, "bad"}),
          LeafError::TypeMismatch, CoreError::TypeMismatch,
-         EventError::TypeMismatch, false, true},
+         EventError::TypeMismatch},
         {"quat", Json::array({0.0, 0.0, 1.0}), LeafError::TypeMismatch,
-         CoreError::TypeMismatch, EventError::TypeMismatch, false, true},
+         CoreError::TypeMismatch, EventError::TypeMismatch},
         {"string", 7, LeafError::TypeMismatch, CoreError::TypeMismatch,
          EventError::TypeMismatch},
         {"bool", 1, LeafError::TypeMismatch, CoreError::TypeMismatch,
@@ -383,14 +415,23 @@ const Pelican::Schema::FieldDeclaration &findLeafField(
 
 } // namespace
 
-TEST_CASE("WP358 typed behavior and leaf agree on 13 canonical defaults and values",
-          "[wp358][schema][corpus][behavior]") {
-    ScalarBehaviorRegistration registered;
-    const auto fields = scalarLeafFields();
+TEST_CASE("WP359 typed Vec2 default registers through the production path",
+          "[wp359][schema][behavior][reproduction]") {
+    TypedBehaviorRegistration registered;
+    REQUIRE(registered.canonicalize(Json::object()).at("vec2") ==
+            OrderedJson::array({1.0, 2.0}));
+}
+
+TEST_CASE("WP359 typed behavior and leaf agree on all 17 encode-decode-canonicalize values",
+          "[wp358][wp359][schema][corpus][behavior]") {
+    TypedBehaviorRegistration registered;
+    const auto fields = behaviorLeafFields();
     const auto leaf_defaults =
         Pelican::Schema::resolveObject(fields, Json::object());
     const auto core_defaults = registered.canonicalize(Json::object());
     REQUIRE(core_defaults == leaf_defaults);
+    REQUIRE(registered.canonicalize(Json::parse(core_defaults.dump())) ==
+            core_defaults);
 
     Json supplied = Json::object();
     supplied["i8"] = 7;
@@ -403,6 +444,10 @@ TEST_CASE("WP358 typed behavior and leaf agree on 13 canonical defaults and valu
     supplied["u64"] = UINT64_C(9007199254740992);
     supplied["f32"] = 16777217.0;
     supplied["f64"] = 3.5;
+    supplied["vec2"] = Json::array({16777217.0, -2.0});
+    supplied["vec3"] = Json::array({3.0, 4.0, 5.0});
+    supplied["vec4"] = Json::array({6.0, 7.0, 8.0, 9.0});
+    supplied["quat"] = Json::array({0.0, 0.0, 1.0, 0.0});
     supplied["string"] = "resolved";
     supplied["bool"] = false;
     supplied["enum"] = "run";
@@ -410,11 +455,15 @@ TEST_CASE("WP358 typed behavior and leaf agree on 13 canonical defaults and valu
     const auto core_resolved = registered.canonicalize(supplied);
     REQUIRE(core_resolved == leaf_resolved);
     REQUIRE(core_resolved.at("f32") == 16777216.0);
+    REQUIRE(core_resolved.at("vec2").at(0) == 16777216.0);
+    REQUIRE(registered.canonicalize(Json::parse(core_resolved.dump())) ==
+            core_resolved);
     REQUIRE(core_resolved.dump().find("\"i8\"") <
             core_resolved.dump().find("\"u8\""));
-    std::cout << "WP358_CORPUS_TYPED_BEHAVIOR_TYPES=13 ACROSS=3 DEFAULT_F32="
+    std::cout << "WP359_CORPUS_TYPED_BEHAVIOR_TYPES=17 ACROSS=4 ROUNDTRIPS=2 DEFAULT_F32="
               << core_defaults.at("f32") << " RESOLVED_F32="
-              << core_resolved.at("f32") << '\n';
+              << core_resolved.at("f32") << " RESOLVED_VEC2_X="
+              << core_resolved.at("vec2").at(0) << '\n';
 }
 
 TEST_CASE("WP358 event and leaf agree on all 15 event types including resolved F32",
@@ -439,11 +488,11 @@ TEST_CASE("WP358 event and leaf agree on all 15 event types including resolved F
 
 TEST_CASE("WP358 common negative corpus fixes category and field path",
           "[wp358][schema][corpus][errors]") {
-    ScalarBehaviorRegistration registered;
-    const auto scalar_fields = scalarLeafFields();
+    TypedBehaviorRegistration registered;
+    const auto behavior_fields = behaviorLeafFields();
     const auto event_fields = eventLeafFields();
-    const Json scalar_defaults =
-        Pelican::Schema::resolveObject(scalar_fields, Json::object());
+    const Json behavior_defaults =
+        Pelican::Schema::resolveObject(behavior_fields, Json::object());
     const Json event_defaults =
         Pelican::Schema::resolveObject(event_fields, Json::object());
 
@@ -452,7 +501,7 @@ TEST_CASE("WP358 common negative corpus fixes category and field path",
     for (const auto &entry : invalidCases()) {
         CAPTURE(entry.name);
         const auto &leaf_field = findLeafField(
-            entry.in_behavior ? scalar_fields : event_fields, entry.name);
+            entry.in_behavior ? behavior_fields : event_fields, entry.name);
         const auto expected_path = "params." + entry.name;
         try {
             (void)Pelican::Schema::resolveValue(
@@ -464,7 +513,7 @@ TEST_CASE("WP358 common negative corpus fixes category and field path",
         }
 
         if (entry.in_behavior) {
-            Json payload = scalar_defaults;
+            Json payload = behavior_defaults;
             payload[entry.name] = entry.value;
             try {
                 (void)registered.canonicalize(payload);
@@ -491,8 +540,8 @@ TEST_CASE("WP358 common negative corpus fixes category and field path",
             ++event_compared;
         }
     }
-    REQUIRE(behavior_compared == 13);
+    REQUIRE(behavior_compared == 17);
     REQUIRE(event_compared == 15);
-    std::cout << "WP358_CORPUS_NEGATIVE_LEAF=17 CORE_TYPED=13 EVENT=15"
+    std::cout << "WP359_CORPUS_NEGATIVE_LEAF=17 CORE_TYPED=17 EVENT=15"
               << " PATH_PREFIX=params.\n";
 }

@@ -6,6 +6,7 @@
 #include "../src/core/userpublic/behavior.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <picosha2.h>
 
 #include <cstdint>
 #include <fstream>
@@ -63,12 +64,35 @@ struct FloatingParams {
         defaulted(field<&FloatingParams::f64>("f64"), 2.5));
 };
 
-template <int Tag> struct VectorPlaceholderParams {
-    float placeholder{};
+struct Vec2Params {
+    vec2 value{};
     static constexpr auto schema = structFields(
         behaviorParamsPolicy,
-        defaulted(field<&VectorPlaceholderParams::placeholder>("placeholder"),
-                  0.0F));
+        defaulted(field<&Vec2Params::value>("vec2"), vec2{1.0F, 2.0F}));
+};
+
+struct Vec3Params {
+    vec3 value{};
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&Vec3Params::value>("vec3"),
+                  vec3{1.0F, 2.0F, 3.0F}));
+};
+
+struct Vec4Params {
+    vec4 value{};
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&Vec4Params::value>("vec4"),
+                  vec4{1.0F, 2.0F, 3.0F, 4.0F}));
+};
+
+struct QuatParams {
+    quat value{};
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&QuatParams::value>("quat"),
+                  quat{0.0F, 0.0F, 0.0F, 1.0F}));
 };
 
 struct OtherParams {
@@ -91,22 +115,11 @@ template <class ParamsType> class FixtureBehavior final : public Behavior {
 
 using IntegerBehavior = FixtureBehavior<IntegerParams>;
 using FloatingBehavior = FixtureBehavior<FloatingParams>;
-using Vec2Behavior = FixtureBehavior<VectorPlaceholderParams<2>>;
-using Vec3Behavior = FixtureBehavior<VectorPlaceholderParams<3>>;
-using Vec4Behavior = FixtureBehavior<VectorPlaceholderParams<4>>;
-using QuatBehavior = FixtureBehavior<VectorPlaceholderParams<5>>;
+using Vec2Behavior = FixtureBehavior<Vec2Params>;
+using Vec3Behavior = FixtureBehavior<Vec3Params>;
+using Vec4Behavior = FixtureBehavior<Vec4Params>;
+using QuatBehavior = FixtureBehavior<QuatParams>;
 using OtherBehavior = FixtureBehavior<OtherParams>;
-
-std::string vec2Defaults(const Json &) { return R"({"vec2":[1.0,2.0]})"; }
-std::string vec3Defaults(const Json &) {
-    return R"({"vec3":[1.0,2.0,3.0]})";
-}
-std::string vec4Defaults(const Json &) {
-    return R"({"vec4":[1.0,2.0,3.0,4.0]})";
-}
-std::string quatDefaults(const Json &) {
-    return R"({"quat":[0.0,0.0,0.0,1.0]})";
-}
 
 class RegisteredWireFixture {
     std::vector<internal::RegistrationToken> tokens_;
@@ -115,17 +128,6 @@ class RegisteredWireFixture {
         tokens_.push_back(internal::getBehaviorRegisterer()
                               .registerBehavior<BehaviorType>(std::move(name),
                                                               1, {}));
-    }
-
-    static void replaceVector(
-        std::string_view name, std::string_view field, StructFieldType type,
-        internal::BehaviorCanonicalizeParamsFn canonicalize) {
-        const auto *found = internal::getBehaviorRegisterer().findByName(name);
-        if (found == nullptr) throw std::logic_error("fixture behavior missing");
-        auto &registration =
-            const_cast<internal::BehaviorRegistration &>(*found);
-        registration.params_schema = {StructFieldSchema{field, type, {}}};
-        registration.canonicalize_params = canonicalize;
     }
 
   public:
@@ -137,10 +139,6 @@ class RegisteredWireFixture {
         add<Vec4Behavior>(std::string{Vec4Name});
         add<QuatBehavior>(std::string{QuatName});
         add<OtherBehavior>(std::string{OtherName});
-        replaceVector(Vec2Name, "vec2", StructFieldType::Vec2, vec2Defaults);
-        replaceVector(Vec3Name, "vec3", StructFieldType::Vec3, vec3Defaults);
-        replaceVector(Vec4Name, "vec4", StructFieldType::Vec4, vec4Defaults);
-        replaceVector(QuatName, "quat", StructFieldType::Quat, quatDefaults);
     }
 
     RegisteredWireFixture(const RegisteredWireFixture &) = delete;
@@ -207,6 +205,13 @@ Json oneRpcEnvelope(const std::string &bytes) {
 TEST_CASE("WP358 parent RpcServer fixture remains byte exact with all 17 types",
           "[wp358][schema][rpc][wire]") {
     RegisteredWireFixture registrations;
+    const auto &integer_fingerprint =
+        registrations.registration(IntegerName).params_schema_fingerprint;
+    const auto integer_fingerprint_digest = picosha2::hash256_hex_string(
+        integer_fingerprint.begin(), integer_fingerprint.end());
+    REQUIRE(integer_fingerprint.size() == 585);
+    REQUIRE(integer_fingerprint_digest ==
+            "a935ab6465145eeea704463bd12e75ea1f167cd5858b44c588dbd7fa8d1b8ca5");
     const auto actual = runFixtureRpc();
     const auto expected = readBinary(
         PELICAN_WP358_RPC_FIXTURE);
@@ -224,7 +229,10 @@ TEST_CASE("WP358 parent RpcServer fixture remains byte exact with all 17 types",
                          "i8", "i16", "i32", "i64", "u8", "u16", "u32",
                          "u64", "f32", "f64", "vec2", "vec3", "vec4",
                          "quat", "string", "bool", "enum"});
-    std::cout << "WP358_WIRE_BYTES=" << actual.size()
+    std::cout << "WP359_WP358_INTEGER_FINGERPRINT_BYTES="
+              << integer_fingerprint.size()
+              << " SHA256=" << integer_fingerprint_digest << '\n'
+              << "WP358_WIRE_BYTES=" << actual.size()
               << " SHA256=8F5AC06031D34F9070E243E6143DFB094AB452D0B7CCE61BD6525F4104F56B63"
               << '\n';
 }
