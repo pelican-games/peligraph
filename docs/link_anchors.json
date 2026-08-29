@@ -419,7 +419,7 @@
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`stableDiskDigest()`": "std::string stableDiskDigest(const std::filesystem::path &path) {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`updateSceneDocument()`": "void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|書く前の検査": "scene_document->swap(candidate);",
-    "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|置換直前の `stableDiskDigest` 検査": "if (stableDiskDigest(destination) != *scene_baseline_digest) {",
+    "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|置換直前の `stableDiskDigest` 検査": "if (stableDiskDigest(destination) != save_baseline.scene_digest_sha256) {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|置換直前の検査": "TemporarySceneFile temporary{temporaryScenePath(destination)};",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.hpp|`SceneImportFaultPoint`": "enum class SceneImportFaultPoint : std::uint8_t {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.hpp|`SceneSaveErrorCode`": "enum class SceneSaveErrorCode : std::uint8_t {",
