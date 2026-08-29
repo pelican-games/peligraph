@@ -541,7 +541,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 |---|---|
 | `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L26) |
 | `collider` | [`PhysWorld`](../../src/core/phys/physworld.hpp#L38) |
-| `behavior` | [`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L123) |
+| `behavior` | [`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L147) |
 
 ### collider
 
@@ -549,7 +549,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ### behavior arena ✅実装済み
 
-behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` はECS Chunkとは無関係な独自のarenaで、次を保持します（[`behaviorarena.hpp` 内](../../src/core/gamelogic/behaviorarena.hpp#L125)）。
+behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` はECS Chunkとは無関係な独自のarenaで、次を保持します（[`behaviorarena.hpp` 内](../../src/core/gamelogic/behaviorarena.hpp#L149)）。
 
 - `BehaviorAttachmentInfo`（identityとオブジェクト対応）
 - 元の `raw_component` JSON
