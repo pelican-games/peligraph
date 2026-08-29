@@ -36,16 +36,9 @@ struct PreparedSceneBehaviorAttachment {
     bool pending = false;
 };
 
-struct BehaviorAttachmentIdentity {
-    BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
-    std::uint64_t attachment_seq = 0;
-};
-
 struct BoundSceneBehaviorAttachment {
     PreparedSceneBehaviorAttachment prepared;
     GameObjectId entity = invalidGameObjectId;
-    std::optional<BehaviorAttachmentIdentity> planned_identity;
-    bool preserve_planned_identity = false;
 };
 
 struct BehaviorAttachmentInfo {
@@ -63,6 +56,11 @@ struct BehaviorAttachmentInfo {
     bool active = false;
     bool activation_failed = false;
     std::string activation_error;
+};
+
+struct BehaviorAttachmentIdentity {
+    BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
+    std::uint64_t attachment_seq = 0;
 };
 
 struct BehaviorArenaIsolationState {
@@ -137,33 +135,6 @@ class PreparedBehaviorSceneReconciliation {
     void finish() noexcept;
 };
 
-class PreparedBehaviorEntityPreDestroy {
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-
-    explicit PreparedBehaviorEntityPreDestroy(
-        std::unique_ptr<Impl> impl) noexcept;
-    friend class BehaviorAttachmentArena;
-
-  public:
-    ~PreparedBehaviorEntityPreDestroy();
-    PreparedBehaviorEntityPreDestroy(
-        PreparedBehaviorEntityPreDestroy &&) noexcept;
-    PreparedBehaviorEntityPreDestroy &operator=(
-        PreparedBehaviorEntityPreDestroy &&) noexcept;
-    PreparedBehaviorEntityPreDestroy(
-        const PreparedBehaviorEntityPreDestroy &) = delete;
-    PreparedBehaviorEntityPreDestroy &operator=(
-        const PreparedBehaviorEntityPreDestroy &) = delete;
-
-    // Publication runs reverse-order onDestroy while every target entity is
-    // still live, then detaches the instances without destroying them.  The
-    // retained instances make aggregate transaction rollback allocation-free.
-    void publish() noexcept;
-    void rollback() noexcept;
-    void finish() noexcept;
-};
-
 std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,
                                          std::size_t component_index);
 std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
@@ -177,7 +148,6 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     friend class BehaviorCallbackScope;
     friend class PreparedBehaviorAttachmentEdits;
     friend class PreparedBehaviorSceneReconciliation;
-    friend class PreparedBehaviorEntityPreDestroy;
 
     struct Attachment {
         BehaviorAttachmentInfo info;
@@ -207,7 +177,6 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     void invokeUpdate(Attachment &attachment, GameContext &ctx);
     void invokeEvent(Attachment &attachment, const internal::QueuedEvent &event,
                      GameContext &ctx);
-    void invokeDestroyCallback(Attachment &attachment) noexcept;
     void destroyInstance(Attachment &attachment, bool invoke_destroy_callback) noexcept;
     void deactivateAllInstances() noexcept;
     void applyDeferredMutations();
@@ -238,8 +207,6 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     std::unique_ptr<PreparedBehaviorSceneReconciliation>
     prepareSceneReconciliation(
         std::vector<BoundSceneBehaviorAttachment> desired);
-    std::unique_ptr<PreparedBehaviorEntityPreDestroy>
-    prepareEntityPreDestroy(std::vector<GameObjectId> entities);
 
     void deferCreateObject(LocalTransformComponent transform);
     void deferCreateSpriteObject(LocalTransformComponent transform,

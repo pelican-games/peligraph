@@ -77,82 +77,6 @@ std::unordered_map<std::uint64_t, EntityId> bindingMap(
     return result;
 }
 
-std::vector<BoundSceneBehaviorAttachment> prepareBoundBehaviorAttachments(
-    const ResolvedSceneView *scene,
-    std::span<const EditorProjectionRuntimeObjectBinding> bindings,
-    std::span<const EditorBehaviorAttachmentIdentityPlanEntry> identity_plan) {
-    std::vector<BoundSceneBehaviorAttachment> desired;
-    if (scene == nullptr) {
-        if (!identity_plan.empty()) {
-            throw std::runtime_error(
-                "behavior identity plan targets an absent scene");
-        }
-        return desired;
-    }
-
-    auto prepared = prepareResolvedSceneBehaviorAttachments(
-        scene->objects, BehaviorRegistryAvailability::active);
-    desired.reserve(prepared.size());
-    std::vector<bool> matched(identity_plan.size(), false);
-    for (auto &attachment : prepared) {
-        const auto object = std::find_if(
-            scene->objects.begin(), scene->objects.end(),
-            [&](const auto &candidate) {
-                return candidate.authoring_object_index ==
-                       attachment.object_index;
-            });
-        if (object == scene->objects.end()) {
-            throw std::logic_error(
-                "prepared behavior lost its resolved object");
-        }
-        const auto binding = std::find_if(
-            bindings.begin(), bindings.end(), [&](const auto &candidate) {
-                return candidate.authoring_object_id ==
-                       object->authoring_object_id;
-            });
-        if (binding == bindings.end()) {
-            throw std::runtime_error(
-                "resolved behavior object has no staged runtime binding");
-        }
-
-        BoundSceneBehaviorAttachment bound{
-            .prepared = std::move(attachment),
-            .entity = binding->entity,
-        };
-        if (const auto *authored = bound.prepared.component_origin.authored()) {
-            for (std::size_t index = 0; index < identity_plan.size(); ++index) {
-                const auto &planned = identity_plan[index];
-                if (planned.object_id != object->authoring_object_id ||
-                    planned.authoring_component_index !=
-                        authored->authoring_component_index) {
-                    continue;
-                }
-                if (matched[index]) {
-                    throw std::logic_error(
-                        "behavior identity plan entry matched twice");
-                }
-                matched[index] = true;
-                bound.planned_identity = BehaviorAttachmentIdentity{
-                    .handle = BehaviorAttachmentHandle{
-                        planned.attachment_handle},
-                    .attachment_seq = planned.attachment_seq,
-                };
-                bound.preserve_planned_identity =
-                    planned.preserve_existing;
-                break;
-            }
-        }
-        desired.push_back(std::move(bound));
-    }
-    if (std::any_of(matched.begin(), matched.end(), [](bool value) {
-            return !value;
-        })) {
-        throw std::runtime_error(
-            "behavior identity plan entry is absent from the candidate scene");
-    }
-    return desired;
-}
-
 template <class Token> void publishToken(Token &token) noexcept {
     token.publish();
 }
@@ -717,250 +641,25 @@ void SceneObjectProjectionAdapter::finish() noexcept {
     impl_->bindings_published = false;
 }
 
-struct SceneLifecycleProjectionAdapter::Impl {
-    struct Change {
-        AuthoringObjectId object_id{};
-        bool spawn = false;
-        std::size_t depth = 0;
-        std::size_t declaration_index = 0;
-    };
-
-    ECSCoreTemplatePublic &ecs;
-    ComponentInfoManager &components;
-    ModelAssetContainer &models;
-    PolygonInstanceContainer &renderer;
-    Camera &camera;
-    LightContainer &lights;
-    PhysWorld &physics;
-    BehaviorAttachmentArena &arena;
-    std::string scene_id;
-    std::string adapter_name;
-    std::vector<AuthoringObjectId> targets;
-    std::vector<EditorProjectionRuntimeObjectBinding> bindings;
-    std::vector<EditorProjectionRuntimeObjectBinding> next_bindings;
-    std::vector<EditorBehaviorAttachmentIdentityPlanEntry> identity_plan;
-    std::vector<std::unique_ptr<SceneObjectProjectionAdapter>> lifecycle;
-    std::unique_ptr<PreparedBehaviorEntityPreDestroy> pre_destroy;
-    std::unique_ptr<PreparedBehaviorSceneReconciliation> behavior;
-
-    static std::size_t objectDepth(const ResolvedSceneView &scene,
-                                   const ResolvedObject &object) {
-        std::size_t depth = 0;
-        const ResolvedObject *current = &object;
-        while (current->parent) {
-            const auto parent = std::find_if(
-                scene.objects.begin(), scene.objects.end(),
-                [&](const auto &candidate) {
-                    return candidate.name &&
-                           *candidate.name == *current->parent;
-                });
-            if (parent == scene.objects.end()) {
-                throw std::runtime_error(
-                    "lifecycle candidate parent is absent");
-            }
-            ++depth;
-            if (depth > scene.objects.size()) {
-                throw std::runtime_error(
-                    "lifecycle candidate hierarchy is cyclic");
-            }
-            current = &*parent;
-        }
-        return depth;
-    }
-
-    std::vector<Change> changes(
-        const EditorProjectionPrepareContext &context) const {
-        const auto *base_scene =
-            findResolvedScene(context.base_resolved, scene_id);
-        const auto *next_scene =
-            findResolvedScene(context.next_resolved, scene_id);
-        std::vector<Change> result;
-        result.reserve(targets.size());
-        for (const auto target : targets) {
-            const auto *base = findResolvedObject(base_scene, target);
-            const auto *next = findResolvedObject(next_scene, target);
-            if ((base == nullptr) == (next == nullptr)) continue;
-            const auto spawn = next != nullptr;
-            const auto *scene = spawn ? next_scene : base_scene;
-            const auto *object = spawn ? next : base;
-            if (scene == nullptr || object == nullptr) {
-                throw std::logic_error(
-                    "lifecycle change lost its resolved object");
-            }
-            result.push_back(Change{
-                .object_id = target,
-                .spawn = spawn,
-                .depth = objectDepth(*scene, *object),
-                .declaration_index = object->authoring_object_index,
-            });
-        }
-        std::sort(result.begin(), result.end(),
-                  [](const auto &left, const auto &right) {
-                      if (left.spawn != right.spawn) return left.spawn;
-                      if (left.depth != right.depth) {
-                          return left.spawn ? left.depth < right.depth
-                                            : left.depth > right.depth;
-                      }
-                      if (left.declaration_index != right.declaration_index) {
-                          return left.spawn
-                                     ? left.declaration_index <
-                                           right.declaration_index
-                                     : left.declaration_index >
-                                           right.declaration_index;
-                      }
-                      return left.object_id.value < right.object_id.value;
-                  });
-        return result;
-    }
-};
-
-SceneLifecycleProjectionAdapter::SceneLifecycleProjectionAdapter(
-    ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
-    ModelAssetContainer &models, PolygonInstanceContainer &renderer,
-    Camera &camera, LightContainer &lights, PhysWorld &physics,
-    BehaviorAttachmentArena &behavior_arena, std::string scene_id,
-    std::vector<AuthoringObjectId> target_objects,
-    std::vector<EditorProjectionRuntimeObjectBinding> bindings,
-    std::vector<EditorBehaviorAttachmentIdentityPlanEntry> identity_plan)
-    : impl_{std::make_unique<Impl>(Impl{
-          .ecs = ecs,
-          .components = components,
-          .models = models,
-          .renderer = renderer,
-          .camera = camera,
-          .lights = lights,
-          .physics = physics,
-          .arena = behavior_arena,
-          .scene_id = std::move(scene_id),
-          .targets = std::move(target_objects),
-          .bindings = std::move(bindings),
-          .identity_plan = std::move(identity_plan),
-      })} {
-    (void)bindingMap(impl_->bindings);
-    std::sort(impl_->targets.begin(), impl_->targets.end(),
-              [](auto left, auto right) {
-                  return left.value < right.value;
-              });
-    impl_->targets.erase(
-        std::unique(impl_->targets.begin(), impl_->targets.end()),
-        impl_->targets.end());
-    impl_->adapter_name = "scene_lifecycle." + impl_->scene_id;
-}
-
-SceneLifecycleProjectionAdapter::~SceneLifecycleProjectionAdapter() = default;
-EditorProjectionAdapterKind
-SceneLifecycleProjectionAdapter::kind() const noexcept {
-    return EditorProjectionAdapterKind::EcsArchetype;
-}
-std::string_view SceneLifecycleProjectionAdapter::name() const noexcept {
-    return impl_->adapter_name;
-}
-EditorProjectionPublicationMode
-SceneLifecycleProjectionAdapter::publicationMode() const noexcept {
-    return EditorProjectionPublicationMode::InverseToken;
-}
-
-void SceneLifecycleProjectionAdapter::prepare(
-    const EditorProjectionPrepareContext &context) {
-    impl_->next_bindings = impl_->bindings;
-    const auto changes = impl_->changes(context);
-
-    std::vector<GameObjectId> destroyed_entities;
-    for (const auto &change : changes) {
-        if (change.spawn) continue;
-        const auto binding = std::find_if(
-            impl_->bindings.begin(), impl_->bindings.end(),
-            [&](const auto &candidate) {
-                return candidate.authoring_object_id == change.object_id;
-            });
-        if (binding == impl_->bindings.end()) {
-            throw std::runtime_error(
-                "destroy target has no runtime binding");
-        }
-        destroyed_entities.push_back(binding->entity);
-    }
-    impl_->pre_destroy = impl_->arena.prepareEntityPreDestroy(
-        std::move(destroyed_entities));
-
-    bool pre_destroy_published = false;
-    impl_->lifecycle.reserve(changes.size());
-    for (const auto &change : changes) {
-        auto participant = std::make_unique<SceneObjectProjectionAdapter>(
-            impl_->ecs, impl_->components, impl_->models, impl_->renderer,
-            impl_->camera, impl_->lights, impl_->physics, impl_->scene_id,
-            change.object_id, impl_->next_bindings);
-        participant->prepare(context);
-        if (!change.spawn && !pre_destroy_published) {
-            impl_->pre_destroy->publish();
-            pre_destroy_published = true;
-        }
-        participant->publish();
-        impl_->lifecycle.push_back(std::move(participant));
-        const auto staged = impl_->lifecycle.back()->runtimeBindings();
-        impl_->next_bindings.assign(staged.begin(), staged.end());
-    }
-
-    const auto *scene = findResolvedScene(context.next_resolved,
-                                          impl_->scene_id);
-    impl_->behavior = impl_->arena.prepareSceneReconciliation(
-        prepareBoundBehaviorAttachments(scene, impl_->next_bindings,
-                                        impl_->identity_plan));
-}
-
-void SceneLifecycleProjectionAdapter::publish() noexcept {
-    if (impl_->behavior) impl_->behavior->publish();
-}
-
-void SceneLifecycleProjectionAdapter::rollback() noexcept {
-    if (impl_->behavior) impl_->behavior->rollback();
-    impl_->behavior.reset();
-    for (auto it = impl_->lifecycle.rbegin();
-         it != impl_->lifecycle.rend(); ++it) {
-        (*it)->rollback();
-    }
-    impl_->lifecycle.clear();
-    if (impl_->pre_destroy) impl_->pre_destroy->rollback();
-    impl_->pre_destroy.reset();
-    impl_->next_bindings = impl_->bindings;
-}
-
-void SceneLifecycleProjectionAdapter::finish() noexcept {
-    if (impl_->behavior) impl_->behavior->finish();
-    impl_->behavior.reset();
-    if (impl_->pre_destroy) impl_->pre_destroy->finish();
-    impl_->pre_destroy.reset();
-    for (auto &participant : impl_->lifecycle) participant->finish();
-    impl_->lifecycle.clear();
-    impl_->bindings = impl_->next_bindings;
-}
-
-std::span<const EditorProjectionRuntimeObjectBinding>
-SceneLifecycleProjectionAdapter::runtimeBindings() const noexcept {
-    return impl_->next_bindings;
-}
-
 struct BehaviorSceneProjectionAdapter::Impl {
     BehaviorAttachmentArena &arena;
     std::string scene_id;
     std::string adapter_name;
     std::vector<EditorProjectionRuntimeObjectBinding> bindings;
     std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters;
-    std::vector<EditorBehaviorAttachmentIdentityPlanEntry> identity_plan;
     std::unique_ptr<PreparedBehaviorSceneReconciliation> prepared;
 };
 
 BehaviorSceneProjectionAdapter::BehaviorSceneProjectionAdapter(
     BehaviorAttachmentArena &arena, std::string scene_id,
     std::vector<EditorProjectionRuntimeObjectBinding> bindings,
-    std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters,
-    std::vector<EditorBehaviorAttachmentIdentityPlanEntry> identity_plan)
+    std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters)
     : impl_{std::make_unique<Impl>(Impl{
           .arena = arena,
           .scene_id = std::move(scene_id),
           .adapter_name = {},
           .bindings = std::move(bindings),
           .lifecycle_adapters = std::move(lifecycle_adapters),
-          .identity_plan = std::move(identity_plan),
       })} {
     (void)bindingMap(impl_->bindings);
     impl_->adapter_name = "behavior.scene." + impl_->scene_id;
@@ -1009,9 +708,40 @@ void BehaviorSceneProjectionAdapter::prepare(
 
     const auto *scene = findResolvedScene(context.next_resolved,
                                           impl_->scene_id);
-    impl_->prepared = impl_->arena.prepareSceneReconciliation(
-        prepareBoundBehaviorAttachments(scene, next_bindings,
-                                        impl_->identity_plan));
+    std::vector<BoundSceneBehaviorAttachment> desired;
+    if (scene != nullptr) {
+        auto prepared = prepareResolvedSceneBehaviorAttachments(
+            scene->objects, BehaviorRegistryAvailability::active);
+        desired.reserve(prepared.size());
+        for (auto &attachment : prepared) {
+            const auto object = std::find_if(
+                scene->objects.begin(), scene->objects.end(),
+                [&](const auto &candidate) {
+                    return candidate.authoring_object_index ==
+                           attachment.object_index;
+                });
+            if (object == scene->objects.end()) {
+                throw std::logic_error(
+                    "prepared behavior lost its resolved object");
+            }
+            const auto binding = std::find_if(
+                next_bindings.begin(), next_bindings.end(),
+                [&](const auto &candidate) {
+                    return candidate.authoring_object_id ==
+                           object->authoring_object_id;
+                });
+            if (binding == next_bindings.end()) {
+                throw std::runtime_error(
+                    "resolved behavior object has no staged runtime binding");
+            }
+            desired.push_back(BoundSceneBehaviorAttachment{
+                .prepared = std::move(attachment),
+                .entity = binding->entity,
+            });
+        }
+    }
+    impl_->prepared =
+        impl_->arena.prepareSceneReconciliation(std::move(desired));
 }
 
 void BehaviorSceneProjectionAdapter::publish() noexcept {

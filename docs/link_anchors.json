@@ -888,7 +888,7 @@
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/audio/audio.hpp|`Audio`": "DECLARE_MODULE(Audio) {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/ecs/predefined/camerasystem.cpp|`CameraSystem`": "void CameraSystem::process(QueryComponents components, size_t count) {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/ecs/predefined/camerasystem.cpp|`CameraSystem`|#1": "void CameraSystem::process(QueryComponents components, size_t count) {",
-    "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/gamelogic/behaviorarena.cpp|`BehaviorSystemRegistration`": "struct BehaviorSystemRegistration {",
+    "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/gamelogic/behaviorarena.cpp|`BehaviorSystemRegistration`": "BehaviorSystemRegistration() {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/gamelogic/behaviorarena.cpp|`BehaviorSystem`": "struct BehaviorSystem {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/gamelogic/behaviorarena.cpp|`behaviorarena.cpp` 内": "throw std::runtime_error(\"Unknown behavior type '\" + stable_name +",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/gamelogic/behaviorarena.cpp|`prepareSceneBehaviorAttachments()`": "std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(",

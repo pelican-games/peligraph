@@ -591,32 +591,6 @@ std::string prefabOperationSceneId(const EditorRuntimeModules &modules,
         "prefab parameter edit target is absent from resolved scene");
 }
 
-std::string removalOperationSceneId(
-    const EditorRuntimeModules &modules,
-    const nlohmann::ordered_json &operation, std::string_view fallback) {
-    if (operation.contains("scene_id")) {
-        return operationSceneId(operation, fallback);
-    }
-    const auto ids = operation.find("object_ids");
-    if (ids == operation.end() || !ids->is_array()) {
-        return std::string{fallback};
-    }
-    for (const auto &id : *ids) {
-        if (!id.is_number_unsigned()) continue;
-        const auto object_id = AuthoringObjectId{id.get<std::uint64_t>()};
-        for (const auto &scene :
-             modules.project_config.resolvedScene().scenes()) {
-            if (std::any_of(scene.objects.begin(), scene.objects.end(),
-                            [&](const auto &object) {
-                                return object.authoring_object_id == object_id;
-                            })) {
-                return scene.scene_id;
-            }
-        }
-    }
-    return std::string{fallback};
-}
-
 void requireEditorRuntimeBinding(
     const EditorRuntimeModules &modules,
     std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings,
@@ -798,10 +772,9 @@ EditorProjectionResult executeEditorProjection(
     struct LifecycleUpdate {
         AuthoringObjectId object_id{};
         std::string scene_id;
+        SceneObjectProjectionAdapter *adapter = nullptr;
     };
     std::vector<LifecycleUpdate> lifecycle_updates;
-    std::vector<EditorBehaviorAttachmentIdentityPlanEntry>
-        behavior_identity_plan;
     std::set<std::string> transform_scenes;
     std::set<std::string> ecs_codec_scenes;
     std::set<std::string> renderer_scenes;
@@ -813,8 +786,13 @@ EditorProjectionResult executeEditorProjection(
 
     const auto addLifecycle = [&](AuthoringObjectId object_id,
                                   const std::string &scene_id) {
-        if (scene_id != fallback_scene) return;
-        lifecycle_updates.push_back({object_id, scene_id});
+        auto adapter = std::make_unique<SceneObjectProjectionAdapter>(
+            ecs, modules.component_info, modules.models,
+            modules.polygon_instances, modules.camera, modules.lights,
+            modules.physics, scene_id, object_id, runtime_bindings);
+        auto *raw = adapter.get();
+        adapters.push_back(std::move(adapter));
+        lifecycle_updates.push_back({object_id, scene_id, raw});
     };
 
     for (std::size_t index = 0; index < request.operations.size(); ++index) {
@@ -841,8 +819,6 @@ EditorProjectionResult executeEditorProjection(
                              operation.at("object_id").get<std::uint64_t>()},
                          scene_id);
         } else if (op == "destroy" || op == "remove_objects") {
-            scene_id = removalOperationSceneId(modules, operation,
-                                               fallback_scene);
             for (const auto &id : operation.at("object_ids")) {
                 addLifecycle(AuthoringObjectId{id.get<std::uint64_t>()}, scene_id);
             }
@@ -853,7 +829,6 @@ EditorProjectionResult executeEditorProjection(
                              closure.at("scene_id").get<std::string>());
             }
         } else if (op == "reparent") {
-            if (scene_id != fallback_scene) continue;
             transform_scenes.insert(scene_id);
             adapters.push_back(
                 std::make_unique<ReparentLocalTransformProjectionAdapter>(
@@ -863,7 +838,6 @@ EditorProjectionResult executeEditorProjection(
             const auto component = operation.at("component_slot").get<std::string>();
             requireEditorRuntimeBinding(modules, runtime_bindings, operation,
                                         scene_id, component);
-            if (scene_id != fallback_scene) continue;
             if (component == "behavior") {
                 const auto object_id = AuthoringObjectId{
                     operation.at("object_id").get<std::uint64_t>()};
@@ -873,7 +847,7 @@ EditorProjectionResult executeEditorProjection(
                         authored.at("type").get<std::string>();
                     const nlohmann::json params =
                         authored.contains("params")
-                            ? nlohmann::json(authored.at("params"))
+                            ? nlohmann::json{authored.at("params")}
                             : nlohmann::json::object();
                     behavior_edits.push_back(BehaviorAttachmentEdit{
                         .kind = BehaviorAttachmentEditKind::set_params,
@@ -887,22 +861,6 @@ EditorProjectionResult executeEditorProjection(
                                                                  params),
                         .raw_component = authored,
                     });
-                    if (operation.contains("attachment_handle")) {
-                        behavior_identity_plan.push_back(
-                            EditorBehaviorAttachmentIdentityPlanEntry{
-                                .object_id = object_id,
-                                .authoring_component_index =
-                                    operation.at("attachment_index")
-                                        .get<std::size_t>(),
-                                .attachment_handle =
-                                    operation.at("attachment_handle")
-                                        .get<std::uint64_t>(),
-                                .attachment_seq =
-                                    operation.at("attachment_seq")
-                                        .get<std::uint64_t>(),
-                                .preserve_existing = true,
-                            });
-                    }
                 }
             } else if (component == "transform") transform_scenes.insert(scene_id);
             else if (component == "simplemodelview") renderer_scenes.insert(scene_id);
@@ -915,7 +873,6 @@ EditorProjectionResult executeEditorProjection(
             const auto component = operation.at("component_slot").get<std::string>();
             requireEditorRuntimeBinding(modules, runtime_bindings, operation,
                                         scene_id, component);
-            if (scene_id != fallback_scene) continue;
             const auto object_id = AuthoringObjectId{
                 operation.at("object_id").get<std::uint64_t>()};
             const auto entity = boundEditorEntity(runtime_bindings, object_id);
@@ -927,7 +884,7 @@ EditorProjectionResult executeEditorProjection(
                             authored.at("type").get<std::string>();
                         const nlohmann::json params =
                             authored.contains("params")
-                                ? nlohmann::json(authored.at("params"))
+                                ? nlohmann::json{authored.at("params")}
                                 : nlohmann::json::object();
                         const auto component_index =
                             operation.at("component_index").get<std::size_t>();
@@ -953,17 +910,6 @@ EditorProjectionResult executeEditorProjection(
                                     stable_name, params),
                             .raw_component = authored,
                         });
-                        behavior_identity_plan.push_back(
-                            EditorBehaviorAttachmentIdentityPlanEntry{
-                                .object_id = object_id,
-                                .authoring_component_index = component_index,
-                                .attachment_handle =
-                                    operation.at("attachment_handle")
-                                        .get<std::uint64_t>(),
-                                .attachment_seq =
-                                    operation.at("attachment_seq")
-                                        .get<std::uint64_t>(),
-                            });
                     } else {
                         behavior_edits.push_back(BehaviorAttachmentEdit{
                             .kind = BehaviorAttachmentEditKind::remove,
@@ -1055,25 +1001,26 @@ EditorProjectionResult executeEditorProjection(
             adapters.push_back(
                 std::make_unique<BehaviorSceneProjectionAdapter>(
                     modules.behavior_arena, scene_id, runtime_bindings,
-                    std::vector<SceneObjectProjectionAdapter *>{},
-                    behavior_identity_plan));
+                    std::vector<SceneObjectProjectionAdapter *>{}));
         }
     }
-    SceneLifecycleProjectionAdapter *lifecycle_aggregate = nullptr;
     if (!lifecycle_updates.empty()) {
-        std::vector<AuthoringObjectId> lifecycle_targets;
-        lifecycle_targets.reserve(lifecycle_updates.size());
-        for (const auto &update : lifecycle_updates) {
-            lifecycle_targets.push_back(update.object_id);
+        const auto &scene_id = lifecycle_updates.front().scene_id;
+        if (std::any_of(lifecycle_updates.begin(), lifecycle_updates.end(),
+                        [&](const auto &update) {
+                            return update.scene_id != scene_id;
+                        })) {
+            throw std::runtime_error(
+                "one editor lifecycle transaction cannot span runtime scenes");
         }
-        auto aggregate = std::make_unique<SceneLifecycleProjectionAdapter>(
-            ecs, modules.component_info, modules.models,
-            modules.polygon_instances, modules.camera, modules.lights,
-            modules.physics, modules.behavior_arena, fallback_scene,
-            std::move(lifecycle_targets), runtime_bindings,
-            behavior_identity_plan);
-        lifecycle_aggregate = aggregate.get();
-        adapters.push_back(std::move(aggregate));
+        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters;
+        lifecycle_adapters.reserve(lifecycle_updates.size());
+        for (const auto &update : lifecycle_updates) {
+            lifecycle_adapters.push_back(update.adapter);
+        }
+        adapters.push_back(std::make_unique<BehaviorSceneProjectionAdapter>(
+            modules.behavior_arena, scene_id, runtime_bindings,
+            std::move(lifecycle_adapters)));
     }
 
     std::vector<EditorProjectionAdapter *> adapter_ptrs;
@@ -1082,9 +1029,28 @@ EditorProjectionResult executeEditorProjection(
     ProjectBasicConfigProjectionTarget target{modules.project_config};
     EditorProjectionTransaction transaction{target, request.base_revision};
     auto result = transaction.commit(request.commands, adapter_ptrs);
-    if (result.committed() && lifecycle_aggregate != nullptr) {
-        const auto next = lifecycle_aggregate->runtimeBindings();
-        runtime_bindings.assign(next.begin(), next.end());
+    if (result.committed()) {
+        for (const auto &update : lifecycle_updates) {
+            const auto next = update.adapter->runtimeBindings();
+            const auto replacement = std::find_if(next.begin(), next.end(),
+                                                  [&](const auto &binding) {
+                                                      return binding.authoring_object_id ==
+                                                             update.object_id;
+                                                  });
+            const auto current = std::find_if(runtime_bindings.begin(),
+                                              runtime_bindings.end(),
+                                              [&](const auto &binding) {
+                                                  return binding.authoring_object_id ==
+                                                         update.object_id;
+                                              });
+            if (replacement == next.end()) {
+                if (current != runtime_bindings.end()) runtime_bindings.erase(current);
+            } else if (current == runtime_bindings.end()) {
+                runtime_bindings.push_back(*replacement);
+            } else {
+                *current = *replacement;
+            }
+        }
     }
     return result;
 }
@@ -1509,10 +1475,6 @@ struct EditorRuntimeState {
 };
 
 } // namespace
-
-nlohmann::ordered_json internal::editorRuntimeStateSnapshotForTesting() {
-    return EditorRuntimeState{}.previewSharedState();
-}
 
 std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
     EditorRuntimeServiceOptions options) {

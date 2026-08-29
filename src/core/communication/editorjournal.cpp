@@ -1511,79 +1511,11 @@ Json normalizeBehaviorAttachmentIdentities(
     return result;
 }
 
-void applyCandidateBehaviorIdentityPlan(
-    Json &normalized_operations, PreparedBatch &batch,
-    const ResolvedScene &candidate) {
-    if (!normalized_operations.is_array() ||
-        normalized_operations.size() != batch.operations.size()) {
-        throw std::logic_error(
-            "behavior identity plan requires the prepared operation batch");
-    }
-    for (std::size_t index = 0; index < normalized_operations.size();
-         ++index) {
-        auto &raw = normalized_operations.at(index);
-        auto &prepared = batch.operations.at(index);
-        const auto op = raw.value("op", std::string{});
-        const bool add_behavior =
-            op == "add_component" && raw.contains("component") &&
-            raw.at("component").is_object() &&
-            raw.at("component").value("name", std::string{}) == "behavior";
-        const bool set_behavior =
-            op == "set_component_value" &&
-            raw.value("component_slot", std::string{}) == "behavior";
-        if (!add_behavior && !set_behavior) continue;
-
-        const auto object_id = AuthoringObjectId{exactUnsigned(
-            raw.at("object_id"), "behavior identity plan object_id", true)};
-        const auto authored_index = static_cast<std::size_t>(exactUnsigned(
-            add_behavior ? prepared.forward.at("component_index")
-                         : prepared.forward.at("attachment_index"),
-            "behavior identity plan component index"));
-        const ResolvedObject *resolved_object = nullptr;
-        for (const auto &scene : candidate.scenes()) {
-            const auto found = std::find_if(
-                scene.objects.begin(), scene.objects.end(),
-                [&](const auto &object) {
-                    return object.authoring_object_id == object_id;
-                });
-            if (found != scene.objects.end()) {
-                resolved_object = &*found;
-                break;
-            }
-        }
-        // An add followed by removal of the same object has no live identity
-        // consumer.  Keep its already-reserved handle in the journal record.
-        if (resolved_object == nullptr) continue;
-        const auto resolved_component = std::find_if(
-            resolved_object->components.begin(),
-            resolved_object->components.end(), [&](const auto &component) {
-                const auto *authored = component.origin.authored();
-                return component.name == "behavior" && authored != nullptr &&
-                       authored->authoring_component_index == authored_index;
-            });
-        if (resolved_component == resolved_object->components.end()) {
-            throw std::logic_error(
-                "candidate behavior identity plan target is absent");
-        }
-        const auto attachment_seq = sceneBehaviorAttachmentSeq(
-            resolved_object->authoring_object_index,
-            resolved_component->merged_component_index);
-        raw["attachment_seq"] = attachment_seq;
-        prepared.forward["attachment_seq"] = attachment_seq;
-        prepared.inverse["attachment_seq"] = attachment_seq;
-        if (prepared.structural_domain.contains("attachment_seq")) {
-            prepared.structural_domain["attachment_seq"] = attachment_seq;
-        }
-        batch.forward.at(index)["attachment_seq"] = attachment_seq;
-    }
-}
-
 PreparedBatch prepareBatch(const Json &raw_operations,
                            const AuthoringSceneDocument &source,
                            std::string_view current_scene,
                            PrefabRegistrySnapshot registry = {},
-                           BindableProviderSnapshot provider = {},
-                           Json *identity_plan_operations = nullptr) {
+                           BindableProviderSnapshot provider = {}) {
     if (!raw_operations.is_array() || raw_operations.empty()) {
         throw std::invalid_argument("edit operations must be a non-empty array");
     }
@@ -1631,11 +1563,6 @@ PreparedBatch prepareBatch(const Json &raw_operations,
         batch.affected.insert(batch.affected.end(), prepared.affected.begin(),
                               prepared.affected.end());
         batch.operations.push_back(std::move(prepared));
-    }
-    if (identity_plan_operations != nullptr) {
-        applyCandidateBehaviorIdentityPlan(
-            *identity_plan_operations, batch,
-            local.projectionResolvedScene());
     }
     for (auto it = batch.operations.rbegin(); it != batch.operations.rend(); ++it) {
         batch.inverse.push_back(it->inverse);
@@ -2110,170 +2037,6 @@ bool sameStableSet(std::span<const std::string> left,
 
 } // namespace
 
-namespace {
-
-void optionalExactUnsignedSyntax(const Json &value, std::string_view key,
-                                 std::string_view context,
-                                 bool nonzero = false) {
-    if (const auto found = value.find(key); found != value.end()) {
-        (void)exactUnsigned(*found,
-                            std::string{context} + " " + std::string{key},
-                            nonzero);
-    }
-}
-
-void validateEditorOperationSyntaxLeaf(const Json &operation) {
-    requireObject(operation, "edit operation");
-    const auto op = requireString(operation, "op", "edit operation");
-    if (op == "set_component_value") {
-        const bool has_slot = operation.contains("component_slot");
-        const bool has_generated = operation.contains("generated_id");
-        if (has_slot == has_generated) {
-            throw std::invalid_argument(
-                "set_component_value requires exactly one of component_slot and generated_id");
-        }
-        requireOnly(operation,
-                    has_generated
-                        ? std::initializer_list<std::string_view>{
-                              "op", "object_id", "generated_id",
-                              "field_path", "value"}
-                        : std::initializer_list<std::string_view>{
-                              "op", "object_id", "component_slot",
-                              "field_path", "value", "attachment_index"},
-                    "set_component_value");
-        (void)exactUnsigned(operation.at("object_id"),
-                            "set_component_value object_id", true);
-        if (has_slot) {
-            (void)requireString(operation, "component_slot",
-                                "set_component_value");
-            optionalExactUnsignedSyntax(operation, "attachment_index",
-                                        "set_component_value");
-        } else {
-            (void)requireString(operation, "generated_id",
-                                "set_component_value");
-        }
-        const auto field_path = requireString(
-            operation, "field_path", "set_component_value");
-        if (!field_path.starts_with('/')) {
-            throw std::invalid_argument(
-                "set_component_value field_path must be an RFC6901 JSON pointer");
-        }
-        try {
-            (void)nlohmann::json::json_pointer{field_path};
-        } catch (const nlohmann::json::exception &) {
-            throw std::invalid_argument(
-                "set_component_value field_path must be an RFC6901 JSON pointer");
-        }
-        if (!operation.contains("value")) {
-            throw std::invalid_argument(
-                "set_component_value value is required");
-        }
-        return;
-    }
-    if (op == "add_component") {
-        requireOnly(operation,
-                    {"op", "object_id", "component", "component_index"},
-                    op);
-        (void)exactUnsigned(operation.at("object_id"),
-                            "add_component object_id", true);
-        const auto &component = requireObject(operation.at("component"),
-                                              "add_component component");
-        (void)requireString(component, "name", "add_component component");
-        optionalExactUnsignedSyntax(operation, "component_index", op);
-        return;
-    }
-    if (op == "remove_component") {
-        requireOnly(operation,
-                    {"op", "object_id", "component_slot",
-                     "attachment_index"},
-                    op);
-        (void)exactUnsigned(operation.at("object_id"),
-                            "remove_component object_id", true);
-        (void)requireString(operation, "component_slot", op);
-        optionalExactUnsignedSyntax(operation, "attachment_index", op);
-        return;
-    }
-    if (op == "spawn") {
-        requireOnly(operation,
-                    {"op", "scene_id", "declaration_index", "object",
-                     "new_instance_id"},
-                    op);
-        if (operation.contains("scene_id")) {
-            (void)requireString(operation, "scene_id", op);
-        }
-        optionalExactUnsignedSyntax(operation, "declaration_index", op);
-        if (operation.contains("new_instance_id")) {
-            (void)requireString(operation, "new_instance_id", op);
-        }
-        const auto &object = requireObject(operation.at("object"),
-                                           "spawn object");
-        (void)requireString(object, "name", "spawn object");
-        if (const auto parent = object.find("parent");
-            parent != object.end() && !parent->is_string()) {
-            throw std::invalid_argument("spawn object parent must be a string");
-        }
-        const auto components = object.find("components");
-        if (components == object.end() || !components->is_array()) {
-            throw std::invalid_argument(
-                "spawn object components must be an array");
-        }
-        for (const auto &component_value : *components) {
-            const auto &component = requireObject(component_value,
-                                                  "spawn component");
-            (void)requireString(component, "name", "spawn component");
-        }
-        if (const auto prefab = object.find("prefab");
-            prefab != object.end() && !prefab->is_object()) {
-            throw std::invalid_argument(
-                "spawn object prefab must be an object");
-        }
-        return;
-    }
-    if (op == "destroy") {
-        requireOnly(operation, {"op", "object_id"}, op);
-        (void)exactUnsigned(operation.at("object_id"),
-                            "destroy object_id", true);
-        return;
-    }
-    if (op == "reparent") {
-        requireOnly(operation,
-                    {"op", "object_id", "new_parent_id", "preserve"}, op);
-        (void)exactUnsigned(operation.at("object_id"),
-                            "reparent object_id", true);
-        const auto parent = operation.find("new_parent_id");
-        if (parent == operation.end()) {
-            throw std::invalid_argument(
-                "reparent requires new_parent_id");
-        }
-        if (!parent->is_null()) {
-            (void)exactUnsigned(*parent, "reparent new_parent_id", true);
-        }
-        (void)requireString(operation, "preserve", op);
-        return;
-    }
-    if (op == "set_prefab_parameter" ||
-        op == "unset_prefab_parameter") {
-        requireOnly(operation,
-                    op == "set_prefab_parameter"
-                        ? std::initializer_list<std::string_view>{
-                              "op", "object", "parameter", "value"}
-                        : std::initializer_list<std::string_view>{
-                              "op", "object", "parameter"},
-                    op);
-        (void)exactUnsigned(operation.at("object"), op + " object", true);
-        (void)requireString(operation, "parameter", op);
-        if (op == "set_prefab_parameter" &&
-            !operation.contains("value")) {
-            throw std::invalid_argument(
-                "set_prefab_parameter value is required");
-        }
-        return;
-    }
-    throw std::invalid_argument("unsupported edit operation: " + op);
-}
-
-} // namespace
-
 EditorMutationRequestAst parseEditorMutationRequest(
     const Json &params, std::string_view method) {
     const auto context = std::string{method};
@@ -2329,15 +2092,24 @@ EditorMutationRequestAst parseEditorMutationRequest(
     }
     result.operations = *operations;
     for (const auto &operation : *operations) {
-        validateEditorOperationSyntaxLeaf(operation);
-    }
-    for (const auto &operation : *operations) {
+        requireObject(operation, "edit operation");
         const auto op = requireString(operation, "op", "edit operation");
         if (op == "set_prefab_parameter" ||
             op == "unset_prefab_parameter") {
             result.prefab_mutation = true;
             if (op == "set_prefab_parameter") {
+                requireOnly(operation,
+                            {"op", "object", "parameter", "value"}, op);
+                if (!operation.contains("value")) {
+                    throw std::invalid_argument(
+                        "set_prefab_parameter value is required");
+                }
+            } else {
+                requireOnly(operation, {"op", "object", "parameter"}, op);
             }
+            (void)exactUnsigned(operation.at("object"),
+                                op + " object", true);
+            (void)requireString(operation, "parameter", op);
             continue;
         }
         if (op != "set_component_value") continue;
@@ -2350,12 +2122,31 @@ EditorMutationRequestAst parseEditorMutationRequest(
         const auto object_id = AuthoringObjectId{exactUnsigned(
             operation.at("object_id"), "set_component_value object_id",
             true)};
-        const auto field_path = operation.at("field_path").get<std::string>();
+        const auto field_path = requireString(
+            operation, "field_path", "set_component_value");
+        if (!field_path.starts_with('/')) {
+            throw std::invalid_argument(
+                "set_component_value field_path must be an RFC6901 JSON pointer");
+        }
+        try {
+            (void)nlohmann::json::json_pointer{field_path};
+        } catch (const nlohmann::json::exception &) {
+            throw std::invalid_argument(
+                "set_component_value field_path must be an RFC6901 JSON pointer");
+        }
+        if (!operation.contains("value")) {
+            throw std::invalid_argument(
+                "set_component_value value is required");
+        }
         if (!has_generated) {
             (void)requireString(operation, "component_slot",
                                 "set_component_value");
             continue;
         }
+        requireOnly(operation,
+                    {"op", "object_id", "generated_id", "field_path",
+                     "value"},
+                    "set_component_value generated selector");
         EditorGeneratedSelectorAst selector;
         selector.object_id = object_id;
         selector.generated_id = requireString(
@@ -3586,10 +3377,10 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
     try {
         normalized_operations = normalizeBehaviorAttachmentIdentities(
             operations, impl_->document(), base, impl_->dependencies);
-        const auto batch = prepareBatch(
-            normalized_operations, impl_->document(),
-            impl_->dependencies.current_scene_id(), impl_->prefabRegistry(),
-            impl_->bindableProvider(), &normalized_operations);
+        const auto batch = prepareBatch(normalized_operations, impl_->document(),
+                                        impl_->dependencies.current_scene_id(),
+                                        impl_->prefabRegistry(),
+                                        impl_->bindableProvider());
         const auto writes = batchWriteSet(batch);
         const auto domains = batchStructuralDomains(batch);
         impl_->requireNoLeaseOverlap(writes, domains);
