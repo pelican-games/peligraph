@@ -14981,3 +14981,68 @@ error catalog 追加(design 側にも反映): `prefab_path_invalid` /
 leaf の enum 型(非空 `enum_values` 必須)が表現不能だった。上表を修正し、
 enum parameter の正例(展開まで)と、enum 以外での `enum_values` 指定・
 enum での欠落の負例(いずれも `prefab_document_invalid`)を受け入れに追加する。
+
+#### WP361 コードレビュー(reject・12 件)の仕分けと WP361a
+
+出荷 4 project(behavior 0・prefab 0)は直接踏めないことをレビュー自身が実査済み。
+仕分け: **直す 11 件 = WP361a** / **台帳だけ 1 件**(#9 の codec 記述子完全統一 ——
+schema・provider・decoder を同一データから生成する件は R5(型付き構築 factory)と
+同根の大工事。WP361a では light の三重矛盾の解消と provider を decoder の真実に
+合わせる最小整合まで)。**連鎖はここで打ち切り。WP361a のレビュー指摘は台帳行き。**
+
+### WP361a: WP361 修正パッケージ —— arena 生命線、第二経路の除去、ゲートの穴
+
+**§4 規則 11 上段。コードレビューのみ(仕様源は上記 12 件)。見積: 中〜大。**
+
+1. **lifecycle と arena の合流**(#1): spawn / destroy→undo / restore で前後の
+   resolved behavior attachment を差分化し、arena の prepare/publish/rollback に参加。
+   受け入れ: Generated behavior 持ち prefab の spawn 後に callback が実際に走る /
+   destroy→undo 後も走る(**fake target でなく production adapter 経由**)
+2. **構造編集後の index rebase**(#2): object 挿入・削除の transaction ごとに
+   next ResolvedScene から全 attachment の object/component index・seq を再構築。
+   受け入れ: レビューの再現(先頭 spawn → 新 behavior 追加)で collision 誤拒否が消え、
+   callback 順が fresh load と一致(**取り消したら落ちる**)
+3. **seq の公開値一本化**(#3): journal・arena・RPC が同一 transaction から導出した
+   同じ値を公開。query_journal と get_components の一致テスト
+4. **Studio offline の第二経路除去**(#4): provider descriptor を入力に取る純粋
+   prefab resolution leaf を `pelican_project` に置き、engine/Studio 両方が使う。
+   scheme 付き path(`project://` 等)は registry parser で明示拒否。
+   受け入れ: `shape:"box"` の `/radius` 束縛 prefab を Studio が engine と同じ
+   `prefab_binding_inactive` で拒否 / **同一文書の engine/Studio 展開結果一致テスト**
+5. **collision の型付き伝搬**(#5): PrefabErrorCode を projection error に保持し
+   RPC catalog まで通す。実衝突(`new_instance_id` が既存と同値)のテスト
+6. **selector の共有 parser 化**(#6): 手前の手書き pre-parser を廃し、request 全体を
+   既存 edit parser で構文検証 → selector AST → gid 解決 → read-only の順。
+   `{"op":42}` は invalid_params / 不正 JSON Pointer は read-only より先 /
+   preview 入口(open/update_preview)にも同じ gate
+7. **persistence gate の穴 3 つ**(#7): SnapshotV1 は「format v1 かつ prefab 無し」を
+   formatVersion まで見る / incoming payload の prefab を version 判定より先に
+   `prefab_persistence_unsupported` / 下位 `importSceneDocument` にも同じ named gate
+8. **fingerprint の byte 準拠**(#8): JSON dump を廃し、v4 の型 tag +
+   scalar(IEEE754 LE)/vector/string(LP、引用符なし)binary encoder。
+   **固定 digest の独立 oracle test**(手計算 bytes → 期待 hex)
+9. **light の三重矛盾の最小整合**(#9 の一部): provider の light descriptor を
+   実 decoder の真実(required/default)に一致させ、相互検証テストを置く。
+   完全統一は台帳(下記)
+10. **behavior field 名の RFC6901 escape**(#10): `aim.target` は literal key、
+    `a/b` は `~1` escape。往復テスト
+11. **provider fallback の削除**(#11): global 登録からの黙った補完を廃し、
+    prefab 文書には non-zero provider snapshot を必須化(欠落は named)。
+    generation は成功 publish と同時に commit(失敗時に増えない)
+12. **asset_kind の実効化**(#12): asset descriptor に subtype を持たせ完全一致。
+    model パラメータ → texture socket は named 拒否
+
+テスト感度の是正(レビュー §テスト感度の全件):
+- lifecycle 系は production adapter を通す(fake target 禁止)
+- camera 先勝ちの fixture に **Generated camera を実際に置く**
+- provider default の対照は descriptor 直接変更でなく **codec default 変更 →
+  resolved value 変化**の実配線
+- real RpcServer テストに `.edit` / `.runtime_query` を配線し、authored edit が
+  変化する肯定対照を並べる
+- Studio outliner は engine resolver との一致比較
+
+台帳だけ(WP にしない):
+- codec 記述子の完全統一(schema/provider/decoder 単一ソース)= R5 と同時に設計
+- flat/xr 実機差・prefab 入り eval/render preview の網羅は WP362 の受け入れで拾う
+
+依存: WP361。連鎖打ち切り宣言: WP361a の §10 指摘は台帳行き。
