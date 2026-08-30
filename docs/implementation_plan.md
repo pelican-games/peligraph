@@ -15486,3 +15486,14 @@ design_raytracing.md §7 に「callable data の検証は RT4 で」の note を
 WP364(RT1a)マージ済み → 統合で fixture 1 件割れ → per-file manifest 生成済み →
 テスト置き換えを wp364fix で実装中。**次の一手 = wp364fix の回収**。
 その後は「引き継ぎ: 残 WP への先行裁定」節の作業順どおり。
+
+#### WP364 統合 fixture の autocrlf 裁定(2026-08-30)
+
+fixture 修正の実装が正しく判断を仰いだ: parent manifest は git blob(LF)を hash
+するが、この checkout は autocrlf=true で text は CRLF。**「出荷物不変」= コミット
+された blob が不変**であって、ローカル checkout の改行表現ではない。
+**却下**: リポジトリ全体を LF checkout に固定する .gitattributes(重く、全 checkout と
+golden/他 fixture に波及)。**採用**: manifest v3 が git の per-file eol 分類
+(lf|binary)を持ち、テストは eol==lf を CRLF→LF 正規化してから hash、
+eol==binary は raw 比較。70 text + 5 binary。manifest は integrator が
+git blob + `git ls-files --eol` から機械生成(実装は再生成しない)。

@@ -40,3 +40,14 @@ at the same frozen commit d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72,
 generated mechanically from git blobs of that commit by the integrator
 (not by the implementation). Shipped-bytes invariance means these
 tracked files are unchanged; untracked neighbors are out of scope.
+
+2026-08-30 autocrlf ruling: this checkout has core.autocrlf=true, so
+tracked text files sit on disk as CRLF while the committed blob is LF.
+"Shipped bytes unchanged" means the COMMITTED blob is unchanged, not the
+local CRLF checkout representation. Rejected: a repo-wide .gitattributes
+forcing LF checkout (heavy, would touch every checkout and risk golden/
+other fixtures). Adopted: parent_manifest.json version 3 carries git's
+own per-file eol classification (lf|binary); the test normalizes
+working-tree CRLF->LF for eol==lf entries before hashing and compares
+eol==binary entries raw. 70 text + 5 binary files. Manifest generated
+mechanically from git blobs + `git ls-files --eol` by the integrator.

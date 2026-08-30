@@ -1,85 +1,101 @@
 {
  "schema": "pelican.wp364.parent_manifest",
- "version": 2,
+ "version": 3,
  "source_commit": "d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72",
+ "note": "blob_sha256 hashes the git blob (LF). Test must normalize working-tree CRLF->LF for eol==lf entries before hashing; compare eol==binary raw.",
  "projects": {
   "animgraph_demo": {
    "tracked_file_count": 15,
    "files": [
     {
      "path": "projects/animgraph_demo/README.md",
-     "sha256": "bc345cefabb2061ca1202320f9be6099b3687102db5eda71d951566dfc4d9d25",
-     "bytes": 1154
+     "eol": "lf",
+     "blob_sha256": "bc345cefabb2061ca1202320f9be6099b3687102db5eda71d951566dfc4d9d25",
+     "blob_bytes": 1154
     },
     {
      "path": "projects/animgraph_demo/assets/animgraph_demo.gltf",
-     "sha256": "13c553008d61e35b5c77d6b59ca165d9e8bfca99f6afcf3d6c67fab6da2b31fe",
-     "bytes": 3201
+     "eol": "lf",
+     "blob_sha256": "13c553008d61e35b5c77d6b59ca165d9e8bfca99f6afcf3d6c67fab6da2b31fe",
+     "blob_bytes": 3201
     },
     {
      "path": "projects/animgraph_demo/assets/asset_data.json",
-     "sha256": "ed6d7b8fd54ce8ca9db0863cf07dee4c06b0dc43333d666a4f7773acad3b8cce",
-     "bytes": 159
+     "eol": "lf",
+     "blob_sha256": "ed6d7b8fd54ce8ca9db0863cf07dee4c06b0dc43333d666a4f7773acad3b8cce",
+     "blob_bytes": 159
     },
     {
      "path": "projects/animgraph_demo/assets/status.atlas.json",
-     "sha256": "28fb0585543159fb666f05096ded680604e226a61afcc4f4e2c51a0f7862e029",
-     "bytes": 175
+     "eol": "lf",
+     "blob_sha256": "28fb0585543159fb666f05096ded680604e226a61afcc4f4e2c51a0f7862e029",
+     "blob_bytes": 175
     },
     {
      "path": "projects/animgraph_demo/assets/status.png",
-     "sha256": "f865102680a5f85cbbdb9e0d3c1ecd6d2ab44df09456c100f25caadb16ca9a53",
-     "bytes": 189
+     "eol": "binary",
+     "blob_sha256": "f865102680a5f85cbbdb9e0d3c1ecd6d2ab44df09456c100f25caadb16ca9a53",
+     "blob_bytes": 189
     },
     {
      "path": "projects/animgraph_demo/catalog_smoke.json",
-     "sha256": "55ca6b17ac92c75ef52761411520d29e3641684b2fa74f70703b67f3d7a382cd",
-     "bytes": 132
+     "eol": "lf",
+     "blob_sha256": "55ca6b17ac92c75ef52761411520d29e3641684b2fa74f70703b67f3d7a382cd",
+     "blob_bytes": 132
     },
     {
      "path": "projects/animgraph_demo/code/CMakeLists.txt",
-     "sha256": "6767707a0f211546266e8fa448d8fa3444a9cf659bb203dc66310c6cbb65f3b5",
-     "bytes": 40
+     "eol": "lf",
+     "blob_sha256": "6767707a0f211546266e8fa448d8fa3444a9cf659bb203dc66310c6cbb65f3b5",
+     "blob_bytes": 40
     },
     {
      "path": "projects/animgraph_demo/code/animgraphdemo.cpp",
-     "sha256": "e0464e8f459f0621da6dc41560b5e9860003bcee456ee48c69621a2e7804412f",
-     "bytes": 2882
+     "eol": "lf",
+     "blob_sha256": "e0464e8f459f0621da6dc41560b5e9860003bcee456ee48c69621a2e7804412f",
+     "blob_bytes": 2882
     },
     {
      "path": "projects/animgraph_demo/input/actions.json",
-     "sha256": "46482ae359052faf3c4173e9a45563906d4af66c3d9eb6406c5669dbdea835c6",
-     "bytes": 158
+     "eol": "lf",
+     "blob_sha256": "46482ae359052faf3c4173e9a45563906d4af66c3d9eb6406c5669dbdea835c6",
+     "blob_bytes": 158
     },
     {
      "path": "projects/animgraph_demo/input/keyboard.json",
-     "sha256": "b48ae8d1d4831c00f6da89d5bfc40e90546f071a3bfc62d43e5014794b848564",
-     "bytes": 157
+     "eol": "lf",
+     "blob_sha256": "b48ae8d1d4831c00f6da89d5bfc40e90546f071a3bfc62d43e5014794b848564",
+     "blob_bytes": 157
     },
     {
      "path": "projects/animgraph_demo/movement.anim_graph.json",
-     "sha256": "8c81638249eaa9dcd04f5b2976a99430a08baa73b9f968350526f914cdffed7f",
-     "bytes": 771
+     "eol": "lf",
+     "blob_sha256": "8c81638249eaa9dcd04f5b2976a99430a08baa73b9f968350526f914cdffed7f",
+     "blob_bytes": 771
     },
     {
      "path": "projects/animgraph_demo/passes/main.json",
-     "sha256": "4374b90d8a2999415b88d87b30e71d27251df7fd7acb8476ac75442ff8781650",
-     "bytes": 219
+     "eol": "lf",
+     "blob_sha256": "4374b90d8a2999415b88d87b30e71d27251df7fd7acb8476ac75442ff8781650",
+     "blob_bytes": 219
     },
     {
      "path": "projects/animgraph_demo/project.json",
-     "sha256": "4e40c4502e1194e263ca8567b8b23b85e04cfc6c99c199281be588095946382e",
-     "bytes": 806
+     "eol": "lf",
+     "blob_sha256": "4e40c4502e1194e263ca8567b8b23b85e04cfc6c99c199281be588095946382e",
+     "blob_bytes": 806
     },
     {
      "path": "projects/animgraph_demo/scene.json",
-     "sha256": "a48e75b8be22312e2d18add72f8ffa03e3fe841a423dfe53002aba7beec79e6c",
-     "bytes": 469
+     "eol": "lf",
+     "blob_sha256": "a48e75b8be22312e2d18add72f8ffa03e3fe841a423dfe53002aba7beec79e6c",
+     "blob_bytes": 469
     },
     {
      "path": "projects/animgraph_demo/ui/status_overlay.json",
-     "sha256": "328859f10bcec2255cc0c6b7b3ec237f567a643a814a86d46b27b651db89d802",
-     "bytes": 501
+     "eol": "lf",
+     "blob_sha256": "328859f10bcec2255cc0c6b7b3ec237f567a643a814a86d46b27b651db89d802",
+     "blob_bytes": 501
     }
    ]
   },
@@ -88,133 +104,159 @@
    "files": [
     {
      "path": "projects/example/README.md",
-     "sha256": "5affa377677afcdfc670205d776f2365dcb53d111c73ea8a938c879278f76c8d",
-     "bytes": 1710
+     "eol": "lf",
+     "blob_sha256": "5affa377677afcdfc670205d776f2365dcb53d111c73ea8a938c879278f76c8d",
+     "blob_bytes": 1710
     },
     {
      "path": "projects/example/assets.manifest.json",
-     "sha256": "61e230ec1f77c0a43de67f33c97967e812a09e7267fe8c0b66effb487c8dde3e",
-     "bytes": 3932
+     "eol": "lf",
+     "blob_sha256": "61e230ec1f77c0a43de67f33c97967e812a09e7267fe8c0b66effb487c8dde3e",
+     "blob_bytes": 3932
     },
     {
      "path": "projects/example/assets/asset_data.json",
-     "sha256": "f31a013fcab58efe20e26ab8f2151d309b4fff813c3c7a56eb0463cdedabd55a",
-     "bytes": 403
+     "eol": "lf",
+     "blob_sha256": "f31a013fcab58efe20e26ab8f2151d309b4fff813c3c7a56eb0463cdedabd55a",
+     "blob_bytes": 403
     },
     {
      "path": "projects/example/assets/models/.gitkeep",
-     "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-     "bytes": 1
+     "eol": "lf",
+     "blob_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+     "blob_bytes": 1
     },
     {
      "path": "projects/example/assets/textures/.gitkeep",
-     "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
-     "bytes": 1
+     "eol": "lf",
+     "blob_sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+     "blob_bytes": 1
     },
     {
      "path": "projects/example/assets/textures/ui.atlas.json",
-     "sha256": "ec210610933d150b42c2ef417739c7918e7654d32a40350a08626c3cf40ee9a3",
-     "bytes": 306
+     "eol": "lf",
+     "blob_sha256": "ec210610933d150b42c2ef417739c7918e7654d32a40350a08626c3cf40ee9a3",
+     "blob_bytes": 306
     },
     {
      "path": "projects/example/catalog_smoke.json",
-     "sha256": "c48108c66aabad0cf85c348ad030a0f25f3ca5e8ace59425c8e7b0a63ee7de49",
-     "bytes": 133
+     "eol": "lf",
+     "blob_sha256": "c48108c66aabad0cf85c348ad030a0f25f3ca5e8ace59425c8e7b0a63ee7de49",
+     "blob_bytes": 133
     },
     {
      "path": "projects/example/code/CMakeLists.txt",
-     "sha256": "b28973335235f675af38b8acde4854e5f8cd96b4a70f26f75e0a7da4ff8bafa4",
-     "bytes": 40
+     "eol": "lf",
+     "blob_sha256": "b28973335235f675af38b8acde4854e5f8cd96b4a70f26f75e0a7da4ff8bafa4",
+     "blob_bytes": 40
     },
     {
      "path": "projects/example/code/playercontrol.cpp",
-     "sha256": "de2da09e3e84fb8d73ab2c865634a54c6bc274baa2c32aeb17683a2c64cd62e5",
-     "bytes": 7265
+     "eol": "lf",
+     "blob_sha256": "de2da09e3e84fb8d73ab2c865634a54c6bc274baa2c32aeb17683a2c64cd62e5",
+     "blob_bytes": 7265
     },
     {
      "path": "projects/example/input/actions.json",
-     "sha256": "377fd4ebc3225ac647c0dbde66715a3634943efb1d5a54070898489f21e5e8a1",
-     "bytes": 291
+     "eol": "lf",
+     "blob_sha256": "377fd4ebc3225ac647c0dbde66715a3634943efb1d5a54070898489f21e5e8a1",
+     "blob_bytes": 291
     },
     {
      "path": "projects/example/input/profiles/arcade.json",
-     "sha256": "d667846a86759ca4674579ab0225af2917f398228cf4184963b4517ffb359928",
-     "bytes": 229
+     "eol": "lf",
+     "blob_sha256": "d667846a86759ca4674579ab0225af2917f398228cf4184963b4517ffb359928",
+     "blob_bytes": 229
     },
     {
      "path": "projects/example/input/profiles/gamepad.json",
-     "sha256": "02a24ceb322ae027ff3fa19778a706414a7605d7824c5cdef4fe1893897f8c42",
-     "bytes": 229
+     "eol": "lf",
+     "blob_sha256": "02a24ceb322ae027ff3fa19778a706414a7605d7824c5cdef4fe1893897f8c42",
+     "blob_bytes": 229
     },
     {
      "path": "projects/example/input/profiles/keyboard.json",
-     "sha256": "d7f7289fe3200785e9ad593198e317d5b7190caf64e6cd35a5ebf2efce146639",
-     "bytes": 193
+     "eol": "lf",
+     "blob_sha256": "d7f7289fe3200785e9ad593198e317d5b7190caf64e6cd35a5ebf2efce146639",
+     "blob_bytes": 193
     },
     {
      "path": "projects/example/input/profiles/touch.json",
-     "sha256": "d9f4a6140fcf117eda1efd5f9b2751940cd0fd412d1a769cf8bdc68d92cdc6cf",
-     "bytes": 241
+     "eol": "lf",
+     "blob_sha256": "d9f4a6140fcf117eda1efd5f9b2751940cd0fd412d1a769cf8bdc68d92cdc6cf",
+     "blob_bytes": 241
     },
     {
      "path": "projects/example/materials/depth_fade.material.json",
-     "sha256": "9fc65f7c26d3e92804e78fd0da2994e95a822c33f679e0fd89245abbe9ac2d8c",
-     "bytes": 233
+     "eol": "lf",
+     "blob_sha256": "9fc65f7c26d3e92804e78fd0da2994e95a822c33f679e0fd89245abbe9ac2d8c",
+     "blob_bytes": 233
     },
     {
      "path": "projects/example/materials/openpbr_coat.material.json",
-     "sha256": "0cf64cf6484d54c191188abd8fcf7dbc73e28fcfe2684cdc14b8a82cd616fc17",
-     "bytes": 1089
+     "eol": "lf",
+     "blob_sha256": "0cf64cf6484d54c191188abd8fcf7dbc73e28fcfe2684cdc14b8a82cd616fc17",
+     "blob_bytes": 1089
     },
     {
      "path": "projects/example/materials/refract.material.json",
-     "sha256": "018242c27b526fcb02581a0e2cc249a39b88b55b3ada288ec3355686939ecc86",
-     "bytes": 226
+     "eol": "lf",
+     "blob_sha256": "018242c27b526fcb02581a0e2cc249a39b88b55b3ada288ec3355686939ecc86",
+     "blob_bytes": 226
     },
     {
      "path": "projects/example/materials/toon.material.json",
-     "sha256": "a781237e44fe2b90a4a129df79e60fc581e3096b24b328fbf3f71ac287f3ef61",
-     "bytes": 231
+     "eol": "lf",
+     "blob_sha256": "a781237e44fe2b90a4a129df79e60fc581e3096b24b328fbf3f71ac287f3ef61",
+     "blob_bytes": 231
     },
     {
      "path": "projects/example/passes/example_renderingpass_data.json",
-     "sha256": "2b16430aa67d4cd920c9dd343f155931514a7070e10dbe66144edcb6e84791d8",
-     "bytes": 2229
+     "eol": "lf",
+     "blob_sha256": "2b16430aa67d4cd920c9dd343f155931514a7070e10dbe66144edcb6e84791d8",
+     "blob_bytes": 2229
     },
     {
      "path": "projects/example/passes/main_rendering_config.json",
-     "sha256": "e663b303ac68cb416855830890598b2847f3b0210c201e1012b16c16080a3591",
-     "bytes": 13285
+     "eol": "lf",
+     "blob_sha256": "e663b303ac68cb416855830890598b2847f3b0210c201e1012b16c16080a3591",
+     "blob_bytes": 13285
     },
     {
      "path": "projects/example/project.json",
-     "sha256": "7e20874063190d9e28d290ac6f6094ecf223b5cddec66b4e40b7df06ef206014",
-     "bytes": 1141
+     "eol": "lf",
+     "blob_sha256": "7e20874063190d9e28d290ac6f6094ecf223b5cddec66b4e40b7df06ef206014",
+     "blob_bytes": 1141
     },
     {
      "path": "projects/example/scenes/main.scene.json",
-     "sha256": "7d29c6d2bd2af49748656ad801465e72e882c5c4dd780e245fac6d2f02a62613",
-     "bytes": 26278
+     "eol": "lf",
+     "blob_sha256": "7d29c6d2bd2af49748656ad801465e72e882c5c4dd780e245fac6d2f02a62613",
+     "blob_bytes": 26278
     },
     {
      "path": "projects/example/shaders/depth_fade.surface",
-     "sha256": "bd268ac4de8a5399537112e9d2afc998efc81a00e0da3b65eb28c01cb201f541",
-     "bytes": 761
+     "eol": "lf",
+     "blob_sha256": "bd268ac4de8a5399537112e9d2afc998efc81a00e0da3b65eb28c01cb201f541",
+     "blob_bytes": 761
     },
     {
      "path": "projects/example/shaders/refract.surface",
-     "sha256": "e85ac49fa9d58f816ee4a1bb593e50173e875876dc26f38f3e6521d3a62ad4f1",
-     "bytes": 607
+     "eol": "lf",
+     "blob_sha256": "e85ac49fa9d58f816ee4a1bb593e50173e875876dc26f38f3e6521d3a62ad4f1",
+     "blob_bytes": 607
     },
     {
      "path": "projects/example/shaders/toon.surface",
-     "sha256": "73089bde8923ca7518c6e0214f3a6133267ddf483dec212ec19ad66883067cd4",
-     "bytes": 1031
+     "eol": "lf",
+     "blob_sha256": "73089bde8923ca7518c6e0214f3a6133267ddf483dec212ec19ad66883067cd4",
+     "blob_bytes": 1031
     },
     {
      "path": "projects/example/ui/ui_overlay.json",
-     "sha256": "5b05bebfd4e5f09f2b56b6e457d743b14ba79668c85e1ae5b6e3b1ba145440b3",
-     "bytes": 997
+     "eol": "lf",
+     "blob_sha256": "5b05bebfd4e5f09f2b56b6e457d743b14ba79668c85e1ae5b6e3b1ba145440b3",
+     "blob_bytes": 997
     }
    ]
   },
@@ -223,78 +265,93 @@
    "files": [
     {
      "path": "projects/sprite_demo/README.md",
-     "sha256": "a5c2019fa35ed4595f525143a02592d9f46aca0d4ad67156f3cca24e1f64ad52",
-     "bytes": 916
+     "eol": "lf",
+     "blob_sha256": "a5c2019fa35ed4595f525143a02592d9f46aca0d4ad67156f3cca24e1f64ad52",
+     "blob_bytes": 916
     },
     {
      "path": "projects/sprite_demo/assets.json",
-     "sha256": "a64f7399637a12faa106495b04bba5c36227850694c80f6c9cfe3a719baff8d9",
-     "bytes": 173
+     "eol": "lf",
+     "blob_sha256": "a64f7399637a12faa106495b04bba5c36227850694c80f6c9cfe3a719baff8d9",
+     "blob_bytes": 173
     },
     {
      "path": "projects/sprite_demo/assets/demo.atlas.json",
-     "sha256": "711f8bc005792e8a5d13930363950b718c7013fada63495570fc6f9ee9a6ff60",
-     "bytes": 268
+     "eol": "lf",
+     "blob_sha256": "711f8bc005792e8a5d13930363950b718c7013fada63495570fc6f9ee9a6ff60",
+     "blob_bytes": 268
     },
     {
      "path": "projects/sprite_demo/assets/demo.png",
-     "sha256": "f865102680a5f85cbbdb9e0d3c1ecd6d2ab44df09456c100f25caadb16ca9a53",
-     "bytes": 189
+     "eol": "binary",
+     "blob_sha256": "f865102680a5f85cbbdb9e0d3c1ecd6d2ab44df09456c100f25caadb16ca9a53",
+     "blob_bytes": 189
     },
     {
      "path": "projects/sprite_demo/catalog_smoke.json",
-     "sha256": "d12c61f00b6d334f542ab2b9b70ef431edf6dc82234824352a839bda6193ed51",
-     "bytes": 132
+     "eol": "lf",
+     "blob_sha256": "d12c61f00b6d334f542ab2b9b70ef431edf6dc82234824352a839bda6193ed51",
+     "blob_bytes": 132
     },
     {
      "path": "projects/sprite_demo/code/CMakeLists.txt",
-     "sha256": "b8c450944c16f241e67c57e607a7f8d778ad99b432bbf15f5bba881bda5ef500",
-     "bytes": 40
+     "eol": "lf",
+     "blob_sha256": "b8c450944c16f241e67c57e607a7f8d778ad99b432bbf15f5bba881bda5ef500",
+     "blob_bytes": 40
     },
     {
      "path": "projects/sprite_demo/code/flipbook_demo.cpp",
-     "sha256": "f8dfcee09ebfcfb89f6b57982ce1c3f157f4d2fc8a7ef8d3dcc3850ffdb818ef",
-     "bytes": 4159
+     "eol": "lf",
+     "blob_sha256": "f8dfcee09ebfcfb89f6b57982ce1c3f157f4d2fc8a7ef8d3dcc3850ffdb818ef",
+     "blob_bytes": 4159
     },
     {
      "path": "projects/sprite_demo/input/actions.json",
-     "sha256": "28f4415436c9d7cfac0bd3d591043dac66c0c4c3432e9f7c8e7014950a8ae64f",
-     "bytes": 231
+     "eol": "lf",
+     "blob_sha256": "28f4415436c9d7cfac0bd3d591043dac66c0c4c3432e9f7c8e7014950a8ae64f",
+     "blob_bytes": 231
     },
     {
      "path": "projects/sprite_demo/input/keyboard.json",
-     "sha256": "d7f7289fe3200785e9ad593198e317d5b7190caf64e6cd35a5ebf2efce146639",
-     "bytes": 193
+     "eol": "lf",
+     "blob_sha256": "d7f7289fe3200785e9ad593198e317d5b7190caf64e6cd35a5ebf2efce146639",
+     "blob_bytes": 193
     },
     {
      "path": "projects/sprite_demo/passes/main.json",
-     "sha256": "4b4379df79b3db7077ff8881a209d8acee0cd7c45dbe3d773217b21c06a4b29c",
-     "bytes": 1765
+     "eol": "lf",
+     "blob_sha256": "4b4379df79b3db7077ff8881a209d8acee0cd7c45dbe3d773217b21c06a4b29c",
+     "blob_bytes": 1765
     },
     {
      "path": "projects/sprite_demo/project.json",
-     "sha256": "4e48698400b19125c5722a81414464cfe97e8bf77cc5d0ecf9d936b140be290c",
-     "bytes": 962
+     "eol": "lf",
+     "blob_sha256": "4e48698400b19125c5722a81414464cfe97e8bf77cc5d0ecf9d936b140be290c",
+     "blob_bytes": 962
     },
     {
      "path": "projects/sprite_demo/scene.json",
-     "sha256": "744e9781b0c88835e0f6d676f09a3386a5c80166d73daf79247408a53f87498e",
-     "bytes": 2293
+     "eol": "lf",
+     "blob_sha256": "744e9781b0c88835e0f6d676f09a3386a5c80166d73daf79247408a53f87498e",
+     "blob_bytes": 2293
     },
     {
      "path": "projects/sprite_demo/shaders/fullscreen.vert",
-     "sha256": "4951389917a00d621d709b622b61f1767647f4bf3dc93a6567719e3d23f2177e",
-     "bytes": 153
+     "eol": "lf",
+     "blob_sha256": "4951389917a00d621d709b622b61f1767647f4bf3dc93a6567719e3d23f2177e",
+     "blob_bytes": 153
     },
     {
      "path": "projects/sprite_demo/shaders/white.frag",
-     "sha256": "eabee221bb1d93180103484923a815c3db8b8939d502bb41e6fd4a12c6c9fd98",
-     "bytes": 84
+     "eol": "lf",
+     "blob_sha256": "eabee221bb1d93180103484923a815c3db8b8939d502bb41e6fd4a12c6c9fd98",
+     "blob_bytes": 84
     },
     {
      "path": "projects/sprite_demo/ui/ui.json",
-     "sha256": "16b7e0133f18b651b8d2f1e6577b3bf30c77b53f1a3e17804eab83c494c4faef",
-     "bytes": 86
+     "eol": "lf",
+     "blob_sha256": "16b7e0133f18b651b8d2f1e6577b3bf30c77b53f1a3e17804eab83c494c4faef",
+     "blob_bytes": 86
     }
    ]
   },
@@ -303,98 +360,117 @@
    "files": [
     {
      "path": "projects/vrm_xr_demo/README.md",
-     "sha256": "e7d449fbc0c8532b6f69052bd6d7959108e00fd5874ae68e34106beac7e5a05d",
-     "bytes": 2537
+     "eol": "lf",
+     "blob_sha256": "e7d449fbc0c8532b6f69052bd6d7959108e00fd5874ae68e34106beac7e5a05d",
+     "blob_bytes": 2537
     },
     {
      "path": "projects/vrm_xr_demo/assets/asset_data.json",
-     "sha256": "93037669cd8512e80a64f8e9ec62a609b48fb69724e9f393bbe1bbb7d10c8878",
-     "bytes": 197
+     "eol": "lf",
+     "blob_sha256": "93037669cd8512e80a64f8e9ec62a609b48fb69724e9f393bbe1bbb7d10c8878",
+     "blob_bytes": 197
     },
     {
      "path": "projects/vrm_xr_demo/assets/ground.glb",
-     "sha256": "d84c3de963c7e9c274f4aadd5f4539a1fb3098e6566551ea9016cbe2fbd7915b",
-     "bytes": 1948
+     "eol": "binary",
+     "blob_sha256": "d84c3de963c7e9c274f4aadd5f4539a1fb3098e6566551ea9016cbe2fbd7915b",
+     "blob_bytes": 1948
     },
     {
      "path": "projects/vrm_xr_demo/assets/vrm_xr_character.vrm",
-     "sha256": "a6dff2f234853ec550bbdd9b0db88309104d948c042c77a205ea7f3de20fde47",
-     "bytes": 8156
+     "eol": "binary",
+     "blob_sha256": "a6dff2f234853ec550bbdd9b0db88309104d948c042c77a205ea7f3de20fde47",
+     "blob_bytes": 8156
     },
     {
      "path": "projects/vrm_xr_demo/catalog_smoke.json",
-     "sha256": "4eeaf6504f16679dad33c8ce4bb76c314f54e975498fa559a3c1e5042fb0f959",
-     "bytes": 247
+     "eol": "lf",
+     "blob_sha256": "4eeaf6504f16679dad33c8ce4bb76c314f54e975498fa559a3c1e5042fb0f959",
+     "blob_bytes": 247
     },
     {
      "path": "projects/vrm_xr_demo/code/CMakeLists.txt",
-     "sha256": "14c0b45d33b692862c97ed12ae19fa3074f1b1e05fe7ec1460a0ce2813830c97",
-     "bytes": 36
+     "eol": "lf",
+     "blob_sha256": "14c0b45d33b692862c97ed12ae19fa3074f1b1e05fe7ec1460a0ce2813830c97",
+     "blob_bytes": 36
     },
     {
      "path": "projects/vrm_xr_demo/code/vrmxrdemo.cpp",
-     "sha256": "d73dee752243c92a48b8b354b33becd69181450e38fa8d1329f32045e5ee9fa5",
-     "bytes": 8921
+     "eol": "lf",
+     "blob_sha256": "d73dee752243c92a48b8b354b33becd69181450e38fa8d1329f32045e5ee9fa5",
+     "blob_bytes": 8921
     },
     {
      "path": "projects/vrm_xr_demo/input/actions.json",
-     "sha256": "7becdaca22d492a8e30834c75801f58712e66e6b418e5ec24db9cca65ccfcfee",
-     "bytes": 525
+     "eol": "lf",
+     "blob_sha256": "7becdaca22d492a8e30834c75801f58712e66e6b418e5ec24db9cca65ccfcfee",
+     "blob_bytes": 525
     },
     {
      "path": "projects/vrm_xr_demo/input/gamepad.json",
-     "sha256": "a691937428af9209d54d1c224cb555937b1a7a40419743d7a682e752b746cb58",
-     "bytes": 373
+     "eol": "lf",
+     "blob_sha256": "a691937428af9209d54d1c224cb555937b1a7a40419743d7a682e752b746cb58",
+     "blob_bytes": 373
     },
     {
      "path": "projects/vrm_xr_demo/input/keyboard.json",
-     "sha256": "69b6c5ff53dee5216407850af7b2134822e49f978ef262b9f9622354ad5f5c04",
-     "bytes": 297
+     "eol": "lf",
+     "blob_sha256": "69b6c5ff53dee5216407850af7b2134822e49f978ef262b9f9622354ad5f5c04",
+     "blob_bytes": 297
     },
     {
      "path": "projects/vrm_xr_demo/input/touch.json",
-     "sha256": "766cd59bcbcd563f3739ba101ddd40f85464448e7c05a77f81dce668af08b48c",
-     "bytes": 711
+     "eol": "lf",
+     "blob_sha256": "766cd59bcbcd563f3739ba101ddd40f85464448e7c05a77f81dce668af08b48c",
+     "blob_bytes": 711
     },
     {
      "path": "projects/vrm_xr_demo/movement.anim_graph.json",
-     "sha256": "62ec575dee0d7e85e3c733c401642f91505bf1b0a5fac0078d70d775c0e6c5a7",
-     "bytes": 974
+     "eol": "lf",
+     "blob_sha256": "62ec575dee0d7e85e3c733c401642f91505bf1b0a5fac0078d70d775c0e6c5a7",
+     "blob_bytes": 974
     },
     {
      "path": "projects/vrm_xr_demo/passes/main.json",
-     "sha256": "9f9ca8604f17468b19758f6d8a58500d22ba766c41c7091c03e14090dc38b2d0",
-     "bytes": 1597
+     "eol": "lf",
+     "blob_sha256": "9f9ca8604f17468b19758f6d8a58500d22ba766c41c7091c03e14090dc38b2d0",
+     "blob_bytes": 1597
     },
     {
      "path": "projects/vrm_xr_demo/project.json",
-     "sha256": "a2d521e20320257115eec6a8e03dbf85af069cec8571d7338478d2e1d7c95be6",
-     "bytes": 858
+     "eol": "lf",
+     "blob_sha256": "a2d521e20320257115eec6a8e03dbf85af069cec8571d7338478d2e1d7c95be6",
+     "blob_bytes": 858
     },
     {
      "path": "projects/vrm_xr_demo/scene.json",
-     "sha256": "c9b175d6f3ff6bf61ec6f3c80882b0a50ae2f7ef9fb271c7f40d4124ee783271",
-     "bytes": 895
+     "eol": "lf",
+     "blob_sha256": "c9b175d6f3ff6bf61ec6f3c80882b0a50ae2f7ef9fb271c7f40d4124ee783271",
+     "blob_bytes": 895
     },
     {
      "path": "projects/vrm_xr_demo/screenshot.png",
-     "sha256": "451d38064b94139c05eb04ec0729f7a36a6488c43cfb569bc67e26ed627147e9",
-     "bytes": 3290
+     "eol": "binary",
+     "blob_sha256": "451d38064b94139c05eb04ec0729f7a36a6488c43cfb569bc67e26ed627147e9",
+     "blob_bytes": 3290
     },
     {
      "path": "projects/vrm_xr_demo/shaders/fullscreen.vert",
-     "sha256": "4951389917a00d621d709b622b61f1767647f4bf3dc93a6567719e3d23f2177e",
-     "bytes": 153
+     "eol": "lf",
+     "blob_sha256": "4951389917a00d621d709b622b61f1767647f4bf3dc93a6567719e3d23f2177e",
+     "blob_bytes": 153
     },
     {
      "path": "projects/vrm_xr_demo/shaders/white.frag",
-     "sha256": "eabee221bb1d93180103484923a815c3db8b8939d502bb41e6fd4a12c6c9fd98",
-     "bytes": 84
+     "eol": "lf",
+     "blob_sha256": "eabee221bb1d93180103484923a815c3db8b8939d502bb41e6fd4a12c6c9fd98",
+     "blob_bytes": 84
     },
     {
      "path": "projects/vrm_xr_demo/ui/empty.json",
-     "sha256": "16b7e0133f18b651b8d2f1e6577b3bf30c77b53f1a3e17804eab83c494c4faef",
-     "bytes": 86
+     "eol": "lf",
+     "blob_sha256": "16b7e0133f18b651b8d2f1e6577b3bf30c77b53f1a3e17804eab83c494c4faef",
+     "blob_bytes": 86
     }
    ]
   }
