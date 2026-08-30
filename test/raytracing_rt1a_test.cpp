@@ -21,7 +21,6 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
-#include <ranges>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -66,36 +65,92 @@ std::string sha256(std::string_view bytes) {
     return picosha2::hash256_hex_string(begin, begin + bytes.size());
 }
 
-void appendLittleEndianU64(std::vector<unsigned char> &bytes,
-                           std::uint64_t value) {
-    for (unsigned shift = 0; shift < 64; shift += 8) {
-        bytes.push_back(static_cast<unsigned char>(value >> shift));
+struct ParentManifestMismatch {
+    std::string path;
+    std::string field;
+    std::string detail;
+};
+
+std::vector<unsigned char> normalizeCrLfToLf(
+    std::span<const unsigned char> bytes) {
+    std::vector<unsigned char> normalized;
+    normalized.reserve(bytes.size());
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        if (bytes[index] == 0x0d && index + 1 < bytes.size() &&
+            bytes[index + 1] == 0x0a) {
+            continue;
+        }
+        normalized.push_back(bytes[index]);
     }
+    return normalized;
 }
 
-std::pair<std::size_t, std::string> canonicalTreeSha256(
+std::vector<ParentManifestMismatch> checkParentManifest(
+    const nlohmann::json &manifest,
     const std::filesystem::path &root) {
-    std::vector<std::filesystem::path> paths;
-    for (const auto &entry :
-         std::filesystem::recursive_directory_iterator(root)) {
-        if (entry.is_regular_file()) paths.push_back(entry.path());
+    std::vector<ParentManifestMismatch> mismatches;
+    for (const auto &project : manifest.at("projects")) {
+        for (const auto &entry : project.at("files")) {
+            const auto relative = entry.at("path").get<std::string>();
+            std::vector<unsigned char> contents;
+            try {
+                contents = readBytes(root / relative);
+            } catch (const std::exception &error) {
+                mismatches.push_back(
+                    {relative, "file", error.what()});
+                continue;
+            }
+
+            const auto eol = entry.at("eol").get<std::string>();
+            if (eol == "lf") {
+                contents = normalizeCrLfToLf(contents);
+            } else if (eol != "binary") {
+                mismatches.push_back({
+                    relative,
+                    "eol",
+                    "unsupported manifest value " + eol,
+                });
+                continue;
+            }
+
+            const auto expected_size =
+                entry.at("blob_bytes").get<std::uint64_t>();
+            const auto actual_size =
+                static_cast<std::uint64_t>(contents.size());
+            if (actual_size != expected_size) {
+                mismatches.push_back({
+                    relative,
+                    "blob_bytes",
+                    "expected " + std::to_string(expected_size) +
+                        ", got " + std::to_string(actual_size),
+                });
+            }
+
+            const auto expected_digest =
+                entry.at("blob_sha256").get<std::string>();
+            const auto actual_digest = sha256(
+                std::span<const unsigned char>{contents});
+            if (actual_digest != expected_digest) {
+                mismatches.push_back({
+                    relative,
+                    "blob_sha256",
+                    "expected " + expected_digest + ", got " +
+                        actual_digest,
+                });
+            }
+        }
     }
-    std::ranges::sort(paths, [&](const auto &left, const auto &right) {
-        return std::filesystem::relative(left, root).generic_string() <
-               std::filesystem::relative(right, root).generic_string();
-    });
-    std::vector<unsigned char> canonical;
-    for (const auto &path : paths) {
-        const auto relative =
-            std::filesystem::relative(path, root).generic_string();
-        const auto contents = readBytes(path);
-        appendLittleEndianU64(canonical, relative.size());
-        canonical.insert(canonical.end(), relative.begin(), relative.end());
-        appendLittleEndianU64(canonical, contents.size());
-        canonical.insert(canonical.end(), contents.begin(), contents.end());
+    return mismatches;
+}
+
+std::string describeParentManifestMismatches(
+    std::span<const ParentManifestMismatch> mismatches) {
+    std::string description;
+    for (const auto &mismatch : mismatches) {
+        description += "\n" + mismatch.path + " [" +
+                       mismatch.field + "]: " + mismatch.detail;
     }
-    return {paths.size(),
-            sha256(std::span<const unsigned char>{canonical})};
+    return description;
 }
 
 nlohmann::json currentRtFramePlanProjection() {
@@ -401,11 +456,19 @@ RayTracingRuntimeFacts generousFacts() {
 TEST_CASE(
     "WP364 immutable parent fixtures remain byte exact",
     "[ray-tracing][rt1a][parent-baseline]") {
-    const auto fixture = readJson(
-        sourceRoot() / "test" / "fixtures" / "wp364" /
-        "parent_baseline.json");
+    const auto fixture_directory =
+        sourceRoot() / "test" / "fixtures" / "wp364";
+    const auto fixture =
+        readJson(fixture_directory / "parent_baseline.json");
+    const auto parent_manifest =
+        readJson(fixture_directory / "parent_manifest.json");
     CHECK(fixture.at("source_commit") ==
           "d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72");
+    REQUIRE(parent_manifest.at("schema") ==
+            "pelican.wp364.parent_manifest");
+    REQUIRE(parent_manifest.at("version") == 3);
+    CHECK(parent_manifest.at("source_commit") ==
+          fixture.at("source_commit"));
 
     SECTION("embedded SPIR-V hashes are the compiler-OFF oracle") {
         for (const auto &[name, expected] :
@@ -477,15 +540,36 @@ TEST_CASE(
         }
     }
 
-    SECTION("shipping project bytes are a separate non-RT regression gate") {
-        for (const auto &[name, expected] :
-             fixture.at("shipping_project_tree_sha256").items()) {
-            const auto [file_count, digest] = canonicalTreeSha256(
-                sourceRoot() / "projects" / name);
-            CAPTURE(name, file_count, digest);
-            CHECK(file_count == expected.at("file_count"));
-            CHECK(digest == expected.at("sha256").get<std::string>());
-        }
+    SECTION("manifest-listed shipping project bytes remain exact") {
+        const auto mismatches =
+            checkParentManifest(parent_manifest, sourceRoot());
+        INFO(describeParentManifestMismatches(mismatches));
+        CHECK(mismatches.empty());
+    }
+
+    SECTION("a tampered manifest digest is rejected") {
+        auto tampered_manifest = parent_manifest;
+        auto &projects = tampered_manifest.at("projects");
+        REQUIRE_FALSE(projects.empty());
+        auto &files = projects.begin().value().at("files");
+        REQUIRE_FALSE(files.empty());
+        auto &entry = files.at(0);
+        const auto relative = entry.at("path").get<std::string>();
+        auto tampered_digest =
+            entry.at("blob_sha256").get<std::string>();
+        REQUIRE_FALSE(tampered_digest.empty());
+        tampered_digest.front() =
+            tampered_digest.front() == '0' ? '1' : '0';
+        entry["blob_sha256"] = tampered_digest;
+
+        const auto mismatches =
+            checkParentManifest(tampered_manifest, sourceRoot());
+        CHECK(std::any_of(
+            mismatches.begin(), mismatches.end(),
+            [&](const auto &mismatch) {
+                return mismatch.path == relative &&
+                       mismatch.field == "blob_sha256";
+            }));
     }
 
     SECTION("representative existing GPU goldens are immutable bytes") {
