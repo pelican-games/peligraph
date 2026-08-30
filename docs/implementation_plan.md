@@ -15699,3 +15699,92 @@ AS の宣言面(RT3)/ callable・動的 record(RT4)/ 変形 geometry(RT5)/
 offline bake(RT-bake として別起票)。
 
 依存: WP364 + WP364a。
+
+#### WP365 仕様レビュー(v1、不合格・10 件)と分割
+
+10 件のうち #2(q の全順序)と #4(overlay が production の `g(q)`/`data(q)` を
+解決できない)は同じ根に届いている: **TLAS の row に identity が無い**。
+object 名は optional で重複検査も名前付きにしか効かず、1 model component が
+複数 primitive を生み、AS snapshot は asset・geometry allocation・transform しか
+持たず authoring 由来を運んでいない。これは layout 以前の配管であり、
+**WP365(row identity)と WP366(layout + SBT + ABI)に分割**する。
+一体で仕様レビューする。**全件「直す」。台帳送りは #6 末尾の 1 件のみ**
+(RT1a の「GPU golden」テストが production renderer を走らせず既存画像 hash と
+`fill_byte` の CPU vector で代用している件 —— WP364a で連鎖打ち切り済みのため
+台帳に負債として記録し、**WP366 の受け入れで実 renderer の A/B 対照を新設**して
+実質的に閉じる)。
+
+| # | v1 の壊れた点 | v2 の答え(行き先) |
+|---|---|---|
+| 1 | sentinel を `(q,r)` ごとに一意にする条件が `data(q)`(r 非依存)契約と矛盾 | WP366: sentinel は **q ごとに一意・全 r で複製**。`r` は hit shader の compile-time ray-type marker、`g` は group ごとの shader marker で識別。TLAS base を誤値に差し替える否定対照 |
+| 2 | q の正準順が全順序でない(名前 optional / 複数 primitive / merged 順は宣言順) | **WP365**: row key を明記(下記) |
+| 3 | `H[p,g,r]`・miss・record member の wire grammar が無い | WP366: layout に typed record member schema、task に `traced_ray_types` と named miss table と `group×ray_type→shader` mapping。未充填 slot の bytes と到達不能性の規則も |
+| 4 | overlay が production の `g(q)`/`data(q)` を決められない(provenance 不在) | **WP365**: scene→ECS→ModelInstance→DrawItem→TLAS row に stable provenance を運ぶ。overlay の grammar と解決は WP366 |
+| 5 | 共同 transaction に単一 publication 点が無い(pipeline/SBT は config 世代、TLAS は後続 frame) | WP366: **cache は content-addressed append-only として transaction 対象外**と明記 / transaction 対象 = layout digest + shader bundles + pipeline objects + **完全な SBT** + row snapshot + TLAS / **二段 commit**(新世代は TLAS submission 成功まで非公開)/ compile 後・pipeline 後・SBT 後・AS record 後・submit の各 failure point で active generation を観測 |
+| 6 | 分岐点が preset resolver の許可 key 外 / 親版 baseline に SBT bytes が無く GPU golden も実 renderer 不使用 | WP366: **root authored document を最初に一度だけ parse して presence を typed sidecar として抽出**(位置を固定)。layout 不在は既存 resolver をそのまま。sidecar は flat/xr/preview 全経路へ。**固定 fake handle による純 pack baseline + production 分岐 observer + 実 renderer の同一 run A/B 対照**を新設(RT1a の golden 代用は台帳に負債として記録) |
+| 7 | 生成 include の production 配線・cache invalidation・reload・明示 .spv が閉じていない | WP366: **layout digest を生成 virtual source の salt に必ず含める**(group 並べ替え・whitespace のみの変更でも cache key が変わる)/ RT task の virtual include 空化を解除する seam を名指し / **layout path を reload dependency に登録** / **layout 使用 × 明示 `.spv` は source-only named reject** |
+| 8 | 固定 operand と 24-bit の範囲検査が無い(stride=0/1 でも sentinel が通る) | WP366: 純 validator に **`sbtRecordStride == R`**・offset が宣言 ray type・missIndex が named miss table 内・**checked `q×R` と 24-bit 上限**・record count/byte size overflow。1-geometry fixture で誤 stride を named reject する負例必須 |
+| 9 | record ABI から一意の bytes を導けない(終端 padding・型集合) | WP366 に式を確定: `data_start = alignUp(handleSize, handleAlignment)` / `data_size = std430StructSize(members)` / **`record_byte_stride = alignUp(data_start + data_size, handleAlignment)`** / 終端 padding は 0。**型 whitelist v1 = `i32`/`u32`/`f32`/`vec2`/`vec3`/`vec4`**(8/16/64-bit と bool/enum/quat/string は v1 対象外・named reject。capability facts が要るため)。各型の GLSL/SPIR-V 型・JSON 表現・size/alignment を表で固定 |
+| 10 | 構成 matrix が規範より狭い | WP366: **「全 SBT」= active owner scope の flat + xr pipelines** と定義し、`PELICAN_WITH_OPENXR` ON/OFF を追加 / preview は layout sidecar を同じに読む(RT task 明示拒否ではない)/ ImGui ON/OFF・RT capability 不在・web 既存拒否も targeted matrix に |
+
+### WP365 v2: TLAS row の identity と provenance(layout の前提)
+
+**§4 規則 11 上段。仕様(WP366 と一体)+ コードレビュー。見積: 中〜大。**
+
+#### 範囲
+
+1. **row key の確定**(#2):
+   `row_key = { active_scene_id, object_ref, component_ref, mesh_index, primitive_index, node_index }`
+   - `object_ref` / `component_ref` は **永続参照**(名前ではない)。scene の
+     AuthoringObjectId 系ではなく、**ray-visible な object/component に stable ref を
+     要求**し、無いものは**名前付き拒否**(`ray_row_identity_unavailable@1`)。
+     プレファブ由来 component は WP361 の `stable_generated_id` を使う
+   - 正準順 = 上記 tuple の辞書順(**object 名・宣言順・draw inventory 順は使わない**)
+   - **q は active scene / TLAS ごと**(現行 runtime は同時に 1 scene。
+     複数 scene 同時 TLAS は RT6 で再訪、と明記)
+2. **provenance の運搬**(#4): scene → ECS → ModelInstance → DrawItem → TLAS row に
+   `row_key` を運ぶ。AS snapshot に row_key を保持し、**TLAS instance 列と 1:1**
+3. **q の採番**: row_key の正準順で 0 から連番。**24-bit 上限**の named 拒否
+   (`ray_row_count_limit@1`)。この時点では `instanceShaderBindingTableRecordOffset`
+   は 0 のまま(書き込みは WP366)
+4. **観測面**: RPC / PlanViewer に row 一覧(row_key と q)を露出
+   (G0 可読性の原則。後段のデバッグに必須)
+
+#### 受け入れ(§4 規約 10)
+
+- **順序非依存**: object の宣言順・component 順を入れ替えた同一 scene で、
+  row_key → q の割り当てと TLAS instance 列が完全一致
+- **名前なし object**: 名前を持たない ray-visible object を含む scene で、
+  q 採番が決定的(名前に依存しないことの証明)。stable ref を持てない場合は
+  named 拒否が観測される
+- **複数 primitive**: 1 model component が複数 primitive を持つ scene で、
+  primitive ごとに別 row・別 q(mesh/primitive/node index の効き)
+- **プレファブ instance**: prefab 由来 component の row_key が
+  `stable_generated_id` 由来で、undo/redo・前方挿入で不変(WP361 の identity 表と接続)
+- **row 集合の変更**: instance の追加・削除の前後で、**残った row の q が
+  正準順どおりに再採番**され、観測面がそれを示す
+- 出荷 4 project の bytes・golden・frame plan 不変(RT 未使用。親版 manifest で検証)
+- matrix: SKIP_DEVSTUDIO 両構成 / OPENXR ON/OFF / 全数 2 回 / GPU 直列は統合側
+
+#### やらないこと
+
+layout / SBT / record ABI / 生成 include / overlay の grammar と解決(全て WP366)。
+TLAS への record base 書き込み(WP366)。複数 scene 同時 TLAS(RT6)。
+
+### WP366: RT1b —— layout・SBT addressing・record ABI
+
+**WP365 に依存。§4 規則 11 上段。見積: 大。**
+範囲は v1 の WP365 節から row identity を除いた全部 + 上表の #1・#3・#5〜#10 の答え。
+**v1 節の「### WP365: RT1b」の記述は、row identity 部分を除き WP366 の仕様として
+読み替える**(layout 文法・生成 include・record ABI・充填宣言・共同 transaction・
+production TLAS が record base を書く・compiler OFF 裁定・旧 lowering の byte 保存)。
+
+追加で確定した事項は上表のとおり。とくに:
+- record ABI 式と型 whitelist v1(#9)
+- `sbtRecordStride == R` 等の範囲検査(#8)
+- 二段 commit と cache の transaction 除外(#5)
+- sidecar 抽出位置と実 renderer A/B 対照(#6)
+- layout digest の salt・reload 登録・明示 `.spv` 拒否(#7)
+- 「全 SBT」= flat + xr(#10)
+
+依存: WP365。
