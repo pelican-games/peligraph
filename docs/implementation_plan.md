@@ -15497,3 +15497,26 @@ golden/他 fixture に波及)。**採用**: manifest v3 が git の per-file eol
 (lf|binary)を持ち、テストは eol==lf を CRLF→LF 正規化してから hash、
 eol==binary は raw 比較。70 text + 5 binary。manifest は integrator が
 git blob + `git ls-files --eol` から機械生成(実装は再生成しない)。
+
+#### WP364(RT1a)完了(2026-08-30)
+
+本体 b1449f02 + fixture 修正 089b9ebe(+ manifest v3 と autocrlf 裁定 90e1bb81)。
+統合: 全数 **1450 ×2 緑**(GPU 直列込み・`PELICAN_TEST_PROJECTS_DIR` 付き)、
+doclink 2341 ok / 0 stale。基準値 N=1450(前 WP は 1432)。
+
+成立したもの: RT interface reflection(全 entry を
+`(execution model, entry 名)` キーで保持、occurrence が `(期待 stage, "main")` で選択)/
+常時ビルドの `rtspirvinspection`(SPIRV_LINK OFF でも生存)/ `OpTraceRayKHR` の
+operand 定数性 + payload 変数型による到達 group 検証 / triangles の hit attribute
+絶対規則 / `max_recursion`(facts 比較・1/1/2 の create-info 観測・reload 維持)/
+`RayTracingRuntimeFacts` + 純 validator + 4 配線 / CPU 参照オラクル(v3 の数値・
+演算列・丸め)+ sentinel。error code 10 種。
+出荷 4 project と既存 RT feature は bytes 不変(親版 fixture = 凍結 SHA d5ea0c5、
+per-file manifest v3 + eol 分類で検証)。
+
+統合中に閉じた 2 件(閉ループ内・連鎖に数えない): fixture の測定範囲欠陥
+(ディレクトリ走査 → 追跡ファイルの per-file manifest)/ autocrlf 裁定
+(「不変」= コミット blob。.gitattributes 全体変更は却下、eol 分類で正規化)。
+
+**§10 コードレビューの指摘は宣言どおり台帳のみ**(RT1a の連鎖はここで打ち切り)。
+次: 「引き継ぎ: 残 WP への先行裁定」節の作業順どおり **WP365(RT1b)の起票**。
