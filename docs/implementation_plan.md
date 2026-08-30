@@ -15371,3 +15371,98 @@ design_raytracing.md §7 に「callable data の検証は RT4 で」の note を
 2. **web matrix は本 WP では N/A**: web は別リポジトリ管轄で、`compute_tasks`
    の明示拒否(09_web.md)は既存のまま。本 WP は wire に新 field を足していない
    (max_recursion 省略時は frame plan 不変が受け入れ済み)。
+
+#### 引き継ぎ: 残 WP への先行裁定(2026-08-30、Fable → Opus)
+
+**目的**: 以降のオーケストレータが判断待ちで止まらないよう、予見できる分水嶺に
+先に裁定を下す。手順の判断はスキル codex-wp/orchestration.md の決定表が正。
+本節は**内容**の裁定。裁定を覆す場合は理由を本節の下に追記してから覆すこと。
+
+##### 現在地(この節を書いた時点)
+
+- HEAD 系譜: WP364(RT1a)マージ済み、統合で fixture 測定欠陥 1 件 →
+  per-file manifest(凍結 SHA d5ea0c5 由来)生成済み・テスト置き換えを
+  codex が実装中(worktree <作業ディレクトリ>/wp364fix)。**次の作業 = その回収 → 統合再走 →
+  §10 コードレビュー → 仕分け(修正パッケージは WP364a を 1 回だけ)**
+- 全数の基準値: 1450(統合 fixture 修正後に ±数件動く。「ちょうど N ×2」を毎回記録)
+
+##### 作業順(裁定)
+
+1. WP364 完結 → 2. **WP365 = RT1b** → 3. **WP363 の設計文書**(RT1b の実装中に
+   並行で書いてよい。ただし workspace-write の agent は同時 1 本まで —— 設計は
+   読み取りレビューなので並行可)→ 4. **RT2a** → 5. **RT2b** →
+   6. **WP363 実装** → 7. RT3 → 8. U2 → 9. R1 → 10. RT4/RT5 → …
+   利用者の指示が来たらそちらが優先。
+
+##### WP365(RT1b)の分水嶺と裁定
+
+- **layout の置き場所**: 独立ファイル(`pelican.ray_group_layout` schema)を
+  rendering config の新 key `ray_group_layout: "<path>"` で参照する。
+  preset/feature 合成の規則に巻き込まない
+- **layout 名の字句**: `^[A-Za-z0-9_]{1,64}$`(**hyphen 禁止** —— 生成 include の
+  マクロ名 `PELICAN_RAY_TYPE_<NAME>` / `PELICAN_MISS_<NAME>` に使えないため)。
+  生成 symbol の衝突は名前空間 prefix で防ぎ、同名 group/ray type は既存の
+  重複検査で拒否
+- **record ABI**: **std430 をそのまま採用**(独自規則を発明しない)。
+  data 開始 = handle サイズを `shaderGroupHandleAlignment` へ切上げ。
+  member は宣言順。vec3 は std430 どおり 16B 整列(禁止しない)。
+  正準化 JSON に offset/size 表を出力し、mirror test で固定
+- **`q` の正準順**: **object 名の辞書順**(scene 内一意は既存検証)→ 同一 object 内は
+  merged component 順。draw inventory 順・宣言順・AuthoringObjectId は使わない
+- **共同 transaction の所有**: renderer 側に layout generation を持たせ、
+  design v4 §11-1 の invalidation 列挙(layout digest / row 集合 / ABI)で
+  全再構築。部分更新経路は作らない
+- **compiler-OFF × layout**: named reject(design v4 §11-5 のとおり)。
+  offline bake は RT-bake として別起票(手を出さない)
+- 仕様レビューは 2 巡 + 決定差分の型。**RT1a の実績表(sentinel・observer・
+  純 validator)を対照の雛形として再利用**すること
+
+##### WP363(lifecycle 設計)の方向裁定(設計文書が採るべき骨格)
+
+3 本の失敗レビュー(WP361a §10 の 9 件 / WP361b の 7 件 / WP361b v2 の 7 件)が
+仕様の種。設計は最低限つぎを採用する(再発明しない):
+- identity plan は **final resolved scene から毎 execution 再構築**(undo/redo 含む)
+- destroy は**全 fallible 段の後の point of no return** でのみ onDestroy。
+  deferred queue は checkpoint。**ECS destroy token は publish 直前に
+  entity から chunk/row を再解決**(WP361b v2 の UB の根)
+- entity token は **optional**(light-only / collider-only / empty object)
+- runtime adapter は **current scene の変更にのみ**生成(authoring は全 scene 適用)
+- 文法は**単一 AST parser**(手前 whitelist 禁止)。`attachment_handle` は公開 CAS
+- seq 0 は sentinel にしない
+- 受け入れには「実 producer(inspectormodel / imgui inspector)が生成した request を
+  捕捉して通す」形を含める(手書き JSON の複製は producer テストにならない)
+
+##### RT2a の裁定(design v4 §11-6 の確認)
+
+- 範囲 = `.rahit` 語彙の全所同段 + typed triangle group + **record 定数ベース**の
+  subset any-hit + oracle。**material-alpha は含めない**(RT2b)
+- 語彙追加は wire 正本(pelican_project)→ core → PlanViewer/Studio を同段で。
+  D0: Studio は wire 経由のみ
+
+##### RT2b の分水嶺と裁定
+
+- **bindless の実装形**: geometry access(vertex/index)は **buffer device address**、
+  texture は **descriptor indexing の配列**(sampled image は BDA 不可)。
+  必要 capability が無い device は hard reject(RT 系の既定方針どおり)
+- overlay は path 所有の独立ファイル `pelican.ray_bindings@1`。
+  material 文書への直書きは禁止(purge 閉包のため)
+- 両車線 portable alpha profile はここで実装し、byte 一致契約はこの profile に
+  限定して再定義(design v4 §11-6)
+
+##### U2(プレファブ)着手時の注意
+
+- 一括流し込みの dry-run は **ResolvedScene の純 resolver 経路**をそのまま使う
+  (新しい検証経路を作らない —— 第二の流儀の禁止)
+- unpack の identity 断絶(gid 消滅)は WP361 v3 差分で契約済み。再設計しない
+
+##### R1 着手時の注意
+
+- WP354 の fixtures が等価オラクル。planner が typed PassDefinition を消費する形。
+  RT の compute_tasks parser に隣接するため **RT2b より後**に置いた(並行しない)
+
+##### 恒常の「やらない」
+
+- 完成宣言の早書き(最後の統合緑まで書かない。書くなら「保留」明記)
+- 打ち切り済み設計(prefab v4 / RT v4 / WP364 v3)への再レビュー起動
+- workspace-write agent の 2 本同時(read-only レビューとの並行は可)
+- 台帳・設計の normative example を parser に通さず追加すること
