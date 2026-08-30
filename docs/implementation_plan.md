@@ -15866,3 +15866,213 @@ scene 全域の ID 発明より遥かに小さい。
 - 実 renderer の A/B 対照(RT1a の golden 代用負債もここで返す)
 
 第 3 巡は **(A)(B) の転換が成立するかだけ**を検証する狭い巡とし、それで打ち切る。
+
+#### 第 3 巡(狭い検証)の結果と v4 決定 —— 仕様はここで確定
+
+**(A)(B) の転換は成立**(「壊せなかった項目」: tuple の単射性 / 編集跨ぎの q 安定性が
+不要であること / 同一 material の一様束縛 / layout 不在時の legacy 互換)。
+残る 4 件は未定義であり、以下で決定して**仕様レビューを打ち切る**。
+
+1. **row 順は publish 順から独立させる**(#1): TLAS 列位置は登録順の出力なので
+   key に使わない。**snapshot 内容から計算した sort key で q を採番し、その後で
+   TLAS を構築**する。sort key =
+   `(asset_identity, geometry_allocation_id, index_offset, vertex_offset,
+     material_ref, transform の正準 byte 表現)`。
+   全要素が一致する row は**あらゆる観測点で同一**(g・data も material_ref から
+   決まるため)なので、その中の順序は不問。受け入れは
+   **同じ論理 row 集合を逆の publish 順で本番経路から作り、row→q・TLAS・SBT data の
+   bytes 一致**
+2. **幾何的に一致する row の束縛不一致は名前付き拒否**(#2): 同じ primitive が
+   複数 material group に置かれると、同一 BLAS・同一 transform・同一 t の row が
+   複数でき、Vulkan はどちらを closest に採ってもよい(仕様上、同 t の候補は
+   採用・破棄いずれも合法)。よって
+   **`(geometry_allocation_id, index_offset, vertex_offset, transform)` が一致する
+   row 群は、解決後の `(g, data)` が全て等しくなければならない**。
+   違反は `ray_row_binding_ambiguous@1`(row の material_ref 一覧つき)。
+   production GPU 負例を受け入れに置く
+3. **material_ref の正本を定義する**(#3): `GlobalMaterialId`(再利用される runtime
+   slot)も glTF の `name`(optional・非一意)も**使わない**。正本は 2 branch:
+   - project material 文書由来: **文書 ref**(project 相対 path。既に
+     `projectmaterialasset` が保存している)
+   - model 埋め込み由来: **`(asset_identity, source_material_index)`**
+     (asset_identity は AS snapshot に既在、source_material_index は DrawItem に既在)
+   配管は「`source_material_index` と project 文書 ref を AS snapshot まで運ぶ」だけ。
+   reload 後の再解決はこの 2 branch のどちらかへ再び解決されること(handle 再利用に
+   依存しない)。受け入れ: handle 再利用・同名 material 二つ・project rebind
+4. **selector の一意性規則**(#4): canonical material 解決**後**に selector は一意。
+   重複は `ray_binding_selector_duplicate@1`、存在しない material への selector は
+   `ray_binding_selector_unresolved@1`(いずれも宣言順に依存しない)。
+   **束縛の無い row のみ** layout の default group。
+   受け入れ: 有効 selector が解決した `g/data` の実値検査 + 重複・typo の負例
+
+### WP366(確定版): RT1b —— layout・SBT addressing・record ABI・material 束縛
+
+**これが WP366 の唯一の仕様である。**(v1 の「### WP365: RT1b」節、第 1 巡表、
+v2、v3、上記 v4 決定は経緯として残すが、実装者は本節だけを読めばよい。
+矛盾したら本節が勝つ。)規範設計は docs/design_raytracing.md v4 の §3・§5・§7・§11。
+**§4 規則 11 上段。仕様レビュー打ち切り済み。コードレビューあり。見積: 大。**
+
+#### 1. 3 domain(design v4 §3)
+
+`g` = logical group / `r`,`R` = ray type index, count / `q` = scene record row /
+`H[p,g,r]` = pipeline の handle。
+**hit record index = `q×R + r`**、内容 = `H[p, g(q), r] ∥ data(q)`。
+**operand 固定**: `instanceShaderBindingTableRecordOffset = q×R` /
+`sbtRecordStride = R` / `sbtRecordOffset = r`。
+raygen へ公開するのは `ray_type_index` / `ray_type_count` / `miss_index` のみ
+(`g×R+r` と `q` は非公開)。`record_index_stride`(=R)と `record_byte_stride`
+(byte)は常に別名。**1 BLAS = 1 geometry は恒久制約**(`geometryIndex` 恒等 0、
+sentinel の検査対象から除外)。miss record は grid 外の独立配列。
+
+#### 2. wire(完全な文法。実装はこれに合わせる)
+
+**`pelican.ray_group_layout` v1**(独立ファイル。rendering config の
+`"ray_group_layout": "<path>"` で参照。preset 合成に巻き込まない。
+**presence は root authored document の一度きりの parse から typed sidecar として
+抽出**し、flat/xr/preview 全経路へ渡す):
+
+```json
+{ "schema": "pelican.ray_group_layout", "version": 1,
+  "ray_types": ["primary", "shadow"],
+  "default_group": "opaque",
+  "groups": [ { "name": "opaque" }, { "name": "foliage" } ],
+  "misses": [ { "name": "sky" }, { "name": "shadow_open" } ],
+  "record": [ { "name": "tint", "type": "vec4" },
+              { "name": "flags", "type": "u32" } ] }
+```
+
+- 名前の字句 `^[A-Za-z0-9_]{1,64}$`(**hyphen 禁止** —— 生成マクロ名に使えない)。
+  `ray_types` / `groups` / `misses` は非空・重複禁止。`default_group` は
+  `groups` に存在必須。`record` は空可。unknown field 拒否
+- **layout digest** = ファイル raw bytes の SHA-256
+
+**task 側**(現行 `ray_tracing` block の拡張。旧 3 field 形は layout 不在時のみ有効):
+
+```json
+{ "ray_tracing": {
+    "raygen": "project://shaders/pt",
+    "traced_ray_types": ["primary"],
+    "misses": { "sky": "project://shaders/pt_sky" },
+    "hit_shaders": { "primary": { "opaque": { "closesthit": "project://shaders/pt_hit" },
+                                  "foliage": { "closesthit": "project://shaders/pt_hit" } } } } }
+```
+
+- `traced_ray_types` ⊆ layout の `ray_types`。**その ray type × 全 group** の充填必須。
+  不足は task 名・group・ray type・available 一覧つきの名前付きエラー
+- `misses` の key は layout の `misses` 名。充填必須
+- **未充填 slot**(trace しない ray type の record)は
+  **`H` に有効な no-op group handle を置き data は 0 埋め**(未初期化 bytes を作らない)。
+  到達不能性は §4 の operand 検証(offset ∈ traced_ray_types)で保証
+
+**`pelican.ray_bindings@1`**(独立ファイル。config の `"ray_bindings": "<path>"`):
+
+```json
+{ "schema": "pelican.ray_bindings", "version": 1,
+  "bindings": [
+    { "material": { "document": "materials/leaf.mat.json" },
+      "group": "foliage", "record": { "tint": [0.2, 0.8, 0.2, 1.0], "flags": 1 } },
+    { "material": { "asset": "models/tree.glb", "source_material_index": 2 },
+      "group": "foliage", "record": { "tint": [0.3, 0.7, 0.3, 1.0], "flags": 1 } } ] }
+```
+
+- selector は **material のみ**(v4 決定 3 の 2 branch)。`document` と
+  `asset`+`source_material_index` は排他
+- `record` は layout の `record` member 名の**完全一致集合**(過不足・型不一致は
+  `ray_binding_record_invalid@1`)
+- 解決後の selector 重複 = `ray_binding_selector_duplicate@1` /
+  未解決 = `ray_binding_selector_unresolved@1` / 束縛の無い row のみ `default_group`
+
+#### 3. record ABI
+
+型 whitelist v1 = `i32` / `u32` / `f32` / `vec2` / `vec3` / `vec4`
+(他は `ray_record_type_unsupported@1`。8/16/64-bit・bool・enum・quat・string は
+capability facts が要るため v1 対象外)。
+
+| 型 | GLSL | size | alignment |
+|---|---|---|---|
+| i32 / u32 / f32 | int / uint / float | 4 | 4 |
+| vec2 | vec2 | 8 | 8 |
+| vec3 | vec3 | 12 | **16** |
+| vec4 | vec4 | 16 | 16 |
+
+- 配置は宣言順に std430。**例**: `[vec3 a, f32 b]` → `a@0(12B)`, `b@12`,
+  `data_size = 16`
+- `data_start = alignUp(shaderGroupHandleSize, shaderGroupHandleAlignment)`
+- `record_byte_stride = alignUp(data_start + data_size, shaderGroupHandleAlignment)`
+- **終端 padding と未充填 slot は 0 埋め**
+- offset/size 表を**正準化 JSON に出力**し mirror test で固定
+- `record_byte_stride > maxShaderGroupStride` は名前付き拒否
+  (RT1a で延期した fact をここで実装・使用)
+- **shader 側 ABI 一致を load 時 invariant に**: final SPIR-V の shader-record
+  storage の member 型・offset が canonical ABI と完全一致すること
+  (`rtspirvinspection` に shader-record storage の抽出を追加)。
+  shader 宣言だけを変えた負例で production pipeline が named reject されること
+
+#### 4. 検証(純 validator。RT1a の様式を継承)
+
+`sbtRecordStride == R` / `sbtRecordOffset` が `traced_ray_types` の index /
+`missIndex` が layout の `misses` 範囲 / **checked `q×R` と 24-bit 上限**
+(`ray_row_count_limit@1`)/ SBT record count・byte size の overflow。
+**1-geometry fixture で誤 stride(0 や 1)を named reject する負例が必須**
+(stride 項が恒等消滅するため sentinel では検出できない)。
+
+#### 5. row・q・束縛の解決
+
+- row は **material_ref を含む sort key**(v4 決定 1)で並べ、q を 0 から採番
+- 幾何一致 row の束縛不一致は `ray_row_binding_ambiguous@1`(v4 決定 2)
+- material_ref は v4 決定 3 の 2 branch。配管は `source_material_index` と
+  project 文書 ref を AS snapshot まで運ぶ
+
+#### 6. 共同 transaction(design v4 §11-1・第 1 巡 #5)
+
+- **対象** = layout digest + shader bundles + pipeline objects + **完全な SBT** +
+  row snapshot + TLAS。**shader cache は content-addressed append-only で対象外**
+- **二段 commit**: 新世代は **TLAS submission 成功まで非公開**
+- **invalidation 要因**: layout digest / bindings digest / row 集合 / record ABI
+- **「全 SBT」= active owner scope の flat + xr pipelines**
+- failure point: compile 後・pipeline 後・SBT 後・AS record 後・submit で
+  **active generation が旧世代のまま**であることを観測
+
+#### 7. 生成 include と cache
+
+- 生成 macro は `PELICAN_RAY_TYPE_<NAME>` と `PELICAN_MISS_<NAME>` のみ
+- **layout digest を生成 virtual source の salt に必ず含める**
+  (group 並べ替え・whitespace のみの変更でも cache key が変わること)
+- RT task の virtual include 空化を解除する seam を実装(現在 RT 経路は
+  意図的に空)。**layout path を reload dependency に登録**
+- **layout 使用 × 明示 `.spv` は source-only named reject**
+- **compiler OFF × layout 使用 project は named reject**。layout 不在 project は
+  compiler ON/OFF 両対応のまま
+
+#### 8. 受け入れ(§4 規約 10)
+
+- **旧 lowering の byte 保存**: layout 不在 project は frame plan・SBT bytes・
+  GPU 出力・cache key が RT1a 時点と一致(既存 `rt_shadow_mask_pipeline` が親版)
+- **publish 順非依存**: 同じ論理 row 集合を逆順で本番経路から作り bytes 一致
+- **sentinel**: 二 pipeline × 二 instance の production 配線で、**q ごとに一意な
+  data(全 r で複製)** を書き、`q×R` と `r` と miss index を復元。
+  `r` は hit shader の compile-time marker、`g` は group ごとの shader marker で識別。
+  **TLAS base を誤値に差し替える否定対照**
+- **束縛**: 有効 selector の `g/data` 実値 / 重複・未解決・record 過不足の負例 /
+  幾何一致 row の不一致拒否(production GPU)
+- **ABI**: 正準 JSON と実 SBT bytes の一致 / `vec3+f32` の offset / mirror test /
+  shader 宣言変更の named reject / stride 超過拒否
+- **transaction**: 5 failure point で旧世代維持 / cache が対象外であることの確認
+- **cache**: group 並べ替えのみ・whitespace のみで cache key と compile 回数が変わる。
+  RT include hookup を無効にすると落ちる
+- **実 renderer の A/B 対照**(RT1a の golden 代用負債をここで返す):
+  固定 fake handle の純 pack baseline + production 分岐 observer +
+  **実 renderer を同一 run で A/B**
+- 出荷 4 project の bytes・golden・frame plan 不変(RT 未使用。親版 manifest で検証)
+- matrix: SKIP_DEVSTUDIO 両 / SPIRV_LINK ON/OFF / compiler ON/OFF /
+  OPENXR ON/OFF / ImGui ON/OFF / RT capability 不在 / 全数 2 回 / GPU 直列は統合側
+
+#### 9. やらないこと
+
+per-instance 束縛(永続 authored identity の設計が入る段で再訪。RT3 の instance
+flags と同時)/ `.rahit`(RT2a)/ material ABI・bindless・両車線 alpha(RT2b)/
+AS 宣言面(RT3)/ callable・動的 record(RT4)/ 変形 geometry(RT5)/
+複数 geometry BLAS・indirect・AS graph node・複数 TLAS(RT6)/ 編集 RPC(RT7)/
+offline bake(RT-bake)。
+
+依存: WP364 + WP364a。**WP365 は廃止(挙動を変えない基盤 WP のため)。**
