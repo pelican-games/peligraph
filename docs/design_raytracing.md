@@ -123,7 +123,8 @@ reflection に storage class・構造 fingerprint・size・stage・entry point�
 - **絶対規則**: triangles hit group の hit attribute は `vec2`(f32×2)固定
   (intersection の無い group に独自 hit attribute を許さない)/
   procedural group は intersection の書く attribute と一致 + `maxRayHitAttributeSize`
-- incoming interface の個数制約
+- incoming interface の個数制約(種類ごとに 1 変数)
+- **callable data の検証は RT4(callable 解禁)と同段**(RT1a は payload / hit attribute まで)
 
 ## 8. 段(第 2 巡の分割線を採用)
 

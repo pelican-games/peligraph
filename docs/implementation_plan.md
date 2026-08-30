@@ -15291,3 +15291,25 @@ WP363 待ち」**と記録する。
 AS への変更一切。
 
 依存: なし(WP362 まで到達済みの HEAD)。
+
+#### WP364 仕様レビュー(v1、差し戻し・9 件)と v2
+
+v1 の受け入れ条件に Vulkan-invalid な試験(深さ 2 の miss 起動)と発火不能な負例
+(triangle-only での attribute size 超過)を書いていた。全件「直す」。
+**v2 は v1 との差分。矛盾したら v2 が優先。**第 2 巡を最終とする。
+
+| # | v1 の壊れた点 | v2 |
+|---|---|---|
+| 1 | 深さ 2→miss 試験が Vulkan-invalid(miss も深さ 2 で起動)/ 最低保証 depth=1 / domain に 0 が通る | 二分割: 純 validator + 偽 facts の負例(`requested > fact`、**domain [1, fact]**、0 は `invalid_recursion`)/ GPU 実効は `maxRayRecursionDepth ≥ 2` の device 限定で合法な max_recursion=2×深さ 2(不足 device は理由つき非適用)/ create-info へ 2 が渡ったことは **Vulkan 呼び出し observer** で検査 |
+| 2 | attribute size 超過の独立負例が triangle-only では存在不能(vec2=8B < 最低保証 32B) | size 検査の実装と unit 負例(合成 reflection)は残すが、**production 負例は RT3(intersection 解禁)へ明示送り** |
+| 3 | validator 削除 mutation が invalid Vulkan 実行に依存 | 同一テスト内で「不正 reflection→named / 正 reflection→canonical 契約」+ production は **pre-create observer**(正例は validator digest 付きで create 到達、負例は create 呼び出し 0 回)。GPU mutation 対照は Vulkan-valid かつ policy-invalid な動的 operand。handle ずらし対照は**同種 2 group を明示宣言**した fixture で |
+| 4 | 「所属 group を SPIR-V から抽出」は不可能(group は API 側の情報)/ entry point 未解決 | 層を分離: **module reflection**(entry `"main"` 選択、storage・location・canonical 型・size・trace operand。operand は module 全命令走査)と **pipeline occurrence 契約**(PipelineFactory が group index/type を結合)。複数 entry point fixture / ShaderBundle に安定診断 URI(embedded SPV の空 source_path を埋める) |
+| 5 | spvlink 上の実装は出荷構成(SPIRV_LINK=OFF)で消える / 「定数」が未定義 | **常時ビルドの `rtspirvinspection`** を shaderreflection 隣接に新設し `buildFromSpirv()` で module 作成前に実行。定数 = 直接 `OpConstant`(32-bit 整数)と `OpConstantNull` のみ。`OpSpecConstant*`・`OpCopyObject` 経由は**保守的に named 拒否**。診断は shader URI・命令番号・operand 名。**matrix に `PELICAN_WITH_SPIRV_LINK=ON/OFF` を追加** |
+| 6 | オラクル表が機械判定契約に未達(transform 可逆性・入射角・分母・丸め・量子化時点が未定) | 表を拡張: transform は identity または **condition number ≤ 100 の可逆行列** / ray-plane 入射角 ≥ 5° / determinant 下限 / **入力は f32 量子化後に CPU 評価** / 固定演算列 + `nextafter` 外向き丸め / ε_t の分母 = `max(1, |t|)`、区間幅の分母 = 区間中点 / 端点 ±4 ULP padding。**分類を「対応 device matrix 上の pelican conformance 契約」と明記**(Vulkan-wide 保証ではない) |
+| 7 | design §7 の callable・incoming 個数・fingerprint 規則を閉じていない | canonical type tree(scalar 種/bit 幅・vec/matrix 次元・固定配列数・member 順。名前と ID は除外)+ **tree equality を正**とし fingerprint は索引に格下げ / size は Vulkan の scalar-alignment 規則で算出 / runtime/spec-sized array は named 拒否 / **incoming 種類ごと 1 変数**の負例追加 / callable は RT4 への明示 carve-out を WP と design 側 note の両方に記載 |
+| 8 | facts の配線・seam・code 名が未指定 / maxShaderGroupStride が孤児 | **`RayTracingRuntimeFacts`** 一型(RT property + 各次元 `maxComputeWorkGroupCount×Size` + device 名)。feature 無効時は atomic にゼロ化。**純関数 `validateRayTracingRequest` / `validateTraceExtent`** を pipeline build・初回 extent 解決・rebind・最終 command 前の全 4 箇所から呼ぶ(偽 facts は純関数にのみ注入、production は observer で証明)。負例: 偽 max=1024 vs 64×64×1 / 各次元超過 / UINT32_MAX 積 overflow を load と rebind の両方で。**code 固定**: `pelican.ray_tracing.invalid_recursion@1 / recursion_limit@1 / dispatch_dimension_limit@1 / dispatch_invocation_limit@1 / trace_operand_dynamic@1 / payload_mismatch@1 / hit_attribute_forbidden@1 / hit_attribute_size@1 / interface_count@1 / interface_type_unsupported@1`。**maxShaderGroupStride は RT1b へ延期**(孤児 fact を作らない)。既定 1 の literal は `RayTracingTaskShaderDefinition` の一箇所のみ |
+| 9 | 「bytes 不変」が自己承認可能 / compiler-OFF の空 cache key 比較 | **実装前 HEAD の親版 fixture を凍結**(embedded SPV の SHA-256・compiler-ON cache key・canonical frame plan projection・GPU golden。WP354a の流儀で provenance 付き)/ compiler-OFF は **SPV hash 比較**(空 cache key 比較は不可と明記)/ `max_recursion` 省略時は frame plan に新 field を出さない / 4 project 条件は「非 RT 回帰」と分類し RT validator の有効性条件から分離 |
+
+補足修正: 再帰固定の行は pipelinefactory.cpp:628(625 は誤り)。
+design_raytracing.md §7 に「callable data の検証は RT4 で」の note を追記する
+(本 WP のマージ時に同時修正)。
