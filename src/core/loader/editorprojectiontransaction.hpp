@@ -34,6 +34,9 @@ std::string_view editorProjectionAdapterKindName(
 enum class EditorProjectionPublicationMode : std::uint8_t {
     StagedNoexcept,
     InverseToken,
+    // All fallible preparation and every injected fault are checked before
+    // this adapter publishes. rollback() is never called after publication.
+    PointOfNoReturn,
 };
 
 enum class EditorProjectionErrorCode : std::uint8_t {

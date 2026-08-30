@@ -99,6 +99,10 @@ class ECSEntityMutationToken {
     ECSEntityMutationKind kind() const noexcept;
     bool published() const noexcept;
     void publish() noexcept;
+    // Destroy-only preflight support for the editor lifecycle aggregate. The
+    // published inverse is restored without releasing its prepared storage,
+    // so a later point-of-no-return publish is allocation-free.
+    void restoreForRepublish() noexcept;
     void rollback() noexcept;
     void finish() noexcept;
 };

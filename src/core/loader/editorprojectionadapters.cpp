@@ -77,6 +77,167 @@ std::unordered_map<std::uint64_t, EntityId> bindingMap(
     return result;
 }
 
+std::vector<BoundSceneBehaviorAttachment> prepareBoundBehaviorAttachments(
+    BehaviorAttachmentArena &arena, const ResolvedSceneView *scene,
+    std::span<const EditorProjectionRuntimeObjectBinding> bindings,
+    std::span<const EditorBehaviorAttachmentIdentityClaim> identity_claims,
+    std::span<const EditorProjectionRuntimeObjectBinding> cas_bindings = {}) {
+    std::vector<BoundSceneBehaviorAttachment> desired;
+    const auto current = arena.snapshot();
+
+    const auto bindingFor = [&](AuthoringObjectId object_id)
+        -> const EditorProjectionRuntimeObjectBinding * {
+        const auto found = std::find_if(
+            bindings.begin(), bindings.end(), [&](const auto &binding) {
+                return binding.authoring_object_id == object_id;
+            });
+        return found == bindings.end() ? nullptr : &*found;
+    };
+    if (cas_bindings.empty()) cas_bindings = bindings;
+    const auto casBindingFor = [&](AuthoringObjectId object_id)
+        -> const EditorProjectionRuntimeObjectBinding * {
+        const auto found = std::find_if(
+            cas_bindings.begin(), cas_bindings.end(), [&](const auto &binding) {
+                return binding.authoring_object_id == object_id;
+            });
+        return found == cas_bindings.end() ? nullptr : &*found;
+    };
+    const auto currentByHandle = [&](std::uint64_t handle)
+        -> const BehaviorAttachmentInfo * {
+        const auto found = std::find_if(
+            current.begin(), current.end(), [&](const auto &attachment) {
+                return attachment.handle.value == handle;
+            });
+        return found == current.end() ? nullptr : &*found;
+    };
+    const auto desiredClaim = [&](AuthoringObjectId object_id,
+                                  std::size_t authored_index)
+        -> const EditorBehaviorAttachmentIdentityClaim * {
+        const EditorBehaviorAttachmentIdentityClaim *result = nullptr;
+        for (const auto &claim : identity_claims) {
+            if (claim.kind !=
+                    EditorBehaviorAttachmentIdentityClaimKind::DesiredIdentity ||
+                claim.object_id != object_id ||
+                claim.authoring_component_index != authored_index) {
+                continue;
+            }
+            if (result != nullptr &&
+                result->attachment_handle != claim.attachment_handle) {
+                throw std::runtime_error(
+                    "behavior desired identity claims disagree");
+            }
+            result = &claim;
+        }
+        return result;
+    };
+
+    // attachment_handle is a public CAS. Validate every claim even when a
+    // later operation removes its final consumer; final-plan enumeration must
+    // not turn that legal batch into an unmatched-plan failure.
+    for (const auto &claim : identity_claims) {
+        if (claim.attachment_handle == 0) {
+            throw std::runtime_error(
+                "behavior identity claim has an invalid handle");
+        }
+        if (claim.kind ==
+            EditorBehaviorAttachmentIdentityClaimKind::DesiredIdentity) {
+            continue;
+        }
+        if (!claim.pre_execution_component_index) {
+            const auto *created = desiredClaim(
+                claim.object_id, claim.authoring_component_index);
+            if (created != nullptr &&
+                created->attachment_handle == claim.attachment_handle) {
+                continue;
+            }
+            throw std::runtime_error(
+                "behavior attachment_handle CAS target did not exist at execution start");
+        }
+        const auto *live = currentByHandle(claim.attachment_handle);
+        if (live == nullptr) {
+            throw std::runtime_error(
+                "behavior attachment_handle CAS target is stale");
+        }
+        // A destroy removes the object from the final binding plan, but its
+        // public CAS must still be checked against the pre-transaction entity.
+        const auto *binding = casBindingFor(claim.object_id);
+        const auto *authored = live->component_origin.authored();
+        if (binding == nullptr || live->entity != binding->entity ||
+            (authored != nullptr
+                 ? authored->authoring_component_index !=
+                       *claim.pre_execution_component_index
+                 : live->component_index !=
+                       *claim.pre_execution_component_index)) {
+            throw std::runtime_error(
+                "behavior attachment_handle CAS targets a different origin");
+        }
+    }
+
+    if (scene == nullptr) return desired;
+    auto prepared = prepareResolvedSceneBehaviorAttachments(
+        scene->objects, BehaviorRegistryAvailability::active);
+    desired.reserve(prepared.size());
+    for (auto &attachment : prepared) {
+        const auto object = std::find_if(
+            scene->objects.begin(), scene->objects.end(),
+            [&](const auto &candidate) {
+                return candidate.authoring_object_index ==
+                       attachment.object_index;
+            });
+        if (object == scene->objects.end()) {
+            throw std::logic_error(
+                "prepared behavior lost its resolved object");
+        }
+        const auto *binding = bindingFor(object->authoring_object_id);
+        if (binding == nullptr) {
+            throw std::runtime_error(
+                "resolved behavior object has no staged runtime binding");
+        }
+
+        BoundSceneBehaviorAttachment bound{
+            .prepared = std::move(attachment),
+            .entity = binding->entity,
+        };
+        if (const auto *authored = bound.prepared.component_origin.authored()) {
+            const auto sequence = sceneBehaviorAttachmentSeq(
+                bound.prepared.object_index, bound.prepared.component_index);
+            const auto *claim = desiredClaim(
+                object->authoring_object_id,
+                authored->authoring_component_index);
+            const auto live = std::find_if(
+                current.begin(), current.end(), [&](const auto &candidate) {
+                    const auto *candidate_authored =
+                        candidate.component_origin.authored();
+                    return candidate.entity == binding->entity &&
+                           candidate_authored != nullptr &&
+                           candidate_authored->authoring_component_index ==
+                               authored->authoring_component_index;
+                });
+            if (live != current.end() &&
+                (claim == nullptr ||
+                 claim->attachment_handle == live->handle.value)) {
+                bound.planned_identity = BehaviorAttachmentIdentity{
+                    .handle = live->handle,
+                    .attachment_seq = sequence,
+                };
+                bound.preserve_planned_identity = true;
+            } else if (claim != nullptr) {
+                // A remove+add at the same authored origin intentionally
+                // replaces the old live identity. ExistingCas already
+                // validated the removal target above; DesiredIdentity owns
+                // the final consumer.
+                bound.planned_identity = BehaviorAttachmentIdentity{
+                    .handle = BehaviorAttachmentHandle{
+                        claim->attachment_handle},
+                    .attachment_seq = sequence,
+                };
+            }
+        }
+        desired.push_back(std::move(bound));
+    }
+    return desired;
+}
+
 template <class Token> void publishToken(Token &token) noexcept {
     token.publish();
 }
@@ -519,6 +680,19 @@ SceneObjectProjectionAdapter::preparedTargetObject() const noexcept {
     return impl_->prepared_target;
 }
 
+void SceneObjectProjectionAdapter::preflightDestroyForPointOfNoReturn() {
+    if (!impl_->entity ||
+        impl_->entity->kind() != ECSEntityMutationKind::destroy) {
+        throw std::logic_error(
+            "destroy preflight requires a prepared destroy token");
+    }
+    // Exercise the complete structural publication while rollback is still
+    // legal, then keep its allocated inverse storage for the final noexcept
+    // publication. No behavior callback runs in this preflight.
+    impl_->entity->publish();
+    impl_->entity->restoreForRepublish();
+}
+
 void SceneObjectProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
     impl_->next_bindings.clear();
@@ -641,25 +815,267 @@ void SceneObjectProjectionAdapter::finish() noexcept {
     impl_->bindings_published = false;
 }
 
+struct SceneLifecycleProjectionAdapter::Impl {
+    struct Participant {
+        bool spawn = false;
+        std::unique_ptr<SceneObjectProjectionAdapter> adapter;
+    };
+
+    ECSCoreTemplatePublic &ecs;
+    ComponentInfoManager &components;
+    ModelAssetContainer &models;
+    PolygonInstanceContainer &renderer;
+    Camera &camera;
+    LightContainer &lights;
+    PhysWorld &physics;
+    BehaviorAttachmentArena &behavior_arena;
+    std::string scene_id;
+    std::string adapter_name;
+    std::vector<AuthoringObjectId> target_objects;
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings;
+    std::vector<EditorProjectionRuntimeObjectBinding> next_bindings;
+    std::vector<EditorBehaviorAttachmentIdentityClaim> identity_claims;
+    std::vector<Participant> participants;
+    std::unique_ptr<PreparedBehaviorEntityPreDestroy> pre_destroy;
+    std::unique_ptr<PreparedBehaviorSceneReconciliation> behavior;
+    bool published = false;
+
+    static std::size_t hierarchyDepth(const ResolvedSceneView &scene,
+                                      const ResolvedObject &object) {
+        std::size_t depth = 0;
+        const ResolvedObject *cursor = &object;
+        while (cursor->parent) {
+            const auto parent = std::find_if(
+                scene.objects.begin(), scene.objects.end(),
+                [&](const auto &candidate) {
+                    return candidate.name &&
+                           *candidate.name == *cursor->parent;
+                });
+            if (parent == scene.objects.end()) {
+                throw std::runtime_error(
+                    "lifecycle object has an unresolved parent");
+            }
+            ++depth;
+            if (depth > scene.objects.size()) {
+                throw std::runtime_error(
+                    "lifecycle object hierarchy contains a cycle");
+            }
+            cursor = &*parent;
+        }
+        return depth;
+    }
+};
+
+SceneLifecycleProjectionAdapter::SceneLifecycleProjectionAdapter(
+    ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+    ModelAssetContainer &models, PolygonInstanceContainer &renderer,
+    Camera &camera, LightContainer &lights, PhysWorld &physics,
+    BehaviorAttachmentArena &behavior_arena, std::string scene_id,
+    std::vector<AuthoringObjectId> target_objects,
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+    std::vector<EditorBehaviorAttachmentIdentityClaim> identity_claims)
+    : impl_{std::make_unique<Impl>(Impl{
+          .ecs = ecs,
+          .components = components,
+          .models = models,
+          .renderer = renderer,
+          .camera = camera,
+          .lights = lights,
+          .physics = physics,
+          .behavior_arena = behavior_arena,
+          .scene_id = std::move(scene_id),
+          .adapter_name = {},
+          .target_objects = std::move(target_objects),
+          .bindings = std::move(bindings),
+          .identity_claims = std::move(identity_claims),
+      })} {
+    (void)bindingMap(impl_->bindings);
+    impl_->adapter_name = "lifecycle.scene." + impl_->scene_id;
+}
+
+SceneLifecycleProjectionAdapter::~SceneLifecycleProjectionAdapter() = default;
+
+EditorProjectionAdapterKind
+SceneLifecycleProjectionAdapter::kind() const noexcept {
+    return EditorProjectionAdapterKind::EcsArchetype;
+}
+
+std::string_view SceneLifecycleProjectionAdapter::name() const noexcept {
+    return impl_->adapter_name;
+}
+
+EditorProjectionPublicationMode
+SceneLifecycleProjectionAdapter::publicationMode() const noexcept {
+    return EditorProjectionPublicationMode::PointOfNoReturn;
+}
+
+void SceneLifecycleProjectionAdapter::prepare(
+    const EditorProjectionPrepareContext &context) {
+    struct Change {
+        AuthoringObjectId object_id{};
+        bool spawn = false;
+        std::size_t depth = 0;
+    };
+
+    impl_->participants.clear();
+    impl_->next_bindings = impl_->bindings;
+    impl_->pre_destroy.reset();
+    impl_->behavior.reset();
+    impl_->published = false;
+
+    auto targets = impl_->target_objects;
+    std::sort(targets.begin(), targets.end(), [](auto left, auto right) {
+        return left.value < right.value;
+    });
+    targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
+
+    const auto *base_scene =
+        findResolvedScene(context.base_resolved, impl_->scene_id);
+    const auto *next_scene =
+        findResolvedScene(context.next_resolved, impl_->scene_id);
+    std::vector<Change> changes;
+    changes.reserve(targets.size());
+    for (const auto target : targets) {
+        if (target.value == 0) {
+            throw std::runtime_error(
+                "lifecycle aggregate requires stable object identities");
+        }
+        const auto *base_object = findResolvedObject(base_scene, target);
+        const auto *next_object = findResolvedObject(next_scene, target);
+        if ((base_object == nullptr) == (next_object == nullptr)) {
+            throw std::runtime_error(
+                "lifecycle aggregate target is not a final spawn or destroy");
+        }
+        const bool spawn = next_object != nullptr;
+        const auto *scene = spawn ? next_scene : base_scene;
+        const auto *object = spawn ? next_object : base_object;
+        changes.push_back(Change{
+            .object_id = target,
+            .spawn = spawn,
+            .depth = Impl::hierarchyDepth(*scene, *object),
+        });
+    }
+    std::sort(changes.begin(), changes.end(),
+              [](const Change &left, const Change &right) {
+                  if (left.spawn != right.spawn) return left.spawn;
+                  if (left.depth != right.depth) {
+                      return left.spawn ? left.depth < right.depth
+                                        : left.depth > right.depth;
+                  }
+                  return left.object_id.value < right.object_id.value;
+              });
+
+    std::vector<GameObjectId> destroyed_entities;
+    for (const auto &change : changes) {
+        if (change.spawn) continue;
+        const auto binding = std::find_if(
+            impl_->bindings.begin(), impl_->bindings.end(),
+            [&](const auto &candidate) {
+                return candidate.authoring_object_id == change.object_id;
+            });
+        if (binding == impl_->bindings.end()) {
+            throw std::runtime_error(
+                "destroy target has no runtime object binding");
+        }
+        destroyed_entities.push_back(binding->entity);
+    }
+    impl_->pre_destroy = impl_->behavior_arena.prepareEntityPreDestroy(
+        std::move(destroyed_entities));
+
+    impl_->participants.reserve(changes.size());
+    for (const auto &change : changes) {
+        auto participant = std::make_unique<SceneObjectProjectionAdapter>(
+            impl_->ecs, impl_->components, impl_->models, impl_->renderer,
+            impl_->camera, impl_->lights, impl_->physics, impl_->scene_id,
+            change.object_id, impl_->next_bindings);
+        participant->prepare(context);
+        if (change.spawn) {
+            // A child prepare must observe its newly-created parent. This
+            // publication is still reversible and occurs before callbacks.
+            participant->publish();
+        } else {
+            participant->preflightDestroyForPointOfNoReturn();
+        }
+        const auto prepared = participant->preparedRuntimeBindings();
+        impl_->next_bindings.assign(prepared.begin(), prepared.end());
+        impl_->participants.push_back(Impl::Participant{
+            .spawn = change.spawn,
+            .adapter = std::move(participant),
+        });
+    }
+
+    const auto *final_scene =
+        findResolvedScene(context.next_resolved, impl_->scene_id);
+    impl_->behavior = impl_->behavior_arena.prepareSceneReconciliation(
+        prepareBoundBehaviorAttachments(
+            impl_->behavior_arena, final_scene, impl_->next_bindings,
+            impl_->identity_claims, impl_->bindings));
+}
+
+void SceneLifecycleProjectionAdapter::publish() noexcept {
+    if (impl_->published) return;
+    impl_->pre_destroy->publish();
+    for (auto &participant : impl_->participants) {
+        if (!participant.spawn) participant.adapter->publish();
+    }
+    impl_->behavior->publish();
+    impl_->published = true;
+}
+
+void SceneLifecycleProjectionAdapter::rollback() noexcept {
+    if (impl_->published) return;
+    if (impl_->behavior) impl_->behavior->rollback();
+    impl_->behavior.reset();
+    for (auto it = impl_->participants.rbegin();
+         it != impl_->participants.rend(); ++it) {
+        it->adapter->rollback();
+    }
+    impl_->participants.clear();
+    if (impl_->pre_destroy) impl_->pre_destroy->rollback();
+    impl_->pre_destroy.reset();
+    impl_->next_bindings.clear();
+}
+
+void SceneLifecycleProjectionAdapter::finish() noexcept {
+    if (impl_->behavior) impl_->behavior->finish();
+    impl_->behavior.reset();
+    if (impl_->pre_destroy) impl_->pre_destroy->finish();
+    impl_->pre_destroy.reset();
+    for (auto &participant : impl_->participants) {
+        participant.adapter->finish();
+    }
+    impl_->participants.clear();
+    impl_->bindings = std::move(impl_->next_bindings);
+    impl_->published = false;
+}
+
+std::span<const EditorProjectionRuntimeObjectBinding>
+SceneLifecycleProjectionAdapter::runtimeBindings() const noexcept {
+    return impl_->bindings;
+}
+
 struct BehaviorSceneProjectionAdapter::Impl {
     BehaviorAttachmentArena &arena;
     std::string scene_id;
     std::string adapter_name;
     std::vector<EditorProjectionRuntimeObjectBinding> bindings;
     std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters;
+    std::vector<EditorBehaviorAttachmentIdentityClaim> identity_claims;
     std::unique_ptr<PreparedBehaviorSceneReconciliation> prepared;
 };
 
 BehaviorSceneProjectionAdapter::BehaviorSceneProjectionAdapter(
     BehaviorAttachmentArena &arena, std::string scene_id,
     std::vector<EditorProjectionRuntimeObjectBinding> bindings,
-    std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters)
+    std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters,
+    std::vector<EditorBehaviorAttachmentIdentityClaim> identity_claims)
     : impl_{std::make_unique<Impl>(Impl{
           .arena = arena,
           .scene_id = std::move(scene_id),
           .adapter_name = {},
           .bindings = std::move(bindings),
           .lifecycle_adapters = std::move(lifecycle_adapters),
+          .identity_claims = std::move(identity_claims),
       })} {
     (void)bindingMap(impl_->bindings);
     impl_->adapter_name = "behavior.scene." + impl_->scene_id;
@@ -706,42 +1122,11 @@ void BehaviorSceneProjectionAdapter::prepare(
         }
     }
 
-    const auto *scene = findResolvedScene(context.next_resolved,
-                                          impl_->scene_id);
-    std::vector<BoundSceneBehaviorAttachment> desired;
-    if (scene != nullptr) {
-        auto prepared = prepareResolvedSceneBehaviorAttachments(
-            scene->objects, BehaviorRegistryAvailability::active);
-        desired.reserve(prepared.size());
-        for (auto &attachment : prepared) {
-            const auto object = std::find_if(
-                scene->objects.begin(), scene->objects.end(),
-                [&](const auto &candidate) {
-                    return candidate.authoring_object_index ==
-                           attachment.object_index;
-                });
-            if (object == scene->objects.end()) {
-                throw std::logic_error(
-                    "prepared behavior lost its resolved object");
-            }
-            const auto binding = std::find_if(
-                next_bindings.begin(), next_bindings.end(),
-                [&](const auto &candidate) {
-                    return candidate.authoring_object_id ==
-                           object->authoring_object_id;
-                });
-            if (binding == next_bindings.end()) {
-                throw std::runtime_error(
-                    "resolved behavior object has no staged runtime binding");
-            }
-            desired.push_back(BoundSceneBehaviorAttachment{
-                .prepared = std::move(attachment),
-                .entity = binding->entity,
-            });
-        }
-    }
-    impl_->prepared =
-        impl_->arena.prepareSceneReconciliation(std::move(desired));
+    impl_->prepared = impl_->arena.prepareSceneReconciliation(
+        prepareBoundBehaviorAttachments(
+            impl_->arena,
+            findResolvedScene(context.next_resolved, impl_->scene_id),
+            next_bindings, impl_->identity_claims, impl_->bindings));
 }
 
 void BehaviorSceneProjectionAdapter::publish() noexcept {

@@ -36,9 +36,16 @@ struct PreparedSceneBehaviorAttachment {
     bool pending = false;
 };
 
+struct BehaviorAttachmentIdentity {
+    BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
+    std::uint64_t attachment_seq = 0;
+};
+
 struct BoundSceneBehaviorAttachment {
     PreparedSceneBehaviorAttachment prepared;
     GameObjectId entity = invalidGameObjectId;
+    std::optional<BehaviorAttachmentIdentity> planned_identity;
+    bool preserve_planned_identity = false;
 };
 
 struct BehaviorAttachmentInfo {
@@ -58,14 +65,10 @@ struct BehaviorAttachmentInfo {
     std::string activation_error;
 };
 
-struct BehaviorAttachmentIdentity {
-    BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
-    std::uint64_t attachment_seq = 0;
-};
-
 struct BehaviorArenaIsolationState {
     std::uint64_t next_handle = 0;
     std::uint64_t next_attachment_seq = 0;
+    bool attachment_sequence_exhausted = false;
     std::size_t deferred_mutation_count = 0;
     std::size_t callback_depth = 0;
     internal::RegistrationOwner callback_owner = internal::engineRegistrationOwner;
@@ -135,6 +138,32 @@ class PreparedBehaviorSceneReconciliation {
     void finish() noexcept;
 };
 
+class PreparedBehaviorEntityPreDestroy {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    explicit PreparedBehaviorEntityPreDestroy(
+        std::unique_ptr<Impl> impl) noexcept;
+    friend class BehaviorAttachmentArena;
+
+  public:
+    ~PreparedBehaviorEntityPreDestroy();
+    PreparedBehaviorEntityPreDestroy(
+        PreparedBehaviorEntityPreDestroy &&) noexcept;
+    PreparedBehaviorEntityPreDestroy &operator=(
+        PreparedBehaviorEntityPreDestroy &&) noexcept;
+    PreparedBehaviorEntityPreDestroy(
+        const PreparedBehaviorEntityPreDestroy &) = delete;
+    PreparedBehaviorEntityPreDestroy &operator=(
+        const PreparedBehaviorEntityPreDestroy &) = delete;
+
+    // This is the point-of-no-return barrier. publish() invokes callbacks
+    // while all target entities are live, then detaches their instances.
+    void publish() noexcept;
+    void rollback() noexcept;
+    void finish() noexcept;
+};
+
 std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,
                                          std::size_t component_index);
 std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
@@ -148,6 +177,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     friend class BehaviorCallbackScope;
     friend class PreparedBehaviorAttachmentEdits;
     friend class PreparedBehaviorSceneReconciliation;
+    friend class PreparedBehaviorEntityPreDestroy;
 
     struct Attachment {
         BehaviorAttachmentInfo info;
@@ -168,6 +198,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     std::vector<DeferredMutation> deferred_mutations;
     std::uint64_t next_handle = 1;
     std::uint64_t next_attachment_seq = 1;
+    bool attachment_sequence_exhausted = false;
     std::size_t callback_depth = 0;
     internal::RegistrationOwner callback_owner = internal::engineRegistrationOwner;
 
@@ -177,6 +208,7 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     void invokeUpdate(Attachment &attachment, GameContext &ctx);
     void invokeEvent(Attachment &attachment, const internal::QueuedEvent &event,
                      GameContext &ctx);
+    void invokeDestroyCallback(Attachment &attachment) noexcept;
     void destroyInstance(Attachment &attachment, bool invoke_destroy_callback) noexcept;
     void deactivateAllInstances() noexcept;
     void applyDeferredMutations();
@@ -207,6 +239,8 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     std::unique_ptr<PreparedBehaviorSceneReconciliation>
     prepareSceneReconciliation(
         std::vector<BoundSceneBehaviorAttachment> desired);
+    std::unique_ptr<PreparedBehaviorEntityPreDestroy>
+    prepareEntityPreDestroy(std::vector<GameObjectId> entities);
 
     void deferCreateObject(LocalTransformComponent transform);
     void deferCreateSpriteObject(LocalTransformComponent transform,
@@ -222,6 +256,8 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
         return {
             .next_handle = next_handle,
             .next_attachment_seq = next_attachment_seq,
+            .attachment_sequence_exhausted =
+                attachment_sequence_exhausted,
             .deferred_mutation_count = deferred_mutations.size(),
             .callback_depth = callback_depth,
             .callback_owner = callback_owner,

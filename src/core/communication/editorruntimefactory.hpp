@@ -13,6 +13,9 @@ struct EditorRuntimeServiceOptions {
     // used by Studio.  The existing ImGui composition keeps its current
     // surface while sharing all scene-edit implementation.
     bool render_config_editing = false;
+    // Optional deterministic transaction seam used by production-composition
+    // regression tests. Normal editor compositions leave this null.
+    EditorProjectionFaultInjector *projection_fault_injector = nullptr;
 };
 
 namespace internal {
@@ -23,6 +26,11 @@ namespace internal {
 EditorGateObservation applyBehaviorEditConcurrencyGate(
     EditorGateObservation observation, bool behavior_callback_active,
     bool game_logic_reload_active, bool reload_reconciling) noexcept;
+
+// Exact production isolation oracle used by lifecycle regression tests. It
+// shares the eval-preview snapshot implementation, covering ECS, camera,
+// light, physics, and behavior attachment state.
+nlohmann::ordered_json editorRuntimeStateSnapshotForTesting();
 
 } // namespace internal
 

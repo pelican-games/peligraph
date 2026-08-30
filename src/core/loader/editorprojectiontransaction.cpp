@@ -934,10 +934,15 @@ EditorProjectionResult EditorProjectionTransaction::commit(
             }
         }
 
+        // Preflight every remaining fallible fault point before publishing a
+        // point-of-no-return adapter. In particular, AfterPublication is a
+        // fault-injection label, not permission to invoke onDestroy and then
+        // attempt to resurrect its instance.
         for (auto *adapter : adapters) {
             if (published_during_prepare.contains(adapter)) continue;
-            if (adapter->publicationMode() ==
-                    EditorProjectionPublicationMode::InverseToken &&
+            const auto mode = adapter->publicationMode();
+            if ((mode == EditorProjectionPublicationMode::InverseToken ||
+                 mode == EditorProjectionPublicationMode::PointOfNoReturn) &&
                 fault_injector_ != nullptr &&
                 fault_injector_->shouldFail(EditorProjectionFaultPoint::Publish,
                                             adapter->name())) {
@@ -951,20 +956,30 @@ EditorProjectionResult EditorProjectionTransaction::commit(
                     "injected inverse-token publish failure"};
                 return result;
             }
+        }
+        if (fault_injector_ != nullptr &&
+            fault_injector_->shouldFail(
+                EditorProjectionFaultPoint::AfterPublication,
+                "scene_pair")) {
+            for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {
+                (*it)->rollback();
+            }
+            result.status = EditorProjectionStatus::Failed;
+            result.error = EditorProjectionError{
+                EditorProjectionErrorCode::AdapterPublishFailed,
+                "/publication/scene_pair",
+                "injected failure at the scene pair publication boundary"};
+            return result;
+        }
+
+        for (auto *adapter : adapters) {
+            if (published_during_prepare.contains(adapter)) continue;
             adapter->publish();
         }
 
         const auto committed_revision = candidate_state->revision();
         document_target_.publishProjectionState(*candidate_state);
         document_published = true;
-        if (fault_injector_ != nullptr &&
-            fault_injector_->shouldFail(
-                EditorProjectionFaultPoint::AfterPublication,
-                "scene_pair")) {
-            projectionError(EditorProjectionErrorCode::AdapterPublishFailed,
-                            "/publication/scene_pair",
-                            "injected failure after scene pair publication");
-        }
         for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {
             (*it)->finish();
         }

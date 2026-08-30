@@ -2,6 +2,7 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorjournal.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
+#include "../src/core/communication/editorruntimefactory.hpp"
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/core.hpp"
@@ -18,7 +19,9 @@
 #include "../src/core/loader/prefabprovider.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/resolvedscene.hpp"
+#include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/renderer/camera.hpp"
 #include "../src/core/userpublic/behavior.hpp"
 #include "../src/core/userpublic/gameobjects.hpp"
 #include "../src/project/prefab.hpp"
@@ -36,6 +39,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <picosha2.h>
@@ -72,6 +76,31 @@ struct Wp361Params {
 std::vector<std::string> wp361_callback_trace;
 std::vector<int> wp361_update_trace;
 std::size_t wp361_destroy_count = 0;
+
+struct Wp361bLifetimeParams {
+    std::int32_t hp = 0;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&Wp361bLifetimeParams::hp>("hp"),
+                  std::int32_t{0}));
+};
+
+ECSCoreTemplatePublic *wp361b_lifetime_ecs = nullptr;
+std::size_t wp361b_lifetime_init_count = 0;
+std::vector<bool> wp361b_lifetime_destroy_alive;
+
+class Wp361bLifetimeBehavior final : public Behavior {
+  public:
+    using Params = Wp361bLifetimeParams;
+    void onInit(BehaviorContext &) override {
+        ++wp361b_lifetime_init_count;
+    }
+    void onDestroy(BehaviorContext &context) noexcept override {
+        wp361b_lifetime_destroy_alive.push_back(
+            wp361b_lifetime_ecs != nullptr &&
+            wp361b_lifetime_ecs->isAlive(context.self()));
+    }
+};
 
 class Wp361Behavior final : public Behavior {
   public:
@@ -122,6 +151,19 @@ void ensureEscapedBehavior() {
         if (registry.findByName("wp361_escaped") == nullptr) {
             (void)registry.registerBehavior<Wp361EscapedBehavior>(
                 "wp361_escaped", 1, {});
+        }
+        return true;
+    }();
+    (void)registered;
+}
+
+void ensureWp361bLifetimeBehavior() {
+    ensureBehavior();
+    static const bool registered = [] {
+        auto &registry = internal::getBehaviorRegisterer();
+        if (registry.findByName("wp361b_lifetime") == nullptr) {
+            (void)registry.registerBehavior<Wp361bLifetimeBehavior>(
+                "wp361b_lifetime", 1, {});
         }
         return true;
     }();
@@ -592,12 +634,74 @@ TEST_CASE("WP361 v4 leaf grammar registry gate and GID are byte fixed",
              {"prefabs", Json::array({{{"name", "unit"},
                                         {"path", "project://prefabs/unit.json"}}})}});
     });
+    for (const auto path : {"project:foo", "https:unit.json"}) {
+        requirePrefabError(PrefabErrorCode::PrefabPathInvalid, [&] {
+            (void)parseProjectEnvelopeJson(
+                {{"schema", "pelican.project"}, {"version", 1},
+                 {"prefabs", Json::array({{{"name", "unit"},
+                                            {"path", path}}})}});
+        });
+    }
     requirePrefabError(PrefabErrorCode::PrefabRegistryInvalid, [&] {
         (void)parseProjectEnvelopeJson(
             {{"schema", "pelican.project"}, {"version", 1},
              {"prefabs", Json::array({{{"name", "unit"}, {"path", "u"},
                                         {"extra", true}}})}});
     });
+}
+
+TEST_CASE("WP361b one mutation parser covers producer CAS shapes and every operation leaf",
+          "[wp361b][editor][parser][cas][syntax]") {
+    // Exact operation shape emitted by both
+    // devstudio/model/inspectormodel.cpp and core/imgui/inspector.cpp.
+    const Json producer_operation{
+        {"op", "set_component_value"}, {"object_id", 42},
+        {"component_slot", "behavior"}, {"attachment_index", 3},
+        {"attachment_handle", 17}, {"field_path", "/params/hp"},
+        {"value", 5}};
+    for (const auto producer : {"studio", "imgui"}) {
+        DYNAMIC_SECTION(producer) {
+            const auto parsed = parseEditorMutationRequest(
+                {{"actor_id", 1}, {"base_revision", 2},
+                 {"operations", Json::array({producer_operation})}},
+                "edit");
+            REQUIRE(parsed.operation_asts.size() == 1);
+            REQUIRE(parsed.operation_asts.front().kind ==
+                    EditorMutationOperationKind::SetComponentValue);
+        }
+    }
+
+    const Json generated_selector{
+        {"op", "set_component_value"}, {"object_id", 42},
+        {"generated_id", "gid_valid"}, {"field_path", "/params/hp"},
+        {"value", 8}};
+    const std::array malformed{
+        Json{{"op", "set_component_value"}, {"object_id", 42},
+             {"component_slot", "transform"}, {"field_path", "/pos"}},
+        Json{{"op", "add_component"}, {"object_id", 42},
+             {"component", 7}},
+        Json{{"op", "remove_component"}, {"object_id", 42},
+             {"component_slot", "behavior"}},
+        Json{{"op", "spawn"}, {"scene_id", "main"}, {"object", 42}},
+        Json{{"op", "destroy"}, {"object_id", 0}},
+        Json{{"op", "reparent"}, {"object_id", 42},
+             {"new_parent_id", nullptr}},
+        Json{{"op", "set_prefab_parameter"}, {"object", 42},
+             {"parameter", "hp"}},
+        Json{{"op", "unset_prefab_parameter"}, {"object", 42},
+             {"parameter", "hp"}, {"value", 1}},
+    };
+    for (std::size_t index = 0; index < malformed.size(); ++index) {
+        DYNAMIC_SECTION("malformed operation " << index) {
+            REQUIRE_THROWS_AS(
+                parseEditorMutationRequest(
+                    {{"actor_id", 1}, {"base_revision", 2},
+                     {"operations", Json::array(
+                          {malformed[index], generated_selector})}},
+                    "edit"),
+                std::invalid_argument);
+        }
+    }
 }
 
 TEST_CASE("WP361 enum prefab parameter reaches codec and behavior canonicalization",
@@ -928,6 +1032,55 @@ TEST_CASE("WP361a provider fingerprint v4 has an independent hand-byte oracle",
         .canonical_default = OJson(1.5F)};
     REQUIRE(std::string{BindableProviderSnapshot{1, {std::move(descriptor)}}
                             .fingerprint()} == expected);
+
+    // Independent Vec3 and String byte vectors exercise branches that a
+    // scalar-only oracle cannot distinguish. String is raw UTF-8, not a JSON
+    // dump with quote escaping.
+    const std::vector<unsigned char> vec3_bytes{
+        0x1c,0x00,0x00,0x00,0x70,0x65,0x6c,0x69,0x63,0x61,0x6e,0x2e,
+        0x62,0x69,0x6e,0x64,0x61,0x62,0x6c,0x65,0x2e,0x70,0x72,0x6f,
+        0x76,0x69,0x64,0x65,0x72,0x2e,0x76,0x34,0x01,0x00,0x00,0x00,
+        0x01,0x00,0x00,0x00,0x78,0x02,0x00,0x00,0x00,0x2f,0x76,
+        0x0b, 0x00, 0x00,0x00,0x00,0x00, 0x01,0x00,0x01,
+        0x0b, 0x00,0x00,0x80,0x3f, 0x00,0x00,0x00,0xc0,
+        0x00,0x00,0x00,0x3f, 0x00, 0x00,0x00,0x00,0x00,
+        0x00,0x00,0x00,0x00};
+    const std::string vec3_expected =
+        "af5e97973566f6bcb517d4afb40d1d6dd95c5265513c107267a9ed27449d2f93";
+    REQUIRE(picosha2::hash256_hex_string(vec3_bytes.begin(),
+                                        vec3_bytes.end()) == vec3_expected);
+    BindableDescriptor vec3_descriptor{
+        .provider_name = "x", .json_pointer = "/v",
+        .type = Schema::FieldType::Vec3,
+        .semantic_kind = BindableSemanticKind::Value,
+        .bindable = true, .required = false,
+        .canonical_default = OJson::array({1.0F, -2.0F, 0.5F})};
+    REQUIRE(std::string{BindableProviderSnapshot{
+                            2, {std::move(vec3_descriptor)}}
+                            .fingerprint()} == vec3_expected);
+
+    const std::vector<unsigned char> string_bytes{
+        0x1c,0x00,0x00,0x00,0x70,0x65,0x6c,0x69,0x63,0x61,0x6e,0x2e,
+        0x62,0x69,0x6e,0x64,0x61,0x62,0x6c,0x65,0x2e,0x70,0x72,0x6f,
+        0x76,0x69,0x64,0x65,0x72,0x2e,0x76,0x34,0x01,0x00,0x00,0x00,
+        0x01,0x00,0x00,0x00,0x78,0x02,0x00,0x00,0x00,0x2f,0x76,
+        0x0e, 0x00, 0x00,0x00,0x00,0x00, 0x01,0x00,0x01,
+        0x0e, 0x03,0x00,0x00,0x00, 0x61,0x22,0x62,
+        0x00, 0x00,0x00,0x00,0x00, 0x00,0x00,0x00,0x00};
+    const std::string string_expected =
+        "5c35bea99e3882a451bcc77b2735f4644f2eef656d21ac93e878fb65bd8465b4";
+    REQUIRE(picosha2::hash256_hex_string(string_bytes.begin(),
+                                        string_bytes.end()) ==
+            string_expected);
+    BindableDescriptor string_descriptor{
+        .provider_name = "x", .json_pointer = "/v",
+        .type = Schema::FieldType::String,
+        .semantic_kind = BindableSemanticKind::Value,
+        .bindable = true, .required = false,
+        .canonical_default = OJson("a\"b")};
+    REQUIRE(std::string{BindableProviderSnapshot{
+                            3, {std::move(string_descriptor)}}
+                            .fingerprint()} == string_expected);
 }
 
 TEST_CASE("WP361a light provider required/default rules match the decoder",
@@ -1151,8 +1304,8 @@ TEST_CASE("WP361 object references use frozen identity for forward backward self
                 .effective_json);
 }
 
-TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors and rebases sequence",
-          "[wp361a][prefab][lifecycle][arena][production][rebase]") {
+TEST_CASE("WP361b production factory lifecycle reconciles Generated behaviors and rebases sequence",
+          "[wp361b][prefab][lifecycle][arena][production][factory][rebase]") {
     ensureBehavior();
     ensureWp361Logger();
     Wp361TemporaryProject temporary;
@@ -1176,183 +1329,48 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
              {{"name", "unit"}, {"path", "unit.prefab.json"}}
          })},
         {"basic_config", {{"default_scene_id", "main"},
-                          {"scene_data_json", "scene.json"}}}};
+                          {"scene_data_json", "scene.json"},
+                          {"asset_data_json", "assets.json"},
+                          {"rendering_config_json", "render.json"},
+                          {"default_rendering_pass", "main_render"}}}};
     temporary.write("unit.prefab.json", prefab.dump());
     temporary.write("scene.json", scene.dump());
+    temporary.write(
+        "assets.json",
+        Json{{"schema", "pelican.asset_data"}, {"version", 1},
+             {"models", Json::array()}}
+            .dump());
+    temporary.write(
+        "render.json",
+        Json{{"pipeline",
+              {{"preset",
+                "engine://render_pipelines/hybrid_v1.json"}}}}
+            .dump());
 
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(temporary.root(), false);
     GET_MODULE(ProjectSource).setProjectData(project.dump());
+    GET_MODULE(EngineLaunchConfig).headless = true;
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &config = GET_MODULE(ProjectBasicConfig);
     (void)config.sceneProjectionState();
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
-    auto &components = GET_MODULE(ComponentInfoManager);
     auto &arena = GET_MODULE(BehaviorAttachmentArena);
-    std::vector<EditorProjectionRuntimeObjectBinding> runtime_bindings;
-
-    EditorEditRuntimeDependencies edit_dependencies{
-        .document = [&]() -> const AuthoringSceneDocument & {
-            return config.sceneDocument();
-        },
-        .current_scene_id = [] { return std::string{"main"}; },
-        .execute = [&](const EditorEditExecutionRequest &request) {
-            struct BehaviorState {
-                BehaviorAttachmentArena *arena = nullptr;
-                std::vector<BehaviorAttachmentEdit> edits;
-                std::unique_ptr<PreparedBehaviorAttachmentEdits> token;
-            };
-            std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
-            std::vector<SceneObjectProjectionAdapter *> lifecycle;
-            std::unique_ptr<BehaviorState> behavior_state;
-            const auto add_lifecycle = [&](AuthoringObjectId id) {
-                auto adapter = std::make_unique<SceneObjectProjectionAdapter>(
-                    ecs, components, "main", id, runtime_bindings);
-                lifecycle.push_back(adapter.get());
-                adapters.push_back(std::move(adapter));
-            };
-            for (const auto &operation : request.operations) {
-                const auto op = operation.at("op").get<std::string>();
-                if (op == "spawn") {
-                    add_lifecycle(AuthoringObjectId{
-                        operation.at("object_id").get<std::uint64_t>()});
-                } else if (op == "destroy" || op == "remove_objects") {
-                    for (const auto &id : operation.at("object_ids")) {
-                        add_lifecycle(
-                            AuthoringObjectId{id.get<std::uint64_t>()});
-                    }
-                } else if (op == "restore_objects") {
-                    for (const auto &closure : operation.at("closures")) {
-                        add_lifecycle(AuthoringObjectId{
-                            closure.at("authoring_object_id")
-                                .get<std::uint64_t>()});
-                    }
-                }
-            }
-            if (!lifecycle.empty()) {
-                adapters.push_back(
-                    std::make_unique<BehaviorSceneProjectionAdapter>(
-                        arena, "main", runtime_bindings, lifecycle));
-            }
-            if (lifecycle.empty()) {
-                std::vector<BehaviorAttachmentEdit> requested;
-                for (const auto &operation : request.operations) {
-                    if (operation.at("op") != "add_component" ||
-                        operation.at("component_slot") != "behavior") {
-                        continue;
-                    }
-                    const auto object_id = AuthoringObjectId{
-                        operation.at("object_id").get<std::uint64_t>()};
-                    const auto binding = std::find_if(
-                        runtime_bindings.begin(), runtime_bindings.end(),
-                        [&](const auto &candidate) {
-                            return candidate.authoring_object_id == object_id;
-                        });
-                    REQUIRE(binding != runtime_bindings.end());
-                    const auto &authored = operation.at("component");
-                    requested.push_back(BehaviorAttachmentEdit{
-                        .kind = BehaviorAttachmentEditKind::attach,
-                        .entity = binding->entity,
-                        .component_index = operation.at("component_index")
-                                               .get<std::size_t>(),
-                        .component_origin = ResolvedComponentOrigin{
-                            AuthoredComponentOrigin{
-                                operation.at("component_index")
-                                    .get<std::size_t>()}},
-                        .scene_object_index = std::find_if(
-                            config.resolvedScene().findScene("main")->objects.begin(),
-                            config.resolvedScene().findScene("main")->objects.end(),
-                            [&](const auto &object) {
-                                return object.authoring_object_id == object_id;
-                            })->authoring_object_index,
-                        .scene_ordered = true,
-                        .identity = BehaviorAttachmentIdentity{
-                            .handle = BehaviorAttachmentHandle{
-                                operation.at("attachment_handle")
-                                    .get<std::uint64_t>()},
-                            .attachment_seq = operation.at("attachment_seq")
-                                                  .get<std::uint64_t>()},
-                        .stable_name = authored.at("type").get<std::string>(),
-                        .canonical_params = internal::canonicalizeBehaviorParams(
-                            authored.at("type").get<std::string>(),
-                            authored.value("params", Json::object())),
-                        .raw_component = authored,
-                    });
-                }
-                if (!requested.empty()) {
-                    behavior_state = std::make_unique<BehaviorState>(BehaviorState{
-                        .arena = &arena, .edits = std::move(requested)});
-                    adapters.push_back(
-                        std::make_unique<EditorProjectionCallbackAdapter>(
-                            EditorProjectionAdapterKind::BehaviorAttachment,
-                            "wp361a.production.behavior.add",
-                            EditorProjectionPublicationMode::InverseToken,
-                            behavior_state.get(),
-                            +[](void *raw,
-                                const EditorProjectionPrepareContext &) {
-                                auto &state =
-                                    *static_cast<BehaviorState *>(raw);
-                                state.token = state.arena->prepareEditorEdits(
-                                    std::move(state.edits));
-                            },
-                            +[](void *raw) noexcept {
-                                static_cast<BehaviorState *>(raw)
-                                    ->token->publish();
-                            },
-                            +[](void *raw) noexcept {
-                                auto &state =
-                                    *static_cast<BehaviorState *>(raw);
-                                if (state.token) state.token->rollback();
-                            },
-                            +[](void *raw) noexcept {
-                                auto &state =
-                                    *static_cast<BehaviorState *>(raw);
-                                if (state.token) state.token->finish();
-                                state.token.reset();
-                            }));
-                }
-            }
-            std::vector<EditorProjectionAdapter *> adapter_ptrs;
-            for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
-            ProjectBasicConfigProjectionTarget target{config};
-            EditorProjectionTransaction transaction{target,
-                                                    request.base_revision};
-            auto result = transaction.commit(request.commands, adapter_ptrs);
-            if (result.committed() && !lifecycle.empty()) {
-                const auto next = lifecycle.back()->runtimeBindings();
-                runtime_bindings.assign(next.begin(), next.end());
-            }
-            return result;
-        },
-        .gate = [] { return EditorGateObservation{}; },
-        .allocate_behavior_attachment =
-            [&](std::uint64_t commit_seq, std::size_t command_index,
-                std::size_t attachment_index) {
-                const auto identity = arena.reserveRuntimeAttachmentIdentity(
-                    commit_seq, command_index, attachment_index);
-                return EditorBehaviorAttachmentIdentity{
-                    .handle = identity.handle.value,
-                    .attachment_seq = identity.attachment_seq};
-            },
-        .prefab_registry = [&] {
-            return config.resolvedScene().prefabRegistry();
-        },
-        .bindable_provider = [&] {
-            return config.resolvedScene().bindableProvider();
-        },
-    };
-    EditorEditCoordinator edits{edit_dependencies};
-    const auto session = edits.openSession({{"display_name", "wp361a lifecycle"}});
+    auto &scene_loader = GET_MODULE(SceneLoader);
+    scene_loader.load("main");
+    auto editor_service = makeEditorRuntimeService();
+    const auto session = editor_service->openEditorSession(
+        {{"display_name", "wp361b lifecycle factory"}});
     const auto actor = session.at("actor_id").get<std::uint64_t>();
     const auto commit = [&](Json operation) {
-        const auto accepted = edits.enqueue(
+        const auto accepted = editor_service->edit(
             {{"actor_id", actor},
              {"base_revision", config.sceneDocument().revision().value},
              {"operations", Json::array({std::move(operation)})}});
         REQUIRE(accepted.at("status") == "accepted");
-        edits.commitPending();
+        editor_service->commitPendingEdits();
         const auto result =
-            edits.getResult({{"ticket", accepted.at("ticket")}});
+            editor_service->getEditResult({{"ticket", accepted.at("ticket")}});
         INFO("WP361a lifecycle result: " << result.dump());
         REQUIRE(result.at("status") == "committed");
         return result;
@@ -1365,6 +1383,32 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
                                 {"parameters", {{"hp", hp}}}}}};
     };
 
+    // Object declaration 0 and component declaration 0 intentionally encode
+    // attachment_seq == 0. Zero is a valid position, never an allocator
+    // sentinel.
+    (void)commit({{"op", "spawn"}, {"scene_id", "main"},
+                  {"declaration_index", 0},
+                  {"object", {{"name", "Zero"},
+                              {"components", Json::array()}}}});
+    const auto zero_id = config.resolvedScene()
+                             .findScene("main")->objects.front()
+                             .authoring_object_id;
+    (void)commit({{"op", "add_component"}, {"object_id", zero_id.value},
+                  {"component_index", 0},
+                  {"component", {{"name", "behavior"},
+                                 {"type", "wp361_behavior"},
+                                 {"params", {{"hp", 0}}}}}});
+    GameContext game;
+    arena.update(game);
+    arena.update(game);
+    REQUIRE(arena.snapshot().size() == 1);
+    REQUIRE(arena.snapshot().front().attachment_seq == 0);
+    REQUIRE(editor_service->queryJournal(Json::object())
+                .at("records").back().at("ordered_forward").front()
+                .at("attachment_seq") == 0);
+    (void)commit({{"op", "destroy"}, {"object_id", zero_id.value}});
+    REQUIRE(arena.snapshot().empty());
+
     wp361_callback_trace.clear();
     wp361_update_trace.clear();
     wp361_destroy_count = 0;
@@ -1372,7 +1416,6 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
         {{"op", "spawn"}, {"scene_id", "main"},
          {"declaration_index", 0}, {"object", spawn_object("First", 9)},
          {"new_instance_id", "gi_first"}});
-    GameContext game;
     arena.update(game);
     arena.update(game);
     REQUIRE(wp361_callback_trace == std::vector<std::string>{"9:none"});
@@ -1396,52 +1439,10 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     REQUIRE(attachments[1].scene_object_index == 1);
     REQUIRE(attachments[1].attachment_seq == sceneBehaviorAttachmentSeq(1, 1));
 
-    std::size_t runtime_query_count = 0;
-    EditorCommandService rpc_service{EditorCommandServiceDependencies{
-        .document = [&]() -> const AuthoringSceneDocument & {
-            return config.sceneDocument();
-        },
-        .resolved_scene = [&]() -> const ResolvedScene & {
-            return config.resolvedScene();
-        },
-        .current_scene_id = [] { return std::string{"main"}; },
-        .runtime_query = [&](const ResolvedSceneView &,
-                             const ResolvedObject &object) {
-            ++runtime_query_count;
-            EditorRuntimeObjectState state;
-            state.component_runtime_json.resize(object.components.size());
-            state.component_pending.resize(object.components.size(), false);
-            state.behavior_attachments.resize(object.components.size());
-            const auto binding = std::find_if(
-                runtime_bindings.begin(), runtime_bindings.end(),
-                [&](const auto &candidate) {
-                    return candidate.authoring_object_id ==
-                           object.authoring_object_id;
-                });
-            if (binding == runtime_bindings.end()) return state;
-            state.entity_id = binding->entity;
-            for (const auto &attachment : arena.snapshot()) {
-                if (attachment.entity != binding->entity ||
-                    attachment.component_index >= object.components.size()) {
-                    continue;
-                }
-                state.behavior_attachments[attachment.component_index] =
-                    EditorRuntimeBehaviorAttachmentState{
-                        .handle = attachment.handle.value,
-                        .attachment_seq = attachment.attachment_seq,
-                        .owner = attachment.owner,
-                        .owner_generation =
-                            internal::registrationOwnerGeneration(
-                                attachment.owner),
-                        .pending = attachment.pending,
-                        .active = attachment.active,
-                    };
-            }
-            return state;
-        },
-        .edit = edit_dependencies,
-    }};
-    EditorCommandRpcAdapter rpc_adapter{rpc_service};
+    // This is the real server wired to the production service. Both `.edit`
+    // and `.runtime_query` come from editorruntimefactory; deleting either
+    // factory branch makes the positive/query assertions below fail.
+    EditorCommandRpcAdapter rpc_adapter{*editor_service};
     std::istringstream rpc_input;
     std::ostringstream rpc_output;
     RpcServer rpc_server{rpc_input, rpc_output};
@@ -1463,9 +1464,7 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
         REQUIRE_FALSE(response.contains("error"));
         return response.at("result");
     };
-    const auto rpc_session =
-        rpc("open_editor_session", {{"display_name", "wp361a rpc"}});
-    const auto rpc_actor = rpc_session.at("actor_id").get<std::uint64_t>();
+    const auto rpc_actor = actor;
     const auto collision = rpc_response(
         "edit",
         {{"actor_id", rpc_actor},
@@ -1492,7 +1491,7 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
                                        {"type", "wp361_behavior"},
                                        {"params", {{"hp", 4}}}}}}})}});
     REQUIRE(add_accepted.at("status") == "accepted");
-    rpc_service.commitPendingEdits();
+    editor_service->commitPendingEdits();
     const auto add_result = rpc(
         "get_edit_result", {{"ticket", add_accepted.at("ticket")}});
     REQUIRE(add_result.at("status") == "committed");
@@ -1530,7 +1529,7 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
             "attachment_seq");
     const auto components_rpc =
         rpc("get_components", {{"authoring_object_id", first_id.value}});
-    REQUIRE(runtime_query_count == 1);
+    REQUIRE(components_rpc.at("entity_id").is_object());
     const auto behavior_rpc = std::find_if(
         components_rpc.at("components").begin(),
         components_rpc.at("components").end(), [](const auto &component) {
@@ -1551,12 +1550,13 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
         commit({{"op", "destroy"}, {"object_id", first_id.value}});
     REQUIRE(arena.snapshot().size() == 1);
     REQUIRE(wp361_destroy_count == before_destroy + 2);
-    const auto undo = edits.enqueueUndo(
+    const auto undo = editor_service->undo(
         {{"actor_id", actor},
          {"base_revision", config.sceneDocument().revision().value},
          {"transaction_id", destroyed.at("transaction_id")}});
-    edits.commitPending();
-    const auto undone = edits.getResult({{"ticket", undo.at("ticket")}});
+    editor_service->commitPendingEdits();
+    const auto undone =
+        editor_service->getEditResult({{"ticket", undo.at("ticket")}});
     REQUIRE(undone.at("status") == "committed");
     arena.update(game);
     arena.update(game);
@@ -1564,23 +1564,667 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     REQUIRE(wp361_callback_trace[wp361_callback_trace.size() - 2] == "4:none");
     REQUIRE(wp361_callback_trace.back() == "9:none");
 
-    const auto redo = edits.enqueueRedo(
+    const auto redo = editor_service->redo(
         {{"actor_id", actor},
          {"base_revision", config.sceneDocument().revision().value},
          {"transaction_id", undone.at("transaction_id")}});
-    edits.commitPending();
-    REQUIRE(edits.getResult({{"ticket", redo.at("ticket")}})
+    editor_service->commitPendingEdits();
+    REQUIRE(editor_service->getEditResult({{"ticket", redo.at("ticket")}})
                 .at("status") == "committed");
     REQUIRE(arena.snapshot().size() == 1);
+    editor_service.reset();
     arena.deactivateAll();
-    for (const auto &binding : runtime_bindings) {
-        if (ecs.isAlive(binding.entity)) {
-            REQUIRE(GameObjects::remove(binding.entity));
-        }
-    }
+    GameObjects::removeAll();
+    REQUIRE(arena.snapshot().empty());
+    REQUIRE(ecs.liveCount() == 0);
     (void)first_spawn;
 }
 
+TEST_CASE("WP361b factory aggregate preserves scene isolation identity and lifetime",
+          "[wp361b][prefab][lifecycle][factory][aggregate][rpc]") {
+    ensureWp361bLifetimeBehavior();
+    ensureWp361Logger();
+    Wp361TemporaryProject temporary;
+    const Json prefab{
+        {"schema", "pelican.prefab"}, {"version", 1}, {"name", "unit"},
+        {"parameters", Json::array({
+             {{"name", "hp"}, {"type", "i32"}, {"default", 9}}
+         })},
+        {"components", Json::array({
+             {{"name", "behavior"}, {"id", "generated_logic"},
+              {"type", "wp361_behavior"},
+              {"params", {{"hp", tagged("hp")}}}}
+         })}};
+    const Json probe{
+        {"name", "Probe"},
+        {"components", Json::array({
+             transform(),
+             Json{{"name", "camera"}, {"type", "perspective"},
+                  {"yfov", 0.7F}, {"znear", 0.2F}, {"zfar", 200.0F}},
+             Json{{"name", "light"}, {"type", "directional"},
+                  {"direction", {0.0F, -1.0F, 0.0F}},
+                  {"color", {1.0F, 0.8F, 0.6F}}, {"intensity", 2.0F}},
+             Json{{"name", "collider"}, {"shape", "sphere"},
+                  {"radius", 0.75F}},
+             Json{{"name", "behavior"}, {"type", "wp361b_lifetime"},
+                  {"params", {{"hp", 1}}}}
+         })}};
+    const Json scene{
+        {"schema", "pelican.scene"}, {"version", 2},
+        {"scenes", {{"main", {{"objects", Json::array({probe})}}},
+                    {"secondary", {{"objects", Json::array()}}}}}};
+    const Json project{
+        {"schema", "pelican.project"}, {"version", 1},
+        {"name", "wp361b-factory"}, {"engine_min_version", "0.1.0"},
+        {"prefabs", Json::array({
+             {{"name", "unit"}, {"path", "unit.prefab.json"}}
+         })},
+        {"basic_config", {{"default_scene_id", "main"},
+                          {"scene_data_json", "scene.json"},
+                          {"asset_data_json", "assets.json"},
+                          {"rendering_config_json", "render.json"},
+                          {"default_rendering_pass", "main_render"}}}};
+    temporary.write("unit.prefab.json", prefab.dump());
+    temporary.write("scene.json", scene.dump());
+    temporary.write(
+        "assets.json",
+        Json{{"schema", "pelican.asset_data"}, {"version", 1},
+             {"models", Json::array()}}
+            .dump());
+    temporary.write(
+        "render.json",
+        Json{{"pipeline",
+              {{"preset",
+                "engine://render_pipelines/hybrid_v1.json"}}}}
+            .dump());
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(temporary.root(), false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    GET_MODULE(EngineLaunchConfig).headless = true;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    (void)config.sceneProjectionState();
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto &arena = GET_MODULE(BehaviorAttachmentArena);
+    auto &scene_loader = GET_MODULE(SceneLoader);
+    wp361b_lifetime_ecs = &ecs;
+    struct LifetimeObserverReset {
+        ~LifetimeObserverReset() { wp361b_lifetime_ecs = nullptr; }
+    } lifetime_observer_reset;
+    wp361b_lifetime_init_count = 0;
+    wp361b_lifetime_destroy_alive.clear();
+    wp361_callback_trace.clear();
+    wp361_destroy_count = 0;
+    scene_loader.load("main");
+    REQUIRE(scene_loader.currentScene() == "main");
+
+    struct OneProjectionFault final : EditorProjectionFaultInjector {
+        EditorProjectionFaultPoint point = EditorProjectionFaultPoint::Prepare;
+        std::string adapter;
+        std::function<void()> on_fail;
+        std::vector<std::string> observations;
+        bool armed = false;
+        bool fired = false;
+        bool shouldFail(EditorProjectionFaultPoint observed,
+                        std::string_view name) noexcept override {
+            observations.push_back(
+                std::to_string(static_cast<int>(observed)) + ":" +
+                std::string{name});
+            if (!armed || fired || observed != point || name != adapter) {
+                return false;
+            }
+            fired = true;
+            armed = false;
+            if (on_fail) {
+                auto callback = std::move(on_fail);
+                callback();
+            }
+            return true;
+        }
+        void arm(EditorProjectionFaultPoint next_point,
+                 std::string next_adapter) {
+            point = next_point;
+            adapter = std::move(next_adapter);
+            armed = true;
+            fired = false;
+            observations.clear();
+            on_fail = {};
+        }
+    } fault;
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.projection_fault_injector = &fault});
+    EditorCommandRpcAdapter rpc_adapter{*service};
+    std::istringstream rpc_input;
+    std::ostringstream rpc_output;
+    RpcServer rpc_server{rpc_input, rpc_output};
+    configureEditorRpcHandlers(
+        rpc_server, rpc_adapter,
+        EditorRpcHandlerHooks{.snapshot_imported = [] {},
+                              .save_busy = [] { return false; }});
+    std::uint64_t rpc_id = 1;
+    const auto rpc_response = [&](std::string method, Json params) {
+        return Json::parse(rpc_server.processLine(
+            Json{{"jsonrpc", "2.0"}, {"id", rpc_id++},
+                 {"method", std::move(method)}, {"params", std::move(params)}}
+                .dump()));
+    };
+    const auto rpc = [&](std::string method, Json params) {
+        const auto response =
+            rpc_response(std::move(method), std::move(params));
+        INFO("WP361b RPC response: " << response.dump());
+        REQUIRE_FALSE(response.contains("error"));
+        return response.at("result");
+    };
+    const auto session =
+        rpc("open_editor_session", {{"display_name", "wp361b factory"}});
+    const auto actor = session.at("actor_id").get<std::uint64_t>();
+    const auto submit = [&](Json operations) {
+        const auto accepted = rpc(
+            "edit", {{"actor_id", actor},
+                     {"base_revision", config.sceneDocument().revision().value},
+                     {"operations", std::move(operations)}});
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        return rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+    };
+    const auto commit = [&](Json operations) {
+        const auto result = submit(std::move(operations));
+        INFO("WP361b edit result: " << result.dump());
+        REQUIRE(result.at("status") == "committed");
+        return result;
+    };
+    const auto runtime_snapshot = [] {
+        const auto full = internal::editorRuntimeStateSnapshotForTesting();
+        return OJson{
+            {"camera", full.at("camera")},
+            {"light", full.at("light")},
+            {"phys", full.at("phys")},
+            {"behavior_attachments",
+             full.at("behavior").at("attachments")},
+        };
+    };
+    const auto find_object = [&](std::string_view scene_id,
+                                 std::string_view name)
+        -> const ResolvedObject & {
+        const auto *resolved_scene = config.resolvedScene().findScene(scene_id);
+        REQUIRE(resolved_scene != nullptr);
+        const auto found = std::find_if(
+            resolved_scene->objects.begin(), resolved_scene->objects.end(),
+            [&](const auto &object) { return object.name == name; });
+        REQUIRE(found != resolved_scene->objects.end());
+        return *found;
+    };
+    const auto plain_object = [](std::string name) {
+        return Json{{"name", std::move(name)},
+                    {"components", Json::array({transform()})}};
+    };
+    const auto prefab_object = [](std::string name) {
+        return Json{{"name", std::move(name)},
+                    {"components", Json::array({transform()})},
+                    {"prefab", {{"ref", "unit"},
+                                {"instance_id", "replaced"}}}};
+    };
+
+    // Current-scene positive control for all special lifecycle projections.
+    // The destroy half also checks that no ECS/camera/light/collider orphan is
+    // left behind.
+    const auto initial_runtime = runtime_snapshot();
+    const auto initial_live_count = ecs.liveCount();
+    REQUIRE(GET_MODULE(Camera).hasSceneCamera("Probe"));
+    REQUIRE(initial_runtime.at("light").at("directional").size() == 1);
+    REQUIRE(initial_runtime.at("phys").at("bindings").size() == 1);
+    const Json rich_object = {
+        {"name", "RuntimeRich"},
+        {"components", Json::array({
+             transform(),
+             Json{{"name", "camera"}, {"type", "perspective"},
+                  {"yfov", 0.8F}, {"znear", 0.25F}, {"zfar", 90.0F}},
+             Json{{"name", "light"}, {"type", "directional"},
+                  {"direction", {1.0F, -1.0F, 0.0F}},
+                  {"color", {0.3F, 0.4F, 0.5F}}, {"intensity", 3.0F}},
+             Json{{"name", "collider"}, {"shape", "sphere"},
+                  {"radius", 1.25F}}
+         })}
+    };
+    (void)commit(Json::array({
+        {{"op", "spawn"}, {"scene_id", "main"}, {"object", rich_object}}
+    }));
+    const auto rich_query = rpc(
+        "get_components", {{"scene_id", "main"}, {"name", "RuntimeRich"}});
+    const auto rich_entity = GameObjectId{
+        rich_query.at("entity_id").at("index").get<std::uint32_t>(),
+        rich_query.at("entity_id").at("gen").get<std::uint32_t>()};
+    const auto rich_runtime = runtime_snapshot();
+    REQUIRE(ecs.isAlive(rich_entity));
+    REQUIRE(GET_MODULE(Camera).hasSceneCamera("RuntimeRich"));
+    REQUIRE(rich_runtime.at("light").at("directional").size() == 2);
+    REQUIRE(rich_runtime.at("phys").at("bindings").size() == 2);
+    const auto rich_id =
+        find_object("main", "RuntimeRich").authoring_object_id;
+    (void)commit(Json::array({
+        {{"op", "destroy"}, {"object_id", rich_id.value}}
+    }));
+    const auto after_rich_destroy = runtime_snapshot();
+    REQUIRE_FALSE(ecs.isAlive(rich_entity));
+    REQUIRE_FALSE(GET_MODULE(Camera).hasSceneCamera("RuntimeRich"));
+    REQUIRE(GET_MODULE(Camera).hasSceneCamera("Probe"));
+    REQUIRE(after_rich_destroy.at("light").at("directional").size() == 1);
+    REQUIRE(after_rich_destroy.at("phys").at("bindings").size() == 1);
+    REQUIRE(ecs.liveCount() == initial_live_count);
+
+    // A non-current lifecycle edit must remain authoring-only. The oracle is
+    // the production isolation snapshot and enumerates all four affected
+    // runtime domains rather than comparing only resolved component JSON.
+    const auto before_secondary_spawn = runtime_snapshot();
+    (void)commit(Json::array({
+        {{"op", "spawn"}, {"scene_id", "secondary"},
+         {"declaration_index", 0},
+         {"object",
+          Json{{"name", "SecondaryOnly"},
+               {"components", Json::array({
+                    transform(),
+                    Json{{"name", "camera"}, {"type", "orthographic"},
+                         {"xmag", 4.0F}, {"ymag", 3.0F}},
+                    Json{{"name", "light"}, {"type", "directional"},
+                         {"direction", {1.0F, 0.0F, 0.0F}},
+                         {"color", {0.2F, 0.3F, 1.0F}}},
+                    Json{{"name", "collider"}, {"shape", "sphere"},
+                         {"radius", 3.0F}}
+                })},
+               {"prefab", {{"ref", "unit"},
+                           {"instance_id", "replaced"}}}}},
+         {"new_instance_id", "gi_secondary"}}
+    }));
+    REQUIRE(runtime_snapshot() == before_secondary_spawn);
+    const auto secondary_query =
+        rpc("get_components", {{"scene_id", "secondary"},
+                               {"name", "SecondaryOnly"}});
+    REQUIRE_FALSE(secondary_query.contains("entity_id"));
+    const auto secondary_id =
+        find_object("secondary", "SecondaryOnly").authoring_object_id;
+
+    const auto before_secondary_destroy = runtime_snapshot();
+    (void)commit(Json::array({
+        {{"op", "destroy"}, {"object_id", secondary_id.value}}
+    }));
+    REQUIRE(runtime_snapshot() == before_secondary_destroy);
+    REQUIRE(config.resolvedScene().findScene("secondary")->objects.empty());
+
+    // One request may author lifecycle changes in several scenes; only main
+    // receives an aggregate runtime participant.
+    (void)commit(Json::array({
+        {{"op", "spawn"}, {"scene_id", "main"},
+         {"declaration_index", 1},
+         {"object", plain_object("MainBatch")}},
+        {{"op", "spawn"}, {"scene_id", "secondary"},
+         {"declaration_index", 0},
+         {"object", plain_object("SecondaryBatch")}}
+    }));
+    REQUIRE(find_object("main", "MainBatch").name == "MainBatch");
+    REQUIRE(find_object("secondary", "SecondaryBatch").name ==
+            "SecondaryBatch");
+    REQUIRE(rpc("get_components", {{"scene_id", "main"},
+                                   {"name", "MainBatch"}})
+                .contains("entity_id"));
+    REQUIRE_FALSE(rpc("get_components", {{"scene_id", "secondary"},
+                                         {"name", "SecondaryBatch"}})
+                      .contains("entity_id"));
+    GameContext game;
+    arena.update(game);
+    arena.update(game);
+    REQUIRE(wp361b_lifetime_init_count == 1);
+
+    const auto probe_id = find_object("main", "Probe").authoring_object_id;
+    // Leading spawn rebases Probe to object index 1. The behavior add in the
+    // same operations array must consume one candidate-derived identity plan.
+    (void)commit(Json::array({
+        {{"op", "spawn"}, {"scene_id", "main"},
+         {"declaration_index", 0},
+         {"object", prefab_object("IdentityHead")},
+         {"new_instance_id", "gi_identity"}},
+        {{"op", "add_component"}, {"object_id", probe_id.value},
+         {"component_index", 5},
+         {"component", {{"name", "behavior"},
+                        {"type", "wp361_behavior"},
+                        {"params", {{"hp", 4}}}}}}
+    }));
+    arena.update(game);
+    arena.update(game);
+    const auto journal = rpc("query_journal", Json::object());
+    const auto &forward = journal.at("records").back().at("ordered_forward");
+    const auto journal_add = std::find_if(
+        forward.begin(), forward.end(), [](const auto &operation) {
+            return operation.at("op") == "add_component";
+        });
+    REQUIRE(journal_add != forward.end());
+    const auto journal_handle =
+        journal_add->at("attachment_handle").get<std::uint64_t>();
+    const auto journal_seq =
+        journal_add->at("attachment_seq").get<std::uint64_t>();
+    REQUIRE(journal_seq == sceneBehaviorAttachmentSeq(1, 5));
+    const auto probe_entity = scene_loader.objectId("Probe");
+    REQUIRE(probe_entity.has_value());
+    const auto arena_after_identity = arena.snapshot();
+    const auto arena_identity = std::find_if(
+        arena_after_identity.begin(), arena_after_identity.end(),
+        [&](const auto &attachment) {
+            return attachment.entity == *probe_entity &&
+                   attachment.component_index == 5;
+        });
+    REQUIRE(arena_identity != arena_after_identity.end());
+    REQUIRE(arena_identity->handle.value == journal_handle);
+    REQUIRE(arena_identity->attachment_seq == journal_seq);
+    const auto probe_rpc =
+        rpc("get_components", {{"authoring_object_id", probe_id.value}});
+    const auto rpc_behavior = std::find_if(
+        probe_rpc.at("components").begin(), probe_rpc.at("components").end(),
+        [](const auto &component) {
+            return component.contains("name") &&
+                   component.at("name") == "behavior" &&
+                   component.at("component_index") == 5;
+        });
+    REQUIRE(rpc_behavior != probe_rpc.at("components").end());
+    REQUIRE(rpc_behavior->at("behavior").at("attachment_handle") ==
+            journal_handle);
+    REQUIRE(rpc_behavior->at("behavior").at("attachment_seq") ==
+            journal_seq);
+
+    // A later component insertion changes the first add's authored origin.
+    // Both journal metadata and the production desired-handle claim must bind
+    // to the final origin, and undo/redo must rebuild that association for
+    // their own next_resolved scene rather than reuse a forward sequence.
+    (void)commit(Json::array({
+        {{"op", "spawn"}, {"scene_id", "main"},
+         {"object", plain_object("OriginShift")}}
+    }));
+    const auto origin_shift_id =
+        find_object("main", "OriginShift").authoring_object_id;
+    const auto origin_shift_runtime = rpc(
+        "get_components", {{"scene_id", "main"}, {"name", "OriginShift"}});
+    const auto origin_shift_entity = GameObjectId{
+        origin_shift_runtime.at("entity_id").at("index").get<std::uint32_t>(),
+        origin_shift_runtime.at("entity_id").at("gen").get<std::uint32_t>()};
+    const auto shifted_add = commit(Json::array({
+        {{"op", "add_component"}, {"object_id", origin_shift_id.value},
+         {"component_index", 1},
+         {"component", {{"name", "behavior"}, {"type", "wp361_behavior"},
+                        {"params", {{"hp", 11}}}}}},
+        {{"op", "add_component"}, {"object_id", origin_shift_id.value},
+         {"component_index", 0},
+         {"component", {{"name", "behavior"}, {"type", "wp361_behavior"},
+                        {"params", {{"hp", 22}}}}}}
+    }));
+    arena.update(game);
+    arena.update(game);
+    const auto shifted_journal = rpc("query_journal", Json::object());
+    const auto &shifted_forward =
+        shifted_journal.at("records").back().at("ordered_forward");
+    REQUIRE(shifted_forward.size() == 2);
+    const auto first_shifted_handle =
+        shifted_forward[0].at("attachment_handle").get<std::uint64_t>();
+    const auto second_shifted_handle =
+        shifted_forward[1].at("attachment_handle").get<std::uint64_t>();
+    const auto &shifted_object = find_object("main", "OriginShift");
+    REQUIRE(shifted_forward[0].at("attachment_seq") ==
+            sceneBehaviorAttachmentSeq(shifted_object.authoring_object_index,
+                                       2));
+    REQUIRE(shifted_forward[1].at("attachment_seq") ==
+            sceneBehaviorAttachmentSeq(shifted_object.authoring_object_index,
+                                       0));
+    const auto require_shifted_identities = [&] {
+        const auto attachments = arena.snapshot();
+        const auto at_origin = [&](std::size_t authored_index) {
+            return std::find_if(
+                attachments.begin(), attachments.end(),
+                [&](const auto &attachment) {
+                    const auto *authored = attachment.component_origin.authored();
+                    return attachment.entity == origin_shift_entity &&
+                           authored != nullptr &&
+                           authored->authoring_component_index == authored_index;
+                });
+        };
+        const auto first = at_origin(2);
+        const auto second = at_origin(0);
+        REQUIRE(first != attachments.end());
+        REQUIRE(second != attachments.end());
+        REQUIRE(first->handle.value == first_shifted_handle);
+        REQUIRE(second->handle.value == second_shifted_handle);
+        REQUIRE(first->attachment_seq ==
+                shifted_forward[0].at("attachment_seq"));
+        REQUIRE(second->attachment_seq ==
+                shifted_forward[1].at("attachment_seq"));
+    };
+    require_shifted_identities();
+
+    const auto shifted_undo = rpc(
+        "undo", {{"actor_id", actor},
+                 {"base_revision", config.sceneDocument().revision().value},
+                 {"transaction_id", shifted_add.at("transaction_id")}});
+    REQUIRE(shifted_undo.at("status") == "accepted");
+    service->commitPendingEdits();
+    const auto shifted_undone = rpc(
+        "get_edit_result", {{"ticket", shifted_undo.at("ticket")}});
+    REQUIRE(shifted_undone.at("status") == "committed");
+    const auto after_shifted_undo = arena.snapshot();
+    REQUIRE(std::none_of(
+        after_shifted_undo.begin(), after_shifted_undo.end(),
+        [&](const auto &attachment) {
+            return attachment.entity == origin_shift_entity;
+        }));
+
+    const auto shifted_redo = rpc(
+        "redo", {{"actor_id", actor},
+                 {"base_revision", config.sceneDocument().revision().value},
+                 {"transaction_id", shifted_undone.at("transaction_id")}});
+    REQUIRE(shifted_redo.at("status") == "accepted");
+    service->commitPendingEdits();
+    const auto shifted_redone = rpc(
+        "get_edit_result", {{"ticket", shifted_redo.at("ticket")}});
+    REQUIRE(shifted_redone.at("status") == "committed");
+    arena.update(game);
+    arena.update(game);
+    require_shifted_identities();
+
+    (void)commit(Json::array({
+        {{"op", "destroy"}, {"object_id", origin_shift_id.value}}
+    }));
+    const auto after_shifted_destroy = arena.snapshot();
+    REQUIRE(std::none_of(
+        after_shifted_destroy.begin(), after_shifted_destroy.end(),
+        [&](const auto &attachment) {
+            return attachment.entity == origin_shift_entity;
+        }));
+
+    // Public attachment_handle is the producer/consumer CAS. This is the
+    // exact Studio/ImGui shape; the positive reaches the production arena and
+    // the stale value remains a named stale_revision rejection.
+    (void)commit(Json::array({
+        {{"op", "set_component_value"}, {"object_id", probe_id.value},
+         {"component_slot", "behavior"}, {"attachment_index", 5},
+         {"attachment_handle", journal_handle},
+         {"field_path", "/params/hp"}, {"value", 5}}
+    }));
+    const auto stale_cas = rpc_response(
+        "edit", {{"actor_id", actor},
+                 {"base_revision", config.sceneDocument().revision().value},
+                 {"operations", Json::array({
+                      {{"op", "set_component_value"},
+                       {"object_id", probe_id.value},
+                       {"component_slot", "behavior"},
+                       {"attachment_index", 5},
+                       {"attachment_handle", journal_handle + 1U},
+                       {"field_path", "/params/hp"}, {"value", 6}}
+                  })}});
+    REQUIRE(stale_cas.at("result").at("status") == "rejected");
+    REQUIRE(stale_cas.at("result").at("error").at("code") ==
+            "stale_revision");
+
+    // The same real server has an authored positive above and the Generated
+    // negative below, both with production .edit and .runtime_query wiring.
+    const auto &identity_head = find_object("main", "IdentityHead");
+    const auto generated_gid =
+        generatedByKey(identity_head, "generated_logic")
+            .origin.generated()->stable_generated_id;
+    const auto generated_rejected = rpc_response(
+        "edit", {{"actor_id", actor},
+                 {"base_revision", config.sceneDocument().revision().value},
+                 {"operations", Json::array({
+                      {{"op", "set_component_value"},
+                       {"object_id", identity_head.authoring_object_id.value},
+                       {"generated_id", generated_gid},
+                       {"field_path", "/params/hp"}, {"value", 8}}
+                  })}});
+    REQUIRE(generated_rejected.at("error").at("data").at("code") ==
+            "prefab_generated_read_only");
+
+    // All operation syntax is checked before selector resolution. Without the
+    // syntax leaf this valid gid would win and incorrectly report read_only.
+    const auto malformed_before_selector = rpc_response(
+        "edit", {{"actor_id", actor},
+                 {"base_revision", config.sceneDocument().revision().value},
+                 {"operations", Json::array({
+                      {{"op", "spawn"}, {"scene_id", "main"},
+                       {"object", 42}},
+                      {{"op", "set_component_value"},
+                       {"object_id", identity_head.authoring_object_id.value},
+                       {"generated_id", generated_gid},
+                       {"field_path", "/params/hp"}, {"value", 8}}
+                  })}});
+    REQUIRE(malformed_before_selector.at("error").at("data").at("code") ==
+            "invalid_params");
+
+    const auto init_trace_before_params = wp361_callback_trace;
+    const auto destroy_before_params = wp361_destroy_count;
+    const auto lifetime_init_before_params = wp361b_lifetime_init_count;
+    const auto lifetime_destroy_before_params =
+        wp361b_lifetime_destroy_alive;
+    (void)commit(Json::array({
+        {{"op", "set_component_value"}, {"object_id", probe_id.value},
+         {"component_slot", "behavior"}, {"attachment_index", 5},
+         {"attachment_handle", journal_handle},
+         {"field_path", "/params/hp"}, {"value", 6}},
+        {{"op", "set_component_value"}, {"object_id", probe_id.value},
+         {"component_slot", "behavior"}, {"attachment_index", 5},
+         {"attachment_handle", journal_handle},
+         {"field_path", "/params/hp"}, {"value", 8}},
+        {{"op", "spawn"}, {"scene_id", "main"},
+         {"object", plain_object("Unrelated")}}
+    }));
+    arena.update(game);
+    REQUIRE(wp361_callback_trace == init_trace_before_params);
+    REQUIRE(wp361_destroy_count == destroy_before_params);
+    REQUIRE(wp361b_lifetime_init_count == lifetime_init_before_params);
+    REQUIRE(wp361b_lifetime_destroy_alive == lifetime_destroy_before_params);
+    const auto arena_after_params = arena.snapshot();
+    const auto params_attachment = std::find_if(
+        arena_after_params.begin(), arena_after_params.end(),
+        [&](const auto &attachment) {
+            return attachment.entity == *probe_entity &&
+                   attachment.component_index == 5;
+        });
+    REQUIRE(params_attachment != arena_after_params.end());
+    REQUIRE(params_attachment->handle.value == journal_handle);
+    REQUIRE(Json::parse(params_attachment->canonical_params).at("hp") == 8);
+
+    (void)commit(Json::array({
+        {{"op", "spawn"}, {"scene_id", "main"},
+         {"object", plain_object("BatchParent")}},
+        {{"op", "spawn"}, {"scene_id", "main"},
+         {"object", Json{{"name", "BatchChild"},
+                         {"parent", "BatchParent"},
+                         {"components", Json::array({transform()})}}}}
+    }));
+    const auto parent_runtime =
+        rpc("get_components", {{"scene_id", "main"},
+                               {"name", "BatchParent"}});
+    const auto child_runtime =
+        rpc("get_components", {{"scene_id", "main"},
+                               {"name", "BatchChild"}});
+    REQUIRE(parent_runtime.contains("entity_id"));
+    REQUIRE(child_runtime.contains("entity_id"));
+    const auto parent_entity = GameObjectId{
+        parent_runtime.at("entity_id").at("index").get<std::uint32_t>(),
+        parent_runtime.at("entity_id").at("gen").get<std::uint32_t>()};
+    const auto child_entity = GameObjectId{
+        child_runtime.at("entity_id").at("index").get<std::uint32_t>(),
+        child_runtime.at("entity_id").at("gen").get<std::uint32_t>()};
+    REQUIRE(ecs.component<LocalTransformComponent>(child_entity).parent ==
+            parent_entity);
+
+    const auto destroyed_probe_entity = *probe_entity;
+    const auto before_fault_attachments = arena.snapshot();
+    const auto lifetime_in_snapshot = std::find_if(
+        before_fault_attachments.begin(), before_fault_attachments.end(),
+        [&](const auto &attachment) {
+            return attachment.entity == destroyed_probe_entity &&
+                   attachment.component_index == 4;
+        });
+    REQUIRE(lifetime_in_snapshot != before_fault_attachments.end());
+    const auto lifetime_handle = lifetime_in_snapshot->handle.value;
+    const auto set_then_destroy = [&] {
+        return Json::array({
+            {{"op", "set_component_value"}, {"object_id", probe_id.value},
+             {"component_slot", "behavior"}, {"attachment_index", 4},
+             {"attachment_handle", lifetime_handle},
+             {"field_path", "/params/hp"}, {"value", 99}},
+            {{"op", "destroy"}, {"object_id", probe_id.value}}
+        });
+    };
+    wp361b_lifetime_destroy_alive.clear();
+    const auto semantic_before_fault =
+        AuthoringSceneAuthority::encodeSemantic(config.sceneDocument());
+    const auto revision_before_fault = config.sceneDocument().revision();
+    const auto runtime_before_fault = runtime_snapshot();
+    const auto deferred_before_fault =
+        arena.deferredMutationCountForTesting();
+    for (const auto point : {EditorProjectionFaultPoint::Prepare,
+                             EditorProjectionFaultPoint::Publish,
+                             EditorProjectionFaultPoint::AfterPublication}) {
+        fault.arm(point,
+                  point == EditorProjectionFaultPoint::AfterPublication
+                      ? "scene_pair"
+                      : "lifecycle.scene.main");
+        if (point != EditorProjectionFaultPoint::Prepare) {
+            // Mutation arrives after lifecycle prepare but before rollback;
+            // PreparedBehaviorEntityPreDestroy owns the queue checkpoint.
+            fault.on_fail = [&] {
+                arena.deferCreateObject(LocalTransformComponent{});
+            };
+        }
+        const auto failed = submit(set_then_destroy());
+        CAPTURE(static_cast<int>(point), fault.observations, failed.dump());
+        REQUIRE(fault.fired);
+        REQUIRE(failed.at("status") == "failed");
+        REQUIRE(config.sceneDocument().revision() == revision_before_fault);
+        REQUIRE(AuthoringSceneAuthority::encodeSemantic(
+                    config.sceneDocument()) == semantic_before_fault);
+        REQUIRE(runtime_snapshot() == runtime_before_fault);
+        REQUIRE(ecs.isAlive(destroyed_probe_entity));
+        REQUIRE(wp361b_lifetime_destroy_alive.empty());
+        REQUIRE(arena.deferredMutationCountForTesting() ==
+                deferred_before_fault);
+    }
+    (void)commit(set_then_destroy());
+    REQUIRE(wp361b_lifetime_destroy_alive == std::vector<bool>{true});
+    REQUIRE_FALSE(ecs.isAlive(destroyed_probe_entity));
+    REQUIRE_FALSE(GET_MODULE(Camera).hasSceneCamera("Probe"));
+    const auto after_probe_destroy = runtime_snapshot();
+    REQUIRE(after_probe_destroy.at("light").at("directional").empty());
+    REQUIRE(after_probe_destroy.at("phys").at("bindings").empty());
+    const auto after_probe_attachments = arena.snapshot();
+    REQUIRE(std::none_of(
+        after_probe_attachments.begin(), after_probe_attachments.end(),
+        [&](const auto &attachment) {
+            return attachment.entity == destroyed_probe_entity;
+        }));
+
+    service.reset();
+    arena.deactivateAll();
+    GameObjects::removeAll();
+    REQUIRE(arena.snapshot().empty());
+    REQUIRE(ecs.liveCount() == 0);
+}
 TEST_CASE("WP361 generated identity survives edit undo redo removal and authored insertion",
           "[wp361][prefab][identity]") {
     auto fixture = prepareFixture();
