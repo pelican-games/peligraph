@@ -30,3 +30,13 @@ not a fresh device capture.  The final WP364 report must keep that distinction.
 
 The implementation and tests may read these fixtures, but must never rewrite
 or bless them from current output.
+
+2026-08-30 integration amendment: parent_baseline.json's per-project
+{file_count, sha256} measured the WHOLE working directory, which counts
+untracked local artifacts (caches, saves) and therefore differs between
+a clean worktree and a long-lived checkout. Replaced by
+parent_manifest.json (version 2): per-file sha256 of the files TRACKED
+at the same frozen commit d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72,
+generated mechanically from git blobs of that commit by the integrator
+(not by the implementation). Shipped-bytes invariance means these
+tracked files are unchanged; untracked neighbors are out of scope.
