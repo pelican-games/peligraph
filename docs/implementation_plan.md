@@ -15358,3 +15358,16 @@ design_raytracing.md §7 に「callable data の検証は RT4 で」の note を
    `min(2, fact)` の類が全条件を通る穴を塞ぐ)
 
 以降の指摘はコードレビューで受ける。
+
+#### WP364 実装の UNMET 2 件への裁定(v3 追補)
+
+1. **「payload location」は仕様の誤り(v3 決定 2 の修正)**: SPIR-V の
+   `OpTraceRayKHR` は payload **変数の operand id** を直接参照し、glslang は
+   GLSL の location をコンパイル時に解決するため最終 SPIR-V に Location 装飾は
+   現れない。record が持つべきは location でなく **operand id から解決した
+   payload 変数の canonical type tree**。「装飾欠落時 location 0 fallback」は
+   削除し、比較は常に変数の型で行う。受け入れ(実 GLSL で 2 つの payload 変数を
+   使い分ける pipeline の正例・cross-wire 負例)はこの形で成立させる。
+2. **web matrix は本 WP では N/A**: web は別リポジトリ管轄で、`compute_tasks`
+   の明示拒否(09_web.md)は既存のまま。本 WP は wire に新 field を足していない
+   (max_recursion 省略時は frame plan 不変が受け入れ済み)。
