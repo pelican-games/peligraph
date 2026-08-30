@@ -16104,3 +16104,85 @@ row の内容 sort と幾何一致 row の束縛不一致拒否 / 二段 commit(
 test 基盤の別 WP か、次に test/ を大きく触る WP に同乗させる。
 
 次: WP366 の §10 コードレビュー(fast_mode 適用)→ 先行裁定の作業順どおり RT2a。
+
+#### WP366 コードレビュー(不合格・10 件、致命 1)の仕分けと WP366a
+
+##### 裁定: revert ではなく修正パッケージ(理由を残す)
+
+決定表の即断基準は「use-after-free 級 = 問答無用で revert」だが、これは
+**WP361b v2 の文脈(同じ機構への 2 度目の失敗で、UB が導入機構の中核にあった)**
+で書かれたものである。本件は当てはまらない:
+
+- **本体 WP の初回レビュー**であり、表の第 1 行(実害 → 修正パッケージ 1 回)に該当
+- **中核設計は生存**: 3 domain の代数・SBT packing(untraced slot・終端 padding・
+  `vec3@0+f32@12`・overflow)・cache の rollback 除外・material の handle/name 分離は
+  いずれも「壊せなかった項目」
+- UAF は**新規に足した staged publication の配管**にあり、処方(span を所有 vector へ
+  copy、prepared state を所有 transaction へ move)が具体的で局所
+- **出荷構成では到達不能**: 遅延実行は layout 世代のみで発生し、出荷 4 project は
+  `ray_group_layout` を 0 件しか持たない(実測)。layout 不在の reload は即時実行のため
+  span は生存している
+
+**WP366a を 1 回だけ。以降の指摘は無条件で台帳。**
+
+### WP366a: RT1b の修理(最終。以降の指摘は台帳)
+
+**§4 規則 11 上段。コードレビューのみ(仕様源は上記 10 件)。見積: 中〜大。**
+
+1. **致命・UAF**(#2): renderer が `companion_requests` の `std::span` を lambda に
+   値 capture しているが、実体は ReloadService の局所 `companion_batch` で、
+   layout 世代では lambda が次 submit まで遅延されるため破棄済み。
+   **span を所有する `std::vector<ReloadRequest>` へ copy**。
+   authoring 経路も `[&, default_pass_name]` で prepared 局所と `source_commit` の
+   参照を捕捉しているため、**所有する transaction object へ move**。
+   API は `committed` でなく **`staged` を返し submit 後に完了通知**
+   (現在は callback 未実行のまま invalid pass ID・空 watch set・generation 0 を
+   公開して committed を返している)
+2. **legacy TLAS の byte 非等価**(#1): `instanceCustomIndex` が旧版の
+   「TLAS 内の密な行番号」から draw inventory の source index に変わっている。
+   **legacy branch では `instance_custom_index = result.size()`**(source index は
+   lookup 専用)。受け入れ: **先頭に除外 instance(skinned 等)を置いた
+   null-layout 回帰**で親版 TLAS bytes と一致
+3. **late failure で runtime 以外が candidate のまま**(#3): renderer の pass ID・
+   公開 config・watch dependency・履歴・reload counters が candidate へ更新済みで、
+   rollback するのは staged_publication だけ。**これらも staged payload に含め、
+   `publishStagedGeneration` と同じ commit 点でのみ move-publication**。
+   5-point テストは **ReloadService 経由**にし、失敗後にもう一度 render して
+   旧 config/watch/output を検査(現在は loader 直呼びで active runtime と TLAS のみ)
+4. **raygen/miss の shader-record を受理して data を書かない**(#4):
+   validator の `allowed` と `required` を分け、**raygen/miss/untraced hit では
+   shader-record storage 自体を named reject**
+5. **幾何一致判定が asset/mesh metadata に依存**(#5): q の sort key と
+   「幾何一致 key」を**分離**し、後者は **GPU geometry allocation/range と
+   canonical transform のみ**(asset/material/mesh/node 名を含めない)。
+   負例: 同一 geometry・同一 transform で asset alias / mesh_index 違いの束縛不一致
+6. **`ray_type_count` が shader に公開されていない**(#6): 仕様が要求している。
+   macro 制約と衝突しない予約済み generated constant
+   (例 `const uint pelican_ray_type_count = Ru;`)を公開し、
+   **fixture と実 shader が literal でなくそれを operand に使う**
+7. **stride 負例が production 配線を検証していない**(#7): final SPIR-V validator から
+   `validateRayTracingRecordAddressing` 呼び出しだけを外しても純テストは通る。
+   **実 config/PipelineFactory から stride `1` の raygen を load** して
+   named reject を確認し、hookup 無効化で同じ shader が通ることも同一テストで。
+   `ray_type_offset_invalid@1` と `miss_index_invalid@1` も同様
+8. **material_ref 2 branch が production で証明されていない**(#8): GPU fixture が
+   `authored_asset_reference` と index を手書きしており、document propagation を
+   空にしても通る。**実 project material 文書と最小 glTF を loader から読み**、
+   reload・handle 退役/再利用・同名 material 拒否まで一つの production fixture で
+9. **cache/salt が代理条件**(#9): 直接 cache テストは generated include を手挿しして
+   vertex shader を compile しており RT task の hookup ではない。
+   **ReloadService 経由で group reorder と whitespace を別々に行い、production の
+   cache key/requests/misses を観測**。RT hookup を無効化する scoped seam も同一テストで。
+   併せて **`writeTextFile` を fail-fast 化**(親ディレクトリ作成 + open/write/flush
+   検査 + 直後の exact bytes 再読込)—— 台帳の負債(#WP366 完了節)をここで返す
+10. **matrix が build だけで RT1b を走らせていない**(#10): feature smoke は反対構成を
+    full build するが RT1b テストを実行せず、compiler-OFF branch は無条件 `SUCCEED`。
+    **各 contrast build で `raytracing_rt1b_test` を実行**し、compiler-OFF の
+    named reject・preview sidecar・OpenXR owner の全 SBT・capability 不在を
+    targeted test として走らせる
+
+**受け入れ全体**: 各修正に「取り消したら落ちる」対照 / 出荷 4 project・
+core resources・既存 RT feature の bytes 不変 / 全数 2 回(統合側 GPU 直列)/
+matrix は #10 のとおり実行まで。
+
+依存: WP366。**連鎖打ち切り: WP366a の §10 指摘は無条件で台帳。**
