@@ -16076,3 +16076,31 @@ AS 宣言面(RT3)/ callable・動的 record(RT4)/ 変形 geometry(RT5)/
 offline bake(RT-bake)。
 
 依存: WP364 + WP364a。**WP365 は廃止(挙動を変えない基盤 WP のため)。**
+
+#### WP366(RT1b)完了(2026-08-31)
+
+本体 + GPU fixture 修正。統合: 全数 **1463 ×2 緑**(GPU 直列込み)、doclink 2341 ok。
+基準値 N=1463(RT1a 完了時 1452 + WP366 11)。
+
+成立したもの: `pelican.ray_group_layout`(独立ファイル・sidecar 一度きり抽出)/
+3 domain の実装(`q×R+r`、operand 固定、production TLAS が `q×R` を書く)/
+std430 の record ABI(型 whitelist v1、`vec3@0+f32@12`、正準 JSON + mirror)/
+**final SPIR-V の shader-record ABI 一致を load 時検証**(`shader_record_abi_mismatch@1`)/
+material 束縛 overlay(`pelican.ray_bindings`、2 branch の material_ref)/
+row の内容 sort と幾何一致 row の束縛不一致拒否 / 二段 commit(cache は対象外)/
+生成 include と layout digest salt / 新規 named code 10 種。
+出荷 4 project・core resources・既存 RT feature は bytes 不変。
+
+統合中に閉じた 1 件(閉ループ内): GPU fixture の shader 8 ファイルが
+**全て黙って書かれていなかった**(`writeTextFile` が親ディレクトリを作らず
+書き込み失敗も検査しない)。原因は temp dir の実見で特定。
+
+##### 台帳のみの負債(この統合で判明)
+
+`test/headless_render_test.cpp` の `writeTextFile()` は親ディレクトリを作らず、
+書き込み失敗も検査しない。**「書いたつもりのファイルが無い」形の偽陽性を
+どの fixture でも生みうる**。他の fixture が既存ディレクトリに書いているため
+現状は露見していないだけ。硬化(親ディレクトリ作成 + 失敗時 throw)は
+test 基盤の別 WP か、次に test/ を大きく触る WP に同乗させる。
+
+次: WP366 の §10 コードレビュー(fast_mode 適用)→ 先行裁定の作業順どおり RT2a。
