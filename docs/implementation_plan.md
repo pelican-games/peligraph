@@ -15229,3 +15229,65 @@ set/unset —— は WP361+361a+362 の状態で全て成立し全数緑(1432×2
 b 系譜はプレファブでなく**エディタ lifecycle の後退修復**であり、これは WP363 に
 移った。よって **U1 は「完成、ただしエディタ lifecycle × behavior の合流は
 WP363 待ち」**と記録する。
+
+### WP364: RT1a —— RT interface 安全・再帰・オラクル基盤(語彙・SBT 不変)
+
+**§4 規則 11 上段(shader 契約・新検証基盤)。仕様 + コードレビュー。見積: 中〜大。**
+**規範は docs/design_raytracing.md(v4、3 巡 29 件消化)の RT1a 節 + §4 §5 §7 §11。**
+
+#### 範囲
+
+1. **RT reflection 拡張**(design §7): SPIR-V から ray payload / incoming payload /
+   hit attribute の storage class・location・構造 fingerprint・byte size・
+   entry point・所属 group を抽出して reflection に保持
+2. **load 時 named 検証**:
+   - stage 間 payload 構造一致(raygen↔miss↔closesthit、location ごと、
+     型全体の fingerprint 比較)
+   - **絶対規則**: intersection の無い(= 現行全ての)hit group で closesthit が
+     hit attribute を宣言するなら `vec2`(f32×2)固定。逸脱は shader path・
+     group・実際の型を含む名前付きエラー
+   - hit attribute の byte size ≤ `maxRayHitAttributeSize`
+   - **`OpTraceRayKHR` の operand 定数性**(design §11-3):
+     sbtRecordOffset / sbtRecordStride / missIndex が SPIR-V 上で定数で
+     あること。動的 operand は名前付き拒否。直接 `.spv` 供給も同じ検証を通る
+     (layout に対する範囲検証は RT1b —— 本 WP では定数性のみ)
+3. **`max_recursion`**: `ray_tracing` block に省略可 field(既定 1)。
+   pipelinefactory.cpp:625 の固定 1 を置換。device の `maxRayRecursionDepth`
+   超過は property 名・要求値・実値・device 名つき named 拒否
+4. **runtime facts 追加**(design §5): maxRayRecursionDepth /
+   maxShaderGroupStride / maxRayHitAttributeSize / maxRayDispatchInvocationCount +
+   各次元上限。dispatch 解決時に **overflow-safe な積検査**(現行は正のみ検査)
+5. **CPU 参照オラクル基盤**(design §4 + §11-4): std のみの参照交差器 +
+   **数値契約の表を本 WP で確定**(初期値: 座標 domain ±2^10 / t ∈ [1e-3, 2^12] /
+   triangle 最小角 ≥ 5°・最小面積 ≥ 1e-4 / ε_t = 相対 1e-3 / ε_b = 重心座標 1e-3 /
+   CPU は double + 有向丸めで区間構成 / **区間幅上限 = 相対 1e-2、超過 fixture は
+   生成器が拒否**)。fixture 生成器は margin を**構成的に**保証する
+6. **sentinel 検査(0-offset 経路)**: 既存 rt_shadow_mask_pipeline 相当の
+   単一 group 構成で、hit / miss / **再帰深度の実効**(深さ n で n 回 payload を
+   変える fixture shader)を CPU 参照と包含比較
+
+#### 受け入れ(§4 規約 10 の対照)
+
+- **既存 RT feature の bytes 不変**: rt_shadow_mask / rt_shadow_mask_pipeline の
+  GPU 出力・frame plan・shader cache key が本 WP 前後で一致(検証は正当 shader を
+  素通しするだけであることの証明)
+- **各検証の負例が実 load 経路で落ちる**: payload 不一致 / vec3 hit attribute /
+  attribute size 超過 / 動的 trace operand / recursion 超過(device 上限は
+  facts を偽装できる test seam 経由で 1 に固定して再現)—— それぞれ named code を
+  実 engine load(headless)で観測。**検証コードを削る mutation で素通りに戻る**こと
+- **オラクルが噛む**: 参照器の交差判定に故意の符号バグを入れると sentinel 比較が
+  落ちる(オラクル自身の対照)/ GPU 側 fixture の group handle を隣へずらすと
+  record ID 包含が落ちる
+- **再帰の実効**: max_recursion=1 のまま深さ 2 を trace する fixture が
+  device 挙動に依存しないよう、**仕様上 miss へ落ちる形の fixture** で
+  1 と 4 の出力差を CPU 参照と一致させる
+- 出荷 4 project(RT 0 使用)の bytes・golden 完全不変 / matrix:
+  compiler ON/OFF・Studio ON/OFF・web 拒否 / 全数 2 回 / GPU 直列は統合側
+
+#### やらないこと
+
+`ray_group_layout` / 3 domain / record ABI / 生成 include(RT1b = WP365 予定)。
+`.rahit/.rint/.rcall` の語彙追加(RT2a/RT3/RT4)。material ABI(RT2b)。
+AS への変更一切。
+
+依存: なし(WP362 まで到達済みの HEAD)。
