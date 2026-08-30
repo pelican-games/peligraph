@@ -466,6 +466,7 @@ void writeRt1bLayoutProject(
     writeTextFile(
         directory / "ray_bindings.json",
         R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":2},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":3},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}}]})json");
+    std::filesystem::create_directories(directory / "shaders");
 
     const auto raygen = [](std::string_view ray_type,
                            std::string_view miss,
@@ -599,11 +600,50 @@ void main() {
            {"format", "R32G32B32A32_UINT"},
            {"format_class", "data"},
            {"role", "data"},
-           {"usage", {"STORAGE", "TRANSFER_SRC"}}}}},
+           {"usage", {"STORAGE", "TRANSFER_SRC"}}},
+          {{"name", "gbuffer_albedo"},
+           {"extent_scale", 1.0},
+           {"format", "B8G8R8A8_UNORM"},
+           {"format_class", "scene"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "gbuffer_normal"},
+           {"extent_scale", 1.0},
+           {"format", "R16G16B16A16_SFLOAT"},
+           {"format_class", "data"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "gbuffer_material"},
+           {"extent_scale", 1.0},
+           {"format", "R8G8B8A8_UNORM"},
+           {"format_class", "data"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "gbuffer_worldpos"},
+           {"extent_scale", 1.0},
+           {"format", "R16G16B16A16_SFLOAT"},
+           {"format_class", "data"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "g_emissive"},
+           {"extent_scale", 1.0},
+           {"format", "B8G8R8A8_UNORM"},
+           {"format_class", "scene"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "scene_depth"},
+           {"extent_scale", 1.0},
+           {"format", "D32_SFLOAT"},
+           {"format_class", "data"},
+           {"usage", {"DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"}}}}},
         {"rendering_passes",
          {{{"name", "main_render"},
            {"passes",
-            {{{"name", "present"},
+            {{{"name", "deferred_geometry"},
+              {"type", "material"},
+              {"material_contract", "deferred_geometry_v1"},
+              {"output",
+               {{"color",
+                 {"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                  "gbuffer_worldpos", "g_emissive"}},
+                {"depth", "scene_depth"}}},
+              {"depth_store_op", "store"}},
+             {{"name", "present"},
               {"type", "fullscreen"},
               {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
               {"shader",
@@ -10540,10 +10580,23 @@ TEST_CASE(
                    forward_writes[index].hit_bytes));
         }
 
-        // Removing an authored row must shrink Q*R immediately.  A stale
-        // foliage row would keep the right-hand ray live or retain four SBT
-        // records, both of which are observed through production GPU state.
+        // Removing an authored row and its selector must shrink Q*R in the
+        // same staged publication.  A stale foliage row would keep the
+        // right-hand ray live or retain four SBT records, both of which are
+        // observed through production GPU state.
         REQUIRE(instances.removeModelInstance(reverse_b));
+        const auto bindings_path = temp_dir / "ray_bindings.json";
+        const auto complete_bindings = readTextFile(bindings_path);
+        auto reduced_bindings = nlohmann::json::parse(complete_bindings);
+        auto &binding_entries = reduced_bindings.at("bindings");
+        REQUIRE(binding_entries.size() == 2);
+        binding_entries.erase(binding_entries.begin() + 1);
+        writeTextFile(bindings_path, reduced_bindings.dump(2));
+        REQUIRE(GET_MODULE(watch::ReloadService)
+                    .applyRequestForTesting(
+                        watch::ReloadRequest{
+                            watch::makeAssetKey("ray_bindings.json"),
+                            watch::ReloadKind::modified, {}, 1}));
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
@@ -10576,6 +10629,12 @@ TEST_CASE(
         instances.setTrs(restored_b, {2.0f, 0.0f, 0.0f},
                          glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
                          glm::vec3{1.0f});
+        writeTextFile(bindings_path, complete_bindings);
+        REQUIRE(GET_MODULE(watch::ReloadService)
+                    .applyRequestForTesting(
+                        watch::ReloadRequest{
+                            watch::makeAssetKey("ray_bindings.json"),
+                            watch::ReloadKind::modified, {}, 2}));
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
