@@ -1216,15 +1216,17 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 pelican_define_test(raytracing_rt1a_test pelican_core spirv-reflect-static picosha2)
+find_package(Git QUIET)
+if(Git_FOUND)
+    file(TO_CMAKE_PATH "${GIT_EXECUTABLE}" PELICAN_TEST_GIT_EXECUTABLE)
+else()
+    set(PELICAN_TEST_GIT_EXECUTABLE "")
+endif()
 target_compile_definitions(pelican_test_raytracing_rt1a_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
-add_test(
-  NAME wp364_raytracing_wiring_mutation_contract
-  COMMAND ${CMAKE_COMMAND}
-    -P ${CMAKE_SOURCE_DIR}/cmake/test_wp364_raytracing_wiring_mutations.cmake
+    PELICAN_TEST_GIT_EXECUTABLE="${PELICAN_TEST_GIT_EXECUTABLE}"
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_raytracing_rt1a_test PRIVATE pelican_shaderc)

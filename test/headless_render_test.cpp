@@ -9856,7 +9856,7 @@ TEST_CASE(
     setupLogger();
     struct RunResult {
         RayTracingRuntimeFacts facts;
-        std::vector<std::uint32_t> create_depths;
+        std::vector<RayTracingPipelineCreateObservation> creates;
         std::vector<RayTracingValidationObservation> validations;
         std::size_t rebuilt_pipelines = 0;
     };
@@ -9884,11 +9884,7 @@ TEST_CASE(
                     }};
                 const ScopedRayTracingPipelineCreateObserver create_observer{
                     [&](const auto &observation) {
-                        REQUIRE_FALSE(
-                            observation.validator_digest.empty());
-                        result.create_depths.push_back(
-                            observation
-                                .max_pipeline_ray_recursion_depth);
+                        result.creates.push_back(observation);
                     }};
 
                 auto &renderer = GET_MODULE(Renderer);
@@ -9922,12 +9918,37 @@ TEST_CASE(
         }
     };
 
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    constexpr std::string_view engine_digest =
+        "rt1a-fnv1a64:d18212b9cb401962";
+#else
+    constexpr std::string_view engine_digest =
+        "rt1a-fnv1a64:22899212d139d671";
+#endif
+    constexpr std::string_view reload_digest =
+        "rt1a-fnv1a64:6cba33c01f3e8dae";
+    const auto check_creates = [](
+                                   const RunResult &result,
+                                   std::span<const std::uint32_t> depths,
+                                   std::string_view expected_digest) {
+        const std::string expected_digest_string{expected_digest};
+        REQUIRE(result.creates.size() == depths.size());
+        for (std::size_t index = 0; index < depths.size(); ++index) {
+            CHECK(result.creates[index]
+                      .max_pipeline_ray_recursion_depth ==
+                  depths[index]);
+            CHECK(result.creates[index].validator_digest ==
+                  expected_digest_string);
+        }
+    };
+
     const auto omitted = run(std::nullopt, true, false);
-    REQUIRE(omitted.create_depths ==
-            std::vector<std::uint32_t>{1});
+    const std::array omitted_depths{1u};
+    check_creates(omitted, omitted_depths, engine_digest);
     const auto explicit_one = run(1, false, false);
-    CHECK(explicit_one.create_depths ==
-          std::vector<std::uint32_t>{1});
+    const std::array explicit_one_depths{1u};
+    check_creates(
+        explicit_one, explicit_one_depths, engine_digest);
     std::array<bool, 4> observed_sites{};
     for (const auto &observation : omitted.validations) {
         CHECK(observation.facts == omitted.facts);
@@ -9946,8 +9967,9 @@ TEST_CASE(
                  omitted.facts.max_ray_recursion_depth));
     }
     const auto explicit_two = run(2, false, true);
-    CHECK(explicit_two.create_depths ==
-          std::vector<std::uint32_t>{2, 2});
+    const std::array explicit_two_depths{2u, 2u};
+    check_creates(
+        explicit_two, explicit_two_depths, reload_digest);
     CHECK(explicit_two.rebuilt_pipelines == 1);
 }
 

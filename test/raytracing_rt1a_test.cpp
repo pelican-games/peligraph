@@ -12,15 +12,20 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -28,8 +33,17 @@
 #include <utility>
 #include <vector>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#endif
+
 namespace Pelican {
 namespace {
+
+#ifndef PELICAN_TEST_GIT_EXECUTABLE
+#define PELICAN_TEST_GIT_EXECUTABLE ""
+#endif
 
 std::filesystem::path sourceRoot() {
     return std::filesystem::path{PELICAN_TEST_SOURCE_DIR};
@@ -71,52 +85,263 @@ struct ParentManifestMismatch {
     std::string detail;
 };
 
-std::vector<unsigned char> normalizeCrLfToLf(
-    std::span<const unsigned char> bytes) {
-    std::vector<unsigned char> normalized;
-    normalized.reserve(bytes.size());
-    for (std::size_t index = 0; index < bytes.size(); ++index) {
-        if (bytes[index] == 0x0d && index + 1 < bytes.size() &&
-            bytes[index + 1] == 0x0a) {
-            continue;
-        }
-        normalized.push_back(bytes[index]);
+struct GitCommandResult {
+    int exit_code = -1;
+    std::vector<unsigned char> output;
+};
+
+std::string shellQuote(std::string_view value) {
+#ifdef _WIN32
+    std::string quoted{"\""};
+    for (const auto character : value) {
+        if (character == '"') quoted += "\\\"";
+        else quoted += character;
     }
-    return normalized;
+    quoted += '"';
+    return quoted;
+#else
+    std::string quoted{"'"};
+    for (const auto character : value) {
+        if (character == '\'') quoted += "'\"'\"'";
+        else quoted += character;
+    }
+    quoted += '\'';
+    return quoted;
+#endif
+}
+
+GitCommandResult runGit(
+    const std::filesystem::path &root,
+    std::initializer_list<std::string> arguments) {
+    if (std::string_view{PELICAN_TEST_GIT_EXECUTABLE}.empty()) {
+        return {};
+    }
+    auto command = shellQuote(PELICAN_TEST_GIT_EXECUTABLE) +
+                   " -C " + shellQuote(root.string()) +
+                   " --no-pager";
+    for (const auto &argument : arguments) {
+        command += " " + shellQuote(argument);
+    }
+#ifdef _WIN32
+    command += " 2>NUL";
+    // _popen dispatches through cmd.exe. A command whose executable path is
+    // quoted needs one additional pair around the complete command line.
+    command = "\"" + command + "\"";
+    auto *pipe = _popen(command.c_str(), "r");
+#else
+    command += " 2>/dev/null";
+    auto *pipe = popen(command.c_str(), "r");
+#endif
+    if (pipe == nullptr) return {};
+#ifdef _WIN32
+    if (_setmode(_fileno(pipe), _O_BINARY) == -1) {
+        _pclose(pipe);
+        return {};
+    }
+#endif
+
+    GitCommandResult result;
+    std::array<unsigned char, 4096> buffer{};
+    while (const auto count =
+               std::fread(buffer.data(), 1, buffer.size(), pipe)) {
+        result.output.insert(result.output.end(), buffer.begin(),
+                             buffer.begin() + count);
+    }
+#ifdef _WIN32
+    result.exit_code = _pclose(pipe);
+#else
+    result.exit_code = pclose(pipe);
+#endif
+    return result;
+}
+
+struct ParentManifestGitAccess {
+    std::function<GitCommandResult(std::string_view)> show_head_blob;
+    std::function<GitCommandResult(std::string_view)> list_tracked_files;
+};
+
+ParentManifestGitAccess gitAccess(
+    const std::filesystem::path &root) {
+    return {
+        .show_head_blob = [root](std::string_view path) {
+            return runGit(
+                root,
+                {"show", "--no-ext-diff", "--no-textconv",
+                 "HEAD:" + std::string{path}});
+        },
+        .list_tracked_files = [root](std::string_view project) {
+            return runGit(
+                root,
+                {"ls-files", "-z", "--",
+                 "projects/" + std::string{project}});
+        },
+    };
+}
+
+std::string gitSnapshotUnavailableReason(
+    const std::filesystem::path &root) {
+    if (std::string_view{PELICAN_TEST_GIT_EXECUTABLE}.empty()) {
+        return "git executable was not found at configure time";
+    }
+    const auto version = runGit(root, {"--version"});
+    if (version.exit_code != 0) {
+        return "configured git executable cannot be run (exit=" +
+               std::to_string(version.exit_code) + ")";
+    }
+    if (runGit(root, {"rev-parse", "--verify", "HEAD"})
+            .exit_code != 0) {
+        return "source tree has no readable HEAD commit";
+    }
+    return {};
+}
+
+std::set<std::string> parseNullTerminatedPaths(
+    std::span<const unsigned char> bytes) {
+    std::set<std::string> paths;
+    std::size_t start = 0;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        if (bytes[index] != 0) continue;
+        if (index != start) {
+            paths.emplace(
+                reinterpret_cast<const char *>(bytes.data() + start),
+                index - start);
+        }
+        start = index + 1;
+    }
+    if (start != bytes.size()) {
+        paths.emplace(
+            reinterpret_cast<const char *>(bytes.data() + start),
+            bytes.size() - start);
+    }
+    return paths;
+}
+
+bool confinedManifestPath(std::string_view relative,
+                          std::string_view project) {
+    if (relative.empty() ||
+        relative.find('\\') != std::string_view::npos ||
+        relative.starts_with('/') || relative.starts_with('\\') ||
+        (relative.size() >= 2 &&
+         std::isalpha(static_cast<unsigned char>(relative[0])) &&
+         relative[1] == ':')) {
+        return false;
+    }
+    const std::filesystem::path path{relative};
+    if (path.is_absolute() || path.has_root_name() ||
+        path.has_root_directory()) {
+        return false;
+    }
+    std::vector<std::string> components;
+    for (const auto &component : path) {
+        const auto text = component.generic_string();
+        if (text.empty() || text == "." || text == "..") {
+            return false;
+        }
+        components.push_back(text);
+    }
+    return components.size() >= 3 && components[0] == "projects" &&
+           components[1] == project &&
+           path.generic_string() == relative;
 }
 
 std::vector<ParentManifestMismatch> checkParentManifest(
     const nlohmann::json &manifest,
-    const std::filesystem::path &root) {
+    const ParentManifestGitAccess &git) {
     std::vector<ParentManifestMismatch> mismatches;
-    for (const auto &project : manifest.at("projects")) {
+    for (const auto &[project_name, project] :
+         manifest.at("projects").items()) {
+        const auto project_path = "projects/" + project_name;
+        if (project_name.empty() || project_name == "." ||
+            project_name == ".." ||
+            project_name.find('/') != std::string::npos ||
+            project_name.find('\\') != std::string::npos) {
+            mismatches.push_back({
+                project_path, "path_confinement",
+                "invalid project name",
+            });
+            continue;
+        }
+
+        std::set<std::string> manifest_paths;
+        std::set<std::string> valid_manifest_paths;
         for (const auto &entry : project.at("files")) {
             const auto relative = entry.at("path").get<std::string>();
-            std::vector<unsigned char> contents;
-            try {
-                contents = readBytes(root / relative);
-            } catch (const std::exception &error) {
-                mismatches.push_back(
-                    {relative, "file", error.what()});
-                continue;
-            }
-
-            const auto eol = entry.at("eol").get<std::string>();
-            if (eol == "lf") {
-                contents = normalizeCrLfToLf(contents);
-            } else if (eol != "binary") {
+            if (!manifest_paths.insert(relative).second) {
                 mismatches.push_back({
-                    relative,
-                    "eol",
-                    "unsupported manifest value " + eol,
+                    relative, "path_set",
+                    "duplicate manifest path",
+                });
+            }
+            if (!confinedManifestPath(relative, project_name)) {
+                mismatches.push_back({
+                    relative, "path_confinement",
+                    "path must remain below " + project_path,
                 });
                 continue;
             }
+            valid_manifest_paths.insert(relative);
+        }
 
+        const auto tracked_result =
+            git.list_tracked_files(project_name);
+        if (tracked_result.exit_code != 0) {
+            mismatches.push_back({
+                project_path, "git_ls_files",
+                "git ls-files failed with exit code " +
+                    std::to_string(tracked_result.exit_code),
+            });
+            continue;
+        }
+        const auto tracked_paths = parseNullTerminatedPaths(
+            tracked_result.output);
+        const auto expected_count =
+            project.at("tracked_file_count").get<std::uint64_t>();
+        if (expected_count != tracked_paths.size() ||
+            expected_count != project.at("files").size()) {
+            mismatches.push_back({
+                project_path, "tracked_file_count",
+                "expected " + std::to_string(expected_count) +
+                    ", manifest has " +
+                    std::to_string(project.at("files").size()) +
+                    ", git tracks " +
+                    std::to_string(tracked_paths.size()),
+            });
+        }
+        for (const auto &relative : manifest_paths) {
+            if (!tracked_paths.contains(relative)) {
+                mismatches.push_back({
+                    relative,
+                    "path_set",
+                    "manifest path is not tracked at HEAD",
+                });
+            }
+        }
+        for (const auto &relative : tracked_paths) {
+            if (!manifest_paths.contains(relative)) {
+                mismatches.push_back({
+                    relative,
+                    "path_set",
+                    "tracked HEAD path is absent from the manifest",
+                });
+            }
+        }
+
+        for (const auto &entry : project.at("files")) {
+            const auto relative = entry.at("path").get<std::string>();
+            if (!valid_manifest_paths.contains(relative)) continue;
+            const auto blob = git.show_head_blob(relative);
+            if (blob.exit_code != 0) {
+                mismatches.push_back({
+                    relative, "git_show",
+                    "git show HEAD:path failed with exit code " +
+                        std::to_string(blob.exit_code),
+                });
+                continue;
+            }
             const auto expected_size =
                 entry.at("blob_bytes").get<std::uint64_t>();
             const auto actual_size =
-                static_cast<std::uint64_t>(contents.size());
+                static_cast<std::uint64_t>(blob.output.size());
             if (actual_size != expected_size) {
                 mismatches.push_back({
                     relative,
@@ -129,7 +354,7 @@ std::vector<ParentManifestMismatch> checkParentManifest(
             const auto expected_digest =
                 entry.at("blob_sha256").get<std::string>();
             const auto actual_digest = sha256(
-                std::span<const unsigned char>{contents});
+                std::span<const unsigned char>{blob.output});
             if (actual_digest != expected_digest) {
                 mismatches.push_back({
                     relative,
@@ -151,6 +376,54 @@ std::string describeParentManifestMismatches(
                        mismatch.field + "]: " + mismatch.detail;
     }
     return description;
+}
+
+GitCommandResult successfulGitOutput(std::string_view output) {
+    return {
+        .exit_code = 0,
+        .output = std::vector<unsigned char>{output.begin(), output.end()},
+    };
+}
+
+ParentManifestGitAccess fakeGitAccess(
+    std::string blob, std::vector<std::string> tracked_paths,
+    std::function<void(std::string_view)> on_show = {}) {
+    std::string listing;
+    for (const auto &path : tracked_paths) {
+        listing += path;
+        listing.push_back('\0');
+    }
+    return {
+        .show_head_blob =
+            [blob = std::move(blob), on_show = std::move(on_show)](
+                std::string_view path) {
+                if (on_show) on_show(path);
+                return successfulGitOutput(blob);
+            },
+        .list_tracked_files =
+            [listing = std::move(listing)](std::string_view) {
+                return successfulGitOutput(listing);
+            },
+    };
+}
+
+nlohmann::json oneFileParentManifest(
+    std::string path, std::string_view blob,
+    std::uint64_t tracked_file_count = 1) {
+    return {
+        {"schema", "pelican.wp364.parent_manifest"},
+        {"version", 3},
+        {"projects",
+         {{"demo",
+           {{"tracked_file_count", tracked_file_count},
+            {"files",
+             nlohmann::json::array({
+                 {{"path", std::move(path)},
+                  {"eol", "lf"},
+                  {"blob_sha256", sha256(blob)},
+                  {"blob_bytes", blob.size()}},
+             })}}}}},
+    };
 }
 
 nlohmann::json currentRtFramePlanProjection() {
@@ -451,6 +724,54 @@ RayTracingRuntimeFacts generousFacts() {
     };
 }
 
+std::string rtShadowMaskValidatorDigest(
+    const std::vector<std::uint32_t> &raygen_spirv,
+    const std::vector<std::uint32_t> &miss_spirv,
+    const std::vector<std::uint32_t> &hit_spirv,
+    std::string_view raygen_uri, std::string_view miss_uri,
+    std::string_view hit_uri) {
+    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+    const auto raygen_id = library.loadFromSpirv(
+        raygen_spirv, ShaderStage::raygen, raygen_uri);
+    const auto miss_id = library.loadFromSpirv(
+        miss_spirv, ShaderStage::miss, miss_uri);
+    const auto hit_id = library.loadFromSpirv(
+        hit_spirv, ShaderStage::closesthit, hit_uri);
+    const auto occurrence = [&](ShaderBundleId id, ShaderStage stage,
+                                std::uint32_t group) {
+        const auto &bundle = library.get(id);
+        return RayTracingShaderOccurrence{
+            .stage = stage,
+            .group_index = group,
+            .diagnostic_uri = bundle.diagnostic_uri,
+            .entry = &selectRayTracingEntryPoint(
+                bundle.reflection.ray_tracing_module, stage, "main",
+                bundle.diagnostic_uri),
+        };
+    };
+    const auto raygen = occurrence(
+        raygen_id, ShaderStage::raygen, 0);
+    const std::array misses{
+        occurrence(miss_id, ShaderStage::miss, 1)};
+    const std::array hits{
+        occurrence(hit_id, ShaderStage::closesthit, 2)};
+    return validateRayTracingPipelineInterfaces(
+        {.raygen = raygen,
+         .misses = misses,
+         .hit_groups = hits},
+        generousFacts());
+}
+
+std::string embeddedRtShadowMaskValidatorDigest(
+    std::string_view raygen_uri, std::string_view miss_uri,
+    std::string_view hit_uri) {
+    return rtShadowMaskValidatorDigest(
+        resourceSpirv("rt_shadow_mask_pipeline.rgen.spv"),
+        resourceSpirv("rt_shadow_mask_pipeline.rmiss.spv"),
+        resourceSpirv("rt_shadow_mask_pipeline.rchit.spv"),
+        raygen_uri, miss_uri, hit_uri);
+}
+
 } // namespace
 
 TEST_CASE(
@@ -541,13 +862,25 @@ TEST_CASE(
     }
 
     SECTION("manifest-listed shipping project bytes remain exact") {
+        const auto unavailable =
+            gitSnapshotUnavailableReason(sourceRoot());
+        if (!unavailable.empty()) {
+            SKIP("WP364a parent manifest Git-blob validation skipped: " +
+                 unavailable);
+        }
         const auto mismatches =
-            checkParentManifest(parent_manifest, sourceRoot());
+            checkParentManifest(parent_manifest, gitAccess(sourceRoot()));
         INFO(describeParentManifestMismatches(mismatches));
         CHECK(mismatches.empty());
     }
 
     SECTION("a tampered manifest digest is rejected") {
+        const auto unavailable =
+            gitSnapshotUnavailableReason(sourceRoot());
+        if (!unavailable.empty()) {
+            SKIP("WP364a parent manifest Git-blob validation skipped: " +
+                 unavailable);
+        }
         auto tampered_manifest = parent_manifest;
         auto &projects = tampered_manifest.at("projects");
         REQUIRE_FALSE(projects.empty());
@@ -563,7 +896,8 @@ TEST_CASE(
         entry["blob_sha256"] = tampered_digest;
 
         const auto mismatches =
-            checkParentManifest(tampered_manifest, sourceRoot());
+            checkParentManifest(
+                tampered_manifest, gitAccess(sourceRoot()));
         CHECK(std::any_of(
             mismatches.begin(), mismatches.end(),
             [&](const auto &mismatch) {
@@ -591,6 +925,98 @@ TEST_CASE(
             empty.at("fill_byte").get<unsigned char>());
         CHECK(sha256(std::span<const unsigned char>{pixels}) ==
               empty.at("sha256").get<std::string>());
+    }
+}
+
+TEST_CASE(
+    "WP364a parent manifest judge uses raw HEAD blobs and a complete confined path set",
+    "[ray-tracing][rt1a][parent-baseline][mutation]") {
+    constexpr std::string_view path = "projects/demo/file.txt";
+    constexpr std::string_view lf_blob = "line one\nline two\n";
+    const auto has_mismatch = [](
+                                  const auto &mismatches,
+                                  std::string_view expected_path,
+                                  std::string_view expected_field) {
+        return std::any_of(
+            mismatches.begin(), mismatches.end(),
+            [&](const auto &mismatch) {
+                return mismatch.path == expected_path &&
+                       mismatch.field == expected_field;
+            });
+    };
+
+    SECTION("CRLF in the HEAD blob is not normalized to manifest LF") {
+        const auto manifest = oneFileParentManifest(
+            std::string{path}, lf_blob);
+        const auto mismatches = checkParentManifest(
+            manifest,
+            fakeGitAccess("line one\r\nline two\r\n",
+                          {std::string{path}}));
+        CHECK(has_mismatch(mismatches, path, "blob_bytes"));
+        CHECK(has_mismatch(mismatches, path, "blob_sha256"));
+    }
+
+    SECTION("a tracked path missing from the manifest is rejected") {
+        auto manifest = oneFileParentManifest(
+            std::string{path}, lf_blob);
+        manifest["projects"]["demo"]["files"] =
+            nlohmann::json::array();
+        const auto mismatches = checkParentManifest(
+            manifest,
+            fakeGitAccess(std::string{lf_blob},
+                          {std::string{path}}));
+        CHECK(has_mismatch(mismatches, path, "path_set"));
+    }
+
+    SECTION("a manifest path absent from tracked HEAD is rejected") {
+        auto manifest = oneFileParentManifest(
+            std::string{path}, lf_blob, 0);
+        const auto mismatches = checkParentManifest(
+            manifest, fakeGitAccess(std::string{lf_blob}, {}));
+        CHECK(has_mismatch(mismatches, path, "path_set"));
+    }
+
+    SECTION("tracked_file_count is an enforced field") {
+        const auto manifest = oneFileParentManifest(
+            std::string{path}, lf_blob, 2);
+        const auto mismatches = checkParentManifest(
+            manifest,
+            fakeGitAccess(std::string{lf_blob},
+                          {std::string{path}}));
+        CHECK(has_mismatch(
+            mismatches, "projects/demo", "tracked_file_count"));
+    }
+
+    SECTION("parent traversal is rejected before git show") {
+        constexpr std::string_view escaped =
+            "projects/demo/../escape.txt";
+        std::size_t show_calls = 0;
+        const auto manifest = oneFileParentManifest(
+            std::string{escaped}, lf_blob);
+        const auto mismatches = checkParentManifest(
+            manifest,
+            fakeGitAccess(
+                std::string{lf_blob}, {std::string{escaped}},
+                [&](std::string_view) { ++show_calls; }));
+        CHECK(has_mismatch(
+            mismatches, escaped, "path_confinement"));
+        CHECK(show_calls == 0);
+    }
+
+    SECTION("an absolute path is rejected before git show") {
+        constexpr std::string_view absolute =
+            "C:/outside/demo.txt";
+        std::size_t show_calls = 0;
+        const auto manifest = oneFileParentManifest(
+            std::string{absolute}, lf_blob);
+        const auto mismatches = checkParentManifest(
+            manifest,
+            fakeGitAccess(
+                std::string{lf_blob}, {std::string{absolute}},
+                [&](std::string_view) { ++show_calls; }));
+        CHECK(has_mismatch(
+            mismatches, absolute, "path_confinement"));
+        CHECK(show_calls == 0);
     }
 }
 
@@ -681,42 +1107,46 @@ TEST_CASE(
 TEST_CASE(
     "existing embedded RT pipeline passes actual SPIR-V loads and canonical validation",
     "[ray-tracing][rt1a][load][positive][regression]") {
-    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
-    const auto raygen_id = library.loadFromSpirv(
-        resourceSpirv("rt_shadow_mask_pipeline.rgen.spv"),
-        ShaderStage::raygen,
-        "engine://rt_shadow_mask_pipeline.rgen.spv");
-    const auto miss_id = library.loadFromSpirv(
-        resourceSpirv("rt_shadow_mask_pipeline.rmiss.spv"),
-        ShaderStage::miss,
-        "engine://rt_shadow_mask_pipeline.rmiss.spv");
-    const auto hit_id = library.loadFromSpirv(
-        resourceSpirv("rt_shadow_mask_pipeline.rchit.spv"),
-        ShaderStage::closesthit,
+    const auto embedded = embeddedRtShadowMaskValidatorDigest(
+        "engine://rt_shadow_mask_pipeline.rgen.spv",
+        "engine://rt_shadow_mask_pipeline.rmiss.spv",
         "engine://rt_shadow_mask_pipeline.rchit.spv");
-    const auto occurrence = [&](ShaderBundleId id, ShaderStage stage,
-                                std::uint32_t group) {
-        const auto &bundle = library.get(id);
-        return RayTracingShaderOccurrence{
-            .stage = stage,
-            .group_index = group,
-            .diagnostic_uri = bundle.diagnostic_uri,
-            .entry = &selectRayTracingEntryPoint(
-                bundle.reflection.ray_tracing_module, stage, "main",
-                bundle.diagnostic_uri),
-        };
-    };
-    const auto raygen = occurrence(raygen_id, ShaderStage::raygen, 0);
-    const std::array misses{
-        occurrence(miss_id, ShaderStage::miss, 1)};
-    const std::array hits{
-        occurrence(hit_id, ShaderStage::closesthit, 2)};
-    CHECK(validateRayTracingPipelineInterfaces(
-              {.raygen = raygen,
-               .misses = misses,
-               .hit_groups = hits},
-              generousFacts())
-              .starts_with("rt1a-fnv1a64:"));
+    const auto source = embeddedRtShadowMaskValidatorDigest(
+        "engine://rt_shadow_mask_pipeline.rgen",
+        "engine://rt_shadow_mask_pipeline.rmiss",
+        "engine://rt_shadow_mask_pipeline.rchit");
+    const auto project = embeddedRtShadowMaskValidatorDigest(
+        "project://shaders/wp364_reload.rgen.spv",
+        "project://shaders/wp364_reload.rmiss.spv",
+        "project://shaders/wp364_reload.rchit.spv");
+    CHECK(embedded == "rt1a-fnv1a64:22899212d139d671");
+    CHECK(source == "rt1a-fnv1a64:d18212b9cb401962");
+    CHECK(project == "rt1a-fnv1a64:6cba33c01f3e8dae");
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    const auto compiled_raygen = compiler.compileSource(
+        engineResourceOrThrow("rt_shadow_mask_pipeline.rgen"),
+        vk::ShaderStageFlagBits::eRaygenKHR,
+        "engine://rt_shadow_mask_pipeline.rgen");
+    const auto compiled_miss = compiler.compileSource(
+        engineResourceOrThrow("rt_shadow_mask_pipeline.rmiss"),
+        vk::ShaderStageFlagBits::eMissKHR,
+        "engine://rt_shadow_mask_pipeline.rmiss");
+    const auto compiled_hit = compiler.compileSource(
+        engineResourceOrThrow("rt_shadow_mask_pipeline.rchit"),
+        vk::ShaderStageFlagBits::eClosestHitKHR,
+        "engine://rt_shadow_mask_pipeline.rchit");
+    REQUIRE(compiled_raygen.ok);
+    REQUIRE(compiled_miss.ok);
+    REQUIRE(compiled_hit.ok);
+    const auto compiled_source = rtShadowMaskValidatorDigest(
+        compiled_raygen.spirv, compiled_miss.spirv,
+        compiled_hit.spirv,
+        "engine://rt_shadow_mask_pipeline.rgen",
+        "engine://rt_shadow_mask_pipeline.rmiss",
+        "engine://rt_shadow_mask_pipeline.rchit");
+    CHECK(compiled_source == source);
+#endif
 }
 
 TEST_CASE(
@@ -1100,6 +1530,15 @@ TEST_CASE(
         fixture.request(), facts);
     CHECK(digest.starts_with("rt1a-fnv1a64:"));
 
+    SECTION("digest binds resolved trace routing targets and payload trees") {
+        std::swap(fixture.raygen.trace_calls[0],
+                  fixture.raygen.trace_calls[1]);
+        const auto rerouted_digest =
+            validateRayTracingPipelineInterfaces(
+                fixture.request(), facts);
+        CHECK(rerouted_digest != digest);
+    }
+
     SECTION("missIndex chooses the mismatching miss group") {
         fixture.misses[1].interfaces.front() = interfaceVariable(
             RayTracingInterfaceStorage::incoming_ray_payload, 1,
@@ -1234,6 +1673,70 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "RT1a production delegates reject and observe exact values only while enabled",
+    "[ray-tracing][rt1a][wiring][mutation]") {
+    auto facts = generousFacts();
+    facts.max_ray_recursion_depth = 1;
+    facts.max_dispatch_dimensions = {1, 1, 1};
+    facts.max_ray_dispatch_invocation_count = 1;
+
+    const auto invoke = [&](RayTracingValidationSite site) {
+        switch (site) {
+        case RayTracingValidationSite::pipeline_build:
+            validateRayTracingPipelineBuild(2, facts);
+            return;
+        case RayTracingValidationSite::initial_extent:
+            validateRayTracingInitialExtent({2, 1, 1}, facts);
+            return;
+        case RayTracingValidationSite::rebind:
+            validateRayTracingRebindExtent({2, 1, 1}, facts);
+            return;
+        case RayTracingValidationSite::final_command:
+            validateRayTracingFinalCommandExtent({2, 1, 1}, facts);
+            return;
+        }
+        FAIL("unknown RT1a validation site");
+    };
+
+    for (const auto site : {
+             RayTracingValidationSite::pipeline_build,
+             RayTracingValidationSite::initial_extent,
+             RayTracingValidationSite::rebind,
+             RayTracingValidationSite::final_command}) {
+        CAPTURE(static_cast<unsigned>(site));
+        std::vector<RayTracingValidationObservation> observations;
+        const ScopedRayTracingValidationObserver observer{
+            [&](const auto &observation) {
+                observations.push_back(observation);
+            }};
+
+        REQUIRE_THROWS(invoke(site));
+        REQUIRE(observations.size() == 1);
+        CHECK(observations.front().site == site);
+        CHECK(observations.front().facts == facts);
+        if (site == RayTracingValidationSite::pipeline_build) {
+            CHECK(observations.front().requested_depth == 2);
+            CHECK_FALSE(observations.front().extent.has_value());
+        } else {
+            CHECK(observations.front().extent ==
+                  std::array<std::uint32_t, 3>{2, 1, 1});
+            CHECK_FALSE(
+                observations.front().requested_depth.has_value());
+        }
+
+        {
+            const ScopedRayTracingValidationDelegateOverrideForTesting
+                disabled{site, false};
+            CHECK_NOTHROW(invoke(site));
+        }
+        CHECK(observations.size() == 1);
+
+        REQUIRE_THROWS(invoke(site));
+        CHECK(observations.size() == 2);
+    }
+}
+
+TEST_CASE(
     "CPU RT oracle constructively covers hit miss and recursion sentinels",
     "[ray-tracing][rt1a][oracle][sentinel]") {
     const auto hit_fixture = makeConstructiveRayTracingOracleFixture(
@@ -1247,14 +1750,63 @@ TEST_CASE(
     // Deliberate group-handle shift is detected by record identity.
     CHECK_FALSE(rayTracingOracleContainsGpuHit(
         *hit.hit, 8.0f, 0x365u));
-    // Deliberate intersection-sign oracle mutation cannot contain the GPU t.
-    auto sign_bug = *hit.hit;
-    sign_bug.t_interval = {
-        -hit.hit->t_interval.upper,
-        -hit.hit->t_interval.lower,
-    };
-    CHECK_FALSE(rayTracingOracleContainsGpuHit(
-        sign_bug, 8.0f, 0x364u));
+
+    // A replaceable intersector runs a real inv-determinant sign bug. This is
+    // deliberately not a post-hoc mutation of the normative result interval.
+    std::size_t sign_bug_calls = 0;
+    const RayTracingOracleIntersectorForTesting sign_bug_intersector =
+        [&](std::uint32_t record_id,
+            const RayTracingOracleRay &ray,
+            const std::array<RayTracingOracleVec3, 3> &vertices) {
+            ++sign_bug_calls;
+            const auto subtract_vec = [](
+                                          RayTracingOracleVec3 left,
+                                          RayTracingOracleVec3 right) {
+                return RayTracingOracleVec3{
+                    left.x - right.x, left.y - right.y,
+                    left.z - right.z};
+            };
+            const auto cross_vec = [](
+                                       RayTracingOracleVec3 left,
+                                       RayTracingOracleVec3 right) {
+                return RayTracingOracleVec3{
+                    left.y * right.z - left.z * right.y,
+                    left.z * right.x - left.x * right.z,
+                    left.x * right.y - left.y * right.x};
+            };
+            const auto dot_vec = [](
+                                     RayTracingOracleVec3 left,
+                                     RayTracingOracleVec3 right) {
+                return (left.x * right.x + left.y * right.y) +
+                       left.z * right.z;
+            };
+
+            const auto e1 = subtract_vec(vertices[1], vertices[0]);
+            const auto e2 = subtract_vec(vertices[2], vertices[0]);
+            const auto p = cross_vec(ray.direction, e2);
+            const auto det = dot_vec(e1, p);
+            const auto inv = -1.0 / det; // the injected sign defect
+            const auto tvec = subtract_vec(ray.origin, vertices[0]);
+            const auto u = dot_vec(tvec, p) * inv;
+            const auto q = cross_vec(tvec, e1);
+            const auto v = dot_vec(ray.direction, q) * inv;
+            const auto t = dot_vec(e2, q) * inv;
+            return RayTracingOracleIntersection{
+                .record_id = record_id,
+                .u = u,
+                .v = v,
+                .t = t,
+                .t_interval = {t, t},
+                .inside = u >= 0.0 && v >= 0.0 &&
+                          u + v <= 1.0 && t >= 0.0,
+            };
+        };
+    const auto sign_bug =
+        traceRayTracingOracleWithIntersectorForTesting(
+            hit_fixture.ray, hit_fixture.triangles,
+            sign_bug_intersector);
+    CHECK_FALSE(sign_bug.hit.has_value());
+    CHECK(sign_bug_calls >= 2);
 
     const auto miss_fixture = makeConstructiveRayTracingOracleFixture(
         RayTracingSentinelKind::miss, 0x777u, 8.0f);
@@ -1269,65 +1821,245 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "CPU RT oracle rejects every numeric-contract boundary",
-    "[ray-tracing][rt1a][oracle][contract][negative]") {
+    "CPU RT oracle outward f32 endpoint rounding accepts the WP364a review hit",
+    "[ray-tracing][rt1a][oracle][rounding][regression]") {
+    constexpr std::uint32_t record_id = 0x364au;
+    const RayTracingOracleRay ray{
+        .origin = {0.0, 0.0, 0.0},
+        .direction = {0.6000000238418579, 0.0,
+                      0.800000011920929},
+    };
+    const std::array triangles{
+        RayTracingOracleTriangle{
+            .vertices = {
+                RayTracingOracleVec3{5.0, -1.0, 8.0},
+                RayTracingOracleVec3{7.0, -1.0, 8.0},
+                RayTracingOracleVec3{6.0, 1.0, 8.0},
+            },
+            .record_id = record_id,
+        },
+    };
+    const auto result = traceRayTracingOracle(ray, triangles);
+    REQUIRE(result.hit.has_value());
+    CHECK(rayTracingOracleContainsGpuHit(
+        *result.hit, 10.0f, record_id));
+
+    // This is the removed implementation: add four f32 ULPs in double
+    // without first rounding the double endpoint outward to f32. It rejects
+    // the valid 10.0f GPU result from the review counterexample.
+    constexpr double review_t = 9.99999985098839;
+    const auto endpoint = std::abs(static_cast<float>(review_t));
+    const auto endpoint_ulp = static_cast<double>(
+        std::nextafter(
+            endpoint, std::numeric_limits<float>::infinity()) -
+        endpoint);
+    auto legacy_hit = *result.hit;
+    legacy_hit.t_interval = {
+        std::nextafter(
+            review_t - RayTracingOracleContract::endpoint_f32_ulp_padding *
+                           endpoint_ulp,
+            -std::numeric_limits<double>::infinity()),
+        std::nextafter(
+            review_t + RayTracingOracleContract::endpoint_f32_ulp_padding *
+                           endpoint_ulp,
+            std::numeric_limits<double>::infinity()),
+    };
+    CHECK_FALSE(rayTracingOracleContainsGpuHit(
+        legacy_hit, 10.0f, record_id));
+
+    CHECK_FALSE(rayTracingOracleContainsGpuHit(
+        *result.hit,
+        std::nextafter(
+            10.0f, std::numeric_limits<float>::infinity()),
+        record_id));
+}
+
+TEST_CASE(
+    "CPU RT oracle exercises both sides of every numeric-contract boundary",
+    "[ray-tracing][rt1a][oracle][contract][boundary]") {
     const auto baseline = makeConstructiveRayTracingOracleFixture(
         RayTracingSentinelKind::hit, 0x364u, 8.0f);
     const auto rejects = [&](const RayTracingOracleFixture &fixture,
-                             std::string_view detail) {
-        const std::string captured_detail{detail};
-        CAPTURE(captured_detail);
+                             std::string_view expected) {
+        const std::string captured_expected{expected};
+        CAPTURE(captured_expected);
         REQUIRE_THROWS_WITH(
             validateRayTracingOracleFixture(
                 fixture.ray, fixture.triangles),
             Catch::Matchers::ContainsSubstring(
-                "ray tracing oracle fixture rejected"));
+                captured_expected));
     };
+    CHECK_NOTHROW(validateRayTracingOracleFixture(
+        baseline.ray, baseline.triangles));
+
+    SECTION("finite ray is accepted and non-finite ray is rejected") {
+        auto infinite_origin = baseline;
+        infinite_origin.ray.origin.x =
+            std::numeric_limits<double>::infinity();
+        rejects(infinite_origin, "ray contains NaN or infinity");
+
+        auto nan_direction = baseline;
+        nan_direction.ray.direction.y =
+            std::numeric_limits<double>::quiet_NaN();
+        rejects(nan_direction, "ray contains NaN or infinity");
+    }
+
+    SECTION("finite transform is accepted and non-finite transform is rejected") {
+        auto fixture = baseline;
+        fixture.triangles[0].transform.object_to_world[3] =
+            std::numeric_limits<double>::infinity();
+        rejects(fixture, "object-to-world transform is not finite");
+    }
 
     SECTION("f32-quantized ray direction must remain normalized") {
         auto fixture = baseline;
         fixture.ray.direction.z = 0.5;
-        rejects(fixture, "normalization");
+        rejects(fixture, "ray direction is not normalized");
     }
     SECTION("world-space coordinate domain") {
         auto fixture = baseline;
         fixture.triangles[0].vertices[0].x = 2048.0;
-        rejects(fixture, "coordinate domain");
+        rejects(fixture, "world-space coordinate exceeds +/-2^10");
     }
     SECTION("object-to-world determinant") {
         auto fixture = baseline;
         fixture.triangles[0].transform.object_to_world[10] = 5.0e-4;
-        rejects(fixture, "determinant");
+        rejects(fixture, "object-to-world |det| is below 1e-3");
     }
     SECTION("object-to-world infinity-norm condition") {
         auto fixture = baseline;
         fixture.triangles[0].transform.object_to_world[10] = 5.0e-3;
-        rejects(fixture, "condition");
+        rejects(fixture,
+                "object-to-world infinity-norm condition exceeds 100");
     }
     SECTION("ray-plane incidence") {
         auto fixture = baseline;
         fixture.ray.direction = {1.0, 0.0, 0.0};
-        rejects(fixture, "incidence");
+        rejects(fixture,
+                "ray-plane incidence is below the 5 degree bound");
     }
     SECTION("edge and vertex barycentric margin") {
         auto fixture = baseline;
         fixture.ray.origin = {0.0, 1.0, 0.0};
-        rejects(fixture, "barycentric margin");
+        rejects(fixture,
+                "intersection is within epsilon_b of an edge or vertex");
     }
-    SECTION("t domain") {
+
+    SECTION("minimum triangle area has accepted and rejected sides") {
+        const auto area_fixture = [&](double scale) {
+            auto fixture = baseline;
+            const auto half_extent = static_cast<double>(
+                static_cast<float>(
+                    std::sqrt(
+                        RayTracingOracleContract::minimum_triangle_area /
+                        2.0) *
+                    scale));
+            fixture.triangles[0].vertices = {
+                RayTracingOracleVec3{-half_extent, -half_extent, 8.0},
+                RayTracingOracleVec3{half_extent, -half_extent, 8.0},
+                RayTracingOracleVec3{0.0, half_extent, 8.0},
+            };
+            return fixture;
+        };
+        const auto accepted = area_fixture(1.001);
+        CHECK_NOTHROW(validateRayTracingOracleFixture(
+            accepted.ray, accepted.triangles));
+        rejects(area_fixture(0.999),
+                "world-space triangle area is below 1e-4");
+    }
+
+    SECTION("minimum triangle angle has accepted and rejected sides") {
+        const auto angle_fixture = [&](double apex_degrees) {
+            auto fixture = baseline;
+            const auto radians = apex_degrees *
+                                 (std::acos(-1.0) / 180.0);
+            const auto height = static_cast<double>(
+                static_cast<float>(1.0 / std::tan(radians * 0.5)));
+            fixture.triangles[0].vertices = {
+                RayTracingOracleVec3{-1.0, -height / 3.0, 8.0},
+                RayTracingOracleVec3{1.0, -height / 3.0, 8.0},
+                RayTracingOracleVec3{0.0, 2.0 * height / 3.0, 8.0},
+            };
+            return fixture;
+        };
+        const auto accepted = angle_fixture(5.001);
+        CHECK_NOTHROW(validateRayTracingOracleFixture(
+            accepted.ray, accepted.triangles));
+        rejects(angle_fixture(4.999),
+                "world-space triangle angle is below 5 degrees");
+    }
+
+    SECTION("t_min rejects below the lower endpoint") {
         REQUIRE_THROWS_WITH(
             makeConstructiveRayTracingOracleFixture(
                 RayTracingSentinelKind::hit, 0x364u, 5.0e-4f),
             Catch::Matchers::ContainsSubstring(
                 "hit t is outside [1e-3, 2^12]"));
     }
+
+    SECTION("t_max accepts its endpoint and rejects the next f32 value") {
+        const auto t_fixture = [&](float t) {
+            auto fixture = baseline;
+            fixture.ray.origin = {0.0, 0.0,
+                                  -static_cast<double>(t)};
+            for (auto &vertex : fixture.triangles[0].vertices) {
+                vertex.z = 0.0;
+            }
+            return fixture;
+        };
+        const auto accepted = t_fixture(
+            static_cast<float>(RayTracingOracleContract::t_max));
+        CHECK_NOTHROW(validateRayTracingOracleFixture(
+            accepted.ray, accepted.triangles));
+        rejects(
+            t_fixture(std::nextafter(
+                static_cast<float>(RayTracingOracleContract::t_max),
+                std::numeric_limits<float>::infinity())),
+            "hit t is outside [1e-3, 2^12]");
+    }
+
+    SECTION("relative interval width has accepted and rejected sides") {
+        const auto interval_intersector = [](
+                                               double relative_width) {
+            return RayTracingOracleIntersectorForTesting{
+                [relative_width](
+                    std::uint32_t record_id,
+                    const RayTracingOracleRay &,
+                    const std::array<RayTracingOracleVec3, 3> &) {
+                    constexpr double t = 8.0;
+                    const auto half_width =
+                        relative_width * t * 0.5;
+                    return RayTracingOracleIntersection{
+                        .record_id = record_id,
+                        .u = 0.25,
+                        .v = 0.5,
+                        .t = t,
+                        .t_interval = {
+                            t - half_width, t + half_width},
+                        .inside = true,
+                    };
+                }};
+        };
+        CHECK_NOTHROW(
+            validateRayTracingOracleFixtureWithIntersectorForTesting(
+                baseline.ray, baseline.triangles,
+                interval_intersector(0.00999)));
+        REQUIRE_THROWS_WITH(
+            validateRayTracingOracleFixtureWithIntersectorForTesting(
+                baseline.ray, baseline.triangles,
+                interval_intersector(0.01001)),
+            Catch::Matchers::ContainsSubstring(
+                "relative t interval width exceeds 1e-2"));
+    }
+
     SECTION("nearest-hit uniqueness uses the CPU interval midpoint") {
         auto fixture = baseline;
         auto neighbor = fixture.triangles.front();
         for (auto &vertex : neighbor.vertices) vertex.z += 0.001;
         neighbor.record_id = 0x365u;
         fixture.triangles.push_back(neighbor);
-        rejects(fixture, "uniqueness");
+        rejects(fixture,
+                "nearest-hit uniqueness margin is not constructive");
     }
 }
 

@@ -11,6 +11,16 @@ namespace {
 
 thread_local RayTracingValidationObserver validation_observer;
 thread_local RayTracingPipelineCreateObserver create_observer;
+thread_local std::array<bool, 4> validation_delegate_enabled{
+    true, true, true, true};
+
+std::size_t siteIndex(RayTracingValidationSite site) {
+    const auto index = static_cast<std::size_t>(site);
+    if (index >= validation_delegate_enabled.size()) {
+        throw std::logic_error("unknown ray tracing validation site");
+    }
+    return index;
+}
 
 std::string deviceName(const RayTracingRuntimeFacts &facts) {
     return facts.device_name.empty() ? "<unknown>" : facts.device_name;
@@ -265,6 +275,45 @@ std::string validateRayTracingPipelineInterfaces(
         digest_occurrence(occurrence);
     for (const auto &occurrence : request.hit_groups)
         digest_occurrence(occurrence);
+
+    const auto digest_target = [&](std::string_view domain,
+                                   std::uint32_t resolved_index,
+                                   const auto &target) {
+        hashAppend(hash, domain);
+        hashAppend(hash, std::to_string(resolved_index));
+        hashAppend(hash, shaderStageName(target.stage));
+        hashAppend(hash, target.diagnostic_uri);
+        hashAppend(hash, std::to_string(target.group_index));
+    };
+    const auto digest_traces = [&](const auto &caller) {
+        for (const auto &trace : caller.entry->trace_calls) {
+            hashAppend(hash, "trace");
+            hashAppend(hash,
+                       std::to_string(trace.instruction_number));
+            hashAppend(hash, "missIndex");
+            hashAppend(hash, std::to_string(trace.miss_index));
+            digest_target("missTarget", trace.miss_index,
+                          request.misses[trace.miss_index]);
+            hashAppend(hash, "sbtRecordOffset");
+            hashAppend(hash,
+                       std::to_string(trace.sbt_record_offset));
+            hashAppend(hash, "sbtRecordStride");
+            hashAppend(hash,
+                       std::to_string(trace.sbt_record_stride));
+            digest_target(
+                "hitTarget", trace.sbt_record_offset,
+                request.hit_groups[trace.sbt_record_offset]);
+            hashAppend(hash, "tracePayloadType");
+            hashAppend(hash,
+                       describeRayTracingCanonicalType(
+                           trace.payload_type));
+        }
+    };
+    digest_traces(request.raygen);
+    for (const auto &occurrence : request.misses)
+        digest_traces(occurrence);
+    for (const auto &occurrence : request.hit_groups)
+        digest_traces(occurrence);
     std::ostringstream result;
     result << "rt1a-fnv1a64:" << std::hex << std::setw(16)
            << std::setfill('0') << hash;
@@ -280,6 +329,19 @@ ScopedRayTracingValidationObserver::
 
 ScopedRayTracingValidationObserver::~ScopedRayTracingValidationObserver() {
     validation_observer = std::move(previous_);
+}
+
+ScopedRayTracingValidationDelegateOverrideForTesting::
+    ScopedRayTracingValidationDelegateOverrideForTesting(
+        RayTracingValidationSite site, bool enabled)
+    : site_{site},
+      previous_{validation_delegate_enabled[siteIndex(site)]} {
+    validation_delegate_enabled[siteIndex(site)] = enabled;
+}
+
+ScopedRayTracingValidationDelegateOverrideForTesting::
+    ~ScopedRayTracingValidationDelegateOverrideForTesting() {
+    validation_delegate_enabled[siteIndex(site_)] = previous_;
 }
 
 void validateProductionRayTracingRequest(
@@ -316,12 +378,20 @@ void validateProductionTraceExtent(
 void validateRayTracingPipelineBuild(
     std::uint32_t requested_depth,
     const RayTracingRuntimeFacts &facts) {
+    if (!validation_delegate_enabled[siteIndex(
+            RayTracingValidationSite::pipeline_build)]) {
+        return;
+    }
     validateProductionRayTracingRequest(requested_depth, facts);
 }
 
 void validateRayTracingInitialExtent(
     std::array<std::uint32_t, 3> extent,
     const RayTracingRuntimeFacts &facts) {
+    if (!validation_delegate_enabled[siteIndex(
+            RayTracingValidationSite::initial_extent)]) {
+        return;
+    }
     validateProductionTraceExtent(
         extent, facts, RayTracingValidationSite::initial_extent);
 }
@@ -329,6 +399,10 @@ void validateRayTracingInitialExtent(
 void validateRayTracingRebindExtent(
     std::array<std::uint32_t, 3> extent,
     const RayTracingRuntimeFacts &facts) {
+    if (!validation_delegate_enabled[siteIndex(
+            RayTracingValidationSite::rebind)]) {
+        return;
+    }
     validateProductionTraceExtent(
         extent, facts, RayTracingValidationSite::rebind);
 }
@@ -336,6 +410,10 @@ void validateRayTracingRebindExtent(
 void validateRayTracingFinalCommandExtent(
     std::array<std::uint32_t, 3> extent,
     const RayTracingRuntimeFacts &facts) {
+    if (!validation_delegate_enabled[siteIndex(
+            RayTracingValidationSite::final_command)]) {
+        return;
+    }
     validateProductionTraceExtent(
         extent, facts, RayTracingValidationSite::final_command);
 }

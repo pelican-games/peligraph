@@ -189,39 +189,41 @@ void require(bool condition, std::string message) {
     }
 }
 
-double f32Ulp(double endpoint) {
-    const auto value = std::abs(static_cast<float>(endpoint));
-    const auto next = std::nextafter(
-        value, std::numeric_limits<float>::infinity());
-    const auto ulp = static_cast<double>(next - value);
-    return ulp == 0.0
-               ? static_cast<double>(
-                     std::numeric_limits<float>::denorm_min())
-               : ulp;
+float roundDownToF32(double value) {
+    auto rounded = static_cast<float>(value);
+    if (static_cast<double>(rounded) > value) {
+        rounded = std::nextafter(
+            rounded, -std::numeric_limits<float>::infinity());
+    }
+    return rounded;
+}
+
+float roundUpToF32(double value) {
+    auto rounded = static_cast<float>(value);
+    if (static_cast<double>(rounded) < value) {
+        rounded = std::nextafter(
+            rounded, std::numeric_limits<float>::infinity());
+    }
+    return rounded;
 }
 
 Interval padEndpoints(Interval interval) {
-    interval.lower = nextDown(
-        interval.lower -
-        Contract::endpoint_f32_ulp_padding * f32Ulp(interval.lower));
-    interval.upper = nextUp(
-        interval.upper +
-        Contract::endpoint_f32_ulp_padding * f32Ulp(interval.upper));
-    return interval;
+    auto lower = roundDownToF32(interval.lower);
+    auto upper = roundUpToF32(interval.upper);
+    for (int index = 0;
+         index < Contract::endpoint_f32_ulp_padding; ++index) {
+        lower = std::nextafter(
+            lower, -std::numeric_limits<float>::infinity());
+        upper = std::nextafter(
+            upper, std::numeric_limits<float>::infinity());
+    }
+    return {static_cast<double>(lower),
+            static_cast<double>(upper)};
 }
 
-struct Candidate {
-    std::uint32_t record_id = 0;
-    double u = 0.0;
-    double v = 0.0;
-    double t = 0.0;
-    Interval t_interval;
-    bool inside = false;
-};
-
-Candidate intersect(std::uint32_t record_id,
-                    const RayTracingOracleRay &ray,
-                    const std::array<Vec3, 3> &vertices) {
+RayTracingOracleIntersection intersect(
+    std::uint32_t record_id, const RayTracingOracleRay &ray,
+    const std::array<Vec3, 3> &vertices) {
     // Normative Moller-Trumbore sequence. Keep each expression separate.
     const auto e1 = subtract(vertices[1], vertices[0]);
     const auto e2 = subtract(vertices[2], vertices[0]);
@@ -260,9 +262,12 @@ Candidate intersect(std::uint32_t record_id,
 
 } // namespace
 
-void validateRayTracingOracleFixture(
+void validateRayTracingOracleFixtureWithIntersectorForTesting(
     const RayTracingOracleRay &authored_ray,
-    std::span<const RayTracingOracleTriangle> authored_triangles) {
+    std::span<const RayTracingOracleTriangle> authored_triangles,
+    const RayTracingOracleIntersectorForTesting &intersector) {
+    require(static_cast<bool>(intersector),
+            "test intersector is empty");
     require(!authored_triangles.empty(), "scene has no triangles");
     const RayTracingOracleRay ray{
         quantize(authored_ray.origin),
@@ -273,7 +278,7 @@ void validateRayTracingOracleFixture(
     require(std::abs(length(ray.direction) - 1.0) <= 1.0e-6,
             "ray direction is not normalized after f32 quantization");
 
-    std::vector<Candidate> hits;
+    std::vector<RayTracingOracleIntersection> hits;
     for (const auto &authored : authored_triangles) {
         const auto transform = quantize(authored.transform);
         for (const auto component : transform.object_to_world) {
@@ -332,7 +337,7 @@ void validateRayTracingOracleFixture(
         require(incidence >= Contract::minimum_incidence_dot,
                 "ray-plane incidence is below the 5 degree bound");
 
-        const auto candidate = intersect(
+        const auto candidate = intersector(
             authored.record_id, ray, world);
         const auto w = 1.0 - candidate.u - candidate.v;
         const auto boundary_distance = std::min(
@@ -354,7 +359,8 @@ void validateRayTracingOracleFixture(
                 "relative t interval width exceeds 1e-2");
         hits.push_back(candidate);
     }
-    std::ranges::sort(hits, {}, &Candidate::t);
+    std::ranges::sort(
+        hits, {}, &RayTracingOracleIntersection::t);
     if (hits.size() >= 2) {
         const auto midpoint =
             (hits[0].t_interval.lower +
@@ -366,15 +372,24 @@ void validateRayTracingOracleFixture(
     }
 }
 
-RayTracingOracleResult traceRayTracingOracle(
+void validateRayTracingOracleFixture(
     const RayTracingOracleRay &authored_ray,
     std::span<const RayTracingOracleTriangle> authored_triangles) {
-    validateRayTracingOracleFixture(authored_ray, authored_triangles);
+    validateRayTracingOracleFixtureWithIntersectorForTesting(
+        authored_ray, authored_triangles, intersect);
+}
+
+RayTracingOracleResult traceRayTracingOracleWithIntersectorForTesting(
+    const RayTracingOracleRay &authored_ray,
+    std::span<const RayTracingOracleTriangle> authored_triangles,
+    const RayTracingOracleIntersectorForTesting &intersector) {
+    validateRayTracingOracleFixtureWithIntersectorForTesting(
+        authored_ray, authored_triangles, intersector);
     const RayTracingOracleRay ray{
         quantize(authored_ray.origin),
         quantize(authored_ray.direction),
     };
-    std::optional<Candidate> nearest;
+    std::optional<RayTracingOracleIntersection> nearest;
     for (const auto &authored : authored_triangles) {
         const auto transform = quantize(authored.transform);
         std::array<Vec3, 3> world;
@@ -382,7 +397,7 @@ RayTracingOracleResult traceRayTracingOracle(
             world[index] = transformPoint(
                 transform, quantize(authored.vertices[index]));
         }
-        const auto candidate = intersect(
+        const auto candidate = intersector(
             authored.record_id, ray, world);
         if (candidate.inside &&
             (!nearest || candidate.t < nearest->t)) {
@@ -403,6 +418,13 @@ RayTracingOracleResult traceRayTracingOracle(
             .t_interval = nearest->t_interval,
         },
     };
+}
+
+RayTracingOracleResult traceRayTracingOracle(
+    const RayTracingOracleRay &authored_ray,
+    std::span<const RayTracingOracleTriangle> authored_triangles) {
+    return traceRayTracingOracleWithIntersectorForTesting(
+        authored_ray, authored_triangles, intersect);
 }
 
 RayTracingOracleInterval expandGpuRayT(float value) {

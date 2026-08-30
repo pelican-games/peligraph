@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
@@ -60,6 +61,20 @@ struct RayTracingOracleInterval {
     }
 };
 
+struct RayTracingOracleIntersection {
+    std::uint32_t record_id = 0;
+    double u = 0.0;
+    double v = 0.0;
+    double t = 0.0;
+    RayTracingOracleInterval t_interval;
+    bool inside = false;
+};
+
+using RayTracingOracleIntersectorForTesting = std::function<
+    RayTracingOracleIntersection(
+        std::uint32_t, const RayTracingOracleRay &,
+        const std::array<RayTracingOracleVec3, 3> &)>;
+
 struct RayTracingOracleHit {
     std::uint32_t record_id = 0;
     double t_mid = 0.0;
@@ -79,6 +94,17 @@ void validateRayTracingOracleFixture(
 RayTracingOracleResult traceRayTracingOracle(
     const RayTracingOracleRay &ray,
     std::span<const RayTracingOracleTriangle> triangles);
+
+// Explicit test seam for oracle mutation and boundary fixtures. Production
+// callers always use the normative Moller-Trumbore implementation above.
+void validateRayTracingOracleFixtureWithIntersectorForTesting(
+    const RayTracingOracleRay &ray,
+    std::span<const RayTracingOracleTriangle> triangles,
+    const RayTracingOracleIntersectorForTesting &intersector);
+RayTracingOracleResult traceRayTracingOracleWithIntersectorForTesting(
+    const RayTracingOracleRay &ray,
+    std::span<const RayTracingOracleTriangle> triangles,
+    const RayTracingOracleIntersectorForTesting &intersector);
 
 RayTracingOracleInterval expandGpuRayT(float value);
 bool rayTracingOracleContainsGpuHit(

@@ -135,12 +135,13 @@ jobs:
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
 
-      - name: Build WP354 Studio model and widget tests
+      - name: Build WP354 Studio and WP364 RT1a tests
         shell: pwsh
         run: |
           cmake --build build-studio --config Debug --target `
             pelican_test_devstudio_frameplan_test `
-            pelican_test_devstudio_frameplan_graph_test 2>&1 |
+            pelican_test_devstudio_frameplan_graph_test `
+            pelican_test_raytracing_rt1a_test 2>&1 |
             Tee-Object -FilePath build-studio/ci-artifacts/build.log
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
@@ -160,6 +161,15 @@ jobs:
           ctest --test-dir build-studio -C Debug `
             -R "^WP354 Studio" --output-on-failure 2>&1 |
             Tee-Object -FilePath build-studio/ci-artifacts/ctest.log
+          $result = $LASTEXITCODE
+          if ($result -ne 0) { exit $result }
+
+      - name: Run WP364 RT1a with compiler and SPIRV_LINK off
+        shell: pwsh
+        run: |
+          & build-studio/test/Debug/pelican_test_raytracing_rt1a_test.exe `
+            --reporter console 2>&1 |
+            Tee-Object -FilePath build-studio/ci-artifacts/rt1a.log
           $result = $LASTEXITCODE
           if ($result -ne 0) { exit $result }
 

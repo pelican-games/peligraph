@@ -73,6 +73,24 @@ class ScopedRayTracingValidationObserver {
         const ScopedRayTracingValidationObserver &) = delete;
 };
 
+// Test-only seam for proving each production validation delegate is live.
+// Every site is enabled by default; a scoped override is thread-local.
+class ScopedRayTracingValidationDelegateOverrideForTesting {
+    RayTracingValidationSite site_;
+    bool previous_ = true;
+
+  public:
+    ScopedRayTracingValidationDelegateOverrideForTesting(
+        RayTracingValidationSite site, bool enabled);
+    ~ScopedRayTracingValidationDelegateOverrideForTesting();
+    ScopedRayTracingValidationDelegateOverrideForTesting(
+        const ScopedRayTracingValidationDelegateOverrideForTesting &) =
+        delete;
+    ScopedRayTracingValidationDelegateOverrideForTesting &operator=(
+        const ScopedRayTracingValidationDelegateOverrideForTesting &) =
+        delete;
+};
+
 void validateProductionRayTracingRequest(
     std::uint32_t requested_depth,
     const RayTracingRuntimeFacts &facts);
