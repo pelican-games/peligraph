@@ -15788,3 +15788,81 @@ production TLAS が record base を書く・compiler OFF 裁定・旧 lowering �
 - 「全 SBT」= flat + xr(#10)
 
 依存: WP365。
+
+#### WP365/366 仕様レビュー第 2 巡(不合格・8 件)と v3 —— 設計の方向転換
+
+第 2 巡の核心は 3 つの事実である。
+
+1. **authored object/component の永続参照は存在しない**。scene 形式に ID が無く、
+   `AuthoringObjectId` は load 時に宣言順で採番される。`stable_generated_id` を
+   持つのは prefab 由来 component だけ。よって v2 の `row_key` は現行から構成できない
+2. **v2 の tuple は単射でない**。同じ primitive が二つの material group に置ける
+   (ModelTemplate は一意性制約を持たない)ため、同じ tuple の TLAS row が 2 本できる
+3. **WP365 単独では挙動が変わらない**。legacy 互換を守る実装なら SBT offset は 0 の
+   ままで、識別子の拒否も layout(= WP366 の概念)に gate しないと既存 RT feature を壊す
+
+**裁定: 永続 authored ID を前提にするのをやめる。** それは scene 形式・journal・
+undo/redo・import に跨る別サブシステムであり(過去 WP304「安定 ID」が仕様レビューで
+不合格になった領域そのもの)、RT の前提として押し込むのは WP363 で 2 度失敗した
+「設計を飛ばした前提化」と同型である。
+
+##### v3 の設計転換(2 点)
+
+**(A) `q` は snapshot 局所でよい。永続性は要らない。**
+共同 transaction が `{row snapshot, TLAS, 全 SBT data}` を**同一 snapshot から一緒に
+再構築**する以上、q が編集で振り直されても record の対応は崩れない。
+よって要求を「編集を跨いで安定」から**「同一 snapshot 内で決定的・単射」**へ弱める:
+- 正準順 = **AS snapshot が既に持つ安定値のみ**で決める:
+  `(asset_identity, geometry_allocation_id, index_offset, vertex_offset,
+    instance の TLAS 列位置)`。列位置は同一 build 内で一意なので**単射が保証**される
+- v2 の受け入れ「宣言順を入れ替えても q が一致」は**撤回**(そもそも不要だった)。
+  代わりに「**同一入力から同一 q**(2 回 build して bytes 一致)」と
+  「**row 集合が変わったら TLAS と SBT data が一緒に作り直される**」を要求する
+
+**(B) 束縛は material を主キーにする(component 単位の束縛は v1 の対象外)。**
+material は**名前(と文書 path)で永続**であり、DrawItem は既に
+`GlobalMaterialId` と `source_material_index` を持っている。AS snapshot 生成時に
+捨てられているだけなので、**material identity を snapshot まで運ぶ**のは
+scene 全域の ID 発明より遥かに小さい。
+- overlay `pelican.ray_bindings@1` の selector は **material 参照のみ**(v1)
+- 同一 material の全 row が同じ `g` と `data` を得る(第 2 巡 #4 の
+  component/material 競合は**そもそも起きない**)
+- **失われる自由の明示**: 「同じ material の instance A だけ別 group」は v1 では
+  書けない。これは**能力の意図的な縮小**であり、per-instance 束縛は
+  永続 authored ID の設計が入る段(RT3 の instance flags と同時に再訪)で解禁する。
+  design_raytracing.md の overlay 記述もこの範囲に合わせて読む
+
+##### 第 2 巡 8 件の行き先(A・B 適用後)
+
+| # | 指摘 | v3 |
+|---|---|---|
+| 1 | 永続 authored ref の正本が無い | **(A)(B) で前提ごと撤回**。row_key は snapshot 局所、束縛は material |
+| 2 | tuple が単射でない | (A) の列位置により単射。同一 primitive × 二 material は**別 row・同一 material 束縛**で矛盾しない |
+| 3 | 拒否条件が legacy と両立しない | 拒否は **layout を持つ generation に限定**(WP366 で実装)。layout 不在の RT/ray-query/preview は既存経路のまま。**WP365 は廃止**(下記) |
+| 4 | material provenance と overlay grammar | **WP366 の正式範囲に含める**(v2 の除外は誤り)。selector は material のみ、未一致 row は default group、定数の過不足は named |
+| 5 | layout/task の wire が無い | WP366 に完全な正負 JSON schema(下記の必須項目) |
+| 6 | record ABI が shader 側と接続していない | WP366: 型表と offset 例(`vec3+f32`)を本文に置き、**final SPIR-V の shader-record storage/member type/offset が canonical ABI と一致することを load 時 invariant に**(shader 宣言だけ変えた負例で named reject) |
+| 7 | 二段 commit が単一 state machine でない | WP366(第 1 巡 #5 の答えを維持・詳細化) |
+| 8 | (第 2 巡末尾) | WP366 |
+
+##### WP365 は廃止し、WP366 に一本化する
+
+第 2 巡の結論どおり WP365 は**挙動を変えない基盤 WP**であり、縦切りの基準
+(memory: slice-must-change-behavior)を満たさない。(A)(B) により必要な配管は
+「material identity を AS snapshot まで運ぶ」だけに縮んだので、**WP366 の中に含める**。
+
+**WP366(RT1b、最終形)の範囲** = v1 の WP365 節 + 上表の答え。必須の追加項目:
+- material identity を DrawItem → AS snapshot → row へ運ぶ(最小の配管)
+- overlay `pelican.ray_bindings@1`: material selector / group 名 / 静的 record 定数。
+  未一致 row は layout の default group、定数の過不足・型不一致は named
+- layout と task の完全な JSON schema(typed record members / `traced_ray_types` /
+  named miss table / `group×ray_type→shader` mapping / 未充填 slot の bytes と
+  到達不能性)
+- record ABI の型表(i32/u32/f32/vec2/vec3/vec4)と offset 算法 + `vec3+f32` の実例、
+  および **SPIR-V shader-record ABI 一致の load 時検証**
+- `sbtRecordStride == R` 等の範囲検査、checked `q×R`、24-bit 上限
+- 二段 commit(cache は append-only で対象外、新世代は TLAS submission まで非公開)
+- 分岐は root authored document の一度きりの parse から typed sidecar として抽出
+- 実 renderer の A/B 対照(RT1a の golden 代用負債もここで返す)
+
+第 3 巡は **(A)(B) の転換が成立するかだけ**を検証する狭い巡とし、それで打ち切る。
