@@ -148,8 +148,8 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 
 | 場所 | 内容 |
 |---|---|
-| [`ecs/archetypemigration.hpp`](../../src/core/ecs/archetypemigration.hpp#L118) | 失敗しても原子的なarchetype移行と entity mutation のトークン（[第4章](04_ecs_deep_dive.md)） |
-| [`gamelogic/behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L141) | オブジェクトbehaviorのアタッチメントarena。ECS Componentではない別の所有者 |
+| [`ecs/archetypemigration.hpp`](../../src/core/ecs/archetypemigration.hpp#L122) | 失敗しても原子的なarchetype移行と entity mutation のトークン（[第4章](04_ecs_deep_dive.md)） |
+| [`gamelogic/behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L170) | オブジェクトbehaviorのアタッチメントarena。ECS Componentではない別の所有者 |
 | [`imgui/inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) / [`imgui/assetbrowser.hpp`](../../src/core/imgui/assetbrowser.hpp#L36) | schema駆動inspectorパネルと読み取り専用asset browserパネル |
 | [`loader/authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L90) | `AuthoringSceneDocument` / `AuthoringSceneDocumentStage`（[第3章](03_project_and_loading.md)） |
 | [`loader/componentcodec.hpp`](../../src/core/loader/componentcodec.hpp#L143) | component codecの五点セット。componentのJSON受理仕様の正 |

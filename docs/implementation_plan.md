@@ -15175,3 +15175,11 @@ E. current 側にも rich payload(camera/light/collider)の肯定対照 + destro
    孤児検査(prepareSpecials 削除で落ちること)
 
 依存: WP361a、WP362(revert 6c68181 の上)。
+
+#### U1 完成宣言の確定(WP361b v2 統合緑)
+
+WP361b v2(7040f23)統合: 全数 1434 ×2 緑(GPU 直列込み)、doclink 2341 ok。
+revert(6c68181)を挟んだ経緯ごと記録: WP361b 初版は Inspector の実 request
+(`attachment_handle`)を新 gate が拒否する等 5 件で不合格 → パッチでなく revert +
+やり直し(処方 A〜E)。保留していた完成宣言はこれで確定。
+WP361b v2 の §10 指摘は無条件で台帳のみ(打ち切り最終)。

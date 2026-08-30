@@ -689,7 +689,7 @@
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`discardPrepared()`": "void discardPrepared() noexcept {",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`eraseUnpublishedArchetype()`": "void eraseUnpublishedArchetype() noexcept {",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`finishPublished()`": "void finishPublished() noexcept {",
-    "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`free_indices.push_back()`": "(void)id;",
+    "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`free_indices.push_back()`": "free_index_published = true;",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`id_table.emplace_back()`": "std::unique_ptr<ECSComponentChunk> staged_chunk;",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`prepare()`": "ECSArchetypeMigrationToken ECSArchetypeMigration::prepare(",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/archetypemigration.cpp|`prepareCreate()`": "ECSEntityMutationToken ECSEntityMutation::prepareCreate(",
