@@ -1,113 +1,208 @@
-# レイトレーシング拡張設計 — DCC 級の自由度へ(v1)
+# レイトレーシング拡張設計 — DCC 級の自由度へ(v2)
 
-状態: v1 草稿。敵対的設計レビュー前。
+状態: v2。第 1 巡レビュー(Reject・構造欠陥 14 件)を全面反映。§9 に対応表。
 
 ## 0. 要求
 
 利用者要求(2026-08-30): **速度性を重視しない DCC ツールと同程度に「好き勝手」できる
-RT**。到達点は視覚的正しさと表現の自由度であり、リアルタイム性能は制約にしない。
-恒常制約: **機能のパージ性は下げない**(RT は capability gate 付きの purgeable feature
-のまま拡張する)。fail-fast / 名前付きエラー / 決定性の家風は全段に適用する。
+RT**。到達点は視覚的正しさと表現の自由度。リアルタイム性能は制約にしない
+(遅い rebuild・毎フレーム再構築も目的上は許容)。
+恒常制約: パージ性を下げない / fail-fast / 名前付きエラー / 決定性 / D0。
 
-## 1. 現状の固定点(実測。file:line は 2026-08-30 HEAD)
+## 1. 現状の固定点(第 1 巡で検算済み。引用は検算後の正しい行)
 
-| 面 | 今 | 根拠 |
-|---|---|---|
-| 車線 | ray query(fullscreen 内)と RT pipeline(compute_tasks の `ray_tracing`)の 2 本 | features/rt_shadow_mask*.json |
-| stage | raygen ちょうど 1 + miss 複数 + closesthit 複数。**any_hit / intersection / callable は名前付き拒否** | computetask.cpp:1190,1194 |
-| SBT | 平坦(raygen==1 検査、record = handle のみ、shader record データなし) | shaderbindingtable.cpp:66 |
-| hit group | 全 geometry 共通(per-instance / per-material 割り当てなし、sbtOffset 未使用) | 同上 + accelerationstructure.cpp |
-| AS | エンジン所有。静的 geometry のみ(`isBlasIneligibleStaticGeometry`)、mask / flags / customIndex の宣言面なし | accelerationstructure.cpp:43 |
-| 再帰 | 宣言不可(深度 1 相当) | computetask.cpp に該当なし |
-| dispatch | `rays_from: {port}`(port extent がレイ数)のみ | computetask.cpp:1279 |
-| material | hit shader を供給しない(opaque 収束の note のみ) | materiallowering.cpp:230 |
-| shader | .rgen/.rmiss/.rchit は resolver 済み(engine:// / project:// 両対応) | shadersourceresolver.cpp:118 |
+- 2 車線: ray query(fullscreen)と RT pipeline(compute_tasks)。**両車線は
+  byte 一致契約を持つ**(source-code-guide/11 §29)——拡張時はこの契約の去就を明示する
+- stage: raygen/miss/closesthit のみ(computetask.cpp:1190)。SBT は handle-only
+  (shaderbindingtable.cpp:72、コピーは pipelinefactory.cpp:682)。
+  **再帰は pipeline 作成時に 1 固定**(pipelinefactory.cpp:625)
+- TLAS: custom index = 描画列順、mask 0xff、SBT offset 0、flags 0
+  (accelerationstructure.cpp:584)。BLAS は静的 geometry のみ(同 :199 で
+  skinned/morph/VAT 除外)。**AS build は frame graph の外**(renderer.cpp:4862 →
+  task 実行 :4926 の前)
+- material: MaterialDefinition に RT field なし(materialformat.hpp:89)。
+  RT task は material set(set 2)を bind しない(computetask.cpp:2957)
+- dispatch: 単一 image port の `rays_from` のみ(computetask.cpp:1260)
+- runtime facts: RT property は alignment/size 3 種のみ(core.cpp:363)。
+  recursion / maxShaderGroupStride / maxRayHitAttributeSize は未取得
+- shader reflection は RT interface(payload/hit attribute/callable data)を検査しない
+  (shaderreflection.hpp:51)。stage 語彙は resolver / core / wire / Studio の
+  全所で閉じている
 
-## 2. 到達点(「好き勝手」の定義)
+## 2. 到達点と非目標
 
-DCC 的に書けるべきもの: alpha-tested / 半透明の hit 制御(anyhit)、
-procedural geometry(intersection + AABB)、callable による shader 分岐、
-material ごとの hit shader、instance の mask / flags / custom index、
-再帰(パストレ)、shader record データ、複数 TLAS(レイヤ分け)。
-**非目標**: リアルタイム最適化(denoiser・SER・motion blur AS 等は別設計)。
+書けるべきもの: anyhit(実 material alpha で)/ intersection(procedural)/
+callable / material ごとの hit shader / instance・geometry の flags・mask・
+custom index / 再帰パストレ / shader record(静的+動的)/ 複数 TLAS /
+**変形 geometry(skinned・morph・VAT)の RT 描画**(第 1 巡 #9: 速度非重視ゆえ
+毎フレーム rebuild でも到達点に含める)/ buffer・1D・3D・indirect の trace。
+非目標: denoiser、motion blur AS、SER 等の性能系(需要実測後に別設計)。
 
-## 3. 段階(1 段 = 1 出荷単位。各段が単独で挙動を変える)
+## 3. 背骨の 3 決定(第 1 巡の破綻 3 件への答え)
 
-### RT1: SBT の一般化 — hit_groups・anyhit・再帰・record 定数
+### 3-1. group layout は project 所有の global 契約(#1)
+
+TLAS は scene に一つ、SBT は pipeline ごと。ゆえに **`group name → stable slot` の
+表を task-local にせず、project 所有の `ray_group_layout` として一枚**にする:
 
 ```json
-"ray_tracing": {
-  "raygen": "project://shaders/pt",
-  "max_recursion": 4,
-  "miss": [ { "shader": "project://shaders/pt", "record": { "sky_tint": [1,1,1] } } ],
-  "hit_groups": [
-    { "name": "opaque",  "closesthit": "project://shaders/pt" },
-    { "name": "foliage", "closesthit": "project://shaders/pt",
-      "anyhit": "project://shaders/pt_alpha" } ],
-  "default_hit_group": "opaque" }
+{ "schema": "pelican.ray_group_layout", "version": 1,
+  "ray_types": ["primary", "shadow"],
+  "groups": [ { "name": "opaque" }, { "name": "foliage" } ] }
 ```
 
-- SBT を group 配列 + 固定長 record(handle ∥ 定数ブロック)に一般化。
-  record 定数は StructFieldSchema 語彙で型付け(leaf 検証、WP358 の資産)
-- `max_recursion` はデバイス上限超過で名前付き拒否
-- 旧形(miss/closesthit の文字列 list)は sugar として受理し、正準化で新形へ
-- **オラクル**: CPU 参照レイトレーサ(std のみ、test/ 配下)を新設し、
-  fixture scene の交差結果・可視性を device 精度境界つきで比較
-  (WP357 の「不等式オラクル」の流儀。golden の目視合わせを禁止する土台)
+- 物理 slot = `group_index × ray_type_count + ray_type_index`(宣言順で固定・全 SBT 共通)
+- 各 RT task は「どの slot にどの shader を挿すか」を宣言する側に回る。
+  **未充填 slot は名前付きエラー**(task 名・group 名・ray type・available 一覧つき)
+- slot 定数は **生成 shader 定数**(`pelican_ray_layout.h` を build 時生成)として
+  raygen から参照する。手書き数値 offset は lint で拒否
+- 旧 flat 構文は slot 順保存の sugar として完全互換(第 1 巡「壊せなかった項目」)
 
-### RT2: material 束縛 — per-instance hit group と sbtOffset
+### 3-2. material データ ABI(#2)
 
-- material 宣言に `ray_hit_group`(名前参照)を追加。
-  instance ごとに TLAS の `instanceShaderBindingTableRecordOffset` を割り当て
-- 未定義 group 参照 / RT パス側に該当 group 不在は名前付き
-- WP354 の material drill-through(名前付き必須フォローアップ)とここで合流:
-  material の shader 出所が RT hit にも投影される
-- オラクル: 2 material × 2 group の fixture で、group 差(例: 片方だけ anyhit で
-  市松に discard)が CPU 参照と一致
+shader code の選択だけでは alpha texture を読めない。RT2 で:
 
-### RT3: AS の宣言面 — mask / flags / custom index / procedural
+- **RT material table**: bindless descriptor array(または device-address table)に
+  material parameter block + texture index を平坦化。SBT hit record に
+  `{material_index, geometry_index}` を持たせる(instanceCustomIndex とは独立。
+  custom index を engine 用途と兼用しない)
+- **geometry access**: vertex/index buffer の device address 表(UV・normal の
+  取り出し accessor を生成 glsl として提供)
+- material 側の束縛は **base 文書への直書きではなく** path 所有の overlay
+  `pelican.ray_bindings@1`(#12): material/component の stable reference →
+  hit group・mask・flags。**feature purge = overlay ごと削除**で孤児ゼロ
 
-- component 側(simplemodelview / 新 `procedural_volume`)に
-  `ray: { mask, flags: [opaque|no_duplicate_anyhit|...], custom_index }` を追加
-- `intersection` stage 解禁 + AABB ソース(component の宣言 bounds か storage port)
-- raygen 側は `rayMask` で層別トレースが可能に(ライト層・カメラ層の分離)
-- BLAS 適格性の拡張は段内で明示(skinned は RT3 では**やらない**と宣言)
+### 3-3. オラクルは「決定的部分集合」契約(#3, #4)
 
-### RT4: callable + 動的 record
+CPU 参照と GPU の一意比較は一般には存在しない(候補順・tie・順序依存 payload)。
 
-- `callable` stage 解禁(SBT に callable region 追加)
-- record の動的更新(frame ごとの定数供給を port と同じ流儀で宣言)
+- **保証対象の subset を文書で定義**: any-hit は候補局所の accept/ignore のみ /
+  payload の順序依存更新をしない / tie・共有辺・近接 t は分離述語で assertion 対象外 /
+  比較は最終 visibility と最近接区間のみ
+- subset 外の自由 shader は書ける(拒否しない)が、**cross-device golden 非保証の
+  escape hatch** として明示区分(golden 化する fixture は subset 内で書く)
+- **sentinel 検査を一級に**(#4): 各 slot/record に異なる sentinel を書かせ、
+  resolved slot 表・record stride・`instanceOffset + geometryIndex×stride + offset`
+  の各項・miss index・再帰の実効を**同一テスト内で** off/on 比較。
+  交差だけのオラクルでは SBT 計算は未検証、を設計上の警句として残す
 
-### RT5: 複数 TLAS と車線の一級化
+## 4. capability・構成(#5)
 
-- 名前付き TLAS 宣言(所属は component の `ray.scene` 参照)、
-  raygen へ複数 AS binding
-- ノードエディタ上で RT パスを一級ノード化(compute 車線からの昇格。
-  hit_groups・record・AS 参照をソケット/インスペクタで編集)
-- RPE12b の凍結・A/B 測定ループに RT パスを乗せる
+- 「名前付き skip」を撤回。**選択済み feature × 非対応 device = hard reject**
+  (現行原則どおり)。authoring UI は選択前に unavailable reason を提示
+- capability は既存 `pelican.vulkan.ray_tracing_pipeline@1`(@N は major version)。
+  数値上限は capability でなく **runtime facts に追加**:
+  maxRayRecursionDepth / maxShaderGroupStride / maxRayHitAttributeSize。
+  超過は device property 名・要求値・実値・device 名つきの名前付きエラー
+- web は `compute_tasks` 明示拒否のまま(subset 原則、09_web.md:60)
+- 全段の受け入れ matrix: 4 project × feature off/on(off で AS build 0・frame plan
+  不変・描画 bytes 不変)/ shader compiler ON/OFF / Studio ON/OFF / web 拒否
 
-### 依存と順序
+## 5. 二車線の去就(#10)
 
-RT1 → RT2 → RT3 → (RT4 ⇄ RT5 は独立)。skinned BLAS・denoise・
-motion blur は本設計の外(需要実測後に別設計)。
+ray query 車線と pipeline 車線の byte 一致契約は **RT2 で意味が割れる**
+(pipeline は anyhit alpha、query は Opaque first-hit)。裁定:
+**RT2 で ray query 側にも material alpha candidate loop を実装し、一致契約を維持**
+(速度非重視だから許容)。両車線同時有効の production 一致テストを RT2 の受け入れに。
+mask/flags(RT3)も両車線の AS に同時適用。
 
-## 4. 横断原則
+## 6. 段(1 段 = 1 出荷単位)
 
-- **capability gate**: 各段は `pelican.vulkan.ray_tracing_pipeline@1` 配下の
-  追加 capability(例 `…ray_tracing_recursion@N`)で宣言し、不在デバイスでは
-  feature 単位の名前付き skip(パージ性維持。web/player subset 原則と整合)
-- **fail-fast**: SBT の group 参照・record 型・mask 範囲・再帰上限、全て load 時名前付き
-- **決定性**: RT 出力の golden は CPU 参照オラクル合格を機械的ゲートにする
-  (WP357 の golden updater 方式を踏襲)。参照器は交差のみ(シェーディングは
-  fixture shader を単純化して算術一致域に置く)
-- **提示**: 各段で planviewer / studio の表示(hit group・record・mask)を同段に含める
-  (G0 可読性の原則: 自動挿入・暗黙値は見えるところに)
+### RT1: layout 契約と SBT 一般化(単 pipeline 内で完結)
 
-## 5. 未決事項(レビューで攻撃してほしい点)
+- `ray_group_layout`(§3-1)+ 生成 shader 定数
+- anyhit 解禁(hit group は `{ "type": "triangles", "closesthit": …, "anyhit": … }`
+  の typed 形。#8 の型分離を先取り)
+- `max_recursion`(facts 比較、超過 hard reject)
+- record 定数(静的): ABI は leaf 語彙 → **明示 offset/size 表を正準化 JSON に出力**
+  (std430 相当の導出規則を文書に固定。整合は静的検査)
+- **stage 語彙拡張を全所同段で**: `.rahit`(+ RT3 用に `.rint`、RT4 用 `.rcall` の
+  語彙自体は今回入れ、未対応段では named 拒否)を pelican_project wire 正本 →
+  core enum / compiler / frame-plan wire / PlanViewer / Studio(D0: Studio は
+  wire 経由のみ)
+- **SPIR-V interface 照合**(#11): payload / hit attribute の location・型を
+  reflection に追加し、stage 間不一致を group/path 名付き load 時エラーに
+- CPU 参照オラクル(§3-3 subset + sentinel)を同段で導入
+- 互換: 旧 flat 構文 sugar、既存 rt_shadow_mask_pipeline は bytes 不変
 
-1. CPU 参照オラクルの精度境界の定式化(watertight 交差 vs GPU の RT コア差。
-   device の `…rayTracingPipeline` 精度保証は貧弱 —— 不等式で書き切れるか)
-2. record 定数の ABI(std430 相当の layout を leaf 語彙からどう決定的に導くか)
-3. per-instance offset の再構築コスト(TLAS rebuild 頻度と編集ループの整合)
-4. ray query 車線との二重化(RT3 の mask/flags は ray query 側 AS にも適用するか)
-5. material drill-through との統合順序(WP354 フォローアップを RT2 に吸収するか独立か)
+### RT2: material 束縛と両車線 alpha
+
+§3-2 の ABI 全部 + overlay `pelican.ray_bindings@1` + per-instance
+`instanceShaderBindingTableRecordOffset`(= global slot)+ ray query 車線の
+alpha loop(§5)+ WP354 material drill-through の RT 面への投影。
+
+### RT3: AS 宣言面(静的)
+
+- **`geometry_flags`(BLAS 側: opaque / no_duplicate_anyhit)と
+  `instance_flags`(TLAS 側: force_opaque / force_no_opaque / …)を別名で分離**(#7)。
+  geometry_flags は BLAS cache key に入り、同一 geometry への矛盾宣言は
+  instance 名一覧つきで拒否
+- mask(既定 0xff)/ custom_index(**未指定は 0。TLAS 列順を既定値として
+  shader に晒さない**、#12 末尾)
+- intersection + procedural AABB は **CPU-authored / static のみ**(#8。
+  storage-port 供給は RT6 の AS graph node 化とセット)。
+  hit group `{ "type": "procedural", "intersection": …, … }`
+
+### RT4: callable と動的 record
+
+- callable 解禁(SBT に callable region)
+- 動的 record: **per-in-flight SBT storage / immutable frame generation**(#13)、
+  producer → record copy → trace の graph 依存と barrier、退役は submission lease。
+  N/N+1 で異なる resolved record を同時検査
+
+### RT5: 変形 geometry(#9)
+
+skinned / morph / VAT の current-frame vertex からの BLAS rebuild/refit
+(毎フレーム再構築で可。deform 済み頂点は既存 compute 出力を再利用)。
+vrm_xr_demo の歩行 character が RT 影に正しく現れることが受け入れ。
+
+### RT6: dispatch 一般化と AS の graph node 化
+
+- `rays_from` に加え explicit extent / buffer count / **indirect** dispatch(#9 末尾)
+- AS build を frame graph node へ(storage-port AABB・GPU driven rebuild が可能に。
+  producer→AS build→trace の resource edge と BLAS invalidation generation を定義)
+- 複数 TLAS(名前付き宣言、component の `ray.scene` 所属、raygen へ複数 binding)
+
+### RT7: ノード一級化と編集 RPC(#14)
+
+- generic RT task の add/update/remove RPC(source origin/digest 持ち)
+- engine/preset node → project fragment への fork 操作
+- candidate compile → SBT/TLAS/material binding 共同検証 → CAS commit
+  (失敗時旧 generation 維持、material・task・group・available・source path を返す)
+- RPE12b 凍結・A/B 測定ループへの搭載
+
+依存: RT1 → RT2 → RT3 → {RT4, RT5} → RT6 → RT7。
+
+## 7. エラー文言の最低内容(第 1 巡ゲート要求の採用)
+
+group 不足: material 文書/名前/variant + task/path + 要求 group + available 一覧。
+device limit: property 名 + 要求値 + 実値 + device 名。
+SBT 範囲: instance/geometry/shader 各項 + record 数。
+BLAS flag 衝突: geometry identity + 競合 component path 一覧。
+編集失敗: 旧 generation 維持 + candidate digest + 復旧方法。
+
+## 8. 未決事項
+
+1. record ABI の導出規則の詳細(RT1 の WP 仕様で表として固定)
+2. bindless の実装形(descriptor indexing vs buffer device address。device 普及率実測後)
+3. per-path TLAS(§3-1 で不要化したが、mask では足りない演出要求が出た場合の再訪)
+4. ray query 車線の alpha loop の shader 生成方法(材質ごとの分岐 vs uber-loop)
+
+## 9. 第 1 巡指摘(14 件)への対応表
+
+| # | 指摘 | v2 |
+|---|---|---|
+| 1 | 共有 TLAS × pipeline 別 SBT で offset 非一意 | §3-1 global `ray_group_layout` |
+| 2 | material data ABI 欠落 | §3-2(bindless 表 + geometry access + overlay) |
+| 3 | CPU オラクル述語が一般に不在 | §3-3 決定的部分集合 + escape hatch |
+| 4 | 交差オラクルでは SBT/record 未検証 | §3-3 sentinel 検査を一級化 |
+| 5 | named skip が fail-fast と衝突 / @N 誤用 / facts 不足 | §4 hard reject + facts 追加 |
+| 6 | 複数 group の default 順序意味が不安定 | §3-1 stable slot 表 + 生成定数(task-local 配列を廃止) |
+| 7 | geometry/instance flag 混同 | RT3 で別名分離 + BLAS cache key |
+| 8 | storage-port AABB が同フレームで届かない | RT3 は static 限定、GPU 供給は RT6(AS node 化)へ |
+| 9 | 変形 geometry が最後まで消えたまま / dispatch 硬直 | RT5 新設 + RT6 dispatch 一般化 |
+| 10 | 二車線の意味分裂 | §5 ray query alpha を RT2 同段、一致契約維持 |
+| 11 | RT interface 検証と stage 語彙の閉鎖 | RT1 で reflection 拡張 + 語彙を wire 正本から全所同段 |
+| 12 | base 文書直書きの purge 崩れ / custom index 既定の列順露出 | §3-2 overlay / RT3 で未指定=0 |
+| 13 | 動的 record の in-flight 競合 | RT4 per-in-flight generation |
+| 14 | RT5(旧)編集が保存経路に無い | RT7 に RPC・fork・CAS を明記 |
