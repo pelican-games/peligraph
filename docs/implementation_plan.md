@@ -15466,3 +15466,23 @@ design_raytracing.md §7 に「callable data の検証は RT4 で」の note を
 - 打ち切り済み設計(prefab v4 / RT v4 / WP364 v3)への再レビュー起動
 - workspace-write agent の 2 本同時(read-only レビューとの並行は可)
 - 台帳・設計の normative example を parser に通さず追加すること
+
+##### 環境に生きている状態(セッション跨ぎで残る。要注意)
+
+`git worktree list` を最初に必ず見ること。この節を書いた時点:
+- **<作業ディレクトリ>/wp364fix (agent/wp364fix)**: WP364 の fixture 測定欠陥修正が
+  **codex 実行中**(ログ <作業ディレクトリ>/wp364fix.log)。完了通知が来たら §E で回収 →
+  統合再走。これが本線の続き。**生存確認はログのバイト伸び**(39B や 1h 停滞で疑う)
+- **<作業ディレクトリ>/wp336 (agent/wp336)**: **前セッションからの放置 worktree**。
+  main から約 1196 先行(render-target-runtime-slice 系列 + 独自の shader reach 作業)。
+  「WP345 の書き直し + wp336 をどうするか」は**利用者との合同判断待ち**で、
+  勝手にマージも削除もしない。触る前に利用者へ確認する
+- 放置の別件: フレーク族(WP332 / 334b / 335。~load 依存で単独では常に緑、
+  assertion 本文を一度も捕捉できていない)。特性化は「1 本の重い load 再現 +
+  全出力捕捉」が要る。急がない
+
+##### 本線が今どこか(一行)
+
+WP364(RT1a)マージ済み → 統合で fixture 1 件割れ → per-file manifest 生成済み →
+テスト置き換えを wp364fix で実装中。**次の一手 = wp364fix の回収**。
+その後は「引き継ぎ: 残 WP への先行裁定」節の作業順どおり。
