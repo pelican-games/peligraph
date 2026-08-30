@@ -252,6 +252,12 @@ DECLARE_MODULE(ShaderLibrary) {
     ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv,
                                  ShaderStage expected_stage,
                                  std::string_view name);
+    ShaderBundleId loadGeneratedSource(
+        std::string_view source, ShaderStage stage,
+        std::string_view name,
+        std::vector<std::string> defines = {},
+        std::vector<std::pair<std::string, std::string>>
+            virtual_includes = {});
     SurfaceShaderBundleIds loadFromSurface(const SurfaceFormatDocument &surface,
                                            std::string_view source_name,
                                            SurfacePass pass = SurfacePass::main,

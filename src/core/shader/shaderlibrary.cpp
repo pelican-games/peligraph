@@ -472,6 +472,19 @@ ShaderBundleId ShaderLibrary::loadFromFile(
         std::move(virtual_includes), path.generic_string());
 }
 
+ShaderBundleId ShaderLibrary::loadGeneratedSource(
+    std::string_view source, ShaderStage stage,
+    std::string_view name, std::vector<std::string> defines,
+    std::vector<std::pair<std::string, std::string>> virtual_includes) {
+    auto bundle = buildFromEngineSource(
+        source, stage, name, 1, std::move(defines),
+        std::move(virtual_includes));
+    bundle_ids.reserve(bundle_ids.size() + 1);
+    const auto id = bundles.reg(std::move(bundle));
+    bundle_ids.push_back(id);
+    return id;
+}
+
 ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
                                                     const ShaderReference &reference,
                                                     std::string_view display_name,

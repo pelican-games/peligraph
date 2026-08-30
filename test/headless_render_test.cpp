@@ -34,12 +34,15 @@
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
+#include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/shader/raytracingoracle.hpp"
 #include "../src/core/shader/raytracingvalidation.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/startup.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
 #include "../src/core/watch/reloadservice.hpp"
@@ -447,6 +450,176 @@ void writeRt1aOracleProject(
     }
   }
 })json");
+}
+
+void writeRt1bLayoutProject(
+    const std::filesystem::path &directory) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeTextFile(
+        directory / "ray_layout.json",
+        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["primary","shadow"],"default_group":"opaque","groups":[{"name":"opaque"},{"name":"foliage"}],"misses":[{"name":"sky"},{"name":"shadow_open"}],"record":[{"name":"tint","type":"vec4"},{"name":"flags","type":"u32"}]})json");
+    writeTextFile(
+        directory / "ray_bindings.json",
+        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":2},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":3},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}}]})json");
+
+    const auto raygen = [](std::string_view ray_type,
+                           std::string_view miss,
+                           std::string_view output) {
+        std::string source = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+layout(set=0,binding=6) uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(rgba32ui,set=1,binding=0) writeonly uniform uimage2D OUTPUT_NAME;
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadEXT Payload payload;
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);
+    payload = Payload(0u, 0xffffffffu, 0u, 0u);
+    traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
+                RAY_TYPE, 2u, MISS_INDEX,
+                vec3(x, 0.0, 0.0), 0.001,
+                vec3(0.0, 0.0, 1.0), 4096.0, 0);
+    imageStore(OUTPUT_NAME, pixel,
+               uvec4(payload.marker, payload.q, payload.flags, payload.tint));
+}
+)glsl";
+        const auto replace_all = [&](std::string_view token,
+                                     std::string_view value) {
+            for (auto at = source.find(token); at != std::string::npos;
+                 at = source.find(token, at + value.size())) {
+                source.replace(at, token.size(), value);
+            }
+        };
+        replace_all("RAY_TYPE", ray_type);
+        replace_all("MISS_INDEX", miss);
+        replace_all("OUTPUT_NAME", output);
+        return source;
+    };
+    const auto miss = [](std::string_view marker,
+                         std::string_view miss_index) {
+        std::string source = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+void main() { payload = Payload(MARKER, 0xffffffffu, MISS_INDEX, 0u); }
+)glsl";
+        source.replace(source.find("MARKER"), 6, marker);
+        source.replace(source.find("MISS_INDEX"), 10, miss_index);
+        return source;
+    };
+    const auto hit = [](std::uint32_t marker) {
+        std::string source = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    vec4 tint;
+    uint flags;
+} ray_record;
+void main() {
+    payload = Payload(MARKER, gl_InstanceCustomIndexEXT,
+                      ray_record.flags, floatBitsToUint(ray_record.tint.x));
+}
+)glsl";
+        source.replace(source.find("MARKER"), 6,
+                       std::to_string(marker) + "u");
+        return source;
+    };
+    writeTextFile(
+        directory / "shaders" / "wp366_a.rgen",
+        raygen("PELICAN_RAY_TYPE_primary", "PELICAN_MISS_sky",
+               "pelican_resource_wp366_a"));
+    writeTextFile(
+        directory / "shaders" / "wp366_b.rgen",
+        raygen("PELICAN_RAY_TYPE_shadow", "PELICAN_MISS_shadow_open",
+               "pelican_resource_wp366_b"));
+    writeTextFile(directory / "shaders" / "wp366_sky.rmiss",
+                  miss("1280u", "PELICAN_MISS_sky"));
+    writeTextFile(directory / "shaders" / "wp366_open.rmiss",
+                  miss("1281u", "PELICAN_MISS_shadow_open"));
+    writeTextFile(directory / "shaders" / "wp366_opaque_primary.rchit",
+                  hit(0xa0u));
+    writeTextFile(directory / "shaders" / "wp366_opaque_shadow.rchit",
+                  hit(0xa1u));
+    writeTextFile(directory / "shaders" / "wp366_foliage_primary.rchit",
+                  hit(0xb0u));
+    writeTextFile(directory / "shaders" / "wp366_foliage_shadow.rchit",
+                  hit(0xb1u));
+
+    const nlohmann::json hit_shaders{
+        {"primary",
+         {{"opaque", {{"closesthit", "project://shaders/wp366_opaque_primary"}}},
+          {"foliage", {{"closesthit", "project://shaders/wp366_foliage_primary"}}}}},
+        {"shadow",
+         {{"opaque", {{"closesthit", "project://shaders/wp366_opaque_shadow"}}},
+          {"foliage", {{"closesthit", "project://shaders/wp366_foliage_shadow"}}}}},
+    };
+    const auto task = [&](std::string name, std::string output,
+                          std::string raygen_name) {
+        return nlohmann::json{
+            {"name", std::move(name)},
+            {"ray_tracing",
+             {{"raygen", std::move(raygen_name)},
+              {"traced_ray_types", {"primary", "shadow"}},
+              {"misses",
+               {{"sky", "project://shaders/wp366_sky"},
+                {"shadow_open", "project://shaders/wp366_open"}}},
+              {"hit_shaders", hit_shaders}}},
+            {"writes", {output}},
+            {"resource_ports",
+             {{output,
+               {{"resource", output}, {"access", "storage"}}}}},
+            {"dispatch", {{"rays_from", {{"port", output}}}}},
+        };
+    };
+    const nlohmann::json config{
+        {"ray_group_layout", "ray_layout.json"},
+        {"ray_bindings", "ray_bindings.json"},
+        {"render_targets",
+         {{{"name", "wp366_a"},
+           {"extent_scale", 1.0},
+           {"format", "R32G32B32A32_UINT"},
+           {"format_class", "data"},
+           {"role", "data"},
+           {"usage", {"STORAGE", "TRANSFER_SRC"}}},
+          {{"name", "wp366_b"},
+           {"extent_scale", 1.0},
+           {"format", "R32G32B32A32_UINT"},
+           {"format_class", "data"},
+           {"role", "data"},
+           {"usage", {"STORAGE", "TRANSFER_SRC"}}}}},
+        {"rendering_passes",
+         {{{"name", "main_render"},
+           {"passes",
+            {{{"name", "present"},
+              {"type", "fullscreen"},
+              {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+              {"shader",
+               {{"vertex", "engine://fullscreen"},
+                {"fragment", "engine://shader_lab_hello"}}}}}}}}},
+        {"compute_tasks",
+         {task("wp366_a", "wp366_a", "project://shaders/wp366_a"),
+          task("wp366_b", "wp366_b", "project://shaders/wp366_b")}},
+        {"target_planning",
+         {{"graphs",
+           {{"main_render",
+             {{"required_capabilities",
+               {"pelican.vulkan.ray_query@1",
+                "pelican.vulkan.ray_tracing_pipeline@1"}}}}}}}},
+    };
+    writeTextFile(directory / "hybrid.json", config.dump(2));
 }
 
 enum class Rt1aNegativeLoadKind {
@@ -10152,6 +10325,437 @@ TEST_CASE(
 #else
     SUCCEED(
         "RT1a GPU oracle shaders require the runtime compiler; compiler-OFF parent SPIR-V hashes are covered by the CPU gate");
+#endif
+}
+
+TEST_CASE(
+    "WP366 renderer A B recovers q r group miss and authored record bytes in one submission",
+    "[headless][gpu][ray-tracing][rt1b][renderer][sentinel][transaction]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeRt1bLayoutProject(temp_dir);
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+
+        std::vector<RayTracingSbtWriteObservation> writes;
+        const ScopedRayTracingSbtWriteObserver observer{
+            [&](const auto &write) { writes.push_back(write); }};
+        auto &renderer = GET_MODULE(Renderer);
+        auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+        REQUIRE(runtime.snapshot() == nullptr);
+        const auto private_generation = runtime.stagedGeneration();
+        REQUIRE(private_generation != 0);
+        CHECK_THROWS_WITH(
+            renderer.currentFramePlanJson(),
+            Catch::Matchers::ContainsSubstring(
+                "Current frame plan is not registered"));
+        CHECK_THROWS_WITH(
+            renderer.currentFramePlanOrderForTesting(),
+            Catch::Matchers::ContainsSubstring(
+                "Current frame plan is not registered"));
+
+        CommonPolygonVertData geometry;
+        geometry.indices = {0, 1, 2};
+        geometry.pos = {{-0.75f, -0.75f, 8.0f},
+                        {0.75f, -0.75f, 8.0f},
+                        {0.0f, 0.75f, 8.0f}};
+        geometry.normal.assign(3, glm::vec3{0.0f, 0.0f, 1.0f});
+        geometry.texcoord.assign(3, glm::vec2{0.0f});
+        geometry.color.assign(3, glm::vec4{1.0f});
+        const auto primitive =
+            GET_MODULE(VertBufContainer).addPrimitiveEntry(
+                std::move(geometry));
+        const auto material =
+            GET_MODULE(StandardMaterialResource)
+                .standardTransparentMaterial();
+        ModelTemplate model_a;
+        model_a.asset_id = ModelAssetId{3660};
+        model_a.authored_asset_reference = "models/tree.glb";
+        model_a.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = material,
+                .primitives = {primitive},
+                .source_material_index = 2,
+            }};
+        ModelTemplate model_b;
+        model_b.asset_id = ModelAssetId{3661};
+        model_b.authored_asset_reference = "models/tree.glb";
+        model_b.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material = material,
+                .primitives = {primitive},
+                .source_material_index = 3,
+            }};
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto a = instances.placeModelInstance(model_a);
+        const auto b = instances.placeModelInstance(model_b);
+        instances.setTrs(a, {-2.0f, 0.0f, 0.0f}, glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
+                         glm::vec3{1.0f});
+        instances.setTrs(b, {2.0f, 0.0f, 0.0f}, glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
+                         glm::vec3{1.0f});
+
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE(runtime.stagedGeneration() == 0);
+        REQUIRE(runtime.activeGeneration() == private_generation);
+
+        const auto output_a = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        const auto output_b = renderer.readRenderTargetForTesting(
+            "wp366_b", ImageSubresourceRange{});
+        REQUIRE(output_a.format == vk::Format::eR32G32B32A32Uint);
+        REQUIRE(output_b.format == output_a.format);
+        const auto pixel = [](const RenderTargetReadback &readback,
+                              std::uint32_t x) {
+            std::array<std::uint32_t, 4> result{};
+            const auto offset = static_cast<std::size_t>(x) * sizeof(result);
+            if (offset + sizeof(result) > readback.bytes.size()) {
+                throw std::out_of_range("WP366 sentinel pixel is outside readback");
+            }
+            std::memcpy(result.data(), readback.bytes.data() + offset,
+                        sizeof(result));
+            return result;
+        };
+        CHECK(pixel(output_a, 0) ==
+              std::array{0xa0u, 1u, 101u, std::bit_cast<std::uint32_t>(1.0f)});
+        CHECK(pixel(output_a, 1) ==
+              std::array{0xb0u, 0u, 202u, std::bit_cast<std::uint32_t>(0.0f)});
+        CHECK(pixel(output_a, 2) ==
+              std::array{1280u, 0xffffffffu, 0u, 0u});
+        CHECK(pixel(output_b, 0) ==
+              std::array{0xa1u, 1u, 101u, std::bit_cast<std::uint32_t>(1.0f)});
+        CHECK(pixel(output_b, 1) ==
+              std::array{0xb1u, 0u, 202u, std::bit_cast<std::uint32_t>(0.0f)});
+        CHECK(pixel(output_b, 2) ==
+              std::array{1281u, 0xffffffffu, 1u, 0u});
+
+        REQUIRE(writes.size() == 2);
+        CHECK(writes[0].row_digest_sha256 == writes[1].row_digest_sha256);
+        CHECK(writes[0].pipeline_handle != writes[1].pipeline_handle);
+        const auto &capabilities = vkcore.getRuntimeCapabilities();
+        const auto alignment = capabilities.shader_group_handle_alignment;
+        REQUIRE(alignment != 0);
+        const auto data_start =
+            (capabilities.shader_group_handle_size + alignment - 1u) /
+            alignment * alignment;
+        for (const auto &write : writes) {
+            REQUIRE(write.record_index_stride == 2);
+            REQUIRE(write.record_count == 4);
+            REQUIRE(write.hit_bytes.size() ==
+                    static_cast<std::size_t>(write.record_byte_stride) * 4u);
+            for (std::uint32_t q = 0; q < 2; ++q) {
+                for (std::uint32_t r = 0; r < 2; ++r) {
+                    const auto at =
+                        static_cast<std::size_t>(q * 2u + r) *
+                            write.record_byte_stride +
+                        data_start;
+                    std::array<float, 4> tint{};
+                    std::uint32_t flags = 0;
+                    std::memcpy(tint.data(), write.hit_bytes.data() + at,
+                                sizeof(tint));
+                    std::memcpy(&flags,
+                                write.hit_bytes.data() + at + sizeof(tint),
+                                sizeof(flags));
+                    CHECK(flags == (q == 0 ? 202u : 101u));
+                    CHECK(tint[0] == (q == 0 ? 0.0f : 1.0f));
+                    CHECK(tint[1] == (q == 0 ? 1.0f : 0.0f));
+                }
+            }
+        }
+
+        // Rebuild the same authored scene in reverse publication order.  The
+        // production row resolver, both production SBT writes, TLAS q*R, and
+        // renderer output must all remain byte-identical.
+        const auto forward_writes = writes;
+
+        // Replace the production TLAS base q*R with the tempting wrong q.
+        // One geometry is enough to hit neighboring records, so both actual
+        // pipelines must expose the addressing error in their GPU payloads.
+        writes.clear();
+        {
+            const ScopedRayTracingTlasRecordOffsetOverrideForTesting
+                wrong_tlas_base{[](
+                                    std::uint32_t q,
+                                    std::uint32_t) { return q; }};
+            renderer.render();
+            vkcore.waitIdle();
+        }
+        const auto wrong_tlas_output_a =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        const auto wrong_tlas_output_b =
+            renderer.readRenderTargetForTesting(
+                "wp366_b", ImageSubresourceRange{});
+        CHECK(pixel(wrong_tlas_output_a, 0) ==
+              std::array{0xb1u, 1u, 202u,
+                         std::bit_cast<std::uint32_t>(0.0f)});
+        CHECK(pixel(wrong_tlas_output_b, 0) ==
+              std::array{0xa0u, 1u, 101u,
+                         std::bit_cast<std::uint32_t>(1.0f)});
+        CHECK(wrong_tlas_output_a.bytes != output_a.bytes);
+        CHECK(wrong_tlas_output_b.bytes != output_b.bytes);
+
+        writes.clear();
+        renderer.render();
+        vkcore.waitIdle();
+        CHECK(renderer.readRenderTargetForTesting(
+                  "wp366_a", ImageSubresourceRange{}).bytes ==
+              output_a.bytes);
+        CHECK(renderer.readRenderTargetForTesting(
+                  "wp366_b", ImageSubresourceRange{}).bytes ==
+              output_b.bytes);
+
+        REQUIRE(instances.removeModelInstance(a));
+        REQUIRE(instances.removeModelInstance(b));
+        const auto reverse_b = instances.placeModelInstance(model_b);
+        const auto reverse_a = instances.placeModelInstance(model_a);
+        instances.setTrs(reverse_b, {2.0f, 0.0f, 0.0f},
+                         glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, glm::vec3{1.0f});
+        instances.setTrs(reverse_a, {-2.0f, 0.0f, 0.0f},
+                         glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, glm::vec3{1.0f});
+        writes.clear();
+        renderer.render();
+        vkcore.waitIdle();
+        const auto reverse_output_a = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        const auto reverse_output_b = renderer.readRenderTargetForTesting(
+            "wp366_b", ImageSubresourceRange{});
+        CHECK(reverse_output_a.bytes == output_a.bytes);
+        CHECK(reverse_output_b.bytes == output_b.bytes);
+        REQUIRE(writes.size() == forward_writes.size());
+        for (std::size_t index = 0; index < writes.size(); ++index) {
+            CHECK(writes[index].row_digest_sha256 ==
+                  forward_writes[index].row_digest_sha256);
+            CHECK(writes[index].record_index_stride ==
+                  forward_writes[index].record_index_stride);
+            CHECK(writes[index].record_byte_stride ==
+                  forward_writes[index].record_byte_stride);
+            CHECK((writes[index].hit_bytes ==
+                   forward_writes[index].hit_bytes));
+        }
+
+        // Removing an authored row must shrink Q*R immediately.  A stale
+        // foliage row would keep the right-hand ray live or retain four SBT
+        // records, both of which are observed through production GPU state.
+        REQUIRE(instances.removeModelInstance(reverse_b));
+        writes.clear();
+        renderer.render();
+        vkcore.waitIdle();
+        const auto removed_output_a =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        const auto removed_output_b =
+            renderer.readRenderTargetForTesting(
+                "wp366_b", ImageSubresourceRange{});
+        CHECK(pixel(removed_output_a, 0) ==
+              std::array{0xa0u, 0u, 101u,
+                         std::bit_cast<std::uint32_t>(1.0f)});
+        CHECK(pixel(removed_output_a, 1) ==
+              std::array{1280u, 0xffffffffu, 0u, 0u});
+        CHECK(pixel(removed_output_b, 0) ==
+              std::array{0xa1u, 0u, 101u,
+                         std::bit_cast<std::uint32_t>(1.0f)});
+        CHECK(pixel(removed_output_b, 1) ==
+              std::array{1281u, 0xffffffffu, 1u, 0u});
+        REQUIRE(writes.size() == 2);
+        for (const auto &write : writes) {
+            CHECK(write.record_count == 2);
+            CHECK(write.hit_bytes.size() ==
+                  static_cast<std::size_t>(
+                      write.record_byte_stride) * 2u);
+        }
+
+        const auto restored_b =
+            instances.placeModelInstance(model_b);
+        instances.setTrs(restored_b, {2.0f, 0.0f, 0.0f},
+                         glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
+                         glm::vec3{1.0f});
+        writes.clear();
+        renderer.render();
+        vkcore.waitIdle();
+        CHECK(renderer.readRenderTargetForTesting(
+                  "wp366_a", ImageSubresourceRange{}).bytes ==
+              output_a.bytes);
+        CHECK(renderer.readRenderTargetForTesting(
+                  "wp366_b", ImageSubresourceRange{}).bytes ==
+              output_b.bytes);
+        REQUIRE(writes.size() == 2);
+        for (const auto &write : writes) {
+            CHECK(write.record_count == 4);
+        }
+
+        // A layout-only file notification must be claimed by the real render
+        // pipeline reload participant. Removing the root-authored dependency
+        // registration makes this request unclaimed and this assertion fail.
+        const auto layout_path = temp_dir / "ray_layout.json";
+        auto layout_bytes = readTextFile(layout_path);
+        layout_bytes += "\n";
+        writeTextFile(layout_path, layout_bytes);
+        const auto before_layout_reload = runtime.snapshot();
+        REQUIRE(before_layout_reload != nullptr);
+        const auto before_layout_reload_generation =
+            before_layout_reload->generation;
+        writes.clear();
+        REQUIRE(GET_MODULE(watch::ReloadService)
+                    .applyRequestForTesting(
+                        watch::ReloadRequest{
+                            watch::makeAssetKey("ray_layout.json"),
+                            watch::ReloadKind::modified, {}, 1}));
+        CHECK(runtime.snapshot() == before_layout_reload);
+        REQUIRE(runtime.stagedGeneration() != 0);
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE(runtime.stagedGeneration() == 0);
+        REQUIRE(runtime.activeGeneration() ==
+                before_layout_reload_generation + 1);
+        CHECK(renderer.readRenderTargetForTesting(
+                  "wp366_a", ImageSubresourceRange{}).bytes ==
+              output_a.bytes);
+        CHECK(renderer.readRenderTargetForTesting(
+                  "wp366_b", ImageSubresourceRange{}).bytes ==
+              output_b.bytes);
+        REQUIRE(writes.size() == 2);
+        for (const auto &write : writes) {
+            CHECK(write.record_count == 4);
+        }
+
+        const auto stable_root = runtime.snapshot();
+        REQUIRE(stable_root != nullptr);
+        const auto stable_scope = std::find_if(
+            stable_root->gpu_arena->scopes.begin(),
+            stable_root->gpu_arena->scopes.end(),
+            [](const auto &scope) {
+                return scope.ray_tracing_project != nullptr;
+            });
+        REQUIRE(stable_scope != stable_root->gpu_arena->scopes.end());
+        REQUIRE(stable_scope->acceleration_structures != nullptr);
+        const auto stable_tlas =
+            stable_scope->acceleration_structures
+                ->topLevelDeviceAddress();
+        REQUIRE(stable_tlas != 0);
+        constexpr std::array transaction_points{
+            RayTracingJointTransactionPoint::after_compile,
+            RayTracingJointTransactionPoint::after_pipeline,
+            RayTracingJointTransactionPoint::after_sbt,
+            RayTracingJointTransactionPoint::after_as_record,
+            RayTracingJointTransactionPoint::submit,
+        };
+        for (std::size_t index = 0;
+             index < transaction_points.size(); ++index) {
+            const auto point = transaction_points[index];
+            layout_bytes += index % 2 == 0 ? " " : "\n";
+            writeTextFile(layout_path, layout_bytes);
+            const ScopedRayTracingJointTransactionInjector injector{
+                [point](RayTracingJointTransactionPoint observed) {
+                    if (observed == point) {
+                        throw std::runtime_error(
+                            "injected WP366 joint transaction failure");
+                    }
+                }};
+            const auto config = readTextFile(temp_dir / "hybrid.json");
+            if (point == RayTracingJointTransactionPoint::after_compile ||
+                point == RayTracingJointTransactionPoint::after_pipeline) {
+                CHECK_THROWS_WITH(
+                    loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                        config),
+                    Catch::Matchers::ContainsSubstring(
+                        "injected WP366 joint transaction failure"));
+                if (point ==
+                    RayTracingJointTransactionPoint::after_pipeline) {
+                    // Pipeline creation has populated the production shader
+                    // compiler cache, but registration rollback has removed
+                    // the candidate ShaderLibrary bundles. Repeating the
+                    // exact failed transaction must compile zero misses.
+                    const auto before_retry =
+                        GET_MODULE(StartupMetrics).snapshot();
+                    CHECK_THROWS_WITH(
+                        loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                            config),
+                        Catch::Matchers::ContainsSubstring(
+                            "injected WP366 joint transaction failure"));
+                    const auto after_retry =
+                        GET_MODULE(StartupMetrics).snapshot();
+                    const auto requests =
+                        after_retry.shader_cache_requests -
+                        before_retry.shader_cache_requests;
+                    const auto hits =
+                        after_retry.shader_cache_hits -
+                        before_retry.shader_cache_hits;
+                    CHECK(requests > 0);
+                    CHECK(hits == requests);
+                }
+            } else {
+                const auto replacement =
+                    loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                        config);
+                CHECK(replacement.flat.value >= 0);
+                REQUIRE(runtime.snapshot() == stable_root);
+                REQUIRE(runtime.stagedGeneration() != 0);
+                CHECK_THROWS_WITH(
+                    renderer.render(),
+                    Catch::Matchers::ContainsSubstring(
+                        "injected WP366 joint transaction failure"));
+            }
+            CHECK(runtime.snapshot() == stable_root);
+            CHECK(runtime.activeGeneration() ==
+                  stable_root->generation);
+            CHECK(runtime.stagedGeneration() == 0);
+            CHECK(stable_scope->acceleration_structures
+                      ->topLevelDeviceAddress() == stable_tlas);
+        }
+
+        // Change a shader-record declaration behind the production config
+        // loader. The real ShaderLibrary reflection and PipelineFactory gate
+        // must reject it by name without exposing a candidate generation.
+        const auto wrong_hit_path =
+            temp_dir / "shaders" /
+            "wp366_opaque_primary.rchit";
+        auto wrong_hit = readTextFile(wrong_hit_path);
+        const auto flags_declaration =
+            wrong_hit.find("    uint flags;\n");
+        REQUIRE(flags_declaration != std::string::npos);
+        wrong_hit.insert(flags_declaration,
+                         "    float unexpected;\n");
+        writeTextFile(wrong_hit_path, wrong_hit);
+        CHECK_THROWS_WITH(
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                readTextFile(temp_dir / "hybrid.json")),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.shader_record_abi_mismatch@1"));
+        CHECK(runtime.snapshot() == stable_root);
+        CHECK(runtime.stagedGeneration() == 0);
+        CHECK(stable_scope->acceleration_structures
+                  ->topLevelDeviceAddress() == stable_tlas);
+
+        // The two authored material selectors deliberately share one asset
+        // and geometry.  Making their persistent scene identity coincide must
+        // be rejected by the production renderer before a divergent row can
+        // reach TLAS/SBT publication.
+        instances.setTrs(restored_b, {-2.0f, 0.0f, 0.0f},
+                         glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, glm::vec3{1.0f});
+        CHECK_THROWS_WITH(
+            renderer.render(),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_row_binding_ambiguous@1"));
+        CHECK(runtime.snapshot() == stable_root);
+        CHECK(stable_scope->acceleration_structures
+                  ->topLevelDeviceAddress() == stable_tlas);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan WP366 renderer A/B fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("WP366 layout projects are rejected before GPU work when the runtime compiler is disabled");
 #endif
 }
 

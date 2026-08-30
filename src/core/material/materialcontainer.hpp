@@ -167,6 +167,9 @@ DECLARE_MODULE(MaterialContainer) {
         };
 
         PipelineHandle pipeline;
+        std::string name;
+        std::string source_asset;
+        std::string source_document;
         std::vector<vk::Format> pipeline_color_formats;
         std::optional<vk::Format> pipeline_depth_format;
         vk::SampleCountFlagBits pipeline_rasterization_samples =
@@ -396,6 +399,10 @@ DECLARE_MODULE(MaterialContainer) {
     }
     MaterialRouteClass routeForMaterial(GlobalMaterialId material) const {
         return materials.get(material).route;
+    }
+    const std::string &materialDocumentReference(
+        GlobalMaterialId material) const {
+        return materials.get(material).source_document;
     }
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                       const PassDefinition &pass, GlobalMaterialId material,

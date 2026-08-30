@@ -386,6 +386,10 @@ struct CompiledRenderPipeline {
         render_strategy;
     std::optional<RenderCompilerProgramSelection>
         render_compiler_program;
+    // Root-authored, non-composed references used by renderer reload
+    // dependency tracking. The parsed layout itself remains a core sidecar.
+    std::optional<std::string> ray_group_layout_reference;
+    std::optional<std::string> ray_bindings_reference;
     std::vector<RenderPipelineDiagnostic> diagnostics;
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;

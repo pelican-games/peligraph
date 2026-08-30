@@ -94,6 +94,43 @@ bool isTriangleHitAttribute(
            type.elements.front().bit_width == 32;
 }
 
+RayTracingCanonicalType canonicalRecordType(RayRecordType type) {
+    RayTracingCanonicalType scalar;
+    scalar.bit_width = 32;
+    switch (type) {
+    case RayRecordType::i32:
+        scalar.kind = RayTracingCanonicalTypeKind::signed_integer;
+        return scalar;
+    case RayRecordType::u32:
+        scalar.kind = RayTracingCanonicalTypeKind::unsigned_integer;
+        return scalar;
+    case RayRecordType::f32:
+        scalar.kind = RayTracingCanonicalTypeKind::floating;
+        return scalar;
+    case RayRecordType::vec2:
+    case RayRecordType::vec3:
+    case RayRecordType::vec4: {
+        scalar.kind = RayTracingCanonicalTypeKind::floating;
+        RayTracingCanonicalType vector;
+        vector.kind = RayTracingCanonicalTypeKind::vector;
+        vector.element_count = type == RayRecordType::vec2
+                                   ? 2u
+                                   : type == RayRecordType::vec3 ? 3u : 4u;
+        vector.elements.push_back(std::move(scalar));
+        return vector;
+    }
+    }
+    throw std::logic_error("unknown ray record type");
+}
+
+[[noreturn]] void failShaderRecord(
+    const RayTracingShaderOccurrence &occurrence,
+    std::string message) {
+    throw std::runtime_error(
+        "pelican.ray_tracing.shader_record_abi_mismatch@1: " +
+        occurrenceName(occurrence) + " " + std::move(message));
+}
+
 void hashAppend(std::uint64_t &hash, std::string_view text) {
     for (const auto byte : text) {
         hash ^= static_cast<unsigned char>(byte);
@@ -217,6 +254,70 @@ std::string validateRayTracingPipelineInterfaces(
         }
     }
 
+    if (request.group_layout != nullptr) {
+        const auto &layout = *request.group_layout;
+        const auto ray_count = layout.ray_types.size();
+        if (request.hit_groups.size() !=
+            layout.groups.size() * ray_count) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.hit_grid_invalid@1: hit group count does not equal groups*ray_types");
+        }
+        const auto validate_record =
+            [&](const RayTracingShaderOccurrence &occurrence,
+                bool required) {
+                const auto &actual = occurrence.entry->shader_record;
+                if (!actual) {
+                    if (required && !layout.record.empty()) {
+                        failShaderRecord(
+                            occurrence,
+                            "has no shader-record storage; expected " +
+                                std::to_string(layout.record.size()) +
+                                " members");
+                    }
+                    return;
+                }
+                if (actual->members.size() != layout.record.size()) {
+                    failShaderRecord(
+                        occurrence, "member_count=" +
+                                        std::to_string(actual->members.size()) +
+                                        " expected=" +
+                                        std::to_string(layout.record.size()));
+                }
+                for (std::size_t member = 0;
+                     member < layout.record.size(); ++member) {
+                    const auto expected_type =
+                        canonicalRecordType(layout.record[member].type);
+                    if (actual->members[member].offset !=
+                            layout.record[member].offset ||
+                        actual->members[member].type != expected_type) {
+                        failShaderRecord(
+                            occurrence, "member=" + std::to_string(member) +
+                                            " offset=" +
+                                            std::to_string(actual->members[member].offset) +
+                                            " expected_offset=" +
+                                            std::to_string(layout.record[member].offset) +
+                                            " type=" +
+                                            describeRayTracingCanonicalType(
+                                                actual->members[member].type) +
+                                            " expected_type=" +
+                                            describeRayTracingCanonicalType(
+                                                expected_type));
+                    }
+                }
+            };
+        validate_record(request.raygen, false);
+        for (const auto &miss : request.misses)
+            validate_record(miss, false);
+        for (std::size_t index = 0; index < request.hit_groups.size(); ++index) {
+            const auto ray = static_cast<std::uint32_t>(index % ray_count);
+            const auto traced =
+                std::find(request.traced_ray_type_indices.begin(),
+                          request.traced_ray_type_indices.end(), ray) !=
+                request.traced_ray_type_indices.end();
+            validate_record(request.hit_groups[index], traced);
+        }
+    }
+
     const auto validate_trace = [&](const auto &caller,
                                     const auto &trace) {
         const auto *outgoing = &trace.payload_type;
@@ -237,10 +338,31 @@ std::string validateRayTracingPipelineInterfaces(
                             incoming ? &incoming->type : nullptr);
             }
         };
-        // RT1a only: instance SBT offset and geometry index are identity zero.
         compare_target("miss", trace.miss_index, request.misses);
-        compare_target("hit", trace.sbt_record_offset,
-                       request.hit_groups);
+        if (request.group_layout == nullptr) {
+            // RT1a legacy: instance SBT offset and geometry index are zero.
+            compare_target("hit", trace.sbt_record_offset,
+                           request.hit_groups);
+            return;
+        }
+        RayTracingRecordAddressing addressing{
+            .record_index_stride = static_cast<std::uint32_t>(
+                request.group_layout->ray_types.size()),
+            .traced_ray_type_indices = {
+                request.traced_ray_type_indices.begin(),
+                request.traced_ray_type_indices.end()},
+        };
+        validateRayTracingRecordAddressing(
+            trace.sbt_record_offset, trace.sbt_record_stride,
+            trace.miss_index, *request.group_layout, addressing);
+        const auto ray_count = request.group_layout->ray_types.size();
+        for (std::size_t group = 0;
+             group < request.group_layout->groups.size(); ++group) {
+            compare_target(
+                "hit", static_cast<std::uint32_t>(group * ray_count +
+                                                  trace.sbt_record_offset),
+                request.hit_groups);
+        }
     };
 
     const auto validate_traces = [&](const auto &caller) {
@@ -300,9 +422,21 @@ std::string validateRayTracingPipelineInterfaces(
             hashAppend(hash, "sbtRecordStride");
             hashAppend(hash,
                        std::to_string(trace.sbt_record_stride));
-            digest_target(
-                "hitTarget", trace.sbt_record_offset,
-                request.hit_groups[trace.sbt_record_offset]);
+            if (request.group_layout == nullptr) {
+                digest_target(
+                    "hitTarget", trace.sbt_record_offset,
+                    request.hit_groups[trace.sbt_record_offset]);
+            } else {
+                const auto ray_count =
+                    request.group_layout->ray_types.size();
+                for (std::size_t group = 0;
+                     group < request.group_layout->groups.size(); ++group) {
+                    const auto resolved = static_cast<std::uint32_t>(
+                        group * ray_count + trace.sbt_record_offset);
+                    digest_target("hitTarget", resolved,
+                                  request.hit_groups[resolved]);
+                }
+            }
             hashAppend(hash, "tracePayloadType");
             hashAppend(hash,
                        describeRayTracingCanonicalType(
@@ -315,7 +449,9 @@ std::string validateRayTracingPipelineInterfaces(
     for (const auto &occurrence : request.hit_groups)
         digest_traces(occurrence);
     std::ostringstream result;
-    result << "rt1a-fnv1a64:" << std::hex << std::setw(16)
+    result << (request.group_layout ? "rt1b-fnv1a64:"
+                                    : "rt1a-fnv1a64:")
+           << std::hex << std::setw(16)
            << std::setfill('0') << hash;
     return result.str();
 }

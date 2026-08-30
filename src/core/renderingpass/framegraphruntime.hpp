@@ -170,9 +170,19 @@ class PreparedRendererRuntimeGeneration {
 };
 
 DECLARE_MODULE(FrameGraphRuntimeContainer) {
+    struct StagedPublication {
+        PreparedRendererRuntimeGeneration prepared;
+        std::shared_ptr<const void> lifetime;
+        std::function<void()> commit_lifetime;
+        std::function<void(const RendererRuntimeGeneration &)>
+            before_publish;
+        bool ready = false;
+    };
+
     std::shared_ptr<RendererRuntimePublication>
         publication;
     mutable std::mutex publication_mutex;
+    std::optional<StagedPublication> staged_publication;
 
   public:
     FrameGraphRuntimeContainer();
@@ -191,6 +201,21 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
         const std::function<void(
             const RendererRuntimeGeneration &)>
             &before_publish = {});
+    // A ray-layout generation is executable while private, but remains
+    // absent from snapshot() until the frame containing its complete SBT,
+    // row snapshot, and TLAS has been submitted successfully.
+    void stagePreparedGeneration(
+        PreparedRendererRuntimeGeneration &&prepared,
+        std::shared_ptr<const void> lifetime,
+        std::function<void()> commit_lifetime,
+        std::function<void(const RendererRuntimeGeneration &)>
+            before_publish = {});
+    std::shared_ptr<const RendererRuntimeGeneration>
+    renderingSnapshot() const noexcept;
+    std::uint64_t stagedGeneration() const noexcept;
+    void prepareStagedGenerationCommit(std::uint64_t generation);
+    bool publishStagedGeneration(std::uint64_t generation) noexcept;
+    bool rollbackStagedGeneration(std::uint64_t generation) noexcept;
     void rollbackPreparedGeneration(
         PreparedRendererRuntimeGeneration &prepared) const noexcept;
 

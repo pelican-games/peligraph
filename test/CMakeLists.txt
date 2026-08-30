@@ -812,6 +812,9 @@ target_compile_definitions(pelican_test_wp360_resolvedscene_test PRIVATE
   PELICAN_WP360_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
 )
 pelican_define_test(wp361_prefab_test pelican_core glm picosha2)
+target_compile_definitions(pelican_test_wp361_prefab_test PRIVATE
+  PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
+)
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})
@@ -1216,6 +1219,17 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     endif()
 endif()
 pelican_define_test(raytracing_rt1a_test pelican_core spirv-reflect-static picosha2)
+pelican_define_test(raytracing_rt1b_test pelican_core picosha2
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+target_compile_definitions(pelican_test_raytracing_rt1b_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_raytracing_rt1b_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_shaderc_runtime(pelican_test_raytracing_rt1b_test)
+    endif()
+endif()
 find_package(Git QUIET)
 if(Git_FOUND)
     file(TO_CMAKE_PATH "${GIT_EXECUTABLE}" PELICAN_TEST_GIT_EXECUTABLE)

@@ -1,4 +1,5 @@
 #include "renderingpassconfigregistration.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "computetask.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "../../project/vulkanviewplanning.hpp"
@@ -130,6 +131,8 @@ std::string gpuOwnerScope(
 
 std::vector<CompiledComputeTask> compileComputeTasks(
     const std::vector<ComputeTaskDefinition> &definitions,
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project,
     const std::unordered_map<
         std::string,
         std::shared_ptr<const VulkanTargetPlan>>
@@ -256,6 +259,7 @@ std::vector<CompiledComputeTask> compileComputeTasks(
                 &resource_view_counts,
                 &dependencies.runtime
                      .shader_defines,
+                ray_tracing_project,
             });
         compiled.push_back(CompiledComputeTask{definition, task_id});
     }
@@ -448,6 +452,7 @@ registerPreparedRenderingPassConfigVariant(
     auto compiled_compute_tasks =
         compileComputeTasks(
             prepared.compute_task_definitions,
+            prepared.ray_tracing_project,
             physical.target_plans,
             dependencies);
     injectGpuRegistrationFault(
@@ -773,6 +778,17 @@ registerRenderingPassConfigVariantsData(
     constexpr bool runtime_shader_compiler_enabled =
         false;
 #endif
+    const auto load_root_document =
+        [&dependencies](std::string_view reference) {
+            if (dependencies.front().options.load_document) {
+                return dependencies.front().options.load_document(reference);
+            }
+            return dependencies.front().runtime.path_resolver.loadText(reference);
+        };
+    const auto ray_tracing_project =
+        loadRayTracingProjectConfig(
+            rendering_pass_data, load_root_document,
+            runtime_shader_compiler_enabled);
     const auto &vulkan_core =
         GET_MODULE(VulkanManageCore);
     const auto enabled_device_extensions =
@@ -802,6 +818,7 @@ registerRenderingPassConfigVariantsData(
             dependencies.front().options.load_document,
         .runtime_shader_compiler_enabled =
             runtime_shader_compiler_enabled,
+        .ray_tracing_project = ray_tracing_project,
         .graph_transforms =
             graph_transform_providers,
         .render_strategies =
@@ -819,6 +836,10 @@ registerRenderingPassConfigVariantsData(
             effectiveRenderCompilerProgram(
                 dependencies.front().options),
             compiler_input);
+    if (ray_tracing_project != nullptr) {
+        injectRayTracingJointTransactionPoint(
+            RayTracingJointTransactionPoint::after_compile);
+    }
     auto prepared_variants =
         std::move(compiler_output.variants);
     std::optional<PreviewGraphProgram>
@@ -867,7 +888,8 @@ registerRenderingPassConfigVariantsData(
             ? current_generation->gpu_arena->findScope(
                   owner_scope)
             : nullptr;
-    RenderPipelineGpuRegistrationArena gpu_arena{
+    auto gpu_arena = std::make_shared<
+        RenderPipelineGpuRegistrationArena>(
         RenderPipelineGpuRegistrationDependencies{
             first.render_targets.render_target_container,
             first.frame_graph_resources,
@@ -878,7 +900,7 @@ registerRenderingPassConfigVariantsData(
             first.runtime.shadow_depth_pass_container,
             first.runtime.velocity_pass_container,
         },
-        replaced_scope};
+        replaced_scope);
 
     std::vector<RenderingPassConfigRegistrationResult>
         results(dependencies.size());
@@ -894,7 +916,7 @@ registerRenderingPassConfigVariantsData(
         auto variant_programs =
             registerPreparedRenderingPassConfigVariant(
                 prepared_variants[index], base_extent,
-                dependencies[index], gpu_arena,
+                dependencies[index], *gpu_arena,
                 pass_implementation_providers,
                 native_scope_providers,
                 results[index]);
@@ -930,7 +952,9 @@ registerRenderingPassConfigVariantsData(
                            ->required_physical_features.end();
         });
     auto prepared_gpu_scope =
-        gpu_arena.preparedScope(owner_scope);
+        gpu_arena->preparedScope(owner_scope);
+    prepared_gpu_scope.ray_tracing_project =
+        ray_tracing_project;
     const bool reflection_requires_ray_query = std::any_of(
         prepared_gpu_scope.resources.begin(),
         prepared_gpu_scope.resources.end(),
@@ -945,7 +969,17 @@ registerRenderingPassConfigVariantsData(
     if (plan_requires_ray_query ||
         reflection_requires_ray_query) {
         attachRayQueryAccelerationStructures(
-            prepared_gpu_scope);
+            prepared_gpu_scope,
+            replaced_scope != nullptr
+                ? replaced_scope->acceleration_structures
+                : nullptr);
+    }
+    const bool joint_ray_transaction =
+        ray_tracing_project != nullptr &&
+        prepared_gpu_scope.acceleration_structures != nullptr;
+    if (joint_ray_transaction) {
+        injectRayTracingJointTransactionPoint(
+            RayTracingJointTransactionPoint::after_pipeline);
     }
     auto prepared_generation =
         first.frame_graph_runtime.prepareGeneration(
@@ -997,10 +1031,18 @@ registerRenderingPassConfigVariantsData(
     }
     first.pass_container.bindRuntimePublication(
         first.frame_graph_runtime.publicationState());
-    first.frame_graph_runtime.publishPreparedGeneration(
-        std::move(prepared_generation),
-        coordinated_commit);
-    gpu_arena.commit();
+    if (joint_ray_transaction) {
+        first.frame_graph_runtime.stagePreparedGeneration(
+            std::move(prepared_generation),
+            std::static_pointer_cast<const void>(gpu_arena),
+            [gpu_arena] { gpu_arena->commit(); },
+            std::move(coordinated_commit));
+    } else {
+        first.frame_graph_runtime.publishPreparedGeneration(
+            std::move(prepared_generation),
+            coordinated_commit);
+        gpu_arena->commit();
+    }
     return {
         .runtime_variants =
             std::move(results),

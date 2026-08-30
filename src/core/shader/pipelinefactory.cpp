@@ -1,4 +1,5 @@
 #include "pipelinefactory.hpp"
+#include "raygrouplayout.hpp"
 #include "raytracingvalidation.hpp"
 #include "../vkcore/buf.hpp"
 #include "pelican_sets.hpp"
@@ -364,6 +365,17 @@ bool hasPipelineObject(
 
 } // namespace
 
+const RayTracingShaderBindingTableRegions *
+RayTracingSceneShaderBindingTables::find(
+    PipelineHandle pipeline) const noexcept {
+    const auto found = std::find_if(
+        pipelines.begin(), pipelines.end(),
+        [pipeline](const auto &entry) {
+            return entry.pipeline == pipeline;
+        });
+    return found == pipelines.end() ? nullptr : &found->regions;
+}
+
 bool PipelineFactory::DescriptorSetLayoutKey::operator==(const DescriptorSetLayoutKey &other) const {
     return bindings.size() == other.bindings.size() &&
            std::equal(bindings.begin(), bindings.end(), other.bindings.begin(), descriptorBindingEquals);
@@ -703,6 +715,14 @@ PipelineFactory::createRayTracingShaderBindingTable(
     copy_region(layout.raygen);
     copy_region(layout.miss);
     copy_region(layout.hit);
+    const auto hit_handle_offset =
+        static_cast<std::size_t>(group_counts.raygen +
+                                 group_counts.miss) *
+        capabilities.shader_group_handle_size;
+    std::vector<std::byte> hit_group_handles(
+        handles.begin() +
+            static_cast<std::ptrdiff_t>(hit_handle_offset),
+        handles.end());
 
     const auto padding =
         capabilities.shader_group_base_alignment - 1u;
@@ -742,6 +762,7 @@ PipelineFactory::createRayTracingShaderBindingTable(
             .hit = make_region(layout.hit),
             .callable = {},
         },
+        .hit_group_handles = std::move(hit_group_handles),
     };
 }
 
@@ -922,6 +943,12 @@ PipelineFactory::buildRayTracingPipeline(
                 .raygen = raygen_occurrence,
                 .misses = miss_occurrences,
                 .hit_groups = hit_occurrences,
+                .group_layout =
+                    desc.ray_tracing_project
+                        ? &desc.ray_tracing_project->layout
+                        : nullptr,
+                .traced_ray_type_indices =
+                    desc.traced_ray_type_indices,
             },
             capabilities.ray_tracing_facts);
 
@@ -962,6 +989,9 @@ PipelineFactory::buildRayTracingPipeline(
             .hit = static_cast<std::uint32_t>(
                 desc.closest_hits.size()),
         });
+    if (!desc.ray_tracing_project) {
+        sbt.hit_group_handles.clear();
+    }
     return PipelineRecord{
         .desc = desc,
         .reflection = std::move(reflection),
@@ -1132,17 +1162,157 @@ PipelineFactory::rayTracingShaderBindingTableRegions(
     return sbt->regions;
 }
 
+std::shared_ptr<const RayTracingSceneShaderBindingTables>
+PipelineFactory::createRayTracingSceneShaderBindingTables(
+    std::span<const PipelineHandle> active_owner_pipelines,
+    std::shared_ptr<const RaySceneRowSnapshot> rows,
+    const RayTracingProjectConfig &project) const {
+    if (!rows) {
+        throw std::invalid_argument(
+            "pelican.sbt.row_snapshot_invalid@1: production SBT requires a row snapshot");
+    }
+    auto result =
+        std::make_shared<RayTracingSceneShaderBindingTables>();
+    result->row_snapshot = std::move(rows);
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto &capabilities = vkcore.getRuntimeCapabilities();
+    std::unordered_set<int> seen;
+    for (const auto handle : active_owner_pipelines) {
+        if (!seen.emplace(handle.value).second) continue;
+        const auto &record = pipelines.get(handle);
+        const auto *desc =
+            std::get_if<RayTracingPipelineDesc>(&record.desc);
+        if (desc == nullptr) continue;
+        if (!desc->ray_tracing_project ||
+            desc->ray_tracing_project->layout.digest_sha256 !=
+                project.layout.digest_sha256 ||
+            (desc->ray_tracing_project->bindings
+                     ? desc->ray_tracing_project->bindings->digest_sha256
+                     : std::string{}) !=
+                (project.bindings
+                     ? project.bindings->digest_sha256
+                     : std::string{})) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.scene_generation_mismatch@1: active owner pipeline does not share the scene layout generation");
+        }
+        if (!record.ray_tracing_sbt) {
+            throw std::logic_error(
+                "ray tracing pipeline has no static SBT records");
+        }
+        const auto &static_sbt = *record.ray_tracing_sbt;
+        auto packed = packRayTracingHitTable(
+            project.layout,
+            RayTracingHitTablePackRequest{
+                .shader_group_handle_size =
+                    capabilities.shader_group_handle_size,
+                .shader_group_handle_alignment =
+                    capabilities.shader_group_handle_alignment,
+                .max_shader_group_stride =
+                    capabilities.ray_tracing_facts
+                        .max_shader_group_stride,
+                .group_handles = static_sbt.hit_group_handles,
+                .rows = result->row_snapshot->rows,
+                .traced_ray_type_indices =
+                    desc->traced_ray_type_indices,
+            });
+        RayTracingShaderBindingTableRegions regions{
+            .raygen = static_sbt.regions.raygen,
+            .miss = static_sbt.regions.miss,
+            .hit = {},
+            .callable = {},
+        };
+        std::shared_ptr<BufferWrapper> hit_buffer;
+        if (!packed.bytes.empty()) {
+            if (capabilities.shader_group_base_alignment == 0 ||
+                (capabilities.shader_group_base_alignment &
+                 (capabilities.shader_group_base_alignment - 1u)) != 0) {
+                throw std::runtime_error(
+                    "pelican.sbt.layout_invalid@1: shaderGroupBaseAlignment must be a non-zero power of two");
+            }
+            const auto padding =
+                capabilities.shader_group_base_alignment - 1u;
+            if (packed.bytes.size() >
+                std::numeric_limits<std::size_t>::max() - padding) {
+                throw std::overflow_error(
+                    "pelican.sbt.layout_overflow@1: aligned GPU hit table allocation size overflow");
+            }
+            auto buffer = vkcore.allocBuf(
+                packed.bytes.size() + padding,
+                vk::BufferUsageFlagBits::eShaderBindingTableKHR |
+                    vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                vma::MemoryUsage::eAutoPreferHost,
+                vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+            const auto address = device.getBufferAddress(
+                vk::BufferDeviceAddressInfo{buffer.buffer.get()});
+            const auto remainder =
+                address % capabilities.shader_group_base_alignment;
+            const auto buffer_offset =
+                remainder == 0
+                    ? vk::DeviceSize{0}
+                    : static_cast<vk::DeviceSize>(
+                          capabilities.shader_group_base_alignment -
+                          remainder);
+            // This is the production branch observer: removing the actual
+            // GPU write or routing different bytes makes its A/B test fail.
+            observeRayTracingSbtWrite(
+                RayTracingSbtWriteObservation{
+                    .pipeline_handle = handle.value,
+                    .layout_digest_sha256 =
+                        project.layout.digest_sha256,
+                    .row_digest_sha256 =
+                        result->row_snapshot
+                            ->identity_digest_sha256,
+                    .record_index_stride =
+                        packed.record_index_stride,
+                    .record_byte_stride =
+                        packed.record_byte_stride,
+                    .record_count = packed.record_count,
+                    .hit_bytes = packed.bytes,
+                });
+            vkcore.writeBuf(buffer, packed.bytes.data(), buffer_offset,
+                            packed.bytes.size());
+            regions.hit = vk::StridedDeviceAddressRegionKHR{
+                address + buffer_offset,
+                packed.record_byte_stride,
+                static_cast<vk::DeviceSize>(packed.bytes.size())};
+            hit_buffer = std::make_shared<BufferWrapper>(
+                std::move(buffer));
+        }
+        result->pipelines.push_back(
+            RayTracingSceneShaderBindingTableEntry{
+                .pipeline = handle,
+                .static_records = static_sbt.buffer,
+                .hit_records = std::move(hit_buffer),
+                .regions = regions,
+                .packed_hit = std::move(packed),
+            });
+    }
+    return result;
+}
+
 void PipelineFactory::traceRays(
     vk::CommandBuffer command_buffer, PipelineHandle handle,
     std::uint32_t width, std::uint32_t height,
-    std::uint32_t depth) const {
+    std::uint32_t depth,
+    const RayTracingSceneShaderBindingTables *scene_tables) const {
     validateRayTracingFinalCommandExtent(
         {width, height, depth},
         GET_MODULE(VulkanManageCore)
             .getRuntimeCapabilities()
             .ray_tracing_facts);
-    const auto &regions =
-        rayTracingShaderBindingTableRegions(handle);
+    const auto &record = pipelines.get(handle);
+    const auto *desc =
+        std::get_if<RayTracingPipelineDesc>(&record.desc);
+    const auto *scene_regions =
+        scene_tables != nullptr ? scene_tables->find(handle) : nullptr;
+    if (desc != nullptr && desc->ray_tracing_project &&
+        scene_regions == nullptr) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.scene_sbt_unavailable@1: layout pipeline dispatch has no jointly prepared scene SBT");
+    }
+    const auto &regions = scene_regions != nullptr
+                              ? *scene_regions
+                              : rayTracingShaderBindingTableRegions(handle);
     command_buffer.traceRaysKHR(
         regions.raygen, regions.miss, regions.hit,
         regions.callable, width, height, depth,

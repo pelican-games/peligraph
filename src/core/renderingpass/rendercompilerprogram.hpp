@@ -18,6 +18,8 @@
 
 namespace Pelican {
 
+struct RayTracingProjectConfig;
+
 class GraphTransformRegistrySnapshot;
 class PathResolver;
 class RenderStrategyRegistrySnapshot;
@@ -79,6 +81,8 @@ struct RenderCompilerProgramInput {
     // use this same loader.
     std::function<std::string(std::string_view)> load_document;
     bool runtime_shader_compiler_enabled = false;
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project;
     const GraphTransformRegistrySnapshot
         &graph_transforms;
     const RenderStrategyRegistrySnapshot
@@ -98,6 +102,8 @@ struct RenderCompilerProgramVariantOutput {
         RenderPipelineGraphVariant::flat;
     std::shared_ptr<const CompiledRenderPipeline>
         compiled_pipeline;
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project;
     nlohmann::json normalized_config;
     std::vector<FrameGraphBufferDefinition>
         buffer_definitions;

@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
@@ -32,6 +33,7 @@ class RenderTargetContainer;
 class RenderTargetLayoutTracker;
 class ShaderLibrary;
 class VulkanUtils;
+struct RayTracingProjectConfig;
 
 // Descriptor caches backed by shared pools and whole-pool generations both
 // retire through DeletionQueue submission leases. The pool is declared before
@@ -82,6 +84,8 @@ struct ComputeTaskRuntimeDependencies {
     // reload without a second parameter transport.
     const std::vector<std::string>
         *shader_defines = nullptr;
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project;
 };
 
 struct ResolvedComputeResourceBinding {
@@ -97,7 +101,9 @@ struct ResolvedComputeResourceBinding {
 
 std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson(const nlohmann::json &config_json);
 std::unordered_set<std::string> frameGraphBufferNameSet(const std::vector<FrameGraphBufferDefinition> &definitions);
-std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(const nlohmann::json &config_json);
+std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
+    const nlohmann::json &config_json,
+    const RayTracingProjectConfig *ray_tracing_project = nullptr);
 void validateComputeTaskBufferContracts(
     std::span<const FrameGraphBufferDefinition>
         buffer_definitions,

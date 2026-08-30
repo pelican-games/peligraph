@@ -422,6 +422,12 @@ void FrameResources::beginLogicalFrame(
         main_view_count,
         sequential_count,
         ray_query);
+    active_ray_tracing_scene_tables.reset();
+}
+
+void FrameResources::setRayTracingSceneShaderBindingTables(
+    std::shared_ptr<const RayTracingSceneShaderBindingTables> tables) {
+    active_ray_tracing_scene_tables = std::move(tables);
 }
 
 void FrameResources::setRayQueryAccelerationStructure(

@@ -722,8 +722,19 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                      "draw_sort", "graph_transforms",
                      "render_strategy", "target_planning",
                      "vulkan_plan_pins",
-                     "vulkan_physical_fragments", "xr"},
+                     "vulkan_physical_fragments", "xr",
+                     "ray_group_layout", "ray_bindings"},
                     "rendering config using pipeline preset");
+    for (const auto key : {"ray_group_layout", "ray_bindings"}) {
+        if (resolved.contains(key)) {
+            throw std::runtime_error(
+                "render pipeline presets cannot own " +
+                std::string{key});
+        }
+        if (authored_config.contains(key)) {
+            resolved[key] = authored_config.at(key);
+        }
+    }
     appendUniqueArray(resolved, authored_config, "features", "rendering config", false);
     appendUniqueArray(resolved, authored_config, "shader_defines", "rendering config", true);
     appendUniqueArray(resolved, authored_config, "graph_transforms",

@@ -43,6 +43,7 @@
 #include "../ecs/core.hpp"
 #include "../os/window.hpp"
 #include "../shader/pipelinefactory.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../../project/frameresolutionwire.hpp"
@@ -128,6 +129,14 @@ rayQueryAccelerationStructureScope(
     return {};
 }
 
+const RenderPipelineGpuResourceScope *renderPipelineGpuOwnerScope(
+    const RendererRuntimeGeneration &generation,
+    const CompiledRenderProgram &program) noexcept {
+    return generation.gpu_arena != nullptr
+               ? generation.gpu_arena->findScope(program.owner_scope)
+               : nullptr;
+}
+
 std::optional<watch::AssetKey> projectAssetKeyForReference(
     std::string_view reference) {
     if (reference.empty() ||
@@ -172,6 +181,12 @@ std::set<watch::AssetKey> renderPipelineWatchSources(
     for (const auto &feature :
          pipeline.feature_instances) {
         append(feature.reference);
+    }
+    if (pipeline.ray_group_layout_reference) {
+        append(*pipeline.ray_group_layout_reference);
+    }
+    if (pipeline.ray_bindings_reference) {
+        append(*pipeline.ray_bindings_reference);
     }
     return result;
 }
@@ -2493,7 +2508,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
 void rebindFullscreenInputs(RenderFrameModules &modules) {
     RenderTargetImageViewResolver rt_views{modules.render_target_container};
     const auto generation =
-        modules.frame_graph_runtime.snapshot();
+        modules.frame_graph_runtime.renderingSnapshot();
     if (generation == nullptr) {
         throw std::runtime_error(
             "Fullscreen input rebind requires a published render pipeline");
@@ -2817,6 +2832,29 @@ class LogicalFrameAbortGuard {
     void complete() noexcept { target = nullptr; }
 };
 
+class StagedRuntimeRollbackGuard {
+    FrameGraphRuntimeContainer *runtime_ = nullptr;
+    std::uint64_t generation_ = 0;
+
+  public:
+    StagedRuntimeRollbackGuard(
+        FrameGraphRuntimeContainer &runtime,
+        std::uint64_t generation) noexcept
+        : runtime_{generation != 0 ? &runtime : nullptr},
+          generation_{generation} {}
+    StagedRuntimeRollbackGuard(
+        const StagedRuntimeRollbackGuard &) = delete;
+    StagedRuntimeRollbackGuard &operator=(
+        const StagedRuntimeRollbackGuard &) = delete;
+    ~StagedRuntimeRollbackGuard() {
+        if (runtime_ != nullptr) {
+            (void)runtime_->rollbackStagedGeneration(
+                generation_);
+        }
+    }
+    void complete() noexcept { runtime_ = nullptr; }
+};
+
 } // namespace
 
 Renderer::Renderer() {
@@ -2854,7 +2892,8 @@ void Renderer::installRenderPipelineReloadParticipant() {
         GET_MODULE(ProjectBasicConfig)
             .renderingConfigReference();
     const auto generation =
-        GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+        GET_MODULE(FrameGraphRuntimeContainer)
+            .renderingSnapshot();
     if (generation != nullptr) {
         state->watched_sources =
             renderPipelineWatchSources(
@@ -3021,7 +3060,7 @@ void Renderer::relowerRenderPipelineForCurrentOutput() {
         loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
     const auto generation =
         GET_MODULE(FrameGraphRuntimeContainer)
-            .snapshot();
+            .renderingSnapshot();
     if (generation == nullptr) {
         throw std::runtime_error(
             "output re-lowering published no renderer generation");
@@ -3120,7 +3159,7 @@ bool Renderer::reloadRenderPipelineFromDisk(
                 json, std::move(hooks));
         const auto generation =
             GET_MODULE(FrameGraphRuntimeContainer)
-                .snapshot();
+                .renderingSnapshot();
         if (generation == nullptr) {
             throw std::runtime_error(
                 "render pipeline reload published no generation");
@@ -4109,7 +4148,7 @@ Renderer::xrCompositionDepthFormat() const {
             FrameGraphRuntimeContainer>();
     const auto generation =
         frame_graph_runtime != nullptr
-            ? frame_graph_runtime->snapshot()
+            ? frame_graph_runtime->renderingSnapshot()
             : nullptr;
     const auto *program =
         generation != nullptr
@@ -4283,7 +4322,16 @@ void Renderer::renderLogicalFrame(
     // A frame therefore observes either the complete old generation or the
     // complete new generation, never a pass/plan mixture.
     const auto runtime_generation =
-        modules.frame_graph_runtime.snapshot();
+        modules.frame_graph_runtime.renderingSnapshot();
+    const auto staged_runtime_generation =
+        runtime_generation != nullptr &&
+                modules.frame_graph_runtime.stagedGeneration() ==
+                    runtime_generation->generation
+            ? runtime_generation->generation
+            : 0;
+    StagedRuntimeRollbackGuard staged_runtime_guard{
+        modules.frame_graph_runtime,
+        staged_runtime_generation};
     const auto *program =
         runtime_generation != nullptr
             ? runtime_generation->find(
@@ -4297,6 +4345,8 @@ void Renderer::renderLogicalFrame(
     const auto acceleration_structures =
         rayQueryAccelerationStructureScope(
             *runtime_generation, *program);
+    const auto *gpu_owner_scope =
+        renderPipelineGpuOwnerScope(*runtime_generation, *program);
     std::optional<
         RayQueryAccelerationStructureScope::FrameBuild>
         acceleration_structure_build;
@@ -4307,6 +4357,53 @@ void Renderer::renderLogicalFrame(
             const auto geometry_instances =
                 modules.instance_container
                     .rayQueryGeometryInstances();
+            std::shared_ptr<const RaySceneRowSnapshot>
+                ray_scene_rows;
+            std::shared_ptr<const RayTracingSceneShaderBindingTables>
+                ray_tracing_scene_tables;
+            std::uint32_t ray_type_count = 0;
+            if (gpu_owner_scope != nullptr &&
+                gpu_owner_scope->ray_tracing_project != nullptr) {
+                const auto &ray_project =
+                    *gpu_owner_scope->ray_tracing_project;
+                if (ray_project.layout.ray_types.size() >
+                    std::numeric_limits<std::uint32_t>::max()) {
+                    throw std::runtime_error(
+                        "pelican.ray_tracing.ray_type_count_limit@1: ray type count exceeds uint32");
+                }
+                ray_type_count = static_cast<std::uint32_t>(
+                    ray_project.layout.ray_types.size());
+                ray_scene_rows =
+                    std::make_shared<RaySceneRowSnapshot>(
+                        resolveRayTracingSceneRows(
+                            geometry_instances, ray_project));
+                std::vector<PipelineHandle> owner_pipelines;
+                for (const auto &resource :
+                     gpu_owner_scope->resources) {
+                    if (resource.kind !=
+                        RenderPipelineGpuResourceKind::pipeline) {
+                        continue;
+                    }
+                    if (resource.handle < 0 ||
+                        resource.handle >
+                            std::numeric_limits<int>::max()) {
+                        throw std::runtime_error(
+                            "pelican.ray_tracing.scene_generation_mismatch@1: owner pipeline handle is out of range");
+                    }
+                    owner_pipelines.push_back(PipelineHandle{
+                        static_cast<int>(resource.handle)});
+                }
+                ray_tracing_scene_tables =
+                    GET_MODULE(PipelineFactory)
+                        .createRayTracingSceneShaderBindingTables(
+                            owner_pipelines, ray_scene_rows,
+                            ray_project);
+                injectRayTracingJointTransactionPoint(
+                    RayTracingJointTransactionPoint::after_sbt);
+            }
+            modules.frame_resources
+                .setRayTracingSceneShaderBindingTables(
+                    ray_tracing_scene_tables);
             acceleration_structure_build.emplace(
                 acceleration_structures->recordFrame(
                     command_buffer,
@@ -4320,7 +4417,14 @@ void Renderer::renderLogicalFrame(
                         .geometryAddressGeneration(),
                     geometry_instances,
                     modules.instance_container
-                        .rayQueryGeometryGeneration()));
+                        .rayQueryGeometryGeneration(),
+                    ray_scene_rows, ray_type_count,
+                    ray_tracing_scene_tables));
+            if (gpu_owner_scope != nullptr &&
+                gpu_owner_scope->ray_tracing_project != nullptr) {
+                injectRayTracingJointTransactionPoint(
+                    RayTracingJointTransactionPoint::after_as_record);
+            }
             modules.frame_resources
                 .setRayQueryAccelerationStructure(
                     in_flight_frame_index,
@@ -5103,9 +5207,26 @@ void Renderer::renderLogicalFrame(
     }
     }
 
+    if (staged_runtime_generation != 0) {
+        injectRayTracingJointTransactionPoint(
+            RayTracingJointTransactionPoint::submit);
+    }
     target.endLogicalFrame(submission_lease);
+    if (staged_runtime_generation != 0) {
+        modules.frame_graph_runtime
+            .prepareStagedGenerationCommit(
+                staged_runtime_generation);
+    }
     if (acceleration_structure_build) {
         acceleration_structure_build->commit();
+    }
+    if (staged_runtime_generation != 0) {
+        if (!modules.frame_graph_runtime
+                 .publishStagedGeneration(
+                     staged_runtime_generation)) {
+            std::terminate();
+        }
+        staged_runtime_guard.complete();
     }
     frame_abort_guard.complete();
     deletion_queue.confirmSubmission();

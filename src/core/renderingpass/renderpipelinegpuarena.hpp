@@ -22,6 +22,7 @@ class ShaderLibrary;
 class ShadowDepthPassContainer;
 class VelocityPassContainer;
 class RayQueryAccelerationStructureScope;
+struct RayTracingProjectConfig;
 
 enum class RenderPipelineGpuResourceKind {
     render_target,
@@ -61,6 +62,8 @@ struct RenderPipelineGpuScopePreparation {
     std::vector<std::shared_ptr<const void>> resource_leases;
     std::shared_ptr<RayQueryAccelerationStructureScope>
         acceleration_structures;
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project;
 };
 
 struct RenderPipelineGpuResourceScope {
@@ -69,11 +72,14 @@ struct RenderPipelineGpuResourceScope {
     std::vector<std::shared_ptr<const void>> resource_leases;
     std::shared_ptr<RayQueryAccelerationStructureScope>
         acceleration_structures;
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project;
 };
 
 // Adds the request-only static BLAS/TLAS owner to a prepared purgeable scope.
 void attachRayQueryAccelerationStructures(
-    RenderPipelineGpuScopePreparation &scope);
+    RenderPipelineGpuScopePreparation &scope,
+    std::shared_ptr<RayQueryAccelerationStructureScope> previous = {});
 
 // Immutable metadata and lifetime root paired with a runtime generation.
 // Recompiling an owner replaces exactly that scope while unrelated scopes

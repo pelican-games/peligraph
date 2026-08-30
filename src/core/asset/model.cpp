@@ -300,6 +300,7 @@ struct ModelAssetContainer::Impl {
         if (records.contains(declaration.name))
             throw std::runtime_error("duplicate model asset name: " + declaration.name);
         model.asset_id = ModelAssetId{next_asset_identity++};
+        model.authored_asset_reference = declaration.reference;
         model.content_revision = 1;
         model.compatibility_revision = 0;
         const auto name = declaration.name;
@@ -474,6 +475,8 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
                 auto model = GET_MODULE(GltfLoader).commit(item.prepared);
                 applyDeclarationBindings(model, record.declaration);
                 model.asset_id = record.model.asset_id;
+                model.authored_asset_reference =
+                    record.declaration.reference;
                 model.content_revision = current->content_revision + 1;
                 model.compatibility_revision = current->compatibility_revision +
                                                (item.rig_changed ? 1u : 0u);

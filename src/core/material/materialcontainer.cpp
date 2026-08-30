@@ -2109,6 +2109,9 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto gpu_data = makeMaterialGpuData(info);
     const auto material_id = materials.reg(InternalMaterialInfo{
         .pipeline = pipeline,
+        .name = std::move(info.name),
+        .source_asset = std::move(info.source_asset),
+        .source_document = std::move(info.source_document),
         .pipeline_color_formats =
             rendering.color_formats,
         .pipeline_depth_format =

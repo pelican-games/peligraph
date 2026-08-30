@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <iomanip>
 #include <limits>
 #include <map>
 #include <nlohmann/json.hpp>
@@ -246,6 +248,129 @@ RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
     return result;
 }
 
+std::string canonicalTransformIdentity(const glm::mat4 &transform) {
+    // Spell the IEEE-754 payload as fixed-width hexadecimal so the sort key
+    // is independent of locale, stream float formatting, and host byte order.
+    std::ostringstream output;
+    output << std::hex << std::setfill('0');
+    for (glm::length_t column = 0; column < 4; ++column) {
+        for (glm::length_t row = 0; row < 4; ++row) {
+            output << std::setw(8)
+                   << std::bit_cast<std::uint32_t>(
+                          transform[column][row]);
+        }
+    }
+    return output.str();
+}
+
+RaySceneRowSnapshot resolveRayTracingSceneRows(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    const RayTracingProjectConfig &project) {
+    const auto classification =
+        classifyRayQueryStaticGeometry(instances);
+    std::vector<RaySceneRowInput> inputs;
+    inputs.reserve(classification.static_instance_indices.size());
+    for (const auto source_index :
+         classification.static_instance_indices) {
+        const auto &instance = instances[source_index];
+        const auto asset =
+            instance.material_asset_reference.empty()
+                ? "asset-id:" +
+                      std::to_string(instance.asset_identity)
+                : instance.material_asset_reference;
+        inputs.push_back(RaySceneRowInput{
+            // Authored/content identity only: instance slot, generation, and
+            // draw publication ordinal would make q depend on publish order.
+            .scene_identity =
+                asset + "@" +
+                canonicalTransformIdentity(instance.world_transform),
+            .geometry_identity =
+                asset + "#" +
+                std::to_string(instance.geometry_allocation_id) + ":" +
+                std::to_string(instance.index_offset) + ":" +
+                std::to_string(instance.vertex_offset) + ":" +
+                std::to_string(instance.mesh_index) + ":" +
+                std::to_string(instance.primitive_index) + ":" +
+                std::to_string(instance.node_index),
+            .material_document =
+                instance.material_document_reference,
+            .material_asset =
+                instance.material_asset_reference,
+            .source_material_index =
+                instance.source_material_index,
+            .source_index = source_index,
+        });
+    }
+    return resolveRaySceneRows(
+        inputs, project.layout,
+        project.bindings ? &*project.bindings : nullptr);
+}
+
+std::vector<RayTracingTlasInstancePlanEntry>
+lowerRayTracingTlasInstancePlan(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    std::span<const std::size_t> static_instance_indices,
+    const RaySceneRowSnapshot *ray_scene_rows,
+    std::uint32_t ray_type_count) {
+    std::vector<RayTracingTlasInstancePlanEntry> result;
+    result.reserve(static_instance_indices.size());
+    if (ray_scene_rows == nullptr) {
+        for (const auto source_index : static_instance_indices) {
+            if (source_index >= instances.size() ||
+                source_index > 0x00ffffffu) {
+                throw std::runtime_error(
+                    "ray-query TLAS instance identity exceeds 24 bits");
+            }
+            result.push_back({
+                .source_index = source_index,
+                .q = 0,
+                .instance_custom_index =
+                    static_cast<std::uint32_t>(source_index),
+                .instance_sbt_record_offset = 0,
+            });
+        }
+        return result;
+    }
+    if (ray_type_count == 0 ||
+        ray_scene_rows->rows.size() != static_instance_indices.size()) {
+        throw std::runtime_error(
+            "pelican.sbt.row_snapshot_invalid@1: TLAS row count or ray type count does not match the static scene");
+    }
+    std::vector<bool> is_static(instances.size(), false);
+    for (const auto index : static_instance_indices) {
+        if (index >= instances.size() || is_static[index]) {
+            throw std::runtime_error(
+                "pelican.sbt.row_snapshot_invalid@1: static scene indices are invalid or duplicated");
+        }
+        is_static[index] = true;
+    }
+    std::vector<bool> consumed(instances.size(), false);
+    for (std::size_t canonical_index = 0;
+         canonical_index < ray_scene_rows->rows.size();
+         ++canonical_index) {
+        const auto &row = ray_scene_rows->rows[canonical_index];
+        if (row.q != canonical_index ||
+            row.source_index >= instances.size() ||
+            !is_static[row.source_index] ||
+            consumed[row.source_index]) {
+            throw std::runtime_error(
+                "pelican.sbt.row_snapshot_invalid@1: TLAS rows must be a canonical permutation of the static scene");
+        }
+        consumed[row.source_index] = true;
+        result.push_back({
+            .source_index = row.source_index,
+            .q = row.q,
+            .instance_custom_index = row.q,
+            .instance_sbt_record_offset =
+                overrideRayTracingTlasRecordOffsetForTesting(
+                    row.q,
+                    rayTracingInstanceRecordOffset(
+                        row.q, ray_type_count)),
+        });
+    }
+    return result;
+}
+
 nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
     const RayQueryAccelerationStructureDiagnostics &diagnostics) {
     nlohmann::json inputs = nlohmann::json::array();
@@ -304,6 +429,14 @@ struct RayQueryAccelerationStructureScope::State {
         std::shared_ptr<AccelerationStructureResource>>
         blas;
     std::shared_ptr<AccelerationStructureResource> tlas;
+    std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows;
+    std::uint32_t ray_type_count = 0;
+    // The dynamic hit records contain device addresses consumed by the same
+    // submission as this TLAS.  Retaining them in the unpublished candidate
+    // makes the FrameBuild commit the row map, SBT, and TLAS as one unit and
+    // keeps the buffers alive through the submission lease.
+    std::shared_ptr<const RayTracingSceneShaderBindingTables>
+        ray_tracing_scene_tables;
     RayQueryAccelerationStructureDiagnostics diagnostics{
         .requested = true,
     };
@@ -382,7 +515,11 @@ RayQueryAccelerationStructureScope::recordFrame(
     const BufferWrapper &vertex_buffer,
     std::uint64_t geometry_pool_generation,
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
-    std::uint64_t model_rebuild_generation) {
+    std::uint64_t model_rebuild_generation,
+    std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows,
+    std::uint32_t ray_type_count,
+    std::shared_ptr<const RayTracingSceneShaderBindingTables>
+        ray_tracing_scene_tables) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (!capabilities.ray_query ||
         !capabilities.acceleration_structure ||
@@ -398,6 +535,19 @@ RayQueryAccelerationStructureScope::recordFrame(
     const auto classification =
         classifyRayQueryStaticGeometry(instances);
     auto candidate = std::make_shared<State>();
+    candidate->ray_scene_rows = std::move(ray_scene_rows);
+    candidate->ray_type_count = ray_type_count;
+    candidate->ray_tracing_scene_tables =
+        std::move(ray_tracing_scene_tables);
+    if (candidate->ray_scene_rows && candidate->ray_type_count == 0) {
+        throw std::runtime_error(
+            "pelican.sbt.row_snapshot_invalid@1: layout scene requires a non-zero ray type count");
+    }
+    if (static_cast<bool>(candidate->ray_scene_rows) !=
+        static_cast<bool>(candidate->ray_tracing_scene_tables)) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.scene_generation_mismatch@1: row snapshot and complete SBT must be prepared together");
+    }
     candidate->diagnostics = diagnostics_;
     candidate->diagnostics.requested = true;
     candidate->diagnostics.excluded = classification.excluded;
@@ -570,26 +720,23 @@ RayQueryAccelerationStructureScope::recordFrame(
 
     std::vector<vk::AccelerationStructureInstanceKHR>
         tlas_instances;
-    tlas_instances.reserve(
-        classification.static_instance_indices.size());
-    for (const auto index :
-         classification.static_instance_indices) {
-        const auto &instance = instances[index];
+    tlas_instances.reserve(classification.static_instance_indices.size());
+    const auto planned_instances = lowerRayTracingTlasInstancePlan(
+        instances, classification.static_instance_indices,
+        candidate->ray_scene_rows.get(), candidate->ray_type_count);
+    for (const auto &planned : planned_instances) {
+        const auto &instance = instances[planned.source_index];
         const auto blas = candidate->blas.find(
             instance.geometry_allocation_id);
         if (blas == candidate->blas.end()) {
             throw std::runtime_error(
                 "static ray-query TLAS instance has no BLAS");
         }
-        if (tlas_instances.size() > 0x00ffffffu) {
-            throw std::runtime_error(
-                "ray-query TLAS instance identity exceeds 24 bits");
-        }
         tlas_instances.emplace_back(
             toVulkanTransform(instance.world_transform),
-            static_cast<std::uint32_t>(
-                tlas_instances.size()),
-            0xffu, 0u, vk::GeometryInstanceFlagsKHR{},
+            planned.instance_custom_index,
+            0xffu, planned.instance_sbt_record_offset,
+            vk::GeometryInstanceFlagsKHR{},
             blas->second->address);
     }
 

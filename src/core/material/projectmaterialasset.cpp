@@ -363,6 +363,7 @@ ProjectMaterialAssetContainer::
             documents.at(entry.document_index);
         info.name = entry.definition.name;
         info.source_asset = source_document.reference;
+        info.source_document = source_document.reference;
         const auto material =
             materials.registerMaterial(
                 std::move(info));
@@ -388,6 +389,8 @@ ProjectMaterialAssetContainer::
                 entry.definition.name + "#variant/" +
                 variant.name;
             variant_info.source_asset =
+                source_document.reference;
+            variant_info.source_document =
                 source_document.reference;
             variants.push_back({
                 .name = variant.name,

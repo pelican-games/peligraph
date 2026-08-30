@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../shader/raygrouplayout.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -16,12 +18,19 @@ namespace Pelican {
 class DeletionQueue;
 class VulkanManageCore;
 struct BufferWrapper;
+struct RayTracingSceneShaderBindingTables;
 
 // Renderer-owned data frozen before recording begins. vkcore deliberately
 // sees only raw stable identities/ranges and has no dependency on model or
 // draw-inventory types.
 struct RayQueryGeometryInstanceSnapshot {
     std::uint64_t asset_identity = 0;
+    std::uint32_t instance_index = 0;
+    std::uint32_t instance_generation = 0;
+    std::uint64_t scene_epoch = 0;
+    std::string material_asset_reference;
+    std::string material_document_reference;
+    std::uint32_t source_material_index = 0;
     std::uint64_t geometry_allocation_id = 0;
     std::uint32_t index_count = 0;
     std::uint32_t index_offset = 0;
@@ -60,6 +69,33 @@ struct RayQueryStaticGeometryClassification {
 
 RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
     std::span<const RayQueryGeometryInstanceSnapshot> instances);
+
+// Production scene lowering shared by SBT packing and TLAS construction.
+// Only BLAS-eligible static rows participate, and source_index always points
+// back into the supplied immutable AS snapshot.
+RaySceneRowSnapshot resolveRayTracingSceneRows(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    const RayTracingProjectConfig &project);
+
+struct RayTracingTlasInstancePlanEntry {
+    std::size_t source_index = 0;
+    std::uint32_t q = 0;
+    std::uint32_t instance_custom_index = 0;
+    std::uint32_t instance_sbt_record_offset = 0;
+
+    bool operator==(
+        const RayTracingTlasInstancePlanEntry &) const = default;
+};
+
+// Exact CPU lowering consumed by recordFrame immediately before Vulkan TLAS
+// instance records are emitted. With a row snapshot it returns canonical q
+// order and q*R bases; without one it preserves the RT1a legacy order/zeros.
+std::vector<RayTracingTlasInstancePlanEntry>
+lowerRayTracingTlasInstancePlan(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    std::span<const std::size_t> static_instance_indices,
+    const RaySceneRowSnapshot *ray_scene_rows,
+    std::uint32_t ray_type_count);
 
 struct RayQueryBlasInputDiagnostics {
     std::uint64_t geometry_allocation_id = 0;
@@ -137,7 +173,11 @@ class RayQueryAccelerationStructureScope {
         const BufferWrapper &vertex_buffer,
         std::uint64_t geometry_pool_generation,
         std::span<const RayQueryGeometryInstanceSnapshot> instances,
-        std::uint64_t model_rebuild_generation);
+        std::uint64_t model_rebuild_generation,
+        std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows = {},
+        std::uint32_t ray_type_count = 0,
+        std::shared_ptr<const RayTracingSceneShaderBindingTables>
+            ray_tracing_scene_tables = {});
 
     const RayQueryAccelerationStructureDiagnostics &
     diagnostics() const noexcept {

@@ -1,5 +1,6 @@
 target_sources(pelican_core PRIVATE
     pipelinefactory.cpp
+    raygrouplayout.cpp
     raytracingoracle.cpp
     raytracingvalidation.cpp
     rtspirvinspection.cpp

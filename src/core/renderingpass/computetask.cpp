@@ -4,6 +4,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../shader/pelican_sets.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../shader/raytracingvalidation.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../renderer/frameresources.hpp"
@@ -15,8 +16,10 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cctype>
 #include <iterator>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <utility>
 
@@ -1176,15 +1179,222 @@ imageExtentTraceDimensions(
             mip_dimension(metadata.extent.height), 1u};
 }
 
+std::string availableObjectKeys(const nlohmann::json &object) {
+    std::string result = "[";
+    if (object.is_object()) {
+        for (auto field = object.begin(); field != object.end(); ++field) {
+            if (result.size() > 1) result += ",";
+            result += field.key();
+        }
+    }
+    return result + "]";
+}
+
+ShaderReference makeLayoutShaderReference(
+    const nlohmann::json &value, ShaderStage stage,
+    const std::string &task_name) {
+    if (!value.is_string() || value.get_ref<const std::string &>().empty()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.layout_shader_invalid@1: compute task '" +
+            task_name + "' requires non-empty shader references");
+    }
+    auto reference = value.get<std::string>();
+    auto lower = reference;
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    if (lower.ends_with(".spv")) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.layout_source_only@1: compute task '" +
+            task_name + "' ray_group_layout shaders must be GLSL source, not SPIR-V: " +
+            reference);
+    }
+    return makeShaderReference(std::move(reference), stage);
+}
+
+void parseRayTracingRecursion(
+    const nlohmann::json &pipeline_json, const std::string &name,
+    RayTracingTaskShaderDefinition &result) {
+    const auto recursion = pipeline_json.find("max_recursion");
+    if (recursion == pipeline_json.end()) return;
+    const auto positive_signed =
+        recursion->is_number_integer() && !recursion->is_number_unsigned() &&
+        recursion->get<std::int64_t>() > 0;
+    const auto unsigned_integer = recursion->is_number_unsigned();
+    const auto encoded = positive_signed
+                             ? static_cast<std::uint64_t>(recursion->get<std::int64_t>())
+                             : unsigned_integer ? recursion->get<std::uint64_t>() : 0;
+    if ((!positive_signed && !unsigned_integer) || encoded == 0 ||
+        encoded > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.invalid_recursion@1: compute task '" + name +
+            "' max_recursion must be a positive uint32 integer");
+    }
+    result.max_recursion = static_cast<std::uint32_t>(encoded);
+}
+
+RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
+    const nlohmann::json &pipeline_json, const std::string &name,
+    const RayTracingProjectConfig &project) {
+    for (auto field = pipeline_json.begin(); field != pipeline_json.end(); ++field) {
+        if (field.key() == "raygen" || field.key() == "traced_ray_types" ||
+            field.key() == "misses" || field.key() == "hit_shaders" ||
+            field.key() == "max_recursion") {
+            continue;
+        }
+        if (field.key() == "miss" || field.key() == "closesthit") {
+            throw std::runtime_error(
+                "pelican.ray_tracing.legacy_syntax_with_layout@1: compute task '" +
+                name + "' must use traced_ray_types/misses/hit_shaders");
+        }
+        if (field.key() == "any_hit" || field.key() == "anyhit" ||
+            field.key() == "intersection" || field.key() == "callable") {
+            throw std::runtime_error(
+                "pelican.ray_tracing.unsupported_shader_stage@1: compute task '" +
+                name + "' declares unsupported ray tracing stage '" +
+                field.key() + "'");
+        }
+        throw std::runtime_error(
+            "pelican.ray_tracing.unknown_shader_stage@1: compute task '" +
+            name + "' declares unknown ray tracing field '" + field.key() + "'");
+    }
+
+    const auto &layout = project.layout;
+    RayTracingTaskShaderDefinition result{
+        .raygen = makeLayoutShaderReference(
+            pipeline_json.contains("raygen") ? pipeline_json.at("raygen")
+                                               : nlohmann::json{},
+            ShaderStage::raygen, name),
+        .uses_group_layout = true,
+    };
+    if (!pipeline_json.contains("traced_ray_types") ||
+        !pipeline_json.at("traced_ray_types").is_array() ||
+        pipeline_json.at("traced_ray_types").empty()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.traced_ray_types_invalid@1: compute task '" +
+            name + "' requires a non-empty traced_ray_types array");
+    }
+    std::set<std::uint32_t> traced;
+    for (const auto &encoded : pipeline_json.at("traced_ray_types")) {
+        if (!encoded.is_string()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.traced_ray_types_invalid@1: compute task '" +
+                name + "' ray type names must be strings");
+        }
+        const auto index = layout.rayTypeIndex(
+            encoded.get_ref<const std::string &>());
+        if (!traced.emplace(index).second) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.traced_ray_types_invalid@1: compute task '" +
+                name + "' duplicates ray type '" + encoded.get<std::string>() + "'");
+        }
+        result.traced_ray_type_indices.push_back(index);
+    }
+
+    if (!pipeline_json.contains("misses") ||
+        !pipeline_json.at("misses").is_object()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.miss_shader_missing@1: compute task '" +
+            name + "' requires misses object");
+    }
+    const auto &misses = pipeline_json.at("misses");
+    for (auto field = misses.begin(); field != misses.end(); ++field) {
+        if (std::find(layout.misses.begin(), layout.misses.end(), field.key()) ==
+            layout.misses.end()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.miss_shader_unknown@1: compute task '" +
+                name + "' miss='" + field.key() + "'");
+        }
+    }
+    for (const auto &miss : layout.misses) {
+        if (!misses.contains(miss) || !misses.at(miss).is_string() ||
+            misses.at(miss).get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.miss_shader_missing@1: compute task '" +
+                name + "' miss='" + miss + "' available=" +
+                availableObjectKeys(misses));
+        }
+        result.misses.push_back(makeLayoutShaderReference(
+            misses.at(miss), ShaderStage::miss, name));
+    }
+
+    if (!pipeline_json.contains("hit_shaders") ||
+        !pipeline_json.at("hit_shaders").is_object()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.hit_shader_missing@1: compute task '" +
+            name + "' requires hit_shaders object");
+    }
+    const auto &hit_shaders = pipeline_json.at("hit_shaders");
+    for (auto ray = hit_shaders.begin(); ray != hit_shaders.end(); ++ray) {
+        const auto ray_index = layout.rayTypeIndex(ray.key());
+        if (!traced.contains(ray_index)) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.hit_shader_untraced@1: compute task '" +
+                name + "' supplies untraced ray type '" + ray.key() + "'");
+        }
+    }
+    const auto ray_count = layout.ray_types.size();
+    result.hit_shader_slots.resize(layout.groups.size() * ray_count);
+    for (const auto ray_index : result.traced_ray_type_indices) {
+        const auto &ray_name = layout.ray_types.at(ray_index);
+        if (!hit_shaders.contains(ray_name) ||
+            !hit_shaders.at(ray_name).is_object()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.hit_shader_missing@1: compute task '" +
+                name + "' group='<all>' ray_type='" + ray_name +
+                "' available=" + availableObjectKeys(hit_shaders));
+        }
+        const auto &groups = hit_shaders.at(ray_name);
+        for (auto group = groups.begin(); group != groups.end(); ++group) {
+            if (std::find(layout.groups.begin(), layout.groups.end(), group.key()) ==
+                layout.groups.end()) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.hit_shader_unknown_group@1: compute task '" +
+                    name + "' group='" + group.key() + "' ray_type='" +
+                    ray_name + "'");
+            }
+        }
+        for (std::size_t group_index = 0;
+             group_index < layout.groups.size(); ++group_index) {
+            const auto &group_name = layout.groups[group_index];
+            if (!groups.contains(group_name) ||
+                !groups.at(group_name).is_object()) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.hit_shader_missing@1: compute task '" +
+                    name + "' group='" + group_name + "' ray_type='" + ray_name +
+                    "' available=" + availableObjectKeys(groups));
+            }
+            const auto &group = groups.at(group_name);
+            if (group.size() != 1 || !group.contains("closesthit") ||
+                !group.at("closesthit").is_string() ||
+                group.at("closesthit").get_ref<const std::string &>().empty()) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.hit_shader_invalid@1: compute task '" +
+                    name + "' group='" + group_name + "' ray_type='" + ray_name +
+                    "' requires exactly closesthit");
+            }
+            result.hit_shader_slots[group_index * ray_count + ray_index] =
+                makeLayoutShaderReference(group.at("closesthit"),
+                                          ShaderStage::closesthit, name);
+        }
+    }
+    parseRayTracingRecursion(pipeline_json, name, result);
+    return result;
+}
+
 RayTracingTaskShaderDefinition parseRayTracingShaders(
     const nlohmann::json &task_json,
-    const std::string &name) {
+    const std::string &name,
+    const RayTracingProjectConfig *ray_tracing_project) {
     const auto &pipeline_json = task_json.at("ray_tracing");
     if (!pipeline_json.is_object()) {
         throw std::runtime_error(
             "pelican.ray_tracing.invalid_pipeline_declaration@1: compute "
             "task '" +
             name + "' ray_tracing must be an object");
+    }
+    if (ray_tracing_project != nullptr) {
+        return parseLayoutRayTracingShaders(
+            pipeline_json, name, *ray_tracing_project);
     }
     for (auto field = pipeline_json.begin();
          field != pipeline_json.end(); ++field) {
@@ -1267,6 +1477,26 @@ void captureDeclaredComputeShaderReferences(
     const auto &pipeline = task_json.at("ray_tracing");
     append(DeclaredShaderStage::raygen,
            pipeline.at("raygen"));
+    if (definition.ray_tracing->uses_group_layout) {
+        for (std::size_t index = 0;
+             index < definition.ray_tracing->misses.size(); ++index) {
+            definition.declared_shader_refs.push_back(
+                {.stage = DeclaredShaderStage::miss,
+                 .index = index,
+                 .ref = definition.ray_tracing->misses[index].ref});
+        }
+        for (std::size_t index = 0;
+             index < definition.ray_tracing->hit_shader_slots.size(); ++index) {
+            const auto &slot =
+                definition.ray_tracing->hit_shader_slots[index];
+            if (!slot) continue;
+            definition.declared_shader_refs.push_back(
+                {.stage = DeclaredShaderStage::closesthit,
+                 .index = index,
+                 .ref = slot->ref});
+        }
+        return;
+    }
     const auto append_list = [&](std::string_view field,
                                  DeclaredShaderStage stage) {
         const auto &encoded = pipeline.at(field);
@@ -1705,7 +1935,9 @@ std::unordered_set<std::string> frameGraphBufferNameSet(const std::vector<FrameG
     return names;
 }
 
-std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(const nlohmann::json &config_json) {
+std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
+    const nlohmann::json &config_json,
+    const RayTracingProjectConfig *ray_tracing_project) {
     std::vector<ComputeTaskDefinition> definitions;
     if (!config_json.contains("compute_tasks")) {
         return definitions;
@@ -1745,7 +1977,8 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(con
         if (ray_tracing) {
             definition.ray_tracing =
                 parseRayTracingShaders(
-                    task_json, definition.name);
+                    task_json, definition.name,
+                    ray_tracing_project);
         } else {
             definition.shader = makeShaderReference(
                 requireString(
@@ -2529,6 +2762,17 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             makeShaderResourcePortVirtualIncludes(
                 resource_interface);
     }
+    if (definition.ray_tracing &&
+        definition.ray_tracing->uses_group_layout) {
+        if (!dependencies.ray_tracing_project) {
+            throw std::logic_error(
+                "layout ray tracing task lost its typed project sidecar");
+        }
+        virtual_includes.emplace_back(
+            std::string{rayGroupLayoutVirtualIncludeName},
+            makeRayGroupLayoutVirtualInclude(
+                dependencies.ray_tracing_project->layout));
+    }
     const auto shader_defines =
         !definition.ray_tracing &&
                 dependencies.shader_defines != nullptr
@@ -2538,6 +2782,20 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     PipelineHandle pipeline;
     const auto load_shader =
         [&](const ShaderReference &reference) {
+            if (definition.ray_tracing &&
+                definition.ray_tracing->uses_group_layout) {
+                auto lower = reference.ref;
+                std::transform(
+                    lower.begin(), lower.end(), lower.begin(),
+                    [](unsigned char c) {
+                        return static_cast<char>(std::tolower(c));
+                    });
+                if (lower.ends_with(".spv")) {
+                    throw std::runtime_error(
+                        "pelican.ray_tracing.layout_source_only@1: ray_group_layout shaders must be GLSL source, not SPIR-V: " +
+                        reference.ref);
+                }
+            }
             return shader_library.loadFromReference(
                 reference, dependencies.path_resolver, true,
                 shader_defines, virtual_includes);
@@ -2551,11 +2809,35 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             misses.push_back(load_shader(reference));
         }
         std::vector<ShaderBundleId> closest_hits;
-        closest_hits.reserve(
-            definition.ray_tracing->closest_hits.size());
-        for (const auto &reference :
-             definition.ray_tracing->closest_hits) {
-            closest_hits.push_back(load_shader(reference));
+        if (definition.ray_tracing->uses_group_layout) {
+            closest_hits.reserve(
+                definition.ray_tracing->hit_shader_slots.size());
+            std::optional<ShaderBundleId> no_op;
+            for (const auto &slot :
+                 definition.ray_tracing->hit_shader_slots) {
+                if (slot) {
+                    closest_hits.push_back(load_shader(*slot));
+                    continue;
+                }
+                if (!no_op) {
+                    static constexpr std::string_view source =
+                        "#version 460\n"
+                        "#extension GL_EXT_ray_tracing : require\n"
+                        "void main() {}\n";
+                    no_op = shader_library.loadGeneratedSource(
+                        source, ShaderStage::closesthit,
+                        "pelican://generated/ray_group_noop.rchit",
+                        shader_defines, virtual_includes);
+                }
+                closest_hits.push_back(*no_op);
+            }
+        } else {
+            closest_hits.reserve(
+                definition.ray_tracing->closest_hits.size());
+            for (const auto &reference :
+                 definition.ray_tracing->closest_hits) {
+                closest_hits.push_back(load_shader(reference));
+            }
         }
         pipeline = pipeline_factory.createRayTracing(
             RayTracingPipelineDesc{
@@ -2567,6 +2849,11 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 .closest_hits = std::move(closest_hits),
                 .shader_defines = shader_defines,
                 .resource_interface = resource_interface,
+                .ray_tracing_project =
+                    dependencies.ray_tracing_project,
+                .traced_ray_type_indices =
+                    definition.ray_tracing
+                        ->traced_ray_type_indices,
             });
     } else {
         pipeline = pipeline_factory.createCompute(
@@ -3021,7 +3308,8 @@ void ComputeTaskContainer::dispatch(
         pipeline_factory.traceRays(
             cmd_buf, record.pipeline,
             record.dispatch_x, record.dispatch_y,
-            record.dispatch_z);
+            record.dispatch_z,
+            frame_resources.rayTracingSceneShaderBindingTables());
     } else if (record.indirect_dispatch) {
         const auto &indirect =
             *record.indirect_dispatch;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rtspirvinspection.hpp"
+#include "raygrouplayout.hpp"
 #include "../vkcore/runtimecapabilities.hpp"
 
 #include <array>
@@ -33,6 +34,8 @@ struct RayTracingPipelineInterfaceRequest {
     RayTracingShaderOccurrence raygen;
     std::span<const RayTracingShaderOccurrence> misses;
     std::span<const RayTracingShaderOccurrence> hit_groups;
+    const RayGroupLayout *group_layout = nullptr;
+    std::span<const std::uint32_t> traced_ray_type_indices;
 };
 
 // Returns a stable digest of the validated structural contract. Equality is

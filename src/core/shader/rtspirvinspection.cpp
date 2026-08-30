@@ -256,6 +256,8 @@ class Inspector {
     std::unordered_map<std::uint32_t, Producer> producers_;
     std::unordered_map<std::uint32_t, Variable> variables_;
     std::unordered_map<std::uint32_t, std::uint32_t> locations_;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
+        member_offsets_;
     std::vector<RawEntry> entries_;
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> calls_;
     std::vector<RawTraceCall> trace_calls_;
@@ -448,6 +450,49 @@ class Inspector {
         };
     }
 
+    RayTracingShaderRecordReflection reflectShaderRecord(
+        std::uint32_t variable_id, std::uint32_t instruction_number) {
+        const auto variable = variables_.find(variable_id);
+        if (variable == variables_.end() ||
+            variable->second.storage !=
+                SpvStorageClassShaderRecordBufferKHR) {
+            failUnsupported(uri_,
+                            "internal shader-record variable selection mismatch");
+        }
+        const auto pointer = types_.find(variable->second.pointer_type_id);
+        if (pointer == types_.end() ||
+            pointer->second.opcode != SpvOpTypePointer ||
+            pointer->second.operands.size() < 2) {
+            failUnsupported(uri_,
+                            "shader-record variable does not have a pointer type");
+        }
+        const auto structure_id = pointer->second.operands[1];
+        const auto structure = types_.find(structure_id);
+        if (structure == types_.end() ||
+            structure->second.opcode != SpvOpTypeStruct) {
+            failUnsupported(uri_,
+                            "shader-record storage must point to a structure");
+        }
+        RayTracingShaderRecordReflection result;
+        result.members.reserve(structure->second.operands.size());
+        for (std::size_t member = 0;
+             member < structure->second.operands.size(); ++member) {
+            const auto offset = member_offsets_.find(
+                {structure_id, static_cast<std::uint32_t>(member)});
+            if (offset == member_offsets_.end()) {
+                failUnsupported(
+                    uri_, "shader-record member " + std::to_string(member) +
+                              " has no SPIR-V Offset decoration");
+            }
+            result.members.push_back({
+                .type = canonicalType(
+                    structure->second.operands[member], instruction_number),
+                .offset = offset->second,
+            });
+        }
+        return result;
+    }
+
     void parse() {
         if (words_.size() < 5 || words_[0] != spirv_magic) {
             failUnsupported(uri_, "is not a SPIR-V module");
@@ -509,6 +554,13 @@ class Inspector {
                     instruction[2] == SpvDecorationLocation) {
                     locations_.insert_or_assign(instruction[1],
                                                 instruction[3]);
+                }
+                break;
+            case SpvOpMemberDecorate:
+                if (instruction.size() >= 5 &&
+                    instruction[3] == SpvDecorationOffset) {
+                    member_offsets_.insert_or_assign(
+                        {instruction[1], instruction[2]}, instruction[4]);
                 }
                 break;
             case SpvOpTypeBool:
@@ -641,6 +693,17 @@ class Inspector {
             for (const auto variable_id : raw_entry.interfaces) {
                 const auto variable = variables_.find(variable_id);
                 if (variable == variables_.end()) continue;
+                if (variable->second.storage ==
+                    SpvStorageClassShaderRecordBufferKHR) {
+                    if (entry.shader_record) {
+                        failInterfaceCount(
+                            uri_, raw_entry.key,
+                            "declares more than one shader-record variable");
+                    }
+                    entry.shader_record =
+                        reflectShaderRecord(variable_id, 0);
+                    continue;
+                }
                 const auto storage = interfaceStorage(variable->second.storage);
                 if (!storage) continue;
                 auto reflected = reflectVariable(variable_id, 0);

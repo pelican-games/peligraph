@@ -384,6 +384,8 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         const auto core_properties = physical_device.getProperties();
         ray_tracing_facts.max_ray_recursion_depth =
             ray_tracing_properties.maxRayRecursionDepth;
+        ray_tracing_facts.max_shader_group_stride =
+            ray_tracing_properties.maxShaderGroupStride;
         ray_tracing_facts.max_ray_hit_attribute_size =
             ray_tracing_properties.maxRayHitAttributeSize;
         ray_tracing_facts.max_ray_dispatch_invocation_count =

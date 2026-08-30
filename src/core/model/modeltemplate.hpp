@@ -129,6 +129,10 @@ struct ModelTemplate {
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
     std::shared_ptr<ModelGpuResources> gpu_resources;
     ModelAssetId asset_id{};
+    // The project-authored model reference, preserved across physical-path
+    // resolution and content reload. Ray material asset selectors use this
+    // value rather than a transient path or numeric GPU identity.
+    std::string authored_asset_reference;
     std::uint64_t content_revision = 1;
     std::uint64_t compatibility_revision = 0;
 };

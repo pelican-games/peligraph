@@ -2123,6 +2123,7 @@ TEST_CASE("WP361a SnapshotV1 and lower import gates reject every prefab persiste
             initial_provider_generation + 1U);
 }
 
+#if PELICAN_WITH_IMGUI
 TEST_CASE("WP361 authored detector remains and ImGui never creates generated mutation UI",
           "[wp361][prefab][detector][imgui]") {
     STATIC_REQUIRE_FALSE(std::is_constructible_v<ResolvedComponentOrigin,
@@ -2150,6 +2151,7 @@ TEST_CASE("WP361 authored detector remains and ImGui never creates generated mut
                           forged, SceneResolverGeneration{1}),
                       ResolvedSceneError);
 }
+#endif
 
 TEST_CASE("WP361 and WP362 v4 JSON examples remain syntax parse gates",
           "[wp361][prefab][json-examples]") {

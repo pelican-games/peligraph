@@ -149,6 +149,10 @@ compileRenderPipelineGpuArena(
                 std::move(
                     prepared_scope
                         ->acceleration_structures),
+            .ray_tracing_project =
+                std::move(
+                    prepared_scope
+                        ->ray_tracing_project),
         };
         if (existing != candidate->scopes.end()) {
             *existing = std::move(replacement);
@@ -161,7 +165,8 @@ compileRenderPipelineGpuArena(
 }
 
 void attachRayQueryAccelerationStructures(
-    RenderPipelineGpuScopePreparation &scope) {
+    RenderPipelineGpuScopePreparation &scope,
+    std::shared_ptr<RayQueryAccelerationStructureScope> previous) {
     if (scope.acceleration_structures != nullptr) {
         throw std::runtime_error(
             "ray-query acceleration structures are already attached "
@@ -179,8 +184,10 @@ void attachRayQueryAccelerationStructures(
             "structure resource");
     }
     auto acceleration_structures =
-        std::make_shared<
-            RayQueryAccelerationStructureScope>();
+        previous != nullptr
+            ? std::move(previous)
+            : std::make_shared<
+                  RayQueryAccelerationStructureScope>();
     scope.resources.push_back(
         RenderPipelineGpuResourceRegistration{
             .kind = RenderPipelineGpuResourceKind::

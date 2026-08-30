@@ -316,7 +316,10 @@ size_t primitiveCount(const ModelTemplate &model) {
 DrawItemSnapshot makeDrawItemSnapshot(
     ModelInstanceId instance,
     const ModelTemplate::MaterialPrimitives &material,
-    const ModelTemplate::PrimitiveRefInfo &primitive, MaterialRouteClass route,
+    const ModelTemplate::PrimitiveRefInfo &primitive,
+    std::string_view material_asset_reference,
+    std::string_view material_document_reference,
+    MaterialRouteClass route,
     std::uint64_t declaration_ordinal = 0) {
     if (!primitive.bounds_source) {
         throw std::runtime_error(
@@ -345,6 +348,10 @@ DrawItemSnapshot makeDrawItemSnapshot(
                 .source_material_index = material.source_material_index,
                 .skinned = primitive.skinned,
             },
+        .material_asset_reference =
+            std::string{material_asset_reference},
+        .material_document_reference =
+            std::string{material_document_reference},
         .route = route,
         .phase = drawPhaseForMaterialRoute(route),
         .bounds_source = primitive.bounds_source,
@@ -452,9 +459,12 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
         for (const auto &material : model.material_primitives) {
             if (material.primitives.empty()) continue;
             const auto route = materials.routeForMaterial(material.material);
+            const auto &document =
+                materials.materialDocumentReference(material.material);
             for (const auto &primitive : material.primitives) {
                 staged->draw_items.push_back(makeDrawItemSnapshot(
-                    staged->id, material, primitive, route));
+                    staged->id, material, primitive,
+                    model.authored_asset_reference, document, route));
             }
         }
     }
@@ -955,9 +965,12 @@ void PolygonInstanceContainer::rebuildModelInstances(
         for (const auto &material : replacement.material_primitives) {
             if (material.primitives.empty()) continue;
             const auto route = materials->routeForMaterial(material.material);
+            const auto &document =
+                materials->materialDocumentReference(material.material);
             for (const auto &primitive : material.primitives) {
                 rebuilt.push_back(makeDrawItemSnapshot(
-                    instance_id, material, primitive, route,
+                    instance_id, material, primitive,
+                    replacement.authored_asset_reference, document, route,
                     next_declaration_ordinal++));
             }
         }
@@ -1047,6 +1060,18 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
             RayQueryGeometryInstanceSnapshot{
                 .asset_identity =
                     model_asset_ids[instance].value,
+                .instance_index =
+                    item.stable_identity.instance.index,
+                .instance_generation =
+                    item.stable_identity.instance.generation,
+                .scene_epoch =
+                    item.stable_identity.instance.scene_epoch,
+                .material_asset_reference =
+                    item.material_asset_reference,
+                .material_document_reference =
+                    item.material_document_reference,
+                .source_material_index =
+                    item.pipeline_material_key.source_material_index,
                 .geometry_allocation_id =
                     item.geometry_allocation_id,
                 .index_count = item.indexed.index_count,

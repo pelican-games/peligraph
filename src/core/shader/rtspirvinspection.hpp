@@ -79,10 +79,26 @@ struct RayTracingTraceCall {
     bool operator==(const RayTracingTraceCall &) const = default;
 };
 
+struct RayTracingShaderRecordMemberReflection {
+    RayTracingCanonicalType type;
+    std::uint32_t offset = 0;
+
+    bool operator==(
+        const RayTracingShaderRecordMemberReflection &) const = default;
+};
+
+struct RayTracingShaderRecordReflection {
+    std::vector<RayTracingShaderRecordMemberReflection> members;
+
+    bool operator==(
+        const RayTracingShaderRecordReflection &) const = default;
+};
+
 struct RayTracingEntryPointReflection {
     SpirvEntryPointKey key;
     std::vector<RayTracingInterfaceVariable> interfaces;
     std::vector<RayTracingTraceCall> trace_calls;
+    std::optional<RayTracingShaderRecordReflection> shader_record;
 
     bool operator==(const RayTracingEntryPointReflection &) const = default;
 };

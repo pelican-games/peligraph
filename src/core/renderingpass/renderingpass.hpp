@@ -726,6 +726,11 @@ struct RayTracingTaskShaderDefinition {
         ShaderReferenceKind::explicit_file, false};
     std::vector<ShaderReference> misses;
     std::vector<ShaderReference> closest_hits;
+    bool uses_group_layout = false;
+    std::vector<std::uint32_t> traced_ray_type_indices;
+    // H[g,r], group-major. Null slots are materialized as valid generated
+    // no-op closest-hit groups for ray types this task never traces.
+    std::vector<std::optional<ShaderReference>> hit_shader_slots;
 };
 
 enum class ComputeTaskSchedule : std::uint8_t {

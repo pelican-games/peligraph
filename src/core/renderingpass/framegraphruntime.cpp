@@ -240,7 +240,11 @@ FrameGraphRuntimeContainer::FrameGraphRuntimeContainer()
     : publication{
           std::make_shared<RendererRuntimePublication>()} {}
 
-FrameGraphRuntimeContainer::~FrameGraphRuntimeContainer() = default;
+FrameGraphRuntimeContainer::~FrameGraphRuntimeContainer() {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
+    staged_publication.reset();
+}
 
 PreparedRendererRuntimeGeneration
 FrameGraphRuntimeContainer::prepareGeneration(
@@ -512,6 +516,10 @@ void FrameGraphRuntimeContainer::publishPreparedGeneration(
         &before_publish) {
     const std::scoped_lock publication_lock{
         publication_mutex};
+    if (staged_publication) {
+        throw std::runtime_error(
+            "Renderer runtime has an unpublished ray-tracing generation");
+    }
     if (!prepared.valid()) {
         throw std::runtime_error(
             "Renderer runtime candidate is empty");
@@ -534,6 +542,119 @@ void FrameGraphRuntimeContainer::publishPreparedGeneration(
         prepared.candidate_, std::memory_order_release);
     prepared.candidate_.reset();
     prepared.prepared_rendering_pass_ids_.clear();
+}
+
+void FrameGraphRuntimeContainer::stagePreparedGeneration(
+    PreparedRendererRuntimeGeneration &&prepared,
+    std::shared_ptr<const void> lifetime,
+    std::function<void()> commit_lifetime,
+    std::function<void(const RendererRuntimeGeneration &)>
+        before_publish) {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
+    if (staged_publication) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.generation_pending@1: an unpublished ray-tracing generation already exists");
+    }
+    if (!prepared.valid()) {
+        throw std::runtime_error(
+            "Renderer runtime candidate is empty");
+    }
+    const auto active = publication->active_generation.load(
+        std::memory_order_acquire);
+    if (generationOf(active) != prepared.base_generation_) {
+        throw std::runtime_error(
+            "Renderer runtime candidate is stale");
+    }
+    if (lifetime == nullptr || !commit_lifetime) {
+        throw std::invalid_argument(
+            "A staged renderer generation requires transaction lifetime ownership");
+    }
+    staged_publication.emplace(StagedPublication{
+        .prepared = std::move(prepared),
+        .lifetime = std::move(lifetime),
+        .commit_lifetime = std::move(commit_lifetime),
+        .before_publish = std::move(before_publish),
+    });
+}
+
+std::shared_ptr<const RendererRuntimeGeneration>
+FrameGraphRuntimeContainer::renderingSnapshot() const noexcept {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
+    if (staged_publication &&
+        staged_publication->prepared.candidate_ != nullptr) {
+        return staged_publication->prepared.candidate_;
+    }
+    return publication->active_generation.load(
+        std::memory_order_acquire);
+}
+
+std::uint64_t
+FrameGraphRuntimeContainer::stagedGeneration() const noexcept {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
+    return staged_publication
+               ? staged_publication->prepared.generation()
+               : 0;
+}
+
+void FrameGraphRuntimeContainer::prepareStagedGenerationCommit(
+    std::uint64_t generation) {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
+    if (!staged_publication ||
+        staged_publication->prepared.generation() != generation) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.generation_stale@1: staged generation is unavailable");
+    }
+    if (staged_publication->ready) return;
+    const auto active = publication->active_generation.load(
+        std::memory_order_acquire);
+    if (generationOf(active) !=
+        staged_publication->prepared.base_generation_) {
+        throw std::runtime_error(
+            "Renderer runtime candidate is stale");
+    }
+    if (staged_publication->before_publish) {
+        staged_publication->before_publish(
+            *staged_publication->prepared.candidate_);
+    }
+    staged_publication->ready = true;
+}
+
+bool FrameGraphRuntimeContainer::publishStagedGeneration(
+    std::uint64_t generation) noexcept {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
+    if (!staged_publication || !staged_publication->ready ||
+        staged_publication->prepared.generation() != generation) {
+        return false;
+    }
+    try {
+        staged_publication->commit_lifetime();
+    } catch (...) {
+        std::terminate();
+    }
+    publication->active_generation.store(
+        staged_publication->prepared.candidate_,
+        std::memory_order_release);
+    staged_publication->prepared.candidate_.reset();
+    staged_publication->prepared.prepared_rendering_pass_ids_.clear();
+    staged_publication.reset();
+    return true;
+}
+
+bool FrameGraphRuntimeContainer::rollbackStagedGeneration(
+    std::uint64_t generation) noexcept {
+    const std::scoped_lock publication_lock{
+        publication_mutex};
+    if (!staged_publication ||
+        staged_publication->prepared.generation() != generation) {
+        return false;
+    }
+    staged_publication.reset();
+    return true;
 }
 
 void FrameGraphRuntimeContainer::rollbackPreparedGeneration(

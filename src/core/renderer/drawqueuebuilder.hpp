@@ -133,6 +133,8 @@ struct DrawItemSnapshot {
     std::uint64_t declaration_ordinal = 0;
     DrawIndexedArguments indexed{};
     DrawPipelineMaterialKey pipeline_material_key{};
+    std::string material_asset_reference;
+    std::string material_document_reference;
     // Canonical material-side authoring tags. They are copied into this
     // immutable snapshot before queue compilation and never reach the Vulkan
     // execution loop.

@@ -9,6 +9,7 @@
 #include "rendertargetjsonparser.hpp"
 #include "subgraphreplacementregistry.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../shader/raygrouplayout.hpp"
 
 #include <algorithm>
 #include <array>
@@ -463,6 +464,14 @@ compileDefaultLogicalVariant(
         resolve_dependencies);
     auto compiled_pipeline_value =
         compileRenderPipeline(resolved);
+    if (input.ray_tracing_project) {
+        compiled_pipeline_value.ray_group_layout_reference =
+            input.ray_tracing_project->layout.source_reference;
+        if (input.ray_tracing_project->bindings) {
+            compiled_pipeline_value.ray_bindings_reference =
+                input.ray_tracing_project->bindings->source_reference;
+        }
+    }
     auto composed_config =
         std::move(resolved.normalized_config);
     if (request.artifact ==
@@ -537,6 +546,7 @@ compileDefaultVulkanVariant(
                     const CompiledRenderPipeline>(
                     std::move(
                         logical.compiled_pipeline)),
+            .ray_tracing_project = input.ray_tracing_project,
             .normalized_config =
                 std::move(
                     logical.composed_config),
@@ -553,7 +563,8 @@ compileDefaultVulkanVariant(
         frameGraphBufferNameSet(buffer_definitions);
     auto compute_task_definitions =
         parseComputeTaskDefinitionsFromConfigJson(
-            logical.composed_config);
+            logical.composed_config,
+            input.ray_tracing_project.get());
     validateComputeTaskBufferContracts(
         buffer_definitions,
         compute_task_definitions);
@@ -653,6 +664,7 @@ compileDefaultVulkanVariant(
         .graph_variant = request.graph_variant,
         .compiled_pipeline =
             std::move(compiled_pipeline),
+        .ray_tracing_project = input.ray_tracing_project,
         .normalized_config =
             std::move(logical.composed_config),
         .buffer_definitions =

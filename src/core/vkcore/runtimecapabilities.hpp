@@ -11,6 +11,7 @@ namespace Pelican {
 // value atomically; callers must never assemble a partial fact set.
 struct RayTracingRuntimeFacts {
     std::uint32_t max_ray_recursion_depth = 0;
+    std::uint32_t max_shader_group_stride = 0;
     std::uint32_t max_ray_hit_attribute_size = 0;
     std::uint64_t max_ray_dispatch_invocation_count = 0;
     std::array<std::uint64_t, 3> max_dispatch_dimensions{};

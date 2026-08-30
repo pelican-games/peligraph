@@ -80,6 +80,10 @@ struct MaterialInfo {
     // diagnostics can point back to the material and its containing asset.
     std::string name;
     std::string source_asset;
+    // Present only for a project-authored material document. glTF materials
+    // keep source_asset for diagnostics but deliberately leave this empty so
+    // ray-binding document and asset selectors remain disjoint.
+    std::string source_document;
 };
 
 struct alignas(16) MaterialGpuData {

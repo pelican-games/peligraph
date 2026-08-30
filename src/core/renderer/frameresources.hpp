@@ -4,6 +4,7 @@
 #include "../vkcore/buf.hpp"
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <span>
 #include <type_traits>
 #include <glm/glm.hpp>
@@ -11,6 +12,9 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+struct PipelineHandle;
+struct RayTracingSceneShaderBindingTables;
 
 struct alignas(16) FrameUniformData {
     alignas(16) glm::vec4 time_delta{0.0f};
@@ -113,6 +117,8 @@ DECLARE_MODULE(FrameResources) {
     std::size_t active_slot = 0;
     bool active_multiview_slot = false;
     bool ray_query_enabled = false;
+    std::shared_ptr<const RayTracingSceneShaderBindingTables>
+        active_ray_tracing_scene_tables;
 
     void configureViewCount(
         std::uint32_t count,
@@ -142,6 +148,12 @@ DECLARE_MODULE(FrameResources) {
     void setRayQueryAccelerationStructure(
         std::uint32_t in_flight_frame_index,
         vk::AccelerationStructureKHR top_level);
+    void setRayTracingSceneShaderBindingTables(
+        std::shared_ptr<const RayTracingSceneShaderBindingTables> tables);
+    const RayTracingSceneShaderBindingTables *
+    rayTracingSceneShaderBindingTables() const noexcept {
+        return active_ray_tracing_scene_tables.get();
+    }
     void selectView(std::uint32_t in_flight_frame_index, std::uint32_t view_index);
     void selectSequentialView(
         std::uint32_t in_flight_frame_index,

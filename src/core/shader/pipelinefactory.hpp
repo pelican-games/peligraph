@@ -1,6 +1,7 @@
 #pragma once
 
 #include "graphicsviewcontract.hpp"
+#include "raygrouplayout.hpp"
 #include "shaderbindingtable.hpp"
 #include "shaderlibrary.hpp"
 #include "shaderreflection.hpp"
@@ -24,6 +25,8 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+struct RayTracingProjectConfig;
 
 struct BufferWrapper;
 
@@ -132,6 +135,9 @@ struct RayTracingPipelineDesc {
     std::vector<std::string> shader_defines;
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface;
+    std::shared_ptr<const RayTracingProjectConfig>
+        ray_tracing_project;
+    std::vector<std::uint32_t> traced_ray_type_indices;
 };
 
 struct RayTracingShaderBindingTableRegions {
@@ -142,6 +148,23 @@ struct RayTracingShaderBindingTableRegions {
 };
 
 PELICAN_DEFINE_HANDLE(PipelineHandle, int);
+
+struct RayTracingSceneShaderBindingTableEntry {
+    PipelineHandle pipeline;
+    // Keeps the raygen/miss records from the same pipeline generation alive.
+    std::shared_ptr<BufferWrapper> static_records;
+    std::shared_ptr<BufferWrapper> hit_records;
+    RayTracingShaderBindingTableRegions regions;
+    RayTracingPackedHitTable packed_hit;
+};
+
+struct RayTracingSceneShaderBindingTables {
+    std::shared_ptr<const RaySceneRowSnapshot> row_snapshot;
+    std::vector<RayTracingSceneShaderBindingTableEntry> pipelines;
+
+    const RayTracingShaderBindingTableRegions *find(
+        PipelineHandle pipeline) const noexcept;
+};
 
 struct GraphicsPipelineReloadOverride {
     PipelineHandle handle;
@@ -180,6 +203,9 @@ DECLARE_MODULE(PipelineFactory) {
             std::shared_ptr<BufferWrapper> buffer;
             ShaderBindingTableLayout layout;
             RayTracingShaderBindingTableRegions regions;
+            // H[g,r] for a layout pipeline; tightly packed and independent of
+            // raygen/miss records. Empty for legacy lowering.
+            std::vector<std::byte> hit_group_handles;
         };
 
         std::variant<GraphicsPipelineDesc, ComputePipelineDesc,
@@ -258,10 +284,17 @@ DECLARE_MODULE(PipelineFactory) {
     const RayTracingShaderBindingTableRegions &
     rayTracingShaderBindingTableRegions(
         PipelineHandle handle) const;
+    std::shared_ptr<const RayTracingSceneShaderBindingTables>
+    createRayTracingSceneShaderBindingTables(
+        std::span<const PipelineHandle> active_owner_pipelines,
+        std::shared_ptr<const RaySceneRowSnapshot> rows,
+        const RayTracingProjectConfig &project) const;
     void traceRays(vk::CommandBuffer command_buffer,
                    PipelineHandle handle, std::uint32_t width,
                    std::uint32_t height,
-                   std::uint32_t depth = 1) const;
+                   std::uint32_t depth = 1,
+                   const RayTracingSceneShaderBindingTables *scene_tables =
+                       nullptr) const;
     const ShaderReflection &reflection(PipelineHandle handle) const;
     GraphicsPipelineDesc graphicsDesc(
         PipelineHandle handle) const;
