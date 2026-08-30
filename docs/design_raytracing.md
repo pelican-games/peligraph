@@ -1,7 +1,8 @@
-# レイトレーシング拡張設計 — DCC 級の自由度へ(v3)
+# レイトレーシング拡張設計 — DCC 級の自由度へ(v4)
 
-状態: v3。第 1 巡(14 件)・第 2 巡(9 件)を反映。§10 に第 2 巡対応表。
-第 3 巡を最終巡とし、以降の残余は各 WP の仕様レビューで受ける。
+状態: **v4。設計レビューはここで打ち切る**(1 巡: 14 件 / 2 巡: 9 件 / 3 巡: 6 件。
+3 巡の代数・共有 q 配列・互換分岐・D0 は「壊せなかった項目」で生存確認済み)。
+§11 が 3 巡への裁定。以降の残余は各 WP の仕様レビューで受ける。
 
 ## 0. 要求
 
@@ -188,3 +189,38 @@ v2 §7 に同じ + §5 の matrix + 「off/on は同一テスト内」+ sentinel
 残余(WP 仕様で固定するもの): record ABI の完全表(RT1b WP)/
 生成 include の symbol 命名と衝突規則(RT1b WP)/ portable alpha profile の
 生成方法(RT2a WP)。
+
+## 11. 第 3 巡指摘(6 件)への裁定(v4 差分。v3 本文と矛盾したらこちらが優先)
+
+1. **`q` の identity と世代**(採用): row 順は draw inventory 順でなく、
+   **永続 scene identity の正準ソート**で決める。`{TLAS, 全 SBT の data 領域}` は
+   単一 immutable row snapshot から candidate として共同構築し、原子的 publication、
+   旧世代は submission lease で退役。**invalidation 要因を列挙**: layout digest 変更 /
+   row 集合の変更(instance の追加・削除・group 束縛変更)/ record ABI 変更。
+   受け入れ: 登録順を入れ替えた同一 scene で出力 bytes 一致 / add→remove 後の
+   sentinel が旧 row を読まない
+2. **RT1b に本番の `g(q)`・`data(q)` 供給者が無い**(採用):
+   `pelican.ray_bindings@1` overlay の**最小形を RT2b から RT1b へ前倒し**する:
+   component/material stable ref → group 名、および **authored 静的 record 定数**。
+   RT2b はこれを material/geometry index と bindless 表で拡張する側に回る。
+   これで RT1b の非ゼロ base sentinel は production 配線で書ける
+3. **shader 内 trace operand は dispatch 時に検査できない**(採用):
+   検査面を SPIR-V に移す。**load 時に最終 SPIR-V の全 `OpTraceRayKHR` operand
+   (sbtRecordOffset / sbtRecordStride / missIndex)が定数であることを検証**し、
+   動的 operand は名前付き拒否(直接 `.spv` 供給も同じ検証を通る)。
+   定数性検証は RT1a、layout に対する範囲検証は RT1b
+4. **オラクルの数値契約**(採用): 設計段で枠を固定し、数値は RT1a WP の表で確定:
+   座標 domain ±2^10 / t ∈ [1e-3, 2^12] / triangle は最小角と最小面積の下限 /
+   CPU は double + 有向丸めで `[t_lo, t_hi]` を誤差伝播式から構成 / GPU は f32。
+   ε は相対 1e-3 級を初期値に、**「区間を広げれば常に通る」を防ぐため
+   区間幅の上限も同じ表で固定**する(幅超過 fixture は生成器がリジェクト)
+5. **compiler-OFF × 生成 include**(採用・正直化): matrix を修正する。
+   **layout 不在 project は compiler ON/OFF 両対応のまま**(旧 bytes 保存)。
+   **layout 使用 project は当面 runtime compiler ON を要求**し、OFF では
+   named reject(黙って壊さない)。layout digest に結び付いた offline bake
+   (焼出し `.spv` + reflection artifact + 欠落時 named error)は
+   design_build_tiers の bake 完成と合流する別段(RT-bake)として明記
+6. **RT2a が material ABI に先行**(採用): RT2a から material-alpha profile を
+   除き、**RT2a = `.rahit` 語彙 + typed group + record 定数ベースの subset any-hit**
+   に縮小。**両車線 portable alpha profile は RT2b(material ABI と同段)へ移動**。
+   二車線 byte 一致契約の適用範囲も RT2b で定義する
