@@ -81,24 +81,6 @@ struct EditorGeneratedSelectorAst {
     std::string field_path;
 };
 
-enum class EditorMutationOperationKind : std::uint8_t {
-    SetComponentValue,
-    AddComponent,
-    RemoveComponent,
-    Spawn,
-    Destroy,
-    Reparent,
-    SetPrefabParameter,
-    UnsetPrefabParameter,
-};
-
-struct EditorMutationOperationAst {
-    EditorMutationOperationKind kind =
-        EditorMutationOperationKind::SetComponentValue;
-    std::size_t source_index = 0;
-    std::optional<EditorGeneratedSelectorAst> generated_selector;
-};
-
 struct EditorMutationRequestAst {
     EditorActorId actor_id{};
     std::optional<SceneRevision> base_revision;
@@ -108,7 +90,6 @@ struct EditorMutationRequestAst {
     std::optional<std::uint64_t> provider_generation;
     bool prefab_mutation = false;
     nlohmann::json operations;
-    std::vector<EditorMutationOperationAst> operation_asts;
     std::vector<EditorGeneratedSelectorAst> generated_selectors;
 };
 
@@ -163,28 +144,6 @@ struct EditorEditExecutionRequest {
     std::span<const EditorProjectionCommand> commands;
     std::span<const nlohmann::ordered_json> operations;
 };
-
-namespace internal {
-
-// Tracks the component selected by one canonical operation through the
-// remaining operations in the same execution. The result is an authored
-// origin in the final candidate, or nullopt when that consumer was removed.
-// Runtime planning still enumerates consumers from the final ResolvedScene;
-// this helper only associates public identity metadata with that final origin.
-std::optional<std::size_t> finalAuthoredComponentOrigin(
-    std::span<const nlohmann::ordered_json> operations,
-    std::size_t operation_index, AuthoringObjectId object_id,
-    std::size_t operation_time_index);
-
-// Maps an operation-time component index back to the authored origin present
-// at the beginning of this execution. nullopt means an earlier operation in
-// the same execution created that component/object.
-std::optional<std::size_t> initialAuthoredComponentOrigin(
-    std::span<const nlohmann::ordered_json> operations,
-    std::size_t operation_index, AuthoringObjectId object_id,
-    std::size_t operation_time_index);
-
-} // namespace internal
 
 // Live preview uses the same canonical commands and adapter preparation path
 // as a committed edit, but the composition root supplies an ephemeral

@@ -5,7 +5,6 @@
 #include <details/ecs/entity.hpp>
 
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,25 +22,6 @@ class PolygonInstanceContainer;
 struct EditorProjectionRuntimeObjectBinding {
     AuthoringObjectId authoring_object_id{};
     EntityId entity{};
-};
-
-enum class EditorBehaviorAttachmentIdentityClaimKind : std::uint8_t {
-    ExistingCas,
-    DesiredIdentity,
-};
-
-// Operations contribute only identity claims. The runtime plan itself is
-// enumerated from next_resolved and keyed by final authored origin.
-struct EditorBehaviorAttachmentIdentityClaim {
-    AuthoringObjectId object_id{};
-    std::size_t authoring_component_index = 0;
-    // ExistingCas validates against the arena snapshot from transaction
-    // entry. This differs from the operation-time/final origin when an
-    // earlier canonical operation inserted or removed a component.
-    std::optional<std::size_t> pre_execution_component_index;
-    std::uint64_t attachment_handle = 0;
-    EditorBehaviorAttachmentIdentityClaimKind kind =
-        EditorBehaviorAttachmentIdentityClaimKind::ExistingCas;
 };
 
 // Aggregate lifecycle participant for one structural object insert/restore or
@@ -84,38 +64,6 @@ class SceneObjectProjectionAdapter final : public EditorProjectionAdapter {
     std::span<const EditorProjectionRuntimeObjectBinding>
     preparedRuntimeBindings() const noexcept;
     AuthoringObjectId preparedTargetObject() const noexcept;
-    void preflightDestroyForPointOfNoReturn();
-};
-
-// One current-scene lifecycle participant. Spawn tokens may be published
-// reversibly during prepare so same-batch children can bind their parents.
-// Destroy tokens are publish/restored as a no-allocation preflight and are
-// republished only after the behavior pre-destroy barrier.
-class SceneLifecycleProjectionAdapter final : public EditorProjectionAdapter {
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
-
-  public:
-    SceneLifecycleProjectionAdapter(
-        ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
-        ModelAssetContainer &models, PolygonInstanceContainer &renderer,
-        Camera &camera, LightContainer &lights, PhysWorld &physics,
-        BehaviorAttachmentArena &behavior_arena, std::string scene_id,
-        std::vector<AuthoringObjectId> target_objects,
-        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
-        std::vector<EditorBehaviorAttachmentIdentityClaim> identity_claims = {});
-    ~SceneLifecycleProjectionAdapter();
-
-    EditorProjectionAdapterKind kind() const noexcept override;
-    std::string_view name() const noexcept override;
-    EditorProjectionPublicationMode publicationMode() const noexcept override;
-    void prepare(const EditorProjectionPrepareContext &context) override;
-    void publish() noexcept override;
-    void rollback() noexcept override;
-    void finish() noexcept override;
-
-    std::span<const EditorProjectionRuntimeObjectBinding>
-    runtimeBindings() const noexcept;
 };
 
 // Reconciles every scene-ordered behavior attachment from next_resolved after
@@ -129,8 +77,7 @@ class BehaviorSceneProjectionAdapter final : public EditorProjectionAdapter {
     BehaviorSceneProjectionAdapter(
         BehaviorAttachmentArena &arena, std::string scene_id,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings,
-        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters,
-        std::vector<EditorBehaviorAttachmentIdentityClaim> identity_claims = {});
+        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters);
     ~BehaviorSceneProjectionAdapter();
 
     EditorProjectionAdapterKind kind() const noexcept override;

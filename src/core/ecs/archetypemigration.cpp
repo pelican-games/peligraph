@@ -650,7 +650,6 @@ struct ECSEntityMutationToken::State {
     std::optional<ECSCoreTemplatePublic::IdEntry> old_id_entry;
     EntityId backfilled_entity{};
     bool free_index_published = false;
-    bool destroy_rearmed = false;
 
     bool published = false;
     bool published_new_chunk = false;
@@ -772,12 +771,9 @@ struct ECSEntityMutationToken::State {
             auto &source_array = *source.component_arrays[index];
             auto &inverse_array = *staged_chunk->component_arrays[index];
             auto *inverse = inverse_array.atUnchecked(0);
-            if (!destroy_rearmed) {
-                inverse_array.destroy_one(inverse);
-            }
+            inverse_array.destroy_one(inverse);
             inverse_array.relocate_one(
                 inverse, source_array.atUnchecked(source_row));
-            if (destroy_rearmed) ++inverse_array.count;
             if (source_row != source_last_row) {
                 source_array.relocate_one(
                     source_array.atUnchecked(source_row),
@@ -786,7 +782,6 @@ struct ECSEntityMutationToken::State {
             --source_array.count;
         }
         --source.count;
-        if (destroy_rearmed) staged_chunk->count = 1;
         if (backfilled_entity != entity) {
             core->id_table[backfilled_entity.index].ref =
                 ECSCoreTemplatePublic::EntityRef{source_chunk_index, source_row};
@@ -803,24 +798,11 @@ struct ECSEntityMutationToken::State {
             source.updateVersion(index, core->global_tick);
         }
         published = true;
-        destroy_rearmed = false;
         mutation.reset();
     }
 
     void publish() noexcept {
-        assert(!published && staged_chunk != nullptr);
-        if (destroy_rearmed) {
-            assert(kind == ECSEntityMutationKind::destroy &&
-                   mutation == nullptr);
-            try {
-                ECSCoreTemplatePublic::MutationScope republish_mutation{*core};
-                publishDestroy();
-            } catch (...) {
-                std::terminate();
-            }
-            return;
-        }
-        assert(mutation != nullptr);
+        assert(!published && mutation != nullptr && staged_chunk != nullptr);
         if (kind == ECSEntityMutationKind::create) {
             publishCreate();
         } else {
@@ -875,7 +857,7 @@ struct ECSEntityMutationToken::State {
         eraseEmptyArchetype();
     }
 
-    void rollbackDestroy(bool retain_for_republish = false) noexcept {
+    void rollbackDestroy() noexcept {
         assert(mutation == nullptr);
         ECSCoreTemplatePublic::MutationScope rollback_mutation{*core};
         auto &source = core->chunks_storage[source_chunk_index];
@@ -912,13 +894,7 @@ struct ECSEntityMutationToken::State {
         for (const auto [index, version] : source_versions) {
             source.component_versions[index] = version;
         }
-        if (retain_for_republish) {
-            staged_chunk->count = 0;
-            destroy_rearmed = true;
-        } else {
-            staged_chunk.reset();
-            destroy_rearmed = false;
-        }
+        staged_chunk.reset();
         published = false;
     }
 
@@ -981,13 +957,6 @@ bool ECSEntityMutationToken::published() const noexcept {
 }
 void ECSEntityMutationToken::publish() noexcept {
     if (state_ != nullptr && !state_->published) state_->publish();
-}
-void ECSEntityMutationToken::restoreForRepublish() noexcept {
-    if (state_ == nullptr || !state_->published ||
-        state_->kind != ECSEntityMutationKind::destroy) {
-        return;
-    }
-    state_->rollbackDestroy(true);
 }
 void ECSEntityMutationToken::rollback() noexcept {
     if (state_ == nullptr) return;

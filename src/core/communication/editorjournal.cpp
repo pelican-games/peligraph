@@ -10,7 +10,6 @@
 
 #include <algorithm>
 #include <array>
-#include <map>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -516,12 +515,12 @@ std::string stableBehaviorTarget(AuthoringObjectId object_id,
     return result;
 }
 
-std::optional<std::uint64_t> optionalInternalIdentityValue(
-    const Json &operation, std::string_view field, std::string_view context,
-    bool nonzero = false) {
+std::uint64_t internalIdentityValue(const Json &operation,
+                                    std::string_view field,
+                                    std::string_view context,
+                                    bool nonzero = false) {
     const auto found = operation.find(std::string{field});
-    if (found == operation.end()) return std::nullopt;
-    return exactUnsigned(*found, context, nonzero);
+    return found == operation.end() ? 0 : exactUnsigned(*found, context, nonzero);
 }
 
 [[noreturn]] void throwPrefabEditFailure(const PrefabError &error,
@@ -707,6 +706,9 @@ PreparedOperation preparePrefabParameter(
 PreparedOperation prepareSet(const Json &raw,
                              const AuthoringSceneDocument &document) {
     constexpr auto context = "set_component_value";
+    requireOnly(raw, {"op", "object_id", "component_slot", "field_path",
+                      "value", "attachment_index", "attachment_handle",
+                      "attachment_seq"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "set_component_value object_id", true)};
     const auto component_name = requireString(raw, "component_slot", context);
@@ -778,14 +780,13 @@ PreparedOperation prepareSet(const Json &raw,
                          ? canonicalBehaviorComponent(next_component, object_id)
                          : canonicalComponent(next_component, object_id,
                                               component_name);
-    const auto attachment_handle = optionalInternalIdentityValue(
+    const auto attachment_handle = internalIdentityValue(
         raw, "attachment_handle", "set_component_value attachment_handle", true);
-    const auto attachment_seq = optionalInternalIdentityValue(
+    const auto attachment_seq = internalIdentityValue(
         raw, "attachment_seq", "set_component_value attachment_seq");
     const auto target = behavior
                             ? stableBehaviorTarget(object_id, attachment_index,
-                                                   attachment_handle.value_or(0),
-                                                   field_path)
+                                                   attachment_handle, field_path)
                             : stableComponentTarget(object_id, component_name,
                                                     field_path);
     OrderedJson forward{{"op", context},
@@ -804,13 +805,12 @@ PreparedOperation prepareSet(const Json &raw,
     if (behavior) {
         forward["attachment_index"] = attachment_index;
         inverse["attachment_index"] = attachment_index;
-        if (attachment_handle) {
-            forward["attachment_handle"] = *attachment_handle;
-            inverse["attachment_handle"] = *attachment_handle;
+        if (attachment_handle != 0) {
+            forward["attachment_handle"] = attachment_handle;
+            inverse["attachment_handle"] = attachment_handle;
         }
-        if (attachment_seq) {
-            forward["attachment_seq"] = *attachment_seq;
-        }
+        forward["attachment_seq"] = attachment_seq;
+        inverse["attachment_seq"] = attachment_seq;
     }
     return PreparedOperation{
         .commands = {makeReplaceComponentCommand(object, component_index,
@@ -827,8 +827,8 @@ PreparedOperation prepareSet(const Json &raw,
                               {"field_path", field_path},
                               {"attachment_index", behavior ? OrderedJson(attachment_index)
                                                              : OrderedJson(nullptr)},
-                              {"attachment_handle", behavior && attachment_handle
-                                                            ? OrderedJson(*attachment_handle)
+                              {"attachment_handle", behavior && attachment_handle != 0
+                                                            ? OrderedJson(attachment_handle)
                                                             : OrderedJson(nullptr)}},
     };
 }
@@ -836,6 +836,8 @@ PreparedOperation prepareSet(const Json &raw,
 PreparedOperation prepareAdd(const Json &raw,
                              const AuthoringSceneDocument &document) {
     constexpr auto context = "add_component";
+    requireOnly(raw, {"op", "object_id", "component", "component_index",
+                      "attachment_handle", "attachment_seq"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "add_component object_id", true)};
     const auto object = requireObjectLocation(document, object_id);
@@ -864,18 +866,18 @@ PreparedOperation prepareAdd(const Json &raw,
                         "component index is outside the declaration interval");
         }
     }
-    const auto attachment_handle = optionalInternalIdentityValue(
+    const auto attachment_handle = internalIdentityValue(
         raw, "attachment_handle", "add_component attachment_handle", true);
-    const auto attachment_seq = optionalInternalIdentityValue(
+    const auto attachment_seq = internalIdentityValue(
         raw, "attachment_seq", "add_component attachment_seq");
-    if (behavior && (!attachment_handle || !attachment_seq)) {
+    if (behavior && (attachment_handle == 0 || attachment_seq == 0)) {
         editFailure(EditorEditErrorCode::method_unavailable,
                     {{"method", context}, {"adapter", "behavior_identity"}},
                     "behavior attach identity allocator is unavailable");
     }
     const auto target = behavior
                             ? stableBehaviorTarget(object_id, component_index,
-                                                   attachment_handle.value_or(0))
+                                                   attachment_handle)
                             : stableComponentTarget(object_id, component_name);
     OrderedJson forward{{"op", context},
                         {"object_id", object_id.value},
@@ -889,10 +891,11 @@ PreparedOperation prepareAdd(const Json &raw,
                         {"component_slot", component_name},
                         {"component_index", component_index}};
     if (behavior) {
-        forward["attachment_handle"] = *attachment_handle;
-        forward["attachment_seq"] = *attachment_seq;
+        forward["attachment_handle"] = attachment_handle;
+        forward["attachment_seq"] = attachment_seq;
         inverse["attachment_index"] = component_index;
-        inverse["attachment_handle"] = *attachment_handle;
+        inverse["attachment_handle"] = attachment_handle;
+        inverse["attachment_seq"] = attachment_seq;
     }
     return PreparedOperation{
         .commands = {makeInsertComponentCommand(object, component_index, canonical)},
@@ -914,10 +917,10 @@ PreparedOperation prepareAdd(const Json &raw,
                               {"slot", component_name},
                               {"component_index", component_index},
                               {"attachment_handle", behavior
-                                                            ? OrderedJson(*attachment_handle)
+                                                            ? OrderedJson(attachment_handle)
                                                             : OrderedJson(nullptr)},
                               {"attachment_seq", behavior
-                                                         ? OrderedJson(*attachment_seq)
+                                                         ? OrderedJson(attachment_seq)
                                                          : OrderedJson(nullptr)}},
     };
 }
@@ -925,6 +928,8 @@ PreparedOperation prepareAdd(const Json &raw,
 PreparedOperation prepareRemove(const Json &raw,
                                 const AuthoringSceneDocument &document) {
     constexpr auto context = "remove_component";
+    requireOnly(raw, {"op", "object_id", "component_slot", "attachment_index",
+                      "attachment_handle", "attachment_seq"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "remove_component object_id", true)};
     const auto component_name = requireString(raw, "component_slot", context);
@@ -949,13 +954,13 @@ PreparedOperation prepareRemove(const Json &raw,
         located = requireComponent(object, component_name);
     }
     const auto &[component_index, old_component] = located;
-    const auto attachment_handle = optionalInternalIdentityValue(
+    const auto attachment_handle = internalIdentityValue(
         raw, "attachment_handle", "remove_component attachment_handle", true);
-    const auto attachment_seq = optionalInternalIdentityValue(
+    const auto attachment_seq = internalIdentityValue(
         raw, "attachment_seq", "remove_component attachment_seq");
     const auto target = behavior
                             ? stableBehaviorTarget(object_id, component_index,
-                                                   attachment_handle.value_or(0))
+                                                   attachment_handle)
                             : stableComponentTarget(object_id, component_name);
     OrderedJson forward{{"op", context},
                         {"object_id", object_id.value},
@@ -971,13 +976,12 @@ PreparedOperation prepareRemove(const Json &raw,
     if (behavior) {
         forward["attachment_index"] = component_index;
         inverse["attachment_index"] = component_index;
-        if (attachment_handle) {
-            forward["attachment_handle"] = *attachment_handle;
-            inverse["attachment_handle"] = *attachment_handle;
+        if (attachment_handle != 0) {
+            forward["attachment_handle"] = attachment_handle;
+            inverse["attachment_handle"] = attachment_handle;
         }
-        if (attachment_seq) {
-            forward["attachment_seq"] = *attachment_seq;
-        }
+        forward["attachment_seq"] = attachment_seq;
+        inverse["attachment_seq"] = attachment_seq;
     }
     return PreparedOperation{
         .commands = {makeEraseComponentCommand(object, component_index,
@@ -998,11 +1002,11 @@ PreparedOperation prepareRemove(const Json &raw,
                               {"object", object_id.value},
                               {"slot", component_name},
                               {"component_index", component_index},
-                              {"attachment_handle", behavior && attachment_handle
-                                                            ? OrderedJson(*attachment_handle)
+                              {"attachment_handle", behavior && attachment_handle != 0
+                                                            ? OrderedJson(attachment_handle)
                                                             : OrderedJson(nullptr)},
-                              {"attachment_seq", behavior && attachment_seq
-                                                         ? OrderedJson(*attachment_seq)
+                              {"attachment_seq", behavior && attachment_seq != 0
+                                                         ? OrderedJson(attachment_seq)
                                                          : OrderedJson(nullptr)}},
     };
 }
@@ -1059,6 +1063,9 @@ PreparedOperation prepareSpawn(const Json &raw,
                                const AuthoringSceneDocument &document,
                                std::string_view default_scene) {
     constexpr auto context = "spawn";
+    requireOnly(raw, {"op", "scene_id", "declaration_index", "object",
+                      "new_instance_id"},
+                context);
     const auto scene_id = optionalString(raw, "scene_id", context)
                               .value_or(std::string{default_scene});
     const auto scenes = AuthoringSceneAuthority::query(document);
@@ -1173,6 +1180,7 @@ std::vector<ObjectLocation> subtreeObjects(const AuthoringSceneDocument &documen
 PreparedOperation prepareDestroy(const Json &raw,
                                  const AuthoringSceneDocument &document) {
     constexpr auto context = "destroy";
+    requireOnly(raw, {"op", "object_id"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "destroy object_id", true)};
     const auto root = requireObjectLocation(document, object_id);
@@ -1206,6 +1214,7 @@ PreparedOperation prepareDestroy(const Json &raw,
 PreparedOperation prepareReparent(const Json &raw,
                                   const AuthoringSceneDocument &document) {
     constexpr auto context = "reparent";
+    requireOnly(raw, {"op", "object_id", "new_parent_id", "preserve"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "reparent object_id", true)};
     const auto child = requireObjectLocation(document, object_id);
@@ -1428,8 +1437,7 @@ Json normalizeBehaviorAttachmentIdentities(
             operation.value("component_slot", std::string{}) == "behavior";
         if (!add_behavior && !target_behavior) continue;
 
-        const auto requested_handle = optionalInternalIdentityValue(
-            operation, "attachment_handle", "behavior attachment_handle", true);
+        operation.erase("attachment_handle");
         operation.erase("attachment_seq");
         const auto object_id = AuthoringObjectId{exactUnsigned(
             operation.at("object_id"), "behavior edit object_id", true)};
@@ -1442,8 +1450,7 @@ Json normalizeBehaviorAttachmentIdentities(
                 attachment_index = static_cast<std::size_t>(exactUnsigned(
                     *found, "behavior add component_index"));
             }
-            if (!requested_handle &&
-                !dependencies.allocate_behavior_attachment) {
+            if (!dependencies.allocate_behavior_attachment) {
                 editFailure(EditorEditErrorCode::method_unavailable,
                             {{"method", "add_component"},
                              {"adapter", "behavior_identity"}},
@@ -1452,22 +1459,16 @@ Json normalizeBehaviorAttachmentIdentities(
             if (base_revision.value == std::numeric_limits<std::uint64_t>::max()) {
                 throw std::overflow_error("behavior commit sequence space exhausted");
             }
-            const auto allocated = requested_handle
-                                       ? EditorBehaviorAttachmentIdentity{}
-                                       : dependencies.allocate_behavior_attachment(
-                                             base_revision.value + 1U,
-                                             command_index,
-                                             attachment_index);
-            const auto handle =
-                requested_handle.value_or(allocated.handle);
+            const auto identity = dependencies.allocate_behavior_attachment(
+                base_revision.value + 1U, command_index, attachment_index);
             const auto attachment_seq = sceneBehaviorAttachmentSeq(
                 object.object_index, attachment_index);
-            if (handle == 0 || handle > maxExactJsonInteger ||
+            if (identity.handle == 0 || identity.handle > maxExactJsonInteger ||
                 attachment_seq > maxExactJsonInteger) {
                 throw std::overflow_error(
                     "behavior attachment identity exceeds the exact JSON range");
             }
-            operation["attachment_handle"] = handle;
+            operation["attachment_handle"] = identity.handle;
             operation["attachment_seq"] = attachment_seq;
             continue;
         }
@@ -1497,28 +1498,7 @@ Json normalizeBehaviorAttachmentIdentities(
                 throw std::overflow_error(
                     "resolved behavior attachment identity exceeds the exact JSON range");
             }
-            if (requested_handle && *requested_handle != identity->handle) {
-                editFailure(
-                    EditorEditErrorCode::stale_revision,
-                    {{"current_revision", document.revision().value},
-                     {"target",
-                      {{"object", object_id.value},
-                       {"attachment_index", attachment_index},
-                       {"attachment_handle", identity->handle}}}},
-                    "behavior attachment_handle CAS is stale");
-            }
             operation["attachment_handle"] = identity->handle;
-        } else if (requested_handle) {
-            editFailure(
-                EditorEditErrorCode::stale_revision,
-                {{"current_revision", document.revision().value},
-                 {"target",
-                  {{"object", object_id.value},
-                   {"attachment_index", attachment_index},
-                   {"attachment_handle", nullptr}}}},
-                "behavior attachment_handle CAS target is absent");
-        } else {
-            operation.erase("attachment_handle");
         }
         const auto attachment_seq = sceneBehaviorAttachmentSeq(
             object.object_index, attachment_index);
@@ -1529,98 +1509,6 @@ Json normalizeBehaviorAttachmentIdentities(
         operation["attachment_seq"] = attachment_seq;
     }
     return result;
-}
-
-struct FinalBehaviorOriginKey {
-    std::uint64_t object_id = 0;
-    std::size_t authoring_component_index = 0;
-
-    auto operator<=>(const FinalBehaviorOriginKey &) const = default;
-};
-
-std::map<FinalBehaviorOriginKey, std::uint64_t>
-finalBehaviorAttachmentSequences(const ResolvedScene &candidate) {
-    std::map<FinalBehaviorOriginKey, std::uint64_t> result;
-    for (const auto &scene : candidate.scenes()) {
-        for (const auto &object : scene.objects) {
-            for (const auto &component : object.components) {
-                const auto *authored = component.origin.authored();
-                if (component.name != "behavior" || authored == nullptr) {
-                    continue;
-                }
-                const auto sequence = sceneBehaviorAttachmentSeq(
-                    object.authoring_object_index,
-                    component.merged_component_index);
-                if (sequence > maxExactJsonInteger) {
-                    throw std::overflow_error(
-                        "final behavior attachment sequence exceeds the exact JSON range");
-                }
-                const FinalBehaviorOriginKey key{
-                    object.authoring_object_id.value,
-                    authored->authoring_component_index};
-                if (!result.emplace(key, sequence).second) {
-                    throw std::logic_error(
-                        "final resolved scene duplicated an authored behavior origin");
-                }
-            }
-        }
-    }
-    return result;
-}
-
-void applyFinalBehaviorIdentityMetadata(
-    std::vector<OrderedJson> &operations, const ResolvedScene &candidate) {
-    const auto final_sequences = finalBehaviorAttachmentSequences(candidate);
-    for (std::size_t operation_index = 0;
-         operation_index < operations.size(); ++operation_index) {
-        auto &operation = operations[operation_index];
-        const auto op = operation.value("op", std::string{});
-        const bool add_behavior =
-            op == "add_component" &&
-            operation.value("component_slot", std::string{}) == "behavior";
-        const bool set_behavior =
-            op == "set_component_value" &&
-            operation.value("component_slot", std::string{}) == "behavior";
-        if (!add_behavior && !set_behavior) continue;
-
-        const auto object_id =
-            operation.at("object_id").get<std::uint64_t>();
-        const auto operation_time_index =
-            operation
-                .at(add_behavior ? "component_index" : "attachment_index")
-                .get<std::size_t>();
-        const auto component_index = internal::finalAuthoredComponentOrigin(
-            operations, operation_index, AuthoringObjectId{object_id},
-            operation_time_index);
-        if (!component_index) {
-            operation.erase("attachment_seq");
-            continue;
-        }
-        const auto found = final_sequences.find(
-            FinalBehaviorOriginKey{object_id, *component_index});
-        if (found == final_sequences.end()) {
-            // A later operation removed the consumer. It intentionally has no
-            // entry in the runtime identity plan.
-            operation.erase("attachment_seq");
-            continue;
-        }
-        operation["attachment_seq"] = found->second;
-    }
-}
-
-void applyFinalBehaviorIdentityMetadata(PreparedBatch &batch,
-                                         const ResolvedScene &candidate) {
-    applyFinalBehaviorIdentityMetadata(batch.forward, candidate);
-    for (std::size_t index = 0; index < batch.operations.size(); ++index) {
-        auto &prepared = batch.operations[index];
-        prepared.forward = batch.forward.at(index);
-        if (prepared.structural_domain.contains("attachment_seq")) {
-            const auto sequence = prepared.forward.find("attachment_seq");
-            prepared.structural_domain["attachment_seq"] =
-                sequence == prepared.forward.end() ? OrderedJson(nullptr)
-                                                   : *sequence;
-        }
-    }
 }
 
 PreparedBatch prepareBatch(const Json &raw_operations,
@@ -1676,8 +1564,6 @@ PreparedBatch prepareBatch(const Json &raw_operations,
                               prepared.affected.end());
         batch.operations.push_back(std::move(prepared));
     }
-    applyFinalBehaviorIdentityMetadata(batch,
-                                       local.projectionResolvedScene());
     for (auto it = batch.operations.rbegin(); it != batch.operations.rend(); ++it) {
         batch.inverse.push_back(it->inverse);
     }
@@ -1829,31 +1715,6 @@ commandsFromCanonical(std::span<const OrderedJson> operations,
         if (!preflight.committed()) throw projectionFailure(preflight, op);
         result.insert(result.end(), current.begin(), current.end());
     }
-    return result;
-}
-
-std::vector<OrderedJson> rebuildExecutionBehaviorIdentityMetadata(
-    std::span<const OrderedJson> operations,
-    std::span<const EditorProjectionCommand> commands,
-    const AuthoringSceneDocument &document,
-    PrefabRegistrySnapshot registry,
-    BindableProviderSnapshot provider) {
-    LocalDocumentTarget candidate{document, std::move(registry),
-                                  std::move(provider)};
-    EditorProjectionTransaction transaction{
-        candidate, candidate.projectionDocument().revision()};
-    std::vector<EditorProjectionAdapter *> adapters;
-    const auto preflight = transaction.commit(commands, adapters);
-    if (!preflight.committed()) {
-        throw projectionFailure(preflight, "behavior_identity_plan");
-    }
-
-    std::vector<OrderedJson> result{operations.begin(), operations.end()};
-    // This is deliberately derived from the complete candidate scene. The
-    // operation list is only annotated for journal/RPC transport; it is not
-    // the source of attachment consumers or their positional sequences.
-    applyFinalBehaviorIdentityMetadata(result,
-                                       candidate.projectionResolvedScene());
     return result;
 }
 
@@ -2174,314 +2035,7 @@ bool sameStableSet(std::span<const std::string> left,
            std::equal(left.begin(), left.end(), right.begin());
 }
 
-void validateOptionalUnsignedSyntax(const Json &value, std::string_view field,
-                                    std::string_view context,
-                                    bool nonzero = false) {
-    if (const auto found = value.find(std::string{field});
-        found != value.end()) {
-        (void)exactUnsigned(*found,
-                            std::string{context} + " " +
-                                std::string{field},
-                            nonzero);
-    }
-}
-
-EditorMutationOperationAst parseEditorOperationSyntax(
-    const Json &operation, std::size_t source_index) {
-    requireObject(operation, "edit operation");
-    const auto op = requireString(operation, "op", "edit operation");
-    EditorMutationOperationAst result{.source_index = source_index};
-
-    if (op == "set_component_value") {
-        result.kind = EditorMutationOperationKind::SetComponentValue;
-        const bool has_slot = operation.contains("component_slot");
-        const bool has_generated = operation.contains("generated_id");
-        if (has_slot == has_generated) {
-            throw std::invalid_argument(
-                "set_component_value requires exactly one of component_slot and generated_id");
-        }
-        if (has_generated) {
-            requireOnly(operation,
-                        {"op", "object_id", "generated_id", "field_path",
-                         "value"},
-                        op);
-        } else {
-            requireOnly(operation,
-                        {"op", "object_id", "component_slot", "field_path",
-                         "value", "attachment_index", "attachment_handle"},
-                        op);
-        }
-        const auto object_id = AuthoringObjectId{exactUnsigned(
-            operation.at("object_id"), "set_component_value object_id", true)};
-        const auto field_path = requireString(operation, "field_path", op);
-        if (!field_path.starts_with('/')) {
-            throw std::invalid_argument(
-                "set_component_value field_path must be an RFC6901 JSON pointer");
-        }
-        try {
-            (void)Json::json_pointer{field_path};
-        } catch (const Json::exception &) {
-            throw std::invalid_argument(
-                "set_component_value field_path must be an RFC6901 JSON pointer");
-        }
-        if (!operation.contains("value")) {
-            throw std::invalid_argument(
-                "set_component_value value is required");
-        }
-        if (has_generated) {
-            result.generated_selector = EditorGeneratedSelectorAst{
-                .object_id = object_id,
-                .generated_id = requireString(operation, "generated_id", op),
-                .field_path = field_path,
-            };
-            return result;
-        }
-
-        const auto slot = requireString(operation, "component_slot", op);
-        validateOptionalUnsignedSyntax(operation, "attachment_index", op);
-        validateOptionalUnsignedSyntax(operation, "attachment_handle", op,
-                                       true);
-        const bool has_attachment_index = operation.contains("attachment_index");
-        const bool has_attachment_handle = operation.contains("attachment_handle");
-        if (slot == "behavior" && !has_attachment_index) {
-            throw std::invalid_argument(
-                "behavior set_component_value requires attachment_index");
-        }
-        if (slot != "behavior" &&
-            (has_attachment_index || has_attachment_handle)) {
-            throw std::invalid_argument(
-                "attachment identity fields are valid only for behavior edits");
-        }
-        return result;
-    }
-
-    if (op == "add_component") {
-        result.kind = EditorMutationOperationKind::AddComponent;
-        requireOnly(operation,
-                    {"op", "object_id", "component", "component_index"},
-                    op);
-        (void)exactUnsigned(operation.at("object_id"),
-                            "add_component object_id", true);
-        const auto &component =
-            requireObject(operation.at("component"), "add_component component");
-        (void)requireString(component, "name", "add_component component");
-        validateOptionalUnsignedSyntax(operation, "component_index", op);
-        return result;
-    }
-
-    if (op == "remove_component") {
-        result.kind = EditorMutationOperationKind::RemoveComponent;
-        requireOnly(operation,
-                    {"op", "object_id", "component_slot",
-                     "attachment_index", "attachment_handle"},
-                    op);
-        (void)exactUnsigned(operation.at("object_id"),
-                            "remove_component object_id", true);
-        const auto slot = requireString(operation, "component_slot", op);
-        validateOptionalUnsignedSyntax(operation, "attachment_index", op);
-        validateOptionalUnsignedSyntax(operation, "attachment_handle", op,
-                                       true);
-        const bool has_attachment_index = operation.contains("attachment_index");
-        const bool has_attachment_handle = operation.contains("attachment_handle");
-        if (slot == "behavior" && !has_attachment_index) {
-            throw std::invalid_argument(
-                "behavior remove_component requires attachment_index");
-        }
-        if (slot != "behavior" &&
-            (has_attachment_index || has_attachment_handle)) {
-            throw std::invalid_argument(
-                "attachment identity fields are valid only for behavior edits");
-        }
-        return result;
-    }
-
-    if (op == "spawn") {
-        result.kind = EditorMutationOperationKind::Spawn;
-        requireOnly(operation,
-                    {"op", "scene_id", "declaration_index", "object",
-                     "new_instance_id"},
-                    op);
-        if (operation.contains("scene_id")) {
-            (void)requireString(operation, "scene_id", op);
-        }
-        validateOptionalUnsignedSyntax(operation, "declaration_index", op);
-        if (operation.contains("new_instance_id")) {
-            (void)requireString(operation, "new_instance_id", op);
-        }
-        const auto &object = requireObject(operation.at("object"), "spawn object");
-        (void)requireString(object, "name", "spawn object");
-        if (const auto parent = object.find("parent");
-            parent != object.end() && !parent->is_string()) {
-            throw std::invalid_argument("spawn object parent must be a string");
-        }
-        const auto components = object.find("components");
-        if (components == object.end() || !components->is_array()) {
-            throw std::invalid_argument(
-                "spawn object components must be an array");
-        }
-        for (const auto &component_value : *components) {
-            const auto &component =
-                requireObject(component_value, "spawn component");
-            (void)requireString(component, "name", "spawn component");
-        }
-        if (const auto prefab = object.find("prefab");
-            prefab != object.end() && !prefab->is_object()) {
-            throw std::invalid_argument(
-                "spawn object prefab must be an object");
-        }
-        return result;
-    }
-
-    if (op == "destroy") {
-        result.kind = EditorMutationOperationKind::Destroy;
-        requireOnly(operation, {"op", "object_id"}, op);
-        (void)exactUnsigned(operation.at("object_id"), "destroy object_id",
-                            true);
-        return result;
-    }
-
-    if (op == "reparent") {
-        result.kind = EditorMutationOperationKind::Reparent;
-        requireOnly(operation,
-                    {"op", "object_id", "new_parent_id", "preserve"}, op);
-        (void)exactUnsigned(operation.at("object_id"), "reparent object_id",
-                            true);
-        const auto parent = operation.find("new_parent_id");
-        if (parent == operation.end()) {
-            throw std::invalid_argument("reparent requires new_parent_id");
-        }
-        if (!parent->is_null()) {
-            (void)exactUnsigned(*parent, "reparent new_parent_id", true);
-        }
-        (void)requireString(operation, "preserve", op);
-        return result;
-    }
-
-    if (op == "set_prefab_parameter" ||
-        op == "unset_prefab_parameter") {
-        const bool set = op == "set_prefab_parameter";
-        result.kind = set ? EditorMutationOperationKind::SetPrefabParameter
-                          : EditorMutationOperationKind::UnsetPrefabParameter;
-        if (set) {
-            requireOnly(operation, {"op", "object", "parameter", "value"},
-                        op);
-        } else {
-            requireOnly(operation, {"op", "object", "parameter"}, op);
-        }
-        (void)exactUnsigned(operation.at("object"), op + " object", true);
-        (void)requireString(operation, "parameter", op);
-        if (set && !operation.contains("value")) {
-            throw std::invalid_argument(
-                "set_prefab_parameter value is required");
-        }
-        return result;
-    }
-
-    throw std::invalid_argument("unsupported edit operation: " + op);
-}
-
 } // namespace
-
-std::optional<std::size_t> internal::finalAuthoredComponentOrigin(
-    std::span<const nlohmann::ordered_json> operations,
-    std::size_t operation_index, AuthoringObjectId object_id,
-    std::size_t operation_time_index) {
-    if (operation_index >= operations.size()) {
-        throw std::out_of_range(
-            "component-origin operation index is outside the batch");
-    }
-
-    auto final_index = operation_time_index;
-    for (std::size_t index = operation_index + 1U; index < operations.size();
-         ++index) {
-        const auto &operation = operations[index];
-        const auto op = operation.value("op", std::string{});
-        if (op == "destroy" || op == "remove_objects") {
-            const auto object_ids = operation.find("object_ids");
-            if (object_ids != operation.end() &&
-                std::any_of(object_ids->begin(), object_ids->end(),
-                            [&](const auto &candidate) {
-                                return candidate.template get<std::uint64_t>() ==
-                                       object_id.value;
-                            })) {
-                return std::nullopt;
-            }
-            continue;
-        }
-        if (op != "add_component" && op != "remove_component") continue;
-        const auto operation_object = operation.find("object_id");
-        const auto component_index = operation.find("component_index");
-        if (operation_object == operation.end() ||
-            component_index == operation.end() ||
-            operation_object->get<std::uint64_t>() != object_id.value) {
-            continue;
-        }
-
-        const auto changed_index = component_index->get<std::size_t>();
-        if (op == "add_component") {
-            if (changed_index <= final_index) ++final_index;
-        } else if (changed_index < final_index) {
-            --final_index;
-        } else if (changed_index == final_index) {
-            return std::nullopt;
-        }
-    }
-    return final_index;
-}
-
-std::optional<std::size_t> internal::initialAuthoredComponentOrigin(
-    std::span<const nlohmann::ordered_json> operations,
-    std::size_t operation_index, AuthoringObjectId object_id,
-    std::size_t operation_time_index) {
-    if (operation_index >= operations.size()) {
-        throw std::out_of_range(
-            "component-origin operation index is outside the batch");
-    }
-
-    auto initial_index = operation_time_index;
-    for (std::size_t offset = operation_index; offset > 0; --offset) {
-        const auto &operation = operations[offset - 1U];
-        const auto op = operation.value("op", std::string{});
-        if (op == "spawn") {
-            const auto spawned_id = operation.find("object_id");
-            if (spawned_id != operation.end() &&
-                spawned_id->get<std::uint64_t>() == object_id.value) {
-                return std::nullopt;
-            }
-            continue;
-        }
-        if (op == "restore_objects") {
-            const auto closures = operation.find("closures");
-            if (closures != operation.end() &&
-                std::any_of(closures->begin(), closures->end(),
-                            [&](const auto &closure) {
-                                return closure.at("authoring_object_id")
-                                           .template get<std::uint64_t>() ==
-                                       object_id.value;
-                            })) {
-                return std::nullopt;
-            }
-            continue;
-        }
-        if (op != "add_component" && op != "remove_component") continue;
-        const auto operation_object = operation.find("object_id");
-        const auto component_index = operation.find("component_index");
-        if (operation_object == operation.end() ||
-            component_index == operation.end() ||
-            operation_object->get<std::uint64_t>() != object_id.value) {
-            continue;
-        }
-
-        const auto changed_index = component_index->get<std::size_t>();
-        if (op == "add_component") {
-            if (initial_index == changed_index) return std::nullopt;
-            if (initial_index > changed_index) --initial_index;
-        } else if (initial_index >= changed_index) {
-            ++initial_index;
-        }
-    }
-    return initial_index;
-}
 
 EditorMutationRequestAst parseEditorMutationRequest(
     const Json &params, std::string_view method) {
@@ -2537,21 +2091,68 @@ EditorMutationRequestAst parseEditorMutationRequest(
                                     " operations must be a non-empty array");
     }
     result.operations = *operations;
-    result.operation_asts.reserve(operations->size());
-    for (std::size_t index = 0; index < operations->size(); ++index) {
-        auto operation = parseEditorOperationSyntax(operations->at(index),
-                                                    index);
-        if (operation.kind ==
-                EditorMutationOperationKind::SetPrefabParameter ||
-            operation.kind ==
-                EditorMutationOperationKind::UnsetPrefabParameter) {
+    for (const auto &operation : *operations) {
+        requireObject(operation, "edit operation");
+        const auto op = requireString(operation, "op", "edit operation");
+        if (op == "set_prefab_parameter" ||
+            op == "unset_prefab_parameter") {
             result.prefab_mutation = true;
+            if (op == "set_prefab_parameter") {
+                requireOnly(operation,
+                            {"op", "object", "parameter", "value"}, op);
+                if (!operation.contains("value")) {
+                    throw std::invalid_argument(
+                        "set_prefab_parameter value is required");
+                }
+            } else {
+                requireOnly(operation, {"op", "object", "parameter"}, op);
+            }
+            (void)exactUnsigned(operation.at("object"),
+                                op + " object", true);
+            (void)requireString(operation, "parameter", op);
+            continue;
         }
-        if (operation.generated_selector) {
-            result.generated_selectors.push_back(
-                *operation.generated_selector);
+        if (op != "set_component_value") continue;
+        const bool has_slot = operation.contains("component_slot");
+        const bool has_generated = operation.contains("generated_id");
+        if (has_slot == has_generated) {
+            throw std::invalid_argument(
+                "set_component_value requires exactly one of component_slot and generated_id");
         }
-        result.operation_asts.push_back(std::move(operation));
+        const auto object_id = AuthoringObjectId{exactUnsigned(
+            operation.at("object_id"), "set_component_value object_id",
+            true)};
+        const auto field_path = requireString(
+            operation, "field_path", "set_component_value");
+        if (!field_path.starts_with('/')) {
+            throw std::invalid_argument(
+                "set_component_value field_path must be an RFC6901 JSON pointer");
+        }
+        try {
+            (void)nlohmann::json::json_pointer{field_path};
+        } catch (const nlohmann::json::exception &) {
+            throw std::invalid_argument(
+                "set_component_value field_path must be an RFC6901 JSON pointer");
+        }
+        if (!operation.contains("value")) {
+            throw std::invalid_argument(
+                "set_component_value value is required");
+        }
+        if (!has_generated) {
+            (void)requireString(operation, "component_slot",
+                                "set_component_value");
+            continue;
+        }
+        requireOnly(operation,
+                    {"op", "object_id", "generated_id", "field_path",
+                     "value"},
+                    "set_component_value generated selector");
+        EditorGeneratedSelectorAst selector;
+        selector.object_id = object_id;
+        selector.generated_id = requireString(
+            operation, "generated_id", "set_component_value");
+        selector.field_path = field_path;
+        result.generated_selectors.push_back(std::move(selector));
     }
     if (method == "edit" && result.prefab_mutation) {
         if (!params.contains("scene_revision")) {
@@ -3037,22 +2638,15 @@ struct EditorEditCoordinator::Impl {
 
     std::string finalizeRevertJournal(
         const Ticket &ticket, const EditorJournalRecord &source,
-        const EditorProjectionResult &projection, std::string operation_kind,
-        std::span<const OrderedJson> executed_operations) {
+        const EditorProjectionResult &projection, std::string operation_kind) {
         EditorJournalRecord record;
         record.transaction_id = allocateTransaction();
         record.actor_id = ticket.actor_id;
         record.actor_display_name = sessions.at(ticket.actor_id.value).display_name;
         record.base_revision = ticket.base_revision;
         record.committed_revision = projection.committed_revision;
-        record.ordered_forward.assign(executed_operations.begin(),
-                                      executed_operations.end());
+        record.ordered_forward = source.ordered_inverse;
         record.ordered_inverse = source.ordered_forward;
-        // A positional attachment sequence belongs to one concrete execution.
-        // Redo will rebuild it from its own candidate ResolvedScene.
-        for (auto &operation : record.ordered_inverse) {
-            operation.erase("attachment_seq");
-        }
         record.affected_authoring_ids = source.affected_authoring_ids;
         record.operation_kind = std::move(operation_kind);
         record.source_transaction_id = source.transaction_id;
@@ -3502,7 +3096,6 @@ struct EditorEditCoordinator::Impl {
                 PreparedBatch batch;
                 std::optional<EditorJournalRecord> revert_source;
                 std::vector<EditorProjectionCommand> revert_commands;
-                std::vector<OrderedJson> execution_operation_storage;
                 std::span<const OrderedJson> execution_operations;
                 std::span<const EditorProjectionCommand> execution_commands;
                 if (ticket.kind == Ticket::Kind::edit) {
@@ -3543,18 +3136,6 @@ struct EditorEditCoordinator::Impl {
                     execution_operations = revert_source->ordered_inverse;
                     execution_commands = revert_commands;
                 }
-                execution_operation_storage =
-                    rebuildExecutionBehaviorIdentityMetadata(
-                        execution_operations, execution_commands, document(),
-                        prefabRegistry(), bindableProvider());
-                execution_operations = execution_operation_storage;
-                if (ticket.kind == Ticket::Kind::edit) {
-                    batch.forward = execution_operation_storage;
-                    for (std::size_t index = 0;
-                         index < batch.operations.size(); ++index) {
-                        batch.operations[index].forward = batch.forward[index];
-                    }
-                }
                 const EditorEditExecutionRequest request{
                     .base_revision = ticket.base_revision,
                     .commands = execution_commands,
@@ -3588,8 +3169,7 @@ struct EditorEditCoordinator::Impl {
                 } else {
                     transaction_id = finalizeRevertJournal(
                         ticket, *revert_source, projection,
-                        ticket.kind == Ticket::Kind::undo ? "undo" : "redo",
-                        execution_operations);
+                        ticket.kind == Ticket::Kind::undo ? "undo" : "redo");
                     auto &undo_stack = undo_stacks[ticket.actor_id.value];
                     auto &redo_stack = redo_stacks[ticket.actor_id.value];
                     if (ticket.kind == Ticket::Kind::undo) {
@@ -4296,13 +3876,10 @@ EditorProjectionResult EditorEditCoordinator::executeJournalForVerification(
     auto commands = commandsFromCanonical(
         operations, impl_->document(), impl_->prefabRegistry(),
         impl_->bindableProvider());
-    auto execution_operations = rebuildExecutionBehaviorIdentityMetadata(
-        operations, commands, impl_->document(), impl_->prefabRegistry(),
-        impl_->bindableProvider());
     const EditorEditExecutionRequest request{
         .base_revision = impl_->document().revision(),
         .commands = commands,
-        .operations = execution_operations,
+        .operations = operations,
     };
     return impl_->dependencies.execute(request);
 }

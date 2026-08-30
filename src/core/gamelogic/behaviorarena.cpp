@@ -433,39 +433,15 @@ bool sameSceneBehaviorOrigin(const ResolvedComponentOrigin &left,
 } // namespace
 
 struct PreparedBehaviorSceneReconciliation::Impl {
-    struct ParamUpdate {
-        BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
-        internal::RawBehaviorParams old_params;
-        internal::RawBehaviorParams next_params;
-        internal::BehaviorApplyPreparedParamsFn apply = nullptr;
-        internal::BehaviorDestroyPreparedParamsFn destroy = nullptr;
-    };
-
     BehaviorAttachmentArena *arena = nullptr;
     std::vector<BehaviorAttachmentArena::Attachment> detached;
     std::vector<BehaviorAttachmentHandle> reused;
-    std::vector<ParamUpdate> param_updates;
     std::uint64_t old_next_handle = 1;
     std::uint64_t old_next_attachment_seq = 1;
     std::uint64_t next_handle = 1;
     std::uint64_t next_attachment_seq = 1;
-    bool old_attachment_sequence_exhausted = false;
-    bool attachment_sequence_exhausted = false;
     bool published = false;
     bool finished = false;
-
-    void releasePreparedParams() noexcept {
-        for (auto &update : param_updates) {
-            if (update.destroy == nullptr) continue;
-            if (update.old_params.value != nullptr) {
-                update.destroy(update.old_params);
-            }
-            if (update.next_params.value != nullptr) {
-                update.destroy(update.next_params);
-            }
-        }
-        param_updates.clear();
-    }
 
     static void transferRuntime(BehaviorAttachmentArena::Attachment &from,
                                 BehaviorAttachmentArena::Attachment &to) noexcept {
@@ -497,7 +473,6 @@ struct PreparedBehaviorSceneReconciliation::Impl {
     }
 
     ~Impl() {
-        releasePreparedParams();
         if (!finished) destroyDetached(false);
     }
 };
@@ -535,20 +510,6 @@ void PreparedBehaviorSceneReconciliation::publish() noexcept {
     arena.attachments.swap(impl_->detached);
     arena.next_handle = impl_->next_handle;
     arena.next_attachment_seq = impl_->next_attachment_seq;
-    arena.attachment_sequence_exhausted =
-        impl_->attachment_sequence_exhausted;
-    for (auto &update : impl_->param_updates) {
-        const auto current = std::find_if(
-            arena.attachments.begin(), arena.attachments.end(),
-            [&](const auto &attachment) {
-                return attachment.info.handle == update.handle;
-            });
-        if (current != arena.attachments.end() &&
-            current->instance.params != nullptr &&
-            update.next_params.value != nullptr) {
-            update.apply(current->instance.params, update.next_params);
-        }
-    }
     impl_->published = true;
 }
 
@@ -556,18 +517,6 @@ void PreparedBehaviorSceneReconciliation::rollback() noexcept {
     if (!impl_ || impl_->finished) return;
     auto &arena = *impl_->arena;
     if (impl_->published) {
-        for (auto &update : impl_->param_updates) {
-            const auto current = std::find_if(
-                arena.attachments.begin(), arena.attachments.end(),
-                [&](const auto &attachment) {
-                    return attachment.info.handle == update.handle;
-                });
-            if (current != arena.attachments.end() &&
-                current->instance.params != nullptr &&
-                update.old_params.value != nullptr) {
-                update.apply(current->instance.params, update.old_params);
-            }
-        }
         for (const auto handle : impl_->reused) {
             const auto current = std::find_if(
                 arena.attachments.begin(), arena.attachments.end(),
@@ -587,133 +536,15 @@ void PreparedBehaviorSceneReconciliation::rollback() noexcept {
         arena.attachments.swap(impl_->detached);
         arena.next_handle = impl_->old_next_handle;
         arena.next_attachment_seq = impl_->old_next_attachment_seq;
-        arena.attachment_sequence_exhausted =
-            impl_->old_attachment_sequence_exhausted;
     }
-    impl_->releasePreparedParams();
     impl_->destroyDetached(false);
     impl_->finished = true;
 }
 
 void PreparedBehaviorSceneReconciliation::finish() noexcept {
     if (!impl_ || impl_->finished) return;
-    impl_->releasePreparedParams();
     impl_->destroyDetached(impl_->published);
     impl_->finished = true;
-}
-
-struct PreparedBehaviorEntityPreDestroy::Impl {
-    BehaviorAttachmentArena *arena = nullptr;
-    std::vector<GameObjectId> entities;
-    std::vector<BehaviorAttachmentArena::Attachment> detached;
-    std::vector<BehaviorAttachmentArena::Attachment> scratch;
-    std::size_t deferred_checkpoint = 0;
-    bool published = false;
-    bool finished = false;
-
-    bool targets(GameObjectId entity) const noexcept {
-        return std::find(entities.begin(), entities.end(), entity) !=
-               entities.end();
-    }
-
-    void destroyDetached() noexcept {
-        if (arena == nullptr) return;
-        for (auto it = detached.rbegin(); it != detached.rend(); ++it) {
-            arena->destroyInstance(*it, false);
-        }
-        detached.clear();
-    }
-
-    ~Impl() {
-        if (published && !finished) destroyDetached();
-    }
-};
-
-PreparedBehaviorEntityPreDestroy::PreparedBehaviorEntityPreDestroy(
-    std::unique_ptr<Impl> impl) noexcept
-    : impl_{std::move(impl)} {}
-PreparedBehaviorEntityPreDestroy::~PreparedBehaviorEntityPreDestroy() =
-    default;
-PreparedBehaviorEntityPreDestroy::PreparedBehaviorEntityPreDestroy(
-    PreparedBehaviorEntityPreDestroy &&) noexcept = default;
-PreparedBehaviorEntityPreDestroy &
-PreparedBehaviorEntityPreDestroy::operator=(
-    PreparedBehaviorEntityPreDestroy &&) noexcept = default;
-
-void PreparedBehaviorEntityPreDestroy::publish() noexcept {
-    if (!impl_ || impl_->published || impl_->finished) return;
-    auto &arena = *impl_->arena;
-
-    // The callback pass observes the untouched arena and ECS. Moving the
-    // instances happens only after the complete reverse-order barrier.
-    for (auto it = arena.attachments.rbegin();
-         it != arena.attachments.rend(); ++it) {
-        if (!impl_->targets(it->info.entity) ||
-            it->instance.behavior == nullptr || !it->initialized) {
-            continue;
-        }
-        arena.invokeDestroyCallback(*it);
-    }
-
-    impl_->detached.clear();
-    impl_->scratch.clear();
-    for (auto &attachment : arena.attachments) {
-        if (impl_->targets(attachment.info.entity)) {
-            impl_->detached.push_back(std::move(attachment));
-        } else {
-            impl_->scratch.push_back(std::move(attachment));
-        }
-    }
-    arena.attachments.swap(impl_->scratch);
-    impl_->scratch.clear();
-    impl_->published = true;
-}
-
-void PreparedBehaviorEntityPreDestroy::rollback() noexcept {
-    if (!impl_ || impl_->finished) return;
-    auto &arena = *impl_->arena;
-    if (!impl_->published) {
-        if (arena.deferred_mutations.size() > impl_->deferred_checkpoint) {
-            arena.deferred_mutations.resize(impl_->deferred_checkpoint);
-        }
-    } else {
-        // Publication is deliberately beyond the point of no return. If a
-        // caller violates that invariant, never resurrect an initialized
-        // instance whose onDestroy already ran.
-        impl_->destroyDetached();
-    }
-    impl_->finished = true;
-}
-
-void PreparedBehaviorEntityPreDestroy::finish() noexcept {
-    if (!impl_ || impl_->finished) return;
-    impl_->destroyDetached();
-    impl_->finished = true;
-}
-
-std::unique_ptr<PreparedBehaviorEntityPreDestroy>
-BehaviorAttachmentArena::prepareEntityPreDestroy(
-    std::vector<GameObjectId> entities) {
-    std::sort(entities.begin(), entities.end(), [](auto left, auto right) {
-        if (left.index != right.index) return left.index < right.index;
-        return left.generation < right.generation;
-    });
-    entities.erase(std::unique(entities.begin(), entities.end()),
-                   entities.end());
-    if (std::any_of(entities.begin(), entities.end(), [](auto entity) {
-            return entity == invalidGameObjectId;
-        })) {
-        throw std::invalid_argument(
-            "behavior pre-destroy requires valid entity identities");
-    }
-    auto impl = std::make_unique<PreparedBehaviorEntityPreDestroy::Impl>();
-    impl->arena = this;
-    impl->entities = std::move(entities);
-    impl->deferred_checkpoint = deferred_mutations.size();
-    impl->detached.reserve(attachments.size());
-    impl->scratch.reserve(attachments.size());
-    return std::unique_ptr<PreparedBehaviorEntityPreDestroy>{
-        new PreparedBehaviorEntityPreDestroy{std::move(impl)}};
 }
 
 std::unique_ptr<PreparedBehaviorSceneReconciliation>
@@ -726,10 +557,6 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
     impl->old_next_attachment_seq = next_attachment_seq;
     impl->next_handle = next_handle;
     impl->next_attachment_seq = next_attachment_seq;
-    impl->old_attachment_sequence_exhausted =
-        attachment_sequence_exhausted;
-    impl->attachment_sequence_exhausted =
-        attachment_sequence_exhausted;
     impl->detached.reserve(attachments.size() + desired.size());
     std::vector<bool> consumed(attachments.size(), false);
 
@@ -753,133 +580,34 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
         }
         const auto sequence = sceneBehaviorAttachmentSeq(
             bound.prepared.object_index, bound.prepared.component_index);
-        if (bound.planned_identity &&
-            (bound.planned_identity->handle ==
-                 invalidBehaviorAttachmentHandle ||
-             bound.planned_identity->attachment_seq != sequence)) {
-            throw std::runtime_error(
-                "behavior scene reconciliation identity plan is stale");
-        }
         std::optional<std::size_t> reusable;
-        if (bound.preserve_planned_identity) {
-            if (!bound.planned_identity) {
-                throw std::logic_error(
-                    "behavior identity preservation requires a plan entry");
+        for (std::size_t index = 0; index < attachments.size(); ++index) {
+            const auto &current = attachments[index];
+            if (consumed[index] || !current.info.scene_ordered ||
+                current.info.entity != bound.entity ||
+                current.info.stable_name != bound.prepared.stable_name ||
+                current.info.canonical_params !=
+                    bound.prepared.canonical_params ||
+                current.info.pending != bound.prepared.pending ||
+                !sameSceneBehaviorOrigin(current.info.component_origin,
+                                         bound.prepared.component_origin)) {
+                continue;
             }
-            for (std::size_t index = 0; index < attachments.size(); ++index) {
-                const auto &current = attachments[index];
-                if (consumed[index] ||
-                    current.info.handle != bound.planned_identity->handle) {
-                    continue;
-                }
-                if (!current.info.scene_ordered ||
-                    current.info.entity != bound.entity ||
-                    current.info.stable_name != bound.prepared.stable_name ||
-                    current.info.pending != bound.prepared.pending ||
-                    !sameSceneBehaviorOrigin(
-                        current.info.component_origin,
-                        bound.prepared.component_origin)) {
-                    throw std::runtime_error(
-                        "behavior identity plan targets a different attachment");
-                }
-                reusable = index;
-                break;
-            }
-            if (!reusable) {
-                throw std::runtime_error(
-                    "behavior identity plan target is absent");
-            }
-        }
-        if (!bound.planned_identity) {
-            for (std::size_t index = 0; index < attachments.size(); ++index) {
-                if (reusable) break;
-                const auto &current = attachments[index];
-                if (consumed[index] || !current.info.scene_ordered ||
-                    current.info.entity != bound.entity ||
-                    current.info.stable_name != bound.prepared.stable_name ||
-                    current.info.canonical_params !=
-                        bound.prepared.canonical_params ||
-                    current.info.pending != bound.prepared.pending ||
-                    !sameSceneBehaviorOrigin(current.info.component_origin,
-                                             bound.prepared.component_origin)) {
-                    continue;
-                }
-                reusable = index;
-                break;
-            }
+            reusable = index;
+            break;
         }
 
         BehaviorAttachmentHandle handle{};
         if (reusable) {
             consumed[*reusable] = true;
             handle = attachments[*reusable].info.handle;
-            if (bound.planned_identity &&
-                bound.planned_identity->handle != handle) {
-                throw std::runtime_error(
-                    "reusable behavior identity disagrees with the final plan");
-            }
             impl->reused.push_back(handle);
-            const auto &current = attachments[*reusable];
-            if (!current.info.pending &&
-                current.info.canonical_params !=
-                    bound.prepared.canonical_params) {
-                const auto *registration =
-                    internal::getBehaviorRegisterer().findByNameAndOwner(
-                        current.info.stable_name, current.info.owner);
-                if (registration == nullptr) {
-                    throw std::runtime_error(
-                        "behavior registration disappeared during params reconciliation: " +
-                        current.info.stable_name);
-                }
-                PreparedBehaviorSceneReconciliation::Impl::ParamUpdate update{
-                    .handle = handle,
-                    .apply = registration->apply_prepared_params,
-                    .destroy = registration->destroy_prepared_params,
-                };
-                update.old_params = registration->prepare_params(
-                    current.info.canonical_params);
-                try {
-                    update.next_params = registration->prepare_params(
-                        bound.prepared.canonical_params);
-                } catch (...) {
-                    if (update.old_params.value != nullptr) {
-                        update.destroy(update.old_params);
-                    }
-                    throw;
-                }
-                impl->param_updates.push_back(std::move(update));
-            }
         } else {
-            if (bound.planned_identity) {
-                handle = bound.planned_identity->handle;
-                if (std::any_of(
-                        attachments.begin(), attachments.end(),
-                        [&](const auto &attachment) {
-                            return attachment.info.handle == handle;
-                        }) ||
-                    std::any_of(
-                        impl->detached.begin(), impl->detached.end(),
-                        [&](const auto &attachment) {
-                            return attachment.info.handle == handle;
-                        })) {
-                    throw std::runtime_error(
-                        "planned behavior handle is already live");
-                }
-                if (handle.value >= impl->next_handle) {
-                    if (handle.value ==
-                        std::numeric_limits<std::uint64_t>::max()) {
-                        throw std::overflow_error(
-                            "BehaviorAttachmentHandle space exhausted");
-                    }
-                    impl->next_handle = handle.value + 1U;
-                }
-            } else {
-                if (impl->next_handle == 0) {
-                    throw std::overflow_error(
-                        "BehaviorAttachmentHandle space exhausted");
-                }
-                handle = BehaviorAttachmentHandle{impl->next_handle++};
+            if (impl->next_handle == 0) {
+                throw std::overflow_error(
+                    "BehaviorAttachmentHandle space exhausted");
             }
+            handle = BehaviorAttachmentHandle{impl->next_handle++};
         }
         Attachment next{
             .info = BehaviorAttachmentInfo{
@@ -913,8 +641,8 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
         }
         impl->detached.push_back(std::move(next));
         if (sequence == std::numeric_limits<std::uint64_t>::max()) {
-            impl->attachment_sequence_exhausted = true;
-        } else if (!impl->attachment_sequence_exhausted) {
+            impl->next_attachment_seq = 0;
+        } else {
             impl->next_attachment_seq =
                 std::max(impl->next_attachment_seq, sequence + 1U);
         }
@@ -975,8 +703,8 @@ void BehaviorAttachmentArena::publishSceneAttachments(
             .raw_component = std::move(bound.prepared.raw_component),
         });
         if (sequence == std::numeric_limits<std::uint64_t>::max()) {
-            attachment_sequence_exhausted = true;
-        } else if (!attachment_sequence_exhausted) {
+            next_attachment_seq = 0;
+        } else {
             next_attachment_seq = std::max(next_attachment_seq, sequence + 1U);
         }
     }
@@ -1025,9 +753,14 @@ void BehaviorAttachmentArena::invokeEvent(Attachment &attachment,
     handler->dispatch(*attachment.instance.behavior, event.payload.get(), ctx);
 }
 
-void BehaviorAttachmentArena::invokeDestroyCallback(
-    Attachment &attachment) noexcept {
-    if (attachment.instance.behavior != nullptr && attachment.initialized) {
+void BehaviorAttachmentArena::destroyInstance(Attachment &attachment,
+                                              bool invoke_destroy_callback) noexcept {
+    if (attachment.instance.behavior == nullptr) {
+        attachment.initialized = false;
+        attachment.info.active = false;
+        return;
+    }
+    if (invoke_destroy_callback && attachment.initialized) {
         BehaviorContext ctx{attachment.info.entity, attachment.info.handle,
                             attachment.info.attachment_seq, attachment.instance.params,
                             attachment.instance.params_type};
@@ -1041,16 +774,6 @@ void BehaviorAttachmentArena::invokeDestroyCallback(
             }
         }
     }
-}
-
-void BehaviorAttachmentArena::destroyInstance(Attachment &attachment,
-                                              bool invoke_destroy_callback) noexcept {
-    if (attachment.instance.behavior == nullptr) {
-        attachment.initialized = false;
-        attachment.info.active = false;
-        return;
-    }
-    if (invoke_destroy_callback) invokeDestroyCallback(attachment);
     if (attachment.destroy != nullptr) {
         attachment.destroy(attachment.instance);
     }
@@ -1212,19 +935,13 @@ BehaviorAttachmentIdentity BehaviorAttachmentArena::reserveRuntimeAttachmentIden
     if (next_handle == 0 || next_handle > max_exact_json_integer) {
         throw std::overflow_error("BehaviorAttachmentHandle space exhausted");
     }
-    if (attachment_sequence_exhausted ||
+    if (next_attachment_seq == 0 ||
         next_attachment_seq > max_exact_json_integer) {
         throw std::overflow_error("runtime behavior attachment sequence space exhausted");
     }
-    const auto sequence = next_attachment_seq;
-    if (next_attachment_seq == std::numeric_limits<std::uint64_t>::max()) {
-        attachment_sequence_exhausted = true;
-    } else {
-        ++next_attachment_seq;
-    }
     return BehaviorAttachmentIdentity{
         .handle = BehaviorAttachmentHandle{next_handle++},
-        .attachment_seq = sequence,
+        .attachment_seq = next_attachment_seq++,
     };
 }
 

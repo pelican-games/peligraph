@@ -1098,11 +1098,8 @@ TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequenc
             identity.attachment_seq);
     REQUIRE(forward_record.ordered_inverse.front().at("attachment_handle") ==
             identity.handle);
-    // WP361b v2: an inverse keeps the public handle CAS but never freezes a
-    // forward execution's positional sequence. Undo rebuilds that sequence
-    // from its own final resolved scene.
-    REQUIRE_FALSE(
-        forward_record.ordered_inverse.front().contains("attachment_seq"));
+    REQUIRE(forward_record.ordered_inverse.front().at("attachment_seq") ==
+            identity.attachment_seq);
     REQUIRE(forward_record.stable_targets.front().find(
                 "handles/" + std::to_string(identity.handle)) != std::string::npos);
     const auto first_stable_target = forward_record.stable_targets.front();
@@ -1186,8 +1183,8 @@ TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequenc
     const auto &remove_record = harness.edits->journal().back();
     REQUIRE(remove_record.ordered_forward.front().at("attachment_handle") ==
             second_identity.handle);
-    REQUIRE_FALSE(
-        remove_record.ordered_inverse.front().contains("attachment_seq"));
+    REQUIRE(remove_record.ordered_inverse.front().at("attachment_seq") ==
+            second_identity.attachment_seq);
     REQUIRE(harness.runtime_behaviors.size() == 1);
     REQUIRE(harness.runtime_behaviors.front().identity.handle == identity.handle);
 
