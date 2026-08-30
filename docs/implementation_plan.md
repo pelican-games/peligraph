@@ -15183,3 +15183,49 @@ revert(6c68181)を挟んだ経緯ごと記録: WP361b 初版は Inspector の実
 (`attachment_handle`)を新 gate が拒否する等 5 件で不合格 → パッチでなく revert +
 やり直し(処方 A〜E)。保留していた完成宣言はこれで確定。
 WP361b v2 の §10 指摘は無条件で台帳のみ(打ち切り最終)。
+
+#### WP361b v2 コードレビュー(不合格・7 件、致命 1)→ revert(2 度目)と系譜の打ち切り
+
+v2 も不合格: **致命 1 件 = 同一 edit の複数 destroy で、preflight→rearm 経路が
+prepare 時の古い row を保持したまま最終 publish し、破棄済み component
+(`std::string` 持ち)を二重 move する UB**(出荷 example の DamagedHelmet+sponza の
+組で具体再現、backfill で row が動くのに token が追随しない)。他: 非 behavior の
+挿入で既存 behavior が破棄・再生成 / sequential には合法な batch を base document
+基準の正規化が拒否 / **light-only object(出荷 example に 14 個・vrm_xr に 1 個)の
+destroy が runtime binding 必須化で失敗** / reparent の preserve enum が selector より
+後 / 「実 producer」テストが producer を呼んでいない / rich fixture が実値を見ない。
+宣言どおりパッチは重ねない。**7040f23 を revert(2 度目)し、この系譜
+(WP361b → v2)をここで打ち切る。**
+
+#### 裁定: エディタ lifecycle × arena の合流は「修正」ではなく「設計」だった
+
+2 連続不合格の共通根: この合流(spawn/destroy/undo と BehaviorArena・ECS token の
+transaction 統合)は WP361a のコードレビュー指摘 #1 の「修正」として入り、
+**プレファブ本体が受けた 3 巡の敵対的仕様レビューを一度も受けていない**。
+identity・所有・rollback の各難点(まさに WP360/WP361 で 3 巡かけて潰した種類の
+問題)を、修正パッケージの粒度で 2 回解いて 2 回失敗した。
+
+**WP363(起票のみ。実装前に設計文書 + 仕様レビュー必須の上段)**:
+エディタ lifecycle 操作と runtime(ECS/arena/camera/light/physics)の合流。
+2 回の失敗レビュー(WP361a §10 の 9 件 / WP361b §10 の 7 件 / WP361b v2 §10 の
+7 件)を仕様の種として全部使う。最低限の設計論点:
+- ECS destroy token の row 再解決(backfill 追随)か、token を row でなく entity で持つか
+- identity plan の正本(final resolved scene)と sequential 正規化の統一
+- point of no return と deferred queue checkpoint(v2 の B は方向として正しかった)
+- entity token の optional 化(light-only / collider-only / empty object)
+- 実 producer request の捕捉方法(D0 を保ったまま共通 pure builder か)
+
+**それまでの現状(= WP361a 状態)の既知の穴を台帳の負債として明記**:
+- 別 scene への lifecycle 編集が現行 scene の runtime を再構築する(WP361a #1)
+- destroy の onDestroy が entity 死後(同 #2)/ 混合 batch の handle/seq 分裂(#3)/
+  同一 batch 親子 spawn 失敗(#4)/ seq 0 誤 sentinel / Inspector CAS は動作
+これらは memory-safe であり、出荷 4 project(behavior 0)は踏めない。
+編集ワークフローの穴として WP363 が閉じる。
+
+#### U1 完成宣言の再訂正
+
+U1(プレファブ)の機能面 —— 文書・展開・identity・表示・SnapshotV2・save・
+set/unset —— は WP361+361a+362 の状態で全て成立し全数緑(1432×2 で検証済み)。
+b 系譜はプレファブでなく**エディタ lifecycle の後退修復**であり、これは WP363 に
+移った。よって **U1 は「完成、ただしエディタ lifecycle × behavior の合流は
+WP363 待ち」**と記録する。
