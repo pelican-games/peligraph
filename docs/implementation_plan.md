@@ -15520,3 +15520,61 @@ per-file manifest v3 + eol 分類で検証)。
 
 **§10 コードレビューの指摘は宣言どおり台帳のみ**(RT1a の連鎖はここで打ち切り)。
 次: 「引き継ぎ: 残 WP への先行裁定」節の作業順どおり **WP365(RT1b)の起票**。
+
+#### WP364 コードレビュー(不合格・5 件)の仕分けと WP364a
+
+出荷影響は 0(4 project・core resources・既存 RT feature の bytes 不変、
+到達 group 解決・10 named code・max_recursion・D0 は「壊せなかった項目」で生存確認)。
+壊れているのは**証拠の側**である。しかも 2 件は**以後の RT 全段が依存する審判**
+(CPU オラクルと配線証明)なので、ここで直す。決定表どおり
+**本体への修正パッケージは 1 回だけ。WP364a のレビュー指摘は台帳のみ。**
+
+仕分け: **直す 5 件 = WP364a**(台帳送りは無し —— どれも「テストが主張を証明して
+いない」型で、放置すると後続 WP がその緑を根拠にしてしまう)。
+
+### WP364a: RT1a の証拠の修復(最終。以降の指摘は台帳)
+
+**§4 規則 11 上段。コードレビューのみ(仕様源は上記 5 件)。見積: 中。**
+
+1. **CPU オラクルが正当な f32 hit を拒否する**(実害): CPU は double 区間端に
+   ±4 f32 ULP を足すが、比較側は double→f32 丸め後にさらに ±4 ULP 展開するため、
+   double→f32 の最大 0.5 ULP 分が区間に入っていない。
+   **修正**: CPU 区間に double→f32 の外向き丸めを含めてから 4 回 `nextafterf`
+   (最低限 `expandGpuRayT(static_cast<float>(t))` を包含すること)。
+   **受け入れ**: レビューの反例(ray dir `(0.6,0,0.8)` の f32 値 /
+   triangle `(5,-1,8),(7,-1,8),(6,1,8)` / t≈9.99999985 → GPU `10.0f`)を
+   regression として追加し、修正前は落ちること
+2. **parent manifest が「コミット blob 不変」を測っていない**(実害):
+   working-tree bytes を正規化して比較しているため、(a) blob 側を CRLF に
+   変えても通る、(b) manifest に無い新規 tracked file が素通り、
+   (c) `tracked_file_count` が未参照。
+   **修正**: **`git show HEAD:<path>` の blob bytes を直接比較**する形へ。
+   併せて現コミットの `git ls-files -- projects/<name>` と manifest の path 集合を
+   **完全一致**で検査(欠落・余剰の双方)、`tracked_file_count` も検査、
+   path confinement(`..`・絶対パス)も拒否。正規化は不要になる(裁定
+   「不変 = コミット blob」に一致する形での実装。90e1bb81 の裁定は維持、
+   実装が裁定に追いついていなかった)
+3. **配線証明が静的ソース文字列の代理条件**(実害・§4 規約 10 違反):
+   `test_wp364_raytracing_wiring_mutations.cmake` は関数名の文字列有無しか見ず、
+   pure validator 呼び出し 2 行を削除しても observer と unit 負例は通る。
+   **修正**: 文字列検査を廃し、**各 site の delegate を無効化できる実行 variant**
+   (テスト専用の注入点。production 既定は有効)を用意して同一テスト内で
+   有効/無効を実行し、**拒否結果・解決済み値・observer 記録が異なる**ことを検査。
+   併せて **create observer の `validator_digest` に解決済み
+   `missIndex` / `sbtRecordOffset` / 到達 target / trace payload 型を含める**
+   (現在は stage/URI/group/interface のみで、GPU テストも non-empty しか見ていない)
+4. **数値契約の境界テストが主要境界を通していない**(懸念): 非有限 transform/ray、
+   最小面積、最小角、`t_max`、区間幅上限、非 f32-exact 端点。
+   **修正**: 各規範定数の**両側境界** fixture を追加(検査を削ると落ちること)。
+   さらに「符号変異オラクル」は現在**計算後の区間を負にしているだけ**なので、
+   交差器の実装を差し替え可能にして**実際の符号バグ版**を同一テストで走らせる
+5. **SPIRV_LINK/compiler OFF 構成で WP364 テストが CI 実行されていない**(懸念):
+   `.github/workflows/cpu-gate.yml` の OFF job は WP354 の 2 target しか走らせない。
+   **修正**: OFF job に `pelican_test_raytracing_rt1a_test` の build/run を追加
+   (direct-SPV 負例と embedded-SPV 正例が実際に走ること)
+
+**受け入れ全体**: 出荷 4 project・core resources・既存 RT feature の bytes 不変は
+維持 / 各修正に「取り消したら落ちる」対照 / 全数 2 回(統合側 GPU 直列)/
+matrix は SKIP_DEVSTUDIO 両構成 + SPIRV_LINK ON/OFF。
+
+依存: WP364。**連鎖打ち切り宣言: WP364a の §10 指摘は無条件で台帳。**
