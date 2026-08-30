@@ -115,6 +115,13 @@ endif()
 if(PELICAN_TEST_GPU)
   list(APPEND discovery_properties LABELS gpu)
 endif()
+if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
+  # These cases exercise source compilation and deliberately compile to empty
+  # Catch2 bodies in the baked-SPIR-V shipping tier.  Keep them visible as
+  # disabled tests instead of letting -w NoAssertions turn that tier red (or,
+  # worse, dropping the no-assertion guard and reporting false coverage).
+  list(APPEND discovery_properties DISABLED TRUE)
+endif()
 if(discovery_properties)
   catch_discover_tests(${target_name}
     ${discovery_arguments}
@@ -1002,6 +1009,7 @@ pelican_define_test(headless_render_test GROUP headless_gpu GPU pelican_core
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(MSVC)
     # This integration translation unit intentionally aggregates the complete
@@ -1166,23 +1174,21 @@ pelican_define_test(vatformat_test GROUP runtime_services pelican_core glm)
 endif()
 pelican_define_test(shader_compile_test pelican_target_environment spirv-reflect-static stb)
 pelican_define_test(parallel_prepare_test)
-pelican_define_test(shader_cache_test GROUP shader_cache_runtime RUNTIME_SHADER
-                    pelican_core spirv-reflect-static glm)
-target_compile_definitions(pelican_test_shader_cache_test PRIVATE
-    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
-)
 if(PELICAN_RUNTIME_SHADER_COMPILER)
+    pelican_define_test(shader_cache_test GROUP shader_cache_runtime RUNTIME_SHADER
+                        pelican_core spirv-reflect-static glm)
+    target_compile_definitions(pelican_test_shader_cache_test PRIVATE
+        PELICAN_RUNTIME_SHADER_COMPILER=1
+    )
     target_link_libraries(pelican_test_shader_cache_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
         pelican_copy_test_shaderc_runtime(pelican_test_shader_cache_test)
     endif()
-endif()
-pelican_define_test(shader_cache_wp254_test GROUP shader_cache_runtime RUNTIME_SHADER
-                    pelican_core spirv-reflect-static glm)
-target_compile_definitions(pelican_test_shader_cache_wp254_test PRIVATE
-    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
-)
-if(PELICAN_RUNTIME_SHADER_COMPILER)
+    pelican_define_test(shader_cache_wp254_test GROUP shader_cache_runtime RUNTIME_SHADER
+                        pelican_core spirv-reflect-static glm)
+    target_compile_definitions(pelican_test_shader_cache_wp254_test PRIVATE
+        PELICAN_RUNTIME_SHADER_COMPILER=1
+    )
     target_link_libraries(pelican_test_shader_cache_wp254_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
         pelican_copy_test_shaderc_runtime(pelican_test_shader_cache_wp254_test)
@@ -1207,6 +1213,23 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_shader_compiler_reflection_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
         pelican_copy_test_shaderc_runtime(pelican_test_shader_compiler_reflection_test)
+    endif()
+endif()
+pelican_define_test(raytracing_rt1a_test pelican_core spirv-reflect-static picosha2)
+target_compile_definitions(pelican_test_raytracing_rt1a_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+add_test(
+  NAME wp364_raytracing_wiring_mutation_contract
+  COMMAND ${CMAKE_COMMAND}
+    -P ${CMAKE_SOURCE_DIR}/cmake/test_wp364_raytracing_wiring_mutations.cmake
+)
+if(PELICAN_RUNTIME_SHADER_COMPILER)
+    target_link_libraries(pelican_test_raytracing_rt1a_test PRIVATE pelican_shaderc)
+    if(COMMAND pelican_copy_shaderc_runtime)
+        pelican_copy_test_shaderc_runtime(pelican_test_raytracing_rt1a_test)
     endif()
 endif()
 pelican_define_test(surfacecompiler_test GROUP shader_tools RUNTIME_SHADER pelican_core spirv-reflect-static glm)
@@ -1234,7 +1257,8 @@ if(PELICAN_WITH_SPIRV_LINK)
         endif()
     endif()
 else()
-    pelican_define_test(spvlink_disabled_test GROUP shader_tools RUNTIME_SHADER pelican_core)
+    # This is the OFF-tier contract itself, not a runtime-compiler consumer.
+    pelican_define_test(spvlink_disabled_test pelican_core)
 endif()
 if(PELICAN_WITH_SPIRV_LINK)
     find_program(PELICAN_SLANGC_EXECUTABLE slangc HINTS $ENV{VULKAN_SDK}/Bin)

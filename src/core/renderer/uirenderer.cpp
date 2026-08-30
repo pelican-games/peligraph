@@ -50,8 +50,8 @@ UiRenderer::UiRenderer() : device{GET_MODULE(VulkanManageCore).getDevice()} {
     const auto frag = b::embed<"ui.frag.spv">();
     if (vert.length() == 0 || frag.length() == 0) throw std::runtime_error("UI shaders not found");
     auto &library = GET_MODULE(ShaderLibrary);
-    vert_shader = library.loadFromBytes(vert.length(), vert.data(), "ui.vert.spv");
-    frag_shader = library.loadFromBytes(frag.length(), frag.data(), "ui.frag.spv");
+    vert_shader = library.loadFromBytes(vert.length(), vert.data(), ShaderStage::vertex, "ui.vert.spv");
+    frag_shader = library.loadFromBytes(frag.length(), frag.data(), ShaderStage::fragment, "ui.frag.spv");
 }
 
 UiRenderer::~UiRenderer() = default;

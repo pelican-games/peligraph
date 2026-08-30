@@ -1,5 +1,8 @@
 target_sources(pelican_core PRIVATE
     pipelinefactory.cpp
+    raytracingoracle.cpp
+    raytracingvalidation.cpp
+    rtspirvinspection.cpp
     shadercontainer.cpp
     shadercompiler.cpp
     shaderbindingtable.cpp
@@ -9,6 +12,13 @@ target_sources(pelican_core PRIVATE
     shaderresourceinterface.cpp
     surfacecompiler.cpp
 )
+if(MSVC)
+    set_source_files_properties(raytracingoracle.cpp PROPERTIES
+        COMPILE_OPTIONS "/fp:strict")
+else()
+    set_source_files_properties(raytracingoracle.cpp PROPERTIES
+        COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 if(PELICAN_WITH_SPIRV_LINK)
     target_sources(pelican_core PRIVATE spvlink.cpp)
 else()

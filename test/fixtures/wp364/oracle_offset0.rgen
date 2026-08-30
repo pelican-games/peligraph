@@ -1,0 +1,31 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(set = 0, binding = 6)
+    uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(rgba32ui, set = 1, binding = 0)
+    writeonly uniform uimage2D pelican_resource_oracle;
+
+struct Payload {
+    uint record_id;
+    float first_t;
+    uint depth;
+    uint status;
+};
+
+layout(location = 0) rayPayloadEXT Payload payload;
+
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    bool hit_ray = pixel.x == 0;
+    payload = Payload(0u, -1.0, 0u, 0u);
+    traceRayEXT(
+        pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
+        0u, 0u, 0u,
+        vec3(hit_ray ? 0.0 : 8.0, 0.0, 0.0), 0.001,
+        vec3(0.0, 0.0, 1.0), 4096.0, 0);
+    imageStore(
+        pelican_resource_oracle, pixel,
+        uvec4(payload.record_id, floatBitsToUint(payload.first_t),
+              payload.depth, payload.status));
+}

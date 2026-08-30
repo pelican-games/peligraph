@@ -16,6 +16,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <variant>
@@ -123,6 +124,8 @@ struct ComputePipelineDesc {
 };
 
 struct RayTracingPipelineDesc {
+    // Resolved authoring value. Deliberately has no default.
+    std::uint32_t max_recursion;
     ShaderBundleId raygen;
     std::vector<ShaderBundleId> misses;
     std::vector<ShaderBundleId> closest_hits;
@@ -214,7 +217,8 @@ DECLARE_MODULE(PipelineFactory) {
                                              vk::PipelineLayout layout) const;
     UniqueRayTracingPipeline createRayTracingPipeline(
         const RayTracingPipelineDesc &desc,
-        vk::PipelineLayout layout) const;
+        vk::PipelineLayout layout,
+        std::string_view validator_digest) const;
     PipelineRecord::RayTracingShaderBindingTable
     createRayTracingShaderBindingTable(
         vk::Pipeline pipeline,

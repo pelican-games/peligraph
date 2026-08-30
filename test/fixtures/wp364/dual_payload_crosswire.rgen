@@ -1,0 +1,21 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+
+layout(set = 0, binding = 6)
+    uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(location = 0) rayPayloadEXT float scalar_payload;
+layout(location = 1) rayPayloadEXT vec2 vector_payload;
+
+void main() {
+    scalar_payload = 0.0;
+    traceRayEXT(
+        pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
+        0u, 0u, 1u, vec3(0.0), 0.001,
+        vec3(0.0, 0.0, 1.0), 1.0, 0);
+
+    vector_payload = vec2(0.0);
+    traceRayEXT(
+        pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
+        1u, 0u, 1u, vec3(0.0), 0.001,
+        vec3(0.0, 0.0, 1.0), 1.0, 1);
+}

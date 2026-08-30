@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../project/materialoutput.hpp"
+#include "rtspirvinspection.hpp"
 
 #include <glm/vec3.hpp>
 #include <optional>
@@ -55,6 +56,11 @@ struct ShaderReflection {
     std::vector<ReflectedFragmentOutput> fragment_outputs;
     glm::uvec3 local_size{0, 0, 0};
     bool uses_view_index = false;
+    // Full module reflection is retained so a pipeline occurrence can select
+    // the exact (expected execution model, "main") pair.  The selected key is
+    // occurrence-specific even when multiple bundles share identical words.
+    RayTracingModuleReflection ray_tracing_module;
+    std::optional<SpirvEntryPointKey> selected_entry_point;
 };
 
 ShaderReflection reflect(std::span<const uint32_t> spirv);

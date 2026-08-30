@@ -1,4 +1,5 @@
 #include "pipelinefactory.hpp"
+#include "raytracingvalidation.hpp"
 #include "../vkcore/buf.hpp"
 #include "pelican_sets.hpp"
 #include "../log.hpp"
@@ -570,7 +571,8 @@ vk::UniquePipeline PipelineFactory::createComputePipeline(const ComputePipelineD
 UniqueRayTracingPipeline
 PipelineFactory::createRayTracingPipeline(
     const RayTracingPipelineDesc &desc,
-    vk::PipelineLayout layout) const {
+    vk::PipelineLayout layout,
+    std::string_view validator_digest) const {
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
     stages.reserve(
         1 + desc.misses.size() + desc.closest_hits.size());
@@ -625,8 +627,12 @@ PipelineFactory::createRayTracingPipeline(
     vk::RayTracingPipelineCreateInfoKHR create_info;
     create_info.setStages(stages);
     create_info.setGroups(groups);
-    create_info.maxPipelineRayRecursionDepth = 1;
+    create_info.maxPipelineRayRecursionDepth = desc.max_recursion;
     create_info.layout = layout;
+    // The observer is immediately adjacent to the Vulkan call, so a rejected
+    // interface cannot be mistaken for a create attempt.
+    observeRayTracingPipelineCreate(
+        create_info.maxPipelineRayRecursionDepth, validator_digest);
     auto result = device.createRayTracingPipelineKHRUnique(
         {}, pipeline_cache.get(), create_info, nullptr,
         GET_MODULE(VulkanManageCore)
@@ -859,6 +865,8 @@ PipelineFactory::buildRayTracingPipeline(
             "pelican.plan.ray_tracing_pipeline_required_unavailable@1: "
             "pipeline requires pelican.vulkan.ray_tracing_pipeline@1");
     }
+    validateRayTracingPipelineBuild(
+        desc.max_recursion, capabilities.ray_tracing_facts);
     if (desc.misses.empty()) {
         throw std::runtime_error(
             "pelican.ray_tracing.miss_shader_required@1: ray tracing "
@@ -877,6 +885,45 @@ PipelineFactory::buildRayTracingPipeline(
             "pelican.ray_tracing.shader_group_count_overflow@1: ray "
             "tracing shader group count exceeds uint32_t");
     }
+
+    const auto occurrence = [&](ShaderBundleId id, ShaderStage stage,
+                                std::uint32_t group_index) {
+        const auto &bundle = shader_library.get(id);
+        const auto &entry = selectRayTracingEntryPoint(
+            bundle.reflection.ray_tracing_module, stage, "main",
+            bundle.diagnostic_uri);
+        return RayTracingShaderOccurrence{
+            .stage = stage,
+            .group_index = group_index,
+            .diagnostic_uri = bundle.diagnostic_uri,
+            .entry = &entry,
+        };
+    };
+    const auto raygen_occurrence =
+        occurrence(desc.raygen, ShaderStage::raygen, 0);
+    std::vector<RayTracingShaderOccurrence> miss_occurrences;
+    miss_occurrences.reserve(desc.misses.size());
+    for (std::uint32_t index = 0; index < desc.misses.size(); ++index) {
+        miss_occurrences.push_back(occurrence(
+            desc.misses[index], ShaderStage::miss, 1 + index));
+    }
+    std::vector<RayTracingShaderOccurrence> hit_occurrences;
+    hit_occurrences.reserve(desc.closest_hits.size());
+    for (std::uint32_t index = 0;
+         index < desc.closest_hits.size(); ++index) {
+        hit_occurrences.push_back(occurrence(
+            desc.closest_hits[index], ShaderStage::closesthit,
+            1 + static_cast<std::uint32_t>(desc.misses.size()) +
+                index));
+    }
+    const auto validator_digest =
+        validateRayTracingPipelineInterfaces(
+            {
+                .raygen = raygen_occurrence,
+                .misses = miss_occurrences,
+                .hit_groups = hit_occurrences,
+            },
+            capabilities.ray_tracing_facts);
 
     std::vector<ShaderReflection> reflections;
     reflections.reserve(
@@ -905,7 +952,7 @@ PipelineFactory::buildRayTracingPipeline(
     auto pipeline_layout =
         createPipelineLayout(reflection, set_layouts);
     auto pipeline_object = createRayTracingPipeline(
-        desc, pipeline_layout.get());
+        desc, pipeline_layout.get(), validator_digest);
     auto sbt = createRayTracingShaderBindingTable(
         pipeline_object.get(),
         ShaderBindingTableGroupCounts{
@@ -1089,11 +1136,11 @@ void PipelineFactory::traceRays(
     vk::CommandBuffer command_buffer, PipelineHandle handle,
     std::uint32_t width, std::uint32_t height,
     std::uint32_t depth) const {
-    if (width == 0 || height == 0 || depth == 0) {
-        throw std::runtime_error(
-            "pelican.ray_tracing.invalid_trace_extent@1: trace-rays "
-            "dimensions must be positive");
-    }
+    validateRayTracingFinalCommandExtent(
+        {width, height, depth},
+        GET_MODULE(VulkanManageCore)
+            .getRuntimeCapabilities()
+            .ray_tracing_facts);
     const auto &regions =
         rayTracingShaderBindingTableRegions(handle);
     command_buffer.traceRaysKHR(

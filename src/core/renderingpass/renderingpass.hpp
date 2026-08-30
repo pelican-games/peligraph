@@ -719,6 +719,8 @@ struct ComputeDispatchDefinition {
 };
 
 struct RayTracingTaskShaderDefinition {
+    // The sole production default literal for RT recursion.
+    std::uint32_t max_recursion = 1;
     ShaderReference raygen{
         "", ShaderStage::raygen,
         ShaderReferenceKind::explicit_file, false};

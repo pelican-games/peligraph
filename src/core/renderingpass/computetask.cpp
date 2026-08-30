@@ -4,6 +4,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../shader/pelican_sets.hpp"
+#include "../shader/raytracingvalidation.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../renderer/frameresources.hpp"
 #include "../vkcore/core.hpp"
@@ -1188,7 +1189,8 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
     for (auto field = pipeline_json.begin();
          field != pipeline_json.end(); ++field) {
         if (field.key() == "raygen" || field.key() == "miss" ||
-            field.key() == "closesthit") {
+            field.key() == "closesthit" ||
+            field.key() == "max_recursion") {
             continue;
         }
         if (field.key() == "any_hit" || field.key() == "anyhit" ||
@@ -1205,7 +1207,7 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
             name + "' declares unknown ray tracing field '" +
             field.key() + "'");
     }
-    return RayTracingTaskShaderDefinition{
+    RayTracingTaskShaderDefinition result{
         .raygen = makeShaderReference(
             requireString(
                 pipeline_json, "raygen",
@@ -1217,6 +1219,29 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
             pipeline_json, "closesthit",
             ShaderStage::closesthit, name),
     };
+    if (const auto recursion = pipeline_json.find("max_recursion");
+        recursion != pipeline_json.end()) {
+        const auto positive_signed =
+            recursion->is_number_integer() &&
+            !recursion->is_number_unsigned() &&
+            recursion->get<std::int64_t>() > 0;
+        const auto unsigned_integer =
+            recursion->is_number_unsigned();
+        const auto encoded = positive_signed
+                                 ? static_cast<std::uint64_t>(
+                                       recursion->get<std::int64_t>())
+                                 : unsigned_integer
+                                       ? recursion->get<std::uint64_t>()
+                                       : 0;
+        if ((!positive_signed && !unsigned_integer) || encoded == 0 ||
+            encoded > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.invalid_recursion@1: compute task '" +
+                name + "' max_recursion must be a positive uint32 integer");
+        }
+        result.max_recursion = static_cast<std::uint32_t>(encoded);
+    }
+    return result;
 }
 
 void captureDeclaredComputeShaderReferences(
@@ -2534,6 +2559,8 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         }
         pipeline = pipeline_factory.createRayTracing(
             RayTracingPipelineDesc{
+                .max_recursion =
+                    definition.ray_tracing->max_recursion,
                 .raygen = load_shader(
                     definition.ray_tracing->raygen),
                 .misses = std::move(misses),
@@ -2585,6 +2612,13 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 .mip_level =
                     resolved_dispatch.mip_level,
             };
+    }
+    if (definition.ray_tracing) {
+        validateRayTracingInitialExtent(
+            dispatch_groups,
+            GET_MODULE(VulkanManageCore)
+                .getRuntimeCapabilities()
+                .ray_tracing_facts);
     }
     std::uint32_t descriptor_variant_count = 1;
     if (definition.schedule ==
@@ -2741,6 +2775,13 @@ void ComputeTaskContainer::rebindRenderTargets(
                           GET_MODULE(PipelineFactory)
                               .reflection(task.pipeline)
                               .local_size);
+            if (task.ray_tracing) {
+                validateRayTracingRebindExtent(
+                    *next.dispatch_groups,
+                    GET_MODULE(VulkanManageCore)
+                        .getRuntimeCapabilities()
+                        .ray_tracing_facts);
+            }
         }
         next.descriptor_sets.resize(
             task.descriptor_sets.size());

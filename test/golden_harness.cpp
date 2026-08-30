@@ -688,7 +688,11 @@ ShaderBundleId compileShaderToBundle(ShaderLibrary &library, const std::string &
     if (!result.ok) {
         throw std::runtime_error("golden shader compile failed: " + result.log);
     }
-    return library.loadFromSpirv(result.spirv, name);
+    const auto expected_stage =
+        stage == vk::ShaderStageFlagBits::eVertex
+            ? ShaderStage::vertex
+            : ShaderStage::fragment;
+    return library.loadFromSpirv(result.spirv, expected_stage, name);
 #else
     (void)library;
     (void)source;
@@ -804,7 +808,9 @@ void renderSurfaceToonFrame(RenderTarget &render_target) {
     if (!result.ok) throw std::runtime_error("surface toon golden compile failed: " + result.log);
     auto &library = GET_MODULE(ShaderLibrary);
     renderFullscreenFrameWithFragment(render_target,
-                                      library.loadFromSpirv(result.spirv, "surface_toon.frag"));
+                                      library.loadFromSpirv(
+                                          result.spirv, ShaderStage::fragment,
+                                          "surface_toon.frag"));
 #else
     (void)render_target;
     throw std::runtime_error("runtime shader compiler disabled");
@@ -927,7 +933,9 @@ void renderOpenPbrCoatSphereFrame(RenderTarget &render_target) {
     if (!result.ok) throw std::runtime_error("OpenPBR coat golden compile failed: " + result.log);
     auto &library = GET_MODULE(ShaderLibrary);
     renderFullscreenFrameWithFragment(
-        render_target, library.loadFromSpirv(result.spirv, "openpbr_coat_sphere.frag"));
+        render_target, library.loadFromSpirv(
+                           result.spirv, ShaderStage::fragment,
+                           "openpbr_coat_sphere.frag"));
 #else
     (void)render_target;
     throw std::runtime_error("runtime shader compiler disabled");

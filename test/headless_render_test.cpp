@@ -34,6 +34,8 @@
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
+#include "../src/core/shader/raytracingoracle.hpp"
+#include "../src/core/shader/raytracingvalidation.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/deletionqueue.hpp"
@@ -46,6 +48,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
@@ -54,6 +57,7 @@
 #include <fstream>
 #include <iterator>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -74,6 +78,24 @@ std::filesystem::path makeTempProjectDir() {
 void writeTextFile(const std::filesystem::path &path, const std::string &contents) {
     std::ofstream file{path, std::ios::binary};
     file << contents;
+}
+
+void writeBinaryFile(const std::filesystem::path &path,
+                     std::string_view contents) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream file{path, std::ios::binary};
+    file.write(contents.data(),
+               static_cast<std::streamsize>(contents.size()));
+}
+
+std::string readTextFile(const std::filesystem::path &path) {
+    std::ifstream file{path, std::ios::binary};
+    if (!file) {
+        throw std::runtime_error(
+            "failed to open text fixture: " + path.string());
+    }
+    return {std::istreambuf_iterator<char>{file},
+            std::istreambuf_iterator<char>{}};
 }
 
 nlohmann::json makeProjectConfig(const std::filesystem::path &scene_path, const std::filesystem::path &asset_path) {
@@ -145,7 +167,9 @@ void writeRtShadowMaskTestProject(
 }
 
 void writeEmbeddedRtShadowMaskTestProject(
-    const std::filesystem::path &directory) {
+    const std::filesystem::path &directory,
+    std::optional<std::uint32_t> max_recursion = std::nullopt,
+    bool reloadable_project_shaders = false) {
     writeTextFile(
         directory / "scene.json",
         R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
@@ -154,9 +178,7 @@ void writeEmbeddedRtShadowMaskTestProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     // This intentionally has no shader defines or generated includes. The
     // compiler-OFF build must resolve every stage to embedded SPIR-V.
-    writeTextFile(
-        directory / "hybrid.json",
-        R"json({
+    auto config = nlohmann::json::parse(R"json({
   "render_targets": [
     {
       "name": "gbuffer_worldpos",
@@ -273,6 +295,243 @@ void writeEmbeddedRtShadowMaskTestProject(
         }
       },
       "dispatch": {"rays_from": {"port": "shadow_mask"}}
+    }
+  ],
+  "target_planning": {
+    "graphs": {
+      "main_render": {
+        "required_capabilities": [
+          "pelican.vulkan.ray_query@1",
+          "pelican.vulkan.ray_tracing_pipeline@1"
+        ]
+      }
+    }
+  }
+})json");
+    auto &ray_tracing =
+        config["compute_tasks"][0]["ray_tracing"];
+    if (max_recursion) {
+        ray_tracing["max_recursion"] = *max_recursion;
+    }
+    if (reloadable_project_shaders) {
+        constexpr std::string_view stem =
+            "project://shaders/wp364_reload";
+        ray_tracing["raygen"] = stem;
+        ray_tracing["miss"] = stem;
+        ray_tracing["closesthit"] = stem;
+        for (const auto extension : {"rgen", "rmiss", "rchit"}) {
+            const auto name = std::string{
+                                  "rt_shadow_mask_pipeline."} +
+                              extension + ".spv";
+            writeBinaryFile(
+                directory / "shaders" /
+                    (std::string{"wp364_reload."} + extension +
+                     ".spv"),
+                engineResourceOrThrow(name));
+        }
+    }
+    writeTextFile(directory / "hybrid.json", config.dump(2));
+}
+
+void writeRt1aOracleProject(
+    const std::filesystem::path &directory) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    const auto fixture_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "wp364";
+    std::filesystem::create_directories(directory / "shaders");
+    for (const auto name : {
+             "oracle_offset0.rgen", "oracle_offset1.rgen",
+             "oracle.rmiss", "oracle_recursive.rmiss",
+             "oracle_hit0.rchit", "oracle_hit1.rchit",
+             "oracle_shift_hit0.rchit",
+             "oracle_shift_hit1.rchit"}) {
+        writeTextFile(directory / "shaders" / name,
+                      readTextFile(fixture_root / name));
+    }
+    writeTextFile(
+        directory / "hybrid.json",
+        R"json({
+  "render_targets": [
+    {
+      "name": "wp364_oracle",
+      "extent_scale": 1.0,
+      "format": "R32G32B32A32_UINT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["STORAGE", "TRANSFER_SRC"]
+    },
+    {
+      "name": "wp364_oracle_shifted",
+      "extent_scale": 1.0,
+      "format": "R32G32B32A32_UINT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["STORAGE", "TRANSFER_SRC"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main_render",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://shader_lab_hello"
+          }
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "wp364_oracle",
+      "ray_tracing": {
+        "max_recursion": 2,
+        "raygen": "project://shaders/oracle_offset0",
+        "miss": [
+          "project://shaders/oracle",
+          "project://shaders/oracle_recursive"
+        ],
+        "closesthit": [
+          "project://shaders/oracle_hit0",
+          "project://shaders/oracle_hit1"
+        ]
+      },
+      "writes": ["wp364_oracle"],
+      "resource_ports": {
+        "oracle": {
+          "resource": "wp364_oracle",
+          "access": "storage"
+        }
+      },
+      "dispatch": {"rays_from": {"port": "oracle"}}
+    },
+    {
+      "name": "wp364_oracle_shifted",
+      "ray_tracing": {
+        "max_recursion": 2,
+        "raygen": "project://shaders/oracle_offset1",
+        "miss": "project://shaders/oracle",
+        "closesthit": [
+          "project://shaders/oracle_shift_hit0",
+          "project://shaders/oracle_shift_hit1"
+        ]
+      },
+      "writes": ["wp364_oracle_shifted"],
+      "resource_ports": {
+        "oracle_shifted": {
+          "resource": "wp364_oracle_shifted",
+          "access": "storage"
+        }
+      },
+      "dispatch": {"rays_from": {"port": "oracle_shifted"}}
+    }
+  ],
+  "target_planning": {
+    "graphs": {
+      "main_render": {
+        "required_capabilities": [
+          "pelican.vulkan.ray_query@1",
+          "pelican.vulkan.ray_tracing_pipeline@1"
+        ]
+      }
+    }
+  }
+})json");
+}
+
+enum class Rt1aNegativeLoadKind {
+    payload_mismatch,
+    forbidden_hit_attribute,
+    dynamic_trace_operand,
+};
+
+void writeRt1aNegativeLoadProject(
+    const std::filesystem::path &directory,
+    Rt1aNegativeLoadKind kind) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    const auto fixture_root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "wp364";
+    std::filesystem::create_directories(directory / "shaders");
+    const auto raygen =
+        kind == Rt1aNegativeLoadKind::dynamic_trace_operand
+            ? "negative_dynamic.rgen"
+            : "negative_valid.rgen";
+    const auto miss =
+        kind == Rt1aNegativeLoadKind::payload_mismatch
+            ? "negative_payload_mismatch.rmiss"
+            : "negative_valid.rmiss";
+    const auto closest_hit =
+        kind == Rt1aNegativeLoadKind::forbidden_hit_attribute
+            ? "negative_vec3.rchit"
+            : "negative_valid.rchit";
+    for (const auto &[source, destination] :
+         {std::pair{raygen, "negative.rgen"},
+          std::pair{miss, "negative.rmiss"},
+          std::pair{closest_hit, "negative.rchit"}}) {
+        writeTextFile(directory / "shaders" / destination,
+                      readTextFile(fixture_root / source));
+    }
+    writeTextFile(
+        directory / "hybrid.json",
+        R"json({
+  "render_targets": [
+    {
+      "name": "wp364_negative_output",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["STORAGE"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main_render",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://shader_lab_hello"
+          }
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "wp364_negative_load",
+      "ray_tracing": {
+        "raygen": "project://shaders/negative",
+        "miss": "project://shaders/negative",
+        "closesthit": "project://shaders/negative"
+      },
+      "writes": ["wp364_negative_output"],
+      "resource_ports": {
+        "output": {
+          "resource": "wp364_negative_output",
+          "access": "storage"
+        }
+      },
+      "dispatch": {"rays_from": {"port": "output"}}
     }
   ],
   "target_planning": {
@@ -9572,6 +9831,306 @@ TEST_CASE(
             "Vulkan embedded ray-query shadow-mask rendering unavailable");
         throw;
     }
+}
+
+CommonPolygonVertData makeRt1aOracleTriangles() {
+    CommonPolygonVertData data;
+    data.indices = {0, 1, 2, 3, 4, 5};
+    data.pos = {
+        {-1.0f, -1.0f, 8.0f},
+        {1.0f, -1.0f, 8.0f},
+        {0.0f, 1.0f, 8.0f},
+        {-1.0f, -1.0f, 16.0f},
+        {1.0f, -1.0f, 16.0f},
+        {0.0f, 1.0f, 16.0f},
+    };
+    data.normal.assign(6, glm::vec3{0.0f, 0.0f, 1.0f});
+    data.texcoord.assign(6, glm::vec2{0.0f});
+    data.color.assign(6, glm::vec4{1.0f});
+    return data;
+}
+
+TEST_CASE(
+    "RT1a production observers see omitted explicit recursion reload and all extent wires",
+    "[headless][gpu][ray-tracing][rt1a][observer][reload]") {
+    setupLogger();
+    struct RunResult {
+        RayTracingRuntimeFacts facts;
+        std::vector<std::uint32_t> create_depths;
+        std::vector<RayTracingValidationObservation> validations;
+        std::size_t rebuilt_pipelines = 0;
+    };
+    const auto run = [](std::optional<std::uint32_t> max_recursion,
+                        bool exercise_extent_wires,
+                        bool exercise_reload) {
+        RunResult result;
+        const auto temp_dir = makeTempProjectDir();
+        try {
+            {
+                FastModuleContainer modules;
+                writeEmbeddedRtShadowMaskTestProject(
+                    temp_dir, max_recursion, exercise_reload);
+                configureRayQueryTestRuntime(temp_dir);
+                auto &vkcore = GET_MODULE(VulkanManageCore);
+                if (!vkcore.getRuntimeCapabilities()
+                         .ray_tracing_pipeline) {
+                    SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+                }
+                result.facts = vkcore.getRuntimeCapabilities()
+                                   .ray_tracing_facts;
+                const ScopedRayTracingValidationObserver validation_observer{
+                    [&](const auto &observation) {
+                        result.validations.push_back(observation);
+                    }};
+                const ScopedRayTracingPipelineCreateObserver create_observer{
+                    [&](const auto &observation) {
+                        REQUIRE_FALSE(
+                            observation.validator_digest.empty());
+                        result.create_depths.push_back(
+                            observation
+                                .max_pipeline_ray_recursion_depth);
+                    }};
+
+                auto &renderer = GET_MODULE(Renderer);
+                if (exercise_extent_wires) {
+                    GET_MODULE(ComputeTaskContainer)
+                        .rebindRenderTargets(
+                            GET_MODULE(RenderTargetContainer));
+                    renderer.render();
+                }
+                if (exercise_reload) {
+                    auto prepared =
+                        GET_MODULE(ShaderLibrary).prepareReloadAll();
+                    REQUIRE_FALSE(prepared.empty());
+                    const auto rebuilt =
+                        GET_MODULE(PipelineFactory)
+                            .rebuildPrepared(std::move(prepared));
+                    REQUIRE(rebuilt.committed);
+                    REQUIRE(rebuilt.failed_pipelines == 0);
+                    result.rebuilt_pipelines =
+                        rebuilt.rebuilt_pipelines;
+                }
+                vkcore.waitIdle();
+            }
+            std::filesystem::remove_all(temp_dir);
+            return result;
+        } catch (const std::exception &error) {
+            std::filesystem::remove_all(temp_dir);
+            TestSupport::skipIfVulkanDeviceUnavailable(
+                error, "Vulkan RT1a observer fixture unavailable");
+            throw;
+        }
+    };
+
+    const auto omitted = run(std::nullopt, true, false);
+    REQUIRE(omitted.create_depths ==
+            std::vector<std::uint32_t>{1});
+    const auto explicit_one = run(1, false, false);
+    CHECK(explicit_one.create_depths ==
+          std::vector<std::uint32_t>{1});
+    std::array<bool, 4> observed_sites{};
+    for (const auto &observation : omitted.validations) {
+        CHECK(observation.facts == omitted.facts);
+        observed_sites[static_cast<std::size_t>(observation.site)] =
+            true;
+        if (observation.extent) {
+            CHECK(*observation.extent ==
+                  std::array<std::uint32_t, 3>{32, 32, 1});
+        }
+    }
+    CHECK(observed_sites == std::array{true, true, true, true});
+
+    if (omitted.facts.max_ray_recursion_depth < 2) {
+        SKIP("RT1a explicit depth-2 reload requires maxRayRecursionDepth >= 2; actual=" +
+             std::to_string(
+                 omitted.facts.max_ray_recursion_depth));
+    }
+    const auto explicit_two = run(2, false, true);
+    CHECK(explicit_two.create_depths ==
+          std::vector<std::uint32_t>{2, 2});
+    CHECK(explicit_two.rebuilt_pipelines == 1);
+}
+
+TEST_CASE(
+    "RT1a policy negatives stop the real headless load before Vulkan create",
+    "[headless][gpu][ray-tracing][rt1a][negative][load]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    struct Case {
+        Rt1aNegativeLoadKind kind;
+        std::string_view code;
+    };
+    for (const auto test_case : {
+             Case{Rt1aNegativeLoadKind::payload_mismatch,
+                  "pelican.ray_tracing.payload_mismatch@1"},
+             Case{Rt1aNegativeLoadKind::forbidden_hit_attribute,
+                  "pelican.ray_tracing.hit_attribute_forbidden@1"},
+             Case{Rt1aNegativeLoadKind::dynamic_trace_operand,
+                  "pelican.ray_tracing.trace_operand_dynamic@1"},
+         }) {
+        const auto temp_dir = makeTempProjectDir();
+        try {
+            FastModuleContainer modules;
+            writeRt1aNegativeLoadProject(temp_dir, test_case.kind);
+            configureRayQueryTestRuntime(temp_dir);
+            auto &vkcore = GET_MODULE(VulkanManageCore);
+            if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+                SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+            }
+
+            std::size_t create_calls = 0;
+            const ScopedRayTracingPipelineCreateObserver create_observer{
+                [&](const auto &) { ++create_calls; }};
+            std::string error_message;
+            try {
+                (void)GET_MODULE(Renderer);
+            } catch (const std::exception &error) {
+                error_message = error.what();
+            }
+            const std::string expected_code{test_case.code};
+            CAPTURE(expected_code, error_message);
+            CHECK(error_message.find(expected_code) != std::string::npos);
+            CHECK(error_message.find("project://shaders/negative") !=
+                  std::string::npos);
+            CHECK(create_calls == 0);
+            vkcore.waitIdle();
+            std::filesystem::remove_all(temp_dir);
+        } catch (const std::exception &error) {
+            std::filesystem::remove_all(temp_dir);
+            TestSupport::skipIfVulkanDeviceUnavailable(
+                error, "Vulkan RT1a negative-load fixture unavailable");
+            throw;
+        }
+    }
+#else
+    SUCCEED(
+        "RT1a source negative loads require the runtime compiler; direct SPIR-V rejection is covered by the CPU load test");
+#endif
+}
+
+TEST_CASE(
+    "RT1a GPU sentinels match the CPU interval oracle and expose a neighboring hit group",
+    "[headless][gpu][ray-tracing][rt1a][oracle][sentinel]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeRt1aOracleProject(temp_dir);
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        const auto actual_depth =
+            vkcore.getRuntimeCapabilities()
+                .ray_tracing_facts.max_ray_recursion_depth;
+        if (actual_depth < 2) {
+            SKIP("RT1a recursion sentinel requires maxRayRecursionDepth >= 2; actual=" +
+                 std::to_string(actual_depth));
+        }
+
+        auto primitive = GET_MODULE(VertBufContainer)
+                             .addPrimitiveEntry(
+                                 makeRt1aOracleTriangles());
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        ModelTemplate model;
+        model.asset_id = ModelAssetId{3640};
+        model.material_primitives = {
+            ModelTemplate::MaterialPrimitives{
+                .material =
+                    GET_MODULE(StandardMaterialResource)
+                        .standardTransparentMaterial(),
+                .primitives = {primitive},
+            },
+        };
+        GET_MODULE(PolygonInstanceContainer)
+            .placeModelInstance(model);
+
+        renderer.render();
+        vkcore.waitIdle();
+        const auto primary =
+            renderer.readRenderTargetForTesting(
+                "wp364_oracle", ImageSubresourceRange{});
+        const auto shifted =
+            renderer.readRenderTargetForTesting(
+                "wp364_oracle_shifted",
+                ImageSubresourceRange{});
+        REQUIRE(primary.format ==
+                vk::Format::eR32G32B32A32Uint);
+        REQUIRE(shifted.format == primary.format);
+        REQUIRE(primary.extent.width >= 2);
+        REQUIRE(primary.bytes.size() >= 2 * 4 * sizeof(std::uint32_t));
+
+        const auto pixel = [](const RenderTargetReadback &readback,
+                              std::uint32_t x) {
+            std::array<std::uint32_t, 4> result{};
+            const auto offset =
+                static_cast<std::size_t>(x) * sizeof(result);
+            if (offset + sizeof(result) > readback.bytes.size()) {
+                throw std::out_of_range(
+                    "RT1a oracle pixel is outside readback");
+            }
+            std::memcpy(result.data(),
+                        readback.bytes.data() + offset,
+                        sizeof(result));
+            return result;
+        };
+        const auto gpu_hit = pixel(primary, 0);
+        const auto gpu_miss = pixel(primary, 1);
+        const auto gpu_shifted_hit = pixel(shifted, 0);
+
+        auto cpu_fixture =
+            makeConstructiveRayTracingOracleFixture(
+                RayTracingSentinelKind::hit, 0x364u, 8.0f);
+        auto second = cpu_fixture.triangles.front();
+        for (auto &vertex : second.vertices) vertex.z = 16.0;
+        cpu_fixture.triangles.push_back(second);
+        const auto cpu_hit = traceRayTracingOracle(
+            cpu_fixture.ray, cpu_fixture.triangles);
+        REQUIRE(cpu_hit.hit.has_value());
+        const auto gpu_t = std::bit_cast<float>(gpu_hit[1]);
+        CHECK(gpu_hit[3] == 1u);
+        CHECK(rayTracingOracleContainsGpuHit(
+            *cpu_hit.hit, gpu_t, gpu_hit[0]));
+
+        const auto miss_fixture =
+            makeConstructiveRayTracingOracleFixture(
+                RayTracingSentinelKind::miss, 0x777u, 8.0f);
+        CHECK_FALSE(traceRayTracingOracle(
+                        miss_fixture.ray,
+                        miss_fixture.triangles)
+                        .hit.has_value());
+        CHECK(gpu_miss[0] == 0x777u);
+        CHECK(gpu_miss[3] == 0u);
+
+        // Offset 1 selects the neighboring, same-kind hit-group handle.
+        // The geometry and t stay fixed, so only the record identity moves.
+        CHECK(gpu_shifted_hit[0] == 0x365u);
+        CHECK_FALSE(rayTracingOracleContainsGpuHit(
+            *cpu_hit.hit,
+            std::bit_cast<float>(gpu_shifted_hit[1]),
+            gpu_shifted_hit[0]));
+
+        const auto recursion =
+            rayTracingRecursionSentinel(2, 2, 0);
+        CHECK(gpu_hit[2] == recursion.executed_depth);
+        CHECK(gpu_hit[2] == recursion.payload);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan RT1a oracle sentinel fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED(
+        "RT1a GPU oracle shaders require the runtime compiler; compiler-OFF parent SPIR-V hashes are covered by the CPU gate");
+#endif
 }
 
 } // namespace Pelican

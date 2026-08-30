@@ -197,7 +197,8 @@ TEST_CASE("shader library resolves shader stem project format fixtures", "[shade
 TEST_CASE("shader library keeps embedded SPIR-V bundles out of reload tracking", "[shader]") {
     ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
     const auto spirv = readSpirvWords(sourceRoot() / "src/core/resources/fullscreen.vert.spv");
-    const auto id = library.loadFromSpirv(spirv, "embedded_fullscreen.vert");
+    const auto id = library.loadFromSpirv(
+        spirv, ShaderStage::vertex, "embedded_fullscreen.vert");
 
     REQUIRE(library.get(id).version == 1);
     REQUIRE(library.get(id).source_path.empty());

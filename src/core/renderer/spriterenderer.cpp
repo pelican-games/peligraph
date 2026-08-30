@@ -97,8 +97,8 @@ SpriteRenderer::SpriteRenderer() : device{GET_MODULE(VulkanManageCore).getDevice
     const auto frag = b::embed<"sprite.frag.spv">();
     if (vert.length() == 0 || frag.length() == 0) throw std::runtime_error("sprite shaders not found");
     auto &library = GET_MODULE(ShaderLibrary);
-    vert_shader = library.loadFromBytes(vert.length(), vert.data(), "sprite.vert.spv");
-    frag_shader = library.loadFromBytes(frag.length(), frag.data(), "sprite.frag.spv");
+    vert_shader = library.loadFromBytes(vert.length(), vert.data(), ShaderStage::vertex, "sprite.vert.spv");
+    frag_shader = library.loadFromBytes(frag.length(), frag.data(), ShaderStage::fragment, "sprite.frag.spv");
 }
 
 SpriteRenderer::~SpriteRenderer() = default;

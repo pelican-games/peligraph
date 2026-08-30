@@ -1180,8 +1180,28 @@ TEST_CASE(
         tasks.front().ray_tracing->closest_hits.size() == 1);
     CHECK(tasks.front().ray_tracing->closest_hits.front().stage ==
           ShaderStage::closesthit);
+    CHECK(tasks.front().ray_tracing->max_recursion == 1);
     REQUIRE(tasks.front().dispatch.rays_from.has_value());
     CHECK(tasks.front().dispatch.rays_from->port == "mask");
+
+    auto explicit_depth = config;
+    explicit_depth["compute_tasks"][0]["ray_tracing"]
+                  ["max_recursion"] = 2;
+    const auto depth_tasks =
+        parseComputeTaskDefinitionsFromConfigJson(explicit_depth);
+    CHECK(depth_tasks.front().ray_tracing->max_recursion == 2);
+
+    for (const auto &invalid_depth :
+         {nlohmann::json{0}, nlohmann::json{-1},
+          nlohmann::json{1.5}, nlohmann::json{"2"}}) {
+        auto invalid = config;
+        invalid["compute_tasks"][0]["ray_tracing"]
+               ["max_recursion"] = invalid_depth;
+        REQUIRE_THROWS_WITH(
+            parseComputeTaskDefinitionsFromConfigJson(invalid),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.invalid_recursion@1"));
+    }
 
     for (const auto *unsupported :
          {"any_hit", "intersection", "callable"}) {

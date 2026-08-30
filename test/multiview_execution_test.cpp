@@ -250,7 +250,14 @@ ShaderBundleId compileBundle(
             "multiview test shader compile failed: " +
             compiled.log);
     }
-    return library.loadFromSpirv(compiled.spirv, name);
+    const auto expected_stage =
+        stage == vk::ShaderStageFlagBits::eVertex
+            ? ShaderStage::vertex
+            : stage == vk::ShaderStageFlagBits::eFragment
+                  ? ShaderStage::fragment
+                  : ShaderStage::compute;
+    return library.loadFromSpirv(
+        compiled.spirv, expected_stage, name);
 }
 
 vk::UniqueDescriptorPool createFramePool(

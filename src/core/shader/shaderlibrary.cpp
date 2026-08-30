@@ -32,6 +32,31 @@ std::string lowerExtension(const std::filesystem::path &path) {
     return ext;
 }
 
+ShaderStage shaderStageFromPath(const std::filesystem::path &path) {
+    auto candidate = path;
+    if (lowerExtension(candidate) == ".spv") {
+        candidate = candidate.stem();
+    }
+    const auto extension = lowerExtension(candidate);
+    if (extension == ".vert") return ShaderStage::vertex;
+    if (extension == ".frag") return ShaderStage::fragment;
+    if (extension == ".comp") return ShaderStage::compute;
+    if (extension == ".rgen") return ShaderStage::raygen;
+    if (extension == ".rmiss") return ShaderStage::miss;
+    if (extension == ".rchit") return ShaderStage::closesthit;
+    throw std::runtime_error(
+        "Shader path does not encode an expected stage: " +
+        path.string());
+}
+
+std::string memoryDiagnosticUri(std::string_view name) {
+    if (name.find("://") != std::string_view::npos) {
+        return std::string{name};
+    }
+    return "memory://" +
+           (name.empty() ? std::string{"unnamed"} : std::string{name});
+}
+
 std::vector<uint32_t> bytesToSpirv(const std::string &data, const std::filesystem::path &path) {
     if (data.empty()) {
         throw std::runtime_error("Shader SPIR-V file is empty: " + path.string());
@@ -231,7 +256,8 @@ void ShaderLibrary::registerFileReloadUnit(ShaderBundleId id,
     if (!source) return;
     ReloadUnit unit{
         FileReloadRecipe{
-            bundle.source_path, std::move(defines),
+            bundle.source_path, bundle.expected_stage,
+            bundle.diagnostic_uri, std::move(defines),
             std::move(virtual_includes)},
         {id},
         *source,
@@ -287,17 +313,25 @@ void ShaderLibrary::rebuildReverseDependencies() {
     }
 }
 
-ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uint64_t version,
-                                          std::vector<std::string> defines,
-                                          std::vector<std::pair<std::string, std::string>>
-                                              virtual_includes) const {
+ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path,
+                                          ShaderStage expected_stage,
+                                           uint64_t version,
+                                           std::vector<std::string> defines,
+                                           std::vector<std::pair<std::string, std::string>>
+                                               virtual_includes,
+                                           std::string diagnostic_uri) const {
+    if (diagnostic_uri.empty()) {
+        diagnostic_uri = path.generic_string();
+    }
     if (lowerExtension(path) == ".spv") {
         if (!defines.empty() || !virtual_includes.empty()) {
             throw std::runtime_error(
                 "Shader defines and generated includes require GLSL source, not SPIR-V: " +
                 path.string());
         }
-        return buildFromSpirv(bytesToSpirv(readBinaryFile(path.string()), path), path, version, "");
+        return buildFromSpirv(
+            bytesToSpirv(readBinaryFile(path.string()), path),
+            expected_stage, path, std::move(diagnostic_uri), version, "");
     }
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -308,7 +342,9 @@ ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uin
     if (!result.ok) {
         throw std::runtime_error("Shader compile failed: " + path.string() + "\n" + result.log);
     }
-    auto bundle = buildFromSpirv(result.spirv, path, version, result.log, std::move(defines));
+    auto bundle = buildFromSpirv(
+        result.spirv, expected_stage, path, std::move(diagnostic_uri),
+        version, result.log, std::move(defines));
     bundle.virtual_includes =
         std::move(virtual_includes);
     bundle.cache_key = result.cache_key;
@@ -323,13 +359,29 @@ ShaderBundle ShaderLibrary::buildFromFile(const std::filesystem::path &path, uin
 #endif
 }
 
-ShaderBundle ShaderLibrary::buildFromSpirv(std::span<const uint32_t> spirv, std::filesystem::path source_path,
-                                           uint64_t version, std::string log,
+ShaderBundle ShaderLibrary::buildFromSpirv(
+    std::span<const uint32_t> spirv, ShaderStage expected_stage,
+    std::filesystem::path source_path, std::string diagnostic_uri,
+    uint64_t version, std::string log,
                                            std::vector<std::string> defines) const {
     ShaderBundle bundle;
-    bundle.module = createShaderModule(spirv);
+    if (diagnostic_uri.empty()) {
+        diagnostic_uri = source_path.empty()
+                             ? "memory://unnamed"
+                             : source_path.generic_string();
+    }
+    auto rt_module = inspectRayTracingSpirv(spirv, diagnostic_uri);
+    const auto &selected = selectRayTracingEntryPoint(
+        rt_module, expected_stage, "main", diagnostic_uri);
     bundle.reflection = reflect(spirv);
+    bundle.reflection.selected_entry_point = selected.key;
+    bundle.reflection.ray_tracing_module = std::move(rt_module);
+    // All policy inspection and entry selection happens before the Vulkan
+    // shader module exists.
+    bundle.module = createShaderModule(spirv);
     bundle.source_path = std::move(source_path);
+    bundle.diagnostic_uri = std::move(diagnostic_uri);
+    bundle.expected_stage = expected_stage;
     bundle.defines = std::move(defines);
     bundle.version = version;
     bundle.log = std::move(log);
@@ -350,7 +402,9 @@ ShaderBundle ShaderLibrary::buildFromEngineSource(std::string_view source, Shade
     if (!result.ok) {
         throw std::runtime_error("Shader compile failed: " + std::string{name} + "\n" + result.log);
     }
-    auto bundle = buildFromSpirv(result.spirv, {}, version, result.log, std::move(defines));
+    auto bundle = buildFromSpirv(
+        result.spirv, stage, {}, memoryDiagnosticUri(name), version,
+        result.log, std::move(defines));
     bundle.virtual_includes =
         std::move(virtual_includes);
     bundle.cache_key = result.cache_key;
@@ -389,13 +443,16 @@ void ShaderLibrary::markDirty(ShaderBundleId id) {
     }
 }
 
-ShaderBundleId ShaderLibrary::loadFromFile(
+ShaderBundleId ShaderLibrary::loadFromFileForStage(
     const std::filesystem::path &path,
+    ShaderStage expected_stage,
     std::vector<std::string> defines,
     std::vector<std::pair<std::string, std::string>>
-        virtual_includes) {
+        virtual_includes,
+    std::string diagnostic_uri) {
     auto bundle =
-        buildFromFile(path, 1, defines, virtual_includes);
+        buildFromFile(path, expected_stage, 1, defines, virtual_includes,
+                      std::move(diagnostic_uri));
     bundle_ids.reserve(bundle_ids.size() + 1);
     const auto id = bundles.reg(std::move(bundle));
     bundle_ids.push_back(id);
@@ -405,6 +462,16 @@ ShaderBundleId ShaderLibrary::loadFromFile(
     return id;
 }
 
+ShaderBundleId ShaderLibrary::loadFromFile(
+    const std::filesystem::path &path,
+    std::vector<std::string> defines,
+    std::vector<std::pair<std::string, std::string>>
+        virtual_includes) {
+    return loadFromFileForStage(
+        path, shaderStageFromPath(path), std::move(defines),
+        std::move(virtual_includes), path.generic_string());
+}
+
 ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
                                                     const ShaderReference &reference,
                                                     std::string_view display_name,
@@ -412,8 +479,9 @@ ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
                                                     const std::vector<std::pair<std::string, std::string>>
                                                         &virtual_includes) {
     if (const auto path = std::get_if<std::filesystem::path>(&resolved)) {
-        return loadFromFile(
-            *path, defines, virtual_includes);
+        return loadFromFileForStage(
+            *path, reference.stage, defines, virtual_includes,
+            std::string{display_name});
     }
     if (const auto fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
         throwUnsupportedFragment(fragment->fragment);
@@ -431,7 +499,9 @@ ShaderBundleId ShaderLibrary::loadResolvedReference(const ResolvedRef &resolved,
                 "Shader defines and generated includes require GLSL source, not SPIR-V: engine://" +
                 engine_id);
         }
-        bundle = buildFromSpirv(bytesToSpirv(resource, engine_id), {}, 1, std::string{display_name});
+        bundle = buildFromSpirv(
+            bytesToSpirv(resource, engine_id), reference.stage, {},
+            "engine://" + engine_id, 1, std::string{display_name});
     } else {
         bundle = buildFromEngineSource(
             resource, reference.stage, display_name, 1,
@@ -507,16 +577,18 @@ ShaderBundleId ShaderLibrary::loadFromReference(const ShaderReference &reference
             virtual_includes);
     }
     if (!project_context && !hasScheme(reference.ref)) {
-        return loadFromFile(
-            reference.ref, std::move(defines),
-            std::move(virtual_includes));
+        return loadFromFileForStage(
+            reference.ref, reference.stage, std::move(defines),
+            std::move(virtual_includes), reference.ref);
     }
     return loadResolvedReference(
         resolver.resolveProjectRef(reference.ref), reference,
         reference.ref, defines, virtual_includes);
 }
 
-ShaderBundleId ShaderLibrary::loadFromBytes(size_t len, const char *data, std::string_view name) {
+ShaderBundleId ShaderLibrary::loadFromBytes(
+    size_t len, const char *data, ShaderStage expected_stage,
+    std::string_view name) {
     if (data == nullptr || len == 0) {
         throw std::runtime_error("Shader module data must not be empty");
     }
@@ -526,12 +598,16 @@ ShaderBundleId ShaderLibrary::loadFromBytes(size_t len, const char *data, std::s
 
     std::vector<uint32_t> spirv(len / sizeof(uint32_t));
     std::memcpy(spirv.data(), data, len);
-    return loadFromSpirv(spirv, name);
+    return loadFromSpirv(spirv, expected_stage, name);
 }
 
-ShaderBundleId ShaderLibrary::loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name) {
+ShaderBundleId ShaderLibrary::loadFromSpirv(
+    std::span<const uint32_t> spirv, ShaderStage expected_stage,
+    std::string_view name) {
     bundle_ids.reserve(bundle_ids.size() + 1);
-    const auto id = bundles.reg(buildFromSpirv(spirv, {}, 1, std::string{name}));
+    const auto id = bundles.reg(buildFromSpirv(
+        spirv, expected_stage, {}, memoryDiagnosticUri(name), 1,
+        std::string{name}));
     bundle_ids.push_back(id);
     return id;
 }
@@ -567,16 +643,20 @@ SurfaceShaderBundleIds ShaderLibrary::loadFromSurface(const SurfaceFormatDocumen
                              std::string{surfacePassName(pass)} + ".vert";
     const auto fragment_name = std::string{source_name} + "#" +
                                std::string{surfacePassName(pass)} + ".frag";
-    auto vertex_bundle = buildFromSpirv(result.vertex.spirv, source_path, 1, vertex_name,
-                                        composition.defines);
+    auto vertex_bundle = buildFromSpirv(
+        result.vertex.spirv, ShaderStage::vertex, source_path,
+        memoryDiagnosticUri(vertex_name), 1, vertex_name,
+        composition.defines);
     vertex_bundle.binding_table = result.vertex_bindings;
     vertex_bundle.cache_key = result.vertex_cache_key.empty()
                                   ? result.vertex.cache_key : result.vertex_cache_key;
     vertex_bundle.cache_hit = result.vertex.cache_hit;
     vertex_bundle.dependency_paths = result.vertex.dependencies;
     appendPathUnique(vertex_bundle.dependency_paths, source_path);
-    auto fragment_bundle = buildFromSpirv(result.fragment.spirv, source_path, 1, fragment_name,
-                                          composition.defines);
+    auto fragment_bundle = buildFromSpirv(
+        result.fragment.spirv, ShaderStage::fragment, source_path,
+        memoryDiagnosticUri(fragment_name), 1, fragment_name,
+        composition.defines);
     fragment_bundle.compiler_resource_interface =
         compilerOwnedSurfaceResourceInterface(
             composition, surface);
@@ -665,9 +745,11 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
             }
             const auto id = unit.bundle_ids.front();
             add_candidate(id, unit_index,
-                          buildFromFile(file->path, bundles.get(id).version + 1,
+                          buildFromFile(file->path, file->expected_stage,
+                                        bundles.get(id).version + 1,
                                         file->defines,
-                                        file->virtual_includes));
+                                        file->virtual_includes,
+                                        file->diagnostic_uri));
             continue;
         }
 
@@ -757,7 +839,11 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
 
         const auto vertex_id = unit.bundle_ids[0];
         auto vertex = buildFromSpirv(
-            compiled.vertex.spirv, surface_recipe.path,
+            compiled.vertex.spirv, ShaderStage::vertex,
+            surface_recipe.path,
+            memoryDiagnosticUri(surface_recipe.source_name + "#" +
+                                std::string{surfacePassName(
+                                    surface_recipe.pass)} + ".vert"),
             bundles.get(vertex_id).version + 1,
             surface_recipe.source_name + "#" +
                 std::string{surfacePassName(surface_recipe.pass)} + ".vert",
@@ -770,7 +856,11 @@ ShaderLibrary::prepareUnits(const std::set<std::size_t> &units,
         appendPathUnique(vertex.dependency_paths, surface_recipe.path);
 
         auto fragment = buildFromSpirv(
-            compiled.fragment.spirv, surface_recipe.path,
+            compiled.fragment.spirv, ShaderStage::fragment,
+            surface_recipe.path,
+            memoryDiagnosticUri(surface_recipe.source_name + "#" +
+                                std::string{surfacePassName(
+                                    surface_recipe.pass)} + ".frag"),
             bundles.get(fragment_id).version + 1,
             surface_recipe.source_name + "#" +
                 std::string{surfacePassName(surface_recipe.pass)} + ".frag",
@@ -1078,9 +1168,12 @@ bool ShaderLibrary::reload(ShaderBundleId id) {
             finalizePrepared(prepared);
             for (const auto affected_id : affected) markDirty(affected_id);
         } else {
-            auto replacement = buildFromFile(current.source_path, current.version + 1,
+            auto replacement = buildFromFile(current.source_path,
+                                             current.expected_stage,
+                                             current.version + 1,
                                              current.defines,
-                                             current.virtual_includes);
+                                             current.virtual_includes,
+                                             current.diagnostic_uri);
             current = std::move(replacement);
             markDirty(id);
         }

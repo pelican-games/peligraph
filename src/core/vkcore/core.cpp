@@ -363,6 +363,7 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
     std::uint32_t shader_group_handle_size = 0;
     std::uint32_t shader_group_base_alignment = 0;
     std::uint32_t shader_group_handle_alignment = 0;
+    RayTracingRuntimeFacts ray_tracing_facts;
     const auto ray_tracing_pipeline_extension =
         has_extension(
             VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
@@ -380,6 +381,23 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             ray_tracing_properties.shaderGroupBaseAlignment;
         shader_group_handle_alignment =
             ray_tracing_properties.shaderGroupHandleAlignment;
+        const auto core_properties = physical_device.getProperties();
+        ray_tracing_facts.max_ray_recursion_depth =
+            ray_tracing_properties.maxRayRecursionDepth;
+        ray_tracing_facts.max_ray_hit_attribute_size =
+            ray_tracing_properties.maxRayHitAttributeSize;
+        ray_tracing_facts.max_ray_dispatch_invocation_count =
+            ray_tracing_properties.maxRayDispatchInvocationCount;
+        for (std::size_t dimension = 0; dimension < 3; ++dimension) {
+            ray_tracing_facts.max_dispatch_dimensions[dimension] =
+                static_cast<std::uint64_t>(
+                    core_properties.limits
+                        .maxComputeWorkGroupCount[dimension]) *
+                core_properties.limits
+                    .maxComputeWorkGroupSize[dimension];
+        }
+        ray_tracing_facts.device_name =
+            core_properties.deviceName.data();
     }
     DeviceFeatureSupport result{
         .required =
@@ -426,6 +444,8 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
                 shader_group_base_alignment,
             .shader_group_handle_alignment =
                 shader_group_handle_alignment,
+            .ray_tracing_facts =
+                std::move(ray_tracing_facts),
         },
     };
 
@@ -692,6 +712,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             ray_query_selection.shader_group_base_alignment,
         .shader_group_handle_alignment =
             ray_query_selection.shader_group_handle_alignment,
+        .ray_tracing_facts =
+            ray_query_selection.ray_tracing_facts,
         .dynamic_rendering_local_read =
             feature_support.dynamic_rendering_local_read,
         .sampler_anisotropy =

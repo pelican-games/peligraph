@@ -53,6 +53,10 @@ RayQueryDeviceSelection selectRayQueryDeviceFeatures(
             ray_tracing_pipeline_enabled
                 ? support.shader_group_handle_alignment
                 : 0,
+        .ray_tracing_facts =
+            ray_tracing_pipeline_enabled
+                ? support.ray_tracing_facts
+                : RayTracingRuntimeFacts{},
         .device_extensions = std::move(extensions),
     };
 }

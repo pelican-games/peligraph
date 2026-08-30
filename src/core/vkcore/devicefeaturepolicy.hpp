@@ -1,5 +1,7 @@
 #pragma once
 
+#include "runtimecapabilities.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -22,6 +24,7 @@ struct RayQueryDeviceSupport {
     std::uint32_t shader_group_handle_size = 0;
     std::uint32_t shader_group_base_alignment = 0;
     std::uint32_t shader_group_handle_alignment = 0;
+    RayTracingRuntimeFacts ray_tracing_facts;
 };
 
 // Ray query is one atomic optional device contract. None of its extensions or
@@ -36,6 +39,7 @@ struct RayQueryDeviceSelection {
     std::uint32_t shader_group_handle_size = 0;
     std::uint32_t shader_group_base_alignment = 0;
     std::uint32_t shader_group_handle_alignment = 0;
+    RayTracingRuntimeFacts ray_tracing_facts;
     std::vector<std::string> device_extensions;
 };
 

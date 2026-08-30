@@ -48,7 +48,8 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
     const auto regular = GET_MODULE(PipelineFactory).create(desc);
     const auto embedded = b::embed<"skinned_shadow_depth.vert.spv">();
     desc.vert = GET_MODULE(ShaderLibrary).loadFromBytes(
-        embedded.length(), embedded.data(), "skinned_shadow_depth.vert.spv");
+        embedded.length(), embedded.data(), ShaderStage::vertex,
+        "skinned_shadow_depth.vert.spv");
     desc.use_engine_vertex_layout = false;
     desc.use_skinned_vertex_layout = true;
     const auto skinned = GET_MODULE(PipelineFactory).create(desc);

@@ -31,6 +31,8 @@ struct ShaderBundle {
     vk::UniqueShaderModule module;
     ShaderReflection reflection;
     std::filesystem::path source_path;
+    std::string diagnostic_uri;
+    ShaderStage expected_stage = ShaderStage::vertex;
     std::vector<std::string> defines;
     std::vector<std::pair<std::string, std::string>>
         virtual_includes;
@@ -120,6 +122,8 @@ DECLARE_MODULE(ShaderLibrary) {
 
     struct FileReloadRecipe {
         std::filesystem::path path;
+        ShaderStage expected_stage = ShaderStage::vertex;
+        std::string diagnostic_uri;
         std::vector<std::string> defines;
         std::vector<std::pair<std::string, std::string>>
             virtual_includes;
@@ -154,17 +158,29 @@ DECLARE_MODULE(ShaderLibrary) {
     ShaderLibraryModuleMode module_mode = ShaderLibraryModuleMode::create_modules;
     mutable ShaderCompiler compiler;
 
-    ShaderBundle buildFromFile(const std::filesystem::path &path, uint64_t version,
+    ShaderBundle buildFromFile(const std::filesystem::path &path,
+                               ShaderStage expected_stage, uint64_t version,
                                std::vector<std::string> defines = {},
                                std::vector<std::pair<std::string, std::string>>
-                                   virtual_includes = {}) const;
-    ShaderBundle buildFromSpirv(std::span<const uint32_t> spirv, std::filesystem::path source_path,
-                                uint64_t version, std::string log, std::vector<std::string> defines = {}) const;
+                                   virtual_includes = {},
+                               std::string diagnostic_uri = {}) const;
+    ShaderBundle buildFromSpirv(std::span<const uint32_t> spirv,
+                                ShaderStage expected_stage,
+                                std::filesystem::path source_path,
+                                std::string diagnostic_uri,
+                                uint64_t version, std::string log,
+                                std::vector<std::string> defines = {}) const;
     ShaderBundle buildFromEngineSource(std::string_view source, ShaderStage stage,
                                        std::string_view name, uint64_t version,
                                        std::vector<std::string> defines = {},
                                        std::vector<std::pair<std::string, std::string>>
                                            virtual_includes = {}) const;
+    ShaderBundleId loadFromFileForStage(
+        const std::filesystem::path &path, ShaderStage expected_stage,
+        std::vector<std::string> defines,
+        std::vector<std::pair<std::string, std::string>>
+            virtual_includes,
+        std::string diagnostic_uri);
     vk::UniqueShaderModule createShaderModule(std::span<const uint32_t> spirv) const;
     ShaderBundleId loadResolvedReference(const ResolvedRef &resolved, const ShaderReference &reference,
                                          std::string_view display_name,
@@ -230,8 +246,12 @@ DECLARE_MODULE(ShaderLibrary) {
                                      bool project_context, std::vector<std::string> defines = {},
                                      std::vector<std::pair<std::string, std::string>>
                                          virtual_includes = {});
-    ShaderBundleId loadFromBytes(size_t len, const char *data, std::string_view name);
-    ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv, std::string_view name);
+    ShaderBundleId loadFromBytes(size_t len, const char *data,
+                                 ShaderStage expected_stage,
+                                 std::string_view name);
+    ShaderBundleId loadFromSpirv(std::span<const uint32_t> spirv,
+                                 ShaderStage expected_stage,
+                                 std::string_view name);
     SurfaceShaderBundleIds loadFromSurface(const SurfaceFormatDocument &surface,
                                            std::string_view source_name,
                                            SurfacePass pass = SurfacePass::main,

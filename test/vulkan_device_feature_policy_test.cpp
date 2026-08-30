@@ -27,6 +27,7 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
     REQUIRE_FALSE(disabled.ray_query);
     REQUIRE_FALSE(disabled.buffer_device_address);
     REQUIRE_FALSE(disabled.ray_tracing_pipeline);
+    REQUIRE(disabled.ray_tracing_facts == RayTracingRuntimeFacts{});
     REQUIRE(disabled.device_extensions.empty());
 
     SECTION("advertised BDA alone is not treated as enabled") {
@@ -106,11 +107,20 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
             .shader_group_handle_size = 32,
             .shader_group_base_alignment = 64,
             .shader_group_handle_alignment = 0,
+            .ray_tracing_facts = {
+                .max_ray_recursion_depth = 8,
+                .max_ray_hit_attribute_size = 32,
+                .max_ray_dispatch_invocation_count = 4096,
+                .max_dispatch_dimensions = {64, 64, 1},
+                .device_name = "must be zeroed",
+            },
         };
         const auto selection =
             selectRayQueryDeviceFeatures(supported);
         CHECK(selection.ray_query);
         CHECK_FALSE(selection.ray_tracing_pipeline);
+        CHECK(selection.ray_tracing_facts ==
+              RayTracingRuntimeFacts{});
         CHECK_FALSE(hasExtension(
             selection,
             VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
@@ -129,6 +139,13 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
             .shader_group_handle_size = 32,
             .shader_group_base_alignment = 64,
             .shader_group_handle_alignment = 32,
+            .ray_tracing_facts = {
+                .max_ray_recursion_depth = 8,
+                .max_ray_hit_attribute_size = 32,
+                .max_ray_dispatch_invocation_count = 4096,
+                .max_dispatch_dimensions = {64, 64, 1},
+                .device_name = "WP364 policy fixture",
+            },
         };
         const auto selection =
             selectRayQueryDeviceFeatures(supported);
@@ -136,6 +153,8 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
         CHECK(selection.shader_group_handle_size == 32);
         CHECK(selection.shader_group_base_alignment == 64);
         CHECK(selection.shader_group_handle_alignment == 32);
+        CHECK(selection.ray_tracing_facts ==
+              supported.ray_tracing_facts);
         CHECK(hasExtension(
             selection,
             VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));

@@ -1,0 +1,92 @@
+{
+  "schema": "pelican.wp364.parent_baseline",
+  "version": 1,
+  "source_commit": "d5ea0c5bdca4d5ea2d2437f50e6c8cb80f1fcf72",
+  "embedded_spirv_sha256": {
+    "rt_shadow_mask.frag.spv": "7ed6df45d81170bc5050c98d4fbad94c8a17eed3cc66987f5a02d6dd8b9f8345",
+    "rt_shadow_mask_pipeline.rgen.spv": "f6967e61f84fccb5840e836325dbe5aef43e68d5f13303794d54468e1e2e4a24",
+    "rt_shadow_mask_pipeline.rmiss.spv": "42e6b11d2f5672e93621ceb99dd16a43e0369490c7921428a86761e5b1d016b3",
+    "rt_shadow_mask_pipeline.rchit.spv": "3b9e8f34bde222c9e67bc7d8b125799332be62d195faffc19955124918468d3d"
+  },
+  "compiler_on_cache_key": {
+    "rt_shadow_mask.frag": "def9d740ae563cbeaf3f84a2525e838a530cb7498f2b9266fc0943aef299f1ee",
+    "rt_shadow_mask_pipeline.rgen": "c328d9ed09d72fdcd2eefaa8bbb817db351b6325b2562d4d5ef0a97aeb10c433",
+    "rt_shadow_mask_pipeline.rmiss": "a2f5120e341a514a551c49903b7992e57cdd3e481f144dfb3f01cb6402c8018e",
+    "rt_shadow_mask_pipeline.rchit": "e410c4b4758d88f59cc87af89364c48107926ee14da12b6759f717bbb79b9e50"
+  },
+  "frame_plan_projection": {
+    "schema": "pelican.frame_plan",
+    "version": 1,
+    "graph": "main_render",
+    "node_order": [
+      "deferred_geometry",
+      "rt_shadow_mask",
+      "ssao_pass",
+      "ssao_blur_pass",
+      "deferred_lighting",
+      "forward_opaque",
+      "__snapshot_opaque_color",
+      "__snapshot_opaque_depth",
+      "forward_transparent",
+      "__anchor_sprite",
+      "__anchor_post_main",
+      "__anchor_tonemap",
+      "__anchor_post_ldr",
+      "scene_present",
+      "__anchor_pelican_ui",
+      "__anchor_debug_draw",
+      "__anchor_debug_text",
+      "__anchor_imgui",
+      "rt_shadow_mask_pipeline",
+      "output_transform"
+    ],
+    "rt_nodes": [
+      {
+        "declaration_index": 1,
+        "kind": "render",
+        "level": 1,
+        "name": "rt_shadow_mask",
+        "order": 1,
+        "reads": ["gbuffer_worldpos", "gbuffer_normal"],
+        "reads_history": [],
+        "writes": ["rt_shadow_mask"]
+      },
+      {
+        "declaration_index": 19,
+        "kind": "compute",
+        "level": 1,
+        "name": "rt_shadow_mask_pipeline",
+        "order": 18,
+        "reads": ["gbuffer_worldpos", "gbuffer_normal"],
+        "reads_history": [],
+        "writes": ["rt_shadow_mask_pipeline"]
+      }
+    ],
+    "rt_barriers": [
+      {"from": "deferred_geometry", "kind": "read_after_write", "resource": "gbuffer_worldpos", "to": "rt_shadow_mask"},
+      {"from": "deferred_geometry", "kind": "read_after_write", "resource": "gbuffer_normal", "to": "rt_shadow_mask"},
+      {"from": "deferred_geometry", "kind": "read_after_write", "resource": "gbuffer_worldpos", "to": "rt_shadow_mask_pipeline"},
+      {"from": "deferred_geometry", "kind": "read_after_write", "resource": "gbuffer_normal", "to": "rt_shadow_mask_pipeline"}
+    ]
+  },
+  "gpu_golden": {
+    "rt_shadow_mask_pipeline_empty_scene_r8": {
+      "extent": [32, 32],
+      "fill_byte": 255,
+      "sha256": "5f4ecdb7b71c3e403983fe405cddcdc2f2576b655fdb3e80d94a6f7c32e58bc2"
+    }
+  },
+  "shipping_project_tree_sha256": {
+    "animgraph_demo": {"file_count": 15, "sha256": "c75b39557efc8bdb2c80e2d179ea62f1f3cf2216723b2dd60a9bc253935bdfc6"},
+    "example": {"file_count": 26, "sha256": "b3e6222c7491465420beea8134f8776aec745580399ddc82d4050d6bf24534ec"},
+    "sprite_demo": {"file_count": 15, "sha256": "b375dd9725bd145844e871c19eca8c5da764d74ebcdec3a195e53157fe4e9c2e"},
+    "vrm_xr_demo": {"file_count": 19, "sha256": "e8f770817abbf3cf5d382d615e592a530159e30b68592157829866da4adf5c84"}
+  },
+  "representative_golden_sha256": {
+    "fullscreen/expected.png": "ece423cfb0c254fe92924addd82f0ad164dad240f6e0d02778a430d5987eb2ee",
+    "feature_compose/expected.png": "2f9f0b104a4bc31f5ed3651534058f345028258ecc59dfbf96bfbf1335d9ea72",
+    "skeletal_toon/expected.png": "67bc6d0c1de3a98e43de0b5a0556e3e8a492f28e63abb26bc4b0ce52ed3c4dec",
+    "sprite_pixel_zoom3_policy/expected.png": "c3266e1edb4c074eff4eeaf867851cf52890facd4a746ba1525762d544458f62",
+    "vrm_xr_demo/expected.png": "de081f54806e06ee3567341b297095420d38a8fc446a47ccfc670c372dd52988"
+  }
+}

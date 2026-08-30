@@ -1,8 +1,23 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
+#include <string>
 
 namespace Pelican {
+
+// The complete production fact set used by RT1a validation.  A device for
+// which ray-tracing-pipeline support was not selected carries the all-zero
+// value atomically; callers must never assemble a partial fact set.
+struct RayTracingRuntimeFacts {
+    std::uint32_t max_ray_recursion_depth = 0;
+    std::uint32_t max_ray_hit_attribute_size = 0;
+    std::uint64_t max_ray_dispatch_invocation_count = 0;
+    std::array<std::uint64_t, 3> max_dispatch_dimensions{};
+    std::string device_name;
+
+    bool operator==(const RayTracingRuntimeFacts &) const = default;
+};
 
 // Features that were both advertised by the selected physical device and
 // enabled on the logical device. Callers must use this runtime contract rather
@@ -19,6 +34,7 @@ struct VulkanRuntimeCapabilities {
     std::uint32_t shader_group_handle_size = 0;
     std::uint32_t shader_group_base_alignment = 0;
     std::uint32_t shader_group_handle_alignment = 0;
+    RayTracingRuntimeFacts ray_tracing_facts;
     bool dynamic_rendering_local_read = false;
     bool sampler_anisotropy = false;
     bool independent_blend = false;

@@ -217,9 +217,11 @@ TEST_CASE("production DebugText and UI framebuffers are byte-exact",
     const auto vert_bytes = engineResourceOrThrow("debug_text.vert.spv");
     const auto frag_bytes = engineResourceOrThrow("debug_text.frag.spv");
     const auto vert = shader_library.loadFromBytes(
-        vert_bytes.size(), vert_bytes.data(), "engine://debug_text.vert.spv");
+        vert_bytes.size(), vert_bytes.data(), ShaderStage::vertex,
+        "engine://debug_text.vert.spv");
     const auto frag = shader_library.loadFromBytes(
-        frag_bytes.size(), frag_bytes.data(), "engine://debug_text.frag.spv");
+        frag_bytes.size(), frag_bytes.data(), ShaderStage::fragment,
+        "engine://debug_text.frag.spv");
     auto &debug_text = GET_MODULE(DebugText);
     const auto debug_pass =
         debug_text.registerPass(target.getSwapchainFormat(), vert, frag);
