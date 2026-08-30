@@ -15313,3 +15313,48 @@ v1 の受け入れ条件に Vulkan-invalid な試験(深さ 2 の miss 起動)�
 補足修正: 再帰固定の行は pipelinefactory.cpp:628(625 は誤り)。
 design_raytracing.md §7 に「callable data の検証は RT4 で」の note を追記する
 (本 WP のマージ時に同時修正)。
+
+#### WP364 第 2 巡(差し戻し・5 件)と v3 —— 決定
+
+レビューはここで打ち切り、5 件を決定で閉じる。**v3 > v2 > v1。**
+
+1. **entry の選択キー**: module reflection は**全 entry point を
+   `(execution model, entry 名)` キーで保持**する。pipeline occurrence が
+   `(期待 stage, "main")` で必ず選択する。`buildFromSpirv()` と直接 SPV API に
+   **期待 stage 引数を必須化**。fixture: 同名 `"main"` の raygen+miss を持つ
+   1 module から、それぞれ正しい reflection が選ばれること
+2. **trace call と到達 group の対応**: 各 `OpTraceRayKHR` record は
+   `{caller entry, payload 変数の location, missIndex, sbtRecordOffset,
+   sbtRecordStride}` を保持する(operand は定数強制済み)。
+   **RT1a の到達規則**(AS instance offset 恒等 0・geometryIndex 恒等 0 を根拠に):
+   到達 miss = `miss[missIndex]`、到達 hit = `hit_group[sbtRecordOffset]`。
+   その group の incoming payload tree と call 側 payload tree の不一致は
+   `payload_mismatch@1`(caller entry・call 位置・group index・両型を含む)。
+   正例: location 0→group 0 / location 1→group 1 の使い分け pipeline が通る。
+   **RT1b への前方互換 note**: layout 導入後は到達集合を
+   「trace する ray type × 全 group」に広げて再定義する(この規則は RT1a 限定)
+3. **オラクル数値の完全確定**:
+   - transform = instance の object→world。**∞-norm condition number ≤ 100**、
+     **|det| ≥ 1e-3**。座標 domain・面積・角度は **world 空間(変換後)**で判定
+   - 入射条件: ray 方向と triangle 平面のなす角 ≥ 5°(`|dot(dir, n̂)| ≥ 0.0871`)
+   - ε_t の分母 = **CPU 区間中点** `max(1, |t_mid|)`。区間幅上限の分母も同じ
+   - ULP = **f32 の ULP**(端点の大きさで評価)。端点は外向きに ±4 f32 ULP
+   - CPU 参照は double・**FMA/contraction 禁止**(`FP_CONTRACT OFF` を明記)、
+     演算列は **Möller–Trumbore を次の順で固定**:
+     `e1=v1−v0; e2=v2−v0; p=cross(d,e2); det=dot(e1,p); inv=1/det;
+     tvec=o−v0; u=dot(tvec,p)·inv; q=cross(tvec,e1); v=dot(d,q)·inv;
+     t=dot(e2,q)·inv`。各段の区間は `nextafter` で外向き伝播し、
+     最終比較は「GPU の f32 t(±4 f32 ULP 拡張)⊂ CPU 区間」
+4. **fake facts の面の分離**: 「fake 負例を load/rebind で実行」を**削除**。
+   fake facts は純 validator テスト専用。load・初回 extent・rebind・最終 command の
+   4 配線は「observer が実 extent と実 facts を受け取った記録 + **配線削除 mutation で
+   落ちる**」ことで証明する(production facts での拒否は要求しない ——
+   conformant device の下限が大きく本物では発火しないため)
+5. **max_recursion の実効証明**: 同一 ctest で **省略 / 明示 1 / 明示 2** の
+   3 構成を production load し、observer が create-info の
+   `maxPipelineRayRecursionDepth = 1 / 1 / 2` を全て検査する。
+   `RayTracingPipelineDesc` に **default を持たない resolved depth** を必須保存し、
+   shader reload 後も observer 値 2 が維持されること(hard-code
+   `min(2, fact)` の類が全条件を通る穴を塞ぐ)
+
+以降の指摘はコードレビューで受ける。
