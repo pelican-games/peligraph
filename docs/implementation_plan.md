@@ -15578,3 +15578,22 @@ per-file manifest v3 + eol 分類で検証)。
 matrix は SKIP_DEVSTUDIO 両構成 + SPIRV_LINK ON/OFF。
 
 依存: WP364。**連鎖打ち切り宣言: WP364a の §10 指摘は無条件で台帳。**
+
+#### WP364a 完了 —— RT1a の証拠が主張どおりになった(2026-08-30)
+
+統合: 全数 **1452 ×2 緑**(GPU 直列込み)、doclink 2341 ok。基準値 N=1452。
+5 件すべて修正、UNMET 0。要点:
+- CPU オラクルは double→f32 の外向き丸めを区間に含めるようになり、レビューの
+  反例(t≈9.99999985 → GPU 10.0f)を受理。同テスト内で旧アルゴリズムが同じ値を
+  拒否することも固定
+- parent manifest 検査は `git show HEAD:<path>` の生 blob + `git ls-files` の
+  path 集合完全一致・count・confinement へ(裁定「不変 = コミット blob」に実装が追随)
+- 静的文字列の配線変異検査は**廃止**。4 site の delegate をテスト専用注入点で
+  無効化し、拒否結果・解決値・observer 記録の差を同一テストで比較。
+  validator_digest に missIndex / sbtRecordOffset / 到達 target / payload 型を追加
+- 数値契約は両側境界 fixture。符号変異は実際に `inv = -1/det` を実行する
+  差し替え交差器で(post-hoc の区間反転を廃止)
+- CI の compiler OFF / SPIRV_LINK OFF job で RT1a target を build/run
+
+**RT1a はここで確定**(本体 b1449f02 / fixture 089b9ebe / 証拠 WP364a)。
+連鎖打ち切り済み: 以降の指摘は台帳のみ。次は先行裁定どおり **WP365(RT1b)**。
