@@ -15597,3 +15597,105 @@ matrix は SKIP_DEVSTUDIO 両構成 + SPIRV_LINK ON/OFF。
 
 **RT1a はここで確定**(本体 b1449f02 / fixture 089b9ebe / 証拠 WP364a)。
 連鎖打ち切り済み: 以降の指摘は台帳のみ。次は先行裁定どおり **WP365(RT1b)**。
+
+### WP365: RT1b —— SBT addressing と record ABI(3 domain の実体化)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
+**規範は docs/design_raytracing.md(v4)§3・§5・§11 と、台帳「引き継ぎ: 残 WP への
+先行裁定」節の WP365 裁定。両者が正で、本節はそれに対する WP としての範囲・
+受け入れ・オラクルを定める。**
+
+#### 前提(RT1a で揃ったもの)
+
+`rtspirvinspection`(常時ビルド、全 entry を `(execution model, entry 名)` で保持、
+`OpTraceRayKHR` の operand 定数性 + payload 変数型)/ `RayTracingRuntimeFacts` と
+純 validator + 4 配線(delegate 注入点つき)/ CPU 参照オラクル(外向き丸め済み)/
+create observer の `validator_digest`(missIndex・sbtRecordOffset・到達 target・
+payload 型を含む)/ 親版 fixture(凍結 SHA d5ea0c5、git blob 直接比較)。
+
+#### 3 domain(design v4 §3。実装はこの語彙を使う)
+
+`g` = logical group(layout 所有)/ `r`,`R` = ray type index, count /
+`q` = scene record row(instance ごと)/ `H[p,g,r]` = pipeline の handle。
+**physical hit record index = `q×R + r`**、内容 = `H[p, g(q), r] ∥ data(q)`。
+**Vulkan operand 割り当て(固定)**: `instanceShaderBindingTableRecordOffset = q_base×R`
+/ `sbtRecordStride = R` / `sbtRecordOffset = r`。
+raygen へ公開するのは `ray_type_index` / `ray_type_count` / 独立 `miss_index` のみ。
+`record_index_stride`(=R)と `record_byte_stride`(byte、`maxShaderGroupStride`
+検査対象)は文書・コード・診断で常に別名。
+**1 BLAS = 1 geometry を恒久制約として維持**(`geometryIndex` 項は恒等 0。
+sentinel の検査対象から明示除外)。
+
+#### 範囲
+
+1. **`pelican.ray_group_layout` v1**(独立ファイル。rendering config の新 key
+   `"ray_group_layout": "<path>"` で参照。preset/feature 合成には巻き込まない):
+   ```json
+   { "schema": "pelican.ray_group_layout", "version": 1,
+     "ray_types": ["primary", "shadow"],
+     "groups": [ { "name": "opaque" }, { "name": "foliage" } ] }
+   ```
+   - 名前の字句 `^[A-Za-z0-9_]{1,64}$`(**hyphen 禁止** —— 生成マクロ名に使えない)。
+     ray_types / groups とも非空・重複禁止・unknown field 拒否
+   - **layout digest** = ファイル raw bytes の SHA-256
+2. **生成 include**(compiler 所有の virtual include + cache key。既存経路を使う):
+   `PELICAN_RAY_TYPE_<NAME>` と `PELICAN_MISS_<NAME>` のみを定義。
+   **`g×R+r` や `q` は定義しない**。cache key に layout digest を含める
+3. **静的 record ABI**: 型集合 = leaf の scalar/vec(WP358 の語彙)。
+   data 開始 offset = `shaderGroupHandleSize` を `shaderGroupHandleAlignment` へ
+   切上げ。member は宣言順に **std430 をそのまま適用**(vec3 は 16B 整列。
+   独自規則を作らない)。padding は 0 初期化。
+   **offset/size 表を正準化 JSON に出力**し mirror test で固定。
+   `record_byte_stride > maxShaderGroupStride` は名前付き拒否(RT1a で延期した
+   `maxShaderGroupStride` fact をここで実装・使用する)
+4. **task 側の充填宣言**: task は trace する ray type を宣言し、
+   **その ray type × 全 group** の充填を要求される(trace しない ray type は免除)。
+   不足は task 名・group・ray type・available 一覧つきの名前付きエラー
+5. **`q` の採番と共同 transaction**:
+   - **正準順 = object 名の辞書順 → 同一 object 内は merged component 順**
+     (draw inventory 順・宣言順・AuthoringObjectId は使わない)
+   - **invalidation 要因**(design v4 §11-1): layout digest 変更 / row 集合の変更
+     (instance の追加・削除・group 束縛変更)/ record ABI 変更
+   - `{TLAS, 全 SBT の data 領域}` を単一 immutable row snapshot から candidate として
+     共同構築 → 原子的 publication → 旧世代は submission lease で退役。
+     **部分更新経路は作らない**。generation は renderer 所有
+6. **束縛 overlay の最小形**(design v4 §11-2 で RT2b から前倒し):
+   `pelican.ray_bindings@1` —— component/material の stable ref → group 名、
+   および **authored 静的 record 定数**。これが `g(q)` と `data(q)` の
+   production 供給者になる(RT2b が material/geometry index と bindless 表で拡張)
+7. **production TLAS が record base `q_base×R` を書く**
+8. **compiler OFF × layout 使用 project は named reject**(design v4 §11-5)。
+   layout 不在 project は **compiler ON/OFF 両対応のまま、旧 lowering を byte 保存**
+
+#### 受け入れ(§4 規約 10。RT1a の対照様式を雛形に)
+
+- **旧 lowering の byte 保存**: `ray_group_layout` 不在の project は
+  frame plan・SBT bytes・GPU 出力・shader cache key が RT1a 時点と完全一致
+  (既存 `rt_shadow_mask_pipeline` が親版オラクル)
+- **sentinel(非ゼロ base 必須)**: **二 pipeline × 二 instance**の production 配線で、
+  各 `(q, r)` record の data に一意 sentinel を書き、raygen が読んだ値から
+  `q_base×R` と `r` と miss index を復元。`geometryIndex` 項は恒久制約により除外
+- **layout 世代の原子性**: layout を変更した際に header・cache・全 SBT・TLAS base が
+  同一 transaction で更新されること / **失敗注入で旧世代が完全に残る**こと
+- **`q` の順序非依存**: object の宣言順を入れ替えた同一 scene で、
+  解決された `q` 割り当てと SBT/TLAS bytes が一致
+- **row 集合変更**: instance の追加・削除後に、残った instance が
+  **他人の record を読まない**(削除前後の sentinel 比較)
+- **充填不足**: 宣言 ray type × 未充填 group で名前付きエラー(文言に available 一覧)
+- **ABI**: 正準化 JSON の offset/size 表と実 SBT bytes の一致 /
+  `record_byte_stride > maxShaderGroupStride` の named 拒否 /
+  mirror test(表に無い member を足すと落ちる)
+- **compiler OFF**: layout 使用 project が named reject / layout 不在 project は
+  従来どおり(両方を同じ matrix で)
+- 出荷 4 project の bytes・golden 完全不変(RT 未使用のため。親版 manifest で検証)
+- matrix: SKIP_DEVSTUDIO 両構成 / SPIRV_LINK ON/OFF / compiler ON/OFF /
+  全数 2 回 / GPU 直列は統合側
+
+#### やらないこと
+
+`.rahit`(RT2a)/ material ABI・bindless・両車線 alpha(RT2b)/
+AS の宣言面(RT3)/ callable・動的 record(RT4)/ 変形 geometry(RT5)/
+複数 geometry BLAS・indirect・AS graph node 化(RT6)/ 編集 RPC(RT7)/
+offline bake(RT-bake として別起票)。
+
+依存: WP364 + WP364a。
