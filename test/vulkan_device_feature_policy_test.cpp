@@ -1,8 +1,10 @@
 #include "../src/core/vkcore/devicefeaturepolicy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #include <string>
 
 namespace Pelican {
@@ -177,6 +179,102 @@ TEST_CASE("VMA buffer device address flag exactly follows logical-device enablem
                         vma::AllocatorCreateFlagBits::
                             eBufferDeviceAddress) ==
                     buffer_device_address);
+        }
+    }
+}
+
+TEST_CASE(
+    "WP368 bindless material device policy fixes all features and limits",
+    "[WP368][vulkan][ray-tracing][bindless][capability][mutation]") {
+    using Catch::Matchers::ContainsSubstring;
+    RayQueryDeviceSupport support{
+        .runtime_descriptor_array_feature = true,
+        .shader_sampled_image_array_non_uniform_indexing_feature = true,
+        .descriptor_binding_partially_bound_feature = true,
+        .max_bound_descriptor_sets = 4,
+        .max_descriptor_set_sampled_images = 1024,
+        .device_name = "WP368 fixture device",
+    };
+    const auto selected = selectRayQueryDeviceFeatures(support);
+    CHECK(selected.runtime_descriptor_array);
+    CHECK(selected.shader_sampled_image_array_non_uniform_indexing);
+    CHECK(selected.descriptor_binding_partially_bound);
+    CHECK(selected.ray_material_bindless);
+    CHECK(selected.max_bound_descriptor_sets == 4);
+    CHECK(selected.max_descriptor_set_sampled_images == 1024);
+    CHECK(selected.device_name == "WP368 fixture device");
+
+    VulkanRuntimeCapabilities capabilities{
+        .runtime_descriptor_array = true,
+        .shader_sampled_image_array_non_uniform_indexing = true,
+        .descriptor_binding_partially_bound = true,
+        .ray_material_bindless = true,
+        .max_bound_descriptor_sets = 4,
+        .max_descriptor_set_sampled_images = 1024,
+        .device_name = "WP368 fixture device",
+    };
+    CHECK_NOTHROW(requireRayMaterialBindlessDevice(capabilities));
+
+    struct FeatureMutation {
+        const char *property;
+        bool VulkanRuntimeCapabilities::*member;
+    };
+    constexpr std::array feature_mutations{
+        FeatureMutation{"runtimeDescriptorArray",
+                        &VulkanRuntimeCapabilities::runtime_descriptor_array},
+        FeatureMutation{
+            "shaderSampledImageArrayNonUniformIndexing",
+            &VulkanRuntimeCapabilities::
+                shader_sampled_image_array_non_uniform_indexing},
+        FeatureMutation{
+            "descriptorBindingPartiallyBound",
+            &VulkanRuntimeCapabilities::descriptor_binding_partially_bound},
+    };
+    for (const auto &mutation : feature_mutations) {
+        auto missing = capabilities;
+        missing.*(mutation.member) = false;
+        CAPTURE(mutation.property);
+        CHECK_THROWS_WITH(
+            requireRayMaterialBindlessDevice(missing),
+            ContainsSubstring(mutation.property) &&
+                ContainsSubstring("requested=VK_TRUE") &&
+                ContainsSubstring("actual=VK_FALSE") &&
+                ContainsSubstring("WP368 fixture device"));
+    }
+
+    auto too_few_sets = capabilities;
+    too_few_sets.max_bound_descriptor_sets = 3;
+    CHECK_THROWS_WITH(
+        requireRayMaterialBindlessDevice(too_few_sets),
+        ContainsSubstring("maxBoundDescriptorSets") &&
+            ContainsSubstring("requested>=4") &&
+            ContainsSubstring("actual=3"));
+    auto too_few_images = capabilities;
+    too_few_images.max_descriptor_set_sampled_images = 1023;
+    CHECK_THROWS_WITH(
+        requireRayMaterialBindlessDevice(too_few_images),
+        ContainsSubstring("maxDescriptorSetSampledImages") &&
+            ContainsSubstring("requested>=1024") &&
+            ContainsSubstring("actual=1023"));
+
+    SECTION("removing any one advertised feature disables the atomic contract") {
+        for (const auto feature : {0, 1, 2}) {
+            auto mutant = support;
+            if (feature == 0) mutant.runtime_descriptor_array_feature = false;
+            if (feature == 1) {
+                mutant.shader_sampled_image_array_non_uniform_indexing_feature =
+                    false;
+            }
+            if (feature == 2) {
+                mutant.descriptor_binding_partially_bound_feature = false;
+            }
+            const auto rejected = selectRayQueryDeviceFeatures(mutant);
+            CAPTURE(feature);
+            CHECK_FALSE(rejected.runtime_descriptor_array);
+            CHECK_FALSE(
+                rejected.shader_sampled_image_array_non_uniform_indexing);
+            CHECK_FALSE(rejected.descriptor_binding_partially_bound);
+            CHECK_FALSE(rejected.ray_material_bindless);
         }
     }
 }

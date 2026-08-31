@@ -174,6 +174,11 @@ void requireVulkanEndpointCapabilities(
                 endpoint.id + "' lacks capability '" +
                 required + "'");
         }
+        if (required == vulkanRayMaterialBindlessCapability) {
+            throw std::runtime_error(
+                "pelican.plan.ray_material_bindless_required_unavailable@1: endpoint '" +
+                endpoint.id + "' lacks capability '" + required + "'");
+        }
         throw std::runtime_error(
             "pelican.plan.endpoint_capability_required_unavailable@1: "
             "endpoint '" +

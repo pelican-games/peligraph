@@ -640,6 +640,16 @@ void FrameResources::bindRayTracing(
     bindFrameDescriptorSet(
         cmd_buf, pipeline_layout,
         vk::PipelineBindPoint::eRayTracingKHR);
+    if (active_ray_tracing_scene_tables &&
+        active_ray_tracing_scene_tables
+            ->ray_table_descriptor_set) {
+        const auto descriptor_set =
+            active_ray_tracing_scene_tables
+                ->ray_table_descriptor_set.get();
+        cmd_buf.bindDescriptorSets(
+            vk::PipelineBindPoint::eRayTracingKHR,
+            pipeline_layout, 3, descriptor_set, {});
+    }
 }
 
 vk::Buffer FrameResources::slotBufferForTesting(std::uint32_t in_flight_frame_index,

@@ -13,7 +13,10 @@
 
 #include <algorithm>
 #include <array>
+#include <iterator>
+#include <ranges>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <unordered_set>
 #include <utility>
@@ -386,6 +389,33 @@ void validateVulkanDevicePlanningContext(
     }
 }
 
+void requireRayMaterialBindlessForGraphs(
+    CompiledRenderPipeline &pipeline,
+    std::span<const std::string> graph_names) {
+    for (const auto &graph_name : graph_names) {
+        auto constraints = std::find_if(
+            pipeline.target_planning.graphs.begin(),
+            pipeline.target_planning.graphs.end(),
+            [&](const auto &candidate) {
+                return candidate.graph == graph_name;
+            });
+        if (constraints == pipeline.target_planning.graphs.end()) {
+            pipeline.target_planning.graphs.push_back(
+                PlanningGraphConstraints{.graph = graph_name});
+            constraints =
+                std::prev(pipeline.target_planning.graphs.end());
+        }
+        auto &required = constraints->required_capabilities;
+        const std::string capability{
+            vulkanRayMaterialBindlessCapability};
+        if (std::find(required.begin(), required.end(), capability) ==
+            required.end()) {
+            required.push_back(capability);
+            std::sort(required.begin(), required.end());
+        }
+    }
+}
+
 DefaultLogicalVariantCompilation
 compileDefaultLogicalVariant(
     const RenderCompilerProgramInput &input,
@@ -539,6 +569,22 @@ compileDefaultVulkanVariant(
         input, backend, request);
     if (request.artifact ==
         RenderCompilerProgramArtifact::data_only) {
+        if (input.ray_tracing_project &&
+            input.ray_tracing_project->layout.usesRayTables()) {
+            std::vector<std::string> graph_names;
+            const auto rendering_passes =
+                logical.composed_config.find("rendering_passes");
+            if (rendering_passes != logical.composed_config.end() &&
+                rendering_passes->is_array()) {
+                graph_names.reserve(rendering_passes->size());
+                for (const auto &graph : *rendering_passes) {
+                    graph_names.push_back(
+                        graph.at("name").get<std::string>());
+                }
+            }
+            requireRayMaterialBindlessForGraphs(
+                logical.compiled_pipeline, graph_names);
+        }
         return {
             .graph_variant = request.graph_variant,
             .compiled_pipeline =
@@ -583,6 +629,16 @@ compileDefaultVulkanVariant(
     applyResolvedTaggedSubgraphSelections(
         graph_definitions,
         logical.subgraphs);
+    if (input.ray_tracing_project &&
+        input.ray_tracing_project->layout.usesRayTables()) {
+        std::vector<std::string> graph_names;
+        graph_names.reserve(graph_definitions.size());
+        std::ranges::transform(
+            graph_definitions, std::back_inserter(graph_names),
+            &FrameGraphDefinition::name);
+        requireRayMaterialBindlessForGraphs(
+            logical.compiled_pipeline, graph_names);
+    }
     detail::namespaceComputeTasks(
         compute_task_definitions,
         graph_definitions,

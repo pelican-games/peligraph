@@ -380,6 +380,10 @@ void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
 
 ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVertData &&data) {
     validateVertexStreams(data, false);
+    const auto attribute_presence =
+        (data.normal.empty() ? 0u : modelPrimitiveAttributeNormal) |
+        (data.texcoord.empty() ? 0u : modelPrimitiveAttributeUv0) |
+        (data.color.empty() ? 0u : modelPrimitiveAttributeColor0);
     if (next_geometry_allocation_id ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::runtime_error(
@@ -435,11 +439,16 @@ ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVe
     primitive.morph_deformed = morph_deformed;
     primitive.geometry_allocation_id =
         next_geometry_allocation_id++;
+    primitive.ray_attribute_presence = attribute_presence;
     return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }
 
 ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPolygonVertData &&data) {
     validateVertexStreams(data, true);
+    const auto attribute_presence =
+        (data.normal.empty() ? 0u : modelPrimitiveAttributeNormal) |
+        (data.texcoord.empty() ? 0u : modelPrimitiveAttributeUv0) |
+        (data.color.empty() ? 0u : modelPrimitiveAttributeColor0);
     if (next_geometry_allocation_id ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::runtime_error(
@@ -501,6 +510,7 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
     primitive.morph_deformed = morph_deformed;
     primitive.geometry_allocation_id =
         next_geometry_allocation_id++;
+    primitive.ray_attribute_presence = attribute_presence;
     return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }
 

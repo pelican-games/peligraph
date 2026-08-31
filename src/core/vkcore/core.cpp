@@ -336,6 +336,7 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             vk::PhysicalDeviceRayTracingPipelineFeaturesKHR>();
     const auto api_version =
         physical_device.getProperties().apiVersion;
+    const auto core_properties = physical_device.getProperties();
     const auto draw_indirect_count_core =
         VK_API_VERSION_MAJOR(api_version) > 1 ||
         (VK_API_VERSION_MAJOR(api_version) == 1 &&
@@ -381,7 +382,6 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
             ray_tracing_properties.shaderGroupBaseAlignment;
         shader_group_handle_alignment =
             ray_tracing_properties.shaderGroupHandleAlignment;
-        const auto core_properties = physical_device.getProperties();
         ray_tracing_facts.max_ray_recursion_depth =
             ray_tracing_properties.maxRayRecursionDepth;
         ray_tracing_facts.max_shader_group_stride =
@@ -438,6 +438,17 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
                 VK_TRUE,
             .ray_tracing_pipeline_extension =
                 ray_tracing_pipeline_extension,
+            .runtime_descriptor_array_feature =
+                vk12.runtimeDescriptorArray == VK_TRUE,
+            .shader_sampled_image_array_non_uniform_indexing_feature =
+                vk12.shaderSampledImageArrayNonUniformIndexing == VK_TRUE,
+            .descriptor_binding_partially_bound_feature =
+                vk12.descriptorBindingPartiallyBound == VK_TRUE,
+            .max_bound_descriptor_sets =
+                core_properties.limits.maxBoundDescriptorSets,
+            .max_descriptor_set_sampled_images =
+                core_properties.limits.maxDescriptorSetSampledImages,
+            .device_name = core_properties.deviceName.data(),
             .min_acceleration_structure_scratch_offset_alignment =
                 scratch_alignment,
             .shader_group_handle_size =
@@ -640,6 +651,19 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         ray_query_selection.buffer_device_address
             ? VK_TRUE
             : VK_FALSE;
+    vk12features.runtimeDescriptorArray =
+        ray_query_selection.runtime_descriptor_array
+            ? VK_TRUE
+            : VK_FALSE;
+    vk12features.shaderSampledImageArrayNonUniformIndexing =
+        ray_query_selection
+                .shader_sampled_image_array_non_uniform_indexing
+            ? VK_TRUE
+            : VK_FALSE;
+    vk12features.descriptorBindingPartiallyBound =
+        ray_query_selection.descriptor_binding_partially_bound
+            ? VK_TRUE
+            : VK_FALSE;
     vk::PhysicalDeviceAccelerationStructureFeaturesKHR
         acceleration_structure_features;
     acceleration_structure_features.accelerationStructure =
@@ -705,6 +729,20 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             ray_query_selection.buffer_device_address,
         .ray_tracing_pipeline =
             ray_query_selection.ray_tracing_pipeline,
+        .runtime_descriptor_array =
+            ray_query_selection.runtime_descriptor_array,
+        .shader_sampled_image_array_non_uniform_indexing =
+            ray_query_selection
+                .shader_sampled_image_array_non_uniform_indexing,
+        .descriptor_binding_partially_bound =
+            ray_query_selection.descriptor_binding_partially_bound,
+        .ray_material_bindless =
+            ray_query_selection.ray_material_bindless,
+        .max_bound_descriptor_sets =
+            ray_query_selection.max_bound_descriptor_sets,
+        .max_descriptor_set_sampled_images =
+            ray_query_selection.max_descriptor_set_sampled_images,
+        .device_name = ray_query_selection.device_name,
         .min_acceleration_structure_scratch_offset_alignment =
             ray_query_selection
                 .min_acceleration_structure_scratch_offset_alignment,

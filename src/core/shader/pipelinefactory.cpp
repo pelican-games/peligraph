@@ -4,9 +4,11 @@
 #include "../vkcore/buf.hpp"
 #include "pelican_sets.hpp"
 #include "../log.hpp"
+#include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#include "../vkcore/devicefeaturepolicy.hpp"
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -145,6 +147,29 @@ frameDescriptorSetLayoutBindings(bool ray_query) {
             all_stages);
     }
     return bindings;
+}
+
+std::vector<vk::DescriptorSetLayoutBinding>
+rayMaterialDescriptorSetLayoutBindings() {
+    const auto stages = vk::ShaderStageFlagBits::eAll;
+    return {
+        vk::DescriptorSetLayoutBinding{
+            0, vk::DescriptorType::eStorageBuffer, 1, stages},
+        vk::DescriptorSetLayoutBinding{
+            1, vk::DescriptorType::eCombinedImageSampler,
+            rayBindlessTextureCapacity, stages},
+        vk::DescriptorSetLayoutBinding{
+            2, vk::DescriptorType::eStorageBuffer, 1, stages},
+    };
+}
+
+std::vector<vk::DescriptorBindingFlags>
+rayMaterialDescriptorBindingFlags() {
+    return {
+        {},
+        vk::DescriptorBindingFlagBits::ePartiallyBound,
+        {},
+    };
 }
 
 namespace {
@@ -385,13 +410,19 @@ RayTracingSceneShaderBindingTables::find(
 
 bool PipelineFactory::DescriptorSetLayoutKey::operator==(const DescriptorSetLayoutKey &other) const {
     return bindings.size() == other.bindings.size() &&
-           std::equal(bindings.begin(), bindings.end(), other.bindings.begin(), descriptorBindingEquals);
+           std::equal(bindings.begin(), bindings.end(), other.bindings.begin(), descriptorBindingEquals) &&
+           binding_flags == other.binding_flags;
 }
 
 size_t PipelineFactory::DescriptorSetLayoutKeyHash::operator()(const DescriptorSetLayoutKey &key) const {
     size_t seed = std::hash<size_t>{}(key.bindings.size());
     for (const auto &binding : key.bindings) {
         seed = hashCombine(seed, descriptorBindingHash(binding));
+    }
+    seed = hashCombine(seed, std::hash<size_t>{}(key.binding_flags.size()));
+    for (const auto flags : key.binding_flags) {
+        seed = hashCombine(seed, std::hash<VkDescriptorBindingFlags>{}(
+                                     static_cast<VkDescriptorBindingFlags>(flags)));
     }
     return seed;
 }
@@ -405,6 +436,13 @@ PipelineFactory::~PipelineFactory() { savePipelineCache(); }
 
 std::vector<PipelineFactory::DescriptorSetLayoutKey>
 PipelineFactory::descriptorSetLayoutKeysFor(const ShaderReflection &reflection) const {
+    return descriptorSetLayoutKeysFor(reflection, nullptr);
+}
+
+std::vector<PipelineFactory::DescriptorSetLayoutKey>
+PipelineFactory::descriptorSetLayoutKeysFor(
+    const ShaderReflection &reflection,
+    const RayGroupLayout *ray_layout) const {
     std::vector<DescriptorSetLayoutKey> keys(maxDescriptorSet(reflection) + 1);
     keys[PELICAN_SET_FRAME].bindings =
         frameDescriptorSetLayoutBindings(
@@ -412,16 +450,37 @@ PipelineFactory::descriptorSetLayoutKeysFor(const ShaderReflection &reflection) 
     for (uint32_t set = 1; set < keys.size(); ++set) {
         keys[set].bindings = makeDescriptorSetLayoutBindings(reflection, set);
     }
+    if (ray_layout != nullptr && ray_layout->usesRayTables()) {
+        keys.resize(std::max<std::size_t>(keys.size(), 4));
+        keys[3].bindings = rayMaterialDescriptorSetLayoutBindings();
+        keys[3].binding_flags = rayMaterialDescriptorBindingFlags();
+    }
     return keys;
 }
 
 std::vector<vk::DescriptorSetLayout>
 PipelineFactory::descriptorSetLayoutsFor(const ShaderReflection &reflection) {
+    const auto keys = descriptorSetLayoutKeysFor(reflection);
+    return descriptorSetLayoutsFor(keys);
+}
+
+std::vector<vk::DescriptorSetLayout>
+PipelineFactory::descriptorSetLayoutsFor(
+    std::span<const DescriptorSetLayoutKey> keys) {
     std::vector<vk::DescriptorSetLayout> layouts;
-    for (const auto &key : descriptorSetLayoutKeysFor(reflection)) {
+    for (const auto &key : keys) {
         auto found = descriptor_set_layout_cache.find(key);
         if (found == descriptor_set_layout_cache.end()) {
-            const auto create_info = makeDescriptorSetLayoutCreateInfo(key.bindings);
+            vk::DescriptorSetLayoutBindingFlagsCreateInfo flags_info;
+            auto create_info = makeDescriptorSetLayoutCreateInfo(key.bindings);
+            if (!key.binding_flags.empty()) {
+                if (key.binding_flags.size() != key.bindings.size()) {
+                    throw std::logic_error(
+                        "descriptor binding flag count does not match layout binding count");
+                }
+                flags_info.setBindingFlags(key.binding_flags);
+                create_info.pNext = &flags_info;
+            }
             auto [inserted, _] = descriptor_set_layout_cache.emplace(key, device.createDescriptorSetLayoutUnique(create_info));
             found = inserted;
         }
@@ -1017,7 +1076,16 @@ PipelineFactory::buildRayTracingPipeline(
             "pelican.ray_tracing.frame_tlas_required@1: ray tracing "
             "pipeline must reflect the frame TLAS binding");
     }
-    auto set_layouts = descriptorSetLayoutsFor(reflection);
+    if (desc.ray_tracing_project &&
+        desc.ray_tracing_project->layout.usesRayTables()) {
+        requireRayMaterialBindlessDevice(capabilities);
+    }
+    const auto set_layout_keys = descriptorSetLayoutKeysFor(
+        reflection,
+        desc.ray_tracing_project
+            ? &desc.ray_tracing_project->layout
+            : nullptr);
+    auto set_layouts = descriptorSetLayoutsFor(set_layout_keys);
     auto pipeline_layout =
         createPipelineLayout(reflection, set_layouts);
     auto pipeline_object = createRayTracingPipeline(
@@ -1208,16 +1276,142 @@ std::shared_ptr<const RayTracingSceneShaderBindingTables>
 PipelineFactory::createRayTracingSceneShaderBindingTables(
     std::span<const PipelineHandle> active_owner_pipelines,
     std::shared_ptr<const RaySceneRowSnapshot> rows,
-    const RayTracingProjectConfig &project) const {
+    const RayTracingProjectConfig &project,
+    std::shared_ptr<const RayTracingGeometrySnapshot> geometry) const {
     if (!rows) {
         throw std::invalid_argument(
             "pelican.sbt.row_snapshot_invalid@1: production SBT requires a row snapshot");
     }
     auto result =
         std::make_shared<RayTracingSceneShaderBindingTables>();
-    result->row_snapshot = std::move(rows);
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto &capabilities = vkcore.getRuntimeCapabilities();
+    if (project.layout.usesRayTables()) {
+        requireRayMaterialBindlessDevice(capabilities);
+        if (!geometry) {
+            throw std::invalid_argument(
+                "pelican.ray_geometry_snapshot_invalid@1: ray tables require the immutable AS geometry snapshot");
+        }
+        std::vector<RayMaterialTableSource> material_sources;
+        material_sources.reserve(rows->rows.size());
+        const auto &materials = GET_MODULE(MaterialContainer);
+        for (const auto &row : rows->rows) {
+            material_sources.push_back(
+                materials.rayMaterialTableSource(
+                    GlobalMaterialId{row.resolved_material_handle},
+                    row.material_reference,
+                    row.resolved_material_generation,
+                    row.resolved_material_lease));
+        }
+        auto table_build = buildRayTracingTableSnapshot(
+            *rows, material_sources, *geometry);
+        result->ray_tables = std::move(table_build.tables);
+        result->row_snapshot =
+            std::make_shared<const RaySceneRowSnapshot>(
+                std::move(table_build.scene_rows));
+        result->geometry_snapshot = std::move(geometry);
+
+        const auto allocate_table = [&](std::span<const std::byte> bytes,
+                                        std::size_t minimum_size) {
+            const auto allocation_size = std::max(bytes.size(), minimum_size);
+            auto buffer = vkcore.allocBuf(
+                allocation_size,
+                vk::BufferUsageFlagBits::eStorageBuffer,
+                vma::MemoryUsage::eAutoPreferHost,
+                vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+            if (bytes.empty()) {
+                std::vector<std::byte> zero(allocation_size, std::byte{0});
+                vkcore.writeBuf(buffer, zero.data(), 0, zero.size());
+            } else {
+                vkcore.writeBuf(buffer, bytes.data(), 0, bytes.size());
+            }
+            return std::make_shared<BufferWrapper>(std::move(buffer));
+        };
+        result->material_table_buffer = allocate_table(
+            std::span<const std::byte>{
+                result->ray_tables.material_bytes},
+            sizeof(RayMaterialTableRow));
+        result->geometry_table_buffer = allocate_table(
+            std::span<const std::byte>{
+                result->ray_tables.geometry_bytes},
+            sizeof(RayGeometryTableRow));
+
+        std::array<vk::DescriptorPoolSize, 2> pool_sizes{
+            vk::DescriptorPoolSize{
+                vk::DescriptorType::eStorageBuffer, 2},
+            vk::DescriptorPoolSize{
+                vk::DescriptorType::eCombinedImageSampler,
+                rayBindlessTextureCapacity},
+        };
+        vk::DescriptorPoolCreateInfo pool_info;
+        pool_info.flags =
+            vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+        pool_info.maxSets = 1;
+        pool_info.setPoolSizes(pool_sizes);
+        result->ray_table_descriptor_pool =
+            device.createDescriptorPoolUnique(pool_info);
+
+        const auto layout_pipeline = std::find_if(
+            active_owner_pipelines.begin(), active_owner_pipelines.end(),
+            [&](const auto handle) {
+                const auto &record = pipelines.get(handle);
+                const auto *desc =
+                    std::get_if<RayTracingPipelineDesc>(&record.desc);
+                return desc != nullptr && desc->ray_tracing_project &&
+                       desc->ray_tracing_project->layout.usesRayTables();
+            });
+        if (layout_pipeline == active_owner_pipelines.end()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.scene_generation_mismatch@1: active ray-table generation has no owner pipeline layout");
+        }
+        const auto set_layout = descriptorSetLayout(*layout_pipeline, 3);
+        const std::array set_layouts{set_layout};
+        vk::DescriptorSetAllocateInfo allocation_info;
+        allocation_info.descriptorPool =
+            result->ray_table_descriptor_pool.get();
+        allocation_info.setSetLayouts(set_layouts);
+        auto descriptor_sets =
+            device.allocateDescriptorSetsUnique(allocation_info);
+        result->ray_table_descriptor_set =
+            std::move(descriptor_sets.front());
+
+        std::array<vk::DescriptorBufferInfo, 2> buffer_infos{
+            vk::DescriptorBufferInfo{
+                result->material_table_buffer->buffer.get(), 0,
+                vk::WholeSize},
+            vk::DescriptorBufferInfo{
+                result->geometry_table_buffer->buffer.get(), 0,
+                vk::WholeSize},
+        };
+        std::vector<vk::DescriptorImageInfo> image_infos;
+        image_infos.reserve(result->ray_tables.textures.size());
+        for (const auto &texture : result->ray_tables.textures) {
+            image_infos.emplace_back(
+                texture.sampler, texture.srgb_view,
+                vk::ImageLayout::eShaderReadOnlyOptimal);
+        }
+        std::vector<vk::WriteDescriptorSet> writes{
+            vk::WriteDescriptorSet{
+                result->ray_table_descriptor_set.get(), 0, 0, 1,
+                vk::DescriptorType::eStorageBuffer, nullptr,
+                &buffer_infos[0]},
+            vk::WriteDescriptorSet{
+                result->ray_table_descriptor_set.get(), 2, 0, 1,
+                vk::DescriptorType::eStorageBuffer, nullptr,
+                &buffer_infos[1]},
+        };
+        if (!image_infos.empty()) {
+            writes.emplace_back(
+                result->ray_table_descriptor_set.get(), 1, 0,
+                static_cast<std::uint32_t>(image_infos.size()),
+                vk::DescriptorType::eCombinedImageSampler,
+                image_infos.data());
+        }
+        device.updateDescriptorSets(writes, {});
+    }
+    if (!result->row_snapshot) {
+        result->row_snapshot = std::move(rows);
+    }
     std::unordered_set<int> seen;
     for (const auto handle : active_owner_pipelines) {
         if (!seen.emplace(handle.value).second) continue;

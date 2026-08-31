@@ -167,6 +167,8 @@ DECLARE_MODULE(MaterialContainer) {
         };
 
         PipelineHandle pipeline;
+        std::uint64_t ray_generation = 0;
+        std::shared_ptr<const void> ray_lease;
         std::string name;
         std::string source_asset;
         std::string source_document;
@@ -208,6 +210,9 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalTextureId normal_texture;
         GlobalTextureId emissive_texture;
         GlobalTextureId occlusion_texture;
+        std::string base_color_texture_identity;
+        MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
+        float alpha_cutoff = 0.5F;
         glm::vec4 base_color_factor{1.0f};
         glm::vec3 emissive_factor{1.0f};
         float metallic_factor = 1.0f;
@@ -246,6 +251,7 @@ DECLARE_MODULE(MaterialContainer) {
     std::unique_ptr<TextureReloadHandler> texture_reload_handler;
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
     mutable std::uint64_t next_screen_input_binding_revision = 1;
+    std::uint64_t next_ray_material_generation = 1;
     // Declared last and explicitly closed at destructor entry. Deferred slot
     // callbacks pin this state while using the owner.
     DeferredCallbackLifetime deferred_callbacks;
@@ -404,6 +410,21 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalMaterialId material) const {
         return materials.get(material).source_document;
     }
+    const std::string &materialName(GlobalMaterialId material) const {
+        return materials.get(material).name;
+    }
+    std::uint64_t rayMaterialGeneration(
+        GlobalMaterialId material) const {
+        return materials.get(material).ray_generation;
+    }
+    std::shared_ptr<const void> rayMaterialLease(
+        GlobalMaterialId material) const {
+        return materials.get(material).ray_lease;
+    }
+    RayMaterialTableSource rayMaterialTableSource(
+        GlobalMaterialId material, std::string canonical_key,
+        std::uint64_t expected_generation,
+        const std::shared_ptr<const void> &expected_lease) const;
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                       const PassDefinition &pass, GlobalMaterialId material,
                       GlobalMaterialId prev_material_id,

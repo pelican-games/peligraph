@@ -381,6 +381,10 @@ TargetEndpoint makeRuntimeEndpoint(
             std::string{
                 vulkanRayTracingPipelineCapability});
     }
+    if (facts.ray_material_bindless) {
+        capabilities.push_back(
+            std::string{vulkanRayMaterialBindlessCapability});
+    }
     return TargetEndpoint{
         .id = "device:0",
         .kind = TargetEndpointKind::vulkan_device,
@@ -2204,6 +2208,8 @@ compileRenderingTargetPlansForVulkanDevice(
             .ray_query = runtime_capabilities.ray_query,
             .ray_tracing_pipeline =
                 runtime_capabilities.ray_tracing_pipeline,
+            .ray_material_bindless =
+                runtime_capabilities.ray_material_bindless,
             .device_identity = {
                 .vendor_id =
                     device_properties.vendorID,

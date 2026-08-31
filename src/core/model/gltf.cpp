@@ -310,6 +310,10 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
 
     AddedPrimitive addPrimitive(CommonPolygonVertData data, bool skinned) override {
         validateCandidatePrimitive(data, skinned);
+        const auto attribute_presence =
+            (data.normal.empty() ? 0u : modelPrimitiveAttributeNormal) |
+            (data.texcoord.empty() ? 0u : modelPrimitiveAttributeUv0) |
+            (data.color.empty() ? 0u : modelPrimitiveAttributeColor0);
         const auto vertex_count = static_cast<uint32_t>(data.pos.size());
         const auto index_count = data.indices.empty()
                                      ? vertex_count
@@ -326,6 +330,7 @@ class ValidationGltfResourceSink final : public GltfResourceSink {
         primitive.morph_deformed = !data.morph_targets.empty();
         primitive.geometry_allocation_id =
             next_geometry_allocation_id_++;
+        primitive.ray_attribute_presence = attribute_presence;
         std::vector<MorphTargetDeltaRange> ranges;
         if (!data.morph_targets.empty()) {
             if (vertex_offset > maxMorphVerticesPerPool ||
@@ -1708,6 +1713,14 @@ struct InternalGltfLoader {
             .normal_texture = normal_texture,
             .emissive_texture = emissive_texture,
             .occlusion_texture = occlusion_texture,
+            .base_color_texture_identity =
+                base_color_texture_index >= 0
+                    ? "gltf-texture/" +
+                          std::to_string(base_color_texture_index)
+                    : std::string{},
+            .alpha_mode = definition.routing->alpha_mode,
+            .alpha_cutoff =
+                static_cast<float>(material.alphaCutoff),
             .base_color_factor = glm::vec4{
                 static_cast<float>(vectorValueOr(base_factor, 0, 1.0)),
                 static_cast<float>(vectorValueOr(base_factor, 1, 1.0)),

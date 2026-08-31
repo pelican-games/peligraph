@@ -20,6 +20,9 @@ inline constexpr std::string_view vulkanRayQueryCapability =
 inline constexpr std::string_view
     vulkanRayTracingPipelineCapability =
         "pelican.vulkan.ray_tracing_pipeline@1";
+inline constexpr std::string_view
+    vulkanRayMaterialBindlessCapability =
+        "pelican.vulkan.ray_material_bindless@1";
 inline constexpr std::string_view vulkanMaxMultiviewViewCountFact =
     "pelican.vulkan.max_multiview_view_count@1";
 inline constexpr std::string_view vulkanVendorIdFact =

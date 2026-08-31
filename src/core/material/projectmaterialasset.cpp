@@ -15,6 +15,7 @@
 #include "standardmaterialresource.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -112,6 +113,23 @@ GlobalTextureId resolveOptionalTexture(
                : fallback;
 }
 
+float rayAlphaCutoff(const LoweredMaterial &lowered) {
+    const auto found = std::find_if(
+        lowered.values_layout.members.begin(),
+        lowered.values_layout.members.end(),
+        [](const auto &member) { return member.name == "alpha_cutoff"; });
+    if (found == lowered.values_layout.members.end() ||
+        found->size < sizeof(float) ||
+        found->offset > lowered.values.size() ||
+        sizeof(float) > lowered.values.size() - found->offset) {
+        return 0.5F;
+    }
+    float result = 0.5F;
+    std::memcpy(&result, lowered.values.data() + found->offset,
+                sizeof(result));
+    return result;
+}
+
 MaterialInfo makeMaterialInfo(
     const MaterialBase &base,
     const LoweredMaterial &lowered,
@@ -156,6 +174,12 @@ MaterialInfo makeMaterialInfo(
                 textures, base.occlusion_texture,
                 standard.occlusionDefaultTexture(),
                 SurfaceTextureRole::data),
+        .base_color_texture_identity =
+            base.base_color_texture.value_or(std::string{}),
+        .alpha_mode = lowered.routing
+                          ? lowered.routing->alpha_mode
+                          : MaterialAlphaMode::opaque,
+        .alpha_cutoff = rayAlphaCutoff(lowered),
         .base_color_factor =
             glm::vec4{
                 static_cast<float>(

@@ -325,6 +325,11 @@ DrawItemSnapshot makeDrawItemSnapshot(
         throw std::runtime_error(
             "model primitive is missing the draw bounds source");
     }
+    const auto &materials = GET_MODULE(MaterialContainer);
+    const auto material_generation =
+        materials.rayMaterialGeneration(material.material);
+    const auto material_lease =
+        materials.rayMaterialLease(material.material);
     return DrawItemSnapshot{
         .stable_identity =
             DrawStableIdentity{
@@ -352,6 +357,9 @@ DrawItemSnapshot makeDrawItemSnapshot(
             std::string{material_asset_reference},
         .material_document_reference =
             std::string{material_document_reference},
+        .material_name = materials.materialName(material.material),
+        .ray_material_generation = material_generation,
+        .ray_material_lease = material_lease,
         .route = route,
         .phase = drawPhaseForMaterialRoute(route),
         .bounds_source = primitive.bounds_source,
@@ -362,6 +370,8 @@ DrawItemSnapshot makeDrawItemSnapshot(
         .vat_deformed = primitive.vat_deformed,
         .geometry_allocation_id =
             primitive.geometry_allocation_id,
+        .ray_attribute_presence =
+            primitive.ray_attribute_presence,
     };
 }
 } // namespace
@@ -1070,6 +1080,13 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
                     item.material_asset_reference,
                 .material_document_reference =
                     item.material_document_reference,
+                .material_name = item.material_name,
+                .resolved_material_handle =
+                    item.pipeline_material_key.material.value,
+                .resolved_material_generation =
+                    item.ray_material_generation,
+                .resolved_material_lease =
+                    item.ray_material_lease,
                 .source_material_index =
                     item.pipeline_material_key.source_material_index,
                 .geometry_allocation_id =
@@ -1078,6 +1095,8 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
                 .index_offset = item.indexed.first_index,
                 .vertex_offset = item.indexed.vertex_offset,
                 .vertex_count = item.vertex_count,
+                .attribute_presence =
+                    item.ray_attribute_presence,
                 .skinned =
                     item.pipeline_material_key.skinned,
                 .morph_deformed = item.morph_deformed,

@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
 #include <set>
@@ -14,6 +15,22 @@
 
 namespace Pelican {
 namespace {
+
+static_assert(alignof(RayMaterialTableRow) == 16);
+static_assert(offsetof(RayMaterialTableRow, base_color_factor) == 0);
+static_assert(offsetof(RayMaterialTableRow, alpha_cutoff) == 16);
+static_assert(offsetof(RayMaterialTableRow, alpha_mode) == 20);
+static_assert(offsetof(RayMaterialTableRow, base_color_texture_index) == 24);
+static_assert(offsetof(RayMaterialTableRow, reserved) == 28);
+static_assert(sizeof(RayMaterialTableRow) == 32);
+static_assert(alignof(RayGeometryTableRow) == 8);
+static_assert(offsetof(RayGeometryTableRow, vertex_address) == 0);
+static_assert(offsetof(RayGeometryTableRow, index_address) == 8);
+static_assert(offsetof(RayGeometryTableRow, vertex_stride) == 16);
+static_assert(offsetof(RayGeometryTableRow, index_type) == 20);
+static_assert(offsetof(RayGeometryTableRow, attribute_presence) == 24);
+static_assert(offsetof(RayGeometryTableRow, reserved) == 28);
+static_assert(sizeof(RayGeometryTableRow) == 32);
 
 thread_local RayTracingSbtWriteObserver sbt_write_observer;
 thread_local RayTracingTlasRecordOffsetOverrideForTesting
@@ -95,6 +112,31 @@ TypeFacts typeFacts(std::string_view encoded, std::string_view source) {
         "pelican.ray_record_type_unsupported@1: type '" +
         std::string{encoded} + "'" +
         (source.empty() ? std::string{} : " in '" + std::string{source} + "'"));
+}
+
+std::string_view engineRecordFieldName(
+    RayEngineRecordField field) noexcept {
+    switch (field) {
+    case RayEngineRecordField::material_index:
+        return "material_index";
+    case RayEngineRecordField::geometry_index:
+        return "geometry_index";
+    }
+    return "unknown";
+}
+
+RayRecordMemberLayout appendRecordMember(
+    std::string name, const TypeFacts &facts, std::uint32_t &cursor) {
+    cursor = alignUp(cursor, facts.alignment,
+                     "pelican.ray_group_layout_invalid@1");
+    RayRecordMemberLayout result{std::move(name), facts.type, cursor,
+                                 facts.size, facts.alignment};
+    if (cursor > std::numeric_limits<std::uint32_t>::max() - facts.size) {
+        throw std::overflow_error(
+            "pelican.sbt.layout_overflow@1: record ABI size overflow");
+    }
+    cursor += facts.size;
+    return result;
 }
 
 std::vector<std::string> parseNameStrings(
@@ -242,8 +284,13 @@ std::vector<std::byte> encodeRecord(
     return result;
 }
 
-std::string materialReference(const RaySceneRowInput &row) {
-    if (!row.material_document.empty()) return "document:" + row.material_document;
+std::string materialReference(
+    const RaySceneRowInput &row, bool table_key) {
+    if (!row.material_document.empty()) {
+        auto result = "document:" + row.material_document;
+        if (table_key) result += "#" + row.material_name;
+        return result;
+    }
     return "asset:" + row.material_asset + "#" +
            std::to_string(row.source_material_index);
 }
@@ -273,6 +320,16 @@ std::uint32_t RayGroupLayout::missIndex(std::string_view name) const {
     return findIndex(misses, name, "miss");
 }
 
+std::optional<std::uint32_t> RayGroupLayout::engineRecordOffset(
+    RayEngineRecordField field) const noexcept {
+    const auto name = engineRecordFieldName(field);
+    const auto found = std::find_if(
+        physical_record.begin(), physical_record.end(),
+        [name](const auto &member) { return member.name == name; });
+    if (found == physical_record.end()) return std::nullopt;
+    return found->offset;
+}
+
 RayGroupLayout parseRayGroupLayout(
     std::string_view raw_bytes, std::string source_reference) {
     json root;
@@ -283,7 +340,7 @@ RayGroupLayout parseRayGroupLayout(
     }
     requireObjectFields(root,
                         {"schema", "version", "ray_types", "default_group",
-                         "groups", "misses", "record"},
+                         "groups", "misses", "engine_record", "record"},
                         "layout", source_reference);
     if (!root.contains("schema") || root.at("schema") != "pelican.ray_group_layout" ||
         !root.contains("version") || !root.at("version").is_number_integer() ||
@@ -313,12 +370,55 @@ RayGroupLayout parseRayGroupLayout(
         layoutError(result.source_reference,
                     "default_group '" + result.default_group + "' is not in groups");
     }
+    std::set<RayEngineRecordField> requested_engine_fields;
+    if (const auto engine = root.find("engine_record");
+        engine != root.end()) {
+        if (!engine->is_array() || engine->empty()) {
+            layoutError(result.source_reference,
+                        "engine_record must be a non-empty array when present");
+        }
+        for (const auto &encoded : *engine) {
+            if (!encoded.is_string()) {
+                throw std::runtime_error(
+                    "pelican.ray_engine_record_unknown@1: engine record field must be a string");
+            }
+            const auto &name = encoded.get_ref<const std::string &>();
+            std::optional<RayEngineRecordField> field;
+            if (name == "material_index") {
+                field = RayEngineRecordField::material_index;
+            } else if (name == "geometry_index") {
+                field = RayEngineRecordField::geometry_index;
+            } else {
+                throw std::runtime_error(
+                    "pelican.ray_engine_record_unknown@1: unknown engine record field '" +
+                    name + "'");
+            }
+            if (!requested_engine_fields.emplace(*field).second) {
+                throw std::runtime_error(
+                    "pelican.ray_engine_record_duplicate@1: duplicate engine record field '" +
+                    name + "'");
+            }
+        }
+    }
+    for (const auto field : {RayEngineRecordField::material_index,
+                             RayEngineRecordField::geometry_index}) {
+        if (requested_engine_fields.contains(field)) {
+            result.engine_record.push_back(field);
+        }
+    }
+
     const auto &record = root.at("record");
     if (!record.is_array()) {
         layoutError(result.source_reference, "record must be an array");
     }
     std::set<std::string> member_names;
     std::uint32_t cursor = 0;
+    const TypeFacts engine_facts{RayRecordType::u32, 4, 4, 1};
+    for (const auto field : result.engine_record) {
+        result.physical_record.push_back(appendRecordMember(
+            std::string{engineRecordFieldName(field)}, engine_facts,
+            cursor));
+    }
     for (const auto &encoded : record) {
         requireObjectFields(encoded, {"name", "type"}, "record member", result.source_reference);
         if (!encoded.contains("name") || !encoded.at("name").is_string() ||
@@ -328,29 +428,28 @@ RayGroupLayout parseRayGroupLayout(
                         "record member requires valid name and string type");
         }
         auto name = encoded.at("name").get<std::string>();
+        if (name == "material_index" || name == "geometry_index") {
+            throw std::runtime_error(
+                "pelican.ray_record_name_reserved@1: authored record member '" +
+                name + "' is reserved for the engine");
+        }
         if (!member_names.emplace(name).second) {
             layoutError(result.source_reference,
                         "record contains duplicate member '" + name + "'");
         }
         const auto facts = typeFacts(encoded.at("type").get_ref<const std::string &>(),
                                      result.source_reference);
-        cursor = alignUp(cursor, facts.alignment,
-                         "pelican.ray_group_layout_invalid@1");
-        result.record.push_back({std::move(name), facts.type, cursor,
-                                 facts.size, facts.alignment});
-        if (cursor > std::numeric_limits<std::uint32_t>::max() - facts.size) {
-            throw std::overflow_error(
-                "pelican.sbt.layout_overflow@1: record ABI size overflow");
-        }
-        cursor += facts.size;
+        auto member = appendRecordMember(std::move(name), facts, cursor);
+        result.record.push_back(member);
+        result.physical_record.push_back(std::move(member));
     }
     // A struct's std430 base alignment is the maximum member alignment; the
     // final size is rounded to that alignment. Empty records have size zero.
     std::uint32_t struct_alignment = 1;
-    for (const auto &member : result.record) {
+    for (const auto &member : result.physical_record) {
         struct_alignment = std::max(struct_alignment, member.alignment);
     }
-    result.data_size = result.record.empty()
+    result.data_size = result.physical_record.empty()
                            ? 0
                            : alignUp(cursor, struct_alignment,
                                      "pelican.ray_group_layout_invalid@1");
@@ -371,17 +470,27 @@ std::string_view rayRecordTypeName(RayRecordType type) noexcept {
 
 json canonicalRayRecordAbiJson(const RayGroupLayout &layout) {
     json members = json::array();
-    for (const auto &member : layout.record) {
+    for (const auto &member : layout.physical_record) {
         members.push_back({{"name", member.name},
                            {"type", rayRecordTypeName(member.type)},
                            {"offset", member.offset},
                            {"size", member.size},
                            {"alignment", member.alignment}});
     }
-    return {{"schema", "pelican.ray_record_abi"},
-            {"version", 1},
-            {"data_size", layout.data_size},
-            {"members", std::move(members)}};
+    json result{{"schema", "pelican.ray_record_abi"},
+                {"version", 1},
+                {"data_size", layout.data_size},
+                {"members", std::move(members)}};
+    if (layout.usesRayTables()) {
+        json engine = json::array();
+        for (const auto field : layout.engine_record) {
+            engine.push_back(engineRecordFieldName(field));
+        }
+        result["engine_record"] = std::move(engine);
+        // Array stride of the single physical std430 struct.
+        result["stride"] = layout.data_size;
+    }
+    return result;
 }
 
 std::string makeRayGroupLayoutVirtualInclude(const RayGroupLayout &layout) {
@@ -397,6 +506,112 @@ std::string makeRayGroupLayoutVirtualInclude(const RayGroupLayout &layout) {
         source << "#define PELICAN_MISS_" << layout.misses[index]
                << ' ' << index << '\n';
     }
+    if (!layout.usesRayTables()) return source.str();
+
+    source << "#extension GL_EXT_nonuniform_qualifier : require\n";
+    source << "#extension GL_EXT_buffer_reference2 : require\n";
+    source << "#define PELICAN_RAY_ENGINE_RECORD_MEMBERS \\\n";
+    for (std::size_t index = 0; index < layout.engine_record.size(); ++index) {
+        source << "    uint "
+               << engineRecordFieldName(layout.engine_record[index]) << ';';
+        if (index + 1 != layout.engine_record.size()) source << " \\\n";
+        else source << '\n';
+    }
+    source << "const uint pelican_ray_missing_texture = 0xffffffffu;\n";
+    source << "const uint pelican_ray_attribute_normal = 1u;\n";
+    source << "const uint pelican_ray_attribute_uv0 = 2u;\n";
+    source << "const uint pelican_ray_attribute_color0 = 4u;\n";
+    source << R"glsl(
+struct PelicanRayMaterialRow {
+    vec4 base_color_factor;
+    float alpha_cutoff;
+    uint alpha_mode;
+    uint base_color_texture_index;
+    uint reserved;
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer PelicanRayVertexWords {
+    uint words[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer PelicanRayIndexWords {
+    uint words[];
+};
+struct PelicanRayGeometryRow {
+    PelicanRayVertexWords vertices;
+    PelicanRayIndexWords indices;
+    uint vertex_stride;
+    uint index_type;
+    uint attribute_presence;
+    uint reserved;
+};
+layout(set = 3, binding = 0, std430) readonly buffer PelicanRayMaterialTable {
+    PelicanRayMaterialRow pelican_ray_material_rows[];
+};
+layout(set = 3, binding = 1) uniform sampler2D pelican_ray_material_textures[1024];
+layout(set = 3, binding = 2, std430) readonly buffer PelicanRayGeometryTable {
+    PelicanRayGeometryRow pelican_ray_geometry_rows[];
+};
+PelicanRayMaterialRow pelicanRayMaterial(uint material_index) {
+    return pelican_ray_material_rows[material_index];
+}
+vec4 pelicanRaySampleBaseColor(uint material_index, vec2 uv) {
+    PelicanRayMaterialRow row = pelicanRayMaterial(material_index);
+    vec4 texel = row.base_color_texture_index == pelican_ray_missing_texture
+        ? vec4(1.0)
+        : texture(pelican_ray_material_textures[nonuniformEXT(row.base_color_texture_index)], uv);
+    return row.base_color_factor * texel;
+}
+uvec3 pelicanRayTriangleVertexIndices(PelicanRayGeometryRow row, uint primitive_id) {
+    uint first = primitive_id * 3u;
+    return uvec3(row.indices.words[first], row.indices.words[first + 1u],
+                 row.indices.words[first + 2u]);
+}
+vec3 pelicanRayBarycentricWeights(vec2 barycentric) {
+    return vec3(1.0 - barycentric.x - barycentric.y,
+                barycentric.x, barycentric.y);
+}
+vec2 pelicanRayVertexUV(PelicanRayGeometryRow row, uint vertex_index) {
+    uint first = vertex_index * (row.vertex_stride / 4u) + 10u;
+    return vec2(uintBitsToFloat(row.vertices.words[first]),
+                uintBitsToFloat(row.vertices.words[first + 1u]));
+}
+vec3 pelicanRayVertexNormal(PelicanRayGeometryRow row, uint vertex_index) {
+    uint first = vertex_index * (row.vertex_stride / 4u) + 3u;
+    return vec3(uintBitsToFloat(row.vertices.words[first]),
+                uintBitsToFloat(row.vertices.words[first + 1u]),
+                uintBitsToFloat(row.vertices.words[first + 2u]));
+}
+vec4 pelicanRayVertexColor0(PelicanRayGeometryRow row, uint vertex_index) {
+    uint first = vertex_index * (row.vertex_stride / 4u) + 12u;
+    return vec4(uintBitsToFloat(row.vertices.words[first]),
+                uintBitsToFloat(row.vertices.words[first + 1u]),
+                uintBitsToFloat(row.vertices.words[first + 2u]),
+                uintBitsToFloat(row.vertices.words[first + 3u]));
+}
+vec2 pelicanRayFetchUV(uint geometry_index, uint primitive_id, vec2 barycentric) {
+    PelicanRayGeometryRow row = pelican_ray_geometry_rows[geometry_index];
+    uvec3 vertex = pelicanRayTriangleVertexIndices(row, primitive_id);
+    vec3 weight = pelicanRayBarycentricWeights(barycentric);
+    return pelicanRayVertexUV(row, vertex.x) * weight.x +
+           pelicanRayVertexUV(row, vertex.y) * weight.y +
+           pelicanRayVertexUV(row, vertex.z) * weight.z;
+}
+vec3 pelicanRayFetchNormal(uint geometry_index, uint primitive_id, vec2 barycentric) {
+    PelicanRayGeometryRow row = pelican_ray_geometry_rows[geometry_index];
+    uvec3 vertex = pelicanRayTriangleVertexIndices(row, primitive_id);
+    vec3 weight = pelicanRayBarycentricWeights(barycentric);
+    return pelicanRayVertexNormal(row, vertex.x) * weight.x +
+           pelicanRayVertexNormal(row, vertex.y) * weight.y +
+           pelicanRayVertexNormal(row, vertex.z) * weight.z;
+}
+vec4 pelicanRayFetchColor0(uint geometry_index, uint primitive_id, vec2 barycentric) {
+    PelicanRayGeometryRow row = pelican_ray_geometry_rows[geometry_index];
+    uvec3 vertex = pelicanRayTriangleVertexIndices(row, primitive_id);
+    vec3 weight = pelicanRayBarycentricWeights(barycentric);
+    return pelicanRayVertexColor0(row, vertex.x) * weight.x +
+           pelicanRayVertexColor0(row, vertex.y) * weight.y +
+           pelicanRayVertexColor0(row, vertex.z) * weight.z;
+}
+)glsl";
     return source.str();
 }
 
@@ -571,7 +786,8 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 if (chosen != nullptr) {
                     throw std::runtime_error(
                         "pelican.ray_binding_selector_duplicate@1: material '" +
-                        materialReference(input) + "' resolves more than once");
+                        materialReference(input, layout.usesRayTables()) +
+                        "' resolves more than once");
                 }
                 chosen = &bindings->bindings[index];
             }
@@ -583,9 +799,19 @@ RaySceneRowSnapshot resolveRaySceneRows(
              .record_data = chosen ? chosen->record_data
                                    : std::vector<std::byte>(layout.data_size, std::byte{0}),
              .scene_identity = input.scene_identity,
-             .geometry_identity = input.geometry_identity,
-             .geometry_match_identity = input.geometry_match_identity,
-             .material_reference = materialReference(input)});
+              .geometry_identity = input.geometry_identity,
+              .geometry_match_identity = input.geometry_match_identity,
+              .material_reference = materialReference(
+                  input, layout.usesRayTables()),
+              .material_name = input.material_name,
+              .resolved_material_handle =
+                  input.resolved_material_handle,
+              .resolved_material_generation =
+                  input.resolved_material_generation,
+              .resolved_material_lease =
+                  input.resolved_material_lease,
+              .geometry_allocation_id =
+                  input.geometry_allocation_id});
     }
     if (bindings != nullptr) {
         for (std::size_t index = 0; index < binding_matched.size(); ++index) {
@@ -640,6 +866,246 @@ RaySceneRowSnapshot resolveRaySceneRows(
         picosha2::hash256_hex_string(encoded.begin(), encoded.end());
     result.rows = std::move(resolved);
     return result;
+}
+
+RayTracingTableBuildResult buildRayTracingTableSnapshot(
+    const RaySceneRowSnapshot &immutable_scene_rows,
+    std::span<const RayMaterialTableSource> materials,
+    const RayTracingGeometrySnapshot &geometry) {
+    const auto hash_bytes = [](std::string_view prefix,
+                               const void *data, std::size_t size) {
+        std::string encoded{prefix};
+        encoded.append(static_cast<const char *>(data), size);
+        return picosha2::hash256_hex_string(
+            encoded.begin(), encoded.end());
+    };
+    const auto same_material_source = [](const RayMaterialTableSource &left,
+                                         const RayMaterialTableSource &right) {
+        return left.material_handle == right.material_handle &&
+               left.material_generation == right.material_generation &&
+               left.base_color_factor == right.base_color_factor &&
+               left.alpha_cutoff == right.alpha_cutoff &&
+               left.alpha_mode == right.alpha_mode &&
+               left.base_color_texture_identity ==
+                   right.base_color_texture_identity &&
+               left.base_color_srgb_view == right.base_color_srgb_view &&
+               left.default_sampler == right.default_sampler;
+    };
+
+    std::map<std::tuple<int, std::uint64_t, std::string>,
+             const RayMaterialTableSource *>
+        source_by_handle;
+    std::map<std::string, const RayMaterialTableSource *, std::less<>>
+        source_by_key;
+    for (const auto &source : materials) {
+        if (source.material_handle < 0 || source.material_generation == 0 ||
+            source.canonical_key.empty() || !source.material_lease) {
+            throw std::runtime_error(
+                "pelican.ray_material_snapshot_invalid@1: resolved material handle, generation, lease, and canonical key are required");
+        }
+        const auto handle_key = std::tuple{
+            source.material_handle, source.material_generation,
+            source.canonical_key};
+        const auto [handle_found, handle_inserted] =
+            source_by_handle.emplace(handle_key, &source);
+        if (!handle_inserted &&
+            !same_material_source(*handle_found->second, source)) {
+            throw std::runtime_error(
+                "pelican.ray_material_snapshot_invalid@1: one resolved material generation has inconsistent table data");
+        }
+        const auto [key_found, key_inserted] =
+            source_by_key.emplace(source.canonical_key, &source);
+        if (!key_inserted &&
+            !same_material_source(*key_found->second, source)) {
+            throw std::runtime_error(
+                "pelican.ray_material_key_collision@1: canonical material key '" +
+                source.canonical_key + "' resolves to inconsistent material generations");
+        }
+    }
+
+    std::map<std::string, RayTextureTableEntry, std::less<>> texture_by_key;
+    for (const auto &[_, source] : source_by_key) {
+        if (source->base_color_texture_identity.empty()) continue;
+        if (!source->base_color_srgb_view || !source->default_sampler) {
+            throw std::runtime_error(
+                "pelican.ray_material_texture_invalid@1: canonical texture '" +
+                source->base_color_texture_identity +
+                "' requires an sRGB view and default sampler");
+        }
+        RayTextureTableEntry entry{
+            .canonical_identity = source->base_color_texture_identity,
+            .srgb_view = source->base_color_srgb_view,
+            .sampler = source->default_sampler,
+        };
+        const auto [found, inserted] = texture_by_key.emplace(
+            entry.canonical_identity, entry);
+        if (!inserted &&
+            (found->second.srgb_view != entry.srgb_view ||
+             found->second.sampler != entry.sampler)) {
+            throw std::runtime_error(
+                "pelican.ray_material_texture_identity_collision@1: canonical texture identity maps to inconsistent image/sampler resources");
+        }
+    }
+    if (texture_by_key.size() > rayBindlessTextureCapacity) {
+        throw std::runtime_error(
+            "pelican.ray_material_texture_capacity@1: canonical texture count exceeds 1024");
+    }
+
+    RayTracingTableBuildResult build;
+    build.scene_rows = immutable_scene_rows;
+    auto &scene_rows = build.scene_rows;
+    auto &result = build.tables;
+    result.textures.reserve(texture_by_key.size());
+    for (const auto &[_, texture] : texture_by_key) {
+        result.textures.push_back(texture);
+    }
+    result.material_keys.reserve(source_by_key.size());
+    result.material_rows.reserve(source_by_key.size());
+    result.material_row_digests.reserve(source_by_key.size());
+    result.material_leases.reserve(source_by_key.size());
+    for (const auto &[key, source] : source_by_key) {
+        RayMaterialTableRow row{
+            .base_color_factor = source->base_color_factor,
+            .alpha_cutoff = source->alpha_cutoff,
+            .alpha_mode = source->alpha_mode,
+        };
+        if (!source->base_color_texture_identity.empty()) {
+            const auto texture = std::lower_bound(
+                result.textures.begin(), result.textures.end(),
+                source->base_color_texture_identity,
+                [](const auto &entry, std::string_view identity) {
+                    return entry.canonical_identity < identity;
+                });
+            row.base_color_texture_index = static_cast<std::uint32_t>(
+                texture - result.textures.begin());
+        }
+        result.material_keys.push_back(key);
+        result.material_rows.push_back(row);
+        result.material_leases.push_back(source->material_lease);
+        std::ostringstream prefix;
+        prefix << key << '\0' << source->material_handle << ':'
+               << source->material_generation << '\0';
+        result.material_row_digests.push_back(hash_bytes(
+            prefix.str(), &result.material_rows.back(), sizeof(row)));
+    }
+    result.material_bytes.resize(
+        result.material_rows.size() * sizeof(RayMaterialTableRow));
+    if (!result.material_bytes.empty()) {
+        std::memcpy(result.material_bytes.data(), result.material_rows.data(),
+                    result.material_bytes.size());
+    }
+    std::string material_identity;
+    for (std::size_t index = 0; index < result.material_keys.size(); ++index) {
+        material_identity += result.material_keys[index];
+        material_identity.push_back('\0');
+        material_identity += result.material_row_digests[index];
+        material_identity.push_back('\n');
+    }
+    for (const auto &texture : result.textures) {
+        material_identity += texture.canonical_identity;
+        material_identity.push_back('\n');
+    }
+    if (!result.material_bytes.empty()) {
+        material_identity.append(
+            reinterpret_cast<const char *>(result.material_bytes.data()),
+            result.material_bytes.size());
+    }
+    result.material_digest_sha256 = picosha2::hash256_hex_string(
+        material_identity.begin(), material_identity.end());
+
+    result.geometry_allocation_ids.reserve(geometry.rows.size());
+    result.geometry_rows.reserve(geometry.rows.size());
+    result.geometry_row_digests.reserve(geometry.rows.size());
+    std::uint64_t previous_id = 0;
+    for (const auto &source : geometry.rows) {
+        if (source.geometry_allocation_id == 0 ||
+            (!result.geometry_allocation_ids.empty() &&
+             source.geometry_allocation_id <= previous_id)) {
+            throw std::runtime_error(
+                "pelican.ray_geometry_snapshot_invalid@1: geometry rows must be unique non-zero allocation IDs in ascending order");
+        }
+        previous_id = source.geometry_allocation_id;
+        result.geometry_allocation_ids.push_back(
+            source.geometry_allocation_id);
+        result.geometry_rows.push_back(source.gpu);
+        const auto prefix = std::to_string(source.geometry_allocation_id) + "\0";
+        result.geometry_row_digests.push_back(hash_bytes(
+            prefix, &result.geometry_rows.back(), sizeof(source.gpu)));
+    }
+    result.geometry_bytes.resize(
+        result.geometry_rows.size() * sizeof(RayGeometryTableRow));
+    if (!result.geometry_bytes.empty()) {
+        std::memcpy(result.geometry_bytes.data(), result.geometry_rows.data(),
+                    result.geometry_bytes.size());
+    }
+    std::string geometry_identity;
+    for (std::size_t index = 0;
+         index < result.geometry_allocation_ids.size(); ++index) {
+        geometry_identity +=
+            std::to_string(result.geometry_allocation_ids[index]);
+        geometry_identity.push_back('\0');
+        geometry_identity += result.geometry_row_digests[index];
+        geometry_identity.push_back('\n');
+    }
+    if (!result.geometry_bytes.empty()) {
+        geometry_identity.append(
+            reinterpret_cast<const char *>(result.geometry_bytes.data()),
+            result.geometry_bytes.size());
+    }
+    result.geometry_digest_sha256 = picosha2::hash256_hex_string(
+        geometry_identity.begin(), geometry_identity.end());
+
+    for (auto &scene_row : scene_rows.rows) {
+        const auto material_source = source_by_handle.find(
+            {scene_row.resolved_material_handle,
+             scene_row.resolved_material_generation,
+             scene_row.material_reference});
+        if (material_source == source_by_handle.end() ||
+            material_source->second->material_lease !=
+                scene_row.resolved_material_lease) {
+            throw std::runtime_error(
+                "pelican.ray_material_snapshot_invalid@1: selector row does not match its resolved material handle generation/lease");
+        }
+        const auto material = std::lower_bound(
+            result.material_keys.begin(), result.material_keys.end(),
+            scene_row.material_reference);
+        if (material == result.material_keys.end() ||
+            *material != scene_row.material_reference) {
+            throw std::runtime_error(
+                "pelican.ray_material_snapshot_invalid@1: row canonical material key is absent from the table");
+        }
+        scene_row.material_index = static_cast<std::uint32_t>(
+            material - result.material_keys.begin());
+
+        const auto geometry_row = std::lower_bound(
+            result.geometry_allocation_ids.begin(),
+            result.geometry_allocation_ids.end(),
+            scene_row.geometry_allocation_id);
+        if (geometry_row == result.geometry_allocation_ids.end() ||
+            *geometry_row != scene_row.geometry_allocation_id) {
+            throw std::runtime_error(
+                "pelican.ray_geometry_snapshot_invalid@1: row allocation ID is absent from the geometry table");
+        }
+        scene_row.geometry_index = static_cast<std::uint32_t>(
+            geometry_row - result.geometry_allocation_ids.begin());
+    }
+    scene_rows.material_table_digest_sha256 =
+        result.material_digest_sha256;
+    scene_rows.geometry_table_digest_sha256 =
+        result.geometry_digest_sha256;
+    std::string final_identity = scene_rows.identity_digest_sha256 + '\n' +
+        result.material_digest_sha256 + '\n' +
+        result.geometry_digest_sha256 + '\n';
+    for (const auto &row : scene_rows.rows) {
+        final_identity += std::to_string(row.q) + ':' +
+                          std::to_string(row.material_index) + ':' +
+                          std::to_string(row.geometry_index) + ':' +
+                          std::to_string(row.resolved_material_generation) +
+                          '\n';
+    }
+    scene_rows.identity_digest_sha256 = picosha2::hash256_hex_string(
+        final_identity.begin(), final_identity.end());
+    return build;
 }
 
 void validateRayTracingRecordAddressing(
@@ -776,6 +1242,26 @@ RayTracingPackedHitTable packRayTracingHitTable(
             if (traced[ray] && !row.record_data.empty()) {
                 std::memcpy(bytes.data() + destination + data_start,
                             row.record_data.data(), row.record_data.size());
+                const auto physical = std::span<std::byte>{bytes}.subspan(
+                    destination + data_start, layout.data_size);
+                if (const auto offset = layout.engineRecordOffset(
+                        RayEngineRecordField::material_index)) {
+                    if (row.material_index == rayMissingTextureIndex) {
+                        throw std::runtime_error(
+                            "pelican.sbt.row_snapshot_invalid@1: material_index was not finalized");
+                    }
+                    writeU32(physical.subspan(*offset, 4),
+                             row.material_index);
+                }
+                if (const auto offset = layout.engineRecordOffset(
+                        RayEngineRecordField::geometry_index)) {
+                    if (row.geometry_index == rayMissingTextureIndex) {
+                        throw std::runtime_error(
+                            "pelican.sbt.row_snapshot_invalid@1: geometry_index was not finalized");
+                    }
+                    writeU32(physical.subspan(*offset, 4),
+                             row.geometry_index);
+                }
             }
         }
     }

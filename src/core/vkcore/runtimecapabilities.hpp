@@ -30,6 +30,13 @@ struct VulkanRuntimeCapabilities {
     bool ray_query = false;
     bool buffer_device_address = false;
     bool ray_tracing_pipeline = false;
+    bool runtime_descriptor_array = false;
+    bool shader_sampled_image_array_non_uniform_indexing = false;
+    bool descriptor_binding_partially_bound = false;
+    bool ray_material_bindless = false;
+    std::uint32_t max_bound_descriptor_sets = 0;
+    std::uint32_t max_descriptor_set_sampled_images = 0;
+    std::string device_name;
     std::uint32_t
         min_acceleration_structure_scratch_offset_alignment = 0;
     std::uint32_t shader_group_handle_size = 0;

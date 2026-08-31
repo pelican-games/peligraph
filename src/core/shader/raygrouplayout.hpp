@@ -1,8 +1,10 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <nlohmann/json_fwd.hpp>
 #include <optional>
@@ -10,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
@@ -35,6 +38,11 @@ struct RayRecordMemberLayout {
     bool operator==(const RayRecordMemberLayout &) const = default;
 };
 
+enum class RayEngineRecordField : std::uint8_t {
+    material_index,
+    geometry_index,
+};
+
 struct RayGroupLayout {
     std::string source_reference;
     std::string digest_sha256;
@@ -42,12 +50,21 @@ struct RayGroupLayout {
     std::string default_group;
     std::vector<std::string> groups;
     std::vector<std::string> misses;
+    // Authored members retain their authored order, but their offsets are the
+    // offsets in the one physical std430 shader-record struct.
     std::vector<RayRecordMemberLayout> record;
+    // Canonical physical order: requested engine fields first in
+    // [material_index, geometry_index] order, followed by authored members.
+    std::vector<RayEngineRecordField> engine_record;
+    std::vector<RayRecordMemberLayout> physical_record;
     std::uint32_t data_size = 0;
 
     std::uint32_t rayTypeIndex(std::string_view name) const;
     std::uint32_t groupIndex(std::string_view name) const;
     std::uint32_t missIndex(std::string_view name) const;
+    bool usesRayTables() const noexcept { return !engine_record.empty(); }
+    std::optional<std::uint32_t> engineRecordOffset(
+        RayEngineRecordField field) const noexcept;
 };
 
 RayGroupLayout parseRayGroupLayout(
@@ -116,7 +133,12 @@ struct RaySceneRowInput {
     std::string geometry_match_identity;
     std::string material_document;
     std::string material_asset;
+    std::string material_name;
     std::uint32_t source_material_index = 0;
+    int resolved_material_handle = -1;
+    std::uint64_t resolved_material_generation = 0;
+    std::shared_ptr<const void> resolved_material_lease;
+    std::uint64_t geometry_allocation_id = 0;
     std::size_t source_index = 0;
 };
 
@@ -129,12 +151,115 @@ struct RaySceneRow {
     std::string geometry_identity;
     std::string geometry_match_identity;
     std::string material_reference;
+    std::string material_name;
+    int resolved_material_handle = -1;
+    std::uint64_t resolved_material_generation = 0;
+    std::shared_ptr<const void> resolved_material_lease;
+    std::uint64_t geometry_allocation_id = 0;
+    std::uint32_t material_index =
+        std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t geometry_index =
+        std::numeric_limits<std::uint32_t>::max();
 };
 
 struct RaySceneRowSnapshot {
     std::string identity_digest_sha256;
+    std::string material_table_digest_sha256;
+    std::string geometry_table_digest_sha256;
     std::vector<RaySceneRow> rows;
 };
+
+inline constexpr std::uint32_t rayGeometryAttributeNormal = 1u << 0u;
+inline constexpr std::uint32_t rayGeometryAttributeUv0 = 1u << 1u;
+inline constexpr std::uint32_t rayGeometryAttributeColor0 = 1u << 2u;
+inline constexpr std::uint32_t rayMissingTextureIndex = 0xffffffffu;
+inline constexpr std::uint32_t rayBindlessTextureCapacity = 1024u;
+
+// C++ half of the generated set-3 ABI. The offset assertions in the
+// implementation are mirrored by generated GLSL declarations and tests.
+struct alignas(16) RayMaterialTableRow {
+    std::array<float, 4> base_color_factor{1.0F, 1.0F, 1.0F, 1.0F};
+    float alpha_cutoff = 0.5F;
+    std::uint32_t alpha_mode = 0;
+    std::uint32_t base_color_texture_index = rayMissingTextureIndex;
+    std::uint32_t reserved = 0;
+
+    bool operator==(const RayMaterialTableRow &) const = default;
+};
+
+struct alignas(8) RayGeometryTableRow {
+    std::uint64_t vertex_address = 0;
+    std::uint64_t index_address = 0;
+    std::uint32_t vertex_stride = 0;
+    std::uint32_t index_type = 0;
+    std::uint32_t attribute_presence = 0;
+    std::uint32_t reserved = 0;
+
+    bool operator==(const RayGeometryTableRow &) const = default;
+};
+
+struct RayTracingGeometrySnapshotRow {
+    std::uint64_t geometry_allocation_id = 0;
+    std::uint32_t index_count = 0;
+    std::uint32_t index_offset = 0;
+    std::int32_t vertex_offset = 0;
+    std::uint32_t vertex_count = 0;
+    RayGeometryTableRow gpu;
+
+    bool operator==(const RayTracingGeometrySnapshotRow &) const = default;
+};
+
+// Sorted by geometry_allocation_id and consumed by both BLAS construction and
+// the set-3 geometry table. Addresses already point at the subranges, so every
+// Vulkan/GLSL offset is zero and double addition is structurally impossible.
+struct RayTracingGeometrySnapshot {
+    std::string digest_sha256;
+    std::vector<RayTracingGeometrySnapshotRow> rows;
+};
+
+struct RayMaterialTableSource {
+    int material_handle = -1;
+    std::uint64_t material_generation = 0;
+    std::shared_ptr<const void> material_lease;
+    std::string canonical_key;
+    std::array<float, 4> base_color_factor{1.0F, 1.0F, 1.0F, 1.0F};
+    float alpha_cutoff = 0.5F;
+    std::uint32_t alpha_mode = 0;
+    std::string base_color_texture_identity;
+    vk::ImageView base_color_srgb_view;
+    vk::Sampler default_sampler;
+};
+
+struct RayTextureTableEntry {
+    std::string canonical_identity;
+    vk::ImageView srgb_view;
+    vk::Sampler sampler;
+};
+
+struct RayTracingTableSnapshot {
+    std::string material_digest_sha256;
+    std::string geometry_digest_sha256;
+    std::vector<std::string> material_keys;
+    std::vector<std::string> material_row_digests;
+    std::vector<RayMaterialTableRow> material_rows;
+    std::vector<std::uint64_t> geometry_allocation_ids;
+    std::vector<std::string> geometry_row_digests;
+    std::vector<RayGeometryTableRow> geometry_rows;
+    std::vector<RayTextureTableEntry> textures;
+    std::vector<std::shared_ptr<const void>> material_leases;
+    std::vector<std::byte> material_bytes;
+    std::vector<std::byte> geometry_bytes;
+};
+
+struct RayTracingTableBuildResult {
+    RaySceneRowSnapshot scene_rows;
+    RayTracingTableSnapshot tables;
+};
+
+RayTracingTableBuildResult buildRayTracingTableSnapshot(
+    const RaySceneRowSnapshot &rows,
+    std::span<const RayMaterialTableSource> materials,
+    const RayTracingGeometrySnapshot &geometry);
 
 RaySceneRowSnapshot resolveRaySceneRows(
     std::span<const RaySceneRowInput> inputs,

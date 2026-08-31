@@ -154,6 +154,10 @@ DECLARE_MODULE(FrameResources) {
     rayTracingSceneShaderBindingTables() const noexcept {
         return active_ray_tracing_scene_tables.get();
     }
+    std::shared_ptr<const RayTracingSceneShaderBindingTables>
+    rayTracingSceneShaderBindingTablesLeaseForTesting() const noexcept {
+        return active_ray_tracing_scene_tables;
+    }
     void selectView(std::uint32_t in_flight_frame_index, std::uint32_t view_index);
     void selectSequentialView(
         std::uint32_t in_flight_frame_index,

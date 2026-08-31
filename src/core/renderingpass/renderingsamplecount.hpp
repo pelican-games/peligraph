@@ -90,6 +90,7 @@ struct RenderingTargetPlanDeviceFacts {
     std::uint32_t max_multiview_view_count = 0;
     bool ray_query = false;
     bool ray_tracing_pipeline = false;
+    bool ray_material_bindless = false;
     XrMultiviewDeviceIdentity device_identity;
     AttachmentSampleCapabilityQuery query_attachment_samples;
     ExternalDepthTransferCapabilityQuery

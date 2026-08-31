@@ -4,6 +4,7 @@
 #include "../vkcore/buf.hpp"
 #include "../vkcore/deferredcallback.hpp"
 #include "polygonvertdata.hpp"
+#include <cstddef>
 #include <glm/glm.hpp>
 #include <memory>
 #include <span>
@@ -19,6 +20,13 @@ struct CommonVertStruct {
     glm::vec2 texcoord;
     glm::vec4 color;
 };
+
+static_assert(offsetof(CommonVertStruct, pos) == 0);
+static_assert(offsetof(CommonVertStruct, normal) == 12);
+static_assert(offsetof(CommonVertStruct, tangent) == 24);
+static_assert(offsetof(CommonVertStruct, texcoord) == 40);
+static_assert(offsetof(CommonVertStruct, color) == 48);
+static_assert(sizeof(CommonVertStruct) == 64);
 
 struct CommonSkinningVertStruct {
     glm::vec3 pos;

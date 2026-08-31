@@ -39,6 +39,12 @@ struct MaterialInfo {
     GlobalTextureId normal_texture;
     GlobalTextureId emissive_texture;
     GlobalTextureId occlusion_texture;
+    // Empty means the semantic fallback texture and is encoded as the
+    // ray-table missing sentinel. Authored textures carry a stable source
+    // identity; numeric GlobalTextureId values never enter canonical keys.
+    std::string base_color_texture_identity;
+    MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
+    float alpha_cutoff = 0.5F;
     glm::vec4 base_color_factor{1.0f};
     glm::vec3 emissive_factor{1.0f};
     float metallic_factor = 1.0f;

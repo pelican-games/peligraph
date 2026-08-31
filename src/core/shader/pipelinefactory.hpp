@@ -162,11 +162,25 @@ struct RayTracingSceneShaderBindingTableEntry {
 
 struct RayTracingSceneShaderBindingTables {
     std::shared_ptr<const RaySceneRowSnapshot> row_snapshot;
+    std::shared_ptr<const RayTracingGeometrySnapshot>
+        geometry_snapshot;
+    RayTracingTableSnapshot ray_tables;
+    std::shared_ptr<BufferWrapper> material_table_buffer;
+    std::shared_ptr<BufferWrapper> geometry_table_buffer;
+    // Dedicated immutable-generation pool. Declaration order makes the set
+    // release before its owning pool.
+    vk::UniqueDescriptorPool ray_table_descriptor_pool;
+    vk::UniqueDescriptorSet ray_table_descriptor_set;
     std::vector<RayTracingSceneShaderBindingTableEntry> pipelines;
 
     const RayTracingShaderBindingTableRegions *find(
         PipelineHandle pipeline) const noexcept;
 };
+
+std::vector<vk::DescriptorSetLayoutBinding>
+rayMaterialDescriptorSetLayoutBindings();
+std::vector<vk::DescriptorBindingFlags>
+rayMaterialDescriptorBindingFlags();
 
 struct GraphicsPipelineReloadOverride {
     PipelineHandle handle;
@@ -190,8 +204,10 @@ bool shaderReflectionUsesRayQueryFrameSet(
     const ShaderReflection &reflection) noexcept;
 
 DECLARE_MODULE(PipelineFactory) {
+  public:
     struct DescriptorSetLayoutKey {
         std::vector<vk::DescriptorSetLayoutBinding> bindings;
+        std::vector<vk::DescriptorBindingFlags> binding_flags;
 
         bool operator==(const DescriptorSetLayoutKey &other) const;
     };
@@ -200,6 +216,7 @@ DECLARE_MODULE(PipelineFactory) {
         size_t operator()(const DescriptorSetLayoutKey &key) const;
     };
 
+  private:
     struct PipelineRecord {
         struct RayTracingShaderBindingTable {
             std::shared_ptr<BufferWrapper> buffer;
@@ -236,6 +253,11 @@ DECLARE_MODULE(PipelineFactory) {
         ray_query_pipeline_layouts;
 
     std::vector<DescriptorSetLayoutKey> descriptorSetLayoutKeysFor(const ShaderReflection &reflection) const;
+    std::vector<DescriptorSetLayoutKey> descriptorSetLayoutKeysFor(
+        const ShaderReflection &reflection,
+        const RayGroupLayout *ray_layout) const;
+    std::vector<vk::DescriptorSetLayout> descriptorSetLayoutsFor(
+        std::span<const DescriptorSetLayoutKey> keys);
     std::vector<vk::DescriptorSetLayout> descriptorSetLayoutsFor(const ShaderReflection &reflection);
     vk::UniquePipelineLayout createPipelineLayout(const ShaderReflection &reflection,
                                                   std::span<const vk::DescriptorSetLayout> layouts) const;
@@ -290,7 +312,9 @@ DECLARE_MODULE(PipelineFactory) {
     createRayTracingSceneShaderBindingTables(
         std::span<const PipelineHandle> active_owner_pipelines,
         std::shared_ptr<const RaySceneRowSnapshot> rows,
-        const RayTracingProjectConfig &project) const;
+        const RayTracingProjectConfig &project,
+        std::shared_ptr<const RayTracingGeometrySnapshot>
+            geometry) const;
     void traceRays(vk::CommandBuffer command_buffer,
                    PipelineHandle handle, std::uint32_t width,
                    std::uint32_t height,

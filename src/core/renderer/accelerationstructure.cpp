@@ -13,6 +13,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <picosha2.h>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -248,6 +249,84 @@ RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
     return result;
 }
 
+RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    std::uint64_t index_pool_address,
+    std::uint64_t vertex_pool_address) {
+    static_assert(modelPrimitiveAttributeNormal ==
+                  rayGeometryAttributeNormal);
+    static_assert(modelPrimitiveAttributeUv0 ==
+                  rayGeometryAttributeUv0);
+    static_assert(modelPrimitiveAttributeColor0 ==
+                  rayGeometryAttributeColor0);
+    const auto classification =
+        classifyRayQueryStaticGeometry(instances);
+    std::map<std::uint64_t, RayTracingGeometrySnapshotRow> unique;
+    for (const auto source_index :
+         classification.static_instance_indices) {
+        const auto &instance = instances[source_index];
+        if (instance.geometry_allocation_id == 0 ||
+            instance.vertex_offset < 0 || instance.vertex_count == 0 ||
+            instance.index_count == 0 || instance.index_count % 3u != 0) {
+            throw std::runtime_error(
+                "pelican.ray_geometry_snapshot_invalid@1: static geometry has invalid allocation/range metadata");
+        }
+        RayTracingGeometrySnapshotRow row{
+            .geometry_allocation_id =
+                instance.geometry_allocation_id,
+            .index_count = instance.index_count,
+            .index_offset = instance.index_offset,
+            .vertex_offset = instance.vertex_offset,
+            .vertex_count = instance.vertex_count,
+            .gpu =
+                RayGeometryTableRow{
+                    .vertex_address =
+                        vertex_pool_address +
+                        sizeof(CommonVertStruct) *
+                            static_cast<std::uint32_t>(
+                                instance.vertex_offset),
+                    .index_address =
+                        index_pool_address +
+                        sizeof(std::uint32_t) *
+                            instance.index_offset,
+                    .vertex_stride = static_cast<std::uint32_t>(
+                        sizeof(CommonVertStruct)),
+                    .index_type = static_cast<std::uint32_t>(
+                        vk::IndexType::eUint32),
+                    .attribute_presence =
+                        instance.attribute_presence,
+                },
+        };
+        const auto [found, inserted] = unique.emplace(
+            row.geometry_allocation_id, row);
+        if (!inserted && found->second != row) {
+            throw std::runtime_error(
+                "pelican.ray_geometry_snapshot_invalid@1: geometry allocation identity maps to inconsistent ranges or attributes");
+        }
+    }
+    RayTracingGeometrySnapshot result;
+    result.rows.reserve(unique.size());
+    std::string encoded;
+    for (const auto &[identity, row] : unique) {
+        result.rows.push_back(row);
+        encoded.append(reinterpret_cast<const char *>(&identity),
+                       sizeof(identity));
+        encoded.append(reinterpret_cast<const char *>(&row.index_count),
+                       sizeof(row.index_count));
+        encoded.append(reinterpret_cast<const char *>(&row.index_offset),
+                       sizeof(row.index_offset));
+        encoded.append(reinterpret_cast<const char *>(&row.vertex_offset),
+                       sizeof(row.vertex_offset));
+        encoded.append(reinterpret_cast<const char *>(&row.vertex_count),
+                       sizeof(row.vertex_count));
+        encoded.append(reinterpret_cast<const char *>(&row.gpu),
+                       sizeof(row.gpu));
+    }
+    result.digest_sha256 = picosha2::hash256_hex_string(
+        encoded.begin(), encoded.end());
+    return result;
+}
+
 std::string canonicalTransformIdentity(const glm::mat4 &transform) {
     // Spell the IEEE-754 payload as fixed-width hexadecimal so the sort key
     // is independent of locale, stream float formatting, and host byte order.
@@ -303,8 +382,17 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
                 instance.material_document_reference,
             .material_asset =
                 instance.material_asset_reference,
+            .material_name = instance.material_name,
             .source_material_index =
                 instance.source_material_index,
+            .resolved_material_handle =
+                instance.resolved_material_handle,
+            .resolved_material_generation =
+                instance.resolved_material_generation,
+            .resolved_material_lease =
+                instance.resolved_material_lease,
+            .geometry_allocation_id =
+                instance.geometry_allocation_id,
             .source_index = source_index,
         });
     }
@@ -437,6 +525,8 @@ struct RayQueryAccelerationStructureScope::State {
         blas;
     std::shared_ptr<AccelerationStructureResource> tlas;
     std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows;
+    std::shared_ptr<const RayTracingGeometrySnapshot>
+        geometry_snapshot;
     std::uint32_t ray_type_count = 0;
     // The dynamic hit records contain device addresses consumed by the same
     // submission as this TLAS.  Retaining them in the unpublished candidate
@@ -522,6 +612,8 @@ RayQueryAccelerationStructureScope::recordFrame(
     const BufferWrapper &vertex_buffer,
     std::uint64_t geometry_pool_generation,
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    std::shared_ptr<const RayTracingGeometrySnapshot>
+        geometry_snapshot,
     std::uint64_t model_rebuild_generation,
     std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows,
     std::uint32_t ray_type_count,
@@ -542,6 +634,15 @@ RayQueryAccelerationStructureScope::recordFrame(
     const auto classification =
         classifyRayQueryStaticGeometry(instances);
     auto candidate = std::make_shared<State>();
+    if (!geometry_snapshot) {
+        const auto device = vkcore.getDevice();
+        geometry_snapshot =
+            std::make_shared<RayTracingGeometrySnapshot>(
+                makeRayTracingGeometrySnapshot(
+                    instances, bufferDeviceAddress(device, index_buffer),
+                    bufferDeviceAddress(device, vertex_buffer)));
+    }
+    candidate->geometry_snapshot = std::move(geometry_snapshot);
     candidate->ray_scene_rows = std::move(ray_scene_rows);
     candidate->ray_type_count = ray_type_count;
     candidate->ray_tracing_scene_tables =
@@ -589,13 +690,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     auto recorded =
         std::make_shared<RecordedSubmissionResources>();
     const auto device = vkcore.getDevice();
-    vk::DeviceAddress index_pool_address = 0;
-    vk::DeviceAddress vertex_pool_address = 0;
     if (!classification.static_instance_indices.empty()) {
-        index_pool_address = bufferDeviceAddress(
-            device, index_buffer);
-        vertex_pool_address = bufferDeviceAddress(
-            device, vertex_buffer);
         recordMemoryBarrier(
             command_buffer,
             vk::PipelineStageFlagBits::eHost,
@@ -610,8 +705,13 @@ RayQueryAccelerationStructureScope::recordFrame(
         active_state_ != nullptr && !pool_invalidated &&
         !model_invalidated;
     std::map<std::uint64_t,
-             const RayQueryGeometryInstanceSnapshot *>
+             const RayTracingGeometrySnapshotRow *>
         unique_geometry;
+    for (const auto &geometry :
+         candidate->geometry_snapshot->rows) {
+        unique_geometry.emplace(
+            geometry.geometry_allocation_id, &geometry);
+    }
     for (const auto index :
          classification.static_instance_indices) {
         const auto &instance = instances[index];
@@ -619,19 +719,28 @@ RayQueryAccelerationStructureScope::recordFrame(
             throw std::runtime_error(
                 "static ray-query primitive has no geometry allocation identity");
         }
-        const auto [found, inserted] = unique_geometry.emplace(
-            instance.geometry_allocation_id, &instance);
-        if (!inserted) {
-            const auto &previous = *found->second;
-            if (previous.index_count != instance.index_count ||
-                previous.index_offset != instance.index_offset ||
-                previous.vertex_offset != instance.vertex_offset ||
-                previous.vertex_count != instance.vertex_count) {
-                throw std::runtime_error(
-                    "geometry allocation identity maps to inconsistent "
-                    "ray-query input ranges");
-            }
+        const auto found = unique_geometry.find(
+            instance.geometry_allocation_id);
+        if (found == unique_geometry.end() ||
+            found->second->index_count != instance.index_count ||
+            found->second->index_offset != instance.index_offset ||
+            found->second->vertex_offset != instance.vertex_offset ||
+            found->second->vertex_count != instance.vertex_count ||
+            found->second->gpu.attribute_presence !=
+                instance.attribute_presence) {
+            throw std::runtime_error(
+                "pelican.ray_geometry_snapshot_invalid@1: AS input does not match the immutable geometry snapshot");
         }
+    }
+    std::set<std::uint64_t> instance_allocations;
+    for (const auto index :
+         classification.static_instance_indices) {
+        instance_allocations.emplace(
+            instances[index].geometry_allocation_id);
+    }
+    if (unique_geometry.size() != instance_allocations.size()) {
+        throw std::runtime_error(
+            "pelican.ray_geometry_snapshot_invalid@1: immutable geometry snapshot has missing or extra allocation rows");
     }
 
     for (const auto &[identity, instance] : unique_geometry) {
@@ -644,14 +753,8 @@ RayQueryAccelerationStructureScope::recordFrame(
                 continue;
             }
         }
-        const auto index_address =
-            index_pool_address +
-            sizeof(std::uint32_t) * instance->index_offset;
-        const auto vertex_address =
-            vertex_pool_address +
-            sizeof(CommonVertStruct) *
-                static_cast<std::uint32_t>(
-                    instance->vertex_offset);
+        const auto index_address = instance->gpu.index_address;
+        const auto vertex_address = instance->gpu.vertex_address;
         const vk::AccelerationStructureGeometryTrianglesDataKHR
             triangles{
                 vk::Format::eR32G32B32Sfloat,
@@ -852,6 +955,22 @@ RayQueryAccelerationStructureScope::topLevel() const noexcept {
     return active_state_ != nullptr && active_state_->tlas != nullptr
                ? active_state_->tlas->handle.get()
                : vk::AccelerationStructureKHR{};
+}
+
+const RaySceneRowSnapshot *
+RayQueryAccelerationStructureScope::
+    activeRaySceneRowsForTesting() const noexcept {
+    return active_state_ && active_state_->ray_scene_rows
+               ? active_state_->ray_scene_rows.get()
+               : nullptr;
+}
+
+const RayTracingGeometrySnapshot *
+RayQueryAccelerationStructureScope::
+    activeGeometrySnapshotForTesting() const noexcept {
+    return active_state_ && active_state_->geometry_snapshot
+               ? active_state_->geometry_snapshot.get()
+               : nullptr;
 }
 
 vk::DeviceAddress

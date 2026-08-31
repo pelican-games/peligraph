@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -135,6 +136,9 @@ struct DrawItemSnapshot {
     DrawPipelineMaterialKey pipeline_material_key{};
     std::string material_asset_reference;
     std::string material_document_reference;
+    std::string material_name;
+    std::uint64_t ray_material_generation = 0;
+    std::shared_ptr<const void> ray_material_lease;
     // Canonical material-side authoring tags. They are copied into this
     // immutable snapshot before queue compilation and never reach the Vulkan
     // execution loop.
@@ -148,6 +152,7 @@ struct DrawItemSnapshot {
     bool morph_deformed = false;
     bool vat_deformed = false;
     std::uint64_t geometry_allocation_id = 0;
+    std::uint32_t ray_attribute_presence = 0;
 
     bool operator==(const DrawItemSnapshot &) const = default;
 };

@@ -1851,6 +1851,27 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     if (materials.size() >= maxMaterials) {
         throw std::runtime_error("Material capacity exceeded");
     }
+    if (next_ray_material_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error(
+            "ray material generation identity exhausted");
+    }
+    const auto ray_generation = next_ray_material_generation++;
+    std::shared_ptr<const void> ray_lease =
+        std::make_shared<const std::uint64_t>(ray_generation);
+    if (!info.base_color_texture_identity.empty() &&
+        !info.base_color_texture_identity.starts_with("document:") &&
+        !info.base_color_texture_identity.starts_with("asset:")) {
+        if (!info.source_document.empty()) {
+            info.base_color_texture_identity =
+                "document:" + info.source_document + "#texture:" +
+                info.base_color_texture_identity;
+        } else {
+            info.base_color_texture_identity =
+                "asset:" + info.source_asset + "#texture:" +
+                info.base_color_texture_identity;
+        }
+    }
     info.tags = canonicalizeMaterialDrawTags(
         std::move(info.tags), "registered material");
     const auto &fragment_bundle =
@@ -2109,6 +2130,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     const auto gpu_data = makeMaterialGpuData(info);
     const auto material_id = materials.reg(InternalMaterialInfo{
         .pipeline = pipeline,
+        .ray_generation = ray_generation,
+        .ray_lease = std::move(ray_lease),
         .name = std::move(info.name),
         .source_asset = std::move(info.source_asset),
         .source_document = std::move(info.source_document),
@@ -2142,6 +2165,10 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .normal_texture = info.normal_texture,
         .emissive_texture = info.emissive_texture,
         .occlusion_texture = info.occlusion_texture,
+        .base_color_texture_identity =
+            std::move(info.base_color_texture_identity),
+        .alpha_mode = info.alpha_mode,
+        .alpha_cutoff = info.alpha_cutoff,
         .base_color_factor = info.base_color_factor,
         .emissive_factor = info.emissive_factor,
         .metallic_factor = info.metallic_factor,
@@ -2780,6 +2807,59 @@ MaterialContainer::materialTextureForTesting(
 }
 
 size_t MaterialContainer::materialCapacityForTesting() const { return maxMaterials; }
+
+RayMaterialTableSource MaterialContainer::rayMaterialTableSource(
+    GlobalMaterialId material, std::string canonical_key,
+    std::uint64_t expected_generation,
+    const std::shared_ptr<const void> &expected_lease) const {
+    const auto &registered = materials.get(material);
+    if (registered.ray_generation != expected_generation ||
+        registered.ray_lease != expected_lease || !expected_lease) {
+        throw std::runtime_error(
+            "pelican.ray_material_snapshot_stale@1: resolved material handle generation/lease is no longer live");
+    }
+    const auto expected_document_key =
+        "document:" + registered.source_document + "#" + registered.name;
+    const auto expected_asset_prefix =
+        "asset:" + registered.source_asset + "#";
+    if ((!registered.source_document.empty() &&
+         canonical_key != expected_document_key) ||
+        (registered.source_document.empty() &&
+         ((!registered.source_asset.empty() &&
+           !canonical_key.starts_with(expected_asset_prefix)) ||
+          (registered.source_asset.empty() &&
+           !canonical_key.starts_with("asset:"))))) {
+        throw std::runtime_error(
+            "pelican.ray_material_key_mismatch@1: canonical row key does not identify the resolved material handle");
+    }
+    RayMaterialTableSource result{
+        .material_handle = material.value,
+        .material_generation = registered.ray_generation,
+        .material_lease = registered.ray_lease,
+        .canonical_key = std::move(canonical_key),
+        .base_color_factor = {
+            registered.base_color_factor.x,
+            registered.base_color_factor.y,
+            registered.base_color_factor.z,
+            registered.base_color_factor.w,
+        },
+        .alpha_cutoff = registered.alpha_cutoff,
+        .alpha_mode = static_cast<std::uint32_t>(registered.alpha_mode),
+        .base_color_texture_identity =
+            registered.base_color_texture_identity,
+    };
+    if (!result.base_color_texture_identity.empty()) {
+        const auto &texture = textures.get(
+            registered.base_color_texture);
+        if (!texture.srgb_view) {
+            throw std::runtime_error(
+                "pelican.ray_material_texture_invalid@1: authored base color texture has no sRGB view");
+        }
+        result.base_color_srgb_view = texture.srgb_view.get();
+        result.default_sampler = linear_sampler.get();
+    }
+    return result;
+}
 
 bool MaterialContainer::handlesTextureReload(const watch::AssetKey &key) const {
     return texture_reload_handler && texture_reload_handler->handles(key);

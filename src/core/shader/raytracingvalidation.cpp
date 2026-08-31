@@ -340,11 +340,11 @@ std::string validateRayTracingPipelineInterfaces(
                 bool allowed, bool required) {
                 const auto &actual = occurrence.entry->shader_record;
                 if (!actual) {
-                    if (required && !layout.record.empty()) {
+                    if (required && !layout.physical_record.empty()) {
                         failShaderRecord(
                             occurrence,
                             "has no shader-record storage; expected " +
-                                std::to_string(layout.record.size()) +
+                                std::to_string(layout.physical_record.size()) +
                                 " members");
                     }
                     return;
@@ -354,26 +354,26 @@ std::string validateRayTracingPipelineInterfaces(
                         occurrence,
                         "declares shader-record storage where it is forbidden");
                 }
-                if (actual->members.size() != layout.record.size()) {
+                if (actual->members.size() != layout.physical_record.size()) {
                     failShaderRecord(
                         occurrence, "member_count=" +
                                         std::to_string(actual->members.size()) +
                                         " expected=" +
-                                        std::to_string(layout.record.size()));
+                                        std::to_string(layout.physical_record.size()));
                 }
                 for (std::size_t member = 0;
-                     member < layout.record.size(); ++member) {
+                     member < layout.physical_record.size(); ++member) {
                     const auto expected_type =
-                        canonicalRecordType(layout.record[member].type);
+                        canonicalRecordType(layout.physical_record[member].type);
                     if (actual->members[member].offset !=
-                            layout.record[member].offset ||
+                            layout.physical_record[member].offset ||
                         actual->members[member].type != expected_type) {
                         failShaderRecord(
                             occurrence, "member=" + std::to_string(member) +
                                             " offset=" +
                                             std::to_string(actual->members[member].offset) +
                                             " expected_offset=" +
-                                            std::to_string(layout.record[member].offset) +
+                                            std::to_string(layout.physical_record[member].offset) +
                                             " type=" +
                                             describeRayTracingCanonicalType(
                                                 actual->members[member].type) +

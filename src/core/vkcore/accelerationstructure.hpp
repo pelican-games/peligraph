@@ -30,12 +30,17 @@ struct RayQueryGeometryInstanceSnapshot {
     std::uint64_t scene_epoch = 0;
     std::string material_asset_reference;
     std::string material_document_reference;
+    std::string material_name;
+    int resolved_material_handle = -1;
+    std::uint64_t resolved_material_generation = 0;
+    std::shared_ptr<const void> resolved_material_lease;
     std::uint32_t source_material_index = 0;
     std::uint64_t geometry_allocation_id = 0;
     std::uint32_t index_count = 0;
     std::uint32_t index_offset = 0;
     std::int32_t vertex_offset = 0;
     std::uint32_t vertex_count = 0;
+    std::uint32_t attribute_presence = 0;
     bool skinned = false;
     bool morph_deformed = false;
     bool vat_deformed = false;
@@ -76,6 +81,11 @@ RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
 RaySceneRowSnapshot resolveRayTracingSceneRows(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
     const RayTracingProjectConfig &project);
+
+RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    std::uint64_t index_pool_address,
+    std::uint64_t vertex_pool_address);
 
 struct RayTracingTlasInstancePlanEntry {
     std::size_t source_index = 0;
@@ -173,6 +183,8 @@ class RayQueryAccelerationStructureScope {
         const BufferWrapper &vertex_buffer,
         std::uint64_t geometry_pool_generation,
         std::span<const RayQueryGeometryInstanceSnapshot> instances,
+        std::shared_ptr<const RayTracingGeometrySnapshot>
+            geometry_snapshot,
         std::uint64_t model_rebuild_generation,
         std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows = {},
         std::uint32_t ray_type_count = 0,
@@ -183,6 +195,10 @@ class RayQueryAccelerationStructureScope {
     diagnostics() const noexcept {
         return diagnostics_;
     }
+    const RaySceneRowSnapshot *
+    activeRaySceneRowsForTesting() const noexcept;
+    const RayTracingGeometrySnapshot *
+    activeGeometrySnapshotForTesting() const noexcept;
     vk::AccelerationStructureKHR topLevel() const noexcept;
     vk::DeviceAddress topLevelDeviceAddress() const noexcept;
 };

@@ -1228,6 +1228,8 @@ endif()
 pelican_define_test(raytracing_rt1a_test pelican_core spirv-reflect-static picosha2)
 pelican_define_test(raytracing_rt1b_test pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(raytracing_rt2b_test pelican_core picosha2
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_raytracing_rt1b_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
@@ -1236,10 +1238,17 @@ target_compile_definitions(pelican_test_raytracing_rt1b_test PRIVATE
     PELICAN_WP366_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+target_compile_definitions(pelican_test_raytracing_rt2b_test PRIVATE
+    PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_raytracing_rt1b_test PRIVATE pelican_shaderc)
+    target_link_libraries(pelican_test_raytracing_rt2b_test PRIVATE pelican_shaderc)
     if(COMMAND pelican_copy_shaderc_runtime)
         pelican_copy_shaderc_runtime(pelican_test_raytracing_rt1b_test)
+        pelican_copy_shaderc_runtime(pelican_test_raytracing_rt2b_test)
     endif()
 endif()
 find_package(Git QUIET)

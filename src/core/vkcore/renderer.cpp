@@ -4675,10 +4675,33 @@ void Renderer::renderLogicalFrame(
     const auto record_acceleration_structures =
         [&](vk::CommandBuffer command_buffer,
             std::uint32_t in_flight_frame_index) {
-            if (acceleration_structures == nullptr) return;
+            if (acceleration_structures == nullptr) {
+                // A generation without an RT layout must not retain the
+                // previous generation's table buffers, pool, or set through
+                // FrameResources.
+                modules.frame_resources
+                    .setRayTracingSceneShaderBindingTables({});
+                return;
+            }
             const auto geometry_instances =
                 modules.instance_container
                     .rayQueryGeometryInstances();
+            const auto &index_buffer =
+                modules.vert_buf_container.indexBuffer();
+            const auto &vertex_buffer =
+                modules.vert_buf_container.vertexBuffer(false);
+            const auto device =
+                GET_MODULE(VulkanManageCore).getDevice();
+            const auto geometry_snapshot =
+                std::make_shared<RayTracingGeometrySnapshot>(
+                    makeRayTracingGeometrySnapshot(
+                        geometry_instances,
+                        device.getBufferAddress(
+                            vk::BufferDeviceAddressInfo{
+                                index_buffer.buffer.get()}),
+                        device.getBufferAddress(
+                            vk::BufferDeviceAddressInfo{
+                                vertex_buffer.buffer.get()})));
             std::shared_ptr<const RaySceneRowSnapshot>
                 ray_scene_rows;
             std::shared_ptr<const RayTracingSceneShaderBindingTables>
@@ -4719,7 +4742,9 @@ void Renderer::renderLogicalFrame(
                     GET_MODULE(PipelineFactory)
                         .createRayTracingSceneShaderBindingTables(
                             owner_pipelines, ray_scene_rows,
-                            ray_project);
+                            ray_project, geometry_snapshot);
+                ray_scene_rows =
+                    ray_tracing_scene_tables->row_snapshot;
                 injectRayTracingJointTransactionPoint(
                     RayTracingJointTransactionPoint::after_sbt);
             }
@@ -4731,13 +4756,12 @@ void Renderer::renderLogicalFrame(
                     command_buffer,
                     GET_MODULE(VulkanManageCore),
                     deletion_queue,
-                    modules.vert_buf_container
-                        .indexBuffer(),
-                    modules.vert_buf_container
-                        .vertexBuffer(false),
+                    index_buffer,
+                    vertex_buffer,
                     modules.vert_buf_container
                         .geometryAddressGeneration(),
                     geometry_instances,
+                    geometry_snapshot,
                     modules.instance_container
                         .rayQueryGeometryGeneration(),
                     ray_scene_rows, ray_type_count,

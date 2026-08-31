@@ -17,6 +17,10 @@
 
 namespace Pelican {
 
+inline constexpr std::uint32_t modelPrimitiveAttributeNormal = 1u << 0u;
+inline constexpr std::uint32_t modelPrimitiveAttributeUv0 = 1u << 1u;
+inline constexpr std::uint32_t modelPrimitiveAttributeColor0 = 1u << 2u;
+
 using ModelTemplateId = int;
 
 PELICAN_DEFINE_HANDLE(ModelAssetId, std::uint64_t)
@@ -87,6 +91,9 @@ struct ModelPrimitiveRefInfo {
     bool morph_deformed = false;
     bool vat_deformed = false;
     std::uint64_t geometry_allocation_id = 0;
+    // Original importer presence, retained even though upload writes ABI
+    // defaults for absent streams.
+    std::uint32_t ray_attribute_presence = 0;
 };
 
 // Exact suballocations owned by one model generation. Keeping this metadata
