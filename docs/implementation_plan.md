@@ -16690,3 +16690,49 @@ hit shader からの利用は本 WP の範囲外。表と accessor は使える�
 engine 生成 profile は alpha のみ)。
 
 依存: WP366 + WP366a + WP367 + WP367a。
+
+#### WP368 仕様レビュー(v1、不合格・12 件)と分割
+
+**全件「直す」。v2 は v1 との差分で、矛盾したら v2 が優先。**
+最大の判明: **v1 は「access(表と accessor)」と「profile(engine が書く alpha 述語)」を
+1 WP に混ぜていた**。前者は pipeline 車線だけで完結し単独で挙動を変えるが、後者は
+alpha の正規化 IR・ray query 車線の候補ループ・authored anyhit との排他まで要る。
+**WP368(access + reload hole 閉鎖)と WP369(portable alpha profile)に分割**する。
+一体で仕様レビューする。
+
+さらに #8 が示したとおり、**RT1b の共同 transaction に「相乗り」する前提は、
+WP367 で台帳送りにした既知の穴(`.rchit`/`.rahit` の reload が pipeline を先に
+commit し SBT は次 render)と矛盾する**。表を generation payload に載せる以上、
+**この穴を閉じるのが WP368 の前提**になる(台帳の負債をここで返す)。
+
+| # | v1 の壊れた点 | 決定(行き先) |
+|---|---|---|
+| 1 | 1 文書が複数 material を定義でき、AS snapshot の document ref では実体を特定できない / 引用も誤り(確定 branch は `material_asset_reference` + index であって `asset_identity` ではない) | **WP368**: row snapshot に **解決済み material handle + 世代/lease** を持たせ、selector→handle の一致を transaction 構築時に検証。asset branch は `material_asset_reference` を使う(引用訂正) |
+| 2 | 指定した述語が engine の実 alpha 判定と違う(raster は texture×vertex color×factor を比較 / project OpenPBR は `geometry_opacity` 系 / per-instance override が判定前に効く) | **WP369**: lowering から **正規化 alpha IR**`{mode, source_kind, factor, texture, uv_transform, cutoff, sampler/lod}` を保持。**v1 は glTF-core に限定**し、alpha に効く per-instance override と別 opacity 源は**load 時に名前付き拒否**。受け入れに raster または独立 CPU evaluator との decision 比較 |
+| 3 | `engine_record` が RT1b の record ABI(overlay の exact-set / canonical JSON / SPIR-V mirror / SBT pack の 4 用途)に一意に統合できない | **WP368**: **`authored_record` と `physical_record = engine_prefix ∥ authored_record` を分離**。engine 名は**予約 namespace**(authored と同名は `ray_record_name_reserved@1`)。overlay は authored のみ encode / validator は physical を検査 / packer は engine bytes と authored bytes を別々に注入。**canonical order は固定 `[material_index, geometry_index]`**(配列の宣言順は使わない)。省略時は **canonical field・include text・descriptor・cache salt を一切生成しない** |
+| 4 | ray query 車線に shader record が無く `material_index`/`geometry_index` を得る経路が無い / `instanceCustomIndex` の流用は規範違反 / 生成 include は RT compute task にしか注入されない | **WP369**: **engine-private な `TLAS instance ID → {material_index, geometry_index}` 表**を同一 generation に追加(user custom index は独立に保持)。候補 loop・`rayQueryConfirmIntersectionEXT`・flags/opacity を逐語規定。**typed profile sidecar を fullscreen の compile/bind 経路にも運ぶ**。production の `rt_shadow_mask` を通す否定対照 |
+| 5 | 生成 `.rahit` と自由 `.rahit` は同一 hit group に共存できない(Vulkan の any-hit slot は 1 つ)/ profile の activation 文法が無い | **WP369**: **`portable_profile: "material_alpha_v1"` の明示 opt-in**(engine field 2 つと capability を原子的に要求)。**v1 は authored anyhit と同居したら名前付き拒否** |
+| 6 | descriptor indexing は feature bit だけでは ABI にならない(set/binding・sampler・容量・binding flags・`nonuniformEXT`・bind 点が未定。既存 set 2 は material ごとで scene-global bindless ではない) | **WP368**: exact set/binding・**combined image sampler**・固定容量 + device limit 検査と named reject・layout creation の binding flags(pipeline layout cache key にも含める)・**`nonuniformEXT` 必須**・両車線の bind 点を規範化。**generation ごとに新 descriptor set**(update-after-bind を要求しない immutable publication) |
+| 7 | `ray_geometry_attribute_missing@1` が構成不能(欠落 UV は upload 時に `(0,0)` 埋め、presence mask がどこにも残らない)/ 表の address と offset が二重加算しうる | **WP368**: **import 時の attribute presence を primitive→draw→AS snapshot まで保持**。AS の triangles input と geometry 表を**単一の immutable geometry snapshot** から生成。**subrange address 方式に統一**(表の offset は 0。二重加算を構造的に不可能に)。attribute の offset/format は既存 `CommonVertStruct` の固定 ABI を**規範として引用**。非ゼロ suballocation / UV 欠落 / 全ゼロ UV を別 fixture |
+| 8 | 共同 transaction への「相乗り」が既知の reload hole と矛盾 | **WP368 の前提として穴を閉じる**。generation payload を `{layout/include, shaders, pipeline layouts/objects, 全 SBT, rows, row-index 表, material buffer, texture descriptor set + image lease, geometry 表, TLAS}` と列挙。shader・material value・texture・model・geometry pool の全 invalidation を規定。各 failure point の後、**実際に次フレームを旧世代で描画**して確認 |
+| 9 | table index の決定性が未規定(handle 再利用・`unordered_map` 順・allocation 順)/「表を 1 行ずらすと落ちる」は表を読んだことしか示さない | **WP368**: canonical sort key を固定(material = `material_ref` の正準文字列順 / geometry = `geometry_allocation_id` 順)+ dedup 規則。**row snapshot digest に各 table の digest/generation を含める**。登録順反転・退役/再利用を同一 fixture に。GPU readback に `{material_index, geometry_index, texture_index, sampled_alpha, cutoff, decision}` を出し**各入力を 1 つずつ壊す否定対照** |
+| 10 | 市松 fixture の「texel 中心が厳密に決まる」は受け入れ条件にできない(barycentric の bit 一致は非保証)/ mip/LOD 未指定で両車線が別 mip を読み得る | **WP369**: exact equality を捨て、**generator が「全 texel 境界から固定 margin 以上」を証明**する。両車線を **`textureLod(..., 0)` または単一 mip view に固定**し、CPU も同じ mip を参照 |
+| 11 | WP354 投影の供給者が存在しない(shader は task の物理 slot が所有し、material に一意な `declared_ref` は無い)/ 受け入れに observable が無い | **WP368**(closesthit 分)+ **WP369**(生成 anyhit 分): **task × 物理 hit slot ごと**に投影。**生成 alpha anyhit は `origin:"generated"`・authored ref なし・open 不可(理由つき)**。PlanViewer/Studio の strict parse と open action の否定対照 |
+| 12 | variant・purge の受け入れが具体化されていない | 両 WP: flat/xr/preview・compiler ON/OFF(**OFF は `layout_requires_runtime_compiler@1` + shader document load 0 件**)・OpenXR/ImGui/Studio を**具体的 test ID と observable で列挙**。**profile/layout 不在時は capability 要求・table buffer・descriptor pool/set・生成 shader・render target が全て 0 件**であることを観測 |
+
+### WP368 v2: RT2b-1 —— material/geometry 表と access(pipeline 車線)
+
+範囲 = 上表の #1・#3・#6・#7・#8・#9・#11(closesthit 分)・#12 +
+v1 の §1(capability と device feature)・§3(material 表)・§4(geometry access)。
+**単独価値**: hit shader が自分の material のパラメータを読み、UV を取得できる
+(alpha 判定は engine が書かない —— 利用者が自分の `.rahit` で書ける)。
+**やらないこと**: engine 生成の alpha 述語・ray query 車線・両車線一致契約(全て WP369)。
+
+### WP369: RT2b-2 —— portable alpha profile(両車線)
+
+範囲 = 上表の #2・#4・#5・#10・#11(生成 anyhit 分)・#12 + v1 の §5。
+**単独価値**: `portable_profile: "material_alpha_v1"` を書くだけで、両車線で
+実 texture の alpha test が効く。
+依存: WP368。
+
+依存: WP366 + WP366a + WP367 + WP367a。
