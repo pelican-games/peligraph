@@ -16865,3 +16865,67 @@ GPU 出力が双方入れ替わり、復元で元 bytes に戻る**(表と行が
 
 次: §10 コードレビュー → **WP369(RT2b-2: 両車線の portable alpha profile)**。
 WP369 は本 WP 完了後に仕様レビューを 1 巡(第 2 巡の裁定 4 が起点)。
+
+#### WP368 コードレビュー(受理不可・4 件、致命 1)の仕分けと WP368a
+
+範囲外侵入なし(reload・ray query・missing-attribute 拒否・生成 alpha・Studio の
+変更 0)。physical record の std430・engine field 0 個の RT1b byte 一致・
+subrange の二重加算なし・set 3 の binding/flags/pool 破棄順・RT1b selector の意味不変は
+「壊せなかった項目」。**全 4 件「直す」= WP368a を 1 回だけ。以降は無条件で台帳。**
+
+### WP368a: RT2b-1 の修理(最終。以降の指摘は台帳)
+
+**§4 規則 11 上段。コードレビューのみ。見積: 中。**
+
+1. **致命 —— 実 glTF の material canonical key が必ず物理パスと衝突する**:
+   `model.cpp` は canonical `declaration.reference` と物理 `declaration.path` を
+   明示的に分離しているのに、GltfLoader へ渡すのは物理パスで、それが
+   `MaterialInfo.source_asset` に保存される。一方 row key は canonical reference 由来。
+   **実プロジェクト(例: `animgraph_demo` の material 0)で RT2b layout を有効化すると
+   最初の table build が `ray_material_key_mismatch@1` で停止する**。
+   texture identity も絶対パスを含むため machine 間で非決定的。
+   **修正**: 物理パスは I/O・診断専用にし、**`declaration.reference` を
+   GltfLoader の commit / material registration に別引数で渡す**。
+   `MaterialInfo.source_asset` と texture の canonical identity は
+   **authored reference から作る**。
+   **受け入れ**: **実 project ロード(ModelAssetContainer / GltfLoader の本番経路)から
+   RT2b table・GPU まで通す**テスト(現行 fixture は `source_asset` と
+   `authored_asset_reference` を手で同じ文字列にしており本番経路を通っていない)
+2. **bindless capability の limit 検査が不足**(実害): 検査しているのは
+   `maxBoundDescriptorSets` と `maxDescriptorSetSampledImages` の 2 つだけ。
+   `maxDescriptorSetSamplers` / `maxPerStageDescriptorSamplers` /
+   `maxPerStageDescriptorSampledImages` / **set 0〜3 を合算した descriptor 数** /
+   `maxPerStageResources` が未検査。
+   具体例: `maxDescriptorSetSamplers=512` の device / sampled-image 上限がちょうど
+   1024 で set 2 の 2 sampler を足すと 1026 になる device。
+   `PartiallyBound` は宣言 `descriptorCount` を limit 計算から外さない。
+   **修正**: 全該当 limit を runtime facts に運び、**実際の set 0〜3 layout を
+   stage 別に合算**して Vulkan object 作成前に property/required/actual/device つきで
+   拒否。既存 `materialcontainer` の sampler limit 検査と**同じ流儀に揃える**
+   (第二の流儀を作らない)
+3. **asset key の handle 整合が prefix だけ**(fail-fast 欠陥):
+   `starts_with("asset:<source>#")` しか見ないため、`source_material_index` が
+   ずれた入力を黙って受理する。**修正**: 埋め込み material 登録時に
+   source material index も保存し、provenance のある material は
+   **canonical key と完全一致**を要求
+4. **受け入れテストに誤実装でも通る経路が 4 つ**(§4 規約 10 違反):
+   (a) texture descriptor mapping —— 2 identity が同じ `whiteTexture()` を指し、
+   「全 descriptor に先頭 texture を書く」実装でも通る →
+   **異なる色の 1×1 texture** を使い、index→実 image の対応を出力差で示す
+   (b) attribute presence —— GPU fixture は両 geometry とも全属性あり、欠落対照は
+   snapshot field の手書き。producer を「常に全 bit」にしても通る →
+   **実 importer/upload 経路**で「欠落」と「全ゼロだが存在」を比較
+   (c) 1 文書複数 material —— `material_document`/`material_name` を直接構築しており
+   production の `material_name` 運搬を空にしても通る →
+   **実 project material 文書**を production 経路へ
+   (d) purge の「生成 shader 0」—— active/absent の両方で
+   `compute_task_definitions.empty()` になっており観測になっていない →
+   **ShaderLibrary の registration checkpoint/count** が baseline に戻ることを観測
+   + WP368 固有 matrix(OpenXR/ImGui/SKIP_DEVSTUDIO・compiler OFF の実 named reject)を
+   `SUCCEED` でなく実行
+
+**受け入れ全体**: 各修正に「取り消したら落ちる」対照(代理条件禁止)/
+出荷 4 project・core resources の bytes 不変 / **実 project で RT2b layout を
+有効化した経路が通ること**(#1 の再発防止)/ 全数 2 回 / GPU 直列は統合側。
+
+依存: WP368。**連鎖打ち切り: WP368a の §10 指摘は無条件で台帳。**
