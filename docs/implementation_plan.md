@@ -16385,3 +16385,90 @@ always-accept A/B が原理的に可能なこと / 旧形の byte 保存が原�
 - reason code は正規化した固定集合(wire に出る)
 
 依存: WP366 + WP366a。
+
+#### WP367 第 2 巡(FATAL 7 件)と v3 —— subset 認証器を捨てる
+
+**v3 が最終。仕様レビューはここで打ち切る。v3 > v2 > v1。**
+
+##### 裁定: 認証器は RT2a から削除する
+
+7 件のうち **#1(whitelist 表が未定義)/ #2(pointer origin の停止条件)/
+#3(未初期化 `Function`/`Private`)/ #4(単一 AST では float の意味差が閉じない)**
+は、すべて **v2 が導入した subset 認証器**から出ている。これを閉じるには
+opcode・storage・BuiltIn・型/operand 条件の完全表、最小不動点の停止規則、
+definite-assignment 解析、float opcode ごとの Vulkan 保証区間 —— を規範化する
+必要がある。
+
+**問い直す: 認証器は誰のためか。** 利用者の要求は「any-hit を自由に書けること」で
+あって、可搬性の分類ではない。認証器の唯一の消費者は **CPU オラクルの自信**である。
+それは**シェーダを解析するのではなく、fixture の側を構成的に縛れば足りる**:
+
+- **golden fixture の any-hit 述語は単一の生成器から出す**。生成器は
+  **整数・ID のみ**の述語(`gl_PrimitiveID`・`gl_InstanceCustomIndexEXT`・
+  record の `u32`)を GLSL と CPU オラクルの双方へ出力する。**float 比較を生成しない**
+  ので #4 は発生しない。認証ではなく**構成**で保証する
+- **自由な `.rahit` は従来どおり書ける**(それが目的)。単に golden fixture に
+  使わないだけ。wire に分類 field は載せない
+
+これにより #1〜#4 が消滅し、#5(null slot の意味)と #6(fingerprint 配線)も
+分類 field が無くなることで大幅に縮む。**#7 は RT2a の欠陥ではない**(下記)。
+
+##### 第 2 巡 7 件の行き先
+
+| # | 指摘 | v3 |
+|---|---|---|
+| 1〜4 | 認証器の whitelist / pointer origin / 未初期化 / float 意味差 | **認証器ごと削除**。fixture 生成器が整数述語のみを構成的に出す |
+| 5 | 固定長 wire の null slot が自己記述的でない / strict parser と不整合 | **null を作らない**。`anyhit_slots: [{hit_slot, ...}]` を**存在するものだけ**昇順で出し、any-hit が皆無なら **field ごと省略**(旧形の byte 保存)。Studio と PlanViewer は同段で許可 field を更新(D0: wire 経由) |
+| 6 | `shader_resolution_fingerprint` の配線先が実在しない | **分類が無くなったので新 fingerprint 自体が不要**。`.rahit` の内容変更は**既存の shader cache key**(source digest)で再 compile され、pipeline は `pipelineUsesShader` 経由で再構築される。frame plan は `anyhit_slots` の ref を映すのみ |
+| 7 | `.rahit` の hot reload が完全 SBT と同時 commit できない | **RT2a の欠陥ではない ——`.rchit` が既に `pipelineUsesShader` の `closest_hits` に入っており(pipelinefactory.cpp:336)、同じ形で pipeline が SBT 前に commit される既存の穴**。RT2a はそれを `.rahit` へ広げるだけ。**台帳の負債として記録**し、WP366 の共同 transaction 契約との齟齬として別途扱う(RT2a の受け入れでは「`.rahit` 編集で pipeline が再構築される」ことのみ要求し、SBT 同時 commit は要求しない) |
+
+##### v3 の RT2a 範囲(これが確定仕様)
+
+1. **`.rahit` 語彙**を production 経路すべてに追加。v1 が挙げた 8 箇所に加え、
+   第 2 巡 #6 が指摘した **`shadercompiler.cpp` の 3 箇所**(stage→shaderc kind /
+   engine shader suffix universe / path suffix→stage)と
+   **`renderingpass.hpp` の task enum** を含める
+2. **typed hit group**: `type ::= absent | "triangles"` のみ(**procedural は文法に
+   入れない**。RT3 で `.rint` + AABB + procedural group と原子的に)。
+   `anyhit` は省略可、指定時 `.rahit` として解決。unknown field は
+   `ray_hit_group_invalid@1`
+3. **ABI 検査を `(g,r)` occurrence の `{closesthit, optional<anyhit>}` へ**:
+   両 stage の payload 構造・triangle attribute `vec2` 固定・record ABI・
+   incoming interface 個数。payload 不一致 / `vec3` attribute /
+   record 不一致 / 複数 incoming payload を production load で名前付き拒否
+4. **wire**: `anyhit_slots: [{hit_slot, <既存 stage 投影と同じ field>}]`(存在分のみ・
+   昇順・皆無なら省略)。Studio と PlanViewer の strict parse を同段で更新
+5. **オラクル**: 生成器由来の整数述語のみ。**always-accept と実述語の
+   2 本の完全な production pipeline** を同一 row snapshot 上に作る
+   (stage 単体差し替えは Vulkan 上不可能)。**ray flags から `Opaque` /
+   `TerminateOnFirstHit` / `SkipClosestHit` を除き、geometry・instance も
+   opaque にしない**(既存 fixture は `gl_RayFlagsOpaqueEXT` を使っており
+   そのままでは any-hit が走らない)
+6. **同一 record の証明は 2 fixture に分離**(第 2 巡 #8):
+   (a) 単一 candidate の accept で any-hit と closest-hit の `q` sentinel・
+   **compile-time `r` marker**・group marker が一致 / (b) 二 candidate で
+   前面 ignore・背面 hit(distinct `q`)。**副作用ログの順序をオラクルにしない**
+   (any-hit の呼び出し順は規範上不定)
+7. **受け入れは本番 observable**(箇所数を条件にしない。ソース文字列検査は禁止):
+   canonical resolver / AnyHit の shaderc compile / final SPIR-V の stage 検査 /
+   hit group の `anyHitShader` / active pipeline と SBT / frame-plan の
+   occurrence mapping / PlanViewer・Studio の strict parse / `.rahit` 編集での
+   pipeline 再構築
+8. **compiler ON のみで機能試験**。**OFF 対照**は「`.rahit` を含む layout project が
+   `layout_requires_runtime_compiler@1` で拒否され、shader document を一件も
+   ロードしない」。5 contrast には **RT2a の具体的 test ID と observable を列挙**
+9. 出荷 4 project・core resources・既存 RT feature の bytes 不変 /
+   旧形(`type` 無し・`anyhit` 無し)は frame plan・SBT・GPU 出力・cache key が
+   RT1b 時点と一致 / 全数 2 回 / GPU 直列は統合側
+
+##### 台帳のみ(WP にしない)
+
+- **subset 認証器**: cross-device の golden 可搬性が実際に問題になったときに再訪する。
+  そのときは第 2 巡 #1〜#4 の処方(完全 whitelist・最小不動点・definite-assignment・
+  float opcode の保証区間)が仕様の種
+- **hit shader の hot reload と共同 transaction の齟齬**: `.rchit`/`.rahit` の編集は
+  `rebuildPrepared` で pipeline を先に commit し、完全 SBT はその後の render で作る。
+  WP366 の「完全な SBT を共同 transaction に含める」契約と齟齬がある**既存の穴**。
+  RT2a はこれを広げも直しもしない
+
+依存: WP366 + WP366a。
