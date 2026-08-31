@@ -16736,3 +16736,103 @@ v1 の §1(capability と device feature)・§3(material 表)・§4(geometry acc
 依存: WP368。
 
 依存: WP366 + WP366a + WP367 + WP367a。
+
+#### WP368/369 第 2 巡(9 件)と v3 —— 共同 transaction 要求の撤回と数値の確定
+
+**v3 が最終。WP368 の仕様レビューはここで打ち切る。v3 > v2 > v1。**
+WP369 は WP368 完了後に 1 巡だけ仕様レビューを行う(本節の決定を起点に)。
+
+##### 裁定 1: 「新しい表も共同 transaction に入れて失敗時は旧世代維持」を**撤回**(#3)
+
+第 2 巡が示した二つの反例は、いずれも **RT の外**にある:
+同形 texture reload は **live image へ直接 upload** し(旧 texel は失敗前に既に消える)、
+capacity 境界の model reload は **共有 vertex/index pool を再確保**する
+(旧 buffer は DeletionQueue 送り)。これを本当に満たすには
+「全 RT-visible 更新を generation-private resource へ stage し、成功 submission 後に
+一度だけ公開する」——**resource lifetime のサブシステム**が要る。
+WP363(lifecycle)と同じ「機能 WP の中に前提サブシステムが隠れている」形である。
+
+**決定**: WP368 は**この保証を主張しない**。
+- material 表と geometry 表は **SBT と同じ場所・同じ immutable row snapshot から構築**
+  する(renderer.cpp:4718 の地点)。**行との整合は構成的に保証**され、
+  失敗時の挙動は現行 SBT 失敗と同じ
+- **reload hole の閉鎖は WP368 の範囲外**(台帳の既存負債のまま)。
+  「RT-visible 更新の generation-private staging」は**別設計**として台帳に残す
+  (texture reload / model reload / pool lease を跨ぐため、設計から始める)
+
+##### 裁定 2: 数値と鍵の確定(#1・#2・#4・#5)
+
+- **`physical_record` の packing**(#1): engine prefix を canonical 順
+  `[material_index, geometry_index]`(いずれも `u32`)で先頭に置き、
+  **その後 authored member を、engine prefix を含む単一 struct として std430 で配置**する
+  (例: `engine=[material_index]`, authored=`[vec4 tint]` →
+  `material_index@0`, padding 4..15, `tint@16`, `data_size=32`)。
+  **physical offset が唯一の正本**。overlay は authored を**名前で** encode し、
+  packer は physical offset へ置く。mirror JSON は physical を出す。
+  engine field 0/1/2 個の全ケースの offset/size/stride を表として本文に持つ
+- **bindless ABI**(#2): **set 3(free 枠)** を使う。
+  `binding 0` = material row buffer(storage buffer)/ `binding 1` = **combined image
+  sampler の配列**(容量 **1024** 固定)/ `binding 2` = geometry table(storage buffer)。
+  **専用 descriptor pool を RT 表が所有**(material container の pool を使わない)。
+  `maxBoundDescriptorSets >= 4` と `maxDescriptorSetSampledImages >= 1024` を
+  device limit として検査し、不足は named reject。index は **`nonuniformEXT` 必須**。
+  binding flags(`PartiallyBound`)を layout creation に付け、
+  **pipeline layout の cache key にも含める**。
+  material row の ABI(field 順・型・offset・missing texture sentinel = `0xFFFFFFFF`・
+  texture の正準 identity・sRGB view・default sampler)を C++/GLSL 両方で表として固定
+- **geometry 表の順序**(#4): **`geometry_allocation_id` 昇順**。
+  **「登録順を反転しても同じ bytes」という受け入れは撤回**する ——
+  allocation ID は採番順に依存し、両立不能だった(row の q と違い、
+  geometry index は **engine-private** で shader に公開されないため順序の安定性は不要)。
+  受け入れは「**同一入力から同一 bytes**」+ 「row snapshot digest に表の digest を含む」
+- **material の canonical key**(#5): **`document:<ref>#<material 名>`**(project material)
+  / **`asset:<material_asset_reference>#<source_material_index>`**(埋め込み)。
+  これが表の sort key かつ dedup 等価判定。
+  **RT1b の `ray_bindings` selector の意味は変えない**(`document` 指定は
+  その文書の全 material を選ぶ)—— 表の鍵だけが細かい
+
+##### 裁定 3: 分割境界の訂正(#6・#7)
+
+- **missing-attribute の拒否は WP368 から外す**(#6): 発火条件を宣言するのは
+  profile だけなので、`ray_geometry_attribute_missing@1` は **WP369** へ。
+  WP368 は attribute presence を **snapshot まで運ぶだけ**(拒否しない)
+- **bind 点の割り当てを明示**(#7): **pipeline 車線の bind は WP368、
+  fullscreen/ray query 車線の bind は WP369**。WP368 は `rt_shadow_mask.frag`
+  経路を触らない
+
+##### 裁定 4: WP369 の前提(#8・#9。実装は WP368 の後)
+
+- **alpha IR の `source_kind` を列挙し式を固定**(#8): v1 は
+  `gltf_base_color` のみ。式は **`texture.a × factor.a × COLOR_0.a`**
+  (raster の実装と一致)。**COLOR_0 の accessor を追加**し、無い場合の default は `1.0`。
+  それ以外の opacity 源(project OpenPBR の `geometry_opacity` 系)と
+  alpha に効く per-instance override は **load 時に名前付き拒否**
+- **production の opaque 強制を解く**(#9): profile が active な geometry/instance に
+  ついて、**両車線の ray flags から `Opaque` を外し**、query 車線は
+  候補ループ + `rayQueryConfirmIntersectionEXT` を持つ。生成 predicate の
+  production hook を具体 GLSL 相当で規定。**profile 不在時は現行 bytes 保持**
+
+##### WP368 v3 の範囲(確定)
+
+裁定 1〜3 を適用した v2 の WP368。すなわち:
+capability と device feature(裁定 2 の数値)/ engine record の physical packing /
+material 表・geometry 表・descriptor 表の構築(SBT と同じ地点・同じ snapshot)/
+BDA の geometry access と生成 accessor(UV・normal・**COLOR_0**)/
+attribute presence の運搬(拒否はしない)/ material 解決済み handle の row snapshot 保持 /
+表の canonical key と digest / WP354 投影(closesthit 分)/ pipeline 車線の bind /
+variant・purge の受け入れ(#12 の形。**profile/layout 不在時は capability 要求・
+table buffer・descriptor pool/set・生成 shader・render target が全て 0 件**)。
+
+**単独価値**: authored `.rchit` が自分の material row と geometry accessor を読める
+(観測は production SBT → AS record 経由。第 2 巡で「壊せなかった項目」として確認済み)。
+**やらないこと**: 共同 transaction の保証 / reload hole の閉鎖 / ray query 車線 /
+engine 生成 alpha 述語 / missing-attribute の拒否(全て WP369 または別設計)。
+
+##### 台帳のみ(別設計)
+
+**RT-visible 更新の generation-private staging**: texture reload の live upload、
+model reload の共有 pool 再確保、vertex/index pool lease を跨ぐため、
+機能 WP に混ぜず設計から始める。これが入るまで、RT の表と SBT は
+「行と構成的に整合するが、reload 失敗時の旧世代保持は保証しない」。
+
+依存: WP366 + WP366a + WP367 + WP367a。
