@@ -17127,3 +17127,34 @@ instance_flags の分離・mask・custom_index 未指定=0・static AABB + `.rin
 全数 2 回 / GPU 直列は統合側。
 
 依存: WP369。**連鎖打ち切り: WP369a の §10 指摘は無条件で台帳。**
+
+#### WP369a 完了 —— RT2b 確定(2026-09-01)
+
+統合: 全数 **1494 ×2 緑**(GPU 直列込み)、doclink 2341 ok。7 件修理、UNMET 0。
+
+**RT と raster が同じ述語を指すようになった**: clamp を生成 shader だけでなく
+**raster 側の ABI lowering(materialformat.cpp)にも通して意味を統一**
+(`clamp(alpha) >= clamp(cutoff)`)/ override は absolute UV → relative UV の
+raster と同じ優先順位(relative base-color multiplier は discard 後なので不参照)/
+**`KHR_texture_transform` は raster が未実装なので非 identity を
+`ray_profile_uv_transform_unsupported@1` で拒否**(present-invalid と absent も区別。
+raster 対応は台帳)/ 非 MASK row は通常 field から構築(IR 強制をやめた)/
+authored reference は**型付きで渡された経路だけ**が IR を生成(字面推測を廃止)。
+
+代理条件の除去: 同一 GPU fixture に **MASK/OPAQUE/BLEND を併置**、**実 COLOR_0** の
+low/high、AS flags を **production `recordFrame` の 3 箇所に seam 注入**して
+named 拒否まで、生成 shader は文字列でなく**コンパイル済み SPIR-V** を検証。
+matrix は compiler OFF・SKIP_DEVSTUDIO・OpenXR で RT2b target を実行し、
+**呼び出しを外すと `rt2b_matrix_execution_missing@1` になる ledger** つき。
+
+エージェントの自己申告: feature-smoke をそのまま回した際に既存 WP367 の GPU lane まで
+起動したため、WP369 限定 matrix モードを追加して再実行(GPU 直列規約の自己修復)。
+
+##### 台帳のみ
+
+- **raster の `KHR_texture_transform` 未対応**: engine 全体の機能追加。
+  対応するまで profile 使用時の非 identity transform は named 拒否のまま
+
+**RT2b はここで確定**(WP368/368a + WP369/369a)。連鎖打ち切り済み。
+次: **RT3(AS の宣言面: geometry_flags / instance_flags の分離・mask・
+custom_index 未指定=0・static AABB + `.rint`)**。
