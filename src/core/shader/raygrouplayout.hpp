@@ -109,6 +109,11 @@ struct RaySceneRowInput {
     // ordinal. It deliberately excludes draw-inventory publication order.
     std::string scene_identity;
     std::string geometry_identity;
+    // Equality domain for the ambiguity guard.  Unlike the canonical q sort
+    // key above, this contains only the physical GPU geometry range and the
+    // canonical transform; authored asset/mesh/node aliases must not make
+    // coincident geometry look distinct.
+    std::string geometry_match_identity;
     std::string material_document;
     std::string material_asset;
     std::uint32_t source_material_index = 0;
@@ -122,6 +127,7 @@ struct RaySceneRow {
     std::vector<std::byte> record_data;
     std::string scene_identity;
     std::string geometry_identity;
+    std::string geometry_match_identity;
     std::string material_reference;
 };
 

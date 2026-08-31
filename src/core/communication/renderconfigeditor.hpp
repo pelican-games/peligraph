@@ -2,16 +2,19 @@
 
 #include "../../project/renderconfigdocument.hpp"
 #include "../../project/renderpipeline.hpp"
+#include "renderconfigtransaction.hpp"
 #include "../vkcore/renderer_config.hpp"
 
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <optional>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -39,12 +42,16 @@ struct RenderConfigRuntimeSnapshot {
 
 struct RenderConfigRuntimeApplyResult {
     bool committed = false;
+    bool staged = false;
+    std::uint64_t staged_generation = 0;
     std::uint64_t published_generation = 0;
     std::string error;
     std::string post_commit_error;
 };
 
 using RenderConfigSourceCommit = std::function<void()>;
+using RenderConfigRuntimeApplyCompletion =
+    std::function<void(RenderConfigRuntimeApplyResult)>;
 
 struct ResolvedRenderConfigAuthoringContext {
     nlohmann::json config = nlohmann::json::object();
@@ -69,7 +76,8 @@ struct RenderConfigEditorDependencies {
     // publishes the runtime generation without throwing.
     std::function<RenderConfigRuntimeApplyResult(
         RenderConfigCandidateDocumentSet,
-        const RenderConfigSourceCommit &)>
+        RenderConfigSourceCommit,
+        RenderConfigRuntimeApplyCompletion)>
         apply_candidate;
     std::function<ResolvedRenderConfigAuthoringContext(
         const RenderConfigCandidateDocumentSet &)>
@@ -100,6 +108,18 @@ class RenderConfigEditorService {
         std::string digest;
     };
 
+    struct CommitTransaction {
+        Ticket ticket;
+        std::optional<RenderConfigDocumentCommitReceipt>
+            source_receipt;
+        bool source_commit_called = false;
+        bool completion_arrived = false;
+        std::string source_external_modification;
+
+        explicit CommitTransaction(Ticket value)
+            : ticket{std::move(value)} {}
+    };
+
     RenderConfigEditorDependencies dependencies_;
     AuthoredRenderConfigDocument document_;
     std::vector<RenderFeatureCatalogEntry> feature_catalog_;
@@ -115,6 +135,9 @@ class RenderConfigEditorService {
     bool observed_can_edit_ = true;
     std::vector<std::string> observed_gate_reasons_;
     bool gate_initialized_ = false;
+    std::shared_ptr<const void> lifetime_ =
+        std::make_shared<const int>(0);
+    std::optional<std::string> inflight_ticket_;
 
     struct GateSnapshot {
         bool can_edit = true;
@@ -131,10 +154,14 @@ class RenderConfigEditorService {
         std::string_view reference) const noexcept;
     RenderConfigCandidateDocumentSet currentDocumentSet() const;
     void loadManagedDocumentBaselines();
+    void completeCommitTransaction(
+        const std::shared_ptr<CommitTransaction> &transaction,
+        RenderConfigRuntimeApplyResult applied) noexcept;
 
   public:
     explicit RenderConfigEditorService(
         RenderConfigEditorDependencies dependencies);
+    ~RenderConfigEditorService();
 
     nlohmann::ordered_json getRenderFeatures(
         const nlohmann::json &params) const;

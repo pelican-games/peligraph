@@ -292,6 +292,13 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
                 std::to_string(instance.mesh_index) + ":" +
                 std::to_string(instance.primitive_index) + ":" +
                 std::to_string(instance.node_index),
+            .geometry_match_identity =
+                std::to_string(instance.geometry_allocation_id) + ":" +
+                std::to_string(instance.index_offset) + ":" +
+                std::to_string(instance.index_count) + ":" +
+                std::to_string(instance.vertex_offset) + ":" +
+                std::to_string(instance.vertex_count) + "@" +
+                canonicalTransformIdentity(instance.world_transform),
             .material_document =
                 instance.material_document_reference,
             .material_asset =
@@ -317,7 +324,7 @@ lowerRayTracingTlasInstancePlan(
     if (ray_scene_rows == nullptr) {
         for (const auto source_index : static_instance_indices) {
             if (source_index >= instances.size() ||
-                source_index > 0x00ffffffu) {
+                result.size() > 0x00ffffffu) {
                 throw std::runtime_error(
                     "ray-query TLAS instance identity exceeds 24 bits");
             }
@@ -325,7 +332,7 @@ lowerRayTracingTlasInstancePlan(
                 .source_index = source_index,
                 .q = 0,
                 .instance_custom_index =
-                    static_cast<std::uint32_t>(source_index),
+                    static_cast<std::uint32_t>(result.size()),
                 .instance_sbt_record_offset = 0,
             });
         }

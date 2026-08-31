@@ -387,6 +387,8 @@ json canonicalRayRecordAbiJson(const RayGroupLayout &layout) {
 std::string makeRayGroupLayoutVirtualInclude(const RayGroupLayout &layout) {
     std::ostringstream source;
     source << "// pelican.ray_group_layout sha256=" << layout.digest_sha256 << '\n';
+    source << "const uint pelican_ray_type_count = "
+           << layout.ray_types.size() << "u;\n";
     for (std::size_t index = 0; index < layout.ray_types.size(); ++index) {
         source << "#define PELICAN_RAY_TYPE_" << layout.ray_types[index]
                << ' ' << index << '\n';
@@ -582,6 +584,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
                                    : std::vector<std::byte>(layout.data_size, std::byte{0}),
              .scene_identity = input.scene_identity,
              .geometry_identity = input.geometry_identity,
+             .geometry_match_identity = input.geometry_match_identity,
              .material_reference = materialReference(input)});
     }
     if (bindings != nullptr) {
@@ -603,13 +606,13 @@ RaySceneRowSnapshot resolveRaySceneRows(
     for (std::size_t index = 1; index < resolved.size(); ++index) {
         const auto &left = resolved[index - 1];
         const auto &right = resolved[index];
-        if (left.scene_identity == right.scene_identity &&
-            left.geometry_identity == right.geometry_identity &&
+        if (!left.geometry_match_identity.empty() &&
+            left.geometry_match_identity == right.geometry_match_identity &&
             (left.group_index != right.group_index ||
              left.record_data != right.record_data)) {
             throw std::runtime_error(
                 "pelican.ray_row_binding_ambiguous@1: geometric row '" +
-                left.scene_identity + "/" + left.geometry_identity +
+                left.geometry_match_identity +
                 "' has inconsistent material bindings");
         }
     }
@@ -625,6 +628,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
         resolved[index].q = static_cast<std::uint32_t>(index);
         identity << resolved[index].scene_identity << '\0'
                  << resolved[index].geometry_identity << '\0'
+                 << resolved[index].geometry_match_identity << '\0'
                  << resolved[index].material_reference << '\0'
                  << resolved[index].group_index << '\n';
         for (const auto byte : resolved[index].record_data)

@@ -94,6 +94,26 @@ class ScopedRayTracingValidationDelegateOverrideForTesting {
         delete;
 };
 
+// Test-only mutation seam around the production RT1b trace-routing hookup.
+// Disabling it skips both operand-domain validation and the payload target
+// lookup driven by those operands; reflection and shader-record validation
+// remain active.
+class ScopedRayTracingRecordAddressingValidationOverrideForTesting {
+    bool previous_ = true;
+
+  public:
+    explicit
+    ScopedRayTracingRecordAddressingValidationOverrideForTesting(
+        bool enabled);
+    ~ScopedRayTracingRecordAddressingValidationOverrideForTesting();
+    ScopedRayTracingRecordAddressingValidationOverrideForTesting(
+        const ScopedRayTracingRecordAddressingValidationOverrideForTesting &) =
+        delete;
+    ScopedRayTracingRecordAddressingValidationOverrideForTesting &operator=(
+        const ScopedRayTracingRecordAddressingValidationOverrideForTesting &) =
+        delete;
+};
+
 void validateProductionRayTracingRequest(
     std::uint32_t requested_depth,
     const RayTracingRuntimeFacts &facts);

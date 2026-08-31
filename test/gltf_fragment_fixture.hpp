@@ -34,7 +34,8 @@ inline void writeBytes(const std::filesystem::path &path, const std::vector<uint
 } // namespace detail
 
 inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
-                                    bool geometry_only = false) {
+                                    bool geometry_only = false,
+                                    bool project_name_collision = false) {
     std::vector<uint8_t> bin;
     for (const float value : {
              -0.5f, -0.5f, 0.0f,
@@ -103,6 +104,9 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
            {"min", {-0.5, -0.5, 0.0}},
            {"max", {0.5, 0.5, 0.0}}}}},
     };
+    if (project_name_collision && !geometry_only) {
+        json["materials"][0]["name"] = "ProjectLeaf";
+    }
     if (geometry_only) {
         json.erase("materials");
         json.erase("images");
@@ -290,8 +294,11 @@ inline std::vector<uint8_t> makeMaterialRoutingGlb() {
 }
 
 inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_names = false,
-                     bool geometry_only = false) {
-    detail::writeBytes(path, makeGlb(duplicate_root_names, geometry_only));
+                     bool geometry_only = false,
+                     bool project_name_collision = false) {
+    detail::writeBytes(
+        path, makeGlb(duplicate_root_names, geometry_only,
+                      project_name_collision));
 }
 
 inline void writeNormalizedPositionGlb(

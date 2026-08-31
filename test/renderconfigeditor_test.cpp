@@ -435,7 +435,8 @@ std::unique_ptr<RenderConfigEditorService> makeService(
             .apply_candidate =
                 [&runtime](
                     RenderConfigCandidateDocumentSet candidate,
-                    const RenderConfigSourceCommit &commit) {
+                    RenderConfigSourceCommit commit,
+                    RenderConfigRuntimeApplyCompletion) {
                     return runtime.apply(
                         std::move(candidate), commit);
                 },
@@ -483,7 +484,8 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
             .runtime_snapshot = [&runtime] { return runtime.snapshot; },
             .apply_candidate =
                 [&runtime](RenderConfigCandidateDocumentSet documents,
-                           const RenderConfigSourceCommit &commit) {
+                           RenderConfigSourceCommit commit,
+                           RenderConfigRuntimeApplyCompletion) {
                     return runtime.apply(std::move(documents), commit);
                 },
             .resolve_authoring_context =
@@ -788,7 +790,8 @@ TEST_CASE(
                     .apply_candidate =
                         [&runtime](
                             RenderConfigCandidateDocumentSet,
-                            const RenderConfigSourceCommit &commit) {
+                            RenderConfigSourceCommit commit,
+                            RenderConfigRuntimeApplyCompletion) {
                             ++runtime.apply_calls;
                             commit();
                             ++runtime.generation;
@@ -2122,7 +2125,8 @@ TEST_CASE(
             .apply_candidate =
                 [&published_generation](
                     RenderConfigCandidateDocumentSet,
-                    const RenderConfigSourceCommit &commit) {
+                    RenderConfigSourceCommit commit,
+                    RenderConfigRuntimeApplyCompletion) {
                     commit();
                     return RenderConfigRuntimeApplyResult{
                         .committed = true,

@@ -219,9 +219,18 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
     // binary loader path (projects/example の AliciaSolid.vrm が現行利用者).
     if (extension != ".glb" && extension != ".gltf" && extension != ".vrm")
         throw std::runtime_error("model reference requires a .glb/.gltf/.vrm file: " + reference);
+    // ProjectBasicConfig rewrites model paths to physical absolute paths for
+    // loading.  Do not let that machine-local path become authored identity:
+    // ray material selectors and reload-stable provenance use the canonical
+    // project-relative key.
+    auto authored_reference = container_key.path;
+    if (fragment) {
+        authored_reference += "#" + fragment->kind + "/" +
+                              fragment->path;
+    }
     auto declaration = ModelDeclaration{
         .name = std::move(name),
-        .reference = std::move(reference),
+        .reference = std::move(authored_reference),
         .path = std::move(physical),
         .fragment = std::move(fragment),
         .container_key = std::move(container_key),

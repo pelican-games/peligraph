@@ -1,9 +1,17 @@
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/graphtransformregistry.hpp"
+#include "../src/core/renderingpass/rendercompilerprogram.hpp"
+#include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
+#include "../src/core/renderingpass/renderstrategyregistry.hpp"
+#include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/shader/raytracingvalidation.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -29,6 +37,8 @@ TEST_CASE("WP366 staged runtime publication waits for joint submit commit",
     FrameGraphRuntimeContainer runtime;
     std::size_t lifetime_commits = 0;
     std::size_t coordinated_commits = 0;
+    std::size_t publication_notifications = 0;
+    std::size_t rollback_notifications = 0;
     const auto stage = [&] {
         auto prepared = runtime.prepareGeneration({});
         const auto generation = prepared.generation();
@@ -39,7 +49,12 @@ TEST_CASE("WP366 staged runtime publication waits for joint submit commit",
             [&] { ++lifetime_commits; },
             [&](const RendererRuntimeGeneration &) {
                 ++coordinated_commits;
-            });
+            },
+            [&, generation](const RendererRuntimeGeneration &published) {
+                CHECK(published.generation == generation);
+                ++publication_notifications;
+            },
+            [&] { ++rollback_notifications; });
         return generation;
     };
 
@@ -52,6 +67,8 @@ TEST_CASE("WP366 staged runtime publication waits for joint submit commit",
     CHECK(runtime.stagedGeneration() == 0);
     CHECK(lifetime_commits == 0);
     CHECK(coordinated_commits == 0);
+    CHECK(publication_notifications == 0);
+    CHECK(rollback_notifications == 1);
 
     const auto committed = stage();
     runtime.prepareStagedGenerationCommit(committed);
@@ -62,6 +79,8 @@ TEST_CASE("WP366 staged runtime publication waits for joint submit commit",
     CHECK(runtime.snapshot()->generation == committed);
     CHECK(runtime.stagedGeneration() == 0);
     CHECK(lifetime_commits == 1);
+    CHECK(publication_notifications == 1);
+    CHECK(rollback_notifications == 1);
 }
 namespace {
 
@@ -96,6 +115,101 @@ RayBindings bindingsFor(const RayGroupLayout &layout) {
     })json", layout, "bindings.json");
 }
 
+nlohmann::json rt1bSidecarRoot() {
+    return {
+        {"ray_group_layout", "layout.json"},
+        {"ray_bindings", "bindings.json"},
+    };
+}
+
+std::shared_ptr<const RayTracingProjectConfig> loadRt1bSidecar(
+    bool runtime_shader_compiler_enabled,
+    std::size_t *load_count = nullptr) {
+    return loadRayTracingProjectConfig(
+        rt1bSidecarRoot(),
+        [load_count](std::string_view reference) {
+            if (load_count != nullptr) {
+                ++*load_count;
+            }
+            if (reference == "layout.json") {
+                return std::string{layoutJson};
+            }
+            if (reference == "bindings.json") {
+                return std::string{R"json({
+                  "schema":"pelican.ray_bindings","version":1,
+                  "bindings":[]
+                })json"};
+            }
+            throw std::runtime_error(
+                "unexpected RT1b sidecar reference");
+        },
+        runtime_shader_compiler_enabled);
+}
+
+nlohmann::json rt1bCompilerConfig(bool require_rt_capability) {
+    nlohmann::json config{
+        {"features", nlohmann::json::array()},
+        {"render_targets", nlohmann::json::array()},
+        {"rendering_passes",
+         nlohmann::json::array({
+             {
+                 {"name", "main"},
+                 {"passes",
+                  nlohmann::json::array({
+                      {
+                          {"name", "scene"},
+                          {"type", "material"},
+                          {"output",
+                           {{"color", nlohmann::json::array({"swapchain"})},
+                            {"depth", nullptr}}},
+                      },
+                  })},
+             },
+         })},
+    };
+    if (require_rt_capability) {
+        config["target_planning"] = {
+            {"graphs",
+             {{"main",
+               {{"required_capabilities",
+                 {"pelican.vulkan.ray_query@1",
+                  "pelican.vulkan.ray_tracing_pipeline@1"}}}}}},
+        };
+    }
+    return config;
+}
+
+struct Rt1bCompilerFixture {
+    nlohmann::json config;
+    PathResolver path_resolver;
+    GraphTransformRegistrySnapshot graph_transforms;
+    RenderStrategyRegistrySnapshot render_strategies;
+    SubgraphReplacementRegistrySnapshot subgraph_replacements;
+    VulkanRenderCompilerBackendContext backend{
+        vk::Format::eB8G8R8A8Srgb,
+        vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    std::vector<RenderCompilerProgramVariantRequest> variants;
+
+    RenderCompilerProgramInput input(
+        std::shared_ptr<const RayTracingProjectConfig> project,
+        bool runtime_shader_compiler_enabled) const {
+        return {
+            .rendering_config = config,
+            .source_name = "WP366a RT1b contrast",
+            .path_resolver = path_resolver,
+            .runtime_shader_compiler_enabled =
+                runtime_shader_compiler_enabled,
+            .ray_tracing_project = std::move(project),
+            .graph_transforms = graph_transforms,
+            .render_strategies = render_strategies,
+            .subgraph_replacements = subgraph_replacements,
+            .backend_context = backend,
+            .variants = variants,
+        };
+    }
+};
+
 TEST_CASE("WP366 layout schema and generated source are raw-digest bound",
           "[ray-tracing][rt1b][layout][mutation]") {
     const auto layout = parseRayGroupLayout(layoutJson, "layout.json");
@@ -107,6 +221,8 @@ TEST_CASE("WP366 layout schema and generated source are raw-digest bound",
     const auto include = makeRayGroupLayoutVirtualInclude(layout);
     CHECK_THAT(include, ContainsSubstring("PELICAN_RAY_TYPE_primary 0"));
     CHECK_THAT(include, ContainsSubstring("PELICAN_RAY_TYPE_shadow 1"));
+    CHECK_THAT(include, ContainsSubstring(
+                            "const uint pelican_ray_type_count = 2u;"));
     CHECK_THAT(include, ContainsSubstring("PELICAN_MISS_sky 0"));
     CHECK_THAT(include, ContainsSubstring(layout.digest_sha256));
     CHECK(include.find("GROUP_") == std::string::npos);
@@ -347,6 +463,120 @@ TEST_CASE("WP366 root sidecar is single-load and drives the complete task gramma
     }
 }
 
+TEST_CASE("WP366a compiler contrast executes the real root-sidecar gate",
+          "[ray-tracing][rt1b][matrix][compiler][production][mutation]") {
+    std::size_t loads = 0;
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto project = loadRt1bSidecar(
+        PELICAN_RUNTIME_SHADER_COMPILER != 0, &loads);
+    REQUIRE(project != nullptr);
+    CHECK(loads == 2);
+    CHECK(project->layout.source_reference == "layout.json");
+    REQUIRE(project->bindings.has_value());
+    CHECK(project->bindings->source_reference == "bindings.json");
+#else
+    CHECK_THROWS_WITH(
+        loadRt1bSidecar(
+            PELICAN_RUNTIME_SHADER_COMPILER != 0, &loads),
+        Catch::Matchers::ContainsSubstring(
+            "pelican.ray_tracing.layout_requires_runtime_compiler@1"));
+    CHECK(loads == 0);
+#endif
+}
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+TEST_CASE("WP366a preview production compiler retains RT1b sidecar provenance",
+          "[ray-tracing][rt1b][matrix][preview][production][mutation]") {
+    Rt1bCompilerFixture fixture;
+    fixture.config = rt1bCompilerConfig(false);
+    fixture.variants = {
+        RenderCompilerProgramVariantRequest{
+            .graph_variant = RenderPipelineGraphVariant::preview,
+            .artifact = RenderCompilerProgramArtifact::data_only,
+        },
+    };
+    const auto sidecar = loadRt1bSidecar(true);
+    const auto output = runRenderCompilerProgram(
+        defaultVulkanRenderCompilerProgram(),
+        fixture.input(sidecar, true));
+    REQUIRE(output.variants.size() == 1);
+    const auto &preview = output.variants.front();
+    REQUIRE(preview.compiled_pipeline != nullptr);
+    CHECK(preview.graph_variant ==
+          RenderPipelineGraphVariant::preview);
+    CHECK(preview.ray_tracing_project == sidecar);
+    CHECK(preview.compiled_pipeline->ray_group_layout_reference ==
+          std::optional<std::string>{"layout.json"});
+    CHECK(preview.compiled_pipeline->ray_bindings_reference ==
+          std::optional<std::string>{"bindings.json"});
+}
+#endif
+
+TEST_CASE("WP366a OpenXR variant owner retains every pipeline SBT",
+          "[ray-tracing][rt1b][matrix][openxr][owner][production][mutation]") {
+#if PELICAN_WITH_OPENXR
+    const auto flat_owner = renderPipelineVariantGpuOwnerScope(
+        true, RenderPipelineGraphVariant::flat);
+    const auto xr_owner = renderPipelineVariantGpuOwnerScope(
+        true, RenderPipelineGraphVariant::xr);
+    REQUIRE(flat_owner == "render_pipeline/variants");
+    REQUIRE(xr_owner == flat_owner);
+
+    RenderPipelineGpuScopePreparation prepared{
+        .owner_scope = flat_owner,
+        .resources = {
+            {RenderPipelineGpuResourceKind::pipeline, 41,
+             "flat_pipeline_with_sbt", 0},
+            {RenderPipelineGpuResourceKind::pipeline, 42,
+             "xr_pipeline_with_sbt", 0},
+        },
+    };
+    const auto arena = compileRenderPipelineGpuArena(
+        {}, 366, std::move(prepared));
+    REQUIRE(arena != nullptr);
+    const auto *scope = arena->findScope(flat_owner);
+    REQUIRE(scope != nullptr);
+    REQUIRE(scope->resources.size() == 2);
+    CHECK(scope->resources[0].name ==
+          "flat_pipeline_with_sbt");
+    CHECK(scope->resources[1].name ==
+          "xr_pipeline_with_sbt");
+#else
+    CHECK(renderPipelineVariantGpuOwnerScope(
+              false, RenderPipelineGraphVariant::flat) ==
+          "render_pipeline/flat");
+    CHECK_THROWS_WITH(
+        renderPipelineVariantGpuOwnerScope(
+            true, RenderPipelineGraphVariant::xr),
+        Catch::Matchers::ContainsSubstring(
+            "XR graph variant is unavailable in this build"));
+#endif
+}
+
+TEST_CASE("WP366a production compiler rejects an RT1b plan without device capability",
+          "[ray-tracing][rt1b][matrix][capability][production][mutation]") {
+    Rt1bCompilerFixture fixture;
+    fixture.config = rt1bCompilerConfig(true);
+    fixture.variants = {
+        RenderCompilerProgramVariantRequest{
+            .graph_variant = RenderPipelineGraphVariant::flat,
+            .artifact = RenderCompilerProgramArtifact::runtime_package,
+        },
+    };
+    std::shared_ptr<const RayTracingProjectConfig> sidecar;
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    sidecar = loadRt1bSidecar(true);
+#endif
+    CHECK_THROWS_WITH(
+        runRenderCompilerProgram(
+            defaultVulkanRenderCompilerProgram(),
+            fixture.input(
+                std::move(sidecar),
+                PELICAN_RUNTIME_SHADER_COMPILER != 0)),
+        Catch::Matchers::ContainsSubstring(
+            "pelican.plan.ray_query_required_unavailable@1"));
+}
+
 TEST_CASE("WP366 canonical std430 ABI mirrors binding bytes",
           "[ray-tracing][rt1b][abi][mutation]") {
     const auto layout = parseRayGroupLayout(layoutJson);
@@ -409,9 +639,11 @@ TEST_CASE("WP366 material resolution produces canonical immutable rows",
     const auto bindings = bindingsFor(layout);
     const std::array input{
         RaySceneRowInput{.scene_identity = "TreeB/0", .geometry_identity = "mesh/0",
+                         .geometry_match_identity = "allocation/1@transform/B",
                          .material_asset = "models/tree.glb", .source_material_index = 2,
                          .source_index = 41},
         RaySceneRowInput{.scene_identity = "TreeA/0", .geometry_identity = "mesh/0",
+                         .geometry_match_identity = "allocation/2@transform/A",
                          .material_document = "materials/leaf.mat.json", .source_index = 17},
     };
     const auto forward = resolveRaySceneRows(input, layout, &bindings);
@@ -451,8 +683,8 @@ TEST_CASE("WP366 material resolution produces canonical immutable rows",
     }
     SECTION("one geometric row cannot receive divergent bindings") {
         auto ambiguous = input;
-        ambiguous[1].scene_identity = ambiguous[0].scene_identity;
-        ambiguous[1].geometry_identity = ambiguous[0].geometry_identity;
+        ambiguous[1].geometry_match_identity =
+            ambiguous[0].geometry_match_identity;
         CHECK_THROWS_WITH(resolveRaySceneRows(ambiguous, layout, &bindings),
                           Catch::Matchers::ContainsSubstring(
                               "pelican.ray_row_binding_ambiguous@1"));
@@ -551,16 +783,47 @@ TEST_CASE("WP366 production AS lowering is publish-order independent",
               reverse_inputs[right.source_index].world_transform);
     }
 
+    SECTION("legacy null-layout bytes number only included instances") {
+        auto legacy = forward_inputs;
+        legacy[0].skinned = true;
+        const auto classification =
+            classifyRayQueryStaticGeometry(legacy);
+        REQUIRE(classification.static_instance_indices ==
+                std::vector<std::size_t>{1});
+        const auto planned = lowerRayTracingTlasInstancePlan(
+            legacy, classification.static_instance_indices,
+            nullptr, 0);
+        REQUIRE(planned.size() == 1);
+        CHECK(planned[0].source_index == 1);
+        CHECK(planned[0].instance_custom_index == 0);
+        const vk::AccelerationStructureInstanceKHR actual{
+            vk::TransformMatrixKHR{},
+            planned[0].instance_custom_index,
+            0xffu,
+            planned[0].instance_sbt_record_offset,
+            vk::GeometryInstanceFlagsKHR{},
+            0x366aull};
+        const vk::AccelerationStructureInstanceKHR parent_bytes{
+            vk::TransformMatrixKHR{}, 0u, 0xffu, 0u,
+            vk::GeometryInstanceFlagsKHR{}, 0x366aull};
+        CHECK(std::memcmp(&actual, &parent_bytes,
+                          sizeof(actual)) == 0);
+    }
+
     SECTION("geometrically coincident production rows reject divergent material bindings") {
         auto ambiguous = forward_inputs;
         ambiguous[1].geometry_allocation_id =
             ambiguous[0].geometry_allocation_id;
         ambiguous[1].index_offset = ambiguous[0].index_offset;
         ambiguous[1].vertex_offset = ambiguous[0].vertex_offset;
-        ambiguous[1].mesh_index = ambiguous[0].mesh_index;
+        ambiguous[1].material_asset_reference =
+            "models/tree-alias.glb";
+        ambiguous[1].mesh_index =
+            ambiguous[0].mesh_index + 7;
         ambiguous[1].primitive_index =
-            ambiguous[0].primitive_index;
-        ambiguous[1].node_index = ambiguous[0].node_index;
+            ambiguous[0].primitive_index + 3;
+        ambiguous[1].node_index =
+            ambiguous[0].node_index + 5;
         ambiguous[1].world_transform = ambiguous[0].world_transform;
         project.bindings = parseRayBindings(R"json({
           "schema":"pelican.ray_bindings","version":1,"bindings":[
@@ -582,9 +845,11 @@ TEST_CASE("WP366 q by r addressing packs every row from H of its logical group",
     const auto bindings = bindingsFor(layout);
     const std::array inputs{
         RaySceneRowInput{.scene_identity = "TreeB/0", .geometry_identity = "mesh/0",
+                         .geometry_match_identity = "allocation/1@transform/B",
                          .material_asset = "models/tree.glb", .source_material_index = 2,
                          .source_index = 1},
         RaySceneRowInput{.scene_identity = "TreeA/0", .geometry_identity = "mesh/0",
+                         .geometry_match_identity = "allocation/2@transform/A",
                          .material_document = "materials/leaf.mat.json", .source_index = 0},
     };
     const auto rows = resolveRaySceneRows(inputs, layout, &bindings);
@@ -839,7 +1104,62 @@ TEST_CASE("WP366 final SPIR-V shader-record ABI is a load-time invariant",
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_tracing.shader_record_abi_mismatch@1"));
     }
+    SECTION("record storage is forbidden outside traced hit slots") {
+        auto record_raygen = compile(R"glsl(
+          #version 460
+          #extension GL_EXT_ray_tracing : require
+          layout(shaderRecordEXT, std430) buffer Record {
+            vec3 tint; float flags;
+          } record_data;
+          void main() {}
+        )glsl", vk::ShaderStageFlagBits::eRaygenKHR,
+            "record.rgen");
+        auto invalid_request = request();
+        invalid_request.raygen = occurrence(
+            record_raygen, ShaderStage::raygen, 0,
+            "record.rgen");
+        CHECK_THROWS_WITH(
+            validateRayTracingPipelineInterfaces(
+                invalid_request, facts),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.shader_record_abi_mismatch@1"));
+
+        auto record_miss = compile(R"glsl(
+          #version 460
+          #extension GL_EXT_ray_tracing : require
+          layout(location=0) rayPayloadInEXT vec4 payload;
+          layout(shaderRecordEXT, std430) buffer Record {
+            vec3 tint; float flags;
+          } record_data;
+          void main() { payload = vec4(record_data.tint, record_data.flags); }
+        )glsl", vk::ShaderStageFlagBits::eMissKHR,
+            "record.rmiss");
+        invalid_request = request();
+        std::array invalid_misses = misses;
+        invalid_misses[0] = occurrence(
+            record_miss, ShaderStage::miss, 1,
+            "record.rmiss");
+        invalid_request.misses = invalid_misses;
+        CHECK_THROWS_WITH(
+            validateRayTracingPipelineInterfaces(
+                invalid_request, facts),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.shader_record_abi_mismatch@1"));
+
+        invalid_request = request();
+        auto invalid_hits = hits;
+        invalid_hits[1] = occurrence(
+            hit, ShaderStage::closesthit, 4,
+            "record-untraced.rchit");
+        invalid_request.hit_groups = invalid_hits;
+        CHECK_THROWS_WITH(
+            validateRayTracingPipelineInterfaces(
+                invalid_request, facts),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.shader_record_abi_mismatch@1"));
+    }
 }
+
 #endif
 
 } // namespace

@@ -176,6 +176,9 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
         std::function<void()> commit_lifetime;
         std::function<void(const RendererRuntimeGeneration &)>
             before_publish;
+        std::function<void(const RendererRuntimeGeneration &)>
+            after_publish;
+        std::function<void()> after_rollback;
         bool ready = false;
     };
 
@@ -200,7 +203,10 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
         PreparedRendererRuntimeGeneration &&prepared,
         const std::function<void(
             const RendererRuntimeGeneration &)>
-            &before_publish = {});
+            &before_publish = {},
+        const std::function<void(
+            const RendererRuntimeGeneration &)>
+            &after_publish = {});
     // A ray-layout generation is executable while private, but remains
     // absent from snapshot() until the frame containing its complete SBT,
     // row snapshot, and TLAS has been submitted successfully.
@@ -209,7 +215,10 @@ DECLARE_MODULE(FrameGraphRuntimeContainer) {
         std::shared_ptr<const void> lifetime,
         std::function<void()> commit_lifetime,
         std::function<void(const RendererRuntimeGeneration &)>
-            before_publish = {});
+            before_publish = {},
+        std::function<void(const RendererRuntimeGeneration &)>
+            after_publish = {},
+        std::function<void()> after_rollback = {});
     std::shared_ptr<const RendererRuntimeGeneration>
     renderingSnapshot() const noexcept;
     std::uint64_t stagedGeneration() const noexcept;

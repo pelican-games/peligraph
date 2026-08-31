@@ -1006,13 +1006,28 @@ registerRenderingPassConfigVariantsData(
     std::function<void(
         const RendererRuntimeGeneration &)>
         coordinated_commit;
+    std::function<void(
+        const RendererRuntimeGeneration &)>
+        coordinated_publication;
+    std::function<void()> coordinated_rollback;
     for (const auto &variant : dependencies) {
         if (variant.options
                 .before_publish_prepared_generation) {
             coordinated_commit =
                 variant.options
                     .before_publish_prepared_generation;
-            break;
+        }
+        if (variant.options
+                .after_publish_prepared_generation) {
+            coordinated_publication =
+                variant.options
+                    .after_publish_prepared_generation;
+        }
+        if (variant.options
+                .after_rollback_prepared_generation) {
+            coordinated_rollback =
+                variant.options
+                    .after_rollback_prepared_generation;
         }
     }
     const auto &ids =
@@ -1036,12 +1051,22 @@ registerRenderingPassConfigVariantsData(
             std::move(prepared_generation),
             std::static_pointer_cast<const void>(gpu_arena),
             [gpu_arena] { gpu_arena->commit(); },
-            std::move(coordinated_commit));
+            std::move(coordinated_commit),
+            std::move(coordinated_publication),
+            std::move(coordinated_rollback));
     } else {
         first.frame_graph_runtime.publishPreparedGeneration(
             std::move(prepared_generation),
             coordinated_commit);
         gpu_arena->commit();
+        if (coordinated_publication) {
+            const auto published =
+                first.frame_graph_runtime.snapshot();
+            if (published == nullptr) {
+                std::terminate();
+            }
+            coordinated_publication(*published);
+        }
     }
     return {
         .runtime_variants =

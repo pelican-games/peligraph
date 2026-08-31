@@ -1223,6 +1223,11 @@ pelican_define_test(raytracing_rt1b_test pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_raytracing_rt1b_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
+    PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>
+    PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
+    PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
+    PELICAN_WP366_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_raytracing_rt1b_test PRIVATE pelican_shaderc)
@@ -1843,37 +1848,39 @@ add_test(
 set_tests_properties(animgraph_demo_preset_headless_player PROPERTIES
     TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
 
-add_executable(pelican_test_studio_player_arguments
-    studio_player_arguments_probe.cpp
-    ${CMAKE_SOURCE_DIR}/src/devstudio/viewport/studioplayerarguments.cpp)
-set_target_properties(pelican_test_studio_player_arguments PROPERTIES
-    CXX_STANDARD 20)
-target_link_libraries(pelican_test_studio_player_arguments PRIVATE
-    nlohmann_json)
+if(NOT SKIP_DEVSTUDIO)
+    add_executable(pelican_test_studio_player_arguments
+        studio_player_arguments_probe.cpp
+        ${CMAKE_SOURCE_DIR}/src/devstudio/viewport/studioplayerarguments.cpp)
+    set_target_properties(pelican_test_studio_player_arguments PROPERTIES
+        CXX_STANDARD 20)
+    target_link_libraries(pelican_test_studio_player_arguments PRIVATE
+        nlohmann_json)
 
-if(MSVC)
-    set(pelican_validation_build_default "$<CONFIG:Debug>")
-else()
-    # _DEBUG is an MSVC convention. Preserve the engine's existing exact
-    # preprocessor default on other toolchains instead of assuming that a
-    # configuration named Debug defines it.
-    set(pelican_validation_build_default 0)
+    if(MSVC)
+        set(pelican_validation_build_default "$<CONFIG:Debug>")
+    else()
+        # _DEBUG is an MSVC convention. Preserve the engine's existing exact
+        # preprocessor default on other toolchains instead of assuming that a
+        # configuration named Debug defines it.
+        set(pelican_validation_build_default 0)
+    endif()
+    add_test(
+        NAME vulkan_validation_runtime_player
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
+            -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
+            -DEXPECT_DEFAULT_ENABLED=${pelican_validation_build_default}
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vulkan_validation_runtime
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vulkan_validation_runtime.cmake
+    )
+    set_tests_properties(vulkan_validation_runtime_player PROPERTIES
+        TIMEOUT 600
+        RESOURCE_LOCK pelican_gpu
+        LABELS gpu
+        SKIP_REGULAR_EXPRESSION PELICAN_VULKAN_VALIDATION_RUNTIME_SKIP_NO_DEVICE)
 endif()
-add_test(
-    NAME vulkan_validation_runtime_player
-    COMMAND ${CMAKE_COMMAND}
-        -DPLAYER=$<TARGET_FILE:pelican_player>
-        -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
-        -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
-        -DEXPECT_DEFAULT_ENABLED=${pelican_validation_build_default}
-        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vulkan_validation_runtime
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vulkan_validation_runtime.cmake
-)
-set_tests_properties(vulkan_validation_runtime_player PROPERTIES
-    TIMEOUT 600
-    RESOURCE_LOCK pelican_gpu
-    LABELS gpu
-    SKIP_REGULAR_EXPRESSION PELICAN_VULKAN_VALIDATION_RUNTIME_SKIP_NO_DEVICE)
 
 add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
@@ -1917,27 +1924,32 @@ if(NOT "${PELICAN_TEST_PROJECTS_DIR}" STREQUAL "")
 endif()
 
 add_dependencies(pelican_test_png_nonuniform_check
-    pelican_test_studio_player_arguments
     ${pelican_catalog_game_logic_targets})
+if(TARGET pelican_test_studio_player_arguments)
+    add_dependencies(pelican_test_png_nonuniform_check
+        pelican_test_studio_player_arguments)
+endif()
 
-add_test(
-    NAME project_catalog_headless_smoke
-    COMMAND ${CMAKE_COMMAND}
-        -DPLAYER=$<TARGET_FILE:pelican_player>
-        -DPNG_NONUNIFORM_CHECK=$<TARGET_FILE:pelican_test_png_nonuniform_check>
-        -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
-        -DGAME_LOGIC_DIR=$<TARGET_FILE_DIR:pelican_test_png_nonuniform_check>
-        -DGAME_LOGIC_PREFIX=${CMAKE_SHARED_LIBRARY_PREFIX}
-        -DGAME_LOGIC_SUFFIX=${CMAKE_SHARED_LIBRARY_SUFFIX}
-        -DPROJECTS_DIR=${PELICAN_TEST_PROJECTS_DIR}
-        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/project_catalog_smoke
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake
-)
-set_tests_properties(project_catalog_headless_smoke PROPERTIES
-    TIMEOUT 600
-    RESOURCE_LOCK pelican_gpu
-    LABELS gpu
-    SKIP_REGULAR_EXPRESSION PELICAN_PROJECT_CATALOG_SMOKE_SKIP_NO_PROJECTS_DIR)
+if(TARGET pelican_test_studio_player_arguments)
+    add_test(
+        NAME project_catalog_headless_smoke
+        COMMAND ${CMAKE_COMMAND}
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPNG_NONUNIFORM_CHECK=$<TARGET_FILE:pelican_test_png_nonuniform_check>
+            -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
+            -DGAME_LOGIC_DIR=$<TARGET_FILE_DIR:pelican_test_png_nonuniform_check>
+            -DGAME_LOGIC_PREFIX=${CMAKE_SHARED_LIBRARY_PREFIX}
+            -DGAME_LOGIC_SUFFIX=${CMAKE_SHARED_LIBRARY_SUFFIX}
+            -DPROJECTS_DIR=${PELICAN_TEST_PROJECTS_DIR}
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/project_catalog_smoke
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake
+    )
+    set_tests_properties(project_catalog_headless_smoke PROPERTIES
+        TIMEOUT 600
+        RESOURCE_LOCK pelican_gpu
+        LABELS gpu
+        SKIP_REGULAR_EXPRESSION PELICAN_PROJECT_CATALOG_SMOKE_SKIP_NO_PROJECTS_DIR)
+endif()
 
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(audio_test GROUP core_diagnostics pelican_core)

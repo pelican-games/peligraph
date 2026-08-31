@@ -35,6 +35,24 @@ class ShaderLibrary;
 class VulkanUtils;
 struct RayTracingProjectConfig;
 
+// Test-only mutation seam proving that production ComputeTask preparation is
+// the component that injects the generated ray-layout include and cache salt.
+class ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting {
+    bool previous_ = true;
+
+  public:
+    explicit
+    ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting(
+        bool enabled);
+    ~ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting();
+    ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting(
+        const ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting &) =
+        delete;
+    ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting &operator=(
+        const ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting &) =
+        delete;
+};
+
 // Descriptor caches backed by shared pools and whole-pool generations both
 // retire through DeletionQueue submission leases. The pool is declared before
 // the descriptor owner so reverse member destruction releases descriptor sets

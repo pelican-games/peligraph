@@ -103,6 +103,13 @@ struct RenderingPassConfigRegistrationDependencies {
         // variant in a family may own this coordinated commit hook.
         std::function<void(const RendererRuntimeGeneration &)>
             before_publish_prepared_generation;
+        // These observers are part of the same publication slot.  A staged
+        // ray generation invokes exactly one of them after submit succeeds
+        // or when the private generation is rolled back.
+        std::function<void(const RendererRuntimeGeneration &)>
+            after_publish_prepared_generation;
+        std::function<void()>
+            after_rollback_prepared_generation;
         RenderPipelineGpuRegistrationFaultPoint fault_point =
             RenderPipelineGpuRegistrationFaultPoint::none;
     } options;

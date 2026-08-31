@@ -45,6 +45,25 @@
 
 namespace Pelican {
 
+std::string renderPipelineVariantGpuOwnerScope(
+    bool xr_active,
+    RenderPipelineGraphVariant variant) {
+    if (xr_active) {
+#if PELICAN_WITH_OPENXR
+        if (variant == RenderPipelineGraphVariant::flat ||
+            variant == RenderPipelineGraphVariant::xr) {
+            return "render_pipeline/variants";
+        }
+#else
+        (void)variant;
+        throw std::runtime_error(
+            "XR graph variant is unavailable in this build");
+#endif
+    }
+    return "render_pipeline/" +
+           std::string{renderPipelineGraphVariantName(variant)};
+}
+
 namespace {
 
 template <typename Module>
@@ -457,6 +476,10 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         };
     flat_options.before_publish_prepared_generation =
         std::move(hooks.before_publish);
+    flat_options.after_publish_prepared_generation =
+        std::move(hooks.after_publish);
+    flat_options.after_rollback_prepared_generation =
+        std::move(hooks.after_rollback);
 #if PELICAN_WITH_OPENXR
     const bool xr_active =
         GET_MODULE(EngineLaunchConfig).xr_active;
@@ -467,7 +490,9 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         // share targets, shaders, and pipelines, so a combined owner is the
         // honest lifetime boundary.
         flat_options.gpu_owner_scope =
-            "render_pipeline/variants";
+            renderPipelineVariantGpuOwnerScope(
+                xr_active,
+                RenderPipelineGraphVariant::flat);
     }
 #endif
     variant_dependencies.push_back(
@@ -486,7 +511,9 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         xr_options.enable_external_depth_export = true;
         xr_options.publish_enabled_features = false;
         xr_options.gpu_owner_scope =
-            "render_pipeline/variants";
+            renderPipelineVariantGpuOwnerScope(
+                xr_active,
+                RenderPipelineGraphVariant::xr);
         xr_options.prepare_additional_gpu_resources =
             [base_extent] {
                 registerXrMirrorIntermediate(base_extent);

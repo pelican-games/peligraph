@@ -1566,8 +1566,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     .apply_candidate =
                         [runtime](
                             RenderConfigCandidateDocumentSet candidate,
-                            const RenderConfigSourceCommit
-                                &source_commit) {
+                            RenderConfigSourceCommit source_commit,
+                            RenderConfigRuntimeApplyCompletion
+                                completion) {
                             if (runtime->modules.reload_service ==
                                 nullptr) {
                                 return RenderConfigRuntimeApplyResult{
@@ -1580,9 +1581,27 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                     ->applyAuthoredCandidate(
                                         watch::renderPipelineReloadParticipantName,
                                         std::move(candidate),
-                                        source_commit);
+                                        std::move(source_commit),
+                                        [completion =
+                                             std::move(completion)](
+                                            watch::AuthoredRuntimeReloadResult
+                                                completed) mutable {
+                                            if (!completion) return;
+                                            completion(
+                                                RenderConfigRuntimeApplyResult{
+                                                    .committed = completed.committed,
+                                                    .staged = completed.staged,
+                                                    .staged_generation = completed.staged_generation,
+                                                    .published_generation = completed.published_generation,
+                                                    .error = std::move(completed.error),
+                                                    .post_commit_error = std::move(completed.post_commit_error),
+                                                });
+                                        });
                             return RenderConfigRuntimeApplyResult{
                                 .committed = applied.committed,
+                                .staged = applied.staged,
+                                .staged_generation =
+                                    applied.staged_generation,
                                 .published_generation =
                                     applied.published_generation,
                                 .error = applied.error,

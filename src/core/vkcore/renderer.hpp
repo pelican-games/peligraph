@@ -26,10 +26,14 @@ namespace Pelican {
 struct RenderPipelineReloadState;
 struct RenderPipelineAuthoringApplyResult {
     bool committed = false;
+    bool staged = false;
+    std::uint64_t staged_generation = 0;
     std::uint64_t published_generation = 0;
     std::string error;
     std::string post_commit_error;
 };
+using RenderPipelineAuthoringCompletion =
+    std::function<void(RenderPipelineAuthoringApplyResult)>;
 struct RayQueryAccelerationStructureDiagnostics;
 namespace watch {
 struct ReloadRequest;
@@ -165,7 +169,8 @@ DECLARE_MODULE(Renderer) {
     bool reloadRenderPipelineFromDisk(
         std::string &error,
         std::span<const watch::ReloadRequest>
-            companion_requests = {}) noexcept;
+            companion_requests = {},
+        std::uint64_t *staged_generation = nullptr) noexcept;
 
   public:
     Renderer();
@@ -176,7 +181,8 @@ DECLARE_MODULE(Renderer) {
     RenderPipelineAuthoringApplyResult
     applyRenderPipelineAuthoringCandidate(
         RenderConfigCandidateDocumentSet candidate_documents,
-        const std::function<void()> &source_commit);
+        std::function<void()> source_commit,
+        RenderPipelineAuthoringCompletion completion = {});
     PickingReadbackResult readPickingPixel(std::uint32_t x,
                                            std::uint32_t y);
     RenderTargetReadback readRenderTargetForTesting(

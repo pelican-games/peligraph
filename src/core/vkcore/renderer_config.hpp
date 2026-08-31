@@ -80,12 +80,23 @@ struct RenderGraphVariantLoadHooks {
     std::function<void(
         const RendererRuntimeGeneration &)>
         before_publish;
+    std::function<void(
+        const RendererRuntimeGeneration &)>
+        after_publish;
+    std::function<void()> after_rollback;
 };
 
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfig();
 RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
     std::string_view rendering_config_json,
     RenderGraphVariantLoadHooks hooks = {});
+
+// The owner identity used by the production variant-family registration.
+// When OpenXR is active, flat and XR pipelines (including every pipeline's
+// SBT) must retire and publish as one scope.
+std::string renderPipelineVariantGpuOwnerScope(
+    bool xr_active,
+    RenderPipelineGraphVariant variant);
 
 // Explicit launch/tooling path. The baseline functions above remain solely
 // project-authored and never inspect EngineLaunchConfig overlays.

@@ -47,6 +47,8 @@ enum class RuntimeReloadTrigger : std::uint8_t {
 struct RuntimeReloadResult {
     bool attempted = false;
     bool committed = false;
+    bool staged = false;
+    std::uint64_t staged_generation = 0;
     std::string error;
 
     bool failed() const noexcept { return !error.empty(); }
@@ -61,9 +63,27 @@ struct RuntimeReloadSummary {
 struct AuthoredRuntimeReloadResult {
     bool attempted = false;
     bool committed = false;
+    bool staged = false;
+    std::uint64_t staged_generation = 0;
     std::uint64_t published_generation = 0;
     std::string error;
     std::string post_commit_error;
+};
+
+using RenderPipelineCompanionReloadObserver =
+    std::function<void(std::span<const ReloadRequest>)>;
+
+class ScopedRenderPipelineCompanionReloadObserver {
+    RenderPipelineCompanionReloadObserver previous_;
+
+  public:
+    explicit ScopedRenderPipelineCompanionReloadObserver(
+        RenderPipelineCompanionReloadObserver observer);
+    ~ScopedRenderPipelineCompanionReloadObserver();
+    ScopedRenderPipelineCompanionReloadObserver(
+        const ScopedRenderPipelineCompanionReloadObserver &) = delete;
+    ScopedRenderPipelineCompanionReloadObserver &operator=(
+        const ScopedRenderPipelineCompanionReloadObserver &) = delete;
 };
 
 struct RuntimeReloadParticipant {
@@ -104,7 +124,8 @@ struct ReloadParticipant {
     // fallible pre-publication operation, and then publish without throwing.
     std::function<AuthoredRuntimeReloadResult(
         RenderConfigCandidateDocumentSet,
-        const std::function<void()> &)>
+        std::function<void()>,
+        std::function<void(AuthoredRuntimeReloadResult)>)>
         apply_authored_candidate;
 };
 
@@ -119,7 +140,8 @@ DECLARE_MODULE(ReloadService) {
     AuthoredRuntimeReloadResult applyAuthoredCandidate(
         std::string_view name,
         RenderConfigCandidateDocumentSet candidate,
-        const std::function<void()> &source_commit);
+        std::function<void()> source_commit,
+        std::function<void(AuthoredRuntimeReloadResult)> completion = {});
     bool requestRuntimeReload(std::string_view name);
     nlohmann::json statusJson() const;
     FileWatcher *watcherForTesting() noexcept { return watcher_.get(); }

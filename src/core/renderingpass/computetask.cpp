@@ -27,6 +27,9 @@ namespace Pelican {
 
 namespace {
 
+thread_local bool ray_group_layout_virtual_include_hookup_enabled =
+    true;
+
 constexpr uint32_t max_compute_descriptor_sets = 256;
 constexpr uint32_t max_compute_descriptors = 1024;
 constexpr vk::DeviceSize compute_dispatch_command_size =
@@ -2762,7 +2765,8 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             makeShaderResourcePortVirtualIncludes(
                 resource_interface);
     }
-    if (definition.ray_tracing &&
+    if (ray_group_layout_virtual_include_hookup_enabled &&
+        definition.ray_tracing &&
         definition.ray_tracing->uses_group_layout) {
         if (!dependencies.ray_tracing_project) {
             throw std::logic_error(
@@ -3019,6 +3023,19 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     }
     registration_order.push_back(id);
     return id;
+}
+
+ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting::
+    ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting(
+        bool enabled)
+    : previous_{
+          ray_group_layout_virtual_include_hookup_enabled} {
+    ray_group_layout_virtual_include_hookup_enabled = enabled;
+}
+
+ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting::
+    ~ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting() {
+    ray_group_layout_virtual_include_hookup_enabled = previous_;
 }
 
 void ComputeTaskContainer::rebindRenderTargets(

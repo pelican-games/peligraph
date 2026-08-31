@@ -291,6 +291,10 @@ RenderConfigEditorService::RenderConfigEditorService(
     loadManagedDocumentBaselines();
 }
 
+RenderConfigEditorService::~RenderConfigEditorService() {
+    lifetime_.reset();
+}
+
 void RenderConfigEditorService::loadManagedDocumentBaselines() {
     managed_documents_.clear();
     if (!dependencies_.normalize_reference ||
@@ -1063,17 +1067,161 @@ bool RenderConfigEditorService::ownsTicket(
     return results_.contains(std::string{ticket});
 }
 
+void RenderConfigEditorService::completeCommitTransaction(
+    const std::shared_ptr<CommitTransaction> &transaction,
+    RenderConfigRuntimeApplyResult applied) noexcept {
+    transaction->completion_arrived = true;
+    if (inflight_ticket_ == transaction->ticket.id) {
+        inflight_ticket_.reset();
+    }
+    const auto finish = [this, &transaction](OrderedJson result) {
+        if (!result.contains("ticket")) {
+            result["ticket"] = transaction->ticket.id;
+        }
+        results_[transaction->ticket.id] = result;
+        completed_.push_back(std::move(result));
+    };
+    const auto rollback_source = [&transaction]() noexcept {
+        std::string error;
+        if (transaction->source_receipt &&
+            transaction->source_receipt->changed()) {
+            try {
+                rollbackCommittedRenderConfigDocuments(
+                    std::move(*transaction->source_receipt));
+            } catch (const std::exception &caught) {
+                error = caught.what();
+            } catch (...) {
+                error =
+                    "unknown render config rollback failure";
+            }
+        }
+        return error;
+    };
+    try {
+        if (!transaction->source_external_modification.empty()) {
+            finish(rejection(
+                "external_modification",
+                transaction->source_external_modification,
+                {{"ticket", transaction->ticket.id},
+                 {"expected_source_digest",
+                  transaction->ticket.base_source_digest}}));
+            return;
+        }
+        if (applied.staged || !applied.committed) {
+            const auto rollback_error = rollback_source();
+            auto details = OrderedJson{
+                {"ticket", transaction->ticket.id},
+                {"participant", "pelican.render_pipeline"},
+            };
+            if (!rollback_error.empty()) {
+                details["rollback_error"] = rollback_error;
+            }
+            finish(rejection(
+                rollback_error.empty()
+                    ? "render_pipeline_preflight_failed"
+                    : "render_config_rollback_failed",
+                applied.error.empty()
+                    ? (applied.staged
+                           ? "render pipeline completion returned staged twice"
+                           : "render pipeline candidate was rejected")
+                    : applied.error,
+                std::move(details)));
+            return;
+        }
+        if (!transaction->source_commit_called) {
+            finish(rejection(
+                "render_pipeline_commit_protocol_error",
+                "pelican.render_pipeline reported a commit without invoking the source commit callback",
+                {{"ticket", transaction->ticket.id},
+                 {"participant", "pelican.render_pipeline"}}));
+            return;
+        }
+
+        document_ = std::move(transaction->ticket.candidate);
+        if (transaction->ticket.candidate_documents) {
+            for (const auto &candidate :
+                 transaction->ticket.candidate_documents->documents()) {
+                if (candidate.normalized_reference ==
+                    source_normalized_reference_) {
+                    continue;
+                }
+                if (candidate.operation ==
+                    RenderConfigDocumentOperation::erase) {
+                    managed_documents_.erase(
+                        candidate.normalized_reference);
+                } else if (hasManagedFragmentMarker(candidate.bytes) &&
+                           isManagedFragmentPath(
+                               dependencies_.project_root,
+                               candidate.path)) {
+                    managed_documents_.insert_or_assign(
+                        candidate.normalized_reference,
+                        ManagedDocumentBaseline{
+                            .reference = candidate.reference,
+                            .normalized_reference =
+                                candidate.normalized_reference,
+                            .path = candidate.path,
+                            .bytes = candidate.bytes,
+                            .digest = renderConfigSourceDigest(
+                                candidate.bytes),
+                        });
+                }
+            }
+        }
+        auto completed = OrderedJson{
+            {"ticket", transaction->ticket.id},
+            {"status", "committed"},
+            {"committed", true},
+            {"published_generation", applied.published_generation},
+            {"source_digest", digestJson(document_.sourceDigest())},
+            {"source_commit_called",
+             transaction->source_commit_called},
+        };
+        if (!transaction->ticket.operation.empty()) {
+            completed["operation"] =
+                transaction->ticket.operation;
+        }
+        if (!transaction->ticket.fragment_reference.empty()) {
+            completed["fragment_reference"] =
+                transaction->ticket.fragment_reference;
+        }
+        if (!applied.post_commit_error.empty()) {
+            completed["post_commit_error"] =
+                applied.post_commit_error;
+        }
+        finish(std::move(completed));
+    } catch (const std::exception &caught) {
+        const auto rollback_error = rollback_source();
+        finish(rejection(
+            rollback_error.empty()
+                ? "render_pipeline_preflight_failed"
+                : "render_config_rollback_failed",
+            caught.what(),
+            {{"ticket", transaction->ticket.id},
+             {"participant", "pelican.render_pipeline"},
+             {"rollback_error", rollback_error}}));
+    } catch (...) {
+        (void)rollback_source();
+        finish(rejection(
+            "render_pipeline_preflight_failed",
+            "unknown render pipeline completion failure",
+            {{"ticket", transaction->ticket.id},
+             {"participant", "pelican.render_pipeline"}}));
+    }
+}
+
 void RenderConfigEditorService::commitPending() noexcept {
+    if (inflight_ticket_) return;
     auto queue = std::move(pending_);
     pending_.clear();
-    for (auto &ticket : queue) {
+    for (auto ticket_iterator = queue.begin();
+         ticket_iterator != queue.end(); ++ticket_iterator) {
+        auto &ticket = *ticket_iterator;
         auto finish = [&](OrderedJson result) {
             if (!result.contains("ticket")) result["ticket"] = ticket.id;
             results_[ticket.id] = result;
             completed_.push_back(std::move(result));
         };
-        std::optional<RenderConfigDocumentCommitReceipt>
-            source_receipt;
+        std::shared_ptr<CommitTransaction> transaction;
         try {
             const auto gate = gateSnapshot();
             if (!gate.can_edit || gate.epoch != ticket.accepted_gate_epoch ||
@@ -1125,151 +1273,115 @@ void RenderConfigEditorService::commitPending() noexcept {
                 continue;
             }
 
-            bool source_commit_called = false;
-            std::string source_external_modification;
-            const auto source_commit = [&] {
-                source_commit_called = true;
+            transaction = std::make_shared<CommitTransaction>(
+                std::move(ticket));
+            const auto project_root =
+                dependencies_.project_root;
+            const auto source_commit =
+                [transaction, project_root] {
+                transaction->source_commit_called = true;
                 try {
-                    if (!ticket.candidate_documents) {
+                    if (!transaction->ticket.candidate_documents) {
                         throw std::logic_error(
                             "render config edit ticket has no candidate document set");
                     }
-                    source_receipt =
+                    transaction->source_receipt =
                         commitRenderConfigCandidateDocuments(
-                            dependencies_.project_root,
-                            *ticket.candidate_documents);
+                            project_root,
+                            *transaction->ticket.candidate_documents);
                 } catch (const RenderConfigExternalModification &error) {
                     // Production's reload participant converts callback
                     // exceptions to its result type. Preserve the CAS
                     // classification across that boundary.
-                    source_external_modification = error.what();
+                    transaction->source_external_modification =
+                        error.what();
                     throw;
                 }
             };
+            const std::weak_ptr<const void> lifetime =
+                lifetime_;
+            const auto completion =
+                [this, lifetime, transaction](
+                    RenderConfigRuntimeApplyResult completed) noexcept {
+                    if (lifetime.expired()) return;
+                    completeCommitTransaction(
+                        transaction, std::move(completed));
+                };
+            // Mark the transaction before calling into the runtime so a
+            // synchronous completion cannot race with installing the
+            // in-flight ticket after it has already cleared it.
+            inflight_ticket_ = transaction->ticket.id;
             const auto applied = dependencies_.apply_candidate(
-                *ticket.candidate_documents, source_commit);
-            if (!source_external_modification.empty()) {
+                *transaction->ticket.candidate_documents, source_commit,
+                completion);
+            if (applied.staged) {
+                if (applied.staged_generation == 0) {
+                    completeCommitTransaction(
+                        transaction,
+                        RenderConfigRuntimeApplyResult{
+                            .error =
+                                "render pipeline returned staged without a generation",
+                        });
+                } else if (!transaction->completion_arrived) {
+                    const auto remaining =
+                        std::next(ticket_iterator);
+                    pending_.insert(
+                        pending_.end(),
+                        std::make_move_iterator(remaining),
+                        std::make_move_iterator(queue.end()));
+                    break;
+                }
+                continue;
+            }
+            if (!transaction->completion_arrived) {
+                completeCommitTransaction(transaction, applied);
+            }
+        } catch (const RenderConfigExternalModification &error) {
+            if (transaction && !transaction->completion_arrived) {
+                if (transaction->source_external_modification.empty()) {
+                    transaction->source_external_modification =
+                        error.what();
+                }
+                completeCommitTransaction(
+                    transaction,
+                    RenderConfigRuntimeApplyResult{
+                        .error = error.what(),
+                    });
+            } else if (!transaction) {
                 finish(rejection(
-                    "external_modification",
-                    source_external_modification,
+                    "external_modification", error.what(),
                     {{"ticket", ticket.id},
                      {"expected_source_digest",
                       ticket.base_source_digest}}));
-                continue;
             }
-            if (!applied.committed) {
-                std::string rollback_error;
-                if (source_receipt && source_receipt->changed()) {
-                    try {
-                        rollbackCommittedRenderConfigDocuments(
-                            std::move(*source_receipt));
-                    } catch (const std::exception &error) {
-                        rollback_error = error.what();
-                    }
-                }
-                auto details = OrderedJson{
-                    {"ticket", ticket.id},
-                    {"participant", "pelican.render_pipeline"},
-                };
-                if (!rollback_error.empty()) {
-                    details["rollback_error"] = rollback_error;
-                }
+        } catch (const std::exception &error) {
+            if (transaction && !transaction->completion_arrived) {
+                completeCommitTransaction(
+                    transaction,
+                    RenderConfigRuntimeApplyResult{
+                        .error = error.what(),
+                    });
+            } else if (!transaction) {
                 finish(rejection(
-                    rollback_error.empty() ? "render_pipeline_preflight_failed"
-                                           : "render_config_rollback_failed",
-                    applied.error.empty()
-                        ? "render pipeline candidate was rejected"
-                        : applied.error,
-                    std::move(details)));
-                continue;
-            }
-            if (!source_commit_called) {
-                finish(rejection(
-                    "render_pipeline_commit_protocol_error",
-                    "pelican.render_pipeline reported a commit without invoking the source commit callback",
+                    "render_pipeline_preflight_failed", error.what(),
                     {{"ticket", ticket.id},
                      {"participant", "pelican.render_pipeline"}}));
-                continue;
             }
-
-            document_ = std::move(ticket.candidate);
-            if (ticket.candidate_documents) {
-                for (const auto &candidate :
-                     ticket.candidate_documents->documents()) {
-                    if (candidate.normalized_reference ==
-                        source_normalized_reference_) {
-                        continue;
-                    }
-                    if (candidate.operation ==
-                        RenderConfigDocumentOperation::erase) {
-                        managed_documents_.erase(
-                            candidate.normalized_reference);
-                    } else if (hasManagedFragmentMarker(
-                                   candidate.bytes) &&
-                               isManagedFragmentPath(
-                                   dependencies_.project_root,
-                                   candidate.path)) {
-                        managed_documents_.insert_or_assign(
-                            candidate.normalized_reference,
-                            ManagedDocumentBaseline{
-                                .reference = candidate.reference,
-                                .normalized_reference =
-                                    candidate.normalized_reference,
-                                .path = candidate.path,
-                                .bytes = candidate.bytes,
-                                .digest =
-                                    renderConfigSourceDigest(
-                                        candidate.bytes),
-                            });
-                    }
-                }
-            }
-            auto result = OrderedJson{
-                {"ticket", ticket.id},
-                {"status", "committed"},
-                {"committed", true},
-                {"published_generation", applied.published_generation},
-                {"source_digest", digestJson(document_.sourceDigest())},
-                {"source_commit_called", source_commit_called},
-            };
-            if (!ticket.operation.empty()) {
-                result["operation"] = ticket.operation;
-            }
-            if (!ticket.fragment_reference.empty()) {
-                result["fragment_reference"] =
-                    ticket.fragment_reference;
-            }
-            if (!applied.post_commit_error.empty()) {
-                result["post_commit_error"] = applied.post_commit_error;
-            }
-            finish(std::move(result));
-        } catch (const RenderConfigExternalModification &error) {
-            finish(rejection(
-                "external_modification", error.what(),
-                {{"ticket", ticket.id},
-                 {"expected_source_digest", ticket.base_source_digest}}));
-        } catch (const std::exception &error) {
-            if (source_receipt && source_receipt->changed()) {
-                try {
-                    rollbackCommittedRenderConfigDocuments(
-                        std::move(*source_receipt));
-                } catch (...) {
-                    finish(rejection(
-                        "render_config_rollback_failed", error.what(),
-                        {{"ticket", ticket.id}}));
-                    continue;
-                }
-            }
-            finish(rejection(
-                "render_pipeline_preflight_failed", error.what(),
-                {{"ticket", ticket.id},
-                 {"participant", "pelican.render_pipeline"}}));
         } catch (...) {
-            finish(rejection(
-                "render_pipeline_preflight_failed",
-                "unknown render pipeline candidate failure",
-                {{"ticket", ticket.id},
-                 {"participant", "pelican.render_pipeline"}}));
+            if (transaction && !transaction->completion_arrived) {
+                completeCommitTransaction(
+                    transaction,
+                    RenderConfigRuntimeApplyResult{
+                        .error =
+                            "unknown render pipeline candidate failure",
+                    });
+            } else if (!transaction) {
+                finish(rejection(
+                    "render_pipeline_preflight_failed",
+                    "unknown render pipeline candidate failure",
+                    {{"ticket", ticket.id},
+                     {"participant", "pelican.render_pipeline"}}));
+            }
         }
     }
 }

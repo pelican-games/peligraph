@@ -13,6 +13,7 @@ thread_local RayTracingValidationObserver validation_observer;
 thread_local RayTracingPipelineCreateObserver create_observer;
 thread_local std::array<bool, 4> validation_delegate_enabled{
     true, true, true, true};
+thread_local bool record_addressing_validation_enabled = true;
 
 std::size_t siteIndex(RayTracingValidationSite site) {
     const auto index = static_cast<std::size_t>(site);
@@ -264,7 +265,7 @@ std::string validateRayTracingPipelineInterfaces(
         }
         const auto validate_record =
             [&](const RayTracingShaderOccurrence &occurrence,
-                bool required) {
+                bool allowed, bool required) {
                 const auto &actual = occurrence.entry->shader_record;
                 if (!actual) {
                     if (required && !layout.record.empty()) {
@@ -275,6 +276,11 @@ std::string validateRayTracingPipelineInterfaces(
                                 " members");
                     }
                     return;
+                }
+                if (!allowed) {
+                    failShaderRecord(
+                        occurrence,
+                        "declares shader-record storage where it is forbidden");
                 }
                 if (actual->members.size() != layout.record.size()) {
                     failShaderRecord(
@@ -305,16 +311,16 @@ std::string validateRayTracingPipelineInterfaces(
                     }
                 }
             };
-        validate_record(request.raygen, false);
+        validate_record(request.raygen, false, false);
         for (const auto &miss : request.misses)
-            validate_record(miss, false);
+            validate_record(miss, false, false);
         for (std::size_t index = 0; index < request.hit_groups.size(); ++index) {
             const auto ray = static_cast<std::uint32_t>(index % ray_count);
             const auto traced =
                 std::find(request.traced_ray_type_indices.begin(),
                           request.traced_ray_type_indices.end(), ray) !=
                 request.traced_ray_type_indices.end();
-            validate_record(request.hit_groups[index], traced);
+            validate_record(request.hit_groups[index], traced, traced);
         }
     }
 
@@ -338,13 +344,15 @@ std::string validateRayTracingPipelineInterfaces(
                             incoming ? &incoming->type : nullptr);
             }
         };
-        compare_target("miss", trace.miss_index, request.misses);
         if (request.group_layout == nullptr) {
             // RT1a legacy: instance SBT offset and geometry index are zero.
+            compare_target("miss", trace.miss_index,
+                           request.misses);
             compare_target("hit", trace.sbt_record_offset,
                            request.hit_groups);
             return;
         }
+        if (!record_addressing_validation_enabled) return;
         RayTracingRecordAddressing addressing{
             .record_index_stride = static_cast<std::uint32_t>(
                 request.group_layout->ray_types.size()),
@@ -355,6 +363,8 @@ std::string validateRayTracingPipelineInterfaces(
         validateRayTracingRecordAddressing(
             trace.sbt_record_offset, trace.sbt_record_stride,
             trace.miss_index, *request.group_layout, addressing);
+        compare_target("miss", trace.miss_index,
+                       request.misses);
         const auto ray_count = request.group_layout->ray_types.size();
         for (std::size_t group = 0;
              group < request.group_layout->groups.size(); ++group) {
@@ -407,6 +417,25 @@ std::string validateRayTracingPipelineInterfaces(
         hashAppend(hash, target.diagnostic_uri);
         hashAppend(hash, std::to_string(target.group_index));
     };
+    const auto digest_indexed_target =
+        [&](std::string_view domain,
+            std::uint32_t resolved_index,
+            const auto &targets) {
+            if (resolved_index >= targets.size()) {
+                // The production validator rejects this before digesting.
+                // The mutation seam deliberately bypasses that gate, so it
+                // still needs a deterministic, bounds-safe digest on the
+                // way to the real PipelineFactory create attempt.
+                hashAppend(hash, domain);
+                hashAppend(hash,
+                           std::to_string(resolved_index));
+                hashAppend(hash,
+                           "<unvalidated-out-of-range>");
+                return;
+            }
+            digest_target(domain, resolved_index,
+                          targets[resolved_index]);
+        };
     const auto digest_traces = [&](const auto &caller) {
         for (const auto &trace : caller.entry->trace_calls) {
             hashAppend(hash, "trace");
@@ -414,8 +443,9 @@ std::string validateRayTracingPipelineInterfaces(
                        std::to_string(trace.instruction_number));
             hashAppend(hash, "missIndex");
             hashAppend(hash, std::to_string(trace.miss_index));
-            digest_target("missTarget", trace.miss_index,
-                          request.misses[trace.miss_index]);
+            digest_indexed_target(
+                "missTarget", trace.miss_index,
+                request.misses);
             hashAppend(hash, "sbtRecordOffset");
             hashAppend(hash,
                        std::to_string(trace.sbt_record_offset));
@@ -423,9 +453,9 @@ std::string validateRayTracingPipelineInterfaces(
             hashAppend(hash,
                        std::to_string(trace.sbt_record_stride));
             if (request.group_layout == nullptr) {
-                digest_target(
+                digest_indexed_target(
                     "hitTarget", trace.sbt_record_offset,
-                    request.hit_groups[trace.sbt_record_offset]);
+                    request.hit_groups);
             } else {
                 const auto ray_count =
                     request.group_layout->ray_types.size();
@@ -433,8 +463,9 @@ std::string validateRayTracingPipelineInterfaces(
                      group < request.group_layout->groups.size(); ++group) {
                     const auto resolved = static_cast<std::uint32_t>(
                         group * ray_count + trace.sbt_record_offset);
-                    digest_target("hitTarget", resolved,
-                                  request.hit_groups[resolved]);
+                    digest_indexed_target(
+                        "hitTarget", resolved,
+                        request.hit_groups);
                 }
             }
             hashAppend(hash, "tracePayloadType");
@@ -478,6 +509,18 @@ ScopedRayTracingValidationDelegateOverrideForTesting::
 ScopedRayTracingValidationDelegateOverrideForTesting::
     ~ScopedRayTracingValidationDelegateOverrideForTesting() {
     validation_delegate_enabled[siteIndex(site_)] = previous_;
+}
+
+ScopedRayTracingRecordAddressingValidationOverrideForTesting::
+    ScopedRayTracingRecordAddressingValidationOverrideForTesting(
+        bool enabled)
+    : previous_{record_addressing_validation_enabled} {
+    record_addressing_validation_enabled = enabled;
+}
+
+ScopedRayTracingRecordAddressingValidationOverrideForTesting::
+    ~ScopedRayTracingRecordAddressingValidationOverrideForTesting() {
+    record_addressing_validation_enabled = previous_;
 }
 
 void validateProductionRayTracingRequest(

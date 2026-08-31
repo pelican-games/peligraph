@@ -243,6 +243,14 @@ FrameGraphRuntimeContainer::FrameGraphRuntimeContainer()
 FrameGraphRuntimeContainer::~FrameGraphRuntimeContainer() {
     const std::scoped_lock publication_lock{
         publication_mutex};
+    if (staged_publication &&
+        staged_publication->after_rollback) {
+        try {
+            staged_publication->after_rollback();
+        } catch (...) {
+            // Destruction cannot surface a completion-observer failure.
+        }
+    }
     staged_publication.reset();
 }
 
@@ -513,7 +521,10 @@ void FrameGraphRuntimeContainer::publishPreparedGeneration(
     PreparedRendererRuntimeGeneration &&prepared,
     const std::function<void(
         const RendererRuntimeGeneration &)>
-        &before_publish) {
+        &before_publish,
+    const std::function<void(
+        const RendererRuntimeGeneration &)>
+        &after_publish) {
     const std::scoped_lock publication_lock{
         publication_mutex};
     if (staged_publication) {
@@ -540,6 +551,9 @@ void FrameGraphRuntimeContainer::publishPreparedGeneration(
     // commit and cannot report failure after the new source is on disk.
     publication->active_generation.store(
         prepared.candidate_, std::memory_order_release);
+    if (after_publish) {
+        after_publish(*prepared.candidate_);
+    }
     prepared.candidate_.reset();
     prepared.prepared_rendering_pass_ids_.clear();
 }
@@ -549,7 +563,10 @@ void FrameGraphRuntimeContainer::stagePreparedGeneration(
     std::shared_ptr<const void> lifetime,
     std::function<void()> commit_lifetime,
     std::function<void(const RendererRuntimeGeneration &)>
-        before_publish) {
+        before_publish,
+    std::function<void(const RendererRuntimeGeneration &)>
+        after_publish,
+    std::function<void()> after_rollback) {
     const std::scoped_lock publication_lock{
         publication_mutex};
     if (staged_publication) {
@@ -575,6 +592,8 @@ void FrameGraphRuntimeContainer::stagePreparedGeneration(
         .lifetime = std::move(lifetime),
         .commit_lifetime = std::move(commit_lifetime),
         .before_publish = std::move(before_publish),
+        .after_publish = std::move(after_publish),
+        .after_rollback = std::move(after_rollback),
     });
 }
 
@@ -639,6 +658,14 @@ bool FrameGraphRuntimeContainer::publishStagedGeneration(
     publication->active_generation.store(
         staged_publication->prepared.candidate_,
         std::memory_order_release);
+    if (staged_publication->after_publish) {
+        try {
+            staged_publication->after_publish(
+                *staged_publication->prepared.candidate_);
+        } catch (...) {
+            std::terminate();
+        }
+    }
     staged_publication->prepared.candidate_.reset();
     staged_publication->prepared.prepared_rendering_pass_ids_.clear();
     staged_publication.reset();
@@ -652,6 +679,13 @@ bool FrameGraphRuntimeContainer::rollbackStagedGeneration(
     if (!staged_publication ||
         staged_publication->prepared.generation() != generation) {
         return false;
+    }
+    if (staged_publication->after_rollback) {
+        try {
+            staged_publication->after_rollback();
+        } catch (...) {
+            // Rollback must remain noexcept; observers own their diagnostics.
+        }
     }
     staged_publication.reset();
     return true;

@@ -16,6 +16,26 @@
 namespace Pelican::watch {
 
 namespace {
+thread_local RenderPipelineCompanionReloadObserver
+    render_pipeline_companion_reload_observer;
+}
+
+ScopedRenderPipelineCompanionReloadObserver::
+    ScopedRenderPipelineCompanionReloadObserver(
+        RenderPipelineCompanionReloadObserver observer)
+    : previous_{
+          std::move(render_pipeline_companion_reload_observer)} {
+    render_pipeline_companion_reload_observer =
+        std::move(observer);
+}
+
+ScopedRenderPipelineCompanionReloadObserver::
+    ~ScopedRenderPipelineCompanionReloadObserver() {
+    render_pipeline_companion_reload_observer =
+        std::move(previous_);
+}
+
+namespace {
 
 std::string_view runtimeBoundaryName(RuntimeReloadBoundary boundary) {
     switch (boundary) {
@@ -190,7 +210,8 @@ RuntimeReloadResult ReloadService::applyRuntimeNow(std::string_view name) {
 AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
     std::string_view name,
     RenderConfigCandidateDocumentSet candidate,
-    const std::function<void()> &source_commit) {
+    std::function<void()> source_commit,
+    std::function<void(AuthoredRuntimeReloadResult)> completion) {
     ensureBuiltInParticipants();
     const auto found = std::ranges::find(
         participants_, name, &ReloadParticipant::name);
@@ -210,7 +231,8 @@ AuthoredRuntimeReloadResult ReloadService::applyAuthoredCandidate(
     }
     try {
         auto result = found->apply_authored_candidate(
-            std::move(candidate), source_commit);
+            std::move(candidate), std::move(source_commit),
+            std::move(completion));
         result.attempted = true;
         return result;
     } catch (const std::exception &error) {
@@ -290,6 +312,10 @@ void ReloadService::applyRenderPipelineCompanionReload(
     const RendererRuntimeGeneration &generation,
     std::span<const ReloadRequest>
         companion_requests) {
+    if (render_pipeline_companion_reload_observer) {
+        render_pipeline_companion_reload_observer(
+            companion_requests);
+    }
     auto *library =
         FastModuleContainer::tryGet<ShaderLibrary>();
     auto *pipelines =

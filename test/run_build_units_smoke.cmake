@@ -67,6 +67,14 @@ function(configure_and_build label option_name out_build_dir)
         list(APPEND forwarded_arguments
             "-DPython3_EXECUTABLE=${Python3_EXECUTABLE}")
     endif()
+    get_cmake_property(smoke_variables VARIABLES)
+    foreach(variable IN LISTS smoke_variables)
+        if(variable MATCHES "^FETCHCONTENT_SOURCE_DIR_[A-Z0-9_-]+$" AND
+           DEFINED ${variable} AND NOT "${${variable}}" STREQUAL "")
+            list(APPEND forwarded_arguments
+                "-D${variable}=${${variable}}")
+        endif()
+    endforeach()
 
     set(build_dir "${SOURCE_DIR}/build-feature-${label}")
     file(REMOVE_RECURSE "${build_dir}")
@@ -319,6 +327,30 @@ function(find_built_executable build_dir target_name out_path)
     set("${out_path}" "${found}" PARENT_SCOPE)
 endfunction()
 
+function(run_rt1b_test build_dir label)
+    find_built_executable(
+        "${build_dir}"
+        "pelican_test_raytracing_rt1b_test"
+        rt1b_test)
+    run_process(
+        "${label}_raytracing_rt1b"
+        TRUE
+        "${rt1b_test}")
+endfunction()
+
+function(run_rt1b_case build_dir label test_name)
+    find_built_executable(
+        "${build_dir}"
+        "pelican_test_raytracing_rt1b_test"
+        rt1b_test)
+    run_process(
+        "${label}_raytracing_rt1b_targeted"
+        TRUE
+        "${rt1b_test}"
+        "${test_name}"
+        -w NoAssertions)
+endfunction()
+
 function(expect_disabled_error label feature_name)
     execute_process(
         COMMAND ${ARGN}
@@ -563,22 +595,13 @@ function(run_runtime_shader_compiler_smoke)
         "runtime_shader_compiler"
         "PELICAN_RUNTIME_SHADER_COMPILER"
         runtime_shader_compiler_build_dir)
-    run_process(
-        "runtime_shader_compiler_wp354_discovery"
-        TRUE
-        "${CMAKE_CTEST_COMMAND}"
-            --test-dir "${runtime_shader_compiler_build_dir}"
-            --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
-            --output-on-failure
-            -R "^WP354 production config and provider flow through renderer model and Open action$"
-    )
-    if(NOT runtime_shader_compiler_wp354_discovery_STDOUT MATCHES
-       "100% tests passed, 0 tests failed out of 1")
-        message(FATAL_ERROR
-            "compiler-OFF did not discover exactly one WP354 production test\n"
-            "stdout:\n${runtime_shader_compiler_wp354_discovery_STDOUT}\n"
-            "stderr:\n${runtime_shader_compiler_wp354_discovery_STDERR}")
-    endif()
+    run_rt1b_case(
+        "${runtime_shader_compiler_build_dir}"
+        "runtime_shader_compiler"
+        "WP366a compiler contrast executes the real root-sidecar gate")
+    run_rt1b_test(
+        "${runtime_shader_compiler_build_dir}"
+        "runtime_shader_compiler")
     clean_successful_build("${runtime_shader_compiler_build_dir}")
 endfunction()
 
@@ -588,6 +611,7 @@ function(run_spirv_link_smoke)
         "PELICAN_WITH_SPIRV_LINK"
         spirv_link_build_dir)
     verify_spirv_link_absent("${spirv_link_build_dir}")
+    run_rt1b_test("${spirv_link_build_dir}" "spirv_link")
     clean_successful_build("${spirv_link_build_dir}")
 endfunction()
 
@@ -597,6 +621,9 @@ function(run_skip_devstudio_smoke)
         "SKIP_DEVSTUDIO"
         skip_devstudio_build_dir)
     verify_devstudio_absent("${skip_devstudio_build_dir}")
+    run_rt1b_test(
+        "${skip_devstudio_build_dir}"
+        "skip_devstudio")
     clean_successful_build("${skip_devstudio_build_dir}")
 endfunction()
 
@@ -609,6 +636,7 @@ function(run_openxr_smoke)
         "PELICAN_WITH_OPENXR"
         "${openxr_player}" --xr on
     )
+    run_rt1b_test("${openxr_build_dir}" "openxr")
     clean_successful_build("${openxr_build_dir}")
 endfunction()
 
@@ -782,6 +810,7 @@ endfunction()
 function(run_imgui_smoke)
     configure_and_build("imgui" "PELICAN_WITH_IMGUI" imgui_build_dir)
     verify_imgui_absent("${imgui_build_dir}")
+    run_rt1b_test("${imgui_build_dir}" "imgui")
     clean_successful_build("${imgui_build_dir}")
 endfunction()
 
