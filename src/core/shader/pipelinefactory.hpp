@@ -247,6 +247,11 @@ DECLARE_MODULE(PipelineFactory) {
     vk::UniquePipelineCache pipeline_cache;
     std::unordered_map<DescriptorSetLayoutKey, vk::UniqueDescriptorSetLayout, DescriptorSetLayoutKeyHash>
         descriptor_set_layout_cache;
+    // Monotonic observation of successful Vulkan descriptor-set-layout
+    // creation. Registration rollback deliberately does not rewind this: a
+    // caller can therefore prove that a rejected capability contract ran
+    // before object creation, not merely that the cache was restored later.
+    std::uint64_t descriptor_set_layout_creation_count = 0;
     ResourceContainer<PipelineHandle, PipelineRecord> pipelines;
     std::vector<PipelineHandle> pipeline_handles;
     std::unordered_set<VkPipelineLayout>
@@ -285,6 +290,7 @@ DECLARE_MODULE(PipelineFactory) {
         std::size_t pipeline_count = 0;
         std::vector<DescriptorSetLayoutKey>
             descriptor_set_layout_keys;
+        std::uint64_t descriptor_set_layout_creation_count = 0;
     };
 
     PipelineFactory();

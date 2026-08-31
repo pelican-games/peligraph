@@ -3,10 +3,12 @@
 #include "runtimecapabilities.hpp"
 
 #include <cstdint>
+#include <span>
 #include <string>
 #include <vector>
 
 #include <vk_mem_alloc.hpp>
+#include <vulkan/vulkan.hpp>
 
 namespace Pelican {
 
@@ -23,7 +25,11 @@ struct RayQueryDeviceSupport {
     bool shader_sampled_image_array_non_uniform_indexing_feature = false;
     bool descriptor_binding_partially_bound_feature = false;
     std::uint32_t max_bound_descriptor_sets = 0;
+    std::uint32_t max_descriptor_set_samplers = 0;
     std::uint32_t max_descriptor_set_sampled_images = 0;
+    std::uint32_t max_per_stage_descriptor_samplers = 0;
+    std::uint32_t max_per_stage_descriptor_sampled_images = 0;
+    std::uint32_t max_per_stage_resources = 0;
     std::string device_name;
     std::uint32_t
         min_acceleration_structure_scratch_offset_alignment = 0;
@@ -45,7 +51,11 @@ struct RayQueryDeviceSelection {
     bool descriptor_binding_partially_bound = false;
     bool ray_material_bindless = false;
     std::uint32_t max_bound_descriptor_sets = 0;
+    std::uint32_t max_descriptor_set_samplers = 0;
     std::uint32_t max_descriptor_set_sampled_images = 0;
+    std::uint32_t max_per_stage_descriptor_samplers = 0;
+    std::uint32_t max_per_stage_descriptor_sampled_images = 0;
+    std::uint32_t max_per_stage_resources = 0;
     std::string device_name;
     std::uint32_t
         min_acceleration_structure_scratch_offset_alignment = 0;
@@ -61,6 +71,28 @@ RayQueryDeviceSelection selectRayQueryDeviceFeatures(
 
 void requireRayMaterialBindlessDevice(
     const VulkanRuntimeCapabilities &capabilities);
+
+struct RayMaterialBindlessLayoutRequirements {
+    std::uint64_t descriptor_set_count = 0;
+    std::uint64_t descriptor_set_samplers = 0;
+    std::uint64_t descriptor_set_sampled_images = 0;
+    std::uint64_t per_stage_descriptor_samplers = 0;
+    std::uint64_t per_stage_descriptor_sampled_images = 0;
+    std::uint64_t per_stage_resources = 0;
+
+    bool operator==(const RayMaterialBindlessLayoutRequirements &) const =
+        default;
+};
+
+RayMaterialBindlessLayoutRequirements
+rayMaterialBindlessLayoutRequirements(
+    std::uint32_t descriptor_set_count,
+    std::span<const vk::DescriptorSetLayoutBinding> bindings);
+
+void requireRayMaterialBindlessDevice(
+    const VulkanRuntimeCapabilities &capabilities,
+    std::uint32_t descriptor_set_count,
+    std::span<const vk::DescriptorSetLayoutBinding> bindings);
 
 vma::AllocatorCreateFlags selectVmaAllocatorCreateFlags(
     bool memory_budget_enabled,

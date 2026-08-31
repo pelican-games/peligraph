@@ -446,8 +446,16 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
                 vk12.descriptorBindingPartiallyBound == VK_TRUE,
             .max_bound_descriptor_sets =
                 core_properties.limits.maxBoundDescriptorSets,
+            .max_descriptor_set_samplers =
+                core_properties.limits.maxDescriptorSetSamplers,
             .max_descriptor_set_sampled_images =
                 core_properties.limits.maxDescriptorSetSampledImages,
+            .max_per_stage_descriptor_samplers =
+                core_properties.limits.maxPerStageDescriptorSamplers,
+            .max_per_stage_descriptor_sampled_images =
+                core_properties.limits.maxPerStageDescriptorSampledImages,
+            .max_per_stage_resources =
+                core_properties.limits.maxPerStageResources,
             .device_name = core_properties.deviceName.data(),
             .min_acceleration_structure_scratch_offset_alignment =
                 scratch_alignment,
@@ -740,8 +748,16 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             ray_query_selection.ray_material_bindless,
         .max_bound_descriptor_sets =
             ray_query_selection.max_bound_descriptor_sets,
+        .max_descriptor_set_samplers =
+            ray_query_selection.max_descriptor_set_samplers,
         .max_descriptor_set_sampled_images =
             ray_query_selection.max_descriptor_set_sampled_images,
+        .max_per_stage_descriptor_samplers =
+            ray_query_selection.max_per_stage_descriptor_samplers,
+        .max_per_stage_descriptor_sampled_images =
+            ray_query_selection.max_per_stage_descriptor_sampled_images,
+        .max_per_stage_resources =
+            ray_query_selection.max_per_stage_resources,
         .device_name = ray_query_selection.device_name,
         .min_acceleration_structure_scratch_offset_alignment =
             ray_query_selection

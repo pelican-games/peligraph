@@ -2134,6 +2134,7 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .ray_lease = std::move(ray_lease),
         .name = std::move(info.name),
         .source_asset = std::move(info.source_asset),
+        .source_material_index = info.source_material_index,
         .source_document = std::move(info.source_document),
         .pipeline_color_formats =
             rendering.color_formats,
@@ -2822,11 +2823,19 @@ RayMaterialTableSource MaterialContainer::rayMaterialTableSource(
         "document:" + registered.source_document + "#" + registered.name;
     const auto expected_asset_prefix =
         "asset:" + registered.source_asset + "#";
+    const auto expected_asset_key =
+        registered.source_material_index
+            ? expected_asset_prefix +
+                  std::to_string(*registered.source_material_index)
+            : std::string{};
     if ((!registered.source_document.empty() &&
          canonical_key != expected_document_key) ||
         (registered.source_document.empty() &&
          ((!registered.source_asset.empty() &&
-           !canonical_key.starts_with(expected_asset_prefix)) ||
+           ((registered.source_material_index &&
+             canonical_key != expected_asset_key) ||
+            (!registered.source_material_index &&
+             !canonical_key.starts_with(expected_asset_prefix)))) ||
           (registered.source_asset.empty() &&
            !canonical_key.starts_with("asset:"))))) {
         throw std::runtime_error(

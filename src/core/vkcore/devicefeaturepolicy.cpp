@@ -1,5 +1,7 @@
 #include "devicefeaturepolicy.hpp"
 
+#include <algorithm>
+#include <array>
 #include <stdexcept>
 #include <utility>
 
@@ -18,13 +20,24 @@ RayQueryDeviceSelection selectRayQueryDeviceFeatures(
     result.descriptor_binding_partially_bound =
         descriptor_indexing_enabled;
     result.max_bound_descriptor_sets = support.max_bound_descriptor_sets;
+    result.max_descriptor_set_samplers =
+        support.max_descriptor_set_samplers;
     result.max_descriptor_set_sampled_images =
         support.max_descriptor_set_sampled_images;
+    result.max_per_stage_descriptor_samplers =
+        support.max_per_stage_descriptor_samplers;
+    result.max_per_stage_descriptor_sampled_images =
+        support.max_per_stage_descriptor_sampled_images;
+    result.max_per_stage_resources = support.max_per_stage_resources;
     result.device_name = support.device_name;
     result.ray_material_bindless =
         descriptor_indexing_enabled &&
         support.max_bound_descriptor_sets >= 4 &&
-        support.max_descriptor_set_sampled_images >= 1024;
+        support.max_descriptor_set_samplers >= 1024 &&
+        support.max_descriptor_set_sampled_images >= 1024 &&
+        support.max_per_stage_descriptor_samplers >= 1024 &&
+        support.max_per_stage_descriptor_sampled_images >= 1024 &&
+        support.max_per_stage_resources >= 1026;
 
     const auto ray_query_enabled =
         support.acceleration_structure_feature &&
@@ -74,14 +87,16 @@ RayQueryDeviceSelection selectRayQueryDeviceFeatures(
     return result;
 }
 
-void requireRayMaterialBindlessDevice(
+namespace {
+
+void requireRayMaterialBindlessFeatures(
     const VulkanRuntimeCapabilities &capabilities) {
     const auto reject_bool = [&](std::string_view property, bool actual) {
         if (actual) return;
         throw std::runtime_error(
             "pelican.vulkan.ray_material_bindless_required_unavailable@1: property=" +
             std::string{property} +
-            " requested=VK_TRUE actual=VK_FALSE device='" +
+            " required=VK_TRUE actual=VK_FALSE device='" +
             capabilities.device_name + "'");
     };
     reject_bool("runtimeDescriptorArray",
@@ -91,21 +106,126 @@ void requireRayMaterialBindlessDevice(
                     .shader_sampled_image_array_non_uniform_indexing);
     reject_bool("descriptorBindingPartiallyBound",
                 capabilities.descriptor_binding_partially_bound);
-    const auto reject_limit = [&](std::string_view property,
-                                  std::uint32_t requested,
-                                  std::uint32_t actual) {
-        if (actual >= requested) return;
-        throw std::runtime_error(
-            "pelican.vulkan.ray_material_bindless_limit_unavailable@1: property=" +
-            std::string{property} + " requested>=" +
-            std::to_string(requested) + " actual=" +
-            std::to_string(actual) + " device='" +
-            capabilities.device_name + "'");
+}
+
+void requireRayMaterialBindlessLimit(
+    const VulkanRuntimeCapabilities &capabilities,
+    std::string_view property, std::uint64_t required,
+    std::uint64_t actual) {
+    if (actual >= required) return;
+    throw std::runtime_error(
+        "pelican.vulkan.ray_material_bindless_limit_unavailable@1: property=" +
+        std::string{property} + " required>=" +
+        std::to_string(required) + " actual=" +
+        std::to_string(actual) + " device='" +
+        capabilities.device_name + "'");
+}
+
+bool samplerDescriptor(vk::DescriptorType type) {
+    return type == vk::DescriptorType::eSampler ||
+           type == vk::DescriptorType::eCombinedImageSampler;
+}
+
+bool sampledImageDescriptor(vk::DescriptorType type) {
+    return type == vk::DescriptorType::eSampledImage ||
+           type == vk::DescriptorType::eCombinedImageSampler ||
+           type == vk::DescriptorType::eUniformTexelBuffer;
+}
+
+} // namespace
+
+RayMaterialBindlessLayoutRequirements
+rayMaterialBindlessLayoutRequirements(
+    std::uint32_t descriptor_set_count,
+    std::span<const vk::DescriptorSetLayoutBinding> bindings) {
+    RayMaterialBindlessLayoutRequirements result{
+        .descriptor_set_count = descriptor_set_count,
     };
-    reject_limit("maxBoundDescriptorSets", 4,
-                 capabilities.max_bound_descriptor_sets);
-    reject_limit("maxDescriptorSetSampledImages", 1024,
-                 capabilities.max_descriptor_set_sampled_images);
+    std::array<std::uint64_t, 32> stage_samplers{};
+    std::array<std::uint64_t, 32> stage_sampled_images{};
+    std::array<std::uint64_t, 32> stage_resources{};
+    for (const auto &binding : bindings) {
+        const auto count = static_cast<std::uint64_t>(
+            binding.descriptorCount);
+        const auto sampler = samplerDescriptor(binding.descriptorType);
+        const auto sampled_image =
+            sampledImageDescriptor(binding.descriptorType);
+        if (sampler) result.descriptor_set_samplers += count;
+        if (sampled_image) {
+            result.descriptor_set_sampled_images += count;
+        }
+        const auto flags = static_cast<VkShaderStageFlags>(
+            binding.stageFlags);
+        for (std::uint32_t bit = 0; bit < 32; ++bit) {
+            if ((flags & (VkShaderStageFlags{1} << bit)) == 0) continue;
+            if (sampler) stage_samplers[bit] += count;
+            if (sampled_image) stage_sampled_images[bit] += count;
+            stage_resources[bit] += count;
+        }
+    }
+    result.per_stage_descriptor_samplers =
+        *std::max_element(stage_samplers.begin(), stage_samplers.end());
+    result.per_stage_descriptor_sampled_images = *std::max_element(
+        stage_sampled_images.begin(), stage_sampled_images.end());
+    result.per_stage_resources =
+        *std::max_element(stage_resources.begin(), stage_resources.end());
+    return result;
+}
+
+void requireRayMaterialBindlessDevice(
+    const VulkanRuntimeCapabilities &capabilities) {
+    requireRayMaterialBindlessFeatures(capabilities);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxBoundDescriptorSets", 4,
+        capabilities.max_bound_descriptor_sets);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxDescriptorSetSamplers", 1024,
+        capabilities.max_descriptor_set_samplers);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxDescriptorSetSampledImages", 1024,
+        capabilities.max_descriptor_set_sampled_images);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxPerStageDescriptorSamplers", 1024,
+        capabilities.max_per_stage_descriptor_samplers);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxPerStageDescriptorSampledImages", 1024,
+        capabilities.max_per_stage_descriptor_sampled_images);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxPerStageResources", 1026,
+        capabilities.max_per_stage_resources);
+}
+
+void requireRayMaterialBindlessDevice(
+    const VulkanRuntimeCapabilities &capabilities,
+    std::uint32_t descriptor_set_count,
+    std::span<const vk::DescriptorSetLayoutBinding> bindings) {
+    requireRayMaterialBindlessFeatures(capabilities);
+    const auto required = rayMaterialBindlessLayoutRequirements(
+        descriptor_set_count, bindings);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxBoundDescriptorSets",
+        required.descriptor_set_count,
+        capabilities.max_bound_descriptor_sets);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxDescriptorSetSamplers",
+        required.descriptor_set_samplers,
+        capabilities.max_descriptor_set_samplers);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxDescriptorSetSampledImages",
+        required.descriptor_set_sampled_images,
+        capabilities.max_descriptor_set_sampled_images);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxPerStageDescriptorSamplers",
+        required.per_stage_descriptor_samplers,
+        capabilities.max_per_stage_descriptor_samplers);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxPerStageDescriptorSampledImages",
+        required.per_stage_descriptor_sampled_images,
+        capabilities.max_per_stage_descriptor_sampled_images);
+    requireRayMaterialBindlessLimit(
+        capabilities, "maxPerStageResources",
+        required.per_stage_resources,
+        capabilities.max_per_stage_resources);
 }
 
 vma::AllocatorCreateFlags selectVmaAllocatorCreateFlags(

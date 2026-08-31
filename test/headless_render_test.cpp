@@ -724,6 +724,37 @@ void writeRt2bTableProject(
     const std::filesystem::path &directory) {
     writeRt1bLayoutProject(directory);
 
+    TestGltfFragmentFixture::writeWp368Glb(
+        directory / "models" / "tree.glb");
+    writeTextFile(
+        directory / "materials" / "forest.material.json",
+        R"json({"schema":"pelican.material","version":1,"materials":[{"name":"ProjectOak","surface":"engine://surfaces/openpbr/opaque_single.surface","base":{"baseColorFactor":[0.25,0.5,0.75,1.0]},"routing":{"alpha_mode":"opaque","double_sided":false}},{"name":"ProjectPine","surface":"engine://surfaces/openpbr/opaque_single.surface","base":{"baseColorFactor":[0.75,0.5,0.25,1.0]},"routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+    writeTextFile(
+        directory / "materials" / "tree.bindings.json",
+        R"json({"schema":"pelican.material_bindings","version":1,"model":"project://models/tree.glb","bindings":[{"usd_path":"/World/EmbeddedRed","mesh":0,"primitive":0,"material":"EmbeddedRed","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/EmbeddedGreen","mesh":1,"primitive":0,"material":"EmbeddedGreen","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/ProjectOak","mesh":2,"primitive":0,"material":"ProjectOak","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/ProjectPine","mesh":3,"primitive":0,"material":"ProjectPine","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/forest.material.json"}],"textures":[]})json");
+    writeTextFile(
+        directory / "ray_bindings.json",
+        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":0},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}},{"material":{"document":"materials/forest.material.json"},"group":"opaque","record":{"tint":[0.25,0.5,0.75,1.0],"flags":303}}]})json");
+
+    for (const auto shader_name : {"wp366_a.rgen", "wp366_b.rgen"}) {
+        const auto path = directory / "shaders" / shader_name;
+        auto source = readTextFile(path);
+        const std::string old_lane =
+            "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
+        const std::string new_lane =
+            "float x = pixel.x == 0 ? -3.0 : (pixel.x == 1 ? -1.0 : "
+            "(pixel.x == 2 ? 1.0 : (pixel.x == 3 ? 3.0 : 8.0)));";
+        const auto at = source.find(old_lane);
+        if (at == std::string::npos) {
+            throw std::logic_error("WP368 ray lane source is missing");
+        }
+        source.replace(at, old_lane.size(), new_lane);
+        writeTextFile(path, source);
+    }
+
     auto layout = nlohmann::json::parse(
         readTextFile(directory / "ray_layout.json"));
     // Reverse the authored spelling deliberately. The physical engine prefix
@@ -740,6 +771,11 @@ void writeRt2bTableProject(
 struct Payload { uint x; uint y; uint z; uint w; };
 layout(location=0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 hit_attribute;
+// A real reflected set-2 declaration supplies the two samplers called out by
+// the WP368a device-limit example. It is intentionally not statically used;
+// set 2 remains outside this engine-generated table shader's data path while
+// its full descriptorCount still participates in layout limit validation.
+layout(set=2, binding=0) uniform sampler2D wp368_set2_textures[2];
 layout(shaderRecordEXT, std430) buffer RayRecord {
     PELICAN_RAY_ENGINE_RECORD_MEMBERS
     vec4 tint;
@@ -769,6 +805,7 @@ void main() {
                           floatBitsToUint(sampled.x));
     }
 }
+
 )glsl";
         const auto token = source.find("GEOMETRY_LANE");
         if (token == std::string::npos) {
@@ -789,6 +826,25 @@ void main() {
                 (std::string{"wp366_"} + group + "_shadow.rchit"),
             hit(true));
     }
+}
+
+std::string wp368InactiveRenderingConfig(
+    std::string_view active_config) {
+    auto inactive = nlohmann::json::parse(active_config);
+    inactive.erase("ray_group_layout");
+    inactive.erase("ray_bindings");
+    inactive.erase("compute_tasks");
+    inactive.erase("target_planning");
+    auto &targets = inactive.at("render_targets");
+    targets.erase(
+        std::remove_if(
+            targets.begin(), targets.end(),
+            [](const auto &target) {
+                const auto name = target.value("name", std::string{});
+                return name == "wp366_a" || name == "wp366_b";
+            }),
+        targets.end());
+    return inactive.dump(2);
 }
 
 constexpr std::uint32_t wp367SingleRecord = 111u;
@@ -11999,7 +12055,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP368 production SBT AS and set three expose material and geometry table values",
+    "WP368 production project load reaches RT2b tables descriptors and GPU",
     "[WP368][headless][gpu][ray-tracing][rt2b][tables][bda][production][mutation][purge]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -12007,9 +12063,17 @@ TEST_CASE(
     try {
         FastModuleContainer modules;
         writeRt2bTableProject(temp_dir);
+        const auto active_config =
+            readTextFile(temp_dir / "hybrid.json");
+        const auto inactive_config =
+            wp368InactiveRenderingConfig(active_config);
+        writeTextFile(temp_dir / "hybrid.json",
+                      inactive_config);
         configureRayQueryTestRuntime(temp_dir);
+
         auto &vkcore = GET_MODULE(VulkanManageCore);
-        const auto &capabilities = vkcore.getRuntimeCapabilities();
+        const auto &capabilities =
+            vkcore.getRuntimeCapabilities();
         if (!capabilities.ray_tracing_pipeline) {
             SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
         }
@@ -12021,90 +12085,194 @@ TEST_CASE(
                     .shader_sampled_image_array_non_uniform_indexing);
         REQUIRE(capabilities.descriptor_binding_partially_bound);
         REQUIRE(capabilities.max_bound_descriptor_sets >= 4);
-        REQUIRE(capabilities.max_descriptor_set_sampled_images >= 1024);
+        REQUIRE(capabilities.max_descriptor_set_samplers >= 1026);
+        REQUIRE(capabilities.max_descriptor_set_sampled_images >= 1026);
+        REQUIRE(capabilities.max_per_stage_descriptor_samplers >= 1026);
+        REQUIRE(
+            capabilities.max_per_stage_descriptor_sampled_images >= 1026);
+        REQUIRE(capabilities.max_per_stage_resources >= 1035);
 
-        auto &standard = GET_MODULE(StandardMaterialResource);
+        // ProjectBasicConfig resolves the path for I/O. The model and every
+        // table identity below must still retain the authored reference.
+        auto &model_assets = GET_MODULE(ModelAssetContainer);
+        const auto &loaded =
+            model_assets.getModelTemplateByName("tree");
+        REQUIRE(loaded.authored_asset_reference ==
+                "models/tree.glb");
+        REQUIRE(loaded.material_primitives.size() == 4);
+
+        std::array<std::uint64_t, 4> geometry_by_mesh{};
+        std::array<std::uint32_t, 4> presence_by_mesh{};
+        std::array<GlobalMaterialId, 4> material_by_mesh{};
+        material_by_mesh.fill(invalidMaterialId());
+        for (const auto &group : loaded.material_primitives) {
+            REQUIRE(group.primitives.size() == 1);
+            const auto &primitive = group.primitives.front();
+            REQUIRE(primitive.mesh_index <
+                    geometry_by_mesh.size());
+            const auto mesh = primitive.mesh_index;
+            REQUIRE(geometry_by_mesh[mesh] == 0);
+            geometry_by_mesh[mesh] =
+                primitive.geometry_allocation_id;
+            presence_by_mesh[mesh] =
+                primitive.ray_attribute_presence;
+            material_by_mesh[mesh] = group.material;
+        }
+        for (std::size_t mesh = 0; mesh < 4; ++mesh) {
+            CAPTURE(mesh);
+            REQUIRE(geometry_by_mesh[mesh] != 0);
+            REQUIRE(isValidMaterialId(
+                material_by_mesh[mesh]));
+        }
+        constexpr auto all_attributes =
+            rayGeometryAttributeNormal |
+            rayGeometryAttributeUv0 |
+            rayGeometryAttributeColor0;
+        CHECK(presence_by_mesh[0] == 0);
+        CHECK(presence_by_mesh[1] == all_attributes);
+        CHECK(presence_by_mesh[2] == all_attributes);
+        CHECK(presence_by_mesh[3] == all_attributes);
+
         auto &materials = GET_MODULE(MaterialContainer);
-        const auto make_material = [&](std::string name,
-                                       std::string texture_identity,
-                                       float factor) {
-            MaterialInfo info{
-                .vert_shader = standard.standardVertShader(),
-                .frag_shader = standard.standardFragShader(),
-                .base_color_texture = standard.whiteTexture(),
-                .metallic_roughness_texture =
-                    standard.metallicRoughnessDefaultTexture(),
-                .normal_texture = standard.normalDefaultTexture(),
-                .emissive_texture = standard.emissiveDefaultTexture(),
-                .occlusion_texture = standard.occlusionDefaultTexture(),
-            };
-            info.base_color_texture_identity =
-                std::move(texture_identity);
-            info.base_color_factor =
-                glm::vec4{factor, 0.5F, 0.75F, 1.0F};
-            info.name = std::move(name);
-            info.source_asset = "models/tree.glb";
-            return materials.registerMaterial(std::move(info));
-        };
-        const auto material_a = make_material(
-            "WP368A", "wp368-white-a", 0.25F);
-        const auto material_b = make_material(
-            "WP368B", "wp368-white-b", 0.75F);
+        CHECK(materials.materialDocumentReference(
+                  material_by_mesh[0]).empty());
+        CHECK(materials.materialDocumentReference(
+                  material_by_mesh[1]).empty());
+        CHECK(materials.materialDocumentReference(
+                  material_by_mesh[2]) ==
+              "materials/forest.material.json");
+        CHECK(materials.materialName(material_by_mesh[2]) ==
+              "ProjectOak");
+        CHECK(materials.materialDocumentReference(
+                  material_by_mesh[3]) ==
+              "materials/forest.material.json");
+        CHECK(materials.materialName(material_by_mesh[3]) ==
+              "ProjectPine");
 
-        const auto make_geometry = [](
-            float uv, float normal_z, float color_x) {
-            CommonPolygonVertData geometry;
-            geometry.indices = {0, 1, 2};
-            geometry.pos = {{-0.75F, -0.75F, 8.0F},
-                            {0.75F, -0.75F, 8.0F},
-                            {0.0F, 0.75F, 8.0F}};
-            geometry.normal.assign(
-                3, glm::vec3{0.0F, 0.0F, normal_z});
-            geometry.texcoord.assign(3, glm::vec2{uv, 0.5F});
-            geometry.color.assign(
-                3, glm::vec4{color_x, 0.5F, 0.75F, 1.0F});
-            return geometry;
+        const auto source_for = [&](GlobalMaterialId material,
+                                    std::string key) {
+            return materials.rayMaterialTableSource(
+                material, std::move(key),
+                materials.rayMaterialGeneration(material),
+                materials.rayMaterialLease(material));
         };
-        auto &vertices = GET_MODULE(VertBufContainer);
-        const auto primitive_a = vertices.addPrimitiveEntry(
-            make_geometry(0.25F, 1.0F, 0.125F));
-        const auto primitive_b = vertices.addPrimitiveEntry(
-            make_geometry(0.75F, 0.5F, 0.625F));
-        REQUIRE(primitive_a.geometry_allocation_id !=
-                primitive_b.geometry_allocation_id);
+        const auto embedded_red = source_for(
+            material_by_mesh[0],
+            "asset:models/tree.glb#0");
+        const auto embedded_green = source_for(
+            material_by_mesh[1],
+            "asset:models/tree.glb#1");
+        CHECK(embedded_red.base_color_texture_identity ==
+              "asset:models/tree.glb#texture:gltf-texture/0");
+        CHECK(embedded_green.base_color_texture_identity ==
+              "asset:models/tree.glb#texture:gltf-texture/1");
 
-        ModelTemplate model_a;
-        model_a.asset_id = ModelAssetId{3680};
-        model_a.authored_asset_reference = "models/tree.glb";
-        model_a.material_primitives = {
-            ModelTemplate::MaterialPrimitives{
-                .material = material_a,
-                .primitives = {primitive_a},
-                .source_material_index = 2,
-            }};
-        ModelTemplate model_b;
-        model_b.asset_id = ModelAssetId{3681};
-        model_b.authored_asset_reference = "models/tree.glb";
-        model_b.material_primitives = {
-            ModelTemplate::MaterialPrimitives{
-                .material = material_b,
-                .primitives = {primitive_b},
-                .source_material_index = 3,
-            }};
-        auto &instances = GET_MODULE(PolygonInstanceContainer);
-        const auto instance_a = instances.placeModelInstance(model_a);
-        const auto instance_b = instances.placeModelInstance(model_b);
-        instances.setTrs(instance_a, {-2.0F, 0.0F, 0.0F},
-                         glm::quat{1.0F, 0.0F, 0.0F, 0.0F},
-                         glm::vec3{1.0F});
-        instances.setTrs(instance_b, {2.0F, 0.0F, 0.0F},
-                         glm::quat{1.0F, 0.0F, 0.0F, 0.0F},
-                         glm::vec3{1.0F});
+        // Reverting full source-index provenance makes both mutations pass.
+        CHECK_THROWS_WITH(
+            source_for(material_by_mesh[0],
+                       "asset:models/tree.glb#1"),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_material_key_mismatch@1"));
+        CHECK_THROWS_WITH(
+            source_for(material_by_mesh[1],
+                       "asset:models/tree.glb#0"),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_material_key_mismatch@1"));
+
+        // These factors and names came through real project material and
+        // primitive-binding documents.
+        const auto project_oak = source_for(
+            material_by_mesh[2],
+            "document:materials/forest.material.json#ProjectOak");
+        const auto project_pine = source_for(
+            material_by_mesh[3],
+            "document:materials/forest.material.json#ProjectPine");
+        CHECK(project_oak.base_color_factor[0] == 0.25F);
+        CHECK(project_pine.base_color_factor[0] == 0.75F);
+        CHECK_THROWS_WITH(
+            source_for(
+                material_by_mesh[2],
+                "document:materials/forest.material.json#ProjectPine"),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_material_key_mismatch@1"));
+
+        auto &instances =
+            GET_MODULE(PolygonInstanceContainer);
+        (void)instances.placeModelInstance(loaded);
+
+        // Initialize a genuinely absent layout. This is the ShaderLibrary
+        // registration baseline that active RT2b must later restore.
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        vkcore.waitIdle();
+        CHECK_THROWS(renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{}));
+        auto &shaders = GET_MODULE(ShaderLibrary);
+        const auto registration_baseline =
+            shaders.checkpointRegistrations();
+        const auto baseline_count =
+            shaders.registrationCount();
+        auto &pipelines = GET_MODULE(PipelineFactory);
+        const auto pipeline_baseline =
+            pipelines.checkpointRegistrations();
+
+        // Mutate the real runtime fact consumed by production pipeline
+        // creation. The exact set 0-3 layout requires 1026 sampled images;
+        // rejection must happen before a descriptor-set-layout Vulkan object
+        // is created. Restoring only the old static 1024 check, omitting set 2,
+        // or moving validation after object creation breaks this contrast.
+        {
+            auto &mutable_capabilities =
+                const_cast<VulkanRuntimeCapabilities &>(capabilities);
+            struct RestoreSampledImageLimit {
+                VulkanRuntimeCapabilities &capabilities;
+                std::uint32_t value;
+                ~RestoreSampledImageLimit() {
+                    capabilities.max_descriptor_set_sampled_images = value;
+                }
+            } restore{
+                mutable_capabilities,
+                mutable_capabilities.max_descriptor_set_sampled_images};
+            mutable_capabilities.max_descriptor_set_sampled_images = 1025;
+            REQUIRE_THROWS_WITH(
+                loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                    active_config),
+                Catch::Matchers::ContainsSubstring(
+                    "maxDescriptorSetSampledImages") &&
+                    Catch::Matchers::ContainsSubstring("required>=1026") &&
+                    Catch::Matchers::ContainsSubstring("actual=1025") &&
+                    Catch::Matchers::ContainsSubstring(
+                        capabilities.device_name));
+        }
+        const auto failed_pipeline_checkpoint =
+            pipelines.checkpointRegistrations();
+        CHECK(failed_pipeline_checkpoint.pipeline_count ==
+              pipeline_baseline.pipeline_count);
+        CHECK(failed_pipeline_checkpoint.descriptor_set_layout_keys.size() ==
+              pipeline_baseline.descriptor_set_layout_keys.size());
+        CHECK(failed_pipeline_checkpoint
+                  .descriptor_set_layout_creation_count ==
+              pipeline_baseline.descriptor_set_layout_creation_count);
+        CHECK(shaders.registrationCount() == baseline_count);
+        CHECK(shaders.registrationsSince(
+                  registration_baseline).empty());
+        CHECK_THROWS(renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{}));
 
         std::vector<RayTracingSbtWriteObservation> writes;
         const ScopedRayTracingSbtWriteObserver observer{
-            [&](const auto &write) { writes.push_back(write); }};
-        auto &renderer = GET_MODULE(Renderer);
+            [&](const auto &write) {
+                writes.push_back(write);
+            }};
+        const auto active_variant =
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                active_config);
+        REQUIRE(isValidRenderingPassId(active_variant.flat));
+        REQUIRE_FALSE(shaders.registrationsSince(
+                          registration_baseline).empty());
+        REQUIRE(shaders.registrationCount() >
+                baseline_count);
+
         renderer.render();
         vkcore.waitIdle();
 
@@ -12118,21 +12286,53 @@ TEST_CASE(
         REQUIRE(tables.geometry_snapshot != nullptr);
         REQUIRE(tables.material_table_buffer != nullptr);
         REQUIRE(tables.geometry_table_buffer != nullptr);
-        CHECK(tables.material_table_buffer->buffer.get() != vk::Buffer{});
-        CHECK(tables.geometry_table_buffer->buffer.get() != vk::Buffer{});
         CHECK(tables.ray_table_descriptor_pool.get() !=
               vk::DescriptorPool{});
         CHECK(tables.ray_table_descriptor_set.get() !=
               vk::DescriptorSet{});
-        CHECK(tables.ray_tables.textures.size() == 2);
+
+        const std::vector<std::string> expected_material_keys{
+            "asset:models/tree.glb#0",
+            "asset:models/tree.glb#1",
+            "document:materials/forest.material.json#ProjectOak",
+            "document:materials/forest.material.json#ProjectPine",
+        };
         CHECK(tables.ray_tables.material_keys ==
-              std::vector<std::string>{
-                  "asset:models/tree.glb#2",
-                  "asset:models/tree.glb#3"});
-        CHECK(tables.ray_tables.geometry_allocation_ids ==
-              std::vector<std::uint64_t>{
-                  primitive_a.geometry_allocation_id,
-                  primitive_b.geometry_allocation_id});
+              expected_material_keys);
+        REQUIRE(tables.ray_tables.textures.size() == 2);
+        CHECK(tables.ray_tables.textures[0].canonical_identity ==
+              "asset:models/tree.glb#texture:gltf-texture/0");
+        CHECK(tables.ray_tables.textures[1].canonical_identity ==
+              "asset:models/tree.glb#texture:gltf-texture/1");
+        CHECK(tables.ray_tables.textures[0].srgb_view !=
+              tables.ray_tables.textures[1].srgb_view);
+
+        const auto index_of = [](const auto &values,
+                                 const auto &needle) {
+            const auto found =
+                std::ranges::find(values, needle);
+            if (found == values.end()) {
+                throw std::out_of_range(
+                    "WP368 expected table identity is absent");
+            }
+            return static_cast<std::uint32_t>(
+                std::distance(values.begin(), found));
+        };
+        std::array<std::uint32_t, 4> material_index{};
+        std::array<std::uint32_t, 4> geometry_index{};
+        for (std::size_t lane = 0; lane < 4; ++lane) {
+            material_index[lane] = index_of(
+                tables.ray_tables.material_keys,
+                expected_material_keys[lane]);
+            geometry_index[lane] = index_of(
+                tables.ray_tables.geometry_allocation_ids,
+                geometry_by_mesh[lane]);
+        }
+        CHECK(tables.ray_tables.geometry_rows[
+                  geometry_index[0]].attribute_presence == 0);
+        CHECK(tables.ray_tables.geometry_rows[
+                  geometry_index[1]].attribute_presence ==
+              all_attributes);
 
         {
             const auto runtime =
@@ -12145,8 +12345,10 @@ TEST_CASE(
                 [](const auto &scope) {
                     return scope.ray_tracing_project != nullptr;
                 });
-            REQUIRE(owner_scope != runtime->gpu_arena->scopes.end());
-            REQUIRE(owner_scope->acceleration_structures != nullptr);
+            REQUIRE(owner_scope !=
+                    runtime->gpu_arena->scopes.end());
+            REQUIRE(owner_scope->acceleration_structures !=
+                    nullptr);
             CHECK(owner_scope->acceleration_structures
                       ->activeRaySceneRowsForTesting() ==
                   tables.row_snapshot.get());
@@ -12155,178 +12357,265 @@ TEST_CASE(
                   tables.geometry_snapshot.get());
         }
 
-        const auto index_of = [](const auto &values,
-                                 const auto &needle) {
-            const auto found = std::ranges::find(values, needle);
-            if (found == values.end()) {
-                throw std::out_of_range(
-                    "WP368 expected table identity is absent");
-            }
-            return static_cast<std::uint32_t>(
-                std::distance(values.begin(), found));
-        };
-        const auto material_index_a = index_of(
-            tables.ray_tables.material_keys,
-            std::string{"asset:models/tree.glb#2"});
-        const auto material_index_b = index_of(
-            tables.ray_tables.material_keys,
-            std::string{"asset:models/tree.glb#3"});
-        const auto geometry_index_a = index_of(
-            tables.ray_tables.geometry_allocation_ids,
-            primitive_a.geometry_allocation_id);
-        const auto geometry_index_b = index_of(
-            tables.ray_tables.geometry_allocation_ids,
-            primitive_b.geometry_allocation_id);
-        REQUIRE(material_index_a != material_index_b);
-        REQUIRE(geometry_index_a != geometry_index_b);
-
         const auto pixel = [](const RenderTargetReadback &readback,
                               std::uint32_t x) {
             std::array<std::uint32_t, 4> result{};
             const auto offset =
-                static_cast<std::size_t>(x) * sizeof(result);
-            if (offset + sizeof(result) > readback.bytes.size()) {
+                static_cast<std::size_t>(x) *
+                sizeof(result);
+            if (offset + sizeof(result) >
+                readback.bytes.size()) {
                 throw std::out_of_range(
-                    "WP368 table sentinel pixel is outside readback");
+                    "WP368 sentinel pixel is outside readback");
             }
-            std::memcpy(result.data(),
-                        readback.bytes.data() + offset,
-                        sizeof(result));
+            std::memcpy(
+                result.data(),
+                readback.bytes.data() + offset,
+                sizeof(result));
             return result;
         };
-        const auto primary = renderer.readRenderTargetForTesting(
-            "wp366_a", ImageSubresourceRange{});
-        const auto geometry = renderer.readRenderTargetForTesting(
-            "wp366_b", ImageSubresourceRange{});
-        const auto primary_a = std::array{
-            material_index_a, geometry_index_a,
-            std::bit_cast<std::uint32_t>(0.25F),
-            std::bit_cast<std::uint32_t>(0.25F)};
-        const auto primary_b = std::array{
-            material_index_b, geometry_index_b,
-            std::bit_cast<std::uint32_t>(0.75F),
-            std::bit_cast<std::uint32_t>(0.75F)};
-        const auto geometry_a = std::array{
-            std::bit_cast<std::uint32_t>(0.25F),
-            std::bit_cast<std::uint32_t>(1.0F),
-            std::bit_cast<std::uint32_t>(0.125F),
-            rayGeometryAttributeNormal | rayGeometryAttributeUv0 |
-                rayGeometryAttributeColor0};
-        const auto geometry_b = std::array{
-            std::bit_cast<std::uint32_t>(0.75F),
-            std::bit_cast<std::uint32_t>(0.5F),
-            std::bit_cast<std::uint32_t>(0.625F),
-            rayGeometryAttributeNormal | rayGeometryAttributeUv0 |
-                rayGeometryAttributeColor0};
-        CHECK(pixel(primary, 0) == primary_a);
-        CHECK(pixel(primary, 1) == primary_b);
-        CHECK(pixel(geometry, 0) == geometry_a);
-        CHECK(pixel(geometry, 1) == geometry_b);
+        const auto primary =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        const auto geometry =
+            renderer.readRenderTargetForTesting(
+                "wp366_b", ImageSubresourceRange{});
+
+        const std::array<std::array<std::uint32_t, 4>, 4>
+            primary_expected{{
+                {material_index[0], geometry_index[0],
+                 std::bit_cast<std::uint32_t>(1.0F),
+                 std::bit_cast<std::uint32_t>(1.0F)},
+                {material_index[1], geometry_index[1],
+                 std::bit_cast<std::uint32_t>(1.0F),
+                 std::bit_cast<std::uint32_t>(0.0F)},
+                {material_index[2], geometry_index[2],
+                 std::bit_cast<std::uint32_t>(0.25F),
+                 std::bit_cast<std::uint32_t>(0.25F)},
+                {material_index[3], geometry_index[3],
+                 std::bit_cast<std::uint32_t>(0.75F),
+                 std::bit_cast<std::uint32_t>(0.75F)},
+            }};
+        const std::array<std::array<std::uint32_t, 4>, 4>
+            geometry_expected{{
+                {std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(1.0F), 0},
+                {std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(0.0F),
+                 all_attributes},
+                {std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(0.0F),
+                 all_attributes},
+                {std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(0.0F),
+                 std::bit_cast<std::uint32_t>(0.0F),
+                 all_attributes},
+            }};
+        for (std::uint32_t lane = 0; lane < 4; ++lane) {
+            CAPTURE(lane);
+            CHECK(pixel(primary, lane) ==
+                  primary_expected[lane]);
+            CHECK(pixel(geometry, lane) ==
+                  geometry_expected[lane]);
+        }
 
         REQUIRE(writes.size() == 2);
         const auto alignment =
             capabilities.shader_group_handle_alignment;
         REQUIRE(alignment != 0);
         const auto data_start =
-            (capabilities.shader_group_handle_size + alignment - 1u) /
+            (capabilities.shader_group_handle_size +
+             alignment - 1u) /
             alignment * alignment;
+        const auto flags_for =
+            [](std::string_view key) -> std::uint32_t {
+            if (key == "asset:models/tree.glb#0")
+                return 101;
+            if (key == "asset:models/tree.glb#1")
+                return 202;
+            if (key ==
+                "document:materials/forest.material.json#ProjectOak")
+                return 303;
+            if (key ==
+                "document:materials/forest.material.json#ProjectPine")
+                return 303;
+            throw std::out_of_range(
+                "WP368 SBT material key is unexpected");
+        };
         for (const auto &write : writes) {
             CHECK(write.row_digest_sha256 ==
-                  tables.row_snapshot->identity_digest_sha256);
+                  tables.row_snapshot
+                      ->identity_digest_sha256);
             REQUIRE(write.record_index_stride == 2);
-            REQUIRE(write.record_count == 4);
-            for (const auto &row : tables.row_snapshot->rows) {
-                for (std::uint32_t ray = 0; ray < 2; ++ray) {
+            REQUIRE(write.record_count == 8);
+            for (const auto &row :
+                 tables.row_snapshot->rows) {
+                for (std::uint32_t ray = 0;
+                     ray < 2; ++ray) {
                     const auto at =
-                        static_cast<std::size_t>(row.q * 2u + ray) *
+                        static_cast<std::size_t>(
+                            row.q * 2u + ray) *
                             write.record_byte_stride +
                         data_start;
-                    REQUIRE(at + 36 <= write.hit_bytes.size());
-                    std::array<std::uint32_t, 2> engine{};
+                    REQUIRE(at + 36 <=
+                            write.hit_bytes.size());
+                    std::array<std::uint32_t, 2>
+                        engine{};
                     std::uint32_t flags = 0;
-                    std::memcpy(engine.data(),
-                                write.hit_bytes.data() + at,
-                                sizeof(engine));
-                    std::memcpy(&flags,
-                                write.hit_bytes.data() + at + 32,
-                                sizeof(flags));
-                    CHECK(engine[0] == row.material_index);
-                    CHECK(engine[1] == row.geometry_index);
+                    std::memcpy(
+                        engine.data(),
+                        write.hit_bytes.data() + at,
+                        sizeof(engine));
+                    std::memcpy(
+                        &flags,
+                        write.hit_bytes.data() + at + 32,
+                        sizeof(flags));
+                    CHECK(engine[0] ==
+                          row.material_index);
+                    CHECK(engine[1] ==
+                          row.geometry_index);
                     CHECK(flags ==
-                          (row.material_reference.ends_with("#2")
-                               ? 101u
-                               : 202u));
+                          flags_for(
+                              row.material_reference));
                 }
             }
         }
 
-        // Mutate the final production TLAS-to-SBT hookup, keeping the table,
-        // SBT bytes, AS geometry, and shaders unchanged. Both pixels must now
-        // read the other row's material and geometry values.
+        const auto row_for =
+            [&](std::string_view key)
+                -> const RaySceneRow & {
+            const auto found = std::ranges::find(
+                tables.row_snapshot->rows, key,
+                &RaySceneRow::material_reference);
+            if (found ==
+                tables.row_snapshot->rows.end()) {
+                throw std::out_of_range(
+                    "WP368 scene row is absent");
+            }
+            return *found;
+        };
+        const auto red_q =
+            row_for(expected_material_keys[0]).q;
+        const auto green_q =
+            row_for(expected_material_keys[1]).q;
+        REQUIRE(red_q != green_q);
+
+        // Mutate only final TLAS record-offset routing. The same table and
+        // shaders must now select the other genuinely different 1x1 image.
         {
             const ScopedRayTracingTlasRecordOffsetOverrideForTesting
-                swapped_rows{[](std::uint32_t q, std::uint32_t) {
-                    return (1u - q) * 2u;
-                }};
+                swapped_rows{
+                    [red_q, green_q](
+                        std::uint32_t q,
+                        std::uint32_t) {
+                        if (q == red_q)
+                            return green_q * 2u;
+                        if (q == green_q)
+                            return red_q * 2u;
+                        return q * 2u;
+                    }};
             renderer.render();
             vkcore.waitIdle();
         }
-        const auto wrong_primary = renderer.readRenderTargetForTesting(
-            "wp366_a", ImageSubresourceRange{});
-        const auto wrong_geometry = renderer.readRenderTargetForTesting(
-            "wp366_b", ImageSubresourceRange{});
-        CHECK(pixel(wrong_primary, 0) == primary_b);
-        CHECK(pixel(wrong_primary, 1) == primary_a);
-        CHECK(pixel(wrong_geometry, 0) == geometry_b);
-        CHECK(pixel(wrong_geometry, 1) == geometry_a);
+        const auto wrong_primary =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        const auto wrong_geometry =
+            renderer.readRenderTargetForTesting(
+                "wp366_b", ImageSubresourceRange{});
+        CHECK(pixel(wrong_primary, 0) ==
+              primary_expected[1]);
+        CHECK(pixel(wrong_primary, 1) ==
+              primary_expected[0]);
+        CHECK(pixel(wrong_geometry, 0) ==
+              geometry_expected[1]);
+        CHECK(pixel(wrong_geometry, 1) ==
+              geometry_expected[0]);
         CHECK(wrong_primary.bytes != primary.bytes);
         CHECK(wrong_geometry.bytes != geometry.bytes);
 
         renderer.render();
         vkcore.waitIdle();
         CHECK(renderer.readRenderTargetForTesting(
-                  "wp366_a", ImageSubresourceRange{}).bytes ==
+                  "wp366_a",
+                  ImageSubresourceRange{}).bytes ==
               primary.bytes);
         CHECK(renderer.readRenderTargetForTesting(
-                  "wp366_b", ImageSubresourceRange{}).bytes ==
+                  "wp366_b",
+                  ImageSubresourceRange{}).bytes ==
               geometry.bytes);
 
-        // Replace the complete variant with one that has no layout. The next
-        // generation owns no RT2b tables, pool, or set, and the prior
-        // generation's table object must become unreachable after in-flight
-        // frame retirement.
         tables_lease.reset();
-        auto retiring = frame_resources
-                            .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        auto retiring =
+            frame_resources
+                .rayTracingSceneShaderBindingTablesLeaseForTesting();
         REQUIRE(retiring != nullptr);
-        std::weak_ptr<const RayTracingSceneShaderBindingTables>
+        std::weak_ptr<
+            const RayTracingSceneShaderBindingTables>
             retired_tables = retiring;
         retiring.reset();
-        writeRayQueryTestProject(temp_dir, false);
+
         const auto purged_variant =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
-                readTextFile(temp_dir / "hybrid.json"));
-        REQUIRE(isValidRenderingPassId(purged_variant.flat));
-        for (std::size_t frame = 0; frame < 3; ++frame) {
+                inactive_config);
+        REQUIRE(isValidRenderingPassId(
+            purged_variant.flat));
+        for (std::size_t frame = 0; frame < 3;
+             ++frame) {
             renderer.render();
             vkcore.waitIdle();
         }
-        CHECK(frame_resources.rayTracingSceneShaderBindingTables() ==
+        CHECK(frame_resources
+                  .rayTracingSceneShaderBindingTables() ==
               nullptr);
         CHECK(retired_tables.expired());
         CHECK_THROWS(renderer.readRenderTargetForTesting(
             "wp366_a", ImageSubresourceRange{}));
+        CHECK(shaders.registrationCount() ==
+              baseline_count);
+        CHECK(shaders.registrationsSince(
+                  registration_baseline).empty());
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {
         std::filesystem::remove_all(temp_dir);
         TestSupport::skipIfVulkanDeviceUnavailable(
-            error, "Vulkan WP368 material/geometry table fixture unavailable");
+            error,
+            "Vulkan WP368 production project fixture unavailable");
         throw;
     }
 #else
-    SUCCEED(
-        "WP368 layout projects are rejected before GPU work when the runtime compiler is disabled");
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        writeRt2bTableProject(temp_dir);
+        const nlohmann::json authored_root{
+            {"ray_group_layout", "ray_layout.json"},
+            {"ray_bindings", "ray_bindings.json"},
+        };
+        std::size_t document_loads = 0;
+        CHECK_THROWS_WITH(
+            loadRayTracingProjectConfig(
+                authored_root,
+                [&](std::string_view reference) {
+                    ++document_loads;
+                    return readTextFile(
+                        temp_dir /
+                        std::filesystem::path{
+                            std::string{reference}});
+                },
+                false),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_tracing.layout_requires_runtime_compiler@1"));
+        CHECK(document_loads == 0);
+        std::filesystem::remove_all(temp_dir);
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
 #endif
 }
 

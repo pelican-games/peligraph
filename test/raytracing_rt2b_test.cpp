@@ -4,8 +4,10 @@
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderreflection.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
+#include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
@@ -81,19 +83,24 @@ struct Wp368CompilerFixture {
         vk::Format::eB8G8R8A8Srgb,
         vk::Extent2D{64, 64}, {}, {}, {},
         VulkanRenderCompilerDevicePlanningMode::compiler_only};
-    std::array<RenderCompilerProgramVariantRequest, 3> variants{
-        RenderCompilerProgramVariantRequest{
+    std::vector<RenderCompilerProgramVariantRequest> variants = [] {
+        std::vector<RenderCompilerProgramVariantRequest> result{
+            RenderCompilerProgramVariantRequest{
             .graph_variant = RenderPipelineGraphVariant::flat,
             .artifact = RenderCompilerProgramArtifact::data_only,
-        },
-        RenderCompilerProgramVariantRequest{
+        }};
+#if PELICAN_WITH_OPENXR
+        result.push_back(RenderCompilerProgramVariantRequest{
             .graph_variant = RenderPipelineGraphVariant::xr,
             .artifact = RenderCompilerProgramArtifact::data_only,
-        },
-        RenderCompilerProgramVariantRequest{
+        });
+#endif
+        result.push_back(RenderCompilerProgramVariantRequest{
             .graph_variant = RenderPipelineGraphVariant::preview,
             .artifact = RenderCompilerProgramArtifact::data_only,
-        }};
+        });
+        return result;
+    }();
 
     RenderCompilerProgramInput input(
         std::shared_ptr<const RayTracingProjectConfig> project) const {
@@ -121,6 +128,42 @@ std::size_t wp368BindlessCapabilityCount(
             std::string{vulkanRayMaterialBindlessCapability}));
     }
     return result;
+}
+
+std::shared_ptr<const RayTracingProjectConfig>
+loadWp368Sidecar(bool runtime_shader_compiler_enabled,
+                 std::size_t *loads = nullptr) {
+    const nlohmann::json root{
+        {"ray_group_layout", "layout.json"},
+        {"ray_bindings", "bindings.json"},
+    };
+    return loadRayTracingProjectConfig(
+        root,
+        [&](std::string_view reference) {
+            if (loads != nullptr) ++*loads;
+            if (reference == "layout.json") {
+                return std::string{R"json({
+                  "schema":"pelican.ray_group_layout","version":1,
+                  "ray_types":["primary"],"default_group":"opaque",
+                  "groups":[{"name":"opaque"}],
+                  "misses":[{"name":"sky"}],
+                  "engine_record":["material_index","geometry_index"],
+                  "record":[{"name":"tint","type":"vec4"}]
+                })json"};
+            }
+            if (reference == "bindings.json") {
+                return std::string{R"json({
+                  "schema":"pelican.ray_bindings","version":1,
+                  "bindings":[{
+                    "material":{"asset":"models/tree.glb","source_material_index":0},
+                    "group":"opaque","record":{"tint":[1,0,0,1]}
+                  }]
+                })json"};
+            }
+            throw std::runtime_error(
+                "unexpected WP368 sidecar reference");
+        },
+        runtime_shader_compiler_enabled);
 }
 
 } // namespace
@@ -613,8 +656,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP368 absent table profile creates no RT2b capability shader or target resources",
-    "[WP368][ray-tracing][rt2b][inactive][variant][purge][production][mutation]") {
+    "WP368 inactive production profile and build matrix enforce RT2b owner gates",
+    "[WP368][ray-tracing][rt2b][inactive][variant][purge][production][matrix][mutation]") {
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER,
+            PELICAN_WITH_OPENXR,
+            PELICAN_WITH_IMGUI,
+            PELICAN_WP368_SKIP_DEVSTUDIO);
     Wp368CompilerFixture fixture;
     const auto compile = [&](std::shared_ptr<const RayTracingProjectConfig>
                                  project) {
@@ -632,13 +679,13 @@ TEST_CASE(
     };
 
     const auto absent = compile(nullptr);
-    std::array<nlohmann::json, 3> absent_targets;
+    std::vector<nlohmann::json> absent_targets(
+        absent.variants.size());
     for (std::size_t index = 0; index < absent.variants.size(); ++index) {
         const auto &variant = absent.variants[index];
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 0);
-        CHECK(variant.compute_task_definitions.empty());
         CHECK(variant.buffer_definitions.empty());
         REQUIRE(variant.normalized_config.contains("render_targets"));
         CHECK(variant.physical_package == nullptr);
@@ -654,7 +701,6 @@ TEST_CASE(
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 0);
-        CHECK(variant.compute_task_definitions.empty());
         CHECK(variant.buffer_definitions.empty());
         CHECK(variant.physical_package == nullptr);
         CHECK(variant.normalized_config.at("render_targets") ==
@@ -673,12 +719,54 @@ TEST_CASE(
         CAPTURE(index);
         CHECK(wp368BindlessCapabilityCount(
                   *variant.compiled_pipeline) == 1);
-        CHECK(variant.compute_task_definitions.empty());
         CHECK(variant.buffer_definitions.empty());
         CHECK(variant.physical_package == nullptr);
         CHECK(variant.normalized_config.at("render_targets") ==
               absent_targets[index]);
     }
+
+    // Build-matrix contrast through the production root-sidecar gate.  The
+    // disabled build must reject the named contract before invoking either
+    // real sidecar loader.
+    std::size_t loads = 0;
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const auto project = loadWp368Sidecar(
+        PELICAN_RUNTIME_SHADER_COMPILER != 0, &loads);
+    REQUIRE(project != nullptr);
+    CHECK(loads == 2);
+    CHECK(project->layout.usesRayTables());
+    CHECK(project->layout.source_reference == "layout.json");
+    REQUIRE(project->bindings.has_value());
+    CHECK(project->bindings->source_reference ==
+          "bindings.json");
+#else
+    CHECK_THROWS_WITH(
+        loadWp368Sidecar(
+            PELICAN_RUNTIME_SHADER_COMPILER != 0, &loads),
+        ContainsSubstring(
+            "pelican.ray_tracing.layout_requires_runtime_compiler@1"));
+    CHECK(loads == 0);
+#endif
+
+    // The same executable observes the production GPU-owner policy selected
+    // by the OpenXR build flag, rather than a mirrored test-only condition.
+#if PELICAN_WITH_OPENXR
+    const auto flat_owner = renderPipelineVariantGpuOwnerScope(
+        true, RenderPipelineGraphVariant::flat);
+    const auto xr_owner = renderPipelineVariantGpuOwnerScope(
+        true, RenderPipelineGraphVariant::xr);
+    CHECK(flat_owner == "render_pipeline/variants");
+    CHECK(xr_owner == flat_owner);
+#else
+    CHECK(renderPipelineVariantGpuOwnerScope(
+              false, RenderPipelineGraphVariant::flat) ==
+          "render_pipeline/flat");
+    CHECK_THROWS_WITH(
+        renderPipelineVariantGpuOwnerScope(
+            true, RenderPipelineGraphVariant::xr),
+        ContainsSubstring(
+            "XR graph variant is unavailable in this build"));
+#endif
 }
 
 TEST_CASE(

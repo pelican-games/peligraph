@@ -138,6 +138,131 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
     return glb;
 }
 
+// WP368's production-path fixture deliberately distinguishes authored absence
+// from authored zeroes, and gives the two embedded materials different image
+// bytes. It is loaded through ModelAssetContainer/GltfLoader; no geometry or
+// material registration is synthesized by the test.
+inline std::vector<uint8_t> makeWp368Glb() {
+    std::vector<uint8_t> bin;
+    const auto append = [&](std::initializer_list<float> values) {
+        for (const auto value : values) detail::appendF32(bin, value);
+    };
+    append({-0.75f, -0.75f, 0.0f,
+             0.75f, -0.75f, 0.0f,
+             0.0f,   0.75f, 0.0f});
+    const auto normal_offset = bin.size();
+    append({0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f});
+    const auto uv_offset = bin.size();
+    append({0.0f, 0.0f,
+            0.0f, 0.0f,
+            0.0f, 0.0f});
+    const auto color_offset = bin.size();
+    append({0.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 0.0f});
+
+    const std::string red_png =
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAF"
+        "AAH/iZk9HQAAAABJRU5ErkJggg==";
+    const std::string green_png =
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+M/wHwAE"
+        "AQH/cetH5QAAAABJRU5ErkJggg==";
+    const nlohmann::json full_attributes{
+        {"POSITION", 0}, {"NORMAL", 1}, {"TEXCOORD_0", 2}, {"COLOR_0", 3}};
+    nlohmann::json json{
+        {"asset", {{"version", "2.0"},
+                   {"generator", "pelican WP368 production fixture"}}},
+        {"scene", 0},
+        {"scenes", {{{"nodes", {0, 1, 2, 3}}}}},
+        {"nodes",
+         {
+             {{"name", "Lane0Missing"}, {"mesh", 0},
+              {"translation", {-3.0, 0.0, 8.0}}},
+             {{"name", "Lane1ZeroPresent"}, {"mesh", 1},
+              {"translation", {-1.0, 0.0, 8.0}}},
+             {{"name", "Lane2ProjectOak"}, {"mesh", 2},
+              {"translation", {1.0, 0.0, 8.0}}},
+             {{"name", "Lane3ProjectPine"}, {"mesh", 3},
+              {"translation", {3.0, 0.0, 8.0}}},
+         }},
+        {"materials",
+         {
+             {{"name", "EmbeddedRed"},
+              {"pbrMetallicRoughness",
+               {{"baseColorFactor", {1.0, 1.0, 1.0, 1.0}},
+                {"baseColorTexture", {{"index", 0}}}}}},
+             {{"name", "EmbeddedGreen"},
+              {"pbrMetallicRoughness",
+               {{"baseColorFactor", {1.0, 1.0, 1.0, 1.0}},
+                {"baseColorTexture", {{"index", 1}}}}}},
+             {{"name", "EmbeddedProjectOakSlot"}},
+             {{"name", "EmbeddedProjectPineSlot"}},
+         }},
+        {"images", {{{"name", "Red1x1"}, {"uri", red_png}},
+                    {{"name", "Green1x1"}, {"uri", green_png}}}},
+        {"textures", {{{"source", 0}}, {{"source", 1}}}},
+        {"meshes",
+         {
+             {{"name", "MissingAttributes"},
+              {"primitives", {{{"attributes", {{"POSITION", 0}}},
+                                {"material", 0}}}}},
+             {{"name", "AllZeroAttributes"},
+              {"primitives", {{{"attributes", full_attributes},
+                                {"material", 1}}}}},
+             {{"name", "ProjectOakMesh"},
+              {"primitives", {{{"attributes", full_attributes},
+                                {"material", 2}}}}},
+             {{"name", "ProjectPineMesh"},
+              {"primitives", {{{"attributes", full_attributes},
+                                {"material", 3}}}}},
+         }},
+        {"buffers", {{{"byteLength", bin.size()}}}},
+        {"bufferViews",
+         {
+             {{"buffer", 0}, {"byteOffset", 0}, {"byteLength", normal_offset}},
+             {{"buffer", 0}, {"byteOffset", normal_offset},
+              {"byteLength", uv_offset - normal_offset}},
+             {{"buffer", 0}, {"byteOffset", uv_offset},
+              {"byteLength", color_offset - uv_offset}},
+             {{"buffer", 0}, {"byteOffset", color_offset},
+              {"byteLength", bin.size() - color_offset}},
+         }},
+        {"accessors",
+         {
+             {{"bufferView", 0}, {"componentType", 5126}, {"count", 3},
+              {"type", "VEC3"}, {"min", {-0.75, -0.75, 0.0}},
+              {"max", {0.75, 0.75, 0.0}}},
+             {{"bufferView", 1}, {"componentType", 5126}, {"count", 3},
+              {"type", "VEC3"}},
+             {{"bufferView", 2}, {"componentType", 5126}, {"count", 3},
+              {"type", "VEC2"}},
+             {{"bufferView", 3}, {"componentType", 5126}, {"count", 3},
+              {"type", "VEC4"}},
+         }},
+    };
+
+    auto json_bytes = json.dump();
+    while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
+    while (bin.size() % 4 != 0) bin.push_back(0);
+    std::vector<uint8_t> glb;
+    const auto total_length = static_cast<uint32_t>(
+        12 + 8 + json_bytes.size() + 8 + bin.size());
+    detail::appendU32(glb, 0x46546c67);
+    detail::appendU32(glb, 2);
+    detail::appendU32(glb, total_length);
+    detail::appendU32(glb, static_cast<uint32_t>(json_bytes.size()));
+    detail::appendU32(glb, 0x4e4f534a);
+    glb.insert(glb.end(), json_bytes.begin(), json_bytes.end());
+    detail::appendU32(glb, static_cast<uint32_t>(bin.size()));
+    detail::appendU32(glb, 0x004e4942);
+    glb.insert(glb.end(), bin.begin(), bin.end());
+    return glb;
+}
+
 inline std::vector<uint8_t> makeNormalizedPositionGlb() {
     std::vector<uint8_t> bin{
         0x80, 0xc0, 0x00,
@@ -304,6 +429,10 @@ inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_name
 inline void writeNormalizedPositionGlb(
     const std::filesystem::path &path) {
     detail::writeBytes(path, makeNormalizedPositionGlb());
+}
+
+inline void writeWp368Glb(const std::filesystem::path &path) {
+    detail::writeBytes(path, makeWp368Glb());
 }
 
 inline void writeMaterialRoutingGlb(

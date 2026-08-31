@@ -429,6 +429,7 @@ struct InternalGltfLoader {
     StandardMaterialResource &std_mat;
     tinygltf::Model &model;
     std::string source_path;
+    std::string authored_reference;
     std::optional<AssetFragmentRef> fragment;
     bool scene_node_instance = false;
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
@@ -1538,14 +1539,20 @@ struct InternalGltfLoader {
 
         const auto normal_transform = glm::transpose(glm::inverse(glm::mat3{transform}));
         for (auto &normal : data.normal) {
-            normal = data.morph_targets.empty()
-                         ? glm::normalize(normal_transform * normal)
-                         : normal_transform * normal;
+            const auto transformed = normal_transform * normal;
+            normal = data.morph_targets.empty() &&
+                             glm::dot(transformed, transformed) > 0.0f
+                         ? glm::normalize(transformed)
+                         : transformed;
         }
         for (auto &tangent : data.tangent) {
-            const auto transformed = data.morph_targets.empty()
-                                         ? glm::normalize(normal_transform * glm::vec3{tangent})
-                                         : normal_transform * glm::vec3{tangent};
+            const auto unnormalized =
+                normal_transform * glm::vec3{tangent};
+            const auto transformed =
+                data.morph_targets.empty() &&
+                        glm::dot(unnormalized, unnormalized) > 0.0f
+                    ? glm::normalize(unnormalized)
+                    : unnormalized;
             tangent = glm::vec4{transformed, tangent.w};
         }
         const auto position_transform = glm::mat3{transform};
@@ -1744,7 +1751,9 @@ struct InternalGltfLoader {
                 ? "material[" +
                       std::to_string(material_index) + "]"
                 : material.name;
-        material_info.source_asset = source_path;
+        material_info.source_asset = authored_reference;
+        material_info.source_material_index =
+            static_cast<std::uint32_t>(material_index);
         material_infos.at(material_index) =
             std::move(material_info);
         material_routings.at(material_index) =
@@ -2316,7 +2325,8 @@ PreparedGltf GltfLoader::prepareGltfBinarySceneNode(std::string path,
     return prepared;
 }
 
-ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
+ModelTemplate GltfLoader::commit(PreparedGltf prepared,
+                                 std::string authored_reference) const {
     if (!prepared.impl) {
         throw std::runtime_error("cannot commit an empty prepared glTF");
     }
@@ -2348,13 +2358,16 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared) const {
         GET_MODULE(StandardMaterialResource),
         prepared.impl->model,
         prepared.impl->source_path,
+        authored_reference,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
         prepared.impl->vrm.semantic,
         true,
         activeMaterialShaderDefines(),
     };
-    return loader.load();
+    auto model = loader.load();
+    model.authored_asset_reference = std::move(authored_reference);
+    return model;
 }
 
 ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
@@ -2364,6 +2377,7 @@ ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
         resources,
         GET_MODULE(StandardMaterialResource),
         prepared.impl->model,
+        prepared.impl->source_path,
         prepared.impl->source_path,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
@@ -2376,17 +2390,28 @@ ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
 
 ModelTemplate GltfLoader::loadGltfBinary(std::string path,
                                          std::optional<AssetFragmentRef> fragment) {
-    return commit(prepareGltfBinary(std::move(path), std::move(fragment)));
+    auto authored_reference = path;
+    if (fragment) {
+        authored_reference += "#" + fragment->kind + "/" + fragment->path;
+    }
+    return commit(prepareGltfBinary(std::move(path), std::move(fragment)),
+                  std::move(authored_reference));
 }
 
 ModelTemplate GltfLoader::loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment) {
+    auto authored_reference = path + "#" + fragment.kind + "/" + fragment.path;
     auto prepared = prepareGltfBinarySceneNode(std::move(path), std::move(fragment));
-    return commit(std::move(prepared));
+    return commit(std::move(prepared), std::move(authored_reference));
 }
 
 ModelTemplate GltfLoader::loadGltf(std::string path,
                                    std::optional<AssetFragmentRef> fragment) {
-    return commit(prepareGltf(std::move(path), std::move(fragment)));
+    auto authored_reference = path;
+    if (fragment) {
+        authored_reference += "#" + fragment->kind + "/" + fragment->path;
+    }
+    return commit(prepareGltf(std::move(path), std::move(fragment)),
+                  std::move(authored_reference));
 }
 
 void releaseModelGpuResources(ModelTemplate &model, bool deferred) noexcept {

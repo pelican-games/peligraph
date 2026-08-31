@@ -171,6 +171,7 @@ DECLARE_MODULE(MaterialContainer) {
         std::shared_ptr<const void> ray_lease;
         std::string name;
         std::string source_asset;
+        std::optional<std::uint32_t> source_material_index;
         std::string source_document;
         std::vector<vk::Format> pipeline_color_formats;
         std::optional<vk::Format> pipeline_depth_format;

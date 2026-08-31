@@ -38,7 +38,8 @@ DECLARE_MODULE(GltfLoader) {
     // with synthetic draw handles and is suitable for reload compatibility
     // checks only.
     ModelTemplate inspect(const PreparedGltf &prepared) const;
-    ModelTemplate commit(PreparedGltf prepared) const;
+    ModelTemplate commit(PreparedGltf prepared,
+                         std::string authored_reference) const;
     ModelTemplate loadGltfBinary(std::string path,
                                  std::optional<AssetFragmentRef> fragment = std::nullopt);
     ModelTemplate loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment);

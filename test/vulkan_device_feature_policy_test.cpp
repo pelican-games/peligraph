@@ -1,4 +1,6 @@
 #include "../src/core/vkcore/devicefeaturepolicy.hpp"
+#include "../src/core/shader/pipelinefactory.hpp"
+#include "../src/core/shader/shaderreflection.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -192,7 +194,11 @@ TEST_CASE(
         .shader_sampled_image_array_non_uniform_indexing_feature = true,
         .descriptor_binding_partially_bound_feature = true,
         .max_bound_descriptor_sets = 4,
-        .max_descriptor_set_sampled_images = 1024,
+        .max_descriptor_set_samplers = 1026,
+        .max_descriptor_set_sampled_images = 1026,
+        .max_per_stage_descriptor_samplers = 1026,
+        .max_per_stage_descriptor_sampled_images = 1026,
+        .max_per_stage_resources = 1035,
         .device_name = "WP368 fixture device",
     };
     const auto selected = selectRayQueryDeviceFeatures(support);
@@ -201,8 +207,42 @@ TEST_CASE(
     CHECK(selected.descriptor_binding_partially_bound);
     CHECK(selected.ray_material_bindless);
     CHECK(selected.max_bound_descriptor_sets == 4);
-    CHECK(selected.max_descriptor_set_sampled_images == 1024);
+    CHECK(selected.max_descriptor_set_samplers == 1026);
+    CHECK(selected.max_descriptor_set_sampled_images == 1026);
+    CHECK(selected.max_per_stage_descriptor_samplers == 1026);
+    CHECK(selected.max_per_stage_descriptor_sampled_images == 1026);
+    CHECK(selected.max_per_stage_resources == 1035);
     CHECK(selected.device_name == "WP368 fixture device");
+
+    ShaderReflection reflected_sets{
+        .bindings = {
+            {1, 0, vk::DescriptorType::eStorageImage, 1,
+             vk::ShaderStageFlagBits::eRaygenKHR, "output"},
+            {2, 0, vk::DescriptorType::eCombinedImageSampler, 2,
+             vk::ShaderStageFlagBits::eClosestHitKHR, "surfaces"},
+        },
+    };
+    auto actual_bindings = frameDescriptorSetLayoutBindings(true);
+    for (const auto set : {1u, 2u}) {
+        const auto reflected = makeDescriptorSetLayoutBindings(
+            reflected_sets, set);
+        actual_bindings.insert(actual_bindings.end(),
+                               reflected.begin(), reflected.end());
+    }
+    const auto set_three = rayMaterialDescriptorSetLayoutBindings();
+    actual_bindings.insert(actual_bindings.end(),
+                           set_three.begin(), set_three.end());
+    const auto requirements = rayMaterialBindlessLayoutRequirements(
+        4, actual_bindings);
+    const RayMaterialBindlessLayoutRequirements expected_requirements{
+        .descriptor_set_count = 4,
+        .descriptor_set_samplers = 1026,
+        .descriptor_set_sampled_images = 1026,
+        .per_stage_descriptor_samplers = 1026,
+        .per_stage_descriptor_sampled_images = 1026,
+        .per_stage_resources = 1035,
+    };
+    CHECK(requirements == expected_requirements);
 
     VulkanRuntimeCapabilities capabilities{
         .runtime_descriptor_array = true,
@@ -210,10 +250,16 @@ TEST_CASE(
         .descriptor_binding_partially_bound = true,
         .ray_material_bindless = true,
         .max_bound_descriptor_sets = 4,
-        .max_descriptor_set_sampled_images = 1024,
+        .max_descriptor_set_samplers = 1026,
+        .max_descriptor_set_sampled_images = 1026,
+        .max_per_stage_descriptor_samplers = 1026,
+        .max_per_stage_descriptor_sampled_images = 1026,
+        .max_per_stage_resources = 1035,
         .device_name = "WP368 fixture device",
     };
     CHECK_NOTHROW(requireRayMaterialBindlessDevice(capabilities));
+    CHECK_NOTHROW(requireRayMaterialBindlessDevice(
+        capabilities, 4, actual_bindings));
 
     struct FeatureMutation {
         const char *property;
@@ -237,25 +283,53 @@ TEST_CASE(
         CHECK_THROWS_WITH(
             requireRayMaterialBindlessDevice(missing),
             ContainsSubstring(mutation.property) &&
-                ContainsSubstring("requested=VK_TRUE") &&
+                ContainsSubstring("required=VK_TRUE") &&
                 ContainsSubstring("actual=VK_FALSE") &&
                 ContainsSubstring("WP368 fixture device"));
     }
 
-    auto too_few_sets = capabilities;
-    too_few_sets.max_bound_descriptor_sets = 3;
-    CHECK_THROWS_WITH(
-        requireRayMaterialBindlessDevice(too_few_sets),
-        ContainsSubstring("maxBoundDescriptorSets") &&
-            ContainsSubstring("requested>=4") &&
-            ContainsSubstring("actual=3"));
-    auto too_few_images = capabilities;
-    too_few_images.max_descriptor_set_sampled_images = 1023;
-    CHECK_THROWS_WITH(
-        requireRayMaterialBindlessDevice(too_few_images),
-        ContainsSubstring("maxDescriptorSetSampledImages") &&
-            ContainsSubstring("requested>=1024") &&
-            ContainsSubstring("actual=1023"));
+    struct LimitMutation {
+        const char *property;
+        std::uint32_t VulkanRuntimeCapabilities::*member;
+        std::uint32_t required;
+    };
+    constexpr std::array limit_mutations{
+        LimitMutation{"maxBoundDescriptorSets",
+                      &VulkanRuntimeCapabilities::max_bound_descriptor_sets,
+                      4},
+        LimitMutation{"maxDescriptorSetSamplers",
+                      &VulkanRuntimeCapabilities::max_descriptor_set_samplers,
+                      1026},
+        LimitMutation{
+            "maxDescriptorSetSampledImages",
+            &VulkanRuntimeCapabilities::max_descriptor_set_sampled_images,
+            1026},
+        LimitMutation{
+            "maxPerStageDescriptorSamplers",
+            &VulkanRuntimeCapabilities::max_per_stage_descriptor_samplers,
+            1026},
+        LimitMutation{
+            "maxPerStageDescriptorSampledImages",
+            &VulkanRuntimeCapabilities::max_per_stage_descriptor_sampled_images,
+            1026},
+        LimitMutation{"maxPerStageResources",
+                      &VulkanRuntimeCapabilities::max_per_stage_resources,
+                      1035},
+    };
+    for (const auto &mutation : limit_mutations) {
+        auto too_small = capabilities;
+        too_small.*(mutation.member) = mutation.required - 1;
+        CAPTURE(mutation.property, mutation.required);
+        CHECK_THROWS_WITH(
+            requireRayMaterialBindlessDevice(
+                too_small, 4, actual_bindings),
+            ContainsSubstring(mutation.property) &&
+                ContainsSubstring("required>=" +
+                                  std::to_string(mutation.required)) &&
+                ContainsSubstring(
+                    "actual=" + std::to_string(mutation.required - 1)) &&
+                ContainsSubstring("WP368 fixture device"));
+    }
 
     SECTION("removing any one advertised feature disables the atomic contract") {
         for (const auto feature : {0, 1, 2}) {
@@ -275,6 +349,37 @@ TEST_CASE(
                 rejected.shader_sampled_image_array_non_uniform_indexing);
             CHECK_FALSE(rejected.descriptor_binding_partially_bound);
             CHECK_FALSE(rejected.ray_material_bindless);
+        }
+    }
+
+    SECTION("removing any one advertised descriptor limit disables the atomic contract") {
+        struct SupportLimitMutation {
+            std::uint32_t RayQueryDeviceSupport::*member;
+            std::uint32_t below_minimum;
+        };
+        constexpr std::array mutations{
+            SupportLimitMutation{
+                &RayQueryDeviceSupport::max_bound_descriptor_sets, 3},
+            SupportLimitMutation{
+                &RayQueryDeviceSupport::max_descriptor_set_samplers, 1023},
+            SupportLimitMutation{
+                &RayQueryDeviceSupport::max_descriptor_set_sampled_images,
+                1023},
+            SupportLimitMutation{
+                &RayQueryDeviceSupport::max_per_stage_descriptor_samplers,
+                1023},
+            SupportLimitMutation{
+                &RayQueryDeviceSupport::max_per_stage_descriptor_sampled_images,
+                1023},
+            SupportLimitMutation{
+                &RayQueryDeviceSupport::max_per_stage_resources, 1025},
+        };
+        for (const auto &mutation : mutations) {
+            auto mutant = support;
+            mutant.*(mutation.member) = mutation.below_minimum;
+            CAPTURE(mutation.below_minimum);
+            CHECK_FALSE(
+                selectRayQueryDeviceFeatures(mutant).ray_material_bindless);
         }
     }
 }

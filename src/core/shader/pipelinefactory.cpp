@@ -481,7 +481,11 @@ PipelineFactory::descriptorSetLayoutsFor(
                 flags_info.setBindingFlags(key.binding_flags);
                 create_info.pNext = &flags_info;
             }
-            auto [inserted, _] = descriptor_set_layout_cache.emplace(key, device.createDescriptorSetLayoutUnique(create_info));
+            auto layout =
+                device.createDescriptorSetLayoutUnique(create_info);
+            ++descriptor_set_layout_creation_count;
+            auto [inserted, _] = descriptor_set_layout_cache.emplace(
+                key, std::move(layout));
             found = inserted;
         }
         layouts.push_back(found->second.get());
@@ -1076,15 +1080,23 @@ PipelineFactory::buildRayTracingPipeline(
             "pelican.ray_tracing.frame_tlas_required@1: ray tracing "
             "pipeline must reflect the frame TLAS binding");
     }
-    if (desc.ray_tracing_project &&
-        desc.ray_tracing_project->layout.usesRayTables()) {
-        requireRayMaterialBindlessDevice(capabilities);
-    }
     const auto set_layout_keys = descriptorSetLayoutKeysFor(
         reflection,
         desc.ray_tracing_project
             ? &desc.ray_tracing_project->layout
             : nullptr);
+    if (desc.ray_tracing_project &&
+        desc.ray_tracing_project->layout.usesRayTables()) {
+        std::vector<vk::DescriptorSetLayoutBinding> actual_bindings;
+        for (const auto &key : set_layout_keys) {
+            actual_bindings.insert(actual_bindings.end(),
+                                   key.bindings.begin(), key.bindings.end());
+        }
+        requireRayMaterialBindlessDevice(
+            capabilities,
+            static_cast<std::uint32_t>(set_layout_keys.size()),
+            actual_bindings);
+    }
     auto set_layouts = descriptorSetLayoutsFor(set_layout_keys);
     auto pipeline_layout =
         createPipelineLayout(reflection, set_layouts);
@@ -1238,7 +1250,11 @@ vk::DescriptorSetLayout PipelineFactory::frameDescriptorSetLayout(
     auto found = descriptor_set_layout_cache.find(key);
     if (found == descriptor_set_layout_cache.end()) {
         const auto create_info = makeDescriptorSetLayoutCreateInfo(key.bindings);
-        found = descriptor_set_layout_cache.emplace(key, device.createDescriptorSetLayoutUnique(create_info)).first;
+        auto layout =
+            device.createDescriptorSetLayoutUnique(create_info);
+        ++descriptor_set_layout_creation_count;
+        found = descriptor_set_layout_cache.emplace(
+            key, std::move(layout)).first;
     }
     return found->second.get();
 }
@@ -1791,6 +1807,8 @@ PipelineFactory::RegistrationCheckpoint
 PipelineFactory::checkpointRegistrations() const {
     RegistrationCheckpoint checkpoint;
     checkpoint.pipeline_count = pipeline_handles.size();
+    checkpoint.descriptor_set_layout_creation_count =
+        descriptor_set_layout_creation_count;
     checkpoint.descriptor_set_layout_keys.reserve(
         descriptor_set_layout_cache.size());
     for (const auto &[key, layout] :

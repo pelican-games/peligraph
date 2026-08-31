@@ -86,6 +86,10 @@ struct MaterialInfo {
     // diagnostics can point back to the material and its containing asset.
     std::string name;
     std::string source_asset;
+    // Present for an embedded source material. This is retained with the
+    // registered handle so a ray-table row must identify the exact glTF
+    // material, rather than merely another material from the same asset.
+    std::optional<std::uint32_t> source_material_index;
     // Present only for a project-authored material document. glTF materials
     // keep source_asset for diagnostics but deliberately leave this empty so
     // ray-binding document and asset selectors remain disjoint.
