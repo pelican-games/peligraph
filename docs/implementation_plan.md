@@ -17179,3 +17179,118 @@ override 優先順位(absolute UV → relative UV、relative multiplier は disc
 
 **推奨**: #1 は RT を次に触る WP の冒頭で直す(または #1〜#3 をまとめた小さな
 独立修理 WP)。#4〜#7 はその WP の受け入れ条件に同乗させる。
+
+### WP370: プレファブ U2 —— unpack・object picker・一括流し込み・dry-run
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
+**規範は docs/design_prefabs.md の U2 行(§7)と、台帳「引き継ぎ: 残 WP への先行裁定」の
+U2 裁定。前提は WP361/361a(プレファブ本体)+ WP362(永続化と編集)。**
+
+#### 前提の実測(2026-09-01、起票時に確認)
+
+- `unpack` は**未実装**(`src/core/` に該当なし)
+- `set_prefab_parameter` / `unset_prefab_parameter` は WP362 で実装済み
+  (journal・inverse・3 重 CAS・12 fault point)
+- `kind:"object"` パラメータは WP361 で解決済みだが、**rename 連動は未実装**
+  (壊れた参照は load 検証で名前付きに落ちるだけ)
+
+#### 1. unpack(journal 1 op)
+
+`unpack_prefab`: object の `prefab` キーを**展開済み components への置換**で消す。
+**object 名は不変**。design v4 の原則どおり **一方向**(re-pack は作らない)。
+
+- **identity 断絶は WP361 v3 差分で契約済み**(gid は消え、authored な通常
+  component になる)。**再設計しない**
+- journal の inverse は「prefab キーの復元 + 展開 component の除去」
+  (undo のための逆操作であって、利用者向けの re-pack 機能ではない)
+- unpack 後の component は authored なので `set_component_value` で編集できる
+  (これが unpack の目的)
+- 受け入れ: unpack → undo → redo で **authored index・component bytes・
+  behavior seq が完全復元** / unpack 後に元 prefab を編集しても
+  **unpack 済み object は影響を受けない**(参照が切れている証明)/
+  Generated だった component が **`editable: true` になり `set_component_value` が通る**
+
+#### 2. object picker と rename 連動
+
+- `kind:"object"` パラメータの候補一覧を RPC で公開(scene 内の authored object 名 +
+  `required_components` を満たすかの判定)
+- **object の rename が `kind:"object"` パラメータ値を追随**する。
+  同一 transaction・同一 inverse(undo で両方戻る)
+- 受け入れ: rename → 参照が追随 → undo で両方戻る /
+  `required_components` を満たさない候補は picker に**出るが選ぶと named 拒否**
+  (出さないと「なぜ無いのか」が分からない。G0 可読性)
+
+#### 3. Studio の behavior inventory(台帳の負債を返す)
+
+WP361a レビュー #6 で台帳送りにした
+「**Studio offline の behavior binding 乖離**」をここで閉じる ——
+Studio は engine を link しないため behavior schema を知らず、
+`behavior:<type>` provider を要求する prefab を offline で開くと
+engine と違う結果になる。**behavior schema を project metadata / RPC catalog 経由で
+Studio の pure leaf へ渡す**(D0: `pelican_core` を link しない)。
+picker の inventory と同じ経路なので同段で行う。
+
+#### 4. 一括流し込み面と純粋 dry-run
+
+- **複数 object の prefab パラメータを 1 transaction で設定**する面
+  (AI・表・外部データからの流し込み。design v4 の「parameters as bulk-import contract」)
+- 既存の batch(all-or-nothing・inverse-list undo)・schema 検証・CAS を**そのまま使う**
+- **dry-run は `ResolvedScene` の純 resolver 経路をそのまま使う**(裁定)。
+  **新しい検証経路を作らない —— 第二の流儀の禁止**。
+  適用せずに「何が起きるか・何が失敗するか」を返す
+- 受け入れ: N 件の流し込みで 1 件だけ型不正 → **全件適用されない**(all-or-nothing)/
+  dry-run の結果と実適用の結果が**同一の named エラー**になる /
+  dry-run が **scene revision も ECS も arena も動かさない**(観測で)
+
+#### やらないこと
+
+パラメータ昇格(U3)/ `ctx.spawn`(U4)/ 多オブジェクト prefab(§7 の前提 4 件)/
+optional slot・variant / HDA / attributes。
+
+依存: WP361 + WP361a + WP362。
+
+---
+
+### WP371: R1 —— planner のパーサ統一(typed PassDefinition の単一消費)
+
+**§4 規則 11 中段(複数経路にまたがる)。仕様レビュー + コードレビュー。見積: 中〜大。**
+**規範は台帳のリファクタ計画 R1 と「引き継ぎ」の R1 裁定。**
+
+#### 前提の実測(2026-09-01、起票時に確認)
+
+`src/core/renderingpass/frameplanner.cpp` が **独自の JSON パーサを持っている**:
+`requireString` / `parseStringList` / `parseOptionalStringList` と、
+`nlohmann::json` を直接受ける関数群(121・185・219 行ほか)。
+これは `passinfojsonparser` / `PassDefinition` が既に解析している**同じ文書の
+第二のパーサ**であり、WP303・WP326 で 2 回踏んだ「同じ文書を読む第二経路」そのもの。
+
+#### 範囲
+
+1. **planner は typed `PassDefinition` だけを消費する**。`frameplanner` から
+   raw JSON パースを**物理的に削除**(残すと第三の流儀になる)
+2. パース責務は `passinfojsonparser` / project 層に一本化。
+   planner が必要とする情報が typed 側に無ければ **typed 側に足す**
+   (planner 側で JSON を読み直さない)
+3. `framePlanToJson` は**出力**なので現状維持(WP354 で
+   `CompiledRenderPipeline*` を受ける形になっている)
+
+#### 受け入れ(§4 規約 10)
+
+- **WP354 の fixtures が等価オラクル**: raw fixture(`runtime_projection.pre_wp354.json`
+  ほか)と出荷 4 project の frame plan・GPU golden・cache key が**完全不変**
+- **第二パーサの物理的消失**: `frameplanner.cpp` に `nlohmann::json` を引数に取る
+  パース関数が**残っていないこと**を検査(削除の実測。ソース文字列検査ではなく、
+  typed 経路を無効化すると planner が動かないことで示す)
+- **旧が拒否し新が受理する JSON が無いこと**: 削除した分岐を
+  `git show <SHA>^:frameplanner.cpp` と突き合わせ、**同じ名前付き違反で
+  両経路が拒否する**ことを確認(WP324 の教訓 —— 集約で検証が弱くなる)
+- RT の `compute_tasks` パーサに隣接するため、**RT1b/RT2a/RT2b の layout・
+  hit_shaders・ray_bindings の解析経路が影響を受けないこと**を明示的に検査
+- 全数 2 回 / GPU 直列は統合側 / matrix は SKIP_DEVSTUDIO 両構成
+
+#### やらないこと
+
+R5(型付き構築 factory・codec 記述子の単一ソース化)/ R6(fullscreen・
+output_transform の variant tag)/ RT の parser 統合。
+
+依存: WP354(fixtures がオラクル)+ RT2b 完了(隣接のため並行しない)。
