@@ -16472,3 +16472,29 @@ definite-assignment 解析、float opcode ごとの Vulkan 保証区間 —— �
   RT2a はこれを広げも直しもしない
 
 依存: WP366 + WP366a。
+
+#### WP367(RT2a)完了(2026-08-31)
+
+統合: 全数 **1476 ×2 緑**(GPU 直列込み)、doclink 2341 ok。
+基準値 N=1476(RT1b 完了時 1467 + 9)。UNMET 0。
+
+成立したもの: `.rahit` 語彙が production 全経路(resolver → shaderc kind →
+suffix 推論 → ShaderLibrary → final SPIR-V stage → task enum → PlanViewer/Studio)/
+typed hit group(`type ::= absent | "triangles"`、**procedural は文法に無い**)/
+ABI 検査の `(g,r)` occurrence `{closesthit, optional<anyhit>}` 化(payload・
+`vec2` attribute・record・incoming 個数。**GPU 負例で Vulkan pipeline create 0 回**)/
+sparse な `anyhit_slots` wire(存在分のみ昇順、皆無なら field 省略、両 strict
+consumer 更新)/ **整数述語生成器**が CPU オラクルと GLSL の双方を生成 /
+always-accept と実述語の完全 pipeline 2 本立て A/B(**`Opaque` flag を戻すと
+actual=always になって落ちる**)/ single-candidate と two-candidate の分離証明 /
+compiler OFF は `layout_requires_runtime_compiler@1` + document load 0 /
+5 contrast build で RT2a の具体 test ID 実行。
+旧形(`type` 無し・`anyhit` 無し)は validator digest まで完全一致。
+
+**第 2 巡 FATAL 7 件のうち 4 件は v2 が導入した subset 認証器由来**であり、
+v3 で認証器ごと削除して解消した(fixture 側を構成的に縛る方針へ)。
+残 1 件(#7 hot reload と共同 transaction の齟齬)は `.rchit` に既存の穴と確認し
+台帳へ。
+
+次: WP367 の §10 コードレビュー → **RT2b(material ABI: bindless material 表・
+geometry access・実 texture の alpha test・両車線 portable profile)**。
