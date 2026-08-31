@@ -17158,3 +17158,24 @@ matrix は compiler OFF・SKIP_DEVSTUDIO・OpenXR で RT2b target を実行し�
 **RT2b はここで確定**(WP368/368a + WP369/369a)。連鎖打ち切り済み。
 次: **RT3(AS の宣言面: geometry_flags / instance_flags の分離・mask・
 custom_index 未指定=0・static AABB + `.rint`)**。
+
+#### WP369a コードレビュー(7 件)—— 宣言どおり台帳のみ
+
+致命なし。**連鎖打ち切り済みのため WP は起票しない**。以下は次に RT を触る WP
+(RT3 以降)または独立の修理を起こすときの仕様の種。
+「壊せなかった項目」: clamp の実挙動(raster shader・生成 anyhit とも saturate、
+GPU fixture が `alphaCutoff=2.0` と absolute alpha `-0.1` で RT と gbuffer を比較)/
+override 優先順位(absolute UV → relative UV、relative multiplier は discard 後)。
+
+| # | 指摘 | 重み |
+|---|---|---|
+| **1** | **legacy direct load(`loadGltfBinary()`/`loadGltf()`)の runtime material identity が消失**。#5 の「path 字面推測の廃止」の副作用で `commit()` に reference を渡さなくなり、`MaterialInfo::source_asset` と `ModelTemplate::authored_asset_reference` が空になる。全 direct model の material key が `asset:#0` になり、**2 つ以上で `ray_material_key_collision@1`**。旧 path を指す既存 `ray_bindings` selector も不一致になる。テストは production key を使わず `"asset:legacy-relative.glb#0"` を手で注入していて退行を隠している。**直し方: authored provenance と runtime identity を分離**し、legacy direct load には衝突しない deterministic な runtime identity を別 field で持たせる(物理 path を IR provenance に戻さない) | **実害あり。出荷 4 project は RT layout 未使用のため到達しないが、public API の後退。RT を触る次の WP で最優先** |
+| 2 | KHR non-identity を **row の override 解決前**に拒否しており、absolute/relative UV override で置換できる正当な入力まで弾く。さらに **「raster は KHR を一切読まない」という私の前提は VRM 経路では不成立** —— loader が KHR 値を `SourceMaterialInitialValues` に格納し、VRM texture-transform expression が absolute UV override として publish、raster shader はそれを適用する。**直し方: present-invalid は常に拒否 / valid non-identity は各 MASK row で resolved override の有無を見て判定(あれば採用、無ければ拒否)/ 設計文書の「一切読まない」も訂正** | 実害あり。**設計文書の記述訂正を含む** |
+| 3 | valid な non-identity KHR が **float 丸めで identity に落ちる**(`scale:[1.00000001, 1.0]`)。KHR schema に精度制約は無い。視覚差は float 未満だが fail-fast 契約違反。**直し方: identity 判定を JSON の double 値で行い、その後 float 表現可能性を検査** | 実害あり(軽) |
+| 4 | raster lowering の clamp 追加テストが**取り消しても落ちない**(shader 側が既に saturate しており、production lowering test は範囲内 `0.625` しか見ない)。**直し方: `alpha_cutoff=2.0 / -0.1` を `lowerMaterial()` に通し `lowered.values` の実値 `1.0 / 0.0` を検査** | 懸念(§4 規約 10 の禁止形) |
+| 5 | 非 MASK が依然 normalized IR digest に依存(source 同値判定と row digest が無条件で normalized を含む)。OPAQUE で absent KHR と明示 identity KHR を切り替えると digest が変わり、重複 source で false collision もあり得る。**直し方: `same_material_source` と row digest の normalized 部分も profile_mask で囲む** | 懸念 |
+| 6 | compiler OFF の「registration 0」が**切断された代理条件**(ローカル `ShaderLibrary` を作って数えているだけで production 経路に繋がっていない)。実装自体は loader で先に拒否しており正しい。**直し方: production の config-registration を実 checkpoint / spy つきで呼ぶ** | 懸念 |
+| 7 | matrix ledger が実行を独立に証明していない(同じ wrapper が無条件で自分に property を立てるため、`run_process()` だけ消しても通る)。**直し方: 必須 label の中央一覧 + executable 自身の成功 marker + 末尾の差分監査** | 懸念 |
+
+**推奨**: #1 は RT を次に触る WP の冒頭で直す(または #1〜#3 をまとめた小さな
+独立修理 WP)。#4〜#7 はその WP の受け入れ条件に同乗させる。
