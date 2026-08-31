@@ -23,6 +23,16 @@ static_assert(offsetof(RayMaterialTableRow, alpha_mode) == 20);
 static_assert(offsetof(RayMaterialTableRow, base_color_texture_index) == 24);
 static_assert(offsetof(RayMaterialTableRow, reserved) == 28);
 static_assert(sizeof(RayMaterialTableRow) == 32);
+static_assert(alignof(RayProfileMaterialTableRow) == 16);
+static_assert(offsetof(RayProfileMaterialTableRow, alpha_mode) == 0);
+static_assert(offsetof(RayProfileMaterialTableRow, cutoff) == 4);
+static_assert(offsetof(RayProfileMaterialTableRow, base_factor_a) == 8);
+static_assert(offsetof(RayProfileMaterialTableRow, texture_index) == 12);
+static_assert(offsetof(RayProfileMaterialTableRow, uv_offset_scale) == 16);
+static_assert(offsetof(RayProfileMaterialTableRow, uv_rotation) == 32);
+static_assert(offsetof(RayProfileMaterialTableRow, uses_vertex_color) == 36);
+static_assert(offsetof(RayProfileMaterialTableRow, reserved) == 40);
+static_assert(sizeof(RayProfileMaterialTableRow) == 48);
 static_assert(alignof(RayGeometryTableRow) == 8);
 static_assert(offsetof(RayGeometryTableRow, vertex_address) == 0);
 static_assert(offsetof(RayGeometryTableRow, index_address) == 8);
@@ -123,6 +133,18 @@ std::string_view engineRecordFieldName(
         return "geometry_index";
     }
     return "unknown";
+}
+
+std::string_view glslRecordTypeName(RayRecordType type) noexcept {
+    switch (type) {
+    case RayRecordType::i32: return "int";
+    case RayRecordType::u32: return "uint";
+    case RayRecordType::f32: return "float";
+    case RayRecordType::vec2: return "vec2";
+    case RayRecordType::vec3: return "vec3";
+    case RayRecordType::vec4: return "vec4";
+    }
+    return "uint";
 }
 
 RayRecordMemberLayout appendRecordMember(
@@ -340,7 +362,8 @@ RayGroupLayout parseRayGroupLayout(
     }
     requireObjectFields(root,
                         {"schema", "version", "ray_types", "default_group",
-                         "groups", "misses", "engine_record", "record"},
+                         "groups", "misses", "engine_record", "record",
+                         "portable_profile"},
                         "layout", source_reference);
     if (!root.contains("schema") || root.at("schema") != "pelican.ray_group_layout" ||
         !root.contains("version") || !root.at("version").is_number_integer() ||
@@ -356,6 +379,18 @@ RayGroupLayout parseRayGroupLayout(
     RayGroupLayout result;
     result.source_reference = std::move(source_reference);
     result.digest_sha256 = picosha2::hash256_hex_string(raw_bytes.begin(), raw_bytes.end());
+    if (const auto profile = root.find("portable_profile");
+        profile != root.end()) {
+        if (!profile->is_string() ||
+            profile->get_ref<const std::string &>() !=
+                "material_alpha_v1") {
+            layoutError(
+                result.source_reference,
+                "portable_profile must be 'material_alpha_v1' when present");
+        }
+        result.portable_profile =
+            RayPortableProfile::material_alpha_v1;
+    }
     result.ray_types = parseNameStrings(root.at("ray_types"), "ray_types", result.source_reference);
     result.groups = parseNamedObjects(root.at("groups"), "groups", result.source_reference);
     result.misses = parseNamedObjects(root.at("misses"), "misses", result.source_reference);
@@ -405,6 +440,17 @@ RayGroupLayout parseRayGroupLayout(
         if (requested_engine_fields.contains(field)) {
             result.engine_record.push_back(field);
         }
+    }
+    if (result.usesMaterialAlphaProfile() &&
+        requested_engine_fields !=
+            std::set<RayEngineRecordField>{
+                RayEngineRecordField::material_index,
+                RayEngineRecordField::geometry_index}) {
+        throw std::runtime_error(
+            "pelican.ray_profile_engine_record_required@1: portable_profile 'material_alpha_v1' requires engine_record material_index and geometry_index" +
+            (result.source_reference.empty()
+                 ? std::string{}
+                 : " in '" + result.source_reference + "'"));
     }
 
     const auto &record = root.at("record");
@@ -517,18 +563,47 @@ std::string makeRayGroupLayoutVirtualInclude(const RayGroupLayout &layout) {
         if (index + 1 != layout.engine_record.size()) source << " \\\n";
         else source << '\n';
     }
+    if (layout.usesMaterialAlphaProfile()) {
+        source << "#define PELICAN_RAY_PROFILE_RECORD_MEMBERS \\\n";
+        for (std::size_t index = 0;
+             index < layout.physical_record.size(); ++index) {
+            source << "    "
+                   << glslRecordTypeName(
+                          layout.physical_record[index].type)
+                   << ' ' << layout.physical_record[index].name << ';';
+            if (index + 1 != layout.physical_record.size())
+                source << " \\\n";
+            else
+                source << '\n';
+        }
+    }
     source << "const uint pelican_ray_missing_texture = 0xffffffffu;\n";
     source << "const uint pelican_ray_attribute_normal = 1u;\n";
     source << "const uint pelican_ray_attribute_uv0 = 2u;\n";
     source << "const uint pelican_ray_attribute_color0 = 4u;\n";
-    source << R"glsl(
+    if (layout.usesMaterialAlphaProfile()) {
+        source << R"glsl(
+struct PelicanRayMaterialRow {
+    uint alpha_mode;
+    float cutoff;
+    float base_factor_a;
+    uint texture_index;
+    vec4 uv_offset_scale;
+    float uv_rotation;
+    uint uses_vertex_color;
+    uvec2 reserved;
+};)glsl";
+    } else {
+        source << R"glsl(
 struct PelicanRayMaterialRow {
     vec4 base_color_factor;
     float alpha_cutoff;
     uint alpha_mode;
     uint base_color_texture_index;
     uint reserved;
-};
+};)glsl";
+    }
+    source << R"glsl(
 layout(buffer_reference, std430, buffer_reference_align = 4) readonly buffer PelicanRayVertexWords {
     uint words[];
 };
@@ -552,14 +627,27 @@ layout(set = 3, binding = 2, std430) readonly buffer PelicanRayGeometryTable {
 };
 PelicanRayMaterialRow pelicanRayMaterial(uint material_index) {
     return pelican_ray_material_rows[material_index];
-}
+})glsl";
+    if (layout.usesMaterialAlphaProfile()) {
+        source << R"glsl(
+vec4 pelicanRaySampleBaseColor(uint material_index, vec2 uv) {
+    PelicanRayMaterialRow row = pelicanRayMaterial(material_index);
+    float texel_alpha = row.texture_index == pelican_ray_missing_texture
+        ? 1.0
+        : textureLod(pelican_ray_material_textures[nonuniformEXT(row.texture_index)], uv, 0.0).a;
+    return vec4(1.0, 1.0, 1.0, row.base_factor_a * texel_alpha);
+})glsl";
+    } else {
+        source << R"glsl(
 vec4 pelicanRaySampleBaseColor(uint material_index, vec2 uv) {
     PelicanRayMaterialRow row = pelicanRayMaterial(material_index);
     vec4 texel = row.base_color_texture_index == pelican_ray_missing_texture
         ? vec4(1.0)
         : texture(pelican_ray_material_textures[nonuniformEXT(row.base_color_texture_index)], uv);
     return row.base_color_factor * texel;
-}
+})glsl";
+    }
+    source << R"glsl(
 uvec3 pelicanRayTriangleVertexIndices(PelicanRayGeometryRow row, uint primitive_id) {
     uint first = primitive_id * 3u;
     return uvec3(row.indices.words[first], row.indices.words[first + 1u],
@@ -613,6 +701,68 @@ vec4 pelicanRayFetchColor0(uint geometry_index, uint primitive_id, vec2 barycent
 }
 )glsl";
     return source.str();
+}
+
+std::string makeMaterialAlphaAnyHitSource(
+    const RayGroupLayout &layout) {
+    if (!layout.usesMaterialAlphaProfile()) {
+        throw std::logic_error(
+            "material alpha any-hit source requested without an active portable profile");
+    }
+    if (!layout.engineRecordOffset(
+            RayEngineRecordField::material_index) ||
+        !layout.engineRecordOffset(
+            RayEngineRecordField::geometry_index)) {
+        throw std::logic_error(
+            "material alpha profile lost its material/geometry record fields");
+    }
+    // Deliberately has no rayPayloadInEXT declaration. The RT validator has
+    // one narrowly-scoped exception for this engine-generated any-hit stage.
+    return R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+hitAttributeEXT vec2 pelican_alpha_hit_attribute;
+layout(shaderRecordEXT, std430) buffer PelicanAlphaRecord {
+    PELICAN_RAY_PROFILE_RECORD_MEMBERS
+} pelican_alpha_record;
+void main() {
+    PelicanRayMaterialRow row =
+        pelicanRayMaterial(pelican_alpha_record.material_index);
+    if (row.alpha_mode != 1u) {
+        return;
+    }
+    vec2 uv = vec2(0.0);
+    if (row.texture_index != pelican_ray_missing_texture) {
+        uv = pelicanRayFetchUV(pelican_alpha_record.geometry_index,
+                               gl_PrimitiveID,
+                               pelican_alpha_hit_attribute);
+        float cosine = cos(row.uv_rotation);
+        float sine = sin(row.uv_rotation);
+        mat2 rotation = mat2(cosine, sine, -sine, cosine);
+        uv = row.uv_offset_scale.xy +
+             rotation * (uv * row.uv_offset_scale.zw);
+    }
+    float texture_alpha =
+        row.texture_index == pelican_ray_missing_texture
+            ? 1.0
+            : textureLod(
+                  pelican_ray_material_textures[
+                      nonuniformEXT(row.texture_index)],
+                  uv, 0.0).a;
+    float vertex_alpha = 1.0;
+    if (row.uses_vertex_color != 0u) {
+        vertex_alpha = pelicanRayFetchColor0(
+            pelican_alpha_record.geometry_index,
+            gl_PrimitiveID,
+            pelican_alpha_hit_attribute).a;
+    }
+    if (texture_alpha * row.base_factor_a * vertex_alpha <
+        row.cutoff) {
+        ignoreIntersectionEXT;
+    }
+}
+)glsl";
 }
 
 RayBindings parseRayBindings(
@@ -811,7 +961,15 @@ RaySceneRowSnapshot resolveRaySceneRows(
               .resolved_material_lease =
                   input.resolved_material_lease,
               .geometry_allocation_id =
-                  input.geometry_allocation_id});
+                  input.geometry_allocation_id,
+              .alpha_override_mask =
+                  input.alpha_override_mask,
+              .alpha_override_base_color_factor =
+                  input.alpha_override_base_color_factor,
+              .alpha_override_uv_offset_scale =
+                  input.alpha_override_uv_offset_scale,
+              .alpha_override_uv_rotation =
+                  input.alpha_override_uv_rotation});
     }
     if (bindings != nullptr) {
         for (std::size_t index = 0; index < binding_matched.size(); ++index) {
@@ -871,7 +1029,10 @@ RaySceneRowSnapshot resolveRaySceneRows(
 RayTracingTableBuildResult buildRayTracingTableSnapshot(
     const RaySceneRowSnapshot &immutable_scene_rows,
     std::span<const RayMaterialTableSource> materials,
-    const RayTracingGeometrySnapshot &geometry) {
+    const RayTracingGeometrySnapshot &geometry,
+    const RayGroupLayout *layout) {
+    const auto profile_active =
+        layout != nullptr && layout->usesMaterialAlphaProfile();
     const auto hash_bytes = [](std::string_view prefix,
                                const void *data, std::size_t size) {
         std::string encoded{prefix};
@@ -879,10 +1040,10 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
         return picosha2::hash256_hex_string(
             encoded.begin(), encoded.end());
     };
-    const auto same_material_source = [](const RayMaterialTableSource &left,
-                                         const RayMaterialTableSource &right) {
-        return left.material_handle == right.material_handle &&
-               left.material_generation == right.material_generation &&
+    const auto same_material_source = [profile_active](
+                                          const RayMaterialTableSource &left,
+                                          const RayMaterialTableSource &right) {
+        const auto ordinary_equal =
                left.base_color_factor == right.base_color_factor &&
                left.alpha_cutoff == right.alpha_cutoff &&
                left.alpha_mode == right.alpha_mode &&
@@ -890,6 +1051,32 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
                    right.base_color_texture_identity &&
                left.base_color_srgb_view == right.base_color_srgb_view &&
                left.default_sampler == right.default_sampler;
+        if (!profile_active) {
+            return left.material_handle == right.material_handle &&
+                   left.material_generation ==
+                       right.material_generation &&
+                   ordinary_equal;
+        }
+        if (!ordinary_equal) return false;
+        return left.has_normalized_alpha_ir ==
+                   right.has_normalized_alpha_ir &&
+               left.alpha_source_kind == right.alpha_source_kind &&
+               left.alpha_material_identity ==
+                   right.alpha_material_identity &&
+               left.alpha_texture_identity ==
+                   right.alpha_texture_identity &&
+               left.normalized_alpha_mode ==
+                   right.normalized_alpha_mode &&
+               left.normalized_alpha_cutoff ==
+                   right.normalized_alpha_cutoff &&
+               left.normalized_base_factor_a ==
+                   right.normalized_base_factor_a &&
+               left.normalized_uv_offset_scale ==
+                   right.normalized_uv_offset_scale &&
+               left.normalized_uv_rotation ==
+                   right.normalized_uv_rotation &&
+               left.normalized_alpha_digest_sha256 ==
+                   right.normalized_alpha_digest_sha256;
     };
 
     std::map<std::tuple<int, std::uint64_t, std::string>,
@@ -902,6 +1089,24 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
             source.canonical_key.empty() || !source.material_lease) {
             throw std::runtime_error(
                 "pelican.ray_material_snapshot_invalid@1: resolved material handle, generation, lease, and canonical key are required");
+        }
+        if (profile_active &&
+            (!source.has_normalized_alpha_ir ||
+             source.alpha_source_kind != "gltf_base_color" ||
+             source.normalized_alpha_digest_sha256.empty())) {
+            throw std::runtime_error(
+                "pelican.ray_profile_alpha_ir_missing@1: material '" +
+                source.canonical_key +
+                "' requires project-lowered gltf_base_color NormalizedAlphaIr");
+        }
+        if (profile_active &&
+            (source.alpha_material_identity != source.canonical_key ||
+             source.alpha_texture_identity !=
+                 source.base_color_texture_identity)) {
+            throw std::runtime_error(
+                "pelican.ray_profile_alpha_identity_mismatch@1: material '" +
+                source.canonical_key +
+                "' NormalizedAlphaIr is not derived from its WP368a authored references");
         }
         const auto handle_key = std::tuple{
             source.material_handle, source.material_generation,
@@ -923,17 +1128,24 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
         }
     }
 
+    const auto texture_identity = [profile_active](
+                                      const RayMaterialTableSource &source)
+        -> const std::string & {
+        return profile_active ? source.alpha_texture_identity
+                              : source.base_color_texture_identity;
+    };
     std::map<std::string, RayTextureTableEntry, std::less<>> texture_by_key;
     for (const auto &[_, source] : source_by_key) {
-        if (source->base_color_texture_identity.empty()) continue;
+        const auto &identity = texture_identity(*source);
+        if (identity.empty()) continue;
         if (!source->base_color_srgb_view || !source->default_sampler) {
             throw std::runtime_error(
                 "pelican.ray_material_texture_invalid@1: canonical texture '" +
-                source->base_color_texture_identity +
+                identity +
                 "' requires an sRGB view and default sampler");
         }
         RayTextureTableEntry entry{
-            .canonical_identity = source->base_color_texture_identity,
+            .canonical_identity = identity,
             .srgb_view = source->base_color_srgb_view,
             .sampler = source->default_sampler,
         };
@@ -959,40 +1171,141 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
     for (const auto &[_, texture] : texture_by_key) {
         result.textures.push_back(texture);
     }
-    result.material_keys.reserve(source_by_key.size());
-    result.material_rows.reserve(source_by_key.size());
-    result.material_row_digests.reserve(source_by_key.size());
-    result.material_leases.reserve(source_by_key.size());
-    for (const auto &[key, source] : source_by_key) {
-        RayMaterialTableRow row{
-            .base_color_factor = source->base_color_factor,
-            .alpha_cutoff = source->alpha_cutoff,
-            .alpha_mode = source->alpha_mode,
-        };
-        if (!source->base_color_texture_identity.empty()) {
-            const auto texture = std::lower_bound(
-                result.textures.begin(), result.textures.end(),
-                source->base_color_texture_identity,
-                [](const auto &entry, std::string_view identity) {
-                    return entry.canonical_identity < identity;
-                });
-            row.base_color_texture_index = static_cast<std::uint32_t>(
-                texture - result.textures.begin());
+    const auto material_row_count =
+        profile_active ? scene_rows.rows.size() : source_by_key.size();
+    result.material_keys.reserve(material_row_count);
+    result.material_row_digests.reserve(material_row_count);
+    result.material_leases.reserve(material_row_count);
+    if (!profile_active) {
+        result.material_rows.reserve(source_by_key.size());
+        for (const auto &[key, source] : source_by_key) {
+            RayMaterialTableRow row{
+                .base_color_factor = source->base_color_factor,
+                .alpha_cutoff = source->alpha_cutoff,
+                .alpha_mode = source->alpha_mode,
+            };
+            if (!source->base_color_texture_identity.empty()) {
+                const auto texture = std::lower_bound(
+                    result.textures.begin(), result.textures.end(),
+                    source->base_color_texture_identity,
+                    [](const auto &entry, std::string_view identity) {
+                        return entry.canonical_identity < identity;
+                    });
+                row.base_color_texture_index =
+                    static_cast<std::uint32_t>(
+                        texture - result.textures.begin());
+            }
+            result.material_keys.push_back(key);
+            result.material_rows.push_back(row);
+            result.material_leases.push_back(source->material_lease);
+            std::ostringstream prefix;
+            prefix << key << '\0' << source->material_handle << ':'
+                   << source->material_generation << '\0';
+            result.material_row_digests.push_back(hash_bytes(
+                prefix.str(), &result.material_rows.back(), sizeof(row)));
         }
-        result.material_keys.push_back(key);
-        result.material_rows.push_back(row);
-        result.material_leases.push_back(source->material_lease);
-        std::ostringstream prefix;
-        prefix << key << '\0' << source->material_handle << ':'
-               << source->material_generation << '\0';
-        result.material_row_digests.push_back(hash_bytes(
-            prefix.str(), &result.material_rows.back(), sizeof(row)));
-    }
-    result.material_bytes.resize(
-        result.material_rows.size() * sizeof(RayMaterialTableRow));
-    if (!result.material_bytes.empty()) {
-        std::memcpy(result.material_bytes.data(), result.material_rows.data(),
-                    result.material_bytes.size());
+        result.material_bytes.resize(
+            result.material_rows.size() * sizeof(RayMaterialTableRow));
+        if (!result.material_bytes.empty()) {
+            std::memcpy(result.material_bytes.data(),
+                        result.material_rows.data(),
+                        result.material_bytes.size());
+        }
+    } else {
+        result.profile_material_rows.reserve(scene_rows.rows.size());
+        for (const auto &scene_row : scene_rows.rows) {
+            const auto source = source_by_handle.find(
+                {scene_row.resolved_material_handle,
+                 scene_row.resolved_material_generation,
+                 scene_row.material_reference});
+            if (source == source_by_handle.end() ||
+                source->second->material_lease !=
+                    scene_row.resolved_material_lease) {
+                throw std::runtime_error(
+                    "pelican.ray_material_snapshot_invalid@1: selector row does not match its resolved material handle generation/lease");
+            }
+            const auto geometry_row = std::lower_bound(
+                geometry.rows.begin(), geometry.rows.end(),
+                scene_row.geometry_allocation_id,
+                [](const auto &candidate, std::uint64_t identity) {
+                    return candidate.geometry_allocation_id < identity;
+                });
+            if (geometry_row == geometry.rows.end() ||
+                geometry_row->geometry_allocation_id !=
+                    scene_row.geometry_allocation_id) {
+                throw std::runtime_error(
+                    "pelican.ray_geometry_snapshot_invalid@1: row allocation ID is absent from the geometry table");
+            }
+            const auto &material = *source->second;
+            RayProfileMaterialTableRow row{
+                .alpha_mode = material.normalized_alpha_mode,
+                .cutoff = material.normalized_alpha_cutoff,
+                .base_factor_a = material.normalized_base_factor_a,
+                .uv_offset_scale = material.normalized_uv_offset_scale,
+                .uv_rotation = material.normalized_uv_rotation,
+                .uses_vertex_color =
+                    (geometry_row->gpu.attribute_presence &
+                     rayGeometryAttributeColor0) != 0
+                        ? 1u
+                        : 0u,
+            };
+            if (!material.alpha_texture_identity.empty()) {
+                const auto texture = std::lower_bound(
+                    result.textures.begin(), result.textures.end(),
+                    material.alpha_texture_identity,
+                    [](const auto &entry, std::string_view identity) {
+                        return entry.canonical_identity < identity;
+                    });
+                if (texture == result.textures.end() ||
+                    texture->canonical_identity !=
+                        material.alpha_texture_identity) {
+                    throw std::logic_error(
+                        "profile texture identity was not lowered into the table");
+                }
+                row.texture_index = static_cast<std::uint32_t>(
+                    texture - result.textures.begin());
+            }
+            if ((scene_row.alpha_override_mask &
+                 rayAlphaOverrideBaseFactor) != 0) {
+                row.base_factor_a =
+                    scene_row.alpha_override_base_color_factor[3];
+            }
+            if ((scene_row.alpha_override_mask &
+                 rayAlphaOverrideUvTransform) != 0) {
+                row.uv_offset_scale =
+                    scene_row.alpha_override_uv_offset_scale;
+                row.uv_rotation =
+                    scene_row.alpha_override_uv_rotation;
+            }
+            if (row.alpha_mode == 1u) {
+                validateRayProfileGeometryAttributes(
+                    row, geometry_row->gpu, scene_row.q,
+                    scene_row.material_reference);
+            }
+            const auto key =
+                "row:" + std::to_string(scene_row.q) + ":" +
+                scene_row.material_reference;
+            result.material_keys.push_back(key);
+            result.profile_material_rows.push_back(row);
+            result.material_leases.push_back(material.material_lease);
+            std::string prefix = key;
+            prefix.push_back('\0');
+            prefix += material.normalized_alpha_digest_sha256;
+            prefix.push_back('\0');
+            prefix += scene_row.scene_identity;
+            prefix.push_back('\0');
+            result.material_row_digests.push_back(hash_bytes(
+                prefix, &result.profile_material_rows.back(),
+                sizeof(row)));
+        }
+        result.material_bytes.resize(
+            result.profile_material_rows.size() *
+            sizeof(RayProfileMaterialTableRow));
+        if (!result.material_bytes.empty()) {
+            std::memcpy(result.material_bytes.data(),
+                        result.profile_material_rows.data(),
+                        result.material_bytes.size());
+        }
     }
     std::string material_identity;
     for (std::size_t index = 0; index < result.material_keys.size(); ++index) {
@@ -1066,16 +1379,27 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
             throw std::runtime_error(
                 "pelican.ray_material_snapshot_invalid@1: selector row does not match its resolved material handle generation/lease");
         }
-        const auto material = std::lower_bound(
-            result.material_keys.begin(), result.material_keys.end(),
-            scene_row.material_reference);
-        if (material == result.material_keys.end() ||
-            *material != scene_row.material_reference) {
-            throw std::runtime_error(
-                "pelican.ray_material_snapshot_invalid@1: row canonical material key is absent from the table");
+        if (profile_active) {
+            if (scene_row.q >= result.profile_material_rows.size() ||
+                result.material_keys[scene_row.q] !=
+                    "row:" + std::to_string(scene_row.q) + ":" +
+                        scene_row.material_reference) {
+                throw std::runtime_error(
+                    "pelican.ray_material_snapshot_invalid@1: resolved profile row is absent from the per-instance table");
+            }
+            scene_row.material_index = scene_row.q;
+        } else {
+            const auto material = std::lower_bound(
+                result.material_keys.begin(), result.material_keys.end(),
+                scene_row.material_reference);
+            if (material == result.material_keys.end() ||
+                *material != scene_row.material_reference) {
+                throw std::runtime_error(
+                    "pelican.ray_material_snapshot_invalid@1: row canonical material key is absent from the table");
+            }
+            scene_row.material_index = static_cast<std::uint32_t>(
+                material - result.material_keys.begin());
         }
-        scene_row.material_index = static_cast<std::uint32_t>(
-            material - result.material_keys.begin());
 
         const auto geometry_row = std::lower_bound(
             result.geometry_allocation_ids.begin(),
@@ -1106,6 +1430,27 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
     scene_rows.identity_digest_sha256 = picosha2::hash256_hex_string(
         final_identity.begin(), final_identity.end());
     return build;
+}
+
+void validateRayProfileGeometryAttributes(
+    const RayProfileMaterialTableRow &row,
+    const RayGeometryTableRow &geometry,
+    std::uint32_t q, std::string_view material_reference) {
+    const auto fail = [&](std::string_view attribute) {
+        throw std::runtime_error(
+            "pelican.ray_geometry_attribute_missing@1: row=" +
+            std::to_string(q) + " material='" +
+            std::string{material_reference} + "' missing='" +
+            std::string{attribute} + "'");
+    };
+    if (row.texture_index != rayMissingTextureIndex &&
+        (geometry.attribute_presence & rayGeometryAttributeUv0) == 0) {
+        fail("TEXCOORD_0");
+    }
+    if (row.uses_vertex_color != 0 &&
+        (geometry.attribute_presence & rayGeometryAttributeColor0) == 0) {
+        fail("COLOR_0");
+    }
 }
 
 void validateRayTracingRecordAddressing(

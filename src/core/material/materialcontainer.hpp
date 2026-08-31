@@ -212,6 +212,7 @@ DECLARE_MODULE(MaterialContainer) {
         GlobalTextureId emissive_texture;
         GlobalTextureId occlusion_texture;
         std::string base_color_texture_identity;
+        std::optional<NormalizedAlphaIr> normalized_alpha_ir;
         MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
         float alpha_cutoff = 0.5F;
         glm::vec4 base_color_factor{1.0f};

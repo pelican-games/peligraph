@@ -327,6 +327,22 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
     return result;
 }
 
+void validateRayProfileAccelerationStructureFlags(
+    bool profile_active,
+    vk::GeometryFlagsKHR geometry_flags,
+    vk::GeometryInstanceFlagsKHR instance_flags,
+    std::string_view diagnostic) {
+    if (!profile_active) return;
+    if ((geometry_flags & vk::GeometryFlagBitsKHR::eOpaque) ||
+        (instance_flags &
+         vk::GeometryInstanceFlagBitsKHR::eForceOpaque)) {
+        throw std::runtime_error(
+            "pelican.ray_profile_opaque_as@1: " +
+            std::string{diagnostic} +
+            " requires non-opaque geometry and instance flags");
+    }
+}
+
 std::string canonicalTransformIdentity(const glm::mat4 &transform) {
     // Spell the IEEE-754 payload as fixed-width hexadecimal so the sort key
     // is independent of locale, stream float formatting, and host byte order.
@@ -394,6 +410,14 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
             .geometry_allocation_id =
                 instance.geometry_allocation_id,
             .source_index = source_index,
+            .alpha_override_mask =
+                instance.alpha_override_mask,
+            .alpha_override_base_color_factor =
+                instance.alpha_override_base_color_factor,
+            .alpha_override_uv_offset_scale =
+                instance.alpha_override_uv_offset_scale,
+            .alpha_override_uv_rotation =
+                instance.alpha_override_uv_rotation,
         });
     }
     return resolveRaySceneRows(
@@ -618,7 +642,8 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows,
     std::uint32_t ray_type_count,
     std::shared_ptr<const RayTracingSceneShaderBindingTables>
-        ray_tracing_scene_tables) {
+        ray_tracing_scene_tables,
+    bool material_alpha_profile_active) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (!capabilities.ray_query ||
         !capabilities.acceleration_structure ||
@@ -764,9 +789,14 @@ RayQueryAccelerationStructureScope::recordFrame(
                 vk::IndexType::eUint32,
                 vk::DeviceOrHostAddressConstKHR{index_address},
             };
+        const vk::GeometryFlagsKHR geometry_flags{};
+        validateRayProfileAccelerationStructureFlags(
+            material_alpha_profile_active, geometry_flags, {},
+            "BLAS geometry '" + std::to_string(identity) + "'");
         const vk::AccelerationStructureGeometryKHR geometry_info{
             vk::GeometryTypeKHR::eTriangles,
-            vk::AccelerationStructureGeometryDataKHR{triangles}};
+            vk::AccelerationStructureGeometryDataKHR{triangles},
+            geometry_flags};
         vk::AccelerationStructureBuildGeometryInfoKHR build_info{
             vk::AccelerationStructureTypeKHR::eBottomLevel,
             vk::BuildAccelerationStructureFlagBitsKHR::
@@ -842,11 +872,15 @@ RayQueryAccelerationStructureScope::recordFrame(
             throw std::runtime_error(
                 "static ray-query TLAS instance has no BLAS");
         }
+        const vk::GeometryInstanceFlagsKHR instance_flags{};
+        validateRayProfileAccelerationStructureFlags(
+            material_alpha_profile_active, {}, instance_flags,
+            "TLAS instance row " + std::to_string(planned.q));
         tlas_instances.emplace_back(
             toVulkanTransform(instance.world_transform),
             planned.instance_custom_index,
             0xffu, planned.instance_sbt_record_offset,
-            vk::GeometryInstanceFlagsKHR{},
+            instance_flags,
             blas->second->address);
     }
 
@@ -892,10 +926,15 @@ RayQueryAccelerationStructureScope::recordFrame(
             false,
             vk::DeviceOrHostAddressConstKHR{
                 instance_buffer.address}};
+    const vk::GeometryFlagsKHR tlas_geometry_flags{};
+    validateRayProfileAccelerationStructureFlags(
+        material_alpha_profile_active, tlas_geometry_flags, {},
+        "TLAS instances geometry");
     const vk::AccelerationStructureGeometryKHR geometry_info{
         vk::GeometryTypeKHR::eInstances,
         vk::AccelerationStructureGeometryDataKHR{
-            instance_data}};
+            instance_data},
+        tlas_geometry_flags};
     vk::AccelerationStructureBuildGeometryInfoKHR build_info{
         vk::AccelerationStructureTypeKHR::eTopLevel,
         vk::BuildAccelerationStructureFlagBitsKHR::

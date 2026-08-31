@@ -4765,7 +4765,11 @@ void Renderer::renderLogicalFrame(
                     modules.instance_container
                         .rayQueryGeometryGeneration(),
                     ray_scene_rows, ray_type_count,
-                    ray_tracing_scene_tables));
+                    ray_tracing_scene_tables,
+                    gpu_owner_scope != nullptr &&
+                        gpu_owner_scope->ray_tracing_project != nullptr &&
+                        gpu_owner_scope->ray_tracing_project->layout
+                            .usesMaterialAlphaProfile()));
             if (gpu_owner_scope != nullptr &&
                 gpu_owner_scope->ray_tracing_project != nullptr) {
                 injectRayTracingJointTransactionPoint(

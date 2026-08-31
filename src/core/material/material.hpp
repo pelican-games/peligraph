@@ -4,6 +4,7 @@
 #include "../handle.hpp"
 #include "../shader/shaderlibrary.hpp"
 #include "../../project/materiallowering.hpp"
+#include "../../project/gltfmateriallowering.hpp"
 #include <array>
 #include <cstddef>
 #include <functional>
@@ -43,6 +44,10 @@ struct MaterialInfo {
     // ray-table missing sentinel. Authored textures carry a stable source
     // identity; numeric GlobalTextureId values never enter canonical keys.
     std::string base_color_texture_identity;
+    // Produced only by normalizeGltfBaseColorAlpha().  The ordinary raster
+    // material fields remain unchanged; the portable RT profile consumes
+    // this authored-reference IR instead of reconstructing it from handles.
+    std::optional<NormalizedAlphaIr> normalized_alpha_ir;
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5F;
     glm::vec4 base_color_factor{1.0f};

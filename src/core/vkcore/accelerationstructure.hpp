@@ -2,6 +2,7 @@
 
 #include "../shader/raygrouplayout.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -35,6 +36,12 @@ struct RayQueryGeometryInstanceSnapshot {
     std::uint64_t resolved_material_generation = 0;
     std::shared_ptr<const void> resolved_material_lease;
     std::uint32_t source_material_index = 0;
+    std::uint32_t alpha_override_mask = 0;
+    std::array<float, 4> alpha_override_base_color_factor{
+        1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<float, 4> alpha_override_uv_offset_scale{
+        0.0F, 0.0F, 1.0F, 1.0F};
+    float alpha_override_uv_rotation = 0.0F;
     std::uint64_t geometry_allocation_id = 0;
     std::uint32_t index_count = 0;
     std::uint32_t index_offset = 0;
@@ -86,6 +93,12 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
     std::uint64_t index_pool_address,
     std::uint64_t vertex_pool_address);
+
+void validateRayProfileAccelerationStructureFlags(
+    bool profile_active,
+    vk::GeometryFlagsKHR geometry_flags,
+    vk::GeometryInstanceFlagsKHR instance_flags,
+    std::string_view diagnostic);
 
 struct RayTracingTlasInstancePlanEntry {
     std::size_t source_index = 0;
@@ -189,7 +202,8 @@ class RayQueryAccelerationStructureScope {
         std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows = {},
         std::uint32_t ray_type_count = 0,
         std::shared_ptr<const RayTracingSceneShaderBindingTables>
-            ray_tracing_scene_tables = {});
+            ray_tracing_scene_tables = {},
+        bool material_alpha_profile_active = false);
 
     const RayQueryAccelerationStructureDiagnostics &
     diagnostics() const noexcept {

@@ -18,6 +18,7 @@ enum class ShaderStage {
 enum class ShaderReferenceKind {
     explicit_file,
     stem,
+    engine_generated,
 };
 
 struct ShaderReference {

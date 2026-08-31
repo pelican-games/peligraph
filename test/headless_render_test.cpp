@@ -13,6 +13,7 @@
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/projectmaterialasset.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/model/gltf.hpp"
 #include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
@@ -826,6 +827,95 @@ void main() {
                 (std::string{"wp366_"} + group + "_shadow.rchit"),
             hit(true));
     }
+}
+
+void setWp369PortableProfile(
+    const std::filesystem::path &directory, bool active) {
+    auto layout = nlohmann::json::parse(
+        readTextFile(directory / "ray_layout.json"));
+    if (active) {
+        layout["portable_profile"] = "material_alpha_v1";
+    } else {
+        layout.erase("portable_profile");
+    }
+    writeTextFile(directory / "ray_layout.json", layout.dump(2));
+}
+
+void writeWp369MaterialAlphaProject(
+    const std::filesystem::path &directory) {
+    writeRt1bLayoutProject(directory);
+    TestGltfFragmentFixture::writeWp369Glb(
+        directory / "models" / "tree.glb");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb"}],"materials":[],"textures":[]})json");
+    writeTextFile(
+        directory / "ray_bindings.json",
+        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":0},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":3690}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"opaque","record":{"tint":[0.0,1.0,0.0,1.0],"flags":3691}}]})json");
+
+    auto layout = nlohmann::json::parse(
+        readTextFile(directory / "ray_layout.json"));
+    layout["engine_record"] = {
+        "material_index", "geometry_index"};
+    layout["portable_profile"] = "material_alpha_v1";
+    writeTextFile(directory / "ray_layout.json", layout.dump(2));
+
+    for (const auto shader_name : {"wp366_a.rgen", "wp366_b.rgen"}) {
+        const auto path = directory / "shaders" / shader_name;
+        auto source = readTextFile(path);
+        const std::string old_lane =
+            "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
+        const std::string new_lane =
+            "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 0.0 : "
+            "(pixel.x == 2 ? 2.0 : 8.0));";
+        const auto lane_at = source.find(old_lane);
+        if (lane_at == std::string::npos) {
+            throw std::logic_error(
+                "WP369 ray lane source is missing");
+        }
+        source.replace(lane_at, old_lane.size(), new_lane);
+        const std::string opaque = "gl_RayFlagsOpaqueEXT";
+        const auto opaque_at = source.find(opaque);
+        if (opaque_at == std::string::npos) {
+            throw std::logic_error(
+                "WP369 ray flags source is missing");
+        }
+        source.replace(opaque_at, opaque.size(),
+                       "gl_RayFlagsNoneEXT");
+        writeTextFile(path, source);
+    }
+
+    const auto hit = [](std::uint32_t marker) {
+        std::string source = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    PELICAN_RAY_ENGINE_RECORD_MEMBERS
+    vec4 tint;
+    uint flags;
+} ray_record;
+void main() {
+    payload = Payload(MARKER, gl_InstanceCustomIndexEXT,
+                      ray_record.flags,
+                      floatBitsToUint(ray_record.tint.x));
+}
+)glsl";
+        source.replace(source.find("MARKER"), 6,
+                       std::to_string(marker) + "u");
+        return source;
+    };
+    writeTextFile(directory / "shaders" / "wp366_opaque_primary.rchit",
+                  hit(0x3690u));
+    writeTextFile(directory / "shaders" / "wp366_opaque_shadow.rchit",
+                  hit(0x3691u));
+    writeTextFile(directory / "shaders" / "wp366_foliage_primary.rchit",
+                  hit(0x3692u));
+    writeTextFile(directory / "shaders" / "wp366_foliage_shadow.rchit",
+                  hit(0x3693u));
 }
 
 std::string wp368InactiveRenderingConfig(
@@ -12051,6 +12141,320 @@ TEST_CASE(
     }
 #else
     SUCCEED("WP366 layout projects are rejected before GPU work when the runtime compiler is disabled");
+#endif
+}
+
+TEST_CASE(
+    "WP369 production material alpha profile matches mip zero oracle and next frame overrides",
+    "[WP369][headless][gpu][ray-tracing][rt2b-2][profile][oracle][override][identity][production][mutation]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeWp369MaterialAlphaProject(temp_dir);
+        const auto rendering_config =
+            readTextFile(temp_dir / "hybrid.json");
+        setWp369PortableProfile(temp_dir, false);
+        configureRayQueryTestRuntime(temp_dir);
+
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        const auto &capabilities = vkcore.getRuntimeCapabilities();
+        if (!capabilities.ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        if (!capabilities.ray_material_bindless) {
+            SKIP("pelican.vulkan.ray_material_bindless@1 is unavailable");
+        }
+
+        auto &shaders = GET_MODULE(ShaderLibrary);
+        const auto profile_absent_shader_checkpoint =
+            shaders.checkpointRegistrations();
+        auto &model_assets = GET_MODULE(ModelAssetContainer);
+        const auto &loaded = model_assets.getModelTemplateByName("tree");
+        REQUIRE(loaded.authored_asset_reference == "models/tree.glb");
+        REQUIRE(loaded.material_primitives.size() == 2);
+        std::array<GlobalMaterialId, 2> material_by_source{
+            invalidMaterialId(), invalidMaterialId()};
+        std::array<std::size_t, 2> primitive_count{};
+        for (const auto &group : loaded.material_primitives) {
+            REQUIRE(group.source_material_index < material_by_source.size());
+            material_by_source[group.source_material_index] = group.material;
+            primitive_count[group.source_material_index] =
+                group.primitives.size();
+        }
+        REQUIRE(primitive_count == std::array<std::size_t, 2>{2, 1});
+
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto model_instance = instances.placeModelInstance(loaded);
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        vkcore.waitIdle();
+
+        const auto generated_registration_count =
+            [&](const ShaderLibrary::RegistrationCheckpoint &checkpoint) {
+                return std::ranges::count_if(
+                    shaders.registrationsSince(checkpoint),
+                    [&](ShaderBundleId id) {
+                        return shaders.get(id).engine_generated;
+                    });
+            };
+        // This is a real compile/registration observation, not a parse-only
+        // stand-in: an otherwise identical RT2b layout has no generated
+        // shader registration when portable_profile is absent.
+        CHECK(generated_registration_count(
+                  profile_absent_shader_checkpoint) == 0);
+        for (const auto id : shaders.registrationsSince(
+                 profile_absent_shader_checkpoint)) {
+            for (const auto &[_, include] :
+                 shaders.get(id).virtual_includes) {
+                CHECK(include.find("PELICAN_RAY_PROFILE") ==
+                      std::string::npos);
+                CHECK(include.find("textureLod") ==
+                      std::string::npos);
+            }
+        }
+
+        const auto marker_at = [](const RenderTargetReadback &readback,
+                                  std::uint32_t x) {
+            std::uint32_t marker = 0;
+            const auto offset = static_cast<std::size_t>(x) * 16;
+            if (offset + sizeof(marker) > readback.bytes.size()) {
+                throw std::out_of_range(
+                    "WP369 sentinel pixel is outside readback");
+            }
+            std::memcpy(&marker, readback.bytes.data() + offset,
+                        sizeof(marker));
+            return marker;
+        };
+        const auto profile_absent =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        for (std::uint32_t lane = 0; lane < 3; ++lane) {
+            CAPTURE(lane);
+            CHECK(marker_at(profile_absent, lane) == 0x3690u);
+        }
+        const auto absent_plan = renderer.currentFramePlanJson();
+        const auto absent_task = std::ranges::find_if(
+            absent_plan.at("nodes"), [](const auto &node) {
+                return node.at("name") == "wp366_a";
+            });
+        REQUIRE(absent_task != absent_plan.at("nodes").end());
+        CHECK_FALSE(absent_task->at("shader_resolution")
+                        .contains("anyhit_slots"));
+
+        // Load the same authored asset identity from another physical path.
+        // The original came through ModelAssetContainer; only the mirror is
+        // committed directly, so the comparison crosses the production
+        // authored/physical separation rather than constructing IR by hand.
+        const auto mirror_path = temp_dir / "mirror" / "tree.glb";
+        std::filesystem::create_directories(mirror_path.parent_path());
+        std::filesystem::copy_file(
+            temp_dir / "models" / "tree.glb", mirror_path,
+            std::filesystem::copy_options::overwrite_existing);
+        auto &gltf = GET_MODULE(GltfLoader);
+        auto mirror = gltf.commit(
+            gltf.prepareGltfBinary(mirror_path.string()),
+            "models/tree.glb");
+        REQUIRE(mirror.authored_asset_reference == "models/tree.glb");
+        const auto mirror_group = std::ranges::find(
+            mirror.material_primitives, 0u,
+            &ModelTemplate::MaterialPrimitives::source_material_index);
+        REQUIRE(mirror_group != mirror.material_primitives.end());
+
+        auto &materials = GET_MODULE(MaterialContainer);
+        const auto source_for = [&](GlobalMaterialId material) {
+            return materials.rayMaterialTableSource(
+                material, "asset:models/tree.glb#0",
+                materials.rayMaterialGeneration(material),
+                materials.rayMaterialLease(material));
+        };
+        const auto original_source = source_for(material_by_source[0]);
+        const auto mirror_source = source_for(mirror_group->material);
+        REQUIRE(original_source.has_normalized_alpha_ir);
+        REQUIRE(mirror_source.has_normalized_alpha_ir);
+        CHECK(original_source.alpha_material_identity ==
+              mirror_source.alpha_material_identity);
+        CHECK(original_source.alpha_texture_identity ==
+              mirror_source.alpha_texture_identity);
+        CHECK(original_source.normalized_alpha_digest_sha256 ==
+              mirror_source.normalized_alpha_digest_sha256);
+        CHECK(original_source.material_handle !=
+              mirror_source.material_handle);
+
+        const auto active_layout = parseRayGroupLayout(
+            [&] {
+                setWp369PortableProfile(temp_dir, true);
+                return readTextFile(temp_dir / "ray_layout.json");
+            }(),
+            "ray_layout.json");
+        const std::array geometry_input{
+            RayQueryGeometryInstanceSnapshot{
+                .geometry_allocation_id = 1,
+                .index_count = 3,
+                .vertex_count = 3,
+                .attribute_presence = rayGeometryAttributeUv0,
+            }};
+        const auto identity_geometry =
+            makeRayTracingGeometrySnapshot(
+                geometry_input, 0x1000, 0x2000);
+        const auto build_identity_table =
+            [&](const RayMaterialTableSource &source) {
+                const std::array row_input{
+                    RaySceneRowInput{
+                        .scene_identity = "identity-scene",
+                        .geometry_identity = "identity-geometry",
+                        .material_asset = "models/tree.glb",
+                        .source_material_index = 0,
+                        .resolved_material_handle =
+                            source.material_handle,
+                        .resolved_material_generation =
+                            source.material_generation,
+                        .resolved_material_lease =
+                            source.material_lease,
+                        .geometry_allocation_id = 1,
+                    }};
+                const auto rows = resolveRaySceneRows(
+                    row_input, active_layout, nullptr);
+                const std::array sources{source};
+                return buildRayTracingTableSnapshot(
+                    rows, sources, identity_geometry,
+                    &active_layout);
+            };
+        const auto original_table =
+            build_identity_table(original_source);
+        const auto mirror_table = build_identity_table(mirror_source);
+        CHECK((original_table.tables.material_bytes ==
+               mirror_table.tables.material_bytes));
+        CHECK(original_table.tables.material_digest_sha256 ==
+              mirror_table.tables.material_digest_sha256);
+
+        const auto active_shader_checkpoint =
+            shaders.checkpointRegistrations();
+        const auto active_variant =
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                rendering_config);
+        REQUIRE(isValidRenderingPassId(active_variant.flat));
+        REQUIRE(generated_registration_count(
+                    active_shader_checkpoint) > 0);
+        renderer.render();
+        vkcore.waitIdle();
+
+        const auto profile_active =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        constexpr std::uint32_t miss_marker = 1280u;
+        constexpr std::array<double, 2> alpha_mip0{
+            64.0 / 255.0, 192.0 / 255.0};
+        constexpr std::array<double, 2> uv_x{0.25, 0.75};
+        constexpr double cutoff = 0.5;
+        for (std::size_t lane = 0; lane < 2; ++lane) {
+            CAPTURE(lane, alpha_mip0[lane]);
+            const auto boundary_margin =
+                std::min(std::abs(uv_x[lane] - 0.5),
+                         std::min(uv_x[lane], 1.0 - uv_x[lane]));
+            CHECK(boundary_margin == 0.25);
+            const bool cpu_ignored = alpha_mip0[lane] < cutoff;
+            const bool gpu_ignored =
+                marker_at(profile_active,
+                          static_cast<std::uint32_t>(lane)) ==
+                miss_marker;
+            CHECK(gpu_ignored == cpu_ignored);
+        }
+        CHECK(marker_at(profile_active, 0) == miss_marker);
+        CHECK(marker_at(profile_active, 1) == 0x3690u);
+        CHECK(marker_at(profile_active, 2) == 0x3690u);
+        CHECK(profile_active.bytes != profile_absent.bytes);
+
+        auto profile_tables = GET_MODULE(FrameResources)
+                                  .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        REQUIRE(profile_tables != nullptr);
+        REQUIRE(profile_tables->ray_tables.profile_material_rows.size() == 3);
+        const auto factor_row = [&](const auto &tables)
+            -> const RayProfileMaterialTableRow & {
+            const auto scene_row = std::ranges::find(
+                tables.row_snapshot->rows,
+                std::string{"asset:models/tree.glb#1"},
+                &RaySceneRow::material_reference);
+            if (scene_row == tables.row_snapshot->rows.end()) {
+                throw std::out_of_range(
+                    "WP369 factor material row is absent");
+            }
+            return tables.ray_tables.profile_material_rows.at(
+                scene_row->material_index);
+        };
+        CHECK(factor_row(*profile_tables).texture_index ==
+              rayMissingTextureIndex);
+        CHECK(factor_row(*profile_tables).base_factor_a == 1.0F);
+
+        PublishMaterialInstanceOverrideDescV1 relative;
+        relative.instance = instances.animationInstance(model_instance);
+        relative.frame_revision = 1;
+        relative.values.mask = materialOverrideBaseColor;
+        relative.values.base_color_factor = {1.0F, 1.0F, 1.0F, 0.0F};
+        REQUIRE(instances.publishMaterialInstanceOverride(
+                    model_instance, relative) == Animation::Status::ok);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto relative_frame =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        CHECK(relative_frame.bytes == profile_active.bytes);
+        auto relative_tables = GET_MODULE(FrameResources)
+                                   .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        REQUIRE(relative_tables != nullptr);
+        CHECK(factor_row(*relative_tables).base_factor_a == 1.0F);
+
+        PublishMaterialInstanceAbsoluteOverrideDescV2 absolute;
+        absolute.instance = instances.animationInstance(model_instance);
+        absolute.frame_revision = 1;
+        absolute.source_material_index = 1;
+        absolute.values.mask = materialOverrideBaseColor;
+        absolute.values.base_color_factor = {1.0F, 1.0F, 1.0F, 0.0F};
+        REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
+                    model_instance, absolute) == Animation::Status::ok);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto absolute_frame =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        CHECK(marker_at(absolute_frame, 2) == miss_marker);
+        CHECK(absolute_frame.bytes != relative_frame.bytes);
+        auto absolute_tables = GET_MODULE(FrameResources)
+                                   .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        REQUIRE(absolute_tables != nullptr);
+        CHECK(factor_row(*absolute_tables).base_factor_a == 0.0F);
+
+        // Direct rollback contrast for the opt-in itself. With all scene and
+        // override state unchanged, deleting only portable_profile removes
+        // the generated any-hit and all three intersections are accepted.
+        setWp369PortableProfile(temp_dir, false);
+        const auto removed_variant =
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                rendering_config);
+        REQUIRE(isValidRenderingPassId(removed_variant.flat));
+        renderer.render();
+        vkcore.waitIdle();
+        const auto profile_removed =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        for (std::uint32_t lane = 0; lane < 3; ++lane) {
+            CAPTURE(lane);
+            CHECK(marker_at(profile_removed, lane) == 0x3690u);
+        }
+        CHECK(profile_removed.bytes != absolute_frame.bytes);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error,
+            "Vulkan WP369 material-alpha fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED(
+        "WP369 generated profile shaders require the runtime compiler; the production loader rejection is covered by the RT2b matrix test");
 #endif
 }
 

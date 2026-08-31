@@ -129,6 +129,93 @@ accessor を使って**自分の `.rahit` で ray query 相当のことを書け
 表現力は失われない(失われるのは engine 側の自動一致だけ)。
 ray query 車線の alpha 対応が必要と分かった時点で、**設計から**始める。
 
+`material_alpha_v1` は layout 単独では shader を有効化しない。次のように
+top-level field を持つ layout と、それを使う typed ray-tracing task の両方が必要である。
+`ray_layout.json` の完全例:
+
+```json
+{
+  "schema": "pelican.ray_group_layout",
+  "version": 1,
+  "portable_profile": "material_alpha_v1",
+  "ray_types": ["primary"],
+  "default_group": "opaque",
+  "groups": [{"name": "opaque"}],
+  "misses": [{"name": "sky"}],
+  "engine_record": ["material_index", "geometry_index"],
+  "record": []
+}
+```
+
+対応する rendering config の完全例:
+
+```json
+{
+  "ray_group_layout": "ray_layout.json",
+  "features": [],
+  "render_targets": [
+    {
+      "name": "alpha_result",
+      "extent_scale": 1.0,
+      "format": "R32G32B32A32_UINT",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["STORAGE", "TRANSFER_SRC"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main_render",
+      "passes": [
+        {
+          "name": "scene",
+          "type": "material",
+          "output": {"color": ["swapchain"], "depth": null}
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "alpha_trace",
+      "ray_tracing": {
+        "raygen": "project://shaders/alpha_trace",
+        "traced_ray_types": ["primary"],
+        "misses": {"sky": "project://shaders/alpha_miss"},
+        "hit_shaders": {
+          "primary": {
+            "opaque": {
+              "type": "triangles",
+              "closesthit": "project://shaders/alpha_hit"
+            }
+          }
+        }
+      },
+      "writes": ["alpha_result"],
+      "resource_ports": {
+        "alpha_result": {
+          "resource": "alpha_result",
+          "access": "storage"
+        }
+      },
+      "dispatch": {"rays_from": {"port": "alpha_result"}}
+    }
+  ],
+  "target_planning": {
+    "graphs": {
+      "main_render": {
+        "required_capabilities": [
+          "pelican.vulkan.ray_tracing_pipeline@1"
+        ]
+      }
+    }
+  }
+}
+```
+
+この raygen の各 `traceRayEXT` は定数かつ `Opaque` を含まない ray flags を使う。
+`hit_shaders` に authored `anyhit` を加えると profile との同居拒否になる。
+
 ## 7. RT interface 検証(第 2 巡 #5)
 
 reflection に storage class・構造 fingerprint・size・stage・entry point・group を

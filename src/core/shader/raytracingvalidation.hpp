@@ -29,6 +29,7 @@ struct RayTracingShaderOccurrence {
     std::uint32_t group_index = 0;
     std::string_view diagnostic_uri;
     const RayTracingEntryPointReflection *entry = nullptr;
+    bool engine_generated = false;
 };
 
 struct RayTracingHitGroupOccurrence {

@@ -129,6 +129,41 @@ std::optional<std::array<double, 2>> valueVec2(const tinygltf::Value *value) {
     return result;
 }
 
+struct GltfBaseColorUvTransform {
+    glm::vec2 offset{0.0F};
+    glm::vec2 scale{1.0F};
+    float rotation = 0.0F;
+};
+
+template <class TextureInfo>
+GltfBaseColorUvTransform baseColorUvTransform(
+    const TextureInfo &base_texture) {
+    GltfBaseColorUvTransform result;
+    const auto extension =
+        base_texture.extensions.find("KHR_texture_transform");
+    if (extension == base_texture.extensions.end() ||
+        !extension->second.IsObject()) {
+        return result;
+    }
+    const auto &object =
+        extension->second.Get<tinygltf::Value::Object>();
+    if (const auto offset =
+            valueVec2(objectMember(object, "offset"))) {
+        result.offset = {static_cast<float>((*offset)[0]),
+                         static_cast<float>((*offset)[1])};
+    }
+    if (const auto scale =
+            valueVec2(objectMember(object, "scale"))) {
+        result.scale = {static_cast<float>((*scale)[0]),
+                        static_cast<float>((*scale)[1])};
+    }
+    if (const auto rotation =
+            valueNumber(objectMember(object, "rotation"))) {
+        result.rotation = static_cast<float>(*rotation);
+    }
+    return result;
+}
+
 VatPrimitiveMeta tinyGltfValueToVatMeta(const tinygltf::Value &extras) {
     VatPrimitiveMeta meta;
     if (!extras.IsObject()) {
@@ -1754,6 +1789,37 @@ struct InternalGltfLoader {
         material_info.source_asset = authored_reference;
         material_info.source_material_index =
             static_cast<std::uint32_t>(material_index);
+        const auto uv_transform = baseColorUvTransform(
+            material.pbrMetallicRoughness.baseColorTexture);
+        // Validation-only inspection and the legacy direct-load API can have
+        // only a physical path. Such a path must never be disguised inside
+        // an `asset:` identity; profile table construction will name the
+        // missing authored IR if one of those materials is later selected.
+        if (!std::filesystem::path{authored_reference}.is_absolute() &&
+            !authored_reference.starts_with("file://")) {
+            material_info.normalized_alpha_ir =
+                normalizeGltfBaseColorAlpha({
+                    .authored_reference = authored_reference,
+                    .material_index =
+                        static_cast<std::uint32_t>(material_index),
+                    .texture_index =
+                        base_color_texture_index >= 0
+                            ? std::optional<std::uint32_t>{
+                                  static_cast<std::uint32_t>(
+                                      base_color_texture_index)}
+                            : std::nullopt,
+                    .alpha_mode = definition.routing->alpha_mode,
+                    .cutoff = static_cast<float>(material.alphaCutoff),
+                    .base_factor_a = material_info.base_color_factor.w,
+                    .uv_offset_scale = {
+                        uv_transform.offset.x,
+                        uv_transform.offset.y,
+                        uv_transform.scale.x,
+                        uv_transform.scale.y,
+                    },
+                    .uv_rotation = uv_transform.rotation,
+                });
+        }
         material_infos.at(material_index) =
             std::move(material_info);
         material_routings.at(material_index) =
@@ -1771,30 +1837,10 @@ struct InternalGltfLoader {
              ++material_index) {
             const auto &material = model.materials[material_index];
             const auto &base = material.pbrMetallicRoughness.baseColorFactor;
-            glm::vec2 uv_offset{0.0f};
-            glm::vec2 uv_scale{1.0f};
-            float uv_rotation = 0.0f;
             const auto &base_texture =
                 material.pbrMetallicRoughness.baseColorTexture;
-            if (const auto extension =
-                    base_texture.extensions.find("KHR_texture_transform");
-                extension != base_texture.extensions.end() &&
-                extension->second.IsObject()) {
-                const auto &object =
-                    extension->second.Get<tinygltf::Value::Object>();
-                if (const auto offset = valueVec2(objectMember(object, "offset"))) {
-                    uv_offset = {static_cast<float>((*offset)[0]),
-                                 static_cast<float>((*offset)[1])};
-                }
-                if (const auto scale = valueVec2(objectMember(object, "scale"))) {
-                    uv_scale = {static_cast<float>((*scale)[0]),
-                                static_cast<float>((*scale)[1])};
-                }
-                if (const auto rotation =
-                        valueNumber(objectMember(object, "rotation"))) {
-                    uv_rotation = static_cast<float>(*rotation);
-                }
-            }
+            const auto uv_transform =
+                baseColorUvTransform(base_texture);
             float emissive_strength = 1.0f;
             if (const auto extension =
                     material.extensions.find("KHR_materials_emissive_strength");
@@ -1822,9 +1868,9 @@ struct InternalGltfLoader {
                         emissive_strength,
                     1.0f,
                 },
-                .uv_offset = uv_offset,
-                .uv_scale = uv_scale,
-                .uv_rotation = uv_rotation,
+                .uv_offset = uv_transform.offset,
+                .uv_scale = uv_transform.scale,
+                .uv_rotation = uv_transform.rotation,
             });
         }
         return table;

@@ -1418,9 +1418,16 @@ TEST_CASE(
     CHECK(trace.miss_index == 0);
     CHECK(trace.sbt_record_offset == 0);
     CHECK(trace.sbt_record_stride == 0);
+    REQUIRE(trace.ray_flags);
+    CHECK(*trace.ray_flags == 5u);
 
-    CHECK_NOTHROW(inspectRayTracingSpirv(
-        traceModule(SpvOpConstant), "memory://constant.spv"));
+    const auto dynamic_flags = inspectRayTracingSpirv(
+        traceModule(SpvOpConstant), "memory://constant.spv");
+    const auto &dynamic_entry = selectRayTracingEntryPoint(
+        dynamic_flags, ShaderStage::raygen, "main",
+        "memory://constant.spv");
+    REQUIRE(dynamic_entry.trace_calls.size() == 1);
+    CHECK_FALSE(dynamic_entry.trace_calls.front().ray_flags);
     CHECK_NOTHROW(inspectRayTracingSpirv(
         traceModule(SpvOpConstantNull), "memory://constant-null.spv"));
     ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};

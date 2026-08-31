@@ -1066,6 +1066,40 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
             !instance_slots.alive(instance)) {
             continue;
         }
+        std::uint32_t alpha_override_mask = 0;
+        std::array<float, 4> alpha_override_base_color_factor{
+            1.0F, 1.0F, 1.0F, 1.0F};
+        std::array<float, 4> alpha_override_uv_offset_scale{
+            0.0F, 0.0F, 1.0F, 1.0F};
+        float alpha_override_uv_rotation = 0.0F;
+        const MaterialInstanceAbsoluteOverrideKey override_key{
+            static_cast<std::uint64_t>(instance) + 1,
+            item.pipeline_material_key.source_material_index};
+        if (const auto override =
+                material_absolute_override_frames.find(override_key);
+            override != material_absolute_override_frames.end()) {
+            const auto &values = override->second.current;
+            if ((values.mask & materialOverrideBaseColor) != 0) {
+                alpha_override_mask |= rayAlphaOverrideBaseFactor;
+                alpha_override_base_color_factor = {
+                    values.base_color_factor.x,
+                    values.base_color_factor.y,
+                    values.base_color_factor.z,
+                    values.base_color_factor.w,
+                };
+            }
+            if ((values.mask & materialOverrideUvTransform) != 0) {
+                alpha_override_mask |= rayAlphaOverrideUvTransform;
+                alpha_override_uv_offset_scale = {
+                    values.uv_offset.x,
+                    values.uv_offset.y,
+                    values.uv_scale.x,
+                    values.uv_scale.y,
+                };
+                alpha_override_uv_rotation =
+                    values.uv_rotation;
+            }
+        }
         result.push_back(
             RayQueryGeometryInstanceSnapshot{
                 .asset_identity =
@@ -1089,6 +1123,13 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
                     item.ray_material_lease,
                 .source_material_index =
                     item.pipeline_material_key.source_material_index,
+                .alpha_override_mask = alpha_override_mask,
+                .alpha_override_base_color_factor =
+                    alpha_override_base_color_factor,
+                .alpha_override_uv_offset_scale =
+                    alpha_override_uv_offset_scale,
+                .alpha_override_uv_rotation =
+                    alpha_override_uv_rotation,
                 .geometry_allocation_id =
                     item.geometry_allocation_id,
                 .index_count = item.indexed.index_count,

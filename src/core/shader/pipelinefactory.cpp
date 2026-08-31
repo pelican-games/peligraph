@@ -1009,6 +1009,7 @@ PipelineFactory::buildRayTracingPipeline(
             .group_index = group_index,
             .diagnostic_uri = bundle.diagnostic_uri,
             .entry = &entry,
+            .engine_generated = bundle.engine_generated,
         };
     };
     const auto raygen_occurrence =
@@ -1320,7 +1321,8 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
                     row.resolved_material_lease));
         }
         auto table_build = buildRayTracingTableSnapshot(
-            *rows, material_sources, *geometry);
+            *rows, material_sources, *geometry,
+            &project.layout);
         result->ray_tables = std::move(table_build.tables);
         result->row_snapshot =
             std::make_shared<const RaySceneRowSnapshot>(
@@ -1346,7 +1348,9 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
         result->material_table_buffer = allocate_table(
             std::span<const std::byte>{
                 result->ray_tables.material_bytes},
-            sizeof(RayMaterialTableRow));
+            project.layout.usesMaterialAlphaProfile()
+                ? sizeof(RayProfileMaterialTableRow)
+                : sizeof(RayMaterialTableRow));
         result->geometry_table_buffer = allocate_table(
             std::span<const std::byte>{
                 result->ray_tables.geometry_bytes},

@@ -5,7 +5,9 @@
 #include "../src/core/shader/shaderreflection.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
+#include "../src/core/vkcore/shaderresolution.hpp"
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/rendercompilerprogram.hpp"
 #include "../src/core/renderingpass/renderpipelinegpuarena.hpp"
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
@@ -13,6 +15,7 @@
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
+#include "../src/project/gltfmateriallowering.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -23,8 +26,10 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <filesystem>
 #include <memory>
 #include <nlohmann/json.hpp>
+#include <picosha2.h>
 #include <ranges>
 #include <span>
 #include <string>
@@ -164,6 +169,73 @@ loadWp368Sidecar(bool runtime_shader_compiler_enabled,
                 "unexpected WP368 sidecar reference");
         },
         runtime_shader_compiler_enabled);
+}
+
+RayGroupLayout wp369ProfileLayout() {
+    return parseRayGroupLayout(R"json({
+      "schema":"pelican.ray_group_layout","version":1,
+      "portable_profile":"material_alpha_v1",
+      "ray_types":["primary"],"default_group":"opaque",
+      "groups":[{"name":"opaque"}],
+      "misses":[{"name":"sky"}],
+      "engine_record":["material_index","geometry_index"],
+      "record":[]
+    })json", "project://ray_layout.json");
+}
+
+nlohmann::json wp369TypedTask() {
+    return nlohmann::json::parse(R"json({
+      "compute_tasks":[{
+        "name":"alpha_trace",
+        "ray_tracing":{
+          "raygen":"project://shaders/alpha_trace",
+          "traced_ray_types":["primary"],
+          "misses":{"sky":"project://shaders/sky"},
+          "hit_shaders":{"primary":{"opaque":{
+            "type":"triangles",
+            "closesthit":"project://shaders/alpha_hit"
+          }}}
+        },
+        "writes":["alpha_result"],
+        "resource_ports":{"alpha_result":{
+          "resource":"alpha_result","access":"storage"
+        }},
+        "dispatch":{"rays_from":{"port":"alpha_result"}}
+      }]
+    })json");
+}
+
+RayMaterialTableSource wp369MaterialSource(
+    const NormalizedAlphaIr &ir, int handle,
+    std::uint64_t generation,
+    std::shared_ptr<const void> lease) {
+    RayMaterialTableSource result{
+        .material_handle = handle,
+        .material_generation = generation,
+        .material_lease = std::move(lease),
+        .canonical_key = std::string{ir.materialIdentity()},
+        .base_color_factor = {1.0F, 1.0F, 1.0F,
+                              ir.baseFactorA()},
+        .alpha_cutoff = ir.cutoff(),
+        .alpha_mode = static_cast<std::uint32_t>(ir.alphaMode()),
+        .base_color_texture_identity =
+            std::string{ir.textureIdentity()},
+        .has_normalized_alpha_ir = true,
+        .alpha_source_kind = std::string{ir.sourceKind()},
+        .alpha_material_identity =
+            std::string{ir.materialIdentity()},
+        .alpha_texture_identity =
+            std::string{ir.textureIdentity()},
+        .normalized_alpha_mode =
+            static_cast<std::uint32_t>(ir.alphaMode()),
+        .normalized_alpha_cutoff = ir.cutoff(),
+        .normalized_base_factor_a = ir.baseFactorA(),
+        .normalized_uv_offset_scale = ir.uvOffsetScale(),
+        .normalized_uv_rotation = ir.uvRotation(),
+        .normalized_alpha_digest_sha256 =
+            std::string{ir.digestSha256()},
+    };
+    return result;
 }
 
 } // namespace
@@ -929,5 +1001,633 @@ void main() {
               }) == 3);
 }
 #endif
+
+TEST_CASE(
+    "WP369 layout profile generates every traced anyhit slot and profile absence creates no artifact",
+    "[WP369][ray-tracing][rt2b-2][profile][grammar][projection][inactive][production][mutation]") {
+    const auto layout = wp369ProfileLayout();
+    REQUIRE(layout.usesMaterialAlphaProfile());
+    CHECK(layout.portable_profile ==
+          RayPortableProfile::material_alpha_v1);
+
+    RayTracingProjectConfig project{.layout = layout};
+    const auto tasks = parseComputeTaskDefinitionsFromConfigJson(
+        wp369TypedTask(), &project);
+    REQUIRE(tasks.size() == 1);
+    REQUIRE(tasks.front().ray_tracing);
+    const auto &ray = *tasks.front().ray_tracing;
+    REQUIRE(ray.any_hit_shader_slots.size() == 1);
+    REQUIRE(ray.any_hit_shader_slots.front());
+    CHECK(ray.any_hit_shader_slots.front()->ref ==
+          "generated://material_alpha_v1");
+    CHECK(ray.any_hit_shader_slots.front()->kind ==
+          ShaderReferenceKind::engine_generated);
+    CHECK(std::ranges::none_of(
+        tasks.front().declared_shader_refs,
+        [](const auto &reference) {
+            return reference.stage == DeclaredShaderStage::anyhit;
+        }));
+
+    RayTracingProjectConfig multi_project{
+        .layout = parseRayGroupLayout(R"json({
+          "schema":"pelican.ray_group_layout","version":1,
+          "portable_profile":"material_alpha_v1",
+          "ray_types":["primary","secondary"],
+          "default_group":"opaque",
+          "groups":[{"name":"opaque"},{"name":"foliage"}],
+          "misses":[{"name":"sky"}],
+          "engine_record":["material_index","geometry_index"],
+          "record":[]
+        })json", "project://multi_ray_layout.json")};
+    auto multi_task = wp369TypedTask();
+    auto &multi_ray = multi_task["compute_tasks"][0]["ray_tracing"];
+    multi_ray["traced_ray_types"] = {"primary", "secondary"};
+    const auto hit_template =
+        multi_ray["hit_shaders"]["primary"]["opaque"];
+    multi_ray["hit_shaders"]["primary"]["foliage"] = hit_template;
+    multi_ray["hit_shaders"]["secondary"]["opaque"] = hit_template;
+    multi_ray["hit_shaders"]["secondary"]["foliage"] = hit_template;
+    const auto multi_tasks = parseComputeTaskDefinitionsFromConfigJson(
+        multi_task, &multi_project);
+    REQUIRE(multi_tasks.size() == 1);
+    REQUIRE(multi_tasks.front().ray_tracing);
+    const auto &multi_slots =
+        multi_tasks.front().ray_tracing->any_hit_shader_slots;
+    REQUIRE(multi_slots.size() == 4);
+    for (std::size_t slot = 0; slot < multi_slots.size(); ++slot) {
+        CAPTURE(slot);
+        REQUIRE(multi_slots[slot]);
+        CHECK(multi_slots[slot]->ref ==
+              "generated://material_alpha_v1");
+        CHECK(multi_slots[slot]->kind ==
+              ShaderReferenceKind::engine_generated);
+    }
+    auto authored_multi = multi_task;
+    authored_multi["compute_tasks"][0]["ray_tracing"]
+                  ["hit_shaders"]["secondary"]["foliage"]["anyhit"] =
+        "project://shaders/authored_filter";
+    CHECK_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(
+            authored_multi, &multi_project),
+        ContainsSubstring("pelican.ray_profile_authored_anyhit@1") &&
+            ContainsSubstring("authored_filter"));
+
+    const auto project_resolution = [](const ComputeTaskDefinition &task) {
+        CompiledRenderingPass compiled;
+        compiled.compute_tasks.push_back(CompiledComputeTask{
+            .definition = task,
+            .task_id = ComputeTaskId{0},
+        });
+        nlohmann::json plan{
+            {"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"nodes", nlohmann::json::array({
+                {{"name", "alpha_trace"}, {"kind", "compute"}},
+            })},
+        };
+        PathResolver resolver;
+        resolver.setup(
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                "projects" / "example",
+            false);
+        appendShaderResolution(plan, compiled, resolver);
+        return plan.at("nodes").at(0).at("shader_resolution");
+    };
+    const auto active_resolution = project_resolution(tasks.front());
+    REQUIRE(active_resolution.contains("anyhit_slots"));
+    REQUIRE(active_resolution.at("anyhit_slots").size() == 1);
+    const auto &generated = active_resolution.at("anyhit_slots").at(0);
+    CHECK(generated.at("origin") == "generated");
+    CHECK_FALSE(generated.contains("declared_ref"));
+    CHECK(generated.at("source_open_ref").is_null());
+    CHECK(generated.at("source_open_reason") == "generated");
+    CHECK(generated.at("effective_ref") ==
+          "generated://material_alpha_v1");
+
+    auto authored = wp369TypedTask();
+    authored["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
+            ["primary"]["opaque"]["anyhit"] =
+        "project://shaders/authored_filter";
+    CHECK_THROWS_WITH(
+        parseComputeTaskDefinitionsFromConfigJson(authored, &project),
+        ContainsSubstring("pelican.ray_profile_authored_anyhit@1") &&
+            ContainsSubstring("authored_filter"));
+
+    auto absent_layout_json = nlohmann::json::parse(R"json({
+      "schema":"pelican.ray_group_layout","version":1,
+      "ray_types":["primary"],"default_group":"opaque",
+      "groups":[{"name":"opaque"}],"misses":[{"name":"sky"}],
+      "engine_record":["material_index","geometry_index"],"record":[]
+    })json");
+    RayTracingProjectConfig absent{
+        .layout = parseRayGroupLayout(absent_layout_json.dump())};
+    const auto absent_tasks = parseComputeTaskDefinitionsFromConfigJson(
+        wp369TypedTask(), &absent);
+    REQUIRE(absent_tasks.size() == 1);
+    REQUIRE(absent_tasks.front().ray_tracing);
+    REQUIRE(absent_tasks.front().ray_tracing->any_hit_shader_slots.size() ==
+            1);
+    CHECK_FALSE(absent_tasks.front()
+                    .ray_tracing->any_hit_shader_slots.front());
+    const auto absent_resolution =
+        project_resolution(absent_tasks.front());
+    CHECK_FALSE(absent_resolution.contains("anyhit_slots"));
+    const auto absent_include =
+        makeRayGroupLayoutVirtualInclude(absent.layout);
+    CHECK(absent_include.size() == 4857);
+    CHECK(picosha2::hash256_hex_string(
+              absent_include.begin(), absent_include.end()) ==
+          "5a6297a886c4dc38bac1fef74693035b890193add47531c3d5e33f6bc0291e69");
+    CHECK(absent_include.find("PELICAN_RAY_PROFILE_RECORD_MEMBERS") ==
+          std::string::npos);
+    CHECK(absent_include.find("textureLod") == std::string::npos);
+    CHECK_THROWS(makeMaterialAlphaAnyHitSource(absent.layout));
+
+    auto partial = absent_layout_json;
+    partial["portable_profile"] = "material_alpha_v1";
+    partial["engine_record"] = {"material_index"};
+    CHECK_THROWS_WITH(
+        parseRayGroupLayout(partial.dump()),
+        ContainsSubstring(
+            "pelican.ray_profile_engine_record_required@1"));
+    partial["engine_record"] = {
+        "material_index", "geometry_index"};
+    partial["portable_profile"] = "future_profile";
+    CHECK_THROWS_WITH(
+        parseRayGroupLayout(partial.dump()),
+        ContainsSubstring("portable_profile"));
+}
+
+TEST_CASE(
+    "WP369 profile planning enters the mandatory capability lane in every build variant",
+    "[WP369][ray-tracing][rt2b-2][capability][matrix][production][mutation]") {
+    CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER,
+            PELICAN_WITH_OPENXR,
+            PELICAN_WITH_IMGUI,
+            PELICAN_WP369_SKIP_DEVSTUDIO);
+    Wp368CompilerFixture fixture;
+    const auto compile = [&](std::shared_ptr<const RayTracingProjectConfig>
+                                 project) {
+        return runRenderCompilerProgram(
+            defaultVulkanRenderCompilerProgram(),
+            fixture.input(std::move(project)));
+    };
+
+    const auto absent = compile(nullptr);
+    auto profile = std::make_shared<RayTracingProjectConfig>();
+    profile->layout = wp369ProfileLayout();
+    const auto active = compile(profile);
+    REQUIRE(active.variants.size() == absent.variants.size());
+    for (std::size_t index = 0; index < active.variants.size(); ++index) {
+        CAPTURE(index, active.variants[index].graph_variant);
+        REQUIRE(active.variants[index].compiled_pipeline != nullptr);
+        REQUIRE(absent.variants[index].compiled_pipeline != nullptr);
+        CHECK(wp368BindlessCapabilityCount(
+                  *active.variants[index].compiled_pipeline) == 1);
+        // Direct opt-out contrast: deleting portable_profile together with
+        // its RT layout removes the mandatory capability occurrence.
+        CHECK(wp368BindlessCapabilityCount(
+                  *absent.variants[index].compiled_pipeline) == 0);
+    }
+
+    const TargetEndpoint endpoint{
+        .id = "device:wp369-profile",
+        .kind = TargetEndpointKind::vulkan_device,
+    };
+    const std::array required{
+        std::string{vulkanRayMaterialBindlessCapability}};
+    CHECK_THROWS_WITH(
+        requireVulkanEndpointCapabilities(endpoint, required),
+        ContainsSubstring(
+            "pelican.plan.ray_material_bindless_required_unavailable@1"));
+    auto capable = endpoint;
+    capable.capabilities.assign(required.begin(), required.end());
+    CHECK_NOTHROW(
+        requireVulkanEndpointCapabilities(capable, required));
+}
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+TEST_CASE(
+    "WP369 generated anyhit omits payload uses explicit lod zero and mirrors the profile record",
+    "[WP369][ray-tracing][rt2b-2][generated-anyhit][spirv][payload][lod0][production][mutation]") {
+    const auto layout = wp369ProfileLayout();
+    const auto source = makeMaterialAlphaAnyHitSource(layout);
+    CHECK(source.find("rayPayload") == std::string::npos);
+    CHECK(source.find("textureLod(") != std::string::npos);
+    CHECK(source.find("uv, 0.0") != std::string::npos);
+    CHECK(source.find("ignoreIntersectionEXT") != std::string::npos);
+    ShaderCompiler compiler;
+    const auto compiled = compiler.compileSource(
+        source, vk::ShaderStageFlagBits::eAnyHitKHR,
+        "generated-material-alpha.rahit",
+        ShaderCompileOptions{
+            .virtual_includes = {{
+                std::string{rayGroupLayoutVirtualIncludeName},
+                makeRayGroupLayoutVirtualInclude(layout)}}});
+    INFO(compiled.log);
+    REQUIRE(compiled.ok);
+    const auto module = inspectRayTracingSpirv(
+        compiled.spirv, "generated://material_alpha_v1.rahit");
+    const auto &entry = selectRayTracingEntryPoint(
+        module, ShaderStage::anyhit, "main",
+        "generated://material_alpha_v1.rahit");
+    CHECK(std::ranges::none_of(
+        entry.interfaces, [](const auto &interface) {
+            return interface.storage ==
+                   RayTracingInterfaceStorage::incoming_ray_payload;
+        }));
+    REQUIRE(entry.shader_record);
+    REQUIRE(entry.shader_record->members.size() == 2);
+    CHECK(entry.shader_record->members[0].offset == 0);
+    CHECK(entry.shader_record->members[1].offset == 4);
+}
+#endif
+
+TEST_CASE(
+    "WP369 normalized alpha rows resolve attributes overrides and authored identities",
+    "[WP369][ray-tracing][rt2b-2][alpha-ir][tables][attributes][override][digest][production][mutation]") {
+    const auto layout = wp369ProfileLayout();
+    const auto no_texture_ir = normalizeGltfBaseColorAlpha({
+        .authored_reference = "models/tree.glb",
+        .material_index = 0,
+        .alpha_mode = MaterialAlphaMode::mask,
+        .cutoff = 0.5F,
+        .base_factor_a = 0.75F,
+    });
+    CHECK(std::string{no_texture_ir.sourceKind()} == "gltf_base_color");
+    const auto lease = wp368Lease(369);
+    const auto source = wp369MaterialSource(
+        no_texture_ir, 7, 11, lease);
+    const RaySceneRowSnapshot rows{
+        .identity_digest_sha256 = "stable-authored-scene",
+        .rows = {RaySceneRow{
+            .q = 0,
+            .scene_identity = "tree@identity",
+            .material_reference = "asset:models/tree.glb#0",
+            .resolved_material_handle = 7,
+            .resolved_material_generation = 11,
+            .resolved_material_lease = lease,
+            .geometry_allocation_id = 4,
+        }},
+    };
+    const RayTracingGeometrySnapshot no_attributes{
+        .rows = {RayTracingGeometrySnapshotRow{
+            .geometry_allocation_id = 4,
+            .index_count = 3,
+            .vertex_count = 3,
+            .gpu = RayGeometryTableRow{
+                .vertex_stride = 64,
+                .index_type = static_cast<std::uint32_t>(
+                    vk::IndexType::eUint32),
+            },
+        }},
+    };
+    const std::array sources{source};
+    const auto base = buildRayTracingTableSnapshot(
+        rows, sources, no_attributes, &layout);
+    REQUIRE(base.tables.material_rows.empty());
+    REQUIRE(base.tables.profile_material_rows.size() == 1);
+    const auto &base_row = base.tables.profile_material_rows.front();
+    CHECK(base_row.alpha_mode == 1);
+    CHECK(base_row.cutoff == 0.5F);
+    CHECK(base_row.base_factor_a == 0.75F);
+    CHECK(base_row.texture_index == rayMissingTextureIndex);
+    CHECK(base_row.uses_vertex_color == 0);
+    CHECK(base.tables.material_bytes.size() ==
+          sizeof(RayProfileMaterialTableRow));
+    CHECK(base.scene_rows.rows.front().material_index == 0);
+
+    auto overridden_rows = rows;
+    overridden_rows.rows.front().alpha_override_mask =
+        rayAlphaOverrideBaseFactor |
+        rayAlphaOverrideUvTransform;
+    overridden_rows.rows.front()
+        .alpha_override_base_color_factor[3] = 0.25F;
+    overridden_rows.rows.front().alpha_override_uv_offset_scale =
+        {0.25F, 0.5F, 2.0F, 3.0F};
+    overridden_rows.rows.front().alpha_override_uv_rotation = 0.75F;
+    const auto overridden = buildRayTracingTableSnapshot(
+        overridden_rows, sources, no_attributes, &layout);
+    REQUIRE(overridden.tables.profile_material_rows.size() == 1);
+    CHECK(overridden.tables.profile_material_rows.front().base_factor_a ==
+          0.25F);
+    CHECK(overridden.tables.profile_material_rows.front().uv_offset_scale ==
+          std::array<float, 4>{0.25F, 0.5F, 2.0F, 3.0F});
+    CHECK(overridden.tables.profile_material_rows.front().uv_rotation ==
+          0.75F);
+    CHECK((overridden.tables.material_bytes != base.tables.material_bytes));
+    CHECK(overridden.tables.material_digest_sha256 !=
+          base.tables.material_digest_sha256);
+
+    const auto texture_ir = normalizeGltfBaseColorAlpha({
+        .authored_reference = "models/tree.glb",
+        .material_index = 0,
+        .texture_index = 2,
+        .alpha_mode = MaterialAlphaMode::mask,
+        .cutoff = 0.5F,
+        .base_factor_a = 1.0F,
+    });
+    auto textured_source = wp369MaterialSource(
+        texture_ir, 7, 11, lease);
+    textured_source.base_color_srgb_view = vk::ImageView{
+        reinterpret_cast<VkImageView>(std::uintptr_t{1})};
+    textured_source.default_sampler = vk::Sampler{
+        reinterpret_cast<VkSampler>(std::uintptr_t{2})};
+    const std::array textured_sources{textured_source};
+    CHECK_THROWS_WITH(
+        buildRayTracingTableSnapshot(
+            rows, textured_sources, no_attributes, &layout),
+        ContainsSubstring("pelican.ray_geometry_attribute_missing@1") &&
+            ContainsSubstring("TEXCOORD_0") &&
+            ContainsSubstring("asset:models/tree.glb#0"));
+    auto uv_geometry = no_attributes;
+    uv_geometry.rows.front().gpu.attribute_presence =
+        rayGeometryAttributeUv0;
+    CHECK_NOTHROW(buildRayTracingTableSnapshot(
+        rows, textured_sources, uv_geometry, &layout));
+
+    RayProfileMaterialTableRow color_row;
+    color_row.uses_vertex_color = 1;
+    CHECK_THROWS_WITH(
+        validateRayProfileGeometryAttributes(
+            color_row, no_attributes.rows.front().gpu, 0,
+            "asset:models/tree.glb#0"),
+        ContainsSubstring("COLOR_0"));
+    auto color_geometry = no_attributes.rows.front().gpu;
+    color_geometry.attribute_presence = rayGeometryAttributeColor0;
+    CHECK_NOTHROW(validateRayProfileGeometryAttributes(
+        color_row, color_geometry, 0,
+        "asset:models/tree.glb#0"));
+
+    const auto reloaded_ir = normalizeGltfBaseColorAlpha({
+        .authored_reference = "models/tree.glb",
+        .material_index = 0,
+        .alpha_mode = MaterialAlphaMode::mask,
+        .cutoff = 0.5F,
+        .base_factor_a = 0.75F,
+    });
+    CHECK(reloaded_ir == no_texture_ir);
+    const auto other_lease = wp368Lease(370);
+    const auto reloaded_source = wp369MaterialSource(
+        reloaded_ir, 91, 102, other_lease);
+    auto reloaded_rows = rows;
+    reloaded_rows.rows.front().resolved_material_handle = 91;
+    reloaded_rows.rows.front().resolved_material_generation = 102;
+    reloaded_rows.rows.front().resolved_material_lease = other_lease;
+    const std::array reloaded_sources{reloaded_source};
+    const auto reloaded = buildRayTracingTableSnapshot(
+        reloaded_rows, reloaded_sources, no_attributes, &layout);
+    CHECK((reloaded.tables.material_bytes == base.tables.material_bytes));
+    CHECK(reloaded.tables.material_digest_sha256 ==
+          base.tables.material_digest_sha256);
+
+    CHECK_THROWS_WITH(
+        normalizeGltfBaseColorAlpha({
+            .authored_reference = "C:/physical/tree.glb"}),
+        ContainsSubstring(
+            "pelican.normalized_alpha_identity_invalid@1"));
+    auto missing_ir = source;
+    missing_ir.has_normalized_alpha_ir = false;
+    const std::array missing_ir_sources{missing_ir};
+    CHECK_THROWS_WITH(
+        buildRayTracingTableSnapshot(
+            rows, missing_ir_sources, no_attributes, &layout),
+        ContainsSubstring("pelican.ray_profile_alpha_ir_missing@1"));
+}
+
+TEST_CASE(
+    "WP369 validator permits only generated payload omission and constant non opaque ray flags",
+    "[WP369][ray-tracing][rt2b-2][validator][payload][ray-flags][opaque][production][mutation]") {
+    const auto f32 = RayTracingCanonicalType{
+        .kind = RayTracingCanonicalTypeKind::floating,
+        .bit_width = 32,
+    };
+    const auto u32 = RayTracingCanonicalType{
+        .kind = RayTracingCanonicalTypeKind::unsigned_integer,
+        .bit_width = 32,
+    };
+    const auto vec2 = RayTracingCanonicalType{
+        .kind = RayTracingCanonicalTypeKind::vector,
+        .element_count = 2,
+        .elements = {f32},
+    };
+    const auto interface = [](RayTracingInterfaceStorage storage,
+                              std::uint32_t location,
+                              RayTracingCanonicalType type) {
+        return RayTracingInterfaceVariable{
+            .storage = storage,
+            .location = location,
+            .type = std::move(type),
+            .fingerprint = "test",
+            .byte_size = 4,
+        };
+    };
+    const RayTracingShaderRecordReflection record{
+        .members = {
+            {.type = u32, .offset = 0},
+            {.type = u32, .offset = 4},
+        },
+    };
+    RayTracingEntryPointReflection raygen{
+        .key = {spirvExecutionModelForShaderStage(
+                    ShaderStage::raygen),
+                "main"},
+        .interfaces = {interface(
+            RayTracingInterfaceStorage::ray_payload, 0, f32)},
+    };
+    raygen.trace_calls.push_back(RayTracingTraceCall{
+        .caller_entry = raygen.key,
+        .instruction_number = 12,
+        .payload_type = f32,
+        .miss_index = 0,
+        .sbt_record_offset = 0,
+        .sbt_record_stride = 1,
+        .ray_flags = 0,
+    });
+    RayTracingEntryPointReflection miss{
+        .key = {spirvExecutionModelForShaderStage(
+                    ShaderStage::miss),
+                "main"},
+        .interfaces = {interface(
+            RayTracingInterfaceStorage::incoming_ray_payload, 0, f32)},
+    };
+    RayTracingEntryPointReflection closest{
+        .key = {spirvExecutionModelForShaderStage(
+                    ShaderStage::closesthit),
+                "main"},
+        .interfaces = {
+            interface(
+                RayTracingInterfaceStorage::incoming_ray_payload, 0,
+                f32),
+            interface(
+                RayTracingInterfaceStorage::hit_attribute, 0, vec2),
+        },
+        .shader_record = record,
+    };
+    RayTracingEntryPointReflection generated_anyhit{
+        .key = {spirvExecutionModelForShaderStage(
+                    ShaderStage::anyhit),
+                "main"},
+        .interfaces = {interface(
+            RayTracingInterfaceStorage::hit_attribute, 0, vec2)},
+        .shader_record = record,
+    };
+    const auto raygen_occurrence = RayTracingShaderOccurrence{
+        .stage = ShaderStage::raygen,
+        .diagnostic_uri = "project://shaders/profile_trace.rgen",
+        .entry = &raygen,
+    };
+    const std::array misses{RayTracingShaderOccurrence{
+        .stage = ShaderStage::miss,
+        .group_index = 1,
+        .diagnostic_uri = "project://shaders/sky.rmiss",
+        .entry = &miss,
+    }};
+    const auto closest_occurrence = RayTracingShaderOccurrence{
+        .stage = ShaderStage::closesthit,
+        .group_index = 2,
+        .diagnostic_uri = "project://shaders/profile.rchit",
+        .entry = &closest,
+    };
+    auto anyhit_occurrence = RayTracingShaderOccurrence{
+        .stage = ShaderStage::anyhit,
+        .group_index = 2,
+        .diagnostic_uri = "generated://material_alpha_v1.rahit",
+        .entry = &generated_anyhit,
+        .engine_generated = true,
+    };
+    std::array pairs{RayTracingHitGroupOccurrence{
+        .closest_hit = closest_occurrence,
+        .any_hit = anyhit_occurrence,
+    }};
+    const auto layout = wp369ProfileLayout();
+    const std::array<std::uint32_t, 1> traced{0};
+    const RayTracingRuntimeFacts facts{
+        .max_ray_recursion_depth = 8,
+        .max_shader_group_stride = 4096,
+        .max_ray_hit_attribute_size = 32,
+        .max_ray_dispatch_invocation_count = 1u << 20u,
+        .max_dispatch_dimensions = {4096, 4096, 4096},
+        .device_name = "WP369 validator",
+    };
+    const auto validate = [&] {
+        return validateRayTracingPipelineInterfaces(
+            {.raygen = raygen_occurrence,
+             .misses = misses,
+             .group_layout = &layout,
+             .traced_ray_type_indices = traced,
+             .hit_group_occurrences = pairs},
+            facts);
+    };
+    const auto active_flags_zero_digest = validate();
+    CHECK(active_flags_zero_digest.starts_with("rt1b-fnv1a64:"));
+    raygen.trace_calls.front().ray_flags = 2;
+    CHECK(validate() != active_flags_zero_digest);
+    raygen.trace_calls.front().ray_flags = 0;
+
+    auto inactive_layout = layout;
+    inactive_layout.portable_profile.reset();
+    auto authored_anyhit = generated_anyhit;
+    authored_anyhit.interfaces.push_back(interface(
+        RayTracingInterfaceStorage::incoming_ray_payload, 0, f32));
+    auto authored_anyhit_occurrence = anyhit_occurrence;
+    authored_anyhit_occurrence.entry = &authored_anyhit;
+    authored_anyhit_occurrence.engine_generated = false;
+    const std::array inactive_pairs{RayTracingHitGroupOccurrence{
+        .closest_hit = closest_occurrence,
+        .any_hit = authored_anyhit_occurrence,
+    }};
+    const auto validate_inactive = [&] {
+        return validateRayTracingPipelineInterfaces(
+            {.raygen = raygen_occurrence,
+             .misses = misses,
+             .group_layout = &inactive_layout,
+             .traced_ray_type_indices = traced,
+             .hit_group_occurrences = inactive_pairs},
+            facts);
+    };
+    const auto inactive_flags_zero_digest = validate_inactive();
+    raygen.trace_calls.front().ray_flags = 2;
+    // Direct profile-absent contrast: WP369 adds no ray-flag cache salt.
+    CHECK(validate_inactive() == inactive_flags_zero_digest);
+    raygen.trace_calls.front().ray_flags = 0;
+
+    pairs.front().any_hit->engine_generated = false;
+    CHECK_THROWS_WITH(
+        validate(),
+        ContainsSubstring("pelican.ray_tracing.payload_mismatch@1"));
+    pairs.front().any_hit->engine_generated = true;
+
+    raygen.trace_calls.front().ray_flags = 1;
+    CHECK_THROWS_WITH(
+        validate(),
+        ContainsSubstring("pelican.ray_profile_opaque_trace@1") &&
+            ContainsSubstring("project://shaders/profile_trace.rgen"));
+    raygen.trace_calls.front().ray_flags = std::nullopt;
+    CHECK_THROWS_WITH(
+        validate(),
+        ContainsSubstring("pelican.ray_profile_opaque_trace@1") &&
+            ContainsSubstring("non-constant"));
+    raygen.trace_calls.front().ray_flags = 0;
+
+    CHECK_NOTHROW(validateRayProfileAccelerationStructureFlags(
+        true, {}, {}, "production flags"));
+    CHECK_THROWS_WITH(
+        validateRayProfileAccelerationStructureFlags(
+            true, vk::GeometryFlagBitsKHR::eOpaque, {},
+            "BLAS mutation"),
+        ContainsSubstring("pelican.ray_profile_opaque_as@1"));
+    CHECK_THROWS_WITH(
+        validateRayProfileAccelerationStructureFlags(
+            true, {},
+            vk::GeometryInstanceFlagBitsKHR::eForceOpaque,
+            "TLAS mutation"),
+        ContainsSubstring("pelican.ray_profile_opaque_as@1"));
+}
+
+TEST_CASE(
+    "WP369 checker oracle samples one mip with a generated boundary margin",
+    "[WP369][ray-tracing][rt2b-2][oracle][checker][margin][single-mip][mutation]") {
+    struct CheckerSample {
+        std::array<double, 2> uv{};
+        double alpha = 0.0;
+        double boundary_margin = 0.0;
+        std::uint32_t mip = 0;
+    };
+    const auto generate = [](std::uint32_t cells) {
+        std::vector<CheckerSample> result;
+        for (std::uint32_t y = 0; y < cells; ++y) {
+            for (std::uint32_t x = 0; x < cells; ++x) {
+                result.push_back({
+                    .uv = {
+                        (static_cast<double>(x) + 0.5) / cells,
+                        (static_cast<double>(y) + 0.5) / cells,
+                    },
+                    .alpha = ((x + y) & 1u) == 0 ? 0.25 : 0.75,
+                    .boundary_margin = 0.5 / cells,
+                    .mip = 0,
+                });
+            }
+        }
+        return result;
+    };
+    const auto samples = generate(8);
+    REQUIRE(samples.size() == 64);
+    for (const auto &sample : samples) {
+        CHECK(sample.boundary_margin >= 1.0 / 16.0);
+        CHECK(sample.mip == 0);
+        const auto x = static_cast<std::uint32_t>(sample.uv[0] * 8.0);
+        const auto y = static_cast<std::uint32_t>(sample.uv[1] * 8.0);
+        const auto cpu_alpha =
+            ((x + y) & 1u) == 0 ? 0.25 : 0.75;
+        CHECK(cpu_alpha == sample.alpha);
+        CHECK((sample.alpha < 0.5) ==
+              (((x + y) & 1u) == 0));
+    }
+    auto boundary_mutant = samples.front();
+    boundary_mutant.uv[0] = 0.0;
+    boundary_mutant.boundary_margin = 0.0;
+    CHECK_FALSE(boundary_mutant.boundary_margin >= 1.0 / 16.0);
+}
 
 } // namespace Pelican

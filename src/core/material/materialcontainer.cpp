@@ -2168,6 +2168,8 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
         .occlusion_texture = info.occlusion_texture,
         .base_color_texture_identity =
             std::move(info.base_color_texture_identity),
+        .normalized_alpha_ir =
+            std::move(info.normalized_alpha_ir),
         .alpha_mode = info.alpha_mode,
         .alpha_cutoff = info.alpha_cutoff,
         .base_color_factor = info.base_color_factor,
@@ -2857,6 +2859,26 @@ RayMaterialTableSource MaterialContainer::rayMaterialTableSource(
         .base_color_texture_identity =
             registered.base_color_texture_identity,
     };
+    if (registered.normalized_alpha_ir) {
+        const auto &alpha = *registered.normalized_alpha_ir;
+        result.has_normalized_alpha_ir = true;
+        result.alpha_source_kind = alpha.sourceKind();
+        result.alpha_material_identity =
+            alpha.materialIdentity();
+        result.alpha_texture_identity =
+            alpha.textureIdentity();
+        result.normalized_alpha_mode =
+            static_cast<std::uint32_t>(alpha.alphaMode());
+        result.normalized_alpha_cutoff = alpha.cutoff();
+        result.normalized_base_factor_a =
+            alpha.baseFactorA();
+        result.normalized_uv_offset_scale =
+            alpha.uvOffsetScale();
+        result.normalized_uv_rotation =
+            alpha.uvRotation();
+        result.normalized_alpha_digest_sha256 =
+            alpha.digestSha256();
+    }
     if (!result.base_color_texture_identity.empty()) {
         const auto &texture = textures.get(
             registered.base_color_texture);

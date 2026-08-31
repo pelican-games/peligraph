@@ -41,6 +41,9 @@ struct ShaderBundle {
     std::vector<SpvLinkBinding> binding_table;
     std::string cache_key;
     bool cache_hit = false;
+    // Set only by loadGeneratedSource(); authored references cannot assert
+    // the validator exceptions reserved for engine-generated RT stages.
+    bool engine_generated = false;
     std::vector<std::filesystem::path> dependency_paths;
     // Resource ports synthesized by the surface compiler rather than
     // declared in the authored .surface (for example clustered-light

@@ -43,6 +43,10 @@ enum class RayEngineRecordField : std::uint8_t {
     geometry_index,
 };
 
+enum class RayPortableProfile : std::uint8_t {
+    material_alpha_v1,
+};
+
 struct RayGroupLayout {
     std::string source_reference;
     std::string digest_sha256;
@@ -58,11 +62,18 @@ struct RayGroupLayout {
     std::vector<RayEngineRecordField> engine_record;
     std::vector<RayRecordMemberLayout> physical_record;
     std::uint32_t data_size = 0;
+    // Authored only at the layout document top level. Absence is the exact
+    // pre-WP369 path and creates no generated shader/wire/cache input.
+    std::optional<RayPortableProfile> portable_profile;
 
     std::uint32_t rayTypeIndex(std::string_view name) const;
     std::uint32_t groupIndex(std::string_view name) const;
     std::uint32_t missIndex(std::string_view name) const;
     bool usesRayTables() const noexcept { return !engine_record.empty(); }
+    bool usesMaterialAlphaProfile() const noexcept {
+        return portable_profile ==
+               RayPortableProfile::material_alpha_v1;
+    }
     std::optional<std::uint32_t> engineRecordOffset(
         RayEngineRecordField field) const noexcept;
 };
@@ -75,6 +86,8 @@ std::string_view rayRecordTypeName(RayRecordType type) noexcept;
 nlohmann::json canonicalRayRecordAbiJson(
     const RayGroupLayout &layout);
 std::string makeRayGroupLayoutVirtualInclude(
+    const RayGroupLayout &layout);
+std::string makeMaterialAlphaAnyHitSource(
     const RayGroupLayout &layout);
 
 struct RayBindingSelector {
@@ -140,6 +153,14 @@ struct RaySceneRowInput {
     std::shared_ptr<const void> resolved_material_lease;
     std::uint64_t geometry_allocation_id = 0;
     std::size_t source_index = 0;
+    // Only absolute per-instance source overrides are transported. Relative
+    // post-discard multipliers deliberately never enter this snapshot.
+    std::uint32_t alpha_override_mask = 0;
+    std::array<float, 4> alpha_override_base_color_factor{
+        1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<float, 4> alpha_override_uv_offset_scale{
+        0.0F, 0.0F, 1.0F, 1.0F};
+    float alpha_override_uv_rotation = 0.0F;
 };
 
 struct RaySceneRow {
@@ -156,6 +177,12 @@ struct RaySceneRow {
     std::uint64_t resolved_material_generation = 0;
     std::shared_ptr<const void> resolved_material_lease;
     std::uint64_t geometry_allocation_id = 0;
+    std::uint32_t alpha_override_mask = 0;
+    std::array<float, 4> alpha_override_base_color_factor{
+        1.0F, 1.0F, 1.0F, 1.0F};
+    std::array<float, 4> alpha_override_uv_offset_scale{
+        0.0F, 0.0F, 1.0F, 1.0F};
+    float alpha_override_uv_rotation = 0.0F;
     std::uint32_t material_index =
         std::numeric_limits<std::uint32_t>::max();
     std::uint32_t geometry_index =
@@ -174,6 +201,8 @@ inline constexpr std::uint32_t rayGeometryAttributeUv0 = 1u << 1u;
 inline constexpr std::uint32_t rayGeometryAttributeColor0 = 1u << 2u;
 inline constexpr std::uint32_t rayMissingTextureIndex = 0xffffffffu;
 inline constexpr std::uint32_t rayBindlessTextureCapacity = 1024u;
+inline constexpr std::uint32_t rayAlphaOverrideBaseFactor = 1u << 0u;
+inline constexpr std::uint32_t rayAlphaOverrideUvTransform = 1u << 1u;
 
 // C++ half of the generated set-3 ABI. The offset assertions in the
 // implementation are mirrored by generated GLSL declarations and tests.
@@ -185,6 +214,22 @@ struct alignas(16) RayMaterialTableRow {
     std::uint32_t reserved = 0;
 
     bool operator==(const RayMaterialTableRow &) const = default;
+};
+
+// Profile-active per-instance material row. Its byte layout is separate from
+// RayMaterialTableRow so a profile-absent layout retains the exact WP368 ABI.
+struct alignas(16) RayProfileMaterialTableRow {
+    std::uint32_t alpha_mode = 0;
+    float cutoff = 0.5F;
+    float base_factor_a = 1.0F;
+    std::uint32_t texture_index = rayMissingTextureIndex;
+    std::array<float, 4> uv_offset_scale{
+        0.0F, 0.0F, 1.0F, 1.0F};
+    float uv_rotation = 0.0F;
+    std::uint32_t uses_vertex_color = 0;
+    std::array<std::uint32_t, 2> reserved{};
+
+    bool operator==(const RayProfileMaterialTableRow &) const = default;
 };
 
 struct alignas(8) RayGeometryTableRow {
@@ -228,6 +273,17 @@ struct RayMaterialTableSource {
     std::string base_color_texture_identity;
     vk::ImageView base_color_srgb_view;
     vk::Sampler default_sampler;
+    bool has_normalized_alpha_ir = false;
+    std::string alpha_source_kind;
+    std::string alpha_material_identity;
+    std::string alpha_texture_identity;
+    std::uint32_t normalized_alpha_mode = 0;
+    float normalized_alpha_cutoff = 0.5F;
+    float normalized_base_factor_a = 1.0F;
+    std::array<float, 4> normalized_uv_offset_scale{
+        0.0F, 0.0F, 1.0F, 1.0F};
+    float normalized_uv_rotation = 0.0F;
+    std::string normalized_alpha_digest_sha256;
 };
 
 struct RayTextureTableEntry {
@@ -242,6 +298,7 @@ struct RayTracingTableSnapshot {
     std::vector<std::string> material_keys;
     std::vector<std::string> material_row_digests;
     std::vector<RayMaterialTableRow> material_rows;
+    std::vector<RayProfileMaterialTableRow> profile_material_rows;
     std::vector<std::uint64_t> geometry_allocation_ids;
     std::vector<std::string> geometry_row_digests;
     std::vector<RayGeometryTableRow> geometry_rows;
@@ -259,7 +316,13 @@ struct RayTracingTableBuildResult {
 RayTracingTableBuildResult buildRayTracingTableSnapshot(
     const RaySceneRowSnapshot &rows,
     std::span<const RayMaterialTableSource> materials,
-    const RayTracingGeometrySnapshot &geometry);
+    const RayTracingGeometrySnapshot &geometry,
+    const RayGroupLayout *layout = nullptr);
+
+void validateRayProfileGeometryAttributes(
+    const RayProfileMaterialTableRow &row,
+    const RayGeometryTableRow &geometry,
+    std::uint32_t q, std::string_view material_reference);
 
 RaySceneRowSnapshot resolveRaySceneRows(
     std::span<const RaySceneRowInput> inputs,

@@ -208,6 +208,7 @@ struct RawTraceCall {
     std::uint32_t sbt_record_stride_id = 0;
     std::uint32_t miss_index_id = 0;
     std::uint32_t payload_id = 0;
+    std::uint32_t ray_flags_id = 0;
 };
 
 std::string decodeLiteralString(
@@ -300,6 +301,21 @@ class Inspector {
         return producer.opcode == SpvOpConstantNull
                    ? 0u
                    : producer.literal.value_or(0u);
+    }
+
+    std::optional<std::uint32_t> tryDirectUint32Constant(
+        std::uint32_t id) const noexcept {
+        const auto found = producers_.find(id);
+        if (found == producers_.end()) return std::nullopt;
+        const auto &producer = found->second;
+        if ((producer.opcode != SpvOpConstant &&
+             producer.opcode != SpvOpConstantNull) ||
+            !isInt32(producer.type_id)) {
+            return std::nullopt;
+        }
+        return producer.opcode == SpvOpConstantNull
+                   ? std::optional<std::uint32_t>{0u}
+                   : producer.literal;
     }
 
     RayTracingCanonicalType canonicalType(std::uint32_t type_id,
@@ -628,6 +644,7 @@ class Inspector {
                     .sbt_record_stride_id = instruction[5],
                     .miss_index_id = instruction[6],
                     .payload_id = instruction[11],
+                    .ray_flags_id = instruction[2],
                 });
                 break;
             default:
@@ -652,6 +669,7 @@ class Inspector {
             std::uint32_t stride = 0;
             std::uint32_t miss = 0;
             RayTracingCanonicalType payload_type;
+            std::optional<std::uint32_t> ray_flags;
         };
         std::vector<ResolvedTrace> resolved_traces;
         resolved_traces.reserve(trace_calls_.size());
@@ -681,6 +699,8 @@ class Inspector {
                     trace.miss_index_id, trace.instruction_number,
                     "missIndex", true),
                 .payload_type = std::move(payload_type),
+                .ray_flags = tryDirectUint32Constant(
+                    trace.ray_flags_id),
             });
         }
 
@@ -763,6 +783,7 @@ class Inspector {
                     .miss_index = trace.miss,
                     .sbt_record_offset = trace.offset,
                     .sbt_record_stride = trace.stride,
+                    .ray_flags = trace.ray_flags,
                 });
             }
             if (!result.entries.emplace(raw_entry.key, std::move(entry)).second) {

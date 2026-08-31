@@ -75,6 +75,10 @@ struct RayTracingTraceCall {
     std::uint32_t miss_index = 0;
     std::uint32_t sbt_record_offset = 0;
     std::uint32_t sbt_record_stride = 0;
+    // nullopt means the Ray Flags operand was not a direct 32-bit
+    // OpConstant/OpConstantNull. Unlike SBT routing operands this is accepted
+    // by general RT inspection and rejected only by profile-active tasks.
+    std::optional<std::uint32_t> ray_flags;
 
     bool operator==(const RayTracingTraceCall &) const = default;
 };

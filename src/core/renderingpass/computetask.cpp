@@ -1400,8 +1400,32 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                 makeLayoutShaderReference(group.at("closesthit"),
                                           ShaderStage::closesthit, name);
             if (const auto anyhit = group.find("anyhit"); anyhit != group.end()) {
+                if (layout.usesMaterialAlphaProfile()) {
+                    throw std::runtime_error(
+                        "pelican.ray_profile_authored_anyhit@1: compute task '" +
+                        name + "' group='" + group_name +
+                        "' ray_type='" + ray_name +
+                        "' cannot combine portable_profile 'material_alpha_v1' with authored anyhit '" +
+                        anyhit->get<std::string>() + "'");
+                }
                 result.any_hit_shader_slots[slot_index] =
                     makeLayoutShaderReference(*anyhit, ShaderStage::anyhit, name);
+            }
+        }
+    }
+    if (layout.usesMaterialAlphaProfile()) {
+        for (const auto ray_index : result.traced_ray_type_indices) {
+            for (std::size_t group_index = 0;
+                 group_index < layout.groups.size(); ++group_index) {
+                const auto slot_index =
+                    group_index * ray_count + ray_index;
+                result.any_hit_shader_slots[slot_index] =
+                    ShaderReference{
+                        "generated://material_alpha_v1",
+                        ShaderStage::anyhit,
+                        ShaderReferenceKind::engine_generated,
+                        false,
+                    };
             }
         }
     }
@@ -1527,7 +1551,11 @@ void captureDeclaredComputeShaderReferences(
              index < definition.ray_tracing->any_hit_shader_slots.size(); ++index) {
             const auto &slot =
                 definition.ray_tracing->any_hit_shader_slots[index];
-            if (!slot) continue;
+            if (!slot ||
+                slot->kind ==
+                    ShaderReferenceKind::engine_generated) {
+                continue;
+            }
             definition.declared_shader_refs.push_back(
                 {.stage = DeclaredShaderStage::anyhit,
                  .index = index,
@@ -2821,6 +2849,26 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     PipelineHandle pipeline;
     const auto load_shader =
         [&](const ShaderReference &reference) {
+            if (reference.kind ==
+                ShaderReferenceKind::engine_generated) {
+                if (!definition.ray_tracing ||
+                    !definition.ray_tracing->uses_group_layout ||
+                    !dependencies.ray_tracing_project ||
+                    reference.stage != ShaderStage::anyhit ||
+                    reference.ref !=
+                        "generated://material_alpha_v1" ||
+                    !dependencies.ray_tracing_project->layout
+                         .usesMaterialAlphaProfile()) {
+                    throw std::logic_error(
+                        "invalid engine-generated ray shader reference");
+                }
+                return shader_library.loadGeneratedSource(
+                    makeMaterialAlphaAnyHitSource(
+                        dependencies.ray_tracing_project->layout),
+                    ShaderStage::anyhit,
+                    reference.ref,
+                    shader_defines, virtual_includes);
+            }
             if (definition.ray_tracing &&
                 definition.ray_tracing->uses_group_layout) {
                 auto lower = reference.ref;

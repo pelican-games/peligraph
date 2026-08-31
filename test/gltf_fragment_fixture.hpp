@@ -263,6 +263,116 @@ inline std::vector<uint8_t> makeWp368Glb() {
     return glb;
 }
 
+// WP369's checker fixture puts every barycentrically interpolated UV at a
+// texel center.  The two 2x2 mip-0 samples are therefore a fixed normalized
+// margin 0.25 from every texel boundary; no float equality at a boundary is
+// part of the oracle.  The third MASK material deliberately has no texture,
+// TEXCOORD_0, or COLOR_0 and is the per-instance alpha-override lane.
+inline std::vector<uint8_t> makeWp369Glb() {
+    std::vector<uint8_t> bin;
+    const auto append = [&](std::initializer_list<float> values) {
+        for (const auto value : values) detail::appendF32(bin, value);
+    };
+    append({-0.75f, -0.75f, 0.0f,
+             0.75f, -0.75f, 0.0f,
+             0.0f,   0.75f, 0.0f});
+    const auto low_uv_offset = bin.size();
+    append({0.25f, 0.25f,
+            0.25f, 0.25f,
+            0.25f, 0.25f});
+    const auto high_uv_offset = bin.size();
+    append({0.75f, 0.25f,
+            0.75f, 0.25f,
+            0.75f, 0.25f});
+
+    const std::string checker_png =
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR42mP4//+/"
+        "AxAfYAARIA4AgKAN9Ubdi9sAAAAASUVORK5CYII=";
+    nlohmann::json json{
+        {"asset", {{"version", "2.0"},
+                   {"generator", "pelican WP369 margin checker"}}},
+        {"scene", 0},
+        {"scenes", {{{"nodes", {0, 1, 2}}}}},
+        {"nodes",
+         {
+             {{"name", "CheckerLow"}, {"mesh", 0},
+              {"translation", {-2.0, 0.0, 8.0}}},
+             {{"name", "CheckerHigh"}, {"mesh", 1},
+              {"translation", {0.0, 0.0, 8.0}}},
+             {{"name", "AbsoluteFactor"}, {"mesh", 2},
+              {"translation", {2.0, 0.0, 8.0}}},
+         }},
+        {"materials",
+         {
+             {{"name", "CheckerMask"},
+              {"alphaMode", "MASK"},
+              {"alphaCutoff", 0.5},
+              {"pbrMetallicRoughness",
+               {{"baseColorFactor", {1.0, 1.0, 1.0, 1.0}},
+                {"baseColorTexture", {{"index", 0}}}}}},
+             {{"name", "FactorMask"},
+              {"alphaMode", "MASK"},
+              {"alphaCutoff", 0.5},
+              {"pbrMetallicRoughness",
+               {{"baseColorFactor", {1.0, 1.0, 1.0, 1.0}}}}},
+         }},
+        {"images", {{{"name", "CheckerMip0"}, {"uri", checker_png}}}},
+        {"textures", {{{"source", 0}}}},
+        {"meshes",
+         {
+             {{"name", "CheckerLowMesh"},
+              {"primitives", {{{"attributes", {{"POSITION", 0},
+                                                 {"TEXCOORD_0", 1}}},
+                                {"material", 0}}}}},
+             {{"name", "CheckerHighMesh"},
+              {"primitives", {{{"attributes", {{"POSITION", 0},
+                                                 {"TEXCOORD_0", 2}}},
+                                {"material", 0}}}}},
+             {{"name", "FactorMesh"},
+              {"primitives", {{{"attributes", {{"POSITION", 0}}},
+                                {"material", 1}}}}},
+         }},
+        {"buffers", {{{"byteLength", bin.size()}}}},
+        {"bufferViews",
+         {
+             {{"buffer", 0}, {"byteOffset", 0},
+              {"byteLength", low_uv_offset}},
+             {{"buffer", 0}, {"byteOffset", low_uv_offset},
+              {"byteLength", high_uv_offset - low_uv_offset}},
+             {{"buffer", 0}, {"byteOffset", high_uv_offset},
+              {"byteLength", bin.size() - high_uv_offset}},
+         }},
+        {"accessors",
+         {
+             {{"bufferView", 0}, {"componentType", 5126}, {"count", 3},
+              {"type", "VEC3"}, {"min", {-0.75, -0.75, 0.0}},
+              {"max", {0.75, 0.75, 0.0}}},
+             {{"bufferView", 1}, {"componentType", 5126}, {"count", 3},
+              {"type", "VEC2"}},
+             {{"bufferView", 2}, {"componentType", 5126}, {"count", 3},
+              {"type", "VEC2"}},
+         }},
+    };
+
+    auto json_bytes = json.dump();
+    while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
+    while (bin.size() % 4 != 0) bin.push_back(0);
+    std::vector<uint8_t> glb;
+    const auto total_length = static_cast<uint32_t>(
+        12 + 8 + json_bytes.size() + 8 + bin.size());
+    detail::appendU32(glb, 0x46546c67);
+    detail::appendU32(glb, 2);
+    detail::appendU32(glb, total_length);
+    detail::appendU32(glb, static_cast<uint32_t>(json_bytes.size()));
+    detail::appendU32(glb, 0x4e4f534a);
+    glb.insert(glb.end(), json_bytes.begin(), json_bytes.end());
+    detail::appendU32(glb, static_cast<uint32_t>(bin.size()));
+    detail::appendU32(glb, 0x004e4942);
+    glb.insert(glb.end(), bin.begin(), bin.end());
+    return glb;
+}
+
 inline std::vector<uint8_t> makeNormalizedPositionGlb() {
     std::vector<uint8_t> bin{
         0x80, 0xc0, 0x00,
@@ -433,6 +543,10 @@ inline void writeNormalizedPositionGlb(
 
 inline void writeWp368Glb(const std::filesystem::path &path) {
     detail::writeBytes(path, makeWp368Glb());
+}
+
+inline void writeWp369Glb(const std::filesystem::path &path) {
+    detail::writeBytes(path, makeWp369Glb());
 }
 
 inline void writeMaterialRoutingGlb(

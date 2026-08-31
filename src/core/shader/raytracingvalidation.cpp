@@ -298,6 +298,26 @@ std::string validateRayTracingPipelineInterfaces(
         }
     }
 
+    if (request.group_layout != nullptr &&
+        request.group_layout->usesMaterialAlphaProfile()) {
+        constexpr std::uint32_t opaque_ray_flag = 0x1u;
+        for (const auto &trace : request.raygen.entry->trace_calls) {
+            if (!trace.ray_flags ||
+                ((*trace.ray_flags & opaque_ray_flag) != 0)) {
+                throw std::runtime_error(
+                    "pelican.ray_profile_opaque_trace@1: shader '" +
+                    std::string{request.raygen.diagnostic_uri} +
+                    "' instruction=" +
+                    std::to_string(trace.instruction_number) +
+                    " rayFlags=" +
+                    (trace.ray_flags
+                         ? std::to_string(*trace.ray_flags)
+                         : std::string{"<non-constant>"}) +
+                    " requires constant non-Opaque flags for portable_profile 'material_alpha_v1'");
+            }
+        }
+    }
+
     // A physical hit-group pair has one canonical incoming payload type even
     // when no OpTraceRayKHR currently reaches that ray slot.  Establish that
     // invariant before trace-call routing; the latter then compares outgoing
@@ -312,9 +332,13 @@ std::string validateRayTracingPipelineInterfaces(
             const auto *any_incoming = findInterface(
                 *any_hits[index]->entry,
                 RayTracingInterfaceStorage::incoming_ray_payload);
-            if ((closest_incoming == nullptr) != (any_incoming == nullptr) ||
+            const auto generated_omission =
+                any_hits[index]->engine_generated &&
+                any_incoming == nullptr;
+            if (!generated_omission &&
+                ((closest_incoming == nullptr) != (any_incoming == nullptr) ||
                 (closest_incoming != nullptr &&
-                 closest_incoming->type != any_incoming->type)) {
+                 closest_incoming->type != any_incoming->type))) {
                 failHitPairPayload(
                     index, hit_groups[index], *any_hits[index],
                     closest_incoming
@@ -536,6 +560,14 @@ std::string validateRayTracingPipelineInterfaces(
             hashAppend(hash, "trace");
             hashAppend(hash,
                        std::to_string(trace.instruction_number));
+            if (request.group_layout != nullptr &&
+                request.group_layout->usesMaterialAlphaProfile()) {
+                hashAppend(hash, "rayFlags");
+                hashAppend(hash,
+                           trace.ray_flags
+                               ? std::to_string(*trace.ray_flags)
+                               : "<non-constant>");
+            }
             hashAppend(hash, "missIndex");
             hashAppend(hash, std::to_string(trace.miss_index));
             digest_indexed_target(

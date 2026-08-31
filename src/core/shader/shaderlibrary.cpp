@@ -484,6 +484,7 @@ ShaderBundleId ShaderLibrary::loadGeneratedSource(
     auto bundle = buildFromEngineSource(
         source, stage, name, 1, std::move(defines),
         std::move(virtual_includes));
+    bundle.engine_generated = true;
     bundle_ids.reserve(bundle_ids.size() + 1);
     const auto id = bundles.reg(std::move(bundle));
     bundle_ids.push_back(id);
