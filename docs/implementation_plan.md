@@ -16238,3 +16238,113 @@ RT1b executable を実行**。
 
 **RT1b はここで確定**(WP366 + WP366a)。連鎖打ち切り済み: 以降の指摘は台帳のみ。
 次は先行裁定の作業順どおり **RT2a(anyhit 縦切り)**。
+
+### WP367: RT2a —— any-hit の縦切り(`.rahit` 語彙 + typed group + subset オラクル)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
+**規範は docs/design_raytracing.md v4 の §4・§6・§7・§8(RT2a)・§11-6。
+alpha は含めない(§11-6 で RT2b へ移動済み)。**
+
+#### 前提(RT1a + RT1b で揃っている)
+
+`ray_group_layout` と 3 domain(`q×R+r`、operand 固定)/ record ABI(std430、
+型 whitelist、`shader_record_abi_mismatch@1`)/ `pelican.ray_bindings` の
+material 束縛 / `rtspirvinspection`(全 entry・operand 定数性・payload 型・
+shader-record storage)/ 純 validator + 4 配線 + delegate 注入点 /
+CPU 参照オラクル(外向き丸め、subset 規範表)/ 二段 commit / 生成 include と salt /
+5 contrast build での RT1b 実行。
+
+#### 1. 語彙の追加(**使う段で入れる**。`.rint`/`.rcall` は入れない)
+
+`.rahit` を**全所同段**で追加する(現状 `.rgen/.rmiss/.rchit` が閉じている 6 箇所 +
+表示 2 箇所):
+`src/project/shadersourceresolver.cpp`(**wire 正本**。suffix と受理集合)→
+`src/core/shader/shaderreference.cpp` / `shaderlibrary.cpp` / `pipelinefactory.cpp` /
+`rtspirvinspection.cpp` / `src/core/vkcore/shaderresolution.cpp` /
+`src/core/renderingpass/computetask.cpp` → 表示は
+`src/core/imgui/planviewer.cpp` と `src/devstudio/model/frameplanmodel.cpp`。
+**D0: Studio は wire 経由のみ**(`pelican_core` をリンクしない)。
+
+受け入れ: `.rahit` を含む shader が **全構成**(compiler ON/OFF、SPIRV_LINK ON/OFF)で
+解決・compile・登録され、PlanViewer と Studio の frame plan に stage として現れること。
+**どれか 1 箇所を旧のままにすると落ちる**対照(語彙の閉包検査)。
+
+#### 2. typed hit group(現行の平坦形からの拡張)
+
+現行 WP366 の `hit_shaders` は `{"closesthit": "<ref>"}` **のみ**を許し、
+`group.size() != 1` で拒否している(computetask.cpp:1370)。これを typed 形へ:
+
+```json
+"hit_shaders": {
+  "primary": {
+    "opaque":  { "type": "triangles", "closesthit": "project://shaders/pt_hit" },
+    "foliage": { "type": "triangles", "closesthit": "project://shaders/pt_hit",
+                 "anyhit": "project://shaders/pt_alpha" } } }
+```
+
+- `type` は省略可、既定 `"triangles"`(**旧形 `{"closesthit": ...}` は byte 保存**)。
+  `"procedural"` は **RT3 まで名前付き拒否**(`ray_hit_group_type_unsupported@1`)——
+  「存在するが必ず拒否」の語彙を出荷しないという原則との整合: `type` の**値**は
+  文法上受理して名前付きで拒否する(stage 語彙 `.rint` 自体は入れない)
+- `anyhit` は省略可。指定時は `.rahit` として解決
+- unknown field は `ray_hit_group_invalid@1`
+- **RT1a の絶対規則を anyhit にも適用**: triangles group の hit attribute は
+  `vec2`(f32×2)固定。anyhit が独自 attribute を宣言したら
+  `hit_attribute_forbidden@1`
+- **shader-record storage は traced hit slot でのみ許可**(WP366a #4)。
+  anyhit も同じ扱い —— anyhit は closesthit と**同じ record**を読む
+  (同一 group の同一 `(q,r)` record であることを sentinel で確認)
+
+#### 3. subset any-hit(design v4 §4 の許可集合)
+
+- **許可**: 候補局所の入力(barycentric、primitive/instance ID、
+  **record data 定数**)からの**純関数** accept/ignore のみ
+- **subset 外**(書けるが cross-device golden 非保証の分類。**エラーではない**):
+  payload 書き込み・texture sample・`terminateRayEXT`・副作用
+- subset 判定は**静的に機械判定できる範囲**で行う: `rtspirvinspection` に
+  anyhit 本体の検査を追加し、payload storage への書き込み・image/sampler 参照・
+  `OpTerminateRayKHR` の有無を抽出。**subset 外は拒否せず、frame plan と
+  診断に `golden_portable: false` として現れる**(G0 可読性: 暗黙の分類を見せる)
+- **自由 `.rahit` は pipeline 車線専用**(§6)。ray query 側に等価物は要求しない
+
+#### 4. オラクル(design v4 §4 の subset 契約を anyhit へ拡張)
+
+- CPU 参照器に **candidate 列挙 + 純述語 accept/ignore** を追加。
+  述語は record data 定数と barycentric/primitive ID からのみ計算する形に限る
+  (fixture 生成器が**構成的に**その形の shader を出す)
+- **off/on 対照は design §4 のとおり「機能 off」ではない**:
+  同一 production scene で **always-accept 述語と実述語**を走らせ、
+  GPU が実際に読んだ record ID / t / 可視性が**予告どおり変わる**ことを見る
+- 一意性 margin(ε_t / ε_b)と区間幅上限は RT1a の数値表をそのまま使う
+- **anyhit が ignore した候補は closest から除外される**ことを、
+  CPU 区間と GPU の hit t の包含で確認(市松状に ignore する述語で、
+  ignore 無しなら手前の triangle、ignore 有りなら奥の triangle が hit になる fixture)
+
+#### 5. 受け入れ(§4 規約 10)
+
+- **語彙の閉包**: §1 の 8 箇所のどれか 1 つを旧のままにすると落ちる
+- **旧形の byte 保存**: `type` 無し・`anyhit` 無しの既存 task は frame plan・
+  SBT bytes・GPU 出力・cache key が RT1b 時点と一致(既存 fixture が親版)
+- **anyhit が効く**: always-accept vs 実述語で GPU の hit t / record ID が変わり、
+  **CPU 参照の区間に包含**される。anyhit を group から外すと落ちる
+- **同一 record**: anyhit と closesthit が同じ `(q,r)` record の sentinel を読む
+- **subset 分類**: payload 書き込みや texture sample を持つ anyhit が
+  **拒否されず** `golden_portable: false` として frame plan に現れる。
+  分類を外すと落ちる
+- **絶対規則**: anyhit が `vec3` hit attribute を宣言したら
+  `hit_attribute_forbidden@1`(production load 経路で)
+- **procedural の拒否**: `"type": "procedural"` が
+  `ray_hit_group_type_unsupported@1`(RT3 で解禁予定であることを文言に含む)
+- 出荷 4 project・core resources・既存 RT feature の bytes 不変
+- matrix: **5 contrast build で RT2a テストを実行**(WP366a #10 の枠組みを使う)/
+  SKIP_DEVSTUDIO 両構成 / SPIRV_LINK ON/OFF / compiler ON/OFF /
+  OPENXR ON/OFF / ImGui ON/OFF / 全数 2 回 / GPU 直列は統合側
+
+#### 6. やらないこと
+
+**material alpha(実 texture の alpha test)と両車線 portable profile は RT2b**
+(§11-6。alpha を判定するには material ABI —— bindless texture 表と
+geometry access —— が要るため)。`.rint`(RT3)/ `.rcall`(RT4)/
+per-instance 束縛(永続 identity 設計の段)/ 変形 geometry(RT5)。
+
+依存: WP366 + WP366a。
