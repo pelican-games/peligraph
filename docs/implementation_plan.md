@@ -16929,3 +16929,32 @@ subrange の二重加算なし・set 3 の binding/flags/pool 破棄順・RT1b s
 有効化した経路が通ること**(#1 の再発防止)/ 全数 2 回 / GPU 直列は統合側。
 
 依存: WP368。**連鎖打ち切り: WP368a の §10 指摘は無条件で台帳。**
+
+#### WP368a 完了 —— RT2b-1 確定(2026-08-31)
+
+統合: 全数 **1487 ×2 緑**(GPU 直列込み)、doclink 2341 ok。4 件修理、UNMET 0。
+
+要点: **authored reference が GltfLoader の commit まで届き**、material と texture の
+identity をそこから作る(物理パスは I/O・診断専用)。修正を戻すと
+`asset:models/tree.glb#0` と物理絶対パスが衝突し table 作成前に落ちる
+—— **本番経路(ModelAssetContainer → GltfLoader → RT2b table → GPU)**を通した対照 /
+bindless limit は全 runtime facts + **set 0〜3 の実 layout を stage 別に合算**して
+Vulkan object 作成前に検証(実 layout 1026 に対し fact を 1025 に変異させ、
+旧 1024 検査に戻すと落ちなくなる対照。layout 作成件数の不変も見るので検査位置の
+後退も検出)/ asset key は index まで**完全一致** / 代理条件 4 件を実物に置換
+(赤・緑の 1×1 texture / 実 importer の欠落 vs 存在する全ゼロ / 実 project material
+文書の `ProjectOak`・`ProjectPine` / ShaderLibrary registration が purge で baseline 復帰)/
+matrix 5 構成は `SUCCEED` でなく実行(compiler OFF は production loader の named reject)。
+
+##### 統合時の障害(コードではない)
+
+マージ後の初回ビルドが `accelerationstructure.obj : LNK1163`(COMDAT セクション選択が
+無効)で失敗。**worktree で作ったオブジェクトとマージ後ソースが混在した
+incremental link の破損**であり、stale プロセスは無し。該当 obj を削除して再ビルドで
+復旧(exit 0)。既知の LNK1104/LNK1168(exe ロック)とは別症状・別対処なので
+skill の運用節に追記した。
+
+次: **WP369(RT2b-2: 両車線の portable alpha profile)**。
+仕様レビューを 1 巡(第 2 巡の裁定 4 —— alpha IR の `source_kind` を
+`gltf_base_color` のみとし式は `texture.a × factor.a × COLOR_0.a`、
+production の opaque 強制を profile active 時に解く —— が起点)。
