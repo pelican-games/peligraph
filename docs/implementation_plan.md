@@ -16836,3 +16836,32 @@ model reload の共有 pool 再確保、vertex/index pool lease を跨ぐため�
 「行と構成的に整合するが、reload 失敗時の旧世代保持は保証しない」。
 
 依存: WP366 + WP366a + WP367 + WP367a。
+
+#### WP368(RT2b-1)完了(2026-08-31)
+
+統合: 全数 **1487 ×2 緑**(GPU 直列込み)、doclink 2341 ok。
+基準値 N=1487(RT2a 完了時 1478 + 9)。UNMET 0。
+
+成立したもの: descriptor indexing の capability と device limit 検査
+(3 feature 個別 false / limits 3・1023 で property・要求値・実値・device 名つき reject)/
+**physical record**(engine prefix `[material_index, geometry_index]` を含む単一
+std430 struct。0/1/2 field 全ケースの offset/size/stride を正準 JSON と mirror で固定。
+逆順宣言も正準化)/ material 表・geometry 表(同一入力で bytes・digest 一致、
+各要素の単独変更が対応表と row digest に出る)/ geometry の subrange address 昇順と
+attribute presence の運搬(UV 欠落と全ゼロ UV を区別。**拒否はしない** = WP369)/
+**set 3**(binding 0 material row / 1 sampler2D[1024] / 2 geometry table、専用 pool、
+PartiallyBound、`nonuniformEXT`、cache key)/ 生成 accessor(UV・normal・COLOR_0)/
+material の canonical key `document:<ref>#<名前>`(RT1b selector の意味は不変)/
+WP354 の closesthit 投影。
+
+**スコープ規律**: 裁定 1 のとおり **reload hole に手を出していない**
+(`generation-private` 系の変更 0)。ray query 車線(`rt_shadow_mask.frag`)も無傷。
+出荷 4 project・core resources の diff 0。
+
+最も強い対照: **TLAS→SBT の row を交換すると material・UV・normal・COLOR_0 の
+GPU 出力が双方入れ替わり、復元で元 bytes に戻る**(表と行が同一 snapshot 由来である
+直接証明)。purge 対照: layout 不在時に capability 要求・buffer・descriptor pool/set・
+生成 shader・target が**全て 0 件**。
+
+次: §10 コードレビュー → **WP369(RT2b-2: 両車線の portable alpha profile)**。
+WP369 は本 WP 完了後に仕様レビューを 1 巡(第 2 巡の裁定 4 が起点)。
