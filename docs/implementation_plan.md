@@ -15464,6 +15464,7 @@ design_raytracing.md §7 に「callable data の検証は RT4 で」の note を
 
 - 完成宣言の早書き(最後の統合緑まで書かない。書くなら「保留」明記)
 - 打ち切り済み設計(prefab v4 / RT v4 / WP364 v3)への再レビュー起動
+- **roadmap 項目から WP を起票するとき、自分の要約で書くこと** —— 台帳の本文(依存・レビュー段・fixture 数・等価性の方向)を読み直す。U2 は WP363 を、R1 は上段/8 fixture/両方向を落として 2 件同時に差し戻された
 - workspace-write agent の 2 本同時(read-only レビューとの並行は可)
 - 台帳・設計の normative example を parser に通さず追加すること
 
@@ -17294,3 +17295,68 @@ R5(型付き構築 factory・codec 記述子の単一ソース化)/ R6(fullscree
 output_transform の variant tag)/ RT の parser 統合。
 
 依存: WP354(fixtures がオラクル)+ RT2b 完了(隣接のため並行しない)。
+
+#### WP370(U2)/ WP371(R1)仕様レビュー —— **両方とも前提不足で着手不能**
+
+両方 Reject。**共通の根: 私が台帳の roadmap 項目を「要約」で扱い、本文の条件を
+落として起票した**。教訓は §恒常の「やらない」に追記した。
+
+##### WP370(U2)—— WP363 を依存から落としていた
+
+- **前提の誤り**: 「引き継ぎ: 残 WP への先行裁定」の作業順は
+  **WP363 → U2** と明記しているのに、WP370 の依存に WP363 が無い
+- **なぜ致命か**: unpack は component を **generated → authored** へ移す。
+  arena の再利用判定は authored↔authored か同一 gid の generated↔generated だけで、
+  **generated↔authored は必ず不一致 → 新 handle 採番 → attachment の破棄と再生成**。
+  そのときの callback・handle・rollback の正解を決めるのが WP363 である。
+  現行 runtime routing も prefab 用 adapter を付けるのは set/unset だけ
+- 他の実害:
+  - **unpack の inverse が元の展開を特定できない**(prefab の bytes が変わった後の
+    undo / 解放された `instance_id` の再利用)。inverse に prefab ref・instance id・
+    parameter overrides・**prefab digest と provider fingerprint** を保存し、
+    digest 不在時の named error を定義する必要
+  - **「展開 bytes を保つ」と「authored として有効」が両立しない入力**がある
+    (prefab body は `generated:true` を許すが authored では resolver が拒否)。
+    さらに **codec の無い component は authored でも編集不能**なので
+    「authored だから編集可能」は一般に偽
+  - **rename の閉包が足りない**: `parent` 参照も同時に更新しないと
+    `unknown parent` になる。閉包は `name + 全 parent refs + 全 object-parameter`。
+    単一 PreparedOperation・複数 command・単一 inverse なら構造的に可能
+  - **dry-run と実適用の named error 一致は現在の意味論では不可能**:
+    resolver は cross-field failure を throw せず `runtime_resolution_error` に
+    保存して成功扱いにする。実適用は adapter が失敗して `method_unavailable` になる
+
+##### WP371(R1)—— `PassDefinition` は planner の入力になれない(循環)
+
+- **致命**: `PassDefinition` は **物理 target plan 確定後**に構築される runtime 型で、
+  concrete target metadata(sample count・array layer)に依存する。
+  **早く parse すれば metadata 未確定、遅く parse すれば planner は終了済み** ——
+  field を足しても解けない循環
+- **表現力不足**: `PassDefinition` は compute / anchor / snapshot node を表せない。
+  出荷 example には **snapshot node が 2 つ**あり、`clustered_lighting` は
+  出荷 core resource の compute node
+- **D0**: 現 `PassDefinition` は core 所属で Vulkan 型を含む。project 層の正本に
+  そのまま移すと `pelican_project` を汚す
+- **WP354 fixtures はオラクルにならない**: `familyFramePlan()` は 15 node を
+  **手で構築**しており planner/parser を通らない。immutable fixture も barriers と
+  reads/writes が空。`framePlanToJson` は footprint・resource access・attachment・
+  region・resolution domain を**出力しない**が、それらは lowering で消費される
+- **私が台帳の R1 本文を落としていた**: 正本は **上段(設計+仕様+コード)**・
+  **exact fixture 8 件 + 出荷 4 plan + golden**・**等価性は両方向**
+  (旧拒否→新受理 と 旧受理→新拒否)・**R2 は R1 に統合するか直後**。
+  WP371 は中段・WP354 中心・片方向にしてしまった
+- **旧拒否→新受理の具体例が既にある**: `"after": 7`(raw は非 string/array を拒否、
+  typed は `after` を読まない)/ `"input_footprints":{"ghost":...}`(raw は
+  current read でない名前を拒否、typed は無視)
+- **正しい形**: `pelican_project` に **Vulkan 非依存の `TypedRenderGraphDocument`**
+  (resource 宣言 + `variant<render, compute, anchor, snapshot>`)を設計し、
+  **一度だけ parse → planner へ → physical plan 後に runtime `PassDefinition` へ lower**
+  という二段構造。raw API の 3 caller(production compiler・graph transform registry・
+  subgraph replacement registry)も範囲に含める
+
+##### 結論と次の分岐
+
+- **U2 は WP363(lifecycle × arena の設計)の後**。WP363 は起票のみで、
+  実装前に設計文書 + 仕様レビューが必須(2 度失敗した領域)
+- **R1 は設計文書(`TypedRenderGraphDocument`)から**。台帳の R1 本文どおり上段
+- どちらも「設計から始める」段であり、**機能 WP として今すぐ実装するものではない**
