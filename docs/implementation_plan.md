@@ -16212,3 +16212,29 @@ footprint を実際に使う WP —— footprint の 3 経路
 起票するときに、**この実装を参考実装として読む**。143 遅れているので、
 その時点でコンフリクト解消より書き直しが速い可能性が高い。
 **この判断を再検討しないこと**(覆すなら理由をここに追記してから)。
+
+#### WP366a 完了 —— RT1b 確定(2026-08-31)
+
+統合: 全数 **1467 ×2 緑**(GPU 直列込み)、doclink 2341 ok。基準値 N=1467。
+10 件すべて修理、UNMET 0。
+
+修理の要点: 遅延 callback が所有する vector を持つ(UAF 解消。残る `span` は
+関数パラメータで正当)/ authoring は prepared state を所有 transaction へ move し、
+**`committed` でなく `staged` を返して submit 後に完了通知** / legacy null-layout は
+`instance_custom_index = result.size()`(除外 instance を飛ばして数える)/
+raygen・miss・untraced hit では shader-record storage を named reject /
+幾何一致 key は **GPU allocation・range・canonical transform のみ**(asset 名を含めない)/
+`pelican_ray_type_count` を生成定数として公開(fixture の literal 撤去)/
+5 failure point で status・config・plan・TLAS を維持 / material_ref 2 branch を
+実 project material と実 glTF で(reload・退役・再利用・同名衝突まで)/
+`writeTextFile` の fail-fast 化(台帳の負債を返済)/ **5 contrast build すべてで
+RT1b executable を実行**。
+
+**中断からの再開で判明した重要事実**: 静的には完了に見えた #7(stride の production
+負例)と #10(matrix)が、**実際にテストを走らせたら壊れていた**。
+前回の実行は sandbox のパイプ切断でテスト到達前に中断していた。
+副産物として FetchContent のハイフン付き cache 変数転送と SKIP_DEVSTUDIO の
+残存 test target も修正。
+
+**RT1b はここで確定**(WP366 + WP366a)。連鎖打ち切り済み: 以降の指摘は台帳のみ。
+次は先行裁定の作業順どおり **RT2a(anyhit 縦切り)**。
