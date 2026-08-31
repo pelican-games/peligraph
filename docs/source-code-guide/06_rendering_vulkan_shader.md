@@ -982,7 +982,7 @@ buffer は storage buffer、render target は storage image でなければ [`cr
 
 ### extensionless stem
 
-project rendering config では shader を `foo/bar` のような stem で指定します。[`makeShaderReference()`](../../src/core/shader/shaderreference.cpp#L77) は `.vert`、`.frag`、`.comp`、`.spv` などが明記されていると例外にします。
+project rendering config では shader を `foo/bar` のような stem で指定します。[`makeShaderReference()`](../../src/core/shader/shaderreference.cpp#L90) は `.vert`、`.frag`、`.comp`、`.spv` などが明記されていると例外にします。
 
 stage に応じた候補は次です。
 

@@ -16553,3 +16553,23 @@ Vulkan の group 配線・A/B の単一 row snapshot・sparse wire の順序・t
 全数 2 回(統合側 GPU 直列)/ matrix は #8 の形で。
 
 依存: WP367。**連鎖打ち切り: WP367a の §10 指摘は無条件で台帳。**
+
+#### WP367a 完了 —— RT2a 確定(2026-08-31)
+
+統合: 全数 **1478 ×2 緑**(GPU 直列込み)、doclink 2341 ok。基準値 N=1478。
+8 件すべて修理、UNMET 0。
+
+要点: layout の closesthit も物理 `hit_slot` 付きで frame plan に投影し、
+**orphan slot を拒否** / payload ABI を **trace 到達性と独立に全 `(g,r)` pair** で
+比較 / Studio が `anyhit[hit_slot=N]` を表示し Open へ接続 /
+**`.rahit` は AnyHit でのみ予約 suffix**(旧 task の `foo.rahit` stem は
+`foo.rahit.rchit` へ解決。legacy fixture で回帰固定)/ closesthit が record marker を
+**実際に読んで出力に反映**し、record・ray・group marker の単独誤りが miss/ignore に /
+**述語は単一の整数 IR**(opcode ノード列を CPU evaluator と GLSL emitter が共に走査。
+入力を 1 つずつ誤らせる GPU 否定対照つき)/ 必須 capability lane は
+`--no-tests=error` + skip を失敗扱い(0 件時は CTest の非ゼロ終了まで要求)。
+
+**RT2a はここで確定**(WP367 + WP367a)。連鎖打ち切り済み。
+次: **RT2b(material ABI)** —— bindless material 表・geometry access(vertex/index の
+device address)・`data(q)` への material/geometry index 充填・実 texture の
+alpha test・両車線 portable alpha profile・WP354 drill-through の投影。
