@@ -22,6 +22,17 @@ struct GltfCoreMaterialDescription {
     bool double_sided = false;
 };
 
+// KHR_texture_transform is deliberately not part of the raster material
+// contract yet.  Keep its authored state in the normalized alpha IR so the
+// portable ray profile can distinguish an absent extension from an authored
+// identity, a non-identity transform, and malformed extension data.
+enum class NormalizedAlphaUvTransformState : std::uint8_t {
+    absent,
+    identity,
+    non_identity,
+    invalid,
+};
+
 // The sole normalized alpha representation consumed by the portable ray
 // material profile.  Construction is intentionally confined to the project
 // lowering function below: runtime handles and resolved filesystem paths are
@@ -37,6 +48,8 @@ class NormalizedAlphaIr {
     float base_factor_a_ = 1.0F;
     std::array<float, 4> uv_offset_scale_{0.0F, 0.0F, 1.0F, 1.0F};
     float uv_rotation_ = 0.0F;
+    NormalizedAlphaUvTransformState uv_transform_state_ =
+        NormalizedAlphaUvTransformState::absent;
     std::string digest_sha256_;
 
   public:
@@ -61,6 +74,9 @@ class NormalizedAlphaIr {
         return uv_offset_scale_;
     }
     float uvRotation() const noexcept { return uv_rotation_; }
+    NormalizedAlphaUvTransformState uvTransformState() const noexcept {
+        return uv_transform_state_;
+    }
     const std::string &digestSha256() const noexcept {
         return digest_sha256_;
     }
@@ -83,6 +99,8 @@ struct GltfBaseColorAlphaDescription {
     float base_factor_a = 1.0F;
     std::array<float, 4> uv_offset_scale{0.0F, 0.0F, 1.0F, 1.0F};
     float uv_rotation = 0.0F;
+    NormalizedAlphaUvTransformState uv_transform_state =
+        NormalizedAlphaUvTransformState::absent;
 };
 
 NormalizedAlphaIr normalizeGltfBaseColorAlpha(

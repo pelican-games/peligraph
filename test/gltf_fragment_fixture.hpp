@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -264,18 +265,18 @@ inline std::vector<uint8_t> makeWp368Glb() {
 }
 
 // WP369's checker fixture puts every barycentrically interpolated UV at a
-// texel center.  The two 2x2 mip-0 samples are therefore a fixed normalized
-// margin 0.25 from every texel boundary; no float equality at a boundary is
-// part of the oracle.  The third MASK material deliberately has no texture,
-// TEXCOORD_0, or COLOR_0 and is the per-instance alpha-override lane.
-inline std::vector<uint8_t> makeWp369Glb() {
+// texel center. The two 2x2 mip-0 samples are therefore a fixed normalized
+// margin 0.25 from every texel boundary. The same authored scene also carries
+// real COLOR_0 low/high lanes, both clamp counterexamples, and non-MASK lanes.
+inline std::vector<uint8_t> makeWp369Glb(
+    const std::optional<nlohmann::json> &texture_transform = std::nullopt) {
     std::vector<uint8_t> bin;
     const auto append = [&](std::initializer_list<float> values) {
         for (const auto value : values) detail::appendF32(bin, value);
     };
-    append({-0.75f, -0.75f, 0.0f,
-             0.75f, -0.75f, 0.0f,
-             0.0f,   0.75f, 0.0f});
+    append({-0.30f, -0.65f, 0.0f,
+             0.0f,   0.65f, 0.0f,
+             0.30f, -0.65f, 0.0f});
     const auto low_uv_offset = bin.size();
     append({0.25f, 0.25f,
             0.25f, 0.25f,
@@ -284,6 +285,14 @@ inline std::vector<uint8_t> makeWp369Glb() {
     append({0.75f, 0.25f,
             0.75f, 0.25f,
             0.75f, 0.25f});
+    const auto low_color_offset = bin.size();
+    append({1.0f, 1.0f, 1.0f, 0.25f,
+            1.0f, 1.0f, 1.0f, 0.25f,
+            1.0f, 1.0f, 1.0f, 0.25f});
+    const auto high_color_offset = bin.size();
+    append({1.0f, 1.0f, 1.0f, 0.75f,
+            1.0f, 1.0f, 1.0f, 0.75f,
+            1.0f, 1.0f, 1.0f, 0.75f});
 
     const std::string checker_png =
         "data:image/png;base64,"
@@ -293,46 +302,101 @@ inline std::vector<uint8_t> makeWp369Glb() {
         {"asset", {{"version", "2.0"},
                    {"generator", "pelican WP369 margin checker"}}},
         {"scene", 0},
-        {"scenes", {{{"nodes", {0, 1, 2}}}}},
+        {"scenes", {{{"nodes", {0, 1, 2, 3, 4, 5, 6, 7}}}}},
         {"nodes",
          {
-             {{"name", "CheckerLow"}, {"mesh", 0},
-              {"translation", {-2.0, 0.0, 8.0}}},
-             {{"name", "CheckerHigh"}, {"mesh", 1},
-              {"translation", {0.0, 0.0, 8.0}}},
-             {{"name", "AbsoluteFactor"}, {"mesh", 2},
-              {"translation", {2.0, 0.0, 8.0}}},
-         }},
+              {{"name", "CheckerLow"}, {"mesh", 0},
+               {"translation", {-2.625, 0.0, 8.0}}},
+              {{"name", "CheckerHigh"}, {"mesh", 1},
+               {"translation", {-1.875, 0.0, 8.0}}},
+              {{"name", "NegativeClamp"}, {"mesh", 2},
+               {"translation", {-1.125, 0.0, 8.0}}},
+              {{"name", "ColorLow"}, {"mesh", 3},
+               {"translation", {-0.375, 0.0, 8.0}}},
+              {{"name", "ColorHigh"}, {"mesh", 4},
+               {"translation", {0.375, 0.0, 8.0}}},
+              {{"name", "CutoffClamp"}, {"mesh", 5},
+               {"translation", {1.125, 0.0, 8.0}}},
+              {{"name", "ProjectOpaque"}, {"mesh", 6},
+               {"translation", {1.875, 0.0, 8.0}}},
+              {{"name", "Blend"}, {"mesh", 7},
+               {"translation", {2.625, 0.0, 8.0}}},
+          }},
         {"materials",
          {
-             {{"name", "CheckerMask"},
-              {"alphaMode", "MASK"},
-              {"alphaCutoff", 0.5},
-              {"pbrMetallicRoughness",
-               {{"baseColorFactor", {1.0, 1.0, 1.0, 1.0}},
-                {"baseColorTexture", {{"index", 0}}}}}},
-             {{"name", "FactorMask"},
-              {"alphaMode", "MASK"},
-              {"alphaCutoff", 0.5},
-              {"pbrMetallicRoughness",
-               {{"baseColorFactor", {1.0, 1.0, 1.0, 1.0}}}}},
-         }},
+              {{"name", "CheckerLowMask"},
+               {"alphaMode", "MASK"},
+               {"alphaCutoff", 0.5},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {1.0, 0.1, 0.1, 1.0}},
+                 {"baseColorTexture", {{"index", 0}}}}}},
+              {{"name", "CheckerHighMask"},
+               {"alphaMode", "MASK"},
+               {"alphaCutoff", 0.5},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {0.1, 1.0, 0.1, 1.0}},
+                 {"baseColorTexture", {{"index", 0}}}}}},
+              {{"name", "NegativeClampMask"},
+               {"alphaMode", "MASK"},
+               {"alphaCutoff", 0.0},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {0.1, 0.1, 1.0, 1.0}}}}},
+              {{"name", "ColorLowMask"},
+               {"alphaMode", "MASK"},
+               {"alphaCutoff", 0.5},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {1.0, 1.0, 0.1, 1.0}}}}},
+              {{"name", "ColorHighMask"},
+               {"alphaMode", "MASK"},
+               {"alphaCutoff", 0.5},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {0.1, 1.0, 1.0, 1.0}}}}},
+              {{"name", "CutoffClampMask"},
+               {"alphaMode", "MASK"},
+               {"alphaCutoff", 2.0},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {1.0, 0.1, 1.0, 1.0}}}}},
+              {{"name", "EmbeddedOpaquePlaceholder"},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {0.8, 0.4, 0.1, 1.0}}}}},
+              {{"name", "BlendMaterial"},
+               {"alphaMode", "BLEND"},
+               {"pbrMetallicRoughness",
+                {{"baseColorFactor", {0.5, 0.2, 0.8, 0.1}}}}},
+          }},
         {"images", {{{"name", "CheckerMip0"}, {"uri", checker_png}}}},
         {"textures", {{{"source", 0}}}},
         {"meshes",
          {
-             {{"name", "CheckerLowMesh"},
-              {"primitives", {{{"attributes", {{"POSITION", 0},
-                                                 {"TEXCOORD_0", 1}}},
-                                {"material", 0}}}}},
-             {{"name", "CheckerHighMesh"},
-              {"primitives", {{{"attributes", {{"POSITION", 0},
-                                                 {"TEXCOORD_0", 2}}},
-                                {"material", 0}}}}},
-             {{"name", "FactorMesh"},
-              {"primitives", {{{"attributes", {{"POSITION", 0}}},
-                                {"material", 1}}}}},
-         }},
+              {{"name", "CheckerLowMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0},
+                                                  {"TEXCOORD_0", 1}}},
+                                 {"material", 0}}}}},
+              {{"name", "CheckerHighMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0},
+                                                  {"TEXCOORD_0", 2}}},
+                                 {"material", 1}}}}},
+              {{"name", "NegativeClampMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0}}},
+                                 {"material", 2}}}}},
+              {{"name", "ColorLowMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0},
+                                                  {"COLOR_0", 3}}},
+                                 {"material", 3}}}}},
+              {{"name", "ColorHighMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0},
+                                                  {"COLOR_0", 4}}},
+                                 {"material", 4}}}}},
+              {{"name", "CutoffClampMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0}}},
+                                 {"material", 5}}}}},
+              {{"name", "ProjectOpaqueMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0}}},
+                                 {"material", 6}}}}},
+              {{"name", "BlendMesh"},
+               {"primitives", {{{"attributes", {{"POSITION", 0}}},
+                                 {"material", 7}}}}},
+          }},
         {"buffers", {{{"byteLength", bin.size()}}}},
         {"bufferViews",
          {
@@ -340,8 +404,12 @@ inline std::vector<uint8_t> makeWp369Glb() {
               {"byteLength", low_uv_offset}},
              {{"buffer", 0}, {"byteOffset", low_uv_offset},
               {"byteLength", high_uv_offset - low_uv_offset}},
-             {{"buffer", 0}, {"byteOffset", high_uv_offset},
-              {"byteLength", bin.size() - high_uv_offset}},
+              {{"buffer", 0}, {"byteOffset", high_uv_offset},
+               {"byteLength", low_color_offset - high_uv_offset}},
+              {{"buffer", 0}, {"byteOffset", low_color_offset},
+               {"byteLength", high_color_offset - low_color_offset}},
+              {{"buffer", 0}, {"byteOffset", high_color_offset},
+               {"byteLength", bin.size() - high_color_offset}},
          }},
         {"accessors",
          {
@@ -350,10 +418,21 @@ inline std::vector<uint8_t> makeWp369Glb() {
               {"max", {0.75, 0.75, 0.0}}},
              {{"bufferView", 1}, {"componentType", 5126}, {"count", 3},
               {"type", "VEC2"}},
-             {{"bufferView", 2}, {"componentType", 5126}, {"count", 3},
-              {"type", "VEC2"}},
-         }},
+              {{"bufferView", 2}, {"componentType", 5126}, {"count", 3},
+               {"type", "VEC2"}},
+              {{"bufferView", 3}, {"componentType", 5126}, {"count", 3},
+               {"type", "VEC4"}},
+              {{"bufferView", 4}, {"componentType", 5126}, {"count", 3},
+               {"type", "VEC4"}},
+          }},
     };
+
+    if (texture_transform) {
+        json["extensionsUsed"] = {"KHR_texture_transform"};
+        json["materials"][0]["pbrMetallicRoughness"]
+            ["baseColorTexture"]["extensions"]
+            ["KHR_texture_transform"] = *texture_transform;
+    }
 
     auto json_bytes = json.dump();
     while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
@@ -545,8 +624,10 @@ inline void writeWp368Glb(const std::filesystem::path &path) {
     detail::writeBytes(path, makeWp368Glb());
 }
 
-inline void writeWp369Glb(const std::filesystem::path &path) {
-    detail::writeBytes(path, makeWp369Glb());
+inline void writeWp369Glb(
+    const std::filesystem::path &path,
+    const std::optional<nlohmann::json> &texture_transform = std::nullopt) {
+    detail::writeBytes(path, makeWp369Glb(texture_transform));
 }
 
 inline void writeMaterialRoutingGlb(

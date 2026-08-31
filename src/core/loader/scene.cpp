@@ -683,7 +683,8 @@ std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, 
 
     UnpublishedModelCandidate candidate{
         .model = gltf_loader.commit(std::move(prepared),
-                                    std::string{path_ref}),
+                                    GltfAuthoredAssetReference{
+                                        std::string{path_ref}}),
     };
     auto staged_instance = instances.stageModelInstance(candidate.model);
     const auto model_instance_id = staged_instance.id();

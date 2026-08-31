@@ -757,8 +757,11 @@ void main() {
             gl_PrimitiveID,
             pelican_alpha_hit_attribute).a;
     }
-    if (texture_alpha * row.base_factor_a * vertex_alpha <
-        row.cutoff) {
+    float opacity = clamp(
+        texture_alpha * row.base_factor_a * vertex_alpha,
+        0.0, 1.0);
+    float cutoff = clamp(row.cutoff, 0.0, 1.0);
+    if (opacity < cutoff) {
         ignoreIntersectionEXT;
     }
 }
@@ -1033,6 +1036,9 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
     const RayGroupLayout *layout) {
     const auto profile_active =
         layout != nullptr && layout->usesMaterialAlphaProfile();
+    constexpr std::uint32_t mask_alpha_mode = 1u;
+    constexpr std::uint32_t uv_transform_absent = 0u;
+    constexpr std::uint32_t uv_transform_identity = 1u;
     const auto hash_bytes = [](std::string_view prefix,
                                const void *data, std::size_t size) {
         std::string encoded{prefix};
@@ -1075,6 +1081,8 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
                    right.normalized_uv_offset_scale &&
                left.normalized_uv_rotation ==
                    right.normalized_uv_rotation &&
+               left.normalized_uv_transform_state ==
+                   right.normalized_uv_transform_state &&
                left.normalized_alpha_digest_sha256 ==
                    right.normalized_alpha_digest_sha256;
     };
@@ -1090,7 +1098,9 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
             throw std::runtime_error(
                 "pelican.ray_material_snapshot_invalid@1: resolved material handle, generation, lease, and canonical key are required");
         }
-        if (profile_active &&
+        const bool profile_mask =
+            profile_active && source.alpha_mode == mask_alpha_mode;
+        if (profile_mask &&
             (!source.has_normalized_alpha_ir ||
              source.alpha_source_kind != "gltf_base_color" ||
              source.normalized_alpha_digest_sha256.empty())) {
@@ -1099,7 +1109,7 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
                 source.canonical_key +
                 "' requires project-lowered gltf_base_color NormalizedAlphaIr");
         }
-        if (profile_active &&
+        if (profile_mask &&
             (source.alpha_material_identity != source.canonical_key ||
              source.alpha_texture_identity !=
                  source.base_color_texture_identity)) {
@@ -1107,6 +1117,20 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
                 "pelican.ray_profile_alpha_identity_mismatch@1: material '" +
                 source.canonical_key +
                 "' NormalizedAlphaIr is not derived from its WP368a authored references");
+        }
+        if (profile_mask &&
+            source.normalized_uv_transform_state !=
+                uv_transform_absent &&
+            source.normalized_uv_transform_state !=
+                uv_transform_identity) {
+            const auto authored_state =
+                source.normalized_uv_transform_state == 3u
+                    ? "present-invalid"
+                    : "non-identity";
+            throw std::runtime_error(
+                "pelican.ray_profile_uv_transform_unsupported@1: material '" +
+                source.canonical_key + "' has " + authored_state +
+                " KHR_texture_transform data; raster alpha does not consume this extension");
         }
         const auto handle_key = std::tuple{
             source.material_handle, source.material_generation,
@@ -1130,9 +1154,13 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
 
     const auto texture_identity = [profile_active](
                                       const RayMaterialTableSource &source)
-        -> const std::string & {
-        return profile_active ? source.alpha_texture_identity
-                              : source.base_color_texture_identity;
+        -> std::string_view {
+        if (profile_active) {
+            return source.alpha_mode == mask_alpha_mode
+                       ? std::string_view{source.alpha_texture_identity}
+                       : std::string_view{};
+        }
+        return source.base_color_texture_identity;
     };
     std::map<std::string, RayTextureTableEntry, std::less<>> texture_by_key;
     for (const auto &[_, source] : source_by_key) {
@@ -1141,11 +1169,11 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
         if (!source->base_color_srgb_view || !source->default_sampler) {
             throw std::runtime_error(
                 "pelican.ray_material_texture_invalid@1: canonical texture '" +
-                identity +
+                std::string{identity} +
                 "' requires an sRGB view and default sampler");
         }
         RayTextureTableEntry entry{
-            .canonical_identity = identity,
+            .canonical_identity = std::string{identity},
             .srgb_view = source->base_color_srgb_view,
             .sampler = source->default_sampler,
         };
@@ -1237,19 +1265,29 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
                     "pelican.ray_geometry_snapshot_invalid@1: row allocation ID is absent from the geometry table");
             }
             const auto &material = *source->second;
+            const bool mask =
+                material.alpha_mode == mask_alpha_mode;
             RayProfileMaterialTableRow row{
-                .alpha_mode = material.normalized_alpha_mode,
-                .cutoff = material.normalized_alpha_cutoff,
-                .base_factor_a = material.normalized_base_factor_a,
-                .uv_offset_scale = material.normalized_uv_offset_scale,
-                .uv_rotation = material.normalized_uv_rotation,
+                .alpha_mode = material.alpha_mode,
+                .cutoff = mask ? material.normalized_alpha_cutoff
+                               : material.alpha_cutoff,
+                .base_factor_a =
+                    mask ? material.normalized_base_factor_a
+                         : material.base_color_factor[3],
+                .uv_offset_scale =
+                    mask ? material.normalized_uv_offset_scale
+                         : std::array<float, 4>{
+                               0.0F, 0.0F, 1.0F, 1.0F},
+                .uv_rotation =
+                    mask ? material.normalized_uv_rotation : 0.0F,
                 .uses_vertex_color =
-                    (geometry_row->gpu.attribute_presence &
-                     rayGeometryAttributeColor0) != 0
+                    mask &&
+                            (geometry_row->gpu.attribute_presence &
+                             rayGeometryAttributeColor0) != 0
                         ? 1u
                         : 0u,
             };
-            if (!material.alpha_texture_identity.empty()) {
+            if (mask && !material.alpha_texture_identity.empty()) {
                 const auto texture = std::lower_bound(
                     result.textures.begin(), result.textures.end(),
                     material.alpha_texture_identity,
@@ -1265,19 +1303,19 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
                 row.texture_index = static_cast<std::uint32_t>(
                     texture - result.textures.begin());
             }
-            if ((scene_row.alpha_override_mask &
+            if (mask && (scene_row.alpha_override_mask &
                  rayAlphaOverrideBaseFactor) != 0) {
                 row.base_factor_a =
                     scene_row.alpha_override_base_color_factor[3];
             }
-            if ((scene_row.alpha_override_mask &
+            if (mask && (scene_row.alpha_override_mask &
                  rayAlphaOverrideUvTransform) != 0) {
                 row.uv_offset_scale =
                     scene_row.alpha_override_uv_offset_scale;
                 row.uv_rotation =
                     scene_row.alpha_override_uv_rotation;
             }
-            if (row.alpha_mode == 1u) {
+            if (mask) {
                 validateRayProfileGeometryAttributes(
                     row, geometry_row->gpu, scene_row.q,
                     scene_row.material_reference);

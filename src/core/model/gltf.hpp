@@ -4,6 +4,8 @@
 #include "../loader/pathresolver.hpp"
 #include "modeltemplate.hpp"
 #include <memory>
+#include <optional>
+#include <string>
 
 namespace Pelican {
 
@@ -19,6 +21,12 @@ class PreparedGltf {
 
   public:
     PreparedGltf() = default;
+};
+
+// Provenance-bearing logical reference supplied by the project/path resolver.
+// A filesystem path is intentionally not implicitly convertible to this type.
+struct GltfAuthoredAssetReference {
+    std::string value;
 };
 
 DECLARE_MODULE(GltfLoader) {
@@ -38,8 +46,10 @@ DECLARE_MODULE(GltfLoader) {
     // with synthetic draw handles and is suitable for reload compatibility
     // checks only.
     ModelTemplate inspect(const PreparedGltf &prepared) const;
-    ModelTemplate commit(PreparedGltf prepared,
-                         std::string authored_reference) const;
+    ModelTemplate commit(
+        PreparedGltf prepared,
+        std::optional<GltfAuthoredAssetReference> authored_reference =
+            std::nullopt) const;
     ModelTemplate loadGltfBinary(std::string path,
                                  std::optional<AssetFragmentRef> fragment = std::nullopt);
     ModelTemplate loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment);

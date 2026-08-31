@@ -413,6 +413,9 @@ TEST_CASE("six OpenPBR routing states have a byte-stable dump and fixed boundari
     REQUIRE_FALSE(materialMaskKeepsFragment(0.499999, 0.5));
     REQUIRE(materialMaskKeepsFragment(0.5, 0.5));
     REQUIRE(materialMaskKeepsFragment(0.500001, 0.5));
+    REQUIRE(materialMaskKeepsFragment(1.0, 2.0));
+    REQUIRE(materialMaskKeepsFragment(-0.1, 0.0));
+    REQUIRE_FALSE(materialMaskKeepsFragment(-0.1, 0.5));
 }
 
 } // namespace Pelican

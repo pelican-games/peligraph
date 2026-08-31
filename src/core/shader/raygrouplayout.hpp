@@ -153,8 +153,9 @@ struct RaySceneRowInput {
     std::shared_ptr<const void> resolved_material_lease;
     std::uint64_t geometry_allocation_id = 0;
     std::size_t source_index = 0;
-    // Only absolute per-instance source overrides are transported. Relative
-    // post-discard multipliers deliberately never enter this snapshot.
+    // Absolute source overrides take priority. Relative UV transforms are
+    // transported only when no absolute UV transform exists; relative base
+    // color multipliers remain post-discard and deliberately stay out.
     std::uint32_t alpha_override_mask = 0;
     std::array<float, 4> alpha_override_base_color_factor{
         1.0F, 1.0F, 1.0F, 1.0F};
@@ -283,6 +284,7 @@ struct RayMaterialTableSource {
     std::array<float, 4> normalized_uv_offset_scale{
         0.0F, 0.0F, 1.0F, 1.0F};
     float normalized_uv_rotation = 0.0F;
+    std::uint32_t normalized_uv_transform_state = 0;
     std::string normalized_alpha_digest_sha256;
 };
 

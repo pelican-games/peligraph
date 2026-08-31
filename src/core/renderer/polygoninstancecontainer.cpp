@@ -1072,6 +1072,7 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
         std::array<float, 4> alpha_override_uv_offset_scale{
             0.0F, 0.0F, 1.0F, 1.0F};
         float alpha_override_uv_rotation = 0.0F;
+        bool has_absolute_uv_override = false;
         const MaterialInstanceAbsoluteOverrideKey override_key{
             static_cast<std::uint64_t>(instance) + 1,
             item.pipeline_material_key.source_material_index};
@@ -1089,6 +1090,29 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
                 };
             }
             if ((values.mask & materialOverrideUvTransform) != 0) {
+                has_absolute_uv_override = true;
+                alpha_override_mask |= rayAlphaOverrideUvTransform;
+                alpha_override_uv_offset_scale = {
+                    values.uv_offset.x,
+                    values.uv_offset.y,
+                    values.uv_scale.x,
+                    values.uv_scale.y,
+                };
+                alpha_override_uv_rotation =
+                    values.uv_rotation;
+            }
+        }
+        // Raster resolves UV transforms before sampling: a source-material
+        // absolute override wins, otherwise the per-instance relative UV
+        // transform is used. Relative base-color multiplication happens only
+        // after raster discard and therefore remains intentionally absent.
+        if (!has_absolute_uv_override) {
+            if (const auto relative =
+                    material_override_frames.find(instance);
+                relative != material_override_frames.end() &&
+                (relative->second.current.mask &
+                 materialOverrideUvTransform) != 0) {
+                const auto &values = relative->second.current;
                 alpha_override_mask |= rayAlphaOverrideUvTransform;
                 alpha_override_uv_offset_scale = {
                     values.uv_offset.x,

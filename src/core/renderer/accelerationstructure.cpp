@@ -24,6 +24,9 @@ namespace Pelican {
 
 namespace {
 
+thread_local RayProfileAccelerationStructureFlagsOverrideForTesting
+    ray_profile_as_flags_override_for_testing;
+
 std::string geometryName(
     const RayQueryGeometryInstanceSnapshot &instance) {
     return "asset[" + std::to_string(instance.asset_identity) +
@@ -341,6 +344,18 @@ void validateRayProfileAccelerationStructureFlags(
             std::string{diagnostic} +
             " requires non-opaque geometry and instance flags");
     }
+}
+
+ScopedRayProfileAccelerationStructureFlagsOverrideForTesting::
+    ScopedRayProfileAccelerationStructureFlagsOverrideForTesting(
+        RayProfileAccelerationStructureFlagsOverrideForTesting replacement)
+    : previous_{ray_profile_as_flags_override_for_testing} {
+    ray_profile_as_flags_override_for_testing = replacement;
+}
+
+ScopedRayProfileAccelerationStructureFlagsOverrideForTesting::
+    ~ScopedRayProfileAccelerationStructureFlagsOverrideForTesting() {
+    ray_profile_as_flags_override_for_testing = previous_;
 }
 
 std::string canonicalTransformIdentity(const glm::mat4 &transform) {
@@ -728,7 +743,9 @@ RayQueryAccelerationStructureScope::recordFrame(
 
     const bool can_reuse =
         active_state_ != nullptr && !pool_invalidated &&
-        !model_invalidated;
+        !model_invalidated &&
+        !ray_profile_as_flags_override_for_testing
+             .blas_geometry_flags;
     std::map<std::uint64_t,
              const RayTracingGeometrySnapshotRow *>
         unique_geometry;
@@ -789,7 +806,9 @@ RayQueryAccelerationStructureScope::recordFrame(
                 vk::IndexType::eUint32,
                 vk::DeviceOrHostAddressConstKHR{index_address},
             };
-        const vk::GeometryFlagsKHR geometry_flags{};
+        const auto geometry_flags =
+            ray_profile_as_flags_override_for_testing
+                .blas_geometry_flags;
         validateRayProfileAccelerationStructureFlags(
             material_alpha_profile_active, geometry_flags, {},
             "BLAS geometry '" + std::to_string(identity) + "'");
@@ -872,7 +891,9 @@ RayQueryAccelerationStructureScope::recordFrame(
             throw std::runtime_error(
                 "static ray-query TLAS instance has no BLAS");
         }
-        const vk::GeometryInstanceFlagsKHR instance_flags{};
+        const auto instance_flags =
+            ray_profile_as_flags_override_for_testing
+                .tlas_instance_flags;
         validateRayProfileAccelerationStructureFlags(
             material_alpha_profile_active, {}, instance_flags,
             "TLAS instance row " + std::to_string(planned.q));
@@ -926,7 +947,9 @@ RayQueryAccelerationStructureScope::recordFrame(
             false,
             vk::DeviceOrHostAddressConstKHR{
                 instance_buffer.address}};
-    const vk::GeometryFlagsKHR tlas_geometry_flags{};
+    const auto tlas_geometry_flags =
+        ray_profile_as_flags_override_for_testing
+            .tlas_geometry_flags;
     validateRayProfileAccelerationStructureFlags(
         material_alpha_profile_active, tlas_geometry_flags, {},
         "TLAS instances geometry");

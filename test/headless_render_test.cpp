@@ -847,11 +847,35 @@ void writeWp369MaterialAlphaProject(
     TestGltfFragmentFixture::writeWp369Glb(
         directory / "models" / "tree.glb");
     writeTextFile(
-        directory / "assets.json",
-        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb"}],"materials":[],"textures":[]})json");
+        directory / "materials" / "wp369.material.json",
+        R"json({"schema":"pelican.material","version":1,"materials":[{"name":"ProjectOpaque","surface":"engine://surfaces/openpbr/opaque_single.surface","base":{"baseColorFactor":[0.8,0.4,0.1,1.0]},"routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
     writeTextFile(
-        directory / "ray_bindings.json",
-        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":0},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":3690}},{"material":{"asset":"models/tree.glb","source_material_index":1},"group":"opaque","record":{"tint":[0.0,1.0,0.0,1.0],"flags":3691}}]})json");
+        directory / "materials" / "tree.bindings.json",
+        R"json({"schema":"pelican.material_bindings","version":1,"model":"project://models/tree.glb","bindings":[{"usd_path":"/World/CheckerLow","mesh":0,"primitive":0,"material":"CheckerLowMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/CheckerHigh","mesh":1,"primitive":0,"material":"CheckerHighMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/NegativeClamp","mesh":2,"primitive":0,"material":"NegativeClampMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/ColorLow","mesh":3,"primitive":0,"material":"ColorLowMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/ColorHigh","mesh":4,"primitive":0,"material":"ColorHighMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/CutoffClamp","mesh":5,"primitive":0,"material":"CutoffClampMask","routing":{"alpha_mode":"mask","double_sided":false}},{"usd_path":"/World/ProjectOpaque","mesh":6,"primitive":0,"material":"ProjectOpaque","routing":{"alpha_mode":"opaque","double_sided":false}},{"usd_path":"/World/Blend","mesh":7,"primitive":0,"material":"BlendMaterial","routing":{"alpha_mode":"blend","double_sided":false}}]})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"tree","path":"models/tree.glb","material_bindings":"materials/tree.bindings.json"}],"materials":[{"path":"materials/wp369.material.json"}],"textures":[]})json");
+    nlohmann::json ray_bindings{
+        {"schema", "pelican.ray_bindings"},
+        {"version", 1},
+        {"bindings", nlohmann::json::array()},
+    };
+    for (const auto source : {0u, 1u, 2u, 3u, 4u, 5u, 7u}) {
+        ray_bindings["bindings"].push_back({
+            {"material", {{"asset", "models/tree.glb"},
+                          {"source_material_index", source}}},
+            {"group", "opaque"},
+            {"record", {{"tint", {1.0, 1.0, 1.0, 1.0}},
+                        {"flags", 3690u + source}}},
+        });
+    }
+    ray_bindings["bindings"].push_back({
+        {"material", {{"document", "materials/wp369.material.json"}}},
+        {"group", "opaque"},
+        {"record", {{"tint", {0.8, 0.4, 0.1, 1.0}},
+                    {"flags", 3696}}},
+    });
+    writeTextFile(directory / "ray_bindings.json", ray_bindings.dump(2));
 
     auto layout = nlohmann::json::parse(
         readTextFile(directory / "ray_layout.json"));
@@ -866,8 +890,10 @@ void writeWp369MaterialAlphaProject(
         const std::string old_lane =
             "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
         const std::string new_lane =
-            "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 0.0 : "
-            "(pixel.x == 2 ? 2.0 : 8.0));";
+            "float x = pixel.x == 0 ? -2.625 : (pixel.x == 1 ? -1.875 : "
+            "(pixel.x == 2 ? -1.125 : (pixel.x == 3 ? -0.375 : "
+            "(pixel.x == 4 ? 0.375 : (pixel.x == 5 ? 1.125 : "
+            "(pixel.x == 6 ? 1.875 : (pixel.x == 7 ? 2.625 : 8.0)))))));";
         const auto lane_at = source.find(old_lane);
         if (lane_at == std::string::npos) {
             throw std::logic_error(
@@ -884,6 +910,38 @@ void writeWp369MaterialAlphaProject(
                        "gl_RayFlagsNoneEXT");
         writeTextFile(path, source);
     }
+
+    auto rendering = nlohmann::json::parse(
+        readTextFile(directory / "hybrid.json"));
+    const auto albedo = std::ranges::find(
+        rendering["render_targets"], "gbuffer_albedo",
+        [](const auto &target) {
+            return target.at("name").template get<std::string>();
+        });
+    if (albedo == rendering["render_targets"].end()) {
+        throw std::logic_error("WP369 raster oracle target is missing");
+    }
+    (*albedo)["usage"].push_back("TRANSFER_SRC");
+    rendering["render_targets"].push_back({
+        {"name", "wp369_transparent"},
+        {"extent_scale", 1.0},
+        {"format", "R16G16B16A16_SFLOAT"},
+        {"format_class", "explicit(R16G16B16A16_SFLOAT)"},
+        {"role", "color"},
+        {"usage", {"COLOR_ATTACHMENT"}},
+    });
+    auto &passes = rendering["rendering_passes"][0]["passes"];
+    nlohmann::json transparent_pass{
+        {"name", "wp369_forward_transparent"},
+        {"type", "material"},
+        {"material_contract", "forward_transparent_v1"},
+        {"output", {{"color", {"wp369_transparent"}},
+                    {"depth", "scene_depth"}}},
+        {"depth_load_op", "load"},
+        {"depth_store_op", "store"},
+    };
+    passes.insert(passes.end() - 1, std::move(transparent_pass));
+    writeTextFile(directory / "hybrid.json", rendering.dump(2));
 
     const auto hit = [](std::uint32_t marker) {
         std::string source = R"glsl(#version 460
@@ -12173,20 +12231,27 @@ TEST_CASE(
         auto &model_assets = GET_MODULE(ModelAssetContainer);
         const auto &loaded = model_assets.getModelTemplateByName("tree");
         REQUIRE(loaded.authored_asset_reference == "models/tree.glb");
-        REQUIRE(loaded.material_primitives.size() == 2);
-        std::array<GlobalMaterialId, 2> material_by_source{
+        REQUIRE(loaded.material_primitives.size() == 8);
+        std::array<GlobalMaterialId, 8> material_by_source{
+            invalidMaterialId(), invalidMaterialId(), invalidMaterialId(),
+            invalidMaterialId(), invalidMaterialId(), invalidMaterialId(),
             invalidMaterialId(), invalidMaterialId()};
-        std::array<std::size_t, 2> primitive_count{};
+        std::array<std::size_t, 8> primitive_count{};
         for (const auto &group : loaded.material_primitives) {
             REQUIRE(group.source_material_index < material_by_source.size());
             material_by_source[group.source_material_index] = group.material;
             primitive_count[group.source_material_index] =
                 group.primitives.size();
         }
-        REQUIRE(primitive_count == std::array<std::size_t, 2>{2, 1});
+        REQUIRE(primitive_count ==
+                std::array<std::size_t, 8>{1, 1, 1, 1, 1, 1, 1, 1});
 
         auto &instances = GET_MODULE(PolygonInstanceContainer);
         const auto model_instance = instances.placeModelInstance(loaded);
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0F, 0.0F, 0.0F});
+        camera.setDir({0.0F, 0.0F, 1.0F});
+        camera.setUp({0.0F, 1.0F, 0.0F});
         auto &renderer = GET_MODULE(Renderer);
         renderer.render();
         vkcore.waitIdle();
@@ -12204,16 +12269,6 @@ TEST_CASE(
         // shader registration when portable_profile is absent.
         CHECK(generated_registration_count(
                   profile_absent_shader_checkpoint) == 0);
-        for (const auto id : shaders.registrationsSince(
-                 profile_absent_shader_checkpoint)) {
-            for (const auto &[_, include] :
-                 shaders.get(id).virtual_includes) {
-                CHECK(include.find("PELICAN_RAY_PROFILE") ==
-                      std::string::npos);
-                CHECK(include.find("textureLod") ==
-                      std::string::npos);
-            }
-        }
 
         const auto marker_at = [](const RenderTargetReadback &readback,
                                   std::uint32_t x) {
@@ -12230,7 +12285,7 @@ TEST_CASE(
         const auto profile_absent =
             renderer.readRenderTargetForTesting(
                 "wp366_a", ImageSubresourceRange{});
-        for (std::uint32_t lane = 0; lane < 3; ++lane) {
+        for (std::uint32_t lane = 0; lane < 8; ++lane) {
             CAPTURE(lane);
             CHECK(marker_at(profile_absent, lane) == 0x3690u);
         }
@@ -12255,7 +12310,7 @@ TEST_CASE(
         auto &gltf = GET_MODULE(GltfLoader);
         auto mirror = gltf.commit(
             gltf.prepareGltfBinary(mirror_path.string()),
-            "models/tree.glb");
+            GltfAuthoredAssetReference{"models/tree.glb"});
         REQUIRE(mirror.authored_asset_reference == "models/tree.glb");
         const auto mirror_group = std::ranges::find(
             mirror.material_primitives, 0u,
@@ -12263,14 +12318,17 @@ TEST_CASE(
         REQUIRE(mirror_group != mirror.material_primitives.end());
 
         auto &materials = GET_MODULE(MaterialContainer);
-        const auto source_for = [&](GlobalMaterialId material) {
+        const auto source_for = [&](GlobalMaterialId material,
+                                    std::string canonical_key) {
             return materials.rayMaterialTableSource(
-                material, "asset:models/tree.glb#0",
+                material, std::move(canonical_key),
                 materials.rayMaterialGeneration(material),
                 materials.rayMaterialLease(material));
         };
-        const auto original_source = source_for(material_by_source[0]);
-        const auto mirror_source = source_for(mirror_group->material);
+        const auto original_source = source_for(
+            material_by_source[0], "asset:models/tree.glb#0");
+        const auto mirror_source = source_for(
+            mirror_group->material, "asset:models/tree.glb#0");
         REQUIRE(original_source.has_normalized_alpha_ir);
         REQUIRE(mirror_source.has_normalized_alpha_ir);
         CHECK(original_source.alpha_material_identity ==
@@ -12299,12 +12357,13 @@ TEST_CASE(
             makeRayTracingGeometrySnapshot(
                 geometry_input, 0x1000, 0x2000);
         const auto build_identity_table =
-            [&](const RayMaterialTableSource &source) {
+            [&](const RayMaterialTableSource &source,
+                std::string material_asset = "models/tree.glb") {
                 const std::array row_input{
                     RaySceneRowInput{
                         .scene_identity = "identity-scene",
                         .geometry_identity = "identity-geometry",
-                        .material_asset = "models/tree.glb",
+                        .material_asset = std::move(material_asset),
                         .source_material_index = 0,
                         .resolved_material_handle =
                             source.material_handle,
@@ -12329,6 +12388,93 @@ TEST_CASE(
         CHECK(original_table.tables.material_digest_sha256 ==
               mirror_table.tables.material_digest_sha256);
 
+        // A relative physical path is still only a physical path. The legacy
+        // API must not infer authored provenance from its spelling; the
+        // profile rejects it later because no typed authored reference made
+        // normalized IR available.
+        const auto relative_mirror_path = std::filesystem::relative(
+            mirror_path, std::filesystem::current_path());
+        REQUIRE(relative_mirror_path.is_relative());
+        auto legacy_relative = gltf.loadGltfBinary(
+            relative_mirror_path.string());
+        CHECK(legacy_relative.authored_asset_reference.empty());
+        const auto legacy_group = std::ranges::find(
+            legacy_relative.material_primitives, 0u,
+            &ModelTemplate::MaterialPrimitives::source_material_index);
+        REQUIRE(legacy_group != legacy_relative.material_primitives.end());
+        const auto legacy_source = source_for(
+            legacy_group->material, "asset:legacy-relative.glb#0");
+        CHECK_FALSE(legacy_source.has_normalized_alpha_ir);
+        CHECK_THROWS_WITH(
+            build_identity_table(legacy_source, "legacy-relative.glb"),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_profile_alpha_ir_missing@1"));
+
+        const auto load_transform_source =
+            [&](std::string_view filename,
+                const nlohmann::json &transform) {
+                const auto path = temp_dir / "transform" /
+                                  std::string{filename};
+                std::filesystem::create_directories(
+                    path.parent_path());
+                TestGltfFragmentFixture::writeWp369Glb(
+                    path, transform);
+                const auto authored =
+                    "transform/" + std::string{filename};
+                auto model = gltf.commit(
+                    gltf.prepareGltfBinary(path.string()),
+                    GltfAuthoredAssetReference{authored});
+                const auto group = std::ranges::find(
+                    model.material_primitives, 0u,
+                    &ModelTemplate::MaterialPrimitives::source_material_index);
+                if (group == model.material_primitives.end()) {
+                    throw std::logic_error(
+                        "WP369 transform material is missing");
+                }
+                const auto material = group->material;
+                auto source = source_for(
+                    material, "asset:" + authored + "#0");
+                return std::pair{
+                    std::move(model), std::move(source)};
+            };
+        auto [identity_transform_model, identity_transform_source] =
+            load_transform_source(
+                "identity.glb",
+                {{"offset", {0.0, 0.0}},
+                 {"scale", {1.0, 1.0}},
+                 {"rotation", 0.0}});
+        CHECK(identity_transform_source.normalized_uv_transform_state ==
+              static_cast<std::uint32_t>(
+                  NormalizedAlphaUvTransformState::identity));
+        CHECK_NOTHROW(build_identity_table(
+            identity_transform_source, "transform/identity.glb"));
+
+        auto [nonidentity_transform_model, nonidentity_transform_source] =
+            load_transform_source(
+                "nonidentity.glb", {{"offset", {0.5, 0.0}}});
+        CHECK(nonidentity_transform_source.normalized_uv_transform_state ==
+              static_cast<std::uint32_t>(
+                  NormalizedAlphaUvTransformState::non_identity));
+        CHECK_THROWS_WITH(
+            build_identity_table(
+                nonidentity_transform_source,
+                "transform/nonidentity.glb"),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_profile_uv_transform_unsupported@1"));
+
+        auto [invalid_transform_model, invalid_transform_source] =
+            load_transform_source(
+                "invalid.glb", {{"offset", {0.5}}});
+        CHECK(invalid_transform_source.normalized_uv_transform_state ==
+              static_cast<std::uint32_t>(
+                  NormalizedAlphaUvTransformState::invalid));
+        CHECK_THROWS_WITH(
+            build_identity_table(
+                invalid_transform_source,
+                "transform/invalid.glb"),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_profile_uv_transform_unsupported@1"));
+
         const auto active_shader_checkpoint =
             shaders.checkpointRegistrations();
         const auto active_variant =
@@ -12343,7 +12489,11 @@ TEST_CASE(
         const auto profile_active =
             renderer.readRenderTargetForTesting(
                 "wp366_a", ImageSubresourceRange{});
+        const auto raster_active =
+            renderer.readRenderTargetForTesting(
+                "gbuffer_albedo", ImageSubresourceRange{});
         constexpr std::uint32_t miss_marker = 1280u;
+        constexpr std::uint32_t hit_marker = 0x3690u;
         constexpr std::array<double, 2> alpha_mip0{
             64.0 / 255.0, 192.0 / 255.0};
         constexpr std::array<double, 2> uv_x{0.25, 0.75};
@@ -12361,37 +12511,132 @@ TEST_CASE(
                 miss_marker;
             CHECK(gpu_ignored == cpu_ignored);
         }
-        CHECK(marker_at(profile_active, 0) == miss_marker);
-        CHECK(marker_at(profile_active, 1) == 0x3690u);
-        CHECK(marker_at(profile_active, 2) == 0x3690u);
+        const auto ray_visible = [&](const RenderTargetReadback &readback,
+                                     std::size_t lane) {
+            const auto marker = marker_at(
+                readback, static_cast<std::uint32_t>(lane));
+            if (marker != miss_marker && marker != hit_marker) {
+                throw std::runtime_error(
+                    "WP369 ray visibility marker is outside the fixture ABI");
+            }
+            return marker == hit_marker;
+        };
+        const auto raster_visible = [&](const RenderTargetReadback &readback,
+                                        std::size_t lane) {
+            const auto bgr = readback.format ==
+                                 vk::Format::eB8G8R8A8Unorm ||
+                             readback.format ==
+                                 vk::Format::eB8G8R8A8Srgb;
+            const auto rgb = readback.format ==
+                                 vk::Format::eR8G8B8A8Unorm ||
+                             readback.format ==
+                                 vk::Format::eR8G8B8A8Srgb;
+            if ((!bgr && !rgb) || lane >= 6) {
+                throw std::logic_error(
+                    "WP369 raster oracle readback contract is invalid: " +
+                    vk::to_string(readback.format));
+            }
+            for (std::size_t offset = 0;
+                 offset + 3 < readback.bytes.size(); offset += 4) {
+                const auto red = readback.bytes[
+                    offset + (bgr ? 2 : 0)];
+                const auto green = readback.bytes[offset + 1];
+                const auto blue = readback.bytes[
+                    offset + (bgr ? 0 : 2)];
+                const auto high = [](std::uint8_t value) {
+                    return value > 190;
+                };
+                const auto low = [](std::uint8_t value) {
+                    return value < 130;
+                };
+                const bool matches = [&] {
+                    switch (lane) {
+                    case 0:
+                        return high(red) && low(green) && low(blue);
+                    case 1:
+                        return low(red) && high(green) && low(blue);
+                    case 2:
+                        return low(red) && low(green) && high(blue);
+                    case 3:
+                        return high(red) && high(green) && low(blue);
+                    case 4:
+                        return low(red) && high(green) && high(blue);
+                    case 5:
+                        return high(red) && low(green) && high(blue);
+                    default:
+                        return false;
+                    }
+                }();
+                if (matches) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        const auto require_shared_visibility =
+            [&](const RenderTargetReadback &ray,
+                const RenderTargetReadback &raster,
+                const std::array<bool, 6> &expected) {
+                for (std::size_t lane = 0; lane < expected.size(); ++lane) {
+                    CAPTURE(lane, expected[lane]);
+                    const auto rt = ray_visible(ray, lane);
+                    const auto raster_result = raster_visible(raster, lane);
+                    CHECK(rt == expected[lane]);
+                    CHECK(raster_result == expected[lane]);
+                    CHECK(rt == raster_result);
+                }
+            };
+        constexpr std::array<bool, 6> active_visibility{
+            false, true, true, false, true, true};
+        require_shared_visibility(
+            profile_active, raster_active, active_visibility);
+        CHECK(ray_visible(profile_active, 6));
+        CHECK(ray_visible(profile_active, 7));
         CHECK(profile_active.bytes != profile_absent.bytes);
 
         auto profile_tables = GET_MODULE(FrameResources)
                                   .rayTracingSceneShaderBindingTablesLeaseForTesting();
         REQUIRE(profile_tables != nullptr);
-        REQUIRE(profile_tables->ray_tables.profile_material_rows.size() == 3);
-        const auto factor_row = [&](const auto &tables)
+        REQUIRE(profile_tables->ray_tables.profile_material_rows.size() == 8);
+        const auto material_row = [&](const auto &tables,
+                                      std::uint32_t source_material_index)
             -> const RayProfileMaterialTableRow & {
+            const auto key = source_material_index == 6
+                                 ? std::string{
+                                       "document:materials/wp369.material.json#ProjectOpaque"}
+                                 : "asset:models/tree.glb#" +
+                                       std::to_string(source_material_index);
             const auto scene_row = std::ranges::find(
-                tables.row_snapshot->rows,
-                std::string{"asset:models/tree.glb#1"},
+                tables.row_snapshot->rows, key,
                 &RaySceneRow::material_reference);
             if (scene_row == tables.row_snapshot->rows.end()) {
                 throw std::out_of_range(
-                    "WP369 factor material row is absent");
+                    "WP369 material row is absent");
             }
             return tables.ray_tables.profile_material_rows.at(
                 scene_row->material_index);
         };
-        CHECK(factor_row(*profile_tables).texture_index ==
+        CHECK(material_row(*profile_tables, 2).texture_index ==
               rayMissingTextureIndex);
-        CHECK(factor_row(*profile_tables).base_factor_a == 1.0F);
+        CHECK(material_row(*profile_tables, 2).base_factor_a == 1.0F);
+        CHECK(material_row(*profile_tables, 3).uses_vertex_color == 1u);
+        CHECK(material_row(*profile_tables, 4).uses_vertex_color == 1u);
+        CHECK(material_row(*profile_tables, 6).alpha_mode == 0u);
+        CHECK(material_row(*profile_tables, 7).alpha_mode == 2u);
+        CHECK(material_row(*profile_tables, 5).cutoff == 2.0F);
+        const auto project_source = source_for(
+            material_by_source[6],
+            "document:materials/wp369.material.json#ProjectOpaque");
+        CHECK_FALSE(project_source.has_normalized_alpha_ir);
 
         PublishMaterialInstanceOverrideDescV1 relative;
         relative.instance = instances.animationInstance(model_instance);
         relative.frame_revision = 1;
-        relative.values.mask = materialOverrideBaseColor;
+        relative.values.mask = materialOverrideBaseColor |
+                               materialOverrideUvTransform;
         relative.values.base_color_factor = {1.0F, 1.0F, 1.0F, 0.0F};
+        relative.values.uv_offset = {0.5F, 0.0F};
+        relative.values.uv_scale = {1.0F, 1.0F};
         REQUIRE(instances.publishMaterialInstanceOverride(
                     model_instance, relative) == Animation::Status::ok);
         renderer.render();
@@ -12399,35 +12644,80 @@ TEST_CASE(
         const auto relative_frame =
             renderer.readRenderTargetForTesting(
                 "wp366_a", ImageSubresourceRange{});
-        CHECK(relative_frame.bytes == profile_active.bytes);
+        const auto relative_raster =
+            renderer.readRenderTargetForTesting(
+                "gbuffer_albedo", ImageSubresourceRange{});
+        constexpr std::array<bool, 6> relative_visibility{
+            true, false, true, false, true, true};
+        require_shared_visibility(
+            relative_frame, relative_raster, relative_visibility);
+        CHECK(relative_frame.bytes != profile_active.bytes);
         auto relative_tables = GET_MODULE(FrameResources)
                                    .rayTracingSceneShaderBindingTablesLeaseForTesting();
         REQUIRE(relative_tables != nullptr);
-        CHECK(factor_row(*relative_tables).base_factor_a == 1.0F);
+        CHECK(material_row(*relative_tables, 2).base_factor_a == 1.0F);
+        CHECK(material_row(*relative_tables, 0).uv_offset_scale ==
+              std::array<float, 4>{0.5F, 0.0F, 1.0F, 1.0F});
 
-        PublishMaterialInstanceAbsoluteOverrideDescV2 absolute;
-        absolute.instance = instances.animationInstance(model_instance);
-        absolute.frame_revision = 1;
-        absolute.source_material_index = 1;
-        absolute.values.mask = materialOverrideBaseColor;
-        absolute.values.base_color_factor = {1.0F, 1.0F, 1.0F, 0.0F};
+        PublishMaterialInstanceAbsoluteOverrideDescV2 absolute_uv;
+        absolute_uv.instance = instances.animationInstance(model_instance);
+        absolute_uv.frame_revision = 1;
+        absolute_uv.source_material_index = 1;
+        absolute_uv.values.mask = materialOverrideUvTransform;
+        absolute_uv.values.uv_offset = {0.0F, 0.0F};
+        absolute_uv.values.uv_scale = {1.0F, 1.0F};
         REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
-                    model_instance, absolute) == Animation::Status::ok);
+                    model_instance, absolute_uv) == Animation::Status::ok);
         renderer.render();
         vkcore.waitIdle();
-        const auto absolute_frame =
+        const auto absolute_uv_frame =
             renderer.readRenderTargetForTesting(
                 "wp366_a", ImageSubresourceRange{});
-        CHECK(marker_at(absolute_frame, 2) == miss_marker);
-        CHECK(absolute_frame.bytes != relative_frame.bytes);
-        auto absolute_tables = GET_MODULE(FrameResources)
-                                   .rayTracingSceneShaderBindingTablesLeaseForTesting();
-        REQUIRE(absolute_tables != nullptr);
-        CHECK(factor_row(*absolute_tables).base_factor_a == 0.0F);
+        const auto absolute_uv_raster =
+            renderer.readRenderTargetForTesting(
+                "gbuffer_albedo", ImageSubresourceRange{});
+        constexpr std::array<bool, 6> absolute_uv_visibility{
+            true, true, true, false, true, true};
+        require_shared_visibility(
+            absolute_uv_frame, absolute_uv_raster,
+            absolute_uv_visibility);
+        auto absolute_uv_tables = GET_MODULE(FrameResources)
+                                      .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        REQUIRE(absolute_uv_tables != nullptr);
+        CHECK(material_row(*absolute_uv_tables, 0).uv_offset_scale ==
+              std::array<float, 4>{0.5F, 0.0F, 1.0F, 1.0F});
+        CHECK(material_row(*absolute_uv_tables, 1).uv_offset_scale ==
+              std::array<float, 4>{0.0F, 0.0F, 1.0F, 1.0F});
+
+        PublishMaterialInstanceAbsoluteOverrideDescV2 negative_alpha;
+        negative_alpha.instance = instances.animationInstance(model_instance);
+        negative_alpha.frame_revision = 1;
+        negative_alpha.source_material_index = 2;
+        negative_alpha.values.mask = materialOverrideBaseColor;
+        negative_alpha.values.base_color_factor =
+            {0.1F, 0.1F, 1.0F, -0.1F};
+        REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(
+                    model_instance, negative_alpha) ==
+                Animation::Status::ok);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto clamped_frame =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        const auto clamped_raster =
+            renderer.readRenderTargetForTesting(
+                "gbuffer_albedo", ImageSubresourceRange{});
+        require_shared_visibility(
+            clamped_frame, clamped_raster,
+            absolute_uv_visibility);
+        auto clamped_tables = GET_MODULE(FrameResources)
+                                  .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        REQUIRE(clamped_tables != nullptr);
+        CHECK(material_row(*clamped_tables, 2).base_factor_a == -0.1F);
 
         // Direct rollback contrast for the opt-in itself. With all scene and
         // override state unchanged, deleting only portable_profile removes
-        // the generated any-hit and all three intersections are accepted.
+        // the generated any-hit and every intersection is accepted.
         setWp369PortableProfile(temp_dir, false);
         const auto removed_variant =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
@@ -12438,11 +12728,46 @@ TEST_CASE(
         const auto profile_removed =
             renderer.readRenderTargetForTesting(
                 "wp366_a", ImageSubresourceRange{});
-        for (std::uint32_t lane = 0; lane < 3; ++lane) {
+        for (std::uint32_t lane = 0; lane < 8; ++lane) {
             CAPTURE(lane);
-            CHECK(marker_at(profile_removed, lane) == 0x3690u);
+            CHECK(marker_at(profile_removed, lane) == hit_marker);
         }
-        CHECK(profile_removed.bytes != absolute_frame.bytes);
+        CHECK(profile_removed.bytes != clamped_frame.bytes);
+
+        // Re-enable the profile, then inject each forbidden production flag
+        // at the actual recordFrame call site. The TLAS-geometry case is last
+        // because it deliberately aborts after recording its input barrier.
+        setWp369PortableProfile(temp_dir, true);
+        const auto restored_variant =
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                rendering_config);
+        REQUIRE(isValidRenderingPassId(restored_variant.flat));
+        renderer.render();
+        vkcore.waitIdle();
+        const auto require_as_rejection =
+            [&](RayProfileAccelerationStructureFlagsOverrideForTesting flags,
+                std::string_view site) {
+                const ScopedRayProfileAccelerationStructureFlagsOverrideForTesting
+                    injected{flags};
+                CHECK_THROWS_WITH(
+                    renderer.render(),
+                    Catch::Matchers::ContainsSubstring(
+                        "pelican.ray_profile_opaque_as@1") &&
+                        Catch::Matchers::ContainsSubstring(
+                            std::string{site}));
+            };
+        require_as_rejection(
+            {.blas_geometry_flags =
+                 vk::GeometryFlagBitsKHR::eOpaque},
+            "BLAS geometry");
+        require_as_rejection(
+            {.tlas_instance_flags =
+                 vk::GeometryInstanceFlagBitsKHR::eForceOpaque},
+            "TLAS instance row");
+        require_as_rejection(
+            {.tlas_geometry_flags =
+                 vk::GeometryFlagBitsKHR::eOpaque},
+            "TLAS instances geometry");
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {

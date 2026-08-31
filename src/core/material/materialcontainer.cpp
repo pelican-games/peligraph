@@ -2876,6 +2876,9 @@ RayMaterialTableSource MaterialContainer::rayMaterialTableSource(
             alpha.uvOffsetScale();
         result.normalized_uv_rotation =
             alpha.uvRotation();
+        result.normalized_uv_transform_state =
+            static_cast<std::uint32_t>(
+                alpha.uvTransformState());
         result.normalized_alpha_digest_sha256 =
             alpha.digestSha256();
     }

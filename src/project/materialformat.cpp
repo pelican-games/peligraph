@@ -904,7 +904,9 @@ bool materialVariantKeepsFace(const MaterialVariantRouting &routing,
 }
 
 bool materialMaskKeepsFragment(double alpha, double alpha_cutoff) {
-    return std::isfinite(alpha) && std::isfinite(alpha_cutoff) && alpha >= alpha_cutoff;
+    return std::isfinite(alpha) && std::isfinite(alpha_cutoff) &&
+           std::clamp(alpha, 0.0, 1.0) >=
+               std::clamp(alpha_cutoff, 0.0, 1.0);
 }
 
 std::string dumpPrimitiveMaterialBindings(

@@ -133,33 +133,63 @@ struct GltfBaseColorUvTransform {
     glm::vec2 offset{0.0F};
     glm::vec2 scale{1.0F};
     float rotation = 0.0F;
+    NormalizedAlphaUvTransformState state =
+        NormalizedAlphaUvTransformState::absent;
 };
 
 template <class TextureInfo>
 GltfBaseColorUvTransform baseColorUvTransform(
     const TextureInfo &base_texture) {
-    GltfBaseColorUvTransform result;
     const auto extension =
         base_texture.extensions.find("KHR_texture_transform");
-    if (extension == base_texture.extensions.end() ||
-        !extension->second.IsObject()) {
+    if (extension == base_texture.extensions.end()) return {};
+    const auto invalid = [] {
+        GltfBaseColorUvTransform result;
+        result.state = NormalizedAlphaUvTransformState::invalid;
         return result;
-    }
+    };
+    if (!extension->second.IsObject()) return invalid();
     const auto &object =
         extension->second.Get<tinygltf::Value::Object>();
-    if (const auto offset =
-            valueVec2(objectMember(object, "offset"))) {
+    GltfBaseColorUvTransform result;
+    result.state = NormalizedAlphaUvTransformState::identity;
+    if (const auto *value = objectMember(object, "offset")) {
+        const auto offset = valueVec2(value);
+        if (!offset) return invalid();
         result.offset = {static_cast<float>((*offset)[0]),
                          static_cast<float>((*offset)[1])};
     }
-    if (const auto scale =
-            valueVec2(objectMember(object, "scale"))) {
+    if (const auto *value = objectMember(object, "scale")) {
+        const auto scale = valueVec2(value);
+        if (!scale) return invalid();
         result.scale = {static_cast<float>((*scale)[0]),
                         static_cast<float>((*scale)[1])};
     }
-    if (const auto rotation =
-            valueNumber(objectMember(object, "rotation"))) {
+    if (const auto *value = objectMember(object, "rotation")) {
+        const auto rotation = valueNumber(value);
+        if (!rotation) return invalid();
         result.rotation = static_cast<float>(*rotation);
+    }
+    if (const auto *value = objectMember(object, "texCoord")) {
+        const auto tex_coord = valueInteger(value);
+        if (!tex_coord || *tex_coord < 0) return invalid();
+        if (*tex_coord != base_texture.texCoord) {
+            result.state =
+                NormalizedAlphaUvTransformState::non_identity;
+        }
+    }
+    if (!std::isfinite(result.offset.x) ||
+        !std::isfinite(result.offset.y) ||
+        !std::isfinite(result.scale.x) ||
+        !std::isfinite(result.scale.y) ||
+        !std::isfinite(result.rotation)) {
+        return invalid();
+    }
+    if (result.offset != glm::vec2{0.0F} ||
+        result.scale != glm::vec2{1.0F} ||
+        result.rotation != 0.0F) {
+        result.state =
+            NormalizedAlphaUvTransformState::non_identity;
     }
     return result;
 }
@@ -464,7 +494,7 @@ struct InternalGltfLoader {
     StandardMaterialResource &std_mat;
     tinygltf::Model &model;
     std::string source_path;
-    std::string authored_reference;
+    std::optional<std::string> authored_reference;
     std::optional<AssetFragmentRef> fragment;
     bool scene_node_instance = false;
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
@@ -1786,20 +1816,19 @@ struct InternalGltfLoader {
                 ? "material[" +
                       std::to_string(material_index) + "]"
                 : material.name;
-        material_info.source_asset = authored_reference;
+        material_info.source_asset =
+            authored_reference.value_or(std::string{});
         material_info.source_material_index =
             static_cast<std::uint32_t>(material_index);
         const auto uv_transform = baseColorUvTransform(
             material.pbrMetallicRoughness.baseColorTexture);
-        // Validation-only inspection and the legacy direct-load API can have
-        // only a physical path. Such a path must never be disguised inside
-        // an `asset:` identity; profile table construction will name the
-        // missing authored IR if one of those materials is later selected.
-        if (!std::filesystem::path{authored_reference}.is_absolute() &&
-            !authored_reference.starts_with("file://")) {
+        // Only the typed project/path-resolver route carries authored
+        // provenance. Inspection and legacy direct loads intentionally leave
+        // this empty even when their physical path happens to look relative.
+        if (authored_reference) {
             material_info.normalized_alpha_ir =
                 normalizeGltfBaseColorAlpha({
-                    .authored_reference = authored_reference,
+                    .authored_reference = *authored_reference,
                     .material_index =
                         static_cast<std::uint32_t>(material_index),
                     .texture_index =
@@ -1818,6 +1847,7 @@ struct InternalGltfLoader {
                         uv_transform.scale.y,
                     },
                     .uv_rotation = uv_transform.rotation,
+                    .uv_transform_state = uv_transform.state,
                 });
         }
         material_infos.at(material_index) =
@@ -2372,7 +2402,8 @@ PreparedGltf GltfLoader::prepareGltfBinarySceneNode(std::string path,
 }
 
 ModelTemplate GltfLoader::commit(PreparedGltf prepared,
-                                 std::string authored_reference) const {
+                                 std::optional<GltfAuthoredAssetReference>
+                                     authored_reference) const {
     if (!prepared.impl) {
         throw std::runtime_error("cannot commit an empty prepared glTF");
     }
@@ -2399,12 +2430,16 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared,
     (void)inspect(prepared);
     LiveGltfResourceSink resources{GET_MODULE(MaterialContainer),
                                    GET_MODULE(VertBufContainer)};
+    const auto authored_value =
+        authored_reference
+            ? std::optional<std::string>{authored_reference->value}
+            : std::nullopt;
     InternalGltfLoader loader{
         resources,
         GET_MODULE(StandardMaterialResource),
         prepared.impl->model,
         prepared.impl->source_path,
-        authored_reference,
+        authored_value,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
         prepared.impl->vrm.semantic,
@@ -2412,7 +2447,8 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared,
         activeMaterialShaderDefines(),
     };
     auto model = loader.load();
-    model.authored_asset_reference = std::move(authored_reference);
+    model.authored_asset_reference =
+        authored_value.value_or(std::string{});
     return model;
 }
 
@@ -2424,7 +2460,7 @@ ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
         GET_MODULE(StandardMaterialResource),
         prepared.impl->model,
         prepared.impl->source_path,
-        prepared.impl->source_path,
+        std::nullopt,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
         prepared.impl->vrm.semantic,
@@ -2436,28 +2472,18 @@ ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
 
 ModelTemplate GltfLoader::loadGltfBinary(std::string path,
                                          std::optional<AssetFragmentRef> fragment) {
-    auto authored_reference = path;
-    if (fragment) {
-        authored_reference += "#" + fragment->kind + "/" + fragment->path;
-    }
-    return commit(prepareGltfBinary(std::move(path), std::move(fragment)),
-                  std::move(authored_reference));
+    return commit(
+        prepareGltfBinary(std::move(path), std::move(fragment)));
 }
 
 ModelTemplate GltfLoader::loadGltfBinarySceneNode(std::string path, AssetFragmentRef fragment) {
-    auto authored_reference = path + "#" + fragment.kind + "/" + fragment.path;
     auto prepared = prepareGltfBinarySceneNode(std::move(path), std::move(fragment));
-    return commit(std::move(prepared), std::move(authored_reference));
+    return commit(std::move(prepared));
 }
 
 ModelTemplate GltfLoader::loadGltf(std::string path,
                                    std::optional<AssetFragmentRef> fragment) {
-    auto authored_reference = path;
-    if (fragment) {
-        authored_reference += "#" + fragment->kind + "/" + fragment->path;
-    }
-    return commit(prepareGltf(std::move(path), std::move(fragment)),
-                  std::move(authored_reference));
+    return commit(prepareGltf(std::move(path), std::move(fragment)));
 }
 
 void releaseModelGpuResources(ModelTemplate &model, bool deferred) noexcept {

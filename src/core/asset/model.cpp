@@ -397,7 +397,9 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
         [&](std::size_t index) { return prepareDeclaration(declarations[index]); }, 4);
     auto &loader = GET_MODULE(GltfLoader);
     for (std::size_t index = 0; index < declarations.size(); ++index) {
-        auto model = loader.commit(prepared[index], declarations[index].reference);
+        auto model = loader.commit(
+            prepared[index],
+            GltfAuthoredAssetReference{declarations[index].reference});
         applyDeclarationBindings(model, declarations[index]);
         impl_->add(std::move(declarations[index]), std::move(model));
     }
@@ -416,8 +418,9 @@ ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &na
     if (!parsed.fragment) throw std::out_of_range("unknown model asset: " + name);
     auto declaration = resolveDeclaration(name, name, true);
     auto prepared = prepareDeclaration(declaration);
-    auto model = GET_MODULE(GltfLoader).commit(std::move(prepared),
-                                               declaration.reference);
+    auto model = GET_MODULE(GltfLoader).commit(
+        std::move(prepared),
+        GltfAuthoredAssetReference{declaration.reference});
     impl_->add(std::move(declaration), std::move(model));
     return impl_->records.at(name).model;
 }
@@ -483,7 +486,9 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
                 auto &record = impl_->records.at(name);
                 auto &item = pending->at(name);
                 auto model = GET_MODULE(GltfLoader).commit(
-                    item.prepared, record.declaration.reference);
+                    item.prepared,
+                    GltfAuthoredAssetReference{
+                        record.declaration.reference});
                 applyDeclarationBindings(model, record.declaration);
                 model.asset_id = record.model.asset_id;
                 model.authored_asset_reference =

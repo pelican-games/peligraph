@@ -339,6 +339,31 @@ function(run_rt1b_test build_dir label)
         "${rt1b_test}")
 endfunction()
 
+function(run_rt2b_test build_dir label)
+    find_built_executable(
+        "${build_dir}"
+        "pelican_test_raytracing_rt2b_test"
+        rt2b_test)
+    run_process(
+        "${label}_raytracing_rt2b"
+        TRUE
+        "${rt2b_test}")
+    set_property(
+        GLOBAL PROPERTY
+        "PELICAN_WP369_RT2B_EXECUTED_${label}"
+        TRUE)
+endfunction()
+
+function(require_rt2b_test_execution label)
+    get_property(
+        executed GLOBAL PROPERTY
+        "PELICAN_WP369_RT2B_EXECUTED_${label}")
+    if(NOT executed)
+        message(FATAL_ERROR
+            "pelican.wp369.rt2b_matrix_execution_missing@1: ${label}")
+    endif()
+endfunction()
+
 function(run_rt1b_case build_dir label test_name)
     find_built_executable(
         "${build_dir}"
@@ -641,6 +666,14 @@ function(run_runtime_shader_compiler_smoke)
         "runtime_shader_compiler"
         "PELICAN_RUNTIME_SHADER_COMPILER"
         runtime_shader_compiler_build_dir)
+    run_rt2b_test(
+        "${runtime_shader_compiler_build_dir}"
+        "runtime_shader_compiler")
+    require_rt2b_test_execution("runtime_shader_compiler")
+    if(PELICAN_BUILD_UNIT_SMOKE_WP369_ONLY)
+        clean_successful_build("${runtime_shader_compiler_build_dir}")
+        return()
+    endif()
     run_rt1b_case(
         "${runtime_shader_compiler_build_dir}"
         "runtime_shader_compiler"
@@ -672,6 +705,14 @@ function(run_skip_devstudio_smoke)
         "SKIP_DEVSTUDIO"
         skip_devstudio_build_dir)
     verify_devstudio_absent("${skip_devstudio_build_dir}")
+    run_rt2b_test(
+        "${skip_devstudio_build_dir}"
+        "skip_devstudio")
+    require_rt2b_test_execution("skip_devstudio")
+    if(PELICAN_BUILD_UNIT_SMOKE_WP369_ONLY)
+        clean_successful_build("${skip_devstudio_build_dir}")
+        return()
+    endif()
     run_rt2a_compiler_on_contrast(
         "${skip_devstudio_build_dir}" "skip_devstudio")
     run_rt1b_test(
@@ -689,6 +730,12 @@ function(run_openxr_smoke)
         "PELICAN_WITH_OPENXR"
         "${openxr_player}" --xr on
     )
+    run_rt2b_test("${openxr_build_dir}" "openxr")
+    require_rt2b_test_execution("openxr")
+    if(PELICAN_BUILD_UNIT_SMOKE_WP369_ONLY)
+        clean_successful_build("${openxr_build_dir}")
+        return()
+    endif()
     run_rt2a_compiler_on_contrast(
         "${openxr_build_dir}" "openxr")
     run_rt1b_test("${openxr_build_dir}" "openxr")

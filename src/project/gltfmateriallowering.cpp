@@ -123,6 +123,7 @@ NormalizedAlphaIr normalizeGltfBaseColorAlpha(
     result.base_factor_a_ = description.base_factor_a;
     result.uv_offset_scale_ = description.uv_offset_scale;
     result.uv_rotation_ = description.uv_rotation;
+    result.uv_transform_state_ = description.uv_transform_state;
 
     std::ostringstream encoded;
     encoded << result.sourceKind() << '\0'
@@ -134,6 +135,9 @@ NormalizedAlphaIr normalizeGltfBaseColorAlpha(
     for (const auto value : result.uv_offset_scale_)
         appendFloatBits(encoded, value);
     appendFloatBits(encoded, result.uv_rotation_);
+    encoded << static_cast<std::uint32_t>(
+                   result.uv_transform_state_)
+            << ':';
     const auto bytes = encoded.str();
     result.digest_sha256_ = picosha2::hash256_hex_string(
         bytes.begin(), bytes.end());
@@ -157,7 +161,11 @@ MaterialDefinition makeGltfCoreMaterialDefinition(
     result.values.push_back(MaterialValue{
         .name = "alpha_cutoff",
         .value = floatValue(
-            description.alpha_cutoff),
+            // The surface parameter has a [0,1] authoring range. Preserve
+            // the raw authored value in NormalizedAlphaIr for the RT
+            // predicate, while feeding raster the equivalent saturated
+            // value accepted by its material ABI.
+            std::clamp(description.alpha_cutoff, 0.0, 1.0)),
     });
     return result;
 }
