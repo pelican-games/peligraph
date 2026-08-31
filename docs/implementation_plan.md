@@ -17020,3 +17020,39 @@ per-instance の absolute alpha 変更が**次フレームの GPU 出力に反�
 alpha 以外の material 効果 / RT3 以降。
 
 依存: WP366/366a + WP367/367a + WP368/368a。
+
+#### WP369(RT2b-2)完了 —— RT2b 完結(2026-09-01)
+
+統合: 全数 **1494 ×2 緑**(GPU 直列込み)、doclink 2341 ok。
+基準値 N=1494(RT2b-1 完了時 1487 + 7)。UNMET 0。
+
+`portable_profile: "material_alpha_v1"` を layout に書くと、**pipeline 車線**の
+traced な各 `(g,r)`(authored anyhit の無い slot)に engine 生成 `.rahit` が入り、
+`texture.a × factor.a × COLOR_0.a < cutoff` で ignore する。
+
+裁定が実装で守られた点(回収時に独立確認):
+- **ray query 車線 diff 0**(裁定 1: 範囲外)
+- **`Opaque` を外さず検査**(`ray_profile_opaque_trace@1` / `ray_profile_opaque_as@1`)
+  —— engine が所有しない shader を書き換えない
+- **per-instance override は監視せず row に解決**(`base_factor_a` /
+  `uses_vertex_color`)—— relative multiplier では row も GPU bytes も不変、
+  absolute alpha は次フレームで row 1→0・GPU hit→miss
+
+対照: authored anyhit が 1 slot でもあれば named 拒否 /
+**`engine_generated=false` に戻すと payload mismatch で落ちる**(生成 anyhit の
+validator 例外が効いている証明)/ 市松は margin 方式で境界 margin=0 の変異が落ちる /
+**profile を外すと全 intersection が再び hit** / profile 不在時は生成 shader 0・
+従来 include の SHA 固定・validator digest が ray flags 変更でも不変。
+
+##### 設計の改訂(design_raytracing.md §6-1)
+
+**両車線の byte 一致契約を退役**。二車線は「どちらも alpha を使わない範囲でのみ」
+一致する。理由: 一つの述語を構造の違う二車線へ通すには profile sidecar の
+fullscreen 輸送・graphics pipeline への set 3・SBT からの table 所有権分離という
+**engine のサブシステム**が要り、機能 WP に収まらないことが実証された
+(WP369 v1 レビュー #3・#4・#5)。RT2b-1 の表と accessor があるので
+**利用者は自分の `.rahit` で ray query 相当を書ける**——失われたのは
+engine 側の自動一致だけ。ray query の alpha が必要と分かった時点で設計から。
+
+次: WP369 の §10 コードレビュー → **RT3(AS の宣言面: geometry_flags /
+instance_flags の分離・mask・custom_index 未指定=0・static AABB + `.rint`)**。
