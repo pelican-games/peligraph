@@ -262,6 +262,69 @@ RayTracingOracleIntersection intersect(
 
 } // namespace
 
+bool RayTracingAnyHitIntegerPredicate::accepts(
+    RayTracingAnyHitIntegerInputs inputs) const noexcept {
+    if (mode == RayTracingAnyHitIntegerPredicateMode::always_accept) {
+        return true;
+    }
+    const auto matches = inputs.primitive_id == match.primitive_id &&
+                         inputs.instance_custom_index ==
+                             match.instance_custom_index &&
+                         inputs.record_u32 == match.record_u32;
+    return mode == RayTracingAnyHitIntegerPredicateMode::accept_matching
+               ? matches
+               : !matches;
+}
+
+std::string RayTracingAnyHitIntegerPredicate::glslAcceptExpression(
+    std::string_view record_u32_expression) const {
+    if (record_u32_expression.empty()) {
+        throw std::invalid_argument(
+            "any-hit integer predicate requires a record u32 expression");
+    }
+    if (mode == RayTracingAnyHitIntegerPredicateMode::always_accept) {
+        // Keep all three integer inputs live in the generated shader.  This
+        // is an integer tautology, so it is still a genuine always-accept
+        // lane while reflecting the same payload/record interfaces as the
+        // actual predicate lane.
+        const auto uint_record = "uint(" +
+                                 std::string{record_u32_expression} + ")";
+        return "(((uint(gl_PrimitiveID) | ~uint(gl_PrimitiveID)) == "
+               "0xffffffffu) && ((uint(gl_InstanceCustomIndexEXT) | "
+               "~uint(gl_InstanceCustomIndexEXT)) == 0xffffffffu) && ((" +
+               uint_record + " | ~" + uint_record +
+               ") == 0xffffffffu))";
+    }
+    const auto tuple =
+        "((uint(gl_PrimitiveID) == " + std::to_string(match.primitive_id) +
+        "u) && (uint(gl_InstanceCustomIndexEXT) == " +
+        std::to_string(match.instance_custom_index) +
+        "u) && (uint(" + std::string{record_u32_expression} + ") == " +
+        std::to_string(match.record_u32) + "u))";
+    return mode == RayTracingAnyHitIntegerPredicateMode::accept_matching
+               ? tuple
+               : "(!" + tuple + ")";
+}
+
+RayTracingAnyHitIntegerPredicate
+RayTracingAnyHitIntegerPredicate::alwaysAccept() noexcept {
+    return {};
+}
+
+RayTracingAnyHitIntegerPredicate
+RayTracingAnyHitIntegerPredicate::acceptMatching(
+    RayTracingAnyHitIntegerInputs match) noexcept {
+    return {.mode = RayTracingAnyHitIntegerPredicateMode::accept_matching,
+            .match = match};
+}
+
+RayTracingAnyHitIntegerPredicate
+RayTracingAnyHitIntegerPredicate::ignoreMatching(
+    RayTracingAnyHitIntegerInputs match) noexcept {
+    return {.mode = RayTracingAnyHitIntegerPredicateMode::ignore_matching,
+            .match = match};
+}
+
 void validateRayTracingOracleFixtureWithIntersectorForTesting(
     const RayTracingOracleRay &authored_ray,
     std::span<const RayTracingOracleTriangle> authored_triangles,
@@ -425,6 +488,50 @@ RayTracingOracleResult traceRayTracingOracle(
     std::span<const RayTracingOracleTriangle> authored_triangles) {
     return traceRayTracingOracleWithIntersectorForTesting(
         authored_ray, authored_triangles, intersect);
+}
+
+RayTracingOracleResult traceRayTracingOracle(
+    const RayTracingOracleRay &authored_ray,
+    std::span<const RayTracingOracleTriangle> authored_triangles,
+    const RayTracingAnyHitIntegerPredicate &predicate) {
+    validateRayTracingOracleFixture(authored_ray, authored_triangles);
+    const RayTracingOracleRay ray{
+        quantize(authored_ray.origin),
+        quantize(authored_ray.direction),
+    };
+    std::optional<RayTracingOracleIntersection> nearest;
+    for (const auto &authored : authored_triangles) {
+        const auto transform = quantize(authored.transform);
+        std::array<Vec3, 3> world;
+        for (std::size_t index = 0; index < world.size(); ++index) {
+            world[index] = transformPoint(
+                transform, quantize(authored.vertices[index]));
+        }
+        const auto candidate = intersect(authored.record_id, ray, world);
+        if (!candidate.inside ||
+            !predicate.accepts({
+                .primitive_id = authored.primitive_id,
+                .instance_custom_index = authored.instance_custom_index,
+                .record_u32 = authored.record_u32,
+            })) {
+            continue;
+        }
+        if (!nearest || candidate.t < nearest->t) nearest = candidate;
+    }
+    if (!nearest) return {};
+    return RayTracingOracleResult{
+        .hit = RayTracingOracleHit{
+            .record_id = nearest->record_id,
+            .t_mid = (nearest->t_interval.lower +
+                      nearest->t_interval.upper) * 0.5,
+            .barycentric = {
+                1.0 - nearest->u - nearest->v,
+                nearest->u,
+                nearest->v,
+            },
+            .t_interval = nearest->t_interval,
+        },
+    };
 }
 
 RayTracingOracleInterval expandGpuRayT(float value) {

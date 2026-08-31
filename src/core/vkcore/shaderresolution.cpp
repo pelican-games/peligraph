@@ -43,6 +43,8 @@ std::string_view wireStageName(DeclaredShaderStage stage) {
         return "miss";
     case DeclaredShaderStage::closesthit:
         return "closesthit";
+    case DeclaredShaderStage::anyhit:
+        return "anyhit";
     }
     throw std::runtime_error("unknown declared shader stage");
 }
@@ -252,12 +254,14 @@ Json computeShaderResolution(
     const ComputeTaskDefinition &task,
     const PathResolver &path_resolver) {
     std::vector<EffectiveShaderStage> stages;
+    const RayTracingTaskShaderDefinition *ray_definition = nullptr;
     if (!task.ray_tracing) {
         stages.push_back(
             {DeclaredShaderStage::compute, std::nullopt,
              task.shader.ref, ShaderSourceStage::compute});
     } else {
         const auto &ray = *task.ray_tracing;
+        ray_definition = &ray;
         stages.push_back(
             {DeclaredShaderStage::raygen, std::nullopt,
              ray.raygen.ref, ShaderSourceStage::raygen});
@@ -275,10 +279,36 @@ Json computeShaderResolution(
                  ShaderSourceStage::closesthit});
         }
     }
-    return resolvedStages(
+    auto result = resolvedStages(
         std::move(stages), task.declared_shader_refs,
         false, task.shader_declaration_parsed,
         path_resolver);
+    if (ray_definition != nullptr) {
+        Json anyhit_slots = Json::array();
+        for (std::size_t hit_slot = 0;
+             hit_slot < ray_definition->any_hit_shader_slots.size();
+             ++hit_slot) {
+            const auto &shader =
+                ray_definition->any_hit_shader_slots[hit_slot];
+            if (!shader) continue;
+            const EffectiveShaderStage stage{
+                DeclaredShaderStage::anyhit, hit_slot, shader->ref,
+                ShaderSourceStage::anyhit};
+            const auto *authored = findDeclared(
+                task.declared_shader_refs, stage.stage, stage.index);
+            auto encoded = stageToJson(
+                stage, task.declared_shader_refs,
+                authored != nullptr ? "authored" : "generated",
+                path_resolver);
+            encoded.erase("index");
+            encoded["hit_slot"] = hit_slot;
+            anyhit_slots.push_back(std::move(encoded));
+        }
+        if (!anyhit_slots.empty()) {
+            result["anyhit_slots"] = std::move(anyhit_slots);
+        }
+    }
+    return result;
 }
 
 } // namespace
@@ -294,7 +324,8 @@ shaderResolutionFamilyContracts() {
     static constexpr std::string_view skinned[] = {
         "vertex", "skinned_vertex", "fragment"};
     static constexpr std::string_view compute_or_ray[] = {
-        "compute", "raygen", "miss[index]*", "closesthit[index]*"};
+        "compute", "raygen", "miss[index]*", "closesthit[index]*",
+        "anyhit_slots[hit_slot]*"};
     static constexpr ShaderResolutionFamilyContract contracts[] = {
         {"material", "material_owned", "material_owned", no_stages},
         {"fullscreen", "resolved", "path_owned", vertex_fragment},

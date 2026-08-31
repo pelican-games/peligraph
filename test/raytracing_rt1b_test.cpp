@@ -9,7 +9,9 @@
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/shader/raytracingvalidation.hpp"
+#include "../src/core/shader/raytracingoracle.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
+#include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 
@@ -24,6 +26,7 @@
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <glm/gtc/matrix_transform.hpp>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -146,6 +149,30 @@ std::shared_ptr<const RayTracingProjectConfig> loadRt1bSidecar(
         runtime_shader_compiler_enabled);
 }
 
+struct Wp367TemporaryDirectory {
+    std::filesystem::path path;
+
+    Wp367TemporaryDirectory() {
+        path = std::filesystem::temp_directory_path() /
+               ("pelican_wp367_" + std::to_string(
+                    std::chrono::steady_clock::now()
+                        .time_since_epoch().count()));
+        std::filesystem::create_directories(path / "shaders");
+    }
+
+    ~Wp367TemporaryDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+};
+
+void writeWp367Text(const std::filesystem::path &path,
+                    std::string_view text) {
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    if (!output) throw std::runtime_error("cannot write WP367 fixture");
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+}
+
 nlohmann::json rt1bCompilerConfig(bool require_rt_capability) {
     nlohmann::json config{
         {"features", nlohmann::json::array()},
@@ -209,6 +236,185 @@ struct Rt1bCompilerFixture {
         };
     }
 };
+
+TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
+          "[WP367][ray-tracing][rt2a][grammar][production][mutation]") {
+    const auto project = loadRt1bSidecar(true);
+    auto config = nlohmann::json::parse(R"json({
+      "compute_tasks":[{
+        "name":"trace",
+        "ray_tracing":{
+          "raygen":"shaders/trace",
+          "traced_ray_types":["primary"],
+          "misses":{"sky":"shaders/sky","shadow_open":"shaders/open"},
+          "hit_shaders":{"primary":{
+            "opaque":{"type":"triangles","closesthit":"shaders/opaque","anyhit":"shaders/filter"},
+            "foliage":{"closesthit":"shaders/foliage"}
+          }}
+        },
+        "writes":["mask"],
+        "resource_ports":{"mask":{"resource":"mask","access":"storage"}},
+        "dispatch":{"rays_from":{"port":"mask"}}
+      }]
+    })json");
+
+    const auto parsed =
+        parseComputeTaskDefinitionsFromConfigJson(config, project.get());
+    REQUIRE(parsed.size() == 1);
+    REQUIRE(parsed.front().ray_tracing);
+    const auto &ray = *parsed.front().ray_tracing;
+    REQUIRE(ray.any_hit_shader_slots.size() == 4);
+    REQUIRE(ray.any_hit_shader_slots[0]);
+    CHECK(ray.any_hit_shader_slots[0]->stage == ShaderStage::anyhit);
+    CHECK(ray.any_hit_shader_slots[0]->ref == "shaders/filter");
+    CHECK_FALSE(ray.any_hit_shader_slots[1]);
+    CHECK_FALSE(ray.any_hit_shader_slots[2]);
+    CHECK_FALSE(ray.any_hit_shader_slots[3]);
+    CHECK(shaderSourceCandidateReference(
+              ray.any_hit_shader_slots[0]->ref,
+              ShaderSourceStage::anyhit, false) ==
+          "shaders/filter.rahit");
+
+    SECTION("absent type remains the RT1b triangle form") {
+        auto absent = config;
+        absent["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
+              ["primary"]["opaque"].erase("type");
+        CHECK_NOTHROW(parseComputeTaskDefinitionsFromConfigJson(
+            absent, project.get()));
+    }
+    SECTION("procedural is not a typed grammar value") {
+        auto invalid = config;
+        invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
+               ["primary"]["opaque"]["type"] = "procedural";
+        CHECK_THROWS_WITH(
+            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            ContainsSubstring(
+                "pelican.ray_tracing.ray_hit_group_invalid@1"));
+    }
+    SECTION("unknown group fields use the one closed-grammar error") {
+        auto invalid = config;
+        invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
+               ["primary"]["opaque"]["intersection"] = "shaders/nope";
+        CHECK_THROWS_WITH(
+            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            ContainsSubstring(
+                "pelican.ray_tracing.ray_hit_group_invalid@1"));
+    }
+    SECTION("an empty optional anyhit is invalid") {
+        auto invalid = config;
+        invalid["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
+               ["primary"]["opaque"]["anyhit"] = "";
+        CHECK_THROWS_WITH(
+            parseComputeTaskDefinitionsFromConfigJson(invalid, project.get()),
+            ContainsSubstring(
+                "pelican.ray_tracing.ray_hit_group_invalid@1"));
+    }
+}
+
+TEST_CASE("WP367 integer predicate generator drives both CPU oracle lanes",
+          "[WP367][ray-tracing][rt2a][oracle][mutation]") {
+    auto front = makeConstructiveRayTracingOracleFixture(
+        RayTracingSentinelKind::hit, 0xA0u, 8.0f);
+    auto back = makeConstructiveRayTracingOracleFixture(
+        RayTracingSentinelKind::hit, 0xB0u, 16.0f);
+    front.triangles.front().primitive_id = 3u;
+    front.triangles.front().instance_custom_index = 41u;
+    front.triangles.front().record_u32 = 7u;
+    back.triangles.front().primitive_id = 5u;
+    back.triangles.front().instance_custom_index = 42u;
+    back.triangles.front().record_u32 = 9u;
+    std::vector triangles{
+        front.triangles.front(), back.triangles.front()};
+
+    const auto always =
+        RayTracingAnyHitIntegerPredicate::alwaysAccept();
+    const auto actual =
+        RayTracingAnyHitIntegerPredicate::ignoreMatching({
+            .primitive_id = 3u,
+            .instance_custom_index = 41u,
+            .record_u32 = 7u,
+        });
+    const auto always_result =
+        traceRayTracingOracle(front.ray, triangles, always);
+    const auto actual_result =
+        traceRayTracingOracle(front.ray, triangles, actual);
+    REQUIRE(always_result.hit);
+    REQUIRE(actual_result.hit);
+    CHECK(always_result.hit->record_id == 0xA0u);
+    CHECK(actual_result.hit->record_id == 0xB0u);
+    CHECK(actual.accepts({5u, 42u, 9u}));
+    CHECK_FALSE(actual.accepts({3u, 41u, 7u}));
+}
+
+TEST_CASE("WP367 compiler contrast rejects layout before shader documents",
+          "[WP367][ray-tracing][rt2a][matrix][compiler][production][mutation]") {
+    std::size_t shader_document_loads = 0;
+    CHECK_THROWS_WITH(
+        loadRayTracingProjectConfig(
+            rt1bSidecarRoot(),
+            [&](std::string_view) {
+                ++shader_document_loads;
+                return std::string{};
+            },
+            false),
+        ContainsSubstring(
+            "pelican.ray_tracing.layout_requires_runtime_compiler@1"));
+    CHECK(shader_document_loads == 0);
+}
+
+#if PELICAN_RUNTIME_SHADER_COMPILER
+TEST_CASE("WP367 canonical anyhit resolves compiles and selects final SPIR-V stage",
+          "[WP367][ray-tracing][rt2a][resolver][shaderc][spirv][production][mutation]") {
+    Wp367TemporaryDirectory temporary;
+    const auto predicate =
+        RayTracingAnyHitIntegerPredicate::ignoreMatching({
+            .primitive_id = 2u,
+            .instance_custom_index = 19u,
+            .record_u32 = 367u,
+        });
+    const auto source =
+        std::string{"#version 460\n"
+                    "#extension GL_EXT_ray_tracing : require\n"
+                    "layout(location=0) rayPayloadInEXT uvec4 payload;\n"
+                    "hitAttributeEXT vec2 attributes;\n"
+                    "layout(shaderRecordEXT, std430) buffer Record { uint marker; } record_data;\n"
+                    "void main() { if (!("} +
+        predicate.glslAcceptExpression("record_data.marker") +
+        ")) { ignoreIntersectionEXT; } }\n";
+    const auto path = temporary.path / "shaders" / "filter.rahit";
+    writeWp367Text(path, source);
+
+    PathResolver resolver;
+    resolver.setup(temporary.path, false);
+    const auto opened = resolver.resolveShaderSourceOpenReference(
+        "shaders/filter", ShaderSourceStage::anyhit);
+    REQUIRE(opened.openable());
+    CHECK(opened.logical_ref ==
+          std::optional<std::string>{"project://shaders/filter.rahit"});
+    CHECK(opened.physical_path == std::optional<std::filesystem::path>{path});
+    REQUIRE(inferShaderStageFromPath(path));
+    CHECK(*inferShaderStageFromPath(path) ==
+          vk::ShaderStageFlagBits::eAnyHitKHR);
+
+    ShaderCompiler compiler;
+    const auto compiled = compiler.compileFile(path);
+    INFO(compiled.log);
+    REQUIRE(compiled.ok);
+    ShaderLibrary library{ShaderLibraryModuleMode::reflection_only};
+    const auto id = library.loadFromFile(path);
+    const auto &bundle = library.get(id);
+    const auto &entry = selectRayTracingEntryPoint(
+        bundle.reflection.ray_tracing_module, ShaderStage::anyhit,
+        "main", bundle.diagnostic_uri);
+    CHECK(entry.key.execution_model ==
+          spirvExecutionModelForShaderStage(ShaderStage::anyhit));
+    CHECK_THROWS_WITH(
+        library.loadFromSpirv(compiled.spirv, ShaderStage::closesthit,
+                              "wrong-final-stage.rchit"),
+        ContainsSubstring(
+            "pelican.ray_tracing.interface_type_unsupported@1"));
+}
+#endif
 
 TEST_CASE("WP366 layout schema and generated source are raw-digest bound",
           "[ray-tracing][rt1b][layout][mutation]") {
@@ -996,8 +1202,8 @@ TEST_CASE("WP366 SPIR-V trace operands are validated in layout domains",
 }
 
 #if PELICAN_RUNTIME_SHADER_COMPILER
-TEST_CASE("WP366 final SPIR-V shader-record ABI is a load-time invariant",
-          "[ray-tracing][rt1b][spirv][abi][production][mutation]") {
+TEST_CASE("WP366/WP367 final SPIR-V hit-pair ABI is a load-time invariant",
+          "[WP367][ray-tracing][rt1b][rt2a][spirv][abi][production][mutation]") {
     ShaderCompiler compiler;
     const auto compile = [&](std::string_view source,
                              vk::ShaderStageFlagBits stage,
@@ -1045,6 +1251,17 @@ TEST_CASE("WP366 final SPIR-V shader-record ABI is a load-time invariant",
       #extension GL_EXT_ray_tracing : require
       void main() {}
     )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "noop.rchit");
+    auto anyhit = compile(R"glsl(
+      #version 460
+      #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec2 attributes;
+      layout(shaderRecordEXT, std430) buffer Record {
+        vec3 tint;
+        float flags;
+      } record_data;
+      void main() { if (record_data.flags == 999.0) { ignoreIntersectionEXT; } }
+    )glsl", vk::ShaderStageFlagBits::eAnyHitKHR, "abi.rahit");
 
     const auto occurrence = [](
         const RayTracingModuleReflection &module, ShaderStage stage,
@@ -1065,6 +1282,15 @@ TEST_CASE("WP366 final SPIR-V shader-record ABI is a load-time invariant",
         occurrence(noop, ShaderStage::closesthit, 4, "noop.rchit"),
         occurrence(hit, ShaderStage::closesthit, 5, "abi.rchit"),
         occurrence(noop, ShaderStage::closesthit, 6, "noop.rchit")};
+    std::array paired_hits{
+        RayTracingHitGroupOccurrence{
+            .closest_hit = hits[0],
+            .any_hit = occurrence(anyhit, ShaderStage::anyhit, 3,
+                                  "abi.rahit")},
+        RayTracingHitGroupOccurrence{.closest_hit = hits[1]},
+        RayTracingHitGroupOccurrence{.closest_hit = hits[2]},
+        RayTracingHitGroupOccurrence{.closest_hit = hits[3]},
+    };
     const auto layout = parseRayGroupLayout(layoutJson);
     const std::array<std::uint32_t, 1> traced{0};
     const RayTracingRuntimeFacts facts{
@@ -1082,8 +1308,105 @@ TEST_CASE("WP366 final SPIR-V shader-record ABI is a load-time invariant",
             .group_layout = &layout,
             .traced_ray_type_indices = traced};
     };
-    CHECK(validateRayTracingPipelineInterfaces(request(), facts)
+    const auto legacy_digest =
+        validateRayTracingPipelineInterfaces(request(), facts);
+    CHECK(legacy_digest.starts_with("rt1b-fnv1a64:"));
+    const std::array legacy_pairs{
+        RayTracingHitGroupOccurrence{.closest_hit = hits[0]},
+        RayTracingHitGroupOccurrence{.closest_hit = hits[1]},
+        RayTracingHitGroupOccurrence{.closest_hit = hits[2]},
+        RayTracingHitGroupOccurrence{.closest_hit = hits[3]},
+    };
+    CHECK(validateRayTracingPipelineInterfaces(
+              {.raygen = raygen_occurrence,
+               .misses = misses,
+               .group_layout = &layout,
+               .traced_ray_type_indices = traced,
+               .hit_group_occurrences = legacy_pairs},
+              facts) == legacy_digest);
+    const auto paired_request = [&] {
+        return RayTracingPipelineInterfaceRequest{
+            .raygen = raygen_occurrence,
+            .misses = misses,
+            .group_layout = &layout,
+            .traced_ray_type_indices = traced,
+            .hit_group_occurrences = paired_hits};
+    };
+    CHECK(validateRayTracingPipelineInterfaces(paired_request(), facts)
               .starts_with("rt1b-fnv1a64:"));
+
+    SECTION("WP367 anyhit payload mismatch is named") {
+        auto wrong = compile(R"glsl(
+          #version 460
+          #extension GL_EXT_ray_tracing : require
+          layout(location=0) rayPayloadInEXT uvec4 payload;
+          hitAttributeEXT vec2 attributes;
+          layout(shaderRecordEXT, std430) buffer Record {
+            vec3 tint; float flags;
+          } record_data;
+          void main() {}
+        )glsl", vk::ShaderStageFlagBits::eAnyHitKHR,
+            "payload-mismatch.rahit");
+        paired_hits[0].any_hit = occurrence(
+            wrong, ShaderStage::anyhit, 3, "payload-mismatch.rahit");
+        CHECK_THROWS_WITH(
+            validateRayTracingPipelineInterfaces(paired_request(), facts),
+            ContainsSubstring("pelican.ray_tracing.payload_mismatch@1"));
+    }
+    SECTION("WP367 anyhit vec3 triangle attribute is named") {
+        auto wrong = compile(R"glsl(
+          #version 460
+          #extension GL_EXT_ray_tracing : require
+          layout(location=0) rayPayloadInEXT vec4 payload;
+          hitAttributeEXT vec3 attributes;
+          layout(shaderRecordEXT, std430) buffer Record {
+            vec3 tint; float flags;
+          } record_data;
+          void main() {}
+        )glsl", vk::ShaderStageFlagBits::eAnyHitKHR,
+            "attribute-mismatch.rahit");
+        paired_hits[0].any_hit = occurrence(
+            wrong, ShaderStage::anyhit, 3, "attribute-mismatch.rahit");
+        CHECK_THROWS_WITH(
+            validateRayTracingPipelineInterfaces(paired_request(), facts),
+            ContainsSubstring(
+                "pelican.ray_tracing.hit_attribute_forbidden@1"));
+    }
+    SECTION("WP367 anyhit record mismatch is named") {
+        auto wrong = compile(R"glsl(
+          #version 460
+          #extension GL_EXT_ray_tracing : require
+          layout(location=0) rayPayloadInEXT vec4 payload;
+          hitAttributeEXT vec2 attributes;
+          layout(shaderRecordEXT, std430) buffer Record {
+            vec4 tint; float flags;
+          } record_data;
+          void main() {}
+        )glsl", vk::ShaderStageFlagBits::eAnyHitKHR,
+            "record-mismatch.rahit");
+        paired_hits[0].any_hit = occurrence(
+            wrong, ShaderStage::anyhit, 3, "record-mismatch.rahit");
+        CHECK_THROWS_WITH(
+            validateRayTracingPipelineInterfaces(paired_request(), facts),
+            ContainsSubstring(
+                "pelican.ray_tracing.shader_record_abi_mismatch@1"));
+    }
+    SECTION("WP367 anyhit multiple incoming payloads are named") {
+        CHECK_THROWS_WITH(
+            compile(R"glsl(
+              #version 460
+              #extension GL_EXT_ray_tracing : require
+              layout(location=0) rayPayloadInEXT vec4 payload0;
+              layout(location=1) rayPayloadInEXT vec4 payload1;
+              hitAttributeEXT vec2 attributes;
+              layout(shaderRecordEXT, std430) buffer Record {
+                vec3 tint; float flags;
+              } record_data;
+              void main() {}
+            )glsl", vk::ShaderStageFlagBits::eAnyHitKHR,
+                "multiple-incoming.rahit"),
+            ContainsSubstring("pelican.ray_tracing.interface_count@1"));
+    }
 
     SECTION("changing only the shader declaration is named reject") {
         auto wrong = compile(R"glsl(

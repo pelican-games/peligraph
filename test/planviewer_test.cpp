@@ -143,3 +143,87 @@ TEST_CASE("plan viewer rejects data outside the public frame plan contract",
         Catch::Matchers::ContainsSubstring(
             "requires frame plan profile 'runtime'"));
 }
+
+TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
+          "[WP367][imgui][plan-viewer][rt2a][shader-resolution][mutation]") {
+    nlohmann::json plan{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"profile", "runtime"},
+        {"graph", "wp367"},
+        {"levels", {{"trace"}}},
+        {"nodes", nlohmann::json::array({
+             {{"name", "trace"}, {"kind", "compute"}, {"order", 0},
+              {"level", 0}, {"reads", nlohmann::json::array()},
+              {"writes", nlohmann::json::array()},
+              {"shader_resolution",
+               {{"state", "resolved"},
+                {"stages", nlohmann::json::array({
+                     {{"stage", "raygen"},
+                      {"declared_ref", "shaders/trace"},
+                      {"effective_ref", "shaders/trace"},
+                      {"origin", "authored"},
+                      {"source_open_ref", "project://shaders/trace.rgen"}},
+                 })},
+                {"anyhit_slots", nlohmann::json::array({
+                     {{"hit_slot", std::size_t{0}}, {"stage", "anyhit"},
+                      {"declared_ref", "shaders/filter0"},
+                      {"effective_ref", "shaders/filter0"},
+                      {"origin", "authored"},
+                      {"source_open_ref", "project://shaders/filter0.rahit"}},
+                     {{"hit_slot", std::size_t{3}}, {"stage", "anyhit"},
+                      {"declared_ref", "shaders/filter3"},
+                      {"effective_ref", "shaders/filter3"},
+                      {"origin", "authored"},
+                      {"source_open_ref", "project://shaders/filter3.rahit"}},
+                 })}}}},
+         })},
+        {"barriers", nlohmann::json::array()},
+        {"resources", nlohmann::json::array()},
+    };
+
+    const auto model = buildPlanViewerModel(plan);
+    REQUIRE(model.nodes.size() == 1);
+    REQUIRE(model.nodes.front().shader_resolution.anyhit_slots.size() == 2);
+    CHECK(model.nodes.front().shader_resolution.anyhit_slots[0].hit_slot == 0);
+    CHECK(model.nodes.front().shader_resolution.anyhit_slots[1].hit_slot == 3);
+    CHECK(model.nodes.front()
+              .shader_resolution.anyhit_slots[1]
+              .projection.source_open_ref ==
+          std::optional<std::string>{
+              "project://shaders/filter3.rahit"});
+
+    auto &slots =
+        plan["nodes"][0]["shader_resolution"]["anyhit_slots"];
+    SECTION("unknown projection field is rejected") {
+        slots[0]["subset_certified"] = true;
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring("unknown field"));
+    }
+    SECTION("slot order is strictly increasing") {
+        slots[1]["hit_slot"] = std::size_t{0};
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring("strictly increasing"));
+    }
+    SECTION("slot stage is exactly anyhit") {
+        slots[0]["stage"] = "closesthit";
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring("missing a required field"));
+    }
+    SECTION("slot source suffix is exactly rahit") {
+        slots[0]["source_open_ref"] =
+            "project://shaders/filter0.rchit";
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring("must end in .rahit"));
+    }
+    SECTION("empty sparse field must instead be omitted") {
+        slots = nlohmann::json::array();
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring("non-empty array"));
+    }
+}

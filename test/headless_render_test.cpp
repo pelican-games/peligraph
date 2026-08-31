@@ -720,6 +720,430 @@ void main() {
     writeTextFile(directory / "hybrid.json", config.dump(2));
 }
 
+constexpr std::uint32_t wp367SingleRecord = 111u;
+constexpr std::uint32_t wp367FrontRecord = 222u;
+constexpr std::uint32_t wp367BackRecord = 333u;
+constexpr std::uint32_t wp367SingleGroup = 0x510u;
+constexpr std::uint32_t wp367FrontGroup = 0x520u;
+constexpr std::uint32_t wp367BackGroup = 0x530u;
+
+std::string wp367AnyHitSource(
+    const RayTracingAnyHitIntegerPredicate &predicate) {
+    std::string source = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    uint marker;
+} ray_record;
+void main() {
+    if (!(PREDICATE)) {
+        ignoreIntersectionEXT;
+    }
+}
+)glsl";
+    source.replace(source.find("PREDICATE"),
+                   std::string_view{"PREDICATE"}.size(),
+                   predicate.glslAcceptExpression("ray_record.marker"));
+    return source;
+}
+
+void writeWp367AnyHitShader(
+    const std::filesystem::path &directory,
+    std::string_view stem,
+    const RayTracingAnyHitIntegerPredicate &predicate) {
+    writeTextFile(directory / "shaders" /
+                      (std::string{stem} + ".rahit"),
+                  wp367AnyHitSource(predicate));
+}
+
+void writeWp367ActualAnyHitShaders(
+    const std::filesystem::path &directory,
+    const RayTracingAnyHitIntegerPredicate &single,
+    const RayTracingAnyHitIntegerPredicate &overlap) {
+    writeWp367AnyHitShader(directory, "wp367_actual_single", single);
+    writeWp367AnyHitShader(directory, "wp367_actual_front", overlap);
+    writeWp367AnyHitShader(directory, "wp367_actual_back", overlap);
+}
+
+void writeRt2aAnyHitProject(
+    const std::filesystem::path &directory) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeTextFile(
+        directory / "ray_layout.json",
+        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["primary","shadow"],"default_group":"single","groups":[{"name":"single"},{"name":"front"},{"name":"back"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json");
+    writeTextFile(
+        directory / "ray_bindings.json",
+        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/wp367_single.glb","source_material_index":0},"group":"single","record":{"marker":111}},{"material":{"asset":"models/wp367_front.glb","source_material_index":0},"group":"front","record":{"marker":222}},{"material":{"asset":"models/wp367_back.glb","source_material_index":0},"group":"back","record":{"marker":333}}]})json");
+    std::filesystem::create_directories(directory / "shaders");
+
+    const auto raygen = [](std::string_view output) {
+        std::string source = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+layout(set=0,binding=6) uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(rgba32ui,set=1,binding=0) writeonly uniform uimage2D OUTPUT_NAME;
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadEXT Payload payload;
+void main() {
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);
+    payload = Payload(0xffffffffu, 0u, 0xffffffffu, 0u);
+    traceRayEXT(pelicanRayTracingScene, 0u, 0xffu,
+                PELICAN_RAY_TYPE_shadow, pelican_ray_type_count,
+                PELICAN_MISS_open, vec3(x, 0.0, 0.0), 0.001,
+                vec3(0.0, 0.0, 1.0), 4096.0, 0);
+    imageStore(OUTPUT_NAME, pixel,
+               uvec4(payload.q, payload.t_bits,
+                     payload.ray_type, payload.group_marker));
+}
+)glsl";
+        for (auto at = source.find("OUTPUT_NAME");
+             at != std::string::npos;
+             at = source.find("OUTPUT_NAME", at + output.size())) {
+            source.replace(at, std::string_view{"OUTPUT_NAME"}.size(),
+                           output);
+        }
+        return source;
+    };
+    const auto closest_hit = [](std::uint32_t group_marker) {
+        std::string source = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    uint marker;
+} ray_record;
+void main() {
+    payload = Payload(uint(gl_InstanceCustomIndexEXT),
+                      floatBitsToUint(gl_HitTEXT),
+                      PELICAN_RAY_TYPE_shadow, GROUP_MARKER);
+}
+)glsl";
+        source.replace(source.find("GROUP_MARKER"),
+                       std::string_view{"GROUP_MARKER"}.size(),
+                       std::to_string(group_marker) + "u");
+        return source;
+    };
+    writeTextFile(directory / "shaders" / "wp367_actual.rgen",
+                  raygen("pelican_resource_wp367_actual"));
+    writeTextFile(directory / "shaders" / "wp367_always.rgen",
+                  raygen("pelican_resource_wp367_always"));
+    writeTextFile(
+        directory / "shaders" / "wp367_open.rmiss",
+        R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+void main() {
+    payload = Payload(0xffffffffu, 0u, 0x6ffu, 0x5ffu);
+}
+)glsl");
+    writeTextFile(directory / "shaders" / "wp367_single.rchit",
+                  closest_hit(wp367SingleGroup));
+    writeTextFile(directory / "shaders" / "wp367_front.rchit",
+                  closest_hit(wp367FrontGroup));
+    writeTextFile(directory / "shaders" / "wp367_back.rchit",
+                  closest_hit(wp367BackGroup));
+
+    const auto always = RayTracingAnyHitIntegerPredicate::alwaysAccept();
+    writeWp367ActualAnyHitShaders(directory, always, always);
+    for (const auto group : {"single", "front", "back"}) {
+        writeWp367AnyHitShader(
+            directory, std::string{"wp367_always_"} + group, always);
+    }
+
+    const auto hit_shaders = [](std::string_view lane) {
+        const auto group = [lane](std::string_view name,
+                                  bool explicit_type) {
+            nlohmann::json result{
+                {"closesthit", "project://shaders/wp367_" +
+                                   std::string{name}},
+                {"anyhit", "project://shaders/wp367_" +
+                               std::string{lane} + "_" +
+                               std::string{name}},
+            };
+            if (explicit_type) result["type"] = "triangles";
+            return result;
+        };
+        return nlohmann::json{
+            {"shadow",
+             {{"single", group("single", true)},
+              {"front", group("front", false)},
+              {"back", group("back", true)}}},
+        };
+    };
+    const auto task = [&](std::string_view lane) {
+        const auto output = "wp367_" + std::string{lane};
+        return nlohmann::json{
+            {"name", output},
+            {"ray_tracing",
+             {{"raygen", "project://shaders/" + output},
+              {"traced_ray_types", {"shadow"}},
+              {"misses", {{"open", "project://shaders/wp367_open"}}},
+              {"hit_shaders", hit_shaders(lane)}}},
+            {"writes", {output}},
+            {"resource_ports",
+             {{output, {{"resource", output}, {"access", "storage"}}}}},
+            {"dispatch", {{"rays_from", {{"port", output}}}}},
+        };
+    };
+    const auto target = [](std::string_view name) {
+        return nlohmann::json{
+            {"name", name},
+            {"extent_scale", 1.0},
+            {"format", "R32G32B32A32_UINT"},
+            {"format_class", "data"},
+            {"role", "data"},
+            {"usage", {"STORAGE", "TRANSFER_SRC"}},
+        };
+    };
+    const nlohmann::json config{
+        {"ray_group_layout", "ray_layout.json"},
+        {"ray_bindings", "ray_bindings.json"},
+        {"render_targets",
+         {target("wp367_actual"),
+          target("wp367_always"),
+          {{"name", "gbuffer_albedo"},
+           {"extent_scale", 1.0},
+           {"format", "B8G8R8A8_UNORM"},
+           {"format_class", "scene"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "gbuffer_normal"},
+           {"extent_scale", 1.0},
+           {"format", "R16G16B16A16_SFLOAT"},
+           {"format_class", "data"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "gbuffer_material"},
+           {"extent_scale", 1.0},
+           {"format", "R8G8B8A8_UNORM"},
+           {"format_class", "data"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "gbuffer_worldpos"},
+           {"extent_scale", 1.0},
+           {"format", "R16G16B16A16_SFLOAT"},
+           {"format_class", "data"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "g_emissive"},
+           {"extent_scale", 1.0},
+           {"format", "B8G8R8A8_UNORM"},
+           {"format_class", "scene"},
+           {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}},
+          {{"name", "scene_depth"},
+           {"extent_scale", 1.0},
+           {"format", "D32_SFLOAT"},
+           {"format_class", "data"},
+           {"usage", {"DEPTH_STENCIL_ATTACHMENT", "TRANSFER_SRC"}}}}},
+        {"rendering_passes",
+         {{{"name", "main_render"},
+           {"passes",
+            {{{"name", "deferred_geometry"},
+              {"type", "material"},
+              {"material_contract", "deferred_geometry_v1"},
+              {"output",
+               {{"color",
+                 {"gbuffer_albedo", "gbuffer_normal", "gbuffer_material",
+                  "gbuffer_worldpos", "g_emissive"}},
+                {"depth", "scene_depth"}}},
+              {"depth_store_op", "store"}},
+             {{"name", "present"},
+              {"type", "fullscreen"},
+              {"output", {{"color", "swapchain"}, {"depth", nullptr}}},
+              {"shader",
+               {{"vertex", "engine://fullscreen"},
+                {"fragment", "engine://shader_lab_hello"}}}}}}}}},
+        {"compute_tasks", {task("actual"), task("always")}},
+        {"target_planning",
+         {{"graphs",
+           {{"main_render",
+             {{"required_capabilities",
+               {"pelican.vulkan.ray_query@1",
+                "pelican.vulkan.ray_tracing_pipeline@1"}}}}}}}},
+    };
+    writeTextFile(directory / "hybrid.json", config.dump(2));
+}
+
+enum class Wp367NegativeAnyHitLoadKind {
+    payload_mismatch,
+    vec3_attribute,
+    record_mismatch,
+    multiple_incoming_payloads,
+};
+
+void writeWp367NegativeAnyHitLoadProject(
+    const std::filesystem::path &directory,
+    Wp367NegativeAnyHitLoadKind kind) {
+    writeTextFile(
+        directory / "scene.json",
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})json");
+    writeTextFile(
+        directory / "assets.json",
+        R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
+    writeTextFile(
+        directory / "ray_layout.json",
+        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["shadow"],"default_group":"only","groups":[{"name":"only"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json");
+    writeTextFile(
+        directory / "shaders" / "wp367_negative.rgen",
+        R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+layout(set=0,binding=6) uniform accelerationStructureEXT pelicanRayTracingScene;
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadEXT Payload payload;
+void main() {
+    traceRayEXT(pelicanRayTracingScene, 0u, 0xffu,
+                PELICAN_RAY_TYPE_shadow, pelican_ray_type_count,
+                PELICAN_MISS_open, vec3(0.0), 0.001,
+                vec3(0.0, 0.0, 1.0), 4096.0, 0);
+}
+)glsl");
+    writeTextFile(
+        directory / "shaders" / "wp367_negative.rmiss",
+        R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+void main() { payload.q = 0xffffffffu; }
+)glsl");
+    writeTextFile(
+        directory / "shaders" / "wp367_negative.rchit",
+        R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
+void main() { payload.q = ray_record.marker; }
+)glsl");
+
+    std::string anyhit;
+    switch (kind) {
+    case Wp367NegativeAnyHitLoadKind::payload_mismatch:
+        anyhit = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+layout(location=0) rayPayloadInEXT uvec4 payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
+void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
+)glsl";
+        break;
+    case Wp367NegativeAnyHitLoadKind::vec3_attribute:
+        anyhit = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec3 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
+void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
+)glsl";
+        break;
+    case Wp367NegativeAnyHitLoadKind::record_mismatch:
+        anyhit = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uvec2 marker; } ray_record;
+void main() { if (ray_record.marker.x == 0xffffffffu) ignoreIntersectionEXT; }
+)glsl";
+        break;
+    case Wp367NegativeAnyHitLoadKind::multiple_incoming_payloads:
+        anyhit = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload0;
+layout(location=1) rayPayloadInEXT Payload payload1;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
+void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
+)glsl";
+        break;
+    }
+    writeTextFile(directory / "shaders" / "wp367_negative.rahit",
+                  anyhit);
+    writeTextFile(
+        directory / "hybrid.json",
+        R"json({
+  "ray_group_layout": "ray_layout.json",
+  "render_targets": [
+    {
+      "name": "wp367_negative_output",
+      "extent_scale": 1.0,
+      "format": "R8_UNORM",
+      "format_class": "data",
+      "role": "data",
+      "usage": ["STORAGE"]
+    }
+  ],
+  "rendering_passes": [
+    {
+      "name": "main_render",
+      "passes": [
+        {
+          "name": "present",
+          "type": "fullscreen",
+          "output": {"color": "swapchain", "depth": null},
+          "shader": {
+            "vertex": "engine://fullscreen",
+            "fragment": "engine://shader_lab_hello"
+          }
+        }
+      ]
+    }
+  ],
+  "compute_tasks": [
+    {
+      "name": "wp367_negative_load",
+      "ray_tracing": {
+        "raygen": "project://shaders/wp367_negative",
+        "traced_ray_types": ["shadow"],
+        "misses": {"open": "project://shaders/wp367_negative"},
+        "hit_shaders": {
+          "shadow": {
+            "only": {
+              "type": "triangles",
+              "closesthit": "project://shaders/wp367_negative",
+              "anyhit": "project://shaders/wp367_negative"
+            }
+          }
+        }
+      },
+      "writes": ["wp367_negative_output"],
+      "resource_ports": {
+        "output": {
+          "resource": "wp367_negative_output",
+          "access": "storage"
+        }
+      },
+      "dispatch": {"rays_from": {"port": "output"}}
+    }
+  ],
+  "target_planning": {
+    "graphs": {
+      "main_render": {
+        "required_capabilities": [
+          "pelican.vulkan.ray_query@1",
+          "pelican.vulkan.ray_tracing_pipeline@1"
+        ]
+      }
+    }
+  }
+})json");
+}
+
 enum class Rt1aNegativeLoadKind {
     payload_mismatch,
     forbidden_hit_attribute,
@@ -11406,6 +11830,415 @@ TEST_CASE(
     }
 #else
     SUCCEED("WP366 layout projects are rejected before GPU work when the runtime compiler is disabled");
+#endif
+}
+
+TEST_CASE(
+    "WP367 production anyhit A B proves integer predicates occurrence wire SBT and reload",
+    "[WP367][headless][gpu][ray-tracing][rt2a][oracle][reload][wire]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeRt2aAnyHitProject(temp_dir);
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+
+        CommonPolygonVertData geometry;
+        geometry.indices = {0, 1, 2};
+        geometry.pos = {{-0.75f, -0.75f, 0.0f},
+                        {0.75f, -0.75f, 0.0f},
+                        {0.0f, 0.75f, 0.0f}};
+        geometry.normal.assign(3, glm::vec3{0.0f, 0.0f, 1.0f});
+        geometry.texcoord.assign(3, glm::vec2{0.0f});
+        geometry.color.assign(3, glm::vec4{1.0f});
+        const auto primitive =
+            GET_MODULE(VertBufContainer).addPrimitiveEntry(
+                std::move(geometry));
+        const auto material =
+            GET_MODULE(StandardMaterialResource)
+                .standardTransparentMaterial();
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto place = [&](std::uint64_t asset_id,
+                               std::string authored_reference,
+                               glm::vec3 translation) {
+            ModelTemplate model;
+            model.asset_id = ModelAssetId{asset_id};
+            model.authored_asset_reference =
+                std::move(authored_reference);
+            model.material_primitives = {
+                ModelTemplate::MaterialPrimitives{
+                    .material = material,
+                    .primitives = {primitive},
+                    .source_material_index = 0,
+                }};
+            const auto placed = instances.placeModelInstance(model);
+            instances.setTrs(
+                placed, translation,
+                glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
+                glm::vec3{1.0f});
+            return placed;
+        };
+        const auto single_instance = place(
+            36701, "models/wp367_single.glb", {-2.0f, 0.0f, 8.0f});
+        const auto front_instance = place(
+            36702, "models/wp367_front.glb", {2.0f, 0.0f, 8.0f});
+        const auto back_instance = place(
+            36703, "models/wp367_back.glb", {2.0f, 0.0f, 16.0f});
+        CHECK(instances.isModelInstanceAlive(single_instance));
+        CHECK(instances.isModelInstanceAlive(front_instance));
+        CHECK(instances.isModelInstanceAlive(back_instance));
+
+        RayTracingProjectConfig project{
+            .layout = parseRayGroupLayout(
+                readTextFile(temp_dir / "ray_layout.json"),
+                "ray_layout.json"),
+        };
+        project.bindings = parseRayBindings(
+            readTextFile(temp_dir / "ray_bindings.json"),
+            project.layout, "ray_bindings.json");
+        const auto snapshots = instances.rayQueryGeometryInstances();
+        const auto rows = resolveRayTracingSceneRows(snapshots, project);
+        REQUIRE(rows.rows.size() == 3);
+        struct RowIdentity {
+            std::uint32_t q = 0;
+            std::uint32_t record = 0;
+        };
+        const auto row_for = [&](std::string_view authored_reference) {
+            const auto row = std::find_if(
+                rows.rows.begin(), rows.rows.end(), [&](const auto &candidate) {
+                    return snapshots.at(candidate.source_index)
+                               .material_asset_reference == authored_reference;
+                });
+            if (row == rows.rows.end()) {
+                throw std::runtime_error(
+                    "WP367 row snapshot lost an authored model reference");
+            }
+            if (row->record_data.size() < sizeof(std::uint32_t)) {
+                throw std::runtime_error(
+                    "WP367 row snapshot lost its u32 record");
+            }
+            RowIdentity result{.q = row->q};
+            std::memcpy(&result.record, row->record_data.data(),
+                        sizeof(result.record));
+            return result;
+        };
+        const auto single = row_for("models/wp367_single.glb");
+        const auto front = row_for("models/wp367_front.glb");
+        const auto back = row_for("models/wp367_back.glb");
+        CHECK(single.record == wp367SingleRecord);
+        CHECK(front.record == wp367FrontRecord);
+        CHECK(back.record == wp367BackRecord);
+        CHECK(single.q != front.q);
+        CHECK(single.q != back.q);
+        CHECK(front.q != back.q);
+
+        const auto single_predicate =
+            RayTracingAnyHitIntegerPredicate::acceptMatching({
+                .primitive_id = 0,
+                .instance_custom_index = single.q,
+                .record_u32 = single.record,
+            });
+        const auto overlap_predicate =
+            RayTracingAnyHitIntegerPredicate::ignoreMatching({
+                .primitive_id = 0,
+                .instance_custom_index = front.q,
+                .record_u32 = front.record,
+            });
+        const auto always_predicate =
+            RayTracingAnyHitIntegerPredicate::alwaysAccept();
+        writeWp367ActualAnyHitShaders(
+            temp_dir, single_predicate, overlap_predicate);
+
+        std::vector<RayTracingPipelineCreateObservation> creates;
+        std::vector<RayTracingSbtWriteObservation> writes;
+        const ScopedRayTracingPipelineCreateObserver create_observer{
+            [&](const auto &observation) { creates.push_back(observation); }};
+        const ScopedRayTracingSbtWriteObserver sbt_observer{
+            [&](const auto &observation) { writes.push_back(observation); }};
+        auto &renderer = GET_MODULE(Renderer);
+        REQUIRE(creates.size() == 2);
+        for (const auto &create : creates) {
+            REQUIRE(create.hit_group_any_hit_shaders.size() == 6);
+            CHECK(std::count_if(
+                      create.hit_group_any_hit_shaders.begin(),
+                      create.hit_group_any_hit_shaders.end(),
+                      [](const auto index) {
+                          return index != VK_SHADER_UNUSED_KHR;
+                      }) == 3);
+        }
+
+        renderer.render();
+        vkcore.waitIdle();
+        const auto actual = renderer.readRenderTargetForTesting(
+            "wp367_actual", ImageSubresourceRange{});
+        const auto always = renderer.readRenderTargetForTesting(
+            "wp367_always", ImageSubresourceRange{});
+        REQUIRE(actual.format == vk::Format::eR32G32B32A32Uint);
+        REQUIRE(always.format == actual.format);
+        const auto pixel = [](const RenderTargetReadback &readback,
+                              std::uint32_t x) {
+            std::array<std::uint32_t, 4> result{};
+            const auto offset = static_cast<std::size_t>(x) * sizeof(result);
+            if (offset + sizeof(result) > readback.bytes.size()) {
+                throw std::out_of_range(
+                    "WP367 sentinel pixel is outside readback");
+            }
+            std::memcpy(result.data(), readback.bytes.data() + offset,
+                        sizeof(result));
+            return result;
+        };
+        const auto actual_single = pixel(actual, 0);
+        const auto always_single = pixel(always, 0);
+        const auto actual_overlap = pixel(actual, 1);
+        const auto always_overlap = pixel(always, 1);
+        CHECK(actual_single[0] == single.q);
+        CHECK(always_single[0] == single.q);
+        CHECK(actual_single[2] == 1u);
+        CHECK(always_single[2] == 1u);
+        CHECK(actual_single[3] == wp367SingleGroup);
+        CHECK(always_single[3] == wp367SingleGroup);
+        CHECK(actual_overlap[0] == back.q);
+        CHECK(always_overlap[0] == front.q);
+        CHECK(actual_overlap[2] == 1u);
+        CHECK(always_overlap[2] == 1u);
+        CHECK(actual_overlap[3] == wp367BackGroup);
+        CHECK(always_overlap[3] == wp367FrontGroup);
+        CHECK(pixel(actual, 2) ==
+              std::array{0xffffffffu, 0u, 0x6ffu, 0x5ffu});
+        CHECK(pixel(always, 2) ==
+              std::array{0xffffffffu, 0u, 0x6ffu, 0x5ffu});
+
+        const auto oracle_triangle = [](
+            double x, double z, const RowIdentity &row) {
+            return RayTracingOracleTriangle{
+                .vertices = {
+                    RayTracingOracleVec3{x - 0.75, -0.75, z},
+                    RayTracingOracleVec3{x + 0.75, -0.75, z},
+                    RayTracingOracleVec3{x, 0.75, z},
+                },
+                .record_id = row.q,
+                .primitive_id = 0,
+                .instance_custom_index = row.q,
+                .record_u32 = row.record,
+            };
+        };
+        const RayTracingOracleRay single_ray{
+            .origin = {-2.0, 0.0, 0.0},
+            .direction = {0.0, 0.0, 1.0},
+        };
+        const std::array single_triangles{
+            oracle_triangle(-2.0, 8.0, single)};
+        const auto cpu_single_actual = traceRayTracingOracle(
+            single_ray, single_triangles, single_predicate);
+        const auto cpu_single_always = traceRayTracingOracle(
+            single_ray, single_triangles, always_predicate);
+        REQUIRE(cpu_single_actual.hit);
+        REQUIRE(cpu_single_always.hit);
+        CHECK(rayTracingOracleContainsGpuHit(
+            *cpu_single_actual.hit,
+            std::bit_cast<float>(actual_single[1]), actual_single[0]));
+        CHECK(rayTracingOracleContainsGpuHit(
+            *cpu_single_always.hit,
+            std::bit_cast<float>(always_single[1]), always_single[0]));
+
+        const RayTracingOracleRay overlap_ray{
+            .origin = {2.0, 0.0, 0.0},
+            .direction = {0.0, 0.0, 1.0},
+        };
+        const std::array overlap_triangles{
+            oracle_triangle(2.0, 8.0, front),
+            oracle_triangle(2.0, 16.0, back),
+        };
+        const auto cpu_overlap_actual = traceRayTracingOracle(
+            overlap_ray, overlap_triangles, overlap_predicate);
+        const auto cpu_overlap_always = traceRayTracingOracle(
+            overlap_ray, overlap_triangles, always_predicate);
+        REQUIRE(cpu_overlap_actual.hit);
+        REQUIRE(cpu_overlap_always.hit);
+        CHECK(rayTracingOracleContainsGpuHit(
+            *cpu_overlap_actual.hit,
+            std::bit_cast<float>(actual_overlap[1]), actual_overlap[0]));
+        CHECK(rayTracingOracleContainsGpuHit(
+            *cpu_overlap_always.hit,
+            std::bit_cast<float>(always_overlap[1]), always_overlap[0]));
+
+        REQUIRE(writes.size() == 2);
+        CHECK(writes[0].row_digest_sha256 ==
+              writes[1].row_digest_sha256);
+        CHECK(writes[0].pipeline_handle != writes[1].pipeline_handle);
+        const auto &capabilities = vkcore.getRuntimeCapabilities();
+        const auto alignment = capabilities.shader_group_handle_alignment;
+        REQUIRE(alignment != 0);
+        const auto data_start =
+            (capabilities.shader_group_handle_size + alignment - 1u) /
+            alignment * alignment;
+        std::array<std::uint32_t, 3> marker_by_q{};
+        marker_by_q[single.q] = single.record;
+        marker_by_q[front.q] = front.record;
+        marker_by_q[back.q] = back.record;
+        for (const auto &write : writes) {
+            REQUIRE(write.record_index_stride == 2);
+            REQUIRE(write.record_count == 6);
+            for (std::uint32_t q = 0; q < 3; ++q) {
+                for (std::uint32_t r = 0; r < 2; ++r) {
+                    const auto at =
+                        static_cast<std::size_t>(q * 2u + r) *
+                            write.record_byte_stride +
+                        data_start;
+                    std::uint32_t marker = 0;
+                    REQUIRE(at + sizeof(marker) <= write.hit_bytes.size());
+                    std::memcpy(&marker, write.hit_bytes.data() + at,
+                                sizeof(marker));
+                    CHECK(marker ==
+                          (r == 1u ? marker_by_q[q] : 0u));
+                }
+            }
+        }
+
+        const auto plan = renderer.currentFramePlanJson();
+        const auto check_occurrences = [&](std::string_view lane) {
+            const auto name = "wp367_" + std::string{lane};
+            const auto node = std::find_if(
+                plan.at("nodes").begin(), plan.at("nodes").end(),
+                [&](const auto &candidate) {
+                    return candidate.value("name", std::string{}) == name;
+                });
+            REQUIRE(node != plan.at("nodes").end());
+            const auto &resolution = node->at("shader_resolution");
+            REQUIRE(resolution.contains("anyhit_slots"));
+            const auto &slots = resolution.at("anyhit_slots");
+            REQUIRE(slots.size() == 3);
+            constexpr std::array<std::size_t, 3> expected_slots{1, 3, 5};
+            constexpr std::array<std::string_view, 3> groups{
+                "single", "front", "back"};
+            for (std::size_t index = 0; index < slots.size(); ++index) {
+                CHECK(slots.at(index).at("hit_slot") ==
+                      expected_slots[index]);
+                CHECK(slots.at(index).at("stage") == "anyhit");
+                CHECK(slots.at(index).at("declared_ref") ==
+                      "project://shaders/wp367_" + std::string{lane} +
+                          "_" + std::string{groups[index]});
+                for (const auto forbidden :
+                     {"classifier", "golden_portable", "subset_certified",
+                      "reason", "reasons"}) {
+                    CHECK_FALSE(slots.at(index).contains(forbidden));
+                }
+            }
+        };
+        check_occurrences("actual");
+        check_occurrences("always");
+
+        auto &reload_service = GET_MODULE(watch::ReloadService);
+        const auto front_key =
+            watch::makeAssetKey("shaders/wp367_actual_front.rahit");
+        REQUIRE(GET_MODULE(ShaderLibrary).handlesReload(front_key));
+        writeWp367AnyHitShader(
+            temp_dir, "wp367_actual_front", always_predicate);
+        const auto creates_before_reload = creates.size();
+        REQUIRE(reload_service.applyRequestForTesting(
+            watch::ReloadRequest{front_key, watch::ReloadKind::modified,
+                                 {}, 1}));
+        REQUIRE(creates.size() > creates_before_reload);
+        CHECK(std::count_if(
+                  creates.back().hit_group_any_hit_shaders.begin(),
+                  creates.back().hit_group_any_hit_shaders.end(),
+                  [](const auto index) {
+                      return index != VK_SHADER_UNUSED_KHR;
+                  }) == 3);
+
+        writes.clear();
+        renderer.render();
+        vkcore.waitIdle();
+        const auto reloaded_actual = renderer.readRenderTargetForTesting(
+            "wp367_actual", ImageSubresourceRange{});
+        const auto reloaded_always = renderer.readRenderTargetForTesting(
+            "wp367_always", ImageSubresourceRange{});
+        const auto reloaded_front = pixel(reloaded_actual, 1);
+        CHECK(reloaded_front[0] == front.q);
+        CHECK(reloaded_front[2] == 1u);
+        CHECK(reloaded_front[3] == wp367FrontGroup);
+        CHECK(rayTracingOracleContainsGpuHit(
+            *cpu_overlap_always.hit,
+            std::bit_cast<float>(reloaded_front[1]), reloaded_front[0]));
+        CHECK(reloaded_always.bytes == always.bytes);
+        REQUIRE(writes.size() == 2);
+        CHECK(writes[0].row_digest_sha256 == rows.identity_digest_sha256);
+        CHECK(writes[1].row_digest_sha256 == rows.identity_digest_sha256);
+
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan WP367 any-hit A/B fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED(
+        "WP367 layout projects are rejected before GPU work when the runtime compiler is disabled");
+#endif
+}
+
+TEST_CASE(
+    "WP367 production load names every anyhit ABI reject before Vulkan pipeline creation",
+    "[WP367][headless][gpu][ray-tracing][rt2a][abi][production][mutation]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    struct Case {
+        Wp367NegativeAnyHitLoadKind kind;
+        std::string_view code;
+    };
+    for (const auto test_case : {
+             Case{Wp367NegativeAnyHitLoadKind::payload_mismatch,
+                  "pelican.ray_tracing.payload_mismatch@1"},
+             Case{Wp367NegativeAnyHitLoadKind::vec3_attribute,
+                  "pelican.ray_tracing.hit_attribute_forbidden@1"},
+             Case{Wp367NegativeAnyHitLoadKind::record_mismatch,
+                  "pelican.ray_tracing.shader_record_abi_mismatch@1"},
+             Case{Wp367NegativeAnyHitLoadKind::multiple_incoming_payloads,
+                  "pelican.ray_tracing.interface_count@1"},
+         }) {
+        const auto temp_dir = makeTempProjectDir();
+        try {
+            FastModuleContainer modules;
+            writeWp367NegativeAnyHitLoadProject(temp_dir, test_case.kind);
+            configureRayQueryTestRuntime(temp_dir);
+            auto &vkcore = GET_MODULE(VulkanManageCore);
+            if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+                SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+            }
+
+            std::size_t create_calls = 0;
+            const ScopedRayTracingPipelineCreateObserver create_observer{
+                [&](const auto &) { ++create_calls; }};
+            std::string error_message;
+            try {
+                (void)GET_MODULE(Renderer);
+            } catch (const std::exception &error) {
+                error_message = error.what();
+            }
+            const std::string expected_code{test_case.code};
+            CAPTURE(expected_code, error_message);
+            CHECK(error_message.find(expected_code) != std::string::npos);
+            CHECK(error_message.find("wp367_negative") !=
+                  std::string::npos);
+            CHECK(create_calls == 0);
+            vkcore.waitIdle();
+            std::filesystem::remove_all(temp_dir);
+        } catch (const std::exception &error) {
+            std::filesystem::remove_all(temp_dir);
+            TestSupport::skipIfVulkanDeviceUnavailable(
+                error, "Vulkan WP367 negative any-hit fixture unavailable");
+            throw;
+        }
+    }
+#else
+    SUCCEED(
+        "WP367 layout projects are rejected before GPU work when the runtime compiler is disabled");
 #endif
 }
 

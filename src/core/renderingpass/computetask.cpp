@@ -1337,6 +1337,7 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
     }
     const auto ray_count = layout.ray_types.size();
     result.hit_shader_slots.resize(layout.groups.size() * ray_count);
+    result.any_hit_shader_slots.resize(layout.groups.size() * ray_count);
     for (const auto ray_index : result.traced_ray_type_indices) {
         const auto &ray_name = layout.ray_types.at(ray_index);
         if (!hit_shaders.contains(ray_name) ||
@@ -1367,17 +1368,41 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                     "' available=" + availableObjectKeys(groups));
             }
             const auto &group = groups.at(group_name);
-            if (group.size() != 1 || !group.contains("closesthit") ||
+            const auto invalid_group = [&] {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.ray_hit_group_invalid@1: compute task '" +
+                    name + "' group='" + group_name + "' ray_type='" + ray_name +
+                    "' requires closesthit, optional anyhit, and optional type='triangles'");
+            };
+            if (!group.contains("closesthit") ||
                 !group.at("closesthit").is_string() ||
                 group.at("closesthit").get_ref<const std::string &>().empty()) {
-                throw std::runtime_error(
-                    "pelican.ray_tracing.hit_shader_invalid@1: compute task '" +
-                    name + "' group='" + group_name + "' ray_type='" + ray_name +
-                    "' requires exactly closesthit");
+                invalid_group();
             }
-            result.hit_shader_slots[group_index * ray_count + ray_index] =
+            for (auto field = group.begin(); field != group.end(); ++field) {
+                if (field.key() != "closesthit" && field.key() != "anyhit" &&
+                    field.key() != "type") {
+                    invalid_group();
+                }
+            }
+            if (const auto type = group.find("type"); type != group.end() &&
+                (!type->is_string() ||
+                 type->get_ref<const std::string &>() != "triangles")) {
+                invalid_group();
+            }
+            if (const auto anyhit = group.find("anyhit"); anyhit != group.end() &&
+                (!anyhit->is_string() ||
+                 anyhit->get_ref<const std::string &>().empty())) {
+                invalid_group();
+            }
+            const auto slot_index = group_index * ray_count + ray_index;
+            result.hit_shader_slots[slot_index] =
                 makeLayoutShaderReference(group.at("closesthit"),
                                           ShaderStage::closesthit, name);
+            if (const auto anyhit = group.find("anyhit"); anyhit != group.end()) {
+                result.any_hit_shader_slots[slot_index] =
+                    makeLayoutShaderReference(*anyhit, ShaderStage::anyhit, name);
+            }
         }
     }
     parseRayTracingRecursion(pipeline_json, name, result);
@@ -1495,6 +1520,16 @@ void captureDeclaredComputeShaderReferences(
             if (!slot) continue;
             definition.declared_shader_refs.push_back(
                 {.stage = DeclaredShaderStage::closesthit,
+                 .index = index,
+                 .ref = slot->ref});
+        }
+        for (std::size_t index = 0;
+             index < definition.ray_tracing->any_hit_shader_slots.size(); ++index) {
+            const auto &slot =
+                definition.ray_tracing->any_hit_shader_slots[index];
+            if (!slot) continue;
+            definition.declared_shader_refs.push_back(
+                {.stage = DeclaredShaderStage::anyhit,
                  .index = index,
                  .ref = slot->ref});
         }
@@ -2813,6 +2848,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             misses.push_back(load_shader(reference));
         }
         std::vector<ShaderBundleId> closest_hits;
+        std::vector<std::optional<ShaderBundleId>> any_hits;
         if (definition.ray_tracing->uses_group_layout) {
             closest_hits.reserve(
                 definition.ray_tracing->hit_shader_slots.size());
@@ -2835,6 +2871,15 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 }
                 closest_hits.push_back(*no_op);
             }
+            any_hits.reserve(
+                definition.ray_tracing->any_hit_shader_slots.size());
+            for (const auto &slot :
+                 definition.ray_tracing->any_hit_shader_slots) {
+                any_hits.push_back(slot
+                                       ? std::optional<ShaderBundleId>{
+                                             load_shader(*slot)}
+                                       : std::nullopt);
+            }
         } else {
             closest_hits.reserve(
                 definition.ray_tracing->closest_hits.size());
@@ -2851,6 +2896,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                     definition.ray_tracing->raygen),
                 .misses = std::move(misses),
                 .closest_hits = std::move(closest_hits),
+                .any_hits = std::move(any_hits),
                 .shader_defines = shader_defines,
                 .resource_interface = resource_interface,
                 .ray_tracing_project =

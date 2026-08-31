@@ -20,6 +20,7 @@ enum class ShaderSourceStage {
     raygen,
     miss,
     closesthit,
+    anyhit,
 };
 
 enum class ShaderSourceOpenReason {

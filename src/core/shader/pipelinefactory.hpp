@@ -132,6 +132,8 @@ struct RayTracingPipelineDesc {
     ShaderBundleId raygen;
     std::vector<ShaderBundleId> misses;
     std::vector<ShaderBundleId> closest_hits;
+    // Empty for the legacy RT1a form; otherwise aligned with closest_hits.
+    std::vector<std::optional<ShaderBundleId>> any_hits;
     std::vector<std::string> shader_defines;
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface;

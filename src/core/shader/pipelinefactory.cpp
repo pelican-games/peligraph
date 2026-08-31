@@ -339,6 +339,13 @@ bool pipelineUsesShader(
                            [&](const auto shader) {
                                return containsShader(
                                    dirty_shaders, shader);
+                           }) ||
+                       std::any_of(
+                           pipeline_desc.any_hits.begin(),
+                           pipeline_desc.any_hits.end(),
+                           [&](const auto &shader) {
+                               return shader && containsShader(
+                                   dirty_shaders, *shader);
                            });
             }
         },
@@ -586,8 +593,11 @@ PipelineFactory::createRayTracingPipeline(
     vk::PipelineLayout layout,
     std::string_view validator_digest) const {
     std::vector<vk::PipelineShaderStageCreateInfo> stages;
-    stages.reserve(
-        1 + desc.misses.size() + desc.closest_hits.size());
+    const auto any_hit_count = static_cast<std::size_t>(std::count_if(
+        desc.any_hits.begin(), desc.any_hits.end(),
+        [](const auto &shader) { return shader.has_value(); }));
+    stages.reserve(1 + desc.misses.size() + desc.closest_hits.size() +
+                   any_hit_count);
     const auto append_stage = [&](ShaderBundleId shader,
                                   vk::ShaderStageFlagBits stage) {
         stages.push_back(
@@ -603,6 +613,15 @@ PipelineFactory::createRayTracingPipeline(
     for (const auto shader : desc.closest_hits) {
         append_stage(
             shader, vk::ShaderStageFlagBits::eClosestHitKHR);
+    }
+    std::vector<std::uint32_t> any_hit_stage_indices(
+        desc.closest_hits.size(), VK_SHADER_UNUSED_KHR);
+    for (std::uint32_t index = 0; index < desc.any_hits.size(); ++index) {
+        if (!desc.any_hits[index]) continue;
+        any_hit_stage_indices[index] =
+            static_cast<std::uint32_t>(stages.size());
+        append_stage(*desc.any_hits[index],
+                     vk::ShaderStageFlagBits::eAnyHitKHR);
     }
 
     std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
@@ -631,7 +650,7 @@ PipelineFactory::createRayTracingPipeline(
         group.closestHitShader =
             1 + static_cast<std::uint32_t>(desc.misses.size()) +
             index;
-        group.anyHitShader = unused;
+        group.anyHitShader = any_hit_stage_indices[index];
         group.intersectionShader = unused;
         groups.push_back(group);
     }
@@ -644,7 +663,8 @@ PipelineFactory::createRayTracingPipeline(
     // The observer is immediately adjacent to the Vulkan call, so a rejected
     // interface cannot be mistaken for a create attempt.
     observeRayTracingPipelineCreate(
-        create_info.maxPipelineRayRecursionDepth, validator_digest);
+        create_info.maxPipelineRayRecursionDepth, validator_digest,
+        any_hit_stage_indices);
     auto result = device.createRayTracingPipelineKHRUnique(
         {}, pipeline_cache.get(), create_info, nullptr,
         GET_MODULE(VulkanManageCore)
@@ -879,6 +899,9 @@ PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const Comp
 PipelineFactory::PipelineRecord
 PipelineFactory::buildRayTracingPipeline(
     const RayTracingPipelineDesc &desc) {
+    const auto any_hit_count = static_cast<std::size_t>(std::count_if(
+        desc.any_hits.begin(), desc.any_hits.end(),
+        [](const auto &shader) { return shader.has_value(); }));
     const auto &capabilities =
         GET_MODULE(VulkanManageCore).getRuntimeCapabilities();
     if (!capabilities.ray_tracing_pipeline) {
@@ -897,6 +920,11 @@ PipelineFactory::buildRayTracingPipeline(
         throw std::runtime_error(
             "pelican.ray_tracing.closesthit_shader_required@1: ray tracing "
             "pipeline requires at least one closesthit shader");
+    }
+    if (!desc.any_hits.empty() &&
+        desc.any_hits.size() != desc.closest_hits.size()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.hit_grid_invalid@1: any-hit slot count does not equal closest-hit slot count");
     }
     if (desc.misses.size() >
             std::numeric_limits<std::uint32_t>::max() ||
@@ -928,33 +956,42 @@ PipelineFactory::buildRayTracingPipeline(
         miss_occurrences.push_back(occurrence(
             desc.misses[index], ShaderStage::miss, 1 + index));
     }
-    std::vector<RayTracingShaderOccurrence> hit_occurrences;
+    std::vector<RayTracingHitGroupOccurrence> hit_occurrences;
     hit_occurrences.reserve(desc.closest_hits.size());
     for (std::uint32_t index = 0;
          index < desc.closest_hits.size(); ++index) {
-        hit_occurrences.push_back(occurrence(
-            desc.closest_hits[index], ShaderStage::closesthit,
-            1 + static_cast<std::uint32_t>(desc.misses.size()) +
-                index));
+        const auto group_index =
+            1 + static_cast<std::uint32_t>(desc.misses.size()) + index;
+        hit_occurrences.push_back({
+            .closest_hit = occurrence(
+                desc.closest_hits[index], ShaderStage::closesthit,
+                group_index),
+            .any_hit = !desc.any_hits.empty() && desc.any_hits[index]
+                           ? std::optional<RayTracingShaderOccurrence>{
+                                 occurrence(*desc.any_hits[index],
+                                            ShaderStage::anyhit,
+                                            group_index)}
+                           : std::nullopt,
+        });
     }
     const auto validator_digest =
         validateRayTracingPipelineInterfaces(
             {
                 .raygen = raygen_occurrence,
                 .misses = miss_occurrences,
-                .hit_groups = hit_occurrences,
                 .group_layout =
                     desc.ray_tracing_project
                         ? &desc.ray_tracing_project->layout
                         : nullptr,
                 .traced_ray_type_indices =
                     desc.traced_ray_type_indices,
+                .hit_group_occurrences = hit_occurrences,
             },
             capabilities.ray_tracing_facts);
 
     std::vector<ShaderReflection> reflections;
-    reflections.reserve(
-        1 + desc.misses.size() + desc.closest_hits.size());
+    reflections.reserve(1 + desc.misses.size() + desc.closest_hits.size() +
+                        any_hit_count);
     reflections.push_back(
         shader_library.get(desc.raygen).reflection);
     for (const auto shader : desc.misses) {
@@ -962,6 +999,11 @@ PipelineFactory::buildRayTracingPipeline(
     }
     for (const auto shader : desc.closest_hits) {
         reflections.push_back(shader_library.get(shader).reflection);
+    }
+    for (const auto &shader : desc.any_hits) {
+        if (shader) {
+            reflections.push_back(shader_library.get(*shader).reflection);
+        }
     }
     auto reflection = merge(reflections);
     validateFrameBindings(reflection);

@@ -12,6 +12,7 @@ enum class ShaderStage {
     raygen,
     miss,
     closesthit,
+    anyhit,
 };
 
 enum class ShaderReferenceKind {

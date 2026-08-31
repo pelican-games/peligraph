@@ -441,6 +441,7 @@ enum class DeclaredShaderStage : std::uint8_t {
     raygen,
     miss,
     closesthit,
+    anyhit,
 };
 
 struct DeclaredShaderReference {
@@ -731,6 +732,9 @@ struct RayTracingTaskShaderDefinition {
     // H[g,r], group-major. Null slots are materialized as valid generated
     // no-op closest-hit groups for ray types this task never traces.
     std::vector<std::optional<ShaderReference>> hit_shader_slots;
+    // Optional any-hit stage paired with the same physical H[g,r]
+    // occurrence. The vector is empty for legacy RT1a definitions.
+    std::vector<std::optional<ShaderReference>> any_hit_shader_slots;
 };
 
 enum class ComputeTaskSchedule : std::uint8_t {

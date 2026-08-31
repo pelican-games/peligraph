@@ -11,6 +11,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace Pelican {
 
@@ -30,12 +31,20 @@ struct RayTracingShaderOccurrence {
     const RayTracingEntryPointReflection *entry = nullptr;
 };
 
+struct RayTracingHitGroupOccurrence {
+    RayTracingShaderOccurrence closest_hit;
+    std::optional<RayTracingShaderOccurrence> any_hit;
+};
+
 struct RayTracingPipelineInterfaceRequest {
     RayTracingShaderOccurrence raygen;
     std::span<const RayTracingShaderOccurrence> misses;
     std::span<const RayTracingShaderOccurrence> hit_groups;
     const RayGroupLayout *group_layout = nullptr;
     std::span<const std::uint32_t> traced_ray_type_indices;
+    // Production RT2a input. Empty retains the legacy closest-hit-only
+    // adapter above, preserving RT1a/RT1b callers and their digest bytes.
+    std::span<const RayTracingHitGroupOccurrence> hit_group_occurrences;
 };
 
 // Returns a stable digest of the validated structural contract. Equality is
@@ -140,6 +149,9 @@ void validateRayTracingFinalCommandExtent(
 struct RayTracingPipelineCreateObservation {
     std::uint32_t max_pipeline_ray_recursion_depth = 0;
     std::string validator_digest;
+    // Exact VkRayTracingShaderGroupCreateInfoKHR::anyHitShader values for
+    // physical hit groups, observed immediately before the Vulkan call.
+    std::vector<std::uint32_t> hit_group_any_hit_shaders;
 };
 using RayTracingPipelineCreateObserver =
     std::function<void(const RayTracingPipelineCreateObservation &)>;
@@ -159,6 +171,7 @@ class ScopedRayTracingPipelineCreateObserver {
 
 void observeRayTracingPipelineCreate(
     std::uint32_t resolved_depth,
-    std::string_view validator_digest);
+    std::string_view validator_digest,
+    std::span<const std::uint32_t> hit_group_any_hit_shaders = {});
 
 } // namespace Pelican

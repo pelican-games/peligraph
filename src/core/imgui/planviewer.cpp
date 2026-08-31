@@ -110,7 +110,99 @@ ShaderSourceStage sourceStageForWireStage(std::string_view stage) {
     if (stage == "raygen") return ShaderSourceStage::raygen;
     if (stage == "miss") return ShaderSourceStage::miss;
     if (stage == "closesthit") return ShaderSourceStage::closesthit;
+    if (stage == "anyhit") return ShaderSourceStage::anyhit;
     throw std::logic_error("unknown validated plan viewer shader stage");
+}
+
+PlanViewerAnyHitSlot parseAnyHitSlot(
+    const nlohmann::json &entry) {
+    if (!entry.is_object()) {
+        throw std::runtime_error(
+            "plan viewer anyhit slot must be an object");
+    }
+    for (auto field = entry.begin(); field != entry.end(); ++field) {
+        if (!knownValue(field.key(),
+                        {"stage", "hit_slot", "declared_ref",
+                         "effective_ref", "origin", "source_open_ref",
+                         "source_open_reason"})) {
+            throw std::runtime_error(
+                "plan viewer anyhit slot has unknown field '" +
+                field.key() + "'");
+        }
+    }
+    if (!entry.contains("stage") || !entry.at("stage").is_string() ||
+        entry.at("stage") != "anyhit" ||
+        !entry.contains("hit_slot") ||
+        !entry.at("hit_slot").is_number_unsigned() ||
+        !entry.contains("effective_ref") ||
+        !entry.at("effective_ref").is_string() ||
+        entry.at("effective_ref").get_ref<const std::string &>().empty() ||
+        !entry.contains("origin") || !entry.at("origin").is_string() ||
+        !entry.contains("source_open_ref")) {
+        throw std::runtime_error(
+            "plan viewer anyhit slot is missing a required field");
+    }
+
+    PlanViewerAnyHitSlot result;
+    result.hit_slot = entry.at("hit_slot").get<std::size_t>();
+    auto &stage = result.projection;
+    stage.stage = "anyhit";
+    stage.effective_ref = entry.at("effective_ref").get<std::string>();
+    stage.origin = entry.at("origin").get<std::string>();
+    if (!knownValue(stage.origin,
+                    {"authored", "engine_default", "provider",
+                     "generated"})) {
+        throw std::runtime_error(
+            "plan viewer unknown shader origin '" + stage.origin + "'");
+    }
+    const bool declared_required =
+        stage.origin == "authored" || stage.origin == "provider";
+    if (declared_required) {
+        if (!entry.contains("declared_ref") ||
+            !entry.at("declared_ref").is_string() ||
+            entry.at("declared_ref").get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                "plan viewer anyhit origin requires declared_ref");
+        }
+        stage.declared_ref = entry.at("declared_ref").get<std::string>();
+    } else if (entry.contains("declared_ref")) {
+        throw std::runtime_error(
+            "plan viewer anyhit origin forbids declared_ref");
+    }
+
+    const auto &source = entry.at("source_open_ref");
+    if (source.is_string()) {
+        const auto logical = source.get<std::string>();
+        if (!isCanonicalShaderSourceOpenReference(
+                logical, ShaderSourceStage::anyhit)) {
+            throw std::runtime_error(
+                "plan viewer anyhit source_open_ref must end in .rahit");
+        }
+        if (entry.contains("source_open_reason")) {
+            throw std::runtime_error(
+                "plan viewer non-null anyhit source forbids reason");
+        }
+        stage.source_open_ref = logical;
+    } else if (source.is_null()) {
+        if (!entry.contains("source_open_reason") ||
+            !entry.at("source_open_reason").is_string()) {
+            throw std::runtime_error(
+                "plan viewer null anyhit source requires reason");
+        }
+        const auto reason =
+            entry.at("source_open_reason").get<std::string>();
+        if (!knownValue(reason,
+                        {"embedded_engine_resource", "generated",
+                         "source_not_found"})) {
+            throw std::runtime_error(
+                "plan viewer unknown anyhit source reason '" + reason + "'");
+        }
+        stage.source_open_reason = reason;
+    } else {
+        throw std::runtime_error(
+            "plan viewer anyhit source_open_ref must be string or null");
+    }
+    return result;
 }
 
 PlanViewerShaderResolution readShaderResolution(
@@ -142,7 +234,8 @@ PlanViewerShaderResolution readShaderResolution(
         }
         return result;
     }
-    if (wire.size() != 2 || !wire.contains("stages") ||
+    if ((wire.size() != 2 && wire.size() != 3) ||
+        !wire.contains("stages") ||
         !wire.at("stages").is_array() || wire.at("stages").empty()) {
         throw std::runtime_error(
             "plan viewer resolved shader_resolution requires only a "
@@ -154,6 +247,17 @@ PlanViewerShaderResolution readShaderResolution(
     std::size_t next_miss = 0;
     std::size_t next_hit = 0;
     for (const auto &entry : wire.at("stages")) {
+        for (auto field = entry.begin(); entry.is_object() &&
+             field != entry.end(); ++field) {
+            if (!knownValue(field.key(),
+                            {"stage", "index", "declared_ref",
+                             "effective_ref", "origin", "source_open_ref",
+                             "source_open_reason"})) {
+                throw std::runtime_error(
+                    "plan viewer shader stage has unknown field '" +
+                    field.key() + "'");
+            }
+        }
         if (!entry.is_object() || !entry.contains("stage") ||
             !entry.at("stage").is_string() ||
             !entry.contains("effective_ref") ||
@@ -268,6 +372,26 @@ PlanViewerShaderResolution readShaderResolution(
                 "plan viewer source_open_ref must be string or null");
         }
         result.stages.push_back(std::move(stage));
+    }
+    if (wire.size() == 3 && !wire.contains("anyhit_slots")) {
+        throw std::runtime_error(
+            "plan viewer resolved shader_resolution has unknown field");
+    }
+    if (const auto slots = wire.find("anyhit_slots"); slots != wire.end()) {
+        if (!slots->is_array() || slots->empty()) {
+            throw std::runtime_error(
+                "plan viewer anyhit_slots must be a non-empty array");
+        }
+        std::optional<std::size_t> previous;
+        for (const auto &entry : *slots) {
+            auto slot = parseAnyHitSlot(entry);
+            if (previous && slot.hit_slot <= *previous) {
+                throw std::runtime_error(
+                    "plan viewer anyhit_slots must be strictly increasing");
+            }
+            previous = slot.hit_slot;
+            result.anyhit_slots.push_back(std::move(slot));
+        }
     }
     return result;
 }
@@ -820,6 +944,27 @@ struct PlanViewer::Impl {
                 ImGui::TextDisabled(
                     "  source unavailable: %s",
                     stage.source_open_reason->c_str());
+            }
+        }
+        for (const auto &slot : node.shader_resolution.anyhit_slots) {
+            const auto &stage = slot.projection;
+            const auto label =
+                "anyhit[hit_slot=" + std::to_string(slot.hit_slot) + "]";
+            ImGui::BulletText("%s  [%s]", label.c_str(),
+                              stage.origin.c_str());
+            if (stage.declared_ref &&
+                *stage.declared_ref != stage.effective_ref) {
+                ImGui::TextWrapped("  declared: %s",
+                                   stage.declared_ref->c_str());
+            }
+            ImGui::TextWrapped("  effective: %s",
+                               stage.effective_ref.c_str());
+            if (stage.source_open_ref) {
+                ImGui::TextWrapped("  source: %s",
+                                   stage.source_open_ref->c_str());
+            } else if (stage.source_open_reason) {
+                ImGui::TextWrapped("  source: <%s>",
+                                   stage.source_open_reason->c_str());
             }
         }
         ImGui::SeparatorText("attachment ops");

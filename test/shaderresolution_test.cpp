@@ -14,6 +14,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -144,6 +145,27 @@ void eraseRequiredObjectPointer(Json &document,
     REQUIRE(parent.erase(field) == 1);
 }
 
+struct Wp367ShaderResolutionDirectory {
+    std::filesystem::path path;
+
+    Wp367ShaderResolutionDirectory() {
+        path = std::filesystem::temp_directory_path() /
+               ("pelican_wp367_wire_" + std::to_string(
+                    std::chrono::steady_clock::now()
+                        .time_since_epoch().count()));
+        std::filesystem::create_directories(path / "shaders");
+    }
+    ~Wp367ShaderResolutionDirectory() {
+        std::error_code error;
+        std::filesystem::remove_all(path, error);
+    }
+};
+
+void writeWp367Shader(const std::filesystem::path &path) {
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    output << "#version 460\nvoid main() {}\n";
+}
+
 } // namespace
 
 TEST_CASE("WP354 publishes the complete 14 pass family plus compute task contract table",
@@ -183,7 +205,7 @@ TEST_CASE("WP354 publishes the complete 14 pass family plus compute task contrac
             {"imgui", {"resolved", {"vertex", "fragment"}}},
             {"canonical_anchor", {"not_applicable", {}}},
             {"snapshot_copy", {"not_applicable", {}}},
-            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*"}}},
+            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*", "anyhit_slots[hit_slot]*"}}},
         };
     for (const auto &contract : contracts) {
         const auto found = expected.find(std::string{contract.family});
@@ -193,6 +215,100 @@ TEST_CASE("WP354 publishes the complete 14 pass family plus compute task contrac
                     contract.stages.begin(), contract.stages.end()} ==
                 found->second.second);
     }
+}
+
+TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
+          "[WP367][ray-tracing][rt2a][shader-resolution][production][mutation]") {
+    Wp367ShaderResolutionDirectory temporary;
+    writeWp367Shader(temporary.path / "shaders" / "filter0.rahit");
+    writeWp367Shader(temporary.path / "shaders" / "filter2.rahit");
+
+    ComputeTaskDefinition task;
+    task.name = "wp367_trace";
+    task.shader_declaration_parsed = true;
+    task.ray_tracing = RayTracingTaskShaderDefinition{
+        .raygen = shader("shaders/trace", ShaderStage::raygen),
+        .misses = {shader("shaders/miss", ShaderStage::miss)},
+        .uses_group_layout = true,
+        .traced_ray_type_indices = {0},
+        .hit_shader_slots = {
+            shader("shaders/hit0", ShaderStage::closesthit),
+            std::nullopt,
+            shader("shaders/hit2", ShaderStage::closesthit)},
+        .any_hit_shader_slots = {
+            shader("shaders/filter0", ShaderStage::anyhit),
+            std::nullopt,
+            shader("shaders/filter2", ShaderStage::anyhit)},
+    };
+    task.declared_shader_refs = {
+        declared(DeclaredShaderStage::raygen, "shaders/trace"),
+        declared(DeclaredShaderStage::miss, "shaders/miss", 0),
+        declared(DeclaredShaderStage::closesthit, "shaders/hit0", 0),
+        declared(DeclaredShaderStage::closesthit, "shaders/hit2", 2),
+        declared(DeclaredShaderStage::anyhit, "shaders/filter2", 2),
+        declared(DeclaredShaderStage::anyhit, "shaders/filter0", 0),
+    };
+    CompiledRenderingPass compiled;
+    compiled.compute_tasks.push_back(CompiledComputeTask{
+        .definition = task,
+        .task_id = ComputeTaskId{0},
+    });
+    Json plan{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"graph", "wp367"},
+        {"nodes", Json::array({
+             {{"name", "wp367_trace"}, {"kind", "compute"}},
+         })},
+    };
+    PathResolver resolver;
+    resolver.setup(temporary.path, false);
+    appendShaderResolution(plan, compiled, resolver);
+    const auto &resolution =
+        plan.at("nodes").at(0).at("shader_resolution");
+    REQUIRE(resolution.contains("anyhit_slots"));
+    const auto &slots = resolution.at("anyhit_slots");
+    REQUIRE(slots.size() == 2);
+    CHECK(slots.at(0).at("hit_slot") == 0);
+    CHECK(slots.at(1).at("hit_slot") == 2);
+    for (const auto &slot : slots) {
+        CHECK(slot.at("stage") == "anyhit");
+        CHECK(slot.at("origin") == "authored");
+        CHECK(slot.at("source_open_ref").get<std::string>().ends_with(
+            ".rahit"));
+        std::set<std::string> fields;
+        for (auto field = slot.begin(); field != slot.end(); ++field) {
+            fields.insert(field.key());
+        }
+        CHECK(fields == std::set<std::string>{
+                            "declared_ref", "effective_ref", "hit_slot",
+                            "origin", "source_open_ref", "stage"});
+    }
+    for (const auto &stage : resolution.at("stages")) {
+        CHECK(stage.at("stage") != "anyhit");
+    }
+
+    auto old_task = task;
+    old_task.ray_tracing->any_hit_shader_slots.clear();
+    std::erase_if(old_task.declared_shader_refs, [](const auto &reference) {
+        return reference.stage == DeclaredShaderStage::anyhit;
+    });
+    CompiledRenderingPass old_compiled;
+    old_compiled.compute_tasks.push_back(CompiledComputeTask{
+        .definition = std::move(old_task),
+        .task_id = ComputeTaskId{0},
+    });
+    Json old_plan{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"graph", "wp367-old"},
+        {"nodes", Json::array({
+             {{"name", "wp367_trace"}, {"kind", "compute"}},
+         })},
+    };
+    appendShaderResolution(old_plan, old_compiled, resolver);
+    CHECK_FALSE(old_plan.at("nodes").at(0).at("shader_resolution")
+                    .contains("anyhit_slots"));
 }
 
 TEST_CASE("WP354 shipping shader families project their concrete effective references",

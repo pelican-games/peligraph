@@ -62,6 +62,8 @@ std::string_view shaderSourceStageExtension(ShaderSourceStage stage) {
         return ".rmiss";
     case ShaderSourceStage::closesthit:
         return ".rchit";
+    case ShaderSourceStage::anyhit:
+        return ".rahit";
     }
     throw std::runtime_error("unknown shader source stage");
 }
@@ -116,7 +118,8 @@ bool isCanonicalShaderSourceOpenReference(
     const auto extension = path.extension().generic_string();
     return extension == ".vert" || extension == ".frag" ||
            extension == ".comp" || extension == ".rgen" ||
-           extension == ".rmiss" || extension == ".rchit";
+           extension == ".rmiss" || extension == ".rchit" ||
+           extension == ".rahit";
 }
 
 bool isCanonicalShaderSourceOpenReference(

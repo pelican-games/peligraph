@@ -351,6 +351,49 @@ function(run_rt1b_case build_dir label test_name)
         -w NoAssertions)
 endfunction()
 
+# WP367 v3 item 8: these are concrete test IDs, not a claim that running the
+# RT1b executable incidentally covers RT2a.  The ON rows observe the closed
+# typed grammar, the shared integer CPU/GLSL predicate, canonical resolver +
+# shaderc + final SPIR-V stage, paired hit-stage ABI, sparse production wire,
+# and the production GPU actual/always pipelines including reload.  The OFF
+# row observes only the named pre-document-load compiler gate.
+function(run_rt2a_compiler_on_contrast build_dir label)
+    message(STATUS
+        "${label} RT2a observables: typed grammar; integer oracle; canonical .rahit resolver/shaderc/final-stage; paired ABI; sparse wire; production GPU A/B+SBT+reload")
+    foreach(test_name IN ITEMS
+            "WP367 typed triangle hit groups expose only optional anyhit"
+            "WP367 integer predicate generator drives both CPU oracle lanes"
+            "WP367 canonical anyhit resolves compiles and selects final SPIR-V stage"
+            "WP366/WP367 final SPIR-V hit-pair ABI is a load-time invariant")
+        run_rt1b_case("${build_dir}" "${label}_rt2a" "${test_name}")
+    endforeach()
+    run_process(
+        "${label}_rt2a_sparse_wire"
+        TRUE
+        "${CMAKE_CTEST_COMMAND}"
+            --test-dir "${build_dir}"
+            --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+            --output-on-failure
+            -R "^WP367 runtime wire projects sparse sorted anyhit occurrences$")
+    run_process(
+        "${label}_rt2a_gpu_actual_always"
+        TRUE
+        "${CMAKE_CTEST_COMMAND}"
+            --test-dir "${build_dir}"
+            --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+            --output-on-failure
+            -R "^WP367 production anyhit A B proves integer predicates occurrence wire SBT and reload$")
+endfunction()
+
+function(run_rt2a_compiler_off_contrast build_dir label)
+    message(STATUS
+        "${label} RT2a observable: layout_requires_runtime_compiler@1 before any shader document load")
+    run_rt1b_case(
+        "${build_dir}"
+        "${label}_rt2a_off"
+        "WP367 compiler contrast rejects layout before shader documents")
+endfunction()
+
 function(expect_disabled_error label feature_name)
     execute_process(
         COMMAND ${ARGN}
@@ -599,6 +642,9 @@ function(run_runtime_shader_compiler_smoke)
         "${runtime_shader_compiler_build_dir}"
         "runtime_shader_compiler"
         "WP366a compiler contrast executes the real root-sidecar gate")
+    run_rt2a_compiler_off_contrast(
+        "${runtime_shader_compiler_build_dir}"
+        "runtime_shader_compiler")
     run_rt1b_test(
         "${runtime_shader_compiler_build_dir}"
         "runtime_shader_compiler")
@@ -611,6 +657,8 @@ function(run_spirv_link_smoke)
         "PELICAN_WITH_SPIRV_LINK"
         spirv_link_build_dir)
     verify_spirv_link_absent("${spirv_link_build_dir}")
+    run_rt2a_compiler_on_contrast(
+        "${spirv_link_build_dir}" "spirv_link")
     run_rt1b_test("${spirv_link_build_dir}" "spirv_link")
     clean_successful_build("${spirv_link_build_dir}")
 endfunction()
@@ -621,6 +669,8 @@ function(run_skip_devstudio_smoke)
         "SKIP_DEVSTUDIO"
         skip_devstudio_build_dir)
     verify_devstudio_absent("${skip_devstudio_build_dir}")
+    run_rt2a_compiler_on_contrast(
+        "${skip_devstudio_build_dir}" "skip_devstudio")
     run_rt1b_test(
         "${skip_devstudio_build_dir}"
         "skip_devstudio")
@@ -636,6 +686,8 @@ function(run_openxr_smoke)
         "PELICAN_WITH_OPENXR"
         "${openxr_player}" --xr on
     )
+    run_rt2a_compiler_on_contrast(
+        "${openxr_build_dir}" "openxr")
     run_rt1b_test("${openxr_build_dir}" "openxr")
     clean_successful_build("${openxr_build_dir}")
 endfunction()
@@ -810,6 +862,8 @@ endfunction()
 function(run_imgui_smoke)
     configure_and_build("imgui" "PELICAN_WITH_IMGUI" imgui_build_dir)
     verify_imgui_absent("${imgui_build_dir}")
+    run_rt2a_compiler_on_contrast(
+        "${imgui_build_dir}" "imgui")
     run_rt1b_test("${imgui_build_dir}" "imgui")
     clean_successful_build("${imgui_build_dir}")
 endfunction()

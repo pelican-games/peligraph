@@ -70,6 +70,8 @@ shaderc_shader_kind toShadercKind(vk::ShaderStageFlagBits stage) {
         return shaderc_miss_shader;
     case vk::ShaderStageFlagBits::eClosestHitKHR:
         return shaderc_closesthit_shader;
+    case vk::ShaderStageFlagBits::eAnyHitKHR:
+        return shaderc_anyhit_shader;
     default:
         throw std::runtime_error("Unsupported shader stage for shaderc");
     }
@@ -189,7 +191,7 @@ const std::string &engineShaderUniverseSha256() {
             const auto extension = std::filesystem::path{id}.extension().string();
             if (extension != ".glsl" && extension != ".vert" && extension != ".frag" &&
                 extension != ".comp" && extension != ".rgen" && extension != ".rmiss" &&
-                extension != ".rchit") {
+                extension != ".rchit" && extension != ".rahit") {
                 continue;
             }
             if (const auto resource = engineResource(id)) {
@@ -576,6 +578,9 @@ std::optional<vk::ShaderStageFlagBits> inferShaderStageFromPath(const std::files
     }
     if (ext == ".rchit") {
         return vk::ShaderStageFlagBits::eClosestHitKHR;
+    }
+    if (ext == ".rahit") {
+        return vk::ShaderStageFlagBits::eAnyHitKHR;
     }
     return std::nullopt;
 }

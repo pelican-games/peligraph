@@ -1206,3 +1206,74 @@ TEST_CASE("WP354 Studio model enforces the complete shader resolution wire schem
                 "miss indices must be contiguous authored order starting at 0"));
     }
 }
+
+TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
+          "[WP367][devstudio][frame-plan][rt2a][shader-resolution][mutation]") {
+    Json plan = Json::parse(capturedResponse());
+    auto &resolution = plan["nodes"][0]["shader_resolution"];
+    resolution = Json{
+        {"state", "resolved"},
+        {"stages", Json::array({
+             {{"stage", "raygen"},
+              {"declared_ref", "shaders/trace"},
+              {"effective_ref", "shaders/trace"},
+              {"origin", "authored"},
+              {"source_open_ref", "project://shaders/trace.rgen"}},
+         })},
+        {"anyhit_slots", Json::array({
+             {{"hit_slot", std::size_t{1}}, {"stage", "anyhit"},
+              {"declared_ref", "shaders/filter1"},
+              {"effective_ref", "shaders/filter1"},
+              {"origin", "authored"},
+              {"source_open_ref", "project://shaders/filter1.rahit"}},
+             {{"hit_slot", std::size_t{4}}, {"stage", "anyhit"},
+              {"declared_ref", "shaders/filter4"},
+              {"effective_ref", "shaders/filter4"},
+              {"origin", "authored"},
+              {"source_open_ref", "project://shaders/filter4.rahit"}},
+         })},
+    };
+
+    const auto model = buildFramePlanModel(plan.dump());
+    REQUIRE(model.nodes.front().shader_resolution.anyhit_slots.size() == 2);
+    CHECK(model.nodes.front().shader_resolution.anyhit_slots[0].hit_slot == 1);
+    CHECK(model.nodes.front()
+              .shader_resolution.anyhit_slots[1]
+              .projection.stage == "anyhit");
+
+    auto &slots = resolution["anyhit_slots"];
+    SECTION("unknown field is rejected") {
+        slots[0]["reasons"] = Json::array();
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("contains unknown field 'reasons'"));
+    }
+    SECTION("duplicate and descending hit slots are rejected") {
+        slots[1]["hit_slot"] = std::size_t{1};
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("must be strictly increasing"));
+    }
+    SECTION("normal stages cannot smuggle anyhit") {
+        resolution["stages"][0] = slots[0];
+        resolution["stages"][0]["index"] =
+            resolution["stages"][0]["hit_slot"];
+        resolution["stages"][0].erase("hit_slot");
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("stages forbids anyhit"));
+    }
+    SECTION("wrong suffix is rejected") {
+        slots[0]["source_open_ref"] =
+            "project://shaders/filter1.rchit";
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("exact stage source suffix"));
+    }
+    SECTION("empty anyhit_slots is not a valid sparse encoding") {
+        slots = Json::array();
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("must be a non-empty array"));
+    }
+}

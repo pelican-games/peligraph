@@ -528,7 +528,7 @@ bool knownShaderStage(std::string_view value) {
     return value == "vertex" || value == "skinned_vertex" ||
            value == "fragment" || value == "compute" ||
            value == "raygen" || value == "miss" ||
-           value == "closesthit";
+           value == "closesthit" || value == "anyhit";
 }
 
 Pelican::ShaderSourceStage sourceStageForWireStage(
@@ -543,6 +543,7 @@ Pelican::ShaderSourceStage sourceStageForWireStage(
     if (value == "closesthit") {
         return Pelican::ShaderSourceStage::closesthit;
     }
+    if (value == "anyhit") return Pelican::ShaderSourceStage::anyhit;
     throw std::logic_error("unknown validated shader stage");
 }
 
@@ -586,7 +587,8 @@ FramePlanShaderStage parseShaderStage(
     }
 
     const bool indexed_ray_stage =
-        result.stage == "miss" || result.stage == "closesthit";
+        result.stage == "miss" || result.stage == "closesthit" ||
+        result.stage == "anyhit";
     const auto index = value.find("index");
     if (indexed_ray_stage) {
         if (index == value.end()) {
@@ -701,7 +703,7 @@ FramePlanShaderResolution parseShaderResolution(
                       state + "'");
     }
 
-    requireOnlyFields(value, {"state", "stages"}, context);
+    requireOnlyFields(value, {"state", "stages", "anyhit_slots"}, context);
     result.state = FramePlanShaderResolutionState::resolved;
     const auto &stages = requireArrayField(value, "stages", context);
     if (stages.empty()) {
@@ -717,6 +719,10 @@ FramePlanShaderResolution parseShaderResolution(
         auto stage = parseShaderStage(
             stages.at(index), std::string{context} + ".stages[" +
                                   std::to_string(index) + "]");
+        if (stage.stage == "anyhit") {
+            throw invalid(std::string{context} +
+                          ".stages forbids anyhit; use anyhit_slots");
+        }
         const auto order = shaderStageOrder(stage.stage);
         if (order < previous_order) {
             throw invalid(std::string{context} +
@@ -741,6 +747,51 @@ FramePlanShaderResolution parseShaderResolution(
                           "authored order starting at 0");
         }
         result.stages.push_back(std::move(stage));
+    }
+    if (const auto slots = value.find("anyhit_slots"); slots != value.end()) {
+        if (!slots->is_array() || slots->empty()) {
+            throw invalid(std::string{context} +
+                          ".anyhit_slots must be a non-empty array");
+        }
+        std::optional<std::size_t> previous;
+        result.anyhit_slots.reserve(slots->size());
+        for (std::size_t index = 0; index < slots->size(); ++index) {
+            const auto entry_context =
+                std::string{context} + ".anyhit_slots[" +
+                std::to_string(index) + "]";
+            const auto &entry = slots->at(index);
+            if (!entry.is_object()) {
+                throw invalid(entry_context + " must be an object");
+            }
+            requireOnlyFields(
+                entry,
+                {"stage", "hit_slot", "declared_ref", "effective_ref",
+                 "origin", "source_open_ref", "source_open_reason"},
+                entry_context);
+            const auto hit_slot =
+                optionalSizeField(entry, "hit_slot", entry_context);
+            if (!hit_slot) {
+                throw invalid(entry_context + ".hit_slot is required");
+            }
+            Json normalized = entry;
+            normalized.erase("hit_slot");
+            normalized["index"] = *hit_slot;
+            auto projection = parseShaderStage(normalized, entry_context);
+            if (projection.stage != "anyhit") {
+                throw invalid(entry_context +
+                              ".stage must be 'anyhit'");
+            }
+            projection.index.reset();
+            if (previous && *hit_slot <= *previous) {
+                throw invalid(std::string{context} +
+                              ".anyhit_slots must be strictly increasing");
+            }
+            previous = *hit_slot;
+            result.anyhit_slots.push_back({
+                .hit_slot = *hit_slot,
+                .projection = std::move(projection),
+            });
+        }
     }
     return result;
 }

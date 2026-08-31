@@ -5,6 +5,8 @@
 #include <functional>
 #include <optional>
 #include <span>
+#include <string>
+#include <string_view>
 #include <vector>
 
 namespace Pelican {
@@ -50,6 +52,40 @@ struct RayTracingOracleTriangle {
     std::array<RayTracingOracleVec3, 3> vertices;
     RayTracingOracleTransform transform;
     std::uint32_t record_id = 0;
+    std::uint32_t primitive_id = 0;
+    std::uint32_t instance_custom_index = 0;
+    std::uint32_t record_u32 = 0;
+};
+
+struct RayTracingAnyHitIntegerInputs {
+    std::uint32_t primitive_id = 0;
+    std::uint32_t instance_custom_index = 0;
+    std::uint32_t record_u32 = 0;
+};
+
+enum class RayTracingAnyHitIntegerPredicateMode {
+    always_accept,
+    accept_matching,
+    ignore_matching,
+};
+
+// Constructive fixture predicate. The same immutable object is the CPU
+// oracle and the GLSL generator; its grammar has no floating-point operand.
+struct RayTracingAnyHitIntegerPredicate {
+    RayTracingAnyHitIntegerPredicateMode mode =
+        RayTracingAnyHitIntegerPredicateMode::always_accept;
+    RayTracingAnyHitIntegerInputs match;
+
+    [[nodiscard]] bool accepts(
+        RayTracingAnyHitIntegerInputs inputs) const noexcept;
+    [[nodiscard]] std::string glslAcceptExpression(
+        std::string_view record_u32_expression) const;
+
+    static RayTracingAnyHitIntegerPredicate alwaysAccept() noexcept;
+    static RayTracingAnyHitIntegerPredicate acceptMatching(
+        RayTracingAnyHitIntegerInputs match) noexcept;
+    static RayTracingAnyHitIntegerPredicate ignoreMatching(
+        RayTracingAnyHitIntegerInputs match) noexcept;
 };
 
 struct RayTracingOracleInterval {
@@ -94,6 +130,10 @@ void validateRayTracingOracleFixture(
 RayTracingOracleResult traceRayTracingOracle(
     const RayTracingOracleRay &ray,
     std::span<const RayTracingOracleTriangle> triangles);
+RayTracingOracleResult traceRayTracingOracle(
+    const RayTracingOracleRay &ray,
+    std::span<const RayTracingOracleTriangle> triangles,
+    const RayTracingAnyHitIntegerPredicate &predicate);
 
 // Explicit test seam for oracle mutation and boundary fixtures. Production
 // callers always use the normative Moller-Trumbore implementation above.
