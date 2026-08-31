@@ -17056,3 +17056,74 @@ engine 側の自動一致だけ。ray query の alpha が必要と分かった�
 
 次: WP369 の §10 コードレビュー → **RT3(AS の宣言面: geometry_flags /
 instance_flags の分離・mask・custom_index 未指定=0・static AABB + `.rint`)**。
+
+#### WP369 コードレビュー(不合格・7 件)の仕分けと WP369a
+
+致命なし。範囲外侵入なし。**#2・#3・#4 は同じ根 —— RT と raster が alpha の意味で
+食い違う**(仕様レビューで「両車線が同じ間違った式を使えば通る」と指摘された危険が、
+今度は RT vs raster の形で出た)。**全 7 件「直す」= WP369a を 1 回だけ。
+以降は無条件で台帳。**
+
+**確認した事実**: `rg` で調べたところ **raster は `KHR_texture_transform` を
+一切読んでいない**。したがって RT が適用するのは**新規の乖離**であり、
+「両方が読む」に揃えるのは raster 側の機能追加(別件)。
+
+### WP369a: RT2b-2 の修理(最終。以降の指摘は台帳)
+
+**§4 規則 11 上段。コードレビューのみ。見積: 中。**
+
+1. **非 MASK material にまで `NormalizedAlphaIr` を強制**(実害): profile active の
+   table build が `alpha_mode` を見る**前**に全 source へ IR を要求するため、
+   project `.material` 由来の正当な OPAQUE row が
+   `ray_profile_alpha_ir_missing@1` で落ちる(project material の producer は
+   IR を設定しない)。**修正**: IR 要求・identity 検査・alpha texture 収集を
+   **「解決後に MASK になった row」に限定**。非 MASK row は通常の `alpha_mode` から
+   構築し、normalized field の既定値に依存しない
+2. **relative UV override が RT row から脱落**(実害): raster は absolute が無ければ
+   **relative UV** を適用するのに、RT snapshot producer は
+   `material_absolute_override_frames` しか見ていない。
+   **修正**: row producer を raster と同じ優先順位に —— absolute UV があればそれ、
+   無ければ relative UV。**relative base-color multiplier だけは discard の後**なので
+   引き続き無視(v2 の裁定どおり)
+3. **authored KHR texture transform が RT にだけ効く**(実害): loader が IR に
+   取り込み生成 anyhit が適用するが、**raster は読んでいない**。
+   **修正(v1)**: **profile 使用時の非 identity KHR transform を名前付き拒否**
+   (`ray_profile_uv_transform_unsupported@1`)。併せて **extension field の
+   absent と present-invalid を区別**し、`"offset":[0.5]` のような不正を
+   黙って identity に落とさず名前付きエラーにする。
+   **台帳**: raster の KHR_texture_transform 対応は別件(engine 全体の機能追加)
+4. **raster の saturate と生成 anyhit の生比較が不一致**(実害): raster は
+   opacity と cutoff の**両方を `[0,1]` に clamp** するが、生成 anyhit は生の積と
+   cutoff を比較する。`alphaCutoff = 2.0` や absolute alpha `-0.1` で判定が逆転。
+   **修正**: **raster の正準 predicate と完全に同じ clamp** を生成 shader に入れる
+   (cutoff だけ・factor だけの部分修正は不可)
+5. **authored reference を path の字面から推測**(実害): 「絶対でも `file://` でもない」
+   だけで authored reference と判定するため、legacy API が物理 path を渡す経路で
+   profile 不在でも normalizer に入り `normalized_alpha_identity_invalid@1` になる。
+   逆に `"models/tree.glb"` のような相対物理 path を authored と誤認し、
+   cwd 依存の identity を作る(WP368a の provenance 契約に反する)。
+   **修正**: **字面推測を廃止**。WP368a の論理 reference が**型付きで渡された経路**
+   だけが IR を生成し、legacy direct/inspection 経路は `authored_reference = nullopt`。
+   profile がその material を選んだ時点で既存の missing-IR named エラーにする
+6. **テストが代理条件**(懸念): GPU fixture の material が**全部 MASK**、
+   geometry に **COLOR_0 が一つも無い**、生成 shader 検査が**ソース文字列**、
+   COLOR missing は helper 直叩きの手書き row(production producer は同じ presence bit
+   から `uses_vertex_color` を作るので不整合 row は本番から出ない)、
+   **AS の production flags は三箇所とも常に空**で helper に synthetic flags を渡すだけ。
+   → non-MASK guard・COLOR_0 の fetch/multiply・AS validator 呼び出し 3 箇所を削っても
+   通る。**修正**: 同一 GPU テストに **MASK と OPAQUE/BLEND を併置**して解決済み row と
+   hit/miss を比較 / **実 geometry の COLOR_0** で low/high alpha / AS builder に
+   test seam で flags を注入し **production `recordFrame` から named 拒否まで**通す
+7. **matrix が compiler OFF を実行していない**(懸念): fixture が
+   `runtime_shader_compiler_enabled = true` 固定で、CI の OFF job も
+   feature smoke も RT2b target を対象にしていない。
+   **修正**: RT2b target を **compiler ON/OFF・SKIP_DEVSTUDIO ON/OFF・OpenXR ON/OFF**
+   で build/run。fixture は**実 macro 値**を渡し、OFF では
+   `layout_requires_runtime_compiler@1` と**生成 registration 0 件**を実検査
+
+**受け入れ全体**: 各修正に「取り消したら落ちる」対照(代理条件禁止)/
+**RT と raster の alpha 判定一致**を同一 fixture で(clamp・override 優先順位)/
+出荷 4 project・core resources の bytes 不変 / profile 不在時 0 artifacts /
+全数 2 回 / GPU 直列は統合側。
+
+依存: WP369。**連鎖打ち切り: WP369a の §10 指摘は無条件で台帳。**
