@@ -16573,3 +16573,120 @@ Vulkan の group 配線・A/B の単一 row snapshot・sparse wire の順序・t
 次: **RT2b(material ABI)** —— bindless material 表・geometry access(vertex/index の
 device address)・`data(q)` への material/geometry index 充填・実 texture の
 alpha test・両車線 portable alpha profile・WP354 drill-through の投影。
+
+### WP368: RT2b —— material ABI(bindless 表・geometry access・実 alpha test)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
+**規範は docs/design_raytracing.md v4 の §3-2(v2 参照)・§6・§11-6 と、
+台帳「引き継ぎ: 残 WP への先行裁定」の RT2b 裁定
+(geometry = buffer device address / texture = descriptor indexing 配列)。**
+
+#### 前提の実測(2026-08-31、起票時に確認)
+
+- **`bufferDeviceAddress` は既に有効**(core.cpp:428/639)—— geometry access は
+  新規 capability 無しで実装できる
+- **AS snapshot が既に material identity と geometry range を運んでいる**
+  (WP366/366a の成果): `material_asset_reference` / `material_document_reference` /
+  `source_material_index` / `geometry_allocation_id` / `index_count` /
+  `index_offset` / `vertex_offset` / `vertex_count`
+- **descriptor indexing は未有効**(`runtimeDescriptorArray` /
+  `shaderSampledImageArrayNonUniformIndexing` の指定が無い)——
+  **これが本 WP で足す唯一の device feature**
+
+#### 1. capability と device feature
+
+- `runtimeDescriptorArray` + `shaderSampledImageArrayNonUniformIndexing` +
+  `descriptorBindingPartiallyBound` を device feature policy に追加
+- 新 capability **`pelican.vulkan.ray_material_bindless@1`**。
+  これを要求する feature × 非対応 device は **hard reject**
+  (property 名・要求値・実値・device 名。RT の既定方針どおり)
+- **layout がこの capability を要求しない project は一切影響を受けない**
+  (bytes 不変)
+
+#### 2. engine record prefix(`data(q)` への engine 値の席)
+
+RT1b の record は **authored 定数のみ**だった。material/geometry index は
+**engine が row ごとに供給する**ので席を作る。layout の opt-in:
+
+```json
+{ "schema": "pelican.ray_group_layout", "version": 1,
+  "ray_types": ["primary"],
+  "default_group": "opaque",
+  "groups": [{ "name": "opaque" }],
+  "engine_record": ["material_index", "geometry_index"],
+  "record": [{ "name": "tint", "type": "vec4" }] }
+```
+
+- `engine_record` は省略可。**省略時は RT1b と byte 完全一致**
+- 値は固定順・固定型 `u32`。**authored member より前**に置く
+  (`data_start` の直後から engine prefix、その後 authored)
+- 許可語は `material_index` / `geometry_index` のみ(他は
+  `ray_engine_record_unknown@1`)。重複は名前付き拒否
+- 正準化 JSON の offset/size 表に engine prefix も出す(mirror test 対象)
+
+#### 3. RT material table(bindless)
+
+- material parameter block(base color factor・alpha cutoff・alpha mode 等)を
+  **`material_index` で引ける GPU buffer** に平坦化
+- texture は **descriptor indexing の sampled image 配列**。material block は
+  配列 index を持つ
+- 表は **row snapshot と同じ共同 transaction** で構築・公開(RT1b の二段 commit に
+  相乗り。失敗時は旧世代維持)
+- material identity → `material_index` の解決は **AS snapshot の 2 branch**
+  (`material_document_reference` / `(asset_identity, source_material_index)`)を使う
+  —— WP366a で確定済みの正本
+
+#### 4. geometry access(buffer device address)
+
+- `geometry_allocation_id` → `{vertex_address, index_address, vertex_stride,
+  index_type, vertex_offset, index_offset}` の表を BDA で公開
+- **生成 GLSL accessor** を提供(生成 include に追加):
+  `pelicanRayFetchUV(geometry_index, primitive_id, barycentric)` /
+  `pelicanRayFetchNormal(...)`。手書きの address 演算を利用者に強いない
+- accessor が読む頂点属性の存在は **load 時に検証**(UV を持たない geometry を
+  alpha profile に束縛したら `ray_geometry_attribute_missing@1`)
+
+#### 5. portable alpha profile(両車線。design §6・§11-6)
+
+- **engine が生成する述語**を両車線へ注入する:
+  pipeline 車線は生成 `.rahit`、ray query 車線は候補ループ内の同一ロジック
+- 述語は `alpha_mode == MASK` のとき
+  `sampleBaseColorAlpha(material_index, uv) < alpha_cutoff` で ignore
+- **byte 一致契約はこの profile の範囲に限定**して維持(§11-6 の裁定どおり)。
+  **自由 `.rahit` は pipeline 車線専用**で一致契約の外
+- material の alpha 設定は既存の material 文書から読む(新しい authoring 面を作らない)
+
+#### 6. WP354 drill-through の投影
+
+material が供給する RT hit shader の出所(`declared_ref` / origin / `source_open_ref`)を
+frame plan の hit slot 投影に載せる(WP354 の様式をそのまま使う)。
+
+#### 7. 受け入れ(§4 規約 10)
+
+- **オラクルは構成的に**(RT2a の教訓): alpha texture は **texel 中心が
+  barycentric から厳密に決まる市松 fixture**を生成器が作り、CPU 参照は
+  同じ生成器の texel 値を読む。**texture フィルタリングを比較対象にしない**
+  (`filter: nearest`・`address: clamp_to_edge` 固定、UV は texel 中心に構成)
+- **両車線の一致**: 同一 scene・同一 material で pipeline 車線と ray query 車線の
+  出力が **pixel 一致**(profile の範囲で)。**片方の profile 注入を外すと落ちる**
+- **engine record**: `material_index` / `geometry_index` の実値が shader で読め、
+  **表を 1 行ずらすと落ちる** / `engine_record` 省略時は RT1b と byte 一致
+- **geometry access**: accessor が返す UV が CPU 参照と一致 /
+  UV 無し geometry の束縛が `ray_geometry_attribute_missing@1`
+- **capability**: 非対応 device で hard reject(property 名つき)/
+  対応 device で feature が有効化されること
+- **共同 transaction**: material 表と geometry 表の構築失敗を 5 failure point に
+  追加し、旧世代が完全に残ること
+- 出荷 4 project・core resources・既存 RT feature の bytes 不変 /
+  RT1b・RT2a の既存挙動不変 / 全数 2 回 / matrix は WP367a の
+  必須 capability lane の形(`--no-tests=error` + skip 失敗扱い)
+
+#### 8. やらないこと
+
+per-instance 束縛(永続 identity の設計段)/ `.rint`(RT3)/ `.rcall`(RT4)/
+変形 geometry(RT5)/ 複数 geometry BLAS・indirect・AS graph node(RT6)/
+編集 RPC(RT7)/ **alpha 以外の material 効果**(normal map・emissive 等の
+hit shader からの利用は本 WP の範囲外。表と accessor は使えるようになるが、
+engine 生成 profile は alpha のみ)。
+
+依存: WP366 + WP366a + WP367 + WP367a。
