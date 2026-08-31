@@ -16498,3 +16498,58 @@ v3 で認証器ごと削除して解消した(fixture 側を構成的に縛る�
 
 次: WP367 の §10 コードレビュー → **RT2b(material ABI: bindless material 表・
 geometry access・実 texture の alpha test・両車線 portable profile)**。
+
+#### WP367 コードレビュー(不合格・8 件)の仕分けと WP367a
+
+出荷物は不変(4 project + core resources の 67 blob を親版と一致確認)。
+Vulkan の group 配線・A/B の単一 row snapshot・sparse wire の順序・typed grammar・
+到達 pair の ABI 拒否は「壊せなかった項目」。**全 8 件「直す」= WP367a を 1 回だけ。
+以降の指摘は無条件で台帳。**
+
+### WP367a: RT2a の修理(最終。以降の指摘は台帳)
+
+**§4 規則 11 上段。コードレビューのみ。見積: 中。**
+
+1. **layout 形式の closesthit が frame plan から消える**(実害): 通常 stage 出力は
+   `ray.closest_hits` しか走査せず、layout の `hit_shader_slots` を投影しない。
+   **closesthit も物理 `hit_slot` 付きで wire に出し**、各 `anyhit_slots[].hit_slot` に
+   対応する closesthit が必ず一件あることを producer と consumer の両方で検査
+2. **sparse consumer が slot の正当性を検査しない**(実害): 重複・降順・空配列は
+   拒否するが、**存在しない/範囲外/orphan な `hit_slot` を受理**する。
+   wire に**物理 hit-slot domain を明示**し、anyhit slot が対応する typed closesthit
+   slot に属することまで検査(既存テストが orphan slot を hand-wire しているので
+   それも修正)
+3. **payload ABI が trace 到達 pair しか比較しない**(実害): 未 trace の ray type で
+   closesthit=`vec4` / anyhit=`uvec4` が通る。**trace reachability と独立に、
+   全物理 `(g,r)` の incoming payload 型を直接比較**し、その後 trace の outgoing を
+   pair の正準型と比較
+4. **Studio が解析済み anyhit を表示しない**(実害): model は保存するが widget は
+   `resolution.stages` だけを描く。**`anyhit[hit_slot=N]` を widget に追加**し、
+   production wire を入力にした表示・open action のテスト
+5. **後方互換の破壊**(実害): `.rahit` を既知拡張子に加えたため、旧 task が
+   closesthit の stem に `"shaders/foo.rahit"` を使っていると
+   「明示拡張子」と判定されロード前に拒否される(親版では `foo.rahit.rchit` と
+   して解決できた)。**stage-aware にする** —— `.rahit` は anyhit の予約 suffix と
+   して扱い、**他 stage の stem suffix としては従来どおり許可**
+6. **「同じ record を両 shader が読んだ」が代理条件**(実害): closesthit は record
+   block を宣言するだけで marker を出力に使っておらず、**single fixture の actual
+   anyhit を always-accept に置換しても通る**。anyhit 側に compile-time `r`/group
+   marker も無い。**closesthit が実際に record marker を読んで出力に反映**し、
+   marker を 1 つ誤らせた否定対照で miss/ignore になること、双方が `r`/group marker
+   を結果へ反映することを要求
+7. **CPU と GLSL の述語が二重定義**(v3 指定違反): v3 は「**単一の生成器**から双方を
+   出す」と定めたが、実装は定数を共有する**別々の 2 実装**。
+   **小さな整数述語 AST/IR を唯一の定義**にして CPU evaluator と GLSL emitter を
+   そこから生成する。GPU fixture は全 candidate の `primitive_id` が同じで instance と
+   record が同時に変わるため、**入力を 1 つだけ誤らせる GPU 否定対照**を各入力に追加
+8. **contrast smoke が「対象テスト 0 件」や GPU skip で緑になる**(実害):
+   exact `ctest -R` 呼び出しに **`--no-tests=error` を付ける**。
+   RT2a 必須 capability の job では **skip を失敗扱い**にし、
+   flat/xr/preview のどれを機能保証するかを明示した行を置く
+
+**受け入れ全体**: 各修正に「取り消したら落ちる」対照(代理条件禁止)/
+出荷 4 project・core resources・既存 RT feature の bytes 不変 /
+**旧形の byte 保存は #5 を含めて再確認**(`.rahit` stem の旧 task fixture を追加)/
+全数 2 回(統合側 GPU 直列)/ matrix は #8 の形で。
+
+依存: WP367。**連鎖打ち切り: WP367a の §10 指摘は無条件で台帳。**
