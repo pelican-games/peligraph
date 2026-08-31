@@ -86,6 +86,25 @@ std::string occurrenceName(
                   : "<missing>"));
 }
 
+[[noreturn]] void failHitPairPayload(
+    std::size_t hit_slot,
+    const RayTracingShaderOccurrence &closest_hit,
+    const RayTracingShaderOccurrence &any_hit,
+    const RayTracingCanonicalType *closest_incoming,
+    const RayTracingCanonicalType *any_incoming) {
+    throw std::runtime_error(
+        "pelican.ray_tracing.payload_mismatch@1: physical hit_slot=" +
+        std::to_string(hit_slot) + " closesthit " +
+        occurrenceName(closest_hit) + " incoming=" +
+        (closest_incoming
+             ? describeRayTracingCanonicalType(*closest_incoming)
+             : "<missing>") +
+        " anyhit " + occurrenceName(any_hit) + " incoming=" +
+        (any_incoming
+             ? describeRayTracingCanonicalType(*any_incoming)
+             : "<missing>"));
+}
+
 bool isTriangleHitAttribute(
     const RayTracingCanonicalType &type) {
     return type.kind == RayTracingCanonicalTypeKind::vector &&
@@ -279,6 +298,35 @@ std::string validateRayTracingPipelineInterfaces(
         }
     }
 
+    // A physical hit-group pair has one canonical incoming payload type even
+    // when no OpTraceRayKHR currently reaches that ray slot.  Establish that
+    // invariant before trace-call routing; the latter then compares outgoing
+    // payloads with this already-validated canonical type.
+    std::vector<const RayTracingCanonicalType *> hit_payload_types;
+    hit_payload_types.reserve(hit_groups.size());
+    for (std::size_t index = 0; index < hit_groups.size(); ++index) {
+        const auto *closest_incoming = findInterface(
+            *hit_groups[index].entry,
+            RayTracingInterfaceStorage::incoming_ray_payload);
+        if (any_hits[index]) {
+            const auto *any_incoming = findInterface(
+                *any_hits[index]->entry,
+                RayTracingInterfaceStorage::incoming_ray_payload);
+            if ((closest_incoming == nullptr) != (any_incoming == nullptr) ||
+                (closest_incoming != nullptr &&
+                 closest_incoming->type != any_incoming->type)) {
+                failHitPairPayload(
+                    index, hit_groups[index], *any_hits[index],
+                    closest_incoming
+                        ? &closest_incoming->type
+                        : nullptr,
+                    any_incoming ? &any_incoming->type : nullptr);
+            }
+        }
+        hit_payload_types.push_back(
+            closest_incoming ? &closest_incoming->type : nullptr);
+    }
+
     if (request.group_layout != nullptr) {
         const auto &layout = *request.group_layout;
         const auto ray_count = layout.ray_types.size();
@@ -372,15 +420,14 @@ std::string validateRayTracingPipelineInterfaces(
             }
         };
         const auto compare_hit_target = [&](std::uint32_t index) {
-            compare_target("hit", index, hit_groups);
-            if (index >= any_hits.size() || !any_hits[index]) return;
-            const auto &target = *any_hits[index];
-            const auto *incoming = findInterface(
-                *target.entry,
-                RayTracingInterfaceStorage::incoming_ray_payload);
-            if (incoming == nullptr || *outgoing != incoming->type) {
-                failPayload(caller, trace, "anyhit", index, outgoing,
-                            incoming ? &incoming->type : nullptr);
+            if (index >= hit_groups.size()) {
+                failPayload(caller, trace, "hit", index,
+                            outgoing, nullptr);
+            }
+            const auto *incoming = hit_payload_types[index];
+            if (incoming == nullptr || *outgoing != *incoming) {
+                failPayload(caller, trace, "hit", index, outgoing,
+                            incoming);
             }
         };
         if (request.group_layout == nullptr) {

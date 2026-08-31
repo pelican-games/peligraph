@@ -63,18 +63,49 @@ struct RayTracingAnyHitIntegerInputs {
     std::uint32_t record_u32 = 0;
 };
 
-enum class RayTracingAnyHitIntegerPredicateMode {
-    always_accept,
-    accept_matching,
-    ignore_matching,
+enum class RayTracingAnyHitIntegerPredicateInput : std::uint8_t {
+    primitive_id,
+    instance_custom_index,
+    record_u32,
 };
 
-// Constructive fixture predicate. The same immutable object is the CPU
-// oracle and the GLSL generator; its grammar has no floating-point operand.
-struct RayTracingAnyHitIntegerPredicate {
-    RayTracingAnyHitIntegerPredicateMode mode =
-        RayTracingAnyHitIntegerPredicateMode::always_accept;
-    RayTracingAnyHitIntegerInputs match;
+enum class RayTracingAnyHitIntegerPredicateOpcode : std::uint8_t {
+    boolean_literal,
+    u32_literal,
+    input,
+    equal,
+    logical_and,
+    logical_not,
+    bitwise_or,
+    bitwise_not,
+};
+
+struct RayTracingAnyHitIntegerPredicateNode {
+    RayTracingAnyHitIntegerPredicateOpcode opcode =
+        RayTracingAnyHitIntegerPredicateOpcode::boolean_literal;
+    RayTracingAnyHitIntegerPredicateInput input =
+        RayTracingAnyHitIntegerPredicateInput::primitive_id;
+    std::uint32_t literal = 0;
+    std::uint8_t left = 0;
+    std::uint8_t right = 0;
+};
+
+// Constructive fixture predicate.  The postfix integer IR is the sole
+// predicate definition; the CPU evaluator and GLSL emitter are consumers of
+// that same node sequence.  Its grammar has no floating-point operand.
+class RayTracingAnyHitIntegerPredicate {
+    static constexpr std::size_t maximum_nodes = 20;
+    std::array<RayTracingAnyHitIntegerPredicateNode, maximum_nodes> nodes_{};
+    std::uint8_t node_count_ = 0;
+    std::uint8_t root_ = 0;
+
+    [[nodiscard]] std::uint8_t append(
+        RayTracingAnyHitIntegerPredicateNode node) noexcept;
+    static RayTracingAnyHitIntegerPredicate matching(
+        RayTracingAnyHitIntegerInputs match, bool negate) noexcept;
+
+  public:
+    RayTracingAnyHitIntegerPredicate() noexcept;
 
     [[nodiscard]] bool accepts(
         RayTracingAnyHitIntegerInputs inputs) const noexcept;
@@ -86,6 +117,12 @@ struct RayTracingAnyHitIntegerPredicate {
         RayTracingAnyHitIntegerInputs match) noexcept;
     static RayTracingAnyHitIntegerPredicate ignoreMatching(
         RayTracingAnyHitIntegerInputs match) noexcept;
+
+    [[nodiscard]] std::span<
+        const RayTracingAnyHitIntegerPredicateNode>
+    ir() const noexcept {
+        return {nodes_.data(), node_count_};
+    }
 };
 
 struct RayTracingOracleInterval {

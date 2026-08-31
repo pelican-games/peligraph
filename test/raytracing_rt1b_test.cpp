@@ -309,6 +309,30 @@ TEST_CASE("WP367 typed triangle hit groups expose only optional anyhit",
             ContainsSubstring(
                 "pelican.ray_tracing.ray_hit_group_invalid@1"));
     }
+    SECTION("WP367a legacy task keeps rahit as a closesthit stem suffix") {
+        const auto fixture_path =
+            std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+            "fixtures" / "wp367a" /
+            "legacy_rahit_stem_task.json";
+        std::ifstream input{fixture_path, std::ios::binary};
+        REQUIRE(input.is_open());
+        const auto legacy = nlohmann::json::parse(input);
+        const auto tasks =
+            parseComputeTaskDefinitionsFromConfigJson(legacy);
+        REQUIRE(tasks.size() == 1);
+        REQUIRE(tasks.front().ray_tracing);
+        REQUIRE(tasks.front().ray_tracing->closest_hits.size() == 1);
+        const auto &closest =
+            tasks.front().ray_tracing->closest_hits.front();
+        CHECK(closest.ref == "shaders/foo.rahit");
+        CHECK(shaderSourceCandidateReference(
+                  closest.ref, ShaderSourceStage::closesthit, false) ==
+              "shaders/foo.rahit.rchit");
+        CHECK_THROWS_WITH(
+            makeShaderReference(
+                "shaders/foo.rahit", ShaderStage::anyhit),
+            ContainsSubstring("explicit file extension"));
+    }
 }
 
 TEST_CASE("WP367 integer predicate generator drives both CPU oracle lanes",
@@ -344,6 +368,26 @@ TEST_CASE("WP367 integer predicate generator drives both CPU oracle lanes",
     CHECK(actual_result.hit->record_id == 0xB0u);
     CHECK(actual.accepts({5u, 42u, 9u}));
     CHECK_FALSE(actual.accepts({3u, 41u, 7u}));
+
+    const auto matching =
+        RayTracingAnyHitIntegerPredicate::acceptMatching({3u, 41u, 7u});
+    CHECK(matching.accepts({3u, 41u, 7u}));
+    SECTION("each integer input independently controls the CPU evaluator") {
+        CHECK_FALSE(matching.accepts({4u, 41u, 7u}));
+        CHECK_FALSE(matching.accepts({3u, 42u, 7u}));
+        CHECK_FALSE(matching.accepts({3u, 41u, 8u}));
+    }
+    SECTION("the immutable IR carries all three input leaves") {
+        std::array<bool, 3> present{};
+        for (const auto &node : matching.ir()) {
+            if (node.opcode !=
+                RayTracingAnyHitIntegerPredicateOpcode::input) {
+                continue;
+            }
+            present[static_cast<std::size_t>(node.input)] = true;
+        }
+        CHECK(present == std::array{true, true, true});
+    }
 }
 
 TEST_CASE("WP367 compiler contrast rejects layout before shader documents",
@@ -1249,6 +1293,8 @@ TEST_CASE("WP366/WP367 final SPIR-V hit-pair ABI is a load-time invariant",
     auto noop = compile(R"glsl(
       #version 460
       #extension GL_EXT_ray_tracing : require
+      layout(location=0) rayPayloadInEXT vec4 payload;
+      hitAttributeEXT vec2 attributes;
       void main() {}
     )glsl", vk::ShaderStageFlagBits::eClosestHitKHR, "noop.rchit");
     auto anyhit = compile(R"glsl(
@@ -1349,6 +1395,22 @@ TEST_CASE("WP366/WP367 final SPIR-V hit-pair ABI is a load-time invariant",
             "payload-mismatch.rahit");
         paired_hits[0].any_hit = occurrence(
             wrong, ShaderStage::anyhit, 3, "payload-mismatch.rahit");
+        CHECK_THROWS_WITH(
+            validateRayTracingPipelineInterfaces(paired_request(), facts),
+            ContainsSubstring("pelican.ray_tracing.payload_mismatch@1"));
+    }
+    SECTION("WP367 an unreached physical ray slot still compares its hit pair") {
+        auto wrong = compile(R"glsl(
+          #version 460
+          #extension GL_EXT_ray_tracing : require
+          layout(location=0) rayPayloadInEXT uvec4 payload;
+          hitAttributeEXT vec2 attributes;
+          void main() {}
+        )glsl", vk::ShaderStageFlagBits::eAnyHitKHR,
+            "unreached-payload-mismatch.rahit");
+        paired_hits[1].any_hit = occurrence(
+            wrong, ShaderStage::anyhit, 4,
+            "unreached-payload-mismatch.rahit");
         CHECK_THROWS_WITH(
             validateRayTracingPipelineInterfaces(paired_request(), facts),
             ContainsSubstring("pelican.ray_tracing.payload_mismatch@1"));

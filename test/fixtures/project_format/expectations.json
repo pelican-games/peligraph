@@ -74,6 +74,10 @@
     "expect": "ok"
   },
   {
+    "file": "valid/shader_stem_rahit_closesthit_legacy.json",
+    "expect": "ok"
+  },
+  {
     "file": "invalid/shader_stem_missing.json",
     "expect": "error",
     "error_kind": "shader_stem_missing"

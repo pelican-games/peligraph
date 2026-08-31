@@ -14,6 +14,7 @@ endif()
 
 get_filename_component(SOURCE_DIR "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 include("${SOURCE_DIR}/cmake/pelican_feature_registry.cmake")
+include("${SOURCE_DIR}/test/required_capability_ctest.cmake")
 pelican_verify_feature_ledger("${SOURCE_DIR}/docs/implementation_plan.md")
 set(ARTIFACT_ROOT "${SOURCE_DIR}/build-unit-smoke-artifacts")
 
@@ -359,7 +360,9 @@ endfunction()
 # row observes only the named pre-document-load compiler gate.
 function(run_rt2a_compiler_on_contrast build_dir label)
     message(STATUS
-        "${label} RT2a observables: typed grammar; integer oracle; canonical .rahit resolver/shaderc/final-stage; paired ABI; sparse wire; production GPU A/B+SBT+reload")
+        "${label} RT2a observables: typed grammar; integer IR oracle; canonical .rahit resolver/shaderc/final-stage; all-physical paired ABI; physical-domain sparse wire; production GPU A/B+record markers+per-input negatives+SBT+reload")
+    message(STATUS
+        "${label} RT2a capability lane: flat/headless is the functional guarantee; XR and preview are configuration coverage only in this job")
     foreach(test_name IN ITEMS
             "WP367 typed triangle hit groups expose only optional anyhit"
             "WP367 integer predicate generator drives both CPU oracle lanes"
@@ -374,15 +377,15 @@ function(run_rt2a_compiler_on_contrast build_dir label)
             --test-dir "${build_dir}"
             --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
             --output-on-failure
+            --no-tests=error
             -R "^WP367 runtime wire projects sparse sorted anyhit occurrences$")
-    run_process(
-        "${label}_rt2a_gpu_actual_always"
-        TRUE
-        "${CMAKE_CTEST_COMMAND}"
-            --test-dir "${build_dir}"
-            --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
-            --output-on-failure
-            -R "^WP367 production anyhit A B proves integer predicates occurrence wire SBT and reload$")
+    pelican_run_required_capability_ctest(
+        BUILD_DIR "${build_dir}"
+        CONFIG "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
+        REGEX "^WP367 production anyhit A B proves integer predicates occurrence wire SBT and reload$"
+        LABEL "${label}_rt2a_gpu_actual_always"
+        REPORT_DIR "${ARTIFACT_ROOT}/required-capability/${label}"
+        FUNCTIONAL_LANE "flat/headless production RT2a")
 endfunction()
 
 function(run_rt2a_compiler_off_contrast build_dir label)
@@ -884,6 +887,7 @@ function(run_builtin_physics_smoke)
             --test-dir "${physics_provider_build_dir}"
             --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
             --output-on-failure
+            --no-tests=error
             -R "^physics_provider_game_dll_e2e$"
     )
     clean_successful_build("${physics_provider_build_dir}")
@@ -923,6 +927,7 @@ function(run_jolt_physics_smoke)
             --test-dir "${physics_jolt_build_dir}"
             --build-config "${PELICAN_BUILD_UNIT_SMOKE_CONFIG}"
             --output-on-failure
+            --no-tests=error
             -R "^physics_provider_game_dll_e2e$"
     )
     clean_successful_build("${physics_jolt_build_dir}")

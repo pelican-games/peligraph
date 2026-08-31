@@ -69,17 +69,21 @@ struct FramePlanShaderStage {
     bool operator==(const FramePlanShaderStage &) const = default;
 };
 
-struct FramePlanAnyHitSlot {
+struct FramePlanHitShaderSlot {
     std::size_t hit_slot = 0;
     FramePlanShaderStage projection;
 
-    bool operator==(const FramePlanAnyHitSlot &) const = default;
+    bool operator==(const FramePlanHitShaderSlot &) const = default;
 };
+
+using FramePlanAnyHitSlot = FramePlanHitShaderSlot;
 
 struct FramePlanShaderResolution {
     FramePlanShaderResolutionState state =
         FramePlanShaderResolutionState::not_applicable;
     std::vector<FramePlanShaderStage> stages;
+    std::optional<std::size_t> hit_slot_count;
+    std::vector<FramePlanHitShaderSlot> closesthit_slots;
     std::vector<FramePlanAnyHitSlot> anyhit_slots;
 
     [[nodiscard]] bool resolved() const noexcept {

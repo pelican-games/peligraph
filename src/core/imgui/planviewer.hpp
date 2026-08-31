@@ -22,14 +22,18 @@ struct PlanViewerShaderStage {
     std::optional<std::string> source_open_reason;
 };
 
-struct PlanViewerAnyHitSlot {
+struct PlanViewerHitShaderSlot {
     std::size_t hit_slot = 0;
     PlanViewerShaderStage projection;
 };
 
+using PlanViewerAnyHitSlot = PlanViewerHitShaderSlot;
+
 struct PlanViewerShaderResolution {
     std::string state;
     std::vector<PlanViewerShaderStage> stages;
+    std::optional<std::size_t> hit_slot_count;
+    std::vector<PlanViewerHitShaderSlot> closesthit_slots;
     std::vector<PlanViewerAnyHitSlot> anyhit_slots;
 };
 

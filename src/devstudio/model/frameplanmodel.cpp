@@ -703,7 +703,11 @@ FramePlanShaderResolution parseShaderResolution(
                       state + "'");
     }
 
-    requireOnlyFields(value, {"state", "stages", "anyhit_slots"}, context);
+    requireOnlyFields(
+        value,
+        {"state", "stages", "hit_slot_count", "closesthit_slots",
+         "anyhit_slots"},
+        context);
     result.state = FramePlanShaderResolutionState::resolved;
     const auto &stages = requireArrayField(value, "stages", context);
     if (stages.empty()) {
@@ -748,18 +752,37 @@ FramePlanShaderResolution parseShaderResolution(
         }
         result.stages.push_back(std::move(stage));
     }
-    if (const auto slots = value.find("anyhit_slots"); slots != value.end()) {
-        if (!slots->is_array() || slots->empty()) {
-            throw invalid(std::string{context} +
-                          ".anyhit_slots must be a non-empty array");
+    const bool has_hit_domain = value.contains("hit_slot_count") ||
+                                value.contains("closesthit_slots");
+    if (has_hit_domain !=
+        (value.contains("hit_slot_count") &&
+         value.contains("closesthit_slots"))) {
+        throw invalid(std::string{context} +
+                      " physical hit-slot projection requires both "
+                      "hit_slot_count and closesthit_slots");
+    }
+    if (value.contains("anyhit_slots") && !has_hit_domain) {
+        throw invalid(std::string{context} +
+                      ".anyhit_slots requires a physical hit-slot domain");
+    }
+
+    std::set<std::size_t> typed_closesthit_slots;
+    const auto parse_slots = [&](std::string_view field_name,
+                                 std::string_view expected_stage,
+                                 auto &destination) {
+        const auto &slots = value.at(field_name);
+        if (!slots.is_array() || slots.empty()) {
+            throw invalid(std::string{context} + "." +
+                          std::string{field_name} +
+                          " must be a non-empty array");
         }
         std::optional<std::size_t> previous;
-        result.anyhit_slots.reserve(slots->size());
-        for (std::size_t index = 0; index < slots->size(); ++index) {
+        destination.reserve(slots.size());
+        for (std::size_t index = 0; index < slots.size(); ++index) {
             const auto entry_context =
-                std::string{context} + ".anyhit_slots[" +
-                std::to_string(index) + "]";
-            const auto &entry = slots->at(index);
+                std::string{context} + "." + std::string{field_name} +
+                "[" + std::to_string(index) + "]";
+            const auto &entry = slots.at(index);
             if (!entry.is_object()) {
                 throw invalid(entry_context + " must be an object");
             }
@@ -773,24 +796,63 @@ FramePlanShaderResolution parseShaderResolution(
             if (!hit_slot) {
                 throw invalid(entry_context + ".hit_slot is required");
             }
+            if (*hit_slot >= *result.hit_slot_count) {
+                throw invalid(entry_context +
+                              ".hit_slot is outside hit_slot_count");
+            }
             Json normalized = entry;
             normalized.erase("hit_slot");
             normalized["index"] = *hit_slot;
             auto projection = parseShaderStage(normalized, entry_context);
-            if (projection.stage != "anyhit") {
-                throw invalid(entry_context +
-                              ".stage must be 'anyhit'");
+            if (projection.stage != expected_stage) {
+                throw invalid(entry_context + ".stage must be '" +
+                              std::string{expected_stage} + "'");
             }
             projection.index.reset();
             if (previous && *hit_slot <= *previous) {
-                throw invalid(std::string{context} +
-                              ".anyhit_slots must be strictly increasing");
+                throw invalid(std::string{context} + "." +
+                              std::string{field_name} +
+                              " must be strictly increasing");
             }
             previous = *hit_slot;
-            result.anyhit_slots.push_back({
+            destination.push_back({
                 .hit_slot = *hit_slot,
                 .projection = std::move(projection),
             });
+        }
+    };
+
+    if (has_hit_domain) {
+        if (std::any_of(
+                result.stages.begin(), result.stages.end(),
+                [](const auto &stage) {
+                    return stage.stage == "closesthit";
+                })) {
+            throw invalid(std::string{context} +
+                          " physical hit-slot projection forbids closesthit "
+                          "in stages");
+        }
+        result.hit_slot_count = optionalSizeField(
+            value, "hit_slot_count", context);
+        if (!result.hit_slot_count || *result.hit_slot_count == 0) {
+            throw invalid(std::string{context} +
+                          ".hit_slot_count must be a positive unsigned integer");
+        }
+        parse_slots("closesthit_slots", "closesthit",
+                    result.closesthit_slots);
+        for (const auto &slot : result.closesthit_slots) {
+            typed_closesthit_slots.insert(slot.hit_slot);
+        }
+    }
+    if (value.contains("anyhit_slots")) {
+        parse_slots("anyhit_slots", "anyhit", result.anyhit_slots);
+        for (const auto &slot : result.anyhit_slots) {
+            if (!typed_closesthit_slots.contains(slot.hit_slot)) {
+                throw invalid(std::string{context} +
+                              ".anyhit_slots hit_slot=" +
+                              std::to_string(slot.hit_slot) +
+                              " has no corresponding typed closesthit slot");
+            }
         }
     }
     return result;

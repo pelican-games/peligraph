@@ -74,8 +74,21 @@ bool hasKnownShaderExtension(std::string_view ref) {
            ext == ".rchit" || ext == ".rahit" || ext == ".wgsl";
 }
 
+bool hasKnownShaderExtension(
+    std::string_view ref, ShaderStage stage) {
+    const auto ext = lowerExtension(ref);
+    // .rahit became vocabulary in RT2a.  Before that addition it was a
+    // perfectly valid final component of an arbitrary stem (for example a
+    // closest-hit stem "foo.rahit" resolved to foo.rahit.rchit).  Reserve
+    // the new suffix only in the stage that owns it so old tasks keep that
+    // resolution behavior.  All older explicit suffixes retain their
+    // historical, stage-independent rejection.
+    if (ext == ".rahit") return stage == ShaderStage::anyhit;
+    return hasKnownShaderExtension(ref);
+}
+
 ShaderReference makeShaderReference(std::string ref, ShaderStage stage) {
-    if (hasKnownShaderExtension(ref)) {
+    if (hasKnownShaderExtension(ref, stage)) {
         throw std::runtime_error("shader reference '" + ref +
                                  "' uses an explicit file extension; use an extensionless " +
                                  shaderStageName(stage) + " shader stem");

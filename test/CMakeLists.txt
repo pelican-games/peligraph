@@ -185,6 +185,13 @@ add_test(
     -DPELICAN_MUTATION_DIR=${CMAKE_CURRENT_BINARY_DIR}/feature_registry_mutations
     -P ${CMAKE_SOURCE_DIR}/cmake/test_feature_registry_mutations.cmake
 )
+add_test(
+  NAME wp367a_required_capability_rejects_zero_tests_and_skips
+  COMMAND ${CMAKE_COMMAND}
+    "-DPELICAN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
+    "-DPELICAN_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_required_capability_ctest_contrast.cmake
+)
 
 if(TARGET pelican_studio_layout)
   # Qt imported targets are directory-scoped; make the layout library and

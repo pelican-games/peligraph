@@ -30,6 +30,7 @@ struct ShaderReference {
 std::string_view shaderStageSourceExtension(ShaderStage stage);
 std::string shaderStageName(ShaderStage stage);
 bool hasKnownShaderExtension(std::string_view ref);
+bool hasKnownShaderExtension(std::string_view ref, ShaderStage stage);
 ShaderReference makeShaderReference(std::string ref, ShaderStage stage);
 
 } // namespace Pelican

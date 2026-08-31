@@ -51,6 +51,9 @@ ShaderStage parseStage(const std::string &stage) {
     if (stage == "fragment") {
         return ShaderStage::fragment;
     }
+    if (stage == "closesthit") {
+        return ShaderStage::closesthit;
+    }
     throw std::runtime_error("unknown fixture shader stage: " + stage);
 }
 
@@ -71,6 +74,13 @@ struct ShaderSandbox {
         std::filesystem::copy_file(sourceRoot() / "src/core/resources/fullscreen.vert.spv",
                                    root / "shaders" / "fullscreen.vert.spv");
         writeText(root / "shaders" / "note.txt", "not a shader");
+        writeText(
+            root / "shaders" / "legacy.rahit.rchit",
+            "#version 460\n"
+            "#extension GL_EXT_ray_tracing : require\n"
+            "layout(location=0) rayPayloadInEXT uvec4 payload;\n"
+            "hitAttributeEXT vec2 attributes;\n"
+            "void main() { payload.x = 367u; }\n");
     }
 
     ~ShaderSandbox() {
@@ -129,6 +139,7 @@ TEST_CASE("shader references reject explicit extensions and name the stem form",
         {"shaders/fullscreen.vert", ShaderStage::vertex},
         {"shaders/fullscreen.frag", ShaderStage::fragment},
         {"shaders/fullscreen.comp", ShaderStage::compute},
+        {"shaders/fullscreen.rahit", ShaderStage::anyhit},
         {"shaders/fullscreen.wgsl", ShaderStage::fragment},
     };
 

@@ -1220,6 +1220,19 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
               {"origin", "authored"},
               {"source_open_ref", "project://shaders/trace.rgen"}},
          })},
+        {"hit_slot_count", std::size_t{5}},
+        {"closesthit_slots", Json::array({
+             {{"hit_slot", std::size_t{1}}, {"stage", "closesthit"},
+              {"declared_ref", "shaders/hit1"},
+              {"effective_ref", "shaders/hit1"},
+              {"origin", "authored"},
+              {"source_open_ref", "project://shaders/hit1.rchit"}},
+             {{"hit_slot", std::size_t{4}}, {"stage", "closesthit"},
+              {"declared_ref", "shaders/hit4"},
+              {"effective_ref", "shaders/hit4"},
+              {"origin", "authored"},
+              {"source_open_ref", "project://shaders/hit4.rchit"}},
+         })},
         {"anyhit_slots", Json::array({
              {{"hit_slot", std::size_t{1}}, {"stage", "anyhit"},
               {"declared_ref", "shaders/filter1"},
@@ -1235,6 +1248,10 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
     };
 
     const auto model = buildFramePlanModel(plan.dump());
+    CHECK(model.nodes.front().shader_resolution.hit_slot_count ==
+          std::optional<std::size_t>{5});
+    REQUIRE(model.nodes.front().shader_resolution.closesthit_slots.size() == 2);
+    CHECK(model.nodes.front().shader_resolution.closesthit_slots[0].hit_slot == 1);
     REQUIRE(model.nodes.front().shader_resolution.anyhit_slots.size() == 2);
     CHECK(model.nodes.front().shader_resolution.anyhit_slots[0].hit_slot == 1);
     CHECK(model.nodes.front()
@@ -1275,5 +1292,25 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
         REQUIRE_THROWS_WITH(
             buildFramePlanModel(plan.dump()),
             ContainsSubstring("must be a non-empty array"));
+    }
+    SECTION("an in-domain orphan anyhit slot is rejected") {
+        slots[0]["hit_slot"] = std::size_t{2};
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "no corresponding typed closesthit slot"));
+    }
+    SECTION("an out-of-domain anyhit slot is rejected") {
+        slots[1]["hit_slot"] = std::size_t{5};
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring("outside hit_slot_count"));
+    }
+    SECTION("the physical domain cannot be omitted") {
+        resolution.erase("closesthit_slots");
+        REQUIRE_THROWS_WITH(
+            buildFramePlanModel(plan.dump()),
+            ContainsSubstring(
+                "requires both hit_slot_count and closesthit_slots"));
     }
 }

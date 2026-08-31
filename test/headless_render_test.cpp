@@ -723,48 +723,79 @@ void main() {
 constexpr std::uint32_t wp367SingleRecord = 111u;
 constexpr std::uint32_t wp367FrontRecord = 222u;
 constexpr std::uint32_t wp367BackRecord = 333u;
+constexpr std::uint32_t wp367ShadowRayMarker = 1u;
 constexpr std::uint32_t wp367SingleGroup = 0x510u;
 constexpr std::uint32_t wp367FrontGroup = 0x520u;
 constexpr std::uint32_t wp367BackGroup = 0x530u;
 
+constexpr std::uint32_t wp367MarkerProof(
+    std::uint32_t ray_marker, std::uint32_t group_marker) {
+    const auto packed = (ray_marker << 16u) | group_marker;
+    const auto anyhit = 0xa3670000u ^ packed;
+    const auto closesthit = 0xc3670000u ^ packed;
+    return anyhit * 33u + closesthit;
+}
+
 std::string wp367AnyHitSource(
-    const RayTracingAnyHitIntegerPredicate &predicate) {
+    const RayTracingAnyHitIntegerPredicate &predicate,
+    std::uint32_t ray_marker, std::uint32_t group_marker) {
     std::string source = R"glsl(#version 460
 #extension GL_EXT_ray_tracing : require
-struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+struct Payload { uint q; uint t_bits; uint record_marker; uint marker_proof; };
 layout(location=0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 hit_attribute;
 layout(shaderRecordEXT, std430) buffer RayRecord {
     uint marker;
+    uint ray_marker;
+    uint group_marker;
 } ray_record;
 void main() {
-    if (!(PREDICATE)) {
+    if (!((ray_record.ray_marker == R_MARKER) &&
+          (ray_record.group_marker == GROUP_MARKER) &&
+          (PREDICATE))) {
         ignoreIntersectionEXT;
     }
+    payload.marker_proof =
+        0xa3670000u ^
+        ((ray_record.ray_marker << 16u) | ray_record.group_marker);
 }
 )glsl";
     source.replace(source.find("PREDICATE"),
                    std::string_view{"PREDICATE"}.size(),
                    predicate.glslAcceptExpression("ray_record.marker"));
+    source.replace(source.find("R_MARKER"),
+                   std::string_view{"R_MARKER"}.size(),
+                   std::to_string(ray_marker) + "u");
+    source.replace(source.find("GROUP_MARKER"),
+                   std::string_view{"GROUP_MARKER"}.size(),
+                   std::to_string(group_marker) + "u");
     return source;
 }
 
 void writeWp367AnyHitShader(
     const std::filesystem::path &directory,
     std::string_view stem,
-    const RayTracingAnyHitIntegerPredicate &predicate) {
+    const RayTracingAnyHitIntegerPredicate &predicate,
+    std::uint32_t ray_marker, std::uint32_t group_marker) {
     writeTextFile(directory / "shaders" /
                       (std::string{stem} + ".rahit"),
-                  wp367AnyHitSource(predicate));
+                  wp367AnyHitSource(
+                      predicate, ray_marker, group_marker));
 }
 
 void writeWp367ActualAnyHitShaders(
     const std::filesystem::path &directory,
     const RayTracingAnyHitIntegerPredicate &single,
     const RayTracingAnyHitIntegerPredicate &overlap) {
-    writeWp367AnyHitShader(directory, "wp367_actual_single", single);
-    writeWp367AnyHitShader(directory, "wp367_actual_front", overlap);
-    writeWp367AnyHitShader(directory, "wp367_actual_back", overlap);
+    writeWp367AnyHitShader(
+        directory, "wp367_actual_single", single,
+        wp367ShadowRayMarker, wp367SingleGroup);
+    writeWp367AnyHitShader(
+        directory, "wp367_actual_front", overlap,
+        wp367ShadowRayMarker, wp367FrontGroup);
+    writeWp367AnyHitShader(
+        directory, "wp367_actual_back", overlap,
+        wp367ShadowRayMarker, wp367BackGroup);
 }
 
 void writeRt2aAnyHitProject(
@@ -777,10 +808,10 @@ void writeRt2aAnyHitProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(
         directory / "ray_layout.json",
-        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["primary","shadow"],"default_group":"single","groups":[{"name":"single"},{"name":"front"},{"name":"back"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json");
+        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["primary","shadow"],"default_group":"single","groups":[{"name":"single"},{"name":"front"},{"name":"back"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"},{"name":"ray_marker","type":"u32"},{"name":"group_marker","type":"u32"}]})json");
     writeTextFile(
         directory / "ray_bindings.json",
-        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/wp367_single.glb","source_material_index":0},"group":"single","record":{"marker":111}},{"material":{"asset":"models/wp367_front.glb","source_material_index":0},"group":"front","record":{"marker":222}},{"material":{"asset":"models/wp367_back.glb","source_material_index":0},"group":"back","record":{"marker":333}}]})json");
+        R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/wp367_single.glb","source_material_index":0},"group":"single","record":{"marker":111,"ray_marker":1,"group_marker":1296}},{"material":{"asset":"models/wp367_front.glb","source_material_index":0},"group":"front","record":{"marker":222,"ray_marker":1,"group_marker":1312}},{"material":{"asset":"models/wp367_back.glb","source_material_index":0},"group":"back","record":{"marker":333,"ray_marker":1,"group_marker":1328}}]})json");
     std::filesystem::create_directories(directory / "shaders");
 
     const auto raygen = [](std::string_view output) {
@@ -790,7 +821,7 @@ void writeRt2aAnyHitProject(
 #include "__pelican_ray_group_layout.glsl"
 layout(set=0,binding=6) uniform accelerationStructureEXT pelicanRayTracingScene;
 layout(rgba32ui,set=1,binding=0) writeonly uniform uimage2D OUTPUT_NAME;
-struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+struct Payload { uint q; uint t_bits; uint record_marker; uint marker_proof; };
 layout(location=0) rayPayloadEXT Payload payload;
 void main() {
     ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
@@ -802,7 +833,7 @@ void main() {
                 vec3(0.0, 0.0, 1.0), 4096.0, 0);
     imageStore(OUTPUT_NAME, pixel,
                uvec4(payload.q, payload.t_bits,
-                     payload.ray_type, payload.group_marker));
+                     payload.record_marker, payload.marker_proof));
 }
 )glsl";
         for (auto at = source.find("OUTPUT_NAME");
@@ -818,21 +849,36 @@ void main() {
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : require
 #include "__pelican_ray_group_layout.glsl"
-struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+struct Payload { uint q; uint t_bits; uint record_marker; uint marker_proof; };
 layout(location=0) rayPayloadInEXT Payload payload;
 hitAttributeEXT vec2 hit_attribute;
 layout(shaderRecordEXT, std430) buffer RayRecord {
     uint marker;
+    uint ray_marker;
+    uint group_marker;
 } ray_record;
 void main() {
+    uint anyhit_marker_proof = payload.marker_proof;
+    uint closesthit_marker_proof =
+        (ray_record.ray_marker == PELICAN_RAY_TYPE_shadow &&
+         ray_record.group_marker == GROUP_MARKER)
+            ? (0xc3670000u ^
+               ((ray_record.ray_marker << 16u) |
+                ray_record.group_marker))
+            : 0xfffffffeu;
     payload = Payload(uint(gl_InstanceCustomIndexEXT),
                       floatBitsToUint(gl_HitTEXT),
-                      PELICAN_RAY_TYPE_shadow, GROUP_MARKER);
+                      ray_record.marker,
+                      anyhit_marker_proof * 33u +
+                          closesthit_marker_proof);
 }
 )glsl";
-        source.replace(source.find("GROUP_MARKER"),
-                       std::string_view{"GROUP_MARKER"}.size(),
-                       std::to_string(group_marker) + "u");
+        for (auto at = source.find("GROUP_MARKER");
+             at != std::string::npos;
+             at = source.find("GROUP_MARKER", at + 1)) {
+            source.replace(at, std::string_view{"GROUP_MARKER"}.size(),
+                           std::to_string(group_marker) + "u");
+        }
         return source;
     };
     writeTextFile(directory / "shaders" / "wp367_actual.rgen",
@@ -845,7 +891,7 @@ void main() {
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : require
 #include "__pelican_ray_group_layout.glsl"
-struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+struct Payload { uint q; uint t_bits; uint record_marker; uint marker_proof; };
 layout(location=0) rayPayloadInEXT Payload payload;
 void main() {
     payload = Payload(0xffffffffu, 0u, 0x6ffu, 0x5ffu);
@@ -860,9 +906,13 @@ void main() {
 
     const auto always = RayTracingAnyHitIntegerPredicate::alwaysAccept();
     writeWp367ActualAnyHitShaders(directory, always, always);
-    for (const auto group : {"single", "front", "back"}) {
+    for (const auto [group, marker] : {
+             std::pair{"single", wp367SingleGroup},
+             std::pair{"front", wp367FrontGroup},
+             std::pair{"back", wp367BackGroup}}) {
         writeWp367AnyHitShader(
-            directory, std::string{"wp367_always_"} + group, always);
+            directory, std::string{"wp367_always_"} + group, always,
+            wp367ShadowRayMarker, marker);
     }
 
     const auto hit_shaders = [](std::string_view lane) {
@@ -977,6 +1027,7 @@ void main() {
 
 enum class Wp367NegativeAnyHitLoadKind {
     payload_mismatch,
+    unreached_payload_mismatch,
     vec3_attribute,
     record_mismatch,
     multiple_incoming_payloads,
@@ -993,7 +1044,9 @@ void writeWp367NegativeAnyHitLoadProject(
         R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
     writeTextFile(
         directory / "ray_layout.json",
-        R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["shadow"],"default_group":"only","groups":[{"name":"only"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json");
+        kind == Wp367NegativeAnyHitLoadKind::unreached_payload_mismatch
+            ? R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["shadow","unused"],"default_group":"only","groups":[{"name":"only"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json"
+            : R"json({"schema":"pelican.ray_group_layout","version":1,"ray_types":["shadow"],"default_group":"only","groups":[{"name":"only"}],"misses":[{"name":"open"}],"record":[{"name":"marker","type":"u32"}]})json");
     writeTextFile(
         directory / "shaders" / "wp367_negative.rgen",
         R"glsl(#version 460
@@ -1040,6 +1093,16 @@ layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
 void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
 )glsl";
         break;
+    case Wp367NegativeAnyHitLoadKind::unreached_payload_mismatch:
+        anyhit = R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint q; uint t_bits; uint ray_type; uint group_marker; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
+void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
+)glsl";
+        break;
     case Wp367NegativeAnyHitLoadKind::vec3_attribute:
         anyhit = R"glsl(#version 460
 #extension GL_EXT_ray_tracing : require
@@ -1074,9 +1137,27 @@ void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
     }
     writeTextFile(directory / "shaders" / "wp367_negative.rahit",
                   anyhit);
-    writeTextFile(
-        directory / "hybrid.json",
-        R"json({
+    if (kind == Wp367NegativeAnyHitLoadKind::unreached_payload_mismatch) {
+        writeTextFile(
+            directory / "shaders" / "wp367_negative_unused.rchit",
+            R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+layout(location=0) rayPayloadInEXT vec4 payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
+void main() { payload.x = float(ray_record.marker); }
+)glsl");
+        writeTextFile(
+            directory / "shaders" / "wp367_negative_unused.rahit",
+            R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+layout(location=0) rayPayloadInEXT uvec4 payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord { uint marker; } ray_record;
+void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
+)glsl");
+    }
+    auto config = nlohmann::json::parse(R"json({
   "ray_group_layout": "ray_layout.json",
   "render_targets": [
     {
@@ -1142,6 +1223,19 @@ void main() { if (ray_record.marker == 0xffffffffu) ignoreIntersectionEXT; }
     }
   }
 })json");
+    if (kind == Wp367NegativeAnyHitLoadKind::unreached_payload_mismatch) {
+        auto &ray = config["compute_tasks"][0]["ray_tracing"];
+        ray["traced_ray_types"].push_back("unused");
+        ray["hit_shaders"]["unused"] = {
+            {"only",
+             {{"type", "triangles"},
+              {"closesthit",
+               "project://shaders/wp367_negative_unused"},
+              {"anyhit",
+               "project://shaders/wp367_negative_unused"}}},
+        };
+    }
+    writeTextFile(directory / "hybrid.json", config.dump(2));
 }
 
 enum class Rt1aNegativeLoadKind {
@@ -11998,16 +12092,24 @@ TEST_CASE(
         const auto always_overlap = pixel(always, 1);
         CHECK(actual_single[0] == single.q);
         CHECK(always_single[0] == single.q);
-        CHECK(actual_single[2] == 1u);
-        CHECK(always_single[2] == 1u);
-        CHECK(actual_single[3] == wp367SingleGroup);
-        CHECK(always_single[3] == wp367SingleGroup);
+        CHECK(actual_single[2] == single.record);
+        CHECK(always_single[2] == single.record);
+        CHECK(actual_single[3] == wp367MarkerProof(
+                                      wp367ShadowRayMarker,
+                                      wp367SingleGroup));
+        CHECK(always_single[3] == wp367MarkerProof(
+                                      wp367ShadowRayMarker,
+                                      wp367SingleGroup));
         CHECK(actual_overlap[0] == back.q);
         CHECK(always_overlap[0] == front.q);
-        CHECK(actual_overlap[2] == 1u);
-        CHECK(always_overlap[2] == 1u);
-        CHECK(actual_overlap[3] == wp367BackGroup);
-        CHECK(always_overlap[3] == wp367FrontGroup);
+        CHECK(actual_overlap[2] == back.record);
+        CHECK(always_overlap[2] == front.record);
+        CHECK(actual_overlap[3] == wp367MarkerProof(
+                                       wp367ShadowRayMarker,
+                                       wp367BackGroup));
+        CHECK(always_overlap[3] == wp367MarkerProof(
+                                       wp367ShadowRayMarker,
+                                       wp367FrontGroup));
         CHECK(pixel(actual, 2) ==
               std::array{0xffffffffu, 0u, 0x6ffu, 0x5ffu});
         CHECK(pixel(always, 2) ==
@@ -12078,9 +12180,13 @@ TEST_CASE(
             (capabilities.shader_group_handle_size + alignment - 1u) /
             alignment * alignment;
         std::array<std::uint32_t, 3> marker_by_q{};
+        std::array<std::uint32_t, 3> group_marker_by_q{};
         marker_by_q[single.q] = single.record;
         marker_by_q[front.q] = front.record;
         marker_by_q[back.q] = back.record;
+        group_marker_by_q[single.q] = wp367SingleGroup;
+        group_marker_by_q[front.q] = wp367FrontGroup;
+        group_marker_by_q[back.q] = wp367BackGroup;
         for (const auto &write : writes) {
             REQUIRE(write.record_index_stride == 2);
             REQUIRE(write.record_count == 6);
@@ -12090,12 +12196,16 @@ TEST_CASE(
                         static_cast<std::size_t>(q * 2u + r) *
                             write.record_byte_stride +
                         data_start;
-                    std::uint32_t marker = 0;
-                    REQUIRE(at + sizeof(marker) <= write.hit_bytes.size());
-                    std::memcpy(&marker, write.hit_bytes.data() + at,
-                                sizeof(marker));
-                    CHECK(marker ==
+                    std::array<std::uint32_t, 3> record{};
+                    REQUIRE(at + sizeof(record) <= write.hit_bytes.size());
+                    std::memcpy(record.data(), write.hit_bytes.data() + at,
+                                sizeof(record));
+                    CHECK(record[0] ==
                           (r == 1u ? marker_by_q[q] : 0u));
+                    CHECK(record[1] ==
+                          (r == 1u ? wp367ShadowRayMarker : 0u));
+                    CHECK(record[2] ==
+                          (r == 1u ? group_marker_by_q[q] : 0u));
                 }
             }
         }
@@ -12110,6 +12220,10 @@ TEST_CASE(
                 });
             REQUIRE(node != plan.at("nodes").end());
             const auto &resolution = node->at("shader_resolution");
+            REQUIRE(resolution.at("hit_slot_count") == 6);
+            const auto &closesthit_slots =
+                resolution.at("closesthit_slots");
+            REQUIRE(closesthit_slots.size() == 3);
             REQUIRE(resolution.contains("anyhit_slots"));
             const auto &slots = resolution.at("anyhit_slots");
             REQUIRE(slots.size() == 3);
@@ -12117,6 +12231,10 @@ TEST_CASE(
             constexpr std::array<std::string_view, 3> groups{
                 "single", "front", "back"};
             for (std::size_t index = 0; index < slots.size(); ++index) {
+                CHECK(closesthit_slots.at(index).at("hit_slot") ==
+                      expected_slots[index]);
+                CHECK(closesthit_slots.at(index).at("stage") ==
+                      "closesthit");
                 CHECK(slots.at(index).at("hit_slot") ==
                       expected_slots[index]);
                 CHECK(slots.at(index).at("stage") == "anyhit");
@@ -12134,15 +12252,109 @@ TEST_CASE(
         check_occurrences("always");
 
         auto &reload_service = GET_MODULE(watch::ReloadService);
+        const auto single_key =
+            watch::makeAssetKey("shaders/wp367_actual_single.rahit");
         const auto front_key =
             watch::makeAssetKey("shaders/wp367_actual_front.rahit");
+        REQUIRE(GET_MODULE(ShaderLibrary).handlesReload(single_key));
         REQUIRE(GET_MODULE(ShaderLibrary).handlesReload(front_key));
+
+        struct SingleNegativeControl {
+            std::string input;
+            RayTracingAnyHitIntegerPredicate predicate;
+            std::uint32_t ray_marker = wp367ShadowRayMarker;
+            std::uint32_t group_marker = wp367SingleGroup;
+        };
+        const std::array single_negative_controls{
+            SingleNegativeControl{
+                "primitive_id",
+                RayTracingAnyHitIntegerPredicate::acceptMatching({
+                    .primitive_id = 1,
+                    .instance_custom_index = single.q,
+                    .record_u32 = single.record,
+                })},
+            SingleNegativeControl{
+                "instance_custom_index",
+                RayTracingAnyHitIntegerPredicate::acceptMatching({
+                    .primitive_id = 0,
+                    .instance_custom_index = single.q + 1u,
+                    .record_u32 = single.record,
+                })},
+            SingleNegativeControl{
+                "record_u32",
+                RayTracingAnyHitIntegerPredicate::acceptMatching({
+                    .primitive_id = 0,
+                    .instance_custom_index = single.q,
+                    .record_u32 = single.record + 1u,
+                })},
+            SingleNegativeControl{
+                "record_ray_marker",
+                single_predicate,
+                wp367ShadowRayMarker + 1u,
+                wp367SingleGroup},
+            SingleNegativeControl{
+                "record_group_marker",
+                single_predicate,
+                wp367ShadowRayMarker,
+                wp367SingleGroup + 1u},
+        };
+        const auto miss_pixel = pixel(actual, 2);
+        std::uint64_t reload_sequence = 1;
+        for (const auto &control : single_negative_controls) {
+            CAPTURE(control.input, control.ray_marker,
+                    control.group_marker);
+            writeWp367AnyHitShader(
+                temp_dir, "wp367_actual_single", control.predicate,
+                control.ray_marker, control.group_marker);
+            const auto creates_before_control = creates.size();
+            REQUIRE(reload_service.applyRequestForTesting(
+                watch::ReloadRequest{
+                    single_key, watch::ReloadKind::modified, {},
+                    reload_sequence++}));
+            REQUIRE(creates.size() > creates_before_control);
+            renderer.render();
+            vkcore.waitIdle();
+            const auto rejected = renderer.readRenderTargetForTesting(
+                "wp367_actual", ImageSubresourceRange{});
+            const auto unchanged_always =
+                renderer.readRenderTargetForTesting(
+                    "wp367_always", ImageSubresourceRange{});
+            CHECK(pixel(rejected, 0) == miss_pixel);
+            CHECK(unchanged_always.bytes == always.bytes);
+        }
+
+        // Restore the exact AST predicate and both record marker guards.  A
+        // hit now proves that the negative results above were caused by the
+        // one changed input, not by a stale or failed reload.
         writeWp367AnyHitShader(
-            temp_dir, "wp367_actual_front", always_predicate);
+            temp_dir, "wp367_actual_single", single_predicate,
+            wp367ShadowRayMarker, wp367SingleGroup);
+        REQUIRE(reload_service.applyRequestForTesting(
+            watch::ReloadRequest{
+                single_key, watch::ReloadKind::modified, {},
+                reload_sequence++}));
+        renderer.render();
+        vkcore.waitIdle();
+        const auto restored = renderer.readRenderTargetForTesting(
+            "wp367_actual", ImageSubresourceRange{});
+        const auto restored_single = pixel(restored, 0);
+        CHECK(restored_single[0] == single.q);
+        CHECK(restored_single[2] == single.record);
+        CHECK(restored_single[3] == wp367MarkerProof(
+                                         wp367ShadowRayMarker,
+                                         wp367SingleGroup));
+        CHECK(rayTracingOracleContainsGpuHit(
+            *cpu_single_actual.hit,
+            std::bit_cast<float>(restored_single[1]),
+            restored_single[0]));
+
+        writeWp367AnyHitShader(
+            temp_dir, "wp367_actual_front", always_predicate,
+            wp367ShadowRayMarker, wp367FrontGroup);
         const auto creates_before_reload = creates.size();
         REQUIRE(reload_service.applyRequestForTesting(
             watch::ReloadRequest{front_key, watch::ReloadKind::modified,
-                                 {}, 1}));
+                                 {}, reload_sequence++}));
         REQUIRE(creates.size() > creates_before_reload);
         CHECK(std::count_if(
                   creates.back().hit_group_any_hit_shaders.begin(),
@@ -12160,8 +12372,10 @@ TEST_CASE(
             "wp367_always", ImageSubresourceRange{});
         const auto reloaded_front = pixel(reloaded_actual, 1);
         CHECK(reloaded_front[0] == front.q);
-        CHECK(reloaded_front[2] == 1u);
-        CHECK(reloaded_front[3] == wp367FrontGroup);
+        CHECK(reloaded_front[2] == front.record);
+        CHECK(reloaded_front[3] == wp367MarkerProof(
+                                        wp367ShadowRayMarker,
+                                        wp367FrontGroup));
         CHECK(rayTracingOracleContainsGpuHit(
             *cpu_overlap_always.hit,
             std::bit_cast<float>(reloaded_front[1]), reloaded_front[0]));
@@ -12194,6 +12408,8 @@ TEST_CASE(
     };
     for (const auto test_case : {
              Case{Wp367NegativeAnyHitLoadKind::payload_mismatch,
+                  "pelican.ray_tracing.payload_mismatch@1"},
+             Case{Wp367NegativeAnyHitLoadKind::unreached_payload_mismatch,
                   "pelican.ray_tracing.payload_mismatch@1"},
              Case{Wp367NegativeAnyHitLoadKind::vec3_attribute,
                   "pelican.ray_tracing.hit_attribute_forbidden@1"},

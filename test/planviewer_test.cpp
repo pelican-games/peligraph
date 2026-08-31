@@ -165,6 +165,19 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
                       {"origin", "authored"},
                       {"source_open_ref", "project://shaders/trace.rgen"}},
                  })},
+                {"hit_slot_count", std::size_t{4}},
+                {"closesthit_slots", nlohmann::json::array({
+                     {{"hit_slot", std::size_t{0}}, {"stage", "closesthit"},
+                      {"declared_ref", "shaders/hit0"},
+                      {"effective_ref", "shaders/hit0"},
+                      {"origin", "authored"},
+                      {"source_open_ref", "project://shaders/hit0.rchit"}},
+                     {{"hit_slot", std::size_t{3}}, {"stage", "closesthit"},
+                      {"declared_ref", "shaders/hit3"},
+                      {"effective_ref", "shaders/hit3"},
+                      {"origin", "authored"},
+                      {"source_open_ref", "project://shaders/hit3.rchit"}},
+                 })},
                 {"anyhit_slots", nlohmann::json::array({
                      {{"hit_slot", std::size_t{0}}, {"stage", "anyhit"},
                       {"declared_ref", "shaders/filter0"},
@@ -184,6 +197,10 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
 
     const auto model = buildPlanViewerModel(plan);
     REQUIRE(model.nodes.size() == 1);
+    CHECK(model.nodes.front().shader_resolution.hit_slot_count ==
+          std::optional<std::size_t>{4});
+    REQUIRE(model.nodes.front().shader_resolution.closesthit_slots.size() == 2);
+    CHECK(model.nodes.front().shader_resolution.closesthit_slots[1].hit_slot == 3);
     REQUIRE(model.nodes.front().shader_resolution.anyhit_slots.size() == 2);
     CHECK(model.nodes.front().shader_resolution.anyhit_slots[0].hit_slot == 0);
     CHECK(model.nodes.front().shader_resolution.anyhit_slots[1].hit_slot == 3);
@@ -218,12 +235,33 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
             "project://shaders/filter0.rchit";
         CHECK_THROWS_WITH(
             buildPlanViewerModel(plan),
-            Catch::Matchers::ContainsSubstring("must end in .rahit"));
+            Catch::Matchers::ContainsSubstring("wrong stage suffix"));
     }
     SECTION("empty sparse field must instead be omitted") {
         slots = nlohmann::json::array();
         CHECK_THROWS_WITH(
             buildPlanViewerModel(plan),
             Catch::Matchers::ContainsSubstring("non-empty array"));
+    }
+    SECTION("an in-domain orphan anyhit slot is rejected") {
+        slots[0]["hit_slot"] = std::size_t{1};
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring(
+                "no corresponding typed closesthit slot"));
+    }
+    SECTION("an out-of-domain anyhit slot is rejected") {
+        slots[1]["hit_slot"] = std::size_t{4};
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring(
+                "outside hit_slot_count"));
+    }
+    SECTION("the physical domain cannot be omitted") {
+        plan["nodes"][0]["shader_resolution"].erase("hit_slot_count");
+        CHECK_THROWS_WITH(
+            buildPlanViewerModel(plan),
+            Catch::Matchers::ContainsSubstring(
+                "requires both hit_slot_count and closesthit_slots"));
     }
 }

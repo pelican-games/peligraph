@@ -4,9 +4,11 @@
 #include <bit>
 #include <cfenv>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 #if !defined(_MSC_VER)
 #pragma STDC FP_CONTRACT OFF
@@ -262,18 +264,153 @@ RayTracingOracleIntersection intersect(
 
 } // namespace
 
+RayTracingAnyHitIntegerPredicate::RayTracingAnyHitIntegerPredicate()
+    noexcept {
+    const auto tautology = [&](RayTracingAnyHitIntegerPredicateInput input) {
+        const auto value = append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::input,
+            .input = input,
+        });
+        const auto inverse = append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::bitwise_not,
+            .left = value,
+        });
+        const auto all_bits = append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::bitwise_or,
+            .left = value,
+            .right = inverse,
+        });
+        const auto expected = append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::u32_literal,
+            .literal = 0xffffffffu,
+        });
+        return append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::equal,
+            .left = all_bits,
+            .right = expected,
+        });
+    };
+    auto result = tautology(
+        RayTracingAnyHitIntegerPredicateInput::primitive_id);
+    for (const auto input : {
+             RayTracingAnyHitIntegerPredicateInput::instance_custom_index,
+             RayTracingAnyHitIntegerPredicateInput::record_u32}) {
+        const auto next = tautology(input);
+        result = append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::logical_and,
+            .left = result,
+            .right = next,
+        });
+    }
+    root_ = result;
+}
+
+std::uint8_t RayTracingAnyHitIntegerPredicate::append(
+    RayTracingAnyHitIntegerPredicateNode node) noexcept {
+    if (node_count_ >= nodes_.size()) std::terminate();
+    nodes_[node_count_] = node;
+    return node_count_++;
+}
+
+RayTracingAnyHitIntegerPredicate
+RayTracingAnyHitIntegerPredicate::matching(
+    RayTracingAnyHitIntegerInputs match, bool negate) noexcept {
+    RayTracingAnyHitIntegerPredicate result;
+    result.node_count_ = 0;
+    const auto equality = [&](RayTracingAnyHitIntegerPredicateInput input,
+                              std::uint32_t literal) {
+        const auto input_node = result.append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::input,
+            .input = input,
+        });
+        const auto literal_node = result.append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::u32_literal,
+            .literal = literal,
+        });
+        return result.append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::equal,
+            .left = input_node,
+            .right = literal_node,
+        });
+    };
+    auto root = equality(
+        RayTracingAnyHitIntegerPredicateInput::primitive_id,
+        match.primitive_id);
+    for (const auto [input, literal] : {
+             std::pair{
+                 RayTracingAnyHitIntegerPredicateInput::instance_custom_index,
+                 match.instance_custom_index},
+             std::pair{
+                 RayTracingAnyHitIntegerPredicateInput::record_u32,
+                 match.record_u32}}) {
+        const auto next = equality(input, literal);
+        root = result.append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::logical_and,
+            .left = root,
+            .right = next,
+        });
+    }
+    if (negate) {
+        root = result.append({
+            .opcode = RayTracingAnyHitIntegerPredicateOpcode::logical_not,
+            .left = root,
+        });
+    }
+    result.root_ = root;
+    return result;
+}
+
 bool RayTracingAnyHitIntegerPredicate::accepts(
     RayTracingAnyHitIntegerInputs inputs) const noexcept {
-    if (mode == RayTracingAnyHitIntegerPredicateMode::always_accept) {
-        return true;
+    struct Value {
+        std::uint32_t integer = 0;
+        bool boolean = false;
+    };
+    std::array<Value, maximum_nodes> values{};
+    for (std::uint8_t index = 0; index < node_count_; ++index) {
+        const auto &node = nodes_[index];
+        auto &value = values[index];
+        switch (node.opcode) {
+        case RayTracingAnyHitIntegerPredicateOpcode::boolean_literal:
+            value.boolean = node.literal != 0;
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::u32_literal:
+            value.integer = node.literal;
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::input:
+            switch (node.input) {
+            case RayTracingAnyHitIntegerPredicateInput::primitive_id:
+                value.integer = inputs.primitive_id;
+                break;
+            case RayTracingAnyHitIntegerPredicateInput::instance_custom_index:
+                value.integer = inputs.instance_custom_index;
+                break;
+            case RayTracingAnyHitIntegerPredicateInput::record_u32:
+                value.integer = inputs.record_u32;
+                break;
+            }
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::equal:
+            value.boolean = values[node.left].integer ==
+                            values[node.right].integer;
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::logical_and:
+            value.boolean = values[node.left].boolean &&
+                            values[node.right].boolean;
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::logical_not:
+            value.boolean = !values[node.left].boolean;
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::bitwise_or:
+            value.integer = values[node.left].integer |
+                            values[node.right].integer;
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::bitwise_not:
+            value.integer = ~values[node.left].integer;
+            break;
+        }
     }
-    const auto matches = inputs.primitive_id == match.primitive_id &&
-                         inputs.instance_custom_index ==
-                             match.instance_custom_index &&
-                         inputs.record_u32 == match.record_u32;
-    return mode == RayTracingAnyHitIntegerPredicateMode::accept_matching
-               ? matches
-               : !matches;
+    return values[root_].boolean;
 }
 
 std::string RayTracingAnyHitIntegerPredicate::glslAcceptExpression(
@@ -282,28 +419,51 @@ std::string RayTracingAnyHitIntegerPredicate::glslAcceptExpression(
         throw std::invalid_argument(
             "any-hit integer predicate requires a record u32 expression");
     }
-    if (mode == RayTracingAnyHitIntegerPredicateMode::always_accept) {
-        // Keep all three integer inputs live in the generated shader.  This
-        // is an integer tautology, so it is still a genuine always-accept
-        // lane while reflecting the same payload/record interfaces as the
-        // actual predicate lane.
-        const auto uint_record = "uint(" +
-                                 std::string{record_u32_expression} + ")";
-        return "(((uint(gl_PrimitiveID) | ~uint(gl_PrimitiveID)) == "
-               "0xffffffffu) && ((uint(gl_InstanceCustomIndexEXT) | "
-               "~uint(gl_InstanceCustomIndexEXT)) == 0xffffffffu) && ((" +
-               uint_record + " | ~" + uint_record +
-               ") == 0xffffffffu))";
+    std::array<std::string, maximum_nodes> emitted;
+    for (std::uint8_t index = 0; index < node_count_; ++index) {
+        const auto &node = nodes_[index];
+        auto &value = emitted[index];
+        switch (node.opcode) {
+        case RayTracingAnyHitIntegerPredicateOpcode::boolean_literal:
+            value = node.literal != 0 ? "true" : "false";
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::u32_literal:
+            value = std::to_string(node.literal) + "u";
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::input:
+            switch (node.input) {
+            case RayTracingAnyHitIntegerPredicateInput::primitive_id:
+                value = "uint(gl_PrimitiveID)";
+                break;
+            case RayTracingAnyHitIntegerPredicateInput::instance_custom_index:
+                value = "uint(gl_InstanceCustomIndexEXT)";
+                break;
+            case RayTracingAnyHitIntegerPredicateInput::record_u32:
+                value = "uint(" + std::string{record_u32_expression} + ")";
+                break;
+            }
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::equal:
+            value = "(" + emitted[node.left] + " == " +
+                    emitted[node.right] + ")";
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::logical_and:
+            value = "(" + emitted[node.left] + " && " +
+                    emitted[node.right] + ")";
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::logical_not:
+            value = "(!" + emitted[node.left] + ")";
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::bitwise_or:
+            value = "(" + emitted[node.left] + " | " +
+                    emitted[node.right] + ")";
+            break;
+        case RayTracingAnyHitIntegerPredicateOpcode::bitwise_not:
+            value = "(~" + emitted[node.left] + ")";
+            break;
+        }
     }
-    const auto tuple =
-        "((uint(gl_PrimitiveID) == " + std::to_string(match.primitive_id) +
-        "u) && (uint(gl_InstanceCustomIndexEXT) == " +
-        std::to_string(match.instance_custom_index) +
-        "u) && (uint(" + std::string{record_u32_expression} + ") == " +
-        std::to_string(match.record_u32) + "u))";
-    return mode == RayTracingAnyHitIntegerPredicateMode::accept_matching
-               ? tuple
-               : "(!" + tuple + ")";
+    return emitted[root_];
 }
 
 RayTracingAnyHitIntegerPredicate
@@ -314,15 +474,13 @@ RayTracingAnyHitIntegerPredicate::alwaysAccept() noexcept {
 RayTracingAnyHitIntegerPredicate
 RayTracingAnyHitIntegerPredicate::acceptMatching(
     RayTracingAnyHitIntegerInputs match) noexcept {
-    return {.mode = RayTracingAnyHitIntegerPredicateMode::accept_matching,
-            .match = match};
+    return matching(match, false);
 }
 
 RayTracingAnyHitIntegerPredicate
 RayTracingAnyHitIntegerPredicate::ignoreMatching(
     RayTracingAnyHitIntegerInputs match) noexcept {
-    return {.mode = RayTracingAnyHitIntegerPredicateMode::ignore_matching,
-            .match = match};
+    return matching(match, true);
 }
 
 void validateRayTracingOracleFixtureWithIntersectorForTesting(

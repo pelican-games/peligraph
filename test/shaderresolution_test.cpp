@@ -205,7 +205,7 @@ TEST_CASE("WP354 publishes the complete 14 pass family plus compute task contrac
             {"imgui", {"resolved", {"vertex", "fragment"}}},
             {"canonical_anchor", {"not_applicable", {}}},
             {"snapshot_copy", {"not_applicable", {}}},
-            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*", "anyhit_slots[hit_slot]*"}}},
+            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*", "hit_slot_count?", "closesthit_slots[hit_slot]*", "anyhit_slots[hit_slot]*"}}},
         };
     for (const auto &contract : contracts) {
         const auto found = expected.find(std::string{contract.family});
@@ -222,6 +222,8 @@ TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
     Wp367ShaderResolutionDirectory temporary;
     writeWp367Shader(temporary.path / "shaders" / "filter0.rahit");
     writeWp367Shader(temporary.path / "shaders" / "filter2.rahit");
+    writeWp367Shader(temporary.path / "shaders" / "hit0.rchit");
+    writeWp367Shader(temporary.path / "shaders" / "hit2.rchit");
 
     ComputeTaskDefinition task;
     task.name = "wp367_trace";
@@ -266,6 +268,15 @@ TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
     appendShaderResolution(plan, compiled, resolver);
     const auto &resolution =
         plan.at("nodes").at(0).at("shader_resolution");
+    REQUIRE(resolution.at("hit_slot_count") == 3);
+    const auto &closesthit_slots =
+        resolution.at("closesthit_slots");
+    REQUIRE(closesthit_slots.size() == 2);
+    CHECK(closesthit_slots.at(0).at("hit_slot") == 0);
+    CHECK(closesthit_slots.at(1).at("hit_slot") == 2);
+    CHECK(closesthit_slots.at(0).at("stage") == "closesthit");
+    CHECK(closesthit_slots.at(1).at("source_open_ref") ==
+          "project://shaders/hit2.rchit");
     REQUIRE(resolution.contains("anyhit_slots"));
     const auto &slots = resolution.at("anyhit_slots");
     REQUIRE(slots.size() == 2);
@@ -286,6 +297,51 @@ TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
     }
     for (const auto &stage : resolution.at("stages")) {
         CHECK(stage.at("stage") != "anyhit");
+        CHECK(stage.at("stage") != "closesthit");
+    }
+
+    SECTION("producer rejects an anyhit occurrence orphaned from closesthit") {
+        auto orphan = task;
+        orphan.ray_tracing->any_hit_shader_slots[1] =
+            shader("shaders/filter0", ShaderStage::anyhit);
+        CompiledRenderingPass malformed;
+        malformed.compute_tasks.push_back(CompiledComputeTask{
+            .definition = std::move(orphan),
+            .task_id = ComputeTaskId{0},
+        });
+        Json malformed_plan{
+            {"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "wp367-orphan"},
+            {"nodes", Json::array({
+                 {{"name", "wp367_trace"}, {"kind", "compute"}},
+             })},
+        };
+        CHECK_THROWS_WITH(
+            appendShaderResolution(malformed_plan, malformed, resolver),
+            Catch::Matchers::ContainsSubstring(
+                "no corresponding typed closesthit slot"));
+    }
+    SECTION("producer rejects unequal physical slot domains") {
+        auto unequal = task;
+        unequal.ray_tracing->any_hit_shader_slots.pop_back();
+        CompiledRenderingPass malformed;
+        malformed.compute_tasks.push_back(CompiledComputeTask{
+            .definition = std::move(unequal),
+            .task_id = ComputeTaskId{0},
+        });
+        Json malformed_plan{
+            {"schema", "pelican.frame_plan"},
+            {"version", 1},
+            {"graph", "wp367-unequal"},
+            {"nodes", Json::array({
+                 {{"name", "wp367_trace"}, {"kind", "compute"}},
+             })},
+        };
+        CHECK_THROWS_WITH(
+            appendShaderResolution(malformed_plan, malformed, resolver),
+            Catch::Matchers::ContainsSubstring(
+                "unequal closesthit and anyhit physical domains"));
     }
 
     auto old_task = task;
@@ -307,8 +363,11 @@ TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
          })},
     };
     appendShaderResolution(old_plan, old_compiled, resolver);
-    CHECK_FALSE(old_plan.at("nodes").at(0).at("shader_resolution")
-                    .contains("anyhit_slots"));
+    const auto &old_resolution =
+        old_plan.at("nodes").at(0).at("shader_resolution");
+    CHECK(old_resolution.at("hit_slot_count") == 3);
+    CHECK(old_resolution.at("closesthit_slots").size() == 2);
+    CHECK_FALSE(old_resolution.contains("anyhit_slots"));
 }
 
 TEST_CASE("WP354 shipping shader families project their concrete effective references",

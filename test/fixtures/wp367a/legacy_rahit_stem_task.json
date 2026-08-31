@@ -1,0 +1,17 @@
+{
+  "compute_tasks": [
+    {
+      "name": "legacy_rahit_stem",
+      "ray_tracing": {
+        "raygen": "shaders/trace",
+        "miss": "shaders/open",
+        "closesthit": "shaders/foo.rahit"
+      },
+      "writes": ["mask"],
+      "resource_ports": {
+        "mask": {"resource": "mask", "access": "storage"}
+      },
+      "dispatch": {"rays_from": {"port": "mask"}}
+    }
+  ]
+}

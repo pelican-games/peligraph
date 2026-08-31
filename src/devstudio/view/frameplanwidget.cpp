@@ -992,15 +992,15 @@ struct FramePlanWidget::Impl {
         }
 
         auto *group = groupItem(
-            pass_item, owner.tr("Shaders"), resolution.stages.size());
-        for (const auto &stage : resolution.stages) {
+            pass_item, owner.tr("Shaders"),
+            resolution.stages.size() +
+                resolution.closesthit_slots.size() +
+                resolution.anyhit_slots.size());
+        const auto add_stage = [&](
+            const FramePlanShaderStage &stage,
+            const QString &stage_name,
+            std::optional<std::size_t> hit_slot = std::nullopt) {
             auto *stage_item = new QTreeWidgetItem(group);
-            const QString stage_name =
-                stage.index
-                    ? QStringLiteral("%1[%2]")
-                          .arg(text(stage.stage))
-                          .arg(static_cast<qulonglong>(*stage.index))
-                    : text(stage.stage);
             stage_item->setText(1, stage_name);
             stage_item->setText(
                 2, QStringLiteral("[%1]").arg(text(stage.origin)));
@@ -1025,6 +1025,11 @@ struct FramePlanWidget::Impl {
                 "pelicanStageIndex",
                 stage.index ? QVariant::fromValue<qulonglong>(*stage.index)
                             : QVariant{});
+            open->setProperty(
+                "pelicanHitSlot",
+                hit_slot
+                    ? QVariant::fromValue<qulonglong>(*hit_slot)
+                    : QVariant{});
             if (stage.source_open_ref) {
                 const auto logical_ref = *stage.source_open_ref;
                 open->setProperty(
@@ -1048,6 +1053,29 @@ struct FramePlanWidget::Impl {
                         .arg(text(reason)));
             }
             tree->setItemWidget(stage_item, 4, open);
+        };
+        for (const auto &stage : resolution.stages) {
+            const QString stage_name =
+                stage.index
+                    ? QStringLiteral("%1[%2]")
+                          .arg(text(stage.stage))
+                          .arg(static_cast<qulonglong>(*stage.index))
+                    : text(stage.stage);
+            add_stage(stage, stage_name);
+        }
+        for (const auto &slot : resolution.closesthit_slots) {
+            add_stage(
+                slot.projection,
+                QStringLiteral("closesthit[hit_slot=%1]")
+                    .arg(static_cast<qulonglong>(slot.hit_slot)),
+                slot.hit_slot);
+        }
+        for (const auto &slot : resolution.anyhit_slots) {
+            add_stage(
+                slot.projection,
+                QStringLiteral("anyhit[hit_slot=%1]")
+                    .arg(static_cast<qulonglong>(slot.hit_slot)),
+                slot.hit_slot);
         }
     }
 

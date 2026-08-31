@@ -1,0 +1,6 @@
+{
+  "mode": "shader_stem",
+  "stage": "closesthit",
+  "ref": "shaders/legacy.rahit",
+  "source": "glsl"
+}

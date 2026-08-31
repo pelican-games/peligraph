@@ -283,17 +283,26 @@ Json computeShaderResolution(
         std::move(stages), task.declared_shader_refs,
         false, task.shader_declaration_parsed,
         path_resolver);
-    if (ray_definition != nullptr) {
-        Json anyhit_slots = Json::array();
-        for (std::size_t hit_slot = 0;
-             hit_slot < ray_definition->any_hit_shader_slots.size();
-             ++hit_slot) {
-            const auto &shader =
-                ray_definition->any_hit_shader_slots[hit_slot];
-            if (!shader) continue;
+    if (ray_definition != nullptr &&
+        ray_definition->uses_group_layout) {
+        const auto hit_slot_count =
+            ray_definition->hit_shader_slots.size();
+        if (hit_slot_count == 0) {
+            throw std::runtime_error(
+                "layout ray tracing shader resolution has an empty physical hit-slot domain");
+        }
+        if (!ray_definition->any_hit_shader_slots.empty() &&
+            ray_definition->any_hit_shader_slots.size() !=
+                hit_slot_count) {
+            throw std::runtime_error(
+                "layout ray tracing shader resolution has unequal closesthit and anyhit physical domains");
+        }
+        const auto encode_slot = [&](DeclaredShaderStage declared_stage,
+                                     ShaderSourceStage source_stage,
+                                     std::size_t hit_slot,
+                                     const ShaderReference &shader) {
             const EffectiveShaderStage stage{
-                DeclaredShaderStage::anyhit, hit_slot, shader->ref,
-                ShaderSourceStage::anyhit};
+                declared_stage, hit_slot, shader.ref, source_stage};
             const auto *authored = findDeclared(
                 task.declared_shader_refs, stage.stage, stage.index);
             auto encoded = stageToJson(
@@ -302,7 +311,41 @@ Json computeShaderResolution(
                 path_resolver);
             encoded.erase("index");
             encoded["hit_slot"] = hit_slot;
-            anyhit_slots.push_back(std::move(encoded));
+            return encoded;
+        };
+
+        Json closesthit_slots = Json::array();
+        for (std::size_t hit_slot = 0;
+             hit_slot < hit_slot_count; ++hit_slot) {
+            const auto &shader =
+                ray_definition->hit_shader_slots[hit_slot];
+            if (!shader) continue;
+            closesthit_slots.push_back(encode_slot(
+                DeclaredShaderStage::closesthit,
+                ShaderSourceStage::closesthit, hit_slot, *shader));
+        }
+        if (closesthit_slots.empty()) {
+            throw std::runtime_error(
+                "layout ray tracing shader resolution has no typed closesthit slots");
+        }
+        result["hit_slot_count"] = hit_slot_count;
+        result["closesthit_slots"] = std::move(closesthit_slots);
+
+        Json anyhit_slots = Json::array();
+        for (std::size_t hit_slot = 0;
+             hit_slot < ray_definition->any_hit_shader_slots.size();
+             ++hit_slot) {
+            const auto &shader =
+                ray_definition->any_hit_shader_slots[hit_slot];
+            if (!shader) continue;
+            if (!ray_definition->hit_shader_slots[hit_slot]) {
+                throw std::runtime_error(
+                    "layout ray tracing anyhit slot has no corresponding typed closesthit slot: hit_slot=" +
+                    std::to_string(hit_slot));
+            }
+            anyhit_slots.push_back(encode_slot(
+                DeclaredShaderStage::anyhit,
+                ShaderSourceStage::anyhit, hit_slot, *shader));
         }
         if (!anyhit_slots.empty()) {
             result["anyhit_slots"] = std::move(anyhit_slots);
@@ -325,6 +368,7 @@ shaderResolutionFamilyContracts() {
         "vertex", "skinned_vertex", "fragment"};
     static constexpr std::string_view compute_or_ray[] = {
         "compute", "raygen", "miss[index]*", "closesthit[index]*",
+        "hit_slot_count?", "closesthit_slots[hit_slot]*",
         "anyhit_slots[hit_slot]*"};
     static constexpr ShaderResolutionFamilyContract contracts[] = {
         {"material", "material_owned", "material_owned", no_stages},

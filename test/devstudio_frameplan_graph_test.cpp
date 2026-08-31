@@ -23,12 +23,16 @@
 #include "frameplanwidget.hpp"
 
 #include "../src/core/loader/engineresources.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
 #include "../src/core/renderingpass/frameexecutionadapter.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/renderingpass.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/viewexecutionscheduler.hpp"
+#include "../src/core/shader/shaderreference.hpp"
+#include "../src/core/vkcore/shaderresolution.hpp"
 #include "../src/project/executionplan.hpp"
 #include "../src/project/frameresolutionwire.hpp"
 #include "../src/project/renderpipeline.hpp"
@@ -6044,6 +6048,127 @@ TEST_CASE(
     REQUIRE_FALSE(shadow_disabled->isEnabled());
     REQUIRE(shadow_disabled->text() ==
             QStringLiteral("embedded_engine_resource"));
+}
+
+TEST_CASE(
+    "WP367a Studio displays and opens production anyhit physical slots",
+    "[WP367][WP367a][devstudio][frame-plan][shader-resolution][widget][production][mutation]") {
+    (void)application();
+    QTemporaryDir temporary;
+    REQUIRE(temporary.isValid());
+    const auto root = std::filesystem::path{
+        temporary.path().toStdWString()};
+    std::filesystem::create_directories(root / "shaders");
+    {
+        std::ofstream project{root / "project.json", std::ios::binary};
+        project << Json{
+            {"schema", "pelican.project"},
+            {"version", 1},
+            {"name", "wp367a-widget"},
+        }.dump();
+    }
+    for (const auto file : {
+             "trace.rgen", "open.rmiss", "hit1.rchit",
+             "filter1.rahit"}) {
+        std::ofstream shader_file{root / "shaders" / file,
+                                  std::ios::binary};
+        shader_file << "#version 460\nvoid main() {}\n";
+    }
+
+    Pelican::ComputeTaskDefinition task;
+    task.name = "trace";
+    task.shader_declaration_parsed = true;
+    task.ray_tracing = Pelican::RayTracingTaskShaderDefinition{
+        .raygen = Pelican::makeShaderReference(
+            "shaders/trace", Pelican::ShaderStage::raygen),
+        .misses = {Pelican::makeShaderReference(
+            "shaders/open", Pelican::ShaderStage::miss)},
+        .uses_group_layout = true,
+        .traced_ray_type_indices = {1},
+        .hit_shader_slots = {
+            std::nullopt,
+            Pelican::makeShaderReference(
+                "shaders/hit1", Pelican::ShaderStage::closesthit)},
+        .any_hit_shader_slots = {
+            std::nullopt,
+            Pelican::makeShaderReference(
+                "shaders/filter1", Pelican::ShaderStage::anyhit)},
+    };
+    task.declared_shader_refs = {
+        {Pelican::DeclaredShaderStage::raygen, std::nullopt,
+         "shaders/trace"},
+        {Pelican::DeclaredShaderStage::miss, 0, "shaders/open"},
+        {Pelican::DeclaredShaderStage::closesthit, 1, "shaders/hit1"},
+        {Pelican::DeclaredShaderStage::anyhit, 1, "shaders/filter1"},
+    };
+    Pelican::CompiledRenderingPass compiled;
+    compiled.compute_tasks.push_back(Pelican::CompiledComputeTask{
+        .definition = std::move(task),
+        .task_id = Pelican::ComputeTaskId{0},
+    });
+    Json wire{
+        {"schema", "pelican.frame_plan"},
+        {"version", 1},
+        {"graph", "wp367a_widget"},
+        {"nodes", Json::array({
+             {{"name", "trace"},
+              {"kind", "compute"},
+              {"declaration_index", 0},
+              {"order", 0},
+              {"level", 0},
+              {"reads", Json::array()},
+              {"writes", Json::array()}},
+         })},
+        {"barriers", Json::array()},
+        {"resources", Json::array()},
+    };
+    Pelican::PathResolver resolver;
+    resolver.setup(root, false);
+    Pelican::appendShaderResolution(wire, compiled, resolver);
+    const auto &production_resolution =
+        wire.at("nodes").at(0).at("shader_resolution");
+    REQUIRE(production_resolution.at("hit_slot_count") == 2);
+    REQUIRE(production_resolution.at("closesthit_slots").size() == 1);
+    REQUIRE(production_resolution.at("anyhit_slots").at(0).at("hit_slot") ==
+            1);
+
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.setProjectRoot(root);
+    std::optional<std::filesystem::path> opened;
+    widget.setShaderSourceOpenAction(
+        [&](const std::filesystem::path &path) {
+            opened = path;
+            return true;
+        });
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+
+    qsizetype anyhit_label_count = 0;
+    for (const auto *tree : widget.findChildren<QTreeWidget *>()) {
+        anyhit_label_count += tree->findItems(
+            QStringLiteral("anyhit[hit_slot=1]"),
+            Qt::MatchExactly | Qt::MatchRecursive, 1).size();
+    }
+    CHECK(anyhit_label_count == 1);
+
+    const auto buttons = widget.findChildren<QPushButton *>(
+        QStringLiteral("pelican.shaderSourceOpen"));
+    const auto anyhit_open = std::find_if(
+        buttons.begin(), buttons.end(), [](const auto *button) {
+            return button->property("pelicanNode") ==
+                       QStringLiteral("trace") &&
+                   button->property("pelicanStage") ==
+                       QStringLiteral("anyhit") &&
+                   button->property("pelicanHitSlot").toULongLong() == 1;
+        });
+    REQUIRE(anyhit_open != buttons.end());
+    REQUIRE((*anyhit_open)->isEnabled());
+    REQUIRE((*anyhit_open)->property("pelicanSourceOpenRef") ==
+            QStringLiteral("project://shaders/filter1.rahit"));
+    (*anyhit_open)->click();
+    REQUIRE(opened == std::filesystem::canonical(
+                          root / "shaders" / "filter1.rahit"));
 }
 
 
