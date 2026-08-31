@@ -139,3 +139,100 @@ behavior の object target が変わる場合の runtime 反映は §3-1 の pla
 3. §3-5 で Prepare 段拒否に変えると、既存の「resolver は成功扱い + 実行時失敗」に
    依存した挙動(あれば)が壊れないか
 4. 複数 actor の並行編集と structural domain の予約範囲
+
+---
+
+## v2(第 1 巡・7 件への裁定。**v2 > v1。矛盾したら v2 が正**)
+
+第 1 巡は全件が実在コードとの矛盾だった。**共通の根: v1 は多段でステートフルな
+既存機構を「一回の変換」として扱っていた。** とくに、現行 transaction は
+**「ECS token を逐次 publish し、inverse token で集約 rollback する」**という
+解法を**既に持っている**(editorprojectiontransaction.cpp のコメントに明記)。
+v1 の「全 prepare → PONR」はそれを見ずに書いた別解であり、撤回する。
+
+### 裁定 1: 原子性の階層を宣言する(#1・#2 の答え)
+
+「すべてを一つの成功または失敗に」を**撤回**し、**3 層**に分ける。
+
+| 層 | 対象 | 契約 |
+|---|---|---|
+| **A: 原子的** | authoring 文書 + ResolvedScene + **journal record** | 全部成功か全部失敗。journal record・last-writer・undo entry・runtime binding は **Prepare で構築**し、Publish では splice/swap のみ(割り当てゼロ) |
+| **B: noexcept 公開** | ECS 構造変更・arena attach/detach・specials 再投影 | A から**導出**される。**逐次 publish + inverse token で集約 rollback**(既存機構をそのまま使う)。事前確保により publish 自体は throw しない |
+| **C: 最善努力 + 名前付き終端状態** | **behavior の activation(`onInit`)** | **既存の契約をそのまま維持**(`activateReadyEditorAttachments` が transaction 外で実行し、失敗を `activation_failed` として保持)。**transaction の rollback にしない**。応答に名前付きで載せる |
+
+- `onInit` は契約上 fallible(`noexcept` は `onDestroy` のみ)。v1 が
+  `Publish(noexcept)` に入れたのは**既存のテスト済み契約との矛盾**であり撤回
+- `AfterPublication` fault は **A 層に対してのみ**維持(document を戻す)。
+  B 層は inverse token、C 層は終端状態で表現する
+
+### 裁定 2: PONR は callback と外部副作用にのみ適用(#2 の残り)
+
+PONR は「全 publish の前」ではなく、**不可逆な callback(`onDestroy`)と
+外部副作用の直前**に置く。順序:
+
+```
+Prepare(全 fallible + journal/binding の事前構築 + 参加者 epoch の採取)
+  → 逐次 ECS publish(失敗は inverse token で巻き戻す。ここはまだ可逆)
+  → [PONR] 参加者 epoch を再検証 → 逆順 onDestroy → 外部副作用
+  → Publish(A 層の splice。割り当てなし)
+  → activation は transaction 外(C 層)
+```
+
+`onDestroy` 中の deferred queue は PONR 後にしか積まれないので巻き戻し不要。
+
+### 裁定 3: 参加者レジストリと epoch 再検証(#4 の答え)
+
+snapshot 対から作るのは**論理的な desired diff だけ**。実適用には
+`PreparedPublication` が**versioned な参加者 snapshot** を持つ:
+ECS epoch / SceneLoader の bindings と name map / arena state と deferred watermark /
+renderer・model の resource token / camera runtime overlay / **physics の
+`active_trigger_pairs`**。**PONR 直前に epoch を再検証**し、ずれていたら
+名前付き失敗(可逆な位置なので安全)。
+
+### 裁定 4: `AuthoringComponentId` と `OriginTransitionMap`(#5 の答え)
+
+- **session 安定な `AuthoringComponentId`** を導入する。authoring の structural stage が
+  発行し、値・順序による matching をやめる(重複 component と同時 insert/remove で
+  取り違える問題の根治)
+- unpack は `OriginTransitionMap<old gid → new AuthoringComponentId>` を明示的に出す。
+  **undo は逆写像を出す** —— v1 の「authored→generated は存在しない」は**誤り**
+  (undo は必ずそれを通る)。撤回し、**双方向の写像を契約**とする
+- §3-3 の「handle 維持・callback 無し」は**この写像がある場合にのみ**成立する。
+  写像が無い遷移(値の一致に頼る推測)は**行わない**
+
+### 裁定 5: `ObjectReferenceIndex`(#6 の答え)
+
+rename の閉包は `name + parent + kind:"object" parameter` では**不足**。
+camera の `controller.target` のように **component が直接 object を参照する field** がある。
+
+- **codec descriptor に semantic `object_ref`(JSON path 付き)を宣言**させ、
+  resolver が `ObjectReferenceIndex` を構築する
+- rename はその index 全体 + SceneLoader の name map を**原子的に**更新
+- **参照 field を宣言しない external component は、object rename の対象 scene に
+  存在するだけで名前付き拒否**(黙って壊さない)。これは fail-fast の家風どおり
+
+### 裁定 6: `runtime_resolution_error` の型付けと inactive scene(#7 の答え)
+
+- 現在 string で保持されている resolution failure を**型付き named error に格上げ**し、
+  dry-run はそれをそのまま返す / 実適用は **Prepare 段で同じ named error として拒否**
+- **inactive scene の扱いを明示**: inactive scene の解決失敗は**拒否しない**
+  (現行どおり保持)。current scene に切り替える瞬間に named 失敗させる
+
+### 裁定 7: 段割りの修正
+
+- **L1**: 裁定 1〜3 + WP361a 状態の既知の穴 4 件。**単独価値**: 4 件の穴が閉じ、
+  別 scene 編集・onDestroy 生存・混合 batch・親子 spawn が正しくなる
+- **L2**: 裁定 4〜6(`AuthoringComponentId` / `OriginTransitionMap` /
+  `ObjectReferenceIndex` / エラー面統一)。**これが U2 を解放する**
+- v1 の「ECS batch token の新設」は**不要**(既存の逐次 publish + inverse で足りる)
+
+### v2 の未決(第 2 巡で攻撃してほしい点)
+
+1. 裁定 1 の C 層(activation を transaction 外に残す)で、U2 の一括流し込みの
+   「all-or-nothing」は本当に成立するか(authoring は原子的だが activation は別、
+   という二段の結果を利用者にどう見せるか)
+2. 裁定 3 の epoch 再検証で、どの参加者が「ずれ」を検出できないか
+3. 裁定 5 の「宣言しない external component は拒否」が既存 project を壊さないか
+   (出荷 4 project と core resources での実測が要る)
+4. `AuthoringComponentId` の発行・永続化範囲(scene 文書に書くのか session 内のみか)
+   —— WP304「安定 ID」が過去に不合格になった領域と重なる
