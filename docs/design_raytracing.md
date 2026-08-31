@@ -115,6 +115,20 @@ RT2a/RT2 の alpha 判定は両車線に**同じ生成 predicate を注入**す�
 とし、その範囲で一致テストを置く。**自由 `.rahit` は pipeline 車線専用**と明示
 (ray query 側に等価物は要求しない)。
 
+### 6-1. 改訂(2026-08-31、WP369 仕様レビューによる)
+
+**両車線の byte 一致契約を退役させる。**「同じ生成 predicate を両車線へ注入する
+portable profile」は、profile sidecar の fullscreen 輸送・graphics pipeline への
+set 3・SBT からの table 所有権分離という **engine のサブシステム**を要し、
+機能 WP には収まらないことが実証された(WP369 v1 レビュー #3・#4・#5)。
+
+**改訂後の契約**: 二車線は **どちらも alpha を使わない範囲でのみ**一致する。
+profile が active な scene では一致を主張しない。
+**RT2b-2(WP369)は pipeline 車線のみ。**利用者は RT2b-1 の material 表と
+accessor を使って**自分の `.rahit` で ray query 相当のことを書ける**ので、
+表現力は失われない(失われるのは engine 側の自動一致だけ)。
+ray query 車線の alpha 対応が必要と分かった時点で、**設計から**始める。
+
 ## 7. RT interface 検証(第 2 巡 #5)
 
 reflection に storage class・構造 fingerprint・size・stage・entry point・group を

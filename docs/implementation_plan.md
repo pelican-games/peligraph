@@ -16958,3 +16958,65 @@ skill の運用節に追記した。
 仕様レビューを 1 巡(第 2 巡の裁定 4 —— alpha IR の `source_kind` を
 `gltf_base_color` のみとし式は `texture.a × factor.a × COLOR_0.a`、
 production の opaque 強制を profile active 時に解く —— が起点)。
+
+#### WP369 仕様レビュー(v1、不合格・12 件)と v2 —— 両車線契約の退役
+
+**v2 が最終。仕様レビューはここで打ち切る。v2 > v1。**
+
+##### 裁定 1: **ray query 車線を範囲から外し、両車線の byte 一致契約を退役させる**
+
+12 件のうち #3(engine が authored raygen の `Opaque` を外せない)・
+#4(生成 include が fullscreen compile に届かない)・#5(query-only 構成では
+table を所有する RT pipeline が存在しない)は、いずれも
+**「一つの述語を構造の違う二車線へ通す」**ことに由来する。閉じるには
+profile sidecar の fullscreen 輸送・graphics pipeline への set 3・
+SBT からの table 所有権分離 —— **engine のサブシステム**が要る。
+
+**問い直す: 両車線の byte 一致は誰のためか。** 利用者の要求は
+「DCC 級に好き勝手できる RT」であって、engine 内部の二車線一致ではない。
+そして **RT2b-1 が入った今、利用者は既に自分の `.rahit` で material texture を
+sample して `ignoreIntersectionEXT()` を書ける**。WP369 が足すのは
+**利便(自分で書かなくてよい)**だけである。
+
+**決定**:
+- **WP369 は pipeline 車線のみ**。ray query 車線は現行のまま(opaque・first-hit)
+- **design v4 §6 の byte 一致契約を改訂**: 「両車線は **どちらも alpha を使わない
+  範囲でのみ**一致する」。profile が active な scene では一致を主張しない
+  (この改訂を design_raytracing.md に記載する)
+- ray query 側の alpha 対応が本当に要ると分かったら、**そのときに設計から**
+  始める(profile sidecar の輸送・set 3 の共有・table 所有権が論点。台帳に残す)
+
+##### 裁定 2: 残る 9 件の決定
+
+| # | 指摘 | v2 |
+|---|---|---|
+| 1 | `portable_profile` の置き場所と適用単位が未定義 / 出荷 feature は旧文法で layout と併用できない | **layout 文書の top-level field** に置く(`"portable_profile": "material_alpha_v1"`)。適用は **traced な `(g,r)` のうち authored anyhit を持たない slot 全部**。**authored anyhit を持つ slot が一つでもあれば名前付き拒否**(v1)。「profile を書くだけで既存 feature が有効化される」という主張は**撤回** —— **typed task が必要**であることを明記し、完全な JSON 例を載せる |
+| 2 | 生成 anyhit の payload ABI が validator と両立しない(closesthit に payload、生成側に無い → reject) | **validator に明示的な例外**: engine-generated anyhit は payload 宣言を省略できる(pair 検査は closesthit 側のみで成立)。RT2a の subset 分類は**存在しない**ので `subset_certified` の投影も不要 |
+| 3 | engine が authored raygen の `Opaque` を外せない | **外さない。検査する。** `rtspirvinspection` の trace-call 記録に **ray flags(定数)を追加**し(operand 定数性の既存機構の小拡張)、**profile-active task の raygen が `Opaque` を含む、または flags が定数でないなら `ray_profile_opaque_trace@1` で拒否**(shader path つき)。AS の geometry/instance flags も non-opaque を要求 |
+| 4・5 | 生成 include の fullscreen 輸送 / query-only の table 所有 | **裁定 1 により消滅**(範囲外) |
+| 6 | per-instance override の「load 時 reject」は成立しない(publish 経路が 3 つ、frame ごとに変わる)/ relative multiplier は discard の**後**なので全部 reject は過剰 | **拒否をやめ、row に解決して載せる**。row は per-instance override 適用**後**の
+`{alpha_mode, cutoff, base_factor_a, texture_index, uv_transform, uses_vertex_color}` を持つ。row は snapshot と一緒に作り直されるので**監視も rollback も不要**。raster が discard の後に適用する relative multiplier は**そもそも判定に効かない**ので無視(過剰拒否を作らない) |
+| 7 | alpha IR の正準 producer と identity が未定義 | **project lowering に単一の normalizer** を置き、そこだけが `NormalizedAlphaIr` を作る。material と texture の identity は **WP368a の authored reference 由来**(数値 handle・絶対パス禁止)。**同じ authored ref・異なる物理 path で 2 回 load して IR と table digest が一致**する対照 |
+| 8 | missing-attribute 条件が閉じていない(texture 無し・UV 無しの MASK が拒否される) | **要求は解決済み row から導く**: texture がある行だけ UV を要求し、`uses_vertex_color` の行だけ COLOR_0 を要求する。それ以外は要求しない。不足は `ray_geometry_attribute_missing@1`(行・material・欠落属性つき) |
+| 9〜12 | (第 1 巡表の残り。市松 margin・単一 mip・matrix・WP354 生成 anyhit 投影) | 市松は **exact equality を捨て境界からの margin を生成器が保証**、両車線でなく **pipeline 車線のみ `textureLod(..., 0)`**、CPU も同じ mip。生成 anyhit は WP354 投影で `origin:"generated"`・authored ref なし・open 不可(理由つき)。matrix は WP367a の必須 capability lane の形 |
+
+##### WP369 v2 の範囲(確定)
+
+`portable_profile: "material_alpha_v1"` を layout に書くと、**pipeline 車線**の
+traced な各 `(g,r)`(authored anyhit の無い slot)に **engine 生成の `.rahit`** が入り、
+式 **`texture.a × factor.a × COLOR_0.a < cutoff` で ignore** する。
+入力は WP368-1 の material 表・geometry accessor・engine record。
+`alpha_mode == MASK` の行だけが対象(それ以外の行は生成 anyhit を持たない)。
+
+受け入れ: profile 有無で GPU 出力が変わる(**profile を外すと落ちる**)/
+CPU 参照(市松 margin・単一 mip)と包含一致 / `Opaque` を含む raygen の named 拒否 /
+authored anyhit 同居の named 拒否 / texture 無し・UV 無しの MASK が**通る** /
+texture ありで UV 無しは named 拒否 / 同一 authored ref・別物理 path で digest 一致 /
+per-instance の absolute alpha 変更が**次フレームの GPU 出力に反映**される /
+**profile 不在なら生成 shader・新 wire・cache salt が 0 件**(現行 bytes 保持)/
+出荷 4 project bytes 不変 / matrix は必須 capability lane の形 / 全数 2 回。
+
+やらないこと: **ray query 車線の alpha(別設計)**/ MASK 以外の alpha mode /
+alpha 以外の material 効果 / RT3 以降。
+
+依存: WP366/366a + WP367/367a + WP368/368a。
