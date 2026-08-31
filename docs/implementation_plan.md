@@ -16348,3 +16348,40 @@ geometry access —— が要るため)。`.rint`(RT3)/ `.rcall`(RT4)/
 per-instance 束縛(永続 identity 設計の段)/ 変形 geometry(RT5)。
 
 依存: WP366 + WP366a。
+
+#### WP367 仕様レビュー(v1、差し戻し・11 件)と v2
+
+**全件「直す」。v2 は v1 との差分で、矛盾したら v2 が優先。**第 2 巡を最終とする。
+壊せなかった項目: alpha の RT2b 送り / 自由 `.rahit` を pipeline 車線に限る方針 /
+同一 candidate で any-hit と closest-hit が同じ record を読むという Vulkan 主張 /
+always-accept A/B が原理的に可能なこと / 旧形の byte 保存が原理的に可能なこと / D0。
+
+| # | v1 の壊れた点 | v2 の決定 |
+|---|---|---|
+| 1 | compiler OFF で `.rahit` が resolve/compile される受け入れは**成立不能**(layout project は OFF で `layout_requires_runtime_compiler@1` 拒否が RT1b の確定仕様) | **機能試験は compiler ON のみ**。OFF 対照は「`.rahit` を含む layout project が同じ名前付きエラーで拒否され、**shader document を一件もロードしない**」ことの検査に置換 |
+| 2 | 3 種の抽出では subset を判定できない(payload **読み**での分岐 / readonly UBO・SSBO / atomic・store / 非許可 built-in / helper の `inout` / 未到達 helper の誤検出 / 未使用 descriptor の誤検出) | **保守的認証器**にする(§後述)。selected entry point の**推移的閉包**に限定し、**許可 opcode・許可 storage class・許可 built-in の whitelist**。pointer origin を parameter / access-chain / phi / select 越しに追跡。不明・alias 未解決・未知 opcode は**拒否ではなく非認証(reason code つき)**。**module 全体の文字列・opcode 存在検査は禁止** |
+| 3 | `golden_portable` の受け入れが**恒偽実装で通る** / float predicate の device 間一致が未定 | 名称を **`subset_certified`** に変更(「golden が可搬」ではなく「認証済み subset」)。**肯定認証を必須**にし、reason ごとに 1 つずつ負例(payload read / payload write / SSBO write / atomic / image access / terminate / 非許可 built-in / alias 未解決)。**golden fixture の述語は単一の生成器(DSL/AST)から GLSL と CPU オラクル述語の双方を生成**する —— これで float 境界問題も同時に閉じる(任意 SPIR-V と CPU の一致は主張しない) |
+| 4 | optional any-hit の `(g,r)` wire 表現が未定義(圧縮すると対応を失い、疎配列は strict consumer が拒否) | **固定長 `ray_hit_groups[]`**(`g×R` 全要素、欠けは null)を出す。各要素 `{group, ray_type, hit_slot, closesthit, anyhit?, subset_certified, reasons[]}`。順序は `g×R+r` 昇順。**旧タスクでは field ごと省略**(byte 保存) |
+| 5 | portability 判定だけが変わったとき frame plan identity/cache が変わらない | **独立した `shader_resolution_fingerprint`** を新設(active final SPIR-V digest + 認証 profile version + 判定結果 + reasons)。既存の execution-plan fingerprint の契約は**変更しない**。旧タスクでは省略。reload 成功時は pipeline / SBT / 分類 / fingerprint を**同一 publish transaction** で切替え、失敗時は全て旧世代維持 |
+| 6 | 「8 箇所」の閉包検査が代理条件(文字列 scan や dead table で満たせる)/ **compiler 経路 3 箇所と task enum が漏れている** | **箇所数を受け入れ条件にしない**。追加すべき経路として `shadercompiler.cpp` の stage→shaderc kind / engine shader suffix universe / path suffix→stage、および `renderingpass.hpp` の task enum を明示。受け入れは**本番 observable 8 件**(canonical resolver / AnyHit の shaderc compile / final SPIR-V の stage 検査 / hit group の `anyHitShader` / active pipeline と SBT / frame-plan の occurrence mapping / PlanViewer・Studio の strict parse / `.rahit` 編集での hot reload)。**ソース文字列検査は明示的に禁止** |
+| 7 | any-hit が既存 ABI 検査(payload / attribute / record)に入っていない | validation input を **物理 `(g,r)` occurrence の `{closesthit, optional<anyhit>}`** に変更。両 stage の payload 構造・triangle attribute `vec2`・record ABI・incoming interface 個数を検査。`vec3` attribute だけでなく **payload 不一致・record 不一致・複数 incoming payload** も production load 経路で名前付き拒否 |
+| 8 | 「同じ `(q,r)` record」の試験が candidate を取り違えている(前面 ignore / 背面 hit は別 candidate。`data(q)` は全 `r` に複製されるので `q` sentinel だけでは `r` の証明にならない) | **試験を 2 つに分離**: (a) **単一 candidate の accept fixture** で any-hit と closest-hit の `q` sentinel・**compile-time `r` marker**・group marker が一致 / (b) **二 candidate fixture** で前面 ignore・背面 hit(二枚は distinct `q` が要るなら別 instance/geometry)。**any-hit の呼び出し順は規範上不定なので、副作用ログの順序をオラクルにしない** |
+| 9 | always-accept 対照の差し替え粒度が未指定 / 既存 fixture が `Opaque` flag を使っており any-hit が走らない | **同一 generation・同一 row snapshot 上に、実述語と always-accept の 2 本の完全な production pipeline/task** を作る(stage 単体差し替えは不可能)。**ray flags から `Opaque` / `TerminateOnFirstHit` / `SkipClosestHit` を除き、geometry・instance も opaque にしない**。`pipelineUsesShader` に `.rahit` を追加し、**`.rahit` 編集で pipeline 全体が再生成**され、失敗 reload では旧 pipeline・SBT・分類が残ることを同一テストで |
+| 10 | `type:"procedural"` を文法受理して拒否するのは「doomed vocabulary を出荷しない」と**直接矛盾** | 文法を **`type ::= absent \| "triangles"`** に限定。他の値は `ray_hit_group_invalid@1`(診断のため raw token を読んでよいが、**typed AST の受理集合に入れない**)。procedural は **RT3 で `.rint` + AABB geometry + procedural group と原子的に**追加 |
+| 11 | 5 contrast build の「実行」だけでは RT2a を通った証明にならない(既存 RT1b runner を走らせるだけで表面的に満たせる) | 各 contrast に **RT2a の具体的 test ID と observable を列挙**。compiler ON は実述語 / always-accept の GPU 差と wire、compiler OFF は確定済みの named reject |
+
+##### subset 認証器の規範(#2・#3 の実体)
+
+- **対象**: selected entry point から推移的に到達する関数のみ(未到達 helper は無視)
+- **許可 built-in**: `HitKindKHR` / `PrimitiveId` / `InstanceId` / `InstanceCustomIndexKHR` /
+  `GeometryIndexKHR` / hit attribute(barycentric)
+- **許可 storage class**: `Function` / `Private`(読み書き可)/ shader-record buffer(**読みのみ**)/
+  hit attribute(読みのみ)
+- **禁止**(= 非認証 + reason): incoming payload の**読みも書きも** /
+  `Uniform` / `StorageBuffer` / `Image` / `Sampler` の参照 / atomic /
+  `OpTerminateRayKHR` / `OpTraceRayKHR` / `OpExecuteCallableKHR` /
+  上記以外の built-in / pointer origin 不明
+- 判定は**保守的**: 判定できないものは非認証。**拒否はしない**(利用者は書ける)
+- reason code は正規化した固定集合(wire に出る)
+
+依存: WP366 + WP366a。
