@@ -16186,3 +16186,29 @@ core resources・既存 RT feature の bytes 不変 / 全数 2 回(統合側 GPU
 matrix は #10 のとおり実行まで。
 
 依存: WP366。**連鎖打ち切り: WP366a の §10 指摘は無条件で台帳。**
+
+#### wp336(shader footprint 宣言)の裁定: 保留継続(2026-08-31、利用者判断)
+
+worktree `<作業ディレクトリ>/wp336`、branch `agent/wp336`、独自コミット **1 本**(`31f09712`)。
+現ブランチから **143 遅れ**(以前この節に書いた「1196 先行」は main 基準の数え方で
+誤解を招くため訂正する。現ブランチとの差分は 1 コミット)。
+
+内容: シェーダが読む近傍範囲を `//!` ヘッダで宣言する配管。`.surface` と同じ
+tokenizer で解析し、グラフ解析前に解決して execution plan へ届ける。
+`ssao_blur.frag` は 5×5 を読むのに fullscreen パスは `input_footprints` を
+一度も埋めず全て `arbitrary` に落ちていた。**シェーダの性質であり、パスの作者は
+知り得ない**(台帳の同趣旨: 「契約(型・footprint・sampling・fallback)…
+シェーダーの性質。パスの著者は知り得ない」)。
+影響は frame plan の 16 フィールド(値とその fingerprint と診断文字列)のみで、
+representation・backend 選択・scope・attachment・alias group は byte 一致。
+
+**保留の理由(コミット自身が書いている)**: `same_pixel` を使い分ける経路が
+エンジンに無いため、**単独では挙動を変えない**([[slice-must-change-behavior]])。
+
+**利用者裁定(2026-08-31): 保留継続。マージも破棄もしない。**
+footprint を実際に使う WP —— footprint の 3 経路
+(`material_resources.footprint` / `input_footprints` / `read_footprints`)を
+`resource_ports` へ寄せるソケット整理、または alias 可否判定の最適化 —— を
+起票するときに、**この実装を参考実装として読む**。143 遅れているので、
+その時点でコンフリクト解消より書き直しが速い可能性が高い。
+**この判断を再検討しないこと**(覆すなら理由をここに追記してから)。
