@@ -565,3 +565,135 @@ RT3-2(static AABB + .rint)
         ↓
 RT4 / RT5 → RT6 → RT7
 ```
+
+
+### 11-8. 設計レビュー第 2 巡(8 件・破綻 3)と v3 —— 担体を **material 鍵の layout 規則**に変える
+
+**v3 が §11 の正。v2 の決定 2・4・5 は v3 で置換される。決定 1・6・7 は維持。**
+
+#### 第 2 巡が確定させたこと: **per-instance 担体は今日のエンジンに無い**
+
+v2 の「`ray_instance` を登録すれば既存経路にそのまま乗る」は**誤り**だった:
+
+| 環 | 実測 |
+|---|---|
+| runtime kind | **4 種だけ**(ECS / Camera / Light / Collider)([componentcodec.hpp:19](../src/core/loader/componentcodec.hpp#L19)) |
+| schema | scalar / vec / string / bool / enum の**固定 leaf のみ。可変長 collection が無い**([structfieldschema.hpp:21](../src/core/userpublic/details/schema/structfieldschema.hpp#L21)) |
+| RPC edit | `set_component_value` は**既存 JSON pointer を `.at()` で要求**。欠落 field も override 行も**作れない**([editorjournal.cpp:1057](../src/core/communication/editorjournal.cpp#L1057)) |
+| Studio | 固定 schema field のみ。**`add_component` / `remove_component` を呼ぶ経路が無い**([inspectormodel.cpp:558](../src/devstudio/model/inspectormodel.cpp#L558)) |
+| runtime AS | live edit routing が component 名を hard-code。AS snapshot に **authoring object ID が無い**([accelerationstructure.hpp:27](../src/core/vkcore/accelerationstructure.hpp#L27)) |
+
+さらに **`{asset ref, mesh index, primitive index}` は row に単射でない**:
+**1 つの glTF mesh を 2 つの node が参照**すれば同じ key が複数 row に当たり
+([gltf.cpp:2261](../src/core/model/gltf.cpp#L2261))、auto-split の variant も同じ key を持つ。
+実 row は `node_index` まで保持している
+([polygoninstancecontainer.cpp:1169](../src/core/renderer/polygoninstancecontainer.cpp#L1169))。
+
+**つまり v2 は「宣言面を作る」WP ではなく、
+「schema 体系に可変長宣言を足し、Studio に追加編集面を作り、
+新しい runtime kind と authoring→row の join を作る」プログラムだった。**
+エディタトラックで 3 本中止したのと同じ形である。
+
+#### 決定 9(v2 決定 4・5 を置換): 担体は **layout の material 鍵規則**
+
+第 1 巡で候補 C(規則)を「述語文法を発明することになる」と退けたが、
+**発明ではなかった**。material 鍵は既に存在する:
+
+- material 表は **per-material・per-row**(WP368)
+- row は `material_index` を持ち、**shader record で運ばれている**
+- material の identity は **WP368a の authored reference**(数値 handle・絶対パス禁止)
+- `BindableDescriptor` には既に **`discriminant`** という述語機構がある
+
+```json
+{ "schema": "pelican.ray_group_layout", "version": 2,
+  "ray_types": ["primary", "shadow"],
+  "groups": [ {"name": "opaque"}, {"name": "foliage"} ],
+  "acceleration_structure": {
+    "defaults": { "mask": 255, "instance_flags": [], "geometry_flags": [] },
+    "rules": [
+      { "material": "materials/foliage.json",
+        "geometry_flags": [], "instance_flags": [], "mask": 2,
+        "custom_index": 7 }
+    ] } }
+```
+
+- **鍵は authored material reference ただ 1 つ**。述語を増やさない
+- 規則は **上から順に最初の一致**(決定的。順序が規範)
+- 一致しない row は `defaults`
+- **同じ material の 2 個体を区別できない**のは**承知の上の制限**である。
+  per-instance の区別が要ると分かったときに、**担体プログラム**を別途起こす
+
+**なぜこれで十分か**: DCC の運用で mask と flags は
+**「foliage は影を落とさない」「この material は非 opaque」**のように
+**material 単位で決まることが多い**。per-instance の自由度は
+**担体が無い今、どう書いても半端になる**。
+
+#### 決定 10(#1・破綻): 状態は 4 つ。**layout version 2 で opt-in**
+
+v2 の三分岐は **4 つ目の状態**(layout 無しなのに宣言がある)を持たず、
+既存 layout v1 利用者(`gl_InstanceCustomIndexEXT == q` を読む shader)を
+**無言で壊す**。
+
+| layout | `acceleration_structure` | `instanceCustomIndex` |
+|---|---|---|
+| 無し | — | **legacy ABI(`0,1,…`)。変更しない** |
+| **v1** | — | **`q` のまま。変更しない**(既存利用者を壊さない) |
+| **v2** | 無し | **0** |
+| **v2** | 有り | 規則の解決値(既定 0) |
+
+- **`ray_group_layout` の version を 2 に上げることが opt-in である。**
+  自動移行はしない(§3 の恒久規則と同じ形)
+- **layout 無しで `acceleration_structure` を書いたら名前付き拒否**
+  (`ray_as_declaration_requires_layout@1`)
+- **v1 で `acceleration_structure` を書いたら名前付き拒否**
+  (`ray_as_declaration_requires_layout_v2@1`)
+- 既存の `custom_index == q` を固定するテスト(RT1b 1 件・headless 5 件)は
+  **v1 のテストとして残る**。v2 の対照を新規に足す
+
+#### 決定 11(v2 決定 6a を精密化): BLAS variant の join と purge
+
+BLAS は `geometry_allocation_id` **だけ**を鍵に共有され、reuse 判定が flags を見ない。
+
+- **BLAS cache 鍵 = `(geometry_allocation_id, 解決済み geometry_flags)`**
+- variant は **AS-only**(`q` 採番・SBT・material 表に影響しない)。
+  TLAS instance は自分の variant の BLAS address を指すだけ
+- **purge**: variant を持つ geometry が消えたら**全 variant を落とす**。
+  機能のパージ性を下げない
+- **観測面**: `tlas_build_count` と同じ診断に **variant 数**を出す
+- 受け入れ: **flags だけの reload で BLAS が作り直される**
+  (cache 鍵に入っていないと落ちる)/ 同一 allocation の opaque/mask 混在で
+  **build 数が 2 になる**
+
+#### 決定 12(#7): 受け入れから充足不能なものを外す
+
+- **「古い engine が名前付きで拒否」は充足不能**(古い engine を試験に持ち込めない)。
+  **撤回**し、代わりに **version gate の否定対照**を置く:
+  v1 に `acceleration_structure` を書くと `ray_as_declaration_requires_layout_v2@1`
+- **geometry flags の no-op 排除**: 宣言を外すと **BLAS build 数が変わる**
+- **担体の no-op 排除**: 規則の material 参照を存在しない物に変えると
+  **名前付きで落ちる**(`ray_as_rule_material_unresolved@1`)。
+  黙って defaults に落ちない
+
+#### 決定 13: 段割り(最終)
+
+| 段 | 内容 | 単独の価値 |
+|---|---|---|
+| **RT3-1** | layout v2 + `acceleration_structure`(defaults + material 鍵規則)+ custom index の供給源変更 + BLAS variant 鍵 | mask と flags が**初めて author できる**。今日はテスト用 override しか入力が無い |
+| **RT3-2** | §4 の procedural subset 規範(文書)→ static AABB + `.rint` | 三角形以外が書ける |
+
+**per-instance 担体は別プログラム**として台帳に残す(下記)。
+
+#### 台帳へ残す: **per-instance 宣言の担体プログラム**
+
+RT4(callable の per-in-flight record)・RT5(変形 geometry)・RT7(ノード編集)も
+**同じ担体を必要とする**。要るものは:
+
+1. schema 体系の**可変長宣言**(今は固定 leaf のみ)
+2. **欠落 field と行を作れる編集 RPC**(今の `set_component_value` は `.at()`)
+3. **Studio の component 追加・行編集 UI**(今は経路が無い)
+4. 新しい **runtime kind と adapter**、AS snapshot への **authoring object ID**
+5. **authoring → row の join**。key に `node_index` と importer variant を含める
+   (`{asset, mesh, primitive}` は**単射でない**)
+6. **予約 namespace か version gate**(外部 ECS の同名 component と衝突する)
+
+これは R5(型付き構築 factory・codec 記述子の単一ソース化)と**同じ領域**である。
