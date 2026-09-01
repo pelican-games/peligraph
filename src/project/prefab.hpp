@@ -214,6 +214,12 @@ nlohmann::ordered_json resolvePrefabComponentBody(
     std::span<const BindableDescriptor> descriptors,
     PrefabErrorContext context = {});
 
+// The single production-owned classifier for root fields which request a
+// generated component.  The resolver rejects those fields on authored
+// components; unpack removes exactly the fields classified here.
+bool prefabGeneratedMarkerRule(std::string_view field,
+                               const nlohmann::json &value);
+
 // Stable generated ids are byte-defined by WP361 v4. The component key is
 // component.id when present, otherwise component.name.
 std::string prefabGeneratedId(std::string_view instance_id,

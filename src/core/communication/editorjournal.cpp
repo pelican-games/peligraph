@@ -440,6 +440,9 @@ class LocalDocumentTarget final : public EditorProjectionDocumentTarget {
     SceneProjectionState state_;
 
   public:
+    explicit LocalDocumentTarget(const SceneProjectionState &source)
+        : state_{source} {}
+
     explicit LocalDocumentTarget(
         const AuthoringSceneDocument &source,
         PrefabRegistrySnapshot registry = {},
@@ -472,6 +475,14 @@ class LocalDocumentTarget final : public EditorProjectionDocumentTarget {
     }
 };
 
+struct PreparedUnpack {
+    ResolvedScene generated_scene;
+    std::string scene_id;
+    AuthoringObjectId object_id{};
+    std::string instance_id;
+    std::vector<OriginTransitionAuthority> authority;
+};
+
 struct PreparedOperation {
     std::vector<EditorProjectionCommand> commands;
     OrderedJson forward;
@@ -481,6 +492,7 @@ struct PreparedOperation {
     std::vector<std::string> read_set;
     std::vector<std::string> write_set;
     OrderedJson structural_domain = OrderedJson::object();
+    std::optional<PreparedUnpack> unpack;
 };
 
 struct PreparedBatch {
@@ -701,6 +713,291 @@ PreparedOperation preparePrefabParameter(
                               {"object", object_id.value},
                               {"parameter", parameter}},
     };
+}
+
+EditorEditErrorCode transitionEditErrorCode(
+    OriginTransitionErrorCode code) noexcept {
+    switch (code) {
+    case OriginTransitionErrorCode::TargetMismatch:
+        return EditorEditErrorCode::origin_transition_target_mismatch;
+    case OriginTransitionErrorCode::GeneratedIdSetMismatch:
+        return EditorEditErrorCode::origin_transition_gid_set_mismatch;
+    case OriginTransitionErrorCode::AuthoredIndexSetMismatch:
+        return EditorEditErrorCode::origin_transition_index_set_mismatch;
+    case OriginTransitionErrorCode::AuthoredIndexInvalid:
+        return EditorEditErrorCode::origin_transition_index_invalid;
+    case OriginTransitionErrorCode::ComponentMismatch:
+        return EditorEditErrorCode::origin_transition_component_mismatch;
+    case OriginTransitionErrorCode::ComponentKeyMismatch:
+        return EditorEditErrorCode::origin_transition_component_key_mismatch;
+    case OriginTransitionErrorCode::GeneratedIdMismatch:
+        return EditorEditErrorCode::origin_transition_gid_derivation_mismatch;
+    case OriginTransitionErrorCode::AuthorityBodyMismatch:
+        return EditorEditErrorCode::origin_transition_body_mismatch;
+    }
+    return EditorEditErrorCode::origin_transition_component_mismatch;
+}
+
+[[noreturn]] void throwOriginTransitionFailure(
+    const OriginTransitionError &error, AuthoringObjectId object_id) {
+    editFailure(transitionEditErrorCode(error.code()),
+                {{"object", object_id.value},
+                 {"transition_error",
+                  originTransitionErrorCodeName(error.code())}},
+                error.what());
+}
+
+OrderedJson unpackExpandedComponentsJson(
+    std::span<const OriginTransitionAuthority> authority) {
+    OrderedJson result = OrderedJson::array();
+    for (const auto &component : authority) {
+        result.push_back({{"component_key", component.component_key},
+                          {"body", component.body}});
+    }
+    return result;
+}
+
+std::vector<OriginTransitionAuthority> unpackAuthorityFromJson(
+    const Json &value) {
+    if (!value.is_array()) {
+        throw std::invalid_argument(
+            "unpack expanded_components must be an array");
+    }
+    std::vector<OriginTransitionAuthority> result;
+    result.reserve(value.size());
+    for (const auto &entry : value) {
+        requireOnly(entry, {"component_key", "body"},
+                    "unpack expanded component");
+        result.push_back({
+            .component_key = requireString(entry, "component_key",
+                                           "unpack expanded component"),
+            .body = entry.at("body"),
+        });
+    }
+    return result;
+}
+
+OrderedJson unpackDependencyWitness(
+    const PrefabInstanceDeclaration &instance,
+    const PrefabRegistryRecord &record, const ResolvedScene &resolved,
+    std::span<const OriginTransitionAuthority> authority) {
+    std::vector<std::string> behavior_names;
+    for (const auto &component : authority) {
+        if (component.body.value("name", std::string{}) == "behavior") {
+            behavior_names.push_back(
+                component.body.value("type", std::string{}));
+        }
+    }
+    std::sort(behavior_names.begin(), behavior_names.end());
+    behavior_names.erase(
+        std::unique(behavior_names.begin(), behavior_names.end()),
+        behavior_names.end());
+    OrderedJson behaviors = OrderedJson::array();
+    const auto dependencies =
+        resolved.bindableProvider().behaviorDependencies();
+    for (const auto &name : behavior_names) {
+        const auto found = std::lower_bound(
+            dependencies.begin(), dependencies.end(), name,
+            [](const auto &dependency, std::string_view stable_name) {
+                return dependency.stable_name < stable_name;
+            });
+        if (found == dependencies.end() || found->stable_name != name) {
+            editFailure(EditorEditErrorCode::prefab_provider_stale,
+                        {{"behavior", name}},
+                        "generated behavior dependency is absent from the provider");
+        }
+        behaviors.push_back(
+            {{"stable_name", found->stable_name},
+             {"schema_version", found->schema_version},
+             {"params_schema_fingerprint",
+              found->params_schema_fingerprint}});
+    }
+    const auto &closure = resolved.prefabClosure();
+    return {{"ref", instance.ref},
+            {"instance_id", instance.instance_id},
+            {"prefab_digest_sha256", record.digest_sha256},
+            {"provider_fingerprint_sha256",
+             closure.provider_fingerprint_sha256},
+            {"behaviors", std::move(behaviors)},
+            {"resolver_inputs_fingerprint_sha256",
+             closure.resolver_inputs_fingerprint_sha256}};
+}
+
+EditorProjectionCommand makeUnpackPrefabCommand(
+    const ObjectLocation &object, Json prefab,
+    std::vector<OriginTransitionAuthority> authority, bool restore) {
+    const auto path = "/authoring_objects/" +
+                      std::to_string(object.object_id.value);
+    return EditorProjectionCommand{
+        .object_path = path,
+        .apply = [scene_id = object.scene_id,
+                  object_index = object.object_index,
+                  prefab = std::move(prefab),
+                  authority = std::move(authority), restore](Json &document) {
+            auto &object_json = document.at("scenes").at(scene_id)
+                                    .at("objects").at(object_index);
+            auto &components = object_json.at("components");
+            if (!restore) {
+                const auto current = object_json.find("prefab");
+                if (current == object_json.end() || *current != prefab) {
+                    throw std::runtime_error(
+                        "unpack prefab block changed before application");
+                }
+                for (const auto &component : authority) {
+                    components.push_back(component.body);
+                }
+                object_json.erase("prefab");
+                return;
+            }
+
+            if (object_json.contains("prefab") ||
+                components.size() < authority.size()) {
+                throw std::runtime_error(
+                    "unpack inverse target does not contain the expanded interval");
+            }
+            const auto first = components.size() - authority.size();
+            for (std::size_t index = 0; index < authority.size(); ++index) {
+                if (OrderedJson(components.at(first + index)) !=
+                    authority[index].body) {
+                    throw std::runtime_error(
+                        "unpack inverse expanded component changed");
+                }
+            }
+            components.erase(
+                components.begin() +
+                    static_cast<Json::difference_type>(first),
+                components.end());
+            object_json["prefab"] = prefab;
+        },
+    };
+}
+
+PreparedOperation prepareUnpackPrefab(
+    const Json &raw, const AuthoringSceneDocument &document,
+    const ResolvedScene &resolved) {
+    constexpr auto op = "unpack_prefab";
+    requireOnly(raw, {"op", "object"}, op);
+    const auto object_id = AuthoringObjectId{
+        exactUnsigned(raw.at("object"), "unpack_prefab object", true)};
+    const auto object = requireObjectLocation(document, object_id);
+    const auto prefab = object.authored.find("prefab");
+    if (prefab == object.authored.end() || !prefab->is_object()) {
+        editFailure(EditorEditErrorCode::closure_unresolvable,
+                    {{"object", object_id.value},
+                     {"object_path", "/authoring_objects/" +
+                                         std::to_string(object_id.value) +
+                                         "/prefab"}},
+                    "authoring object is not a prefab instance");
+    }
+
+    PrefabInstanceDeclaration instance;
+    try {
+        instance = resolvePrefabInstance(
+            *prefab, resolved.prefabRegistry(),
+            {.scene_id = object.scene_id, .json_pointer = "/prefab"});
+    } catch (const PrefabError &error) {
+        throwPrefabEditFailure(error, object_id, {});
+    }
+    const auto *record = resolved.prefabRegistry().find(instance.ref);
+    if (record == nullptr) {
+        editFailure(EditorEditErrorCode::prefab_dependency_mismatch,
+                    {{"object", object_id.value}, {"ref", instance.ref}},
+                    "prefab dependency disappeared from the registry snapshot");
+    }
+
+    std::vector<OriginTransitionAuthority> authority;
+    authority.reserve(record->document->components.size());
+    try {
+        for (const auto &component : record->document->components) {
+            auto body = resolvePrefabComponentBody(
+                *record->document, component, instance,
+                resolved.bindableProvider().descriptors(),
+                {.scene_id = object.scene_id,
+                 .instance_id = instance.instance_id,
+                 .prefab = instance.ref});
+            std::vector<std::string> marker_fields;
+            for (auto field = body.begin(); field != body.end(); ++field) {
+                if (prefabGeneratedMarkerRule(field.key(), field.value())) {
+                    marker_fields.push_back(field.key());
+                }
+            }
+            for (const auto &field : marker_fields) body.erase(field);
+            authority.push_back({.component_key = component.key,
+                                 .body = std::move(body)});
+        }
+    } catch (const PrefabError &error) {
+        throwPrefabEditFailure(error, object_id, {});
+    }
+
+    OrderedJson forward{
+        {"op", op},
+        {"object", object_id.value},
+        {"scene_id", object.scene_id},
+        {"prefab", OrderedJson(*prefab)},
+        {"expanded_components", unpackExpandedComponentsJson(authority)},
+        {"dependency_witness",
+         unpackDependencyWitness(instance, *record, resolved, authority)},
+    };
+    const auto target = "/authoring_objects/" +
+                        std::to_string(object_id.value);
+    return PreparedOperation{
+        .commands = {makeUnpackPrefabCommand(object, *prefab, authority,
+                                              false)},
+        .forward = std::move(forward),
+        .inverse = OrderedJson::object(),
+        .affected = {object_id},
+        .stable_target = target,
+        .read_set = {target},
+        .write_set = {target},
+        .structural_domain = {{"kind", "object_subtree"},
+                              {"scene_id", object.scene_id},
+                              {"object", object_id.value}},
+        .unpack = PreparedUnpack{
+            .generated_scene = resolved,
+            .scene_id = object.scene_id,
+            .object_id = object_id,
+            .instance_id = instance.instance_id,
+            .authority = std::move(authority),
+        },
+    };
+}
+
+OrderedJson invertUnpackOperation(const OrderedJson &forward) {
+    auto result = forward;
+    const auto op = forward.value("op", std::string{});
+    if (op == "unpack_prefab") result["op"] = "restore_prefab";
+    else if (op == "restore_prefab") result["op"] = "unpack_prefab";
+    else throw std::invalid_argument("operation is not an unpack inverse");
+    const auto map = originTransitionMapFromJson(
+        forward.at("origin_transition"));
+    result["origin_transition"] =
+        originTransitionMapJson(invertOriginTransitionMap(map));
+    return result;
+}
+
+void finalizePreparedUnpack(PreparedOperation &prepared,
+                            const AuthoringSceneDocument &authored_document,
+                            const ResolvedScene &authored_scene) {
+    if (!prepared.unpack) return;
+    auto &unpack = *prepared.unpack;
+    try {
+        const auto transition = buildOriginTransitionMap(
+            unpack.generated_scene, authored_document, authored_scene,
+            unpack.scene_id, unpack.object_id, unpack.instance_id,
+            unpack.authority);
+        prepared.forward["origin_transition"] =
+            originTransitionMapJson(transition);
+        prepared.inverse = invertUnpackOperation(prepared.forward);
+        if (const auto failure = unpackJournalIntegrityFailure(
+                prepared.forward, prepared.inverse)) {
+            editFailure(EditorEditErrorCode::journal_integrity_error,
+                        {{"reason", *failure},
+                         {"object", unpack.object_id.value}},
+                        "generated unpack journal pair is inconsistent");
+        }
+    } catch (const OriginTransitionError &error) {
+        throwOriginTransitionFailure(error, unpack.object_id);
+    }
 }
 
 PreparedOperation prepareSet(const Json &raw,
@@ -1315,6 +1612,7 @@ PreparedOperation prepareReparent(const Json &raw,
 
 PreparedOperation prepareRpcOperation(const Json &raw,
                                       const AuthoringSceneDocument &document,
+                                      const ResolvedScene &resolved,
                                       std::string_view current_scene,
                                       const PrefabRegistrySnapshot &registry) {
     requireObject(raw, "edit operation");
@@ -1329,6 +1627,8 @@ PreparedOperation prepareRpcOperation(const Json &raw,
         return preparePrefabParameter(raw, document, registry, false);
     if (op == "unset_prefab_parameter")
         return preparePrefabParameter(raw, document, registry, true);
+    if (op == "unpack_prefab")
+        return prepareUnpackPrefab(raw, document, resolved);
     editFailure(EditorEditErrorCode::method_unavailable,
                 {{"method", op}, {"adapter", "editor_operation"}},
                 "unknown editor operation");
@@ -1515,25 +1815,45 @@ PreparedBatch prepareBatch(const Json &raw_operations,
                            const AuthoringSceneDocument &source,
                            std::string_view current_scene,
                            PrefabRegistrySnapshot registry = {},
-                           BindableProviderSnapshot provider = {}) {
+                           BindableProviderSnapshot provider = {},
+                           const SceneProjectionState *projection_state =
+                               nullptr) {
     if (!raw_operations.is_array() || raw_operations.empty()) {
         throw std::invalid_argument("edit operations must be a non-empty array");
     }
-    LocalDocumentTarget local{source, std::move(registry),
-                              std::move(provider)};
+    const auto contains_unpack = std::any_of(
+        raw_operations.begin(), raw_operations.end(), [](const Json &raw) {
+            return raw.is_object() &&
+                   raw.value("op", std::string{}) == "unpack_prefab";
+        });
+    if (contains_unpack && raw_operations.size() != 1U) {
+        editFailure(EditorEditErrorCode::unpack_must_be_singleton,
+                    {{"operation_count", raw_operations.size()}},
+                    "unpack_prefab must be the only operation in its request");
+    }
+    std::optional<LocalDocumentTarget> local;
+    if (projection_state != nullptr &&
+        projection_state->revision() == source.revision()) {
+        local.emplace(*projection_state);
+    } else {
+        local.emplace(source, std::move(registry), std::move(provider));
+    }
     PreparedBatch batch;
     batch.operations.reserve(raw_operations.size());
     for (const auto &raw : raw_operations) {
         auto prepared = prepareRpcOperation(
-            raw, local.projectionDocument(), current_scene,
-            local.projectionResolvedScene().prefabRegistry());
-        EditorProjectionTransaction transaction{local,
-                                                local.projectionDocument().revision()};
+            raw, local->projectionDocument(), local->projectionResolvedScene(),
+            current_scene,
+            local->projectionResolvedScene().prefabRegistry());
+        EditorProjectionTransaction transaction{
+            *local, local->projectionDocument().revision()};
         std::vector<EditorProjectionAdapter *> adapters;
         const auto result = transaction.commit(prepared.commands, adapters);
         if (!result.committed()) {
             throw projectionFailure(result, prepared.forward.value("op", "edit"));
         }
+        finalizePreparedUnpack(prepared, local->projectionDocument(),
+                              local->projectionResolvedScene());
         if (prepared.forward.at("op") == "spawn") {
             const auto inserted = std::find_if(
                 result.structural_changes.begin(), result.structural_changes.end(),
@@ -1577,6 +1897,29 @@ PreparedBatch prepareBatch(const Json &raw_operations,
 EditorProjectionCommand commandFromCanonical(const Json &operation,
                                               const AuthoringSceneDocument &document) {
     const auto op = requireString(operation, "op", "journal operation");
+    if (op == "unpack_prefab" || op == "restore_prefab") {
+        requireOnly(operation,
+                    {"op", "object", "scene_id", "prefab",
+                     "expanded_components", "dependency_witness",
+                     "origin_transition"},
+                    "canonical unpack operation");
+        const auto object_id = AuthoringObjectId{exactUnsigned(
+            operation.at("object"), "journal unpack object", true)};
+        const auto object = requireObjectLocation(document, object_id);
+        if (requireString(operation, "scene_id", op) != object.scene_id) {
+            editFailure(EditorEditErrorCode::journal_integrity_error,
+                        {{"reason", "scene_id"},
+                         {"object", object_id.value}},
+                        "unpack journal scene does not match its object");
+        }
+        auto authority = unpackAuthorityFromJson(
+            operation.at("expanded_components"));
+        (void)originTransitionMapFromJson(
+            operation.at("origin_transition"));
+        return makeUnpackPrefabCommand(
+            object, operation.at("prefab"), std::move(authority),
+            op == "restore_prefab");
+    }
     if (op == "set_prefab_parameter" ||
         op == "unset_prefab_parameter") {
         const auto object_id = AuthoringObjectId{exactUnsigned(
@@ -1688,12 +2031,26 @@ std::vector<EditorProjectionCommand>
 commandsFromCanonical(std::span<const OrderedJson> operations,
                       const AuthoringSceneDocument &document,
                       PrefabRegistrySnapshot registry = {},
-                      BindableProviderSnapshot provider = {}) {
-    LocalDocumentTarget local{document, std::move(registry),
-                              std::move(provider)};
+                      BindableProviderSnapshot provider = {},
+                      const SceneProjectionState *projection_state = nullptr) {
+    std::optional<LocalDocumentTarget> local;
+    if (projection_state != nullptr &&
+        projection_state->revision() == document.revision()) {
+        local.emplace(*projection_state);
+    } else {
+        local.emplace(document, std::move(registry), std::move(provider));
+    }
     std::vector<EditorProjectionCommand> result;
     for (const auto &operation : operations) {
         const auto op = operation.at("op").get<std::string>();
+        const bool unpack = op == "unpack_prefab";
+        const bool restore = op == "restore_prefab";
+        std::optional<AuthoringSceneDocument> base_document;
+        std::optional<ResolvedScene> base_resolved;
+        if (unpack || restore) {
+            base_document = local->projectionDocument();
+            base_resolved = local->projectionResolvedScene();
+        }
         std::vector<EditorProjectionCommand> current;
         if (op == "destroy" || op == "remove_objects") {
             for (const auto &id : operation.at("object_ids")) {
@@ -1706,13 +2063,50 @@ commandsFromCanonical(std::span<const OrderedJson> operations,
             }
         } else {
             current.push_back(commandFromCanonical(operation,
-                                                   local.projectionDocument()));
+                                                   local->projectionDocument()));
         }
-        EditorProjectionTransaction transaction{local,
-                                                local.projectionDocument().revision()};
+        EditorProjectionTransaction transaction{
+            *local, local->projectionDocument().revision()};
         std::vector<EditorProjectionAdapter *> adapters;
         const auto preflight = transaction.commit(current, adapters);
         if (!preflight.committed()) throw projectionFailure(preflight, op);
+        if (unpack || restore) {
+            const auto object_id = AuthoringObjectId{exactUnsigned(
+                operation.at("object"), "journal unpack object", true)};
+            const auto scene_id = requireString(operation, "scene_id", op);
+            const auto &witness = operation.at("dependency_witness");
+            const auto instance_id = requireString(
+                witness, "instance_id", "unpack dependency witness");
+            const auto authority = unpackAuthorityFromJson(
+                operation.at("expanded_components"));
+            const auto transition = originTransitionMapFromJson(
+                operation.at("origin_transition"));
+            const auto expected_direction =
+                unpack ? OriginTransitionDirection::GeneratedToAuthored
+                       : OriginTransitionDirection::AuthoredToGenerated;
+            if (transition.direction != expected_direction) {
+                editFailure(EditorEditErrorCode::journal_integrity_error,
+                            {{"reason", "origin_transition_direction"},
+                             {"object", object_id.value}},
+                            "unpack transition direction does not match operation");
+            }
+            try {
+                if (unpack) {
+                    validateOriginTransitionMap(
+                        transition, *base_resolved,
+                        local->projectionDocument(),
+                        local->projectionResolvedScene(), scene_id,
+                        object_id, instance_id, authority);
+                } else {
+                    validateOriginTransitionMap(
+                        transition, local->projectionResolvedScene(),
+                        *base_document, *base_resolved, scene_id, object_id,
+                        instance_id, authority);
+                }
+            } catch (const OriginTransitionError &error) {
+                throwOriginTransitionFailure(error, object_id);
+            }
+        }
         result.insert(result.end(), current.begin(), current.end());
     }
     return result;
@@ -1770,6 +2164,12 @@ OrderedJson targetState(const Json &operations,
                     }
                 }
                 result["source"] = overridden ? "override" : "default";
+            }
+            if (op == "unpack_prefab" || op == "restore_prefab") {
+                result["prefab"] = object.authored.contains("prefab")
+                                       ? OrderedJson(object.authored.at("prefab"))
+                                       : OrderedJson(nullptr);
+                result["components"] = object.authored.at("components");
             }
             if (op == "spawn") result["authored_object"] = object.authored;
             if (op == "reparent" && hasComponent(object, "transform")) {
@@ -2035,7 +2435,309 @@ bool sameStableSet(std::span<const std::string> left,
            std::equal(left.begin(), left.end(), right.begin());
 }
 
+bool isCanonicalUnpackOperation(const Json &operation) {
+    const auto op = operation.value("op", std::string{});
+    return op == "unpack_prefab" || op == "restore_prefab";
+}
+
+std::optional<std::string> unpackJournalIntegrityFailureImpl(
+    const OrderedJson &forward, const OrderedJson &inverse) {
+    try {
+        if (!isCanonicalUnpackOperation(forward) ||
+            !isCanonicalUnpackOperation(inverse)) {
+            return "operation";
+        }
+        const auto forward_op = forward.at("op").get<std::string>();
+        const auto inverse_op = inverse.at("op").get<std::string>();
+        if ((forward_op == "unpack_prefab") ==
+            (inverse_op == "unpack_prefab")) {
+            return "operation";
+        }
+        constexpr std::array<std::string_view, 6> common_fields{
+            "object", "scene_id", "prefab", "expanded_components",
+            "dependency_witness", "origin_transition"};
+        if (forward.size() != common_fields.size() + 1U ||
+            inverse.size() != common_fields.size() + 1U) {
+            return "shape";
+        }
+        for (const auto field : common_fields) {
+            if (!forward.contains(std::string{field}) ||
+                !inverse.contains(std::string{field})) {
+                return "shape";
+            }
+            if (field != "origin_transition" && field != "prefab" &&
+                field != "dependency_witness" &&
+                forward.at(std::string{field}) !=
+                    inverse.at(std::string{field})) {
+                return std::string{field};
+            }
+        }
+        const auto &forward_prefab = forward.at("prefab");
+        const auto &inverse_prefab = inverse.at("prefab");
+        const auto &forward_witness = forward.at("dependency_witness");
+        const auto &inverse_witness = inverse.at("dependency_witness");
+        if (!forward_prefab.is_object() || !inverse_prefab.is_object() ||
+            !forward_witness.is_object() || !inverse_witness.is_object() ||
+            !forward_prefab.contains("ref") ||
+            !forward_prefab.at("ref").is_string() ||
+            !inverse_prefab.contains("ref") ||
+            !inverse_prefab.at("ref").is_string() ||
+            !forward_witness.contains("ref") ||
+            !forward_witness.at("ref").is_string() ||
+            !inverse_witness.contains("ref") ||
+            !inverse_witness.at("ref").is_string()) {
+            return "ref";
+        }
+        if (forward_prefab.at("ref") != inverse_prefab.at("ref") ||
+            forward_prefab.at("ref") != forward_witness.at("ref") ||
+            forward_prefab.at("ref") != inverse_witness.at("ref")) {
+            return "ref";
+        }
+        if (!forward_prefab.contains("instance_id") ||
+            !forward_prefab.at("instance_id").is_string() ||
+            !inverse_prefab.contains("instance_id") ||
+            !inverse_prefab.at("instance_id").is_string() ||
+            !forward_witness.contains("instance_id") ||
+            !forward_witness.at("instance_id").is_string() ||
+            !inverse_witness.contains("instance_id") ||
+            !inverse_witness.at("instance_id").is_string()) {
+            return "instance_id";
+        }
+        if (forward_prefab.at("instance_id") !=
+                inverse_prefab.at("instance_id") ||
+            forward_prefab.at("instance_id") !=
+                forward_witness.at("instance_id") ||
+            forward_prefab.at("instance_id") !=
+                inverse_witness.at("instance_id")) {
+            return "instance_id";
+        }
+        if (forward_prefab != inverse_prefab) return "prefab";
+        if (forward_witness != inverse_witness) {
+            return "dependency_witness";
+        }
+        constexpr std::array<std::string_view, 6> witness_fields{
+            "ref", "instance_id", "prefab_digest_sha256",
+            "provider_fingerprint_sha256", "behaviors",
+            "resolver_inputs_fingerprint_sha256"};
+        if (forward_witness.size() != witness_fields.size()) {
+            return "dependency_witness";
+        }
+        for (const auto field : witness_fields) {
+            if (!forward_witness.contains(std::string{field})) {
+                return "dependency_witness";
+            }
+        }
+        for (const auto field : {"ref", "instance_id",
+                                 "prefab_digest_sha256",
+                                 "provider_fingerprint_sha256",
+                                 "resolver_inputs_fingerprint_sha256"}) {
+            if (!forward_witness.at(field).is_string()) {
+                return "dependency_witness";
+            }
+        }
+        const auto &behaviors = forward_witness.at("behaviors");
+        if (!behaviors.is_array()) return "behaviors";
+        std::string previous_behavior;
+        for (const auto &behavior : behaviors) {
+            if (!behavior.is_object() || behavior.size() != 3U ||
+                !behavior.contains("stable_name") ||
+                !behavior.at("stable_name").is_string() ||
+                !behavior.contains("schema_version") ||
+                !behavior.contains("params_schema_fingerprint") ||
+                !behavior.at("params_schema_fingerprint").is_string()) {
+                return "behaviors";
+            }
+            (void)exactUnsigned(behavior.at("schema_version"),
+                                "unpack behavior schema_version");
+            const auto name = behavior.at("stable_name").get<std::string>();
+            if (name.empty() ||
+                (!previous_behavior.empty() && name <= previous_behavior)) {
+                return "behaviors";
+            }
+            previous_behavior = name;
+        }
+        const auto forward_map = originTransitionMapFromJson(
+            forward.at("origin_transition"));
+        const auto inverse_map = originTransitionMapFromJson(
+            inverse.at("origin_transition"));
+        if (invertOriginTransitionMap(forward_map) != inverse_map) {
+            return "origin_transition";
+        }
+        if ((forward_op == "unpack_prefab" &&
+             forward_map.direction !=
+                 OriginTransitionDirection::GeneratedToAuthored) ||
+            (forward_op == "restore_prefab" &&
+             forward_map.direction !=
+                 OriginTransitionDirection::AuthoredToGenerated)) {
+            return "origin_transition_direction";
+        }
+        const auto authority = unpackAuthorityFromJson(
+            forward.at("expanded_components"));
+        if (authority.size() != forward_map.entries.size()) {
+            return "origin_transition_count";
+        }
+        const auto object_id = exactUnsigned(
+            forward.at("object"), "unpack journal object", true);
+        const auto scene_id = requireString(forward, "scene_id",
+                                            "unpack journal operation");
+        const auto instance_id = requireString(
+            forward_witness, "instance_id", "unpack dependency witness");
+        std::unordered_set<std::string> component_keys;
+        std::unordered_set<std::string> gids;
+        std::unordered_set<std::size_t> authored_indices;
+        for (std::size_t index = 0; index < authority.size(); ++index) {
+            const auto &body = authority[index].body;
+            const auto &entry = forward_map.entries[index];
+            if (authority[index].component_key.empty() || !body.is_object() ||
+                !component_keys.insert(authority[index].component_key).second ||
+                authority[index].component_key != entry.component_key) {
+                return "component_key";
+            }
+            for (auto field = body.begin(); field != body.end(); ++field) {
+                if (prefabGeneratedMarkerRule(field.key(), field.value())) {
+                    return "expanded_components";
+                }
+            }
+            if (entry.scene_id != scene_id ||
+                entry.authoring_object_id.value != object_id) {
+                return "origin_transition_target";
+            }
+            if (entry.gid != prefabGeneratedId(instance_id,
+                                                entry.component_key) ||
+                !gids.insert(entry.gid).second) {
+                return "gid";
+            }
+            if (!authored_indices.insert(entry.final_authored_index).second ||
+                (index != 0U &&
+                 (forward_map.entries[index - 1U].final_authored_index ==
+                      std::numeric_limits<std::size_t>::max() ||
+                  entry.final_authored_index !=
+                      forward_map.entries[index - 1U]
+                              .final_authored_index +
+                          1U))) {
+                return "final_authored_index";
+            }
+        }
+        return std::nullopt;
+    } catch (const std::exception &) {
+        return "shape";
+    }
+}
+
+void requireUnpackDependencies(const OrderedJson &operation,
+                               const SceneProjectionState &state) {
+    if (!isCanonicalUnpackOperation(operation)) return;
+    const auto &witness = operation.at("dependency_witness");
+    const auto ref = requireString(witness, "ref",
+                                   "unpack dependency witness");
+    const auto expected_digest = requireString(
+        witness, "prefab_digest_sha256", "unpack dependency witness");
+    const auto *record = state.resolved().prefabRegistry().find(ref);
+    const auto current_digest =
+        record == nullptr ? std::string{} : record->digest_sha256;
+    if (current_digest != expected_digest) {
+        editFailure(EditorEditErrorCode::prefab_digest_changed,
+                    {{"expected", expected_digest},
+                     {"current", current_digest},
+                     {"ref", ref}},
+                    "prefab digest changed since unpack");
+    }
+
+    const auto expected_provider = requireString(
+        witness, "provider_fingerprint_sha256",
+        "unpack dependency witness");
+    const auto current_provider =
+        state.resolved().prefabClosure().provider_fingerprint_sha256;
+    if (current_provider != expected_provider) {
+        editFailure(EditorEditErrorCode::prefab_provider_changed,
+                    {{"expected", expected_provider},
+                     {"current", current_provider}},
+                    "prefab provider fingerprint changed since unpack");
+    }
+
+    const auto expected_behaviors = witness.find("behaviors");
+    if (expected_behaviors == witness.end() ||
+        !expected_behaviors->is_array()) {
+        editFailure(EditorEditErrorCode::journal_integrity_error,
+                    {{"reason", "behaviors"}},
+                    "unpack behavior dependency witness is invalid");
+    }
+    OrderedJson current_behaviors = OrderedJson::array();
+    const auto dependencies =
+        state.resolved().bindableProvider().behaviorDependencies();
+    for (const auto &expected : *expected_behaviors) {
+        const auto name = requireString(expected, "stable_name",
+                                        "unpack behavior dependency");
+        const auto found = std::lower_bound(
+            dependencies.begin(), dependencies.end(), name,
+            [](const auto &dependency, std::string_view stable_name) {
+                return dependency.stable_name < stable_name;
+            });
+        if (found == dependencies.end() || found->stable_name != name) {
+            current_behaviors.push_back(nullptr);
+        } else {
+            current_behaviors.push_back(
+                {{"stable_name", found->stable_name},
+                 {"schema_version", found->schema_version},
+                 {"params_schema_fingerprint",
+                  found->params_schema_fingerprint}});
+        }
+    }
+    const auto expected_resolver = requireString(
+        witness, "resolver_inputs_fingerprint_sha256",
+        "unpack dependency witness");
+    const auto current_resolver = state.resolved()
+                                      .prefabClosure()
+                                      .resolver_inputs_fingerprint_sha256;
+    if (current_behaviors != OrderedJson(*expected_behaviors) ||
+        current_resolver != expected_resolver) {
+        editFailure(EditorEditErrorCode::prefab_behavior_dependency_changed,
+                    {{"expected_behaviors", *expected_behaviors},
+                     {"current_behaviors", current_behaviors},
+                     {"expected_resolver_inputs", expected_resolver},
+                     {"current_resolver_inputs", current_resolver}},
+                    "prefab behavior dependency or resolver inputs changed since unpack");
+    }
+}
+
+bool journalUsesUnpack(const EditorJournalRecord &record) {
+    for (const auto &operation : record.ordered_forward) {
+        if (isCanonicalUnpackOperation(operation)) return true;
+    }
+    for (const auto &operation : record.ordered_inverse) {
+        if (isCanonicalUnpackOperation(operation)) return true;
+    }
+    return false;
+}
+
+void requireUnpackJournalRecord(const EditorJournalRecord &record,
+                                const SceneProjectionState &state) {
+    if (!journalUsesUnpack(record)) return;
+    if (record.ordered_forward.size() != 1U ||
+        record.ordered_inverse.size() != 1U ||
+        record.commands.size() != 1U ||
+        record.commands.front().forward != record.ordered_forward.front() ||
+        record.commands.front().inverse != record.ordered_inverse.front()) {
+        editFailure(EditorEditErrorCode::journal_integrity_error,
+                    {{"reason", "record"}},
+                    "unpack journal record is internally inconsistent");
+    }
+    if (const auto failure = unpackJournalIntegrityFailureImpl(
+            record.ordered_forward.front(),
+            record.ordered_inverse.front())) {
+        editFailure(EditorEditErrorCode::journal_integrity_error,
+                    {{"reason", *failure}},
+                    "unpack journal forward and inverse are inconsistent");
+    }
+    requireUnpackDependencies(record.ordered_forward.front(), state);
+}
+
 } // namespace
+
+std::optional<std::string> unpackJournalIntegrityFailure(
+    const OrderedJson &forward, const OrderedJson &inverse) {
+    return unpackJournalIntegrityFailureImpl(forward, inverse);
+}
 
 EditorMutationRequestAst parseEditorMutationRequest(
     const Json &params, std::string_view method) {
@@ -2112,6 +2814,13 @@ EditorMutationRequestAst parseEditorMutationRequest(
             (void)requireString(operation, "parameter", op);
             continue;
         }
+        if (op == "unpack_prefab") {
+            result.prefab_mutation = true;
+            requireOnly(operation, {"op", "object"}, op);
+            (void)exactUnsigned(operation.at("object"),
+                                "unpack_prefab object", true);
+            continue;
+        }
         if (op != "set_component_value") continue;
         const bool has_slot = operation.contains("component_slot");
         const bool has_generated = operation.contains("generated_id");
@@ -2157,11 +2866,11 @@ EditorMutationRequestAst parseEditorMutationRequest(
     if (method == "edit" && result.prefab_mutation) {
         if (!params.contains("scene_revision")) {
             throw std::invalid_argument(
-                "prefab parameter edits require scene_revision");
+                "prefab mutations require scene_revision");
         }
         if (!result.closure_generation || !result.provider_generation) {
             throw std::invalid_argument(
-                "prefab parameter edits require closure_generation and provider_generation");
+                "prefab mutations require closure_generation and provider_generation");
         }
     }
     return result;
@@ -2172,7 +2881,8 @@ bool operationsUsePrefabParameters(
     return std::any_of(operations.begin(), operations.end(), [](const auto &op) {
         const auto name = op.value("op", std::string{});
         return name == "set_prefab_parameter" ||
-               name == "unset_prefab_parameter";
+               name == "unset_prefab_parameter" ||
+               name == "unpack_prefab" || name == "restore_prefab";
     });
 }
 
@@ -2199,6 +2909,32 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
         return "prefab_parameter_unknown";
     case EditorEditErrorCode::prefab_parameter_type:
         return "prefab_parameter_type";
+    case EditorEditErrorCode::unpack_must_be_singleton:
+        return "unpack_must_be_singleton@1";
+    case EditorEditErrorCode::journal_integrity_error:
+        return "journal_integrity_error@1";
+    case EditorEditErrorCode::prefab_digest_changed:
+        return "prefab_digest_changed@1";
+    case EditorEditErrorCode::prefab_provider_changed:
+        return "prefab_provider_changed@1";
+    case EditorEditErrorCode::prefab_behavior_dependency_changed:
+        return "prefab_behavior_dependency_changed@1";
+    case EditorEditErrorCode::origin_transition_target_mismatch:
+        return "origin_transition_target_mismatch@1";
+    case EditorEditErrorCode::origin_transition_gid_set_mismatch:
+        return "origin_transition_gid_set_mismatch@1";
+    case EditorEditErrorCode::origin_transition_index_set_mismatch:
+        return "origin_transition_index_set_mismatch@1";
+    case EditorEditErrorCode::origin_transition_index_invalid:
+        return "origin_transition_index_invalid@1";
+    case EditorEditErrorCode::origin_transition_component_mismatch:
+        return "origin_transition_component_mismatch@1";
+    case EditorEditErrorCode::origin_transition_component_key_mismatch:
+        return "origin_transition_component_key_mismatch@1";
+    case EditorEditErrorCode::origin_transition_gid_derivation_mismatch:
+        return "origin_transition_gid_derivation_mismatch@1";
+    case EditorEditErrorCode::origin_transition_body_mismatch:
+        return "origin_transition_body_mismatch@1";
     case EditorEditErrorCode::unknown_component_type: return "unknown_component_type";
     case EditorEditErrorCode::duplicate_component: return "duplicate_component";
     case EditorEditErrorCode::missing_component: return "missing_component";
@@ -2275,6 +3011,8 @@ struct EditorEditCoordinator::Impl {
         std::optional<std::uint64_t> expected_closure_generation;
         std::optional<std::uint64_t> expected_provider_generation;
         bool prefab_cas = false;
+        std::optional<OrderedJson> accepted_unpack_forward;
+        std::optional<OrderedJson> accepted_unpack_inverse;
         std::uint64_t accepted_gate_epoch = 0;
         std::uint64_t accepted_transition_epoch = 0;
         std::string accepted_scene_id;
@@ -2348,6 +3086,22 @@ struct EditorEditCoordinator::Impl {
         : dependencies{std::move(runtime)} {}
 
     const AuthoringSceneDocument &document() const { return dependencies.document(); }
+    const SceneProjectionState *projectionState() const {
+        if (!dependencies.projection_state) return nullptr;
+        const auto &state = dependencies.projection_state();
+        return state.revision() == document().revision() ? &state : nullptr;
+    }
+    const SceneProjectionState &requireProjectionState(
+        std::string_view method) const {
+        const auto *state = projectionState();
+        if (state == nullptr) {
+            editFailure(EditorEditErrorCode::method_unavailable,
+                        {{"method", method},
+                         {"adapter", "projection_state"}},
+                        "unpack requires the live projection state callback");
+        }
+        return *state;
+    }
     PrefabRegistrySnapshot prefabRegistry() const {
         return dependencies.prefab_registry
                    ? dependencies.prefab_registry()
@@ -2819,7 +3573,8 @@ struct EditorEditCoordinator::Impl {
                     auto batch = prepareBatch(request.raw_operations, document(),
                                               request.accepted_scene_id,
                                               prefabRegistry(),
-                                              bindableProvider());
+                                              bindableProvider(),
+                                              projectionState());
                     requireLivePreviewCapability(batch, "open_preview");
                     PreviewLease lease{
                         .ticket = request.ticket,
@@ -2896,7 +3651,8 @@ struct EditorEditCoordinator::Impl {
                     auto batch = prepareBatch(request.raw_operations, document(),
                                               request.accepted_scene_id,
                                               prefabRegistry(),
-                                              bindableProvider());
+                                              bindableProvider(),
+                                              projectionState());
                     requireLivePreviewCapability(batch, "update_preview");
                     auto writes = batchWriteSet(batch);
                     if (!sameStableSet(writes, preview_lease->write_set)) {
@@ -2939,7 +3695,8 @@ struct EditorEditCoordinator::Impl {
                     auto batch = prepareBatch(preview_lease->raw_operations,
                                               document(), preview_lease->scene_id,
                                               prefabRegistry(),
-                                              bindableProvider());
+                                              bindableProvider(),
+                                              projectionState());
                     const EditorEditExecutionRequest execution{
                         .base_revision = preview_lease->base_revision,
                         .commands = batch.commands,
@@ -3072,6 +3829,36 @@ struct EditorEditCoordinator::Impl {
                     completed.push_back(ticket.result);
                     continue;
                 }
+                std::optional<EditorJournalRecord> revert_source;
+                if (ticket.kind != Ticket::Kind::edit) {
+                    revert_source =
+                        requireJournal(*ticket.source_transaction_id);
+                    if (journalUsesUnpack(*revert_source)) {
+                        requireUnpackJournalRecord(
+                            *revert_source,
+                            requireProjectionState(
+                                ticket.kind == Ticket::Kind::undo
+                                    ? "undo"
+                                    : "redo"));
+                    }
+                }
+                if (ticket.accepted_unpack_forward) {
+                    if (!ticket.accepted_unpack_inverse) {
+                        editFailure(EditorEditErrorCode::journal_integrity_error,
+                                    {{"reason", "accepted_inverse"}},
+                                    "accepted unpack witness lost its inverse");
+                    }
+                    if (const auto failure = unpackJournalIntegrityFailureImpl(
+                            *ticket.accepted_unpack_forward,
+                            *ticket.accepted_unpack_inverse)) {
+                        editFailure(EditorEditErrorCode::journal_integrity_error,
+                                    {{"reason", *failure}},
+                                    "accepted unpack witness is inconsistent");
+                    }
+                    requireUnpackDependencies(
+                        *ticket.accepted_unpack_forward,
+                        requireProjectionState("unpack_prefab"));
+                }
                 if (document().revision() != ticket.base_revision) {
                     const EditFailure failure{
                         EditorEditErrorCode::stale_revision,
@@ -3084,17 +3871,18 @@ struct EditorEditCoordinator::Impl {
                     completed.push_back(ticket.result);
                     continue;
                 }
-                if (const auto failure = prefabCasFailure(ticket)) {
-                    ticket.result = rejected(ticket.id, ticket.actor_id,
-                                             ticket.base_revision, *failure);
-                    ticket.result["status"] = "failed";
-                    results[ticket.id] = ticket.result;
-                    completed.push_back(ticket.result);
-                    continue;
+                if (ticket.kind == Ticket::Kind::edit) {
+                    if (const auto failure = prefabCasFailure(ticket)) {
+                        ticket.result = rejected(ticket.id, ticket.actor_id,
+                                                 ticket.base_revision, *failure);
+                        ticket.result["status"] = "failed";
+                        results[ticket.id] = ticket.result;
+                        completed.push_back(ticket.result);
+                        continue;
+                    }
                 }
 
                 PreparedBatch batch;
-                std::optional<EditorJournalRecord> revert_source;
                 std::vector<EditorProjectionCommand> revert_commands;
                 std::span<const OrderedJson> execution_operations;
                 std::span<const EditorProjectionCommand> execution_commands;
@@ -3102,14 +3890,28 @@ struct EditorEditCoordinator::Impl {
                     batch = prepareBatch(ticket.raw_operations, document(),
                                          ticket.accepted_scene_id,
                                          prefabRegistry(),
-                                         bindableProvider());
+                                         bindableProvider(),
+                                         projectionState());
                     const auto writes = batchWriteSet(batch);
                     const auto domains = batchStructuralDomains(batch);
                     requireNoLeaseOverlap(writes, domains);
+                    if (ticket.accepted_unpack_forward &&
+                        (batch.forward.size() != 1U ||
+                         batch.inverse.size() != 1U ||
+                         batch.forward.front() !=
+                             *ticket.accepted_unpack_forward ||
+                         batch.inverse.front() !=
+                             *ticket.accepted_unpack_inverse)) {
+                        editFailure(EditorEditErrorCode::journal_integrity_error,
+                                    {{"reason", "acceptance_witness"}},
+                                    "unpack witness changed between acceptance and execution");
+                    }
                     execution_operations = batch.forward;
                     execution_commands = batch.commands;
                 } else {
-                    revert_source = requireJournal(*ticket.source_transaction_id);
+                    if (const auto failure = prefabCasFailure(ticket)) {
+                        throw *failure;
+                    }
                     auto &undo_stack = undo_stacks[ticket.actor_id.value];
                     auto &redo_stack = redo_stacks[ticket.actor_id.value];
                     const bool stack_matches =
@@ -3132,7 +3934,8 @@ struct EditorEditCoordinator::Impl {
                                           revert_source->structural_domain);
                     revert_commands = commandsFromCanonical(
                         revert_source->ordered_inverse, document(),
-                        prefabRegistry(), bindableProvider());
+                        prefabRegistry(), bindableProvider(),
+                        projectionState());
                     execution_operations = revert_source->ordered_inverse;
                     execution_commands = revert_commands;
                 }
@@ -3374,16 +4177,25 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         }
     }
     Json normalized_operations;
+    std::optional<OrderedJson> accepted_unpack_forward;
+    std::optional<OrderedJson> accepted_unpack_inverse;
     try {
         normalized_operations = normalizeBehaviorAttachmentIdentities(
             operations, impl_->document(), base, impl_->dependencies);
         const auto batch = prepareBatch(normalized_operations, impl_->document(),
                                         impl_->dependencies.current_scene_id(),
                                         impl_->prefabRegistry(),
-                                        impl_->bindableProvider());
+                                        impl_->bindableProvider(),
+                                        impl_->projectionState());
         const auto writes = batchWriteSet(batch);
         const auto domains = batchStructuralDomains(batch);
         impl_->requireNoLeaseOverlap(writes, domains);
+        if (batch.forward.size() == 1U &&
+            isCanonicalUnpackOperation(batch.forward.front())) {
+            (void)impl_->requireProjectionState("unpack_prefab");
+            accepted_unpack_forward = batch.forward.front();
+            accepted_unpack_inverse = batch.inverse.front();
+        }
     } catch (const EditFailure &failure) {
         auto result = impl_->rejected(ticket, actor, base, failure);
         impl_->results[ticket] = result;
@@ -3398,6 +4210,8 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
         .expected_closure_generation = request.closure_generation,
         .expected_provider_generation = request.provider_generation,
         .prefab_cas = request.prefab_mutation,
+        .accepted_unpack_forward = std::move(accepted_unpack_forward),
+        .accepted_unpack_inverse = std::move(accepted_unpack_inverse),
         .accepted_gate_epoch = gate.epoch,
         .accepted_transition_epoch = impl_->observed_transition_epoch,
         .accepted_scene_id = impl_->dependencies.current_scene_id(),
@@ -3463,13 +4277,6 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
              {"gate_epoch", gate.epoch}},
             "editor gate is closed"});
     }
-    if (impl.document().revision() != base) {
-        return reject(EditFailure{
-            EditorEditErrorCode::stale_revision,
-            {{"current_revision", impl.document().revision().value},
-             {"target", nullptr}},
-            "base SceneRevision is stale"});
-    }
     try {
         std::string source_id;
         if (redo) {
@@ -3489,8 +4296,19 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
             }
             source_id = stack.back();
         }
+        const auto &source = impl.requireJournal(source_id);
+        if (journalUsesUnpack(source)) {
+            requireUnpackJournalRecord(
+                source, impl.requireProjectionState(method));
+        }
+        if (impl.document().revision() != base) {
+            return reject(EditFailure{
+                EditorEditErrorCode::stale_revision,
+                {{"current_revision", impl.document().revision().value},
+                 {"target", nullptr}},
+                "base SceneRevision is stale"});
+        }
         if (requested && *requested != source_id) {
-            const auto &source = impl.requireJournal(source_id);
             impl.throwUndoConflict(
                 source,
                 source.structural_domain.empty()
@@ -3498,7 +4316,6 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
                     : source.structural_domain.front(),
                 source.transaction_id, impl.document().revision());
         }
-        const auto &source = impl.requireJournal(source_id);
         const bool prefab_cas =
             operationsUsePrefabParameters(source.ordered_forward) ||
             operationsUsePrefabParameters(source.ordered_inverse);
@@ -3506,7 +4323,7 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
             (!has_scene || !expected_closure || !expected_provider)) {
             throw std::invalid_argument(
                 std::string{method} +
-                " of a prefab parameter edit requires scene_revision, closure_generation, and provider_generation");
+                " of a prefab mutation requires scene_revision, closure_generation, and provider_generation");
         }
         if (prefab_cas && *expected_closure != impl.closureGeneration()) {
             return reject(EditFailure{
@@ -3526,7 +4343,8 @@ OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,
         impl.requireNoLeaseOverlap(source.write_set, source.structural_domain);
         (void)commandsFromCanonical(source.ordered_inverse, impl.document(),
                                     impl.prefabRegistry(),
-                                    impl.bindableProvider());
+                                    impl.bindableProvider(),
+                                    impl.projectionState());
         Impl::Ticket pending{
             .id = ticket_id,
             .kind = redo ? Impl::Ticket::Kind::redo : Impl::Ticket::Kind::undo,
@@ -3609,7 +4427,8 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
         auto batch = prepareBatch(request.raw_operations, impl_->document(),
                                   request.accepted_scene_id,
                                   impl_->prefabRegistry(),
-                                  impl_->bindableProvider());
+                                  impl_->bindableProvider(),
+                                  impl_->projectionState());
         requireLivePreviewCapability(batch, method);
         if (!impl_->dependencies.execute_preview) {
             editFailure(EditorEditErrorCode::method_unavailable,
@@ -3680,7 +4499,8 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
         auto batch = prepareBatch(request.raw_operations, impl_->document(),
                                   request.accepted_scene_id,
                                   impl_->prefabRegistry(),
-                                  impl_->bindableProvider());
+                                  impl_->bindableProvider(),
+                                  impl_->projectionState());
         requireLivePreviewCapability(batch, method);
         const auto writes = batchWriteSet(batch);
         if (!sameStableSet(writes, impl_->preview_lease->write_set)) {
@@ -3871,11 +4691,16 @@ EditorProjectionResult EditorEditCoordinator::executeJournalForVerification(
     if (found == impl_->journal.end()) {
         throw std::invalid_argument("journal transaction does not exist");
     }
+    if (journalUsesUnpack(*found)) {
+        requireUnpackJournalRecord(
+            *found, impl_->requireProjectionState(
+                        inverse ? "journal_inverse" : "journal_forward"));
+    }
     const auto &operations = inverse ? found->ordered_inverse
                                      : found->ordered_forward;
     auto commands = commandsFromCanonical(
         operations, impl_->document(), impl_->prefabRegistry(),
-        impl_->bindableProvider());
+        impl_->bindableProvider(), impl_->projectionState());
     const EditorEditExecutionRequest request{
         .base_revision = impl_->document().revision(),
         .commands = commands,

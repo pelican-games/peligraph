@@ -128,14 +128,10 @@ std::string sha256(std::string_view bytes) {
 }
 
 bool requestsGeneratedComponent(const nlohmann::json &component) {
-    const auto generated = component.find("generated");
-    if (generated != component.end() && generated->is_boolean() &&
-        generated->get<bool>()) {
-        return true;
+    for (auto field = component.begin(); field != component.end(); ++field) {
+        if (prefabGeneratedMarkerRule(field.key(), field.value())) return true;
     }
-    const auto origin = component.find("origin");
-    return origin != component.end() && origin->is_string() &&
-           origin->get_ref<const std::string &>() == "generated";
+    return false;
 }
 
 ResolvedComponent resolveComponent(
@@ -367,6 +363,379 @@ bool PrefabResolutionClosure::sameWireIdentity(
            provider_fingerprint_sha256 == other.provider_fingerprint_sha256 &&
            resolver_inputs_fingerprint_sha256 ==
                other.resolver_inputs_fingerprint_sha256;
+}
+
+std::string_view originTransitionErrorCodeName(
+    OriginTransitionErrorCode code) noexcept {
+    switch (code) {
+    case OriginTransitionErrorCode::TargetMismatch:
+        return "origin_transition_target_mismatch@1";
+    case OriginTransitionErrorCode::GeneratedIdSetMismatch:
+        return "origin_transition_gid_set_mismatch@1";
+    case OriginTransitionErrorCode::AuthoredIndexSetMismatch:
+        return "origin_transition_index_set_mismatch@1";
+    case OriginTransitionErrorCode::AuthoredIndexInvalid:
+        return "origin_transition_index_invalid@1";
+    case OriginTransitionErrorCode::ComponentMismatch:
+        return "origin_transition_component_mismatch@1";
+    case OriginTransitionErrorCode::ComponentKeyMismatch:
+        return "origin_transition_component_key_mismatch@1";
+    case OriginTransitionErrorCode::GeneratedIdMismatch:
+        return "origin_transition_gid_derivation_mismatch@1";
+    case OriginTransitionErrorCode::AuthorityBodyMismatch:
+        return "origin_transition_body_mismatch@1";
+    }
+    return "origin_transition_component_mismatch@1";
+}
+
+OriginTransitionError::OriginTransitionError(
+    OriginTransitionErrorCode code, std::string message)
+    : std::runtime_error(std::string{originTransitionErrorCodeName(code)} +
+                         ": " + message),
+      code_{code} {}
+
+namespace {
+
+[[noreturn]] void transitionFailure(OriginTransitionErrorCode code,
+                                    std::string message) {
+    throw OriginTransitionError{code, std::move(message)};
+}
+
+const ResolvedObject *transitionObject(const ResolvedScene &resolved,
+                                       std::string_view scene_id,
+                                       AuthoringObjectId object_id) {
+    const auto *scene = resolved.findScene(scene_id);
+    if (scene == nullptr) return nullptr;
+    const auto found = std::find_if(
+        scene->objects.begin(), scene->objects.end(),
+        [object_id](const ResolvedObject &object) {
+            return object.authoring_object_id == object_id;
+        });
+    return found == scene->objects.end() ? nullptr : &*found;
+}
+
+const AuthoringObjectView *transitionAuthoredObject(
+    const AuthoringSceneDocument &document, std::string_view scene_id,
+    AuthoringObjectId object_id,
+    std::vector<AuthoringSceneView> &authoring_scenes) {
+    authoring_scenes = AuthoringSceneAuthority::query(document);
+    const auto scene = std::find_if(
+        authoring_scenes.begin(), authoring_scenes.end(),
+        [scene_id](const AuthoringSceneView &candidate) {
+            return candidate.scene_id == scene_id;
+        });
+    if (scene == authoring_scenes.end()) return nullptr;
+    const auto object = std::find_if(
+        scene->objects.begin(), scene->objects.end(),
+        [object_id](const AuthoringObjectView &candidate) {
+            return candidate.authoring_object_id == object_id;
+        });
+    return object == scene->objects.end() ? nullptr : &*object;
+}
+
+const OriginTransitionAuthority *transitionAuthority(
+    std::span<const OriginTransitionAuthority> authority,
+    std::string_view component_key) {
+    const auto found = std::find_if(
+        authority.begin(), authority.end(),
+        [component_key](const OriginTransitionAuthority &candidate) {
+            return candidate.component_key == component_key;
+        });
+    return found == authority.end() ? nullptr : &*found;
+}
+
+const ResolvedComponent *transitionAuthoredComponent(
+    const ResolvedObject &object, std::size_t authored_index) {
+    const auto found = std::find_if(
+        object.components.begin(), object.components.end(),
+        [authored_index](const ResolvedComponent &component) {
+            const auto *origin = component.origin.authored();
+            return origin != nullptr &&
+                   origin->authoring_component_index == authored_index;
+        });
+    return found == object.components.end() ? nullptr : &*found;
+}
+
+std::string transitionStableName(const ResolvedComponent &component) {
+    return component.name == "behavior"
+               ? component.effective_json.value("type", std::string{})
+               : std::string{};
+}
+
+std::uint64_t transitionUnsigned(const nlohmann::json &value,
+                                 std::string_view field) {
+    if (value.is_number_unsigned()) return value.get<std::uint64_t>();
+    if (value.is_number_integer()) {
+        const auto result = value.get<std::int64_t>();
+        if (result >= 0) return static_cast<std::uint64_t>(result);
+    }
+    throw std::invalid_argument("origin transition " + std::string{field} +
+                                " must be a non-negative integer");
+}
+
+} // namespace
+
+void validateOriginTransitionMap(
+    const OriginTransitionMap &map, const ResolvedScene &generated_scene,
+    const AuthoringSceneDocument &authored_document,
+    const ResolvedScene &authored_scene, std::string_view scene_id,
+    AuthoringObjectId object_id, std::string_view instance_id,
+    std::span<const OriginTransitionAuthority> authority) {
+    const auto *generated_object =
+        transitionObject(generated_scene, scene_id, object_id);
+    const auto *authored_resolved_object =
+        transitionObject(authored_scene, scene_id, object_id);
+    std::vector<AuthoringSceneView> authoring_scenes;
+    const auto *authored_object = transitionAuthoredObject(
+        authored_document, scene_id, object_id, authoring_scenes);
+    if (generated_object == nullptr || authored_resolved_object == nullptr ||
+        authored_object == nullptr || !generated_object->prefab_instance ||
+        generated_object->prefab_instance->instance_id != instance_id ||
+        authored_resolved_object->prefab_instance) {
+        transitionFailure(OriginTransitionErrorCode::TargetMismatch,
+                          "the two snapshots do not describe the requested unpack target");
+    }
+
+    std::vector<const ResolvedComponent *> generated_components;
+    std::unordered_set<std::string> expected_gids;
+    for (const auto &component : generated_object->components) {
+        const auto *origin = component.origin.generated();
+        if (origin == nullptr || origin->instance_id != instance_id) continue;
+        generated_components.push_back(&component);
+        expected_gids.insert(origin->stable_generated_id);
+    }
+    if (generated_components.size() != authority.size() ||
+        map.entries.size() != generated_components.size()) {
+        transitionFailure(OriginTransitionErrorCode::GeneratedIdSetMismatch,
+                          "entry count does not match generated components");
+    }
+
+    std::unordered_set<std::string> authority_keys;
+    for (const auto &item : authority) {
+        if (!authority_keys.insert(item.component_key).second) {
+            transitionFailure(OriginTransitionErrorCode::ComponentKeyMismatch,
+                              "authority component keys are not unique");
+        }
+    }
+
+    const auto &authored_components = authored_object->authoredJson().at("components");
+    if (!authored_components.is_array() ||
+        authored_components.size() < generated_components.size()) {
+        transitionFailure(OriginTransitionErrorCode::AuthoredIndexInvalid,
+                          "authored component interval is too small");
+    }
+    const auto first_expanded =
+        authored_components.size() - generated_components.size();
+    std::unordered_set<std::size_t> expected_indices;
+    for (std::size_t index = first_expanded;
+         index < authored_components.size(); ++index) {
+        expected_indices.insert(index);
+        if (transitionAuthoredComponent(*authored_resolved_object, index) ==
+            nullptr) {
+            transitionFailure(OriginTransitionErrorCode::AuthoredIndexInvalid,
+                              "an expanded authored index is absent from next_resolved");
+        }
+    }
+
+    std::unordered_set<std::string> actual_gids;
+    std::unordered_set<std::size_t> actual_indices;
+    for (const auto &entry : map.entries) {
+        if (entry.scene_id != scene_id ||
+            entry.authoring_object_id != object_id) {
+            transitionFailure(OriginTransitionErrorCode::TargetMismatch,
+                              "an entry names a different scene or object");
+        }
+        if (!actual_gids.insert(entry.gid).second) {
+            transitionFailure(OriginTransitionErrorCode::GeneratedIdSetMismatch,
+                              "generated ids are not unique");
+        }
+        if (entry.final_authored_index >= authored_components.size() ||
+            !actual_indices.insert(entry.final_authored_index).second) {
+            transitionFailure(OriginTransitionErrorCode::AuthoredIndexInvalid,
+                              "authored indices are duplicated or out of range");
+        }
+    }
+    if (actual_gids != expected_gids) {
+        transitionFailure(OriginTransitionErrorCode::GeneratedIdSetMismatch,
+                          "generated id set is not a bijection");
+    }
+    if (actual_indices != expected_indices) {
+        transitionFailure(OriginTransitionErrorCode::AuthoredIndexSetMismatch,
+                          "authored index set is not the expanded interval");
+    }
+
+    for (const auto &entry : map.entries) {
+        const auto source = std::find_if(
+            generated_components.begin(), generated_components.end(),
+            [&](const ResolvedComponent *component) {
+                return component->origin.generated()->stable_generated_id ==
+                       entry.gid;
+            });
+        if (source == generated_components.end()) {
+            transitionFailure(OriginTransitionErrorCode::GeneratedIdSetMismatch,
+                              "entry source is absent");
+        }
+        const auto *generated = (*source)->origin.generated();
+        if (entry.component_key != generated->component_key) {
+            transitionFailure(OriginTransitionErrorCode::ComponentKeyMismatch,
+                              "component_key is not bound to its generated source");
+        }
+        if (entry.gid != prefabGeneratedId(instance_id, entry.component_key)) {
+            transitionFailure(OriginTransitionErrorCode::GeneratedIdMismatch,
+                              "gid does not match instance_id and component_key");
+        }
+        const auto *expected_body =
+            transitionAuthority(authority, entry.component_key);
+        if (expected_body == nullptr) {
+            transitionFailure(OriginTransitionErrorCode::ComponentKeyMismatch,
+                              "component_key is absent from the authority bodies");
+        }
+        const auto *next_component = transitionAuthoredComponent(
+            *authored_resolved_object, entry.final_authored_index);
+        if (next_component == nullptr ||
+            next_component->name != (*source)->name ||
+            transitionStableName(*next_component) !=
+                transitionStableName(**source)) {
+            transitionFailure(OriginTransitionErrorCode::ComponentMismatch,
+                              "component kind or behavior stable name changed");
+        }
+        if (nlohmann::ordered_json(
+                authored_components.at(entry.final_authored_index)) !=
+            expected_body->body) {
+            transitionFailure(OriginTransitionErrorCode::AuthorityBodyMismatch,
+                              "final component was not produced from its authority body");
+        }
+    }
+}
+
+OriginTransitionMap buildOriginTransitionMap(
+    const ResolvedScene &generated_scene,
+    const AuthoringSceneDocument &authored_document,
+    const ResolvedScene &authored_scene, std::string_view scene_id,
+    AuthoringObjectId object_id, std::string_view instance_id,
+    std::span<const OriginTransitionAuthority> authority) {
+    const auto *generated_object =
+        transitionObject(generated_scene, scene_id, object_id);
+    const auto *authored_resolved_object =
+        transitionObject(authored_scene, scene_id, object_id);
+    std::vector<AuthoringSceneView> authoring_scenes;
+    const auto *authored_object = transitionAuthoredObject(
+        authored_document, scene_id, object_id, authoring_scenes);
+    if (generated_object == nullptr || authored_resolved_object == nullptr ||
+        authored_object == nullptr) {
+        transitionFailure(OriginTransitionErrorCode::TargetMismatch,
+                          "unpack target is absent from a snapshot");
+    }
+    std::vector<const ResolvedComponent *> generated_components;
+    std::size_t base_authored_count = 0;
+    for (const auto &component : generated_object->components) {
+        if (component.origin.authored() != nullptr) ++base_authored_count;
+        const auto *origin = component.origin.generated();
+        if (origin != nullptr && origin->instance_id == instance_id) {
+            generated_components.push_back(&component);
+        }
+    }
+    std::vector<std::size_t> final_indices;
+    for (const auto &component : authored_resolved_object->components) {
+        const auto *origin = component.origin.authored();
+        if (origin != nullptr &&
+            origin->authoring_component_index >= base_authored_count) {
+            final_indices.push_back(origin->authoring_component_index);
+        }
+    }
+    std::sort(final_indices.begin(), final_indices.end());
+    if (final_indices.size() != generated_components.size()) {
+        transitionFailure(OriginTransitionErrorCode::AuthoredIndexInvalid,
+                          "next_resolved does not contain the expanded interval");
+    }
+    OriginTransitionMap result;
+    result.entries.reserve(generated_components.size());
+    for (std::size_t index = 0; index < generated_components.size(); ++index) {
+        const auto *origin = generated_components[index]->origin.generated();
+        result.entries.push_back({
+            .scene_id = std::string{scene_id},
+            .authoring_object_id = object_id,
+            .gid = origin->stable_generated_id,
+            .component_key = origin->component_key,
+            .final_authored_index = final_indices[index],
+        });
+    }
+    validateOriginTransitionMap(result, generated_scene, authored_document,
+                                authored_scene, scene_id, object_id,
+                                instance_id, authority);
+    return result;
+}
+
+OriginTransitionMap invertOriginTransitionMap(const OriginTransitionMap &map) {
+    auto result = map;
+    result.direction =
+        map.direction == OriginTransitionDirection::GeneratedToAuthored
+            ? OriginTransitionDirection::AuthoredToGenerated
+            : OriginTransitionDirection::GeneratedToAuthored;
+    return result;
+}
+
+nlohmann::ordered_json originTransitionMapJson(const OriginTransitionMap &map) {
+    nlohmann::ordered_json entries = nlohmann::ordered_json::array();
+    for (const auto &entry : map.entries) {
+        entries.push_back({{"scene_id", entry.scene_id},
+                           {"authoring_object_id",
+                            entry.authoring_object_id.value},
+                           {"gid", entry.gid},
+                           {"component_key", entry.component_key},
+                           {"final_authored_index",
+                            entry.final_authored_index}});
+    }
+    return {{"direction",
+             map.direction == OriginTransitionDirection::GeneratedToAuthored
+                 ? "generated_to_authored"
+                 : "authored_to_generated"},
+            {"entries", std::move(entries)}};
+}
+
+OriginTransitionMap originTransitionMapFromJson(const nlohmann::json &value) {
+    if (!value.is_object() || value.size() != 2U ||
+        !value.contains("direction") || !value.at("direction").is_string() ||
+        !value.contains("entries") || !value.at("entries").is_array()) {
+        throw std::invalid_argument("origin transition map has an invalid shape");
+    }
+    const auto direction = value.at("direction").get<std::string>();
+    OriginTransitionMap result;
+    if (direction == "generated_to_authored") {
+        result.direction = OriginTransitionDirection::GeneratedToAuthored;
+    } else if (direction == "authored_to_generated") {
+        result.direction = OriginTransitionDirection::AuthoredToGenerated;
+    } else {
+        throw std::invalid_argument("origin transition direction is invalid");
+    }
+    result.entries.reserve(value.at("entries").size());
+    for (const auto &raw : value.at("entries")) {
+        if (!raw.is_object() || raw.size() != 5U ||
+            !raw.contains("scene_id") || !raw.at("scene_id").is_string() ||
+            !raw.contains("authoring_object_id") || !raw.contains("gid") ||
+            !raw.at("gid").is_string() || !raw.contains("component_key") ||
+            !raw.at("component_key").is_string() ||
+            !raw.contains("final_authored_index")) {
+            throw std::invalid_argument(
+                "origin transition entry has an invalid shape");
+        }
+        const auto object_id = transitionUnsigned(
+            raw.at("authoring_object_id"), "authoring_object_id");
+        const auto authored_index = transitionUnsigned(
+            raw.at("final_authored_index"), "final_authored_index");
+        if (authored_index > std::numeric_limits<std::size_t>::max()) {
+            throw std::invalid_argument(
+                "origin transition authored index is out of range");
+        }
+        result.entries.push_back({
+            .scene_id = raw.at("scene_id").get<std::string>(),
+            .authoring_object_id = AuthoringObjectId{object_id},
+            .gid = raw.at("gid").get<std::string>(),
+            .component_key = raw.at("component_key").get<std::string>(),
+            .final_authored_index = static_cast<std::size_t>(authored_index),
+        });
+    }
+    return result;
 }
 
 std::string resolverInputsFingerprint(

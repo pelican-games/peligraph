@@ -647,6 +647,9 @@ struct BehaviorSceneProjectionAdapter::Impl {
     std::string adapter_name;
     std::vector<EditorProjectionRuntimeObjectBinding> bindings;
     std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters;
+    OriginTransitionMap origin_transition;
+    BehaviorRegistryAvailability availability =
+        BehaviorRegistryAvailability::active;
     std::unique_ptr<PreparedBehaviorSceneReconciliation> prepared;
 };
 
@@ -654,12 +657,25 @@ BehaviorSceneProjectionAdapter::BehaviorSceneProjectionAdapter(
     BehaviorAttachmentArena &arena, std::string scene_id,
     std::vector<EditorProjectionRuntimeObjectBinding> bindings,
     std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters)
+    : BehaviorSceneProjectionAdapter(
+          arena, std::move(scene_id), std::move(bindings),
+          std::move(lifecycle_adapters), {},
+          BehaviorRegistryAvailability::active) {}
+
+BehaviorSceneProjectionAdapter::BehaviorSceneProjectionAdapter(
+    BehaviorAttachmentArena &arena, std::string scene_id,
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+    std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters,
+    OriginTransitionMap origin_transition,
+    BehaviorRegistryAvailability availability)
     : impl_{std::make_unique<Impl>(Impl{
           .arena = arena,
           .scene_id = std::move(scene_id),
           .adapter_name = {},
           .bindings = std::move(bindings),
           .lifecycle_adapters = std::move(lifecycle_adapters),
+          .origin_transition = std::move(origin_transition),
+          .availability = availability,
       })} {
     (void)bindingMap(impl_->bindings);
     impl_->adapter_name = "behavior.scene." + impl_->scene_id;
@@ -711,7 +727,7 @@ void BehaviorSceneProjectionAdapter::prepare(
     std::vector<BoundSceneBehaviorAttachment> desired;
     if (scene != nullptr) {
         auto prepared = prepareResolvedSceneBehaviorAttachments(
-            scene->objects, BehaviorRegistryAvailability::active);
+            scene->objects, impl_->availability);
         desired.reserve(prepared.size());
         for (auto &attachment : prepared) {
             const auto object = std::find_if(
@@ -741,7 +757,8 @@ void BehaviorSceneProjectionAdapter::prepare(
         }
     }
     impl_->prepared =
-        impl_->arena.prepareSceneReconciliation(std::move(desired));
+        impl_->arena.prepareSceneReconciliation(
+            std::move(desired), impl_->origin_transition);
 }
 
 void BehaviorSceneProjectionAdapter::publish() noexcept {

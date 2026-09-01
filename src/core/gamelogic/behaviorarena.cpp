@@ -417,17 +417,49 @@ void PreparedBehaviorAttachmentEdits::finish() noexcept {
 namespace {
 
 bool sameSceneBehaviorOrigin(const ResolvedComponentOrigin &left,
-                             const ResolvedComponentOrigin &right) {
+                             const ResolvedComponentOrigin &right,
+                             const OriginTransitionMap &transition) {
     if (const auto *authored = left.authored()) {
         const auto *candidate = right.authored();
-        return candidate != nullptr &&
-               candidate->authoring_component_index ==
+        if (candidate != nullptr) {
+            return candidate->authoring_component_index ==
                    authored->authoring_component_index;
+        }
+        if (transition.direction !=
+            OriginTransitionDirection::AuthoredToGenerated) {
+            return false;
+        }
+        const auto *generated = right.generated();
+        if (generated == nullptr) return false;
+        return std::any_of(
+            transition.entries.begin(), transition.entries.end(),
+            [&](const OriginTransitionEntry &entry) {
+                return entry.gid == generated->stable_generated_id &&
+                       entry.component_key == generated->component_key &&
+                       entry.final_authored_index ==
+                           authored->authoring_component_index;
+            });
     }
     const auto *generated = left.generated();
     const auto *candidate = right.generated();
-    return generated != nullptr && candidate != nullptr &&
-           candidate->stable_generated_id == generated->stable_generated_id;
+    if (generated == nullptr) return false;
+    if (candidate != nullptr) {
+        return candidate->stable_generated_id == generated->stable_generated_id;
+    }
+    if (transition.direction !=
+        OriginTransitionDirection::GeneratedToAuthored) {
+        return false;
+    }
+    const auto *authored = right.authored();
+    if (authored == nullptr) return false;
+    return std::any_of(
+        transition.entries.begin(), transition.entries.end(),
+        [&](const OriginTransitionEntry &entry) {
+            return entry.gid == generated->stable_generated_id &&
+                   entry.component_key == generated->component_key &&
+                   entry.final_authored_index ==
+                       authored->authoring_component_index;
+        });
 }
 
 } // namespace
@@ -601,7 +633,8 @@ void PreparedBehaviorSceneReconciliation::finish() noexcept {
 
 std::unique_ptr<PreparedBehaviorSceneReconciliation>
 BehaviorAttachmentArena::prepareSceneReconciliation(
-    std::vector<BoundSceneBehaviorAttachment> desired) {
+    std::vector<BoundSceneBehaviorAttachment> desired,
+    const OriginTransitionMap &origin_transition) {
     auto impl =
         std::make_unique<PreparedBehaviorSceneReconciliation::Impl>();
     impl->arena = this;
@@ -642,7 +675,8 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
                 current.info.pending != bound.prepared.pending ||
                 current.info.owner != bound.prepared.registration_owner ||
                 !sameSceneBehaviorOrigin(current.info.component_origin,
-                                         bound.prepared.component_origin)) {
+                                         bound.prepared.component_origin,
+                                         origin_transition)) {
                 continue;
             }
             reusable = index;

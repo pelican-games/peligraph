@@ -206,7 +206,8 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     prepareEditorEdits(std::vector<BehaviorAttachmentEdit> edits);
     std::unique_ptr<PreparedBehaviorSceneReconciliation>
     prepareSceneReconciliation(
-        std::vector<BoundSceneBehaviorAttachment> desired);
+        std::vector<BoundSceneBehaviorAttachment> desired,
+        const OriginTransitionMap &origin_transition = {});
 
     void deferCreateObject(LocalTransformComponent transform);
     void deferCreateSpriteObject(LocalTransformComponent transform,

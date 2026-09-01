@@ -822,6 +822,9 @@ pelican_define_test(wp361_prefab_test pelican_core glm picosha2)
 target_compile_definitions(pelican_test_wp361_prefab_test PRIVATE
   PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
 )
+if(MSVC)
+  target_compile_options(pelican_test_wp361_prefab_test PRIVATE /bigobj)
+endif()
 
 function(pelican_event_schema_compile_fixture fixture expect_failure)
     set(target_name pelican_event_schema_${fixture})

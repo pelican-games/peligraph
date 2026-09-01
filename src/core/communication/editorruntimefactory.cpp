@@ -67,6 +67,50 @@ EditorGateObservation internal::applyBehaviorEditConcurrencyGate(
     return observation;
 }
 
+std::vector<internal::EditorPrefabProjectionRoute>
+internal::planEditorPrefabProjectionRoutes(
+    std::span<const nlohmann::ordered_json> operations,
+    const ResolvedScene &resolved, std::string_view current_scene,
+    BehaviorRegistryAvailability behavior_availability) {
+    std::vector<EditorPrefabProjectionRoute> result;
+    for (const auto &operation : operations) {
+        const auto op = operation.value("op", std::string{});
+        const bool parameter = op == "set_prefab_parameter" ||
+                               op == "unset_prefab_parameter";
+        const bool unpack = op == "unpack_prefab" ||
+                            op == "restore_prefab";
+        if (!parameter && !unpack) continue;
+        const auto object_id = AuthoringObjectId{
+            operation.at("object").get<std::uint64_t>()};
+        std::string scene_id;
+        for (const auto &scene : resolved.scenes()) {
+            if (std::any_of(scene.objects.begin(), scene.objects.end(),
+                            [object_id](const ResolvedObject &object) {
+                                return object.authoring_object_id == object_id;
+                            })) {
+                scene_id = scene.scene_id;
+                break;
+            }
+        }
+        if (scene_id.empty()) {
+            throw std::runtime_error(
+                "prefab edit target is absent from resolved scene");
+        }
+        if (scene_id != current_scene) continue;
+        EditorPrefabProjectionRoute route{
+            .scene_id = scene_id,
+            .full_component_projection = parameter,
+            .behavior_availability = behavior_availability,
+        };
+        if (unpack) {
+            route.origin_transition = originTransitionMapFromJson(
+                operation.at("origin_transition"));
+        }
+        result.push_back(std::move(route));
+    }
+    return result;
+}
+
 namespace {
 
 struct EditorRuntimeModules {
@@ -577,20 +621,6 @@ std::string operationSceneId(const nlohmann::ordered_json &operation,
     return std::string{fallback};
 }
 
-std::string prefabOperationSceneId(const EditorRuntimeModules &modules,
-                                   AuthoringObjectId object_id) {
-    for (const auto &scene : modules.project_config.resolvedScene().scenes()) {
-        if (std::any_of(scene.objects.begin(), scene.objects.end(),
-                        [&](const auto &object) {
-                            return object.authoring_object_id == object_id;
-                        })) {
-            return scene.scene_id;
-        }
-    }
-    throw std::runtime_error(
-        "prefab parameter edit target is absent from resolved scene");
-}
-
 void requireEditorRuntimeBinding(
     const EditorRuntimeModules &modules,
     std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings,
@@ -782,7 +812,33 @@ EditorProjectionResult executeEditorProjection(
     std::set<std::string> light_scenes;
     std::set<std::string> collider_scenes;
     std::set<std::string> prefab_scenes;
+    std::unordered_map<std::string, OriginTransitionMap>
+        prefab_origin_transitions;
+    std::unordered_map<std::string, BehaviorRegistryAvailability>
+        prefab_behavior_availabilities;
     const auto fallback_scene = modules.scene_loader.currentScene();
+    const auto behavior_availability = configuredGameLogicStatus().loaded
+                                           ? BehaviorRegistryAvailability::active
+                                           : BehaviorRegistryAvailability::dll_unavailable;
+
+    for (const auto &route : internal::planEditorPrefabProjectionRoutes(
+             request.operations, modules.project_config.resolvedScene(),
+             fallback_scene, behavior_availability)) {
+        prefab_scenes.insert(route.scene_id);
+        prefab_behavior_availabilities.insert_or_assign(
+            route.scene_id, route.behavior_availability);
+        if (!route.origin_transition.entries.empty()) {
+            prefab_origin_transitions.insert_or_assign(
+                route.scene_id, route.origin_transition);
+        }
+        if (route.full_component_projection) {
+            ecs_codec_scenes.insert(route.scene_id);
+            renderer_scenes.insert(route.scene_id);
+            camera_scenes.insert(route.scene_id);
+            light_scenes.insert(route.scene_id);
+            collider_scenes.insert(route.scene_id);
+        }
+    }
 
     const auto addLifecycle = [&](AuthoringObjectId object_id,
                                   const std::string &scene_id) {
@@ -801,17 +857,9 @@ EditorProjectionResult executeEditorProjection(
         auto scene_id = operationSceneId(operation, fallback_scene);
         if (op == "set_prefab_parameter" ||
             op == "unset_prefab_parameter") {
-            const auto object_id = AuthoringObjectId{
-                operation.at("object").get<std::uint64_t>()};
-            scene_id = prefabOperationSceneId(modules, object_id);
-            if (scene_id == fallback_scene) {
-                prefab_scenes.insert(scene_id);
-                ecs_codec_scenes.insert(scene_id);
-                renderer_scenes.insert(scene_id);
-                camera_scenes.insert(scene_id);
-                light_scenes.insert(scene_id);
-                collider_scenes.insert(scene_id);
-            }
+            continue;
+        }
+        if (op == "unpack_prefab" || op == "restore_prefab") {
             continue;
         }
         if (op == "spawn") {
@@ -998,10 +1046,19 @@ EditorProjectionResult executeEditorProjection(
     }
     if (lifecycle_updates.empty()) {
         for (const auto &scene_id : prefab_scenes) {
+            const auto transition = prefab_origin_transitions.find(scene_id);
+            const auto availability =
+                prefab_behavior_availabilities.find(scene_id);
             adapters.push_back(
                 std::make_unique<BehaviorSceneProjectionAdapter>(
                     modules.behavior_arena, scene_id, runtime_bindings,
-                    std::vector<SceneObjectProjectionAdapter *>{}));
+                    std::vector<SceneObjectProjectionAdapter *>{},
+                    transition == prefab_origin_transitions.end()
+                        ? OriginTransitionMap{}
+                        : transition->second,
+                    availability == prefab_behavior_availabilities.end()
+                        ? behavior_availability
+                        : availability->second));
         }
     }
     if (!lifecycle_updates.empty()) {
@@ -1020,7 +1077,8 @@ EditorProjectionResult executeEditorProjection(
         }
         adapters.push_back(std::make_unique<BehaviorSceneProjectionAdapter>(
             modules.behavior_arena, scene_id, runtime_bindings,
-            std::move(lifecycle_adapters)));
+            std::move(lifecycle_adapters), OriginTransitionMap{},
+            behavior_availability));
     }
 
     std::vector<EditorProjectionAdapter *> adapter_ptrs;
@@ -1682,6 +1740,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         .edit = EditorEditRuntimeDependencies{
             .document = [runtime]() -> const AuthoringSceneDocument & {
                 return runtime->modules.project_config.sceneDocument();
+            },
+            .projection_state = [runtime]() -> const SceneProjectionState & {
+                return runtime->modules.project_config.sceneProjectionState();
             },
             .current_scene_id = [runtime] {
                 return runtime->modules.scene_loader.currentScene();

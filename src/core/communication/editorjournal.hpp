@@ -59,6 +59,19 @@ enum class EditorEditErrorCode : std::uint8_t {
     prefab_parameter_required,
     prefab_parameter_unknown,
     prefab_parameter_type,
+    unpack_must_be_singleton,
+    journal_integrity_error,
+    prefab_digest_changed,
+    prefab_provider_changed,
+    prefab_behavior_dependency_changed,
+    origin_transition_target_mismatch,
+    origin_transition_gid_set_mismatch,
+    origin_transition_index_set_mismatch,
+    origin_transition_index_invalid,
+    origin_transition_component_mismatch,
+    origin_transition_component_key_mismatch,
+    origin_transition_gid_derivation_mismatch,
+    origin_transition_body_mismatch,
     unknown_component_type,
     duplicate_component,
     missing_component,
@@ -163,6 +176,9 @@ struct EditorBehaviorAttachmentIdentity {
 
 struct EditorEditRuntimeDependencies {
     std::function<const AuthoringSceneDocument &()> document;
+    // Unpack inverse validation needs the exact live defaults, registry and
+    // provider closure, not a reconstruction from generation tokens.
+    std::function<const SceneProjectionState &()> projection_state;
     std::function<std::string()> current_scene_id;
     std::function<EditorProjectionResult(const EditorEditExecutionRequest &)> execute;
     std::function<EditorProjectionResult(const EditorPreviewExecutionRequest &)>
@@ -185,6 +201,13 @@ struct EditorEditRuntimeDependencies {
     std::function<BindableProviderSnapshot()> bindable_provider;
     std::function<std::uint64_t()> closure_generation;
 };
+
+// Production journal validation exposed for corruption controls. A value is
+// returned only when the two canonical unpack operations are not mechanical
+// inverses of one another.
+std::optional<std::string> unpackJournalIntegrityFailure(
+    const nlohmann::ordered_json &forward,
+    const nlohmann::ordered_json &inverse);
 
 // Owns the session-issued actor identity, the accepted ticket queue and
 // JOURNAL0. JSON parsing lives here so RPC and embedded GUI adapters consume

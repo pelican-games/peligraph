@@ -12,6 +12,7 @@ namespace Pelican {
 
 class Camera;
 class BehaviorAttachmentArena;
+enum class BehaviorRegistryAvailability;
 class ComponentInfoManager;
 class ECSCoreTemplatePublic;
 class LightContainer;
@@ -78,6 +79,12 @@ class BehaviorSceneProjectionAdapter final : public EditorProjectionAdapter {
         BehaviorAttachmentArena &arena, std::string scene_id,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings,
         std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters);
+    BehaviorSceneProjectionAdapter(
+        BehaviorAttachmentArena &arena, std::string scene_id,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters,
+        OriginTransitionMap origin_transition,
+        BehaviorRegistryAvailability availability);
     ~BehaviorSceneProjectionAdapter();
 
     EditorProjectionAdapterKind kind() const noexcept override;

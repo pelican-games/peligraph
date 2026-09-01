@@ -122,6 +122,59 @@ struct GeneratedComponentOrigin {
     std::string digest_sha256;
 };
 
+enum class OriginTransitionDirection : std::uint8_t {
+    GeneratedToAuthored,
+    AuthoredToGenerated,
+};
+
+struct OriginTransitionEntry {
+    std::string scene_id;
+    AuthoringObjectId authoring_object_id{};
+    std::string gid;
+    std::string component_key;
+    std::size_t final_authored_index = 0;
+
+    friend bool operator==(const OriginTransitionEntry &,
+                           const OriginTransitionEntry &) = default;
+};
+
+struct OriginTransitionMap {
+    OriginTransitionDirection direction =
+        OriginTransitionDirection::GeneratedToAuthored;
+    std::vector<OriginTransitionEntry> entries;
+
+    friend bool operator==(const OriginTransitionMap &,
+                           const OriginTransitionMap &) = default;
+};
+
+struct OriginTransitionAuthority {
+    std::string component_key;
+    nlohmann::ordered_json body;
+};
+
+enum class OriginTransitionErrorCode : std::uint8_t {
+    TargetMismatch,
+    GeneratedIdSetMismatch,
+    AuthoredIndexSetMismatch,
+    AuthoredIndexInvalid,
+    ComponentMismatch,
+    ComponentKeyMismatch,
+    GeneratedIdMismatch,
+    AuthorityBodyMismatch,
+};
+
+std::string_view originTransitionErrorCodeName(
+    OriginTransitionErrorCode code) noexcept;
+
+class OriginTransitionError : public std::runtime_error {
+    OriginTransitionErrorCode code_;
+
+  public:
+    OriginTransitionError(OriginTransitionErrorCode code,
+                          std::string message);
+    OriginTransitionErrorCode code() const noexcept { return code_; }
+};
+
 class ResolvedComponentOrigin {
     std::variant<AuthoredComponentOrigin, GeneratedComponentOrigin> value_;
 
@@ -229,6 +282,24 @@ class ResolvedScene {
 
     const ResolvedSceneView *findScene(std::string_view scene_id) const noexcept;
 };
+
+OriginTransitionMap buildOriginTransitionMap(
+    const ResolvedScene &generated_scene,
+    const AuthoringSceneDocument &authored_document,
+    const ResolvedScene &authored_scene, std::string_view scene_id,
+    AuthoringObjectId object_id, std::string_view instance_id,
+    std::span<const OriginTransitionAuthority> authority);
+
+void validateOriginTransitionMap(
+    const OriginTransitionMap &map, const ResolvedScene &generated_scene,
+    const AuthoringSceneDocument &authored_document,
+    const ResolvedScene &authored_scene, std::string_view scene_id,
+    AuthoringObjectId object_id, std::string_view instance_id,
+    std::span<const OriginTransitionAuthority> authority);
+
+OriginTransitionMap invertOriginTransitionMap(const OriginTransitionMap &map);
+nlohmann::ordered_json originTransitionMapJson(const OriginTransitionMap &map);
+OriginTransitionMap originTransitionMapFromJson(const nlohmann::json &value);
 
 // Atomic ownership unit. The authoring and resolved halves are never
 // published independently, and their revisions are checked at construction.

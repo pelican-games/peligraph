@@ -377,6 +377,8 @@ class EditorCommandRpcAdapter {
         const nlohmann::json &params) const;
     nlohmann::ordered_json unsetPrefabParameter(
         const nlohmann::json &params) const;
+    nlohmann::ordered_json unpackPrefab(
+        const nlohmann::json &params) const;
     nlohmann::ordered_json undo(const nlohmann::json &params) const;
     nlohmann::ordered_json redo(const nlohmann::json &params) const;
     nlohmann::ordered_json openPreview(const nlohmann::json &params) const;

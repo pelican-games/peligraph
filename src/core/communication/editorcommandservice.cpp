@@ -1910,6 +1910,41 @@ OrderedJson EditorCommandRpcAdapter::unsetPrefabParameter(
                                 {"parameter", *parameter}}})}});
 }
 
+OrderedJson EditorCommandRpcAdapter::unpackPrefab(
+    const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    constexpr auto method = "unpack_prefab";
+    requireObjectParams(params, method);
+    requireOnlyFields(params,
+                      {"actor_id", "scene_revision", "closure_generation",
+                       "provider_generation", "object"},
+                      method);
+    for (const auto field : {"actor_id", "scene_revision",
+                             "closure_generation", "provider_generation",
+                             "object"}) {
+        if (!params.contains(field)) {
+            invalidParams(std::string{method} + " " + field + " is required");
+        }
+    }
+    return mutable_service_->edit(
+        Json{{"actor_id", exactUnsignedInteger(params.at("actor_id"),
+                                                "unpack_prefab actor_id")},
+             {"scene_revision",
+              exactUnsignedInteger(params.at("scene_revision"),
+                                   "unpack_prefab scene_revision")},
+             {"closure_generation",
+              exactUnsignedInteger(params.at("closure_generation"),
+                                   "unpack_prefab closure_generation")},
+             {"provider_generation",
+              exactUnsignedInteger(params.at("provider_generation"),
+                                   "unpack_prefab provider_generation")},
+             {"operations",
+              Json::array({Json{{"op", method},
+                                {"object", exactUnsignedInteger(
+                                               params.at("object"),
+                                               "unpack_prefab object")}}})}});
+}
+
 OrderedJson EditorCommandRpcAdapter::undo(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
     return mutable_service_->undo(params);

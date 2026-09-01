@@ -1037,6 +1037,15 @@ nlohmann::ordered_json resolvePrefabComponentBody(
     return substitutePrefabComponent(component, instance.parameters);
 }
 
+bool prefabGeneratedMarkerRule(std::string_view field,
+                               const nlohmann::json &value) {
+    if (field == "generated") {
+        return value.is_boolean() && value.get<bool>();
+    }
+    return field == "origin" && value.is_string() &&
+           value.get_ref<const std::string &>() == "generated";
+}
+
 std::string prefabGeneratedId(std::string_view instance_id,
                               std::string_view component_key) {
     std::vector<unsigned char> bytes;

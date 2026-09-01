@@ -124,6 +124,11 @@ void configureEditorRpcHandlers(RpcServer &server,
         return invokeEditorRpc(
             [&] { return editor_rpc.unsetPrefabParameter(params); });
     });
+    server.setHandler("unpack_prefab",
+                      [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc(
+            [&] { return editor_rpc.unpackPrefab(params); });
+    });
     server.setHandler("undo", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.undo(params); });
     });

@@ -3,10 +3,14 @@
 #include "editorjournal.hpp"
 
 #include <memory>
+#include <span>
+#include <string>
+#include <vector>
 
 namespace Pelican {
 
 class EditorCommandService;
+enum class BehaviorRegistryAvailability;
 
 struct EditorRuntimeServiceOptions {
     // The config editor is intentionally exposed only by the RPC composition
@@ -16,6 +20,21 @@ struct EditorRuntimeServiceOptions {
 };
 
 namespace internal {
+
+struct EditorPrefabProjectionRoute {
+    std::string scene_id;
+    bool full_component_projection = false;
+    OriginTransitionMap origin_transition;
+    BehaviorRegistryAvailability behavior_availability;
+};
+
+// Shared production route planner. Runtime execution and CPU acceptance use
+// this same typed decision, so an unpack operation cannot silently omit the
+// behavior scene reconciliation adapter.
+std::vector<EditorPrefabProjectionRoute> planEditorPrefabProjectionRoutes(
+    std::span<const nlohmann::ordered_json> operations,
+    const ResolvedScene &resolved, std::string_view current_scene,
+    BehaviorRegistryAvailability behavior_availability);
 
 // Centralizes the BEH2 G2 policy so acceptance and execution observe the
 // same stable reject while a behavior callback or game-logic reload owns the
