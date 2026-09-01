@@ -18029,3 +18029,72 @@ callback 0 / handle・seq・内部状態不変 / origin と gid の往復 /
 **実装する。** 第 2 巡の 8 件はすべて上記で閉じた。
 「1 WP に 1 つの文法」という分割の前提は #8 の撤回により回復している
 (372b = 写像と marker の文法、372c = path と overlap の文法)。
+
+### WP372b-fix: 受け入れが本番のループを再実装していた(第二の流儀)
+
+**§4 規則 11 中段。コードレビューのみ。見積: 小。連鎖打ち切り —— 本 WP で閉じる。**
+
+#### 統合側で見つけたこと(エージェントの報告は誤りだった)
+
+WP372b の報告は「route を無効化する実変異で arena origin が generated のままとなり失敗」
+と書いていた。**統合後に自分で変異を当てたところ、5 件すべて緑のまま通った。**
+
+- 変異: `editorruntimefactory.cpp:831-832` の
+  `prefab_origin_transitions.insert_or_assign(route.scene_id, route.origin_transition)`
+  を 2 行ともコメントアウト(`git diff` で適用を確認済み)
+- 結果: **`ctest -R WP372b` が 5/5 緑**
+- 対照として `resolvedscene.cpp:579-582` の `component_key` 束縛検査を外した変異は
+  **正しく赤くなった**(`ComponentKeyMismatch`)。変異の当て方が悪いのではない
+
+**原因**: 受け入れテストが**本番の adapter 構築ループを再実装している**
+([wp361_prefab_test.cpp:3948](../test/wp361_prefab_test.cpp#L3948))。
+`planEditorPrefabProjectionRoutes` までは本番を通るが、その後は
+`route.origin_transition` を adapter へ**直接**渡しており、本番側の
+
+- `if (!route.origin_transition.entries.empty())` guard と dict への insert(830-833)
+- `transition == end() ? OriginTransitionMap{} : transition->second` の引き当て(1049-1057)
+- availability の同型の引き当て
+
+を**一度も通らない**。これは WP303・WP326 で 2 回踏んだ
+「**同じ仕事をする第二の経路**」であり、今回はそれが**テスト側**に生えた。
+
+**したがって第 2 巡 #6 は閉じていない。** 「document command だけ実装して route を
+足さなくても通る」は塞がったが、**route の最後の一跳ねを消しても通る**状態が残った。
+本番の editor で unpack すると behavior が破棄されるのに、全数は緑のままになる。
+
+#### 範囲
+
+**本番と受け入れが同じ 1 つの関数を呼ぶようにする。**
+
+- `internal::` に **routes から「scene_id → {`OriginTransitionMap`, availability}」を作る
+  関数**を 1 つ置く(`empty()` guard と引き当ての既定値もその中に入れる)
+- `makeEditorRuntimeService` の該当ループ(830-833 と 1049-1057)を**それに置き換える**。
+  本番側にロジックを残さない
+- 受け入れテストの手書きループを**同じ関数の呼び出しに置き換える**
+
+ヘッダの既存コメントが planner の存在理由を
+「an unpack operation cannot silently omit the behavior scene reconciliation adapter」
+と書いている([editorruntimefactory.hpp:30](../src/core/communication/editorruntimefactory.hpp#L30))。
+その seam を**もう一段だけ**伸ばすことであり、テストのために新しい設計を入れるのではない。
+
+#### 受け入れ(§4 規約 10)
+
+- **`prefab_origin_transitions` への insert を消す変異で、WP372b の実 RPC テストが落ちる**
+  (これが本 WP の存在理由。統合側で私が実際に当てて確認する)
+- **availability の引き当てを消す変異でも落ちる**
+- 受け入れテストに `BehaviorSceneProjectionAdapter` を**直接構築する箇所が残っていないこと**
+  を、テストを通して示す(構築を関数に寄せたので、関数を壊せば全部落ちる)
+- 既存 1502 件を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成 /
+  出荷 4 project と `src/core/resources/` の bytes 不変
+
+#### やらないこと
+
+WP372b の仕様変更・写像の意味論の変更・`makeEditorRuntimeService` 全体の
+テスト可能化(重い。今回の穴は最後の一跳ねだけ)/ WP372c / WP372d。
+
+#### 教訓(恒常)
+
+**「本番経路を通す」は入口だけでは足りない。** 実 `RpcServer::run` を通していても、
+テストが途中から本番のループを写経していれば、**写経した範囲は検証されていない**。
+受け入れが本番と同じ関数を呼んでいるかを、**変異で**確かめること ——
+エージェントの「この変異で落ちる」という報告は、**当てて確かめるまで主張にすぎない**。
