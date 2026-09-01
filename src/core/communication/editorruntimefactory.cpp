@@ -111,6 +111,46 @@ internal::planEditorPrefabProjectionRoutes(
     return result;
 }
 
+std::vector<std::unique_ptr<EditorProjectionAdapter>>
+internal::makeEditorPrefabBehaviorProjectionAdapters(
+    BehaviorAttachmentArena &arena,
+    const std::vector<EditorProjectionRuntimeObjectBinding> &runtime_bindings,
+    std::span<const EditorPrefabProjectionRoute> routes,
+    BehaviorRegistryAvailability fallback_availability) {
+    std::set<std::string> prefab_scenes;
+    std::unordered_map<std::string, OriginTransitionMap>
+        prefab_origin_transitions;
+    std::unordered_map<std::string, BehaviorRegistryAvailability>
+        prefab_behavior_availabilities;
+    for (const auto &route : routes) {
+        prefab_scenes.insert(route.scene_id);
+        prefab_behavior_availabilities.insert_or_assign(
+            route.scene_id, route.behavior_availability);
+        if (!route.origin_transition.entries.empty()) {
+            prefab_origin_transitions.insert_or_assign(
+                route.scene_id, route.origin_transition);
+        }
+    }
+
+    std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
+    adapters.reserve(prefab_scenes.size());
+    for (const auto &scene_id : prefab_scenes) {
+        const auto transition = prefab_origin_transitions.find(scene_id);
+        const auto availability =
+            prefab_behavior_availabilities.find(scene_id);
+        adapters.push_back(std::make_unique<BehaviorSceneProjectionAdapter>(
+            arena, scene_id, runtime_bindings,
+            std::vector<SceneObjectProjectionAdapter *>{},
+            transition == prefab_origin_transitions.end()
+                ? OriginTransitionMap{}
+                : transition->second,
+            availability == prefab_behavior_availabilities.end()
+                ? fallback_availability
+                : availability->second));
+    }
+    return adapters;
+}
+
 namespace {
 
 struct EditorRuntimeModules {
@@ -812,25 +852,16 @@ EditorProjectionResult executeEditorProjection(
     std::set<std::string> light_scenes;
     std::set<std::string> collider_scenes;
     std::set<std::string> prefab_scenes;
-    std::unordered_map<std::string, OriginTransitionMap>
-        prefab_origin_transitions;
-    std::unordered_map<std::string, BehaviorRegistryAvailability>
-        prefab_behavior_availabilities;
     const auto fallback_scene = modules.scene_loader.currentScene();
     const auto behavior_availability = configuredGameLogicStatus().loaded
                                            ? BehaviorRegistryAvailability::active
                                            : BehaviorRegistryAvailability::dll_unavailable;
 
-    for (const auto &route : internal::planEditorPrefabProjectionRoutes(
-             request.operations, modules.project_config.resolvedScene(),
-             fallback_scene, behavior_availability)) {
+    const auto prefab_routes = internal::planEditorPrefabProjectionRoutes(
+        request.operations, modules.project_config.resolvedScene(),
+        fallback_scene, behavior_availability);
+    for (const auto &route : prefab_routes) {
         prefab_scenes.insert(route.scene_id);
-        prefab_behavior_availabilities.insert_or_assign(
-            route.scene_id, route.behavior_availability);
-        if (!route.origin_transition.entries.empty()) {
-            prefab_origin_transitions.insert_or_assign(
-                route.scene_id, route.origin_transition);
-        }
         if (route.full_component_projection) {
             ecs_codec_scenes.insert(route.scene_id);
             renderer_scenes.insert(route.scene_id);
@@ -1045,20 +1076,12 @@ EditorProjectionResult executeEditorProjection(
             std::make_unique<EditorProjectionCallbackAdapter>(std::move(junction)));
     }
     if (lifecycle_updates.empty()) {
-        for (const auto &scene_id : prefab_scenes) {
-            const auto transition = prefab_origin_transitions.find(scene_id);
-            const auto availability =
-                prefab_behavior_availabilities.find(scene_id);
-            adapters.push_back(
-                std::make_unique<BehaviorSceneProjectionAdapter>(
-                    modules.behavior_arena, scene_id, runtime_bindings,
-                    std::vector<SceneObjectProjectionAdapter *>{},
-                    transition == prefab_origin_transitions.end()
-                        ? OriginTransitionMap{}
-                        : transition->second,
-                    availability == prefab_behavior_availabilities.end()
-                        ? behavior_availability
-                        : availability->second));
+        auto prefab_adapters =
+            internal::makeEditorPrefabBehaviorProjectionAdapters(
+                modules.behavior_arena, runtime_bindings, prefab_routes,
+                behavior_availability);
+        for (auto &adapter : prefab_adapters) {
+            adapters.push_back(std::move(adapter));
         }
     }
     if (!lifecycle_updates.empty()) {

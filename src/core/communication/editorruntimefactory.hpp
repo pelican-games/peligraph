@@ -9,8 +9,10 @@
 
 namespace Pelican {
 
+class BehaviorAttachmentArena;
 class EditorCommandService;
 enum class BehaviorRegistryAvailability;
+struct EditorProjectionRuntimeObjectBinding;
 
 struct EditorRuntimeServiceOptions {
     // The config editor is intentionally exposed only by the RPC composition
@@ -35,6 +37,16 @@ std::vector<EditorPrefabProjectionRoute> planEditorPrefabProjectionRoutes(
     std::span<const nlohmann::ordered_json> operations,
     const ResolvedScene &resolved, std::string_view current_scene,
     BehaviorRegistryAvailability behavior_availability);
+
+// Shared final hop for prefab behavior projection. Runtime execution and CPU
+// acceptance both use this function so the per-scene transition/availability
+// table, its missing-entry defaults, and the adapter construction cannot drift.
+std::vector<std::unique_ptr<EditorProjectionAdapter>>
+makeEditorPrefabBehaviorProjectionAdapters(
+    BehaviorAttachmentArena &arena,
+    const std::vector<EditorProjectionRuntimeObjectBinding> &runtime_bindings,
+    std::span<const EditorPrefabProjectionRoute> routes,
+    BehaviorRegistryAvailability fallback_availability);
 
 // Centralizes the BEH2 G2 policy so acceptance and execution observe the
 // same stable reject while a behavior callback or game-logic reload owns the

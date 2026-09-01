@@ -3943,21 +3943,17 @@ TEST_CASE("WP372b real unpack RPC routes origin transitions through undo and red
             },
             .current_scene_id = [] { return std::string{"main"}; },
             .execute = [&](const EditorEditExecutionRequest &request) {
-                std::vector<std::unique_ptr<BehaviorSceneProjectionAdapter>>
-                    owned;
+                const auto routes = internal::planEditorPrefabProjectionRoutes(
+                    request.operations, target.projectionResolvedScene(),
+                    "main", BehaviorRegistryAvailability::active);
+                auto owned =
+                    internal::makeEditorPrefabBehaviorProjectionAdapters(
+                        arena, bindings, routes,
+                        BehaviorRegistryAvailability::dll_unavailable);
                 std::vector<EditorProjectionAdapter *> adapters;
-                for (const auto &route :
-                     internal::planEditorPrefabProjectionRoutes(
-                         request.operations,
-                         target.projectionResolvedScene(), "main",
-                         BehaviorRegistryAvailability::active)) {
-                    owned.push_back(
-                        std::make_unique<BehaviorSceneProjectionAdapter>(
-                            arena, route.scene_id, bindings,
-                            std::vector<SceneObjectProjectionAdapter *>{},
-                            route.origin_transition,
-                            route.behavior_availability));
-                    adapters.push_back(owned.back().get());
+                adapters.reserve(owned.size());
+                for (auto &adapter : owned) {
+                    adapters.push_back(adapter.get());
                 }
                 EditorProjectionTransaction transaction{target,
                                                         request.base_revision};
@@ -4757,21 +4753,16 @@ TEST_CASE("WP372b availability wiring preserves unrelated authored pending",
         },
         .current_scene_id = [] { return std::string{"main"}; },
         .execute = [&](const EditorEditExecutionRequest &request) {
-            std::vector<std::unique_ptr<BehaviorSceneProjectionAdapter>>
-                owned;
+            const auto routes = internal::planEditorPrefabProjectionRoutes(
+                request.operations, target.projectionResolvedScene(), "main",
+                BehaviorRegistryAvailability::dll_unavailable);
+            auto owned = internal::makeEditorPrefabBehaviorProjectionAdapters(
+                arena, bindings, routes,
+                BehaviorRegistryAvailability::active);
             std::vector<EditorProjectionAdapter *> adapters;
-            for (const auto &route :
-                 internal::planEditorPrefabProjectionRoutes(
-                     request.operations, target.projectionResolvedScene(),
-                     "main",
-                     BehaviorRegistryAvailability::dll_unavailable)) {
-                owned.push_back(
-                    std::make_unique<BehaviorSceneProjectionAdapter>(
-                        arena, route.scene_id, bindings,
-                        std::vector<SceneObjectProjectionAdapter *>{},
-                        route.origin_transition,
-                        route.behavior_availability));
-                adapters.push_back(owned.back().get());
+            adapters.reserve(owned.size());
+            for (auto &adapter : owned) {
+                adapters.push_back(adapter.get());
             }
             EditorProjectionTransaction transaction{target,
                                                     request.base_revision};
