@@ -229,3 +229,75 @@ resource・境界・provenance を比較する」。**この反復をそのま�
    CPU phase で既に構築している現行順序をどう組み替えるか
 4. 反復 compile(裁定 7)と「一度だけ parse」(要求)の両立 ——
    parse は一度、compile は反復、という区別が実装で保てるか
+
+---
+
+## v3(第 2 巡・7 件への裁定。**v3 > v2 > v1。これが最終**)
+
+第 2 巡の指摘は、**v2 が「一度だけ parse」を「物理値を持たない可搬な logical
+blueprint を一度だけ作る」と読み替えた**ことに全部由来する:
+
+- snapshot の byte size(物理値)は**既に logical fingerprint に入っている**
+  (`legacy_physical_byte_size_omitted` の detail 経由)→
+  「[L] に物理値なし」と「fingerprint byte 不変」は両立しない
+- variant 条件付き feature(XR は `ui` を除外、ImGui は flat 限定)があるので
+  **単一の composed blueprint は作れない**
+- `ComputeTaskDefinition` は variant namespacing の後に V planning が
+  `name`/`schedule` を読む —— C を F の後ろに置くと現行順序が壊れる
+
+### 裁定 1(最重要): 要求を「**パーサは一つ**」に戻す(「一度だけ parse」は撤回)
+
+R1 の要求は**第二のパーサの除去**であって、可搬な論理表現の新設ではない。
+
+**決定**: `TypedGraphDocument` は **現行の正規化済み JSON が座っている位置に座る**
+—— compiler の中間表現である。したがって:
+
+- **variant ごとに 1 回 parse される**(今日 JSON がそうであるように)。
+  「一度だけ」ではなく「**一箇所だけ**」が要求
+- **物理値を持ってよい**(backend が書き戻した format/extent、snapshot の byte size)。
+  現行 fingerprint はそのまま再現され、**byte 不変が成立する**
+- **[P]/[L]/[V]/[F]/[C] のパイプライン再編は撤回**。現行順序を一切変えない
+- variant 条件付き feature も現行どおり(variant ごとに compiler を再実行)
+
+これで第 2 巡 #1(fingerprint)・#2(variant)・#5(CTD の順序)が**消滅**する。
+
+### 裁定 2: 意味論は現行 raw planner を**そのまま**写す(#3 の答え)
+
+v2 の「グラフ順を正準」は**撤回**。resource version は現行どおり
+**宣言順の `last_writer`** から作り、explicit edge はその後に足す
+(frameplanner.cpp の現行動作)。typed 側が宣言順検査を持つのは
+**別の相の検査**として残す。
+
+- 理由: logical adapter は宣言順 version を読んでおり、変えると
+  logical bytes と fingerprint が動く。R1 は**移設であって意味変更ではない**
+- 旧 raw と旧 typed で意味が違う field は、**raw を正準**として決定表に載せる
+  (既知 3 種: `after` の型 / footprint の未知名 / compute の `read_footprints`)
+
+### 裁定 3: compute / RT syntax の所有(#5 の残り)
+
+v2 の「`ComputeTaskSyntax` を project へ」は**維持するが順序は変えない** ——
+document は CTD 構築の**入力**として project 側 syntax を持ち、
+CTD 自体は**現行と同じ位置・同じ順序**で構築される(variant namespacing も現行どおり)。
+D0 は syntax 型が Vulkan 非依存であることで満たす。
+
+### 裁定 4: corpus を manifest で定義する(#4 の答え)
+
+「出荷 4 project + core 全 config」は集合として決まらない。
+**`(root, feature parameters, overlays, integrations, variant, build flags)` の
+固定 manifest** を作り、**raw parser の削除前に**、同じ入力を raw と新経路の
+両方へ通す differential test を置く。受け入れの主張も
+「旧受理言語の全体」ではなく**この manifest に限定**する。
+
+### 裁定 5: 段割り(v2 の G0 は消滅)
+
+- **G1**: `TypedGraphDocument` + 単一 parser + planner/provider/3 caller の消費 +
+  **raw parser の物理削除** + manifest differential。
+  **挙動変更は決定表の 3 種のみ**(縦切り成立)
+- **G2(= R2)**: 検証 4 相のうち **syntax/authored と logical constraint** を
+  project へ一本化(v2 裁定 6 を維持)
+
+### v3 の残余(WP 仕様レビューで受ける)
+
+- 決定表の完全版(全 field × canonical decoder × phase × error code)
+- manifest の具体的な行(parameter 値・feature 組合せ・variant・build flag)
+- provider の反復 compile を document 上で保存する API 形(v2 裁定 7 は維持)
