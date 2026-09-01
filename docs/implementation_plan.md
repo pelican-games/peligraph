@@ -17710,3 +17710,186 @@ inverse は **prefab 依存閉包を復元**する。保存し、復元し、
 rename・`ObjectReferenceIndex`・CAS(WP372c)/ dry-run と型付き resolution error
 (WP372d)/ picker・Studio inventory・一括流し込み(U2 本体)/
 spawn・destroy の原子性(E2)/ re-pack。
+
+#### WP372b 仕様レビュー第 1 巡(11 件・破綻 3)と v2
+
+**v2 が本節の正。v1 の §1〜§3 と受け入れは v2 で置換される。**
+
+**自分の退行を先に書く**: 第 1 巡 #3 は「gid は `instance_id` + `component_key`
+だけから作られ、scene も object も含まない」([prefab.cpp:1040](../src/project/prefab.cpp#L1040))
+—— **scene A と B が同じ `instance_id` を持てば gid は衝突する**(一意性検査は
+どちらも scene-local: [resolvedscene.cpp:420](../src/core/loader/resolvedscene.cpp#L420))。
+WP372 v2 では entry を `{scene_id, authoring_object_id, old_gid, final_index}` と
+**既に決めていた**のに、372b で裸の gid へ**自分で退行させた**。
+台帳の本文ではなく自分の要約から書いたときに起きる、記録済みの失敗そのものである。
+
+##### 決定 1(#1): 規範参照
+
+正確な規範は「**v4 により維持された v3 の裁定 2〜4**」。
+v4 の決定 2(`ObjectReferenceIndex`)・決定 3(component 列 CAS)は **WP372c** で扱う。
+**372c 以前は既存の object 粒度 conflict がそのまま安全性を担う**(弱くしない)。
+
+##### 決定 2(#2): 写像は 2 snapshot から作る。`unpack_prefab` は単独 operation
+
+- 旧側 witness(`scene_id`・`authoring_object_id`・gid・`component_key`・
+  behavior stable name)は **`base_resolved`** から取る
+- 最終 index は **`next_resolved`** から取る
+  ([editorprojectiontransaction.hpp:166](../src/core/loader/editorprojectiontransaction.hpp#L166))
+- **`unpack_prefab` を含む request は、その 1 operation のみを含むこと。**
+  他 operation との混在は `unpack_must_be_singleton@1` で名前付き拒否。
+  batch を許すと「全 operation 適用後に final index を確定する第 2 pass」が要り、
+  それは E2 の原子性設計に属する
+
+##### 決定 3(#3): entry の形と全単射検証
+
+entry は **`{scene_id, authoring_object_id, gid, component_key, final_authored_index}`**。
+検証は集合一致ではなく**全単射**とし、**生成時に行い違反は名前付き拒否**:
+
+1. gid 集合が `base_resolved` の当該 instance の generated component 集合と厳密一致
+2. `final_authored_index` の集合が、**`next_resolved` の当該 object 上の
+   期待 index 集合と厳密一致**(#3 入力 2 の「正しい index が `[2,3]` のとき
+   `[0,1]` にする」改竄はここで落ちる)
+3. index に重複が無く、範囲内である
+4. 各 entry の **component kind と behavior stable name** が両 snapshot で一致
+5. `(scene_id, authoring_object_id)` が operation の対象と一致
+
+##### 決定 4(#4): 行数ではなく**単一の production-owned 分類器**
+
+「表の行数を検査する」は代理条件だった(第 3 の綴りを足しても固定 fixture は
+動かず、検出には source 文字列検査が要る)。**撤回する。**
+
+- marker 判定を **`prefabGeneratedMarkerRule` 1 箇所**に置き、
+  **`requestsGeneratedComponent`(resolver)と unpack の両方がそれを呼ぶ**
+- 規則は「**分類器が marker と報告した field だけを除去し、
+  それ以外の root field と値はすべて byte 保存**」という普遍則にする
+- 検査は **property corpus**: `generated` と `origin` の**両キーの直積**を、
+  値域(`true` / `false` / `"generated"` / `"authored"` / 他文字列 / 数値 / `null` /
+  キー不在)で回し、除去されたものが分類器の報告と厳密一致することを確認する
+- **第 3 の綴りを分類器に足すと unpack へ自動的に伝わる。** 表の同期は不要になる
+
+##### 決定 5(#5): 否定対照は初回 Prepare で取る
+
+candidate は authoring command 適用直後に resolve される
+([editorprojectiontransaction.cpp:829](../src/core/loader/editorprojectiontransaction.cpp#L829))
+ので、「marker を残して unpack が成功し、後の reload で落ちる」は**本番経路で到達不能**。
+
+対照は同じ実 RPC テスト内で: **正常な分類器は commit し、除去を無効にした変異は
+初回 Prepare で `generated_component_unsupported` により拒否され、
+scene revision・journal・arena が不変**。
+
+##### 決定 6(#6): route と arena origin を受け入れに入れる
+
+v1 の受け入れ(callback 0・handle 不変・内部状態保存)は、
+**document command だけ実装して `editorruntimefactory` の route を足さなくても通る**
+(arena が古い generated origin のままなので何も起きない)。**規約 10 違反だった。**
+
+- 受け入れに **「型付き arena snapshot の origin が generated から authored に変わる」**を
+  追加。**route を外す変異で落ちること**
+- `unpack_prefab` を **`prefab_mutation` として分類**し、undo CAS 分類にも加える
+  ([editorjournal.cpp:2097](../src/core/communication/editorjournal.cpp#L2097))
+- **object 全体を覆う structural domain** を持たせる
+  (別 actor の同 object 編集を黙って捨てない。既存 overlap で衝突扱いになる)
+- RPC は固定 schema: `actor_id`, `scene_revision`, `closure_generation`,
+  `provider_generation`, `object`
+
+##### 決定 7(#7): 権威は 1 つ。forward と inverse は機械生成し整合を検証
+
+inverse の index を全部 `+1` した改竄は v1 の 3 条件を通り、undo で handle 保持が壊れる。
+
+- **canonical transition witness を 1 つ作り、forward map と inverse map は
+  そこから機械生成**する
+- journal 追加時に **`inverse == invert(forward)`** を検証する
+- 両方に載せること自体は合理的(undo は inverse operation しか実行しない:
+  [editorjournal.cpp:3133](../src/core/communication/editorjournal.cpp#L3133))。
+  欠けていたのは単一権威だった
+- 対照: **片側だけを壊した fixture が拒否される**
+
+##### 決定 8(#8): 閉包を実体に合わせ、object parameter は名前付き拒否
+
+v1 の 5 項目は現行の closure identity ではない
+([resolvedscene.hpp:94](../src/core/loader/resolvedscene.hpp#L94)、
+`sameWireIdentity`: [resolvedscene.cpp:363](../src/core/loader/resolvedscene.cpp#L363))。
+provider fingerprint は descriptor しか hash せず `behavior_dependencies` を含まない。
+
+- witness に **behavior dependency tuple(stable name・schema version・fingerprint)**と
+  **resolver input fingerprint** を含める
+- **`kind:"object"` パラメータを宣言する prefab の unpack は
+  `prefab_unpack_object_parameter_unsupported@1` で名前付き拒否**する。
+  参照追随には `ObjectReferenceIndex` が要り、それは WP372c である
+  (#8 反例 2: undo までの間に参照先が destroy されると
+  `PrefabObjectRefUnresolved` で落ちる)。**372c で拒否を解除する。**
+  372b を 372c 依存にはしない —— 分割の目的は「1 WP に 1 つの文法」である
+
+##### 決定 9(#9): エラー表と、到達不能な項目の除外
+
+「5 つを別コード」は名前付きエラーの仕様になっていなかった。**表にする**:
+
+| 検査順 | 条件 | code | payload |
+|---|---|---|---|
+| 1 | journal 内部(map・保存 `prefab` block・witness)の改竄 | `journal_integrity_error@1` | 何が矛盾したか |
+| 2 | `ref` 不一致 | `prefab_ref_changed@1` | expected / current |
+| 3 | `instance_id` 不一致 | `prefab_instance_id_changed@1` | expected / current |
+| 4 | prefab digest 不一致 | `prefab_digest_changed@1` | expected / current |
+| 5 | provider fingerprint 不一致 | `prefab_provider_changed@1` | expected / current |
+| 6 | behavior dependency と resolver input fingerprint の不一致 | `prefab_behavior_dependency_changed@1` | expected / current |
+
+- 検査は inverse の preflight resolve **より前**に置く
+  ([editorjournal.cpp:1687](../src/core/communication/editorjournal.cpp#L1687))。
+  でないと generic な prefab/schema error が先に出る
+- **override 単独の不一致は 5 分割から除外**する ——
+  digest と provider が同じなら保存した override は同じ resolver で再び有効になり、
+  **本番状態から独立に壊せない**(壊すには journal 改竄しかなく、それは検査 1)
+
+##### 決定 10(#10): 書き込む bytes の権威
+
+候補が 3 つあった(`resolvePrefabComponentBody` 直後 / `source_json_exact` /
+`effective_json`)。**権威を明示する**:
+
+- unpack が authoring document へ書くのは
+  **`resolvePrefabComponentBody` の結果から、分類器が報告した marker だけを除いたもの**
+- **codec の default canonicalization(`effective_json`)は書かない。**
+  behavior の canonical params による上書き
+  ([resolvedscene.cpp:183](../src/core/loader/resolvedscene.cpp#L183))も書かない
+- inverse は **元の `prefab` block を ordered JSON として逐語保存**する。
+  semantic な `ref` / `id` / `overrides` だけを保存すると
+  **`"parameters":{}` とキー不在を区別できない**([prefab.cpp:629](../src/project/prefab.cpp#L629))。
+  依存 witness は**別フィールド**に置く
+
+##### 決定 11(#11): pending 構成を範囲に入れる
+
+editor の adapter は availability を常に `active` として prepare している
+([editorprojectionadapters.cpp:709](../src/core/loader/editorprojectionadapters.cpp#L709))が、
+通常の scene loader は DLL 不在を pending として扱う
+([scene.cpp:311](../src/core/loader/scene.cpp#L311))。
+
+**adapter へ実際の availability を渡し**、**active と DLL 不在の両方**で
+pending flag・handle・seq・origin が保存され callback 0 であることを本番テストにする。
+
+##### 受け入れ(v1 を置換)
+
+- **実 producer**: 実 `RpcServer::run` 経由の `unpack_prefab` で
+  attach/detach と `onInit`/`onDestroy` が**ちょうど 0 回**、handle 不変、内部状態保存、
+  **かつ型付き arena snapshot の origin が generated から authored に変わる**。
+  **route を外すと落ちる**
+- **marker**: 分類器の property corpus(両キー直積 × 8 値域)。
+  **除去を無効にした変異が初回 Prepare で `generated_component_unsupported`** となり、
+  revision・journal・arena が不変
+- **写像**: entry 2 件 swap / index を `[2,3]` から `[0,1]` へ / inverse だけ `+1` /
+  別 scene の同 gid —— **それぞれ別の名前付き拒否**
+- **`set_component_value`**(規約 10。positive だけにしない):
+  **unpack 前は同じ論理 field が `prefab_generated_read_only` で拒否**され、
+  **unpack 後は成功し実 resolved 値が変わる**
+  ([editorcommandservice.cpp:1208](../src/core/communication/editorcommandservice.cpp#L1208))。
+  **codec がある component のみ**
+- **参照断絶**: unpack 後に prefab **asset** を更新しても unpacked object は変わらず、
+  **undo すると追随する**。(v1 の「undo 後に編集して redo」は
+  **新規 commit が redo stack を消す**ため到達不能:
+  [editorjournal.cpp:2633](../src/core/communication/editorjournal.cpp#L2633)。**撤回**)
+- **inverse 閉包**: 表の code 2〜6 を 1 つずつ、**本番状態から**壊して個別に確認。
+  改竄由来は code 1 に集約
+- **pending**: DLL 不在構成でも同じ保存性
+- **`unpack_must_be_singleton@1`** と
+  **`prefab_unpack_object_parameter_unsupported@1`** の名前付き拒否
+- 出荷 4 project と `src/core/resources/` の bytes 不変
+  (**回帰 guard であって feature 有効性の証拠ではない** —— 対象 root に prefab は 0 件)
+- 既存テスト(全数 1497)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成
