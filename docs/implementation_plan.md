@@ -18775,3 +18775,115 @@ camera が失敗する** —— **失敗した編集が不可逆な副作用を�
 ##### 次
 
 **WP373** を起票する。
+
+
+### WP373: resolver の失敗に名前と場所を与える
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中。**
+**規範は WP372d 第 2 巡の裁定(3 分割の 1 本目)。**
+**前提は WP372a + WP372b + WP372b-fix(統合済み、全数 1502)。**
+
+#### 何が壊れているか(利用者に見える形)
+
+利用者が camera の値を間違えたとき、**返るのは型無しの文字列**である。
+`zfar <= znear` も `yfov` 欠落も、`what()` の文面でしか区別できない。
+`json_pointer` も、どの scene のどの object かも付かない。
+
+#### 起票時の実測(2026-09-02)
+
+- resolver の catch 範囲に**手書きの `std::runtime_error` が 4 箇所**。
+  すべて**利用者入力で起きる**:
+  `camera.yfov` 欠落([resolvedscene.cpp:230](../src/core/loader/resolvedscene.cpp#L230))/
+  `camera.xmag`(:248)/ `camera.ymag`(:256)/
+  **`camera.zfar <= 解決後の znear`**(:285)
+- 同じブロックに **`std::logic_error`(内部 invariant)**が同居する(:281)
+- `runtime_resolution_error` の設定は **2 箇所ちょうど**
+  (:191 behavior params / :308 codec decode)。どちらも
+  **`catch (const std::exception &)` で `error.what()` に潰している**
+- **`std::logic_error` と `std::bad_alloc` も component error として保持されている** ——
+  **内部バグが利用者の入力ミスに見える。fail-fast 違反**
+- 再送出は `std::runtime_error`(:46)と文字列連結
+  ([behaviorarena.cpp:164](../src/core/gamelogic/behaviorarena.cpp#L164))。型が失われる
+- resolver は provenance(`scene_id` / `object_index` / `component_index`)を
+  **既に受け取っている**([resolvedscene.hpp:39](../src/core/loader/resolvedscene.hpp#L39))が、
+  error には載せていない
+
+#### 1. 手書き検証を型付き利用者エラーにする
+
+4 箇所を **`code` と `json_pointer` を持つ明示的な利用者データ例外**に変える:
+
+| 現行の文言 | code | `json_pointer` |
+|---|---|---|
+| `camera.yfov is required when changing projection to perspective` | `camera_yfov_required@1` | `/yfov` |
+| `camera.xmag is required when changing projection to orthographic` | `camera_xmag_required@1` | `/xmag` |
+| `camera.ymag is required when changing projection to orthographic` | `camera_ymag_required@1` | `/ymag` |
+| `camera.zfar must be greater than the resolved znear` | `camera_zfar_not_greater_than_znear@1` | `/zfar` |
+
+**文言は変えない**(既存テストが文面を見ている)。
+
+#### 2. 分類表(exact exception class × 動作)
+
+| 例外 | 動作 |
+|---|---|
+| `StructFieldValidationError` | **component error 化** |
+| 本 WP が導入する利用者データ例外(上表) | **component error 化** |
+| nlohmann の明示的な data error | **component error 化** |
+| `ResolvedSceneError` | 再送出(現行どおり) |
+| `std::logic_error` | **再送出**(現行を変える) |
+| `std::bad_alloc` | **再送出**(現行を変える) |
+| その他 `std::exception` | **再送出**(現行を変える) |
+
+**`resolution_unclassified` は作らない。** 分類できない例外を component error にすると、
+内部バグを利用者の入力ミスとして制度化することになる。
+
+#### 3. 型と provenance
+
+```
+ResolvedComponentError {
+  code, message,          // message は catch した what() と byte 一致(leaf)
+  json_pointer?,
+  scene_id, authoring_object_id, component_index, attachment_index?
+}
+```
+
+- `runtime_resolution_error` を `std::optional<ResolvedComponentError>` にする
+- **`what()` の互換対象は現行の文脈付き文言**
+  (`"behavior_resolution_error on object 'X': "` 接頭辞。
+  [wp360_resolvedscene_test.cpp:476](../test/wp360_resolvedscene_test.cpp#L476) が要求)。
+  **連結をやめるのではなく、連結の材料を型に持たせ、文脈を決定的に組み立てる**
+- `requireRuntimeValue()` と behaviorarena は **typed error を投げ直す**
+- 一覧の規範順は
+  `(scene_id, authoring_object_id, component_index, attachment_index)`
+
+#### 受け入れ(§4 規約 10)
+
+- **4 つの camera エラーが本番経路で名前付きになる**。
+  第 2 巡が挙げた実入力を使う: **project default で `zfar=1000`、generated camera が
+  `zfar` を省略、prefab parameter で `znear=5000`** ——
+  codec は両値が authored のときしか比較しないので通過し、
+  **resolver が default を補完した後に落ちる**。
+  `code` と `json_pointer` が付くこと。**型付けを外すと落ちる**
+- **inactive scene の保持契約が 4 つすべてで保たれる**:
+  無効な camera を持つ inactive scene が**保存・query できる**、
+  current へ切り替えると**名前付きで**落ちる。
+  **v2 の「その他は再送出」のまま実装すると、この対照が落ちる**(そのための対照)
+- **`logic_error` / `bad_alloc` の再送出**: 対照は **resolver seam** に置く。
+  **これは本番経路の対照ではない** —— `commit` が `noexcept` で全例外を変換し
+  ([editorprojectiontransaction.hpp:291](../src/core/loader/editorprojectiontransaction.hpp#L291))、
+  下流がさらに潰すため。**その平坦化は WP374 と台帳の負債**であり、本 WP では直さない。
+  **この 1 項目だけが seam 対照であることを明記する**
+- **provenance**: 同一 object に**同型・同文言の behavior attachment が 2 つ**ある構成で、
+  一覧から**どちらか識別できる**。provenance を落とすと識別できなくなる
+- **`what()` の互換**: 既存の文脈付き文言テストが**無変更で通る**
+- **規範順**: 複数エラーが**決定的な順**で並ぶ。順序規則を外すと落ちる
+- 出荷 4 project・`src/core/resources/` の bytes 不変 /
+  既存テスト(全数 1502)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成
+
+#### やらないこと
+
+**resolve 直後の resolution gate と typed variant の terminal 伝搬(WP374)**/
+dry-run(U2 と同時)/ rename(設計)/ spawn・destroy(E2)/
+`commit` の `noexcept` 平坦化そのもの(台帳の負債)/
+`ResolvedSceneError` の再設計 / camera 以外の component の手書き検証の棚卸し。
+
+依存: WP372a + WP372b + WP372b-fix。
