@@ -18543,3 +18543,164 @@ spawn・destroy の原子性(E2)/ **単一 production executor seam の一般化
 `ResolvedSceneError` 自体の再設計。
 
 依存: WP372a + WP372b + WP372b-fix。
+
+#### WP372d 仕様レビュー第 1 巡(却下・破綻 3)と v2
+
+**v2 が本節の正。v1 の §1・§2 と受け入れは v2 で置換される。**
+**第 1 巡は本 WP を縮めた。** 分類すべき族は実質 1 つ、dry-run は resolver で止まる。
+
+**自分の誤りを先に書く**: v1 は dry-run を
+`EditorProjectionTransaction` に通し「publish の代わりに rollback」するとしたが、
+**規範は「純 `ResolvedScene` resolver 経路」と書いてある**
+([design_editor_lifecycle.md:99](design_editor_lifecycle.md#L99))。
+**自分で引用した規範を、自分の仕様で破っていた。**
+
+##### 決定 1(#3・破綻): dry-run は **resolver で止まる**。adapter prepare を呼ばない
+
+v1 の形は成立しない:
+
+- `EditorProjectionTransaction` に **`prepare()` API は無く `commit()` だけ**。
+  ECS archetype adapter は **prepare walk の途中で publish される**
+  ([editorprojectiontransaction.cpp:909](../src/core/loader/editorprojectiontransaction.cpp#L909))
+- adapter prepare は**戻せない副作用**を起こす —— renderer prepare が
+  **GPU asset を cache へ commit**([model.cpp:413](../src/core/asset/model.cpp#L413))、
+  live vector の capacity 増加と **skeletal の GPU skin buffer 書き込み**
+  ([polygoninstancecontainer.cpp:502](../src/core/renderer/polygoninstancecontainer.cpp#L502))。
+  rollback は staged entry を捨てるだけ
+- `add_component behavior` は prepare 中に **利用者の constructor を実行**する
+  ([behaviorarena.cpp:1140](../src/core/gamelogic/behaviorarena.cpp#L1140))
+- **出荷側にも `simplemodelview` と skeletal model がある**ので、架空の話ではない
+
+**決定**: dry-run は **共有の candidate builder + `ResolvedSceneResolver::prepare`** までで停止する。
+**adapter prepare を一切呼ばない。** runtime resource の preflight が要ると分かったら、
+そのときに**副作用禁止の `validate` 契約**を別途設計する(本 WP では作らない)。
+
+##### 決定 2(#4): endpoint を **`set/unset_prefab_parameter` の batch に限定**する
+
+「`edit` と同一 params」は過大契約だった。実 edit の前半には
+session / gate / revision / prefab CAS / preview lease / behavior identity 正規化があり、
+**tail だけ通る dry-run は preview lease 衝突で実 edit と食い違う**
+([editorjournal.cpp:3255](../src/core/communication/editorjournal.cpp#L3255))。
+前半を通せば ticket と identity counter が動き、no-op 条件が壊れる
+([behaviorarena.cpp:1056](../src/core/gamelogic/behaviorarena.cpp#L1056))。
+
+- **`dry_run_edit` は `set_prefab_parameter` / `unset_prefab_parameter` のみ受理**する。
+  他の op は `dry_run_unsupported_operation@1` で名前付き拒否
+- **read-only の request preparation** を共有する: session / gate / revision /
+  prefab closure・provider CAS / **preview lease 検査**。
+  **identity は予約も加算もしない**(prefab parameter は identity を作らない)
+- spawn / destroy / add / remove は E2 の範囲であり、本 WP では受理しない
+
+##### 決定 3(#5・破綻): 分類表は**実際に届く族だけ**。他は再送出(fail-fast の回復)
+
+第 1 巡が 2 つの catch site へ実際に届く族を数えた。**`StructFieldValidationError`
+だけである。** `PrefabError` は `preparePrefabParameter` で先に変換され、
+`ResolvedSceneError` は :301 で明示再送出、codec 固有の例外型は**存在しない**。
+
+**現状は fail-fast 違反である**: `catch (const std::exception &)` が
+**`std::logic_error`(内部 invariant。例: resolved camera に projection 値が無い
+[resolvedscene.cpp:281](../src/core/loader/resolvedscene.cpp#L281))と `std::bad_alloc`
+まで component error として保持している。**
+
+**規範表(exact exception class × phase × 動作)**:
+
+| 例外 | 動作 | 理由 |
+|---|---|---|
+| `StructFieldValidationError` | **component error 化**(code + `json_pointer`) | 利用者の宣言が悪い。保持して報告する |
+| nlohmann の明示的な data error | **component error 化** | 同上 |
+| `ResolvedSceneError` | **再送出**(現行どおり) | 既に名前付き |
+| `PrefabError` | **再送出** | 上流で変換済み。ここへは届かない |
+| `std::logic_error` | **再送出**(**現行を変える**) | 内部 invariant の破れ。握り潰さない |
+| `std::bad_alloc` | **再送出**(**現行を変える**) | fail-fast |
+| その他 `std::exception` | **再送出**(**現行を変える**) | 分類できないものを保持しない |
+
+**`resolution_unclassified` は作らない**(v1 の案は撤回)。
+分類できない例外を component error にすると、内部バグが利用者の入力ミスに見える。
+
+受け入れ fixture は **resolver site へ本当に到達する入力**に限る
+(generated component 等)。直接編集は resolver 前の canonicalizer が
+`schema_violation` へ変換してしまうので、族の対照にならない
+([editorjournal.cpp:212](../src/core/communication/editorjournal.cpp#L212))。
+
+##### 決定 4(#6・破綻 / #7): 型に provenance を持たせ、leaf と提示を分ける
+
+v1 の `{code, message, json_pointer?, component_name}` では足りない。
+
+```
+ResolvedComponentError {
+  code, message(leaf。catch した what() と byte 一致),
+  json_pointer?,
+  scene_id, authoring_object_id, component_index, attachment_index?
+}
+```
+
+- resolver は既に `scene_id / object_index / component_index` の provenance を受け取っている
+  ([resolvedscene.hpp:39](../src/core/loader/resolvedscene.hpp#L39))。**それを載せる**
+- **`what()` の互換対象は現行の文脈付き文言**
+  (`"behavior_resolution_error on object 'X': "` 接頭辞。既存テストが要求する:
+  [wp360_resolvedscene_test.cpp:476](../test/wp360_resolvedscene_test.cpp#L476))。
+  **leaf `message` と `what()` は別物**であり、**文脈は型から決定的に組み立てる**
+  (文字列連結をやめるのではなく、**連結の材料を型に持たせる**)
+- **一覧の規範順**: `(scene_id, authoring_object_id, component_index, attachment_index)`
+- **base / candidate の差分規則**: dry-run が返すのは
+  **candidate で新規に発生した error**。base に既にある inactive の error は
+  **`preexisting: true` として別枠**で返す(消さない・混ぜない)
+- **primary の選択**: 規範順の先頭。実 edit の最初の adapter failure と一致させる
+
+##### 決定 5(#1): 型付き code を **terminal RPC まで**届かせる
+
+transaction は `EditorProjectionException` と `PrefabError` しか保存せず、
+他は `AdapterPrepareFailed` になり、edit 層が **`method_unavailable` へ潰す**
+([editorjournal.cpp:1706](../src/core/communication/editorjournal.cpp#L1706))。
+**v1 の「dry-run と edit で code が一致」は、両方 `method_unavailable` でも緑になる。**
+
+- `EditorProjectionError` に **resolution error の typed variant を追加**し、
+  `errorFromException` → `projectionFailure` → **`get_edit_result` の terminal error**
+  まで保存する
+- **受け入れは「一致」ではなく「期待する具体的 code が terminal に出る」**こと
+- `load_scene` も同じ穴を持つ([rpcserver.cpp:1095](../src/core/communication/rpcserver.cpp#L1095))。
+  **inactive → current 切替の名前付き失敗を RPC 契約にする**なら、この mapping も本 WP に含める
+
+##### 決定 6(#2・#8): 受け入れは production composition を通る。写経を禁止する
+
+- **テストの `EditorEditRuntimeDependencies.execute` 注入を使わない。**
+  `makeEditorRuntimeService()` + `configureEditorRpcHandlers` + 直列化した
+  `RpcServer` を使う(single production executor seam は WP372c 裁定の持ち越しであり、
+  本 WP では**作らずに、production composition をそのまま呼ぶ**)
+- **比較点は terminal**: `edit → accepted → production frame commit → get_edit_result`
+  の `result.error` と、`dry_run_edit` の結果を比較する。**helper の戻り値同士を比較しない**
+- wire schema を固定する: 成功 / domain reject / invalid params の各形、
+  dry-run が **ticket を確保しない**こと、error 一覧の置き場所
+
+##### 受け入れ(v1 を置換)
+
+- **正側(規約 10。v1 に欠けていた)**: 同じテスト内で、dry-run 後に
+  **実解決値が不変**であることを確認し、続けて同じ編集を**本適用**して
+  **実際に解決された runtime 値が変わる**ことを確認する
+- **terminal code**: `StructFieldValidationError` を起こす prefab parameter で、
+  **dry-run と `get_edit_result` の両方に期待する具体的 code が出る**。
+  `method_unavailable` に潰れたら不合格
+- **fail-fast の回復**: `std::logic_error` / `std::bad_alloc` を起こす対照で、
+  **component error として保持されず伝播する**。現行実装ではここが落ちる(= 現行がバグ)
+- **副作用ゼロ**: dry-run 前後で scene revision・journal・ECS・arena・
+  `next_handle` / `next_attachment_seq`・**asset cache の要素数**・
+  **polygon instance container の capacity** が不変
+- **adapter を呼んでいない証拠**: dry-run 中に renderer adapter の prepare が
+  **一度も呼ばれない**(counter で観測)。呼ぶ実装にする変異で落ちる
+- **第二経路の否定**: dry-run 専用の検証関数を足す変異、または
+  `ResolvedSceneResolver::prepare` を通らない実装で落ちる
+- **provenance**: 同一 object に同型・同文言の behavior attachment が 2 つある構成で、
+  一覧から**どちらか識別できる**
+- **base / candidate**: 無効な inactive component が base にある状態で
+  無関係な編集を dry-run し、既存 error が **`preexisting: true` として分離**される
+- **`what()` の互換**: 既存の文脈付き文言テストが**無変更で通る**
+- **`dry_run_unsupported_operation@1`**: `spawn` を含む request が名前付き拒否される
+- 出荷 4 project・`src/core/resources/` の bytes 不変 /
+  既存テスト(全数 1502)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成
+
+##### やらないこと(v1 から変更)
+
+rename(設計)/ picker・Studio inventory・一括流し込み(U2 本体)/
+spawn・destroy(E2)/ **adapter の副作用禁止 `validate` 契約**(決定 1)/
+**single production executor seam**(WP372c 裁定の持ち越し 8)/
+`ResolvedSceneError` 自体の再設計。
