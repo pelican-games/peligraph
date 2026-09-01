@@ -583,6 +583,124 @@ TEST_CASE("Structural removal during a behavior callback waits for the next boun
     REQUIRE(arena.snapshot().empty());
 }
 
+TEST_CASE("Scene behavior reuse keeps pending and registration owner as identity",
+          "[behavior][scene-reconcile][wp372a][negative-control]") {
+    const auto make_desired = [](std::string stable_name,
+                                 internal::RegistrationOwner owner,
+                                 bool pending, GameObjectId entity) {
+        const auto *registration =
+            internal::getBehaviorRegisterer().findByNameAndOwner(stable_name,
+                                                                  owner);
+        const auto canonical =
+            registration == nullptr
+                ? std::string{R"({"label":"same"})"}
+                : registration->canonicalize_params(
+                      nlohmann::json{{"label", "same"}});
+        std::vector<BoundSceneBehaviorAttachment> result;
+        result.push_back({
+            .prepared = PreparedSceneBehaviorAttachment{
+                .object_index = 0,
+                .component_index = 0,
+                .component_origin = ResolvedComponentOrigin{
+                    AuthoredComponentOrigin{0}},
+                .object_name = "OwnerProbe",
+                .stable_name = std::move(stable_name),
+                .canonical_params = canonical,
+                .raw_component = {{"name", "behavior"},
+                                  {"type", "owner_probe"},
+                                  {"params", {{"label", "same"}}}},
+                .registration_owner = owner,
+                .pending = pending,
+            },
+            .entity = entity,
+        });
+        return result;
+    };
+    const auto publish = [](BehaviorAttachmentArena &arena,
+                            std::vector<BoundSceneBehaviorAttachment> desired) {
+        auto token = arena.prepareSceneReconciliation(std::move(desired));
+        token->publish();
+        token->finish();
+    };
+
+    SECTION("pending and active attachments are not reused") {
+        const auto owner = internal::allocateRegistrationOwner();
+        internal::RegistrationToken registration_token;
+        const std::string stable_name = "wp372a_pending_identity";
+        {
+            internal::ScopedRegistrationOwner owner_scope{owner};
+            registration_token =
+                internal::getBehaviorRegisterer().registerBehavior<OwnerBehavior>(
+                    stable_name, 1, {});
+        }
+
+        FastModuleContainer modules;
+        initializeBehaviorTestModules();
+        auto &arena = GET_MODULE(BehaviorAttachmentArena);
+        const auto entity = createEmptyEntity();
+        publish(arena, make_desired(stable_name, owner, true, entity));
+        const auto pending = arena.snapshot().front();
+        REQUIRE(pending.pending);
+
+        publish(arena, make_desired(stable_name, owner, false, entity));
+        const auto active = arena.snapshot().front();
+        REQUIRE_FALSE(active.pending);
+        REQUIRE(active.owner == owner);
+        REQUIRE(active.handle != pending.handle);
+
+        arena.deactivateAll();
+        REQUIRE(GameObjects::remove(entity));
+        internal::unregisterBehavior(registration_token);
+        internal::releaseRegistrationOwner(owner);
+    }
+
+    SECTION("different registration owners are not reused") {
+        const auto first_owner = internal::allocateRegistrationOwner();
+        const auto second_owner = internal::allocateRegistrationOwner();
+        internal::RegistrationToken first_token;
+        internal::RegistrationToken second_token;
+        const std::string stable_name = "wp372a_owner_identity";
+        {
+            internal::ScopedRegistrationOwner owner_scope{first_owner};
+            first_token =
+                internal::getBehaviorRegisterer().registerBehavior<OwnerBehavior>(
+                    stable_name, 1, {});
+        }
+        {
+            internal::ScopedRegistrationOwner owner_scope{second_owner};
+            second_token =
+                internal::getBehaviorRegisterer().registerBehavior<OwnerBehavior>(
+                    stable_name, 1, {});
+        }
+
+        FastModuleContainer modules;
+        initializeBehaviorTestModules();
+        auto &arena = GET_MODULE(BehaviorAttachmentArena);
+        const auto entity = createEmptyEntity();
+        publish(arena,
+                make_desired(stable_name, first_owner, false, entity));
+        GameContext game;
+        arena.update(game);
+        arena.update(game);
+        const auto first = arena.snapshot().front();
+        REQUIRE(first.active);
+        REQUIRE(first.owner == first_owner);
+
+        publish(arena,
+                make_desired(stable_name, second_owner, false, entity));
+        const auto second = arena.snapshot().front();
+        REQUIRE(second.owner == second_owner);
+        REQUIRE(second.handle != first.handle);
+
+        arena.deactivateAll();
+        REQUIRE(GameObjects::remove(entity));
+        internal::unregisterBehavior(second_token);
+        internal::unregisterBehavior(first_token);
+        internal::releaseRegistrationOwner(second_owner);
+        internal::releaseRegistrationOwner(first_owner);
+    }
+}
+
 TEST_CASE("Every game-logic owner cleanup branch purges registry and live instances",
           "[behavior][owner][reload]") {
     FastModuleContainer modules;

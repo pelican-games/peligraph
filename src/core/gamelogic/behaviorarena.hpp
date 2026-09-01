@@ -56,6 +56,7 @@ struct BehaviorAttachmentInfo {
     bool active = false;
     bool activation_failed = false;
     std::string activation_error;
+    std::uint8_t activation_delay = 0;
 };
 
 struct BehaviorAttachmentIdentity {
@@ -155,7 +156,6 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
         internal::RawBehaviorInstance instance;
         internal::BehaviorDestroyFn destroy = nullptr;
         bool initialized = false;
-        std::uint8_t activation_delay = 0;
     };
 
     struct DeferredMutation {

@@ -72,20 +72,57 @@ struct Wp361Params {
 std::vector<std::string> wp361_callback_trace;
 std::vector<int> wp361_update_trace;
 std::size_t wp361_destroy_count = 0;
+struct Wp372aUpdateObservation {
+    BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
+    std::int32_t hp = 0;
+    std::uint32_t internal_state = 0;
+};
+std::vector<Wp372aUpdateObservation> wp372a_update_trace;
+std::size_t wp372a_create_count = 0;
+std::size_t wp372a_destroy_instance_count = 0;
+std::size_t wp372a_on_init_count = 0;
+std::size_t wp372a_on_destroy_count = 0;
+std::vector<std::string> wp372a_conditional_trace;
 
 class Wp361Behavior final : public Behavior {
+    std::uint32_t internal_state_ = 0;
+
   public:
     using Params = Wp361Params;
+    Wp361Behavior() { ++wp372a_create_count; }
+    ~Wp361Behavior() override { ++wp372a_destroy_instance_count; }
     void onInit(BehaviorContext &context) override {
+        ++wp372a_on_init_count;
         const auto &params = context.params<Params>();
         wp361_callback_trace.push_back(std::to_string(params.hp) + ":" +
                                        params.target);
     }
     void onDestroy(BehaviorContext &) noexcept override {
         ++wp361_destroy_count;
+        ++wp372a_on_destroy_count;
     }
     void onUpdate(BehaviorContext &context) override {
-        wp361_update_trace.push_back(context.params<Params>().hp);
+        ++internal_state_;
+        const auto hp = context.params<Params>().hp;
+        wp361_update_trace.push_back(hp);
+        wp372a_update_trace.push_back({context.attachment(), hp,
+                                       internal_state_});
+    }
+};
+
+class Wp372aConditionalBehavior final : public Behavior {
+  public:
+    using Params = Wp361Params;
+    void onInit(BehaviorContext &context) override {
+        const auto hp = context.params<Params>().hp;
+        wp372a_conditional_trace.push_back("init:" + std::to_string(hp));
+        if (hp == 30) {
+            throw std::runtime_error("wp372a activation failure");
+        }
+    }
+    void onDestroy(BehaviorContext &context) noexcept override {
+        wp372a_conditional_trace.push_back(
+            "destroy:" + std::to_string(context.params<Params>().hp));
     }
 };
 
@@ -109,6 +146,19 @@ void ensureBehavior() {
         if (registry.findByName("wp361_behavior") == nullptr) {
             (void)registry.registerBehavior<Wp361Behavior>(
                 "wp361_behavior", 1, {});
+        }
+        return true;
+    }();
+    (void)registered;
+}
+
+void ensureWp372aBehavior() {
+    ensureBehavior();
+    static const bool registered = [] {
+        auto &registry = internal::getBehaviorRegisterer();
+        if (registry.findByName("wp372a_conditional") == nullptr) {
+            (void)registry.registerBehavior<Wp372aConditionalBehavior>(
+                "wp372a_conditional", 1, {});
         }
         return true;
     }();
@@ -282,6 +332,39 @@ Json enumSceneFixture() {
     return scene;
 }
 
+Json wp372aPrefabFixture(bool include_conditional = false) {
+    Json components = Json::array({
+        {{"name", "behavior"}, {"id", "stateful"},
+         {"type", "wp361_behavior"},
+         {"params", {{"hp", tagged("hp")}}}},
+    });
+    if (include_conditional) {
+        components.push_back(
+            {{"name", "behavior"}, {"id", "conditional"},
+             {"type", "wp372a_conditional"},
+             {"params", {{"hp", tagged("hp")}}}});
+    }
+    return {
+        {"schema", "pelican.prefab"}, {"version", 1}, {"name", "unit"},
+        {"parameters", Json::array({
+             {{"name", "hp"}, {"type", "i32"}, {"default", 30}}
+         })},
+        {"components", std::move(components)},
+    };
+}
+
+Json wp372aSceneFixture() {
+    return {
+        {"schema", "pelican.scene"}, {"version", 2},
+        {"scenes", {{"main", {{"objects", Json::array({
+             {{"name", "Instance"},
+              {"components", Json::array({transform()})},
+              {"prefab", {{"ref", "unit"},
+                           {"instance_id", "wp372a_instance"}}}}
+         })}}}}},
+    };
+}
+
 struct PreparedFixture {
     PrefabRegistrySnapshot registry;
     BindableProviderSnapshot provider;
@@ -384,6 +467,46 @@ std::vector<ArenaIdentity> arenaIdentity(
                                 : generated->stable_generated_id);
     }
     return result;
+}
+
+Json wp372aArenaSnapshot(const BehaviorAttachmentArena &arena) {
+    Json attachments = Json::array();
+    for (const auto &attachment : arena.snapshot()) {
+        Json origin;
+        if (const auto *generated = attachment.component_origin.generated()) {
+            origin = {{"generated", generated->stable_generated_id}};
+        } else {
+            origin = {{"authored",
+                       attachment.component_origin.authored()
+                           ->authoring_component_index}};
+        }
+        attachments.push_back({
+            {"handle", attachment.handle.value},
+            {"seq", attachment.attachment_seq},
+            {"entity_index", attachment.entity.index},
+            {"entity_generation", attachment.entity.generation},
+            {"component_index", attachment.component_index},
+            {"scene_object_index", attachment.scene_object_index},
+            {"origin", std::move(origin)},
+            {"name", attachment.stable_name},
+            {"params", attachment.canonical_params},
+            {"owner", attachment.owner},
+            {"pending", attachment.pending},
+            {"active", attachment.active},
+            {"activation_failed", attachment.activation_failed},
+            {"activation_error", attachment.activation_error},
+            {"activation_delay", attachment.activation_delay},
+        });
+    }
+    const auto isolation = arena.isolationState();
+    return {
+        {"attachments", std::move(attachments)},
+        {"next_handle", isolation.next_handle},
+        {"next_attachment_seq", isolation.next_attachment_seq},
+        {"deferred", isolation.deferred_mutation_count},
+        {"callback_depth", isolation.callback_depth},
+        {"callback_owner", isolation.callback_owner},
+    };
 }
 
 using BehaviorOriginIdentity = std::pair<bool, std::string>;
@@ -3317,5 +3440,416 @@ TEST_CASE("WP362 prefab set unset undo redo roll back every projection fault poi
         }
     }
 }
+
+TEST_CASE("WP372a reconciliation fault matrix restores params activation and instance state",
+          "[wp372a][prefab-edit][fault][arena][rollback]") {
+    ensureWp372aBehavior();
+    const std::array fault_points{
+        EditorProjectionFaultPoint::Prepare,
+        EditorProjectionFaultPoint::Publish,
+        EditorProjectionFaultPoint::AfterPublication,
+    };
+
+    for (const auto point : fault_points) {
+        DYNAMIC_SECTION("fault point " << static_cast<int>(point)) {
+            const auto run_scenario = [&](bool inject_failure) {
+                const auto prefab = wp372aPrefabFixture(true);
+                auto registry = registryFor(prefab);
+                auto provider = buildProductionBindableProviderSnapshot(373);
+                auto document = AuthoringSceneDocument::load(
+                    wp372aSceneFixture().dump(), SceneRevision{372});
+                PrefabProjectionTarget target{
+                    std::move(document), std::move(registry),
+                    std::move(provider)};
+
+                FastModuleContainer modules;
+                GET_MODULE(ECSPredefinedRegistration).reg();
+                const auto entity = GameObjects::createWithComponents(
+                    std::span<const ComponentId>{}, {});
+                const auto object_id = instanceObject(
+                    target.projectionResolvedScene()).authoring_object_id;
+                const std::vector<EditorProjectionRuntimeObjectBinding>
+                    bindings{{.authoring_object_id = object_id,
+                              .entity = entity}};
+                auto prepared = prepareResolvedSceneBehaviorAttachments(
+                    target.projectionResolvedScene()
+                        .findScene("main")->objects,
+                    BehaviorRegistryAvailability::active);
+                std::vector<BoundSceneBehaviorAttachment> desired;
+                for (auto &attachment : prepared) {
+                    desired.push_back(
+                        {.prepared = std::move(attachment), .entity = entity});
+                }
+                auto &arena = GET_MODULE(BehaviorAttachmentArena);
+                auto initial =
+                    arena.prepareSceneReconciliation(std::move(desired));
+                initial->publish();
+                initial->finish();
+                GameContext game;
+                arena.update(game);
+                arena.update(game);
+
+                REQUIRE(arena.snapshot().size() == 2);
+                const auto initialized_snapshot = arena.snapshot();
+                const auto initialized_stateful = std::find_if(
+                    initialized_snapshot.begin(), initialized_snapshot.end(),
+                    [](const auto &attachment) {
+                        return attachment.stable_name == "wp361_behavior";
+                    });
+                const auto initialized_conditional = std::find_if(
+                    initialized_snapshot.begin(), initialized_snapshot.end(),
+                    [](const auto &attachment) {
+                        return attachment.stable_name ==
+                               "wp372a_conditional";
+                    });
+                REQUIRE(initialized_stateful != initialized_snapshot.end());
+                REQUIRE(initialized_conditional != initialized_snapshot.end());
+                REQUIRE(initialized_stateful->active);
+                REQUIRE(initialized_conditional->activation_failed);
+                REQUIRE(initialized_conditional->activation_error ==
+                        "wp372a activation failure");
+                REQUIRE(initialized_conditional->activation_delay == 0);
+                REQUIRE(wp372a_update_trace.back().handle ==
+                        initialized_stateful->handle);
+                REQUIRE(wp372a_update_trace.back().internal_state == 1);
+                const auto stateful_handle = initialized_stateful->handle;
+
+                struct OneFault final : EditorProjectionFaultInjector {
+                    EditorProjectionFaultPoint point =
+                        EditorProjectionFaultPoint::Prepare;
+                    std::string adapter;
+                    bool armed = false;
+                    bool fired = false;
+                    bool shouldFail(EditorProjectionFaultPoint observed,
+                                    std::string_view name) noexcept override {
+                        if (!armed || fired || observed != point ||
+                            name != adapter) {
+                            return false;
+                        }
+                        fired = true;
+                        armed = false;
+                        return true;
+                    }
+                } fault;
+                fault.point = point;
+                fault.adapter =
+                    point == EditorProjectionFaultPoint::AfterPublication
+                        ? "scene_pair"
+                        : "behavior.scene.main";
+
+                EditorEditCoordinator edits{EditorEditRuntimeDependencies{
+                    .document = [&]() -> const AuthoringSceneDocument & {
+                        return target.projectionDocument();
+                    },
+                    .current_scene_id = [] { return std::string{"main"}; },
+                    .execute = [&](const EditorEditExecutionRequest &request) {
+                        BehaviorSceneProjectionAdapter behavior_adapter{
+                            arena, "main", bindings, {}};
+                        std::array<EditorProjectionAdapter *, 1> adapters{
+                            &behavior_adapter};
+                        EditorProjectionTransaction transaction{
+                            target, request.base_revision, &fault};
+                        return transaction.commit(request.commands, adapters);
+                    },
+                    .gate = [] { return EditorGateObservation{}; },
+                    .prefab_registry = [&] {
+                        return target.projectionResolvedScene()
+                            .prefabRegistry();
+                    },
+                    .bindable_provider = [&] {
+                        return target.projectionResolvedScene()
+                            .bindableProvider();
+                    },
+                    .closure_generation = [&] {
+                        return target.projectionResolvedScene()
+                            .prefabClosure().generation;
+                    },
+                }};
+                const auto actor =
+                    edits.openSession({{"display_name", "wp372a fault"}})
+                        .at("actor_id").get<std::uint64_t>();
+                const auto set_hp = [&](int hp) {
+                    const auto &resolved = target.projectionResolvedScene();
+                    const auto accepted = edits.enqueue({
+                        {"actor_id", actor},
+                        {"scene_revision",
+                         target.projectionDocument().revision().value},
+                        {"closure_generation",
+                         resolved.prefabClosure().generation},
+                        {"provider_generation",
+                         resolved.bindableProvider().generation()},
+                        {"operations", Json::array({
+                             {{"op", "set_prefab_parameter"},
+                              {"object", object_id.value},
+                              {"parameter", "hp"}, {"value", hp}}
+                         })},
+                    });
+                    REQUIRE(accepted.at("status") == "accepted");
+                    edits.commitPending();
+                    return edits.getResult(
+                        {{"ticket", accepted.at("ticket")}});
+                };
+
+                wp361_callback_trace.clear();
+                wp372a_conditional_trace.clear();
+                wp372a_update_trace.clear();
+                wp372a_create_count = 0;
+                wp372a_destroy_instance_count = 0;
+                wp372a_on_init_count = 0;
+                wp372a_on_destroy_count = 0;
+
+                if (!inject_failure) {
+                    const auto committed = set_hp(55);
+                    REQUIRE(committed.at("status") == "committed");
+                    const auto after = arena.snapshot();
+                    const auto next_stateful = std::find_if(
+                        after.begin(), after.end(), [](const auto &attachment) {
+                            return attachment.stable_name == "wp361_behavior";
+                        });
+                    const auto next_conditional = std::find_if(
+                        after.begin(), after.end(), [](const auto &attachment) {
+                            return attachment.stable_name ==
+                                   "wp372a_conditional";
+                        });
+                    REQUIRE(next_stateful != after.end());
+                    REQUIRE(next_conditional != after.end());
+                    REQUIRE(next_stateful->handle == stateful_handle);
+                    REQUIRE(Json::parse(next_stateful->canonical_params)
+                                .at("hp") == 55);
+                    REQUIRE_FALSE(next_conditional->activation_failed);
+                    REQUIRE(next_conditional->activation_error.empty());
+                    REQUIRE(next_conditional->activation_delay == 1);
+                    REQUIRE(wp372a_create_count == 0);
+                    REQUIRE(wp372a_destroy_instance_count == 0);
+                    REQUIRE(wp372a_on_init_count == 0);
+                    REQUIRE(wp372a_on_destroy_count == 0);
+                    REQUIRE(wp361_callback_trace.empty());
+                    REQUIRE(wp372a_conditional_trace.empty());
+                    arena.update(game);
+                    REQUIRE(wp372a_update_trace.size() == 1);
+                    REQUIRE(wp372a_update_trace.front().handle ==
+                            stateful_handle);
+                    REQUIRE(wp372a_update_trace.front().hp == 55);
+                    REQUIRE(wp372a_update_trace.front().internal_state == 2);
+                } else {
+                    const auto before = wp372aArenaSnapshot(arena);
+                    fault.armed = true;
+                    const auto failed = set_hp(55);
+                    REQUIRE(fault.fired);
+                    REQUIRE(failed.at("status") == "failed");
+                    REQUIRE(wp372aArenaSnapshot(arena) == before);
+                    REQUIRE(wp372a_create_count == 0);
+                    REQUIRE(wp372a_destroy_instance_count == 0);
+                    REQUIRE(wp372a_on_init_count == 0);
+                    REQUIRE(wp372a_on_destroy_count == 0);
+                    REQUIRE(wp361_callback_trace.empty());
+                    REQUIRE(wp372a_conditional_trace.empty());
+
+                    arena.update(game);
+                    REQUIRE(wp372a_update_trace.size() == 1);
+                    REQUIRE(wp372a_update_trace.front().handle ==
+                            stateful_handle);
+                    REQUIRE(wp372a_update_trace.front().hp == 30);
+                    REQUIRE(wp372a_update_trace.front().internal_state == 2);
+
+                    wp372a_update_trace.clear();
+                    const auto retried = set_hp(55);
+                    REQUIRE(retried.at("status") == "committed");
+                    const auto after_retry = arena.snapshot();
+                    const auto retried_stateful = std::find_if(
+                        after_retry.begin(), after_retry.end(),
+                        [](const auto &attachment) {
+                            return attachment.stable_name == "wp361_behavior";
+                        });
+                    const auto retried_conditional = std::find_if(
+                        after_retry.begin(), after_retry.end(),
+                        [](const auto &attachment) {
+                            return attachment.stable_name ==
+                                   "wp372a_conditional";
+                        });
+                    REQUIRE(retried_stateful != after_retry.end());
+                    REQUIRE(retried_conditional != after_retry.end());
+                    REQUIRE(retried_stateful->handle == stateful_handle);
+                    REQUIRE(Json::parse(retried_stateful->canonical_params)
+                                .at("hp") == 55);
+                    REQUIRE_FALSE(retried_conditional->activation_failed);
+                    REQUIRE(retried_conditional->activation_error.empty());
+                    REQUIRE(retried_conditional->activation_delay == 1);
+                    REQUIRE(wp372a_create_count == 0);
+                    REQUIRE(wp372a_destroy_instance_count == 0);
+                    REQUIRE(wp372a_on_init_count == 0);
+                    REQUIRE(wp372a_on_destroy_count == 0);
+                    REQUIRE(wp361_callback_trace.empty());
+                    REQUIRE(wp372a_conditional_trace.empty());
+                    arena.update(game);
+                    REQUIRE(wp372a_update_trace.size() == 1);
+                    REQUIRE(wp372a_update_trace.front().handle ==
+                            stateful_handle);
+                    REQUIRE(wp372a_update_trace.front().hp == 55);
+                    REQUIRE(wp372a_update_trace.front().internal_state == 3);
+                }
+
+                arena.deactivateAll();
+                REQUIRE(GameObjects::remove(entity));
+            };
+
+            run_scenario(false);
+            run_scenario(true);
+        }
+    }
+}
+
+#if PELICAN_WITH_RPC
+TEST_CASE("WP372a real prefab parameter producer preserves the live behavior instance",
+          "[wp372a][prefab-edit][rpc][arena][instance]") {
+    ensureWp372aBehavior();
+    const auto prefab = wp372aPrefabFixture();
+    auto registry = registryFor(prefab);
+    auto provider = buildProductionBindableProviderSnapshot(372);
+    auto document = AuthoringSceneDocument::load(
+        wp372aSceneFixture().dump(), SceneRevision{371});
+    PrefabProjectionTarget target{std::move(document), std::move(registry),
+                                  std::move(provider)};
+
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    const auto entity = GameObjects::createWithComponents(
+        std::span<const ComponentId>{}, {});
+    const auto object_id =
+        instanceObject(target.projectionResolvedScene()).authoring_object_id;
+    const std::vector<EditorProjectionRuntimeObjectBinding> bindings{
+        {.authoring_object_id = object_id, .entity = entity}};
+    auto desired = prepareResolvedSceneBehaviorAttachments(
+        target.projectionResolvedScene().findScene("main")->objects,
+        BehaviorRegistryAvailability::active);
+    std::vector<BoundSceneBehaviorAttachment> bound;
+    for (auto &attachment : desired) {
+        bound.push_back({.prepared = std::move(attachment), .entity = entity});
+    }
+    auto &arena = GET_MODULE(BehaviorAttachmentArena);
+    arena.publishSceneAttachments(std::move(bound));
+    arena.activatePublished();
+    REQUIRE(arena.snapshot().size() == 1);
+
+    GameContext game;
+    wp372a_update_trace.clear();
+    arena.update(game);
+    REQUIRE(wp372a_update_trace.size() == 1);
+    REQUIRE(wp372a_update_trace.front().internal_state == 1);
+    const auto before = arena.snapshot().front();
+
+    EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & {
+            return target.projectionDocument();
+        },
+        .resolved_scene = [&]() -> const ResolvedScene & {
+            return target.projectionResolvedScene();
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .edit = EditorEditRuntimeDependencies{
+            .document = [&]() -> const AuthoringSceneDocument & {
+                return target.projectionDocument();
+            },
+            .current_scene_id = [] { return std::string{"main"}; },
+            .execute = [&](const EditorEditExecutionRequest &request) {
+                BehaviorSceneProjectionAdapter behavior_adapter{
+                    arena, "main", bindings, {}};
+                std::array<EditorProjectionAdapter *, 1> adapters{
+                    &behavior_adapter};
+                EditorProjectionTransaction transaction{target,
+                                                        request.base_revision};
+                return transaction.commit(request.commands, adapters);
+            },
+            .gate = [] { return EditorGateObservation{}; },
+            .prefab_registry = [&] {
+                return target.projectionResolvedScene().prefabRegistry();
+            },
+            .bindable_provider = [&] {
+                return target.projectionResolvedScene().bindableProvider();
+            },
+            .closure_generation = [&] {
+                return target.projectionResolvedScene()
+                    .prefabClosure().generation;
+            },
+        },
+    }};
+    EditorCommandRpcAdapter adapter{service};
+    std::uint64_t request_id = 1;
+    const auto run_rpc = [&](std::string method, Json params) {
+        const Json request{{"jsonrpc", "2.0"}, {"id", request_id++},
+                           {"method", std::move(method)},
+                           {"params", std::move(params)}};
+        std::istringstream input{request.dump() + "\n"};
+        std::ostringstream output;
+        RpcServer server{input, output};
+        configureEditorRpcHandlers(
+            server, adapter,
+            {.snapshot_imported = [] {},
+             .save_busy = [] { return false; }});
+        server.run();
+        std::string line;
+        std::istringstream response_lines{output.str()};
+        REQUIRE(std::getline(response_lines, line));
+        REQUIRE_FALSE(line.empty());
+        return Json::parse(line);
+    };
+    const auto opened = run_rpc(
+        "open_editor_session", {{"display_name", "wp372a producer"}});
+    const auto actor =
+        opened.at("result").at("actor_id").get<std::uint64_t>();
+
+    wp361_callback_trace.clear();
+    wp372a_update_trace.clear();
+    wp372a_create_count = 0;
+    wp372a_destroy_instance_count = 0;
+    wp372a_on_init_count = 0;
+    wp372a_on_destroy_count = 0;
+    const auto &resolved = target.projectionResolvedScene();
+    const Json params{
+        {"actor_id", actor},
+        {"scene_revision", target.projectionDocument().revision().value},
+        {"closure_generation", resolved.prefabClosure().generation},
+        {"provider_generation", resolved.bindableProvider().generation()},
+        {"object", object_id.value},
+        {"parameter", "hp"},
+        {"value", 55},
+    };
+    const auto accepted = run_rpc("set_prefab_parameter", params);
+    REQUIRE(accepted.at("result").at("status") == "accepted");
+    const auto ticket =
+        accepted.at("result").at("ticket").get<std::string>();
+    service.commitPendingEdits();
+    const auto result =
+        run_rpc("get_edit_result", {{"ticket", ticket}}).at("result");
+    REQUIRE(result.at("status") == "committed");
+    REQUIRE(service.editCoordinator()->journal().back().ordered_forward ==
+            std::vector<OJson>{
+                OJson{{"op", "set_prefab_parameter"},
+                      {"object", object_id.value},
+                      {"parameter", "hp"}, {"value", 55}}});
+
+    REQUIRE(arena.snapshot().size() == 1);
+    const auto after = arena.snapshot().front();
+    REQUIRE(after.handle == before.handle);
+    REQUIRE(after.attachment_seq == before.attachment_seq);
+    REQUIRE(after.component_origin.generated()->stable_generated_id ==
+            before.component_origin.generated()->stable_generated_id);
+    REQUIRE(Json::parse(after.canonical_params).at("hp") == 55);
+    REQUIRE(wp372a_create_count == 0);
+    REQUIRE(wp372a_destroy_instance_count == 0);
+    REQUIRE(wp372a_on_init_count == 0);
+    REQUIRE(wp372a_on_destroy_count == 0);
+    REQUIRE(wp361_callback_trace.empty());
+
+    arena.update(game);
+    REQUIRE(wp372a_update_trace.size() == 1);
+    REQUIRE(wp372a_update_trace.front().handle == before.handle);
+    REQUIRE(wp372a_update_trace.front().hp == 55);
+    REQUIRE(wp372a_update_trace.front().internal_state == 2);
+
+    arena.deactivateAll();
+    REQUIRE(GameObjects::remove(entity));
+}
+#endif
 
 } // namespace Pelican

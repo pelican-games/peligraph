@@ -222,7 +222,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 
 - `light`: ECSへ入れず`LightLoadEntry`へ
 - `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L53)）
-- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L147) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L184) で特別扱い）
+- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L148) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L184) で特別扱い）
 - その他: `ComponentInfoManager`で文字列名から`ComponentId`へ
 
 このためsceneの見た目はcomponent配列でも、現在のruntime実装ではlight/collider/behaviorがECS Chunkに保存されるわけではありません。
