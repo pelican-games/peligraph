@@ -17454,3 +17454,41 @@ Studio 表示(**U2 本体 = 別 WP**)。パラメータ昇格(U3)/ `ctx.spawn`(U
 多オブジェクト prefab。
 
 依存: WP361 + WP361a + WP362。
+
+#### WP372 仕様レビュー(v1、Reject・4 件)と v2
+
+**§0 の成立条件は「実装可能」と検算された**(再利用条件から `canonical_params`
+一致だけを外し、prepare で新 `RawBehaviorParams` を作り、publish で既存 instance を
+next attachment へ移した後 **noexcept swap**、rollback で再 swap、finish で旧 params
+破棄。Params の nothrow-swappable は登録時に要求済み)。
+**したがって UNMET ではない。U2 は E2 待ちに戻さない。**
+残り 4 件は「仕様が閉じていない」型。**全件「直す」。v2 > v1。第 2 巡を最終とする。**
+
+| # | v1 の壊れた点 | v2 の決定 |
+|---|---|---|
+| 1 | 再利用条件の緩和が広すぎる(`pending` や registration owner まで落ちる)/ 既存 `set_params` token は **publish 後の rollback が no-op** で、`AfterPublication` 失敗時に live params だけ新値のまま残る | **外すのは `canonical_params` 一致だけ**と明記。`pending`・entity・stable_name・origin(写像込み)・**registration owner** は一致を要求。params 差分時は既存 `set_params` と同様に **activation failure / error / delay も更新**し、**rollback でそれらも復元**する。受け入れに **Prepare / Publish / AfterPublication の各 fault と rollback 後 retry** を入れ、`next_handle`・`next_attachment_seq`・params・activation fields・内部状態・callback trace を前後比較。**origin は汎用 runtime snapshot では観測できない**ので **arena の型付き snapshot を直接検査**する |
+| 2 | CAS の新条件(component 列 domain)は**否定対照が恒真** —— 現行 domain は既に `object` を含み、overlap は同一 object で無条件 true を返す。新配線を全部消してもテストが落ちない | **v1 の範囲 5(component 列 domain)を削除**する。object 粒度の既存 CAS で十分。代わりに**設計が要求していたのに v1 が落とした rename の name reservation** を入れる: rename の structural domain に `{scene_id, object, name_reservations: [old, new]}` を必須化。**対照**: Actor A が rename → Actor B が new name で spawn → A が undo、で named conflict |
+| 3 | unpack inverse の **prefab 依存閉包が消えている**(WP370 v1 レビューで確定済みだったものを引き継いでいない)。現行 undo は journal 作成時ではなく**undo 時点の registry/provider** で inverse を再構築する | canonical forward/inverse に **`ref` / `instance_id` / parameter overrides / prefab digest / provider fingerprint** を固定 schema で保存。**unpack/restore を prefab CAS の対象に含める**。**digest 不一致・provider 不一致・instance_id 再利用をそれぞれ別の named error** に。**prefab bytes と provider を変更した後の undo/redo を必須試験**にする |
+| 4 | `OriginTransitionMap` の scope・最終化・production 配線が未定義(gid は scene を含まず scene-local / batch は operation ごとに逐次 commit するため記録 index が final とずれる / journal に map の文法が無い / **`unpack_prefab` は BehaviorScene adapter に route されていない**) | entry を **`{scene_id, authoring_object_id, old_gid, final_authored_component_index}`** とする。**request から受け取らず、preparer が全 operation 適用後の final ResolvedScene に対する第 2 pass で生成**する。上記 tuple で正準ソートし、**全単射・同一 object・同一 stable behavior・過不足なし**を検証。forward/inverse に正写像と逆写像を保存し、**undo/redo/verifier の各 execution で再検証**。**current scene の `unpack_prefab` を BehaviorScene adapter に明示 route** し、map を arena まで渡す。検査は**型付き arena snapshot** |
+
+##### 壊せなかった点(v1 のまま維持)
+
+reconciliation の publish/rollback 自体(desired attachment が新 origin を持ち、
+publish は vector swap、rollback は旧 vector と count の復元)。
+
+##### v2 の受け入れ(v1 §2 をこれで置換・追加)
+
+v1 の受け入れに加えて:
+
+- **決定 1 の fault matrix**: Prepare / Publish / AfterPublication × (成功・失敗・
+  失敗後 retry)で、handle・seq・params・activation fields・内部状態・callback trace が
+  **旧値へ完全復帰**(型付き arena snapshot で)
+- **決定 2**: rename の name reservation 衝突が named。**同一 object の無関係な列を
+  編集する正例が成功する**(過剰拒否でないこと)
+- **決定 3**: prefab bytes 変更後・provider 変更後・`instance_id` 再利用後の undo が
+  **それぞれ別の named error**。即時 undo は成功
+- **決定 4**: batch `[unpack, その前の authored component を remove]` で index が
+  ずれても写像が正しい / scene A・B に同一 gid が存在しても取り違えない /
+  同一 stable behavior 2 個の entry を入れ替えると検証が落ちる
+
+依存: WP361 + WP361a + WP362。
