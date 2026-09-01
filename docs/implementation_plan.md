@@ -19250,3 +19250,150 @@ ray tracing の対象にならない geometry の object に `ray_instance` を�
 per-geometry × per-instance の override(担体プログラム)/
 Studio の UI(台帳)/ static AABB と `.rint`(RT3-2)/ RT4 以降。
 **予約 namespace は範囲内へ移した**(決定 9)。
+
+
+#### WP374 第 2 巡(8 件)と v3 決定差分 —— **v3 が最終。仕様レビューは打ち切り**
+
+第 2 巡の 8 件は**すべて「仕様を締めよ」**であり、
+「機構が違う」は 1 件も無い(第 1 巡で本番構成不能だった条件は除去できている)。
+**v3 は v2 への差分であり、触れていない決定は v2 のまま。**
+
+##### 差分 1(#1): **10 組合せ**を列挙し、優先順位を固定する
+
+v2 の 7 行は重複と wildcard があり、v2 最終行が 4 状態を 1 行に畳んでいた。
+
+| # | layout | `acceleration_structure` | `ray_instance` | 結果 |
+|---|---|---|---|---|
+| 1 | 無し | — | 無し | legacy ABI(`0,1,…`) |
+| 2 | 無し | — | **有り** | `ray_instance_requires_layout_v2@1` |
+| 3 | v1 | 無し | 無し | **`q` のまま** |
+| 4 | v1 | 無し | 有り | `ray_instance_requires_layout_v2@1` |
+| 5 | v1 | **有り** | 無し | `ray_as_declaration_requires_layout_v2@1` |
+| 6 | v1 | **有り** | 有り | **`ray_as_declaration_requires_layout_v2@1` が優先**(layout を先に読むため) |
+| 7 | v2 | 無し | 無し | custom index 0 / `defaults` |
+| 8 | v2 | 無し | 有り | component 値 |
+| 9 | v2 | 有り | 無し | rule + `defaults` |
+| 10 | v2 | 有り | 有り | 両方 |
+
+- **本番は AS scope が無いと component inventory を読む前に return する**
+  ([renderer.cpp:4671](../src/core/vkcore/renderer.cpp#L4671))。
+  そして scene load は Renderer 生成より先である
+  ([pelican_core.cpp:82](../src/core/userpublic/pelican_core.cpp#L82))
+- **したがって #2・#4 は scene load 時の preflight validator で出す。**
+  AS scope の有無に関わらず**必ず走る**production validator を作る
+- 受け入れは **10 行すべてを実 project root + scene load / frame 経路から**実行する
+
+##### 差分 2(#2): build 列と **resident cache key 集合**
+
+v2 の「各世代 build 1 回」は、毎 frame cache を捨てる実装でも通り、
+旧 F を保持したまま再利用しない実装でも通る。
+さらに **cache 鍵にだけ flags を入れ、実際の
+`vk::AccelerationStructureGeometryKHR.flags` に空を渡す実装**も通った
+([accelerationstructure.cpp:809](../src/core/renderer/accelerationstructure.cpp#L809) が実消費点)。
+
+**受け入れを差し替える**:
+
+- 列を固定: **`F1(+1) → F2(+0) → G1(+1) → G2(+0) → F3(+1) → F4(+0)`**
+- **各 commit 後の resident cache key 集合**を診断に出し、
+  **常に `{(allocation, 現在の flags)}` と完全一致**すること(count では不可)
+- **同じ F/G/F テスト内で GPU 実効を見る** —— any-hit 呼び出し回数が
+  **F と G で変化し、F 復帰で戻る**
+
+##### 差分 3(#3): 受け入れを配線の全長にする
+
+`set_component_value` の live ECS 配線は **component 名の hard-code 分岐**であり、
+新しい codec は自動では通らない([editorruntimefactory.cpp:916](../src/core/communication/editorruntimefactory.cpp#L916))。
+add/remove は generic ECS migration を通る(:951)。**両方を通す。**
+
+受け入れの手順を固定する:
+
+1. **実 JSON-RPC bytes** を `RpcServer::run` へ流して `add_component`
+2. render して**実 TLAS 値と GPU 出力**を確認
+3. attach したまま **`set_component_value`** して再 render
+4. **`save_scene`** 後に **fresh reload** して再 render
+5. `remove_component` して既定へ戻る
+
+- **authoring object ID の保存場所を明記する。**
+  `DrawItemSnapshot` に ID が無く、model asset reload は snapshot を再生成する
+  ([polygoninstancecontainer.cpp:903](../src/core/renderer/polygoninstancecontainer.cpp#L903))ので、
+  **model reload を跨いで ID が保たれること**を受け入れに入れる
+
+##### 差分 4(#4・破綻): 多重一致を固定する
+
+同じ row が **document/name 規則と asset/index 規則の両方に一致し得る**
+(project material を持つ model row は両 identity を持つ)。
+exact key が違うので重複検査を通り、**どちらを採るかが未定義**だった。
+既存 binding resolver は同じ事態を row 単位の多重一致エラーにしている
+([raygrouplayout.cpp:934](../src/core/shader/raygrouplayout.cpp#L934))。
+
+- **0 一致 = defaults / 1 一致 = 適用 / 2 以上 = `ray_as_rule_ambiguous@1`**
+- **valid identity の定義**: 「完全な document + material_name の対」**または**
+  「完全な asset + source_material_index の対」。
+  **partial identity(document のみ / document + 空 name /
+  asset + `noSourceMaterialIndex`)は名前付き拒否**
+- 受け入れに**本番 snapshot から作る二重一致の負例**を入れる
+
+##### 差分 5(#5・破綻): 完全な wire grammar を本文に置く
+
+v2 は v1 §1〜§3 を置換すると宣言しながら、flag 語彙と bit 幅しか再定義していなかった。
+**次を v3 本文で確定する**:
+
+```
+ray_instance component:
+  { "name": "ray_instance",
+    "mask": <u8, 省略可, 既定は layout defaults.mask>,
+    "instance_flags": <string[], 省略可, 既定は layout defaults.instance_flags>,
+    "custom_index": <u32 の下位 24 bit, 省略可, 既定 0> }
+```
+
+- **field ごとに独立して override** する(component 全体の置換ではない)
+- **未知 field は `ray_instance_unknown_field@1`**、
+  型違いは `ray_instance_field_type@1`、範囲外は `ray_instance_field_range@1`
+- **field を 1 つも持たない component は `ray_instance_empty@1`**
+  (何も宣言しない component は誤りである)
+- `acceleration_structure` を書くなら **`defaults` は必須**。
+  `rules` は省略可(空配列と同義)
+- **canonical default は 1 型・1 箇所**に置き、layout の `defaults` と
+  component の省略値が**同じ既定を指す**こと(既定値の所在は一箇所)
+- strict parser の**正負両方**を受け入れに入れる
+
+##### 差分 6(#6・破綻): **version gate を選ぶ**(二択を決める)
+
+- **layout mode を component 登録より前に確定**する
+  (起動順は core 登録 → 外部 game logic 登録 → scene load → Renderer/layout parse
+  なので、**layout mode の preflight を最前へ出す**。差分 1 の validator と同じ場所)
+- **v2 のときだけ builtin の codec / ECS 型を登録**する
+- **no-layout / v1 で外部 owner が同名を登録済みなら、外部型として扱う**
+  (奪わない)。**未登録の builtin 形だけ**が `ray_instance_requires_layout_v2@1`
+- **mode を跨ぐ hot reload(v1 ↔ v2)は名前付き拒否**する
+  (`ray_layout_mode_change_requires_restart@1`)
+- 受け入れ: **登録順を反転した負例**と、
+  **no-layout の外部 `ray_instance` を壊さない正例**
+
+##### 差分 7(#7): 非 ray-traced の判定は **static 分類の前**に行う
+
+分類器は skinned / morph / VAT / BLAS-ineligible を**先に除外**し、
+row lowering は static index だけを走査する
+([accelerationstructure.cpp:205](../src/core/renderer/accelerationstructure.cpp#L205))。
+**lowering 内だけに実装すると、component 付き row が到達せず黙って消える。**
+
+- **static 分類の前に、authoring object 単位で component と候補 primitive を突合**する
+- **model 無し / skinned のみ / morph のみ / VAT のみ / BLAS-ineligible のみ**を
+  **それぞれ実 production scene から**拒否する(`ray_instance_not_ray_traced@1`)
+- **static と excluded が混在する object**は、**static row にだけ適用し、
+  エラーにしない**(混在は正当な構成である)
+
+##### 差分 8(#8): 構成 matrix
+
+- **parser / codec / 状態表のテストは `PELICAN_RUNTIME_SHADER_COMPILER` ON/OFF 両方**
+- **v2 の GPU / reload 受け入れは ON 限定**と明記する
+- **OFF では既存 `layout_requires_runtime_compiler@1` が先行する**ことを確認
+  ([raygrouplayout.cpp:887](../src/core/shader/raygrouplayout.cpp#L887))
+- `PELICAN_WITH_OPENXR` ON/OFF のコンパイルと flat/xr の owner 共有、
+  `PELICAN_WITH_IMGUI` ON/OFF も matrix に含める
+- `SKIP_DEVSTUDIO` 両構成
+
+##### 実装可否
+
+**実装する。** 第 2 巡は「機構が違う」を 1 件も出していない。
+全数は**起票時に `ctest -N` で実測**して基準とする(v2 決定 11)。
