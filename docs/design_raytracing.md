@@ -697,3 +697,119 @@ RT4(callable の per-in-flight record)・RT5(変形 geometry)・RT7(ノード編
 6. **予約 namespace か version gate**(外部 ECS の同名 component と衝突する)
 
 これは R5(型付き構築 factory・codec 記述子の単一ソース化)と**同じ領域**である。
+
+
+### 11-9. 設計レビュー第 3 巡と v4(最終) —— 担体は**分割できる**
+
+**v4 が §11 の最終。v3 の決定 9 は v4 で置換される。決定 10〜13 は v4 の修正を受ける。**
+**設計レビューは 3 巡で打ち切り、以降は WP の仕様レビューで受ける。**
+
+#### 第 3 巡の裁定を受け入れる: **material 鍵では目的を果たさない**
+
+第 3 巡 #5 は正しい。**v3 の retreat は目的を捨てていた**:
+
+- 同じ木材 material の椅子 2 脚を、**片方だけ shadow ray から外せない**
+- mirrored instance だけ `TriangleFlipFacing` を設定できない
+- `custom_index` で object table を引けない(同 material の全個体が同値)
+- 複数 material の 1 object を「除外」すると**一部だけ残る**
+
+そして §11-3 で**私自身が**「mask は個体を分類するためにある。全体で 1 つなら無意味」と
+書いていた。v3 はそれを自分で覆していた。
+
+#### しかし担体は第 2・3 巡の見積もりより小さい(実測)
+
+第 2 巡は担体を「schema に可変長宣言を足し、Studio に編集面を作り、
+runtime kind と join を作るプログラム」と見た。**分けられる**:
+
+| 必要とされたもの | 実測 |
+|---|---|
+| schema の**可変長宣言** | **per-instance の値には不要**。`mask` は `U8`、`custom_index` は `U32`、flags は enum —— **全部固定 leaf**([structfieldschema.hpp:21](../src/core/userpublic/details/schema/structfieldschema.hpp#L21))。可変長が要るのは **per-geometry override だけ** |
+| **component を足す編集経路** | **core に既にある**。`add_component` / `remove_component` は journal の op として実装済み([editorjournal.cpp:1135](../src/core/communication/editorjournal.cpp#L1135)・:1621)。**欠けているのは Studio の UI だけ**であり、engine と RPC は塞がっていない |
+| typed material selector | **AS snapshot に既にある** —— `material_document_reference` / `material_name` / `material_asset_reference` / `source_material_index`([accelerationstructure.hpp:32](../src/core/vkcore/accelerationstructure.hpp#L32)) |
+| authoring object ID の運搬 | **これだけが新規配線**。snapshot は `instance_index` / `instance_generation` を持つが authoring object を持たない |
+
+#### 決定 14(v3 決定 9 を置換): **粒度ごとに担体を分ける**
+
+| 値 | 粒度 | 担体 | 段 |
+|---|---|---|---|
+| `mask` / `instance_flags` / `custom_index` | **instance** | **固定 leaf の `ray_instance` component**(`components[]` 内) | **RT3-1** |
+| `geometry_flags` | **geometry** | **layout の material 鍵規則**(typed selector) | **RT3-1** |
+| per-geometry × per-instance の override | row | **可変長宣言が要る。台帳の担体プログラム** | 先送り |
+
+**優先順位を固定する**: `defaults < material rule < instance override`。
+
+**Studio の UI は RT3-1 の範囲外**とし、台帳に残す ——
+engine・RPC・project 形式は塞がっておらず、**Studio が追いつくのは常にエンジン先行**
+(サブセット原則と同じ形)。
+
+#### 決定 15(#1): material selector は **typed union**。単一文字列をやめる
+
+```json
+{"material": {"document": "materials/multi.json", "material_name": "Oak"}}
+{"material": {"asset": "models/tree.glb", "source_material_index": 7}}
+```
+
+- 実 selector が既に `document` と `asset + source_material_index` の分岐である
+  ([raygrouplayout.hpp:93](../src/core/shader/raygrouplayout.hpp#L93))。**それに合わせる**
+- document material の canonical key は **material name まで含む**
+  ([raygrouplayout.cpp:309](../src/core/shader/raygrouplayout.cpp#L309))
+- **legacy direct load は authored reference が空になり得る**
+  ([gltf.cpp:2433](../src/core/model/gltf.cpp#L2433))。
+  その row に規則が当たったら **`ray_as_row_material_identity_unavailable@1`** で拒否する
+  (黙って defaults に落とさない)
+- **同一 exact key の重複規則は first-match にせず拒否**する
+  (`ray_as_duplicate_rule@1`)。存在しない asset・範囲外 index も別コード
+
+#### 決定 16(#2): semantic mode を **plan まで運ぶ**
+
+`RayGroupLayout` は version を保持せず、parser は v1 固定、
+TLAS lowering は layout version も AS mode も受け取らない
+([accelerationstructure.cpp:443](../src/core/renderer/accelerationstructure.cpp#L443))。
+
+- **`LegacyNoLayout` / `LayoutV1Q` / `LayoutV2` を型として保持**し、
+  **immutable な row / TLAS plan まで運ぶ**
+- **`ray_as_declaration_requires_layout@1` は削除**する ——
+  `acceleration_structure` は layout 内の field なので、
+  「layout 無しで書く」構文が存在せず**到達不能**だった
+- **4 状態表を custom index だけでなく mask と両 flags まで広げる**
+- **wire を固定**: `mask` は 8 bit、`custom_index` は **24 bit**、
+  flag 語彙、未知 field の扱い、`defaults` の必須性
+
+#### 決定 17(#3): variant の purge は **exact active set** で行う
+
+- BLAS cache 鍵は `(geometry_allocation_id, 解決済み geometry_flags)`
+- **purge は「この frame で実際に参照された variant 集合」との差分で行う** ——
+  「geometry が消えたら全部落とす」だけでは、
+  **規則の reload で参照されなくなった variant が残る**
+- **SBT digest と AS digest を分離**する(variant は AS 側だけを動かす)
+
+#### 決定 18(#4): 受け入れを全面改訂(no-op と充足不能を両方潰す)
+
+**同一テスト内で off/on・実効値・GPU 効果・purge を見る**:
+
+- **mask**: 同じ material の**個体 2 つ**で、片方の `ray_instance.mask` だけを変えると
+  **GPU 出力が変わる**。component を消すと両方写る(**第 3 巡 #5 の椅子 2 脚**)
+- **instance_flags**: 片方だけ `ForceOpaque` にすると **any-hit の呼び出し回数が減る**。
+  profile active なら `ray_profile_opaque_as@1`
+- **custom_index**: 宣言値が `gl_InstanceCustomIndexEXT` に出る。
+  **row を追加して `q` をずらしても不変**。SBT sentinel は**独立に正しい**
+- **geometry_flags**: 同一 allocation を opaque/mask で共有 → **BLAS build 数が 2**。
+  **規則の reload で参照されなくなった variant が purge される**(残ると落ちる)
+- **優先順位**: `defaults < material rule < instance override` を 3 段重ねで検査
+- **version gate**: v1 に `acceleration_structure` を書くと
+  `ray_as_declaration_requires_layout_v2@1`。**v1 の `custom_index == q` は不変**
+- **legacy**: layout 無し project の **source / SBT / TLAS instance の bytes が三つとも不変**
+- **拒否**: legacy provenance の row / 重複規則 / 未解決 material
+
+#### 決定 19: 段割り(最終)
+
+| 段 | 内容 |
+|---|---|
+| **RT3-1** | layout v2 + typed material 鍵の geometry flags + **固定 leaf `ray_instance` component**(mask / instance_flags / custom_index)+ custom index の供給源変更 + semantic mode の運搬 + BLAS variant 鍵と exact purge |
+| **RT3-2** | §4 の procedural subset 規範(文書)→ static AABB + `.rint` |
+
+#### 台帳へ残す(RT3-1 の範囲外)
+
+- **per-geometry × per-instance の override**(可変長宣言が要る。担体プログラム)
+- **Studio の `ray_instance` 追加・編集 UI**(core の `add_component` は既にある)
+- **外部 ECS との名前衝突**に備えた予約 namespace か version gate
