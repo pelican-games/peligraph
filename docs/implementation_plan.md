@@ -18098,3 +18098,51 @@ WP372b の仕様変更・写像の意味論の変更・`makeEditorRuntimeService
 テストが途中から本番のループを写経していれば、**写経した範囲は検証されていない**。
 受け入れが本番と同じ関数を呼んでいるかを、**変異で**確かめること ——
 エージェントの「この変異で落ちる」という報告は、**当てて確かめるまで主張にすぎない**。
+
+#### WP372b + WP372b-fix 完了(統合済み、`2620f640` + `a7ef7eef`)
+
+**全数 1502/1502 緑**(GPU 171 件を直列で含む。1497 → +5)。`SKIP_DEVSTUDIO` 両構成。
+出荷 4 project と `src/core/resources/` の bytes 不変。
+
+**閉じたもの**: unpack が behavior を殺さなくなった。generated → authored の
+origin 遷移は、その 1 回の execution の `OriginTransitionMap` を
+`sameSceneBehaviorOrigin` が参照することで attach/detach を通らずに行われる。
+写像の entry は `{scene_id, authoring_object_id, gid, component_key,
+final_authored_index}` で、**gid は `component_key` から再導出して検算する** ——
+同一 `type` の behavior 2 個は正当なので、entry の入れ替えは状態の移植になる。
+
+##### 検出力(統合側で自分で当てた変異。**エージェントの報告は 1 件が誤りだった**)
+
+| 変異 | 1 回目(WP372b 時点) | 2 回目(fix 後) |
+|---|---|---|
+| `component_key` 束縛検査を外す | **赤**(`ComponentKeyMismatch`) | — |
+| `prefab_origin_transitions` への insert を外す | **緑のまま(すり抜け)** | **赤**(`unpacked.handle` が `2 == 1`) |
+
+すり抜けの原因は、受け入れテストが `.execute` の中で
+**本番の adapter 構築ループを写経していた**こと。`planEditorPrefabProjectionRoutes`
+までは本番だが、その先は `route.origin_transition` を adapter へ直接渡しており、
+本番側の dict への insert と引き当てを一度も通らなかった。
+WP372b-fix で**本番と受け入れが同じ 1 つの関数を呼ぶ**ようにし、
+**同じ変異が赤くなること**を確認した。
+
+##### 恒常の教訓
+
+**「本番経路を通す」は入口だけでは足りない。**
+実 `RpcServer::run` を通していても、テストが途中から本番のループを写経していれば、
+**写経した範囲は検証されていない**。WP303・WP326 で踏んだ「第二の経路」は
+本番コードだけでなく**テスト側にも生える**。
+
+**エージェントの「この変異で落ちる」は、当てて確かめるまで主張にすぎない。**
+今回は 2 件中 1 件が誤りだった。**統合側で必ず自分で当てること。**
+
+##### 台帳の負債(本 WP では返さない)
+
+- **manifest-backed provider**: DLL 不在でも behavior dependency schema を
+  供給できる provider。これが無い限り generated pending は存在しない
+  (現在は `PrefabProviderStale` で fatal)
+- **E2 が destroy を入れた後**、参照先が destroy された状態での unpack の undo は
+  既存の `PrefabObjectRefUnresolved` で落ちる。真の衝突なので名前付きで落ちること自体は正しい
+- **`makeEditorRuntimeService` 全体のテスト可能化**: 今回は最後の一跳ねだけ閉じた。
+  現在この関数を丸ごと通すのは `golden_harness.cpp` だけである
+
+次は **WP372c**(`ObjectReferenceIndex` + rename + CAS overlap 規範表)。
