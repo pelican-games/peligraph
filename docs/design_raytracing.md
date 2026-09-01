@@ -423,3 +423,145 @@ layout に `{"when": {"material": "foliage"}, "instance_flags": [...]}` のよ�
   片方だけ `mask` で除外して**GPU 出力が変わる**。宣言を外すと両方写る
 - **RT3c**: AABB + `.rint` で球を描き、**CPU 参照(§4 の規範表)と包含一致**
 - 全段: **layout を書いていない project の bytes 不変**(§3 の恒久規則)
+
+
+### 11-7. 設計レビュー第 1 巡(10 件・破綻 3)と v2
+
+**v2 が §11 の正。11-2 の規範文・11-4 の担体・11-5 の段割り・11-6 の受け入れは v2 で置換される。**
+
+#### 決定 1(#1): 規範は「`q` を秘密にする」ではなく「**custom index の供給源を `q` にしない**」
+
+11-2 の受け入れ「`q` が shader から観測できない」は**恒偽**だった ——
+§3 は `data(q)` を **shader record に置く**と規定し、§4 は
+**`(q,r)` ごとの一意 sentinel を shader が読み戻す**ことを要求している。
+**私が §4 で自分に課した検査が、私が §11 で置いた受け入れを否定していた。**
+
+規範を書き直す:
+
+> **`instanceCustomIndex` の供給源は `q` ではない。** 利用者が宣言した値だけが入る。
+> `q` は shader record 経由でのみ shader に届く(§3 のとおり)。
+
+受け入れも書き直す: **row を追加して `q` をずらしても、宣言済みの custom index は
+同値のまま**であり、**SBT sentinel は独立に正しい**。同一 GPU テストで両方見る。
+
+#### 決定 2(#2・破綻): layout 無しは **legacy ABI のまま**。既定 0 は layout 有りだけ
+
+「宣言のない project は custom index 0」と「layout 無し project の bytes 不変」は
+両立しない —— legacy branch は `result.size()` を custom index にしており
+([accelerationstructure.cpp:451](../src/core/renderer/accelerationstructure.cpp#L451))、
+それは**過去のレビューで byte 互換のために意図的に修復された仕様**である。
+
+| 構成 | `instanceCustomIndex` |
+|---|---|
+| **layout 無し** | **legacy ABI(`0,1,…`)を維持。変更しない** |
+| layout 有り・AS 宣言無し | **0** |
+| layout 有り・AS 宣言有り | 宣言値 |
+
+**「bytes 不変」の対象を固定する**: source file の bytes /
+SBT の bytes / TLAS instance の bytes の**三つすべて**。
+layout 無し project ではこの三つが不変であること。
+
+#### 決定 3(#3): **RT3a と RT3b を 1 つの出荷単位にする**
+
+RT3a 単独では表現力が**後退する** —— `gl_InstanceCustomIndexEXT` で instance を
+区別している shader は、全 row が 0 になった時点で**エラーにならず出力だけ変わり**、
+代替手段は RT3b まで来ない。既存 fixture も `custom_index == q` を固定している
+([raytracing_rt1b_test.cpp:1026](../test/raytracing_rt1b_test.cpp#L1026) ほか、
+headless に 5 件)。
+
+**段割りを改める**:
+
+| 段 | 内容 |
+|---|---|
+| **RT3-1** | AS 宣言面(geometry flags / instance flags / mask / custom index)を**担体ごと**入れる。custom index の供給源変更も**同時** |
+| **RT3-2** | static AABB + `.rint`(手続き幾何)。**§4 の procedural subset 規範を先に書く**(決定 6) |
+
+#### 決定 4(#5・破綻): 担体は **`components[]` の中の登録済み `ray_instance` component**
+
+候補 A を「object の sibling」として置く案は**成立しない**:
+
+- scene parser は object をコピーするが `name` / `parent` / `components` しか検査せず、
+  未知の sibling は**保持するが意味付けしない**
+  ([sceneformat.cpp:75](../src/project/sceneformat.cpp#L75))
+- `ResolvedObject` に raw object field が無く、resolver は component だけを移送する
+  ([resolvedscene.hpp:234](../src/core/loader/resolvedscene.hpp#L234))
+- Studio の query/edit 面は `components[]` と `set_component_value` だけ
+  ([editorcommandservice.cpp:627](../src/core/communication/editorcommandservice.cpp#L627))
+
+つまり失敗の形は「disk から消える」ではなく **「保存はされるが編集不能で、
+runtime では無効」** —— **最も悪い形**である。
+
+**決定**: `components[]` の中の **登録済み `ray_instance` component** にする。
+codec・public schema・runtime adapter・RPC・Studio の既存経路に**そのまま乗る**。
+`BindableDescriptor` にも自然に載る(prefab パラメータで束縛できる)。
+
+**subset 原則**(web で開ける ⊆ pelican で開ける)は、
+**web が新 component を対応まで明示拒否**すれば満たされる。
+
+#### 決定 5(#6): 粒度は **object 既定 + geometry override**。key に実行時 ID を使わない
+
+**scene object と TLAS instance は 1:1 ではない** —— 1 object が 2 primitive を持てば
+**2 row** になる(`q` は instance×geometry の row。
+[polygoninstancecontainer.cpp:1061](../src/core/renderer/polygoninstancecontainer.cpp#L1061))。
+
+- `ray_instance` component は **object 既定**を持つ
+- **geometry override** を `{asset ref, mesh index, primitive index}` の
+  **安定 key** で宣言する。**`geometry_allocation_id` のような実行時 ID を
+  author key にしない**(決定性を壊す)
+- **geometry flags は geometry override 側**(粒度が違う)
+- 受け入れ: **1 object × 2 primitive を別設定にして GPU 出力が変わる**
+
+#### 決定 6(#4・#7): 先に書くべき規範が 2 つある
+
+**(a) BLAS の解決規則**(#7)。BLAS は `geometry_allocation_id` **だけ**を key に共有され、
+reuse 判定は geometry pool / model generation とテスト override しか見ない
+([accelerationstructure.cpp:744](../src/core/renderer/accelerationstructure.cpp#L744))。
+**flags だけを変えた reload は古い BLAS を再利用し、宣言が無効になる。**
+
+規範化する:
+
+- **BLAS cache key に解決済み geometry flags を含める**
+- 同一 geometry に**衝突する要求**が来たら、**`(geometry, flags)` ごとの BLAS variant**
+  を作る(**利用者の要求は「速度を重視しない DCC 級の自由度」**なので、
+  variant 増加は許容する。named reject や保守的統合で自由度を削らない)
+- material routing からの自動導出と authored flag の**優先順位**を明記する
+- `material_alpha_v1` と自由 any-hit・opaque flag の同居規則
+  (profile active なら opaque は既に `ray_profile_opaque_as@1` で拒否される)
+
+**(b) §4 の procedural subset 規範**(#4)。§4 の入力 domain は**非退化三角形だけ**で、
+CPU oracle の入力型も `RayTracingOracleTriangle` しかない
+([raytracingoracle.hpp:51](../src/core/shader/raytracingoracle.hpp#L51))。
+**RT3-2 の前に**、有限 AABB / `min <= max` / ray-sphere の root 選択 /
+`t` の一意性 margin / AABB 内包含 / hit attribute / 区間幅上限を規範表に足す。
+足さないなら **procedural は §4 subset 外**と明記し、CPU golden を受け入れから外す。
+
+#### 決定 7(#8): 受け入れを **no-op 実装で落ちる**形にする
+
+第 1 巡の受け入れは no-op でも通った。書き直す:
+
+- **custom index**: 宣言した値が **GPU の `gl_InstanceCustomIndexEXT` に出る**。
+  **row を追加して `q` をずらしても宣言値は不変**。宣言を消すと 0 になる
+- **mask**: 同じ geometry・同じ material の **2 個体**で、片方だけ mask で除外すると
+  **GPU 出力が変わる**。宣言を外すと両方写る
+- **instance flags**: `ForceOpaque` を宣言した個体だけ any-hit が**呼ばれない**
+  (呼び出し回数を数える)。profile active なら `ray_profile_opaque_as@1` で拒否される
+- **geometry flags**: 同一 allocation を opaque/mask で共有する構成で、
+  **flags ごとに別 BLAS が作られる**(build 数で観測)。
+  **flags だけの reload で BLAS が作り直される**(cache key に入っていないと落ちる)
+- **担体**: `ray_instance` を **Studio から編集 → save → 再起動 → 同じ実効値**。
+  **古い engine が名前付きで拒否**する
+- **粒度**: 1 object × 2 primitive を別設定にして GPU 出力が変わる
+- **legacy**: layout 無し project の **source / SBT / TLAS instance の bytes が三つとも不変**
+- 全数 2 回 / GPU は統合側で直列 / `SKIP_DEVSTUDIO` 両構成
+
+#### 決定 8: 段の順序(改)
+
+```
+§4 procedural subset 規範(文書のみ)
+        ↓
+RT3-1(宣言面 + 担体 + custom index 供給源 + BLAS cache key)
+        ↓
+RT3-2(static AABB + .rint)
+        ↓
+RT4 / RT5 → RT6 → RT7
+```
