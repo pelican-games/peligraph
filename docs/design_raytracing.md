@@ -326,3 +326,100 @@ v2 §7 に同じ + §5 の matrix + 「off/on は同一テスト内」+ sentinel
    除き、**RT2a = `.rahit` 語彙 + typed group + record 定数ベースの subset any-hit**
    に縮小。**両車線 portable alpha profile は RT2b(material ABI と同段)へ移動**。
    二車線 byte 一致契約の適用範囲も RT2b で定義する
+
+
+## 11. RT3 設計: AS 宣言面(2026-09-02。実測から書く)
+
+RT3 を WP として起票しようとして、**per-instance の RT 宣言経路が
+エンジンに一つも無い**ことが分かった。宣言面を WP の中で発明するのは、
+このセッションで 3 本続けて中止になった形そのものなので、設計として書く。
+
+### 11-1. 実測(現状)
+
+| 項目 | 現状 | 場所 |
+|---|---|---|
+| `mask` | **`0xffu` 固定** | [accelerationstructure.cpp:903](../src/core/renderer/accelerationstructure.cpp#L903) |
+| `instanceCustomIndex` | **`q` を直接入れている** | 同 :497 / :902 |
+| instance flags | **テスト用 override だけが入力**。本番に宣言面が無い | 同 :894 |
+| geometry flags | **同上**(`blas_geometry_flags`) | 同 :748 |
+| profile 検査 | `ray_profile_opaque_as@1` で opaque を拒否(WP369) | 同 :333 |
+| `.rint` | `group.intersectionShader = unused` 固定。手続き幾何は皆無 | [pipelinefactory.cpp:699](../src/core/shader/pipelinefactory.cpp#L699) |
+| per-instance の RT 宣言 | **無い**。`alpha_override_mask` は material override からの派生であって author 面ではない | [polygoninstancecontainer.cpp:1069](../src/core/renderer/polygoninstancecontainer.cpp#L1069) |
+
+TLAS 構築は **1 箇所**で、pipeline 車線と ray query 車線が共用する。
+
+### 11-2. 先に閉じるべき欠陥: **`q` が shader に漏れている**
+
+§3 は「**raygen へ公開するのは `ray_type_index` / `ray_type_count` /
+独立 `miss_index` のみ。`g×R+r` や `q` を shader に公開しない**」と規定している。
+しかし `instanceCustomIndex = q` は、**`gl_InstanceCustomIndexEXT` で `q` を
+すべての hit shader に公開している**。**現行実装は自分の規範に違反している。**
+
+`material_index` は shader record(`shaderRecordEXT`)で運ばれており
+custom index に依存していないので、**custom index は解放できる**。
+
+**決定 1: `instanceCustomIndex` の既定は 0。`q` は入れない。**
+利用者が宣言した値だけが入る。既存の「custom index == q」を検査するテスト
+(`headless_render_test.cpp` に 5 件)は**この規範に合わせて変更する** ——
+規範違反を固定していたテストである。
+
+### 11-3. 宣言の粒度(ここが設計の本体)
+
+flags / mask / custom index は**粒度が違う**:
+
+| 項目 | 自然な粒度 | 理由 |
+|---|---|---|
+| geometry flags | **geometry(BLAS 入力)** | opaque かどうかは形状と material の性質 |
+| instance flags | **instance** | 同じ geometry を opaque な個体と非 opaque な個体で使い分ける |
+| `mask` | **instance** | mask は個体を分類するためにある。全体で 1 つなら無意味 |
+| `instanceCustomIndex` | **instance** | 利用者の per-instance データの席 |
+
+**したがって layout 文書だけの宣言は成立しない。** mask を project 全体で 1 つに
+するのは、mask を導入しないのと同じである(「半端を増やさない」)。
+
+### 11-4. 候補と評価
+
+**候補 A: scene object に RT ブロックを足す**
+`{"ray": {"instance_flags": [...], "mask": 12, "custom_index": 7}}` を object へ。
+- 利点: 粒度が正しい。既存の component codec 機構に乗る
+- 欠点: **scene 形式の拡張**。web で開ける ⊆ pelican で開ける の原則により、
+  形式拡張は常にエンジン先行だが、**Studio の編集面と save 経路にも波及**する
+- 懸念: RT を使わない project の bytes を動かさないこと(既定は宣言なし)
+
+**候補 B: material に紐づける**
+material 表(WP368)が既に per-material・per-row である。
+- 利点: 新しい author 面を作らない。RT2b の表をそのまま拡張
+- 欠点: **mask と custom index は material の性質ではない**。
+  同じ material の 2 個体を別 mask にできない。**mask の目的を満たさない**
+
+**候補 C: layout に「規則」を書き、instance に解決する**
+layout に `{"when": {"material": "foliage"}, "instance_flags": [...]}` のような
+規則を並べ、TLAS 構築時に解決する。
+- 利点: scene 形式を変えない。project 所有のまま
+- 欠点: **述語の文法を発明することになる**。
+  このセッションで「文法を発明する WP」は 3 本中止になっている
+
+**評価: 候補 A。** 粒度が唯一正しく、既存の codec 機構に乗り、
+「宣言データとして開く」という user-space 境界の原則にも合う。
+候補 C の述語文法は、必要になったときに候補 A の上へ足せる。
+
+### 11-5. 段割り
+
+| 段 | 内容 | 単独で何が良くなるか |
+|---|---|---|
+| **RT3a** | **`q` 漏れの停止**(custom index 既定 0)+ layout の `acceleration_structure` 既定ブロック(geometry flags / instance flags / mask の**既定値**) | 規範違反が消える。テスト用 override が本番入力である状態が終わる |
+| **RT3b** | **object の `ray` ブロック**(instance flags / mask / custom index の per-instance 宣言) | mask が意味を持つ。同じ geometry を opaque/非 opaque で使い分けられる |
+| **RT3c** | **static AABB + `.rint`**(手続き幾何) | 三角形以外を書ける。DCC 級自由度の本体の一つ |
+
+**RT3a は RT3b の前提**(既定値の置き場所が要る)。
+**RT3c は独立**(AABB geometry と intersection shader は別の話)。
+
+### 11-6. 受け入れの骨(各段の WP へ引き継ぐ)
+
+- **RT3a**: 宣言のない project で `gl_InstanceCustomIndexEXT` が **0 を読む**
+  (今日は `q`)。`q` が shader から観測できないことを GPU テストで示す。
+  テスト用 override を消しても本番が動くこと
+- **RT3b**: **同じ geometry・同じ material の 2 個体**を、
+  片方だけ `mask` で除外して**GPU 出力が変わる**。宣言を外すと両方写る
+- **RT3c**: AABB + `.rint` で球を描き、**CPU 参照(§4 の規範表)と包含一致**
+- 全段: **layout を書いていない project の bytes 不変**(§3 の恒久規則)
