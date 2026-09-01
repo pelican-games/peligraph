@@ -301,3 +301,52 @@ D0 は syntax 型が Vulkan 非依存であることで満たす。
 - 決定表の完全版(全 field × canonical decoder × phase × error code)
 - manifest の具体的な行(parameter 値・feature 組合せ・variant・build flag)
 - provider の反復 compile を document 上で保存する API 形(v2 裁定 7 は維持)
+
+---
+
+## v4(第 3 巡への決定差分。**設計レビューはここで打ち切る。v4 > v3 > v2 > v1**)
+
+第 3 巡の 3 件は、いずれも「document の所有境界」に関するもの。決定する。
+
+### 決定 1: **Provider V2(typed)を G0 として前提化する**(#1)
+
+現行は正規化後にも `compose_runtime_config` が JSON を書き換え(ImGui pass の挿入)、
+provider は config JSON 全体を入出力し、その前後で raw compile している。
+したがって「document を置ける安定点」は**今は存在しない**。作る:
+
+- **G0**: `compose_runtime_config` を **`TypedGraphDocument` 上の typed mutation** へ。
+  provider は **typed snapshot + typed edit の V2 ABI** へ移す。
+  **V1 の JSON adapter は移行期間のみ**とし、G1 完了時には残さない
+- **未知 root field は opaque 保持**(bag)とする。3 択のうち「捨てる」は挙動変更、
+  「拒否」は『変更は決定表の 3 種のみ』を破る。**opaque 保持は
+  『パーサは一つ』に反しない** —— 素通しは parse ではないため。
+  provider は bag を読める。schema registry は将来の課題として残す
+
+### 決定 2: RT syntax は **family 級と variant 級の 2 型**にする(#2)
+
+現行契約は「RT project config を authored root から一度だけ解析し、
+flat/xr/preview で共有」(raygrouplayout.hpp:123 に明記)。これを壊さない:
+
+- **`RayProjectSyntax`(family 級)**: authored root から**一度だけ**構築し全 variant 共有
+- **`RayTaskSyntax`(variant 級)**: document が保持し、共有 `RayProjectSyntax` を
+  **参照**して CTD へ lower する
+- 参照方法・digest・エラー発生順・所有 lifetime を WP 仕様で固定。
+  CTD の構築順序と variant namespacing は**現行のまま**
+
+### 決定 3: G1 を 2 段に割る(#3)
+
+「raw と新経路の differential」と「raw の物理削除」は同じ完了状態に共存できない。
+
+- **G1a**: `TypedGraphDocument` + 単一 parser + planner/provider/3 caller の消費。
+  **raw は残す**。同じ入力を両経路へ通す **live differential test** を置く
+- **G1b**: **raw parser の物理削除**。differential は G1a で採取した
+  **凍結 fixture** に置換する(親版オラクルの流儀)
+- **manifest に環境入力を追加**(#3 の実例): `display extent` を含める。
+  タプルは `(root, feature parameters, overlays, integrations, variant,
+  build flags, display extent)`
+
+### 設計段の終了
+
+以降の残余は **G0/G1a の WP 仕様レビュー**で受ける:
+決定表の完全版 / manifest の具体行 / V2 ABI の型と移行手順 /
+opaque bag の digest への入り方。**G2(= R2)は据え置き**。

@@ -311,3 +311,61 @@ generated(gid)↔ authored(component index)を同一と判定できるように�
 - `ObjectReferenceIndex` の codec 宣言面の詳細(JSON path の文法)
 - unpack で除去する marker の完全な規範表
 - E2 の起票時期(U2 完了後でよい)
+
+---
+
+## v4(第 3 巡への決定差分。**設計レビューはここで打ち切る。v4 > v3 > v2 > v1**)
+
+第 3 巡は 3 件。**#1 は私の分割前提を実配線で崩した**(自分で検算し確認):
+`set/unset_prefab_parameter` は `prefab_scenes` 経路に入り、
+**`set_params` junction は `prefab_scenes.empty()` のときしか使われない**
+(editorruntimefactory.cpp:983 付近)。非空だと scene 全体の
+`BehaviorSceneProjectionAdapter` に切り替わり、arena の再利用条件に
+`canonical_params` の一致があるため、**param を変えると新 handle → 旧 instance の
+`destroyInstance` + `onDestroy`** を通る。
+「U2 は behavior を作らず壊さない」は**そのままでは偽**だった。
+
+### 決定 1: E1/E2 の境界を「要件」として復元する(#1)
+
+分割を捨てるのではなく、**E1 の要件に加える**:
+
+> **prefab パラメータの変更は、既存 instance への `set_params` として適用する。**
+> canonical params の差分を scene reconcile の detach/attach で表現しない。
+
+これは仕様の追加であると同時に**利用者に見えるバグの修正**でもある ——
+現状は prefab の数値を 1 つ変えるだけで behavior instance の内部状態が失われる。
+
+- 実装の形: `prefab_scenes` 経路でも、reconcile の照合が
+  **entity + stable_name + origin(transition map 込み)が一致すれば
+  canonical params の差分を `set_params` として適用**する
+  (params 不一致だけで再利用を諦めない)
+- **受け入れ**: 実 producer request の一括流し込みで
+  **handle 不変・create/destroy/`onDestroy` がちょうど 0 回**・
+  behavior instance の内部状態が保存される。**照合を戻すと落ちる**
+- これが満たされて初めて U2 は E1 に分類できる。満たせないと分かった時点で
+  **U2 は E2 待ち**に戻す(この判定を WP 仕様レビューの最初に置く)
+
+### 決定 2: object 参照の意味は behavior params schema にも要る(#2)
+
+`ObjectReferenceIndex` の入力を **codec 宣言だけに限定しない**:
+
+- **behavior の params schema(`BehaviorRegistration` 由来)にも
+  object-reference semantic を宣言できるようにする**。現在 provider は
+  behavior field を一律 `BindableSemanticKind::Value` にしている
+- 理由: 規範例自身が `target` object parameter を `behavior.params.target` に
+  束縛しており、**unpack 後は prefab 宣言が消えて意味情報が失われる**
+- 受け入れ: unpack 後・reload 後にも同じ field が index に入り、rename が追随する
+
+### 決定 3: 写像の他 actor 安全性は CAS で閉じる(#3)
+
+execution 内でのみ有効な写像(v3 決定 3)は維持する。他 actor の介在は
+**既存の 3 重 CAS の structural domain に「対象 object の component 列」を含める**
+ことで、silent shift ではなく**名前付き衝突**にする。
+undo/redo の写像は journal の forward/inverse に載る(v3 どおり)。
+
+### 設計段の終了
+
+以降の残余は **E1 の WP 仕様レビュー**で受ける:
+`ObjectReferenceIndex` の宣言面の文法 / unpack で除去する marker の規範表 /
+決定 1 の照合をどこに実装するか。
+**E2(spawn/destroy の原子性)は別文書**。着手時期は U2 完了後でよい。
