@@ -17893,3 +17893,139 @@ pending flag・handle・seq・origin が保存され callback 0 であること�
 - 出荷 4 project と `src/core/resources/` の bytes 不変
   (**回帰 guard であって feature 有効性の証拠ではない** —— 対象 root に prefab は 0 件)
 - 既存テスト(全数 1497)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成
+
+#### WP372b 第 2 巡(8 件)と v3 決定差分 —— **v3 が最終。仕様レビューはここで打ち切る**
+
+v3 は v2 への差分であり、**触れていない決定は v2 のまま生きている**。
+
+##### 差分 1(#3): 写像 entry を**発生源に束縛**する
+
+第 2 巡が通した攻撃: **同一 `stable name`・異なる `component_key`** の behavior 2 つ
+(同一 stable name の behavior 複数は許可されている:
+[resolvedscene.cpp:515](../src/core/loader/resolvedscene.cpp#L515)、
+既存 fixture にも 2 個ある: [wp361_prefab_test.cpp:267](../test/wp361_prefab_test.cpp#L267))。
+gid 集合・index 集合・重複・kind・stable name・scene/object の 6 条件を**全部通り**、
+A の内部状態が論理 component B へ移植される。
+**`component_key` を entry に持たせながら、一度も突き合わせていなかった。**
+
+追加する条件(v2 の 5 条件に足す):
+
+6. `entry.component_key` が **`base_resolved` の当該 generated origin の
+   `component_key` と一致**
+7. `entry.gid` が **`prefabGeneratedId(instance_id, component_key)` と一致**
+   (gid の導出規則そのものに戻して検算する)
+8. `final_authored_index` の component が、**その `component_key` の権威 body
+   (差分 5 / v2 決定 10)から生成されたもの**であること
+
+必須対照: **同一 stable name の behavior 2 個の swap** と、
+**`component_key` だけを書き換えた改竄**。
+
+##### 差分 2(#4): oracle を分類器から独立させる
+
+v2 の property corpus は「除去結果が分類器の報告と一致」しか見ておらず、
+**分類器自身を oracle にしていた**。分類器を「キーが在れば値によらず marker」と
+誤らせても、resolver と unpack が同じ誤りを共有するので全条件が通る。
+
+**仕様に期待値を固定する**(分類器の実装とは独立に):
+
+- `/generated` は **boolean `true` のときだけ**除去
+- `/origin` は **string `"generated"` のときだけ**除去
+- `false` / `"authored"` / 他文字列 / 数値 / `null` / 他の root field は**保持**
+
+production helper は 1 つのままでよい(resolver と unpack が共有する)。
+綴りを足す改修は、**分類器と独立 oracle の両方を明示的に更新しなければ通らない**。
+
+##### 差分 3(#1): asset 更新と undo の順序
+
+v2 の受け入れは「asset 更新後に undo して追随」と
+「digest 不一致を `prefab_digest_changed@1` で拒否」を**同時に要求**していた。
+digest は raw bytes から作られる([prefab.cpp:599](../src/project/prefab.cpp#L599))ので、
+両立しない。**受け入れの手順を確定する**:
+
+1. unpack する
+2. prefab asset を更新 → **unpacked object は変化しない**(参照断絶の証明)
+3. **asset を元の bytes へ戻す**
+4. undo が成功する
+5. もう一度 asset を更新 → **復元された prefab 参照が追随する**
+
+##### 差分 4(#2): `ref` と `instance_id` は integrity に畳む
+
+unpack 後は object の `prefab` キー自体が消えるため、**current state に `ref` も
+`instance_id` も存在しない**。両者は inverse に保存した block からしか読めない
+([prefab.cpp:629](../src/project/prefab.cpp#L629))ので、
+「本番状態から独立に壊す」ことができない。
+
+- code 2(`prefab_ref_changed@1`)と code 3(`prefab_instance_id_changed@1`)を**削除**し、
+  **`journal_integrity_error@1` の下位 reason**(`ref` / `instance_id`)にする
+- **本番状態から壊せる code は 3 つだけ**: digest / provider / behavior dependency
+- 受け入れの「code 2〜6 を本番状態から 1 つずつ」は
+  **「digest・provider・behavior dependency の 3 つを 1 つずつ」**に置換
+
+##### 差分 5(#5): 検査点を core の callback にする
+
+`commandsFromCanonical` の明示 transaction より前に `LocalDocumentTarget` の
+constructor が resolver を呼ぶ([editorjournal.cpp:439](../src/core/communication/editorjournal.cpp#L439))ので、
+v2 が名指しした seam には置けない。undo 受付時も既存 CAS と precondition が先にある。
+
+- **core 内 callback を足し、`projection_state` または完全な
+  `PrefabResolutionClosure` を返す**(runtime dependencies は registry・provider・
+  closure generation までしか届かず、resolver input fingerprint は
+  実 defaults から作られる: [resolvedscene.cpp:673](../src/core/loader/resolvedscene.cpp#L673))
+- **journal 取得直後・generic CAS/precondition より前**に、
+  **受付時と実行時の両方で同じ検査関数**を呼ぶ
+- preflight にも**現在の defaults** を渡す
+- 対照: **複数の不一致を同時に作り、表の優先順が守られること**
+
+##### 差分 6(#6): 決定 11 を格下げする(generated pending は到達不能)
+
+production provider は**登録済み behavior からしか dependency を作らない**
+([prefabprovider.cpp:401](../src/core/loader/prefabprovider.cpp#L401))。
+そして generated behavior の dependency が provider に無ければ、resolver は
+pending にせず **`PrefabProviderStale` で fatal** にする
+([resolvedscene.cpp:716](../src/core/loader/resolvedscene.cpp#L716))。
+**「DLL 不在の generated behavior」は作れない。**
+
+- 決定 11 は **「availability 配線が、無関係な authored pending を壊さないこと」**に限定
+- **origin 遷移の証拠として数えない**(そう数えるのは代理条件)
+- **台帳の負債**: DLL 不在でも behavior dependency schema を供給できる
+  manifest-backed provider。これが入るまで generated pending は存在しない
+
+##### 差分 7(#7): undo/redo の本番 lifecycle 受け入れを**復活**させる
+
+v2 が受け入れを全面置換したとき、v1 にあった undo/redo の確認を落とした。
+通る変異: **「写像を通常 edit では渡し、undo/redo ticket では渡さない」** ——
+forward・singleton・journal 整合・document 復元は全部通り、
+undo/redo でだけ behavior が detach/create される。
+
+**同一 RPC テストで unpack → undo → redo を実行**し、各遷移で
+callback 0 / handle・seq・内部状態不変 / origin と gid の往復 /
+**forward と inverse が各 1 operation**であることを検査する。
+
+##### 差分 8(#8): **object parameter の拒否を撤回する**(v2 決定 8 の後半を取り消し)
+
+第 2 巡は「決定 8 が設計の規範例と主要 fixture を全部拒否し、
+372b が単独出荷の有用性を証明できない」と指摘した。**指摘は正しいが、
+正しい解決は 372c との合体ではなく、拒否そのものの撤回である。**
+
+`PrefabObjectRefUnresolved` は **対象 object 名が scene に存在しない**ときだけ出る
+([resolvedscene.cpp:565](../src/core/loader/resolvedscene.cpp#L565))。
+名前が消えるのは **destroy(E2。E1 の範囲外)か rename(372c。今日は未実装)**だけである。
+**E1 には destroy 操作が存在しない**ので、第 1 巡 #8 反例 2 の状況は E1 内で作れない。
+
+- **object parameter を持つ prefab も通常どおり unpack する。**
+  置換済みの値(object 名)を権威 body から逐語で書けば、resolve 結果は同一
+- `prefab_unpack_object_parameter_unsupported@1` は**作らない**
+- **正の受け入れ**: 設計の規範例([design_prefabs.md:51](design_prefabs.md#L51))と
+  主要 fixture([wp361_prefab_test.cpp:244](../test/wp361_prefab_test.cpp#L244))の形、
+  すなわち **object parameter を持つ prefab を unpack して、
+  解決後の参照が変わらない**こと
+- rename 追随は 372c のまま(**今日も未実装なので後退は無い**)
+- **台帳の負債**: E2 が destroy を入れた後、参照先が destroy された状態での
+  unpack の undo は既存の `PrefabObjectRefUnresolved` で落ちる。
+  これは真の衝突であり、名前付きで落ちること自体は正しい
+
+##### 実装可否
+
+**実装する。** 第 2 巡の 8 件はすべて上記で閉じた。
+「1 WP に 1 つの文法」という分割の前提は #8 の撤回により回復している
+(372b = 写像と marker の文法、372c = path と overlap の文法)。
