@@ -19084,3 +19084,169 @@ wire を固定する: `mask` 8 bit / `custom_index` **24 bit** / flag 語彙 /
 static AABB と `.rint`(RT3-2)/ RT4 以降。
 
 依存: RT1a + RT1b + RT2a + RT2b。
+
+
+#### WP374 仕様レビュー第 1 巡(12 件・破綻 4)と v2
+
+**v2 が本節の正。v1 の §1〜§3 と受け入れは v2 で置換される。**
+
+##### 決定 1(#1・破綻): `ray_instance` は layout の外にある
+
+v1 は「`acceleration_structure` は layout 内の field だから
+`ray_as_declaration_requires_layout@1` は到達不能」と書いたが、
+**`ray_instance` は独立した `components[]` 要素**であり、layout が無くても書ける。
+**無視すれば fail-fast 違反、適用すれば legacy/v1 ABI を変える。**
+
+状態表に **「`ray_instance` の有無」の軸を足す**:
+
+| layout | `acceleration_structure` | `ray_instance` | 結果 |
+|---|---|---|---|
+| 無し | — | 無し | legacy ABI(`0,1,…`)。現行のまま |
+| 無し | — | **有り** | **`ray_instance_requires_layout_v2@1`** |
+| v1 | — | 無し | **`q` のまま**。現行のまま |
+| v1 | 有り | — | `ray_as_declaration_requires_layout_v2@1` |
+| v1 | — | **有り** | **`ray_instance_requires_layout_v2@1`** |
+| v2 | 無し | 無し | custom index 0、`defaults` 相当 |
+| v2 | 有り / 無し | 有り / 無し | 解決値 |
+
+##### 決定 2(#2・破綻): 優先順位は **2 本の 2 段 chain**。3 段ではない
+
+carrier は field ごとに**分離している** —— material rule は geometry flags 専用、
+component は mask / instance flags / custom index 専用。
+**同一 field で 3 段の勝敗を作れないので、証明できない条件だった。**
+
+- `geometry_flags`: **`defaults < material rule`**
+- `mask` / `instance_flags` / `custom_index`: **`defaults < ray_instance`**
+
+v1 の「3 段重ねで検査」は**削除**する。
+
+##### 決定 3(#3): geometry flags の受け入れは **本番 layout の reload** で取る
+
+v1 の「同一 allocation の opaque/mask 混在」は**本番入力から構成できない** ——
+material rule は material 鍵であり、production model は
+同 material の primitive を 1 group に再編する
+([modeltemplate.cpp:89](../src/core/model/modeltemplate.cpp#L89))ので、
+その allocation の全個体が同じ flags になる。
+そして **test override を使うと偽陽性**になる ——
+override の BLAS flags が非ゼロだと現行 `can_reuse` が**全 reuse を禁止**するため、
+cache 鍵が allocation だけのままでも「2 build」が出てしまう
+([accelerationstructure.cpp:744](../src/core/renderer/accelerationstructure.cpp#L744))。
+
+**受け入れを差し替える**:
+
+- 同一 allocation・同一 flags の個体を **3 つ以上**置く
+- **本番 layout を `F → G → F` と reload** する
+- 各世代で **build がちょうど 1 回**(reuse 全無効を落とす)
+- **G 化で再 build、F 復帰でも再 build**(旧 F variant が残る実装を落とす)
+- **受け入れで test override を使うことを禁止する**
+
+##### 決定 4(#4): 配線を範囲に入れる
+
+`add_component` の op は core にあるが、**登録 codec のある型しか足せない**
+([editorjournal.cpp:212](../src/core/communication/editorjournal.cpp#L212))。
+そして snapshot 生成 loop には join 用の identity が無い。
+**次を本 WP の範囲に明記する**:
+
+1. `ray_instance` の **codec / schema 登録**と **ECS runtime kind**
+2. **attach / remove** と **save / reload**
+3. **authoring object → renderer instance の join**、
+   **AS snapshot への authoring object ID の運搬**
+4. 値の変更・component の着脱による **invalidation**
+
+**受け入れは実 RPC から始める。** helper 直呼びを禁止する。
+
+##### 決定 5(#5): **v2 専用の AS selector 型**を作る。v1 binding selector を流用しない
+
+現行 `RayBindingSelector` に **`material_name` が無く**、document selector は
+**同一 document の全 material に一致する**
+([raygrouplayout.cpp:320](../src/core/shader/raygrouplayout.cpp#L320))。
+v1 の「既存 typed selector をそのまま使える」は**偽**だった。
+
+- **AS 専用の selector 型・厳密 parser・canonical key** を作る
+- 受け入れ: **同一 document の Oak と Pine を、本番 snapshot から選別**して
+  片方だけ flags が変わる
+
+##### 決定 6(#6・破綻): **「当たらない規則」はエラーではない**
+
+v1 の `ray_as_row_material_identity_unavailable@1` と
+「未解決 material の拒否」は**判定不能**だった ——
+project の material catalog が無く、active な draw snapshot からは
+「scene B 用の正当な規則」と「typo」を区別できない。
+
+**分ける**:
+
+| 何を検査するか | いつ | code |
+|---|---|---|
+| selector の**構文**(`document` と `asset` の排他、必須 field、`source_material_index` の範囲) | **layout parse 時** | `ray_as_rule_malformed@1` |
+| **同一 exact key の重複規則** | layout parse 時 | `ray_as_duplicate_rule@1` |
+| row の authored material identity が**空**、かつ **AS rule が 1 つ以上ある** | TLAS lowering 時 | `ray_as_row_material_identity_unavailable@1` |
+
+**現在の scene に当たらない規則は正当**である(scene は複数ある)。
+黙って defaults に落ちるのが正しい。
+
+##### 決定 7(#7): `instance_flags` の wire を確定する
+
+語彙は `VkGeometryInstanceFlagBitsKHR` に 1:1 対応させる:
+
+`triangle_facing_cull_disable` / `triangle_flip_facing` /
+`force_opaque` / `force_no_opaque`
+
+- **`force_opaque` と `force_no_opaque` の同時指定は
+  `ray_as_conflicting_instance_flags@1`**
+- 未知の語は `ray_as_unknown_flag@1`(黙って無視しない)
+- `geometry_flags` の語彙は `opaque` / `no_duplicate_any_hit_invocation`
+- `mask` は **8 bit**、`custom_index` は **24 bit**。範囲外は名前付き拒否
+
+##### 決定 8(#8・#9): 受け入れの否定対照と digest 分離
+
+- **test override を受け入れで使わない**(決定 3)
+- **本番 frame 経路を通す。**「本番の loop を写経したテスト」を禁止する ——
+  **本番と受け入れが同じ関数を呼ぶ**こと(WP372b-fix と同じ形)。
+  **本番側の解決を消す変異で受け入れが落ちる**ことを必須にする
+- **SBT digest と AS digest の分離**を受け入れに入れる:
+  **AS rule だけを変えて SBT digest が不変**であること
+
+##### 決定 9(#10): 予約 namespace を**本 WP に入れる**
+
+`ray_instance` を登録した時点で、**同名の外部 ECS component から名前を奪う**
+([componentinfo.cpp:20](../src/core/ecs/componentinfo.cpp#L20) は登録名重複を拒否する)。
+延期すると本 WP 自体が互換を壊す。**予約 namespace か version gate を本 WP で入れる。**
+
+##### 決定 10(#11): AS 対象外の geometry に付いた component は黙って無効にしない
+
+ray tracing の対象にならない geometry の object に `ray_instance` を付けたら、
+**名前付きの診断**を出す(`ray_instance_not_ray_traced@1`)。黙って無効にしない。
+
+##### 決定 11(#12): 全数は**起票時に実測**する
+
+「全数 1502」は固定値として書くべきではない。**実装前に `ctest -N` で数え、
+その数を基準として記録する**(skill §K の「`out of N` を毎回控える」)。
+
+##### 受け入れ(v1 を置換)
+
+- **mask(椅子 2 脚)**: 同じ material の個体 2 つで、片方の `ray_instance.mask` だけを
+  変えると **GPU 出力が変わる**。component を消すと**両方写る**。**実 RPC から**
+- **instance_flags**: 片方だけ `force_opaque` で **any-hit 呼び出し回数が減る**。
+  profile active なら `ray_profile_opaque_as@1`。
+  `force_opaque` + `force_no_opaque` で `ray_as_conflicting_instance_flags@1`
+- **custom_index**: 宣言値が `gl_InstanceCustomIndexEXT` に出る。
+  **row を追加して `q` をずらしても不変**。**SBT sentinel は独立に正しい**
+- **geometry_flags**: 決定 3 の `F → G → F` reload。各世代 build 1 回、
+  変更で再 build、復帰でも再 build。**override 使用禁止**
+- **selector**: 同一 document の **Oak と Pine を選別**(決定 5)
+- **優先順位**: 2 本の 2 段 chain を個別に(決定 2)
+- **状態表**: 7 状態すべて。特に **no-layout / v1 + `ray_instance` の名前付き拒否**
+- **digest**: AS rule だけを変えて **SBT digest 不変**
+- **配線**: 実 RPC の `add_component` → render → `remove_component` が
+  TLAS へ届く。**本番側の解決を消す変異で落ちる**
+- **legacy**: layout 無し project の **source / SBT / TLAS instance の bytes が三つとも不変**
+- **拒否**: malformed selector / 重複規則 / legacy provenance row /
+  未知 flag / 範囲外 mask・custom_index / 非 ray-traced object の component
+- 起票時に実測した全数を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成 /
+  GPU は統合側で直列
+
+##### やらないこと(v1 から変更)
+
+per-geometry × per-instance の override(担体プログラム)/
+Studio の UI(台帳)/ static AABB と `.rint`(RT3-2)/ RT4 以降。
+**予約 namespace は範囲内へ移した**(決定 9)。
