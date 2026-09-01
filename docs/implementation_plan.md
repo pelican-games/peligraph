@@ -18887,3 +18887,78 @@ dry-run(U2 と同時)/ rename(設計)/ spawn・destroy(E2)/
 `ResolvedSceneError` の再設計 / camera 以外の component の手書き検証の棚卸し。
 
 依存: WP372a + WP372b + WP372b-fix。
+
+
+#### WP373 第 1 巡(8 件・破綻 2)と裁定 —— **中止。これは codec 契約の設計であり、WP ではない**
+
+**私は try の字面を数えて、動的な到達範囲を数えていなかった。**
+
+try は 4 つの手書き投出点だけでなく、**`codec->decodeAuthored()` と
+`encodeCanonical()` の呼び出し全体を覆っている**
+([resolvedscene.cpp:207](../src/core/loader/resolvedscene.cpp#L207))。
+実際に届く利用者エラーは:
+
+| 出所 | 投出点 |
+|---|---|
+| camera の alias | [componentcodec.cpp:512](../src/core/loader/componentcodec.cpp#L512) |
+| animation の `graph` | [componentcodec.cpp:827](../src/core/loader/componentcodec.cpp#L827) |
+| **collider** | [collider.cpp:13](../src/core/userpublic/components/collider.cpp#L13) ほか **17 箇所** |
+| **sprite_view** | [spriteview.cpp:16](../src/core/userpublic/components/spriteview.cpp#L16) ほか **15 箇所** |
+| sprite asset の参照検証 | [atlasasset.cpp:138](../src/core/asset/atlasasset.cpp#L138) |
+
+WP373 の分類表どおり「その他 `std::exception` は再送出」を実装すると、
+**collider の `radius:-1` や sprite_view の不正 texture で
+inactive scene の保存・query が不可能になる** —— 現行契約の破壊である。
+そして仕様は「camera 以外の棚卸し」を**明示的に範囲外にしていた**。
+
+##### もう 1 つの破綻: 利用者に見えない(#2)
+
+`ResolvedComponent` に code と pointer を入れても、**利用者からは見えない**:
+
+- scene query の component serialization は `runtime_resolution_error` を**一切出さない**
+  ([editorcommandservice.cpp:635](../src/core/communication/editorcommandservice.cpp#L635))
+- edit は `commit() noexcept` で平坦化し、terminal が `method_unavailable` へ潰す
+- **本 WP 自身が terminal 伝搬を WP374 へ送っていた**
+
+したがって受け入れは **resolver 直叩きにしかならない**。
+既存の generated-camera テストが実際にそうである
+([wp361_prefab_test.cpp:929](../test/wp361_prefab_test.cpp#L929))。
+「利用者に見える形」と書きながら、見える場所が無い。
+
+##### 裁定: **中止し、設計トラックへ移す**
+
+WP372c(rename)と同じ形である —— **機構の穴ではなく、切り方が違う。**
+
+真の形は **「built-in codec の利用者入力拒否を、型付き data-error 契約へ統一する」**
+であり、5 component・**約 35 の投出点**に跨る。さらに「見える場所」を作るには
+scene query の serialization か terminal 伝搬のどちらかが要る。
+**これは codec 契約の設計であって、1 WP ではない。**
+
+##### 設計トラックへ持ち越す論点
+
+1. **typed data-error 契約**: `code` + `json_pointer` を持つ利用者データ例外を
+   codec 境界の規範にし、camera alias / animation / collider(17)/ sprite_view(15)/
+   atlas を移す。**移し終わるまで「その他を再送出」は入れられない**
+2. **例外クラスだけでは data error と内部バグを区別できない**(#3)。
+   `std::runtime_error` は両方に使われている
+3. **見える場所**: scene query の serialization に出すか、terminal まで運ぶか
+4. **`what()` の byte 互換**: 提案した型だけでは現行文言を再構築できない(#5)
+5. **一覧が存在しない**(#6): provenance と規範順の受け入れ対象が、そもそも無い
+6. **`logic_error` / `bad_alloc`**: 再送出は正しいが、
+   本番組成では下流の平坦化に隠れる。**平坦化を直すのが先**
+7. **R5 との関係**: collider の既定値が 5 箇所にある負債は同じ領域である
+
+##### この裁定でエディタトラックは一区切りとする
+
+- **E1 の目的(U2 を塞いでいるものを外す)は WP372a + WP372b で達成済み**
+- rename(WP372c)・dry-run(WP372d)・型付きエラー(WP373)は
+  **いずれも U2 を塞いでいない**
+- 3 本続けて「WP ではなく設計」と判定した。**これは連鎖の打ち切り条件である**
+  (skill §I: 「WP が WP を直していて、それがまた WP を直しているなら、
+  起票する前に元を revert して一度でやり直すことを検討する」)
+
+##### 次
+
+**RT3(AS 宣言面)** へ移る。利用者が明示した要求
+「RT 周りを DCC ツールと同程度に好き勝手したい」の本体であり、
+エディタトラックとは独立している。
