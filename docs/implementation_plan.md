@@ -18460,3 +18460,86 @@ overlap を緩めない判断は第 2 巡でも壊せなかった
 ##### 次
 
 **WP372d(dry-run + 型付き resolution error)** へ進む。
+
+### WP372d: dry-run と型付き resolution error(E1 の最後の一片)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中。**
+**規範は `docs/design_editor_lifecycle.md` v4 の「dry-run」受け入れと、
+台帳の U2 裁定「dry-run は `ResolvedScene` の純 resolver 経路をそのまま使う。
+新しい検証経路を作らない —— 第二の流儀の禁止」。**
+**前提は WP372a + WP372b + WP372b-fix(統合済み、全数 1502)。WP372c は設計へ移送済み。**
+
+#### 起票時の実測(2026-09-02)
+
+- **dry-run の RPC は存在しない**(`src/core/communication/` に該当なし)
+- `ResolvedComponent::runtime_resolution_error` は **`std::optional<std::string>`**
+  ([resolvedscene.hpp:212](../src/core/loader/resolvedscene.hpp#L212))
+- 設定箇所は 2 つ。どちらも **`catch (const std::exception &error)` で
+  `error.what()` に潰している**
+  ([resolvedscene.cpp:191](../src/core/loader/resolvedscene.cpp#L191) = behavior params、
+  [resolvedscene.cpp:308](../src/core/loader/resolvedscene.cpp#L308) = codec decode)
+- 再送出は **`std::runtime_error`**([resolvedscene.cpp:46](../src/core/loader/resolvedscene.cpp#L46))と、
+  文字列連結([behaviorarena.cpp:164](../src/core/gamelogic/behaviorarena.cpp#L164))。
+  **どちらも型を失う**
+- :302 のコメントは「Runtime binders consume this **named** result」と書いているが、
+  **実際には named ではなく文字列**である。コメントが仕様に先行している
+- 既存の編集失敗 payload は `{code, payload, message}`
+  ([editorjournal.cpp:3192](../src/core/communication/editorjournal.cpp#L3192))。
+  **dry-run はこれと同じ形を返す**(新しい形を作らない)
+
+#### 1. 型付き resolution error
+
+`runtime_resolution_error` を **`std::optional<ResolvedComponentError>`** にする:
+
+```
+ResolvedComponentError { code, message, json_pointer?(optional), component_name }
+```
+
+- **`message` は今日の `error.what()` と byte 一致**させる。
+  既存の文言に依存する経路を動かさない
+- 分類は **2 つの catch site で明示的に行う**。既知の typed 族
+  (schema / struct field / prefab / resolved scene / codec)を**個別に catch** して code を付け、
+  **`catch (const std::exception &)` は `resolution_unclassified@1`** に落とす。
+  第三者 JSON ライブラリの `std::runtime_error` が来ても壊れない
+- **`requireRuntimeValue()` と behaviorarena は typed error を投げ直す**。
+  文字列連結をやめる(連結すると呼び出し側が再び parse する羽目になる)
+- **inactive scene のエラー保持契約は変えない**
+  (authoring/query/save は無効な component を保持でき、binder が投げる)
+
+#### 2. dry-run(**新しい検証経路を作らない**)
+
+- RPC `dry_run_edit` は **`edit` と同一の params** を取る
+- **同じ `executeEditorProjection` の分類**と**同じ
+  `EditorProjectionTransaction` の prepare** を通し、**publish の代わりに rollback** する
+- 返すのは既存の `{code, payload, message}` と、
+  **適用したら発生する `ResolvedComponentError` の一覧**
+- **dry-run 専用の検証関数を書かないこと。** 書いた時点で本 WP は失敗である
+
+#### 受け入れ(§4 規約 10)
+
+- **同一 code**: 失敗する編集を `dry_run_edit` と `edit` の両方へ流し、
+  **code と payload が完全一致**する。族ごとに 1 件ずつ(schema / prefab /
+  codec decode / behavior params / unclassified)
+- **dry-run は何も動かさない**: scene revision・journal・ECS・arena・
+  `next_handle` / `next_attachment_seq` が**呼び出し前後で不変**。
+  **成功する編集でも不変**(rollback が効いていることの証明)
+- **第二経路の否定**: dry-run が `EditorProjectionTransaction::prepare` を
+  通らない実装にする変異で落ちること。
+  **本番の分類・prepare を消す変異で dry-run も同時に落ちる**こと
+  (= 同じ経路を通っている証拠。WP372b-fix と同じ形)
+- **型が届く**: `requireRuntimeValue()` が投げた error から **code が読める**
+  (今日は文字列なので読めない)。文字列連結に戻す変異で落ちる
+- **`message` の byte 一致**: 既存の error 文言を使うテストが**無変更で通る**
+- **inactive scene**: 無効な component を持つ inactive scene が
+  **保存・query できる**(現行契約)。current へ切り替えると**名前付きで**落ちる
+- 出荷 4 project・`src/core/resources/` の bytes 不変 /
+  既存テスト(全数 1502)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成
+
+#### やらないこと
+
+rename(設計トラックへ移送済み)/ picker・Studio inventory・一括流し込み(U2 本体)/
+spawn・destroy の原子性(E2)/ **単一 production executor seam の一般化**
+(WP372c 裁定の持ち越し 8。単独で価値があるが本 WP の範囲外)/
+`ResolvedSceneError` 自体の再設計。
+
+依存: WP372a + WP372b + WP372b-fix。
