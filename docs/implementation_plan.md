@@ -17492,3 +17492,80 @@ v1 の受け入れに加えて:
   同一 stable behavior 2 個の entry を入れ替えると検証が落ちる
 
 依存: WP361 + WP361a + WP362。
+
+#### WP372 第 2 巡(FATAL 6 件)と v3 —— 分割(**v3 が最終。仕様レビュー打ち切り**)
+
+6 件の内訳は「**文法 / 表 / API を定義せよ**」が 4 件(#2 判別子・#3 path 文法と
+rename wire・#4 marker 規範表・#6 dry-run の error taxonomy)、
+「**規範との矛盾**」が 1 件(#1 CAS)、「**受け入れが範囲外に依存**」が 1 件(#5)。
+
+**判定: WP372 には未規定のサブシステムが 4 つ入っていた。** 1 WP に 4 つの
+文法を書かせるのは、WP370/371 で 2 件同時に差し戻された形の再演である。**分割する。**
+
+| WP | 範囲 | 定義すべき文法/表 | 状態 |
+|---|---|---|---|
+| **WP372a** | **決定 1 のみ**(prefab param 変更を既存 instance の `set_params` として適用) | **無し**(既存の照合条件から 1 項目を外すだけ) | **下記に確定版。起票済み** |
+| WP372b | unpack op + `OriginTransitionMap` + inverse の prefab 依存閉包 | **source discriminator の規則**(#2)+ **marker 規範表**(#4) | 起票のみ |
+| WP372c | `ObjectReferenceIndex` + rename op + CAS overlap | **共通 path 文法**(#3)+ **overlap 規範表**(#1)+ rename の request/forward/inverse wire | 起票のみ |
+| WP372d | dry-run + 型付き resolution error | **error taxonomy と payload**(#6)+ 呼出境界(RPC method か edit mode か) | 起票のみ |
+
+**#1 の解消**: v2 で「component 列 CAS を削除」としたのは**誤り**だった ——
+設計 v4 は細粒度 CAS を要求しており、v2 の正例(同一 object の無関係な列編集後に
+rename の undo が成功)は現行の「同一 object なら無条件 overlap」と両立しない。
+**WP372c で overlap 規範表として決める**(削除は撤回)。
+
+**#5 の解消**: `EditorCommandRpcAdapter::setPrefabParameter` は**単発の
+`set_prefab_parameter` を出す実 producer として実在**する。
+**状態消失バグはパラメータ 1 つの変更で観測できる**ので、WP372a は
+一括 request を必要としない。一括流し込み面は U2 本体のまま。
+
+### WP372a(確定版): prefab パラメータ変更で behavior instance を殺さない
+
+**§4 規則 11 上段。仕様レビュー完了(2 巡 + 本裁定)。コードレビューあり。見積: 中。**
+**規範は `docs/design_editor_lifecycle.md` v4 決定 1。**
+
+#### 何が壊れているか(利用者に見える形)
+
+prefab のパラメータを 1 つ変えると、`prefab_scenes` 経路が scene 全体の
+`BehaviorSceneProjectionAdapter` に切り替わり、arena の再利用条件に
+`canonical_params` の一致があるため **behavior instance が破棄・再生成される** ——
+**内部状態が失われ、`onDestroy` / `onInit` が走る**。
+
+#### 範囲
+
+**再利用条件から `canonical_params` 一致だけを外す。**
+`pending` / entity / stable_name / origin / **registration owner** の一致は
+**引き続き要求**する(第 1 巡 #1: 緩めすぎると DLL 不在の pending attachment と
+active attachment を同一視する)。
+
+- prepare で新しい `RawBehaviorParams` を生成
+- publish で既存 instance を next attachment へ移した後、**noexcept swap** で params 交換
+- **rollback で再 swap** し、instance を旧 attachment へ戻す(既存 `set_params` token の
+  publish 後 rollback が no-op である問題を、本 WP の token では起こさない)
+- params 差分時は既存 `set_params` と同様に **activation failure / error / delay も更新**、
+  **rollback でそれらも復元**
+- Params の nothrow-swappable は登録時に要求済み。instance 移送と publish 後 rollback も
+  arena に既存
+
+#### 受け入れ(§4 規約 10)
+
+- **実 producer**: `EditorCommandRpcAdapter::setPrefabParameter` が出す
+  **単発 request** を実 `RpcServer::run` へ流し、**handle 不変・
+  create/destroy/`onDestroy`/`onInit` がちょうど 0 回・behavior instance の内部状態が
+  保存される**。**照合条件を戻すと落ちる**
+- **fault matrix**: Prepare / Publish / **AfterPublication** × (成功・失敗・失敗後 retry)。
+  失敗時は `next_handle`・`next_attachment_seq`・params・activation fields・内部状態・
+  callback trace が**旧値へ完全復帰**
+- **検査は型付き arena snapshot**(汎用 runtime snapshot は origin も params も
+  観測できない)
+- **緩めすぎの否定対照**: pending attachment(DLL 不在)と active attachment が
+  **同一視されない** / registration owner が異なる場合は再利用しない
+- 出荷 4 project・core resources の bytes 不変 / 既存テスト(全数 1494)を壊さない /
+  全数 2 回 / matrix は SKIP_DEVSTUDIO 両構成
+
+#### やらないこと
+
+unpack(372b)/ rename・`ObjectReferenceIndex`・CAS(372c)/ dry-run(372d)/
+一括流し込み面・picker・Studio inventory(U2 本体)/ spawn・destroy の原子性(E2)。
+
+依存: WP361 + WP361a + WP362。
