@@ -17603,3 +17603,110 @@ rollback で再 swap して戻す。identity には **registration owner と pen
 
 `apply_prepared_params` が本物の `swap`(noexcept)であることは
 `registerer.hpp:256` で確認済み ―― 二度呼べば戻るので rollback は正しい。
+
+### WP372b: unpack —— origin 遷移・marker 規範表・inverse の prefab 依存閉包
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
+**規範は `docs/design_editor_lifecycle.md` v4 の裁定 2〜4。**
+**前提は WP372a(既存 instance を殺さない params 適用)。**
+
+#### 起票時の実測(2026-09-01。この節を書く前に読んだもの)
+
+- `GeneratedComponentOrigin` は **`{stable_generated_id, prefab, instance_id,
+  component_key, digest_sha256}`** を持つ([resolvedscene.hpp:117](../src/core/loader/resolvedscene.hpp#L117))。
+  **判別子は既に存在する**(WP372 第 2 巡 #2 は「id が body から消える」と述べたが、
+  消えるのは *body* であって *origin* ではない)
+- generated marker は **2 綴りだけ**: `generated`(boolean true)と
+  `origin`(string `"generated"`)([resolvedscene.cpp:130](../src/core/loader/resolvedscene.cpp#L130))
+- authored component がその marker を持つと
+  **`generated_component_unsupported` で拒否される**([resolvedscene.cpp:771](../src/core/loader/resolvedscene.cpp#L771))。
+  呼び出しは `resolveComponent` の 1 箇所のみ
+- **出荷 4 project にも `src/core/resources/` にも marker は 1 件も無い**(grep 実測)。
+  したがって marker 除去は出荷物の bytes を動かさない
+- 逆に **prefab の component body は marker を持てる**(generated origin では
+  検査されないため)。**unpack するとその body が authored になり拒否される** ——
+  これが規範表を書く理由である
+
+#### 1. marker の規範表(**これが無いと unpack は出荷できない**)
+
+unpack が authoring document へ書く component body に対し、**この表の行だけ**を適用する。
+
+| # | JSON path | 述語 | unpack での動作 | inverse に保存するもの |
+|---|---|---|---|---|
+| 1 | `/generated` | `is_boolean() && value == true` | **キーごと除去** | キーの存在と厳密値(`true`) |
+| 2 | `/origin` | `is_string() && value == "generated"` | **キーごと除去** | キーの存在と厳密文字列 |
+
+**除去してはならない否定行**(精度の対照。取り違えると利用者の宣言を壊す):
+
+| # | 例 | 理由 |
+|---|---|---|
+| 3 | `"generated": false` | 述語を満たさない。**そのまま残す** |
+| 4 | `"origin": "authored"` ほか任意の他文字列 | 述語を満たさない。**そのまま残す** |
+| 5 | `/generated` が数値・文字列など非 boolean | 述語を満たさない。**そのまま残す**(型検査は resolver の仕事) |
+
+表の**行数が仕様**である。`requestsGeneratedComponent` に第 3 の綴りを足す改修は、
+**この表を同時に更新しなければ通らない**ようにテストで縛ること。
+
+#### 2. `OriginTransitionMap` の生成規則(第 2 巡 #2 の答え)
+
+- **キーは `stable_generated_id`**。body の値一致に頼る推測は一切しない
+- 生成は preparer が **最終 `ResolvedScene` を 1 度走査**して行い、
+  対象 instance の generated component を **resolved の出現順**に列挙、
+  同じ順に unpack 後 authoring object で得る index を割り当てる
+- 検証(**生成時に行い、違反は名前付き拒否**):
+  1. gid 集合が、その instance の generated component 集合と**厳密一致**
+  2. **`i` 番目の entry の gid が、resolved 出現順の `i` 番目と一致**
+  3. `authored_index` が**狭義単調増加**
+- **条件 2 が「2 つの entry を入れ替える」攻撃を落とす。**
+  同一 `type`・同一 params の behavior が 2 つあっても、gid が異なるので確定する
+- 写像は **journal の forward と inverse の両方に保存**する。
+  unpack 後は gid が scene から消えるため、**undo 時には再導出できない** ——
+  保存する理由はここにあり、「決定的だから省ける」ではない
+- 有効範囲は**その 1 回の execution 内のみ**(v4 裁定 3。永続 ID は作らない)
+
+`sameSceneBehaviorOrigin` が execution の写像を参照し、gid ↔ authored index を
+同一と判定する。これにより unpack は attach/detach を通らない。
+
+#### 3. unpack op と inverse
+
+`unpack_prefab`: object の `prefab` キーを展開済み components への置換で消す。
+**object 名は不変。一方向**(re-pack は作らない)。identity 断絶は WP361 v3 で契約済み。
+
+inverse は **prefab 依存閉包を復元**する。保存し、復元し、
+**不一致はそれぞれ別の名前付きエラー**にすること:
+
+| 保存する物 | 不一致時 |
+|---|---|
+| `ref` | 別コード |
+| `instance_id` | 別コード |
+| overrides(パラメータ値) | 別コード |
+| prefab digest | 別コード |
+| provider fingerprint | 別コード |
+
+「まとめて 1 つの `unpack_inverse_mismatch`」にしないこと ——
+どれが動いたのかが分からないと利用者は復旧できない。
+
+#### 受け入れ(§4 規約 10)
+
+- **実 producer**: RPC 経由の `unpack_prefab` を実 `RpcServer::run` へ流し、
+  **attach/detach callback がちょうど 0 回・`onInit`/`onDestroy` 0 回・handle 不変・
+  behavior instance の内部状態が保存**。origin 遷移を外すと落ちる
+- **marker 表の全 5 行**を個別に検査。行 1・2 は除去され、**行 3〜5 は保存される**。
+  行 1 を除去しない変異で、unpack 後の reload が
+  `generated_component_unsupported` で落ちることを示す
+- **写像の入れ替え攻撃**: 同一 `type`・同一 params の behavior 2 つを持つ prefab で、
+  手で写像の 2 entry を入れ替えたものが**条件 2 で名前付き拒否**される
+- **undo/redo**: origin・gid・authored index・component bytes・behavior seq が完全復元。
+  **undo 後に元 prefab を編集すると unpack 済み object が追随し、
+  redo 後は追随しない**(参照が切れている証明)
+- **inverse 閉包の 5 項目**を 1 つずつ壊し、**それぞれ別の名前付きエラー**
+- `set_component_value` が unpack 後に通る(**codec がある component のみ**。
+  「authored だから編集可能」は偽)
+- 出荷 4 project・`src/core/resources/` の bytes 不変 /
+  既存テスト(全数 1497)を壊さない / 全数 2 回 / matrix は `SKIP_DEVSTUDIO` 両構成
+
+#### やらないこと
+
+rename・`ObjectReferenceIndex`・CAS(WP372c)/ dry-run と型付き resolution error
+(WP372d)/ picker・Studio inventory・一括流し込み(U2 本体)/
+spawn・destroy の原子性(E2)/ re-pack。
