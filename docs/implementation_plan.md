@@ -18146,3 +18146,119 @@ WP372b-fix で**本番と受け入れが同じ 1 つの関数を呼ぶ**よう�
   現在この関数を丸ごと通すのは `golden_harness.cpp` だけである
 
 次は **WP372c**(`ObjectReferenceIndex` + rename + CAS overlap 規範表)。
+
+### WP372c: rename 追随 —— `ObjectReferenceIndex`・JSON Pointer 文法・overlap 規範表
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中。**
+**規範は `docs/design_editor_lifecycle.md` v4 決定 2。ただし v4 決定 3 は下記 決定 A で撤回する。**
+**前提は WP372a + WP372b(統合済み、全数 1502)。**
+
+#### 起票時の実測(2026-09-02。書く前に読んだもの)
+
+- **rename 操作は存在しない**(`src/core/communication/` に該当なし)。本 WP が作る
+- **`name_reservations` 機構は既存**。object 作成が
+  `/scenes/<id>/name_reservations/<name>` を `stable_target` と `read_set` に置き、
+  `object_existence` domain に `name_reservation` を載せている
+  ([editorjournal.cpp:1439](../src/core/communication/editorjournal.cpp#L1439))
+- **path 記法は RFC6901 JSON Pointer が既に単一の流儀**
+  (`json_pointer` / `"/prefab/parameters/" + parameter`:
+  [editorjournal.cpp:626](../src/core/communication/editorjournal.cpp#L626))。
+  **新しい文法は要らない**
+- overlap の第 1 規則は **「object 集合が交われば無条件に衝突」**
+  ([editorjournal.cpp:2365](../src/core/communication/editorjournal.cpp#L2365))
+- **出荷 scene の component は 6 種(transform / simplemodelview / light / camera /
+  sprite_view / collider)で、すべて codec を持つ**(codec 表は
+  [componentcodec.cpp:900](../src/core/loader/componentcodec.cpp#L900) の 7 種)。
+  `example` は project 名、`demo_atlas` は asset 名であり component ではない
+- 出荷 scene に **`behavior` component は 0 件**、prefab も 0 件
+
+#### 決定 A: **v4 決定 3(component 列 CAS)を撤回する**
+
+v4 は rename のために overlap を component 列粒度へ細分化するとしていた。**撤回する。**
+
+- 第 1 規則を緩めると、**rename のためではなく全操作の安全網が緩む**。
+  WP324 で「規則を 1 箇所へ集約したら engine の検証が 3 箇所で弱くなった」を踏んでいる
+- 細分化が要求されたのは、WP372 v2 が置いた正例
+  「同一 object の無関係な列を編集した後 rename の undo が成功する」を通すためだった。
+  **その正例は仕様のために発明されたものであり、利用者の要求ではない**
+- rename に必要なのは**同一 transaction 内での参照追随**であって、並行性の緩和ではない
+
+**rename は、対象 object と参照元 object のいずれかに触る並行編集と衝突する。**
+これは既存規則のままであり、本 WP は overlap を**緩めない**。
+
+#### 決定 B: 参照の宣言面(JSON Pointer。新文法なし)
+
+参照の出所は 2 つだけとする:
+
+| # | 出所 | 状態 |
+|---|---|---|
+| 1 | prefab の `kind:"object"` パラメータ | **既存**。WP361 で解決済み、追随だけが無かった |
+| 2 | schema field の `semantic: object_ref` 宣言 | **新設**。`StructFieldSchema` に `semantic` を足す |
+
+- `StructFieldSchema` は constexpr の平坦構造体
+  ([structfieldschema.hpp:46](../src/core/userpublic/details/schema/structfieldschema.hpp#L46))。
+  `semantic`(`None` / `ObjectRef`)を**既定 `None` で足す**。既存宣言は無変更で通る
+- **出所 2 の実利用者は利用者の behavior params** である
+  (「別 object を指す behavior パラメータ」)。
+  出荷 codec は当面すべて `None` —— **誰も使わない機構を作らない**ため、
+  **behavior params から宣言できることを受け入れで示す**
+- index の entry は **`{scene_id, object_id, json_pointer, current_name}`**。
+  `json_pointer` は RFC6901。**独自記法を作らない**
+
+#### 決定 C: 未知の参照面は名前付きで拒否する
+
+rename の危険は「**知らない参照を黙って壊す**」ことである。
+
+- 対象 scene に **codec を持たず schema も無い component** が 1 つでもあれば、
+  参照を持たないと**証明できない**ので `rename_unknown_reference_surface@1` で拒否する
+  (どの object のどの component かを payload に載せる)
+- **実測: 出荷 4 project の scene にそのような component は 0 件**。
+  したがってこの拒否は出荷物を壊さない
+- behavior は schema を持つので拒否対象ではない
+
+#### 決定 D: rename の wire と domain
+
+```
+forward: {"op":"rename_object", "scene_id":…, "object":…,
+          "old_name":…, "new_name":…,
+          "reference_updates":[{"object":…, "json_pointer":…}, …]}
+inverse: 同形で old_name と new_name を入れ替えたもの(同じ reference_updates)
+```
+
+- `reference_updates` は **preparer が `ObjectReferenceIndex` から生成**し、
+  journal に保存する。undo で再導出しない(WP372b 決定 7 と同じ理由: 単一権威)
+- **`inverse == invert(forward)`** を journal 追加時に検証する
+- `read_set` / `write_set` に
+  `/scenes/<id>/name_reservations/<old_name>` と `<new_name>` の**両方**を入れる
+- `structural_domain` は
+  `{kind:"object_subtree", scene_id, objects:[対象 + 参照元すべて],
+    name_reservations:[old_name, new_name]}`
+- **新名が既存 object 名と衝突したら `object_name_taken@1`**
+  (既存の name_reservation 機構がそのまま効く)
+
+#### 受け入れ(§4 規約 10)
+
+- **実 producer**: 実 `RpcServer::run` 経由の `rename_object` で、
+  **prefab の `kind:"object"` パラメータが追随**し、resolve 後の参照が新名を指す。
+  **追随を外すと `PrefabObjectRefUnresolved` で落ちる**
+- **behavior params の `semantic: object_ref`** を宣言した fixture behavior でも追随する
+  (宣言を `None` に戻すと追随しなくなることを同じテストで示す)
+- **undo で名前と全参照が同時に戻る**。forward / inverse が同じ `reference_updates` を持ち、
+  **片側だけ壊した fixture が拒否される**
+- **overlap を緩めていない対照**: rename と、同一 object への無関係な
+  `set_component_value` が**衝突する**(決定 A。緩めた実装では通ってしまう)
+- **`rename_unknown_reference_surface@1`**: codec も schema も無い component を持つ
+  scene で拒否。**出荷 4 project では拒否されない**ことを実測で示す
+- **`object_name_taken@1`**: 既存名への rename が拒否される
+- **WP372b の解除**: object parameter を持つ prefab の unpack は
+  372b の時点で通っている。本 WP はそれを壊さない(全数で確認)
+- 出荷 4 project・`src/core/resources/` の bytes 不変 /
+  既存テスト(全数 1502)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成
+
+#### やらないこと
+
+dry-run と型付き resolution error(WP372d)/ picker・Studio inventory・
+一括流し込み(U2 本体)/ spawn・destroy の原子性(E2)/
+**overlap の細分化(決定 A で撤回)**/ scene 跨ぎの参照。
+
+依存: WP372a + WP372b。
