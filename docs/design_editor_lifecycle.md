@@ -236,3 +236,78 @@ camera の `controller.target` のように **component が直接 object を参�
    (出荷 4 project と core resources での実測が要る)
 4. `AuthoringComponentId` の発行・永続化範囲(scene 文書に書くのか session 内のみか)
    —— WP304「安定 ID」が過去に不合格になった領域と重なる
+
+---
+
+## v3(第 2 巡・7 件への裁定。**v3 > v2 > v1。これが最終**)
+
+第 2 巡は「成立不能 3・決定不能 4」。積み重ねが一つの結論を指している ——
+**完全な原子性は engine の 3 つの性質と両立しない**:
+`onInit` は契約上 fallible で任意の副作用を持つ / ECS の `MutationScope` は非再入 /
+journal は post-commit の live state から構築される。
+これらを変えるのは **3 つの別設計**であって、1 つの設計ではない。
+
+### 裁定 1(最重要): **設計を 2 つに割る。U2 は原子性の完成を待たない**
+
+実測した事実:
+
+- `set_params` は attach/detach とは**別の edit kind**(behaviorarena.cpp:363)
+- **`onInit` は activation 時にのみ呼ばれる**(同 :722)
+- generated↔authored を弾いているのは `sameSceneBehaviorOrigin` という**限定的な
+  照合関数**(同 :417 付近)
+
+したがって **U2 の操作(unpack / rename / 一括流し込み / dry-run)は
+entity も behavior も作らず壊さない**。第 2 巡が「成立不能」とした 3 件
+(C 層と all-or-nothing / PONR と非再入 scope / PONR 後の rollback)は
+**すべて spawn・destroy の話**であり、**U2 は通らない**。
+
+| 設計 | 範囲 | 状態 |
+|---|---|---|
+| **E1(U2 の前提。小)** | **create/destroy を含まない構造編集**: origin 遷移(unpack)・`ObjectReferenceIndex`(rename)・エラー面統一(dry-run) | **本文書の残りはこれ**。WP 起票可能 |
+| **E2(大。別文書)** | **lifecycle の原子性**: spawn / destroy / それらの undo。ECS aggregate protocol + activation 契約 + journal 境界の 3 つを決める必要がある | **未着手。WP361a 状態の既知の穴 4 件はここ** |
+
+**E1 は新しい原子性契約を作らない。** 既存の WP360 pair(AuthoringSceneDocument +
+ResolvedScene の原子公開)と、**既存の journal 経路(set/unset と同一)**をそのまま使う。
+v2 の裁定 1〜3(3 層・PONR・epoch 再検証)は **E2 へ移す**。
+
+### 裁定 2: origin 遷移は照合関数の拡張で行う(callback を通らない)
+
+`sameSceneBehaviorOrigin` が **その execution の `OriginTransitionMap` を参照**して
+generated(gid)↔ authored(component index)を同一と判定できるようにする。
+これにより unpack は **attach/detach を一度も通らず**、handle・instance 状態・
+`activation` 状態がそのまま維持される。**`onInit` も `onDestroy` も発火しない。**
+
+- 受け入れ: unpack 前後で attach/detach callback が**ちょうど 0 回**、
+  handle 不変、behavior instance の内部状態が保存される
+
+### 裁定 3: `AuthoringComponentId` を**撤回**(第 2 巡 #6 の答え)
+
+永続 authored component ID は scene 形式・journal・undo・snapshot import に跨り、
+**WP304「安定 ID」が不合格になった領域そのもの**。E1 には不要である:
+
+- `OriginTransitionMap` は **その 1 回の execution 内でのみ有効な写像**でよい
+  (unpack: gid → その execution の authored index / undo: その逆)
+- 写像は **journal の forward/inverse に保存**する(値の一致に頼る推測はしない)
+- scene bytes には何も足さない。snapshot import の再採番とも衝突しない
+
+### 裁定 4: E1 の受け入れ(v2 の受け入れ節はこれで置換)
+
+- **unpack**: callback 0 回 / handle 不変 / arena の origin が変わる /
+  `set_component_value` が通るようになる(**codec がある component のみ**。
+  第 1 巡 #3 のとおり「authored だから編集可能」は偽) / undo で origin と gid が復元
+- **byte 保存の限定**: prefab body の `generated:true` 等、authored では拒否される
+  marker は **unpack 時に除去**する。「展開 bytes 完全保存」は**撤回**し、
+  除去対象を規範表に列挙する(第 1 巡 #3)
+- **rename**: `ObjectReferenceIndex`(codec の semantic `object_ref` 宣言由来)
+  + name map を原子的に更新。**参照 field を宣言しない external component が
+  対象 scene に存在したら名前付き拒否**。**出荷 4 project と core resources で
+  実測**して壊さないことを確認(第 2 巡が要求)
+- **dry-run**: `runtime_resolution_error` を型付き named error に格上げし、
+  dry-run と実適用が同一 code。inactive scene の失敗は保持(current 切替時に named)
+- 全て「取り消したら落ちる」対照。実 producer request の捕捉
+
+### v3 の残余(WP 仕様レビューで受ける)
+
+- `ObjectReferenceIndex` の codec 宣言面の詳細(JSON path の文法)
+- unpack で除去する marker の完全な規範表
+- E2 の起票時期(U2 完了後でよい)
