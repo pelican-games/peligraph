@@ -18262,3 +18262,130 @@ dry-run と型付き resolution error(WP372d)/ picker・Studio inventory・
 **overlap の細分化(決定 A で撤回)**/ scene 跨ぎの参照。
 
 依存: WP372a + WP372b。
+
+#### WP372c 仕様レビュー第 1 巡(Reject・破綻 2)と v2
+
+**v2 が本節の正。v1 の 決定 B・決定 C と受け入れは v2 で置換される。決定 A は維持。**
+
+**自分の誤りを先に書く**: v1 は「参照の宣言面を新設する」と書いたが、
+**`BindableSemanticKind::Object` として既に本番に存在していた**
+([prefab.hpp:166](../src/project/prefab.hpp#L166))。しかも **RFC6901 path +
+discriminant 付き**で、`camera /controller/target` が orbit と follow の両方に
+宣言されている([prefab.cpp:782](../src/project/prefab.cpp#L782))。
+**「出荷 codec は当面すべて None」は誤り**であり、実測せずに書いた。
+台帳の要約から書くとこうなる、という 3 度目の実例である。
+
+##### 実測(v2 を書く前に数えたもの)
+
+- **`K::Object` の宣言は本番に 2 件のみ**: camera `/controller/target`(orbit / follow)
+- descriptor を持つ component は 7 種すべて。ただし**網羅ではない** ——
+  `simplemodelview` は `/model` しか宣言しておらず、`params` の自由 JSON は宣言外
+- **出荷 scene に `parent` は 0 件**、`behavior` も prefab も 0 件
+- `SceneLoader::object_bindings` は **名前 → binding の実行時 map**
+  ([scene.cpp:553](../src/core/loader/scene.cpp#L553))。rename で更新が要る
+- 低層の `renameObject` / `makeRenameObjectCommand` は**既にある**
+  ([authoringscenedocument.cpp:325](../src/core/loader/authoringscenedocument.cpp#L325))。
+  無いのは **communication 層の op** である(v1 の書き方が不正確だった)
+
+##### 決定 B'(#1・#3): 参照源は 4 つ。宣言面は**既存のものを使う**
+
+| # | 出所 | 権威 | 状態 |
+|---|---|---|---|
+| 1 | object の `/parent` | `sceneformat` の parent 解決 | **既存**。追随しないと `unknown parent` で stage finish が失敗する |
+| 2 | component の `K::Object` descriptor | `BindableSemanticKind::Object` | **既存**。今日は camera target 2 件。**discriminant を評価して active な path だけ**を採る |
+| 3 | prefab の `kind:"object"` パラメータ | `PrefabParameterKind::Object` | **既存**。authored override も対象 |
+| 4 | behavior params の `ObjectRef` 宣言 | **新設** | 下記 |
+
+**`StructFieldSchema` だけに `semantic` を足す v1 の案は撤回**する。利用者は
+そこを直接構築せず、`field()` → `StructFieldDescriptor` → `structFields()` →
+`materializeStructField()` を通る。**宣言が届かないので機構が空になる。**
+
+出所 4 に必要な配線(全部を通すこと。どれか 1 つ欠けると宣言できない):
+
+- 公開 constexpr 構文 **`objectRef(field<&Params::target>("target"))`**
+- **`StructFieldType::String` にのみ許可**。違反は consteval / 登録時に fail-fast
+- `StructFieldDescriptor` → `materializeStructField` → `StructFieldSchema` へ運ぶ
+- **behavior schema fingerprint に含める**([registerer.hpp:134](../src/core/userpublic/details/behavior/registerer.hpp#L134))。
+  含めないと **semantic だけの変更が hot-reload の検証をすり抜ける**
+  ([behaviorreloadvalidation.cpp:24](../src/core/gamelogic/behaviorreloadvalidation.cpp#L24))
+- provider descriptor が behavior field を `Value` に固定している箇所を通す
+  ([prefabprovider.cpp:422](../src/core/loader/prefabprovider.cpp#L422))
+- **受け入れ fixture は実 `PELICAN_REGISTER_BEHAVIOR` を使う DLL**。
+  `BehaviorRegistration` を手で組む fixture は代理条件
+
+##### 決定 C'(#4): **scene 内容による拒否を撤回する**
+
+v1 の「codec も schema も無い component があれば拒否」は両方向に誤っていた:
+
+- **狭すぎる**: camera は codec も schema も持つが、schema は `/controller/type` までで
+  `/controller/target` を含まない。「schema がある = 参照面を知っている」は偽
+- **広すぎる**: 未登録 behavior は**正当な authored pending** であり codec も schema も無い
+  ([resolvedscene.cpp:160](../src/core/loader/resolvedscene.cpp#L160))。
+  これを拒否すると DLL 不在では rename が永久に使えない
+- そもそも `simplemodelview.params` は自由 JSON なので、descriptor があっても網羅にならない
+
+**問い直す: 参照とは何か。** 文字列が object 名に見えることではなく、
+**本番のどこかがそれを object 名として解決すること**である。解決する場所は数えられる:
+`/parent`(sceneformat)/ camera controller / prefab object parameter /
+利用者が宣言した behavior params ―― **これが出所 1〜4 と一致する**。
+
+したがって拒否ではなく **構造的な網羅義務**にする:
+
+- **object 名を名前で解決する本番の場所を 1 つの表に集め**、
+  **解決側と index の両方がその表を読む**
+- 表に載っていない新しい解決者を足すと**通らない**ようにする
+  (WP372b-fix と同じ形: 本番と受け入れが同じ関数を呼ぶ)
+- **利用者が宣言しなかった behavior の名前引きは追随しない。**
+  これは欠陥ではなく契約である(宣言したものが追随する)。文書に明記する
+
+##### 決定 E'(#2): 本番 route を受け入れに入れる
+
+`executeEditorProjection` の op 分類に rename が無く、**未知 op はエラーにもならず
+adapter 0 個で document transaction を commit する**
+([editorruntimefactory.cpp:1030](../src/core/communication/editorruntimefactory.cpp#L1030))。
+つまり document だけ新名になり、arena・camera・`object_bindings` は旧名のまま ——
+**WP372b で出したのと同じ欠陥が再現できる。**
+
+- **production-owned な rename route/planner を定義**し、
+  **本番 executor と受け入れが同じ関数を呼ぶ**
+- 参加させる adapter: **behavior(`set_params` として適用。handle と内部状態を維持、
+  create/destroy/`onInit`/`onDestroy` は 0)/ camera runtime /
+  `SceneLoader` の name map**。すべて同一 transaction
+- 受け入れは resolved JSON だけでなく、**live arena params・camera の実 target・
+  `hasObjectTransform(new)==true` かつ `hasObjectTransform(old)==false`** を検査する
+- **route または各 adapter の挿入を消す変異で、同じ実 RPC テストが赤くなること**
+
+##### 受け入れ(v1 を置換)
+
+- **実 producer**: 実 `RpcServer::run` の `rename_object` で、
+  出所 1〜4 が**すべて追随**する。各出所の追随を外す変異が**個別に**落ちる
+  - `/parent`: 外すと `unknown parent` で stage finish が失敗
+  - camera `/controller/target`: discriminant が orbit / follow の**両方**で追随。
+    fly では対象外(宣言が無い)
+  - prefab `kind:"object"`: 外すと `PrefabObjectRefUnresolved`
+  - behavior `objectRef`: **実 DLL の `PELICAN_REGISTER_BEHAVIOR`** で宣言。
+    宣言を外すと追随しなくなる
+- **runtime まで届くこと**: live arena params・camera の実 target・
+  `object_bindings` の新旧。**adapter を 1 つずつ外す変異が個別に落ちる**
+- **v4 が要求した順序**: object parameter を behavior target に束縛した prefab を
+  **unpack し、DLL を reload してから rename** して追随する
+  ([design_editor_lifecycle.md:352](design_editor_lifecycle.md#L352))
+- **fingerprint**: `objectRef` 宣言だけを変えた behavior の reload が
+  **検証で弾かれる**(fingerprint に含めないと素通りする)
+- **undo**: 名前と全参照が同時に戻る。forward / inverse が同じ `reference_updates` を持ち、
+  **片側だけ壊した fixture が拒否される**
+- **overlap を緩めていない対照**(決定 A): rename と同一 object への無関係な
+  `set_component_value` が**衝突する**
+- **`object_name_taken@1`**: 既存名への rename が拒否される
+- **網羅義務**: 表に載せずに名前解決者を足すと通らないことを、テストで示す
+- **pending behavior を壊さない**: 未登録 behavior を持つ scene でも rename が通り、
+  pending flag・handle・seq が保存される(v1 の拒否は撤回済み)
+- 出荷 4 project・`src/core/resources/` の bytes 不変 /
+  既存テスト(全数 1502)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成
+
+##### やらないこと(v1 から変更なし、拒否の項目だけ削除)
+
+dry-run と型付き resolution error(WP372d)/ picker・Studio inventory・
+一括流し込み(U2 本体)/ spawn・destroy の原子性(E2)/
+overlap の細分化(決定 A)/ scene 跨ぎの参照 /
+**利用者が宣言しない behavior の実行時名前引きの追随**(契約として追随しない)。
