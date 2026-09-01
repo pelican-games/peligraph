@@ -18962,3 +18962,125 @@ scene query の serialization か terminal 伝搬のどちらかが要る。
 **RT3(AS 宣言面)** へ移る。利用者が明示した要求
 「RT 周りを DCC ツールと同程度に好き勝手したい」の本体であり、
 エディタトラックとは独立している。
+
+
+### WP374: RT3-1 —— AS 宣言面(mask・instance flags・custom index・geometry flags)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
+**規範は `docs/design_raytracing.md` の §11(v4 = 11-9 が最終)。**
+**前提は RT1a/RT1b/RT2a/RT2b(統合済み、全数 1502)。**
+
+#### 何が無いか
+
+**利用者は AS の flags も mask も custom index も宣言できない。**
+本番の入力は**テスト用 override だけ**である
+([accelerationstructure.cpp:894](../src/core/renderer/accelerationstructure.cpp#L894)・:748)。
+`mask` は `0xffu` 固定(:903)、`instanceCustomIndex` は **`q` を直接入れている**(:497)——
+これは §3 の「**`q` を shader に公開しない**」に**違反している**。
+
+#### 1. 宣言面(粒度ごとに担体を分ける。設計 決定 14)
+
+| 値 | 粒度 | 担体 |
+|---|---|---|
+| `mask`(`U8`)/ `instance_flags`(enum 集合)/ `custom_index`(`U32`、24 bit) | **instance** | **固定 leaf の `ray_instance` component**(`components[]` 内) |
+| `geometry_flags` | **geometry** | **layout の material 鍵規則** |
+
+**優先順位: `defaults < material rule < instance override`。**
+
+layout(version 2):
+
+```json
+{ "schema": "pelican.ray_group_layout", "version": 2,
+  "ray_types": ["primary", "shadow"],
+  "groups": [ {"name": "opaque"} ],
+  "acceleration_structure": {
+    "defaults": { "mask": 255, "instance_flags": [], "geometry_flags": [] },
+    "rules": [
+      { "material": {"document": "materials/multi.json", "material_name": "Oak"},
+        "geometry_flags": [] },
+      { "material": {"asset": "models/tree.glb", "source_material_index": 7},
+        "geometry_flags": [] } ] } }
+```
+
+- selector は **typed union**(設計 決定 15)。実 selector が既にこの 2 分岐である
+  ([raygrouplayout.hpp:93](../src/core/shader/raygrouplayout.hpp#L93))。
+  必要な 4 フィールドは **AS snapshot に既にある**
+  ([accelerationstructure.hpp:32](../src/core/vkcore/accelerationstructure.hpp#L32))
+- **同一 exact key の重複規則は拒否**(`ray_as_duplicate_rule@1`)。first-match にしない
+- **legacy direct load は authored reference が空になり得る**
+  ([gltf.cpp:2433](../src/core/model/gltf.cpp#L2433))。その row に規則が当たったら
+  **`ray_as_row_material_identity_unavailable@1`**。黙って defaults に落とさない
+
+`ray_instance` component は **`add_component` で足せる**(core に既存:
+[editorjournal.cpp:1135](../src/core/communication/editorjournal.cpp#L1135))。
+**Studio の UI は本 WP の範囲外**(台帳)。
+
+#### 2. semantic mode を plan まで運ぶ(設計 決定 16)
+
+`RayGroupLayout` は version を保持せず、TLAS lowering は layout version も AS mode も
+受け取らない([accelerationstructure.cpp:443](../src/core/renderer/accelerationstructure.cpp#L443))。
+
+**`LegacyNoLayout` / `LayoutV1Q` / `LayoutV2` を型として保持**し、
+**immutable な row / TLAS plan まで運ぶ**。
+
+| layout | `acceleration_structure` | `instanceCustomIndex` | mask / flags |
+|---|---|---|---|
+| 無し | — | **legacy ABI(`0,1,…`)** | 現行のまま |
+| **v1** | — | **`q` のまま** | 現行のまま |
+| **v1** | 有り | — | **`ray_as_declaration_requires_layout_v2@1`** |
+| **v2** | 無し | **0** | `defaults` 相当 |
+| **v2** | 有り | 解決値(既定 0) | 解決値 |
+
+**自動移行はしない**(§3 の恒久規則)。既存の `custom_index == q` を固定するテスト
+(RT1b 1 件・headless 5 件)は **v1 のテストとして残す**。
+
+**`ray_as_declaration_requires_layout@1` は作らない** ——
+`acceleration_structure` は layout 内の field なので、その構文は**存在しない**。
+
+wire を固定する: `mask` 8 bit / `custom_index` **24 bit** / flag 語彙 /
+未知 field の扱い / `defaults` の必須性。
+
+#### 3. BLAS variant(設計 決定 17)
+
+- cache 鍵 = **`(geometry_allocation_id, 解決済み geometry_flags)`**。
+  現行は allocation id だけで、reuse 判定が flags を見ない
+  ([accelerationstructure.cpp:744](../src/core/renderer/accelerationstructure.cpp#L744))ため、
+  **flags だけの reload が古い BLAS を再利用して宣言が無効になる**
+- variant は **AS-only**。`q` 採番・SBT・material 表を動かさない
+- **purge は「その frame で実際に参照された variant 集合」との差分**で行う。
+  「geometry が消えたら全部落とす」だけでは、規則の reload で
+  **参照されなくなった variant が残る**
+- **SBT digest と AS digest を分離**する
+- 診断に **variant 数**を出す(`tlas_build_count` と同じ場所)
+- **速度は制約ではない**(利用者の要求)。variant 増加を named reject や
+  保守的統合で避けない
+
+#### 受け入れ(§4 規約 10。設計 決定 18)
+
+**同一テスト内で off/on・実効値・GPU 効果・purge を見る。**
+
+- **mask(椅子 2 脚)**: **同じ material の個体 2 つ**で、片方の
+  `ray_instance.mask` だけを変えると **GPU 出力が変わる**。
+  component を消すと**両方写る**
+- **instance_flags**: 片方だけ `ForceOpaque` にすると **any-hit の呼び出し回数が減る**。
+  profile active なら `ray_profile_opaque_as@1` で拒否される
+- **custom_index**: 宣言値が `gl_InstanceCustomIndexEXT` に出る。
+  **row を追加して `q` をずらしても宣言値は不変**。
+  **SBT sentinel は独立に正しい**(同一 GPU テストで両方)
+- **geometry_flags**: 同一 allocation を opaque/mask で共有 → **BLAS build 数が 2**。
+  **規則の reload で参照されなくなった variant が purge される**(残ると落ちる)
+- **優先順位**: `defaults < material rule < instance override` を **3 段重ね**で検査
+- **version gate**: v1 に `acceleration_structure` を書くと
+  `ray_as_declaration_requires_layout_v2@1`。**v1 の `custom_index == q` は不変**
+- **拒否 3 種**: legacy provenance の row / 重複規則 / 未解決 material
+- **legacy**: layout 無し project の **source / SBT / TLAS instance の bytes が三つとも不変**
+- 既存テスト(全数 1502)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成 /
+  GPU は統合側で直列
+
+#### やらないこと
+
+**per-geometry × per-instance の override**(可変長宣言が要る。台帳の担体プログラム)/
+**Studio の `ray_instance` 追加・編集 UI**(台帳)/ 予約 namespace(台帳)/
+static AABB と `.rint`(RT3-2)/ RT4 以降。
+
+依存: RT1a + RT1b + RT2a + RT2b。
