@@ -120,3 +120,112 @@ G1 は「挙動を変えない基盤」に見えるが、**旧拒否→新受理
    拡張しないと段ごと比較の一部が wire に乗らない
 4. XR の array-layer assignment が lowering 側に残ることの確認
    (document は論理のみ、という境界が実データで成立するか)
+
+---
+
+## v2(第 1 巡・8 件への裁定。**v2 > v1。矛盾したら v2 が正**)
+
+第 1 巡の共通の根は lifecycle 設計と同じ ——
+**v1 は多段でステートフルな compile を「一回の変換」として扱っていた。**
+現行は「feature 合成 → backend が format/extent を JSON に書き込む →
+graph variant → runtime host 追加 → graph transform → subgraph replacement」
+という順序で、**document を一度だけ作れる挿入点が存在しない**。
+
+### 裁定 1: パイプラインを明示する(#1・#8 の答え)
+
+```
+authored sources
+  → [P] portable composed blueprint(project 所有・**物理値を持たない**)
+  → [L] 反復 logical transforms(provider ごとに compile→provide→compile)
+  → [V] per-variant physical plan(flat / xr。format・extent・sample を決める)
+  → [F] family coalesce
+  → [C] core lowering(runtime PassDefinition / ComputeTaskDefinition)
+```
+
+- **format-class 解決・ImGui 追加・graph variant 生成を typed producer / transform に
+  移す**(現在は JSON への書き戻しで実現されている)。これにより [P] が
+  「一度だけ」成立する
+- **snapshot node は source / destination のみ**を持つ。byte range は
+  resolved format × resolved extent の積なので **[V] 以降で生成**する
+  (v1 が blueprint に載せたのは誤り)
+- lowering は [F] の後(v1 の「per-variant physical の直後に lower」は撤回)
+
+### 裁定 2: resource schema を出荷構成に合わせる(#2)
+
+`ResourceDecl = image | buffer | external` とし、**現行 syntax を無損失で**表す:
+
+- image: `format_class` / role / extent(または `extent_scale`)/ format candidates /
+  mip / array layers / dimension(cube を含む)/ usage / history
+- buffer: `size` / `size_from_extent` / `lifetime` / `host_source`
+  (出荷 `clustered_lighting` が実際に使用)
+- **authored constraint と physical decision を別型**にする
+  (blueprint は前者のみ。後者は [V] の産物)
+
+### 裁定 3: compute / RT の syntax を project へ置く(#3。**v1 の範囲宣言を撤回**)
+
+v1 は「`ComputeTaskDefinition` を参照」「RT 解析は範囲外」としたが、
+前者は **core 所有で Vulkan 型を含むため D0 違反**、後者は
+**core 側 parser が JSON を再読するため二重 parser が残る**。
+
+**決定**: `pelican_project` に **Vulkan 非依存の `ComputeTaskSyntax` と
+`RayTracingSyntax`** を置き、blueprint が完全所有する。
+core の `ComputeTaskDefinition` は **lowering の産物**に純化する。
+RT1b〜RT2b の layout / hit_shaders / ray_bindings の**解析結果の意味は変えない**
+(所有者が project へ移るだけ。byte 不変を受け入れで確認)。
+
+### 裁定 4: node universe を全列挙する(#4)
+
+`RenderNodeSyntax` に **`RenderPassType` の全 variant**を明示的に持たせる:
+material / fullscreen / raster / **output_transform** / **debug_draw** / **gizmo** /
+**debug_text** / **shadow_depth** / **velocity** / **picking** / **ui** / **imgui** /
+canonical_anchor / snapshot_copy。**logical kind への射影表**を設計に置く
+(`output_transform` は logical でも別 kind であり、render に潰さない)。
+
+### 裁定 5: strictness は「和集合」でなく**決定表**にする(#5)
+
+表の列: `field / canonical decoder / value・default・presence / validation phase /
+error code・優先順位`。とくに**旧 raw と旧 typed で意味が違う field は
+どちらを採るかを決める**:
+
+- **宣言順 vs グラフ順**: **グラフ順(明示 edge を尊重)を正準**とする。
+  根拠は「**出荷中の全 frame plan を実際に作ったのは raw planner** である」こと。
+  typed sequence の「宣言順に生成済み」検査は **[L] 相の『到達路が無い』検査**へ
+  置き換える。**ただし旧受理→新拒否を作らないことの実測**(出荷 4 project +
+  core resources 全 config)を受け入れ条件に置く
+- `output_transform` の kind は **raw の専用 kind を正準**とする
+- 既知の旧拒否→新受理 3 種(`after` の型 / footprint の未知名 /
+  compute の `read_footprints`)は raw の拒否を正準として表に載せる
+
+### 裁定 6: 検証を 4 相に分ける(#6。R2 の範囲を限定)
+
+`syntax/authored` → `logical constraint` → `selected physical values` →
+`runtime/provider`。**R2(= G2)は前 2 相の project 一本化に限定**し、
+後 2 相は「**JSON を再読しない typed validator**」として core に残す。
+v1 の「project 層で完全検証」は撤回する(target usage・実 extent・
+選択済み sample count / format numeric class は [V] 以降でしか判定できない)。
+
+### 裁定 7: provider は反復 compile を保存する(#7)
+
+現行 provider 契約は「provider の前後で logical graph を compile し、
+resource・境界・provenance を比較する」。**この反復をそのまま保存**する:
+`doc0 → logical0 → transform1 → doc1 → logical1 → …`。
+各段の **fingerprint と provenance trace** を設計に含め、
+「最終 logical が一致するから中間は不問」にしない。
+
+### 裁定 8: 段割りの修正
+
+- **G0**: blueprint 型 + resource schema + node syntax + compute/RT syntax +
+  producer/transform の typed 化。**挙動変更は裁定 5 の 3 種のみ**(縦切り成立)
+- **G1**: planner が blueprint を消費 / **raw parser の物理削除** /
+  3 caller と provider の反復 compile を document 上へ移行
+- **G2(= R2)**: 検証 4 相のうち前 2 相を project へ一本化
+
+### v2 の未決(第 2 巡で攻撃してほしい点)
+
+1. 裁定 1 の [P] を「物理値なし」に保てるか —— backend が JSON に書き戻している
+   値の中に、論理段で必要なものが混ざっていないか
+2. 裁定 5 のグラフ順採用で、**旧受理→新拒否**が本当に 0 か(実測方法)
+3. 裁定 3 で `ComputeTaskDefinition` を lowering 産物に純化するとき、
+   CPU phase で既に構築している現行順序をどう組み替えるか
+4. 反復 compile(裁定 7)と「一度だけ parse」(要求)の両立 ——
+   parse は一度、compile は反復、という区別が実装で保てるか
