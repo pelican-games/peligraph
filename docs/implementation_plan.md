@@ -18389,3 +18389,74 @@ dry-run と型付き resolution error(WP372d)/ picker・Studio inventory・
 一括流し込み(U2 本体)/ spawn・destroy の原子性(E2)/
 overlap の細分化(決定 A)/ scene 跨ぎの参照 /
 **利用者が宣言しない behavior の実行時名前引きの追随**(契約として追随しない)。
+
+#### WP372c 第 2 巡(8 件)と裁定 —— **rename は WP ではなく設計である。本 WP は中止する**
+
+第 2 巡の 8 件を並べると、単一の事実が出る。
+**object 名は、このエンジンで少なくとも 6 つのサブシステムの identity キーである。**
+
+| subsystem | 名前が identity である証拠 |
+|---|---|
+| SceneLoader | `object_bindings` が名前 key。しかも RPC `load_gltf` の transient と**同じ map を共有**する([rpcserver.cpp:1439](../src/core/communication/rpcserver.cpp#L1439)) |
+| Light | 名前を 3 つの map の key に持つ([lightcontainer.hpp:29](../src/core/light/lightcontainer.hpp#L29)) |
+| Physics | collider identity と query hit の公開名が object 名([physworld.cpp:285](../src/core/phys/physworld.cpp#L285)) |
+| Animation | `objects` map が名前 key。**古い cache を先に返す**([animationservice.cpp:432](../src/core/animation/animationservice.cpp#L432)) |
+| Camera | active camera / pose が名前依存([camera.cpp:296](../src/core/renderer/camera.cpp#L296)) |
+| Controller | camera 名が map key、**target 名が signature に入る**([cameracontrollersystem.cpp:346](../src/core/userpublic/cameracontrollersystem.cpp#L346)) |
+
+そして第 2 巡 #5(**仕様が破綻**)が決定的だった。v2 の「解決者を 1 つの表に集め、
+表に無い解決者を足すと通らなくする」は**実装不能**である ——
+生の名前解決 API が公開されたままだから([scene.hpp:57](../src/core/loader/scene.hpp#L57))。
+将来のコードは表に触れずに `GET_MODULE(SceneLoader).objectId(params.target)` と書け、
+**既存テストはそれを知り得ない**。source grep の allow-list なら作れるが、
+それは**この台帳が禁止している代理条件そのもの**である。
+
+##### 裁定: **rename を E1 から外し、設計トラックへ移す**
+
+WP361b で 2 回 revert したときと同じ形である ——
+**機構の穴が塞がらないのではなく、機構の切り方が違う。**
+
+- **rename は「編集操作」ではなく「identity の rekey」**である。
+  文書と宣言済み参照だけを直しても、上表の 6 subsystem は旧名のまま残る
+- 閉じるには **生の名前引きを非公開化し、opaque な参照型へ集約する**必要がある。
+  これは横断リファクタであり、**WP304(安定 ID)が不合格になった領域に隣接する**
+- **今日 rename は存在しない**([communication 層に op が無い](../src/core/communication/editorjournal.cpp))。
+  やらないことによる後退は無い
+
+##### 中止しても E1 と U2 は進む
+
+- **E1 の残りは WP372d(dry-run)**。rename に依存しない
+- **U2 の picker と一括流し込みは rename 追随に依存しない**。
+  参照は今日どおり、壊れれば load 検証が名前付きで落ちる
+- 372b が入れた `prefab_unpack_object_parameter_unsupported` は**存在しない**
+  (v3 差分 8 で撤回済み)ので、unpack も止まらない
+
+##### 設計トラックへ持ち越す論点(次に設計文書を書くときの入力)
+
+1. **名前を identity から降ろす**か、**rekey を全 subsystem が実装する**か
+2. 生の名前引き API の非公開化と、opaque 参照型 + 単一 resolver API
+3. `object_bindings` が `load_gltf` transient と map を共有している件
+   (rename 以前に、transient と authored の衝突が既に成立し得る)
+4. 宣言済み参照面(`BindableSemanticKind::Object` / `/parent` /
+   prefab `kind:"object"` / behavior params の `objectRef`)は**そのまま使える**。
+   v2 の 決定 B' は設計として生きている
+5. behavior params の `objectRef` 配線(field → descriptor → materialize →
+   fingerprint → provider)も設計として生きている。
+   ただし **`BehaviorParamsPolicy` 限定**にすること(第 2 巡 #4)
+6. **省略時既定値の undo**(第 2 巡 #3): ObjectRef の default を空文字のみ許すか、
+   `prior_presence` / `prior_value` を inverse に持つか
+7. **publish 後 rollback できる `set_params` primitive**(第 2 巡 #7)。
+   WP372a が scene reconciler 側で作ったものの、直接編集経路版
+8. **単一の production executor seam**(第 2 巡 #8)。
+   分類・全 adapter 構築・commit まで所有し、受け入れがそれを呼ぶ。
+   これは rename に限らず **WP372b-fix の一般化**であり、単独でも価値がある
+
+##### 決定 A は設計として維持する
+
+overlap を緩めない判断は第 2 巡でも壊せなかった
+(「衝突範囲は広いが、単独・逐次 rename は成立する」)。
+**v4 決定 3(component 列 CAS)の撤回は有効**である。
+
+##### 次
+
+**WP372d(dry-run + 型付き resolution error)** へ進む。
