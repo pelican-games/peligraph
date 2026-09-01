@@ -17380,3 +17380,77 @@ orchestration.md §A の手順でここから回す:
 レビュー起動の形(スキル §5 どおり、codex read-only):
 設計本文 path を先頭に置き、§未決を「重複不要・構造的な見落としを探せ」の
 名指し対象として渡す。3 巡で打ち切り、残余は WP 仕様レビューへ。
+
+### WP372: E1 —— create/destroy を含まない構造編集(unpack・rename 閉包・dry-run)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
+**規範は `docs/design_editor_lifecycle.md` の v3 + v4(設計レビュー 3 巡完了)。
+矛盾したら v4 > v3 > v2 > v1。**
+
+#### 0. 最初に判定すること(設計 v4 決定 1)
+
+**この WP の成立条件は「prefab パラメータの変更を、既存 instance への `set_params`
+として適用できること」である。** 現状は `prefab_scenes` 経路が
+`set_params` junction を飛ばし(`prefab_scenes.empty()` でしか使われない)、
+scene 全体の `BehaviorSceneProjectionAdapter` に切り替わり、arena の再利用条件に
+`canonical_params` の一致があるため、**param を 1 つ変えるだけで新 handle →
+旧 instance の `destroyInstance` + `onDestroy`** を通る。
+
+**実装不能と判明した場合は UNMET として報告し、本 WP を中止すること**
+(U2 は E2 = spawn/destroy の原子性設計待ちに戻る)。
+
+#### 1. 範囲
+
+1. **param 変更の instance 再利用**(決定 1): reconcile の照合が
+   **entity + stable_name + origin(transition map 込み)が一致すれば、
+   canonical params の差分を `set_params` として適用**する。
+   params 不一致だけで再利用を諦めない。
+   **これは利用者に見えるバグの修正でもある**(今は prefab の数値を 1 つ動かすと
+   behavior instance の内部状態が失われる)
+2. **`OriginTransitionMap` と unpack op**: `unpack_prefab` を journal の 1 op として
+   追加。`sameSceneBehaviorOrigin` が **その execution の写像**を参照して
+   generated(gid)↔ authored(component index)を同一と判定できるようにする。
+   **attach/detach を通らない** —— `onInit`・`onDestroy` は発火しない。
+   写像は journal の forward/inverse に載る(**永続 ID は作らない**。
+   `AuthoringComponentId` は設計 v3 決定 3 で撤回済み)
+3. **`ObjectReferenceIndex` と rename 閉包**: codec の semantic `object_ref`
+   (JSON path つき)宣言に加え、**behavior の params schema
+   (`BehaviorRegistration` 由来)にも object 参照を宣言できるようにする**
+   (現在 provider は behavior field を一律 `BindableSemanticKind::Value` にしている)。
+   rename は **単一 PreparedOperation・複数 command・単一 inverse** で
+   `name + 全 parent refs + index 全体 + SceneLoader の name map` を原子更新
+4. **エラー面の統一と dry-run**: `runtime_resolution_error` を**型付き named error**
+   に格上げし、dry-run(純 resolver 経路)と実適用が**同一 code**。
+   inactive scene の解決失敗は**保持**し、current へ切り替える瞬間に named 失敗
+5. **CAS の拡張**: structural domain に**対象 object の component 列**を含め、
+   他 actor の挿入を silent shift でなく**名前付き衝突**にする
+
+#### 2. 受け入れ(§4 規約 10。全て「取り消したら落ちる」)
+
+- **決定 1**: **実 producer request** の一括 prefab パラメータ変更で
+  **handle 不変・create/destroy/`onDestroy` がちょうど 0 回**・
+  behavior instance の内部状態が保存される。**照合を戻すと落ちる**
+- **unpack**: attach/detach callback **ちょうど 0 回** / handle 不変 /
+  arena の origin が generated→authored / **codec のある component は**
+  `set_component_value` が通るようになる(**codec の無い component は
+  `not_editable` のまま** —— 「authored だから編集可能」は偽) /
+  undo で origin・gid・handle が復元
+- **marker 除去**: prefab body が許す `generated:true` / `origin:"generated"` は
+  authored では resolver が拒否するため、**unpack 時に除去**する。
+  除去対象の**規範表**を本文に持ち、表に無い field が消えたら落ちる対照
+- **rename**: `behavior.params.target` 経由の参照も追随(**unpack 後・reload 後も**) /
+  参照 field を宣言しない external component が対象 scene にあれば named 拒否 /
+  **出荷 4 project と core resources で実測**して壊さないこと
+- **dry-run**: 実適用と同一 named code / scene revision・ECS・arena が不動
+- **他 actor**: 対象 object の component 列を触られたら named 衝突(silent shift でない)
+- 出荷 4 project・core resources の bytes 不変 / 全数 2 回 /
+  matrix は SKIP_DEVSTUDIO 両構成 / GPU 直列は統合側
+
+#### 3. やらないこと
+
+**spawn / destroy の原子性(E2)** —— WP361a 状態の既知の穴 4 件はそこ。
+object picker の UI・Studio の behavior inventory・一括流し込みの面・
+Studio 表示(**U2 本体 = 別 WP**)。パラメータ昇格(U3)/ `ctx.spawn`(U4)/
+多オブジェクト prefab。
+
+依存: WP361 + WP361a + WP362。
