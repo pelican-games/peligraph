@@ -18704,3 +18704,74 @@ rename(設計)/ picker・Studio inventory・一括流し込み(U2 本体)/
 spawn・destroy(E2)/ **adapter の副作用禁止 `validate` 契約**(決定 1)/
 **single production executor seam**(WP372c 裁定の持ち越し 8)/
 `ResolvedSceneError` 自体の再設計。
+
+#### WP372d 第 2 巡(8 件・破綻 3)と裁定 —— **順序が違っていた。3 つに分ける**
+
+第 2 巡は v2 の決定を 3 つ潰した。並べると、**dry-run が最後に来るべきもの**だと分かる。
+
+##### 潰れた決定と、その理由
+
+**決定 3 は事実誤認だった**(#2)。「利用者エラーは `StructFieldValidationError` だけ」は誤りで、
+resolver の catch 範囲に**手書きの `std::runtime_error` が 4 箇所**ある ——
+`yfov` 欠落([resolvedscene.cpp:230](../src/core/loader/resolvedscene.cpp#L230))/
+`xmag`(:248)/ `ymag`(:256)/ **`zfar <= znear`**(:285)。
+これらは**利用者入力で起きる**。v2 の「その他は再送出」を実装すると、
+**inactive scene の保持契約を実利用者エラーで壊す**。
+既存テストは `StructFieldValidationError` の 1 例しか見ていないので検出しない。
+
+**決定 3 の fail-fast 半分は本番組成から観測できない**(#3)。
+`EditorProjectionTransaction::commit` は **`noexcept` で全 `std::exception` を変換**し
+([editorprojectiontransaction.hpp:291](../src/core/loader/editorprojectiontransaction.hpp#L291))、
+coordinator と RPC がさらに汎用エラーへ潰す。
+resolver 直叩きなら緑にできるが、**production composition では同じ観測にならない**。
+
+**決定 1 と決定 4 が互いに矛盾する**(#1)。resolver で止めた dry-run は
+**adapter 段でしか出ない失敗を予測できない**のに、
+決定 4 は「primary は実 edit の最初の adapter failure と一致」と書いていた。
+しかも反例が悪い: `model="__missing__"` と `znear=5000` を同じ batch に入れると、
+**dry-run は camera の失敗だけを返し、実 edit は renderer が先に落ちる**。
+`model` を「有効だが未 cache」にすると、**renderer が GPU asset を cache へ commit した後で
+camera が失敗する** —— **失敗した編集が不可逆な副作用を残す**。
+
+**そして dry-run には今日の消費者がいない**(#8)。
+出荷 4 project に prefab は 0 件、Studio にも経路が無い。
+
+##### 裁定: 3 つに分け、dry-run を最後にする
+
+| WP | 内容 | 単独で何が良くなるか |
+|---|---|---|
+| **WP373** | resolver の手書き検証を**型付き利用者エラー**にし、分類表と provenance を入れる | 今日 `zfar <= znear` は**型無しの文字列**でしか出ない。名前と `json_pointer` が付く |
+| **WP374** | **resolve 直後・adapter loop 前の resolution gate** と、typed variant を terminal まで運ぶ | 今日は **失敗する編集が renderer prepare を走らせ、GPU asset を cache へ commit してから落ちる**。gate があれば adapter に触れずに落ちる |
+| **dry-run** | **U2 の一括流し込み面と同時に**作る | **U2 が消費者である**。今日作っても呼ぶ者がいない |
+
+**dry-run を U2 へ移すのは規範に反しない。** 台帳の U2 裁定は
+「dry-run は純 resolver 経路をそのまま使う。新しい検証経路を作らない」と書いており、
+**どの WP で作るかは指定していない**。むしろ U2 の一括流し込みこそが
+「N 件流し込んで 1 件だけ型不正」を必要とする面である。
+
+##### WP373 / WP374 へ持ち越す決定(v2 から生きているもの)
+
+- **決定 4 の型**: `ResolvedComponentError { code, message(leaf), json_pointer?,
+  scene_id, authoring_object_id, component_index, attachment_index? }`。
+  provenance は resolver が既に受け取っている
+  ([resolvedscene.hpp:39](../src/core/loader/resolvedscene.hpp#L39))
+- **`what()` の互換対象は現行の文脈付き文言**。leaf `message` と分ける。
+  **連結をやめるのではなく、連結の材料を型に持たせる**
+- **規範順**: `(scene_id, authoring_object_id, component_index, attachment_index)`
+- **決定 6**: 受け入れは production composition を通し、
+  テストの `.execute` 注入を使わない
+- **決定 2 の endpoint 限定**は dry-run と一緒に U2 へ持ち越す
+
+##### 台帳の負債
+
+- **下流の平坦化**: `commit` が `noexcept` で全例外を変換し、coordinator と RPC が
+  さらに潰すため、**内部 invariant の破れが本番で観測できない**。
+  WP374 の typed variant はこれを resolution error について直すが、
+  **一般の例外については開いたまま**である
+- **`logic_error` / `bad_alloc` の握り潰し**: WP373 で再送出に変えるが、
+  **対照は resolver seam に置く**。production composition では上記の平坦化に隠れる
+- **dry-run の消費者**: U2 の一括流し込み面が入るまで存在しない
+
+##### 次
+
+**WP373** を起票する。
