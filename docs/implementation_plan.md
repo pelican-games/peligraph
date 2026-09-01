@@ -17569,3 +17569,37 @@ unpack(372b)/ rename・`ObjectReferenceIndex`・CAS(372c)/ dry-run(372d)/
 一括流し込み面・picker・Studio inventory(U2 本体)/ spawn・destroy の原子性(E2)。
 
 依存: WP361 + WP361a + WP362。
+
+#### WP372a 完了(統合済み、`a6272980`)
+
+**全数 1497/1497 緑**(GPU 171 件を直列で含む。基準 1494 → +3)。
+`SKIP_DEVSTUDIO` OFF 構成 + `PELICAN_TEST_PROJECTS_DIR` あり。doclink 2341 ok。
+
+**利用者に見えていた欠陥が閉じた**: prefab のパラメータを 1 つ変えると
+behavior instance が破棄・再生成され内部状態が失われていた。
+params は prepare で用意し、publish で生存中の instance へ swap、
+rollback で再 swap して戻す。identity には **registration owner と pending** を
+加えたので、DLL 不在の pending attachment が active と同一視されることはない。
+
+**検出力は統合側で 2 つの変異により自分で確認した**(エージェントの報告を額面で
+受け取っていない):
+
+| 変異 | 結果 |
+|---|---|
+| 再利用条件に `canonical_params` 一致を戻す(= 本 WP の取り消し) | **2 件とも失敗**。実 producer は `after.handle == before.handle` で落ちる |
+| rollback の再 swap を 1 行コメントアウト | **fault matrix が失敗**(`wp372aArenaSnapshot(arena) == before`) |
+
+**運用の教訓(2 件、いずれも自分の手順の穴)**:
+
+1. `git commit -F <(...)`(プロセス置換)が**無言で失敗**し、squash merge が
+   index に載ったまま HEAD は台帳コミットのままだった。ビルドと全数は
+   作業ツリーに対して走っていたので結果自体は有効だったが、
+   **`&&` 連鎖の最後の `git log` を読まなかったので気付かなかった**。
+   → **コミット後は必ず `git log --oneline -1` を読む。**
+2. 変異テストの perl 正規表現が**当たらず**、変異ゼロのまま「緑」を得て
+   一度「対照が効かない」と誤判定しかけた。
+   → **変異は `git diff` で適用を確認してからビルドする。**
+   (§4 規約 10 の対照は、対照が適用されていることの確認までが対照である)
+
+`apply_prepared_params` が本物の `swap`(noexcept)であることは
+`registerer.hpp:256` で確認済み ―― 二度呼べば戻るので rollback は正しい。
