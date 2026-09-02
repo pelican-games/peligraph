@@ -20856,6 +20856,25 @@ legacy: `"resolution_error": { "legacy_branch_id": "collider.radius_non_positive
 
 依存: **WP375a 統合後**。仕様レビューは 2 巡で打ち切り。見積: **中〜大**(cross-field 4 箇所、preview の decode 削除、registry corpus、wrapper 型が増えた)。
 E-3a(commit noexcept / internal の伝播 / generation guard)と E-3b(broad catch 撤去)の節は、本 WP 統合後に切る。
+
+
+#### WP378 完了記録(統合側。2026-09-03、`a8b8102e`)
+
+- **実装(codex、fast 無し)**: move-only `ResolutionResult<T, E>` / `UserDataViolation` / `LegacyResolutionText` / `LegacyRejectException` / `ResolutionFailureException`(`resolutionresult.hpp`。
+  copy 禁止・move 許可・`std::any` 不可を static_assert)。projection は `ResolutionResult<EditorProjectionPlan, ProjectionPlanFailure>`。broad catch は残し(決定 11)、`legacyReject(id, …)` が
+  branch ID 付き例外を投げ既存境界が `LegacyResolutionText` に変換。decode callback 欠落は `logic_error` のまま(単体 seam)。camera cross-field 規則は純粋関数 1 つを decoder /
+  resolver completion / transaction・preview の完全検証 / basic-config の 4 箇所から呼ぶ(決定 12)。preview の validation-only decode は削除、production caller は 5(決定 13)。
+  resolver が失敗値を保持し実行値要求時に `ResolutionFailureException`。`get_components` の authored / generated 直下に `resolution_error`。RPC `load_scene` は wrapper を `error.data` に(決定 15 / 16)
+- **5 caller の表(agent)**: journal / factory / transaction(transform・set)/ resolver それぞれに到達証拠・site 固有 mapping を消す変異(それぞれその行だけ赤)・成功値の消費観測。5 case / 78 assertions
+- **legacy registry**: 暗黙 / transitive 4 箇所(collider.cpp:110、componentcodec.cpp:612、spriteview.cpp:27、atlasasset.cpp:138)を `legacyReject` 化 or corpus 化。
+  registry 52 = corpus 52 = 生成 docs 52、duplicate / unknown / unreachable 0、裸の `type_error` 0(全単射テスト 211 assertions)。descriptor 1 件削除で 52 対 51 → 赤
+- **exact JSON**: typed 204 bytes(SHA-256 `9c027cd5…`)/ legacy 104 bytes(`2fa87645…`)を `get_components` と `load_scene error.data` の実出力から byte 一致。provenance を足すと mismatch
+- **agent の検証**: 非 GPU **1239 / 1239**、`SKIP_DEVSTUDIO=OFF` build、`PELICAN_WITH_RPC=OFF` build + 非 GPU 1208 / 1208、出荷 4 project tree ID 不変、golden 不変
+- **統合側の検証(worktree、base 上)**: build 0 error / 非 GPU **1239 / 1239** / WP378 系 + RT3-1 production の GPU **9 / 9**
+- **統合側の変異(production レベル)**: **R1**(decoder の camera cross-field 検査を無効化)赤 2 / 2 / **R2**(`load_scene` の `ResolutionFailureException` → `error.data` 変換を潰す)赤 / **R3**(authored の `resolution_error` 出力を消す)赤(resolver 保持テスト)。残留 0
+- **main 取り込み**(`merge-resolver` agent、opus): textual 衝突は `rpcserver.cpp` の `load_scene` 1 箇所(WP378 の resolution boundary の内側に WP380a の `SceneLoadRequest::borrowed` を置く)。自動 merge が壊した `wp360_resolvedscene_test.cpp`(旧 `load(SceneId)` 3 箇所)を WP380a の `test_support::loadScene` へ移行。worktree で 1248 / 1248 + WP 系 GPU 64 / 64
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1570 件中 1566 緑**。#73 Studio fatal = WP380a の後退(WP380a-fix 中)/ WP332・WP334b = `-j4` の commit 待ち flake(単独緑)/ **`WP378 legacy descriptor corpus is a configuration-independent bijection` は単独でも赤**: 生成 docs と repo の `docs/component_codec_legacy_branches.md` の比較が main で不一致(worktree では緑)→ 原因調査(行末 CRLF の疑い)
+- コードレビュー `rev378`: (記入)
 ### WP379: RAY-NAMESPACE —— `ray_instance` を `pelican_ray_instance` へ移し、builtin 名を owner-aware に予約する
 
 **§4 規則 11 中段(core の複数経路 + project 形式)。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小〜中。**
