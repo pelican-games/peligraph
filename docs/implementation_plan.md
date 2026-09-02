@@ -21475,6 +21475,22 @@ smoke(`project_catalog_headless_smoke`、正常 config)は緑。つまり **失�
 #### やらないこと
 
 ModelAsset の participant 化(裁定は維持)/ 容量の引き上げ(症状を隠す)。
+
+
+#### WP380a-fix 完了記録(統合側。2026-09-03、`f8cd134d`)
+
+- **原因(codex)**: WP380a の startup `SceneLoader::load` が prepare 中に `ModelAssetContainer` を初期化し model を upload する。rendering config が壊れていると Renderer の検証で失敗するが、
+  その前に upload 済み(`scene.cpp:518` → `model.cpp`)。同一 process の再試行で同じ model がもう一度 upload され、morph 頂点の pool offset が 262144 を超えた。
+  upload を起動したのは pending ではなく `pelican_core.cpp:122` の startup load
+- **修正**: `pelican_core.cpp:115` で **Renderer の検証・publish を scene prepare より前**へ(WP380a 以前の順序)。失敗 candidate は warm cache にせず**解放**
+  (未完成の `ModelAssetContainer` は公開・cache されないので、部分状態の再利用より再試行前に GPU 資源を戻す方が正しい)。`model.cpp:289` の `Impl` destructor で登録済み model、
+  `model.cpp:410` の例外処理で現在の candidate を解放
+- **agent の対照**: (a) Renderer の順序変更を戻すと Studio テストが `morph vertex …` を受ける / (b) 解放を戻すと 1 回目直後に index 使用量 `0 → 92712` が残り再試行ごとに増加
+- **agent の検証**: 全体 build、指定 GPU 1 件(Studio fatal)緑、非 GPU 1366 / 1366(1 skip)。smoke は GPU label のため未実行(統合側)
+- **統合側の検証と変異(`mutation-runner` agent、opus)**: 基準 WP380a 系 + Studio fatal の GPU 20 / 20。**A**(Renderer 検証を prepare の後へ戻す)→ Studio fatal が `morph vertex … 262144` の別 fatal になり赤(material route の失敗が最初に出ない = 直すこと 2 の機構そのもの)/ **B1**(失敗 candidate の解放を無効化)/ **B2**(`~Impl` の登録済み model 解放を無効化)→ いずれも index 使用量 `46356 == 0` で赤(fixture は warm と failing に同じ DamagedHelmet を使うので両者が独立に観測される)。残留 0、md5 一致、assertion dialog なし。所見: (a)(b) は同一 TEST_CASE の前半・後半で、赤の帰属は assertion 行で読む(分割は WP380b 以降の宿題)。agent の指摘: Git Bash の `sed -i` は CR を落とすので `grep -c MUT` だけでは残留検査にならず、md5 での復元確認が要る
+- **main 取り込み**(`merge-resolver` agent、WP381 / WP379a の後): 衝突なし。pelican_core.cpp は WP379a の terminal shutdown helper と本 WP の Renderer 検証順序が別領域で両立(行を引用して確認)。merge 後 非 GPU 1398 / 1400(2 件は既知の -j flake、単独緑)
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1591 / 1591**。WP379a 着地時の赤 1(Studio fatal の morph vertex 262144)が消えた
+- コードレビュー: WP380a と併せて `rev380a`(上段、codex)で見る。観点に「failure path の資源解放が warm cache 裁定と矛盾しないか」を追加
 ### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾く(v3: epoch anchor + 入口改名。OS loader が強制、raw import 読みは診断)
 
 **§4 規則 11 上段(core の ABI・出荷 DLL の挙動が変わる)。設計レビュー済み(carrier §8 修正 γ)。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
