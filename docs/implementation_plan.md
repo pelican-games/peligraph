@@ -21004,7 +21004,55 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
   **G2**(RPC の未登録 component を `schema_violation` に)**赤** / **G3**(external の `pelican_` 禁止を消す)**赤**(CPU)。残留 0
 - **統合側の検証(worktree)**: 継続後の再ビルドで WP379 系 + RT3-1 production GPU **20 / 20**、非 GPU **1221 / 1221**(復元後)
 - 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1540 件中 1539 緑**。落ちた 1 件は `WP375 production acceptance c`(fixture DLL の **shadow copy 衝突** = 既知 flake。単独再実行 1 / 1 緑)
-- コードレビュー `rev379`: 投入済み(fast 無し)。結果は追記
+- コードレビュー `rev379`: **Reject**。致命: 外部 DLL が `registerEngineComponent` / owner allocator を呼んで engine owner を自称でき、unload 後に callback が残る。実害: RPC が codec 無しの登録済み外部 component を `component_unknown` と誤分類 / binding 付き prefab の未登録名が共通 cause に到達しない / 終了順を守るテストが無い。リーク: test owner guard の release が黙って失敗。→ **WP379a**(連鎖 1 段)。壊せなかった: 11 decoder 分岐の等価性、出荷 80 JSON に旧名・canonical 名なし、3 ingress の共通 cause(binding 無し)、第二の流儀なし
+
+### WP379a: 外部 DLL が engine owner を自称できる(WP379 コードレビューの致命 1 + 実害 3 + テスト欠陥 2)
+
+**§4 規則 11 上段。コードレビューのみ(§10)。見積: 小〜中。連鎖: WP379 → 379a で打ち切り(致命の修正として 1 回だけ)。**
+**依存: なし(WP379 統合済み `51841eb3`)。WP381(loader)と並列: 本 WP は `gamelogicreload.cpp` を触らない(shutdown 順の共有関数は `pelican_core.cpp` 側)。**
+
+#### 何が壊れているか(コードレビュー `rev379` が確認)
+
+1. **致命**: `UserComponentRegistererTemplatePublic` が export され、public な `registerEngineComponent()` が無条件に owner `0`(engine)を渡す
+   ([registerer.hpp:117](../src/core/userpublic/details/component/registerer.hpp#L117))。さらに `allocateRegistrationOwner()` / `ScopedRegistrationOwner` も export
+   されているため、**外部 DLL が engine owner を自称して `pelican_*` を登録でき**、その登録は loader の owner purge 対象外 → unload 後も callback が unloaded code を指す(UB)
+2. **実害**: RPC `add_component` は production registry を見ず、固定 `findComponentCodec()` が null なら無条件に `component_unknown@1`
+   ([editorjournal.cpp:215](../src/core/communication/editorjournal.cpp#L215))。実 DLL が登録した codec 無しの外部 component を **RPC だけが「未登録」と嘘をつく**(scene は受理)
+3. **実害**: binding 付き prefab の未登録名は registry lookup より前に `PrefabBindingNotBindable`([prefab.cpp:963](../src/project/prefab.cpp#L963))。
+   v3 決定 F の「prefab は構文検査のみ、未登録名は scene 解決で `component_unknown@1`」に反する
+4. **テスト欠陥**: 実 DLL fixture が非 Windows で無条件 FAIL。production の終了順(`teardown.run() → shutdownConfiguredGameLogic()`
+   [pelican_core.cpp:129](../src/core/userpublic/pelican_core.cpp#L129))をテストが手書きで写しているだけで、順序反転・`unregisterComponents(owner)` 削除・別 owner 登録の変異が通る
+5. **リーク**: `ScopedTestRegistrationOwner` の destructor は token が残った状態で `releaseRegistrationOwner()` を呼び、それは黙って return する
+   ([registrationowner.cpp:89](../src/core/userpublic/details/reload/registrationowner.cpp#L89))→ owner slot がリーク(3 test helper + benchmark)
+6. **「exact」でないテスト**: decoder 11 分岐のうち直接検査は 4。allowlist の実集合(`grandfathered_engine_names`)は production descriptor と比較されていない。
+   `SKIP_DEVSTUDIO=ON` では WP379 の実 DLL / 3 ingress テストが `[gpu]` のため未実行
+7. manual が旧文字列を規範として残す([manual/04_scene_ecs.md:92](../docs/manual/04_scene_ecs.md#L92)・:300)
+
+#### 直すこと
+
+1. **engine registrar と owner allocator を game-DLL 向けヘッダから外す**。owner は DLL が渡せない host 側 capability にし、builtin 登録だけ friend / private 経路。
+   実 DLL fixture で `registerEngineComponent` / `allocateRegistrationOwner` が **リンクできない(または名前付き拒否される)**ことを受け入れに
+2. RPC に registry の existence lookup を注入: 未登録 → `component_unknown@1`、登録済みだが editor codec 無し → **`not_editable`**(既存 `set_component_value` の分類と揃える)
+3. prefab: provider 自体が未知なら raw substitution を続け、後段の registry に未登録判定を委ねる(既知 provider の未知 path だけ `PrefabBindingNotBindable`)。SnapshotV2 も同じ
+4. test と player が **同じ terminal-shutdown 関数**を呼ぶ。shutdown 後に `ComponentUnknownError`、owner count 0、同一 process 再ロード成功まで検査。非 Windows は fixture 無しで **SKIP(理由付き)**
+5. owner guard を module container より長生きさせるか、最後の token 解放時に pending owner release を完了させる。release 失敗を名前付きに
+6. decoder 11 分岐を同一 codec の表駆動 corpus に。allowlist は production descriptor から一元生成(または列挙可能にして exact 比較)。統合側で `SKIP_DEVSTUDIO=ON` の GPU も回す
+7. manual を `component_unknown@1{"name":"X"}` に更新(履歴文書は触らない)
+
+#### 受け入れ(§4 規約 10)
+
+- **owner 自称**: 実 DLL fixture(現行の `ray_namespace_component` を拡張)が `registerEngineComponent<...>("pelican_evil")` を呼ぶ形は **リンク不能**(または `reserved_component_namespace@1`)。
+  外部 owner の登録は unload 後に **registry から消える**(今日 = 残る)。engine registrar を DLL ヘッダに戻す変異で落ちる
+- **RPC 分類**: 実 DLL + 実 RPC で `add_component("ray_instance")` → `not_editable`(今日 = `component_unknown@1`)。lookup を外すと落ちる
+- **prefab**: binding 付き未登録名 → scene 解決で `component_unknown@1{name}`(今日 = `PrefabBindingNotBindable`)。SnapshotV2 は inner cause として同 code
+- **終了順**: production の 2 行を反転する変異・`unregisterComponents(owner)` を削る変異・別 owner に登録する変異がそれぞれ落ちる
+- **リーク**: owner slot を allocate → 登録 → guard 破棄 → manager 破棄 で owner count が 0 に戻る(今日 = 戻らない)
+- **11 分岐 corpus**: conflict check を削ると落ちる。allowlist に未登録名を足すと落ちる
+- 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成(GPU も統合側で)/ RPC OFF / 出荷 4 project bytes 不変 / golden 不変
+
+#### 記録のみ
+
+`rev379` #4 の非 Windows(実 `.so` fixture)は Linux CI ができたときに。
 ### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
