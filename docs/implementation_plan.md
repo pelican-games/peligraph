@@ -21571,6 +21571,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 2. **WP379**: 統合済み(`51841eb3`、2026-09-03)。→ **WP381**(v3。epoch anchor): **投入済み**(worktree `<作業ディレクトリ>/wp381`。shadow dir の process 分離を同梱)
 3. **WP375b**: 統合済み(`c61ce078`、全数 1544 / 1544)。**WP380a**(v3): 実装 1 回目が完了(参加者 drop / bypass 変異が manifest の ID だけで未実行 → fault injector 化の継続 + main 取り込みを投入)
 **WP379a**(rev379 の致命: engine registrar が DLL ヘッダに露出)を投入(worktree `<作業ディレクトリ>/wp379a`。WP379 系はこれで打ち切り)
+**WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
 5. WP380b / CARRIER-RT3 / CARRIER-STUDIO は上の後に節を切り直す
 
