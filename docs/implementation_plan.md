@@ -21433,6 +21433,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 
 2026-09-02 深夜 再開: `rev377a` `rev375a` を再投入、**WP379 と WP380a を並列投入**(worktree `<作業ディレクトリ>/wp379` / `<作業ディレクトリ>/wp380a`)。
+両レビューとも reject: `rev377a` の 2 件は連鎖上限で既知の穴へ、`rev375a` の致命(Preview の inactive light 置換)は **WP375b** として投入(worktree `<作業ディレクトリ>/wp375b`。WP375 系はこれで打ち切り。次に致命が出たら revert を先に検討)。
 **統合済みで残っているもの**
 - WP377a(`a3f318fb`)のコードレビュー `rev377a`: 判定前に中断。**再投入**(観点は `<作業ディレクトリ>/rev377a.txt`)
 - WP375a: **統合済み**(`1aeafc59`)。コードレビュー `rev375a` は再開後に投入(観点は完了記録の末尾)
