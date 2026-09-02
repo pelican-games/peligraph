@@ -20331,6 +20331,16 @@ version gate は「外部 `ray_instance` を持つ project が layout v2 を有�
 **未出荷の今が最安。** `pelican_` 予約は `ComponentInfo.owner` で owner-aware に。WP377 の後、小 WP として起票する。
 
 
+
+#### WP377 完了記録(統合側。2026-09-02、`8b216770`)
+
+- **統合側の変異 3 本(エージェントは GPU 禁止のため build までで UNMET 報告)**: V(reuse 前の profile 検証を消す)/ M3(BLAS cache 鍵から
+  flags を消す)/ M4(Vulkan に空 flags)—— いずれも **`WP374a F G F geometry flags rebuild exact resident keys and change any-hit on GPU`
+  または `WP369 production material alpha profile …` が赤**。復元後の残留 0
+- **全数**: worktree 1377 件(WP334b の 3 件が `-j4` 負荷で commit 待ちタイムアウト、単独再実行 10/10 緑)/
+  統合後 main **1516 / 1516 緑**(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列)
+- `RayProfileAccelerationStructureFlagsOverrideForTesting` は payload・guard・thread_local・全読み取り点とも消えた。到達不能だった TLAS-geometry 検証も削除
+- 残: コードレビュー(§10)は WP375 統合後に投入
 ### WP378: E-0a —— 利用者データ拒否を「値」にする最初の縦切り(型 + 6 caller + camera + `get_components`)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
