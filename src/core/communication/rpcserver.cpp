@@ -1276,7 +1276,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         server, modules.reload_service,
         internal::GameLogicReloadRpcHooks{
             .before_apply = [&editor_rpc] {
-                (void)editor_rpc.forceAbortPreview("reload");
+                editor_rpc.forceAbortPreview("reload");
             },
             .after_apply = [&pending_transforms] {
                 pending_transforms.clear();
@@ -1525,7 +1525,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             }
             const auto pose_action_names = internal::poseInputActionNames();
             modules.input_sequence.startReplay(path, pose_action_names);
-            (void)editor_rpc.forceAbortPreview("replay");
+            editor_rpc.forceAbortPreview("replay");
             modules.input_state.clear();
             auto &config = modules.launch_config;
             config.input_replay = true;
@@ -1596,7 +1596,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
 
     server.setHandler("load_scene", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "load_scene");
-        (void)editor_rpc.forceAbortPreview("scene_transition");
+        editor_rpc.forceAbortPreview("scene_transition");
         internal::loadSceneResolutionBoundary(
             name, [&modules](std::string_view scene_name) {
                 auto request = SceneLoadRequest::borrowed(

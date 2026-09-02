@@ -1153,11 +1153,13 @@ BehaviorAttachmentIdentity BehaviorAttachmentArena::reserveRuntimeAttachmentIden
 }
 
 std::optional<BehaviorAttachmentInfo> BehaviorAttachmentArena::findEditorAttachment(
-    GameObjectId entity, std::size_t component_index) const {
+    GameObjectId entity, std::size_t authored_component_occurrence) const {
     const auto found = std::find_if(
         attachments.begin(), attachments.end(), [&](const Attachment &attachment) {
-            return attachment.info.entity == entity &&
-                   attachment.info.component_index == component_index;
+            const auto *authored = attachment.info.component_origin.authored();
+            return attachment.info.entity == entity && authored != nullptr &&
+                   authored->authoring_component_index ==
+                       authored_component_occurrence;
         });
     return found == attachments.end() ? std::nullopt
                                       : std::optional{found->info};

@@ -223,7 +223,8 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
         std::uint64_t commit_seq, std::size_t command_index,
         std::size_t attachment_index);
     std::optional<BehaviorAttachmentInfo> findEditorAttachment(
-        GameObjectId entity, std::size_t component_index) const;
+        GameObjectId entity,
+        std::size_t authored_component_occurrence) const;
     std::unique_ptr<PreparedBehaviorAttachmentEdits>
     prepareEditorEdits(std::vector<BehaviorAttachmentEdit> edits,
                        BehaviorRegistryAvailability availability);

@@ -724,14 +724,14 @@ EditorProjectionPlan planEditorProjectionOrThrow(
                     std::same_as<Operation, EditorAddComponentOperation> ||
                     std::same_as<Operation,
                                  EditorRemoveComponentOperation>) {
+                    if (context.mode() == EditorProjectionMode::Preview) {
+                        planFailure("editor_preview_unsupported@1",
+                                    "component lifecycle has no live preview policy");
+                    }
                     if (appendDocumentOnlyIfInactive(
                             plan, operation_index, operation.scene_id,
                             operation.object_id)) {
                         return;
-                    }
-                    if (context.mode() == EditorProjectionMode::Preview) {
-                        planFailure("editor_preview_unsupported@1",
-                                    "component lifecycle has no live preview policy");
                     }
                     if (operation.component == "behavior") {
                         plan.routes.push_back(EditorProjectionRoute{
@@ -759,14 +759,14 @@ EditorProjectionPlan planEditorProjectionOrThrow(
                     }
                 } else if constexpr (
                     std::same_as<Operation, EditorReparentOperation>) {
+                    if (context.mode() == EditorProjectionMode::Preview) {
+                        planFailure("editor_preview_unsupported@1",
+                                    "reparent has no live preview policy");
+                    }
                     if (appendDocumentOnlyIfInactive(
                             plan, operation_index, operation.scene_id,
                             operation.object_id)) {
                         return;
-                    }
-                    if (context.mode() == EditorProjectionMode::Preview) {
-                        planFailure("editor_preview_unsupported@1",
-                                    "reparent has no live preview policy");
                     }
                     const auto transform = std::find_if(
                         context.codecCatalog().begin(),

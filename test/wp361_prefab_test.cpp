@@ -3971,6 +3971,38 @@ TEST_CASE("WP372b real unpack RPC routes origin transitions through undo and red
                     EditorBehaviorAvailability::Active);
             },
             .gate = [] { return EditorGateObservation{}; },
+            .resolve_behavior_attachment =
+                [&](AuthoringObjectId resolved_object_id,
+                    std::size_t attachment_index)
+                    -> std::optional<EditorBehaviorAttachmentIdentity> {
+                    if (resolved_object_id != object_id) return std::nullopt;
+                    const auto attachment = arena.findEditorAttachment(
+                        entity, attachment_index);
+                    if (!attachment) return std::nullopt;
+                    EditorBehaviorAttachmentIdentity::Origin origin;
+                    if (const auto *authored =
+                            attachment->component_origin.authored()) {
+                        origin.authoring_component_index =
+                            authored->authoring_component_index;
+                    } else if (const auto *generated =
+                                   attachment->component_origin.generated()) {
+                        origin.generated = true;
+                        origin.stable_generated_id =
+                            generated->stable_generated_id;
+                        origin.prefab = generated->prefab;
+                        origin.instance_id = generated->instance_id;
+                        origin.component_key = generated->component_key;
+                        origin.digest_sha256 = generated->digest_sha256;
+                    }
+                    return EditorBehaviorAttachmentIdentity{
+                        .handle = attachment->handle.value,
+                        .attachment_seq = attachment->attachment_seq,
+                        .authoring_object_id = resolved_object_id,
+                        .authored_component_occurrence = attachment_index,
+                        .stable_type = attachment->stable_name,
+                        .origin = std::move(origin),
+                    };
+                },
             .prefab_registry = [&] {
                 return target.projectionResolvedScene().prefabRegistry();
             },

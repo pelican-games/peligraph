@@ -5,6 +5,7 @@
 #include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace Pelican {
@@ -118,6 +120,7 @@ class RuntimeMirrorAdapter final : public EditorProjectionAdapter {
 
 struct Harness {
     struct RuntimeBehavior {
+        AuthoringObjectId object_id{};
         std::size_t component_index = 0;
         EditorBehaviorAttachmentIdentity identity;
     };
@@ -140,16 +143,111 @@ struct Harness {
     std::vector<EditorBehaviorAttachmentIdentity>
         executed_behavior_identities;
     bool behavior_reload_in_progress = false;
+    bool enforce_preview_planner = false;
+    bool reject_preview_restore = false;
+    bool reject_next_edit_execution = false;
 
-    Harness() {
-        edits = std::make_unique<EditorEditCoordinator>(
-            EditorEditRuntimeDependencies{
+    static EditorBehaviorAttachmentIdentity::Origin authoredOrigin(
+        std::size_t component_index) {
+        return EditorBehaviorAttachmentIdentity::Origin{
+            .authoring_component_index = component_index,
+        };
+    }
+
+    std::optional<EditorBehaviorAttachmentIdentity> resolveBehavior(
+        AuthoringObjectId object_id, std::size_t component_index) const {
+        const auto tracked = std::find_if(
+            runtime_behaviors.begin(), runtime_behaviors.end(),
+            [&](const RuntimeBehavior &behavior) {
+                return behavior.object_id == object_id &&
+                       behavior.component_index == component_index;
+            });
+        if (tracked != runtime_behaviors.end()) return tracked->identity;
+
+        for (const auto &scene : AuthoringSceneAuthority::query(target.document)) {
+            const auto object = std::find_if(
+                scene.objects.begin(), scene.objects.end(),
+                [&](const AuthoringObjectView &candidate) {
+                    return candidate.authoring_object_id == object_id;
+                });
+            if (object == scene.objects.end() ||
+                component_index >= object->components.size()) {
+                continue;
+            }
+            const auto &component =
+                object->components[component_index].authoredJson();
+            if (component.value("name", std::string{}) != "behavior") {
+                return std::nullopt;
+            }
+            return EditorBehaviorAttachmentIdentity{
+                .handle = UINT64_C(1000000000000) +
+                          object_id.value * UINT64_C(1024) + component_index,
+                .attachment_seq = sceneBehaviorAttachmentSeq(
+                    object->declaration_index, component_index),
+                .authoring_object_id = object_id,
+                .authored_component_occurrence = component_index,
+                .stable_type = component.at("type").get<std::string>(),
+                .origin = authoredOrigin(component_index),
+            };
+        }
+        return std::nullopt;
+    }
+
+    void synchronizeRuntimeBehaviorPositions() {
+        const auto scenes = AuthoringSceneAuthority::query(target.document);
+        std::erase_if(runtime_behaviors, [&](RuntimeBehavior &behavior) {
+            for (const auto &scene : scenes) {
+                const auto object = std::find_if(
+                    scene.objects.begin(), scene.objects.end(),
+                    [&](const AuthoringObjectView &candidate) {
+                        return candidate.authoring_object_id ==
+                               behavior.object_id;
+                    });
+                if (object == scene.objects.end() ||
+                    behavior.component_index >= object->components.size()) {
+                    continue;
+                }
+                const auto &component =
+                    object->components[behavior.component_index].authoredJson();
+                if (component.value("name", std::string{}) != "behavior") {
+                    return true;
+                }
+                behavior.identity.attachment_seq =
+                    sceneBehaviorAttachmentSeq(
+                        object->declaration_index,
+                        behavior.component_index);
+                behavior.identity.authoring_object_id = behavior.object_id;
+                behavior.identity.authored_component_occurrence =
+                    behavior.component_index;
+                behavior.identity.stable_type =
+                    component.at("type").get<std::string>();
+                behavior.identity.origin =
+                    authoredOrigin(behavior.component_index);
+                return false;
+            }
+            return true;
+        });
+    }
+
+    explicit Harness(bool install_behavior_resolver = true) {
+        EditorEditRuntimeDependencies dependencies{
                 .document = [this]() -> const AuthoringSceneDocument & {
                     return target.document;
                 },
                 .current_scene_id = [this] { return current_scene; },
                 .execute = [this](const EditorEditExecutionRequest &request) {
                     phase_trace.push_back("edit:prepare_publish");
+                    if (reject_next_edit_execution) {
+                        reject_next_edit_execution = false;
+                        return EditorProjectionResult{
+                            .status = EditorProjectionStatus::Rejected,
+                            .base_revision = request.base_revision,
+                            .committed_revision = target.document.revision(),
+                            .error = EditorProjectionError{
+                                EditorProjectionErrorCode::CommandInvalid,
+                                "/", "injected committed projection failure"},
+                        };
+                    }
                     RuntimeMirrorAdapter mirror{runtime};
                     std::vector<EditorProjectionAdapter *> adapters{&mirror};
                     EditorProjectionTransaction transaction{target,
@@ -174,32 +272,46 @@ struct Harness {
                                 });
                             }
                             if (slot == "behavior" && op == "add_component") {
+                                const auto object_id = AuthoringObjectId{
+                                    wire.at("object_id").get<std::uint64_t>()};
                                 const auto index = wire.at("component_index")
                                                        .get<std::size_t>();
                                 for (auto &behavior : runtime_behaviors) {
-                                    if (behavior.component_index >= index) {
+                                    if (behavior.object_id == object_id &&
+                                        behavior.component_index >= index) {
                                         ++behavior.component_index;
                                     }
                                 }
                                 runtime_behaviors.push_back(RuntimeBehavior{
+                                    .object_id = object_id,
                                     .component_index = index,
                                     .identity = {
                                         .handle = wire.at("attachment_handle")
                                                       .get<std::uint64_t>(),
                                         .attachment_seq = wire.at("attachment_seq")
                                                               .get<std::uint64_t>(),
+                                        .authoring_object_id = object_id,
+                                        .authored_component_occurrence = index,
+                                        .stable_type = wire.at("component")
+                                                           .at("type")
+                                                           .get<std::string>(),
+                                        .origin = authoredOrigin(index),
                                     },
                                 });
                                 lifecycle_trace.push_back("onInit");
                             } else if (slot == "behavior" &&
                                        op == "remove_component") {
+                                const auto object_id = AuthoringObjectId{
+                                    wire.at("object_id").get<std::uint64_t>()};
                                 const auto index = wire.at("component_index")
                                                        .get<std::size_t>();
                                 std::erase_if(runtime_behaviors, [&](const auto &behavior) {
-                                    return behavior.component_index == index;
+                                    return behavior.object_id == object_id &&
+                                           behavior.component_index == index;
                                 });
                                 for (auto &behavior : runtime_behaviors) {
-                                    if (behavior.component_index > index) {
+                                    if (behavior.object_id == object_id &&
+                                        behavior.component_index > index) {
                                         --behavior.component_index;
                                     }
                                 }
@@ -223,6 +335,7 @@ struct Harness {
                                 lifecycle_trace.push_back(op);
                             }
                         }
+                        synchronizeRuntimeBehaviorPositions();
                     }
                     return result;
                 },
@@ -232,6 +345,79 @@ struct Harness {
                         phase_trace.push_back(request.restore_committed
                                                   ? "preview:restore"
                                                   : "preview:prepare_publish");
+                        if (request.restore_committed &&
+                            reject_preview_restore) {
+                            return EditorProjectionResult{
+                                .status = EditorProjectionStatus::Rejected,
+                                .base_revision = request.base_revision,
+                                .committed_revision =
+                                    target.document.revision(),
+                                .error = EditorProjectionError{
+                                    EditorProjectionErrorCode::CommandInvalid,
+                                    "/", "injected preview restore failure"},
+                            };
+                        }
+                        if (enforce_preview_planner) {
+                            try {
+                                const auto context =
+                                    makeEditorProjectionContext(
+                                        current_scene,
+                                        EditorProjectionMode::Preview);
+                                auto plan_result = planEditorProjection(
+                                    EditorProjectionPlanningRequest{
+                                        .base_revision =
+                                            request.base_revision,
+                                        .commands = request.commands,
+                                        .operations = request.operations,
+                                        .restore_committed =
+                                            request.restore_committed,
+                                    },
+                                    target.projectionState(), context);
+                                // WP378 turned the planner's recoverable
+                                // rejections into a value.  Mirror the
+                                // production boundary: consume the failure
+                                // here, and keep the catch for the paths that
+                                // still throw.
+                                if (!plan_result) {
+                                    auto failure =
+                                        std::move(plan_result).error();
+                                    std::string message;
+                                    if (const auto *recoverable = std::get_if<
+                                            EditorProjectionRecoverable>(
+                                            &failure)) {
+                                        message = recoverable->name + ": " +
+                                                  recoverable->message;
+                                    } else {
+                                        message =
+                                            std::get<UserDataViolation>(
+                                                failure)
+                                                .leaf_message;
+                                    }
+                                    return EditorProjectionResult{
+                                        .status =
+                                            EditorProjectionStatus::Rejected,
+                                        .base_revision = request.base_revision,
+                                        .committed_revision =
+                                            target.document.revision(),
+                                        .error = EditorProjectionError{
+                                            EditorProjectionErrorCode::
+                                                CommandInvalid,
+                                            "/", message},
+                                    };
+                                }
+                            } catch (const EditorProjectionPlanError &error) {
+                                return EditorProjectionResult{
+                                    .status =
+                                        EditorProjectionStatus::Rejected,
+                                    .base_revision = request.base_revision,
+                                    .committed_revision =
+                                        target.document.revision(),
+                                    .error = EditorProjectionError{
+                                        EditorProjectionErrorCode::CommandInvalid,
+                                        "/", error.what()},
+                                };
+                            }
+                        }
                         PreviewDocumentTarget preview{target.document};
                         RuntimeMirrorAdapter mirror{runtime};
                         std::vector<EditorProjectionAdapter *> adapters{&mirror};
@@ -256,17 +442,17 @@ struct Harness {
                         };
                     },
                 .resolve_behavior_attachment =
-                    [this](AuthoringObjectId, std::size_t attachment_index)
+                    [this](AuthoringObjectId object_id,
+                           std::size_t attachment_index)
                     -> std::optional<EditorBehaviorAttachmentIdentity> {
-                        const auto found = std::find_if(
-                            runtime_behaviors.begin(), runtime_behaviors.end(),
-                            [&](const auto &behavior) {
-                                return behavior.component_index == attachment_index;
-                            });
-                        if (found == runtime_behaviors.end()) return std::nullopt;
-                        return found->identity;
+                        return resolveBehavior(object_id, attachment_index);
                     },
-            });
+            };
+        if (!install_behavior_resolver) {
+            dependencies.resolve_behavior_attachment = {};
+        }
+        edits = std::make_unique<EditorEditCoordinator>(
+            std::move(dependencies));
         const auto session = edits->openSession({{"display_name", "fixture actor"}});
         actor = session.at("actor_id").get<std::uint64_t>();
         reconnect_token = session.at("reconnect_token").get<std::string>();
@@ -1032,6 +1218,122 @@ TEST_CASE("WP161 preview commit abort ownership capability and execution gate ar
     }
 }
 
+TEST_CASE(
+    "WP375c inactive lifecycle preview is rejected before document-only routing while active set still aborts",
+    "[WP375c][editor][journal][preview][inactive-scene][abort][regression][mutation]") {
+    Harness harness;
+    harness.enforce_preview_planner = true;
+    harness.current_scene = "secondary";
+
+    const auto inactive = harness.edits->openPreview(
+        {{"actor_id", harness.actor},
+         {"operations",
+          Json::array({{{"op", "reparent"},
+                        {"object_id", 3},
+                        {"new_parent_id", 1},
+                        {"preserve", "local"}}})}});
+    REQUIRE(inactive.at("status") == "accepted");
+    harness.edits->commitPending();
+    const auto inactive_result = harness.edits->getPreviewResult(
+        {{"request_id", inactive.at("request_id")}});
+    REQUIRE(inactive_result.at("status") == "failed");
+    REQUIRE(inactive_result.at("error").at("code") ==
+            "editor_preview_unsupported@1");
+    REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+
+    harness.current_scene = "main";
+    const Json active_set{{"op", "set_component_value"},
+                          {"object_id", 1},
+                          {"component_slot", "light"},
+                          {"field_path", "/intensity"},
+                          {"value", 3.75}};
+    const auto active = harness.edits->openPreview(
+        {{"actor_id", harness.actor},
+         {"operations", Json::array({active_set})}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits
+                ->getPreviewResult(
+                    {{"request_id", active.at("request_id")}})
+                .at("status") == "open");
+    const auto aborted = harness.edits->abortPreview(
+        {{"actor_id", harness.actor}, {"ticket", active.at("ticket")}});
+    harness.edits->commitPending();
+    const auto abort_result = harness.edits->getPreviewResult(
+        {{"request_id", aborted.at("request_id")}});
+    REQUIRE(abort_result.at("status") == "succeeded");
+    REQUIRE(abort_result.at("final_status") == "aborted");
+    REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+}
+
+TEST_CASE(
+    "WP375c forced abort propagates a named restore failure and permits an explicit retry",
+    "[WP375c][editor][journal][preview][forced-abort][error][mutation]") {
+    Harness harness;
+    const Json preview_operation{
+        {"op", "set_component_value"}, {"object_id", 1},
+        {"component_slot", "light"}, {"field_path", "/intensity"},
+        {"value", 4.0}};
+    const auto opened = harness.edits->openPreview(
+        {{"actor_id", harness.actor},
+         {"operations", Json::array({preview_operation})}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->hasOpenPreviewLease());
+
+    harness.reject_preview_restore = true;
+    try {
+        (void)harness.edits->forceAbortPreview("reload");
+        FAIL("forced abort unexpectedly hid the restore failure");
+    } catch (const EditorPreviewAbortError &error) {
+        REQUIRE_THAT(error.what(), Catch::Matchers::ContainsSubstring(
+                                      "editor_preview_forced_abort_failed@1"));
+        REQUIRE_THAT(error.what(), Catch::Matchers::ContainsSubstring(
+                                      "injected preview restore failure"));
+    }
+    REQUIRE(harness.edits->hasOpenPreviewLease());
+
+    harness.reject_preview_restore = false;
+    REQUIRE(harness.edits->forceAbortPreview("retry"));
+    REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+}
+
+TEST_CASE(
+    "WP375c failed preview commit restores runtime and releases its lease",
+    "[WP375c][editor][journal][preview][commit-failure][lease][mutation]") {
+    Harness harness;
+    const Json preview_operation{
+        {"op", "set_component_value"}, {"object_id", 1},
+        {"component_slot", "light"}, {"field_path", "/intensity"},
+        {"value", 4.5}};
+    const auto opened = harness.edits->openPreview(
+        {{"actor_id", harness.actor},
+         {"operations", Json::array({preview_operation})}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->hasOpenPreviewLease());
+
+    harness.reject_next_edit_execution = true;
+    const auto commit = harness.edits->commitPreview(
+        {{"actor_id", harness.actor}, {"ticket", opened.at("ticket")}});
+    REQUIRE(commit.at("status") == "accepted");
+    harness.edits->commitPending();
+    const auto failed = harness.edits->getPreviewResult(
+        {{"request_id", commit.at("request_id")}});
+    REQUIRE(failed.at("status") == "failed");
+    REQUIRE_FALSE(harness.edits->hasOpenPreviewLease());
+    REQUIRE(std::ranges::find(harness.phase_trace, "preview:restore") !=
+            harness.phase_trace.end());
+    REQUIRE(harness.runtime == harness.target.document.encodeSemantic());
+
+    const auto reopened = harness.edits->openPreview(
+        {{"actor_id", harness.actor},
+         {"operations", Json::array({preview_operation})}});
+    harness.edits->commitPending();
+    REQUIRE(harness.edits
+                ->getPreviewResult(
+                    {{"request_id", reopened.at("request_id")}})
+                .at("status") == "open");
+    REQUIRE(harness.edits->forceAbortPreview("cleanup"));
+}
+
 TEST_CASE("WP161 RPC and windowed paths share one frame-boundary phase trace",
           "[editor][journal][wp161][ec3-2][phase]") {
     const Json operation{{"op", "set_component_value"}, {"object_id", 1},
@@ -1159,7 +1461,7 @@ TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequenc
     REQUIRE(forward_record.ordered_inverse.front().at("attachment_seq") ==
             identity.attachment_seq);
     REQUIRE(forward_record.stable_targets.front().find(
-                "handles/" + std::to_string(identity.handle)) != std::string::npos);
+                "occurrences/2") != std::string::npos);
     const auto first_stable_target = forward_record.stable_targets.front();
 
     const auto undo = harness.edits->enqueueUndo(
@@ -1316,6 +1618,138 @@ TEST_CASE(
             journal_handle);
     REQUIRE(harness.executed_behavior_identities.back().attachment_seq ==
             journal_sequence);
+}
+
+TEST_CASE(
+    "WP375c behavior undo survives a preceding object destroy that changes position sequence",
+    "[WP375c][editor][journal][behavior][undo][identity][mutation]") {
+    Harness harness;
+    const auto added = harness.commit(
+        {{"op", "add_component"},
+         {"object_id", 4},
+         {"component",
+          {{"name", "behavior"},
+           {"type", "wp167_journal_behavior"},
+           {"params", {{"label", "shifted"}}}}}});
+    REQUIRE(added.at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 1);
+    const auto original_sequence =
+        harness.runtime_behaviors.front().identity.attachment_seq;
+    REQUIRE(original_sequence == sceneBehaviorAttachmentSeq(3, 2));
+
+    const auto [destroy_actor, destroy_token] =
+        harness.bindNewActor("destroy actor");
+    (void)destroy_token;
+    const auto destroyed = harness.edits->enqueue(
+        {{"actor_id", destroy_actor},
+         {"base_revision", harness.target.document.revision().value},
+         {"operations", Json::array({
+                            {{"op", "destroy"}, {"object_id", 1}}})},
+         {"coalesce_key", "destroy-a"}});
+    REQUIRE(destroyed.at("status") == "accepted");
+    harness.edits->commitPending();
+    REQUIRE(harness.edits
+                ->getResult({{"ticket", destroyed.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 1);
+    const auto shifted_sequence =
+        harness.runtime_behaviors.front().identity.attachment_seq;
+    REQUIRE(shifted_sequence == sceneBehaviorAttachmentSeq(0, 2));
+    REQUIRE(shifted_sequence != original_sequence);
+
+    harness.bind(harness.reconnect_token);
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", added.at("transaction_id")}});
+    INFO(undo.dump());
+    REQUIRE(undo.at("status") == "accepted");
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", undo.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.empty());
+    REQUIRE(harness.executed_behavior_identities.back().attachment_seq ==
+            shifted_sequence);
+}
+
+TEST_CASE(
+    "WP375c zero position sequence still validates authored behavior identity",
+    "[WP375c][editor][journal][behavior][identity][zero][mutation]") {
+    for (const auto mismatch : {std::string{"object"},
+                                std::string{"occurrence"},
+                                std::string{"type"},
+                                std::string{"origin"}}) {
+        DYNAMIC_SECTION(mismatch) {
+            Harness harness;
+            const auto added = harness.commit(
+                {{"op", "add_component"},
+                 {"object_id", 1},
+                 {"component_index", 0},
+                 {"component",
+                  {{"name", "behavior"},
+                   {"type", "wp167_journal_behavior"},
+                   {"params", {{"label", "zero"}}}}}});
+            REQUIRE(added.at("status") == "committed");
+            REQUIRE(harness.runtime_behaviors.size() == 1);
+            REQUIRE(harness.runtime_behaviors.front().identity.attachment_seq ==
+                    0);
+            REQUIRE(harness.edits->journal().back()
+                        .ordered_inverse.front()
+                        .at("attachment_seq") == 0);
+
+            auto &runtime_identity =
+                harness.runtime_behaviors.front().identity;
+            if (mismatch == "object") {
+                runtime_identity.authoring_object_id = AuthoringObjectId{2};
+            } else if (mismatch == "occurrence") {
+                runtime_identity.authored_component_occurrence = 1;
+            } else if (mismatch == "type") {
+                runtime_identity.stable_type = "neighbor_behavior";
+            } else {
+                runtime_identity.origin.authoring_component_index = 1;
+            }
+
+            const auto undo = harness.edits->enqueueUndo(
+                {{"actor_id", harness.actor},
+                 {"base_revision", harness.target.document.revision().value},
+                 {"transaction_id", added.at("transaction_id")}});
+            REQUIRE(undo.at("status") == "accepted");
+            harness.edits->commitPending();
+            const auto rejected = harness.edits->getResult(
+                {{"ticket", undo.at("ticket")}});
+            REQUIRE(rejected.at("status") == "failed");
+            REQUIRE(rejected.at("error").at("code") ==
+                    "journal_integrity_error@1");
+        }
+    }
+}
+
+TEST_CASE(
+    "WP375c behavior journal replay rejects an unconfigured identity resolver",
+    "[WP375c][editor][journal][behavior][identity][resolver][mutation]") {
+    Harness harness{false};
+    const auto added = harness.commit(
+        {{"op", "add_component"},
+         {"object_id", 1},
+         {"component",
+          {{"name", "behavior"},
+           {"type", "wp167_journal_behavior"},
+           {"params", {{"label", "resolver"}}}}}});
+    REQUIRE(added.at("status") == "committed");
+
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", added.at("transaction_id")}});
+    REQUIRE(undo.at("status") == "accepted");
+    harness.edits->commitPending();
+    const auto rejected =
+        harness.edits->getResult({{"ticket", undo.at("ticket")}});
+    REQUIRE(rejected.at("status") == "failed");
+    REQUIRE(rejected.at("error").at("code") ==
+            "journal_integrity_error@1");
+    REQUIRE(rejected.at("error").at("payload").at("reason") ==
+            "behavior_attachment_resolver_unavailable");
 }
 
 TEST_CASE("WP167 replay and golden gates reject behavior edits before identity allocation",

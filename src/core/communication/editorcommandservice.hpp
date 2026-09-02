@@ -338,7 +338,7 @@ class EditorCommandService {
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
     std::vector<nlohmann::ordered_json> takeCompletedEditResults();
     void commitPendingEdits() noexcept;
-    bool forceAbortPreview(std::string reason) noexcept;
+    bool forceAbortPreview(std::string reason);
     EditorEditCoordinator *editCoordinator() noexcept { return edit_.get(); }
     const EditorEditCoordinator *editCoordinator() const noexcept { return edit_.get(); }
     bool usesPrefabs() const { return document().usesPrefabs(); }
@@ -399,7 +399,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getPreviewResult(const nlohmann::json &params) const;
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
     std::vector<nlohmann::ordered_json> takeCompletedEditResults() const;
-    bool forceAbortPreview(std::string reason) const noexcept;
+    bool forceAbortPreview(std::string reason) const;
 };
 
 // The ImGui WP consumes the same typed service. This fake is deliberately kept

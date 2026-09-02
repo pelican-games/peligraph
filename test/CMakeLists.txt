@@ -7,6 +7,14 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
+set(PELICAN_CATCH_ADD_TESTS_SCRIPT "${_CATCH_DISCOVER_TESTS_SCRIPT}")
+set(PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT
+  "${CMAKE_CURRENT_BINARY_DIR}/run_catch_discovery_allow_empty.cmake")
+configure_file(
+  ${CMAKE_CURRENT_SOURCE_DIR}/run_catch_discovery_allow_empty.cmake.in
+  ${PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT}
+  @ONLY)
+
 if(POLICY CMP0110)
   cmake_policy(SET CMP0110 NEW)
 endif()
@@ -134,6 +142,12 @@ if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
   list(APPEND discovery_properties DISABLED TRUE)
 endif()
 if(PELICAN_TEST_MIXED_GPU)
+  # Catch2 returns before writing its discovery file when a TEST_SPEC has no
+  # matches.  That exposes a synthetic *_NOT_BUILT test in clean builds and
+  # can retain stale names/labels after a tag mutation.  Keep both TEST_SPEC
+  # lanes, but make an empty lane an explicit empty inventory.
+  set(_CATCH_DISCOVER_TESTS_SCRIPT
+    ${PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT})
   if(discovery_properties)
     catch_discover_tests(${target_name}
       ${discovery_arguments}
@@ -221,6 +235,16 @@ add_test(
     "-DPELICAN_SOURCE_DIR=${CMAKE_SOURCE_DIR}"
     "-DPELICAN_TEST_BINARY_DIR=${CMAKE_CURRENT_BINARY_DIR}"
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_required_capability_ctest_contrast.cmake
+)
+
+add_test(
+  NAME wp375c_ctest_inventory_contract
+  COMMAND ${CMAKE_COMMAND}
+    "-DPELICAN_CTEST_COMMAND=${CMAKE_CTEST_COMMAND}"
+    "-DPELICAN_BINARY_DIR=${CMAKE_BINARY_DIR}"
+    "-DPELICAN_TEST_CONFIG=$<CONFIG>"
+    "-DPELICAN_EXPECT_RPC=$<BOOL:${PELICAN_WITH_RPC}>"
+    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wp375c_ctest_inventory.cmake
 )
 
 if(TARGET pelican_studio_layout)
@@ -1568,9 +1592,8 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_test PRIVATE
 # WP375 cases in this source are RPC-gated.  Split discovery in both builds so
 # the executor remains buildable with RPC OFF and its GPU case never leaks
 # into the non-GPU lane.
-set(raytracing_rt3_1_production_test_discovery MIXED_GPU)
 pelican_define_test(raytracing_rt3_1_production_test
-                    ${raytracing_rt3_1_production_test_discovery}
+                    MIXED_GPU
                     pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_raytracing_rt3_1_production_test PRIVATE

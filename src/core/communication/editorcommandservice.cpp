@@ -1383,7 +1383,7 @@ void EditorCommandService::commitPendingEdits() noexcept {
     }
 }
 
-bool EditorCommandService::forceAbortPreview(std::string reason) noexcept {
+bool EditorCommandService::forceAbortPreview(std::string reason) {
     if (!edit_ || !edit_->forceAbortPreview(std::move(reason))) return false;
     preview_lease_.reset();
     return true;
@@ -2043,7 +2043,7 @@ std::vector<OrderedJson> EditorCommandRpcAdapter::takeCompletedEditResults() con
     return mutable_service_->takeCompletedEditResults();
 }
 
-bool EditorCommandRpcAdapter::forceAbortPreview(std::string reason) const noexcept {
+bool EditorCommandRpcAdapter::forceAbortPreview(std::string reason) const {
     return mutable_service_ &&
            mutable_service_->forceAbortPreview(std::move(reason));
 }

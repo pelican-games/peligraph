@@ -738,6 +738,26 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP375c inactive component lifecycle and reparent previews reject before document-only routing",
+    "[WP375c][plan][preview][inactive-scene][lifecycle][regression][mutation]") {
+    FastModuleContainer modules;
+    test_support::SceneProjectionTarget target{twoSceneMatrixDocument()};
+    const auto inactive_id = objectIdInScene(target, "secondary");
+    const auto context = projectionContext(EditorProjectionMode::Preview);
+    const std::array rejected{
+        addOperation(inactive_id, "behavior"),
+        removeOperation(inactive_id, "behavior"),
+        Json{{"op", "reparent"}, {"object_id", inactive_id.value}},
+    };
+
+    for (const auto &operation : rejected) {
+        DYNAMIC_SECTION(operation.at("op")) {
+            requirePreviewRejected(operation, target, context);
+        }
+    }
+}
+
+TEST_CASE(
     "WP375a document-only behavior replay still validates the active registry",
     "[WP375a][materialize][inactive-scene][behavior][validation-order]") {
     FastModuleContainer modules;

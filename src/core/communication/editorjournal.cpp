@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <array>
 #include <concepts>
+#include <exception>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -555,15 +556,126 @@ std::string stableBehaviorTarget(AuthoringObjectId object_id,
                                  std::size_t attachment_index,
                                  std::uint64_t attachment_handle,
                                  std::string_view field_path = {}) {
+    (void)attachment_handle;
     auto result = "/authoring_objects/" + std::to_string(object_id.value) +
-                  "/behaviors/";
-    if (attachment_handle != 0) {
-        result += "handles/" + std::to_string(attachment_handle);
-    } else {
-        result += "indices/" + std::to_string(attachment_index);
-    }
+                  "/behaviors/occurrences/" +
+                  std::to_string(attachment_index);
     if (!field_path.empty() && field_path != "/") result += std::string{field_path};
     return result;
+}
+
+OrderedJson behaviorOriginIdentityJson(
+    const EditorBehaviorAttachmentIdentity::Origin &origin) {
+    if (!origin.generated) {
+        return OrderedJson{
+            {"kind", "authored"},
+            {"authoring_component_index", origin.authoring_component_index},
+        };
+    }
+    return OrderedJson{
+        {"kind", "generated"},
+        {"stable_generated_id", origin.stable_generated_id},
+        {"prefab", origin.prefab},
+        {"instance_id", origin.instance_id},
+        {"component_key", origin.component_key},
+        {"digest_sha256", origin.digest_sha256},
+    };
+}
+
+EditorBehaviorAttachmentIdentity::Origin authoredBehaviorOrigin(
+    std::size_t component_index) {
+    return EditorBehaviorAttachmentIdentity::Origin{
+        .generated = false,
+        .authoring_component_index = component_index,
+    };
+}
+
+OrderedJson behaviorAttachmentWitness(
+    AuthoringObjectId object_id, std::size_t component_index,
+    std::string_view stable_type,
+    const EditorBehaviorAttachmentIdentity::Origin &origin) {
+    return OrderedJson{
+        {"authoring_object_id", object_id.value},
+        {"authored_component_occurrence", component_index},
+        {"type", stable_type},
+        {"origin", behaviorOriginIdentityJson(origin)},
+    };
+}
+
+OrderedJson authoredBehaviorAttachmentWitness(
+    AuthoringObjectId object_id, std::size_t component_index,
+    const Json &component) {
+    return behaviorAttachmentWitness(
+        object_id, component_index,
+        requireString(component, "type", "behavior attachment identity"),
+        authoredBehaviorOrigin(component_index));
+}
+
+OrderedJson runtimeBehaviorAttachmentWitness(
+    const EditorBehaviorAttachmentIdentity &identity) {
+    return behaviorAttachmentWitness(
+        identity.authoring_object_id,
+        identity.authored_component_occurrence,
+        identity.stable_type, identity.origin);
+}
+
+bool sameBehaviorAttachmentWitness(const OrderedJson &left,
+                                   const OrderedJson &right) {
+    // Journal operations use the regular JSON object container while records
+    // use ordered_json. Object member order is not part of the identity.
+    return Json(left) == Json(right);
+}
+
+std::optional<OrderedJson> currentAuthoredBehaviorAttachmentWitness(
+    const AuthoringSceneDocument &document, AuthoringObjectId object_id,
+    std::size_t component_index) {
+    for (const auto &scene : AuthoringSceneAuthority::query(document)) {
+        const auto object = std::find_if(
+            scene.objects.begin(), scene.objects.end(),
+            [&](const AuthoringObjectView &candidate) {
+                return candidate.authoring_object_id == object_id;
+            });
+        if (object == scene.objects.end() ||
+            component_index >= object->components.size()) {
+            continue;
+        }
+        const auto &component = object->components[component_index].authoredJson();
+        const auto name = component.find("name");
+        const auto type = component.find("type");
+        if (name == component.end() || !name->is_string() ||
+            name->get_ref<const std::string &>() != "behavior" ||
+            type == component.end() || !type->is_string() ||
+            type->get_ref<const std::string &>().empty()) {
+            return std::nullopt;
+        }
+        return behaviorAttachmentWitness(
+            object_id, component_index, type->get_ref<const std::string &>(),
+            authoredBehaviorOrigin(component_index));
+    }
+    return std::nullopt;
+}
+
+[[noreturn]] void behaviorAttachmentIntegrityFailure(
+    std::string_view reason, AuthoringObjectId object_id,
+    std::size_t component_index, const OrderedJson &expected = nullptr,
+    const OrderedJson &current = nullptr) {
+    OrderedJson payload{{"reason", reason},
+                        {"object", object_id.value},
+                        {"component_index", component_index}};
+    if (!expected.is_null()) payload["expected_identity"] = expected;
+    if (!current.is_null()) payload["runtime_identity"] = current;
+    editFailure(EditorEditErrorCode::journal_integrity_error,
+                std::move(payload),
+                "journal behavior attachment identity is unavailable or no longer matches");
+}
+
+void copyBehaviorAttachmentWitness(const Json &raw, OrderedJson &forward,
+                                   OrderedJson &inverse) {
+    if (const auto found = raw.find("attachment_identity");
+        found != raw.end()) {
+        forward["attachment_identity"] = *found;
+        inverse["attachment_identity"] = *found;
+    }
 }
 
 std::uint64_t internalIdentityValue(const Json &operation,
@@ -1044,7 +1156,7 @@ PreparedOperation prepareSet(const Json &raw,
     constexpr auto context = "set_component_value";
     requireOnly(raw, {"op", "object_id", "component_slot", "field_path",
                       "value", "attachment_index", "attachment_handle",
-                      "attachment_seq"}, context);
+                      "attachment_seq", "attachment_identity"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "set_component_value object_id", true)};
     const auto component_name = requireString(raw, "component_slot", context);
@@ -1147,6 +1259,7 @@ PreparedOperation prepareSet(const Json &raw,
         }
         forward["attachment_seq"] = attachment_seq;
         inverse["attachment_seq"] = attachment_seq;
+        copyBehaviorAttachmentWitness(raw, forward, inverse);
     }
     return PreparedOperation{
         .commands = {makeReplaceComponentCommand(object, component_index,
@@ -1175,7 +1288,8 @@ PreparedOperation prepareAdd(const Json &raw,
                                  component_exists) {
     constexpr auto context = "add_component";
     requireOnly(raw, {"op", "object_id", "component", "component_index",
-                      "attachment_handle", "attachment_seq"}, context);
+                      "attachment_handle", "attachment_seq",
+                      "attachment_identity"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "add_component object_id", true)};
     const auto object = requireObjectLocation(document, object_id);
@@ -1209,7 +1323,7 @@ PreparedOperation prepareAdd(const Json &raw,
         raw, "attachment_handle", "add_component attachment_handle", true);
     const auto attachment_seq = internalIdentityValue(
         raw, "attachment_seq", "add_component attachment_seq");
-    if (behavior && (attachment_handle == 0 || attachment_seq == 0)) {
+    if (behavior && attachment_handle == 0) {
         editFailure(EditorEditErrorCode::method_unavailable,
                     {{"method", context}, {"adapter", "behavior_identity"}},
                     "behavior attach identity allocator is unavailable");
@@ -1235,6 +1349,7 @@ PreparedOperation prepareAdd(const Json &raw,
         inverse["attachment_index"] = component_index;
         inverse["attachment_handle"] = attachment_handle;
         inverse["attachment_seq"] = attachment_seq;
+        copyBehaviorAttachmentWitness(raw, forward, inverse);
     }
     return PreparedOperation{
         .commands = {makeInsertComponentCommand(object, component_index, canonical)},
@@ -1268,7 +1383,8 @@ PreparedOperation prepareRemove(const Json &raw,
                                 const AuthoringSceneDocument &document) {
     constexpr auto context = "remove_component";
     requireOnly(raw, {"op", "object_id", "component_slot", "attachment_index",
-                      "attachment_handle", "attachment_seq"}, context);
+                      "attachment_handle", "attachment_seq",
+                      "attachment_identity"}, context);
     const auto object_id = AuthoringObjectId{
         exactUnsigned(raw.at("object_id"), "remove_component object_id", true)};
     const auto component_name = requireString(raw, "component_slot", context);
@@ -1321,6 +1437,7 @@ PreparedOperation prepareRemove(const Json &raw,
         }
         forward["attachment_seq"] = attachment_seq;
         inverse["attachment_seq"] = attachment_seq;
+        copyBehaviorAttachmentWitness(raw, forward, inverse);
     }
     return PreparedOperation{
         .commands = {makeEraseComponentCommand(object, component_index,
@@ -1770,6 +1887,12 @@ EditFailure projectionFailure(const EditorProjectionResult &result,
         return EditFailure{EditorEditErrorCode::method_unavailable,
                            OrderedJson{{"method", method}, {"adapter", path}}, message};
     case EditorProjectionErrorCode::CommandInvalid:
+        if (message.starts_with("editor_preview_unsupported@1")) {
+            return EditFailure{
+                EditorEditErrorCode::preview_unsupported,
+                OrderedJson{{"method", method}, {"detail", message}},
+                message};
+        }
         return EditFailure{EditorEditErrorCode::schema_violation,
                            OrderedJson{{"object", nullptr}, {"slot", nullptr},
                                        {"field_path", path}, {"detail", message}}, message};
@@ -1801,6 +1924,7 @@ Json normalizeBehaviorAttachmentIdentities(
 
         operation.erase("attachment_handle");
         operation.erase("attachment_seq");
+        operation.erase("attachment_identity");
         const auto object_id = AuthoringObjectId{exactUnsigned(
             operation.at("object_id"), "behavior edit object_id", true)};
         const auto object = requireObjectLocation(document, object_id);
@@ -1832,6 +1956,10 @@ Json normalizeBehaviorAttachmentIdentities(
             }
             operation["attachment_handle"] = identity.handle;
             operation["attachment_seq"] = attachment_seq;
+            operation["attachment_identity"] =
+                authoredBehaviorAttachmentWitness(
+                    object_id, attachment_index,
+                    operation.at("component"));
             continue;
         }
 
@@ -1846,29 +1974,39 @@ Json normalizeBehaviorAttachmentIdentities(
         }
         attachment_index = static_cast<std::size_t>(exactUnsigned(
             *found_index, "behavior attachment_index"));
-        (void)requireComponentAt(object, attachment_index, "behavior");
-        std::optional<EditorBehaviorAttachmentIdentity> identity;
-        if (dependencies.resolve_behavior_attachment) {
-            identity = dependencies.resolve_behavior_attachment(object_id,
-                                                                 attachment_index);
+        const auto &[component_index, component] =
+            requireComponentAt(object, attachment_index, "behavior");
+        const auto expected_identity = authoredBehaviorAttachmentWitness(
+            object_id, component_index, component);
+        operation["attachment_identity"] = expected_identity;
+        if (!dependencies.resolve_behavior_attachment) {
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_resolver_unavailable", object_id,
+                attachment_index, expected_identity);
         }
-        if (identity) {
-            if (identity->handle == 0 || identity->handle > maxExactJsonInteger ||
-                sceneBehaviorAttachmentSeq(object.object_index,
-                                           attachment_index) >
-                    maxExactJsonInteger) {
-                throw std::overflow_error(
-                    "resolved behavior attachment identity exceeds the exact JSON range");
-            }
-            operation["attachment_handle"] = identity->handle;
+        const auto identity = dependencies.resolve_behavior_attachment(
+            object_id, attachment_index);
+        if (!identity) {
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_resolver_missing", object_id,
+                attachment_index, expected_identity);
         }
-        const auto attachment_seq = sceneBehaviorAttachmentSeq(
-            object.object_index, attachment_index);
-        if (attachment_seq > maxExactJsonInteger) {
+        if (identity->handle == 0 ||
+            identity->handle > maxExactJsonInteger ||
+            identity->attachment_seq > maxExactJsonInteger) {
             throw std::overflow_error(
-                "scene behavior attachment sequence exceeds exact JSON range");
+                "resolved behavior attachment identity exceeds the exact JSON range");
         }
-        operation["attachment_seq"] = attachment_seq;
+        const auto runtime_identity =
+            runtimeBehaviorAttachmentWitness(*identity);
+        if (!sameBehaviorAttachmentWitness(runtime_identity,
+                                           expected_identity)) {
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_witness_mismatch", object_id,
+                attachment_index, expected_identity, runtime_identity);
+        }
+        operation["attachment_handle"] = identity->handle;
+        operation["attachment_seq"] = identity->attachment_seq;
     }
     return result;
 }
@@ -1877,7 +2015,6 @@ std::vector<OrderedJson> rebindJournalBehaviorTargets(
     std::span<const OrderedJson> operations,
     const EditorEditRuntimeDependencies &dependencies) {
     std::vector<OrderedJson> result{operations.begin(), operations.end()};
-    if (!dependencies.resolve_behavior_attachment) return result;
 
     for (auto &operation : result) {
         const auto op = operation.value("op", std::string{});
@@ -1893,16 +2030,35 @@ std::vector<OrderedJson> rebindJournalBehaviorTargets(
         const auto attachment_index = static_cast<std::size_t>(
             exactUnsigned(operation.at("attachment_index"),
                           "journal behavior attachment_index"));
-        const auto expected_sequence = internalIdentityValue(
-            operation, "attachment_seq",
-            "journal behavior attachment_seq");
+        const auto witness = operation.find("attachment_identity");
+        if (witness == operation.end() || !witness->is_object()) {
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_identity_missing", object_id,
+                attachment_index);
+        }
+        const OrderedJson expected_identity = *witness;
+        const auto authored_identity =
+            currentAuthoredBehaviorAttachmentWitness(
+                dependencies.document(), object_id, attachment_index);
+        if (!authored_identity ||
+            !sameBehaviorAttachmentWitness(*authored_identity,
+                                           expected_identity)) {
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_authored_identity", object_id,
+                attachment_index, expected_identity,
+                authored_identity.value_or(OrderedJson{}));
+        }
+        if (!dependencies.resolve_behavior_attachment) {
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_resolver_unavailable", object_id,
+                attachment_index, expected_identity);
+        }
         const auto current = dependencies.resolve_behavior_attachment(
             object_id, attachment_index);
         if (!current) {
-            // Keep the journal value so the production adapter returns its
-            // existing named "attachment not found" failure. A missing live
-            // attachment is not made equivalent to some neighboring slot.
-            continue;
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_resolver_missing", object_id,
+                attachment_index, expected_identity);
         }
         if (current->handle == 0 ||
             current->handle > maxExactJsonInteger ||
@@ -1910,20 +2066,17 @@ std::vector<OrderedJson> rebindJournalBehaviorTargets(
             throw std::overflow_error(
                 "resolved behavior attachment identity exceeds the exact JSON range");
         }
-        if (expected_sequence != 0 &&
-            current->attachment_seq != expected_sequence) {
-            editFailure(
-                EditorEditErrorCode::journal_integrity_error,
-                {{"reason", "behavior_attachment_sequence"},
-                 {"object", object_id.value},
-                 {"component_index", attachment_index},
-                 {"expected_sequence", expected_sequence},
-                 {"runtime_sequence", current->attachment_seq}},
-                "journal behavior attachment sequence no longer identifies the runtime attachment");
+        const auto runtime_identity =
+            runtimeBehaviorAttachmentWitness(*current);
+        if (!sameBehaviorAttachmentWitness(runtime_identity,
+                                           expected_identity)) {
+            behaviorAttachmentIntegrityFailure(
+                "behavior_attachment_witness_mismatch", object_id,
+                attachment_index, expected_identity, runtime_identity);
         }
-        // The handle belongs to one arena lifetime. Object, authored component
-        // index, and scene sequence are the journal identity; refresh the
-        // handle at the last possible point before materialization.
+        // Handle and sequence both belong to the current arena projection.
+        // The authored witness is the integrity identity; refresh both
+        // runtime values at the last possible point before materialization.
         operation["attachment_handle"] = current->handle;
         operation["attachment_seq"] = current->attachment_seq;
     }
@@ -2304,13 +2457,18 @@ OrderedJson targetState(const Json &operations,
         result["object_id"] = object_id.value;
         try {
             const auto object = requireObjectLocation(document, object_id);
+            const auto op = operation.value("op", std::string{});
+            const bool behavior_target =
+                operation.value("component_slot", std::string{}) ==
+                "behavior";
             result["exists"] = true;
             result["scene_id"] = object.scene_id;
-            result["declaration_index"] = object.object_index;
+            if (!behavior_target) {
+                result["declaration_index"] = object.object_index;
+            }
             result["name"] = object.name ? OrderedJson(*object.name) : OrderedJson(nullptr);
             result["parent"] = object.parent ? OrderedJson(*object.parent)
                                               : OrderedJson(nullptr);
-            const auto op = operation.value("op", std::string{});
             if (op == "set_prefab_parameter" ||
                 op == "unset_prefab_parameter") {
                 const auto parameter = operation.at("parameter").get<std::string>();
@@ -2353,8 +2511,9 @@ OrderedJson targetState(const Json &operations,
                     const bool exists = index < components.size() &&
                         components.at(index).value("name", std::string{}) == name;
                     result["attachment_index"] = index;
-                    if (operation.contains("attachment_handle")) {
-                        result["attachment_handle"] = operation.at("attachment_handle");
+                    if (operation.contains("attachment_identity")) {
+                        result["attachment_identity"] =
+                            operation.at("attachment_identity");
                     }
                     result["component_exists"] = exists;
                     if (exists) result["authored_component"] = components.at(index);
@@ -2900,6 +3059,10 @@ void requireUnpackJournalRecord(const EditorJournalRecord &record,
 
 } // namespace
 
+EditorPreviewAbortError::EditorPreviewAbortError(std::string detail)
+    : std::runtime_error{std::string{codeName()} + ": " +
+                         std::move(detail)} {}
+
 std::optional<std::string> unpackJournalIntegrityFailure(
     const OrderedJson &forward, const OrderedJson &inverse) {
     return unpackJournalIntegrityFailureImpl(forward, inverse);
@@ -3060,6 +3223,8 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::preview_lease_busy: return "preview_lease_busy";
     case EditorEditErrorCode::not_lease_owner: return "not_lease_owner";
     case EditorEditErrorCode::ticket_not_found: return "ticket_not_found";
+    case EditorEditErrorCode::preview_unsupported:
+        return "editor_preview_unsupported@1";
     case EditorEditErrorCode::undo_conflict: return "undo_conflict";
     case EditorEditErrorCode::not_editable: return "not_editable";
     case EditorEditErrorCode::schema_violation: return "schema_violation";
@@ -3672,13 +3837,15 @@ struct EditorEditCoordinator::Impl {
         return dependencies.execute_preview(request);
     }
 
-    bool forceAbort(std::string reason) noexcept {
+    bool forceAbort(std::string reason) {
         if (!preview_lease) return false;
         try {
             const auto lease = *preview_lease;
             const auto projection = executeLivePreview(
                 lease, {}, lease.canonical_operations, true);
-            if (!projection.committed()) return false;
+            if (!projection.committed()) {
+                throw projectionFailure(projection, "forced_abort_preview");
+            }
             if (dependencies.preview_boundary) dependencies.preview_boundary();
             advancePreviewEpoch();
             preview_tombstones[lease.ticket] =
@@ -3691,8 +3858,12 @@ struct EditorEditCoordinator::Impl {
                                  {"preview_epoch", preview_epoch}});
             preview_lease.reset();
             return true;
+        } catch (const EditorPreviewAbortError &) {
+            throw;
+        } catch (const std::exception &error) {
+            throw EditorPreviewAbortError{error.what()};
         } catch (...) {
-            return false;
+            throw EditorPreviewAbortError{"unknown preview restore failure"};
         }
     }
 
@@ -3870,47 +4041,57 @@ struct EditorEditCoordinator::Impl {
                             "preview ticket base SceneRevision is stale"};
                         finishPreviewRequest(request,
                                              previewRejected(request, failure));
-                        (void)forceAbort("stale_revision");
+                        forceAbort("stale_revision");
                         continue;
                     }
-                    auto batch = prepareBatch(preview_lease->raw_operations,
-                                              document(), preview_lease->scene_id,
-                                              prefabRegistry(),
-                                              bindableProvider(),
-                                              projectionState(),
-                                              componentExists());
-                    const EditorEditExecutionRequest execution{
-                        .base_revision = preview_lease->base_revision,
-                        .commands = batch.commands,
-                        .operations = batch.canonical_forward,
-                    };
-                    const auto projection = dependencies.execute(execution);
-                    if (!projection.committed()) {
-                        throw projectionFailure(projection, "commit_preview");
+                    try {
+                        auto batch = prepareBatch(
+                            preview_lease->raw_operations, document(),
+                            preview_lease->scene_id, prefabRegistry(),
+                            bindableProvider(), projectionState(),
+                            componentExists());
+                        const EditorEditExecutionRequest execution{
+                            .base_revision = preview_lease->base_revision,
+                            .commands = batch.commands,
+                            .operations = batch.canonical_forward,
+                        };
+                        const auto projection = dependencies.execute(execution);
+                        if (!projection.committed()) {
+                            throw projectionFailure(projection,
+                                                    "commit_preview");
+                        }
+                        Ticket journal_ticket{
+                            .id = request.request_id,
+                            .kind = Ticket::Kind::edit,
+                            .actor_id = request.actor_id,
+                            .base_revision = preview_lease->base_revision,
+                            .raw_operations = preview_lease->raw_operations,
+                        };
+                        const auto transaction_id = allocateTransaction();
+                        finalizeJournal(journal_ticket, std::move(batch),
+                                        projection, transaction_id);
+                        advancePreviewEpoch();
+                        preview_tombstones[request.ticket] =
+                            PreviewTombstone{request.actor_id, "committed"};
+                        preview_lease.reset();
+                        finishPreviewRequest(
+                            request,
+                            {{"request_id", request.request_id},
+                             {"ticket", request.ticket},
+                             {"actor_id", request.actor_id.value},
+                             {"status", "committed"},
+                             {"committed_revision",
+                              projection.committed_revision.value},
+                             {"transaction_id", transaction_id},
+                             {"preview_epoch", preview_epoch}});
+                    } catch (...) {
+                        const auto commit_failure = std::current_exception();
+                        if (preview_lease &&
+                            preview_lease->ticket == request.ticket) {
+                            forceAbort("commit_failed");
+                        }
+                        std::rethrow_exception(commit_failure);
                     }
-                    Ticket journal_ticket{
-                        .id = request.request_id,
-                        .kind = Ticket::Kind::edit,
-                        .actor_id = request.actor_id,
-                        .base_revision = preview_lease->base_revision,
-                        .raw_operations = preview_lease->raw_operations,
-                    };
-                    const auto transaction_id = allocateTransaction();
-                    finalizeJournal(journal_ticket, std::move(batch), projection,
-                                    transaction_id);
-                    advancePreviewEpoch();
-                    preview_tombstones[request.ticket] =
-                        PreviewTombstone{request.actor_id, "committed"};
-                    preview_lease.reset();
-                    finishPreviewRequest(
-                        request,
-                        {{"request_id", request.request_id},
-                         {"ticket", request.ticket},
-                         {"actor_id", request.actor_id.value},
-                         {"status", "committed"},
-                         {"committed_revision", projection.committed_revision.value},
-                         {"transaction_id", transaction_id},
-                         {"preview_epoch", preview_epoch}});
                     continue;
                 }
 
@@ -4864,7 +5045,7 @@ std::uint64_t EditorEditCoordinator::previewEpoch() const noexcept {
     return impl_->preview_epoch;
 }
 
-bool EditorEditCoordinator::forceAbortPreview(std::string reason) noexcept {
+bool EditorEditCoordinator::forceAbortPreview(std::string reason) {
     return impl_->forceAbort(std::move(reason));
 }
 

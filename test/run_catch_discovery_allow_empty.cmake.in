@@ -1,0 +1,12 @@
+if(NOT DEFINED CTEST_FILE OR CTEST_FILE STREQUAL "")
+  message(FATAL_ERROR "Catch discovery requires CTEST_FILE")
+endif()
+
+# CatchAddTests.cmake returns without touching CTEST_FILE when TEST_SPEC has
+# no matches.  Reset only this generated inventory so a prior tag assignment
+# cannot leak into the current configure/build.
+file(REMOVE "${CTEST_FILE}")
+include("@PELICAN_CATCH_ADD_TESTS_SCRIPT@")
+if(NOT EXISTS "${CTEST_FILE}")
+  file(WRITE "${CTEST_FILE}" "set(${TEST_LIST})\n")
+endif()

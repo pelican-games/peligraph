@@ -707,6 +707,20 @@ void wp375FinishRuntime(std::unique_ptr<EditorCommandService> &service,
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+class Wp375RuntimeScopeGuard final {
+    std::unique_ptr<EditorCommandService> &service_;
+    bool behavior_ = false;
+
+  public:
+    explicit Wp375RuntimeScopeGuard(
+        std::unique_ptr<EditorCommandService> &service,
+        bool behavior = false) noexcept
+        : service_{service}, behavior_{behavior} {}
+    Wp375RuntimeScopeGuard(const Wp375RuntimeScopeGuard &) = delete;
+    Wp375RuntimeScopeGuard &operator=(const Wp375RuntimeScopeGuard &) = delete;
+    ~Wp375RuntimeScopeGuard() { wp375FinishRuntime(service_, behavior_); }
+};
+
 void requireWp375MissingRendererParticipant() {
     FastModuleContainer modules;
     GET_MODULE(RayLayoutRuntimeState)
@@ -1142,6 +1156,7 @@ TEST_CASE(
     FastModuleContainer modules;
     loadWp375aShippingExample(behavior_dll);
     auto service = makeEditorRuntimeService();
+    Wp375RuntimeScopeGuard runtime_scope{service, true};
     const auto actor = wp375OpenActor(
         *service, rpc_id, "WP375b inactive light preview");
 
@@ -1250,7 +1265,6 @@ TEST_CASE(
                 "light")
                 .at("authored_json")
                 .at("intensity") == Catch::Approx(3.75));
-    wp375FinishRuntime(service, true);
 #else
     FAIL("WP375b shipping production behavior fixture was not composed");
 #endif
@@ -1354,7 +1368,7 @@ TEST_CASE(
 
 TEST_CASE(
     "WP377 authored pelican_ray_instance force opaque reaches the material alpha profile row guard",
-    "[WP377][WP369][ray-tracing][rt3-1][instance-flags][profile][production]") {
+    "[WP377][WP369][ray-tracing][rt3-1][instance-flags][profile][production][gpu]") {
     setupLogger();
 #if PELICAN_RUNTIME_SHADER_COMPILER
     for (const bool force_opaque : {false, true}) {
@@ -1398,7 +1412,7 @@ TEST_CASE(
 
 
 TEST_CASE("WP374a all ten root layout AS component states cross real SceneLoader",
-          "[WP374a][WP374][ray-tracing][rt3-1][state-table][scene-loader][production][mutation-2]") {
+          "[WP374a][WP374][ray-tracing][rt3-1][state-table][scene-loader][production][mutation-2][gpu]") {
     setupLogger();
     struct State {
         int number;
@@ -1949,7 +1963,7 @@ TEST_CASE(
 
 TEST_CASE(
     "WP375 production SceneLoader preflight rejects a non-renderable ray instance beside a valid scene",
-    "[WP375][ray-tracing][scene-loader][production][preflight][mutation-preflight]") {
+    "[WP375][ray-tracing][scene-loader][production][preflight][mutation-preflight][gpu]") {
     setupLogger();
 #if PELICAN_RUNTIME_SHADER_COMPILER
     Wp374aProjectRoot valid{"wp375_preflight_valid"};

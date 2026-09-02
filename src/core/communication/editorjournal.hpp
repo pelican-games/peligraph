@@ -50,6 +50,7 @@ enum class EditorEditErrorCode : std::uint8_t {
     preview_lease_busy,
     not_lease_owner,
     ticket_not_found,
+    preview_unsupported,
     undo_conflict,
     not_editable,
     schema_violation,
@@ -89,6 +90,15 @@ enum class EditorEditErrorCode : std::uint8_t {
 };
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept;
+
+class EditorPreviewAbortError final : public std::runtime_error {
+  public:
+    static constexpr std::string_view codeName() noexcept {
+        return "editor_preview_forced_abort_failed@1";
+    }
+
+    explicit EditorPreviewAbortError(std::string detail);
+};
 
 struct EditorGeneratedSelectorAst {
     AuthoringObjectId object_id{};
@@ -175,6 +185,20 @@ struct EditorPreviewExecutionRequest {
 struct EditorBehaviorAttachmentIdentity {
     std::uint64_t handle = 0;
     std::uint64_t attachment_seq = 0;
+    AuthoringObjectId authoring_object_id{};
+    std::size_t authored_component_occurrence = 0;
+    std::string stable_type;
+    struct Origin {
+        bool generated = false;
+        std::size_t authoring_component_index = 0;
+        std::string stable_generated_id;
+        std::string prefab;
+        std::string instance_id;
+        std::string component_key;
+        std::string digest_sha256;
+
+        friend bool operator==(const Origin &, const Origin &) = default;
+    } origin;
 };
 
 struct EditorEditRuntimeDependencies {
@@ -253,7 +277,7 @@ class EditorEditCoordinator {
     bool hasOpenPreviewLease() const noexcept;
     std::uint64_t previewEpoch() const noexcept;
     // Used by replay/reload/scene-transition owners before observers resume.
-    bool forceAbortPreview(std::string reason) noexcept;
+    bool forceAbortPreview(std::string reason);
     const std::vector<EditorJournalRecord> &journal() const noexcept;
 
     EditorProjectionResult executeJournalForVerification(
