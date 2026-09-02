@@ -420,7 +420,7 @@
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`prepareBorrowedSceneMetadata()`": "MetadataCommitToken ProjectBasicConfig::prepareBorrowedSceneMetadata(",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`prepareImportedSceneMetadata()`": "MetadataCommitToken ProjectBasicConfig::prepareImportedSceneMetadata(",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`publishPreparedSceneState()`": "void ProjectBasicConfig::publishPreparedSceneState(",
-    "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`publishPreparedSceneState(next_state)`": "publishPreparedSceneState(next_state);",
+    "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`publishPreparedSceneState(next_state)`": "void ProjectBasicConfig::publishPreparedSceneState(",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`replaceSceneFileAtomically()` の呼び出し": "replaceSceneFileAtomically(temporary.path(), destination);",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`resolvedScene()`": "const ResolvedScene &ProjectBasicConfig::resolvedScene() const {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/loader/basicconfig.cpp|`resolvedScene()`|#1": "const ResolvedScene &ProjectBasicConfig::resolvedScene() const {",
