@@ -20008,7 +20008,7 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 
 - レビュー #3(設定 DLL が起動時に無く、後から不適合 DLL が現れた reload で旧 runtime を再構築しない: [gamelogicreload.cpp:184](../src/core/gamelogic/gamelogicreload.cpp#L184) が
   `active == null` のとき behavior sources を検証しない)は **WP381 / WP380 の loader 領域**。既知欠陥として記録
-- レビュー #6(generation guard が production で自己充足し、内部不整合を `schema_violation` に分類)は **WP378(E-0a)の内部 / 利用者エラー分類**で扱う。記録のみ
+- レビュー #6(generation guard が production で自己充足し、内部不整合を `schema_violation` に分類)は **E-3a**(commit noexcept と guard 再設計)で扱う(WP378 v2 決定 1 で訂正。E-0a は触らない)。記録のみ
 ### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
 
 **§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
@@ -20569,6 +20569,75 @@ launcher の `PELICAN_DIAG` / terminal `error.data` / `commit` の `noexcept` �
 **実装の順序(改)**: WP375 → WP376 → WP377 → **ID-B** / **S-1**(前提無し。並走可)→ WP378(E-0a)→ ID-A → CARRIER-1 → …
 
 
+
+#### WP378 仕様レビュー第 1 巡(不合格・10 件)と v2
+
+仕分け: **直す 8**(#2 #3 #5 #6 #7 #8 #9 #10)/ **範囲を訂正 2**(#1 #4)。前提の再実測: 本番 caller **6**(journal :223 / factory :372 / preview :266 /
+transaction :114・:528 / resolver :207)、直接 test caller **18**(componentcodec_test 7 / raytracing_rt3_1_test 6 / wp361_prefab_test 5)。行番号は v1 から移動している(上記が正)。
+
+##### 決定 1(#1、訂正): generation guard の内部 / 利用者分類は **E-3a** の所有。E-0a は触らない
+
+WP375a の「やらないこと」で本 WP に割り当てた generation guard(`binding_state.codec_generation` を execute 直前に上書きし、不一致を `schema_violation` に落とす)は
+**`commit noexcept` と guard の再設計を伴う E-3a の領域**。E-0a の目的から「内部 / 利用者分類を直す」を**削り**、目的を「利用者データ拒否を値にする(6 caller)」に限定する。
+WP375a の記述は「E-3a で扱う」に訂正(本差分と同時)。
+
+##### 決定 2(#2): `ResolutionResult<T, E = UserDataViolation>`。producer を先に 3 分し、表は **producer site 単位**
+
+- codec の decode は `E = UserDataViolation`。projection の plan は **`E = ProjectionPlanFailure`**(規範 §8 のとおり別型)
+- **producer の分離を先に行う**: 利用者入力 → `UserDataViolation` / 列挙済み recoverable → 専用型(`ProjectionPlanFailure` 等)/ invariant → `logic_error` をそのまま再送出。
+  6 caller の範囲内では **内部 producer に `CommandInvalid` / 汎用 `runtime_error` を使うことを禁止**する(`editorprojectiontransaction.cpp:528` の decode 失敗は `UserDataViolation` 経由に移す)
+- 3 分類表は **code 単位ではなく producer site 単位**(file:line と producer 種別)。同一 code に複数分類が混在する現状(`CommandInvalid`)はこの分離で解消する
+
+##### 決定 3(#3): 6 caller は **`Result.error` だけ**を利用者エラーへ写像し、throw は捕捉しない
+
+- `resolvedscene.cpp:301` / preview / transaction の **decode 境界の broad catch を外す**(`logic_error` / `bad_any_cast` / callback 欠落は内部として伝播)。
+  decode 境界以外の broad catch は範囲外(記録)
+- fault test: decoder callback 欠落 / encoder callback 欠落(`encode_canonical == nullptr`)/ 内部 `logic_error` → **6 caller すべてで内部として伝播**(利用者エラー・legacy 文字列にならない)
+
+##### 決定 4(#4、訂正): provenance は E-4。E-0a は **同一文書内の camera エラー**だけを扱う
+
+- `UserDataViolation` は `{code, path(JSON pointer), fields}` のみ。`primary_source` / `related_sources[]` の主張を E-0a から**削る**(origin map は E-4 所有のまま)
+- 受け入れ入力は **同一 scene 文書の camera**(prefab parameter / project default の由来は使わない)
+- `get_components` の JSON: **component object 直下に `"resolution_error": {code, path, fields}`**(generated component も同じ位置。serializer の早期 return
+  [editorcommandservice.cpp:1453](../src/core/communication/editorcommandservice.cpp#L1453) を直す)。exact JSON を受け入れに書く
+
+##### 決定 5(#5): camera の cross-field 検査は **completion 後の 1 箇所**に集約
+
+- decoder 内の `znear >= zfar` 検査([componentcodec.cpp:608](../src/core/loader/componentcodec.cpp#L608))を消し、resolver completion([resolvedscene.cpp:285](../src/core/loader/resolvedscene.cpp#L285))の
+  1 箇所で `camera.zfar_not_greater_than_znear@1` を出す。`{"znear":5000,"zfar":1000}` と `{"znear":5000}` + default 1000 が **同じ code・同じ path** になることを同一テストで
+- basic-config の `near/far/fov_y` parser([basicconfig.cpp:131](../src/core/loader/basicconfig.cpp#L131))は**範囲外**(別 parser。記録)
+
+##### 決定 6(#6): preview の対照を 2 つに分ける
+
+- (a) **decoder alias**(`near`): 今日は decoder が throw → preview が `schema_violation`。移行後は値エラー → preview が Result を検査して拒否。
+  対照 = Result 検査を `(void)` に戻す変異で alias が受理される
+- (b) **completion failure**(`znear=5000`、`zfar` 省略): `decodeAuthored` は成功し resolver で落ちる。preview は **resolver 後の stored failure を明示的に検査**する production test
+
+##### 決定 7(#7): inactive scene の 2 失敗は **`get_components` で同時観測、load は 2 回**
+
+- `get_components` が camera と collider の **stored alternative を同時に**返す(1 query)
+- load は fail-fast のため 1 回目は camera で止まる。camera を直して 2 回目に collider が露出する、と明記。
+  実 RPC `load_scene` の一般例外(`-32000` + message)は本 WP で **`error.data = {code, path, fields}`** を載せる(WP381 決定 12 と同じ契約)
+
+##### 決定 8(#8): legacy 拒否は **`legacyReject(id, …)` の明示 API** 経由に限定
+
+- production-owned・構成非依存の descriptor registry。**ID 重複はビルド時 / 起動時に失敗**、docs は ID 順に生成
+- `LegacyResolutionText` は `legacy_branch_id` を保持する
+- `componentCodecs()` が runtime state で `ray_instance` codec を除外する([componentcodec.cpp:1208](../src/core/loader/componentcodec.cpp#L1208))のは registry の列挙に影響させない
+  (registry は codec 表と独立)。未列挙の `throw std::runtime_error` を decoder に足す変異は、**registry を通らない throw を検出する fault test**(6 caller の内部伝播テスト)で落ちる
+
+##### 決定 9(#9): 6 caller × 3 点 + caller ごとの変異 1 つ
+
+- 各 caller に **typed failure / 成功時に実際に消費された値 / internal fault** の 3 点。transaction の 2 経路(:114 / :528)は別々
+- 変異は **caller ごとに 1 つ**(Result 検査を `(void)` に戻す)
+- 型の固定: copyable な sentinel `X / E` で `!copy_constructible` / `!copy_assignable` / `move_constructible` / `move_assignable` + `std::any` 4 assertion
+- ABI fixture: 凍結旧ヘッダ側から**実際に throw** し、新 core 側で `code / path / what()` を検査(link / run だけでは不可)
+
+##### 決定 10(#10): 依存と構成
+
+- **依存: WP375a 統合後**(RPC guard を取り込む)。構成表に `PELICAN_WITH_RPC` ON/OFF(OFF は configure / build + 非 RPC service test)と `PELICAN_WITH_OPENXR` を足す
+
+**第 2 巡へ。** 見積は「中」のまま(decoder の cross-field 集約と broad catch 除去が増え、provenance が減った)。
 ### WP379: RAY-NAMESPACE —— `ray_instance` を `pelican_ray_instance` へ移し、builtin 名を owner-aware に予約する
 
 **§4 規則 11 中段(core の複数経路 + project 形式)。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小〜中。**
