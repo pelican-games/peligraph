@@ -20873,7 +20873,7 @@ E-3a(commit noexcept / internal の伝播 / generation guard)と E-3b(broad catc
 - **統合側の検証(worktree、base 上)**: build 0 error / 非 GPU **1239 / 1239** / WP378 系 + RT3-1 production の GPU **9 / 9**
 - **統合側の変異(production レベル)**: **R1**(decoder の camera cross-field 検査を無効化)赤 2 / 2 / **R2**(`load_scene` の `ResolutionFailureException` → `error.data` 変換を潰す)赤 / **R3**(authored の `resolution_error` 出力を消す)赤(resolver 保持テスト)。残留 0
 - **main 取り込み**(`merge-resolver` agent、opus): textual 衝突は `rpcserver.cpp` の `load_scene` 1 箇所(WP378 の resolution boundary の内側に WP380a の `SceneLoadRequest::borrowed` を置く)。自動 merge が壊した `wp360_resolvedscene_test.cpp`(旧 `load(SceneId)` 3 箇所)を WP380a の `test_support::loadScene` へ移行。worktree で 1248 / 1248 + WP 系 GPU 64 / 64
-- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1570 件中 1566 緑**。#73 Studio fatal = WP380a の後退(WP380a-fix 中)/ WP332・WP334b = `-j4` の commit 待ち flake(単独緑)/ **`WP378 legacy descriptor corpus is a configuration-independent bijection` は単独でも赤**: 生成 docs と repo の `docs/component_codec_legacy_branches.md` の比較が main で不一致(worktree では緑)→ 原因調査(行末 CRLF の疑い)
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1570 件中 1566 緑**。#73 Studio fatal = WP380a の後退(WP380a-fix 中)/ WP332・WP334b = `-j4` の commit 待ち flake(単独緑)/ **`WP378 legacy descriptor corpus is a configuration-independent bijection` は単独でも赤**: 生成 docs と repo の `docs/component_codec_legacy_branches.md` の比較が main で不一致(worktree では緑)→ 原因は checkout の `core.autocrlf`(main では CRLF、agent の worktree では LF)。比較側(`readRepositoryText`)で CR を除去して修正(`test/componentcodec_test.cpp`)。単独 1 / 1 緑
 - コードレビュー `rev378`: (記入)
 ### WP379: RAY-NAMESPACE —— `ray_instance` を `pelican_ray_instance` へ移し、builtin 名を owner-aware に予約する
 

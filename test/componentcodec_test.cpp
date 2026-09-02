@@ -42,8 +42,13 @@ std::string readRepositoryText(const std::filesystem::path &relative) {
     std::ifstream input{path, std::ios_base::binary};
     if (!input.is_open())
         throw std::runtime_error("failed to open fixture: " + path.string());
-    return {std::istreambuf_iterator<char>{input},
-            std::istreambuf_iterator<char>{}};
+    std::string text{std::istreambuf_iterator<char>{input},
+                     std::istreambuf_iterator<char>{}};
+    // The generated document is compared byte-for-byte with the registry
+    // output; a checkout with core.autocrlf must not turn that into a
+    // line-ending diff.
+    std::erase(text, '');
+    return text;
 }
 
 struct ResolutionSentinelValue {};
