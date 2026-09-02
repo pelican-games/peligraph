@@ -21572,6 +21572,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 3. **WP375b**: 統合済み(`c61ce078`、全数 1544 / 1544)。**WP380a**(v3): 実装 1 回目が完了(参加者 drop / bypass 変異が manifest の ID だけで未実行 → fault injector 化の継続 + main 取り込みを投入)
 **WP379a**(rev379 の致命: engine registrar が DLL ヘッダに露出)を投入(worktree `<作業ディレクトリ>/wp379a`。WP379 系はこれで打ち切り)
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
+2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
 5. WP380b / CARRIER-RT3 / CARRIER-STUDIO は上の後に節を切り直す
 
