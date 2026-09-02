@@ -35,7 +35,7 @@ GameObjects / SceneLoader / 内部System
 DECLARE_COMPONENT(型, 数値ID)
 ```
 
-組み込みIDは [`components/predefined.hpp`](../../src/core/userpublic/components/predefined.hpp#L12) にあります。
+組み込みIDは [`components/predefined.hpp`](../../src/core/userpublic/components/predefined.hpp#L13) にあります。
 
 | ID | 型 | scene名 | 用途 |
 |---:|---|---|---|
@@ -405,7 +405,7 @@ per-chunk型では、required Component列の最大versionが`last_run_tick`未�
 
 batch型では、全matching Chunkのどれかに変更があれば一回だけ全viewを渡します。実行後は全matching Chunkのwrite列を更新します。
 
-`force_update`ならversionに関係なく毎回実行します。現在の組み込みSystemは全て [`registerSystemForce`](../../src/core/ecs/predefined.cpp#L32) で登録されています。
+`force_update`ならversionに関係なく毎回実行します。現在の組み込みSystemは全て [`registerSystemForce`](../../src/core/ecs/predefined.cpp#L40) で登録されています。
 
 ## 4.12 依存グラフと並列実行 ✅実装済み
 
@@ -503,7 +503,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ### 組み込みSystemの依存
 
-現在の組み込み登録はほぼ全順序まで強化されています（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L31)）。
+現在の組み込み登録はほぼ全順序まで強化されています（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L39)）。
 
 | System | 依存 |
 |---|---|
@@ -520,12 +520,12 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ## 4.13 組み込みSystem
 
-[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L20) が登録します。
+[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) が登録します。
 
 | System | Query | 処理 |
 |---|---|---|
 | [`LocalTransformSystem`](../../src/core/ecs/predefined/localtransformsystem.cpp#L52) | `EntityId, Transform, LocalTransform` | 公開transformをGLM内部transformへcopy |
-| [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L23) | `SimpleModelView` | dirtyなmodel名からGPU instanceを生成 |
+| [`SimpleModelViewUpdateSystem`](../../src/core/ecs/predefined/modelviewupdatesystem.cpp#L42) | `SimpleModelView` | dirtyなmodel名からGPU instanceを生成 |
 | [`AnimationSystem`](../../src/core/ecs/predefined/animationsystem.cpp) | `Animation, SimpleModelView` | アニメーション再生状態をmodel instanceへ反映 |
 | [`SimpleModelViewTransformSystem`](../../src/core/ecs/predefined/modelviewtransformsystem.cpp#L7) | `Transform, SimpleModelView` | GPU instanceへTRS反映 |
 | [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L9) | `Transform, Camera` | 最初のcamera Componentをactive Cameraへ反映 |
@@ -545,7 +545,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ### collider
 
-[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L180)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L426)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L101)）。
+[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L226)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L472)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L147)）。
 
 ### behavior arena ✅実装済み
 
@@ -562,7 +562,7 @@ behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` �
 
 ## 4.15 ユーザー独自Componentの現在地
 
-`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。実際の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L20)、benchmark、lifecycle testです。
+`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。実際の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L22)、benchmark、lifecycle testです。
 
 なお、game System/Eventの登録はDLL化後、[`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位でreload時に`unregisterGameSystems(owner)`されるようになりましたが、Componentを**登録する**側は依然としてengine側のみです。
 

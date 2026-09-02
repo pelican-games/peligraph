@@ -20096,3 +20096,9 @@ M1 は **WP374 時点ですり抜けていた変異**(8/8 緑のまま)であり
 `renderWp374aProductionRows` の中で **project 設定後に遅延取得**されていたから。
 処置: `requireVulkanDevice` を `loadWp374aScene` 内の `configureWp374aRuntime(root)` の直後へ移動。
 SKIP の意味論(device 無しで Catch `SKIP`)は保たれる。
+
+##### 統合(2026-09-02): WP374 + WP374a を `8af06f3f` として squash merge
+
+- worktree での最終確認: **1376/1376 緑(GPU 直列含む)**、WP374a は GPU 実行体に 6 本・非 GPU 0 本
+- 分離後の受け入れ: `raytracing_rt3_1_production_test`(`GPU` 登録)+ 共有 `raytracing_rt3_1_fixture.hpp`
+- 統合側の全数は merge 直後に別途実行して次行に記す
