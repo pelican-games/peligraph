@@ -20080,6 +20080,25 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 - `rev375a` #4: canonical operation の `scene_id` を偽装すると active op が `DocumentOnly` に落ちる(内部 API。通常 RPC からは到達しない)。planner が object の実所属で照合する改修は E-3a と同時に
 - `rev375a` #5: participant 欠落テストは renderer だけ。camera / light / collider は production composition が全 participant を供給するため対照が作れない(記録)
 - `rev375a` #6: BlueSpot 受け入れは local asset に依存(smoke と同じ。hermetic 化は asset 同梱方針の決定後)
+
+
+#### WP375b 完了記録(統合側。2026-09-03、`c61ce078`)
+
+- **実装(codex、fast 無し)**: planner の `DocumentOnly` を Preview にも適用(abort / forced-abort の restore でも canonical operation を保持し、inactive は `DocumentOnly`、active は
+  Light / Transform participant へ)。裁定: inactive preview は名前付き拒否ではなく **document-only**(表示 runtime は active の projection であり inactive を表示する viewport は無い。
+  document の編集・commit 自体は安全に成立する)。journal の behavior remove / set は **実行直前に object ID・component index・attachment sequence から現在の arena handle へ再解決**
+  (journal 内の handle は互換のため残すが identity には使わない。sequence 不一致は `journal_integrity_error`)。RPC guard は RPC 依存部分だけ(production 実行体は RPC OFF でも常時 build、
+  GPU / non-GPU の discovery を分割して RPC OFF で空の `[gpu]` discovery を作らない)
+- **agent の CPU 変異**: `mode != Committed` に戻す → planner regression 赤 / 再解決を外す → 旧 handle 100 と reload 後 10100 の不一致で赤 / broad guard に戻す → RPC OFF の必須登録 4 → 0
+- **RPC OFF**: configure + build 成功、非 GPU 1191 件(1190 pass、1 skip)。必須直接経路 4 件(WP377 SceneLoader / WP374a 10 状態 / WP375 preflight / WP361a coordinator)が登録・実行
+- **統合側の検証**: 通常構成 build 0 error / 非 GPU **1222 件中 1221 緑**(`WP335 parameterized feature entries …` が `-j16` の commit 待ちで 1 回落ち、単独 1 / 1 緑 = 既知の負荷 flake 系)/
+  WP375 系 GPU 23 件中 1 件赤 = `inactive shipping-scene light preview …` が **worktree に無い gitignore 済み texture**(`projects/example/assets/textures/Frame84.png`)で
+  `open_preview` が `method_unavailable`("Failed to load image")→ 出荷 example の ignored asset(models / textures / .pelican)を worktree へ copy して再実行 → **1 / 1 緑**(dialog 無し。assertion は変異時のみ)
+- **統合側の変異(GPU)**: **P1**(Preview を DocumentOnly から外す = WP375a の穴)**赤**(`light_count() == 14` に対し 1 = 後退がそのまま再現)/ **P2**(journal の handle 再解決を無効化)**赤**(reload 後の undo が failed)。残留 0。
+  P1 の実行中に MSVC の Debug assertion dialog(`vector erase iterator outside range`)が出た(利用者が観測)。変異で runtime の light が置換された状態の teardown で不正 erase → **CRT の assert dialog を test harness が抑止していない**(自動実行を止める。既知の穴へ)
+- main(WP379)取り込みで `raytracing_rt3_1_production_test.cpp` が 1 hunk 衝突(RPC helper の `#if` 囲い vs 関数分割)→ 両方を残す形で解消。worktree で WP375 / WP379 / WP374a / WP377 系 **38 / 38**(GPU 含む)→ squash。
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1544 / 1544 緑**
+- コードレビュー `rev375b`: 投入済み(fast 無し)。結果は追記
 ### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
 
 **§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
@@ -21460,8 +21479,8 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 **再開後の投入順**(すべて仕様確定済み。台帳の各節の最終差分が正)
 1. `rev377a` / `rev375a`(コードレビュー。read-only)
 2. **WP379**: 統合済み(`51841eb3`、2026-09-03)。→ **WP381**(v3。epoch anchor): **投入済み**(worktree `<作業ディレクトリ>/wp381`。shadow dir の process 分離を同梱)
-3. **WP380a**(v3): 実装中(worktree `<作業ディレクトリ>/wp380a`)。WP375b(統合中)の後に統合
-4. **WP378**(v3。E-0a): WP375b 統合後に自動投入(launcher 待機中)
+3. **WP375b**: 統合済み(`c61ce078`、全数 1544 / 1544)。**WP380a**(v3): 実装中(worktree `<作業ディレクトリ>/wp380a`)
+4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
 5. WP380b / CARRIER-RT3 / CARRIER-STUDIO は上の後に節を切り直す
 
 **既知の穴(WP 化は別途判断)**
