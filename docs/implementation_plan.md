@@ -20098,7 +20098,49 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
   P1 の実行中に MSVC の Debug assertion dialog(`vector erase iterator outside range`)が出た(利用者が観測)。変異で runtime の light が置換された状態の teardown で不正 erase → **CRT の assert dialog を test harness が抑止していない**(自動実行を止める。既知の穴へ)
 - main(WP379)取り込みで `raytracing_rt3_1_production_test.cpp` が 1 hunk 衝突(RPC helper の `#if` 囲い vs 関数分割)→ 両方を残す形で解消。worktree で WP375 / WP379 / WP374a / WP377 系 **38 / 38**(GPU 含む)→ squash。
 - 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1544 / 1544 緑**
-- コードレビュー `rev375b`: 投入済み(fast 無し)。結果は追記
+- コードレビュー `rev375b`: **reject**(実害 4)。inactive の lifecycle preview が open は通るのに abort 不能(lease 残留)/ `attachment_seq` が位置依存で正当な undo を拒否 / RPC guard が RPC OFF の build を壊し実 GPU 3 件から `gpu` label を落とす / 変異時の teardown が exception-safe でない。→ **WP375c**(375b が作った後退 2 件の一度限りの延長)。壊せなかった: active-light 置換の致命そのものは set 操作で塞がれている
+
+### WP375c: WP375b が作った後退 2 件(RPC OFF の build 破壊 + GPU label 欠落 / inactive lifecycle preview が abort 不能)と、位置依存の `attachment_seq`
+
+**§4 規則 11 中段。コードレビューのみ(§10)。見積: 小〜中。**
+**連鎖: WP375 → 375a → 375b → 375c。375c は「修正が作った後退」の一度限りの延長(#1 #3 は 375b が作った)。#2 は 375b の identity 再解決が不完全だったもの。
+これ以降 WP375 系で実害が出たら、起票せず WP375b/c を revert して設計からやり直す。**
+**依存: なし(WP375b 統合済み `c61ce078`)。WP378 / WP379a / WP380a と並列(planner / journal / test CMake / production test を触るので統合時に main を取り込み、衝突は継続で解消)。**
+
+#### 何が壊れているか(コードレビュー `rev375b` が確認)
+
+1. **後退**: inactive scene の `add_component` / `remove_component` / `reparent` の preview は open では `DocumentOnly` として通る
+   ([editorprojectionplan.cpp:724](../src/core/communication/editorprojectionplan.cpp#L724))が、restore は `set_component_value` 以外を拒否する(:628)。
+   `abort_preview` が `editor_projection_invalid_request@1` になり **lease が解放されない**(commit かサービス再起動まで preview が塞がる)。
+   forced-abort は全例外を `false` に潰し([editorjournal.cpp:3624](../src/core/communication/editorjournal.cpp#L3624))、reload / load_scene 側はそれを捨てて続行する
+2. **実害**: `attachment_seq` は安定 ID ではなく **`(object_index << 32) | component_index` の現在位置**([behaviorarena.cpp:70](../src/core/gamelogic/behaviorarena.cpp#L70))。
+   無関係な先行 object の destroy で同じ attachment の sequence が変わり、undo / redo / verification が `journal_integrity_error` で拒否される。`(0,0)` の正当な sequence 0 は
+   `expected_sequence != 0` 条件で検証をすり抜ける。resolver 未設定なら旧 handle を黙って使う経路も残る(:1834)
+3. **後退**: RPC guard が `raytracing_rt3_1_production_test` を `PELICAN_WITH_RPC=OFF` で **compile 不能**にした(WP379 の RPC test が guard 外 :1589)。
+   executable の label を `GPU` → `MIXED_GPU` に変えた結果、実 GPU を使う 3 件(WP377 row guard / WP374a 10 状態 / WP375 preflight)から **`gpu` label が落ちた**
+   (GPU lock 無しで並列実行される = flake 源)
+4. **検証基盤**: 変異時に `REQUIRE` が落ちると `wp375FinishRuntime` に到達せず、runtime / document 不一致のまま module shutdown へ(MSVC assertion の一因)。
+   production でも commit 失敗の catch が lease を解放しない
+
+#### 直すこと
+
+1. **preview 非対応判定を inactive shortcut より先に置き、lifecycle preview は一律に名前付き拒否**(inactive の lifecycle preview を許す仕様は無い)。
+   forced-abort の失敗は名前付きで伝播(`false` に潰さない)。reload / load_scene はそれを無視しない
+2. journal の identity は **object ID + authored component occurrence / type / origin** で検証し、正当な再解決では handle と現在 sequence の**両方を更新**する。
+   位置 sequence を integrity 判定に使わない(ABA が要るなら永続 ID。今は要らない)。`(0,0)` の抜け道を閉じる。resolver 未設定は名前付き拒否
+3. executable は RPC に関係なく `MIXED_GPU`。WP379 の RPC test 本体だけ `#if PELICAN_WITH_RPC`。実 GPU の 3 件に `[gpu]`。**configure-level contract**: RPC ON / OFF ごとの
+   test 名・label・重複 0 を `ctest -N` 相当で検査するテストを登録
+4. production fixture の teardown を **scope guard** にし、REQUIRE 失敗でも同じ停止順序を通す。production の commit 失敗 catch は lease を解放する
+
+#### 受け入れ(§4 規約 10)
+
+- **abort**: inactive scene の reparent を `open_preview` → 名前付き拒否(今日 = open 成功・abort 不能)。同じテストで active の set preview は open / abort とも成功
+- **undo after destroy**: `[A, B]` で B に behavior add → 別 actor が A を destroy → B の add を undo が **成功**(今日 = `journal_integrity_error`)。
+  identity 検証を位置 sequence に戻す変異で落ちる。`(0,0)` の抜け道: object 0 / component 0 の不一致が拒否される
+- **RPC OFF**: `-DPELICAN_WITH_RPC=OFF` で configure + build が通り、実 GPU 3 件に `gpu` label が付く(`ctest -N` 一覧の contract test が ON / OFF で緑)。
+  label を落とす変異・guard を広げる変異で contract test が落ちる
+- **teardown**: 変異 P1 相当(Preview の DocumentOnly を外す)を当てて REQUIRE が落ちても **MSVC assertion が出ず** process が正常終了(統合側で確認)
+- 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成 / RPC ON/OFF / 出荷 4 project bytes 不変 / golden 不変 / GPU は統合側で直列
 ### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
 
 **§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
