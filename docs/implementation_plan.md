@@ -20018,3 +20018,36 @@ WP374 で **「override があると偽陽性になる」**が実証済み(overr
 
 観測 seam の削減 / fault 注入 seam の変更 / RT 以外の override seam(`forceGeneration` /
 `forceSceneEpoch` / `setExecutionTracing` / `resetForTesting`)は**用途を記録するだけ**。
+
+
+#### WP374a が本番経路で見つけた既存欠陥: RPC からの `add_component` / `remove_component` が常に失敗していた
+
+**場所**: [editorruntimefactory.cpp:326](../src/core/communication/editorruntimefactory.cpp#L326)
+(component migration adapter の ctor)。
+
+```cpp
+operation_{std::move(operation)},   // ← nlohmann::ordered_json を brace-init
+```
+
+`nlohmann::ordered_json` を **brace-init で別の json から初期化すると initializer_list ctor が選ばれ、
+operation が一要素配列に包まれる**。直後の `operation_.at("op")` が
+`json.exception.type_error.304: cannot use at() with array` で落ちる。
+
+- **誰も踏んでいなかった理由**: 本番の `add_component` を **実 RPC bytes から**通す受け入れが
+  1 本も無かった(既存テストは `.execute` を注入し、この adapter を経由しない)。
+  **WP374a の「実 RPC bytes → add → render」がこの経路を初めて通した**
+- 修正は 1 トークン: `operation_(std::move(operation))`。意味論の変更ではなく、
+  書いた人の意図どおりに動くようにするだけ
+- エージェントは意味論を変えない指示に従い、修正を戻して **UNMET** として報告した(正しい)。
+  統合側で私が適用した
+
+**この欠陥はテスト品質計画(2026-09-02)の主張そのもの**: 「受け入れが本番経路を通っていない」
+とは、こういう欠陥が全数緑の裏に残るということである。
+
+##### 統合の記録(回収時に追記)
+
+- 全数(GPU 直列含む、`SKIP_DEVSTUDIO=ON` + projects dir): **1376/1376 緑**(WP374 の 8 + WP374a の GPU 4・CPU 2 を含む)。修正適用後、実 RPC 受け入れは緑
+- 私が当てた 4 変異: 統合側の完了記録に記す(M1 invalidation / M2 preflight は CPU、M3 BLAS 鍵 / M4 Vulkan flags は GPU 直列)
+- 受け入れ 2 本(実 RPC / 10 状態表)は **GPU 無しの実行体に入っていた**。device が無い環境では
+  skip ではなくクラッシュする(このセッションで実際に SEGFAULT が出た)。
+  **GPU ラベル付きの実行体へ移し `requireVulkanDevice` で skip させる**(回収時に処置)
