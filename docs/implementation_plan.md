@@ -20051,3 +20051,38 @@ operation が一要素配列に包まれる**。直後の `operation_.at("op")` 
 - 受け入れ 2 本(実 RPC / 10 状態表)は **GPU 無しの実行体に入っていた**。device が無い環境では
   skip ではなくクラッシュする(このセッションで実際に SEGFAULT が出た)。
   **GPU ラベル付きの実行体へ移し `requireVulkanDevice` で skip させる**(回収時に処置)
+
+
+#### WP374 + WP374a 完了記録(統合側。変異は私が当て直した)
+
+**全数(GPU 直列含む、`SKIP_DEVSTUDIO=ON` + projects dir): 1376/1376 緑。** 内訳は WP374 の CPU 8 本 +
+WP374a の GPU 4 本(`headless_render_test`)+ CPU 2 本(実 RPC / 10 状態表)。
+
+##### 私が当てた変異(エージェントの報告を額面で受け取らない)
+
+| # | 変異(適用は `git diff` で確認) | 対象テスト | 結果 |
+|---|---|---|---|
+| M1 | `editorruntimefactory.cpp:951` live invalidation の `component == "ray_instance"` → `false` | WP374a real RPC bytes … | **赤**(0/1) |
+| M2 | `scene.cpp:350` `validateResolvedSceneFeatureBindings(*scene)` をコメントアウト | WP374a all ten root layout … | **赤**(0/1) |
+| M3 | `accelerationstructure.cpp:846` BLAS cache 鍵の flags を `0u *` で消す | WP374a F G F …(GPU) | **赤**(0/1。G の +1 build と resident key が壊れる) |
+| M4 | 同 :884 付近 Vulkan に渡す `geometry_flags` → `vk::GeometryFlagsKHR{}` | 同上 | **赤**(0/1。cache 鍵は合うが any-hit の GPU 実効が変わらない) |
+
+M1 は **WP374 時点ですり抜けていた変異**(8/8 緑のまま)であり、WP374a の実 RPC 受け入れで初めて赤くなった。
+
+##### 回収時の処置
+
+1. **既存欠陥の修正**: `editorruntimefactory.cpp:326` の brace-init(前節)。1 トークン
+2. **受け入れ 2 本の実行体移動**: 実 RPC / 10 状態表は device を要求するのに GPU ラベル無しの
+   実行体に入っていた(device 無しでは skip でなく **SEGFAULT**。このセッションで実際に出た)。
+   `raytracing_rt3_1_production_test`(`GPU` 登録)へ移し、共有 helper は
+   `raytracing_rt3_1_fixture.hpp` に出し、各 case の先頭で `TestSupport::requireVulkanDevice` を呼ぶ
+   (device 無しでは Catch の `SKIP`)
+3. M1 の変異戻し(`git checkout`)で :326 の修正も一緒に戻っていた → 再適用して確認。
+   **変異の restore は「対象ファイルの他の変更」も消す**。同一ファイルに修正がある場合は
+   restore 後に修正の存在を再確認すること(skill §K に追記)
+
+##### 台帳の負債(WP374 から持ち越し)
+
+- per-geometry × per-instance override(担体プログラム)/ Studio の `ray_instance` UI /
+  v1↔v2 hot reload 拒否の運用監視(#8)/ `resident_blas_keys` を frame-plan 投影に載せた件は
+  WP354 の baseline を overlay で更新(permitted pointer は増やしていない)
