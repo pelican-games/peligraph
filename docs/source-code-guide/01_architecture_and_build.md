@@ -149,11 +149,11 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
 | 場所 | 内容 |
 |---|---|
 | [`ecs/archetypemigration.hpp`](../../src/core/ecs/archetypemigration.hpp#L118) | 失敗しても原子的なarchetype移行と entity mutation のトークン（[第4章](04_ecs_deep_dive.md)） |
-| [`gamelogic/behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L142) | オブジェクトbehaviorのアタッチメントarena。ECS Componentではない別の所有者 |
+| [`gamelogic/behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L163) | オブジェクトbehaviorのアタッチメントarena。ECS Componentではない別の所有者 |
 | [`imgui/inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) / [`imgui/assetbrowser.hpp`](../../src/core/imgui/assetbrowser.hpp#L36) | schema駆動inspectorパネルと読み取り専用asset browserパネル |
 | [`loader/authoringscenedocument.hpp`](../../src/core/loader/authoringscenedocument.hpp#L90) | `AuthoringSceneDocument` / `AuthoringSceneDocumentStage`（[第3章](03_project_and_loading.md)） |
-| [`loader/componentcodec.hpp`](../../src/core/loader/componentcodec.hpp#L143) | component codecの五点セット。componentのJSON受理仕様の正 |
-| [`loader/editorprojectiontransaction.hpp`](../../src/core/loader/editorprojectiontransaction.hpp#L20) | 編集のprepare/publish transactionと8種のadapter kind |
+| [`loader/componentcodec.hpp`](../../src/core/loader/componentcodec.hpp#L214) | component codecの五点セット。componentのJSON受理仕様の正 |
+| [`loader/editorprojectiontransaction.hpp`](../../src/core/loader/editorprojectiontransaction.hpp#L21) | 編集のprepare/publish transactionと8種のadapter kind |
 | [`loader/vrmadecoder.hpp`](../../src/core/loader/vrmadecoder.hpp#L25) / [`model/vrmaanimation.hpp`](../../src/core/model/vrmaanimation.hpp#L87) / [`animation/vrmaretarget.hpp`](../../src/core/animation/vrmaretarget.hpp#L124) | `.vrma` decode → 型付きチャンネル → versioned retarget profile |
 | [`renderingpass/previewgraph.hpp`](../../src/core/renderingpass/previewgraph.hpp#L15) | 第3のグラフプログラム（preview variant） |
 | [`vkcore/previewexecutor.hpp`](../../src/core/vkcore/previewexecutor.hpp#L61) | previewの隔離実行とキャプチャ |

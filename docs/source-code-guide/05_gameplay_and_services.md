@@ -765,7 +765,7 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 
 ### scene側の宣言
 
-`behavior` componentは`type`に**非空文字列**が必須です。scene loaderは`prepareSceneBindings()`とは別系統で [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L70) に流します（[第3章](03_project_and_loading.md)）。
+`behavior` componentは`type`に**非空文字列**が必須です。scene loaderは`prepareSceneBindings()`とは別系統で [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L80) に流します（[第3章](03_project_and_loading.md)）。
 
 ```json
 {"name": "TriggerZone", "components": [
@@ -774,8 +774,8 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
   {"name": "behavior", "type": "wp179_trigger_behavior"}]}
 ```
 
-- game DLLがロード済みなのに未登録の型名 → `Unknown behavior type '<type>' on object '<name>'` でload失敗
-- game DLL不在 → warningを出して **pending** 扱いで進む（[`behaviorarena.cpp` 内](../../src/core/gamelogic/behaviorarena.cpp#L100)）
+- game DLLがロード済みなのに未登録の型名 → `behavior_type_unknown@1`（`BehaviorTypeUnknownError`。[`BehaviorTypeUnknownError` を投げる箇所](../../src/core/gamelogic/behaviorarena.cpp#L110)）でload失敗。editor の `add_component` も同じ code
+- game DLL不在 → warningを出して **pending** 扱いで進む（[pending にする箇所](../../src/core/gamelogic/behaviorarena.cpp#L116)）
 
 ### 実行順
 
@@ -788,15 +788,15 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 
 ### Arena
 
-[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L148) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
+[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L169) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
 
 | 経路 | 使うAPI |
 |---|---|
 | scene由来 | `prepareSceneBehaviorAttachments()` → `publishSceneAttachments()` → `activatePublished()` |
-| 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L96) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
+| 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L117) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L62) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L139) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L75) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L82) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L160) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L95) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 
