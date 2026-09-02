@@ -407,3 +407,16 @@ production `GameLogicReloader` 経由で検査する。対照: 現行 loader は
 | **CARRIER-STUDIO** | 修正 ζ + design_studio_component_ui | RT3 の後 |
 
 順序: **GLABI-2 ∥ RAY-NAMESPACE(並列可。RAY-NAMESPACE は migration を持たないので GLABI-2 に依存しない)→ ID-B → CARRIER-RT3 → CARRIER-STUDIO**。
+
+### §8 補遺(2026-09-02、WP381 仕様レビュー第 1 巡の結果。修正 γ の起票ゲート 1〜6 を**撤回**)
+
+WP381 の仕様レビュー(13 件)が、修正 γ の機構そのものを壊した: embedded section と単一 C entrypoint は **enforcement ではない**
+(新 entrypoint と旧 static registrar を同居させれば preflight を通って旧 constructor が走る)。完全に固定するには host / DLL 境界の全部を
+C ABI にする必要があり、GLABI-2 の目的と釣り合わない。
+
+**置き換え**: ABI は **DLL が import する host symbol の版付き名前**で表し、enforcement は OS loader(import 解決は static initializer より前)。
+layout を変える入口は版を上げて旧名を消す。ロード前の raw import table 読みは**診断**(名前付きエラー)であって強制ではない。
+section / `build_id` / C wire / `schema_v1` 予約 / candidate staging は作らない。CARRIER-RT3 の再帰 schema は `pelican_register_behavior_v3` になる。
+offline manifest(修正 ζ)は **final artifact の SHA-256** に拘束する(`build_id` は無い)。
+
+規範は WP381 v2(台帳)。設計段の 3 巡打ち切りは維持する —— これは設計を再開したのではなく、仕様レビューが設計の 1 決定を覆したので理由と共に記録したもの。

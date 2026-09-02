@@ -20693,11 +20693,11 @@ WP380a の後、WP380b 前の状態は「state は原子的、effect は漏れ�
 - **WP380b**(effect transaction): 決定 2(中身)・4・6・7。依存: WP380a。見積: 大
 - 仕様レビューは **WP380a を先に第 2 巡**にかけ、WP380b は WP380a 統合後に節を切り直してから
 
-### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾き、登録を C ABI の 1 entrypoint と transaction にする
+### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾く(v2: ABI は import symbol の版。section・C ABI は撤回)
 
 **§4 規則 11 上段(core の ABI・出荷 DLL の挙動が変わる)。設計レビュー済み(carrier §8 修正 γ)。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
-**規範は `docs/design_declaration_carrier.md` v4 §8 修正 γ(起票ゲート 1〜6)。本節はその道案内であり、矛盾したら §8 が優先する。**
-**依存: なし**(WP375 / WP379 / WP380 と独立。触るのは game-logic loader と SDK 登録 macro だけ)。
+**規範は `docs/design_declaration_carrier.md` §8 補遺(修正 γ は撤回)。**下の **v2 差分が本節の正**。
+**依存: WP379(統合後。component 登録 ingress を共有)。WP375 / WP380a とは独立。**
 
 #### 何が壊れているか(既存欠陥)
 
@@ -20775,3 +20775,84 @@ ABI version は今 `gameLogicAbiVersion = 1` の関数 export だけ([gamelogic.
 
 sidecar / helper process 隔離 / manifest 生成(CARRIER-STUDIO)/ `schema_v1` wire 本体(CARRIER-RT3)/ registry 型の変更 /
 Behavior の layout 変更 / hot-reload の teardown・rebuild 順序(WP380 の領域)/ `GameLogicArtifactMismatch` の検査。
+
+#### WP381 仕様レビュー第 1 巡(不合格・13 件)と v2 —— **section も C ABI も捨てる。ABI は import symbol の版で強制する**
+
+仕分け: **機構ごと削除 8**(#1 #2 #3 #5 #6 #7 #8 #9)/ **直す 4**(#4 #10 #11 #12)/ **依存を訂正 1**(#13)。
+
+**なぜ機構を捨てるか。** レビューの #5〜#8 が示したのは、「embedded section + 単一 C entrypoint」は
+(a) **enforcement ではない**(新 entrypoint と旧 static registrar を同じ DLL にリンクすれば preflight を通って旧 constructor が走る)、
+(b) 完全に固定するには **host / DLL 境界の全部を C ABI にする**か、provider 含む全 registry を candidate staging にする必要があり、
+GLABI-2 の目的(旧 DLL を実行前に止める)と釣り合わない、の 2 点である。一方、OS の loader は **import の解決を static initializer より前に行う**
+(Windows: `LoadLibrary` は import 未解決なら DllMain 前に失敗 / ELF: `RTLD_NOW` は relocation を initializer の前に完了する。現行は
+[gamelogicreload.cpp:139](../src/core/gamelogic/gamelogicreload.cpp#L139) で `RTLD_NOW`)。**ABI の enforcement は import symbol の名前に版を入れるだけで OS が行う。**
+section・raw PE section reader・`build_id`・C entrypoint・descriptor wire・`schema_v1` 予約・candidate staging は**全部作らない**。
+
+##### 決定 1(#5 #6 #7 #8 を消す): **ABI = DLL が import する host symbol の版付き名前**
+
+- host が export し DLL が import する登録・emit 入口は今 4 本: `__registerBehavior`([registerer.hpp:190](../src/core/userpublic/details/behavior/registerer.hpp#L190))/
+  `__registerEvent`・`__emit`([event/registerer.hpp:64](../src/core/userpublic/details/event/registerer.hpp#L64))/
+  `__registerSystem`([system/registerer.hpp:95](../src/core/userpublic/details/system/registerer.hpp#L95))+ component の `__registerComponent`
+- これらを **`pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_emit_v2` / `pelican_register_system_v2` / `pelican_register_component_v2`** に改名し、
+  **旧名は export しない**。SDK macro(`PELICAN_REGISTER_*`)は変えない(ソース互換。18 fixture variant と出荷 4 project は再ビルドだけで v2)
+- **規則**: 境界を越える struct(`BehaviorRegistration` / `EventTypeRegistration` / `GameSystemRegistration` / `QueuedEvent` / `ComponentLoaderInfo`)の
+  layout を変えるときは **その入口の版を上げ、旧名を消す**。CARRIER-RT3 の再帰 schema は `pelican_register_behavior_v3` になる(major を上げる儀式は無い)。
+  `gameLogicAbiVersion`([gamelogic.hpp:8](../src/core/userpublic/gamelogic.hpp#L8))は **2** に上げ、意味を「入口 symbol 世代の総和」にする(post-load の二重検査として残す)
+- **provider(render 5 種 / vulkan native scope / physics / animation)の static 登録は今のまま**(owner scope 下。#7 の「1 entrypoint」主張は撤回)。
+  それらの入口 symbol にも同じ版付け規則を適用する(今回は layout 不変なので改名しない。inventory を台帳に列挙)
+- #6(candidate と active の同名 component 衝突)は**既存の制限**であり本 WP の外。台帳の既知欠陥に記録(registry 世代化 = ID-A の領域)
+
+##### 決定 2(#2 #3 #9 を消し、#4 を直す): ロード前の検査は **raw PE / ELF の import table を読む診断**。強制は OS
+
+- `readGameLogicImports(path)` が PE import directory / ELF `.dynsym`(undefined)を raw で読み、**旧世代の名前(`__registerBehavior` 等の
+  legacy inventory)を 1 つでも import していれば `GameLogicAbiStale{symbol, found_generation, required_generation}`** で `LoadLibrary` を呼ばずに拒否。
+  読めない・PE でない → `GameLogicAbiUnreadable{reason}`。inventory に無い `pelican_core.dll` の未知 import → `GameLogicAbiUnknownImport{symbol}`
+- import が全部現行なのに `LoadLibrary` が失敗 → 既存の `GameLogicLoadFailed{os_code}`(今の文字列を code 化)
+- section・export table の解析はしない(entrypoint が無いので forged の概念が消える)
+- **`initialize()` は `shutdown()` の前に import 診断を行う**([gamelogicreload.cpp:209](../src/core/gamelogic/gamelogicreload.cpp#L209))。
+  reload 経路の「validate で load → unload → 再 load」([gamelogicreload.cpp:184](../src/core/gamelogic/gamelogicreload.cpp#L184)・:253)は
+  **変えない**(shadow copy は attempt ごとに一意で `.pelican-hot-reload` の下。path 差し替えは本 WP の脅威モデル外と明記)
+
+##### 決定 3(#4 #10): fixture は **frozen v1 header + v1 import stub** で作る。sentinel は registry の外
+
+- `test/fixtures/userpublic_frozen/v1/` に **本 WP 着手時点の `src/core/userpublic` を snapshot** としてチェックイン(WP380b の frozen-header fixture と共用。
+  先に着地した方が置く)。stale fixture の include path に **現行 userpublic を入れない**ことを CMake で assert
+- **v1 import stub**: `pelican_core_v1.def`(旧 5 symbol)から `lib /DEF /NAME:pelican_core.dll` で import library を生成し、stale fixture はそれにリンクする
+  (import table は `pelican_core.dll!__registerBehavior` を指す。v2 host はそれを export しないので OS が拒否する)
+- **sentinel**: stale fixture の static constructor は **自分の DLL と同じディレクトリに `wp381_stale_probe.txt` を作る**(registry rollback の外で観測できる)。
+  加えて `__registerBehavior` を呼ぶ(frozen header 経由)
+- fixture の役割は **6**: stale v1 / 現行 v2(WP162 variant をそのまま)/ 重複 key で登録拒否される v2 / 逆順 2 本 / 登録中に throw する v2
+  (「4 種」は撤回)。全 DLL target(18 variant + provider fixture + 出荷 4 project)の inventory と分類(v1 固定 = stale fixture のみ / 残り全部 v2 再ビルド)を台帳に置く
+
+##### 決定 4(#12): status は実在型を拡張する
+
+- `GameLogicReloadStatus`([gamelogicreload.hpp:14](../src/core/gamelogic/gamelogicreload.hpp#L14))と `RuntimeReloadResult`
+  ([reloadservice.hpp:47](../src/core/watch/reloadservice.hpp#L47))に **`error_code`(string、`@1` 付き名前)と `error_fields`(ordered_json)** を足す。
+  `last_error` / `error` の文字列は残す
+- RPC は既存の **`get_status` と `reload_game_logic`**([rpcserver.cpp:1116](../src/core/communication/rpcserver.cpp#L1116))の応答に同じ 2 field を足す。
+  新 method は作らない。Studio は JSON だけを見る
+
+##### 決定 5(#13): 依存の訂正
+
+- **WP375**: registry generation 契約に触らない(owner promotion の経路は今のまま)→ 独立
+- **WP379**: component 登録の ingress policy(WP379 決定 B)に触らない(改名するのは export 名、policy 関数は WP379 の所有)→ **同じファイルを触るので WP379 統合後**に着手
+- **WP380a**: 独立。**WP380b** は frozen header fixture を共用(先に着地した方が置く)
+- carrier §8 の順序「GLABI-2 → ID-B」は **CARRIER-RT3 の前提**としての順序であり、WP380a との依存ではない
+
+##### 決定 6(#11): 受け入れ(§4 規約 10)
+
+- **stale**: 3 root(initial / reload / 再 initialize)で stale fixture → `GameLogicAbiStale` の code と `symbol` field、
+  **`wp381_stale_probe.txt` が存在しない**、active handle / generation / 全 registry の key 集合が試行前と一致。
+  **対照: host に旧名 `__registerBehavior` の export を 1 本戻す変異で、probe file が現れる**(= 今日の挙動)
+- **診断の対照**: `readGameLogicImports` の呼出を消すと、同じ stale fixture が `GameLogicLoadFailed{os_code=127}` に落ちる(code が変わる)。
+  OS の enforcement は残るので probe は現れない —— これが「診断と強制は別」の観測
+- **v2 正常**: 現行 18 variant と出荷 4 project の DLL を **raw import 診断に通し、legacy 名 0・全 import が inventory 内**。
+  `project_catalog_headless_smoke` は起動確認として残すが、それとは別に **各出荷 project の DLL を production loader で load して `system_count` が着手時実測値と一致**
+- **rollback**: 重複 key fixture で active が前のまま・registry 一致。throw fixture で `internal` 相当の code と継続
+- **`initialize()` の順序**: 再 initialize に stale を渡すと **active が残る**(今日は `shutdown()` 後に空 = 対照)
+- `SKIP_DEVSTUDIO` 両構成・`PELICAN_WITH_PHYSICS` ON/OFF。全数(着手時に実測)。GPU は統合側で直列。CI は Windows/MSVC/Debug のみなので ELF 側は **コードは置くがテストは Windows で skip ではなく未登録**と明記
+
+##### やらないこと(v2 で追加)
+
+section / raw section・export reader / `build_id` / C entrypoint・descriptor wire / candidate registry staging(ID-A)/ provider 入口の改名 /
+validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の SHA-256 を使う)。
