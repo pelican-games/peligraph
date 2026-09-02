@@ -197,3 +197,111 @@ E-5  見える境界 3 つ(WP375 着地後。failure variant と terminal wire �
 
 `StructFieldValidationError` の名前・constructor・`code()/path()` を保持する。**game-logic ABI は上げない**。
 旧 DLL が投げた同型例外は core 境界で同じ値変換を受ける(基底に依存しない)。
+
+
+## 7. 設計レビュー第 2 巡(9 件・破綻 4)と v3 —— **v3 が最終。設計レビューは 3 巡目で打ち切る**
+
+**v3 が本文書の正。§6 の決定 1'〜9' は v3 の修正を受ける。触れていない決定は §6 のまま。**
+訂正: 「sprite_view 15、うち resolver 到達 5」は誤記(`decodeSprite` は full parser を呼ぶ)。
+resolver 到達 5 は **atlas の参照構文**の話であり、sprite_view 15 は全部 resolver から到達する。
+
+### 決定 1''(#1): Result 型を**自前で 1 つ**定め、`std::any` への暗黙 boxing を禁じる
+
+- core は C++20 で `std::expected` は無い。**`ResolutionResult<T>`** を自前で置く: `[[nodiscard]]`、
+  暗黙変換なし、`std::any` へ入れられない(コンストラクタを explicit、`std::any` 構築を `= delete` する強い wrapper)。
+  **unwrap 忘れはコンパイルで落ちる**(`ComponentCodecValue` = `std::any` に result が入ると `any_cast` で内部エラーになる穴を塞ぐ)
+- **seam は decode ではなく「decode + default 補完」**(resolver 所有)。camera の 4 エラーは decode 後の補完中に出る
+  ([resolvedscene.cpp:217](../src/core/loader/resolvedscene.cpp#L217))
+- `decodeAuthored` の production caller **6 箇所**(resolver / journal / runtime factory / preview / transaction ×2)を
+  E-0 で**全部**列挙し、preview の「戻り値を捨てる」呼び出し([editorpreviewprojection.cpp](../src/core/loader/editorpreviewprojection.cpp))は
+  **result を検査する形へ**変える(捨てると不正値を受理する)
+- **behavior params の ABI callback(`std::string (*)(json const&)`)は変えない**。core 境界で `StructFieldValidationError` を
+  値へ変換する(決定 1' どおり)
+
+### 決定 2''(#2): 遷移中の型を正確に書く。E-0 に単独価値を持たせる
+
+- 保持型は **`std::optional<StoredResolutionFailure>`**、`StoredResolutionFailure = variant<UserDataViolation, LegacyResolutionText>`
+  (成功状態は `nullopt`)
+- **未移行の拒否は投げ続ける**。resolver の catch が **`LegacyResolutionText` へ変換**する(decode 境界で変換するのは移行済みの
+  分岐だけ)。**§6 決定 1' の「decode 境界で既存 runtime_error も値へ変換」は撤回**
+- 混在受け入れ(typed と legacy の同居)は **E-1 / E-2 のみ**。**E-3 の受け入れは「producer が 0」**であり、
+  E-4b はそれを条件に `LegacyResolutionText` を削除する
+- **E-0 = 型 + camera(E-1 相当)+ `get_components` への最小の可視化**を 1 段に束ねる。
+  可視化無しの段には単独価値が無い(第 2 巡 (f))
+
+### 決定 3''(#3): **3 分類表**。internal は rollback してから再送出。coordinator の `noexcept` を越えて fail-fast
+
+| 分類 | 例 | transaction | coordinator / frame hook(`noexcept`) |
+|---|---|---|---|
+| **recoverable**(既存 `EditorProjectionException`、fault 注入 `AfterPublication` 等) | fault matrix | rollback → **失敗結果値**(現行どおり。matrix の `status=="failed"` を保つ) | 結果値 |
+| **UserDataViolation** | 利用者の入力 | rollback → **結果値** | 結果値 → terminal |
+| **internal**(`logic_error` / `bad_alloc` / 未知) | invariant 破れ | **`catch (...) { rollback; throw; }`**(cleanup してから再送出) | **`noexcept` の中で `std::terminate`** = fail-fast。ログに分類と場所を出してから止まる |
+
+**§4「一般例外について `commit` の `noexcept` を解かない」は撤回**する(v2 と矛盾していた)。
+`commit` は `noexcept` を外し、internal は伝播する。既存 fault matrix は recoverable 経路なので**壊れない**(受け入れで確認)。
+
+### 決定 4''(#4): failure variant は **本設計で決める**。WP375 を待たない
+
+WP375 の `plan → EditorProjectionPlan` / `materialize → EditorProjectionResult` は失敗値の型を持たない。**本設計側で二経路を固定**:
+- `plan → ResolutionResult<EditorProjectionPlan>`(失敗は `UserDataViolation` のみ)
+- `materialize → 既存 domain result(recoverable)+ UserDataViolation`。**internal は rollback 後に throw**(variant に載せない。
+  §6 決定 5' の「internal を variant に含める」は撤回)
+- terminal JSON: **outer の `EditorEditErrorCode` は不変**(既存 client を壊さない)+ **`error.data.user_data_violation`** を加える。
+  規範は `data` 側(outer は互換のため残る)
+
+### 決定 5''(#5): 第 3 境界は **2 つに分ける**。RPC は加算、launcher は handshake
+
+| 境界 | 契約 |
+|---|---|
+| RPC `load_scene` | outer `code=-32000` と旧 message bytes を**保ち**、`error.data.user_data_violation` を**加える**(JSON-RPC は既に `error.data` を運べる: [jsonrpc.hpp:28](../src/project/jsonrpc.hpp#L28)) |
+| cold start / launcher | 終了コード 0/1/-1 を**保ち**、**versioned NDJSON を stderr へ**(または専用 handshake)。Studio は unsolicited JSON を RPC と認めないので、**process failure の経路で読む** |
+| Studio | wire DTO / serializer / parser は **`pelican_project`** に置く(D0) |
+
+`requireRuntimeValue()` と collider / light / behavior binder の**文字列再包装も除去**する([resolvedscene.cpp:44](../src/core/loader/resolvedscene.cpp#L44)、[scene.cpp](../src/core/loader/scene.cpp))。
+
+### 決定 6''(#6): atlas 本体は resolver で評価されない。**wire 契約に「未評価」を明記**する
+
+atlas 本体の parse は `SpriteScene::resolve`、呼び出しは ECS system の worker dependency preparation
+([spriteviewsystem.cpp:25](../src/core/ecs/predefined/spriteviewsystem.cpp#L25))。**同期 `load_scene` が成功した後に落ち得る**。
+- v3 は **同期 preflight を作らない**(publish 前の asset 全走査 + digest cache は別設計)。代わりに
+  **query の wire 契約に `asset_evaluated: false`** を持たせ、未評価 asset のエラーは**非同期 diagnostic event**(`resolution_error` と同型)で
+  届く、と明記する。**rollback 契約**: 非同期失敗は scene を落とさず、該当 sprite を非表示 + diagnostic
+- E-3 の範囲は resolver 到達の 5 分岐 + **非同期 event の型付け**。残り 26 は event 経由で E-3 内に入る
+
+### 決定 7''(#7): ABI v1 DLL からは token が届かない。**lossless 復元 adapter + degraded alternative**
+
+DLL 内 inline canonicalizer が投げる型は `code + field_path`(`root + "." + field`)しか持たず、field 名は `aim.target` や `a/b` を許す
+(fixture に実在: [wp361_prefab_test.cpp:130](../test/wp361_prefab_test.cpp#L130))。**naive な dot split は誤り**。
+- **v1 adapter**: `params_schema` の field 名と authored key を突き合わせて **lossless に復元**できる場合だけ token 列にする
+- 一意に復元できなければ **`LegacySourcePath`**(pointer 無しの degraded alternative)。**pointer を捏造しない**
+- ABI v2(token callback)は**必要になったら**追加し v1 と併存。本設計では作らない
+
+### 決定 8''(#8): 合成後の violation は **`primary_source + related_sources[]`**。token 単位の origin map
+
+prefab substitution と default completion を通る **token 単位の origin map** を `PendingComponent` に持たせる
+(今は concrete JSON + component-level origin だけ: [resolvedscene.cpp:338](../src/core/loader/resolvedscene.cpp#L338))。
+- cross-field violation(`zfar <= znear`)は **`primary_source`**(比較で「後に読まれた側」= 規則を固定)+ `related_sources[]`
+- 台帳の実例(default `zfar=1000` / prefab parameter `znear=5000`)を受け入れに使う: primary は `znear` の prefab parameter、
+  related に project default の `zfar`
+
+### 決定 9''(#9): golden の受け入れを **surface ごとに分ける**
+
+- **変更前 bytes と一致させるのは `leaf_message` と既存の文脈付き message だけ**。
+  atlas の leaf に filesystem path が入る件は、**path を `source.document_id` へ移し leaf からは外す**(leaf は path 非依存)
+- query / terminal は **新 schema の新 golden**
+- **同一テストの両側**: 不正側で structured error が出る / 修正後に error が消え **実 subsystem が解決した値**が出る。
+  result unwrap / resolver wiring / serializer のどれか 1 つを消す変異で落ちる
+
+### 決定 10'': 段割り(最終)
+
+```
+E-0  ResolutionResult<T> + optional<StoredResolutionFailure> + 6 caller の列挙と preview の result 検査
+     + camera 4+alias / animation graph / ray_instance 11 の値化 + get_components の最小可視化   ← 単独価値あり
+E-1  collider 17 / sprite_view 15(混在受け入れ)
+E-2  atlas 5 + 非同期 diagnostic event の型付け(producer 0 が受け入れ)
+E-3a 3 分類表の実装: commit の noexcept 解除、internal は rollback → throw、coordinator で terminate
+E-3b resolver の catch を狭め LegacyResolutionText を削除
+E-4  terminal(`error.data`)/ load_scene(`error.data`)/ launcher handshake / Studio parser(project 層)
+     + origin map(決定 8'')+ v1 adapter(決定 7'')
+```
+**WP375 との関係**: E-3a は WP375 の materialize の失敗経路に触るので **WP375 着地後**。E-0〜E-2 は独立。
