@@ -20205,3 +20205,89 @@ scene save hook(production `saveSceneDocument` 内で任意 callback、常時コ
 ##### やらないこと
 
 観測 seam の削減 / WSI fault script と scene hook の設計変更(表に載せるだけ)/ rt1a・rt1b の sentinel の書き換え。
+
+
+#### WP376 仕様レビュー第 1 巡(7 件・破綻 3)と v2 —— **v2 が最終(1 巡 + 決定差分)**
+
+**v2 が本節の正。v1 の「実測」「決定」「受け入れ」は v2 で置換される。**
+
+##### 訂正 1(#1): 母集団の数え方が誤っていた
+
+「41 箇所」は `ResolvedSceneResolver::resolve(` の**生ヒット**で、テスト呼び出しは 39(現在 40)+ 本番 caller 1 + 定義 1。
+さらに数えていなかった母集団が 2 つある: テスト内の **`prepare(` 直叩き 4** と、
+**`.resolved_scene =` の initializer 20 箇所 / 5 ファイル**。分類も「downstream validator 用 fixture」
+(WP360 physics・RT3-1 の resolved-scene fixture)が抜けていた。
+
+**WP375 統合後に、2 つの表を file:line・テスト名つきで固定する**:
+1. `resolve` と `prepare` の全 test caller
+2. `.resolved_scene` と `.projection_state` の全 test initializer
+
+分類は **5 種**: `resolver unit` / `oracle` / `downstream fixture` / `service double` / `production composition`。
+
+##### 訂正 2(#2): 2 つの手製 provider は「写経」ではなく **service-boundary の test double**
+
+本番の query provider は resolver を呼ばず、`ProjectBasicConfig::resolvedScene()` の参照を返すだけ
+([editorruntimefactory.cpp:1748](../src/core/communication/editorruntimefactory.cpp#L1748))。edit/preview の provider は
+型すら違い `SceneProjectionState` を返す。`ProjectBasicConfig` は revision と resolver generation を**別 authority**として
+管理し、generation だけを進める `refreshResolvedScene` を持つ([basicconfig.cpp:632](../src/core/loader/basicconfig.cpp#L632))。
+
+**決定**: 手製 provider は **service / RPC 単体の test double として許容**する(方針 (1) は条件付きで維持)。
+ただし根拠は「写経」ではなく「明示 dependency の double」であり、**20 initializer 全件を「受け入れではない」と表に固定**する。
+
+##### 訂正 3(#3): 「古い generation」の変異は観測できない。**本当の不一致は SnapshotV2 export にある**
+
+- non-prefab の query は `scene_revision` しか出さず、resolver generation は wire に出ない
+- prefab では手製 provider 型の `resolve(document, generation)` が registry/provider を渡さず、`PrefabProviderStale` で先に落ちる
+- 出荷 4 project と `default_config.json` は scene v1 で `prefabs` を持たない
+
+**差し替え**: 検出すべきは変異ではなく**実在する不一致**。`EditorCommandService::resolved()` の consumer は query だけでなく
+`scene_tree` / `get_scene_revision` / SnapshotV1・V2 export / V2 import validation / generated selector validation にあり
+([editorcommandservice.cpp:695](../src/core/communication/editorcommandservice.cpp#L695)・:704・:802・:856・:994・:1198)、
+**SnapshotV2 export は `document()` と `resolved()` を別々に取得し、前者の revision と後者の prefab closure を
+1 つの response に載せる**(:802 / :856)。これが WP376 が閉じるべき欠陥である。
+
+##### 決定 A(#4・#5): 全 `resolved()` consumer を **単一の `SceneProjectionState` provider** に統合する
+
+- WP375 の `EditorProjectionContext` を丸ごと共有する案(方針 (2))は**却下**。
+  `EditorProjectionContext` の generation は codec/layout/behavior/default のものであり
+  `SceneResolverGeneration` を含まない。`active_scene_id` / `mode` は planner 固有で、query は他 scene を明示できる
+- **分離する**: planner 固有 `{active_scene_id, mode}` と、共有可能な **immutable environment snapshot**
+  (codec policy catalog / layout mode・generation / behavior registry・generation / canonical defaults)。
+  **WP375 は既に実装中**なので、WP375 が monolithic な context で着地した場合は **この分離を WP376 の範囲で行う**(WP375 v3 差分 2 の精密化)
+- query は **`{SceneProjectionState, environment snapshot, expected generation}` を 1 回で取得**し、
+  document と resolved を別 callback で読む箇所を**全部**その provider に置換する
+  (表: 上記 6 consumer)。SnapshotV2 export の **semantic bytes・revision・closure が 1 つの state から出る**
+
+##### 決定 B(#6): production acceptance は **WP374a の GPU fixture を名指しで拡張**する
+
+factory は `PolygonInstanceContainer` / `LightContainer` / `Renderer` を無条件に取得するので **GPU が要る**。
+新しい CPU テストを「1 本足す」のではなく、既存の本番経路 fixture
+([raytracing_rt3_1_production_test.cpp:195](../test/raytracing_rt3_1_production_test.cpp#L195): project 構成後に device 要求 →
+SceneLoader → 実 `RpcServer` → `makeEditorRuntimeService` → commit hook → save → fresh factory reload)を拡張する。
+`GPU` label、project → device の順序(WP374a 回収で踏んだ罠)を明記。
+
+##### 決定 C(#7): §4 規約 10 と matrix
+
+同じ実 RPC テストで **edit 前の exact resolved 値 + generation / edit・refresh 後の値 + generation / 両者が異なる**の 3 点。
+特に **`refreshResolvedScene` で generation だけを進めた後**、SnapshotV2 export の revision と closure が
+**同じ state から**出ること(統合前は別 callback なので食い違う = 対照)。
+
+matrix は **WP375 v3 を継承**: IMGUI ON/OFF(factory は ImGui からも使われる:
+[imguisystem.cpp:317](../src/core/imgui/imguisystem.cpp#L317))、runtime compiler ON/OFF、OpenXR compile、
+`PELICAN_WITH_RPC` OFF 時の factory / ImGui query smoke、`SKIP_DEVSTUDIO` 両構成。
+
+##### 受け入れ(v1 を置換)
+
+- 2 つの母集団表(5 分類、file:line・テスト名)が節に固定される
+- 6 consumer が単一 provider を呼ぶ。**document と resolved を別 callback で読む箇所が 0**
+  (残っていれば下の対照が落ちる)
+- **SnapshotV2 export**: `refreshResolvedScene` 後に revision と closure が同一 state 由来。
+  別 callback に戻す変異で食い違って落ちる
+- 実 RPC で edit 前後の exact resolved 値と generation が異なる(規約 10 の両側)
+- WP374a GPU fixture の拡張(名指し)。`GPU` label、project → device 順
+- 出荷 4 project・`src/core/resources/` の bytes を**変更しない**(要求してはならない)
+- 全数(着手時に実測)を壊さない / 決定 C の matrix
+
+##### やらないこと
+
+resolver 単体・オラクル・downstream fixture の移設 / 手製 double の削除 / Studio。
