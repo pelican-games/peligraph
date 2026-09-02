@@ -20,7 +20,7 @@ Runtime object
 |---|---|---|
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L122) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L507) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
-| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L203) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L336) |
+| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L203) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L334) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2695) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1122) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L39) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
@@ -106,7 +106,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 > publishPreparedSceneState(next_state); baseline.swap(next_digest) # 無throw / 比較ではなくbaseline更新
 > ```
 >
-> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L343) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L672) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L426)「SAVE0 is failure-atomic at every prepare point」。
+> **手がかり**: 上の `SceneSaveFaultPoint` 6値がそのまま手順の段名で、2回目のdigest検査は `AfterCachePrepare` と `BeforeReplace` の**間**にあります。[`stableDiskDigest()`](../../src/core/loader/basicconfig.cpp#L343) が `watch::readStableContentDigest()` を使うのは、「書き込み途中のファイルを読んだ」状態(`retry`)を成功と混同しないためです。一時ファイルは `TemporarySceneFile` のデストラクタが必ず消すので、どの中断点でthrowしてもゴミが残りません。[`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L672) が同じswap手法で「reload失敗時に確保なしで元へ戻す」を作っているので、対にして読むと早いです。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L427)「SAVE0 is failure-atomic at every prepare point」。
 >
 > **不変条件**: 直列化は1回だけ(以降の全段が同じバイト列を消費する)。ファイル置換より後にthrowしうる処理を置かない。baseline digestの更新はファイル置換と同一の無throw区間で行う。
 
@@ -212,24 +212,24 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 > stack.pop(); state[i] = 2
 > ```
 >
-> **手がかり**: 「未知parent」と「曖昧parent」はDFSより**前**の別ループで弾いてあるので([前段の検査](../../src/project/sceneformat.cpp#L134))、DFS中の `object_index_by_name.at(parent_name)` は必ず成功します。名前の無いobjectは `object_index_by_name` に載らないため親になれません。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L112) で、`NodeA` / `NodeB` / `NodeC` の3名がメッセージに出ることまで検査します。
+> **手がかり**: 「未知parent」と「曖昧parent」はDFSより**前**の別ループで弾いてあるので([前段の検査](../../src/project/sceneformat.cpp#L134))、DFS中の `object_index_by_name.at(parent_name)` は必ず成功します。名前の無いobjectは `object_index_by_name` に載らないため親になれません。テストは [`sceneformat_test.cpp` 内](../../test/sceneformat_test.cpp#L113) で、`NodeA` / `NodeB` / `NodeC` の3名がメッセージに出ることまで検査します。
 >
 > **不変条件**: 3値stateの `1` と `2` を統合しない。エラーには循環に参加する名前の並びを載せる(「循環あり」だけにしない)。重複名・未知親・曖昧親の検査はDFSより前に済ませる。
 
 ### 2. runtime用にcomponentを分類
 
-[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L159) はcomponentを四系統へ分けます。
+[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L157) はcomponentを四系統へ分けます。
 
 - `light`: ECSへ入れず`LightLoadEntry`へ
-- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L99)）
-- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L169) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L230) で特別扱い）
+- `collider`: `ColliderComponent`として検証し、後で`PhysWorld`へ。`PELICAN_WITH_PHYSICS` OFFのビルドでは、colliderを含むsceneは明示エラーです（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L101)）
+- `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L169) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L228) で特別扱い）
 - その他: `ComponentInfoManager`で文字列名から`ComponentId`へ
 
 このためsceneの見た目はcomponent配列でも、現在のruntime実装ではlight/collider/behaviorがECS Chunkに保存されるわけではありません。
 
 #### behaviorコンポーネント ✅実装済み
 
-behaviorはobject単位に束ねてから渡します（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L358)）。
+behaviorはobject単位に束ねてから渡します（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L356)）。
 
 ```cpp
 const auto behavior_availability = game_logic_status.loaded
@@ -248,7 +248,7 @@ auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_e
 | DLLロード済みで、未登録の型名 | エラー `Unknown behavior type '<type>' on object '<name>'` |
 | DLL不在で、未登録の型名 | warningを出して **pending** 扱いで続行 |
 
-公開は `arena.publishSceneAttachments(std::move(bound_behaviors))`（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L549)）で、失敗した場合は [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L584) してからrethrowします（[同](../../src/core/loader/scene.cpp#L552)）。
+公開は `arena.publishSceneAttachments(std::move(bound_behaviors))`（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L547)）で、失敗した場合は [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L582) してからrethrowします（[同](../../src/core/loader/scene.cpp#L550)）。
 
 > **設計決定:** game logic DLLが無い状態でsceneを開くのは、ツールや検証では正常なケースです。そこで「DLLが有るのに型名が引けない」ときだけfailにし、DLL不在は保留にしています。ロード可否がビルド構成に依存してぶれない、という線引きです。
 
@@ -267,7 +267,7 @@ auto ecs_objects = prepareSceneBindings(objects, component_info_manager, light_e
 
 ### 3. 旧sceneを破棄して新sceneを構築
 
-[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L336) は正規化と事前準備が成功した後、[`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L584) を呼びます。
+[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L334) は正規化と事前準備が成功した後、[`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L582) を呼びます。
 
 ```text
 object bindingをclear
@@ -276,11 +276,11 @@ object bindingをclear
 → PolygonInstanceContainerをclear
 ```
 
-その後、light、camera、ECS object、collider、behaviorを作ります。ECS objectは [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L386) のpopulate callback内でJSONを各Componentへロードします（transient glTF経路は[同](../../src/core/loader/scene.cpp#L760)）。
+その後、light、camera、ECS object、collider、behaviorを作ります。ECS objectは [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L384) のpopulate callback内でJSONを各Componentへロードします（transient glTF経路は[同](../../src/core/loader/scene.cpp#L758)）。
 
 ### 4. authored local TRSのworld投影
 
-ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子transformのworld解決を済ませます（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L431)）。
+ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子transformのworld解決を済ませます（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L429)）。
 
 ```cpp
 // Project authored local TRS to world before any SceneLoaded observer can
@@ -314,32 +314,32 @@ ECS objectを作った後、`SceneLoaded` を配送する**前**に、親子tran
 
 ### 5. 名前binding
 
-名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L611)、呼び出しは [親子あり経路](../../src/core/loader/scene.cpp#L403) / [親子なし経路](../../src/core/loader/scene.cpp#L502)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
+名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります（[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L609)、呼び出しは [親子あり経路](../../src/core/loader/scene.cpp#L401) / [親子なし経路](../../src/core/loader/scene.cpp#L500)）。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
 
 bindingは生ポインタを保持しません。アクセス時に`tryComponent<TransformComponent>()`でIDのgenerationとComponent存在を再検証します。
 
 ### 6. SceneLoaded event
 
-ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L559)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
+ロード完了後に [`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) をemitします（[`SceneLoader::load()`末尾](../../src/core/loader/scene.cpp#L557)）。フレーム末尾のpending loadからemitされた場合、eventは次フレーム冒頭に届きます。
 
 ## 3.6 即時loadと要求load
 
 - `SceneLoader::load()`はその場で全sceneを置換。
-- [`requestLoad()`](../../src/core/loader/scene.cpp#L562) は存在確認後、scene IDだけをpendingへ保存。
-- [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L570) はフレームのゲーム更新末尾で実際にload。
+- [`requestLoad()`](../../src/core/loader/scene.cpp#L560) は存在確認後、scene IDだけをpendingへ保存。
+- [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L568) はフレームのゲーム更新末尾で実際にload。
 
 `GameContext::loadScene()`はrequest型です。RPCの`load_scene`は即時loadです。この違いは、ゲームSystem update中にECS全削除が起きないようにするためです。
 
 ## 3.7 ComponentのJSONロード
 
-sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L37) が担います。
+sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L54) が担います。
 
 1. runtime登録時に `name → ComponentId` を保存。
 2. `ComponentId → ComponentInfo`からJSON loader callbackを得る。
-3. [`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L109) が`JsonArchiveLoader`を作る。
+3. [`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L130) が`JsonArchiveLoader`を作る。
 4. Componentの`ref(ar)`を型消去callback越しに呼ぶ。
 
-`ref()`を持たないComponentはscene JSONからロードできず、明示エラーになります。JSON archiveの対応型は [`jsonarchive.hpp`](../../src/core/userpublic/serialize/jsonarchive.hpp#L10) に固定されています。
+`ref()`を持たないComponentはscene JSONからロードできず、明示エラーになります。JSON archiveの対応型は [`jsonarchive.hpp`](../../src/core/userpublic/serialize/jsonarchive.hpp#L12) に固定されています。
 
 ## 3.8 Asset modelから描画instanceまで
 
@@ -479,13 +479,13 @@ API面の主な変化は次の通りです。
 
 ### `load_gltf` はトランザクション（WP144）
 
-RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L702) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
+RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L700) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
 
-1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L716)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
+1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L714)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
 2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2455) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L339) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
 3. [`commit()`](../../src/core/model/gltf.cpp#L2404) でGPU資源を確保し、`stageModelInstance()` でstagingします。
 4. エンティティ生成がthrowしたら `releaseModelGpuResources()` して `transient_models.pop_back()` します。
-5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L770)）。
+5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L768)）。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -726,7 +726,7 @@ struct ComponentCodec {
 
 この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L67)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L872) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L351)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L376)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
 
-現在の登録は7種です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1090)）。
+現在の登録は7種です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1092)）。
 
 | codec名 | `runtime_kind` |
 |---|---|
@@ -777,7 +777,7 @@ componentごとに §3.11 のcodec metadataが付くので、「宣言として�
 
 > **設計決定:** `removeObject()` は破棄ではなく [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L63) を**返します**。ここでのclosureは「取り除いた宣言を元の場所へそのまま戻すための記録一式」という意味で、関数のクロージャでもグラフの閉包でもありません。中身は `authoring_object_id` / `scene_id` / `declaration_index` / `previous_object_id` / `next_object_id` / `authored_json` の六つで（[`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L63)）、これだけあれば **同じ `AuthoringObjectId` を、消したときと同じ宣言区間（前後の兄弟の間）へ、JSONを一字も落とさずに戻せます** — 「無損失」はこの意味です。ヘッダのコメント通り、object配列の変更をこれらの操作だけに限ることで、metadataのidentity列とauthored JSONの並びがずれないことを型で保証しています。
 
-> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L281) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L3390))
+> 🧩 **難所 — closureがidentityを運ぶ**([`restoreObject()`](../../src/core/loader/authoringscenedocument.cpp#L281) / journal側の [`finalizeJournal()`](../../src/core/communication/editorjournal.cpp#L3391))
 >
 > **何をする所か**: commit済みのjournal recordに、spawnしたobjectのclosure(id + scene + 宣言index + 前後の兄弟id + authored JSON)を後から書き足し、再生時は同じidを同じ宣言区間へ戻します。
 >

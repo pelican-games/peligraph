@@ -20967,6 +20967,25 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
 
 **依存: WP375 統合後**(同じ `raytracing_rt3_1_production_test.cpp` を触る)。WP381 は本 WP の後(決定 5 のとおり)。
 仕様レビューは 2 巡で打ち切り。見積: **中**(決定 G の owner 移設 15 call site と決定 F の 2 ingress が増えた)。
+
+
+#### WP379 完了記録(統合側。2026-09-03、`51841eb3`)
+
+- **実装(codex、fast 無し)**: builtin を `pelican_ray_instance` に統一(登録・codec・scene preflight・TLAS / RayLayout 診断)。未登録 component の共通 cause
+  `component_unknown@1{name}`(`ComponentUnknownError`。SceneLoader と RPC が同じ cause、snapshot は `snapshot_invalid` の inner detail)。
+  owner-aware policy を production 登録入口 1 箇所に(engine: `pelican_` or allowlist 7 / external: `pelican_` 禁止 / payload `{name, owner_kind}`)。
+  scope 無しの登録を拒否し、builtin は明示 engine registrar、test / benchmark は allocated test owner へ。実 DLL fixture(`test/fixtures/ray_namespace_component`)で共存試験
+- **決定 I の manifest(実測)**: `src/` production hardcode は着手時 9 / 3(WP375 が 2 箇所を先に消していた)→ **0**。`test/` は 21 / 4 → **14 / 3、全部意図的 negative**。
+  design docs の raw token 29 / 4 → 11 / 2(全部 superseded / 履歴)。出荷物 0
+- **統合側の GPU 実行**(agent は GPU 禁止で UNMET 報告): 20 件中 **1 件赤**(`production bootstrap keeps external ray_instance …` の `instance_flags` 期待 0 に対し実測 1)→
+  継続で判定 → **(a) 期待値の誤り**: `with_as=true` の fixture は AS defaults を使い、`instance_flags` の既定は `triangle_facing_cull_disable`(= 1。`rayinstance.hpp:11`)。
+  authored は mask だけなので resolver が default の 1 を維持する(WP374 テストも同じ既定を期待)。期待値を定数に直し、**DLL 無しの canonical-only control の row(mask / flags / custom index / geometry flags)を保存して、
+  外部 DLL + `ray_instance` ありの row と直接比較**する形に変更(共存が row に影響しないことの直接検査)。GPU 1 / 1 緑
+- **統合側の変異 3 本**: **G1**(builtin を旧名で登録)継続後に再実行 → **赤**(基準は 20 / 20 緑) /
+  **G2**(RPC の未登録 component を `schema_violation` に)**赤** / **G3**(external の `pelican_` 禁止を消す)**赤**(CPU)。残留 0
+- **統合側の検証(worktree)**: 継続後の再ビルドで WP379 系 + RT3-1 production GPU **20 / 20**、非 GPU **1221 / 1221**(復元後)
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1540 件中 1539 緑**。落ちた 1 件は `WP375 production acceptance c`(fixture DLL の **shadow copy 衝突** = 既知 flake。単独再実行 1 / 1 緑)
+- コードレビュー `rev379`: 投入済み(fast 無し)。結果は追記
 ### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**

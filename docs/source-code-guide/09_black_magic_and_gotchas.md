@@ -309,7 +309,7 @@ builder を後で使うなら、component value を別の lvalue として `fini
 
 ## 9.5 Component type erasure と lifecycle callback
 
-ECS chunk は C++ 型を知りません。登録時に [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L36) が次を callback に変えます。
+ECS chunk は C++ 型を知りません。登録時に [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L118) が次を callback に変えます。
 
 ```text
 T
@@ -322,7 +322,7 @@ T
 └─ optional ref(JsonArchiveLoader&)
 ```
 
-non-trivial component の swap-delete(削除した要素の穴へ配列の末尾要素を移して末尾を縮める方式。詰め直しが 1 要素で済む代わりに、並び順は保たれません)は assignment ではなく、destination へ move-construct し source を destroy します。[`relocate` lambda](../../src/core/userpublic/details/component/registerer.hpp#L53) と [`VariedArray::removeAt()`](../../src/core/userpublic/details/ecs/chunk.cpp#L71) が対になっています。
+non-trivial component の swap-delete(削除した要素の穴へ配列の末尾要素を移して末尾を縮める方式。詰め直しが 1 要素で済む代わりに、並び順は保たれません)は assignment ではなく、destination へ move-construct し source を destroy します。[`relocate` lambda](../../src/core/userpublic/details/component/registerer.hpp#L80) と [`VariedArray::removeAt()`](../../src/core/userpublic/details/ecs/chunk.cpp#L71) が対になっています。
 
 制約は compile-time に固定されます。
 
@@ -335,7 +335,7 @@ non-trivial component の swap-delete(削除した要素の穴へ配列の末尾
 
 ### Component ID は dense index でもある
 
-[`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L86) は値としては ID をそのまま index に使いますが、**現在は `get(id)` 経由になりました**。未登録スロットの読み出しは [`getFromIndex()`](../../src/core/ecs/componentinfo.cpp#L89) が `std::out_of_range("component index N is not registered")` を投げます。黙って壊れた metadata を返すことはありません。さらに archetype mask(archetype は「同じ component の組み合わせを持つ entity をまとめた区画」で、mask はその組み合わせを component ID 1 個 = 1 ビットとして表した値)は [`MAX_COMPONENTS = 64`](../../src/core/userpublic/details/ecs/componentdeclare.hpp#L21) の `uint64_t` です。
+[`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L91) は値としては ID をそのまま index に使いますが、**現在は `get(id)` 経由になりました**。未登録スロットの読み出しは [`getFromIndex()`](../../src/core/ecs/componentinfo.cpp#L94) が `std::out_of_range("component index N is not registered")` を投げます。黙って壊れた metadata を返すことはありません。さらに archetype mask(archetype は「同じ component の組み合わせを持つ entity をまとめた区画」で、mask はその組み合わせを component ID 1 個 = 1 ビットとして表した値)は [`MAX_COMPONENTS = 64`](../../src/core/userpublic/details/ecs/componentdeclare.hpp#L21) の `uint64_t` です。
 
 したがって Component ID は次を満たす必要があります。
 
@@ -343,7 +343,7 @@ non-trivial component の swap-delete(削除した要素の穴へ配列の末尾
 - `0..63` の範囲。
 - 同じ型は全 translation unit で同じ ID specialization を見る。
 
-**登録側の検査は全面的に強化されました**(WP163 / ECS1)。[`ComponentInfoManager::registerComponent()`](../../src/core/ecs/componentinfo.cpp#L20) は以下をすべて例外で拒否します。旧版の「黙って slot を上書きする」挙動はもうありません。
+**登録側の検査は全面的に強化されました**(WP163 / ECS1)。[`ComponentInfoManager::registerComponent()`](../../src/core/ecs/componentinfo.cpp#L25) は以下をすべて例外で拒否します。旧版の「黙って slot を上書きする」挙動はもうありません。
 
 | 条件 | 文言 |
 |---|---|
@@ -355,7 +355,7 @@ non-trivial component の swap-delete(削除した要素の穴へ配列の末尾
 
 ID 割当を engine-wide schema として管理する必要がある点は変わりませんが、間違いは **起動時に落ちて分かる** ようになりました。
 
-登録解除 API も入りました。[`unregisterComponent(token)`](../../src/core/userpublic/details/component/registerer.hpp#L90) / [`unregisterComponents(owner)`](../../src/core/userpublic/details/component/registerer.hpp#L91) / `componentRegistrationCount(owner)` です。ただし [`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L64) は **依存 System が残っていると拒否** します。
+登録解除 API も入りました。[`unregisterComponent(token)`](../../src/core/userpublic/details/component/registerer.hpp#L136) / [`unregisterComponents(owner)`](../../src/core/userpublic/details/component/registerer.hpp#L137) / `componentRegistrationCount(owner)` です。ただし [`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L69) は **依存 System が残っていると拒否** します。
 
 ```text
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
@@ -363,11 +363,11 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 
 ### custom Component の現状
 
-型 ID 宣言 macro は公開 header にありますが、runtime 登録入口は [`internal::getComponentRegisterer()`](../../src/core/userpublic/details/component/registerer.hpp#L89) です。production で自動登録されるのは [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) の built-in 群です。
+型 ID 宣言 macro は公開 header にありますが、runtime 登録入口は [`internal::getComponentRegisterer()`](../../src/core/userpublic/details/component/registerer.hpp#L135) です。production で自動登録されるのは [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) の built-in 群です。
 
-game code 向けの安定した `PELICAN_REGISTER_COMPONENT` public macro/boot hook は **現在も存在しません**(リポジトリ全体を grep しても不在)。`DECLARE_COMPONENT` しただけでは `ComponentInfoManager` に metadata が入らず、create/scene load できません。テストは internal API を直接呼んで登録しています。[`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L190) が例です。
+game code 向けの安定した `PELICAN_REGISTER_COMPONENT` public macro/boot hook は **現在も存在しません**(リポジトリ全体を grep しても不在)。`DECLARE_COMPONENT` しただけでは `ComponentInfoManager` に metadata が入らず、create/scene load できません。テストは internal API を直接呼んで登録しています。[`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L191) が例です。
 
-なお `registerComponent<T>()` の戻り値は `void` から [`RegistrationToken`](../../src/core/userpublic/details/component/registerer.hpp#L36) へ変わりました。
+なお `registerComponent<T>()` の戻り値は `void` から [`RegistrationToken`](../../src/core/userpublic/details/component/registerer.hpp#L62) へ変わりました。
 
 ## 9.6 Archetype/SoA chunk と pointer lifetime
 
@@ -432,7 +432,7 @@ ECS unordered component hazard between systems '<A>' and '<B>' on component(s) '
 
 ### 組み込み System の依存はほぼ全順序になった
 
-[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L39) の現在の依存です(全て `registerSystemForce`)。
+[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L42) の現在の依存です(全て `registerSystemForce`)。
 
 | System | 依存 |
 |---|---|
@@ -457,18 +457,18 @@ non-force system は matching chunk の component version と `last_run_tick` �
 
 ## 9.8 Camera、light、collider はすべて同じ ECS component ではない
 
-scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L159) が分岐します。系統は **4 つ**になりました。
+scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L157) が分岐します。系統は **4 つ**になりました。
 
 | scene name | runtime 経路 |
 |---|---|
 | `transform`, `simplemodelview`, `camera` | ComponentInfo 経由で ECS chunk へ作成 |
 | `light` | ECS へ入れず `LightLoadEntry` として `LightContainer::load()` |
-| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::bindCollider()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`throwBuildFeatureDisabled()`](../../src/core/loader/scene.cpp#L99)) |
-| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L80) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L230))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
+| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::bindCollider()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`throwBuildFeatureDisabled()`](../../src/core/loader/scene.cpp#L101)) |
+| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L80) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L228))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。
 
-behavior の公開は [`arena.publishSceneAttachments()`](../../src/core/loader/scene.cpp#L549) の 1 点で、失敗すると [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L584) してから rethrow します。「behavior 型名を間違えると scene が半分だけロードされる」ということはありません。
+behavior の公開は [`arena.publishSceneAttachments()`](../../src/core/loader/scene.cpp#L547) の 1 点で、失敗すると [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L582) してから rethrow します。「behavior 型名を間違えると scene が半分だけロードされる」ということはありません。
 
 ### ライトのマジックネームは撤去された(WP142 / LIGHT0)
 
@@ -639,14 +639,14 @@ teardown の最終段は phase で分岐します。
 | 項目 | 調査時点の状態 | コード |
 |---|---|---|
 | `JsonArchiveLoader` | 実装済み。scene component/event JSON load に使用 | [`jsonarchive.cpp`](../../src/core/userpublic/serialize/jsonarchive.cpp#L6) |
-| `JsonArchiveSaver` | `prop` 宣言のみで、この repository 内に定義なし | [`jsonarchive.hpp`](../../src/core/userpublic/serialize/jsonarchive.hpp#L30) |
+| `JsonArchiveSaver` | `prop` 宣言のみで、この repository 内に定義なし | [`jsonarchive.hpp`](../../src/core/userpublic/serialize/jsonarchive.hpp#L32) |
 | `BinaryArchive` | `prop` 宣言のみで、この repository 内に定義なし | [`binaryarchive.hpp`](../../src/core/userpublic/serialize/binaryarchive.hpp#L10) |
 | pose action | **実装済み**(WP130/132)。pose は `poses` map から返り、未サンプルなら default `ActionPose`。flat 環境では pose サンプルが来ないので default が返る点に注意 | [`actionmap.cpp`](../../src/core/os/actionmap.cpp#L867) |
 | `.surface` / material format | **runtime 接続済み**(WP116/117/122)。`.surface` は surfacecompiler で pipeline に、`.material.json` は lowering を経て `MaterialContainer` へ | [`surfacecompiler.hpp`](../../src/core/shader/surfacecompiler.hpp) / [`materiallowering.hpp`](../../src/project/materiallowering.hpp) |
 | Studio project editor | D2、WP264 の viewport / Outliner 選択同期、WP266 の schema-driven property Inspector、WP275 の gizmo 操作まで実装済み。project は同じ child へ `--rpc --project` で渡り、identity は名前でなく `(scene_id, declaration_index)`。property edit / gizmo / live preview / undo / redo / save は公開 RPC を使い、terminal result まで成功扱いしない。picking / gizmo feature 無効は理由を警告し、自動有効化しない | [`SelectionModel`](../../src/devstudio/model/selection.hpp) / [`GizmoModel`](../../src/devstudio/model/gizmomodel.hpp) / [`InspectorModel`](../../src/devstudio/model/inspectormodel.hpp) / [`InspectorWidget`](../../src/devstudio/view/inspectorwidget.hpp) / [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L28) |
 | swapchain capture | surface が TRANSFER_SRC を持てば windowed でも readback 実装済み。不可時のみ `capture unavailable_windowed` 例外 | [`swapchainframetarget.cpp`](../../src/core/vkcore/swapchainframetarget.cpp#L435) |
 | frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1420) |
-| custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L20) |
+| custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L45) |
 | behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L163) |
 | 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L548) |
 | 編集 RPC(query / snapshot / edit / undo / preview / journal) | ✅実装済み(WP153〜172) | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L261) |
@@ -785,7 +785,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 
 > **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、その adapter だけでなく、**同じ `commit()` が束ねる transaction 全体**(= 編集・reload・scene 遷移が共有するこのプロトコル)の原子性が崩れます。他の adapter が正しく rollback できても、その 1 つが戻らなければ transaction は半端な状態で終わるからです。
 
-`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L772))。
+`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L770))。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -927,7 +927,7 @@ rg -n -A3 "catch \(const std::exception" test --glob "*.cpp" | rg -B1 "SKIP\("
 
 skip が緑を汚さない以上、`ctest` の exit code だけでは検出できません。そのため gate 側が **許可した名前以外の skip をすべて失敗にする**方針を持っています。判定は [`validate_skip_policy()`](../../test/ci/skip_policy.py#L74)(CPU/GPU 両 gate 共通)で、GPU 側の driver が [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py)、許可リストが [`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) です。現在の GPU allowlist は、clone / worktree 外の corpus を `PELICAN_TEST_PROJECTS_DIR` で指定する `project_catalog_headless_smoke` の未指定 skip だけを載せています。上の 4 件の broad exception skip は載せません。entry を消せば未指定時の skip が非許可になり、逆にテスト名自体が現れなければ stale entry として失敗するので、リストは腐りません([`skip_policy.py` 内](../../test/ci/skip_policy.py#L83))。
 
-なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L30) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L126) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L1502) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
+なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L30) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L126) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L1526) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
 
 ---
 
