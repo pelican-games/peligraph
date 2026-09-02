@@ -20439,8 +20439,8 @@ launcher の `PELICAN_DIAG` / terminal `error.data` / `commit` の `noexcept` �
 ### WP379: RAY-NAMESPACE —— `ray_instance` を `pelican_ray_instance` へ移し、builtin 名を owner-aware に予約する
 
 **§4 規則 11 中段(core の複数経路 + project 形式)。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小〜中。**
-**規範は `docs/design_declaration_carrier.md` v4 §8 修正 θ(RAY-NAMESPACE は独立 WP)。**下の **v2 差分が本節の正**(migration・alias は廃止)。
-**依存: WP377(統合後)のみ。GLABI-2 とは並列可。WP374 の後追い負債。**
+**規範は `docs/design_declaration_carrier.md` v4 §8 修正 θ(RAY-NAMESPACE は独立 WP)。**下の **v3 差分が本節の正**(v2 で migration・alias を廃止、v3 で受け入れと範囲を確定)。
+**依存: WP375(統合後。同じ production test TU を触る)。GLABI-2(WP381)は本 WP の後。WP374 の後追い負債。**
 
 #### 何が壊れているか
 
@@ -20550,6 +20550,64 @@ GLABI-2 の `OwnerDescriptor` が来たら足す(WP381 の後追いとして台�
 migration / alias / ambiguity エラー / owner の module id / 他 builtin の改名(allowlist で据え置く)/ prefab registry の構築順
 (外部 DLL 登録より前に prefab を検証する既存挙動は本 WP の外。着手時に再現したら台帳へ記録だけ)。
 
+
+#### WP379 仕様レビュー第 2 巡(不合格・6 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ)**
+
+「migration / alias を作らない」中心判断は支持された。落ちたのは受け入れの成立条件と作業範囲。仕分け: **直す 6 / やらない 0**。
+
+##### 決定 E(#1): compiler OFF の対照は **`layout_requires_runtime_compiler@1`**。policy テストは CPU 実行体へ
+
+- `PELICAN_RUNTIME_SHADER_COMPILER=OFF` では layout 付き project が component 解決の**前**に
+  `pelican.ray_tracing.layout_requires_runtime_compiler@1` で止まる([raygrouplayout.cpp:1175](../src/core/shader/raygrouplayout.cpp#L1175))。
+  これを OFF の**正式な対照**とし、(a)(b: layout v2)(c) は **compiler ON でだけ**実行する
+- (d)(policy)と (b: no-layout の未登録名)は **GPU label を継承しない CPU TU / target** に置く(同一実行体は target 単位で `gpu` を継承する:
+  [test/CMakeLists.txt:115](../test/CMakeLists.txt#L115))
+
+##### 決定 F(#2): 未登録 component は **`component_unknown@1`** を共通 cause にする(SceneLoader と RPC)
+
+- 今は scene が code 無しの `runtime_error("Unknown component …")`([scene.cpp:117](../src/core/loader/scene.cpp#L117))、RPC が固定 codec 表の
+  `unknown_component_type`([editorjournal.cpp:212](../src/core/communication/editorjournal.cpp#L212))で、**同じ lookup ではない**(v2 の前提は誤り。訂正)
+- 本 WP で **`component_unknown@1{name}`** を scene(`SceneLoader`)と RPC(`add_component`)の両方に入れる。snapshot import は top-level `snapshot_invalid` を保ち、
+  **inner cause** として同 code を載せる。prefab は構文検査のみ(変えない。未登録名は scene 解決で同 code に落ちる)
+- 受け入れ (b) は **scene / RPC / snapshot の 3 ingress** で同 code を検査する(prefab は scene 経由で 1 回)
+
+##### 決定 G(#3): allowlist は **7 件**。テスト・benchmark の登録は **allocated test owner** へ移す
+
+- production bootstrap の unprefixed engine builtin は **`eid / transform / localtransform / simplemodelview / camera / animation / sprite_view`**
+  (最後は [spriteview.cpp:107](../src/core/userpublic/components/spriteview.cpp#L107))
+- scope 無しの `registerComponent<T>` は既定で engine owner に落ちる。**テスト 14 call site と `ecs_benchmark`([benchmark.cpp:220](../src/core/ecs/benchmark.cpp#L220))は
+  `TestSupport::ScopedTestRegistrationOwner`(allocated external owner)へ移す**。engine owner の登録は **明示の engine registrar** からだけ行う
+  (暗黙 scope 無し = engine、をやめる)
+- 受け入れ: **production registry の unprefixed engine-owned 集合が allowlist と完全一致**(動的。allowlist を 1 件減らすと落ちる)
+
+##### 決定 H(#4): (c) は **実 DLL fixture** を `initializeConfiguredGameLogic` 経由でロードする
+
+- WP162 系列に **serializable な外部 `ray_instance` component を登録する fixture DLL** を足し、production bootstrap
+  (`configure layout → builtin 登録 → initializeConfiguredGameLogic → SceneLoader`、[pelican_core.cpp:108](../src/core/userpublic/pelican_core.cpp#L108))で通す。
+  内部 API(`allocateRegistrationOwner`)での手動登録は受け入れに数えない。[raytracing_rt3_1_test.cpp:289](../test/raytracing_rt3_1_test.cpp#L289) の旧テストは消す
+- 対照: DLL の外部 `ray_instance` を登録しないと scene が `component_unknown@1` で落ちる / DLL ありで builtin と共存し両方 resolve
+
+##### 決定 I(#5): 旧名出現の **manifest**(着手時に固定。回収時に照合)
+
+| 分類 | 件数(2026-09-02 実測) | 扱い |
+|---|---:|---|
+| `src/` production hardcode | **11 / 5 ファイル**(v1 の「6 ファイル」は誤り) | 全部 canonical へ(WP375 が消す 2 箇所は WP375 側で確認) |
+| `test/` literal | 19 / 3 ファイル | positive builtin fixture → canonical / (b)(c) の negative → **意図的に旧名を保持**(manifest に行ごとに記す) |
+| `docs/` raw token(本節以外) | 31 / 4 ファイル | 歴史記述は保持、現行仕様の記述は canonical へ |
+| 出荷 4 project / resources / tracked JSON・binary | 0 | 対象なし |
+- 設計文書 §8 修正 θ の RAY-NAMESPACE 行(「修正 6」= migration matrix)を「rename + owner policy、migration / alias 無し」に**一本化**する(本差分と同時に修正)
+
+##### 決定 J(#6): policy の受け入れは **表駆動 + exact payload**
+
+- allowlist **7 件全部**が engine owner で受理 / allowlist 外 **3 件以上**(`foo` / `ray_instance` / `sprite`)が `builtin_name_unprefixed@1` /
+  external の `pelican_*` **3 件以上**が `reserved_component_namespace@1` / external の unprefixed は受理
+- payload は **`{name, owner_kind}` の exact 一致**(余分な field 無し。raw owner・path を含まない)。owner を allocate → release → 再利用しても **bytes 同一**
+- 全部 production registration entry(policy 関数の所在)経由。allowlist / prefix / owner の判定を **1 つずつ**消す変異がそれぞれ落ちる
+
+##### 段割りと依存(v3)
+
+**依存: WP375 統合後**(同じ `raytracing_rt3_1_production_test.cpp` を触る)。WP381 は本 WP の後(決定 5 のとおり)。
+仕様レビューは 2 巡で打ち切り。見積: **中**(決定 G の owner 移設 15 call site と決定 F の 2 ingress が増えた)。
 ### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**

@@ -402,7 +402,7 @@ production `GameLogicReloader` 経由で検査する。対照: 現行 loader は
 | WP | 内容 | 単独価値 |
 |---|---|---|
 | **GLABI-2** | 修正 γ 全部 | あり(今日は v1 DLL の constructor が host state を変えてから拒否される) |
-| **RAY-NAMESPACE** | 修正 6 | あり(WP379 起票済み) |
+| **RAY-NAMESPACE** | rename + owner-aware policy(**migration / alias 無し**。修正 6 の matrix は WP379 v2 で撤回) | あり(WP379 起票済み) |
 | **CARRIER-RT3** | 修正 α β δ ε η + RT3 row schema(修正 2)+ inventory(修正 7')。前提: GLABI-2 / RAY-NAMESPACE / ID-B(WP380) | あり(1 object × 2 primitive を別設定) |
 | **CARRIER-STUDIO** | 修正 ζ + design_studio_component_ui | RT3 の後 |
 
