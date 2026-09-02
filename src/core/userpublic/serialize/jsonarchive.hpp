@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../export.hpp"
+
 #include <cstdint>
 #include <geom/quat.hpp>
 #include <geom/vec.hpp>
@@ -7,7 +9,7 @@
 
 namespace Pelican {
 
-struct JsonArchiveLoader {
+struct PELICAN_API JsonArchiveLoader {
     const void *ptr;
 
     void prop(const char *name, int8_t &val);
@@ -27,7 +29,7 @@ struct JsonArchiveLoader {
     void prop(const char *name, quat &val);
 };
 
-class JsonArchiveSaver {
+class PELICAN_API JsonArchiveSaver {
   public:
     void prop(const char *name, int8_t &val);
     void prop(const char *name, int16_t &val);

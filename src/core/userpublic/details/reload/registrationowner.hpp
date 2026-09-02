@@ -74,3 +74,28 @@ class PELICAN_API ScopedRegistrationOwner {
 };
 
 } // namespace Pelican::internal
+
+namespace Pelican::TestSupport {
+
+// Test and benchmark component registrations are external by construction.
+// Keeping this scope explicit prevents a missing fixture owner from silently
+// acquiring the engine namespace.
+class ScopedTestRegistrationOwner final {
+    internal::RegistrationOwner owner_ =
+        internal::allocateRegistrationOwner();
+    internal::ScopedRegistrationOwner scope_{owner_};
+
+  public:
+    ScopedTestRegistrationOwner() = default;
+    ~ScopedTestRegistrationOwner() {
+        internal::releaseRegistrationOwner(owner_);
+    }
+
+    ScopedTestRegistrationOwner(const ScopedTestRegistrationOwner &) = delete;
+    ScopedTestRegistrationOwner &operator=(
+        const ScopedTestRegistrationOwner &) = delete;
+
+    internal::RegistrationOwner owner() const noexcept { return owner_; }
+};
+
+} // namespace Pelican::TestSupport

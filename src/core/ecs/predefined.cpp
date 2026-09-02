@@ -21,18 +21,21 @@ namespace Pelican {
 
 void ECSPredefinedRegistration::reg() {
     // predefined component
-    internal::getComponentRegisterer().registerComponent<EntityId>("eid");
-    internal::getComponentRegisterer().registerComponent<TransformComponent>("transform");
-    internal::getComponentRegisterer().registerComponent<LocalTransformComponent>("localtransform");
-    internal::getComponentRegisterer().registerComponent<SimpleModelViewComponent>("simplemodelview");
-    internal::getComponentRegisterer().registerComponent<CameraComponent>("camera");
-    internal::getComponentRegisterer().registerComponent<AnimationComponent>("animation");
+    auto &components = internal::getComponentRegisterer();
+    components.registerEngineComponent<EntityId>("eid");
+    components.registerEngineComponent<TransformComponent>("transform");
+    components.registerEngineComponent<LocalTransformComponent>(
+        "localtransform");
+    components.registerEngineComponent<SimpleModelViewComponent>(
+        "simplemodelview");
+    components.registerEngineComponent<CameraComponent>("camera");
+    components.registerEngineComponent<AnimationComponent>("animation");
     registerSpriteViewComponent();
     if (const auto *ray_layout =
             FastModuleContainer::tryGet<RayLayoutRuntimeState>();
         ray_layout != nullptr && ray_layout->builtinRayInstanceEnabled()) {
-        internal::getComponentRegisterer()
-            .registerComponent<RayInstanceComponent>("ray_instance");
+        components.registerEngineComponent<RayInstanceComponent>(
+            "pelican_ray_instance");
     }
 
     auto &ecs = GET_MODULE(ECSCore);

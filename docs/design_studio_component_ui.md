@@ -5,7 +5,7 @@
 WP372c レビューと RT3 設計で確定: **Studio には component を追加・削除する経路が無い**
 (`inspectorwidget.cpp:519` の `addComponent` は widget 配置 helper であって RPC ではない)。
 core には `add_component` / `remove_component` の op が既にある。**穴は Studio 側だけ**。
-`ray_instance`(WP374)を含め、**新しい component を足すたびに Studio から使えない**状態が続く。
+`pelican_ray_instance`(WP374/WP379)を含め、**新しい component を足すたびに Studio から使えない**状態が続く。
 「web で開ける ⊆ pelican で開ける」は満たしているが、Studio は常に一歩遅れる。
 
 ## 1. 実測(2026-09-02)
@@ -56,7 +56,7 @@ offline(engine 非接続)では、**project 層が同じ schema catalog を JSON
 
 ## 3. 受け入れの骨
 
-- **S-1**: Studio から `ray_instance` を object に追加 → `save_scene` → engine で開いて実効値が出る(WP374 の TLAS row で観測)。
+- **S-1**: Studio から `pelican_ray_instance` を object に追加 → `save_scene` → engine で開いて実効値が出る(WP374 の TLAS row で観測)。
   削除 → save → 消えている。**Studio のソースに component 名を持たない**ことは、
   「catalog に無い component を Studio が提示できない」対照で示す(catalog から 1 つ外すと一覧から消える)
 - **S-2**: offline と online で **同じ一覧**(手書き一覧を消すと offline の一覧が空になる = 対照)
@@ -70,7 +70,7 @@ Studio 固有の undo / 衝突解決 / 既定値 / component の意味論。pref
 ## 5. 敵対レビューへの問い
 
 (1) `get_components` の schema 経路は「追加できる component の全一覧」を出せるか(今は authored なものだけか)
-(2) S-1 が単独で有用か —— `ray_instance` 以外に今日 Studio から足したい component は何か
+(2) S-1 が単独で有用か —— `pelican_ray_instance` 以外に今日 Studio から足したい component は何か
 (3) offline catalog を project 層から出すとき、behavior(DLL 由来の schema)はどう扱うか(WP361a の「Studio offline 乖離」と同件)
 (4) `add_component` の既定値は誰が埋めるか(core の op が catalog 既定で埋めるのか、Studio が payload を送るのか)
 
@@ -83,7 +83,7 @@ Studio 固有の undo / 衝突解決 / 既定値 / component の意味論。pref
 
 `add_component` は未完成 component を挿入して後から編集する API ではなく、**受信時に完全な component を canonicalize**する
 ([editorjournal.cpp:1141](../src/core/communication/editorjournal.cpp#L1141))。`sprite_view` は `texture`、`animation` は `clip`、
-`simplemodelview` は `model` が必須で、`{"name":"ray_instance"}` も field 不在なら `ray_instance_empty` で拒否される。
+`simplemodelview` は `model` が必須で、`{"name":"pelican_ray_instance"}` も field 不在なら `ray_instance_empty` で拒否される。
 現在 RPC に出る `StructFieldSchema` は型・範囲・enum だけで **required/defaulted と default 値を失っている**
 ([editorcommandservice.cpp:70](../src/core/communication/editorcommandservice.cpp#L70))。
 
@@ -133,15 +133,15 @@ core は `payload` に object / slot / field path / detail を返す([editorjour
 - catalog RPC は担体設計 v2 決定 8' の **`component_schema_catalog` / `occurrence_inventory`** と同じもの。**別に作らない**
 - **RPC capability / version handshake**: 新 Studio が旧 engine に接続したら `incompatible_engine@1` と **read-only fallback**
   (既存 `get_components` への黙った fallback は authored-only の不完全一覧になるので禁止)
-- `ray_instance` は **`pelican_ray_instance` 改名の後**に受け入れへ載せる(旧名を固定しない)
+- `pelican_ray_instance` は **WP379 の改名後の canonical 名**を受け入れへ載せる(旧名を固定しない)
 - **「S-1 は前提無し・今すぐ」は撤回**。順序: CARRIER-1(catalog RPC + 改名)→ S-1 → S-3(行編集)
 
 ### 決定 9'(#8): 受け入れの差し替え(false positive を潰す)
 
 | v1 | 問題 | v2 |
 |---|---|---|
-| `ray_instance` を追加 → TLAS row で観測 | remove 後も row は残り fallback 値になる | **同一テスト**: component 無し fallback → UI から **`mask=17 / force_opaque / custom_index=0x123456`** を追加 → 実 resolved TLAS 値 → remove → fallback 復帰 |
-| catalog から外すと一覧から消える | `intersect(catalog, {"ray_instance"})` の hardcode でも通る | **実 production registry に、Studio ソースに無い一意な test component を登録**し、実 RPC → 実 UI → add / save / reload。**登録無し側も同じテスト**で |
+| `pelican_ray_instance` を追加 → TLAS row で観測 | remove 後も row は残り fallback 値になる | **同一テスト**: component 無し fallback → UI から **`mask=17 / force_opaque / custom_index=0x123456`** を追加 → 実 resolved TLAS 値 → remove → fallback 復帰 |
+| catalog から外すと一覧から消える | `intersect(catalog, {"pelican_ray_instance"})` の hardcode でも通る | **実 production registry に、Studio ソースに無い一意な test component を登録**し、実 RPC → 実 UI → add / save / reload。**登録無し側も同じテスト**で |
 | offline / online で同じ一覧 | 両方空でも通る。名前だけ一致でも通る | **非空 sentinel + 完全な canonical descriptor** を比較し、**両経路で実際に解決された値**を比較 |
 | 行の存在 | 既定行・手書き fixture で通る | 事前不在 → 固有値で追加 → engine の list に固有値 → 削除 |
 

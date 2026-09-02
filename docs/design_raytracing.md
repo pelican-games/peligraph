@@ -732,7 +732,7 @@ runtime kind と join を作るプログラム」と見た。**分けられる**
 
 | 値 | 粒度 | 担体 | 段 |
 |---|---|---|---|
-| `mask` / `instance_flags` / `custom_index` | **instance** | **固定 leaf の `ray_instance` component**(`components[]` 内) | **RT3-1** |
+| `mask` / `instance_flags` / `custom_index` | **instance** | **固定 leaf の `pelican_ray_instance` component**(`components[]` 内) | **RT3-1** |
 | `geometry_flags` | **geometry** | **layout の material 鍵規則**(typed selector) | **RT3-1** |
 | per-geometry × per-instance の override | row | **可変長宣言が要る。台帳の担体プログラム** | 先送り |
 
@@ -787,7 +787,7 @@ TLAS lowering は layout version も AS mode も受け取らない
 
 **同一テスト内で off/on・実効値・GPU 効果・purge を見る**:
 
-- **mask**: 同じ material の**個体 2 つ**で、片方の `ray_instance.mask` だけを変えると
+- **mask**: 同じ material の**個体 2 つ**で、片方の `pelican_ray_instance.mask` だけを変えると
   **GPU 出力が変わる**。component を消すと両方写る(**第 3 巡 #5 の椅子 2 脚**)
 - **instance_flags**: 片方だけ `ForceOpaque` にすると **any-hit の呼び出し回数が減る**。
   profile active なら `ray_profile_opaque_as@1`
@@ -805,11 +805,11 @@ TLAS lowering は layout version も AS mode も受け取らない
 
 | 段 | 内容 |
 |---|---|
-| **RT3-1** | layout v2 + typed material 鍵の geometry flags + **固定 leaf `ray_instance` component**(mask / instance_flags / custom_index)+ custom index の供給源変更 + semantic mode の運搬 + BLAS variant 鍵と exact purge |
+| **RT3-1** | layout v2 + typed material 鍵の geometry flags + **固定 leaf `pelican_ray_instance` component**(mask / instance_flags / custom_index)+ custom index の供給源変更 + semantic mode の運搬 + BLAS variant 鍵と exact purge |
 | **RT3-2** | §4 の procedural subset 規範(文書)→ static AABB + `.rint` |
 
 #### 台帳へ残す(RT3-1 の範囲外)
 
 - **per-geometry × per-instance の override**(可変長宣言が要る。担体プログラム)
-- **Studio の `ray_instance` 追加・編集 UI**(core の `add_component` は既にある)
+- **Studio の `pelican_ray_instance` 追加・編集 UI**(core の `add_component` は既にある)
 - **外部 ECS との名前衝突**に備えた予約 namespace か version gate

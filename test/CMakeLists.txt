@@ -784,6 +784,7 @@ pelican_define_test(ecs_lifecycle_test GROUP ecs_editor pelican_core)
 pelican_define_test(ecs_migration_test GROUP ecs_editor pelican_core)
 pelican_define_test(ecs_scheduler_test GROUP ecs_editor pelican_core)
 pelican_define_test(registration_lifetime_test GROUP ecs_editor pelican_core)
+pelican_define_test(component_namespace_test GROUP ecs_editor pelican_core)
 pelican_define_test(eventlayer_test GROUP ecs_editor pelican_core)
 pelican_define_test(eventpayloadschema_test GROUP ecs_editor pelican_core)
 pelican_define_test(structfieldschema_test GROUP ecs_editor pelican_core)
@@ -1308,6 +1309,29 @@ if(WIN32)
     target_compile_definitions(
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP375_BEHAVIOR_FIXTURE="$<TARGET_FILE:pelican_wp375_behavior_fixture>")
+
+    add_library(pelican_wp379_ray_instance_fixture SHARED
+        fixtures/ray_namespace_component/component.cpp
+        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(pelican_wp379_ray_instance_fixture PROPERTIES
+        CXX_STANDARD 20
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        OUTPUT_NAME "pelican_wp379_ray_instance_fixture"
+    )
+    add_dependencies(pelican_wp379_ray_instance_fixture
+        pelican_test_raytracing_rt3_1_production_test)
+    target_link_libraries(pelican_wp379_ray_instance_fixture PRIVATE
+        "$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>"
+        nlohmann_json)
+    target_include_directories(pelican_wp379_ray_instance_fixture PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core/userpublic
+        ${CMAKE_SOURCE_DIR}/src/core)
+    target_compile_definitions(pelican_wp379_ray_instance_fixture PRIVATE
+        PELICAN_GAME_DLL=1)
+    target_compile_definitions(
+        pelican_test_raytracing_rt3_1_production_test PRIVATE
+        PELICAN_WP379_RAY_INSTANCE_FIXTURE="$<TARGET_FILE:pelican_wp379_ray_instance_fixture>")
 endif()
 endif()
 if(PELICAN_RUNTIME_SHADER_COMPILER)

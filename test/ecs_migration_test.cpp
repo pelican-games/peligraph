@@ -184,6 +184,7 @@ void registerMigrationComponents() {
         return true;
     }();
     (void)logger_initialized;
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
     auto &registerer = internal::getComponentRegisterer();
     registerer.registerComponent<EntityId>("migration_entity_id");
     registerer.registerComponent<MigrationMoveOnlyComponent>("migration_move_only");

@@ -74,7 +74,8 @@ DECLARE_COMPONENT(OverLimitComponent, 64);
 TEST_CASE("Registration tokens drive deterministic owner purge",
           "[registration][token][owner]") {
     FastModuleContainer modules;
-    const auto owner = internal::allocateRegistrationOwner();
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
+    const auto owner = registration_owner.owner();
 
     internal::RegistrationToken component_token;
     internal::RegistrationToken event_token;
@@ -125,7 +126,8 @@ TEST_CASE("Registration tokens drive deterministic owner purge",
 TEST_CASE("Registration dependencies reject event and component removal",
           "[registration][dependent]") {
     FastModuleContainer modules;
-    const auto owner = internal::allocateRegistrationOwner();
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
+    const auto owner = registration_owner.owner();
 
     internal::RegistrationToken component_token;
     internal::RegistrationToken event_token;
@@ -218,6 +220,7 @@ TEST_CASE("Registration owner slot reuse rejects a stale generation",
 TEST_CASE("Component registration rejects capacity and duplicate aliases",
           "[registration][component]") {
     FastModuleContainer modules;
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
     auto &registerer = internal::getComponentRegisterer();
     const auto valid = registerer.registerComponent<ValidLimitComponent>(
         "wp163_valid_component");

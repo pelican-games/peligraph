@@ -417,7 +417,7 @@ export/import。昇格専用 API は引き続き作らない — 採用値は通
 | undo_conflict | {domain, owner_txn, revision} | revert precondition 不成立(全 no-op) |
 | not_editable | {object, slot} | codec なし/read-only |
 | schema_violation | {object, slot, field path, detail} | 型/range/enum/required 違反 |
-| unknown_component_type | {object, name} | 未知 component 名(add) |
+| component_unknown@1 | {name} | 未登録 component 名(add。SceneLoader と共通 cause) |
 | duplicate_component | {object, slot} | 既存 slot への add |
 | missing_component | {object, slot} | 不存在 slot への remove |
 | name_conflict | {name} | spawn の名前一意性違反 |
@@ -447,7 +447,7 @@ precondition は **acceptance(受付時)/ execution(frame-boundary
 | op | stable target / owner | acceptance precondition | execution precondition | adapter | rev / preview_epoch | stable conflict result |
 |---|---|---|---|---|---|---|
 | set_component_value | ObjectId+component slot+field path | base rev CAS・can_edit・editable・schema 検証・lease overlap なし | gate 再検査・lease overlap 再検査・preflight | codec runtime apply(E-PROJTX0) | rev+1 | stale_revision / not_editable / schema_violation / preview_lease_conflict / gate_closed |
-| add_component | ObjectId+component slot(新設) | 同上 + component 名既知 + slot 不存在 | 同上 + ECS-MUT0 prepare | migration + special adapter | rev+1 | stale_revision / unknown_component_type / duplicate_component / schema_violation / preview_lease_conflict / gate_closed |
+| add_component | ObjectId+component slot(新設) | 同上 + component 名既知 + slot 不存在 | 同上 + ECS-MUT0 prepare | migration + special adapter | rev+1 | stale_revision / component_unknown@1 / duplicate_component / schema_violation / preview_lease_conflict / gate_closed |
 | remove_component | ObjectId+component slot | 同上 + slot 存在 | 同上 | migration + special adapter | rev+1 | stale_revision / missing_component / preview_lease_conflict / gate_closed |
 | spawn | object/subtree existence + declaration interval + name reservation | CAS・can_edit・名前一意・parent 存在・schema 検証・lease overlap なし | gate/lease 再検査 + 全 codec preflight | 全 codec + migration | rev+1 | stale_revision / name_conflict / parent_not_found / schema_violation / preview_lease_conflict / gate_closed |
 | destroy | 同上(closure) | CAS・can_edit・closure 解決・lease overlap なし | gate/lease 再検査 + closure 再解決 | 同上(逆) | rev+1 | stale_revision / closure_unresolvable / preview_lease_conflict / gate_closed |
@@ -466,7 +466,7 @@ precondition は **acceptance(受付時)/ execution(frame-boundary
 | op | authoring forward | authoring inverse | runtime adapter | 必要先行 WP | preflight error | activation/deactivation boundary |
 |---|---|---|---|---|---|---|
 | set_component_value | staged document へ field write | 旧値 write(last-writer stamp 付き) | codec runtime apply(transform は descendant closure 再計算) | E-PROJTX0 | stale_revision / not_editable / schema_violation | なし(observer 再開前に publish 完了) |
-| add_component | component 挿入(slot 採番・raw canonical) | 同 slot remove | ECS-MUT0 migration + special adapter publish | ECS-MUT0(済 WP152)+ E-PROJTX0 | duplicate_component / unknown_component_type / schema_violation | behavior 付き component は commit 後の次 activation boundary で onInit(BEH2 規範) |
+| add_component | component 挿入(slot 採番・raw canonical) | 同 slot remove | ECS-MUT0 migration + special adapter publish | ECS-MUT0(済 WP152)+ E-PROJTX0 | duplicate_component / component_unknown@1 / schema_violation | behavior 付き component は commit 後の次 activation boundary で onInit(BEH2 規範) |
 | remove_component | component 削除(raw JSON・array index 保存) | 保存 raw から復元 | migration + special adapter unpublish | 同上 | missing_component | pre-destroy で deinit(逆 attachment 順) |
 | spawn | object 挿入(declaration interval + name reservation + parent edge) | closure destroy | 全 codec project + migration | E-PROJTX0 | name_conflict / parent_not_found / schema_violation | activation barrier で attachment_seq 順 onInit |
 | destroy | closure 削除(全 raw・order・parent edge を journal に保存) | 保存 closure から spawn 復元 | 逆順 unpublish + pre-destroy barrier | E-PROJTX0 | closure_unresolvable | pre-destroy barrier(逆 attachment 順 onDestroy) |

@@ -385,7 +385,7 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
          declared_targets) {
         if (authoring_object_id == 0 || !has_static_geometry) {
             throw std::runtime_error(
-                "pelican.ray_instance_not_ray_traced@1: ray_instance authoring object " +
+                "pelican.ray_instance_not_ray_traced@1: pelican_ray_instance authoring object " +
                 std::to_string(authoring_object_id) +
                 " has no BLAS-eligible static geometry");
         }

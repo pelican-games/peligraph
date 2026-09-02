@@ -65,6 +65,7 @@ void registerSchedulerComponents() {
         return true;
     }();
     (void)logger_initialized;
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
     auto &registerer = internal::getComponentRegisterer();
     registerer.registerComponent<EntityId>("eid");
     registerer.registerComponent<SchedulerProbeComponent>("scheduler_probe");

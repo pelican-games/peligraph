@@ -6,6 +6,11 @@
 
 namespace Pelican {
 
+ComponentUnknownError::ComponentUnknownError(std::string name)
+    : std::runtime_error(std::string{componentUnknownErrorCode} +
+                         nlohmann::ordered_json{{"name", name}}.dump()),
+      payload_{{"name", std::move(name)}} {}
+
 ComponentInfoManager::ComponentInfoManager() {}
 
 ComponentInfoManager::~ComponentInfoManager() {
@@ -96,7 +101,23 @@ const ComponentInfo &ComponentInfoManager::getFromIndex(size_t index) const {
 const ComponentInfo &ComponentInfoManager::get(ComponentId id) const {
     return getFromIndex(static_cast<size_t>(id));
 }
-ComponentId ComponentInfoManager::getComponentIdByName(const std::string &name) const { return name_id_map.at(name); }
+ComponentId ComponentInfoManager::getComponentIdByName(
+    const std::string &name) const {
+    const auto found = name_id_map.find(name);
+    if (found == name_id_map.end()) throw ComponentUnknownError{name};
+    return found->second;
+}
+
+std::vector<std::string> ComponentInfoManager::registrationNames(
+    internal::RegistrationOwner owner) const {
+    std::vector<std::string> result;
+    result.reserve(infos.size());
+    for (const auto &info : infos) {
+        if (info.token && info.owner == owner) result.push_back(info.name);
+    }
+    std::ranges::sort(result);
+    return result;
+}
 
 std::size_t ComponentInfoManager::registrationCount(
     internal::RegistrationOwner owner) const noexcept {

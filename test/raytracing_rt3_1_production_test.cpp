@@ -46,10 +46,12 @@
 #include <iterator>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <picosha2.h>
 #include <sstream>
 #include <string>
 #include <vector>
 #include "authoringscenetestsupport.hpp"
+#include "fixtures/ray_namespace_component/ray_instance_component.hpp"
 #include "raytracing_rt3_1_fixture.hpp"
 #include "vulkan_test_support.hpp"
 
@@ -157,7 +159,7 @@ void writeWp374aProject(const std::filesystem::path &root,
     }
     if (with_ray_instance) {
         components.push_back(authored_ray_instance.value_or(
-            Json{{"name", "ray_instance"}, {"mask", 9}}));
+            Json{{"name", "pelican_ray_instance"}, {"mask", 9}}));
     }
     Json objects = Json::array();
     if (!components.empty()) {
@@ -365,8 +367,8 @@ void loadWp375aShippingExample(
 #endif
 }
 
-Json runWp374aRpcBytes(EditorCommandService &service, std::uint64_t id,
-                       std::string_view method, Json params) {
+Json runWp374aRpcResponse(EditorCommandService &service, std::uint64_t id,
+                          std::string_view method, Json params) {
     const auto request =
         Json{{"jsonrpc", "2.0"},
              {"id", id},
@@ -389,8 +391,17 @@ Json runWp374aRpcBytes(EditorCommandService &service, std::uint64_t id,
             "WP374a RpcServer::run did not emit one newline-terminated response");
     }
     const auto response = Json::parse(response_bytes);
-    if (response.value("id", std::uint64_t{}) != id ||
-        !response.contains("result")) {
+    if (response.value("id", std::uint64_t{}) != id) {
+        throw std::runtime_error("WP374a RPC failure: " + response.dump());
+    }
+    return response;
+}
+
+Json runWp374aRpcBytes(EditorCommandService &service, std::uint64_t id,
+                       std::string_view method, Json params) {
+    const auto response = runWp374aRpcResponse(
+        service, id, method, std::move(params));
+    if (!response.contains("result")) {
         throw std::runtime_error("WP374a RPC failure: " + response.dump());
     }
     return response.at("result");
@@ -461,6 +472,17 @@ void requireWp374aTlasValues(const RaySceneRowSnapshot &rows,
         CHECK(row.instance_flags == flags);
         CHECK(row.instance_custom_index == custom_index);
     }
+}
+
+std::vector<std::array<std::uint32_t, 4>> wp379ResolvedTlasRowValues(
+    const RaySceneRowSnapshot &rows, std::uint64_t authoring_object_id) {
+    std::vector<std::array<std::uint32_t, 4>> values;
+    for (const auto &row : rows.rows) {
+        if (row.authoring_object_id != authoring_object_id) continue;
+        values.push_back({row.instance_mask, row.instance_flags,
+                          row.instance_custom_index, row.geometry_flags});
+    }
+    return values;
 }
 
 const Json &wp375Component(const Json &response, std::string_view name) {
@@ -1051,7 +1073,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP377 authored ray_instance force opaque reaches the material alpha profile row guard",
+    "WP377 authored pelican_ray_instance force opaque reaches the material alpha profile row guard",
     "[WP377][WP369][ray-tracing][rt3-1][instance-flags][profile][production]") {
     setupLogger();
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -1064,7 +1086,7 @@ TEST_CASE(
                              : "wp377_force_no_opaque"};
             writeWp374aProject(
                 project.path, 2, true, true, true,
-                Json{{"name", "ray_instance"},
+                Json{{"name", "pelican_ray_instance"},
                      {"instance_flags",
                       Json::array({force_opaque ? "force_opaque"
                                                 : "force_no_opaque"})}},
@@ -1212,7 +1234,7 @@ TEST_CASE(
             Json::array({{{"op", "add_component"},
                           {"object_id", saved_object_id},
                           {"component",
-                           {{"name", "ray_instance"},
+                           {{"name", "pelican_ray_instance"},
                             {"mask", 17},
                             {"instance_flags", {"force_opaque"}},
                             {"custom_index", 0x123456}}}}}));
@@ -1229,17 +1251,17 @@ TEST_CASE(
             Json::array(
                 {{{"op", "set_component_value"},
                   {"object_id", saved_object_id},
-                  {"component_slot", "ray_instance"},
+                  {"component_slot", "pelican_ray_instance"},
                   {"field_path", "/mask"},
                   {"value", 34}},
                  {{"op", "set_component_value"},
                   {"object_id", saved_object_id},
-                  {"component_slot", "ray_instance"},
+                  {"component_slot", "pelican_ray_instance"},
                   {"field_path", "/instance_flags"},
                   {"value", {"force_no_opaque"}}},
                  {{"op", "set_component_value"},
                   {"object_id", saved_object_id},
-                  {"component_slot", "ray_instance"},
+                  {"component_slot", "pelican_ray_instance"},
                   {"field_path", "/custom_index"},
                  {"value", 0x654321}}}));
         INFO("WP374a RPC stage: render after set");
@@ -1254,6 +1276,10 @@ TEST_CASE(
               runWp374aRpcBytes(*service, rpc_id++, "scene_tree",
                                 Json::object())
                   .at("scene_revision"));
+        const auto saved_bytes = readWp374aText(project.path / "scene.json");
+        CHECK(saved_bytes.find("\"pelican_ray_instance\"") !=
+              std::string::npos);
+        CHECK(saved_bytes.find("\"ray_instance\"") == std::string::npos);
         service.reset();
         GET_MODULE(VulkanManageCore).waitIdle();
     }
@@ -1284,7 +1310,7 @@ TEST_CASE(
             tree.at("scene_revision").get<std::uint64_t>(),
             Json::array({{{"op", "remove_component"},
                           {"object_id", reloaded_object_id},
-                          {"component_slot", "ray_instance"}}}));
+                          {"component_slot", "pelican_ray_instance"}}}));
         requireWp374aTlasValues(
             renderWp374aProductionRows(), reloaded_object_id, 127,
             rayInstanceTriangleFacingCullDisable, 0);
@@ -1294,6 +1320,227 @@ TEST_CASE(
 #else
     SUCCEED(
         "WP374a v2 production RPC rendering is compiler-ON only; the compiler-OFF precedence test remains active");
+#endif
+}
+
+TEST_CASE(
+    "WP379 production scene RPC and snapshot boundaries share component_unknown",
+    "[WP379][component][namespace][production][rpc][snapshot][gpu][mutation-unknown]") {
+    setupLogger();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    Wp374aProjectRoot invalid_scene{"wp379_unknown_scene"};
+    Wp374aProjectRoot live_project{"wp379_unknown_rpc"};
+    // Intentional old-name occurrence: the production SceneLoader negative.
+    writeWp374aProject(
+        invalid_scene.path, 2, true, true, true,
+        Json{{"name", "ray_instance"}, {"marker", 379}});
+    writeWp374aProject(live_project.path, 2, true, false, true);
+
+    {
+        FastModuleContainer modules;
+        try {
+            loadWp374aScene(invalid_scene.path);
+            FAIL("old unregistered component name unexpectedly loaded");
+        } catch (const ComponentUnknownError &error) {
+            CHECK(std::string{error.code()} == "component_unknown@1");
+            CHECK(error.payload() ==
+                  nlohmann::ordered_json{{"name", "ray_instance"}});
+            CHECK(std::string{error.what()} ==
+                  "component_unknown@1{\"name\":\"ray_instance\"}");
+        }
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    {
+        FastModuleContainer modules;
+        loadWp374aScene(live_project.path);
+        auto service = makeEditorRuntimeService();
+        std::uint64_t rpc_id = 379000;
+        const auto tree = runWp374aRpcBytes(
+            *service, rpc_id++, "scene_tree", Json::object());
+        REQUIRE(tree.at("objects").size() == 1);
+        const auto object_id = tree.at("objects")
+                                   .at(0)
+                                   .at("authoring_object_id")
+                                   .get<std::uint64_t>();
+        const auto actor = wp375OpenActor(
+            *service, rpc_id, "WP379 unknown component boundary");
+
+        // Intentional old-name occurrence: real JSON-RPC add_component
+        // rejection, with the same code/payload as SceneLoader.
+        const auto rejected = runWp374aRpcBytes(
+            *service, rpc_id++, "edit",
+            {{"actor_id", actor},
+             {"base_revision",
+              tree.at("scene_revision").get<std::uint64_t>()},
+             {"operations",
+              Json::array({{{"op", "add_component"},
+                            {"object_id", object_id},
+                            {"component",
+                             {{"name", "ray_instance"},
+                              {"marker", 379}}}}})},
+             {"coalesce_key", "wp379-unknown-component"}});
+        REQUIRE(rejected.at("status") == "rejected");
+        REQUIRE(rejected.at("error").at("code") ==
+                std::string{componentUnknownErrorCode});
+        CHECK(rejected.at("error").at("payload") ==
+              Json{{"name", "ray_instance"}});
+        CHECK(rejected.at("error").at("message") ==
+              "component_unknown@1{\"name\":\"ray_instance\"}");
+
+        // Intentional old-name occurrence: SnapshotV1 enters through the real
+        // RpcServer and preserves snapshot_invalid as its outer contract.
+        const auto snapshot_bytes =
+            Json{{"schema", "pelican.scene"},
+                 {"version", 1},
+                 {"scenes",
+                  {{"main",
+                    {{"objects",
+                      Json::array(
+                          {{{"name", "SnapshotLegacyName"},
+                            {"components",
+                             Json::array({{{"name", "ray_instance"},
+                                           {"marker", 379}}})}}})}}}}}}
+                .dump();
+        const auto digest = picosha2::hash256_hex_string(
+            snapshot_bytes.begin(), snapshot_bytes.end());
+        const auto snapshot_response = runWp374aRpcResponse(
+            *service, rpc_id++, "import_scene_snapshot",
+            {{"schema_version", 1},
+             {"semantic_scene_bytes", snapshot_bytes},
+             {"digest", {{"algorithm", "sha256"}, {"hex", digest}}},
+             {"current_scene_id", "main"}});
+        REQUIRE(snapshot_response.contains("error"));
+        const auto &snapshot_error = snapshot_response.at("error");
+        REQUIRE(snapshot_error.at("data").at("code") ==
+                "snapshot_invalid");
+        CHECK(snapshot_error.at("data").at("detail") ==
+              "component_unknown@1{\"name\":\"ray_instance\"}");
+        CHECK(wp375SceneRevision(*service, rpc_id) ==
+              tree.at("scene_revision").get<std::uint64_t>());
+
+        service.reset();
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+#else
+    SUCCEED(
+        "WP379 layout-v2 unknown-boundary production fixture is compiler-ON only; compiler-OFF precedence is covered by layout_requires_runtime_compiler@1");
+#endif
+}
+
+TEST_CASE(
+    "WP379 production bootstrap keeps external ray_instance beside the builtin canonical component",
+    "[WP379][component][namespace][production][dll][coexistence][gpu][mutation-dll]") {
+    setupLogger();
+#if PELICAN_RUNTIME_SHADER_COMPILER && defined(PELICAN_WP379_RAY_INSTANCE_FIXTURE)
+    Wp374aProjectRoot project{"wp379_external_coexistence"};
+    writeWp374aProject(
+        project.path, 2, true, true, true,
+        Json{{"name", "pelican_ray_instance"}, {"mask", 37}});
+    std::vector<std::array<std::uint32_t, 4>> control_row_values;
+
+    {
+        FastModuleContainer modules;
+        loadWp374aScene(project.path);
+        const auto *resolved =
+            GET_MODULE(ProjectBasicConfig).resolvedScene().findScene("main");
+        REQUIRE(resolved != nullptr);
+        REQUIRE(resolved->objects.size() == 1);
+        const auto authoring_object_id =
+            resolved->objects.front().authoring_object_id.value;
+        const auto rows = renderWp374aProductionRows();
+        requireWp374aTlasValues(
+            rows, authoring_object_id, 37,
+            rayInstanceTriangleFacingCullDisable, 0);
+        control_row_values =
+            wp379ResolvedTlasRowValues(rows, authoring_object_id);
+        REQUIRE_FALSE(control_row_values.empty());
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    auto authored = Json::parse(readWp374aText(project.path / "scene.json"));
+    // Intentional old-name occurrence: serialized external component owned by
+    // the real fixture DLL, not an alias for the builtin.
+    authored["scenes"]["main"]["objects"][0]["components"].push_back(
+        {{"name", "ray_instance"}, {"marker", 379}});
+    writeWp374aText(project.path / "scene.json", authored.dump(2));
+
+    {
+        FastModuleContainer modules;
+        try {
+            loadWp374aScene(project.path);
+            FAIL("control without the fixture DLL unexpectedly resolved the old name");
+        } catch (const ComponentUnknownError &error) {
+            CHECK(std::string{error.code()} == "component_unknown@1");
+            CHECK(error.payload() ==
+                  nlohmann::ordered_json{{"name", "ray_instance"}});
+        }
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+
+    {
+        FastModuleContainer modules;
+        const std::filesystem::path fixture_dll{
+            PELICAN_WP379_RAY_INSTANCE_FIXTURE};
+        loadWp374aScene(project.path, fixture_dll);
+        REQUIRE(configuredGameLogicStatus().loaded);
+
+        const auto &component_info = GET_MODULE(ComponentInfoManager);
+        const auto builtin_id =
+            component_info.getComponentIdByName("pelican_ray_instance");
+        // Intentional old-name occurrence: query the external registration.
+        const auto external_id =
+            component_info.getComponentIdByName("ray_instance");
+        CHECK(builtin_id != external_id);
+        CHECK(component_info.get(builtin_id).owner ==
+              internal::engineRegistrationOwner);
+        CHECK(component_info.get(external_id).owner !=
+              internal::engineRegistrationOwner);
+
+        const auto *resolved =
+            GET_MODULE(ProjectBasicConfig).resolvedScene().findScene("main");
+        REQUIRE(resolved != nullptr);
+        REQUIRE(resolved->objects.size() == 1);
+        const auto &components = resolved->objects.front().components;
+        CHECK(std::ranges::count(components, std::string{"pelican_ray_instance"},
+                                 &ResolvedComponent::name) == 1);
+        // Intentional old-name occurrence: both semantic names remain distinct.
+        CHECK(std::ranges::count(components, std::string{"ray_instance"},
+                                 &ResolvedComponent::name) == 1);
+
+        const auto entity = GET_MODULE(SceneLoader).objectId("Chair");
+        REQUIRE(entity.has_value());
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+        const auto *builtin = ecs.tryComponent<RayInstanceComponent>(*entity);
+        const auto *external =
+            ecs.tryComponent<Wp379ExternalRayInstanceComponent>(*entity);
+        REQUIRE(builtin != nullptr);
+        REQUIRE(external != nullptr);
+        CHECK(builtin->mask == std::optional<std::uint8_t>{37});
+        CHECK(external->marker == 379);
+        const auto authoring_object_id =
+            resolved->objects.front().authoring_object_id.value;
+        const auto rows = renderWp374aProductionRows();
+        requireWp374aTlasValues(
+            rows, authoring_object_id, 37,
+            rayInstanceTriangleFacingCullDisable, 0);
+        const auto coexistence_row_values =
+            wp379ResolvedTlasRowValues(rows, authoring_object_id);
+        REQUIRE_FALSE(coexistence_row_values.empty());
+        CHECK(coexistence_row_values == control_row_values);
+
+        // Destroy values whose lifecycle callbacks live in the DLL before
+        // unregistering and unloading that DLL.
+        GET_MODULE(ECSCore).clearEntities();
+        shutdownConfiguredGameLogic();
+        CHECK_FALSE(configuredGameLogicStatus().loaded);
+        GET_MODULE(VulkanManageCore).waitIdle();
+    }
+#elif !PELICAN_RUNTIME_SHADER_COMPILER
+    SUCCEED(
+        "WP379 DLL coexistence uses layout v2 and is compiler-ON only; compiler-OFF precedence is covered separately");
+#else
+    FAIL("WP379 production external component fixture was not composed");
 #endif
 }
 

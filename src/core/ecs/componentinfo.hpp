@@ -4,6 +4,8 @@
 
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <stdexcept>
+#include <string_view>
 #include <unordered_map>
 
 #include "component.hpp"
@@ -17,6 +19,21 @@ namespace Pelican {
 namespace internal {
 class UserComponentRegistererTemplatePublic;
 }
+
+inline constexpr std::string_view componentUnknownErrorCode =
+    "component_unknown@1";
+
+class ComponentUnknownError final : public std::runtime_error {
+    nlohmann::ordered_json payload_;
+
+  public:
+    explicit ComponentUnknownError(std::string name);
+
+    constexpr std::string_view code() const noexcept {
+        return componentUnknownErrorCode;
+    }
+    const nlohmann::ordered_json &payload() const noexcept { return payload_; }
+};
 
 struct ComponentInfo {
     ComponentId id;
@@ -49,6 +66,8 @@ DECLARE_MODULE(ComponentInfoManager) {
     const ComponentInfo &getFromIndex(size_t index) const;
     const ComponentInfo &get(ComponentId id) const;
     ComponentId getComponentIdByName(const std::string &name) const;
+    std::vector<std::string>
+    registrationNames(internal::RegistrationOwner owner) const;
     void loadByJson(void *ptr, const nlohmann::json &json) const;
     void unregisterComponent(internal::RegistrationToken token);
     std::size_t registrationCount(internal::RegistrationOwner owner) const noexcept;

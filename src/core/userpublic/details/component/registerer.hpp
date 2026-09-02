@@ -3,6 +3,7 @@
 #include <details/ecs/component.hpp>
 #include <details/ecs/componentdeclare.hpp>
 #include <details/reload/registrationowner.hpp>
+#include <nlohmann/json.hpp>
 #include <serialize/jsonarchive.hpp>
 #include <serialize/serialize.hpp>
 #include <cstring>
@@ -17,7 +18,31 @@ namespace Pelican {
 
 namespace internal {
 
-class UserComponentRegistererTemplatePublic {
+enum class ComponentRegistrationPolicyErrorCode : std::uint8_t {
+    builtin_name_unprefixed,
+    reserved_component_namespace,
+};
+
+PELICAN_API std::string_view componentRegistrationPolicyErrorCodeName(
+    ComponentRegistrationPolicyErrorCode code) noexcept;
+
+class PELICAN_API ComponentRegistrationPolicyError final
+    : public std::runtime_error {
+    ComponentRegistrationPolicyErrorCode code_;
+    nlohmann::ordered_json payload_;
+
+  public:
+    ComponentRegistrationPolicyError(
+        ComponentRegistrationPolicyErrorCode code, std::string name,
+        RegistrationOwner owner);
+
+    ComponentRegistrationPolicyErrorCode code() const noexcept {
+        return code_;
+    }
+    const nlohmann::ordered_json &payload() const noexcept { return payload_; }
+};
+
+class PELICAN_API UserComponentRegistererTemplatePublic {
     struct ComponentLoaderInfo {
         std::string name;
         size_t alignment;
@@ -30,10 +55,12 @@ class UserComponentRegistererTemplatePublic {
     };
 
     RegistrationToken __registerComponent(ComponentId id, size_t sz,
-                                          ComponentLoaderInfo loader);
+                                          ComponentLoaderInfo loader,
+                                          RegistrationOwner owner);
 
-  public:
-    template <class Component> RegistrationToken registerComponent(std::string name) {
+    template <class Component>
+    RegistrationToken registerComponentForOwner(std::string name,
+                                                RegistrationOwner owner) {
         static_assert(std::is_default_constructible_v<Component>,
                       "ECS components must be default constructible");
         static_assert(std::is_nothrow_move_constructible_v<Component>,
@@ -82,14 +109,36 @@ class UserComponentRegistererTemplatePublic {
                     }
                     return nullptr;
                 }(),
-            });
+            },
+            owner);
+    }
+
+  public:
+    template <class Component>
+    RegistrationToken registerComponent(std::string name) {
+        const auto owner = currentRegistrationOwner();
+        if (owner == engineRegistrationOwner) {
+            throw std::logic_error(
+                "component registration requires an allocated external owner; "
+                "engine components must use the explicit engine registrar");
+        }
+        return registerComponentForOwner<Component>(std::move(name), owner);
+    }
+
+    template <class Component>
+    RegistrationToken registerEngineComponent(std::string name) {
+        return registerComponentForOwner<Component>(
+            std::move(name), engineRegistrationOwner);
     }
 };
 
-UserComponentRegistererTemplatePublic &getComponentRegisterer();
-void unregisterComponent(RegistrationToken token);
-void unregisterComponents(RegistrationOwner owner) noexcept;
-std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
+PELICAN_API UserComponentRegistererTemplatePublic &getComponentRegisterer();
+PELICAN_API void unregisterComponent(RegistrationToken token);
+PELICAN_API void unregisterComponents(RegistrationOwner owner) noexcept;
+PELICAN_API std::size_t
+componentRegistrationCount(RegistrationOwner owner) noexcept;
+PELICAN_API std::vector<std::string>
+componentRegistrationNames(RegistrationOwner owner);
 
 } // namespace internal
 

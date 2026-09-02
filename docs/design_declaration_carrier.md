@@ -213,7 +213,7 @@ occurrence_id v1 = H( canonical_logical_asset_identity   // 宣言名でも URI 
 - 代数に **`Flags<EnumVocabulary>`** を scalar leaf として追加(flag 集合を list にしない → list の list を回避)
 - RT3 row: `{ occurrence_id(required), mask?: U8, instance_flags?: Flags<InstanceFlag>, custom_index?: U24 }`
   (`geometry_flags` は **row で上書きしない** —— geometry 粒度は material 規則のまま)
-- **field ごとの優先順位**: `defaults < material rule(geometry_flags のみ) < object-level ray_instance < occurrence row`。
+- **field ごとの優先順位**: `defaults < material rule(geometry_flags のみ) < object-level pelican_ray_instance < occurrence row`。
   row で未指定の field は **object-level を継承**(schema default に戻さない)
 - **flags の合成則は「置換」**(和集合・差分にしない。宣言した集合がそのまま実効値)
 - authored absent と明示 default の runtime 意味は**同じ**(presence は編集 / undo のためだけに保持)

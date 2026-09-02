@@ -1228,7 +1228,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
         if (semantic_mode != RayLayoutSemanticMode::LayoutV2 &&
             input.ray_instance) {
             throw std::runtime_error(
-                "pelican.ray_instance_requires_layout_v2@1: ray_instance is only available with ray_group_layout version 2");
+                "pelican.ray_instance_requires_layout_v2@1: pelican_ray_instance is only available with ray_group_layout version 2");
         }
         const RayMaterialBinding *chosen = nullptr;
         if (bindings != nullptr) {

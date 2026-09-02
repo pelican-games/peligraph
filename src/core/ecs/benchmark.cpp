@@ -220,6 +220,7 @@ double physWorldQuery() {
 int main() {
     Pelican::setupLogger();
     Pelican::FastModuleContainer modules;
+    Pelican::TestSupport::ScopedTestRegistrationOwner registration_owner;
     auto &registerer = Pelican::internal::getComponentRegisterer();
     registerer.registerComponent<Pelican::EntityId>("EntityId");
     registerer.registerComponent<Pelican::TransformComponent>("TransformComponent");

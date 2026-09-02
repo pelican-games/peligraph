@@ -70,7 +70,7 @@ EditorProjectionContext projectionContext(
     ComponentCodecCanonicalDefaults defaults = {}) {
     const auto layout_mode =
         std::any_of(codecs.begin(), codecs.end(), [](const ComponentCodec &codec) {
-            return codec.name == "ray_instance";
+            return codec.name == "pelican_ray_instance";
         })
             ? EditorLayoutSemanticMode::LayoutV2
             : EditorLayoutSemanticMode::Legacy;
@@ -186,7 +186,7 @@ constexpr std::array literal_component_routes{
     LiteralComponentRoute{"collider", EditorProjectionRouteKind::Collider,
                           false},
     LiteralComponentRoute{"light", EditorProjectionRouteKind::Light, true},
-    LiteralComponentRoute{"ray_instance", EditorProjectionRouteKind::EcsCodec,
+    LiteralComponentRoute{"pelican_ray_instance", EditorProjectionRouteKind::EcsCodec,
                           false},
     LiteralComponentRoute{"simplemodelview",
                           EditorProjectionRouteKind::RendererModel, false},
@@ -940,6 +940,7 @@ TEST_CASE(
     "WP375a pending behavior publication has a complete inverse token and retries in process",
     "[WP375a][materialize][behavior][rollback][retry][mutation]") {
     FastModuleContainer modules;
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
     test_support::SceneProjectionTarget target{matrixDocument()};
     const auto object_id = matrixObjectId(target);
     const auto entity_id_token =
@@ -1076,6 +1077,7 @@ TEST_CASE("WP375 a registered foo codec reaches runtime set add and remove witho
           "[WP375][component-codec][type-erased][materialize]") {
     setupLogger();
     FastModuleContainer modules;
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
     const auto entity_id_token =
         internal::getComponentRegisterer().registerComponent<EntityId>(
             "wp375_entity_id");

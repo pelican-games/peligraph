@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/loader/authoringscenedocument.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -717,7 +718,8 @@ TEST_CASE("Scene format rejects legacy lights and names the v1 replacement", "[s
     REQUIRE(contains(message, "'light'"));
 }
 
-TEST_CASE("SceneLoader reports object name for unknown component names", "[scene-format]") {
+TEST_CASE("SceneLoader reports the common typed cause for unknown component names",
+          "[scene-format][WP379]") {
     ensureLogger();
     auto temp_dir = makeTempProjectDir();
 
@@ -755,14 +757,16 @@ TEST_CASE("SceneLoader reports object name for unknown component names", "[scene
         GET_MODULE(PathResolver).setup(temp_dir, false);
         GET_MODULE(ProjectSource).setProjectData(project.dump());
 
-        std::string message;
         try {
             GET_MODULE(SceneLoader).load("default_scene");
-        } catch (const std::exception &ex) {
-            message = ex.what();
+            FAIL("unknown component unexpectedly loaded");
+        } catch (const ComponentUnknownError &error) {
+            CHECK(std::string{error.code()} == "component_unknown@1");
+            CHECK(error.payload() == nlohmann::ordered_json{
+                                         {"name", "missingcomponent"}});
+            CHECK(std::string{error.what()} ==
+                  "component_unknown@1{\"name\":\"missingcomponent\"}");
         }
-        REQUIRE(contains(message, "missingcomponent"));
-        REQUIRE(contains(message, "NamedObject"));
     } catch (...) {
         std::filesystem::remove_all(temp_dir);
         throw;

@@ -126,7 +126,7 @@ encode 側で同じ例外が出たら **invariant failure として伝播**さ�
 - **E-0**: `StoredResolutionFailure = variant<UserDataViolation, LegacyResolutionText>`。
   `runtime_resolution_error` の `optional<string>` をこれに替える。**E-4 の完了条件 = `LegacyResolutionText` の
   producer が 0 になること**(そのとき alternative を削除する)
-- **棚卸しの単位は「decoder の拒否分岐」**であって `throw` の数ではない。ray_instance の 11 分岐と
+- **棚卸しの単位は「decoder の拒否分岐」**であって `throw` の数ではない。pelican_ray_instance の 11 分岐と
   暗黙の nlohmann 例外を **E-4 より前**に閉じる。E-1〜E-3 の対象表を分岐単位で作り直す
 - E-1〜E-3 の各段は、移した分岐の `UserDataViolation` と、未移行分岐の `LegacyResolutionText` が
   **同じ inactive scene に同居して保持される**ことを受け入れにする(第 1 巡 #3 の構成そのもの)
@@ -173,7 +173,7 @@ code を生成し、`projectionFailure` は固定 switch で adapter failure を
 ### 決定 7'(#9・#10): wire 契約は **分岐ごとの表**と **全 surface の golden bytes**
 
 - **拒否分岐ごとに `{code, tokens, leaf_message bytes}`** を表にする(namespace の列挙ではなく exact)。
-  animation / ray_instance を含める
+  animation / pelican_ray_instance を含める
 - 5 surface(direct `what()` / stored leaf / 文脈付き `what()` / query / terminal)を **変更前の golden bytes** と比較する。
   「既存文言テスト無変更」は証明にならない(sprite の大半は `REQUIRE_THROWS` だけ)
 - **`DiagnosticOccurrence { violation, provenance, introduced_by_candidate, base_revision }`**。
@@ -183,7 +183,7 @@ code を生成し、`projectionFailure` は固定 switch で adapter failure を
 
 ```
 E-0  StoredResolutionFailure(variant)+ decode 境界の値変換の器(expected)+ 分岐単位の棚卸し表
-E-1  camera(4 + alias)/ animation graph / ray_instance(11)を分岐単位で UserDataViolation へ
+E-1  camera(4 + alias)/ animation graph / pelican_ray_instance(11)を分岐単位で UserDataViolation へ
 E-2  collider(17)/ sprite_view(15、うち resolver 到達 5)
 E-3  atlas(resolver 到達 5。残りは asset loader 境界)
 E-4a materialize / commit で内部例外を結果値にしない(fail-fast の回復。本番境界)
@@ -296,7 +296,7 @@ prefab substitution と default completion を通る **token 単位の origin ma
 
 ```
 E-0  ResolutionResult<T> + optional<StoredResolutionFailure> + 6 caller の列挙と preview の result 検査
-     + camera 4+alias / animation graph / ray_instance 11 の値化 + get_components の最小可視化   ← 単独価値あり
+     + camera 4+alias / animation graph / pelican_ray_instance 11 の値化 + get_components の最小可視化   ← 単独価値あり
 E-1  collider 17 / sprite_view 15(混在受け入れ)
 E-2  atlas 5 + 非同期 diagnostic event の型付け(producer 0 が受け入れ)
 E-3a 3 分類表の実装: commit の noexcept 解除、internal は rollback → throw、coordinator で terminate
@@ -327,7 +327,7 @@ E-4  terminal(`error.data`)/ load_scene(`error.data`)/ launcher handshake / Stud
 | 段 | 内容 |
 |---|---|
 | **E-0a** | move-only `ResolutionResult` + `optional<StoredResolutionFailure>` + `decodeAuthored` の **6 production caller** 移行(5 ファイル。test の直接 caller 18 も同時)+ camera 4 + alias(resolver 所有の completion seam)+ `get_components` の `resolution_error` |
-| E-0b | animation graph + ray_instance 11 分岐の corpus |
+| E-0b | animation graph + pelican_ray_instance 11 分岐の corpus |
 | E-0c | behavior callback の値化(`StructFieldValidationError → UserDataViolation`、当面は `LegacySourcePath` 付き)。**E-3b より前** |
 
 E-0a 単独で「不正 camera が structured error / 修正後に本番 resolver が解決した camera 値」を検査できる。
@@ -403,7 +403,7 @@ camera.zfar_not_greater_than_znear@1   primary_token = znear   related_tokens = 
 
 ```
 E-0a  型(move-only)+ 6 caller + camera 4+alias + get_components + legacy_branch_id 表   ← 最初の WP
-E-0b  animation + ray_instance 11
+E-0b  animation + pelican_ray_instance 11
 E-0c  behavior callback の値化(LegacySourcePath 付き)+ v1 lossless adapter
 E-1   collider 17 / sprite_view 15
 E-2   atlas 5(resolver 到達)      E-2b  診断 registry + get_resolution_diagnostics(別設計に近い規模)

@@ -954,13 +954,13 @@ std::uint32_t decodeRayInstanceUnsigned(const Json &encoded,
 ComponentCodecValue decodeRayInstance(const Json &json) {
     if (!json.is_object()) {
         rayInstanceCodecError("ray_instance_field_type",
-                              "ray_instance must be an object");
+                              "pelican_ray_instance must be an object");
     }
     const auto name = json.find("name");
     if (name == json.end() || !name->is_string() ||
-        name->get_ref<const std::string &>() != "ray_instance") {
+        name->get_ref<const std::string &>() != "pelican_ray_instance") {
         rayInstanceCodecError("ray_instance_field_type",
-                              "name must be 'ray_instance'");
+                              "name must be 'pelican_ray_instance'");
     }
     for (const auto &[key, value] : json.items()) {
         (void)value;
@@ -986,15 +986,15 @@ ComponentCodecValue decodeRayInstance(const Json &json) {
     }
     if (!result.mask && !result.instance_flags && !result.custom_index) {
         rayInstanceCodecError("ray_instance_empty",
-                              "ray_instance must declare at least one field");
+                              "pelican_ray_instance must declare at least one field");
     }
     return result;
 }
 
 OrderedJson encodeRayInstance(const ComponentCodecValue &value) {
     const auto &data =
-        codecValue<RayInstanceComponent>(value, "ray_instance");
-    OrderedJson result{{"name", "ray_instance"}};
+        codecValue<RayInstanceComponent>(value, "pelican_ray_instance");
+    OrderedJson result{{"name", "pelican_ray_instance"}};
     if (data.mask) result["mask"] = *data.mask;
     if (data.instance_flags) {
         OrderedJson flags = OrderedJson::array();
@@ -1014,14 +1014,16 @@ OrderedJson encodeRayInstance(const ComponentCodecValue &value) {
 
 void applyRayInstance(const ComponentCodecValue &value, void *target) {
     if (target == nullptr)
-        throw std::invalid_argument("ray_instance runtime target is null");
+        throw std::invalid_argument(
+            "pelican_ray_instance runtime target is null");
     *static_cast<RayInstanceComponent *>(target) =
-        codecValue<RayInstanceComponent>(value, "ray_instance");
+        codecValue<RayInstanceComponent>(value, "pelican_ray_instance");
 }
 
 ComponentCodecValue projectRayInstance(const void *source) {
     if (source == nullptr)
-        throw std::invalid_argument("ray_instance runtime source is null");
+        throw std::invalid_argument(
+            "pelican_ray_instance runtime source is null");
     return *static_cast<const RayInstanceComponent *>(source);
 }
 
@@ -1120,7 +1122,7 @@ const std::array codecs{
                    [] { return fieldSpan(sprite_fields); }, applySprite,
                    projectSprite, prepareEcsEditorSwap<SpriteViewComponent>,
                    swapEcsEditorToken<SpriteViewComponent>},
-    ComponentCodec{"ray_instance", ComponentCodecRuntimeKind::Ecs,
+    ComponentCodec{"pelican_ray_instance", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeRayInstance, encodeRayInstance,
                    [] { return fieldSpan(ray_instance_fields); },

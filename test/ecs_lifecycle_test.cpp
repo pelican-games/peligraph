@@ -187,6 +187,7 @@ void registerComponents() {
         return true;
     }();
     (void)logger_initialized;
+    TestSupport::ScopedTestRegistrationOwner registration_owner;
     auto &registerer = internal::getComponentRegisterer();
     registerer.registerComponent<EntityId>("test_entity_id");
     (registerer.registerComponent<Components>(typeid(Components).name()), ...);

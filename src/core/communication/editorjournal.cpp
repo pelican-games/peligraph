@@ -3,6 +3,7 @@
 #include "../loader/authoringsceneauthority.hpp"
 
 #include "../appflow/framephase.hpp"
+#include "../ecs/componentinfo.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../loader/componentcodec.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
@@ -215,9 +216,9 @@ Json canonicalComponent(const Json &component, AuthoringObjectId object_id,
                         std::string_view component_name) {
     const auto *codec = findComponentCodec(component_name);
     if (codec == nullptr) {
-        editFailure(EditorEditErrorCode::unknown_component_type,
-                    {{"object", object_id.value}, {"name", component_name}},
-                    "component type has no registered editor codec");
+        const ComponentUnknownError cause{std::string{component_name}};
+        editFailure(EditorEditErrorCode::component_unknown, cause.payload(),
+                    cause.what());
     }
     try {
         return Json::parse(codec->encodeCanonical(codec->decodeAuthored(component)).dump());
@@ -2999,7 +3000,7 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
         return "behavior_type_unknown@1";
     case EditorEditErrorCode::runtime_binding_missing:
         return "runtime_binding_missing@1";
-    case EditorEditErrorCode::unknown_component_type: return "unknown_component_type";
+    case EditorEditErrorCode::component_unknown: return componentUnknownErrorCode;
     case EditorEditErrorCode::duplicate_component: return "duplicate_component";
     case EditorEditErrorCode::missing_component: return "missing_component";
     case EditorEditErrorCode::name_conflict: return "name_conflict";

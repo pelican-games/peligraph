@@ -105,7 +105,8 @@ void SpriteViewComponent::validate() const {
 }
 
 void registerSpriteViewComponent() {
-    internal::getComponentRegisterer().registerComponent<SpriteViewComponent>("sprite_view");
+    internal::getComponentRegisterer()
+        .registerEngineComponent<SpriteViewComponent>("sprite_view");
 }
 
 } // namespace Pelican

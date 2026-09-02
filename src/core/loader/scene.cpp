@@ -55,9 +55,10 @@ void internal::validateResolvedSceneFeatureBindings(
         if (const auto *components =
                 FastModuleContainer::tryGet<ComponentInfoManager>()) {
             try {
-                (void)components->getComponentIdByName("ray_instance");
+                (void)components->getComponentIdByName(
+                    "pelican_ray_instance");
                 external_owner = true;
-            } catch (const std::out_of_range &) {
+            } catch (const ComponentUnknownError &) {
             }
         }
         if (!external_owner) {
@@ -65,10 +66,11 @@ void internal::validateResolvedSceneFeatureBindings(
                 if (std::any_of(object.components.begin(),
                                 object.components.end(),
                                 [](const auto &component) {
-                                    return component.name == "ray_instance";
+                                    return component.name ==
+                                           "pelican_ray_instance";
                                 })) {
                     throw std::runtime_error(
-                        "pelican.ray_instance_requires_layout_v2@1: builtin ray_instance declarations require ray_group_layout version 2");
+                        "pelican.ray_instance_requires_layout_v2@1: builtin pelican_ray_instance declarations require ray_group_layout version 2");
                 }
             }
         }
@@ -77,7 +79,7 @@ void internal::validateResolvedSceneFeatureBindings(
             const bool has_ray_instance = std::any_of(
                 object.components.begin(), object.components.end(),
                 [](const auto &component) {
-                    return component.name == "ray_instance";
+                    return component.name == "pelican_ray_instance";
                 });
             const bool has_model = std::any_of(
                 object.components.begin(), object.components.end(),
@@ -86,7 +88,7 @@ void internal::validateResolvedSceneFeatureBindings(
                 });
             if (has_ray_instance && !has_model) {
                 throw std::runtime_error(
-                    "pelican.ray_instance_not_ray_traced@1: ray_instance object has no ray-traceable model component");
+                    "pelican.ray_instance_not_ray_traced@1: pelican_ray_instance object has no ray-traceable model component");
             }
         }
     }
@@ -116,12 +118,8 @@ std::string displayObjectName(const std::string &object_name) {
 
 ComponentId getComponentIdForObject(ComponentInfoManager &component_info_manager, const std::string &component_name,
                                     const std::string &object_name) {
-    try {
-        return component_info_manager.getComponentIdByName(component_name);
-    } catch (const std::out_of_range &) {
-        throw std::runtime_error("Unknown component '" + component_name + "' on object '" +
-                                 displayObjectName(object_name) + "'");
-    }
+    (void)object_name;
+    return component_info_manager.getComponentIdByName(component_name);
 }
 
 struct EcsObjectLoad {

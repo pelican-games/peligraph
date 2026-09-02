@@ -45,9 +45,6 @@
 
 namespace Pelican {
 
-struct Wp374ExternalRayInstanceComponent {};
-DECLARE_COMPONENT(Wp374ExternalRayInstanceComponent, 63);
-
 namespace {
 
 using Catch::Matchers::ContainsSubstring;
@@ -243,15 +240,15 @@ TEST_CASE("WP374 semantic modes preserve legacy and v1 custom-index ABIs",
     CHECK(legacy[0].geometry_flags == 0);
 }
 
-TEST_CASE("WP374 ray_instance codec is strict and version gated",
+TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
           "[WP374][ray-tracing][rt3-1][component-codec][version-gate][matrix]") {
     FastModuleContainer modules;
     auto &mode = GET_MODULE(RayLayoutRuntimeState);
     mode.configure(RayLayoutSemanticMode::LayoutV2);
     REQUIRE(componentCodecs().size() == 8);
-    const auto &codec = requireComponentCodec("ray_instance");
+    const auto &codec = requireComponentCodec("pelican_ray_instance");
     const auto decoded = codec.decodeAuthored({
-        {"name", "ray_instance"},
+        {"name", "pelican_ray_instance"},
         {"mask", 9},
         {"instance_flags", {"force_no_opaque"}},
         {"custom_index", 0x654321},
@@ -263,22 +260,22 @@ TEST_CASE("WP374 ray_instance codec is strict and version gated",
     CHECK(canonical["custom_index"] == 0x654321);
 
     CHECK_THROWS_WITH(
-        codec.decodeAuthored({{"name", "ray_instance"}}),
+        codec.decodeAuthored({{"name", "pelican_ray_instance"}}),
         ContainsSubstring("pelican.ray_instance_empty@1"));
     CHECK_THROWS_WITH(
         codec.decodeAuthored(
-            {{"name", "ray_instance"}, {"future", 1}}),
+            {{"name", "pelican_ray_instance"}, {"future", 1}}),
         ContainsSubstring("pelican.ray_instance_unknown_field@1"));
     CHECK_THROWS_WITH(
         codec.decodeAuthored(
-            {{"name", "ray_instance"}, {"mask", "all"}}),
+            {{"name", "pelican_ray_instance"}, {"mask", "all"}}),
         ContainsSubstring("pelican.ray_instance_field_type@1"));
     CHECK_THROWS_WITH(
         codec.decodeAuthored(
-            {{"name", "ray_instance"}, {"mask", 256}}),
+            {{"name", "pelican_ray_instance"}, {"mask", 256}}),
         ContainsSubstring("pelican.ray_instance_field_range@1"));
     CHECK_THROWS_WITH(
-        codec.decodeAuthored({{"name", "ray_instance"},
+        codec.decodeAuthored({{"name", "pelican_ray_instance"},
                               {"custom_index", 0x1000000}}),
         ContainsSubstring("pelican.ray_instance_field_range@1"));
     CHECK_THROWS_WITH(
@@ -292,33 +289,6 @@ TEST_CASE("WP374 ray_instance codec is strict and version gated",
     STATIC_CHECK(PELICAN_WITH_IMGUI == 0 || PELICAN_WITH_IMGUI == 1);
     STATIC_CHECK(PELICAN_WP374_SKIP_DEVSTUDIO == 0 ||
                  PELICAN_WP374_SKIP_DEVSTUDIO == 1);
-}
-
-TEST_CASE("WP374 version gate preserves an external no-layout owner",
-          "[WP374][ray-tracing][rt3-1][namespace][external-owner][mutation]") {
-    SECTION("no-layout keeps the pre-existing external component") {
-        FastModuleContainer modules;
-        GET_MODULE(RayLayoutRuntimeState)
-            .configure(RayLayoutSemanticMode::LegacyNoLayout);
-        (void)internal::getComponentRegisterer()
-            .registerComponent<Wp374ExternalRayInstanceComponent>(
-                "ray_instance");
-        CHECK(findComponentCodec("ray_instance") == nullptr);
-        ResolvedScene resolved;
-        const auto &scene = resolveProductionScene(true, resolved);
-        CHECK_NOTHROW(internal::validateResolvedSceneFeatureBindings(scene));
-    }
-    SECTION("v2 reverse registration cannot steal the external name") {
-        FastModuleContainer modules;
-        GET_MODULE(RayLayoutRuntimeState)
-            .configure(RayLayoutSemanticMode::LayoutV2);
-        (void)internal::getComponentRegisterer()
-            .registerComponent<Wp374ExternalRayInstanceComponent>(
-                "ray_instance");
-        CHECK_THROWS(internal::getComponentRegisterer()
-                         .registerComponent<RayInstanceComponent>(
-                             "ray_instance"));
-    }
 }
 
 TEST_CASE("WP374 non-ray-traced declarations fail before static filtering",

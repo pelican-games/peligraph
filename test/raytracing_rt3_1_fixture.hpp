@@ -299,7 +299,7 @@ inline const ResolvedSceneView &resolveProductionScene(bool with_ray_instance,
         {{{"name", "simplemodelview"}, {"model", "chair"}}});
     if (with_ray_instance) {
         components.push_back(
-            {{"name", "ray_instance"}, {"mask", 9}});
+            {{"name", "pelican_ray_instance"}, {"mask", 9}});
     }
     const Json scene{
         {"schema", "pelican.scene"},
