@@ -28,6 +28,11 @@ struct EditorRuntimeServiceOptions {
     // used by Studio.  The existing ImGui composition keeps its current
     // surface while sharing all scene-edit implementation.
     bool render_config_editing = false;
+    // The transaction fault seam is part of the production materializer. A
+    // null pointer is the shipped path; production-composition acceptance can
+    // forward a one-shot injector without replacing classification, adapter
+    // construction, or commit.
+    EditorProjectionFaultInjector *projection_fault_injector = nullptr;
 };
 
 // The materialization boundary uses optional module pointers so CPU tests can

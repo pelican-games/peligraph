@@ -1713,6 +1713,11 @@ EditFailure projectionFailure(const EditorProjectionResult &result,
             EditorEditErrorCode::behavior_type_unknown,
             result.error ? result.error->data : OrderedJson::object(),
             message};
+    case EditorProjectionErrorCode::RuntimeBindingMissing:
+        return EditFailure{
+            EditorEditErrorCode::runtime_binding_missing,
+            result.error ? result.error->data : OrderedJson::object(),
+            message};
     case EditorProjectionErrorCode::AdapterPrepareFailed:
     case EditorProjectionErrorCode::AdapterPublishFailed:
         return EditFailure{EditorEditErrorCode::method_unavailable,
@@ -2176,9 +2181,6 @@ OrderedJson editErrorJson(EditorEditErrorCode code, const OrderedJson &payload,
     OrderedJson result{{"code", editorEditErrorCodeName(code)},
                        {"message", message},
                        {"payload", payload}};
-    if (code == EditorEditErrorCode::behavior_type_unknown) {
-        result["data"] = payload;
-    }
     return result;
 }
 
@@ -2995,6 +2997,8 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
         return "origin_transition_body_mismatch@1";
     case EditorEditErrorCode::behavior_type_unknown:
         return "behavior_type_unknown@1";
+    case EditorEditErrorCode::runtime_binding_missing:
+        return "runtime_binding_missing@1";
     case EditorEditErrorCode::unknown_component_type: return "unknown_component_type";
     case EditorEditErrorCode::duplicate_component: return "duplicate_component";
     case EditorEditErrorCode::missing_component: return "missing_component";

@@ -271,10 +271,12 @@ add_test(
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_schema_leaf_consumer.cmake
 )
 
+if(PELICAN_WITH_RPC)
 pelican_define_test(schema_rpc_test pelican_core pelican_schema_core_adapter picosha2)
 target_compile_definitions(pelican_test_schema_rpc_test PRIVATE
   PELICAN_WP358_RPC_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp358/get_components.pre_wp358.ndjson"
 )
+endif()
 
 pelican_define_test(schema_value_oracle_test pelican_core pelican_schema_leaf)
 if(MSVC)
@@ -1071,6 +1073,7 @@ target_compile_definitions(pelican_test_temporal_test PRIVATE
 )
 pelican_define_test(color_pipeline_test GROUP view_temporal pelican_core glm
                     pelican_bloom_upsample_test_support)
+if(PELICAN_WITH_RPC)
 pelican_define_test(rpc_color_contract_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp spirv-reflect-static stb glm)
 target_include_directories(pelican_test_rpc_color_contract_test PRIVATE ${stb_SOURCE_DIR})
 target_compile_definitions(pelican_test_rpc_color_contract_test PRIVATE
@@ -1081,6 +1084,7 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
     if(COMMAND pelican_copy_shaderc_runtime)
         pelican_copy_test_shaderc_runtime(pelican_test_rpc_color_contract_test)
     endif()
+endif()
 endif()
 if(PELICAN_WITH_EXR)
 pelican_define_test(imageloader_test GROUP core_assets_input pelican_core tinyexr)
@@ -1259,6 +1263,7 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_test PRIVATE
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_WP374_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
 )
+if(PELICAN_WITH_RPC)
 pelican_define_test(raytracing_rt3_1_production_test GPU pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_raytracing_rt3_1_production_test PRIVATE
@@ -1266,6 +1271,7 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_production_test PRIVATE
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_WP374_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(WIN32)
     # This production acceptance executable is the real SDK export host for
@@ -1302,6 +1308,7 @@ if(WIN32)
     target_compile_definitions(
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP375_BEHAVIOR_FIXTURE="$<TARGET_FILE:pelican_wp375_behavior_fixture>")
+endif()
 endif()
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_raytracing_rt1b_test PRIVATE pelican_shaderc)

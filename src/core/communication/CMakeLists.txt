@@ -23,6 +23,7 @@ if(PELICAN_WITH_RPC)
 target_sources(pelican_core PRIVATE
     rpcserver.cpp
     windowedrpchost.cpp
+    editorrpchandlers.cpp
 )
 else()
 target_sources(pelican_core PRIVATE
@@ -38,6 +39,5 @@ target_sources(pelican_core PRIVATE
     editorprojectionplan.cpp
     renderconfigeditor.cpp
     renderconfigtransaction.cpp
-    editorrpchandlers.cpp
     editorruntimefactory.cpp
 )

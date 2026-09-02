@@ -9,11 +9,13 @@ TEST_CASE("golden image cases match expected output",
     GoldenHarness::runGoldenImages();
 }
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "inspector edits unnamed parented runtime objects and changes rendered pixels",
     "[golden][headless][editor][transform][collider][load-scene][wp244]") {
     GoldenHarness::runEditorRuntimeBinding();
 }
+#endif
 
 TEST_CASE("B-layer directional shadow is visible and copied features are equivalent",
           "[golden][headless][wp205]") {

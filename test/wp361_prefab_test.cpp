@@ -1355,6 +1355,7 @@ TEST_CASE("WP361 object references use frozen identity for forward backward self
                 .effective_json);
 }
 
+#if PELICAN_WITH_RPC
 TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors and rebases sequence",
           "[wp361a][prefab][lifecycle][arena][production][rebase]") {
     ensureBehavior();
@@ -1669,6 +1670,7 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     }
     (void)first_spawn;
 }
+#endif
 
 TEST_CASE("WP361 generated identity survives edit undo redo removal and authored insertion",
           "[wp361][prefab][identity]") {
@@ -2673,6 +2675,7 @@ TEST_CASE("WP362 SnapshotV2 routes all four wire shapes and checks closure befor
     REQUIRE(unset_ast.prefab_mutation);
 }
 
+#if PELICAN_WITH_RPC
 TEST_CASE("WP362 real RpcServer run edits prefab parameters with three-token CAS and journal replay",
           "[wp362][prefab-edit][rpc][cas][undo-redo]") {
     ensureBehavior();
@@ -2845,6 +2848,7 @@ TEST_CASE("WP362 real RpcServer run edits prefab parameters with three-token CAS
         OJson{{"op", "set_prefab_parameter"}, {"object", object_id},
               {"parameter", "hp"}, {"value", 55}}});
 }
+#endif
 
 TEST_CASE("WP362 closure CAS closes kind-object indirect prefab dependencies",
           "[wp362][prefab-edit][cas][indirect]") {

@@ -319,6 +319,23 @@ std::size_t codecIndex(const EditorProjectionContext &context,
     return static_cast<std::size_t>(found - catalog.begin());
 }
 
+bool appendDocumentOnlyIfInactive(EditorProjectionPlan &plan,
+                                  std::size_t operation_index,
+                                  std::string_view scene_id,
+                                  AuthoringObjectId object_id) {
+    if (plan.context.mode() != EditorProjectionMode::Committed ||
+        scene_id == plan.context.activeSceneId()) {
+        return false;
+    }
+    plan.routes.push_back(EditorProjectionRoute{
+        .kind = EditorProjectionRouteKind::DocumentOnly,
+        .operation_index = operation_index,
+        .scene_id = std::string{scene_id},
+        .object_id = object_id,
+    });
+    return true;
+}
+
 void appendPolicyRoute(EditorProjectionPlan &plan, std::size_t operation_index,
                        std::string scene_id, AuthoringObjectId object_id,
                        std::string component) {
@@ -345,6 +362,10 @@ void appendLifecycleRoutes(EditorProjectionPlan &plan,
                            std::size_t operation_index,
                            std::string scene_id,
                            AuthoringObjectId object_id) {
+    if (appendDocumentOnlyIfInactive(plan, operation_index, scene_id,
+                                     object_id)) {
+        return;
+    }
     constexpr EditorProjectionRouteKind kinds[]{
         EditorProjectionRouteKind::ObjectLifecycle,
         EditorProjectionRouteKind::LifecycleRenderer,
@@ -370,6 +391,10 @@ void appendPrefabRoutes(EditorProjectionPlan &plan,
                         bool full_component_projection,
                         std::optional<OriginTransitionMap> transition =
                             std::nullopt) {
+    if (appendDocumentOnlyIfInactive(plan, operation_index, scene_id,
+                                     object_id)) {
+        return;
+    }
     plan.routes.push_back(EditorProjectionRoute{
         .kind = EditorProjectionRouteKind::Prefab,
         .operation_index = operation_index,
@@ -636,6 +661,11 @@ EditorProjectionPlan planEditorProjection(
                 if constexpr (std::same_as<
                                   Operation,
                                   EditorSetComponentValueOperation>) {
+                    if (appendDocumentOnlyIfInactive(
+                            plan, operation_index, operation.scene_id,
+                            operation.object_id)) {
+                        return;
+                    }
                     if (operation.component == "behavior") {
                         if (context.mode() == EditorProjectionMode::Preview) {
                             planFailure("editor_preview_unsupported@1",
@@ -658,6 +688,11 @@ EditorProjectionPlan planEditorProjection(
                     std::same_as<Operation, EditorAddComponentOperation> ||
                     std::same_as<Operation,
                                  EditorRemoveComponentOperation>) {
+                    if (appendDocumentOnlyIfInactive(
+                            plan, operation_index, operation.scene_id,
+                            operation.object_id)) {
+                        return;
+                    }
                     if (context.mode() == EditorProjectionMode::Preview) {
                         planFailure("editor_preview_unsupported@1",
                                     "component lifecycle has no live preview policy");
@@ -688,6 +723,11 @@ EditorProjectionPlan planEditorProjection(
                     }
                 } else if constexpr (
                     std::same_as<Operation, EditorReparentOperation>) {
+                    if (appendDocumentOnlyIfInactive(
+                            plan, operation_index, operation.scene_id,
+                            operation.object_id)) {
+                        return;
+                    }
                     if (context.mode() == EditorProjectionMode::Preview) {
                         planFailure("editor_preview_unsupported@1",
                                     "reparent has no live preview policy");

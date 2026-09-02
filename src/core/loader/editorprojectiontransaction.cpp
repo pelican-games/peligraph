@@ -450,6 +450,8 @@ std::string_view editorProjectionErrorCodeName(
         return "transform_unrepresentable";
     case EditorProjectionErrorCode::BehaviorTypeUnknown:
         return BehaviorTypeUnknownError::codeName();
+    case EditorProjectionErrorCode::RuntimeBindingMissing:
+        return "runtime_binding_missing@1";
     case EditorProjectionErrorCode::AdapterPrepareFailed:
         return "projection_adapter_prepare_failed";
     case EditorProjectionErrorCode::AdapterPublishFailed:

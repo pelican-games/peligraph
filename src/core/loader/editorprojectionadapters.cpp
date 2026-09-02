@@ -254,8 +254,7 @@ struct SceneObjectProjectionAdapter::Impl {
         if (model_load != loads.end()) {
             if (models == nullptr || renderer == nullptr) {
                 throw std::runtime_error(
-                    "object lifecycle cannot project simplemodelview without "
-                    "the renderer participant");
+                    "editor_projection_participant_missing@1: renderer");
             } else {
                 const auto &data =
                     std::any_cast<const SimpleModelViewCodecData &>(
@@ -371,8 +370,10 @@ struct SceneObjectProjectionAdapter::Impl {
                 (sceneContains(base_scene, component_name) ||
                  sceneContains(next_scene, component_name))) {
                 throw std::runtime_error(
-                    "headless object lifecycle cannot project " +
-                    std::string{component_name});
+                    "editor_projection_participant_missing@1: " +
+                    (component_name == "simplemodelview"
+                         ? std::string{"renderer"}
+                         : std::string{component_name}));
             }
         };
         if (require_connected_participants) {
@@ -485,7 +486,7 @@ SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
           .camera = participants.camera ? camera : nullptr,
           .lights = participants.light ? lights : nullptr,
           .physics = participants.collider ? physics : nullptr,
-          .require_connected_participants = false,
+          .require_connected_participants = true,
           .scene_id = std::move(scene_id),
           .target_object = target_object,
           .bindings = std::move(bindings),
@@ -619,8 +620,7 @@ void SceneObjectProjectionAdapter::prepare(
     if (findResolvedComponent(lifecycle_object, "simplemodelview") != nullptr &&
         (impl_->models == nullptr || impl_->renderer == nullptr)) {
         throw std::runtime_error(
-            "object lifecycle cannot project simplemodelview without the "
-            "renderer participant");
+            "editor_projection_participant_missing@1: renderer");
     }
     if (next_object != nullptr) {
         if (next_scene == nullptr) {

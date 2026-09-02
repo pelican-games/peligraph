@@ -48,6 +48,7 @@ enum class EditorProjectionErrorCode : std::uint8_t {
     TransformNonFinite,
     TransformUnrepresentable,
     BehaviorTypeUnknown,
+    RuntimeBindingMissing,
     AdapterPrepareFailed,
     AdapterPublishFailed,
 };

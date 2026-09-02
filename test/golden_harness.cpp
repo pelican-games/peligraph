@@ -5822,6 +5822,7 @@ void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     (void)render_target;
 }
 
+#if PELICAN_WITH_RPC
 void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene_loader = GET_MODULE(SceneLoader);
@@ -6104,6 +6105,7 @@ void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
     REQUIRE(changed_pixels >= 4);
     REQUIRE(trace.edit_enqueue_calls == 2);
 }
+#endif
 
 void renderComputeFrame(RenderTarget &render_target) {
     GET_MODULE(Renderer).render();
@@ -6702,9 +6704,13 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         renderTemporalAccumulationFrames(render_target);
     } else if (golden_case.mode == "ui_u1" || golden_case.mode == "ui_u2") {
         renderFeatureFrame(render_target);
-    } else if (golden_case.mode == "editor_runtime_binding") {
+    }
+#if PELICAN_WITH_RPC
+    else if (golden_case.mode == "editor_runtime_binding") {
         renderEditorRuntimeBindingFrame(render_target);
-    } else if (isSpriteGoldenMode(golden_case.mode)) {
+    }
+#endif
+    else if (isSpriteGoldenMode(golden_case.mode)) {
         renderSpriteFrame(render_target, golden_case.mode);
     } else if (golden_case.mode == "debug_draw_feature") {
         renderDebugDrawFrame(render_target);

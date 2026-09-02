@@ -574,6 +574,7 @@ std::string emptyHybridConfig() {
 
 } // namespace
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP335 RPC startup is read-only and the first requested edit initializes features",
     "[render-config-editor][wp335][rpc][byte-lossless][initialization]") {
@@ -705,6 +706,7 @@ TEST_CASE(
     REQUIRE(readBytes(source.path) == edited_bytes);
     REQUIRE(runtime.apply_calls == 1);
 }
+#endif
 
 TEST_CASE(
     "WP331 adding a build-available feature publishes its real frame-plan node without restarting",
@@ -1325,6 +1327,7 @@ TEST_CASE(
         runtime.frame_plan, buildAvailableFeature));
 }
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP331 list_render_features RPC exactly reflects registered engine documents",
     "[render-config-editor][wp331][catalog][rpc]") {
@@ -1403,7 +1406,9 @@ TEST_CASE(
     }
     REQUIRE(observed == expected);
 }
+#endif
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP331 render feature RPC accepts a ticket and exposes the committed result",
     "[render-config-editor][wp331][rpc][ticket]") {
@@ -1481,6 +1486,7 @@ TEST_CASE(
     REQUIRE(frame_results.size() == 1);
     REQUIRE(frame_results.front().at("ticket") == ticket);
 }
+#endif
 
 TEST_CASE(
     "WP334b animgraph preset authored pass appears only after save and purges without an orphan",
@@ -1775,6 +1781,7 @@ TEST_CASE(
     REQUIRE_FALSE(graph->at("anchor_candidates").empty());
 }
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP334b engine RPC publishes context and both authored-pass operations",
     "[render-config-editor][wp334b][rpc][context][add][remove]") {
@@ -1873,6 +1880,7 @@ TEST_CASE(
             .at("result");
     REQUIRE(remove_result.at("committed") == true);
 }
+#endif
 
 TEST_CASE(
     "WP334b removing a hand-written feature reference never deletes its file",

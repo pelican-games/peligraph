@@ -256,6 +256,7 @@ const nlohmann::ordered_json &editorCanonicalOperationWire(
     const EditorCanonicalOperation &operation) noexcept;
 
 enum class EditorProjectionRouteKind : std::uint8_t {
+    DocumentOnly,
     TransformClosure,
     RendererModel,
     EcsCodec,

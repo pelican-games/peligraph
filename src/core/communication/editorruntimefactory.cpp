@@ -242,6 +242,69 @@ std::optional<EntityId> boundEditorEntity(
                                    : std::optional{found->entity};
 }
 
+// A full prefab projection names every participant up front, even when the
+// edited object has no component owned by that participant.  A disconnected
+// participant is therefore represented by an explicit guard route: it is a
+// no-op only when the targeted object is irrelevant in both the old and next
+// resolved scenes, and otherwise fails during prepare with the participant's
+// stable name.  Direct set routes always have a relevant component and take
+// the same failure path.
+class MissingProjectionParticipantGuard final
+    : public EditorProjectionAdapter {
+    EditorProjectionAdapterKind kind_;
+    std::string participant_;
+    std::string scene_id_;
+    AuthoringObjectId object_id_{};
+    std::string component_;
+    std::string name_;
+
+    bool relevant(const ResolvedScene &resolved) const {
+        const auto *scene = resolved.findScene(scene_id_);
+        if (scene == nullptr) return false;
+        const auto object = std::find_if(
+            scene->objects.begin(), scene->objects.end(),
+            [&](const ResolvedObject &candidate) {
+                return candidate.authoring_object_id == object_id_;
+            });
+        if (object == scene->objects.end()) return false;
+        return std::any_of(
+            object->components.begin(), object->components.end(),
+            [&](const ResolvedComponent &candidate) {
+                return candidate.name == component_;
+            });
+    }
+
+  public:
+    MissingProjectionParticipantGuard(
+        EditorProjectionAdapterKind kind, std::string participant,
+        std::string scene_id, AuthoringObjectId object_id,
+        std::string component)
+        : kind_{kind}, participant_{std::move(participant)},
+          scene_id_{std::move(scene_id)}, object_id_{object_id},
+          component_{std::move(component)},
+          name_{"participant_guard." + participant_ + "." +
+                std::to_string(object_id_.value)} {}
+
+    EditorProjectionAdapterKind kind() const noexcept override {
+        return kind_;
+    }
+    std::string_view name() const noexcept override { return name_; }
+    EditorProjectionPublicationMode publicationMode() const noexcept override {
+        return EditorProjectionPublicationMode::StagedNoexcept;
+    }
+    void prepare(const EditorProjectionPrepareContext &context) override {
+        if (relevant(context.base_resolved) ||
+            relevant(context.next_resolved)) {
+            throw std::runtime_error(
+                "editor_projection_participant_missing@1: " +
+                participant_);
+        }
+    }
+    void publish() noexcept override {}
+    void rollback() noexcept override {}
+    void finish() noexcept override {}
+};
+
 class SimpleModelMigrationParticipant final
     : public ECSArchetypeMigrationAdapter {
     ModelAssetContainer &models_;
@@ -363,7 +426,7 @@ class EditorEcsMigrationProjectionAdapter final
         if (codec_.editor_policy == EditorProjectionPolicy::RendererModel) {
             if (models_ == nullptr || renderer_ == nullptr) {
                 throw std::runtime_error(
-                    "renderer component migration modules are unavailable");
+                    "editor_projection_participant_missing@1: renderer");
             }
             simple_model_.emplace(*models_, *renderer_, kind_);
             participants.push_back(&*simple_model_);
@@ -1224,12 +1287,20 @@ EditorProjectionResult materializeEditorProjection(
     EditorProjectionFaultInjector *fault_injector) {
     const auto reject = [&](EditorProjectionStatus status,
                             EditorProjectionErrorCode code,
-                            std::string message) {
+                            std::string message,
+                            std::string object_path = "/",
+                            nlohmann::ordered_json data =
+                                nlohmann::ordered_json::object()) {
         return EditorProjectionResult{
             .status = status,
             .base_revision = plan.base_revision,
             .committed_revision = target.projectionState().revision(),
-            .error = EditorProjectionError{code, "/", std::move(message)},
+            .error = EditorProjectionError{
+                .code = code,
+                .object_path = std::move(object_path),
+                .message = std::move(message),
+                .data = std::move(data),
+            },
         };
     };
     try {
@@ -1242,10 +1313,87 @@ EditorProjectionResult materializeEditorProjection(
                           EditorProjectionErrorCode::CommandInvalid,
                           "editor_projection_stale_bindings@1: runtime binding or policy generation changed");
         }
-        if (modules.ecs == nullptr || modules.component_info == nullptr) {
+        // Registry validation is deliberately independent of runtime entity
+        // binding. In particular, a document-only inactive-scene replay and
+        // an active light-only object both observe the same active registry
+        // before either path can decide that no ECS binding exists.
+        if (plan.context.behaviorAvailability() ==
+            EditorBehaviorAvailability::Active) {
+            for (const auto &operation : plan.operations) {
+                const auto unknown = std::visit(
+                    [&](const auto &typed)
+                        -> std::optional<std::pair<std::string,
+                                                   AuthoringObjectId>> {
+                        using Operation =
+                            std::remove_cvref_t<decltype(typed)>;
+                        if constexpr (
+                            std::same_as<Operation,
+                                         EditorSetComponentValueOperation> ||
+                            std::same_as<Operation,
+                                         EditorAddComponentOperation>) {
+                            if (typed.component != "behavior") {
+                                return std::nullopt;
+                            }
+                            const auto &authored = typed.wire.at(
+                                std::same_as<
+                                    Operation,
+                                    EditorSetComponentValueOperation>
+                                    ? "authored_component"
+                                    : "component");
+                            const auto stable_name =
+                                authored.at("type").get<std::string>();
+                            if (plan.context.findBehavior(stable_name) ==
+                                nullptr) {
+                                return std::pair{stable_name,
+                                                 typed.object_id};
+                            }
+                        }
+                        return std::nullopt;
+                    },
+                    operation);
+                if (unknown) {
+                    return reject(
+                        EditorProjectionStatus::Rejected,
+                        EditorProjectionErrorCode::BehaviorTypeUnknown,
+                        "Unknown behavior type '" + unknown->first + "'",
+                        "/authoring_objects/" +
+                            std::to_string(unknown->second.value) +
+                            "/components/behavior",
+                        nlohmann::ordered_json{
+                            {"type", unknown->first},
+                            {"object_id", unknown->second.value}});
+                }
+            }
+        }
+        const auto has_runtime_route = std::any_of(
+            plan.routes.begin(), plan.routes.end(),
+            [](const EditorProjectionRoute &route) {
+                return route.kind != EditorProjectionRouteKind::DocumentOnly;
+            });
+        if (has_runtime_route &&
+            (modules.ecs == nullptr || modules.component_info == nullptr)) {
             return reject(EditorProjectionStatus::Failed,
                           EditorProjectionErrorCode::AdapterPrepareFailed,
                           "editor_projection_module_missing@1: ECS projection modules are unavailable");
+        }
+
+        for (const auto &route : plan.routes) {
+            if (route.kind != EditorProjectionRouteKind::BehaviorBatch) {
+                continue;
+            }
+            if (!boundEditorEntity(binding_state.bindings,
+                                   route.object_id)) {
+                return reject(
+                    EditorProjectionStatus::Rejected,
+                    EditorProjectionErrorCode::RuntimeBindingMissing,
+                    "runtime_binding_missing@1: active scene behavior target has no runtime entity binding",
+                    "/authoring_objects/" +
+                        std::to_string(route.object_id.value) +
+                        "/components/behavior",
+                    nlohmann::ordered_json{
+                        {"object_id", route.object_id.value},
+                        {"scene_id", route.scene_id}});
+            }
         }
 
         auto runtime_bindings = binding_state.bindings;
@@ -1263,6 +1411,10 @@ EditorProjectionResult materializeEditorProjection(
         std::set<std::string> camera_scenes;
         std::set<std::string> light_scenes;
         std::set<std::string> collider_scenes;
+        std::vector<EditorProjectionRoute> renderer_routes;
+        std::vector<EditorProjectionRoute> camera_routes;
+        std::vector<EditorProjectionRoute> light_routes;
+        std::vector<EditorProjectionRoute> collider_routes;
 
         const auto hasRoute = [&](EditorProjectionRouteKind kind,
                                   std::size_t operation_index,
@@ -1321,23 +1473,29 @@ EditorProjectionResult materializeEditorProjection(
 
         for (const auto &route : plan.routes) {
             switch (route.kind) {
+            case EditorProjectionRouteKind::DocumentOnly:
+                break;
             case EditorProjectionRouteKind::TransformClosure:
                 transform_scenes.insert(route.scene_id);
                 break;
             case EditorProjectionRouteKind::RendererModel:
                 renderer_scenes.insert(route.scene_id);
+                renderer_routes.push_back(route);
                 break;
             case EditorProjectionRouteKind::EcsCodec:
                 ecs_codec_scenes.insert(route.scene_id);
                 break;
             case EditorProjectionRouteKind::Camera:
                 camera_scenes.insert(route.scene_id);
+                camera_routes.push_back(route);
                 break;
             case EditorProjectionRouteKind::Light:
                 light_scenes.insert(route.scene_id);
+                light_routes.push_back(route);
                 break;
             case EditorProjectionRouteKind::Collider:
                 collider_scenes.insert(route.scene_id);
+                collider_routes.push_back(route);
                 break;
             case EditorProjectionRouteKind::Reparent:
                 adapters.push_back(
@@ -1405,7 +1563,10 @@ EditorProjectionResult materializeEditorProjection(
                                           EditorSetComponentValueOperation>) {
                             const auto entity = boundEditorEntity(
                                 runtime_bindings, operation.object_id);
-                            if (!entity) return;
+                            if (!entity) {
+                                throw std::logic_error(
+                                    "validated behavior binding disappeared");
+                            }
                             const auto &authored =
                                 operation.wire.at("authored_component");
                             behavior_edits.push_back(BehaviorAttachmentEdit{
@@ -1427,7 +1588,10 @@ EditorProjectionResult materializeEditorProjection(
                                                  EditorAddComponentOperation>) {
                             const auto entity = boundEditorEntity(
                                 runtime_bindings, operation.object_id);
-                            if (!entity) return;
+                            if (!entity) {
+                                throw std::logic_error(
+                                    "validated behavior binding disappeared");
+                            }
                             const ResolvedObject *object = nullptr;
                             for (const auto &scene :
                                  target.projectionState().resolved().scenes()) {
@@ -1472,7 +1636,10 @@ EditorProjectionResult materializeEditorProjection(
                                                  EditorRemoveComponentOperation>) {
                             const auto entity = boundEditorEntity(
                                 runtime_bindings, operation.object_id);
-                            if (!entity) return;
+                            if (!entity) {
+                                throw std::logic_error(
+                                    "validated behavior binding disappeared");
+                            }
                             behavior_edits.push_back(BehaviorAttachmentEdit{
                                 .kind = BehaviorAttachmentEditKind::remove,
                                 .entity = *entity,
@@ -1519,29 +1686,67 @@ EditorProjectionResult materializeEditorProjection(
                 *modules.ecs, scene, runtime_bindings, catalog));
         }
         for (const auto &scene : renderer_scenes) {
-            if (modules.models == nullptr ||
-                modules.polygon_instances == nullptr) {
-                continue;
+            if (modules.models != nullptr &&
+                modules.polygon_instances != nullptr) {
+                adapters.push_back(
+                    std::make_unique<RendererModelProjectionAdapter>(
+                        *modules.ecs, *modules.models,
+                        *modules.polygon_instances, scene,
+                        runtime_bindings));
             }
-            adapters.push_back(
-                std::make_unique<RendererModelProjectionAdapter>(
-                    *modules.ecs, *modules.models,
-                    *modules.polygon_instances, scene, runtime_bindings));
+        }
+        if (modules.models == nullptr ||
+            modules.polygon_instances == nullptr) {
+            for (const auto &route : renderer_routes) {
+                adapters.push_back(std::make_unique<
+                    MissingProjectionParticipantGuard>(
+                    EditorProjectionAdapterKind::RendererModel,
+                    "renderer", route.scene_id, route.object_id,
+                    route.component));
+            }
         }
         for (const auto &scene : camera_scenes) {
-            if (modules.camera == nullptr) continue;
-            adapters.push_back(std::make_unique<CameraProjectionAdapter>(
-                *modules.camera, scene));
+            if (modules.camera != nullptr) {
+                adapters.push_back(std::make_unique<CameraProjectionAdapter>(
+                    *modules.camera, scene));
+            }
+        }
+        if (modules.camera == nullptr) {
+            for (const auto &route : camera_routes) {
+                adapters.push_back(std::make_unique<
+                    MissingProjectionParticipantGuard>(
+                    EditorProjectionAdapterKind::Camera, "camera",
+                    route.scene_id, route.object_id, route.component));
+            }
         }
         for (const auto &scene : light_scenes) {
-            if (modules.lights == nullptr) continue;
-            adapters.push_back(std::make_unique<LightProjectionAdapter>(
-                *modules.lights, scene));
+            if (modules.lights != nullptr) {
+                adapters.push_back(std::make_unique<LightProjectionAdapter>(
+                    *modules.lights, scene));
+            }
+        }
+        if (modules.lights == nullptr) {
+            for (const auto &route : light_routes) {
+                adapters.push_back(std::make_unique<
+                    MissingProjectionParticipantGuard>(
+                    EditorProjectionAdapterKind::Light, "light",
+                    route.scene_id, route.object_id, route.component));
+            }
         }
         for (const auto &scene : collider_scenes) {
-            if (modules.physics == nullptr) continue;
-            adapters.push_back(std::make_unique<ColliderProjectionAdapter>(
-                *modules.ecs, *modules.physics, scene, runtime_bindings));
+            if (modules.physics != nullptr) {
+                adapters.push_back(std::make_unique<ColliderProjectionAdapter>(
+                    *modules.ecs, *modules.physics, scene,
+                    runtime_bindings));
+            }
+        }
+        if (modules.physics == nullptr) {
+            for (const auto &route : collider_routes) {
+                adapters.push_back(std::make_unique<
+                    MissingProjectionParticipantGuard>(
+                    EditorProjectionAdapterKind::PhysWorld, "collider",
+                    route.scene_id, route.object_id, route.component));
+            }
         }
 
         std::unique_ptr<BehaviorProjectionJunctionState> behavior_state;
@@ -1880,7 +2085,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
             .current_scene_id = [runtime] {
                 return runtime->modules.scene_loader.currentScene();
             },
-            .execute = [runtime](const EditorEditExecutionRequest &request) {
+            .execute = [runtime, fault_injector =
+                                     options.projection_fault_injector](
+                           const EditorEditExecutionRequest &request) {
                 runtime->refreshRuntimeBindings();
                 auto context = makeEditorProjectionContext(
                     runtime->modules.scene_loader.currentScene(),
@@ -1904,7 +2111,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         target, runtime->binding_state,
                         runtime->modules.scene_loader.runtimeSceneEpoch(),
                         context.layoutGeneration(),
-                        context.behaviorGeneration());
+                        context.behaviorGeneration(), fault_injector);
                 } catch (const EditorProjectionPlanError &error) {
                     return EditorProjectionResult{
                         .status = EditorProjectionStatus::Rejected,

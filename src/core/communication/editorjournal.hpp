@@ -73,6 +73,7 @@ enum class EditorEditErrorCode : std::uint8_t {
     origin_transition_gid_derivation_mismatch,
     origin_transition_body_mismatch,
     behavior_type_unknown,
+    runtime_binding_missing,
     unknown_component_type,
     duplicate_component,
     missing_component,

@@ -17,14 +17,18 @@
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/basicconfig.hpp"
+#include "../src/core/loader/authoringsceneauthority.hpp"
 #include "../src/core/loader/componentcodec.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/resolvedscene.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/light/lightcontainer.hpp"
+#include "../src/core/phys/physworld.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpassconfigloader.hpp"
+#include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
@@ -45,6 +49,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include "authoringscenetestsupport.hpp"
 #include "raytracing_rt3_1_fixture.hpp"
 #include "vulkan_test_support.hpp"
 
@@ -89,6 +94,39 @@ void writeWp374aText(const std::filesystem::path &path,
         throw std::runtime_error("failed to write WP374a fixture: " +
                                  path.string());
     }
+}
+
+Json wp375NoLayoutCompilerOffRenderingConfig() {
+    // The hybrid_v1 preset deliberately injects a global shader define. A
+    // compiler-OFF build cannot apply that define to its embedded SPIR-V.
+    // These WP375 edits do not render a frame, so use the smallest production
+    // graph that resolves directly to embedded shaders and generates no
+    // shader include document.
+    return Json{
+        {"rendering_passes",
+         Json::array(
+             {{{"name", "main_render"},
+               {"passes",
+                Json::array(
+                    {{{"name", "present"},
+                      {"type", "fullscreen"},
+                      {"output",
+                       {{"color", Json::array({"swapchain"})},
+                        {"depth", nullptr}}},
+                      {"shader",
+                       {{"vertex", "engine://fullscreen"},
+                        {"fragment", "engine://shader_lab_hello"}}}}})}}})},
+    };
+}
+
+std::string readWp374aText(const std::filesystem::path &path) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input) {
+        throw std::runtime_error("failed to read WP374a fixture: " +
+                                 path.string());
+    }
+    return {std::istreambuf_iterator<char>{input},
+            std::istreambuf_iterator<char>{}};
 }
 
 Json wp374aLayout(std::uint32_t version, bool with_as) {
@@ -148,9 +186,19 @@ void writeWp374aProject(const std::filesystem::path &root,
              {"textures", Json::array()}}
             .dump(2));
 
-    Json rendering{
-        {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+    Json rendering;
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    rendering = Json{
+        {"pipeline",
+         {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
     };
+#else
+    rendering = layout_version
+                    ? Json{{"pipeline",
+                            {{"preset",
+                              "engine://render_pipelines/hybrid_v1.json"}}}}
+                    : wp375NoLayoutCompilerOffRenderingConfig();
+#endif
     if (layout_version) {
         rendering["ray_group_layout"] = "ray_layout.json";
         auto layout = wp374aLayout(*layout_version, with_as);
@@ -208,15 +256,30 @@ void writeWp374aProject(const std::filesystem::path &root,
 std::shared_ptr<const RayTracingProjectConfig>
 configureWp374aRuntime(const std::filesystem::path &root) {
     GET_MODULE(PathResolver).setup(root, false);
-    GET_MODULE(ProjectSource).setSourceByData(
-        Json{{"basic_config",
-              {{"window_size", {{"width", 32}, {"height", 32}}},
-               {"scene_data_json", "scene.json"},
-               {"asset_data_json", "assets.json"},
-               {"default_scene_id", "main"},
-               {"rendering_config_json", "hybrid.json"},
-               {"default_rendering_pass", "main_render"}}}}
-            .dump());
+    const Json basic_config{
+        {"window_size", {{"width", 32}, {"height", 32}}},
+        {"scene_data_json", "scene.json"},
+        {"asset_data_json", "assets.json"},
+        {"default_scene_id", "main"},
+        {"rendering_config_json", "hybrid.json"},
+        {"default_rendering_pass", "main_render"},
+    };
+    const auto prefab_path = root / "prefabs" / "wp375a_unit.json";
+    if (std::filesystem::exists(prefab_path)) {
+        GET_MODULE(ProjectSource).setProjectData(
+            Json{{"schema", "pelican.project"},
+                 {"version", 1},
+                 {"name", "wp375a-production"},
+                 {"engine_min_version", "0.1.0"},
+                 {"prefabs",
+                  Json::array({{{"name", "wp375a_unit"},
+                                {"path", "prefabs/wp375a_unit.json"}}})},
+                 {"basic_config", basic_config}}
+                .dump());
+    } else {
+        GET_MODULE(ProjectSource).setSourceByData(
+            Json{{"basic_config", basic_config}}.dump());
+    }
     auto &launch = GET_MODULE(EngineLaunchConfig);
     launch.headless = true;
     launch.headless_extent = vk::Extent2D{32, 32};
@@ -240,7 +303,8 @@ configureWp374aRuntime(const std::filesystem::path &root) {
 
 void loadWp374aScene(
     const std::filesystem::path &root,
-    std::optional<std::filesystem::path> game_logic_dll = std::nullopt) {
+    std::optional<std::filesystem::path> game_logic_dll = std::nullopt,
+    std::string_view scene_id = "main") {
     (void)configureWp374aRuntime(root);
     const bool has_game_logic_dll = game_logic_dll.has_value();
     if (has_game_logic_dll) {
@@ -256,7 +320,49 @@ void loadWp374aScene(
             "WP375 production behavior fixture failed to load: " +
             configuredGameLogicStatus().last_error);
     }
-    GET_MODULE(SceneLoader).load("main");
+    GET_MODULE(SceneLoader).load(std::string{scene_id});
+}
+
+void loadWp375aShippingExample(
+    const std::filesystem::path &game_logic_dll) {
+#ifdef PELICAN_TEST_SOURCE_DIR
+    const auto root =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" /
+        "example";
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setProjectData(
+        readWp374aText(root / "project.json"));
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{32, 32};
+    launch.headless_frames = 1;
+    launch.game_logic_dll = game_logic_dll;
+    GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    auto &paths = GET_MODULE(PathResolver);
+    const auto rendering = loadRenderingPassConfigJsonFromString(
+        config.renderingConfigJson(), "WP375a shipping example");
+    const auto project = loadRayTracingProjectConfig(
+        rendering,
+        [&paths](std::string_view reference) {
+            return paths.loadText(reference);
+        },
+        PELICAN_RUNTIME_SHADER_COMPILER != 0);
+    GET_MODULE(RayLayoutRuntimeState)
+        .configure(rayLayoutSemanticMode(project.get()));
+    TestSupport::requireVulkanDevice("WP375a shipping example");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    if (!initializeConfiguredGameLogic()) {
+        throw std::runtime_error(
+            "WP375a shipping example behavior fixture failed to load: " +
+            configuredGameLogicStatus().last_error);
+    }
+    GET_MODULE(SceneLoader).load("default_scene");
+#else
+    (void)game_logic_dll;
+    throw std::runtime_error("PELICAN_TEST_SOURCE_DIR is unavailable");
+#endif
 }
 
 Json runWp374aRpcBytes(EditorCommandService &service, std::uint64_t id,
@@ -371,10 +477,11 @@ const Json &wp375Component(const Json &response, std::string_view name) {
 }
 
 Json wp375Components(EditorCommandService &service, std::uint64_t &rpc_id,
-                     std::string_view name) {
+                     std::string_view name,
+                     std::string_view scene_id = "main") {
     return runWp374aRpcBytes(
         service, rpc_id++, "get_components",
-        {{"scene_id", "main"}, {"name", std::string{name}}});
+        {{"scene_id", std::string{scene_id}}, {"name", std::string{name}}});
 }
 
 std::uint64_t wp375OpenActor(EditorCommandService &service,
@@ -420,6 +527,126 @@ void writeWp375BehaviorProject(const std::filesystem::path &root) {
             .dump(2));
 }
 
+void writeWp375aInactivePrefabProject(const std::filesystem::path &root) {
+    writeWp374aProject(root, std::nullopt, false, false, false);
+    writeWp374aText(
+        root / "prefabs" / "wp375a_unit.json",
+        Json{{"schema", "pelican.prefab"},
+             {"version", 1},
+             {"name", "wp375a_unit"},
+             {"parameters",
+              Json::array({{{"name", "radius"},
+                            {"type", "f32"},
+                            {"default", 0.4}}})},
+             {"components",
+              Json::array({{{"name", "collider"},
+                            {"id", "hit"},
+                            {"shape", "sphere"},
+                            {"radius", {{"$param", "radius"}}}}})}}
+            .dump(2));
+    const Json transform{{"name", "transform"},
+                         {"pos", {0.0, 0.0, 0.0}},
+                         {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                         {"scale", {1.0, 1.0, 1.0}}};
+    writeWp374aText(
+        root / "scene.json",
+        Json{{"schema", "pelican.scene"},
+             {"version", 2},
+             {"scenes",
+              {{"main",
+                {{"objects",
+                  Json::array(
+                      {{{"name", "BehaviorHost"},
+                        {"components",
+                         Json::array(
+                             {transform,
+                              {{"name", "behavior"},
+                               {"type", "wp155_project_behavior"},
+                               {"params", {{"label", "main-active"}}}}})}}})}}},
+               {"secondary",
+                {{"objects",
+                  Json::array(
+                      {{{"name", "P"},
+                        {"components", Json::array({transform})},
+                        {"prefab",
+                         {{"ref", "wp375a_unit"},
+                          {"instance_id", "wp375a_secondary"}}}}})}}}}}}
+            .dump(2));
+}
+
+void writeWp375aParticipantProject(const std::filesystem::path &root) {
+    writeWp374aProject(root, std::nullopt, false, false, false);
+    const Json transform{{"name", "transform"},
+                         {"pos", {0.0, 0.0, 0.0}},
+                         {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                         {"scale", {1.0, 1.0, 1.0}}};
+    writeWp374aText(
+        root / "scene.json",
+        Json{{"schema", "pelican.scene"},
+             {"version", 1},
+             {"scenes",
+              {{"main",
+                {{"objects",
+                  Json::array(
+                      {{{"name", "CameraHost"},
+                        {"components",
+                         Json::array(
+                             {transform,
+                              {{"name", "camera"},
+                               {"type", "perspective"},
+                               {"yfov", 0.7},
+                               {"znear", 0.1},
+                               {"zfar", 100.0}}})}},
+                       {{"name", "LightHost"},
+                        {"components",
+                         Json::array(
+                             {{{"name", "light"},
+                               {"type", "point"},
+                               {"position", {1.0, 2.0, 3.0}},
+                               {"intensity", 1.5},
+                               {"color", {1.0, 1.0, 1.0}}}})}},
+                       {{"name", "ColliderHost"},
+                        {"components",
+                         Json::array(
+                             {transform,
+                              {{"name", "collider"},
+                               {"shape", "sphere"},
+                               {"radius", 0.5}}})}},
+                       {{"name", "BehaviorHost"},
+                        {"components",
+                         Json::array(
+                             {transform,
+                              {{"name", "behavior"},
+                               {"type", "wp155_project_behavior"},
+                               {"params", {{"label", "before"}}}}})}}})}}}}}}
+            .dump(2));
+}
+
+Json commitWp375PrefabParameter(EditorCommandService &service,
+                                std::uint64_t &rpc_id,
+                                std::uint64_t actor,
+                                const Json &object,
+                                double value) {
+    const auto &instance = object.at("prefab_instance");
+    const auto accepted = runWp374aRpcBytes(
+        service, rpc_id++, "set_prefab_parameter",
+        {{"actor_id", actor},
+         {"scene_revision", wp375SceneRevision(service, rpc_id)},
+         {"closure_generation", instance.at("closure_generation")},
+         {"provider_generation", instance.at("provider_generation")},
+         {"object", object.at("authoring_object_id")},
+         {"parameter", "radius"},
+         {"value", value}});
+    REQUIRE(accepted.at("status") == "accepted");
+    invokeEditorCommitQueueHook();
+    const auto result = runWp374aRpcBytes(
+        service, rpc_id++, "get_edit_result",
+        {{"ticket", accepted.at("ticket")}});
+    INFO("WP375a prefab edit result: " << result.dump());
+    REQUIRE(result.at("status") == "committed");
+    return result;
+}
+
 void wp375FinishRuntime(std::unique_ptr<EditorCommandService> &service,
                         bool behavior = false) {
     service.reset();
@@ -430,7 +657,398 @@ void wp375FinishRuntime(std::unique_ptr<EditorCommandService> &service,
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+void requireWp375MissingRendererParticipant() {
+    FastModuleContainer modules;
+    GET_MODULE(RayLayoutRuntimeState)
+        .configure(RayLayoutSemanticMode::LegacyNoLayout);
+    test_support::SceneProjectionTarget target{
+        AuthoringSceneDocument::load(
+            nlohmann::ordered_json{
+                {"schema", "pelican.scene"},
+                {"version", 2},
+                {"scenes",
+                 {{"main",
+                   {{"objects",
+                     nlohmann::ordered_json::array(
+                         {{{"name", "Root"},
+                           {"components",
+                            nlohmann::ordered_json::array(
+                                {{{"name", "transform"},
+                                  {"pos", {0.0, 0.0, 0.0}},
+                                  {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                                  {"scale", {1.0, 1.0, 1.0}}},
+                                 {{"name", "simplemodelview"},
+                                  {"model", "old"}}})}}})}}}}},
+            }
+                .dump(),
+            SceneRevision{13})};
+    const auto &scene = target.projectionState().resolved().scenes().front();
+    REQUIRE(scene.objects.size() == 1);
+    const auto object_id = scene.objects.front().authoring_object_id;
+    const nlohmann::ordered_json authored{
+        {"name", "simplemodelview"}, {"model", "next"}};
+    const std::array operations{nlohmann::ordered_json{
+        {"op", "set_component_value"},
+        {"object_id", object_id.value},
+        {"component_slot", "simplemodelview"},
+        {"authored_component", authored},
+    }};
+    const auto canonical = freezeEditorCanonicalOperations(
+        operations, target.projectionState());
+    const std::array commands{makeSetComponentValueCommand(
+        "main", "Root", "simplemodelview", authored)};
+    const auto context = makeEditorProjectionContext(
+        "main", EditorProjectionMode::Committed);
+    const auto plan = planEditorProjection(
+        EditorProjectionPlanningRequest{
+            .base_revision = target.projectionState().revision(),
+            .commands = commands,
+            .operations = canonical,
+        },
+        target.projectionState(), context);
+    ECSCoreTemplatePublic ecs;
+    EditorRuntimeBindingState bindings{
+        .epoch = 9,
+        .codec_generation = context.layoutGeneration(),
+        .behavior_generation = context.behaviorGeneration(),
+    };
+    const auto result = materializeEditorProjection(
+        plan,
+        EditorProjectionModules{
+            .ecs = &ecs,
+            .component_info = &GET_MODULE(ComponentInfoManager),
+        },
+        target, bindings, bindings.epoch, context.layoutGeneration(),
+        context.behaviorGeneration());
+    REQUIRE(result.status == EditorProjectionStatus::Failed);
+    REQUIRE(result.error.has_value());
+    INFO("WP375 missing renderer participant: " << result.error->message);
+    REQUIRE_THAT(
+        result.error->message,
+        ContainsSubstring("editor_projection_participant_missing@1"));
+    REQUIRE_THAT(result.error->message, ContainsSubstring("renderer"));
+    REQUIRE(target.projectionState().revision() == SceneRevision{13});
+}
+
 } // namespace
+
+TEST_CASE(
+    "WP375a inactive prefab RPC is document-only and cannot reconcile the active behavior arena",
+    "[WP375a][rpc][production][inactive-scene][prefab][behavior][regression][gpu]") {
+    setupLogger();
+#ifdef PELICAN_WP375_BEHAVIOR_FIXTURE
+    Wp374aProjectRoot project{"wp375a_inactive_prefab"};
+    writeWp375aInactivePrefabProject(project.path);
+    const std::filesystem::path behavior_dll{
+        PELICAN_WP375_BEHAVIOR_FIXTURE};
+    std::uint64_t rpc_id = 375500;
+
+    // The negative side is the reported regression: main owns the only live
+    // behavior, while the edited behavior-free prefab belongs to secondary.
+    {
+        FastModuleContainer modules;
+        loadWp374aScene(project.path, behavior_dll, "main");
+        auto service = makeEditorRuntimeService();
+        const auto actor = wp375OpenActor(
+            *service, rpc_id, "WP375a inactive-scene regression");
+        const auto secondary = runWp374aRpcBytes(
+            *service, rpc_id++, "get_components",
+            {{"scene_id", "secondary"}, {"name", "P"}});
+        const auto before_document = Json::parse(
+            AuthoringSceneAuthority::encodeSemantic(
+                GET_MODULE(ProjectBasicConfig).sceneDocument()));
+        const auto before_attachments =
+            GET_MODULE(BehaviorAttachmentArena).snapshot();
+        REQUIRE_FALSE(before_attachments.empty());
+        REQUIRE(std::ranges::all_of(
+            before_attachments,
+            [](const BehaviorAttachmentInfo &attachment) {
+                return attachment.active && !attachment.pending;
+            }));
+
+        (void)commitWp375PrefabParameter(
+            *service, rpc_id, actor, secondary, 1.25);
+
+        const auto after_attachments =
+            GET_MODULE(BehaviorAttachmentArena).snapshot();
+        REQUIRE(after_attachments.size() == before_attachments.size());
+        for (std::size_t index = 0; index < before_attachments.size(); ++index) {
+            CHECK(after_attachments[index].handle ==
+                  before_attachments[index].handle);
+            CHECK(after_attachments[index].entity ==
+                  before_attachments[index].entity);
+            CHECK(after_attachments[index].stable_name ==
+                  before_attachments[index].stable_name);
+            CHECK(after_attachments[index].active);
+            CHECK_FALSE(after_attachments[index].pending);
+        }
+
+        const auto after_document = Json::parse(
+            AuthoringSceneAuthority::encodeSemantic(
+                GET_MODULE(ProjectBasicConfig).sceneDocument()));
+        REQUIRE(after_document.at("scenes").at("main") ==
+                before_document.at("scenes").at("main"));
+        REQUIRE(after_document.at("scenes")
+                    .at("secondary")
+                    .at("objects")
+                    .at(0)
+                    .at("prefab")
+                    .at("parameters")
+                    .at("radius") == Catch::Approx(1.25));
+        wp375FinishRuntime(service, true);
+    }
+
+    // The positive side makes secondary active. The same RPC must now reach
+    // its real physics participant, proving that the edit itself was not
+    // globally disabled to fix the negative side.
+    {
+        FastModuleContainer modules;
+        loadWp374aScene(project.path, behavior_dll, "secondary");
+        auto service = makeEditorRuntimeService();
+        const auto actor = wp375OpenActor(
+            *service, rpc_id, "WP375a active-secondary contrast");
+        const auto secondary = runWp374aRpcBytes(
+            *service, rpc_id++, "get_components",
+            {{"scene_id", "secondary"}, {"name", "P"}});
+        const auto before_physics = GET_MODULE(PhysWorld).snapshotPrepared();
+        REQUIRE(before_physics.bindings.size() == 1);
+        REQUIRE(before_physics.bindings.front().collider.radius ==
+                Catch::Approx(0.4));
+
+        (void)commitWp375PrefabParameter(
+            *service, rpc_id, actor, secondary, 1.75);
+
+        const auto after_physics = GET_MODULE(PhysWorld).snapshotPrepared();
+        REQUIRE(after_physics.bindings.size() == 1);
+        REQUIRE(after_physics.bindings.front().collider.radius ==
+                Catch::Approx(1.75));
+        wp375FinishRuntime(service, true);
+    }
+#else
+    FAIL("WP375a production behavior fixture was not composed");
+#endif
+}
+
+TEST_CASE(
+    "WP375a pending behavior add rolls back after publication and succeeds on retry in one process",
+    "[WP375a][rpc][production][behavior][rollback][mutation][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"wp375a_pending_rollback"};
+    writeWp375BehaviorProject(project.path);
+    std::uint64_t rpc_id = 375600;
+
+    struct OneShotAfterPublication final : EditorProjectionFaultInjector {
+        bool armed = true;
+        bool fired = false;
+
+        bool shouldFail(EditorProjectionFaultPoint point,
+                        std::string_view adapter_name) noexcept override {
+            if (!armed || fired ||
+                point != EditorProjectionFaultPoint::AfterPublication ||
+                adapter_name != "scene_pair") {
+                return false;
+            }
+            fired = true;
+            armed = false;
+            return true;
+        }
+    } fault;
+
+    FastModuleContainer modules;
+    loadWp374aScene(project.path);
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.projection_fault_injector = &fault});
+    const auto actor = wp375OpenActor(
+        *service, rpc_id, "WP375a pending rollback");
+    const auto before = wp375Components(*service, rpc_id, "BehaviorHost");
+    const auto object_id =
+        before.at("authoring_object_id").get<std::uint64_t>();
+    const auto before_revision = wp375SceneRevision(*service, rpc_id);
+    const auto add = Json::array(
+        {{{"op", "add_component"},
+          {"object_id", object_id},
+          {"component_index", 1},
+          {"component",
+           {{"name", "behavior"},
+            {"type", "wp375a_dll_absent_behavior"},
+            {"params", Json::object()}}}}});
+
+    const auto failed = finishWp374aEdit(
+        *service, rpc_id, actor, before_revision, add);
+    REQUIRE(failed.at("status") == "failed");
+    REQUIRE(fault.fired);
+    REQUIRE(GET_MODULE(BehaviorAttachmentArena).snapshot().empty());
+    REQUIRE(wp375SceneRevision(*service, rpc_id) == before_revision);
+    REQUIRE(wp375Components(*service, rpc_id, "BehaviorHost")
+                .at("components") == before.at("components"));
+
+    (void)commitWp374aEdit(
+        *service, rpc_id, actor, before_revision, add);
+    const auto attachments = GET_MODULE(BehaviorAttachmentArena).snapshot();
+    REQUIRE(attachments.size() == 1);
+    REQUIRE(attachments.front().pending);
+    REQUIRE_FALSE(attachments.front().active);
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "BehaviorHost"),
+                "behavior")
+                .at("pending") == true);
+    wp375FinishRuntime(service);
+}
+
+TEST_CASE(
+    "WP375a shipping BlueSpot validates behavior type before its missing runtime binding",
+    "[WP375a][rpc][production][example][behavior][validation-order][gpu]") {
+    setupLogger();
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    // The shipping example resolves B-layer surfaces from GLSL source, which a
+    // compiler-OFF build cannot provide (same gate as the project smoke).
+    SKIP("shipping example requires the runtime shader compiler");
+#endif
+#ifdef PELICAN_WP375_BEHAVIOR_FIXTURE
+    const std::filesystem::path behavior_dll{
+        PELICAN_WP375_BEHAVIOR_FIXTURE};
+    std::uint64_t rpc_id = 375700;
+    FastModuleContainer modules;
+    loadWp375aShippingExample(behavior_dll);
+    auto service = makeEditorRuntimeService();
+    const auto actor = wp375OpenActor(
+        *service, rpc_id, "WP375a BlueSpot validation order");
+    const auto blue_spot = wp375Components(
+        *service, rpc_id, "BlueSpot", "default_scene");
+    REQUIRE_FALSE(blue_spot.contains("entity_id"));
+    const auto object_id =
+        blue_spot.at("authoring_object_id").get<std::uint64_t>();
+    const auto revision = wp375SceneRevision(*service, rpc_id);
+
+    const auto add_behavior = [&](std::string type) {
+        return finishWp374aEdit(
+            *service, rpc_id, actor, revision,
+            Json::array(
+                {{{"op", "add_component"},
+                  {"object_id", object_id},
+                  {"component",
+                   {{"name", "behavior"},
+                    {"type", std::move(type)},
+                    {"params", {{"label", "blue"}}}}}}}));
+    };
+
+    const auto unknown = add_behavior("wp375a_no_such_behavior");
+    REQUIRE(unknown.at("status") == "rejected");
+    REQUIRE(unknown.at("error").at("code") ==
+            "behavior_type_unknown@1");
+    REQUIRE(unknown.at("error").at("payload").at("type") ==
+            "wp375a_no_such_behavior");
+    REQUIRE(unknown.at("error").at("payload").at("object_id") ==
+            object_id);
+
+    const auto known = add_behavior("wp155_project_behavior");
+    REQUIRE(known.at("status") == "rejected");
+    REQUIRE(known.at("error").at("code") ==
+            "runtime_binding_missing@1");
+    REQUIRE(known.at("error").at("payload").at("object_id") == object_id);
+    REQUIRE(wp375SceneRevision(*service, rpc_id) == revision);
+    REQUIRE(wp375Components(*service, rpc_id, "BlueSpot", "default_scene")
+                .at("components") == blue_spot.at("components"));
+    REQUIRE(GET_MODULE(BehaviorAttachmentArena).snapshot().empty());
+    wp375FinishRuntime(service, true);
+#else
+    FAIL("WP375a production behavior fixture was not composed");
+#endif
+}
+
+TEST_CASE(
+    "WP375a production set routes publish camera light collider and behavior participant values",
+    "[WP375a][rpc][production][route-participants][mutation][gpu]") {
+    setupLogger();
+#ifdef PELICAN_WP375_BEHAVIOR_FIXTURE
+    Wp374aProjectRoot project{"wp375a_route_participants"};
+    writeWp375aParticipantProject(project.path);
+    const std::filesystem::path behavior_dll{
+        PELICAN_WP375_BEHAVIOR_FIXTURE};
+    std::uint64_t rpc_id = 375800;
+
+    FastModuleContainer modules;
+    loadWp374aScene(project.path, behavior_dll);
+    auto service = makeEditorRuntimeService();
+    const auto actor = wp375OpenActor(
+        *service, rpc_id, "WP375a route participant values");
+    const auto camera = wp375Components(*service, rpc_id, "CameraHost");
+    const auto light = wp375Components(*service, rpc_id, "LightHost");
+    const auto collider = wp375Components(*service, rpc_id, "ColliderHost");
+    const auto behavior = wp375Components(*service, rpc_id, "BehaviorHost");
+    const auto object_id = [](const Json &object) {
+        return object.at("authoring_object_id").get<std::uint64_t>();
+    };
+
+    commitWp374aEdit(
+        *service, rpc_id, actor, wp375SceneRevision(*service, rpc_id),
+        Json::array(
+            {{{"op", "set_component_value"},
+              {"object_id", object_id(camera)},
+              {"component_slot", "camera"},
+              {"field_path", "/yfov"},
+              {"value", 1.1}},
+             {{"op", "set_component_value"},
+              {"object_id", object_id(light)},
+              {"component_slot", "light"},
+              {"field_path", "/intensity"},
+              {"value", 4.5}},
+             {{"op", "set_component_value"},
+              {"object_id", object_id(collider)},
+              {"component_slot", "collider"},
+              {"field_path", "/radius"},
+              {"value", 2.25}},
+             {{"op", "set_component_value"},
+              {"object_id", object_id(behavior)},
+              {"component_slot", "behavior"},
+              {"attachment_index", 1},
+              {"field_path", "/params/label"},
+              {"value", "after"}}}));
+
+    const auto camera_state = GET_MODULE(Camera).snapshotPrepared();
+    REQUIRE(camera_state.scene_cameras.at("CameraHost")
+                .projection.yfov == Catch::Approx(1.1));
+
+    const auto light_state = GET_MODULE(LightContainer).snapshotPrepared();
+    const auto light_index = light_state.point_names.at("LightHost");
+    REQUIRE(light_state.point_lights.at(light_index).intensity ==
+            Catch::Approx(4.5));
+
+    const auto physics_state = GET_MODULE(PhysWorld).snapshotPrepared();
+    REQUIRE(physics_state.bindings.size() == 1);
+    REQUIRE(physics_state.bindings.front().collider.radius ==
+            Catch::Approx(2.25));
+
+    const auto attachments = GET_MODULE(BehaviorAttachmentArena).snapshot();
+    REQUIRE(attachments.size() == 1);
+    REQUIRE(attachments.front().active);
+    REQUIRE(Json::parse(attachments.front().canonical_params).at("label") ==
+            "after");
+
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "CameraHost"), "camera")
+                .at("authored_json")
+                .at("yfov") == Catch::Approx(1.1));
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "LightHost"), "light")
+                .at("authored_json")
+                .at("intensity") == Catch::Approx(4.5));
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "ColliderHost"),
+                "collider")
+                .at("authored_json")
+                .at("radius") == Catch::Approx(2.25));
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "BehaviorHost"),
+                "behavior")
+                .at("authored_json")
+                .at("params")
+                .at("label") == "after");
+    wp375FinishRuntime(service, true);
+#else
+    FAIL("WP375a production behavior fixture was not composed");
+#endif
+}
 
 TEST_CASE(
     "WP377 authored ray_instance force opaque reaches the material alpha profile row guard",
@@ -710,7 +1328,16 @@ TEST_CASE(
     "[WP375][rpc][production][mutation-a][gpu]") {
     setupLogger();
     Wp374aProjectRoot project{"wp375_mutation_a"};
-    writeWp374aProject(project.path, std::nullopt, false, false, true);
+    writeWp374aProject(project.path, 2, false, false, true);
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    FastModuleContainer modules;
+    INFO("WP375 acceptance a compiler-OFF layout precedence");
+    REQUIRE_THROWS_WITH(
+        configureWp374aRuntime(project.path),
+        ContainsSubstring(
+            "pelican.ray_tracing.layout_requires_runtime_compiler@1"));
+    return;
+#endif
     std::uint64_t rpc_id = 375100;
 
     {
@@ -764,8 +1391,35 @@ TEST_CASE(
     "WP375 production acceptance b persists committed target through fresh reload",
     "[WP375][rpc][production][mutation-b][gpu]") {
     setupLogger();
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    INFO("WP375 acceptance b compiler-OFF no-layout RPC persistence");
+#endif
     Wp374aProjectRoot project{"wp375_mutation_b"};
-    writeWp374aProject(project.path, std::nullopt, false, false, true);
+    // The transform edit under test needs no model. A renderable object pulls
+    // a B-layer surface whose source is unavailable without the runtime
+    // shader compiler, so compiler-OFF keeps the fixture non-renderable.
+    writeWp374aProject(project.path, std::nullopt, false, false,
+                       PELICAN_RUNTIME_SHADER_COMPILER != 0);
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    // A non-renderable fixture writes no objects; the edit under test only
+    // needs a transform, so give the same object name with a transform alone.
+    writeWp374aText(
+        project.path / "scene.json",
+        Json{{"schema", "pelican.scene"},
+             {"version", 1},
+             {"scenes",
+              {{"main",
+                {{"objects",
+                  Json::array(
+                      {{{"name", "Chair"},
+                        {"components",
+                         Json::array(
+                             {{{"name", "transform"},
+                               {"pos", {0.0, 0.0, 0.0}},
+                               {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                               {"scale", {1.0, 1.0, 1.0}}}})}}})}}}}}}
+            .dump(2));
+#endif
     std::uint64_t rpc_id = 375200;
 
     {
@@ -805,6 +1459,9 @@ TEST_CASE(
     "WP375 production acceptance c contrasts active and unavailable behavior registries",
     "[WP375][rpc][production][mutation-c][behavior][gpu]") {
     setupLogger();
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    INFO("WP375 acceptance c compiler-OFF active and pending behavior registry contrast");
+#endif
 #ifdef PELICAN_WP375_BEHAVIOR_FIXTURE
     Wp374aProjectRoot active_project{"wp375_mutation_c_active"};
     Wp374aProjectRoot pending_project{"wp375_mutation_c_pending"};
@@ -838,10 +1495,9 @@ TEST_CASE(
         REQUIRE(unknown.at("status") == "rejected");
         const auto &unknown_error = unknown.at("error");
         REQUIRE(unknown_error.at("code") == "behavior_type_unknown@1");
-        REQUIRE(unknown_error.at("data").at("type") ==
+        REQUIRE(unknown_error.at("payload").at("type") ==
                 "wp375_no_such_behavior");
-        REQUIRE(unknown_error.at("data").at("object_id") == object_id);
-        REQUIRE(unknown_error.at("payload") == unknown_error.at("data"));
+        REQUIRE(unknown_error.at("payload").at("object_id") == object_id);
         REQUIRE(wp375SceneRevision(*service, rpc_id) == before_revision);
         const auto after_unknown =
             wp375Components(*service, rpc_id, "BehaviorHost");
@@ -942,6 +1598,10 @@ TEST_CASE(
     "WP375 production acceptance d publishes spawn and destroy renderer participants at commit",
     "[WP375][rpc][production][mutation-d][renderer][gpu]") {
     setupLogger();
+    requireWp375MissingRendererParticipant();
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    return;
+#endif
     Wp374aProjectRoot project{"wp375_mutation_d"};
     writeWp374aProject(project.path, std::nullopt, false, false, true);
     std::uint64_t rpc_id = 375400;
