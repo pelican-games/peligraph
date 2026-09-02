@@ -68,6 +68,12 @@ Camera::SceneCamera parseResolvedSceneCamera(
     try {
         resolved_data = &std::any_cast<const CameraCodecData &>(
             component->requireRuntimeValue());
+    } catch (const ResolutionFailureException &error) {
+        throw ResolutionFailureException{
+            error.failure(),
+            "Invalid camera on object '" +
+                (object.name ? *object.name : std::string{"<unnamed>"}) +
+                "': " + error.what()};
     } catch (const std::exception &error) {
         throw std::runtime_error(
             "Invalid camera on object '" +

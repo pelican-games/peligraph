@@ -1051,11 +1051,27 @@ JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message,
                                          nlohmann::json data)
     : std::runtime_error(message), error_code{code}, error_data{std::move(data)} {}
 
+JsonRpcHandlerError::JsonRpcHandlerError(int code, const std::string &message,
+                                         nlohmann::ordered_json data,
+                                         PreserveJsonRpcDataOrder)
+    : std::runtime_error(message), error_code{code},
+      ordered_error_data{std::move(data)} {}
+
 RpcServer::RpcServer(std::istream &input_stream, std::ostream &output_stream)
     : input{input_stream}, output{output_stream} {}
 
 void RpcServer::setHandler(std::string method, MethodHandler handler) {
-    handlers.insert_or_assign(std::move(method), std::move(handler));
+    handlers.insert_or_assign(
+        std::move(method),
+        Handler{std::in_place_type<MethodHandler>, std::move(handler)});
+}
+
+void RpcServer::setOrderedHandler(std::string method,
+                                  OrderedMethodHandler handler) {
+    handlers.insert_or_assign(
+        std::move(method),
+        Handler{std::in_place_type<OrderedMethodHandler>,
+                std::move(handler)});
 }
 
 std::string RpcServer::processLine(std::string_view line) const {
@@ -1081,8 +1097,50 @@ std::string RpcServer::handleLine(std::string_view line) const {
     }
 
     try {
-        return serializeJsonRpcResult(request.id, handler->second(request.params));
+        if (const auto *ordered =
+                std::get_if<OrderedMethodHandler>(&handler->second)) {
+            auto result = (*ordered)(request.params);
+            const auto contains_resolution_error = [](const auto &self,
+                                                      const auto &value)
+                -> bool {
+                if (value.is_object()) {
+                    if (value.contains("resolution_error")) return true;
+                    for (const auto &entry : value) {
+                        if (self(self, entry)) return true;
+                    }
+                } else if (value.is_array()) {
+                    for (const auto &entry : value) {
+                        if (self(self, entry)) return true;
+                    }
+                }
+                return false;
+            };
+            if (!contains_resolution_error(contains_resolution_error,
+                                           result)) {
+                return serializeJsonRpcResult(
+                    request.id, nlohmann::json(std::move(result)));
+            }
+            nlohmann::ordered_json response;
+            response["jsonrpc"] = "2.0";
+            response["id"] = request.id;
+            response["result"] = std::move(result);
+            return response.dump();
+        }
+        return serializeJsonRpcResult(
+            request.id,
+            std::get<MethodHandler>(handler->second)(request.params));
     } catch (const JsonRpcHandlerError &error) {
+        if (error.orderedData()) {
+            nlohmann::ordered_json error_object;
+            error_object["code"] = error.code();
+            error_object["message"] = error.what();
+            error_object["data"] = *error.orderedData();
+            nlohmann::ordered_json response;
+            response["jsonrpc"] = "2.0";
+            response["id"] = request.id;
+            response["error"] = std::move(error_object);
+            return response.dump();
+        }
         if (error.data()) {
             return serializeJsonRpcError(
                 makeJsonRpcError(request.id, error.code(), error.what(), *error.data()));
@@ -1106,6 +1164,18 @@ void RpcServer::run() {
         }
         output << handleLine(line) << '\n';
         output.flush();
+    }
+}
+
+void internal::loadSceneResolutionBoundary(
+    std::string_view name,
+    const std::function<void(std::string_view)> &load_scene) {
+    try {
+        load_scene(name);
+    } catch (const ResolutionFailureException &error) {
+        throw JsonRpcHandlerError{
+            JsonRpcErrorCodes::applicationError, error.what(),
+            resolutionFailureJson(error.failure()), PreserveJsonRpcDataOrder{}};
     }
 }
 
@@ -1450,11 +1520,15 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("load_scene", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "load_scene");
         (void)editor_rpc.forceAbortPreview("scene_transition");
-        auto request = SceneLoadRequest::borrowed(
-            name, modules.project_config.sceneProjectionState(),
-            SceneLoadRoot::rpc);
-        (void)requireSceneLoadCommitted(
-            modules.scene_loader.load(std::move(request)));
+        internal::loadSceneResolutionBoundary(
+            name, [&modules](std::string_view scene_name) {
+                auto request = SceneLoadRequest::borrowed(
+                    std::string{scene_name},
+                    modules.project_config.sceneProjectionState(),
+                    SceneLoadRoot::rpc);
+                (void)requireSceneLoadCommitted(
+                    modules.scene_loader.load(std::move(request)));
+            });
         pending_transforms.clear();
         return nlohmann::json{
             {"name", modules.scene_loader.currentScene()},

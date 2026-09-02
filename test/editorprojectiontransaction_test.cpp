@@ -208,7 +208,106 @@ void requireVec3(glm::vec3 value, glm::vec3 expected) {
                  Catch::Matchers::WithinAbs(expected.z, 1.0e-4F));
 }
 
+ResolutionResult<ComponentCodecValue> decodeWp378Transform(
+    const nlohmann::json &authored) {
+    if (authored.value("wp378_invalid", false)) {
+        return ResolutionResult<ComponentCodecValue>::failure(
+            *cameraCrossFieldViolation(5000.0F, 1000.0F));
+    }
+    const auto &pos = authored.at("pos");
+    const auto &rotation = authored.at("rotation");
+    const auto &scale = authored.at("scale");
+    return ResolutionResult<ComponentCodecValue>::success(
+        TransformCodecData{
+            .pos = {pos.at(0).get<float>(), pos.at(1).get<float>(),
+                    pos.at(2).get<float>()},
+            .rotation = {rotation.at(0).get<float>(),
+                         rotation.at(1).get<float>(),
+                         rotation.at(2).get<float>(),
+                         rotation.at(3).get<float>()},
+            .scale = {scale.at(0).get<float>(), scale.at(1).get<float>(),
+                      scale.at(2).get<float>()},
+            .rotation_specified = true,
+        });
+}
+
+nlohmann::json wp378TransformFixture(bool invalid) {
+    nlohmann::json root_transform{
+        {"name", "transform"},
+        {"pos", {10, 0, 0}},
+        {"rotation", {0, 0, 0, 1}},
+        {"scale", {1, 1, 1}},
+    };
+    if (invalid) root_transform["wp378_invalid"] = true;
+    return nlohmann::json{
+        {"schema", "pelican.scene"},
+        {"version", 1},
+        {"scenes",
+         {{"main",
+           {{"objects",
+             nlohmann::json::array({
+                 {{"name", "Root"},
+                  {"components",
+                   nlohmann::json::array({std::move(root_transform)})}},
+                 {{"name", "Child"},
+                  {"parent", "Root"},
+                  {"components",
+                   nlohmann::json::array({
+                       {{"name", "transform"},
+                        {"pos", {2, 0, 0}},
+                        {"rotation", {0, 0, 0, 1}},
+                        {"scale", {1, 1, 1}}},
+                   })}},
+             })}}}}},
+    };
+}
+
 } // namespace
+
+TEST_CASE("WP378 transform transaction caller maps a result failure and consumes success",
+          "[WP378][transaction][transform][caller][mutation]") {
+    auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(),
+                                               componentCodecs().end()};
+    const auto transform = std::find_if(
+        codecs.begin(), codecs.end(), [](const ComponentCodec &codec) {
+            return codec.name == "transform";
+        });
+    REQUIRE(transform != codecs.end());
+    transform->decode_authored = decodeWp378Transform;
+    testing::ScopedComponentCodecCatalog catalog{std::move(codecs)};
+    std::vector<EditorProjectionAdapter *> no_adapters;
+
+    SECTION("typed failure reaches the transform mapping") {
+        DocumentTarget target{AuthoringSceneDocument::load(
+            wp378TransformFixture(true).dump(), SceneRevision{70})};
+        const std::array command{makeReparentCommand(
+            "main", "Child", std::nullopt, ReparentPreserve::Local)};
+        EditorProjectionTransaction transaction{target, SceneRevision{70}};
+        const auto result = transaction.commit(command, no_adapters);
+        REQUIRE(result.status == EditorProjectionStatus::Rejected);
+        REQUIRE(result.error.has_value());
+        REQUIRE(result.error->code ==
+                EditorProjectionErrorCode::TransformNonFinite);
+        REQUIRE(result.error->message ==
+                "transform_non_finite: camera zfar (1000) must be greater "
+                "than znear (5000)");
+        REQUIRE(target.projectionState().revision() == SceneRevision{70});
+    }
+
+    SECTION("decoded transform values drive preserve-world output") {
+        DocumentTarget target{AuthoringSceneDocument::load(
+            wp378TransformFixture(false).dump(), SceneRevision{80})};
+        const std::array command{makeReparentCommand(
+            "main", "Child", std::nullopt, ReparentPreserve::World)};
+        EditorProjectionTransaction transaction{target, SceneRevision{80}};
+        REQUIRE(transaction.commit(command, no_adapters).committed());
+        const auto &child = target.document.rawJson()
+                                .at("scenes").at("main").at("objects").at(1);
+        REQUIRE_FALSE(child.contains("parent"));
+        REQUIRE(child.at("components").at(0).at("pos") ==
+                nlohmann::json::array({12.0F, 0.0F, 0.0F}));
+    }
+}
 
 TEST_CASE("Editor projection restores every adapter prepare and inverse publish fault",
           "[editor-projection][fault]") {

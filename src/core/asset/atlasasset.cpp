@@ -1,5 +1,7 @@
 #include "atlasasset.hpp"
 
+#include "../loader/resolutionresult.hpp"
+
 #include <algorithm>
 #include <limits>
 #include <nlohmann/json.hpp>
@@ -136,21 +138,29 @@ std::vector<SpriteAssetDeclaration> parseSpriteAssetDeclarations(const nlohmann:
 }
 
 SpriteAssetReference parseSpriteAssetReference(std::string_view reference) {
-    if (reference.empty()) throw std::runtime_error("sprite_view texture must not be empty");
+    if (reference.empty())
+        legacyReject("sprite_view.texture_empty",
+                     "sprite_view texture must not be empty");
     if (reference.starts_with("snapshot:"))
-        throw std::runtime_error("sprite_view snapshot: references are reserved for a future version");
+        legacyReject(
+            "sprite_view.texture_snapshot_reserved",
+            "sprite_view snapshot: references are reserved for a future version");
     const auto marker = reference.find('#');
     if (marker == std::string_view::npos)
         return {std::string{reference}, {}, false};
     if (reference.find('#', marker + 1) != std::string_view::npos)
-        throw std::runtime_error("sprite_view texture contains multiple fragments");
+        legacyReject("sprite_view.texture_multiple_fragments",
+                     "sprite_view texture contains multiple fragments");
     constexpr std::string_view prefix = "#sprite/";
     if (reference.substr(marker) != prefix && !reference.substr(marker).starts_with(prefix))
-        throw std::runtime_error("sprite_view texture fragment must use #sprite/name");
+        legacyReject("sprite_view.texture_fragment_syntax",
+                     "sprite_view texture fragment must use #sprite/name");
     const auto asset_id = reference.substr(0, marker);
     const auto sprite_name = reference.substr(marker + prefix.size());
     if (asset_id.empty() || sprite_name.empty())
-        throw std::runtime_error("sprite_view texture requires asset id and sprite fragment name");
+        legacyReject(
+            "sprite_view.texture_fragment_empty",
+            "sprite_view texture requires asset id and sprite fragment name");
     return {std::string{asset_id}, std::string{sprite_name}, true};
 }
 

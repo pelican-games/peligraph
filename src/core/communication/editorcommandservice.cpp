@@ -645,6 +645,7 @@ EditorObjectQueryResult EditorCommandService::queryObject(
             .codec_state = component.codec.state,
             .codec_name = std::string{component.codec.codec_name},
             .pending = !runtime.component_pending.empty() && runtime.component_pending[index],
+            .resolution_failure = component.runtime_resolution_error,
         };
         if (const auto *generated = component.origin.generated()) {
             component_result.generated = *generated;
@@ -1452,7 +1453,7 @@ OrderedJson editorComponentQueryJson(
     const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
     if (component.generated && component.generated_resolved_json) {
         const auto &generated = *component.generated;
-        return OrderedJson{{"generated",
+        OrderedJson result{{"generated",
                             OrderedJson{
                                 {"stable_generated_id", generated.stable_generated_id},
                                 {"source",
@@ -1466,6 +1467,11 @@ OrderedJson editorComponentQueryJson(
                                 {"resolved_json", *component.generated_resolved_json},
                                 {"editable", false},
                             }}};
+        if (component.resolution_failure) {
+            result["resolution_error"] =
+                resolutionFailureJson(*component.resolution_failure);
+        }
+        return result;
     }
     OrderedJson result{{"name", component.name},
                        {"component_index", component.component_index},
@@ -1504,6 +1510,10 @@ OrderedJson editorComponentQueryJson(
                                      : OrderedJson(nullptr)},
             {"status", component.pending ? "pending" : "available"},
         };
+    }
+    if (component.resolution_failure) {
+        result["resolution_error"] =
+            resolutionFailureJson(*component.resolution_failure);
     }
     return result;
 }

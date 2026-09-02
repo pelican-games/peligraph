@@ -828,6 +828,7 @@ add_test(
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_determinism.cmake
 )
 pelican_define_test(componentcodec_test GROUP ecs_editor pelican_core glm)
+pelican_define_test(wp378_resolution_test GROUP ecs_editor pelican_core glm)
 pelican_define_test(wp375_editor_projection_test GROUP ecs_editor pelican_core glm)
 pelican_define_test(editorprojectiontransaction_test GROUP ecs_editor pelican_core glm
   VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -836,6 +837,27 @@ pelican_define_test(editorpreview_test GROUP ecs_editor pelican_core glm)
 target_compile_definitions(pelican_test_componentcodec_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+target_compile_definitions(pelican_test_wp378_resolution_test PRIVATE
+  PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+if(WIN32)
+  add_library(pelican_wp378_structfield_abi_fixture SHARED
+    fixtures/wp378_abi/old_client.cpp
+  )
+  set_target_properties(pelican_wp378_structfield_abi_fixture PROPERTIES
+    CXX_STANDARD 20
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    OUTPUT_NAME "pelican_wp378_structfield_abi_fixture"
+  )
+  target_include_directories(pelican_wp378_structfield_abi_fixture PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp378_abi
+  )
+  add_dependencies(pelican_test_wp378_resolution_test
+    pelican_wp378_structfield_abi_fixture)
+  target_compile_definitions(pelican_test_wp378_resolution_test PRIVATE
+    PELICAN_WP378_STRUCTFIELD_ABI_DLL="$<TARGET_FILE:pelican_wp378_structfield_abi_fixture>"
+  )
+endif()
 pelican_define_test(editorcommandservice_test GROUP ecs_editor pelican_core glm picosha2)
 target_compile_definitions(pelican_test_editorcommandservice_test PRIVATE
   PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

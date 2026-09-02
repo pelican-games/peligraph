@@ -2,6 +2,7 @@
 
 #include "../cameradefinition.hpp"
 #include "../userpublic/details/schema/structfieldschema.hpp"
+#include "resolutionresult.hpp"
 
 #include <any>
 #include <cstdint>
@@ -109,6 +110,13 @@ struct CameraCodecData {
     std::optional<CameraControllerCodecData> controller;
 };
 
+// Shared complete-camera boundary used by editor transaction and preview
+// validation. The implementation delegates to the single pure cross-field
+// rule.
+std::optional<UserDataViolation> completedCameraCrossFieldViolation(
+    const CameraCodecData &camera,
+    std::span<const std::string> path_prefix = {});
+
 enum class LightCodecType : std::uint8_t {
     Directional,
     Point,
@@ -212,7 +220,8 @@ class ComponentEditorSwapToken {
 //   transform -> TransformCodecTarget, other ECS codecs -> their component,
 //   camera/light -> CameraCodecData/LightCodecData, collider -> ColliderComponent.
 struct ComponentCodec {
-    using DecodeAuthored = ComponentCodecValue (*)(const nlohmann::json &);
+    using DecodeAuthored = ResolutionResult<ComponentCodecValue> (*)(
+        const nlohmann::json &);
     using EncodeCanonical = nlohmann::ordered_json (*)(const ComponentCodecValue &);
     using Schema = std::span<const StructFieldSchema> (*)();
     using RuntimeApply = void (*)(const ComponentCodecValue &, void *);
@@ -234,7 +243,8 @@ struct ComponentCodec {
     EditorPrepare editor_prepare;
     EditorSwap editor_swap;
 
-    ComponentCodecValue decodeAuthored(const nlohmann::json &authored) const;
+    ResolutionResult<ComponentCodecValue> decodeAuthored(
+        const nlohmann::json &authored) const;
     nlohmann::ordered_json encodeCanonical(const ComponentCodecValue &value) const;
     std::span<const StructFieldSchema> fieldSchema() const;
     void applyRuntime(const ComponentCodecValue &value, void *target) const;
@@ -267,6 +277,9 @@ const ComponentCodec &requireComponentCodec(std::string_view name);
 ComponentCodecQueryMetadata componentCodecQueryMetadata(std::string_view name) noexcept;
 
 namespace testing {
+
+const ComponentCodec *findComponentCodecIncludingDisabled(
+    std::string_view name) noexcept;
 
 // Test registration uses the same registry read by resolution and production
 // context capture.  The planner itself receives a copied catalog and never

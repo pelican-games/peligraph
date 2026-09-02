@@ -357,6 +357,46 @@ std::vector<OperationCase> operationCases() {
 
 } // namespace
 
+TEST_CASE("WP378 journal maps typed decode failure and consumes canonical success",
+          "[WP378][journal][component-codec][mutation]") {
+    Harness harness;
+    const auto before = harness.target.document.encodeSemantic();
+    const auto rejected = harness.enqueue(
+        {{"op", "add_component"},
+         {"object_id", 1},
+         {"component",
+          {{"name", "camera"},
+           {"type", "perspective"},
+           {"yfov", 0.5F},
+           {"znear", 5000.0F},
+           {"zfar", 1000.0F}}}});
+    REQUIRE(rejected.at("status") == "rejected");
+    REQUIRE(rejected.at("error").at("code") == "schema_violation");
+    REQUIRE(rejected.at("error").at("payload").at("field_path") ==
+            "/znear");
+    REQUIRE(rejected.at("error").at("payload").at("detail") ==
+            "camera zfar (1000) must be greater than znear (5000)");
+    REQUIRE(harness.target.document.encodeSemantic() == before);
+
+    const auto committed = harness.commit(
+        {{"op", "add_component"},
+         {"object_id", 1},
+         {"component",
+          {{"name", "camera"},
+           {"type", "perspective"},
+           {"yfov", 0.75F},
+           {"znear", 2.0F},
+           {"zfar", 20.0F}}}});
+    REQUIRE(committed.at("status") == "committed");
+    const auto &components = harness.target.document.rawJson()
+                                 .at("scenes").at("main")
+                                 .at("objects").at(0).at("components");
+    REQUIRE(components.back().at("name") == "camera");
+    REQUIRE(components.back().at("yfov") == 0.75F);
+    REQUIRE(components.back().at("znear") == 2.0F);
+    REQUIRE(components.back().at("zfar") == 20.0F);
+}
+
 TEST_CASE("WP157 six edit rows enforce acceptance and execution preconditions",
           "[editor][journal][wp157][matrix]") {
     for (const auto &test : operationCases()) {

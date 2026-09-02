@@ -298,6 +298,38 @@ TEST_CASE("Project sprite ppu and default camera policy are validated", "[camera
                         Catch::Matchers::ContainsSubstring("pixels_per_unit"));
 }
 
+TEST_CASE("WP378 basic camera cross-field boundary returns the shared typed failure",
+          "[WP378][camera][basic-config][mutation]") {
+    ensureLogger();
+    Sandbox sandbox;
+    writeText(sandbox.root / "scene.json", R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{"default_scene":{"objects":[]}}
+    })json");
+    auto project = projectJson();
+    project["basic_config"]["camera"]["znear"] = 5000.0F;
+    project["basic_config"]["camera"]["zfar"] = 1000.0F;
+
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(sandbox.root, false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    try {
+        (void)GET_MODULE(ProjectBasicConfig);
+        FAIL("invalid basic camera was accepted");
+    } catch (const ResolutionFailureException &error) {
+        const auto data = resolutionFailureJson(error.failure());
+        REQUIRE(data == nlohmann::ordered_json{
+                            {"code", "camera.zfar_not_greater_than_znear@1"},
+                            {"path", "/basic_config/camera/znear"},
+                            {"fields",
+                             nlohmann::ordered_json{{"znear", 5000.0F},
+                                                    {"zfar", 1000.0F}}},
+                            {"message",
+                             "camera zfar (1000) must be greater than znear (5000)"},
+                        });
+    }
+}
+
 TEST_CASE("Project camera up is a finite non-zero vec3", "[camera][config]") {
     ensureLogger();
 

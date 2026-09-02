@@ -166,11 +166,14 @@ prepareResolvedSceneBehaviorAttachments(
         for (const auto &component : object.components) {
             if (component.name != "behavior") continue;
             if (component.runtime_resolution_error) {
-                throw std::runtime_error(
+                const ResolutionFailureException failure{
+                    *component.runtime_resolution_error};
+                throw ResolutionFailureException{
+                    failure.failure(),
                     "behavior_resolution_error on object '" +
-                    (object_name.empty() ? std::string{"<unnamed>"}
-                                         : object_name) +
-                    "': " + *component.runtime_resolution_error);
+                        (object_name.empty() ? std::string{"<unnamed>"}
+                                             : object_name) +
+                        "': " + failure.what()};
             }
             const auto stable_name =
                 component.effective_json.value("type", std::string{});

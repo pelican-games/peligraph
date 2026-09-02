@@ -10,11 +10,15 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <any>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <set>
+#include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_set>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
@@ -32,9 +36,44 @@ nlohmann::json readFixture(std::string_view name) {
     return nlohmann::json::parse(input);
 }
 
+std::string readRepositoryText(const std::filesystem::path &relative) {
+    const auto path =
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / relative;
+    std::ifstream input{path, std::ios_base::binary};
+    if (!input.is_open())
+        throw std::runtime_error("failed to open fixture: " + path.string());
+    return {std::istreambuf_iterator<char>{input},
+            std::istreambuf_iterator<char>{}};
+}
+
+struct ResolutionSentinelValue {};
+struct ResolutionSentinelError {};
+using SentinelResolutionResult =
+    ResolutionResult<ResolutionSentinelValue, ResolutionSentinelError>;
+static_assert(!std::is_copy_constructible_v<SentinelResolutionResult>);
+static_assert(!std::is_copy_assignable_v<SentinelResolutionResult>);
+static_assert(std::is_move_constructible_v<SentinelResolutionResult>);
+static_assert(std::is_move_assignable_v<SentinelResolutionResult>);
+static_assert(
+    !std::is_constructible_v<std::any, SentinelResolutionResult &>);
+static_assert(
+    !std::is_constructible_v<std::any, SentinelResolutionResult &&>);
+static_assert(!std::is_assignable_v<std::any &, SentinelResolutionResult &>);
+static_assert(!std::is_assignable_v<std::any &, SentinelResolutionResult &&>);
+
+ComponentCodecValue decodeOrThrow(const ComponentCodec &codec,
+                                  const nlohmann::json &authored) {
+    auto decoded = codec.decodeAuthored(authored);
+    if (!decoded) {
+        throw ResolutionFailureException{
+            StoredResolutionFailure{std::move(decoded).error()}};
+    }
+    return std::move(decoded).value();
+}
+
 nlohmann::ordered_json canonicalThroughRuntime(const ComponentCodec &codec,
                                                const nlohmann::json &authored) {
-    const auto decoded = codec.decodeAuthored(authored);
+    const auto decoded = decodeOrThrow(codec, authored);
     ComponentCodecValue projected;
     if (codec.name == "transform") {
         TransformComponent world{};
@@ -110,6 +149,53 @@ TEST_CASE("component codec registry exposes runtime and editor projection policy
     REQUIRE(missing.codec_name.empty());
 }
 
+TEST_CASE("WP378 legacy descriptor corpus is a configuration-independent bijection",
+          "[component-codec][WP378][legacy-corpus][mutation]") {
+    const auto descriptors = componentCodecLegacyBranches();
+    const auto corpus = readFixture("legacy_corpus.json");
+    REQUIRE(corpus.size() == descriptors.size());
+
+    std::set<std::string> descriptor_ids;
+    std::ostringstream generated;
+    generated << "# Component codec legacy branches\n\n"
+                 "Generated from `componentCodecLegacyBranches()`; edit the "
+                 "production registry and its reachability corpus together.\n\n"
+                 "| legacy_branch_id | producer |\n"
+                 "|---|---|\n";
+    for (const auto &descriptor : descriptors) {
+        REQUIRE(descriptor_ids.emplace(descriptor.legacy_branch_id).second);
+        generated << "| `" << descriptor.legacy_branch_id << "` | `"
+                  << descriptor.producer << "` |\n";
+    }
+
+    std::set<std::string> reached_ids;
+    for (const auto &entry : corpus) {
+        const auto expected =
+            entry.at("legacy_branch_id").get<std::string>();
+        const auto codec_name = entry.at("codec").get<std::string>();
+        INFO("legacy branch " << expected << " via " << codec_name);
+        const auto *codec =
+            testing::findComponentCodecIncludingDisabled(codec_name);
+        REQUIRE(codec != nullptr);
+        try {
+            auto result = codec->decodeAuthored(entry.at("authored"));
+            if (!result) {
+                FAIL("legacy corpus entry returned a typed violation");
+            }
+            FAIL("legacy corpus entry decoded successfully");
+        } catch (const LegacyRejectException &error) {
+            REQUIRE(error.legacyBranchId() == expected);
+            REQUIRE(reached_ids.insert(error.legacyBranchId()).second);
+        } catch (const nlohmann::json::type_error &error) {
+            FAIL("naked nlohmann::json::type_error: " << error.what());
+        }
+    }
+    REQUIRE(reached_ids == descriptor_ids);
+    REQUIRE(readRepositoryText(
+                "docs/component_codec_legacy_branches.md") ==
+            generated.str());
+}
+
 TEST_CASE("seven component codecs roundtrip authored runtime canonical and fresh load",
           "[component-codec][roundtrip][wp151]") {
     for (const auto &entry : readFixture("valid.json")) {
@@ -138,18 +224,19 @@ TEST_CASE("transform codec keeps authored local TRS and projects parent-child wo
 
     TransformComponent parent_world{};
     TransformCodecTarget parent_target{.world = &parent_world};
-    codec.applyRuntime(codec.decodeAuthored(parent_json), &parent_target);
+    codec.applyRuntime(decodeOrThrow(codec, parent_json), &parent_target);
 
     TransformComponent child_world{};
     LocalTransformComponent child_local{};
     TransformCodecTarget child_target{
         .world = &child_world, .local = &child_local, .parent_world = &parent_world};
-    codec.applyRuntime(codec.decodeAuthored(child_json), &child_target);
+    codec.applyRuntime(decodeOrThrow(codec, child_json), &child_target);
 
     requireVec3(child_world.pos, {4.0f, 2.0f, 12.0f});
     requireVec3(child_world.scale, {1.0f, 6.0f, 4.0f});
     const auto runtime_json = projectTransformRuntimeJson(child_target);
-    REQUIRE(runtime_json.at("local_trs") == codec.encodeCanonical(codec.decodeAuthored(child_json)));
+    REQUIRE(runtime_json.at("local_trs") ==
+            codec.encodeCanonical(decodeOrThrow(codec, child_json)));
     const auto &world_pos = runtime_json.at("world_trs").at("pos");
     REQUIRE(world_pos.at(0).get<float>() == Catch::Approx(4.0f).margin(1.0e-5f));
     REQUIRE(world_pos.at(1).get<float>() == Catch::Approx(2.0f).margin(1.0e-5f));
@@ -157,7 +244,8 @@ TEST_CASE("transform codec keeps authored local TRS and projects parent-child wo
 
     TransformCodecTarget inverse_target{.world = &child_world, .parent_world = &parent_world};
     const auto inverse_local = codec.encodeCanonical(codec.projectRuntime(&inverse_target));
-    const auto expected_local = codec.encodeCanonical(codec.decodeAuthored(child_json));
+    const auto expected_local =
+        codec.encodeCanonical(decodeOrThrow(codec, child_json));
     for (const auto *field : {"pos", "rotation", "scale"}) {
         for (std::size_t index = 0; index < inverse_local.at(field).size(); ++index) {
             REQUIRE(inverse_local.at(field).at(index).get<float>() ==
@@ -169,7 +257,8 @@ TEST_CASE("transform codec keeps authored local TRS and projects parent-child wo
     LocalTransformComponent fresh_local{};
     TransformCodecTarget fresh_target{
         .world = &fresh_world, .local = &fresh_local, .parent_world = &parent_world};
-    codec.applyRuntime(codec.decodeAuthored(runtime_json.at("local_trs")), &fresh_target);
+    codec.applyRuntime(
+        decodeOrThrow(codec, runtime_json.at("local_trs")), &fresh_target);
     requireVec3(fresh_world.pos, child_world.pos);
     requireVec3(fresh_world.scale, child_world.scale);
 }
@@ -218,7 +307,9 @@ TEST_CASE("every component codec rejects invalid type range and unknown key fixt
         const auto name = entry.at("name").get<std::string>();
         const auto kind = entry.at("kind").get<std::string>();
         DYNAMIC_SECTION(name << "/" << kind) {
-            REQUIRE_THROWS(requireComponentCodec(name).decodeAuthored(entry.at("authored")));
+            REQUIRE_THROWS(
+                decodeOrThrow(requireComponentCodec(name),
+                              entry.at("authored")));
         }
         covered.insert(name + "/" + kind);
     }

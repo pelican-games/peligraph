@@ -214,6 +214,11 @@ ColliderComponent loadColliderComponent(const ResolvedComponent &component,
         component.runtime_codec->applyRuntime(component.requireRuntimeValue(),
                                               &collider);
         return collider;
+    } catch (const ResolutionFailureException &error) {
+        throw ResolutionFailureException{
+            error.failure(),
+            "Invalid collider on object '" +
+                displayObjectName(object_name) + "': " + error.what()};
     } catch (const std::exception &ex) {
         throw std::runtime_error("Invalid collider on object '" + displayObjectName(object_name) + "': " + ex.what());
     }
@@ -278,6 +283,12 @@ std::vector<EcsObjectLoad> prepareSceneBindings(const ResolvedSceneView &scene,
                             component.requireRuntimeValue());
                     light_entries.push_back(
                         LightLoadEntry{object_name, light});
+                } catch (const ResolutionFailureException &error) {
+                    throw ResolutionFailureException{
+                        error.failure(),
+                        "Invalid light on object '" +
+                            displayObjectName(object_name) + "': " +
+                            error.what()};
                 } catch (const std::exception &error) {
                     throw std::runtime_error(
                         "Invalid light on object '" +

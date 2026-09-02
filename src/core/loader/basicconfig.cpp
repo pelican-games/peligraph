@@ -9,6 +9,7 @@
 #include "../../project/assetdataformat.hpp"
 #include "../../project/projectformat.hpp"
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -228,6 +229,15 @@ CameraSpritePolicySpec parseBasicCameraSpritePolicy(const JsonLoader &loader) {
     return result;
 }
 
+void validateBasicCameraCrossField(const CameraProjectionSpec &projection) {
+    const std::array<std::string, 2> prefix{"basic_config", "camera"};
+    if (auto violation = cameraCrossFieldViolation(
+            projection.znear, projection.zfar, prefix)) {
+        throw ResolutionFailureException{
+            StoredResolutionFailure{std::move(*violation)}};
+    }
+}
+
 glm::vec3 parseBasicCameraUp(const JsonLoader &loader) {
     const auto value = loader.getVal("basic_config/camera/up");
     if (!value.is_array() || value.size() != 3) {
@@ -276,6 +286,7 @@ CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
         projection.ymag = requireCameraNumber(loader, "ymag");
         projection.znear = requireCameraNumber(loader, "znear");
         projection.zfar = requireCameraNumber(loader, "zfar");
+        validateBasicCameraCrossField(projection);
         return projection;
     }
 
@@ -284,6 +295,7 @@ CameraProjectionSpec parseBasicCameraProjection(const JsonLoader &loader) {
     projection.znear = requireCameraNumber(loader, "znear");
     projection.zfar = requireCameraNumber(loader, "zfar");
     projection.aspect = optionalCameraNumber(loader, "aspect");
+    validateBasicCameraCrossField(projection);
     return projection;
 }
 

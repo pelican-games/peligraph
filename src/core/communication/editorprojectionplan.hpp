@@ -115,11 +115,24 @@ std::uint64_t editorProjectionBehaviorGeneration(
 
 class EditorProjectionPlanError final : public std::runtime_error {
     std::string name_;
+    std::string message_;
 
   public:
     EditorProjectionPlanError(std::string name, std::string message);
     const std::string &name() const noexcept { return name_; }
+    const std::string &message() const noexcept { return message_; }
 };
+
+struct EditorProjectionRecoverable {
+    std::string name;
+    std::string message;
+
+    friend bool operator==(const EditorProjectionRecoverable &,
+                           const EditorProjectionRecoverable &) = default;
+};
+
+using ProjectionPlanFailure =
+    std::variant<EditorProjectionRecoverable, UserDataViolation>;
 
 struct EditorSetComponentValueOperation {
     AuthoringObjectId object_id{};
@@ -327,7 +340,8 @@ struct EditorProjectionPlan {
     }
 };
 
-EditorProjectionPlan planEditorProjection(
+ResolutionResult<EditorProjectionPlan, ProjectionPlanFailure>
+planEditorProjection(
     const EditorProjectionPlanningRequest &request,
     const SceneProjectionState &projection_state,
     const EditorProjectionContext &context);

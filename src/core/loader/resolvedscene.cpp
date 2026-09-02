@@ -43,7 +43,7 @@ const ResolvedSceneView *ResolvedScene::findScene(
 
 const ComponentCodecValue &ResolvedComponent::requireRuntimeValue() const {
     if (runtime_resolution_error) {
-        throw std::runtime_error(*runtime_resolution_error);
+        throw ResolutionFailureException{*runtime_resolution_error};
     }
     if (runtime_codec == nullptr || !runtime_value.has_value()) {
         throw std::logic_error("resolved component has no runtime value: " +
@@ -70,6 +70,34 @@ void SceneProjectionState::swap(SceneProjectionState &other) noexcept {
 }
 
 namespace {
+
+std::vector<std::string> componentPathPrefix(
+    const SceneComponentProvenance &provenance) {
+    return {"scenes", provenance.scene_id, "objects",
+            std::to_string(provenance.object_index), "components",
+            std::to_string(provenance.component_index)};
+}
+
+UserDataViolation cameraCompletionViolation(
+    std::string code, std::string token, std::string message,
+    std::span<const std::string> path_prefix) {
+    std::vector<std::string> tokens{path_prefix.begin(), path_prefix.end()};
+    tokens.push_back(std::move(token));
+    return UserDataViolation{
+        .code = std::move(code),
+        .tokens = std::move(tokens),
+        .fields = nlohmann::ordered_json::object(),
+        .leaf_message = std::move(message),
+    };
+}
+
+void retainResolutionFailure(ResolvedComponent &component,
+                             StoredResolutionFailure failure,
+                             const nlohmann::json &authored) {
+    component.runtime_value.reset();
+    component.runtime_resolution_error = std::move(failure);
+    component.effective_json = authored;
+}
 
 void appendLe32(std::vector<unsigned char> &bytes, std::uint32_t value) {
     for (unsigned shift = 0; shift != 32; shift += 8) {
@@ -188,7 +216,10 @@ ResolvedComponent resolveComponent(
             result.codec = {ComponentCodecState::Registered, true,
                             std::string_view{"behavior_params"}};
         } catch (const std::exception &error) {
-            result.runtime_resolution_error = error.what();
+            result.runtime_resolution_error = LegacyResolutionText{
+                .legacy_branch_id = "behavior.params_untyped",
+                .message = error.what(),
+            };
             result.codec = {ComponentCodecState::Registered, true,
                             std::string_view{"behavior_params"}};
         }
@@ -203,8 +234,17 @@ ResolvedComponent resolveComponent(
     }
 
     result.runtime_codec = codec;
+    const auto path_prefix = componentPathPrefix(provenance);
     try {
-        result.runtime_value = codec->decodeAuthored(authored);
+        auto decoded = codec->decodeAuthored(authored);
+        if (!decoded) {
+            retainResolutionFailure(
+                result,
+                prependResolutionPath(std::move(decoded).error(), path_prefix),
+                authored);
+            return result;
+        }
+        result.runtime_value = std::move(decoded).value();
         if (result.name == "camera") {
             auto data = std::any_cast<CameraCodecData>(result.runtime_value);
             const auto nested = [&](std::string_view name)
@@ -227,8 +267,15 @@ ResolvedComponent resolveComponent(
                 if (!data.yfov) {
                     if (defaults.camera_projection.kind !=
                         CameraProjectionKind::Perspective) {
-                        throw std::runtime_error(
-                            "camera.yfov is required when changing projection to perspective");
+                        retainResolutionFailure(
+                            result,
+                            cameraCompletionViolation(
+                                "camera.yfov_required_for_perspective@1",
+                                "yfov",
+                                "camera.yfov is required when changing projection to perspective",
+                                path_prefix),
+                            authored);
+                        return result;
                     }
                     data.yfov = defaults.camera_projection.yfov;
                 }
@@ -245,16 +292,30 @@ ResolvedComponent resolveComponent(
                 if (!data.xmag) {
                     if (defaults.camera_projection.kind !=
                         CameraProjectionKind::Orthographic) {
-                        throw std::runtime_error(
-                            "camera.xmag is required when changing projection to orthographic");
+                        retainResolutionFailure(
+                            result,
+                            cameraCompletionViolation(
+                                "camera.xmag_required_for_orthographic@1",
+                                "xmag",
+                                "camera.xmag is required when changing projection to orthographic",
+                                path_prefix),
+                            authored);
+                        return result;
                     }
                     data.xmag = defaults.camera_projection.xmag;
                 }
                 if (!data.ymag) {
                     if (defaults.camera_projection.kind !=
                         CameraProjectionKind::Orthographic) {
-                        throw std::runtime_error(
-                            "camera.ymag is required when changing projection to orthographic");
+                        retainResolutionFailure(
+                            result,
+                            cameraCompletionViolation(
+                                "camera.ymag_required_for_orthographic@1",
+                                "ymag",
+                                "camera.ymag is required when changing projection to orthographic",
+                                path_prefix),
+                            authored);
+                        return result;
                     }
                     data.ymag = defaults.camera_projection.ymag;
                 }
@@ -282,9 +343,11 @@ ResolvedComponent resolveComponent(
                 throw std::logic_error(
                     "resolved camera is missing projection values");
             }
-            if (*data.zfar <= *data.znear) {
-                throw std::runtime_error(
-                    "camera.zfar must be greater than the resolved znear");
+            if (auto violation = cameraCrossFieldViolation(
+                    *data.znear, *data.zfar, path_prefix)) {
+                retainResolutionFailure(result, std::move(*violation),
+                                        authored);
+                return result;
             }
 
             const auto sprite = nested("sprite");
@@ -300,13 +363,21 @@ ResolvedComponent resolveComponent(
         result.effective_json = codec->encodeCanonical(result.runtime_value);
     } catch (const ResolvedSceneError &) {
         throw;
+    } catch (const LegacyRejectException &error) {
+        retainResolutionFailure(
+            result,
+            LegacyResolutionText{.legacy_branch_id = error.legacyBranchId(),
+                                 .message = error.what()},
+            authored);
     } catch (const std::exception &error) {
         // Preserve the pre-WP360 validation boundary: authoring/query/save may
         // retain an invalid component in an inactive scene. Runtime binders
         // consume this named result and throw it without a second decode.
-        result.runtime_value.reset();
-        result.runtime_resolution_error = error.what();
-        result.effective_json = authored;
+        retainResolutionFailure(
+            result,
+            LegacyResolutionText{.legacy_branch_id = {},
+                                 .message = error.what()},
+            authored);
     }
     return result;
 }

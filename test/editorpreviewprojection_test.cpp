@@ -247,4 +247,68 @@ TEST_CASE("WP172 eval_preview rejects unsupported prepared fields without public
     REQUIRE(test_support::authoring(base).encodeSemantic() == bytes);
 }
 
+TEST_CASE("WP378 preview rejects resolver failures and consumes repaired camera values",
+          "[WP378][preview][camera][mutation]") {
+    auto fixture = previewFixture();
+    auto &camera = fixture.at("scenes").at("main").at("objects").at(3)
+                       .at("components").at(1);
+    camera.erase("zfar");
+    const auto base = AuthoringSceneDocument::load(
+        fixture.dump(), SceneRevision{378});
+    const auto before = test_support::authoring(base).encodeSemantic();
+
+    const ResolvedSceneDefaults defaults{
+        .camera_projection = CameraProjectionSpec{
+            .kind = CameraProjectionKind::Perspective,
+            .yfov = 0.8F,
+            .znear = 0.1F,
+            .zfar = 1000.0F,
+            .xmag = 1.0F,
+            .ymag = 1.0F,
+        },
+    };
+    const auto override = [](std::string field, Json value) {
+        return Json::array({
+            {{"op", "set_component_value"},
+             {"object_id", 4},
+             {"component_slot", "camera"},
+             {"field_path", std::move(field)},
+             {"value", std::move(value)}}});
+    };
+
+    try {
+        (void)prepareEditorPreviewProjection(
+            base, override("/znear", 5000.0F), defaults);
+        FAIL("resolver completion failure was accepted by preview");
+    } catch (const EditorPreviewProjectionError &error) {
+        REQUIRE(error.code() ==
+                EditorPreviewProjectionErrorCode::schema_violation);
+        REQUIRE(error.field() == "prepared_projection/resolution_error");
+        REQUIRE(std::string{error.what()} ==
+                "camera zfar (1000) must be greater than znear (5000)");
+    }
+
+    try {
+        (void)prepareEditorPreviewProjection(
+            base, override("/near", 0.2F), defaults);
+        FAIL("camera alias was accepted by preview");
+    } catch (const EditorPreviewProjectionError &error) {
+        REQUIRE(error.code() ==
+                EditorPreviewProjectionErrorCode::schema_violation);
+        REQUIRE(error.field() == "prepared_projection/resolution_error");
+    }
+
+    const auto prepared = prepareEditorPreviewProjection(
+        base, override("/znear", 2.0F), defaults);
+    const auto *scene = prepared.state.resolved().findScene("main");
+    REQUIRE(scene != nullptr);
+    const auto &resolved_camera = scene->objects.at(3).components.at(1);
+    const auto &runtime = std::any_cast<const CameraCodecData &>(
+        resolved_camera.requireRuntimeValue());
+    REQUIRE(*runtime.znear == 2.0F);
+    REQUIRE(*runtime.zfar == 1000.0F);
+    REQUIRE(test_support::authoring(base).encodeSemantic() == before);
+    REQUIRE(base.revision() == SceneRevision{378});
+}
+
 } // namespace Pelican

@@ -746,13 +746,15 @@ void requireWp375MissingRendererParticipant() {
         "main", "Root", "simplemodelview", authored)};
     const auto context = makeEditorProjectionContext(
         "main", EditorProjectionMode::Committed);
-    const auto plan = planEditorProjection(
+    auto plan_result = planEditorProjection(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision(),
             .commands = commands,
             .operations = canonical,
         },
         target.projectionState(), context);
+    REQUIRE(plan_result.hasValue());
+    auto plan = std::move(plan_result).value();
     ECSCoreTemplatePublic ecs;
     EditorRuntimeBindingState bindings{
         .epoch = 9,
@@ -1600,6 +1602,7 @@ TEST_CASE(
 }
 #endif
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP379 production scene RPC and snapshot boundaries share component_unknown",
     "[WP379][component][namespace][production][rpc][snapshot][gpu][mutation-unknown]") {
@@ -1708,6 +1711,7 @@ TEST_CASE(
         "WP379 layout-v2 unknown-boundary production fixture is compiler-ON only; compiler-OFF precedence is covered by layout_requires_runtime_compiler@1");
 #endif
 }
+#endif
 
 TEST_CASE(
     "WP379 production bootstrap keeps external ray_instance beside the builtin canonical component",

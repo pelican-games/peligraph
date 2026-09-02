@@ -605,7 +605,8 @@ std::uint64_t editorProjectionBehaviorGeneration(
 
 EditorProjectionPlanError::EditorProjectionPlanError(std::string name,
                                                      std::string message)
-    : std::runtime_error{name + ": " + message}, name_{std::move(name)} {}
+    : std::runtime_error{name + ": " + message}, name_{std::move(name)},
+      message_{std::move(message)} {}
 
 EditorProjectionPlan::EditorProjectionPlan(
     SceneRevision base_revision_value, EditorProjectionContext context_value,
@@ -613,7 +614,9 @@ EditorProjectionPlan::EditorProjectionPlan(
     : base_revision{base_revision_value}, context{std::move(context_value)},
       restore_committed{restore_committed_value} {}
 
-EditorProjectionPlan planEditorProjection(
+namespace {
+
+EditorProjectionPlan planEditorProjectionOrThrow(
     const EditorProjectionPlanningRequest &request,
     const SceneProjectionState &projection_state,
     const EditorProjectionContext &context) {
@@ -855,6 +858,24 @@ EditorProjectionPlan planEditorProjection(
             plan.operations[operation_index]);
     }
     return plan;
+}
+
+} // namespace
+
+ResolutionResult<EditorProjectionPlan, ProjectionPlanFailure>
+planEditorProjection(const EditorProjectionPlanningRequest &request,
+                     const SceneProjectionState &projection_state,
+                     const EditorProjectionContext &context) {
+    try {
+        return ResolutionResult<EditorProjectionPlan,
+                                ProjectionPlanFailure>::success(
+            planEditorProjectionOrThrow(request, projection_state, context));
+    } catch (const EditorProjectionPlanError &error) {
+        return ResolutionResult<EditorProjectionPlan,
+                                ProjectionPlanFailure>::failure(
+            ProjectionPlanFailure{EditorProjectionRecoverable{
+                .name = error.name(), .message = error.message()}});
+    }
 }
 
 } // namespace Pelican

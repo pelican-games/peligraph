@@ -509,6 +509,79 @@ TEST_CASE("WP360a case 6 stores inactive behavior errors and names active bind f
                  " bind_error=behavior_resolution_error\n";
 }
 
+TEST_CASE("WP378 inactive scene retains typed and legacy failures until two active loads",
+          "[WP378][inactive][scene-loader][mutation]") {
+    ensureWp360aLogger();
+    Wp360aSandbox sandbox{"wp378-inactive"};
+    auto scene = Json::parse(R"json({
+      "schema":"pelican.scene","version":1,
+      "scenes":{
+        "active":{"objects":[]},
+        "inactive":{"objects":[
+          {"name":"Broken","components":[
+            {"name":"camera","type":"perspective","yfov":0.5,
+             "znear":5000.0,"zfar":1000.0},
+            {"name":"collider","shape":"sphere","radius":-1.0}
+          ]}
+        ]}
+      }
+    })json");
+    FastModuleContainer modules;
+    setupWp360aProject(
+        sandbox, wp360aProjectJson(1.0f, 1000.0f, "active"), scene);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &loader = GET_MODULE(SceneLoader);
+    REQUIRE_NOTHROW(test_support::loadScene(loader, SceneId{"active"}));
+
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&config]() -> const AuthoringSceneDocument & {
+            return config.sceneDocument();
+        },
+        .resolved_scene = [&config]() -> const ResolvedScene & {
+            return config.resolvedScene();
+        },
+        .current_scene_id = [&loader] { return loader.currentScene(); },
+    }};
+    const auto query = editorQueryJson(service.getComponents(
+        {.scene_id = "inactive", .name = "Broken"}));
+    const auto &components = query.at("components");
+    REQUIRE(components.at(0).at("resolution_error").at("code") ==
+            "camera.zfar_not_greater_than_znear@1");
+    REQUIRE(components.at(1).at("resolution_error")
+                .at("legacy_branch_id") ==
+            "collider.radius_non_positive");
+    REQUIRE_NOTHROW(config.saveSceneDocument());
+
+    try {
+        test_support::loadScene(loader, SceneId{"inactive"});
+        FAIL("typed camera failure did not reject active load");
+    } catch (const ResolutionFailureException &error) {
+        const auto *typed =
+            std::get_if<UserDataViolation>(&error.failure());
+        REQUIRE(typed != nullptr);
+        REQUIRE(typed->code ==
+                "camera.zfar_not_greater_than_znear@1");
+    }
+    REQUIRE(loader.currentScene() == SceneId{"active"});
+
+    auto repaired = Json::parse(config.sceneDataJson());
+    repaired.at("scenes").at("inactive").at("objects").at(0)
+        .at("components").at(0)["znear"] = 0.1F;
+    config.updateSceneDocument(repaired.dump());
+    try {
+        test_support::loadScene(loader, SceneId{"inactive"});
+        FAIL("legacy collider failure did not reject active load");
+    } catch (const ResolutionFailureException &error) {
+        const auto *legacy =
+            std::get_if<LegacyResolutionText>(&error.failure());
+        REQUIRE(legacy != nullptr);
+        REQUIRE(legacy->legacy_branch_id ==
+                "collider.radius_non_positive");
+    }
+    REQUIRE(loader.currentScene() == SceneId{"active"});
+}
+
 TEST_CASE("WP360a missing resolved provider is a named error with no fallback",
           "[wp360a][fallback]") {
     const auto document = AuthoringSceneDocument::load(

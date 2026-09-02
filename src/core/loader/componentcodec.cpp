@@ -34,6 +34,30 @@ thread_local ComponentCodecCanonicalDefaults codec_canonical_defaults;
 thread_local const std::vector<ComponentCodec> *codec_catalog_override =
     nullptr;
 
+class DecodedUserDataViolation final {
+    UserDataViolation violation_;
+
+  public:
+    explicit DecodedUserDataViolation(UserDataViolation violation)
+        : violation_{std::move(violation)} {}
+
+    UserDataViolation take() { return std::move(violation_); }
+};
+
+[[noreturn]] void rejectDecodedUserData(UserDataViolation violation) {
+    throw DecodedUserDataViolation{std::move(violation)};
+}
+
+template <ComponentCodecValue (*Decode)(const Json &)>
+ResolutionResult<ComponentCodecValue> decodeResult(const Json &authored) {
+    try {
+        return ResolutionResult<ComponentCodecValue>::success(
+            Decode(authored));
+    } catch (DecodedUserDataViolation &error) {
+        return ResolutionResult<ComponentCodecValue>::failure(error.take());
+    }
+}
+
 enum class ColliderSchemaShape : std::uint8_t { Sphere, Box, Capsule };
 
 struct CameraSchemaFields {
@@ -536,9 +560,17 @@ ComponentCodecValue decodeCamera(const Json &json) {
         };
         for (const auto &[alias, replacement] : aliases) {
             if (object.contains(alias)) {
-                throw std::runtime_error(std::string{root} + " field '" + std::string{alias} +
-                                         "' is not supported in v1; use '" + std::string{replacement} +
-                                         (alias == "fov_y" ? "' (radians)" : "'"));
+                rejectDecodedUserData(UserDataViolation{
+                    .code = "camera.field_alias_not_supported@1",
+                    .tokens = {std::string{alias}},
+                    .fields = OrderedJson{{"alias", alias},
+                                          {"replacement", replacement}},
+                    .leaf_message =
+                        std::string{root} + " field '" + std::string{alias} +
+                        "' is not supported in v1; use '" +
+                        std::string{replacement} +
+                        (alias == "fov_y" ? "' (radians)" : "'"),
+                });
             }
         }
     };
@@ -605,19 +637,28 @@ ComponentCodecValue decodeCamera(const Json &json) {
         result.zfar = readFloat(*value, "camera.zfar", 0.0f,
                                 std::numeric_limits<float>::max(), false);
     }
-    if (result.znear && result.zfar && *result.zfar <= *result.znear) {
-        codecError(StructFieldErrorCode::OutOfRange, "camera.zfar", "must be greater than znear");
+    if (result.znear && result.zfar) {
+        if (auto violation =
+                cameraCrossFieldViolation(*result.znear, *result.zfar)) {
+            rejectDecodedUserData(std::move(*violation));
+        }
     }
 
     if (const auto *sprite = optionalObject(json, "camera", "sprite")) {
         requireClosed(*sprite, "camera.sprite",
                       std::array<std::string_view, 2>{"pixel_perfect", "sort"});
         result.sprite_specified = true;
-        const auto pixel = sprite->value("pixel_perfect", std::string{"off"});
+        const auto pixel = sprite->contains("pixel_perfect")
+                               ? readString(sprite->at("pixel_perfect"),
+                                            "camera.sprite.pixel_perfect")
+                               : std::string{"off"};
         if (pixel == "off") result.pixel_perfect = CameraPixelPerfectMode::off;
         else if (pixel == "strict") result.pixel_perfect = CameraPixelPerfectMode::strict;
         else codecError(StructFieldErrorCode::InvalidEnum, "camera.sprite.pixel_perfect", "is invalid");
-        const auto sort = sprite->value("sort", std::string{"z"});
+        const auto sort = sprite->contains("sort")
+                              ? readString(sprite->at("sort"),
+                                           "camera.sprite.sort")
+                              : std::string{"z"};
         if (sort == "z") result.sprite_sort = CameraSpriteSortPolicy::z;
         else if (sort == "y_down") result.sprite_sort = CameraSpriteSortPolicy::y_down;
         else if (sort == "declaration") result.sprite_sort = CameraSpriteSortPolicy::declaration;
@@ -788,9 +829,9 @@ ComponentCodecValue projectLight(const void *source) {
 ComponentCodecValue decodeCollider(const Json &json) {
     requireObjectAndName(json, "collider");
     requireClosed(json, "collider",
-                  std::array<std::string_view, 11>{"name", "shape", "pos", "rotation", "radius",
+                  std::array<std::string_view, 13>{"name", "shape", "pos", "rotation", "radius",
                                                    "half_extents", "half_height", "layer", "mask", "trigger",
-                                                   "one_way"});
+                                                   "one_way", "size", "height"});
     auto normalized = json;
     if (!normalized.contains("shape")) normalized["shape"] = "sphere";
     if (normalized.at("shape").is_string()) {
@@ -844,7 +885,8 @@ ComponentCodecValue projectCollider(const void *source) {
 ComponentCodecValue decodeAnimation(const Json &json) {
     requireObjectAndName(json, "animation");
     if (json.contains("graph")) {
-        throw std::runtime_error("animation: reserved v1 key 'graph' is not supported");
+        legacyReject("animation.graph_reserved",
+                     "animation: reserved v1 key 'graph' is not supported");
     }
     requireClosed(json, "animation",
                   std::array<std::string_view, 5>{"name", "clip", "speed", "loop", "start_time"});
@@ -885,27 +927,32 @@ ComponentCodecValue decodeSprite(const Json &json) {
     return result;
 }
 
-[[noreturn]] void rayInstanceCodecError(std::string_view code,
+[[noreturn]] void rayInstanceCodecError(std::string_view legacy_branch_id,
+                                        std::string_view code,
                                         std::string message) {
-    throw std::runtime_error("pelican." + std::string{code} +
-                             "@1: " + std::move(message));
+    legacyReject(legacy_branch_id,
+                 "pelican." + std::string{code} +
+                     "@1: " + std::move(message));
 }
 
 std::uint32_t decodeRayInstanceFlags(const Json &encoded) {
     if (!encoded.is_array()) {
-        rayInstanceCodecError("ray_instance_field_type",
+        rayInstanceCodecError("pelican_ray_instance.flags_not_array",
+                              "ray_instance_field_type",
                               "instance_flags must be a string array");
     }
     std::uint32_t result = 0;
     std::set<std::string> seen;
     for (const auto &item : encoded) {
         if (!item.is_string()) {
-            rayInstanceCodecError("ray_instance_field_type",
+            rayInstanceCodecError("pelican_ray_instance.flag_not_string",
+                                  "ray_instance_field_type",
                                   "instance_flags entries must be strings");
         }
         const auto &name = item.get_ref<const std::string &>();
         if (!seen.emplace(name).second) {
-            rayInstanceCodecError("ray_instance_field_type",
+            rayInstanceCodecError("pelican_ray_instance.duplicate_flag",
+                                  "ray_instance_field_type",
                                   "instance_flags contains duplicate '" +
                                       name + "'");
         }
@@ -918,13 +965,15 @@ std::uint32_t decodeRayInstanceFlags(const Json &encoded) {
         } else if (name == "force_no_opaque") {
             result |= rayInstanceForceNoOpaque;
         } else {
-            rayInstanceCodecError("ray_as_unknown_flag",
+            rayInstanceCodecError("pelican_ray_instance.unknown_flag",
+                                  "ray_as_unknown_flag",
                                   "unknown instance flag '" + name + "'");
         }
     }
     if ((result & rayInstanceForceOpaque) != 0 &&
         (result & rayInstanceForceNoOpaque) != 0) {
-        rayInstanceCodecError("ray_as_conflicting_instance_flags",
+        rayInstanceCodecError("pelican_ray_instance.conflicting_flags",
+                              "ray_as_conflicting_instance_flags",
                               "force_opaque and force_no_opaque are mutually exclusive");
     }
     return result;
@@ -940,12 +989,14 @@ std::uint32_t decodeRayInstanceUnsigned(const Json &encoded,
                encoded.get<std::int64_t>() >= 0) {
         result = static_cast<std::uint64_t>(encoded.get<std::int64_t>());
     } else {
-        rayInstanceCodecError("ray_instance_field_type",
+        rayInstanceCodecError("pelican_ray_instance.unsigned_type",
+                              "ray_instance_field_type",
                               std::string{field} +
                                   " must be an unsigned integer");
     }
     if (result > maximum) {
-        rayInstanceCodecError("ray_instance_field_range",
+        rayInstanceCodecError("pelican_ray_instance.unsigned_range",
+                              "ray_instance_field_range",
                               std::string{field} + " is out of range");
     }
     return static_cast<std::uint32_t>(result);
@@ -953,20 +1004,23 @@ std::uint32_t decodeRayInstanceUnsigned(const Json &encoded,
 
 ComponentCodecValue decodeRayInstance(const Json &json) {
     if (!json.is_object()) {
-        rayInstanceCodecError("ray_instance_field_type",
+        rayInstanceCodecError("pelican_ray_instance.payload_not_object",
+                              "ray_instance_field_type",
                               "pelican_ray_instance must be an object");
     }
     const auto name = json.find("name");
     if (name == json.end() || !name->is_string() ||
         name->get_ref<const std::string &>() != "pelican_ray_instance") {
-        rayInstanceCodecError("ray_instance_field_type",
+        rayInstanceCodecError("pelican_ray_instance.name_mismatch",
+                              "ray_instance_field_type",
                               "name must be 'pelican_ray_instance'");
     }
     for (const auto &[key, value] : json.items()) {
         (void)value;
         if (key != "name" && key != "mask" &&
             key != "instance_flags" && key != "custom_index") {
-            rayInstanceCodecError("ray_instance_unknown_field",
+            rayInstanceCodecError("pelican_ray_instance.unknown_field",
+                                  "ray_instance_unknown_field",
                                   "unknown field '" + key + "'");
         }
     }
@@ -985,7 +1039,8 @@ ComponentCodecValue decodeRayInstance(const Json &json) {
             *custom, rayCustomIndexMaximum, "custom_index");
     }
     if (!result.mask && !result.instance_flags && !result.custom_index) {
-        rayInstanceCodecError("ray_instance_empty",
+        rayInstanceCodecError("pelican_ray_instance.empty",
+                              "ray_instance_empty",
                               "pelican_ray_instance must declare at least one field");
     }
     return result;
@@ -1089,42 +1144,117 @@ void swapEcsEditorToken(ComponentEditorSwapToken &erased,
     }
 }
 
+constexpr std::array legacy_branch_descriptors{
+    LegacyBranchDescriptor{"animation.graph_reserved", "decodeAnimation"},
+    LegacyBranchDescriptor{"animation.schema_validation", "decodeAnimation"},
+    LegacyBranchDescriptor{"camera.schema_validation", "decodeCamera"},
+    LegacyBranchDescriptor{"collider.boolean_type", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.box_size_alias", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.capsule_height_alias", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.capsule_radius_non_positive", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.half_extents_non_positive", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.half_height_negative", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.numeric_type", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.pose_non_finite", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.quaternion_type", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.radius_non_positive", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.schema_validation", "decodeCollider"},
+    LegacyBranchDescriptor{"collider.shape_type", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.shape_unknown", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.uint32_range", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.uint32_type", "ColliderComponent"},
+    LegacyBranchDescriptor{"collider.vec3_type", "ColliderComponent"},
+    LegacyBranchDescriptor{"light.schema_validation", "decodeLight"},
+    LegacyBranchDescriptor{"pelican_ray_instance.conflicting_flags", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.duplicate_flag", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.empty", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.flag_not_string", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.flags_not_array", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.name_mismatch", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.payload_not_object", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.unknown_field", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.unknown_flag", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.unsigned_range", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.unsigned_type", "decodeRayInstance"},
+    LegacyBranchDescriptor{"simplemodelview.schema_validation", "decodeSimpleModelView"},
+    LegacyBranchDescriptor{"sprite_view.billboard_type", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.billboard_value", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.color_non_finite", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.flip_type", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.layer_range", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.layer_type", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.name_mismatch", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.payload_not_object", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.pivot_out_of_range", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.size_non_positive", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.texture_empty", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.texture_fragment_empty", "parseSpriteAssetReference"},
+    LegacyBranchDescriptor{"sprite_view.texture_fragment_syntax", "parseSpriteAssetReference"},
+    LegacyBranchDescriptor{"sprite_view.texture_multiple_fragments", "parseSpriteAssetReference"},
+    LegacyBranchDescriptor{"sprite_view.texture_snapshot_reserved", "parseSpriteAssetReference"},
+    LegacyBranchDescriptor{"sprite_view.texture_type", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.unknown_field", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.vec2_type", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"sprite_view.vec4_type", "SpriteViewComponent"},
+    LegacyBranchDescriptor{"transform.schema_validation", "decodeTransform"},
+};
+
+consteval bool legacyBranchDescriptorsAreStrictlyOrdered() {
+    for (std::size_t index = 1; index < legacy_branch_descriptors.size();
+         ++index) {
+        if (!(legacy_branch_descriptors[index - 1].legacy_branch_id <
+              legacy_branch_descriptors[index].legacy_branch_id)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static_assert(legacyBranchDescriptorsAreStrictlyOrdered(),
+              "component codec legacy branch IDs must be unique and sorted");
+
 const std::array codecs{
     ComponentCodec{"transform", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::TransformClosure,
-                   decodeTransform, encodeTransform,
+                   decodeResult<decodeTransform>, encodeTransform,
                    [] { return fieldSpan(transform_fields); }, applyTransform,
                    projectTransform, nullptr, nullptr},
     ComponentCodec{"simplemodelview", ComponentCodecRuntimeKind::Ecs,
-                   EditorProjectionPolicy::RendererModel, decodeSimpleModelView,
+                   EditorProjectionPolicy::RendererModel,
+                   decodeResult<decodeSimpleModelView>,
                    encodeSimpleModelView, [] { return fieldSpan(simple_model_view_fields); },
                    applySimpleModelView, projectSimpleModelView, nullptr, nullptr},
     ComponentCodec{"camera", ComponentCodecRuntimeKind::Camera,
-                   EditorProjectionPolicy::Camera, decodeCamera, encodeCamera,
+                   EditorProjectionPolicy::Camera, decodeResult<decodeCamera>,
+                   encodeCamera,
                    [] { return fieldSpan(camera_fields); }, applyCamera,
                    projectCamera, nullptr, nullptr},
     ComponentCodec{"light", ComponentCodecRuntimeKind::Light,
-                   EditorProjectionPolicy::Light, decodeLight, encodeLight,
+                   EditorProjectionPolicy::Light, decodeResult<decodeLight>,
+                   encodeLight,
                    [] { return fieldSpan(light_fields); }, applyLight,
                    projectLight, nullptr, nullptr},
     ComponentCodec{"collider", ComponentCodecRuntimeKind::Collider,
-                   EditorProjectionPolicy::Collider, decodeCollider,
+                   EditorProjectionPolicy::Collider,
+                   decodeResult<decodeCollider>,
                    encodeCollider, [] { return fieldSpan(collider_fields); },
                    applyCollider, projectCollider, nullptr, nullptr},
     ComponentCodec{"animation", ComponentCodecRuntimeKind::Ecs,
-                   EditorProjectionPolicy::EcsCodec, decodeAnimation,
+                   EditorProjectionPolicy::EcsCodec,
+                   decodeResult<decodeAnimation>,
                    encodeAnimation, [] { return fieldSpan(animation_fields); },
                    applyAnimation, projectAnimation,
                    prepareEcsEditorSwap<AnimationComponent>,
                    swapEcsEditorToken<AnimationComponent>},
     ComponentCodec{"sprite_view", ComponentCodecRuntimeKind::Ecs,
-                   EditorProjectionPolicy::EcsCodec, decodeSprite, encodeSprite,
+                   EditorProjectionPolicy::EcsCodec,
+                   decodeResult<decodeSprite>, encodeSprite,
                    [] { return fieldSpan(sprite_fields); }, applySprite,
                    projectSprite, prepareEcsEditorSwap<SpriteViewComponent>,
                    swapEcsEditorToken<SpriteViewComponent>},
     ComponentCodec{"pelican_ray_instance", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
-                   decodeRayInstance, encodeRayInstance,
+                   decodeResult<decodeRayInstance>, encodeRayInstance,
                    [] { return fieldSpan(ray_instance_fields); },
                    applyRayInstance, projectRayInstance,
                    prepareEcsEditorSwap<RayInstanceComponent>,
@@ -1132,6 +1262,33 @@ const std::array codecs{
 };
 
 } // namespace
+
+std::span<const LegacyBranchDescriptor> componentCodecLegacyBranches() {
+    static const bool runtime_validated = [] {
+        for (std::size_t left = 0; left < legacy_branch_descriptors.size();
+             ++left) {
+            for (std::size_t right = left + 1;
+                 right < legacy_branch_descriptors.size(); ++right) {
+                if (legacy_branch_descriptors[left].legacy_branch_id ==
+                    legacy_branch_descriptors[right].legacy_branch_id) {
+                    throw std::logic_error(
+                        "duplicate component codec legacy branch ID");
+                }
+            }
+        }
+        return true;
+    }();
+    (void)runtime_validated;
+    return legacy_branch_descriptors;
+}
+
+std::optional<UserDataViolation> completedCameraCrossFieldViolation(
+    const CameraCodecData &camera,
+    std::span<const std::string> path_prefix) {
+    if (!camera.znear || !camera.zfar) return std::nullopt;
+    return cameraCrossFieldViolation(*camera.znear, *camera.zfar,
+                                     path_prefix);
+}
 
 ComponentCodecCanonicalDefaults componentCodecCanonicalDefaults() noexcept {
     return codec_canonical_defaults;
@@ -1157,9 +1314,14 @@ ScopedComponentCodecCanonicalDefaults::~ScopedComponentCodecCanonicalDefaults()
 
 } // namespace testing
 
-ComponentCodecValue ComponentCodec::decodeAuthored(const nlohmann::json &authored) const {
+ResolutionResult<ComponentCodecValue> ComponentCodec::decodeAuthored(
+    const nlohmann::json &authored) const {
     if (decode_authored == nullptr) throw std::logic_error("component codec decode callback is missing");
-    return decode_authored(authored);
+    try {
+        return decode_authored(authored);
+    } catch (const StructFieldValidationError &error) {
+        legacyReject(std::string{name} + ".schema_validation", error.what());
+    }
 }
 
 nlohmann::ordered_json ComponentCodec::encodeCanonical(const ComponentCodecValue &value) const {
@@ -1208,6 +1370,7 @@ bool rayInstanceCodecEnabled() noexcept {
 } // namespace
 
 std::span<const ComponentCodec> componentCodecs() {
+    (void)componentCodecLegacyBranches();
     if (codec_catalog_override != nullptr) return *codec_catalog_override;
     return rayInstanceCodecEnabled()
                ? std::span<const ComponentCodec>{codecs}
@@ -1216,6 +1379,15 @@ std::span<const ComponentCodec> componentCodecs() {
 }
 
 namespace testing {
+
+const ComponentCodec *findComponentCodecIncludingDisabled(
+    std::string_view name) noexcept {
+    const auto found = std::find_if(
+        codecs.begin(), codecs.end(), [name](const ComponentCodec &codec) {
+            return codec.name == name;
+        });
+    return found == codecs.end() ? nullptr : &*found;
+}
 
 ScopedComponentCodecCatalog::ScopedComponentCodecCatalog(
     std::vector<ComponentCodec> replacement)

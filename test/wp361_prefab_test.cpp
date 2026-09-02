@@ -54,6 +54,25 @@ namespace {
 using Json = nlohmann::json;
 using OJson = nlohmann::ordered_json;
 
+ComponentCodecValue decodeWp361OrThrow(
+    const ComponentCodec &codec, const nlohmann::json &authored) {
+    auto decoded = codec.decodeAuthored(authored);
+    if (!decoded) {
+        throw ResolutionFailureException{
+            StoredResolutionFailure{std::move(decoded).error()}};
+    }
+    return std::move(decoded).value();
+}
+
+EditorProjectionPlan planWp361OrThrow(
+    const EditorProjectionPlanningRequest &request,
+    const SceneProjectionState &state,
+    const EditorProjectionContext &context) {
+    auto plan = planEditorProjection(request, state, context);
+    if (!plan) throw std::runtime_error("WP361 projection plan rejected");
+    return std::move(plan).value();
+}
+
 enum class Wp361Mode { none, y_axis, full };
 
 struct Wp361Params {
@@ -577,7 +596,7 @@ EditorProjectionResult executeWp375Seam(
     const auto context = wp375ContextSnapshot(availability);
     binding_state.codec_generation = context.layoutGeneration();
     binding_state.behavior_generation = context.behaviorGeneration();
-    const auto plan = planEditorProjection(
+    const auto plan = planWp361OrThrow(
         EditorProjectionPlanningRequest{
             .base_revision = request.base_revision,
             .commands = request.commands,
@@ -912,8 +931,9 @@ TEST_CASE("WP361 resolver expands authored then generated and preserves camera-e
     REQUIRE(prepared.back().component_origin.generated() != nullptr);
 
     const auto *raw_sprite = fixture.registry.find("unit");
-    REQUIRE_THROWS(findComponentCodec("sprite_view")
-                       ->decodeAuthored(raw_sprite->document->components[0].body));
+    REQUIRE_THROWS(decodeWp361OrThrow(
+        *findComponentCodec("sprite_view"),
+        raw_sprite->document->components[0].body));
     REQUIRE_FALSE(generatedByKey(object, "sprite").runtime_resolution_error);
 
     auto changed_instance_scene = sceneFixture();
@@ -1147,7 +1167,8 @@ TEST_CASE("WP361a light provider required/default rules match the decoder",
              {"position", {0.0, 0.0, 0.0}},
              {"direction", {0.0, -1.0, 0.0}}, {"color", {1.0, 1.0, 1.0}}}};
     for (const auto &component : valid) {
-        const auto canonical = codec.encodeCanonical(codec.decodeAuthored(component));
+        const auto canonical =
+            codec.encodeCanonical(decodeWp361OrThrow(codec, component));
         REQUIRE(canonical.at("intensity") == Catch::Approx(1.0F));
         const auto *intensity = provider.findActive("light", "/intensity", component);
         REQUIRE(intensity != nullptr);
@@ -1163,13 +1184,13 @@ TEST_CASE("WP361a light provider required/default rules match the decoder",
             }
         }
     }
-    REQUIRE_THROWS(codec.decodeAuthored(
+    REQUIRE_THROWS(decodeWp361OrThrow(codec,
         Json{{"name", "light"}, {"direction", {0.0, -1.0, 0.0}},
              {"color", {1.0, 1.0, 1.0}}}));
-    REQUIRE_THROWS(codec.decodeAuthored(
+    REQUIRE_THROWS(decodeWp361OrThrow(codec,
         Json{{"name", "light"}, {"type", "point"},
              {"position", {0.0, 0.0, 0.0}}}));
-    REQUIRE_THROWS(codec.decodeAuthored(
+    REQUIRE_THROWS(decodeWp361OrThrow(codec,
         Json{{"name", "light"}, {"type", "spot"},
              {"position", {0.0, 0.0, 0.0}}, {"color", {1.0, 1.0, 1.0}}}));
 }

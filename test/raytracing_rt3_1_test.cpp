@@ -57,6 +57,16 @@ using RayTracingRt31Fixture::v2Layout;
 using RayTracingRt31Fixture::rowByAuthor;
 using RayTracingRt31Fixture::resolveProductionScene;
 
+ComponentCodecValue decodeRayCodecOrThrow(
+    const ComponentCodec &codec, const nlohmann::json &authored) {
+    auto decoded = codec.decodeAuthored(authored);
+    if (!decoded) {
+        throw ResolutionFailureException{
+            StoredResolutionFailure{std::move(decoded).error()}};
+    }
+    return std::move(decoded).value();
+}
+
 } // namespace
 
 TEST_CASE("WP374 layout v2 owns AS parsing and separates SBT/AS digests",
@@ -247,7 +257,7 @@ TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
     mode.configure(RayLayoutSemanticMode::LayoutV2);
     REQUIRE(componentCodecs().size() == 8);
     const auto &codec = requireComponentCodec("pelican_ray_instance");
-    const auto decoded = codec.decodeAuthored({
+    const auto decoded = decodeRayCodecOrThrow(codec, {
         {"name", "pelican_ray_instance"},
         {"mask", 9},
         {"instance_flags", {"force_no_opaque"}},
@@ -260,22 +270,23 @@ TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
     CHECK(canonical["custom_index"] == 0x654321);
 
     CHECK_THROWS_WITH(
-        codec.decodeAuthored({{"name", "pelican_ray_instance"}}),
+        decodeRayCodecOrThrow(
+            codec, {{"name", "pelican_ray_instance"}}),
         ContainsSubstring("pelican.ray_instance_empty@1"));
     CHECK_THROWS_WITH(
-        codec.decodeAuthored(
+        decodeRayCodecOrThrow(codec,
             {{"name", "pelican_ray_instance"}, {"future", 1}}),
         ContainsSubstring("pelican.ray_instance_unknown_field@1"));
     CHECK_THROWS_WITH(
-        codec.decodeAuthored(
+        decodeRayCodecOrThrow(codec,
             {{"name", "pelican_ray_instance"}, {"mask", "all"}}),
         ContainsSubstring("pelican.ray_instance_field_type@1"));
     CHECK_THROWS_WITH(
-        codec.decodeAuthored(
+        decodeRayCodecOrThrow(codec,
             {{"name", "pelican_ray_instance"}, {"mask", 256}}),
         ContainsSubstring("pelican.ray_instance_field_range@1"));
     CHECK_THROWS_WITH(
-        codec.decodeAuthored({{"name", "pelican_ray_instance"},
+        decodeRayCodecOrThrow(codec, {{"name", "pelican_ray_instance"},
                               {"custom_index", 0x1000000}}),
         ContainsSubstring("pelican.ray_instance_field_range@1"));
     CHECK_THROWS_WITH(

@@ -78,6 +78,7 @@ struct EditorComponentQueryResult {
     std::optional<std::uint32_t> behavior_owner_generation;
     std::optional<GeneratedComponentOrigin> generated;
     std::optional<nlohmann::ordered_json> generated_resolved_json;
+    std::optional<StoredResolutionFailure> resolution_failure;
 };
 
 struct EditorObjectQueryResult {

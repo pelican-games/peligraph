@@ -209,7 +209,7 @@ struct ResolvedComponent {
     // Authoring accepts inactive-scene runtime errors and historically raises
     // them only when that scene is bound. Resolve the error once, retain it in
     // the projection, and let binders rethrow it without decoding raw JSON.
-    std::optional<std::string> runtime_resolution_error;
+    std::optional<StoredResolutionFailure> runtime_resolution_error;
     std::optional<std::string> behavior_canonical_params;
     bool behavior_pending = false;
 

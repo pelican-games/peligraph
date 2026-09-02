@@ -1,0 +1,1 @@
+{"code":"camera.zfar_not_greater_than_znear@1","path":"/scenes/main/objects/3/components/1/znear","fields":{"znear":5000.0,"zfar":1000.0},"message":"camera zfar (1000) must be greater than znear (5000)"}

@@ -110,10 +110,23 @@ TransformCodecData decodeTransformObject(const Json &object,
                         "hierarchy object has no transform component");
     }
     try {
+        auto decoded =
+            requireComponentCodec("transform").decodeAuthored(*component);
+        if (!decoded) {
+            projectionError(EditorProjectionErrorCode::TransformNonFinite,
+                            std::string{path} + "/components/transform",
+                            decoded.error().leaf_message);
+        }
         return std::any_cast<TransformCodecData>(
-            requireComponentCodec("transform").decodeAuthored(*component));
+            std::move(decoded).value());
     } catch (const EditorProjectionException &) {
         throw;
+    } catch (const LegacyRejectException &error) {
+        throw ResolutionFailureException{
+            StoredResolutionFailure{LegacyResolutionText{
+                .legacy_branch_id = error.legacyBranchId(),
+                .message = error.what(),
+            }}};
     } catch (const std::exception &error) {
         projectionError(EditorProjectionErrorCode::TransformNonFinite,
                         std::string{path} + "/components/transform",
@@ -527,10 +540,43 @@ EditorProjectionCommand makeSetComponentValueCommand(
                                 "component has no editable codec");
             }
             try {
-                const auto decoded = codec->decodeAuthored(authored_component);
-                *component = Json::parse(codec->encodeCanonical(decoded).dump());
+                auto decoded_result = codec->decodeAuthored(authored_component);
+                if (!decoded_result) {
+                    const auto &violation = decoded_result.error();
+                    throw EditorProjectionException{
+                        EditorProjectionErrorCode::CommandInvalid, path,
+                        violation.leaf_message,
+                        nlohmann::ordered_json{
+                            {"resolution_error",
+                             resolutionFailureJson(
+                                 StoredResolutionFailure{violation})}}};
+                }
+                auto decoded = std::move(decoded_result).value();
+                if (component_name == "camera") {
+                    const auto &camera =
+                        std::any_cast<const CameraCodecData &>(decoded);
+                    if (auto violation =
+                            completedCameraCrossFieldViolation(camera)) {
+                        throw EditorProjectionException{
+                            EditorProjectionErrorCode::CommandInvalid, path,
+                            violation->leaf_message,
+                            nlohmann::ordered_json{
+                                {"resolution_error",
+                                 resolutionFailureJson(
+                                     StoredResolutionFailure{
+                                         std::move(*violation)})}}};
+                    }
+                }
+                *component =
+                    Json::parse(codec->encodeCanonical(decoded).dump());
             } catch (const EditorProjectionException &) {
                 throw;
+            } catch (const LegacyRejectException &error) {
+                throw ResolutionFailureException{
+                    StoredResolutionFailure{LegacyResolutionText{
+                        .legacy_branch_id = error.legacyBranchId(),
+                        .message = error.what(),
+                    }}};
             } catch (const std::exception &error) {
                 projectionError(EditorProjectionErrorCode::CommandInvalid,
                                 path, error.what());
@@ -1003,6 +1049,28 @@ EditorProjectionResult EditorProjectionTransaction::commit(
         result.committed_revision = committed_revision;
         result.structural_changes = std::move(structural_changes);
         result.removed_objects = std::move(removed_objects);
+        return result;
+    } catch (const ResolutionFailureException &error) {
+        if (document_published && candidate_state) {
+            document_target_.publishProjectionState(*candidate_state);
+            document_published = false;
+        }
+        for (auto it = prepared.rbegin(); it != prepared.rend(); ++it) {
+            (*it)->rollback();
+        }
+        const auto data = resolutionFailureJson(error.failure());
+        std::string path = "/projection";
+        if (const auto *typed =
+                std::get_if<UserDataViolation>(&error.failure())) {
+            path = resolutionJsonPointer(typed->tokens);
+        }
+        result.status = EditorProjectionStatus::Rejected;
+        result.error = EditorProjectionError{
+            .code = EditorProjectionErrorCode::CommandInvalid,
+            .object_path = std::move(path),
+            .message = error.what(),
+            .data = nlohmann::ordered_json{{"resolution_error", data}},
+        };
         return result;
     } catch (const std::exception &error) {
         if (document_published && candidate_state) {

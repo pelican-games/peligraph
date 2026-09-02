@@ -221,7 +221,32 @@ Json canonicalComponent(const Json &component, AuthoringObjectId object_id,
                     cause.what());
     }
     try {
-        return Json::parse(codec->encodeCanonical(codec->decodeAuthored(component)).dump());
+        auto decoded = codec->decodeAuthored(component);
+        if (!decoded) {
+            const auto &violation = decoded.error();
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", object_id.value},
+                         {"slot", component_name},
+                         {"field_path", resolutionJsonPointer(violation.tokens)},
+                         {"detail", violation.leaf_message}},
+                        violation.leaf_message);
+        }
+        return Json::parse(
+            codec->encodeCanonical(std::move(decoded).value()).dump());
+    } catch (const EditFailure &) {
+        throw;
+    } catch (const LegacyRejectException &error) {
+        const auto failure = StoredResolutionFailure{LegacyResolutionText{
+            .legacy_branch_id = error.legacyBranchId(),
+            .message = error.what(),
+        }};
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", object_id.value},
+                     {"slot", component_name},
+                     {"field_path", "/"},
+                     {"detail", error.what()},
+                     {"resolution_error", resolutionFailureJson(failure)}},
+                    error.what());
     } catch (const std::exception &error) {
         editFailure(EditorEditErrorCode::schema_violation,
                     {{"object", object_id.value},

@@ -432,11 +432,30 @@ class EditorEcsMigrationProjectionAdapter final
             participants.push_back(&*simple_model_);
         }
         if (kind_ == ECSArchetypeMigrationKind::add) {
-            auto decoded = codec_.decodeAuthored(operation_.at("component"));
+            ResolutionResult<ComponentCodecValue> decoded_result = [&] {
+                try {
+                    return codec_.decodeAuthored(
+                        operation_.at("component"));
+                } catch (const LegacyRejectException &error) {
+                    throw ResolutionFailureException{
+                        StoredResolutionFailure{LegacyResolutionText{
+                            .legacy_branch_id = error.legacyBranchId(),
+                            .message = error.what(),
+                        }}};
+                }
+            }();
+            if (!decoded_result) {
+                throw ResolutionFailureException{
+                    StoredResolutionFailure{
+                        std::move(decoded_result).error()}};
+            }
+            auto decoded = std::move(decoded_result).value();
+            auto canonical = codec_.encodeCanonical(decoded);
             token_.emplace(ECSArchetypeMigration::prepareAdd(
                 ecs_, *entity, component_id,
                 [this, codec = &codec_,
-                 decoded = std::move(decoded)](void *target) {
+                 decoded = std::move(decoded),
+                 canonical = std::move(canonical)](void *target) {
                     if (codec->editor_policy ==
                         EditorProjectionPolicy::TransformClosure) {
                         TransformCodecTarget transform{
@@ -451,8 +470,7 @@ class EditorEcsMigrationProjectionAdapter final
                                 ->authoring_object_id = object_id_.value;
                         }
                     } else {
-                        components_.loadByJson(target,
-                                               operation_.at("component"));
+                        components_.loadByJson(target, canonical);
                     }
                 },
                 participants));
@@ -1277,6 +1295,36 @@ EditorProjectionContext makeEditorProjectionContext(
         behavior_generation, defaults};
 }
 
+namespace {
+
+EditorProjectionResult rejectProjectionPlanFailure(
+    ProjectionPlanFailure failure, SceneRevision base_revision,
+    SceneRevision committed_revision) {
+    EditorProjectionError error;
+    error.code = EditorProjectionErrorCode::CommandInvalid;
+    error.object_path = "/";
+    if (auto *recoverable =
+            std::get_if<EditorProjectionRecoverable>(&failure)) {
+        error.message = recoverable->name + ": " + recoverable->message;
+    } else {
+        auto violation =
+            std::get<UserDataViolation>(std::move(failure));
+        error.message = violation.leaf_message;
+        error.data = nlohmann::ordered_json{
+            {"resolution_error",
+             resolutionFailureJson(
+                 StoredResolutionFailure{std::move(violation)})}};
+    }
+    return EditorProjectionResult{
+        .status = EditorProjectionStatus::Rejected,
+        .base_revision = base_revision,
+        .committed_revision = committed_revision,
+        .error = std::move(error),
+    };
+}
+
+} // namespace
+
 EditorProjectionResult materializeEditorProjection(
     const EditorProjectionPlan &plan, const EditorProjectionModules &modules,
     EditorProjectionDocumentTarget &target,
@@ -2099,13 +2147,20 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 ProjectBasicConfigProjectionTarget target{
                     runtime->modules.project_config};
                 try {
-                    auto plan = planEditorProjection(
+                    auto plan_result = planEditorProjection(
                         EditorProjectionPlanningRequest{
                             .base_revision = request.base_revision,
                             .commands = request.commands,
                             .operations = request.operations,
                         },
                         target.projectionState(), context);
+                    if (!plan_result) {
+                        return rejectProjectionPlanFailure(
+                            std::move(plan_result).error(),
+                            request.base_revision,
+                            target.projectionState().revision());
+                    }
+                    auto plan = std::move(plan_result).value();
                     return materializeEditorProjection(
                         plan, editorProjectionModules(runtime->modules),
                         target, runtime->binding_state,
@@ -2138,7 +2193,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         runtime->modules.project_config
                             .sceneProjectionState()};
                     try {
-                        auto plan = planEditorProjection(
+                        auto plan_result = planEditorProjection(
                             EditorProjectionPlanningRequest{
                                 .base_revision = request.base_revision,
                                 .commands = request.commands,
@@ -2147,6 +2202,13 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                     request.restore_committed,
                             },
                             target.projectionState(), context);
+                        if (!plan_result) {
+                            return rejectProjectionPlanFailure(
+                                std::move(plan_result).error(),
+                                request.base_revision,
+                                target.projectionState().revision());
+                        }
+                        auto plan = std::move(plan_result).value();
                         return materializeEditorProjection(
                             plan,
                             editorProjectionModules(runtime->modules),

@@ -11,9 +11,10 @@
 namespace Pelican {
 namespace {
 
-template <class Invoke> nlohmann::json invokeEditorRpc(Invoke &&invoke) {
+template <class Invoke>
+auto invokeEditorRpc(Invoke &&invoke) -> decltype(invoke()) {
     try {
-        return nlohmann::json(std::forward<Invoke>(invoke)());
+        return std::forward<Invoke>(invoke)();
     } catch (const EditorPreviewError &error) {
         const auto invalid = error.code() == EditorPreviewErrorCode::schema_violation ||
                              error.code() == EditorPreviewErrorCode::capture_schema_violation;
@@ -56,7 +57,7 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_scene_revision", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getSceneRevision(params); });
     });
-    server.setHandler("get_components", [&editor_rpc](const nlohmann::json &params) {
+    server.setOrderedHandler("get_components", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getComponents(params); });
     });
     server.setHandler("list_assets", [&editor_rpc](const nlohmann::json &params) {

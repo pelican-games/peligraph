@@ -221,13 +221,32 @@ EditorProjectionRoute literalPolicyRoute(
     };
 }
 
+EditorProjectionPlan requireProjectionPlan(
+    const EditorProjectionPlanningRequest &request,
+    const SceneProjectionState &state,
+    const EditorProjectionContext &context) {
+    auto result = planEditorProjection(request, state, context);
+    if (!result) {
+        auto failure = std::move(result).error();
+        if (auto *recoverable =
+                std::get_if<EditorProjectionRecoverable>(&failure)) {
+            throw EditorProjectionPlanError{recoverable->name,
+                                            recoverable->message};
+        }
+        throw ResolutionFailureException{
+            StoredResolutionFailure{
+                std::get<UserDataViolation>(std::move(failure))}};
+    }
+    return std::move(result).value();
+}
+
 EditorProjectionPlan planOne(const Json &operation,
                              const test_support::SceneProjectionTarget &target,
     const EditorProjectionContext &context) {
     const std::array operations{operation};
     const auto canonical_operations = freezeEditorCanonicalOperations(
         operations, target.projectionState());
-    return planEditorProjection(
+    return requireProjectionPlan(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision(),
             .commands = {},
@@ -335,9 +354,20 @@ std::vector<EditorProjectionRoute> fullPrefabRoutes(
     return routes;
 }
 
-ComponentCodecValue decodeFoo(const nlohmann::json &authored) {
-    return Wp375FooComponent{
-        .value = authored.at("value").get<std::int32_t>()};
+ResolutionResult<ComponentCodecValue> decodeFoo(
+    const nlohmann::json &authored) {
+    const auto value = authored.at("value").get<std::int32_t>();
+    if (value < 0) {
+        return ResolutionResult<ComponentCodecValue>::failure(
+            UserDataViolation{
+                .code = "wp378.factory.foo_negative@1",
+                .tokens = {"value"},
+                .fields = Json{{"value", value}},
+                .leaf_message = "factory foo value must be non-negative",
+            });
+    }
+    return ResolutionResult<ComponentCodecValue>::success(
+        Wp375FooComponent{.value = value});
 }
 
 Json encodeFoo(const ComponentCodecValue &value) {
@@ -678,7 +708,7 @@ TEST_CASE(
     const std::array inactive_wire{inactive_operation};
     const auto inactive_canonical = freezeEditorCanonicalOperations(
         inactive_wire, target.projectionState());
-    const auto inactive_restore = planEditorProjection(
+    const auto inactive_restore = requireProjectionPlan(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision(),
             .operations = inactive_canonical,
@@ -695,7 +725,7 @@ TEST_CASE(
     const std::array active_wire{active_operation};
     const auto active_canonical = freezeEditorCanonicalOperations(
         active_wire, target.projectionState());
-    const auto active_restore = planEditorProjection(
+    const auto active_restore = requireProjectionPlan(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision(),
             .operations = active_canonical,
@@ -717,7 +747,7 @@ TEST_CASE(
     const std::array operations{operation};
     const auto canonical = freezeEditorCanonicalOperations(
         operations, target.projectionState());
-    const auto plan = planEditorProjection(
+    const auto plan = requireProjectionPlan(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision(),
             .operations = canonical,
@@ -768,7 +798,7 @@ TEST_CASE(
         const std::array operations{operation};
         const auto canonical = freezeEditorCanonicalOperations(
             operations, target.projectionState());
-        const auto plan = planEditorProjection(
+        const auto plan = requireProjectionPlan(
             EditorProjectionPlanningRequest{
                 .base_revision = target.projectionState().revision(),
                 .operations = canonical,
@@ -818,7 +848,7 @@ TEST_CASE(
         operations, target.projectionState());
     const std::array commands{makeSetComponentValueCommand(
         "main", "Root", "simplemodelview", authored)};
-    const auto plan = planEditorProjection(
+    const auto plan = requireProjectionPlan(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision(),
             .commands = commands,
@@ -924,7 +954,7 @@ TEST_CASE("WP375 preview semantic gate exists only in the planner and covers eve
                 context, expected_route.component),
         });
     }
-    const auto restore = planEditorProjection(
+    const auto restore = requireProjectionPlan(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision(),
             .restore_committed = true,
@@ -966,7 +996,7 @@ TEST_CASE("WP375 stale materialization inputs fail with a named error",
           "[WP375][materialize][generation][epoch]") {
     test_support::SceneProjectionTarget target{matrixDocument()};
     const auto context = projectionContext(EditorProjectionMode::Committed);
-    const auto plan = planEditorProjection(
+    const auto plan = requireProjectionPlan(
         EditorProjectionPlanningRequest{
             .base_revision = target.projectionState().revision()},
         target.projectionState(), context);
@@ -1044,7 +1074,7 @@ TEST_CASE(
             binding_state.codec_generation = context.layoutGeneration();
             binding_state.behavior_generation =
                 context.behaviorGeneration();
-            const auto plan = planEditorProjection(
+            const auto plan = requireProjectionPlan(
                 EditorProjectionPlanningRequest{
                     .base_revision = request.base_revision,
                     .commands = request.commands,
@@ -1122,7 +1152,7 @@ TEST_CASE(
 }
 
 TEST_CASE("WP375 a registered foo codec reaches runtime set add and remove without adapter edits",
-          "[WP375][component-codec][type-erased][materialize]") {
+          "[WP375][WP378][component-codec][type-erased][materialize][factory][mutation]") {
     setupLogger();
     FastModuleContainer modules;
     TestSupport::ScopedTestRegistrationOwner registration_owner;
@@ -1162,22 +1192,27 @@ TEST_CASE("WP375 a registered foo codec reaches runtime set add and remove witho
             .component_info = &GET_MODULE(ComponentInfoManager),
         };
 
-        const auto execute = [&](EditorProjectionCommand command,
-                                 Json operation) {
+        const auto materialize = [&](EditorProjectionCommand command,
+                                     Json operation) {
             const std::array commands{std::move(command)};
             const std::array operations{std::move(operation)};
             const auto canonical_operations = freezeEditorCanonicalOperations(
                 operations, target.projectionState());
-            const auto plan = planEditorProjection(
+            const auto plan = requireProjectionPlan(
                 EditorProjectionPlanningRequest{
                     .base_revision = target.projectionState().revision(),
                     .commands = commands,
                     .operations = canonical_operations,
                 },
                 target.projectionState(), context);
-            const auto result = materializeEditorProjection(
+            return materializeEditorProjection(
                 plan, projection_modules, target, bindings, bindings.epoch,
                 context.layoutGeneration(), context.behaviorGeneration());
+        };
+        const auto execute = [&](EditorProjectionCommand command,
+                                 Json operation) {
+            const auto result =
+                materialize(std::move(command), std::move(operation));
             INFO((result.error ? result.error->message : std::string{}));
             REQUIRE(result.committed());
         };
@@ -1197,6 +1232,27 @@ TEST_CASE("WP375 a registered foo codec reaches runtime set add and remove witho
                      {"object_id", object_id.value},
                      {"component_slot", "foo"},
                      {"component_index", 0}});
+        REQUIRE(ecs.tryComponent<Wp375FooComponent>(entity) == nullptr);
+
+        const auto revision_before_invalid =
+            target.projectionState().revision();
+        const auto invalid = materialize(
+            insertFooCommand(-1),
+            Json{{"op", "add_component"},
+                 {"object_id", object_id.value},
+                 {"component_slot", "foo"},
+                 {"component_index", 0},
+                 {"component", Json{{"name", "foo"}, {"value", -1}}}});
+        REQUIRE(invalid.status == EditorProjectionStatus::Rejected);
+        REQUIRE(invalid.error.has_value());
+        REQUIRE(invalid.error->code ==
+                EditorProjectionErrorCode::CommandInvalid);
+        REQUIRE(invalid.error->message ==
+                "factory foo value must be non-negative");
+        REQUIRE(invalid.error->data.at("resolution_error").at("code") ==
+                "wp378.factory.foo_negative@1");
+        REQUIRE(target.projectionState().revision() ==
+                revision_before_invalid);
         REQUIRE(ecs.tryComponent<Wp375FooComponent>(entity) == nullptr);
 
         execute(insertFooCommand(3),

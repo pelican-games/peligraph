@@ -237,8 +237,7 @@ void applyOverrides(Json &raw, const AuthoringSceneDocument &base,
         }
         const auto component_name =
             requiredString(override_value, "component_slot", context);
-        const auto *codec = findComponentCodec(component_name);
-        if (codec == nullptr) {
+        if (findComponentCodec(component_name) == nullptr) {
             unavailable(context + "/component_slot", component_name,
                         "component has no prepared projection codec");
         }
@@ -260,16 +259,27 @@ void applyOverrides(Json &raw, const AuthoringSceneDocument &base,
         }
         try {
             (*component)[Json::json_pointer{field_path}] = override_value.at("value");
-            // Validate the complete authored component at the override seam.
-            // The resolved value is produced once below; this call exists only
-            // to preserve the pre-WP360 rejection boundary.
-            (void)codec->decodeAuthored(*component);
         } catch (const EditorPreviewProjectionError &) {
             throw;
         } catch (const std::exception &error) {
             schemaError(context + "/field_path", error.what());
         }
     }
+}
+
+std::string previewFailureField(const Json &overrides,
+                                std::uint64_t object_id,
+                                std::string_view component_name) {
+    for (std::size_t offset = 0; offset < overrides.size(); ++offset) {
+        const auto index = overrides.size() - offset - 1;
+        const auto &override_value = overrides.at(index);
+        if (override_value.at("object_id").get<std::uint64_t>() == object_id &&
+            override_value.at("component_slot").get<std::string>() ==
+                component_name) {
+            return "overrides/" + std::to_string(index) + "/field_path";
+        }
+    }
+    return "prepared_projection/resolution_error";
 }
 
 OrderedJson evaluatedScene(const ResolvedScene &document) {
@@ -764,6 +774,39 @@ PreparedProjection prepareEditorPreviewProjection(
         std::move(staged),
         SceneResolverGeneration{base_document.revision().value + 1},
         defaults, std::move(registry), std::move(provider));
+    for (const auto &scene : state.resolved().scenes()) {
+        for (const auto &object : scene.objects) {
+            for (const auto &component : object.components) {
+                if (component.runtime_resolution_error) {
+                    const ResolutionFailureException error{
+                        *component.runtime_resolution_error};
+                    const auto field =
+                        std::holds_alternative<LegacyResolutionText>(
+                            *component.runtime_resolution_error)
+                            ? previewFailureField(
+                                  overrides,
+                                  object.authoring_object_id.value,
+                                  component.name)
+                            : "prepared_projection/resolution_error";
+                    schemaError(field, error.what());
+                }
+                if (component.name != "camera" ||
+                    component.runtime_codec == nullptr) {
+                    continue;
+                }
+                const auto &camera = std::any_cast<const CameraCodecData &>(
+                    component.requireRuntimeValue());
+                if (auto violation =
+                        completedCameraCrossFieldViolation(camera)) {
+                    schemaError(previewFailureField(
+                                    overrides,
+                                    object.authoring_object_id.value,
+                                    component.name),
+                                violation->leaf_message);
+                }
+            }
+        }
+    }
     auto evaluated = evaluatedScene(state.resolved());
     return PreparedProjection{.state = std::move(state),
                               .evaluated_scene = std::move(evaluated)};
