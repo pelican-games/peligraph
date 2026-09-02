@@ -20638,6 +20638,76 @@ WP375a の記述は「E-3a で扱う」に訂正(本差分と同時)。
 - **依存: WP375a 統合後**(RPC guard を取り込む)。構成表に `PELICAN_WITH_RPC` ON/OFF(OFF は configure / build + 非 RPC service test)と `PELICAN_WITH_OPENXR` を足す
 
 **第 2 巡へ。** 見積は「中」のまま(decoder の cross-field 集約と broad catch 除去が増え、provenance が減った)。
+
+#### WP378 仕様レビュー第 2 巡(不合格・8 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ)**
+
+第 2 巡は v2 の決定同士の矛盾を突いた: 「throw を捕捉しない」(決定 3)は、未移行 legacy を保持すること(規範 E-3b まで broad catch を残す)と、
+`noexcept` な production transaction の中で internal を再送出すること(E-3a 範囲外)の**両方と両立しない**。仕分け: **直す 8 / やらない 0**。
+v3 の原則: **E-0a は「値の経路を足す」だけで、「例外の経路を消す」ことはしない。** 消すのは E-3a / E-3b。
+
+##### 決定 11(#1 #2): broad catch は **残す**。E-0a が変えるのは「移行済み producer が値で返る」ことだけ
+
+- 6(→5、決定 13)caller の decode 境界にある broad catch(legacy 文字列化)は **E-3b まで残す**(規範 [design_error_contract.md:335](../docs/design_error_contract.md#L335) のとおり)
+- `legacyReject(id, …)` は **`LegacyRejectException`(`std::runtime_error` 派生、`legacy_branch_id` を持つ)を throw** し、既存の catch がそれを `LegacyResolutionText{id, message}` に写像する
+- internal fault(`logic_error` / callback 欠落)の「再送出して terminate しない」証明は **decode 境界の単体 seam(caller を経由しない `decodeAuthored` 直呼び)で
+  `Result.error` にならず throw のまま**であることまで。production transaction 内の伝播 / death test は **E-3a**
+- 受け入れ「内部が利用者エラーに見えない」は、**移行済み camera producer について** `UserDataViolation` が値で返り、`LegacyResolutionText` にも `AdapterPrepareFailed` にも
+  ならないこと(= 今日の対照)に限定する
+
+##### 決定 12(#4): cross-field 規則は **1 つの純粋関数**。4 箇所から呼ぶ
+
+- `cameraCrossFieldViolation(znear, zfar, …) → optional<UserDataViolation>` を 1 箇所に置き、**decoder(両値が揃うとき)/ resolver completion 後 / transaction :528 と
+  preview の「完全検証」境界 / basic-config の camera parser**([basicconfig.cpp:262](../src/core/loader/basicconfig.cpp#L262))の 4 箇所から呼ぶ。
+  v2 の「decoder 側を消す」は撤回(decode-only 経路が黙って通る)
+- 受け入れ: 4 箇所それぞれで `{"znear":5000,"zfar":1000}` が **同じ code・同じ path** で落ち、関数の呼出を 1 箇所ずつ消すとその経路だけ落ちる(4 変異)
+- inactive scene への stored failure の commit 条件: **document は commit、runtime は bind しない**(今日の inactive 動作と同じ)。active scene では fail-fast
+
+##### 決定 13(#3 #6): preview の validation-only decode は **caller から外す**。caller は 5、変異は「その site の mapping を消す」
+
+- preview([editorpreviewprojection.cpp:261](../src/core/loader/editorpreviewprojection.cpp#L261))の前段 decode は値を捨てる二重 decode。**削除**し、resolver + stored failure 検査を唯一の経路にする
+  (第二の流儀の削減。preview の受け入れは決定 6(b) だけ残し、6(a) は撤回)
+- **caller 5**: journal :223 / factory :372 / transaction :114 / transaction :528 / resolver :207。各行に **到達証拠(production 入力でその site に来たこと)/
+  その site 固有の error→failure mapping を消す変異(対象行だけ赤、他 4 行は緑)/ 成功値を consumer が使った観測** の 3 点。`(void)` 変異は撤回(コンパイルエラーになる)
+- transaction :528 の production 到達性(空 adapter commit = journal preflight [editorjournal.cpp:2121](../src/core/communication/editorjournal.cpp#L2121))を到達証拠に含める
+
+##### 決定 14(#5): legacy registry は **descriptor ごとの到達 corpus** で全単射を検査する
+
+- 各 `legacy_branch_id` に **到達する入力を 1 件以上** corpus(`test/fixtures/component_codec/legacy_corpus.json`)に置き、
+  `descriptor ID ↔ 実際に返った legacy_branch_id` の**全単射**(未到達 ID・未登録到達の両方が失敗)
+- **暗黙 / transitive の例外**(unchecked `get<string>` [collider.cpp:110](../src/core/userpublic/components/collider.cpp#L110)、`value<string>`
+  [componentcodec.cpp:612](../src/core/loader/componentcodec.cpp#L612)、sprite の `get<float>` [spriteview.cpp:27](../src/core/userpublic/components/spriteview.cpp#L27)、
+  atlas の transitive 拒否 [atlasasset.cpp:138](../src/core/asset/atlasasset.cpp#L138))は **着手時に列挙し、`legacyReject` で明示化するか corpus に載せる**。
+  nlohmann の `type_error` が裸で出る経路は 0 にする(それ自体が受け入れ)
+- 「未列挙 throw を足す変異」は corpus に入力が無ければ検出できない、と明記(代理条件にしない)。検出は全単射検査の側
+
+##### 決定 15(#7): 値は **`ResolutionFailureException`** で運び、RPC で `error.data` に変換する
+
+- `UserDataViolation` / `LegacyResolutionText` を保持する **type-preserving な例外 wrapper**(`std::exception` 派生)を定義し、
+  `requireRuntimeValue`([resolvedscene.cpp:44](../src/core/loader/resolvedscene.cpp#L44))はそれを throw する(文字列 `runtime_error` に戻さない)
+- `SceneLoader::load` はそのまま伝播。RPC の `load_scene` は wrapper を捕捉して **`error.data`** に変換する:
+  typed → `{"code": "...", "path": "...", "fields": {...}}` / legacy → `{"legacy_branch_id": "...", "message": "..."}`。両方の exact JSON を本文に置く(決定 16)
+- 通信層の型を loader から投げない(D0 / 層の分離)
+
+##### 決定 16(#8): exact JSON(規範)
+
+`get_components` の component object 直下(authored / generated とも同じ位置):
+```json
+"resolution_error": { "code": "camera.zfar_not_greater_than_znear@1",
+                      "path": "/scenes/main/objects/3/components/1/znear",
+                      "fields": { "znear": 5000.0, "zfar": 1000.0 },
+                      "message": "camera zfar (1000) must be greater than znear (5000)" }
+```
+legacy: `"resolution_error": { "legacy_branch_id": "collider.radius_non_positive", "message": "..." }`(`code` / `path` / `fields` 無し)。
+- `path` は **scene document 絶対の JSON pointer**(primary token = `znear`。related は E-4 まで出さない)
+- `fields` は **順序付き object**(規範の field 名順)。`message` は残す(v1 の leaf byte 一致は message にも適用)
+- generated component は serializer の早期 return([editorcommandservice.cpp:1453](../src/core/communication/editorcommandservice.cpp#L1453))を直して同じ位置に出す
+- `load_scene` の `error.data` は上の object をそのまま(`resolution_error` の中身)。golden は **この literal から** byte-exact に固定する。
+  決定 12 の「同じ path」検査は、この literal との一致で置換(代理条件の撤回)
+
+##### 段割りと依存(v3)
+
+依存: **WP375a 統合後**。仕様レビューは 2 巡で打ち切り。見積: **中〜大**(cross-field 4 箇所、preview の decode 削除、registry corpus、wrapper 型が増えた)。
+E-3a(commit noexcept / internal の伝播 / generation guard)と E-3b(broad catch 撤去)の節は、本 WP 統合後に切る。
 ### WP379: RAY-NAMESPACE —— `ray_instance` を `pelican_ray_instance` へ移し、builtin 名を owner-aware に予約する
 
 **§4 規則 11 中段(core の複数経路 + project 形式)。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小〜中。**
