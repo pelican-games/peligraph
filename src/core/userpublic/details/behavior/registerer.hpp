@@ -187,7 +187,8 @@ std::string materializeBehaviorParamsSchemaFingerprint() {
 class UserBehaviorRegistererTemplatePublic {
     std::vector<BehaviorRegistration> behaviors;
 
-    PELICAN_API RegistrationToken __registerBehavior(BehaviorRegistration registration);
+    PELICAN_API RegistrationToken
+    pelican_register_behavior_v2(BehaviorRegistration registration);
 
     friend void unregisterBehavior(RegistrationToken token);
     friend void unregisterBehaviors(RegistrationOwner owner) noexcept;
@@ -217,7 +218,7 @@ class UserBehaviorRegistererTemplatePublic {
             throw std::runtime_error("behavior schema version must be positive");
         }
 
-        return __registerBehavior(BehaviorRegistration{
+        return pelican_register_behavior_v2(BehaviorRegistration{
             .stable_name = std::move(stable_name),
             .schema_version = schema_version,
             .behavior_type = std::type_index{typeid(Type)},

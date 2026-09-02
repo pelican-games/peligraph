@@ -19,6 +19,7 @@
 #include "../loader/pathresolver.hpp"
 #include "../loader/scene.hpp"
 #include "../gamelogic/gamelogicreload.hpp"
+#include "../gamelogic/gamelogicimports.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../launchconfig.hpp"
 #include "../material/materialcontainer.hpp"
@@ -1167,6 +1168,94 @@ void RpcServer::run() {
     }
 }
 
+namespace internal {
+
+nlohmann::json gameLogicParticipantRpcStatus(
+    const watch::ReloadService *reload_service) {
+    if (reload_service != nullptr) {
+        const auto reload = reload_service->statusJson();
+        if (reload.contains("runtime") && reload.at("runtime").is_object()) {
+            const auto found = reload.at("runtime").find(
+                watch::gameLogicReloadParticipantName);
+            if (found != reload.at("runtime").end()) return *found;
+        }
+    }
+    const auto status = configuredGameLogicStatus();
+    return nlohmann::json{
+        {"error_code", status.error_code.empty()
+                           ? nlohmann::json(nullptr)
+                           : nlohmann::json(status.error_code)},
+        {"error_fields", status.error_fields},
+    };
+}
+
+void configureGameLogicReloadRpcHandler(
+    RpcServer &server, watch::ReloadService *reload_service,
+    GameLogicReloadRpcHooks hooks) {
+    server.setHandler(
+        "reload_game_logic",
+        [reload_service, hooks = std::move(hooks)](
+            const nlohmann::json &params) {
+            requireObjectParams(params, "reload_game_logic");
+            const auto before = configuredGameLogicStatus();
+            if (!before.configured) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::applicationError,
+                    "reload_game_logic: no game logic DLL is configured",
+                    nlohmann::ordered_json{
+                        {"error_code", std::string{
+                                           gameLogicNotConfiguredErrorCode}},
+                        {"error_fields", nlohmann::ordered_json::object()},
+                    });
+            }
+            if (reload_service == nullptr) {
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::applicationError,
+                    "reload_game_logic: reload service is unavailable",
+                    nlohmann::ordered_json{
+                        {"error_code", std::string{
+                                           gameLogicUnavailableErrorCode}},
+                        {"error_fields", nlohmann::ordered_json::object()},
+                    });
+            }
+            if (hooks.before_apply) hooks.before_apply();
+            const auto result = reload_service->applyRuntimeNow(
+                watch::gameLogicReloadParticipantName);
+            if (hooks.after_apply) hooks.after_apply();
+            const auto status = configuredGameLogicStatus();
+            if (!result.committed) {
+                const auto code = !result.error_code.empty()
+                                      ? result.error_code
+                                      : (!status.error_code.empty()
+                                             ? status.error_code
+                                             : std::string{
+                                                   gameLogicReloadFailedErrorCode});
+                const auto &fields = !result.error_code.empty()
+                                         ? result.error_fields
+                                         : status.error_fields;
+                throw JsonRpcHandlerError(
+                    JsonRpcErrorCodes::applicationError,
+                    "reload_game_logic: " +
+                        (result.error.empty() ? status.last_error
+                                              : result.error),
+                    nlohmann::ordered_json{
+                        {"error_code", code},
+                        {"error_fields", fields.is_object()
+                                             ? fields
+                                             : nlohmann::ordered_json::object()},
+                    });
+            }
+            return nlohmann::json{
+                {"generation", status.generation},
+                {"systems", status.system_count},
+                {"source", status.source.generic_string()},
+                {"participant", watch::gameLogicReloadParticipantName},
+            };
+        });
+}
+
+} // namespace internal
+
 void internal::loadSceneResolutionBoundary(
     std::string_view name,
     const std::function<void(std::string_view)> &load_scene) {
@@ -1183,32 +1272,16 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                 const std::string &instance_id,
                                 std::vector<PendingTransformUpdate> &pending_transforms,
                                 EditorCommandRpcAdapter &editor_rpc) {
-    server.setHandler("reload_game_logic", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
-        requireObjectParams(params, "reload_game_logic");
-        const auto before = configuredGameLogicStatus();
-        if (!before.configured) {
-            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
-                                      "reload_game_logic: no game logic DLL is configured");
-        }
-        if (modules.reload_service == nullptr) {
-            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
-                                      "reload_game_logic: reload service is unavailable");
-        }
-        (void)editor_rpc.forceAbortPreview("reload");
-        const auto result = modules.reload_service->applyRuntimeNow(
-            watch::gameLogicReloadParticipantName);
-        pending_transforms.clear();
-        const auto status = configuredGameLogicStatus();
-        if (!result.committed) {
-            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
-                                      "reload_game_logic: " +
-                                          (result.error.empty() ? status.last_error : result.error));
-        }
-        return nlohmann::json{{"generation", status.generation},
-                              {"systems", status.system_count},
-                              {"source", status.source.generic_string()},
-                              {"participant", watch::gameLogicReloadParticipantName}};
-    });
+    internal::configureGameLogicReloadRpcHandler(
+        server, modules.reload_service,
+        internal::GameLogicReloadRpcHooks{
+            .before_apply = [&editor_rpc] {
+                (void)editor_rpc.forceAbortPreview("reload");
+            },
+            .after_apply = [&pending_transforms] {
+                pending_transforms.clear();
+            },
+        });
 
     server.setHandler("get_status", [instance_id, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
@@ -1335,6 +1408,10 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                            : nlohmann::json{{"state", "disabled"},
                                             {"epoch", modules.reload_gate.snapshot().epoch},
                                             {"error", nullptr}}},
+            {"participants",
+             {{"game_logic",
+               internal::gameLogicParticipantRpcStatus(
+                   modules.reload_service)}}},
             {"sprite", modules.sprite_scene != nullptr
                            ? modules.sprite_scene->statusJson()
                            : nlohmann::json{{"enabled", false}}},

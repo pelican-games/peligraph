@@ -8,7 +8,7 @@
 #include <functional>
 #include <cstdint>
 #include <memory>
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
 #include <string>
@@ -50,6 +50,8 @@ struct RuntimeReloadResult {
     bool staged = false;
     std::uint64_t staged_generation = 0;
     std::string error;
+    std::string error_code;
+    nlohmann::ordered_json error_fields = nlohmann::ordered_json::object();
 
     bool failed() const noexcept { return !error.empty(); }
 };
@@ -165,6 +167,8 @@ DECLARE_MODULE(ReloadService) {
         std::uint64_t applied = 0;
         std::uint64_t failed = 0;
         std::string last_error;
+        std::string error_code;
+        nlohmann::ordered_json error_fields = nlohmann::ordered_json::object();
     };
 
     void ensureBuiltInParticipants();

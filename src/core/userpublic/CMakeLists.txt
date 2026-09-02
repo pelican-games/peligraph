@@ -1,5 +1,6 @@
 target_sources(pelican_core PRIVATE
     pelican_core.cpp
+    gamelogic.cpp
     cameracontrollersystem.cpp
     modaltransformsystem.cpp
     deterministicrng.cpp

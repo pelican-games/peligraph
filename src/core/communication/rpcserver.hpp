@@ -16,6 +16,10 @@
 
 namespace Pelican {
 
+namespace watch {
+class ReloadService;
+}
+
 struct PreserveJsonRpcDataOrder {};
 
 #if PELICAN_WITH_OPENXR
@@ -71,6 +75,18 @@ class RpcServer {
 };
 
 namespace internal {
+
+struct GameLogicReloadRpcHooks {
+    std::function<void()> before_apply;
+    std::function<void()> after_apply;
+};
+
+// Shared by the full engine endpoint and the non-GPU wire acceptance test.
+void configureGameLogicReloadRpcHandler(
+    RpcServer &server, watch::ReloadService *reload_service,
+    GameLogicReloadRpcHooks hooks = {});
+nlohmann::json gameLogicParticipantRpcStatus(
+    const watch::ReloadService *reload_service);
 
 // Shared by the production load_scene handler and the non-GPU wire contract
 // test. The loader callback may throw a type-preserving resolution failure;

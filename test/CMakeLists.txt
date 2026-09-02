@@ -7,6 +7,10 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
+if(POLICY CMP0110)
+  cmake_policy(SET CMP0110 NEW)
+endif()
+
 if(MSVC AND PELICAN_LEAN_TEST_ARTIFACTS)
   # A separate linker PDB and incremental-link database for every test
   # duplicates pelican_core's Debug symbols hundreds of times. Keep Debug
@@ -29,7 +33,7 @@ endif()
 
 function(pelican_define_test source_name)
 cmake_parse_arguments(PELICAN_TEST
-  "GOLDEN;GPU;MIXED_GPU;QT;QT_OFFSCREEN;RUNTIME_SHADER" "GROUP" "" ${ARGN})
+  "GOLDEN;GPU;MIXED_GPU;QT;QT_OFFSCREEN;RUNTIME_SHADER;NO_DISCOVERY" "GROUP" "" ${ARGN})
 set(source_target pelican_test_${source_name})
 set(target_name ${source_target})
 set(is_new_executable TRUE)
@@ -91,6 +95,9 @@ else()
 endif()
 
 if(NOT is_new_executable)
+  return()
+endif()
+if(PELICAN_TEST_NO_DISCOVERY)
   return()
 endif()
 set(discovery_properties)
@@ -391,19 +398,275 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
 endif()
 
 if(WIN32 AND COMMAND pelican_configure_game_logic_target)
+  pelican_define_test(game_logic_abi_test NO_DISCOVERY pelican_core)
+  # The frozen-v1 OS control imports this executable by name. CTest's direct
+  # Win32 child launch can block while LoadLibrary resolves that self-named
+  # EXE import; one execute_process hop preserves the real loader call and its
+  # error 127. Keep tests that can reach that path under a source mutation
+  # behind one execute_process hop and serial. The remaining reload cases run
+  # concurrently and exercise the per-process shadow paths.
+  catch_discover_tests(pelican_test_game_logic_abi_test
+    TEST_SPEC "~[wp381-os-loader-control]"
+    EXTRA_ARGS -w NoAssertions)
+  add_test(
+    NAME "WP381 legacy entrance inventory is diagnosed before load"
+    COMMAND ${CMAKE_COMMAND}
+      "-DTEST_EXECUTABLE=$<TARGET_FILE:pelican_test_game_logic_abi_test>"
+      "-DTEST_NAME=WP381 legacy entrance inventory is diagnosed before load"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wp381_os_loader_control.cmake)
+  add_test(
+    NAME wp381_os_loader_control
+    COMMAND ${CMAKE_COMMAND}
+      "-DTEST_EXECUTABLE=$<TARGET_FILE:pelican_test_game_logic_abi_test>"
+      "-DTEST_NAME=WP381 diagnostic and OS enforcement are separate constructor controls"
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wp381_os_loader_control.cmake)
+  set_tests_properties(
+    "WP381 legacy entrance inventory is diagnosed before load"
+    wp381_os_loader_control
+    PROPERTIES RUN_SERIAL TRUE TIMEOUT 30)
+  set_target_properties(pelican_test_game_logic_abi_test PROPERTIES
+    ENABLE_EXPORTS TRUE
+  )
+  if(MSVC)
+    target_link_options(pelican_test_game_logic_abi_test PRIVATE
+      "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>"
+    )
+  endif()
+
+  set(wp381_v1_import_dir "${CMAKE_CURRENT_BINARY_DIR}/wp381_v1_import")
+  set(wp381_v1_import_library
+      "${wp381_v1_import_dir}/pelican_test_game_logic_abi_test_v1.lib")
+  add_custom_command(
+    OUTPUT "${wp381_v1_import_library}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${wp381_v1_import_dir}"
+    COMMAND "${CMAKE_AR}" /nologo
+      "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/fixtures/game_logic_abi/pelican_game_logic_v1.def"
+      /MACHINE:X64
+      /NAME:pelican_test_game_logic_abi_test.exe
+      "/OUT:${wp381_v1_import_library}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/game_logic_abi/pelican_game_logic_v1.def"
+    VERBATIM
+  )
+  add_custom_target(pelican_wp381_v1_import_stub
+    DEPENDS "${wp381_v1_import_library}")
+
+  set(wp381_epoch_v999_import_library
+      "${wp381_v1_import_dir}/pelican_player_epoch_v999.lib")
+  add_custom_command(
+    OUTPUT "${wp381_epoch_v999_import_library}"
+    COMMAND "${CMAKE_AR}" /nologo
+      "/DEF:${CMAKE_CURRENT_SOURCE_DIR}/fixtures/game_logic_abi/pelican_game_logic_epoch_v999.def"
+      /MACHINE:X64
+      /NAME:pelican_player.exe
+      "/OUT:${wp381_epoch_v999_import_library}"
+    DEPENDS
+      "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/game_logic_abi/pelican_game_logic_epoch_v999.def"
+    VERBATIM)
+  add_custom_target(pelican_wp381_epoch_v999_import_stub
+    DEPENDS "${wp381_epoch_v999_import_library}")
+
+  function(pelican_add_wp381_legacy_symbol_fixture
+           target_name symbol_define fixture_role)
+    add_library(${target_name} SHARED
+      fixtures/game_logic_abi/legacy_symbol.cpp)
+    set_target_properties(${target_name} PROPERTIES OUTPUT_NAME "${target_name}")
+    target_compile_definitions(${target_name} PRIVATE ${symbol_define}=1)
+    pelican_configure_game_logic_target(${target_name}
+      HOST_TARGET pelican_test_game_logic_abi_test
+      ROLE ${fixture_role} NO_INVENTORY)
+    add_dependencies(${target_name} pelican_wp381_v1_import_stub)
+    target_link_libraries(${target_name} PRIVATE "${wp381_v1_import_library}")
+  endfunction()
+
+  pelican_add_wp381_legacy_symbol_fixture(
+    pelican_wp381_legacy_behavior WP381_LEGACY_BEHAVIOR legacy-behavior)
+  pelican_add_wp381_legacy_symbol_fixture(
+    pelican_wp381_legacy_event WP381_LEGACY_EVENT legacy-event)
+  pelican_add_wp381_legacy_symbol_fixture(
+    pelican_wp381_legacy_emit WP381_LEGACY_EMIT legacy-emit)
+  pelican_add_wp381_legacy_symbol_fixture(
+    pelican_wp381_legacy_system WP381_LEGACY_SYSTEM legacy-system)
+
+  # Compile four real reader mutants. Each copy disables exactly one legacy
+  # recognizer literal; its matching single-import fixture must then be
+  # (incorrectly) accepted, proving the production assertion kills the mutant.
+  file(READ "${CMAKE_SOURCE_DIR}/src/core/gamelogic/gamelogicimports.cpp"
+    wp381_import_reader_source)
+  foreach(wp381_mutation IN ITEMS
+      "behavior|__registerBehavior|pelican_wp381_legacy_behavior"
+      "event|__registerEvent|pelican_wp381_legacy_event"
+      "emit|__emit|pelican_wp381_legacy_emit"
+      "system|__registerSystem|pelican_wp381_legacy_system")
+    string(REPLACE "|" ";" wp381_mutation_fields "${wp381_mutation}")
+    list(GET wp381_mutation_fields 0 wp381_mutation_name)
+    list(GET wp381_mutation_fields 1 wp381_mutation_symbol)
+    list(GET wp381_mutation_fields 2 wp381_mutation_fixture)
+    string(FIND "${wp381_import_reader_source}"
+      "\"${wp381_mutation_symbol}\"" wp381_mutation_index)
+    if(wp381_mutation_index EQUAL -1)
+      message(FATAL_ERROR
+        "WP381 reader mutation point vanished: ${wp381_mutation_symbol}")
+    endif()
+    string(REPLACE "\"${wp381_mutation_symbol}\""
+      "\"${wp381_mutation_symbol}_removed_by_mutation\""
+      wp381_mutated_reader "${wp381_import_reader_source}")
+    set(wp381_mutated_source
+      "${CMAKE_CURRENT_BINARY_DIR}/wp381_mutations/gamelogicimports_${wp381_mutation_name}.cpp")
+    file(WRITE "${wp381_mutated_source}" "${wp381_mutated_reader}")
+    set(wp381_mutation_target
+      pelican_wp381_reader_mutation_${wp381_mutation_name})
+    add_executable(${wp381_mutation_target}
+      wp381_legacy_reader_mutation.cpp "${wp381_mutated_source}")
+    set_target_properties(${wp381_mutation_target} PROPERTIES CXX_STANDARD 20)
+    target_include_directories(${wp381_mutation_target} PRIVATE
+      "${CMAKE_SOURCE_DIR}/src/core/gamelogic")
+    target_link_libraries(${wp381_mutation_target} PRIVATE nlohmann_json)
+    target_compile_definitions(${wp381_mutation_target} PRIVATE
+      WP381_MUTATION_FIXTURE="$<TARGET_FILE:${wp381_mutation_fixture}>"
+      WP381_MUTATION_HOST="pelican_test_game_logic_abi_test.exe")
+    add_dependencies(${wp381_mutation_target} ${wp381_mutation_fixture})
+    add_test(NAME wp381_legacy_reader_mutation_${wp381_mutation_name}
+      COMMAND $<TARGET_FILE:${wp381_mutation_target}>)
+  endforeach()
+
+  add_library(pelican_wp381_stale_behavior SHARED
+    fixtures/game_logic_abi/constructor_fixture.cpp)
+  set_target_properties(pelican_wp381_stale_behavior PROPERTIES
+    CXX_STANDARD 20
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+    OUTPUT_NAME pelican_wp381_stale_behavior
+  )
+  add_dependencies(pelican_wp381_stale_behavior
+    pelican_wp381_v1_import_stub pelican_test_game_logic_abi_test)
+  target_link_libraries(pelican_wp381_stale_behavior PRIVATE
+    "${wp381_v1_import_library}" glm nlohmann_json)
+  target_include_directories(pelican_wp381_stale_behavior PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v1"
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v1_support"
+  )
+  target_compile_definitions(pelican_wp381_stale_behavior PRIVATE
+    PELICAN_GAME_DLL=1
+    WP381_FROZEN_V1_BEHAVIOR=1
+  )
+  set(wp381_stale_source_dependencies
+      "${CMAKE_CURRENT_BINARY_DIR}/wp381_stale_source_dependencies.json")
+  target_compile_options(pelican_wp381_stale_behavior PRIVATE
+    /sourceDependencies "${wp381_stale_source_dependencies}")
+  pelican_classify_game_logic_target(pelican_wp381_stale_behavior
+    loader stale-behavior-v1)
+  set_property(TARGET pelican_wp381_stale_behavior PROPERTY
+    PELICAN_GAME_DLL_HOST_TARGET pelican_test_game_logic_abi_test)
+
+  add_library(pelican_wp381_v2_constructor_control SHARED
+    fixtures/game_logic_abi/constructor_fixture.cpp)
+  set_target_properties(pelican_wp381_v2_constructor_control PROPERTIES
+    OUTPUT_NAME pelican_wp381_v2_constructor_control)
+  target_compile_definitions(pelican_wp381_v2_constructor_control PRIVATE
+    WP381_CURRENT_V2_CONTROL=1)
+  pelican_configure_game_logic_target(pelican_wp381_v2_constructor_control
+    HOST_TARGET pelican_test_game_logic_abi_test
+    ROLE v2-constructor-control NO_INVENTORY)
+
+  function(pelican_add_wp381_registration_fixture target_name order role)
+    add_library(${target_name} SHARED
+      fixtures/game_logic_abi/registration_order.cpp)
+    set_target_properties(${target_name} PROPERTIES OUTPUT_NAME "${target_name}")
+    target_compile_definitions(${target_name} PRIVATE
+      WP381_REGISTRATION_ORDER=${order})
+    pelican_configure_game_logic_target(${target_name}
+      HOST_TARGET pelican_test_game_logic_abi_test ROLE ${role} NO_INVENTORY)
+  endfunction()
+  pelican_add_wp381_registration_fixture(
+    pelican_wp381_duplicate_key 1 duplicate-key)
+  pelican_add_wp381_registration_fixture(
+    pelican_wp381_reverse_a 2 reverse-order-a)
+  pelican_add_wp381_registration_fixture(
+    pelican_wp381_reverse_b 3 reverse-order-b)
+
+  foreach(wp381_role_target IN ITEMS
+      pelican_wp381_legacy_behavior
+      pelican_wp381_legacy_event
+      pelican_wp381_legacy_emit
+      pelican_wp381_legacy_system
+      pelican_wp381_stale_behavior
+      pelican_wp381_v2_constructor_control
+      pelican_wp381_duplicate_key
+      pelican_wp381_reverse_a
+      pelican_wp381_reverse_b)
+    set_property(TARGET ${wp381_role_target} PROPERTY
+      PELICAN_WP381_ABI_FIXTURE TRUE)
+  endforeach()
+
+  foreach(wp381_project IN ITEMS example animgraph_demo sprite_demo vrm_xr_demo)
+    string(REPLACE "_" "-" wp381_project_role "${wp381_project}")
+    set(wp381_project_target pelican_wp381_project_${wp381_project})
+    if(wp381_project STREQUAL "example")
+      set(wp381_project_source playercontrol.cpp)
+    elseif(wp381_project STREQUAL "animgraph_demo")
+      set(wp381_project_source animgraphdemo.cpp)
+    elseif(wp381_project STREQUAL "sprite_demo")
+      set(wp381_project_source flipbook_demo.cpp)
+    else()
+      set(wp381_project_source vrmxrdemo.cpp)
+    endif()
+    add_library(${wp381_project_target} SHARED
+      "${CMAKE_SOURCE_DIR}/projects/${wp381_project}/code/${wp381_project_source}")
+    set_target_properties(${wp381_project_target} PROPERTIES
+      OUTPUT_NAME "${wp381_project_target}")
+    target_include_directories(${wp381_project_target} PRIVATE
+      "${CMAKE_SOURCE_DIR}/projects/${wp381_project}"
+      "${CMAKE_SOURCE_DIR}/projects/${wp381_project}/code")
+    pelican_configure_game_logic_target(${wp381_project_target}
+      HOST_TARGET pelican_test_game_logic_abi_test
+      ROLE shipped-project-${wp381_project_role} NO_INVENTORY)
+  endforeach()
+
+  target_compile_definitions(pelican_test_game_logic_abi_test PRIVATE
+    PELICAN_WP381_LEGACY_BEHAVIOR="$<TARGET_FILE:pelican_wp381_legacy_behavior>"
+    PELICAN_WP381_LEGACY_EVENT="$<TARGET_FILE:pelican_wp381_legacy_event>"
+    PELICAN_WP381_LEGACY_EMIT="$<TARGET_FILE:pelican_wp381_legacy_emit>"
+    PELICAN_WP381_LEGACY_SYSTEM="$<TARGET_FILE:pelican_wp381_legacy_system>"
+    PELICAN_WP381_STALE_BEHAVIOR="$<TARGET_FILE:pelican_wp381_stale_behavior>"
+    PELICAN_WP381_V2_CONTROL="$<TARGET_FILE:pelican_wp381_v2_constructor_control>"
+    PELICAN_WP381_DUPLICATE_KEY="$<TARGET_FILE:pelican_wp381_duplicate_key>"
+    PELICAN_WP381_REVERSE_A="$<TARGET_FILE:pelican_wp381_reverse_a>"
+    PELICAN_WP381_REVERSE_B="$<TARGET_FILE:pelican_wp381_reverse_b>"
+    PELICAN_WP381_PROJECT_EXAMPLE="$<TARGET_FILE:pelican_wp381_project_example>"
+    PELICAN_WP381_PROJECT_ANIMGRAPH="$<TARGET_FILE:pelican_wp381_project_animgraph_demo>"
+    PELICAN_WP381_PROJECT_SPRITE="$<TARGET_FILE:pelican_wp381_project_sprite_demo>"
+    PELICAN_WP381_PROJECT_VRM_XR="$<TARGET_FILE:pelican_wp381_project_vrm_xr_demo>"
+    PELICAN_WP381_STALE_SOURCE_DEPENDENCIES="${wp381_stale_source_dependencies}"
+    PELICAN_WP381_CURRENT_USERPUBLIC="${CMAKE_SOURCE_DIR}/src/core/userpublic"
+  )
+
+  get_filename_component(wp381_msvc_tool_dir "${CMAKE_LINKER}" DIRECTORY)
+  add_test(
+    NAME game_logic_abi_post_link_audit
+    COMMAND ${CMAKE_COMMAND}
+      -DDUMPBIN=${wp381_msvc_tool_dir}/dumpbin.exe
+      -DSTALE_DLL=$<TARGET_FILE:pelican_wp381_stale_behavior>
+      -DHOST_EXE=$<TARGET_FILE:pelican_test_game_logic_abi_test>
+      -DSOURCE_DEPENDENCIES=${wp381_stale_source_dependencies}
+      -DCURRENT_USERPUBLIC=${CMAKE_SOURCE_DIR}/src/core/userpublic
+      -DEXPECTED_HOST=pelican_test_game_logic_abi_test.exe
+      -P ${CMAKE_CURRENT_SOURCE_DIR}/wp381_post_link_audit.cmake
+  )
+  set_tests_properties(game_logic_abi_post_link_audit PROPERTIES TIMEOUT 30)
+
   add_library(pelican_public_api_link_fixture SHARED
     fixtures/public_api_link/flipbook_client.cpp
   )
   set_target_properties(pelican_public_api_link_fixture PROPERTIES
     OUTPUT_NAME "pelican_public_api_link_fixture"
   )
-  pelican_configure_game_logic_target(pelican_public_api_link_fixture)
+  pelican_configure_game_logic_target(pelican_public_api_link_fixture
+    LINK_ONLY ROLE public-api-link)
 
   foreach(wp90_version IN ITEMS 1 2)
     set(wp90_target pelican_wp90_fixture_v${wp90_version})
     add_library(${wp90_target} SHARED
       ${CMAKE_SOURCE_DIR}/projects/example/code/playercontrol.cpp
-      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
     )
     set_target_properties(${wp90_target} PROPERTIES OUTPUT_NAME "pelican_wp90_fixture_v${wp90_version}")
     target_compile_definitions(${wp90_target} PRIVATE
@@ -415,7 +678,6 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
 
   add_library(pelican_wp90_fixture_bad_abi SHARED
     ${CMAKE_SOURCE_DIR}/projects/example/code/playercontrol.cpp
-    ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
   )
   set_target_properties(pelican_wp90_fixture_bad_abi PROPERTIES OUTPUT_NAME "pelican_wp90_fixture_bad_abi")
   target_compile_definitions(pelican_wp90_fixture_bad_abi PRIVATE
@@ -423,11 +685,15 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     WP90_HOT_RELOAD_FIXTURE=1
     PELICAN_GAME_LOGIC_ABI_VERSION=999
   )
-  pelican_configure_game_logic_target(pelican_wp90_fixture_bad_abi)
+  pelican_configure_game_logic_target(pelican_wp90_fixture_bad_abi
+    ROLE epoch-mismatch)
+  add_dependencies(pelican_wp90_fixture_bad_abi
+    pelican_wp381_epoch_v999_import_stub)
+  target_link_libraries(pelican_wp90_fixture_bad_abi PRIVATE
+    "${wp381_epoch_v999_import_library}")
 
   add_library(pelican_wp155_behavior_fixture SHARED
     fixtures/behavior_game_dll/behavior.cpp
-    ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
   )
   set_target_properties(pelican_wp155_behavior_fixture PROPERTIES
     OUTPUT_NAME "pelican_wp155_behavior_fixture"
@@ -437,7 +703,6 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   if(PELICAN_WITH_PHYSICS)
     add_library(pelican_wp179_trigger_behavior_fixture SHARED
       fixtures/physics_trigger_behavior/behavior.cpp
-      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
     )
     set_target_properties(pelican_wp179_trigger_behavior_fixture PROPERTIES
       OUTPUT_NAME "pelican_wp179_trigger_behavior_fixture"
@@ -460,7 +725,6 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   function(pelican_add_wp162_behavior_fixture target_name variant)
     add_library(${target_name} SHARED
       fixtures/behavior_reload_dll/behavior.cpp
-      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
     )
     set_target_properties(${target_name} PROPERTIES OUTPUT_NAME "${target_name}")
     target_compile_definitions(${target_name} PRIVATE WP162_VARIANT=${variant})
@@ -565,30 +829,20 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
         pelican_render_policy_fixture_v${render_policy_fixture_version})
     add_library(${render_policy_fixture_target} SHARED
       fixtures/render_policy_dll/provider.cpp
-      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
     )
     set_target_properties(${render_policy_fixture_target} PROPERTIES
-      CXX_STANDARD 20
-      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
       OUTPUT_NAME "pelican_render_policy_fixture_v${render_policy_fixture_version}"
     )
-    add_dependencies(${render_policy_fixture_target}
-      pelican_test_render_policy_dll_test)
-    target_link_libraries(${render_policy_fixture_target} PRIVATE
-      "$<TARGET_LINKER_FILE:pelican_test_render_policy_dll_test>"
-    )
-    target_include_directories(${render_policy_fixture_target} PRIVATE
-      ${CMAKE_SOURCE_DIR}/src/core/userpublic
-    )
+    pelican_configure_game_logic_target(${render_policy_fixture_target}
+      HOST_TARGET pelican_test_render_policy_dll_test
+      ROLE render-provider)
     target_compile_definitions(${render_policy_fixture_target} PRIVATE
-      PELICAN_GAME_DLL=1
       PELICAN_RENDER_POLICY_FIXTURE_VERSION=${render_policy_fixture_version}
     )
   endforeach()
 
   add_library(pelican_render_policy_fixture_bad_abi SHARED
     fixtures/render_policy_dll/provider.cpp
-    ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
   )
   set_target_properties(pelican_render_policy_fixture_bad_abi PROPERTIES
     CXX_STANDARD 20
@@ -606,8 +860,11 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   target_compile_definitions(pelican_render_policy_fixture_bad_abi PRIVATE
     PELICAN_GAME_DLL=1
     PELICAN_RENDER_POLICY_FIXTURE_VERSION=2
-    PELICAN_GAME_LOGIC_ABI_VERSION=999
   )
+  pelican_mark_game_logic_target(pelican_render_policy_fixture_bad_abi
+    loader provider-only-stale)
+  set_property(TARGET pelican_render_policy_fixture_bad_abi PROPERTY
+    PELICAN_GAME_DLL_HOST_TARGET pelican_test_render_policy_dll_test)
 
   add_test(
     NAME render_policy_game_dll_e2e
@@ -660,30 +917,20 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
           pelican_physics_provider_fixture_${physics_fixture_name})
       add_library(${physics_fixture_target} SHARED
         fixtures/physics_provider_dll/provider.cpp
-        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
       )
       set_target_properties(${physics_fixture_target} PROPERTIES
-        CXX_STANDARD 20
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
         OUTPUT_NAME "pelican_physics_provider_fixture_${physics_fixture_name}"
       )
-      add_dependencies(${physics_fixture_target}
-        pelican_test_physics_provider_dll_test)
-      target_link_libraries(${physics_fixture_target} PRIVATE
-        "$<TARGET_LINKER_FILE:pelican_test_physics_provider_dll_test>"
-      )
-      target_include_directories(${physics_fixture_target} PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core/userpublic
-      )
+      pelican_configure_game_logic_target(${physics_fixture_target}
+        HOST_TARGET pelican_test_physics_provider_dll_test
+        ROLE physics-provider)
       target_compile_definitions(${physics_fixture_target} PRIVATE
-        PELICAN_GAME_DLL=1
         PELICAN_PHYSICS_FIXTURE_REVISION=${physics_fixture_revision}
       )
     endforeach()
 
     add_library(pelican_physics_provider_fixture_bad_abi SHARED
       fixtures/physics_provider_dll/provider.cpp
-      ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
     )
     set_target_properties(pelican_physics_provider_fixture_bad_abi PROPERTIES
       CXX_STANDARD 20
@@ -701,8 +948,11 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     target_compile_definitions(pelican_physics_provider_fixture_bad_abi PRIVATE
       PELICAN_GAME_DLL=1
       PELICAN_PHYSICS_FIXTURE_REVISION=2
-      PELICAN_GAME_LOGIC_ABI_VERSION=999
     )
+    pelican_mark_game_logic_target(pelican_physics_provider_fixture_bad_abi
+      loader provider-only-stale)
+    set_property(TARGET pelican_physics_provider_fixture_bad_abi PROPERTY
+      PELICAN_GAME_DLL_HOST_TARGET pelican_test_physics_provider_dll_test)
 
     add_test(
       NAME physics_provider_game_dll_e2e
@@ -1340,25 +1590,13 @@ if(WIN32)
 
     add_library(pelican_wp375_behavior_fixture SHARED
         fixtures/behavior_game_dll/behavior.cpp
-        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
     )
     set_target_properties(pelican_wp375_behavior_fixture PROPERTIES
-        CXX_STANDARD 20
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
         OUTPUT_NAME "pelican_wp375_behavior_fixture"
     )
-    add_dependencies(pelican_wp375_behavior_fixture
-        pelican_test_raytracing_rt3_1_production_test)
-    target_link_libraries(pelican_wp375_behavior_fixture PRIVATE
-        "$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>"
-        glm
-        nlohmann_json)
-    target_include_directories(pelican_wp375_behavior_fixture PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core/userpublic
-        ${CMAKE_SOURCE_DIR}/src/core
-        ${Vulkan_INCLUDE_DIRS})
-    target_compile_definitions(pelican_wp375_behavior_fixture PRIVATE
-        PELICAN_GAME_DLL=1)
+    pelican_configure_game_logic_target(pelican_wp375_behavior_fixture
+        HOST_TARGET pelican_test_raytracing_rt3_1_production_test
+        ROLE production-behavior NO_INVENTORY)
     target_compile_definitions(
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP375_BEHAVIOR_FIXTURE="$<TARGET_FILE:pelican_wp375_behavior_fixture>")
@@ -1391,23 +1629,13 @@ if(WIN32)
 
     add_library(pelican_wp379_ray_instance_fixture SHARED
         fixtures/ray_namespace_component/component.cpp
-        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
     )
     set_target_properties(pelican_wp379_ray_instance_fixture PROPERTIES
-        CXX_STANDARD 20
-        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
         OUTPUT_NAME "pelican_wp379_ray_instance_fixture"
     )
-    add_dependencies(pelican_wp379_ray_instance_fixture
-        pelican_test_raytracing_rt3_1_production_test)
-    target_link_libraries(pelican_wp379_ray_instance_fixture PRIVATE
-        "$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>"
-        nlohmann_json)
-    target_include_directories(pelican_wp379_ray_instance_fixture PRIVATE
-        ${CMAKE_SOURCE_DIR}/src/core/userpublic
-        ${CMAKE_SOURCE_DIR}/src/core)
-    target_compile_definitions(pelican_wp379_ray_instance_fixture PRIVATE
-        PELICAN_GAME_DLL=1)
+    pelican_configure_game_logic_target(pelican_wp379_ray_instance_fixture
+        HOST_TARGET pelican_test_raytracing_rt3_1_production_test
+        ROLE production-component NO_INVENTORY)
     target_compile_definitions(
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP379_RAY_INSTANCE_FIXTURE="$<TARGET_FILE:pelican_wp379_ray_instance_fixture>")

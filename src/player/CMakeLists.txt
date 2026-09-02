@@ -27,14 +27,59 @@ else()
 endif()
 target_include_directories(pelican_player PRIVATE ${Vulkan_INCLUDE_DIRS})
 
+function(pelican_classify_game_logic_target target_name game_logic_class game_logic_role)
+    set_property(TARGET ${target_name} PROPERTY PELICAN_GAME_DLL_CLASS
+        "${game_logic_class}")
+    set_property(TARGET ${target_name} PROPERTY PELICAN_GAME_DLL_ROLE
+        "${game_logic_role}")
+endfunction()
+
+function(pelican_mark_game_logic_target target_name game_logic_class game_logic_role)
+    set_property(TARGET ${target_name} PROPERTY PELICAN_GAME_DLL TRUE)
+    pelican_classify_game_logic_target(
+        ${target_name} "${game_logic_class}" "${game_logic_role}")
+    set_property(GLOBAL APPEND PROPERTY PELICAN_GAME_DLL_TARGETS
+        ${target_name})
+endfunction()
+
 function(pelican_configure_game_logic_target target_name)
+    set(options LINK_ONLY NO_INVENTORY)
+    set(one_value_args HOST_TARGET ROLE)
+    cmake_parse_arguments(PGL "${options}" "${one_value_args}" "" ${ARGN})
+    if(PGL_HOST_TARGET)
+        set(game_logic_host_target "${PGL_HOST_TARGET}")
+    else()
+        set(game_logic_host_target pelican_player)
+    endif()
+    if(PGL_LINK_ONLY)
+        set(game_logic_class "link-only")
+    else()
+        set(game_logic_class "loader")
+    endif()
+    if(PGL_ROLE)
+        set(game_logic_role "${PGL_ROLE}")
+    else()
+        set(game_logic_role "current-sdk")
+    endif()
+    if(PGL_NO_INVENTORY)
+        pelican_classify_game_logic_target(
+            ${target_name} "${game_logic_class}" "${game_logic_role}")
+    else()
+        pelican_mark_game_logic_target(
+            ${target_name} "${game_logic_class}" "${game_logic_role}")
+    endif()
+    set_property(TARGET ${target_name} PROPERTY PELICAN_GAME_DLL_HOST_TARGET
+        "${game_logic_host_target}")
+
     set_target_properties(${target_name} PROPERTIES
         CXX_STANDARD 20
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
     )
-    add_dependencies(${target_name} pelican_player)
+    target_sources(${target_name} PRIVATE
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/gamelogic_entry.cpp")
+    add_dependencies(${target_name} ${game_logic_host_target})
     target_link_libraries(${target_name} PRIVATE
-        "$<TARGET_LINKER_FILE:pelican_player>"
+        "$<TARGET_LINKER_FILE:${game_logic_host_target}>"
         glm
         nlohmann_json
     )
@@ -76,8 +121,7 @@ function(pelican_game_sources)
     endforeach()
 
     if(NOT TARGET ${game_logic_target})
-        add_library(${game_logic_target} SHARED
-            "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/gamelogic_entry.cpp")
+        add_library(${game_logic_target} SHARED)
         set_target_properties(${game_logic_target} PROPERTIES
             OUTPUT_NAME "${game_logic_target}"
         )

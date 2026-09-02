@@ -463,3 +463,84 @@ endif()
 if(BUILD_TESTING)
 add_subdirectory(test)
 endif()
+
+# WP381: derive the configured game-DLL inventory from the target marker
+# itself after every in-tree project and test target has been declared.
+function(pelican_collect_targets_with_property
+         directory property_name output_variable)
+  get_property(directory_targets DIRECTORY "${directory}"
+    PROPERTY BUILDSYSTEM_TARGETS)
+  set(result)
+  foreach(candidate IN LISTS directory_targets)
+    get_target_property(property_value ${candidate} ${property_name})
+    if(property_value)
+      list(APPEND result ${candidate})
+    endif()
+  endforeach()
+  get_property(child_directories DIRECTORY "${directory}"
+    PROPERTY SUBDIRECTORIES)
+  foreach(child IN LISTS child_directories)
+    pelican_collect_targets_with_property(
+      "${child}" "${property_name}" child_targets)
+    list(APPEND result ${child_targets})
+  endforeach()
+  set(${output_variable} "${result}" PARENT_SCOPE)
+endfunction()
+
+pelican_collect_targets_with_property(
+  "${CMAKE_SOURCE_DIR}" PELICAN_GAME_DLL pelican_game_dll_targets)
+list(REMOVE_DUPLICATES pelican_game_dll_targets)
+list(SORT pelican_game_dll_targets)
+set(pelican_game_dll_inventory
+  "{\n  \"schema_version\": 1,\n  \"targets\": [")
+set(pelican_game_dll_separator "")
+foreach(game_dll_target IN LISTS pelican_game_dll_targets)
+  get_target_property(game_dll_class ${game_dll_target}
+    PELICAN_GAME_DLL_CLASS)
+  get_target_property(game_dll_role ${game_dll_target}
+    PELICAN_GAME_DLL_ROLE)
+  get_target_property(game_dll_host ${game_dll_target}
+    PELICAN_GAME_DLL_HOST_TARGET)
+  string(APPEND pelican_game_dll_inventory
+    "${pelican_game_dll_separator}\n    {\"target\": \"${game_dll_target}\", "
+    "\"file\": \"$<TARGET_FILE:${game_dll_target}>\", "
+    "\"host_module\": \"$<TARGET_FILE_NAME:${game_dll_host}>\", "
+    "\"class\": \"${game_dll_class}\", "
+    "\"role\": \"${game_dll_role}\"}")
+  set(pelican_game_dll_separator ",")
+endforeach()
+string(APPEND pelican_game_dll_inventory "\n  ],\n  \"wp381_fixture_roles\": [")
+pelican_collect_targets_with_property(
+  "${CMAKE_SOURCE_DIR}" PELICAN_WP381_ABI_FIXTURE
+  pelican_wp381_fixture_targets)
+list(REMOVE_DUPLICATES pelican_wp381_fixture_targets)
+list(SORT pelican_wp381_fixture_targets)
+set(pelican_game_dll_separator "")
+foreach(game_dll_target IN LISTS pelican_wp381_fixture_targets)
+  get_target_property(game_dll_class ${game_dll_target}
+    PELICAN_GAME_DLL_CLASS)
+  get_target_property(game_dll_role ${game_dll_target}
+    PELICAN_GAME_DLL_ROLE)
+  get_target_property(game_dll_host ${game_dll_target}
+    PELICAN_GAME_DLL_HOST_TARGET)
+  string(APPEND pelican_game_dll_inventory
+    "${pelican_game_dll_separator}\n    {\"target\": \"${game_dll_target}\", "
+    "\"file\": \"$<TARGET_FILE:${game_dll_target}>\", "
+    "\"host_module\": \"$<TARGET_FILE_NAME:${game_dll_host}>\", "
+    "\"class\": \"${game_dll_class}\", "
+    "\"role\": \"${game_dll_role}\"}")
+  set(pelican_game_dll_separator ",")
+endforeach()
+string(APPEND pelican_game_dll_inventory "\n  ]\n}\n")
+set(pelican_game_dll_inventory_path
+  "${CMAKE_BINARY_DIR}/game_logic_dll_inventory_$<CONFIG>.json")
+file(GENERATE OUTPUT "${pelican_game_dll_inventory_path}"
+  CONTENT "${pelican_game_dll_inventory}")
+
+if(TARGET pelican_test_game_logic_abi_test)
+  add_dependencies(pelican_test_game_logic_abi_test
+    ${pelican_game_dll_targets})
+  target_compile_definitions(pelican_test_game_logic_abi_test PRIVATE
+    PELICAN_WP381_GAME_DLL_INVENTORY="${pelican_game_dll_inventory_path}"
+    PELICAN_WP381_EXPECTED_GAME_DLL_COUNT=$<IF:$<BOOL:${PELICAN_WITH_PHYSICS}>,19,15>)
+endif()

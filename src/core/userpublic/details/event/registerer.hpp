@@ -65,8 +65,9 @@ class UserEventRegistererTemplatePublic {
     std::size_t payload_load_calls = 0;
     bool catalog_frozen = false;
 
-    PELICAN_API RegistrationToken __registerEvent(EventTypeRegistration registration);
-    PELICAN_API void __emit(QueuedEvent event);
+    PELICAN_API RegistrationToken
+    pelican_register_event_v2(EventTypeRegistration registration);
+    PELICAN_API void pelican_emit_v2(QueuedEvent event);
     const EventTypeRegistration &validateByName(std::string_view name, const void *payload_json) const;
 
     friend void unregisterEvent(RegistrationToken token);
@@ -114,7 +115,7 @@ class UserEventRegistererTemplatePublic {
                           "typed event ref must support the event catalog recording archive");
         }
 
-        return __registerEvent(EventTypeRegistration{
+        return pelican_register_event_v2(EventTypeRegistration{
             .name = std::move(name),
             .type = std::type_index{typeid(EventType)},
             .schema_state = []() constexpr {
@@ -177,7 +178,7 @@ class UserEventRegistererTemplatePublic {
         if (registration == nullptr) {
             throw std::runtime_error("event type is not registered");
         }
-        __emit(QueuedEvent{
+        pelican_emit_v2(QueuedEvent{
             .type = std::type_index{typeid(EventType)},
             .name = registration->name,
             .payload = std::make_shared<EventType>(event),

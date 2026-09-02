@@ -172,6 +172,31 @@ registrationTokens(RegistrationOwner owner, RegistrationKind kind) {
     return result;
 }
 
+std::vector<RegistrationRecord>
+registrationRecords(RegistrationOwner owner) {
+    auto &value = state();
+    std::scoped_lock lock{value.mutex};
+    std::vector<RegistrationRecord> result;
+    for (const auto &slot : value.tokens) {
+        if (slot.active && slot.owner == owner) {
+            result.push_back({.kind = slot.kind, .name = slot.name});
+        }
+    }
+    return result;
+}
+
+std::vector<RegistrationRecord> allRegistrationRecords() {
+    auto &value = state();
+    std::scoped_lock lock{value.mutex};
+    std::vector<RegistrationRecord> result;
+    for (const auto &slot : value.tokens) {
+        if (slot.active) {
+            result.push_back({.kind = slot.kind, .name = slot.name});
+        }
+    }
+    return result;
+}
+
 ScopedRegistrationOwner::ScopedRegistrationOwner(RegistrationOwner owner) noexcept
     : previous{active_owner} {
     active_owner = owner;

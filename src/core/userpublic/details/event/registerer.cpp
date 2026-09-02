@@ -281,7 +281,7 @@ EventOutboxScope::~EventOutboxScope() {
     active_event_outbox = previous_;
 }
 
-RegistrationToken UserEventRegistererTemplatePublic::__registerEvent(
+RegistrationToken UserEventRegistererTemplatePublic::pelican_register_event_v2(
     EventTypeRegistration registration) {
     registration.owner = currentRegistrationOwner();
     registration.name = eventDisplayName(std::move(registration.name));
@@ -337,7 +337,7 @@ RegistrationToken UserEventRegistererTemplatePublic::__registerEvent(
     return token;
 }
 
-void UserEventRegistererTemplatePublic::__emit(QueuedEvent event) {
+void UserEventRegistererTemplatePublic::pelican_emit_v2(QueuedEvent event) {
     if (active_event_outbox != nullptr) {
         active_event_outbox->stage(std::move(event));
         return;
@@ -348,7 +348,7 @@ void UserEventRegistererTemplatePublic::__emit(QueuedEvent event) {
 std::size_t UserEventRegistererTemplatePublic::emitByName(std::string_view name, const void *payload_json) {
     const auto &registration = validateByName(name, payload_json);
 
-    __emit(QueuedEvent{
+    pelican_emit_v2(QueuedEvent{
         .type = registration.type,
         .name = registration.name,
         .payload = (++payload_load_calls, registration.load_json_payload(payload_json)),

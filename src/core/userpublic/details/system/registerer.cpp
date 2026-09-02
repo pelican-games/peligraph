@@ -6,7 +6,8 @@ namespace Pelican {
 
 namespace internal {
 
-RegistrationToken UserGameSystemRegistererTemplatePublic::__registerSystem(
+RegistrationToken
+UserGameSystemRegistererTemplatePublic::pelican_register_system_v2(
     GameSystemRegistration registration) {
     registration.owner = currentRegistrationOwner();
     registration.token = acquireRegistrationToken(

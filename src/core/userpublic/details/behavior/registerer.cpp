@@ -4,7 +4,8 @@
 
 namespace Pelican::internal {
 
-RegistrationToken UserBehaviorRegistererTemplatePublic::__registerBehavior(
+RegistrationToken
+UserBehaviorRegistererTemplatePublic::pelican_register_behavior_v2(
     BehaviorRegistration registration) {
     registration.owner = currentRegistrationOwner();
     const auto duplicate_name = std::find_if(

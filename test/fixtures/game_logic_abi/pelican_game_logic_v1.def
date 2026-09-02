@@ -1,0 +1,12 @@
+EXPORTS
+??0Behavior@Pelican@@QEAA@XZ
+??1Behavior@Pelican@@UEAA@XZ
+?__emit@UserEventRegistererTemplatePublic@internal@Pelican@@AEAAXUQueuedEvent@23@@Z
+?__registerBehavior@UserBehaviorRegistererTemplatePublic@internal@Pelican@@AEAA?AVRegistrationToken@23@UBehaviorRegistration@23@@Z
+?__registerEvent@UserEventRegistererTemplatePublic@internal@Pelican@@AEAA?AVRegistrationToken@23@UEventTypeRegistration@23@@Z
+?__registerSystem@UserGameSystemRegistererTemplatePublic@internal@Pelican@@AEAA?AVRegistrationToken@23@UGameSystemRegistration@23@@Z
+?getBehaviorRegisterer@internal@Pelican@@YAAEAVUserBehaviorRegistererTemplatePublic@12@XZ
+?getEventRegisterer@internal@Pelican@@YAAEAVUserEventRegistererTemplatePublic@12@XZ
+?onDestroy@Behavior@Pelican@@UEAAXAEAVBehaviorContext@2@@Z
+?onInit@Behavior@Pelican@@UEAAXAEAVBehaviorContext@2@@Z
+?onUpdate@Behavior@Pelican@@UEAAXAEAVBehaviorContext@2@@Z

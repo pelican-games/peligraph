@@ -126,7 +126,7 @@ teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpubl
 
 ### 名前と重複
 
-[`__registerEvent()`](../../src/core/userpublic/details/event/registerer.cpp#L284) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L20) で最後の`::`以前を除去します（正規化は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L287)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
+[`pelican_register_event_v2()`](../../src/core/userpublic/details/event/registerer.cpp#L284) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L20) で最後の`::`以前を除去します（正規化は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L287)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
 
 - 同じ名前・同じ型の再登録はno-op
 - 同名・別型はerror

@@ -153,9 +153,15 @@ RuntimeReloadResult ReloadService::invokeRuntimeParticipant(
     try {
         result = participant.runtime->apply(trigger);
     } catch (const std::exception &error) {
-        result = {.attempted = true, .error = error.what()};
+        result = {.attempted = true,
+                  .error = error.what(),
+                  .error_code = "runtime_reload_exception@1",
+                  .error_fields = {{"reason", error.what()}}};
     } catch (...) {
-        result = {.attempted = true, .error = "unknown runtime reload failure"};
+        result = {.attempted = true,
+                  .error = "unknown runtime reload failure",
+                  .error_code = "runtime_reload_exception@1",
+                  .error_fields = {{"reason", "non_standard_exception"}}};
     }
 
     if (result.committed || !result.error.empty()) result.attempted = true;
@@ -165,12 +171,18 @@ RuntimeReloadResult ReloadService::invokeRuntimeParticipant(
     if (!result.error.empty()) {
         ++status.failed;
         status.last_error = result.error;
+        status.error_code = result.error_code;
+        status.error_fields = result.error_fields.is_object()
+                                  ? result.error_fields
+                                  : nlohmann::ordered_json::object();
         if (logger) {
             LOG_WARNING(logger, "runtime reload participant '{}' failed: {}",
                         participant.name, result.error);
         }
     } else if (result.attempted) {
         status.last_error.clear();
+        status.error_code.clear();
+        status.error_fields = nlohmann::ordered_json::object();
     }
     return result;
 }
@@ -566,6 +578,8 @@ void ReloadService::ensureBuiltInParticipants() {
                         .attempted = attempt.attempted,
                         .committed = attempt.committed,
                         .error = attempt.error,
+                        .error_code = attempt.error_code,
+                        .error_fields = attempt.error_fields,
                     };
                 },
                 .describe = [](nlohmann::json &output) {
@@ -585,6 +599,10 @@ void ReloadService::ensureBuiltInParticipants() {
                         {"domain_error", status.last_error.empty()
                                              ? nlohmann::json(nullptr)
                                              : nlohmann::json(status.last_error)},
+                        {"error_code", status.error_code.empty()
+                                           ? nlohmann::json(nullptr)
+                                           : nlohmann::json(status.error_code)},
+                        {"error_fields", status.error_fields},
                     };
                 },
             },
@@ -1002,6 +1020,10 @@ nlohmann::json ReloadService::runtimeStatusJson() const {
             {"last_error", status.last_error.empty()
                                ? nlohmann::json(nullptr)
                                : nlohmann::json(status.last_error)},
+            {"error_code", status.error_code.empty()
+                               ? nlohmann::json(nullptr)
+                               : nlohmann::json(status.error_code)},
+            {"error_fields", status.error_fields},
             {"details", std::move(details)},
         };
     }

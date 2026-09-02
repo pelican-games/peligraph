@@ -18,6 +18,14 @@ enum class RegistrationKind : std::uint8_t {
     behavior,
 };
 
+struct RegistrationRecord {
+    RegistrationKind kind = RegistrationKind::system;
+    std::string name;
+
+    friend bool operator==(const RegistrationRecord &,
+                           const RegistrationRecord &) = default;
+};
+
 class RegistrationToken;
 PELICAN_API RegistrationToken acquireRegistrationToken(RegistrationKind kind,
                                                        RegistrationOwner owner,
@@ -26,6 +34,9 @@ PELICAN_API bool releaseRegistrationToken(RegistrationToken token,
                                           RegistrationKind kind) noexcept;
 PELICAN_API std::vector<RegistrationToken>
 registrationTokens(RegistrationOwner owner, RegistrationKind kind);
+std::vector<RegistrationRecord>
+registrationRecords(RegistrationOwner owner);
+std::vector<RegistrationRecord> allRegistrationRecords();
 
 class RegistrationToken {
     std::uint32_t identity_ = 0;

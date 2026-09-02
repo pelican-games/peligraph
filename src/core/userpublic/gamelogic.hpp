@@ -1,13 +1,19 @@
 #pragma once
 
+#include "export.hpp"
+
 #include <cstdint>
 
 namespace Pelican {
 
-// Increment this only when the C++ game-DLL boundary changes incompatibly.
-inline constexpr std::uint32_t gameLogicAbiVersion = 1;
-inline constexpr const char *gameLogicAbiSymbol = "pelican_game_logic_abi_version";
+// The SDK epoch is monotonic. Every game DLL produced by
+// pelican_configure_game_logic_target imports the matching anchor from its
+// executable host before any DLL initializer can run.
+inline constexpr std::uint32_t gameLogicAbiVersion = 2;
+inline constexpr const char *gameLogicEpochAnchorSymbol =
+    "pelican_game_logic_epoch_v2";
 
-using GameLogicAbiVersionFn = std::uint32_t (*)();
+extern "C" PELICAN_API std::uint64_t
+pelican_game_logic_epoch_v2() noexcept;
 
 } // namespace Pelican

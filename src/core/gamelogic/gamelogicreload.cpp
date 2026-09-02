@@ -1,6 +1,7 @@
 #include "gamelogicreload.hpp"
 #include "behaviorreloadvalidation.hpp"
 #include "behaviorarena.hpp"
+#include "gamelogicimports.hpp"
 
 #include "../animation/animationservice.hpp"
 #if PELICAN_WITH_PHYSICS
@@ -25,6 +26,7 @@
 #include "../userpublic/gamelogic.hpp"
 
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <system_error>
@@ -34,6 +36,7 @@
 #include <Windows.h>
 #else
 #include <dlfcn.h>
+#include <unistd.h>
 #endif
 
 namespace Pelican {
@@ -73,15 +76,124 @@ class ReloadStateGuard {
     ~ReloadStateGuard() { reload_in_progress.store(false, std::memory_order_release); }
 };
 
-std::string platformLoadError() {
+struct PlatformLoadError {
+    std::uint32_t code = 0;
+    std::string message;
+};
+
+PlatformLoadError platformLoadError() {
 #ifdef _WIN32
     const auto code = GetLastError();
     // System messages follow the machine locale, while JSON-RPC is UTF-8.
-    return "Windows loader error code " + std::to_string(code);
+    return {
+        .code = code,
+        .message = "Windows loader error code " + std::to_string(code),
+    };
 #else
     const char *message = dlerror();
-    return message != nullptr ? message : "unknown dynamic-loader error";
+    return {
+        .message = message != nullptr ? message
+                                      : "unknown dynamic-loader error",
+    };
 #endif
+}
+
+std::uint64_t currentProcessId() noexcept {
+#ifdef _WIN32
+    return GetCurrentProcessId();
+#else
+    return static_cast<std::uint64_t>(getpid());
+#endif
+}
+
+#ifdef _WIN32
+std::string currentExecutableName() {
+    std::wstring buffer(32768, L'\0');
+    const auto length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length == buffer.size()) {
+        return {};
+    }
+    buffer.resize(length);
+    return std::filesystem::path{buffer}.filename().string();
+}
+
+class SourceReadLease {
+    HANDLE handle_ = INVALID_HANDLE_VALUE;
+    DWORD error_ = ERROR_SUCCESS;
+
+  public:
+    SourceReadLease() = default;
+    SourceReadLease(const SourceReadLease &) = delete;
+    SourceReadLease &operator=(const SourceReadLease &) = delete;
+    ~SourceReadLease() {
+        if (handle_ != INVALID_HANDLE_VALUE) CloseHandle(handle_);
+    }
+
+    bool acquire(const std::filesystem::path &path) noexcept {
+        handle_ = CreateFileW(
+            path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
+            nullptr);
+        if (handle_ == INVALID_HANDLE_VALUE) {
+            error_ = GetLastError();
+            return false;
+        }
+        error_ = ERROR_SUCCESS;
+        return true;
+    }
+
+    DWORD error() const noexcept { return error_; }
+};
+
+bool sourceWriterIsActive(DWORD error) noexcept {
+    return error == ERROR_SHARING_VIOLATION ||
+           error == ERROR_LOCK_VIOLATION;
+}
+#endif
+
+std::string_view registrationKindName(internal::RegistrationKind kind) {
+    switch (kind) {
+    case internal::RegistrationKind::system:
+        return "system";
+    case internal::RegistrationKind::component:
+        return "component";
+    case internal::RegistrationKind::event:
+        return "event";
+    case internal::RegistrationKind::behavior:
+        return "behavior";
+    }
+    return "unknown";
+}
+
+std::optional<GameLogicErrorInfo>
+validateRegistrationKeys(internal::RegistrationOwner owner,
+                         const std::filesystem::path &source_path) {
+    auto records = internal::registrationRecords(owner);
+    std::ranges::sort(records, [](const auto &left, const auto &right) {
+        if (left.kind != right.kind) {
+            return static_cast<std::uint8_t>(left.kind) <
+                   static_cast<std::uint8_t>(right.kind);
+        }
+        return left.name < right.name;
+    });
+    for (std::size_t index = 1; index < records.size(); ++index) {
+        if (records[index] != records[index - 1]) continue;
+        const auto kind = registrationKindName(records[index].kind);
+        nlohmann::ordered_json fields{
+            {"kind", kind},
+            {"key", records[index].name},
+        };
+        return GameLogicErrorInfo{
+            .message = "game logic DLL '" + source_path.string() +
+                       "' registration rejected: duplicate " +
+                       std::string{kind} + " key '" + records[index].name +
+                       "'",
+            .code = std::string{internal::gameLogicRegistrationRejectedErrorCode},
+            .fields = std::move(fields),
+        };
+    }
+    return std::nullopt;
 }
 
 void removeFileNoThrow(const std::filesystem::path &path) noexcept {
@@ -96,6 +208,32 @@ void removeFileNoThrow(const std::filesystem::path &path) noexcept {
 
 GameLogicReloader::~GameLogicReloader() {
     shutdown();
+}
+
+void GameLogicReloader::setLastError(GameLogicErrorInfo error) {
+    last_error = std::move(error.message);
+    last_error_code = std::move(error.code);
+    last_error_fields = std::move(error.fields);
+    if (!last_error_fields.is_object()) {
+        last_error_fields = nlohmann::ordered_json::object();
+    }
+}
+
+void GameLogicReloader::clearLastError() noexcept {
+    last_error.clear();
+    last_error_code.clear();
+    last_error_fields = nlohmann::ordered_json::object();
+}
+
+std::optional<GameLogicReloader::SourceFingerprint>
+GameLogicReloader::sourceFingerprint(
+    const std::filesystem::path &path, std::error_code &error) const noexcept {
+    error.clear();
+    const auto write_time = std::filesystem::last_write_time(path, error);
+    if (error) return std::nullopt;
+    const auto size = std::filesystem::file_size(path, error);
+    if (error) return std::nullopt;
+    return SourceFingerprint{.write_time = write_time, .size = size};
 }
 
 std::filesystem::path GameLogicReloader::makeShadowCopy(const char *purpose) {
@@ -131,7 +269,23 @@ std::filesystem::path GameLogicReloader::makeShadowCopy(const char *purpose) {
 
 std::optional<GameLogicReloader::LoadedLibrary>
 GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::RegistrationOwner owner,
-                           std::string &error) {
+                           GameLogicErrorInfo &error) {
+#ifdef _WIN32
+    const auto diagnostic = internal::diagnoseGameLogicImports(
+        path, currentExecutableName(), gameLogicAbiVersion);
+    if (!diagnostic.accepted()) {
+        internal::releaseGameLogicRegistrations(owner);
+        error = {
+            .message = "game logic DLL '" + source_path.string() +
+                       "' rejected before load: " +
+                       diagnostic.error_code +
+                       diagnostic.error_fields.dump(),
+            .code = diagnostic.error_code,
+            .fields = diagnostic.error_fields,
+        };
+        return std::nullopt;
+    }
+#endif
     internal::ScopedRegistrationOwner registration_scope{owner};
 #ifdef _WIN32
     const auto handle = LoadLibraryW(path.c_str());
@@ -139,25 +293,19 @@ GameLogicReloader::loadCopy(const std::filesystem::path &path, internal::Registr
     const auto handle = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
 #endif
     if (handle == nullptr) {
+        const auto platform_error = platformLoadError();
         internal::releaseGameLogicRegistrations(owner);
-        error = "game logic DLL '" + source_path.string() + "' load failed: " + platformLoadError();
+        error = {
+            .message = "game logic DLL '" + source_path.string() +
+                       "' load failed: " + platform_error.message,
+            .code = std::string{internal::gameLogicLoadFailedErrorCode},
+            .fields = {{"os_code", platform_error.code}},
+        };
         return std::nullopt;
     }
 
-#ifdef _WIN32
-    const auto abi = reinterpret_cast<GameLogicAbiVersionFn>(GetProcAddress(handle, gameLogicAbiSymbol));
-#else
-    const auto abi = reinterpret_cast<GameLogicAbiVersionFn>(dlsym(handle, gameLogicAbiSymbol));
-#endif
-    if (abi == nullptr) {
-        error = "game logic DLL '" + source_path.string() + "' is missing ABI symbol '" +
-                gameLogicAbiSymbol + "'";
-    } else if (const auto candidate_abi = abi(); candidate_abi != gameLogicAbiVersion) {
-        error = "game logic DLL '" + source_path.string() + "' ABI version " +
-                std::to_string(candidate_abi) + " does not match engine ABI version " +
-                std::to_string(gameLogicAbiVersion);
-    }
-    if (!error.empty()) {
+    if (auto validation = validateRegistrationKeys(owner, source_path)) {
+        error = std::move(*validation);
         internal::releaseGameLogicRegistrations(owner);
 #ifdef _WIN32
         FreeLibrary(handle);
@@ -181,7 +329,8 @@ void GameLogicReloader::unload(LoadedLibrary &library) noexcept {
     }
 }
 
-bool GameLogicReloader::validateCandidate(const std::filesystem::path &path, std::string &error) {
+bool GameLogicReloader::validateCandidate(const std::filesystem::path &path,
+                                          GameLogicErrorInfo &error) {
     const auto owner = internal::allocateRegistrationOwner();
     auto candidate = loadCopy(path, owner, error);
     if (!candidate) return false;
@@ -198,7 +347,12 @@ bool GameLogicReloader::validateCandidate(const std::filesystem::path &path, std
                 active->owner, candidate->owner, behavior_sources);
         }
     } catch (const std::exception &validation_error) {
-        error = validation_error.what();
+        error = {
+            .message = validation_error.what(),
+            .code =
+                std::string{internal::gameLogicRegistrationRejectedErrorCode},
+            .fields = {{"reason", validation_error.what()}},
+        };
         unload(*candidate);
         return false;
     }
@@ -207,25 +361,65 @@ bool GameLogicReloader::validateCandidate(const std::filesystem::path &path, std
 }
 
 bool GameLogicReloader::initialize(const std::filesystem::path &source) {
-    shutdown();
-    source_path = std::filesystem::absolute(source).lexically_normal();
-    shadow_directory = source_path.parent_path() / ".pelican-hot-reload";
+    const auto requested_source =
+        std::filesystem::absolute(source).lexically_normal();
+    const auto requested_shadow =
+        requested_source.parent_path() / ".pelican-hot-reload" /
+        std::to_string(currentProcessId());
     std::error_code ec;
-    observed_write_time = std::filesystem::last_write_time(source_path, ec);
-    if (ec) {
-        last_error = "game logic DLL '" + source_path.string() + "' is unavailable: " + ec.message();
+    const auto requested_fingerprint = sourceFingerprint(requested_source, ec);
+    if (!requested_fingerprint) {
+        if (!active) {
+            source_path = requested_source;
+            shadow_directory = requested_shadow;
+        }
+        setLastError({
+            .message = "game logic DLL '" + requested_source.string() +
+                       "' is unavailable: " + ec.message(),
+            .code = std::string{internal::gameLogicUnavailableErrorCode},
+            .fields = {{"reason", ec.message()}},
+        });
         LOG_ERROR(logger, "{}", last_error);
         return false;
     }
 
+    if (active) {
+        const auto previous_source = source_path;
+        const auto previous_shadow = shadow_directory;
+        const auto previous_observed_source = observed_source;
+        const auto previous_settling_source = settling_source;
+        const auto previous_copy_sequence = copy_sequence;
+        source_path = requested_source;
+        shadow_directory = requested_shadow;
+        observed_source = *requested_fingerprint;
+        settling_source.reset();
+        const bool committed = reloadTransaction([] {}, [] {});
+        if (!committed) {
+            source_path = previous_source;
+            shadow_directory = previous_shadow;
+            observed_source = previous_observed_source;
+            settling_source = previous_settling_source;
+            copy_sequence = previous_copy_sequence;
+        }
+        return committed;
+    }
+
+    // Even with no active DLL, preflight must occur before shutdown/reset so
+    // an incompatible image is never executed as a side effect of initialize.
+    source_path = requested_source;
+    shadow_directory = requested_shadow;
+    observed_source = *requested_fingerprint;
+    settling_source.reset();
+    copy_sequence = 0;
+
     try {
         const auto copy = makeShadowCopy("initial");
-        std::string error;
+        GameLogicErrorInfo error;
         const auto owner = internal::allocateRegistrationOwner();
         active = loadCopy(copy, owner, error);
         if (!active) {
             removeFileNoThrow(copy);
-            last_error = std::move(error);
+            setLastError(std::move(error));
             LOG_ERROR(logger, "{}", last_error);
             return false;
         }
@@ -239,13 +433,17 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
         physics_internal::activateProviderOwner(owner);
 #endif
         generation = 1;
-        last_error.clear();
-        LOG_INFO(logger, "game logic DLL loaded: source='{}' copy='{}' ABI={} systems={}",
+        clearLastError();
+        LOG_INFO(logger, "game logic DLL loaded: source='{}' copy='{}' epoch={} systems={}",
                  source_path.string(), copy.string(), gameLogicAbiVersion,
                  internal::gameSystemRegistrationCount(owner));
         return true;
     } catch (const std::exception &error) {
-        last_error = error.what();
+        setLastError({
+            .message = error.what(),
+            .code = std::string{internal::gameLogicShadowCopyFailedErrorCode},
+            .fields = {{"reason", error.what()}},
+        });
         LOG_ERROR(logger, "{}", last_error);
         return false;
     }
@@ -256,15 +454,19 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
     try {
         candidate_path = makeShadowCopy("candidate");
     } catch (const std::exception &error) {
-        last_error = error.what();
+        setLastError({
+            .message = error.what(),
+            .code = std::string{internal::gameLogicShadowCopyFailedErrorCode},
+            .fields = {{"reason", error.what()}},
+        });
         LOG_ERROR(logger, "{}; keeping previous game logic DLL", last_error);
         return false;
     }
 
-    std::string validation_error;
+    GameLogicErrorInfo validation_error;
     if (!validateCandidate(candidate_path, validation_error)) {
         removeFileNoThrow(candidate_path);
-        last_error = std::move(validation_error);
+        setLastError(std::move(validation_error));
         LOG_ERROR(logger, "{}; keeping previous game logic DLL", last_error);
         return false;
     }
@@ -274,6 +476,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
     bool previous_unloaded = false;
     active.reset();
     std::string reload_error;
+    GameLogicErrorInfo transaction_error;
     try {
         teardown();
         if (previous) {
@@ -281,10 +484,13 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
             previous_unloaded = true;
         }
 
-        std::string load_error;
+        GameLogicErrorInfo load_error;
         const auto owner = internal::allocateRegistrationOwner();
         active = loadCopy(candidate_path, owner, load_error);
-        if (!active) throw std::runtime_error(load_error);
+        if (!active) {
+            transaction_error = std::move(load_error);
+            throw std::runtime_error(transaction_error.message);
+        }
         render_policy_internal::activateProviderOwner(owner);
         render_pass_internal::activateProviderOwner(owner);
         render_subgraph_internal::activateProviderOwner(owner);
@@ -297,7 +503,7 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
         rebuild();
 
         ++generation;
-        last_error.clear();
+        clearLastError();
         if (previous) removeFileNoThrow(previous->path);
         LOG_INFO(logger, "game logic DLL reloaded: source='{}' generation={} systems={}",
                  source_path.string(), generation, internal::gameSystemRegistrationCount(owner));
@@ -306,8 +512,20 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
         // Copy the message and leave the handler before unloading a DLL that
         // may own the active exception's destructor/unwind metadata.
         reload_error = error.what();
+        if (transaction_error.code.empty()) {
+            transaction_error = {
+                .message = reload_error,
+                .code = std::string{internal::gameLogicReloadFailedErrorCode},
+                .fields = {{"reason", reload_error}},
+            };
+        }
     } catch (...) {
         reload_error = "non-standard exception";
+        transaction_error = {
+            .message = reload_error,
+            .code = std::string{internal::gameLogicReloadFailedErrorCode},
+            .fields = {{"reason", reload_error}},
+        };
     }
 
     if (active) {
@@ -322,7 +540,10 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
         bool activate_rollback_owner = false;
         if (previous_unloaded) {
             const auto rollback_owner = internal::allocateRegistrationOwner();
-            active = loadCopy(previous->path, rollback_owner, rollback_error);
+            GameLogicErrorInfo rollback_load_error;
+            active = loadCopy(previous->path, rollback_owner,
+                              rollback_load_error);
+            rollback_error = rollback_load_error.message;
             activate_rollback_owner = active.has_value();
         } else {
             // Teardown failed before the old DLL was unloaded. Reuse that
@@ -364,8 +585,14 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
             }
         }
     }
-    last_error = "game logic DLL '" + source_path.string() + "' reload failed: " + reload_error;
-    if (!rollback_error.empty()) last_error += "; rollback failed: " + rollback_error;
+    transaction_error.message =
+        "game logic DLL '" + source_path.string() +
+        "' reload failed: " + reload_error;
+    if (!rollback_error.empty()) {
+        transaction_error.message += "; rollback failed: " + rollback_error;
+        transaction_error.fields["rollback_error"] = rollback_error;
+    }
+    setLastError(std::move(transaction_error));
     LOG_ERROR(logger, "{}", last_error);
     return false;
 }
@@ -373,20 +600,32 @@ bool GameLogicReloader::reloadTransaction(const ResetFn &teardown, const ResetFn
 GameLogicReloadAttempt GameLogicReloader::reloadNowAttempt(const ResetFn &teardown,
                                                            const ResetFn &rebuild) {
     if (source_path.empty()) {
-        last_error = "game logic DLL reload requested, but no DLL is configured";
-        return {.attempted = true, .error = last_error};
+        setLastError({
+            .message =
+                "game logic DLL reload requested, but no DLL is configured",
+            .code = std::string{internal::gameLogicNotConfiguredErrorCode},
+        });
+        return {.attempted = true,
+                .error = last_error,
+                .error_code = last_error_code,
+                .error_fields = last_error_fields};
     }
     // A forced/manual reload acknowledges the current source version too. This
     // prevents the next automatic poll from applying the same DLL a second time.
     std::error_code ec;
-    const auto write_time = std::filesystem::last_write_time(source_path, ec);
-    if (!ec) observed_write_time = write_time;
+    if (const auto fingerprint = sourceFingerprint(source_path, ec)) {
+        observed_source = *fingerprint;
+        settling_source.reset();
+    }
 
     const bool committed = reloadTransaction(teardown, rebuild);
     return {
         .attempted = true,
         .committed = committed,
         .error = committed ? std::string{} : last_error,
+        .error_code = committed ? std::string{} : last_error_code,
+        .error_fields = committed ? nlohmann::ordered_json::object()
+                                  : last_error_fields,
     };
 }
 
@@ -394,18 +633,71 @@ GameLogicReloadAttempt GameLogicReloader::pollAttempt(const ResetFn &teardown,
                                                       const ResetFn &rebuild, bool force) {
     if (source_path.empty()) return {};
     std::error_code ec;
-    const auto write_time = std::filesystem::last_write_time(source_path, ec);
-    if (ec) {
-        last_error = "game logic DLL '" + source_path.string() + "' stat failed: " + ec.message();
-        return {.attempted = true, .error = last_error};
+    const auto fingerprint = sourceFingerprint(source_path, ec);
+    if (!fingerprint) {
+        setLastError({
+            .message = "game logic DLL '" + source_path.string() +
+                       "' stat failed: " + ec.message(),
+            .code = std::string{internal::gameLogicUnavailableErrorCode},
+            .fields = {{"reason", ec.message()}},
+        });
+        return {.attempted = true,
+                .error = last_error,
+                .error_code = last_error_code,
+                .error_fields = last_error_fields};
     }
-    if (!force && write_time == observed_write_time) return {};
-    observed_write_time = write_time;
+
+#ifdef _WIN32
+    SourceReadLease source_lease;
+#endif
+    if (!force) {
+        if (*fingerprint == observed_source) {
+            settling_source.reset();
+            return {};
+        }
+        if (!settling_source || *settling_source != *fingerprint) {
+            settling_source = *fingerprint;
+            return {};
+        }
+#ifdef _WIN32
+        // A build can truncate and refill the DLL in place. Two matching
+        // metadata samples debounce changing sizes/timestamps; this read lease
+        // then excludes writers while the shadow copy is taken. A busy source
+        // is not a failed reload and remains pending for the next poll.
+        if (!source_lease.acquire(source_path)) {
+            if (sourceWriterIsActive(source_lease.error())) return {};
+            setLastError({
+                .message = "game logic DLL '" + source_path.string() +
+                           "' readiness open failed: Windows error code " +
+                           std::to_string(source_lease.error()),
+                .code = std::string{internal::gameLogicUnavailableErrorCode},
+                .fields = {{"reason", "readiness_open_failed"},
+                           {"os_code", source_lease.error()}},
+            });
+            return {.attempted = true,
+                    .error = last_error,
+                    .error_code = last_error_code,
+                    .error_fields = last_error_fields};
+        }
+        std::error_code locked_ec;
+        const auto locked_fingerprint =
+            sourceFingerprint(source_path, locked_ec);
+        if (!locked_fingerprint || *locked_fingerprint != *fingerprint) {
+            if (locked_fingerprint) settling_source = *locked_fingerprint;
+            return {};
+        }
+#endif
+    }
+    observed_source = *fingerprint;
+    settling_source.reset();
     const bool committed = reloadTransaction(teardown, rebuild);
     return {
         .attempted = true,
         .committed = committed,
         .error = committed ? std::string{} : last_error,
+        .error_code = committed ? std::string{} : last_error_code,
+        .error_fields = committed ? nlohmann::ordered_json::object()
+                                  : last_error_fields,
     };
 }
 
@@ -425,7 +717,10 @@ void GameLogicReloader::shutdown() noexcept {
         removeFileNoThrow(path);
     }
     source_path.clear();
-    last_error.clear();
+    shadow_directory.clear();
+    observed_source = {};
+    settling_source.reset();
+    clearLastError();
     generation = 0;
 }
 
@@ -440,6 +735,8 @@ GameLogicReloadStatus GameLogicReloader::status() const {
         .source = source_path,
         .loaded_copy = active ? active->path : std::filesystem::path{},
         .last_error = last_error,
+        .error_code = last_error_code,
+        .error_fields = last_error_fields,
     };
 }
 

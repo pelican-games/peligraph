@@ -92,7 +92,8 @@ std::vector<GameSystemEventHandlerRegistration> collectGameSystemEventHandlers(s
 class UserGameSystemRegistererTemplatePublic {
     std::vector<GameSystemRegistration> systems;
 
-    PELICAN_API RegistrationToken __registerSystem(GameSystemRegistration registration);
+    PELICAN_API RegistrationToken
+    pelican_register_system_v2(GameSystemRegistration registration);
 
     friend void unregisterGameSystem(RegistrationToken token);
     friend void unregisterGameSystems(RegistrationOwner owner) noexcept;
@@ -122,7 +123,7 @@ class UserGameSystemRegistererTemplatePublic {
             };
         }
 
-        return __registerSystem(GameSystemRegistration{
+        return pelican_register_system_v2(GameSystemRegistration{
             .name = std::move(name),
             .order = order,
             .update = update,

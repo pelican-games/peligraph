@@ -74,12 +74,21 @@ try {
     Set-Content -LiteralPath $sourceDll -Value 'not a PE DLL' -Encoding ascii
     $badLoad = Invoke-Rpc 4 'reload_game_logic'
     if ($null -eq $badLoad.error -or $badLoad.error.message -notmatch 'wp90_live.dll') { throw 'bad DLL did not return a named error' }
+    if ($badLoad.error.data.error_code -ne 'game_logic_abi_unreadable@1' -or
+        $badLoad.error.data.error_fields.reason -ne 'not_pe') {
+        throw "unreadable DLL did not return structured RPC data: $($badLoad | ConvertTo-Json -Compress -Depth 8)"
+    }
     $stepAfterBad = Invoke-Rpc 5 'step_frame'
     if ($null -eq $stepAfterBad.result) { throw 'old behavior did not continue after bad DLL' }
 
     Copy-Item -LiteralPath $FixtureBadAbi -Destination $sourceDll -Force
     $badAbi = Invoke-Rpc 6 'reload_game_logic'
-    if ($null -eq $badAbi.error -or $badAbi.error.message -notmatch 'ABI version') { throw 'ABI mismatch was not rejected' }
+    if ($null -eq $badAbi.error -or
+        $badAbi.error.data.error_code -ne 'game_logic_abi_stale@1' -or
+        $badAbi.error.data.error_fields.expected_epoch -ne 2 -or
+        $badAbi.error.data.error_fields.found -ne 'v999') {
+        throw "ABI epoch mismatch was not rejected structurally: $($badAbi | ConvertTo-Json -Compress -Depth 8)"
+    }
     $stepAfterAbi = Invoke-Rpc 7 'step_frame'
     if ($null -eq $stepAfterAbi.result) { throw 'old behavior did not continue after ABI mismatch' }
 
@@ -93,6 +102,15 @@ try {
         throw "unexpected game logic participant counters: $($runtime | ConvertTo-Json -Compress)"
     }
     if ($null -ne $runtime.last_error) { throw 'successful reload did not clear participant error' }
+    if ($null -ne $runtime.error_code -or
+        @($runtime.error_fields.PSObject.Properties).Count -ne 0) {
+        throw 'successful reload did not clear participant structured error'
+    }
+    $gameLogic = $status.result.participants.game_logic
+    if ($null -eq $gameLogic -or $null -ne $gameLogic.error_code -or
+        @($gameLogic.error_fields.PSObject.Properties).Count -ne 0) {
+        throw 'get_status participants.game_logic did not expose cleared structured status'
+    }
 } finally {
     $process.StandardInput.Close()
     if (-not $process.WaitForExit(30000)) { $process.Kill($true); throw 'player did not stop' }
