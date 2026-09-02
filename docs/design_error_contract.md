@@ -305,3 +305,109 @@ E-4  terminal(`error.data`)/ load_scene(`error.data`)/ launcher handshake / Stud
      + origin map(決定 8'')+ v1 adapter(決定 7'')
 ```
 **WP375 との関係**: E-3a は WP375 の materialize の失敗経路に触るので **WP375 着地後**。E-0〜E-2 は独立。
+
+
+## 8. 設計レビュー第 3 巡(9 件)と v4 —— **設計段は 3 巡で打ち切り。以降は E-0a の WP 仕様レビューで受ける**
+
+第 3 巡は不合格だが、**「着手可能にする最小修正」8 項目**を明示した。v4 はその 8 項目を 1:1 で閉じる差分であり、
+**これで設計段を終える**(skill §5: 設計レビューは最大 3 巡)。閉じ切れない点は E-0a の仕様レビューへ持ち越す。
+
+### 修正 1(#1): `ResolutionResult<T>` は **move-only**。compile-contract を受け入れに置く
+
+「`std::any` 構築を `= delete`」は方向が逆で強制できない(`std::any::any(T&&)` が選ばれる)。
+- **copy constructor / copy assignment を削除**する(move-only)。`std::any` の格納型制約(`is_copy_constructible`)で
+  実際に排除される
+- E-0a の受け入れに次の **static_assert 4 本**を置く:
+  `!is_constructible_v<any, R&>`, `!is_constructible_v<any, R&&>`, `!is_assignable_v<any&, R&>`, `!is_assignable_v<any&, R&&>`
+- `[[nodiscard]]` は診断であり `(void)result` を防げない。preview の「捨てる」呼び出しは **production test で result を検査**し、
+  `-Werror` 相当(unused-result を error)を E-0a の構成に加える
+
+### 修正 2(#5): **E-0 を分割**。最初の WP は **E-0a = 型 + 6 caller + camera + `get_components`**
+
+| 段 | 内容 |
+|---|---|
+| **E-0a** | move-only `ResolutionResult` + `optional<StoredResolutionFailure>` + `decodeAuthored` の **6 production caller** 移行(5 ファイル。test の直接 caller 18 も同時)+ camera 4 + alias(resolver 所有の completion seam)+ `get_components` の `resolution_error` |
+| E-0b | animation graph + ray_instance 11 分岐の corpus |
+| E-0c | behavior callback の値化(`StructFieldValidationError → UserDataViolation`、当面は `LegacySourcePath` 付き)。**E-3b より前** |
+
+E-0a 単独で「不正 camera が structured error / 修正後に本番 resolver が解決した camera 値」を検査できる。
+
+### 修正 3(#2): 「producer 0」を **検査可能な単位**で定義し直す
+
+- 「producer」= **列挙表に残る `legacy_branch_id`**(decoder の拒否分岐ごとに ID を振った表。E-0a で表を作る)。
+  broad な `catch (const std::exception &) → LegacyResolutionText` が残っている間は**「producer 0」と呼ばない**
+- E-3b の完了条件 = **表の全 `legacy_branch_id` が typed へ移行済み**、かつ broad catch を狭めた後に
+  **internal fault 注入で legacy count が増えず再送出される**こと
+- behavior の値化(E-0c)は **E-3b より前**に置く(修正 2 の表どおり)
+
+### 修正 4(#4): plan の失敗型は **2 系統の variant**
+
+`plan` の前段には `UserDataViolation` でも internal でもない recoverable(stale revision、存在しない object への edit、
+`prepare()` の `PrefabError`)がある。
+```
+using ProjectionPlanFailure = std::variant<EditorProjectionRecoverable, UserDataViolation>;
+ResolutionResult<EditorProjectionPlan, ProjectionPlanFailure> plan(...);
+```
+codec 用 `ResolutionResult<T>`(error = `UserDataViolation` 固定)と projection 用は**別の error 型**を取る。internal だけ throw。
+
+### 修正 5(#3): recoverable の **完全な分類表**と **noexcept terminal zone**
+
+- 分類表は「例」ではなく **型 / 値ごと**に 1 件ずつ: `EditorProjectionException`(全 code)、`PrefabError`(全 code)、
+  各 adapter が今投げる `runtime_error`(**1 件ずつ列挙して recoverable / internal を判定**)。E-3a の仕様がこの表を持つ
+- catch 順: **(1) 列挙された recoverable → rollback + result、(2) `UserDataViolation` → rollback + result、(3) その他 → rollback + rethrow**
+- `publish() / rollback() / finish()` の `noexcept` 領域は **「rollback を保証できない terminal zone」**と明記。
+  transaction-level internal は rollback 後 throw、coordinator-level は **subprocess death test** で terminate を検査
+- `AfterPublication` は同じ matrix で引き続き `Failed` を要求(第 3 巡が両立を確認)
+- `bad_alloc` 時のログは **no-allocation logger による best effort** に弱める
+
+### 修正 6(#6): atlas 診断は **sticky state + replay 可能な query**。非同期 event は通知だけ
+
+「`asset_evaluated: false` + event」では Studio 未接続時に event が失われ、query は再取得できない。
+- 状態は **`not_applicable | pending | succeeded | failed | disabled`**
+- stable key = **`(resolver_generation, scene_revision, scene_id, object_id, component_index, asset document / digest)`**
+- **sticky な評価状態と最後の violation を所有する registry** を置き、**`get_resolution_diagnostics(since_sequence)`** で
+  polling / replay できる(JSON-RPC notification は**採らない** —— Studio transport は unsolicited JSON を受理しない)
+- event は状態変更通知に限定(`schema_version`, `sequence`, stable key, revision, payload, `cleared`)
+- scene unload / edit / asset reload 時の **stale 廃棄と purge** を定義
+- production acceptance: **失敗した 1 件だけ非表示、他 sprite は描画**
+- worker item に scene revision / object / component index を運ぶ配線が要る(現在は `EntityId` と component pointer のみ)
+- **これは E-2 の範囲を超える**。**E-2b(診断 registry)として分離**し、E-2 は resolver 到達 5 分岐に限定する
+
+### 修正 7(#7): launcher は **専用 prefix 付き 1 行 JSON を stderr** に固定(二択を決める)
+
+stderr は既存ログの sink なので裸の NDJSON は混ぜられない。**予約 prefix + exact schema** に固定:
+```
+PELICAN_DIAG {"schema":"pelican.launch_diagnostic","version":1,"run_id":"…","kind":"user_data_violation","violation":{…}}
+```
+UTF-8 / LF の 1 行、**最大長 64 KiB**、複数 record は sequence 順、partial line は捨てて exit code のみを信頼、
+parse failure 時の fallback は「exit code + 生 stderr」。exit code 0/1/-1 は不変。
+
+### 修正 8(#8・#9): v1 adapter と `primary_source` を **byte-exact な規範アルゴリズム**に
+
+**v1 adapter(lossless 復元)**:
+1. `path == "params"` → tokens `["params"]`
+2. `path` が byte-exact に `"params."` で始まらなければ **degraded**(`LegacySourcePath`)
+3. suffix を `params_schema.name ∪ authored object keys` の各文字列と **byte-exact 比較**
+4. distinct な token 列が**ちょうど 1 つ**で、legacy path に再 encode して元 bytes と一致するときだけ採用
+5. 0 または複数 → `LegacySourcePath`
+6. Unicode 正規化・dot split・slash escape・登録順の tie-break は**一切しない**
+corpus: `aim.target` / `a/b` / dot を含む unknown key / dot を含む missing field / payload-not-object / synthetic 不正 path
+
+**`primary_source`**: 「後に読まれた側」は撤回。**error code ごとの規範表**にする:
+```
+camera.zfar_not_greater_than_znear@1   primary_token = znear   related_tokens = [zfar]
+```
+`related_sources[]` の順序も token 順で固定(実行時の読取順・実装順・登録順から導出しない)。
+
+### 段割り(最終)
+
+```
+E-0a  型(move-only)+ 6 caller + camera 4+alias + get_components + legacy_branch_id 表   ← 最初の WP
+E-0b  animation + ray_instance 11
+E-0c  behavior callback の値化(LegacySourcePath 付き)+ v1 lossless adapter
+E-1   collider 17 / sprite_view 15
+E-2   atlas 5(resolver 到達)      E-2b  診断 registry + get_resolution_diagnostics(別設計に近い規模)
+E-3a  3 分類表の実装(commit の noexcept 解除、terminal zone、死活 test)   ← WP375 着地後
+E-3b  broad catch を狭め LegacyResolutionText 削除(producer 表が空になってから)
+E-4   terminal error.data / load_scene error.data / launcher PELICAN_DIAG / Studio parser(project 層)/ origin map
+```
