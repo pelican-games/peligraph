@@ -20291,3 +20291,15 @@ matrix は **WP375 v3 を継承**: IMGUI ON/OFF(factory は ImGui からも使�
 ##### やらないこと
 
 resolver 単体・オラクル・downstream fixture の移設 / 手製 double の削除 / Studio。
+
+#### 設計トラックの文書(2026-09-02 起票。いずれも敵対レビュー待ち / 進行中)
+
+| トラック | 文書 | 段 |
+|---|---|---|
+| object identity(#4) | [design_object_identity.md](design_object_identity.md) | ID-1(ObjectRef と名前解決の 1 関数化)→ ID-2(map の key を id へ、transient 分離)→ ID-3(Physics / Animation / Controller)→ rename WP |
+| 例外契約(#5) | [design_error_contract.md](design_error_contract.md) | E-1(camera / animation)→ E-2(collider / sprite)→ E-3(atlas)→ E-4(その他を再送出)→ E-5(見える場所) |
+| 宣言の担体(#10) | [design_declaration_carrier.md](design_declaration_carrier.md) | C-1(可変長宣言)→ C-2(行を作れる編集)→ C-3(authoring → row の join)。RT4/5/7 と R5 の前提 |
+| Studio 汎用 component UI(#9) | [design_studio_component_ui.md](design_studio_component_ui.md) | S-1(追加・削除。今すぐ可)→ S-2(offline catalog)→ S-3(行編集。C-2 の後) |
+
+順序は計画どおり WP375 → WP376 → WP377 → identity / 例外契約 → 担体 → Studio。
+**S-1 は前提が無いので、WP377 の後に前倒しできる**(`ray_instance` を Studio から足せない状態を早く終える)。
