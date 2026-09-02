@@ -20410,7 +20410,7 @@ launcher の `PELICAN_DIAG` / terminal `error.data` / `commit` の `noexcept` �
 |---|---|---|---|---|
 | object identity(#4) | [design_object_identity.md](design_object_identity.md) **v3(§8)**。3 巡目のレビューは枠待ち | ID-A(型移設・registry・WP375 participant・全 name entry の canonical adapter)→ **ID-B(scene transaction)** → ID-C(内部 consumer の ref 化)→ ID-D(public ref API + Animation V2 ABI、互換 release)→ ID-E(breaking release で name API 除去)→ rename WP | **ID-B**(既存欠陥「publish 途中失敗で世代混在」を直す。ID-A 無しで価値あり) | 無し(ID-A は WP375 着地後) |
 | 例外契約(#5) | [design_error_contract.md](design_error_contract.md) **v4(§8)。設計段は 3 巡で打ち切り** | E-0a → E-0b → E-0c → E-1 → E-2 / E-2b(診断 registry)→ E-3a → E-3b → E-4 | **WP378 = E-0a**(起票済み。move-only Result + 6 caller + camera + `get_components`) | **WP375 着地後**(6 caller のうち 3 が WP375 の動かす場所) |
-| 宣言の担体(#10) | [design_declaration_carrier.md](design_declaration_carrier.md) **v2(§6)**。2 巡目レビュー走行中 | CARRIER-1(C-1+C-2+C-3 + `pelican_ray_instance` 改名。消費者 = RT3 の per-geometry override)→ CARRIER-2(Studio 汎用 UI) | 2 巡目の結果待ち | WP377(改名は WP374 後追い) |
+| 宣言の担体(#10) | [design_declaration_carrier.md](design_declaration_carrier.md) **v4(§8 が最終)**。第 3 巡で GLABI-2 の起票ゲート 6 条件を確定。SCHEMA-TX と RT3 は 1 縦切りに統合。次は WP381(GLABI-2) | CARRIER-1(C-1+C-2+C-3 + `pelican_ray_instance` 改名。消費者 = RT3 の per-geometry override)→ CARRIER-2(Studio 汎用 UI) | 2 巡目の結果待ち | WP377(改名は WP374 後追い) |
 | Studio 汎用 component UI(#9) | [design_studio_component_ui.md](design_studio_component_ui.md) **v1**。1 巡目レビュー走行中 | S-1(追加・削除)→ S-2(offline catalog)→ S-3(行編集。CARRIER-1 の後) | 1 巡目の結果待ち | S-1 は無し(前倒し可) |
 
 **実装の順序(改)**: WP375 → WP376 → WP377 → **ID-B** / **S-1**(前提無し。並走可)→ WP378(E-0a)→ ID-A → CARRIER-1 → …
@@ -20543,3 +20543,87 @@ prepare → early_publish_ecs(observer gate、inverse token)→ publish_candidat
 
 registry / `ObjectRef` / wire DTO(ID-A)/ 名前 join の ref 化(ID-C)/ public API(ID-D)/ rename /
 DLL global・直接 I/O の隔離(非保証)/ WP375 の protocol 変更。
+
+
+### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾き、登録を C ABI の 1 entrypoint と transaction にする
+
+**§4 規則 11 上段(core の ABI・出荷 DLL の挙動が変わる)。設計レビュー済み(carrier §8 修正 γ)。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
+**規範は `docs/design_declaration_carrier.md` v4 §8 修正 γ(起票ゲート 1〜6)。本節はその道案内であり、矛盾したら §8 が優先する。**
+**依存: なし**(WP375 / WP379 / WP380 と独立。触るのは game-logic loader と SDK 登録 macro だけ)。
+
+#### 何が壊れているか(既存欠陥)
+
+現行の ABI 検査は **`LoadLibrary` の後**にある([gamelogicreload.cpp:137](../src/core/gamelogic/gamelogicreload.cpp#L137) → :148)。
+DLL の static initializer は `LoadLibrary` 中に走り、`PELICAN_REGISTER_BEHAVIOR` / `_EVENT` / `_SYSTEM`
+([registerer.hpp:298](../src/core/userpublic/details/behavior/registerer.hpp#L298)・
+[event/registerer.hpp:242](../src/core/userpublic/details/event/registerer.hpp#L242)・
+[system/registerer.hpp:155](../src/core/userpublic/details/system/registerer.hpp#L155))は **ABI が合っているか分からないまま**
+`BehaviorRegistration`(`vector<StructFieldSchema>` を含む C++ layout)を host に渡す。layout が違えば UB、合っていても
+「登録してから拒否 → release」の順になる(:161)。さらに `initialize()` は **候補を検証する前に `shutdown()` で active を捨てる**
+([gamelogicreload.cpp:209](../src/core/gamelogic/gamelogicreload.cpp#L209))ので、再 initialize の失敗は空の状態を残す。
+ABI version は今 `gameLogicAbiVersion = 1` の関数 export だけ([gamelogic.hpp:8](../src/core/userpublic/gamelogic.hpp#L8))。
+
+#### 1. section と raw reader(起票ゲート 1)
+
+- SDK は **`.pelabi` PE section**(ELF: `.note.pelican.abi`)に §8 の固定 layout
+  (`magic "PELABI\0\0" ‖ major u16 ‖ minor u16 ‖ struct_size u32 ‖ capabilities u64 ‖ build_id[16] ‖ entry_symbol char[64]`)を置く。
+  MSVC は `#pragma section` + `__declspec(allocate)`、GCC/Clang は `__attribute__((section))`。SDK 側は `PELICAN_GAME_LOGIC_ABI_SECTION()` 1 macro
+  ([gamelogic_entry.cpp:12](../src/player/gamelogic_entry.cpp#L12) の現行 export を置換)
+- host は **PE / ELF の section 表を raw で読む** reader(`readGameLogicAbiHeader(path) → expected<AbiHeader, NamedError>`)を
+  `src/core/gamelogic/` に置く。**`LoadLibrary` / `dlopen` / `GetProcAddress` を呼ばない**(それが本 WP の目的)
+- `build_id` は fixture / 出荷 DLL の CMake が **source contents の SHA-256 から** generated header に埋める(mtime・時計は使わない)。
+  本 WP では **log と `GameLogicStatus` に載せるだけ**(manifest の消費は CARRIER-STUDIO)
+
+#### 2. 1 entrypoint と wire(起票ゲート 2・3)
+
+- `extern "C" pelican_gl_status pelican_game_logic_register_v2(const pelican_gl_host_api *, pelican_gl_registration_sink *)`。
+  host が両 struct を所有、先頭 `struct_size u32 ‖ version u32`、関数 pointer 表。**STL / `type_info` を境界越えさせない**。
+  例外は境界で `internal`(3)に落とす
+- **SDK v2 の登録 macro は host state を変える static initializer を持たない**。macro は **DLL 内の static 表**へ追記し、
+  entrypoint がその表を歩いて `sink->register_descriptor(kind, version, bytes, len)` を呼ぶ。
+  kind は `behavior_v1 / event_v1 / system_v1 / component_v1` と **`schema_v1`(番号予約のみ。wire は CARRIER-RT3)**。
+  Behavior の既存 `BehaviorRegistration`(`vector<StructFieldSchema>`)は **`behavior_v1` の length-delimited wire に encode / decode**
+  し、host 側の registry 型は変えない(registry は WP の範囲外)
+- **未知 kind は `UnknownDescriptorKind{kind, version}` で candidate 全体を拒否**(skip しない)
+- 旧 `pelican_game_logic_abi_version` export は **廃止**。`gameLogicAbiVersion` は **2** に上げ、意味を「section の major」にする
+
+#### 3. transaction(起票ゲート 4)
+
+- §8 の owner kind 表(Behavior / GameSystem / Event / Component、Animation、render 5 provider、vulkan native scope、physics、registration owner)を
+  **`GameLogicReloader` 内の 1 つの表**にし、candidate / commit / rollback を行ごとに持つ。
+  `releaseGameLogicRegistrations` ([gamelogicreload.cpp:43](../src/core/gamelogic/gamelogicreload.cpp#L43))と
+  `activateProviderOwner` の並び(:232〜:239、:279〜:286)は**その表から生成**する(2 箇所の手書き列挙を 1 箇所へ)
+- candidate は **`allocateRegistrationOwner()` の新 owner** に登録し、検証は **canonical key 順**で行う(登録順に依存しない)
+- **`initialize()` は `shutdown()` の前に preflight**(raw header 検証 + candidate load + 検証)。失敗したら active も registry も**触らない**。
+  reload 経路(:253)は既に validate → unload なので、同じ関数を使う
+
+#### 4. エラー(起票ゲート 5)
+
+`GameLogicAbiMissing`(section 無し = **v1 DLL**)/ `GameLogicAbiMalformed`(magic・struct_size)/
+`GameLogicAbiUnsupported{found_major, required_major}` / `GameLogicEntryMissing`(section は v2 だが entry symbol 無し)/
+`UnknownDescriptorKind{kind, version}`。**5 つは別々の名前付きエラー**で、`GameLogicStatus.last_error` と RPC の
+`get_game_logic_status` に **code と field** で載る(文字列一致に依存させない)。`GameLogicArtifactMismatch` は本 WP では**定義だけ**。
+
+#### 受け入れ(§4 規約 10。起票ゲート 5・6)
+
+- **fixture DLL 4 種**を `test/CMakeLists.txt` の WP162 variant 系列([test/CMakeLists.txt:441](../test/CMakeLists.txt#L441))に足す:
+  (i) **stale v1**: section 無し・`pelican_game_logic_abi_version` export・static initializer が **`__registerComponent("wp381_stale_probe")`
+  を呼ぶ**(host の component registry がそのまま sentinel。test hook は足さない)
+  (ii) **forged v2**: section あり・entry symbol 無し (iii) **malformed**: magic 不一致 (iv) **valid v2**: v2 macro で書いた最小 DLL
+- **matrix**: initial load / reload / 再 initialize × (i)(ii)(iii)(iv) を **production `GameLogicReloader`**(`initializeConfiguredGameLogic` /
+  `pollGameLogicReload` の実経路)で回す。(i)(ii)(iii) は名前付きエラーの **code** が一致し、
+  **active handle・generation・全 registry の key 集合が試行前と一致**、`wp381_stale_probe` は**存在しない**。
+  対照: raw header 検証の呼出を消すと (i) で `wp381_stale_probe` が現れる(今日の挙動)。(iv) は成功し generation が進む
+- **rollback**: (iv) の後に **`register_descriptor` が途中で `registration_rejected` を返す DLL**(重複 key)を reload し、
+  active が (iv) のまま・registry が (iv) と一致。**表の 1 行ずつ**(Animation・render provider・physics …)の rollback を消す変異が
+  それぞれ落ちる(aggregate の 1 変異では足りない)
+- **canonical key 順**: 同じ 2 登録を逆順に並べた DLL 2 つで、拒否理由の code と field が一致
+- **例外境界**: entrypoint 内で throw する DLL が `internal` で拒否され、host は継続
+- **出荷 4 project**: game DLL を v2 macro に移し、`project_catalog_headless_smoke`(`-DPELICAN_TEST_PROJECTS_DIR`)が通る。
+  bytes 不変は **scene / project JSON** について(DLL は変わる)。golden 不変
+- `SKIP_DEVSTUDIO` 両構成・`PELICAN_WITH_PHYSICS` ON/OFF でビルド。全数(着手時に実測)。GPU は統合側で直列
+
+#### やらないこと
+
+sidecar / helper process 隔離 / manifest 生成(CARRIER-STUDIO)/ `schema_v1` wire 本体(CARRIER-RT3)/ registry 型の変更 /
+Behavior の layout 変更 / hot-reload の teardown・rebuild 順序(WP380 の領域)/ `GameLogicArtifactMismatch` の検査。

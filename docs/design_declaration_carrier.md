@@ -1,4 +1,4 @@
-# 設計: 宣言の担体 —— 可変長の宣言と、authoring object から実行 row への join(v1、2026-09-02)
+# 設計: 宣言の担体 —— 可変長の宣言と、authoring object から実行 row への join(v1→v4、2026-09-02)
 
 ## 0. なぜ今か
 
@@ -189,7 +189,7 @@ CARRIER-2 = Studio 汎用 UI(design_studio_component_ui。core RPC 2 本の上)
 CARRIER-1 は大きい。**仕様レビューで分割案が出たら、C-1+C-2(消費者: 名指しの behavior list)と C-3 に割る**ことを許す。
 
 
-## 7. 設計レビュー第 2 巡(9 件・破綻 3)と v3 —— **v3 が最終。設計段は 3 巡で打ち切る**
+## 7. 設計レビュー第 2 巡(9 件・破綻 3)と v3(§8 の v4 で置換)
 
 **v3 が本文書の正。§6 の決定 1'〜12' は v3 の修正を受ける。残余は各 WP の仕様レビューで受ける。**
 
@@ -282,3 +282,128 @@ AS plan を **side state で構築し、全成功後に generation 単位で 1 �
 
 順序: **GLABI-2 → RAY-NAMESPACE → (ID-B) → CARRIER-SCHEMA-TX + CARRIER-RT3 → CARRIER-STUDIO**。
 **最初に起票するのは GLABI-2**(前提が無く、既存欠陥を直す)。
+
+## 8. 設計レビュー第 3 巡(11 件・破綻 4)と v4 —— **v4 が最終。設計段はここで打ち切り、残余は GLABI-2 の仕様レビューへ**
+
+**v4 が本文書の正。§7 の修正 1〜9 は v4 の修正 α〜θ を受ける。** 第 3 巡の結論は「GLABI-2 を最初の carrier WP に置く判断は妥当。
+ただし起票に必要な契約が未確定」であり、本節はその**起票ゲート 6 条件**を規範として確定する。
+
+### 修正 α(#1): `stable_primitive_identity` は **tagged union**。index は identity にしない
+
+- `PrimitiveIdentity = ExplicitId{ extras.id 文字列 } | OrderedContentDigest{ 正規化 accessor の digest }`。
+  **primitive index は診断にだけ載せ、H の入力にしない**(DCC 再出力で配列順が変わる)
+- 同一 node 内で digest が一致する sibling は **`AmbiguousOccurrence`**(両 primitive の index・material・bounds を載せる)。
+  利用者は `extras.id` か geometry で区別する。**黙って先勝ちにしない**(修正 1 を維持)
+
+### 修正 β(#2): `occurrence_id v1` の **byte 仕様**と、asset key の強い型
+
+```
+occurrence_id_v1 = hex32( SHA-256( "pelican.occurrence.v1" ‖ F(asset) ‖ F(node) ‖ F(prim) ‖ F(variant) ‖ F(content) )[0:16] )
+F(x) = u32le(len(bytes(x))) ‖ bytes(x)          // 全 component を length-prefix。空でも u32le(0) を書く
+```
+- 文字列は **NFC 正規化 UTF-8**。整数は **u32le / u64le**。float は **f32 bit pattern**、`-0.0 → +0.0`、**NaN / Inf は `OccurrenceIdUnrepresentable` で名前付き拒否**
+- accessor 正規化: 量子化・normalized 型は **f32 へ dequantize**、index は **u32**、attribute は **semantic 名の byte 順で並べ**、
+  未使用 attribute は含めない。sparse accessor は展開する
+- `node` = glTF node index + 親 path(index 列)。`asset` = **`CanonicalModelAssetKey`(強い型)**。project の asset 表が
+  採番し、**prepare / inspect / commit を同じ型で通す**(文字列で持ち回らない。宣言名・URI からの再構成は禁止)
+- version は prefix 文字列に埋める。式を変えるときは `v2` を足し、v1 の再計算は**しない**(旧 row は `OccurrenceAbsent` で落ちるのが契約)
+
+### 修正 γ(#3・#5・#6・起票ゲート 1〜6): GLABI-2 の **C ABI と transaction を完全固定**する
+
+**起票ゲート 1: embedded section を規範**にする。sidecar は**廃止**(DLL と拘束できず、stale sidecar が preflight を通す)。
+- PE: section `.pelabi` / ELF: note `PELICAN_ABI`。**raw file reader で読み、`LoadLibrary` / `dlopen` の前に検証**する
+- 内容(すべて little-endian・固定 layout):
+  `magic "PELABI\0\0"(8) ‖ major u16 ‖ minor u16 ‖ struct_size u32 ‖ capabilities u64 ‖ build_id[16] ‖ entry_symbol char[64]`
+- `build_id` は SDK の generated header が **build ごとに**埋める 128 bit(時計は使わず、link 入力の digest)
+
+**起票ゲート 2: 単一 C entrypoint を固定**する。
+```c
+typedef uint32_t pelican_gl_status;            /* 0 ok / 1 host_incompatible / 2 registration_rejected / 3 internal */
+PELICAN_GL_EXPORT pelican_gl_status
+pelican_game_logic_register_v2(const pelican_gl_host_api *host,        /* host が所有。呼出中のみ有効 */
+                               pelican_gl_registration_sink *sink);    /* host が所有。呼出中のみ有効 */
+```
+- `extern "C"`、x64 の既定呼出規約、**`noexcept` 相当(例外は境界を越えない。越えたら `internal`)**
+- `pelican_gl_host_api` / `pelican_gl_registration_sink` は先頭に `struct_size u32 ‖ version u32`。関数 pointer 表。**STL / `type_info` を跨がない**
+- descriptor は **`sink->register_descriptor(kind u32, version u32, const uint8_t *bytes, size_t len)`** の
+  **versioned length-delimited wire** で渡す。host が copy する。DLL 側 pointer の寿命は呼出中のみ
+- 旧 `pelican_game_logic_abi_version` は **v2 では export しない**(section が代替)。v1 の symbol だけ持つ DLL は section 欠落で落ちる
+
+**起票ゲート 3: extension contract**。`kind` は host の登録表で解決し、**未知 kind は `UnknownDescriptorKind{kind, version}` で拒否**
+(skip しない。fail-fast)。kind の追加は **minor** を上げ、既存 kind の wire 変更は **新 kind**(major は据え置き)。
+**`kind = schema_v1`(再帰 schema wire)は今ここで番号だけ予約**し、wire 本体は CARRIER-RT3 が定義する。
+これで「flat 向け ABI v2 を固定すると SCHEMA-TX で v3 が要る」問題は消える(major を上げずに kind を足す)。
+
+**起票ゲート 4: transaction 対象表**。`releaseGameLogicRegistrations`
+([gamelogicreload.cpp:43](../src/core/gamelogic/gamelogicreload.cpp#L43))の **全 owner kind** を行にする:
+
+| owner kind | candidate | commit | rollback |
+|---|---|---|---|
+| Behavior / GameSystem / Event / Component 登録 | candidate owner に登録 | owner を live に昇格 | owner ごと release |
+| Animation owner | 同上 | 同上 | 同上 |
+| render policy / pass / subgraph / graph transform / strategy provider | candidate owner に登録(**activate しない**) | `activateProviderOwner` | release |
+| vulkan native scope provider | 同上 | 同上 | 同上 |
+| physics provider(`PELICAN_WITH_PHYSICS`) | 同上 | 同上 | 同上 |
+| registration owner 自体 | `allocateRegistrationOwner` | 旧 owner を release | candidate owner を release |
+
+- 登録の検証は **canonical key 順**(登録順に依存しない)。重複・不正は名前付きで candidate 全体を落とす
+- **`initialize()` は `shutdown()` の前に preflight**(section 検証 + candidate load)を置く
+  ([gamelogicreload.cpp:209](../src/core/gamelogic/gamelogicreload.cpp#L209) は今 active を先に捨てる)。
+  reload 経路([gamelogicreload.cpp:253](../src/core/gamelogic/gamelogicreload.cpp#L253))は既に validate → unload なので、そこに揃える
+
+**起票ゲート 5: matrix**(initial load / reload / 再 initialize)×(missing section / stale v1 / forged v2 / valid v2):
+- `GameLogicAbiMissing`(section 無し。**v1 DLL はここ**)/ `GameLogicAbiMalformed`(magic・struct_size 不整合)/
+  `GameLogicAbiUnsupported{found_major, required_major}` / `GameLogicEntryMissing`(section は v2 だが entry 無し = forged)/
+  `GameLogicArtifactMismatch`(修正 ζ の manifest 用)。**5 つは別々の名前付きエラー**
+- どの行でも **旧 active handle・generation・全 registry の件数と key 集合が不変**。missing / stale / forged は **`LoadLibrary` を呼ばない**
+
+**起票ゲート 6: 受け入れ**。「**v1 SDK で作った実 DLL(WP162 の fixture 系列)で、static constructor が host の sentinel を変更するもの**」
+を候補にし、initial / reload / 再 initialize の 3 経路で **sentinel 不変・旧 active handle / generation / 全 registry 一致**を
+production `GameLogicReloader` 経由で検査する。対照: 現行 loader は `LoadLibrary` で constructor を走らせるので sentinel が変わる。
+**section 検証の呼出を消したら落ちる**。
+
+### 修正 δ(#4・#7): row envelope は **container decoder が剥がす**。raw は上書きしない
+
+- **`$` prefix を schema field 名から予約**(builder の `consteval` / `static_assert` と、runtime `ReservedFieldName` の両方)
+- list container decoder が `$row` を剥がし、**user struct decoder には authored field だけを渡す**。encoder は envelope を先頭に戻す
+- **raw authored tree は一切上書きしない**。`ResolvedComponent::source_json_exact` の Behavior 上書き
+  ([resolvedscene.cpp:179](../src/core/loader/resolvedscene.cpp#L179))と journal の全再 encode
+  ([editorjournal.cpp:1057](../src/core/communication/editorjournal.cpp#L1057))を、**raw patch → typed validation → raw / typed atomic publish** に置き換える
+- `id`: **u32**、JSON number、scope = `{object, component, list_path}`。allocator = scope 内 `max + 1`(決定的)。
+  overflow は `RowIdExhausted`。未知 `v` は `RowEnvelopeUnsupported`
+- **envelope の無い手書き行は `RowEnvelopeMissing` で拒否**(暗黙 migration しない。row の唯一の writer は insert op)
+- prefab: body は instance ごとに複製される([resolvedscene.cpp:822](../src/core/loader/resolvedscene.cpp#L822))が、
+  scope が instance の component なので id は**そのまま**複製してよい(衝突しない)
+- 受け入れ: **無関係な scalar `/params/speed` の編集後も、全 row envelope・省略 field・row 順序が byte 一致**
+
+### 修正 ε(#8): `last_known_provenance` は **非権威の `provenance_hint`** に置き換え、**absent は正式契約**
+
+- 選択時に envelope へ `"$row": { "id", "v", "hint": { asset, node_path, primitive } }` を**非権威**で保存する(join には使わない)
+- `OccurrenceAbsent{row_id, occurrence_id, provenance_hint: optional}`。**`null` は正式**(再起動後に逆算できないため)
+
+### 修正 ζ(#9): offline manifest は **exact artifact に拘束**
+
+- manifest は `{ dll_sha256, build_id, target_triple, configuration, feature_vector, abi{major,minor}, fingerprint, descriptors[] }`
+- **同じ registration entrypoint を headless host で走らせて生成**する(手書き一覧を許さない)
+- offline Studio は project closure が指す exact artifact と照合し、不一致は **`SchemaManifestUnbound`** で UI を止める
+
+### 修正 η(#10): ID-B は **identity 設計 v4 の executor**(§9)を前提にする
+
+- v3 参照(修正 7)を **v4 §9 修正 B の scene 専用 executor** に差し替える
+- CARRIER-RT3 が後から登録する **participant seam** を v4 の participant 表に足す:
+  catalog / occurrence map / AS plan は **`prepare` で失敗可**、publish / rollback / retire は **`noexcept`**
+- 受け入れ: carrier participant を **1 つずつ** bypass / drop した変異が production test で落ちる
+
+### 修正 θ(#11): **4 つに分ける**。SCHEMA-TX と RT3 は 1 つの縦切り
+
+「単独出荷しない」と本文が認める WP は WP ではない。**CARRIER-SCHEMA-TX + CARRIER-RT3 を 1 つの vertical WP(CARRIER-RT3)**に統合し、
+内部 milestone(schema / envelope / row 編集 → occurrence / inventory / GPU)だけ分ける。消費者は RT3 の per-occurrence override。
+
+| WP | 内容 | 単独価値 |
+|---|---|---|
+| **GLABI-2** | 修正 γ 全部 | あり(今日は v1 DLL の constructor が host state を変えてから拒否される) |
+| **RAY-NAMESPACE** | 修正 6 | あり(WP379 起票済み) |
+| **CARRIER-RT3** | 修正 α β δ ε η + RT3 row schema(修正 2)+ inventory(修正 7')。前提: GLABI-2 / RAY-NAMESPACE / ID-B(WP380) | あり(1 object × 2 primitive を別設定) |
+| **CARRIER-STUDIO** | 修正 ζ + design_studio_component_ui | RT3 の後 |
+
+順序: **GLABI-2 → RAY-NAMESPACE → ID-B → CARRIER-RT3 → CARRIER-STUDIO**。
