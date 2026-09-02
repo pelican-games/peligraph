@@ -21389,7 +21389,7 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 - **統合側の変異(2 回目、継続後)**: 基準 10 / 10 → **M1**(`initialize()` の reload 委譲を外す)赤 / **M2**(raw 診断の結果を常時受理)赤 2 / 2(`legacy entrance inventory …` が production loader 経由で観測)。残留 0
 - **統合側の変異**: (記入)
 - **main 取り込み**(`merge-resolver` agent、opus): 衝突 6 ファイル(event registerer の outbox + 改名、rpcserver.hpp/.cpp の両側追加、test CMake の option 集合、docs 2)。WP380a の typed rebuild は WP381 の loader 内で生存を確認。worktree で非 GPU 1264 / 1264、GPU 含む WP 系 gate は出荷 example の ignored asset を copy して緑
-- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1586 件中 1583 緑**。#71 Studio fatal = WP380a の後退(WP380a-fix 統合待ち)。**WP381 の inventory テスト 2 件が単独でも赤**: `targets.size() == 19` の literal に対し main の構成では 23(SKIP_DEVSTUDIO=OFF + 後続 WP の fixture DLL)。「exact 19」は 1 構成の実測値であって受け入れの意図(property から生成され完全)ではない → literal を外し inventory を走査する形に修正(Claude agent)
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1586 件中 1583 緑**。#71 Studio fatal = WP380a の後退(WP380a-fix 統合待ち)。**WP381 の inventory テスト 2 件が単独でも赤**: `targets.size() == 19` の literal に対し main の構成では 23(SKIP_DEVSTUDIO=OFF + 後続 WP の fixture DLL)。「exact 19」は 1 構成の実測値であって受け入れの意図(property から生成され完全)ではない → literal を外し inventory を走査する形に修正(Claude agent、`5dabe347`。9 role exact + 全 entry の分類 + loader 全件の PE 監査。dead な count define も削除)。WP381 系 10 / 10 緑
 - コードレビュー `rev381`: (記入)
 ### WP380a-fix: 失敗した scene load が vertex pool を消費し、出荷 example の config fatal を別の fatal で隠す
 
