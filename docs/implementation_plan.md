@@ -20035,8 +20035,51 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 - 統合後 main(`1aeafc59`、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1534 件中 1532 緑**。落ちた 2 件(`WP375a inactive prefab …` / `WP375a production set routes …`)は
   **`pelican_wp375_behavior_fixture.dll` の shadow copy 衝突**(`gamelogicreload.cpp:249` "shadow copy failed: The process cannot access the file")。shadow dir が
   `<DLL dir>/.pelican-hot-reload` で **同じ fixture DLL を使うテスト process 間で共有**され、`-j4` で衝突する。単独再実行 **2 / 2 緑**。既知の穴に記録(shadow dir を process ごとに分ける = WP381 の loader 変更に同梱)
-- コードレビュー `rev375a`: **codex 再開後(2026-09-07)に投入**。観点: 上記 (ii) の契約統一、`DocumentOnly` route が preview / snapshot import / undo でも効くか、
-  `runtime_binding_missing@1` の裁定が prefab instance の behavior に副作用を持たないか
+- コードレビュー `rev375a`(同夜、fast 無し): **reject**。致命: `DocumentOnly` が Committed 限定で **Preview の inactive light が active の light を置換**(出荷 example で到達)。実害: pending behavior の journal handle が DLL reload 後に stale。検証欠落: RPC OFF guard が非 RPC case まで消す。→ **WP375b**(375a の修正の完成として 1 回だけ)。#4〜#6 は記録。壊せなかった: Committed 全 op の DocumentOnly、undo の scene routing、snapshot import、inverse token の即時 rollback、統合側の 2 修正は代理条件ではない
+
+### WP375b: 非 active scene の **preview** commit が active scene の light を置換する(WP375a の filter が Preview に効いていない)+ pending behavior の journal handle + RPC guard の粒度
+
+**§4 規則 11 上段。コードレビューのみ(§10)。見積: 小〜中。**
+**連鎖: WP375 → 375a → 375b。375a は WP375 が落とした filter を Committed にだけ戻したので、同じ後退が Preview に残った(= 375a の修正の完成であって新しい輪ではない)。
+これ以降 WP375 系で致命が出たら、起票ではなく revert を先に検討する。**
+**依存: なし(WP375a 統合済み `1aeafc59`)。WP379 / WP380a と並列(planner / preview / journal / test CMake を触る。統合時に main を取り込む)。**
+
+#### 何が壊れているか(コードレビュー `rev375a` が出荷 example で到達を確認)
+
+1. **致命**: `appendDocumentOnlyIfInactive`([editorprojectionplan.cpp:322](../src/core/communication/editorprojectionplan.cpp#L322))は `Committed` 限定。
+   **Preview** は light / transform を許し、light preview は対象 scene の全 light を作って global `LightContainer` と交換する
+   ([editorprojectionadapters.cpp:1158](../src/core/loader/editorprojectionadapters.cpp#L1158))。出荷 example で `scene_flow_second`(inactive、light 1 個)の
+   `SceneFlowKeyLight` を `open_preview → set → commit_preview` すると **active `default_scene` の light 14 個が 1 個に置換されたまま**になる(abort なら restore route で戻る。成功 commit だけ壊れる)
+2. **実害**: pending behavior(DLL 不在)の commit は attachment handle `h2` を journal inverse に保存する([editorjournal.cpp:1190](../src/core/communication/editorjournal.cpp#L1190))。
+   DLL が現れて reload → runtime teardown + scene rebuild で arena が消え、同じ attachment に `h3` が振られる([behaviorarena.cpp:824](../src/core/gamelogic/behaviorarena.cpp#L824))。
+   undo は `h2` で検索して **見つからない**([editorjournal.cpp:4005](../src/core/communication/editorjournal.cpp#L4005))
+3. **検証欠落**: `PELICAN_WITH_RPC=OFF` の guard が `raytracing_rt3_1_production_test` **実行体ごと**([test/CMakeLists.txt:1266](../test/CMakeLists.txt#L1266))と
+   `wp361_prefab_test.cpp:1358` の**テスト全体**を消し、RPC を使わない case(WP377 の直接 `SceneLoader` 検証、WP374a の 10 状態 matrix、WP375 preflight、
+   coordinator 直接経路)まで RPC OFF で消えている
+
+#### 直すこと
+
+1. **`DocumentOnly` を Preview にも適用**する(`open_preview` / `commit_preview` / restore route)。inactive scene の preview は document だけを更新し、runtime の light / transform を触らない
+   (preview の表示は active scene の runtime を写す。inactive を「見る」機能は無いので、preview 自体を名前付きで拒否するのも可。どちらにしたかと理由を報告)
+2. journal inverse は **handle ではなく attachment identity**(object / component index / sequence)で remove 対象を解決する。handle は runtime 内部の値であり journal に保存しない
+   (保存するなら reload で再解決する)。DLL 不在 commit → DLL 出現 reload → undo が成功する受け入れ
+3. RPC guard を **RPC を使う case だけ**に絞る(`#if PELICAN_WITH_RPC` を TEST_CASE / SECTION 単位に。実行体は常に build)。RPC OFF でも WP377 / WP374a / WP375 preflight / coordinator 直接経路が走る
+
+#### 受け入れ(§4 規約 10)
+
+- **preview**: 出荷 example(local asset 依存は smoke と同じ)で `scene_flow_second` の light を `open_preview → set → commit_preview` → **`default_scene` の runtime light は 14 個のまま**、
+  document は secondary だけ変わる(今日 = 1 個に置換)。Preview 側の DocumentOnly を外す変異で落ちる。同じテストで active scene の light preview は runtime に反映
+- **journal handle**: DLL 不在で behavior add(pending)→ save → DLL を置いて `reload_game_logic` → **undo が成功**し attachment が消える(今日 = `behavior attachment not found`)。
+  identity 解決を handle 検索に戻す変異で落ちる
+- **RPC OFF**: `-DPELICAN_WITH_RPC=OFF` の build で、WP377 の直接 `SceneLoader` 検証・WP374a の 10 状態 matrix・WP375 preflight・coordinator 直接経路が **登録され実行される**(件数を報告)。
+  RPC を使う case は OFF では未登録
+- 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成 / RPC ON/OFF / 出荷 4 project bytes 不変 / golden 不変 / GPU は統合側で直列
+
+#### 記録のみ(やらない)
+
+- `rev375a` #4: canonical operation の `scene_id` を偽装すると active op が `DocumentOnly` に落ちる(内部 API。通常 RPC からは到達しない)。planner が object の実所属で照合する改修は E-3a と同時に
+- `rev375a` #5: participant 欠落テストは renderer だけ。camera / light / collider は production composition が全 participant を供給するため対照が作れない(記録)
+- `rev375a` #6: BlueSpot 受け入れは local asset に依存(smoke と同じ。hermetic 化は asset 同梱方針の決定後)
 ### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
 
 **§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
