@@ -21387,8 +21387,9 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 依存: **WP379 統合後**(component 登録 ingress は触らないが、同じ test EXE / fixture 系列を触る)。仕様レビューは 2 巡で打ち切り。
 見積: **中〜大**(anchor + 4 入口改名 + reader + `initialize()` 順序 + fixture 9 role + RPC data + 監査テスト)。
 
-### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止、再開 2026-09-07 11:26)
+### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 
+2026-09-02 深夜 再開: `rev377a` `rev375a` を再投入、**WP379 と WP380a を並列投入**(worktree `<作業ディレクトリ>/wp379` / `<作業ディレクトリ>/wp380a`)。
 **統合済みで残っているもの**
 - WP377a(`a3f318fb`)のコードレビュー `rev377a`: 判定前に中断。**再投入**(観点は `<作業ディレクトリ>/rev377a.txt`)
 - WP375a: **統合済み**(`1aeafc59`)。コードレビュー `rev375a` は再開後に投入(観点は完了記録の末尾)
