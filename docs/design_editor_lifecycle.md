@@ -369,3 +369,30 @@ undo/redo の写像は journal の forward/inverse に載る(v3 どおり)。
 `ObjectReferenceIndex` の宣言面の文法 / unpack で除去する marker の規範表 /
 決定 1 の照合をどこに実装するか。
 **E2(spawn/destroy の原子性)は別文書**。着手時期は U2 完了後でよい。
+
+
+## v5 追記(2026-09-02): 決定 3 の撤回と、E1 の到達点
+
+**決定 3(component 列 CAS)は撤回する。** 台帳 WP372c 決定 A で裁定済みだが、
+設計文書側に反映されていなかったので、ここに記す。
+
+- 撤回の理由: component 列粒度への細分化は、**overlap の第 1 規則
+  (object 集合が交われば無条件に衝突)を緩める**ことであり、rename のためではなく
+  **全操作の安全網が緩む**。細分化を要求していたのは WP372 v2 が置いた正例
+  「同一 object の無関係な列を編集した後 rename の undo が成功する」だけで、
+  それは仕様のために発明されたものであって利用者の要求ではない
+- 現行の overlap 規則([editorjournal.cpp:2365](../src/core/communication/editorjournal.cpp#L2365))を
+  **緩めない**。rename は対象 object と参照元 object に触る並行編集と衝突する
+- v3 決定 3(execution 内でのみ有効な写像)は**維持**。WP372b で実装済み
+
+**E1 の到達点(2026-09-02 時点)**:
+
+| 項目 | 状態 |
+|---|---|
+| origin 遷移(unpack) | **実装済み**(WP372b + fix、`OriginTransitionMap`) |
+| params 変更で instance を殺さない | **実装済み**(WP372a) |
+| `ObjectReferenceIndex` / rename | **設計トラックへ移送**。object 名が 6 subsystem の identity キーであり、rename は編集ではなく rekey(台帳 WP372c 裁定) |
+| dry-run / エラー面統一 | **U2 と同時**(消費者がそこにしか無い)。型付き resolution error は codec 契約の設計(台帳 WP373 裁定) |
+
+決定 2(behavior params schema への object 参照宣言)は設計として生きているが、
+rename 追随が設計トラックへ移ったため、**実装は担体プログラムと同時**に行う。

@@ -19397,3 +19397,67 @@ row lowering は static index だけを走査する
 
 **実装する。** 第 2 巡は「機構が違う」を 1 件も出していない。
 全数は**起票時に `ctest -N` で実測**して基準とする(v2 決定 11)。
+
+
+### WP374a: RT3-1 の受け入れを本番経路と GPU で書き直す(修正パッケージ。連鎖打ち切り)
+
+**§4 規則 11 上段のうち、コードレビューのみ(仕様は WP374 v3 で確定済み)。見積: 中。**
+**WP374 の実装本体(worktree `agent/wp374`、22 ファイル)は触らない。受け入れだけを足す。**
+
+#### 統合側で確定した事実(2026-09-02)
+
+WP374 の実装は **ビルド 0 エラー、非 GPU 1208/1208 緑、構成 matrix 4 本で WP374 群 8/8 緑**。
+しかしエージェント自身の変異で **UNMET 4 件**が出ており、**GPU テストは 1 本も書かれていない**
+(新規 8 件は全部 CPU)。**WP372b と同じ穴**(受け入れが本番経路を通っていない):
+
+| # | 変異 | 結果 | 意味 |
+|---|---|---|---|
+| 1 | `set_component_value(ray_instance)` の live invalidation を外す | **8/8 緑のまま** | 「実 RPC bytes → add/set/save/reload/remove → TLAS」の受け入れが存在しない |
+| 2 | SceneLoader から preflight 呼び出しを外す | **8/8 緑のまま** | 状態表テストが helper 直呼び。本番 scene load を通っていない |
+| 3 | BLAS cache 鍵から解決済み geometry flags を外す | 非 GPU では緑 | F→G→F の GPU 受け入れが無い |
+| 4 | `vk::AccelerationStructureGeometryKHR.flags` に空を渡す | 非 GPU では緑 | 「鍵にだけ入れて Vulkan に渡さない」実装が通る |
+
+#### 範囲(WP374 v3 の受け入れのうち、未実装のものだけ)
+
+**A. 本番経路(CPU)**
+
+- **実 JSON-RPC bytes** を `RpcServer::run` へ流す `add_component(ray_instance)` →
+  render → `set_component_value` → 再 render → `save_scene` → fresh reload → 再 render →
+  `remove_component`。各段で **実 TLAS plan の値**(mask / flags / custom index)を検査
+- **10 状態表を本番 scene load(SceneLoader)経由で**走らせる。
+  #2・#4(`ray_instance_requires_layout_v2@1`)と #5・#6(`…requires_layout_v2@1` 優先)は
+  **preflight validator が本番の scene load から呼ばれること**で出ること
+- **変異 1・2 が赤くなること**が本 WP の存在理由
+
+**B. GPU(`[gpu]` ラベル。統合側で直列に回す)**
+
+- **椅子 2 脚**: 同じ material の個体 2 つで片方の `ray_instance.mask` だけを変えて
+  **GPU 出力が変わる**。component を消すと両方写る
+- **instance_flags**: 片方だけ `force_opaque` で **any-hit 呼び出し回数が減る**
+- **custom_index**: 宣言値が `gl_InstanceCustomIndexEXT` に出る。
+  **row を追加して `q` をずらしても不変**。**SBT sentinel は独立に正しい**(同一テスト)
+- **F→G→F**: `F1(+1) F2(+0) G1(+1) G2(+0) F3(+1) F4(+0)` の build 列、
+  **各 commit 後の resident cache key 集合が `{(allocation, 現在の flags)}` と完全一致**、
+  **any-hit 呼び出し回数が F と G で変化し F 復帰で戻る**
+- **変異 3・4 が赤くなること**
+
+#### 禁止事項(WP372b-fix と同じ)
+
+- **`EditorEditRuntimeDependencies.execute` にラムダを注入しない**
+- **`BehaviorSceneProjectionAdapter` 等の adapter をテストで直接構築しない**
+- **`…ForTesting` の override 型 seam を受け入れで使わない**(観測 seam は可)
+- **helper 直呼びで「本番経路」と称しない**。本番の分類・validator・executor を
+  **消す変異で落ちる**ことを、各項目について報告に書く
+
+#### 受け入れ
+
+- 上記 A・B が **WP374 v3 の各項目に 1:1** で対応し、**変異 1〜4 がそれぞれ赤くなる**
+- 実装本体の変更が必要になった場合(観測のための診断追加など)は、
+  **何をなぜ変えたかを報告に明記**する。意味論の変更は UNMET として報告し、勝手に変えない
+- 既存 1208(非 GPU、`SKIP_DEVSTUDIO=ON`)を壊さない / `SKIP_DEVSTUDIO` 両構成 /
+  出荷 4 project と `src/core/resources/` の bytes 不変
+
+#### やらないこと
+
+単一 production executor seam の導入(**別 WP**。14 箇所の `.execute` 注入の一掃はそちら)/
+実装本体の再設計 / RT3-2 / Studio UI。
