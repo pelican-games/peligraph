@@ -19461,3 +19461,82 @@ WP374 の実装は **ビルド 0 エラー、非 GPU 1208/1208 緑、構成 matr
 
 単一 production executor seam の導入(**別 WP**。14 箇所の `.execute` 注入の一掃はそちら)/
 実装本体の再設計 / RT3-2 / Studio UI。
+
+
+### WP375: 単一の本番 executor seam —— 受け入れが本番の分類・adapter 構築・commit を写経できなくする
+
+**§4 規則 11 中段(`pelican_project` は触らないが core の複数経路に跨る)。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中。**
+**規範は台帳 WP372c 裁定の持ち越し 8 と、テスト品質の仕分け(2026-09-02)。**
+
+#### 何が壊れているか(このセッションで 3 回踏んだ)
+
+編集の本番経路は `executeEditorProjection`(分類 → adapter 構築 → transaction commit)だが、
+**匿名 namespace の中にあり、`EditorRuntimeModules`(本番の live module 14 個への参照)を
+丸ごと要求する**([editorruntimefactory.cpp:835](../src/core/communication/editorruntimefactory.cpp#L835)・:156)。
+テストはこれを呼べないので、**`EditorEditRuntimeDependencies.execute` にラムダを注入し、
+分類と adapter 構築を手で書き直している** —— **14 箇所 / 4 ファイル**
+(`wp361_prefab_test.cpp` に 11、`devstudio_inspector_test` / `editorjournal_test` /
+`inspector_test` に 1 ずつ)。
+
+結果、**本番の分岐を消してもテストは緑のまま**になる。実例:
+
+| WP | 消した本番側 | テスト |
+|---|---|---|
+| WP372b | 写像を arena へ渡す dict insert | 5/5 緑のまま(→ WP372b-fix) |
+| WP374 | `set_component_value(ray_instance)` の live invalidation | 8/8 緑のまま |
+| WP374 | SceneLoader からの preflight 呼び出し | 8/8 緑のまま |
+
+#### 起票時の実測(2026-09-02)
+
+- `executeEditorProjection` が触る `modules.<field>` は **10 種類だけ**:
+  `ecs_core` / `component_info` / `models` / `polygon_instances` / `camera` / `lights` /
+  `physics` / `behavior_arena` / `project_config` / `scene_loader`。
+  **`renderer` には触らない** —— つまり **GPU 無しで呼べる**
+- それらは既に単体テストが module container 経由で構築している
+  (WP372a の受け入れが `GET_MODULE(BehaviorAttachmentArena)` を使っている)
+- transaction の target は `EditorProjectionDocumentTarget` 抽象で、
+  テスト用実装が 2 つある(`SceneProjectionTarget` / `PrefabProjectionTarget`)。
+  **target は差し替えてよい。差し替えてはいけないのは分類・adapter 構築・commit である**
+- 本番組成 `makeEditorRuntimeService` を呼ぶテストは `golden_harness.cpp` だけ
+
+#### 1. seam の形
+
+- `executeEditorProjection` を **`internal::` に出し**、依存を
+  **実際に使う 10 module だけを持つ `EditorProjectionExecutorModules`** に絞る
+  (`EditorRuntimeModules` からの投影を本番側で 1 回作る)
+- **target を引数にする**(`EditorProjectionDocumentTarget &`)。
+  本番は `EphemeralEditorProjectionTarget`、テストは既存の 2 実装を渡す
+- **本番の `.execute` はこの関数への転送だけ**になる(:1775)。
+  分類・adapter 構築・commit のロジックを転送側に残さない
+- **分類表(op 名 → adapter 集合)を seam の中で 1 箇所**にする。
+  現在 component 名を hard-code している分岐([editorruntimefactory.cpp:916](../src/core/communication/editorruntimefactory.cpp#L916))も
+  ここに集約する。未知の op は**名前付きで拒否**(今は adapter 0 個で commit する:
+  WP372c 第 1 巡 #2 で判明)
+
+#### 2. 14 箇所の置換
+
+- 14 箇所の `.execute` ラムダを**すべて seam の呼び出しに置換**する。
+  テスト側に分類・adapter 構築を残さない
+- 置換できないテストがあれば、**理由を UNMET として報告**する(勝手に残さない)
+- `ResolvedSceneResolver` 直叩き 41 箇所は**本 WP の範囲外**(次の仕分け WP)
+
+#### 受け入れ(§4 規約 10)
+
+- **本番側の分岐を消す変異で、該当テストが落ちる**。最低限、次の 3 つを当てる:
+  WP372b の dict insert(現在は WP372b-fix で共有関数化済み。その関数を壊す)/
+  WP374 の `set_component_value(ray_instance)` invalidation /
+  未知 op の名前付き拒否。**3 つとも赤くなること**
+- **未知 op が名前付きで拒否される**(`editor_projection_unknown_operation@1`)。
+  今は adapter 0 個で document だけ commit される
+- **14 箇所すべてが seam を呼ぶ**。テストコードに `.execute = [` が残っていない
+  (これは静的検査ではなく、**残っていれば上の変異が通ってしまう**ことで示す)
+- 本番組成(`makeEditorRuntimeService` → RPC)経由の既存テストと golden が**不変**
+- 既存テスト(起票時に実測した全数)を壊さない / 全数 2 回 / `SKIP_DEVSTUDIO` 両構成 /
+  GPU は統合側で直列
+
+#### やらないこと
+
+`ResolvedSceneResolver` 直叩きの仕分け(次 WP)/ override 型 `ForTesting` seam の棚卸し(次々 WP)/
+transaction や adapter の意味論の変更 / Studio 側の変更。
+
+依存: WP374a(RT3-1 の受け入れ)の後。WP374 の invalidation 分岐が変異対照に入るため。
