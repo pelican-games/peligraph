@@ -406,4 +406,4 @@ production `GameLogicReloader` 経由で検査する。対照: 現行 loader は
 | **CARRIER-RT3** | 修正 α β δ ε η + RT3 row schema(修正 2)+ inventory(修正 7')。前提: GLABI-2 / RAY-NAMESPACE / ID-B(WP380) | あり(1 object × 2 primitive を別設定) |
 | **CARRIER-STUDIO** | 修正 ζ + design_studio_component_ui | RT3 の後 |
 
-順序: **GLABI-2 → RAY-NAMESPACE → ID-B → CARRIER-RT3 → CARRIER-STUDIO**。
+順序: **GLABI-2 ∥ RAY-NAMESPACE(並列可。RAY-NAMESPACE は migration を持たないので GLABI-2 に依存しない)→ ID-B → CARRIER-RT3 → CARRIER-STUDIO**。

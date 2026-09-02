@@ -20419,8 +20419,8 @@ launcher の `PELICAN_DIAG` / terminal `error.data` / `commit` の `noexcept` �
 ### WP379: RAY-NAMESPACE —— `ray_instance` を `pelican_ray_instance` へ移し、builtin 名を owner-aware に予約する
 
 **§4 規則 11 中段(core の複数経路 + project 形式)。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小〜中。**
-**規範は `docs/design_declaration_carrier.md` v3 修正 6・9(RAY-NAMESPACE は独立 WP。CARRIER-1 に含めない)。**
-**依存: WP377(統合後)。WP374 の後追い負債。**
+**規範は `docs/design_declaration_carrier.md` v4 §8 修正 θ(RAY-NAMESPACE は独立 WP)。**下の **v2 差分が本節の正**(migration・alias は廃止)。
+**依存: WP377(統合後)のみ。GLABI-2 とは並列可。WP374 の後追い負債。**
 
 #### 何が壊れているか
 
@@ -20476,6 +20476,59 @@ WP374 の version gate は「外部 `ray_instance` を持つ project が layout 
 
 担体本体(SCHEMA-TX / RT3)/ GLABI-2 / Studio の catalog / 他 builtin component の改名(`pelican_` は新規 builtin から適用)。
 
+
+#### WP379 仕様レビュー第 1 巡(不合格・10 件)と v2 —— **migration と alias を捨てる**
+
+仕分け: **機構ごと削除 5**(#1 #2 #3 #5 #8)/ **直す 4**(#6 #7 #9 #10)/ 訂正 1(#4 は alias 廃止で消える)。
+
+**なぜ機構を捨てるか。** scene JSON に owner provenance が無い以上、「builtin と証明できる」判定は **DLL の初期化状態に依存して非決定**
+になる(#1: 同じ scene が、依存 DLL の故障だけで builtin に化ける)。そして移行対象は**存在しない**: 出荷 4 project と
+`src/core/resources/` に旧名 0 件、`ray_instance` は WP374(2026-08、未出荷)が導入した builtin、公開 RPC client も 0。
+**移行対象の無い migration matrix と、利用者の無い alias は、レビューが 3 回穴を見つける機構そのもの**である。
+
+##### 決定 A(#1 #2 #3 #4 #5 #8): **migration matrix・alias・`RayInstanceMigrationAmbiguous`・`deprecated_component_name` を作らない**
+
+- builtin は **`pelican_ray_instance`** として登録し、11 箇所の hardcode を移す。それだけ
+- 旧 `ray_instance` は **registry の言うとおり**: 外部 owner が登録していればその外部 component、誰も登録していなければ
+  既存の **`Unknown component` 名前付き拒否**(scene / prefab / snapshot / RPC の全 ingress は既に同じ registry lookup
+  [componentcodec.cpp:1141](../src/core/loader/componentcodec.cpp#L1141) を通るので、ingress ごとの seam は要らない。#3 はここで閉じる)
+- RPC は canonical 名だけ受理(#4 の「raw 旧名で重複検査」問題は alias が無ければ発生しない)
+- **依存から GLABI-2 を外す**(migration が無いので DLL 初期化順に依存しない)。設計 §8 修正 θ の順序は
+  「GLABI-2 と RAY-NAMESPACE は並列可」に訂正する。依存は **WP377 統合後**のみ
+
+##### 決定 B(#10): 予約は **immutable な grandfather allowlist + 単一 policy 関数**
+
+- 着手時に registry へ登録される **全 unprefixed builtin**(`eid / transform / localtransform / simplemodelview / camera / animation`
+  [predefined.cpp:24](../src/core/ecs/predefined.cpp#L24)〜:29 と、他の登録点を実測で列挙)を **1 箇所の allowlist** に固定する。
+  以後の追加は allowlist の diff として現れる
+- policy は **1 関数**(登録器の入口): engine owner → `pelican_` prefix **または** allowlist(それ以外は **`builtin_name_unprefixed@1`**)/
+  external owner → `pelican_` **禁止**(**`reserved_component_namespace@1`**)。「新規 builtin から」という時間依存の規約は捨てる
+
+##### 決定 C(#6): エラー payload は **`{name, owner_kind: engine | external}`** だけ
+
+raw `RegistrationOwner`(世代付き再利用整数)と DLL path(マシン依存)は**載せない**(決定性)。module id は
+GLABI-2 の `OwnerDescriptor` が来たら足す(WP381 の後追いとして台帳に残す。本 WP では要求しない)。
+
+##### 決定 D(#7 #9): 受け入れは **WP374a の production fixture** で、同一テスト内に両側を置く
+
+`raytracing_rt3_1_production_test.cpp` の fixture(SceneLoader → 実 RPC bytes → commit → save → fresh reload → Renderer / GPU TLAS)で:
+- (a) **canonical**: `pelican_ray_instance` を持つ scene の load / RPC `add_component` / save / fresh reload で **TLAS 値と bytes が一致**
+- (b) **旧名の対照**: 誰も `ray_instance` を登録していない scene が **`Unknown component` の既存 code** で落ちる
+  (= migration も alias も無いことの観測。この分岐を「builtin として解釈」に戻すと (b) が落ちる)
+- (c) **外部 owner 保護**: 外部 owner が `ray_instance` を登録した状態で layout v2 を有効化 → builtin `pelican_ray_instance` と
+  **共存して両方 resolve**(今日は逆登録 throw = 対照。[raytracing_rt3_1_test.cpp:289](../test/raytracing_rt3_1_test.cpp#L289) の
+  手動登録テストは **production fixture へ移し、旧テストは消す**)
+- (d) **policy**: external の `pelican_foo` → `reserved_component_namespace@1`、engine の allowlist 外 `foo` → `builtin_name_unprefixed@1`。
+  **policy 関数の呼出を消すとどちらも通ってしまう**(対照)
+- 構成: `PELICAN_RUNTIME_SHADER_COMPILER=ON` で (a)〜(d) 全部。**OFF では (b)(c)(d) を実行し、(a) の GPU 部分だけ skip**
+  (今の `SUCCEED` 分岐 [raytracing_rt3_1_production_test.cpp:493](../test/raytracing_rt3_1_production_test.cpp#L493) を GPU 部分に絞る)。
+  `SKIP_DEVSTUDIO` 両構成。GPU は統合側で直列
+- **静的 literal 検査は受け入れにしない**(#8)。旧名 literal 0 件は回収時の監査項目
+
+##### やらないこと(v2 で追加)
+
+migration / alias / ambiguity エラー / owner の module id / 他 builtin の改名(allowlist で据え置く)/ prefab registry の構築順
+(外部 DLL 登録より前に prefab を検証する既存挙動は本 WP の外。着手時に再現したら台帳へ記録だけ)。
 
 ### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
 
