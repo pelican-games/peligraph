@@ -200,3 +200,109 @@ not_materialized / missing_capability / name_ambiguous`。エラーは operation
 - **ID-3**: 旧ヘッダの client が link し動く。V1 layout の static_assert
 - **ID-4**: negative compile(全 name overload)。`stale_authority` / `wrong_domain` / `missing_capability` の各名前付き結果
 - 全段: 出荷 4 project の bytes 不変、golden 不変、全数を壊さない、D0(型の配置を明記)
+
+
+## 8. 設計レビュー第 2 巡(11 件・破綻 4)と v3 —— **v3 が最終。設計段は 3 巡で打ち切る**
+
+**v3 が本文書の正。§6 の決定 1'〜9' は v3 の修正を受ける。残余は最初の WP(ID-1 = scene transaction)の仕様レビューで受ける。**
+
+### 修正 1(#1): authority は **`next_authority` と `active_authority` を分ける**
+
+`runtime_scene_epoch` は成功末尾でしか進まないので、失敗した candidate B の authority が次の C に再利用される(ABA)。
+- **candidate authority は prepare 前に 1 回だけ消費し、失敗しても再利用しない**(`next_authority` 単調増加)
+- B の callback は **transaction-local registry / context** で B を参照する(active A を参照させない)
+- authority は **process 単位の run id を含める**(epoch は process ごとに 0 から始まる)。Studio の wire ref は
+  **接続 session 内でのみ有効**と宣言し、再起動を跨ぐ ref は `stale_authority`
+
+### 修正 2(#2): undo / restore は **同じ論理 object の復活**。epoch を進めない
+
+journal は restore 時に元の `AuthoringObjectId` を保存し、`restoreObject` はそれを再利用する。
+- 削除は **terminal stale ではない**(v1 に object incarnation は持ち込まない)
+- 受け入れ: `{authority, id}` を保持 → destroy → `not_materialized` → undo → **同じ ref が再び有効**
+- 削除時の「全 index purge」は registry の値(capability・`GameObjectId`)を落とすことであり、ref の恒久失効ではない
+
+### 修正 3(#3): domain は **ECS entity の有無ではなく由来**で決める
+
+resolved scene 由来の collider-only object は `EcsObjectLoad` に `AuthoringObjectId` を持つ。
+- **`AuthoredObjectRef`** = resolved scene 由来(collider-only / light-only を含む)
+- **`TransientObjectRef`** = RPC(`load_gltf`)/ runtime 注入(free camera、Animation runtime 登録、runtime collider)由来のみ
+
+### 修正 4(#4): canonical resolver は **`(authority, name, expected_domain, required_capability)`**。衝突表を置く
+
+| 同名の組 | 規則 |
+|---|---|
+| authored × authored(同 authority) | load 時に**名前付き拒否**(今日も transform 付きは拒否。light-only / collider-only も含める) |
+| authored × transient | transient の load を**名前付き拒否**(authored が先勝ち。`name_reserved_by_authored`) |
+| transient × transient | 後の load を拒否 |
+| generic resolve(domain 未指定)で複数候補 | `name_ambiguous` |
+
+- **free camera は名前で再同定しない**。engine-owned の stable key(`TransientObjectRef` を Camera projection の
+  re-prepare を跨いで保持)
+- **互換 adapter が第三境界にならない条件**(全部満たす): raw name を canonical resolver に **1 回だけ**渡す /
+  operation 固有 map・cache-first・fallback・lazy 登録を**持たない** / 解決後は name を捨て ref API だけを呼ぶ /
+  resolver の named error を**変換せず返す** / 互換期間を **release と ABI version で区切る**
+- **Animation V1 の cache-first + lazy 登録(`animationservice.cpp:918`)はこの条件に反する。ID-3 で除去**
+
+### 修正 5(#5): **scene hierarchy の parent join** を inventory に加える
+
+loader は `unordered_map<string, GameObjectId>` で parent を解決する([scene.cpp:381](../src/core/loader/scene.cpp#L381))。
+- source schema の `parent` は名前のままでよいが、**`ResolvedSceneResolver` で 1 回だけ `AuthoringObjectId` に正規化**し、
+  runtime DTO は `parent_authoring_id` を持つ。loader は名前 map を作らない
+
+### 修正 6(#6): registry は **WP375 の projection に参加**する
+
+- **`ObjectRegistryProjectionAdapter`** を WP375 の route matrix に追加(capability を変える add / remove、transform の
+  materialization、spawn / destroy / remove / restore、prefab route を old → new で反映)
+- 受け入れ: `makeEditorRuntimeService → RPC → edit` で、add 前 `missing_capability` / add 後に**実際に変わった Light 値** /
+  remove 後の拒否を**同一テスト**で
+
+### 修正 7(#7): scene-load の `onInit` は **transaction-aware な制限 context** で走る
+
+`BehaviorContext` は `GameContext` を継承し、RNG・audio・scene request・event・persistence を持つ。B の `onInit` が
+`ctx.emit` / `ctx.random()` / `ctx.loadScene("C")` / `ctx.saveData` をしてから throw すると transaction 外へ漏れる。
+- **event / scene request / RNG は checkpoint または buffer**(commit で flush、rollback で破棄)
+- **audio / persistence / 外部 I/O は commit 後まで遅延**
+- participant に **Behavior arena・event queue・RNG・pending scene・audio/persistence** を加える
+- 受け入れ: Light / Camera / ECS / document に加え、**behavior handles・pending event 数・RNG の次値・pending scene・
+  renderer instance・保存データ非生成**まで照合
+
+### 修正 8(#8): `PreparedSceneRuntime` の participant token と順序を固定する
+
+- Light / Camera: **`old = snapshot`、`next = prepare`、`publishPrepared` を 1 回**(既存 adapter の雛形:
+  [editorprojectionadapters.cpp:1024](../src/core/loader/editorprojectionadapters.cpp#L1024))。外側から `load()` /
+  `loadSceneCameras()` を**呼ばない**(内部で即 publish する)
+- ECS: entity mutation token は non-reentrant なので、**新しい bulk candidate world** を作るか、
+  **WP375 と同じ inverse-token の early publication + observer gate** を採る(v3 は後者。WP375 と形を揃える)
+- Physics: `PreparedState` に **`active_trigger_pairs` の snapshot** を加える
+- 順序: registry → ECS → Physics → Light → Camera → Behavior(activate は最後。失敗で全部 rollback)
+
+### 修正 9(#9): 段割りを **5 段**に組み直す(各段が常時 build し単独価値を持つ)
+
+| 段 | 内容 | 単独の価値 |
+|---|---|---|
+| **ID-A** | 共通型を `src/core/userpublic/object_ref.hpp` へ移設、registry、**WP375 participant**、**全既存 name entry の canonical adapter 化**(GameContext / Animation V1 / Physics) | 名前解決が 1 関数を通る。第三境界が消える |
+| **ID-B** | **scene transaction**(修正 7・8) | **既存欠陥の修正**(世代混在) |
+| **ID-C** | internal consumers / maps を ref 化(hierarchy 含む)。legacy adapter は**この段で既に ref API を呼ぶ** | 名前 join が消える |
+| **ID-D** | public ref API + **Animation V2 ABI** を出荷し、**互換 release を 1 回出す** | 旧 DLL を壊さない移行 |
+| **ID-E** | 次の明示的 breaking release で name adapter と内部 string API を除去 | 新しい解決者がコンパイルで弾かれる |
+
+**v2 の ID-0〜ID-4 は撤回**(ID-0 に単独価値が無く、ID-2 が ID-3 を先取りし、ID-3 と ID-4 が矛盾していた)。
+
+### 修正 10(#10): 型配置と Animation V2
+
+- `AuthoringObjectId` を loader-private header から **`src/core/userpublic/object_ref.hpp`** へ移す(D0: Studio は
+  `pelican_project` の wire DTO だけを見る)
+- Animation は **service tail の `resolve_sink_v2` + `struct_size / capability`** 方式(旧 client は tail を読まない)
+
+### 修正 11(#11): 受け入れの書き直し
+
+- negative compile は **overload ごとに独立**(`static_assert(!requires { loader.objectId(name); })` を 4 本)
+- 各 named error(`stale_authority` / `missing_capability` / `name_ambiguous` / `wrong_domain`)は**同じ production test 内に成功側**
+  (current ref で実際に解決された Light / transform / collider 値)を持つ。恒常エラー実装を排除
+- ID-C の主張は **「型と inventory の移行完了」**に縮め、identity 非依存の最終証明は **production の rename test**(ID-E の後の rename WP)に置く
+- ID-B の変異 = **transaction bypass を compilable に**(旧 `load()` 経路へ戻す)、production composition で全 participant の実値差を検査
+
+### 最初の WP
+
+**ID-B(scene transaction)を最初に起票する** —— 既存欠陥を直し、ID-A の registry が無くても価値がある(第 2 巡が確認)。
+ID-A は WP375 の着地後(participant を足す先が要る)。
