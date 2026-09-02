@@ -21390,7 +21390,49 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 - **統合側の変異**: (記入)
 - **main 取り込み**(`merge-resolver` agent、opus): 衝突 6 ファイル(event registerer の outbox + 改名、rpcserver.hpp/.cpp の両側追加、test CMake の option 集合、docs 2)。WP380a の typed rebuild は WP381 の loader 内で生存を確認。worktree で非 GPU 1264 / 1264、GPU 含む WP 系 gate は出荷 example の ignored asset を copy して緑
 - 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1586 件中 1583 緑**。#71 Studio fatal = WP380a の後退(WP380a-fix 統合待ち)。**WP381 の inventory テスト 2 件が単独でも赤**: `targets.size() == 19` の literal に対し main の構成では 23(SKIP_DEVSTUDIO=OFF + 後続 WP の fixture DLL)。「exact 19」は 1 構成の実測値であって受け入れの意図(property から生成され完全)ではない → literal を外し inventory を走査する形に修正(Claude agent、`5dabe347`。9 role exact + 全 entry の分類 + loader 全件の PE 監査。dead な count define も削除)。WP381 系 10 / 10 緑
-- コードレビュー `rev381`: (記入)
+- コードレビュー `rev381`(codex sol、上段): **Reject**(実害 6 + 設計懸念 2 + 指摘 1)。inventory の literal(#1)は修正済み。reader の section 境界 / 上限なし / poll の無音 starvation / startup 失敗の隠蔽 / pid dir 未掃除 / epoch 3 重定義 → **WP381a**(中段、terra + high)。provider-only 旧 DLL では raw 診断が唯一の enforcement(#2)= 主張の範囲を訂正(コード不変)。壊せなかった: 全 root で診断が LoadLibrary より前、bound import、frozen fixture の include 分離、RPC の clear、WP380a の typed rebuild、出荷 4 DLL の anchor
+
+### WP381a: raw PE reader の境界と上限、poll の starvation、startup 失敗の可視化(WP381 コードレビューの実害 6)
+
+**§4 規則 11 中段(機構は確定。堅牢化と可視化)。実装者: `gpt-5.6-terra` + `high`。コードレビューは統合側変異 + Claude。見積: 小〜中。連鎖: WP381 → 381a で打ち切り。**
+**依存: なし(WP381 統合済み `e06c7b08`、inventory の literal は `5dabe347` で修正済み)。**
+
+#### 何が壊れているか(コードレビュー `rev381` が確認)
+
+1. **reader の境界**: import / delay descriptor は最初の 1 個だけ RVA → file offset 変換し、2 個目以降は raw offset に `index * 20 / 32` を足す。`directory.size` 内・同一 section 内の確認が無い。
+   section 境界に第 1 descriptor を置き、直後の raw section に偽の anchor descriptor を置いた PE で誤判定
+2. **上限なし**: ファイル全体を `vector<byte>` に読む(上限 = `SIZE_MAX`)。thunk loop に entry 上限が無く最大約 5 億回。数 GB の sparse PE で無制限にメモリ / CPU を消費
+3. **poll の starvation**: writer が DLL を open したままだと sharing violation を `{attempted=false}` で返すだけ。回数上限・pending status・名前付きエラーが無く、reload が**無期限かつ無音**で延期される
+4. **startup 失敗の隠蔽**: startup の `initialize()` 失敗は `GameLogicReloader` に保存されるが、`ReloadService` participant があると RPC helper が未試行 status を優先し、`get_status.participants.game_logic` に出ない。
+   `PelicanCore::run()` は initialize の `false` を無視して続行する
+5. **pid directory の掃除なし**: clean shutdown でも `<pid>` directory を消さず、異常終了後の sweep も無い(実 build tree に空の pid directory 32 個)
+6. **epoch の既定値が 3 箇所**(`gameLogicAbiVersion = 2` / 文字列 `"pelican_game_logic_epoch_v2"` / `PELICAN_GAME_LOGIC_ABI_VERSION 2`)
+
+**裁定(#2 の主張の訂正、コードは変えない)**: 「OS loader が旧 DLL を止め、raw reader は診断」は **SDK 入口か anchor を import する DLL** についてのみ真。provider-only の旧 DLL(`getApiV1` だけ)は
+未解決 import が無いので、**常時有効な raw 診断(anchor 不在 = `game_logic_abi_stale@1`)が唯一の enforcement**。診断は `LoadLibrary` より前なので目的(実行前に止める)は満たす。
+設計 §8 補遺と source-code guide の表現をこの範囲に訂正する(docs-writer)。
+
+#### 直すこと
+
+1. reader: descriptor ごとに RVA → offset 変換し、**directory の size 内・同一 section 内・ファイル内**を検査。逸脱は `game_logic_abi_unreadable@1{reason: "descriptor_out_of_bounds"}`
+2. 上限: ファイルサイズ(例 256 MiB)、descriptor 数、thunk 数に上限を置き、超過は `unreadable{reason: "too_large"}`。ファイルは header + 必要 section だけ読む(全体を読まない)
+3. poll: sharing / lock violation の連続回数(または経過時間)に上限を置き、超えたら `game_logic_source_busy@1{path, retries}` を **status に pending として出す**(次の poll で再試行は続ける)
+4. RPC helper: participant が未試行なら reloader の保存済み startup error(`error_code` / `error_fields`)を `get_status.participants.game_logic` に出す。`PelicanCore::run()` は initialize 失敗を **名前付きで log + status** に残す(起動は継続 = 今日の挙動を維持)
+5. pid dir: clean shutdown で自分の `<pid>` directory を削除。`initialize()` で `.pelican-hot-reload/` 直下の **生きていない pid** の directory を sweep(削除失敗は warning)
+6. epoch: `gameLogicAbiVersion` を唯一の定義にし、anchor 名と `PELICAN_GAME_LOGIC_ABI_VERSION` はそこから導出(`static_assert` で一致)
+
+#### 受け入れ(§4 規約 10)
+
+- reader: (1) の synthetic PE(section 境界跨ぎ)が `unreadable{descriptor_out_of_bounds}`(今日 = 偽 anchor を受理)。PE32 の synthetic も足す(今は PE32+ だけ)。境界検査を消すと落ちる
+- 上限: sparse な巨大 PE と thunk 上限超えの PE が **上限時間内に** `unreadable{too_large}`(今日 = 無制限)。上限を消すと timeout で落ちる
+- poll: writer が open し続ける DLL で N 回後に `game_logic_source_busy@1` が status に出る(今日 = 無音)。writer を閉じると次の poll で reload 成功。上限を消すと落ちる
+- startup: stale DLL を起動時設定 → `get_status.participants.game_logic.error_code == game_logic_abi_stale@1`(今日 = 未試行 status)。helper の fallback を消すと落ちる
+- pid dir: 起動 → shutdown で directory が消える。偽の stale pid directory を置いて起動すると sweep される(今日 = 残る)
+- 全数 / `SKIP_DEVSTUDIO` 両構成 / RPC OFF / 出荷 4 project bytes 不変
+
+#### 記録のみ
+
+`rev381` #9(設計文書の旧入口名)は docs-writer。RPC OFF の別 build はレビューで未実行(統合側で実施)。
 ### WP380a-fix: 失敗した scene load が vertex pool を消費し、出荷 example の config fatal を別の fatal で隠す
 
 **§4 規則 11 上段(出荷挙動)。コードレビューのみ(§10)。見積: 小。WP380a の後追い(致命ではないが利用者に見える診断の後退)。**
