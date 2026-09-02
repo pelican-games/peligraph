@@ -20477,8 +20477,8 @@ WP377 のテストは throw 直後に終わり、この状態を検査してい�
 ### WP378: E-0a —— 利用者データ拒否を「値」にする最初の縦切り(型 + 6 caller + camera + `get_components`)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
-**規範は `docs/design_error_contract.md`(v4 = §8 が最終。設計段は 3 巡で打ち切り)。**
-**依存: WP375(着地後。`get_components` の serializer は WP375 の seam と無関係だが、6 caller のうち
+**規範は `docs/design_error_contract.md`(v4 = §8 が最終)。**下の **v3 差分が本節の正**(v2 で範囲を絞り、v3 で「値を足すだけ、例外経路は消さない」に確定)。
+**依存: WP375a 統合後(RPC guard を取り込む)。E-3a / E-3b は本 WP 統合後に切る。**
 `editorruntimefactory.cpp:352` / `editorprojectiontransaction.cpp:113,499` は WP375 が動かす。着地後に行を実測し直す)。**
 
 #### 何が壊れているか(利用者に見える形)
