@@ -475,22 +475,22 @@ ProjectBasicConfigProjectionTarget::projectionState() const {
 
 SceneRevision ProjectBasicConfigProjectionTarget::nextProjectionRevision() const {
     (void)config_.sceneDocument();
-    if (config_.next_scene_revision ==
+    if (config_.scene_metadata.next_scene_revision ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
-    return SceneRevision{config_.next_scene_revision};
+    return SceneRevision{config_.scene_metadata.next_scene_revision};
 }
 
 SceneResolverGeneration
 ProjectBasicConfigProjectionTarget::nextProjectionResolverGeneration() const {
     (void)config_.sceneProjectionState();
-    if (config_.next_scene_resolver_generation ==
+    if (config_.scene_metadata.next_scene_resolver_generation ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneResolverGeneration space exhausted");
     }
     return SceneResolverGeneration{
-        config_.next_scene_resolver_generation};
+        config_.scene_metadata.next_scene_resolver_generation};
 }
 
 void ProjectBasicConfigProjectionTarget::publishProjectionState(

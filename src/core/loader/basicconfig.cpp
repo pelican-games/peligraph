@@ -504,6 +504,114 @@ void replaceSceneFileAtomically(const std::filesystem::path &temporary,
 
 } // namespace
 
+void ProjectBasicConfig::SceneMetadataState::swap(
+    SceneMetadataState &other) noexcept {
+    using std::swap;
+    swap(projection, other.projection);
+    swap(persistence_baseline, other.persistence_baseline);
+    swap(prefab_provider, other.prefab_provider);
+    swap(next_prefab_provider_generation,
+         other.next_prefab_provider_generation);
+    swap(next_scene_revision, other.next_scene_revision);
+    swap(next_scene_resolver_generation,
+         other.next_scene_resolver_generation);
+    swap(next_authoring_object_id, other.next_authoring_object_id);
+    current_scene_id.swap(other.current_scene_id);
+    swap(epoch, other.epoch);
+    swap(active_authority, other.active_authority);
+}
+
+struct MetadataCommitToken::Impl {
+    ProjectBasicConfig *owner = nullptr;
+    ProjectBasicConfig::SceneMetadataState candidate;
+    bool committed = false;
+};
+
+MetadataCommitToken::MetadataCommitToken() noexcept = default;
+MetadataCommitToken::MetadataCommitToken(std::unique_ptr<Impl> impl) noexcept
+    : impl_{std::move(impl)} {}
+MetadataCommitToken::~MetadataCommitToken() = default;
+MetadataCommitToken::MetadataCommitToken(MetadataCommitToken &&) noexcept =
+    default;
+MetadataCommitToken &MetadataCommitToken::operator=(
+    MetadataCommitToken &&) noexcept = default;
+
+const SceneProjectionState &MetadataCommitToken::projection() const {
+    if (!impl_ || !impl_->candidate.projection) {
+        throw std::logic_error("scene metadata token has no projection");
+    }
+    return *impl_->candidate.projection;
+}
+
+const AuthoringSceneDocument &MetadataCommitToken::document() const {
+    return projection().authoring();
+}
+
+void MetadataCommitToken::prepareRuntimeIdentity(
+    SceneId scene_id, SceneAuthority authority) {
+    if (!impl_ || impl_->committed) {
+        throw std::logic_error("scene metadata token is not preparable");
+    }
+    impl_->candidate.current_scene_id = std::move(scene_id);
+    impl_->candidate.epoch = authority.scene_epoch;
+    impl_->candidate.active_authority = authority;
+}
+
+void MetadataCommitToken::publishDocumentOnlyForFaultInjection() noexcept {
+    if (!impl_ || impl_->committed ||
+        !impl_->owner->scene_metadata.projection ||
+        !impl_->candidate.projection) {
+        return;
+    }
+    // This is intentionally the invalid counterfactual guarded by the
+    // SceneLoadFaultInjector.  Production can publish only SceneMetadataState
+    // as a whole through commit().
+    impl_->owner->scene_metadata.projection->authoring_.swap(
+        impl_->candidate.projection->authoring_);
+}
+
+void MetadataCommitToken::commit() noexcept {
+    if (!impl_ || impl_->committed) return;
+    impl_->owner->scene_metadata.swap(impl_->candidate);
+    impl_->committed = true;
+}
+
+MetadataCommitToken ProjectBasicConfig::prepareBorrowedSceneMetadata(
+    const SceneProjectionState &committed) const {
+    if (!scene_metadata.projection ||
+        &*scene_metadata.projection != &committed) {
+        throw std::invalid_argument(
+            "borrowed scene projection is not the committed projection");
+    }
+    auto impl = std::make_unique<MetadataCommitToken::Impl>();
+    impl->owner = const_cast<ProjectBasicConfig *>(this);
+    impl->candidate = scene_metadata;
+    return MetadataCommitToken{std::move(impl)};
+}
+
+MetadataCommitToken ProjectBasicConfig::prepareImportedSceneMetadata(
+    SceneProjectionState candidate,
+    ScenePersistenceBaseline persistence_baseline,
+    BindableProviderSnapshot candidate_provider,
+    bool publish_provider) const {
+    auto impl = std::make_unique<MetadataCommitToken::Impl>();
+    impl->owner = const_cast<ProjectBasicConfig *>(this);
+    impl->candidate = scene_metadata;
+    impl->candidate.projection.emplace(std::move(candidate));
+    impl->candidate.persistence_baseline = std::move(persistence_baseline);
+    const auto &projection = *impl->candidate.projection;
+    impl->candidate.next_scene_revision = projection.revision().value + 1U;
+    impl->candidate.next_scene_resolver_generation =
+        projection.resolverGeneration().value + 1U;
+    impl->candidate.next_authoring_object_id =
+        projection.authoring_.next_authoring_object_id_value_;
+    if (publish_provider) {
+        impl->candidate.prefab_provider = std::move(candidate_provider);
+        ++impl->candidate.next_prefab_provider_generation;
+    }
+    return MetadataCommitToken{std::move(impl)};
+}
+
 ProjectBasicConfig::ProjectBasicConfig() {
     StartupPhaseTimer startup_timer{&StartupMetrics::addConfig};
     const auto &source = GET_MODULE(ProjectSource);
@@ -594,38 +702,38 @@ ProjectBasicConfig::InitialCameraProperty ProjectBasicConfig::initailCameraPrope
 std::string ProjectBasicConfig::defaultSceneId() const { return default_scene_id; }
 
 void ProjectBasicConfig::publishSceneDocument(std::string_view scene_v1_bytes) const {
-    if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
+    if (scene_metadata.next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
-    if (next_scene_resolver_generation ==
+    if (scene_metadata.next_scene_resolver_generation ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneResolverGeneration space exhausted");
     }
     auto document = AuthoringSceneDocument::load(
-        scene_v1_bytes, SceneRevision{next_scene_revision},
-        next_authoring_object_id);
-    const bool publish_provider = prefab_provider.generation() == 0;
+        scene_v1_bytes, SceneRevision{scene_metadata.next_scene_revision},
+        scene_metadata.next_authoring_object_id);
+    const bool publish_provider = scene_metadata.prefab_provider.generation() == 0;
     auto candidate_provider = publish_provider
                                   ? buildProductionBindableProviderSnapshot(
-                                        next_prefab_provider_generation)
-                                  : prefab_provider;
+                                        scene_metadata.next_prefab_provider_generation)
+                                  : scene_metadata.prefab_provider;
     auto candidate = ResolvedSceneResolver::prepare(
         std::move(document),
-        SceneResolverGeneration{next_scene_resolver_generation},
+        SceneResolverGeneration{scene_metadata.next_scene_resolver_generation},
         ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite},
         prefab_registry, candidate_provider);
-    if (scene_projection) {
+    if (scene_metadata.projection) {
         publishPreparedSceneState(candidate);
     } else {
-        scene_projection.emplace(std::move(candidate));
-        ++next_scene_revision;
-        ++next_scene_resolver_generation;
-        next_authoring_object_id =
-            scene_projection->authoring_.next_authoring_object_id_value_;
+        scene_metadata.projection.emplace(std::move(candidate));
+        ++scene_metadata.next_scene_revision;
+        ++scene_metadata.next_scene_resolver_generation;
+        scene_metadata.next_authoring_object_id =
+            scene_metadata.projection->authoring_.next_authoring_object_id_value_;
     }
     if (publish_provider) {
-        prefab_provider = std::move(candidate_provider);
-        ++next_prefab_provider_generation;
+        scene_metadata.prefab_provider = std::move(candidate_provider);
+        ++scene_metadata.next_prefab_provider_generation;
     }
 }
 
@@ -635,10 +743,10 @@ void ProjectBasicConfig::publishPreparedSceneState(
         state.authoring_.next_authoring_object_id_value_;
     const auto revision = state.revision().value;
     const auto generation = state.resolverGeneration().value;
-    scene_projection->swap(state);
-    next_scene_revision = revision + 1U;
-    next_scene_resolver_generation = generation + 1U;
-    next_authoring_object_id = next_object_id;
+    scene_metadata.projection->swap(state);
+    scene_metadata.next_scene_revision = revision + 1U;
+    scene_metadata.next_scene_resolver_generation = generation + 1U;
+    scene_metadata.next_authoring_object_id = next_object_id;
 }
 
 const AuthoringSceneDocument &ProjectBasicConfig::sceneDocument() const {
@@ -650,14 +758,14 @@ const ResolvedScene &ProjectBasicConfig::resolvedScene() const {
 }
 
 const SceneProjectionState &ProjectBasicConfig::sceneProjectionState() const {
-    if (!scene_projection) {
+    if (!scene_metadata.projection) {
         auto bytes = GET_MODULE(PathResolver).loadText(scene_data_json_ref);
         auto baseline = sceneBytesDigest(bytes);
         publishSceneDocument(bytes);
-        scene_persistence_baseline = scenePersistenceBaseline(
-            std::move(baseline), scene_projection->resolved());
+        scene_metadata.persistence_baseline = scenePersistenceBaseline(
+            std::move(baseline), scene_metadata.projection->resolved());
     }
-    return *scene_projection;
+    return *scene_metadata.projection;
 }
 
 void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
@@ -665,21 +773,21 @@ void ProjectBasicConfig::updateSceneDocument(std::string_view scene_v1_bytes) {
 }
 
 void ProjectBasicConfig::invalidateSceneDocument() noexcept {
-    scene_projection.reset();
-    scene_persistence_baseline.reset();
+    scene_metadata.projection.reset();
+    scene_metadata.persistence_baseline.reset();
 }
 
 SceneRevision ProjectBasicConfig::importSceneDocument(
-    std::string_view scene_v1_bytes, const std::function<void()> &reload,
+    std::string_view scene_v1_bytes, const SceneImportCallback &reload,
     std::uint64_t snapshot_schema_version) {
     if (!reload) {
         throw std::invalid_argument("scene snapshot import requires a reload callback");
     }
     (void)sceneDocument();
-    if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
+    if (scene_metadata.next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
-    if (next_scene_resolver_generation ==
+    if (scene_metadata.next_scene_resolver_generation ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneResolverGeneration space exhausted");
     }
@@ -687,8 +795,8 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
     // Parse, semantic validation, fresh AuthoringObjectId allocation, and all
     // candidate allocation complete before the live cache is touched.
     auto candidate_document = AuthoringSceneDocument::load(
-        scene_v1_bytes, SceneRevision{next_scene_revision},
-        next_authoring_object_id);
+        scene_v1_bytes, SceneRevision{scene_metadata.next_scene_revision},
+        scene_metadata.next_authoring_object_id);
     if (snapshot_schema_version != 1 && snapshot_schema_version != 2) {
         throw PrefabError{PrefabErrorCode::PrefabPersistenceUnsupported,
                           "unsupported scene snapshot persistence version"};
@@ -700,52 +808,50 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
             PrefabErrorCode::PrefabPersistenceUnsupported,
             "scene snapshot import accepts only formatVersion 1 without prefabs"};
     }
-    const bool publish_provider = prefab_provider.generation() == 0;
+    const bool publish_provider = scene_metadata.prefab_provider.generation() == 0;
     auto candidate_provider = publish_provider
                                   ? buildProductionBindableProviderSnapshot(
-                                        next_prefab_provider_generation)
-                                  : prefab_provider;
+                                        scene_metadata.next_prefab_provider_generation)
+                                  : scene_metadata.prefab_provider;
     auto candidate = ResolvedSceneResolver::prepare(
         std::move(candidate_document),
-        SceneResolverGeneration{next_scene_resolver_generation},
+        SceneResolverGeneration{scene_metadata.next_scene_resolver_generation},
         ResolvedSceneDefaults{camera_prop.projection, camera_prop.sprite},
         prefab_registry, candidate_provider);
     auto next_persistence_baseline = scenePersistenceBaseline(
-        scene_persistence_baseline->scene_digest_sha256,
+        scene_metadata.persistence_baseline->scene_digest_sha256,
         candidate.resolved());
     const auto committed_revision = candidate.revision();
-    const auto previous_next_revision = next_scene_revision;
-    const auto previous_next_generation = next_scene_resolver_generation;
-    const auto previous_next_object_id = next_authoring_object_id;
     if (scene_import_fault == SceneImportFaultPoint::AfterCandidatePrepare) {
         throw std::runtime_error(
             "injected scene import fault after candidate prepare");
     }
 
-    // This is the same allocation-free document swap used by SAVE0. The disk
-    // baseline is deliberately retained: snapshot import changes only the
-    // in-memory scene source.
-    publishPreparedSceneState(candidate);
-    try {
-        if (scene_import_fault == SceneImportFaultPoint::AfterPublication) {
-            throw std::runtime_error(
-                "injected scene import fault after publication");
-        }
-        reload();
-    } catch (...) {
-        // candidate owns the old live document after the first swap. Restore
-        // it without parse/allocation and rewind both allocation authorities.
-        publishPreparedSceneState(candidate);
-        next_scene_revision = previous_next_revision;
-        next_scene_resolver_generation = previous_next_generation;
-        next_authoring_object_id = previous_next_object_id;
-        throw;
+    auto metadata = prepareImportedSceneMetadata(
+        std::move(candidate), std::move(next_persistence_baseline),
+        std::move(candidate_provider), publish_provider);
+    if (scene_import_fault == SceneImportFaultPoint::AfterPublication) {
+        // The legacy injection name is retained for test compatibility.  In
+        // the transactional implementation this point is deliberately before
+        // publication; no candidate metadata has become observable.
+        throw std::runtime_error(
+            "injected scene import fault before transactional publication");
     }
-    if (publish_provider) {
-        prefab_provider = std::move(candidate_provider);
-        ++next_prefab_provider_generation;
+    auto request = SceneLoadRequest::owned(
+        {}, std::move(metadata),
+        snapshot_schema_version == 1
+            ? SceneLoadRoot::import_unversioned
+            : SceneLoadRoot::import_versioned);
+    auto result = reload(std::move(request));
+    (void)requireSceneLoadCommitted(result);
+    // A non-runtime importer may accept the typed request without forwarding
+    // it to SceneLoader.  Its successful result still atomically installs the
+    // candidate metadata. Production roots consume and commit this token in
+    // the scene executor, leaving the moved-from token empty here.
+    if (auto *owned = std::get_if<SceneLoadRequest::Owned>(&request.source);
+        owned != nullptr && owned->token) {
+        owned->token.commit();
     }
-    *scene_persistence_baseline = std::move(next_persistence_baseline);
     return committed_revision;
 }
 
@@ -756,49 +862,49 @@ void ProjectBasicConfig::refreshResolvedScene(
             "resolved scene refresh requires a reload callback");
     }
     (void)sceneProjectionState();
-    if (next_scene_resolver_generation ==
+    if (scene_metadata.next_scene_resolver_generation ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneResolverGeneration space exhausted");
     }
 
     auto candidate_provider = buildProductionBindableProviderSnapshot(
-        next_prefab_provider_generation);
+        scene_metadata.next_prefab_provider_generation);
     auto candidate = ResolvedSceneResolver::prepare(
-        scene_projection->authoring(),
-        SceneResolverGeneration{next_scene_resolver_generation},
-        scene_projection->resolved().defaults(),
-        scene_projection->resolved().prefabRegistry(), candidate_provider);
-    const auto previous_next_revision = next_scene_revision;
-    const auto previous_next_generation = next_scene_resolver_generation;
-    const auto previous_next_object_id = next_authoring_object_id;
+        scene_metadata.projection->authoring(),
+        SceneResolverGeneration{scene_metadata.next_scene_resolver_generation},
+        scene_metadata.projection->resolved().defaults(),
+        scene_metadata.projection->resolved().prefabRegistry(), candidate_provider);
+    const auto previous_next_revision = scene_metadata.next_scene_revision;
+    const auto previous_next_generation = scene_metadata.next_scene_resolver_generation;
+    const auto previous_next_object_id = scene_metadata.next_authoring_object_id;
     publishPreparedSceneState(candidate);
     try {
         reload();
     } catch (...) {
         publishPreparedSceneState(candidate);
-        next_scene_revision = previous_next_revision;
-        next_scene_resolver_generation = previous_next_generation;
-        next_authoring_object_id = previous_next_object_id;
+        scene_metadata.next_scene_revision = previous_next_revision;
+        scene_metadata.next_scene_resolver_generation = previous_next_generation;
+        scene_metadata.next_authoring_object_id = previous_next_object_id;
         throw;
     }
-    prefab_provider = scene_projection->resolved().bindableProvider();
-    ++next_prefab_provider_generation;
+    scene_metadata.prefab_provider = scene_metadata.projection->resolved().bindableProvider();
+    ++scene_metadata.next_prefab_provider_generation;
 }
 
 SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     const auto &source = sceneDocument();
-    if (!scene_persistence_baseline) {
+    if (!scene_metadata.persistence_baseline) {
         throw SceneSaveError{SceneSaveErrorCode::Unavailable,
                              "scene source has no baseline disk digest"};
     }
     // Capture scene bytes and the prefab read-set as one immutable baseline
     // before any save-side I/O. Neither half is refreshed during the attempt.
     const auto save_baseline = scenePersistenceBaseline(
-        scene_persistence_baseline->scene_digest_sha256, resolvedScene());
-    if (next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
+        scene_metadata.persistence_baseline->scene_digest_sha256, resolvedScene());
+    if (scene_metadata.next_scene_revision == std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneRevision space exhausted");
     }
-    if (next_scene_resolver_generation ==
+    if (scene_metadata.next_scene_resolver_generation ==
         std::numeric_limits<std::uint64_t>::max()) {
         throw std::overflow_error("SceneResolverGeneration space exhausted");
     }
@@ -846,13 +952,13 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
 
     auto next_document = AuthoringSceneAuthority::stage(
         source, AuthoringSceneAuthority::rawView(source).documentJson(),
-        SceneRevision{next_scene_revision});
+        SceneRevision{scene_metadata.next_scene_revision});
     auto next_state = ResolvedSceneResolver::prepare(
         std::move(next_document),
-        SceneResolverGeneration{next_scene_resolver_generation},
-        scene_projection->resolved().defaults(),
-        scene_projection->resolved().prefabRegistry(),
-        scene_projection->resolved().bindableProvider());
+        SceneResolverGeneration{scene_metadata.next_scene_resolver_generation},
+        scene_metadata.projection->resolved().defaults(),
+        scene_metadata.projection->resolved().prefabRegistry(),
+        scene_metadata.projection->resolved().bindableProvider());
     const auto committed_revision = next_state.revision();
     auto next_baseline = scenePersistenceBaseline(
         sceneBytesDigest(semantic_bytes), next_state.resolved());
@@ -881,7 +987,7 @@ SceneSaveResult ProjectBasicConfig::saveSceneDocument() {
     // and ImGui call SAVE0 on the engine thread, so no reader can enter this
     // short no-throw interval and observe a mixed file/cache/revision state.
     publishPreparedSceneState(next_state);
-    *scene_persistence_baseline = std::move(next_baseline);
+    *scene_metadata.persistence_baseline = std::move(next_baseline);
     return result;
 }
 

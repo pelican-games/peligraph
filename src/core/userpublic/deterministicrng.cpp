@@ -4,6 +4,7 @@
 
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 namespace Pelican {
 
@@ -12,6 +13,7 @@ namespace {
 constexpr std::uint64_t pcg_multiplier = 6364136223846793005ull;
 constexpr std::uint64_t pcg_stream = 0xda3e39cb94b95bdbull;
 constexpr double one_over_two_to_53 = 1.0 / 9007199254740992.0;
+thread_local DeterministicRng::PreparedSequence *active_rng_sequence = nullptr;
 
 } // namespace
 
@@ -20,8 +22,14 @@ DeterministicRng::DeterministicRng() {
 }
 
 std::uint32_t DeterministicRng::nextUInt() {
-    const auto old_state = state;
-    state = old_state * pcg_multiplier + increment;
+    auto &selected_state = active_rng_sequence != nullptr
+                               ? active_rng_sequence->state
+                               : state;
+    const auto selected_increment = active_rng_sequence != nullptr
+                                        ? active_rng_sequence->increment
+                                        : increment;
+    const auto old_state = selected_state;
+    selected_state = old_state * pcg_multiplier + selected_increment;
     const auto xorshifted = static_cast<std::uint32_t>(((old_state >> 18u) ^ old_state) >> 27u);
     const auto rot = static_cast<std::uint32_t>(old_state >> 59u);
     return (xorshifted >> rot) | (xorshifted << ((0u - rot) & 31u));
@@ -75,12 +83,51 @@ float DeterministicRng::randomFloat(float min, float max) {
 }
 
 void DeterministicRng::setSeed(std::uint64_t seed) {
-    current_seed = seed;
-    state = 0;
-    increment = (pcg_stream << 1u) | 1u;
+    auto &selected_seed = active_rng_sequence != nullptr
+                              ? active_rng_sequence->current_seed
+                              : current_seed;
+    auto &selected_state = active_rng_sequence != nullptr
+                               ? active_rng_sequence->state
+                               : state;
+    auto &selected_increment = active_rng_sequence != nullptr
+                                   ? active_rng_sequence->increment
+                                   : increment;
+    selected_seed = seed;
+    selected_state = 0;
+    selected_increment = (pcg_stream << 1u) | 1u;
     (void)nextUInt();
-    state += seed;
+    selected_state += seed;
     (void)nextUInt();
+}
+
+std::uint64_t DeterministicRng::seed() const {
+    return active_rng_sequence != nullptr
+               ? active_rng_sequence->current_seed
+               : current_seed;
+}
+
+DeterministicRng::PreparedSequence
+DeterministicRng::prepareSequence() const noexcept {
+    return PreparedSequence{
+        .current_seed = current_seed,
+        .state = state,
+        .increment = increment,
+    };
+}
+
+void DeterministicRng::publishPreparedSequence(
+    PreparedSequence prepared) noexcept {
+    current_seed = prepared.current_seed;
+    state = prepared.state;
+    increment = prepared.increment;
+}
+
+RngSequenceScope::RngSequenceScope(
+    DeterministicRng::PreparedSequence &candidate) noexcept
+    : previous_{std::exchange(active_rng_sequence, &candidate)} {}
+
+RngSequenceScope::~RngSequenceScope() {
+    active_rng_sequence = previous_;
 }
 
 } // namespace Pelican

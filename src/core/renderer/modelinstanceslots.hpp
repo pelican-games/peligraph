@@ -30,6 +30,9 @@ class ModelInstanceSlots {
 
     void prepareClear();
     void clearPrepared() noexcept;
+    ModelInstanceSlots prepareSceneReplacement(
+        std::vector<std::uint32_t> &withheld_live_indices) const;
+    void releaseWithheld(std::uint32_t index) noexcept;
 
     bool alive(std::uint32_t index) const noexcept;
     std::size_t slotCount() const noexcept { return generations_.size(); }

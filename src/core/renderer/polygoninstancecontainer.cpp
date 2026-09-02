@@ -403,6 +403,290 @@ bool PolygonInstanceContainer::isLive(ModelInstanceId id) const noexcept {
     return instance_slots.isLive(id);
 }
 
+std::size_t
+PolygonInstanceContainer::liveModelInstanceCountForTesting() const noexcept {
+    std::size_t result = 0;
+    for (std::uint32_t index = 0;
+         index < instance_slots.slotCount(); ++index) {
+        if (instance_slots.alive(index)) ++result;
+    }
+    return result;
+}
+
+PolygonInstanceContainer::PreparedSceneState
+PolygonInstanceContainer::snapshotPreparedScene() const {
+    return PreparedSceneState{
+        .draw_inventory = draw_inventory,
+        .compiled_draw_queue = compiled_draw_queue,
+        .draw_queue_material_filters = draw_queue_material_filters,
+        .next_draw_declaration_ordinal = next_draw_declaration_ordinal,
+        .ray_query_geometry_generation = ray_query_geometry_generation,
+        .prepared_view_family_draws = prepared_view_family_draws,
+        .model_instances_data = model_instances_data,
+        .previous_model_instances_data = previous_model_instances_data,
+        .model_history_valid = model_history_valid,
+        .skin_palettes = skin_palettes,
+        .previous_skin_palettes = previous_skin_palettes,
+        .animation_revisions = animation_revisions,
+        .previous_animation_revisions = previous_animation_revisions,
+        .animation_generations = animation_generations,
+        .instance_slots = instance_slots,
+        .model_asset_ids = model_asset_ids,
+        .ray_authoring_object_ids = ray_authoring_object_ids,
+        .ray_instance_declarations = ray_instance_declarations,
+        .material_initial_value_tables = material_initial_value_tables,
+        .vrm_semantics = vrm_semantics,
+        .morph_layouts = morph_layouts,
+        .morph_weight_frames = morph_weight_frames,
+        .morph_history_valid = morph_history_valid,
+        .temporal_history_advance_count = temporal_history_advance_count,
+        .material_override_frames = material_override_frames,
+        .material_absolute_override_frames =
+            material_absolute_override_frames,
+    };
+}
+
+PolygonInstanceContainer::PreparedSceneState
+PolygonInstanceContainer::prepareSceneReplacement(
+    std::vector<std::uint32_t> &retire_indices) {
+    auto candidate = snapshotPreparedScene();
+    candidate.instance_slots =
+        instance_slots.prepareSceneReplacement(retire_indices);
+    candidate.draw_inventory.clear();
+    candidate.compiled_draw_queue = {};
+    candidate.draw_queue_material_filters.clear();
+    candidate.next_draw_declaration_ordinal = 0;
+    candidate.prepared_view_family_draws.clear();
+    candidate.material_override_frames.clear();
+    candidate.material_absolute_override_frames.clear();
+    candidate.temporal_history_advance_count = 0;
+
+    // retire_old_state only moves this already allocated list into the queue.
+    scene_retirement_queue.reserve(scene_retirement_queue.size() + 1U);
+    return candidate;
+}
+
+void PolygonInstanceContainer::publishPreparedScene(
+    PreparedSceneState &&prepared) noexcept {
+    using std::swap;
+    draw_inventory.swap(prepared.draw_inventory);
+    swap(compiled_draw_queue, prepared.compiled_draw_queue);
+    draw_queue_material_filters.swap(prepared.draw_queue_material_filters);
+    swap(next_draw_declaration_ordinal,
+         prepared.next_draw_declaration_ordinal);
+    swap(ray_query_geometry_generation,
+         prepared.ray_query_geometry_generation);
+    prepared_view_family_draws.swap(prepared.prepared_view_family_draws);
+    model_instances_data.swap(prepared.model_instances_data);
+    previous_model_instances_data.swap(
+        prepared.previous_model_instances_data);
+    model_history_valid.swap(prepared.model_history_valid);
+    skin_palettes.swap(prepared.skin_palettes);
+    previous_skin_palettes.swap(prepared.previous_skin_palettes);
+    animation_revisions.swap(prepared.animation_revisions);
+    previous_animation_revisions.swap(prepared.previous_animation_revisions);
+    animation_generations.swap(prepared.animation_generations);
+    swap(instance_slots, prepared.instance_slots);
+    model_asset_ids.swap(prepared.model_asset_ids);
+    ray_authoring_object_ids.swap(prepared.ray_authoring_object_ids);
+    ray_instance_declarations.swap(prepared.ray_instance_declarations);
+    material_initial_value_tables.swap(
+        prepared.material_initial_value_tables);
+    vrm_semantics.swap(prepared.vrm_semantics);
+    morph_layouts.swap(prepared.morph_layouts);
+    morph_weight_frames.swap(prepared.morph_weight_frames);
+    morph_history_valid.swap(prepared.morph_history_valid);
+    swap(temporal_history_advance_count,
+         prepared.temporal_history_advance_count);
+    material_override_frames.swap(prepared.material_override_frames);
+    material_absolute_override_frames.swap(
+        prepared.material_absolute_override_frames);
+}
+
+StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
+    PreparedSceneState &prepared, const ModelTemplate &model) {
+    const auto primitive_count = primitiveCount(model);
+    if (!prepared.instance_slots.hasReusableSlot() &&
+        prepared.model_instances_data.size() >= maxModelInstances) {
+        throw std::runtime_error("Model instance capacity exceeded");
+    }
+    if (prepared.draw_inventory.size() > maxRenderCommands ||
+        primitive_count > maxRenderCommands - prepared.draw_inventory.size()) {
+        throw std::runtime_error("Render command capacity exceeded");
+    }
+    if (primitive_count >
+        std::numeric_limits<std::uint64_t>::max() -
+            prepared.next_draw_declaration_ordinal) {
+        throw std::runtime_error("Draw declaration ordinal exhausted");
+    }
+
+    auto staged = std::make_unique<StagedModelInstance::Impl>();
+    staged->id = prepared.instance_slots.nextId(
+        static_cast<std::uint32_t>(prepared.model_instances_data.size()));
+    const auto index = staged->id.index;
+    const auto reuse = index != prepared.model_instances_data.size();
+    staged->asset_id = model.asset_id;
+    staged->material_initial_values = model.material_initial_values;
+    staged->vrm_semantic = model.vrm_semantic;
+    staged->morph_layout = model.morph_targets;
+    if (model.skeletal) {
+        staged->skin_palette =
+            evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false,
+                                0.0);
+        if (staged->skin_palette.size() > maxSkinJoints) {
+            throw std::runtime_error("Skin palette exceeds 128 joints");
+        }
+    }
+    const auto defaults = model.morph_targets
+                              ? model.morph_targets->default_weights
+                              : std::vector<float>{};
+    staged->morph_weight_frame = MorphWeightFrame{
+        .instance_identity = static_cast<std::uint64_t>(index) + 1,
+        .instance_generation =
+            reuse ? prepared.animation_generations[index] : 1u,
+        .layout_generation =
+            model.morph_targets ? model.morph_targets->generation : 0,
+        .current_revision = 0,
+        .previous_revision = 0,
+        .current = defaults,
+        .previous = defaults,
+    };
+    staged->draw_items.reserve(primitive_count);
+    if (primitive_count != 0) {
+        const auto &materials = GET_MODULE(MaterialContainer);
+        for (const auto &material : model.material_primitives) {
+            if (material.primitives.empty()) continue;
+            const auto route = materials.routeForMaterial(material.material);
+            const auto &document =
+                materials.materialDocumentReference(material.material);
+            for (const auto &primitive : material.primitives) {
+                staged->draw_items.push_back(makeDrawItemSnapshot(
+                    staged->id, material, primitive,
+                    model.authored_asset_reference, document, route));
+            }
+        }
+    }
+
+    const auto capacity = prepared.model_instances_data.size() +
+                          (reuse ? 0U : 1U);
+    prepared.model_instances_data.reserve(capacity);
+    prepared.previous_model_instances_data.reserve(capacity);
+    prepared.model_history_valid.reserve(capacity);
+    prepared.skin_palettes.reserve(capacity);
+    prepared.previous_skin_palettes.reserve(capacity);
+    prepared.animation_revisions.reserve(capacity);
+    prepared.previous_animation_revisions.reserve(capacity);
+    prepared.animation_generations.reserve(capacity);
+    prepared.instance_slots.reserve(capacity);
+    prepared.model_asset_ids.reserve(capacity);
+    prepared.ray_authoring_object_ids.reserve(capacity);
+    prepared.ray_instance_declarations.reserve(capacity);
+    prepared.material_initial_value_tables.reserve(capacity);
+    prepared.vrm_semantics.reserve(capacity);
+    prepared.morph_layouts.reserve(capacity);
+    prepared.morph_weight_frames.reserve(capacity);
+    prepared.morph_history_valid.reserve(capacity);
+    prepared.draw_inventory.reserve(prepared.draw_inventory.size() +
+                                    staged->draw_items.size());
+    if (!staged->skin_palette.empty()) {
+        GET_MODULE(VulkanManageCore)
+            .writeBuf(skin_palette_buffer, staged->skin_palette.data(),
+                      sizeof(glm::mat4) * maxSkinJoints * index,
+                      sizeof(glm::mat4) * staged->skin_palette.size());
+    }
+    return StagedModelInstance{std::move(staged)};
+}
+
+void PolygonInstanceContainer::setPreparedSceneModelMatrix(
+    StagedModelInstance &staged, const glm::mat4 &matrix) noexcept {
+    setStagedModelMatrix(staged, matrix);
+}
+
+void PolygonInstanceContainer::publishPreparedSceneModel(
+    PreparedSceneState &prepared, StagedModelInstance staged) noexcept {
+    assert(staged.impl_ != nullptr);
+    auto &candidate = *staged.impl_;
+    const auto index = candidate.id.index;
+    if (index == prepared.model_instances_data.size()) {
+        prepared.model_instances_data.push_back(candidate.model_matrix);
+        prepared.previous_model_instances_data.push_back(
+            candidate.model_matrix);
+        prepared.model_history_valid.push_back(false);
+        prepared.skin_palettes.push_back(std::move(candidate.skin_palette));
+        prepared.previous_skin_palettes.emplace_back();
+        prepared.animation_revisions.push_back(0);
+        prepared.previous_animation_revisions.push_back(0);
+        prepared.animation_generations.push_back(1);
+        prepared.model_asset_ids.push_back(candidate.asset_id);
+        prepared.ray_authoring_object_ids.push_back(0);
+        prepared.ray_instance_declarations.emplace_back();
+        prepared.material_initial_value_tables.push_back(
+            std::move(candidate.material_initial_values));
+        prepared.vrm_semantics.push_back(std::move(candidate.vrm_semantic));
+        prepared.morph_layouts.push_back(std::move(candidate.morph_layout));
+        prepared.morph_weight_frames.push_back(
+            std::move(candidate.morph_weight_frame));
+        prepared.morph_history_valid.push_back(false);
+    } else {
+        prepared.model_instances_data[index] = candidate.model_matrix;
+        prepared.previous_model_instances_data[index] = candidate.model_matrix;
+        prepared.model_history_valid[index] = false;
+        prepared.skin_palettes[index] = std::move(candidate.skin_palette);
+        prepared.previous_skin_palettes[index].clear();
+        prepared.animation_revisions[index] = 0;
+        prepared.previous_animation_revisions[index] = 0;
+        prepared.model_asset_ids[index] = candidate.asset_id;
+        prepared.ray_authoring_object_ids[index] = 0;
+        prepared.ray_instance_declarations[index].reset();
+        prepared.material_initial_value_tables[index] =
+            std::move(candidate.material_initial_values);
+        prepared.vrm_semantics[index] = std::move(candidate.vrm_semantic);
+        prepared.morph_layouts[index] = std::move(candidate.morph_layout);
+        prepared.morph_weight_frames[index] =
+            std::move(candidate.morph_weight_frame);
+        prepared.morph_history_valid[index] = false;
+    }
+    prepared.instance_slots.publish(candidate.id);
+    for (auto &item : candidate.draw_items) {
+        item.declaration_ordinal =
+            prepared.next_draw_declaration_ordinal++;
+    }
+    prepared.draw_inventory.insert(
+        prepared.draw_inventory.end(),
+        std::make_move_iterator(candidate.draw_items.begin()),
+        std::make_move_iterator(candidate.draw_items.end()));
+}
+
+void PolygonInstanceContainer::enqueueSceneRetirement(
+    std::vector<std::uint32_t> retire_indices) noexcept {
+    assert(scene_retirement_queue.size() < scene_retirement_queue.capacity());
+    scene_retirement_queue.push_back(std::move(retire_indices));
+}
+
+void PolygonInstanceContainer::drainSceneRetirements() {
+    if (scene_retirement_queue.empty()) return;
+    std::vector<std::vector<std::uint32_t>> pending;
+    pending.swap(scene_retirement_queue);
+    bool changed = false;
+    for (const auto &batch : pending) {
+        for (const auto index : batch) {
+            if (index >= instance_slots.slotCount() ||
+                instance_slots.alive(index)) {
+                continue;
+            }
+            resetSlot(index);
+            instance_slots.releaseWithheld(index);
+            const MaterialInstanceOverrideGpuData empty{};
+            GET_MODULE(VulkanManageCore).writeBuf(
+                material_override_buffer, &empty,
+                sizeof(MaterialInstanceOverrideGpuData) * index,
+                sizeof(empty));
+            changed = true;
+        }
+    }
+    if (changed) uploadMaterialAbsoluteOverrides();
+}
+
 std::uint32_t PolygonInstanceContainer::requireLive(ModelInstanceId id,
                                                     const char *api_name) const {
     return instance_slots.requireLive(id, api_name);
@@ -646,6 +930,7 @@ void PolygonInstanceContainer::clear() {
 }
 
 void PolygonInstanceContainer::triggerUpdate() {
+    drainSceneRetirements();
     constexpr std::array default_views{
         DrawQueueSortView{},
     };
@@ -654,6 +939,7 @@ void PolygonInstanceContainer::triggerUpdate() {
 
 void PolygonInstanceContainer::triggerUpdate(
     const DrawQueueFramePlan &frame_plan) {
+    drainSceneRetirements();
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};
     prepared_view_family_draws.clear();

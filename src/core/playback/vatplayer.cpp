@@ -56,4 +56,18 @@ void VatPlayer::releaseInstanceForSceneLoad() {
     enabled = false;
 }
 
+VatPlayer::PreparedSceneState VatPlayer::snapshotPreparedScene() const noexcept {
+    return PreparedSceneState{.enabled = enabled, .instance = instance};
+}
+
+VatPlayer::PreparedSceneState VatPlayer::prepareSceneLoad() const noexcept {
+    return PreparedSceneState{};
+}
+
+void VatPlayer::publishPreparedScene(
+    PreparedSceneState &&prepared) noexcept {
+    std::swap(enabled, prepared.enabled);
+    instance.swap(prepared.instance);
+}
+
 } // namespace Pelican

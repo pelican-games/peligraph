@@ -186,6 +186,19 @@ namespace Pelican
 			directional_light_index);
 	}
 
+	std::optional<float> LightContainer::directionalLightIntensityForTesting(
+		std::string_view name) const noexcept
+	{
+		for (const auto &[candidate, index] : m_LightNameMap)
+		{
+			if (candidate == name && index < m_DirectionalLights.size())
+			{
+				return m_DirectionalLights[index].intensity;
+			}
+		}
+		return std::nullopt;
+	}
+
 	glm::mat4 LightContainer::shadowViewProjection() const
 	{
 		const auto shadow_view = directionalShadowView();

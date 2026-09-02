@@ -12,6 +12,7 @@
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
+#include "scene_load_test_support.hpp"
 
 #include <algorithm>
 #include <array>
@@ -280,7 +281,7 @@ TEST_CASE("WP379 no-layout SceneLoader treats the old name as an unknown compone
     configureNoLayoutProject(project);
 
     try {
-        GET_MODULE(SceneLoader).load("main");
+        test_support::loadScene(GET_MODULE(SceneLoader), "main");
         FAIL("old unregistered component name unexpectedly resolved");
     } catch (const ComponentUnknownError &error) {
         CHECK(std::string{error.code()} == "component_unknown@1");

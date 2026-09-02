@@ -1,7 +1,11 @@
 #include "../src/core/container.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/loader/sceneloadfault.hpp"
+#include "../src/core/loader/sceneparticipantmanifest.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/userpublic/deterministicrng.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
+#include "scene_load_fault_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -81,6 +85,92 @@ TEST_CASE("GameContext randomInt handles inclusive boundaries", "[determinism]")
     REQUIRE(ctx.randomInt(-3, 2) == 1);
     REQUIRE(ctx.randomInt(-3, 2) == 1);
     REQUIRE_THROWS(ctx.randomInt(2, -3));
+}
+
+TEST_CASE("WP380 RNG sequence overlay commits or rolls back as one queue column",
+          "[WP380][transaction][rng]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ProjectSource).setProjectData(projectWithSeed(380).dump());
+
+    auto &rng = GET_MODULE(DeterministicRng);
+    GameContext ctx;
+    const auto before = rng.prepareSequence();
+
+    auto discarded = rng.prepareSequence();
+    {
+        RngSequenceScope scope{discarded};
+        ctx.setSeed(381);
+        (void)ctx.random();
+        (void)ctx.randomInt(-10, 10);
+        REQUIRE(ctx.seed() == 381);
+    }
+    const auto after_discard = rng.prepareSequence();
+    REQUIRE(after_discard.current_seed == before.current_seed);
+    REQUIRE(after_discard.state == before.state);
+    REQUIRE(after_discard.increment == before.increment);
+    REQUIRE(discarded.current_seed == 381);
+    REQUIRE(discarded.state != before.state);
+
+    auto committed = rng.prepareSequence();
+    {
+        RngSequenceScope scope{committed};
+        ctx.setSeed(382);
+        (void)ctx.random();
+        (void)ctx.randomInt(-10, 10);
+        REQUIRE(ctx.seed() == 382);
+    }
+    rng.publishPreparedSequence(committed);
+    const auto after_commit = rng.prepareSequence();
+    REQUIRE(after_commit.current_seed == committed.current_seed);
+    REQUIRE(after_commit.state == committed.state);
+    REQUIRE(after_commit.increment == committed.increment);
+}
+
+TEST_CASE("WP380 RNG rollback bypass mutations leak only their manifest field",
+          "[WP380][transaction][rng][mutation]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ProjectSource).setProjectData(projectWithSeed(380).dump());
+    auto &rng = GET_MODULE(DeterministicRng);
+
+    struct FieldCase {
+        std::string_view field;
+        std::uint64_t DeterministicRng::PreparedSequence::*member;
+    };
+    constexpr FieldCase fields[]{
+        {"current_seed",
+         &DeterministicRng::PreparedSequence::current_seed},
+        {"state", &DeterministicRng::PreparedSequence::state},
+        {"increment", &DeterministicRng::PreparedSequence::increment},
+    };
+    const DeterministicRng::PreparedSequence before{11, 22, 33};
+    const DeterministicRng::PreparedSequence candidate{111, 222, 333};
+
+    for (const auto &field : fields) {
+        const auto mutation = test_support::manifestMutationId(
+            "rng_sequence", field.field);
+        REQUIRE_FALSE(mutation.empty());
+        INFO("mutation=" << mutation);
+        test_support::ManifestSceneLoadFault injector{mutation};
+        for (const bool enabled : {false, true}) {
+            rng.publishPreparedSequence(before);
+            injector.resetCalls();
+            injector.setEnabled(enabled);
+            internal::rollbackSceneRngCandidate(
+                rng, candidate, &injector);
+            const auto actual = rng.prepareSequence();
+            REQUIRE(injector.saw(SceneLoadFaultPhase::flush,
+                                 "rng_sequence"));
+            REQUIRE(actual.*(field.member) ==
+                    (enabled ? candidate.*(field.member)
+                             : before.*(field.member)));
+            for (const auto &other : fields) {
+                if (other.member == field.member) continue;
+                REQUIRE(actual.*(other.member) == before.*(other.member));
+            }
+        }
+    }
 }
 
 } // namespace Pelican

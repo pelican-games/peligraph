@@ -8,6 +8,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "scene_load_test_support.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
@@ -947,7 +948,7 @@ TEST_CASE("RPC load_gltf publishes once and preserves inventory on preflight and
     REQUIRE(transientInventory("anchor") == before_gpu_failure);
 
     const auto transient_owned = *published.anchor_instance;
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     REQUIRE_FALSE(instances.isModelInstanceAlive(transient_owned));
     REQUIRE_FALSE(instances.removeModelInstance(transient_owned));

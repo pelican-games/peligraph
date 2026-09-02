@@ -8,6 +8,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "scene_load_test_support.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
@@ -112,7 +113,7 @@ TEST_CASE("glTF skin and clips connect to animation component without ECS bones"
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     time.setTime(0.5);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto instance = instances.modelInstanceIdForTesting(0);
@@ -147,7 +148,7 @@ TEST_CASE("animation graph key is reserved in component v1", "[skeletal][scene]"
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
         {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
     GET_MODULE(ECSPredefinedRegistration).reg();
-    REQUIRE_THROWS_WITH(GET_MODULE(SceneLoader).load("default_scene"),
+    REQUIRE_THROWS_WITH(test_support::loadScene(GET_MODULE(SceneLoader), "default_scene"),
                         Catch::Matchers::ContainsSubstring("reserved v1 key 'graph'"));
 }
 

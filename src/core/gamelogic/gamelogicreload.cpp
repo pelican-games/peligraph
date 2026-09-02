@@ -459,7 +459,11 @@ void rebuildCurrentScene() {
     if (scene.empty()) return;
     GET_MODULE(ProjectBasicConfig).refreshResolvedScene(
         [&scene_loader, scene = std::move(scene)]() mutable {
-            scene_loader.load(std::move(scene));
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            auto request = SceneLoadRequest::borrowed(
+                std::move(scene), config.sceneProjectionState());
+            (void)requireSceneLoadCommitted(
+                scene_loader.load(std::move(request)));
         });
 }
 

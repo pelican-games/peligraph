@@ -70,6 +70,7 @@
 #include "vat_fixture.hpp"
 #include "vrm_xr_demo_fixture.hpp"
 #include "golden_harness.hpp"
+#include "scene_load_test_support.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1001,7 +1002,7 @@ void renderUsdOpenPbrMaterialFrame(RenderTarget &render_target,
     }
 
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
     auto &camera = GET_MODULE(Camera);
@@ -4591,7 +4592,7 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
     for (auto &group : model.material_primitives) group.material = toon_material;
 
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
 
     auto &camera = GET_MODULE(Camera);
@@ -4611,7 +4612,7 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
 
 void renderUsdStaticGeometryFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -4704,7 +4705,7 @@ void renderShadowFrame(
     bool supply_project_planar_family =
         false) {
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -5606,7 +5607,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
 
 void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -5647,7 +5648,7 @@ void renderMaterialInstanceOverrideFrame(RenderTarget &render_target) {
 
 void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -5731,7 +5732,7 @@ void renderVrmExpressionFrame(RenderTarget &render_target, bool enabled) {
     Vrm::applicationServiceRuntime().reset();
     Animation::animationServiceRuntime().reset();
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -5801,7 +5802,7 @@ void renderVrmExpressionFrame(RenderTarget &render_target, bool enabled) {
 
 void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
     auto &camera = GET_MODULE(Camera);
@@ -5826,7 +5827,7 @@ void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
 void renderEditorRuntimeBindingFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene_loader = GET_MODULE(SceneLoader);
-    scene_loader.load("default_scene");
+    test_support::loadScene(scene_loader, "default_scene");
 
     // Exercise the production load_scene handler with an editor service that
     // was constructed against a different runtime scene. The subsequent query
@@ -6125,7 +6126,7 @@ void renderOrbitCameraControllerFrame(RenderTarget &render_target) {
     engine_time.setTime(2.0);
 
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
 
     GameContext game_context;
     internal::updateRegisteredGameSystems(game_context);
@@ -6149,7 +6150,7 @@ void renderDebugDrawFrame(RenderTarget &render_target) {
 void renderParentTransformFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = GET_MODULE(SceneLoader);
-    scene.load("default_scene");
+    test_support::loadScene(scene, "default_scene");
     GET_MODULE(ECSCore).update();
     const auto child = scene.objectTransform("OrbitingChild");
 
@@ -6181,7 +6182,7 @@ void renderDebugTextFrame(RenderTarget &render_target) {
 
 void renderColliderDebugDrawFrame(RenderTarget &render_target) {
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(Renderer).render();
     GET_MODULE(VulkanManageCore).waitIdle();
     (void)render_target;
@@ -6278,7 +6279,7 @@ void renderTaaGoldenFrames(RenderTarget &render_target, const std::string &mode)
     time.setTime(0.0);
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = GET_MODULE(SceneLoader);
-    scene.load("default_scene");
+    test_support::loadScene(scene, "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -7599,8 +7600,7 @@ captureGpuSegmentedOcclusionXr(
         1.0 / 60.0);
     GET_MODULE(ECSPredefinedRegistration)
         .reg();
-    GET_MODULE(SceneLoader)
-        .load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -8242,8 +8242,7 @@ GpuDrawTimingPathCapture captureGpuDrawTimingPath(
     auto &target = GET_MODULE(RenderTarget);
     auto &renderer = GET_MODULE(Renderer);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load(
-        "default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     GET_MODULE(ECSCore).update();
 
@@ -11782,7 +11781,7 @@ void GoldenHarness::runLogicalFrameStereo() {
     auto &time = GET_MODULE(EngineTime);
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
 
     auto make_view = [](float view_x, float projection_x,
@@ -11991,7 +11990,7 @@ void GoldenHarness::runOpenXrTaaTransition() {
     auto &time = GET_MODULE(EngineTime);
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
 
     auto &renderer = GET_MODULE(Renderer);
@@ -12190,7 +12189,7 @@ void GoldenHarness::runSetTimeSkinnedVelocity() {
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
     time.setTime(0.0);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
 
     auto &camera = GET_MODULE(Camera);
@@ -12245,7 +12244,7 @@ void GoldenHarness::runMorphVelocity() {
     launch.shader_hot_reload = false;
     launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
 
     auto &camera = GET_MODULE(Camera);

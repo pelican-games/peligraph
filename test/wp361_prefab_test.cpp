@@ -2222,7 +2222,11 @@ TEST_CASE("WP361a SnapshotV1 and lower import gates reject every prefab persiste
     auto &config = GET_MODULE(ProjectBasicConfig);
     (void)config.sceneProjectionState();
     requirePrefabError(PrefabErrorCode::PrefabPersistenceUnsupported, [&] {
-        (void)config.importSceneDocument(incoming_prefab_bytes, [] {});
+        (void)config.importSceneDocument(
+            incoming_prefab_bytes,
+            [](SceneLoadRequest &&) -> SceneLoadResult {
+                return SceneLoadCommitted{};
+            });
     });
 
     const auto initial_provider_generation =

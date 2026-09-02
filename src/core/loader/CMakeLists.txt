@@ -20,6 +20,8 @@ target_sources(pelican_core PRIVATE
     editorprojectiontransaction.cpp
     editorprojectionadapters.cpp
     basicconfig.cpp
+    sceneloadfault.cpp
+    sceneparticipantmanifest.cpp
     scene.cpp
     vrmadecoder.cpp
 )

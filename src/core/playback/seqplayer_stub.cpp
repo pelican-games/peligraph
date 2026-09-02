@@ -40,4 +40,18 @@ void SeqPlayer::releaseInstancesForSceneLoad() {
     enabled = false;
 }
 
+SeqPlayer::PreparedSceneState SeqPlayer::snapshotPreparedScene() const {
+    return PreparedSceneState{.enabled = enabled, .instances = instances};
+}
+
+SeqPlayer::PreparedSceneState SeqPlayer::prepareSceneLoad() const {
+    return PreparedSceneState{};
+}
+
+void SeqPlayer::publishPreparedScene(
+    PreparedSceneState &&prepared) noexcept {
+    std::swap(enabled, prepared.enabled);
+    instances.swap(prepared.instances);
+}
+
 } // namespace Pelican

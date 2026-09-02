@@ -38,7 +38,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L359)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L381) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
+setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L372)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L381) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
@@ -101,7 +101,7 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 
 ### event型の契約
 
-登録マクロは [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L257)（IMPLは [L242](../../src/core/userpublic/details/event/registerer.hpp#L242)）です。型は次を満たす必要があります。
+登録マクロは [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L314)（IMPLは [L242](../../src/core/userpublic/details/event/registerer.hpp#L299)）です。型は次を満たす必要があります。
 
 - object型
 - pointerでない
@@ -109,24 +109,24 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 
 RPCの`inject_event`からpayloadを構築するには、さらにdefault construct可能で、[`ISerializable<Event, JsonArchiveLoader>`](../../src/core/userpublic/serialize/serialize.hpp#L11)、つまり`event.ref(archive)`が必要です。
 
-event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadschema.hpp`](../../src/core/userpublic/details/event/payloadschema.hpp)、[`registerer.hpp` 内](../../src/core/userpublic/details/event/registerer.hpp#L50)）を持てます。compile-time検証のfixtureは [`test/fixtures/event_payload_schema/`](../../test/fixtures/event_payload_schema) です。宣言に`structFields`を使う場合は`eventPayloadPolicy`が必須で、全フィールドが`required(...)`かつ`bool`/enum不可という制約が掛かります（§5.14）。
+event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadschema.hpp`](../../src/core/userpublic/details/event/payloadschema.hpp)、[`registerer.hpp` 内](../../src/core/userpublic/details/event/registerer.hpp#L54)）を持てます。compile-time検証のfixtureは [`test/fixtures/event_payload_schema/`](../../test/fixtures/event_payload_schema) です。宣言に`structFields`を使う場合は`eventPayloadPolicy`が必須で、全フィールドが`required(...)`かつ`bool`/enum不可という制約が掛かります（§5.14）。
 
 ### runtime表現
 
-[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L29) は次を持ちます。
+[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L33) は次を持ちます。
 
 - `std::type_index`
 - namespaceを外した表示名
 - `shared_ptr<const void>` payload
-- 発行元の [`RegistrationOwner`](../../src/core/userpublic/details/event/registerer.hpp#L33)
+- 発行元の [`RegistrationOwner`](../../src/core/userpublic/details/event/registerer.hpp#L37)
 
 payloadを値copyしてshared ownershipへ変換するため、emit元のstack objectが消えても次フレームまで安全です。dispatch時に登録済み関数が元のEvent型へcastします。`owner`が付いたことで、game DLL reload時に「消えたownerのqueued event」を選別できます。
 
-teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpublic/details/event/registerer.hpp#L221) が [`EventQueueDrainResult{pending, frozen}`](../../src/core/userpublic/details/event/registerer.hpp#L36) を返し、[第2章](02_runtime_lifecycle.md)のteardown段階から呼ばれます。
+teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpublic/details/event/registerer.hpp#L278) が [`EventQueueDrainResult{pending, frozen}`](../../src/core/userpublic/details/event/registerer.hpp#L40) を返し、[第2章](02_runtime_lifecycle.md)のteardown段階から呼ばれます。
 
 ### 名前と重複
 
-[`__registerEvent()`](../../src/core/userpublic/details/event/registerer.cpp#L238) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L20) で最後の`::`以前を除去します（正規化は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L241)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
+[`__registerEvent()`](../../src/core/userpublic/details/event/registerer.cpp#L284) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L20) で最後の`::`以前を除去します（正規化は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L287)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
 
 - 同じ名前・同じ型の再登録はno-op
 - 同名・別型はerror
@@ -140,7 +140,7 @@ idempotentです。Overlap event は full `EntityId {index,generation}` を
 
 ### queue境界
 
-eventは`pending_events`へ入り、フレーム先頭で`deliver_now_events`へswapし、emit順に配送されます（自由関数 [`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L444)、メンバは [L405](../../src/core/userpublic/details/event/registerer.cpp#L405)）。System側はorder/name順です。従って配送順は次です。
+eventは`pending_events`へ入り、フレーム先頭で`deliver_now_events`へswapし、emit順に配送されます（自由関数 [`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L455)、メンバは [L405](../../src/core/userpublic/details/event/registerer.cpp#L455)）。System側はorder/name順です。従って配送順は次です。
 
 ```text
 event emit順
@@ -253,11 +253,11 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 
 ### scene cameraロード
 
-[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L380) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
+[`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L381) はscene JSONを再正規化し、`camera` componentを持つobjectを抽出します。最初のcameraを初期表示へ使い、名前付きcameraはmapへ保存します。
 
-`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L451) を呼び、以後そのcameraのpose/projectionをactiveにします。
+`GameContext::setCamera(name)`は [`Camera::setActiveCamera()`](../../src/core/renderer/camera.cpp#L452) を呼び、以後そのcameraのpose/projectionをactiveにします。
 
-このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L79)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L394) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L296)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L442) を通るため、このフラグの影響を受けません。
+このとき`bool active_scene_camera_locked`（[`camera.hpp` 内](../../src/core/renderer/camera.hpp#L79)）が`true`になります。特別なlock機構ではなくただのフラグで、[`Camera::setPos()` / `setDir()`](../../src/core/renderer/camera.cpp#L395) がこのフラグを見て先頭で早期returnし、何も書き換えません。つまりtransform componentからcameraを駆動するECSの [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L13) が効かなくなり、scene camera側のposeが勝ちます。フラグは次のscene camera読み込み（[`prepareSceneCameras()`](../../src/core/renderer/camera.cpp#L296)）と`resetToConfigDefaults()`で`false`へ戻ります。なお組み込みcamera controllerは`setPos/setDir`ではなく [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L443) を通るため、このフラグの影響を受けません。
 
 ### controller
 
@@ -289,7 +289,7 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 > quat_cast(mat3{right, up, dir})
 > ```
 >
-> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L442) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
+> **手がかり**: `projectWorldUp()` は `ProjectBasicConfig` が既に読み取った `basic_config.camera.up` を正規化します。`worldUpFor()` はその up と dir がほぼ平行(内積の絶対値が 0.98 超)なら、宣言 up と最も平行でない canonical 軸へ退避します。+Y 規約では従来どおり +Z を選びますが、up 自体が +Z の project では +X を選ぶため、退避先まで平行になることはありません。同じ処理を [`makePose()`](../../src/core/userpublic/cameracontrollersystem.cpp#L113) 経由で orbit / follow が共有し、fly も直接使います。書き戻し先は scene object の transform で、`Camera` 本体へは [`applyControllerPose()`](../../src/core/renderer/camera.cpp#L443) が dir / up のまま渡ります(§5.6 の `active_scene_camera_locked` を迂回する経路です)。
 >
 > **不変条件**: 外積の順は `right = cross(up, dir)` / `up = cross(dir, right)`(+Z 前方の巡回順)を保つ。`quat_cast` へ渡す前に必ず直交化する。project up を固定軸へ読み替えず、極点の fallback も宣言 up に対して非平行な軸を選ぶ。
 
@@ -351,7 +351,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
 > ```
 >
-> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L454) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
+> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L468) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
 >
 > **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([`orderOverlapHits` L530](../../src/core/phys/physicsruntime.cpp#L530) / [`orderShapeCastHits` L621](../../src/core/phys/physicsruntime.cpp#L621) / [`orderRaycastHits` L470](../../src/core/phys/physicsruntime.cpp#L470))。provider の列挙順を結果へ漏らさない最後の関門です。
 
@@ -427,7 +427,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 - live `GameObjectId`
 - static `PhysWorldTransform`
 
-queryのたびに [`collectColliders()`](../../src/core/phys/physworld.cpp#L415) がECS transformをresolveし、local collider offset/rotationとworld scaleを合成して純粋`phys::Collider`列を作ります。削除済みentityのbindingはqueryから自然に除外されます。
+queryのたびに [`collectColliders()`](../../src/core/phys/physworld.cpp#L429) がECS transformをresolveし、local collider offset/rotationとworld scaleを合成して純粋`phys::Collider`列を作ります。削除済みentityのbindingはqueryから自然に除外されます。
 
 builtin providerはbroad phase spatial indexを持たず、queryごとに全bindingを走査します。大量colliderではO(N)が支配的です。
 
@@ -435,7 +435,7 @@ builtin providerはbroad phase spatial indexを持たず、queryごとに全bind
 
 呼び出し元は専用のゲームSystem `PhysicsTriggerSystem` です（[`PhysicsTriggerSystem`](../../src/core/phys/physworld.cpp#L30)）。orderは `std::numeric_limits<int>::max()` なので、組み込み`BuiltinCameraControllerSystem`（10000）を含む**すべてのゲームSystemの後**に走ります。
 
-[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L548) は、
+[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L562) は、
 `trigger=true` collider ごとに provider の overlap query を行い、full
 `EntityId` の canonical pair set を前 frame と比較します。pair 全体を sort /
 unique してから sorted merge するため、provider の列挙順には依存しません。
@@ -451,11 +451,11 @@ event は特別な即時 callback ではなく通常のE1 queueへ入り、次�
 typed System/Behavior handlerへ配送されます。trigger query と rigid-body responseは
 独立であり、現在も Jolt は query providerだけです。
 
-> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L548))
+> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L562))
 >
 > **何をする所か**: trigger collider ごとの overlap 結果から entity ペア集合を作り、前フレームの集合と差分を取って `OverlapEnter` / `OverlapExit` を emit します。
 >
-> **素朴に読むと**: 「集合差分」と言われれば `unordered_set` を 2 つ持って引き算したくなりますが、それでは **emit 順が hash 順**になり決定性が消えます。ここでは (1) ペアを `(min(entity), max(entity))` へ canonical 化し、(2) sort + unique し、(3) **2 本のソート済み列を 1 回のマージで走査**して、Enter と Exit を**同一のペア全順序の中に交互に**出します。素朴に「Exit を全部出してから Enter を全部出す」にすると、同一フレームで A→B の Exit と B→C の Enter が起きたときの相対順序が「フェーズ順」になり、ペア順ではなくなります。canonical 化と unique が無ければ、同じ物理ペアが**両方の trigger から 2 回**、1 entity に複数 collider があれば collider 数だけ重複して出ます。`Status::unavailable` での早期 `return` も重要で、そこで `active_trigger_pairs` を更新しないことが「provider が使えないことは分離した証拠ではない」という不変条件そのものです。逆に [`PhysWorld::clear()`](../../src/core/phys/physworld.cpp#L349) は scene domain reset として **Exit を出さずに**捨てます。この非対称は意図的です。
+> **素朴に読むと**: 「集合差分」と言われれば `unordered_set` を 2 つ持って引き算したくなりますが、それでは **emit 順が hash 順**になり決定性が消えます。ここでは (1) ペアを `(min(entity), max(entity))` へ canonical 化し、(2) sort + unique し、(3) **2 本のソート済み列を 1 回のマージで走査**して、Enter と Exit を**同一のペア全順序の中に交互に**出します。素朴に「Exit を全部出してから Enter を全部出す」にすると、同一フレームで A→B の Exit と B→C の Enter が起きたときの相対順序が「フェーズ順」になり、ペア順ではなくなります。canonical 化と unique が無ければ、同じ物理ペアが**両方の trigger から 2 回**、1 entity に複数 collider があれば collider 数だけ重複して出ます。`Status::unavailable` での早期 `return` も重要で、そこで `active_trigger_pairs` を更新しないことが「provider が使えないことは分離した証拠ではない」という不変条件そのものです。逆に [`PhysWorld::clear()`](../../src/core/phys/physworld.cpp#L363) は scene domain reset として **Exit を出さずに**捨てます。この非対称は意図的です。
 >
 > **骨子**:
 > ```text
@@ -471,7 +471,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ### 編集transaction用のprepare/publish
 
-[`PhysWorld::PreparedState`](../../src/core/phys/physworld.hpp#L47) と [`snapshotPrepared()`](../../src/core/phys/physworld.hpp#L63) / [`prepareBindings()`](../../src/core/phys/physworld.hpp#L64) / [`publishPrepared()`](../../src/core/phys/physworld.hpp#L68)（`noexcept`）は、編集RPCのcollider投影が使うprepare/publishの三点セットです。[第9章](09_black_magic_and_gotchas.md)の編集transaction節を参照してください。
+[`PhysWorld::PreparedState`](../../src/core/phys/physworld.hpp#L47) と [`snapshotPrepared()`](../../src/core/phys/physworld.hpp#L64) / [`prepareBindings()`](../../src/core/phys/physworld.hpp#L65) / [`publishPrepared()`](../../src/core/phys/physworld.hpp#L72)（`noexcept`）は、編集RPCのcollider投影が使うprepare/publishの三点セットです。[第9章](09_black_magic_and_gotchas.md)の編集transaction節を参照してください。
 
 `PELICAN_WITH_PHYSICS=OFF` 用のstubは [`physworld_stub.cpp`](../../src/core/phys/physworld_stub.cpp) で、binding系APIは `PELICAN_WITH_PHYSICS=OFF: PhysWorld collider binding is unavailable` を投げます。
 
@@ -516,7 +516,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ## 5.8 決定的乱数
 
-[`DeterministicRng`](../../src/core/userpublic/deterministicrng.cpp#L18) はPCG32（permuted congruential generator の32bit出力版 — 64bitの内部状態を線形合同法で進め、出力段ではその状態の上位ビットが決めた量だけxorshift結果をビット回転させる擬似乱数生成器。状態が小さく、同じseedから同じ列を完全に再現できるので決定性用途に向きます）です。初期seedは`ProjectBasicConfig.seed()`、RPC/GameContextから再設定できます。
+[`DeterministicRng`](../../src/core/userpublic/deterministicrng.cpp#L20) はPCG32（permuted congruential generator の32bit出力版 — 64bitの内部状態を線形合同法で進め、出力段ではその状態の上位ビットが決めた量だけxorshift結果をビット回転させる擬似乱数生成器。状態が小さく、同じseedから同じ列を完全に再現できるので決定性用途に向きます）です。初期seedは`ProjectBasicConfig.seed()`、RPC/GameContextから再設定できます。
 
 - `random()`: 2回の32-bit出力から53-bit精度の`[0,1)` double
 - `randomInt(min,max)`: modulo bias（剰余偏り — 32bit乱数を`% n`で範囲へ丸めると、2^32がnで割り切れない限り一部の値だけ余分に出てしまう偏り）を避けるrejection sampling（棄却サンプリング — nで割り切れる個数からはみ出す端の出力を捨てて引き直し、偏りを消す方式）
@@ -788,7 +788,7 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 
 ### Arena
 
-[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L169) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
+[`DECLARE_MODULE(BehaviorAttachmentArena)`](../../src/core/gamelogic/behaviorarena.hpp#L170) が生存・初期化・event配送・遅延構造変更・owner解放を持ちます。
 
 | 経路 | 使うAPI |
 |---|---|
@@ -796,7 +796,7 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 | 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L117) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 
-attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L82) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L160) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L95) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
+attachment identityは [`BehaviorAttachmentIdentity{handle, attachment_seq}`](../../src/core/gamelogic/behaviorarena.hpp#L82) です。scene由来のseqは [`sceneBehaviorAttachmentSeq(object_index, component_index)`](../../src/core/gamelogic/behaviorarena.hpp#L161) が上位32bit/下位32bitへpackして作るので、同じsceneからは常に同じseqが出ます。編集の種別は [`BehaviorAttachmentEditKind`](../../src/core/gamelogic/behaviorarena.hpp#L95) の5種（`attach` / `remove` / `set_params` / `insert_component` / `remove_component`）です。
 
 teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-callbacks`と`deferred-mutations`がこのarenaに対応します。
 

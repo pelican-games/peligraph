@@ -180,6 +180,15 @@ class ECSCoreTemplatePublic {
     void clearEntities();
     bool isAlive(EntityId id) const noexcept { return resolve(id).has_value(); }
     size_t liveCount() const noexcept;
+    std::vector<EntityId> liveEntities() const {
+        std::vector<EntityId> result;
+        result.reserve(liveCount());
+        for (std::uint32_t index = 0; index < id_table.size(); ++index) {
+            const auto &entry = id_table[index];
+            if (entry.live) result.push_back(EntityId{index, entry.generation});
+        }
+        return result;
+    }
     IsolationSnapshot isolationSnapshot() const {
         IsolationSnapshot result;
         result.global_tick = global_tick;

@@ -3,6 +3,8 @@
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../ecs/core.hpp"
+#include "../ecs/archetypemigration.hpp"
+#include "../asset/model.hpp"
 #include "../model/gltf.hpp"
 #include "../playback/seqplayer.hpp"
 #include "../playback/vatplayer.hpp"
@@ -16,20 +18,22 @@
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
 #include "../build_features.hpp"
-#if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
-#endif
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../shader/raygrouplayout.hpp"
 #include "../userpublic/events.hpp"
+#include "../userpublic/deterministicrng.hpp"
+#include "../userpublic/details/event/registerer.hpp"
 #include "../userpublic/gameobjects.hpp"
 #include "pathresolver.hpp"
+#include "sceneloadfault.hpp"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <cctype>
+#include <chrono>
 #include <components/localtransform.hpp>
 #include <components/predefined.hpp>
 #include <filesystem>
@@ -37,6 +41,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -107,10 +112,69 @@ void internal::validateResolvedSceneFeatureBindings(
 #endif
 }
 
-SceneLoader::SceneLoader() {}
-SceneLoader::~SceneLoader() { releaseTransientModels(false); }
+struct SceneLoader::RetirementState {
+    struct Batch {
+        std::vector<ECSEntityMutationToken> destroyed_entities;
+        std::vector<ModelTemplate> transient_models;
+    };
+    std::vector<Batch> queue;
+
+    void reserveOne() { queue.reserve(queue.size() + 1U); }
+
+    void enqueue(Batch batch) noexcept {
+        static_assert(std::is_nothrow_move_constructible_v<Batch>);
+        assert(queue.size() < queue.capacity());
+        queue.push_back(std::move(batch));
+    }
+};
+
+SceneLoader::SceneLoader()
+    : retirement_state{std::make_unique<RetirementState>()} {
+    const auto ticks = static_cast<std::uint64_t>(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    run_nonce = ticks ^ static_cast<std::uint64_t>(
+                            reinterpret_cast<std::uintptr_t>(this));
+    if (run_nonce == 0) run_nonce = 1;
+}
+SceneLoader::~SceneLoader() {
+    drainRetirementQueue();
+    releaseTransientModels(false);
+}
 
 namespace {
+
+struct PendingSceneTransaction {
+    SceneLoader *loader = nullptr;
+    const SceneProjectionState *projection = nullptr;
+    std::optional<SceneId> *candidate = nullptr;
+};
+
+thread_local PendingSceneTransaction *active_pending_scene_transaction =
+    nullptr;
+
+class PendingSceneTransactionScope {
+    PendingSceneTransaction *previous_ = nullptr;
+
+  public:
+    explicit PendingSceneTransactionScope(
+        PendingSceneTransaction &transaction) noexcept
+        : previous_{std::exchange(active_pending_scene_transaction,
+                                  &transaction)} {}
+    ~PendingSceneTransactionScope() {
+        active_pending_scene_transaction = previous_;
+    }
+};
+
+std::string exceptionMessage(const std::exception_ptr &error) {
+    try {
+        if (error) std::rethrow_exception(error);
+    } catch (const std::exception &exception) {
+        return exception.what();
+    } catch (...) {
+        return "non-standard scene load exception";
+    }
+    return "unknown scene load failure";
+}
 
 std::string displayObjectName(const std::string &object_name) {
     return object_name.empty() ? std::string{"<unnamed>"} : object_name;
@@ -137,6 +201,7 @@ struct EcsObjectLoad {
     std::vector<ComponentId> components_id;
     std::vector<ColliderComponent> colliders;
     std::vector<PreparedSceneBehaviorAttachment> behaviors;
+    std::optional<ModelInstanceId> prepared_model_instance;
 };
 
 ColliderComponent loadColliderComponent(const ResolvedComponent &component,
@@ -289,7 +354,6 @@ SceneObjectTransform identityObjectTransform() {
     };
 }
 
-#if PELICAN_WITH_PHYSICS
 PhysWorldTransform identityPhysWorldTransform() {
     return PhysWorldTransform{
         .pos = vec3{0.0f, 0.0f, 0.0f},
@@ -297,7 +361,6 @@ PhysWorldTransform identityPhysWorldTransform() {
         .scale = vec3{1.0f, 1.0f, 1.0f},
     };
 }
-#endif
 
 void assignTransform(TransformComponent &dst, const SceneObjectTransform &src) {
     dst.pos = src.pos;
@@ -331,233 +394,550 @@ const EcsObjectLoad::ComponentLoad &transformLoad(const EcsObjectLoad &object) {
 
 } // namespace
 
-void SceneLoader::load(SceneId scene_id) {
+const SceneLoadCommitted &requireSceneLoadCommitted(
+    const SceneLoadResult &result) {
+    if (const auto *committed = std::get_if<SceneLoadCommitted>(&result)) {
+        return *committed;
+    }
+    if (const auto *failure = std::get_if<PreCommitFailure>(&result)) {
+        if (failure->exception) std::rethrow_exception(failure->exception);
+        throw std::runtime_error(failure->error);
+    }
+    const auto &failure = std::get<CommittedWithEffectFailure>(result);
+    std::string message = "scene committed with effect failure";
+    for (const auto &error : failure.effect_errors) {
+        message += ": " + error;
+    }
+    throw std::runtime_error(message);
+}
+
+SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
+    auto *const injector = fault_injector;
+    if (internal::sceneLoadRootDisconnected(request.root, injector)) {
+        auto error = std::make_exception_ptr(
+            std::runtime_error("injected scene-load root disconnect"));
+        return PreCommitFailure{SceneLoadPhase::prepare,
+                                exceptionMessage(error), error};
+    }
+    SceneAuthority candidate_authority{};
+    if (next_authority_epoch == std::numeric_limits<std::uint64_t>::max()) {
+        auto error = std::make_exception_ptr(
+            std::overflow_error("scene authority epoch space exhausted"));
+        return PreCommitFailure{SceneLoadPhase::prepare,
+                                exceptionMessage(error), error};
+    }
+    candidate_authority = SceneAuthority{run_nonce, next_authority_epoch++};
+
     auto &config = GET_MODULE(ProjectBasicConfig);
+    MetadataCommitToken metadata;
+    std::unique_ptr<internal::PreparedEventOutbox> event_outbox;
+    internal::QueuedEvent scene_loaded_event;
+    DeterministicRng::PreparedSequence rng_candidate;
+    std::optional<SceneId> pending_candidate;
+    Camera::PreparedSceneState camera_candidate;
+    LightContainer::PreparedLoad light_candidate;
+    PolygonInstanceContainer::PreparedSceneState renderer_candidate;
+    std::vector<std::uint32_t> renderer_retire_indices;
+    SeqPlayer::PreparedSceneState seq_candidate;
+    VatPlayer::PreparedSceneState vat_candidate;
+    PhysWorld::PreparedState physics_candidate;
+    std::unordered_map<std::string, ObjectBinding> candidate_object_bindings;
+    std::vector<SceneRuntimeObjectBinding> candidate_runtime_bindings;
+    std::vector<ModelTemplate> candidate_transient_models;
+    bool candidate_runtime_only_changes = false;
+    std::vector<EcsObjectLoad> ecs_objects;
+    std::vector<GameObjectId> old_entities;
+    std::vector<GameObjectId> object_ids;
+    std::vector<ECSEntityMutationToken> created_entities;
+    std::vector<ECSEntityMutationToken> destroyed_entities;
+    std::unique_ptr<PreparedBehaviorSceneReconciliation> behavior_candidate;
+    DeterministicRng *rng = nullptr;
+    bool renderer_published = false;
+    bool light_published = false;
+    bool candidates_published = false;
 
-    const auto &scene_document = config.resolvedScene();
-    for (const auto &warning : scene_document.warnings()) {
-        if (logger != nullptr) {
-            LOG_WARNING(logger, "{}", warning);
+    const auto fail = [&](SceneLoadPhase phase,
+                          std::exception_ptr error) -> SceneLoadResult {
+        return PreCommitFailure{phase, exceptionMessage(error), error};
+    };
+
+    try {
+        if (auto *owned = std::get_if<SceneLoadRequest::Owned>(
+                &request.source)) {
+            metadata = std::move(owned->token);
+        } else {
+            metadata = config.prepareBorrowedSceneMetadata(
+                std::get<SceneLoadRequest::Borrowed>(request.source)
+                    .committed.get());
         }
-    }
+        metadata.prepareRuntimeIdentity(request.scene_id,
+                                        candidate_authority);
+        if (internal::sceneLoadMutationEnabled(
+                injector, SceneLoadFaultPhase::prepare, "metadata",
+                scene_load_mutation::metadata_projection)) {
+            throw std::runtime_error(
+                "injected scene metadata prepare drop");
+        }
+        const auto &projection = metadata.projection();
+        const auto &scene_document = projection.resolved();
+        for (const auto &warning : scene_document.warnings()) {
+            if (logger != nullptr) LOG_WARNING(logger, "{}", warning);
+        }
+        const auto *scene = scene_document.findScene(request.scene_id);
+        if (scene == nullptr) {
+            throw std::runtime_error("scene not found: " + request.scene_id);
+        }
+        internal::validateResolvedSceneFeatureBindings(*scene);
 
-    const auto *scene = scene_document.findScene(scene_id);
-    if (scene == nullptr) {
-        throw std::runtime_error("scene not found: " + scene_id);
-    }
-    internal::validateResolvedSceneFeatureBindings(*scene);
-    if (runtime_scene_epoch == std::numeric_limits<std::uint64_t>::max()) {
-        throw std::overflow_error("runtime scene epoch space exhausted");
-    }
+        std::vector<LightLoadEntry> light_entries;
+        auto &component_info_manager = GET_MODULE(ComponentInfoManager);
+        const auto game_logic_status = configuredGameLogicStatus();
+        const auto behavior_availability =
+            game_logic_status.loaded
+                ? BehaviorRegistryAvailability::active
+                : BehaviorRegistryAvailability::dll_unavailable;
+        auto behavior_entries = prepareResolvedSceneBehaviorAttachments(
+            scene->objects, behavior_availability);
+        ecs_objects = prepareSceneBindings(
+            *scene, component_info_manager, light_entries,
+            std::move(behavior_entries));
 
-    std::vector<LightLoadEntry> light_entries;
-    auto &component_info_manager = GET_MODULE(ComponentInfoManager);
-    const auto game_logic_status = configuredGameLogicStatus();
-    const auto behavior_availability = game_logic_status.loaded
-                                           ? BehaviorRegistryAvailability::active
-                                           : BehaviorRegistryAvailability::dll_unavailable;
-    auto behavior_entries = prepareResolvedSceneBehaviorAttachments(
-        scene->objects, behavior_availability);
-    auto ecs_objects = prepareSceneBindings(*scene, component_info_manager,
-                                            light_entries,
-                                            std::move(behavior_entries));
-
-    const auto transform_id = component_info_manager.getComponentIdByName("transform");
-
-    clearRuntimeScene();
-    GET_MODULE(LightContainer).load(light_entries);
-    GET_MODULE(Camera).loadSceneCameras(scene_id);
-
-#if PELICAN_WITH_PHYSICS
-    auto &phys_world = GET_MODULE(PhysWorld);
-#endif
-    const bool scene_uses_parents = std::any_of(ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
-        return object.hierarchy_participant;
-    });
-    std::vector<GameObjectId> object_ids(ecs_objects.size(), invalidGameObjectId);
-    if (scene_uses_parents) {
-        std::unordered_map<std::string, GameObjectId> object_ids_by_name;
-
-        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
-            const auto &object = ecs_objects[object_index];
-            if (!object.components_id.empty() || !object.behaviors.empty()) {
-                object_ids[object_index] = GameObjects::createWithComponents(
-                    object.components_id, [&](std::span<void *> ptrs) {
-                        for (size_t i = 0; i < object.components.size(); ++i) {
-                            applyComponentLoad(component_info_manager, ptrs[i], object.components[i]);
-                        }
-                    });
-                bindRuntimeObject(object.authoring_object_id,
-                                  object_ids[object_index]);
-            }
-            if (!object.name.empty() && object_ids[object_index] != invalidGameObjectId) {
-                object_ids_by_name.emplace(object.name, object_ids[object_index]);
-            }
-            const bool has_transform =
-                object_ids[object_index] != invalidGameObjectId &&
-                std::find(object.components_id.begin(), object.components_id.end(), transform_id) !=
-                    object.components_id.end();
-            if (!object.name.empty() && has_transform) {
-                bindObjectTransform(object.name, object_ids[object_index]);
+        auto &renderer = GET_MODULE(PolygonInstanceContainer);
+        renderer_candidate =
+            renderer.prepareSceneReplacement(renderer_retire_indices);
+        for (auto &object : ecs_objects) {
+            for (const auto &component : object.components) {
+                if (component.codec == nullptr ||
+                    component.codec->name != "simplemodelview") {
+                    continue;
+                }
+                SimpleModelViewComponent model_view;
+                applyComponentLoad(component_info_manager, &model_view,
+                                   component);
+                if (model_view.model_name.empty()) continue;
+                auto &model = GET_MODULE(ModelAssetContainer)
+                                  .getModelTemplateByName(
+                                      model_view.model_name);
+                auto staged =
+                    renderer.stagePreparedSceneModel(renderer_candidate,
+                                                     model);
+                object.prepared_model_instance = staged.id();
+                renderer.publishPreparedSceneModel(renderer_candidate,
+                                                    std::move(staged));
+                break;
             }
         }
+        camera_candidate = GET_MODULE(Camera).prepareSceneCameras(
+            request.scene_id, scene_document);
+        light_candidate = LightContainer::prepareLoad(light_entries);
+        for (const auto &warning : light_candidate.warnings) {
+            if (logger != nullptr) LOG_WARNING(logger, "{}", warning);
+        }
+        seq_candidate = GET_MODULE(SeqPlayer).prepareSceneLoad();
+        vat_candidate = GET_MODULE(VatPlayer).prepareSceneLoad();
+        old_entities =
+            GET_MODULE(ECSCore).getTemplatePublicModule().liveEntities();
+        object_ids.assign(ecs_objects.size(), invalidGameObjectId);
+        created_entities.reserve(ecs_objects.size());
+        destroyed_entities.reserve(old_entities.size());
+        candidate_runtime_bindings.reserve(ecs_objects.size());
+        candidate_object_bindings.reserve(ecs_objects.size());
+        retirement_state->reserveOne();
 
+        rng = &GET_MODULE(DeterministicRng);
+        rng_candidate = rng->prepareSequence();
+        pending_candidate = request.consumes_pending_request
+                                ? std::optional<SceneId>{}
+                                : pending_scene_id;
+        event_outbox = std::make_unique<internal::PreparedEventOutbox>(
+            internal::getEventRegisterer(), 1U);
+        scene_loaded_event = event_outbox->prepare(
+            SceneLoaded{request.scene_id});
+    } catch (...) {
+        return fail(SceneLoadPhase::prepare, std::current_exception());
+    }
+
+    const auto rollback = [&]() noexcept {
+        if (behavior_candidate) behavior_candidate->rollback();
+        if (candidates_published) {
+            GET_MODULE(PhysWorld).publishPrepared(
+                std::move(physics_candidate));
+            if (light_published) {
+                GET_MODULE(LightContainer).publishPrepared(
+                    std::move(light_candidate));
+            }
+            GET_MODULE(Camera).publishPrepared(
+                std::move(camera_candidate));
+            GET_MODULE(VatPlayer).publishPreparedScene(
+                std::move(vat_candidate));
+            GET_MODULE(SeqPlayer).publishPreparedScene(
+                std::move(seq_candidate));
+            transient_models.swap(candidate_transient_models);
+            runtime_only_changes = candidate_runtime_only_changes;
+            runtime_object_bindings.swap(candidate_runtime_bindings);
+            object_bindings.swap(candidate_object_bindings);
+        }
+        if (renderer_published) {
+            GET_MODULE(PolygonInstanceContainer).publishPreparedScene(
+                std::move(renderer_candidate));
+        }
+        for (auto it = destroyed_entities.rbegin();
+             it != destroyed_entities.rend(); ++it) {
+            it->rollback();
+        }
+        const bool bypass_ecs_create_rollback =
+            internal::sceneLoadMutationEnabled(
+                injector, SceneLoadFaultPhase::publish, "ecs",
+                scene_load_mutation::ecs_liveness);
+        for (auto it = created_entities.rbegin();
+             it != created_entities.rend(); ++it) {
+            if (bypass_ecs_create_rollback) {
+                it->finish();
+            } else {
+                it->rollback();
+            }
+        }
+        if (event_outbox) {
+            internal::rollbackSceneEventOutbox(*event_outbox, injector);
+        }
+        if (rng != nullptr) {
+            internal::rollbackSceneRngCandidate(
+                *rng, rng_candidate, injector);
+        }
+        internal::rollbackScenePendingCandidate(
+            pending_scene_id, pending_candidate, injector);
+    };
+
+    try {
+        auto &component_info_manager = GET_MODULE(ComponentInfoManager);
         auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
-        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
-            const auto &object = ecs_objects[object_index];
-            if (!object.hierarchy_participant) {
-                continue;
-            }
-            auto *local = ecs.tryComponent<LocalTransformComponent>(object_ids[object_index]);
-            if (local == nullptr) {
-                throw std::runtime_error("parent hierarchy object '" + displayObjectName(object.name) +
-                                         "' has no localtransform ECS component");
-            }
-            if (!object.parent.empty()) {
-                const auto parent = object_ids_by_name.find(object.parent);
-                if (parent == object_ids_by_name.end() ||
-                    ecs.tryComponent<TransformComponent>(parent->second) == nullptr) {
-                    throw std::runtime_error("parent '" + object.parent + "' for object '" +
-                                             displayObjectName(object.name) + "' has no ECS transform");
-                }
-                local->parent = parent->second;
-                (void)ecs.markComponentChanged(object_ids[object_index],
-                                               ComponentIdByType<LocalTransformComponent>::value);
-            }
-        }
+        auto &renderer = GET_MODULE(PolygonInstanceContainer);
+        renderer.publishPreparedScene(std::move(renderer_candidate));
+        renderer_published = true;
 
-        // Project authored local TRS to world before any SceneLoaded observer can
-        // query the runtime. This is the same recurrence as LocalTransformSystem.
-        std::unordered_map<std::string, size_t> object_indices_by_name;
-        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
-            if (!ecs_objects[object_index].name.empty()) {
-                object_indices_by_name.emplace(ecs_objects[object_index].name, object_index);
+        const auto create_object = [&](std::size_t object_index) {
+            auto &object = ecs_objects[object_index];
+            if (object.components_id.empty() && object.behaviors.empty()) {
+                return;
             }
-        }
-        std::vector<std::uint8_t> transform_state(ecs_objects.size(), 0);
-        const auto project_transform = [&](auto &&self, size_t object_index) -> void {
-            if (transform_state[object_index] == 2) return;
-            if (transform_state[object_index] == 1) {
-                throw std::logic_error("validated scene hierarchy became cyclic during projection");
-            }
-            transform_state[object_index] = 1;
-            const auto &object = ecs_objects[object_index];
-            const TransformComponent *parent_world = nullptr;
-            if (!object.parent.empty()) {
-                const auto parent_index = object_indices_by_name.at(object.parent);
-                self(self, parent_index);
-                parent_world = ecs.tryComponent<TransformComponent>(object_ids[parent_index]);
-            }
-            auto *world = ecs.tryComponent<TransformComponent>(object_ids[object_index]);
-            auto *local = ecs.tryComponent<LocalTransformComponent>(object_ids[object_index]);
-            TransformCodecTarget target{.world = world, .local = local, .parent_world = parent_world};
-            const auto &prepared = transformLoad(object);
-            prepared.codec->applyRuntime(prepared.decoded, &target);
-            transform_state[object_index] = 2;
-        };
-        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
-            if (ecs_objects[object_index].hierarchy_participant) {
-                project_transform(project_transform, object_index);
-            }
-        }
-
-        for (size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
-            const auto &object = ecs_objects[object_index];
-            const auto object_id = object_ids[object_index];
-            const bool has_transform = object_id != invalidGameObjectId &&
-                                       ecs.tryComponent<TransformComponent>(object_id) != nullptr;
-#if PELICAN_WITH_PHYSICS
-            for (const auto &collider : object.colliders) {
-                const auto identity_name = runtimeObjectIdentityName(
-                    scene_id, object.authoring_object_id, object.name);
-                if (has_transform) {
-                    phys_world.bindCollider(identity_name, collider, object_id);
-                } else {
-                    phys_world.bindCollider(identity_name, collider,
-                                            identityPhysWorldTransform());
-                }
-            }
-#endif
-        }
-    } else {
-        for (std::size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
-            const auto &object = ecs_objects[object_index];
-            if (!object.components_id.empty() || !object.behaviors.empty()) {
-                auto &object_id = object_ids[object_index];
-                object_id = GameObjects::createWithComponents(object.components_id, [&](std::span<void *> ptrs) {
-                    for (size_t i = 0; i < object.components.size(); ++i) {
-                        applyComponentLoad(component_info_manager, ptrs[i], object.components[i]);
+            auto token = ECSEntityMutation::prepareCreate(
+                ecs, object.components_id,
+                [&](std::span<void *> ptrs) {
+                    for (std::size_t i = 0; i < object.components.size(); ++i) {
+                        applyComponentLoad(component_info_manager, ptrs[i],
+                                           object.components[i]);
+                        if (object.prepared_model_instance &&
+                            object.components[i].codec != nullptr &&
+                            object.components[i].codec->name ==
+                                "simplemodelview") {
+                            auto &model_view =
+                                *static_cast<SimpleModelViewComponent *>(
+                                    ptrs[i]);
+                            model_view.model_instance_id =
+                                object.prepared_model_instance;
+                            model_view.authoring_object_id =
+                                object.authoring_object_id.value;
+                            model_view.dirty = false;
+                        }
                     }
                 });
-                bindRuntimeObject(object.authoring_object_id, object_id);
+            object_ids[object_index] = token.entity();
+            token.publish();
+            created_entities.push_back(std::move(token));
+            candidate_runtime_bindings.push_back(
+                SceneRuntimeObjectBinding{
+                    .authoring_object_id = object.authoring_object_id,
+                    .object_id = object_ids[object_index],
+                });
+        };
+
+        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+            create_object(index);
+        }
+
+        const auto transform_id =
+            component_info_manager.getComponentIdByName("transform");
+        std::unordered_map<std::string, GameObjectId> object_ids_by_name;
+        object_ids_by_name.reserve(ecs_objects.size());
+        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+            const auto &object = ecs_objects[index];
+            const auto object_id = object_ids[index];
+            if (!object.name.empty() && object_id != invalidGameObjectId) {
+                object_ids_by_name.emplace(object.name, object_id);
             }
-            const auto object_id = object_ids[object_index];
             const bool has_transform =
                 object_id != invalidGameObjectId &&
-                std::find(object.components_id.begin(), object.components_id.end(), transform_id) !=
+                std::find(object.components_id.begin(),
+                          object.components_id.end(), transform_id) !=
                     object.components_id.end();
             if (!object.name.empty() && has_transform) {
-                bindObjectTransform(object.name, object_id);
+                candidate_object_bindings.emplace(
+                    object.name, ObjectBinding{object_id});
             }
-#if PELICAN_WITH_PHYSICS
-            for (const auto &collider : object.colliders) {
-                const auto identity_name = runtimeObjectIdentityName(
-                    scene_id, object.authoring_object_id, object.name);
-                if (has_transform) {
-                    phys_world.bindCollider(identity_name, collider, object_id);
-                } else {
-                    phys_world.bindCollider(identity_name, collider,
-                                            identityPhysWorldTransform());
+        }
+
+        const bool scene_uses_parents = std::any_of(
+            ecs_objects.begin(), ecs_objects.end(), [](const auto &object) {
+                return object.hierarchy_participant;
+            });
+        if (scene_uses_parents) {
+            for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+                const auto &object = ecs_objects[index];
+                if (!object.hierarchy_participant) continue;
+                auto *local = ecs.tryComponent<LocalTransformComponent>(
+                    object_ids[index]);
+                if (local == nullptr) {
+                    throw std::runtime_error(
+                        "parent hierarchy object '" +
+                        displayObjectName(object.name) +
+                        "' has no localtransform ECS component");
+                }
+                if (!object.parent.empty()) {
+                    const auto parent = object_ids_by_name.find(object.parent);
+                    if (parent == object_ids_by_name.end() ||
+                        ecs.tryComponent<TransformComponent>(parent->second) ==
+                            nullptr) {
+                        throw std::runtime_error(
+                            "parent '" + object.parent + "' for object '" +
+                            displayObjectName(object.name) +
+                            "' has no ECS transform");
+                    }
+                    local->parent = parent->second;
+                    (void)ecs.markComponentChanged(
+                        object_ids[index],
+                        ComponentIdByType<LocalTransformComponent>::value);
                 }
             }
-#endif
-        }
-    }
 
-    // Publish the stable authoring-to-renderer join before the first model
-    // update system tick. The field is runtime-only and survives model asset
-    // rebuilds because the container stores it per model-instance slot.
-    {
-        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
-        for (std::size_t object_index = 0;
-             object_index < ecs_objects.size(); ++object_index) {
-            const auto object_id = object_ids[object_index];
-            if (object_id == invalidGameObjectId) continue;
-            if (auto *model =
-                    ecs.tryComponent<SimpleModelViewComponent>(object_id)) {
-                model->authoring_object_id =
-                    ecs_objects[object_index].authoring_object_id.value;
+            std::unordered_map<std::string, std::size_t>
+                object_indices_by_name;
+            object_indices_by_name.reserve(ecs_objects.size());
+            for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+                if (!ecs_objects[index].name.empty()) {
+                    object_indices_by_name.emplace(ecs_objects[index].name,
+                                                   index);
+                }
+            }
+            std::vector<std::uint8_t> transform_state(ecs_objects.size(), 0);
+            const auto project_transform =
+                [&](auto &&self, std::size_t index) -> void {
+                if (transform_state[index] == 2) return;
+                if (transform_state[index] == 1) {
+                    throw std::logic_error(
+                        "validated scene hierarchy became cyclic during projection");
+                }
+                transform_state[index] = 1;
+                const auto &object = ecs_objects[index];
+                const TransformComponent *parent_world = nullptr;
+                if (!object.parent.empty()) {
+                    const auto parent_index =
+                        object_indices_by_name.at(object.parent);
+                    self(self, parent_index);
+                    parent_world = ecs.tryComponent<TransformComponent>(
+                        object_ids[parent_index]);
+                }
+                auto *world = ecs.tryComponent<TransformComponent>(
+                    object_ids[index]);
+                auto *local = ecs.tryComponent<LocalTransformComponent>(
+                    object_ids[index]);
+                TransformCodecTarget target{.world = world,
+                                            .local = local,
+                                            .parent_world = parent_world};
+                const auto &prepared = transformLoad(object);
+                prepared.codec->applyRuntime(prepared.decoded, &target);
+                transform_state[index] = 2;
+            };
+            for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+                if (ecs_objects[index].hierarchy_participant) {
+                    project_transform(project_transform, index);
+                }
             }
         }
+
+        std::vector<PhysWorld::Binding> physics_bindings;
+        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+            const auto &object = ecs_objects[index];
+            const auto object_id = object_ids[index];
+            const bool has_transform =
+                object_id != invalidGameObjectId &&
+                ecs.tryComponent<TransformComponent>(object_id) != nullptr;
+            for (const auto &collider : object.colliders) {
+                const auto identity_name = runtimeObjectIdentityName(
+                    request.scene_id, object.authoring_object_id, object.name);
+                physics_bindings.push_back(PhysWorld::Binding{
+                    .identity = phys::ColliderIdentity{
+                        .name = identity_name,
+                        .entity = has_transform
+                                      ? std::optional<EntityId>{object_id}
+                                      : std::nullopt,
+                    },
+                    .metadata = phys::ColliderQueryMetadata{
+                        .layer = collider.layer,
+                        .mask = collider.mask,
+                        .trigger = collider.trigger,
+                        .one_way = collider.one_way,
+                    },
+                    .collider = collider,
+                    .transform_source = has_transform
+                                            ? std::variant<GameObjectId,
+                                                           PhysWorldTransform>{
+                                                  object_id}
+                                            : std::variant<GameObjectId,
+                                                           PhysWorldTransform>{
+                                                  identityPhysWorldTransform()},
+                });
+            }
+        }
+        physics_candidate = GET_MODULE(PhysWorld).prepareSceneBindings(
+            std::move(physics_bindings), object_ids);
+
+        std::vector<BoundSceneBehaviorAttachment> bound_behaviors;
+        for (std::size_t index = 0; index < ecs_objects.size(); ++index) {
+            auto &object = ecs_objects[index];
+            for (auto &behavior : object.behaviors) {
+                bound_behaviors.push_back(BoundSceneBehaviorAttachment{
+                    .prepared = std::move(behavior),
+                    .entity = object_ids[index],
+                });
+            }
+        }
+        behavior_candidate =
+            GET_MODULE(BehaviorAttachmentArena).prepareSceneReconciliation(
+                std::move(bound_behaviors));
+
+        for (const auto entity : old_entities) {
+            auto token = ECSEntityMutation::prepareDestroy(ecs, entity);
+            token.publish();
+            destroyed_entities.push_back(std::move(token));
+        }
+    } catch (...) {
+        rollback();
+        return fail(SceneLoadPhase::early_publish,
+                    std::current_exception());
     }
 
-    std::vector<BoundSceneBehaviorAttachment> bound_behaviors;
-    for (std::size_t object_index = 0; object_index < ecs_objects.size(); ++object_index) {
-        auto &object = ecs_objects[object_index];
-        for (auto &behavior : object.behaviors) {
-            bound_behaviors.push_back(BoundSceneBehaviorAttachment{
-                .prepared = std::move(behavior),
-                .entity = object_ids[object_index],
-            });
-        }
+    // All remaining candidate publications are swaps over prepared storage.
+    static_assert(noexcept(std::declval<PolygonInstanceContainer &>()
+                               .publishPreparedScene(std::declval<
+                                   PolygonInstanceContainer::PreparedSceneState &&>())));
+    static_assert(noexcept(std::declval<SeqPlayer &>().publishPreparedScene(
+        std::declval<SeqPlayer::PreparedSceneState &&>())));
+    static_assert(noexcept(std::declval<VatPlayer &>().publishPreparedScene(
+        std::declval<VatPlayer::PreparedSceneState &&>())));
+    static_assert(noexcept(std::declval<Camera &>().publishPrepared(
+        std::declval<Camera::PreparedSceneState &&>())));
+    static_assert(noexcept(std::declval<LightContainer &>().publishPrepared(
+        std::declval<LightContainer::PreparedLoad &&>())));
+    static_assert(noexcept(std::declval<PhysWorld &>().publishPrepared(
+        std::declval<PhysWorld::PreparedState &&>())));
+    static_assert(noexcept(std::declval<PreparedBehaviorSceneReconciliation &>()
+                               .publish()));
+    static_assert(noexcept(object_bindings.swap(
+        candidate_object_bindings)));
+    static_assert(noexcept(runtime_object_bindings.swap(
+        candidate_runtime_bindings)));
+    static_assert(noexcept(std::swap(runtime_only_changes,
+                                     candidate_runtime_only_changes)));
+    static_assert(noexcept(transient_models.swap(
+        candidate_transient_models)));
+    object_bindings.swap(candidate_object_bindings);
+    runtime_object_bindings.swap(candidate_runtime_bindings);
+    std::swap(runtime_only_changes, candidate_runtime_only_changes);
+    transient_models.swap(candidate_transient_models);
+    GET_MODULE(SeqPlayer).publishPreparedScene(std::move(seq_candidate));
+    GET_MODULE(VatPlayer).publishPreparedScene(std::move(vat_candidate));
+    GET_MODULE(Camera).publishPrepared(std::move(camera_candidate));
+    if (!internal::sceneLoadMutationEnabled(
+            injector, SceneLoadFaultPhase::publish, "light",
+            scene_load_mutation::light_directional_names)) {
+        GET_MODULE(LightContainer).publishPrepared(
+            std::move(light_candidate));
+        light_published = true;
     }
-    if (!bound_behaviors.empty()) {
-        try {
-            auto &arena = GET_MODULE(BehaviorAttachmentArena);
-            arena.publishSceneAttachments(std::move(bound_behaviors));
-            arena.activatePublished();
-        } catch (...) {
-            clearRuntimeScene();
-            throw;
-        }
+    GET_MODULE(PhysWorld).publishPrepared(std::move(physics_candidate));
+    behavior_candidate->publish();
+    candidates_published = true;
+
+    if (internal::sceneLoadMutationEnabled(
+            injector, SceneLoadFaultPhase::commit, "metadata",
+            scene_load_mutation::metadata_document)) {
+        metadata.publishDocumentOnlyForFaultInjection();
     }
-    current_scene_id = std::move(scene_id);
-    runtime_only_changes = false;
-    ++runtime_scene_epoch;
-    internal::getEventRegisterer().emit(SceneLoaded{current_scene_id});
+
+    PendingSceneTransaction pending_transaction{
+        .loader = this,
+        .projection = &metadata.projection(),
+        .candidate = &pending_candidate,
+    };
+    internal::EventOutboxScope event_scope{*event_outbox};
+    RngSequenceScope rng_scope{rng_candidate};
+    PendingSceneTransactionScope pending_scope{pending_transaction};
+    try {
+        if (!internal::sceneLoadMutationEnabled(
+                injector, SceneLoadFaultPhase::activate,
+                "behavior_arena",
+                scene_load_mutation::behavior_attachments)) {
+            behavior_candidate->activate();
+        }
+    } catch (...) {
+        const auto error = std::current_exception();
+        rollback();
+        return fail(SceneLoadPhase::activate, error);
+    }
+
+    // The commit point is exactly one metadata swap. Nothing after it can
+    // produce PreCommitFailure.
+    static_assert(noexcept(std::declval<MetadataCommitToken &>().commit()));
+    static_assert(noexcept(
+        std::declval<PreparedBehaviorSceneReconciliation &>().finish()));
+    static_assert(noexcept(std::declval<ECSEntityMutationToken &>().finish()));
+    static_assert(noexcept(std::declval<PolygonInstanceContainer &>()
+                               .enqueueSceneRetirement(
+                                   std::declval<std::vector<std::uint32_t>>())));
+    static_assert(noexcept(std::declval<RetirementState &>().enqueue(
+        std::declval<RetirementState::Batch>())));
+    static_assert(noexcept(std::declval<internal::PreparedEventOutbox &>()
+                               .stageReserved(
+                                   std::declval<internal::QueuedEvent>())));
+    static_assert(noexcept(
+        std::declval<internal::PreparedEventOutbox &>().flush()));
+    static_assert(noexcept(std::declval<DeterministicRng &>()
+                               .publishPreparedSequence(
+                                   std::declval<DeterministicRng::PreparedSequence>())));
+    static_assert(noexcept(std::declval<std::optional<SceneId> &>().swap(
+        std::declval<std::optional<SceneId> &>())));
+    metadata.commit();
+    behavior_candidate->finish();
+    for (auto &token : created_entities) token.finish();
+    const bool bypass_transient_retire =
+        internal::sceneLoadMutationEnabled(
+            injector, SceneLoadFaultPhase::retire, "scene_loader",
+            scene_load_mutation::transient_retire);
+    retirement_state->enqueue(RetirementState::Batch{
+        .destroyed_entities = std::move(destroyed_entities),
+        .transient_models = bypass_transient_retire
+                                ? std::vector<ModelTemplate>{}
+                                : std::move(candidate_transient_models),
+    });
+    GET_MODULE(PolygonInstanceContainer).enqueueSceneRetirement(
+        std::move(renderer_retire_indices));
+    event_outbox->stageReserved(std::move(scene_loaded_event));
+    GET_MODULE(DeterministicRng).publishPreparedSequence(rng_candidate);
+    pending_scene_id.swap(pending_candidate);
+    event_outbox->flush();
+    return SceneLoadCommitted{candidate_authority};
 }
 
 void SceneLoader::requestLoad(SceneId scene_id) {
+    if (active_pending_scene_transaction != nullptr &&
+        active_pending_scene_transaction->loader == this) {
+        if (active_pending_scene_transaction->projection->resolved().findScene(
+                scene_id) == nullptr) {
+            throw std::runtime_error("scene not found: " + scene_id);
+        }
+        *active_pending_scene_transaction->candidate = std::move(scene_id);
+        return;
+    }
     auto &config = GET_MODULE(ProjectBasicConfig);
     if (config.resolvedScene().findScene(scene_id) == nullptr) {
         throw std::runtime_error("scene not found: " + scene_id);
@@ -566,17 +946,51 @@ void SceneLoader::requestLoad(SceneId scene_id) {
 }
 
 bool SceneLoader::applyPendingLoad() {
+    drainRetirementQueue();
     if (!pending_scene_id) {
         return false;
     }
-    auto scene_id = std::move(*pending_scene_id);
-    pending_scene_id.reset();
-    load(std::move(scene_id));
+    auto request = SceneLoadRequest::borrowed(
+        *pending_scene_id,
+        GET_MODULE(ProjectBasicConfig).sceneProjectionState(),
+        SceneLoadRoot::pending);
+    request.consumes_pending_request = true;
+    (void)requireSceneLoadCommitted(load(std::move(request)));
     return true;
 }
 
 const SceneId &SceneLoader::currentScene() const {
-    return current_scene_id;
+    return GET_MODULE(ProjectBasicConfig).currentSceneId();
+}
+
+std::uint64_t SceneLoader::runtimeSceneEpoch() const noexcept {
+    return GET_MODULE(ProjectBasicConfig).runtimeSceneEpoch();
+}
+
+SceneAuthority SceneLoader::activeAuthority() const noexcept {
+    return GET_MODULE(ProjectBasicConfig).activeSceneAuthority();
+}
+
+void SceneLoader::drainRetirementQueue() {
+    std::vector<RetirementState::Batch> pending;
+    pending.swap(retirement_state->queue);
+    // Consume every inverse token before deferred GPU cleanup can fail.  A
+    // committed scene must never be resurrected later by a token destructor.
+    for (auto &batch : pending) {
+        for (auto &token : batch.destroyed_entities) token.finish();
+    }
+    for (auto &batch : pending) {
+        for (auto &model : batch.transient_models) {
+            releaseModelGpuResources(model, true);
+        }
+    }
+    // A prepare failure may construct SceneLoader without constructing the
+    // renderer.  During shutdown GET_MODULE would incorrectly try to create
+    // that absent participant, so retirement uses a non-creating lookup.
+    if (auto *renderer =
+            FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
+        renderer->drainSceneRetirements();
+    }
 }
 
 void SceneLoader::clearRuntimeScene() {

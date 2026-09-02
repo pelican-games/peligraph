@@ -3,20 +3,20 @@
 #include "../container.hpp"
 #include "../model/modeltemplate.hpp"
 #include "resolvedscene.hpp"
+#include "sceneload.hpp"
 #include <details/ecs/entity.hpp>
 
 #include <filesystem>
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
 #include <optional>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
 
 namespace Pelican {
-
-using SceneId = std::string;
 
 struct SceneObjectTransform {
     glm::vec3 pos;
@@ -43,10 +43,13 @@ DECLARE_MODULE(SceneLoader) {
     std::unordered_map<std::string, ObjectBinding> object_bindings;
     std::vector<SceneRuntimeObjectBinding> runtime_object_bindings;
     std::vector<ModelTemplate> transient_models;
-    SceneId current_scene_id;
     std::optional<SceneId> pending_scene_id;
-    std::uint64_t runtime_scene_epoch = 0;
     bool runtime_only_changes = false;
+    std::uint64_t next_authority_epoch = 1;
+    std::uint64_t run_nonce = 0;
+    SceneLoadFaultInjector *fault_injector = nullptr;
+    struct RetirementState;
+    std::unique_ptr<RetirementState> retirement_state;
 
     void bindObjectTransform(const std::string &name, GameObjectId object_id);
     void bindRuntimeObject(AuthoringObjectId authoring_object_id,
@@ -58,16 +61,25 @@ DECLARE_MODULE(SceneLoader) {
     SceneLoader();
     ~SceneLoader();
 
-    void load(SceneId scene_id);
+    SceneLoadResult load(SceneLoadRequest request);
     void requestLoad(SceneId scene_id);
     bool applyPendingLoad();
+    // Consumes retirement prepared by the preceding committed load at the
+    // next frame (or before ECS teardown).
+    void drainRetirementQueue();
     const SceneId &currentScene() const;
     std::span<const SceneRuntimeObjectBinding> runtimeObjectBindings() const
         noexcept {
         return runtime_object_bindings;
     }
-    std::uint64_t runtimeSceneEpoch() const noexcept {
-        return runtime_scene_epoch;
+    std::uint64_t runtimeSceneEpoch() const noexcept;
+    SceneAuthority activeAuthority() const noexcept;
+    void setFaultInjectorForTesting(
+        SceneLoadFaultInjector *injector) noexcept {
+        fault_injector = injector;
+    }
+    const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
+        return pending_scene_id;
     }
     std::optional<GameObjectId> objectId(std::string_view name) const;
     bool hasObjectTransform(std::string_view name) const;

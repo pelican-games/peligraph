@@ -16,9 +16,17 @@ DECLARE_MODULE(VatPlayer) {
     void applyCameraOverride();
 
   public:
+    struct PreparedSceneState {
+        bool enabled = false;
+        std::optional<ModelInstanceId> instance;
+    };
+
     VatPlayer();
 
     void releaseInstanceForSceneLoad();
+    PreparedSceneState snapshotPreparedScene() const noexcept;
+    PreparedSceneState prepareSceneLoad() const noexcept;
+    void publishPreparedScene(PreparedSceneState &&prepared) noexcept;
     bool isEnabled() const { return enabled; }
 };
 

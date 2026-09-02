@@ -1450,7 +1450,11 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("load_scene", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "load_scene");
         (void)editor_rpc.forceAbortPreview("scene_transition");
-        modules.scene_loader.load(name);
+        auto request = SceneLoadRequest::borrowed(
+            name, modules.project_config.sceneProjectionState(),
+            SceneLoadRoot::rpc);
+        (void)requireSceneLoadCommitted(
+            modules.scene_loader.load(std::move(request)));
         pending_transforms.clear();
         return nlohmann::json{
             {"name", modules.scene_loader.currentScene()},

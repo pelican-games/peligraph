@@ -360,21 +360,22 @@ Camera::PreparedSceneState Camera::prepareSceneCameras(
 }
 
 void Camera::publishPrepared(PreparedSceneState &&prepared) noexcept {
-    pos = prepared.pos;
-    dir = prepared.dir;
-    up = prepared.up;
-    viewport_aspect = prepared.viewport_aspect;
-    viewport_width = prepared.viewport_width;
-    viewport_height = prepared.viewport_height;
-    projection = prepared.projection;
-    sprite_policy = prepared.sprite_policy;
-    projection_matrix = prepared.projection_matrix;
+    using std::swap;
+    swap(pos, prepared.pos);
+    swap(dir, prepared.dir);
+    swap(up, prepared.up);
+    swap(viewport_aspect, prepared.viewport_aspect);
+    swap(viewport_width, prepared.viewport_width);
+    swap(viewport_height, prepared.viewport_height);
+    swap(projection, prepared.projection);
+    swap(sprite_policy, prepared.sprite_policy);
+    swap(projection_matrix, prepared.projection_matrix);
     scene_cameras.swap(prepared.scene_cameras);
     controlled_scene_camera_order.swap(
         prepared.controlled_scene_camera_order);
     active_camera_name.swap(prepared.active_camera_name);
-    active_scene_camera_locked = prepared.active_scene_camera_locked;
-    discontinuity_revision = prepared.discontinuity_revision;
+    swap(active_scene_camera_locked, prepared.active_scene_camera_locked);
+    swap(discontinuity_revision, prepared.discontinuity_revision);
 }
 
 void Camera::loadSceneCameras(std::string_view scene_id) {

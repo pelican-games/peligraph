@@ -8,6 +8,7 @@
 #include <concepts>
 #include <cstddef>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -20,6 +21,9 @@ namespace Pelican {
 class GameContext;
 
 namespace internal {
+
+class PreparedEventOutbox;
+class EventOutboxScope;
 
 template <int Index> struct EventCatalogTag {};
 template <class Event> struct EventCatalogEntry {
@@ -68,6 +72,7 @@ class UserEventRegistererTemplatePublic {
     friend void unregisterEvent(RegistrationToken token);
     friend void unregisterEvents(RegistrationOwner owner) noexcept;
     friend std::size_t eventRegistrationCount(RegistrationOwner owner) noexcept;
+    friend class PreparedEventOutbox;
 
   public:
     struct IsolationEvent {
@@ -75,6 +80,8 @@ class UserEventRegistererTemplatePublic {
         std::size_t type_hash = 0;
         RegistrationOwner owner = engineRegistrationOwner;
         std::uintptr_t payload_identity = 0;
+
+        bool operator==(const IsolationEvent &) const = default;
     };
 
     struct IsolationSnapshot {
@@ -186,6 +193,9 @@ class UserEventRegistererTemplatePublic {
     void validateCatalogAndFreeze();
     void freezeCatalog() noexcept;
     std::size_t pendingEventCount() const noexcept;
+    std::span<const QueuedEvent> pendingEventsForTesting() const noexcept {
+        return pending_events;
+    }
     std::size_t payloadLoadCallCount() const noexcept;
     IsolationSnapshot isolationSnapshot() const {
         const auto copy = [](const std::vector<QueuedEvent> &source) {
@@ -213,6 +223,53 @@ class UserEventRegistererTemplatePublic {
     std::vector<QueuedEvent> drainFrozenEvents();
     EventQueueDrainResult drainForTeardown() noexcept;
     void clearPendingEvents();
+};
+
+// Scene activation writes to this engine-owned queue overlay. Capacity in the
+// destination queue is acquired while failure is still rollback-safe; flush
+// is consequently a sequence of no-throw moves.
+class PreparedEventOutbox {
+    UserEventRegistererTemplatePublic *destination_ = nullptr;
+    std::vector<QueuedEvent> events_;
+    std::size_t reserved_tail_ = 0;
+
+    void stage(QueuedEvent event);
+    friend class UserEventRegistererTemplatePublic;
+    friend class EventOutboxScope;
+
+  public:
+    explicit PreparedEventOutbox(
+        UserEventRegistererTemplatePublic &destination,
+        std::size_t reserved_tail);
+
+    template <class Event> QueuedEvent prepare(const Event &event) const {
+        using EventType = std::remove_cvref_t<Event>;
+        const auto *registration = destination_->findByType(
+            std::type_index{typeid(EventType)});
+        if (registration == nullptr) {
+            throw std::runtime_error("event type is not registered");
+        }
+        return QueuedEvent{
+            .type = std::type_index{typeid(EventType)},
+            .name = registration->name,
+            .payload = std::make_shared<EventType>(event),
+            .owner = registration->owner,
+        };
+    }
+
+    void stageReserved(QueuedEvent event) noexcept;
+    void flush() noexcept;
+    std::size_t size() const noexcept { return events_.size(); }
+};
+
+class EventOutboxScope {
+    PreparedEventOutbox *previous_ = nullptr;
+
+  public:
+    explicit EventOutboxScope(PreparedEventOutbox &outbox) noexcept;
+    ~EventOutboxScope();
+    EventOutboxScope(const EventOutboxScope &) = delete;
+    EventOutboxScope &operator=(const EventOutboxScope &) = delete;
 };
 
 PELICAN_API UserEventRegistererTemplatePublic &getEventRegisterer();

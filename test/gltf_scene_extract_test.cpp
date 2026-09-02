@@ -5,6 +5,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "scene_load_test_support.hpp"
 #include "../src/core/log.hpp"
 #include "../src/devcli/gltfsceneextract.hpp"
 #include "../src/project/sceneformat.hpp"
@@ -126,7 +127,7 @@ TEST_CASE("extracted scene loads through SceneLoader with glTF world transforms"
 
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &loader = GET_MODULE(SceneLoader);
-    loader.load("default_scene");
+    test_support::loadScene(loader, "default_scene");
     GET_MODULE(ECSCore).update();
 
     // Direct glTF parent_world * child_local analytic values for the fixture.

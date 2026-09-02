@@ -1,6 +1,8 @@
+#pragma once
+
 #include "../cameradefinition.hpp"
 #include "../container.hpp"
-#include "resolvedscene.hpp"
+#include "sceneload.hpp"
 
 #include <cstdint>
 #include <cstddef>
@@ -66,6 +68,8 @@ struct ScenePersistenceBaseline {
 
 DECLARE_MODULE(ProjectBasicConfig) {
     friend class ProjectBasicConfigProjectionTarget;
+    friend class MetadataCommitToken;
+    friend class SceneLoader;
   public:
     struct window_size {
         int width, height;
@@ -96,14 +100,22 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::optional<std::string> default_input_profile;
     bool project_source = false;
     PrefabRegistrySnapshot prefab_registry;
-    mutable BindableProviderSnapshot prefab_provider;
-    mutable std::uint64_t next_prefab_provider_generation = 1;
+    struct SceneMetadataState {
+        std::optional<SceneProjectionState> projection;
+        std::optional<ScenePersistenceBaseline> persistence_baseline;
+        BindableProviderSnapshot prefab_provider;
+        std::uint64_t next_prefab_provider_generation = 1;
+        std::uint64_t next_scene_revision = 1;
+        std::uint64_t next_scene_resolver_generation = 1;
+        std::uint64_t next_authoring_object_id = 1;
+        SceneId current_scene_id;
+        std::uint64_t epoch = 0;
+        SceneAuthority active_authority{};
 
-    mutable std::optional<SceneProjectionState> scene_projection;
-    mutable std::optional<ScenePersistenceBaseline> scene_persistence_baseline;
-    mutable std::uint64_t next_scene_revision = 1;
-    mutable std::uint64_t next_scene_resolver_generation = 1;
-    mutable std::uint64_t next_authoring_object_id = 1;
+        void swap(SceneMetadataState &other) noexcept;
+    };
+
+    mutable SceneMetadataState scene_metadata;
     std::optional<SceneSaveFaultPoint> scene_save_fault;
     std::function<void(SceneSaveFaultPoint)> scene_save_hook;
     std::optional<SceneImportFaultPoint> scene_import_fault;
@@ -115,6 +127,13 @@ DECLARE_MODULE(ProjectBasicConfig) {
 
     void publishSceneDocument(std::string_view scene_v1_bytes) const;
     void publishPreparedSceneState(SceneProjectionState &state) const noexcept;
+    MetadataCommitToken prepareImportedSceneMetadata(
+        SceneProjectionState candidate,
+        ScenePersistenceBaseline persistence_baseline,
+        BindableProviderSnapshot candidate_provider,
+        bool publish_provider) const;
+    MetadataCommitToken prepareBorrowedSceneMetadata(
+        const SceneProjectionState &committed) const;
 
   public:
     ProjectBasicConfig();
@@ -135,7 +154,7 @@ DECLARE_MODULE(ProjectBasicConfig) {
     void updateSceneDocument(std::string_view scene_v1_bytes);
     void invalidateSceneDocument() noexcept;
     SceneRevision importSceneDocument(std::string_view scene_v1_bytes,
-                                      const std::function<void()> &reload,
+                                      const SceneImportCallback &reload,
                                       std::uint64_t snapshot_schema_version = 1);
     void refreshResolvedScene(const std::function<void()> &reload);
     SceneSaveResult saveSceneDocument();
@@ -163,6 +182,16 @@ DECLARE_MODULE(ProjectBasicConfig) {
     std::unordered_map<std::string, std::string> inputProfileJsons() const;
     std::optional<std::string> defaultInputProfile() const;
     bool usesProjectSource() const { return project_source; }
+
+    const SceneId &currentSceneId() const noexcept {
+        return scene_metadata.current_scene_id;
+    }
+    std::uint64_t runtimeSceneEpoch() const noexcept {
+        return scene_metadata.epoch;
+    }
+    SceneAuthority activeSceneAuthority() const noexcept {
+        return scene_metadata.active_authority;
+    }
 
 };
 

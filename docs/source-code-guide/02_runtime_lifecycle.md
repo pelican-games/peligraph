@@ -70,15 +70,15 @@ sequenceDiagram
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
 5. `Persistence`からsettingsを読み、audio設定を適用。
 6. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
-7. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L472) でgame DLLをロード**（WP110系列）。
+7. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L476) でgame DLLをロード**（WP110系列）。
 8. `ProjectBasicConfig.defaultSceneId()` のsceneを即時ロードし、`ModelAssetContainer` を明示的に先行生成（並列prepareのcommitを起動スレッドで実施）。
 9. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L104) でwatcherのlive inventoryを種付け。
 10. `Loop::run()`へ入る。
 11. loop終了後、Vulkan deviceをidleまで待つ。
-12. [`teardown.run()`](../../src/core/userpublic/pelican_core.cpp#L139) でruntime資源を順序付き解放し、続けて [`shutdownConfiguredGameLogic()`](../../src/core/userpublic/pelican_core.cpp#L140)。
+12. [`teardown.run()`](../../src/core/userpublic/pelican_core.cpp#L146) でruntime資源を順序付き解放し、続けて [`shutdownConfiguredGameLogic()`](../../src/core/userpublic/pelican_core.cpp#L147)。
 13. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-12番はtry-catchの**外**にあります。`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L75)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L155)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
+12番はtry-catchの**外**にあります。`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L75)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
 標準例外も非標準例外もここで捕捉され、ログを出して`false`を返します。したがって、playerの終了コードは `pl.run() ? 0 : 1` です。
 
@@ -170,11 +170,11 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 
 この契約は [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp) の「Componentのdeinit/destroyがmodule destructorより先」と、[`lifetime_teardown_test.cpp`](../../test/lifetime_teardown_test.cpp) の全工程fault injection（意図的に各段階を失敗させて、残りの段階が飛ばされないか・順序が崩れないかを確かめるテスト手法）、起動順列、起動途中失敗で検証されています。
 
-> 🧩 **難所 — 一本の順序が二つのモードを兼ねる**([`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) / [`runProductionStep()`](../../src/core/appflow/teardown.cpp#L62))
+> 🧩 **難所 — 一本の順序が二つのモードを兼ねる**([`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) / [`runProductionStep()`](../../src/core/appflow/teardown.cpp#L63))
 >
 > **何をする所か**: 上の8段階を、terminal shutdown と game-logic reload の `runtime_reset` の**両方**で回します。順序の定義は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) の1本だけで、モードごとの別経路はありません。
 >
-> **素朴に読むと**: 「shutdown と reload は別処理」と読みたくなりますが、差分は実質2箇所です。(1) [`beginShutdown()`](../../src/core/container.hpp#L213) を呼ぶかどうか — `run()` の中で `mode == terminal_shutdown` のときだけ、8段階へ入る**直前**に呼びます(container の destructor ではありません)。(2) 最後の deletion queue の扱い — [deletion queue 段](../../src/core/appflow/teardown.cpp#L76) が `FastModuleContainer::phase()` の値で分岐し、`shutting_down` なら `drainForTeardown()`（空にしたうえで以後の登録を拒否）、そうでなければ `flushAll()`（空にするだけで受付は継続）です。つまり mode フラグを8段階へ引き回すのではなく、入口で phase を動かしておき、後段は**そのときの phase を読んで**振る舞いを決めます。もう一つの要点は `runProductionStep()` が全段階で `tryGet<T>()` しか使わないことです。teardown 中は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を拒否するので、`GET_MODULE` を1つでも混ぜると「片付けようとして例外」になります。
+> **素朴に読むと**: 「shutdown と reload は別処理」と読みたくなりますが、差分は実質2箇所です。(1) [`beginShutdown()`](../../src/core/container.hpp#L213) を呼ぶかどうか — `run()` の中で `mode == terminal_shutdown` のときだけ、8段階へ入る**直前**に呼びます(container の destructor ではありません)。(2) 最後の deletion queue の扱い — [`RuntimeTeardownStep::deletion_queue`](../../src/core/appflow/teardown.cpp#L94) が `FastModuleContainer::phase()` の値で分岐し、`shutting_down` なら `drainForTeardown()`（空にしたうえで以後の登録を拒否）、そうでなければ `flushAll()`（空にするだけで受付は継続）です。つまり mode フラグを8段階へ引き回すのではなく、入口で phase を動かしておき、後段は**そのときの phase を読んで**振る舞いを決めます。もう一つの要点は `runProductionStep()` が全段階で `tryGet<T>()` しか使わないことです。teardown 中は [`requireCreationAllowedLocked()`](../../src/core/container.hpp#L98) が生成を拒否するので、`GET_MODULE` を1つでも混ぜると「片付けようとして例外」になります。
 >
 > **骨子**:
 > ```text
@@ -195,7 +195,7 @@ terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規m
 >   ※ enterRunningPhase() も phase を動かせるが production では未使用(test が loop.cpp に無いことを検査)
 > ```
 >
-> **手がかり**: [`cleanupStep()`](../../src/core/appflow/teardown.cpp#L21) が段階ごとに例外を飲むので、**途中の失敗が後続段階を飛ばしません** — 「wait_idle が落ちたので event が残った」という連鎖を作らないための構造です。`RuntimeTeardownActions` を取る overload は各段を `std::function` で差し替えるテスト用の面で、空の `std::function` は「起動が失敗してその module がまだ無い」を表します(ヘッダのコメント [該当箇所](../../src/core/appflow/teardown.hpp#L49) が規範)。`completed` フラグがあるため、§2.1 の12番(明示 `teardown.run()`)と destructor 経由が重なっても8段階は1回しか走りません。テストは [`lifetime_teardown_test.cpp` 内](../../test/lifetime_teardown_test.cpp#L196)(規範順序)/ [同ファイルの reset 側](../../test/lifetime_teardown_test.cpp#L235)(runtime reset が terminal shutdown へ入らない)/ [同ファイルの起動失敗側](../../test/lifetime_teardown_test.cpp#L312)(起動途中失敗)。
+> **手がかり**: [`cleanupStep()`](../../src/core/appflow/teardown.cpp#L22) が段階ごとに例外を飲むので、**途中の失敗が後続段階を飛ばしません** — 「wait_idle が落ちたので event が残った」という連鎖を作らないための構造です。`RuntimeTeardownActions` を取る overload は各段を `std::function` で差し替えるテスト用の面で、空の `std::function` は「起動が失敗してその module がまだ無い」を表します(ヘッダのコメント [該当箇所](../../src/core/appflow/teardown.hpp#L49) が規範)。`completed` フラグがあるため、§2.1 の12番(明示 `teardown.run()`)と destructor 経由が重なっても8段階は1回しか走りません。テストは [`lifetime_teardown_test.cpp` 内](../../test/lifetime_teardown_test.cpp#L196)(規範順序)/ [同ファイルの reset 側](../../test/lifetime_teardown_test.cpp#L235)(runtime reset が terminal shutdown へ入らない)/ [同ファイルの起動失敗側](../../test/lifetime_teardown_test.cpp#L312)(起動途中失敗)。
 >
 > **不変条件**: teardown 経路では module を新規生成しない(`tryGet` のみ)。段階の順序を変えない。`run()` は何度呼んでも副作用が1回。`runtime_reset` は module phase を `shutting_down` にしない(reload 後もフレームを回し続けるため。`shutting_down` にすると deletion queue が `drainForTeardown()` で閉じ、以後のGPU資源登録が拒否されます)。
 
@@ -423,7 +423,7 @@ ECSCore::update()
 
 ### eventの1フレーム遅延
 
-`GameContext::emit()`はeventを`pending_events`へ積みます（[`emit()`](../../src/core/userpublic/details/event/registerer.hpp#L163)）。次のフレーム冒頭で[`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L444)が`deliver_now_events`へswapし、配送します（メンバ実装は[`UserEventRegistererTemplatePublic::freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L405)）。
+`GameContext::emit()`はeventを`pending_events`へ積みます（[`emit()`](../../src/core/userpublic/details/event/registerer.hpp#L170)）。次のフレーム冒頭で[`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L455)が`deliver_now_events`へswapし、配送します（メンバ実装は[`UserEventRegistererTemplatePublic::freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L455)）。
 
 - update中にemit → 次フレームで配送
 - event handler内で別eventをemit → さらに次フレームで配送
@@ -485,7 +485,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 ### RPCディスパッチャは1個
 
-[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L60) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L1843) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L71) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
+[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L60) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L1847) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L71) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
 
 ### 編集セッションの生成点も1個
 

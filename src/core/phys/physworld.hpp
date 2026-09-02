@@ -46,6 +46,7 @@ DECLARE_MODULE(PhysWorld) {
 
     struct PreparedState {
         std::vector<Binding> bindings;
+        std::vector<std::pair<EntityId, EntityId>> active_trigger_pairs;
         std::uint64_t next_collider_id_value = 1;
     };
 
@@ -63,6 +64,9 @@ DECLARE_MODULE(PhysWorld) {
     PreparedState snapshotPrepared() const;
     PreparedState prepareBindings(std::vector<Binding> next_bindings) const;
     PreparedState prepareBindings(
+        std::vector<Binding> next_bindings,
+        std::span<const GameObjectId> unpublished_entities) const;
+    PreparedState prepareSceneBindings(
         std::vector<Binding> next_bindings,
         std::span<const GameObjectId> unpublished_entities) const;
     void publishPrepared(PreparedState &&prepared) noexcept;
@@ -94,6 +98,9 @@ DECLARE_MODULE(PhysWorld) {
     void enqueueDebugDraw(DebugDraw &debug_draw, const glm::mat4 &view_projection) const;
 
     size_t colliderCountForTesting() const { return bindings.size(); }
+    size_t activeTriggerPairCountForTesting() const noexcept {
+        return active_trigger_pairs.size();
+    }
 };
 
 } // namespace Pelican

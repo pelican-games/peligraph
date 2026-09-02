@@ -2248,11 +2248,17 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     next_runtime_bindings;
                 const auto revision =
                     runtime->modules.project_config.importSceneDocument(
-                        bytes, [&] {
-                            runtime->modules.scene_loader.load(
-                                std::string{current_scene_id});
-                            next_runtime_bindings =
-                                collectEditorRuntimeBindings(runtime->modules);
+                        bytes, [&](SceneLoadRequest &&request) {
+                            request.scene_id = std::string{current_scene_id};
+                            auto result = runtime->modules.scene_loader.load(
+                                std::move(request));
+                            if (std::holds_alternative<SceneLoadCommitted>(
+                                    result)) {
+                                next_runtime_bindings =
+                                    collectEditorRuntimeBindings(
+                                        runtime->modules);
+                            }
+                            return result;
                         });
                 runtime->binding_state.bindings.swap(next_runtime_bindings);
                 runtime->binding_state.epoch =
@@ -2268,11 +2274,17 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 const auto revision =
                     runtime->modules.project_config.importSceneDocument(
                         bytes,
-                        [&] {
-                            runtime->modules.scene_loader.load(
-                                std::string{current_scene_id});
-                            next_runtime_bindings =
-                                collectEditorRuntimeBindings(runtime->modules);
+                        [&](SceneLoadRequest &&request) {
+                            request.scene_id = std::string{current_scene_id};
+                            auto result = runtime->modules.scene_loader.load(
+                                std::move(request));
+                            if (std::holds_alternative<SceneLoadCommitted>(
+                                    result)) {
+                                next_runtime_bindings =
+                                    collectEditorRuntimeBindings(
+                                        runtime->modules);
+                            }
+                            return result;
                         },
                         schema_version);
                 runtime->binding_state.bindings.swap(next_runtime_bindings);

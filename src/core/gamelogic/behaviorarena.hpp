@@ -153,6 +153,7 @@ class PreparedBehaviorSceneReconciliation {
         const PreparedBehaviorSceneReconciliation &) = delete;
 
     void publish() noexcept;
+    void activate();
     void rollback() noexcept;
     void finish() noexcept;
 };

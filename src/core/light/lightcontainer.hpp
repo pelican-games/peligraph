@@ -8,7 +8,9 @@
 #include "../vkcore/buf.hpp"
 
 #include <string>
+#include <optional>
 #include <span>
+#include <string_view>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 #include <unordered_map>
@@ -86,6 +88,8 @@ namespace Pelican
 		std::size_t directionalLightCount() const noexcept {
 			return m_DirectionalLights.size();
 		}
+		std::optional<float> directionalLightIntensityForTesting(
+			std::string_view name) const noexcept;
 		const BufferWrapper& lightBuffer() const { return m_LightUBO; }
 		const BufferWrapper& directionalShadowBuffer() const {
 			return m_DirectionalShadowBuffer;

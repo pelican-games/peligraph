@@ -514,6 +514,8 @@ struct PreparedBehaviorSceneReconciliation::Impl {
     std::uint64_t old_next_attachment_seq = 1;
     std::uint64_t next_handle = 1;
     std::uint64_t next_attachment_seq = 1;
+    std::vector<std::size_t> activated;
+    std::size_t deferred_base = 0;
     bool published = false;
     bool finished = false;
 
@@ -623,6 +625,52 @@ void PreparedBehaviorSceneReconciliation::publish() noexcept {
     impl_->published = true;
 }
 
+void PreparedBehaviorSceneReconciliation::activate() {
+    if (!impl_ || !impl_->published || impl_->finished) {
+        throw std::logic_error(
+            "behavior scene reconciliation is not published");
+    }
+    auto &arena = *impl_->arena;
+    impl_->deferred_base = arena.deferred_mutations.size();
+    impl_->activated.clear();
+    try {
+        for (std::size_t index = 0; index < arena.attachments.size(); ++index) {
+            auto &attachment = arena.attachments[index];
+            if (attachment.info.pending || attachment.info.active) continue;
+            if (attachment.instance.behavior == nullptr) {
+                const auto *registration =
+                    internal::getBehaviorRegisterer().findByNameAndOwner(
+                        attachment.info.stable_name, attachment.info.owner);
+                if (registration == nullptr) {
+                    throw std::runtime_error(
+                        "behavior registration disappeared before activation: " +
+                        attachment.info.stable_name);
+                }
+                attachment.instance =
+                    registration->create(attachment.info.canonical_params);
+                attachment.destroy = registration->destroy;
+            }
+            try {
+                arena.invokeInit(attachment);
+            } catch (...) {
+                arena.destroyInstance(attachment, false);
+                throw;
+            }
+            attachment.initialized = true;
+            attachment.info.active = true;
+            impl_->activated.push_back(index);
+        }
+    } catch (...) {
+        for (auto it = impl_->activated.rbegin();
+             it != impl_->activated.rend(); ++it) {
+            arena.destroyInstance(arena.attachments[*it], true);
+        }
+        arena.deferred_mutations.resize(impl_->deferred_base);
+        impl_->activated.clear();
+        throw;
+    }
+}
+
 void PreparedBehaviorSceneReconciliation::rollback() noexcept {
     if (!impl_ || impl_->finished) return;
     auto &arena = *impl_->arena;
@@ -675,6 +723,7 @@ BehaviorAttachmentArena::prepareSceneReconciliation(
     impl->next_attachment_seq = next_attachment_seq;
     impl->detached.reserve(attachments.size() + desired.size());
     impl->params_updates.reserve(desired.size());
+    impl->activated.reserve(attachments.size() + desired.size());
     std::vector<bool> consumed(attachments.size(), false);
 
     // Runtime-created, non-scene attachments are outside reconciliation but

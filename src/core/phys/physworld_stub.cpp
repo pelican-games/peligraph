@@ -40,9 +40,16 @@ PhysWorld::PreparedState PhysWorld::prepareBindings(
     return {};
 }
 
+PhysWorld::PreparedState PhysWorld::prepareSceneBindings(
+    std::vector<Binding> next_bindings,
+    std::span<const GameObjectId> unpublished_entities) const {
+    return prepareBindings(std::move(next_bindings), unpublished_entities);
+}
+
 void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
     (void)prepared;
     bindings.clear();
+    active_trigger_pairs.clear();
     next_collider_id_value = 1;
 }
 

@@ -83,3 +83,39 @@ TEST_CASE("Event bus freeze is separate from delivery", "[event-layer][frame-pha
 
     Pelican::internal::clearPendingEvents();
 }
+
+TEST_CASE("WP380 event outbox is invisible until its preallocated noexcept flush",
+          "[WP380][transaction][event-outbox]") {
+    auto &events = Pelican::internal::getEventRegisterer();
+    Pelican::internal::clearPendingEvents();
+
+    {
+        Pelican::internal::PreparedEventOutbox discarded{events, 1};
+        auto reserved = discarded.prepare(Wp56ProbeEvent{380});
+        {
+            Pelican::internal::EventOutboxScope scope{discarded};
+            events.emit(Wp56ProbeEvent{381});
+            REQUIRE(events.pendingEventCount() == 0);
+            REQUIRE(discarded.size() == 1);
+        }
+        discarded.stageReserved(std::move(reserved));
+        REQUIRE(events.pendingEventCount() == 0);
+    }
+    REQUIRE(events.pendingEventCount() == 0);
+
+    {
+        Pelican::internal::PreparedEventOutbox committed{events, 1};
+        auto reserved = committed.prepare(Wp56ProbeEvent{382});
+        {
+            Pelican::internal::EventOutboxScope scope{committed};
+            events.emit(Wp56ProbeEvent{383});
+        }
+        committed.stageReserved(std::move(reserved));
+        committed.flush();
+    }
+    const auto snapshot = events.isolationSnapshot();
+    REQUIRE(snapshot.pending.size() == 2);
+    REQUIRE(snapshot.pending[0].name == "Wp56ProbeEvent");
+    REQUIRE(snapshot.pending[1].name == "Wp56ProbeEvent");
+    Pelican::internal::clearPendingEvents();
+}

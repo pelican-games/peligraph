@@ -1,0 +1,195 @@
+#pragma once
+
+#include "resolvedscene.hpp"
+
+#include <cstdint>
+#include <exception>
+#include <functional>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <variant>
+#include <vector>
+
+namespace Pelican {
+
+using SceneId = std::string;
+
+struct SceneAuthority {
+    std::uint64_t run_nonce = 0;
+    std::uint64_t scene_epoch = 0;
+
+    bool operator==(const SceneAuthority &) const = default;
+};
+
+enum class SceneLoadPhase : std::uint8_t {
+    prepare,
+    early_publish,
+    activate,
+};
+
+// Fault injection is deliberately orthogonal to the externally reported
+// pre-commit phases.  It names every executor edge, including the no-throw
+// commit/retire/flush tail, so a manifest row can exercise the exact edge it
+// claims to cover.
+enum class SceneLoadFaultPhase : std::uint8_t {
+    prepare,
+    publish,
+    activate,
+    commit,
+    retire,
+    flush,
+};
+
+class SceneLoadFaultInjector {
+  public:
+    virtual ~SceneLoadFaultInjector() = default;
+    virtual bool shouldMutate(SceneLoadFaultPhase phase,
+                              std::string_view participant_name,
+                              std::string_view mutation_id) noexcept = 0;
+};
+
+enum class SceneLoadRoot : std::uint8_t {
+    unspecified,
+    startup,
+    rpc,
+    pending,
+    import_unversioned,
+    import_versioned,
+};
+
+namespace scene_load_mutation {
+inline constexpr std::string_view metadata_document =
+    "metadata.document.drop";
+inline constexpr std::string_view metadata_projection =
+    "metadata.projection.drop";
+inline constexpr std::string_view ecs_liveness = "ecs.liveness.bypass";
+inline constexpr std::string_view light_directional_names =
+    "light.directional-names.bypass";
+inline constexpr std::string_view event_pending = "queue.event.bypass";
+inline constexpr std::string_view rng_current_seed =
+    "queue.rng-current-seed.bypass";
+inline constexpr std::string_view rng_state = "queue.rng-state.bypass";
+inline constexpr std::string_view rng_increment =
+    "queue.rng-increment.bypass";
+inline constexpr std::string_view pending_scene =
+    "queue.pending-scene.bypass";
+inline constexpr std::string_view behavior_attachments =
+    "behavior.attachments.bypass";
+inline constexpr std::string_view transient_retire =
+    "loader.transient-retire.bypass";
+inline constexpr std::string_view root_startup = "root.startup.disconnect";
+inline constexpr std::string_view root_rpc = "root.rpc.disconnect";
+inline constexpr std::string_view root_pending = "root.pending.disconnect";
+inline constexpr std::string_view root_import_unversioned =
+    "root.import-v1.disconnect";
+inline constexpr std::string_view root_import_versioned =
+    "root.import-v2.disconnect";
+} // namespace scene_load_mutation
+
+struct PreCommitFailure {
+    SceneLoadPhase phase = SceneLoadPhase::prepare;
+    std::string error;
+    std::exception_ptr exception;
+};
+
+struct CommittedWithEffectFailure {
+    SceneAuthority active_authority{};
+    std::vector<std::string> effect_errors;
+};
+
+struct SceneLoadCommitted {
+    SceneAuthority active_authority{};
+};
+
+using SceneLoadResult =
+    std::variant<SceneLoadCommitted, PreCommitFailure,
+                 CommittedWithEffectFailure>;
+
+// Owns the one metadata candidate used by an imported scene.  Its definition
+// is private to ProjectBasicConfig so a caller cannot publish only the
+// document or only the resolved projection.
+class MetadataCommitToken {
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+
+    explicit MetadataCommitToken(std::unique_ptr<Impl> impl) noexcept;
+    void prepareRuntimeIdentity(SceneId scene_id,
+                                SceneAuthority authority);
+    void publishDocumentOnlyForFaultInjection() noexcept;
+    void commit() noexcept;
+    friend class ProjectBasicConfig;
+    friend class SceneLoader;
+
+  public:
+    MetadataCommitToken() noexcept;
+    ~MetadataCommitToken();
+    MetadataCommitToken(MetadataCommitToken &&) noexcept;
+    MetadataCommitToken &operator=(MetadataCommitToken &&) noexcept;
+    MetadataCommitToken(const MetadataCommitToken &) = delete;
+    MetadataCommitToken &operator=(const MetadataCommitToken &) = delete;
+
+    explicit operator bool() const noexcept { return impl_ != nullptr; }
+    const SceneProjectionState &projection() const;
+    const AuthoringSceneDocument &document() const;
+};
+
+struct SceneLoadRequest {
+    struct Borrowed {
+        std::reference_wrapper<const SceneProjectionState> committed;
+    };
+
+    struct Owned {
+        std::reference_wrapper<const SceneProjectionState> candidate;
+        std::reference_wrapper<const AuthoringSceneDocument> document;
+        MetadataCommitToken token;
+
+        explicit Owned(MetadataCommitToken metadata)
+            : candidate{std::cref(metadata.projection())},
+              document{std::cref(metadata.document())},
+              token{std::move(metadata)} {}
+    };
+
+    SceneId scene_id;
+    std::variant<Borrowed, Owned> source;
+    bool consumes_pending_request = false;
+    SceneLoadRoot root = SceneLoadRoot::unspecified;
+
+    static SceneLoadRequest borrowed(
+        SceneId scene_id, const SceneProjectionState &committed,
+        SceneLoadRoot root = SceneLoadRoot::unspecified) {
+        return SceneLoadRequest{
+            .scene_id = std::move(scene_id),
+            .source = Borrowed{std::cref(committed)},
+            .root = root,
+        };
+    }
+
+    static SceneLoadRequest owned(SceneId scene_id,
+                                  MetadataCommitToken metadata,
+                                  SceneLoadRoot root =
+                                      SceneLoadRoot::unspecified) {
+        return SceneLoadRequest{
+            .scene_id = std::move(scene_id),
+            .source = Owned{std::move(metadata)},
+            .root = root,
+        };
+    }
+
+    const SceneProjectionState &projection() const {
+        if (const auto *borrowed = std::get_if<Borrowed>(&source)) {
+            return borrowed->committed.get();
+        }
+        return std::get<Owned>(source).candidate.get();
+    }
+};
+
+using SceneImportCallback =
+    std::function<SceneLoadResult(SceneLoadRequest &&)>;
+
+// Production roots use this bridge to retain the historic throwing surface
+// while the executor itself returns an explicit pre/post-commit result.
+const SceneLoadCommitted &requireSceneLoadCommitted(
+    const SceneLoadResult &result);
+
+} // namespace Pelican

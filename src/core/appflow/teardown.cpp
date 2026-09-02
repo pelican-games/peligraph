@@ -2,6 +2,7 @@
 
 #include "../ecs/core.hpp"
 #include "../gamelogic/behaviorarena.hpp"
+#include "../loader/scene.hpp"
 #include "../log.hpp"
 #if PELICAN_WITH_PHYSICS
 #include "../phys/physworld.hpp"
@@ -75,6 +76,8 @@ void runProductionStep(RuntimeTeardownStep step) {
 #endif
         break;
     case RuntimeTeardownStep::ecs:
+        if (auto *scene = FastModuleContainer::tryGet<SceneLoader>())
+            scene->drainRetirementQueue();
         if (auto *ecs = FastModuleContainer::tryGet<ECSCore>())
             ecs->clearEntities();
         break;

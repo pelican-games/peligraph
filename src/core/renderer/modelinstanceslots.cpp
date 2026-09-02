@@ -1,5 +1,6 @@
 #include "modelinstanceslots.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <limits>
 #include <stdexcept>
@@ -97,6 +98,45 @@ void ModelInstanceSlots::clearPrepared() noexcept {
     }
     live_count_ = 0;
     ++scene_epoch_;
+}
+
+ModelInstanceSlots ModelInstanceSlots::prepareSceneReplacement(
+    std::vector<std::uint32_t> &withheld_live_indices) const {
+    if (scene_epoch_ == std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "PolygonInstanceContainer scene epoch exhausted");
+    }
+    ModelInstanceSlots candidate = *this;
+    withheld_live_indices.clear();
+    withheld_live_indices.reserve(live_count_);
+    candidate.free_indices_.clear();
+    candidate.free_indices_.reserve(generations_.size());
+    for (std::uint32_t index = 0; index < alive_.size(); ++index) {
+        if (alive_[index]) {
+            candidate.alive_[index] = false;
+            if (candidate.generations_[index] !=
+                std::numeric_limits<std::uint32_t>::max()) {
+                ++candidate.generations_[index];
+                withheld_live_indices.push_back(index);
+            }
+        } else if (candidate.generations_[index] !=
+                   std::numeric_limits<std::uint32_t>::max()) {
+            candidate.free_indices_.push_back(index);
+        }
+    }
+    candidate.live_count_ = 0;
+    ++candidate.scene_epoch_;
+    return candidate;
+}
+
+void ModelInstanceSlots::releaseWithheld(std::uint32_t index) noexcept {
+    assert(index < alive_.size());
+    assert(!alive_[index]);
+    assert(generations_[index] != std::numeric_limits<std::uint32_t>::max());
+    assert(std::find(free_indices_.begin(), free_indices_.end(), index) ==
+           free_indices_.end());
+    assert(free_indices_.size() < free_indices_.capacity());
+    free_indices_.push_back(index);
 }
 
 bool ModelInstanceSlots::alive(std::uint32_t index) const noexcept {

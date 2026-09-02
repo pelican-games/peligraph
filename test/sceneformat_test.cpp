@@ -5,6 +5,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "scene_load_test_support.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "../src/core/log.hpp"
 #include "authoringscenetestsupport.hpp"
@@ -608,7 +609,11 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
                 DYNAMIC_SECTION("fault point " << static_cast<unsigned>(point)) {
                     config.setSceneImportFaultForTesting(point);
                     REQUIRE_THROWS(config.importSceneDocument(
-                        snapshot_bytes, [&] { ++reload_calls; }));
+                        snapshot_bytes,
+                        [&](SceneLoadRequest &&) -> SceneLoadResult {
+                            ++reload_calls;
+                            return SceneLoadCommitted{};
+                        }));
                     require_old_state();
                     REQUIRE(reload_calls == 0);
                     if (point == SceneImportFaultPoint::AfterPublication) {
@@ -625,12 +630,14 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
 
             std::optional<std::string> loader_error;
             try {
-                (void)config.importSceneDocument(snapshot_bytes, [&] {
+                (void)config.importSceneDocument(
+                    snapshot_bytes,
+                    [&](SceneLoadRequest &&request) -> SceneLoadResult {
                     ++reload_calls;
-                    REQUIRE(test_support::authoring(config.sceneDocument())
+                    REQUIRE(test_support::authoring(request.projection().authoring())
                                 .rawJson() == snapshot);
                     const auto *secondary =
-                        config.resolvedScene().findScene("secondary");
+                        request.projection().resolved().findScene("secondary");
                     REQUIRE(secondary != nullptr);
                     REQUIRE(secondary->objects.front()
                                 .components.front()
@@ -644,10 +651,12 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
             REQUIRE(reload_calls == 1);
             require_old_state();
 
-            const auto imported = config.importSceneDocument(snapshot_bytes, [&] {
+            const auto imported = config.importSceneDocument(
+                snapshot_bytes, [&](SceneLoadRequest &&request) {
                 ++reload_calls;
-                REQUIRE(test_support::authoring(config.sceneDocument())
+                REQUIRE(test_support::authoring(request.projection().authoring())
                             .rawJson() == snapshot);
+                return SceneLoadResult{SceneLoadCommitted{}};
             });
             REQUIRE(reload_calls == 2);
             REQUIRE(imported.value == old_revision.value + 1U);
@@ -758,7 +767,7 @@ TEST_CASE("SceneLoader reports the common typed cause for unknown component name
         GET_MODULE(ProjectSource).setProjectData(project.dump());
 
         try {
-            GET_MODULE(SceneLoader).load("default_scene");
+            test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
             FAIL("unknown component unexpectedly loaded");
         } catch (const ComponentUnknownError &error) {
             CHECK(std::string{error.code()} == "component_unknown@1");

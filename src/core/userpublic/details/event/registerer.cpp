@@ -235,6 +235,52 @@ void validateObject(std::string_view event_name, const EventPayloadSchema &schem
 
 namespace internal {
 
+namespace {
+thread_local PreparedEventOutbox *active_event_outbox = nullptr;
+}
+
+PreparedEventOutbox::PreparedEventOutbox(
+    UserEventRegistererTemplatePublic &destination,
+    std::size_t reserved_tail)
+    : destination_{&destination}, reserved_tail_{reserved_tail} {
+    events_.reserve(reserved_tail_);
+    destination_->pending_events.reserve(
+        destination_->pending_events.size() + reserved_tail_);
+}
+
+void PreparedEventOutbox::stage(QueuedEvent event) {
+    events_.reserve(events_.size() + reserved_tail_ + 1U);
+    destination_->pending_events.reserve(
+        destination_->pending_events.size() + events_.size() +
+        reserved_tail_ + 1U);
+    events_.push_back(std::move(event));
+}
+
+void PreparedEventOutbox::stageReserved(QueuedEvent event) noexcept {
+    static_assert(std::is_nothrow_move_constructible_v<QueuedEvent>);
+    assert(reserved_tail_ != 0);
+    assert(events_.size() < events_.capacity());
+    events_.push_back(std::move(event));
+    --reserved_tail_;
+}
+
+void PreparedEventOutbox::flush() noexcept {
+    static_assert(std::is_nothrow_move_constructible_v<QueuedEvent>);
+    assert(destination_->pending_events.size() + events_.size() <=
+           destination_->pending_events.capacity());
+    for (auto &event : events_) {
+        destination_->pending_events.push_back(std::move(event));
+    }
+    events_.clear();
+}
+
+EventOutboxScope::EventOutboxScope(PreparedEventOutbox &outbox) noexcept
+    : previous_{std::exchange(active_event_outbox, &outbox)} {}
+
+EventOutboxScope::~EventOutboxScope() {
+    active_event_outbox = previous_;
+}
+
 RegistrationToken UserEventRegistererTemplatePublic::__registerEvent(
     EventTypeRegistration registration) {
     registration.owner = currentRegistrationOwner();
@@ -292,6 +338,10 @@ RegistrationToken UserEventRegistererTemplatePublic::__registerEvent(
 }
 
 void UserEventRegistererTemplatePublic::__emit(QueuedEvent event) {
+    if (active_event_outbox != nullptr) {
+        active_event_outbox->stage(std::move(event));
+        return;
+    }
     pending_events.push_back(std::move(event));
 }
 

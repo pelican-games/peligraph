@@ -249,6 +249,7 @@ class StagedModelInstance {
 };
 
 DECLARE_MODULE(PolygonInstanceContainer) {
+  public:
     struct PreparedViewFamilyDraws {
         std::size_t slot_base = 0;
         std::vector<std::size_t>
@@ -262,6 +263,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
             view_queues;
     };
 
+  private:
     std::vector<DrawItemSnapshot> draw_inventory;
     CompiledDrawQueueSet compiled_draw_queue;
     std::vector<MaterialDrawTagFilter>
@@ -321,6 +323,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     vk::UniqueDescriptorSet skinned_deformation_descriptor_set;
     vk::UniqueDescriptorSet static_material_descriptor_set;
     vk::UniqueDescriptorSet skinned_material_descriptor_set;
+    std::vector<std::vector<std::uint32_t>> scene_retirement_queue;
 
     bool isLive(ModelInstanceId id) const noexcept;
     std::uint32_t requireLive(ModelInstanceId id, const char *api_name) const;
@@ -328,6 +331,42 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void uploadMaterialAbsoluteOverrides();
 
   public:
+    struct PreparedSceneState {
+        std::vector<DrawItemSnapshot> draw_inventory;
+        CompiledDrawQueueSet compiled_draw_queue;
+        std::vector<MaterialDrawTagFilter> draw_queue_material_filters;
+        std::uint64_t next_draw_declaration_ordinal = 0;
+        std::uint64_t ray_query_geometry_generation = 1;
+        std::map<std::string, PreparedViewFamilyDraws, std::less<>>
+            prepared_view_family_draws;
+        std::vector<glm::mat4> model_instances_data;
+        std::vector<glm::mat4> previous_model_instances_data;
+        std::vector<bool> model_history_valid;
+        std::vector<std::vector<glm::mat4>> skin_palettes;
+        std::vector<std::vector<glm::mat4>> previous_skin_palettes;
+        std::vector<std::uint64_t> animation_revisions;
+        std::vector<std::uint64_t> previous_animation_revisions;
+        std::vector<std::uint32_t> animation_generations;
+        RendererInternal::ModelInstanceSlots instance_slots;
+        std::vector<ModelAssetId> model_asset_ids;
+        std::vector<std::uint64_t> ray_authoring_object_ids;
+        std::vector<std::optional<RayInstanceComponent>>
+            ray_instance_declarations;
+        std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
+            material_initial_value_tables;
+        std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
+        std::vector<std::shared_ptr<const MorphTargetLayout>> morph_layouts;
+        std::vector<MorphWeightFrame> morph_weight_frames;
+        std::vector<bool> morph_history_valid;
+        std::uint64_t temporal_history_advance_count = 0;
+        std::unordered_map<std::uint32_t, MaterialInstanceOverrideFrame>
+            material_override_frames;
+        std::unordered_map<MaterialInstanceAbsoluteOverrideKey,
+                           MaterialInstanceAbsoluteOverrideFrame,
+                           MaterialInstanceAbsoluteOverrideKeyHash>
+            material_absolute_override_frames;
+    };
+
     struct PreparedModelTrs {
         std::uint32_t index = 0;
         glm::mat4 old_value{1.0F};
@@ -336,6 +375,19 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     };
 
     PolygonInstanceContainer();
+    PreparedSceneState snapshotPreparedScene() const;
+    PreparedSceneState prepareSceneReplacement(
+        std::vector<std::uint32_t> &retire_indices);
+    void publishPreparedScene(PreparedSceneState &&prepared) noexcept;
+    StagedModelInstance stagePreparedSceneModel(
+        PreparedSceneState &prepared, const ModelTemplate &model);
+    void setPreparedSceneModelMatrix(StagedModelInstance &staged,
+                                     const glm::mat4 &matrix) noexcept;
+    void publishPreparedSceneModel(PreparedSceneState &prepared,
+                                   StagedModelInstance staged) noexcept;
+    void enqueueSceneRetirement(
+        std::vector<std::uint32_t> retire_indices) noexcept;
+    void drainSceneRetirements();
     void preflightModelInstance(const ModelTemplate &model) const;
     StagedModelInstance stageModelInstance(const ModelTemplate &model);
     void setStagedModelMatrix(StagedModelInstance &staged,
@@ -373,6 +425,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     bool isModelInstanceAlive(ModelInstanceId id) const noexcept { return isLive(id); }
     std::size_t modelInstanceSlotCount() const noexcept {
         return instance_slots.slotCount();
+    }
+    std::size_t liveModelInstanceCountForTesting() const noexcept;
+    std::uint64_t nextDrawDeclarationOrdinalForTesting() const noexcept {
+        return next_draw_declaration_ordinal;
     }
     std::optional<ModelInstanceId>
     modelInstanceIdAt(std::uint32_t index) const;

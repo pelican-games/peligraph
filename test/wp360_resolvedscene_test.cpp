@@ -6,6 +6,7 @@
 #include "../src/core/loader/editorpreviewprojection.hpp"
 #include "../src/core/loader/resolvedscene.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "scene_load_test_support.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/gamelogic/behaviorarena.hpp"
@@ -492,7 +493,7 @@ TEST_CASE("WP360a case 6 stores inactive behavior errors and names active bind f
     setupWp360aProject(
         sandbox, wp360aProjectJson(1.0f, 1000.0f, "active"), scene);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    REQUIRE_NOTHROW(GET_MODULE(SceneLoader).load(SceneId{"active"}));
+    REQUIRE_NOTHROW(test_support::loadScene(GET_MODULE(SceneLoader), SceneId{"active"}));
     const auto &resolved = GET_MODULE(ProjectBasicConfig).resolvedScene();
     const auto *inactive = resolved.findScene("inactive");
     REQUIRE(inactive != nullptr);

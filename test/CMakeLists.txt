@@ -752,6 +752,7 @@ pelican_define_test(log_test GROUP core_foundation pelican_core)
 pelican_define_test(deletionqueue_test GROUP core_foundation pelican_core)
 pelican_define_test(lifetime_teardown_test GROUP core_foundation pelican_core)
 pelican_define_test(deterministicrng_test GROUP core_foundation pelican_core)
+pelican_define_test(scene_transaction_contract_test GROUP core_foundation pelican_core)
 pelican_define_test(enginetime_test GROUP core_foundation pelican_core)
 pelican_define_test(skeletalanimation_test GROUP core_foundation pelican_core glm)
 pelican_define_test(vrmsemantic_test GROUP core_foundation pelican_core tinygltf)
@@ -1287,14 +1288,11 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_test PRIVATE
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_WP374_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
 )
-set(raytracing_rt3_1_production_test_discovery)
-if(PELICAN_WITH_RPC)
-  # Every [gpu] case in this mixed source is also RPC-only.  Avoid asking
-  # Catch2 to discover an empty [gpu] selection in RPC-OFF builds: an empty
-  # POST_BUILD discovery has no output file and CTest exposes it as a
-  # synthetic *_NOT_BUILT failure.
-  list(APPEND raytracing_rt3_1_production_test_discovery MIXED_GPU)
-endif()
+# WP380's production executor is intentionally independent of RPC, while the
+# WP375 cases in this source are RPC-gated.  Split discovery in both builds so
+# the executor remains buildable with RPC OFF and its GPU case never leaks
+# into the non-GPU lane.
+set(raytracing_rt3_1_production_test_discovery MIXED_GPU)
 pelican_define_test(raytracing_rt3_1_production_test
                     ${raytracing_rt3_1_production_test_discovery}
                     pelican_core picosha2
@@ -1342,6 +1340,32 @@ if(WIN32)
     target_compile_definitions(
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP375_BEHAVIOR_FIXTURE="$<TARGET_FILE:pelican_wp375_behavior_fixture>")
+
+    add_library(pelican_wp380_behavior_fixture SHARED
+        fixtures/wp380_scene_transaction/behavior.cpp
+        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(pelican_wp380_behavior_fixture PROPERTIES
+        CXX_STANDARD 20
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        OUTPUT_NAME "pelican_wp380_behavior_fixture"
+    )
+    add_dependencies(pelican_wp380_behavior_fixture
+        pelican_test_raytracing_rt3_1_production_test)
+    target_link_libraries(pelican_wp380_behavior_fixture PRIVATE
+        "$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>"
+        glm
+        nlohmann_json)
+    target_include_directories(pelican_wp380_behavior_fixture PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core/userpublic
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(pelican_wp380_behavior_fixture PRIVATE
+        PELICAN_GAME_DLL=1
+        PELICAN_WP380_FIXTURE_BUILD=1)
+    target_compile_definitions(
+        pelican_test_raytracing_rt3_1_production_test PRIVATE
+        PELICAN_WP380_BEHAVIOR_FIXTURE="$<TARGET_FILE:pelican_wp380_behavior_fixture>")
 
     add_library(pelican_wp379_ray_instance_fixture SHARED
         fixtures/ray_namespace_component/component.cpp

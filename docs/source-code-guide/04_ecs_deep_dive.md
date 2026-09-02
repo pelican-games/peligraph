@@ -316,9 +316,9 @@ Chunk clearはComponent indexの逆順で各要素を`deinit → destroy`しま�
 
 ## 4.9 Componentアクセスと変更version
 
-- [`tryComponent<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L354): stale/Componentなしなら`nullptr`
-- [`component<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L358): なければ詳細付き例外
-- [`setComponent<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L364): copy assignment後にversion更新
+- [`tryComponent<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L363): stale/Componentなしなら`nullptr`
+- [`component<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L367): なければ詳細付き例外
+- [`setComponent<T>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L373): copy assignment後にversion更新
 - [`markComponentChanged()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L640): pointer経由で直接変更した場合の手動通知
 
 ChunkはComponent indexごとに`component_versions[index]`を一個持ちます。entityごとのversionではなく、**Chunk内のそのComponent列全体のversion**です。どれか一entityを書き換えると、そのChunkを読むSystemはChunk全体を再処理します。
@@ -327,15 +327,15 @@ ChunkはComponent indexごとに`component_versions[index]`を一個持ちます
 
 ## 4.10 内部ECS Systemの登録
 
-template本体は [`registerSystem<TSystem, TComponents...>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L409) です。現在のsignatureは `registerSystem(TSystem &system, std::vector<SystemId> &&depends_list, bool force_update)` で、**Systemのinstance参照を受け取り`SystemId`を返します**。ECSCore側の入口は [`registerSystemForce()`](../../src/core/ecs/core.hpp#L45) です。返る`SystemId`は後続Systemの依存指定に使えます。
+template本体は [`registerSystem<TSystem, TComponents...>()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L418) です。現在のsignatureは `registerSystem(TSystem &system, std::vector<SystemId> &&depends_list, bool force_update)` で、**Systemのinstance参照を受け取り`SystemId`を返します**。ECSCore側の入口は [`registerSystemForce()`](../../src/core/ecs/core.hpp#L45) です。返る`SystemId`は後続Systemの依存指定に使えます。
 
 ### 登録の副作用
 
 `SystemId` を返すだけではありません。
 
-1. wrapperへ **`std::string name`** を持たせ、`wrapper.name = typeid(TSystem).name();` を代入します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L429)）。この名前が§4.12のhazard/cycleエラー文言に出ます。
-2. [`internal::registerECSSystemComponentDependencies()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L27) を呼び、Componentからの**逆参照テーブル**へ登録します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L576)）。これがComponent登録解除時の「依存Systemが残っている」判定に使われます（§4.15）。
-3. `execution_plan_dirty = true` を立て、実行計画キャッシュを無効化します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L556)）。
+1. wrapperへ **`std::string name`** を持たせ、`wrapper.name = typeid(TSystem).name();` を代入します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L438)）。この名前が§4.12のhazard/cycleエラー文言に出ます。
+2. [`internal::registerECSSystemComponentDependencies()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L27) を呼び、Componentからの**逆参照テーブル**へ登録します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L585)）。これがComponent登録解除時の「依存Systemが残っている」判定に使われます（§4.15）。
+3. `execution_plan_dirty = true` を立て、実行計画キャッシュを無効化します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L565)）。
 
 対称に、[`unregisterSystem()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L654) は逆参照テーブルから外して `execution_plan_dirty = true` を立て、デストラクタ [`~ECSCoreTemplatePublic()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L293) が `internal::unregisterECSCoreComponentDependencies(this)` を呼びます。
 
@@ -351,7 +351,7 @@ void process(std::span<ChunkView<TComponents...>> chunks);
 void process(std::tuple<TComponents*...> arrays, size_t count);
 ```
 
-判定は [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77) と [`HasPerChunkProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L82) です。登録時の [`static_assert`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L410) で「少なくともどちらか」のprocess形が必須になりました。
+判定は [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77) と [`HasPerChunkProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L82) です。登録時の [`static_assert`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L419) で「少なくともどちらか」のprocess形が必須になりました。
 
 実装は二つの独立した`if constexpr`なので、両方のsignatureを同時に実装すると両方呼ばれます。通常はどちらか一方だけを実装します。
 
@@ -362,13 +362,13 @@ Component packの型が次を同時に表します。
 - `const T`: read-only
 - `T`: write
 
-登録時にpointer型を組み立て、constを外してComponent IDを求めつつ、read/write indexへ分類します（[`process_component`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L421)）。System実装へ渡るtupleは宣言どおり`const T*`または`T*`になります。
+登録時にpointer型を組み立て、constを外してComponent IDを求めつつ、read/write indexへ分類します（[`process_component`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L430)）。System実装へ渡るtupleは宣言どおり`const T*`または`T*`になります。
 
-> 🧩 **難所 — 型パックとindicesの位置対応**([`registerSystem()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L409) の [fold](../../src/core/userpublic/details/ecs/coretemplate.hpp#L425) と消費側の [index_sequenceラムダ](../../src/core/userpublic/details/ecs/coretemplate.hpp#L496))
+> 🧩 **難所 — 型パックとindicesの位置対応**([`registerSystem()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L418) の [fold](../../src/core/userpublic/details/ecs/coretemplate.hpp#L434) と消費側の [index_sequenceラムダ](../../src/core/userpublic/details/ecs/coretemplate.hpp#L505))
 >
 > **何をする所か**: 型パックから (1) dense index列、(2) read/write分類、(3) matching maskを作り、実行時に `void*` を正しい `T*` へ戻します。
 >
-> **素朴に読むと**: foldの `(process_component(static_cast<TComponents*>(nullptr)), ...)` は**値を渡していません**。null pointerは型を運ぶためだけの実引数で、受け側は `auto* ptr` から `remove_pointer` → `remove_const` してIDを引きます。「なぜdereferenceしないのか」ではなく「なぜpointerなのか」を掴まないと読めません。より危険なのは消費側です。`chunk.getRef(indices[Is]).ptr` を `std::tuple_element_t<Is, std::tuple<TComponents...>>*` へ `static_cast` している、つまり **`component_indices` の並び順と `TComponents...` の並び順が位置で一対一に対応している**ことが暗黙の前提になっています。この対応を保証しているのは、fold式のカンマ演算子が左から右への評価順を持つことと、`comp_indices.push_back(idx)` が末尾へ積むことの二つだけです（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L410)）。型の側には何の裏付けもありません。誰かが「archetype keyと同じようにsortしよう」「重複を潰そう」と `comp_indices` に手を入れると、全Chunk配列が別の型としてreinterpretされ、**コンパイルエラーも実行時チェックも出ないまま**壊れます。read/writeの分類も同じfoldで決まりますが、そちらは `read_indices` / `write_indices`（実体は `std::vector<size_t>` ですが、並び順に意味はありません）として §4.12 へ渡り、hazard判定はcomponent indexをキーにした `std::map` で畳まれる（[`coretemplate.cpp` 内](../../src/core/userpublic/details/ecs/coretemplate.cpp#L684) / [`conflicts` の畳み込み](../../src/core/userpublic/details/ecs/coretemplate.cpp#L172)）ため、**並び順には依存しません**。hazard検出を巻き添えにするのは順序変更ではなく、重複除去のように集合そのものを変える改変です。
+> **素朴に読むと**: foldの `(process_component(static_cast<TComponents*>(nullptr)), ...)` は**値を渡していません**。null pointerは型を運ぶためだけの実引数で、受け側は `auto* ptr` から `remove_pointer` → `remove_const` してIDを引きます。「なぜdereferenceしないのか」ではなく「なぜpointerなのか」を掴まないと読めません。より危険なのは消費側です。`chunk.getRef(indices[Is]).ptr` を `std::tuple_element_t<Is, std::tuple<TComponents...>>*` へ `static_cast` している、つまり **`component_indices` の並び順と `TComponents...` の並び順が位置で一対一に対応している**ことが暗黙の前提になっています。この対応を保証しているのは、fold式のカンマ演算子が左から右への評価順を持つことと、`comp_indices.push_back(idx)` が末尾へ積むことの二つだけです（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L419)）。型の側には何の裏付けもありません。誰かが「archetype keyと同じようにsortしよう」「重複を潰そう」と `comp_indices` に手を入れると、全Chunk配列が別の型としてreinterpretされ、**コンパイルエラーも実行時チェックも出ないまま**壊れます。read/writeの分類も同じfoldで決まりますが、そちらは `read_indices` / `write_indices`（実体は `std::vector<size_t>` ですが、並び順に意味はありません）として §4.12 へ渡り、hazard判定はcomponent indexをキーにした `std::map` で畳まれる（[`coretemplate.cpp` 内](../../src/core/userpublic/details/ecs/coretemplate.cpp#L684) / [`conflicts` の畳み込み](../../src/core/userpublic/details/ecs/coretemplate.cpp#L172)）ため、**並び順には依存しません**。hazard検出を巻き添えにするのは順序変更ではなく、重複除去のように集合そのものを変える改変です。
 >
 > **骨子**:
 > ```text
@@ -399,7 +399,7 @@ Chunkが空になっても個別削除ではChunk自体を消さないため、m
 
 ## 4.11 変更検知
 
-System wrapperは`last_run_tick`を持ちます。ECS全体の [`global_tick`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L402) は`update()`冒頭で1増えます。
+System wrapperは`last_run_tick`を持ちます。ECS全体の [`global_tick`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L411) は`update()`冒頭で1増えます。
 
 per-chunk型では、required Component列の最大versionが`last_run_tick`未満ならskipします。実行後、write宣言した列のversionを現在tickへ更新します。
 
@@ -531,7 +531,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 | [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L9) | `Transform, Camera` | 最初のcamera Componentをactive Cameraへ反映 |
 | [`SpriteViewRenderSystem`](../../src/core/ecs/predefined/spriteviewsystem.cpp) | `EntityId, Transform, SpriteView` | sprite表示をSpriteSceneへ反映 |
 
-`CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L380) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
+`CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L381) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
 
 ## 4.14 ECS Componentとして保存されないもの
 
@@ -539,17 +539,17 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 | scene component名 | 実際の所有者 |
 |---|---|
-| `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L26) |
+| `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L28) |
 | `collider` | [`PhysWorld`](../../src/core/phys/physworld.hpp#L38) |
-| `behavior` | [`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L169) |
+| `behavior` | [`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L170) |
 
 ### collider
 
-[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L224)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L470)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L145)）。
+[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L289)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L764)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L210)）。
 
 ### behavior arena ✅実装済み
 
-behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` はECS Chunkとは無関係な独自のarenaで、次を保持します（[`behaviorarena.hpp` 内](../../src/core/gamelogic/behaviorarena.hpp#L171)）。
+behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` はECS Chunkとは無関係な独自のarenaで、次を保持します（[`behaviorarena.hpp` 内](../../src/core/gamelogic/behaviorarena.hpp#L172)）。
 
 - `BehaviorAttachmentInfo`（identityとオブジェクト対応）
 - 元の `raw_component` JSON
@@ -709,18 +709,18 @@ entityの生成/破棄も同じ形です。[`ECSEntityMutation::prepareCreate()`
 
 ### 既存値のprepare/publish
 
-archetypeを変えない「値の差し替え」にも同じ形が入りました（[`coretemplate.hpp`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L217)）。
+archetypeを変えない「値の差し替え」にも同じ形が入りました（[`coretemplate.hpp`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L226)）。
 
 | 型/関数 | 役割 |
 |---|---|
-| [`PreparedComponentValue<T>`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L217) / [`prepareComponentValue()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L281) | 値のcopyを先に済ませる |
-| [`PreparedComponentSwap<T>`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L228) / [`prepareComponentSwap()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L311) | swapで公開する版 |
-| [`publishComponentValue()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L335) / [`rollbackComponentValue()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L345) | no-throwな公開と巻き戻し |
+| [`PreparedComponentValue<T>`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L226) / [`prepareComponentValue()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L290) | 値のcopyを先に済ませる |
+| [`PreparedComponentSwap<T>`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L237) / [`prepareComponentSwap()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L320) | swapで公開する版 |
+| [`publishComponentValue()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L344) / [`rollbackComponentValue()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L354) | no-throwな公開と巻き戻し |
 
 > **設計決定:** ヘッダのコメント通り、**投げうるcopyは公開の前に完了**し、publish/rollbackは no-throw 代入と厳密なversion交換だけを行います。§4.11の変更検知が使う `component_versions` も、rollback時に元の値へ正確に戻します。「失敗したら変更検知にも痕跡を残さない」という水準です。
 
 ### 隔離テスト用のスナップショット
 
-[`isolationSnapshot()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L183) が [`IsolationSnapshot`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L162) として `global_tick` / `free_indices` / entity slot / chunkのmask+versionを露出します。transactionの前後でこれを比較すれば、「rollbackが本当に元へ戻したか」を外から検証できます。
+[`isolationSnapshot()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L192) が [`IsolationSnapshot`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L162) として `global_tick` / `free_indices` / entity slot / chunkのmask+versionを露出します。transactionの前後でこれを比較すれば、「rollbackが本当に元へ戻したか」を外から検証できます。
 
 テストは [`test/ecs_migration_test.cpp`](../../test/ecs_migration_test.cpp)、[`test/ecs_scheduler_test.cpp`](../../test/ecs_scheduler_test.cpp)、[`test/registration_lifetime_test.cpp`](../../test/registration_lifetime_test.cpp) です。

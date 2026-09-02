@@ -58,10 +58,18 @@ DECLARE_MODULE(SeqPlayer) {
     void initializeInstances(const std::filesystem::path &mesh_path);
 
   public:
+    struct PreparedSceneState {
+        bool enabled = false;
+        std::vector<ModelInstanceId> instances;
+    };
+
     SeqPlayer();
 
     void update(double time);
     void releaseInstancesForSceneLoad();
+    PreparedSceneState snapshotPreparedScene() const;
+    PreparedSceneState prepareSceneLoad() const;
+    void publishPreparedScene(PreparedSceneState &&prepared) noexcept;
     bool isEnabled() const { return enabled; }
     size_t instanceCountForTesting() const { return instances.size(); }
     ModelInstanceId instanceForTesting(size_t index) const {

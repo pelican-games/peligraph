@@ -273,6 +273,7 @@ phys::ColliderId PhysWorld::allocateColliderId() {
 PhysWorld::PreparedState PhysWorld::snapshotPrepared() const {
     return PreparedState{
         .bindings = bindings,
+        .active_trigger_pairs = active_trigger_pairs,
         .next_collider_id_value = next_collider_id_value,
     };
 }
@@ -287,6 +288,7 @@ PhysWorld::PreparedState PhysWorld::prepareBindings(
     std::span<const GameObjectId> unpublished_entities) const {
     PreparedState prepared{
         .bindings = std::move(next_bindings),
+        .active_trigger_pairs = active_trigger_pairs,
         .next_collider_id_value = next_collider_id_value,
     };
     std::unordered_set<std::string> names;
@@ -341,8 +343,20 @@ PhysWorld::PreparedState PhysWorld::prepareBindings(
     return prepared;
 }
 
+PhysWorld::PreparedState PhysWorld::prepareSceneBindings(
+    std::vector<Binding> next_bindings,
+    std::span<const GameObjectId> unpublished_entities) const {
+    auto prepared = prepareBindings(std::move(next_bindings),
+                                    unpublished_entities);
+    // A scene cutover is a domain boundary. Unlike an ordinary collider edit,
+    // no synthetic Exit may leak from the retired scene into the candidate.
+    prepared.active_trigger_pairs.clear();
+    return prepared;
+}
+
 void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
     bindings.swap(prepared.bindings);
+    active_trigger_pairs.swap(prepared.active_trigger_pairs);
     std::swap(next_collider_id_value, prepared.next_collider_id_value);
 }
 

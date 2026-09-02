@@ -8,6 +8,7 @@
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "scene_load_test_support.hpp"
 #include "../src/core/material/materialcontainer.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
@@ -357,7 +358,7 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
 
     REQUIRE(primitiveCount(GET_MODULE(ModelAssetContainer).getModelTemplateByName("selected")) == 1);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    GET_MODULE(SceneLoader).load("default_scene");
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
     const auto scene_object = GET_MODULE(SceneLoader).objectId("fragment_object");
     REQUIRE(scene_object);
@@ -454,7 +455,7 @@ TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fr
 
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = GET_MODULE(SceneLoader);
-    scene.load("default_scene");
+    Pelican::test_support::loadScene(scene, "default_scene");
     GET_MODULE(ECSCore).update();
     const auto object = scene.objectId("YWorld_YUpMeterMesh");
     REQUIRE(object);
@@ -539,7 +540,7 @@ TEST_CASE("U-USD0c generated delivery parses material and binding then loads the
 
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &scene = GET_MODULE(SceneLoader);
-    scene.load("default_scene");
+    Pelican::test_support::loadScene(scene, "default_scene");
     GET_MODULE(ECSCore).update();
     REQUIRE(scene.objectId("World_CoatTriangle"));
     GET_MODULE(VulkanManageCore).waitIdle();

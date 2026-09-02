@@ -311,6 +311,7 @@ class SceneProjectionState {
                          ResolvedScene resolved);
     friend class ResolvedSceneResolver;
     friend class ProjectBasicConfig;
+    friend class MetadataCommitToken;
     friend class ProjectBasicConfigProjectionTarget;
 
   public:

@@ -108,7 +108,14 @@ bool PelicanCore::run() {
         configureRayLayoutModeBeforeComponentRegistration();
         GET_MODULE(ECSPredefinedRegistration).reg();
         (void)initializeConfiguredGameLogic();
-        GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());
+        {
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            auto request = SceneLoadRequest::borrowed(
+                config.defaultSceneId(), config.sceneProjectionState(),
+                SceneLoadRoot::startup);
+            (void)requireSceneLoadCommitted(
+                GET_MODULE(SceneLoader).load(std::move(request)));
+        }
         // glTF materials lower through route-specific surface shaders. Publish
         // the render graph first so their initial compilation sees the same
         // feature defines and material-output ABI as the frame executor.
