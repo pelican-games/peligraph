@@ -20553,7 +20553,7 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
 ### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
-**規範は `docs/design_object_identity.md` v4(§9)。**下の **v2 差分が本節の正**(WP380a state transaction / WP380b effect transaction の 2 分割)。
+**規範は `docs/design_object_identity.md` v4(§9)。**下の **v3 差分が本節の正**(v2 の state / effect 分割は v3 決定 8 で撤回。WP380a = state + engine-owned queue、WP380b = 公開 mutator journal + audio + persistence)。
 **依存: WP375(着地後。ECS の inverse-token early publication と observer gate を再利用する)。registry(ID-A)は未装着で走る。**
 
 #### 何が壊れているか(既存欠陥。設計レビューが本番入力で再現)
@@ -20693,6 +20693,85 @@ WP380a の後、WP380b 前の状態は「state は原子的、effect は漏れ�
 - **WP380b**(effect transaction): 決定 2(中身)・4・6・7。依存: WP380a。見積: 大
 - 仕様レビューは **WP380a を先に第 2 巡**にかけ、WP380b は WP380a 統合後に節を切り直してから
 
+
+#### WP380a 仕様レビュー第 2 巡(不合格・8 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ)**
+
+仕分け: **直す 6**(#1 #2 #4 #6 #7 #8)/ **範囲から外す 2**(#3 #5。理由付きの裁定)。
+
+##### 決定 8(#1): state / effect の二分割を **やめる**。engine-owned queue は WP380a に入る
+
+「state は原子的、effect は漏れる」は今日より悪い(C の `emit` を、戻された B の behavior が受け取る)。
+- **WP380a** = engine-owned state **+ engine-owned queue**(event queue / RNG 列 / pending scene 要求)。
+  これらは engine が所有する 3 本の queue であり、outbox は「prepare で確保 → commit で flush(noexcept push)→ rollback で破棄」
+- activation 中の `loadScene("D")` は **candidate projection に対して解決**する(candidate-aware overlay)。C が失敗すれば要求ごと破棄
+- **WP380b** = 公開 mutator の journal(`GameObjects::*` / ECS・renderer setter)+ audio(provisional handle)+ persistence(shadow)+ settings + frozen DLL fixture
+
+##### 決定 9(#2): `SceneLoaded` は **prepare で確保した outbox slot** から flush する。metadata は **1 つの noexcept swap**
+
+- `SceneLoaded` の payload(`make_shared` + vector push)は **prepare** で確保し、flush は確保済み slot の noexcept な移動だけ
+  ([scene.cpp:556](../src/core/loader/scene.cpp#L556) の即時 emit を置換)
+- **metadata participant** = `{document, projection, current_scene_id, epoch, active_authority, prefab_provider, provider generation, persistence baseline}` を
+  **1 struct にまとめ、commit は 1 回の noexcept swap**([basicconfig.cpp:744](../src/core/loader/basicconfig.cpp#L744) の逐次更新を置換)
+- したがって WP380a で `CommittedWithEffectFailure` が発生する経路は無い(flush は noexcept)。型は置くが**到達不能であることをテストで固定**しない
+  (到達不能の検証は代理条件)。WP380b が audio / persistence で中身を入れる
+- `publish_candidates` は規範どおり **noexcept**。`PreCommitFailure.phase` は `prepare | early_publish | activate` の 3 値(publish を除く)
+
+##### 決定 10(#3、裁定): **refresh root(hot reload)は WP380a の範囲外**
+
+`GameLogicReloader::reloadTransaction` は candidate の検証後に **旧 DLL を unload してから** scene を再構築する
+([gamelogicreload.cpp:253](../src/core/gamelogic/gamelogicreload.cpp#L253))。旧 DLL の behavior state を candidate commit まで生存させるには
+**2 世代の registration を同時に持つ registry**(ID-A の領域)が要る。refresh root の失敗時契約は**今日のまま「旧 DLL で再構築」**とし、
+台帳の既知制限に記録する。WP380a の root は **3 flow・5 call site**: 直接(startup / RPC)/ pending apply / import(versioned / unversioned)
+
+##### 決定 11(#4): `SceneLoadRequest` を型にする
+
+```
+SceneLoadRequest = Borrowed{ const SceneProjectionState &committed }
+                 | Owned{ SceneProjectionState candidate, AuthoringDocument candidate, MetadataCommitToken token }
+```
+- `SceneLoader::load(SceneId)` は `load(SceneLoadRequest)` に置換。import の callback(`std::function<void()>`、
+  [basicconfig.hpp:137](../src/core/loader/basicconfig.hpp#L137))は **`SceneLoadResult (*)(SceneLoadRequest &&)`** に置換し、
+  candidate と result を型で往復する。BasicConfig の局所 candidate([basicconfig.cpp:687](../src/core/loader/basicconfig.cpp#L687))は request に移る
+- pending root は **apply 時点の committed projection に late-bind**(今日の意味論。[scene.cpp:562](../src/core/loader/scene.cpp#L562) が scene id だけ保存するのはそのまま)。
+  apply 時に scene が無ければ既存の名前付きエラー
+
+##### 決定 12(#5、裁定): **`ModelAssetContainer` は cache であって participant ではない**
+
+失敗した candidate が lazy load した model record / GPU resource / geometry allocation は**残る**(warm cache)。
+- 理由: record の所有単位は ModelAsset / reload registry / Material / VertBuf / ray identity に跨り、token 化は本 WP の数倍。
+  一方、残った record は **scene state の世代混在ではない**(どの scene にも束縛されていない)
+- **決定性の定義**: 同じ入力列(失敗した load を含む)に対して同じ出力。失敗 load の有無で geometry allocation ID が変わるのは
+  「入力が違う」のであって非決定ではない。D-vs-control の比較対象は **renderer instance 数 / ordinal / ECS / Light / Camera / Physics** とし、
+  geometry allocation identity は**比較しない**と明記
+- startup の順序(SceneLoader → Renderer → ModelAsset、[pelican_core.cpp:108](../src/core/userpublic/pelican_core.cpp#L108))は変えない
+
+##### 決定 13(#6): sentinel は **`onInit` が観測したもの**を検査する
+
+- A / B / C で Light の**名前**と intensity、Camera fov、ECS 値を変え、B と C の behavior は **`onInit` で各 participant の値を読み、
+  `saveData` ではなく engine-owned な probe(fixture DLL が export する読み取り関数)に記録**する
+- 受け入れ: **B の `onInit` が B の sentinel を、C の `onInit` が C の sentinel を観測した**こと(= activation 前に全 candidate が publish 済み)。
+  「成功時だけ activation 後に publish する」実装はここで落ちる。Light は `setDirectionalLightIntensity(candidate 名)` の成否でも観測
+
+##### 決定 14(#7): retire は **構造的 no-throw** だけ。GPU に触る作業は prepare か次フレーム
+
+- prepare で **allocation / GPU upload / retirement list 構築**まで完了。commit 後の consume は `swap` / `exchange` / vector move のみ
+- Seq / VAT / renderer の**旧 instance の除去**(`removeModelInstance` を呼ぶ [seqplayer.cpp:350](../src/core/playback/seqplayer.cpp#L350)・
+  [vatplayer.cpp:48](../src/core/playback/vatplayer.cpp#L48))は transaction 内で行わず、**noexcept な retirement queue に積み、次フレームの
+  既存 transient retirement 経路が消費**する。そこでの失敗はフレームのエラーであって transaction のエラーではない(state は既に一貫)
+- `static_assert(noexcept(...))` は補助。受け入れは **GPU write fault を prepare に注入して A/A、retire 段には注入点が無い**こと(構造で示す)
+
+##### 決定 15(#8): build ごとの **participant manifest**
+
+- `absent / stub(invariant-empty) / real` を CMake define から生成した manifest で持ち、A/B/C は manifest の行だけを検査する
+  (Seq / VAT OFF は stub がコンパイルされる: [playback/CMakeLists.txt:5](../src/core/playback/CMakeLists.txt#L5))
+- matrix: **CI 構成(Windows / MSVC / Debug、全 ON)で semantic A/B/C/D**。各 OFF(`RUNTIME_SHADER_COMPILER` / `OPENXR` / `IMGUI` / `PHYSICS` builtin と Jolt /
+  `SEQPLAYER` / `VAT`)は **compile + manifest 一致 + 残る行での A/B/C**。flat / xr / preview は renderer participant の 3 variant として manifest の行
+
+##### やらないこと(v3 で追加)
+
+refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutator journal・audio・persistence(WP380b)/ registry 2 世代(ID-A)。
+
+**WP380a は仕様レビューを 2 巡で打ち切り、WP375 統合後に着手する。** 見積: 大(決定 11 の型変更が 5 call site に及ぶ)。
 ### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾く(v2: ABI は import symbol の版。section・C ABI は撤回)
 
 **§4 規則 11 上段(core の ABI・出荷 DLL の挙動が変わる)。設計レビュー済み(carrier §8 修正 γ)。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
