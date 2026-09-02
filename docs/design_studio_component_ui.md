@@ -73,3 +73,85 @@ Studio 固有の undo / 衝突解決 / 既定値 / component の意味論。pref
 (2) S-1 が単独で有用か —— `ray_instance` 以外に今日 Studio から足したい component は何か
 (3) offline catalog を project 層から出すとき、behavior(DLL 由来の schema)はどう扱うか(WP361a の「Studio offline 乖離」と同件)
 (4) `add_component` の既定値は誰が埋めるか(core の op が catalog 既定で埋めるのか、Studio が payload を送るのか)
+
+
+## 6. 設計レビュー第 1 巡(9 件)と v2
+
+**v2 が本文書の正。§2 決定 1〜4・§3 受け入れは v2 で置換される。「S-1 は前提無し・今すぐ」は撤回する。**
+
+### 決定 1'(#1): catalog は表示 schema ではなく **構築契約**
+
+`add_component` は未完成 component を挿入して後から編集する API ではなく、**受信時に完全な component を canonicalize**する
+([editorjournal.cpp:1141](../src/core/communication/editorjournal.cpp#L1141))。`sprite_view` は `texture`、`animation` は `clip`、
+`simplemodelview` は `model` が必須で、`{"name":"ray_instance"}` も field 不在なら `ray_instance_empty` で拒否される。
+現在 RPC に出る `StructFieldSchema` は型・範囲・enum だけで **required/defaulted と default 値を失っている**
+([editorcommandservice.cpp:70](../src/core/communication/editorcommandservice.cpp#L70))。
+
+- catalog entry は **`{required/defaulted, canonical default, picker kind(asset / object / enum / scalar)}`** を持つ
+- Studio は **required 値を draft で集め**、完全な payload を `add_component` に送る。core は canonicalize する。
+  **既定値の所在は core の canonical default 1 箇所**(Studio は catalog から受けた値を表示するだけ)
+
+### 決定 2'(#2): 全体 catalog とは別に **object ごとの可否**を core が返す
+
+generated `collider` を持つ prefab instance では、一覧には出るが read-only、削除は authored 側に無いので missing、
+追加は merged prefab の重複規則で拒否、唯一の authored `transform` の削除は resolve で失敗する。
+- **`object_component_capabilities(object)`** → `[{entry_id, occurrence, can_add, can_remove, reason, origin, multiplicity}]`
+- Studio は意味論を持たず、`can_*` と `reason` を**そのまま**表示する。generated には **`unpack_prefab` への導線**(既存 RPC)
+
+### 決定 3'(#3): behavior の entry は component 名ではなく **`{slot:"behavior", subtype, schema_version, fingerprint, multiplicity, constructor_schema}`**
+
+`behavior` は同名を複数持て、追加には DLL 登録由来の `type`、削除には `attachment_index` が要る。
+UI model は **attachment identity と順序**を持つ。
+
+### 決定 4'(#4): catalog に **generation と entry fingerprint**。add は **`expected_catalog_generation`** を必須にする
+
+DLL reload を跨いだ add は `catalog_stale@1` で拒否し、**draft は保持**する(利用者が一覧で見たものだけを追加できる)。
+
+### 決定 5'(#5): S-2 は **供給元を D0-safe な leaf / 生成物に移す**ことが前提。目的を限定する
+
+canonical builtin schema / default は core の `componentcodec.cpp` にあり、`pelican_project` は schema leaf にしか link しない。
+- canonical descriptor / default を **D0-safe な leaf または生成 artifact** に移し、**core codec と project exporter の双方がそこから生成**する
+  (例外契約設計の「既定値の所在は一箇所」、担体設計の「schema-leaf / project 層が wire 型を所有」と同件)
+- S-2 の目的は **offline authoring の parity**(engine 未接続で同じ一覧・同じ default)に限定する。
+  **今日の Inspector は engine 接続・actor・snapshot が揃わないと編集できない**
+  ([inspectormodel.cpp:1625](../src/devstudio/model/inspectormodel.cpp#L1625))ので、消費者が無ければ S-2 は起票しない
+
+### 決定 6'(#6): 構造編集の ticket は **selection から独立**した session-level tracker で terminal まで追う
+
+`applySelection` は `pending_edits` を消し、旧 generation の結果を捨てる。add 直後に別 object を選ぶと結果が消える。
+- structural ticket は selection 変更で消さず、terminal(committed / rejected)まで poll し、完了後に対象 object を再取得
+
+### 決定 7'(#7): structured error を **field / action に束縛**し、失敗時の draft を保持する
+
+core は `payload` に object / slot / field path / detail を返す([editorjournal.cpp:2121](../src/core/communication/editorjournal.cpp#L2121))。
+- Inspector は error を該当 field / 追加ボタンに結び付ける(例外契約設計の `resolution_error` と同型)
+- **`last_saved_revision` と dirty / unknown-pending** を追跡し、stop / restart / open / close で **Save・Discard・Cancel**
+  (今日は「Stop Engine」で session state が消える: [embeddedviewport.cpp:216](../src/devstudio/viewport/embeddedviewport.cpp#L216))
+
+### 決定 8'(#9): **前提を認める**。S-1 は担体の RPC 2 本と改名の後
+
+- catalog RPC は担体設計 v2 決定 8' の **`component_schema_catalog` / `occurrence_inventory`** と同じもの。**別に作らない**
+- **RPC capability / version handshake**: 新 Studio が旧 engine に接続したら `incompatible_engine@1` と **read-only fallback**
+  (既存 `get_components` への黙った fallback は authored-only の不完全一覧になるので禁止)
+- `ray_instance` は **`pelican_ray_instance` 改名の後**に受け入れへ載せる(旧名を固定しない)
+- **「S-1 は前提無し・今すぐ」は撤回**。順序: CARRIER-1(catalog RPC + 改名)→ S-1 → S-3(行編集)
+
+### 決定 9'(#8): 受け入れの差し替え(false positive を潰す)
+
+| v1 | 問題 | v2 |
+|---|---|---|
+| `ray_instance` を追加 → TLAS row で観測 | remove 後も row は残り fallback 値になる | **同一テスト**: component 無し fallback → UI から **`mask=17 / force_opaque / custom_index=0x123456`** を追加 → 実 resolved TLAS 値 → remove → fallback 復帰 |
+| catalog から外すと一覧から消える | `intersect(catalog, {"ray_instance"})` の hardcode でも通る | **実 production registry に、Studio ソースに無い一意な test component を登録**し、実 RPC → 実 UI → add / save / reload。**登録無し側も同じテスト**で |
+| offline / online で同じ一覧 | 両方空でも通る。名前だけ一致でも通る | **非空 sentinel + 完全な canonical descriptor** を比較し、**両経路で実際に解決された値**を比較 |
+| 行の存在 | 既定行・手書き fixture で通る | 事前不在 → 固有値で追加 → engine の list に固有値 → 削除 |
+
+### 段割り(v2)
+
+```
+CARRIER-1(catalog RPC 2 本 + pelican_ray_instance 改名)
+   → S-1(追加・削除。構築契約 + object 可否 + ticket tracker + error 束縛 + handshake)
+   → S-3(行編集。CARRIER-1 の C-2 の上)
+S-2 は消費者(offline authoring の parity)が名指しされたときだけ起票
+```
+
+**この文書の 1 巡目レビューはここまで。2 巡目は CARRIER-1 の仕様確定後**(catalog RPC の形が決まってから)。
