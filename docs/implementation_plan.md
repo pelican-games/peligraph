@@ -19765,3 +19765,48 @@ WP374 の `ray_instance` はまさに**両方に追記**していた。
 `ResolvedSceneResolver` 直叩きの仕分け(WP376)/ override 型 `ForTesting` seam の棚卸し(WP377)/
 **`PolygonInstanceContainer` / `LightContainer` の CPU state 分離**(要るなら別設計。本 WP は
 GPU ラベルで materialize する)/ transaction・adapter の意味論の変更 / Studio。
+
+
+#### 後続 WP / 設計トラックの入力(2026-09-02 実測。起票時に読み直すこと)
+
+**WP376(`ResolvedSceneResolver` 直叩き 41 箇所)** —— 大半は正当。仕分けの結果:
+
+| 種類 | 件数の目安 | 例 | 扱い |
+|---|---|---|---|
+| resolver そのものの単体テスト | 大半(`wp361_prefab_test` の identity / closure / 展開順、`wp360`) | 「generated requests return only the named unsupported error」 | **正当。移さない** |
+| resolver を**オラクル**として使う | 1 | `devstudio_outliner_test`「Studio offline open resolves…」—— Studio の出力を resolver と突き合わせる | **正当**(resolver は本番オラクル) |
+| **resolved-scene provider を手で用意**して service/RPC を組む | 2 ファイル | `schema_rpc_test::runFixtureRpc` / `editorcommandservice_test::explicitResolvedProvider` | **仕分け対象**。service 層の単体境界としては許容し得るが、本番 provider(`ProjectBasicConfig` の projection state)を通す受け入れが別に要る。**WP375 の context/target の形が決まってから**判断 |
+
+→ WP376 は「41 箇所を移す」WP ではなく、**provider を手で用意する 2 ファイルの扱いを決め、
+本番 provider 経由の受け入れを 1 本足す**小さな WP になる見込み。
+
+**WP377(override 型 `ForTesting` seam)** —— RT の 6 seam はテストでの使用が **計 6 箇所**、
+うち **2 箇所が production タグ付き受け入れの中**:
+
+- `WP368 production project load reaches RT2b tables …`(`headless_render_test`)
+- `WP369 production material alpha profile matches mip zero …`(同)
+
+WP374 で「override があると偽陽性」が実証済みなので、この 2 本は**観測 seam か本番入力へ
+置き換える**のが本丸。残り 4 箇所は sentinel / addressing の単体テストで、用途を確認して残す。
+fault 注入 3 個(`setSceneImportFault` / `setSceneSaveFault` / `setSceneSaveHook`)は
+AfterPublication matrix 用で**正当**。
+
+**object identity(#4)の設計入力** —— 当初の見積もりより**小さい**:
+
+- 名前で object を引く公開 API は **`SceneLoader::objectId / hasObjectTransform /
+  objectTransform` の 3 つ**([scene.hpp:72](../src/core/loader/scene.hpp#L72))。
+  外部の呼び出し側は **3 ファイル**(camera controller / rpcserver / animation)
+- **`SceneRuntimeObjectBinding{authoring_object_id, object_id}` が既に存在**
+  ([scene.hpp:27](../src/core/loader/scene.hpp#L27))。実行時は既に安定 id を持っている。
+  **名前なのは各 subsystem の map の key だけ**
+- 名前 key の実行時構造: `SceneLoader::object_bindings`(1)/ Light の map(6)/
+  `Camera::scene_cameras`(1)/ Physics の collider identity 文字列 / Animation の cache /
+  Controller の signature
+- 設計の形: **新しい ID を作らず、既存の binding の `authoring_object_id` を key に据え替える**。
+  WP304(安定 ID)不合格の理由(永続 ID の再採番・snapshot import)には触れない
+
+**例外契約(#5)の設計入力** —— `StructFieldValidationError{code, field_path}`
+([structfieldjson.hpp:26](../src/core/userpublic/details/schema/structfieldjson.hpp#L26))が
+既に code + path 付きの利用者エラー型。`StructFieldErrorCode` は 6 値。
+設計は**新しい型を発明せず、これを codec 境界へ一般化**する(collider 17 / sprite_view 15 /
+atlas 31 / componentcodec 2 の型無し throw を移す)。
