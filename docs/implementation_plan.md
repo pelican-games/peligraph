@@ -19917,3 +19917,104 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 **実装する。** 第 2 巡の 7 条件は上記で 1:1 に閉じた。依存: **WP374a の統合後**
 (差分 5 (d) と invalidation の plan 変異が WP374 の `ray_instance` route を対照に使う)。
 全数は着手時に `ctest -N` で実測する。
+
+
+### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
+
+**§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
+**規範は「テスト品質と設計負債の解消計画」と「後続 WP の入力」(2026-09-02)。依存: WP375。**
+
+#### 実測
+
+`ResolvedSceneResolver` 直叩き 41 箇所のうち、**移すべきでないもの**が大半:
+
+| 種類 | 扱い |
+|---|---|
+| resolver そのものの単体テスト(`wp361_prefab_test` の identity / closure / 展開順、`wp360`) | **正当。触らない** |
+| resolver をオラクルにする(`devstudio_outliner_test`「Studio offline open resolves…」) | **正当。触らない** |
+| **resolved-scene provider を手で用意して service / RPC を組む** | **本 WP の対象(2 ファイル)** |
+
+対象:
+
+- `test/schema_rpc_test.cpp:169` `runFixtureRpc` —— `ResolvedSceneResolver::resolve` の結果を
+  `EditorCommandServiceDependencies.resolved_scene` に注入
+- `test/editorcommandservice_test.cpp:75` `explicitResolvedProvider` —— 同上(revision で cache)
+
+本番の provider は `makeEditorRuntimeService` の lambda
+([editorruntimefactory.cpp:1747](../src/core/communication/editorruntimefactory.cpp#L1747)・:1767・:1839)で、
+`ProjectBasicConfig` の projection state を返す。**テストの provider はこれを写経している。**
+
+#### 決定
+
+1. **service / RPC 層の単体テストとして、手製 provider は許容する**。ただし節に「受け入れに数えない」と明記
+2. **本番 provider 経由の受け入れを 1 本足す**: `makeEditorRuntimeService` → 実 RPC →
+   `get_components` / `query` 系が **`ProjectBasicConfig` の projection state を返す**こと。
+   **provider lambda を手製と同じ形(resolver 直叩き)に差し替える変異で、
+   projection state の revision / resolver generation の不一致が観測されて落ちる**
+3. WP375 の `EditorProjectionContext`(immutable snapshot)を **query 側も同じ供給元から取る**
+   (edit と query で resolved scene の世代が食い違う経路を残さない)
+
+#### 受け入れ(§4 規約 10)
+
+- 本番 provider 経由の query が、**edit → commit 直後**に新しい revision の resolved scene を返す。
+  provider を resolver 直叩きに替える変異で **古い generation を返して落ちる**
+- 2 ファイルの手製 provider は残るが、**節に列挙**され「受け入れではない」と明記される
+- 既存テスト(着手時の全数)を壊さない / `SKIP_DEVSTUDIO` 両構成 / `PELICAN_WITH_RPC` 内
+
+#### やらないこと
+
+41 箇所の一括移設 / resolver の再設計 / Studio。
+
+
+### WP377: override 型 `ForTesting` seam の棚卸し —— 受け入れから判定の差し替えを追放する
+
+**§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
+**規範は「テスト品質と設計負債の解消計画」(2026-09-02)。依存: WP374 / WP374a(authored AS flags が前提)。**
+
+#### 実測
+
+本番ヘッダの `ForTesting` seam は 141 個。**観測 seam**(`readRenderTargetForTesting` 63 /
+`documentForTesting` 19 / `pendingCountForTesting` 18 …)は健全で、本 WP の対象外。
+**判定を差し替える override 型**は次だけ:
+
+| seam | 使用 | 帰属テストのタグ | 用途 |
+|---|---|---|---|
+| `ScopedRayProfileAccelerationStructureFlagsOverrideForTesting` | `headless_render_test:12750` | **`[WP369]…[production]`** | opaque flags を注入して `ray_profile_opaque_as@1` の拒否を確認(否定対照) |
+| `ScopedRayTracingTlasRecordOffsetOverrideForTesting` | `headless_render_test:11653`, **`:13238`** | rt1b sentinel / **`[WP368]…[production][mutation]`** | TLAS record-offset routing だけを入れ替え、別 image が選ばれることを確認(変異) |
+| `ScopedRayGroupLayoutVirtualIncludeHookupOverrideForTesting` | `:11879` | rt1b sentinel | 生成 include の配線 |
+| `ScopedRayTracingRecordAddressingValidationOverrideForTesting` | `:12125` | rt1b sentinel | addressing 検証の差し替え |
+| `ScopedRayTracingValidationDelegateOverrideForTesting` | `raytracing_rt1a_test:1735` | rt1a wiring mutation | validation delegate の差し替え |
+| fault 注入 3 個(`setSceneImportFault` / `setSceneSaveFault` / `setSceneSaveHook`) | — | — | **AfterPublication matrix 用。正当。対象外** |
+
+WP374 で **「override があると偽陽性になる」**が実証済み(override の BLAS flags が非ゼロだと
+`can_reuse` が全 reuse を禁止し、cache 鍵が壊れていても「2 build」が出る)。
+
+#### 決定
+
+1. **production タグの受け入れの中で override 型 seam を使うことを禁止する**(規範)。
+   否定対照や変異は **本番入力で作る**か、**production タグを外して「変異 seam を使う単体」と明記**する
+2. **WP369 @12750**: opaque flags の注入は、WP374 の **authored `acceleration_structure`
+   (layout v2 の `geometry_flags: ["opaque"]`)で作り直す**。override を消す
+3. **WP368 @13238**: record-offset の入れ替えは本番入力で作れない(routing そのものの変異)。
+   **production タグを外し、「routing 変異の単体」として残す**。production の主張は
+   同テスト内の非 override 部分だけに限定する
+4. rt1a / rt1b の sentinel 用 4 箇所は**用途を確認して残す**(sentinel は設計 §4 が要求する検査)。
+   ただし **production タグの中には置かない**
+5. **AS flags override(`RayProfileAccelerationStructureFlagsOverrideForTesting`)そのものを削除**する。
+   WP374 後は本番入力が存在するので、テスト用 override が本番の唯一の入力である状態は終わる
+   (残すと「テスト用 override が本番入力」の形が再発する)
+
+#### 受け入れ(§4 規約 10)
+
+- `RayProfileAccelerationStructureFlagsOverrideForTesting` が **ヘッダから消え**、
+  WP369 の否定対照が **authored flags で同じ `ray_profile_opaque_as@1` を出す**
+  (authored flags を外すと拒否されなくなる = 対照)
+- production タグの TEST_CASE で `Scoped…OverrideForTesting` を使う箇所が **0**
+  (静的検査ではなく、**override を production 受け入れに戻す変異で偽陽性が再現する**ことを
+  WP374 の F→G→F 受け入れで示す)
+- GPU golden / 全数(着手時に実測)不変
+
+#### やらないこと
+
+観測 seam の削減 / fault 注入 seam の変更 / RT 以外の override seam(`forceGeneration` /
+`forceSceneEpoch` / `setExecutionTracing` / `resetForTesting`)は**用途を記録するだけ**。
