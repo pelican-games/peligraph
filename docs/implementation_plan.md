@@ -21114,6 +21114,24 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
 #### 記録のみ
 
 `rev379` #4 の非 Windows(実 `.so` fixture)は Linux CI ができたときに。
+
+
+#### WP379a 完了記録(統合側。2026-09-03、`da115e69`)
+
+- **実装(codex、fast 無し)**: engine registrar と owner allocator を game-DLL 公開面から分離(host-only の `registrationownerhost.hpp` / `enginecomponentregistrar.hpp`)。
+  実 SHARED DLL が `registerEngineComponent` / `allocateRegistrationOwner` を使う **build 拒否テスト 2 本**。RPC に production registry の存在確認を注入
+  (登録済み・codec 無し → `not_editable`、未登録 → `component_unknown@1`)。未知 prefab provider は raw substitution を継続し SceneLoader の共通 cause へ。
+  player とテストが同じ terminal-shutdown 関数(`teardown.run()` 後に DLL shutdown)。owner release を pending 化し最終 token 解放時に回収(`registration_owner_release_pending@1`)。
+  decoder 11 分岐を単一 codec の表駆動 corpus に、allowlist は production 配列と exact 比較。manual の旧文字列 2 箇所を更新
+- **先に赤を固定**: 実 DLL に `pelican_evil` の engine-owner 登録を一時追加し、未修正では unload 後に残留することを確認してから修正
+- **agent の変異**: registrar / allocator の再公開 → negative DLL が「unexpectedly linked」で赤 / lookup 除去 → `component_unknown` で赤 / prefab 継続除去 → `PrefabBindingNotBindable` で赤 /
+  shutdown 2 行反転 / `unregisterComponents` 無効化 / 別 owner 登録 / pending 回収除去 / conflict 分岐除去 / allowlist 追加 → いずれも赤
+- **agent の検証**: 非 GPU 1230 / 1231(1 skip)、`SKIP_DEVSTUDIO=OFF` build、`PELICAN_WITH_RPC=OFF` build、出荷 4 project 差分なし、golden 差分なし。GPU 2 件は UNMET(統合側)
+- **統合側の検証(worktree)**: 非 GPU 1230 / 1231(WP334b の `-j16` flake、単独緑)/ WP379 系 + RT3-1 production の GPU **23 / 23**
+- **統合側の変異**(1 回目は worktree の deps cache が削除済み WP380a worktree を指して build 不能 = 偽緑 → main の `_deps` へ remap して再実行): **Q1**(prefab の未知 provider 継続を外す)赤 / **Q2**(RPC の registry lookup を潰す)赤(実 DLL + 実 RPC)/ **Q3**(owner の pending release を記録しない)赤。残留 0
+- **main 取り込み**(`merge-resolver` agent 2 回、WP380a と WP381 の後): 衝突は 2 回目が docs の行番号 anchor 4 ファイルのみ(散文は両側同一)。registrar / owner allocator を host header へ移した WP379a と、それを呼ぶ WP381 の loader は `gamelogicreload.hpp` の include で両立。merge 後の非 GPU 1269 / 1269、build 拒否 probe 2 本が実行されて緑(WP381 の入口改名後も game DLL は registrar を link できない)。未解決 doclink 10 件は両親由来(WP379a 8 + main 2)で docs-writer へ
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1590 / 1591**。赤 1 = `Studio receives the running example fatal…` の `morph vertex … 262144`(WP380a-fix が直す既知の赤。fix 着地後に再確認)。doclink 未解決 8 = WP379a が registerer.hpp から移した anchor(docs-writer へ)
+- コードレビュー `rev379a`: 中段相当のため codex レビューは行わず、統合側変異(Q1〜Q3 赤)+ merge-resolver の両立確認 + Claude レビューで代替(節約運用)
 ### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
