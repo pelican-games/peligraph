@@ -19919,6 +19919,95 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 全数は着手時に `ctest -N` で実測する。
 
 
+
+
+#### WP375 完了記録(統合側。2026-09-02、`e855c032`)
+
+**新規**: `src/core/communication/editorprojectionplan.{hpp,cpp}`(plan / materialize / `EditorProjectionContext` / route matrix)、
+`test/wp375_editor_projection_test.cpp`。18 ファイル(+1830 / -808)。継続 4 回(GPU 失敗 4 件 → 受け入れ c/d の是正 → named code)。
+
+##### 回収時の監査(WP324 の教訓: 削除を数える)
+
+- component 名の分岐(`transform` / `simplemodelview` / `light` / preview の `set_component_value` 限定)は codec の `EditorProjectionPolicy` と
+  planner の route matrix へ移設。`boundEditorEntity` の throw は factory に残る
+- `.execute` ラムダは 14 のまま。production 4 箇所(WP361a lifecycle / WP372a producer / WP372b unpack / availability)は `executeWp375Seam` へ委譲し、
+  その helper は本番の `planEditorProjection` + `materializeEditorProjection` を呼ぶ。`make_unique<…ProjectionAdapter>` の直接構築は 0
+- **継続で見つかった実装欠陥 2 件**(受け入れが本番分岐を観測していなかったことで露出):
+  (i) 非 prefab の direct behavior edit に availability が伝播しておらず、DLL 不在時に pending attachment を作れなかった → 伝播(`behaviorarena.cpp` `prepareEditorEdits`)。
+  (ii) renderer participant 欠落時に `SceneObjectProjectionAdapter` が model の staging を **黙って飛ばしていた** → 名前付き拒否に変更
+- **named code の弱化を 1 件差し戻し**: DLL あり + 未登録 behavior 型の拒否が journal 層の `method_unavailable` から
+  `catch(std::exception)` → `AdapterPrepareFailed` + 文字列に落ちていた → `behavior_type_unknown@1{type, object_id}`(`BehaviorTypeUnknownError`)を
+  editor と scene load の両方で共通化。受け入れは `error.code` / `error.data` の exact 一致(文字列照合は禁止)
+
+##### 統合側の変異 5 本(本番組成。エージェントは GPU 禁止のため UNMET 報告)
+
+| 変異 | 結果 |
+|---|---|
+| P: `SceneLoader` の preflight caller を消す | 赤(`WP375 production SceneLoader preflight …`) |
+| (a): materialize を document-only commit に | 赤(acceptance a) |
+| (b): 本番 target を Ephemeral に | 赤(acceptance b) |
+| (c): availability を DllUnavailable 固定 | **初回 緑 → 受け入れ是正後 赤**(active + 未知型が pending になって落ちる) |
+| (d): renderer participant を落とす | **初回 緑 → 受け入れ是正後 赤**(participant 欠落で spawn commit が名前付き拒否) |
+
+初回 (c)(d) が緑だった理由: (c) は既知の型を足すので availability が分岐しない設計のテストだった / (d) は検査前の `ECSCore.update()` が
+本番 ECS system の publish を観測していた(adapter の participant を観測していなかった)。**「変異が緑」は受け入れ側の欠陥として扱い、
+実装を疑う前にテストが本番分岐を観測しているかを確かめる**(2 件とも実装欠陥も同時に露出した)。
+
+##### 統合側の実行
+
+- worktree: 非 GPU 1212 / 1212(+1 skip)、GPU 指定 6 / 6
+- 統合後 main: (記入)
+- コードレビュー: `rev375`(記入)
+
+
+### WP375a: 非アクティブ scene の prefab 編集が active scene の behavior を全削除する(WP375 コードレビューの致命後退 1 件 + 実害 3 件 + 自己参照 oracle)
+
+**§4 規則 11 上段(core の複数経路)。コードレビューのみ(§10)。見積: 中。WP375 → 375a の 1 段で打ち切る(連鎖上限。致命後退なので一度だけ延長)。**
+**依存: なし(WP375 統合済み `e855c032`)。WP379 / WP380a は本 WP の統合後に投入する(同じ planner / factory を触る)。**
+
+#### 何が壊れているか(コードレビュー `rev375` が確認)
+
+1. **致命後退**: 旧 factory は `if (scene_id != current_scene) continue;`(`e855c032^:editorruntimefactory.cpp:99`)で非アクティブ scene の prefab 編集を
+   document-only にしていた。新 planner はこの filter を持たず、非アクティブ scene の `set_prefab_parameter` が **その scene の behavior 集合をグローバルな
+   `BehaviorAttachmentArena` に reconciliation** する。対象 scene に behavior が無ければ **active scene の behavior が全部消える**
+2. **実害**: `BehaviorBatch` の set / add / remove は `boundEditorEntity()` が空なら**型検査より先に黙って return** する
+   ([editorruntimefactory.cpp:1396](../src/core/communication/editorruntimefactory.cpp#L1396))。active scene の light-only object(example の `BlueSpot`
+   [main.scene.json:899](../projects/example/scenes/main.scene.json#L899))に未登録型の behavior を足すと **正常 commit** になる(旧 journal は `method_unavailable` で拒否していた)
+3. **実害**: DLL 不在時の pending attachment(`owner=engineRegistrationOwner`、`destroy=nullptr`、[behaviorarena.cpp:1181](../src/core/gamelogic/behaviorarena.cpp#L1181))は
+   publish 後の transaction rollback が**空実装**。`AfterPublication` fault で document は戻るが attachment は残り、再試行が `identity is already live` で衝突し得る
+4. **実害**: `set_component_value(simplemodelview)` の renderer route で `models` / `polygon_instances` module が無いと**黙って無視**
+   (lifecycle 側は WP375 で throw に変えたが set 側は残った。同じ route matrix 内で fail-fast と silent が混在)
+5. **自己参照 oracle**: route matrix テストの期待値を検査対象の `codec.editor_policy` から計算している([wp375_editor_projection_test.cpp:120](../test/wp375_editor_projection_test.cpp#L120))。
+   stock `simplemodelview` の policy を `Camera` に変えても通る。`LifecycleBehavior` / `Prefab*` route は materializer で no-op、production acceptance は spawn 後の renderer しか実値を見ない
+
+#### 直すこと
+
+1. planner: **committed projection でも `route.scene_id != context.activeSceneId()` なら runtime route を生成しない**。document-only は明示の route / status にする
+2. `BehaviorBatch`: **active registry の型検査を binding lookup より前**に置く。active scene の unbound object への behavior add は、ECS migration を同一 transaction で行うか、
+   名前付き `runtime_binding_missing@1` で拒否する(どちらにしたかと理由を報告)。journal-only 経路(inactive scene の undo)も同じ検査を通す
+3. pending attachment の rollback: `PreparedBehaviorSceneReconciliation` と同様に **旧 vector / sequence / params を保持する token** にし、publish 後も完全に逆操作できる
+4. set route の participant 欠落は **participant 名を含む名前付きエラー**(lifecycle と同じ code 系)。headless / document-only を許すなら null pointer ではなく context / route で明示
+5. route matrix の期待値を **独立した literal oracle**(component 名 → route の表をテストに直書き)にし、同一テスト内で **正しい policy と故意に誤った policy の結果差**を検査する。
+   production acceptance に camera / light / collider / behavior route の**実 participant 解決値**を足す(route を 1 つ無効化するとそれぞれ落ちる)
+6. `raytracing_rt3_1_production_test`(実 `RpcServer` を直接生成)を **`PELICAN_WITH_RPC` で guard**(RPC OFF では stub に ctor が無い。[test/CMakeLists.txt:1262](../test/CMakeLists.txt#L1262))
+
+#### 受け入れ(§4 規約 10)
+
+- **後退の対照**: `main` に active behavior、`secondary` に behavior 無しの prefab instance `P`。`set_prefab_parameter(P, …)` 後に **`main` の attachment が全部残り active**
+  (今日 = 全削除)。document は `secondary` 側だけ変わる。同じテストで `secondary` を active にして同じ編集をすると runtime にも反映
+- **型検査の順序**: light-only object(出荷 example の `BlueSpot` を production fixture で読む)へ未登録型 → `behavior_type_unknown@1`。登録済み型 → 2 の裁定どおり(migration か `runtime_binding_missing@1`)。
+  型検査を binding lookup の後ろへ戻す変異で落ちる
+- **rollback**: DLL 不在 + binding 済み object に behavior add + `AfterPublication` fault → attachment が消え、**同一 process で再試行が成功**(今日 = `identity is already live`)
+- **participant 欠落**: `{ecs, component_info}` だけの modules で `set_component_value(simplemodelview)` → 名前付きエラー(今日 = 黙って成功)
+- **oracle**: policy を故意に誤らせた側が literal 表と食い違って落ちる。route 無効化 × 4(camera / light / collider / behavior)がそれぞれ production acceptance で落ちる
+- `PELICAN_WITH_RPC=OFF` で configure + build が通る(今日 = link error)
+- 出荷 4 project の bytes 不変 / golden 不変 / 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成 / GPU は統合側で直列
+
+#### やらないこと・台帳に残すだけ
+
+- レビュー #3(設定 DLL が起動時に無く、後から不適合 DLL が現れた reload で旧 runtime を再構築しない: [gamelogicreload.cpp:184](../src/core/gamelogic/gamelogicreload.cpp#L184) が
+  `active == null` のとき behavior sources を検証しない)は **WP381 / WP380 の loader 領域**。既知欠陥として記録
+- レビュー #6(generation guard が production で自己充足し、内部不整合を `schema_violation` に分類)は **WP378(E-0a)の内部 / 利用者エラー分類**で扱う。記録のみ
 ### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
 
 **§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
