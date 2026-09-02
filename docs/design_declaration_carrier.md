@@ -187,3 +187,98 @@ CARRIER-1 = C-1 + C-2 + C-3 + 決定 9'(改名) を 1 出荷単位、消費者 =
 CARRIER-2 = Studio 汎用 UI(design_studio_component_ui。core RPC 2 本の上)
 ```
 CARRIER-1 は大きい。**仕様レビューで分割案が出たら、C-1+C-2(消費者: 名指しの behavior list)と C-3 に割る**ことを許す。
+
+
+## 7. 設計レビュー第 2 巡(9 件・破綻 3)と v3 —— **v3 が最終。設計段は 3 巡で打ち切る**
+
+**v3 が本文書の正。§6 の決定 1'〜12' は v3 の修正を受ける。残余は各 WP の仕様レビューで受ける。**
+
+### 修正 1(#1): `occurrence_id` の **byte 仕様と版**を定める。粗い fingerprint を identity にしない
+
+v2 の式は **node occurrence identity を含まず**(同一 mesh/primitive を 2 node が参照すると同値)、世代間 alias も検出できない。
+```
+occurrence_id v1 = H( canonical_logical_asset_identity   // 宣言名でも URI でもなく、project の asset 表の canonical key
+                     , stable_node_occurrence_identity    // glTF: node index + parent path。無ければ順序付き content digest
+                     , stable_primitive_identity          // primitive index(+ extras の id があればそれ)
+                     , semantic_variant_tag
+                     , normalized_full_content_digest )   // source identity が無い場合のみ。頂点配置・topology まで含む
+```
+- 粗い fingerprint(頂点数・bounds)は**候補絞りにのみ**使い、identity にしない
+- 衝突エラーは**同じ ID になった両方**の node path / mesh / primitive / material / variant を載せる
+- **model 差し替え後の旧 key は `OccurrenceAbsent`**(修正 8)。世代間 alias は full-content digest で潰す
+
+### 修正 2(#2): **RT3 row schema を先に仕様化**する。`Flags<Vocabulary>` を scalar leaf に足す
+
+「RT3 は仕様化済み」は誤り。RT3 v4 は固定 leaf の component + material 規則であり、**row list の意味論は未定義**だった。
+- 代数に **`Flags<EnumVocabulary>`** を scalar leaf として追加(flag 集合を list にしない → list の list を回避)
+- RT3 row: `{ occurrence_id(required), mask?: U8, instance_flags?: Flags<InstanceFlag>, custom_index?: U24 }`
+  (`geometry_flags` は **row で上書きしない** —— geometry 粒度は material 規則のまま)
+- **field ごとの優先順位**: `defaults < material rule(geometry_flags のみ) < object-level ray_instance < occurrence row`。
+  row で未指定の field は **object-level を継承**(schema default に戻さない)
+- **flags の合成則は「置換」**(和集合・差分にしない。宣言した集合がそのまま実効値)
+- authored absent と明示 default の runtime 意味は**同じ**(presence は編集 / undo のためだけに保持)
+
+### 修正 3(#3): 旧 DLL は **ロード前**に弾く。SDK v2 は static initializer を廃止する
+
+C descriptor が DLL 内にある限り、`LoadLibrary` 時点で旧 static initializer が先に走る。
+1. **ABI / version を実行せずに読める場所**(sidecar `*.abi.json` か PE/ELF section)に置き、**ロード前に検証**
+2. **SDK v2 は host state を変える static initializer を全廃**(Behavior だけでなく system / event / component も)し、
+   **単一の explicit registration entrypoint** に集約
+3. 候補登録は**一時 registry** に行い、全検証成功時だけ live registry と**原子的に交換**
+4. 旧 DLL の検査を隔離する必要があれば helper process
+これは **GLABI-2**(修正 9)として独立 WP にする。
+
+### 修正 4(#4): `row_id` は **versioned な row envelope** に書く。raw と typed を分離する
+
+scene save は `raw_document.dump()` そのもの。hidden ID は「row に書く(bytes が変わる)」か「side table(再起動で失う)」の二択だった。
+- **row envelope**: `{ "$row": { "id": …, "v": 1 }, …authored fields… }`。metadata と authored value を分離
+- **raw authored tree と typed materialized value を別に保持**(今の Behavior 編集は materialize → 全 field 再 encode で
+  authored presence を失う: [editorjournal.cpp:232](../src/core/communication/editorjournal.cpp#L232))
+- `row_id` は **document 内の決定的 allocator**(時計・乱数を使わない)。**list insert 時にのみ書く**。load / save だけでは migration しない
+- duplicate / invalid ID は名前付き拒否。copy / paste は再採番。insert 応答で生成 ID を返す
+- 出荷 4 project に list row は無いので bytes 不変は達成可能(ただし効能の対照にはならない)
+
+### 修正 5(#5): offline は **build 時の schema manifest**。RPC では閉じない
+
+`component_schema_catalog` は登録済み runtime にしか無い。offline Studio(player / core / game DLL 非起動)には届かない。
+- **build 時に ABI / version / fingerprint 付き schema manifest を生成**し、**project closure に保存**
+- online catalog と manifest の fingerprint が違えば **drift を名前付きで表示**(黙って片方を使わない)
+- Studio 設計の S-2 はこの manifest を消費者とする(それが無ければ S-2 は起票しない、は据え置き)
+
+### 修正 6(#6): 改名は **migration matrix**。自動移行は「builtin と証明できる」場合だけ
+
+scene JSON の component 名に owner が無く、builtin の旧 `ray_instance` と外部 `ray_instance` を区別できない。
+| 判定 | 動作 |
+|---|---|
+| project / layout version から **builtin と証明できる**旧名 | `pelican_ray_instance` へ移行(save 時 canonical) |
+| 外部 owner が登録している旧名 | そのまま |
+| 判定不能 | **`RayInstanceMigrationAmbiguous@1`**(load を止める) |
+- RPC / catalog / error payload は **alias 期間**中は旧名を受理し、save は canonical name
+- 旧名の hardcode(`predefined.cpp:35` / `componentcodec.cpp:1069` / loader / registry)を**全部**列挙して移す
+- `pelican_*` を既に使う外部 component のエラーには owner / module を含める
+これは **RAY-NAMESPACE**(修正 9)として独立 WP。**CARRIER-1 へ無条件に含めない**(v2 決定 9' を訂正)
+
+### 修正 7(#7): **ID-B(scene transaction)を hard prerequisite** にする
+
+「GPU 書き込み前検証」だけでは model publish / AS rebuild の失敗で旧新混在が残る。候補 document・catalog・occurrence map・
+AS plan を **side state で構築し、全成功後に generation 単位で 1 回だけ publish**。これは identity 設計 v3 の ID-B そのもの。
+
+### 修正 8(#8): エラー契約に **absent と運用診断**を足す
+
+- **`OccurrenceResolutionErrorCode`**(resolver 専用): `OccurrenceAbsent{row_id, occurrence_id, last_known_provenance}` /
+  `AmbiguousOccurrence{occurrence_id, candidates[]}` / `OccurrenceNotRayTraced{reason}`
+- inventory entry に **display name / asset / node path / mesh・primitive / material / variant / eligibility reason**
+- 受け入れ: off → on だけでなく、**row 削除後の on → off**、**active mapping が現存 row と完全一致**を同じテストで
+
+### 修正 9(#9): **5 つに分ける**。CARRIER-1 は 1 WP ではない
+
+| WP | 内容 | 単独価値 |
+|---|---|---|
+| **GLABI-2** | pre-load ABI negotiation、explicit transactional registration、旧 DLL の名前付き拒否 | **あり**(今日は旧 DLL が UB で落ちる) |
+| **RAY-NAMESPACE** | `pelican_ray_instance` migration matrix、owner-aware reservation | **あり**(WP374 後追い負債) |
+| **CARRIER-SCHEMA-TX** | 再帰 schema / wire / fingerprint、row envelope、presence、`row_id` 編集(insert / remove / CAS) | **実在する production Behavior consumer を名指しできない限り単独出荷しない** |
+| **CARRIER-RT3** | occurrence identity / inventory、RT3 row schema、field 別 resolution、model reload / AS / GPU 受け入れ | SCHEMA-TX と**同じ enablement gate**(review / 実装 / rollback は分ける) |
+| **CARRIER-STUDIO** | online catalog UI + offline manifest(design_studio_component_ui) | RT3 の後 |
+
+順序: **GLABI-2 → RAY-NAMESPACE → (ID-B) → CARRIER-SCHEMA-TX + CARRIER-RT3 → CARRIER-STUDIO**。
+**最初に起票するのは GLABI-2**(前提が無く、既存欠陥を直す)。
