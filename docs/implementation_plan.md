@@ -19624,3 +19624,144 @@ WP372b / WP374(×2)で「本番の分岐を消しても全数緑」が実際に�
 - **E2 の前提条件**: destroy が入ると、参照先が消えた unpack の undo が
   `PrefabObjectRefUnresolved` で落ちる(WP372b v3 差分 8 の撤回の前提が消える)
 - **version gate(#8)の監視**: v1↔v2 の hot reload 拒否がイテレーションを縛ったら改名案へ
+
+
+#### WP375 仕様レビュー第 1 巡(8 件・破綻 3)と v2 —— **plan と materialize を分ける**
+
+**v2 が本節の正。v1 の §1・§2 と受け入れは v2 で置換される。**
+
+**自分の誤りを先に書く**: 「`executeEditorProjection` は `modules.renderer` に触らないので
+GPU 無しで呼べる」は誤り。触る 10 module のうち **`PolygonInstanceContainer` と
+`LightContainer` は ctor で Vulkan resource を確保する**
+([polygoninstancecontainer.cpp:223](../src/core/renderer/polygoninstancecontainer.cpp#L223)、
+[lightcontainer.cpp:206](../src/core/light/lightcontainer.cpp#L206))。
+「renderer を直接読まない」と「GPU resource を要求しない」は別だった。
+また本番 commit の target を preview 専用の `EphemeralEditorProjectionTarget` と書いていた
+(正しくは `ProjectBasicConfigProjectionTarget`:
+[editorruntimefactory.cpp:1110](../src/core/communication/editorruntimefactory.cpp#L1110))。
+
+##### 実測(v2 を書く前に数えたもの)
+
+- **adapter の ctor は参照を保持するだけ**で module を触らない(全 6 種の ctor 本体を確認。
+  `Impl` の aggregate 初期化のみ)。Vulkan の費用は **module の構築側**にある
+- Vulkan を ctor で取る module は **`PolygonInstanceContainer` と `LightContainer` の 2 つだけ**。
+  `ECSCore` / `BehaviorAttachmentArena` / `ProjectBasicConfig` / `PathResolver` /
+  `ComponentInfoManager` は既に CPU テストが `GET_MODULE` で構築している
+- `EditorProjectionFaultInjector` は transaction の ctor 引数 1 本でしか流れない
+  ([editorprojectiontransaction.hpp:289](../src/core/loader/editorprojectiontransaction.hpp#L289))。
+  seam は**ポインタを転送するだけ**でよい
+- preview executor は 39 行の**第二の分類器**(`transform` / `light` だけを許す:
+  [editorruntimefactory.cpp:794](../src/core/communication/editorruntimefactory.cpp#L794))。
+  `.execute_preview` の注入は 3 箇所
+- 未知 op は **実 RPC では `prepareRpcOperation` が `method_unavailable` で先に拒否**する
+  ([editorjournal.cpp:1613](../src/core/communication/editorjournal.cpp#L1613))。
+  「adapter 0 個で commit」は内部で捏造した request でしか起きない
+
+##### 決定 1(#2・破綻): seam を **plan(純粋)と materialize(module 束縛)に分ける**
+
+このセッションで実際に出た 3 つの穴(写像の dict insert / invalidation の route /
+preflight の呼び出し)は**すべて分類・routing の欠陥**であり、adapter の中身ではない。
+**分類を純粋関数に切り出せば、GPU 無しで穴を検出できる。**
+
+```
+planEditorProjection(request, target.projectionState(), context) → EditorProjectionPlan   // 純粋
+materializeEditorProjection(plan, modules, target, fault_injector?) → EditorProjectionResult // 束縛 + commit
+```
+
+- **`EditorProjectionPlan`** は typed: どの adapter 種別を、どの scene / object に、
+  どの mode で作るか。lifecycle edit・behavior edit・origin transition・availability を含む。
+  **JSON ではなく struct**(比較可能・決定的)
+- **`context`** は immutable: `{active_scene_id, behavior_availability, mode}`。
+  今は `configuredGameLogicStatus()` が ambient global を読んでいる
+  ([editorruntimefactory.cpp:856](../src/core/communication/editorruntimefactory.cpp#L856))。
+  **本番の context factory を 1 つ**作り、受け入れもそれを通す
+- **plan の入力は `target.projectionState()` に統一**する(#3)。
+  今は route planner が `modules.project_config.resolvedScene()` を読み、transaction は
+  target を読むので、**分類元と commit 先が食い違い得る**。`project_config` /
+  `scene_loader` を plan から外す
+- materialize は module 参照を受けて adapter を作り transaction を commit する。
+  **`PolygonInstanceContainer` / `LightContainer` を要する adapter は GPU テストでのみ
+  materialize**。CPU テストは plan の検証と、CPU module だけの materialize(ECS / arena /
+  physics / camera)を行う
+
+##### 決定 2(#1): 本番 target は `ProjectBasicConfigProjectionTarget`
+
+`.execute` は `ProjectBasicConfigProjectionTarget`、`.execute_preview` だけが
+`EphemeralEditorProjectionTarget`。**target を Ephemeral に替える変異で
+save → fresh reload の受け入れが落ちる**ことを対照にする。
+
+##### 決定 3(#7): preview は **mode** であって第二の executor ではない
+
+`planEditorProjection` に `mode ∈ {Committed, Preview}` を持たせ、preview の許可
+component(`transform` / `light`)と restore semantics は **mode ごとの exhaustive policy**
+にする。`executeEditorPreview` の分類器は消す。`.execute_preview` の 3 注入も棚卸し対象。
+
+##### 決定 4(#8): 分類表は **codec が宣言する** —— executor に component 名を並べない
+
+executor の component 名分岐([editorruntimefactory.cpp:916](../src/core/communication/editorruntimefactory.cpp#L916))は
+**codec 登録表([componentcodec.cpp:901](../src/core/loader/componentcodec.cpp#L901))と別の第二 registry**である。
+WP374 の `ray_instance` はまさに**両方に追記**していた。
+
+- `ComponentCodec` に typed **`EditorProjectionPolicy`** を持たせる:
+  `TransformClosure / RendererModel / EcsCodec / Camera / Light / Collider`
+- planner は component 名を再列挙せず、**codec の policy から plan を作る**
+- 受け入れは **`componentCodecs()` の全要素**について set / add / remove の
+  実 runtime 値と、同一テスト内の無効側を検査する。**codec を足して policy を忘れると
+  コンパイルか登録で落ちる**(既定値を持たせない)
+
+##### 決定 5(#6): 未知 op は **typed variant + exhaustive visit**
+
+- preparation / replay / executor が同じ **`EditorCanonicalOperation` variant** を共有し、
+  planner は `std::visit` を exhaustive にする(新 op を足して分岐を忘れるとコンパイルで落ちる)
+- 未知の wire op は**既存の入口で 1 度だけ**拒否する(`method_unavailable`。現行どおり)
+- seam 側の防御的拒否は **unit invariant** であり、本番変異には数えない
+- v1 の `editor_projection_unknown_operation@1` は**作らない**
+
+##### 決定 6(#4・#5): 17 箇所(edit 14 + preview 3)を **4 種に分類**して置換する
+
+| 種類 | 扱い | 例 |
+|---|---|---|
+| **production acceptance** | 本番の plan + materialize を呼ぶ。**受け入れとして数えるのはこれだけ** | WP372a/b/374 の実 RPC テスト |
+| **coordinator / UI 単体** | fake executor 可。**本番受け入れとして数えない**と節に明記 | `editorjournal_test` の `RuntimeMirrorAdapter` と lifecycle trace |
+| **fault matrix** | 既存の `EditorProjectionFaultInjector` を seam が**そのまま転送**(adapter 集合は変えない) | WP361 / WP372a の AfterPublication |
+| **observation** | read-only hook のみ | trace 文字列の検査 |
+
+- `EditorEditRuntimeDependencies.execute` の `std::function` は**残す**(coordinator 単体のため)。
+  ただし **本番組成では final な production executor を保持**し、注入を許さない
+- **受け入れの変異を差し替える**(v1 の「3 変異が赤」は 14 箇所の置換を証明しなかった):
+  1. `makeEditorRuntimeService` から seam 呼び出しを消す
+  2. 本番 target を Ephemeral に替える
+  3. 本番 context factory を消す(availability が ambient に戻る)
+  4. **各 production acceptance が、実際に解決した runtime 値と保存 document の両方**を検査
+
+##### 決定 7: 構成 matrix
+
+- `PELICAN_WITH_IMGUI=OFF` では `inspector_test` 自体が build されない
+  ([test/CMakeLists.txt:1107](../test/CMakeLists.txt#L1107))。
+  **IMGUI ON/OFF 両方で「存在する側の注入が全部 seam 経由」**を示す
+- `SKIP_DEVSTUDIO` 両構成 / 実 RPC テストは `PELICAN_WITH_RPC` 内(既存どおり)
+- `PELICAN_WITH_OPENXR` と `PELICAN_RUNTIME_SHADER_COMPILER` は executor 本文に分岐なし
+  (第 1 巡が確認)。コンパイルのみ
+
+##### 受け入れ(v1 を置換)
+
+- **plan の決定性**: 同じ request + projection state + context で **plan が byte 一致**
+  (JSON 経由でなく struct 比較)
+- **plan の網羅**: `componentCodecs()` の全要素 × set/add/remove で、plan が
+  codec の policy どおりの adapter 種別を出す。**policy を消すとコンパイルで落ちる**
+- **routing の穴 3 つ**(写像 dict insert / `ray_instance` invalidation / preflight)を
+  **plan の検証で検出**する —— それぞれ本番の plan から消す変異で落ちる。
+  **GPU 無しで**
+- **本番組成の変異 4 つ**(決定 6)がそれぞれ落ちる。実 RPC → edit → save → fresh reload
+- **production acceptance に分類した全テスト**が plan + materialize を呼び、
+  fake executor を使わない。coordinator 単体は節に列挙して**数えない**
+- **preview**: `mode = Preview` で `transform` / `light` 以外が名前付き拒否。
+  `executeEditorPreview` の分類器が消えている(消し忘れると preview 変異で落ちる)
+- 本番組成(`makeEditorRuntimeService` → RPC)経由の既存テストと golden が**不変**
+- 起票時に実測した全数を壊さない / 全数 2 回 / 決定 7 の matrix
+
+##### やらないこと(v1 から変更)
+
+`ResolvedSceneResolver` 直叩きの仕分け(WP376)/ override 型 `ForTesting` seam の棚卸し(WP377)/
+**`PolygonInstanceContainer` / `LightContainer` の CPU state 分離**(要るなら別設計。本 WP は
+GPU ラベルで materialize する)/ transaction・adapter の意味論の変更 / Studio。
