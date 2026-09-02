@@ -306,3 +306,88 @@ loader は `unordered_map<string, GameObjectId>` で parent を解決する([sce
 
 **ID-B(scene transaction)を最初に起票する** —— 既存欠陥を直し、ID-A の registry が無くても価値がある(第 2 巡が確認)。
 ID-A は WP375 の着地後(participant を足す先が要る)。
+
+
+## 9. 設計レビュー第 3 巡(6 件・破綻 3)と v4 —— **設計段は 3 巡で打ち切り。ID-B の WP 仕様レビューへ引き継ぐ**
+
+第 3 巡は不合格だが、**「起票可能にする最低修正」8 項目**を明示し、**ID-B を先に置く判断は成立し得る**と述べた。
+v4 はその 8 項目を 1:1 で閉じる差分。**これで設計段を終える。**
+
+### 修正 A(最低修正 1・2 / 欠陥 2): 原子性の保証対象を **engine-owned state / Pelican API** に限定する
+
+native C++ は context を使わず static 状態・filesystem・socket・thread を直接変える。**それは遮断不能**であり、保証しない。
+- **保証範囲**: Pelican が所有し **Pelican API を通じて変更される状態**(ECS / Physics / Light / Camera / Renderer / Behavior arena /
+  event queue / RNG / pending scene / audio voice / persistence の Pelican 経路)。**直接 I/O と DLL global は非保証**と明記
+- **`behavior.hpp` の layout / virtual surface は変えない**(WP155/162/167 の DLL 契約)。既存の `GameContext::*` と
+  event registerer の `__emit` が参照する **scoped transaction sink を下位層**に置く(旧 DLL のコードもその sink を通る)
+- **audio**: `playSound` は **provisional handle** を返し、read-your-writes(`isPlaying / stopSound` は provisional に効く)、
+  decode の同期 validation は行い、backend 再生は commit 後。commit 後の backend 失敗は通常の再生失敗として扱う
+- **persistence**: `setGameSettings` は transaction-local shadow、`saveSettings / saveData` は **commit 後に実 write**(例外は commit 時点)
+- rollback 中に呼ぶ逆順 `onDestroy` も **同じ sink の内側**
+- 受け入れ: **変更前ヘッダで作った実 DLL** が event / RNG / scene / audio / save を `onInit` で呼び throw する fixture
+
+### 修正 B(最低修正 3・4 / 欠陥 3): `PreparedSceneRuntime` は **scene 専用 executor**。state machine と participant 表を固定
+
+WP375 の adapter protocol(`prepare` のみ失敗可、`publish / rollback / finish` は `noexcept`、ECS は early publish)では
+「全 publish 後の activation 失敗で全 rollback」を表現できない。**WP375 を拡張せず、scene 専用の executor**にする(adapter は再利用)。
+
+```
+prepare              // 失敗可
+early_publish_ecs    // observer gate 内、inverse token 保持(WP375 と同じ)
+publish_candidates   // noexcept
+activate_behavior    // 失敗可 ← 新設。失敗で inverse token により全 rollback
+commit_metadata      // document / current_scene / active_authority。noexcept
+retire_old_state     // noexcept
+flush_effect_outbox  // event / audio / persistence の outbox。失敗契約は別途(通常の実行時失敗として扱い、rollback しない)
+finish               // noexcept
+```
+
+**participant 表**(prepare / publish / rollback / finish / retire の所有物を各行に):
+registry slot(**ID-B では未装着**。修正 D)/ ECS / Physics(`active_trigger_pairs` を含む)/ Light / Camera(active・controlled order・
+controller state)/ **Renderer・PolygonInstanceContainer(model instance)**/ **SeqPlayer / VatPlayer(playback)**/
+**transient model の retirement**/ Behavior arena / effect outbox(event / RNG / pending scene / audio / persistence)/
+**document・current scene・active authority**。
+実際の publish 順は現行 lifecycle adapter と同じ **renderer → ECS → Camera → Light → Physics**(v3 の順序は撤回)、
+その後に Behavior。
+
+### 修正 C(欠陥 1): **`name_ambiguous` を削除**する。エラーの優先順位を固定する
+
+衝突表の下では `{authority, name}` の候補は最大 1 件で、`name_ambiguous` は発生不能だった。
+- 結果型から削除。受け入れからも削除
+- 優先順位: **`stale_authority → wrong_domain → not_materialized → missing_capability`**(同一入力から実装が一意になる)
+
+### 修正 D(最低修正 5 / 欠陥 5): ID-B は **registry 未装着**で走る。ID-A が後から装着する
+
+- ID-B の participant graph では **registry slot を「未装着」**と明記。B の callback は**既存 API 用の candidate module view**
+  (transaction-local な module 参照)だけで走る。修正 1(v3)の「transaction-local registry」は **ID-A で装着**
+- したがって順序 **WP375 → ID-B → ID-A** は矛盾しない(第 3 巡の二択の前者)
+
+### 修正 E(欠陥 4): Studio wire contract に authority を通す
+
+- `pelican_project` に wire DTO: **`{run_nonce: string, scene_epoch: uint53, domain, object_id: uint53}`**
+- `scene_tree / get_components / pick / watch` は **active authority を返し**、Studio の cache key に含める
+  (今は `(scene_id, declaration_index)` + `scene_revision` だけ。game DLL reload は revision を変えず epoch を進めるので落ちる)
+- 同一接続中の authority 変更で再取得。`stale_authority` 時の **re-bind / selection clear** を定義
+- **run nonce は永続化しない**。golden の semantic comparison から明示除外
+- 受け入れ: **二プロセス fixture**(P1 で ref を取得し P2 の同一 scene / epoch / id に送って拒否)+
+  **同一プロセスの ABA**(失敗 candidate の authority が再利用されない)を**別々に**
+
+### 修正 F(最低修正 7・8 / 欠陥 6): 受け入れの書き直し
+
+- **同じ production fixture** で: A 成功 → **B 成功**(B の **実 event payload と順序・RNG 列・pending scene・audio handle / voice・
+  保存 bytes・renderer identity** を semantic snapshot)→ **C が同じ作用を行って throw** → 全 participant が **B の snapshot と一致**
+- **participant ごとの drop / bypass 変異**(aggregate bypass 1 個では不足)。各行 1 変異
+- registry の受け入れ(ID-A)は **WP375 route matrix の全行**で実値
+- compile 条件は `template<class T> concept HasNameObjectId = requires(T &x, std::string_view n) { x.objectId(n); };` の形で
+  4 API を個別に(非 dependent な `static_assert(!requires…)` は hard error になり得る)
+- 「pending 件数だけ」の比較は撤回(payload と順序)
+
+### 修正 G: 段割り(最終)
+
+```
+WP375(着地)→ ID-B(scene transaction。registry 未装着。修正 A・B・C・F)
+           → ID-A(型移設・registry 装着・WP375 participant・canonical adapter・修正 E の wire)
+           → ID-C(内部 consumer の ref 化)→ ID-D(public ref API + Animation V2、互換 release)→ ID-E(breaking release)→ rename WP
+```
+
+**ID-B の WP 仕様は本節を規範とし、仕様レビュー(2 巡 + 決定差分)で残余を受ける。**
