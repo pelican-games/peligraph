@@ -20830,10 +20830,10 @@ SceneLoadRequest = Borrowed{ const SceneProjectionState &committed }
 refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutator journal・audio・persistence(WP380b)/ registry 2 世代(ID-A)。
 
 **WP380a は仕様レビューを 2 巡で打ち切り、WP375 統合後に着手する。** 見積: 大(決定 11 の型変更が 5 call site に及ぶ)。
-### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾く(v2: ABI は import symbol の版。section・C ABI は撤回)
+### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾く(v3: epoch anchor + 入口改名。OS loader が強制、raw import 読みは診断)
 
 **§4 規則 11 上段(core の ABI・出荷 DLL の挙動が変わる)。設計レビュー済み(carrier §8 修正 γ)。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
-**規範は `docs/design_declaration_carrier.md` §8 補遺(修正 γ は撤回)。**下の **v2 差分が本節の正**。
+**規範は `docs/design_declaration_carrier.md` §8 補遺(修正 γ は撤回)。**下の **v3 差分が本節の正**(v2 の import 版方式を v3 で anchor 付きに確定)。
 **依存: WP379(統合後。component 登録 ingress を共有)。WP375 / WP380a とは独立。**
 
 #### 何が壊れているか(既存欠陥)
@@ -20993,3 +20993,80 @@ section・raw PE section reader・`build_id`・C entrypoint・descriptor wire・
 
 section / raw section・export reader / `build_id` / C entrypoint・descriptor wire / candidate registry staging(ID-A)/ provider 入口の改名 /
 validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の SHA-256 を使う)。
+
+#### WP381 仕様レビュー第 2 巡(不合格・10 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ)**
+
+「import symbol の版で OS が止める」中心判断は、**通常・直接・名前付き・非 weak の IAT import に限れば**支持された(壊せなかった項目)。
+落ちたのは (i) 全 DLL が必ず import する版付き symbol が無い、(ii) 否定対照が論理的に成立しない、(iii) stub の module 名と装飾名が実物と違う、の 3 点。
+仕分け: **直す 8**(#1 #2 #3 #4 #5 #7 #8 #9)/ **範囲から外す 2**(#6 ELF、#10 throw fixture)。
+
+##### 決定 7(#1 #9): **epoch anchor** を全 game DLL が import する。epoch は単調増加の scalar 1 箇所
+
+- `gamelogic_entry.cpp`([gamelogic_entry.cpp:11](../src/player/gamelogic_entry.cpp#L11))が **`pelican_game_logic_epoch_v<N>`**(C linkage、引数無し、
+  host の nonce を返す)を**通常 import で参照**する。`pelican_configure_game_logic_target` を通る DLL は登録ゼロでも必ずこれを import する
+- `gameLogicAbiVersion`([gamelogic.hpp:8](../src/core/userpublic/gamelogic.hpp#L8))= **SDK epoch**(単調増加、今回 2)。anchor 名は epoch から導出。
+  「入口世代の総和」は撤回。境界 struct の layout を変える WP は **epoch を 1 上げる**(入口ごとの版は持たない)
+- 今回だけ、既存 v1 DLL を止めるために **4 つの PELICAN_API 入口**(`__registerBehavior` / `__registerEvent` / `__emit` / `__registerSystem`)を
+  `pelican_register_behavior_v2` 等へ改名し旧名を消す(`__registerComponent` は `PELICAN_API` ではないので**入口に数えない**。#5)。
+  以後の epoch 昇格では改名せず anchor だけで止まる(旧 anchor を export しないため)
+- provider 入口(render 5 種 / vulkan / physics / animation の `getApiV1`)は改名しない。provider-only の v1 DLL は **anchor 不在の診断**で止める(決定 8)
+
+##### 決定 8(#2 #7): 保証範囲と診断の規則
+
+- **保証範囲**: SDK が生成する **通常・直接・名前付き・非 weak** の import。`/DELAYLOAD`・ordinal・`GetProcAddress`・依存 DLL 経由・`dlsym` は範囲外
+  (文書化。任意バイナリの無実行保証は helper process 隔離 = 将来 WP)
+- raw PE import reader は **top-level のみ**を読み、host module(`pelican_player.exe` / test EXE)への import について:
+  anchor `pelican_game_logic_epoch_v<N>` が **無い** → `GameLogicAbiStale{expected_epoch, found: absent | v<M>}` /
+  旧名 4 つのどれかがある → 同 code に `legacy_symbols[]` を載せる / host module への **delay-load・ordinal import** → `GameLogicAbiUnsupportedImport{kind}` /
+  読めない → `GameLogicAbiUnreadable{reason}`。すべて `LoadLibrary` を呼ばない
+- **`initialize()` に active があるときは reload 経路に委譲**(validate → teardown → swap)。active 無しでも raw 診断は `shutdown()` の前。
+  これで provider-only stale / architecture 不一致 / 依存欠落 / initializer 失敗のどれでも **active は残る**(post-load 失敗は reload 経路の既存 rollback)
+
+##### 決定 9(#3): stale fixture は **host EXE 名の v1 import stub + frozen header**。post-link で監査する
+
+- host module は `pelican_core.dll` ではなく **`pelican_player.exe` / 各 test EXE**([src/player/CMakeLists.txt:30](../src/player/CMakeLists.txt#L30))。
+  loader テストの EXE は 1 つなので、その EXE 名で **`lib /DEF:<v1.def> /NAME:<test exe>`** を生成する。`.def` は改名前の **MSVC 装飾名**
+  (`?__registerBehavior@UserBehaviorRegistererTemplatePublic@…`)を着手時に `dumpbin /exports` から採取してチェックイン
+- frozen header: `test/fixtures/userpublic_frozen/v1/`(着手時点の snapshot)。stale fixture は **専用 CMake 関数**(`pelican_configure_game_logic_target` を呼ばない)で、
+  include に現行 `userpublic` を入れず、現行 player / test host import library にもリンクしない
+- **post-link 監査**(テストとして登録): `/sourceDependencies` を canonicalize して現行 `src/core/userpublic` 配下が 0 件、`dumpbin /imports` 相当で
+  module 名と import symbol 集合が期待どおり、host EXE の export に旧名 4 つが **0 件**
+- 想定される OS error は **127**(procedure not found)であって 126 ではない(module は存在する)
+
+##### 決定 10(#4): 否定対照は **3 枝を同一テスト内**で
+
+1. 診断 ON・旧 export なし → `GameLogicAbiStale`、probe なし、active / generation / registry 不変
+2. **診断 OFF(reader の呼出を消す変異)**・旧 export なし → `GameLogicLoadFailed{os_code=127}`、probe なし(OS が止めた証拠)
+3. **同じ constructor を持つ v2 fixture**(anchor と現行入口を import)→ load 成功、constructor が **anchor の返す host nonce を呼出後に probe へ書く**。
+   probe の値が host の nonce と一致(= constructor が走り、入口が解決された証拠)
+- probe の置き場は **loaded module 自身のディレクトリ**(`GetModuleFileName`。loader は shadow copy を load するので `.pelican-hot-reload` の下)
+- 「host に旧 export を 1 本戻す」対照は撤回(reader が candidate の import を見る以上、host の export は結果に影響しない)
+
+##### 決定 11(#5): 入口ごとの stale fixture と、生成される inventory
+
+- 旧名 **4 つそれぞれを単独で import** する fixture 4 本(+ 決定 9 の behavior 本体 fixture、+ 決定 10 の v2 対照、+ 重複 key、+ 逆順 2 本 = **9 role**)。
+  reader の判定を 1 入口分だけ消す変異がそれぞれ落ちる
+- inventory は手書きせず **`PELICAN_GAME_DLL` target property** から生成し、`loader 対象` / `link-only`(`pelican_public_api_link_fixture`
+  [test/CMakeLists.txt:369](../test/CMakeLists.txt#L369))を分類。physics ON で 19 target
+- 出荷 4 project は `system_count` に加え、**各 DLL の import に anchor があり旧名が無い**ことを raw reader で検査(sprite_demo の event 入口も import 集合で観測)
+
+##### 決定 12(#8): RPC は **`error.data`** に構造化 code を置く
+
+- `reload_game_logic` の失敗は今どおり JSON-RPC error(数値 `error.code` と message 維持)。**`error.data = {error_code, error_fields}`**
+  ([jsonrpc.cpp:224](../src/project/jsonrpc.cpp#L224) の契約どおり)
+- `GameLogicReloadAttempt`([gamelogicreload.hpp:25](../src/core/gamelogic/gamelogicreload.hpp#L25))/ `RuntimeReloadResult` / `RuntimeParticipantStatus`
+  ([reloadservice.hpp:163](../src/core/watch/reloadservice.hpp#L163))に `error_code` / `error_fields` を足し、文字列から再推定しない
+- `get_status` は `participants.game_logic.error_code` / `.error_fields`。**次の成功で両方 clear**。受け入れは RPC wire で失敗応答 → `get_status` → 成功後 clear を同一テストで
+- `PELICAN_WITH_RPC` OFF もビルド(`rpcserver_stub.cpp`)
+
+##### 決定 13(#6 #10、裁定): ELF reader と throw fixture は範囲外
+
+- **ELF**: 本 WP は PE reader だけ。Linux は診断無しで OS enforcement(`RTLD_NOW`)のみ。GNU symbol version / `PT_DYNAMIC` の扱いは
+  Linux CI ができたときの WP(台帳の既知制限に記録)
+- **throw fixture**: C++ 例外が OS loader / CRT initializer 境界を越えた結果は OS 間で定義できない。fixture から外し、
+  「登録拒否(重複 key)」だけを post-load 失敗の対照にする
+
+##### 段割りと依存(v3)
+
+依存: **WP379 統合後**(component 登録 ingress は触らないが、同じ test EXE / fixture 系列を触る)。仕様レビューは 2 巡で打ち切り。
+見積: **中〜大**(anchor + 4 入口改名 + reader + `initialize()` 順序 + fixture 9 role + RPC data + 監査テスト)。
