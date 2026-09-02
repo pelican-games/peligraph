@@ -20303,3 +20303,13 @@ resolver 単体・オラクル・downstream fixture の移設 / 手製 double �
 
 順序は計画どおり WP375 → WP376 → WP377 → identity / 例外契約 → 担体 → Studio。
 **S-1 は前提が無いので、WP377 の後に前倒しできる**(`ray_instance` を Studio から足せない状態を早く終える)。
+
+#### 設計レビューが見つけた既存欠陥 2 件(2026-09-02。WP 化の所在)
+
+| 欠陥 | 本番入力での再現 | 所在 |
+|---|---|---|
+| **resident な opaque BLAS が profile 検査を素通りする** —— `recordFrame` の reuse `continue` が `validateRayProfileAccelerationStructureFlags` より前([accelerationstructure.cpp:859](../src/core/renderer/accelerationstructure.cpp#L859)・:879) | layout v2 で `geometry_flags:["opaque"]` を render → flags を変えず `portable_profile` だけ hot reload → `ray_profile_opaque_as@1` が出ない | **WP377 v2 決定 1**(実装中) |
+| **scene load の publish 途中で失敗すると世代が混在する** —— runtime clear 直後に Light/Camera を publish し、behavior activate が投げても旧 prepared state を戻さない([scene.cpp:369](../src/core/loader/scene.cpp#L369)・:546・:584)。snapshot import も runtime を reload しない([basicconfig.cpp:734](../src/core/loader/basicconfig.cpp#L734)) | scene A 稼働中に snapshot B を import し B の behavior `onInit` が投げる → document は A、Light/Camera は B、ECS は途中 | **object identity 設計 v2 の ID-1**(scene-runtime transaction) |
+
+どちらも「機能を足そうとして、足す先の本番経路を読んだら見つかった」もの。
+テスト品質計画の主張(受け入れが本番経路を通っていない)の傍証である。

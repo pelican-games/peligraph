@@ -95,3 +95,108 @@ Studio の変更。
 (3) Light の 6 map が本当に重複か。3 種の `*_names` と `m_*NameMap` の役割の違い
 (4) Physics の query hit が名前を返す契約は利用者向け API か
 (5) ID-1 が単独で有用か(rename 無しで何が良くなるか)
+
+
+## 6. 設計レビュー第 1 巡(8 件・破綻 4)と v2
+
+**v2 が本文書の正。§2 決定 1〜5・§3 受け入れは v2 で置換される。§1 の実測は次の訂正を受ける。**
+
+訂正(第 1 巡が壊した実測):
+- 名前で object を引く公開 API は 3 つではなく **4 つ**(`applyObjectTransform(std::string_view, …)` が漏れていた:
+  [scene.hpp:72](../src/core/loader/scene.hpp#L72))
+- Light の 6 map は**重複ではない**。staged な `PreparedLoad` の 3 種と live な `m_*NameMap` の 3 種で、
+  snapshot / publish / rollback の旧・新 state([lightcontainer.cpp:294](../src/core/light/lightcontainer.cpp#L294))。
+  「6 → 3 に減る」は撤回
+- `SceneLoader` の `string_view` API は配布 DLL の主公開面ではないが、**`GameContext` の Light / Physics / Camera の
+  名前 API、Animation V1 ABI の `object_name`、Physics の `ColliderIdentity` の名前は配布対象**
+  ([gamecontext.hpp:22](../src/core/userpublic/gamecontext.hpp#L22)、[abi_v1.hpp:299](../src/core/userpublic/animation/abi_v1.hpp#L299)、
+  [physquery.hpp:52](../src/core/phys/physquery.hpp#L52))
+- **全 authored object が `GameObjectId` を持つわけではない**(light-only object は ECS 化前に別経路:
+  [scene.cpp:211](../src/core/loader/scene.cpp#L211))
+
+### 決定 1'(#1): `ObjectRef` は **authority つき**。文書ローカル ID の薄いラッパーにしない
+
+scene A と B の先頭 object はどちらも `AuthoringObjectId{1}` になり得る。ID の値だけでは
+「同じ ID の別 authority」と「同一 object」を区別できず、誤参照の軸が名前から整数へ移るだけだった。
+
+```
+ObjectRef { authority: AuthoringAuthorityId(= load 世代。runtime_scene_epoch で可), id: AuthoringObjectId }
+```
+- snapshot import・別 scene load 後は旧 authority の ref を **`stale_authority`** で名前付き拒否
+- 受け入れ: A の ref を B の load 後に使うと `stale_authority`(今日は同じ整数で別物を引く = 対照)
+
+### 決定 2'(#3): 参照は **2 種類**。authored と transient を型で分け、両方を受ける所だけ tagged union
+
+transient glTF(`load_gltf`)、free camera、static collider、Animation の runtime 登録は **authoring ID を持たない**。
+- `AuthoredObjectRef`(決定 1')と `TransientObjectRef`(runtime 採番 + 同じ authority)
+- 中央 registry の値は **`optional<GameObjectId>` + capability 集合**(`transform / light / camera / physics / …`)。
+  light-only object を格納できる
+- 両方を扱う API だけ `AnyObjectRef = variant<Authored, Transient>`
+
+### 決定 3'(#2): **順序を逆転する**。consumer と ABI を先に、`string` API の削除は最後
+
+ID-1「`string_view` API を削除」は単独では成立しない —— controller は毎フレーム `std::string target` を解決し、
+Animation V1 も任意時点で `object_name` を渡す。削除すればビルドが壊れるか、consumer から `resolveObjectName` を
+呼ばせて「load / RPC 限定」を破るかの二択だった。
+
+| 段 | 内容(改) | 単独の価値 |
+|---|---|---|
+| **ID-0** | `ObjectRef`(authority つき)と registry(capability・`optional<GameObjectId>`)の**追加**。名前 API は残す | registry が存在し、名前 → ref の変換が **1 関数**になる(まだ呼び出し側は名前でよい) |
+| **ID-1** | **scene load を 1 transaction 化**(決定 6')。registry / Light / Camera / Physics / Animation・controller state を prepare → publish、失敗で旧 snapshot へ復帰 | **既存欠陥の修正**(第 1 巡 #7): 今日は publish 途中の失敗で世代が混在する |
+| **ID-2** | consumer を ref へ: controller の target、Animation の sink、projection adapter の `old_by_name`、camera の active / controlled order / controller state、Physics の identity | 名前 join が**全部**消える(map だけでなく selection / cache / rollback 保持まで) |
+| **ID-3** | 公開面: `GameContext` に ref 版を追加、名前版は**互換 adapter として 1 バージョン残す**。Animation は **V2 descriptor**(V1 の layout 不変)。Physics hit は既存型不変 + 別型 | 旧 DLL を壊さない移行 |
+| **ID-4** | 内部 `string` API 4 つの削除(negative compile は**全公開 operation の name overload 不在**を同一テストで) | 新しい解決者がコンパイルで弾かれる |
+
+### 決定 4'(#4): 棚卸しは map ではなく **join・selection・state cache・rollback 保持**
+
+第 1 巡が挙げた残り: `active_camera_name` / `controlled_scene_camera_order` / controller state の名前 key
+([camera.hpp:59](../src/core/renderer/camera.hpp#L59))、projection adapter の `old_by_name`
+([editorprojectionadapters.cpp:397](../src/core/loader/editorprojectionadapters.cpp#L397)。rename すると旧 collider の identity 継承に失敗し新規扱い)。
+ID-2 の対象表はこれらを**全部**含める。projection adapter には **authored owner ref を渡す**。
+
+### 決定 5'(#5): 公開 DLL 面の互換
+
+- `ObjectRef` の公開型は **userpublic の中立 header**に置く(loader の内部 header ではない)。Studio 向け wire DTO は project / RPC 層
+- ABI v1 は上げない。旧ヘッダで作った client と(可能なら)prebuilt DLL、export-symbol manifest で互換試験
+- 出荷 example(`playercontrol.cpp:31`)の名前呼び出しは互換 adapter で動き続ける
+
+### 決定 6'(#7): **scene load の transactional publish**(既存欠陥)
+
+loader は runtime を clear した直後に Light / Camera を publish し、その後 behavior を activate する。
+`onInit` が投げると catch は `clearRuntimeScene()` するが Light / Camera の旧 prepared state を戻さない
+([scene.cpp:369](../src/core/loader/scene.cpp#L369)・:546・:584)。snapshot import も document は戻すが runtime を reload しない
+([basicconfig.cpp:734](../src/core/loader/basicconfig.cpp#L734))。**document は A、Light / Camera は B、ECS は途中**という世代混在が今日成立する。
+
+ID-1 として、registry・Light・Camera・Physics・Animation / controller state を **1 つの scene-runtime transaction**で
+prepare / publish し、publish 後の例外では**全 state を旧 prepared snapshot へ戻す**。
+台帳の「single production executor seam」「rollback primitive」(WP372a の scene reconciler)と同じ形を loader に置く。
+受け入れ: B の behavior `onInit` を投げさせ、**Light / Camera / ECS / document が全部 A のまま**(今日は混在 = 対照)
+
+### 決定 7'(#8): 結果型と capability
+
+`ObjectRef` の解決は名前付き結果: `stale_authority / inactive_scene / wrong_domain(authored↔transient) /
+not_materialized / missing_capability / name_ambiguous`。エラーは operation・ref の authority・要求 capability を持つ。
+削除は **registry の全 index を purge**(fan-out を規定)。
+
+### 決定 8'(#6): 受け入れの差し替え
+
+| v1 の条件 | 問題 | v2 |
+|---|---|---|
+| `objectId("Chair")` の negative compile | 4 つ目の API と resolver 合成を検出しない | **全公開 operation の name overload 不在**を同一 compile test で |
+| `set_component_value` が従来どおり | 通常の対象は数値 `object_id`。何を検査するか不明 | 削除 |
+| A/B 同名 Chair が「今日は混ざる」 | 今日は load ごとに runtime を clear し prepared state を swap するので**混ざらない**(誤対照) | 決定 1' の `stale_authority` 対照へ |
+| authored / transient `New` の衝突 | transform 付き authored は今日も拒否 | **light-only authored `New`** と transient `New` の衝突(今日は素通り)を対照に |
+| controller の「rename 相当 key 更新」 | 本物の rename を通らない代理条件 | **production の rename command**(ID-4 の後の rename WP)で ID 不変・target 継続 |
+
+### 決定 9': rename WP は **ID-4 の後**。本文書の範囲外のまま
+
+## 7. v2 の受け入れの骨(各段)
+
+- **ID-0**: 名前 → ref の変換関数が 1 つ。registry が light-only object を capability つきで持つ
+- **ID-1**: `onInit` 例外で全 state が旧 A に戻る(混在 = 対照)。snapshot import の失敗でも同じ
+- **ID-2**: rename 相当の key 更新なしに、`active_camera_name` 等の**名前文字列が code から消える**
+  (= 名前 join が無い証明は「名前を変えても選択が追随する」ではなく、「名前が identity として読まれる箇所が 0」を
+  ref 化した consumer の変異(ref を名前に戻す)が失敗することで示す)
+- **ID-3**: 旧ヘッダの client が link し動く。V1 layout の static_assert
+- **ID-4**: negative compile(全 name overload)。`stale_authority` / `wrong_domain` / `missing_capability` の各名前付き結果
+- 全段: 出荷 4 project の bytes 不変、golden 不変、全数を壊さない、D0(型の配置を明記)
