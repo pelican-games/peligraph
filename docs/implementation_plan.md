@@ -20141,6 +20141,24 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
   label を落とす変異・guard を広げる変異で contract test が落ちる
 - **teardown**: 変異 P1 相当(Preview の DocumentOnly を外す)を当てて REQUIRE が落ちても **MSVC assertion が出ず** process が正常終了(統合側で確認)
 - 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成 / RPC ON/OFF / 出荷 4 project bytes 不変 / golden 不変 / GPU は統合側で直列
+
+
+#### WP375c 完了記録(統合側。2026-09-03、`25d2f967`)
+
+- **実装(codex sol、fast 無し。段は本来「中段」で足りた)**: lifecycle preview の判定を inactive `DocumentOnly` shortcut より前に置き、inactive の add / remove / reparent preview を
+  `editor_preview_unsupported@1` で拒否。forced abort の restore 失敗は `EditorPreviewAbortError`(`editor_preview_forced_abort_failed@1`)として伝播し reload / replay / load_scene が無視しない。
+  preview commit 失敗時は committed runtime を restore してから lease を解放。journal の identity は object ID + authored component occurrence / type / origin(canonical witness)。
+  正当な再解決では handle と現在 sequence の両方を更新、`attachment_seq` は位置情報として扱い integrity 判定に使わない、sequence 0 の bypass を廃止、resolver 不在は named reject。
+  production executable は RPC に関係なく `MIXED_GPU`、RPC guard は WP379 の RPC test 本体だけ、実 GPU 3 件に `[gpu]`、空 discovery の `*_NOT_BUILT` を防ぐラッパー、
+  ON / OFF の登録一覧・label・重複 0 を検査する `wp375c_ctest_inventory_contract`。production fixture の teardown を scope guard 化
+- **agent の検証**: 通常 / RPC OFF / `SKIP_DEVSTUDIO=OFF` の 3 構成 build、非 GPU 1230 / 1231(1 skip)、WP375c CPU 契約 7 / 7、inventory contract ON 1413 / OFF 1355(重複 0)
+- **統合側の検証(worktree)**: deps cache を main の `_deps` へ remap 後、非 GPU **1231 / 1231**、WP375 / WP379 / WP374a / WP377 系の GPU **45 / 45**
+- **統合側の変異(`mutation-runner` agent、opus)**: (1) preview 拒否の順序を戻す → 2 テスト赤 / (2a) 位置 sequence 比較を復活 → 「undo after destroy」赤、(0,0) は緑 /
+  (2b) witness 比較も無効化 → 両方赤(4 軸すべて) / (3) WP377 テストから `[gpu]` を外す → inventory contract 赤。残留 0。**MSVC の assertion dialog は出なかった**(teardown の scope guard)。
+  所見: (2a)/(2b) で 2 テストが直交していることを確認(位置 sequence の gate 復活と witness 欠落を別々に検出)。`prepareAdd` の `(handle == 0 || seq == 0)` → `handle == 0` の緩和だけは未検証
+- **main 取り込み**(`merge-resolver` agent、WP380a / WP381 / WP379a / WP380a-fix の後): 衝突 3 ファイル。editorjournal.cpp = WP375c の commit 失敗 try/catch の中に WP379a の `componentExists()` 引数を足す / rpcserver.cpp = WP381 の `configureGameLogicReloadRpcHandler` と WP378 の `loadSceneResolutionBoundary` の構造を取り、WP375c の `(void)` 除去を中に残す / test/CMakeLists.txt = RT3-1 production の `MIXED_GPU` 化に両側が独立に到達(main の comment + WP375c の literal)。auto-merge が壊した 1 件: WP375c の journal test harness が WP378 の値返し planner の reject を `(void)` で捨てていた → production の `rejectProjectionPlanFailure` と同じ形に修正(e031e201)。merge 後 非 GPU 1274 / 1274
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1598 / 1599**。赤 1 = WP334b の既知 -j flake(単独緑)。doclink 40 件追従、未解決 8 は WP379a の registerer.hpp anchor(docs-writer へ)
+- コードレビュー: 中段相当のため codex レビューは行わず、統合側変異 + Claude レビューで代替(節約運用)
 ### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
 
 **§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
