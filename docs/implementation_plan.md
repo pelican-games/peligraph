@@ -20430,7 +20430,14 @@ version gate は「外部 `ray_instance` を持つ project が layout v2 を有�
 - **全数**: worktree 1377 件(WP334b の 3 件が `-j4` 負荷で commit 待ちタイムアウト、単独再実行 10/10 緑)/
   統合後 main **1516 / 1516 緑**(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列)
 - `RayProfileAccelerationStructureFlagsOverrideForTesting` は payload・guard・thread_local・全読み取り点とも消えた。到達不能だった TLAS-geometry 検証も削除
-- 残: コードレビュー(§10)は WP375 統合後に投入
+- コードレビュー `rev377`: 実害 1(拒否世代の SBT 残留)+ 受け入れ弱化 3 → **WP377a** として起票・投入。#6(設計文書の「現状」表)は docs で処理
+- **構成 matrix(コードレビュー #5 の要求。統合側で取得、`d875e58b` 時点)**:
+  compile: OpenXR OFF / ImGui OFF / `SKIP_DEVSTUDIO=ON` とも **build 0 error**。compiler ON + GPU: 対象 case(`WP377 authored ray_instance force opaque …`)**非 SKIP で Passed**、
+  WP377 の 3 段 sequence(`WP369 production material alpha profile …` 内)は全数 1516 / 1526 に含まれ Passed。
+  **compiler OFF の全数: 1363 件中 29 失敗**。うち **4 件は WP375 の新 acceptance a〜d**(compiler OFF の分岐を持たない → WP375a で修正)。
+  残り **25 件は WP375 / WP377 が触らない GPU テスト**(`hybrid_v1 preset` / `WP218-219` / `WP238e` / `WP357a` / ray-query 群 / studio 系 …)で、
+  rendering config の load が GLSL source を要求して落ちる(`Shader defines and generated includes require GLSL source, not SPIR-V`)。
+  compiler OFF の基準値は台帳に無く「既存」は推定。**compiler OFF で GPU テストが guard されていない**のは suite の既知の穴として記録(WP 化は別途判断)
 
 ### WP377a: 拒否された世代の SBT が frame resources に残る(WP377 コードレビューの実害 1 件 + 受け入れ弱化 3 件)
 
