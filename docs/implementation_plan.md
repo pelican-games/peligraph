@@ -20341,6 +20341,42 @@ version gate は「外部 `ray_instance` を持つ project が layout v2 を有�
   統合後 main **1516 / 1516 緑**(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列)
 - `RayProfileAccelerationStructureFlagsOverrideForTesting` は payload・guard・thread_local・全読み取り点とも消えた。到達不能だった TLAS-geometry 検証も削除
 - 残: コードレビュー(§10)は WP375 統合後に投入
+
+### WP377a: 拒否された世代の SBT が frame resources に残る(WP377 コードレビューの実害 1 件 + 受け入れ弱化 3 件)
+
+**§4 規則 11 中段。コードレビューのみ(§10)。見積: 小。WP377 → 377a の 1 段で打ち切る(連鎖上限)。**
+**依存: なし(WP377 統合済み `8b216770`。WP375 と触るファイルが重ならない)。**
+
+#### 何が壊れているか(コードレビュー `rev377` が制御フローで確認。連続描画の破壊までは未確認)
+
+`renderer.render()` は **`recordFrame()` より前に** SBT を active slot に入れ([renderer.cpp:4751](../src/core/vkcore/renderer.cpp#L4751))、
+その後の BLAS 検証が throw する([accelerationstructure.cpp:840](../src/core/renderer/accelerationstructure.cpp#L840))。AS の commit は frame 成功後だけ
+([renderer.cpp:5570](../src/core/vkcore/renderer.cpp#L5570))なので runtime generation と AS は旧状態に戻るが、
+**`FrameResources` は拒否された profile-ON 側の SBT を保持したまま**、次の `beginLogicalFrame` まで reset されない([frameresources.cpp:417](../src/core/renderer/frameresources.cpp#L417))。
+WP377 のテストは throw 直後に終わり、この状態を検査していない([headless_render_test.cpp:12619](../test/headless_render_test.cpp#L12619))。
+
+#### 直すこと
+
+1. **SBT の activation を `recordFrame()` 成功後へ移す**(または例外時に旧 lease を復元する guard)。どちらを選んだかと理由を報告に書く
+2. **ON→ON・非 resident の負側**を production reload test に足す(レビュー #2): profile ON + material rule nonopaque で render → profile ON のまま同じ rule だけ
+   `geometry_flags:["opaque"]` に変更(新しい opaque key は非 resident)→ stage 成功後の render が **同じ名前付きエラー**で失敗。
+   正常側では resolved row と resident key が nonopaque であることを同じテスト内で検査
+3. **validator に数値 identity を渡し、違反時だけ診断文字列を作る**(レビュー #3。reuse fast path で毎 frame `std::to_string` していた)
+4. **RT oracle の境界テスト**(レビュー #4): WP377 が削った accepted seam 値 `0.00999` の代わりに、**production intersector で境界直下になる幾何**を作り、
+   返された `hit.t_interval` の実効相対幅が境界直下で**成功**することを検査する([raytracing_rt1a_test.cpp:2032](../test/raytracing_rt1a_test.cpp#L2032))。
+   上限を `1e-2` → `1e-3` に変えると落ちる(対照)
+
+#### 受け入れ(§4 規約 10)
+
+- **失敗直後の状態**: WP377 の ON→OFF→ON 系列で最終 render が失敗した直後に、**active SBT lease が旧世代のもの**、AS が旧、staged generation が破棄されている。
+  さらに**その次の frame が旧世代で正常に描ける**(golden 一致)。SBT 移動(1)を戻すと lease が新世代で落ちる
+- (2)(3)(4) の各対照: (2) reuse lookup の前の検証を「resident のときだけ」に変える変異で落ちる / (3) は挙動不変(全数緑)で、
+  validator の signature 変更が診断文字列を含むことをテストで検査**しない**(代理条件) / (4) 上限変更で落ちる
+- 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成 / 出荷 4 project bytes 不変 / golden 不変 / GPU は統合側で直列
+
+#### やらないこと
+
+レビュー #5(構成 matrix の証拠)は統合側で取る(WP377 完了記録に追記)。#6(設計文書の「現状」表)は docs で処理済み。
 ### WP378: E-0a —— 利用者データ拒否を「値」にする最初の縦切り(型 + 6 caller + camera + `get_components`)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
