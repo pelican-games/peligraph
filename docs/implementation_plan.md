@@ -21459,9 +21459,9 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 
 **再開後の投入順**(すべて仕様確定済み。台帳の各節の最終差分が正)
 1. `rev377a` / `rev375a`(コードレビュー。read-only)
-2. **WP379**(v3。改名 + owner policy)→ 統合後に **WP381**(v3。epoch anchor)
-3. **WP380a**(v3。state + engine-owned queue)—— WP379 と並列可(触るファイルが重ならない: planner / loader vs registry)
-4. **WP378**(v3。E-0a)—— WP375a 統合後
+2. **WP379**: 統合済み(`51841eb3`、2026-09-03)。→ **WP381**(v3。epoch anchor)は投入可
+3. **WP380a**(v3): 実装中(worktree `<作業ディレクトリ>/wp380a`)。WP375b(統合中)の後に統合
+4. **WP378**(v3。E-0a): WP375a 統合済みなので投入可(WP375b 統合後が安全: 同じ journal を触る)
 5. WP380b / CARRIER-RT3 / CARRIER-STUDIO は上の後に節を切り直す
 
 **既知の穴(WP 化は別途判断)**
