@@ -20102,3 +20102,5 @@ SKIP の意味論(device 無しで Catch `SKIP`)は保たれる。
 - worktree での最終確認: **1376/1376 緑(GPU 直列含む)**、WP374a は GPU 実行体に 6 本・非 GPU 0 本
 - 分離後の受け入れ: `raytracing_rt3_1_production_test`(`GPU` 登録)+ 共有 `raytracing_rt3_1_fixture.hpp`
 - 統合側の全数は merge 直後に別途実行して次行に記す
+- 統合側(main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1515/1515 緑**(1502 + WP374 7 + WP374a 6)。
+  基準値は **1515** に更新
