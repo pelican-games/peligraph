@@ -21358,3 +21358,22 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 
 依存: **WP379 統合後**(component 登録 ingress は触らないが、同じ test EXE / fixture 系列を触る)。仕様レビューは 2 巡で打ち切り。
 見積: **中〜大**(anchor + 4 入口改名 + reader + `initialize()` 順序 + fixture 9 role + RPC data + 監査テスト)。
+
+### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止、再開 2026-09-07 11:26)
+
+**統合済みで残っているもの**
+- WP377a(`a3f318fb`)のコードレビュー `rev377a`: 判定前に中断。**再投入**(観点は `<作業ディレクトリ>/rev377a.txt`)
+- WP375a: worktree `<作業ディレクトリ>/wp375a` で実装完了。統合側の検証(通常 build / 非 GPU / WP375 系 GPU / compiler OFF の acceptance)と致命後退の対照変異 F1 を Claude が実行中。
+  緑 / 赤なら **codex 無しで統合**し、コードレビュー `rev375a` は再開後に投入
+
+**再開後の投入順**(すべて仕様確定済み。台帳の各節の最終差分が正)
+1. `rev377a` / `rev375a`(コードレビュー。read-only)
+2. **WP379**(v3。改名 + owner policy)→ 統合後に **WP381**(v3。epoch anchor)
+3. **WP380a**(v3。state + engine-owned queue)—— WP379 と並列可(触るファイルが重ならない: planner / loader vs registry)
+4. **WP378**(v3。E-0a)—— WP375a 統合後
+5. WP380b / CARRIER-RT3 / CARRIER-STUDIO は上の後に節を切り直す
+
+**既知の穴(WP 化は別途判断)**
+- compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
+- WP334b 系の `-j4` 負荷 flake(commit 待ちタイムアウト。今日 5 回)
+- loader: 設定 DLL が起動時に無く、後から不適合 DLL が現れた reload で旧 runtime を再構築しない(`rev375` #3。WP381 / WP380 の領域)
