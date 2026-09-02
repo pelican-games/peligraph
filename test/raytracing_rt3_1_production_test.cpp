@@ -100,7 +100,10 @@ Json wp374aLayout(std::uint32_t version, bool with_as) {
 void writeWp374aProject(const std::filesystem::path &root,
                         std::optional<std::uint32_t> layout_version,
                         bool with_as, bool with_ray_instance,
-                        bool renderable) {
+                        bool renderable,
+                        std::optional<Json> authored_ray_instance =
+                            std::nullopt,
+                        bool material_alpha_profile = false) {
     Json components = Json::array();
     if (renderable) {
         components.push_back({{"name", "transform"},
@@ -111,7 +114,8 @@ void writeWp374aProject(const std::filesystem::path &root,
             {{"name", "simplemodelview"}, {"model", "chair"}});
     }
     if (with_ray_instance) {
-        components.push_back({{"name", "ray_instance"}, {"mask", 9}});
+        components.push_back(authored_ray_instance.value_or(
+            Json{{"name", "ray_instance"}, {"mask", 9}}));
     }
     Json objects = Json::array();
     if (!components.empty()) {
@@ -145,8 +149,46 @@ void writeWp374aProject(const std::filesystem::path &root,
     };
     if (layout_version) {
         rendering["ray_group_layout"] = "ray_layout.json";
-        writeWp374aText(root / "ray_layout.json",
-                        wp374aLayout(*layout_version, with_as).dump(2));
+        auto layout = wp374aLayout(*layout_version, with_as);
+        if (material_alpha_profile) {
+            layout["portable_profile"] = "material_alpha_v1";
+            layout["engine_record"] = {
+                "material_index", "geometry_index"};
+            RayTracingRt31Fixture::writeWp366RaygenAndMissShaders(
+                root, writeWp374aText, false, true);
+            RayTracingRt31Fixture::writeWp366ClosestHitShaders(
+                root, writeWp374aText, false, true, false);
+            const Json feature{
+                {"schema", "pelican.render_feature"},
+                {"version", 1},
+                {"name", "wp377_profile_owner"},
+                {"runtime_shader_compiler", "required"},
+                {"required_capabilities",
+                 Json::array({
+                     "pelican.vulkan.ray_tracing_pipeline@1"})},
+                {"render_targets",
+                 Json::array({
+                     {{"name", "wp366_a"},
+                      {"extent_scale", 1.0},
+                      {"format", "R32G32B32A32_UINT"},
+                      {"format_class", "data"},
+                      {"role", "data"},
+                      {"usage", {"STORAGE"}}},
+                 })},
+                {"compute_tasks",
+                 Json::array({
+                     RayTracingRt31Fixture::wp366TypedRayTracingTask(
+                         "wp377_profile_owner", "wp366_a",
+                         "project://shaders/wp366_a", false),
+                 })},
+            };
+            writeWp374aText(
+                root / "features" / "wp377_profile_owner.json",
+                feature.dump(2));
+            rendering["features"] = Json::array({
+                "project://features/wp377_profile_owner.json"});
+        }
+        writeWp374aText(root / "ray_layout.json", layout.dump(2));
     }
     if (renderable) {
         rendering["target_planning"] = {
@@ -292,6 +334,50 @@ void requireWp374aTlasValues(const RaySceneRowSnapshot &rows,
 }
 
 } // namespace
+
+TEST_CASE(
+    "WP377 authored ray_instance force opaque reaches the material alpha profile row guard",
+    "[WP377][WP369][ray-tracing][rt3-1][instance-flags][profile][production]") {
+    setupLogger();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    for (const bool force_opaque : {false, true}) {
+        DYNAMIC_SECTION("authored flag "
+                        << (force_opaque ? "force_opaque"
+                                         : "force_no_opaque")) {
+            Wp374aProjectRoot project{
+                force_opaque ? "wp377_force_opaque"
+                             : "wp377_force_no_opaque"};
+            writeWp374aProject(
+                project.path, 2, true, true, true,
+                Json{{"name", "ray_instance"},
+                     {"instance_flags",
+                      Json::array({force_opaque ? "force_opaque"
+                                                : "force_no_opaque"})}},
+                true);
+
+            FastModuleContainer modules;
+            loadWp374aScene(project.path);
+            if (force_opaque) {
+                CHECK_THROWS_WITH(
+                    renderWp374aProductionRows(),
+                    ContainsSubstring(
+                        "pelican.ray_profile_opaque_as@1") &&
+                        ContainsSubstring("force_opaque"));
+            } else {
+                const auto rows = renderWp374aProductionRows();
+                REQUIRE_FALSE(rows.rows.empty());
+                for (const auto &row : rows.rows) {
+                    CHECK(row.instance_flags ==
+                          rayInstanceForceNoOpaque);
+                }
+            }
+            GET_MODULE(VulkanManageCore).waitIdle();
+        }
+    }
+#else
+    SUCCEED("WP377 GPU profile acceptance is compiler-ON only");
+#endif
+}
 
 
 TEST_CASE("WP374a all ten root layout AS component states cross real SceneLoader",

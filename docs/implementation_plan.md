@@ -20202,6 +20202,16 @@ scene save hook(production `saveSceneDocument` 内で任意 callback、常時コ
 - fault seam の表(意味条件 4 つの充足を各行に)
 - 全数 1515 を壊さない / compiler OFF 別 build / compile matrix
 
+##### WP377 fault seam 棚卸し(完了報告)
+
+| fault seam | 1. 失敗 / 外部競合だけ | 2. 同じテストの no-fault 成功側 | 3. injected 状態で正常値を主張しない | 4. 帰属テスト / integration |
+|---|---|---|---|---|
+| `setSceneSaveFaultForTesting` | SAVE0 の prepare 各点で例外だけを注入 | seam を `nullopt` に戻した後、同じ case で `saveSceneDocument` が成功 | 注入中は旧 cache / revision / bytes と一時ファイル 0 だけを検査 | `SAVE0 is failure-atomic at every prepare point and reloads semantically` |
+| `setSceneImportFaultForTesting` | SNAPSHOT0 の candidate prepare / publication 後の失敗だけを注入 | seam を `nullopt` に戻した後、同じ case で `importSceneDocument` が成功 | 注入中は rollback された旧 document / resolver / disk bytes だけを検査 | `SNAPSHOT0 cache replacement is rollback-safe and never writes the scene file` |
+| `setSceneSaveHookForTesting` | production save 中の prefab 外部変更だけを起こし、成功結果を供給しない | hook を空に戻し prefab を復元した後、同じ case で `saveScene` が成功 | hook 使用側は `scene_dependency_changed@1` と rollback / purge だけを検査 | `WP362 save baseline rejects prefab changes before and throughout SAVE0` |
+| `WindowWsiFaultScriptForTesting` | parser が `success` を拒否し、Vulkan failure result だけを順序注入 | 同じ 180-frame process が注入境界間の実 WSI 成功を通り、fresh-surface publication を完了 | integration は recovery / script 全消費を主張し、注入値を production の成功値として扱わない | Catch の `WP217 ordered WSI fault scripts consume only the next matching boundary` と Catch 外 CTest `wsi_fault_window_player` (`run_wsi_fault_window.cmake`) |
+| `RayTracingOracleIntersectorForTesting` (**override 型**) | inv-determinant sign bug と契約外 interval の負側だけを供給 | 各同一 case で normative intersector / validator の成功を override の前後に実測 | override 結果から production の正常 hit / interval を主張しない | `CPU RT oracle constructively covers hit miss and recursion sentinels` / `CPU RT oracle exercises both sides of every numeric-contract boundary` |
+
 ##### やらないこと
 
 観測 seam の削減 / WSI fault script と scene hook の設計変更(表に載せるだけ)/ rt1a・rt1b の sentinel の書き換え。

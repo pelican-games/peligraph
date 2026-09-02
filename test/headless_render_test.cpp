@@ -70,6 +70,7 @@
 #include <vector>
 #include "ktx2_test_writer.hpp"
 #include "gltf_fragment_fixture.hpp"
+#include "raytracing_rt3_1_fixture.hpp"
 #include "synthetic_stereo_target.hpp"
 
 namespace Pelican {
@@ -525,125 +526,10 @@ void writeRt1bLayoutProject(
     writeTextFile(
         directory / "ray_bindings.json",
         R"json({"schema":"pelican.ray_bindings","version":1,"bindings":[{"material":{"asset":"models/tree.glb","source_material_index":2},"group":"opaque","record":{"tint":[1.0,0.0,0.0,1.0],"flags":101}},{"material":{"asset":"models/tree.glb","source_material_index":3},"group":"foliage","record":{"tint":[0.0,1.0,0.0,1.0],"flags":202}}]})json");
-    std::filesystem::create_directories(directory / "shaders");
-
-    const auto raygen = [](std::string_view ray_type,
-                           std::string_view miss,
-                           std::string_view output) {
-        std::string source = R"glsl(#version 460
-#extension GL_EXT_ray_tracing : require
-#extension GL_GOOGLE_include_directive : require
-#include "__pelican_ray_group_layout.glsl"
-layout(set=0,binding=6) uniform accelerationStructureEXT pelicanRayTracingScene;
-layout(rgba32ui,set=1,binding=0) writeonly uniform uimage2D OUTPUT_NAME;
-struct Payload { uint marker; uint q; uint flags; uint tint; };
-layout(location=0) rayPayloadEXT Payload payload;
-void main() {
-    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
-    float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);
-    payload = Payload(0u, 0xffffffffu, 0u, 0u);
-    traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
-                RAY_TYPE, pelican_ray_type_count, MISS_INDEX,
-                vec3(x, 0.0, 0.0), 0.001,
-                vec3(0.0, 0.0, 1.0), 4096.0, 0);
-    imageStore(OUTPUT_NAME, pixel,
-               uvec4(payload.marker, payload.q, payload.flags, payload.tint));
-}
-)glsl";
-        const auto replace_all = [&](std::string_view token,
-                                     std::string_view value) {
-            for (auto at = source.find(token); at != std::string::npos;
-                 at = source.find(token, at + value.size())) {
-                source.replace(at, token.size(), value);
-            }
-        };
-        replace_all("RAY_TYPE", ray_type);
-        replace_all("MISS_INDEX", miss);
-        replace_all("OUTPUT_NAME", output);
-        return source;
-    };
-    const auto miss = [](std::string_view marker,
-                         std::string_view miss_index) {
-        std::string source = R"glsl(#version 460
-#extension GL_EXT_ray_tracing : require
-#extension GL_GOOGLE_include_directive : require
-#include "__pelican_ray_group_layout.glsl"
-struct Payload { uint marker; uint q; uint flags; uint tint; };
-layout(location=0) rayPayloadInEXT Payload payload;
-void main() { payload = Payload(MARKER, 0xffffffffu, MISS_INDEX, 0u); }
-)glsl";
-        source.replace(source.find("MARKER"), 6, marker);
-        source.replace(source.find("MISS_INDEX"), 10, miss_index);
-        return source;
-    };
-    const auto hit = [](std::uint32_t marker) {
-        std::string source = R"glsl(#version 460
-#extension GL_EXT_ray_tracing : require
-#extension GL_GOOGLE_include_directive : require
-#include "__pelican_ray_group_layout.glsl"
-struct Payload { uint marker; uint q; uint flags; uint tint; };
-layout(location=0) rayPayloadInEXT Payload payload;
-hitAttributeEXT vec2 hit_attribute;
-layout(shaderRecordEXT, std430) buffer RayRecord {
-    vec4 tint;
-    uint flags;
-} ray_record;
-void main() {
-    payload = Payload(MARKER, gl_InstanceCustomIndexEXT,
-                      ray_record.flags, floatBitsToUint(ray_record.tint.x));
-}
-)glsl";
-        source.replace(source.find("MARKER"), 6,
-                       std::to_string(marker) + "u");
-        return source;
-    };
-    writeTextFile(
-        directory / "shaders" / "wp366_a.rgen",
-        raygen("PELICAN_RAY_TYPE_primary", "PELICAN_MISS_sky",
-               "pelican_resource_wp366_a"));
-    writeTextFile(
-        directory / "shaders" / "wp366_b.rgen",
-        raygen("PELICAN_RAY_TYPE_shadow", "PELICAN_MISS_shadow_open",
-               "pelican_resource_wp366_b"));
-    writeTextFile(directory / "shaders" / "wp366_sky.rmiss",
-                  miss("1280u", "PELICAN_MISS_sky"));
-    writeTextFile(directory / "shaders" / "wp366_open.rmiss",
-                  miss("1281u", "PELICAN_MISS_shadow_open"));
-    writeTextFile(directory / "shaders" / "wp366_opaque_primary.rchit",
-                  hit(0xa0u));
-    writeTextFile(directory / "shaders" / "wp366_opaque_shadow.rchit",
-                  hit(0xa1u));
-    writeTextFile(directory / "shaders" / "wp366_foliage_primary.rchit",
-                  hit(0xb0u));
-    writeTextFile(directory / "shaders" / "wp366_foliage_shadow.rchit",
-                  hit(0xb1u));
-
-    const nlohmann::json hit_shaders{
-        {"primary",
-         {{"opaque", {{"closesthit", "project://shaders/wp366_opaque_primary"}}},
-          {"foliage", {{"closesthit", "project://shaders/wp366_foliage_primary"}}}}},
-        {"shadow",
-         {{"opaque", {{"closesthit", "project://shaders/wp366_opaque_shadow"}}},
-          {"foliage", {{"closesthit", "project://shaders/wp366_foliage_shadow"}}}}},
-    };
-    const auto task = [&](std::string name, std::string output,
-                          std::string raygen_name) {
-        return nlohmann::json{
-            {"name", std::move(name)},
-            {"ray_tracing",
-             {{"raygen", std::move(raygen_name)},
-              {"traced_ray_types", {"primary", "shadow"}},
-              {"misses",
-               {{"sky", "project://shaders/wp366_sky"},
-                {"shadow_open", "project://shaders/wp366_open"}}},
-              {"hit_shaders", hit_shaders}}},
-            {"writes", {output}},
-            {"resource_ports",
-             {{output,
-               {{"resource", output}, {"access", "storage"}}}}},
-            {"dispatch", {{"rays_from", {{"port", output}}}}},
-        };
-    };
+    RayTracingRt31Fixture::writeWp366RaygenAndMissShaders(
+        directory, writeTextFile);
+    RayTracingRt31Fixture::writeWp366ClosestHitShaders(
+        directory, writeTextFile);
     const nlohmann::json config{
         {"ray_group_layout", "ray_layout.json"},
         {"ray_bindings", "ray_bindings.json"},
@@ -709,8 +595,10 @@ void main() {
                {{"vertex", "engine://fullscreen"},
                 {"fragment", "engine://shader_lab_hello"}}}}}}}}},
         {"compute_tasks",
-         {task("wp366_a", "wp366_a", "project://shaders/wp366_a"),
-          task("wp366_b", "wp366_b", "project://shaders/wp366_b")}},
+         {RayTracingRt31Fixture::wp366TypedRayTracingTask(
+              "wp366_a", "wp366_a", "project://shaders/wp366_a"),
+          RayTracingRt31Fixture::wp366TypedRayTracingTask(
+              "wp366_b", "wp366_b", "project://shaders/wp366_b")}},
         {"target_planning",
          {{"graphs",
            {{"main_render",
@@ -841,6 +729,17 @@ void setWp369PortableProfile(
     writeTextFile(directory / "ray_layout.json", layout.dump(2));
 }
 
+void setWp369GeometryOpaque(
+    const std::filesystem::path &directory, bool opaque) {
+    auto layout = nlohmann::json::parse(
+        readTextFile(directory / "ray_layout.json"));
+    auto flags = nlohmann::json::array();
+    if (opaque) flags.push_back("opaque");
+    layout.at("acceleration_structure")
+        .at("defaults")["geometry_flags"] = std::move(flags);
+    writeTextFile(directory / "ray_layout.json", layout.dump(2));
+}
+
 void writeWp369MaterialAlphaProject(
     const std::filesystem::path &directory) {
     writeRt1bLayoutProject(directory);
@@ -879,37 +778,21 @@ void writeWp369MaterialAlphaProject(
 
     auto layout = nlohmann::json::parse(
         readTextFile(directory / "ray_layout.json"));
+    layout["version"] = 2;
     layout["engine_record"] = {
         "material_index", "geometry_index"};
     layout["portable_profile"] = "material_alpha_v1";
+    layout["acceleration_structure"] = {
+        {"defaults",
+         {{"mask", 255},
+          {"instance_flags", nlohmann::json::array()},
+          {"geometry_flags", nlohmann::json::array()}}},
+        {"rules", nlohmann::json::array()},
+    };
     writeTextFile(directory / "ray_layout.json", layout.dump(2));
 
-    for (const auto shader_name : {"wp366_a.rgen", "wp366_b.rgen"}) {
-        const auto path = directory / "shaders" / shader_name;
-        auto source = readTextFile(path);
-        const std::string old_lane =
-            "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
-        const std::string new_lane =
-            "float x = pixel.x == 0 ? -2.625 : (pixel.x == 1 ? -1.875 : "
-            "(pixel.x == 2 ? -1.125 : (pixel.x == 3 ? -0.375 : "
-            "(pixel.x == 4 ? 0.375 : (pixel.x == 5 ? 1.125 : "
-            "(pixel.x == 6 ? 1.875 : (pixel.x == 7 ? 2.625 : 8.0)))))));";
-        const auto lane_at = source.find(old_lane);
-        if (lane_at == std::string::npos) {
-            throw std::logic_error(
-                "WP369 ray lane source is missing");
-        }
-        source.replace(lane_at, old_lane.size(), new_lane);
-        const std::string opaque = "gl_RayFlagsOpaqueEXT";
-        const auto opaque_at = source.find(opaque);
-        if (opaque_at == std::string::npos) {
-            throw std::logic_error(
-                "WP369 ray flags source is missing");
-        }
-        source.replace(opaque_at, opaque.size(),
-                       "gl_RayFlagsNoneEXT");
-        writeTextFile(path, source);
-    }
+    RayTracingRt31Fixture::writeWp366RaygenAndMissShaders(
+        directory, writeTextFile, true, true);
 
     auto rendering = nlohmann::json::parse(
         readTextFile(directory / "hybrid.json"));
@@ -943,37 +826,8 @@ void writeWp369MaterialAlphaProject(
     passes.insert(passes.end() - 1, std::move(transparent_pass));
     writeTextFile(directory / "hybrid.json", rendering.dump(2));
 
-    const auto hit = [](std::uint32_t marker) {
-        std::string source = R"glsl(#version 460
-#extension GL_EXT_ray_tracing : require
-#extension GL_GOOGLE_include_directive : require
-#include "__pelican_ray_group_layout.glsl"
-struct Payload { uint marker; uint q; uint flags; uint tint; };
-layout(location=0) rayPayloadInEXT Payload payload;
-hitAttributeEXT vec2 hit_attribute;
-layout(shaderRecordEXT, std430) buffer RayRecord {
-    PELICAN_RAY_ENGINE_RECORD_MEMBERS
-    vec4 tint;
-    uint flags;
-} ray_record;
-void main() {
-    payload = Payload(MARKER, gl_InstanceCustomIndexEXT,
-                      ray_record.flags,
-                      floatBitsToUint(ray_record.tint.x));
-}
-)glsl";
-        source.replace(source.find("MARKER"), 6,
-                       std::to_string(marker) + "u");
-        return source;
-    };
-    writeTextFile(directory / "shaders" / "wp366_opaque_primary.rchit",
-                  hit(0x3690u));
-    writeTextFile(directory / "shaders" / "wp366_opaque_shadow.rchit",
-                  hit(0x3691u));
-    writeTextFile(directory / "shaders" / "wp366_foliage_primary.rchit",
-                  hit(0x3692u));
-    writeTextFile(directory / "shaders" / "wp366_foliage_shadow.rchit",
-                  hit(0x3693u));
+    RayTracingRt31Fixture::writeWp366ClosestHitShaders(
+        directory, writeTextFile, true, true);
 }
 
 std::string wp368InactiveRenderingConfig(
@@ -12715,10 +12569,37 @@ TEST_CASE(
         REQUIRE(clamped_tables != nullptr);
         CHECK(material_row(*clamped_tables, 2).base_factor_a == -0.1F);
 
-        // Direct rollback contrast for the opt-in itself. With all scene and
-        // override state unchanged, deleting only portable_profile removes
-        // the generated any-hit and every intersection is accepted.
+        const auto require_geometry_flags =
+            [&](std::uint32_t expected) {
+                const auto tables =
+                    GET_MODULE(FrameResources)
+                        .rayTracingSceneShaderBindingTablesLeaseForTesting();
+                REQUIRE(tables != nullptr);
+                REQUIRE(tables->row_snapshot != nullptr);
+                REQUIRE_FALSE(tables->row_snapshot->rows.empty());
+                for (const auto &row : tables->row_snapshot->rows) {
+                    CHECK(row.geometry_flags == expected);
+                }
+                const auto diagnostics =
+                    renderer
+                        .rayQueryAccelerationStructureDiagnosticsForTesting();
+                REQUIRE_FALSE(diagnostics.active_blas_inputs.empty());
+                for (const auto &resident :
+                     diagnostics.active_blas_inputs) {
+                    CHECK(resident.geometry_flags == expected);
+                }
+            };
+
+        // WP377 step 1: the profile is active and authored geometry flags are
+        // non-opaque. Both the resolved rows and resident BLAS keys must carry
+        // the production value before the cache-reuse contrast begins.
+        require_geometry_flags(0);
+
+        // WP377 step 2: disable only the profile and author opaque geometry.
+        // The layout stage and render both succeed, publishing an opaque
+        // resident BLAS which the final step is required to inspect on reuse.
         setWp369PortableProfile(temp_dir, false);
+        setWp369GeometryOpaque(temp_dir, true);
         const auto removed_variant =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
                 rendering_config);
@@ -12733,41 +12614,24 @@ TEST_CASE(
             CHECK(marker_at(profile_removed, lane) == hit_marker);
         }
         CHECK(profile_removed.bytes != clamped_frame.bytes);
+        require_geometry_flags(rayGeometryOpaque);
 
-        // Re-enable the profile, then inject each forbidden production flag
-        // at the actual recordFrame call site. The TLAS-geometry case is last
-        // because it deliberately aborts after recording its input barrier.
+        // WP377 step 3: change only portable_profile. Staging must succeed;
+        // Renderer::render must reject the unchanged opaque resident BLAS.
+        // This failure remains last because render intentionally aborts before
+        // publishing the staged generation.
         setWp369PortableProfile(temp_dir, true);
         const auto restored_variant =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
                 rendering_config);
         REQUIRE(isValidRenderingPassId(restored_variant.flat));
-        renderer.render();
-        vkcore.waitIdle();
-        const auto require_as_rejection =
-            [&](RayProfileAccelerationStructureFlagsOverrideForTesting flags,
-                std::string_view site) {
-                const ScopedRayProfileAccelerationStructureFlagsOverrideForTesting
-                    injected{flags};
-                CHECK_THROWS_WITH(
-                    renderer.render(),
-                    Catch::Matchers::ContainsSubstring(
-                        "pelican.ray_profile_opaque_as@1") &&
-                        Catch::Matchers::ContainsSubstring(
-                            std::string{site}));
-            };
-        require_as_rejection(
-            {.blas_geometry_flags =
-                 vk::GeometryFlagBitsKHR::eOpaque},
-            "BLAS geometry");
-        require_as_rejection(
-            {.tlas_instance_flags =
-                 vk::GeometryInstanceFlagBitsKHR::eForceOpaque},
-            "TLAS instance row");
-        require_as_rejection(
-            {.tlas_geometry_flags =
-                 vk::GeometryFlagBitsKHR::eOpaque},
-            "TLAS instances geometry");
+        REQUIRE(GET_MODULE(FrameGraphRuntimeContainer)
+                    .stagedGeneration() != 0);
+        CHECK_THROWS_WITH(
+            renderer.render(),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_profile_opaque_as@1") &&
+                Catch::Matchers::ContainsSubstring("BLAS geometry"));
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {

@@ -3110,6 +3110,14 @@ TEST_CASE("WP362 save baseline rejects prefab changes before and throughout SAVE
                     old_registry_generation);
             REQUIRE(config.resolvedScene().bindableProvider().generation() ==
                     old_provider_generation);
+
+            // The external-conflict hook is a fault-only seam. Clear it,
+            // restore the dependency, and prove the same production save path
+            // still has a no-fault success side in this test.
+            config.setSceneSaveHookForTesting({});
+            temporary.write("unit.prefab.json", prefab_bytes);
+            const auto saved = service.saveScene();
+            REQUIRE(saved.byte_count > 0);
         }
     }
 }

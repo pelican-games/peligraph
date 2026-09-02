@@ -24,9 +24,6 @@ namespace Pelican {
 
 namespace {
 
-thread_local RayProfileAccelerationStructureFlagsOverrideForTesting
-    ray_profile_as_flags_override_for_testing;
-
 std::string geometryName(
     const RayQueryGeometryInstanceSnapshot &instance) {
     return "asset[" + std::to_string(instance.asset_identity) +
@@ -344,18 +341,6 @@ void validateRayProfileAccelerationStructureFlags(
             std::string{diagnostic} +
             " requires non-opaque geometry and instance flags");
     }
-}
-
-ScopedRayProfileAccelerationStructureFlagsOverrideForTesting::
-    ScopedRayProfileAccelerationStructureFlagsOverrideForTesting(
-        RayProfileAccelerationStructureFlagsOverrideForTesting replacement)
-    : previous_{ray_profile_as_flags_override_for_testing} {
-    ray_profile_as_flags_override_for_testing = replacement;
-}
-
-ScopedRayProfileAccelerationStructureFlagsOverrideForTesting::
-    ~ScopedRayProfileAccelerationStructureFlagsOverrideForTesting() {
-    ray_profile_as_flags_override_for_testing = previous_;
 }
 
 std::string canonicalTransformIdentity(const glm::mat4 &transform) {
@@ -789,9 +774,7 @@ RayQueryAccelerationStructureScope::recordFrame(
 
     const bool can_reuse =
         active_state_ != nullptr && !pool_invalidated &&
-        !model_invalidated &&
-        !ray_profile_as_flags_override_for_testing
-             .blas_geometry_flags;
+        !model_invalidated;
     std::map<std::uint64_t,
              const RayTracingGeometrySnapshotRow *>
         unique_geometry;
@@ -836,15 +819,11 @@ RayQueryAccelerationStructureScope::recordFrame(
         candidate->ray_scene_rows.get(), candidate->ray_type_count);
     std::set<State::BlasVariantKey> required_variants;
     for (const auto &planned : planned_instances) {
-        auto flags = vk::GeometryFlagsKHR{planned.geometry_flags};
-        flags |= ray_profile_as_flags_override_for_testing
-                     .blas_geometry_flags;
         required_variants.emplace(State::BlasVariantKey{
             .geometry_allocation_id =
                 instances[planned.source_index]
                     .geometry_allocation_id,
-            .geometry_flags = static_cast<std::uint32_t>(
-                static_cast<VkGeometryFlagsKHR>(flags)),
+            .geometry_flags = planned.geometry_flags,
         });
     }
 
@@ -856,6 +835,11 @@ RayQueryAccelerationStructureScope::recordFrame(
                 "pelican.ray_geometry_snapshot_invalid@1: BLAS variant has no geometry row");
         }
         const auto *instance = geometry_found->second;
+        const auto geometry_flags =
+            vk::GeometryFlagsKHR{variant.geometry_flags};
+        validateRayProfileAccelerationStructureFlags(
+            material_alpha_profile_active, geometry_flags, {},
+            "BLAS geometry '" + std::to_string(identity) + "'");
         if (can_reuse) {
             const auto existing =
                 active_state_->blas.find(variant);
@@ -876,11 +860,6 @@ RayQueryAccelerationStructureScope::recordFrame(
                 vk::IndexType::eUint32,
                 vk::DeviceOrHostAddressConstKHR{index_address},
             };
-        const auto geometry_flags =
-            vk::GeometryFlagsKHR{variant.geometry_flags};
-        validateRayProfileAccelerationStructureFlags(
-            material_alpha_profile_active, geometry_flags, {},
-            "BLAS geometry '" + std::to_string(identity) + "'");
         const vk::AccelerationStructureGeometryKHR geometry_info{
             vk::GeometryTypeKHR::eTriangles,
             vk::AccelerationStructureGeometryDataKHR{triangles},
@@ -960,17 +939,10 @@ RayQueryAccelerationStructureScope::recordFrame(
     tlas_instances.reserve(classification.static_instance_indices.size());
     for (const auto &planned : planned_instances) {
         const auto &instance = instances[planned.source_index];
-        auto resolved_geometry_flags =
-            vk::GeometryFlagsKHR{planned.geometry_flags};
-        resolved_geometry_flags |=
-            ray_profile_as_flags_override_for_testing
-                .blas_geometry_flags;
         const State::BlasVariantKey blas_key{
             .geometry_allocation_id =
                 instance.geometry_allocation_id,
-            .geometry_flags = static_cast<std::uint32_t>(
-                static_cast<VkGeometryFlagsKHR>(
-                    resolved_geometry_flags)),
+            .geometry_flags = planned.geometry_flags,
         };
         const auto blas = candidate->blas.find(
             blas_key);
@@ -978,10 +950,8 @@ RayQueryAccelerationStructureScope::recordFrame(
             throw std::runtime_error(
                 "static ray-query TLAS instance has no BLAS");
         }
-        auto instance_flags =
+        const auto instance_flags =
             vk::GeometryInstanceFlagsKHR{planned.instance_flags};
-        instance_flags |= ray_profile_as_flags_override_for_testing
-                              .tlas_instance_flags;
         validateRayProfileAccelerationStructureFlags(
             material_alpha_profile_active, {}, instance_flags,
             "TLAS instance row " + std::to_string(planned.q));
@@ -1036,17 +1006,11 @@ RayQueryAccelerationStructureScope::recordFrame(
             false,
             vk::DeviceOrHostAddressConstKHR{
                 instance_buffer.address}};
-    const auto tlas_geometry_flags =
-        ray_profile_as_flags_override_for_testing
-            .tlas_geometry_flags;
-    validateRayProfileAccelerationStructureFlags(
-        material_alpha_profile_active, tlas_geometry_flags, {},
-        "TLAS instances geometry");
     const vk::AccelerationStructureGeometryKHR geometry_info{
         vk::GeometryTypeKHR::eInstances,
         vk::AccelerationStructureGeometryDataKHR{
             instance_data},
-        tlas_geometry_flags};
+        {}};
     vk::AccelerationStructureBuildGeometryInfoKHR build_info{
         vk::AccelerationStructureTypeKHR::eTopLevel,
         vk::BuildAccelerationStructureFlagBitsKHR::

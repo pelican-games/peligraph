@@ -1814,6 +1814,10 @@ TEST_CASE(
             sign_bug_intersector);
     CHECK_FALSE(sign_bug.hit.has_value());
     CHECK(sign_bug_calls >= 2);
+    const auto restored_hit = traceRayTracingOracle(
+        hit_fixture.ray, hit_fixture.triangles);
+    REQUIRE(restored_hit.hit.has_value());
+    CHECK(restored_hit.hit->record_id == 0x364u);
 
     const auto miss_fixture = makeConstructiveRayTracingOracleFixture(
         RayTracingSentinelKind::miss, 0x777u, 8.0f);
@@ -2047,16 +2051,14 @@ TEST_CASE(
                     };
                 }};
         };
-        CHECK_NOTHROW(
-            validateRayTracingOracleFixtureWithIntersectorForTesting(
-                baseline.ray, baseline.triangles,
-                interval_intersector(0.00999)));
         REQUIRE_THROWS_WITH(
             validateRayTracingOracleFixtureWithIntersectorForTesting(
                 baseline.ray, baseline.triangles,
                 interval_intersector(0.01001)),
             Catch::Matchers::ContainsSubstring(
                 "relative t interval width exceeds 1e-2"));
+        CHECK_NOTHROW(validateRayTracingOracleFixture(
+            baseline.ray, baseline.triangles));
     }
 
     SECTION("nearest-hit uniqueness uses the CPU interval midpoint") {

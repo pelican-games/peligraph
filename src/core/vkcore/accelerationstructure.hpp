@@ -102,29 +102,6 @@ void validateRayProfileAccelerationStructureFlags(
     vk::GeometryInstanceFlagsKHR instance_flags,
     std::string_view diagnostic);
 
-// Test seam at the three production recordFrame flag construction sites.
-// Default construction is byte-for-byte the shipping empty-flag path.
-struct RayProfileAccelerationStructureFlagsOverrideForTesting {
-    vk::GeometryFlagsKHR blas_geometry_flags{};
-    vk::GeometryInstanceFlagsKHR tlas_instance_flags{};
-    vk::GeometryFlagsKHR tlas_geometry_flags{};
-};
-
-class ScopedRayProfileAccelerationStructureFlagsOverrideForTesting {
-    RayProfileAccelerationStructureFlagsOverrideForTesting previous_;
-
-  public:
-    explicit ScopedRayProfileAccelerationStructureFlagsOverrideForTesting(
-        RayProfileAccelerationStructureFlagsOverrideForTesting replacement);
-    ~ScopedRayProfileAccelerationStructureFlagsOverrideForTesting();
-    ScopedRayProfileAccelerationStructureFlagsOverrideForTesting(
-        const ScopedRayProfileAccelerationStructureFlagsOverrideForTesting &) =
-        delete;
-    ScopedRayProfileAccelerationStructureFlagsOverrideForTesting &operator=(
-        const ScopedRayProfileAccelerationStructureFlagsOverrideForTesting &) =
-        delete;
-};
-
 struct RayTracingTlasInstancePlanEntry {
     std::size_t source_index = 0;
     std::uint32_t q = 0;
