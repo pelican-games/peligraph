@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -46,6 +47,7 @@ enum class EditorProjectionErrorCode : std::uint8_t {
     TransformZeroParentScale,
     TransformNonFinite,
     TransformUnrepresentable,
+    BehaviorTypeUnknown,
     AdapterPrepareFailed,
     AdapterPublishFailed,
 };
@@ -56,14 +58,18 @@ std::string_view editorProjectionErrorCodeName(
 class EditorProjectionException : public std::runtime_error {
     EditorProjectionErrorCode code_;
     std::string object_path_;
+    nlohmann::ordered_json data_;
 
   public:
     EditorProjectionException(EditorProjectionErrorCode code,
                               std::string object_path,
-                              std::string message);
+                              std::string message,
+                              nlohmann::ordered_json data =
+                                  nlohmann::ordered_json::object());
 
     EditorProjectionErrorCode code() const noexcept { return code_; }
     const std::string &objectPath() const noexcept { return object_path_; }
+    const nlohmann::ordered_json &data() const noexcept { return data_; }
 };
 
 struct EditorProjectionError {
@@ -71,6 +77,7 @@ struct EditorProjectionError {
     std::string object_path;
     std::string message;
     std::optional<PrefabErrorCode> prefab_error_code;
+    nlohmann::ordered_json data = nlohmann::ordered_json::object();
 };
 
 enum class EditorProjectionStatus : std::uint8_t {

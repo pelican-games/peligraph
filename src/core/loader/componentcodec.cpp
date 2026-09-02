@@ -1,5 +1,6 @@
 #include "componentcodec.hpp"
 
+#include "../ecs/core.hpp"
 #include "../ecs/predefined/transform.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
@@ -8,6 +9,7 @@
 #include "../userpublic/components/collider.hpp"
 #include "../userpublic/components/localtransform.hpp"
 #include "../userpublic/components/modelview.hpp"
+#include "../userpublic/components/predefined.hpp"
 #include "../userpublic/components/rayinstance.hpp"
 #include "../userpublic/components/spriteview.hpp"
 #include "../userpublic/details/schema/structfieldjson.hpp"
@@ -29,6 +31,8 @@ using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
 thread_local ComponentCodecCanonicalDefaults codec_canonical_defaults;
+thread_local const std::vector<ComponentCodec> *codec_catalog_override =
+    nullptr;
 
 enum class ColliderSchemaShape : std::uint8_t { Sphere, Box, Capsule };
 
@@ -1050,26 +1054,79 @@ template <class Fields> std::span<const StructFieldSchema> fieldSpan(const Field
     return {fields.data(), fields.size()};
 }
 
+template <class Component>
+ComponentEditorSwapToken prepareEcsEditorSwap(
+    void *raw_ecs, std::uint32_t entity_index,
+    std::uint32_t entity_generation, const ComponentCodecValue &value) {
+    if (raw_ecs == nullptr) {
+        throw std::invalid_argument("editor codec ECS target is null");
+    }
+    auto &ecs = *static_cast<ECSCoreTemplatePublic *>(raw_ecs);
+    using Token = ECSCoreTemplatePublic::PreparedComponentSwap<Component>;
+    return ComponentEditorSwapToken::own(std::make_unique<Token>(
+        ecs.prepareComponentSwap<Component>(
+            EntityId{entity_index, entity_generation},
+            codecValue<Component>(value, "editor projection"))));
+}
+
+template <class Component>
+void swapEcsEditorToken(ComponentEditorSwapToken &erased,
+                        EditorCodecSwapPhase phase) noexcept {
+    using Token = ECSCoreTemplatePublic::PreparedComponentSwap<Component>;
+    auto &token = erased.get<Token>();
+    switch (phase) {
+    case EditorCodecSwapPhase::Publish:
+        token.publish();
+        break;
+    case EditorCodecSwapPhase::Rollback:
+        token.rollback();
+        break;
+    case EditorCodecSwapPhase::Finish:
+        token.finish();
+        break;
+    }
+}
+
 const std::array codecs{
-    ComponentCodec{"transform", ComponentCodecRuntimeKind::Ecs, decodeTransform, encodeTransform,
-                   [] { return fieldSpan(transform_fields); }, applyTransform, projectTransform},
-    ComponentCodec{"simplemodelview", ComponentCodecRuntimeKind::Ecs, decodeSimpleModelView,
+    ComponentCodec{"transform", ComponentCodecRuntimeKind::Ecs,
+                   EditorProjectionPolicy::TransformClosure,
+                   decodeTransform, encodeTransform,
+                   [] { return fieldSpan(transform_fields); }, applyTransform,
+                   projectTransform, nullptr, nullptr},
+    ComponentCodec{"simplemodelview", ComponentCodecRuntimeKind::Ecs,
+                   EditorProjectionPolicy::RendererModel, decodeSimpleModelView,
                    encodeSimpleModelView, [] { return fieldSpan(simple_model_view_fields); },
-                   applySimpleModelView, projectSimpleModelView},
-    ComponentCodec{"camera", ComponentCodecRuntimeKind::Camera, decodeCamera, encodeCamera,
-                   [] { return fieldSpan(camera_fields); }, applyCamera, projectCamera},
-    ComponentCodec{"light", ComponentCodecRuntimeKind::Light, decodeLight, encodeLight,
-                   [] { return fieldSpan(light_fields); }, applyLight, projectLight},
-    ComponentCodec{"collider", ComponentCodecRuntimeKind::Collider, decodeCollider, encodeCollider,
-                   [] { return fieldSpan(collider_fields); }, applyCollider, projectCollider},
-    ComponentCodec{"animation", ComponentCodecRuntimeKind::Ecs, decodeAnimation, encodeAnimation,
-                   [] { return fieldSpan(animation_fields); }, applyAnimation, projectAnimation},
-    ComponentCodec{"sprite_view", ComponentCodecRuntimeKind::Ecs, decodeSprite, encodeSprite,
-                   [] { return fieldSpan(sprite_fields); }, applySprite, projectSprite},
+                   applySimpleModelView, projectSimpleModelView, nullptr, nullptr},
+    ComponentCodec{"camera", ComponentCodecRuntimeKind::Camera,
+                   EditorProjectionPolicy::Camera, decodeCamera, encodeCamera,
+                   [] { return fieldSpan(camera_fields); }, applyCamera,
+                   projectCamera, nullptr, nullptr},
+    ComponentCodec{"light", ComponentCodecRuntimeKind::Light,
+                   EditorProjectionPolicy::Light, decodeLight, encodeLight,
+                   [] { return fieldSpan(light_fields); }, applyLight,
+                   projectLight, nullptr, nullptr},
+    ComponentCodec{"collider", ComponentCodecRuntimeKind::Collider,
+                   EditorProjectionPolicy::Collider, decodeCollider,
+                   encodeCollider, [] { return fieldSpan(collider_fields); },
+                   applyCollider, projectCollider, nullptr, nullptr},
+    ComponentCodec{"animation", ComponentCodecRuntimeKind::Ecs,
+                   EditorProjectionPolicy::EcsCodec, decodeAnimation,
+                   encodeAnimation, [] { return fieldSpan(animation_fields); },
+                   applyAnimation, projectAnimation,
+                   prepareEcsEditorSwap<AnimationComponent>,
+                   swapEcsEditorToken<AnimationComponent>},
+    ComponentCodec{"sprite_view", ComponentCodecRuntimeKind::Ecs,
+                   EditorProjectionPolicy::EcsCodec, decodeSprite, encodeSprite,
+                   [] { return fieldSpan(sprite_fields); }, applySprite,
+                   projectSprite, prepareEcsEditorSwap<SpriteViewComponent>,
+                   swapEcsEditorToken<SpriteViewComponent>},
     ComponentCodec{"ray_instance", ComponentCodecRuntimeKind::Ecs,
+                   EditorProjectionPolicy::EcsCodec,
                    decodeRayInstance, encodeRayInstance,
                    [] { return fieldSpan(ray_instance_fields); },
-                   applyRayInstance, projectRayInstance},
+                   applyRayInstance, projectRayInstance,
+                   prepareEcsEditorSwap<RayInstanceComponent>,
+                   swapEcsEditorToken<RayInstanceComponent>},
 };
 
 } // namespace
@@ -1123,6 +1180,23 @@ ComponentCodecValue ComponentCodec::projectRuntime(const void *source) const {
     return runtime_project(source);
 }
 
+ComponentEditorSwapToken ComponentCodec::prepareEditorSwap(
+    void *ecs, std::uint32_t entity_index,
+    std::uint32_t entity_generation,
+    const ComponentCodecValue &value) const {
+    if (editor_policy != EditorProjectionPolicy::EcsCodec ||
+        editor_prepare == nullptr || editor_swap == nullptr) {
+        throw std::logic_error(
+            "component codec editor projection callbacks are missing");
+    }
+    return editor_prepare(ecs, entity_index, entity_generation, value);
+}
+
+void ComponentCodec::swapEditorToken(
+    ComponentEditorSwapToken &token, EditorCodecSwapPhase phase) const noexcept {
+    if (editor_swap != nullptr) editor_swap(token, phase);
+}
+
 namespace {
 bool rayInstanceCodecEnabled() noexcept {
     const auto *state =
@@ -1132,11 +1206,31 @@ bool rayInstanceCodecEnabled() noexcept {
 } // namespace
 
 std::span<const ComponentCodec> componentCodecs() {
+    if (codec_catalog_override != nullptr) return *codec_catalog_override;
     return rayInstanceCodecEnabled()
                ? std::span<const ComponentCodec>{codecs}
                : std::span<const ComponentCodec>{codecs}.first(
                      codecs.size() - 1u);
 }
+
+namespace testing {
+
+ScopedComponentCodecCatalog::ScopedComponentCodecCatalog(
+    std::vector<ComponentCodec> replacement)
+    : replacement_{std::move(replacement)},
+      previous_{codec_catalog_override} {
+    if (replacement_.empty()) {
+        throw std::invalid_argument(
+            "component codec test catalog must not be empty");
+    }
+    codec_catalog_override = &replacement_;
+}
+
+ScopedComponentCodecCatalog::~ScopedComponentCodecCatalog() noexcept {
+    codec_catalog_override = previous_;
+}
+
+} // namespace testing
 
 const ComponentCodec *findComponentCodec(std::string_view name) noexcept {
     const auto available = componentCodecs();

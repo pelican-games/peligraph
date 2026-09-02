@@ -801,6 +801,7 @@ add_test(
     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_determinism.cmake
 )
 pelican_define_test(componentcodec_test GROUP ecs_editor pelican_core glm)
+pelican_define_test(wp375_editor_projection_test GROUP ecs_editor pelican_core glm)
 pelican_define_test(editorprojectiontransaction_test GROUP ecs_editor pelican_core glm
   VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(editorpreviewprojection_test GROUP ecs_editor pelican_core glm)
@@ -1266,6 +1267,42 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_production_test PRIVATE
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_WP374_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
 )
+if(WIN32)
+    # This production acceptance executable is the real SDK export host for
+    # its game-logic fixture.  The DLL sees only the shipped userpublic API and
+    # links the host import library, matching the actual player composition.
+    set_target_properties(pelican_test_raytracing_rt3_1_production_test
+        PROPERTIES ENABLE_EXPORTS TRUE)
+    if(MSVC)
+        target_link_options(pelican_test_raytracing_rt3_1_production_test PRIVATE
+            "/WHOLEARCHIVE:$<TARGET_LINKER_FILE:pelican_core>")
+    endif()
+
+    add_library(pelican_wp375_behavior_fixture SHARED
+        fixtures/behavior_game_dll/behavior.cpp
+        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+    )
+    set_target_properties(pelican_wp375_behavior_fixture PROPERTIES
+        CXX_STANDARD 20
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        OUTPUT_NAME "pelican_wp375_behavior_fixture"
+    )
+    add_dependencies(pelican_wp375_behavior_fixture
+        pelican_test_raytracing_rt3_1_production_test)
+    target_link_libraries(pelican_wp375_behavior_fixture PRIVATE
+        "$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>"
+        glm
+        nlohmann_json)
+    target_include_directories(pelican_wp375_behavior_fixture PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core/userpublic
+        ${CMAKE_SOURCE_DIR}/src/core
+        ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(pelican_wp375_behavior_fixture PRIVATE
+        PELICAN_GAME_DLL=1)
+    target_compile_definitions(
+        pelican_test_raytracing_rt3_1_production_test PRIVATE
+        PELICAN_WP375_BEHAVIOR_FIXTURE="$<TARGET_FILE:pelican_wp375_behavior_fixture>")
+endif()
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_raytracing_rt1b_test PRIVATE pelican_shaderc)
     target_link_libraries(pelican_test_raytracing_rt2b_test PRIVATE pelican_shaderc)

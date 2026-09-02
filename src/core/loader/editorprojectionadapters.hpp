@@ -19,10 +19,21 @@ class LightContainer;
 class ModelAssetContainer;
 class PhysWorld;
 class PolygonInstanceContainer;
+struct ComponentCodec;
 
 struct EditorProjectionRuntimeObjectBinding {
     AuthoringObjectId authoring_object_id{};
     EntityId entity{};
+};
+
+struct SceneObjectProjectionParticipants {
+    bool renderer = true;
+    bool camera = true;
+    bool light = true;
+    bool collider = true;
+
+    friend bool operator==(const SceneObjectProjectionParticipants &,
+                           const SceneObjectProjectionParticipants &) = default;
 };
 
 // Aggregate lifecycle participant for one structural object insert/restore or
@@ -42,6 +53,20 @@ class SceneObjectProjectionAdapter final : public EditorProjectionAdapter {
         Camera &camera, LightContainer &lights, PhysWorld &physics,
         std::string scene_id, AuthoringObjectId target_object,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings);
+    SceneObjectProjectionAdapter(
+        ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+        ModelAssetContainer &models, PolygonInstanceContainer &renderer,
+        Camera &camera, LightContainer &lights, PhysWorld &physics,
+        std::string scene_id, AuthoringObjectId target_object,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        SceneObjectProjectionParticipants participants);
+    SceneObjectProjectionAdapter(
+        ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+        ModelAssetContainer *models, PolygonInstanceContainer *renderer,
+        Camera *camera, LightContainer *lights, PhysWorld *physics,
+        std::string scene_id, AuthoringObjectId target_object,
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        SceneObjectProjectionParticipants participants);
     // Production lifecycle core for headless/runtime tests whose scene has no
     // renderer, camera, light, model, or collider projection.  It executes the
     // same staged ECS mutation used by the full adapter and deliberately fails
@@ -106,7 +131,8 @@ class EcsCodecProjectionAdapter final : public EditorProjectionAdapter {
   public:
     EcsCodecProjectionAdapter(
         ECSCoreTemplatePublic &ecs, std::string scene_id,
-        std::vector<EditorProjectionRuntimeObjectBinding> bindings);
+        std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+        std::vector<ComponentCodec> codecs);
     ~EcsCodecProjectionAdapter();
 
     EditorProjectionAdapterKind kind() const noexcept override;

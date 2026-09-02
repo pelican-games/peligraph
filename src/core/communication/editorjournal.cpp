@@ -10,9 +10,11 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <limits>
 #include <random>
 #include <stdexcept>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -252,16 +254,18 @@ Json canonicalBehaviorComponent(const Json &component,
     }
     const auto type = requireString(component, "type", "behavior component");
     const auto *registration = internal::getBehaviorRegisterer().findByName(type);
-    if (registration == nullptr) {
-        editFailure(EditorEditErrorCode::method_unavailable,
-                    {{"method", "behavior"},
-                     {"adapter", "behavior_registration"},
-                     {"type", type}},
-                    "behavior registration is unavailable");
-    }
     const auto params = component.contains("params")
                             ? component.at("params")
                             : Json::object();
+    // Registration availability is a runtime projection input.  Keep an
+    // unregistered attachment lossless here so the production context can
+    // distinguish an active registry (named rejection) from an unavailable
+    // DLL (pending attachment) at the commit boundary.
+    if (registration == nullptr) {
+        return Json{{"name", "behavior"},
+                    {"type", type},
+                    {"params", params}};
+    }
     try {
         return Json{{"name", "behavior"},
                     {"type", type},
@@ -499,6 +503,7 @@ struct PreparedBatch {
     std::vector<EditorProjectionCommand> commands;
     std::vector<OrderedJson> forward;
     std::vector<OrderedJson> inverse;
+    std::vector<EditorCanonicalOperation> canonical_forward;
     std::vector<PreparedOperation> operations;
     std::vector<AuthoringObjectId> affected;
 };
@@ -1700,9 +1705,14 @@ EditFailure projectionFailure(const EditorProjectionResult &result,
         return EditFailure{method == "reparent"
                                ? EditorEditErrorCode::parent_not_found
                                : EditorEditErrorCode::closure_unresolvable,
-                           method == "reparent" ? OrderedJson{{"name", path}}
+                            method == "reparent" ? OrderedJson{{"name", path}}
                                                   : OrderedJson{{"object_path", path}},
-                           message};
+                            message};
+    case EditorProjectionErrorCode::BehaviorTypeUnknown:
+        return EditFailure{
+            EditorEditErrorCode::behavior_type_unknown,
+            result.error ? result.error->data : OrderedJson::object(),
+            message};
     case EditorProjectionErrorCode::AdapterPrepareFailed:
     case EditorProjectionErrorCode::AdapterPublishFailed:
         return EditFailure{EditorEditErrorCode::method_unavailable,
@@ -1811,6 +1821,34 @@ Json normalizeBehaviorAttachmentIdentities(
     return result;
 }
 
+EditorCanonicalOperation freezeJournalOperation(
+    const OrderedJson &wire, const SceneProjectionState &projection_state) {
+    auto result = freezeEditorCanonicalOperation(wire, projection_state);
+    std::visit(
+        [&](auto &operation) {
+            using Operation = std::remove_cvref_t<decltype(operation)>;
+            if constexpr (std::same_as<Operation,
+                                       EditorSetComponentValueOperation> ||
+                          std::same_as<Operation,
+                                       EditorAddComponentOperation>) {
+                if (operation.component != "behavior") return;
+                const auto &component =
+                    operation.wire.at(
+                        std::same_as<Operation,
+                                     EditorSetComponentValueOperation>
+                            ? "authored_component"
+                            : "component");
+                const auto canonical =
+                    canonicalBehaviorComponent(component, operation.object_id);
+                operation.canonical_component = OrderedJson(canonical).dump();
+                operation.canonical_behavior_params =
+                    OrderedJson(canonical.value("params", Json::object())).dump();
+            }
+        },
+        result);
+    return result;
+}
+
 PreparedBatch prepareBatch(const Json &raw_operations,
                            const AuthoringSceneDocument &source,
                            std::string_view current_scene,
@@ -1840,6 +1878,7 @@ PreparedBatch prepareBatch(const Json &raw_operations,
     }
     PreparedBatch batch;
     batch.operations.reserve(raw_operations.size());
+    batch.canonical_forward.reserve(raw_operations.size());
     for (const auto &raw : raw_operations) {
         auto prepared = prepareRpcOperation(
             raw, local->projectionDocument(), local->projectionResolvedScene(),
@@ -1877,6 +1916,9 @@ PreparedBatch prepareBatch(const Json &raw_operations,
                 prepared.inverse["closures"].push_back(closureJson(closure));
             }
         }
+        batch.canonical_forward.push_back(
+            freezeJournalOperation(prepared.forward,
+                                   local->projectionState()));
         batch.commands.insert(batch.commands.end(), prepared.commands.begin(),
                               prepared.commands.end());
         batch.forward.push_back(prepared.forward);
@@ -2032,7 +2074,9 @@ commandsFromCanonical(std::span<const OrderedJson> operations,
                       const AuthoringSceneDocument &document,
                       PrefabRegistrySnapshot registry = {},
                       BindableProviderSnapshot provider = {},
-                      const SceneProjectionState *projection_state = nullptr) {
+                      const SceneProjectionState *projection_state = nullptr,
+                      std::vector<EditorCanonicalOperation> *canonical_operations =
+                          nullptr) {
     std::optional<LocalDocumentTarget> local;
     if (projection_state != nullptr &&
         projection_state->revision() == document.revision()) {
@@ -2041,7 +2085,16 @@ commandsFromCanonical(std::span<const OrderedJson> operations,
         local.emplace(document, std::move(registry), std::move(provider));
     }
     std::vector<EditorProjectionCommand> result;
+    if (canonical_operations != nullptr) {
+        canonical_operations->clear();
+        canonical_operations->reserve(operations.size());
+    }
     for (const auto &operation : operations) {
+        if (canonical_operations != nullptr) {
+            canonical_operations->push_back(
+                freezeJournalOperation(operation,
+                                       local->projectionState()));
+        }
         const auto op = operation.at("op").get<std::string>();
         const bool unpack = op == "unpack_prefab";
         const bool restore = op == "restore_prefab";
@@ -2120,9 +2173,13 @@ OrderedJson writerJson(const EditorLastWriterStamp &stamp) {
 
 OrderedJson editErrorJson(EditorEditErrorCode code, const OrderedJson &payload,
                           std::string_view message) {
-    return {{"code", editorEditErrorCodeName(code)},
-            {"message", message},
-            {"payload", payload}};
+    OrderedJson result{{"code", editorEditErrorCodeName(code)},
+                       {"message", message},
+                       {"payload", payload}};
+    if (code == EditorEditErrorCode::behavior_type_unknown) {
+        result["data"] = payload;
+    }
+    return result;
 }
 
 OrderedJson targetState(const Json &operations,
@@ -2416,15 +2473,16 @@ bool postconditionsHold(const EditorJournalRecord &record,
 
 void requireLivePreviewCapability(const PreparedBatch &batch,
                                   std::string_view method) {
+    // Semantic eligibility belongs to planEditorProjection.  This boundary
+    // only protects the prepared-batch structural invariant so preview and
+    // committed execution share one route matrix.
     for (const auto &operation : batch.operations) {
-        const auto op = operation.forward.value("op", std::string{});
-        const auto slot = operation.forward.value("component_slot", std::string{});
-        if (op != "set_component_value" ||
-            (slot != "transform" && slot != "light")) {
+        if (!operation.forward.is_object() ||
+            !operation.forward.contains("op") ||
+            !operation.forward.at("op").is_string()) {
             editFailure(EditorEditErrorCode::method_unavailable,
-                        {{"method", method},
-                         {"field", op + ":" + slot}},
-                        "field has no side-effect-free live preview capability");
+                        {{"method", method}, {"field", "op"}},
+                        "live preview operation is not structurally canonical");
         }
     }
 }
@@ -2935,6 +2993,8 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
         return "origin_transition_gid_derivation_mismatch@1";
     case EditorEditErrorCode::origin_transition_body_mismatch:
         return "origin_transition_body_mismatch@1";
+    case EditorEditErrorCode::behavior_type_unknown:
+        return "behavior_type_unknown@1";
     case EditorEditErrorCode::unknown_component_type: return "unknown_component_type";
     case EditorEditErrorCode::duplicate_component: return "duplicate_component";
     case EditorEditErrorCode::missing_component: return "missing_component";
@@ -3027,7 +3087,7 @@ struct EditorEditCoordinator::Impl {
         EditorActorId actor_id{};
         SceneRevision base_revision{};
         Json raw_operations;
-        std::vector<OrderedJson> canonical_operations;
+        std::vector<EditorCanonicalOperation> canonical_operations;
         std::vector<std::string> write_set;
         std::vector<OrderedJson> structural_domain;
         std::vector<AuthoringObjectId> affected;
@@ -3479,7 +3539,7 @@ struct EditorEditCoordinator::Impl {
 
     EditorProjectionResult executeLivePreview(
         const PreviewLease &lease, std::span<const EditorProjectionCommand> commands,
-        std::span<const OrderedJson> operations, bool restore) {
+        std::span<const EditorCanonicalOperation> operations, bool restore) {
         if (!dependencies.execute_preview) {
             editFailure(EditorEditErrorCode::method_unavailable,
                         {{"method", restore ? "abort_preview" : "open_preview"},
@@ -3488,8 +3548,11 @@ struct EditorEditCoordinator::Impl {
         }
         const EditorPreviewExecutionRequest request{
             .base_revision = document().revision(),
-            .commands = commands,
-            .operations = operations,
+            .commands = restore ? std::span<const EditorProjectionCommand>{}
+                                : commands,
+            .operations = restore
+                              ? std::span<const EditorCanonicalOperation>{}
+                              : operations,
             .restore_committed = restore,
         };
         return dependencies.execute_preview(request);
@@ -3581,14 +3644,14 @@ struct EditorEditCoordinator::Impl {
                         .actor_id = request.actor_id,
                         .base_revision = document().revision(),
                         .raw_operations = request.raw_operations,
-                        .canonical_operations = batch.forward,
+                        .canonical_operations = batch.canonical_forward,
                         .write_set = batchWriteSet(batch),
                         .structural_domain = batchStructuralDomains(batch),
                         .affected = batch.affected,
                         .scene_id = request.accepted_scene_id,
                     };
                     const auto projection = executeLivePreview(
-                        lease, batch.commands, batch.forward, false);
+                        lease, batch.commands, batch.canonical_forward, false);
                     if (!projection.committed()) {
                         throw projectionFailure(projection, "open_preview");
                     }
@@ -3662,12 +3725,14 @@ struct EditorEditCoordinator::Impl {
                                     "preview update cannot expand or replace its lease");
                     }
                     const auto projection = executeLivePreview(
-                        *preview_lease, batch.commands, batch.forward, false);
+                        *preview_lease, batch.commands,
+                        batch.canonical_forward, false);
                     if (!projection.committed()) {
                         throw projectionFailure(projection, "update_preview");
                     }
                     preview_lease->raw_operations = request.raw_operations;
-                    preview_lease->canonical_operations = batch.forward;
+                    preview_lease->canonical_operations =
+                        batch.canonical_forward;
                     preview_lease->affected = batch.affected;
                     advancePreviewEpoch();
                     finishPreviewRequest(request,
@@ -3700,7 +3765,7 @@ struct EditorEditCoordinator::Impl {
                     const EditorEditExecutionRequest execution{
                         .base_revision = preview_lease->base_revision,
                         .commands = batch.commands,
-                        .operations = batch.forward,
+                        .operations = batch.canonical_forward,
                     };
                     const auto projection = dependencies.execute(execution);
                     if (!projection.committed()) {
@@ -3884,7 +3949,8 @@ struct EditorEditCoordinator::Impl {
 
                 PreparedBatch batch;
                 std::vector<EditorProjectionCommand> revert_commands;
-                std::span<const OrderedJson> execution_operations;
+                std::vector<EditorCanonicalOperation> revert_operations;
+                std::span<const EditorCanonicalOperation> execution_operations;
                 std::span<const EditorProjectionCommand> execution_commands;
                 if (ticket.kind == Ticket::Kind::edit) {
                     batch = prepareBatch(ticket.raw_operations, document(),
@@ -3906,7 +3972,7 @@ struct EditorEditCoordinator::Impl {
                                     {{"reason", "acceptance_witness"}},
                                     "unpack witness changed between acceptance and execution");
                     }
-                    execution_operations = batch.forward;
+                    execution_operations = batch.canonical_forward;
                     execution_commands = batch.commands;
                 } else {
                     if (const auto failure = prefabCasFailure(ticket)) {
@@ -3935,8 +4001,8 @@ struct EditorEditCoordinator::Impl {
                     revert_commands = commandsFromCanonical(
                         revert_source->ordered_inverse, document(),
                         prefabRegistry(), bindableProvider(),
-                        projectionState());
-                    execution_operations = revert_source->ordered_inverse;
+                        projectionState(), &revert_operations);
+                    execution_operations = revert_operations;
                     execution_commands = revert_commands;
                 }
                 const EditorEditExecutionRequest request{
@@ -4440,7 +4506,7 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
             .actor_id = actor,
             .base_revision = impl_->document().revision(),
             .raw_operations = request.raw_operations,
-            .canonical_operations = batch.forward,
+            .canonical_operations = batch.canonical_forward,
             .write_set = batchWriteSet(batch),
             .structural_domain = batchStructuralDomains(batch),
             .affected = batch.affected,
@@ -4698,13 +4764,15 @@ EditorProjectionResult EditorEditCoordinator::executeJournalForVerification(
     }
     const auto &operations = inverse ? found->ordered_inverse
                                      : found->ordered_forward;
+    std::vector<EditorCanonicalOperation> canonical_operations;
     auto commands = commandsFromCanonical(
         operations, impl_->document(), impl_->prefabRegistry(),
-        impl_->bindableProvider(), impl_->projectionState());
+        impl_->bindableProvider(), impl_->projectionState(),
+        &canonical_operations);
     const EditorEditExecutionRequest request{
         .base_revision = impl_->document().revision(),
         .commands = commands,
-        .operations = operations,
+        .operations = canonical_operations,
     };
     return impl_->dependencies.execute(request);
 }

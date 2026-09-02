@@ -35,6 +35,7 @@ target_sources(pelican_core PRIVATE
     editorcommandservice.cpp
     editorjournal.cpp
     editorpreviewservice.cpp
+    editorprojectionplan.cpp
     renderconfigeditor.cpp
     renderconfigtransaction.cpp
     editorrpchandlers.cpp

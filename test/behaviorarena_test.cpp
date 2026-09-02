@@ -402,7 +402,7 @@ TEST_CASE("Editor behavior activation failure is terminal until its params chang
         .canonical_params = internal::canonicalizeBehaviorParams(
             "wp155_throw_init", raw.at("params")),
         .raw_component = raw,
-    }});
+    }}, BehaviorRegistryAvailability::active);
     prepared->publish();
     prepared->finish();
 
@@ -479,7 +479,7 @@ TEST_CASE("WP167 live behavior edits preserve identity lifecycle and temporal vi
             .canonical_params = internal::canonicalizeBehaviorParams(
                 "wp155_order", raw.at("params")),
             .raw_component = raw,
-        }});
+        }}, BehaviorRegistryAvailability::active);
         prepared->publish();
         prepared->finish();
         REQUIRE(arena.snapshot().size() == 1);
@@ -503,7 +503,7 @@ TEST_CASE("WP167 live behavior edits preserve identity lifecycle and temporal vi
             .entity = entity,
             .component_index = 0,
             .identity = identity,
-        }});
+        }}, BehaviorRegistryAvailability::active);
         prepared->publish();
         prepared->finish();
         REQUIRE(arena.snapshot().empty());
@@ -533,7 +533,7 @@ TEST_CASE("WP167 live behavior edits preserve identity lifecycle and temporal vi
         .canonical_params = internal::canonicalizeBehaviorParams(
             "wp155_order", edited.at("params")),
         .raw_component = edited,
-    }});
+    }}, BehaviorRegistryAvailability::active);
     set_params->publish();
     set_params->finish();
     arena.dispatchEvent(event, ctx);
@@ -548,7 +548,7 @@ TEST_CASE("WP167 live behavior edits preserve identity lifecycle and temporal vi
         .identity = identity,
         .canonical_params = R"({"label":7})",
         .raw_component = component("unpublished"),
-    }}));
+    }}, BehaviorRegistryAvailability::active));
     trace.clear();
     arena.dispatchEvent(event, ctx);
     REQUIRE(trace == std::vector<std::string>{"B:event:edited"});

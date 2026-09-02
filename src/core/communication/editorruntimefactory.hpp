@@ -1,6 +1,8 @@
 #pragma once
 
 #include "editorjournal.hpp"
+#include "editorprojectionplan.hpp"
+#include "../loader/editorprojectionadapters.hpp"
 
 #include <memory>
 #include <span>
@@ -10,8 +12,15 @@
 namespace Pelican {
 
 class BehaviorAttachmentArena;
+class Camera;
+class ComponentInfoManager;
+class ECSCoreTemplatePublic;
 class EditorCommandService;
 enum class BehaviorRegistryAvailability;
+class LightContainer;
+class ModelAssetContainer;
+class PhysWorld;
+class PolygonInstanceContainer;
 struct EditorProjectionRuntimeObjectBinding;
 
 struct EditorRuntimeServiceOptions {
@@ -20,6 +29,39 @@ struct EditorRuntimeServiceOptions {
     // surface while sharing all scene-edit implementation.
     bool render_config_editing = false;
 };
+
+// The materialization boundary uses optional module pointers so CPU tests can
+// bind only the participants named by their plan.  Production supplies every
+// pointer from the runtime composition root.
+struct EditorProjectionModules {
+    ECSCoreTemplatePublic *ecs = nullptr;
+    ComponentInfoManager *component_info = nullptr;
+    ModelAssetContainer *models = nullptr;
+    PolygonInstanceContainer *polygon_instances = nullptr;
+    Camera *camera = nullptr;
+    LightContainer *lights = nullptr;
+    PhysWorld *physics = nullptr;
+    BehaviorAttachmentArena *behavior_arena = nullptr;
+};
+
+struct EditorRuntimeBindingState {
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings;
+    std::uint64_t epoch = 0;
+    std::uint64_t codec_generation = 0;
+    std::uint64_t behavior_generation = 0;
+};
+
+EditorProjectionContext makeEditorProjectionContext(
+    std::string active_scene_id, EditorProjectionMode mode);
+
+EditorProjectionResult materializeEditorProjection(
+    const EditorProjectionPlan &plan, const EditorProjectionModules &modules,
+    EditorProjectionDocumentTarget &target,
+    EditorRuntimeBindingState &binding_state,
+    std::uint64_t expected_binding_epoch,
+    std::uint64_t expected_codec_generation,
+    std::uint64_t expected_behavior_generation,
+    EditorProjectionFaultInjector *fault_injector = nullptr);
 
 namespace internal {
 

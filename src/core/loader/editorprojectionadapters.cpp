@@ -12,8 +12,6 @@
 #include "../phys/physworld.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
-#include "../userpublic/components/animation.hpp"
-#include "../userpublic/components/spriteview.hpp"
 
 #include <components/predefined.hpp>
 #include <details/ecs/componentdeclare.hpp>
@@ -25,7 +23,6 @@
 #include <stdexcept>
 #include <unordered_map>
 #include <utility>
-#include <variant>
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
@@ -139,6 +136,7 @@ struct SceneObjectProjectionAdapter::Impl {
     Camera *camera = nullptr;
     LightContainer *lights = nullptr;
     PhysWorld *physics = nullptr;
+    bool require_connected_participants = false;
     std::string scene_id;
     AuthoringObjectId target_object{};
     AuthoringObjectId prepared_target{};
@@ -256,35 +254,37 @@ struct SceneObjectProjectionAdapter::Impl {
         if (model_load != loads.end()) {
             if (models == nullptr || renderer == nullptr) {
                 throw std::runtime_error(
-                    "headless object lifecycle cannot project simplemodelview");
-            }
-            const auto &data =
-                std::any_cast<const SimpleModelViewCodecData &>(
-                    model_load->decoded);
-            auto &model = models->getModelTemplateByName(data.model);
-            staged_model.emplace(renderer->stageModelInstance(model));
-            staged_model_id = staged_model->id();
+                    "object lifecycle cannot project simplemodelview without "
+                    "the renderer participant");
+            } else {
+                const auto &data =
+                    std::any_cast<const SimpleModelViewCodecData &>(
+                        model_load->decoded);
+                auto &model = models->getModelTemplateByName(data.model);
+                staged_model.emplace(renderer->stageModelInstance(model));
+                staged_model_id = staged_model->id();
 
-            glm::mat4 matrix{1.0F};
-            const auto transform_load = std::find_if(
-                loads.begin(), loads.end(), [](const auto &load) {
-                    return load.name == "transform";
-                });
-            if (transform_load != loads.end()) {
-                TransformComponent world{};
-                LocalTransformComponent local{};
-                TransformCodecTarget target{
-                    .world = &world,
-                    .local = hierarchy ? &local : nullptr,
-                    .parent_world = parent_world,
-                };
-                transform_load->codec->applyRuntime(transform_load->decoded,
-                                                    &target);
-                matrix = glm::translate(glm::mat4{1.0F}, world.pos) *
-                         glm::toMat4(world.rotation) *
-                         glm::scale(glm::mat4{1.0F}, world.scale);
+                glm::mat4 matrix{1.0F};
+                const auto transform_load = std::find_if(
+                    loads.begin(), loads.end(), [](const auto &load) {
+                        return load.name == "transform";
+                    });
+                if (transform_load != loads.end()) {
+                    TransformComponent world{};
+                    LocalTransformComponent local{};
+                    TransformCodecTarget target{
+                        .world = &world,
+                        .local = hierarchy ? &local : nullptr,
+                        .parent_world = parent_world,
+                    };
+                    transform_load->codec->applyRuntime(
+                        transform_load->decoded, &target);
+                    matrix = glm::translate(glm::mat4{1.0F}, world.pos) *
+                             glm::toMat4(world.rotation) *
+                             glm::scale(glm::mat4{1.0F}, world.scale);
+                }
+                renderer->setStagedModelMatrix(*staged_model, matrix);
             }
-            renderer->setStagedModelMatrix(*staged_model, matrix);
         }
 
         entity.emplace(ECSEntityMutation::prepareCreate(
@@ -375,11 +375,13 @@ struct SceneObjectProjectionAdapter::Impl {
                     std::string{component_name});
             }
         };
-        requireConnected(models != nullptr && renderer != nullptr,
-                         "simplemodelview");
-        requireConnected(camera != nullptr, "camera");
-        requireConnected(lights != nullptr, "light");
-        requireConnected(physics != nullptr, "collider");
+        if (require_connected_participants) {
+            requireConnected(models != nullptr && renderer != nullptr,
+                             "simplemodelview");
+            requireConnected(camera != nullptr, "camera");
+            requireConnected(lights != nullptr, "light");
+            requireConnected(physics != nullptr, "collider");
+        }
 
         if (camera != nullptr) {
             old_camera = camera->snapshotPrepared();
@@ -468,6 +470,60 @@ SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
                                : std::to_string(impl_->target_object.value));
 }
 
+SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
+    ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+    ModelAssetContainer *models, PolygonInstanceContainer *renderer,
+    Camera *camera, LightContainer *lights, PhysWorld *physics,
+    std::string scene_id, AuthoringObjectId target_object,
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+    SceneObjectProjectionParticipants participants)
+    : impl_(std::make_unique<Impl>(Impl{
+          .ecs = ecs,
+          .components = components,
+          .models = participants.renderer ? models : nullptr,
+          .renderer = participants.renderer ? renderer : nullptr,
+          .camera = participants.camera ? camera : nullptr,
+          .lights = participants.light ? lights : nullptr,
+          .physics = participants.collider ? physics : nullptr,
+          .require_connected_participants = false,
+          .scene_id = std::move(scene_id),
+          .target_object = target_object,
+          .bindings = std::move(bindings),
+      })) {
+    (void)bindingMap(impl_->bindings);
+    impl_->adapter_name = "object_lifecycle." + impl_->scene_id + "." +
+                          (impl_->target_object.value == 0
+                               ? std::string{"auto"}
+                               : std::to_string(impl_->target_object.value));
+}
+
+SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
+    ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
+    ModelAssetContainer &models, PolygonInstanceContainer &renderer,
+    Camera &camera, LightContainer &lights, PhysWorld &physics,
+    std::string scene_id, AuthoringObjectId target_object,
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+    SceneObjectProjectionParticipants participants)
+    : impl_(std::make_unique<Impl>(Impl{
+          .ecs = ecs,
+          .components = components,
+          .models = participants.renderer ? &models : nullptr,
+          .renderer = participants.renderer ? &renderer : nullptr,
+          .camera = participants.camera ? &camera : nullptr,
+          .lights = participants.light ? &lights : nullptr,
+          .physics = participants.collider ? &physics : nullptr,
+          .require_connected_participants = false,
+          .scene_id = std::move(scene_id),
+          .target_object = target_object,
+          .bindings = std::move(bindings),
+      })) {
+    (void)bindingMap(impl_->bindings);
+    impl_->adapter_name = "object_lifecycle." + impl_->scene_id + "." +
+                          (impl_->target_object.value == 0
+                               ? std::string{"auto"}
+                               : std::to_string(impl_->target_object.value));
+}
+
 SceneObjectProjectionAdapter::~SceneObjectProjectionAdapter() = default;
 EditorProjectionAdapterKind
 SceneObjectProjectionAdapter::kind() const noexcept {
@@ -492,6 +548,7 @@ SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
     : impl_(std::make_unique<Impl>(Impl{
           .ecs = ecs,
           .components = components,
+          .require_connected_participants = true,
           .scene_id = std::move(scene_id),
           .target_object = target_object,
           .bindings = std::move(bindings),
@@ -556,6 +613,14 @@ void SceneObjectProjectionAdapter::prepare(
     if ((base_object == nullptr) == (next_object == nullptr)) {
         throw std::runtime_error(
             "scene object projection target is not a spawn or destroy");
+    }
+    const auto *lifecycle_object =
+        next_object != nullptr ? next_object : base_object;
+    if (findResolvedComponent(lifecycle_object, "simplemodelview") != nullptr &&
+        (impl_->models == nullptr || impl_->renderer == nullptr)) {
+        throw std::runtime_error(
+            "object lifecycle cannot project simplemodelview without the "
+            "renderer participant");
     }
     if (next_object != nullptr) {
         if (next_scene == nullptr) {
@@ -774,30 +839,29 @@ void BehaviorSceneProjectionAdapter::finish() noexcept {
 }
 
 struct EcsCodecProjectionAdapter::Impl {
-    using AnimationToken =
-        ECSCoreTemplatePublic::PreparedComponentSwap<AnimationComponent>;
-    using SpriteToken =
-        ECSCoreTemplatePublic::PreparedComponentSwap<SpriteViewComponent>;
-    using RayInstanceToken =
-        ECSCoreTemplatePublic::PreparedComponentSwap<RayInstanceComponent>;
-    using Token =
-        std::variant<AnimationToken, SpriteToken, RayInstanceToken>;
+    struct Prepared {
+        const ComponentCodec *codec = nullptr;
+        ComponentEditorSwapToken token;
+    };
 
     ECSCoreTemplatePublic &ecs;
     std::string scene_id;
     std::string adapter_name;
     std::vector<EditorProjectionRuntimeObjectBinding> bindings;
-    std::vector<Token> prepared;
+    std::vector<ComponentCodec> codecs;
+    std::vector<Prepared> prepared;
 };
 
 EcsCodecProjectionAdapter::EcsCodecProjectionAdapter(
     ECSCoreTemplatePublic &ecs, std::string scene_id,
-    std::vector<EditorProjectionRuntimeObjectBinding> bindings)
+    std::vector<EditorProjectionRuntimeObjectBinding> bindings,
+    std::vector<ComponentCodec> codecs)
     : impl_(std::make_unique<Impl>(Impl{
           .ecs = ecs,
           .scene_id = std::move(scene_id),
           .adapter_name = {},
           .bindings = std::move(bindings),
+          .codecs = std::move(codecs),
       })) {
     (void)bindingMap(impl_->bindings);
     impl_->adapter_name = "codec.ecs." + impl_->scene_id;
@@ -829,58 +893,47 @@ void EcsCodecProjectionAdapter::prepare(
             findResolvedObject(next_scene, binding.authoring_object_id);
         if (base_object == nullptr || next_object == nullptr) continue;
 
-        for (const auto component_name :
-             {std::string_view{"animation"}, std::string_view{"sprite_view"},
-              std::string_view{"ray_instance"}}) {
+        for (const auto &codec : impl_->codecs) {
+            if (codec.editor_policy != EditorProjectionPolicy::EcsCodec) {
+                continue;
+            }
             const auto *base_component =
-                findResolvedComponent(base_object, component_name);
+                findResolvedComponent(base_object, codec.name);
             const auto *next_component =
-                findResolvedComponent(next_object, component_name);
+                findResolvedComponent(next_object, codec.name);
             if (base_component == nullptr || next_component == nullptr ||
                 base_component->effective_json ==
                     next_component->effective_json) {
                 continue;
             }
-            if (component_name == "animation") {
-                const auto &next_value =
-                    std::any_cast<const AnimationComponent &>(
-                        next_component->requireRuntimeValue());
-                impl_->prepared.emplace_back(
-                    impl_->ecs.prepareComponentSwap(binding.entity,
-                                                    next_value));
-            } else if (component_name == "sprite_view") {
-                const auto &next_value =
-                    std::any_cast<const SpriteViewComponent &>(
-                        next_component->requireRuntimeValue());
-                impl_->prepared.emplace_back(
-                    impl_->ecs.prepareComponentSwap(binding.entity,
-                                                    next_value));
-            } else {
-                const auto &next_value =
-                    std::any_cast<const RayInstanceComponent &>(
-                        next_component->requireRuntimeValue());
-                impl_->prepared.emplace_back(
-                    impl_->ecs.prepareComponentSwap(binding.entity,
-                                                    next_value));
-            }
+            impl_->prepared.push_back(Impl::Prepared{
+                .codec = &codec,
+                .token = codec.prepareEditorSwap(
+                    &impl_->ecs, binding.entity.index,
+                    binding.entity.generation,
+                    next_component->requireRuntimeValue()),
+            });
         }
     }
 }
 
 void EcsCodecProjectionAdapter::publish() noexcept {
     for (auto &token : impl_->prepared) {
-        std::visit([](auto &value) { publishToken(value); }, token);
+        token.codec->swapEditorToken(token.token,
+                                     EditorCodecSwapPhase::Publish);
     }
 }
 void EcsCodecProjectionAdapter::rollback() noexcept {
     for (auto it = impl_->prepared.rbegin(); it != impl_->prepared.rend(); ++it) {
-        std::visit([](auto &value) { rollbackToken(value); }, *it);
+        it->codec->swapEditorToken(it->token,
+                                   EditorCodecSwapPhase::Rollback);
     }
     impl_->prepared.clear();
 }
 void EcsCodecProjectionAdapter::finish() noexcept {
     for (auto &token : impl_->prepared) {
-        std::visit([](auto &value) { finishToken(value); }, token);
+        token.codec->swapEditorToken(token.token,
+                                     EditorCodecSwapPhase::Finish);
     }
     impl_->prepared.clear();
 }

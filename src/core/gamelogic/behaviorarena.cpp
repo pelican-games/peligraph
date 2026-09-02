@@ -57,6 +57,16 @@ const BehaviorSystemRegistration behavior_system_registration;
 
 } // namespace
 
+BehaviorTypeUnknownError::BehaviorTypeUnknownError(
+    std::string stable_name, std::string object_name,
+    std::optional<AuthoringObjectId> object_id)
+    : std::runtime_error(
+          "Unknown behavior type '" + stable_name + "'" +
+          (object_name.empty()
+               ? std::string{}
+               : " on object '" + object_name + "'")),
+      stable_name_{std::move(stable_name)}, object_id_{object_id} {}
+
 std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,
                                          std::size_t component_index) {
     constexpr auto max_part = std::numeric_limits<std::uint32_t>::max();
@@ -97,11 +107,10 @@ std::vector<PreparedSceneBehaviorAttachment> prepareSceneBehaviorAttachments(
             const auto *registration = registry.findByName(stable_name);
             if (registration == nullptr) {
                 if (availability == BehaviorRegistryAvailability::active) {
-                    throw std::runtime_error("Unknown behavior type '" + stable_name +
-                                             "' on object '" +
-                                             (object_name.empty() ? std::string{"<unnamed>"}
-                                                                  : object_name) +
-                                             "'");
+                    throw BehaviorTypeUnknownError{
+                        stable_name,
+                        object_name.empty() ? std::string{"<unnamed>"}
+                                            : object_name};
                 }
                 if (logger != nullptr) {
                     LOG_WARNING(logger,
@@ -175,12 +184,11 @@ prepareResolvedSceneBehaviorAttachments(
             const auto *registration = registry.findByName(stable_name);
             if (registration == nullptr) {
                 if (availability == BehaviorRegistryAvailability::active) {
-                    throw std::runtime_error(
-                        "Unknown behavior type '" + stable_name +
-                        "' on object '" +
-                        (object_name.empty() ? std::string{"<unnamed>"}
-                                             : object_name) +
-                        "'");
+                    throw BehaviorTypeUnknownError{
+                        stable_name,
+                        object_name.empty() ? std::string{"<unnamed>"}
+                                            : object_name,
+                        object.authoring_object_id};
                 }
                 if (logger != nullptr) {
                     LOG_WARNING(
@@ -1082,7 +1090,8 @@ std::optional<BehaviorAttachmentInfo> BehaviorAttachmentArena::findEditorAttachm
 
 std::unique_ptr<PreparedBehaviorAttachmentEdits>
 BehaviorAttachmentArena::prepareEditorEdits(
-    std::vector<BehaviorAttachmentEdit> edits) {
+    std::vector<BehaviorAttachmentEdit> edits,
+    BehaviorRegistryAvailability availability) {
     struct SimulatedAttachment {
         BehaviorAttachmentHandle handle = invalidBehaviorAttachmentHandle;
         std::uint64_t attachment_seq = 0;
@@ -1139,11 +1148,15 @@ BehaviorAttachmentArena::prepareEditorEdits(
             }
             const auto *registration =
                 internal::getBehaviorRegisterer().findByName(current.stable_name);
-            if (registration == nullptr) {
-                throw std::runtime_error("behavior registration unavailable: " +
-                                         current.stable_name);
+            if (registration == nullptr &&
+                availability == BehaviorRegistryAvailability::active) {
+                throw BehaviorTypeUnknownError{
+                    current.stable_name, {}, current.authoring_object_id};
             }
-            auto instance = registration->create(current.canonical_params);
+            internal::RawBehaviorInstance instance;
+            if (registration != nullptr) {
+                instance = registration->create(current.canonical_params);
+            }
             for (auto &candidate : simulated) {
                 if (candidate.entity == current.entity &&
                     candidate.component_index >= current.component_index) {
@@ -1175,17 +1188,23 @@ BehaviorAttachmentArena::prepareEditorEdits(
                     .scene_object_index = current.scene_object_index,
                     .scene_ordered = current.scene_ordered,
                     .stable_name = current.stable_name,
-                    .canonical_params = current.canonical_params,
-                    .owner = registration->owner,
-                    .pending = false,
+                    .canonical_params = registration != nullptr
+                                            ? current.canonical_params
+                                            : std::string{},
+                    .owner = registration != nullptr
+                                 ? registration->owner
+                                 : internal::engineRegistrationOwner,
+                    .pending = registration == nullptr,
                     .active = false,
                 },
                 .raw_component = current.raw_component,
                 .instance = instance,
-                .destroy = registration->destroy,
+                .destroy = registration != nullptr ? registration->destroy
+                                                   : nullptr,
                 .initialized = false,
             });
-            item.attachment->info.activation_delay = 1;
+            item.attachment->info.activation_delay =
+                registration != nullptr ? 1 : 0;
             simulated.push_back({
                 .handle = current.identity.handle,
                 .attachment_seq = effective_sequence,
@@ -1194,7 +1213,10 @@ BehaviorAttachmentArena::prepareEditorEdits(
                 .scene_object_index = current.scene_object_index,
                 .scene_ordered = current.scene_ordered,
                 .stable_name = current.stable_name,
-                .owner = registration->owner,
+                .owner = registration != nullptr
+                             ? registration->owner
+                             : internal::engineRegistrationOwner,
+                .pending = registration == nullptr,
             });
             ++attach_count;
             break;

@@ -5,6 +5,7 @@
 #include "componentcodec.hpp"
 #include "basicconfig.hpp"
 #include "../../project/sceneformat.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../geomhelper/geomhelper.hpp"
 
 #include <algorithm>
@@ -366,8 +367,33 @@ EditorProjectionError errorFromException(EditorProjectionErrorCode fallback,
                                          const std::exception &error) {
     if (const auto *projection =
             dynamic_cast<const EditorProjectionException *>(&error)) {
-        return EditorProjectionError{projection->code(),
-                                     projection->objectPath(), error.what()};
+        return EditorProjectionError{
+            .code = projection->code(),
+            .object_path = projection->objectPath(),
+            .message = error.what(),
+            .data = projection->data(),
+        };
+    }
+    if (const auto *behavior =
+            dynamic_cast<const BehaviorTypeUnknownError *>(&error)) {
+        auto data = nlohmann::ordered_json{
+            {"type", behavior->stableName()},
+            {"object_id", behavior->objectId()
+                              ? nlohmann::ordered_json(
+                                    behavior->objectId()->value)
+                              : nlohmann::ordered_json(nullptr)},
+        };
+        if (behavior->objectId()) {
+            path = "/authoring_objects/" +
+                   std::to_string(behavior->objectId()->value) +
+                   "/components/behavior";
+        }
+        return EditorProjectionError{
+            .code = EditorProjectionErrorCode::BehaviorTypeUnknown,
+            .object_path = std::move(path),
+            .message = error.what(),
+            .data = std::move(data),
+        };
     }
     if (const auto *prefab = dynamic_cast<const PrefabError *>(&error)) {
         return EditorProjectionError{fallback, std::move(path), error.what(),
@@ -422,6 +448,8 @@ std::string_view editorProjectionErrorCodeName(
         return "transform_non_finite";
     case EditorProjectionErrorCode::TransformUnrepresentable:
         return "transform_unrepresentable";
+    case EditorProjectionErrorCode::BehaviorTypeUnknown:
+        return BehaviorTypeUnknownError::codeName();
     case EditorProjectionErrorCode::AdapterPrepareFailed:
         return "projection_adapter_prepare_failed";
     case EditorProjectionErrorCode::AdapterPublishFailed:
@@ -432,10 +460,11 @@ std::string_view editorProjectionErrorCodeName(
 
 EditorProjectionException::EditorProjectionException(
     EditorProjectionErrorCode code, std::string object_path,
-    std::string message)
+    std::string message, nlohmann::ordered_json data)
     : std::runtime_error(std::string{editorProjectionErrorCodeName(code)} +
                          ": " + message),
-      code_(code), object_path_(std::move(object_path)) {}
+      code_(code), object_path_(std::move(object_path)),
+      data_(std::move(data)) {}
 
 const SceneProjectionState &
 ProjectBasicConfigProjectionTarget::projectionState() const {
@@ -983,9 +1012,7 @@ EditorProjectionResult EditorProjectionTransaction::commit(
         }
         const auto transaction_failed =
             candidate_state.has_value() || !prepared.empty();
-        result.status = transaction_failed ? EditorProjectionStatus::Failed
-                                           : EditorProjectionStatus::Rejected;
-        result.error = errorFromException(
+        auto projection_error = errorFromException(
             transaction_failed
                 ? EditorProjectionErrorCode::AdapterPrepareFailed
                 : EditorProjectionErrorCode::CommandInvalid,
@@ -994,6 +1021,13 @@ EditorProjectionResult EditorProjectionTransaction::commit(
                               : (transaction_failed ? "/projection"
                                                     : "/commands"),
             error);
+        result.status =
+            projection_error.code ==
+                    EditorProjectionErrorCode::BehaviorTypeUnknown
+                ? EditorProjectionStatus::Rejected
+                : transaction_failed ? EditorProjectionStatus::Failed
+                                     : EditorProjectionStatus::Rejected;
+        result.error = std::move(projection_error);
         return result;
     } catch (...) {
         if (document_published && candidate_state) {

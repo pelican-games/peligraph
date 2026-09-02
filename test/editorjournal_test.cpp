@@ -155,12 +155,14 @@ struct Harness {
                     auto result = transaction.commit(request.commands, adapters);
                     if (result.committed()) {
                         for (const auto &operation : request.operations) {
+                            const auto &wire =
+                                editorCanonicalOperationWire(operation);
                             const auto op =
-                                operation.at("op").get<std::string>();
-                            const auto slot = operation.value(
+                                wire.at("op").get<std::string>();
+                            const auto slot = wire.value(
                                 "component_slot", std::string{});
                             if (slot == "behavior" && op == "add_component") {
-                                const auto index = operation.at("component_index")
+                                const auto index = wire.at("component_index")
                                                        .get<std::size_t>();
                                 for (auto &behavior : runtime_behaviors) {
                                     if (behavior.component_index >= index) {
@@ -170,16 +172,16 @@ struct Harness {
                                 runtime_behaviors.push_back(RuntimeBehavior{
                                     .component_index = index,
                                     .identity = {
-                                        .handle = operation.at("attachment_handle")
+                                        .handle = wire.at("attachment_handle")
                                                       .get<std::uint64_t>(),
-                                        .attachment_seq = operation.at("attachment_seq")
+                                        .attachment_seq = wire.at("attachment_seq")
                                                               .get<std::uint64_t>(),
                                     },
                                 });
                                 lifecycle_trace.push_back("onInit");
                             } else if (slot == "behavior" &&
                                        op == "remove_component") {
-                                const auto index = operation.at("component_index")
+                                const auto index = wire.at("component_index")
                                                        .get<std::size_t>();
                                 std::erase_if(runtime_behaviors, [&](const auto &behavior) {
                                     return behavior.component_index == index;
@@ -192,9 +194,9 @@ struct Harness {
                                 lifecycle_trace.push_back("onDestroy");
                             } else if (slot == "behavior" &&
                                        op == "set_component_value") {
-                                const auto label = operation.contains("value")
-                                                       ? operation.at("value").get<std::string>()
-                                                       : operation.at("authored_component")
+                                const auto label = wire.contains("value")
+                                                       ? wire.at("value").get<std::string>()
+                                                       : wire.at("authored_component")
                                                              .value("params", Json::object())
                                                              .value("label",
                                                                     "journal-default");
@@ -889,17 +891,21 @@ TEST_CASE("WP161 preview commit abort ownership capability and execution gate ar
         REQUIRE(harness.edits->forceAbortPreview("fixture"));
     }
 
-    SECTION("irreversible adapter fields are unavailable") {
+    SECTION("preview component semantics are delegated to the executor") {
         Harness harness;
-        const auto rejected = harness.edits->openPreview(
+        const auto opened = harness.edits->openPreview(
             {{"actor_id", harness.actor},
              {"operations", Json::array({
                  {{"op", "set_component_value"}, {"object_id", 3},
                   {"component_slot", "collider"},
                   {"field_path", "/radius"}, {"value", 2.0}}
              })}});
-        REQUIRE(rejected.at("error").at("code") == "method_unavailable");
-        REQUIRE(harness.preview_execute_count == 0);
+        REQUIRE(opened.at("status") == "accepted");
+        harness.edits->commitPending();
+        const auto result = harness.edits->getPreviewResult(
+            {{"request_id", opened.at("request_id")}});
+        REQUIRE(result.at("status") == "open");
+        REQUIRE(harness.preview_execute_count == 1);
     }
 
     SECTION("gate closes between acceptance and execution") {
@@ -1290,8 +1296,9 @@ TEST_CASE("WP157 edit errors use only the canonical catalog",
              EditorEditErrorCode::undo_conflict,
              EditorEditErrorCode::not_editable,
              EditorEditErrorCode::schema_violation,
-             EditorEditErrorCode::prefab_instance_id_collision,
-             EditorEditErrorCode::unknown_component_type,
+              EditorEditErrorCode::prefab_instance_id_collision,
+              EditorEditErrorCode::behavior_type_unknown,
+              EditorEditErrorCode::unknown_component_type,
              EditorEditErrorCode::duplicate_component,
              EditorEditErrorCode::missing_component,
              EditorEditErrorCode::name_conflict,

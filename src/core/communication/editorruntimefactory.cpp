@@ -25,6 +25,7 @@
 #include "../renderingpass/framegraphruntime.hpp"
 #include "../renderer/camera.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 #include "../vkcore/renderer.hpp"
@@ -37,6 +38,7 @@
 #include <algorithm>
 #include <any>
 #include <array>
+#include <concepts>
 #include <filesystem>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -199,6 +201,19 @@ EditorRuntimeModules resolveEditorRuntimeModules() {
     };
 }
 
+EditorProjectionModules editorProjectionModules(EditorRuntimeModules &modules) {
+    return EditorProjectionModules{
+        .ecs = &modules.ecs_core.getTemplatePublicModule(),
+        .component_info = &modules.component_info,
+        .models = &modules.models,
+        .polygon_instances = &modules.polygon_instances,
+        .camera = &modules.camera,
+        .lights = &modules.lights,
+        .physics = &modules.physics,
+        .behavior_arena = &modules.behavior_arena,
+    };
+}
+
 std::vector<EditorProjectionRuntimeObjectBinding>
 collectEditorRuntimeBindings(const EditorRuntimeModules &modules) {
     std::vector<EditorProjectionRuntimeObjectBinding> result;
@@ -302,8 +317,9 @@ class EditorEcsMigrationProjectionAdapter final
     : public EditorProjectionAdapter {
     ECSCoreTemplatePublic &ecs_;
     ComponentInfoManager &components_;
-    ModelAssetContainer &models_;
-    PolygonInstanceContainer &renderer_;
+    ModelAssetContainer *models_ = nullptr;
+    PolygonInstanceContainer *renderer_ = nullptr;
+    ComponentCodec codec_;
     std::vector<EditorProjectionRuntimeObjectBinding> bindings_;
     AuthoringObjectId object_id_{};
     std::string component_name_;
@@ -316,11 +332,12 @@ class EditorEcsMigrationProjectionAdapter final
   public:
     EditorEcsMigrationProjectionAdapter(
         ECSCoreTemplatePublic &ecs, ComponentInfoManager &components,
-        ModelAssetContainer &models, PolygonInstanceContainer &renderer,
+        ModelAssetContainer *models, PolygonInstanceContainer *renderer,
+        ComponentCodec codec,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings,
         nlohmann::ordered_json operation, std::size_t operation_index)
-        : ecs_{ecs}, components_{components}, models_{models}, renderer_{renderer},
-          bindings_{std::move(bindings)},
+        : ecs_{ecs}, components_{components}, models_{models},
+          renderer_{renderer}, codec_{codec}, bindings_{std::move(bindings)},
           object_id_{operation.at("object_id").get<std::uint64_t>()},
           component_name_{operation.at("component_slot").get<std::string>()},
           operation_(std::move(operation)),
@@ -343,25 +360,30 @@ class EditorEcsMigrationProjectionAdapter final
         if (!entity) throw std::runtime_error("component edit target has no runtime binding");
         const auto component_id = components_.getComponentIdByName(component_name_);
         std::vector<ECSArchetypeMigrationAdapter *> participants;
-        if (component_name_ == "simplemodelview") {
-            simple_model_.emplace(models_, renderer_, kind_);
+        if (codec_.editor_policy == EditorProjectionPolicy::RendererModel) {
+            if (models_ == nullptr || renderer_ == nullptr) {
+                throw std::runtime_error(
+                    "renderer component migration modules are unavailable");
+            }
+            simple_model_.emplace(*models_, *renderer_, kind_);
             participants.push_back(&*simple_model_);
         }
         if (kind_ == ECSArchetypeMigrationKind::add) {
-            const auto &codec = requireComponentCodec(component_name_);
-            auto decoded = codec.decodeAuthored(operation_.at("component"));
+            auto decoded = codec_.decodeAuthored(operation_.at("component"));
             token_.emplace(ECSArchetypeMigration::prepareAdd(
                 ecs_, *entity, component_id,
-                [this, codec = &codec,
+                [this, codec = &codec_,
                  decoded = std::move(decoded)](void *target) {
-                    if (component_name_ == "transform") {
+                    if (codec->editor_policy ==
+                        EditorProjectionPolicy::TransformClosure) {
                         TransformCodecTarget transform{
                             .world = static_cast<TransformComponent *>(target)};
                         codec->applyRuntime(decoded, &transform);
                     } else if (codec->runtime_kind ==
                                ComponentCodecRuntimeKind::Ecs) {
                         codec->applyRuntime(decoded, target);
-                        if (component_name_ == "simplemodelview") {
+                        if (codec->editor_policy ==
+                            EditorProjectionPolicy::RendererModel) {
                             static_cast<SimpleModelViewComponent *>(target)
                                 ->authoring_object_id = object_id_.value;
                         }
@@ -617,11 +639,10 @@ class ReparentLocalTransformProjectionAdapter final
 };
 
 std::vector<TransformProjectionBinding> makeTransformBindings(
-    EditorRuntimeModules &modules,
+    ECSCoreTemplatePublic &ecs, const SceneProjectionState &projection_state,
     std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings) {
     std::vector<TransformProjectionBinding> result;
-    auto &ecs = modules.ecs_core.getTemplatePublicModule();
-    const auto scenes = modules.project_config.resolvedScene().scenes();
+    const auto scenes = projection_state.resolved().scenes();
     for (const auto &binding : runtime_bindings) {
         const ResolvedSceneView *bound_scene = nullptr;
         const ResolvedObject *bound_object = nullptr;
@@ -652,96 +673,18 @@ std::vector<TransformProjectionBinding> makeTransformBindings(
     return result;
 }
 
-std::string operationSceneId(const nlohmann::ordered_json &operation,
-                             std::string_view fallback) {
-    if (const auto scene = operation.find("scene_id");
-        scene != operation.end() && scene->is_string()) {
-        return scene->get<std::string>();
-    }
-    if (const auto closures = operation.find("closures");
-        closures != operation.end() && !closures->empty()) {
-        return closures->front().at("scene_id").get<std::string>();
-    }
-    return std::string{fallback};
-}
-
-void requireEditorRuntimeBinding(
-    const EditorRuntimeModules &modules,
-    std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings,
-    const nlohmann::ordered_json &operation, std::string_view scene_id,
-    std::string_view component_name) {
-    if (scene_id != modules.scene_loader.currentScene()) return;
-    const auto *codec = findComponentCodec(component_name);
-    const auto entity_backed =
-        component_name == "behavior" ||
-        (codec != nullptr &&
-         (codec->runtime_kind == ComponentCodecRuntimeKind::Ecs ||
-          codec->runtime_kind == ComponentCodecRuntimeKind::Camera));
-    if (!entity_backed) return;
-    const auto object_id = AuthoringObjectId{
-        operation.at("object_id").get<std::uint64_t>()};
-    if (!boundEditorEntity(runtime_bindings, object_id)) {
-        throw std::runtime_error(
-            std::string{component_name} +
-            " edit target has no runtime binding: authoring_object_id=" +
-            std::to_string(object_id.value));
-    }
-}
-
-std::size_t operationComponentIndex(
-    const EditorRuntimeModules &modules,
-    const nlohmann::ordered_json &operation, AuthoringObjectId object_id,
-    std::string_view component_name) {
-    if (const auto index = operation.find("component_index");
-        index != operation.end()) {
-        return index->get<std::size_t>();
-    }
-
-    // Compatibility for inverse records produced before component_index was
-    // included for non-behavior add_component operations. A remove inverse is
-    // executed against a document where that component is currently present.
-    for (const auto &scene : modules.project_config.resolvedScene().scenes()) {
-        const auto object = std::find_if(
-            scene.objects.begin(), scene.objects.end(),
-            [object_id](const auto &candidate) {
-                return candidate.authoring_object_id == object_id;
-            });
-        if (object == scene.objects.end()) continue;
-        const auto component = std::find_if(
-            object->components.begin(), object->components.end(),
-            [component_name](const auto &candidate) {
-                return !candidate.origin.isGenerated() &&
-                       candidate.name == component_name;
-            });
-        if (component != object->components.end()) {
-            return component->authoring_component_index;
-        }
-    }
-    throw std::runtime_error(
-        "component edit has no declaration index and cannot resolve one");
-}
-
-const ResolvedObject *resolvedEditorObject(const EditorRuntimeModules &modules,
-                                           AuthoringObjectId object_id) {
-    for (const auto &scene : modules.project_config.resolvedScene().scenes()) {
-        const auto found = std::find_if(
-            scene.objects.begin(), scene.objects.end(), [&](const auto &object) {
-                return object.authoring_object_id == object_id;
-            });
-        if (found != scene.objects.end()) return &*found;
-    }
-    return nullptr;
-}
-
 struct BehaviorProjectionJunctionState {
     BehaviorAttachmentArena &arena;
     std::vector<BehaviorAttachmentEdit> edits;
+    BehaviorRegistryAvailability availability =
+        BehaviorRegistryAvailability::active;
     std::unique_ptr<PreparedBehaviorAttachmentEdits> prepared;
 
     static void prepare(void *context,
                         const EditorProjectionPrepareContext &) {
         auto &state = *static_cast<BehaviorProjectionJunctionState *>(context);
-        state.prepared = state.arena.prepareEditorEdits(state.edits);
+        state.prepared = state.arena.prepareEditorEdits(
+            state.edits, state.availability);
     }
     static void publish(void *context) noexcept {
         auto &state = *static_cast<BehaviorProjectionJunctionState *>(context);
@@ -794,352 +737,6 @@ class EphemeralEditorProjectionTarget final
         state_.swap(candidate);
     }
 };
-
-EditorProjectionResult executeEditorPreview(
-    EditorRuntimeModules &modules,
-    std::span<const EditorProjectionRuntimeObjectBinding> runtime_bindings,
-    const EditorPreviewExecutionRequest &request) {
-    std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
-    std::set<std::string> transform_scenes;
-    std::set<std::string> light_scenes;
-    const auto fallback_scene = modules.scene_loader.currentScene();
-    for (const auto &operation : request.operations) {
-        const auto scene_id = operationSceneId(operation, fallback_scene);
-        const auto component = operation.at("component_slot").get<std::string>();
-        requireEditorRuntimeBinding(modules, runtime_bindings, operation,
-                                    scene_id, component);
-        if (component == "transform") transform_scenes.insert(scene_id);
-        if (component == "light") light_scenes.insert(scene_id);
-    }
-    if (!transform_scenes.empty()) {
-        adapters.push_back(std::make_unique<TransformProjectionAdapter>(
-            makeTransformBindings(modules, runtime_bindings)));
-        adapters.push_back(
-            std::make_unique<StandaloneTransformProjectionAdapter>(
-                modules.ecs_core.getTemplatePublicModule(),
-                std::vector<EditorProjectionRuntimeObjectBinding>{
-                    runtime_bindings.begin(), runtime_bindings.end()},
-                transform_scenes));
-    }
-    for (const auto &scene : light_scenes) {
-        adapters.push_back(std::make_unique<LightProjectionAdapter>(
-            modules.lights, scene));
-    }
-
-    std::vector<EditorProjectionAdapter *> adapter_ptrs;
-    adapter_ptrs.reserve(adapters.size());
-    for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
-    EphemeralEditorProjectionTarget target{
-        modules.project_config.sceneProjectionState()};
-    EditorProjectionTransaction transaction{
-        target, target.projectionDocument().revision()};
-    return transaction.commit(request.commands, adapter_ptrs);
-}
-
-EditorProjectionResult executeEditorProjection(
-    EditorRuntimeModules &modules,
-    std::vector<EditorProjectionRuntimeObjectBinding> &runtime_bindings,
-    const EditorEditExecutionRequest &request) {
-    auto &ecs = modules.ecs_core.getTemplatePublicModule();
-    std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
-    std::vector<BehaviorAttachmentEdit> behavior_edits;
-    struct LifecycleUpdate {
-        AuthoringObjectId object_id{};
-        std::string scene_id;
-        SceneObjectProjectionAdapter *adapter = nullptr;
-    };
-    std::vector<LifecycleUpdate> lifecycle_updates;
-    std::set<std::string> transform_scenes;
-    std::set<std::string> ecs_codec_scenes;
-    std::set<std::string> renderer_scenes;
-    std::set<std::string> camera_scenes;
-    std::set<std::string> light_scenes;
-    std::set<std::string> collider_scenes;
-    std::set<std::string> prefab_scenes;
-    const auto fallback_scene = modules.scene_loader.currentScene();
-    const auto behavior_availability = configuredGameLogicStatus().loaded
-                                           ? BehaviorRegistryAvailability::active
-                                           : BehaviorRegistryAvailability::dll_unavailable;
-
-    const auto prefab_routes = internal::planEditorPrefabProjectionRoutes(
-        request.operations, modules.project_config.resolvedScene(),
-        fallback_scene, behavior_availability);
-    for (const auto &route : prefab_routes) {
-        prefab_scenes.insert(route.scene_id);
-        if (route.full_component_projection) {
-            ecs_codec_scenes.insert(route.scene_id);
-            renderer_scenes.insert(route.scene_id);
-            camera_scenes.insert(route.scene_id);
-            light_scenes.insert(route.scene_id);
-            collider_scenes.insert(route.scene_id);
-        }
-    }
-
-    const auto addLifecycle = [&](AuthoringObjectId object_id,
-                                  const std::string &scene_id) {
-        auto adapter = std::make_unique<SceneObjectProjectionAdapter>(
-            ecs, modules.component_info, modules.models,
-            modules.polygon_instances, modules.camera, modules.lights,
-            modules.physics, scene_id, object_id, runtime_bindings);
-        auto *raw = adapter.get();
-        adapters.push_back(std::move(adapter));
-        lifecycle_updates.push_back({object_id, scene_id, raw});
-    };
-
-    for (std::size_t index = 0; index < request.operations.size(); ++index) {
-        const auto &operation = request.operations[index];
-        const auto op = operation.at("op").get<std::string>();
-        auto scene_id = operationSceneId(operation, fallback_scene);
-        if (op == "set_prefab_parameter" ||
-            op == "unset_prefab_parameter") {
-            continue;
-        }
-        if (op == "unpack_prefab" || op == "restore_prefab") {
-            continue;
-        }
-        if (op == "spawn") {
-            addLifecycle(AuthoringObjectId{
-                             operation.at("object_id").get<std::uint64_t>()},
-                         scene_id);
-        } else if (op == "destroy" || op == "remove_objects") {
-            for (const auto &id : operation.at("object_ids")) {
-                addLifecycle(AuthoringObjectId{id.get<std::uint64_t>()}, scene_id);
-            }
-        } else if (op == "restore_objects") {
-            for (const auto &closure : operation.at("closures")) {
-                addLifecycle(AuthoringObjectId{
-                                 closure.at("authoring_object_id").get<std::uint64_t>()},
-                             closure.at("scene_id").get<std::string>());
-            }
-        } else if (op == "reparent") {
-            transform_scenes.insert(scene_id);
-            adapters.push_back(
-                std::make_unique<ReparentLocalTransformProjectionAdapter>(
-                    ecs, modules.component_info, runtime_bindings, operation,
-                    index));
-        } else if (op == "set_component_value") {
-            const auto component = operation.at("component_slot").get<std::string>();
-            requireEditorRuntimeBinding(modules, runtime_bindings, operation,
-                                        scene_id, component);
-            if (component == "behavior") {
-                const auto object_id = AuthoringObjectId{
-                    operation.at("object_id").get<std::uint64_t>()};
-                if (const auto entity = boundEditorEntity(runtime_bindings, object_id)) {
-                    const auto &authored = operation.at("authored_component");
-                    const auto stable_name =
-                        authored.at("type").get<std::string>();
-                    const nlohmann::json params =
-                        authored.contains("params")
-                            ? nlohmann::json{authored.at("params")}
-                            : nlohmann::json::object();
-                    behavior_edits.push_back(BehaviorAttachmentEdit{
-                        .kind = BehaviorAttachmentEditKind::set_params,
-                        .entity = *entity,
-                        .component_index = operation.at("attachment_index")
-                                               .get<std::size_t>(),
-                        .identity = behaviorIdentity(operation),
-                        .stable_name = stable_name,
-                        .canonical_params =
-                            internal::canonicalizeBehaviorParams(stable_name,
-                                                                 params),
-                        .raw_component = authored,
-                    });
-                }
-            } else if (component == "transform") transform_scenes.insert(scene_id);
-            else if (component == "simplemodelview") renderer_scenes.insert(scene_id);
-            else if (component == "animation" || component == "sprite_view" ||
-                     component == "ray_instance")
-                ecs_codec_scenes.insert(scene_id);
-            else if (component == "camera") camera_scenes.insert(scene_id);
-            else if (component == "light") light_scenes.insert(scene_id);
-            else if (component == "collider") collider_scenes.insert(scene_id);
-        } else if (op == "add_component" || op == "remove_component") {
-            const auto component = operation.at("component_slot").get<std::string>();
-            requireEditorRuntimeBinding(modules, runtime_bindings, operation,
-                                        scene_id, component);
-            const auto object_id = AuthoringObjectId{
-                operation.at("object_id").get<std::uint64_t>()};
-            const auto entity = boundEditorEntity(runtime_bindings, object_id);
-            if (component == "behavior") {
-                if (entity) {
-                    if (op == "add_component") {
-                        const auto &authored = operation.at("component");
-                        const auto stable_name =
-                            authored.at("type").get<std::string>();
-                        const nlohmann::json params =
-                            authored.contains("params")
-                                ? nlohmann::json{authored.at("params")}
-                                : nlohmann::json::object();
-                        const auto component_index =
-                            operation.at("component_index").get<std::size_t>();
-                        const auto *resolved_object =
-                            resolvedEditorObject(modules, object_id);
-                        if (resolved_object == nullptr) {
-                            throw std::runtime_error(
-                                "behavior add target is absent from resolved scene");
-                        }
-                        behavior_edits.push_back(BehaviorAttachmentEdit{
-                            .kind = BehaviorAttachmentEditKind::attach,
-                            .entity = *entity,
-                            .component_index = component_index,
-                            .component_origin = ResolvedComponentOrigin{
-                                AuthoredComponentOrigin{component_index}},
-                            .scene_object_index =
-                                resolved_object->authoring_object_index,
-                            .scene_ordered = true,
-                            .identity = behaviorIdentity(operation),
-                            .stable_name = stable_name,
-                            .canonical_params =
-                                internal::canonicalizeBehaviorParams(
-                                    stable_name, params),
-                            .raw_component = authored,
-                        });
-                    } else {
-                        behavior_edits.push_back(BehaviorAttachmentEdit{
-                            .kind = BehaviorAttachmentEditKind::remove,
-                            .entity = *entity,
-                            .component_index = operation.at("attachment_index")
-                                                   .get<std::size_t>(),
-                            .identity = behaviorIdentity(operation),
-                        });
-                    }
-                }
-                continue;
-            }
-            if (entity) {
-                const auto component_index = operationComponentIndex(
-                    modules, operation, object_id, component);
-                behavior_edits.push_back(BehaviorAttachmentEdit{
-                    .kind = op == "add_component"
-                                ? BehaviorAttachmentEditKind::insert_component
-                                : BehaviorAttachmentEditKind::remove_component,
-                    .entity = *entity,
-                    .component_index = component_index,
-                });
-            }
-            const auto &codec = requireComponentCodec(component);
-            if (codec.runtime_kind == ComponentCodecRuntimeKind::Ecs ||
-                codec.runtime_kind == ComponentCodecRuntimeKind::Camera) {
-                adapters.push_back(std::make_unique<EditorEcsMigrationProjectionAdapter>(
-                    ecs, modules.component_info, modules.models,
-                    modules.polygon_instances, runtime_bindings, operation, index));
-            }
-            if (codec.runtime_kind == ComponentCodecRuntimeKind::Camera) {
-                camera_scenes.insert(scene_id);
-            } else if (codec.runtime_kind == ComponentCodecRuntimeKind::Light) {
-                light_scenes.insert(scene_id);
-            } else if (codec.runtime_kind == ComponentCodecRuntimeKind::Collider) {
-                collider_scenes.insert(scene_id);
-            }
-        }
-    }
-
-    if (!transform_scenes.empty()) {
-        adapters.push_back(std::make_unique<TransformProjectionAdapter>(
-            makeTransformBindings(modules, runtime_bindings)));
-        adapters.push_back(
-            std::make_unique<StandaloneTransformProjectionAdapter>(
-                ecs, runtime_bindings, transform_scenes));
-    }
-    for (const auto &scene : ecs_codec_scenes) {
-        adapters.push_back(std::make_unique<EcsCodecProjectionAdapter>(
-            ecs, scene, runtime_bindings));
-    }
-    for (const auto &scene : renderer_scenes) {
-        adapters.push_back(std::make_unique<RendererModelProjectionAdapter>(
-            ecs, modules.models, modules.polygon_instances, scene,
-            runtime_bindings));
-    }
-    for (const auto &scene : camera_scenes) {
-        adapters.push_back(std::make_unique<CameraProjectionAdapter>(
-            modules.camera, scene));
-    }
-    for (const auto &scene : light_scenes) {
-        adapters.push_back(std::make_unique<LightProjectionAdapter>(
-            modules.lights, scene));
-    }
-    for (const auto &scene : collider_scenes) {
-        adapters.push_back(std::make_unique<ColliderProjectionAdapter>(
-            ecs, modules.physics, scene, runtime_bindings));
-    }
-
-    std::unique_ptr<BehaviorProjectionJunctionState> behavior_state;
-    if (!behavior_edits.empty() && lifecycle_updates.empty() &&
-        prefab_scenes.empty()) {
-        behavior_state = std::make_unique<BehaviorProjectionJunctionState>(
-            BehaviorProjectionJunctionState{
-                .arena = modules.behavior_arena,
-                .edits = std::move(behavior_edits),
-            });
-        auto junction = makeBehaviorAttachmentProjectionJunction(
-            "behavior_attachment.batch", behavior_state.get(),
-            &BehaviorProjectionJunctionState::prepare,
-            &BehaviorProjectionJunctionState::publish,
-            &BehaviorProjectionJunctionState::rollback,
-            &BehaviorProjectionJunctionState::finish);
-        adapters.push_back(
-            std::make_unique<EditorProjectionCallbackAdapter>(std::move(junction)));
-    }
-    if (lifecycle_updates.empty()) {
-        auto prefab_adapters =
-            internal::makeEditorPrefabBehaviorProjectionAdapters(
-                modules.behavior_arena, runtime_bindings, prefab_routes,
-                behavior_availability);
-        for (auto &adapter : prefab_adapters) {
-            adapters.push_back(std::move(adapter));
-        }
-    }
-    if (!lifecycle_updates.empty()) {
-        const auto &scene_id = lifecycle_updates.front().scene_id;
-        if (std::any_of(lifecycle_updates.begin(), lifecycle_updates.end(),
-                        [&](const auto &update) {
-                            return update.scene_id != scene_id;
-                        })) {
-            throw std::runtime_error(
-                "one editor lifecycle transaction cannot span runtime scenes");
-        }
-        std::vector<SceneObjectProjectionAdapter *> lifecycle_adapters;
-        lifecycle_adapters.reserve(lifecycle_updates.size());
-        for (const auto &update : lifecycle_updates) {
-            lifecycle_adapters.push_back(update.adapter);
-        }
-        adapters.push_back(std::make_unique<BehaviorSceneProjectionAdapter>(
-            modules.behavior_arena, scene_id, runtime_bindings,
-            std::move(lifecycle_adapters), OriginTransitionMap{},
-            behavior_availability));
-    }
-
-    std::vector<EditorProjectionAdapter *> adapter_ptrs;
-    adapter_ptrs.reserve(adapters.size());
-    for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
-    ProjectBasicConfigProjectionTarget target{modules.project_config};
-    EditorProjectionTransaction transaction{target, request.base_revision};
-    auto result = transaction.commit(request.commands, adapter_ptrs);
-    if (result.committed()) {
-        for (const auto &update : lifecycle_updates) {
-            const auto next = update.adapter->runtimeBindings();
-            const auto replacement = std::find_if(next.begin(), next.end(),
-                                                  [&](const auto &binding) {
-                                                      return binding.authoring_object_id ==
-                                                             update.object_id;
-                                                  });
-            const auto current = std::find_if(runtime_bindings.begin(),
-                                              runtime_bindings.end(),
-                                              [&](const auto &binding) {
-                                                  return binding.authoring_object_id ==
-                                                         update.object_id;
-                                              });
-            if (replacement == next.end()) {
-                if (current != runtime_bindings.end()) runtime_bindings.erase(current);
-            } else if (current == runtime_bindings.end()) {
-                runtime_bindings.push_back(*replacement);
-            } else {
-                *current = *replacement;
-            }
-        }
-    }
-    return result;
-}
 
 std::uint64_t editorTransitionEpoch(const EditorRuntimeModules &modules) {
     std::string state = modules.scene_loader.currentScene();
@@ -1338,20 +935,21 @@ std::vector<EditorAssetQueryResult> collectEditorAssets(const EditorRuntimeModul
 
 struct EditorRuntimeState {
     EditorRuntimeModules modules;
-    std::vector<EditorProjectionRuntimeObjectBinding> runtime_bindings;
-    std::uint64_t runtime_bindings_epoch = 0;
+    EditorRuntimeBindingState binding_state;
 
     EditorRuntimeState()
         : modules{resolveEditorRuntimeModules()},
-          runtime_bindings{collectEditorRuntimeBindings(modules)},
-          runtime_bindings_epoch{modules.scene_loader.runtimeSceneEpoch()} {}
+          binding_state{
+              .bindings = collectEditorRuntimeBindings(modules),
+              .epoch = modules.scene_loader.runtimeSceneEpoch(),
+          } {}
 
     void refreshRuntimeBindings() {
         const auto scene_epoch = modules.scene_loader.runtimeSceneEpoch();
-        if (scene_epoch == runtime_bindings_epoch) return;
+        if (scene_epoch == binding_state.epoch) return;
         auto next = collectEditorRuntimeBindings(modules);
-        runtime_bindings.swap(next);
-        runtime_bindings_epoch = scene_epoch;
+        binding_state.bindings.swap(next);
+        binding_state.epoch = scene_epoch;
     }
 
     nlohmann::ordered_json previewSharedState() const {
@@ -1375,7 +973,7 @@ struct EditorRuntimeState {
         auto runtime_objects = Json::array();
         for (const auto &scene : document.scenes()) {
             for (const auto &object : scene.objects) {
-                const auto state = queryEditorRuntime(modules, runtime_bindings,
+                const auto state = queryEditorRuntime(modules, binding_state.bindings,
                                                       scene, object);
                 auto components = Json::array();
                 for (std::size_t index = 0;
@@ -1561,6 +1159,513 @@ struct EditorRuntimeState {
 };
 
 } // namespace
+
+EditorProjectionContext makeEditorProjectionContext(
+    std::string active_scene_id, EditorProjectionMode mode) {
+    EditorLayoutSemanticMode layout_mode =
+        EditorLayoutSemanticMode::Unconfigured;
+    if (const auto *layout =
+            FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
+        if (!layout->configured()) {
+            layout_mode = EditorLayoutSemanticMode::Unconfigured;
+        } else {
+            switch (layout->mode()) {
+            case RayLayoutSemanticMode::LegacyNoLayout:
+                layout_mode = EditorLayoutSemanticMode::Legacy;
+                break;
+            case RayLayoutSemanticMode::LayoutV1Q:
+                layout_mode = EditorLayoutSemanticMode::LayoutV1;
+                break;
+            case RayLayoutSemanticMode::LayoutV2:
+                layout_mode = EditorLayoutSemanticMode::LayoutV2;
+                break;
+            }
+        }
+    }
+
+    const auto available_codecs = componentCodecs();
+    std::vector<ComponentCodec> codecs{available_codecs.begin(),
+                                       available_codecs.end()};
+    const auto defaults = componentCodecCanonicalDefaults();
+    const auto layout_generation = editorProjectionCodecGeneration(
+        codecs, layout_mode, defaults);
+
+    std::vector<EditorBehaviorPolicy> registry;
+    const auto &registrations =
+        internal::getBehaviorRegisterer().registeredBehaviors();
+    registry.reserve(registrations.size());
+    for (const auto &registration : registrations) {
+        registry.push_back(EditorBehaviorPolicy{
+            .stable_name = registration.stable_name,
+            .schema_version = registration.schema_version,
+            .canonicalize = registration.canonicalize_params,
+            .owner_generation =
+                internal::registrationOwnerGeneration(registration.owner),
+        });
+    }
+    const auto availability = configuredGameLogicStatus().loaded
+                                  ? EditorBehaviorAvailability::Active
+                                  : EditorBehaviorAvailability::DllUnavailable;
+    const auto behavior_generation = editorProjectionBehaviorGeneration(
+        registry, availability);
+    return EditorProjectionContext{
+        std::move(active_scene_id), mode, std::move(codecs), layout_mode,
+        layout_generation, availability, std::move(registry),
+        behavior_generation, defaults};
+}
+
+EditorProjectionResult materializeEditorProjection(
+    const EditorProjectionPlan &plan, const EditorProjectionModules &modules,
+    EditorProjectionDocumentTarget &target,
+    EditorRuntimeBindingState &binding_state,
+    std::uint64_t expected_binding_epoch,
+    std::uint64_t expected_codec_generation,
+    std::uint64_t expected_behavior_generation,
+    EditorProjectionFaultInjector *fault_injector) {
+    const auto reject = [&](EditorProjectionStatus status,
+                            EditorProjectionErrorCode code,
+                            std::string message) {
+        return EditorProjectionResult{
+            .status = status,
+            .base_revision = plan.base_revision,
+            .committed_revision = target.projectionState().revision(),
+            .error = EditorProjectionError{code, "/", std::move(message)},
+        };
+    };
+    try {
+        if (binding_state.epoch != expected_binding_epoch ||
+            binding_state.codec_generation != expected_codec_generation ||
+            binding_state.behavior_generation != expected_behavior_generation ||
+            plan.context.layoutGeneration() != expected_codec_generation ||
+            plan.context.behaviorGeneration() != expected_behavior_generation) {
+            return reject(EditorProjectionStatus::Rejected,
+                          EditorProjectionErrorCode::CommandInvalid,
+                          "editor_projection_stale_bindings@1: runtime binding or policy generation changed");
+        }
+        if (modules.ecs == nullptr || modules.component_info == nullptr) {
+            return reject(EditorProjectionStatus::Failed,
+                          EditorProjectionErrorCode::AdapterPrepareFailed,
+                          "editor_projection_module_missing@1: ECS projection modules are unavailable");
+        }
+
+        auto runtime_bindings = binding_state.bindings;
+        std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
+        std::vector<BehaviorAttachmentEdit> behavior_edits;
+        struct LifecycleUpdate {
+            AuthoringObjectId object_id{};
+            std::string scene_id;
+            SceneObjectProjectionAdapter *adapter = nullptr;
+        };
+        std::vector<LifecycleUpdate> lifecycle_updates;
+        std::set<std::string> transform_scenes;
+        std::set<std::string> ecs_codec_scenes;
+        std::set<std::string> renderer_scenes;
+        std::set<std::string> camera_scenes;
+        std::set<std::string> light_scenes;
+        std::set<std::string> collider_scenes;
+
+        const auto hasRoute = [&](EditorProjectionRouteKind kind,
+                                  std::size_t operation_index,
+                                  AuthoringObjectId object_id) {
+            return std::any_of(
+                plan.routes.begin(), plan.routes.end(),
+                [&](const EditorProjectionRoute &route) {
+                    return route.kind == kind &&
+                           route.operation_index == operation_index &&
+                           route.object_id == object_id;
+                });
+        };
+        const auto requireModule = [&](const void *module,
+                                       std::string_view name) {
+            if (module == nullptr) {
+                throw std::runtime_error(
+                    "editor_projection_module_missing@1: " +
+                    std::string{name});
+            }
+        };
+        const auto wireAt = [&](std::size_t operation_index)
+            -> const nlohmann::ordered_json & {
+            return std::visit(
+                [](const auto &operation)
+                    -> const nlohmann::ordered_json & {
+                    return operation.wire;
+                },
+                plan.operations.at(operation_index));
+        };
+        const auto behavior_availability =
+            plan.context.behaviorAvailability() ==
+                    EditorBehaviorAvailability::Active
+                ? BehaviorRegistryAvailability::active
+                : BehaviorRegistryAvailability::dll_unavailable;
+        const auto canonicalBehaviorParams =
+            [&](const nlohmann::ordered_json &authored,
+                AuthoringObjectId) {
+                const auto stable_name =
+                    authored.at("type").get<std::string>();
+                const auto *policy =
+                    plan.context.findBehavior(stable_name);
+                if (policy == nullptr) {
+                    return std::string{};
+                }
+                if (policy->canonicalize == nullptr) {
+                    throw std::logic_error(
+                        "behavior policy has no canonicalization hook: " +
+                        stable_name);
+                }
+                const nlohmann::json params =
+                    authored.contains("params")
+                        ? nlohmann::json(authored.at("params"))
+                        : nlohmann::json::object();
+                return policy->canonicalize(params);
+            };
+
+        for (const auto &route : plan.routes) {
+            switch (route.kind) {
+            case EditorProjectionRouteKind::TransformClosure:
+                transform_scenes.insert(route.scene_id);
+                break;
+            case EditorProjectionRouteKind::RendererModel:
+                renderer_scenes.insert(route.scene_id);
+                break;
+            case EditorProjectionRouteKind::EcsCodec:
+                ecs_codec_scenes.insert(route.scene_id);
+                break;
+            case EditorProjectionRouteKind::Camera:
+                camera_scenes.insert(route.scene_id);
+                break;
+            case EditorProjectionRouteKind::Light:
+                light_scenes.insert(route.scene_id);
+                break;
+            case EditorProjectionRouteKind::Collider:
+                collider_scenes.insert(route.scene_id);
+                break;
+            case EditorProjectionRouteKind::Reparent:
+                adapters.push_back(
+                    std::make_unique<ReparentLocalTransformProjectionAdapter>(
+                        *modules.ecs, *modules.component_info,
+                        runtime_bindings, wireAt(route.operation_index),
+                        route.operation_index));
+                break;
+            case EditorProjectionRouteKind::ComponentLifecycle: {
+                if (!route.codec_index ||
+                    *route.codec_index >= plan.context.codecCatalog().size()) {
+                    throw std::logic_error(
+                        "component lifecycle route lost its codec descriptor");
+                }
+                const auto &codec =
+                    plan.context.codecCatalog()[*route.codec_index];
+                if (codec.runtime_kind == ComponentCodecRuntimeKind::Ecs ||
+                    codec.runtime_kind == ComponentCodecRuntimeKind::Camera) {
+                    adapters.push_back(std::make_unique<
+                        EditorEcsMigrationProjectionAdapter>(
+                        *modules.ecs, *modules.component_info,
+                        modules.models, modules.polygon_instances, codec,
+                        runtime_bindings, wireAt(route.operation_index),
+                        route.operation_index));
+                }
+                break;
+            }
+            case EditorProjectionRouteKind::ObjectLifecycle: {
+                const SceneObjectProjectionParticipants participants{
+                    .renderer = hasRoute(
+                        EditorProjectionRouteKind::LifecycleRenderer,
+                        route.operation_index, route.object_id),
+                    .camera = hasRoute(
+                        EditorProjectionRouteKind::LifecycleCamera,
+                        route.operation_index, route.object_id),
+                    .light = hasRoute(
+                        EditorProjectionRouteKind::LifecycleLight,
+                        route.operation_index, route.object_id),
+                    .collider = hasRoute(
+                        EditorProjectionRouteKind::LifecycleCollider,
+                        route.operation_index, route.object_id),
+                };
+                auto adapter =
+                    std::make_unique<SceneObjectProjectionAdapter>(
+                        *modules.ecs, *modules.component_info,
+                        modules.models, modules.polygon_instances,
+                        modules.camera, modules.lights, modules.physics,
+                        route.scene_id, route.object_id, runtime_bindings,
+                        participants);
+                auto *raw = adapter.get();
+                adapters.push_back(std::move(adapter));
+                lifecycle_updates.push_back(
+                    {route.object_id, route.scene_id, raw});
+                break;
+            }
+            case EditorProjectionRouteKind::BehaviorBatch: {
+                requireModule(modules.behavior_arena,
+                              "behavior attachment arena");
+                std::visit(
+                    [&](const auto &operation) {
+                        using Operation =
+                            std::remove_cvref_t<decltype(operation)>;
+                        if constexpr (std::same_as<
+                                          Operation,
+                                          EditorSetComponentValueOperation>) {
+                            const auto entity = boundEditorEntity(
+                                runtime_bindings, operation.object_id);
+                            if (!entity) return;
+                            const auto &authored =
+                                operation.wire.at("authored_component");
+                            behavior_edits.push_back(BehaviorAttachmentEdit{
+                                .kind = BehaviorAttachmentEditKind::set_params,
+                                .entity = *entity,
+                                .authoring_object_id = operation.object_id,
+                                .component_index =
+                                    operation.attachment_index.value_or(0),
+                                .identity = behaviorIdentity(operation.wire),
+                                .stable_name =
+                                    authored.at("type").get<std::string>(),
+                                .canonical_params =
+                                    canonicalBehaviorParams(
+                                        authored, operation.object_id),
+                                .raw_component = authored,
+                            });
+                        } else if constexpr (std::same_as<
+                                                 Operation,
+                                                 EditorAddComponentOperation>) {
+                            const auto entity = boundEditorEntity(
+                                runtime_bindings, operation.object_id);
+                            if (!entity) return;
+                            const ResolvedObject *object = nullptr;
+                            for (const auto &scene :
+                                 target.projectionState().resolved().scenes()) {
+                                const auto found = std::find_if(
+                                    scene.objects.begin(), scene.objects.end(),
+                                    [&](const ResolvedObject &candidate) {
+                                        return candidate.authoring_object_id ==
+                                               operation.object_id;
+                                    });
+                                if (found != scene.objects.end()) {
+                                    object = &*found;
+                                    break;
+                                }
+                            }
+                            if (object == nullptr) {
+                                throw std::runtime_error(
+                                    "behavior add target is absent from resolved scene");
+                            }
+                            const auto &authored =
+                                operation.wire.at("component");
+                            behavior_edits.push_back(BehaviorAttachmentEdit{
+                                .kind = BehaviorAttachmentEditKind::attach,
+                                .entity = *entity,
+                                .authoring_object_id = operation.object_id,
+                                .component_index = operation.component_index,
+                                .component_origin = ResolvedComponentOrigin{
+                                    AuthoredComponentOrigin{
+                                        operation.component_index}},
+                                .scene_object_index =
+                                    object->authoring_object_index,
+                                .scene_ordered = true,
+                                .identity = behaviorIdentity(operation.wire),
+                                .stable_name =
+                                    authored.at("type").get<std::string>(),
+                                .canonical_params =
+                                    canonicalBehaviorParams(
+                                        authored, operation.object_id),
+                                .raw_component = authored,
+                            });
+                        } else if constexpr (std::same_as<
+                                                 Operation,
+                                                 EditorRemoveComponentOperation>) {
+                            const auto entity = boundEditorEntity(
+                                runtime_bindings, operation.object_id);
+                            if (!entity) return;
+                            behavior_edits.push_back(BehaviorAttachmentEdit{
+                                .kind = BehaviorAttachmentEditKind::remove,
+                                .entity = *entity,
+                                .authoring_object_id = operation.object_id,
+                                .component_index =
+                                    operation.component_index,
+                                .identity = behaviorIdentity(operation.wire),
+                            });
+                        }
+                    },
+                    plan.operations.at(route.operation_index));
+                break;
+            }
+            case EditorProjectionRouteKind::LifecycleRenderer:
+            case EditorProjectionRouteKind::LifecycleCamera:
+            case EditorProjectionRouteKind::LifecycleLight:
+            case EditorProjectionRouteKind::LifecycleCollider:
+            case EditorProjectionRouteKind::LifecycleBehavior:
+            case EditorProjectionRouteKind::Prefab:
+            case EditorProjectionRouteKind::PrefabRenderer:
+            case EditorProjectionRouteKind::PrefabCamera:
+            case EditorProjectionRouteKind::PrefabLight:
+            case EditorProjectionRouteKind::PrefabCollider:
+            case EditorProjectionRouteKind::PrefabBehavior:
+            case EditorProjectionRouteKind::OriginTransition:
+                break;
+            }
+        }
+
+        if (!transform_scenes.empty()) {
+            adapters.push_back(std::make_unique<TransformProjectionAdapter>(
+                makeTransformBindings(*modules.ecs,
+                                      target.projectionState(),
+                                      runtime_bindings)));
+            adapters.push_back(
+                std::make_unique<StandaloneTransformProjectionAdapter>(
+                    *modules.ecs, runtime_bindings, transform_scenes));
+        }
+        std::vector<ComponentCodec> catalog{
+            plan.context.codecCatalog().begin(),
+            plan.context.codecCatalog().end()};
+        for (const auto &scene : ecs_codec_scenes) {
+            adapters.push_back(std::make_unique<EcsCodecProjectionAdapter>(
+                *modules.ecs, scene, runtime_bindings, catalog));
+        }
+        for (const auto &scene : renderer_scenes) {
+            if (modules.models == nullptr ||
+                modules.polygon_instances == nullptr) {
+                continue;
+            }
+            adapters.push_back(
+                std::make_unique<RendererModelProjectionAdapter>(
+                    *modules.ecs, *modules.models,
+                    *modules.polygon_instances, scene, runtime_bindings));
+        }
+        for (const auto &scene : camera_scenes) {
+            if (modules.camera == nullptr) continue;
+            adapters.push_back(std::make_unique<CameraProjectionAdapter>(
+                *modules.camera, scene));
+        }
+        for (const auto &scene : light_scenes) {
+            if (modules.lights == nullptr) continue;
+            adapters.push_back(std::make_unique<LightProjectionAdapter>(
+                *modules.lights, scene));
+        }
+        for (const auto &scene : collider_scenes) {
+            if (modules.physics == nullptr) continue;
+            adapters.push_back(std::make_unique<ColliderProjectionAdapter>(
+                *modules.ecs, *modules.physics, scene, runtime_bindings));
+        }
+
+        std::unique_ptr<BehaviorProjectionJunctionState> behavior_state;
+        if (!behavior_edits.empty() && lifecycle_updates.empty()) {
+            requireModule(modules.behavior_arena,
+                          "behavior attachment arena");
+            behavior_state =
+                std::make_unique<BehaviorProjectionJunctionState>(
+                    BehaviorProjectionJunctionState{
+                        .arena = *modules.behavior_arena,
+                        .edits = std::move(behavior_edits),
+                        .availability = behavior_availability,
+                    });
+            auto junction = makeBehaviorAttachmentProjectionJunction(
+                "behavior_attachment.batch", behavior_state.get(),
+                &BehaviorProjectionJunctionState::prepare,
+                &BehaviorProjectionJunctionState::publish,
+                &BehaviorProjectionJunctionState::rollback,
+                &BehaviorProjectionJunctionState::finish);
+            adapters.push_back(
+                std::make_unique<EditorProjectionCallbackAdapter>(
+                    std::move(junction)));
+        }
+
+        std::vector<internal::EditorPrefabProjectionRoute> prefab_routes;
+        for (const auto &route : plan.routes) {
+            if (route.kind != EditorProjectionRouteKind::Prefab) continue;
+            OriginTransitionMap transition;
+            const auto origin = std::find_if(
+                plan.routes.begin(), plan.routes.end(),
+                [&](const EditorProjectionRoute &candidate) {
+                    return candidate.kind ==
+                               EditorProjectionRouteKind::OriginTransition &&
+                           candidate.operation_index ==
+                               route.operation_index;
+                });
+            if (origin != plan.routes.end()) {
+                transition = origin->origin_transition;
+            }
+            prefab_routes.push_back(internal::EditorPrefabProjectionRoute{
+                .scene_id = route.scene_id,
+                .full_component_projection =
+                    route.full_component_projection,
+                .origin_transition = std::move(transition),
+                .behavior_availability = behavior_availability,
+            });
+        }
+        if (lifecycle_updates.empty() && !prefab_routes.empty()) {
+            requireModule(modules.behavior_arena,
+                          "behavior attachment arena");
+            auto prefab_adapters =
+                internal::makeEditorPrefabBehaviorProjectionAdapters(
+                    *modules.behavior_arena, runtime_bindings,
+                    prefab_routes, behavior_availability);
+            for (auto &adapter : prefab_adapters) {
+                adapters.push_back(std::move(adapter));
+            }
+        }
+        if (!lifecycle_updates.empty()) {
+            requireModule(modules.behavior_arena,
+                          "behavior attachment arena");
+            const auto &scene_id = lifecycle_updates.front().scene_id;
+            if (std::any_of(
+                    lifecycle_updates.begin(), lifecycle_updates.end(),
+                    [&](const LifecycleUpdate &update) {
+                        return update.scene_id != scene_id;
+                    })) {
+                throw std::runtime_error(
+                    "one editor lifecycle transaction cannot span runtime scenes");
+            }
+            std::vector<SceneObjectProjectionAdapter *>
+                lifecycle_adapters;
+            lifecycle_adapters.reserve(lifecycle_updates.size());
+            for (const auto &update : lifecycle_updates) {
+                lifecycle_adapters.push_back(update.adapter);
+            }
+            adapters.push_back(
+                std::make_unique<BehaviorSceneProjectionAdapter>(
+                    *modules.behavior_arena, scene_id,
+                    runtime_bindings, std::move(lifecycle_adapters),
+                    OriginTransitionMap{}, behavior_availability));
+        }
+
+        std::vector<EditorProjectionAdapter *> adapter_ptrs;
+        adapter_ptrs.reserve(adapters.size());
+        for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
+        testing::ScopedComponentCodecCanonicalDefaults defaults{
+            plan.context.canonicalDefaults()};
+        EditorProjectionTransaction transaction{
+            target, plan.base_revision, fault_injector};
+        auto result = transaction.commit(plan.commands, adapter_ptrs);
+        if (result.committed()) {
+            for (const auto &update : lifecycle_updates) {
+                const auto next = update.adapter->runtimeBindings();
+                const auto replacement = std::find_if(
+                    next.begin(), next.end(), [&](const auto &binding) {
+                        return binding.authoring_object_id ==
+                               update.object_id;
+                    });
+                const auto current_binding = std::find_if(
+                    runtime_bindings.begin(), runtime_bindings.end(),
+                    [&](const auto &binding) {
+                        return binding.authoring_object_id ==
+                               update.object_id;
+                    });
+                if (replacement == next.end()) {
+                    if (current_binding != runtime_bindings.end()) {
+                        runtime_bindings.erase(current_binding);
+                    }
+                } else if (current_binding == runtime_bindings.end()) {
+                    runtime_bindings.push_back(*replacement);
+                } else {
+                    *current_binding = *replacement;
+                }
+            }
+            binding_state.bindings = std::move(runtime_bindings);
+        }
+        return result;
+    } catch (const std::exception &error) {
+        return reject(EditorProjectionStatus::Failed,
+                      EditorProjectionErrorCode::AdapterPrepareFailed,
+                      error.what());
+    }
+}
 
 std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
     EditorRuntimeServiceOptions options) {
@@ -1760,8 +1865,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                       const ResolvedObject &object) {
                 runtime->refreshRuntimeBindings();
                 return queryEditorRuntime(runtime->modules,
-                                          runtime->runtime_bindings,
-                                          scene, object);
+                                           runtime->binding_state.bindings,
+                                           scene, object);
             },
         .assets = [runtime] { return collectEditorAssets(runtime->modules); },
         .snapshot_state = [] { return EditorSnapshotState{}; },
@@ -1777,16 +1882,83 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
             },
             .execute = [runtime](const EditorEditExecutionRequest &request) {
                 runtime->refreshRuntimeBindings();
-                return executeEditorProjection(runtime->modules,
-                                               runtime->runtime_bindings,
-                                               request);
+                auto context = makeEditorProjectionContext(
+                    runtime->modules.scene_loader.currentScene(),
+                    EditorProjectionMode::Committed);
+                runtime->binding_state.codec_generation =
+                    context.layoutGeneration();
+                runtime->binding_state.behavior_generation =
+                    context.behaviorGeneration();
+                ProjectBasicConfigProjectionTarget target{
+                    runtime->modules.project_config};
+                try {
+                    auto plan = planEditorProjection(
+                        EditorProjectionPlanningRequest{
+                            .base_revision = request.base_revision,
+                            .commands = request.commands,
+                            .operations = request.operations,
+                        },
+                        target.projectionState(), context);
+                    return materializeEditorProjection(
+                        plan, editorProjectionModules(runtime->modules),
+                        target, runtime->binding_state,
+                        runtime->modules.scene_loader.runtimeSceneEpoch(),
+                        context.layoutGeneration(),
+                        context.behaviorGeneration());
+                } catch (const EditorProjectionPlanError &error) {
+                    return EditorProjectionResult{
+                        .status = EditorProjectionStatus::Rejected,
+                        .base_revision = request.base_revision,
+                        .committed_revision =
+                            target.projectionState().revision(),
+                        .error = EditorProjectionError{
+                            EditorProjectionErrorCode::CommandInvalid, "/",
+                            error.what()},
+                    };
+                }
             },
             .execute_preview =
                 [runtime](const EditorPreviewExecutionRequest &request) {
                     runtime->refreshRuntimeBindings();
-                    return executeEditorPreview(runtime->modules,
-                                                runtime->runtime_bindings,
-                                                request);
+                    auto context = makeEditorProjectionContext(
+                        runtime->modules.scene_loader.currentScene(),
+                        EditorProjectionMode::Preview);
+                    runtime->binding_state.codec_generation =
+                        context.layoutGeneration();
+                    runtime->binding_state.behavior_generation =
+                        context.behaviorGeneration();
+                    EphemeralEditorProjectionTarget target{
+                        runtime->modules.project_config
+                            .sceneProjectionState()};
+                    try {
+                        auto plan = planEditorProjection(
+                            EditorProjectionPlanningRequest{
+                                .base_revision = request.base_revision,
+                                .commands = request.commands,
+                                .operations = request.operations,
+                                .restore_committed =
+                                    request.restore_committed,
+                            },
+                            target.projectionState(), context);
+                        return materializeEditorProjection(
+                            plan,
+                            editorProjectionModules(runtime->modules),
+                            target, runtime->binding_state,
+                            runtime->modules.scene_loader
+                                .runtimeSceneEpoch(),
+                            context.layoutGeneration(),
+                            context.behaviorGeneration());
+                    } catch (const EditorProjectionPlanError &error) {
+                        return EditorProjectionResult{
+                            .status = EditorProjectionStatus::Rejected,
+                            .base_revision = request.base_revision,
+                            .committed_revision =
+                                target.projectionState().revision(),
+                            .error = EditorProjectionError{
+                                EditorProjectionErrorCode::CommandInvalid,
+                                "/", error.what()},
+                        };
+                    }
                 },
             .preview_boundary = [runtime] {
                 runtime->modules.renderer.resetTemporalHistory();
@@ -1812,7 +1984,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                     -> std::optional<EditorBehaviorAttachmentIdentity> {
                     runtime->refreshRuntimeBindings();
                     const auto entity = boundEditorEntity(
-                        runtime->runtime_bindings, object_id);
+                        runtime->binding_state.bindings, object_id);
                     if (!entity) return std::nullopt;
                     const auto attachment = runtime->modules.behavior_arena
                                                 .findEditorAttachment(
@@ -1875,8 +2047,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             next_runtime_bindings =
                                 collectEditorRuntimeBindings(runtime->modules);
                         });
-                runtime->runtime_bindings.swap(next_runtime_bindings);
-                runtime->runtime_bindings_epoch =
+                runtime->binding_state.bindings.swap(next_runtime_bindings);
+                runtime->binding_state.epoch =
                     runtime->modules.scene_loader.runtimeSceneEpoch();
                 return revision;
             },
@@ -1896,8 +2068,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 collectEditorRuntimeBindings(runtime->modules);
                         },
                         schema_version);
-                runtime->runtime_bindings.swap(next_runtime_bindings);
-                runtime->runtime_bindings_epoch =
+                runtime->binding_state.bindings.swap(next_runtime_bindings);
+                runtime->binding_state.epoch =
                     runtime->modules.scene_loader.runtimeSceneEpoch();
                 return revision;
             },

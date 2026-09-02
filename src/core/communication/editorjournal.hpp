@@ -1,6 +1,6 @@
 #pragma once
 
-#include "../loader/editorprojectiontransaction.hpp"
+#include "editorprojectionplan.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -72,6 +72,7 @@ enum class EditorEditErrorCode : std::uint8_t {
     origin_transition_component_key_mismatch,
     origin_transition_gid_derivation_mismatch,
     origin_transition_body_mismatch,
+    behavior_type_unknown,
     unknown_component_type,
     duplicate_component,
     missing_component,
@@ -155,7 +156,7 @@ nlohmann::ordered_json editorJournalJson(const EditorJournalRecord &record);
 struct EditorEditExecutionRequest {
     SceneRevision base_revision{};
     std::span<const EditorProjectionCommand> commands;
-    std::span<const nlohmann::ordered_json> operations;
+    std::span<const EditorCanonicalOperation> operations;
 };
 
 // Live preview uses the same canonical commands and adapter preparation path
@@ -165,7 +166,7 @@ struct EditorEditExecutionRequest {
 struct EditorPreviewExecutionRequest {
     SceneRevision base_revision{};
     std::span<const EditorProjectionCommand> commands;
-    std::span<const nlohmann::ordered_json> operations;
+    std::span<const EditorCanonicalOperation> operations;
     bool restore_committed = false;
 };
 

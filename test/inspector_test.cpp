@@ -463,10 +463,13 @@ TEST_CASE("WP164 UI and RPC adapters preserve query edit undo and preview result
     const Json unavailable_params{
         {"actor_id", actor},
         {"operations", Json::array({unavailable_operation})}};
-    const auto rpc_unavailable = rpc.openPreview(unavailable_params);
-    const auto ui_unavailable = ui.openPreview(unavailable_params);
-    REQUIRE(rpc_unavailable.dump() == ui_unavailable.dump());
-    REQUIRE(rpc_unavailable.at("error").at("code") == "method_unavailable");
+    const auto rpc_fake_preview = rpc.openPreview(unavailable_params);
+    const auto ui_fake_preview = ui.openPreview(unavailable_params);
+    REQUIRE(rpc_fake_preview.dump() == ui_fake_preview.dump());
+    // This fixture is the coordinator/UI fake-executor row in the WP375
+    // classification table.  Semantic preview support belongs exclusively to
+    // the production planner, so the coordinator must delegate this request.
+    REQUIRE(rpc_fake_preview.at("status") == "accepted");
 
     REQUIRE(trace.query_calls == 6);
     REQUIRE(trace.edit_enqueue_calls == 7);

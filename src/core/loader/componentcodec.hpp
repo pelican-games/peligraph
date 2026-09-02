@@ -6,10 +6,13 @@
 #include <any>
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 namespace Pelican {
 
@@ -21,6 +24,24 @@ enum class ComponentCodecRuntimeKind : std::uint8_t {
     Camera,
     Light,
     Collider,
+};
+
+// The editor projection route is part of codec registration.  There is no
+// fallback value: adding a codec requires choosing the runtime participant
+// which owns its live projection.
+enum class EditorProjectionPolicy : std::uint8_t {
+    TransformClosure,
+    RendererModel,
+    EcsCodec,
+    Camera,
+    Light,
+    Collider,
+};
+
+enum class EditorCodecSwapPhase : std::uint8_t {
+    Publish,
+    Rollback,
+    Finish,
 };
 
 enum class ComponentCodecState : std::uint8_t {
@@ -112,6 +133,9 @@ struct LightCodecData {
 // mutating a detached provider descriptor.
 struct ComponentCodecCanonicalDefaults {
     float collider_radius = 0.5f;
+
+    friend bool operator==(const ComponentCodecCanonicalDefaults &,
+                           const ComponentCodecCanonicalDefaults &) = default;
 };
 
 ComponentCodecCanonicalDefaults componentCodecCanonicalDefaults() noexcept;
@@ -136,6 +160,53 @@ class ScopedComponentCodecCanonicalDefaults final {
 
 using ComponentCodecValue = std::any;
 
+// Move-only owner for a codec-defined prepared runtime token.  The concrete
+// token type never escapes the codec registration; generic editor adapters
+// retain only this erased carrier and call the codec's editor_swap hook.
+class ComponentEditorSwapToken {
+    void *value_ = nullptr;
+    void (*destroy_)(void *) noexcept = nullptr;
+
+  public:
+    ComponentEditorSwapToken() = default;
+
+    template <class Token>
+    static ComponentEditorSwapToken own(std::unique_ptr<Token> token) noexcept {
+        ComponentEditorSwapToken result;
+        result.value_ = token.release();
+        result.destroy_ = [](void *value) noexcept {
+            delete static_cast<Token *>(value);
+        };
+        return result;
+    }
+
+    ~ComponentEditorSwapToken() noexcept { reset(); }
+    ComponentEditorSwapToken(ComponentEditorSwapToken &&other) noexcept
+        : value_{std::exchange(other.value_, nullptr)},
+          destroy_{std::exchange(other.destroy_, nullptr)} {}
+    ComponentEditorSwapToken &operator=(
+        ComponentEditorSwapToken &&other) noexcept {
+        if (this == &other) return *this;
+        reset();
+        value_ = std::exchange(other.value_, nullptr);
+        destroy_ = std::exchange(other.destroy_, nullptr);
+        return *this;
+    }
+    ComponentEditorSwapToken(const ComponentEditorSwapToken &) = delete;
+    ComponentEditorSwapToken &operator=(const ComponentEditorSwapToken &) = delete;
+
+    explicit operator bool() const noexcept { return value_ != nullptr; }
+    void reset() noexcept {
+        if (value_ != nullptr) destroy_(value_);
+        value_ = nullptr;
+        destroy_ = nullptr;
+    }
+
+    template <class Token> Token &get() noexcept {
+        return *static_cast<Token *>(value_);
+    }
+};
+
 // Every registered codec owns exactly these five operations. runtime_apply and
 // runtime_project use the target documented by runtime_kind:
 //   transform -> TransformCodecTarget, other ECS codecs -> their component,
@@ -146,26 +217,75 @@ struct ComponentCodec {
     using Schema = std::span<const StructFieldSchema> (*)();
     using RuntimeApply = void (*)(const ComponentCodecValue &, void *);
     using RuntimeProject = ComponentCodecValue (*)(const void *);
+    using EditorPrepare = ComponentEditorSwapToken (*)(
+        void *ecs, std::uint32_t entity_index,
+        std::uint32_t entity_generation, const ComponentCodecValue &);
+    using EditorSwap = void (*)(ComponentEditorSwapToken &,
+                                EditorCodecSwapPhase) noexcept;
 
     std::string_view name;
     ComponentCodecRuntimeKind runtime_kind;
+    EditorProjectionPolicy editor_policy;
     DecodeAuthored decode_authored;
     EncodeCanonical encode_canonical;
     Schema schema;
     RuntimeApply runtime_apply;
     RuntimeProject runtime_project;
+    EditorPrepare editor_prepare;
+    EditorSwap editor_swap;
 
     ComponentCodecValue decodeAuthored(const nlohmann::json &authored) const;
     nlohmann::ordered_json encodeCanonical(const ComponentCodecValue &value) const;
     std::span<const StructFieldSchema> fieldSchema() const;
     void applyRuntime(const ComponentCodecValue &value, void *target) const;
     ComponentCodecValue projectRuntime(const void *source) const;
+    ComponentEditorSwapToken prepareEditorSwap(
+        void *ecs, std::uint32_t entity_index,
+        std::uint32_t entity_generation,
+        const ComponentCodecValue &value) const;
+    void swapEditorToken(ComponentEditorSwapToken &token,
+                         EditorCodecSwapPhase phase) const noexcept;
+
+    friend bool operator==(const ComponentCodec &left,
+                           const ComponentCodec &right) noexcept {
+        return left.name == right.name &&
+               left.runtime_kind == right.runtime_kind &&
+               left.editor_policy == right.editor_policy &&
+               left.decode_authored == right.decode_authored &&
+               left.encode_canonical == right.encode_canonical &&
+               left.schema == right.schema &&
+               left.runtime_apply == right.runtime_apply &&
+               left.runtime_project == right.runtime_project &&
+               left.editor_prepare == right.editor_prepare &&
+               left.editor_swap == right.editor_swap;
+    }
 };
 
 std::span<const ComponentCodec> componentCodecs();
 const ComponentCodec *findComponentCodec(std::string_view name) noexcept;
 const ComponentCodec &requireComponentCodec(std::string_view name);
 ComponentCodecQueryMetadata componentCodecQueryMetadata(std::string_view name) noexcept;
+
+namespace testing {
+
+// Test registration uses the same registry read by resolution and production
+// context capture.  The planner itself receives a copied catalog and never
+// consults this scoped ambient value.
+class ScopedComponentCodecCatalog final {
+    std::vector<ComponentCodec> replacement_;
+    const std::vector<ComponentCodec> *previous_ = nullptr;
+
+  public:
+    explicit ScopedComponentCodecCatalog(
+        std::vector<ComponentCodec> replacement);
+    ~ScopedComponentCodecCatalog() noexcept;
+
+    ScopedComponentCodecCatalog(const ScopedComponentCodecCatalog &) = delete;
+    ScopedComponentCodecCatalog &operator=(
+        const ScopedComponentCodecCatalog &) = delete;
+};
+
+} // namespace testing
 
 // Query representation mandated for transform: authored local TRS and the
 // display-only world projection are never conflated.

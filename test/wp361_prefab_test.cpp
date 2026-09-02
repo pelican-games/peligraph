@@ -541,6 +541,55 @@ Json wp372aArenaSnapshot(const BehaviorAttachmentArena &arena) {
     };
 }
 
+EditorProjectionContext wp375ContextSnapshot(
+    EditorBehaviorAvailability availability) {
+    const auto available_codecs = componentCodecs();
+    std::vector<ComponentCodec> codecs{available_codecs.begin(),
+                                       available_codecs.end()};
+    std::vector<EditorBehaviorPolicy> behaviors;
+    for (const auto &registration :
+         internal::getBehaviorRegisterer().registeredBehaviors()) {
+        behaviors.push_back(EditorBehaviorPolicy{
+            .stable_name = registration.stable_name,
+            .schema_version = registration.schema_version,
+            .canonicalize = registration.canonicalize_params,
+            .owner_generation =
+                internal::registrationOwnerGeneration(registration.owner),
+        });
+    }
+    const auto defaults = componentCodecCanonicalDefaults();
+    constexpr auto layout_mode = EditorLayoutSemanticMode::Unconfigured;
+    return EditorProjectionContext{
+        "main", EditorProjectionMode::Committed, codecs, layout_mode,
+        editorProjectionCodecGeneration(codecs, layout_mode, defaults),
+        availability, behaviors,
+        editorProjectionBehaviorGeneration(behaviors, availability),
+        defaults};
+}
+
+EditorProjectionResult executeWp375Seam(
+    const EditorEditExecutionRequest &request,
+    EditorProjectionDocumentTarget &target,
+    const EditorProjectionModules &modules,
+    EditorRuntimeBindingState &binding_state,
+    EditorBehaviorAvailability availability,
+    EditorProjectionFaultInjector *fault_injector = nullptr) {
+    const auto context = wp375ContextSnapshot(availability);
+    binding_state.codec_generation = context.layoutGeneration();
+    binding_state.behavior_generation = context.behaviorGeneration();
+    const auto plan = planEditorProjection(
+        EditorProjectionPlanningRequest{
+            .base_revision = request.base_revision,
+            .commands = request.commands,
+            .operations = request.operations,
+        },
+        target.projectionState(), context);
+    return materializeEditorProjection(
+        plan, modules, target, binding_state, binding_state.epoch,
+        context.layoutGeneration(), context.behaviorGeneration(),
+        fault_injector);
+}
+
 using BehaviorOriginIdentity = std::pair<bool, std::string>;
 
 std::vector<BehaviorOriginIdentity> behaviorOriginIdentity(
@@ -1344,7 +1393,14 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     auto &components = GET_MODULE(ComponentInfoManager);
     auto &arena = GET_MODULE(BehaviorAttachmentArena);
-    std::vector<EditorProjectionRuntimeObjectBinding> runtime_bindings;
+    ProjectBasicConfigProjectionTarget projection_target{config};
+    EditorRuntimeBindingState binding_state{.epoch = 1};
+    auto &runtime_bindings = binding_state.bindings;
+    const EditorProjectionModules projection_modules{
+        .ecs = &ecs,
+        .component_info = &components,
+        .behavior_arena = &arena,
+    };
 
     EditorEditRuntimeDependencies edit_dependencies{
         .document = [&]() -> const AuthoringSceneDocument & {
@@ -1352,132 +1408,9 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
         },
         .current_scene_id = [] { return std::string{"main"}; },
         .execute = [&](const EditorEditExecutionRequest &request) {
-            struct BehaviorState {
-                BehaviorAttachmentArena *arena = nullptr;
-                std::vector<BehaviorAttachmentEdit> edits;
-                std::unique_ptr<PreparedBehaviorAttachmentEdits> token;
-            };
-            std::vector<std::unique_ptr<EditorProjectionAdapter>> adapters;
-            std::vector<SceneObjectProjectionAdapter *> lifecycle;
-            std::unique_ptr<BehaviorState> behavior_state;
-            const auto add_lifecycle = [&](AuthoringObjectId id) {
-                auto adapter = std::make_unique<SceneObjectProjectionAdapter>(
-                    ecs, components, "main", id, runtime_bindings);
-                lifecycle.push_back(adapter.get());
-                adapters.push_back(std::move(adapter));
-            };
-            for (const auto &operation : request.operations) {
-                const auto op = operation.at("op").get<std::string>();
-                if (op == "spawn") {
-                    add_lifecycle(AuthoringObjectId{
-                        operation.at("object_id").get<std::uint64_t>()});
-                } else if (op == "destroy" || op == "remove_objects") {
-                    for (const auto &id : operation.at("object_ids")) {
-                        add_lifecycle(
-                            AuthoringObjectId{id.get<std::uint64_t>()});
-                    }
-                } else if (op == "restore_objects") {
-                    for (const auto &closure : operation.at("closures")) {
-                        add_lifecycle(AuthoringObjectId{
-                            closure.at("authoring_object_id")
-                                .get<std::uint64_t>()});
-                    }
-                }
-            }
-            if (!lifecycle.empty()) {
-                adapters.push_back(
-                    std::make_unique<BehaviorSceneProjectionAdapter>(
-                        arena, "main", runtime_bindings, lifecycle));
-            }
-            if (lifecycle.empty()) {
-                std::vector<BehaviorAttachmentEdit> requested;
-                for (const auto &operation : request.operations) {
-                    if (operation.at("op") != "add_component" ||
-                        operation.at("component_slot") != "behavior") {
-                        continue;
-                    }
-                    const auto object_id = AuthoringObjectId{
-                        operation.at("object_id").get<std::uint64_t>()};
-                    const auto binding = std::find_if(
-                        runtime_bindings.begin(), runtime_bindings.end(),
-                        [&](const auto &candidate) {
-                            return candidate.authoring_object_id == object_id;
-                        });
-                    REQUIRE(binding != runtime_bindings.end());
-                    const auto &authored = operation.at("component");
-                    requested.push_back(BehaviorAttachmentEdit{
-                        .kind = BehaviorAttachmentEditKind::attach,
-                        .entity = binding->entity,
-                        .component_index = operation.at("component_index")
-                                               .get<std::size_t>(),
-                        .component_origin = ResolvedComponentOrigin{
-                            AuthoredComponentOrigin{
-                                operation.at("component_index")
-                                    .get<std::size_t>()}},
-                        .scene_object_index = std::find_if(
-                            config.resolvedScene().findScene("main")->objects.begin(),
-                            config.resolvedScene().findScene("main")->objects.end(),
-                            [&](const auto &object) {
-                                return object.authoring_object_id == object_id;
-                            })->authoring_object_index,
-                        .scene_ordered = true,
-                        .identity = BehaviorAttachmentIdentity{
-                            .handle = BehaviorAttachmentHandle{
-                                operation.at("attachment_handle")
-                                    .get<std::uint64_t>()},
-                            .attachment_seq = operation.at("attachment_seq")
-                                                  .get<std::uint64_t>()},
-                        .stable_name = authored.at("type").get<std::string>(),
-                        .canonical_params = internal::canonicalizeBehaviorParams(
-                            authored.at("type").get<std::string>(),
-                            authored.value("params", Json::object())),
-                        .raw_component = authored,
-                    });
-                }
-                if (!requested.empty()) {
-                    behavior_state = std::make_unique<BehaviorState>(BehaviorState{
-                        .arena = &arena, .edits = std::move(requested)});
-                    adapters.push_back(
-                        std::make_unique<EditorProjectionCallbackAdapter>(
-                            EditorProjectionAdapterKind::BehaviorAttachment,
-                            "wp361a.production.behavior.add",
-                            EditorProjectionPublicationMode::InverseToken,
-                            behavior_state.get(),
-                            +[](void *raw,
-                                const EditorProjectionPrepareContext &) {
-                                auto &state =
-                                    *static_cast<BehaviorState *>(raw);
-                                state.token = state.arena->prepareEditorEdits(
-                                    std::move(state.edits));
-                            },
-                            +[](void *raw) noexcept {
-                                static_cast<BehaviorState *>(raw)
-                                    ->token->publish();
-                            },
-                            +[](void *raw) noexcept {
-                                auto &state =
-                                    *static_cast<BehaviorState *>(raw);
-                                if (state.token) state.token->rollback();
-                            },
-                            +[](void *raw) noexcept {
-                                auto &state =
-                                    *static_cast<BehaviorState *>(raw);
-                                if (state.token) state.token->finish();
-                                state.token.reset();
-                            }));
-                }
-            }
-            std::vector<EditorProjectionAdapter *> adapter_ptrs;
-            for (auto &adapter : adapters) adapter_ptrs.push_back(adapter.get());
-            ProjectBasicConfigProjectionTarget target{config};
-            EditorProjectionTransaction transaction{target,
-                                                    request.base_revision};
-            auto result = transaction.commit(request.commands, adapter_ptrs);
-            if (result.committed() && !lifecycle.empty()) {
-                const auto next = lifecycle.back()->runtimeBindings();
-                runtime_bindings.assign(next.begin(), next.end());
-            }
-            return result;
+            return executeWp375Seam(
+                request, projection_target, projection_modules, binding_state,
+                EditorBehaviorAvailability::Active);
         },
         .gate = [] { return EditorGateObservation{}; },
         .allocate_behavior_attachment =
@@ -1650,6 +1583,7 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     rpc_service.commitPendingEdits();
     const auto add_result = rpc(
         "get_edit_result", {{"ticket", add_accepted.at("ticket")}});
+    INFO("WP375 lifecycle add result: " << add_result.dump());
     REQUIRE(add_result.at("status") == "committed");
     const auto authored_after_rpc =
         AuthoringSceneAuthority::rawView(config.sceneDocument()).documentJson();
@@ -3236,6 +3170,15 @@ TEST_CASE("WP362 prefab set unset undo redo roll back every projection fault poi
                     point == EditorProjectionFaultPoint::AfterPublication
                         ? "scene_pair"
                         : "behavior.scene.main";
+                EditorRuntimeBindingState binding_state{
+                    .bindings = bindings,
+                    .epoch = 1,
+                };
+                const EditorProjectionModules projection_modules{
+                    .ecs = &ecs,
+                    .component_info = &GET_MODULE(ComponentInfoManager),
+                    .behavior_arena = &arena,
+                };
 
                 EditorEditCoordinator edits{EditorEditRuntimeDependencies{
                     .document = [&]() -> const AuthoringSceneDocument & {
@@ -3243,15 +3186,9 @@ TEST_CASE("WP362 prefab set unset undo redo roll back every projection fault poi
                     },
                     .current_scene_id = [] { return std::string{"main"}; },
                     .execute = [&](const EditorEditExecutionRequest &request) {
-                        EcsCodecProjectionAdapter ecs_adapter{
-                            ecs, "main", bindings};
-                        BehaviorSceneProjectionAdapter behavior_adapter{
-                            arena, "main", bindings, {}};
-                        std::array<EditorProjectionAdapter *, 2> adapters{
-                            &ecs_adapter, &behavior_adapter};
-                        EditorProjectionTransaction transaction{
-                            target, request.base_revision, &fault};
-                        return transaction.commit(request.commands, adapters);
+                        return executeWp375Seam(
+                            request, target, projection_modules, binding_state,
+                            EditorBehaviorAvailability::Active, &fault);
                     },
                     .gate = [] { return EditorGateObservation{}; },
                     .prefab_registry = [&] {
@@ -3576,6 +3513,15 @@ TEST_CASE("WP372a reconciliation fault matrix restores params activation and ins
                     point == EditorProjectionFaultPoint::AfterPublication
                         ? "scene_pair"
                         : "behavior.scene.main";
+                EditorRuntimeBindingState binding_state{
+                    .bindings = bindings,
+                    .epoch = 1,
+                };
+                const EditorProjectionModules projection_modules{
+                    .ecs = &GET_MODULE(ECSCore).getTemplatePublicModule(),
+                    .component_info = &GET_MODULE(ComponentInfoManager),
+                    .behavior_arena = &arena,
+                };
 
                 EditorEditCoordinator edits{EditorEditRuntimeDependencies{
                     .document = [&]() -> const AuthoringSceneDocument & {
@@ -3583,13 +3529,9 @@ TEST_CASE("WP372a reconciliation fault matrix restores params activation and ins
                     },
                     .current_scene_id = [] { return std::string{"main"}; },
                     .execute = [&](const EditorEditExecutionRequest &request) {
-                        BehaviorSceneProjectionAdapter behavior_adapter{
-                            arena, "main", bindings, {}};
-                        std::array<EditorProjectionAdapter *, 1> adapters{
-                            &behavior_adapter};
-                        EditorProjectionTransaction transaction{
-                            target, request.base_revision, &fault};
-                        return transaction.commit(request.commands, adapters);
+                        return executeWp375Seam(
+                            request, target, projection_modules, binding_state,
+                            EditorBehaviorAvailability::Active, &fault);
                     },
                     .gate = [] { return EditorGateObservation{}; },
                     .prefab_registry = [&] {
@@ -3777,6 +3719,15 @@ TEST_CASE("WP372a real prefab parameter producer preserves the live behavior ins
     REQUIRE(wp372a_update_trace.size() == 1);
     REQUIRE(wp372a_update_trace.front().internal_state == 1);
     const auto before = arena.snapshot().front();
+    EditorRuntimeBindingState binding_state{
+        .bindings = bindings,
+        .epoch = 1,
+    };
+    const EditorProjectionModules projection_modules{
+        .ecs = &GET_MODULE(ECSCore).getTemplatePublicModule(),
+        .component_info = &GET_MODULE(ComponentInfoManager),
+        .behavior_arena = &arena,
+    };
 
     EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&]() -> const AuthoringSceneDocument & {
@@ -3792,13 +3743,9 @@ TEST_CASE("WP372a real prefab parameter producer preserves the live behavior ins
             },
             .current_scene_id = [] { return std::string{"main"}; },
             .execute = [&](const EditorEditExecutionRequest &request) {
-                BehaviorSceneProjectionAdapter behavior_adapter{
-                    arena, "main", bindings, {}};
-                std::array<EditorProjectionAdapter *, 1> adapters{
-                    &behavior_adapter};
-                EditorProjectionTransaction transaction{target,
-                                                        request.base_revision};
-                return transaction.commit(request.commands, adapters);
+                return executeWp375Seam(
+                    request, target, projection_modules, binding_state,
+                    EditorBehaviorAvailability::Active);
             },
             .gate = [] { return EditorGateObservation{}; },
             .prefab_registry = [&] {
@@ -3933,6 +3880,15 @@ TEST_CASE("WP372b real unpack RPC routes origin transitions through undo and red
     wp372a_update_trace.clear();
     arena.update(game);
     REQUIRE(wp372a_update_trace.back().internal_state == 1);
+    EditorRuntimeBindingState binding_state{
+        .bindings = bindings,
+        .epoch = 1,
+    };
+    const EditorProjectionModules projection_modules{
+        .ecs = &GET_MODULE(ECSCore).getTemplatePublicModule(),
+        .component_info = &GET_MODULE(ComponentInfoManager),
+        .behavior_arena = &arena,
+    };
 
     EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&]() -> const AuthoringSceneDocument & {
@@ -3951,21 +3907,9 @@ TEST_CASE("WP372b real unpack RPC routes origin transitions through undo and red
             },
             .current_scene_id = [] { return std::string{"main"}; },
             .execute = [&](const EditorEditExecutionRequest &request) {
-                const auto routes = internal::planEditorPrefabProjectionRoutes(
-                    request.operations, target.projectionResolvedScene(),
-                    "main", BehaviorRegistryAvailability::active);
-                auto owned =
-                    internal::makeEditorPrefabBehaviorProjectionAdapters(
-                        arena, bindings, routes,
-                        BehaviorRegistryAvailability::dll_unavailable);
-                std::vector<EditorProjectionAdapter *> adapters;
-                adapters.reserve(owned.size());
-                for (auto &adapter : owned) {
-                    adapters.push_back(adapter.get());
-                }
-                EditorProjectionTransaction transaction{target,
-                                                        request.base_revision};
-                return transaction.commit(request.commands, adapters);
+                return executeWp375Seam(
+                    request, target, projection_modules, binding_state,
+                    EditorBehaviorAvailability::Active);
             },
             .gate = [] { return EditorGateObservation{}; },
             .prefab_registry = [&] {
@@ -4019,8 +3963,10 @@ TEST_CASE("WP372b real unpack RPC routes origin transitions through undo and red
         const auto ticket = accepted.at("result").at("ticket")
                                 .get<std::string>();
         service.commitPendingEdits();
-        return run_rpc("get_edit_result", {{"ticket", ticket}})
-            .at("result");
+        auto result =
+            run_rpc("get_edit_result", {{"ticket", ticket}}).at("result");
+        INFO("WP375 unpack RPC result: " << result.dump());
+        return result;
     };
 
     const auto generated_edit = run_rpc(
@@ -4751,6 +4697,15 @@ TEST_CASE("WP372b availability wiring preserves unrelated authored pending",
     const auto before = arena.snapshot().front();
     REQUIRE(before.pending);
     REQUIRE_FALSE(before.active);
+    EditorRuntimeBindingState binding_state{
+        .bindings = bindings,
+        .epoch = 1,
+    };
+    const EditorProjectionModules projection_modules{
+        .ecs = &GET_MODULE(ECSCore).getTemplatePublicModule(),
+        .component_info = &GET_MODULE(ComponentInfoManager),
+        .behavior_arena = &arena,
+    };
 
     EditorEditCoordinator edits{EditorEditRuntimeDependencies{
         .document = [&]() -> const AuthoringSceneDocument & {
@@ -4761,20 +4716,9 @@ TEST_CASE("WP372b availability wiring preserves unrelated authored pending",
         },
         .current_scene_id = [] { return std::string{"main"}; },
         .execute = [&](const EditorEditExecutionRequest &request) {
-            const auto routes = internal::planEditorPrefabProjectionRoutes(
-                request.operations, target.projectionResolvedScene(), "main",
-                BehaviorRegistryAvailability::dll_unavailable);
-            auto owned = internal::makeEditorPrefabBehaviorProjectionAdapters(
-                arena, bindings, routes,
-                BehaviorRegistryAvailability::active);
-            std::vector<EditorProjectionAdapter *> adapters;
-            adapters.reserve(owned.size());
-            for (auto &adapter : owned) {
-                adapters.push_back(adapter.get());
-            }
-            EditorProjectionTransaction transaction{target,
-                                                    request.base_revision};
-            return transaction.commit(request.commands, adapters);
+            return executeWp375Seam(
+                request, target, projection_modules, binding_state,
+                EditorBehaviorAvailability::DllUnavailable);
         },
         .gate = [] { return EditorGateObservation{}; },
         .prefab_registry = [&] {

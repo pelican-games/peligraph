@@ -80,7 +80,7 @@ void requireVec3(glm::vec3 actual, glm::vec3 expected) {
 
 } // namespace
 
-TEST_CASE("component codec registry exposes the complete five-tuple", "[component-codec][wp151]") {
+TEST_CASE("component codec registry exposes runtime and editor projection policy", "[component-codec][wp151][WP375]") {
     const auto codecs = componentCodecs();
     REQUIRE(codecs.size() == 7);
     std::unordered_set<std::string_view> names;
@@ -91,6 +91,13 @@ TEST_CASE("component codec registry exposes the complete five-tuple", "[componen
         REQUIRE(codec.schema != nullptr);
         REQUIRE(codec.runtime_apply != nullptr);
         REQUIRE(codec.runtime_project != nullptr);
+        if (codec.editor_policy == EditorProjectionPolicy::EcsCodec) {
+            REQUIRE(codec.editor_prepare != nullptr);
+            REQUIRE(codec.editor_swap != nullptr);
+        } else {
+            REQUIRE(codec.editor_prepare == nullptr);
+            REQUIRE(codec.editor_swap == nullptr);
+        }
         REQUIRE_FALSE(codec.fieldSchema().empty());
         const auto metadata = componentCodecQueryMetadata(codec.name);
         REQUIRE(metadata.state == ComponentCodecState::Registered);

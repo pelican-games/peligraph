@@ -11,6 +11,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,6 +23,25 @@ class BehaviorCallbackScope;
 enum class BehaviorRegistryAvailability {
     active,
     dll_unavailable,
+};
+
+class BehaviorTypeUnknownError final : public std::runtime_error {
+    std::string stable_name_;
+    std::optional<AuthoringObjectId> object_id_;
+
+  public:
+    static constexpr std::string_view codeName() noexcept {
+        return "behavior_type_unknown@1";
+    }
+
+    BehaviorTypeUnknownError(
+        std::string stable_name, std::string object_name = {},
+        std::optional<AuthoringObjectId> object_id = std::nullopt);
+
+    const std::string &stableName() const noexcept { return stable_name_; }
+    const std::optional<AuthoringObjectId> &objectId() const noexcept {
+        return object_id_;
+    }
 };
 
 struct PreparedSceneBehaviorAttachment {
@@ -83,6 +103,7 @@ enum class BehaviorAttachmentEditKind : std::uint8_t {
 struct BehaviorAttachmentEdit {
     BehaviorAttachmentEditKind kind = BehaviorAttachmentEditKind::set_params;
     GameObjectId entity = invalidGameObjectId;
+    std::optional<AuthoringObjectId> authoring_object_id;
     std::size_t component_index = 0;
     ResolvedComponentOrigin component_origin;
     std::size_t scene_object_index = 0;
@@ -203,7 +224,8 @@ DECLARE_MODULE(BehaviorAttachmentArena) {
     std::optional<BehaviorAttachmentInfo> findEditorAttachment(
         GameObjectId entity, std::size_t component_index) const;
     std::unique_ptr<PreparedBehaviorAttachmentEdits>
-    prepareEditorEdits(std::vector<BehaviorAttachmentEdit> edits);
+    prepareEditorEdits(std::vector<BehaviorAttachmentEdit> edits,
+                       BehaviorRegistryAvailability availability);
     std::unique_ptr<PreparedBehaviorSceneReconciliation>
     prepareSceneReconciliation(
         std::vector<BoundSceneBehaviorAttachment> desired,
