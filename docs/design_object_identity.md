@@ -319,7 +319,7 @@ native C++ は context を使わず static 状態・filesystem・socket・thread
 - **保証範囲**: Pelican が所有し **Pelican API を通じて変更される状態**(ECS / Physics / Light / Camera / Renderer / Behavior arena /
   event queue / RNG / pending scene / audio voice / persistence の Pelican 経路)。**直接 I/O と DLL global は非保証**と明記
 - **`behavior.hpp` の layout / virtual surface は変えない**(WP155/162/167 の DLL 契約)。既存の `GameContext::*` と
-  event registerer の `__emit` が参照する **scoped transaction sink を下位層**に置く(旧 DLL のコードもその sink を通る)
+  event registerer の `pelican_emit_v2`(WP381 で epoch v2 に改名。旧名は `__emit`)が参照する **scoped transaction sink を下位層**に置く(旧 DLL のコードもその sink を通る)
 - **audio**: `playSound` は **provisional handle** を返し、read-your-writes(`isPlaying / stopSound` は provisional に効く)、
   decode の同期 validation は行い、backend 再生は commit 後。commit 後の backend 失敗は通常の再生失敗として扱う
 - **persistence**: `setGameSettings` は transaction-local shadow、`saveSettings / saveData` は **commit 後に実 write**(例外は commit 時点)

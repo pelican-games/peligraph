@@ -383,7 +383,7 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 
 | method | 実装行 | 状態変更 |
 |---|---|---|
-| `reload_game_logic` | [再ロード](../../src/core/communication/rpcserver.cpp#L1210) | game DLL(`pelican_game_logic`)を再ロード |
+| `reload_game_logic` | [再ロード](../../src/core/communication/rpcserver.cpp#L1196) | game DLL(`pelican_game_logic`)を再ロード |
 | `get_status` | [状態取得](../../src/core/communication/rpcserver.cpp#L1312) | instance、project、scene、frame/time、seed、store 状態と各種診断を返す |
 | `get_gpu_timing` | [GPU 時間平均](../../src/core/communication/rpcserver.cpp#L1443) | 直近 30 フレームの node 別 `body_ms` / `barriers_ms` 平均と対応状況を軽量に返す |
 | `set_seed` | [seed 設定](../../src/core/communication/rpcserver.cpp#L1502) | deterministic RNG を reseed |

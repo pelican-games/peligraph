@@ -419,4 +419,12 @@ layout を変える入口は版を上げて旧名を消す。ロード前の raw
 section / `build_id` / C wire / `schema_v1` 予約 / candidate staging は作らない。CARRIER-RT3 の再帰 schema は `pelican_register_behavior_v3` になる。
 offline manifest(修正 ζ)は **final artifact の SHA-256** に拘束する(`build_id` は無い)。
 
+**enforcement の範囲(2026-09-03、WP381 コードレビュー `rev381` #2 の裁定に合わせた訂正。機構は変えない)**:
+上の「enforcement は OS loader、raw import 読みは診断」は、**SDK 入口(`pelican_register_behavior_v2` / `pelican_register_event_v2` /
+`pelican_emit_v2` / `pelican_register_system_v2`)か epoch anchor(`pelican_game_logic_epoch_v2`)を import する DLL** についてのみ真。
+旧 DLL はそれらの v1 名(`__registerBehavior` / `__registerEvent` / `__emit` / `__registerSystem`)を import するが host はもう export しないので、
+未解決 import として OS loader が拒否する。**provider-only の旧 DLL**(`getApiV1` 系の export だけで SDK 入口を import しないもの)は
+未解決 import が無く、loader は止めない。この場合は **常時有効な raw import 診断(anchor 不在 = `game_logic_abi_stale@1`)が唯一の enforcement**。
+診断は `LoadLibrary` より前に走る(`GameLogicReloader::loadCopy()`)ので、「旧 DLL のコードを実行前に止める」目的は満たす。
+
 規範は WP381 v2(台帳)。設計段の 3 巡打ち切りは維持する —— これは設計を再開したのではなく、仕様レビューが設計の 1 決定を覆したので理由と共に記録したもの。
