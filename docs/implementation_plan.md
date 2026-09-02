@@ -19810,3 +19810,110 @@ AfterPublication matrix 用で**正当**。
 既に code + path 付きの利用者エラー型。`StructFieldErrorCode` は 6 値。
 設計は**新しい型を発明せず、これを codec 境界へ一般化**する(collider 17 / sprite_view 15 /
 atlas 31 / componentcodec 2 の型無し throw を移す)。
+
+
+#### WP375 第 2 巡(6 件・破綻 2)と v3 決定差分 —— **v3 が最終。仕様レビューは打ち切り**
+
+第 2 巡は「着手可能にする最低条件」を 7 項目で明示した。**v3 はその 7 項目を 1:1 で閉じる差分**であり、
+触れていない決定は v2 のまま。決定 2(本番 target)・決定 7(matrix)は第 2 巡でも壊せなかった。
+
+##### 差分 1(#1・破綻): preflight は plan では検出できない。**本番 `SceneLoader::load` の caller 変異**にする
+
+preflight は planner の route ではなく、`SceneLoader::load()` が validator を呼ぶかどうかである
+([scene.cpp:350](../src/core/loader/scene.cpp#L350))。plan の入出力に一切影響しないので、
+**plan 検証では caller 削除を検出できない**(pure validator を共有しても同じ)。
+
+- routing の穴 3 つのうち **「写像の dict insert」「invalidation の route」は plan 変異**で検出する
+- **preflight は別枠**: 本番 `SceneLoader::load` 経由で **valid / invalid の scene を同一テスト**に置き、
+  `validateResolvedSceneFeatureBindings` の**呼び出しを消す変異**で invalid 側が受理されて落ちる
+
+##### 差分 2(#2): context は **immutable snapshot**。planner の ambient 読み取りを禁止する
+
+v2 の `{active_scene_id, behavior_availability, mode}` では決定性が保証できない —— WP374 の
+`componentCodecs()` は `tryGet<RayLayoutRuntimeState>()` で返す集合を変え、behavior canonicalization は
+singleton registry を読み、codec の canonical default は thread-local である。
+
+**`EditorProjectionContext`(immutable)**:
+
+| 要素 | 内容 |
+|---|---|
+| `active_scene_id`, `mode` | v2 どおり |
+| **codec policy catalog** + **layout semantic mode / generation** | `componentCodecs()` の結果を凍結して持つ |
+| `behavior_availability` + **registry snapshot / generation** | canonicalization は**入口で行い、typed operation に canonical value を凍結**する。planner は registry を読まない |
+| **canonical default snapshot** | thread-local を planner から追放 |
+
+- **materialize は `EditorRuntimeBindingState &` と期待 epoch / generation を明示引数**で受け、
+  不一致は **`editor_projection_stale_bindings@1`**(名前付き)
+- **規範**: planner は `FastModuleContainer` / singleton registry / thread-local default を**読んではならない**。
+  受け入れ: 同じ request + projection state + context で plan が struct 一致し、
+  **ambient(`RayLayoutRuntimeState` / registry / default)だけを変えても plan が変わらない**
+
+##### 差分 3(#3): codec は **type-erased な materialization hook** を持つ。adapter 内の第二表を禁止する
+
+policy だけでは足りない —— WP374 の `EcsCodecProjectionAdapter` は token variant を
+`Animation / Sprite / RayInstance` に固定し、名前を再列挙している
+([wp374: editorprojectionadapters.cpp:776](../src/core/loader/editorprojectionadapters.cpp#L776))。
+lifecycle adapter にも `light / collider / behavior` の除外と `simplemodelview` の特殊処理がある(:185, :252, :378)。
+
+- `ComponentCodec` に **`EditorProjectionPolicy` + type-erased `editor_prepare / editor_swap`** を持たせる
+- **generic adapter は plan が保持する codec descriptor を呼ぶ**。executor と `EcsCodecProjectionAdapter` の
+  **双方で component literal の列挙を禁止**する
+- **lifecycle / prefab の複合 adapter**: 内部 routing を policy ごとの sub-route に展開するのは本 WP では行わず、
+  **「複合 adapter 内の routing は plan-only 検証の対象外」と認め、本番 materialize 変異を置く**
+  (差分 5 の変異 (d))
+- 受け入れ: **新 codec `foo` を policy 付きで登録**し、adapter に一切追記せずに
+  set / add / remove が runtime に届く(**追記が必要な実装は落ちる**)
+
+##### 差分 4(#4): **規範 route matrix** を置く。preview の意味 gate は planner 1 箇所
+
+exhaustive `std::visit` は handler の存在しか保証せず、**空 plan を返す handler もコンパイルできる**。
+
+**route matrix**(op × mode → 期待 adapter 種別・scene / object・payload・cardinality)を本文に置く。
+行は現行 12 op すべて:
+
+| op | Committed | Preview |
+|---|---|---|
+| `set_component_value` | codec policy による(Transform closure / RendererModel / EcsCodec / Camera / Light / Collider) | **`transform` / `light` のみ**。他は `editor_preview_unsupported@1` |
+| `add_component` / `remove_component` | policy による + lifecycle(behavior なら arena) | 拒否 |
+| `reparent` | **transform closure + 専用 adapter の両方**([editorruntimefactory.cpp:910](../src/core/communication/editorruntimefactory.cpp#L910)) | 拒否 |
+| `spawn` / `destroy` / `remove_objects` / `restore_objects` | lifecycle adapter + **renderer / camera / light / collider / behavior の各 participant** | 拒否 |
+| `set_prefab_parameter` / `unset_prefab_parameter` / `unpack_prefab` / `restore_prefab` | prefab route(full projection なら renderer / camera / light / collider / behavior 全部)+ origin transition | 拒否 |
+
+- **preview の semantic gate は planner だけ**。`requireLivePreviewCapability`
+  ([editorjournal.cpp:2417](../src/core/communication/editorjournal.cpp#L2417))は**構造検査のみに縮める**
+  (planner を変異させて camera preview を許しても、入口が先に拒否して緑になる状態を無くす)
+- 受け入れ: **matrix の全行**について「plan が期待 adapter 種別を出す / 期待しない種別を出さない」を
+  **struct 比較**で検査し、**行を空にする変異が落ちる**。`reparent` は runtime の local / world transform、
+  spawn / destroy は 5 participant の実 runtime 値まで見る
+
+##### 差分 5(#5・破綻): 変異は **compilable・非同値な 4 個**。factory 経由の production acceptance と 1:1
+
+v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory を消す」は inline 化で観測同値、
+「seam 呼び出しを消す」は build failure になり意味論を検出しない。
+
+| # | 変異(compilable) | 落とす production acceptance(**`makeEditorRuntimeService` → RPC → edit → save → fresh reload**) | 観測 |
+|---|---|---|---|
+| (a) | materialize を **document-only commit**(adapter 0 個)に bypass | `set_component_value(transform)` | 保存 document は新値、**runtime transform は旧値** |
+| (b) | 本番 target を `EphemeralEditorProjectionTarget` に替える | 同上 | **fresh reload 後の document が旧値** |
+| (c) | context の **availability / generation を意図的に誤らせる**(`dll_unavailable` 固定) | `add_component(behavior)` | behavior が pending のまま、`editor_projection_stale_bindings@1` か activation 不発 |
+| (d) | **計画済み adapter 群の 1 つを materialize しない**(renderer participant を落とす) | `spawn`(model 付き object) | document に object あり、**renderer instance 無し** |
+
+- **plan + materialize を直接呼ぶテストは production composition と数えない**
+- `golden_harness` は save → fresh reload を行わないので、**上記 4 本は新規に書く**
+
+##### 差分 6(#6): 17 箇所の分類表(file:line / test 名で固定)
+
+| 分類 | 箇所 | 扱い |
+|---|---|---|
+| **production**(本番 seam へ置換) | `wp361_prefab_test:1354` WP361a production lifecycle adapter(**hybrid。手書き executor を seam に置換**)/ `:3786` WP372a real prefab parameter producer / `:3945` WP372b real unpack RPC / `:4755` WP372b availability wiring | 4 |
+| **fault matrix**(fault injector を seam が転送) | `:3237` WP362 set/unset undo redo fault points / `:3577` WP372a reconciliation fault matrix | 2 |
+| **coordinator / UI 単体**(fake executor 可。**受け入れに数えない**) | `:1838` WP361 journal / `:2761` WP362 real RpcServer(coordinator 検証)/ `:2968` WP362 closure CAS / `:4288` WP372b marker corpus / `:4561` WP372b inverse closure / `devstudio_inspector_test:925,937` gizmo commit / `editorjournal_test:149,215` fixture helper / `inspector_test:132,138` fixture helper | 8 + 3 |
+| observation | — | 0 |
+
+**production 候補を coordinator に格下げして受け入れ数を減らすことを禁止する**(表が規範)。
+
+##### 差分 7: 実装可否
+
+**実装する。** 第 2 巡の 7 条件は上記で 1:1 に閉じた。依存: **WP374a の統合後**
+(差分 5 (d) と invalidation の plan 変異が WP374 の `ray_instance` route を対照に使う)。
+全数は着手時に `ctest -N` で実測する。
