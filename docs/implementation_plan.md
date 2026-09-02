@@ -20543,7 +20543,7 @@ migration / alias / ambiguity エラー / owner の module id / 他 builtin の�
 ### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
-**規範は `docs/design_object_identity.md` v4(§9 が最終。修正 A・B・C・F が本 WP の契約)。**
+**規範は `docs/design_object_identity.md` v4(§9)。**下の **v2 差分が本節の正**(WP380a state transaction / WP380b effect transaction の 2 分割)。
 **依存: WP375(着地後。ECS の inverse-token early publication と observer gate を再利用する)。registry(ID-A)は未装着で走る。**
 
 #### 何が壊れているか(既存欠陥。設計レビューが本番入力で再現)
@@ -20607,6 +20607,81 @@ prepare → early_publish_ecs(observer gate、inverse token)→ publish_candidat
 registry / `ObjectRef` / wire DTO(ID-A)/ 名前 join の ref 化(ID-C)/ public API(ID-D)/ rename /
 DLL global・直接 I/O の隔離(非保証)/ WP375 の protocol 変更。
 
+
+#### WP380 仕様レビュー第 1 巡(不合格・8 件)と v2 —— **2 つに割る。state の transaction を先に、effect の transaction を後に**
+
+仕分け: **直す 8 / やらない 0**。ただしレビューの 3 分割(primitives / effect / executor)は採らない。
+primitives だけの WP は挙動を変えず消費者が無い(§4 の縦切り基準)。**挙動が変わる単位で 2 つ**に割る:
+
+| WP | 変える挙動 | 今日の対照 |
+|---|---|---|
+| **WP380a: state transaction** | scene load / import / pending / refresh の**どの root**でも、publish 途中の失敗で **engine-owned state が旧世代のまま**(document・Light・Camera・ECS・Physics・renderer・ModelAsset・bindings) | document A / Light B / ECS 空 の混在 |
+| **WP380b: effect transaction** | behavior が transaction 中に行った **Pelican API 経由の作用**(event / RNG / scene / audio / persistence / `GameObjects::*`)が rollback で消える | `onInit` の `emit` / `saveData` が失敗後も残る |
+
+WP380a の後、WP380b 前の状態は「state は原子的、effect は漏れる」であり、それは**文書化された既知の穴**(設計 修正 A の非保証に一時的に effect を含める)。
+
+##### 決定 1(#1): 期待値は **fixture が事前定義**する。B の実値を正解にしない
+
+- A / B / C の各 participant 行に **異なる sentinel**(Light intensity 1 / 2 / 3、Camera fov、ECS component 値、Physics pair 集合、
+  renderer instance 数・ordinal、bindings の key 集合)を fixture が持ち、B 成功時は **fixture の B 期待値**と比較、C 失敗後も同じ B 期待値と比較
+- participant を drop する変異は「B 成功時の比較」で既に落ちる(A の値が残るため)。**B と C の両方で drop しても通らない**
+- 「保存データ非生成」は **C 専用 slot**(A / B が書かない key)の不在と、production write sink の **commit 回数**で検査する
+
+##### 決定 2(#2): executor の結果を **`PreCommitFailure` / `CommittedWithEffectFailure`** に分ける
+
+- `PreCommitFailure{phase, error}`: prepare / early_publish / publish / activate の失敗。**A / A**(document も runtime も旧)
+- `CommittedWithEffectFailure{active_authority, effect_errors[]}`: commit_metadata と retire の**後**の flush 失敗。**B / B のまま**名前付きで報告する
+  (A へは戻さない。retire 済みだから。黙って捨てもしない)
+- `BasicConfig` の catch は **commit status を見て** document を戻すか決める(今は無条件に戻す: [basicconfig.cpp:734](../src/core/loader/basicconfig.cpp#L734))。
+  WP380a では flush 対象が無いので `CommittedWithEffectFailure` は**型だけ**置き、WP380b が中身を入れる
+
+##### 決定 3(#3): executor は **未 publish の candidate** を受け取る。root は 4 つ
+
+- `SceneLoader::load` は live config の resolved scene ではなく **`SceneProjectionState` candidate と document candidate** を受け取る
+  (今は publish 済みを読む: [scene.cpp:339](../src/core/loader/scene.cpp#L339))。`BasicConfig` は**事前 publish しない**
+  ([basicconfig.cpp:728](../src/core/loader/basicconfig.cpp#L728))
+- production root は **4 つ全部**を executor へ配線: 直接 `SceneLoader::load` / `requestLoad → applyPendingLoad` / `importSceneDocument` /
+  `refreshResolvedScene`。受け入れは **root ごと**に A/B/C を通し、**root → executor の配線を削る変異が root ごとに落ちる**。
+  executor helper を直接呼ぶテストは受け入れに数えない
+
+##### 決定 4(#4): 保証対象は **公開 mutator の全列挙表**で定義する(WP380b)
+
+- `GameContext::*` / event `__emit` / **`GameObjects::*`**([gameobjects.hpp:20](../src/core/userpublic/gameobjects.hpp#L20))/ ECS・renderer setter の
+  **全 mutating public API** を 1 表にし、transaction 中の扱いを **journal(旧値を保存して戻す)/ shadow(outbox)/ reject(名前付き)** から 1 つずつ決める
+- `GameObjects::setLocalTransform` 等の**既存 entity への上書き**は **journal**(inverse token だけでは戻らない)。callback 中の利用は禁止しない
+  (`onInit` で transform を触るのは正当な用法)
+- 5 作用 fixture に **`GameObjects::setLocalTransform(B_id)` / 既存 voice の `stopSound` / `setBusVolume` / `setSeed` / `setGameSettings` + `saveSettings`** を足す
+
+##### 決定 5(#5・#6): participant 表を **field 単位**で書き、retire は **prepared-retire token** で `noexcept` にする
+
+- 表の各行: **具体 field / prepare の所有物 / publish / rollback / retire / snapshot schema / mutation ID**。
+  行に足す: `SceneLoader::object_bindings` / `runtime_object_bindings` / `runtime_only_changes`([scene.hpp:43](../src/core/loader/scene.hpp#L43))/
+  **`ModelAssetContainer` の lazy record と GPU resource**(lookup 中にその場で commit される: [model.cpp:413](../src/core/asset/model.cpp#L413) →
+  **prepare で先に解決し、candidate が失敗したら record ごと戻す**)/ renderer の **declaration ordinal**
+  ([polygoninstancecontainer.cpp:568](../src/core/renderer/polygoninstancecontainer.cpp#L568): rollback で進めない)
+- `SeqPlayer` / `VatPlayer` / `PolygonInstanceContainer` / ECS の release は **prepare で retirement token を作り、retire は token の消費だけ**
+  (容量予約・GPU retirement の preflight を prepare へ)。**commit 後の各呼出が `noexcept` であることは API 契約に書き、`static_assert(noexcept(...))` で固定**
+- 複数 object の A→B は **scene 用の bulk adapter**(object ごとの adapter を束ねる。WP375 の protocol は変えない)
+- renderer は C 直後だけでなく **D(C の後にもう一度成功する load)と対照**を比較する(ordinal / instance 数の drift)
+
+##### 決定 6(#7): 旧 DLL fixture は **frozen header snapshot** で build する(WP380b)
+
+- `test/fixtures/userpublic_frozen/<date>/` に public header の snapshot をチェックインし、その DLL target の include path に
+  **現行 `src/core/userpublic` を入れない**ことを build 時に assert する(WP162 系列は live header で毎回再 build する:
+  [test/CMakeLists.txt:435](../test/CMakeLists.txt#L435))
+
+##### 決定 7(#8): 構成 matrix
+
+- **ON baseline**(AUDIO / PHYSICS / SEQPLAYER / VAT 全 ON): A/B/C/D の semantic test
+- **各 OFF**: compile が通る・該当 API は既存の named disabled error([gamecontext.cpp:265](../src/core/userpublic/gamecontext.cpp#L265))・
+  participant が **uninstalled** として表から外れ、残りの行で A/B/C が通る。RPC OFF も同様。`SKIP_DEVSTUDIO` 両構成。GPU は統合側で直列
+- 出荷 4 project の bytes / golden 不変は**機能対照ではない**(scene に behavior attachment が無い)。fixture project を別に持つ
+
+##### 段割り(v2)
+
+- **WP380a**(state transaction): 決定 1・2(型だけ)・3・5・7。依存: **WP375 統合後**。見積: 大
+- **WP380b**(effect transaction): 決定 2(中身)・4・6・7。依存: WP380a。見積: 大
+- 仕様レビューは **WP380a を先に第 2 巡**にかけ、WP380b は WP380a 統合後に節を切り直してから
 
 ### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾き、登録を C ABI の 1 entrypoint と transaction にする
 
