@@ -4748,9 +4748,6 @@ void Renderer::renderLogicalFrame(
                 injectRayTracingJointTransactionPoint(
                     RayTracingJointTransactionPoint::after_sbt);
             }
-            modules.frame_resources
-                .setRayTracingSceneShaderBindingTables(
-                    ray_tracing_scene_tables);
             acceleration_structure_build.emplace(
                 acceleration_structures->recordFrame(
                     command_buffer,
@@ -4770,6 +4767,9 @@ void Renderer::renderLogicalFrame(
                         gpu_owner_scope->ray_tracing_project != nullptr &&
                         gpu_owner_scope->ray_tracing_project->layout
                             .usesMaterialAlphaProfile()));
+            modules.frame_resources
+                .setRayTracingSceneShaderBindingTables(
+                    ray_tracing_scene_tables);
             if (gpu_owner_scope != nullptr &&
                 gpu_owner_scope->ray_tracing_project != nullptr) {
                 injectRayTracingJointTransactionPoint(

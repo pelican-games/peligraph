@@ -1254,10 +1254,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 !input.material_document.empty() &&
                 !input.material_name.empty();
             const bool full_asset_identity = !input.material_asset.empty();
-            const bool partial_document_identity =
-                input.material_document.empty() != input.material_name.empty();
-            if (partial_document_identity ||
-                (!full_document_identity && !full_asset_identity)) {
+            if (!full_document_identity && !full_asset_identity) {
                 throw std::runtime_error(
                     "pelican.ray_as_row_material_identity_unavailable@1: AS rules require a complete document/material_name or asset/source_material_index row identity");
             }

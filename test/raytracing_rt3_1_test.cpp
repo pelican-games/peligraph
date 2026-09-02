@@ -202,6 +202,14 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
             ContainsSubstring(
                 "pelican.ray_as_row_material_identity_unavailable@1"));
     }
+    SECTION("complete asset provenance tolerates an unpaired embedded material name") {
+        auto asset_identified = inputs;
+        asset_identified[0].material_document.clear();
+        const auto asset_rows =
+            resolveRaySceneRows(asset_identified, layout, nullptr);
+        REQUIRE(asset_rows.rows.size() == inputs.size());
+        CHECK(rowByAuthor(asset_rows, 102).geometry_flags == 0);
+    }
 }
 
 TEST_CASE("WP374 semantic modes preserve legacy and v1 custom-index ABIs",

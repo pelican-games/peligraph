@@ -422,7 +422,9 @@ void FrameResources::beginLogicalFrame(
         main_view_count,
         sequential_count,
         ray_query);
-    active_ray_tracing_scene_tables.reset();
+    // This lease names the last successfully recorded RT generation. The
+    // renderer replaces it after AS recording succeeds, or explicitly clears
+    // it when the selected generation has no RT layout.
 }
 
 void FrameResources::setRayTracingSceneShaderBindingTables(

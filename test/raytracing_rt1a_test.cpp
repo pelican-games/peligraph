@@ -2029,7 +2029,7 @@ TEST_CASE(
             "hit t is outside [1e-3, 2^12]");
     }
 
-    SECTION("relative interval width has accepted and rejected sides") {
+    SECTION("production interval width is narrow and the rejected side is named") {
         const auto interval_intersector = [](
                                                double relative_width) {
             return RayTracingOracleIntersectorForTesting{
@@ -2057,8 +2057,19 @@ TEST_CASE(
                 interval_intersector(0.01001)),
             Catch::Matchers::ContainsSubstring(
                 "relative t interval width exceeds 1e-2"));
-        CHECK_NOTHROW(validateRayTracingOracleFixture(
-            baseline.ray, baseline.triangles));
+
+        const auto production = traceRayTracingOracle(
+            baseline.ray, baseline.triangles);
+        REQUIRE(production.hit.has_value());
+        const auto &interval = production.hit->t_interval;
+        const auto midpoint =
+            (interval.lower + interval.upper) * 0.5;
+        const auto production_relative_width =
+            (interval.upper - interval.lower) /
+            std::max(1.0, std::abs(midpoint));
+        CAPTURE(interval.lower, interval.upper,
+                production_relative_width);
+        CHECK(production_relative_width <= 1.0e-5);
     }
 
     SECTION("nearest-hit uniqueness uses the CPU interval midpoint") {

@@ -736,7 +736,20 @@ void setWp369GeometryOpaque(
     auto flags = nlohmann::json::array();
     if (opaque) flags.push_back("opaque");
     layout.at("acceleration_structure")
-        .at("defaults")["geometry_flags"] = std::move(flags);
+        .at("defaults")["geometry_flags"] = flags;
+    layout.at("acceleration_structure")
+        .at("rules").at(0)["geometry_flags"] = std::move(flags);
+    writeTextFile(directory / "ray_layout.json", layout.dump(2));
+}
+
+void setWp369MaterialRuleOpaque(
+    const std::filesystem::path &directory, bool opaque) {
+    auto layout = nlohmann::json::parse(
+        readTextFile(directory / "ray_layout.json"));
+    auto flags = nlohmann::json::array();
+    if (opaque) flags.push_back("opaque");
+    layout.at("acceleration_structure")
+        .at("rules").at(0)["geometry_flags"] = std::move(flags);
     writeTextFile(directory / "ray_layout.json", layout.dump(2));
 }
 
@@ -787,7 +800,12 @@ void writeWp369MaterialAlphaProject(
          {{"mask", 255},
           {"instance_flags", nlohmann::json::array()},
           {"geometry_flags", nlohmann::json::array()}}},
-        {"rules", nlohmann::json::array()},
+        {"rules",
+         nlohmann::json::array(
+             {{{"material",
+                {{"asset", "models/tree.glb"},
+                 {"source_material_index", 0}}},
+               {"geometry_flags", nlohmann::json::array()}}})},
     };
     writeTextFile(directory / "ray_layout.json", layout.dump(2));
 
@@ -12616,22 +12634,90 @@ TEST_CASE(
         CHECK(profile_removed.bytes != clamped_frame.bytes);
         require_geometry_flags(rayGeometryOpaque);
 
+        auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+        const auto stable_root = runtime.snapshot();
+        REQUIRE(stable_root != nullptr);
+        const auto stable_scope = std::ranges::find_if(
+            stable_root->gpu_arena->scopes,
+            [](const auto &scope) {
+                return scope.ray_tracing_project != nullptr;
+            });
+        REQUIRE(stable_scope != stable_root->gpu_arena->scopes.end());
+        REQUIRE(stable_scope->acceleration_structures != nullptr);
+        const auto stable_tlas =
+            stable_scope->acceleration_structures
+                ->topLevelDeviceAddress();
+        REQUIRE(stable_tlas != 0);
+        const auto stable_as =
+            renderer
+                .rayQueryAccelerationStructureDiagnosticsForTesting();
+        const auto stable_tables = GET_MODULE(FrameResources)
+                                       .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        REQUIRE(stable_tables != nullptr);
+        const auto stable_generation = runtime.activeGeneration();
+
         // WP377 step 3: change only portable_profile. Staging must succeed;
         // Renderer::render must reject the unchanged opaque resident BLAS.
-        // This failure remains last because render intentionally aborts before
-        // publishing the staged generation.
         setWp369PortableProfile(temp_dir, true);
         const auto restored_variant =
             loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
                 rendering_config);
         REQUIRE(isValidRenderingPassId(restored_variant.flat));
-        REQUIRE(GET_MODULE(FrameGraphRuntimeContainer)
-                    .stagedGeneration() != 0);
+        REQUIRE(runtime.stagedGeneration() != 0);
         CHECK_THROWS_WITH(
             renderer.render(),
             Catch::Matchers::ContainsSubstring(
                 "pelican.ray_profile_opaque_as@1") &&
                 Catch::Matchers::ContainsSubstring("BLAS geometry"));
+        CHECK(runtime.snapshot() == stable_root);
+        CHECK(runtime.activeGeneration() == stable_generation);
+        CHECK(runtime.stagedGeneration() == 0);
+        CHECK(stable_scope->acceleration_structures
+                  ->topLevelDeviceAddress() == stable_tlas);
+        CHECK(renderer
+                  .rayQueryAccelerationStructureDiagnosticsForTesting()
+                  .active_blas_inputs == stable_as.active_blas_inputs);
+        CHECK(GET_MODULE(FrameResources)
+                  .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
+              stable_tables);
+
+        // The rejected generation must not poison the next frame. With no
+        // staged publication left, the previous profile-OFF generation draws
+        // the same production bytes again.
+        renderer.render();
+        vkcore.waitIdle();
+        CHECK(renderer.readRenderTargetForTesting(
+                  "wp366_a", ImageSubresourceRange{}).bytes ==
+              profile_removed.bytes);
+        require_geometry_flags(rayGeometryOpaque);
+
+        // WP377a non-resident contrast: first publish profile ON with the
+        // material rule explicitly non-opaque, then change only that rule to
+        // an opaque key which is not resident in the active AS state.
+        setWp369GeometryOpaque(temp_dir, false);
+        const auto nonopaque_variant =
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                rendering_config);
+        REQUIRE(isValidRenderingPassId(nonopaque_variant.flat));
+        REQUIRE(runtime.stagedGeneration() != 0);
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE(runtime.stagedGeneration() == 0);
+        require_geometry_flags(0);
+
+        setWp369MaterialRuleOpaque(temp_dir, true);
+        const auto nonresident_opaque_variant =
+            loadRenderGraphVariantsFromConfigDataWithStartupFeatureOverlays(
+                rendering_config);
+        REQUIRE(isValidRenderingPassId(
+            nonresident_opaque_variant.flat));
+        REQUIRE(runtime.stagedGeneration() != 0);
+        CHECK_THROWS_WITH(
+            renderer.render(),
+            Catch::Matchers::ContainsSubstring(
+                "pelican.ray_profile_opaque_as@1") &&
+                Catch::Matchers::ContainsSubstring("BLAS geometry"));
+        CHECK(runtime.stagedGeneration() == 0);
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {

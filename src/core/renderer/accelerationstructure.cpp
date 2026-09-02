@@ -331,16 +331,21 @@ void validateRayProfileAccelerationStructureFlags(
     bool profile_active,
     vk::GeometryFlagsKHR geometry_flags,
     vk::GeometryInstanceFlagsKHR instance_flags,
-    std::string_view diagnostic) {
+    RayProfileAccelerationStructureFlagSite site,
+    std::uint64_t identity) {
     if (!profile_active) return;
-    if ((geometry_flags & vk::GeometryFlagBitsKHR::eOpaque) ||
-        (instance_flags &
-         vk::GeometryInstanceFlagBitsKHR::eForceOpaque)) {
-        throw std::runtime_error(
-            "pelican.ray_profile_opaque_as@1: " +
-            std::string{diagnostic} +
-            " requires non-opaque geometry and instance flags");
-    }
+    if (!(geometry_flags & vk::GeometryFlagBitsKHR::eOpaque) &&
+        !(instance_flags &
+          vk::GeometryInstanceFlagBitsKHR::eForceOpaque))
+        return;
+
+    const auto diagnostic =
+        site == RayProfileAccelerationStructureFlagSite::blas_geometry
+            ? "BLAS geometry '" + std::to_string(identity) + "'"
+            : "TLAS instance row " + std::to_string(identity);
+    throw std::runtime_error(
+        "pelican.ray_profile_opaque_as@1: " + diagnostic +
+        " requires non-opaque geometry and instance flags");
 }
 
 std::string canonicalTransformIdentity(const glm::mat4 &transform) {
@@ -839,7 +844,8 @@ RayQueryAccelerationStructureScope::recordFrame(
             vk::GeometryFlagsKHR{variant.geometry_flags};
         validateRayProfileAccelerationStructureFlags(
             material_alpha_profile_active, geometry_flags, {},
-            "BLAS geometry '" + std::to_string(identity) + "'");
+            RayProfileAccelerationStructureFlagSite::blas_geometry,
+            identity);
         if (can_reuse) {
             const auto existing =
                 active_state_->blas.find(variant);
@@ -954,7 +960,8 @@ RayQueryAccelerationStructureScope::recordFrame(
             vk::GeometryInstanceFlagsKHR{planned.instance_flags};
         validateRayProfileAccelerationStructureFlags(
             material_alpha_profile_active, {}, instance_flags,
-            "TLAS instance row " + std::to_string(planned.q));
+            RayProfileAccelerationStructureFlagSite::tlas_instance_row,
+            planned.q);
         tlas_instances.emplace_back(
             toVulkanTransform(instance.world_transform),
             planned.instance_custom_index,

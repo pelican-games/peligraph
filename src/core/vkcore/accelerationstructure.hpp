@@ -96,11 +96,17 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
     std::uint64_t index_pool_address,
     std::uint64_t vertex_pool_address);
 
+enum class RayProfileAccelerationStructureFlagSite : std::uint8_t {
+    blas_geometry,
+    tlas_instance_row,
+};
+
 void validateRayProfileAccelerationStructureFlags(
     bool profile_active,
     vk::GeometryFlagsKHR geometry_flags,
     vk::GeometryInstanceFlagsKHR instance_flags,
-    std::string_view diagnostic);
+    RayProfileAccelerationStructureFlagSite site,
+    std::uint64_t identity);
 
 struct RayTracingTlasInstancePlanEntry {
     std::size_t source_index = 0;
