@@ -20414,3 +20414,64 @@ launcher の `PELICAN_DIAG` / terminal `error.data` / `commit` の `noexcept` �
 | Studio 汎用 component UI(#9) | [design_studio_component_ui.md](design_studio_component_ui.md) **v1**。1 巡目レビュー走行中 | S-1(追加・削除)→ S-2(offline catalog)→ S-3(行編集。CARRIER-1 の後) | 1 巡目の結果待ち | S-1 は無し(前倒し可) |
 
 **実装の順序(改)**: WP375 → WP376 → WP377 → **ID-B** / **S-1**(前提無し。並走可)→ WP378(E-0a)→ ID-A → CARRIER-1 → …
+
+
+### WP379: RAY-NAMESPACE —— `ray_instance` を `pelican_ray_instance` へ移し、builtin 名を owner-aware に予約する
+
+**§4 規則 11 中段(core の複数経路 + project 形式)。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小〜中。**
+**規範は `docs/design_declaration_carrier.md` v3 修正 6・9(RAY-NAMESPACE は独立 WP。CARRIER-1 に含めない)。**
+**依存: WP377(統合後)。WP374 の後追い負債。**
+
+#### 何が壊れているか
+
+WP374 の version gate は「外部 `ray_instance` を持つ project が layout v2 を有効化すると builtin 登録で衝突する」逆向きの
+問題を残した。現テストも LayoutV2 で builtin の逆登録が throw することを固定している
+([raytracing_rt3_1_test.cpp:289](../test/raytracing_rt3_1_test.cpp#L289))。**未出荷の今が最安。**
+
+#### 起票時の実測(2026-09-02)
+
+- 旧名 `"ray_instance"` の hardcode は **11 箇所 / 6 ファイル**:
+  [editorruntimefactory.cpp:951](../src/core/communication/editorruntimefactory.cpp#L951)(live invalidation 分岐)/
+  [predefined.cpp:35](../src/core/ecs/predefined.cpp#L35)(ECS 登録)/
+  [componentcodec.cpp:957](../src/core/loader/componentcodec.cpp#L957)・:992・:993・:1015・:1069(codec)/
+  [editorprojectionadapters.cpp:834](../src/core/loader/editorprojectionadapters.cpp#L834)(adapter の名前表)/
+  [scene.cpp:58](../src/core/loader/scene.cpp#L58)・:68・:80(preflight)
+  ——うち editorruntimefactory / editorprojectionadapters の 2 箇所は **WP375 が名前表を廃止する**ので、WP375 着地後は減る
+- `ComponentInfo.owner` は runtime 登録の予約判定に使える([componentinfo.hpp:21](../src/core/ecs/componentinfo.hpp#L21))が、
+  **scene JSON の component 名には owner が無い**
+- 出荷 4 project と `src/core/resources/` に `ray_instance` は 0 件(自動移行の対象が無い)
+
+#### 決定(設計 v3 修正 6 をそのまま)
+
+1. **canonical 名は `pelican_ray_instance`**。11 箇所を全部移す(WP375 が消す 2 箇所は WP375 側で消えていることを確認)
+2. **`pelican_` 接頭辞を owner-aware に予約**: 外部 owner が `pelican_*` を登録したら **`reserved_component_namespace@1`**
+   (owner / module 名を payload に)。builtin の owner だけが登録できる
+3. **migration matrix**(load 時):
+
+| 判定 | 動作 |
+|---|---|
+| layout **v2 の project** に旧 `ray_instance` があり、外部 owner が同名を登録していない | builtin と証明できる → 読み込み時に `pelican_ray_instance` として解釈、**save 時に canonical へ書き換え** |
+| 外部 owner が `ray_instance` を登録している | **そのまま外部 component**(builtin は関与しない) |
+| layout v2 で旧名があり、**かつ**外部 owner も同名を登録している | **`RayInstanceMigrationAmbiguous@1`** で load を止める(両方の owner を payload に) |
+| layout 無し / v1 の project の旧名 | 外部 component として扱う(builtin は v2 でしか登録されない。WP374 の gate どおり) |
+
+4. **alias 期間**: RPC / catalog / error payload は旧名を **1 リリースの間**受理し、`deprecated_component_name@1` を warning で返す。
+   save は常に canonical
+5. WP374 の version gate(v2 でのみ builtin 登録)は**維持**。改名は gate の代替ではなく、gate が残す逆向き衝突を消す
+
+#### 受け入れ(§4 規約 10)
+
+- **同一テスト内の両側**: 旧名を持つ v2 project を load → resolved には `pelican_ray_instance` として現れ TLAS 値が同じ →
+  save → bytes は canonical 名 → 再 load で同値。**migration を外すと旧名が未知 component になって落ちる**
+- **外部 owner 保護**: 外部 `ray_instance` を登録した状態で v2 を有効化しても **builtin と衝突しない**(WP374 の
+  「外部 no-layout owner を保護」テストを v2 でも通す。今日は衝突 = 対照)
+- **`RayInstanceMigrationAmbiguous@1`**: 外部 owner あり + 旧名あり + v2 で load が止まり、payload に両 owner
+- **`reserved_component_namespace@1`**: 外部 owner が `pelican_foo` を登録すると名前付き拒否(owner / module つき)
+- **alias**: RPC の `add_component("ray_instance")` が warning つきで受理され、save は canonical。alias を外すと拒否
+- **hardcode 0**: 旧名の文字列が `src/` に**残らない**ことを、alias 経路以外で旧名を受理する変異が落ちることで示す
+  (静的文字列検査ではなく、旧名を builtin 名として解釈する分岐を 1 つ残すと migration テストが落ちる)
+- 出荷 4 project・`src/core/resources/` の bytes 不変(対象 0 件。効能の対照ではない)/ 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成
+
+#### やらないこと
+
+担体本体(SCHEMA-TX / RT3)/ GLABI-2 / Studio の catalog / 他 builtin component の改名(`pelican_` は新規 builtin から適用)。
