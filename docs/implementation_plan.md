@@ -20403,3 +20403,14 @@ component に **`resolution_error {code, source, message}`** を出す(typed の
 
 E-0b(animation / ray_instance)/ E-0c(behavior 値化・v1 adapter)/ E-1〜E-4 / 診断 registry(E-2b)/
 launcher の `PELICAN_DIAG` / terminal `error.data` / `commit` の `noexcept` 変更(E-3a)。
+
+#### 設計トラックの到達点(2026-09-02 夕。各文書の最終版と最初の WP)
+
+| トラック | 文書の最終版 | 段(最終) | 最初の WP | 前提 |
+|---|---|---|---|---|
+| object identity(#4) | [design_object_identity.md](design_object_identity.md) **v3(§8)**。3 巡目のレビューは枠待ち | ID-A(型移設・registry・WP375 participant・全 name entry の canonical adapter)→ **ID-B(scene transaction)** → ID-C(内部 consumer の ref 化)→ ID-D(public ref API + Animation V2 ABI、互換 release)→ ID-E(breaking release で name API 除去)→ rename WP | **ID-B**(既存欠陥「publish 途中失敗で世代混在」を直す。ID-A 無しで価値あり) | 無し(ID-A は WP375 着地後) |
+| 例外契約(#5) | [design_error_contract.md](design_error_contract.md) **v4(§8)。設計段は 3 巡で打ち切り** | E-0a → E-0b → E-0c → E-1 → E-2 / E-2b(診断 registry)→ E-3a → E-3b → E-4 | **WP378 = E-0a**(起票済み。move-only Result + 6 caller + camera + `get_components`) | **WP375 着地後**(6 caller のうち 3 が WP375 の動かす場所) |
+| 宣言の担体(#10) | [design_declaration_carrier.md](design_declaration_carrier.md) **v2(§6)**。2 巡目レビュー走行中 | CARRIER-1(C-1+C-2+C-3 + `pelican_ray_instance` 改名。消費者 = RT3 の per-geometry override)→ CARRIER-2(Studio 汎用 UI) | 2 巡目の結果待ち | WP377(改名は WP374 後追い) |
+| Studio 汎用 component UI(#9) | [design_studio_component_ui.md](design_studio_component_ui.md) **v1**。1 巡目レビュー走行中 | S-1(追加・削除)→ S-2(offline catalog)→ S-3(行編集。CARRIER-1 の後) | 1 巡目の結果待ち | S-1 は無し(前倒し可) |
+
+**実装の順序(改)**: WP375 → WP376 → WP377 → **ID-B** / **S-1**(前提無し。並走可)→ WP378(E-0a)→ ID-A → CARRIER-1 → …
