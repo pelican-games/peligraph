@@ -21508,7 +21508,12 @@ ModelAsset の participant 化(裁定は維持)/ 容量の引き上げ(症状を
 - **統合側の検証と変異(`mutation-runner` agent、opus)**: 基準 WP380a 系 + Studio fatal の GPU 20 / 20。**A**(Renderer 検証を prepare の後へ戻す)→ Studio fatal が `morph vertex … 262144` の別 fatal になり赤(material route の失敗が最初に出ない = 直すこと 2 の機構そのもの)/ **B1**(失敗 candidate の解放を無効化)/ **B2**(`~Impl` の登録済み model 解放を無効化)→ いずれも index 使用量 `46356 == 0` で赤(fixture は warm と failing に同じ DamagedHelmet を使うので両者が独立に観測される)。残留 0、md5 一致、assertion dialog なし。所見: (a)(b) は同一 TEST_CASE の前半・後半で、赤の帰属は assertion 行で読む(分割は WP380b 以降の宿題)。agent の指摘: Git Bash の `sed -i` は CR を落とすので `grep -c MUT` だけでは残留検査にならず、md5 での復元確認が要る
 - **main 取り込み**(`merge-resolver` agent、WP381 / WP379a の後): 衝突なし。pelican_core.cpp は WP379a の terminal shutdown helper と本 WP の Renderer 検証順序が別領域で両立(行を引用して確認)。merge 後 非 GPU 1398 / 1400(2 件は既知の -j flake、単独緑)
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1591 / 1591**。WP379a 着地時の赤 1(Studio fatal の morph vertex 262144)が消えた
-- コードレビュー: WP380a と併せて `rev380a`(上段、codex)で見る。観点に「failure path の資源解放が warm cache 裁定と矛盾しないか」を追加
+- コードレビュー `rev380a`(codex sol、上段。WP380a + fix、`f8cd134d`): **Reject**(実害 2 + 設計懸念 4)。連鎖は 380a-fix で打ち切り(WP380 → 380a → 380a-fix)なので**新 WP は起票せず WP380b の入力として記録**(再開節参照)。
+  (1) executor の phase 順序が v3 決定と違う: `activate` → `metadata.commit` → `behavior_candidate->finish()`(scene.cpp:920-921)→ retire → flush。規範は commit_metadata → retire → flush → finish で、旧 behavior の `onDestroy` が走る時点で旧 entity は既に非 live(統合側で順序は確認、挙動は未検証)/
+  (2) fix の失敗 candidate 解放は `releaseGeometryNow` の複数処理を 1 つの try に入れ、途中失敗を log のみで成功扱い(morph delta・後続 primitive が未返却になりうる)/
+  (3) 5 root のテストは helper と手書き request で直接呼び、RPC が `SceneLoadRoot::rpc` を渡さない変異を通す / (4) manifest 90 行のうち executor の `sceneLoadMutationEnabled` call site は 6、trigger pair は全 scene で 0 /
+  (5) FaultInjector の nullptr 規則は production で強制されない(public setter が残る)/ (6) fix の回帰テストは Studio の GPU test case 内のみで CPU gate と `SKIP_DEVSTUDIO=ON` に無い。
+  壊せなかった: camera scalar 全 swap、rollback 逆順、overlay scope の RAII、retire 後の旧 instance、geometry identity、cache 境界、refresh、出荷 4 project
 ### WP381: GLABI-2 —— 旧 DLL を**ロード前**に弾く(v3: epoch anchor + 入口改名。OS loader が強制、raw import 読みは診断)
 
 **§4 規則 11 上段(core の ABI・出荷 DLL の挙動が変わる)。設計レビュー済み(carrier §8 修正 γ)。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
