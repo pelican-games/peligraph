@@ -19956,8 +19956,9 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 ##### 統合側の実行
 
 - worktree: 非 GPU 1212 / 1212(+1 skip)、GPU 指定 6 / 6
-- 統合後 main: (記入)
-- コードレビュー: `rev375`(記入)
+- 統合後 main: **1526 件中 1525 緑**。落ちた 1 件は `WP334b animgraph preset …`(`-j4` 負荷での commit 待ちタイムアウト。単独再実行 1/1 緑)。
+  **WP334b 系は今日 4 回 `-j4` で同型の flake**(WP377 統合時 3 件、今回 1 件)。commit 待ちの timeout が並列負荷に対して短い。台帳の既知 flake として記録(直すなら timeout ではなく待ち条件の見直し)
+- コードレビュー: `rev375` → **reject**(致命後退 1 + 実害 3 + 自己参照 oracle)→ WP375a として起票・投入。#3(loader の rollback)と #6(generation guard の分類)は記録のみ
 
 
 ### WP375a: 非アクティブ scene の prefab 編集が active scene の behavior を全削除する(WP375 コードレビューの致命後退 1 件 + 実害 3 件 + 自己参照 oracle)
