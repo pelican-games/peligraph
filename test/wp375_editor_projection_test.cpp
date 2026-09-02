@@ -658,6 +658,54 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP375b inactive preview and its restore retain one literal document-only route",
+    "[WP375b][plan][preview][inactive-scene][document-only][route-matrix][mutation]") {
+    FastModuleContainer modules;
+    test_support::SceneProjectionTarget target{twoSceneMatrixDocument()};
+    const auto inactive_id = objectIdInScene(target, "secondary");
+    const auto active_id = objectIdInScene(target, "main");
+    const auto context = projectionContext(EditorProjectionMode::Preview);
+    const auto inactive_operation = setOperation(inactive_id, "light");
+    const auto inactive_route = EditorProjectionRoute{
+        .kind = EditorProjectionRouteKind::DocumentOnly,
+        .operation_index = 0,
+        .scene_id = "secondary",
+        .object_id = inactive_id,
+    };
+
+    REQUIRE(planOne(inactive_operation, target, context).routes ==
+            std::vector{inactive_route});
+    const std::array inactive_wire{inactive_operation};
+    const auto inactive_canonical = freezeEditorCanonicalOperations(
+        inactive_wire, target.projectionState());
+    const auto inactive_restore = planEditorProjection(
+        EditorProjectionPlanningRequest{
+            .base_revision = target.projectionState().revision(),
+            .operations = inactive_canonical,
+            .restore_committed = true,
+        },
+        target.projectionState(), context);
+    REQUIRE(inactive_restore.routes == std::vector{inactive_route});
+
+    const auto active_operation = setOperation(active_id, "light");
+    const auto active_route = literalPolicyRoute(
+        context, literalComponentRoute("light"), active_id);
+    REQUIRE(planOne(active_operation, target, context).routes ==
+            std::vector{active_route});
+    const std::array active_wire{active_operation};
+    const auto active_canonical = freezeEditorCanonicalOperations(
+        active_wire, target.projectionState());
+    const auto active_restore = planEditorProjection(
+        EditorProjectionPlanningRequest{
+            .base_revision = target.projectionState().revision(),
+            .operations = active_canonical,
+            .restore_committed = true,
+        },
+        target.projectionState(), context);
+    REQUIRE(active_restore.routes == std::vector{active_route});
+}
+
+TEST_CASE(
     "WP375a document-only behavior replay still validates the active registry",
     "[WP375a][materialize][inactive-scene][behavior][validation-order]") {
     FastModuleContainer modules;

@@ -1827,6 +1827,63 @@ Json normalizeBehaviorAttachmentIdentities(
     return result;
 }
 
+std::vector<OrderedJson> rebindJournalBehaviorTargets(
+    std::span<const OrderedJson> operations,
+    const EditorEditRuntimeDependencies &dependencies) {
+    std::vector<OrderedJson> result{operations.begin(), operations.end()};
+    if (!dependencies.resolve_behavior_attachment) return result;
+
+    for (auto &operation : result) {
+        const auto op = operation.value("op", std::string{});
+        if ((op != "remove_component" &&
+             op != "set_component_value") ||
+            operation.value("component_slot", std::string{}) !=
+                "behavior") {
+            continue;
+        }
+        const auto object_id = AuthoringObjectId{exactUnsigned(
+            operation.at("object_id"),
+            "journal behavior object_id", true)};
+        const auto attachment_index = static_cast<std::size_t>(
+            exactUnsigned(operation.at("attachment_index"),
+                          "journal behavior attachment_index"));
+        const auto expected_sequence = internalIdentityValue(
+            operation, "attachment_seq",
+            "journal behavior attachment_seq");
+        const auto current = dependencies.resolve_behavior_attachment(
+            object_id, attachment_index);
+        if (!current) {
+            // Keep the journal value so the production adapter returns its
+            // existing named "attachment not found" failure. A missing live
+            // attachment is not made equivalent to some neighboring slot.
+            continue;
+        }
+        if (current->handle == 0 ||
+            current->handle > maxExactJsonInteger ||
+            current->attachment_seq > maxExactJsonInteger) {
+            throw std::overflow_error(
+                "resolved behavior attachment identity exceeds the exact JSON range");
+        }
+        if (expected_sequence != 0 &&
+            current->attachment_seq != expected_sequence) {
+            editFailure(
+                EditorEditErrorCode::journal_integrity_error,
+                {{"reason", "behavior_attachment_sequence"},
+                 {"object", object_id.value},
+                 {"component_index", attachment_index},
+                 {"expected_sequence", expected_sequence},
+                 {"runtime_sequence", current->attachment_seq}},
+                "journal behavior attachment sequence no longer identifies the runtime attachment");
+        }
+        // The handle belongs to one arena lifetime. Object, authored component
+        // index, and scene sequence are the journal identity; refresh the
+        // handle at the last possible point before materialization.
+        operation["attachment_handle"] = current->handle;
+        operation["attachment_seq"] = current->attachment_seq;
+    }
+    return result;
+}
+
 EditorCanonicalOperation freezeJournalOperation(
     const OrderedJson &wire, const SceneProjectionState &projection_state) {
     auto result = freezeEditorCanonicalOperation(wire, projection_state);
@@ -3555,9 +3612,10 @@ struct EditorEditCoordinator::Impl {
             .base_revision = document().revision(),
             .commands = restore ? std::span<const EditorProjectionCommand>{}
                                 : commands,
-            .operations = restore
-                              ? std::span<const EditorCanonicalOperation>{}
-                              : operations,
+            // Retain the lease operations on restore so the planner can keep
+            // an inactive scene document-only instead of touching the active
+            // scene's transform/light participants.
+            .operations = operations,
             .restore_committed = restore,
         };
         return dependencies.execute_preview(request);
@@ -4003,8 +4061,12 @@ struct EditorEditCoordinator::Impl {
                     requireRevertPreconditions(*revert_source);
                     requireNoLeaseOverlap(revert_source->write_set,
                                           revert_source->structural_domain);
+                    const auto rebound_inverse =
+                        rebindJournalBehaviorTargets(
+                            revert_source->ordered_inverse,
+                            dependencies);
                     revert_commands = commandsFromCanonical(
-                        revert_source->ordered_inverse, document(),
+                        rebound_inverse, document(),
                         prefabRegistry(), bindableProvider(),
                         projectionState(), &revert_operations);
                     execution_operations = revert_operations;
@@ -4767,8 +4829,10 @@ EditorProjectionResult EditorEditCoordinator::executeJournalForVerification(
             *found, impl_->requireProjectionState(
                         inverse ? "journal_inverse" : "journal_forward"));
     }
-    const auto &operations = inverse ? found->ordered_inverse
-                                     : found->ordered_forward;
+    const auto &journal_operations = inverse ? found->ordered_inverse
+                                             : found->ordered_forward;
+    const auto operations = rebindJournalBehaviorTargets(
+        journal_operations, impl_->dependencies);
     std::vector<EditorCanonicalOperation> canonical_operations;
     auto commands = commandsFromCanonical(
         operations, impl_->document(), impl_->prefabRegistry(),

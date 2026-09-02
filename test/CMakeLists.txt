@@ -29,7 +29,7 @@ endif()
 
 function(pelican_define_test source_name)
 cmake_parse_arguments(PELICAN_TEST
-  "GOLDEN;GPU;QT;QT_OFFSCREEN;RUNTIME_SHADER" "GROUP" "" ${ARGN})
+  "GOLDEN;GPU;MIXED_GPU;QT;QT_OFFSCREEN;RUNTIME_SHADER" "GROUP" "" ${ARGN})
 set(source_target pelican_test_${source_name})
 set(target_name ${source_target})
 set(is_new_executable TRUE)
@@ -58,7 +58,7 @@ if(PELICAN_TEST_GROUP)
   target_link_libraries(${source_target} PRIVATE Catch2::Catch2 nlohmann_json
     ${PELICAN_TEST_UNPARSED_ARGUMENTS})
   set(discovery_signature
-    "${PELICAN_TEST_GOLDEN};${PELICAN_TEST_GPU};${PELICAN_TEST_QT};${PELICAN_TEST_QT_OFFSCREEN};${PELICAN_TEST_RUNTIME_SHADER}")
+    "${PELICAN_TEST_GOLDEN};${PELICAN_TEST_GPU};${PELICAN_TEST_MIXED_GPU};${PELICAN_TEST_QT};${PELICAN_TEST_QT_OFFSCREEN};${PELICAN_TEST_RUNTIME_SHADER}")
   if(TARGET ${target_name})
     set(is_new_executable FALSE)
     get_target_property(existing_signature ${target_name}
@@ -115,6 +115,10 @@ endif()
 if(PELICAN_TEST_GPU)
   list(APPEND discovery_properties LABELS gpu)
 endif()
+if(PELICAN_TEST_GPU AND PELICAN_TEST_MIXED_GPU)
+  message(FATAL_ERROR
+    "Test ${source_name} cannot use both GPU and MIXED_GPU discovery")
+endif()
 if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
   # These cases exercise source compilation and deliberately compile to empty
   # Catch2 bodies in the baked-SPIR-V shipping tier.  Keep them visible as
@@ -122,7 +126,26 @@ if(PELICAN_TEST_RUNTIME_SHADER AND NOT PELICAN_RUNTIME_SHADER_COMPILER)
   # worse, dropping the no-assertion guard and reporting false coverage).
   list(APPEND discovery_properties DISABLED TRUE)
 endif()
-if(discovery_properties)
+if(PELICAN_TEST_MIXED_GPU)
+  if(discovery_properties)
+    catch_discover_tests(${target_name}
+      ${discovery_arguments}
+      TEST_SPEC "~[gpu]"
+      PROPERTIES ${discovery_properties})
+    catch_discover_tests(${target_name}
+      ${discovery_arguments}
+      TEST_SPEC "[gpu]"
+      PROPERTIES ${discovery_properties} LABELS gpu)
+  else()
+    catch_discover_tests(${target_name}
+      ${discovery_arguments}
+      TEST_SPEC "~[gpu]")
+    catch_discover_tests(${target_name}
+      ${discovery_arguments}
+      TEST_SPEC "[gpu]"
+      PROPERTIES LABELS gpu)
+  endif()
+elseif(discovery_properties)
   catch_discover_tests(${target_name}
     ${discovery_arguments}
     PROPERTIES ${discovery_properties})
@@ -1264,10 +1287,20 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_test PRIVATE
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
     PELICAN_WP374_SKIP_DEVSTUDIO=$<BOOL:${SKIP_DEVSTUDIO}>
 )
+set(raytracing_rt3_1_production_test_discovery)
 if(PELICAN_WITH_RPC)
-pelican_define_test(raytracing_rt3_1_production_test GPU pelican_core picosha2
+  # Every [gpu] case in this mixed source is also RPC-only.  Avoid asking
+  # Catch2 to discover an empty [gpu] selection in RPC-OFF builds: an empty
+  # POST_BUILD discovery has no output file and CTest exposes it as a
+  # synthetic *_NOT_BUILT failure.
+  list(APPEND raytracing_rt3_1_production_test_discovery MIXED_GPU)
+endif()
+pelican_define_test(raytracing_rt3_1_production_test
+                    ${raytracing_rt3_1_production_test_discovery}
+                    pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_raytracing_rt3_1_production_test PRIVATE
+    PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_OPENXR=$<BOOL:${PELICAN_WITH_OPENXR}>
     PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
@@ -1332,7 +1365,6 @@ if(WIN32)
     target_compile_definitions(
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP379_RAY_INSTANCE_FIXTURE="$<TARGET_FILE:pelican_wp379_ray_instance_fixture>")
-endif()
 endif()
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_raytracing_rt1b_test PRIVATE pelican_shaderc)

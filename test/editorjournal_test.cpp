@@ -137,6 +137,8 @@ struct Harness {
     std::uint64_t next_behavior_seq = 1000;
     std::size_t behavior_allocation_count = 0;
     std::vector<RuntimeBehavior> runtime_behaviors;
+    std::vector<EditorBehaviorAttachmentIdentity>
+        executed_behavior_identities;
     bool behavior_reload_in_progress = false;
 
     Harness() {
@@ -161,6 +163,16 @@ struct Harness {
                                 wire.at("op").get<std::string>();
                             const auto slot = wire.value(
                                 "component_slot", std::string{});
+                            if (slot == "behavior") {
+                                executed_behavior_identities.push_back({
+                                    .handle = wire.value(
+                                        "attachment_handle",
+                                        std::uint64_t{}),
+                                    .attachment_seq = wire.value(
+                                        "attachment_seq",
+                                        std::uint64_t{}),
+                                });
+                            }
                             if (slot == "behavior" && op == "add_component") {
                                 const auto index = wire.at("component_index")
                                                        .get<std::size_t>();
@@ -1217,6 +1229,53 @@ TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequenc
     REQUIRE(std::vector<std::string>(harness.lifecycle_trace.end() - 3,
                                      harness.lifecycle_trace.end()) ==
             std::vector<std::string>{"onDestroy", "onInit", "onDestroy"});
+}
+
+TEST_CASE(
+    "WP375b behavior undo re-resolves a journal handle after the runtime arena changes",
+    "[WP375b][editor][journal][behavior][reload][undo][identity][mutation]") {
+    Harness harness;
+    const auto added = harness.commit(
+        {{"op", "add_component"},
+         {"object_id", 1},
+         {"component",
+          {{"name", "behavior"},
+           {"type", "wp167_journal_behavior"},
+           {"params", {{"label", "pending"}}}}}});
+    REQUIRE(added.at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.size() == 1);
+    const auto journal_handle =
+        harness.runtime_behaviors.front().identity.handle;
+    const auto journal_sequence =
+        harness.runtime_behaviors.front().identity.attachment_seq;
+    REQUIRE(harness.edits->journal().back()
+                .ordered_inverse.front()
+                .at("attachment_handle") == journal_handle);
+
+    // A production game-logic reload destroys the arena and reconstructs the
+    // same authored attachment with a new runtime-only handle. Preserve the
+    // stable object/index/sequence identity while changing only that handle.
+    const std::uint64_t reloaded_handle = journal_handle + 10000;
+    harness.runtime_behaviors.front().identity.handle = reloaded_handle;
+    REQUIRE(harness.runtime_behaviors.front().identity.attachment_seq ==
+            journal_sequence);
+
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", added.at("transaction_id")}});
+    REQUIRE(undo.at("status") == "accepted");
+    harness.edits->commitPending();
+    const auto undone =
+        harness.edits->getResult({{"ticket", undo.at("ticket")}});
+    REQUIRE(undone.at("status") == "committed");
+    REQUIRE(harness.runtime_behaviors.empty());
+    REQUIRE(harness.executed_behavior_identities.back().handle ==
+            reloaded_handle);
+    REQUIRE(harness.executed_behavior_identities.back().handle !=
+            journal_handle);
+    REQUIRE(harness.executed_behavior_identities.back().attachment_seq ==
+            journal_sequence);
 }
 
 TEST_CASE("WP167 replay and golden gates reject behavior edits before identity allocation",

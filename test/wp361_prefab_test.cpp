@@ -1355,7 +1355,6 @@ TEST_CASE("WP361 object references use frozen identity for forward backward self
                 .effective_json);
 }
 
-#if PELICAN_WITH_RPC
 TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors and rebases sequence",
           "[wp361a][prefab][lifecycle][arena][production][rebase]") {
     ensureBehavior();
@@ -1485,6 +1484,15 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     REQUIRE(attachments[1].scene_object_index == 1);
     REQUIRE(attachments[1].attachment_seq == sceneBehaviorAttachmentSeq(1, 1));
 
+    const Json add_behavior_operation{
+        {"op", "add_component"},
+        {"object_id", first_id.value},
+        {"component_index", 1},
+        {"component", {{"name", "behavior"},
+                       {"type", "wp361_behavior"},
+                       {"params", {{"hp", 4}}}}}};
+#if PELICAN_WITH_RPC
+    SECTION("RPC exposure shares the coordinator lifecycle route") {
     std::size_t runtime_query_count = 0;
     EditorCommandService rpc_service{EditorCommandServiceDependencies{
         .document = [&]() -> const AuthoringSceneDocument & {
@@ -1574,12 +1582,7 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
         {{"actor_id", rpc_actor},
          {"base_revision", config.sceneDocument().revision().value},
          {"operations",
-          Json::array({{{"op", "add_component"},
-                        {"object_id", first_id.value},
-                        {"component_index", 1},
-                        {"component", {{"name", "behavior"},
-                                       {"type", "wp361_behavior"},
-                                       {"params", {{"hp", 4}}}}}}})}});
+          Json::array({add_behavior_operation})}});
     REQUIRE(add_accepted.at("status") == "accepted");
     rpc_service.commitPendingEdits();
     const auto add_result = rpc(
@@ -1635,6 +1638,33 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     wp361_update_trace.clear();
     arena.update(game);
     REQUIRE(wp361_update_trace == fresh_hp);
+    }
+#else
+    const auto direct_add = commit(add_behavior_operation);
+    REQUIRE(direct_add.at("status") == "committed");
+    arena.update(game);
+    arena.update(game);
+    REQUIRE(wp361_callback_trace ==
+            std::vector<std::string>{"9:none", "2:none", "4:none"});
+    attachments = arena.snapshot();
+    REQUIRE(attachments.size() == 3);
+    std::vector<std::uint64_t> runtime_sequence;
+    for (const auto &attachment : attachments) {
+        runtime_sequence.push_back(attachment.attachment_seq);
+    }
+    std::vector<std::uint64_t> fresh_sequence;
+    std::vector<int> fresh_hp;
+    for (const auto &attachment : prepareResolvedSceneBehaviorAttachments(
+             config.resolvedScene().findScene("main")->objects,
+             BehaviorRegistryAvailability::active)) {
+        fresh_sequence.push_back(sceneBehaviorAttachmentSeq(
+            attachment.object_index, attachment.component_index));
+        fresh_hp.push_back(
+            Json::parse(attachment.canonical_params).at("hp").get<int>());
+    }
+    REQUIRE(runtime_sequence == fresh_sequence);
+    REQUIRE(fresh_hp == std::vector<int>{2, 4, 9});
+#endif
 
     const auto before_destroy = wp361_destroy_count;
     const auto destroyed =
@@ -1670,7 +1700,6 @@ TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors an
     }
     (void)first_spawn;
 }
-#endif
 
 TEST_CASE("WP361 generated identity survives edit undo redo removal and authored insertion",
           "[wp361][prefab][identity]") {

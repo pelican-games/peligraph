@@ -163,7 +163,8 @@ struct EditorEditExecutionRequest {
 // Live preview uses the same canonical commands and adapter preparation path
 // as a committed edit, but the composition root supplies an ephemeral
 // document target. restore_committed projects the current committed document
-// with no authored commands and is used by abort/forced-abort.
+// with no authored commands and retains the lease operations solely for
+// active-scene route selection during abort/forced-abort.
 struct EditorPreviewExecutionRequest {
     SceneRevision base_revision{};
     std::span<const EditorProjectionCommand> commands;

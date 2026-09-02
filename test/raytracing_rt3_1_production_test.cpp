@@ -6,9 +6,13 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/appflow/framephase.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
+#if PELICAN_WITH_RPC
 #include "../src/core/communication/editorrpchandlers.hpp"
+#endif
 #include "../src/core/communication/editorruntimefactory.hpp"
+#if PELICAN_WITH_RPC
 #include "../src/core/communication/rpcserver.hpp"
+#endif
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/ecs/core.hpp"
@@ -34,6 +38,7 @@
 #include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
+#include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
 #include "gltf_fragment_fixture.hpp"
@@ -367,6 +372,7 @@ void loadWp375aShippingExample(
 #endif
 }
 
+#if PELICAN_WITH_RPC
 Json runWp374aRpcResponse(EditorCommandService &service, std::uint64_t id,
                           std::string_view method, Json params) {
     const auto request =
@@ -433,6 +439,7 @@ Json commitWp374aEdit(EditorCommandService &service, std::uint64_t &rpc_id,
     REQUIRE(result.at("status") == "committed");
     return result;
 }
+#endif
 
 RaySceneRowSnapshot renderWp374aProductionRows() {
     GET_MODULE(ECSCore).update();
@@ -498,6 +505,7 @@ const Json &wp375Component(const Json &response, std::string_view name) {
     return *found;
 }
 
+#if PELICAN_WITH_RPC
 Json wp375Components(EditorCommandService &service, std::uint64_t &rpc_id,
                      std::string_view name,
                      std::string_view scene_id = "main") {
@@ -529,6 +537,7 @@ void wp375Save(EditorCommandService &service, std::uint64_t &rpc_id) {
     REQUIRE(result.at("byte_count").get<std::uint64_t>() != 0);
     REQUIRE_FALSE(result.at("digest").at("hex").get<std::string>().empty());
 }
+#endif
 
 void writeWp375BehaviorProject(const std::filesystem::path &root) {
     writeWp374aProject(root, std::nullopt, false, false, false);
@@ -644,6 +653,7 @@ void writeWp375aParticipantProject(const std::filesystem::path &root) {
             .dump(2));
 }
 
+#if PELICAN_WITH_RPC
 Json commitWp375PrefabParameter(EditorCommandService &service,
                                 std::uint64_t &rpc_id,
                                 std::uint64_t actor,
@@ -668,6 +678,7 @@ Json commitWp375PrefabParameter(EditorCommandService &service,
     REQUIRE(result.at("status") == "committed");
     return result;
 }
+#endif
 
 void wp375FinishRuntime(std::unique_ptr<EditorCommandService> &service,
                         bool behavior = false) {
@@ -754,6 +765,7 @@ void requireWp375MissingRendererParticipant() {
 
 } // namespace
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP375a inactive prefab RPC is document-only and cannot reconcile the active behavior arena",
     "[WP375a][rpc][production][inactive-scene][prefab][behavior][regression][gpu]") {
@@ -918,6 +930,125 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP375b pending behavior journal resolves its attachment again after game-logic reload",
+    "[WP375b][rpc][production][behavior][reload][journal][undo][regression][mutation][gpu]") {
+    setupLogger();
+#ifdef PELICAN_WP375_BEHAVIOR_FIXTURE
+    Wp374aProjectRoot project{"wp375b_pending_reload_undo"};
+    writeWp375BehaviorProject(project.path);
+    const auto appearing_dll = project.path / "logic" / "appearing.dll";
+    std::filesystem::create_directories(appearing_dll.parent_path());
+    REQUIRE_FALSE(std::filesystem::exists(appearing_dll));
+
+    (void)configureWp374aRuntime(project.path);
+    GET_MODULE(EngineLaunchConfig).game_logic_dll = appearing_dll;
+    REQUIRE_FALSE(initializeConfiguredGameLogic());
+    REQUIRE(configuredGameLogicStatus().configured);
+    REQUIRE_FALSE(configuredGameLogicStatus().loaded);
+    TestSupport::requireVulkanDevice("WP375b pending behavior reload");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    GET_MODULE(SceneLoader).load("main");
+    // Ensure EngineRpcEndpoint observes the production runtime-reload owner.
+    (void)GET_MODULE(watch::ReloadService);
+
+    std::istringstream rpc_input;
+    std::ostringstream rpc_output;
+    {
+        EngineRpcEndpoint endpoint{rpc_input, rpc_output};
+        std::uint64_t rpc_id = 375650;
+        const auto rpc = [&](std::string_view method, Json params) {
+            const auto id = rpc_id++;
+            const auto response = Json::parse(endpoint.processLine(
+                Json{{"jsonrpc", "2.0"},
+                     {"id", id},
+                     {"method", method},
+                     {"params", std::move(params)}}
+                    .dump()));
+            INFO("WP375b engine RPC response: " << response.dump());
+            if (response.contains("error")) {
+                throw std::runtime_error("WP375b engine RPC failure: " +
+                                         response.dump());
+            }
+            REQUIRE(response.at("id") == id);
+            return response.at("result");
+        };
+
+        const auto actor =
+            rpc("open_editor_session",
+                {{"display_name", "WP375b pending reload undo"}})
+                .at("actor_id")
+                .get<std::uint64_t>();
+        const auto host = rpc("get_components",
+                              {{"scene_id", "main"},
+                               {"name", "BehaviorHost"}});
+        const auto object_id =
+            host.at("authoring_object_id").get<std::uint64_t>();
+        const auto revision = rpc("scene_tree", Json::object())
+                                  .at("scene_revision")
+                                  .get<std::uint64_t>();
+        const auto accepted = rpc(
+            "edit",
+            {{"actor_id", actor},
+             {"base_revision", revision},
+             {"operations",
+              Json::array(
+                  {{{"op", "add_component"},
+                    {"object_id", object_id},
+                    {"component",
+                     {{"name", "behavior"},
+                      {"type", "wp155_project_behavior"},
+                      {"params", {{"label", "pending"}}}}}}})}});
+        REQUIRE(accepted.at("status") == "accepted");
+        invokeEditorCommitQueueHook();
+        const auto added =
+            rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+        REQUIRE(added.at("status") == "committed");
+        const auto pending = GET_MODULE(BehaviorAttachmentArena).snapshot();
+        REQUIRE(pending.size() == 1);
+        REQUIRE(pending.front().pending);
+        REQUIRE_FALSE(pending.front().active);
+        const auto pending_handle = pending.front().handle;
+        const auto saved = rpc("save_scene", Json::object());
+        REQUIRE(saved.at("byte_count").get<std::uint64_t>() != 0);
+
+        std::filesystem::copy_file(
+            std::filesystem::path{PELICAN_WP375_BEHAVIOR_FIXTURE},
+            appearing_dll, std::filesystem::copy_options::overwrite_existing);
+        const auto reloaded = rpc("reload_game_logic", Json::object());
+        REQUIRE(reloaded.at("generation").get<std::uint64_t>() == 1);
+        const auto active = GET_MODULE(BehaviorAttachmentArena).snapshot();
+        REQUIRE(active.size() == 1);
+        REQUIRE(active.front().active);
+        REQUIRE_FALSE(active.front().pending);
+        REQUIRE(active.front().handle != pending_handle);
+
+        const auto undo = rpc(
+            "undo",
+            {{"actor_id", actor},
+             {"base_revision",
+              rpc("scene_tree", Json::object())
+                  .at("scene_revision")},
+             {"transaction_id", added.at("transaction_id")}});
+        REQUIRE(undo.at("status") == "accepted");
+        invokeEditorCommitQueueHook();
+        const auto undone =
+            rpc("get_edit_result", {{"ticket", undo.at("ticket")}});
+        INFO("WP375b post-reload undo result: " << undone.dump());
+        REQUIRE(undone.at("status") == "committed");
+        REQUIRE(GET_MODULE(BehaviorAttachmentArena).snapshot().empty());
+        REQUIRE(rpc("get_components",
+                    {{"scene_id", "main"}, {"name", "BehaviorHost"}})
+                    .at("components") == host.at("components"));
+    }
+    GET_MODULE(BehaviorAttachmentArena).deactivateAll();
+    shutdownConfiguredGameLogic();
+    GET_MODULE(VulkanManageCore).waitIdle();
+#else
+    FAIL("WP375b production behavior fixture was not composed");
+#endif
+}
+
+TEST_CASE(
     "WP375a shipping BlueSpot validates behavior type before its missing runtime binding",
     "[WP375a][rpc][production][example][behavior][validation-order][gpu]") {
     setupLogger();
@@ -975,6 +1106,134 @@ TEST_CASE(
     wp375FinishRuntime(service, true);
 #else
     FAIL("WP375a production behavior fixture was not composed");
+#endif
+}
+
+TEST_CASE(
+    "WP375b inactive shipping-scene light preview cannot replace the active light runtime",
+    "[WP375b][rpc][production][example][preview][inactive-scene][light][regression][mutation][gpu]") {
+    setupLogger();
+#if !PELICAN_RUNTIME_SHADER_COMPILER
+    SKIP("shipping example requires the runtime shader compiler");
+#endif
+#ifdef PELICAN_WP375_BEHAVIOR_FIXTURE
+    const std::filesystem::path behavior_dll{
+        PELICAN_WP375_BEHAVIOR_FIXTURE};
+    std::uint64_t rpc_id = 375750;
+    FastModuleContainer modules;
+    loadWp375aShippingExample(behavior_dll);
+    auto service = makeEditorRuntimeService();
+    const auto actor = wp375OpenActor(
+        *service, rpc_id, "WP375b inactive light preview");
+
+    const auto light_count = [] {
+        const auto state = GET_MODULE(LightContainer).snapshotPrepared();
+        return state.directional_lights.size() + state.point_lights.size() +
+               state.spot_lights.size();
+    };
+    const auto preview_set = [&](const Json &object, double intensity) {
+        const auto operation = Json{{"op", "set_component_value"},
+                                    {"object_id", object.at("authoring_object_id")},
+                                    {"component_slot", "light"},
+                                    {"field_path", "/intensity"},
+                                    {"value", intensity}};
+        const auto opened = runWp374aRpcBytes(
+            *service, rpc_id++, "open_preview",
+            {{"actor_id", actor},
+             {"operations", Json::array({operation})}});
+        REQUIRE(opened.at("status") == "accepted");
+        invokeEditorCommitQueueHook();
+        const auto open_result = runWp374aRpcBytes(
+            *service, rpc_id++, "get_preview_result",
+            {{"request_id", opened.at("request_id")}});
+        INFO("WP375b open preview result: " << open_result.dump());
+        REQUIRE(open_result.at("status") == "open");
+        return opened;
+    };
+    const auto commit_preview = [&](const Json &opened) {
+        const auto accepted = runWp374aRpcBytes(
+            *service, rpc_id++, "commit_preview",
+            {{"actor_id", actor}, {"ticket", opened.at("ticket")}});
+        REQUIRE(accepted.at("status") == "accepted");
+        invokeEditorCommitQueueHook();
+        const auto result = runWp374aRpcBytes(
+            *service, rpc_id++, "get_preview_result",
+            {{"request_id", accepted.at("request_id")}});
+        INFO("WP375b commit preview result: " << result.dump());
+        REQUIRE(result.at("status") == "committed");
+    };
+    const auto abort_preview = [&](const Json &opened) {
+        const auto accepted = runWp374aRpcBytes(
+            *service, rpc_id++, "abort_preview",
+            {{"actor_id", actor}, {"ticket", opened.at("ticket")}});
+        REQUIRE(accepted.at("status") == "accepted");
+        invokeEditorCommitQueueHook();
+        const auto result = runWp374aRpcBytes(
+            *service, rpc_id++, "get_preview_result",
+            {{"request_id", accepted.at("request_id")}});
+        INFO("WP375b abort preview result: " << result.dump());
+        REQUIRE(result.at("status") == "succeeded");
+    };
+
+    const auto before_document = Json::parse(
+        AuthoringSceneAuthority::encodeSemantic(
+            GET_MODULE(ProjectBasicConfig).sceneDocument()));
+    REQUIRE(light_count() == 14);
+    const auto inactive = wp375Components(
+        *service, rpc_id, "SceneFlowKeyLight", "scene_flow_second");
+    const auto inactive_preview = preview_set(inactive, 6.25);
+
+    // The historical fault is already visible here: the inactive scene's
+    // single light replaced all fourteen lights in the active scene.
+    REQUIRE(light_count() == 14);
+    commit_preview(inactive_preview);
+    REQUIRE(light_count() == 14);
+
+    const auto after_inactive = Json::parse(
+        AuthoringSceneAuthority::encodeSemantic(
+            GET_MODULE(ProjectBasicConfig).sceneDocument()));
+    REQUIRE(after_inactive.at("scenes").at("default_scene") ==
+            before_document.at("scenes").at("default_scene"));
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "SceneFlowKeyLight",
+                                "scene_flow_second"),
+                "light")
+                .at("authored_json")
+                .at("intensity") == Catch::Approx(6.25));
+
+    // The abort path restores the committed document through a second
+    // Preview plan. It must retain the inactive operation and select the same
+    // DocumentOnly route instead of projecting the secondary light set.
+    const auto inactive_abort = preview_set(inactive, 8.5);
+    REQUIRE(light_count() == 14);
+    abort_preview(inactive_abort);
+    REQUIRE(light_count() == 14);
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "SceneFlowKeyLight",
+                                "scene_flow_second"),
+                "light")
+                .at("authored_json")
+                .at("intensity") == Catch::Approx(6.25));
+
+    // Positive contrast: previewing a light in the active scene still reaches
+    // the real LightContainer before the durable commit.
+    const auto active = wp375Components(
+        *service, rpc_id, "BlueSpot", "default_scene");
+    const auto active_preview = preview_set(active, 3.75);
+    const auto active_runtime = GET_MODULE(LightContainer).snapshotPrepared();
+    REQUIRE(light_count() == 14);
+    const auto active_index = active_runtime.spot_names.at("BlueSpot");
+    REQUIRE(active_runtime.spot_lights.at(active_index).intensity ==
+            Catch::Approx(3.75));
+    commit_preview(active_preview);
+    REQUIRE(wp375Component(
+                wp375Components(*service, rpc_id, "BlueSpot", "default_scene"),
+                "light")
+                .at("authored_json")
+                .at("intensity") == Catch::Approx(3.75));
+    wp375FinishRuntime(service, true);
+#else
+    FAIL("WP375b shipping production behavior fixture was not composed");
 #endif
 }
 
@@ -1071,6 +1330,8 @@ TEST_CASE(
     FAIL("WP375a production behavior fixture was not composed");
 #endif
 }
+
+#endif
 
 TEST_CASE(
     "WP377 authored pelican_ray_instance force opaque reaches the material alpha profile row guard",
@@ -1200,9 +1461,10 @@ TEST_CASE("WP374a all ten root layout AS component states cross real SceneLoader
     }
 }
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP374a real RPC bytes drive add set save fresh reload remove into committed TLAS rows",
-    "[WP374a][WP374][ray-tracing][rt3-1][rpc][production][tlas][mutation-1]") {
+    "[WP374a][WP374][ray-tracing][rt3-1][rpc][production][tlas][mutation-1][gpu]") {
     setupLogger();
 #if PELICAN_RUNTIME_SHADER_COMPILER
     Wp374aProjectRoot project{"rpc_full_route"};
@@ -1322,6 +1584,7 @@ TEST_CASE(
         "WP374a v2 production RPC rendering is compiler-ON only; the compiler-OFF precedence test remains active");
 #endif
 }
+#endif
 
 TEST_CASE(
     "WP379 production scene RPC and snapshot boundaries share component_unknown",
@@ -1570,6 +1833,7 @@ TEST_CASE(
 #endif
 }
 
+#if PELICAN_WITH_RPC
 TEST_CASE(
     "WP375 production acceptance a materializes transform runtime before save and fresh reload",
     "[WP375][rpc][production][mutation-a][gpu]") {
@@ -1923,6 +2187,7 @@ TEST_CASE(
         wp375FinishRuntime(service);
     }
 }
+#endif
 
 
 } // namespace Pelican

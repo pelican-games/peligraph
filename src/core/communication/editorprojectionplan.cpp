@@ -323,8 +323,7 @@ bool appendDocumentOnlyIfInactive(EditorProjectionPlan &plan,
                                   std::size_t operation_index,
                                   std::string_view scene_id,
                                   AuthoringObjectId object_id) {
-    if (plan.context.mode() != EditorProjectionMode::Committed ||
-        scene_id == plan.context.activeSceneId()) {
+    if (scene_id == plan.context.activeSceneId()) {
         return false;
     }
     plan.routes.push_back(EditorProjectionRoute{
@@ -628,10 +627,44 @@ EditorProjectionPlan planEditorProjection(
 
     if (request.restore_committed) {
         if (context.mode() != EditorProjectionMode::Preview ||
-            !request.operations.empty() || !request.commands.empty()) {
+            !request.commands.empty()) {
             planFailure("editor_projection_invalid_request@1",
-                        "restore_committed is an empty preview operation");
+                        "restore_committed is a command-free preview operation");
         }
+        plan.operations.assign(request.operations.begin(),
+                               request.operations.end());
+        if (!plan.operations.empty()) {
+            for (std::size_t operation_index = 0;
+                 operation_index < plan.operations.size(); ++operation_index) {
+                std::visit(
+                    [&](const auto &operation) {
+                        using Operation =
+                            std::remove_cvref_t<decltype(operation)>;
+                        if constexpr (std::same_as<
+                                          Operation,
+                                          EditorSetComponentValueOperation>) {
+                            if (appendDocumentOnlyIfInactive(
+                                    plan, operation_index,
+                                    operation.scene_id,
+                                    operation.object_id)) {
+                                return;
+                            }
+                            appendPolicyRoute(
+                                plan, operation_index,
+                                operation.scene_id, operation.object_id,
+                                operation.component);
+                        } else {
+                            planFailure(
+                                "editor_projection_invalid_request@1",
+                                "restore_committed retained a non-preview operation");
+                        }
+                    },
+                    plan.operations[operation_index]);
+            }
+            return plan;
+        }
+        // Compatibility for direct callers that do not retain the preview
+        // operations: restore every live-preview policy in the active scene.
         for (std::size_t index = 0; index < context.codecCatalog().size();
              ++index) {
             const auto &codec = context.codecCatalog()[index];
