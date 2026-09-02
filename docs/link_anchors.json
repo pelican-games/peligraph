@@ -1580,7 +1580,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`commitPending`": "void commitPending() noexcept {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`domainObjects()`": "std::vector<std::uint64_t> domainObjects(const Json &domain) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`enqueueRevert`": "OrderedJson EditorEditCoordinator::enqueueRevert(const Json &params,",
-    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`forceAbort()`": "bool forceAbort(std::string reason) noexcept {",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`forceAbort()`": "bool forceAbort(std::string reason) {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`gateSnapshot()`": "EditorGateSnapshot gateSnapshot() {",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`makeReplaceComponentCommand()`": "EditorProjectionCommand makeReplaceComponentCommand(",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../src/core/communication/editorjournal.cpp|`prepareBatch()`": "PreparedBatch prepareBatch(const Json &raw_operations,",
