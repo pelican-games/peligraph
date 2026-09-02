@@ -20517,7 +20517,7 @@ WP377 のテストは throw 直後に終わり、この状態を検査してい�
 - **統合側の GPU 変異**(エージェントは GPU 禁止で UNMET 報告): 基準 1/1 緑 → **M1**(`beginLogicalFrame` で lease を無条件 reset = 旧挙動)赤 /
   **M2**(検証を resident reuse のときだけに)赤。残留 0
 - 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1526 / 1526 緑**
-- コードレビュー `rev377a`: 投入したが **codex の使用上限で判定前に中断**(再開 2026-09-07 11:26)。再投入は台帳の未了項目
+- コードレビュー `rev377a`(再投入、fast 無し): **Reject**。(1) 実害: `recordFrame()` 後・frame transaction 確定前(`after_as_record` / `submit` の fault)に却下世代の SBT が active に残る(RT→非 RT の clear も同型。TLAS descriptor も frame descriptor に書かれた後)。(2) identity 緩和のうち `D=1,N=0,A=1`(document あり・name 無し・asset あり)は gate を通るが後段の material lookup(`raygrouplayout.cpp:309`)と不整合で `ray_material_key_mismatch` に落ちる。(3) compiler OFF / XR / `SKIP_DEVSTUDIO=ON` の受け入れ不足。**連鎖上限(WP377 → 377a)により WP377b は起票せず、既知の穴に修正設計ごと記録**(下の「未了項目」節)。壊せなかった項目: M1 / M2 の変異はいずれも噛む、oracle 正側は production intersector 経由、出荷 4 project は RT 未使用
 ### WP378: E-0a —— 利用者データ拒否を「値」にする最初の縦切り(型 + 6 caller + camera + `get_components`)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
@@ -21406,3 +21406,4 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 - WP334b 系の `-j4` 負荷 flake(commit 待ちタイムアウト。今日 5 回)
 - game-logic fixture DLL の shadow copy 衝突(`.pelican-hot-reload` が DLL 横で process 間共有。`-j4` で同じ fixture を使うテストが衝突。WP375a 統合時に 2 件)→ **WP381 の loader 変更に「shadow dir を process ごと」を同梱**
 - loader: 設定 DLL が起動時に無く、後から不適合 DLL が現れた reload で旧 runtime を再構築しない(`rev375` #3。WP381 / WP380 の領域)
+- **RT frame transaction の SBT / TLAS rollback(WP377b 候補、`rev377a` #1)**: `after_as_record` / `submit` の fault で却下世代の SBT が `FrameResources` に残り、candidate TLAS が frame descriptor に書かれたまま runtime だけ旧世代へ戻る。修正設計: frame 開始時の旧 SBT lease と TLAS descriptor を保持する **rollback guard**(AS commit + staged generation publication が終わるまで例外時に復元。RT→非 RT の clear も対象)。受け入れは既存 transaction test(`headless_render_test.cpp:11833`)の各 fault 点で失敗直後の active SBT / TLAS 同一性。**次に renderer の frame transaction を触る WP に同梱**(連鎖上限のため単独起票しない)- **AS row identity の canonical 化(`rev377a` #2)**: `{document, material_name, asset}` の 8 通りの truth table のうち `D=1,N=0,A=1` が gate と material lookup で食い違う。canonical identity(document 組があれば document、無ければ asset)を 1 箇所で決めて AS rule / binding / `materialReference` / material-table lookup で共有し、8 行を parameterized test に。CARRIER-RT3(occurrence identity)に同梱
