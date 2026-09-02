@@ -482,6 +482,7 @@
     "active_blas_count": 0,
     "active_blas_inputs": [],
     "blas_build_count": 0,
+    "blas_variant_count": 0,
     "excluded": {
       "blas_ineligible_names": [],
       "blas_ineligible_primitive_count": 0,
@@ -499,6 +500,7 @@
     "model_rebuild_generation": 0,
     "model_rebuild_invalidation_count": 0,
     "requested": false,
+    "resident_blas_keys": [],
     "static_only": true,
     "tlas_build_count": 0,
     "tlas_instance_count": 0

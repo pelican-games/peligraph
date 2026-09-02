@@ -323,7 +323,7 @@ class EditorEcsMigrationProjectionAdapter final
           bindings_{std::move(bindings)},
           object_id_{operation.at("object_id").get<std::uint64_t>()},
           component_name_{operation.at("component_slot").get<std::string>()},
-          operation_{std::move(operation)},
+          operation_(std::move(operation)),
           kind_{operation_.at("op") == "add_component"
                     ? ECSArchetypeMigrationKind::add
                     : ECSArchetypeMigrationKind::remove},
@@ -361,6 +361,10 @@ class EditorEcsMigrationProjectionAdapter final
                     } else if (codec->runtime_kind ==
                                ComponentCodecRuntimeKind::Ecs) {
                         codec->applyRuntime(decoded, target);
+                        if (component_name_ == "simplemodelview") {
+                            static_cast<SimpleModelViewComponent *>(target)
+                                ->authoring_object_id = object_id_.value;
+                        }
                     } else {
                         components_.loadByJson(target,
                                                operation_.at("component"));
@@ -943,7 +947,8 @@ EditorProjectionResult executeEditorProjection(
                 }
             } else if (component == "transform") transform_scenes.insert(scene_id);
             else if (component == "simplemodelview") renderer_scenes.insert(scene_id);
-            else if (component == "animation" || component == "sprite_view")
+            else if (component == "animation" || component == "sprite_view" ||
+                     component == "ray_instance")
                 ecs_codec_scenes.insert(scene_id);
             else if (component == "camera") camera_scenes.insert(scene_id);
             else if (component == "light") light_scenes.insert(scene_id);

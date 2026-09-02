@@ -3,10 +3,12 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../userpublic/components/animation.hpp"
 #include "../userpublic/components/collider.hpp"
 #include "../userpublic/components/localtransform.hpp"
 #include "../userpublic/components/modelview.hpp"
+#include "../userpublic/components/rayinstance.hpp"
 #include "../userpublic/components/spriteview.hpp"
 #include "../userpublic/details/schema/structfieldjson.hpp"
 
@@ -14,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <tuple>
 #include <type_traits>
@@ -176,6 +179,16 @@ const auto light_fields = materializeSchema(light_schema);
 const auto collider_fields = materializeSchema(collider_schema);
 const auto animation_fields = materializeSchema(animation_schema);
 const auto sprite_fields = materializeSchema(sprite_schema);
+
+const std::array ray_instance_fields{
+    StructFieldSchema{"mask", StructFieldType::U8,
+                      std::pair<std::uint64_t, std::uint64_t>{0, 0xffu}},
+    StructFieldSchema{"instance_flags", StructFieldType::Enum,
+                      std::monostate{}},
+    StructFieldSchema{"custom_index", StructFieldType::U32,
+                      std::pair<std::uint64_t, std::uint64_t>{
+                          0, rayCustomIndexMaximum}},
+};
 
 [[noreturn]] void codecError(StructFieldErrorCode code, std::string path, std::string_view detail) {
     internal::structFieldError(code, std::move(path), detail);
@@ -868,6 +881,146 @@ ComponentCodecValue decodeSprite(const Json &json) {
     return result;
 }
 
+[[noreturn]] void rayInstanceCodecError(std::string_view code,
+                                        std::string message) {
+    throw std::runtime_error("pelican." + std::string{code} +
+                             "@1: " + std::move(message));
+}
+
+std::uint32_t decodeRayInstanceFlags(const Json &encoded) {
+    if (!encoded.is_array()) {
+        rayInstanceCodecError("ray_instance_field_type",
+                              "instance_flags must be a string array");
+    }
+    std::uint32_t result = 0;
+    std::set<std::string> seen;
+    for (const auto &item : encoded) {
+        if (!item.is_string()) {
+            rayInstanceCodecError("ray_instance_field_type",
+                                  "instance_flags entries must be strings");
+        }
+        const auto &name = item.get_ref<const std::string &>();
+        if (!seen.emplace(name).second) {
+            rayInstanceCodecError("ray_instance_field_type",
+                                  "instance_flags contains duplicate '" +
+                                      name + "'");
+        }
+        if (name == "triangle_facing_cull_disable") {
+            result |= rayInstanceTriangleFacingCullDisable;
+        } else if (name == "triangle_flip_facing") {
+            result |= rayInstanceTriangleFlipFacing;
+        } else if (name == "force_opaque") {
+            result |= rayInstanceForceOpaque;
+        } else if (name == "force_no_opaque") {
+            result |= rayInstanceForceNoOpaque;
+        } else {
+            rayInstanceCodecError("ray_as_unknown_flag",
+                                  "unknown instance flag '" + name + "'");
+        }
+    }
+    if ((result & rayInstanceForceOpaque) != 0 &&
+        (result & rayInstanceForceNoOpaque) != 0) {
+        rayInstanceCodecError("ray_as_conflicting_instance_flags",
+                              "force_opaque and force_no_opaque are mutually exclusive");
+    }
+    return result;
+}
+
+std::uint32_t decodeRayInstanceUnsigned(const Json &encoded,
+                                        std::uint32_t maximum,
+                                        std::string_view field) {
+    std::uint64_t result = 0;
+    if (encoded.is_number_unsigned()) {
+        result = encoded.get<std::uint64_t>();
+    } else if (encoded.is_number_integer() &&
+               encoded.get<std::int64_t>() >= 0) {
+        result = static_cast<std::uint64_t>(encoded.get<std::int64_t>());
+    } else {
+        rayInstanceCodecError("ray_instance_field_type",
+                              std::string{field} +
+                                  " must be an unsigned integer");
+    }
+    if (result > maximum) {
+        rayInstanceCodecError("ray_instance_field_range",
+                              std::string{field} + " is out of range");
+    }
+    return static_cast<std::uint32_t>(result);
+}
+
+ComponentCodecValue decodeRayInstance(const Json &json) {
+    if (!json.is_object()) {
+        rayInstanceCodecError("ray_instance_field_type",
+                              "ray_instance must be an object");
+    }
+    const auto name = json.find("name");
+    if (name == json.end() || !name->is_string() ||
+        name->get_ref<const std::string &>() != "ray_instance") {
+        rayInstanceCodecError("ray_instance_field_type",
+                              "name must be 'ray_instance'");
+    }
+    for (const auto &[key, value] : json.items()) {
+        (void)value;
+        if (key != "name" && key != "mask" &&
+            key != "instance_flags" && key != "custom_index") {
+            rayInstanceCodecError("ray_instance_unknown_field",
+                                  "unknown field '" + key + "'");
+        }
+    }
+    RayInstanceComponent result;
+    if (const auto mask = json.find("mask"); mask != json.end()) {
+        result.mask = static_cast<std::uint8_t>(decodeRayInstanceUnsigned(
+            *mask, 0xffu, "mask"));
+    }
+    if (const auto flags = json.find("instance_flags");
+        flags != json.end()) {
+        result.instance_flags = decodeRayInstanceFlags(*flags);
+    }
+    if (const auto custom = json.find("custom_index");
+        custom != json.end()) {
+        result.custom_index = decodeRayInstanceUnsigned(
+            *custom, rayCustomIndexMaximum, "custom_index");
+    }
+    if (!result.mask && !result.instance_flags && !result.custom_index) {
+        rayInstanceCodecError("ray_instance_empty",
+                              "ray_instance must declare at least one field");
+    }
+    return result;
+}
+
+OrderedJson encodeRayInstance(const ComponentCodecValue &value) {
+    const auto &data =
+        codecValue<RayInstanceComponent>(value, "ray_instance");
+    OrderedJson result{{"name", "ray_instance"}};
+    if (data.mask) result["mask"] = *data.mask;
+    if (data.instance_flags) {
+        OrderedJson flags = OrderedJson::array();
+        if ((*data.instance_flags & rayInstanceTriangleFacingCullDisable) != 0)
+            flags.push_back("triangle_facing_cull_disable");
+        if ((*data.instance_flags & rayInstanceTriangleFlipFacing) != 0)
+            flags.push_back("triangle_flip_facing");
+        if ((*data.instance_flags & rayInstanceForceOpaque) != 0)
+            flags.push_back("force_opaque");
+        if ((*data.instance_flags & rayInstanceForceNoOpaque) != 0)
+            flags.push_back("force_no_opaque");
+        result["instance_flags"] = std::move(flags);
+    }
+    if (data.custom_index) result["custom_index"] = *data.custom_index;
+    return result;
+}
+
+void applyRayInstance(const ComponentCodecValue &value, void *target) {
+    if (target == nullptr)
+        throw std::invalid_argument("ray_instance runtime target is null");
+    *static_cast<RayInstanceComponent *>(target) =
+        codecValue<RayInstanceComponent>(value, "ray_instance");
+}
+
+ComponentCodecValue projectRayInstance(const void *source) {
+    if (source == nullptr)
+        throw std::invalid_argument("ray_instance runtime source is null");
+    return *static_cast<const RayInstanceComponent *>(source);
+}
+
 OrderedJson encodeSprite(const ComponentCodecValue &value) {
     const auto &data = codecValue<SpriteViewComponent>(value, "sprite_view");
     data.validate();
@@ -913,6 +1066,10 @@ const std::array codecs{
                    [] { return fieldSpan(animation_fields); }, applyAnimation, projectAnimation},
     ComponentCodec{"sprite_view", ComponentCodecRuntimeKind::Ecs, decodeSprite, encodeSprite,
                    [] { return fieldSpan(sprite_fields); }, applySprite, projectSprite},
+    ComponentCodec{"ray_instance", ComponentCodecRuntimeKind::Ecs,
+                   decodeRayInstance, encodeRayInstance,
+                   [] { return fieldSpan(ray_instance_fields); },
+                   applyRayInstance, projectRayInstance},
 };
 
 } // namespace
@@ -966,12 +1123,26 @@ ComponentCodecValue ComponentCodec::projectRuntime(const void *source) const {
     return runtime_project(source);
 }
 
-std::span<const ComponentCodec> componentCodecs() { return codecs; }
+namespace {
+bool rayInstanceCodecEnabled() noexcept {
+    const auto *state =
+        FastModuleContainer::tryGet<RayLayoutRuntimeState>();
+    return state != nullptr && state->builtinRayInstanceEnabled();
+}
+} // namespace
+
+std::span<const ComponentCodec> componentCodecs() {
+    return rayInstanceCodecEnabled()
+               ? std::span<const ComponentCodec>{codecs}
+               : std::span<const ComponentCodec>{codecs}.first(
+                     codecs.size() - 1u);
+}
 
 const ComponentCodec *findComponentCodec(std::string_view name) noexcept {
-    const auto found = std::find_if(codecs.begin(), codecs.end(),
+    const auto available = componentCodecs();
+    const auto found = std::find_if(available.begin(), available.end(),
                                     [&](const ComponentCodec &codec) { return codec.name == name; });
-    return found == codecs.end() ? nullptr : &*found;
+    return found == available.end() ? nullptr : &*found;
 }
 
 const ComponentCodec &requireComponentCodec(std::string_view name) {

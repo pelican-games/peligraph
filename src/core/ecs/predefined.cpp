@@ -5,6 +5,8 @@
 #include "predefined/camera.hpp"
 #include "predefined/modelview.hpp"
 #include "predefined/transform.hpp"
+#include "../shader/raygrouplayout.hpp"
+#include "../userpublic/components/rayinstance.hpp"
 
 #include "predefined/camerasystem.hpp"
 #include "predefined/animationsystem.hpp"
@@ -26,13 +28,20 @@ void ECSPredefinedRegistration::reg() {
     internal::getComponentRegisterer().registerComponent<CameraComponent>("camera");
     internal::getComponentRegisterer().registerComponent<AnimationComponent>("animation");
     registerSpriteViewComponent();
+    if (const auto *ray_layout =
+            FastModuleContainer::tryGet<RayLayoutRuntimeState>();
+        ray_layout != nullptr && ray_layout->builtinRayInstanceEnabled()) {
+        internal::getComponentRegisterer()
+            .registerComponent<RayInstanceComponent>("ray_instance");
+    }
 
     auto &ecs = GET_MODULE(ECSCore);
     const auto local_transform_system =
         ecs.registerSystemForce<LocalTransformSystem, EntityId, TransformComponent, LocalTransformComponent>(
             GET_MODULE(LocalTransformSystem), {});
     const auto model_update_system =
-        ecs.registerSystemForce<SimpleModelViewUpdateSystem, SimpleModelViewComponent>(
+        ecs.registerSystemForce<SimpleModelViewUpdateSystem, EntityId,
+                                SimpleModelViewComponent>(
             GET_MODULE(SimpleModelViewUpdateSystem), {});
     const auto animation_system =
         ecs.registerSystemForce<AnimationSystem, AnimationComponent, SimpleModelViewComponent>(

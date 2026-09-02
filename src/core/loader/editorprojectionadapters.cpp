@@ -778,7 +778,10 @@ struct EcsCodecProjectionAdapter::Impl {
         ECSCoreTemplatePublic::PreparedComponentSwap<AnimationComponent>;
     using SpriteToken =
         ECSCoreTemplatePublic::PreparedComponentSwap<SpriteViewComponent>;
-    using Token = std::variant<AnimationToken, SpriteToken>;
+    using RayInstanceToken =
+        ECSCoreTemplatePublic::PreparedComponentSwap<RayInstanceComponent>;
+    using Token =
+        std::variant<AnimationToken, SpriteToken, RayInstanceToken>;
 
     ECSCoreTemplatePublic &ecs;
     std::string scene_id;
@@ -827,7 +830,8 @@ void EcsCodecProjectionAdapter::prepare(
         if (base_object == nullptr || next_object == nullptr) continue;
 
         for (const auto component_name :
-             {std::string_view{"animation"}, std::string_view{"sprite_view"}}) {
+             {std::string_view{"animation"}, std::string_view{"sprite_view"},
+              std::string_view{"ray_instance"}}) {
             const auto *base_component =
                 findResolvedComponent(base_object, component_name);
             const auto *next_component =
@@ -844,9 +848,16 @@ void EcsCodecProjectionAdapter::prepare(
                 impl_->prepared.emplace_back(
                     impl_->ecs.prepareComponentSwap(binding.entity,
                                                     next_value));
-            } else {
+            } else if (component_name == "sprite_view") {
                 const auto &next_value =
                     std::any_cast<const SpriteViewComponent &>(
+                        next_component->requireRuntimeValue());
+                impl_->prepared.emplace_back(
+                    impl_->ecs.prepareComponentSwap(binding.entity,
+                                                    next_value));
+            } else {
+                const auto &next_value =
+                    std::any_cast<const RayInstanceComponent &>(
                         next_component->requireRuntimeValue());
                 impl_->prepared.emplace_back(
                     impl_->ecs.prepareComponentSwap(binding.entity,

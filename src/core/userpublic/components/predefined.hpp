@@ -4,6 +4,7 @@
 #include <components/animation.hpp>
 #include <components/localtransform.hpp>
 #include <components/modelview.hpp>
+#include <components/rayinstance.hpp>
 #include <components/spriteview.hpp>
 #include <details/ecs/componentdeclare.hpp>
 
@@ -16,5 +17,6 @@ DECLARE_COMPONENT_CLASS(CameraComponent, 3);
 DECLARE_COMPONENT(LocalTransformComponent, 16);
 DECLARE_COMPONENT(AnimationComponent, 17);
 DECLARE_COMPONENT(SpriteViewComponent, 18);
+DECLARE_COMPONENT(RayInstanceComponent, 19);
 
 } // namespace Pelican

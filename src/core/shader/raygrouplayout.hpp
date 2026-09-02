@@ -1,5 +1,8 @@
 #pragma once
 
+#include "../container.hpp"
+#include "../userpublic/components/rayinstance.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -47,9 +50,50 @@ enum class RayPortableProfile : std::uint8_t {
     material_alpha_v1,
 };
 
+enum class RayLayoutSemanticMode : std::uint8_t {
+    LegacyNoLayout,
+    LayoutV1Q,
+    LayoutV2,
+};
+
+struct RayTracingProjectConfig;
+
+struct RayAsMaterialSelector {
+    enum class Kind : std::uint8_t {
+        document_material,
+        asset_material,
+    };
+
+    Kind kind = Kind::document_material;
+    std::string reference;
+    std::string material_name;
+    std::uint32_t source_material_index = 0;
+
+    std::string canonicalKey() const;
+    bool operator==(const RayAsMaterialSelector &) const = default;
+};
+
+struct RayAsGeometryRule {
+    RayAsMaterialSelector material;
+    std::uint32_t geometry_flags = 0;
+
+    bool operator==(const RayAsGeometryRule &) const = default;
+};
+
+struct RayAccelerationStructureDeclaration {
+    RayAccelerationStructureCanonicalDefaults defaults;
+    std::vector<RayAsGeometryRule> rules;
+
+    bool operator==(const RayAccelerationStructureDeclaration &) const =
+        default;
+};
+
 struct RayGroupLayout {
     std::string source_reference;
+    std::uint32_t version = 1;
+    RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;
     std::string digest_sha256;
+    std::string acceleration_structure_digest_sha256;
     std::vector<std::string> ray_types;
     std::string default_group;
     std::vector<std::string> groups;
@@ -65,6 +109,7 @@ struct RayGroupLayout {
     // Authored only at the layout document top level. Absence is the exact
     // pre-WP369 path and creates no generated shader/wire/cache input.
     std::optional<RayPortableProfile> portable_profile;
+    std::optional<RayAccelerationStructureDeclaration> acceleration_structure;
 
     std::uint32_t rayTypeIndex(std::string_view name) const;
     std::uint32_t groupIndex(std::string_view name) const;
@@ -77,6 +122,26 @@ struct RayGroupLayout {
     std::optional<std::uint32_t> engineRecordOffset(
         RayEngineRecordField field) const noexcept;
 };
+
+// Process-lifetime runtime gate, owned by FastModuleContainer.  Parsing stays
+// pure; startup configures this before builtin ECS registration, and render
+// graph reloads validate against the immutable mode.
+DECLARE_MODULE(RayLayoutRuntimeState) {
+    bool configured_ = false;
+    RayLayoutSemanticMode mode_ = RayLayoutSemanticMode::LegacyNoLayout;
+
+  public:
+    void configure(RayLayoutSemanticMode mode);
+    void validate(RayLayoutSemanticMode mode) const;
+    bool configured() const noexcept { return configured_; }
+    RayLayoutSemanticMode mode() const noexcept { return mode_; }
+    bool builtinRayInstanceEnabled() const noexcept {
+        return configured_ && mode_ == RayLayoutSemanticMode::LayoutV2;
+    }
+};
+
+RayLayoutSemanticMode rayLayoutSemanticMode(
+    const RayTracingProjectConfig *config) noexcept;
 
 RayGroupLayout parseRayGroupLayout(
     std::string_view raw_bytes,
@@ -152,6 +217,8 @@ struct RaySceneRowInput {
     std::uint64_t resolved_material_generation = 0;
     std::shared_ptr<const void> resolved_material_lease;
     std::uint64_t geometry_allocation_id = 0;
+    std::uint64_t authoring_object_id = 0;
+    std::optional<RayInstanceComponent> ray_instance;
     std::size_t source_index = 0;
     // Absolute source overrides take priority. Relative UV transforms are
     // transported only when no absolute UV transform exists; relative base
@@ -165,6 +232,7 @@ struct RaySceneRowInput {
 };
 
 struct RaySceneRow {
+    RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;
     std::uint32_t q = 0;
     std::size_t source_index = 0;
     std::uint32_t group_index = 0;
@@ -178,6 +246,15 @@ struct RaySceneRow {
     std::uint64_t resolved_material_generation = 0;
     std::shared_ptr<const void> resolved_material_lease;
     std::uint64_t geometry_allocation_id = 0;
+    std::uint64_t authoring_object_id = 0;
+    std::uint8_t instance_mask =
+        rayAccelerationStructureCanonicalDefaults.mask;
+    std::uint32_t instance_flags =
+        rayAccelerationStructureCanonicalDefaults.instance_flags;
+    std::uint32_t instance_custom_index =
+        rayAccelerationStructureCanonicalDefaults.custom_index;
+    std::uint32_t geometry_flags =
+        rayAccelerationStructureCanonicalDefaults.geometry_flags;
     std::uint32_t alpha_override_mask = 0;
     std::array<float, 4> alpha_override_base_color_factor{
         1.0F, 1.0F, 1.0F, 1.0F};
@@ -191,6 +268,7 @@ struct RaySceneRow {
 };
 
 struct RaySceneRowSnapshot {
+    RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LegacyNoLayout;
     std::string identity_digest_sha256;
     std::string material_table_digest_sha256;
     std::string geometry_table_digest_sha256;

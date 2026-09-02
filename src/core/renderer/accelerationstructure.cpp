@@ -376,6 +376,30 @@ std::string canonicalTransformIdentity(const glm::mat4 &transform) {
 RaySceneRowSnapshot resolveRayTracingSceneRows(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
     const RayTracingProjectConfig &project) {
+    // Validate authored instance declarations before static classification.
+    // Otherwise a component attached only to an excluded primitive would be
+    // erased by the classification filter and silently ignored.
+    std::map<std::uint64_t, bool> declared_targets;
+    for (const auto &instance : instances) {
+        if (!instance.ray_instance) continue;
+        auto [target, inserted] = declared_targets.emplace(
+            instance.authoring_object_id, false);
+        (void)inserted;
+        const bool eligible =
+            !instance.skinned && !instance.morph_deformed &&
+            !instance.vat_deformed &&
+            !isBlasIneligibleStaticGeometry(instance);
+        target->second = target->second || eligible;
+    }
+    for (const auto &[authoring_object_id, has_static_geometry] :
+         declared_targets) {
+        if (authoring_object_id == 0 || !has_static_geometry) {
+            throw std::runtime_error(
+                "pelican.ray_instance_not_ray_traced@1: ray_instance authoring object " +
+                std::to_string(authoring_object_id) +
+                " has no BLAS-eligible static geometry");
+        }
+    }
     const auto classification =
         classifyRayQueryStaticGeometry(instances);
     std::vector<RaySceneRowInput> inputs;
@@ -424,6 +448,9 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
                 instance.resolved_material_lease,
             .geometry_allocation_id =
                 instance.geometry_allocation_id,
+            .authoring_object_id =
+                instance.authoring_object_id,
+            .ray_instance = instance.ray_instance,
             .source_index = source_index,
             .alpha_override_mask =
                 instance.alpha_override_mask,
@@ -461,6 +488,12 @@ lowerRayTracingTlasInstancePlan(
                 .instance_custom_index =
                     static_cast<std::uint32_t>(result.size()),
                 .instance_sbt_record_offset = 0,
+                .instance_mask =
+                    rayAccelerationStructureCanonicalDefaults.mask,
+                .instance_flags =
+                    rayAccelerationStructureCanonicalDefaults.instance_flags,
+                .geometry_flags =
+                    rayAccelerationStructureCanonicalDefaults.geometry_flags,
             });
         }
         return result;
@@ -494,12 +527,15 @@ lowerRayTracingTlasInstancePlan(
         result.push_back({
             .source_index = row.source_index,
             .q = row.q,
-            .instance_custom_index = row.q,
+            .instance_custom_index = row.instance_custom_index,
             .instance_sbt_record_offset =
                 overrideRayTracingTlasRecordOffsetForTesting(
                     row.q,
                     rayTracingInstanceRecordOffset(
                         row.q, ray_type_count)),
+            .instance_mask = row.instance_mask,
+            .instance_flags = row.instance_flags,
+            .geometry_flags = row.geometry_flags,
         });
     }
     return result;
@@ -512,6 +548,7 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
         inputs.push_back({
             {"geometry_allocation_id",
              input.geometry_allocation_id},
+            {"geometry_flags", input.geometry_flags},
             {"index_device_address",
              input.index_device_address},
             {"vertex_device_address",
@@ -524,6 +561,8 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
         {"blas_build_count", diagnostics.blas_build_count},
         {"tlas_build_count", diagnostics.tlas_build_count},
         {"active_blas_count", diagnostics.active_blas_count},
+        {"blas_variant_count", diagnostics.blas_variant_count},
+        {"resident_blas_keys", inputs},
         {"tlas_instance_count", diagnostics.tlas_instance_count},
         {"geometry_pool_generation",
          diagnostics.geometry_pool_generation},
@@ -558,8 +597,15 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
 }
 
 struct RayQueryAccelerationStructureScope::State {
-    std::unordered_map<
-        std::uint64_t,
+    struct BlasVariantKey {
+        std::uint64_t geometry_allocation_id = 0;
+        std::uint32_t geometry_flags = 0;
+
+        auto operator<=>(const BlasVariantKey &) const = default;
+    };
+
+    std::map<
+        BlasVariantKey,
         std::shared_ptr<AccelerationStructureResource>>
         blas;
     std::shared_ptr<AccelerationStructureResource> tlas;
@@ -785,12 +831,36 @@ RayQueryAccelerationStructureScope::recordFrame(
             "pelican.ray_geometry_snapshot_invalid@1: immutable geometry snapshot has missing or extra allocation rows");
     }
 
-    for (const auto &[identity, instance] : unique_geometry) {
+    const auto planned_instances = lowerRayTracingTlasInstancePlan(
+        instances, classification.static_instance_indices,
+        candidate->ray_scene_rows.get(), candidate->ray_type_count);
+    std::set<State::BlasVariantKey> required_variants;
+    for (const auto &planned : planned_instances) {
+        auto flags = vk::GeometryFlagsKHR{planned.geometry_flags};
+        flags |= ray_profile_as_flags_override_for_testing
+                     .blas_geometry_flags;
+        required_variants.emplace(State::BlasVariantKey{
+            .geometry_allocation_id =
+                instances[planned.source_index]
+                    .geometry_allocation_id,
+            .geometry_flags = static_cast<std::uint32_t>(
+                static_cast<VkGeometryFlagsKHR>(flags)),
+        });
+    }
+
+    for (const auto &variant : required_variants) {
+        const auto identity = variant.geometry_allocation_id;
+        const auto geometry_found = unique_geometry.find(identity);
+        if (geometry_found == unique_geometry.end()) {
+            throw std::runtime_error(
+                "pelican.ray_geometry_snapshot_invalid@1: BLAS variant has no geometry row");
+        }
+        const auto *instance = geometry_found->second;
         if (can_reuse) {
             const auto existing =
-                active_state_->blas.find(identity);
+                active_state_->blas.find(variant);
             if (existing != active_state_->blas.end()) {
-                candidate->blas.emplace(identity,
+                candidate->blas.emplace(variant,
                                         existing->second);
                 continue;
             }
@@ -807,8 +877,7 @@ RayQueryAccelerationStructureScope::recordFrame(
                 vk::DeviceOrHostAddressConstKHR{index_address},
             };
         const auto geometry_flags =
-            ray_profile_as_flags_override_for_testing
-                .blas_geometry_flags;
+            vk::GeometryFlagsKHR{variant.geometry_flags};
         validateRayProfileAccelerationStructureFlags(
             material_alpha_profile_active, geometry_flags, {},
             "BLAS geometry '" + std::to_string(identity) + "'");
@@ -841,19 +910,23 @@ RayQueryAccelerationStructureScope::recordFrame(
                 primitive_count, 0, 0, 0},
             sizes.buildScratchSize,
             recorded->transient_buffers);
-        candidate->blas.emplace(identity, std::move(blas));
+        candidate->blas.emplace(variant, std::move(blas));
         ++candidate->diagnostics.blas_build_count;
     }
 
     candidate->diagnostics.active_blas_count =
         candidate->blas.size();
+    candidate->diagnostics.blas_variant_count =
+        candidate->blas.size();
     candidate->diagnostics.active_blas_inputs.clear();
     candidate->diagnostics.active_blas_inputs.reserve(
         candidate->blas.size());
-    for (const auto &[identity, blas] : candidate->blas) {
+    for (const auto &[variant, blas] : candidate->blas) {
         candidate->diagnostics.active_blas_inputs.push_back(
             RayQueryBlasInputDiagnostics{
-                .geometry_allocation_id = identity,
+                .geometry_allocation_id =
+                    variant.geometry_allocation_id,
+                .geometry_flags = variant.geometry_flags,
                 .index_device_address =
                     blas->index_input_address,
                 .vertex_device_address =
@@ -862,7 +935,12 @@ RayQueryAccelerationStructureScope::recordFrame(
     }
     std::ranges::sort(
         candidate->diagnostics.active_blas_inputs,
-        {}, &RayQueryBlasInputDiagnostics::geometry_allocation_id);
+        [](const auto &left, const auto &right) {
+            return std::tie(left.geometry_allocation_id,
+                            left.geometry_flags) <
+                   std::tie(right.geometry_allocation_id,
+                            right.geometry_flags);
+        });
 
     if (!classification.static_instance_indices.empty()) {
         recordMemoryBarrier(
@@ -880,27 +958,38 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::vector<vk::AccelerationStructureInstanceKHR>
         tlas_instances;
     tlas_instances.reserve(classification.static_instance_indices.size());
-    const auto planned_instances = lowerRayTracingTlasInstancePlan(
-        instances, classification.static_instance_indices,
-        candidate->ray_scene_rows.get(), candidate->ray_type_count);
     for (const auto &planned : planned_instances) {
         const auto &instance = instances[planned.source_index];
+        auto resolved_geometry_flags =
+            vk::GeometryFlagsKHR{planned.geometry_flags};
+        resolved_geometry_flags |=
+            ray_profile_as_flags_override_for_testing
+                .blas_geometry_flags;
+        const State::BlasVariantKey blas_key{
+            .geometry_allocation_id =
+                instance.geometry_allocation_id,
+            .geometry_flags = static_cast<std::uint32_t>(
+                static_cast<VkGeometryFlagsKHR>(
+                    resolved_geometry_flags)),
+        };
         const auto blas = candidate->blas.find(
-            instance.geometry_allocation_id);
+            blas_key);
         if (blas == candidate->blas.end()) {
             throw std::runtime_error(
                 "static ray-query TLAS instance has no BLAS");
         }
-        const auto instance_flags =
-            ray_profile_as_flags_override_for_testing
-                .tlas_instance_flags;
+        auto instance_flags =
+            vk::GeometryInstanceFlagsKHR{planned.instance_flags};
+        instance_flags |= ray_profile_as_flags_override_for_testing
+                              .tlas_instance_flags;
         validateRayProfileAccelerationStructureFlags(
             material_alpha_profile_active, {}, instance_flags,
             "TLAS instance row " + std::to_string(planned.q));
         tlas_instances.emplace_back(
             toVulkanTransform(instance.world_transform),
             planned.instance_custom_index,
-            0xffu, planned.instance_sbt_record_offset,
+            planned.instance_mask,
+            planned.instance_sbt_record_offset,
             instance_flags,
             blas->second->address);
     }

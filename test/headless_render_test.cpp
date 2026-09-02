@@ -13879,4 +13879,462 @@ TEST_CASE(
 #endif
 }
 
+namespace {
+
+void writeWp374aRt1bV2Project(
+    const std::filesystem::path &directory) {
+    writeRt1bLayoutProject(directory);
+    auto layout = nlohmann::json::parse(
+        readTextFile(directory / "ray_layout.json"));
+    layout["version"] = 2;
+    layout["acceleration_structure"] = {
+        {"defaults",
+         {{"mask", 255},
+          {"instance_flags", nlohmann::json::array()},
+          {"geometry_flags", nlohmann::json::array()}}},
+        {"rules", nlohmann::json::array()},
+    };
+    writeTextFile(directory / "ray_layout.json", layout.dump(2));
+
+    auto bindings = nlohmann::json::parse(
+        readTextFile(directory / "ray_bindings.json"));
+    REQUIRE(bindings.at("bindings").size() == 2);
+    bindings["bindings"] = nlohmann::json::array(
+        {bindings.at("bindings").at(0)});
+    writeTextFile(directory / "ray_bindings.json", bindings.dump(2));
+}
+
+void writeWp374aRt2aV2Project(
+    const std::filesystem::path &directory,
+    std::uint32_t geometry_flags) {
+    writeRt2aAnyHitProject(directory);
+    auto layout = nlohmann::json::parse(
+        readTextFile(directory / "ray_layout.json"));
+    layout["version"] = 2;
+    auto encoded_flags = nlohmann::json::array();
+    if ((geometry_flags & rayGeometryOpaque) != 0) {
+        encoded_flags.push_back("opaque");
+    }
+    if ((geometry_flags & rayGeometryNoDuplicateAnyHitInvocation) != 0) {
+        encoded_flags.push_back("no_duplicate_any_hit_invocation");
+    }
+    layout["acceleration_structure"] = {
+        {"defaults",
+         {{"mask", 255},
+          {"instance_flags", nlohmann::json::array()},
+          {"geometry_flags", nlohmann::json::array()}}},
+        {"rules",
+         nlohmann::json::array(
+             {{{"material",
+                {{"asset", "models/wp367_single.glb"},
+                 {"source_material_index", 0}}},
+               {"geometry_flags", std::move(encoded_flags)}}})},
+    };
+    writeTextFile(directory / "ray_layout.json", layout.dump(2));
+
+    auto bindings = nlohmann::json::parse(
+        readTextFile(directory / "ray_bindings.json"));
+    REQUIRE(bindings.at("bindings").size() == 3);
+    bindings["bindings"] = nlohmann::json::array(
+        {bindings.at("bindings").at(0)});
+    writeTextFile(directory / "ray_bindings.json", bindings.dump(2));
+}
+
+CommonPolygonVertData wp374aTriangle() {
+    CommonPolygonVertData geometry;
+    geometry.indices = {0, 1, 2};
+    geometry.pos = {{-0.75f, -0.75f, 0.0f},
+                    {0.75f, -0.75f, 0.0f},
+                    {0.0f, 0.75f, 0.0f}};
+    geometry.normal.assign(3, glm::vec3{0.0f, 0.0f, 1.0f});
+    geometry.texcoord.assign(3, glm::vec2{0.0f});
+    geometry.color.assign(3, glm::vec4{1.0f});
+    return geometry;
+}
+
+ModelTemplate wp374aModel(
+    std::uint64_t asset_id, std::string authored_reference,
+    std::uint32_t source_material_index,
+    const ModelTemplate::PrimitiveRefInfo &primitive) {
+    ModelTemplate model;
+    model.asset_id = ModelAssetId{asset_id};
+    model.authored_asset_reference = std::move(authored_reference);
+    model.material_primitives = {
+        ModelTemplate::MaterialPrimitives{
+            .material = GET_MODULE(StandardMaterialResource)
+                            .standardTransparentMaterial(),
+            .primitives = {primitive},
+            .source_material_index = source_material_index,
+        }};
+    return model;
+}
+
+ModelInstanceId placeWp374aChair(
+    PolygonInstanceContainer &instances, const ModelTemplate &model,
+    float x) {
+    const auto id = instances.placeModelInstance(model);
+    instances.setTrs(id, {x, 0.0f, 8.0f},
+                     glm::quat{1.0f, 0.0f, 0.0f, 0.0f},
+                     glm::vec3{1.0f});
+    return id;
+}
+
+std::array<std::uint32_t, 4> wp374aPixel(
+    const RenderTargetReadback &readback, std::uint32_t x) {
+    std::array<std::uint32_t, 4> result{};
+    const auto offset = static_cast<std::size_t>(x) * sizeof(result);
+    if (offset + sizeof(result) > readback.bytes.size()) {
+        throw std::out_of_range("WP374a sentinel pixel is outside readback");
+    }
+    std::memcpy(result.data(), readback.bytes.data() + offset,
+                sizeof(result));
+    return result;
+}
+
+const RaySceneRowSnapshot &wp374aActiveRows() {
+    const auto runtime = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    if (runtime == nullptr || runtime->gpu_arena == nullptr) {
+        throw std::runtime_error("WP374a GPU owner is absent");
+    }
+    const auto owner = std::ranges::find_if(
+        runtime->gpu_arena->scopes,
+        [](const auto &scope) { return scope.ray_tracing_project != nullptr; });
+    if (owner == runtime->gpu_arena->scopes.end() ||
+        owner->acceleration_structures == nullptr) {
+        throw std::runtime_error("WP374a AS owner is absent");
+    }
+    const auto *rows =
+        owner->acceleration_structures->activeRaySceneRowsForTesting();
+    if (rows == nullptr) {
+        throw std::runtime_error("WP374a committed row snapshot is absent");
+    }
+    return *rows;
+}
+
+const RaySceneRow &wp374aRowForAuthor(
+    const RaySceneRowSnapshot &rows, std::uint64_t authoring_object_id) {
+    const auto row = std::ranges::find(
+        rows.rows, authoring_object_id,
+        &RaySceneRow::authoring_object_id);
+    if (row == rows.rows.end()) {
+        throw std::runtime_error("WP374a authored row is absent");
+    }
+    return *row;
+}
+
+constexpr std::uint32_t wp374aClosestProof(
+    std::uint32_t ray_marker, std::uint32_t group_marker) {
+    return 0xc3670000u ^ ((ray_marker << 16u) | group_marker);
+}
+
+} // namespace
+
+TEST_CASE(
+    "WP374a two same-material chairs honor instance mask and removal in GPU output",
+    "[WP374a][WP374][headless][gpu][ray-tracing][rt3-1][mask][remove]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeWp374aRt1bV2Project(temp_dir);
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        auto primitive = GET_MODULE(VertBufContainer).addPrimitiveEntry(
+            wp374aTriangle());
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        const auto model = wp374aModel(
+            37401, "models/tree.glb", 2, primitive);
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto left = placeWp374aChair(instances, model, -2.0f);
+        const auto right = placeWp374aChair(instances, model, 2.0f);
+        instances.setRayInstanceDeclaration(left, 374011, std::nullopt);
+        instances.setRayInstanceDeclaration(
+            right, 374012, RayInstanceComponent{.mask = std::uint8_t{0}});
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto masked = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        CHECK(wp374aPixel(masked, 0)[0] == 0xa0u);
+        CHECK(wp374aPixel(masked, 1) ==
+              std::array{1280u, 0xffffffffu, 0u, 0u});
+
+        instances.setRayInstanceDeclaration(right, 374012, std::nullopt);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto restored = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        CHECK(wp374aPixel(restored, 0)[0] == 0xa0u);
+        CHECK(wp374aPixel(restored, 1)[0] == 0xa0u);
+        CHECK(masked.bytes != restored.bytes);
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan WP374a mask fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("WP374a GPU acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE(
+    "WP374a force opaque on one chair suppresses its any-hit invocation",
+    "[WP374a][WP374][headless][gpu][ray-tracing][rt3-1][instance-flags][any-hit]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeWp374aRt2aV2Project(temp_dir, 0);
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        auto primitive = GET_MODULE(VertBufContainer).addPrimitiveEntry(
+            wp374aTriangle());
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        const auto model = wp374aModel(
+            37402, "models/wp367_single.glb", 0, primitive);
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto left = placeWp374aChair(instances, model, -2.0f);
+        const auto right = placeWp374aChair(instances, model, 2.0f);
+        instances.setRayInstanceDeclaration(left, 374021, std::nullopt);
+        instances.setRayInstanceDeclaration(
+            right, 374022,
+            RayInstanceComponent{
+                .instance_flags =
+                    std::uint32_t{rayInstanceForceOpaque}});
+
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto output = renderer.readRenderTargetForTesting(
+            "wp367_actual", ImageSubresourceRange{});
+        const auto left_pixel = wp374aPixel(output, 0);
+        const auto right_pixel = wp374aPixel(output, 1);
+        CHECK(left_pixel[2] == wp367SingleRecord);
+        CHECK(right_pixel[2] == wp367SingleRecord);
+        CHECK(left_pixel[3] ==
+              wp367MarkerProof(wp367ShadowRayMarker, wp367SingleGroup));
+        CHECK(right_pixel[3] ==
+              wp374aClosestProof(wp367ShadowRayMarker, wp367SingleGroup));
+        CHECK(left_pixel[3] != right_pixel[3]);
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan WP374a instance-flags fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("WP374a GPU acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE(
+    "WP374a custom index survives q shift while production SBT sentinels stay independent",
+    "[WP374a][WP374][headless][gpu][ray-tracing][rt3-1][custom-index][sbt]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeWp374aRt1bV2Project(temp_dir);
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        auto primitive = GET_MODULE(VertBufContainer).addPrimitiveEntry(
+            wp374aTriangle());
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        const auto model = wp374aModel(
+            37403, "models/tree.glb", 2, primitive);
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto target = placeWp374aChair(instances, model, -2.0f);
+        const auto neighbor = placeWp374aChair(instances, model, 2.0f);
+        constexpr std::uint32_t declared_index = 0x654321u;
+        instances.setRayInstanceDeclaration(
+            target, 374031,
+            RayInstanceComponent{.custom_index = declared_index});
+        instances.setRayInstanceDeclaration(neighbor, 374032, std::nullopt);
+
+        std::vector<RayTracingSbtWriteObservation> writes;
+        const ScopedRayTracingSbtWriteObserver observer{
+            [&](const auto &write) { writes.push_back(write); }};
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto first_q =
+            wp374aRowForAuthor(wp374aActiveRows(), 374031).q;
+        const auto first = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        CHECK(wp374aPixel(first, 0)[1] == declared_index);
+
+        const auto inserted = placeWp374aChair(instances, model, 8.0f);
+        instances.setRayInstanceDeclaration(inserted, 374033, std::nullopt);
+        writes.clear();
+        renderer.render();
+        vkcore.waitIdle();
+        const auto &shifted_rows = wp374aActiveRows();
+        const auto &target_row = wp374aRowForAuthor(shifted_rows, 374031);
+        CHECK(target_row.q != first_q);
+        CHECK(target_row.instance_custom_index == declared_index);
+        const auto shifted = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        const auto target_pixel = wp374aPixel(shifted, 0);
+        CHECK(target_pixel[0] == 0xa0u);
+        CHECK(target_pixel[1] == declared_index);
+        CHECK(target_pixel[2] == 101u);
+
+        REQUIRE(writes.size() == 2);
+        const auto &capabilities = vkcore.getRuntimeCapabilities();
+        REQUIRE(capabilities.shader_group_handle_alignment != 0);
+        const auto data_start =
+            (capabilities.shader_group_handle_size +
+             capabilities.shader_group_handle_alignment - 1u) /
+            capabilities.shader_group_handle_alignment *
+            capabilities.shader_group_handle_alignment;
+        for (const auto &write : writes) {
+            REQUIRE(write.record_index_stride == 2);
+            REQUIRE(write.record_count == 6);
+            REQUIRE(write.hit_bytes.size() ==
+                    static_cast<std::size_t>(write.record_byte_stride) * 6u);
+            for (std::uint32_t q = 0; q < 3; ++q) {
+                for (std::uint32_t r = 0; r < 2; ++r) {
+                    const auto at =
+                        static_cast<std::size_t>(q * 2u + r) *
+                            write.record_byte_stride +
+                        data_start;
+                    std::array<float, 4> tint{};
+                    std::uint32_t flags = 0;
+                    std::memcpy(tint.data(), write.hit_bytes.data() + at,
+                                sizeof(tint));
+                    std::memcpy(&flags,
+                                write.hit_bytes.data() + at + sizeof(tint),
+                                sizeof(flags));
+                    CHECK(flags == 101u);
+                    CHECK(tint[0] == 1.0f);
+                    CHECK(tint[1] == 0.0f);
+                }
+            }
+        }
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan WP374a custom-index fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("WP374a GPU acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE(
+    "WP374a F G F geometry flags rebuild exact resident keys and change any-hit on GPU",
+    "[WP374a][WP374][headless][gpu][ray-tracing][rt3-1][blas-cache][geometry-flags][any-hit][mutation-3][mutation-4]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeWp374aRt2aV2Project(temp_dir, 0);
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        auto primitive = GET_MODULE(VertBufContainer).addPrimitiveEntry(
+            wp374aTriangle());
+        primitive.mesh_index = 0;
+        primitive.primitive_index = 0;
+        const auto model = wp374aModel(
+            37404, "models/wp367_single.glb", 0, primitive);
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto chair = placeWp374aChair(instances, model, -2.0f);
+        instances.setRayInstanceDeclaration(chair, 374041, std::nullopt);
+
+        auto &renderer = GET_MODULE(Renderer);
+        auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+        auto &reload = GET_MODULE(watch::ReloadService);
+        std::uint64_t previous_builds = 0;
+        std::optional<std::uint64_t> allocation;
+        const auto render_generation =
+            [&](std::uint64_t expected_delta,
+                std::uint32_t expected_flags,
+                std::uint32_t expected_proof) {
+                renderer.render();
+                vkcore.waitIdle();
+                const auto diagnostics =
+                    renderer
+                        .rayQueryAccelerationStructureDiagnosticsForTesting();
+                CHECK(diagnostics.blas_build_count ==
+                      previous_builds + expected_delta);
+                previous_builds = diagnostics.blas_build_count;
+                REQUIRE(diagnostics.active_blas_inputs.size() == 1);
+                const auto &resident = diagnostics.active_blas_inputs.front();
+                if (!allocation) {
+                    allocation = resident.geometry_allocation_id;
+                }
+                CHECK(resident.geometry_allocation_id == *allocation);
+                CHECK(resident.geometry_flags == expected_flags);
+                const auto output = renderer.readRenderTargetForTesting(
+                    "wp367_actual", ImageSubresourceRange{});
+                CHECK(wp374aPixel(output, 0)[3] == expected_proof);
+            };
+        const auto f_proof =
+            wp367MarkerProof(wp367ShadowRayMarker, wp367SingleGroup);
+        const auto g_proof =
+            wp374aClosestProof(wp367ShadowRayMarker, wp367SingleGroup);
+
+        render_generation(1, 0, f_proof); // F1
+        render_generation(0, 0, f_proof); // F2
+
+        const auto publish_layout = [&](std::uint32_t flags,
+                                        std::uint64_t sequence) {
+            writeWp374aRt2aV2Project(temp_dir, flags);
+            const auto before = runtime.snapshot();
+            REQUIRE(before != nullptr);
+            REQUIRE(reload.applyRequestForTesting(
+                watch::ReloadRequest{
+                    watch::makeAssetKey("ray_layout.json"),
+                    watch::ReloadKind::modified, {}, sequence}));
+            REQUIRE(runtime.stagedGeneration() != 0);
+            renderer.render();
+            vkcore.waitIdle();
+            REQUIRE(runtime.stagedGeneration() == 0);
+            REQUIRE(runtime.activeGeneration() == before->generation + 1);
+        };
+
+        publish_layout(rayGeometryOpaque, 1);
+        render_generation(1, rayGeometryOpaque, g_proof); // G1
+        render_generation(0, rayGeometryOpaque, g_proof); // G2
+
+        publish_layout(0, 2);
+        render_generation(1, 0, f_proof); // F3
+        render_generation(0, 0, f_proof); // F4
+        std::filesystem::remove_all(temp_dir);
+    } catch (const std::exception &error) {
+        std::filesystem::remove_all(temp_dir);
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan WP374a F-G-F fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("WP374a GPU acceptance is compiler-ON only");
+#endif
+}
+
 } // namespace Pelican

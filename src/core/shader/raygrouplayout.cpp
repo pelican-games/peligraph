@@ -328,7 +328,250 @@ bool selectorMatches(
            selector.source_material_index == row.source_material_index;
 }
 
+[[noreturn]] void rayAsError(std::string_view code,
+                             std::string_view source,
+                             std::string message) {
+    throw std::runtime_error(
+        "pelican." + std::string{code} + "@1: " + std::move(message) +
+        (source.empty() ? std::string{}
+                        : " in '" + std::string{source} + "'"));
+}
+
+std::uint32_t parseRayFlags(const json &encoded, bool geometry,
+                            std::string_view source) {
+    if (!encoded.is_array()) {
+        rayAsError("ray_as_rule_malformed", source,
+                   geometry ? "geometry_flags must be a string array"
+                            : "instance_flags must be a string array");
+    }
+    std::uint32_t result = 0;
+    std::set<std::string> seen;
+    for (const auto &item : encoded) {
+        if (!item.is_string()) {
+            rayAsError("ray_as_rule_malformed", source,
+                       "flag values must be strings");
+        }
+        const auto &name = item.get_ref<const std::string &>();
+        if (!seen.emplace(name).second) {
+            rayAsError("ray_as_rule_malformed", source,
+                       "duplicate flag '" + name + "'");
+        }
+        if (geometry) {
+            if (name == "opaque") {
+                result |= rayGeometryOpaque;
+            } else if (name == "no_duplicate_any_hit_invocation") {
+                result |= rayGeometryNoDuplicateAnyHitInvocation;
+            } else {
+                rayAsError("ray_as_unknown_flag", source,
+                           "unknown geometry flag '" + name + "'");
+            }
+        } else if (name == "triangle_facing_cull_disable") {
+            result |= rayInstanceTriangleFacingCullDisable;
+        } else if (name == "triangle_flip_facing") {
+            result |= rayInstanceTriangleFlipFacing;
+        } else if (name == "force_opaque") {
+            result |= rayInstanceForceOpaque;
+        } else if (name == "force_no_opaque") {
+            result |= rayInstanceForceNoOpaque;
+        } else {
+            rayAsError("ray_as_unknown_flag", source,
+                       "unknown instance flag '" + name + "'");
+        }
+    }
+    if (!geometry && (result & rayInstanceForceOpaque) != 0 &&
+        (result & rayInstanceForceNoOpaque) != 0) {
+        rayAsError("ray_as_conflicting_instance_flags", source,
+                   "force_opaque and force_no_opaque are mutually exclusive");
+    }
+    return result;
+}
+
+std::uint8_t parseRayMask(const json &encoded, std::string_view source) {
+    std::uint64_t value = 0;
+    if (encoded.is_number_unsigned()) {
+        value = encoded.get<std::uint64_t>();
+    } else if (encoded.is_number_integer() &&
+               encoded.get<std::int64_t>() >= 0) {
+        value = static_cast<std::uint64_t>(encoded.get<std::int64_t>());
+    } else {
+        rayAsError("ray_as_rule_malformed", source,
+                   "defaults.mask must be an unsigned integer");
+    }
+    if (value > 0xffu) {
+        rayAsError("ray_as_field_range", source,
+                   "defaults.mask exceeds 8 bits");
+    }
+    return static_cast<std::uint8_t>(value);
+}
+
+RayAccelerationStructureDeclaration parseAccelerationStructure(
+    const json &encoded, std::string_view source) {
+    requireObjectFields(encoded, {"defaults", "rules"},
+                        "acceleration_structure", source);
+    if (!encoded.contains("defaults")) {
+        rayAsError("ray_as_rule_malformed", source,
+                   "acceleration_structure.defaults is required");
+    }
+    const auto &defaults = encoded.at("defaults");
+    requireObjectFields(defaults,
+                        {"mask", "instance_flags", "geometry_flags"},
+                        "acceleration_structure.defaults", source);
+    RayAccelerationStructureDeclaration result;
+    if (const auto mask = defaults.find("mask"); mask != defaults.end()) {
+        result.defaults.mask = parseRayMask(*mask, source);
+    }
+    if (const auto flags = defaults.find("instance_flags");
+        flags != defaults.end()) {
+        result.defaults.instance_flags = parseRayFlags(*flags, false, source);
+    }
+    if (const auto flags = defaults.find("geometry_flags");
+        flags != defaults.end()) {
+        result.defaults.geometry_flags = parseRayFlags(*flags, true, source);
+    }
+    const auto rules = encoded.find("rules");
+    if (rules == encoded.end()) return result;
+    if (!rules->is_array()) {
+        rayAsError("ray_as_rule_malformed", source,
+                   "acceleration_structure.rules must be an array");
+    }
+    std::set<std::string> exact_keys;
+    for (const auto &rule : *rules) {
+        if (!rule.is_object()) {
+            rayAsError("ray_as_rule_malformed", source,
+                       "each AS rule must be an object");
+        }
+        for (auto field = rule.begin(); field != rule.end(); ++field) {
+            if (field.key() != "material" &&
+                field.key() != "geometry_flags") {
+                rayAsError("ray_as_rule_malformed", source,
+                           "AS rule has unknown field '" + field.key() + "'");
+            }
+        }
+        if (!rule.contains("material") ||
+            !rule.contains("geometry_flags") ||
+            !rule.at("material").is_object()) {
+            rayAsError("ray_as_rule_malformed", source,
+                       "AS rule requires material and geometry_flags");
+        }
+        const auto &material = rule.at("material");
+        for (auto field = material.begin(); field != material.end(); ++field) {
+            if (field.key() != "document" &&
+                field.key() != "material_name" &&
+                field.key() != "asset" &&
+                field.key() != "source_material_index") {
+                rayAsError("ray_as_rule_malformed", source,
+                           "AS material selector has unknown field '" +
+                               field.key() + "'");
+            }
+        }
+        const bool has_document = material.contains("document");
+        const bool has_name = material.contains("material_name");
+        const bool has_asset = material.contains("asset");
+        const bool has_index = material.contains("source_material_index");
+        const bool document_shape = has_document && has_name &&
+                                    !has_asset && !has_index;
+        const bool asset_shape = has_asset && has_index &&
+                                 !has_document && !has_name;
+        if (!document_shape && !asset_shape) {
+            rayAsError("ray_as_rule_malformed", source,
+                       "material selector must be exactly document+material_name or asset+source_material_index");
+        }
+        RayAsMaterialSelector selector;
+        if (document_shape) {
+            if (!material.at("document").is_string() ||
+                material.at("document").get_ref<const std::string &>().empty() ||
+                !material.at("material_name").is_string() ||
+                material.at("material_name")
+                    .get_ref<const std::string &>()
+                    .empty()) {
+                rayAsError("ray_as_rule_malformed", source,
+                           "document selector strings must be non-empty");
+            }
+            selector.kind = RayAsMaterialSelector::Kind::document_material;
+            selector.reference = material.at("document").get<std::string>();
+            selector.material_name =
+                material.at("material_name").get<std::string>();
+        } else {
+            if (!material.at("asset").is_string() ||
+                material.at("asset").get_ref<const std::string &>().empty()) {
+                rayAsError("ray_as_rule_malformed", source,
+                           "asset selector reference must be non-empty");
+            }
+            std::uint64_t index = 0;
+            const auto &value = material.at("source_material_index");
+            if (value.is_number_unsigned()) {
+                index = value.get<std::uint64_t>();
+            } else if (value.is_number_integer() &&
+                       value.get<std::int64_t>() >= 0) {
+                index = static_cast<std::uint64_t>(value.get<std::int64_t>());
+            } else {
+                rayAsError("ray_as_rule_malformed", source,
+                           "source_material_index must be uint32");
+            }
+            if (index > std::numeric_limits<std::uint32_t>::max()) {
+                rayAsError("ray_as_rule_malformed", source,
+                           "source_material_index exceeds uint32");
+            }
+            selector.kind = RayAsMaterialSelector::Kind::asset_material;
+            selector.reference = material.at("asset").get<std::string>();
+            selector.source_material_index =
+                static_cast<std::uint32_t>(index);
+        }
+        const auto key = selector.canonicalKey();
+        if (!exact_keys.emplace(key).second) {
+            rayAsError("ray_as_duplicate_rule", source,
+                       "duplicate material selector '" + key + "'");
+        }
+        result.rules.push_back(
+            {.material = std::move(selector),
+             .geometry_flags =
+                 parseRayFlags(rule.at("geometry_flags"), true, source)});
+    }
+    return result;
+}
+
+bool rayAsSelectorMatches(const RayAsMaterialSelector &selector,
+                          const RaySceneRowInput &row) {
+    if (selector.kind ==
+        RayAsMaterialSelector::Kind::document_material) {
+        return selector.reference == row.material_document &&
+               selector.material_name == row.material_name;
+    }
+    return selector.reference == row.material_asset &&
+           selector.source_material_index == row.source_material_index;
+}
+
 } // namespace
+
+std::string RayAsMaterialSelector::canonicalKey() const {
+    if (kind == Kind::document_material) {
+        return "document:" + reference + "#" + material_name;
+    }
+    return "asset:" + reference + "#" +
+           std::to_string(source_material_index);
+}
+
+void RayLayoutRuntimeState::configure(RayLayoutSemanticMode mode) {
+    if (configured_) {
+        validate(mode);
+        return;
+    }
+    configured_ = true;
+    mode_ = mode;
+}
+
+void RayLayoutRuntimeState::validate(RayLayoutSemanticMode mode) const {
+    if (configured_ && mode_ != mode) {
+        throw std::runtime_error(
+            "pelican.ray_layout_mode_change_requires_restart@1: ray layout semantic mode cannot change during a process lifetime");
+    }
+}
+
+RayLayoutSemanticMode rayLayoutSemanticMode(
+    const RayTracingProjectConfig *config) noexcept {
+    return config == nullptr ? RayLayoutSemanticMode::LegacyNoLayout
+                             : config->layout.semantic_mode;
+}
 
 std::uint32_t RayGroupLayout::rayTypeIndex(std::string_view name) const {
     return findIndex(ray_types, name, "ray type");
@@ -363,13 +606,18 @@ RayGroupLayout parseRayGroupLayout(
     requireObjectFields(root,
                         {"schema", "version", "ray_types", "default_group",
                          "groups", "misses", "engine_record", "record",
-                         "portable_profile"},
+                         "portable_profile", "acceleration_structure"},
                         "layout", source_reference);
     if (!root.contains("schema") || root.at("schema") != "pelican.ray_group_layout" ||
         !root.contains("version") || !root.at("version").is_number_integer() ||
-        root.at("version") != 1) {
+        (root.at("version") != 1 && root.at("version") != 2)) {
         layoutError(source_reference,
-                    "schema must be pelican.ray_group_layout version 1");
+                    "schema must be pelican.ray_group_layout version 1 or 2");
+    }
+    const auto version = root.at("version").get<std::uint32_t>();
+    if (version == 1 && root.contains("acceleration_structure")) {
+        rayAsError("ray_as_declaration_requires_layout_v2", source_reference,
+                   "acceleration_structure requires layout version 2");
     }
     for (const auto required : {"ray_types", "default_group", "groups", "misses", "record"}) {
         if (!root.contains(required)) {
@@ -378,7 +626,36 @@ RayGroupLayout parseRayGroupLayout(
     }
     RayGroupLayout result;
     result.source_reference = std::move(source_reference);
-    result.digest_sha256 = picosha2::hash256_hex_string(raw_bytes.begin(), raw_bytes.end());
+    result.version = version;
+    result.semantic_mode = version == 1 ? RayLayoutSemanticMode::LayoutV1Q
+                                        : RayLayoutSemanticMode::LayoutV2;
+    if (version == 1) {
+        // Preserve the exact v1 ABI/digest behavior byte-for-byte.
+        result.digest_sha256 =
+            picosha2::hash256_hex_string(raw_bytes.begin(), raw_bytes.end());
+    } else {
+        // AS declarations are not shader/SBT inputs.  Hashing the layout with
+        // that member removed makes the separation structural.
+        auto sbt_root = root;
+        sbt_root.erase("acceleration_structure");
+        const auto sbt_bytes = sbt_root.dump();
+        result.digest_sha256 = picosha2::hash256_hex_string(
+            sbt_bytes.begin(), sbt_bytes.end());
+        if (const auto acceleration = root.find("acceleration_structure");
+            acceleration != root.end()) {
+            result.acceleration_structure = parseAccelerationStructure(
+                *acceleration, result.source_reference);
+            const auto as_bytes = acceleration->dump();
+            result.acceleration_structure_digest_sha256 =
+                picosha2::hash256_hex_string(as_bytes.begin(),
+                                             as_bytes.end());
+        } else {
+            constexpr std::string_view default_as = "layout-v2-default-as";
+            result.acceleration_structure_digest_sha256 =
+                picosha2::hash256_hex_string(default_as.begin(),
+                                             default_as.end());
+        }
+    }
     if (const auto profile = root.find("portable_profile");
         profile != root.end()) {
         if (!profile->is_string() ||
@@ -889,6 +1166,10 @@ loadRayTracingProjectConfig(
             throw std::runtime_error(
                 "pelican.ray_tracing.bindings_without_layout@1: ray_bindings requires ray_group_layout");
         }
+        if (const auto *runtime =
+                FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
+            runtime->validate(RayLayoutSemanticMode::LegacyNoLayout);
+        }
         return {};
     }
     if (!runtime_shader_compiler_enabled) {
@@ -909,6 +1190,10 @@ loadRayTracingProjectConfig(
         authored_root.at("ray_group_layout").get<std::string>();
     result->layout = parseRayGroupLayout(
         load_document(layout_reference), layout_reference);
+    if (const auto *runtime =
+            FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
+        runtime->validate(result->layout.semantic_mode);
+    }
     if (has_bindings) {
         if (!authored_root.at("ray_bindings").is_string() ||
             authored_root.at("ray_bindings").get_ref<const std::string &>().empty()) {
@@ -927,10 +1212,24 @@ loadRayTracingProjectConfig(
 RaySceneRowSnapshot resolveRaySceneRows(
     std::span<const RaySceneRowInput> inputs,
     const RayGroupLayout &layout, const RayBindings *bindings) {
+    const auto semantic_mode = layout.semantic_mode;
+    const auto as_defaults = layout.acceleration_structure
+                                 ? layout.acceleration_structure->defaults
+                                 : rayAccelerationStructureCanonicalDefaults;
+    const std::span<const RayAsGeometryRule> as_rules =
+        layout.acceleration_structure
+            ? std::span<const RayAsGeometryRule>{
+                  layout.acceleration_structure->rules}
+            : std::span<const RayAsGeometryRule>{};
     std::vector<RaySceneRow> resolved;
     resolved.reserve(inputs.size());
     std::vector<bool> binding_matched(bindings ? bindings->bindings.size() : 0, false);
     for (const auto &input : inputs) {
+        if (semantic_mode != RayLayoutSemanticMode::LayoutV2 &&
+            input.ray_instance) {
+            throw std::runtime_error(
+                "pelican.ray_instance_requires_layout_v2@1: ray_instance is only available with ray_group_layout version 2");
+        }
         const RayMaterialBinding *chosen = nullptr;
         if (bindings != nullptr) {
             for (std::size_t index = 0; index < bindings->bindings.size(); ++index) {
@@ -945,8 +1244,64 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 chosen = &bindings->bindings[index];
             }
         }
+        auto instance_mask = as_defaults.mask;
+        auto instance_flags = as_defaults.instance_flags;
+        auto instance_custom_index = as_defaults.custom_index;
+        auto geometry_flags = as_defaults.geometry_flags;
+        if (semantic_mode == RayLayoutSemanticMode::LayoutV2 &&
+            !as_rules.empty()) {
+            const bool full_document_identity =
+                !input.material_document.empty() &&
+                !input.material_name.empty();
+            const bool full_asset_identity = !input.material_asset.empty();
+            const bool partial_document_identity =
+                input.material_document.empty() != input.material_name.empty();
+            if (partial_document_identity ||
+                (!full_document_identity && !full_asset_identity)) {
+                throw std::runtime_error(
+                    "pelican.ray_as_row_material_identity_unavailable@1: AS rules require a complete document/material_name or asset/source_material_index row identity");
+            }
+            const RayAsGeometryRule *matched = nullptr;
+            for (const auto &rule : as_rules) {
+                if (!rayAsSelectorMatches(rule.material, input)) continue;
+                if (matched != nullptr) {
+                    throw std::runtime_error(
+                        "pelican.ray_as_rule_ambiguous@1: row material identity matches more than one AS rule");
+                }
+                matched = &rule;
+            }
+            if (matched != nullptr) geometry_flags = matched->geometry_flags;
+        }
+        if (semantic_mode == RayLayoutSemanticMode::LayoutV2 &&
+            input.ray_instance) {
+            if (input.ray_instance->mask) {
+                instance_mask = *input.ray_instance->mask;
+            }
+            if (input.ray_instance->instance_flags) {
+                instance_flags = *input.ray_instance->instance_flags;
+            }
+            if (input.ray_instance->custom_index) {
+                if (*input.ray_instance->custom_index > rayCustomIndexMaximum) {
+                    throw std::runtime_error(
+                        "pelican.ray_instance_field_range@1: custom_index exceeds 24 bits");
+                }
+                instance_custom_index =
+                    *input.ray_instance->custom_index;
+            }
+        }
+        if ((instance_flags & rayInstanceForceOpaque) != 0 &&
+            (instance_flags & rayInstanceForceNoOpaque) != 0) {
+            throw std::runtime_error(
+                "pelican.ray_as_conflicting_instance_flags@1: force_opaque and force_no_opaque are mutually exclusive");
+        }
+        if (layout.usesMaterialAlphaProfile() &&
+            (instance_flags & rayInstanceForceOpaque) != 0) {
+            throw std::runtime_error(
+                "pelican.ray_profile_opaque_as@1: portable alpha profile forbids force_opaque AS instance flags");
+        }
         resolved.push_back(
-            {.source_index = input.source_index,
+            {.semantic_mode = semantic_mode,
+             .source_index = input.source_index,
              .group_index = chosen ? chosen->group_index
                                    : layout.groupIndex(layout.default_group),
              .record_data = chosen ? chosen->record_data
@@ -965,6 +1320,11 @@ RaySceneRowSnapshot resolveRaySceneRows(
                   input.resolved_material_lease,
               .geometry_allocation_id =
                   input.geometry_allocation_id,
+              .authoring_object_id = input.authoring_object_id,
+              .instance_mask = instance_mask,
+              .instance_flags = instance_flags,
+              .instance_custom_index = instance_custom_index,
+              .geometry_flags = geometry_flags,
               .alpha_override_mask =
                   input.alpha_override_mask,
               .alpha_override_base_color_factor =
@@ -1013,6 +1373,9 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 "pelican.ray_row_count_limit@1: scene row q exceeds the 24-bit instance SBT offset domain");
         }
         resolved[index].q = static_cast<std::uint32_t>(index);
+        if (semantic_mode == RayLayoutSemanticMode::LayoutV1Q) {
+            resolved[index].instance_custom_index = resolved[index].q;
+        }
         identity << resolved[index].scene_identity << '\0'
                  << resolved[index].geometry_identity << '\0'
                  << resolved[index].geometry_match_identity << '\0'
@@ -1022,6 +1385,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
             identity << static_cast<char>(byte);
     }
     RaySceneRowSnapshot result;
+    result.semantic_mode = semantic_mode;
     const auto encoded = identity.str();
     result.identity_digest_sha256 =
         picosha2::hash256_hex_string(encoded.begin(), encoded.end());

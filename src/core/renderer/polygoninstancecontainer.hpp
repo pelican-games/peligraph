@@ -288,6 +288,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint32_t> animation_generations;
     RendererInternal::ModelInstanceSlots instance_slots;
     std::vector<ModelAssetId> model_asset_ids;
+    std::vector<std::uint64_t> ray_authoring_object_ids;
+    std::vector<std::optional<RayInstanceComponent>>
+        ray_instance_declarations;
     std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
         material_initial_value_tables;
     std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
@@ -353,6 +356,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void rebuildModelInstances(ModelAssetId asset_id, const ModelTemplate &replacement);
     std::vector<RayQueryGeometryInstanceSnapshot>
     rayQueryGeometryInstances() const;
+    void setRayInstanceDeclaration(
+        ModelInstanceId id, std::uint64_t authoring_object_id,
+        std::optional<RayInstanceComponent> declaration);
     std::uint64_t rayQueryGeometryGeneration() const noexcept {
         return ray_query_geometry_generation;
     }

@@ -20,6 +20,7 @@
 #include "../phys/physworld.hpp"
 #endif
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../userpublic/events.hpp"
 #include "../userpublic/gameobjects.hpp"
 #include "pathresolver.hpp"
@@ -44,6 +45,51 @@ namespace Pelican {
 
 void internal::validateResolvedSceneFeatureBindings(
     const ResolvedSceneView &scene) {
+    const auto *ray_layout =
+        FastModuleContainer::tryGet<RayLayoutRuntimeState>();
+    const auto ray_mode = ray_layout != nullptr && ray_layout->configured()
+                              ? ray_layout->mode()
+                              : RayLayoutSemanticMode::LegacyNoLayout;
+    if (ray_mode != RayLayoutSemanticMode::LayoutV2) {
+        bool external_owner = false;
+        if (const auto *components =
+                FastModuleContainer::tryGet<ComponentInfoManager>()) {
+            try {
+                (void)components->getComponentIdByName("ray_instance");
+                external_owner = true;
+            } catch (const std::out_of_range &) {
+            }
+        }
+        if (!external_owner) {
+            for (const auto &object : scene.objects) {
+                if (std::any_of(object.components.begin(),
+                                object.components.end(),
+                                [](const auto &component) {
+                                    return component.name == "ray_instance";
+                                })) {
+                    throw std::runtime_error(
+                        "pelican.ray_instance_requires_layout_v2@1: builtin ray_instance declarations require ray_group_layout version 2");
+                }
+            }
+        }
+    } else {
+        for (const auto &object : scene.objects) {
+            const bool has_ray_instance = std::any_of(
+                object.components.begin(), object.components.end(),
+                [](const auto &component) {
+                    return component.name == "ray_instance";
+                });
+            const bool has_model = std::any_of(
+                object.components.begin(), object.components.end(),
+                [](const auto &component) {
+                    return component.name == "simplemodelview";
+                });
+            if (has_ray_instance && !has_model) {
+                throw std::runtime_error(
+                    "pelican.ray_instance_not_ray_traced@1: ray_instance object has no ray-traceable model component");
+            }
+        }
+    }
 #if !PELICAN_WITH_PHYSICS
     for (const auto &object : scene.objects) {
         if (std::any_of(object.components.begin(), object.components.end(),
@@ -467,6 +513,23 @@ void SceneLoader::load(SceneId scene_id) {
                 }
             }
 #endif
+        }
+    }
+
+    // Publish the stable authoring-to-renderer join before the first model
+    // update system tick. The field is runtime-only and survives model asset
+    // rebuilds because the container stores it per model-instance slot.
+    {
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+        for (std::size_t object_index = 0;
+             object_index < ecs_objects.size(); ++object_index) {
+            const auto object_id = object_ids[object_index];
+            if (object_id == invalidGameObjectId) continue;
+            if (auto *model =
+                    ecs.tryComponent<SimpleModelViewComponent>(object_id)) {
+                model->authoring_object_id =
+                    ecs_objects[object_index].authoring_object_id.value;
+            }
         }
     }
 

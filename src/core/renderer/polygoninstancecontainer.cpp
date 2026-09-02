@@ -492,6 +492,8 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     animation_generations.reserve(instance_capacity);
     instance_slots.reserve(instance_capacity);
     model_asset_ids.reserve(instance_capacity);
+    ray_authoring_object_ids.reserve(instance_capacity);
+    ray_instance_declarations.reserve(instance_capacity);
     material_initial_value_tables.reserve(instance_capacity);
     vrm_semantics.reserve(instance_capacity);
     morph_layouts.reserve(instance_capacity);
@@ -536,6 +538,8 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         previous_animation_revisions.push_back(0);
         animation_generations.push_back(1);
         model_asset_ids.push_back(candidate.asset_id);
+        ray_authoring_object_ids.push_back(0);
+        ray_instance_declarations.emplace_back();
         material_initial_value_tables.push_back(
             std::move(candidate.material_initial_values));
         vrm_semantics.push_back(std::move(candidate.vrm_semantic));
@@ -552,6 +556,8 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         animation_revisions[index] = 0;
         previous_animation_revisions[index] = 0;
         model_asset_ids[index] = candidate.asset_id;
+        ray_authoring_object_ids[index] = 0;
+        ray_instance_declarations[index].reset();
         material_initial_value_tables[index] =
             std::move(candidate.material_initial_values);
         vrm_semantics[index] = std::move(candidate.vrm_semantic);
@@ -583,6 +589,8 @@ void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
     animation_revisions[index] = 0;
     previous_animation_revisions[index] = 0;
     model_asset_ids[index] = {};
+    ray_authoring_object_ids[index] = 0;
+    ray_instance_declarations[index].reset();
     material_initial_value_tables[index].reset();
     vrm_semantics[index].reset();
     if (++animation_generations[index] == 0) ++animation_generations[index];
@@ -1128,6 +1136,10 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
             RayQueryGeometryInstanceSnapshot{
                 .asset_identity =
                     model_asset_ids[instance].value,
+                .authoring_object_id =
+                    ray_authoring_object_ids.at(instance),
+                .ray_instance =
+                    ray_instance_declarations.at(instance),
                 .instance_index =
                     item.stable_identity.instance.index,
                 .instance_generation =
@@ -1177,6 +1189,18 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
             });
     }
     return result;
+}
+
+void PolygonInstanceContainer::setRayInstanceDeclaration(
+    ModelInstanceId id, std::uint64_t authoring_object_id,
+    std::optional<RayInstanceComponent> declaration) {
+    const auto index = requireLive(id, "setRayInstanceDeclaration");
+    if (ray_authoring_object_ids[index] == authoring_object_id &&
+        ray_instance_declarations[index] == declaration) {
+        return;
+    }
+    ray_authoring_object_ids[index] = authoring_object_id;
+    ray_instance_declarations[index] = std::move(declaration);
 }
 
 void PolygonInstanceContainer::rebuildModelInstances(

@@ -16,6 +16,8 @@
 #include "../launchconfig.hpp"
 #include "../xractivation.hpp"
 #include "../loader/pathresolver.hpp"
+#include "../renderingpass/renderingpassconfigloader.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "../watch/reloadgate.hpp"
 #include "../watch/reloadservice.hpp"
 #include "../vkcore/renderer.hpp"
@@ -29,6 +31,30 @@
 #endif
 
 #include <utility>
+
+namespace {
+
+void configureRayLayoutModeBeforeComponentRegistration() {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    constexpr bool runtime_shader_compiler_enabled = true;
+#else
+    constexpr bool runtime_shader_compiler_enabled = false;
+#endif
+    auto &config = Pelican::GET_MODULE(Pelican::ProjectBasicConfig);
+    auto &paths = Pelican::GET_MODULE(Pelican::PathResolver);
+    const auto rendering = Pelican::loadRenderingPassConfigJsonFromString(
+        config.renderingConfigJson(), "ProjectBasicConfig preflight");
+    const auto ray_project = Pelican::loadRayTracingProjectConfig(
+        rendering,
+        [&paths](std::string_view reference) {
+            return paths.loadText(reference);
+        },
+        runtime_shader_compiler_enabled);
+    Pelican::GET_MODULE(Pelican::RayLayoutRuntimeState)
+        .configure(Pelican::rayLayoutSemanticMode(ray_project.get()));
+}
+
+} // namespace
 
 namespace Pelican {
 
@@ -79,6 +105,7 @@ bool PelicanCore::run() {
 #endif
         }
 
+        configureRayLayoutModeBeforeComponentRegistration();
         GET_MODULE(ECSPredefinedRegistration).reg();
         (void)initializeConfiguredGameLogic();
         GET_MODULE(SceneLoader).load(GET_MODULE(ProjectBasicConfig).defaultSceneId());

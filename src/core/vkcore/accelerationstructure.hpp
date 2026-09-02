@@ -26,6 +26,8 @@ struct RayTracingSceneShaderBindingTables;
 // draw-inventory types.
 struct RayQueryGeometryInstanceSnapshot {
     std::uint64_t asset_identity = 0;
+    std::uint64_t authoring_object_id = 0;
+    std::optional<RayInstanceComponent> ray_instance;
     std::uint32_t instance_index = 0;
     std::uint32_t instance_generation = 0;
     std::uint64_t scene_epoch = 0;
@@ -128,6 +130,12 @@ struct RayTracingTlasInstancePlanEntry {
     std::uint32_t q = 0;
     std::uint32_t instance_custom_index = 0;
     std::uint32_t instance_sbt_record_offset = 0;
+    std::uint8_t instance_mask =
+        rayAccelerationStructureCanonicalDefaults.mask;
+    std::uint32_t instance_flags =
+        rayAccelerationStructureCanonicalDefaults.instance_flags;
+    std::uint32_t geometry_flags =
+        rayAccelerationStructureCanonicalDefaults.geometry_flags;
 
     bool operator==(
         const RayTracingTlasInstancePlanEntry &) const = default;
@@ -145,6 +153,7 @@ lowerRayTracingTlasInstancePlan(
 
 struct RayQueryBlasInputDiagnostics {
     std::uint64_t geometry_allocation_id = 0;
+    std::uint32_t geometry_flags = 0;
     std::uint64_t index_device_address = 0;
     std::uint64_t vertex_device_address = 0;
 
@@ -157,6 +166,7 @@ struct RayQueryAccelerationStructureDiagnostics {
     std::uint64_t blas_build_count = 0;
     std::uint64_t tlas_build_count = 0;
     std::size_t active_blas_count = 0;
+    std::size_t blas_variant_count = 0;
     std::size_t tlas_instance_count = 0;
     std::uint64_t geometry_pool_generation = 0;
     std::uint64_t model_rebuild_generation = 0;
