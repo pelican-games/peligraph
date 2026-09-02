@@ -19540,3 +19540,87 @@ WP374 の実装は **ビルド 0 エラー、非 GPU 1208/1208 緑、構成 matr
 transaction や adapter の意味論の変更 / Studio 側の変更。
 
 依存: WP374a(RT3-1 の受け入れ)の後。WP374 の invalidation 分岐が変異対照に入るため。
+
+
+### テスト品質と設計負債の解消計画(2026-09-02。利用者承認済みの順序)
+
+利用者の指示: 「将来の開発で障害になりそうなもの / エンジンの設計思想に反していそうなものを
+解消する。開発時のテスト群の品質も気になる」。Opus 期の判断 10 件を仕分けした結果と、
+テスト群の実測から、次の順序で進める。**各項目は着手時に設計文書か WP を起こす。**
+
+```
+#3 文書修正(済: design_editor_lifecycle v5 追記)
+→ WP374a(RT3-1 の受け入れを本番経路と GPU で)
+→ WP375(単一 executor seam。写経の根本対策)
+→ WP376(ResolvedSceneResolver 直叩き 41 箇所の仕分け)
+→ WP377(override 型 ForTesting seam の棚卸し)
+→ 設計: object identity(#4) / 例外契約(#5)
+→ 担体プログラム(#10) → Studio 汎用 component UI(#9)
+```
+
+#### テスト群の実測(2026-09-02)
+
+| 指標 | 値 |
+|---|---|
+| `TEST_CASE` | 1430 本(ctest 登録 1502) |
+| `.execute` ラムダ注入(本番 executor の写経) | **14 箇所 / 4 ファイル** |
+| `ResolvedSceneResolver` 直叩き | **41 箇所** |
+| 本番組成 `makeEditorRuntimeService` を通すテスト | **golden_harness のみ** |
+| `ForTesting` seam(本番ヘッダ) | 141 個。上位は観測 seam(`readRenderTargetForTesting` 63、`documentForTesting` 19 …)で健全。**危険なのは判定を差し替える override 型だけ** |
+| 誤挙動を固定していた fixture | `custom_index == q` を 6 本が「正」と検査(§3 違反) |
+| 否定対照の不足 | inactive scene 保持契約の対照が 1 例(実投出点は約 65。下表) |
+
+欠陥の種類は **1 つ**に集約される: **受け入れが本番経路を通っていない**。
+WP372b / WP374(×2)で「本番の分岐を消しても全数緑」が実際に起きた。
+
+#### 設計トラックの問題定義(着手時の入力。実測済み)
+
+**object identity(#4)** —— *決定性と「宣言データとして開く」に反する*
+
+- 実行時サブシステムは **`AuthoringObjectId` を一切知らない**:
+  `src/core/light` 0 files / `phys` 0 / `animation` 0(`loader` 11、`renderer` 1)
+- 名前を key にする実行時 map: Light に **6 つ**
+  ([lightcontainer.hpp:32](../src/core/light/lightcontainer.hpp#L32)・:116-122)、
+  `SceneLoader::object_bindings`([scene.hpp:43](../src/core/loader/scene.hpp#L43))、
+  Physics の collider identity、Animation の cache、Camera/Controller の signature
+- 生の名前解決 API が公開されている([scene.hpp:57](../src/core/loader/scene.hpp#L57))ので、
+  「解決者を表で網羅する」は**実装不能**(WP372c 第 2 巡 #5)
+- 論点: 名前を identity から降ろす(`AuthoringObjectId` を実行時へ運ぶ)か、
+  rekey を全 subsystem が実装するか。**WP304(安定 ID)不合格の隣接領域**
+
+**例外契約(#5)** —— *fail-fast と named error に反する*
+
+| 場所 | 型無し `throw std::runtime_error` | 型付き |
+|---|---|---|
+| `components/collider.cpp` | **17** | 0 |
+| `components/spriteview.cpp` | **15** | 0 |
+| `asset/atlasasset.cpp` | **31** | 0 |
+| `loader/componentcodec.cpp` | 2 | 0 |
+
+- resolver の `catch (const std::exception &)` が **`std::logic_error` と `std::bad_alloc` を
+  component error として保持**([resolvedscene.cpp:308](../src/core/loader/resolvedscene.cpp#L308))
+- `EditorProjectionTransaction::commit` が **`noexcept` で全例外を変換**し、下流が
+  `method_unavailable` へ潰す —— **内部 invariant の破れが本番で観測できない**
+- 論点: codec 境界の typed data-error 契約(code + `json_pointer`)、
+  `logic_error`/`bad_alloc` の再送出、平坦化の解除、見える場所(query serialization か terminal)
+
+**担体プログラム(#10)** —— *RT4 / RT5 / RT7 と R5 が同じものを要る*
+
+- `StructFieldType` は `I8…U64 / F32 F64 / Vec2 Vec3 Vec4 Quat / String Bool Enum` の
+  **固定 leaf のみ。可変長は存在しない**
+- `set_component_value` は既存 JSON pointer を `.at()` で要求し、欠落 field も行も作れない
+- authoring object → renderer row の join が無い(`DrawItemSnapshot` に authoring ID 無し)。
+  key は `node_index` と importer variant を含める必要がある(`{asset, mesh, primitive}` は単射でない)
+
+**Studio 汎用 component UI(#9)** —— *「web で開ける ⊆ pelican で開ける」は満たすが、常に一歩遅れる*
+
+- Studio に component を追加・削除する経路は**無い**
+  (`inspectorwidget.cpp:519` の `addComponent` は widget 配置の helper であって RPC ではない)
+- core には `add_component` / `remove_component` op がある。**Studio 側だけの穴**
+- 論点: schema catalog から追加候補を出す汎用 UI(`ray_instance` に限らない)
+
+#### 台帳の負債として固定(動かさない)
+
+- **E2 の前提条件**: destroy が入ると、参照先が消えた unpack の undo が
+  `PrefabObjectRefUnresolved` で落ちる(WP372b v3 差分 8 の撤回の前提が消える)
+- **version gate(#8)の監視**: v1↔v2 の hot reload 拒否がイテレーションを縛ったら改名案へ
