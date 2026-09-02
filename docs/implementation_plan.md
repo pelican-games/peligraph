@@ -20086,3 +20086,13 @@ M1 は **WP374 時点ですり抜けていた変異**(8/8 緑のまま)であり
 - per-geometry × per-instance override(担体プログラム)/ Studio の `ray_instance` UI /
   v1↔v2 hot reload 拒否の運用監視(#8)/ `resident_blas_keys` を frame-plan 投影に載せた件は
   WP354 の baseline を overlay で更新(permitted pointer は増やしていない)
+
+##### 回収で踏んだ罠(追記): device の取得は fixture project の設定の**後**
+
+受け入れ 2 本を GPU 実行体へ移して `TestSupport::requireVulkanDevice` を case 冒頭に置いたところ、
+`Failed to open file: <temp>/passes/main_rendering_config.json` で落ちた。
+`GET_MODULE(VulkanManageCore)` は **Renderer 連鎖を即座に構築し、その時点の project 設定
+(未設定 = 既定 layout)を読む**。CPU 実行体で通っていたのは、device が
+`renderWp374aProductionRows` の中で **project 設定後に遅延取得**されていたから。
+処置: `requireVulkanDevice` を `loadWp374aScene` 内の `configureWp374aRuntime(root)` の直後へ移動。
+SKIP の意味論(device 無しで Catch `SKIP`)は保たれる。
