@@ -108,6 +108,10 @@ ComponentId ComponentInfoManager::getComponentIdByName(
     return found->second;
 }
 
+bool ComponentInfoManager::hasComponent(std::string_view name) const {
+    return name_id_map.contains(std::string{name});
+}
+
 std::vector<std::string> ComponentInfoManager::registrationNames(
     internal::RegistrationOwner owner) const {
     std::vector<std::string> result;

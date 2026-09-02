@@ -1,5 +1,6 @@
 #include "registerer.hpp"
 #include "../ecs/componentinfo.hpp"
+#include "../../../ecs/enginecomponentregistrar.hpp"
 
 #include <algorithm>
 #include <array>
@@ -37,6 +38,11 @@ void enforceComponentRegistrationPolicy(std::string_view name,
 
 } // namespace
 
+std::span<const std::string_view>
+grandfatheredEngineComponentNames() noexcept {
+    return grandfathered_engine_names;
+}
+
 std::string_view componentRegistrationPolicyErrorCodeName(
     ComponentRegistrationPolicyErrorCode code) noexcept {
     switch (code) {
@@ -71,6 +77,24 @@ DECLARE_MODULE(UserComponentRegisterer) {
 };
 
 RegistrationToken UserComponentRegistererTemplatePublic::__registerComponent(
+    ComponentId id, size_t sz, ComponentLoaderInfo loader) {
+    const auto owner = currentRegistrationOwner();
+    if (owner == engineRegistrationOwner) {
+        throw std::logic_error(
+            "component registration requires a host-allocated external owner");
+    }
+    return __registerComponentForOwner(id, sz, std::move(loader), owner);
+}
+
+RegistrationToken
+UserComponentRegistererTemplatePublic::__registerEngineComponent(
+    ComponentId id, size_t sz, ComponentLoaderInfo loader) {
+    return __registerComponentForOwner(
+        id, sz, std::move(loader), engineRegistrationOwner);
+}
+
+RegistrationToken
+UserComponentRegistererTemplatePublic::__registerComponentForOwner(
     ComponentId id, size_t sz, ComponentLoaderInfo loader,
     RegistrationOwner owner) {
     enforceComponentRegistrationPolicy(loader.name, owner);
@@ -92,6 +116,11 @@ RegistrationToken UserComponentRegistererTemplatePublic::__registerComponent(
 
 UserComponentRegistererTemplatePublic &getComponentRegisterer() {
     return GET_MODULE(UserComponentRegisterer).getPublicSub();
+}
+
+EngineComponentRegisterer &getEngineComponentRegisterer() {
+    static EngineComponentRegisterer registerer;
+    return registerer;
 }
 
 void unregisterComponent(RegistrationToken token) {

@@ -1,9 +1,9 @@
 #include "behaviorarena.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "../ecs/core.hpp"
 #include "../log.hpp"
 #include "../userpublic/components/predefined.hpp"
-#include "../userpublic/details/reload/registrationowner.hpp"
 #include "../userpublic/details/system/registerer.hpp"
 #include "../userpublic/gameobjects.hpp"
 

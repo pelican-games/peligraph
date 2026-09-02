@@ -18,6 +18,8 @@ namespace Pelican {
 
 namespace internal {
 
+class EngineComponentRegisterer;
+
 enum class ComponentRegistrationPolicyErrorCode : std::uint8_t {
     builtin_name_unprefixed,
     reserved_component_namespace,
@@ -42,7 +44,9 @@ class PELICAN_API ComponentRegistrationPolicyError final
     const nlohmann::ordered_json &payload() const noexcept { return payload_; }
 };
 
-class PELICAN_API UserComponentRegistererTemplatePublic {
+class UserComponentRegistererTemplatePublic {
+    friend class EngineComponentRegisterer;
+
     struct ComponentLoaderInfo {
         std::string name;
         size_t alignment;
@@ -54,13 +58,16 @@ class PELICAN_API UserComponentRegistererTemplatePublic {
         void (*json_loader)(void *component, JsonArchiveLoader &ar);
     };
 
-    RegistrationToken __registerComponent(ComponentId id, size_t sz,
-                                          ComponentLoaderInfo loader,
-                                          RegistrationOwner owner);
+    PELICAN_API RegistrationToken
+    __registerComponent(ComponentId id, size_t sz, ComponentLoaderInfo loader);
+    RegistrationToken __registerEngineComponent(ComponentId id, size_t sz,
+                                                ComponentLoaderInfo loader);
+    RegistrationToken __registerComponentForOwner(ComponentId id, size_t sz,
+                                                  ComponentLoaderInfo loader,
+                                                  RegistrationOwner owner);
 
     template <class Component>
-    RegistrationToken registerComponentForOwner(std::string name,
-                                                RegistrationOwner owner) {
+    static ComponentLoaderInfo componentLoader(std::string name) {
         static_assert(std::is_default_constructible_v<Component>,
                       "ECS components must be default constructible");
         static_assert(std::is_nothrow_move_constructible_v<Component>,
@@ -72,9 +79,7 @@ class PELICAN_API UserComponentRegistererTemplatePublic {
                           "ECS component deinit() must be noexcept");
         }
 
-        return __registerComponent(
-            ComponentIdByType<Component>::value, sizeof(Component),
-            ComponentLoaderInfo{
+        return ComponentLoaderInfo{
                 .name = name,
                 .alignment = alignof(Component),
                 .construct = [](void *c) { std::construct_at(static_cast<Component *>(c)); },
@@ -109,36 +114,19 @@ class PELICAN_API UserComponentRegistererTemplatePublic {
                     }
                     return nullptr;
                 }(),
-            },
-            owner);
+            };
     }
 
   public:
     template <class Component>
     RegistrationToken registerComponent(std::string name) {
-        const auto owner = currentRegistrationOwner();
-        if (owner == engineRegistrationOwner) {
-            throw std::logic_error(
-                "component registration requires an allocated external owner; "
-                "engine components must use the explicit engine registrar");
-        }
-        return registerComponentForOwner<Component>(std::move(name), owner);
-    }
-
-    template <class Component>
-    RegistrationToken registerEngineComponent(std::string name) {
-        return registerComponentForOwner<Component>(
-            std::move(name), engineRegistrationOwner);
+        return __registerComponent(
+            ComponentIdByType<Component>::value, sizeof(Component),
+            componentLoader<Component>(std::move(name)));
     }
 };
 
 PELICAN_API UserComponentRegistererTemplatePublic &getComponentRegisterer();
-PELICAN_API void unregisterComponent(RegistrationToken token);
-PELICAN_API void unregisterComponents(RegistrationOwner owner) noexcept;
-PELICAN_API std::size_t
-componentRegistrationCount(RegistrationOwner owner) noexcept;
-PELICAN_API std::vector<std::string>
-componentRegistrationNames(RegistrationOwner owner);
 
 } // namespace internal
 

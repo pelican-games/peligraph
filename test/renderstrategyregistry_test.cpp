@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/renderstrategyregistry.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 #include "../src/project/renderpipeline.hpp"

@@ -62,23 +62,23 @@ sequenceDiagram
 
 ### 段階C: `PelicanCore::run()` でruntimeを組み立てる
 
-[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L73) は短いですが、初期化の正規順序を定義しています。
+[`PelicanCore::run()`](../../src/core/userpublic/pelican_core.cpp#L83) は短いですが、初期化の正規順序を定義しています。
 
 1. ローカルな `FastModuleContainer` と `RuntimeTeardownGuard` を生成。
 2. `StartupMetrics` を開始。
 3. **XR activationを決定**: [`resolveXrActivation()`](../../src/core/xractivation.hpp) がheadless/RPC/replay等のforced-offとOpenXR discovery hookから `launch_config.xr_active` を確定。
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
 5. `Persistence`からsettingsを読み、audio設定を適用。
-6. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
+6. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L21) で組み込みComponent/Systemを登録。
 7. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L773) でgame DLLをロード**（WP110系列）。
 8. `ProjectBasicConfig.defaultSceneId()` のsceneを即時ロードし、`ModelAssetContainer` を明示的に先行生成（並列prepareのcommitを起動スレッドで実施）。
 9. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L106) でwatcherのlive inventoryを種付け。
 10. `Loop::run()`へ入る。
 11. loop終了後、Vulkan deviceをidleまで待つ。
-12. [`teardown.run()`](../../src/core/userpublic/pelican_core.cpp#L146) でruntime資源を順序付き解放し、続けて [`shutdownConfiguredGameLogic()`](../../src/core/userpublic/pelican_core.cpp#L147)。
+12. [`teardown.run()`](../../src/core/userpublic/pelican_core.cpp#L65) でruntime資源を順序付き解放し、続けて [`shutdownConfiguredGameLogic()`](../../src/core/userpublic/pelican_core.cpp#L66)。
 13. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-12番はtry-catchの**外**にあります。`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L75)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
+12番はtry-catchの**外**にあります。`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L85)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
 標準例外も非標準例外もここで捕捉され、ログを出して`false`を返します。したがって、playerの終了コードは `pl.run() ? 0 : 1` です。
 
@@ -304,7 +304,7 @@ InputState::clear（replay中はスキップ）
 
 ### headless RPC
 
-RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin, std::cout)`](../../src/core/appflow/loop.cpp#L393) を呼びます。フレーム進行はクライアントの`step_frame`要求が所有します。stdoutはNDJSON protocol（newline-delimited JSON — 1行に1個のJSON値を置く形式。ここでは1行が1リクエストまたは1レスポンスにあたるため、ログを1行でも混ぜると相手のparseが壊れます）専用なので、[`PelicanCore` constructor](../../src/core/userpublic/pelican_core.cpp#L68) がloggerをprotocol対応で初期化します。
+RPCモードでは通常のfor-loopへ入らず、[`runEngineRpcServer(std::cin, std::cout)`](../../src/core/appflow/loop.cpp#L393) を呼びます。フレーム進行はクライアントの`step_frame`要求が所有します。stdoutはNDJSON protocol（newline-delimited JSON — 1行に1個のJSON値を置く形式。ここでは1行が1リクエストまたは1レスポンスにあたるため、ログを1行でも混ぜると相手のparseが壊れます）専用なので、[`PelicanCore` constructor](../../src/core/userpublic/pelican_core.cpp#L78) がloggerをprotocol対応で初期化します。
 
 ### 全経路に共通する `setCurrentFrameIndex()`
 
@@ -353,7 +353,7 @@ void updateFrameState() {
 - **位置が固定**: reload公開の後、`freeze_events` の直前。windowed / headless固定フレーム / RPC `step_frame` の全loop面で同じ位置です。
 - **未設置ならzero-state no-op**: hookが無い場合、moduleを生成せずmodule graphも変えません。
 
-実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L4212) の1箇所だけです。
+実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L4242) の1箇所だけです。
 
 > **設計決定:** 編集の公開点をフレーム境界の1箇所へ寄せることで、「エディタが動いていないビルド／セッションでは編集面が存在しない」状態を保っています。§2.4 のwindowed RPC dispatch（`updateFrameState()` の直後）と合わせて読むと、リクエスト受理→次フレーム冒頭で公開、という往復になります。
 

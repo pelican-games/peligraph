@@ -1,4 +1,5 @@
 #include "animationservice.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "animationjobs.hpp"
 #include "animationprobe.hpp"

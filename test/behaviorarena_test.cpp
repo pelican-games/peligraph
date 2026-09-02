@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/gamelogic/behaviorarena.hpp"

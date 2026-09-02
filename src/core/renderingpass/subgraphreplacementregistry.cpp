@@ -1,4 +1,5 @@
 #include "subgraphreplacementregistry.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "renderingpassjsonhelpers.hpp"
 #include "renderingsamplecount.hpp"

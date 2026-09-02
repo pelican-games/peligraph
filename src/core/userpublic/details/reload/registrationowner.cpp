@@ -1,5 +1,6 @@
-#include "registrationowner.hpp"
+#include "../../../registrationownerhost.hpp"
 
+#include <algorithm>
 #include <limits>
 #include <mutex>
 #include <stdexcept>
@@ -12,6 +13,7 @@ thread_local RegistrationOwner active_owner = engineRegistrationOwner;
 struct OwnerSlot {
     std::uint32_t generation = 0;
     bool active = false;
+    bool release_pending = false;
 };
 
 struct TokenSlot {
@@ -60,6 +62,22 @@ bool ownerIsCurrentLocked(const RegistrationState &value,
     const auto &slot = value.owners[identity - 1];
     return slot.active && slot.generation == generation;
 }
+
+bool ownerHasTokensLocked(const RegistrationState &value,
+                          RegistrationOwner owner) noexcept {
+    return std::ranges::any_of(value.tokens, [owner](const TokenSlot &token) {
+        return token.active && token.owner == owner;
+    });
+}
+
+void retireOwnerLocked(RegistrationState &value,
+                       RegistrationOwner owner) noexcept {
+    const auto identity = registrationOwnerIdentity(owner);
+    auto &slot = value.owners[identity - 1];
+    slot.active = false;
+    slot.release_pending = false;
+    value.free_owners.push_back(identity);
+}
 } // namespace
 
 RegistrationOwner currentRegistrationOwner() noexcept {
@@ -83,29 +101,42 @@ RegistrationOwner allocateRegistrationOwner() noexcept {
     auto &slot = value.owners[identity - 1];
     slot.generation = nextGeneration(slot.generation);
     slot.active = true;
+    slot.release_pending = false;
     return makeOwner(identity, slot.generation);
 }
 
-void releaseRegistrationOwner(RegistrationOwner owner) noexcept {
+RegistrationOwnerReleaseResult
+releaseRegistrationOwner(RegistrationOwner owner) noexcept {
     if (owner == engineRegistrationOwner ||
         registrationOwnerGeneration(owner) == 0) {
-        return;
+        return RegistrationOwnerReleaseResult::unmanaged_owner;
     }
     auto &value = state();
     std::scoped_lock lock{value.mutex};
-    const auto identity = registrationOwnerIdentity(owner);
-    if (!ownerIsCurrentLocked(value, owner)) return;
-    for (const auto &token : value.tokens) {
-        if (token.active && token.owner == owner) return;
+    if (!ownerIsCurrentLocked(value, owner)) {
+        return RegistrationOwnerReleaseResult::stale_owner;
     }
-    value.owners[identity - 1].active = false;
-    value.free_owners.push_back(identity);
+    auto &slot = value.owners[registrationOwnerIdentity(owner) - 1];
+    slot.release_pending = true;
+    if (ownerHasTokensLocked(value, owner)) {
+        return RegistrationOwnerReleaseResult::pending_registrations;
+    }
+    retireOwnerLocked(value, owner);
+    return RegistrationOwnerReleaseResult::released;
 }
 
 bool isRegistrationOwnerCurrent(RegistrationOwner owner) noexcept {
     auto &value = state();
     std::scoped_lock lock{value.mutex};
     return ownerIsCurrentLocked(value, owner);
+}
+
+std::size_t registrationOwnerCount() noexcept {
+    auto &value = state();
+    std::scoped_lock lock{value.mutex};
+    return static_cast<std::size_t>(
+        std::ranges::count_if(value.owners,
+                              [](const OwnerSlot &slot) { return slot.active; }));
 }
 
 RegistrationToken acquireRegistrationToken(RegistrationKind kind,
@@ -116,6 +147,15 @@ RegistrationToken acquireRegistrationToken(RegistrationKind kind,
     if (!ownerIsCurrentLocked(value, owner)) {
         throw std::runtime_error("stale registration owner rejected while registering '" +
                                  std::string{name} + "'");
+    }
+    if (registrationOwnerGeneration(owner) != 0) {
+        const auto &owner_slot =
+            value.owners[registrationOwnerIdentity(owner) - 1];
+        if (owner_slot.release_pending) {
+            throw std::runtime_error(
+                "registration_owner_release_pending@1: registration rejected for '" +
+                std::string{name} + "'");
+        }
     }
 
     std::uint32_t identity = 0;
@@ -150,10 +190,20 @@ bool releaseRegistrationToken(RegistrationToken token,
         slot.kind != kind) {
         return false;
     }
+    const auto owner = slot.owner;
     slot.active = false;
     slot.owner = engineRegistrationOwner;
     slot.name.clear();
     value.free_tokens.push_back(token.identity_);
+    if (registrationOwnerGeneration(owner) != 0 &&
+        ownerIsCurrentLocked(value, owner)) {
+        const auto &owner_slot =
+            value.owners[registrationOwnerIdentity(owner) - 1];
+        if (owner_slot.release_pending &&
+            !ownerHasTokensLocked(value, owner)) {
+            retireOwnerLocked(value, owner);
+        }
+    }
     return true;
 }
 

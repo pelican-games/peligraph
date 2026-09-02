@@ -1,5 +1,6 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "editorruntimefactory.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "editorcommandservice.hpp"
 #include "renderconfigeditor.hpp"
@@ -2276,6 +2277,9 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
             .closure_generation = [runtime] {
                 return runtime->modules.project_config.resolvedScene()
                     .prefabClosure().generation;
+            },
+            .component_exists = [runtime](std::string_view name) {
+                return runtime->modules.component_info.hasComponent(name);
             },
         },
         .preview = EditorPreviewServiceDependencies{

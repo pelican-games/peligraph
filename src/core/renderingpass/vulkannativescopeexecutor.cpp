@@ -1,4 +1,5 @@
 #include "vulkannativescopeexecutor.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "computetask.hpp"
 #include "rendertargetcontainer.hpp"

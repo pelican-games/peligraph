@@ -89,7 +89,7 @@
 
 (例 — 実物のネガティブ検証は `test/fixtures/project_format/invalid/scene_{unknown_parent,ambiguous_parent,parent_cycle}.json`)
 
-> **設計決定(コンポーネント名 = 登録名):** シーン形式が定義するのは「`name` + 任意パラメータのレコード列」まで。コンポーネントの語彙は ECS の登録名(+バインダの特別扱い)で決まり、新コンポーネント追加にシーン形式仕様の改訂は不要。未知の名前は `Unknown component 'X' on object 'Y'` で fail-fast。
+> **設計決定(コンポーネント名 = 登録名):** シーン形式が定義するのは「`name` + 任意パラメータのレコード列」まで。コンポーネントの語彙は ECS の登録名(+バインダの特別扱い)で決まり、新コンポーネント追加にシーン形式仕様の改訂は不要。未知の名前は `component_unknown@1{"name":"X"}` で fail-fast。
 
 > **設計決定(ファイルパス禁止):** コンポーネントのパラメータにファイルパスを直接書くことは禁止。モデルは必ず `asset_data.json` の登録名(`model: "sotai"`)経由で参照する。パス解決規則の適用面を asset_data.json に限定し、シーン検証をエンジン・web・外部ツールで安価にするため。
 
@@ -298,7 +298,7 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 | `scene data schema is not supported; use schema 'pelican.scene' with version 1 ...` | エンベロープ欠落・レガシー形式 |
 | `scene field 'lights' is not supported in v1; use named objects with a 'light' component` | 旧 lights セクション |
 | `scene not found: <id>` | `default_scene_id` / `loadScene` の指定ミス |
-| `Unknown component 'X' on object 'Y'` | コンポーネント名のタイポ |
+| `component_unknown@1{"name":"X"}` | コンポーネント名のタイポ |
 | `duplicate object name 'X' in scene 'Y'` | name 重複 |
 | `Light 'X' requires vec3 field: Y` | ライトの必須フィールド欠落 |
 | `'size' is not supported in v1; use 'half_extents'` | collider の旧キー名 |

@@ -1,4 +1,5 @@
 #include "passimplementationregistry.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "../../project/targetrenderplanning.hpp"
 

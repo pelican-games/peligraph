@@ -203,6 +203,9 @@ struct EditorEditRuntimeDependencies {
     std::function<PrefabRegistrySnapshot()> prefab_registry;
     std::function<BindableProviderSnapshot()> bindable_provider;
     std::function<std::uint64_t()> closure_generation;
+    // The codec catalog describes editability; the production ECS registry
+    // independently describes whether a game-DLL component exists.
+    std::function<bool(std::string_view)> component_exists;
 };
 
 // Production journal validation exposed for corruption controls. A value is

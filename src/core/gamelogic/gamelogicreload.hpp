@@ -1,7 +1,8 @@
 #pragma once
 
 #include "../container.hpp"
-#include "../userpublic/details/reload/registrationowner.hpp"
+#include "../ecs/enginecomponentregistrar.hpp"
+#include "../registrationownerhost.hpp"
 
 #include <atomic>
 #include <cstdint>

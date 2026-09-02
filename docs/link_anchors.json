@@ -926,7 +926,7 @@
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/details/reload/registrationowner.cpp|`nextGeneration()`": "std::uint32_t nextGeneration(std::uint32_t generation) {",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/details/reload/registrationowner.cpp|`ownerIsCurrentLocked()`": "bool ownerIsCurrentLocked(const RegistrationState &value,",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/details/reload/registrationowner.cpp|`registrationTokens()`": "registrationTokens(RegistrationOwner owner, RegistrationKind kind) {",
-    "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/details/reload/registrationowner.cpp|`releaseRegistrationOwner()`": "void releaseRegistrationOwner(RegistrationOwner owner) noexcept {",
+    "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/details/reload/registrationowner.cpp|`releaseRegistrationOwner()`": "releaseRegistrationOwner(RegistrationOwner owner) noexcept {",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/details/reload/registrationowner.hpp|`RegistrationOwner`": "using RegistrationOwner = std::uint64_t;",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/details/reload/registrationowner.hpp|`RegistrationToken::operator bool()`": "constexpr explicit operator bool() const noexcept {",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/userpublic/gameobjects.cpp|`GameObjects::setLocalTransform()`": "bool GameObjects::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) {",

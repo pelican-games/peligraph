@@ -1639,6 +1639,38 @@ if(WIN32)
     target_compile_definitions(
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP379_RAY_INSTANCE_FIXTURE="$<TARGET_FILE:pelican_wp379_ray_instance_fixture>")
+
+    foreach(wp379a_probe IN ITEMS engine_owner owner_allocator)
+        if(wp379a_probe STREQUAL "engine_owner")
+            set(wp379a_source engine_owner_claim.cpp)
+            set(wp379a_diagnostic registerEngineComponent)
+        else()
+            set(wp379a_source owner_allocator_claim.cpp)
+            set(wp379a_diagnostic allocateRegistrationOwner)
+        endif()
+        add_test(
+            NAME wp379a_game_dll_rejects_${wp379a_probe}
+            COMMAND ${CMAKE_COMMAND}
+                -DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/game_dll_boundary_compile_fixture
+                -DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/game_dll_boundary/${wp379a_probe}
+                -DFIXTURE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/ray_namespace_component/${wp379a_source}
+                -DGAME_LOGIC_ENTRY=${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+                -DUSERPUBLIC_INCLUDE=${CMAKE_SOURCE_DIR}/src/core/userpublic
+                -DCORE_INCLUDE=${CMAKE_SOURCE_DIR}/src/core
+                -DNLOHMANN_INCLUDE=${nlohmann_json_SOURCE_DIR}/include
+                -DHOST_IMPORT_LIBRARY=$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>
+                -DCONFIG=$<CONFIG>
+                -DTARGET_NAME=pelican_wp379a_${wp379a_probe}_probe
+                -DEXPECTED_DIAGNOSTIC=${wp379a_diagnostic}
+                -DGENERATOR=${CMAKE_GENERATOR}
+                -DGENERATOR_INSTANCE=${CMAKE_GENERATOR_INSTANCE}
+                -DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
+                -DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}
+                -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/run_game_dll_boundary_compile.cmake)
+        set_tests_properties(wp379a_game_dll_rejects_${wp379a_probe}
+            PROPERTIES LABELS "WP379a;cpu")
+    endforeach()
 endif()
 if(PELICAN_RUNTIME_SHADER_COMPILER)
     target_link_libraries(pelican_test_raytracing_rt1b_test PRIVATE pelican_shaderc)

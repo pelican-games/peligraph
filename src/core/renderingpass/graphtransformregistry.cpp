@@ -1,4 +1,5 @@
 #include "graphtransformregistry.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "renderingsamplecount.hpp"
 #include "rendertargetjsonparser.hpp"

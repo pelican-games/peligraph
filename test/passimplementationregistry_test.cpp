@@ -1,4 +1,5 @@
 #include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/passimplementationregistry.hpp"
 #include "../src/core/vkcore/shaderresolution.hpp"
 #include "../src/project/targetrenderplanning.hpp"

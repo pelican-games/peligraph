@@ -1,9 +1,9 @@
 #include "spriteview.hpp"
 
 #include "../../asset/atlasasset.hpp"
+#include "../../ecs/enginecomponentregistrar.hpp"
 #include "../../loader/resolutionresult.hpp"
 #include "predefined.hpp"
-#include <details/component/registerer.hpp>
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -134,8 +134,8 @@ void SpriteViewComponent::validate() const {
 }
 
 void registerSpriteViewComponent() {
-    internal::getComponentRegisterer()
-        .registerEngineComponent<SpriteViewComponent>("sprite_view");
+    internal::getEngineComponentRegisterer()
+        .registerComponent<SpriteViewComponent>("sprite_view");
 }
 
 } // namespace Pelican

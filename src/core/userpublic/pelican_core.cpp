@@ -1,6 +1,7 @@
 #include "pelican_core.hpp"
 #include "../appflow/loop.hpp"
 #include "../appflow/teardown.hpp"
+#include "../terminalshutdown.hpp"
 #include "../asset/model.hpp"
 #include "../log.hpp"
 #include "../material/projectmaterialasset.hpp"
@@ -57,6 +58,15 @@ void configureRayLayoutModeBeforeComponentRegistration() {
 } // namespace
 
 namespace Pelican {
+
+namespace internal {
+
+void runTerminalShutdown(RuntimeTeardownGuard &teardown) noexcept {
+    teardown.run();
+    shutdownConfiguredGameLogic();
+}
+
+} // namespace internal
 
 PelicanCore::PelicanCore() {
     setupLogger();
@@ -143,8 +153,7 @@ bool PelicanCore::run() {
         LOG_ERROR(logger, "Pelican fatal error: non-standard exception");
         succeeded = false;
     }
-    teardown.run();
-    shutdownConfiguredGameLogic();
+    internal::runTerminalShutdown(teardown);
     return succeeded;
 }
 

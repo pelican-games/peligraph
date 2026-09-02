@@ -1,4 +1,5 @@
 #include "../src/core/container.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/appflow/teardown.hpp"
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/ecs/archetypemigration.hpp"

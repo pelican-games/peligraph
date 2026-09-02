@@ -1,5 +1,7 @@
 #include "../src/core/container.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/ecs/core.hpp"
+#include "../src/core/ecs/enginecomponentregistrar.hpp"
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/userpublic/behavior.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
@@ -174,6 +176,35 @@ TEST_CASE("Registration dependencies reject event and component removal",
     internal::unregisterComponent(component_token);
     internal::releaseRegistrationOwner(owner);
     CHECK_FALSE(internal::isRegistrationOwnerCurrent(owner));
+}
+
+TEST_CASE("WP379a pending owner release completes when its module drops the final token",
+          "[WP379a][registration][owner][lifetime][mutation]") {
+    const auto owner_count_before = internal::registrationOwnerCount();
+    REQUIRE(owner_count_before == 0);
+    internal::RegistrationOwner owner = internal::engineRegistrationOwner;
+    {
+        FastModuleContainer modules;
+        {
+            TestSupport::ScopedTestRegistrationOwner registration_owner;
+            owner = registration_owner.owner();
+            (void)internal::getComponentRegisterer()
+                .registerComponent<TokenComponent>(
+                    "wp379a_pending_owner_component");
+            REQUIRE(internal::componentRegistrationCount(owner) == 1);
+        }
+
+        CHECK(internal::isRegistrationOwnerCurrent(owner));
+        const auto pending = internal::releaseRegistrationOwner(owner);
+        CHECK(pending == internal::RegistrationOwnerReleaseResult::
+                             pending_registrations);
+        CHECK(std::string{
+                  internal::registrationOwnerReleaseResultName(pending)} ==
+              "registration_owner_release_pending@1");
+    }
+
+    CHECK_FALSE(internal::isRegistrationOwnerCurrent(owner));
+    CHECK(internal::registrationOwnerCount() == 0);
 }
 
 TEST_CASE("Registration owner slot reuse rejects a stale generation",

@@ -213,9 +213,17 @@ bool hasComponent(const ObjectLocation &object, std::string_view component_name)
 }
 
 Json canonicalComponent(const Json &component, AuthoringObjectId object_id,
-                        std::string_view component_name) {
+                        std::string_view component_name,
+                        const std::function<bool(std::string_view)> &
+                            component_exists = {}) {
     const auto *codec = findComponentCodec(component_name);
     if (codec == nullptr) {
+        if (component_exists && component_exists(component_name)) {
+            editFailure(EditorEditErrorCode::not_editable,
+                        {{"object", object_id.value},
+                         {"slot", component_name}},
+                        "component has no editable codec");
+        }
         const ComponentUnknownError cause{std::string{component_name}};
         editFailure(EditorEditErrorCode::component_unknown, cause.payload(),
                     cause.what());
@@ -1162,7 +1170,9 @@ PreparedOperation prepareSet(const Json &raw,
 }
 
 PreparedOperation prepareAdd(const Json &raw,
-                             const AuthoringSceneDocument &document) {
+                             const AuthoringSceneDocument &document,
+                             const std::function<bool(std::string_view)> &
+                                 component_exists) {
     constexpr auto context = "add_component";
     requireOnly(raw, {"op", "object_id", "component", "component_index",
                       "attachment_handle", "attachment_seq"}, context);
@@ -1180,7 +1190,8 @@ PreparedOperation prepareAdd(const Json &raw,
     }
     auto canonical = behavior ? canonicalBehaviorComponent(component, object_id)
                               : canonicalComponent(component, object_id,
-                                                   component_name);
+                                                   component_name,
+                                                   component_exists);
     auto component_index = object.authored.at("components").size();
     if (const auto found = raw.find("component_index"); found != raw.end()) {
         component_index = static_cast<std::size_t>(exactUnsigned(
@@ -1340,7 +1351,9 @@ PreparedOperation prepareRemove(const Json &raw,
 }
 
 Json canonicalSpawnObject(const Json &value, std::string_view scene_id,
-                          const AuthoringSceneDocument &document) {
+                          const AuthoringSceneDocument &document,
+                          const std::function<bool(std::string_view)> &
+                              component_exists) {
     auto object = requireObject(value, "spawn object");
     Json result = object;
     const auto name = result.value("name", std::string{});
@@ -1382,14 +1395,17 @@ Json canonicalSpawnObject(const Json &value, std::string_view scene_id,
                         "spawn component names must be unique");
         }
         if (component_name == "behavior") continue;
-        component = canonicalComponent(component, AuthoringObjectId{}, component_name);
+        component = canonicalComponent(component, AuthoringObjectId{},
+                                       component_name, component_exists);
     }
     return result;
 }
 
 PreparedOperation prepareSpawn(const Json &raw,
                                const AuthoringSceneDocument &document,
-                               std::string_view default_scene) {
+                               std::string_view default_scene,
+                               const std::function<bool(std::string_view)> &
+                                   component_exists) {
     constexpr auto context = "spawn";
     requireOnly(raw, {"op", "scene_id", "declaration_index", "object",
                       "new_instance_id"},
@@ -1420,7 +1436,8 @@ PreparedOperation prepareSpawn(const Json &raw,
                         "spawn declaration index is outside the scene");
         }
     }
-    auto object = canonicalSpawnObject(raw.at("object"), scene_id, document);
+    auto object = canonicalSpawnObject(raw.at("object"), scene_id, document,
+                                       component_exists);
     std::optional<std::string> new_instance_id;
     if (object.contains("prefab")) {
         const auto found = raw.find("new_instance_id");
@@ -1645,13 +1662,17 @@ PreparedOperation prepareRpcOperation(const Json &raw,
                                       const AuthoringSceneDocument &document,
                                       const ResolvedScene &resolved,
                                       std::string_view current_scene,
-                                      const PrefabRegistrySnapshot &registry) {
+                                      const PrefabRegistrySnapshot &registry,
+                                      const std::function<bool(std::string_view)> &
+                                          component_exists) {
     requireObject(raw, "edit operation");
     const auto op = requireString(raw, "op", "edit operation");
     if (op == "set_component_value") return prepareSet(raw, document);
-    if (op == "add_component") return prepareAdd(raw, document);
+    if (op == "add_component")
+        return prepareAdd(raw, document, component_exists);
     if (op == "remove_component") return prepareRemove(raw, document);
-    if (op == "spawn") return prepareSpawn(raw, document, current_scene);
+    if (op == "spawn")
+        return prepareSpawn(raw, document, current_scene, component_exists);
     if (op == "destroy") return prepareDestroy(raw, document);
     if (op == "reparent") return prepareReparent(raw, document);
     if (op == "set_prefab_parameter")
@@ -1943,7 +1964,9 @@ PreparedBatch prepareBatch(const Json &raw_operations,
                            PrefabRegistrySnapshot registry = {},
                            BindableProviderSnapshot provider = {},
                            const SceneProjectionState *projection_state =
-                               nullptr) {
+                               nullptr,
+                           const std::function<bool(std::string_view)> &
+                               component_exists = {}) {
     if (!raw_operations.is_array() || raw_operations.empty()) {
         throw std::invalid_argument("edit operations must be a non-empty array");
     }
@@ -1970,8 +1993,8 @@ PreparedBatch prepareBatch(const Json &raw_operations,
     for (const auto &raw : raw_operations) {
         auto prepared = prepareRpcOperation(
             raw, local->projectionDocument(), local->projectionResolvedScene(),
-            current_scene,
-            local->projectionResolvedScene().prefabRegistry());
+            current_scene, local->projectionResolvedScene().prefabRegistry(),
+            component_exists);
         EditorProjectionTransaction transaction{
             *local, local->projectionDocument().revision()};
         std::vector<EditorProjectionAdapter *> adapters;
@@ -3259,6 +3282,9 @@ struct EditorEditCoordinator::Impl {
                    ? dependencies.bindable_provider()
                    : BindableProviderSnapshot{};
     }
+    const std::function<bool(std::string_view)> &componentExists() const {
+        return dependencies.component_exists;
+    }
     std::uint64_t closureGeneration() const {
         return dependencies.closure_generation
                    ? dependencies.closure_generation()
@@ -3725,7 +3751,8 @@ struct EditorEditCoordinator::Impl {
                                               request.accepted_scene_id,
                                               prefabRegistry(),
                                               bindableProvider(),
-                                              projectionState());
+                                              projectionState(),
+                                              componentExists());
                     requireLivePreviewCapability(batch, "open_preview");
                     PreviewLease lease{
                         .ticket = request.ticket,
@@ -3803,7 +3830,8 @@ struct EditorEditCoordinator::Impl {
                                               request.accepted_scene_id,
                                               prefabRegistry(),
                                               bindableProvider(),
-                                              projectionState());
+                                              projectionState(),
+                                              componentExists());
                     requireLivePreviewCapability(batch, "update_preview");
                     auto writes = batchWriteSet(batch);
                     if (!sameStableSet(writes, preview_lease->write_set)) {
@@ -3849,7 +3877,8 @@ struct EditorEditCoordinator::Impl {
                                               document(), preview_lease->scene_id,
                                               prefabRegistry(),
                                               bindableProvider(),
-                                              projectionState());
+                                              projectionState(),
+                                              componentExists());
                     const EditorEditExecutionRequest execution{
                         .base_revision = preview_lease->base_revision,
                         .commands = batch.commands,
@@ -4045,7 +4074,8 @@ struct EditorEditCoordinator::Impl {
                                          ticket.accepted_scene_id,
                                          prefabRegistry(),
                                          bindableProvider(),
-                                         projectionState());
+                                         projectionState(),
+                                         componentExists());
                     const auto writes = batchWriteSet(batch);
                     const auto domains = batchStructuralDomains(batch);
                     requireNoLeaseOverlap(writes, domains);
@@ -4344,7 +4374,8 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
                                         impl_->dependencies.current_scene_id(),
                                         impl_->prefabRegistry(),
                                         impl_->bindableProvider(),
-                                        impl_->projectionState());
+                                        impl_->projectionState(),
+                                        impl_->componentExists());
         const auto writes = batchWriteSet(batch);
         const auto domains = batchStructuralDomains(batch);
         impl_->requireNoLeaseOverlap(writes, domains);
@@ -4586,7 +4617,8 @@ OrderedJson EditorEditCoordinator::openPreview(const Json &params) {
                                   request.accepted_scene_id,
                                   impl_->prefabRegistry(),
                                   impl_->bindableProvider(),
-                                  impl_->projectionState());
+                                  impl_->projectionState(),
+                                  impl_->componentExists());
         requireLivePreviewCapability(batch, method);
         if (!impl_->dependencies.execute_preview) {
             editFailure(EditorEditErrorCode::method_unavailable,
@@ -4658,7 +4690,8 @@ OrderedJson EditorEditCoordinator::updatePreview(const Json &params) {
                                   request.accepted_scene_id,
                                   impl_->prefabRegistry(),
                                   impl_->bindableProvider(),
-                                  impl_->projectionState());
+                                  impl_->projectionState(),
+                                  impl_->componentExists());
         requireLivePreviewCapability(batch, method);
         const auto writes = batchWriteSet(batch);
         if (!sameStableSet(writes, impl_->preview_lease->write_set)) {

@@ -1,4 +1,5 @@
 #include "../src/core/animation/animationservice.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/animation/vrmapplication.hpp"
 #include "../src/core/animation/vrmaretarget.hpp"
 #include "../src/core/container.hpp"

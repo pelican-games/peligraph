@@ -1,4 +1,5 @@
 #include "../src/core/appflow/enginetime.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"

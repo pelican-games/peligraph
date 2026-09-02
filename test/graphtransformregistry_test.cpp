@@ -1,4 +1,5 @@
 #include "../src/core/renderingpass/graphtransformregistry.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/rendertargetjsonparser.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
 

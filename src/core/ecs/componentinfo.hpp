@@ -66,6 +66,7 @@ DECLARE_MODULE(ComponentInfoManager) {
     const ComponentInfo &getFromIndex(size_t index) const;
     const ComponentInfo &get(ComponentId id) const;
     ComponentId getComponentIdByName(const std::string &name) const;
+    bool hasComponent(std::string_view name) const;
     std::vector<std::string>
     registrationNames(internal::RegistrationOwner owner) const;
     void loadByJson(void *ptr, const nlohmann::json &json) const;

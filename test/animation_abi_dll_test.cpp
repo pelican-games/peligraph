@@ -1,7 +1,7 @@
 #include "../src/core/userpublic/animation/abi_v1.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/model/skeletalanimation.hpp"
-#include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "fixtures/animation_abi/fixture_protocol.hpp"
 
 #include <catch2/catch_test_macros.hpp>

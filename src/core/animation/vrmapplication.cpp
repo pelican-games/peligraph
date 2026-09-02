@@ -1,11 +1,11 @@
 #include "vrmapplication.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "animationservice.hpp"
 #include "../container.hpp"
 #include "../log.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../userpublic/animation/pose_staging_v1.hpp"
-#include "../userpublic/details/reload/registrationowner.hpp"
 
 #include <algorithm>
 #include <cmath>

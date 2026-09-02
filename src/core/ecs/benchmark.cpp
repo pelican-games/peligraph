@@ -5,6 +5,7 @@
 #include "../phys/physworld.hpp"
 #endif
 #include "../profiler.hpp"
+#include "../registrationownerhost.hpp"
 
 #include <components/predefined.hpp>
 #include <details/component/registerer.hpp>

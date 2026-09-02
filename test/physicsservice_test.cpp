@@ -1,9 +1,9 @@
 #include "../src/core/container.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physicsruntime.hpp"
 #include "../src/core/phys/physworld.hpp"
-#include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "../src/core/userpublic/physics/abi_v2.hpp"
 
 #include <catch2/catch_approx.hpp>

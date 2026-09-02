@@ -1,4 +1,5 @@
 #include "../src/core/build_features.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorjournal.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"

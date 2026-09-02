@@ -990,8 +990,19 @@ nlohmann::ordered_json resolvePrefabComponentBody(
             context.parameter = binding.parameter;
             context.json_pointer = binding.json_pointer;
             fail(PrefabErrorCode::PrefabBindingNotBindable,
-                 "prefab discriminants are not bindable", context);
+                     "prefab discriminants are not bindable", context);
         }
+    }
+    const bool provider_known = std::ranges::any_of(
+        descriptors, [&](const BindableDescriptor &descriptor) {
+            return descriptor.provider_name == provider_name;
+        });
+    if (!provider_known) {
+        // A prefab only validates binding syntax.  Registration is a runtime
+        // concern, so preserve unknown providers for SceneLoader's common
+        // component_unknown boundary.  Known providers still reject unknown
+        // paths below.
+        return substitutePrefabComponent(component, instance.parameters);
     }
     for (const auto &binding : component.bindings) {
         context.parameter = binding.parameter;

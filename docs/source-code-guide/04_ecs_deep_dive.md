@@ -69,7 +69,7 @@ IDは単なる外部識別子ではありません。ECS内部では、次の二
 - optional JSON `ref(JsonArchiveLoader&)`
 - [`internal::RegistrationOwner owner`](../../src/core/ecs/componentinfo.hpp#L50) と [`internal::RegistrationToken token`](../../src/core/ecs/componentinfo.hpp#L51)（登録解除のための識別、§4.15）
 
-登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L118) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
+登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L122) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
 
 compile時制約は次です。
 
@@ -82,12 +82,12 @@ compile時制約は次です。
 
 ### trivial型と非trivial型のrelocate
 
-登録コードの [`relocate` callback](../../src/core/userpublic/details/component/registerer.hpp#L80) は二分岐します。
+登録コードの [`relocate` callback](../../src/core/userpublic/details/component/registerer.hpp#L85) は二分岐します。
 
 - trivially copyable（自明にcopy可能 — bit列をそのまま複製しても意味が壊れない型。`std::is_trivially_copyable_v`で判定します）: `memcpy`
 - それ以外: destinationへmove constructし、sourceをdestroy
 
-`std::string`や`std::optional`を持つ`SimpleModelViewComponent`も、末尾要素の移動で安全に詰め直せます。テストは [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L208) です。
+`std::string`や`std::optional`を持つ`SimpleModelViewComponent`も、末尾要素の移動で安全に詰め直せます。テストは [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L209) です。
 
 ## 4.3 EntityId: index + generation
 
@@ -126,7 +126,7 @@ id_table[index]
 
 ### free list
 
-[`releaseId()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L348) はlive/refを消し、generationを1増やしてindexを`free_indices`へ積みます。この`free_indices`がfree list（空きリスト — 使い終わった枠を実際に解放せず、空いた番号だけを別の入れ物へ貯めておいて次の確保でそこから取り出す方式）で、再利用はvector末尾からなのでLIFO（last in, first out）です。これにより同じ操作列は同じindex再利用順になります（[`Free-list LIFO test`](../../test/ecs_lifecycle_test.cpp#L450)）。
+[`releaseId()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L348) はlive/refを消し、generationを1増やしてindexを`free_indices`へ積みます。この`free_indices`がfree list（空きリスト — 使い終わった枠を実際に解放せず、空いた番号だけを別の入れ物へ貯めておいて次の確保でそこから取り出す方式）で、再利用はvector末尾からなのでLIFO（last in, first out）です。これにより同じ操作列は同じindex再利用順になります（[`Free-list LIFO test`](../../test/ecs_lifecycle_test.cpp#L451)）。
 
 generationが`UINT32_MAX`に達したindexはwrapさせず、永久retireしてfree listへ戻しません。
 
@@ -225,13 +225,13 @@ Chunkは64 bitのComponent maskを持ちます。Component indexごとに`1ULL <
 >        新設Chunkを erase → id_table/free_indices を copy から復元 → rebuildChunkCaches()
 > ```
 >
-> **手がかり**: `duplicate_check` は重複検出用のsort済みcopyですが、そのまま**archetype keyとして再利用**されます（[検索側](../../src/core/userpublic/details/ecs/coretemplate.cpp#L428)・[登録側](../../src/core/userpublic/details/ecs/coretemplate.cpp#L440)）。名前から用途が読めません。`initialized` が持つのは`EntityId`ではなく `{deinit関数ポインタ, void*}` の生ポインタで、この時点ではまだ末尾要素での穴埋め（§4.7）が一度も起きていない＝アドレスが安定している、という前提に乗っています。テストは [`ecs_lifecycle_test.cpp` 内](../../test/ecs_lifecycle_test.cpp#L325) "Populate and init failures roll back storage IDs and resources" と [同ファイル内](../../test/ecs_lifecycle_test.cpp#L366) "Bulk creation splits chunks and faults atomically"。
+> **手がかり**: `duplicate_check` は重複検出用のsort済みcopyですが、そのまま**archetype keyとして再利用**されます（[検索側](../../src/core/userpublic/details/ecs/coretemplate.cpp#L428)・[登録側](../../src/core/userpublic/details/ecs/coretemplate.cpp#L440)）。名前から用途が読めません。`initialized` が持つのは`EntityId`ではなく `{deinit関数ポインタ, void*}` の生ポインタで、この時点ではまだ末尾要素での穴埋め（§4.7）が一度も起きていない＝アドレスが安定している、という前提に乗っています。テストは [`ecs_lifecycle_test.cpp` 内](../../test/ecs_lifecycle_test.cpp#L326) "Populate and init failures roll back storage IDs and resources" と [同ファイル内](../../test/ecs_lifecycle_test.cpp#L367) "Bulk creation splits chunks and faults atomically"。
 >
 > **不変条件**: `populate`/`init` の実行中、対象entityは `live = false`（公開APIから観測させない）。`allocation.count` は `chunk.allocate()` が成功した後にだけ代入する。`initialized` は成功した分だけを順に積み、巻き戻しは必ず逆順。
 
 ### 構造変更の再入禁止
 
-`init()`内から`createEntity()`を呼ぶと`mutation_active`で`logic_error`になります。中途半端なtransactionへ別transactionを重ねないためです。テストは [`Structural callback reentry`](../../test/ecs_lifecycle_test.cpp#L353) です。
+`init()`内から`createEntity()`を呼ぶと`mutation_active`で`logic_error`になります。中途半端なtransactionへ別transactionを重ねないためです。テストは [`Structural callback reentry`](../../test/ecs_lifecycle_test.cpp#L354) です。
 
 ## 4.6 GameObjects builderのtemplate黒魔術
 
@@ -300,7 +300,7 @@ GameObjects::add()
 > ~VariedArray():  rollbackTail(count) → operator delete  ← deinit しない
 > ```
 >
-> **手がかり**: Chunk側の3関数（[`rollbackTail`](../../src/core/userpublic/details/ecs/chunk.cpp#L189) / [`removeAt`](../../src/core/userpublic/details/ecs/chunk.cpp#L197) / [`clear`](../../src/core/userpublic/details/ecs/chunk.cpp#L205)）はいずれも `indices.rbegin()` から回します。Componentの破棄順をindex降順に固定して、ログや副作用の順序を決定的にするためです。`deinit_one` は `init()`/`deinit()` を持たないComponentでnullになりうるので、毎回nullptrチェックが入ります。テストは [`ecs_lifecycle_test.cpp` 内](../../test/ecs_lifecycle_test.cpp#L260) "Modelview GPU instance deinit covers remove clear and teardown" と [同ファイル内](../../test/ecs_lifecycle_test.cpp#L285) "Aligned non-trivial component observes lifecycle and relocation order"。
+> **手がかり**: Chunk側の3関数（[`rollbackTail`](../../src/core/userpublic/details/ecs/chunk.cpp#L189) / [`removeAt`](../../src/core/userpublic/details/ecs/chunk.cpp#L197) / [`clear`](../../src/core/userpublic/details/ecs/chunk.cpp#L205)）はいずれも `indices.rbegin()` から回します。Componentの破棄順をindex降順に固定して、ログや副作用の順序を決定的にするためです。`deinit_one` は `init()`/`deinit()` を持たないComponentでnullになりうるので、毎回nullptrチェックが入ります。テストは [`ecs_lifecycle_test.cpp` 内](../../test/ecs_lifecycle_test.cpp#L261) "Modelview GPU instance deinit covers remove clear and teardown" と [同ファイル内](../../test/ecs_lifecycle_test.cpp#L286) "Aligned non-trivial component observes lifecycle and relocation order"。
 >
 > **不変条件**: §4.16 の不変条件5（`init()` 成功済みComponentは全経路でちょうど一度だけ `deinit()`）。`rollbackTail` に `deinit` を足す変更はこれを静かに破ります。destroyと `--count` の順序は経路ごとに逆で（`removeAt` / `clear` はdestroy→`--count`、`rollbackTail` は `--count`→destroy）、揃っているのは結果だけです。守るべきは順序そのものではなく「関数を抜けた時点で `count` の範囲に生きたオブジェクトだけが並ぶ」ことで、relocateのdstは必ずdestroy済み＝オブジェクトの居ない領域。
 
@@ -387,7 +387,7 @@ Component packの型が次を同時に表します。
 >     ここで comp_indices を [18, 1] へ並べ替えると、Sprite配列を Transform として読みます
 > ```
 >
-> **手がかり**: [`getRef()`](../../src/core/userpublic/details/ecs/chunk.cpp#L138) はdense indexキーなので**Chunk側の配列順は無関係**で、効いているのは `indices[]` の並びだけです。同じComponentを `const T` と `T` の両方でパックに書くと、readとwriteの両方にindexが入り、§4.12 の `conflictingComponents()` はwriteありとみなします。テストは [`ECS scheduler keeps read read systems parallel`](../../test/ecs_scheduler_test.cpp#L74) "ECS scheduler keeps read read systems parallel"（`ECSSystemGraphNode` を手組みして `writes=false` を直接与え、スケジューラ単体がread-readを並列に残すことを見る）。`const` 宣言から分類を実際に通すのは [`ECS runtime applies auto serialization before worker scheduling`](../../test/ecs_scheduler_test.cpp#L165) / [`ECS runtime strict launch rejects an unordered hazard`](../../test/ecs_scheduler_test.cpp#L187) の `registerSystem<SchedulerReader, const SchedulerProbeComponent>` 側です。
+> **手がかり**: [`getRef()`](../../src/core/userpublic/details/ecs/chunk.cpp#L138) はdense indexキーなので**Chunk側の配列順は無関係**で、効いているのは `indices[]` の並びだけです。同じComponentを `const T` と `T` の両方でパックに書くと、readとwriteの両方にindexが入り、§4.12 の `conflictingComponents()` はwriteありとみなします。テストは [`ECS scheduler keeps read read systems parallel`](../../test/ecs_scheduler_test.cpp#L75) "ECS scheduler keeps read read systems parallel"（`ECSSystemGraphNode` を手組みして `writes=false` を直接与え、スケジューラ単体がread-readを並列に残すことを見る）。`const` 宣言から分類を実際に通すのは [`ECS runtime applies auto serialization before worker scheduling`](../../test/ecs_scheduler_test.cpp#L166) / [`ECS runtime strict launch rejects an unordered hazard`](../../test/ecs_scheduler_test.cpp#L188) の `registerSystem<SchedulerReader, const SchedulerProbeComponent>` 側です。
 >
 > **不変条件**: `component_indices` は**パック順のまま**保持する（sort・unique・安定化のいずれも禁止）。`matching_mask` が `1ULL << idx` なので dense indexは0〜63（§4.4 / §4.16）。
 
@@ -405,7 +405,7 @@ per-chunk型では、required Component列の最大versionが`last_run_tick`未�
 
 batch型では、全matching Chunkのどれかに変更があれば一回だけ全viewを渡します。実行後は全matching Chunkのwrite列を更新します。
 
-`force_update`ならversionに関係なく毎回実行します。現在の組み込みSystemは全て [`registerSystemForce`](../../src/core/ecs/predefined.cpp#L43) で登録されています。
+`force_update`ならversionに関係なく毎回実行します。現在の組み込みSystemは全て [`registerSystemForce`](../../src/core/ecs/predefined.cpp#L42) で登録されています。
 
 ## 4.12 依存グラフと並列実行 ✅実装済み
 
@@ -442,7 +442,7 @@ Level 2: F        ── workerへschedule      ── wait
 > makeExecutionLevels(...)          ← 今度は本番。処理件数 != ノード数 なら循環
 > ```
 >
-> **手がかり**: [`(void)makeExecutionLevels(...)`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L243) は戻り値を捨てる「検証専用の空打ち」で、到達可能性を使う前にグラフの妥当性を確定させています。循環検出は「levelに入らなかった」ではなく `executed_count != nodes.size()` の件数一致で見るので、未実行ノード名を列挙できます。テストは [`ECS scheduler accepts hazards ordered by a transitive dependency`](../../test/ecs_scheduler_test.cpp#L86)（推移的到達可能性）、[`ECS auto serialization uses registration order`](../../test/ecs_scheduler_test.cpp#L112)（左＝小さいidが先）、[`ECS scheduler rejects dependency cycles and names unexecuted nodes`](../../test/ecs_scheduler_test.cpp#L139)（循環と未実行ノード名）。
+> **手がかり**: [`(void)makeExecutionLevels(...)`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L243) は戻り値を捨てる「検証専用の空打ち」で、到達可能性を使う前にグラフの妥当性を確定させています。循環検出は「levelに入らなかった」ではなく `executed_count != nodes.size()` の件数一致で見るので、未実行ノード名を列挙できます。テストは [`ECS scheduler accepts hazards ordered by a transitive dependency`](../../test/ecs_scheduler_test.cpp#L87)（推移的到達可能性）、[`ECS auto serialization uses registration order`](../../test/ecs_scheduler_test.cpp#L113)（左＝小さいidが先）、[`ECS scheduler rejects dependency cycles and names unexecuted nodes`](../../test/ecs_scheduler_test.cpp#L140)（循環と未実行ノード名）。
 >
 > **不変条件**: 自動直列化の向きは常に「登録IDの小さい方が先」（移行互換のための仕様であって実装都合ではありません）。level内の順序とエラー文言中の名前順は決定的に保つ（sorted containerを維持する）。計画キャッシュは `execution_plan_dirty` とpolicy変化でのみ再構築し、Chunkの増減では再構築しない。
 
@@ -503,7 +503,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ### 組み込みSystemの依存
 
-現在の組み込み登録はほぼ全順序まで強化されています（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L42)）。
+現在の組み込み登録はほぼ全順序まで強化されています（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L41)）。
 
 | System | 依存 |
 |---|---|
@@ -520,7 +520,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ## 4.13 組み込みSystem
 
-[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) が登録します。
+[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L21) が登録します。
 
 | System | Query | 処理 |
 |---|---|---|
@@ -562,7 +562,7 @@ behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` �
 
 ## 4.15 ユーザー独自Componentの現在地
 
-`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。実際の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L22)、benchmark、lifecycle testです。
+`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。実際の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L21)、benchmark、lifecycle testです。
 
 なお、game System/Eventの登録はDLL化後、[`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位でreload時に`unregisterGameSystems(owner)`されるようになりましたが、Componentを**登録する**側は依然としてengine側のみです。
 
@@ -576,7 +576,7 @@ void unregisterComponents(RegistrationOwner owner) noexcept;
 std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 ```
 
-これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L118) の戻り値が `void` → `RegistrationToken` になりました。
+これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L122) の戻り値が `void` → `RegistrationToken` になりました。
 
 解除は無条件ではありません。[`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L69) は、そのComponentへ依存するECS Systemが残っていると拒否します。
 
@@ -586,7 +586,7 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 
 依存の逆参照テーブルは§4.10のSystem登録時に作られたものです。テストは [`test/registration_lifetime_test.cpp`](../../test/registration_lifetime_test.cpp) です。
 
-> 🧩 **難所 — generation 0 を跨がない台帳**([`nextGeneration()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L40) / [`ownerIsCurrentLocked()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L50) / [`releaseRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L89))
+> 🧩 **難所 — generation 0 を跨がない台帳**([`nextGeneration()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L42) / [`ownerIsCurrentLocked()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L52) / [`releaseRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L109))
 >
 > **何をする所か**: System / Component / Event / Behaviorの登録をDLLリロード単位で追跡する台帳で、`RegistrationOwner`（identity + generationの64bit）と `RegistrationToken` を発行・失効させます。
 >
@@ -601,7 +601,7 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 > releaseOwner: 生きた token が残っている限り no-op
 > ```
 >
-> **手がかり**: `releaseRegistrationToken()` が `kind` まで照合するのは、identity再利用後に「Systemのtokenでcomponentを消す」誤爆を防ぐためです。戻り値 `bool` を捨てる呼び出し（`(void)internal::releaseRegistrationToken(...)`）は「既に失効していても正常」の意味。[`registrationTokens()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L161) が末尾から前へ走査するのは、purge側が逆順に消すことを期待しているからです。テストは [`Registration tokens drive deterministic owner purge`](../../test/registration_lifetime_test.cpp#L74) "Registration tokens drive deterministic owner purge" と [`Registration owner slot reuse rejects a stale generation`](../../test/registration_lifetime_test.cpp#L179) "Registration owner slot reuse rejects a stale generation"。
+> **手がかり**: `releaseRegistrationToken()` が `kind` まで照合するのは、identity再利用後に「Systemのtokenでcomponentを消す」誤爆を防ぐためです。戻り値 `bool` を捨てる呼び出し（`(void)internal::releaseRegistrationToken(...)`）は「既に失効していても正常」の意味。[`registrationTokens()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L211) が末尾から前へ走査するのは、purge側が逆順に消すことを期待しているからです。テストは [`Registration tokens drive deterministic owner purge`](../../test/registration_lifetime_test.cpp#L76) "Registration tokens drive deterministic owner purge" と [`Registration owner slot reuse rejects a stale generation`](../../test/registration_lifetime_test.cpp#L210) "Registration owner slot reuse rejects a stale generation"。
 >
 > **不変条件**: generationは0を跨がない（identity 0 と generation 0 は「無効」に予約）。台帳のstaticは解放しない。owner解放は「そのownerのtokenが0件」になってから。
 
@@ -642,7 +642,7 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 
 「ID >= 64」は§4.4のmask制約と同じ根拠です。
 
-主要な実行可能仕様は [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L192) に集中しています。ECS改修時はこのファイルを先に読むのが最短です。
+主要な実行可能仕様は [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L193) に集中しています。ECS改修時はこのファイルを先に読むのが最短です。
 
 ## 4.17 Archetype移行transaction（ECS-MUT0） ✅実装済み
 
@@ -675,7 +675,7 @@ entityの生成/破棄も同じ形です。[`ECSEntityMutation::prepareCreate()`
 > 旧Chunk [ A  D  C ]         新Chunk [ B ]
 > ```
 >
-> **手がかり**: `rollbackPublished()` 冒頭の `assert(published_target_chunk_index + 1 == core->chunks_storage.size())` が本質で、**このtokenは `chunks_storage` の末尾を占有し続けている**前提で撤収します（割り込みの構造変更は `MutationScope` が禁止しています）。rollbackはadapterへ**逆kindの `publish()`** を渡します（`rollback()` ではありません）。既に公開済みのものを打ち消す＝逆向きの公開、という設計です。[`publishDestroy()`](../../src/core/ecs/archetypemigration.cpp#L759) は `releaseId()` と同じ規則（generationが `UINT32_MAX` ならretire）を**手で書き直している**ので、`releaseId()` を変えるならここも変えます。テストは [`ecs_migration_test.cpp` 内](../../test/ecs_migration_test.cpp#L432) と [逆向きtokenの解放](../../test/ecs_migration_test.cpp#L483)。
+> **手がかり**: `rollbackPublished()` 冒頭の `assert(published_target_chunk_index + 1 == core->chunks_storage.size())` が本質で、**このtokenは `chunks_storage` の末尾を占有し続けている**前提で撤収します（割り込みの構造変更は `MutationScope` が禁止しています）。rollbackはadapterへ**逆kindの `publish()`** を渡します（`rollback()` ではありません）。既に公開済みのものを打ち消す＝逆向きの公開、という設計です。[`publishDestroy()`](../../src/core/ecs/archetypemigration.cpp#L759) は `releaseId()` と同じ規則（generationが `UINT32_MAX` ならretire）を**手で書き直している**ので、`releaseId()` を変えるならここも変えます。テストは [`ecs_migration_test.cpp` 内](../../test/ecs_migration_test.cpp#L433) と [逆向きtokenの解放](../../test/ecs_migration_test.cpp#L484)。
 >
 > **不変条件**: `publish()` / `rollbackPublished()` / `finishPublished()` は全て `noexcept`（この中にthrowしうる操作を新たに書かない）。relocateのdstは必ずdestroy済み。ただしcountの増減はrelocate回数と一対一ではなく、`publish()` は1配列あたり最大2回relocateして `--source_array.count` の1件だけ（target側はprepareの `allocate(..., 1)` のまま触らない）、`rollbackPublished()` は2回のrelocateに対し `++source_array.count` と `--target_array.count` の2件です。公開後のtokenは `chunks_storage` の末尾を所有するので、publishとrollbackの間に他の構造変更を挟まない。rollback後は `component_versions` まで元の値へ戻す（変更検知に痕跡を残さない）。
 
@@ -703,7 +703,7 @@ entityの生成/破棄も同じ形です。[`ECSEntityMutation::prepareCreate()`
 > publish(): 押さえた器へ入れるだけ。確保しない = 失敗しない
 > ```
 >
-> **手がかり**: `state->mutation` は `MutationScope` を **prepareからpublish/finish（またはrollback）まで握りっぱなし**なので、prepared tokenを持っている間ECSの構造変更は全て `logic_error` になります（前の難所の「末尾を占有し続ける」前提はこれで成立します）。[`discardPrepared()`](../../src/core/ecs/archetypemigration.cpp#L73) はadapterを**逆順**にrollbackし、`state->adapters.push_back(adapter)` を `adapter->prepare()` の**前**に置いているのは、上の「throwしたprepare自身にもrollbackが来る」規約を満たすためです。順序を入れ替えると規約が破れます。tokenのデストラクタは `rollback()` を呼ぶので、`finish()` を忘れたtokenは自動で巻き戻ります。テストは [`ecs_migration_test.cpp` 内](../../test/ecs_migration_test.cpp#L216) / [adapter失敗の巻き戻し](../../test/ecs_migration_test.cpp#L262) / [cacheとversionの復元](../../test/ecs_migration_test.cpp#L391)。
+> **手がかり**: `state->mutation` は `MutationScope` を **prepareからpublish/finish（またはrollback）まで握りっぱなし**なので、prepared tokenを持っている間ECSの構造変更は全て `logic_error` になります（前の難所の「末尾を占有し続ける」前提はこれで成立します）。[`discardPrepared()`](../../src/core/ecs/archetypemigration.cpp#L73) はadapterを**逆順**にrollbackし、`state->adapters.push_back(adapter)` を `adapter->prepare()` の**前**に置いているのは、上の「throwしたprepare自身にもrollbackが来る」規約を満たすためです。順序を入れ替えると規約が破れます。tokenのデストラクタは `rollback()` を呼ぶので、`finish()` を忘れたtokenは自動で巻き戻ります。テストは [`ecs_migration_test.cpp` 内](../../test/ecs_migration_test.cpp#L217) / [adapter失敗の巻き戻し](../../test/ecs_migration_test.cpp#L263) / [cacheとversionの復元](../../test/ecs_migration_test.cpp#L392)。
 >
 > **不変条件**: publish経路に「確保しうる操作」を足さない（足すならprepare側に対応するreserveを足す）。`try_emplace` で自分が挿入したarchetype keyだけを、空のときだけ消す。adapterは「登録してからprepareを呼ぶ」、rollbackは必ず逆順。
 

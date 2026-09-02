@@ -2,13 +2,16 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include "../src/core/container.hpp"
+#include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
+#include "../src/core/ecs/enginecomponentregistrar.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
@@ -143,16 +146,18 @@ TEST_CASE("WP379 component namespace policy is table driven at the registration 
           "[WP379][component][namespace][policy][cpu][mutation]") {
     setupLogger();
     FastModuleContainer modules;
-    auto &registerer = internal::getComponentRegisterer();
+    auto &engine_registerer = internal::getEngineComponentRegisterer();
 
     constexpr std::array<std::string_view, 7> grandfathered{
         "eid",          "transform", "localtransform", "simplemodelview",
         "camera",       "animation", "sprite_view",
     };
+    CHECK(std::ranges::equal(internal::grandfatheredEngineComponentNames(),
+                             grandfathered));
     for (const auto name : grandfathered) {
         DYNAMIC_SECTION("engine grandfathered name " << name) {
             const auto token =
-                registerer.registerEngineComponent<Wp379PolicyProbeComponent>(
+                engine_registerer.registerComponent<Wp379PolicyProbeComponent>(
                     std::string{name});
             REQUIRE(static_cast<bool>(token));
             internal::unregisterComponent(token);
@@ -163,9 +168,8 @@ TEST_CASE("WP379 component namespace policy is table driven at the registration 
         DYNAMIC_SECTION("engine unprefixed rejection " << name) {
             requirePolicyError(
                 [&] {
-                    return registerer
-                        .registerEngineComponent<Wp379PolicyProbeComponent>(
-                            name);
+                    return engine_registerer
+                        .registerComponent<Wp379PolicyProbeComponent>(name);
                 },
                 internal::ComponentRegistrationPolicyErrorCode::
                     builtin_name_unprefixed,
@@ -174,6 +178,7 @@ TEST_CASE("WP379 component namespace policy is table driven at the registration 
     }
 
     TestSupport::ScopedTestRegistrationOwner external_owner;
+    auto &registerer = internal::getComponentRegisterer();
     for (const auto name :
          {"pelican_foo", "pelican_ray_instance", "pelican_future"}) {
         DYNAMIC_SECTION("external reserved rejection " << name) {
@@ -269,8 +274,71 @@ TEST_CASE("WP379 scope-less component registration cannot acquire engine ownersh
     CHECK_THROWS_WITH(
         internal::getComponentRegisterer()
             .registerComponent<Wp379PolicyProbeComponent>("eid"),
-        ContainsSubstring("allocated external owner") &&
-            ContainsSubstring("explicit engine registrar"));
+        ContainsSubstring("host-allocated external owner"));
+}
+
+void configureUnknownBindingPrefabProject(const TemporaryProject &project) {
+    const Json transform{{"name", "transform"},
+                         {"pos", {0.0, 0.0, 0.0}},
+                         {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                         {"scale", {1.0, 1.0, 1.0}}};
+    project.write(
+        "unknown.prefab.json",
+        Json{{"schema", "pelican.prefab"},
+             {"version", 1},
+             {"name", "unknown_binding"},
+             {"parameters",
+              Json::array({{{"name", "marker"},
+                            {"type", "i32"},
+                            {"default", 379}}})},
+             {"components",
+              Json::array({{{"name", "wp379a_missing_component"},
+                            {"marker", {{"$param", "marker"}}}}})}}
+            .dump(2));
+    project.write(
+        "scene.json",
+        Json{{"schema", "pelican.scene"},
+             {"version", 2},
+             {"scenes",
+              {{"main",
+                {{"objects",
+                  Json::array(
+                      {{{"name", "BoundUnknown"},
+                        {"components", Json::array({transform})},
+                        {"prefab",
+                         {{"ref", "unknown_binding"},
+                          {"instance_id", "wp379a_unknown"}}}}})}}}}}}
+            .dump(2));
+    project.write(
+        "assets.json",
+        Json{{"schema", "pelican.asset_data"},
+             {"version", 1},
+             {"models", Json::array()},
+             {"textures", Json::array()}}
+            .dump(2));
+    project.write(
+        "rendering.json",
+        Json{{"rendering_passes", Json::array()}}.dump(2));
+
+    GET_MODULE(PathResolver).setup(project.root, false);
+    GET_MODULE(ProjectSource).setProjectData(
+        Json{{"schema", "pelican.project"},
+             {"version", 1},
+             {"name", "wp379a-prefab"},
+             {"engine_min_version", "0.1.0"},
+             {"prefabs",
+              Json::array({{{"name", "unknown_binding"},
+                            {"path", "unknown.prefab.json"}}})},
+             {"basic_config",
+              {{"window_size", {{"width", 32}, {"height", 32}}},
+               {"scene_data_json", "scene.json"},
+               {"asset_data_json", "assets.json"},
+               {"default_scene_id", "main"},
+               {"rendering_config_json", "rendering.json"}}}}
+            .dump());
+    GET_MODULE(RayLayoutRuntimeState)
+        .configure(RayLayoutSemanticMode::LegacyNoLayout);
+    GET_MODULE(ECSPredefinedRegistration).reg();
 }
 
 TEST_CASE("WP379 no-layout SceneLoader treats the old name as an unknown component",
@@ -288,6 +356,64 @@ TEST_CASE("WP379 no-layout SceneLoader treats the old name as an unknown compone
         CHECK(error.payload() == OrderedJson{{"name", "ray_instance"}});
         CHECK(std::string{error.what()} ==
               "component_unknown@1{\"name\":\"ray_instance\"}");
+    }
+}
+
+TEST_CASE("WP379a unknown bound prefab providers reach the common component registry cause",
+          "[WP379a][component][prefab][snapshot][cpu][mutation]") {
+    setupLogger();
+    TemporaryProject project;
+    FastModuleContainer modules;
+    configureUnknownBindingPrefabProject(project);
+    auto &config = GET_MODULE(ProjectBasicConfig);
+
+    // Prefab validation is syntactic for an unknown provider.  Resolution
+    // keeps the substituted component so SceneLoader owns registration truth.
+    CHECK_NOTHROW(config.sceneProjectionState());
+    try {
+        test_support::loadScene(GET_MODULE(SceneLoader), "main");
+        FAIL("bound unknown prefab component unexpectedly loaded");
+    } catch (const ComponentUnknownError &error) {
+        CHECK(std::string{error.code()} == "component_unknown@1");
+        CHECK(error.payload() ==
+              OrderedJson{{"name", "wp379a_missing_component"}});
+    }
+
+    EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & {
+            return config.sceneDocument();
+        },
+        .resolved_scene = [&]() -> const ResolvedScene & {
+            return config.resolvedScene();
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .import_scene_snapshot_versioned =
+            [&](std::string_view bytes, std::string_view current_scene,
+                std::uint64_t version) {
+                return config.importSceneDocument(
+                    bytes,
+                    [&](SceneLoadRequest &&request) {
+                        request.scene_id = std::string{current_scene};
+                        return GET_MODULE(SceneLoader)
+                            .load(std::move(request));
+                    },
+                    version);
+            },
+    }};
+    const auto exported =
+        service.exportSceneSnapshotV2(ExportSceneSnapshotRequestV2{});
+    try {
+        (void)service.importSceneSnapshotV2(ImportSceneSnapshotRequestV2{
+            .semantic_scene_bytes = exported.semantic_scene_bytes,
+            .digest = exported.digest,
+            .current_scene_id = exported.current_scene_id,
+            .prefab_closure = exported.prefab_closure,
+        });
+        FAIL("SnapshotV2 bound unknown component unexpectedly imported");
+    } catch (const EditorCommandError &error) {
+        CHECK(error.code() == EditorCommandErrorCode::SnapshotInvalid);
+        CHECK(error.detail() == std::optional<std::string>{
+                                    "component_unknown@1{\"name\":\"wp379a_missing_component\"}"});
     }
 }
 

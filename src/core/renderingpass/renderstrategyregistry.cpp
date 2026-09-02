@@ -1,4 +1,5 @@
 #include "renderstrategyregistry.hpp"
+#include "../registrationownerhost.hpp"
 
 #include "../../project/logicalrendertype.hpp"
 

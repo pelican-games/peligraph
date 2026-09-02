@@ -1,4 +1,5 @@
 #include "renderpolicyregistry.hpp"
+#include "../registrationownerhost.hpp"
 
 #include <algorithm>
 #include <bit>

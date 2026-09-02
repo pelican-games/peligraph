@@ -269,25 +269,59 @@ TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
           Json::array({"force_no_opaque"}));
     CHECK(canonical["custom_index"] == 0x654321);
 
-    CHECK_THROWS_WITH(
-        decodeRayCodecOrThrow(
-            codec, {{"name", "pelican_ray_instance"}}),
-        ContainsSubstring("pelican.ray_instance_empty@1"));
-    CHECK_THROWS_WITH(
-        decodeRayCodecOrThrow(codec,
-            {{"name", "pelican_ray_instance"}, {"future", 1}}),
-        ContainsSubstring("pelican.ray_instance_unknown_field@1"));
-    CHECK_THROWS_WITH(
-        decodeRayCodecOrThrow(codec,
-            {{"name", "pelican_ray_instance"}, {"mask", "all"}}),
-        ContainsSubstring("pelican.ray_instance_field_type@1"));
-    CHECK_THROWS_WITH(
-        decodeRayCodecOrThrow(codec,
-            {{"name", "pelican_ray_instance"}, {"mask", 256}}),
-        ContainsSubstring("pelican.ray_instance_field_range@1"));
+    struct InvalidRow {
+        std::string_view branch;
+        Json authored;
+        std::string_view code;
+    };
+    const std::array<InvalidRow, 11> invalid_corpus{{
+        {"root type", Json::array(), "pelican.ray_instance_field_type@1"},
+        {"name", Json{{"mask", 1}},
+         "pelican.ray_instance_field_type@1"},
+        {"unknown field",
+         Json{{"name", "pelican_ray_instance"}, {"future", 1}},
+         "pelican.ray_instance_unknown_field@1"},
+        {"empty", Json{{"name", "pelican_ray_instance"}},
+         "pelican.ray_instance_empty@1"},
+        {"unsigned type",
+         Json{{"name", "pelican_ray_instance"}, {"mask", "all"}},
+         "pelican.ray_instance_field_type@1"},
+        {"unsigned range",
+         Json{{"name", "pelican_ray_instance"}, {"mask", 256}},
+         "pelican.ray_instance_field_range@1"},
+        {"flags container",
+         Json{{"name", "pelican_ray_instance"},
+              {"instance_flags", "force_opaque"}},
+         "pelican.ray_instance_field_type@1"},
+        {"flags entry",
+         Json{{"name", "pelican_ray_instance"},
+              {"instance_flags", Json::array({1})}},
+         "pelican.ray_instance_field_type@1"},
+        {"flags duplicate",
+         Json{{"name", "pelican_ray_instance"},
+              {"instance_flags",
+               Json::array({"force_opaque", "force_opaque"})}},
+         "pelican.ray_instance_field_type@1"},
+        {"flags unknown",
+         Json{{"name", "pelican_ray_instance"},
+              {"instance_flags", Json::array({"future"})}},
+         "pelican.ray_as_unknown_flag@1"},
+        {"flags conflict",
+         Json{{"name", "pelican_ray_instance"},
+              {"instance_flags",
+               Json::array({"force_opaque", "force_no_opaque"})}},
+         "pelican.ray_as_conflicting_instance_flags@1"},
+    }};
+    for (const auto &row : invalid_corpus) {
+        DYNAMIC_SECTION(row.branch) {
+            REQUIRE_THROWS_WITH(
+                decodeRayCodecOrThrow(codec, row.authored),
+                ContainsSubstring(std::string{row.code}));
+        }
+    }
     CHECK_THROWS_WITH(
         decodeRayCodecOrThrow(codec, {{"name", "pelican_ray_instance"},
-                              {"custom_index", 0x1000000}}),
+                                      {"custom_index", 0x1000000}}),
         ContainsSubstring("pelican.ray_instance_field_range@1"));
     CHECK_THROWS_WITH(
         mode.configure(RayLayoutSemanticMode::LayoutV1Q),

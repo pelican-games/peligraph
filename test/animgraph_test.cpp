@@ -1,8 +1,8 @@
 #include "../src/core/userpublic/animation/animgraph.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/model/modeltemplate.hpp"
 #include "../src/core/model/skeletalanimation.hpp"
-#include "../src/core/userpublic/details/reload/registrationowner.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>

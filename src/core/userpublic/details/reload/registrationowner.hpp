@@ -63,50 +63,5 @@ class RegistrationToken {
 };
 
 PELICAN_API RegistrationOwner currentRegistrationOwner() noexcept;
-PELICAN_API RegistrationOwner allocateRegistrationOwner() noexcept;
-PELICAN_API void releaseRegistrationOwner(RegistrationOwner owner) noexcept;
-PELICAN_API bool isRegistrationOwnerCurrent(RegistrationOwner owner) noexcept;
-constexpr std::uint32_t registrationOwnerIdentity(RegistrationOwner owner) noexcept {
-    return static_cast<std::uint32_t>(owner);
-}
-constexpr std::uint32_t registrationOwnerGeneration(RegistrationOwner owner) noexcept {
-    return static_cast<std::uint32_t>(owner >> 32U);
-}
-
-class PELICAN_API ScopedRegistrationOwner {
-    RegistrationOwner previous;
-
-  public:
-    explicit ScopedRegistrationOwner(RegistrationOwner owner) noexcept;
-    ~ScopedRegistrationOwner();
-
-    ScopedRegistrationOwner(const ScopedRegistrationOwner &) = delete;
-    ScopedRegistrationOwner &operator=(const ScopedRegistrationOwner &) = delete;
-};
 
 } // namespace Pelican::internal
-
-namespace Pelican::TestSupport {
-
-// Test and benchmark component registrations are external by construction.
-// Keeping this scope explicit prevents a missing fixture owner from silently
-// acquiring the engine namespace.
-class ScopedTestRegistrationOwner final {
-    internal::RegistrationOwner owner_ =
-        internal::allocateRegistrationOwner();
-    internal::ScopedRegistrationOwner scope_{owner_};
-
-  public:
-    ScopedTestRegistrationOwner() = default;
-    ~ScopedTestRegistrationOwner() {
-        internal::releaseRegistrationOwner(owner_);
-    }
-
-    ScopedTestRegistrationOwner(const ScopedTestRegistrationOwner &) = delete;
-    ScopedTestRegistrationOwner &operator=(
-        const ScopedTestRegistrationOwner &) = delete;
-
-    internal::RegistrationOwner owner() const noexcept { return owner_; }
-};
-
-} // namespace Pelican::TestSupport

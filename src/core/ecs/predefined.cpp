@@ -5,6 +5,7 @@
 #include "predefined/camera.hpp"
 #include "predefined/modelview.hpp"
 #include "predefined/transform.hpp"
+#include "enginecomponentregistrar.hpp"
 #include "../shader/raygrouplayout.hpp"
 #include "../userpublic/components/rayinstance.hpp"
 
@@ -15,26 +16,24 @@
 #include "predefined/modelviewupdatesystem.hpp"
 #include "predefined/spriteviewsystem.hpp"
 
-#include <details/component/registerer.hpp>
-
 namespace Pelican {
 
 void ECSPredefinedRegistration::reg() {
     // predefined component
-    auto &components = internal::getComponentRegisterer();
-    components.registerEngineComponent<EntityId>("eid");
-    components.registerEngineComponent<TransformComponent>("transform");
-    components.registerEngineComponent<LocalTransformComponent>(
+    auto &components = internal::getEngineComponentRegisterer();
+    components.registerComponent<EntityId>("eid");
+    components.registerComponent<TransformComponent>("transform");
+    components.registerComponent<LocalTransformComponent>(
         "localtransform");
-    components.registerEngineComponent<SimpleModelViewComponent>(
+    components.registerComponent<SimpleModelViewComponent>(
         "simplemodelview");
-    components.registerEngineComponent<CameraComponent>("camera");
-    components.registerEngineComponent<AnimationComponent>("animation");
+    components.registerComponent<CameraComponent>("camera");
+    components.registerComponent<AnimationComponent>("animation");
     registerSpriteViewComponent();
     if (const auto *ray_layout =
             FastModuleContainer::tryGet<RayLayoutRuntimeState>();
         ray_layout != nullptr && ray_layout->builtinRayInstanceEnabled()) {
-        components.registerEngineComponent<RayInstanceComponent>(
+        components.registerComponent<RayInstanceComponent>(
             "pelican_ray_instance");
     }
 

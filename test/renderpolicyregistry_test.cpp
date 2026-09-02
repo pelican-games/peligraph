@@ -1,4 +1,5 @@
 #include "../src/core/renderer/drawqueuebuilder.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderer/renderpolicyregistry.hpp"
 
 #include <catch2/catch_test_macros.hpp>

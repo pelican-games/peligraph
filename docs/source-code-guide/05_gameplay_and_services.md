@@ -69,7 +69,7 @@ registryの各登録には [`RegistrationOwner`](../../src/core/userpublic/detai
 
 ### 実行順
 
-registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/details/system/registerer.cpp#L29) のstaticです。毎回copyして、次でsortします（[`sortGameSystemRegistrations()`](../../src/core/userpublic/details/system/registerer.cpp#L34)）。
+registry実体は [`getGameSystemRegisterer()`](../../src/core/userpublic/details/system/registerer.cpp#L30) のstaticです。毎回copyして、次でsortします（[`sortGameSystemRegistrations()`](../../src/core/userpublic/details/system/registerer.cpp#L35)）。
 
 1. `order`昇順
 2. 同じorderなら登録時の型名文字列昇順
@@ -616,7 +616,7 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 >
 > **不変条件**: `parents[i] < i`(root は -1)。`localToModel()` の 1 パスがこれに依存します。`layout_to_original` と `original_to_layout` は互いの逆写像なので、片方だけ触らないこと。
 
-> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1551) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L801))
+> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1552) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L802))
 >
 > **何をする所か**: anim graph が `base_pose_and_root_modifier` フェーズで publish したフレームを、その場では renderer へ流さず 1 枚だけ staging し、全フェーズ終了後に `commitStagedFrame()` が 1 回だけ publish します。
 >

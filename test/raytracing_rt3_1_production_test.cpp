@@ -5,6 +5,7 @@
 
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/appflow/framephase.hpp"
+#include "../src/core/appflow/teardown.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #if PELICAN_WITH_RPC
 #include "../src/core/communication/editorrpchandlers.hpp"
@@ -32,11 +33,13 @@
 #include "../src/core/log.hpp"
 #include "../src/core/light/lightcontainer.hpp"
 #include "../src/core/phys/physworld.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/renderingpassconfigloader.hpp"
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
+#include "../src/core/terminalshutdown.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
@@ -1826,6 +1829,121 @@ TEST_CASE(
         "WP379 DLL coexistence uses layout v2 and is compiler-ON only; compiler-OFF precedence is covered separately");
 #else
     FAIL("WP379 production external component fixture was not composed");
+#endif
+}
+
+TEST_CASE(
+    "WP379a real game DLL RPC classification and terminal shutdown purge share the production boundary",
+    "[WP379a][component][namespace][production][dll][rpc][cpu][mutation-owner][mutation-shutdown]") {
+    setupLogger();
+#if defined(_WIN32) && defined(PELICAN_WP379_RAY_INSTANCE_FIXTURE)
+    const std::filesystem::path fixture_dll{
+        PELICAN_WP379_RAY_INSTANCE_FIXTURE};
+    const auto owner_count_before = internal::registrationOwnerCount();
+    REQUIRE(owner_count_before == 0);
+
+    {
+        FastModuleContainer modules;
+        auto &reloader = GET_MODULE(GameLogicReloader);
+        REQUIRE(reloader.initialize(fixture_dll));
+        auto &component_info = GET_MODULE(ComponentInfoManager);
+        const auto external_id =
+            component_info.getComponentIdByName("ray_instance");
+        const auto external_owner = component_info.get(external_id).owner;
+        REQUIRE(external_owner != internal::engineRegistrationOwner);
+        CHECK(internal::componentRegistrationCount(external_owner) == 1);
+
+#if PELICAN_WITH_RPC
+        auto document = AuthoringSceneDocument::load(
+            Json{{"schema", "pelican.scene"},
+                 {"version", 1},
+                 {"scenes",
+                  {{"main",
+                    {{"objects",
+                      Json::array({{{"name", "RpcTarget"},
+                                    {"components", Json::array()}}})}}}}}}
+                .dump(),
+            SceneRevision{1});
+        auto resolved = ResolvedSceneResolver::resolve(
+            document, SceneResolverGeneration{1}, {}, {}, {});
+        EditorCommandService service{EditorCommandServiceDependencies{
+            .document = [&]() -> const AuthoringSceneDocument & {
+                return document;
+            },
+            .resolved_scene = [&]() -> const ResolvedScene & {
+                return resolved;
+            },
+            .current_scene_id = [] { return std::string{"main"}; },
+            .edit = EditorEditRuntimeDependencies{
+                .document = [&]() -> const AuthoringSceneDocument & {
+                    return document;
+                },
+                .current_scene_id = [] { return std::string{"main"}; },
+                .execute = [](const EditorEditExecutionRequest &)
+                    -> EditorProjectionResult {
+                    throw std::logic_error(
+                        "rejected WP379a edit must not execute");
+                },
+                .component_exists = [&](std::string_view name) {
+                    return component_info.hasComponent(name);
+                },
+            },
+        }};
+        std::uint64_t rpc_id = 379100;
+        const auto actor = wp375OpenActor(
+            service, rpc_id, "WP379a external component classification");
+        const auto object_id = resolved.scenes().front().objects.front()
+                                   .authoring_object_id.value;
+        const auto rejected = runWp374aRpcBytes(
+            service, rpc_id++, "edit",
+            {{"actor_id", actor},
+             {"base_revision", document.revision().value},
+             {"operations",
+              Json::array({{{"op", "add_component"},
+                            {"object_id", object_id},
+                            {"component",
+                             {{"name", "ray_instance"},
+                              {"marker", 379}}}}})}});
+        REQUIRE(rejected.at("status") == "rejected");
+        REQUIRE(rejected.at("error").at("code") == "not_editable");
+#endif
+
+        bool external_component_visible_during_teardown = false;
+        RuntimeTeardownGuard teardown{
+            RuntimeTeardownActions{
+                .owner_callbacks = [&] {
+                    external_component_visible_during_teardown =
+                        component_info.hasComponent("ray_instance");
+                },
+            },
+            RuntimeTeardownMode::terminal_shutdown};
+        internal::runTerminalShutdown(teardown);
+        CHECK(external_component_visible_during_teardown);
+        CHECK_FALSE(reloader.status().loaded);
+        CHECK_THROWS_AS(component_info.getComponentIdByName("ray_instance"),
+                        ComponentUnknownError);
+        CHECK(internal::componentRegistrationCount(external_owner) == 0);
+        CHECK_FALSE(internal::isRegistrationOwnerCurrent(external_owner));
+    }
+
+    CHECK(internal::registrationOwnerCount() == 0);
+
+    // The owner slot and callback ledger must also permit a fresh load in the
+    // same process after the terminal container has gone away.
+    {
+        FastModuleContainer modules;
+        auto &reloader = GET_MODULE(GameLogicReloader);
+        REQUIRE(reloader.initialize(fixture_dll));
+        CHECK_NOTHROW(GET_MODULE(ComponentInfoManager)
+                          .getComponentIdByName("ray_instance"));
+        RuntimeTeardownGuard teardown{
+            RuntimeTeardownMode::terminal_shutdown};
+        internal::runTerminalShutdown(teardown);
+        CHECK_FALSE(reloader.status().loaded);
+    }
+    CHECK(internal::registrationOwnerCount() == 0);
+#else
+    SKIP("WP379a real game-DLL unload fixture is Windows-only");
 #endif
 }
 
