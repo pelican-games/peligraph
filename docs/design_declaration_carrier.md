@@ -94,3 +94,96 @@ list のネスト / 添字 identity / 永続 ID(WP304)/ Studio の実装 / RT4 �
 (3) `insert_component_field` の inverse が既存 CAS の structural domain で表現できるか
 (4) occurrence key `{authoring_object_id, node_index, importer_variant}` が **本当に単射**か(instancing・LOD・skinned の variant)
 (5) C-1 が単独で有用か(RT が来なくても誰が list を使うか)
+
+
+## 6. 設計レビュー第 1 巡(12 件・破綻 4)と v2
+
+**v2 が本文書の正。§2 決定 1〜6 と §3 段割りは v2 で置換される。**
+
+### 決定 1'(#1): **永続形式に session-local ID を書かない**
+
+`AuthoringObjectId` は同一プロセス内の再 publish で採番が進む。row は **所有 object の内側**に置き、
+`authoring_object_id` は永続形式から除いて **所有 object から実行時に注入**する。object 外から row を参照する形は作らない
+(それには永続 object identity が要り、WP304 の領域)。
+
+### 決定 2'(#2): occurrence key は importer が生成する **opaque な `occurrence_id`**
+
+`{authoring_object_id, node_index, importer_variant}` は **同一 node の 2 primitive を区別できず**、asset 差し替えにも追随しない。
+- importer が **`occurrence_id`** を生成する: **所有 model asset identity + 安定 primitive identity + semantic variant tag**
+- source format に永続 primitive identity が無い場合(glTF)は **決定的な content fingerprint**(頂点数・index 数・material slot・
+  bounds の量子化)で代替し、**衝突は `AmbiguousOccurrence` で名前付き拒否**(黙って先勝ちにしない)
+- 受け入れ: **1 node × 2 primitive**を別 mask にして GPU 出力が変わる。DCC 再出力で配列順だけ変えた model で追随。
+  **model を差し替えた場合は旧 key が `absent` で落ちる**(= 循環条件ではなく本番 importer の生成結果で検査)
+
+### 決定 3'(#3・#4): schema は **再帰代数**。wire と fingerprint も同時に
+
+- `Schema = Leaf | List{ element: Struct(Leaf…), key: leaf 名, limits{max_rows} }`。**list の list は無し**(v1 のまま)
+- policy ごとに明示: **Behavior / Component は許可、Event は consteval 拒否**(今の「Bool/Enum でない」条件では
+  `vector<Row>` が意図せず通る)
+- **versioned な再帰 wire 型**を schema-leaf / project 層が所有し、RPC も同じ wire を使う
+- **fingerprint は element の field 群・順序・presence/default・key 規則・limits まで含める**(同一 version で element だけ変えた
+  DLL reload を検出する)
+
+### 決定 4'(#5): ABI は**上げる**。登録は ABI 検査の後
+
+`BehaviorRegistration` は公開 C++ 境界で `vector<StructFieldSchema>` を運ぶ。再帰 metadata を足せば layout が変わり、
+**旧 DLL の static initializer が ABI 検査より前に旧 layout で登録を呼ぶ**(crash / UB / 部分登録)。
+- **ABI-neutral な C descriptor**(`struct_size` + `version`)を導入し、**ABI 検査に通ってから明示 entrypoint で登録**する
+- game-logic ABI を **v2 に上げる**。旧 DLL は**名前付きで拒否**し、旧 live DLL と登録状態を保つ(部分登録を残さない)
+
+### 決定 5'(#6): **editor の row identity と semantic occurrence id を分ける**
+
+- **`row_id`**: document transaction 内で**自動生成**される hidden な永続 ID(利用者は書かない。添字でもない)
+- **`occurrence_id`**(決定 2'): renderer join 用。row の leaf として利用者が選ぶ(inventory から)
+- RPC は **`{list_path, row_id, leaf_path}`** で指定し、server が **CAS の下で現在の添字に解決**する。
+  `[A,B]` の B を編集した後に先頭へ X を挿入しても、同じ `row_id` は B を指す
+- 既存 `set_component_value` は**変えない**が、list の leaf は `row_id` 経由でしか指せない(添字 path は名前付き拒否)
+
+### 決定 6'(#7): inverse は **journal-only の完全復元**
+
+- remove の inverse は **raw row・authored presence・前後の stable anchor(`row_id`)**を journal に保存する
+  (既存 component inverse が full component と exact index を保存するのと同じ形:
+  [editorjournal.cpp:1179](../src/core/communication/editorjournal.cpp#L1179))
+- **insert は full row か patch を受ける**。required leaf を持つ schema で key だけの insert は **`MissingRequiredLeaf`** で拒否
+- 受け入れ: **中央 row の remove → undo** で値・位置・presence が byte 一致
+
+### 決定 7'(#8): inventory は **eligibility** を返す
+
+`occurrence_inventory` は existence ではなく **`absent | ambiguous | present_but_not_ray_traced | eligible`** を返す
+(skinned / morph / VAT / BLAS-ineligible は `present_but_not_ray_traced`)。
+override が効かない宣言は**名前付きで落ちる**(fail-fast)。validation は **GPU buffer 書き込みの前**に置く
+(model rebuild の途中失敗で旧新混在を作らない)。
+
+### 決定 8'(#9): Studio へは **core の RPC 2 本**で供給する
+
+- `component_schema_catalog`(登録済み全 component の再帰 schema。**未追加のものも**)と `occurrence_inventory`
+- **wire 型は project / schema 層が所有**、**データは core の RPC**。Studio は RPC / project だけ link(D0)
+- game DLL 由来 behavior の schema も catalog 経由(WP361a の offline 乖離はここで閉じる)
+
+### 決定 9'(#10): **`ray_instance` を今 `pelican_ray_instance` に改名する**
+
+未出荷の今が最安。version gate は「外部 `ray_instance` を持つ project が v2 を有効化すると builtin 登録で衝突する」
+逆向きの問題を残す。`pelican_` 予約は **`ComponentInfo.owner` で owner-aware** に実施し、既存外部 `pelican_*` は
+移行手順と名前付きエラーを定義する。**WP374 の後追い修正として起票**(RT3-1 の完了記録に負債として追記)。
+
+### 決定 10'(#11): **最初の出荷単位は C-1 + C-2 + C-3 を束ね、消費者は RT3 の per-geometry override**
+
+C-1 単独の消費者は立証できない。**既に仕様化済みの消費者**(RT3 設計 §11 の「1 object × 2 primitive を別設定」)を
+最初の消費者として名指しし、**C-1〜C-3 を 1 つの出荷単位**にする。list 無し / 有りを**同じ本番経路**(RPC → save → reload → GPU)で比較。
+
+### 決定 11'(#12): 受け入れ matrix とエラー契約
+
+- C-1: **同一 version で element だけ変えた DLL reload が検出される** / 旧 DLL の名前付き拒否 / Event policy の consteval 拒否
+- C-2: 編集後に先頭挿入 → 同じ `row_id` が同じ row / 中央 row の exact undo / 未指定 vs 明示 default の区別 / commit 途中失敗で旧状態保持
+- C-3: **本番 importer が生成した `occurrence_id` の安定性**(再 import で同値)/ 同一テスト内 off・on / 実際に解決した occurrence と GPU 値
+- 名前付きエラー: `DuplicateRowKey{key, first_index, second_index}` / `MissingRowKey` / `ListTooLarge{max}` /
+  `MissingRequiredLeaf` / `AmbiguousOccurrence` / `OccurrenceNotRayTraced`。`StructFieldErrorCode` に追加(既存 6 値を保つ)
+- 失敗時は旧状態を保持(atomic)。全段で出荷 4 project の bytes 不変
+
+### 決定 12': 段割り(v2)
+
+```
+CARRIER-1 = C-1 + C-2 + C-3 + 決定 9'(改名) を 1 出荷単位、消費者 = RT3 の per-geometry override
+CARRIER-2 = Studio 汎用 UI(design_studio_component_ui。core RPC 2 本の上)
+```
+CARRIER-1 は大きい。**仕様レビューで分割案が出たら、C-1+C-2(消費者: 名指しの behavior list)と C-3 に割る**ことを許す。

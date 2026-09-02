@@ -20313,3 +20313,9 @@ resolver 単体・オラクル・downstream fixture の移設 / 手製 double �
 
 どちらも「機能を足そうとして、足す先の本番経路を読んだら見つかった」もの。
 テスト品質計画の主張(受け入れが本番経路を通っていない)の傍証である。
+
+#### WP374 の後追い負債(2026-09-02、担体設計 v2 決定 9'): `ray_instance` → `pelican_ray_instance` の改名
+
+version gate は「外部 `ray_instance` を持つ project が layout v2 を有効化すると builtin 登録で衝突する」逆向きの問題を残す
+(現テストが LayoutV2 で builtin の逆登録が throw することを固定している: [raytracing_rt3_1_test.cpp:289](../test/raytracing_rt3_1_test.cpp#L289))。
+**未出荷の今が最安。** `pelican_` 予約は `ComponentInfo.owner` で owner-aware に。WP377 の後、小 WP として起票する。
