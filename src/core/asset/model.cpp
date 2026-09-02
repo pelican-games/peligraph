@@ -286,6 +286,12 @@ struct ModelAssetContainer::Impl {
     std::shared_ptr<PayloadTracker> tracker = std::make_shared<PayloadTracker>();
     std::uint64_t next_asset_identity = 1;
 
+    ~Impl() {
+        for (auto &[_, record] : records) {
+            releaseModelGpuResources(record.model, false);
+        }
+    }
+
     std::shared_ptr<ModelPayload> makePayload(std::string name) {
         auto payload = std::make_shared<ModelPayload>();
         payload->name = std::move(name);
@@ -305,7 +311,7 @@ struct ModelAssetContainer::Impl {
         record.declared = true;
     }
 
-    void add(ModelDeclaration declaration, ModelTemplate model) {
+    void add(ModelDeclaration declaration, ModelTemplate &&model) {
         if (records.contains(declaration.name))
             throw std::runtime_error("duplicate model asset name: " + declaration.name);
         model.asset_id = ModelAssetId{next_asset_identity++};
@@ -400,15 +406,20 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
         auto model = loader.commit(
             prepared[index],
             GltfAuthoredAssetReference{declarations[index].reference});
-        applyDeclarationBindings(model, declarations[index]);
-        impl_->add(std::move(declarations[index]), std::move(model));
+        try {
+            applyDeclarationBindings(model, declarations[index]);
+            impl_->add(std::move(declarations[index]), std::move(model));
+        } catch (...) {
+            // A throwing constructor is retried by the next scene load.  The
+            // current model is not in Impl yet, so return its allocations here;
+            // Impl's destructor returns every model that was already inserted.
+            releaseModelGpuResources(model, false);
+            throw;
+        }
     }
 }
 
-ModelAssetContainer::~ModelAssetContainer() {
-    if (!impl_) return;
-    for (auto &[_, record] : impl_->records) releaseModelGpuResources(record.model, false);
-}
+ModelAssetContainer::~ModelAssetContainer() = default;
 
 ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &name) {
     if (const auto found = impl_->records.find(name); found != impl_->records.end())

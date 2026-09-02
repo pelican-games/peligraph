@@ -118,6 +118,11 @@ bool PelicanCore::run() {
         configureRayLayoutModeBeforeComponentRegistration();
         GET_MODULE(ECSPredefinedRegistration).reg();
         (void)initializeConfiguredGameLogic();
+        // Validate and publish the render graph before a transactional scene
+        // prepare can instantiate ModelAssetContainer and upload model data.
+        // Invalid material routes must remain the first startup failure and
+        // must not consume the vertex pool.
+        (void)GET_MODULE(Renderer);
         {
             auto &config = GET_MODULE(ProjectBasicConfig);
             auto request = SceneLoadRequest::borrowed(
@@ -126,10 +131,6 @@ bool PelicanCore::run() {
             (void)requireSceneLoadCommitted(
                 GET_MODULE(SceneLoader).load(std::move(request)));
         }
-        // glTF materials lower through route-specific surface shaders. Publish
-        // the render graph first so their initial compilation sees the same
-        // feature defines and material-output ABI as the frame executor.
-        (void)GET_MODULE(Renderer);
         // Model CPU preparation is parallel, but its Vulkan/resource commit is
         // deliberately forced onto the startup thread before ECS systems run.
         // This also makes the permanent startup metric cover the whole phase.

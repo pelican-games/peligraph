@@ -2,6 +2,20 @@
 #include "enginefailuremodel.hpp"
 #include "frameplanwidget.hpp"
 
+#include "../src/core/asset/model.hpp"
+#include "../src/core/container.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "../src/core/loader/basicconfig.hpp"
+#include "../src/core/loader/pathresolver.hpp"
+#include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/loader/scene.hpp"
+#include "../src/core/launchconfig.hpp"
+#include "../src/core/log.hpp"
+#include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/model/vertbufcontainer.hpp"
+#include "../src/core/vkcore/core.hpp"
+#include "vulkan_test_support.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <nlohmann/json.hpp>
@@ -498,6 +512,73 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
         QStringLiteral("Pelican fatal error")));
     REQUIRE(QString::fromStdString(readText(broken_log)).contains(
         QStringLiteral("starting main loop")));
+
+    // A constructor failure is a failed scene prepare, not a cache entry.  A
+    // second load therefore retries the upload in this same process.  Both
+    // attempts must return every real vertex/index allocation before retry.
+    const fs::path scene_data =
+        test_project / "scenes" / "main.scene.json";
+    const std::string original_scene_data = readText(scene_data);
+    const fs::path retry_bindings =
+        test_project / "assets" / "retry_bindings.json";
+    writeText(
+        retry_bindings,
+        R"json({"schema":"pelican.material_bindings","version":1,"model":"assets/models/DamagedHelmet.glb","bindings":[{"usd_path":"/Retry/Missing","mesh":999,"primitive":0,"material":"missing","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+    nlohmann::json retry_assets{
+        {"schema", "pelican.asset_data"},
+        {"version", 1},
+        {"models",
+         nlohmann::json::array({
+             {{"name", "warm_model"},
+              {"path", "assets/models/DamagedHelmet.glb"}},
+             {{"name", "failing_model"},
+              {"path", "assets/models/DamagedHelmet.glb"},
+              {"material_bindings", "assets/retry_bindings.json"}},
+         })},
+    };
+    writeText(asset_data, retry_assets.dump(2) + "\n");
+    writeText(
+        scene_data,
+        R"json({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[{"name":"model","components":[{"name":"simplemodelview","model":"warm_model"}]}]}}})json");
+
+    Pelican::setupLogger();
+    Pelican::FastModuleContainer modules;
+    Pelican::GET_MODULE(Pelican::PathResolver).setup(test_project, false);
+    Pelican::GET_MODULE(Pelican::ProjectSource)
+        .setSourceByData(readText(test_project / "project.json"));
+    auto &launch = Pelican::GET_MODULE(Pelican::EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    Pelican::TestSupport::requireVulkanDevice("Vulkan unavailable");
+    Pelican::GET_MODULE(Pelican::ECSPredefinedRegistration).reg();
+    (void)Pelican::GET_MODULE(Pelican::StandardMaterialResource);
+    auto &geometry = Pelican::GET_MODULE(Pelican::VertBufContainer);
+    const auto baseline_indices = geometry.allocatedIndexCountForTesting();
+    const auto baseline_vertices = geometry.allocatedVertexCountForTesting();
+    auto &config = Pelican::GET_MODULE(Pelican::ProjectBasicConfig);
+    auto &loader = Pelican::GET_MODULE(Pelican::SceneLoader);
+
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        INFO("same-process failed scene attempt=" << attempt);
+        auto request = Pelican::SceneLoadRequest::borrowed(
+            "default_scene", config.sceneProjectionState());
+        const auto result = loader.load(std::move(request));
+        const auto *failure = std::get_if<Pelican::PreCommitFailure>(&result);
+        REQUIRE(failure != nullptr);
+        REQUIRE(failure->phase == Pelican::SceneLoadPhase::prepare);
+        INFO("scene load failure: " << failure->error);
+        REQUIRE(failure->error.find(
+                    "targets missing GLB mesh 999 primitive 0") !=
+                std::string::npos);
+        REQUIRE_FALSE(Pelican::FastModuleContainer::isInitialized<
+                      Pelican::ModelAssetContainer>());
+        REQUIRE(geometry.allocatedIndexCountForTesting() == baseline_indices);
+        REQUIRE(geometry.allocatedVertexCountForTesting() == baseline_vertices);
+    }
+    Pelican::GET_MODULE(Pelican::VulkanManageCore).waitIdle();
+    writeText(scene_data, original_scene_data);
+    writeText(asset_data, original_asset_data);
+    fs::remove(retry_bindings);
 }
 
 } // namespace PelicanStudio

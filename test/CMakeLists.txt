@@ -331,6 +331,10 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   pelican_define_test(devstudio_engine_failure_test QT GPU GOLDEN
     pelican_studio_viewport
     pelican_studio_frame_plan
+    pelican_core
+    VulkanMemoryAllocator
+    VulkanMemoryAllocator-Hpp
+    glm
     Qt6::Core
     Qt6::Widgets
   )
