@@ -542,5 +542,5 @@ if(TARGET pelican_test_game_logic_abi_test)
     ${pelican_game_dll_targets})
   target_compile_definitions(pelican_test_game_logic_abi_test PRIVATE
     PELICAN_WP381_GAME_DLL_INVENTORY="${pelican_game_dll_inventory_path}"
-    PELICAN_WP381_EXPECTED_GAME_DLL_COUNT=$<IF:$<BOOL:${PELICAN_WITH_PHYSICS}>,19,15>)
+    PELICAN_WP381_INVENTORY_GENERATED=1)
 endif()
