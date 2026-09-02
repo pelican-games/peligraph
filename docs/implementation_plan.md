@@ -20104,3 +20104,104 @@ SKIP の意味論(device 無しで Catch `SKIP`)は保たれる。
 - 統合側の全数は merge 直後に別途実行して次行に記す
 - 統合側(main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1515/1515 緑**(1502 + WP374 7 + WP374a 6)。
   基準値は **1515** に更新
+
+
+#### WP377 仕様レビュー第 1 巡(6 件)と v2 —— **v2 が最終(1 巡 + 決定差分)**
+
+**v2 が本節の正。v1 の「決定」「受け入れ」は v2 で置換される。** 数え方の訂正: RT の override 型は
+**5 型・6 使用箇所**(v1 の「6 seam」は使用箇所数)。
+
+##### 決定 1(#1): **既存欠陥を直す** —— resident BLAS の再利用が profile 検査を素通りする
+
+第 1 巡が本番入力で到達可能な穴を見つけた(私も現物で確認した):
+
+```
+if (can_reuse) { … if (existing) { candidate->blas.emplace(...); continue; } }   // :859-866
+…
+validateRayProfileAccelerationStructureFlags(material_alpha_profile_active, geometry_flags, {}, …)  // :879
+```
+
+**resident な variant は `continue` で validate に到達しない。** layout v2 で `geometry_flags:["opaque"]`
+を一度 render し、flags を変えずに `portable_profile` だけを hot reload すると、
+**opaque BLAS が再利用され `ray_profile_opaque_as@1` が出ない**(profile 用 any-hit が有効なのに BLAS は opaque)。
+
+- **修正**: validate を **reuse 判定より前**へ移す(required variant すべてに対して、resident でも検査する)
+- **受け入れ(順序を固定)**:
+  1. profile ON + nonopaque → render 成功、resolved / resident flags が 0
+  2. profile OFF + opaque → render 成功、resident flags が opaque
+  3. **flags を変えず profile だけ ON** → layout の stage は成功し、**`Renderer::render` が
+     `ray_profile_opaque_as@1` + `BLAS geometry` で失敗**
+  失敗を最後に置くのは、現テストが意図的 abort 後の再 render を避けている制約に合わせるため
+- **変異**: validate を reuse の後ろへ戻すと 3. が通ってしまい**赤にならない → この受け入れが落ちる**
+
+##### 決定 2(#2): authored で置換できるのは **2 つの実効値**。TLAS geometry の検査は**廃止**
+
+現 seam は BLAS geometry / TLAS instance / TLAS geometry の **3 注入点**用だが、authored 入力が届くのは:
+
+| 注入点 | authored 入力 | 扱い |
+|---|---|---|
+| BLAS geometry flags | `geometry_flags`(material 鍵規則) | **本番入力で検査** |
+| TLAS instance flags | `ray_instance.instance_flags`(`force_opaque`) | **本番入力で検査**。profile active なら row resolver が先に同コードで拒否する([raygrouplayout.cpp:1292](../src/core/shader/raygrouplayout.cpp#L1292))ので、その位置で検査する |
+| TLAS instances geometry flags | **無い**(test override だけが供給源: [accelerationstructure.cpp:1039](../src/core/renderer/accelerationstructure.cpp#L1039)) | **validation call と diagnostic を削除**。到達不能な検査を残さない |
+
+規範は「内部 3 call site の保持」ではなく「**利用者が指定できる 2 種類の実効値**」。
+
+##### 決定 3(#3): WP368 の `[production]` は**外さない**。規範を tag ではなく意味で書く
+
+tag を外しても実行経路は 1 行も変わらず、headless GPU の唯一の production case が台帳上消えるだけ。
+Catch の tag は TEST_CASE 全体にしか付かないので「非 override 部分だけ production」は表現不能。
+
+**規範(意味条件)**: override 型 seam は
+- **明示した負側だけ**で使い(成功値を供給しない)、
+- **production の正常値は override 無効の前後で実測**し、
+- injected 状態で production の正常値を主張しない。
+
+WP368 は既にこれを満たす(負側 scoped、解除後の復帰、その後 purge 検査)。**tag を残す。**
+rt1b の sentinel 4 使用箇所も同じ意味条件で残す(tag による差別はしない)。
+**単に tag を外すことを禁止する。**
+
+##### 決定 4(#4): 受け入れは**削除の全長**と **M3/M4 の再実行**
+
+- `RayProfileAccelerationStructureFlagsOverrideForTesting`(payload struct)、scoped class、内部 `thread_local`、
+  ctor/dtor、**5 読取点**(reuse 判定 / BLAS key / BLAS build / TLAS instance / TLAS geometry)を**全部削除**
+- **WP374 の M3(cache 鍵から flags を消す)・M4(Vulkan に空 flags)を WP377 後に再実行し、赤**
+- 「旧 seam を戻すと偽陽性」は**完了記録の理由に降ろす**(受け入れではない)
+- WP369 の置換は、invalid layout の **stage 成功後に `Renderer::render` で失敗**することを要求
+  (loader/parser で同じ文字列を投げても通らない)
+
+##### 決定 5(#5): 「全数緑」に**実行された証拠**を要求する
+
+WP369 case は `PELICAN_RUNTIME_SHADER_COMPILER` で囲まれ、GPU 無しなら SKIP、compiler OFF なら SUCCEED。
+- **compiler ON + 対応 GPU で対象 case が SKIP されず実行された**ことを必須(ctest の出力で)
+- compiler OFF は別に build + full を要求
+- OpenXR / IMGUI / SKIP_DEVSTUDIO は compile matrix(runtime 分岐は shader compiler だけ)
+
+##### 決定 6(#6): fault seam は**名前でなく意味条件**で例外化する
+
+「判定を差し替える seam は次だけ」は広すぎた。未分類:
+`RayTracingOracleIntersectorForTesting`(intersection 判定の差し替え: [raytracingoracle.hpp:146](../src/core/shader/raytracingoracle.hpp#L146))、
+`WindowWsiFaultScriptForTesting`(WSI の Vulkan result 差し替え: [swapchainrecovery.hpp:103](../src/core/vkcore/swapchainrecovery.hpp#L103))、
+scene save hook(production `saveSceneDocument` 内で任意 callback、常時コンパイル: [basicconfig.hpp:142](../src/core/loader/basicconfig.hpp#L142))。
+
+**fault seam の例外条件**(全部満たすこと):
+1. 失敗または外部競合**だけ**を注入し、成功結果を供給したり production 判定を bypass しない
+2. 同じテストに **no-fault の成功側**がある
+3. injected 状態で production の正常値を主張しない
+4. **全 fault seam を表に載せる**(WSI・oracle・scene hook、Catch tag 外の CTest integration も)
+
+`RayTracingOracleIntersectorForTesting` は判定の差し替えなので **override 型**として扱う
+(決定 3 の意味条件: 負側のみ)。
+
+##### 受け入れ(v1 を置換)
+
+- 決定 1 の 3 段順序テスト(GPU、compiler ON で実行された証拠つき)。validate の位置を戻す変異で赤
+- authored `geometry_flags` と `instance_flags` の 2 実効値が本番入力で `ray_profile_opaque_as@1` を出す
+- TLAS geometry の validation call が消え、到達不能な diagnostic が無い
+- AS override seam の**全削除**(struct / scoped / thread_local / 5 読取点)。M3・M4 の再実行が赤
+- WP368 は `[production]` のまま、意味条件を満たす(負側のみ、前後の実測、purge)
+- fault seam の表(意味条件 4 つの充足を各行に)
+- 全数 1515 を壊さない / compiler OFF 別 build / compile matrix
+
+##### やらないこと
+
+観測 seam の削減 / WSI fault script と scene hook の設計変更(表に載せるだけ)/ rt1a・rt1b の sentinel の書き換え。
