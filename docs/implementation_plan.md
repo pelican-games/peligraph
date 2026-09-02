@@ -21751,6 +21751,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 見積: **中〜大**(anchor + 4 入口改名 + reader + `initialize()` 順序 + fixture 9 role + RPC data + 監査テスト)。
 
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
+**WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
 2026-09-02 深夜 再開: `rev377a` `rev375a` を再投入、**WP379 と WP380a を並列投入**(worktree `<作業ディレクトリ>/wp379` / `<作業ディレクトリ>/wp380a`)。
 両レビューとも reject: `rev377a` の 2 件は連鎖上限で既知の穴へ、`rev375a` の致命(Preview の inactive light 置換)は **WP375b** として投入(worktree `<作業ディレクトリ>/wp375b`。WP375 系はこれで打ち切り。次に致命が出たら revert を先に検討)。
