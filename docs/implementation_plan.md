@@ -20319,3 +20319,87 @@ resolver 単体・オラクル・downstream fixture の移設 / 手製 double �
 version gate は「外部 `ray_instance` を持つ project が layout v2 を有効化すると builtin 登録で衝突する」逆向きの問題を残す
 (現テストが LayoutV2 で builtin の逆登録が throw することを固定している: [raytracing_rt3_1_test.cpp:289](../test/raytracing_rt3_1_test.cpp#L289))。
 **未出荷の今が最安。** `pelican_` 予約は `ComponentInfo.owner` で owner-aware に。WP377 の後、小 WP として起票する。
+
+
+### WP378: E-0a —— 利用者データ拒否を「値」にする最初の縦切り(型 + 6 caller + camera + `get_components`)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
+**規範は `docs/design_error_contract.md`(v4 = §8 が最終。設計段は 3 巡で打ち切り)。**
+**依存: WP375(着地後。`get_components` の serializer は WP375 の seam と無関係だが、6 caller のうち
+`editorruntimefactory.cpp:352` / `editorprojectiontransaction.cpp:113,499` は WP375 が動かす。着地後に行を実測し直す)。**
+
+#### 何が壊れているか(利用者に見える形)
+
+camera の値を間違える(`zfar <= znear`、projection 切替時の `yfov` 欠落 等)と、返るのは**型無しの文字列**で、
+`get_components` には**何も出ない**。内部 invariant の破れ(`logic_error`)も同じ文字列経路に流れ、利用者の入力ミスに見える。
+
+#### 起票時の実測(2026-09-02)
+
+- `decodeAuthored` の **production caller は 6**:
+  [editorjournal.cpp:221](../src/core/communication/editorjournal.cpp#L221)(canonicalize)/
+  [editorruntimefactory.cpp:352](../src/core/communication/editorruntimefactory.cpp#L352)(component migration adapter)/
+  [editorpreviewprojection.cpp:266](../src/core/loader/editorpreviewprojection.cpp#L266)(**`(void)` で結果を捨てている**)/
+  [editorprojectiontransaction.cpp:113](../src/core/loader/editorprojectiontransaction.cpp#L113)(transform)/
+  [editorprojectiontransaction.cpp:499](../src/core/loader/editorprojectiontransaction.cpp#L499)/
+  [resolvedscene.cpp:207](../src/core/loader/resolvedscene.cpp#L207)(resolver)。test の直接 caller は 18
+- `ComponentCodecValue` は `std::any` の alias([componentcodec.hpp:137](../src/core/loader/componentcodec.hpp#L137))。
+  copyable な Result は `std::any::any(T&&)` で**格納できてしまう**
+- camera の 4 拒否は decode 後の **default completion**(resolver 所有)で出る([resolvedscene.cpp:217](../src/core/loader/resolvedscene.cpp#L217)〜:285)
+- 保持型は `std::optional<std::string>`([resolvedscene.hpp:212](../src/core/loader/resolvedscene.hpp#L212))
+- query の serializer は `runtime_resolution_error` を出さない([editorcommandservice.cpp:635](../src/core/communication/editorcommandservice.cpp#L635))
+
+#### 1. 型(設計 v4 修正 1)
+
+- **`ResolutionResult<T>`: move-only**(copy ctor / copy assign を削除)。error は `UserDataViolation`
+- **compile-contract**(受け入れ): 
+  `static_assert(!std::is_constructible_v<std::any, ResolutionResult<X>&>)` / `…&&` /
+  `!std::is_assignable_v<std::any&, ResolutionResult<X>&>` / `…&&`
+- **`std::optional<StoredResolutionFailure>`**、`StoredResolutionFailure = variant<UserDataViolation, LegacyResolutionText>`。
+  `runtime_resolution_error` をこれに置換。**未移行の拒否は投げ続け、resolver の catch が `LegacyResolutionText` にする**
+- `UserDataViolation { code, tokens[], leaf_message, source{kind, document_id, pointer} }`。
+  **pointer は token 列で保持し、RFC6901 の escape は serialization 時**(dotted path を作らない)
+- **`StructFieldValidationError` の基底・ctor・`code()/path()` は変えない**。game-logic ABI は上げない
+
+#### 2. 6 caller の移行(1 件ずつ)
+
+| caller | 扱い |
+|---|---|
+| resolver `:207` | seam の本体。decode + **completion** を `ResolutionResult` で受け、camera 4 + alias を `UserDataViolation` 化 |
+| journal `:221` canonicalize | 失敗を **既存の `schema_violation`** に写像(wire 不変) |
+| runtime factory `:352` | 失敗を **`UserDataViolation`** として adapter prepare の失敗値へ(WP375 着地後の形に合わせる) |
+| preview `:266` | **`(void)` をやめて result を検査**。失敗なら preview を名前付きで拒否 |
+| transaction `:113` / `:499` | 失敗を `EditorProjectionException` の既存 code に写像(wire 不変) |
+| test 18 | 全部 `ResolutionResult` を unwrap する形へ |
+
+**unused-result を error にする**構成(`-Werror` 相当の compiler flag を core の test target に)。`(void)` は禁止。
+
+#### 3. `legacy_branch_id` 表(設計 v4 修正 3)
+
+decoder の**拒否分岐ごと**に ID を振った表を **`docs/` に生成物として置く**(手書きではなく、拒否分岐を列挙する
+テストが出力し、差分があれば落ちる)。E-0a で typed へ移すのは camera 4 + alias。残りは `legacy_branch_id` 付きで表に残る。
+**「producer 0」はこの表が空になることであり、count ではない。**
+
+#### 4. `get_components` の可視化(設計 v4 決定 4' の最小)
+
+component に **`resolution_error {code, source, message}`** を出す(typed のみ。legacy は `{legacy_message}`)。
+**新 schema の新 golden**。既存 golden と「一致」させない(設計 v3 決定 9'')。
+
+#### 受け入れ(§4 規約 10)
+
+- **同一テストの両側**(実 RPC): project default `zfar=1000`、generated camera が `zfar` 省略、prefab parameter で `znear=5000`
+  → `get_components` に `code = camera.zfar_not_greater_than_znear@1`、`primary_token = znear`、`related_tokens = [zfar]`
+  (設計 v4 修正 8 の規範表)。**`znear` を直すと error が消え、本番 resolver が解決した camera 値が出る**
+- **inactive 契約**: typed(camera)と legacy(collider の `radius:-1`)が**同じ inactive scene に同居**して保持され、
+  save / query が通り、current 切替で **camera は code つき、collider は legacy message** で落ちる
+- **compile-contract 4 本**が通る。`ResolutionResult` に copy を足す変異で **static_assert が落ちる**
+- **preview**: 不正 component の preview が**名前付きで拒否**される(今日は `(void)` で受理 = 対照)
+- **leaf_message の byte 一致**: 移した camera 4 + alias の leaf が変更前と同じ bytes(既存の文脈付き `what()` も)
+- **変異**: result の unwrap / resolver の配線 / serializer のどれか 1 つを消すと落ちる
+- **ABI**: 旧ヘッダで作った client が link し動く(`StructFieldValidationError` の layout 不変を static_assert)
+- **`legacy_branch_id` 表**が生成され、camera 4 + alias が typed 側に移っている
+- 出荷 4 project の bytes 不変 / 全数(着手時に実測)を壊さない / `SKIP_DEVSTUDIO` 両構成 / IMGUI ON/OFF / compiler ON/OFF
+
+#### やらないこと
+
+E-0b(animation / ray_instance)/ E-0c(behavior 値化・v1 adapter)/ E-1〜E-4 / 診断 registry(E-2b)/
+launcher の `PELICAN_DIAG` / terminal `error.data` / `commit` の `noexcept` 変更(E-3a)。
