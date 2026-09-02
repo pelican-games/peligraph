@@ -20474,6 +20474,22 @@ WP377 のテストは throw 直後に終わり、この状態を検査してい�
 #### やらないこと
 
 レビュー #5(構成 matrix の証拠)は統合側で取る(WP377 完了記録に追記)。#6(設計文書の「現状」表)は docs で処理済み。
+
+#### WP377a 完了記録(統合側。2026-09-02、`a3f318fb`)
+
+- **実装**: SBT activation を `recordFrame()` 成功後へ移動 + `beginLogicalFrame` の無条件 lease reset を廃止(「最後に記録成功した世代を active とする」構造)。
+  validator は数値 identity を受け取り違反時だけ診断文字列を構築。production reload test に失敗直後の状態(runtime generation / staged=0 / TLAS / resident BLAS / 旧 SBT lease)、
+  次 frame の旧 golden 一致、ON→ON 非 resident の負側を追加
+- **継続で露出した実装欠陥**: 統合側 GPU で基準(変異前)が `ray_as_row_material_identity_unavailable@1` で赤 → resolver([raygrouplayout.cpp:1257](../src/core/shader/raygrouplayout.cpp#L1257))が
+  **完全な asset identity を持つ row を、document 側の片割れ(埋め込み material 名だけ)を理由に拒否**していた。仕様どおり「document 組 または asset 組」に修正。
+  新たに受理されるのは「partial document + full asset」だけで、両方欠ける row は今も拒否(回帰テスト追加)
+- **第 4 項(RT oracle 境界)の裁定**: 本番 intersector の実効相対幅は `8.94e-7`(最大 `1.19e-6`)で、上限 `1e-2` には本番幾何で到達できない。
+  条件を「**本番経路で返る `hit.t_interval` の実効相対幅 ≤ 1e-5**」に差し替え(拒否側 `0.01001` は据え置き)。対照: 幅を 100 倍にする変異で `8.94e-5` となり赤。
+  `1e-2 → 1e-3` の変異が生き残るのは正しい(検出対象外)
+- **統合側の GPU 変異**(エージェントは GPU 禁止で UNMET 報告): 基準 1/1 緑 → **M1**(`beginLogicalFrame` で lease を無条件 reset = 旧挙動)赤 /
+  **M2**(検証を resident reuse のときだけに)赤。残留 0
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1526 / 1526 緑**
+- コードレビュー `rev377a`: 投入したが **codex の使用上限で判定前に中断**(再開 2026-09-07 11:26)。再投入は台帳の未了項目
 ### WP378: E-0a —— 利用者データ拒否を「値」にする最初の縦切り(型 + 6 caller + camera + `get_components`)
 
 **§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 中〜大。**
