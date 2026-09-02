@@ -20475,3 +20475,71 @@ WP374 の version gate は「外部 `ray_instance` を持つ project が layout 
 #### やらないこと
 
 担体本体(SCHEMA-TX / RT3)/ GLABI-2 / Studio の catalog / 他 builtin component の改名(`pelican_` は新規 builtin から適用)。
+
+
+### WP380: ID-B —— scene load を 1 つの transaction にする(publish 途中の失敗で世代を混ぜない)
+
+**§4 規則 11 上段。仕様レビュー(2 巡 + 決定差分)+ コードレビュー。見積: 大。**
+**規範は `docs/design_object_identity.md` v4(§9 が最終。修正 A・B・C・F が本 WP の契約)。**
+**依存: WP375(着地後。ECS の inverse-token early publication と observer gate を再利用する)。registry(ID-A)は未装着で走る。**
+
+#### 何が壊れているか(既存欠陥。設計レビューが本番入力で再現)
+
+scene A 稼働中に snapshot B を import し、B の behavior `onInit` が投げると:
+loader は runtime を clear した直後に Light / Camera を publish し、その後 behavior を activate する
+([scene.cpp:369](../src/core/loader/scene.cpp#L369)・:546)。catch の `clearRuntimeScene()` は Light / Camera の
+旧 prepared state を戻さない(:584)。snapshot import も document は戻すが runtime を reload しない
+([basicconfig.cpp:734](../src/core/loader/basicconfig.cpp#L734))。
+**document は A、Light / Camera は B、ECS / Physics は空か途中** —— 世代混在が今日成立する。
+
+#### 1. 保証範囲(設計 修正 A)
+
+- **engine-owned state / Pelican API 経由の変更だけ**を原子的に戻す。DLL global・直接 filesystem / socket / thread は**非保証**と文書化
+- `behavior.hpp` の layout / virtual surface は**変えない**。既存 `GameContext::*` と event registerer の `__emit` の**下**に
+  scoped transaction sink を置く(旧 DLL のコードもその sink を通る)
+- effect outbox: **event(payload と順序)/ RNG(列)/ pending scene / audio(provisional handle、read-your-writes)/
+  persistence(settings の shadow、`saveData` は commit 後 write)**。commit で flush、rollback で破棄
+- rollback 中の逆順 `onDestroy` も同じ sink の内側
+
+#### 2. scene 専用 executor と state machine(設計 修正 B)
+
+```
+prepare → early_publish_ecs(observer gate、inverse token)→ publish_candidates(noexcept)
+→ activate_behavior(失敗可)→ commit_metadata(document / current_scene / active_authority、noexcept)
+→ retire_old_state(noexcept)→ flush_effect_outbox → finish(noexcept)
+```
+- **WP375 の adapter protocol を拡張しない**(`publish` が `noexcept` で activation phase が無い)。adapter は再利用し、
+  executor は scene 専用
+- participant 表(prepare / publish / rollback / finish / retire の所有物を各行に): ECS / Physics(`active_trigger_pairs` を
+  `PreparedState` に追加: [physworld.cpp:273](../src/core/phys/physworld.cpp#L273))/ Light / Camera(active・controlled order・
+  controller state)/ Renderer・PolygonInstanceContainer / SeqPlayer / VatPlayer / transient model retirement / Behavior arena /
+  effect outbox / document・current scene・active authority。**registry slot は未装着**(ID-A)
+- Light / Camera は **`old = snapshot`、`next = prepare`、`publishPrepared` 1 回**
+  ([editorprojectionadapters.cpp:1024](../src/core/loader/editorprojectionadapters.cpp#L1024) の雛形)。
+  外側から `load()` / `loadSceneCameras()` を呼ばない(内部で即 publish する)
+- 実 publish 順は現行 lifecycle adapter と同じ **renderer → ECS → Camera → Light → Physics** → Behavior
+
+#### 3. authority(設計 修正 1 の ID-B 分)
+
+- `next_authority` / `active_authority` を分け、**candidate authority は prepare 前に 1 回だけ消費**。失敗しても再利用しない
+  (今日は `runtime_scene_epoch` が成功末尾でしか進まず ABA になる: [scene.cpp:351](../src/core/loader/scene.cpp#L351)・:558)
+- authority は process の run nonce を含む(wire への公開は ID-A)
+
+#### 受け入れ(§4 規約 10。設計 修正 F)
+
+- **同一 production fixture**: A 成功 → **B 成功**(B の実 event payload と順序・RNG 列・pending scene・audio handle / voice・
+  保存 bytes・renderer identity・Light / Camera / ECS / Physics trigger pairs を **semantic snapshot**)→
+  **C が同じ作用(`emit` / `random` / `loadScene` / `playSound` / `saveData`)を行って throw** →
+  **全 participant が B の snapshot と一致**、保存データ非生成、document は B、active authority は B
+  (今日は混在 = 対照)
+- **participant ごとの drop / bypass 変異**(各行 1 つ。aggregate bypass 1 個では不足)がそれぞれ落ちる
+- **変更前ヘッダで作った実 DLL**(WP162 の fixture 系列)が `onInit` で上記 5 作用を呼び throw する
+- **snapshot import の失敗**でも同じ(document・runtime とも旧 A)
+- **ABA**: 失敗 candidate の authority が次の candidate に再利用されない(同一プロセス)
+- **audio**: provisional handle に対する `isPlaying / stopSound` が transaction 内で効き、rollback 後は無効
+- 出荷 4 project の bytes 不変 / golden 不変 / 全数(着手時に実測)/ `SKIP_DEVSTUDIO` 両構成 / GPU は統合側で直列
+
+#### やらないこと
+
+registry / `ObjectRef` / wire DTO(ID-A)/ 名前 join の ref 化(ID-C)/ public API(ID-D)/ rename /
+DLL global・直接 I/O の隔離(非保証)/ WP375 の protocol 変更。
