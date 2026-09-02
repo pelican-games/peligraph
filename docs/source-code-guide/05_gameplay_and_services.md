@@ -792,7 +792,7 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 
 | 経路 | 使うAPI |
 |---|---|
-| scene由来 | `prepareSceneBehaviorAttachments()` → `publishSceneAttachments()` → `activatePublished()` |
+| scene由来 | `prepareResolvedSceneBehaviorAttachments()` → `prepareSceneReconciliation(desired)` → [`PreparedBehaviorSceneReconciliation`](../../src/core/gamelogic/behaviorarena.hpp#L136) の `publish()`（`noexcept`）/ `activate()`（`onInit`。唯一throwしうる）/ `rollback()` / `finish()`（`noexcept`）。scene load executor（[第3章 §3.5](03_project_and_loading.md)）が段ごとに呼ぶ。`publishSceneAttachments()` / `activatePublished()` は宣言が残っているが scene load からは呼ばれない |
 | 編集RPC由来 | `prepareEditorEdits(edits)` → [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L117) の `publish()` / `rollback()` / `finish()`（全て`noexcept`） |
 | teardown | `deactivateAllForTeardown()` / `drainDeferredMutationsForTeardown()` / `releaseOwner(owner)` |
 

@@ -244,15 +244,16 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ## 4.3 シーンロードの流れ
 
-`SceneLoader::load(scene_id)`([scene.cpp](../../src/core/loader/scene.cpp))の実際の処理順:
+`SceneLoader::load(SceneLoadRequest)`([scene.cpp](../../src/core/loader/scene.cpp))は **1 つのトランザクション**です(✅WP380a)。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。実際の処理順:
 
 1. **正規化・検証**(解釈レイヤ `sceneformat.cpp`): エンベロープ・識別子・name 一意性をチェック。不正は fail-fast。
-2. 各オブジェクトの components を振り分け: `light` → LightContainer、`collider` → PhysWorld、**`behavior` → BehaviorAttachmentArena**、**それ以外 → ECS**(未知名はエラー)。ライトだけのオブジェクトは ECS entity を作りませんが、**behavior だけのオブジェクトには作られます**。
-3. 旧シーンをクリア(name 束縛・物理・全 GameObject・モデルインスタンス)。このとき、まず既存 behavior の `onDestroy` が走ります(物理・描画・名前束縛がまだ解決できる時点)。
-4. ECS オブジェクトを**トランザクション生成**(§4.4)。JSON 不正はロールバックして例外。
-5. name があり transform を持つオブジェクトは「name → GameObjectId」を束縛(rpc の宛先になる)。
-6. **behavior を宣言順に有効化**して `onInit` を呼ぶ。途中で例外が出たら、それまでの分を逆順に破棄して全体を巻き戻します。
-7. `SceneLoaded` イベントを emit([第8章](08_gameplay.md))。
+2. **prepare**: 各オブジェクトの components を振り分け: `light` → LightContainer、`collider` → PhysWorld、**`behavior` → BehaviorAttachmentArena**、**それ以外 → ECS**(未知名・未登録の behavior 型名はここでエラー)。ライトだけのオブジェクトは ECS entity を作りませんが、**behavior だけのオブジェクトには作られます**。描画・カメラ・ライト・SeqPlayer/VAT・乱数列・イベント送信箱の候補も、稼働中の状態に触らずここで作ります。モデル資産(`ModelAssetContainer`)だけは候補ではなくキャッシュで、失敗しても読み込んだモデルは残ります(どのシーンにも属さないので世代混在にはなりません)。
+3. **early_publish**: ECS オブジェクトを**トランザクション生成**(§4.4)し、name があり transform を持つオブジェクトの「name → GameObjectId」束縛(rpc の宛先になる)と物理・behavior の候補を作り、旧 entity を unpublish します。JSON 不正はここまでで全部戻して例外。
+4. **publish**(失敗しない): 候補を稼働中の状態と入れ替えます(swap だけ)。
+5. **activate**: **behavior を宣言順に有効化**して `onInit` を呼びます。ここが**失敗しうる最後の段**で、途中で例外が出たら init 済みの分を逆順に `onDestroy` した上で、**描画・ECS・カメラ・ライト・物理・behavior・イベント・乱数・シーン遷移要求の全部**を旧シーンに戻します。document・現在シーン名・authority も旧シーンのままです(`onInit` の `emit` / `loadScene()` も一緒に捨てられます)。
+6. **commit**: シーン文書・現在シーン名・epoch などの metadata を 1 回の swap で切り替えます。以降は失敗しません。
+7. **retire**: 旧シーンの entity・モデルインスタンス・一時モデルは即座には消さず、次フレーム(次の pending load 適用時と描画更新の先頭)に消費される retirement queue に積みます。旧 behavior の `onDestroy` はこの段で走ります。
+8. **flush**: `SceneLoaded` イベントを emit([第8章](08_gameplay.md))。ペイロードは prepare で確保済みなので、ここでの確保失敗はありません。
 
 ### シーン遷移(✅・WP52)
 
