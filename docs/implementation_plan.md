@@ -20009,6 +20009,34 @@ v2 の「4 変異」は 3 個 + assertion 要件だった。「context factory �
 - レビュー #3(設定 DLL が起動時に無く、後から不適合 DLL が現れた reload で旧 runtime を再構築しない: [gamelogicreload.cpp:184](../src/core/gamelogic/gamelogicreload.cpp#L184) が
   `active == null` のとき behavior sources を検証しない)は **WP381 / WP380 の loader 領域**。既知欠陥として記録
 - レビュー #6(generation guard が production で自己充足し、内部不整合を `schema_violation` に分類)は **E-3a**(commit noexcept と guard 再設計)で扱う(WP378 v2 決定 1 で訂正。E-0a は触らない)。記録のみ
+
+
+#### WP375a 完了記録(統合側。2026-09-02 深夜。**codex 停止中のため統合側の検証と小修正は Claude が実施**)
+
+- **実装(codex)**: planner に `DocumentOnly` route(committed projection でも非 active scene は runtime route を生成しない)/ registry 型検査を binding lookup より前に
+  (裁定: ECS migration ではなく `runtime_binding_missing@1`。light-only object に behavior を足すためだけに runtime entity を新設しない)/ pending attachment の rollback を
+  旧 vector・sequence・params・activation 状態を保持する swap 型 inverse token に / renderer・camera・light・collider の欠落 participant を participant 名入りの名前付きエラーに /
+  route matrix の期待値を literal 表に / production acceptance 4 件(非 active prefab・pending rollback・BlueSpot 検証順・4 route の participant 実値)/
+  `PELICAN_WITH_RPC` OFF の guard(RPC transport と RPC 専用テストを除外。golden の `editor_runtime_binding` case は RPC ON のみ)
+- **codex の継続(compiler OFF で WP375 acceptance を SKIP/named error にする)は使用上限で build 途中に停止**。作業ツリーの変更(fixture の compiler OFF 分岐)はそのまま採用し、Claude が検証
+- **統合側で見つけて直したもの(Claude)**:
+  (i) BlueSpot 受け入れが worktree で `DamagedHelmet.glb` 不在で落ちた → 出荷 example の model は **gitignore 済みのローカル asset**(smoke と同じ依存)。worktree へ copy して検証。
+  受け入れがローカル asset に依存することを記録(hermetic でない。smoke と同じ扱い)
+  (ii) `error.data` は edit 拒否の契約ではない: journal の wire 変換が `behavior_type_unknown` **だけ** `data` を複製する特別扱い(4 回目継続の codex 修正)になっていた。
+  edit 拒否の詳細は **`error.payload`**(manual 13_editor.md の契約)。特別扱いを削除し、受け入れ c と BlueSpot は `payload` を読む(`runtime_binding_missing@1` の `payload` に
+  `object_id` / `scene_id` が載る)
+  (iii) compiler OFF で acceptance b が「Runtime shader compiler is disabled; B-layer surface source is unavailable」で落ちた: fixture の `renderable=true` が model の material
+  (`openpbr/opaque_single.surface`)を引き、compiler 無しでは surface source が無い。b の目的(transform の commit target が fresh reload を越えて残る)に model は要らないので、
+  **compiler OFF では非 renderable** にした(`PELICAN_RUNTIME_SHADER_COMPILER != 0`)。ON 側は不変
+  (iv) 非 renderable にすると fixture は object を 1 つも書かず `object_not_found` になった → 他の非 renderable fixture と同じく **compiler OFF では transform だけの `Chair`** を scene に書く。
+  BlueSpot(出荷 example)は compiler OFF では surface source が無く load 不能 → smoke と同じ gate で **`SKIP("shipping example requires the runtime shader compiler")`**
+- **検証(worktree、Claude)**: 通常構成 build 0 error / 非 GPU **1217 / 1217** / WP375 系 GPU **19 / 19**(修正 (i)(ii) 後)/ compiler OFF build 0 error + WP375 系 **19 / 19**(BlueSpot は named SKIP)/ 修正 (iii)(iv) 後の ON 側 WP375 系 **19 / 19**
+- **統合側の変異 F1**(planner の active-scene filter を再び消す = WP375 の後退を再現): **赤**(`WP375a inactive prefab RPC is document-only …` が落ちる)。残留 0
+- 統合後 main(`1aeafc59`、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1534 件中 1532 緑**。落ちた 2 件(`WP375a inactive prefab …` / `WP375a production set routes …`)は
+  **`pelican_wp375_behavior_fixture.dll` の shadow copy 衝突**(`gamelogicreload.cpp:249` "shadow copy failed: The process cannot access the file")。shadow dir が
+  `<DLL dir>/.pelican-hot-reload` で **同じ fixture DLL を使うテスト process 間で共有**され、`-j4` で衝突する。単独再実行 **2 / 2 緑**。既知の穴に記録(shadow dir を process ごとに分ける = WP381 の loader 変更に同梱)
+- コードレビュー `rev375a`: **codex 再開後(2026-09-07)に投入**。観点: 上記 (ii) の契約統一、`DocumentOnly` route が preview / snapshot import / undo でも効くか、
+  `runtime_binding_missing@1` の裁定が prefab instance の behavior に副作用を持たないか
 ### WP376: resolved-scene provider を手で用意するテストの仕分けと、本番 provider 経由の受け入れ
 
 **§4 規則 11 中段。仕様レビュー(1 巡 + 決定差分)+ コードレビュー。見積: 小。**
@@ -21363,8 +21391,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 
 **統合済みで残っているもの**
 - WP377a(`a3f318fb`)のコードレビュー `rev377a`: 判定前に中断。**再投入**(観点は `<作業ディレクトリ>/rev377a.txt`)
-- WP375a: worktree `<作業ディレクトリ>/wp375a` で実装完了。統合側の検証(通常 build / 非 GPU / WP375 系 GPU / compiler OFF の acceptance)と致命後退の対照変異 F1 を Claude が実行中。
-  緑 / 赤なら **codex 無しで統合**し、コードレビュー `rev375a` は再開後に投入
+- WP375a: **統合済み**(`1aeafc59`)。コードレビュー `rev375a` は再開後に投入(観点は完了記録の末尾)
 
 **再開後の投入順**(すべて仕様確定済み。台帳の各節の最終差分が正)
 1. `rev377a` / `rev375a`(コードレビュー。read-only)
@@ -21376,4 +21403,5 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 **既知の穴(WP 化は別途判断)**
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
 - WP334b 系の `-j4` 負荷 flake(commit 待ちタイムアウト。今日 5 回)
+- game-logic fixture DLL の shadow copy 衝突(`.pelican-hot-reload` が DLL 横で process 間共有。`-j4` で同じ fixture を使うテストが衝突。WP375a 統合時に 2 件)→ **WP381 の loader 変更に「shadow dir を process ごと」を同梱**
 - loader: 設定 DLL が起動時に無く、後から不適合 DLL が現れた reload で旧 runtime を再構築しない(`rev375` #3。WP381 / WP380 の領域)
