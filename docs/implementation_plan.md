@@ -21363,6 +21363,34 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
   `glTF morph vertex metadata exceeds renderer capacity of 262144 static vertices`(`vertbufcontainer.cpp:252`、`vertex_offset > maxMorphVerticesPerPool`)。失敗経路で model が二重に upload されている疑い(WP380a の startup root 配線 / warm cache)。→ **WP380a-fix を上段で起票**
 - コードレビュー `rev380a`: (記入)
 
+
+
+#### WP381 完了記録(統合側。2026-09-03、`e06c7b08`)
+
+- **実装(codex、fast 無し)**: `gameLogicAbiVersion = 2` + C linkage の `pelican_game_logic_epoch_v2()`(process-local nonce)を全 game DLL が `gamelogic_entry.cpp` 経由で通常 import。
+  4 入口を `pelican_register_behavior_v2 / pelican_register_event_v2 / pelican_emit_v2 / pelican_register_system_v2` に改名し旧 export を除去(`__registerComponent` と provider `getApiV1` は不変。
+  WP379 の ingress policy 差分 0)。top-level PE32/PE32+ の raw import reader(`gamelogicimports.cpp`。診断中に `LoadLibrary` を呼ばない):
+  `game_logic_abi_stale@1{expected_epoch, found, legacy_symbols[]}` / `game_logic_abi_unsupported_import@1{kind}` / `game_logic_abi_unreadable@1{reason}` / `game_logic_load_failed@1{os_code}`。
+  active ありの `initialize()` は reload transaction に委譲し、全 root で raw 診断を teardown より前に。**shadow dir を `.pelican-hot-reload/<pid>`**(既知の穴の同梱)。
+  RPC の attempt / result / status に `error_code` / `error_fields`(成功で clear)
+- **fixture 9 role**(legacy-behavior / event / emit / system、stale-behavior-v1(frozen v1 SDK 82 ファイル byte 一致 + 実 MSVC 装飾名の EXE import stub)、v2-constructor-control、duplicate-key、reverse-order a / b)。
+  inventory は `PELICAN_GAME_DLL` property から生成(physics ON で exact 19、OFF で 15)。出荷 4 project の DLL は anchor あり・旧名なし・load 成功・`system_count == 1`
+- **agent の対照(実バイナリ)**: 3 枝(診断 ON → stale、reader 除去 → `load_failed{127}`、v2 control → probe に nonce)/ ordinal・delay-load・欠落ファイルはロード前に名前付き /
+  3 root で stale 拒否 + 失敗時 active 保持(preflight または委譲を外すと旧 active が消える)/ post-link 監査(`/sourceDependencies` 0、host の旧 export 0)/ 重複 key と逆順 2 本 /
+  RPC の失敗 → `get_status` → 成功 → clear を同一 wire test / reader mutant 4 本(入口ごと)を専用 CTest で実バイナリに対して
+- **統合側の所見**: 3 枝対照の「診断 OFF」は仕様では**ソース変異**(reader の呼出を消す)だったが、実装は `GameLogicImportDiagnostics` の **runtime switch**(`import_diagnostics_`)で切り替えている
+  = production code に診断を無効化できる seam が残る。コードレビュー `rev381` の重点に載せる(削除して 3 枝のうち OFF 枝は統合側の変異 M2 で代替する案を含む)
+- **統合側の検証(worktree、base 上)**: 非 GPU **1235 / 1235**、GPU label 付き loader 系 29 件中 1 件赤 = 既存 e2e `game_logic_dll_reload`(ps1 駆動)。
+  継続で判定: production の clear は実装済みで、**ps1 側の PowerShell 5.1 の罠**(空 object の `PSObject.Properties.Count` が `$null` → `$null -ne 0` が真)。`@(...).Count` に修正 +
+  `statusJson()` と `get_status.participants.game_logic` の clear を直接検証する回帰テストを追加。ログ先頭の `unreadable` は ps1 が意図的に書いた非 PE。ただし自動 poll に
+  **部分書込みを読む競合が実在** → `(last_write_time, size)` が 2 回連続で安定するまで待ち、Windows では write-share なしの read lease を取ってから診断(writer が開いていれば次回 poll で再試行)
+- **統合側の変異(1 回目)**: M1(`initialize()` の reload 委譲を外す)**赤** / M2(raw 診断の呼出を消す)**緑 = 生存** → 受け入れが reader を直接呼ぶ helper 直叩き(代理条件)だった。
+  継続で `GameLogicReloader::initialize()` 経由(named stale error・未ロード・generation・registry 不変)に変更し、**`GameLogicImportDiagnostics` runtime switch を削除**(診断は常時)。agent は M2 相当のソース変異で赤を確認
+- **統合側の変異(2 回目、継続後)**: 基準 10 / 10 → **M1**(`initialize()` の reload 委譲を外す)赤 / **M2**(raw 診断の結果を常時受理)赤 2 / 2(`legacy entrance inventory …` が production loader 経由で観測)。残留 0
+- **統合側の変異**: (記入)
+- **main 取り込み**(`merge-resolver` agent、opus): 衝突 6 ファイル(event registerer の outbox + 改名、rpcserver.hpp/.cpp の両側追加、test CMake の option 集合、docs 2)。WP380a の typed rebuild は WP381 の loader 内で生存を確認。worktree で非 GPU 1264 / 1264、GPU 含む WP 系 gate は出荷 example の ignored asset を copy して緑
+- 全数(統合後 main、`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列、`-j4`): **1586 件中 1583 緑**。#71 Studio fatal = WP380a の後退(WP380a-fix 統合待ち)。**WP381 の inventory テスト 2 件が単独でも赤**: `targets.size() == 19` の literal に対し main の構成では 23(SKIP_DEVSTUDIO=OFF + 後続 WP の fixture DLL)。「exact 19」は 1 構成の実測値であって受け入れの意図(property から生成され完全)ではない → literal を外し inventory を走査する形に修正(Claude agent)
+- コードレビュー `rev381`: (記入)
 ### WP380a-fix: 失敗した scene load が vertex pool を消費し、出荷 example の config fatal を別の fatal で隠す
 
 **§4 規則 11 上段(出荷挙動)。コードレビューのみ(§10)。見積: 小。WP380a の後追い(致命ではないが利用者に見える診断の後退)。**
