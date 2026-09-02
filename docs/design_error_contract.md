@@ -96,3 +96,104 @@ UserDataError { code, message(leaf), json_pointer?, scene_id?, authoring_object_
 (3) 「その他は再送出」を E-4 まで待つ間、`logic_error` の握り潰しが残る。中間状態の受け入れ方
 (4) E-5 の terminal 伝搬は WP375 の seam(plan/materialize)とどう噛むか。順序依存
 (5) provenance を型に持たせると、resolver の外(asset loader)で投げる UserDataError は provenance を持てない。誰が付けるか
+
+
+## 6. 設計レビュー第 1 巡(10 件・破綻 4)と v2
+
+**v2 が本文書の正。§2 決定 1〜5 は v2 で置換される。§1 の実測は次の訂正を受ける。**
+
+訂正: componentcodec の型無し投出は 2 ではなく **3**(`rayInstanceCodecError` が **11 の拒否分岐**から呼ばれる:
+[componentcodec.cpp:884](../src/core/loader/componentcodec.cpp#L884))。atlas 31 は静的件数として正しいが、
+resolver から実際に到達するのは `SpriteViewComponent::validate → parseSpriteAssetReference` の **5 投出点**だけ。
+そして **明示 `throw` 以外に、camera の `value<string>` / collider・sprite の未検査 `get<float>` から
+nlohmann の型例外が利用者入力で到達する**([componentcodec.cpp:612](../src/core/loader/componentcodec.cpp#L612))。
+
+### 決定 1'(#2・#8): **既存の例外型を変えない。decode 境界で「値」に変換する**
+
+`StructFieldValidationError` を `UserDataError` の派生にする v1 は 2 重に誤りだった:
+- 同じ例外型が **encode 側の invariant 失敗**にも使われる(`encodeAnimation` / `encodeBehaviorParams`:
+  [componentcodec.cpp:858](../src/core/loader/componentcodec.cpp#L858))。基底を変えると内部バグが利用者エラーになる
+- userpublic の公開ヘッダで **game-logic DLL(ABI v1)が inline canonicalizer からこの型を投げる**
+  ([registerer.hpp:228](../src/core/userpublic/details/behavior/registerer.hpp#L228))。基底変更は旧 DLL との ODR 不整合
+
+**決定**: 例外の基底は触らない。**`decodeAuthored` の境界だけ**で既存例外(`StructFieldValidationError`、
+nlohmann の型例外、各 codec の `runtime_error`、`rayInstanceCodecError`)を **`UserDataViolation` 値**へ変換する。
+encode 側で同じ例外が出たら **invariant failure として伝播**させる(変換しない)。
+形は **`decodeAuthored → expected<Value, UserDataViolation>`**。例外クラスで分類しない。
+
+### 決定 2'(#1・#3): **E-0 を置く。中間 carrier は variant**
+
+- **E-0**: `StoredResolutionFailure = variant<UserDataViolation, LegacyResolutionText>`。
+  `runtime_resolution_error` の `optional<string>` をこれに替える。**E-4 の完了条件 = `LegacyResolutionText` の
+  producer が 0 になること**(そのとき alternative を削除する)
+- **棚卸しの単位は「decoder の拒否分岐」**であって `throw` の数ではない。ray_instance の 11 分岐と
+  暗黙の nlohmann 例外を **E-4 より前**に閉じる。E-1〜E-3 の対象表を分岐単位で作り直す
+- E-1〜E-3 の各段は、移した分岐の `UserDataViolation` と、未移行分岐の `LegacyResolutionText` が
+  **同じ inactive scene に同居して保持される**ことを受け入れにする(第 1 巡 #3 の構成そのもの)
+
+### 決定 3'(#5): fail-fast の回復は **E-4 より先に、本番境界で**
+
+`commit()` が `noexcept` で全例外を結果値に変換する限り、E-4 で resolver の catch を狭めても本番の内部バグは
+`method_unavailable` に平坦化される。WP373 裁定「平坦化を直すのが先」と一致する。
+
+- **E-4a(先)**: materialize / commit の結果型に **`InternalInvariantFailure` を載せない**。内部例外は
+  変換せず**伝播して停止**する(fail-fast)。`UserDataViolation` だけが結果値になる
+- **E-4b(後)**: resolver の catch を「`UserDataViolation` だけ保持」に狭める
+- resolver seam で `logic_error` を起こす試験は **unit contract** と明記し、production acceptance に数えない
+  (camera の `logic_error` は補完後の invariant で authored 入力から到達しない)
+
+### 決定 4'(#4): 見える境界は **3 つ**
+
+| 境界 | 今日 | 後 |
+|---|---|---|
+| query(`get_components`) | `runtime_resolution_error` を出さない | `resolution_error {code, source, message}` |
+| edit terminal(`get_edit_result`) | `method_unavailable` に潰れる | `UserDataViolation` を variant で運ぶ |
+| **`load_scene` と cold start / launcher status** | 数値 application error / ログ文字列で終了 | **構造化した `UserDataViolation`** |
+
+「current 切替で code つきで落ちる」は 3 つ目が無いと実 RPC で成立しない
+([rpcserver.cpp:1450](../src/core/communication/rpcserver.cpp#L1450)、[pelican_core.cpp:111](../src/core/userpublic/pelican_core.cpp#L111))。
+
+### 決定 5'(#6): **WP375 を明示的な依存**にし、failure variant と terminal wire を先に確定する
+
+terminal は固定 `EditorEditErrorCode` enum([editorjournal.hpp:46](../src/core/communication/editorjournal.hpp#L46))から
+code を生成し、`projectionFailure` は固定 switch で adapter failure を `method_unavailable` にする。
+- plan / materialize の **共通 failure variant**(canonicalization / resolver / adapter / internal)を WP375 の
+  着地後に固定し、terminal JSON の exact schema(**outer code と payload code のどちらが規範か**)を先に決める
+- E-5 はその variant の上に載る。**WP375 の前には E-5 を起票しない**
+
+### 決定 6'(#7): pointer は **token 列で保持**し、`source` を分離する
+
+- throw 時から **token 列**を持ち、RFC6901 の escape は serialization 時に行う(`a/b` → `/params/a~1b`)。
+  現行の dotted path(`root + "." + field`: [structfieldjson.hpp:53](../src/core/userpublic/details/schema/structfieldjson.hpp#L53))
+  からの変換は非可逆なので、**dotted を作らない**
+- `UserDataViolation { code, tokens[], leaf_message, source{kind ∈ {component, prefab_parameter, project_default, asset}, document_id, pointer} }`
+- **occurrence provenance(scene_id / object / component index)は別の値**(`DiagnosticOccurrence`)。
+  下層(asset loader)は source を持ち、resolver が occurrence を付ける(§5(5) の答え)
+
+### 決定 7'(#9・#10): wire 契約は **分岐ごとの表**と **全 surface の golden bytes**
+
+- **拒否分岐ごとに `{code, tokens, leaf_message bytes}`** を表にする(namespace の列挙ではなく exact)。
+  animation / ray_instance を含める
+- 5 surface(direct `what()` / stored leaf / 文脈付き `what()` / query / terminal)を **変更前の golden bytes** と比較する。
+  「既存文言テスト無変更」は証明にならない(sprite の大半は `REQUIRE_THROWS` だけ)
+- **`DiagnosticOccurrence { violation, provenance, introduced_by_candidate, base_revision }`**。
+  dry-run(U2)は base / candidate の差分を返す(WP372d v2 の `preexisting` の後継)
+
+### 決定 8': 段割り(v1 を置換)
+
+```
+E-0  StoredResolutionFailure(variant)+ decode 境界の値変換の器(expected)+ 分岐単位の棚卸し表
+E-1  camera(4 + alias)/ animation graph / ray_instance(11)を分岐単位で UserDataViolation へ
+E-2  collider(17)/ sprite_view(15、うち resolver 到達 5)
+E-3  atlas(resolver 到達 5。残りは asset loader 境界)
+E-4a materialize / commit で内部例外を結果値にしない(fail-fast の回復。本番境界)
+E-4b resolver の catch を狭め、LegacyResolutionText を削除
+E-5  見える境界 3 つ(WP375 着地後。failure variant と terminal wire を先に固定)
+```
+
+各段の単独の価値は v1 と同じ。**E-4a は E-4b より先**、**E-5 は WP375 の後**。
+
+### 決定 9': ABI
+
+`StructFieldValidationError` の名前・constructor・`code()/path()` を保持する。**game-logic ABI は上げない**。
+旧 DLL が投げた同型例外は core 境界で同じ値変換を受ける(基底に依存しない)。
