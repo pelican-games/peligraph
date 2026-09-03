@@ -22504,6 +22504,7 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 
 軸: `document(D)` / `material_name(N)` / `asset present(A)` / `index present(I)` / `index valid(V)`。`source_material_index` は canonical 化前は optional。
 規則: `D && N → Document` / `!(D && N) && A && I && V → Asset` / `A && I && !V → MaterialIndexOutOfRange@1(named)` / それ以外 → `Unavailable`。
+**訂正(2026-09-04、WP383 実装の統合側検証)**: `D && N` を Document の条件にすると、name の無い document material(単一 material の `.mat.json`。WP366 の fixture が該当)が Asset / Unavailable に落ち、document selector が `ray_binding_selector_unresolved@1` で解決できなくなった(WP366 の 3 テストが赤)。**document の存在が勝つ**: `D → Document{document, material_name?}`(name は optional)/ `!D && A && I && V → Asset` / `!D && A && I && !V → MaterialIndexOutOfRange@1` / それ以外 → Unavailable。selector は document だけなら name を問わず一致、name 付きなら一致を要求。`D=1,N=0,A=1` は gate も lookup も Document を見る(rev377a #2 の不一致はこれで消える)
 検査は production の `resolveRaySceneRows` を通し、gate と lookup が同じ `MaterialRowIdentity` を見ることを 1 つの parametrized test で固定。
 
 ##### 決定 34(#14): fingerprint の受け入れは **production の reload validation** で
