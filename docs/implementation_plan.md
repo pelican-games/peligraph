@@ -21894,7 +21894,11 @@ registry の transaction-local 化(ID-A)/ refresh root の participant 化(WP380
 - **統合側の変異(`mutation-runner` agent、opus。GPU 含む。1 回目、対象 52)**: **基準が赤 1** = GPU の production test「frozen v2 DLL effects rollback and committed RPC effect failures」が `PathResolver setup called more than once`(:3334)で B の import 前に落ち、WP380b の assertion が 1 つも走っていなかった(codex は GPU を回していない)。M1(play の即時化)赤 :140 / M2(save の即時化)赤 :84 / M4(façade が捨てる)赤 :205 / M6(cursor を戻す)赤 :146 / M7b(removeAll の reject 除去)赤 :137 / M8(timestamp を now に)赤 :133。**生存 2**: M3(retire の resolver を candidate に)= fixture の `only_d` が B と C の両方にあり非対称が無い / M5(RPC の結果形を error に)= 実 handler を通す assertion が GPU test にしか無く未実行。M7(create の reject 除去)は ECS の別例外で偶然赤 → 4 件を codex(sol)に差し戻し。**2 回目**: runtime setup を 1 回に統合して production test が末尾まで到達、fixture を B は E だけ / C は D だけの非対称に、実 `RpcServer` の `load_scene` handler で `{committed: true, effect_errors}` と error 不在を観測、create は登録済み component で「throw しない」ことで落ちる形に。codex の再変異: resolver を candidate に → :3399 赤 / RPC を error に → :3417 赤 / create の reject 除去 → :142 赤。GPU 対象 52 / 52、非 GPU 1287 / 1287。統合側の再確認(M3)は resolver の別分岐(scene.cpp:1026、retire 経路は :1034)に当たり緑 = **無効な再確認**(worktree は着地で削除済み)。codex の :3399 赤を採用し、rev380b に観点として渡す
 - **main 取り込み**(`merge-resolver` agent、WP380d の後。merge 352ff61d): 衝突は scene.cpp の commit 末尾 1 箇所のみ。WP380d の「batch が finish を 1 回記録、token は記録しない」を取り、その後に WP380b の `CommittedWithEffectFailure` return を置く。effect transaction の flush は `(void)phase_trace` で trace に書かず 8 要素を保つ。manifest は衝突なし(WP380d は触っていない)で、WP380b の audio 行は `effect` role、`handle_cursor` は `non_rollback`、reject 行は ID 無しで WP380d の role 制約(real 10 行)と両立。merge 後 非 GPU 1287 / 1287
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1621 / 1621**。doclink 84 件追従、未解決 0
-- コードレビュー `rev380b`: (記入)
+- コードレビュー `rev380b`(codex sol、上段。`5fed6612`): **Reject**(致命 2 + 実害 5 + 設計懸念 3)。(1) component registerer の callback は early publish で走るが effect scope は activate 直前に設置され、全 scope を迂回 /
+  (2) `flush() noexcept` と destroy façade が JSON・`std::string` を生成し allocation 失敗で terminate / (3) staging error と flush error の順序が call order でない / (4) 固定容量 256 の overflow が無音、tombstone が容量を占有 /
+  (5) `GameContext::createObject*` は inventory で deferred だが base 実装は callback 中に `logic_error` / (6) persistence の resource key が Windows の case を区別し同一物理ファイルに 2 回書く / (7) read error が `nullopt` に縮退 /
+  (8) inventory JSON と manifest が未接続 / (9)(10) frozen audit の partial TU、受け入れ文言の不一致(記録)。→ **WP380e**(上段、sol max)で 1〜8 を直す。連鎖は 380e で打ち切り。
+  壊せなかった: retire resolver の非対称 fixture、onInit / rollback onDestroy / retire が同一 scope、frozen DLL の inline bypass 無し、provisional handle の ABA 無し、retired view の dead read 無し、通常の atomicWrite 失敗は名前付き、4 root の伝播、出荷 4 project の tree ID 一致
 #### WP380b 仕様レビュー第 1 巡(不合格・15 件)と v2 —— **決定差分(v2 が本節の正。v1 と矛盾する箇所は v2 が勝つ)**
 
 仕分け: **直す 13**(#1〜#12 #14)/ **切り出す 1**(#15 → WP380c)/ **記録 1**(#13 は WP380c の受け入れへ)。
@@ -22327,6 +22331,52 @@ list のネスト / 添字 identity / 永続 ID(WP304)/ Studio の UI(CARRIER-ST
 (1) `List` が既存の constexpr schema(`std::apply` の fold、`materializeStructField`)に載るか。載らないなら何を変えるか / (2) `$row.id` の allocator `max + 1` が undo / redo と copy / paste で決定的か(削除後の再挿入で id が再利用されない保証)/
 (3) `insert_component_field` の inverse が既存 CAS の structural domain で表現できるか / (4) `occurrence_id_v1` の入力(accessor 正規化・variant tag)が本当に単射で、かつ DCC 再出力で安定か(instancing・LOD・skinned)/
 (5) 1 WP に 4 milestone は大きすぎないか(M1+M2 を先に出荷しても意味があるなら分ける。ただし「単独出荷しない」と本文が認める WP は WP ではない = 修正 θ)/ (6) participant seam が WP380b の effect sink と干渉しないか(catalog の prepare は effect を出さないこと)。
+
+### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
+
+**§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
+**依存: WP380b(`5fed6612`)統合済み。WP382(CARRIER-RT3)の participant seam は本 WP の後に載る。**
+
+#### 何が壊れているか(`rev380b` が確認)
+
+1. **致命: behavior より前に走る game-DLL callback が全 scope を迂回**: component registerer の callback([registerer.hpp:82](../src/core/userpublic/details/component/registerer.hpp#L82))は early publish([scene.cpp:682](../src/core/loader/scene.cpp#L682))で走るが、
+   effect scope は behavior activate の直前([scene.cpp:934](../src/core/loader/scene.cpp#L934))に設置される。rollback した scene の audio / persistence / event / RNG / pending scene が残り得る
+2. **致命: `flush() noexcept` と destroy façade が allocation-free でない**: flush([effecttransaction.cpp:501](../src/core/loader/effecttransaction.cpp#L501))が JSON と `std::string` を新規生成し、`exceptionText()` も文字列を構築する。診断生成の allocation 失敗で `std::terminate`
+3. staging error(即時 append。[effecttransaction.cpp:93](../src/core/loader/effecttransaction.cpp#L93))と flush error(後置 append。:501)の順序が call order にならない(決定 21 違反)
+4. 固定容量 256 の overflow: 上限超過は無音 return(:97)、capacity 判定が active 数でなく `entries_.size()`(:110)、`stopSound(provisional)` は tombstone を残す(:171)。257 件目以降が黙って消え、取消済み play が容量を永久占有
+5. `GameContext::createObject*` は inventory で deferred 扱い([public_api_inventory.py:31](../tools/public_api_inventory.py#L31))だが、base 実装([gamecontext.cpp:79](../src/core/userpublic/gamecontext.cpp#L79))は behavior callback 中に `logic_error` を投げる。公開契約と表が食い違う
+6. persistence の resource key が実 path identity と一致しない: Windows で `saveData("Foo")` と `saveData("foo")` は同一物理ファイルだが outbox では別 resource([persistence.cpp:288](../src/core/persistence/persistence.cpp#L288))。last-write-wins が効かず 2 回書く
+7. persistence の read error(壊れた JSON、permission)が `nullopt` = 「slot 不在」に黙って縮退([persistence.cpp:304](../src/core/persistence/persistence.cpp#L304))
+8. 設計懸念: API inventory(JSON)と runtime manifest の分類が**接続されていない**(決定 25 の (2)「mutator 全行が manifest に分類を持つ」が機械的に検査されていない)
+
+記録のみ(#9 #10): frozen header audit に partial TU が混入しうる件、root / Studio / AUDIO OFF の受け入れ文言の不一致 → 台帳の既知の穴に記す。
+
+#### 直すこと
+
+1. effect scope を **early publish の前**(最初の game-DLL callback より前)に設置し、rollback / retire / flush まで 1 つの scope で覆う。component callback から呼ばれた effect API が sink に入り、rollback で捨てられることを観測
+2. flush と destroy façade を **allocation-free** にする: `effect_errors` の各 entry は prepare で確保した固定 slot に **enum code + 固定長 field(u64 / u32 / 固定長 string_view は staging 時に確保済みの buffer を指す)**で書き、JSON 化と `std::string` 化は commit 後の非 noexcept 文脈(RPC 応答 / log)で行う。`exceptionText()` は使わず `what()` を固定長 buffer に `memcpy`(切り詰め)
+3. error の順序: staging error も flush error も **単一の sequence 番号**(staging 時に採番)で並べ、`effect_errors` は sequence 順(= call order)
+4. 容量: `stopSound(provisional)` は entry を**削除**(tombstone を置かない)。capacity 判定は active entry 数。上限超過は無音にせず **最後の固定 slot に `effect_outbox_full@1{dropped}` を 1 件**(決定 20)。受け入れで 257 件目を観測
+5. `GameContext::createObject*` の契約を 1 つにする: base 実装も **behavior callback 中は deferred**(`BehaviorContext` の shadow を base に降ろす)か、inventory の分類を `reject` に直すかを選ぶ。**選ぶのは前者**(callback 中の `createObject` は正当な用法。決定 4 の「callback 中の利用は禁止しない」)。inventory と manifest を一致させる
+6. persistence の resource key は **`atomicWrite` が使う canonical path**(`std::filesystem::weakly_canonical` + Windows では case-fold)で作る。同じ物理ファイルへの 2 call が 1 entry に coalesce されることを Windows で観測
+7. `loadData` / `listSaves` の read error を **名前付き**(`persistence_read_failed@1{path, reason}`)にし、`nullopt` は「存在しない」だけに限定。transaction 中は overlay を先に見る規則は不変
+8. `public_api_inventory.json` の `mutator` 行と manifest の行を **同じテストで照合**(mutator 全行に manifest 分類があり、manifest に inventory に無い API 行が無い)
+
+#### 受け入れ(§4 規約 10)
+
+- 1: component callback(実 DLL の `pelican_register_component_v2` の callback。frozen v2 fixture に足す)が `playSound` / `saveData` を呼ぶ → C 失敗後に voice / disk が B snapshot(今日 = 残る)。scope の設置位置を activate 直前へ戻す変異が落ちる
+- 2: flush 中の allocation を fail させる injector(`SceneLoadFaultPhase::flush` の `allocation`)で **process が継続し** `effect_errors` に `persistence_write_failed@1` が固定 slot で残る(今日 = terminate)。`static_assert(noexcept(...))` + allocation-free の単体テスト(operator new を数える test allocator で 0 回)
+- 3: onDestroy が `playSound(存在しない)` → `saveData` → `setBusVolume(失敗)` の順で呼び、`effect_errors` が call order(staging → flush の混在でも sequence 順)。sequence を消すと落ちる
+- 4: 257 件の `playSound` → 256 件 + `effect_outbox_full@1{dropped: 1}`(今日 = 257 件目が無音)。`playSound → stopSound(provisional)` を 300 回繰り返しても容量を消費しない(tombstone を戻すと落ちる)
+- 5: 実 DLL の behavior callback から `GameContext::createObject` が deferred になり、activate 失敗で消える(今日 = `logic_error`)。inventory の `deferred` 行がテストで照合される
+- 6: Windows で `saveData("Foo")` → `saveData("foo")` が write 1 回(今日 = 2 回)。case-fold を外すと落ちる
+- 7: 壊れた JSON の slot を `loadData` → `persistence_read_failed@1`(今日 = `nullopt`)
+- 8: inventory に mutator を 1 行足して manifest に書かないと落ちる(今日 = 通る)
+- 全数 / 両構成 / RPC OFF / AUDIO OFF / 出荷 4 project bytes 不変
+
+#### やらないこと
+
+frozen audit の partial TU(記録)/ 受け入れ文言の統一(記録)/ CARRIER-RT3 の participant(WP382)。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
@@ -22347,6 +22397,7 @@ list のネスト / 添字 identity / 永続 ID(WP304)/ Studio の UI(CARRIER-ST
 5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)。rev380b の仕分けが残る。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(仕様レビュー中。参加者 seam は WP380b の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
 
 **既知の穴(WP 化は別途判断)**
+- **frozen header audit に partial TU が混入しうる**(`rev380b` #9)/ **root・Studio・AUDIO OFF の受け入れ文言の不一致**(`rev380b` #10)。WP380e の範囲外として記録
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
 - WP334b 系の `-j4` 負荷 flake(commit 待ちタイムアウト。今日 5 回)
 - game-logic fixture DLL の shadow copy 衝突(`.pelican-hot-reload` が DLL 横で process 間共有。`-j4` で同じ fixture を使うテストが衝突。WP375a 統合時に 2 件)→ **WP381 の loader 変更に「shadow dir を process ごと」を同梱**
