@@ -99,6 +99,56 @@ CPU 参照レイトレーサ(std のみ)との比較は、次の**規範表で�
 - subset 外の自由 shader は**書ける**が cross-device golden 非保証の区分
   (エラーではなく分類)。golden fixture は subset 内で書く
 
+
+### 4-P. procedural subset の規範表(2026-09-04。RT3-2 の前提。§11 決定 6(b)・決定 19 が要求した「先に書く」文書)
+
+§4 の入力 domain は三角形だけで、CPU oracle の入力型も `RayTracingOracleTriangle` しかない
+([raytracingoracle.hpp:51](../src/core/shader/raytracingoracle.hpp#L51))。RT3-2(static AABB + `.rint`)を golden 化するには、
+手続き幾何を **同じ区間算術・同じ包含述語**で判定できる subset を先に固定する。**本節が無い限り procedural は §4 subset 外**であり、
+RT3-2 の受け入れから CPU golden を外すことになる。以下は三角形の表([raytracingoracle.hpp:15](../src/core/shader/raytracingoracle.hpp#L15)-26 の定数)を**拡張**する。
+
+#### 4-P.1 入力 domain(fixture 生成器が構成的に保証する。検査に頼らない)
+
+| 項目 | 契約 | 定数 |
+|---|---|---|
+| AABB | 有限、`min ≤ max` を**全軸で strict**(`min_i < max_i`)。零厚は subset 外(名前付き拒否 `procedural_aabb_degenerate`) | 各軸の厚み `≥ ε_box = 1.0e-2`(座標 domain ±2^10 に対して相対 1e-5) |
+| AABB と幾何 | 手続き幾何(球)は AABB に**厳密に内包**され、AABB の各面から `ε_pad = 1.0e-2` 以上離れる(球: `center ± (radius + ε_pad)` が box 内) | `ε_pad = 1.0e-2` |
+| 球 | `center` は座標 domain 内、`radius ∈ [r_min, r_max] = [1.0e-1, 2^8]`。`radius` は f32 で正確に表現できる値(dyadic)に限る | `r_min = 0.1`、`r_max = 256` |
+| ray | §4 と同じ(正規化方向、origin は domain 内、`t ∈ [t_min, t_max]`)。**origin は球の内側に置かない**(内側からの root 選択は subset 外) | `t_min = 1e-3`、`t_max = 4096` |
+| 入射 | ray と球面の交差角の余弦 `|d · n| ≥ minimum_incidence_dot`(掠め入射を排除。三角形と同じ) | `0.0871`(約 85°) |
+| 判別式 margin | `b² − 4ac` の**下限**を fixture 生成器が保証: 判別式の区間が 0 を含まない(接線・準接線を排除) | `disc_min = 1.0e-2 · radius²` |
+| 一意性 | 最近接 hit と次候補(同一球の第 2 root、他の instance、三角形)の `|t1 − t2| > ε_t`。`ε_t` は §4 の `relative_t_epsilon` を t に乗じたもの | `relative_t_epsilon = 1e-3` |
+| AABB の slab と hit | ray は AABB の**辺・頂点から `ε_b` 以上離れて**入射する(slab の縮退を排除) | `barycentric_epsilon` と同じ `1e-3`(box 面上の正規化距離) |
+| transform | §4 と同じ(条件数 ≤ 100、行列式 ≥ 1e-3)。**非一様 scale は subset 外**(球が楕円体になり root の式が変わる)。`.rint` は object 空間で交差し、t は world へそのまま(rigid + uniform scale なら t は scale 倍) | `maximum_transform_condition`、`minimum_transform_determinant` |
+| NaN / Inf | fixture 生成時に拒否(§4 と同じ) | — |
+
+#### 4-P.2 CPU oracle(double + 有向丸めの区間算術。三角形と同じ構成法)
+
+- **AABB slab**: 各軸で `t_near_i = (min_i − o_i) / d_i`、`t_far_i = (max_i − o_i) / d_i` を区間で計算(`d_i` の区間が 0 を含む軸は「無限 slab」として除外し、`o_i ∈ (min_i, max_i)` を区間で確認)。`t_enter = max_i t_near_i`、`t_exit = min_i t_far_i`。
+  `t_enter.upper < t_exit.lower` を要求(交差の区間が確定しない fixture は生成器が拒否)
+- **球**: `oc = o − c`、`b = 2 (d · oc)`、`c' = |oc|² − r²`、`disc = b² − 4 c'`(`a = 1`、正規化方向)。`disc` の区間 lower > `disc_min`。root は `t = (−b − √disc) / 2`(origin が外側なので**小さい方が最近接**)。
+  `√` は区間の両端に `sqrt` を当て、`nextDown / nextUp` で丸める。`t` の区間が `[t_min, t_max]` を跨ぐ fixture は拒否
+- **AABB 内包含**: `t` の区間全体が `[t_enter.lower, t_exit.upper]` に入ること(手続き幾何の hit は必ず box の中で起きる)
+- **hit attribute**: `.rint` が報告する属性は **`t` と `hitKind(u32)` だけ**を subset に入れる。法線・uv は payload 扱いで比較しない(§4 の「payload は比較しない」と同じ)。`hitKind` は fixture が宣言した定数(sentinel)で、GPU が読み戻した値と一致すること
+- **端点の f32 padding**: 三角形と同じ `endpoint_f32_ulp_padding = 4`(`padEndpoints`)
+- **区間幅の上限**: `(t.upper − t.lower) / t_mid ≤ maximum_relative_interval_width = 1e-2`。超える fixture は生成器が**拒否**する(「区間を広げれば常に通る」を防ぐ。§4 と同じ)
+
+#### 4-P.3 GPU との比較述語
+
+- GPU の hit `t`(f32)が CPU 区間に**包含**され、record ID 集合と `hitKind` が一致すること。any-hit は §4 の整数述語 IR(`RayTracingAnyHitIntegerPredicate`)をそのまま使う(`.rint` の後の any-hit も同じ許可集合)
+- **三角形と球の混在**: 最近接判定は両方の候補を同じ区間算術で比較する。一意性 margin は候補の型を問わず適用
+- **off / on 対照**: AABB geometry を宣言しない同一 scene では球が写らない(三角形だけ)。`.rint` を `unused` に戻すと GPU が交差を報告しない = 三角形との最近接が変わる
+
+#### 4-P.4 subset 外(書けるが golden 非保証)
+
+零厚 AABB / 接線・掠め入射 / 球の内側からの ray / 非一様 scale / 楕円体・カプセル等の他の手続き幾何 / 法線・uv の比較 / 複数 `.rint` の同一 AABB 内競合 / `reportIntersectionEXT` を複数回呼ぶ shader。
+
+#### 4-P.5 受け入れの骨(RT3-2 WP へ引き継ぐ。§4 規約 10)
+
+- 生成器: 上の各拒否条件を 1 つずつ満たさない fixture を作ると名前付きで拒否される(零厚 / 接線 / 内側 origin / 非一様 scale / 区間幅超過)。拒否を消すと落ちる
+- oracle: 球 1 個・三角形 1 個・ray 1 本の最小 scene で `t` の区間と GPU の `t` の包含。区間の padding を消すと落ちる(f32 の GPU 値が double 区間から外れる fixture を 1 つ含める)
+- 混在: 球が三角形の手前 / 奥の 2 fixture で最近接の record ID と `hitKind` が入れ替わる
+- 数値契約は RT3-2 WP の表で確定し、**変えるときは本節の定数を上げてから**(定数は `raytracingoracle.hpp` に `Contract` として実装される。設計と実装で同じ名前)
 ## 5. capability・構成(v2 §4 + 第 2 巡 #8)
 
 - 選択済み feature × 非対応 device = hard reject(property 名・要求値・実値・device 名)
