@@ -21879,6 +21879,22 @@ WP380a 後の状態は「engine-owned state と engine-owned queue(event / RNG /
 registry の transaction-local 化(ID-A)/ refresh root の participant 化(WP380 決定 10)/ Studio の authority wire(修正 E)/ 旧 DLL の onDestroy を entity live のまま呼ぶこと(決定 3 で却下)/
 `debugText` の participant 化 / CARRIER-RT3 の participant seam(本 WP の sink と executor 順序の上に載る。順序は WP380b → CARRIER-RT3)。
 
+
+
+#### WP380b 完了記録(統合側。2026-09-03、`5fed6612`)
+
+- **実装(codex sol max、上段)**: `EffectTransaction`(src/core/loader/effecttransaction.*)を scene load の activate〜retire に thread-local で設置し、`GameContext` の各 mutator が sink を見る。
+  audio(play / stop_existing / bus_volume)と persistence(game_settings / save_data / save_settings)は shadow + outbox、`loadData` / `listSaves` は outbox overlay(pending は `timestamp == 0`)、
+  `GameObjects::*` の直接呼出は名前付き reject、retire 中の self setter は `SceneRetiredObjectMutationRejected`。retire 中の `loadScene` は committed projection で解決し pending candidate に書く。
+  `SceneImportResult{revision, SceneLoadResult}`、RPC `load_scene` は `{committed: true, effect_errors}`。destroy façade は固定 256 entry + overflow 集約。handle cursor は `non_rollback` 行。
+  frozen v2(`userpublic_frozen/v2/`、83 files)の DLL が onInit / onDestroy から全 effect API を呼び、`/sourceDependencies` audit が ON / OFF で PASS。`tools/public_api_inventory.py` が exact signature の inventory JSON を生成し、manifest 行と契約
+- **agent の変異**: fallible 5 行の injector(`effect.audio-play.fail` 等)を全件 / `setBusVolume → sink` の配線除去 → `0.75f == Approx(0.25)` で赤
+- **agent の検証**: ON baseline / PHYSICS OFF / SEQPLAYER OFF / VAT OFF / RPC OFF / AUDIO OFF(disabled probe が `playSound is unavailable`)/ `SKIP_DEVSTUDIO` 両構成の build、非 GPU 1285 / 1286(1 skip、WP334b の -j flake は単独緑)、出荷 4 project 差分なし。GPU 対象は未実行(統合側)
+- **統合側の検証(worktree)**: build エラー 0、非 GPU 1283 / 1286 → WP334b / WP335 は -j flake(単独緑)、**WP362 の 1 件は実**: import RPC の結果に `committed: true` と `effect_errors: []` が増え(決定 19)、exact 一致の期待値が旧形のままだった → 期待値を更新(577712de)。agent の 1285 / 1286 は WP362 を含めて緑だったので、agent 側の run では当該テストが走っていない可能性(記録)
+- **統合側の変異(`mutation-runner` agent、opus。GPU 含む。1 回目、対象 52)**: **基準が赤 1** = GPU の production test「frozen v2 DLL effects rollback and committed RPC effect failures」が `PathResolver setup called more than once`(:3334)で B の import 前に落ち、WP380b の assertion が 1 つも走っていなかった(codex は GPU を回していない)。M1(play の即時化)赤 :140 / M2(save の即時化)赤 :84 / M4(façade が捨てる)赤 :205 / M6(cursor を戻す)赤 :146 / M7b(removeAll の reject 除去)赤 :137 / M8(timestamp を now に)赤 :133。**生存 2**: M3(retire の resolver を candidate に)= fixture の `only_d` が B と C の両方にあり非対称が無い / M5(RPC の結果形を error に)= 実 handler を通す assertion が GPU test にしか無く未実行。M7(create の reject 除去)は ECS の別例外で偶然赤 → 4 件を codex(sol)に差し戻し。**2 回目**: runtime setup を 1 回に統合して production test が末尾まで到達、fixture を B は E だけ / C は D だけの非対称に、実 `RpcServer` の `load_scene` handler で `{committed: true, effect_errors}` と error 不在を観測、create は登録済み component で「throw しない」ことで落ちる形に。codex の再変異: resolver を candidate に → :3399 赤 / RPC を error に → :3417 赤 / create の reject 除去 → :142 赤。GPU 対象 52 / 52、非 GPU 1287 / 1287。統合側の再確認(M3)は resolver の別分岐(scene.cpp:1026、retire 経路は :1034)に当たり緑 = **無効な再確認**(worktree は着地で削除済み)。codex の :3399 赤を採用し、rev380b に観点として渡す
+- **main 取り込み**(`merge-resolver` agent、WP380d の後。merge 352ff61d): 衝突は scene.cpp の commit 末尾 1 箇所のみ。WP380d の「batch が finish を 1 回記録、token は記録しない」を取り、その後に WP380b の `CommittedWithEffectFailure` return を置く。effect transaction の flush は `(void)phase_trace` で trace に書かず 8 要素を保つ。manifest は衝突なし(WP380d は触っていない)で、WP380b の audio 行は `effect` role、`handle_cursor` は `non_rollback`、reject 行は ID 無しで WP380d の role 制約(real 10 行)と両立。merge 後 非 GPU 1287 / 1287
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1621 / 1621**。doclink 84 件追従、未解決 0
+- コードレビュー `rev380b`: (記入)
 #### WP380b 仕様レビュー第 1 巡(不合格・15 件)と v2 —— **決定差分(v2 が本節の正。v1 と矛盾する箇所は v2 が勝つ)**
 
 仕分け: **直す 13**(#1〜#12 #14)/ **切り出す 1**(#15 → WP380c)/ **記録 1**(#13 は WP380c の受け入れへ)。
@@ -22207,7 +22223,7 @@ manifest の role 制約は Catch2 実行時保証(static ではない)。ID-A �
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
-5. **WP380c(executor hardening)→ WP380b(effect transaction)**の順(2026-09-03 起票。WP380b 仕様レビュー第 1 巡で M0 を WP380c に切り出し。第 2 巡は両節一体)。CARRIER-RT3 は WP380b の後、CARRIER-STUDIO はその後
+5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)。rev380b の仕分けが残る。**次は CARRIER-RT3 の起票**(参加者 seam は WP380b の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
 
 **既知の穴(WP 化は別途判断)**
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
