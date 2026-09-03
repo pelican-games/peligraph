@@ -43,8 +43,16 @@ struct SceneParticipantManifestEntry {
     std::string_view mutation_id;
 };
 
+struct ScenePublicApiManifestEntry {
+    std::string_view class_name;
+    std::string_view signature;
+    std::string_view classification;
+};
+
 std::span<const SceneParticipantManifestEntry>
 sceneParticipantManifest() noexcept;
+std::span<const ScenePublicApiManifestEntry>
+scenePublicApiManifest() noexcept;
 
 std::string_view sceneParticipantPresenceName(
     SceneParticipantPresence presence) noexcept;

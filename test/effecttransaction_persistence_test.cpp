@@ -8,9 +8,11 @@
 #include "../src/core/userpublic/gamecontext.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 
 namespace Pelican {
 namespace {
@@ -100,13 +102,73 @@ TEST_CASE("WP380b persistence shadow and overlays work without audio",
         internal::EffectTransactionScope scope{transaction};
         context.saveSettings();
         context.saveData("slot_d", {{"value", 381}});
-        errors = transaction.flush(&fault, trace);
+        transaction.flush(&fault, trace);
+        errors = transaction.effectErrors();
     }
     REQUIRE(errors.size() == 1);
     REQUIRE(errors.front().api == "saveData");
     REQUIRE(std::filesystem::is_regular_file(sandbox.user / "settings.json"));
     REQUIRE_FALSE(std::filesystem::exists(
         sandbox.user / "saves" / "slot_d.json"));
+}
+
+TEST_CASE("WP380e persistence keys use physical Windows path identity",
+          "[WP380e][effect][persistence][identity][cpu][mutation]") {
+    PersistenceSandbox sandbox;
+    FastModuleContainer modules;
+    configurePersistence(sandbox);
+    auto &persistence = GET_MODULE(Persistence);
+    auto &loader = GET_MODULE(SceneLoader);
+    GameContext context;
+    SceneLoadPhaseTrace trace;
+    const auto before = persistence.preparedWriteCommitCountForTesting();
+    {
+        internal::PreparedEffectTransaction transaction{persistence, loader};
+        internal::EffectTransactionScope scope{transaction};
+        context.saveData("Foo", {{"value", 1}});
+        context.saveData("foo", {{"value", 2}});
+        transaction.flush(nullptr, trace);
+        REQUIRE(transaction.effectErrors().empty());
+    }
+#ifdef _WIN32
+    REQUIRE(persistence.preparedWriteCommitCountForTesting() - before == 1);
+    REQUIRE(context.loadData("Foo") == nlohmann::json{{"value", 2}});
+#endif
+}
+
+TEST_CASE("WP380e persistence read failures are named and absence alone is nullopt",
+          "[WP380e][effect][persistence][read-error][cpu]") {
+    PersistenceSandbox sandbox;
+    FastModuleContainer modules;
+    configurePersistence(sandbox);
+    auto &persistence = GET_MODULE(Persistence);
+    auto &loader = GET_MODULE(SceneLoader);
+    GameContext context;
+    REQUIRE_FALSE(context.loadData("absent").has_value());
+    std::filesystem::create_directories(sandbox.user / "saves");
+    {
+        std::ofstream corrupt{sandbox.user / "saves" / "corrupt.json"};
+        corrupt << "{not-json";
+    }
+    REQUIRE_THROWS_AS(context.loadData("corrupt"), PersistenceReadError);
+    REQUIRE_THROWS_WITH(context.loadData("corrupt"),
+                        Catch::Matchers::ContainsSubstring(
+                            "persistence_read_failed@1"));
+
+    SceneLoadPhaseTrace trace;
+    internal::PreparedEffectTransaction transaction{persistence, loader};
+    internal::EffectTransactionScope scope{transaction};
+    {
+        internal::EffectDestroyScope destroy_scope;
+        REQUIRE_FALSE(context.loadData("corrupt").has_value());
+    }
+    transaction.flush(nullptr, trace);
+    const auto errors = transaction.effectErrors();
+    REQUIRE(errors.size() == 1);
+    REQUIRE(errors.front().api == "loadData");
+    REQUIRE(errors.front().error_code == "persistence_read_failed@1");
+    REQUIRE(errors.front().error_fields.at("path").get<std::string>().find(
+                "corrupt.json") != std::string::npos);
 }
 
 } // namespace Pelican

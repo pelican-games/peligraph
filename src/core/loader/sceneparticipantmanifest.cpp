@@ -166,11 +166,55 @@ constexpr std::array manifest{
     SceneParticipantManifestEntry{"root.import.versioned", "callback", real, SceneManifestRole::production_root, "Owned", "SceneLoader::load(request)", "discard-token", no_retire, "root-wiring-v1", scene_load_mutation::root_import_versioned},
 };
 
+// Exact public signatures are intentionally stored in the runtime manifest.
+// tools/public_api_inventory.py parses this array and rejects either side's
+// extras, so the checked-in JSON cannot drift into a second classification
+// authority.
+constexpr std::array public_api_manifest{
+    ScenePublicApiManifestEntry{"GameContext", "GameObjectId createObject(const LocalTransformComponent&transform)const", "covered.deferred-object"},
+    ScenePublicApiManifestEntry{"GameContext", "GameObjectId createSpriteObject(const LocalTransformComponent&transform,const SpriteViewComponent&sprite)const", "covered.deferred-object"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool removeObject(GameObjectId id)const", "covered.deferred-object"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setLocalTransform(GameObjectId id,const LocalTransformComponent&transform)const", "covered.candidate-or-retired-reject"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setSpriteView(GameObjectId id,const SpriteViewComponent&sprite)const", "covered.candidate-or-retired-reject"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setSpriteTexture(GameObjectId id,std::string_view texture)const", "covered.candidate-or-retired-reject"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setDirectionalLightDirection(std::string_view name,vec3 direction)const", "covered.candidate"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setDirectionalLightIntensity(std::string_view name,float intensity)const", "covered.candidate"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setPointLightPosition(std::string_view name,vec3 position)const", "covered.candidate"},
+    ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setSpotLightDirection(std::string_view name,vec3 direction)const", "covered.candidate"},
+    ScenePublicApiManifestEntry{"GameContext", "void setCamera(std::string_view name)const", "covered.candidate"},
+    ScenePublicApiManifestEntry{"GameContext", "double random()", "covered.rng-sequence"},
+    ScenePublicApiManifestEntry{"GameContext", "int randomInt(int min,int max)", "covered.rng-sequence"},
+    ScenePublicApiManifestEntry{"GameContext", "float randomFloat(float min,float max)", "covered.rng-sequence"},
+    ScenePublicApiManifestEntry{"GameContext", "void setSeed(std::uint64_t seed)", "covered.rng-sequence"},
+    ScenePublicApiManifestEntry{"GameContext", "SoundHandle playSound(std::string_view path)const", "shadow_outbox.audio-play"},
+    ScenePublicApiManifestEntry{"GameContext", "void stopSound(SoundHandle handle)const", "shadow_outbox.audio-stop"},
+    ScenePublicApiManifestEntry{"GameContext", "void setBusVolume(std::string_view bus,float volume)const", "shadow_outbox.audio-bus-volume"},
+    ScenePublicApiManifestEntry{"GameContext", "void loadScene(std::string_view name)const", "covered.pending-scene"},
+    ScenePublicApiManifestEntry{"GameContext", "void debugText(int x,int y,std::string_view text)const", "nonparticipant.frame-lifetime"},
+    ScenePublicApiManifestEntry{"GameContext", "template<class Event>void emit(const Event&event)const", "covered.event-outbox"},
+    ScenePublicApiManifestEntry{"GameContext", "void setGameSettings(Json settings)const", "shadow_outbox.game-settings"},
+    ScenePublicApiManifestEntry{"GameContext", "void saveSettings()const", "shadow_outbox.save-settings"},
+    ScenePublicApiManifestEntry{"GameContext", "void saveData(std::string_view slot,const Json&data)const", "shadow_outbox.save-data"},
+    ScenePublicApiManifestEntry{"GameObjects", "static auto add()", "reject.direct-gameobjects"},
+    ScenePublicApiManifestEntry{"GameObjects", "static GameObjectId createWithComponents(std::span<const ComponentId>ids,const std::function<void(std::span<void*>)>&populate)", "reject.direct-gameobjects"},
+    ScenePublicApiManifestEntry{"GameObjects", "[[nodiscard]] static bool remove(GameObjectId id)", "reject.direct-gameobjects"},
+    ScenePublicApiManifestEntry{"GameObjects", "static void removeAll()", "reject.direct-gameobjects"},
+    ScenePublicApiManifestEntry{"GameObjects", "[[nodiscard]] static bool setLocalTransform(GameObjectId id,const LocalTransformComponent&transform)", "reject.direct-gameobjects"},
+    ScenePublicApiManifestEntry{"BehaviorContext", "GameObjectId createObject(const LocalTransformComponent&transform)const", "covered.deferred-object"},
+    ScenePublicApiManifestEntry{"BehaviorContext", "GameObjectId createSpriteObject(const LocalTransformComponent&transform,const SpriteViewComponent&sprite)const", "covered.deferred-object"},
+    ScenePublicApiManifestEntry{"BehaviorContext", "[[nodiscard]] bool removeObject(GameObjectId id)const", "covered.deferred-object"},
+};
+
 } // namespace
 
 std::span<const SceneParticipantManifestEntry>
 sceneParticipantManifest() noexcept {
     return manifest;
+}
+
+std::span<const ScenePublicApiManifestEntry>
+scenePublicApiManifest() noexcept {
+    return public_api_manifest;
 }
 
 std::string_view sceneParticipantPresenceName(

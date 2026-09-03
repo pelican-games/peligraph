@@ -171,8 +171,10 @@ TEST_CASE("GameContext save data is atomic, listed deterministically, and reject
     REQUIRE(context.listSaves().size() == 2);
 
     writeText(sandbox.user_root / "saves" / "corrupt.json", "not json");
-    REQUIRE_NOTHROW(context.loadData("corrupt"));
-    REQUIRE_FALSE(context.loadData("corrupt").has_value());
+    REQUIRE_THROWS_AS(context.loadData("corrupt"), PersistenceReadError);
+    REQUIRE_THROWS_WITH(
+        context.loadData("corrupt"),
+        Catch::Matchers::ContainsSubstring("persistence_read_failed@1"));
 
     REQUIRE_THROWS_WITH(context.saveData("../outside", nlohmann::json::object()),
                         Catch::Matchers::ContainsSubstring("invalid file-name character"));

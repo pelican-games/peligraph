@@ -18,6 +18,8 @@ struct Wp380bEffectProbe {
     std::uint8_t playing_after_stop = 0;
     std::uint8_t load_overlay_equal = 0;
     std::uint8_t list_overlay_timestamp_zero = 0;
+    std::uint8_t component_callback_ran = 0;
+    std::uint8_t base_create_deferred = 0;
 };
 
 PELICAN_WP380B_FIXTURE_API bool

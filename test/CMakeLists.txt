@@ -2506,6 +2506,7 @@ target_link_libraries(pelican_test_audio_disabled_probe PRIVATE pelican_core)
 
 pelican_define_test(persistence_test GROUP core_diagnostics pelican_core)
 pelican_define_test(effecttransaction_persistence_test GROUP core_diagnostics pelican_core)
+pelican_define_test(effecttransaction_allocation_test pelican_core)
 if(PELICAN_WITH_AUDIO)
 pelican_define_test(effecttransaction_test GROUP core_diagnostics pelican_core)
 endif()

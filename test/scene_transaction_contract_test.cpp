@@ -40,6 +40,7 @@ const SceneParticipantManifestEntry &manifestRow(
 static_assert(std::is_move_constructible_v<SceneLoadRequest>);
 static_assert(!std::is_copy_constructible_v<SceneLoadRequest>);
 static_assert(noexcept(sceneParticipantManifest()));
+static_assert(noexcept(scenePublicApiManifest()));
 static_assert(noexcept(sceneParticipantPresenceName(
     SceneParticipantPresence::real)));
 

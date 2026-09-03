@@ -6,11 +6,22 @@
 #include <nlohmann/json.hpp>
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace Pelican {
+
+class PersistenceReadError final : public std::runtime_error {
+    std::string path_;
+    std::string reason_;
+
+  public:
+    PersistenceReadError(std::string path, std::string reason);
+    const std::string &path() const noexcept { return path_; }
+    const std::string &reason() const noexcept { return reason_; }
+};
 
 class Audio;
 
@@ -29,6 +40,7 @@ DECLARE_MODULE(Persistence) {
     nlohmann::json game_settings = nlohmann::json::object();
     AudioBusSettings audio_bus_settings;
     std::optional<std::string> last_settings_error;
+    mutable std::size_t prepared_write_commit_count = 0;
 
   public:
     struct PreparedWrite {
@@ -61,8 +73,12 @@ DECLARE_MODULE(Persistence) {
         const AudioBusSettings &audio) const;
     PreparedWrite prepareDataWrite(
         std::string_view slot, const nlohmann::json &data) const;
+    std::string dataResourceKey(std::string_view slot) const;
     void commitPreparedWrite(const PreparedWrite &write) const;
-    void commitGameSettings(nlohmann::json settings) noexcept;
+    void commitGameSettings(nlohmann::json &&settings) noexcept;
+    std::size_t preparedWriteCommitCountForTesting() const noexcept {
+        return prepared_write_commit_count;
+    }
 
     void resetForTesting();
 };

@@ -7,6 +7,7 @@
 #endif
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <limits>
@@ -34,6 +35,23 @@ std::filesystem::path resolveUserPath(std::string_view ref) {
         throw std::runtime_error("Persistence path did not resolve to a file: " + std::string{ref});
     }
     return *path;
+}
+
+std::string canonicalResourceKey(const std::filesystem::path &path) {
+    std::error_code ec;
+    auto canonical = std::filesystem::weakly_canonical(path, ec);
+    if (ec) {
+        throw std::runtime_error("failed to canonicalize persistence path: " +
+                                 ec.message());
+    }
+    auto identity = canonical.generic_string();
+#ifdef _WIN32
+    std::transform(identity.begin(), identity.end(), identity.begin(),
+                   [](unsigned char value) {
+                       return static_cast<char>(std::tolower(value));
+                   });
+#endif
+    return "path:" + identity;
 }
 
 void rejectUnknownKeys(const nlohmann::json &object, const std::set<std::string> &allowed,
@@ -192,6 +210,12 @@ std::string dumpedJson(const nlohmann::json &json) {
 
 } // namespace
 
+PersistenceReadError::PersistenceReadError(std::string path,
+                                           std::string reason)
+    : std::runtime_error("persistence_read_failed@1: path='" + path +
+                         "' reason='" + reason + "'"),
+      path_{std::move(path)}, reason_{std::move(reason)} {}
+
 bool Persistence::loadSettings() {
     audio_bus_settings = {};
     game_settings = nlohmann::json::object();
@@ -243,9 +267,10 @@ Persistence::PreparedWrite Persistence::prepareSettingsWrite(
         {"game", game},
     };
     auto path = resolveUserPath(settings_ref);
+    auto resource_key = canonicalResourceKey(path);
     return PreparedWrite{std::move(path), dumpedJson(document),
-                         std::string{settings_ref}, std::nullopt,
-                         std::nullopt};
+                          std::move(resource_key), std::nullopt,
+                          std::nullopt};
 }
 
 nlohmann::json Persistence::gameSettings() const {
@@ -288,72 +313,97 @@ void Persistence::saveData(std::string_view slot, const nlohmann::json &data) co
 Persistence::PreparedWrite Persistence::prepareDataWrite(
     std::string_view slot, const nlohmann::json &data) const {
     auto path = resolveUserPath(saveRef(slot));
+    auto resource_key = canonicalResourceKey(path);
     return PreparedWrite{std::move(path), dumpedJson(data),
-                         "save:" + std::string{slot}, std::string{slot},
-                         data};
+                          std::move(resource_key), std::string{slot},
+                          data};
+}
+
+std::string Persistence::dataResourceKey(std::string_view slot) const {
+    return canonicalResourceKey(resolveUserPath(saveRef(slot)));
 }
 
 void Persistence::commitPreparedWrite(const PreparedWrite &write) const {
     atomicWrite(write.path, write.bytes);
+    ++prepared_write_commit_count;
 }
 
-void Persistence::commitGameSettings(nlohmann::json settings) noexcept {
-    game_settings = std::move(settings);
+void Persistence::commitGameSettings(nlohmann::json &&settings) noexcept {
+    game_settings.swap(settings);
 }
 
 std::optional<nlohmann::json> Persistence::loadData(std::string_view slot) const {
     std::filesystem::path path;
     try {
         path = resolveUserPath(saveRef(slot));
-        std::error_code ec;
-        const bool exists = std::filesystem::exists(path, ec);
-        if (ec) {
-            throw std::runtime_error("failed to inspect save file: " + ec.message());
-        }
-        if (!exists) {
-            return std::nullopt;
-        }
+    } catch (const std::exception &error) {
+        throw PersistenceReadError{std::string{slot}, error.what()};
+    }
+    std::error_code ec;
+    const bool exists = std::filesystem::exists(path, ec);
+    if (ec) {
+        throw PersistenceReadError{path.string(),
+                                   "failed to inspect save file: " +
+                                       ec.message()};
+    }
+    if (!exists) return std::nullopt;
+    try {
         return readJsonFile(path);
     } catch (const std::exception &error) {
-        const auto name = path.empty() ? std::string{slot} : path.string();
-        LOG_WARNING(logger, "failed to load save '{}': {}", name, error.what());
-        return std::nullopt;
+        throw PersistenceReadError{path.string(), error.what()};
     }
 }
 
 std::vector<PersistenceSlotInfo> Persistence::listSaves() const {
-    const auto saves_dir = resolveUserPath("user://saves");
+    std::filesystem::path saves_dir;
+    try {
+        saves_dir = resolveUserPath("user://saves");
+    } catch (const std::exception &error) {
+        throw PersistenceReadError{"user://saves", error.what()};
+    }
     std::error_code ec;
     if (!std::filesystem::exists(saves_dir, ec)) {
         if (ec) {
-            LOG_WARNING(logger, "failed to inspect saves directory '{}': {}", saves_dir.string(),
-                        ec.message());
+            throw PersistenceReadError{
+                saves_dir.string(),
+                "failed to inspect saves directory: " + ec.message()};
         }
         return {};
     }
 
     std::vector<PersistenceSlotInfo> slots;
     std::filesystem::directory_iterator it{saves_dir, ec};
+    if (ec) {
+        throw PersistenceReadError{
+            saves_dir.string(),
+            "failed to open saves directory: " + ec.message()};
+    }
     const std::filesystem::directory_iterator end;
     while (!ec && it != end) {
         const auto &entry = *it;
         std::error_code entry_error;
-        if (entry.is_regular_file(entry_error) && !entry_error && entry.path().extension() == ".json") {
+        const auto regular = entry.is_regular_file(entry_error);
+        if (entry_error) {
+            throw PersistenceReadError{entry.path().string(),
+                                       entry_error.message()};
+        }
+        if (regular && entry.path().extension() == ".json") {
             const auto timestamp = entry.last_write_time(entry_error);
-            if (!entry_error) {
-                slots.push_back(PersistenceSlotInfo{
-                    .slot = entry.path().stem().string(),
-                    .timestamp = timestamp,
-                });
-            } else {
-                LOG_WARNING(logger, "failed to read save timestamp '{}': {}", entry.path().string(),
-                            entry_error.message());
+            if (entry_error) {
+                throw PersistenceReadError{entry.path().string(),
+                                           entry_error.message()};
             }
+            slots.push_back(PersistenceSlotInfo{
+                .slot = entry.path().stem().string(),
+                .timestamp = timestamp,
+            });
         }
         it.increment(ec);
     }
     if (ec) {
-        LOG_WARNING(logger, "failed to list saves directory '{}': {}", saves_dir.string(), ec.message());
+        throw PersistenceReadError{
+            saves_dir.string(),
+            "failed to list saves directory: " + ec.message()};
     }
 
     std::sort(slots.begin(), slots.end(), [](const auto &lhs, const auto &rhs) {
@@ -366,6 +416,7 @@ void Persistence::resetForTesting() {
     audio_bus_settings = {};
     game_settings = nlohmann::json::object();
     last_settings_error.reset();
+    prepared_write_commit_count = 0;
 }
 
 } // namespace Pelican

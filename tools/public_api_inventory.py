@@ -14,6 +14,7 @@ HEADERS = (
     ("src/core/userpublic/behavior.hpp", "BehaviorContext"),
 )
 OUTPUT = Path("test/fixtures/public_api_inventory.json")
+RUNTIME_MANIFEST = Path("src/core/loader/sceneparticipantmanifest.cpp")
 
 MUTATORS = {
     "createObject", "createSpriteObject", "removeObject", "setLocalTransform",
@@ -26,42 +27,6 @@ MUTATORS = {
 }
 HOST_ENTRANCES = {"emit"}
 NON_MUTATING_VOID = {"logInfo", "logWarning", "logError"}
-
-MANIFEST = {
-    ("GameContext", "GameObjectId createObject(const LocalTransformComponent&transform)const"): "covered.deferred-object",
-    ("GameContext", "GameObjectId createSpriteObject(const LocalTransformComponent&transform,const SpriteViewComponent&sprite)const"): "covered.deferred-object",
-    ("GameContext", "[[nodiscard]] bool removeObject(GameObjectId id)const"): "covered.deferred-object",
-    ("GameContext", "[[nodiscard]] bool setLocalTransform(GameObjectId id,const LocalTransformComponent&transform)const"): "covered.candidate-or-retired-reject",
-    ("GameContext", "[[nodiscard]] bool setSpriteView(GameObjectId id,const SpriteViewComponent&sprite)const"): "covered.candidate-or-retired-reject",
-    ("GameContext", "[[nodiscard]] bool setSpriteTexture(GameObjectId id,std::string_view texture)const"): "covered.candidate-or-retired-reject",
-    ("GameContext", "[[nodiscard]] bool setDirectionalLightDirection(std::string_view name,vec3 direction)const"): "covered.candidate",
-    ("GameContext", "[[nodiscard]] bool setDirectionalLightIntensity(std::string_view name,float intensity)const"): "covered.candidate",
-    ("GameContext", "[[nodiscard]] bool setPointLightPosition(std::string_view name,vec3 position)const"): "covered.candidate",
-    ("GameContext", "[[nodiscard]] bool setSpotLightDirection(std::string_view name,vec3 direction)const"): "covered.candidate",
-    ("GameContext", "void setCamera(std::string_view name)const"): "covered.candidate",
-    ("GameContext", "double random()"): "covered.rng-sequence",
-    ("GameContext", "int randomInt(int min,int max)"): "covered.rng-sequence",
-    ("GameContext", "float randomFloat(float min,float max)"): "covered.rng-sequence",
-    ("GameContext", "void setSeed(std::uint64_t seed)"): "covered.rng-sequence",
-    ("GameContext", "SoundHandle playSound(std::string_view path)const"): "shadow_outbox.audio-play",
-    ("GameContext", "void stopSound(SoundHandle handle)const"): "shadow_outbox.audio-stop",
-    ("GameContext", "void setBusVolume(std::string_view bus,float volume)const"): "shadow_outbox.audio-bus-volume",
-    ("GameContext", "void loadScene(std::string_view name)const"): "covered.pending-scene",
-    ("GameContext", "void debugText(int x,int y,std::string_view text)const"): "nonparticipant.frame-lifetime",
-    ("GameContext", "template<class Event>void emit(const Event&event)const"): "covered.event-outbox",
-    ("GameContext", "void setGameSettings(Json settings)const"): "shadow_outbox.game-settings",
-    ("GameContext", "void saveSettings()const"): "shadow_outbox.save-settings",
-    ("GameContext", "void saveData(std::string_view slot,const Json&data)const"): "shadow_outbox.save-data",
-    ("GameObjects", "static auto add()"): "reject.direct-gameobjects",
-    ("GameObjects", "static GameObjectId createWithComponents(std::span<const ComponentId>ids,const std::function<void(std::span<void*>)>&populate)"): "reject.direct-gameobjects",
-    ("GameObjects", "[[nodiscard]] static bool remove(GameObjectId id)"): "reject.direct-gameobjects",
-    ("GameObjects", "static void removeAll()"): "reject.direct-gameobjects",
-    ("GameObjects", "[[nodiscard]] static bool setLocalTransform(GameObjectId id,const LocalTransformComponent&transform)"): "reject.direct-gameobjects",
-    ("BehaviorContext", "GameObjectId createObject(const LocalTransformComponent&transform)const"): "covered.deferred-object",
-    ("BehaviorContext", "GameObjectId createSpriteObject(const LocalTransformComponent&transform,const SpriteViewComponent&sprite)const"): "covered.deferred-object",
-    ("BehaviorContext", "[[nodiscard]] bool removeObject(GameObjectId id)const"): "covered.deferred-object",
-}
-
 
 def strip_comments(text: str) -> str:
     text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
@@ -142,7 +107,28 @@ def method_name(signature: str) -> str:
     return matches[0].group(0)[:-1]
 
 
+def runtime_manifest(root: Path) -> dict[tuple[str, str], str]:
+    text = (root / RUNTIME_MANIFEST).read_text(encoding="utf-8")
+    start = text.index("constexpr std::array public_api_manifest{")
+    end = text.index("\n};", start)
+    rows = re.findall(
+        r'ScenePublicApiManifestEntry\{"([^"]+)",\s*"([^"]+)",\s*"([^"]+)"\}',
+        text[start:end],
+    )
+    result: dict[tuple[str, str], str] = {}
+    for class_name, signature, classification in rows:
+        key = (class_name, signature)
+        if key in result:
+            raise ValueError(f"duplicate runtime manifest API: {class_name}::{signature}")
+        result[key] = classification
+    if not result:
+        raise ValueError("runtime public API manifest is empty")
+    return result
+
+
 def generate(root: Path) -> dict:
+    manifest = runtime_manifest(root)
+    consumed: set[tuple[str, str]] = set()
     rows: list[dict[str, str]] = []
     for relative, class_name in HEADERS:
         text = strip_comments((root / relative).read_text(encoding="utf-8"))
@@ -168,11 +154,17 @@ def generate(root: Path) -> dict:
                 "classification": classification,
             }
             if classification in {"mutator", "host_entrance"}:
-                manifest = MANIFEST.get((class_name, signature))
-                if not manifest:
+                key = (class_name, signature)
+                manifest_classification = manifest.get(key)
+                if not manifest_classification:
                     raise ValueError(f"mutator lacks manifest classification: {class_name}::{signature}")
-                row["manifest"] = manifest
+                consumed.add(key)
+                row["manifest"] = manifest_classification
             rows.append(row)
+    extras = sorted(set(manifest) - consumed)
+    if extras:
+        rendered = ", ".join(f"{owner}::{signature}" for owner, signature in extras)
+        raise ValueError(f"runtime manifest API absent from inventory: {rendered}")
     return {"schema": "pelican.public_api_inventory", "version": 1,
             "entries": rows}
 

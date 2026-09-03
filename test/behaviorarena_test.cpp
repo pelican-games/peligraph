@@ -104,7 +104,10 @@ class ThrowInitBehavior final : public Behavior {
   public:
     using Params = LabelParams;
     void onInit(BehaviorContext &ctx) override {
-        (void)ctx.createObject(LocalTransformComponent{});
+        // The base-typed public contract must defer exactly like the derived
+        // façade; qualifying GameContext killed WP380e before this fix.
+        (void)static_cast<GameContext &>(ctx).createObject(
+            LocalTransformComponent{});
         trace.push_back("throw:init");
         throw std::runtime_error("wp155 activation fault");
     }

@@ -615,6 +615,18 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         return fail(SceneLoadPhase::prepare, std::current_exception());
     }
 
+    // Every game-DLL callback, including a component JSON loader invoked by
+    // early publication, must observe the same transaction-local effects.
+    PendingSceneTransaction pending_transaction{
+        .loader = this,
+        .projection = &metadata.projection(),
+        .candidate = &pending_candidate,
+    };
+    internal::EventOutboxScope event_scope{*event_outbox};
+    internal::EffectTransactionScope effect_scope{*effect_transaction};
+    RngSequenceScope rng_scope{rng_candidate};
+    PendingSceneTransactionScope pending_scope{pending_transaction};
+
     const auto rollback = [&]() noexcept {
         if (behavior_candidate) behavior_candidate->rollback();
         if (candidates_published) {
@@ -926,15 +938,6 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         metadata.publishDocumentOnlyForFaultInjection();
     }
 
-    PendingSceneTransaction pending_transaction{
-        .loader = this,
-        .projection = &metadata.projection(),
-        .candidate = &pending_candidate,
-    };
-    internal::EventOutboxScope event_scope{*event_outbox};
-    internal::EffectTransactionScope effect_scope{*effect_transaction};
-    RngSequenceScope rng_scope{rng_candidate};
-    PendingSceneTransactionScope pending_scope{pending_transaction};
     try {
         if (!internal::sceneLoadMutationEnabled(
                 injector, SceneLoadFaultPhase::activate,
@@ -997,13 +1000,21 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     phase_trace.record(SceneLoadPhase::flush);
     pending_scene_id.swap(pending_candidate);
     event_outbox->flush(phase_trace);
-    auto effect_errors = effect_transaction->flush(injector, phase_trace);
+    static_assert(noexcept(
+        std::declval<internal::PreparedEffectTransaction &>().flush(
+            std::declval<SceneLoadFaultInjector *>(),
+            std::declval<SceneLoadPhaseTrace &>())));
+    effect_transaction->flush(injector, phase_trace);
 
     // The batch is an executor participant in its own right.  Recording here
     // keeps an empty scene observable while individual token completion stays
     // an implementation detail of the batch.
     phase_trace.record(SceneLoadPhase::finish);
     for (auto &token : created_entities) token.finish();
+
+    // Public strings and JSON are deliberately materialized only after the
+    // noexcept commit tail has completed.
+    auto effect_errors = effect_transaction->effectErrors();
     if (!effect_errors.empty()) {
         return CommittedWithEffectFailure{candidate_authority,
                                           std::move(effect_errors),

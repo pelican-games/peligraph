@@ -1,6 +1,8 @@
 #include "api.hpp"
 
 #include <behavior.hpp>
+#include <details/component/registerer.hpp>
+#include <details/ecs/componentdeclare.hpp>
 
 #include <string>
 
@@ -38,12 +40,49 @@ struct Params {
 
 Wp380bEffectProbe probe{};
 
+} // namespace
+
+struct EarlyEffectComponent {
+    std::string sound;
+    std::string slot;
+
+    template <class Archive> void ref(Archive &archive) {
+        archive.prop("sound", sound);
+        archive.prop("slot", slot);
+        Pelican::GameContext context;
+        if (!sound.empty()) (void)context.playSound(sound);
+        if (!slot.empty()) {
+            context.saveData(slot, {{"source", "component_callback"}});
+        }
+        probe.component_callback_ran = 1;
+    }
+};
+
+DECLARE_COMPONENT(EarlyEffectComponent, 62);
+
+namespace {
+
+class EarlyEffectRegistration final {
+  public:
+    EarlyEffectRegistration() {
+        (void)Pelican::internal::getComponentRegisterer()
+            .registerComponent<EarlyEffectComponent>("wp380e_early_effect");
+    }
+};
+
+EarlyEffectRegistration early_effect_registration;
+
 class EffectBehavior final : public Pelican::Behavior {
   public:
     using Params = ::Params;
 
     void onInit(Pelican::BehaviorContext &context) override {
         const auto &params = context.params<Params>();
+        if (params.fail_after_effects) {
+            probe.base_create_deferred =
+                static_cast<Pelican::GameContext &>(context).createObject({}) ==
+                Pelican::invalidGameObjectId;
+        }
         context.setSeed(380U);
         (void)context.random();
         context.emit(EffectEvent{380});

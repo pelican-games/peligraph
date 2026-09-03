@@ -47,8 +47,9 @@ class PELICAN_API BehaviorContext : public GameContext {
         return *static_cast<Value *>(params_value);
     }
 
-    // Structural changes requested by a behavior callback are applied at the
-    // next behavior boundary. A deferred create has no live EntityId yet and
+    // Structural changes requested through either BehaviorContext or its
+    // GameContext base during a behavior callback are applied at the next
+    // behavior boundary. A deferred create has no live EntityId yet and
     // therefore returns invalidGameObjectId.
     GameObjectId createObject(const LocalTransformComponent &transform) const;
     GameObjectId createSpriteObject(const LocalTransformComponent &transform,

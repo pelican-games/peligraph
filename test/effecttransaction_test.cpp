@@ -22,6 +22,11 @@
 namespace Pelican {
 namespace {
 
+static_assert(noexcept(
+    std::declval<internal::PreparedEffectTransaction &>().flush(
+        std::declval<SceneLoadFaultInjector *>(),
+        std::declval<SceneLoadPhaseTrace &>())));
+
 struct Sandbox {
     std::filesystem::path base;
     std::filesystem::path project;
@@ -206,7 +211,8 @@ TEST_CASE("WP380b retired objects expose their final snapshot and reject setters
                                                "project://other.png"));
         const auto invalid = context.playSound("project://missing.wav");
         REQUIRE(invalid == SoundHandle{});
-        errors = transaction.flush(nullptr, trace);
+        transaction.flush(nullptr, trace);
+        errors = transaction.effectErrors();
     }
 
     REQUIRE(errors.size() == 4);
@@ -246,7 +252,8 @@ TEST_CASE("WP380b flush reports one failed resource and continues in call order"
         context.saveData("slot_c", {{"value", 380}});
         context.setGameSettings({{"world", "D"}});
         context.saveSettings();
-        errors = transaction.flush(&fault, trace);
+        transaction.flush(&fault, trace);
+        errors = transaction.effectErrors();
     }
 
     REQUIRE(errors.size() == 1);
@@ -324,7 +331,8 @@ TEST_CASE("WP380b every fallible effect manifest row has a killing flush mutatio
                 context.setGameSettings({{"world", "D"}});
                 context.saveSettings();
             }
-            const auto errors = transaction.flush(&fault, trace);
+            transaction.flush(&fault, trace);
+            const auto errors = transaction.effectErrors();
             REQUIRE(errors.size() == 1);
             REQUIRE(errors.front().api == std::string{test.api});
             REQUIRE(errors.front().error_code ==
@@ -341,6 +349,77 @@ TEST_CASE("WP380b every fallible effect manifest row has a killing flush mutatio
             }
         }
     }
+}
+
+TEST_CASE("WP380e effect capacity reports overflow and provisional stop frees its slot",
+          "[WP380e][effect][capacity][cpu][mutation]") {
+    Sandbox sandbox;
+    writeTone(sandbox.project / "tone.wav");
+    FastModuleContainer modules;
+    configure(sandbox);
+    auto &persistence = GET_MODULE(Persistence);
+    auto &loader = GET_MODULE(SceneLoader);
+    GameContext context;
+
+    {
+        internal::PreparedEffectTransaction transaction{persistence, loader};
+        internal::EffectTransactionScope scope{transaction};
+        std::size_t staged = 0;
+        for (std::size_t index = 0; index < 257; ++index) {
+            if (context.playSound("project://tone.wav") != SoundHandle{}) {
+                ++staged;
+            }
+        }
+        REQUIRE(staged == internal::sceneEffectCapacity);
+        REQUIRE(transaction.fixedErrorCount() == 1);
+        const auto errors = transaction.effectErrors();
+        REQUIRE(errors.size() == 1);
+        REQUIRE(errors.front().error_code == "effect_outbox_full@1");
+        REQUIRE(errors.front().error_fields.at("dropped") == 1);
+    }
+
+    {
+        internal::PreparedEffectTransaction transaction{persistence, loader};
+        internal::EffectTransactionScope scope{transaction};
+        for (std::size_t index = 0; index < 300; ++index) {
+            const auto handle = context.playSound("project://tone.wav");
+            REQUIRE(handle != SoundHandle{});
+            context.stopSound(handle);
+        }
+        REQUIRE(transaction.fixedErrorCount() == 0);
+        REQUIRE(context.playSound("project://tone.wav") != SoundHandle{});
+    }
+}
+
+TEST_CASE("WP380e destroy staging and flush errors retain API call order",
+          "[WP380e][effect][sequence][cpu][mutation]") {
+    Sandbox sandbox;
+    FastModuleContainer modules;
+    configure(sandbox);
+    auto &persistence = GET_MODULE(Persistence);
+    auto &loader = GET_MODULE(SceneLoader);
+    GameContext context;
+    SceneLoadPhaseTrace trace;
+    EffectFlushFault fault{"persistence",
+                           std::string{scene_load_mutation::effect_save_data}};
+
+    internal::PreparedEffectTransaction transaction{persistence, loader};
+    internal::EffectTransactionScope scope{transaction};
+    {
+        internal::EffectDestroyScope destroy_scope;
+        (void)context.playSound("project://missing-wp380e.wav");
+        context.saveData("sequence", {{"value", 380}});
+        context.setBusVolume("missing-bus", 0.5F);
+    }
+    transaction.flush(&fault, trace);
+    const auto errors = transaction.effectErrors();
+    REQUIRE(errors.size() == 3);
+    REQUIRE(errors[0].api == "playSound");
+    REQUIRE(errors[0].phase == "destroy");
+    REQUIRE(errors[1].api == "saveData");
+    REQUIRE(errors[1].phase == "flush");
+    REQUIRE(errors[2].api == "setBusVolume");
+    REQUIRE(errors[2].phase == "destroy");
 }
 
 } // namespace Pelican

@@ -3277,7 +3277,8 @@ void writeWp380bTone(const std::filesystem::path &path) {
 
 Json wp380bDocument(std::string_view scene_name, std::string_view slot,
                     bool fail, std::string_view available_scene,
-                    bool retire_effects = false) {
+                    bool retire_effects = false,
+                    bool early_effects = false) {
     Json components = Json::array({
         {{"name", "transform"},
          {"pos", {8.0, 3.0, 0.0}},
@@ -3296,10 +3297,17 @@ Json wp380bDocument(std::string_view scene_name, std::string_view slot,
            {"init_scene", available_scene},
            {"retire_slot", retire_effects ? "retired_b" : ""},
            {"retire_scene", retire_effects ? "only_d" : ""},
-           {"retire_reject_scene", retire_effects ? "only_e" : ""},
-           {"invalid_retire_sound", retire_effects},
-           {"fail_after_effects", fail}}}},
+            {"retire_reject_scene", retire_effects ? "only_e" : ""},
+            {"invalid_retire_sound", retire_effects},
+            {"fail_after_effects", fail}}}},
     });
+    if (early_effects) {
+        Json early_component{{"name", "wp380e_early_effect"},
+                             {"sound", "project://tone.wav"},
+                             {"slot", "component_" + std::string{slot}}};
+        components.insert(components.begin() + 3,
+                          std::move(early_component));
+    }
     Json document{
         {"schema", "pelican.scene"},
         {"version", 1},
@@ -3341,9 +3349,9 @@ TEST_CASE(
                                  {"version", 1},
                                  {"scenes", {{"A", {{"objects", Json::array()}}}}}};
     const auto b_document =
-        wp380bDocument("B", "slot_b", false, "only_e", true);
+        wp380bDocument("B", "slot_b", false, "only_e", true, true);
     const auto failed_document =
-        wp380bDocument("failed", "slot_c", true, "only_e");
+        wp380bDocument("failed", "slot_c", true, "only_e", false, true);
     auto c_document =
         wp380bDocument("C", "slot_c_committed", false, "only_d");
     const auto d_document =
@@ -3375,16 +3383,23 @@ TEST_CASE(
     const auto b_result = import(b_document, "B");
     REQUIRE(std::holds_alternative<SceneLoadCommitted>(b_result.load_result));
     const auto b_voice_count = audio.voiceCountForTesting();
-    REQUIRE(b_voice_count == 1);
+    REQUIRE(b_voice_count == 2);
     REQUIRE(context.loadData("slot_b") == Json{{"slot", "slot_b"}});
+    REQUIRE(context.loadData("component_slot_b") ==
+            Json{{"source", "component_callback"}});
+    const auto b_live_count = GameObjects::liveCountForTesting();
 
     REQUIRE_THROWS_WITH(import(failed_document, "failed"),
                         ContainsSubstring("WP380b frozen v2 activation failure"));
     const auto c_handle = wp380bProbe(fixture_path).handle;
     REQUIRE(loader.currentScene() == "B");
     REQUIRE(audio.voiceCountForTesting() == b_voice_count);
+    REQUIRE(GameObjects::liveCountForTesting() == b_live_count);
     REQUIRE(context.busVolume("se") == Catch::Approx(0.38F));
     REQUIRE_FALSE(context.loadData("slot_c").has_value());
+    REQUIRE_FALSE(context.loadData("component_slot_c").has_value());
+    REQUIRE(wp380bProbe(fixture_path).component_callback_ran == 1);
+    REQUIRE(wp380bProbe(fixture_path).base_create_deferred == 1);
 
     const auto c_result = import(c_document, "C");
     const auto *c_effect_failure =

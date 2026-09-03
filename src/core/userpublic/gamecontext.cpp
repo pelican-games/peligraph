@@ -9,6 +9,7 @@
 #include "../audio/audio.hpp"
 #endif
 #include "../ecs/predefined/transform.hpp"
+#include "../gamelogic/behaviorarena.hpp"
 #include "../loader/scene.hpp"
 #include "../loader/effecttransaction.hpp"
 #include "../light/lightcontainer.hpp"
@@ -77,6 +78,10 @@ void GameContext::logError(std::string_view message) const {
 }
 
 GameObjectId GameContext::createObject(const LocalTransformComponent &transform) const {
+    if (internal::behaviorCallbackActive()) {
+        GET_MODULE(BehaviorAttachmentArena).deferCreateObject(transform);
+        return invalidGameObjectId;
+    }
     const auto id = GameObjects::add()
                         .addComponent<TransformComponent>()
                         .addComponent<LocalTransformComponent>(transform)
@@ -88,6 +93,11 @@ GameObjectId GameContext::createObject(const LocalTransformComponent &transform)
 GameObjectId GameContext::createSpriteObject(const LocalTransformComponent &transform,
                                              const SpriteViewComponent &sprite) const {
     sprite.validate();
+    if (internal::behaviorCallbackActive()) {
+        GET_MODULE(BehaviorAttachmentArena).deferCreateSpriteObject(transform,
+                                                                    sprite);
+        return invalidGameObjectId;
+    }
     const auto id = GameObjects::add()
                         .addComponent<TransformComponent>()
                         .addComponent<LocalTransformComponent>(transform)

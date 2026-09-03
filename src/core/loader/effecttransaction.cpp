@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <exception>
 #include <stdexcept>
 #include <utility>
@@ -16,11 +17,12 @@ namespace Pelican::internal {
 namespace {
 thread_local PreparedEffectTransaction *active_effect_transaction = nullptr;
 
-std::string exceptionText() noexcept {
+std::string_view currentExceptionWhat() noexcept {
     try {
         throw;
     } catch (const std::exception &error) {
-        return error.what();
+        return error.what() != nullptr ? std::string_view{error.what()}
+                                       : std::string_view{};
     } catch (...) {
         return "unknown effect failure";
     }
@@ -45,7 +47,6 @@ PreparedEffectTransaction::PreparedEffectTransaction(
       game_settings_shadow_{persistence.gameSettings()},
       audio_shadow_{persistence.audioBusSettings()} {
     entries_.reserve(sceneEffectCapacity);
-    errors_.reserve(sceneEffectCapacity + 1U);
 #if PELICAN_WITH_AUDIO
     audio_ = &GET_MODULE(Audio);
     audio_shadow_.master = audio_->busVolume("master");
@@ -69,8 +70,7 @@ PreparedEffectTransaction::Entry *PreparedEffectTransaction::find(
     EntryKind kind, std::string_view resource) noexcept {
     const auto found = std::find_if(entries_.begin(), entries_.end(),
         [&](const Entry &entry) {
-            return entry.active && entry.kind == kind &&
-                   entry.resource == resource;
+            return entry.kind == kind && entry.resource == resource;
         });
     return found == entries_.end() ? nullptr : &*found;
 }
@@ -79,8 +79,7 @@ const PreparedEffectTransaction::Entry *
 PreparedEffectTransaction::findPlay(SoundHandle handle) const noexcept {
     const auto found = std::find_if(entries_.begin(), entries_.end(),
         [&](const Entry &entry) {
-            return entry.active && entry.kind == EntryKind::play &&
-                   entry.handle == handle;
+            return entry.kind == EntryKind::play && entry.handle == handle;
         });
     return found == entries_.end() ? nullptr : &*found;
 }
@@ -91,54 +90,55 @@ PreparedEffectTransaction::findPlay(SoundHandle handle) noexcept {
 }
 
 void PreparedEffectTransaction::record(
-    std::string_view api, std::string_view code,
-    nlohmann::ordered_json fields) noexcept {
-    try {
-        if (errors_.size() >= sceneEffectCapacity + 1U) return;
-        const auto phase = phase_ == CallbackPhase::destroy
-            ? "destroy"
-            : phase_ == CallbackPhase::flush ? "flush" : "activate";
-        errors_.push_back(CommittedWithEffectFailure::EffectError{
-            std::string{api}, std::string{code}, std::move(fields), phase});
-    } catch (...) {
-        // The report storage was reserved in prepare. If construction of a
-        // diagnostic field itself fails, preserve process liveness at the
-        // noexcept destroy/commit boundary.
-    }
+    std::uint64_t sequence, ErrorApi api, ErrorCode code, ErrorFields fields,
+    std::string_view primary, std::uint64_t value, std::uint32_t value2,
+    std::string_view reason) noexcept {
+    if (error_count_ >= sceneEffectCapacity) return;
+    auto &slot = errors_[error_count_++];
+    slot.api = api;
+    slot.code = code;
+    slot.fields = fields;
+    slot.phase = phase_;
+    slot.sequence = sequence;
+    slot.value = value;
+    slot.value2 = value2;
+    const auto copy = [](auto &target, std::string_view source) noexcept {
+        const auto count = (std::min)(source.size(), target.bytes.size());
+        if (count != 0) std::memcpy(target.bytes.data(), source.data(), count);
+        target.size = static_cast<std::uint16_t>(count);
+    };
+    copy(slot.primary, primary);
+    copy(slot.reason, reason);
 }
 
-bool PreparedEffectTransaction::reserveEntry() noexcept {
+bool PreparedEffectTransaction::reserveEntry(
+    std::uint64_t sequence) noexcept {
     if (entries_.size() < sceneEffectCapacity) return true;
     ++dropped_entries_;
+    auto &overflow = errors_.back();
     if (!overflow_reported_) {
         overflow_reported_ = true;
-        const auto before = errors_.size();
-        record("effect_outbox", "effect_outbox_full@1",
-               {{"dropped", dropped_entries_}});
-        if (errors_.size() != before) overflow_error_index_ = before;
-    } else if (overflow_error_index_ < errors_.size()) {
-        try {
-            errors_[overflow_error_index_].error_fields["dropped"] =
-                dropped_entries_;
-        } catch (...) {
-            // The first fixed diagnostic remains valid if its scalar update
-            // cannot be represented at the noexcept callback boundary.
-        }
+        overflow.api = ErrorApi::effect_outbox;
+        overflow.code = ErrorCode::effect_outbox_full;
+        overflow.fields = ErrorFields::dropped;
+        overflow.phase = phase_;
+        overflow.sequence = sequence;
     }
+    overflow.value = dropped_entries_;
     return false;
 }
 
 SoundHandle PreparedEffectTransaction::playSound(std::string_view path) {
+    const auto sequence = next_sequence_++;
     try {
 #if PELICAN_WITH_AUDIO
+        if (!reserveEntry(sequence)) return SoundHandle{};
         auto sound = audio_->prepareSound(path);
         const auto handle = audio_->reserveSoundHandle();
-        if (!reserveEntry()) return SoundHandle{};
         entries_.push_back(Entry{
             .kind = EntryKind::play,
-            .sequence = next_sequence_++,
+            .sequence = sequence,
             .handle = handle,
-            .resource = std::to_string(handle.value),
             .sound = std::move(sound),
         });
         try {
@@ -154,35 +154,38 @@ SoundHandle PreparedEffectTransaction::playSound(std::string_view path) {
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("playSound",
+        record(sequence, ErrorApi::play_sound,
 #if PELICAN_WITH_AUDIO
-               "audio_play_stage_failed@1",
+               ErrorCode::audio_play_stage_failed,
 #else
-               "build_feature_disabled@1",
+               ErrorCode::build_feature_disabled,
 #endif
-               {{"sound", std::string{path}}, {"reason", exceptionText()}});
+               ErrorFields::sound_reason, path, 0, 0,
+               currentExceptionWhat());
         return SoundHandle{};
     }
 }
 
 void PreparedEffectTransaction::stopSound(SoundHandle handle) {
+    const auto sequence = next_sequence_++;
     try {
 #if PELICAN_WITH_AUDIO
         if (auto *play = findPlay(handle)) {
-            play->active = false;
-#if PELICAN_WITH_AUDIO
+            const auto index = static_cast<std::size_t>(play - entries_.data());
             audio_->cancelPreparedVoice(handle);
-#endif
+            entries_.erase(entries_.begin() +
+                           static_cast<std::ptrdiff_t>(index));
             return;
         }
-        if (!audio_->isPlaying(handle)) return;
-        const auto resource = std::to_string(handle.value);
-        if (find(EntryKind::stop, resource) != nullptr) return;
-        if (!reserveEntry()) return;
+        const auto duplicate = std::find_if(
+            entries_.begin(), entries_.end(), [&](const Entry &entry) {
+                return entry.kind == EntryKind::stop && entry.handle == handle;
+            });
+        if (duplicate != entries_.end() || !audio_->isPlaying(handle)) return;
+        if (!reserveEntry(sequence)) return;
         entries_.push_back(Entry{.kind = EntryKind::stop,
-                                 .sequence = next_sequence_++,
-                                 .handle = handle,
-                                 .resource = resource});
+                                 .sequence = sequence,
+                                 .handle = handle});
 #else
         (void)handle;
         throwBuildFeatureDisabled("PELICAN_WITH_AUDIO",
@@ -190,18 +193,20 @@ void PreparedEffectTransaction::stopSound(SoundHandle handle) {
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("stopSound",
+        record(sequence, ErrorApi::stop_sound,
 #if PELICAN_WITH_AUDIO
-               "audio_stop_stage_failed@1",
+               ErrorCode::audio_stop_stage_failed,
 #else
-               "build_feature_disabled@1",
+               ErrorCode::build_feature_disabled,
 #endif
-               {{"handle", handle.value}, {"reason", exceptionText()}});
+               ErrorFields::handle_reason, {}, handle.value, 0,
+               currentExceptionWhat());
     }
 }
 
 void PreparedEffectTransaction::setBusVolume(std::string_view bus,
                                               float volume) {
+    const auto sequence = next_sequence_++;
     try {
 #if PELICAN_WITH_AUDIO
         if (!std::isfinite(volume) || volume < 0.0f) {
@@ -213,12 +218,12 @@ void PreparedEffectTransaction::setBusVolume(std::string_view bus,
         auto *entry = find(EntryKind::bus_volume, bus);
         if (entry != nullptr) {
             entry->volume = volume;
-            entry->sequence = next_sequence_++;
+            entry->sequence = sequence;
             return;
         }
-        if (!reserveEntry()) return;
+        if (!reserveEntry(sequence)) return;
         entries_.push_back(Entry{.kind = EntryKind::bus_volume,
-                                 .sequence = next_sequence_++,
+                                 .sequence = sequence,
                                  .resource = std::string{bus},
                                  .volume = volume});
 #else
@@ -229,17 +234,18 @@ void PreparedEffectTransaction::setBusVolume(std::string_view bus,
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("setBusVolume",
+        record(sequence, ErrorApi::set_bus_volume,
 #if PELICAN_WITH_AUDIO
-               "audio_bus_volume_stage_failed@1",
+               ErrorCode::audio_bus_volume_stage_failed,
 #else
-               "build_feature_disabled@1",
+               ErrorCode::build_feature_disabled,
 #endif
-               {{"bus", std::string{bus}}, {"reason", exceptionText()}});
+               ErrorFields::bus_reason, bus, 0, 0, currentExceptionWhat());
     }
 }
 
 float PreparedEffectTransaction::busVolume(std::string_view bus) {
+    const auto sequence = next_sequence_++;
     try {
 #if PELICAN_WITH_AUDIO
         (void)audioBusFromName(bus);
@@ -251,23 +257,27 @@ float PreparedEffectTransaction::busVolume(std::string_view bus) {
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("busVolume",
+        record(sequence, ErrorApi::bus_volume,
 #if PELICAN_WITH_AUDIO
-               "audio_bus_volume_stage_failed@1",
+               ErrorCode::audio_bus_volume_stage_failed,
 #else
-               "build_feature_disabled@1",
+               ErrorCode::build_feature_disabled,
 #endif
-               {{"bus", std::string{bus}}, {"reason", exceptionText()}});
+               ErrorFields::bus_reason, bus, 0, 0, currentExceptionWhat());
         return 0.0F;
     }
 }
 
 bool PreparedEffectTransaction::isPlaying(SoundHandle handle) {
+    const auto sequence = next_sequence_++;
     try {
 #if PELICAN_WITH_AUDIO
         if (findPlay(handle) != nullptr) return true;
-        const auto resource = std::to_string(handle.value);
-        if (find(EntryKind::stop, resource) != nullptr) return false;
+        const auto stopped = std::find_if(
+            entries_.begin(), entries_.end(), [&](const Entry &entry) {
+                return entry.kind == EntryKind::stop && entry.handle == handle;
+            });
+        if (stopped != entries_.end()) return false;
         return audio_->isPlaying(handle);
 #else
         (void)handle;
@@ -276,108 +286,131 @@ bool PreparedEffectTransaction::isPlaying(SoundHandle handle) {
 #endif
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("isPlaying",
+        record(sequence, ErrorApi::is_playing,
 #if PELICAN_WITH_AUDIO
-               "audio_is_playing_stage_failed@1",
+               ErrorCode::audio_is_playing_stage_failed,
 #else
-               "build_feature_disabled@1",
+               ErrorCode::build_feature_disabled,
 #endif
-               {{"handle", handle.value}, {"reason", exceptionText()}});
+               ErrorFields::handle_reason, {}, handle.value, 0,
+               currentExceptionWhat());
         return false;
     }
 }
 
 nlohmann::json PreparedEffectTransaction::gameSettings() {
+    const auto sequence = next_sequence_++;
     try {
         return game_settings_shadow_;
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("gameSettings", "persistence_shadow_failed@1",
-               {{"reason", exceptionText()}});
-        return nlohmann::json::object();
+        record(sequence, ErrorApi::game_settings,
+               ErrorCode::persistence_shadow_failed, ErrorFields::reason,
+               {}, 0, 0, currentExceptionWhat());
+        return {};
     }
 }
 
 void PreparedEffectTransaction::setGameSettings(nlohmann::json settings) {
+    const auto sequence = next_sequence_++;
     try {
         game_settings_shadow_ = std::move(settings);
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("setGameSettings", "persistence_shadow_failed@1",
-               {{"reason", exceptionText()}});
+        record(sequence, ErrorApi::set_game_settings,
+               ErrorCode::persistence_shadow_failed, ErrorFields::reason,
+               {}, 0, 0, currentExceptionWhat());
     }
 }
 
 void PreparedEffectTransaction::saveSettings() {
+    const auto sequence = next_sequence_++;
     try {
         auto write = persistence_->prepareSettingsWrite(
             game_settings_shadow_, audio_shadow_);
         auto *entry = find(EntryKind::save_settings, write.resource_key);
         if (entry != nullptr) {
+            entry->diagnostic_path = write.path.string();
             entry->write = std::move(write);
-            entry->sequence = next_sequence_++;
+            entry->sequence = sequence;
             return;
         }
-        if (!reserveEntry()) return;
+        if (!reserveEntry(sequence)) return;
         entries_.push_back(Entry{.kind = EntryKind::save_settings,
-                                 .sequence = next_sequence_++,
+                                 .sequence = sequence,
                                  .resource = write.resource_key,
+                                 .diagnostic_path = write.path.string(),
                                  .write = std::move(write)});
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("saveSettings", "persistence_stage_failed@1",
-               {{"reason", exceptionText()}});
+        record(sequence, ErrorApi::save_settings,
+               ErrorCode::persistence_stage_failed, ErrorFields::reason,
+               {}, 0, 0, currentExceptionWhat());
     }
 }
 
 void PreparedEffectTransaction::saveData(
     std::string_view slot, const nlohmann::json &data) {
+    const auto sequence = next_sequence_++;
     try {
         auto write = persistence_->prepareDataWrite(slot, data);
         auto *entry = find(EntryKind::save_data, write.resource_key);
         if (entry != nullptr) {
+            entry->diagnostic_path = write.path.string();
             entry->write = std::move(write);
-            entry->sequence = next_sequence_++;
+            entry->sequence = sequence;
             return;
         }
-        if (!reserveEntry()) return;
+        if (!reserveEntry(sequence)) return;
         entries_.push_back(Entry{.kind = EntryKind::save_data,
-                                 .sequence = next_sequence_++,
+                                 .sequence = sequence,
                                  .resource = write.resource_key,
+                                 .diagnostic_path = write.path.string(),
                                  .write = std::move(write)});
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("saveData", "persistence_stage_failed@1",
-               {{"slot", std::string{slot}}, {"reason", exceptionText()}});
+        record(sequence, ErrorApi::save_data,
+               ErrorCode::persistence_stage_failed, ErrorFields::slot_reason,
+               slot, 0, 0, currentExceptionWhat());
     }
 }
 
 std::optional<nlohmann::json> PreparedEffectTransaction::loadData(
     std::string_view slot) {
+    const auto sequence = next_sequence_++;
     try {
-        const auto resource = "save:" + std::string{slot};
+        const auto resource = persistence_->dataResourceKey(slot);
         const auto found = std::find_if(entries_.begin(), entries_.end(),
             [&](const Entry &entry) {
-                return entry.active && entry.kind == EntryKind::save_data &&
+                return entry.kind == EntryKind::save_data &&
                        entry.resource == resource;
             });
         if (found != entries_.end() && found->write &&
             found->write->overlay_data) return *found->write->overlay_data;
         return persistence_->loadData(slot);
+    } catch (const PersistenceReadError &error) {
+        if (phase_ != CallbackPhase::destroy) throw;
+        record(sequence, ErrorApi::load_data,
+               ErrorCode::persistence_read_failed, ErrorFields::path_reason,
+               error.path(), 0, 0, error.reason());
+        return std::nullopt;
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("loadData", "persistence_overlay_failed@1",
-               {{"slot", std::string{slot}}, {"reason", exceptionText()}});
+        record(sequence, ErrorApi::load_data,
+               ErrorCode::persistence_overlay_failed,
+               ErrorFields::slot_reason, slot, 0, 0,
+               currentExceptionWhat());
         return std::nullopt;
     }
 }
 
 std::vector<PersistenceSlotInfo> PreparedEffectTransaction::listSaves() {
+    const auto sequence = next_sequence_++;
     try {
         auto result = persistence_->listSaves();
         for (const auto &entry : entries_) {
-            if (!entry.active || entry.kind != EntryKind::save_data ||
-                !entry.write || !entry.write->slot) continue;
+            if (entry.kind != EntryKind::save_data || !entry.write ||
+                !entry.write->slot) continue;
             const auto found = std::find_if(result.begin(), result.end(),
                 [&](const PersistenceSlotInfo &slot) {
                     return slot.slot == *entry.write->slot;
@@ -394,15 +427,23 @@ std::vector<PersistenceSlotInfo> PreparedEffectTransaction::listSaves() {
             return left.slot < right.slot;
         });
         return result;
+    } catch (const PersistenceReadError &error) {
+        if (phase_ != CallbackPhase::destroy) throw;
+        record(sequence, ErrorApi::list_saves,
+               ErrorCode::persistence_read_failed, ErrorFields::path_reason,
+               error.path(), 0, 0, error.reason());
+        return {};
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("listSaves", "persistence_overlay_failed@1",
-               {{"reason", exceptionText()}});
+        record(sequence, ErrorApi::list_saves,
+               ErrorCode::persistence_overlay_failed, ErrorFields::reason,
+               {}, 0, 0, currentExceptionWhat());
         return {};
     }
 }
 
 void PreparedEffectTransaction::loadScene(std::string_view name) {
+    const auto sequence = next_sequence_++;
     try {
         if (phase_ == CallbackPhase::destroy) {
             loader_->requestLoadDuringRetire(std::string{name});
@@ -411,8 +452,10 @@ void PreparedEffectTransaction::loadScene(std::string_view name) {
         }
     } catch (...) {
         if (phase_ != CallbackPhase::destroy) throw;
-        record("loadScene", "scene_retire_load_rejected@1",
-               {{"scene", std::string{name}}, {"reason", exceptionText()}});
+        record(sequence, ErrorApi::load_scene,
+               ErrorCode::scene_retire_load_rejected,
+               ErrorFields::scene_reason, name, 0, 0,
+               currentExceptionWhat());
     }
 }
 
@@ -436,23 +479,25 @@ bool PreparedEffectTransaction::rejectRetiredMutation(
                    object.kind() == ECSEntityMutationKind::destroy;
         });
     if (found == retired_objects_.end()) return false;
-    record(api, "SceneRetiredObjectMutationRejected",
-           {{"object_id", toString(id)}});
+    const auto mapped_api = api == "setLocalTransform"
+        ? ErrorApi::set_local_transform
+        : api == "setSpriteView" ? ErrorApi::set_sprite_view
+                                  : ErrorApi::set_sprite_texture;
+    record(next_sequence_++, mapped_api,
+           ErrorCode::scene_retired_object_mutation_rejected,
+           ErrorFields::object_id, {}, id.index, id.generation);
     return true;
 }
 
-std::vector<CommittedWithEffectFailure::EffectError>
-PreparedEffectTransaction::flush(SceneLoadFaultInjector *injector,
-                                 SceneLoadPhaseTrace &phase_trace) noexcept {
+void PreparedEffectTransaction::flush(SceneLoadFaultInjector *injector,
+                                      SceneLoadPhaseTrace &phase_trace) noexcept {
     (void)phase_trace; // EventOutbox owns the executor's single flush marker.
     phase_ = CallbackPhase::flush;
     persistence_->commitGameSettings(std::move(game_settings_shadow_));
 
     for (std::uint64_t sequence = 0; sequence < next_sequence_; ++sequence) {
         auto found = std::find_if(entries_.begin(), entries_.end(),
-            [&](const Entry &entry) {
-                return entry.active && entry.sequence == sequence;
-            });
+            [&](const Entry &entry) { return entry.sequence == sequence; });
         if (found == entries_.end()) continue;
         auto &entry = *found;
         try {
@@ -462,7 +507,12 @@ PreparedEffectTransaction::flush(SceneLoadFaultInjector *injector,
                 if (sceneLoadMutationEnabled(
                         injector, SceneLoadFaultPhase::flush, "audio",
                         scene_load_mutation::effect_audio_play)) {
-                    throw std::runtime_error("injected audio play failure");
+                    record(entry.sequence, ErrorApi::play_sound,
+                           ErrorCode::audio_play_failed,
+                           ErrorFields::handle_sound_reason,
+                           entry.sound.source, entry.handle.value, 0,
+                           "injected audio play failure");
+                    break;
                 }
                 audio_->commitPreparedPlay(entry.handle, entry.sound);
 #endif
@@ -482,8 +532,11 @@ PreparedEffectTransaction::flush(SceneLoadFaultInjector *injector,
                 if (sceneLoadMutationEnabled(
                         injector, SceneLoadFaultPhase::flush, "audio",
                         scene_load_mutation::effect_audio_bus_volume)) {
-                    throw std::runtime_error(
-                        "injected audio bus volume failure");
+                    record(entry.sequence, ErrorApi::set_bus_volume,
+                           ErrorCode::audio_bus_volume_failed,
+                           ErrorFields::bus_reason, entry.resource, 0, 0,
+                           "injected audio bus volume failure");
+                    break;
                 }
                 audio_->applyBusVolume();
 #endif
@@ -496,44 +549,188 @@ PreparedEffectTransaction::flush(SceneLoadFaultInjector *injector,
                 if (sceneLoadMutationEnabled(
                         injector, SceneLoadFaultPhase::flush, "persistence",
                         mutation)) {
-                    throw std::runtime_error("injected persistence write failure");
+                    record(entry.sequence,
+                           entry.kind == EntryKind::save_data
+                               ? ErrorApi::save_data
+                               : ErrorApi::save_settings,
+                           ErrorCode::persistence_write_failed,
+                           ErrorFields::path_reason,
+                           entry.diagnostic_path, 0, 0,
+                           "injected persistence write failure");
+                    break;
                 }
                 persistence_->commitPreparedWrite(*entry.write);
                 break;
             }
             }
         } catch (...) {
+            const auto reason = currentExceptionWhat();
             switch (entry.kind) {
             case EntryKind::play:
-                record("playSound", "audio_play_failed@1",
-                       {{"handle", entry.handle.value},
-                        {"sound", entry.sound.source},
-                        {"reason", exceptionText()}});
+                record(entry.sequence, ErrorApi::play_sound,
+                       ErrorCode::audio_play_failed,
+                       ErrorFields::handle_sound_reason, entry.sound.source,
+                       entry.handle.value, 0, reason);
                 break;
             case EntryKind::stop:
-                record("stopSound", "audio_stop_failed@1",
-                       {{"handle", entry.handle.value},
-                        {"reason", exceptionText()}});
+                record(entry.sequence, ErrorApi::stop_sound,
+                       ErrorCode::audio_stop_failed,
+                       ErrorFields::handle_reason, {}, entry.handle.value, 0,
+                       reason);
                 break;
             case EntryKind::bus_volume:
-                record("setBusVolume", "audio_bus_volume_failed@1",
-                       {{"bus", entry.resource},
-                        {"reason", exceptionText()}});
+                record(entry.sequence, ErrorApi::set_bus_volume,
+                       ErrorCode::audio_bus_volume_failed,
+                       ErrorFields::bus_reason, entry.resource, 0, 0, reason);
                 break;
             case EntryKind::save_data:
-                record("saveData", "persistence_write_failed@1",
-                       {{"path", entry.write->path.string()},
-                        {"reason", exceptionText()}});
-                break;
             case EntryKind::save_settings:
-                record("saveSettings", "persistence_write_failed@1",
-                       {{"path", entry.write->path.string()},
-                        {"reason", exceptionText()}});
+                record(entry.sequence,
+                       entry.kind == EntryKind::save_data
+                           ? ErrorApi::save_data
+                           : ErrorApi::save_settings,
+                       ErrorCode::persistence_write_failed,
+                       ErrorFields::path_reason,
+                       entry.diagnostic_path,
+                       0, 0, reason);
                 break;
             }
         }
     }
-    return std::move(errors_);
+}
+
+std::vector<CommittedWithEffectFailure::EffectError>
+PreparedEffectTransaction::effectErrors() const {
+    std::array<const FixedEffectError *, sceneEffectCapacity + 1U> ordered{};
+    std::size_t count = 0;
+    for (std::size_t index = 0; index < error_count_; ++index) {
+        ordered[count++] = &errors_[index];
+    }
+    if (overflow_reported_) ordered[count++] = &errors_.back();
+    std::sort(ordered.begin(), ordered.begin() +
+              static_cast<std::ptrdiff_t>(count),
+              [](const auto *left, const auto *right) {
+                  return left->sequence < right->sequence;
+              });
+
+    const auto apiName = [](ErrorApi api) -> std::string_view {
+        switch (api) {
+        case ErrorApi::play_sound: return "playSound";
+        case ErrorApi::stop_sound: return "stopSound";
+        case ErrorApi::set_bus_volume: return "setBusVolume";
+        case ErrorApi::bus_volume: return "busVolume";
+        case ErrorApi::is_playing: return "isPlaying";
+        case ErrorApi::game_settings: return "gameSettings";
+        case ErrorApi::set_game_settings: return "setGameSettings";
+        case ErrorApi::save_settings: return "saveSettings";
+        case ErrorApi::save_data: return "saveData";
+        case ErrorApi::load_data: return "loadData";
+        case ErrorApi::list_saves: return "listSaves";
+        case ErrorApi::load_scene: return "loadScene";
+        case ErrorApi::set_local_transform: return "setLocalTransform";
+        case ErrorApi::set_sprite_view: return "setSpriteView";
+        case ErrorApi::set_sprite_texture: return "setSpriteTexture";
+        case ErrorApi::effect_outbox: return "effect_outbox";
+        }
+        return "effect_outbox";
+    };
+    const auto codeName = [](ErrorCode code) -> std::string_view {
+        switch (code) {
+        case ErrorCode::scene_retired_object_mutation_rejected:
+            return "SceneRetiredObjectMutationRejected";
+        case ErrorCode::effect_outbox_full: return "effect_outbox_full@1";
+        case ErrorCode::build_feature_disabled:
+            return "build_feature_disabled@1";
+        case ErrorCode::audio_play_stage_failed:
+            return "audio_play_stage_failed@1";
+        case ErrorCode::audio_stop_stage_failed:
+            return "audio_stop_stage_failed@1";
+        case ErrorCode::audio_bus_volume_stage_failed:
+            return "audio_bus_volume_stage_failed@1";
+        case ErrorCode::audio_is_playing_stage_failed:
+            return "audio_is_playing_stage_failed@1";
+        case ErrorCode::persistence_shadow_failed:
+            return "persistence_shadow_failed@1";
+        case ErrorCode::persistence_stage_failed:
+            return "persistence_stage_failed@1";
+        case ErrorCode::persistence_overlay_failed:
+            return "persistence_overlay_failed@1";
+        case ErrorCode::persistence_read_failed:
+            return "persistence_read_failed@1";
+        case ErrorCode::scene_retire_load_rejected:
+            return "scene_retire_load_rejected@1";
+        case ErrorCode::audio_play_failed: return "audio_play_failed@1";
+        case ErrorCode::audio_stop_failed: return "audio_stop_failed@1";
+        case ErrorCode::audio_bus_volume_failed:
+            return "audio_bus_volume_failed@1";
+        case ErrorCode::persistence_write_failed:
+            return "persistence_write_failed@1";
+        }
+        return "effect_failure@1";
+    };
+    const auto phaseName = [](CallbackPhase phase) -> std::string_view {
+        switch (phase) {
+        case CallbackPhase::activate: return "activate";
+        case CallbackPhase::destroy: return "destroy";
+        case CallbackPhase::flush: return "flush";
+        }
+        return "activate";
+    };
+    const auto text = [](const auto &value) {
+        return std::string{value.bytes.data(), value.size};
+    };
+
+    std::vector<CommittedWithEffectFailure::EffectError> result;
+    result.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto &fixed = *ordered[index];
+        nlohmann::ordered_json fields = nlohmann::ordered_json::object();
+        switch (fixed.fields) {
+        case ErrorFields::reason:
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::sound_reason:
+            fields["sound"] = text(fixed.primary);
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::handle_reason:
+            fields["handle"] = fixed.value;
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::bus_reason:
+            fields["bus"] = text(fixed.primary);
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::slot_reason:
+            fields["slot"] = text(fixed.primary);
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::scene_reason:
+            fields["scene"] = text(fixed.primary);
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::object_id:
+            fields["object_id"] = std::to_string(fixed.value) + ":" +
+                                  std::to_string(fixed.value2);
+            break;
+        case ErrorFields::path_reason:
+            fields["path"] = text(fixed.primary);
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::handle_sound_reason:
+            fields["handle"] = fixed.value;
+            fields["sound"] = text(fixed.primary);
+            fields["reason"] = text(fixed.reason);
+            break;
+        case ErrorFields::dropped:
+            fields["dropped"] = fixed.value;
+            break;
+        }
+        result.push_back(CommittedWithEffectFailure::EffectError{
+            std::string{apiName(fixed.api)}, std::string{codeName(fixed.code)},
+            std::move(fields), std::string{phaseName(fixed.phase)}});
+    }
+    return result;
 }
 
 PreparedEffectTransaction *activeEffectTransaction() noexcept {
