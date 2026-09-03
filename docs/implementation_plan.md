@@ -22041,6 +22041,21 @@ CMake script test(WP379a の build 拒否テストと同じ形)で固定する�
 
 effect sink / audio / persistence / `CommittedWithEffectFailure` の中身 / onDestroy の snapshot view(すべて WP380b)/ refresh root / CPU-only allocator。
 
+
+
+#### WP380c 完了記録(統合側。2026-09-03、`aa7f65a7`)
+
+- **実装(codex sol max、上段)**: executor を `commit_metadata → retire → flush → finish` に並べ替え、prepare で確保した固定長 phase trace を `SceneLoadCommitted` に載せる。
+  GPU release は `ReleaseReport{array<ReleaseError,8>, overflow_count}`(heap なし)を返し、geometry は列・primitive ごとに例外を隔離。`ModelAssetContainer` が失敗 candidate の report を集約し
+  `PreCommitFailure.release_errors` へ。5 root(startup / RPC / pending / import v1 / v2)を本番入口で検査。manifest は role 別に整理し、real participant は **実測 11 行**(v1 の「90 行」は
+  stub / absent / excluded / production root を含む数だった)。injector の setter は test-only TU + production archive の dumpbin symbol gate。回帰テストは Studio 依存の順序ケースと
+  Studio 非依存の全 6 所有列解放ケースに分割(いずれも GPU lane)
+- **agent の変異**: call site 無し ID の追加 → `12 == 11` で赤 / event_outbox の field mutation 除去 → 赤 / report 容量 8 → 7 → `overflow_count` で赤 / production archive に setter 名混入 → gate 赤
+- **agent の検証**: 標準 / RPC OFF / `SKIP_DEVSTUDIO=OFF` の 3 構成 build、非 GPU 1279 / 1279(1 skip)、GPU は登録と link のみ(統合側)
+- **統合側の変異(`mutation-runner` agent、opus。GPU 含む。1 回目)**: **基準が赤 1**(`rng_sequence.current_seed` / `increment` の行は injector を有効化しても field が変わらない。codex は GPU を走らせていないので未検出)。M2(RPC root を startup に)赤 / M3(pending root)赤 / M4(morph 失敗後の継続を外す)赤 ×2(後続 primitive の index と失敗 allocation 自身の morph range を別々に観測)/ M5(`release_errors` 変換除去)赤。**生存 1**: M1a = finish ループを commit 直後へ戻し `record()` を残す → 全緑(trace は executor の record 文だけが書き、処理と結び付いていない。record も動かす M1b だけ赤)。root 4 つが 1 TEST_CASE の loop で REQUIRE 中断するため独立性が読めない → 3 件を codex(sol)に差し戻し。**2 回目**: trace は各 participant(metadata / renderer publish / behavior publish・activate・finish / retirement enqueue / outbox flush / entity finish)が渡された固定長 trace に自分で記録し、executor には `record()` 文が無い(連続重複は 1 つにまとめる)。`rng_sequence.current_seed` は fixture の behavior が activation 中に `setSeed` で実値を変える。`increment` は固定 PCG stream で独立に変わる production 経路が無いので `invariant` role にして ID を外した。root 4 つは `DYNAMIC_SECTION` に分離。codex 自身の再変異: finish ループを commit 直後へ(record 不変)→ :2499 で赤 / RPC root を startup に → :3089 で赤、他 3 root は緑。GPU 対象 20 / 20、非 GPU 1279 / 1279。統合側の再確認(M1a、finish 2 ループを `metadata.commit(phase_trace)` 直後へ、record は participant 側のまま)→ :2499 の exact sequence で赤。残留 0
+- **main 取り込み**: main は起票 commit から動いていないので衝突なし(merge-resolver 不要)
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1609 / 1609**。doclink は 256 件追従、未解決 12(executor / release / manifest の anchor 移動 → docs-writer)
+- コードレビュー `rev380c`: (記入)
 #### WP380c + WP380b 仕様レビュー第 2 巡(不合格・15 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ。v3 が両節の正)**
 
 仕分け: **直す 15**(全件。うち #4 は縮小して直す)。
