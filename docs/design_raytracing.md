@@ -149,6 +149,42 @@ RT3-2 の受け入れから CPU golden を外すことになる。以下は三�
 - oracle: 球 1 個・三角形 1 個・ray 1 本の最小 scene で `t` の区間と GPU の `t` の包含。区間の padding を消すと落ちる(f32 の GPU 値が double 区間から外れる fixture を 1 つ含める)
 - 混在: 球が三角形の手前 / 奥の 2 fixture で最近接の record ID と `hitKind` が入れ替わる
 - 数値契約は RT3-2 WP の表で確定し、**変えるときは本節の定数を上げてから**(定数は `raytracingoracle.hpp` に `Contract` として実装される。設計と実装で同じ名前)
+
+#### 4-P.6 設計レビュー第 1 巡(6 件・破綻 3)と v2 —— **v2 が 4-P の正。4-P.1〜4-P.3 と矛盾する箇所は v2 が勝つ**
+
+##### 修正 1(#1): transform は **rigid のみ**。交差は world 空間、GPU の `.rint` は `a = dot(d, d)` で書く
+
+uniform scale は subset 外にする(球のまま保てても `t` の意味が object / world で変わる)。CPU oracle は三角形と同じく **球の center を world へ区間変換**し、正規化 world ray と交差する(`a = 1`)。
+GPU の `.rint` は object ray(`gl_ObjectRayOriginEXT / DirectionEXT`)で交差するが、rigid なら方向は単位長のまま・`t` は不変。ただし shader は **`a = dot(d, d)` を明示**して単位長を仮定しない(規範。fixture の transform が rigid でも generator は `|det − 1| ≤ 1e-6` を検査する)。
+
+##### 修正 2(#2): GPU の球判定は **geometric form** を規範にし、domain を f32 の相殺に対して縛る
+
+`b² − 4c'` の直接計算は `origin = (−1024,0,0)`, `center = (1023,0,0)`, `r = 0.125` で f32 の判別式が 0 になる(実例)。規範:
+- **GPU shader の式を固定**: `l = c − o`、`s = dot(l, d)`、`m² = dot(l, l) − s²`、`disc = r² − m²`、`t = s − sqrt(disc)`(`a = dot(d,d)` で割る)。`b² − 4ac` の形は subset 外
+- **domain**: `|l| = |c − o| ≤ 2^9`(origin から center までの距離。座標 domain ±2^10 の中で更に縛る)、`r ≥ 2^-3`、かつ **垂直 margin** `r² − m² ≥ disc_min = 2^-8 · r²`(接線からの距離が半径の 1/16 以上)。`disc_min` は radius² 相対に加えて **`m²` の f32 誤差上限 `4 · 2^-24 · |l|²` を超える**ことも要求する(`2^-8 r² > 2^-22 |l|²` ⇔ `|l| < 2^7 · r`。generator が両方を検査)
+- CPU oracle は同じ geometric form を double の区間で計算し、`sqrt` の両端を有向丸め、端点に f32 の 4 ulp padding(三角形と同じ)。**generator は f32 で geometric form を emulate し、その値が CPU 区間に入らない fixture を拒否**(構成的保証の補助。検査に頼らないという §4 の原則には「拒否した fixture は golden にしない」ことで従う)
+
+##### 修正 3(#3): slab は方向符号に依存しない形
+
+各軸で `t_a = (min_i − o_i) / d_i`、`t_b = (max_i − o_i) / d_i` を区間で計算し、`near_i = min(t_a, t_b)`、`far_i = max(t_a, t_b)`(区間の min / max は端点ごと)。`|d_i| < 2^-12` の軸は「無限 slab」として除外し、`o_i ∈ (min_i, max_i)` を区間で要求。`t_enter = max_i near_i`、`t_exit = min_i far_i`、`t_enter.upper < t_exit.lower`。受け入れは **8 象限すべての方向**の ray を fixture に含める。
+
+##### 修正 4(#4): 一意性は **区間同士**で、any-hit の後にもう一度
+
+`nearest.t.upper + ε_t < next.t.lower`(scalar の差ではなく区間の分離)。any-hit 述語で候補が落ちた後の **accepted candidates** についても同じ分離を要求する(述語が最近接を落として次候補が最近接になる fixture は、その次候補と第 3 候補の分離も generator が保証する)。
+
+##### 修正 5(#5): `ε_t` の式を現行 oracle に合わせる
+
+`ε_t(t) = relative_t_epsilon · max(1, |t|)`(現行 oracle の適用式。[raytracingoracle.cpp](../src/core/shader/raytracingoracle.cpp) の一意性検査と同じ)。区間幅の上限も同じ分母 `max(1, |t_mid|)` で `≤ maximum_relative_interval_width`。純 relative(`t = 1e-3` で `1e-6`)は採らない。
+
+##### 修正 6(#6): 「AABB 内包含」を 2 つの検査に分ける
+
+Vulkan は `reportIntersectionEXT` の `t` が AABB slab 内であることを要求しない(current ray interval だけ)。したがって:
+(a) **幾何が量子化後の AABB に含まれる**: generator が `center ± (r + ε_pad)` を **f32 に丸めた AABB**(BLAS に渡す実 bounds)に含まれることを検査 / (b) **GPU の `t` が CPU の root 区間に含まれる**(4-P.3 の包含述語)。「hit が box の中」は受け入れから外す。
+
+##### 受け入れの骨(v2 差分)
+
+- 8 象限の ray / 負方向からの AABB hit / `|l|` 上限と `|l| < 2^7 r` の generator 拒否 / f32 emulate の拒否 / 区間分離の一意性 / any-hit 後の再検査 / rigid でない transform の拒否 / (a)(b) の分離
+- 定数の追加: `sphere_maximum_center_distance = 512`、`sphere_minimum_radius = 0.125`、`sphere_discriminant_margin = 2^-8`、`slab_direction_epsilon = 2^-12`。`Contract` に同名で実装する
 ## 5. capability・構成(v2 §4 + 第 2 巡 #8)
 
 - 選択済み feature × 非対応 device = hard reject(property 名・要求値・実値・device 名)

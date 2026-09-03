@@ -22570,6 +22570,92 @@ frozen audit の partial TU(記録)/ 受け入れ文言の統一(記録)/ CARRIE
 - **main 取り込み**: main は docs のみ動いていたので衝突なし
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1626 / 1626**。doclink 77 件追従、未解決 1(docs-writer へ)
 - コードレビュー: 連鎖の最後のため codex レビューは行わず、統合側変異 + Claude レビューで代替。以後の指摘は記録のみ
+
+### WP384: frame transaction の rollback guard —— 却下された世代の SBT と TLAS descriptor が active に残らない
+
+**§4 規則 11 上段(renderer の frame transaction を触る)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex)1 巡 → 実装 → 統合側変異 → コードレビュー。見積: 小〜中。`rev377a` #1 の既知の穴を単独で閉じる(「次に frame transaction を触る WP に同梱」の裁定を、今それを触る WP が無いので撤回する)。**
+**依存: なし。規範: docs/design_raytracing.md §11 v4 決定 1(TLAS と SBT は単一 immutable row snapshot から candidate として共同構築し、原子的 publication、旧世代は submission lease で退役)。**
+
+#### 今日の対照(§4 規約 10。実測は HEAD)
+
+frame の実行順([renderer.cpp:4741](../src/core/vkcore/renderer.cpp#L4741)-5581):
+1. 候補 SBT を構築 → `after_sbt` 注入点
+2. `recordFrame()` で AS 構築を record(`FrameBuild` は candidate を保持するだけ。`active_state_` は未変更)
+3. **`FrameResources::setRayTracingSceneShaderBindingTables(candidate)` を無条件実行**([frameresources.cpp:430](../src/core/renderer/frameresources.cpp#L430)。保存 / 復元なし)
+4. `after_as_record` 注入点 ← **ここで fault が出ると 3 の active は候補世代のまま**
+5. **`FrameResources::setRayQueryAccelerationStructure(candidate tlas)` で実 GPU descriptor set に TLAS handle を書く**(:435。guard なし)
+6. `submit` 注入点 ← 3 と 5 は済んでいる
+7. `endLogicalFrame(lease)` → `FrameBuild::commit()`(ここで初めて `active_state_ = candidate_`)→ staged runtime publish → abort guard complete
+
+既存の guard は `LogicalFrameAbortGuard`(frame の abort だけ)と `StagedRuntimeRollbackGuard`(program 世代だけ)。**SBT と TLAS descriptor は誰も戻さない**。`after_as_record` / `submit` の fault では `FrameBuild` の destructor が candidate を解放するので、descriptor の TLAS handle は **解放済みの candidate を指す**(dangling)。RT → 非 RT の clear([renderer.cpp:4678](../src/core/vkcore/renderer.cpp#L4678))も同型。
+既存テスト `WP366 renderer A B recovers …`([headless_render_test.cpp:11094](../test/headless_render_test.cpp#L11094))は 5 注入点を回すが、**失敗直後の active SBT / TLAS の同一性を見ていない**(次 frame の回復だけを見る)。
+
+観測(機能が無いとき): `after_as_record` の fault の直後、`FrameResources` の active SBT は却下世代、descriptor の TLAS は解放済み candidate。次 frame が来る前に描画・query が走れば旧世代でも新世代でもないものを読む。
+
+#### 決定
+
+##### 決定 1: SBT と TLAS descriptor の publish を **`FrameBuild::commit()` と同じ時点**に寄せる(candidate を先に書かない)
+
+- frame 中は候補 SBT と候補 TLAS を **`FramePublication` 型(immutable)**に束ね、record・submit までは **旧世代の active を触らない**。`commit()` で `{active_state_, active SBT, descriptor TLAS}` を **1 つの noexcept swap** で publish する(識別子 v4 §9 の metadata swap と同じ形)
+- descriptor set への TLAS 書き込みは commit 時点で行う(record は candidate の TLAS を command buffer 内で参照するだけで、descriptor は次 frame の描画で読まれる)。**record 前に descriptor を書く必要があるか**は実装時に `recordFrame` の依存を確認する。必要なら **frame ごとの二重 descriptor(候補用 / active 用)**を持ち、commit で index を切り替える(書き換えではなく選択)
+- 失敗時(`after_sbt` / `after_as_record` / `submit`)は `FramePublication` の destructor が候補を解放するだけで、active は旧世代のまま(**何も戻す必要が無い設計** = rollback guard より強い)。RT → 非 RT の clear も `FramePublication{empty}` の commit として同じ経路
+- `static_assert(noexcept(commit()))`。commit 後の各操作が throw しないことを型で固定
+
+##### 決定 2: 受け入れは **失敗直後の同一性**と **dangling の不在**
+
+- 既存の 5 注入点 test を拡張し、**各 fault の直後**(次 frame を回す前)に (a) `FrameResources` の active SBT が旧世代と同一(generation id / bytes)/ (b) descriptor の TLAS handle が旧世代の TLAS と同一 / (c) 候補 TLAS の `shared_ptr` use_count が 0(解放済みで、descriptor が指していない)を検査。`after_sbt` / `after_as_record` / `submit` の 3 点で赤(今日)、`after_compile` / `after_pipeline` は今日も緑(対照)
+- RT → 非 RT の clear を挟んだ frame で `submit` の fault → active SBT は clear 前の世代(今日 = 空)
+- GPU で観測: fault の直後にもう 1 frame 描いて、旧世代の sentinel(§4 の SBT sentinel)が読めること(今日 = 却下世代の sentinel か GPU fault)
+- 変異: commit の swap を「SBT だけ」「TLAS だけ」に分けると (a)(b) が落ちる。候補を先に書く旧順序に戻すと 3 点で落ちる
+
+##### 決定 3: やらないこと
+
+frame transaction を WP380 の executor に載せ替えること(別機構のまま。participant seam は CARRIER-RT3 の後)/ submission lease の設計変更 / staged runtime generation の扱い(既存 guard のまま)。
+
+---
+
+### WP385: GPU テストの process 間 lease —— 2 つの ctest が同じ GPU で偽陽性を出さない
+
+**§4 規則 11 中段(test 基盤。production には触れない)。実装者: `gpt-5.6-terra` + `high`。コードレビューは統合側検証 + Claude。見積: 小。**
+**動機: 検証ループの律速は GPU ではなく「変異 1 件ごとの再 build」と「GPU テストを持つ ctest を 2 本同時に走らせられない」こと([mutation-loop-cost])。lease があれば変異ランナー 2 本と着地スクリプトを並走できる。**
+
+#### 今日の対照
+
+- GPU の直列化は ctest の `RESOURCE_LOCK`(`pelican_golden_gpu` 9 source、`pelican_gpu` 12 箇所。[test/CMakeLists.txt:133](../test/CMakeLists.txt#L133))だけ。これは **1 つの ctest process のスケジューラのメモリ上の状態**で、別 process の ctest は互いを知らない
+- device 取得は `TestSupport::requireVulkanDevice`([vulkan_test_support.hpp:27](../test/vulkan_test_support.hpp#L27))か直接 `GET_MODULE(VulkanManageCore)`。named mutex / lock file は test にも src にも無い
+- `FastModuleContainer` は TEST_CASE ごとに構築・破棄されるので、device 初期化は **TEST_CASE の数だけ**起きる
+
+観測(機能が無いとき): 2 つの ctest process が GPU test を同時に走らせると golden の byte 比較や SEGFAULT(`-j64` で 12 件失敗・GPU 10 回 SEGFAULT の実績)が偽陽性で出る。
+
+#### 決定
+
+##### 決定 1: lease は **Catch2 の event listener** で TEST_CASE 単位に取る
+
+- test の共通 main(Catch2 の `pelican_test_main` 相当)に listener を登録し、**`[gpu]` tag(または `gpu` label に対応する tag)を持つ TEST_CASE の開始で named mutex `Global\pelican_gpu_lease_v1` を取得、終了で解放**する。個々の test を変えない
+- 取得待ちは **上限 20 分**。超えたら `gpu_lease_timeout@1{holder_pid, waited_seconds}` で **Catch の FAIL**(SKIP ではない。黙って通さない)。holder の pid は lease と一緒に共有 memory / lock file に書く
+- 環境変数 `PELICAN_GPU_LEASE=off` で無効化できる(単一 process の CI では不要)。既定は on。**off のときも `RESOURCE_LOCK` は残る**(退化しない)
+- Linux は `flock` の lock file(`$XDG_RUNTIME_DIR/pelican_gpu_lease_v1`)。同じ listener、同じ error code
+
+##### 決定 2: `RESOURCE_LOCK` の名前を統一する
+
+`pelican_golden_gpu` と `pelican_gpu` の 2 名を **`pelican_gpu` 1 つ**に統一し、`GPU` を付けた全 `pelican_define_test` が lock を持つ(今日は `GOLDEN` か個別指定のものだけ)。in-process の直列化と process 間の lease が同じ集合を対象にする。
+
+##### 決定 3: 運用側の 2 点を同じ WP で入れる(script のみ)
+
+- worktree の configure script(`tools/worktree_configure.sh`)を新設: main の `_deps` remap、`MSBUILDDISABLENODEREUSE=1`、任意で `-G Ninja`(Build Tools 同梱の ninja と `vcvars64.bat` を `cmd /c` で経由)。変異ランナーと着地スクリプトはこれを呼ぶ
+- 変異ランナーの手順書(`.claude/agents/mutation-runner.md`)に「lease があるので GPU test を含む 2 本の並走は可。build は node reuse を切る」を追記
+
+#### 受け入れ(§4 規約 10)
+
+- lease: 2 つの process が同じ `[gpu]` test を同時に起動し、**取得区間(timestamp)が重ならない**ことを lock file の履歴で観測(今日 = 重なる)。listener を外すと重なって落ちる
+- timeout: holder が lease を握ったまま 20 分を超える fixture で `gpu_lease_timeout@1` が **FAIL** として出る(SKIP ではない)。off 環境変数で lease を取らない
+- 統一: `ctest -N --print-labels` と `RESOURCE_LOCK` の集合が一致(`GPU` の全 test)。個別 `pelican_gpu` の 12 箇所が残っていない
+- script: 新 worktree を script で configure して非 GPU 全数が緑(VS generator と Ninja の両方)
+- 全数 / 両構成 / 出荷 4 project bytes 不変(test 基盤のみ)
+
+#### やらないこと
+
+device の共有(1 process 内の device 初期化を TEST_CASE 間で使い回すこと。決定性のため今のまま)/ CI 構成の変更 / production コードへの変更。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
