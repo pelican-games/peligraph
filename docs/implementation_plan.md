@@ -21469,6 +21469,23 @@ refresh root(決定 10)/ ModelAsset の participant 化(決定 12)/ 公開 mutat
 #### 記録のみ
 
 `rev381` #9(設計文書の旧入口名)は docs-writer。RPC OFF の別 build はレビューで未実行(統合側で実施)。
+
+
+#### WP381a 完了記録(統合側。2026-09-03、`11fd0071`)
+
+- **実装(codex terra + high、中段)**: descriptor ごとに directory 範囲・同一 section・ファイル境界を検査(`descriptor_out_of_bounds`)。ファイル全体の読み込みを廃止し header と必要 section だけを ifstream で読む。
+  256 MiB / descriptor 4096 / thunk 65536 / import 文字列 4 KiB の上限(`too_large`)。sharing violation 3 回で `game_logic_source_busy@1{path, retries}` を pending status に出し、解除後の poll で再試行。
+  RPC helper は participant 未試行時に reloader の保存済み startup error を返し、`PelicanCore::run()` は initialize 失敗を名前付きで log(起動は継続)。initialize で dead pid の shadow directory を sweep、clean shutdown で自 pid を削除。
+  epoch は `PELICAN_GAME_LOGIC_ABI_VERSION` マクロを唯一の定義とし anchor 名・`gameLogicAbiVersion` を導出(`static_assert`)。`#ifndef` の上書きは test の epoch 999 fixture が使う
+- **codex は build できなかった**(sandbox から quill の FetchContent clone が `SEC_E_NO_CREDENTIALS`)。統合側で main の `_deps` へ remap して build。残っていた compile error 2 件(`std::string` の pointer 型不一致、`gameLogicAbiVersion` の namespace 修飾)と、
+  thunk 上限 fixture の import 名が thunk 配列と重なる不備(`truncated_import_name` が先に出る)を Claude が修正
+- **Claude が加えた 2 点**: (1) Windows の生存判定で `OpenProcess` の access denied を alive 扱い(POSIX の EPERM と同じ。他ユーザーの live shadow dir を掃除しない) /
+  (2) WP381 の reader mutation copy は configure 時生成で reader を直しても再生成されなかった(4 変異版が旧 reader のまま compile error)→ `CMAKE_CONFIGURE_DEPENDS` に reader を追加
+- **統合側の検証(worktree)**: 非 GPU 1266 / 1267 → fixture 修正後 WP381 系 13 / 13
+- **統合側の変異(`mutation-runner` agent、opus。1 回目)**: M2(thunk 上限)/ M3(256 GiB 化。1.7 s で赤、timeout ではない)/ M4(busy 上限 100 万)/ M6(sweep の remove_all)/ M7(自 pid 削除)は赤。**生存 2 件**: M1(同一 section 検査を丸ごと消しても crossing が緑 = fixture の descriptor #1 が両 section の VA 隙間に落ち、`fileOffset` 単独で拒否される)/ M5(RPC helper の `untried` 判定を消しても緑 = テストが const の `statusJson()` だけを呼び participant が登録されない。WP381a 以前でも緑)→ codex(terra)に差し戻し(test 1 ファイルのみ: section 1 を RVA 0x1014 に連続配置し descriptor #1 を完全な anchor import に / participant を `requestRuntimeReload` で登録してから production の status helper を通す)。**2 回目(統合側)**: M1 赤(619 行 `readable()` が true)/ M5 赤(687 行 `null != game_logic_abi_stale@1`)。残留 0。RPC OFF 構成 build エラー 0(deps は worktree の `_deps` へ remap)
+- **main 取り込み**(`merge-resolver` agent、WP379a / WP380a-fix / WP375c の後): 衝突は pelican_core.cpp の 1 箇所のみ(WP381a の initialize 失敗 log と WP380a-fix の Renderer 検証移動が同じ 2 行を触る)。両方を残し、log は Renderer 検証より前でも throw せず vertex pool にも触れないので「material route の失敗が最初」は維持。3 WP の意図(WP379a の terminal shutdown / WP380a-fix の順序 / WP381a の log)を行で確認。merge 後 非 GPU 1277 / 1277、doclink 0 未解決
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1602 / 1602**。doclink 未解決 0
+- コードレビュー: 中段のため codex レビューは行わず、統合側変異 + Claude レビューで代替。連鎖は 381a で打ち切り(以後の指摘は記録のみ)
 ### WP380a-fix: 失敗した scene load が vertex pool を消費し、出荷 example の config fatal を別の fatal で隠す
 
 **§4 規則 11 上段(出荷挙動)。コードレビューのみ(§10)。見積: 小。WP380a の後追い(致命ではないが利用者に見える診断の後退)。**
@@ -21755,6 +21772,112 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 依存: **WP379 統合後**(component 登録 ingress は触らないが、同じ test EXE / fixture 系列を触る)。仕様レビューは 2 巡で打ち切り。
 見積: **中〜大**(anchor + 4 入口改名 + reader + `initialize()` 順序 + fixture 9 role + RPC data + 監査テスト)。
 
+
+### WP380b: effect transaction —— behavior が transaction 中に Pelican API 経由で行った作用は、rollback で消えるか名前付きで残る
+
+**§4 規則 11 上段(core の executor と公開 API の契約を変える)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex、上段)→ 実装 → 統合側変異 → コードレビュー。見積: 大。**
+**依存: WP380a + WP380a-fix(`f8cd134d`)統合済み、WP381(frozen fixture の機構)統合済み。規範: `docs/design_object_identity.md` v4 §9 修正 A(effect sink)・修正 B(executor)。WP380 v3 決定 2・4・6・7・8・9 を受ける(§4 の段割り v2 は本節で切り直し)。**
+
+#### 今日の対照(§4 規約 10)
+
+WP380a 後の状態は「engine-owned state と engine-owned queue(event / RNG / pending scene)は原子的、**それ以外の作用は漏れる**」。
+`BehaviorContext` は `GameContext` を public 継承し([behavior.hpp:24](../src/core/userpublic/behavior.hpp#L24))、deferred 化されるのは create / remove の 3 本だけ
+([behavior.hpp:53](../src/core/userpublic/behavior.hpp#L53))。`onInit` から `playSound` / `stopSound` / `setBusVolume` / `saveData` / `saveSettings` / `setGameSettings` は
+**live state に直通**([gamecontext.cpp:265](../src/core/userpublic/gamecontext.cpp#L265) → [audio.cpp:449](../src/core/audio/audio.cpp#L449)、
+[persistence.cpp:272](../src/core/persistence/persistence.cpp#L272) の `atomicWrite`)。manifest は audio / persistence を `excluded_wp380b` として予約済み
+([sceneparticipantmanifest.cpp:163](../src/core/loader/sceneparticipantmanifest.cpp#L163))。`CommittedWithEffectFailure` は型だけで生成箇所が無い
+([sceneload.hpp:96](../src/core/loader/sceneload.hpp#L96))。
+
+観測(機能が無いとき): B の `onInit` が `playSound` して C で activate が失敗すると、A に戻った世界で B の voice が鳴り続ける。B の `onInit` の `saveData` は失敗後もディスクに残る。
+`setBusVolume` は戻らない。旧 scene の behavior の `onDestroy` は entity が既に `live = false` の後に呼ばれ([scene.cpp:821](../src/core/loader/scene.cpp#L821) →
+[archetypemigration.cpp:791](../src/core/ecs/archetypemigration.cpp#L791)、[behaviorarena.cpp:974](../src/core/gamelogic/behaviorarena.cpp#L974))、`ctx.self()` 経由の自分の component は読めない。
+
+#### 決定
+
+##### 決定 1: 公開 mutator の全列挙表と、transaction 中の扱い(journal / shadow / outbox / reject / covered)
+
+| API | 扱い | 根拠 |
+|---|---|---|
+| `emit<Event>` / `setSeed` / `random*` / `loadScene` | **covered**(WP380a の outbox / overlay。[scene.cpp:883](../src/core/loader/scene.cpp#L883)-885) | 変えない。受け入れで **再確認**する(root ごと) |
+| `setCamera` / light setter 4 種 / `setSpriteView` / `setSpriteTexture` / `setLocalTransform`(executor が作った entity) | **covered**(published candidate に書き、rollback は旧 candidate の再 publish) | 受け入れで再確認 |
+| `BehaviorContext::createObject` / `createSpriteObject` / `removeObject` | **covered**(deferred。activate 失敗で `deferred_mutations.resize`) | 再確認 |
+| `playSound` | **shadow + outbox**: decode の同期 validation は即時(失敗は今日どおり throw)。**provisional handle** を返し、backend の `play` は commit 後の flush。`isPlaying(provisional)` は true、`stopSound(provisional)` は outbox から取り消し | 修正 A |
+| `stopSound(既存 voice)` | **journal**: transaction 中は「停止予約」を記録し `isPlaying` は false を返す(read-your-writes)。backend の `destroy` は flush。rollback は予約を捨てる | 修正 A |
+| `setBusVolume` | **journal**: 旧値を保存して即時適用、rollback で旧値へ戻す(prepare 済みの candidate と同じ扱い。flush 不要) | 音量は engine-owned state |
+| `setGameSettings` | **shadow**: transaction-local copy。`gameSettings()` は shadow を返す。commit で swap(noexcept)、rollback で捨てる | 修正 A |
+| `saveSettings` / `saveData` | **outbox**: bytes は transaction 中に確定(`captureAudioSettings` も shadow から)、`atomicWrite` は flush。flush の例外は `CommittedWithEffectFailure` | 修正 A |
+| `GameObjects::create*` / `remove`(system や非 callback 経路から load 中に呼ぶ) | **token**: executor の created / destroyed 列に合流させ rollback 対象にする。今日は token 外([scene.cpp:634](../src/core/loader/scene.cpp#L634)) | 決定 4 |
+| `GameObjects::removeAll` | **reject**: transaction 中は `SceneTransactionMutationRejected{api: "removeAll"}`(名前付き。黙って通さない) | 全消去は rollback 不能 |
+| `GameObjects::setLocalTransform`(既存 entity) | **journal**: 旧 `LocalTransform` / `Transform` / renderer の TRS を保存して戻す | 決定 4 |
+| `debugText` | **非参加**(frame 寿命。manifest に `frame_lifetime` として明記) | 実害なし |
+| physics query / `loadData` / `listSaves` / getter 群 / log | 読み取りのみ。非参加 | — |
+
+表は `sceneparticipantmanifest.cpp` の行として実装し、**表に無い public mutator が `GameContext` / `GameObjects` に存在しないこと**を
+テストが header の宣言一覧(`gamecontext.hpp` / `gameobjects.hpp` の `PELICAN_API` 関数)と照合して固定する。
+
+##### 決定 2: effect sink は下位層に 1 つ。`onInit` / `onDestroy` / system 経由 / 旧 DLL のコードもそこを通る
+
+- `GameContext` の各 mutator は **scoped transaction sink**(thread-local。WP380a の `EventOutboxScope` と同じ形)を見て、scope が無ければ今日どおり直通
+- sink は `SceneLoader::load` の activate と retire の間だけ設置し、**旧 behavior の `onDestroy`(rollback 中の逆順を含む)も同じ sink の内側**で呼ぶ
+- 旧 DLL(変更前ヘッダで build)も host 側の sink を通る(ヘッダの inline は `getEventRegisterer().emit` のように host 関数を呼ぶ形を保つ)
+
+##### 決定 3: 旧 behavior の `onDestroy` は **自分の最終状態を読める**。順序は v4 のまま
+
+- 順序は v4 の `commit_metadata → retire_old_state → flush → finish` に合わせる。今日の `metadata.commit → behavior finish → token finish → retire enqueue → flush`
+  ([scene.cpp:920](../src/core/loader/scene.cpp#L920)-938)は **behavior の finish を retire の中に移す**
+- ECS の destroy は early publish のまま(WP375 protocol)。したがって `onDestroy` 時点で旧 entity は非 live。**`BehaviorContext` は destroy 中、inverse token の snapshot(最終 component 値)を
+  `self()` / `localTransform()` / `spriteView()` の読み取り元にする**(read-only view)。書き込み系は sink 経由(journal / outbox)で、失敗 transaction では捨てられる
+- **却下した案**: (a) destroy token の publish を retire まで遅らせる = activate 中の新 behavior に旧 object が見える(v4 が避けた状態)/ (b) `onDestroy` を early_publish の前で呼ぶ = rollback で behavior instance を復元できない
+- 受け入れ: 旧 behavior の `onDestroy` が `self()` の component 値と `localTransform()` を読んで `saveData` に書く fixture。C 失敗では **書かれない**、B→C 成功では**旧値が書かれる**
+
+##### 決定 4: `CommittedWithEffectFailure` に中身を入れる
+
+- flush の失敗源は **audio backend の `play` / persistence の `atomicWrite`** の 2 種。`effect_errors[]` は `{api, error_code, error_fields}` の列で、**残りの flush は続ける**(1 つ失敗で以降を捨てない)
+- 結果は B / B のまま(active authority は新)。`BasicConfig` の catch は commit status を見て document を戻さない([basicconfig.cpp](../src/core/loader/basicconfig.cpp) の無条件 restore を置換)
+- RPC(`load_scene`)は `error.data` に `committed_with_effect_failure@1{effect_errors}` を返し、status は committed のまま
+- 受け入れ: write sink を fault injector(`SceneLoadFaultPhase::flush`)で落とし、**document / runtime は B、`effect_errors` に `saveData` が 1 件**。flush の継続を消すと後続の `playSound` が失われて落ちる
+
+##### 決定 5: rev380a の実害・代理条件をここで閉じる(M0)
+
+- (a) 決定 3 の順序 / (b) 失敗 candidate の解放([model.cpp:409](../src/core/asset/model.cpp#L409))は処理ごとに `error_code` を数え、二次失敗を `release_errors[]` として log + status に残す /
+  (c) 5 root(startup / RPC / pending / import v1 / v2)の受け入れは **本番入口**(`PelicanCore::run` の startup、`load_scene` RPC、`requestLoad → applyPendingLoad`、`importSceneDocument`)を通し、`sceneLoadRootDisconnected()` helper 直呼びは受け入れに数えない /
+  (d) manifest の mutation ID と executor の `sceneLoadMutationEnabled` call site を **1:1 に照合する契約テスト**(ID だけの行を拒否)、trigger pair を持つ physics fixture /
+  (e) `setFaultInjectorForTesting` は `PELICAN_TESTING` でのみ compile(production binary に setter が無いことを export 一覧で固定)/
+  (f) WP380a-fix の Studio 回帰テストを **(a) 順序 と (b) 解放 の 2 TEST_CASE に分割**し、(b) は CPU で観測できる形(`allocatedIndexCountForTesting` は ModelAssetContainer 単体 + 失敗 Renderer stub)にして CPU gate と `SKIP_DEVSTUDIO=ON` でも走らせる
+
+##### 決定 6: 旧 DLL fixture は **frozen header snapshot v2**
+
+- `test/fixtures/userpublic_frozen/v1/` は WP381 の stale(v1 入口名)fixture で、**もう load できない**。本 WP 着手時点の `src/core/userpublic` を `userpublic_frozen/v2/` に snapshot し、WP381 と同じ `/sourceDependencies` 検査で live header の混入を拒否する
+- その DLL の `onInit` が event / RNG / `loadScene` / `playSound` / `saveData` / `setBusVolume` / `setGameSettings` を呼んでから throw する。受け入れは**この DLL**で通す(現行ヘッダで build した fixture は補助)
+
+##### 決定 7: 構成 matrix
+
+- ON baseline(AUDIO / PHYSICS / SEQPLAYER / VAT 全 ON): A/B/C/D の semantic test
+- AUDIO OFF: audio 行は `uninstalled`、`playSound` は既存の `BuildFeatureDisabledError` のまま、残りの行で A/B/C が通る。RPC OFF は build。`SKIP_DEVSTUDIO` 両構成。GPU は統合側で直列
+- 出荷 4 project の bytes / golden 不変(機能対照ではない。fixture project を別に持つ)
+
+#### milestone(1 branch。順に着地させるが分割出荷はしない)
+
+- **M0** 決定 5(a)〜(f)。ここまでで rev380a の実害が閉じる
+- **M1** 決定 1〜4(sink、journal、audio provisional、persistence outbox、`CommittedWithEffectFailure`)
+- **M2** 決定 6・7(frozen v2 fixture、matrix)
+
+#### 受け入れ(§4 規約 10。各項目に「無いときに何が観測されるか」「何を取り消したら落ちるか」)
+
+1. **audio**: frozen v2 DLL の B が `onInit` で `playSound` → C 失敗 → A に戻った時点で backend の voice 数 == A の voice 数(今日 = B の voice が残る)。outbox を消すと落ちる
+2. **persistence**: 同 fixture の `saveData(slot_c)` → C 失敗 → `slot_c` が存在しない、write sink の commit 回数 == A/B の分だけ(今日 = 書かれる)。outbox を消すと落ちる。B→C 成功では flush 後に存在する
+3. **journal**: `setBusVolume` / 既存 entity への `setLocalTransform` / 既存 voice の `stopSound` が C 失敗で戻る(今日 = 戻らない)。journal の各行を 1 つずつ無効化した変異がそれぞれ落ちる
+4. **reject**: transaction 中の `removeAll` が `SceneTransactionMutationRejected` で拒否され A/B は不変(今日 = 全消去)
+5. **onDestroy の view**: 決定 3 の受け入れ
+6. **CommittedWithEffectFailure**: 決定 4 の受け入れ。RPC の `error.data` を実 RPC 経路で観測
+7. **M0**: (c) 各 root で「root → executor の配線を削る」変異が root ごとに落ちる / (d) manifest から call site の無い ID を 1 行足すと契約テストが落ちる / (e) production の export 一覧に setter が無い / (f) 分割後の 2 TEST_CASE が CPU gate に登録される
+8. 表の完全性: `gamecontext.hpp` / `gameobjects.hpp` に mutator を 1 つ足して表に書かないと落ちる
+9. 全数 / 両構成 / RPC OFF / AUDIO OFF / 出荷 4 project bytes 不変
+
+#### やらないこと
+
+registry の transaction-local 化(ID-A)/ refresh root の participant 化(WP380 決定 10)/ Studio の authority wire(修正 E)/ 旧 DLL の onDestroy を entity live のまま呼ぶこと(決定 3 で却下)/
+`debugText` の participant 化 / CARRIER-RT3 の participant seam(本 WP の sink と executor 順序の上に載る。順序は WP380b → CARRIER-RT3)。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
@@ -21772,7 +21895,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
-5. WP380b / CARRIER-RT3 / CARRIER-STUDIO は上の後に節を切り直す
+5. **WP380b は 2026-09-03 に節を切り直して起票**(effect transaction + rev380a の実害を M0 に吸収。仕様レビュー待ち)。CARRIER-RT3 は WP380b の後(participant seam が sink と executor 順序に載る)、CARRIER-STUDIO はその後
 
 **既知の穴(WP 化は別途判断)**
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
