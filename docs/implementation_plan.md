@@ -22206,6 +22206,127 @@ manifest の role 制約は Catch2 実行時保証(static ではない)。ID-A �
 - **main 取り込み**: main は起票 commit から動いていないので衝突なし
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1613 / 1613**。doclink 153 件追従、未解決 3(docs-writer へ)
 - コードレビュー: 中段のため codex レビューは行わず、統合側変異 + Claude レビューで代替。連鎖は 380d で打ち切り
+
+### WP382: CARRIER-RT3 —— per-geometry × per-instance の RT override を、可変長宣言・行編集・occurrence identity の 1 本の縦切りで届ける
+
+**§4 規則 11 上段(schema 体系・編集 journal・AS row identity・scene transaction の participant を触る)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex、上段)2 巡 → 実装 → 統合側変異 → コードレビュー。見積: 大(milestone 4)。**
+**規範: `docs/design_declaration_carrier.md` v4(§2 決定 1〜5、§7 修正 1・2・4・8、§8 修正 α β δ ε η θ。§8 補遺で撤回されたもの = section / `build_id` / C wire / `schema_v1` 予約は作らない)、`docs/design_raytracing.md` §11 v4(決定 14〜18。row 粒度は「先送り」とされた本 WP の対象)、`docs/design_object_identity.md` v4 §9(participant seam)。**
+**前提(すべて統合済み): GLABI-2 = WP381/381a、RAY-NAMESPACE = WP379/379a、ID-B = WP380a〜d + WP380b(executor、trace、effect sink)。RT3-1 = WP374/374a(object 単位の `pelican_ray_instance` と material 鍵規則)。**
+
+#### 今日の対照(§4 規約 10。実測は HEAD `610124b5`)
+
+- `pelican_ray_instance` は **object 単位**の固定 leaf(`mask` U8 / `instance_flags` U32 bitmask / `custom_index` U24。[rayinstance.hpp:37](../src/core/userpublic/components/rayinstance.hpp#L37)、
+  [componentcodec.cpp:1005](../src/core/loader/componentcodec.cpp#L1005))。1 object が 2 primitive を持てば row は 2 つだが([polygoninstancecontainer.cpp:1163](../src/core/renderer/polygoninstancecontainer.cpp#L1163) の `DrawStableIdentity`)、
+  **片方だけ mask で除外する書き方が無い**(RT3 v4 決定 14 の「先送り」行)
+- schema の leaf は scalar / vec / string / bool / enum だけで **`List` も `Flags` も無い**([structfieldschema.hpp:21](../src/core/userpublic/details/schema/structfieldschema.hpp#L21))
+- 編集は `set_component_value` が JSON pointer を `.at()` で要求し、**行も欠落 field も作れない**([editorjournal.cpp:1217](../src/core/communication/editorjournal.cpp#L1217))。編集ごとに component 全体を decode → encode し直し
+  ([editorjournal.cpp:216](../src/core/communication/editorjournal.cpp#L216))、Behavior は raw を上書きする([resolvedscene.cpp:213](../src/core/loader/resolvedscene.cpp#L213))
+- engine が保持する primitive の identity は `{mesh_index, primitive_index, node_index}` の index 3 つ([modeltemplate.hpp:76](../src/core/model/modeltemplate.hpp#L76))。glTF の `extras.id` と親 path は fragment 解決用の `NodeOccurrence`
+  ([gltf.cpp:545](../src/core/model/gltf.cpp#L545))にだけあり、描画 pipeline に伝播しない。**`occurrence_id` / `OccurrenceAbsent` / `CanonicalModelAssetKey` は実装ゼロ**
+- AS row の identity は `asset@transform` / `asset#allocation:offsets:mesh:prim:node` / material 3 field の**分離したまま**([accelerationstructure.cpp:391](../src/core/renderer/accelerationstructure.cpp#L391))。`{document, material_name, asset}` の truth table `D=1,N=0,A=1` が gate と lookup で食い違う(`rev377a` #2。本 WP に同梱と台帳が予約済み)
+- manifest の RT 行は `ray_query_geometry_generation` / `ray_authoring_object_ids` / `ray_instance_declarations`([sceneparticipantmanifest.cpp:106](../src/core/loader/sceneparticipantmanifest.cpp#L106))。**catalog / occurrence map / AS plan の participant は無い**(修正 η)
+- 出荷 4 project に list row は無い。**bytes 不変は達成条件であって効能の対照ではない**(修正 4)。効能の対照は fixture project で持つ
+
+観測(機能が無いとき): 同じ木材 material の椅子 2 脚(1 object × 2 primitive、または 2 object)のうち **1 primitive だけ**を shadow ray から外す宣言が書けない。書けたとしても row への join key が無く、DCC 再出力で primitive 順が変わると宣言が別の primitive に当たる。
+
+#### 決定
+
+##### 決定 1(§2 決定 2・修正 2): schema に **`List` と `Flags` を足す**。list は「同型の固定 leaf struct の行の配列」1 種類、ネストしない
+
+- `StructFieldType::List{ element: fixed-leaf struct }`。要素 struct の field は既存 leaf + `Flags` のみ(list の list は名前付き拒否 `ListNestingUnsupported`)
+- `StructFieldType::Flags{ vocabulary: enum }`: flag 集合を scalar leaf として持つ(list にしない)。authored は文字列配列、runtime は bitmask。**合成則は置換**(和集合にしない)
+- decode / encode / schema fingerprint / provider descriptor / `BindableDescriptor` を通す(WP372c 裁定 5 の配線)。fingerprint は `List` と `Flags` を既存 leaf と区別して混ぜる(同じ field 名で型だけ変えた宣言が同じ fingerprint にならない)
+- 受け入れ: 実 `PELICAN_REGISTER_*` の DLL(frozen v2 ではなく現行ヘッダ)から `List<{key fields…}>` と `Flags<Vocab>` を宣言し、scene JSON に書き、resolve と reload で往復。**同一 row id の重複行は名前付き拒否**
+
+##### 決定 2(修正 4・δ): 行の identity は **`$row` envelope**。raw authored tree は上書きしない
+
+- 行は `{ "$row": { "id": u32, "v": 1, "hint"?: {…} }, …authored fields… }`。`$` prefix は schema field 名から予約(builder の `consteval` / `static_assert` + runtime `ReservedFieldName`)
+- list container decoder が `$row` を剥がして user struct decoder には authored field だけを渡す。encoder は envelope を先頭に戻す
+- `id` の allocator は **scope `{object, component, list_path}` 内 `max + 1`**(決定的。時計・乱数なし)。**insert op のみが書く**。overflow は `RowIdExhausted`、未知 `v` は `RowEnvelopeUnsupported`、envelope の無い手書き行は `RowEnvelopeMissing`(暗黙 migration しない)
+- **raw authored tree と typed materialized value を分離**: 編集は raw patch → typed validation → raw / typed の atomic publish。`canonicalComponent` の全再 encode と `source_json_exact` の Behavior 上書きを置換する(Behavior の `params` 上書きも同じ形へ)
+- prefab: instance ごとに複製される body の `id` は scope が instance の component なので**そのまま複製**してよい
+- 受け入れ: **無関係な scalar の編集後も、全 row envelope・省略 field・row 順序・空白を含む bytes が一致**(save の `raw_document.dump()` 比較)。envelope 無しの手書き行は `RowEnvelopeMissing`
+
+##### 決定 3(§2 決定 3): 編集は **path ベースの 4 op**。既存の `.at()` 契約は変えない
+
+| op | 意味 |
+|---|---|
+| `set_component_value` | 既存 pointer の値置換(現行どおり `.at()`。行を作れないことは**否定対照として維持**) |
+| `insert_component_field` | 欠落 field を既定で作る / list に行を追加(`$row.id` を採番し応答で返す) |
+| `remove_component_field` | field を既定へ戻す / list から行を削除 |
+| `add_component` / `remove_component` | 既存 |
+
+- inverse は既存 journal の形(forward / inverse、CAS、structural domain)に乗せる。**新しい journal 機構を作らない**。copy / paste は再採番
+- 受け入れ: 実 RPC bytes で 行追加 → 値置換 → 行削除 → undo / redo で **bytes まで完全復元**。`set_component_value` で存在しない pointer を指すと今日どおり名前付き拒否
+
+##### 決定 4(修正 1・α・β・8・ε): occurrence identity は **`occurrence_id_v1`**。index は identity にしない
+
+- `occurrence_id_v1 = hex32(SHA-256("pelican.occurrence.v1" ‖ F(asset) ‖ F(node) ‖ F(prim) ‖ F(variant) ‖ F(content))[0:16])`、`F(x) = u32le(len) ‖ bytes`(修正 β の byte 仕様をそのまま規範とする。文字列は NFC、float は f32 bit pattern、`-0.0 → +0.0`、NaN / Inf は `OccurrenceIdUnrepresentable`)
+- `asset` = **`CanonicalModelAssetKey`(強い型)**。project の asset 表が採番し、prepare / inspect / commit を同じ型で通す(文字列・URI からの再構成は禁止)
+- `node` = glTF node index + 親 path(index 列)。`prim` = **`PrimitiveIdentity = ExplicitId{extras.id} | OrderedContentDigest{正規化 accessor の digest}`**(primitive index は診断にだけ載せる)。同一 node 内で digest が一致する sibling は `AmbiguousOccurrence{candidates[]}`(先勝ちしない)
+- `variant` = importer の semantic variant tag(auto-split / LOD / skinned)。`content` = source identity が無いときだけ full-content digest
+- glTF loader は `extras.id`・親 path・accessor digest を **`ModelPrimitiveRefInfo` の隣に保持**し、`DrawStableIdentity` と AS snapshot まで運ぶ(今の index 3 つは診断用に残す)
+- エラー(resolver 専用 `OccurrenceResolutionErrorCode`): `OccurrenceAbsent{row_id, occurrence_id, provenance_hint?}`(**`null` は正式**)/ `AmbiguousOccurrence` / `OccurrenceNotRayTraced{reason}` / `OccurrenceIdUnrepresentable`。**黙って defaults に落ちない**
+- `$row.hint = {asset, node_path, primitive}` は選択時に**非権威**で保存(join には使わない)
+- 受け入れ: DCC 再出力で **primitive の順序だけ変えた model** に対し、`extras.id` か content digest が同じ行は追随し、消えた行は `OccurrenceAbsent` で名前付きに落ちる。2 node が同じ mesh を参照する model で 2 つの occurrence が別 ID になる
+
+##### 決定 5(修正 2・RT3 v4 決定 14): RT3 row は `pelican_ray_instance.overrides`。優先順位と合成則を固定
+
+- `pelican_ray_instance` に **`overrides: List<{ occurrence_id: String(required), mask?: U8, instance_flags?: Flags<InstanceFlag>, custom_index?: U24 }>`** を足す(object 単位の既存 3 field は残す)。`geometry_flags` は row で上書きしない(geometry 粒度は material 規則のまま)
+- **優先順位**: `defaults < material rule(geometry_flags のみ) < object-level pelican_ray_instance < occurrence row`。row で未指定の field は **object-level を継承**(schema default に戻さない)
+- **flags の合成則は置換**。authored absent と明示 default の runtime 意味は同じ(presence は編集 / undo のためだけ)
+- occurrence row が現在の model の occurrence に当たらなければ **`OccurrenceAbsent` で scene load の prepare が失敗**(PreCommitFailure。黙って落ちない)
+- 受け入れ(RT3 v4 決定 18 の椅子 2 脚を row 粒度で): **1 object × 2 primitive(同じ material)を別 `mask` にして GPU 出力が変わる**。row を消すと両方写る。`custom_index` の row 値が `gl_InstanceCustomIndexEXT` に出て、row を足して `q` をずらしても不変。object-level と row の 3 段重ね(defaults / object / row)を同一テストで観測。**web(subset 原則)は `overrides` を対応まで明示拒否**
+
+##### 決定 6(修正 7'・8): inventory は **RPC で読める occurrence 一覧**。active mapping と完全一致
+
+- `get_ray_occurrences{object}` → entries `{occurrence_id, display_name, asset, node_path, mesh, primitive, material, variant, eligibility: ok | not_ray_traced{reason} | ambiguous{…}}`
+- 受け入れ: off → on だけでなく **row 削除後の on → off**、**active mapping(TLAS row の実効値)が現存 row と完全一致**を同じテストで。Studio の UI は範囲外(CARRIER-STUDIO)
+
+##### 決定 7(修正 η・ID-B): participant seam を executor の manifest と trace に載せる
+
+- 新 participant: **`ray.occurrence_catalog`(asset 表 + occurrence map)/ `ray.as_plan`(row の実効値の immutable plan)**。`prepare` で失敗可(`OccurrenceAbsent` 等)、publish / rollback / retire は `noexcept`、phase trace に自分で記録(WP380c/d の入口規則)
+- 既存の `ray_instance_declarations` 行は `as_plan` に吸収するか real 行として残すかを実装時に決め、manifest の role 制約(real 行だけ ID)を守る
+- 受け入れ: carrier participant を **1 つずつ bypass / drop** した変異が production test(実 root)で落ちる。rollback 後に旧 plan が TLAS に残る変異も落ちる
+
+##### 決定 8(`rev377a` #2 の同梱): AS row の material identity を canonical 化する
+
+- row の material identity を **`MaterialRowIdentity = Document{document, material_name} | Asset{asset, source_material_index} | Unavailable`** の typed union 1 つにし、gate と lookup([raygrouplayout.cpp:309](../src/core/shader/raygrouplayout.cpp#L309))が同じ値を見る。8 通り truth table を単体テストで固定し、`D=1,N=0,A=1` の不一致を潰す
+- 受け入れ: truth table 8 行の parametrized test。gate と lookup の判定を別々に変える変異がそれぞれ落ちる
+
+##### 決定 9: 構成と bytes
+
+- 出荷 4 project の **source / SBT / TLAS instance の bytes が三つとも不変**(list row が無いので達成条件)。効能の対照は `test/fixtures/` の RT3 fixture project(2 primitive・2 node 参照・DCC 再出力の 3 variant)
+- layout 無し / v1 の legacy ABI は不変(RT3 v4 決定 10 の 10 状態表は既存テストで固定済み)。`SKIP_DEVSTUDIO` 両構成 / RPC OFF build / compiler ON(layout 使用 project は ON 要求のまま)。GPU は統合側で直列
+
+#### milestone(1 branch。順に着地させるが分割出荷はしない。修正 θ)
+
+- **M1** 決定 1・2(schema の `List` / `Flags`、envelope、raw / typed 分離)
+- **M2** 決定 3(4 op、journal、undo / redo の bytes 復元)
+- **M3** 決定 4・8(occurrence identity、asset 表の強い型、glTF の保持、material identity の canonical 化)
+- **M4** 決定 5・6・7(RT3 row、inventory、participant seam、GPU 受け入れ)
+
+#### 受け入れ(§4 規約 10。各項目に「無いときに何が観測されるか」「何を取り消したら落ちるか」)
+
+1. **schema**: 実 DLL の `List` / `Flags` 宣言が往復(今日 = 型が無い)。fingerprint の型区別を消すと落ちる
+2. **envelope**: 無関係 scalar 編集後の bytes 一致(今日 = 全再 encode で presence が消える)。raw 分離を戻すと落ちる。`RowEnvelopeMissing`
+3. **編集**: 実 RPC bytes で insert → set → remove → undo / redo が bytes まで復元。`set_component_value` は今日どおり行を作れない
+4. **occurrence**: DCC 再出力(順序だけ変更)で追随、消えた行は `OccurrenceAbsent`、2 node 同 mesh が別 ID、sibling digest 一致は `AmbiguousOccurrence`。index を identity に戻す変異(prim を index にする)が再出力 fixture で落ちる
+5. **RT3 row**: 1 object × 2 primitive を別 mask で GPU 出力が変わる(今日 = 書けない)。row を消すと両方写る。custom_index の不変。3 段重ね
+6. **inventory**: on → off / off → on / row 削除後の一致。mapping と一覧のずれを作る変異が落ちる
+7. **participant**: bypass / drop / rollback 残留の変異が実 root で落ちる。phase trace に catalog / as_plan の記録が出る
+8. **material identity**: truth table 8 行。gate と lookup の分離変異
+9. 全数 / 両構成 / RPC OFF / 出荷 4 project の 3 bytes 不変 / golden 不変
+
+#### やらないこと
+
+list のネスト / 添字 identity / 永続 ID(WP304)/ Studio の UI(CARRIER-STUDIO)/ offline manifest(修正 ζ)/ RT3-2(procedural)/ RT4 以降の本体 / registry の transaction-local 化(ID-A)/ `geometry_flags` の row 上書き。
+
+#### 敵対レビューへの問い(仕様レビューで攻撃させる)
+
+(1) `List` が既存の constexpr schema(`std::apply` の fold、`materializeStructField`)に載るか。載らないなら何を変えるか / (2) `$row.id` の allocator `max + 1` が undo / redo と copy / paste で決定的か(削除後の再挿入で id が再利用されない保証)/
+(3) `insert_component_field` の inverse が既存 CAS の structural domain で表現できるか / (4) `occurrence_id_v1` の入力(accessor 正規化・variant tag)が本当に単射で、かつ DCC 再出力で安定か(instancing・LOD・skinned)/
+(5) 1 WP に 4 milestone は大きすぎないか(M1+M2 を先に出荷しても意味があるなら分ける。ただし「単独出荷しない」と本文が認める WP は WP ではない = 修正 θ)/ (6) participant seam が WP380b の effect sink と干渉しないか(catalog の prepare は effect を出さないこと)。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
@@ -22223,7 +22344,7 @@ manifest の role 制約は Catch2 実行時保証(static ではない)。ID-A �
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
-5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)。rev380b の仕分けが残る。**次は CARRIER-RT3 の起票**(参加者 seam は WP380b の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
+5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)。rev380b の仕分けが残る。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(仕様レビュー中。参加者 seam は WP380b の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
 
 **既知の穴(WP 化は別途判断)**
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
