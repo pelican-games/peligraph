@@ -105,7 +105,7 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
 #if PELICAN_WITH_AUDIO
     constexpr auto expected_audio = SceneParticipantPresence::real;
 #else
-    constexpr auto expected_audio = SceneParticipantPresence::absent;
+    constexpr auto expected_audio = SceneParticipantPresence::uninstalled;
 #endif
 #if PELICAN_WITH_RPC
     constexpr auto expected_rpc = SceneParticipantPresence::real;
@@ -139,7 +139,11 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
         if (row.presence != SceneParticipantPresence::real ||
             row.role == SceneManifestRole::invariant ||
             row.role == SceneManifestRole::cache ||
-            row.role == SceneManifestRole::excluded_wp380b) {
+            row.role == SceneManifestRole::excluded_wp380b ||
+            row.role == SceneManifestRole::non_rollback ||
+            row.role == SceneManifestRole::reject ||
+            row.role == SceneManifestRole::frame_lifetime ||
+            row.role == SceneManifestRole::read_only) {
             REQUIRE(row.mutation_id.empty());
         }
         if (row.role == SceneManifestRole::production_root) {
@@ -168,7 +172,7 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
     REQUIRE(manifestRow("seqplayer", "instances").presence ==
             expected_seq);
     REQUIRE(manifestRow("vatplayer", "instance").presence == expected_vat);
-    REQUIRE(manifestRow("audio", "voice_and_handles").presence ==
+    REQUIRE(manifestRow("audio", "play").presence ==
             expected_audio);
     REQUIRE(manifestRow("root.rpc", "direct_load").presence == expected_rpc);
 }
@@ -179,10 +183,10 @@ TEST_CASE("WP380 manifest fixes exclusions and all five production call sites",
             SceneManifestRole::cache);
     REQUIRE(manifestRow("registry_slot", "candidate_registry").presence ==
             SceneParticipantPresence::absent);
-    REQUIRE(manifestRow("audio", "voice_and_handles").role ==
-            SceneManifestRole::excluded_wp380b);
-    REQUIRE(manifestRow("persistence", "bytes_and_settings").role ==
-            SceneManifestRole::excluded_wp380b);
+    REQUIRE(manifestRow("audio", "play").role ==
+            SceneManifestRole::effect);
+    REQUIRE(manifestRow("persistence", "save_data").role ==
+            SceneManifestRole::effect);
 
     for (const auto owner : {
              "root.startup", "root.rpc", "root.pending",

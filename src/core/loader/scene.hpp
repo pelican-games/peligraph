@@ -77,6 +77,9 @@ DECLARE_MODULE(SceneLoader) {
 
     SceneLoadResult load(SceneLoadRequest request);
     void requestLoad(SceneId scene_id);
+    // onDestroy resolves against committed metadata while retaining the
+    // transaction's pending candidate as the write target.
+    void requestLoadDuringRetire(SceneId scene_id);
     bool applyPendingLoad();
     // Consumes retirement prepared by the preceding committed load at the
     // next frame (or before ECS teardown).

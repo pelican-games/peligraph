@@ -22,6 +22,7 @@ target_sources(pelican_core PRIVATE
     basicconfig.cpp
     sceneloadfault.cpp
     sceneparticipantmanifest.cpp
+    effecttransaction.cpp
     scene.cpp
     vrmadecoder.cpp
 )

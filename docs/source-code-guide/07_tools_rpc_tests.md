@@ -325,7 +325,7 @@ Outliner の `(scene_id, declaration_index)` を `kind:declaration` の厳密な
 [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp) が headless に固定し、stdio の
 応答/通常 log 分離は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp) が検査します。
 
-> **設計決定:** **エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L262) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
+> **設計決定:** **エンジン側の編集面 — 編集 RPC 23 メソッド(§7.7)と ImGui inspector / asset browser(§7.12) — が正準です**。Qt Inspector も別の編集実装を持たず、その RPC を呼ぶ公開 client です。ImGui は同じ [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L264) を process 内 adapter から呼びますが、Studio は `pelican_project` と JSON-RPC だけへリンクする D0 境界を保ちます。
 
 ## 7.7 JSON-RPC を2層に分けて読む
 
@@ -366,7 +366,7 @@ transport が socket ではなく stream interface なのがポイントです�
 
 キュー容量は [`defaultWindowedRpcQueueCapacity = 64`](../../src/core/communication/rpcserver.hpp#L141) です。溢れたリクエストには reader スレッドが即座に `-32000` を返します(`data.reason == "busy"`)。
 
-[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L35) には構造化 `data` が付きました([3 引数コンストラクタ](../../src/core/communication/rpcserver.hpp#L42)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L47))。`capture_gpu` 失敗時の実例です([`EngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L1993))。
+[`JsonRpcHandlerError`](../../src/core/communication/rpcserver.hpp#L35) には構造化 `data` が付きました([3 引数コンストラクタ](../../src/core/communication/rpcserver.hpp#L42)、取得は [`data()`](../../src/core/communication/rpcserver.hpp#L47))。`capture_gpu` 失敗時の実例です([`EngineRpcEndpoint::EngineRpcEndpoint()`](../../src/core/communication/rpcserver.cpp#L2002))。
 
 ```cpp
 throw JsonRpcHandlerError{
@@ -392,23 +392,23 @@ engine method の登録は [`configureEngineRpcHandlers()`](../../src/core/commu
 | `start_input_record` / `stop_input_record` | [記録開始](../../src/core/communication/rpcserver.cpp#L1539) / [記録終了](../../src/core/communication/rpcserver.cpp#L1551) | 入力記録の開始/終了 |
 | `start_input_replay` / `stop_input_replay` | [再生開始](../../src/core/communication/rpcserver.cpp#L1563) / [再生終了](../../src/core/communication/rpcserver.cpp#L1587) | 入力再生の開始/終了。開始側は再生だけでなく `EngineTime` を記録時 fps の fixed step へ切り替え、reload gate を閉じ、preview lease を強制 abort します |
 | `inject_event` | [event 注入](../../src/core/communication/rpcserver.cpp) | 名前から登録済み event layer へ JSON payload を積む |
-| `set_time` | [時刻設定](../../src/core/communication/rpcserver.cpp#L1622) | time を直接設定。frame index は進めない |
-| `update_transforms` | [pending 積み](../../src/core/communication/rpcserver.cpp#L1629) | update を pending queue へ積む |
+| `set_time` | [時刻設定](../../src/core/communication/rpcserver.cpp#L1631) | time を直接設定。frame index は進めない |
+| `update_transforms` | [pending 積み](../../src/core/communication/rpcserver.cpp#L1638) | update を pending queue へ積む |
 | `load_gltf` | [glTF 追加](../../src/core/communication/rpcserver.cpp) | transient glTF を scene に追加 |
-| `load_scene` | [scene 差替](../../src/core/communication/rpcserver.cpp#L1649) | scene を clear/load、pending transforms を破棄 |
-| `set_camera` | [camera 指定](../../src/core/communication/rpcserver.cpp#L1643) | 名前付き object を active camera にする |
-| `step_frame` | [1 tick 進行](../../src/core/communication/rpcserver.cpp#L1628) | pending flush → time advance → 5 phase update → render |
-| `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L1679) | time/frame を進めず、pending flush → seq update → render |
+| `load_scene` | [scene 差替](../../src/core/communication/rpcserver.cpp#L1658) | scene を clear/load、pending transforms を破棄 |
+| `set_camera` | [camera 指定](../../src/core/communication/rpcserver.cpp#L1652) | 名前付き object を active camera にする |
+| `step_frame` | [1 tick 進行](../../src/core/communication/rpcserver.cpp#L1637) | pending flush → time advance → 5 phase update → render |
+| `render_frame` | [再描画](../../src/core/communication/rpcserver.cpp#L1688) | time/frame を進めず、pending flush → seq update → render |
 | `capture_gpu` | [GPU 捕捉](../../src/core/communication/rpcserver.cpp) | `render_frame` と同型の1回描画を明示 Start/End で capture し、新規 index の `.rdc` path を返す |
-| `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L1679) | planner の JSON を返す |
+| `get_frame_plan` | [plan 取得](../../src/core/communication/rpcserver.cpp#L1688) | planner の JSON を返す |
 | `pick_object` | [ID 読み出し](../../src/core/communication/rpcserver.cpp) | feature が作った `picking_id` の左上原点座標を同期読み出しし、同一フレーム token を WP258 の宣言 identity へ解決 |
 | `set_gizmo` | [表示要求](../../src/core/communication/rpcserver.cpp) | 宣言または runtime object のタグ付き selection と mode をギズモ表示へ設定。`selection:null` で解除 |
-| `query_gizmo_drag_basis` | [ドラッグ基底](../../src/core/communication/rpcserver.cpp#L1750) | selection / mode / axis から、軸または view-plane の論理 pixel 当たりドラッグ基底を状態変更なしで返す |
-| `get_modal_transform` | [modal 状態](../../src/core/communication/rpcserver.cpp#L1836) | player 側 modal transform の現在 snapshot を返す |
-| `cancel_modal_transform` | [modal cancel](../../src/core/communication/rpcserver.cpp#L1848) | player 側 modal transform に cancel を要求する |
-| `ack_modal_transform` | [modal ack](../../src/core/communication/rpcserver.cpp#L1872) | operation / revision が一致する modal transform snapshot を acknowledge する |
+| `query_gizmo_drag_basis` | [ドラッグ基底](../../src/core/communication/rpcserver.cpp#L1759) | selection / mode / axis から、軸または view-plane の論理 pixel 当たりドラッグ基底を状態変更なしで返す |
+| `get_modal_transform` | [modal 状態](../../src/core/communication/rpcserver.cpp#L1845) | player 側 modal transform の現在 snapshot を返す |
+| `cancel_modal_transform` | [modal cancel](../../src/core/communication/rpcserver.cpp#L1857) | player 側 modal transform に cancel を要求する |
+| `ack_modal_transform` | [modal ack](../../src/core/communication/rpcserver.cpp#L1881) | operation / revision が一致する modal transform snapshot を acknowledge する |
 | `query_gizmo_handle` | [状態なし hit query](../../src/core/communication/rpcserver.cpp) | リクエスト自身の selection/mode/物理 pixel を共通投影幾何へ渡し、contract 2 の `content_scale` と、handle に ID/axis/射影方向/論理 px 当たり変化量または `null` を返す |
-| `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L2003) | 最後の frame を PNG 保存 |
+| `capture` | [`EngineRpcEndpoint::run()`](../../src/core/communication/rpcserver.cpp#L2012) | 最後の frame を PNG 保存 |
 
 二つのギズモ RPC は [`engine://features/gizmo.json`](../../src/core/resources/features/gizmo.json) が
 active graph に無ければ application error です。`parseGizmoSelection()` は object のキーを
@@ -425,7 +425,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 #### 編集系(29) ✅実装済み(WP153〜WP172)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L347) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L262) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L349) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L264) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
@@ -599,18 +599,18 @@ transform update も即適用ではなく pending です。複数 update をま�
 
 [`test/CMakeLists.txt`](../../test/CMakeLists.txt#L1) は Catch2 executable と subprocess test を一か所で登録します。`pelican_define_test(name [GROUP group] [GOLDEN] [GPU] [QT] [RUNTIME_SHADER] libs...)` は、`GROUP` 無しなら `test/<name>.cpp` ごとの executable、`GROUP` 有りならソース単位の object target とリンク閉包単位の named executable を作り、compiler option にかかわらず `catch_discover_tests()` で各 `TEST_CASE` を CTest へ公開します。
 
-signature にフラグとグループ名が入ります([`GROUP` を解析する `cmake_parse_arguments`](../../test/CMakeLists.txt#L43))。
+signature にフラグとグループ名が入ります([`GROUP` を解析する `cmake_parse_arguments`](../../test/CMakeLists.txt#L51))。
 
 ```cmake
 cmake_parse_arguments(PELICAN_TEST
   "GOLDEN;GPU;QT;RUNTIME_SHADER" "GROUP" "" ${ARGN})
 ```
 
-`RUNTIME_SHADER` は runtime shader 依存のテストを同じ discovery properties の executable にまとめるための [`discovery_signature`](../../test/CMakeLists.txt#L72) に含まれますが、CTest 登録を抑止するフラグではありません。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` でも discovery 前に return せず、[`catch_discover_tests()`](../../test/CMakeLists.txt#L152) まで到達します。
+`RUNTIME_SHADER` は runtime shader 依存のテストを同じ discovery properties の executable にまとめるための [`discovery_signature`](../../test/CMakeLists.txt#L80) に含まれますが、CTest 登録を抑止するフラグではありません。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` でも discovery 前に return せず、[`catch_discover_tests()`](../../test/CMakeLists.txt#L160) まで到達します。
 
 したがって OFF 構成でも、コンパイラ不在時の logical source 投影、precompiled candidate の診断、renderer/Studio consumer の経路を CTest で検査します。shaderc を実行する分岐だけは build macro で分け、OFF の緑でテスト数自体が減っていないことも discovery 検査で保証します。
 
-`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L128))。コメントが理由です。
+`GOLDEN` を付けたテスト(および `debugtext_ui_compat_test`)は `RESOURCE_LOCK pelican_golden_gpu` を持ちます([付与箇所](../../test/CMakeLists.txt#L136))。コメントが理由です。
 
 > Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
 
@@ -620,7 +620,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2629) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2676) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -663,7 +663,7 @@ cmake_parse_arguments(PELICAN_TEST
 
 なお [`gltf_scene_extract_test`](../../test/gltf_scene_extract_test.cpp) は `SceneLoader` roundtrip case が Vulkan instance を要求するため **GPU ラベル** に変わりました。`xrsession_test` は `get_status` 投影を検証するので `PELICAN_WITH_RPC` でも囲まれています。
 
-**executable 名とファイル名は 1 対 1 ではありません。** `GROUP` を持つ source はソース別 object target を保ったまま、同じリンク閉包・discovery properties を持つ連続区間ごとの `pelican_test_group_<group>` executable に入ります。また `target_sources()` で別の `TEST_CASE` を足している箇所もあります。WP238e の [`headless_native_scope_test.cpp`](../../test/headless_native_scope_test.cpp) が後者で、`headless_render_test` の実行体へ混ぜられています(したがって `gpu` label もそちらの discovery properties から継承します)。ただし CTest 名まで消えるわけではありません。[`pelican_define_test()`](../../test/CMakeLists.txt#L42) は `catch_discover_tests()` で登録するので **CTest 名は常に TEST_CASE の文字列**で、この case は `WP238e NativeScope records Vulkan commands and rebuilds through renderer generations` という独立した名前を持ちます。逆に `headless_render_test` という CTest 名は存在しないため、`ctest -R headless_native_scope` も `ctest -R headless_render_test` も 1 件も引っかかりません。ファイル名でも実行体名でもテストを引けないのがここの落とし穴です。なお `gltf_scene_extract_test` / `processrunner_test` の `target_sources()` は `src/devcli/*.cpp`(TEST_CASE を持たない実装コード)を link するだけで、これとは別の形です。
+**executable 名とファイル名は 1 対 1 ではありません。** `GROUP` を持つ source はソース別 object target を保ったまま、同じリンク閉包・discovery properties を持つ連続区間ごとの `pelican_test_group_<group>` executable に入ります。また `target_sources()` で別の `TEST_CASE` を足している箇所もあります。WP238e の [`headless_native_scope_test.cpp`](../../test/headless_native_scope_test.cpp) が後者で、`headless_render_test` の実行体へ混ぜられています(したがって `gpu` label もそちらの discovery properties から継承します)。ただし CTest 名まで消えるわけではありません。[`pelican_define_test()`](../../test/CMakeLists.txt#L50) は `catch_discover_tests()` で登録するので **CTest 名は常に TEST_CASE の文字列**で、この case は `WP238e NativeScope records Vulkan commands and rebuilds through renderer generations` という独立した名前を持ちます。逆に `headless_render_test` という CTest 名は存在しないため、`ctest -R headless_native_scope` も `ctest -R headless_render_test` も 1 件も引っかかりません。ファイル名でも実行体名でもテストを引けないのがここの落とし穴です。なお `gltf_scene_extract_test` / `processrunner_test` の `target_sources()` は `src/devcli/*.cpp`(TEST_CASE を持たない実装コード)を link するだけで、これとは別の形です。
 
 ### subsystem ごとの「最初に読むテスト」
 
@@ -894,7 +894,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L407) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L409) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.

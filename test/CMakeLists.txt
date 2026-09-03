@@ -7,6 +7,14 @@ FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
 
+add_test(
+  NAME pelican_public_api_inventory
+  COMMAND ${Python3_EXECUTABLE}
+          ${CMAKE_SOURCE_DIR}/tools/public_api_inventory.py
+          --repo-root ${CMAKE_SOURCE_DIR})
+set_tests_properties(pelican_public_api_inventory
+  PROPERTIES LABELS "WP380b;cpu;contract")
+
 set(PELICAN_CATCH_ADD_TESTS_SCRIPT "${_CATCH_DISCOVER_TESTS_SCRIPT}")
 set(PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT
   "${CMAKE_CURRENT_BINARY_DIR}/run_catch_discovery_allow_empty.cmake")
@@ -1684,6 +1692,41 @@ if(WIN32)
         pelican_test_raytracing_rt3_1_production_test PRIVATE
         PELICAN_WP380_BEHAVIOR_FIXTURE="$<TARGET_FILE:pelican_wp380_behavior_fixture>")
 
+    add_library(pelican_wp380b_effect_fixture SHARED
+        fixtures/wp380b_effect/behavior.cpp
+        ${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp)
+    set_target_properties(pelican_wp380b_effect_fixture PROPERTIES
+        CXX_STANDARD 20
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL"
+        OUTPUT_NAME "pelican_wp380b_effect_fixture")
+    add_dependencies(pelican_wp380b_effect_fixture
+        pelican_test_raytracing_rt3_1_production_test)
+    target_link_libraries(pelican_wp380b_effect_fixture PRIVATE
+        "$<TARGET_LINKER_FILE:pelican_test_raytracing_rt3_1_production_test>"
+        glm nlohmann_json)
+    target_include_directories(pelican_wp380b_effect_fixture PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v2
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v1_support
+        ${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp380b_effect
+        ${Vulkan_INCLUDE_DIRS})
+    target_compile_definitions(pelican_wp380b_effect_fixture PRIVATE
+        PELICAN_GAME_DLL=1 PELICAN_WP380B_FIXTURE_BUILD=1)
+    set(wp380b_frozen_source_dependencies
+        "${CMAKE_CURRENT_BINARY_DIR}/wp380b_frozen_source_dependencies.json")
+    target_compile_options(pelican_wp380b_effect_fixture PRIVATE
+        /sourceDependencies "${wp380b_frozen_source_dependencies}")
+    target_compile_definitions(
+        pelican_test_raytracing_rt3_1_production_test PRIVATE
+        PELICAN_WP380B_EFFECT_FIXTURE="$<TARGET_FILE:pelican_wp380b_effect_fixture>")
+    add_test(NAME wp380b_frozen_header_audit
+        COMMAND ${CMAKE_COMMAND}
+            -DSOURCE_DEPENDENCIES=${wp380b_frozen_source_dependencies}
+            -DCURRENT_USERPUBLIC=${CMAKE_SOURCE_DIR}/src/core/userpublic
+            -DFROZEN_USERPUBLIC=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v2
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/wp380b_frozen_header_audit.cmake)
+    set_tests_properties(wp380b_frozen_header_audit
+        PROPERTIES LABELS "WP380b;cpu;abi")
+
     add_library(pelican_wp379_ray_instance_fixture SHARED
         fixtures/ray_namespace_component/component.cpp
     )
@@ -2462,6 +2505,10 @@ set_target_properties(pelican_test_audio_disabled_probe PROPERTIES CXX_STANDARD 
 target_link_libraries(pelican_test_audio_disabled_probe PRIVATE pelican_core)
 
 pelican_define_test(persistence_test GROUP core_diagnostics pelican_core)
+pelican_define_test(effecttransaction_persistence_test GROUP core_diagnostics pelican_core)
+if(PELICAN_WITH_AUDIO)
+pelican_define_test(effecttransaction_test GROUP core_diagnostics pelican_core)
+endif()
 pelican_define_test(assetsmanifest_test pelican_project)
 pelican_define_test(assetsverification_test pelican_core)
 

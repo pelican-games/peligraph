@@ -133,8 +133,15 @@ bool PelicanCore::run() {
             auto request = SceneLoadRequest::borrowed(
                 config.defaultSceneId(), config.sceneProjectionState(),
                 SceneLoadRoot::startup);
-            (void)requireSceneLoadCommitted(
-                GET_MODULE(SceneLoader).load(std::move(request)));
+            const auto result =
+                GET_MODULE(SceneLoader).load(std::move(request));
+            (void)requireSceneLoadCommitted(result);
+            if (const auto *failure =
+                    std::get_if<CommittedWithEffectFailure>(&result)) {
+                LOG_ERROR(logger,
+                          "startup scene committed with effect failure: error_code='committed_with_effect_failure@1' effect_errors={}",
+                          effectErrorsJson(failure->effect_errors).dump());
+            }
         }
         // Model CPU preparation is parallel, but its Vulkan/resource commit is
         // deliberately forced onto the startup thread before ECS systems run.

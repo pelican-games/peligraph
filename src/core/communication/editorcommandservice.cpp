@@ -951,14 +951,20 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
                                  "runtime import surface is unavailable"};
     }
     try {
-        const auto revision = dependencies_.import_scene_snapshot(
+        auto imported = dependencies_.import_scene_snapshot(
             request.semantic_scene_bytes, request.current_scene_id);
+        const auto revision = imported.revision;
         if (revision.value > maxExactEditorJsonInteger) {
             throw std::overflow_error("SceneRevision exceeds 2^53-1");
         }
         return ImportSceneSnapshotResult{
             .scene_revision = revision,
             .current_scene_id = request.current_scene_id,
+            .effect_errors = std::holds_alternative<CommittedWithEffectFailure>(
+                                 imported.load_result)
+                ? std::move(std::get<CommittedWithEffectFailure>(
+                                imported.load_result).effect_errors)
+                : std::vector<CommittedWithEffectFailure::EffectError>{},
         };
     } catch (const EditorCommandError &) {
         throw;
@@ -1051,13 +1057,20 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshotV2(
             "runtime SnapshotV2 import surface is unavailable"};
     }
     try {
-        const auto revision = dependencies_.import_scene_snapshot_versioned(
+        auto imported = dependencies_.import_scene_snapshot_versioned(
             request.semantic_scene_bytes, request.current_scene_id, 2);
+        const auto revision = imported.revision;
         if (revision.value > maxExactEditorJsonInteger) {
             throw std::overflow_error("SceneRevision exceeds 2^53-1");
         }
         return {.scene_revision = revision,
-                .current_scene_id = request.current_scene_id};
+                .current_scene_id = request.current_scene_id,
+                .effect_errors =
+                    std::holds_alternative<CommittedWithEffectFailure>(
+                        imported.load_result)
+                    ? std::move(std::get<CommittedWithEffectFailure>(
+                                    imported.load_result).effect_errors)
+                    : std::vector<CommittedWithEffectFailure::EffectError>{}};
     } catch (const EditorCommandError &) {
         throw;
     } catch (const PrefabError &error) {
@@ -1693,8 +1706,10 @@ OrderedJson editorQueryJson(const ExportSceneSnapshotResponseV2 &snapshot) {
 OrderedJson editorQueryJson(const ImportSceneSnapshotResult &snapshot) {
     return OrderedJson{
         {"status", "imported"},
+        {"committed", true},
         {"scene_revision", snapshot.scene_revision.value},
         {"current_scene_id", snapshot.current_scene_id},
+        {"effect_errors", effectErrorsJson(snapshot.effect_errors)},
     };
 }
 

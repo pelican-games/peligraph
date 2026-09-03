@@ -1,6 +1,7 @@
 #include "behaviorarena.hpp"
 #include "../registrationownerhost.hpp"
 #include "../loader/sceneload.hpp"
+#include "../loader/effecttransaction.hpp"
 
 #include "../ecs/core.hpp"
 #include "../log.hpp"
@@ -989,6 +990,7 @@ void BehaviorAttachmentArena::destroyInstance(Attachment &attachment,
                             attachment.info.attachment_seq, attachment.instance.params,
                             attachment.instance.params_type};
         try {
+            internal::EffectDestroyScope effect_destroy_scope;
             BehaviorCallbackScope callback{*this, attachment.info.owner};
             attachment.instance.behavior->onDestroy(ctx);
         } catch (...) {

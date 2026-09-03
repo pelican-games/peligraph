@@ -659,8 +659,8 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
                 return SceneLoadResult{SceneLoadCommitted{}};
             });
             REQUIRE(reload_calls == 2);
-            REQUIRE(imported.value == old_revision.value + 1U);
-            REQUIRE(config.sceneDocument().revision() == imported);
+            REQUIRE(imported.revision.value == old_revision.value + 1U);
+            REQUIRE(config.sceneDocument().revision() == imported.revision);
             REQUIRE(test_support::authoring(config.sceneDocument()).rawJson() ==
                     snapshot);
             REQUIRE(readText(scene_path) == disk_bytes);
@@ -671,6 +671,30 @@ TEST_CASE("SNAPSHOT0 cache replacement is rollback-safe and never writes the sce
                             old_max_object_id);
                 }
             }
+
+            const auto effect_import = config.importSceneDocument(
+                snapshot_bytes,
+                [&](SceneLoadRequest &&) -> SceneLoadResult {
+                    return CommittedWithEffectFailure{
+                        .effect_errors = {{
+                            .api = "saveData",
+                            .error_code = "persistence_write_failed@1",
+                            .error_fields = {{"path", "slot_c.json"}},
+                            .phase = "flush",
+                        }},
+                    };
+                });
+            REQUIRE(effect_import.revision.value ==
+                    old_revision.value + 2U);
+            const auto *effect_failure =
+                std::get_if<CommittedWithEffectFailure>(
+                    &effect_import.load_result);
+            REQUIRE(effect_failure != nullptr);
+            REQUIRE(effect_failure->effect_errors.size() == 1);
+            REQUIRE(effect_failure->effect_errors.front().api ==
+                    "saveData");
+            REQUIRE(config.sceneDocument().revision() ==
+                    effect_import.revision);
         }
     } catch (...) {
         std::filesystem::remove_all(temp_dir);

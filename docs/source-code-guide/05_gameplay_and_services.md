@@ -8,20 +8,20 @@
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
-| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L26) |
-| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L54) |
-| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L66) |
-| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L78) |
-| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L87) |
-| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L132) |
-| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L151) |
-| camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L241) |
-| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L245) |
-| audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L265) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L301) |
-| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L309) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L89) |
-| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L313) |
+| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L27) |
+| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L55) |
+| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L67) |
+| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L79) |
+| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L88) |
+| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L154) |
+| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L173) |
+| camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L263) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L267) |
+| audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L287) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L349) |
+| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L361) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L90) |
+| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L365) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -765,7 +765,7 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
 
 ### scene側の宣言
 
-`behavior` componentは`type`に**非空文字列**が必須です。scene loaderは`prepareSceneBindings()`とは別系統で [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L81) に流します（[第3章](03_project_and_loading.md)）。
+`behavior` componentは`type`に**非空文字列**が必須です。scene loaderは`prepareSceneBindings()`とは別系統で [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L82) に流します（[第3章](03_project_and_loading.md)）。
 
 ```json
 {"name": "TriggerZone", "components": [
@@ -774,12 +774,12 @@ PELICAN_REGISTER_BEHAVIOR(TriggerBehavior, "wp179_trigger_behavior", 1);
   {"name": "behavior", "type": "wp179_trigger_behavior"}]}
 ```
 
-- game DLLがロード済みなのに未登録の型名 → `behavior_type_unknown@1`（`BehaviorTypeUnknownError`。[`BehaviorTypeUnknownError` を投げる箇所](../../src/core/gamelogic/behaviorarena.cpp#L111)）でload失敗。editor の `add_component` も同じ code
-- game DLL不在 → warningを出して **pending** 扱いで進む（[pending にする箇所](../../src/core/gamelogic/behaviorarena.cpp#L117)）
+- game DLLがロード済みなのに未登録の型名 → `behavior_type_unknown@1`（`BehaviorTypeUnknownError`。[`BehaviorTypeUnknownError` を投げる箇所](../../src/core/gamelogic/behaviorarena.cpp#L112)）でload失敗。editor の `add_component` も同じ code
+- game DLL不在 → warningを出して **pending** 扱いで進む（[pending にする箇所](../../src/core/gamelogic/behaviorarena.cpp#L118)）
 
 ### 実行順
 
-[`BehaviorSystem`](../../src/core/gamelogic/behaviorarena.cpp#L40) は **通常のゲームSystemとして** registryへ登録されます（[`BehaviorSystemRegistration`](../../src/core/gamelogic/behaviorarena.cpp#L50)）。orderは`behaviorSystemOrder = 50`、名前は`"BehaviorSystem"`です。
+[`BehaviorSystem`](../../src/core/gamelogic/behaviorarena.cpp#L41) は **通常のゲームSystemとして** registryへ登録されます（[`BehaviorSystemRegistration`](../../src/core/gamelogic/behaviorarena.cpp#L51)）。orderは`behaviorSystemOrder = 50`、名前は`"BehaviorSystem"`です。
 
 - `update(ctx)` → `BehaviorAttachmentArena::update(ctx)`
 - `dispatchQueuedEvent(event, ctx)` → `BehaviorAttachmentArena::dispatchEvent(event, ctx)`

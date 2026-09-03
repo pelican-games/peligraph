@@ -10,6 +10,7 @@
 #endif
 #include "../ecs/predefined/transform.hpp"
 #include "../loader/scene.hpp"
+#include "../loader/effecttransaction.hpp"
 #include "../light/lightcontainer.hpp"
 #include "../log.hpp"
 #include "../persistence/persistence.hpp"
@@ -101,25 +102,46 @@ bool GameContext::removeObject(GameObjectId id) const {
 }
 
 LocalTransformComponent GameContext::localTransform(GameObjectId id) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        if (const auto *value = effect->retiredComponent(
+                id, ComponentIdByType<LocalTransformComponent>::value)) {
+            return *static_cast<const LocalTransformComponent *>(value);
+        }
+    }
     return GameObjects::localTransform(id);
 }
 
 bool GameContext::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) const {
+    if (auto *effect = internal::activeEffectTransaction();
+        effect != nullptr && effect->rejectRetiredMutation(
+                                 "setLocalTransform", id)) return false;
     return GameObjects::setLocalTransform(id, transform);
 }
 
 std::optional<SpriteViewComponent> GameContext::spriteView(GameObjectId id) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        if (const auto *value = effect->retiredComponent(
+                id, ComponentIdByType<SpriteViewComponent>::value)) {
+            return *static_cast<const SpriteViewComponent *>(value);
+        }
+    }
     const auto *sprite = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<SpriteViewComponent>(id);
     if (sprite == nullptr) return std::nullopt;
     return *sprite;
 }
 
 bool GameContext::setSpriteView(GameObjectId id, const SpriteViewComponent &sprite) const {
+    if (auto *effect = internal::activeEffectTransaction();
+        effect != nullptr && effect->rejectRetiredMutation(
+                                 "setSpriteView", id)) return false;
     sprite.validate();
     return GET_MODULE(ECSCore).getTemplatePublicModule().setComponent<SpriteViewComponent>(id, sprite);
 }
 
 bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) const {
+    if (auto *effect = internal::activeEffectTransaction();
+        effect != nullptr && effect->rejectRetiredMutation(
+                                 "setSpriteTexture", id)) return false;
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     const auto *current = ecs.tryComponent<SpriteViewComponent>(id);
     if (current == nullptr) return false;
@@ -263,6 +285,9 @@ std::uint64_t GameContext::seed() const {
 }
 
 SoundHandle GameContext::playSound(std::string_view path) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        return effect->playSound(path);
+    }
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).playSound(path);
 #else
@@ -271,6 +296,10 @@ SoundHandle GameContext::playSound(std::string_view path) const {
 }
 
 void GameContext::stopSound(SoundHandle handle) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        effect->stopSound(handle);
+        return;
+    }
 #if PELICAN_WITH_AUDIO
     GET_MODULE(Audio).stopSound(handle);
 #else
@@ -280,6 +309,10 @@ void GameContext::stopSound(SoundHandle handle) const {
 }
 
 void GameContext::setBusVolume(std::string_view bus, float volume) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        effect->setBusVolume(bus, volume);
+        return;
+    }
 #if PELICAN_WITH_AUDIO
     GET_MODULE(Audio).setBusVolume(bus, volume);
 #else
@@ -289,7 +322,22 @@ void GameContext::setBusVolume(std::string_view bus, float volume) const {
 #endif
 }
 
+float GameContext::busVolume(std::string_view bus) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        return effect->busVolume(bus);
+    }
+#if PELICAN_WITH_AUDIO
+    return GET_MODULE(Audio).busVolume(bus);
+#else
+    (void)bus;
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "busVolume is unavailable");
+#endif
+}
+
 bool GameContext::isPlaying(SoundHandle handle) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        return effect->isPlaying(handle);
+    }
 #if PELICAN_WITH_AUDIO
     return GET_MODULE(Audio).isPlaying(handle);
 #else
@@ -299,6 +347,10 @@ bool GameContext::isPlaying(SoundHandle handle) const {
 }
 
 void GameContext::loadScene(std::string_view name) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        effect->loadScene(name);
+        return;
+    }
     GET_MODULE(SceneLoader).requestLoad(std::string{name});
 }
 
@@ -311,14 +363,25 @@ void GameContext::debugText(int x, int y, std::string_view text) const {
 }
 
 GameContext::Json GameContext::gameSettings() const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        return effect->gameSettings();
+    }
     return GET_MODULE(Persistence).gameSettings();
 }
 
 void GameContext::setGameSettings(Json settings) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        effect->setGameSettings(std::move(settings));
+        return;
+    }
     GET_MODULE(Persistence).setGameSettings(std::move(settings));
 }
 
 void GameContext::saveSettings() const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        effect->saveSettings();
+        return;
+    }
     auto &persistence = GET_MODULE(Persistence);
 #if PELICAN_WITH_AUDIO
     persistence.captureAudioSettings(GET_MODULE(Audio));
@@ -327,15 +390,24 @@ void GameContext::saveSettings() const {
 }
 
 void GameContext::saveData(std::string_view slot, const Json &data) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        effect->saveData(slot, data);
+        return;
+    }
     GET_MODULE(Persistence).saveData(slot, data);
 }
 
 std::optional<GameContext::Json> GameContext::loadData(std::string_view slot) const {
+    if (auto *effect = internal::activeEffectTransaction()) {
+        return effect->loadData(slot);
+    }
     return GET_MODULE(Persistence).loadData(slot);
 }
 
 std::vector<GameContext::SlotInfo> GameContext::listSaves() const {
-    const auto saves = GET_MODULE(Persistence).listSaves();
+    const auto saves = internal::activeEffectTransaction()
+        ? internal::activeEffectTransaction()->listSaves()
+        : GET_MODULE(Persistence).listSaves();
     std::vector<SlotInfo> result;
     result.reserve(saves.size());
     for (const auto &save : saves) {

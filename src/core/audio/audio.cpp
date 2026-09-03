@@ -447,43 +447,118 @@ void Audio::updateVoiceVolumes() {
 }
 
 SoundHandle Audio::playSound(std::string_view path) {
-    const auto bytes = GET_MODULE(PathResolver).loadBytes(path);
-    auto decoded = std::make_shared<DecodedSound>(decodeWav(std::span<const std::byte>{bytes.data(), bytes.size()}));
-
-    const auto handle = SoundHandle{next_handle++};
-    const auto backend_id = backend->play(decoded, effectiveVolume(AudioBus::Se));
+    auto prepared = prepareSound(path);
+    const auto handle = reserveSoundHandle();
+    prepareVoiceSlot(handle);
     try {
-        const auto [it, inserted] =
-            voices.emplace(handle, Voice{AudioBus::Se, backend_id});
-        (void)it;
-        if (!inserted) {
-            throw std::runtime_error("Audio sound handle space exhausted");
-        }
+        commitPreparedPlay(handle, prepared);
     } catch (...) {
-        // Once backend playback has started, publishing the public handle is
-        // the ownership transfer. Roll it back if map allocation/publication
-        // fails so the backend cannot retain an unreachable voice.
-        backend->destroy(backend_id);
+        cancelPreparedVoice(handle);
         throw;
     }
     return handle;
 }
 
-void Audio::stopSound(SoundHandle handle) {
-    const auto it = voices.find(handle);
-    if (it == voices.end()) {
-        return;
+Audio::PreparedSound Audio::prepareSound(std::string_view path) const {
+    const auto bytes = GET_MODULE(PathResolver).loadBytes(path);
+    auto decoded = std::make_shared<DecodedSound>(
+        decodeWav(std::span<const std::byte>{bytes.data(), bytes.size()}));
+    return PreparedSound{std::move(decoded), std::string{path}};
+}
+
+SoundHandle Audio::reserveSoundHandle() {
+    if (next_handle == 0 ||
+        next_handle == (std::numeric_limits<std::uint64_t>::max)()) {
+        throw std::overflow_error("Audio sound handle space exhausted");
     }
-    backend->destroy(it->second.backend_id);
+    return SoundHandle{next_handle++};
+}
+
+void Audio::reserveEffectVoices(std::size_t count) {
+    voices.reserve(voices.size() + count);
+}
+
+void Audio::prepareVoiceSlot(SoundHandle handle) {
+    const auto [it, inserted] =
+        voices.emplace(handle, Voice{AudioBus::Se, 0});
+    (void)it;
+    if (!inserted) {
+        throw std::runtime_error("Audio sound handle space exhausted");
+    }
+}
+
+void Audio::cancelPreparedVoice(SoundHandle handle) noexcept {
+    const auto found = voices.find(handle);
+    if (found != voices.end() && found->second.backend_id == 0) {
+        voices.erase(found);
+    }
+}
+
+void Audio::commitPreparedPlay(SoundHandle handle,
+                               const PreparedSound &sound) {
+    auto decoded = std::static_pointer_cast<const DecodedSound>(
+        sound.decoded);
+    const auto backend_id = backend->play(decoded, effectiveVolume(AudioBus::Se));
+    const auto slot = voices.find(handle);
+    if (slot == voices.end() || slot->second.backend_id != 0) {
+        backend->destroy(backend_id);
+        throw std::logic_error("prepared audio voice slot is missing");
+    }
+    // The unordered-map node was allocated while staging. Ownership transfer
+    // after the backend call is only this non-throwing scalar publication.
+    slot->second.backend_id = backend_id;
+}
+
+void Audio::commitPreparedStop(SoundHandle handle,
+                               bool inject_backend_failure) {
+    const auto it = voices.find(handle);
+    if (it == voices.end()) return;
+    const auto backend_id = it->second.backend_id;
     voices.erase(it);
+    if (inject_backend_failure) {
+        LOG_ERROR(logger,
+                  "audio_stop_failed@1: backend voice {} may remain after handle {} was erased",
+                  backend_id, handle.value);
+        throw std::runtime_error("injected audio stop failure");
+    }
+    try {
+        backend->destroy(backend_id);
+    } catch (...) {
+        LOG_ERROR(logger,
+                  "audio_stop_failed@1: backend voice {} may remain after handle {} was erased",
+                  backend_id, handle.value);
+        throw;
+    }
+}
+
+void Audio::commitBusVolume(std::string_view bus, float volume) {
+    (void)audioBusFromName(bus);
+    publishBusVolume(bus, volume);
+    applyBusVolume();
+}
+
+void Audio::publishBusVolume(std::string_view bus, float volume) noexcept {
+    const auto parsed = bus == "master" ? AudioBus::Master
+                      : bus == "bgm" ? AudioBus::Bgm
+                                     : AudioBus::Se;
+    bus_volumes[busIndex(parsed)] = volume;
+    voice_volumes_dirty = true;
+}
+
+void Audio::applyBusVolume() {
+    updateVoiceVolumes();
+    voice_volumes_dirty = false;
+}
+
+void Audio::stopSound(SoundHandle handle) {
+    commitPreparedStop(handle);
 }
 
 void Audio::setBusVolume(std::string_view bus, float volume) {
     if (!std::isfinite(volume) || volume < 0.0f) {
         throw std::runtime_error("Audio bus volume must be a finite non-negative number");
     }
-    bus_volumes[busIndex(audioBusFromName(bus))] = volume;
-    updateVoiceVolumes();
+    commitBusVolume(bus, volume);
 }
 
 float Audio::busVolume(std::string_view bus) const {
@@ -492,10 +567,12 @@ float Audio::busVolume(std::string_view bus) const {
 
 bool Audio::isPlaying(SoundHandle handle) const {
     const auto it = voices.find(handle);
-    return it != voices.end() && backend->isPlaying(it->second.backend_id);
+    return it != voices.end() && it->second.backend_id != 0 &&
+           backend->isPlaying(it->second.backend_id);
 }
 
 void Audio::update() {
+    if (voice_volumes_dirty) applyBusVolume();
     for (auto it = voices.begin(); it != voices.end();) {
         if (!backend->isFinished(it->second.backend_id)) {
             ++it;

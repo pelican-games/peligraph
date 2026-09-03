@@ -5,6 +5,7 @@
 #include "../ecs/predefined/transform.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../gamelogic/behaviorarena.hpp"
+#include "../loader/effecttransaction.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "components/predefined.hpp"
 
@@ -12,6 +13,10 @@ namespace Pelican {
 
 GameObjectId GameObjects::create(std::span<const ComponentId> ids,
                                  const std::function<void(std::span<void *>)> &populate) {
+    if (internal::activeEffectTransaction() != nullptr &&
+        !internal::behaviorCallbackActive()) {
+        throw SceneTransactionMutationRejected{"create"};
+    }
     if (internal::behaviorCallbackActive()) {
         throw std::logic_error(
             "direct GameObjects creation is not allowed during a behavior callback; use BehaviorContext");
@@ -25,6 +30,10 @@ GameObjectId GameObjects::createWithComponents(
 }
 
 bool GameObjects::remove(GameObjectId id) {
+    if (internal::activeEffectTransaction() != nullptr &&
+        !internal::behaviorCallbackActive()) {
+        throw SceneTransactionMutationRejected{"remove"};
+    }
     auto &ecs = GET_MODULE(ECSCore);
     if (!ecs.getTemplatePublicModule().isAlive(id)) {
         return false;
@@ -37,6 +46,9 @@ bool GameObjects::remove(GameObjectId id) {
 }
 
 void GameObjects::removeAll() {
+    if (internal::activeEffectTransaction() != nullptr) {
+        throw SceneTransactionMutationRejected{"removeAll"};
+    }
     if (internal::behaviorCallbackActive()) {
         throw std::logic_error("GameObjects::removeAll is not allowed during a behavior callback");
     }
@@ -53,6 +65,10 @@ LocalTransformComponent GameObjects::localTransform(GameObjectId id) {
 }
 
 bool GameObjects::setLocalTransform(GameObjectId id, const LocalTransformComponent &transform) {
+    if (internal::activeEffectTransaction() != nullptr &&
+        !internal::behaviorCallbackActive()) {
+        throw SceneTransactionMutationRejected{"setLocalTransform"};
+    }
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     if (!ecs.setComponent<LocalTransformComponent>(id, transform)) {
         return false;

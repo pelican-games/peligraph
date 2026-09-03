@@ -1602,19 +1602,28 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("load_scene", [&pending_transforms, &modules, &editor_rpc](const nlohmann::json &params) {
         const auto name = requireStringParam(params, "name", "load_scene");
         editor_rpc.forceAbortPreview("scene_transition");
+        SceneLoadResult scene_result{SceneLoadCommitted{}};
         internal::loadSceneResolutionBoundary(
-            name, [&modules](std::string_view scene_name) {
+            name, [&modules, &scene_result](std::string_view scene_name) {
                 auto request = SceneLoadRequest::borrowed(
                     std::string{scene_name},
                     modules.project_config.sceneProjectionState(),
                     SceneLoadRoot::rpc);
-                (void)requireSceneLoadCommitted(
-                    modules.scene_loader.load(std::move(request)));
+                scene_result = modules.scene_loader.load(std::move(request));
+                (void)requireSceneLoadCommitted(scene_result);
             });
         pending_transforms.clear();
-        return nlohmann::json{
+        nlohmann::json response{
             {"name", modules.scene_loader.currentScene()},
+            {"committed", true},
         };
+        if (const auto *failure =
+                std::get_if<CommittedWithEffectFailure>(&scene_result)) {
+            response["effect_errors"] = effectErrorsJson(failure->effect_errors);
+        } else {
+            response["effect_errors"] = nlohmann::json::array();
+        }
+        return response;
     });
 
     server.setHandler("set_camera", [](const nlohmann::json &params) {

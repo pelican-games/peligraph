@@ -2599,7 +2599,7 @@ TEST_CASE("WP362 SnapshotV2 routes all four wire shapes and checks closure befor
     const auto import_result = adapter.importSceneSnapshot(import_request);
     REQUIRE(imported);
     REQUIRE(import_result == OJson::parse(
-        R"json({"status":"imported","scene_revision":62,"current_scene_id":"main"})json"));
+        R"json({"status":"imported","committed":true,"scene_revision":62,"current_scene_id":"main","effect_errors":[]})json"));
 
     auto invalid_scene = Json::parse(
         exported.at("semantic_scene_bytes").get<std::string>());

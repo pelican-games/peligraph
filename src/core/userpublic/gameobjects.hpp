@@ -12,8 +12,19 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <stdexcept>
+#include <string>
 
 namespace Pelican {
+
+class PELICAN_API SceneTransactionMutationRejected : public std::logic_error {
+    std::string api_name_;
+  public:
+    explicit SceneTransactionMutationRejected(std::string_view api)
+        : std::logic_error("SceneTransactionMutationRejected{api: " +
+                           std::string{api} + "}"), api_name_{api} {}
+    const std::string &api() const noexcept { return api_name_; }
+};
 
 using ComponentId = uint64_t;
 

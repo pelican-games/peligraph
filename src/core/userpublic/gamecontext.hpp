@@ -79,6 +79,7 @@ class PELICAN_API GameContext {
     SoundHandle playSound(std::string_view path) const;
     void stopSound(SoundHandle handle) const;
     void setBusVolume(std::string_view bus, float volume) const;
+    float busVolume(std::string_view bus) const;
     bool isPlaying(SoundHandle handle) const;
 
     void loadScene(std::string_view name) const;

@@ -6,6 +6,7 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/appflow/framephase.hpp"
 #include "../src/core/appflow/teardown.hpp"
+#include "../src/core/audio/audio.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #if PELICAN_WITH_RPC
@@ -72,6 +73,7 @@
 #include "raytracing_rt3_1_fixture.hpp"
 #include "vulkan_test_support.hpp"
 #include "fixtures/wp380_scene_transaction/api.hpp"
+#include "fixtures/wp380b_effect/api.hpp"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -280,8 +282,15 @@ void writeWp374aProject(const std::filesystem::path &root,
 std::shared_ptr<const RayTracingProjectConfig>
 configureWp374aRuntime(
     const std::filesystem::path &root,
-    std::optional<std::uint64_t> deterministic_seed = std::nullopt) {
-    GET_MODULE(PathResolver).setup(root, false);
+    std::optional<std::uint64_t> deterministic_seed = std::nullopt,
+    std::optional<std::string> project_json = std::nullopt,
+    std::optional<std::filesystem::path> user_dir = std::nullopt) {
+    if (project_json) {
+        GET_MODULE(PathResolver).setup(root, false, *project_json,
+                                      std::move(user_dir));
+    } else {
+        GET_MODULE(PathResolver).setup(root, false);
+    }
     Json basic_config{
         {"window_size", {{"width", 32}, {"height", 32}}},
         {"scene_data_json", "scene.json"},
@@ -334,8 +343,12 @@ void loadWp374aScene(
     const std::filesystem::path &root,
     std::optional<std::filesystem::path> game_logic_dll = std::nullopt,
     std::string_view scene_id = "main",
-    std::optional<std::uint64_t> deterministic_seed = std::nullopt) {
-    (void)configureWp374aRuntime(root, deterministic_seed);
+    std::optional<std::uint64_t> deterministic_seed = std::nullopt,
+    std::optional<std::string> project_json = std::nullopt,
+    std::optional<std::filesystem::path> user_dir = std::nullopt) {
+    (void)configureWp374aRuntime(root, deterministic_seed,
+                                std::move(project_json),
+                                std::move(user_dir));
     const bool has_game_logic_dll = game_logic_dll.has_value();
     if (has_game_logic_dll) {
         GET_MODULE(EngineLaunchConfig).game_logic_dll =
@@ -3235,6 +3248,187 @@ TEST_CASE(
     }
     REQUIRE(injector.saw(SceneLoadFaultPhase::prepare, "root.startup"));
 }
+
+#if defined(PELICAN_WP380B_EFFECT_FIXTURE) && PELICAN_WITH_AUDIO
+namespace {
+
+void writeWp380bU16(std::ofstream &file, std::uint16_t value) {
+    file.put(static_cast<char>(value & 0xff));
+    file.put(static_cast<char>((value >> 8) & 0xff));
+}
+
+void writeWp380bU32(std::ofstream &file, std::uint32_t value) {
+    writeWp380bU16(file, static_cast<std::uint16_t>(value));
+    writeWp380bU16(file, static_cast<std::uint16_t>(value >> 16));
+}
+
+void writeWp380bTone(const std::filesystem::path &path) {
+    std::ofstream file{path, std::ios::binary};
+    file.write("RIFF", 4); writeWp380bU32(file, 44);
+    file.write("WAVEfmt ", 8); writeWp380bU32(file, 16);
+    writeWp380bU16(file, 1); writeWp380bU16(file, 1);
+    writeWp380bU32(file, 8000); writeWp380bU32(file, 16000);
+    writeWp380bU16(file, 2); writeWp380bU16(file, 16);
+    file.write("data", 4); writeWp380bU32(file, 8);
+    writeWp380bU16(file, 0); writeWp380bU16(file, 512);
+    writeWp380bU16(file, 0);
+    writeWp380bU16(file, static_cast<std::uint16_t>(-512));
+}
+
+Json wp380bDocument(std::string_view scene_name, std::string_view slot,
+                    bool fail, std::string_view available_scene,
+                    bool retire_effects = false) {
+    Json components = Json::array({
+        {{"name", "transform"},
+         {"pos", {8.0, 3.0, 0.0}},
+         {"rotation", {0.0, 0.0, 0.0, 1.0}},
+         {"scale", {1.0, 1.0, 1.0}}},
+        {{"name", "localtransform"},
+         {"pos", {8.0, 3.0, 0.0}},
+         {"rotation", {0.0, 0.0, 0.0, 1.0}},
+         {"scale", {1.0, 1.0, 1.0}}},
+        {{"name", "sprite_view"}, {"texture", "white"}},
+        {{"name", "behavior"},
+         {"type", "wp380b_effect_behavior"},
+         {"params",
+          {{"sound", "project://tone.wav"},
+           {"slot", slot},
+           {"init_scene", available_scene},
+           {"retire_slot", retire_effects ? "retired_b" : ""},
+           {"retire_scene", retire_effects ? "only_d" : ""},
+           {"retire_reject_scene", retire_effects ? "only_e" : ""},
+           {"invalid_retire_sound", retire_effects},
+           {"fail_after_effects", fail}}}},
+    });
+    Json document{
+        {"schema", "pelican.scene"},
+        {"version", 1},
+        {"scenes",
+         {{std::string{scene_name},
+           {{"objects", Json::array({{{"name", "EffectHost"},
+                                      {"components", components}}})}}}}},
+    };
+    document["scenes"][available_scene] = {{"objects", Json::array()}};
+    return document;
+}
+
+Wp380bEffectProbe wp380bProbe(const std::filesystem::path &path) {
+    const auto status = configuredGameLogicStatus();
+    REQUIRE(status.source == path);
+    auto module = GetModuleHandleW(status.loaded_copy.c_str());
+    if (module == nullptr) {
+        module = GetModuleHandleW(status.loaded_copy.filename().c_str());
+    }
+    REQUIRE(module != nullptr);
+    const auto read = reinterpret_cast<decltype(&pelican_wp380b_effect_probe)>(
+        GetProcAddress(module, "pelican_wp380b_effect_probe"));
+    REQUIRE(read != nullptr);
+    Wp380bEffectProbe result{};
+    REQUIRE(read(&result));
+    return result;
+}
+
+} // namespace
+
+TEST_CASE(
+    "WP380b frozen v2 DLL effects rollback and committed RPC effect failures",
+    "[WP380b][transaction][effects][frozen-v2][rpc][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"wp380b_frozen_effect"};
+    writeWp374aProject(project.path, std::nullopt, false, false, true);
+    writeWp380bTone(project.path / "tone.wav");
+    const auto a_document = Json{{"schema", "pelican.scene"},
+                                 {"version", 1},
+                                 {"scenes", {{"A", {{"objects", Json::array()}}}}}};
+    const auto b_document =
+        wp380bDocument("B", "slot_b", false, "only_e", true);
+    const auto failed_document =
+        wp380bDocument("failed", "slot_c", true, "only_e");
+    auto c_document =
+        wp380bDocument("C", "slot_c_committed", false, "only_d");
+    const auto d_document =
+        wp380bDocument("D", "slot_d", false, "only_d");
+    c_document["scenes"]["D"] = d_document.at("scenes").at("D");
+    writeWp374aText(project.path / "scene.json", a_document.dump(2));
+    const std::filesystem::path fixture_path{PELICAN_WP380B_EFFECT_FIXTURE};
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    const auto project_json =
+        Json{{"schema", "pelican.project"}, {"version", 1},
+             {"name", "wp380b-frozen-effect"},
+             {"engine_min_version", "0.1.0"}}.dump();
+    loadWp374aScene(project.path, fixture_path, "A", 380,
+                    project_json, project.path / "user");
+    auto &loader = GET_MODULE(SceneLoader);
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    auto &audio = GET_MODULE(Audio);
+    GameContext context;
+
+    const auto import = [&](const Json &document, std::string scene) {
+        return config.importSceneDocument(
+            document.dump(), [&](SceneLoadRequest &&request) {
+                request.scene_id = std::move(scene);
+                return loader.load(std::move(request));
+            });
+    };
+    const auto b_result = import(b_document, "B");
+    REQUIRE(std::holds_alternative<SceneLoadCommitted>(b_result.load_result));
+    const auto b_voice_count = audio.voiceCountForTesting();
+    REQUIRE(b_voice_count == 1);
+    REQUIRE(context.loadData("slot_b") == Json{{"slot", "slot_b"}});
+
+    REQUIRE_THROWS_WITH(import(failed_document, "failed"),
+                        ContainsSubstring("WP380b frozen v2 activation failure"));
+    const auto c_handle = wp380bProbe(fixture_path).handle;
+    REQUIRE(loader.currentScene() == "B");
+    REQUIRE(audio.voiceCountForTesting() == b_voice_count);
+    REQUIRE(context.busVolume("se") == Catch::Approx(0.38F));
+    REQUIRE_FALSE(context.loadData("slot_c").has_value());
+
+    const auto c_result = import(c_document, "C");
+    const auto *c_effect_failure =
+        std::get_if<CommittedWithEffectFailure>(&c_result.load_result);
+    REQUIRE(c_effect_failure != nullptr);
+    REQUIRE(std::any_of(
+        c_effect_failure->effect_errors.begin(),
+        c_effect_failure->effect_errors.end(), [](const auto &error) {
+            return error.api == "loadScene" &&
+                   error.error_code == "scene_retire_load_rejected@1" &&
+                   error.error_fields.at("scene") == "only_e";
+        }));
+    REQUIRE(loader.currentScene() == "C");
+    REQUIRE(loader.pendingSceneForTesting() ==
+            std::optional<SceneId>{"only_d"});
+
+#if PELICAN_WITH_RPC
+    test_support::ManifestSceneLoadFault injector{
+        scene_load_mutation::effect_save_data};
+    injector.setEnabled(true);
+    test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
+    const auto request =
+        Json{{"jsonrpc", "2.0"}, {"id", 3804},
+             {"method", "load_scene"}, {"params", {{"name", "D"}}}}
+            .dump() + "\n";
+    std::istringstream input{request};
+    std::ostringstream output;
+    runEngineRpcServer(input, output);
+    const auto response = Json::parse(output.str());
+    REQUIRE_FALSE(response.contains("error"));
+    REQUIRE(response.contains("result"));
+    REQUIRE(response.at("result").at("committed") == true);
+    const auto &effect_errors = response.at("result").at("effect_errors");
+    REQUIRE(effect_errors.size() == 1);
+    REQUIRE(effect_errors.front().at("api") == "saveData");
+    REQUIRE(loader.currentScene() == "D");
+    REQUIRE(wp380bProbe(fixture_path).handle != c_handle);
+    REQUIRE(loader.pendingSceneForTesting() ==
+            std::optional<SceneId>{"only_d"});
+    test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
+#endif
+    internal::clearPendingEvents();
+}
+#endif
 
 TEST_CASE(
     "WP380 Light publish-drop mutation is visible to B onInit",

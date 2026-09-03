@@ -245,7 +245,7 @@ GameObjects::add()
     .finish();
 ```
 
-実装は [`gameobjects.hpp`](../../src/core/userpublic/gameobjects.hpp#L20) です。
+実装は [`gameobjects.hpp`](../../src/core/userpublic/gameobjects.hpp#L31) です。
 
 ### compile時に蓄積しているもの
 
@@ -257,7 +257,7 @@ GameObjects::add()
 
 ### `finish()`で実行時へ橋渡し
 
-[`finish()`](../../src/core/userpublic/gameobjects.hpp#L79)（[2オーバーロード](../../src/core/userpublic/gameobjects.hpp#L100)）はcompile時ID packを`span`にし、ECSのpopulate callbackを作ります。callback内のfold expression（畳み込み式 — `(f(pack), ...)` のように書いて、可変個のtemplate引数それぞれへ同じ式を順に適用するC++17の構文）が、保存した位置indexを使って`void*`配列を正しい`T*`へcastし、値をcopy assignmentします（[`GameObjects::copy()`](../../src/core/userpublic/gameobjects.hpp#L82)）。
+[`finish()`](../../src/core/userpublic/gameobjects.hpp#L90)（[2オーバーロード](../../src/core/userpublic/gameobjects.hpp#L90)）はcompile時ID packを`span`にし、ECSのpopulate callbackを作ります。callback内のfold expression（畳み込み式 — `(f(pack), ...)` のように書いて、可変個のtemplate引数それぞれへ同じ式を順に適用するC++17の構文）が、保存した位置indexを使って`void*`配列を正しい`T*`へcastし、値をcopy assignmentします（[`GameObjects::copy()`](../../src/core/userpublic/gameobjects.hpp#L93)）。
 
 要するに、流暢なbuilder APIの各段階で型が変わり、最後にだけruntimeの`vector<ComponentId> + void*`世界へ落としています。
 
@@ -323,7 +323,7 @@ Chunk clearはComponent indexの逆順で各要素を`deinit → destroy`しま�
 
 ChunkはComponent indexごとに`component_versions[index]`を一個持ちます。entityごとのversionではなく、**Chunk内のそのComponent列全体のversion**です。どれか一entityを書き換えると、そのChunkを読むSystemはChunk全体を再処理します。
 
-直接pointerを書き換えて`markComponentChanged()`を忘れると、非force Systemは変更を見逃します。公開 [`GameObjects::setLocalTransform()`](../../src/core/userpublic/gameobjects.cpp#L55) はLocalTransformと内部Transformの両方を更新・markし、描画instanceへも即時反映します。
+直接pointerを書き換えて`markComponentChanged()`を忘れると、非force Systemは変更を見逃します。公開 [`GameObjects::setLocalTransform()`](../../src/core/userpublic/gameobjects.cpp#L67) はLocalTransformと内部Transformの両方を更新・markし、描画instanceへも即時反映します。
 
 ## 4.10 内部ECS Systemの登録
 
@@ -545,7 +545,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ### collider
 
-[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L331)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L811)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L241)）。
+[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L332)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L823)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L242)）。
 
 ### behavior arena ✅実装済み
 
@@ -576,7 +576,7 @@ void unregisterComponents(RegistrationOwner owner) noexcept;
 std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 ```
 
-この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1700)）。
+この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1743)）。
 
 これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L122) の戻り値が `void` → `RegistrationToken` になりました。
 
@@ -659,9 +659,9 @@ WP152で、既存entityへのComponent追加/削除が「途中で失敗して�
 
 ### 低レベルのトークン
 
-[`ECSArchetypeMigration::prepareAdd()`](../../src/core/ecs/archetypemigration.hpp#L126) / [`prepareRemove()`](../../src/core/ecs/archetypemigration.hpp#L130) が [`ECSArchetypeMigrationToken`](../../src/core/ecs/archetypemigration.hpp#L53) を返します。トークンが持つのは `publish() noexcept` / `rollback() noexcept` / `finish() noexcept` / `published()` / `stagedComponent()` / `removedComponent()` です。
+[`ECSArchetypeMigration::prepareAdd()`](../../src/core/ecs/archetypemigration.hpp#L127) / [`prepareRemove()`](../../src/core/ecs/archetypemigration.hpp#L131) が [`ECSArchetypeMigrationToken`](../../src/core/ecs/archetypemigration.hpp#L53) を返します。トークンが持つのは `publish() noexcept` / `rollback() noexcept` / `finish() noexcept` / `published()` / `stagedComponent()` / `removedComponent()` です。
 
-entityの生成/破棄も同じ形です。[`ECSEntityMutation::prepareCreate()`](../../src/core/ecs/archetypemigration.hpp#L113) / [`prepareDestroy()`](../../src/core/ecs/archetypemigration.hpp#L116) が [`ECSEntityMutationToken`](../../src/core/ecs/archetypemigration.hpp#L83) を返します。
+entityの生成/破棄も同じ形です。[`ECSEntityMutation::prepareCreate()`](../../src/core/ecs/archetypemigration.hpp#L114) / [`prepareDestroy()`](../../src/core/ecs/archetypemigration.hpp#L117) が [`ECSEntityMutationToken`](../../src/core/ecs/archetypemigration.hpp#L83) を返します。
 
 > 🧩 **難所 — 移行publishのrelocate舞踏**([`State::publish()`](../../src/core/ecs/archetypemigration.cpp#L93) / [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229))
 >
@@ -690,9 +690,9 @@ entityの生成/破棄も同じ形です。[`ECSEntityMutation::prepareCreate()`
 
 `rollback()` が**throwした prepare も含めて**全ての試行に対して呼ばれる点が要点です。adapter側は「prepareに入った時点でrollbackが来る」前提で書けます。light / collider / behavior など特殊なアタッチメントは、それぞれの投影WPが所有する別adapterのままで、ここは合成境界にすぎません。
 
-> 🧩 **難所 — publishを落とさないreserve**([`prepare()`](../../src/core/ecs/archetypemigration.cpp#L452) 末尾 / [`prepareCreate()`](../../src/core/ecs/archetypemigration.cpp#L983) 末尾)
+> 🧩 **難所 — publishを落とさないreserve**([`prepare()`](../../src/core/ecs/archetypemigration.cpp#L452) 末尾 / [`prepareCreate()`](../../src/core/ecs/archetypemigration.cpp#L997) 末尾)
 >
-> **何をする所か**: 公開に必要な**器**をprepare側で先に押さえます。`chunks_storage.reserve(+1)`、`archetype_to_chunks.try_emplace(key)`、`archetype->second.reserve(+1)`、マッチする全Systemの `matching_chunk_indices.reserve(+1)` の4点が両者に共通で、`prepareCreate()` はさらに `id_table.reserve(+1)`（新規index時のみ）と `free_indices.reserve(+1)` を足した6点です。後の2点は `publishCreate()` の [`id_table.emplace_back()`](../../src/core/ecs/archetypemigration.cpp#L641) と `publishDestroy()` の [`free_indices.push_back()`](../../src/core/ecs/archetypemigration.cpp#L796) を無失敗にするためのもので、`prepareDestroy()` 側にも同じ `free_indices.reserve(+1)`（[`prepareDestroy()` 側](../../src/core/ecs/archetypemigration.cpp#L1111)）が置かれています。
+> **何をする所か**: 公開に必要な**器**をprepare側で先に押さえます。`chunks_storage.reserve(+1)`、`archetype_to_chunks.try_emplace(key)`、`archetype->second.reserve(+1)`、マッチする全Systemの `matching_chunk_indices.reserve(+1)` の4点が両者に共通で、`prepareCreate()` はさらに `id_table.reserve(+1)`（新規index時のみ）と `free_indices.reserve(+1)` を足した6点です。後の2点は `publishCreate()` の [`id_table.emplace_back()`](../../src/core/ecs/archetypemigration.cpp#L641) と `publishDestroy()` の [`free_indices.push_back()`](../../src/core/ecs/archetypemigration.cpp#L796) を無失敗にするためのもので、`prepareDestroy()` 側にも同じ `free_indices.reserve(+1)`（[`prepareDestroy()` 側](../../src/core/ecs/archetypemigration.cpp#L1125)）が置かれています。
 >
 > **素朴に読むと**: 性能チューニングの4行に見えますが、**これが上のadapter規約を成立させている実体**です。`publish()` は `noexcept` で `emplace_back` / `push_back` / mapへの挿入をそのまま呼ぶので、reserveと `try_emplace` がなければ、publish中の再確保やrehashが `bad_alloc` を投げ、`noexcept` 関数からの伝播で `std::terminate` します。派生する非自明な点が二つ。(1) `try_emplace` はarchetype mapに**空エントリを残しうる**ので、`inserted_target_archetype` フラグと [`eraseUnpublishedArchetype()`](../../src/core/ecs/archetypemigration.cpp#L65) で「自分が作ったなら、空のときだけ消す」を判定しています（他人が既に持っていたkeyを消してはいけません）。(2) `chunks_storage.reserve()` はvectorを再確保しうるので、それ以前に取った `ECSComponentChunk&` は無効になります。prepareが `auto &source = core.chunks_storage[...]` を使い終えてからreserveを呼ぶ順序は必然です。一方Componentの**実体pointer**（`staged_component` / `removed_live_component`）は、各 `VariedArray` が独立したheap blockを持つ（[`chunk.cpp` 内](../../src/core/userpublic/details/ecs/chunk.cpp#L27)）おかげで再確保の影響を受けません。
 >

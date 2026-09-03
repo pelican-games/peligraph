@@ -10,6 +10,7 @@ enum class SceneParticipantPresence : std::uint8_t {
     absent,
     stub,
     real,
+    uninstalled,
 };
 
 enum class SceneManifestRole : std::uint8_t {
@@ -18,6 +19,11 @@ enum class SceneManifestRole : std::uint8_t {
     cache,
     production_root,
     excluded_wp380b,
+    effect,
+    non_rollback,
+    reject,
+    frame_lifetime,
+    read_only,
 };
 
 // One row describes one independently observable field (or one build root).

@@ -275,7 +275,7 @@ C++ の `GameContext::emit(event)` は copy した値をそのまま queue に�
 
 ## 9.4 `GameObjects::add()` の typestate builder
 
-[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L20) は fluent API に見えますが、内部では呼ぶたびに別 template 型を返します。
+[`GameObjects`](../../src/core/userpublic/gameobjects.hpp#L31) は fluent API に見えますが、内部では呼ぶたびに別 template 型を返します。
 
 ```cpp
 auto id = GameObjects::add()
@@ -290,11 +290,11 @@ auto id = GameObjects::add()
 - `IndexHolder<...>`: 値を渡した component が pointer 配列の何番目か。
 - `tuple<...>`: populate 時に代入する component data。
 
-`finish()` で初めて ID span と populate lambda へ落ち、[`GameObjects::create()`](../../src/core/userpublic/gameobjects.cpp#L13) から ECS の transactional create へ入ります。template の目的は、runtime に型情報が消えた `void*` 配列へ、compile-time に正しい型と index で代入することです。
+`finish()` で初めて ID span と populate lambda へ落ち、[`GameObjects::create()`](../../src/core/userpublic/gameobjects.cpp#L14) から ECS の transactional create へ入ります。template の目的は、runtime に型情報が消えた `void*` 配列へ、compile-time に正しい型と index で代入することです。
 
 ### reference lifetime の罠
 
-値付き `addComponent(const T&)` は、値を copy して builder に保存するのではなく [`std::tuple<const T&>`](../../src/core/userpublic/gameobjects.hpp#L113) を保存します。
+値付き `addComponent(const T&)` は、値を copy して builder に保存するのではなく [`std::tuple<const T&>`](../../src/core/userpublic/gameobjects.hpp#L108) を保存します。
 
 ```cpp
 // 安全: temporaryが破棄される前、同じfull-expressionでfinishする
@@ -361,7 +361,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L1700))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L1743))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -459,18 +459,18 @@ non-force system は matching chunk の component version と `last_run_tick` �
 
 ## 9.8 Camera、light、collider はすべて同じ ECS component ではない
 
-scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L258) が分岐します。系統は **4 つ**になりました。
+scene の `components` 配列に見えても runtime binding は一様ではありません。[`prepareSceneBindings()`](../../src/core/loader/scene.cpp#L259) が分岐します。系統は **4 つ**になりました。
 
 | scene name | runtime 経路 |
 |---|---|
 | `transform`, `simplemodelview`, `camera` | ComponentInfo 経由で ECS chunk へ作成 |
 | `light` | ECS へ入れず `LightLoadEntry` として `LightContainer::prepareLoad()` → `publishPrepared()`(scene load は 2 段を直接使い、`load()` は通らない) |
-| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::prepareSceneBindings()` → `publishPrepared()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`throwBuildFeatureDisabled()`](../../src/core/loader/scene.cpp#L106)) |
-| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L81) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L335))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
+| `collider` | ECS へ入れず `ColliderComponent` を parse し `PhysWorld::prepareSceneBindings()` → `publishPrepared()`。`PELICAN_WITH_PHYSICS` OFF の build では collider を含む scene は明示エラー([`throwBuildFeatureDisabled()`](../../src/core/loader/scene.cpp#L107)) |
+| `behavior` | ECS へ入れず [`prepareSceneBehaviorAttachments()`](../../src/core/gamelogic/behaviorarena.cpp#L82) 経由で `BehaviorAttachmentArena` へ([`component_name == "behavior"`](../../src/core/loader/scene.cpp#L336))。`type` は非空文字列必須。game DLL 未ロードなら **pending** 扱いで警告のみ |
 
 `ColliderComponent` に `init/deinit` があっても、現在の scene loader は special case です。`ECSCoreTemplatePublic::tryComponent<ColliderComponent>()` で取れる通常 ECS component だとは考えないでください。behavior も同様で、ECS の component として問い合わせても見つかりません。
 
-behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L852) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L908))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L930))で走ります。activate は executor で**唯一の失敗しうる段**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L606) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L935) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L964))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
+behavior は scene load executor(第 3 章 §3.5 の 3。WP380a)の participant の 1 つです。candidate は [`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L864) で作られ、publish 段で `noexcept` に swap され([`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L920))、`onInit` は activate 段([`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L943))で走ります。activate は executor で**唯一の失敗しうる段**で、投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L618) が renderer / ECS / camera / light / physics / behavior / event outbox / RNG / pending scene を**全部**旧世代へ戻し、結果は [`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L948) です。document / projection / current scene / authority の commit([`metadata.commit()`](../../src/core/loader/scene.cpp#L977))はその後なので旧世代のままです。「behavior 型名を間違えると scene が半分だけロードされる」「document は新、runtime は旧」ということはありません(型名の誤りはそもそも prepare 段で落ちます)。旧経路の `clearRuntimeScene()` は `load()` から呼ばれません。
 
 ### ライトのマジックネームは撤去された(WP142 / LIGHT0)
 
@@ -651,7 +651,7 @@ teardown の最終段は phase で分岐します。
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った。解除と engine owner 登録は WP379a で host 専用へ | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L47) / [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) |
 | behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L168) |
 | 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L569) |
-| 編集 RPC(query / snapshot / edit / undo / preview / journal) | ✅実装済み(WP153〜172) | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L262) |
+| 編集 RPC(query / snapshot / edit / undo / preview / journal) | ✅実装済み(WP153〜172) | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L264) |
 | ImGui inspector / asset browser | ✅実装済み(WP159 / 164 / 167)。ただし `--rpc` / headless / replay / golden / XR では無効 | [`inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) |
 | preview graph(第3 variant) | 🚧実装済みだが CPU 模式ラスタ(WP172)。隔離契約が本体で、見た目の忠実度は保証しない | [`previewgraph.hpp`](../../src/core/renderingpass/previewgraph.hpp#L15) |
 | RenderDoc capture | 🚧受動のみ(WP140)。**エンジンは RenderDoc をロードしない** | [`renderdoccapture.hpp`](../../src/core/renderdoc/renderdoccapture.hpp#L66) |
@@ -775,8 +775,8 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 
 | 場所 | API |
 |---|---|
-| ECS archetype | [`ECSArchetypeMigration::prepareAdd/prepareRemove`](../../src/core/ecs/archetypemigration.hpp#L120) → token の `publish()` / `rollback()` / `finish()`(全て `noexcept`) |
-| ECS entity | [`ECSEntityMutation::prepareCreate/prepareDestroy`](../../src/core/ecs/archetypemigration.hpp#L108) |
+| ECS archetype | [`ECSArchetypeMigration::prepareAdd/prepareRemove`](../../src/core/ecs/archetypemigration.hpp#L121) → token の `publish()` / `rollback()` / `finish()`(全て `noexcept`) |
+| ECS entity | [`ECSEntityMutation::prepareCreate/prepareDestroy`](../../src/core/ecs/archetypemigration.hpp#L109) |
 | ECS 既存値 | `prepareComponentValue()` / `publishComponentValue()` / `rollbackComponentValue()` |
 | model instance | `preflightModelInstance()` → `stageModelInstance()` → `publishModelInstance()` |
 | behavior | [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L118) の `publish()` / `rollback()` / `finish()`(全て `noexcept`) |
@@ -787,7 +787,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 
 > **設計決定:** 新しい adapter を足すときは **prepare / rollback / publish の三点セットを必ず作ってください**。「途中まで適用された状態」を許す実装を1つ混ぜるだけで、その adapter だけでなく、**同じ `commit()` が束ねる transaction 全体**(= 編集・reload・scene 遷移が共有するこのプロトコル)の原子性が崩れます。他の adapter が正しく rollback できても、その 1 つが戻らなければ transaction は半端な状態で終わるからです。
 
-`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L1251))。
+`load_gltf` の単一公開点がわかりやすい実例です([`instances.publishModelInstance()`](../../src/core/loader/scene.cpp#L1292))。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -808,7 +808,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 ### 3. CAS は `SceneRevision` で行う。ただし revision だけでは足りない
 
-`edit` は `base_revision` を伴い(これが節題の CAS — compare-and-swap、「読んだときの値から変わっていなければ書き換える」条件付き更新のことです)、ズレていれば `EditorEditErrorCode::stale_revision` です。**watch トークンは [`EditorWatchToken{scene_revision, preview_epoch}`](../../src/core/communication/editorcommandservice.hpp#L212) の 2 要素** で、preview の open/commit も epoch を進めます。`get_scene_revision` の戻り値を丸ごと持ち回ってください。
+`edit` は `base_revision` を伴い(これが節題の CAS — compare-and-swap、「読んだときの値から変わっていなければ書き換える」条件付き更新のことです)、ズレていれば `EditorEditErrorCode::stale_revision` です。**watch トークンは [`EditorWatchToken{scene_revision, preview_epoch}`](../../src/core/communication/editorcommandservice.hpp#L214) の 2 要素** で、preview の open/commit も epoch を進めます。`get_scene_revision` の戻り値を丸ごと持ち回ってください。
 
 ### 4. preview は lease(ticket)
 
@@ -829,11 +829,11 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 
 ### 7. 保存拒否の理由コード
 
-[`EditorCommandErrorCode`](../../src/core/communication/editorcommandservice.hpp#L26) は 13 種です。特に注意すべきものを挙げます。
+[`EditorCommandErrorCode`](../../src/core/communication/editorcommandservice.hpp#L27) は 13 種です。特に注意すべきものを挙げます。
 
-- **`RuntimeOnlyData`**: [`SceneLoader::hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L99) が真のとき、つまり `load_gltf` で持ち込んだ transient モデルがあるときに出ます。「RPC で読み込んだモデルは保存できない」という意味です。
+- **`RuntimeOnlyData`**: [`SceneLoader::hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L102) が真のとき、つまり `load_gltf` で持ち込んだ transient モデルがあるときに出ます。「RPC で読み込んだモデルは保存できない」という意味です。
 - `ExternalModification`: ディスク上の scene が外部で書き換わっていた。
-- 上限は [`maxSceneSnapshotBytes = 64 MiB`](../../src/core/communication/editorcommandservice.hpp#L24)、JSON 整数の安全上限は [`maxExactEditorJsonInteger = 9007199254740991`](../../src/core/communication/editorcommandservice.hpp#L23)。
+- 上限は [`maxSceneSnapshotBytes = 64 MiB`](../../src/core/communication/editorcommandservice.hpp#L25)、JSON 整数の安全上限は [`maxExactEditorJsonInteger = 9007199254740991`](../../src/core/communication/editorcommandservice.hpp#L24)。
 
 ### 8. snapshot は「ファイル内容」ではなく semantic bytes
 
@@ -929,7 +929,7 @@ rg -n -A3 "catch \(const std::exception" test --glob "*.cpp" | rg -B1 "SKIP\("
 
 skip が緑を汚さない以上、`ctest` の exit code だけでは検出できません。そのため gate 側が **許可した名前以外の skip をすべて失敗にする**方針を持っています。判定は [`validate_skip_policy()`](../../test/ci/skip_policy.py#L74)(CPU/GPU 両 gate 共通)で、GPU 側の driver が [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py)、許可リストが [`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) です。現在の GPU allowlist は、clone / worktree 外の corpus を `PELICAN_TEST_PROJECTS_DIR` で指定する `project_catalog_headless_smoke` の未指定 skip だけを載せています。上の 4 件の broad exception skip は載せません。entry を消せば未指定時の skip が非許可になり、逆にテスト名自体が現れなければ stale entry として失敗するので、リストは腐りません([`skip_policy.py` 内](../../test/ci/skip_policy.py#L83))。
 
-なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L42) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L152) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L1921) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
+なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L50) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L160) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L1964) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
 
 ---
 

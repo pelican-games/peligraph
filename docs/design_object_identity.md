@@ -315,6 +315,22 @@ v4 はその 8 項目を 1:1 で閉じる差分。**これで設計段を終え�
 
 ### 修正 A(最低修正 1・2 / 欠陥 2): 原子性の保証対象を **engine-owned state / Pelican API** に限定する
 
+WP380b の規範追記:
+
+- audio の voice 集合と bus 値は rollback participant。provisional
+  `SoundHandle` cursor は明示的に `non_rollback` で、失敗 transaction は
+  名前付き handle gap を残してよいが、voice と bus 値を残してはならない。
+- audio / persistence effect は resource key 単位で coalesce する。
+  `saveData` / `saveSettings` / bus volume は last-write-wins、play / stop は
+  handle が key。独立 entry は staging sequence 順に flush し、1 件失敗後も
+  残りをすべて試行する。
+- 未 flush の `saveData` だけに存在する `listSaves()` entry は canonical
+  sentinel `std::filesystem::file_time_type{}` (`timestamp == 0`) を返す。
+- old behavior の retire 中は scene 名を committed projection で解決するが、
+  request は active pending-scene candidate に書く。retired self の getter は
+  ECS destroy token の最終 snapshot を読み、setter は
+  `SceneRetiredObjectMutationRejected` として拒否する。
+
 native C++ は context を使わず static 状態・filesystem・socket・thread を直接変える。**それは遮断不能**であり、保証しない。
 - **保証範囲**: Pelican が所有し **Pelican API を通じて変更される状態**(ECS / Physics / Light / Camera / Renderer / Behavior arena /
   event queue / RNG / pending scene / audio voice / persistence の Pelican 経路)。**直接 I/O と DLL global は非保証**と明記

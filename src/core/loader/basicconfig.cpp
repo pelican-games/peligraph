@@ -796,7 +796,7 @@ void ProjectBasicConfig::invalidateSceneDocument() noexcept {
     scene_metadata.persistence_baseline.reset();
 }
 
-SceneRevision ProjectBasicConfig::importSceneDocument(
+SceneImportResult ProjectBasicConfig::importSceneDocument(
     std::string_view scene_v1_bytes, const SceneImportCallback &reload,
     std::uint64_t snapshot_schema_version) {
     if (!reload) {
@@ -871,7 +871,7 @@ SceneRevision ProjectBasicConfig::importSceneDocument(
         owned != nullptr && owned->token) {
         owned->token.commit();
     }
-    return committed_revision;
+    return SceneImportResult{committed_revision, std::move(result)};
 }
 
 void ProjectBasicConfig::refreshResolvedScene(

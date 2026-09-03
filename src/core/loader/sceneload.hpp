@@ -7,6 +7,7 @@
 #include <exception>
 #include <functional>
 #include <memory>
+#include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -112,6 +113,16 @@ inline constexpr std::string_view root_import_unversioned =
     "root.import-v1.disconnect";
 inline constexpr std::string_view root_import_versioned =
     "root.import-v2.disconnect";
+inline constexpr std::string_view effect_audio_play =
+    "effect.audio-play.fail";
+inline constexpr std::string_view effect_audio_stop =
+    "effect.audio-stop.fail";
+inline constexpr std::string_view effect_audio_bus_volume =
+    "effect.audio-bus-volume.fail";
+inline constexpr std::string_view effect_save_data =
+    "effect.save-data.fail";
+inline constexpr std::string_view effect_save_settings =
+    "effect.save-settings.fail";
 } // namespace scene_load_mutation
 
 struct PreCommitFailure {
@@ -123,7 +134,14 @@ struct PreCommitFailure {
 
 struct CommittedWithEffectFailure {
     SceneAuthority active_authority{};
-    std::vector<std::string> effect_errors;
+    struct EffectError {
+        std::string api;
+        std::string error_code;
+        nlohmann::ordered_json error_fields;
+        std::string phase;
+    };
+    std::vector<EffectError> effect_errors;
+    SceneLoadPhaseTrace phase_trace{};
 };
 
 struct SceneLoadCommitted {
@@ -218,9 +236,28 @@ struct SceneLoadRequest {
 using SceneImportCallback =
     std::function<SceneLoadResult(SceneLoadRequest &&)>;
 
+struct SceneImportResult {
+    SceneRevision revision{};
+    SceneLoadResult load_result{SceneLoadCommitted{}};
+
+    SceneImportResult() = default;
+    SceneImportResult(SceneRevision imported_revision)
+        : revision{imported_revision} {}
+    SceneImportResult(SceneRevision imported_revision,
+                      SceneLoadResult imported_result)
+        : revision{imported_revision},
+          load_result{std::move(imported_result)} {}
+
+    operator SceneRevision() const noexcept { return revision; }
+};
+
 // Production roots use this bridge to retain the historic throwing surface
 // while the executor itself returns an explicit pre/post-commit result.
-const SceneLoadCommitted &requireSceneLoadCommitted(
-    const SceneLoadResult &result);
+// Pre-commit failure preserves the historic throwing contract. A committed
+// effect failure is still a successful scene publication and is returned to
+// the caller for reporting.
+const SceneLoadResult &requireSceneLoadCommitted(const SceneLoadResult &result);
+nlohmann::ordered_json effectErrorsJson(
+    std::span<const CommittedWithEffectFailure::EffectError> errors);
 
 } // namespace Pelican

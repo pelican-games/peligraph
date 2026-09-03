@@ -453,7 +453,7 @@ ECSCore::update()
 | 内部ECS System | [`ECSCore::registerSystem`](../../src/core/ecs/core.hpp#L40) | `ECSCore::update()` | Component配列をまとめて処理 |
 | ゲームSystem | [`PELICAN_REGISTER_SYSTEM`](../../src/core/userpublic/details/system/registerer.hpp#L174) | `updateRegisteredGameSystems()` | `GameContext`経由のゲームロジック |
 
-内部ECSが先に走ります。そのため、ゲームSystemが同フレーム中に`LocalTransform`を書き換えた結果を内部transform Systemが見るのは原則次フレームです。ただし [`GameObjects::setLocalTransform()`](../../src/core/userpublic/gameobjects.cpp#L55) は公開componentと内部`TransformComponent`を即時同期し、model instanceへも直接TRSを反映するため、公開API経由の通常操作では表示遅延を避けています。
+内部ECSが先に走ります。そのため、ゲームSystemが同フレーム中に`LocalTransform`を書き換えた結果を内部transform Systemが見るのは原則次フレームです。ただし [`GameObjects::setLocalTransform()`](../../src/core/userpublic/gameobjects.cpp#L67) は公開componentと内部`TransformComponent`を即時同期し、model instanceへも直接TRSを反映するため、公開API経由の通常操作では表示遅延を避けています。
 
 ## 2.8 描画フレーム
 
@@ -485,7 +485,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 
 ### RPCディスパッチャは1個
 
-[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L102) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L2003) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L73) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
+[`EngineRpcEndpoint`](../../src/core/communication/rpcserver.hpp#L102) が「状態を持つエンジンRPCディスパッチャ」を1個所有します。ヘッダのコメントが契約です — headlessは [`run()`](../../src/core/communication/rpcserver.cpp#L2012) がEOFまでブロックし、windowedのホストは [`processLine()`](../../src/core/communication/rpcserver.hpp#L73) を**フレーム境界でだけ**呼びます。`runEngineRpcServer()` はheadless用の薄いラッパです。
 
 ### 編集セッションの生成点も1個
 

@@ -33,7 +33,7 @@ constexpr auto xr_presence = SceneParticipantPresence::absent;
 #if PELICAN_WITH_AUDIO
 constexpr auto audio_presence = SceneParticipantPresence::real;
 #else
-constexpr auto audio_presence = SceneParticipantPresence::absent;
+constexpr auto audio_presence = SceneParticipantPresence::uninstalled;
 #endif
 
 #if PELICAN_WITH_RPC
@@ -143,12 +143,21 @@ constexpr std::array manifest{
     SceneParticipantManifestEntry{"pending_scene", "request", real, participant, "prepare+activate:candidate-aware", "flush:noexcept-swap", "discard-candidate", no_retire, "optional-scene-id-v1", scene_load_mutation::pending_scene},
 
     // Explicit non-participants are part of the manifest so tests cannot
-    // silently promote caches, ID-A registry work, or WP380b work into this
-    // transaction.
+    // silently promote caches or ID-A registry work into this transaction.
     SceneParticipantManifestEntry{"model_asset", "warm_cache", real, SceneManifestRole::cache, "lookup", "retained-on-failure", "none", no_retire, "not-compared", {}},
     SceneParticipantManifestEntry{"registry_slot", "candidate_registry", SceneParticipantPresence::absent, participant, "ID-A", "none", "none", no_retire, "absent", {}},
-    SceneParticipantManifestEntry{"audio", "voice_and_handles", audio_presence, SceneManifestRole::excluded_wp380b, "WP380b", "none", "none", no_retire, "excluded", {}},
-    SceneParticipantManifestEntry{"persistence", "bytes_and_settings", SceneParticipantPresence::absent, SceneManifestRole::excluded_wp380b, "WP380b", "none", "none", no_retire, "excluded", {}},
+    SceneParticipantManifestEntry{"audio", "play", audio_presence, SceneManifestRole::effect, "prepare+activate:decode+reserve", "flush:backend-play", "discard-outbox", no_retire, "handle+decoded-sound-v1", audio_presence == real ? scene_load_mutation::effect_audio_play : std::string_view{}},
+    SceneParticipantManifestEntry{"audio", "stop_existing", audio_presence, SceneManifestRole::effect, "activate:shadow", "flush:erase-then-backend-destroy", "discard-outbox", no_retire, "handle-v1", audio_presence == real ? scene_load_mutation::effect_audio_stop : std::string_view{}},
+    SceneParticipantManifestEntry{"audio", "bus_volume", audio_presence, SceneManifestRole::effect, "prepare+activate:shadow", "flush:state-then-backend", "discard-outbox", no_retire, "bus-volume-v1", audio_presence == real ? scene_load_mutation::effect_audio_bus_volume : std::string_view{}},
+    SceneParticipantManifestEntry{"audio", "handle_cursor", audio_presence, SceneManifestRole::non_rollback, "activate:permanent-consume", "none", "non-rollback", no_retire, "u64-gap-named-v1", {}},
+    SceneParticipantManifestEntry{"persistence", "game_settings", real, SceneManifestRole::effect, "prepare+activate:shadow", "flush:noexcept-move", "discard-shadow", no_retire, "json-v1", {}},
+    SceneParticipantManifestEntry{"persistence", "save_data", real, SceneManifestRole::effect, "activate:encode+coalesce", "flush:atomic-write", "discard-outbox", no_retire, "path+bytes-v1", scene_load_mutation::effect_save_data},
+    SceneParticipantManifestEntry{"persistence", "save_settings", real, SceneManifestRole::effect, "activate:encode-shadow+coalesce", "flush:atomic-write", "discard-outbox", no_retire, "path+bytes-v1", scene_load_mutation::effect_save_settings},
+    SceneParticipantManifestEntry{"persistence", "load_data_overlay", real, SceneManifestRole::read_only, "activate:outbox-first", "none", "none", no_retire, "json-v1", {}},
+    SceneParticipantManifestEntry{"persistence", "list_saves_overlay", real, SceneManifestRole::read_only, "activate:disk-union-outbox", "none", "none", no_retire, "slot+timestamp-zero-v1", {}},
+    SceneParticipantManifestEntry{"gameobjects", "direct_mutation", real, SceneManifestRole::reject, "transaction-scope", "reject", "unchanged", no_retire, "SceneTransactionMutationRejected-v1", {}},
+    SceneParticipantManifestEntry{"behavior_context", "retired_self_setters", real, SceneManifestRole::reject, "retire:inverse-view", "effect-error", "unchanged", no_retire, "SceneRetiredObjectMutationRejected-v1", {}},
+    SceneParticipantManifestEntry{"debug_text", "frame_text", real, SceneManifestRole::frame_lifetime, "frame", "direct", "frame-expiry", no_retire, "frame-lifetime", {}},
 
     SceneParticipantManifestEntry{"root.startup", "direct_load", real, SceneManifestRole::production_root, "Borrowed", "SceneLoader::load(request)", "result", no_retire, "root-wiring-v1", scene_load_mutation::root_startup},
     SceneParticipantManifestEntry{"root.rpc", "direct_load", rpc_presence, SceneManifestRole::production_root, "Borrowed", "SceneLoader::load(request)", "result", no_retire, "root-wiring-v1", rpc_presence == real ? scene_load_mutation::root_rpc : std::string_view{}},
@@ -170,6 +179,7 @@ std::string_view sceneParticipantPresenceName(
     case SceneParticipantPresence::absent: return "absent";
     case SceneParticipantPresence::stub: return "stub";
     case SceneParticipantPresence::real: return "real";
+    case SceneParticipantPresence::uninstalled: return "uninstalled";
     }
     return "unknown";
 }
@@ -181,6 +191,11 @@ std::string_view sceneManifestRoleName(SceneManifestRole role) noexcept {
     case SceneManifestRole::cache: return "cache";
     case SceneManifestRole::production_root: return "production-root";
     case SceneManifestRole::excluded_wp380b: return "excluded-wp380b";
+    case SceneManifestRole::effect: return "effect";
+    case SceneManifestRole::non_rollback: return "non-rollback";
+    case SceneManifestRole::reject: return "reject";
+    case SceneManifestRole::frame_lifetime: return "frame-lifetime";
+    case SceneManifestRole::read_only: return "read-only";
     }
     return "unknown";
 }

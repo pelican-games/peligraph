@@ -956,6 +956,20 @@ ECSEntityMutationKind ECSEntityMutationToken::kind() const noexcept {
 bool ECSEntityMutationToken::published() const noexcept {
     return state_ != nullptr && state_->published;
 }
+
+const void *ECSEntityMutationToken::component(
+    ComponentId component_id) const noexcept {
+    if (!state_ || state_->kind != ECSEntityMutationKind::destroy ||
+        !state_->staged_chunk) return nullptr;
+    const auto found = std::find(state_->component_ids.begin(),
+                                 state_->component_ids.end(), component_id);
+    if (found == state_->component_ids.end()) return nullptr;
+    const auto offset = static_cast<std::size_t>(
+        std::distance(state_->component_ids.begin(), found));
+    if (offset >= state_->component_indices.size()) return nullptr;
+    const auto index = state_->component_indices[offset];
+    return state_->staged_chunk->component_arrays[index]->atUnchecked(0);
+}
 void ECSEntityMutationToken::publish() noexcept {
     if (state_ != nullptr && !state_->published) state_->publish();
 }

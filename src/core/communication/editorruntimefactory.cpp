@@ -2337,7 +2337,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             request.scene_id = std::string{current_scene_id};
                             auto result = runtime->modules.scene_loader.load(
                                 std::move(request));
-                            if (std::holds_alternative<SceneLoadCommitted>(
+                            if (!std::holds_alternative<PreCommitFailure>(
                                     result)) {
                                 next_runtime_bindings =
                                     collectEditorRuntimeBindings(
@@ -2363,7 +2363,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                             request.scene_id = std::string{current_scene_id};
                             auto result = runtime->modules.scene_loader.load(
                                 std::move(request));
-                            if (std::holds_alternative<SceneLoadCommitted>(
+                            if (!std::holds_alternative<PreCommitFailure>(
                                     result)) {
                                 next_runtime_bindings =
                                     collectEditorRuntimeBindings(

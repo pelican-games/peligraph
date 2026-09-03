@@ -3,6 +3,7 @@
 #include "editorjournal.hpp"
 #include "editorpreviewservice.hpp"
 #include "../loader/resolvedscene.hpp"
+#include "../loader/sceneload.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -185,6 +186,7 @@ struct ImportSceneSnapshotRequestV2 {
 struct ImportSceneSnapshotResult {
     SceneRevision scene_revision{};
     std::string current_scene_id;
+    std::vector<CommittedWithEffectFailure::EffectError> effect_errors;
 };
 
 struct EditorRuntimeBehaviorAttachmentState {
@@ -251,10 +253,10 @@ struct EditorCommandServiceDependencies {
     std::optional<EditorEditRuntimeDependencies> edit;
     std::optional<EditorPreviewServiceDependencies> preview;
     std::shared_ptr<RenderConfigEditorService> render_config_editor;
-    std::function<SceneRevision(std::string_view, std::string_view)>
+    std::function<SceneImportResult(std::string_view, std::string_view)>
         import_scene_snapshot;
-    std::function<SceneRevision(std::string_view, std::string_view,
-                                std::uint64_t)>
+    std::function<SceneImportResult(std::string_view, std::string_view,
+                                   std::uint64_t)>
         import_scene_snapshot_versioned;
     std::function<SaveSceneResult()> save_scene;
 };

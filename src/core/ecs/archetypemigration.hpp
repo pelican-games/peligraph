@@ -99,6 +99,7 @@ class ECSEntityMutationToken {
     EntityId entity() const noexcept;
     ECSEntityMutationKind kind() const noexcept;
     bool published() const noexcept;
+    const void *component(ComponentId component_id) const noexcept;
     void publish() noexcept;
     void rollback() noexcept;
     void finish() noexcept;

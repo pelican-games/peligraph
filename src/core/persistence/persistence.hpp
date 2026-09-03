@@ -31,6 +31,14 @@ DECLARE_MODULE(Persistence) {
     std::optional<std::string> last_settings_error;
 
   public:
+    struct PreparedWrite {
+        std::filesystem::path path;
+        std::string bytes;
+        std::string resource_key;
+        std::optional<std::string> slot;
+        std::optional<nlohmann::json> overlay_data;
+    };
+
     bool loadSettings();
     void saveSettings() const;
 
@@ -47,6 +55,14 @@ DECLARE_MODULE(Persistence) {
     void saveData(std::string_view slot, const nlohmann::json &data) const;
     std::optional<nlohmann::json> loadData(std::string_view slot) const;
     std::vector<PersistenceSlotInfo> listSaves() const;
+
+    PreparedWrite prepareSettingsWrite(
+        const nlohmann::json &game,
+        const AudioBusSettings &audio) const;
+    PreparedWrite prepareDataWrite(
+        std::string_view slot, const nlohmann::json &data) const;
+    void commitPreparedWrite(const PreparedWrite &write) const;
+    void commitGameSettings(nlohmann::json settings) noexcept;
 
     void resetForTesting();
 };

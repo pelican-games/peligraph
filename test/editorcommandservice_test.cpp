@@ -359,7 +359,13 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
                 target = AuthoringSceneDocument::load(
                     bytes, SceneRevision{target.revision().value + 1U}, 1000);
                 target_scene = std::string{current_scene_id};
-                return target.revision();
+                return SceneImportResult{
+                    target.revision(),
+                    CommittedWithEffectFailure{
+                        {},
+                        {{"saveData", "persistence_write_failed@1",
+                          {{"path", "slot-c.json"}}, "flush"}},
+                        {}}};
             },
     }};
     EditorCommandRpcAdapter target_rpc{target_service};
@@ -367,8 +373,13 @@ TEST_CASE("ImportSceneSnapshot V1 round trips all semantic bytes with fresh iden
     const auto response =
         target_rpc.importSceneSnapshot(importRequestJson(importRequest(exported)));
     REQUIRE(response.at("status") == "imported");
+    REQUIRE(response.at("committed") == true);
     REQUIRE(response.at("scene_revision") == 8);
     REQUIRE(response.at("current_scene_id") == "main");
+    REQUIRE(response.at("effect_errors").size() == 1);
+    REQUIRE(response.at("effect_errors").at(0).at("api") == "saveData");
+    REQUIRE(response.at("effect_errors").at(0).at("error_code") ==
+            "persistence_write_failed@1");
     REQUIRE(import_calls == 1);
 
     const auto round_tripped = target_service.exportSceneSnapshot({});

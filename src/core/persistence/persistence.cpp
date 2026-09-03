@@ -223,20 +223,29 @@ bool Persistence::loadSettings() {
 }
 
 void Persistence::saveSettings() const {
+    commitPreparedWrite(prepareSettingsWrite(game_settings,
+                                             audio_bus_settings));
+    LOG_INFO(logger, "saved user settings: {}",
+             resolveUserPath(settings_ref).string());
+}
+
+Persistence::PreparedWrite Persistence::prepareSettingsWrite(
+    const nlohmann::json &game, const AudioBusSettings &audio) const {
     const nlohmann::json document{
         {"schema", settings_schema},
         {"version", settings_version},
         {"engine",
          {{"audio",
            {{"bus_volumes",
-             {{"master", audio_bus_settings.master},
-              {"bgm", audio_bus_settings.bgm},
-              {"se", audio_bus_settings.se}}}}}}},
-        {"game", game_settings},
+             {{"master", audio.master},
+              {"bgm", audio.bgm},
+              {"se", audio.se}}}}}}},
+        {"game", game},
     };
-    const auto path = resolveUserPath(settings_ref);
-    atomicWrite(path, dumpedJson(document));
-    LOG_INFO(logger, "saved user settings: {}", path.string());
+    auto path = resolveUserPath(settings_ref);
+    return PreparedWrite{std::move(path), dumpedJson(document),
+                         std::string{settings_ref}, std::nullopt,
+                         std::nullopt};
 }
 
 nlohmann::json Persistence::gameSettings() const {
@@ -270,9 +279,26 @@ void Persistence::captureAudioSettings(const Audio &audio) {
 #endif
 
 void Persistence::saveData(std::string_view slot, const nlohmann::json &data) const {
-    const auto path = resolveUserPath(saveRef(slot));
-    atomicWrite(path, dumpedJson(data));
-    LOG_INFO(logger, "saved data slot '{}': {}", std::string{slot}, path.string());
+    const auto write = prepareDataWrite(slot, data);
+    commitPreparedWrite(write);
+    LOG_INFO(logger, "saved data slot '{}': {}", std::string{slot},
+             write.path.string());
+}
+
+Persistence::PreparedWrite Persistence::prepareDataWrite(
+    std::string_view slot, const nlohmann::json &data) const {
+    auto path = resolveUserPath(saveRef(slot));
+    return PreparedWrite{std::move(path), dumpedJson(data),
+                         "save:" + std::string{slot}, std::string{slot},
+                         data};
+}
+
+void Persistence::commitPreparedWrite(const PreparedWrite &write) const {
+    atomicWrite(write.path, write.bytes);
+}
+
+void Persistence::commitGameSettings(nlohmann::json settings) noexcept {
+    game_settings = std::move(settings);
 }
 
 std::optional<nlohmann::json> Persistence::loadData(std::string_view slot) const {

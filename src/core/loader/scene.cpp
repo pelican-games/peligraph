@@ -27,6 +27,7 @@
 #include "../userpublic/gameobjects.hpp"
 #include "pathresolver.hpp"
 #include "sceneloadfault.hpp"
+#include "effecttransaction.hpp"
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -437,21 +438,28 @@ const EcsObjectLoad::ComponentLoad &transformLoad(const EcsObjectLoad &object) {
 
 } // namespace
 
-const SceneLoadCommitted &requireSceneLoadCommitted(
-    const SceneLoadResult &result) {
-    if (const auto *committed = std::get_if<SceneLoadCommitted>(&result)) {
-        return *committed;
+const SceneLoadResult &requireSceneLoadCommitted(const SceneLoadResult &result) {
+    if (std::holds_alternative<SceneLoadCommitted>(result) ||
+        std::holds_alternative<CommittedWithEffectFailure>(result)) {
+        return result;
     }
     if (const auto *failure = std::get_if<PreCommitFailure>(&result)) {
         if (failure->exception) std::rethrow_exception(failure->exception);
         throw std::runtime_error(failure->error);
     }
-    const auto &failure = std::get<CommittedWithEffectFailure>(result);
-    std::string message = "scene committed with effect failure";
-    for (const auto &error : failure.effect_errors) {
-        message += ": " + error;
+    throw std::logic_error("unknown scene load result");
+}
+
+nlohmann::ordered_json effectErrorsJson(
+    std::span<const CommittedWithEffectFailure::EffectError> errors) {
+    auto result = nlohmann::ordered_json::array();
+    for (const auto &error : errors) {
+        result.push_back({{"api", error.api},
+                          {"error_code", error.error_code},
+                          {"error_fields", error.error_fields},
+                          {"phase", error.phase}});
     }
-    throw std::runtime_error(message);
+    return result;
 }
 
 SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
@@ -475,6 +483,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     auto &config = GET_MODULE(ProjectBasicConfig);
     MetadataCommitToken metadata;
     std::unique_ptr<internal::PreparedEventOutbox> event_outbox;
+    std::unique_ptr<internal::PreparedEffectTransaction> effect_transaction;
     internal::QueuedEvent scene_loaded_event;
     DeterministicRng::PreparedSequence rng_candidate;
     std::optional<SceneId> pending_candidate;
@@ -599,6 +608,9 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
             internal::getEventRegisterer(), 1U);
         scene_loaded_event = event_outbox->prepare(
             SceneLoaded{request.scene_id});
+        effect_transaction =
+            std::make_unique<internal::PreparedEffectTransaction>(
+                GET_MODULE(Persistence), *this);
     } catch (...) {
         return fail(SceneLoadPhase::prepare, std::current_exception());
     }
@@ -920,6 +932,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         .candidate = &pending_candidate,
     };
     internal::EventOutboxScope event_scope{*event_outbox};
+    internal::EffectTransactionScope effect_scope{*effect_transaction};
     RngSequenceScope rng_scope{rng_candidate};
     PendingSceneTransactionScope pending_scope{pending_transaction};
     try {
@@ -963,6 +976,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         std::declval<std::optional<SceneId> &>())));
     metadata.commit(phase_trace);
 
+    effect_transaction->setRetiredObjects(destroyed_entities);
     behavior_candidate->finish(phase_trace);
     const bool bypass_transient_retire =
         internal::sceneLoadMutationEnabled(
@@ -983,12 +997,18 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     phase_trace.record(SceneLoadPhase::flush);
     pending_scene_id.swap(pending_candidate);
     event_outbox->flush(phase_trace);
+    auto effect_errors = effect_transaction->flush(injector, phase_trace);
 
     // The batch is an executor participant in its own right.  Recording here
     // keeps an empty scene observable while individual token completion stays
     // an implementation detail of the batch.
     phase_trace.record(SceneLoadPhase::finish);
     for (auto &token : created_entities) token.finish();
+    if (!effect_errors.empty()) {
+        return CommittedWithEffectFailure{candidate_authority,
+                                          std::move(effect_errors),
+                                          phase_trace};
+    }
     return SceneLoadCommitted{candidate_authority, phase_trace};
 }
 
@@ -1009,6 +1029,20 @@ void SceneLoader::requestLoad(SceneId scene_id) {
     pending_scene_id = std::move(scene_id);
 }
 
+void SceneLoader::requestLoadDuringRetire(SceneId scene_id) {
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    if (config.resolvedScene().findScene(scene_id) == nullptr) {
+        throw std::runtime_error("scene not found in committed projection: " +
+                                 scene_id);
+    }
+    if (active_pending_scene_transaction != nullptr &&
+        active_pending_scene_transaction->loader == this) {
+        *active_pending_scene_transaction->candidate = std::move(scene_id);
+        return;
+    }
+    pending_scene_id = std::move(scene_id);
+}
+
 bool SceneLoader::applyPendingLoad() {
     drainRetirementQueue();
     if (!pending_scene_id) {
@@ -1019,7 +1053,14 @@ bool SceneLoader::applyPendingLoad() {
         GET_MODULE(ProjectBasicConfig).sceneProjectionState(),
         SceneLoadRoot::pending);
     request.consumes_pending_request = true;
-    (void)requireSceneLoadCommitted(load(std::move(request)));
+    const auto result = load(std::move(request));
+    (void)requireSceneLoadCommitted(result);
+    if (const auto *failure =
+            std::get_if<CommittedWithEffectFailure>(&result)) {
+        LOG_ERROR(logger,
+                  "pending scene committed with effect failure: error_code='committed_with_effect_failure@1' effect_errors={}",
+                  effectErrorsJson(failure->effect_errors).dump());
+    }
     return true;
 }
 

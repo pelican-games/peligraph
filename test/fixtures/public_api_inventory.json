@@ -1,0 +1,446 @@
+{
+  "schema": "pelican.public_api_inventory",
+  "version": 1,
+  "entries": [
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool actionsConfigured()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool actionPressed(std::string_view action_name)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool actionReleased(std::string_view action_name)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool actionHeld(std::string_view action_name)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "float actionAxis1(std::string_view action_name)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "ActionAxis2 actionAxis2(std::string_view action_name)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "ActionPose actionPose(std::string_view action_name)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "double time()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "double deltaTime()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::uint64_t frameIndex()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void logInfo(std::string_view message)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void logWarning(std::string_view message)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void logError(std::string_view message)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "GameObjectId createObject(const LocalTransformComponent&transform)const",
+      "classification": "mutator",
+      "manifest": "covered.deferred-object"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "GameObjectId createSpriteObject(const LocalTransformComponent&transform,const SpriteViewComponent&sprite)const",
+      "classification": "mutator",
+      "manifest": "covered.deferred-object"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool removeObject(GameObjectId id)const",
+      "classification": "mutator",
+      "manifest": "covered.deferred-object"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "LocalTransformComponent localTransform(GameObjectId id)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool setLocalTransform(GameObjectId id,const LocalTransformComponent&transform)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate-or-retired-reject"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::optional<SpriteViewComponent>spriteView(GameObjectId id)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool setSpriteView(GameObjectId id,const SpriteViewComponent&sprite)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate-or-retired-reject"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool setSpriteTexture(GameObjectId id,std::string_view texture)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate-or-retired-reject"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool setDirectionalLightDirection(std::string_view name,vec3 direction)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool setDirectionalLightIntensity(std::string_view name,float intensity)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool setPointLightPosition(std::string_view name,vec3 position)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "[[nodiscard]] bool setSpotLightDirection(std::string_view name,vec3 direction)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::vector<phys::RaycastQueryHit>raycastAll(const phys::Ray&ray,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::optional<phys::ObjectRaycastHit>raycastClosest(const phys::Ray&ray)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::optional<phys::RaycastQueryHit>raycastClosest(const phys::Ray&ray,const phys::QueryFilter&filter)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::vector<phys::OverlapHit>overlapAllHits(const phys::Shape&shape,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::vector<phys::ShapeCastQueryHit>shapeCastAll(const phys::Shape&moving_shape,vec3 delta,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::optional<phys::ShapeCastQueryHit>shapeCastClosest(const phys::Shape&moving_shape,vec3 delta,const phys::QueryFilter&filter = {})const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::vector<std::string>overlapAll(const phys::Shape&shape)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::vector<std::string>overlapAll(const phys::Shape&shape,const phys::QueryFilter&filter)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void setCamera(std::string_view name)const",
+      "classification": "mutator",
+      "manifest": "covered.candidate"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "double random()",
+      "classification": "mutator",
+      "manifest": "covered.rng-sequence"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "int randomInt(int min,int max)",
+      "classification": "mutator",
+      "manifest": "covered.rng-sequence"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "float randomFloat(float min,float max)",
+      "classification": "mutator",
+      "manifest": "covered.rng-sequence"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void setSeed(std::uint64_t seed)",
+      "classification": "mutator",
+      "manifest": "covered.rng-sequence"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::uint64_t seed()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "SoundHandle playSound(std::string_view path)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.audio-play"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void stopSound(SoundHandle handle)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.audio-stop"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void setBusVolume(std::string_view bus,float volume)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.audio-bus-volume"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "float busVolume(std::string_view bus)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool isPlaying(SoundHandle handle)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void loadScene(std::string_view name)const",
+      "classification": "mutator",
+      "manifest": "covered.pending-scene"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::string currentScene()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void debugText(int x,int y,std::string_view text)const",
+      "classification": "mutator",
+      "manifest": "nonparticipant.frame-lifetime"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "template<class Event>void emit(const Event&event)const",
+      "classification": "host_entrance",
+      "manifest": "covered.event-outbox"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "Json gameSettings()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void setGameSettings(Json settings)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.game-settings"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void saveSettings()const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.save-settings"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "void saveData(std::string_view slot,const Json&data)const",
+      "classification": "mutator",
+      "manifest": "shadow_outbox.save-data"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::optional<Json>loadData(std::string_view slot)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::vector<SlotInfo>listSaves()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gameobjects.hpp",
+      "class": "GameObjects",
+      "signature": "static auto add()",
+      "classification": "mutator",
+      "manifest": "reject.direct-gameobjects"
+    },
+    {
+      "header": "src/core/userpublic/gameobjects.hpp",
+      "class": "GameObjects",
+      "signature": "static GameObjectId createWithComponents(std::span<const ComponentId>ids,const std::function<void(std::span<void*>)>&populate)",
+      "classification": "mutator",
+      "manifest": "reject.direct-gameobjects"
+    },
+    {
+      "header": "src/core/userpublic/gameobjects.hpp",
+      "class": "GameObjects",
+      "signature": "[[nodiscard]] static bool remove(GameObjectId id)",
+      "classification": "mutator",
+      "manifest": "reject.direct-gameobjects"
+    },
+    {
+      "header": "src/core/userpublic/gameobjects.hpp",
+      "class": "GameObjects",
+      "signature": "static void removeAll()",
+      "classification": "mutator",
+      "manifest": "reject.direct-gameobjects"
+    },
+    {
+      "header": "src/core/userpublic/gameobjects.hpp",
+      "class": "GameObjects",
+      "signature": "static size_t liveCountForTesting()",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gameobjects.hpp",
+      "class": "GameObjects",
+      "signature": "static LocalTransformComponent localTransform(GameObjectId id)",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gameobjects.hpp",
+      "class": "GameObjects",
+      "signature": "[[nodiscard]] static bool setLocalTransform(GameObjectId id,const LocalTransformComponent&transform)",
+      "classification": "mutator",
+      "manifest": "reject.direct-gameobjects"
+    },
+    {
+      "header": "src/core/userpublic/behavior.hpp",
+      "class": "BehaviorContext",
+      "signature": "GameObjectId self()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/behavior.hpp",
+      "class": "BehaviorContext",
+      "signature": "BehaviorAttachmentHandle attachment()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/behavior.hpp",
+      "class": "BehaviorContext",
+      "signature": "std::uint64_t attachmentSeq()const noexcept",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/behavior.hpp",
+      "class": "BehaviorContext",
+      "signature": "template<class Params>Params&params()const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/behavior.hpp",
+      "class": "BehaviorContext",
+      "signature": "GameObjectId createObject(const LocalTransformComponent&transform)const",
+      "classification": "mutator",
+      "manifest": "covered.deferred-object"
+    },
+    {
+      "header": "src/core/userpublic/behavior.hpp",
+      "class": "BehaviorContext",
+      "signature": "GameObjectId createSpriteObject(const LocalTransformComponent&transform,const SpriteViewComponent&sprite)const",
+      "classification": "mutator",
+      "manifest": "covered.deferred-object"
+    },
+    {
+      "header": "src/core/userpublic/behavior.hpp",
+      "class": "BehaviorContext",
+      "signature": "[[nodiscard]] bool removeObject(GameObjectId id)const",
+      "classification": "mutator",
+      "manifest": "covered.deferred-object"
+    }
+  ]
+}
