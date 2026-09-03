@@ -22482,6 +22482,17 @@ v1 の「prepare 失敗」を撤回。未解決 row は **plan の中で `unreso
 #### やらないこと
 
 frozen audit の partial TU(記録)/ 受け入れ文言の統一(記録)/ CARRIER-RT3 の participant(WP382)。
+
+
+#### WP380e 完了記録(統合側。2026-09-04、`7b84c55d`)
+
+- **実装(codex sol max、上段)**: effect / event / RNG / pending scope を最初の game-DLL callback より前(early publish 前、scene.cpp:626)へ。診断は 256 slot + overflow 専用 slot の固定領域に enum code・整数・固定長 buffer で書き、JSON / string 化は commit 後。全 effect API を単一 sequence で採番し staging / flush を sequence 順に materialize。provisional stop は entry を erase、257 件目以降は `effect_outbox_full@1{dropped}`。base `GameContext::createObject*` も callback 中は arena に defer。persistence key は `weakly_canonical` + Windows case-fold。`persistence_read_failed@1{path, reason}`、`nullopt` は不在のみ。runtime public API manifest を足し inventory generator が双方向検査
+- **agent の変異 / 検証**: 変異 = scope を activate 直前へ / sort 除去(:419)/ tombstone 復活(:386)/ case-fold 除去(:134)/ 未登録 overload の追加 → generator が拒否。allocation-free の単体テストは `operator new` 0 回(empty flush・persistence failure flush)。通常 1292 / 1292(1 skip)、`SKIP_DEVSTUDIO=OFF` build、AUDIO OFF 1283 / 1283、RPC OFF build、出荷 4 project bytes 不変。GPU production 1 / 1(codex が直列で実行)
+- **統合側の検証(worktree)**: 変異ランナーの基準として GPU 含む 58 / 58
+- **統合側の変異(`mutation-runner` agent、opus。GPU 含む。基準 58 / 58)**: M1(scope を candidates_published 後へ)赤 :3396 `3 == 2` / M2(overflow slot を記録しない)赤 :374 / M3(noexcept flush 内で `std::string`)赤 allocation :121 `1 == 0` / M4(壊れた JSON を `nullopt`)赤 :153 / M5(base createObject の defer 除去)赤 :3393(`logic_error` の文言)/ M6(inventory に無い manifest 行)赤 generator / M7(capacity を staged 数に)赤 :386。残留 0。所見: M1 / M5 では assertion 後に GPU test process が終了せず ctest の timeout(約 1500 s)で回収 = **放棄された transaction の teardown で hang**(既知の穴に記録)
+- **main 取り込み**: main は docs のみ動いていたので衝突なし
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1626 / 1626**。doclink 77 件追従、未解決 1(docs-writer へ)
+- コードレビュー: 連鎖の最後のため codex レビューは行わず、統合側変異 + Claude レビューで代替。以後の指摘は記録のみ
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
@@ -22499,9 +22510,10 @@ frozen audit の partial TU(記録)/ 受け入れ文言の統一(記録)/ CARRIE
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
-5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)。rev380b の仕分けが残る。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(第 1 巡で 4 WP に分割: WP383 ∥ WP382a → b → c → d。enablement は 382d で開く。第 2 巡は 5 節一体。参加者 seam は WP380b/e の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
+5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)、**WP380e は 2026-09-04 に統合済み**(`7b84c55d`。380 系はここで打ち切り)。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(第 1 巡で 4 WP に分割: WP383 ∥ WP382a → b → c → d。enablement は 382d で開く。第 2 巡は 5 節一体。参加者 seam は WP380b/e の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
 
 **既知の穴(WP 化は別途判断)**
+- **放棄された scene transaction の teardown で GPU test process が hang**(WP380e の統合側変異 M1 / M5: assertion 後に process が終了せず ctest timeout 約 1500 s で回収。effect scope が遅い / callback から例外が抜ける状況で fixture の teardown が待ち続ける)。機能の欠陥ではなく test harness の後始末。次に fixture の teardown を触る WP に同梱
 - **frozen header audit に partial TU が混入しうる**(`rev380b` #9)/ **root・Studio・AUDIO OFF の受け入れ文言の不一致**(`rev380b` #10)。WP380e の範囲外として記録
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
 - WP334b 系の `-j4` 負荷 flake(commit 待ちタイムアウト。今日 5 回)
