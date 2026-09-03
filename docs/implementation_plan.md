@@ -21776,7 +21776,7 @@ validate の二重 load 解消 / manifest(CARRIER-STUDIO は final artifact の 
 ### WP380b: effect transaction —— behavior が transaction 中に Pelican API 経由で行った作用は、rollback で消えるか名前付きで残る
 
 **§4 規則 11 上段(core の executor と公開 API の契約を変える)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex、上段)→ 実装 → 統合側変異 → コードレビュー。見積: 大。**
-**依存: WP380a + WP380a-fix(`f8cd134d`)統合済み、WP381(frozen fixture の機構)統合済み。規範: `docs/design_object_identity.md` v4 §9 修正 A(effect sink)・修正 B(executor)。WP380 v3 決定 2・4・6・7・8・9 を受ける(§4 の段割り v2 は本節で切り直し)。**
+**依存: **WP380c(executor hardening)の後**。WP380a + WP380a-fix(`f8cd134d`)統合済み、WP381(frozen fixture の機構)統合済み。規範: `docs/design_object_identity.md` v4 §9 修正 A(effect sink)・修正 B(executor)。WP380 v3 決定 2・4・6・7・8・9 を受ける(§4 の段割り v2 は本節で切り直し)。**
 
 #### 今日の対照(§4 規約 10)
 
@@ -21878,6 +21878,168 @@ WP380a 後の状態は「engine-owned state と engine-owned queue(event / RNG /
 
 registry の transaction-local 化(ID-A)/ refresh root の participant 化(WP380 決定 10)/ Studio の authority wire(修正 E)/ 旧 DLL の onDestroy を entity live のまま呼ぶこと(決定 3 で却下)/
 `debugText` の participant 化 / CARRIER-RT3 の participant seam(本 WP の sink と executor 順序の上に載る。順序は WP380b → CARRIER-RT3)。
+
+#### WP380b 仕様レビュー第 1 巡(不合格・15 件)と v2 —— **決定差分(v2 が本節の正。v1 と矛盾する箇所は v2 が勝つ)**
+
+仕分け: **直す 13**(#1〜#12 #14)/ **切り出す 1**(#15 → WP380c)/ **記録 1**(#13 は WP380c の受け入れへ)。
+
+##### 決定 8(#1): 受け入れの対照は **B 成功直後の semantic snapshot**。A ではない
+
+C 失敗後の世界は B(WP380 決定 1)。audio / persistence / settings の受け入れは「C 失敗後 == B 成功直後の snapshot」「D 成功後 == D の fixture 期待値」で書く。
+v1 の「A に戻った時点で voice 数 == A」は誤りで撤回。
+
+##### 決定 9(#4 #7 #8): audio は **全部 shadow + outbox**。provisional handle は永久消費。flush 表を固定する
+
+- `setBusVolume` も shadow(transaction-local の bus 値。`busVolume()` があれば shadow を返す)+ outbox(commit 後に backend `setVolume`)。journal 分類は audio から消える
+- provisional handle は `next_handle` を**進めたまま**にする(rollback で戻さない)。受け入れ: 失敗 C の handle と次の D の handle が異なる。同一 callback 内の read-your-writes
+  (`playSound → isPlaying == true`、`stopSound(provisional) → isPlaying == false`、`setBusVolume → busVolume()`)を **同じテスト**で検査
+- **flush 表**(1 entry = 1 行。順序は call order):
+
+| entry | backend 呼出 | fallible | 所有権の移る点 | 失敗時の補償 | error_code |
+|---|---|---|---|---|---|
+| `play` | `backend->play` | 可 | `voices.emplace` は **prepare で reserve** した slot へ(noexcept) | voice を登録しない。handle は消費済みのまま(`isPlaying == false`) | `audio_play_failed@1{handle, sound}` |
+| `stop(existing)` | `backend->destroy` | 可 | `voices.erase` は先に行う(noexcept) | engine 側は停止済み扱い。backend の残留は log | `audio_stop_failed@1{handle}` |
+| `bus_volume` | `backend->setVolume` per voice | 可 | engine の bus 値は commit の swap で確定済み | 次の `updateVoiceVolumes` で再適用 | `audio_bus_volume_failed@1{bus}` |
+| `save_data` / `save_settings` | `atomicWrite` | 可 | 無し(失敗 = ファイル不変) | 無し(名前付きで報告) | `persistence_write_failed@1{path, reason}` |
+
+##### 決定 10(#5): persistence の read-your-writes は **outbox overlay**
+
+transaction 中の `loadData(slot)` / `listSaves()` は outbox の未 flush entry を先に見る(同 slot は outbox の bytes、一覧は union)。
+`gameSettings()` は shadow。受け入れ: `saveData(s) → loadData(s)` が同一 callback 内で書いた bytes を返し、C 失敗後の disk には無い。
+
+##### 決定 11(#6): journal 分類を **削除**する。transaction 中の `GameObjects::*` 非 callback 経路は reject
+
+production で transaction 中に live な entity は executor が作った candidate だけ(WP375 の early publish)で、「既存 entity への上書き」は到達不能。
+transform / sprite の書き込みは candidate に対して行われ rollback で消える(covered)。`GameObjects::create* / remove / removeAll` を transaction 中に
+behavior callback 以外から呼ぶ production 経路も無い(system は update で tick)。したがって **token 分類も削除**し、transaction 中の呼出は
+`SceneTransactionMutationRejected{api}` で拒否する(黙って通さない)。決定 1 の表は journal / token 行を消し、5 分類 → **covered / shadow+outbox / reject / 非参加** の 4 分類。
+
+##### 決定 12(#2): `onDestroy` の中の fallible API は **throw しない façade**
+
+`onDestroy` は ABI 上 `noexcept`([behavior.hpp:64](../src/core/userpublic/behavior.hpp#L64))。destroy 中の sink は staging の失敗(decode 失敗、allocation)を
+throw せず `effect_errors[]` に `{api, error_code, error_fields, phase: "destroy"}` として積み、API は失敗値(invalid handle / false)を返す。`onInit` 中は今日どおり throw。
+受け入れ: `onDestroy` で存在しない sound を `playSound` → process 継続、`effect_errors` に 1 件。
+
+##### 決定 13(#3): retire 中の `loadScene` は **committed projection** で解決する
+
+candidate-aware overlay(`PendingSceneTransactionScope`)は **commit で解除**し、retire(旧 behavior の `onDestroy`)中の `loadScene("D")` は
+committed(= C)の projection で解決する。受け入れ: C の document にだけある D を `onDestroy` が要求 → pending に D。B にだけある E を要求 → 名前付き reject。
+
+##### 決定 14(#9): `CommittedWithEffectFailure` の root 別伝播表
+
+| root | 返値 / 例外 | document / runtime | process |
+|---|---|---|---|
+| startup(`PelicanCore::run`) | typed result を log(`error_code` + `effect_errors`)+ status | B のまま | 継続 |
+| pending(`applyPendingLoad`) | 同上 | B | 継続 |
+| import v1 / v2(`importSceneDocument`) | `requireSceneLoadCommitted` は **throw しない**(committed だから)。呼び元へ typed result。`BasicConfig` は restore しない | B | 継続 |
+| RPC `load_scene` | `result` に `{committed: true, effect_errors}`(**error ではない**。v1 の `error.data` 案は撤回: commit 済みを error で返すと client が rollback と誤読する) | B | 継続 |
+| refresh | 範囲外(WP380 決定 10) | — | — |
+
+##### 決定 15(#10): flush は **call order で続ける**。依存は staging で解決済み
+
+entry 間の依存は staging 時点で消す(`stopSound(provisional)` は play entry を outbox から削除、`setGameSettings → saveSettings` は shadow から bytes を確定)。
+したがって flush 時の entry は互いに独立で、失敗した entry を飛ばして残りを続けても「前段失敗後に後段だけ残る」は起きない。`effect_errors[]` は call order。
+受け入れ: 2 番目の entry(`save_data`)だけ落とす injector で、1 番目(`play`)と 3 番目(`save_settings`)は flush される。
+
+##### 決定 16(#14): 構成 matrix は v3 決定 7 を **そのまま**受ける
+
+AUDIO / PHYSICS / SEQPLAYER / VAT の各 OFF + RPC OFF + `SKIP_DEVSTUDIO` 両構成。各 OFF で: compile が通る、該当 API は既存の named disabled error、
+participant は `uninstalled`、残りの行で A/B/C/D が通る。GPU は統合側で直列。
+
+##### 決定 17(#15 #11 #12 #13): **M0 を WP380c に切り出す**。WP380b は M1 + M2
+
+M0 は rev380a の実害を閉じる段階で、M1/M2 と独立に出荷できる(挙動が変わる: root の配線、release の報告、injector の除去)。
+**WP380c: executor hardening** として別節に起票し、**WP380b は WP380c の後**に着手する。#11(`release_errors` は今の `void noexcept` から観測不能)/
+#12(CPU 観測は allocator を置換できないので不成立)/ #13(call site の存在だけでは代理条件)は WP380c の決定に移す。
+
+##### 決定 1 の表(v2)
+
+| API | 扱い |
+|---|---|
+| `emit` / `setSeed` / `random*` / `loadScene`(activate 中) | covered(WP380a)。root ごとに再確認 |
+| `loadScene`(retire 中) | committed projection で解決(決定 13) |
+| `setCamera` / light setter / `setSpriteView` / `setSpriteTexture` / `setLocalTransform`(candidate entity) | covered(candidate に書く)。再確認 |
+| `BehaviorContext::createObject` / `createSpriteObject` / `removeObject` | covered(deferred) |
+| `playSound` / `stopSound` / `setBusVolume` | shadow + outbox(決定 9) |
+| `setGameSettings` / `saveSettings` / `saveData` / `loadData` / `listSaves` / `gameSettings` | shadow + outbox + overlay(決定 10) |
+| `GameObjects::*`(transaction 中、非 callback 経路) | reject(決定 11) |
+| `debugText` / 読み取り / log / physics query | 非参加 |
+
+##### 受け入れ(v2。v1 の 1〜9 を置換)
+
+1. audio: frozen v2 DLL の B が `onInit` で `playSound` / `setBusVolume` → C 失敗 → backend voice 集合と bus 値 == **B snapshot**(今日 = C の分が残る)。outbox を消すと落ちる。D 成功 → D 期待値
+2. persistence: `saveData(slot_c)` → C 失敗 → disk に無く、write 回数 == B まで。同一 callback の `loadData(slot_c)` は書いた bytes を返す(決定 10)
+3. provisional handle: C の handle ≠ D の handle。read-your-writes 3 種を同一テストで
+4. reject: transaction 中の `GameObjects::removeAll` / `create` が名前付きで拒否され B 不変
+5. onDestroy: 決定 3 の view + 決定 12 の façade + 決定 13 の resolution
+6. `CommittedWithEffectFailure`: 決定 14 の 4 root で観測(本番入口)。決定 15 の継続
+7. 表の完全性: header の `PELICAN_API` 宣言(`gamecontext.hpp` / `gameobjects.hpp`)を **生成スクリプトが列挙**して manifest 行と照合(列挙方法は WP381 の inventory generator と同じ形)
+8. 決定 16 の matrix / 出荷 4 project bytes 不変
+
+### WP380c: executor hardening —— rev380a の実害と代理条件を、effect transaction の前に閉じる
+
+**§4 規則 11 上段(core の executor 順序・release API・root 配線を触る)。実装者: `gpt-5.6-sol` + max。仕様レビューは WP380b 第 2 巡と一体。見積: 中。**
+**依存: WP380a + fix(`f8cd134d`)統合済み。WP380b(effect transaction)は本 WP の後。起票の経緯: WP380b v1 の M0 を仕様レビュー #15 で切り出した(挙動が変わり、単独で出荷できる)。**
+
+#### 今日の対照(§4 規約 10)
+
+- executor は `activate → metadata.commit → behavior_candidate->finish() → token finish → retire enqueue → flush`([scene.cpp:920](../src/core/loader/scene.cpp#L920)-938)。規範(v4 §9 修正 B)は `commit_metadata → retire_old_state → flush_effect_outbox → finish`
+- 失敗 candidate の GPU 解放は `releaseModelGpuResources` が `void noexcept` で、下位([vertbufcontainer.cpp:525](../src/core/model/vertbufcontainer.cpp#L525)、[gltf.cpp:2489](../src/core/model/gltf.cpp#L2489))が例外を catch して log のみ。二次失敗は観測不能
+- 5 root の受け入れは `sceneLoadRootDisconnected()` helper と手書き request で executor を直接呼ぶ([scene_transaction_contract_test.cpp:137](../test/scene_transaction_contract_test.cpp#L137))。RPC が `SceneLoadRoot::rpc` を渡さない変異が通る
+- manifest 90 行に対し executor の `sceneLoadMutationEnabled` call site は 6。ID だけの行が「参加者」を名乗る
+- `setFaultInjectorForTesting` は production binary に残る([scene.hpp:77](../src/core/loader/scene.hpp#L77))
+- WP380a-fix の回帰テストは 1 TEST_CASE の前半・後半で、赤の帰属を assertion 行で読む
+
+#### 決定
+
+##### 決定 1: phase 順序を規範に合わせる
+
+`metadata.commit()` の後を **retire(旧 behavior の `destroyDetached` + destroyed token の retire enqueue + renderer retire)→ flush(outbox)→ finish(created token の finish)** に並べ替える。
+`static_assert(noexcept(...))` は各 phase に残す。旧 behavior の `onDestroy` の view(snapshot)は WP380b(決定 3)の範囲で、本 WP は順序だけ。
+受け入れ: phase 順序を production test の participant manifest の `phase` 列で観測(retire の後に flush が来ることを、`SceneLoaded` event の受信時点で旧 behavior が `destroyDetached` 済みであることで見る)。
+順序を戻す変異(finish を commit 直後へ)が落ちる。
+
+##### 決定 2(#11): release は **structured report** を返す
+
+`releaseModelGpuResources` / `VertBufContainer::releaseGeometryNow` / Material・texture の release を `ReleaseReport{errors: [{stage, error_code, error_fields}]}` を返す `noexcept` 関数にする
+(throw しない。catch して積む)。`ModelAssetContainer` の失敗 candidate 解放は report を集約し、`release_errors[]` として log + `SceneLoadResult::PreCommitFailure.release_errors` に載せる。
+受け入れ: morph delta の writeBuf を injector で落とす → `release_errors` に `vertbuf.morph_delta` が 1 件、**後続 primitive の index / vertex は返却済み**(今日 = 途中で止まり未返却)。継続を消すと落ちる。
+
+##### 決定 3(#3 / rev380a): 5 root の受け入れは **本番入口**を通す
+
+startup(`PelicanCore::run` の startup load)/ RPC(`load_scene` handler を実 `RpcServer` で)/ pending(`requestLoad → applyPendingLoad` を frame tick で)/ import v1 / v2(`importSceneDocument`)。
+`sceneLoadRootDisconnected()` と手書き `SceneLoadRequest` を呼ぶテストは受け入れに数えない(helper 単体テストとして残してよい)。
+受け入れ: root ごとに「root → executor の配線を削る」(RPC が `SceneLoadRoot::rpc` を渡さない / pending が旧処理に戻る / import が request を消費しない)変異が **その root のテストだけ**落ちる。
+
+##### 決定 4(#13 / rev380a): manifest の各 ID は **実 mutation の観測**で裏付ける
+
+manifest 行の mutation ID ごとに、fault injector でその ID を有効化した load を走らせ、**その行の field が期待値と異なる**ことを同一テストで観測する(parametrized。90 行を走査)。
+call site が無い ID、call site はあるが field を変えない ID はどちらも落ちる。trigger pair を持つ physics fixture を足し、`physics.active_trigger_pairs` の行が空集合以外で観測される。
+受け入れ: manifest に call site の無い ID を 1 行足す → 落ちる。call site から field mutation を外す → 落ちる。
+
+##### 決定 5(rev380a #5): injector の setter は **test-only build**
+
+`setFaultInjectorForTesting` と `SceneLoadFaultInjector` の runtime branch は `PELICAN_TESTING`(test target だけが定義)の内側。production binary の export 一覧に setter が無いことを
+CMake script test(WP379a の build 拒否テストと同じ形)で固定する。`sceneLoadMutationEnabled` は production では定数 `false` に畳まれる。
+
+##### 決定 6(#12 / rev380a #6): WP380a-fix の回帰テストは **2 TEST_CASE に分割、GPU lane のまま**
+
+(a) 順序(material route の失敗が最初)と (b) 解放(index 使用量が増えない)を別 TEST_CASE にし、両方 GPU label で登録する。CPU 観測は allocator を置換できないので**やらない**(#12 の裁定)。
+`SKIP_DEVSTUDIO=ON` では (b) を `ModelAssetContainer` 単体の GPU test として登録する(Studio 不要)。
+
+#### 受け入れ(§4 規約 10)
+
+1. 決定 1: 順序変異が落ちる。全 root で緑
+2. 決定 2: `release_errors` の観測と継続。structured report を `void` に戻す変異が落ちる
+3. 決定 3: root ごとの配線変異が root ごとに落ちる(5 root)
+4. 決定 4: manifest 走査テスト。ID 追加 / field mutation 除去の 2 変異が落ちる
+5. 決定 5: export 一覧に setter が無い。`PELICAN_TESTING` を production target に足すと落ちる
+6. 決定 6: 2 TEST_CASE が GPU lane に登録され、両構成で走る
+7. 全数 / 両構成 / RPC OFF / 出荷 4 project bytes・golden 不変
+
+#### やらないこと
+
+effect sink / audio / persistence / `CommittedWithEffectFailure` の中身 / onDestroy の snapshot view(すべて WP380b)/ refresh root / CPU-only allocator。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
@@ -21895,7 +22057,7 @@ registry の transaction-local 化(ID-A)/ refresh root の participant 化(WP380
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
-5. **WP380b は 2026-09-03 に節を切り直して起票**(effect transaction + rev380a の実害を M0 に吸収。仕様レビュー待ち)。CARRIER-RT3 は WP380b の後(participant seam が sink と executor 順序に載る)、CARRIER-STUDIO はその後
+5. **WP380c(executor hardening)→ WP380b(effect transaction)**の順(2026-09-03 起票。WP380b 仕様レビュー第 1 巡で M0 を WP380c に切り出し。第 2 巡は両節一体)。CARRIER-RT3 は WP380b の後、CARRIER-STUDIO はその後
 
 **既知の穴(WP 化は別途判断)**
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
