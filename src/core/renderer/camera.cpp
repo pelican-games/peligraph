@@ -3,6 +3,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/resolvedscene.hpp"
+#include "../loader/sceneload.hpp"
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 #include <nlohmann/json.hpp>
@@ -382,6 +383,12 @@ void Camera::publishPrepared(PreparedSceneState &&prepared) noexcept {
     active_camera_name.swap(prepared.active_camera_name);
     swap(active_scene_camera_locked, prepared.active_scene_camera_locked);
     swap(discontinuity_revision, prepared.discontinuity_revision);
+}
+
+void Camera::publishPrepared(PreparedSceneState &&prepared,
+                             SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::publish);
+    publishPrepared(std::move(prepared));
 }
 
 void Camera::loadSceneCameras(std::string_view scene_id) {

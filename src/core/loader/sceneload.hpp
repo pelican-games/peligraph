@@ -39,10 +39,14 @@ inline constexpr std::size_t sceneLoadPhaseCount = 8;
 struct SceneLoadPhaseTrace {
     std::array<SceneLoadPhase, sceneLoadPhaseCount> phases{};
     std::uint8_t count = 0;
+    // A trace is a fixed pre-commit allocation.  Never silently discard an
+    // ordering observation: callers must reject an overflowing trace.
+    bool overflow = false;
 
     void record(SceneLoadPhase phase) noexcept {
         if (count != 0 && phases[count - 1U] == phase) return;
         if (count < phases.size()) phases[count++] = phase;
+        else overflow = true;
     }
 
     std::span<const SceneLoadPhase> view() const noexcept {

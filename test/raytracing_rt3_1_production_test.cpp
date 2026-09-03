@@ -2497,6 +2497,7 @@ void requireWp380CommittedPhaseTrace(const SceneLoadCommitted &committed) {
         SceneLoadPhase::finish,
     };
     REQUIRE(std::ranges::equal(committed.phase_trace.view(), expected));
+    REQUIRE_FALSE(committed.phase_trace.overflow);
 }
 
 struct Wp380RuntimeCleanup {
@@ -2515,6 +2516,42 @@ struct Wp380RuntimeCleanup {
         }
     }
 };
+
+TEST_CASE(
+    "WP380d empty scene commits the complete executor trace without overflow",
+    "[WP380d][transaction][trace][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"wp380d_empty_scene_trace"};
+    writeWp374aProject(project.path, std::nullopt, false, false, true);
+    const auto a_document = wp380Document(1, "A", "A_pending", false);
+    const Json empty_document{
+        {"schema", "pelican.scene"},
+        {"version", 1},
+        {"scenes", {{"empty", {{"objects", Json::array()}}}}},
+    };
+    writeWp374aText(project.path / "scene.json", a_document.dump(2));
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path, std::nullopt, "A", 380);
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    auto &loader = GET_MODULE(SceneLoader);
+    std::optional<SceneLoadResult> result;
+    config.importSceneDocument(
+        empty_document.dump(), [&](SceneLoadRequest &&request) {
+            request.scene_id = "empty";
+            auto loaded = loader.load(std::move(request));
+            result = loaded;
+            return loaded;
+        });
+
+    REQUIRE(result.has_value());
+    const auto *committed = std::get_if<SceneLoadCommitted>(&*result);
+    REQUIRE(committed != nullptr);
+    requireWp380CommittedPhaseTrace(*committed);
+    REQUIRE(loader.currentScene() == "empty");
+    loader.drainRetirementQueue();
+}
 
 std::string_view wp380MutationId(std::string_view owner,
                                  std::string_view field) {
@@ -3063,10 +3100,20 @@ TEST_CASE(
         INFO("production root=" << owner);
         test_support::ManifestSceneLoadFault injector{
             wp380MutationId(owner, field)};
-        injector.setEnabled(true);
         test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
 
         if (root_case == RootCase::pending) {
+            injector.setEnabled(false);
+            loader.requestLoad("A_pending");
+            REQUIRE_NOTHROW(updateFrameState());
+            REQUIRE(loader.currentScene() == "A_pending");
+            const auto *const resolved_pending =
+                config.resolvedScene().findScene("A_pending");
+            REQUIRE(resolved_pending != nullptr);
+            REQUIRE(resolved_pending->objects.empty());
+
+            injector.resetCalls();
+            injector.setEnabled(true);
             loader.requestLoad("A_pending");
             REQUIRE_THROWS_WITH(
                 updateFrameState(),
@@ -3082,17 +3129,45 @@ TEST_CASE(
                      {"params", {{"name", "A_pending"}}}}
                     .dump() +
                 "\n";
+            injector.setEnabled(false);
             std::istringstream input{request};
             std::ostringstream output;
             runEngineRpcServer(input, output);
             const auto response = Json::parse(output.str());
-            REQUIRE(response.contains("error"));
-            REQUIRE(response.at("error").dump().find(
+            REQUIRE(response.contains("result"));
+            REQUIRE(loader.currentScene() == "A_pending");
+            const auto *const resolved_pending =
+                config.resolvedScene().findScene("A_pending");
+            REQUIRE(resolved_pending != nullptr);
+            REQUIRE(resolved_pending->objects.empty());
+
+            injector.resetCalls();
+            injector.setEnabled(true);
+            std::istringstream failing_input{request};
+            std::ostringstream failing_output;
+            runEngineRpcServer(failing_input, failing_output);
+            const auto failing_response = Json::parse(failing_output.str());
+            REQUIRE(failing_response.contains("error"));
+            REQUIRE(failing_response.at("error").dump().find(
                         "injected scene-load root disconnect") !=
                     std::string::npos);
 #endif
         } else {
             const auto version = root_case == RootCase::import_v1 ? 1U : 2U;
+            injector.setEnabled(false);
+            REQUIRE_NOTHROW(config.importSceneDocument(
+                b_document.dump(), [&](SceneLoadRequest &&request) {
+                    request.scene_id = "B";
+                    return loader.load(std::move(request));
+                }, version));
+            REQUIRE(loader.currentScene() == "B");
+            const auto *const resolved_b =
+                config.resolvedScene().findScene("B");
+            REQUIRE(resolved_b != nullptr);
+            REQUIRE(resolved_b->objects.size() == 4);
+
+            injector.resetCalls();
+            injector.setEnabled(true);
             REQUIRE_THROWS_WITH(
                 config.importSceneDocument(
                     b_document.dump(),
@@ -3102,7 +3177,7 @@ TEST_CASE(
                     },
                     version),
                 ContainsSubstring("injected scene-load root disconnect"));
-            REQUIRE(loader.currentScene() == "A");
+            REQUIRE(loader.currentScene() == "B");
         }
         REQUIRE(injector.saw(SceneLoadFaultPhase::prepare, owner));
         test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
@@ -3126,25 +3201,38 @@ TEST_CASE(
           {"rendering_config_json", "hybrid.json"},
           {"default_rendering_pass", "main_render"}}}};
 
-    auto &launch = FastModuleContainer::get<EngineLaunchConfig>();
-    launch.headless = true;
-    launch.headless_extent = vk::Extent2D{16, 16};
-    launch.headless_frames = 1;
-    FastModuleContainer::get<PathResolver>().setup(project.path, false);
+    const auto configure_startup = [&] {
+        auto &launch = FastModuleContainer::get<EngineLaunchConfig>();
+        launch.headless = true;
+        launch.headless_extent = vk::Extent2D{16, 16};
+        launch.headless_frames = 1;
+        FastModuleContainer::get<PathResolver>().setup(project.path, false);
+    };
 
     test_support::ManifestSceneLoadFault injector{
         wp380MutationId("root.startup", "direct_load")};
-    injector.setEnabled(true);
     struct DefaultInjectorReset {
         ~DefaultInjectorReset() {
             test_support::setDefaultSceneLoadFaultInjectorForTesting(nullptr);
         }
     } reset_default_injector;
+    injector.setEnabled(false);
+    configure_startup();
     test_support::setDefaultSceneLoadFaultInjectorForTesting(&injector);
-    PelicanCore core{settings.dump()};
-    const bool succeeded = core.run();
+    {
+        PelicanCore control{settings.dump()};
+        REQUIRE(control.run());
+    }
+    REQUIRE(injector.saw(SceneLoadFaultPhase::prepare, "root.startup"));
 
-    REQUIRE_FALSE(succeeded);
+    injector.resetCalls();
+    injector.setEnabled(true);
+    configure_startup();
+    test_support::setDefaultSceneLoadFaultInjectorForTesting(&injector);
+    {
+        PelicanCore injected{settings.dump()};
+        REQUIRE_FALSE(injected.run());
+    }
     REQUIRE(injector.saw(SceneLoadFaultPhase::prepare, "root.startup"));
 }
 

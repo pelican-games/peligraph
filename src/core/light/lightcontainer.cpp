@@ -1,4 +1,5 @@
 #include "lightcontainer.hpp"
+#include "../loader/sceneload.hpp"
 #include "../log.hpp"
 #include "../userpublic/color.hpp"
 #include "../vkcore/core.hpp"
@@ -324,6 +325,13 @@ namespace Pelican
 		m_PointLightNameMap.swap(prepared.point_names);
 		m_SpotLights.swap(prepared.spot_lights);
 		m_SpotLightNameMap.swap(prepared.spot_names);
+	}
+
+	void LightContainer::publishPrepared(PreparedLoad&& prepared,
+		SceneLoadPhaseTrace &phase_trace) noexcept
+	{
+		phase_trace.record(SceneLoadPhase::publish);
+		publishPrepared(std::move(prepared));
 	}
 
 	void LightContainer::load(const std::vector<LightLoadEntry>& lights)

@@ -301,7 +301,8 @@ struct ModelAssetContainer::Impl {
 
         ~ModelPayload() {
             if (tracker) tracker->values.erase(this);
-            if (owns_candidate) releaseModelGpuResources(candidate, false);
+            if (owns_candidate) ReleaseErrorSink::record(
+                "unpublished model reload candidate", releaseModelGpuResources(candidate, false));
         }
     };
     struct Record {
@@ -332,8 +333,8 @@ struct ModelAssetContainer::Impl {
     }
 
     ~Impl() {
-        logReleaseReport("model container teardown release",
-                         releaseAllModels());
+        ReleaseErrorSink::record("model container teardown release",
+                                 releaseAllModels());
     }
 
     std::shared_ptr<ModelPayload> makePayload(std::string name) {
@@ -419,7 +420,8 @@ struct ModelAssetContainer::Impl {
                     replacement);
             }
         }
-        for (auto &model : retired) releaseModelGpuResources(model, true);
+        for (auto &model : retired) ReleaseErrorSink::record(
+            "retired model release", releaseModelGpuResources(model, true));
     }
 };
 

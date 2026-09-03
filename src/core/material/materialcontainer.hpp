@@ -31,6 +31,12 @@
 
 namespace Pelican {
 
+class MaterialContainer;
+namespace test_support {
+void setMaterialReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
+void setTextureReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
+}
+
 struct LoadedImage;
 struct RendererRuntimeGeneration;
 class TextureReloadHandler;
@@ -255,9 +261,16 @@ DECLARE_MODULE(MaterialContainer) {
     std::unique_ptr<MaterialValuesReloadHandler> material_values_reload_handler;
     mutable std::uint64_t next_screen_input_binding_revision = 1;
     std::uint64_t next_ray_material_generation = 1;
+    bool fail_material_release_for_testing = false;
+    bool fail_texture_release_for_testing = false;
     // Declared last and explicitly closed at destructor entry. Deferred slot
     // callbacks pin this state while using the owner.
     DeferredCallbackLifetime deferred_callbacks;
+
+    friend void test_support::setMaterialReleaseFailureForTesting(
+        MaterialContainer &, bool) noexcept;
+    friend void test_support::setTextureReleaseFailureForTesting(
+        MaterialContainer &, bool) noexcept;
 
     InternalTextureResource createTextureResource(const LoadedImage &image,
                                                   std::string_view name) const;
@@ -312,7 +325,7 @@ DECLARE_MODULE(MaterialContainer) {
     // candidate releases immediately; a published generation moves Vulkan
     // objects to DeletionQueue and delays material-slot reuse until the
     // in-flight window has passed.
-    ReleaseReport releaseModelResources(
+    [[nodiscard]] ReleaseReport releaseModelResources(
         std::vector<GlobalMaterialId> material_ids,
         std::vector<GlobalTextureId> texture_ids,
         bool deferred) noexcept;

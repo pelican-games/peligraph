@@ -15,6 +15,7 @@
 #include <vector>
 
 namespace Pelican {
+struct SceneLoadPhaseTrace;
 
 class DebugDraw;
 class GameContext;
@@ -70,6 +71,8 @@ DECLARE_MODULE(PhysWorld) {
         std::vector<Binding> next_bindings,
         std::span<const GameObjectId> unpublished_entities) const;
     void publishPrepared(PreparedState &&prepared) noexcept;
+    void publishPrepared(PreparedState &&prepared,
+                         SceneLoadPhaseTrace &phase_trace) noexcept;
     void clear();
     void bindCollider(std::string name, const ColliderComponent &collider, GameObjectId object_id,
                       std::optional<phys::ColliderQueryMetadata> metadata = std::nullopt);

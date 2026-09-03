@@ -1,4 +1,5 @@
 target_sources(pelican_core PRIVATE
+    modelresourcerelease.cpp
     vertbufcontainer.cpp
     gltf.cpp
     gltfimage.cpp

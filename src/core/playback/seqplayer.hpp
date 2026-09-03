@@ -14,6 +14,7 @@
 #include <vector>
 
 namespace Pelican {
+struct SceneLoadPhaseTrace;
 
 struct SequenceTransform {
     glm::vec3 pos{0.0f};
@@ -70,6 +71,8 @@ DECLARE_MODULE(SeqPlayer) {
     PreparedSceneState snapshotPreparedScene() const;
     PreparedSceneState prepareSceneLoad() const;
     void publishPreparedScene(PreparedSceneState &&prepared) noexcept;
+    void publishPreparedScene(PreparedSceneState &&prepared,
+                              SceneLoadPhaseTrace &phase_trace) noexcept;
     bool isEnabled() const { return enabled; }
     size_t instanceCountForTesting() const { return instances.size(); }
     ModelInstanceId instanceForTesting(size_t index) const {

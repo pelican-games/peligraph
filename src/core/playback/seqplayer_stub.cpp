@@ -1,4 +1,5 @@
 #include "seqplayer.hpp"
+#include "../loader/sceneload.hpp"
 
 #include "../build_features.hpp"
 #include "../launchconfig.hpp"
@@ -52,6 +53,12 @@ void SeqPlayer::publishPreparedScene(
     PreparedSceneState &&prepared) noexcept {
     std::swap(enabled, prepared.enabled);
     instances.swap(prepared.instances);
+}
+
+void SeqPlayer::publishPreparedScene(PreparedSceneState &&prepared,
+                                     SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::publish);
+    publishPreparedScene(std::move(prepared));
 }
 
 } // namespace Pelican

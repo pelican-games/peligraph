@@ -2,6 +2,7 @@
 
 #include "../launchconfig.hpp"
 #include "../loader/fileio.hpp"
+#include "../loader/sceneload.hpp"
 #include "../log.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../material/standardmaterialresource.hpp"
@@ -370,6 +371,12 @@ void SeqPlayer::publishPreparedScene(
     PreparedSceneState &&prepared) noexcept {
     std::swap(enabled, prepared.enabled);
     instances.swap(prepared.instances);
+}
+
+void SeqPlayer::publishPreparedScene(PreparedSceneState &&prepared,
+                                     SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::publish);
+    publishPreparedScene(std::move(prepared));
 }
 
 } // namespace Pelican

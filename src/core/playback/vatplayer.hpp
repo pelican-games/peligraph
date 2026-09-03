@@ -7,6 +7,7 @@
 #include <optional>
 
 namespace Pelican {
+struct SceneLoadPhaseTrace;
 
 DECLARE_MODULE(VatPlayer) {
     bool enabled = false;
@@ -27,6 +28,8 @@ DECLARE_MODULE(VatPlayer) {
     PreparedSceneState snapshotPreparedScene() const noexcept;
     PreparedSceneState prepareSceneLoad() const noexcept;
     void publishPreparedScene(PreparedSceneState &&prepared) noexcept;
+    void publishPreparedScene(PreparedSceneState &&prepared,
+                              SceneLoadPhaseTrace &phase_trace) noexcept;
     bool isEnabled() const { return enabled; }
 };
 

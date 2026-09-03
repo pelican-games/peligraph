@@ -2410,7 +2410,8 @@ void MaterialContainer::registerMaterialVariants(
             (void)name;
             resources.push_back(resource);
         }
-        releaseModelResources(std::move(resources), {}, false);
+        ReleaseErrorSink::record("material variant rollback release",
+                                 releaseModelResources(std::move(resources), {}, false));
         throw;
     }
 }
@@ -2483,32 +2484,50 @@ ReleaseReport MaterialContainer::releaseModelResources(
         retired.textures.reserve(texture_ids.size());
 
         for (const auto material : material_ids) {
-            if (!materials.contains(material)) continue;
-            const auto bindings = materials.get(material).texture_bindings;
-            for (const auto &binding : bindings) {
-                const auto found = texture_materials.find(binding.texture);
-                if (found == texture_materials.end()) continue;
-                found->second.erase(material);
-                if (found->second.empty()) texture_materials.erase(found);
-            }
-            auto value = materials.extract(material, !deferred);
-            if (value) {
-                if (deferred) retired.material_ids.push_back(material);
-                retired.materials.push_back(std::move(*value));
+            try {
+                if (!materials.contains(material)) continue;
+                const auto bindings = materials.get(material).texture_bindings;
+                for (const auto &binding : bindings) {
+                    const auto found = texture_materials.find(binding.texture);
+                    if (found == texture_materials.end()) continue;
+                    found->second.erase(material);
+                    if (found->second.empty()) texture_materials.erase(found);
+                }
+                auto value = materials.extract(material, !deferred);
+                if (value) {
+                    if (deferred) retired.material_ids.push_back(material);
+                    retired.materials.push_back(std::move(*value));
+                }
+                if (fail_material_release_for_testing) {
+                    throw std::runtime_error("injected material release failure");
+                }
+            } catch (...) {
+                report.add({ReleaseStage::material,
+                            ReleaseErrorCode::operation_failed,
+                            static_cast<std::uint32_t>(material.value)});
             }
         }
 
         for (const auto texture : texture_ids) {
-            const auto reverse = texture_materials.find(texture);
-            if (reverse != texture_materials.end() && !reverse->second.empty()) {
+            try {
+                const auto reverse = texture_materials.find(texture);
+                if (reverse != texture_materials.end() && !reverse->second.empty()) {
+                    report.add({ReleaseStage::texture,
+                                ReleaseErrorCode::resource_still_referenced,
+                                static_cast<std::uint32_t>(texture.value)});
+                    continue;
+                }
+                texture_materials.erase(texture);
+                auto value = textures.extract(texture);
+                if (value) retired.textures.push_back(std::move(*value));
+                if (fail_texture_release_for_testing) {
+                    throw std::runtime_error("injected texture release failure");
+                }
+            } catch (...) {
                 report.add({ReleaseStage::texture,
-                            ReleaseErrorCode::resource_still_referenced,
+                            ReleaseErrorCode::operation_failed,
                             static_cast<std::uint32_t>(texture.value)});
-                continue;
             }
-            texture_materials.erase(texture);
-            auto value = textures.extract(texture);
-            if (value) retired.textures.push_back(std::move(*value));
         }
 
         if (!retired.material_ids.empty()) {

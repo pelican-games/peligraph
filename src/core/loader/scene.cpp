@@ -384,7 +384,8 @@ struct UnpublishedModelCandidate {
     bool owns_resources = true;
 
     ~UnpublishedModelCandidate() {
-        if (owns_resources) releaseModelGpuResources(model, false);
+        if (owns_resources) ReleaseErrorSink::record(
+            "unpublished transient model", releaseModelGpuResources(model, false));
     }
 };
 
@@ -890,17 +891,20 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     runtime_object_bindings.swap(candidate_runtime_bindings);
     std::swap(runtime_only_changes, candidate_runtime_only_changes);
     transient_models.swap(candidate_transient_models);
-    GET_MODULE(SeqPlayer).publishPreparedScene(std::move(seq_candidate));
-    GET_MODULE(VatPlayer).publishPreparedScene(std::move(vat_candidate));
-    GET_MODULE(Camera).publishPrepared(std::move(camera_candidate));
+    GET_MODULE(SeqPlayer).publishPreparedScene(std::move(seq_candidate),
+                                               phase_trace);
+    GET_MODULE(VatPlayer).publishPreparedScene(std::move(vat_candidate),
+                                               phase_trace);
+    GET_MODULE(Camera).publishPrepared(std::move(camera_candidate), phase_trace);
     if (!internal::sceneLoadMutationEnabled(
             injector, SceneLoadFaultPhase::publish, "light",
             scene_load_mutation::light_directional_names)) {
         GET_MODULE(LightContainer).publishPrepared(
-            std::move(light_candidate));
+            std::move(light_candidate), phase_trace);
         light_published = true;
     }
-    GET_MODULE(PhysWorld).publishPrepared(std::move(physics_candidate));
+    GET_MODULE(PhysWorld).publishPrepared(std::move(physics_candidate),
+                                          phase_trace);
     behavior_candidate->publish(phase_trace);
     candidates_published = true;
 
@@ -971,14 +975,20 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                                 : std::move(candidate_transient_models),
     }, phase_trace);
     GET_MODULE(PolygonInstanceContainer).enqueueSceneRetirement(
-        std::move(renderer_retire_indices));
+        std::move(renderer_retire_indices), phase_trace);
 
     event_outbox->stageReserved(std::move(scene_loaded_event));
-    GET_MODULE(DeterministicRng).publishPreparedSequence(rng_candidate);
+    GET_MODULE(DeterministicRng).publishPreparedSequence(rng_candidate,
+                                                          phase_trace);
+    phase_trace.record(SceneLoadPhase::flush);
     pending_scene_id.swap(pending_candidate);
     event_outbox->flush(phase_trace);
 
-    for (auto &token : created_entities) token.finish(phase_trace);
+    // The batch is an executor participant in its own right.  Recording here
+    // keeps an empty scene observable while individual token completion stays
+    // an implementation detail of the batch.
+    phase_trace.record(SceneLoadPhase::finish);
+    for (auto &token : created_entities) token.finish();
     return SceneLoadCommitted{candidate_authority, phase_trace};
 }
 
@@ -1035,7 +1045,8 @@ void SceneLoader::drainRetirementQueue() {
     }
     for (auto &batch : pending) {
         for (auto &model : batch.transient_models) {
-            releaseModelGpuResources(model, true);
+            ReleaseErrorSink::record("retirement queue model release",
+                                     releaseModelGpuResources(model, true));
         }
     }
     // A prepare failure may construct SceneLoader without constructing the
@@ -1069,7 +1080,8 @@ void SceneLoader::clearRuntimeScene() {
 
 void SceneLoader::releaseTransientModels(bool deferred) noexcept {
     for (auto &model : transient_models) {
-        releaseModelGpuResources(model, deferred);
+        ReleaseErrorSink::record("scene teardown transient release",
+                                 releaseModelGpuResources(model, deferred));
     }
     transient_models.clear();
 }
@@ -1228,7 +1240,8 @@ std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, 
             static_cast<SimpleModelViewComponent *>(ptrs[1])->model_instance_id = model_instance_id;
         });
     } catch (...) {
-        releaseModelGpuResources(transient_models.back(), false);
+        ReleaseErrorSink::record("transient entity failure release",
+                                 releaseModelGpuResources(transient_models.back(), false));
         transient_models.pop_back();
         throw;
     }

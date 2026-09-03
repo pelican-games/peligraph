@@ -391,6 +391,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
                                    StagedModelInstance staged) noexcept;
     void enqueueSceneRetirement(
         std::vector<std::uint32_t> retire_indices) noexcept;
+    void enqueueSceneRetirement(
+        std::vector<std::uint32_t> retire_indices,
+        SceneLoadPhaseTrace &phase_trace) noexcept;
     void drainSceneRetirements();
     void preflightModelInstance(const ModelTemplate &model) const;
     StagedModelInstance stageModelInstance(const ModelTemplate &model);

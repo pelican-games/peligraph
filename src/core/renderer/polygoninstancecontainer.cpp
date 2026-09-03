@@ -671,6 +671,13 @@ void PolygonInstanceContainer::enqueueSceneRetirement(
     scene_retirement_queue.push_back(std::move(retire_indices));
 }
 
+void PolygonInstanceContainer::enqueueSceneRetirement(
+    std::vector<std::uint32_t> retire_indices,
+    SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::retire);
+    enqueueSceneRetirement(std::move(retire_indices));
+}
+
 void PolygonInstanceContainer::drainSceneRetirements() {
     if (scene_retirement_queue.empty()) return;
     std::vector<std::vector<std::uint32_t>> pending;

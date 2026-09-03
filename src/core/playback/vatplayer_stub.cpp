@@ -1,4 +1,5 @@
 #include "vatplayer.hpp"
+#include "../loader/sceneload.hpp"
 
 #include "../build_features.hpp"
 #include "../launchconfig.hpp"
@@ -30,6 +31,12 @@ void VatPlayer::publishPreparedScene(
     PreparedSceneState &&prepared) noexcept {
     std::swap(enabled, prepared.enabled);
     instance.swap(prepared.instance);
+}
+
+void VatPlayer::publishPreparedScene(PreparedSceneState &&prepared,
+                                     SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::publish);
+    publishPreparedScene(std::move(prepared));
 }
 
 } // namespace Pelican

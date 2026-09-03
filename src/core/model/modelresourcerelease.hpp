@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -59,6 +60,20 @@ struct ReleaseReport {
     std::span<const ReleaseError> view() const noexcept {
         return {errors.data(), error_count};
     }
+};
+
+struct ReleaseErrorSinkStatus {
+    std::uint64_t release_errors = 0;
+    std::uint64_t overflow_count = 0;
+};
+
+// Destruction and deferred-release paths cannot return a report to their
+// caller.  They use this process-wide structured sink instead of losing it.
+class ReleaseErrorSink {
+  public:
+    static void record(std::string_view context,
+                       const ReleaseReport &report) noexcept;
+    static ReleaseErrorSinkStatus status() noexcept;
 };
 
 static_assert(noexcept(std::declval<ReleaseReport &>().add(

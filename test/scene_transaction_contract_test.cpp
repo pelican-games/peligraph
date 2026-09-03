@@ -56,6 +56,22 @@ TEST_CASE("WP380c result phase enum covers the exact executor trace",
     REQUIRE(std::variant_size_v<SceneLoadResult> == 3);
 }
 
+TEST_CASE("WP380d phase trace makes overflow observable",
+          "[WP380d][contract][trace]") {
+    SceneLoadPhaseTrace trace;
+    constexpr std::array phases{
+        SceneLoadPhase::prepare, SceneLoadPhase::early_publish,
+        SceneLoadPhase::publish, SceneLoadPhase::activate,
+        SceneLoadPhase::commit_metadata, SceneLoadPhase::retire,
+        SceneLoadPhase::flush, SceneLoadPhase::finish,
+    };
+    for (const auto phase : phases) trace.record(phase);
+    REQUIRE_FALSE(trace.overflow);
+    trace.record(SceneLoadPhase::prepare);
+    REQUIRE(trace.overflow);
+    REQUIRE(std::ranges::equal(trace.view(), phases));
+}
+
 TEST_CASE("WP380c release report has fixed capacity and explicit overflow",
           "[WP380c][contract][model-release]") {
     ReleaseReport report;

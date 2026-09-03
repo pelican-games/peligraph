@@ -76,7 +76,7 @@ DECLARE_MODULE(GltfLoader) {
 // Returns a failed candidate immediately. When deferred is true, material
 // slots, Vulkan objects, and geometry ranges remain unavailable/alive for the
 // configured in-flight window as required by their command-buffer lifetime.
-ReleaseReport releaseModelGpuResources(ModelTemplate &model,
-                                       bool deferred) noexcept;
+[[nodiscard]] ReleaseReport releaseModelGpuResources(ModelTemplate &model,
+                                                     bool deferred) noexcept;
 
 } // namespace Pelican

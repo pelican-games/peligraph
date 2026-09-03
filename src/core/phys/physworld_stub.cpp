@@ -1,4 +1,5 @@
 #include "physworld.hpp"
+#include "../loader/sceneload.hpp"
 
 #include <stdexcept>
 #include <utility>
@@ -51,6 +52,12 @@ void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
     bindings.clear();
     active_trigger_pairs.clear();
     next_collider_id_value = 1;
+}
+
+void PhysWorld::publishPrepared(PreparedState &&prepared,
+                                SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::publish);
+    publishPrepared(std::move(prepared));
 }
 
 void PhysWorld::clear() {

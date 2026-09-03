@@ -17,6 +17,7 @@
 
 namespace Pelican
 {
+	struct SceneLoadPhaseTrace;
 	struct LightLoadEntry
 	{
 		std::string name;
@@ -45,6 +46,8 @@ namespace Pelican
 		static PreparedLoad prepareLoad(const std::vector<LightLoadEntry>& lights);
 		PreparedLoad snapshotPrepared() const;
 		void publishPrepared(PreparedLoad&& prepared) noexcept;
+		void publishPrepared(PreparedLoad&& prepared,
+			SceneLoadPhaseTrace &phase_trace) noexcept;
 		void load(const std::vector<LightLoadEntry>& lights);
 		void update();
 		void update(

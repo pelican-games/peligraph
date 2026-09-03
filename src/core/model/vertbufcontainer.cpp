@@ -605,15 +605,7 @@ ReleaseReport VertBufContainer::releaseModelGeometry(
                 if (!lease) return;
                 const auto report = owner->releaseModelGeometry(
                     std::move(allocations), false);
-                for (const auto &error : report.view()) {
-                    if (logger) {
-                        LOG_ERROR(logger,
-                                  "deferred model geometry release failed: stage={} code={} index={}",
-                                  releaseStageName(error.stage),
-                                  releaseErrorCodeName(error.code),
-                                  error.index);
-                    }
-                }
+                ReleaseErrorSink::record("deferred model geometry release", report);
             }
         };
         if (auto *queue = FastModuleContainer::tryGet<DeletionQueue>()) {

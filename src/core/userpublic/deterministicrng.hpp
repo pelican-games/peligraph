@@ -7,6 +7,7 @@
 namespace Pelican {
 
 class RngSequenceScope;
+struct SceneLoadPhaseTrace;
 
 DECLARE_MODULE(DeterministicRng) {
     std::uint64_t current_seed = 0;
@@ -31,6 +32,8 @@ DECLARE_MODULE(DeterministicRng) {
     std::uint64_t seed() const;
     PreparedSequence prepareSequence() const noexcept;
     void publishPreparedSequence(PreparedSequence prepared) noexcept;
+    void publishPreparedSequence(PreparedSequence prepared,
+                                 SceneLoadPhaseTrace &phase_trace) noexcept;
 };
 
 class RngSequenceScope {

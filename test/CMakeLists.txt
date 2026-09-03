@@ -1626,9 +1626,14 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND}
             -DPRODUCTION_ARCHIVE=$<TARGET_FILE:pelican_core>
             -DWP380C_DUMPBIN=${wp380c_toolchain_bin}/dumpbin.exe
+            -DPRODUCTION_SOURCES="$<JOIN:$<TARGET_PROPERTY:pelican_core,SOURCES>,|>"
+            -DSCENE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/sceneloadfault_testing.cpp
+            -DMODEL_RELEASE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/modelreleasefault_testing.cpp
+            -DSCENE_HEADER=${CMAKE_SOURCE_DIR}/src/core/loader/scene.hpp
+            -DRELEASE_HEADER=${CMAKE_SOURCE_DIR}/src/core/model/vertbufcontainer.hpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wp380c_no_production_fault_setter.cmake)
     set_tests_properties(wp380c_production_has_no_fault_setter_symbol
-        PROPERTIES LABELS "WP380c;cpu")
+        PROPERTIES LABELS "WP380c;WP380d;cpu")
 
     # This production acceptance executable is the real SDK export host for
     # its game-logic fixture.  The DLL sees only the shipped userpublic API and

@@ -10,6 +10,7 @@
 
 namespace Pelican {
 class VertBufContainer;
+class MaterialContainer;
 }
 
 namespace Pelican::test_support {
@@ -22,6 +23,8 @@ void setDefaultSceneLoadFaultInjectorForTesting(
     SceneLoadFaultInjector *injector) noexcept;
 void setMorphMetadataReleaseFailureForTesting(
     VertBufContainer &geometry, bool enabled) noexcept;
+void setMaterialReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
+void setTextureReleaseFailureForTesting(MaterialContainer &, bool) noexcept;
 
 inline std::string_view manifestMutationId(std::string_view owner,
                                            std::string_view field) {

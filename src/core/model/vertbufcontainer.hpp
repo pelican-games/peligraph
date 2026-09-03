@@ -95,9 +95,9 @@ DECLARE_MODULE(VertBufContainer) {
     ModelTemplate::PrimitiveRefInfo addSkinnedPrimitiveEntry(CommonPolygonVertData &&data);
     ModelGeometryAllocation addPrimitiveAllocation(CommonPolygonVertData &&data);
     ModelGeometryAllocation addSkinnedPrimitiveAllocation(CommonPolygonVertData &&data);
-    ReleaseReport releaseGeometryNow(
+    [[nodiscard]] ReleaseReport releaseGeometryNow(
         std::span<const ModelGeometryAllocation> allocations) noexcept;
-    ReleaseReport releaseModelGeometry(
+    [[nodiscard]] ReleaseReport releaseModelGeometry(
         std::vector<ModelGeometryAllocation> allocations,
         bool deferred) noexcept;
 

@@ -13,6 +13,7 @@
 #include <vector>
 
 namespace Pelican {
+struct SceneLoadPhaseTrace;
 
 class ResolvedScene;
 
@@ -100,6 +101,8 @@ DECLARE_MODULE(Camera) {
     PreparedSceneState prepareSceneCameras(
         std::string_view scene_id, const ResolvedScene &scene) const;
     void publishPrepared(PreparedSceneState &&prepared) noexcept;
+    void publishPrepared(PreparedSceneState &&prepared,
+                         SceneLoadPhaseTrace &phase_trace) noexcept;
     void loadSceneCameras(std::string_view scene_id);
     void setActiveCamera(std::string_view name);
     const std::string &activeCameraName() const { return active_camera_name; }

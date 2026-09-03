@@ -4,6 +4,7 @@
 
 #include "../ecs/predefined/transform.hpp"
 #include "../ecs/core.hpp"
+#include "../loader/sceneload.hpp"
 #include "../geomhelper/geomhelper.hpp"
 #include "../renderer/debugdraw.hpp"
 #include "../userpublic/details/system/registerer.hpp"
@@ -358,6 +359,12 @@ void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {
     bindings.swap(prepared.bindings);
     active_trigger_pairs.swap(prepared.active_trigger_pairs);
     std::swap(next_collider_id_value, prepared.next_collider_id_value);
+}
+
+void PhysWorld::publishPrepared(PreparedState &&prepared,
+                                SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::publish);
+    publishPrepared(std::move(prepared));
 }
 
 void PhysWorld::clear() {

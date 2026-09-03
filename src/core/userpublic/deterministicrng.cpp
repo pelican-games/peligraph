@@ -1,6 +1,7 @@
 #include "deterministicrng.hpp"
 
 #include "../loader/basicconfig.hpp"
+#include "../loader/sceneload.hpp"
 
 #include <limits>
 #include <stdexcept>
@@ -120,6 +121,12 @@ void DeterministicRng::publishPreparedSequence(
     current_seed = prepared.current_seed;
     state = prepared.state;
     increment = prepared.increment;
+}
+
+void DeterministicRng::publishPreparedSequence(
+    PreparedSequence prepared, SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::flush);
+    publishPreparedSequence(std::move(prepared));
 }
 
 RngSequenceScope::RngSequenceScope(
