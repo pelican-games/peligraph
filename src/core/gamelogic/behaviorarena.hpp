@@ -19,6 +19,7 @@
 namespace Pelican {
 
 class BehaviorCallbackScope;
+struct SceneLoadPhaseTrace;
 
 enum class BehaviorRegistryAvailability {
     active,
@@ -153,9 +154,12 @@ class PreparedBehaviorSceneReconciliation {
         const PreparedBehaviorSceneReconciliation &) = delete;
 
     void publish() noexcept;
+    void publish(SceneLoadPhaseTrace &phase_trace) noexcept;
     void activate();
+    void activate(SceneLoadPhaseTrace &phase_trace);
     void rollback() noexcept;
     void finish() noexcept;
+    void finish(SceneLoadPhaseTrace &phase_trace) noexcept;
 };
 
 std::uint64_t sceneBehaviorAttachmentSeq(std::size_t object_index,

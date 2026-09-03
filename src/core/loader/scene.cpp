@@ -121,15 +121,20 @@ struct SceneLoader::RetirementState {
 
     void reserveOne() { queue.reserve(queue.size() + 1U); }
 
-    void enqueue(Batch batch) noexcept {
+    void enqueue(Batch batch, SceneLoadPhaseTrace &phase_trace) noexcept {
+        phase_trace.record(SceneLoadPhase::retire);
         static_assert(std::is_nothrow_move_constructible_v<Batch>);
         assert(queue.size() < queue.capacity());
         queue.push_back(std::move(batch));
     }
 };
 
+SceneLoadFaultInjector *SceneLoader::default_fault_injector_for_testing =
+    nullptr;
+
 SceneLoader::SceneLoader()
-    : retirement_state{std::make_unique<RetirementState>()} {
+    : fault_injector{default_fault_injector_for_testing},
+      retirement_state{std::make_unique<RetirementState>()} {
     const auto ticks = static_cast<std::uint64_t>(
         std::chrono::steady_clock::now().time_since_epoch().count());
     run_nonce = ticks ^ static_cast<std::uint64_t>(
@@ -174,6 +179,32 @@ std::string exceptionMessage(const std::exception_ptr &error) {
         return "non-standard scene load exception";
     }
     return "unknown scene load failure";
+}
+
+std::vector<std::string>
+releaseErrorStatus(const std::exception_ptr &error) {
+    ReleaseReport report;
+    bool has_report = false;
+    try {
+        if (error) std::rethrow_exception(error);
+    } catch (const ModelResourceReleaseException &exception) {
+        report = exception.releaseReport();
+        has_report = true;
+    } catch (...) {
+    }
+    if (!has_report) return {};
+
+    std::vector<std::string> result;
+    result.reserve(report.error_count +
+                   (report.overflow_count == 0 ? 0U : 1U));
+    for (const auto &release_error : report.view()) {
+        result.emplace_back(releaseStageName(release_error.stage));
+    }
+    if (report.overflow_count != 0) {
+        result.push_back("overflow:" +
+                         std::to_string(report.overflow_count));
+    }
+    return result;
 }
 
 std::string displayObjectName(const std::string &object_name) {
@@ -423,6 +454,7 @@ const SceneLoadCommitted &requireSceneLoadCommitted(
 }
 
 SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
+    SceneLoadPhaseTrace phase_trace;
     auto *const injector = fault_injector;
     if (internal::sceneLoadRootDisconnected(request.root, injector)) {
         auto error = std::make_exception_ptr(
@@ -469,7 +501,8 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
 
     const auto fail = [&](SceneLoadPhase phase,
                           std::exception_ptr error) -> SceneLoadResult {
-        return PreCommitFailure{phase, exceptionMessage(error), error};
+        return PreCommitFailure{phase, exceptionMessage(error), error,
+                                releaseErrorStatus(error)};
     };
 
     try {
@@ -482,7 +515,8 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                     .committed.get());
         }
         metadata.prepareRuntimeIdentity(request.scene_id,
-                                        candidate_authority);
+                                        candidate_authority,
+                                        phase_trace);
         if (internal::sceneLoadMutationEnabled(
                 injector, SceneLoadFaultPhase::prepare, "metadata",
                 scene_load_mutation::metadata_projection)) {
@@ -623,7 +657,8 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         auto &component_info_manager = GET_MODULE(ComponentInfoManager);
         auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
         auto &renderer = GET_MODULE(PolygonInstanceContainer);
-        renderer.publishPreparedScene(std::move(renderer_candidate));
+        renderer.publishPreparedScene(std::move(renderer_candidate),
+                                      phase_trace);
         renderer_published = true;
 
         const auto create_object = [&](std::size_t object_index) {
@@ -866,7 +901,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         light_published = true;
     }
     GET_MODULE(PhysWorld).publishPrepared(std::move(physics_candidate));
-    behavior_candidate->publish();
+    behavior_candidate->publish(phase_trace);
     candidates_published = true;
 
     if (internal::sceneLoadMutationEnabled(
@@ -888,7 +923,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                 injector, SceneLoadFaultPhase::activate,
                 "behavior_arena",
                 scene_load_mutation::behavior_attachments)) {
-            behavior_candidate->activate();
+            behavior_candidate->activate(phase_trace);
         }
     } catch (...) {
         const auto error = std::current_exception();
@@ -898,28 +933,33 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
 
     // The commit point is exactly one metadata swap. Nothing after it can
     // produce PreCommitFailure.
-    static_assert(noexcept(std::declval<MetadataCommitToken &>().commit()));
+    static_assert(noexcept(std::declval<MetadataCommitToken &>().commit(
+        std::declval<SceneLoadPhaseTrace &>())));
     static_assert(noexcept(
-        std::declval<PreparedBehaviorSceneReconciliation &>().finish()));
-    static_assert(noexcept(std::declval<ECSEntityMutationToken &>().finish()));
+        std::declval<PreparedBehaviorSceneReconciliation &>().finish(
+            std::declval<SceneLoadPhaseTrace &>())));
+    static_assert(noexcept(std::declval<ECSEntityMutationToken &>().finish(
+        std::declval<SceneLoadPhaseTrace &>())));
     static_assert(noexcept(std::declval<PolygonInstanceContainer &>()
                                .enqueueSceneRetirement(
                                    std::declval<std::vector<std::uint32_t>>())));
     static_assert(noexcept(std::declval<RetirementState &>().enqueue(
-        std::declval<RetirementState::Batch>())));
+        std::declval<RetirementState::Batch>(),
+        std::declval<SceneLoadPhaseTrace &>())));
     static_assert(noexcept(std::declval<internal::PreparedEventOutbox &>()
                                .stageReserved(
                                    std::declval<internal::QueuedEvent>())));
     static_assert(noexcept(
-        std::declval<internal::PreparedEventOutbox &>().flush()));
+        std::declval<internal::PreparedEventOutbox &>().flush(
+            std::declval<SceneLoadPhaseTrace &>())));
     static_assert(noexcept(std::declval<DeterministicRng &>()
                                .publishPreparedSequence(
                                    std::declval<DeterministicRng::PreparedSequence>())));
     static_assert(noexcept(std::declval<std::optional<SceneId> &>().swap(
         std::declval<std::optional<SceneId> &>())));
-    metadata.commit();
-    behavior_candidate->finish();
-    for (auto &token : created_entities) token.finish();
+    metadata.commit(phase_trace);
+
+    behavior_candidate->finish(phase_trace);
     const bool bypass_transient_retire =
         internal::sceneLoadMutationEnabled(
             injector, SceneLoadFaultPhase::retire, "scene_loader",
@@ -929,14 +969,17 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         .transient_models = bypass_transient_retire
                                 ? std::vector<ModelTemplate>{}
                                 : std::move(candidate_transient_models),
-    });
+    }, phase_trace);
     GET_MODULE(PolygonInstanceContainer).enqueueSceneRetirement(
         std::move(renderer_retire_indices));
+
     event_outbox->stageReserved(std::move(scene_loaded_event));
     GET_MODULE(DeterministicRng).publishPreparedSequence(rng_candidate);
     pending_scene_id.swap(pending_candidate);
-    event_outbox->flush();
-    return SceneLoadCommitted{candidate_authority};
+    event_outbox->flush(phase_trace);
+
+    for (auto &token : created_entities) token.finish(phase_trace);
+    return SceneLoadCommitted{candidate_authority, phase_trace};
 }
 
 void SceneLoader::requestLoad(SceneId scene_id) {

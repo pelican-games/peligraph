@@ -1036,6 +1036,8 @@ pelican_define_test(deletionqueue_test GROUP core_foundation pelican_core)
 pelican_define_test(lifetime_teardown_test GROUP core_foundation pelican_core)
 pelican_define_test(deterministicrng_test GROUP core_foundation pelican_core)
 pelican_define_test(scene_transaction_contract_test GROUP core_foundation pelican_core)
+target_sources(pelican_test_scene_transaction_contract_test PRIVATE
+    sceneloadfault_testing.cpp)
 pelican_define_test(enginetime_test GROUP core_foundation pelican_core)
 pelican_define_test(skeletalanimation_test GROUP core_foundation pelican_core glm)
 pelican_define_test(vrmsemantic_test GROUP core_foundation pelican_core tinygltf)
@@ -1325,6 +1327,10 @@ target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
 )
 pelican_define_test(gltfimage_test pelican_core tinygltf)
 pelican_define_test(modelhotreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+pelican_define_test(model_resource_release_test GPU pelican_core
+    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_sources(pelican_test_model_resource_release_test PRIVATE
+    modelreleasefault_testing.cpp)
 pelican_define_test(drawqueuebuilder_test GROUP renderer_registry pelican_core)
 pelican_define_test(accelerationstructurepolicy_test GROUP renderer_registry pelican_core
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -1601,6 +1607,9 @@ pelican_define_test(raytracing_rt3_1_production_test
                     MIXED_GPU
                     pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+target_sources(pelican_test_raytracing_rt3_1_production_test PRIVATE
+    sceneloadfault_testing.cpp
+    modelreleasefault_testing.cpp)
 target_compile_definitions(pelican_test_raytracing_rt3_1_production_test PRIVATE
     PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
@@ -1610,6 +1619,17 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_production_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(WIN32)
+    get_filename_component(wp380c_toolchain_bin
+        "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    add_test(
+        NAME wp380c_production_has_no_fault_setter_symbol
+        COMMAND ${CMAKE_COMMAND}
+            -DPRODUCTION_ARCHIVE=$<TARGET_FILE:pelican_core>
+            -DWP380C_DUMPBIN=${wp380c_toolchain_bin}/dumpbin.exe
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wp380c_no_production_fault_setter.cmake)
+    set_tests_properties(wp380c_production_has_no_fault_setter_symbol
+        PROPERTIES LABELS "WP380c;cpu")
+
     # This production acceptance executable is the real SDK export host for
     # its game-logic fixture.  The DLL sees only the shipped userpublic API and
     # links the host import library, matching the actual player composition.

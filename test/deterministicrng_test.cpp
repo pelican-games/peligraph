@@ -142,7 +142,6 @@ TEST_CASE("WP380 RNG rollback bypass mutations leak only their manifest field",
         {"current_seed",
          &DeterministicRng::PreparedSequence::current_seed},
         {"state", &DeterministicRng::PreparedSequence::state},
-        {"increment", &DeterministicRng::PreparedSequence::increment},
     };
     const DeterministicRng::PreparedSequence before{11, 22, 33};
     const DeterministicRng::PreparedSequence candidate{111, 222, 333};
@@ -169,6 +168,7 @@ TEST_CASE("WP380 RNG rollback bypass mutations leak only their manifest field",
                 if (other.member == field.member) continue;
                 REQUIRE(actual.*(other.member) == before.*(other.member));
             }
+            REQUIRE(actual.increment == before.increment);
         }
     }
 }

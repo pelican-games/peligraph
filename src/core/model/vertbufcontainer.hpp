@@ -4,6 +4,7 @@
 #include "../vkcore/buf.hpp"
 #include "../vkcore/deferredcallback.hpp"
 #include "polygonvertdata.hpp"
+#include "modelresourcerelease.hpp"
 #include <cstddef>
 #include <glm/glm.hpp>
 #include <memory>
@@ -12,6 +13,12 @@
 #include <vulkan/vulkan.hpp>
 
 namespace Pelican {
+
+class VertBufContainer;
+namespace test_support {
+void setMorphMetadataReleaseFailureForTesting(
+    VertBufContainer &geometry, bool enabled) noexcept;
+} // namespace test_support
 
 struct CommonVertStruct {
     glm::vec3 pos;
@@ -63,9 +70,13 @@ DECLARE_MODULE(VertBufContainer) {
     std::vector<FreeRange> free_vertices;
     std::vector<FreeRange> free_skin_vertices;
     std::vector<FreeRange> free_morph_deltas;
+    bool fail_morph_metadata_release_for_testing = false;
     // Declared last and explicitly closed at destructor entry. Deferred range
     // callbacks pin this state while using the owner.
     DeferredCallbackLifetime deferred_callbacks;
+
+    friend void test_support::setMorphMetadataReleaseFailureForTesting(
+        VertBufContainer &geometry, bool enabled) noexcept;
 
     static uint32_t allocateRange(std::vector<FreeRange> &free_ranges,
                                   uint32_t &high_water, uint32_t count);
@@ -76,7 +87,6 @@ DECLARE_MODULE(VertBufContainer) {
     std::vector<MorphTargetDeltaRange>
     uploadMorphData(const CommonPolygonVertData &data, uint32_t vertex_offset,
                     bool skinned, uint32_t &delta_offset, uint32_t &delta_count);
-    void releaseGeometryNow(std::span<const ModelGeometryAllocation> allocations) noexcept;
 
   public:
     VertBufContainer();
@@ -85,8 +95,11 @@ DECLARE_MODULE(VertBufContainer) {
     ModelTemplate::PrimitiveRefInfo addSkinnedPrimitiveEntry(CommonPolygonVertData &&data);
     ModelGeometryAllocation addPrimitiveAllocation(CommonPolygonVertData &&data);
     ModelGeometryAllocation addSkinnedPrimitiveAllocation(CommonPolygonVertData &&data);
-    void releaseModelGeometry(std::vector<ModelGeometryAllocation> allocations,
-                              bool deferred) noexcept;
+    ReleaseReport releaseGeometryNow(
+        std::span<const ModelGeometryAllocation> allocations) noexcept;
+    ReleaseReport releaseModelGeometry(
+        std::vector<ModelGeometryAllocation> allocations,
+        bool deferred) noexcept;
 
     void bindVertexBuffer(vk::CommandBuffer cmd_buf, bool skinned = false) const;
     const BufferWrapper &morphMetadataBuffer(bool skinned) const {

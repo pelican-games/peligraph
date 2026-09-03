@@ -1,4 +1,5 @@
 #include "archetypemigration.hpp"
+#include "../loader/sceneload.hpp"
 
 #include "componentinfo.hpp"
 #include <details/ecs/chunk.hpp>
@@ -971,6 +972,12 @@ void ECSEntityMutationToken::finish() noexcept {
     }
     state_->finish();
     state_.reset();
+}
+
+void ECSEntityMutationToken::finish(
+    SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::finish);
+    finish();
 }
 
 ECSEntityMutationToken ECSEntityMutation::prepareCreate(

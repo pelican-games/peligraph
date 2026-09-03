@@ -11,6 +11,7 @@
 namespace Pelican {
 
 class ECSCoreTemplatePublic;
+struct SceneLoadPhaseTrace;
 
 enum class ECSArchetypeMigrationKind {
     add,
@@ -101,6 +102,7 @@ class ECSEntityMutationToken {
     void publish() noexcept;
     void rollback() noexcept;
     void finish() noexcept;
+    void finish(SceneLoadPhaseTrace &phase_trace) noexcept;
 };
 
 class ECSEntityMutation {

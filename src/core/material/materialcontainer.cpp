@@ -2427,9 +2427,10 @@ GlobalMaterialId MaterialContainer::materialVariantResource(
     return found->second;
 }
 
-void MaterialContainer::releaseModelResources(
+ReleaseReport MaterialContainer::releaseModelResources(
     std::vector<GlobalMaterialId> material_ids,
     std::vector<GlobalTextureId> texture_ids, bool deferred) noexcept {
+    ReleaseReport report;
     try {
         std::vector<GlobalMaterialId> expanded_material_ids;
         std::unordered_set<GlobalMaterialId, GlobalMaterialId::Hash>
@@ -2500,11 +2501,9 @@ void MaterialContainer::releaseModelResources(
         for (const auto texture : texture_ids) {
             const auto reverse = texture_materials.find(texture);
             if (reverse != texture_materials.end() && !reverse->second.empty()) {
-                if (logger) {
-                    LOG_ERROR(logger,
-                              "model texture {} still has {} material references during retirement",
-                              texture.value, reverse->second.size());
-                }
+                report.add({ReleaseStage::texture,
+                            ReleaseErrorCode::resource_still_referenced,
+                            static_cast<std::uint32_t>(texture.value)});
                 continue;
             }
             texture_materials.erase(texture);
@@ -2526,11 +2525,11 @@ void MaterialContainer::releaseModelResources(
                 queue->defer(std::move(retired));
             }
         }
-    } catch (const std::exception &error) {
-        if (logger) LOG_ERROR(logger, "failed to release model material resources: {}", error.what());
     } catch (...) {
-        if (logger) LOG_ERROR(logger, "failed to release model material resources");
+        report.add({ReleaseStage::material,
+                    ReleaseErrorCode::operation_failed, 0});
     }
+    return report;
 }
 
 namespace {

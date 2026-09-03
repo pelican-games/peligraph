@@ -8,7 +8,20 @@
 #include <cstddef>
 #include <string_view>
 
+namespace Pelican {
+class VertBufContainer;
+}
+
 namespace Pelican::test_support {
+
+class ManifestSceneLoadFault;
+
+void setSceneLoadFaultInjectorForTesting(
+    SceneLoader &loader, SceneLoadFaultInjector *injector) noexcept;
+void setDefaultSceneLoadFaultInjectorForTesting(
+    SceneLoadFaultInjector *injector) noexcept;
+void setMorphMetadataReleaseFailureForTesting(
+    VertBufContainer &geometry, bool enabled) noexcept;
 
 inline std::string_view manifestMutationId(std::string_view owner,
                                            std::string_view field) {

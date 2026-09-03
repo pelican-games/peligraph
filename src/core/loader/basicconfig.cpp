@@ -560,7 +560,9 @@ const AuthoringSceneDocument &MetadataCommitToken::document() const {
 }
 
 void MetadataCommitToken::prepareRuntimeIdentity(
-    SceneId scene_id, SceneAuthority authority) {
+    SceneId scene_id, SceneAuthority authority,
+    SceneLoadPhaseTrace &phase_trace) {
+    phase_trace.record(SceneLoadPhase::prepare);
     if (!impl_ || impl_->committed) {
         throw std::logic_error("scene metadata token is not preparable");
     }
@@ -586,6 +588,11 @@ void MetadataCommitToken::commit() noexcept {
     if (!impl_ || impl_->committed) return;
     impl_->owner->scene_metadata.swap(impl_->candidate);
     impl_->committed = true;
+}
+
+void MetadataCommitToken::commit(SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::commit_metadata);
+    commit();
 }
 
 MetadataCommitToken ProjectBasicConfig::prepareBorrowedSceneMetadata(

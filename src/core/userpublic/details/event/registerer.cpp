@@ -1,4 +1,5 @@
 #include "registerer.hpp"
+#include "../../../loader/sceneload.hpp"
 #include "../behavior/registerer.hpp"
 #include "../system/registerer.hpp"
 
@@ -272,6 +273,12 @@ void PreparedEventOutbox::flush() noexcept {
         destination_->pending_events.push_back(std::move(event));
     }
     events_.clear();
+}
+
+void PreparedEventOutbox::flush(
+    SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::flush);
+    flush();
 }
 
 EventOutboxScope::EventOutboxScope(PreparedEventOutbox &outbox) noexcept

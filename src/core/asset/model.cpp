@@ -32,6 +32,43 @@ namespace {
 
 constexpr std::string_view modelTemplateTable = "model-template";
 
+std::string releaseExceptionMessage(const std::exception_ptr &error) {
+    try {
+        if (error) std::rethrow_exception(error);
+    } catch (const std::exception &exception) {
+        return exception.what();
+    } catch (...) {
+        return "non-standard model candidate failure";
+    }
+    return "unknown model candidate failure";
+}
+
+ReleaseReport releaseReportFromException(
+    const std::exception_ptr &error) noexcept {
+    try {
+        if (error) std::rethrow_exception(error);
+    } catch (const ModelResourceReleaseException &exception) {
+        return exception.releaseReport();
+    } catch (...) {
+    }
+    return {};
+}
+
+void logReleaseReport(std::string_view context,
+                      const ReleaseReport &report) noexcept {
+    for (const auto &error : report.view()) {
+        if (logger) {
+            LOG_ERROR(logger, "{}: stage={} code={} index={}", context,
+                      releaseStageName(error.stage),
+                      releaseErrorCodeName(error.code), error.index);
+        }
+    }
+    if (report.overflow_count != 0 && logger) {
+        LOG_ERROR(logger, "{}: {} additional release errors", context,
+                  report.overflow_count);
+    }
+}
+
 struct ModelDeclaration {
     std::string name;
     std::string reference;
@@ -286,10 +323,17 @@ struct ModelAssetContainer::Impl {
     std::shared_ptr<PayloadTracker> tracker = std::make_shared<PayloadTracker>();
     std::uint64_t next_asset_identity = 1;
 
-    ~Impl() {
+    ReleaseReport releaseAllModels(bool deferred = false) noexcept {
+        ReleaseReport report;
         for (auto &[_, record] : records) {
-            releaseModelGpuResources(record.model, false);
+            report.append(releaseModelGpuResources(record.model, deferred));
         }
+        return report;
+    }
+
+    ~Impl() {
+        logReleaseReport("model container teardown release",
+                         releaseAllModels());
     }
 
     std::shared_ptr<ModelPayload> makePayload(std::string name) {
@@ -402,20 +446,36 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
         declarations.size(),
         [&](std::size_t index) { return prepareDeclaration(declarations[index]); }, 4);
     auto &loader = GET_MODULE(GltfLoader);
-    for (std::size_t index = 0; index < declarations.size(); ++index) {
-        auto model = loader.commit(
-            prepared[index],
-            GltfAuthoredAssetReference{declarations[index].reference});
-        try {
-            applyDeclarationBindings(model, declarations[index]);
-            impl_->add(std::move(declarations[index]), std::move(model));
-        } catch (...) {
-            // A throwing constructor is retried by the next scene load.  The
-            // current model is not in Impl yet, so return its allocations here;
-            // Impl's destructor returns every model that was already inserted.
-            releaseModelGpuResources(model, false);
-            throw;
+    try {
+        for (std::size_t index = 0; index < declarations.size(); ++index) {
+            auto model = loader.commit(
+                prepared[index],
+                GltfAuthoredAssetReference{declarations[index].reference});
+            try {
+                applyDeclarationBindings(model, declarations[index]);
+                impl_->add(std::move(declarations[index]),
+                           std::move(model));
+            } catch (...) {
+                const auto original = std::current_exception();
+                auto report = releaseReportFromException(original);
+                report.append(releaseModelGpuResources(model, false));
+                if (!report.empty()) {
+                    throw ModelResourceReleaseException{
+                        releaseExceptionMessage(original), report};
+                }
+                throw;
+            }
         }
+    } catch (...) {
+        const auto original = std::current_exception();
+        auto report = releaseReportFromException(original);
+        report.append(impl_->releaseAllModels());
+        if (!report.empty()) {
+            logReleaseReport("failed model candidate release", report);
+            throw ModelResourceReleaseException{
+                releaseExceptionMessage(original), report};
+        }
+        throw;
     }
 }
 

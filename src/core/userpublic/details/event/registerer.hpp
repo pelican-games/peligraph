@@ -19,6 +19,7 @@
 namespace Pelican {
 
 class GameContext;
+struct SceneLoadPhaseTrace;
 
 namespace internal {
 
@@ -260,6 +261,7 @@ class PreparedEventOutbox {
 
     void stageReserved(QueuedEvent event) noexcept;
     void flush() noexcept;
+    void flush(SceneLoadPhaseTrace &phase_trace) noexcept;
     std::size_t size() const noexcept { return events_.size(); }
 };
 

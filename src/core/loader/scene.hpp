@@ -18,6 +18,14 @@
 
 namespace Pelican {
 
+class SceneLoader;
+namespace test_support {
+void setSceneLoadFaultInjectorForTesting(
+    SceneLoader &loader, SceneLoadFaultInjector *injector) noexcept;
+void setDefaultSceneLoadFaultInjectorForTesting(
+    SceneLoadFaultInjector *injector) noexcept;
+} // namespace test_support
+
 struct SceneObjectTransform {
     glm::vec3 pos;
     glm::quat rotation;
@@ -48,8 +56,14 @@ DECLARE_MODULE(SceneLoader) {
     std::uint64_t next_authority_epoch = 1;
     std::uint64_t run_nonce = 0;
     SceneLoadFaultInjector *fault_injector = nullptr;
+    static SceneLoadFaultInjector *default_fault_injector_for_testing;
     struct RetirementState;
     std::unique_ptr<RetirementState> retirement_state;
+
+    friend void test_support::setSceneLoadFaultInjectorForTesting(
+        SceneLoader &loader, SceneLoadFaultInjector *injector) noexcept;
+    friend void test_support::setDefaultSceneLoadFaultInjectorForTesting(
+        SceneLoadFaultInjector *injector) noexcept;
 
     void bindObjectTransform(const std::string &name, GameObjectId object_id);
     void bindRuntimeObject(AuthoringObjectId authoring_object_id,
@@ -74,10 +88,6 @@ DECLARE_MODULE(SceneLoader) {
     }
     std::uint64_t runtimeSceneEpoch() const noexcept;
     SceneAuthority activeAuthority() const noexcept;
-    void setFaultInjectorForTesting(
-        SceneLoadFaultInjector *injector) noexcept {
-        fault_injector = injector;
-    }
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;
     }

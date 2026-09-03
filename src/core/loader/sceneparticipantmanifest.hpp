@@ -14,6 +14,7 @@ enum class SceneParticipantPresence : std::uint8_t {
 
 enum class SceneManifestRole : std::uint8_t {
     participant,
+    invariant,
     cache,
     production_root,
     excluded_wp380b,

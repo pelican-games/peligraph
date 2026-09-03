@@ -2,6 +2,7 @@
 #include "../src/core/loader/sceneloadfault.hpp"
 #include "../src/core/loader/sceneparticipantmanifest.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "../src/core/model/modelresourcerelease.hpp"
 #include "../src/core/userpublic/details/event/registerer.hpp"
 #include "scene_load_fault_test_support.hpp"
 
@@ -42,12 +43,30 @@ static_assert(noexcept(sceneParticipantManifest()));
 static_assert(noexcept(sceneParticipantPresenceName(
     SceneParticipantPresence::real)));
 
-TEST_CASE("WP380 result has only prepare early_publish and activate precommit phases",
+TEST_CASE("WP380c result phase enum covers the exact executor trace",
           "[WP380][contract][result]") {
     REQUIRE(static_cast<unsigned>(SceneLoadPhase::prepare) == 0);
     REQUIRE(static_cast<unsigned>(SceneLoadPhase::early_publish) == 1);
-    REQUIRE(static_cast<unsigned>(SceneLoadPhase::activate) == 2);
+    REQUIRE(static_cast<unsigned>(SceneLoadPhase::publish) == 2);
+    REQUIRE(static_cast<unsigned>(SceneLoadPhase::activate) == 3);
+    REQUIRE(static_cast<unsigned>(SceneLoadPhase::commit_metadata) == 4);
+    REQUIRE(static_cast<unsigned>(SceneLoadPhase::retire) == 5);
+    REQUIRE(static_cast<unsigned>(SceneLoadPhase::flush) == 6);
+    REQUIRE(static_cast<unsigned>(SceneLoadPhase::finish) == 7);
     REQUIRE(std::variant_size_v<SceneLoadResult> == 3);
+}
+
+TEST_CASE("WP380c release report has fixed capacity and explicit overflow",
+          "[WP380c][contract][model-release]") {
+    ReleaseReport report;
+    for (std::uint32_t index = 0; index < 10; ++index) {
+        report.add({ReleaseStage::vertbuf_morph_delta,
+                    ReleaseErrorCode::operation_failed, index});
+    }
+    REQUIRE(report.error_count == ReleaseReport::capacity);
+    REQUIRE(report.overflow_count == 2);
+    REQUIRE(report.errors.front().index == 0);
+    REQUIRE(report.errors.back().index == 7);
 }
 
 TEST_CASE("WP380 field manifest is unique complete and build-derived",
@@ -82,6 +101,7 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
     REQUIRE_FALSE(rows.empty());
     std::set<std::pair<std::string, std::string>> keys;
     std::set<std::string> mutations;
+    std::size_t real_participant_mutation_rows = 0;
     for (const auto &row : rows) {
         REQUIRE_FALSE(row.owner.empty());
         REQUIRE_FALSE(row.field.empty());
@@ -90,10 +110,37 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
         REQUIRE_FALSE(row.rollback.empty());
         REQUIRE_FALSE(row.retirement.empty());
         REQUIRE_FALSE(row.snapshot_schema.empty());
-        REQUIRE_FALSE(row.mutation_id.empty());
         REQUIRE(keys.emplace(row.owner, row.field).second);
-        REQUIRE(mutations.emplace(row.mutation_id).second);
+        if (!row.mutation_id.empty()) {
+            REQUIRE(mutations.emplace(row.mutation_id).second);
+        }
+
+        if (row.role == SceneManifestRole::participant &&
+            row.presence == SceneParticipantPresence::real &&
+            !row.mutation_id.empty()) {
+            ++real_participant_mutation_rows;
+        }
+        if (row.presence != SceneParticipantPresence::real ||
+            row.role == SceneManifestRole::invariant ||
+            row.role == SceneManifestRole::cache ||
+            row.role == SceneManifestRole::excluded_wp380b) {
+            REQUIRE(row.mutation_id.empty());
+        }
+        if (row.role == SceneManifestRole::production_root) {
+            REQUIRE(row.mutation_id.empty() ==
+                    (row.presence != SceneParticipantPresence::real));
+        }
     }
+    // WP380c v3 measures only real participant rows backed by an executor
+    // mutation call site. The other manifest rows are presence/schema
+    // inventory, not pretend mutation participants.
+    REQUIRE(real_participant_mutation_rows == 10);
+
+    REQUIRE_FALSE(manifestRow("rng_sequence", "current_seed")
+                      .mutation_id.empty());
+    REQUIRE(manifestRow("rng_sequence", "increment").mutation_id.empty());
+    REQUIRE(manifestRow("rng_sequence", "increment").role ==
+            SceneManifestRole::invariant);
 
     REQUIRE(manifestRow("metadata", "document").presence ==
             SceneParticipantPresence::real);
@@ -134,7 +181,7 @@ TEST_CASE("WP380 manifest fixes exclusions and all five production call sites",
     }
 }
 
-TEST_CASE("WP380 all five root disconnect mutations toggle the executor gate",
+TEST_CASE("WP380 every installed root disconnect mutation toggles the executor gate",
           "[WP380][contract][manifest][roots][mutation]") {
     struct RootCase {
         SceneLoadRoot root;
@@ -160,6 +207,13 @@ TEST_CASE("WP380 all five root disconnect mutations toggle the executor gate",
     for (const auto &entry : cases) {
         const auto mutation = manifestRow(entry.owner, entry.field).mutation_id;
         INFO("mutation=" << mutation);
+#if !PELICAN_WITH_RPC
+        if (entry.root == SceneLoadRoot::rpc) {
+            REQUIRE(mutation.empty());
+            continue;
+        }
+#endif
+        REQUIRE_FALSE(mutation.empty());
         test_support::ManifestSceneLoadFault injector{mutation};
 
         injector.setEnabled(false);
@@ -170,7 +224,7 @@ TEST_CASE("WP380 all five root disconnect mutations toggle the executor gate",
 
         injector.resetCalls();
         injector.setEnabled(true);
-        loader.setFaultInjectorForTesting(&injector);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
         auto request = SceneLoadRequest::borrowed(
             "known", projection, entry.root);
         const auto result = loader.load(std::move(request));
@@ -181,7 +235,7 @@ TEST_CASE("WP380 all five root disconnect mutations toggle the executor gate",
         REQUIRE(injector.saw(SceneLoadFaultPhase::prepare,
                              entry.owner));
     }
-    loader.setFaultInjectorForTesting(nullptr);
+    test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
 }
 
 TEST_CASE("WP380 event discard bypass leaves the C event in the live queue",

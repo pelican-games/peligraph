@@ -25,6 +25,8 @@
 
 namespace Pelican {
 
+struct SceneLoadPhaseTrace;
+
 inline constexpr std::uint32_t morphWeightDescriptorVersionV1 = 1;
 inline constexpr std::uint32_t morphCommitResetHistory = 1u << 0u;
 inline constexpr std::uint32_t morphCommitDiscontinuity = 1u << 1u;
@@ -379,6 +381,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     PreparedSceneState prepareSceneReplacement(
         std::vector<std::uint32_t> &retire_indices);
     void publishPreparedScene(PreparedSceneState &&prepared) noexcept;
+    void publishPreparedScene(PreparedSceneState &&prepared,
+                              SceneLoadPhaseTrace &phase_trace) noexcept;
     StagedModelInstance stagePreparedSceneModel(
         PreparedSceneState &prepared, const ModelTemplate &model);
     void setPreparedSceneModelMatrix(StagedModelInstance &staged,

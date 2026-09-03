@@ -435,10 +435,27 @@ class LiveGltfResourceSink final : public GltfResourceSink {
         : materials_{materials}, geometry_{geometry} {}
 
     ~LiveGltfResourceSink() override {
-        if (committed_ || !owned_) return;
-        materials_.releaseModelResources(std::move(owned_->materials),
-                                         std::move(owned_->textures), false);
-        geometry_.releaseModelGeometry(std::move(owned_->geometry), false);
+        const auto report = release();
+        for (const auto &error : report.view()) {
+            if (logger) {
+                LOG_ERROR(logger,
+                          "failed glTF candidate release: stage={} code={} index={}",
+                          releaseStageName(error.stage),
+                          releaseErrorCodeName(error.code), error.index);
+            }
+        }
+    }
+
+    ReleaseReport release() noexcept {
+        ReleaseReport report;
+        if (committed_ || !owned_) return report;
+        report.append(materials_.releaseModelResources(
+            std::move(owned_->materials), std::move(owned_->textures),
+            false));
+        report.append(geometry_.releaseModelGeometry(
+            std::move(owned_->geometry), false));
+        owned_.reset();
+        return report;
     }
 
     GlobalTextureId registerTexture(vk::Extent3D extent, const void *data,
@@ -2446,10 +2463,25 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared,
         true,
         activeMaterialShaderDefines(),
     };
-    auto model = loader.load();
-    model.authored_asset_reference =
-        authored_value.value_or(std::string{});
-    return model;
+    try {
+        auto model = loader.load();
+        model.authored_asset_reference =
+            authored_value.value_or(std::string{});
+        return model;
+    } catch (const std::exception &error) {
+        auto report = resources.release();
+        if (!report.empty()) {
+            throw ModelResourceReleaseException{error.what(), report};
+        }
+        throw;
+    } catch (...) {
+        auto report = resources.release();
+        if (!report.empty()) {
+            throw ModelResourceReleaseException{
+                "non-standard glTF commit failure", report};
+        }
+        throw;
+    }
 }
 
 ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
@@ -2486,17 +2518,39 @@ ModelTemplate GltfLoader::loadGltf(std::string path,
     return commit(prepareGltf(std::move(path), std::move(fragment)));
 }
 
-void releaseModelGpuResources(ModelTemplate &model, bool deferred) noexcept {
+ReleaseReport releaseModelGpuResources(ModelTemplate &model,
+                                       bool deferred) noexcept {
+    ReleaseReport report;
     auto resources = std::move(model.gpu_resources);
     model.gpu_resources.reset();
-    if (!resources || std::exchange(resources->released, true)) return;
+    if (!resources || std::exchange(resources->released, true)) return report;
     if (auto *materials = FastModuleContainer::tryGet<MaterialContainer>()) {
-        materials->releaseModelResources(std::move(resources->materials),
-                                         std::move(resources->textures), deferred);
+        report.append(materials->releaseModelResources(
+            std::move(resources->materials), std::move(resources->textures),
+            deferred));
+    } else {
+        for (const auto material : resources->materials) {
+            report.add({ReleaseStage::material,
+                        ReleaseErrorCode::owner_unavailable,
+                        static_cast<std::uint32_t>(material.value)});
+        }
+        for (const auto texture : resources->textures) {
+            report.add({ReleaseStage::texture,
+                        ReleaseErrorCode::owner_unavailable,
+                        static_cast<std::uint32_t>(texture.value)});
+        }
     }
     if (auto *geometry = FastModuleContainer::tryGet<VertBufContainer>()) {
-        geometry->releaseModelGeometry(std::move(resources->geometry), deferred);
+        report.append(geometry->releaseModelGeometry(
+            std::move(resources->geometry), deferred));
+    } else {
+        for (std::uint32_t index = 0; index < resources->geometry.size();
+             ++index) {
+            report.add({ReleaseStage::vertbuf_index,
+                        ReleaseErrorCode::owner_unavailable, index});
+        }
     }
+    return report;
 }
 
 } // namespace Pelican

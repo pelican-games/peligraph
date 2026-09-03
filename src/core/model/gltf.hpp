@@ -3,8 +3,10 @@
 #include "../container.hpp"
 #include "../loader/pathresolver.hpp"
 #include "modeltemplate.hpp"
+#include "modelresourcerelease.hpp"
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 
 namespace Pelican {
@@ -27,6 +29,20 @@ class PreparedGltf {
 // A filesystem path is intentionally not implicitly convertible to this type.
 struct GltfAuthoredAssetReference {
     std::string value;
+};
+
+class ModelResourceReleaseException : public std::runtime_error {
+    ReleaseReport release_report_;
+
+  public:
+    ModelResourceReleaseException(std::string message,
+                                  ReleaseReport release_report)
+        : std::runtime_error{std::move(message)},
+          release_report_{release_report} {}
+
+    const ReleaseReport &releaseReport() const noexcept {
+        return release_report_;
+    }
 };
 
 DECLARE_MODULE(GltfLoader) {
@@ -60,6 +76,7 @@ DECLARE_MODULE(GltfLoader) {
 // Returns a failed candidate immediately. When deferred is true, material
 // slots, Vulkan objects, and geometry ranges remain unavailable/alive for the
 // configured in-flight window as required by their command-buffer lifetime.
-void releaseModelGpuResources(ModelTemplate &model, bool deferred) noexcept;
+ReleaseReport releaseModelGpuResources(ModelTemplate &model,
+                                       bool deferred) noexcept;
 
 } // namespace Pelican

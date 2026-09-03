@@ -78,12 +78,6 @@ void rollbackSceneRngCandidate(
         leaked.state = candidate.state;
         publish = true;
     }
-    if (sceneLoadMutationEnabled(
-            injector, SceneLoadFaultPhase::flush, "rng_sequence",
-            scene_load_mutation::rng_increment)) {
-        leaked.increment = candidate.increment;
-        publish = true;
-    }
     if (publish) rng.publishPreparedSequence(leaked);
 }
 

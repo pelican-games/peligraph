@@ -522,36 +522,67 @@ ModelTemplate::PrimitiveRefInfo VertBufContainer::addSkinnedPrimitiveEntry(Commo
     return addSkinnedPrimitiveAllocation(std::move(data)).primitive;
 }
 
-void VertBufContainer::releaseGeometryNow(
+ReleaseReport VertBufContainer::releaseGeometryNow(
     std::span<const ModelGeometryAllocation> allocations) noexcept {
-    try {
-        for (const auto &allocation : allocations) {
+    ReleaseReport report;
+    const auto attempt = [&report](ReleaseStage stage, std::uint32_t index,
+                                   auto &&operation) noexcept {
+        try {
+            operation();
+        } catch (...) {
+            report.add({stage, ReleaseErrorCode::operation_failed, index});
+        }
+    };
+
+    for (std::uint32_t index = 0; index < allocations.size(); ++index) {
+        const auto &allocation = allocations[index];
+        attempt(ReleaseStage::vertbuf_index, index, [&] {
             releaseRange(free_indices, allocation.primitive.index_offset,
                          allocation.primitive.index_count);
-            releaseRange(allocation.primitive.skinned ? free_skin_vertices : free_vertices,
-                         static_cast<uint32_t>(allocation.primitive.vert_offset),
-                         allocation.vertex_count);
-            if (allocation.morph_delta_count != 0) {
-                const std::vector<MorphVertexGpuMetadata> empty(allocation.vertex_count);
-                auto &metadata_buffer = allocation.primitive.skinned
-                                            ? morph_skinned_metadata_buffer
-                                            : morph_static_metadata_buffer;
-                GET_MODULE(VulkanManageCore).writeBuf(
-                    metadata_buffer, empty.data(),
-                    sizeof(MorphVertexGpuMetadata) * allocation.primitive.vert_offset,
-                    sizeof(MorphVertexGpuMetadata) * empty.size());
-                releaseRange(free_morph_deltas, allocation.morph_delta_offset,
-                             allocation.morph_delta_count);
+        });
+        attempt(allocation.primitive.skinned
+                    ? ReleaseStage::vertbuf_skinned_vertex
+                    : ReleaseStage::vertbuf_static_vertex,
+                index, [&] {
+                    releaseRange(
+                        allocation.primitive.skinned ? free_skin_vertices
+                                                     : free_vertices,
+                        static_cast<uint32_t>(
+                            allocation.primitive.vert_offset),
+                        allocation.vertex_count);
+                });
+        if (allocation.morph_delta_count == 0) continue;
+
+        attempt(ReleaseStage::vertbuf_morph_delta, index, [&] {
+            if (fail_morph_metadata_release_for_testing) {
+                throw std::runtime_error(
+                    "injected morph metadata release failure");
             }
-        }
-    } catch (...) {
-        if (logger) LOG_ERROR(logger, "failed to return retired model geometry ranges");
+            const std::vector<MorphVertexGpuMetadata> empty(
+                allocation.vertex_count);
+            auto &metadata_buffer = allocation.primitive.skinned
+                                        ? morph_skinned_metadata_buffer
+                                        : morph_static_metadata_buffer;
+            GET_MODULE(VulkanManageCore).writeBuf(
+                metadata_buffer, empty.data(),
+                sizeof(MorphVertexGpuMetadata) *
+                    allocation.primitive.vert_offset,
+                sizeof(MorphVertexGpuMetadata) * empty.size());
+        });
+        // Metadata clearing failure must not retain this range or prevent a
+        // later primitive's independent ranges from being returned.
+        attempt(ReleaseStage::vertbuf_morph_delta, index, [&] {
+            releaseRange(free_morph_deltas,
+                         allocation.morph_delta_offset,
+                         allocation.morph_delta_count);
+        });
     }
+    return report;
 }
 
-void VertBufContainer::releaseModelGeometry(
+ReleaseReport VertBufContainer::releaseModelGeometry(
     std::vector<ModelGeometryAllocation> allocations, bool deferred) noexcept {
-    if (allocations.empty()) return;
+    if (allocations.empty()) return {};
     if (deferred) {
         struct DeferredRelease {
             VertBufContainer *owner{};
@@ -571,16 +602,27 @@ void VertBufContainer::releaseModelGeometry(
             ~DeferredRelease() {
                 if (!owner) return;
                 const auto lease = callback.acquire();
-                if (lease) owner->releaseModelGeometry(std::move(allocations), false);
+                if (!lease) return;
+                const auto report = owner->releaseModelGeometry(
+                    std::move(allocations), false);
+                for (const auto &error : report.view()) {
+                    if (logger) {
+                        LOG_ERROR(logger,
+                                  "deferred model geometry release failed: stage={} code={} index={}",
+                                  releaseStageName(error.stage),
+                                  releaseErrorCodeName(error.code),
+                                  error.index);
+                    }
+                }
             }
         };
         if (auto *queue = FastModuleContainer::tryGet<DeletionQueue>()) {
             queue->defer(DeferredRelease{this, deferred_callbacks.callback(),
                                          std::move(allocations)});
-            return;
+            return {};
         }
     }
-    releaseGeometryNow(allocations);
+    return releaseGeometryNow(allocations);
 }
 
 size_t VertBufContainer::allocatedIndexCountForTesting() const {

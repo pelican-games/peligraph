@@ -2,6 +2,7 @@
 
 #include "resolvedscene.hpp"
 
+#include <array>
 #include <cstdint>
 #include <exception>
 #include <functional>
@@ -25,8 +26,32 @@ struct SceneAuthority {
 enum class SceneLoadPhase : std::uint8_t {
     prepare,
     early_publish,
+    publish,
     activate,
+    commit_metadata,
+    retire,
+    flush,
+    finish,
 };
+
+inline constexpr std::size_t sceneLoadPhaseCount = 8;
+
+struct SceneLoadPhaseTrace {
+    std::array<SceneLoadPhase, sceneLoadPhaseCount> phases{};
+    std::uint8_t count = 0;
+
+    void record(SceneLoadPhase phase) noexcept {
+        if (count != 0 && phases[count - 1U] == phase) return;
+        if (count < phases.size()) phases[count++] = phase;
+    }
+
+    std::span<const SceneLoadPhase> view() const noexcept {
+        return {phases.data(), count};
+    }
+};
+
+static_assert(noexcept(std::declval<SceneLoadPhaseTrace &>().record(
+    SceneLoadPhase::prepare)));
 
 // Fault injection is deliberately orthogonal to the externally reported
 // pre-commit phases.  It names every executor edge, including the no-throw
@@ -70,8 +95,6 @@ inline constexpr std::string_view event_pending = "queue.event.bypass";
 inline constexpr std::string_view rng_current_seed =
     "queue.rng-current-seed.bypass";
 inline constexpr std::string_view rng_state = "queue.rng-state.bypass";
-inline constexpr std::string_view rng_increment =
-    "queue.rng-increment.bypass";
 inline constexpr std::string_view pending_scene =
     "queue.pending-scene.bypass";
 inline constexpr std::string_view behavior_attachments =
@@ -91,6 +114,7 @@ struct PreCommitFailure {
     SceneLoadPhase phase = SceneLoadPhase::prepare;
     std::string error;
     std::exception_ptr exception;
+    std::vector<std::string> release_errors;
 };
 
 struct CommittedWithEffectFailure {
@@ -100,6 +124,7 @@ struct CommittedWithEffectFailure {
 
 struct SceneLoadCommitted {
     SceneAuthority active_authority{};
+    SceneLoadPhaseTrace phase_trace{};
 };
 
 using SceneLoadResult =
@@ -115,9 +140,11 @@ class MetadataCommitToken {
 
     explicit MetadataCommitToken(std::unique_ptr<Impl> impl) noexcept;
     void prepareRuntimeIdentity(SceneId scene_id,
-                                SceneAuthority authority);
+                                SceneAuthority authority,
+                                SceneLoadPhaseTrace &phase_trace);
     void publishDocumentOnlyForFaultInjection() noexcept;
     void commit() noexcept;
+    void commit(SceneLoadPhaseTrace &phase_trace) noexcept;
     friend class ProjectBasicConfig;
     friend class SceneLoader;
 

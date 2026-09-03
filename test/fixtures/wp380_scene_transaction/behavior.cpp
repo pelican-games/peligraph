@@ -70,6 +70,12 @@ class SceneTransactionBehavior final : public Pelican::Behavior {
         ProbeV1 probe{.scene_tag = params.scene_tag};
         pelican_wp380_host_read_probe(&probe);
         probe.random_value = context.random();
+        if (params.fail_after_effects) {
+            // Exercise the production seed mutation path while the scene-load
+            // RNG candidate is active. Rollback must discard this seed.
+            context.setSeed(380U +
+                            static_cast<std::uint64_t>(params.scene_tag));
+        }
         context.emit(Pelican::Wp380Fixture::Event{
             .scene_tag = params.scene_tag,
             .payload_sentinel = params.scene_tag * 1000 + 380,

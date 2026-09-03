@@ -10,6 +10,7 @@
 #include "../vkcore/deferredcallback.hpp"
 #include "../vkcore/image.hpp"
 #include "material.hpp"
+#include "../model/modelresourcerelease.hpp"
 #include <array>
 #include <cstdint>
 #include <glm/glm.hpp>
@@ -311,9 +312,10 @@ DECLARE_MODULE(MaterialContainer) {
     // candidate releases immediately; a published generation moves Vulkan
     // objects to DeletionQueue and delays material-slot reuse until the
     // in-flight window has passed.
-    void releaseModelResources(std::vector<GlobalMaterialId> material_ids,
-                               std::vector<GlobalTextureId> texture_ids,
-                               bool deferred) noexcept;
+    ReleaseReport releaseModelResources(
+        std::vector<GlobalMaterialId> material_ids,
+        std::vector<GlobalTextureId> texture_ids,
+        bool deferred) noexcept;
     struct ReloadableMaterialValuesBinding {
         std::string name;
         GlobalMaterialId material;

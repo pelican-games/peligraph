@@ -1,5 +1,6 @@
 #include "behaviorarena.hpp"
 #include "../registrationownerhost.hpp"
+#include "../loader/sceneload.hpp"
 
 #include "../ecs/core.hpp"
 #include "../log.hpp"
@@ -628,6 +629,12 @@ void PreparedBehaviorSceneReconciliation::publish() noexcept {
     impl_->published = true;
 }
 
+void PreparedBehaviorSceneReconciliation::publish(
+    SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::publish);
+    publish();
+}
+
 void PreparedBehaviorSceneReconciliation::activate() {
     if (!impl_ || !impl_->published || impl_->finished) {
         throw std::logic_error(
@@ -674,6 +681,12 @@ void PreparedBehaviorSceneReconciliation::activate() {
     }
 }
 
+void PreparedBehaviorSceneReconciliation::activate(
+    SceneLoadPhaseTrace &phase_trace) {
+    phase_trace.record(SceneLoadPhase::activate);
+    activate();
+}
+
 void PreparedBehaviorSceneReconciliation::rollback() noexcept {
     if (!impl_ || impl_->finished) return;
     auto &arena = *impl_->arena;
@@ -711,6 +724,12 @@ void PreparedBehaviorSceneReconciliation::finish() noexcept {
     impl_->destroyDetached(impl_->published);
     impl_->releasePreparedParams();
     impl_->finished = true;
+}
+
+void PreparedBehaviorSceneReconciliation::finish(
+    SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::retire);
+    finish();
 }
 
 std::unique_ptr<PreparedBehaviorSceneReconciliation>

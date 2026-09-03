@@ -1,4 +1,5 @@
 #include "polygoninstancecontainer.hpp"
+#include "../loader/sceneload.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../shader/pelican_sets.hpp"
@@ -501,6 +502,13 @@ void PolygonInstanceContainer::publishPreparedScene(
     material_override_frames.swap(prepared.material_override_frames);
     material_absolute_override_frames.swap(
         prepared.material_absolute_override_frames);
+}
+
+void PolygonInstanceContainer::publishPreparedScene(
+    PreparedSceneState &&prepared,
+    SceneLoadPhaseTrace &phase_trace) noexcept {
+    phase_trace.record(SceneLoadPhase::early_publish);
+    publishPreparedScene(std::move(prepared));
 }
 
 StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(

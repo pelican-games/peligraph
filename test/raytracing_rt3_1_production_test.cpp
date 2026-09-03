@@ -6,6 +6,7 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/appflow/framephase.hpp"
 #include "../src/core/appflow/teardown.hpp"
+#include "../src/core/asset/model.hpp"
 #include "../src/core/communication/editorcommandservice.hpp"
 #if PELICAN_WITH_RPC
 #include "../src/core/communication/editorrpchandlers.hpp"
@@ -32,6 +33,9 @@
 #include "scene_load_fault_test_support.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/light/lightcontainer.hpp"
+#include "../src/core/material/materialcontainer.hpp"
+#include "../src/core/material/standardmaterialresource.hpp"
+#include "../src/core/model/vertbufcontainer.hpp"
 #include "../src/core/phys/physworld.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
@@ -47,7 +51,9 @@
 #include "../src/core/userpublic/details/component/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
 #include "../src/core/userpublic/deterministicrng.hpp"
+#include "../src/core/userpublic/pelican_core.hpp"
 #include "gltf_fragment_fixture.hpp"
+#include "morph_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -2479,6 +2485,20 @@ void requireWp380Observed(const Wp380Probe &actual,
             expected.pending_request_issued);
 }
 
+void requireWp380CommittedPhaseTrace(const SceneLoadCommitted &committed) {
+    constexpr std::array expected{
+        SceneLoadPhase::prepare,
+        SceneLoadPhase::early_publish,
+        SceneLoadPhase::publish,
+        SceneLoadPhase::activate,
+        SceneLoadPhase::commit_metadata,
+        SceneLoadPhase::retire,
+        SceneLoadPhase::flush,
+        SceneLoadPhase::finish,
+    };
+    REQUIRE(std::ranges::equal(committed.phase_trace.view(), expected));
+}
+
 struct Wp380RuntimeCleanup {
     ~Wp380RuntimeCleanup() {
         try {
@@ -2597,6 +2617,8 @@ TEST_CASE(
         });
     REQUIRE(b_result.has_value());
     REQUIRE(std::holds_alternative<SceneLoadCommitted>(*b_result));
+    requireWp380CommittedPhaseTrace(
+        std::get<SceneLoadCommitted>(*b_result));
 
     Wp380Probe expected_b{};
     Wp380Probe observed_b{};
@@ -2691,6 +2713,7 @@ TEST_CASE(
     REQUIRE(d_result.has_value());
     const auto *committed_d = std::get_if<SceneLoadCommitted>(&*d_result);
     REQUIRE(committed_d != nullptr);
+    requireWp380CommittedPhaseTrace(*committed_d);
     // C consumed epoch 3 even though it rolled back.  D therefore proves the
     // failed candidate authority cannot be reused (same-process ABA).
     REQUIRE(committed_d->active_authority.scene_epoch == 4);
@@ -2720,6 +2743,412 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "WP380c every real participant mutation changes its manifest field",
+    "[WP380c][transaction][manifest][mutation][gpu]") {
+    enum class MutationScenario {
+        metadata_document,
+        metadata_projection,
+        transient_models,
+        ecs_liveness,
+        light_names,
+        behavior_attachments,
+        event_pending,
+        rng_current_seed,
+        rng_state,
+        pending_scene,
+    };
+    struct MutationCase {
+        std::string_view owner;
+        std::string_view field;
+        SceneLoadFaultPhase phase;
+        MutationScenario scenario;
+    };
+    constexpr std::array cases{
+        MutationCase{"metadata", "document", SceneLoadFaultPhase::commit,
+                     MutationScenario::metadata_document},
+        MutationCase{"metadata", "projection", SceneLoadFaultPhase::prepare,
+                     MutationScenario::metadata_projection},
+        MutationCase{"scene_loader", "transient_models",
+                     SceneLoadFaultPhase::retire,
+                     MutationScenario::transient_models},
+        MutationCase{"ecs", "entity_liveness", SceneLoadFaultPhase::publish,
+                     MutationScenario::ecs_liveness},
+        MutationCase{"light", "directional_names",
+                     SceneLoadFaultPhase::publish,
+                     MutationScenario::light_names},
+        MutationCase{"behavior_arena", "scene_attachments",
+                     SceneLoadFaultPhase::activate,
+                     MutationScenario::behavior_attachments},
+        MutationCase{"event_outbox", "pending_events",
+                     SceneLoadFaultPhase::flush,
+                     MutationScenario::event_pending},
+        MutationCase{"rng_sequence", "current_seed",
+                     SceneLoadFaultPhase::flush,
+                     MutationScenario::rng_current_seed},
+        MutationCase{"rng_sequence", "state", SceneLoadFaultPhase::flush,
+                     MutationScenario::rng_state},
+        MutationCase{"pending_scene", "request", SceneLoadFaultPhase::flush,
+                     MutationScenario::pending_scene},
+    };
+    STATIC_REQUIRE(cases.size() == 10);
+
+    for (const auto &entry : cases) {
+        DYNAMIC_SECTION(entry.owner << '.' << entry.field) {
+            setupLogger();
+            Wp374aProjectRoot project{"wp380c_manifest_mutation"};
+            writeWp374aProject(project.path, std::nullopt, false, false, true);
+            const auto a_document = wp380Document(1, "A", "A_pending", false);
+            const auto b_document = wp380Document(2, "B", "D", false);
+            const auto c_document = wp380Document(3, "C", "E", true);
+            writeWp374aText(project.path / "scene.json", a_document.dump(2));
+
+            const std::filesystem::path fixture_path{
+                PELICAN_WP380_BEHAVIOR_FIXTURE};
+            FastModuleContainer modules;
+            Wp380RuntimeCleanup cleanup;
+            loadWp374aScene(project.path, fixture_path, "A", 380);
+            const auto fixture = wp380Exports(fixture_path);
+            auto &config = GET_MODULE(ProjectBasicConfig);
+            auto &loader = GET_MODULE(SceneLoader);
+            auto &events = internal::getEventRegisterer();
+            internal::clearPendingEvents();
+
+            const auto mutation = wp380MutationId(entry.owner, entry.field);
+            test_support::ManifestSceneLoadFault injector{mutation};
+            struct InjectorReset {
+                SceneLoader &loader;
+                ~InjectorReset() {
+                    test_support::setSceneLoadFaultInjectorForTesting(
+                        loader, nullptr);
+                }
+            } reset{loader};
+            const auto enable = [&] {
+                injector.setEnabled(true);
+                test_support::setSceneLoadFaultInjectorForTesting(
+                    loader, &injector);
+            };
+            const auto import = [&](const Json &document,
+                                    std::string scene_id) {
+                std::optional<SceneLoadResult> result;
+                config.importSceneDocument(
+                    document.dump(), [&](SceneLoadRequest &&request) {
+                        request.scene_id = std::move(scene_id);
+                        auto loaded = loader.load(std::move(request));
+                        result = loaded;
+                        return loaded;
+                    });
+                REQUIRE(result.has_value());
+                return *result;
+            };
+
+            if (entry.scenario == MutationScenario::metadata_projection) {
+                const auto generation =
+                    config.sceneProjectionState().resolverGeneration();
+                enable();
+                REQUIRE_THROWS_WITH(
+                    import(b_document, "B"),
+                    ContainsSubstring("injected scene metadata prepare drop"));
+                REQUIRE(config.sceneProjectionState().resolverGeneration() ==
+                        generation);
+                REQUIRE(loader.currentScene() == "A");
+            } else if (entry.scenario ==
+                       MutationScenario::transient_models) {
+                auto &geometry = GET_MODULE(VertBufContainer);
+                const auto baseline =
+                    geometry.allocatedIndexCountForTesting();
+                (void)loader.loadTransientGltf("models/chair.glb",
+                                               std::nullopt);
+                REQUIRE(geometry.allocatedIndexCountForTesting() > baseline);
+                enable();
+                const auto result = import(b_document, "B");
+                REQUIRE(std::holds_alternative<SceneLoadCommitted>(result));
+                loader.drainRetirementQueue();
+                REQUIRE(geometry.allocatedIndexCountForTesting() > baseline);
+            } else if (entry.scenario == MutationScenario::light_names) {
+                enable();
+                const auto result = import(b_document, "B");
+                REQUIRE(std::holds_alternative<SceneLoadCommitted>(result));
+                Wp380Probe observed{};
+                REQUIRE(fixture.read_probe(2, &observed));
+                REQUIRE(observed.light_name_tag == 1);
+            } else if (entry.scenario ==
+                       MutationScenario::behavior_attachments) {
+                enable();
+                const auto result = import(b_document, "B");
+                REQUIRE(std::holds_alternative<SceneLoadCommitted>(result));
+                Wp380Probe absent{};
+                REQUIRE_FALSE(fixture.read_probe(2, &absent));
+            } else {
+                const auto b_result = import(b_document, "B");
+                REQUIRE(std::holds_alternative<SceneLoadCommitted>(b_result));
+                const auto rng_before =
+                    GET_MODULE(DeterministicRng).prepareSequence();
+                const auto events_before = events.isolationSnapshot();
+                enable();
+
+                std::optional<SceneLoadResult> c_result;
+                REQUIRE_THROWS_WITH(
+                    config.importSceneDocument(
+                        c_document.dump(), [&](SceneLoadRequest &&request) {
+                            request.scene_id = "C";
+                            auto loaded = loader.load(std::move(request));
+                            c_result = loaded;
+                            return loaded;
+                        }),
+                    ContainsSubstring("WP380 fixture activation failure"));
+                REQUIRE(c_result.has_value());
+                REQUIRE(std::holds_alternative<PreCommitFailure>(*c_result));
+
+                if (entry.scenario ==
+                    MutationScenario::metadata_document) {
+                    REQUIRE(test_support::authoring(config.sceneDocument())
+                                .rawJson() == c_document);
+                } else if (entry.scenario ==
+                           MutationScenario::ecs_liveness) {
+                    REQUIRE(wp380HasLiveTransformX(30.0F));
+                } else if (entry.scenario ==
+                           MutationScenario::event_pending) {
+                    REQUIRE(events.isolationSnapshot().pending !=
+                            events_before.pending);
+                } else if (entry.scenario ==
+                           MutationScenario::rng_current_seed) {
+                    REQUIRE(GET_MODULE(DeterministicRng)
+                                .prepareSequence()
+                                .current_seed != rng_before.current_seed);
+                } else if (entry.scenario ==
+                           MutationScenario::rng_state) {
+                    REQUIRE(GET_MODULE(DeterministicRng)
+                                .prepareSequence()
+                                .state != rng_before.state);
+                } else {
+                    REQUIRE(entry.scenario ==
+                            MutationScenario::pending_scene);
+                    REQUIRE(loader.pendingSceneForTesting() ==
+                            std::optional<SceneId>{"E"});
+                }
+            }
+            REQUIRE(injector.saw(entry.phase, entry.owner));
+        }
+    }
+}
+
+TEST_CASE(
+    "WP380c precommit model failure reports release error and restores all GPU ownership columns",
+    "[WP380c][transaction][model-release][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"wp380c_model_release"};
+    writeWp374aProject(project.path, std::nullopt, false, false, true);
+    TestGltfFragmentFixture::writeGlb(project.path / "models" /
+                                      "textured.glb");
+    TestMorphFixture::writeGlb(project.path / "models" / "skinned.glb",
+                               {.skinned = true, .target_count = 0});
+    TestMorphFixture::writeGlb(project.path / "models" / "morph.glb");
+    writeWp374aText(
+        project.path / "retry_bindings.json",
+        R"json({"schema":"pelican.material_bindings","version":1,"model":"models/morph.glb","bindings":[{"usd_path":"/Retry/Missing","mesh":999,"primitive":0,"material":"missing","routing":{"alpha_mode":"opaque","double_sided":false}}]})json");
+    writeWp374aText(
+        project.path / "assets.json",
+        Json{{"schema", "pelican.asset_data"},
+             {"version", 1},
+             {"models",
+              Json::array(
+                  {{{"name", "chair"},
+                    {"path", "models/textured.glb"}},
+                   {{"name", "skinned"},
+                    {"path", "models/skinned.glb"}},
+                   {{"name", "failing"},
+                    {"path", "models/morph.glb"},
+                    {"material_bindings", "retry_bindings.json"}}})},
+             {"textures", Json::array()}}
+            .dump(2));
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    (void)configureWp374aRuntime(project.path, 380);
+    TestSupport::requireVulkanDevice("WP380c model release acceptance");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    (void)GET_MODULE(StandardMaterialResource);
+    auto &geometry = GET_MODULE(VertBufContainer);
+    auto &materials = GET_MODULE(MaterialContainer);
+    const auto baseline_indices = geometry.allocatedIndexCountForTesting();
+    const auto baseline_static =
+        geometry.allocatedVertexCountForTesting(false);
+    const auto baseline_skinned =
+        geometry.allocatedVertexCountForTesting(true);
+    const auto baseline_morph =
+        geometry.allocatedMorphDeltaCountForTesting();
+    const auto baseline_materials = materials.materialCountForTesting();
+    const auto baseline_textures = materials.textureCountForTesting();
+
+    test_support::setMorphMetadataReleaseFailureForTesting(geometry, true);
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    const auto result = GET_MODULE(SceneLoader).load(
+        SceneLoadRequest::borrowed("main", config.sceneProjectionState(),
+                                   SceneLoadRoot::startup));
+    test_support::setMorphMetadataReleaseFailureForTesting(geometry, false);
+
+    const auto *failure = std::get_if<PreCommitFailure>(&result);
+    REQUIRE(failure != nullptr);
+    REQUIRE(failure->phase == SceneLoadPhase::prepare);
+    REQUIRE(failure->error.find("targets missing GLB mesh 999 primitive 0") !=
+            std::string::npos);
+    REQUIRE(failure->release_errors ==
+            std::vector<std::string>{"vertbuf.morph_delta"});
+    REQUIRE_FALSE(FastModuleContainer::isInitialized<ModelAssetContainer>());
+    REQUIRE(geometry.allocatedIndexCountForTesting() == baseline_indices);
+    REQUIRE(geometry.allocatedVertexCountForTesting(false) == baseline_static);
+    REQUIRE(geometry.allocatedVertexCountForTesting(true) == baseline_skinned);
+    REQUIRE(geometry.allocatedMorphDeltaCountForTesting() == baseline_morph);
+    REQUIRE(materials.materialCountForTesting() == baseline_materials);
+    REQUIRE(materials.textureCountForTesting() == baseline_textures);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE(
+    "WP380c production pending RPC and import roots reach the executor",
+    "[WP380c][transaction][roots][gpu]") {
+    enum class RootCase {
+        pending,
+        rpc,
+        import_v1,
+        import_v2,
+    };
+    constexpr std::array cases{
+        RootCase::pending,
+#if PELICAN_WITH_RPC
+        RootCase::rpc,
+#endif
+        RootCase::import_v1,
+        RootCase::import_v2,
+    };
+
+    for (const auto root_case : cases) {
+        const auto section_name =
+            root_case == RootCase::pending
+                ? "pending"
+                : root_case == RootCase::rpc
+                      ? "rpc"
+                      : root_case == RootCase::import_v1 ? "import_v1"
+                                                         : "import_v2";
+        DYNAMIC_SECTION(section_name) {
+        setupLogger();
+        Wp374aProjectRoot project{"wp380c_root"};
+        writeWp374aProject(project.path, std::nullopt, false, false, true);
+        const auto a_document = wp380Document(1, "A", "A_pending", false);
+        const auto b_document = wp380Document(2, "B", "B_pending", false);
+        writeWp374aText(project.path / "scene.json", a_document.dump(2));
+
+        FastModuleContainer modules;
+        Wp380RuntimeCleanup cleanup;
+        loadWp374aScene(project.path, std::nullopt, "A", 380);
+        auto &loader = GET_MODULE(SceneLoader);
+        auto &config = GET_MODULE(ProjectBasicConfig);
+
+        SceneLoadRoot root = SceneLoadRoot::pending;
+        std::string_view owner = "root.pending";
+        std::string_view field = "apply";
+        if (root_case == RootCase::rpc) {
+            root = SceneLoadRoot::rpc;
+            owner = "root.rpc";
+            field = "direct_load";
+        } else if (root_case == RootCase::import_v1) {
+            root = SceneLoadRoot::import_unversioned;
+            owner = "root.import.unversioned";
+            field = "callback";
+        } else if (root_case == RootCase::import_v2) {
+            root = SceneLoadRoot::import_versioned;
+            owner = "root.import.versioned";
+            field = "callback";
+        }
+        INFO("production root=" << owner);
+        test_support::ManifestSceneLoadFault injector{
+            wp380MutationId(owner, field)};
+        injector.setEnabled(true);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
+
+        if (root_case == RootCase::pending) {
+            loader.requestLoad("A_pending");
+            REQUIRE_THROWS_WITH(
+                updateFrameState(),
+                ContainsSubstring("injected scene-load root disconnect"));
+            REQUIRE(loader.pendingSceneForTesting() ==
+                    std::optional<SceneId>{"A_pending"});
+        } else if (root_case == RootCase::rpc) {
+#if PELICAN_WITH_RPC
+            const auto request =
+                Json{{"jsonrpc", "2.0"},
+                     {"id", 3803},
+                     {"method", "load_scene"},
+                     {"params", {{"name", "A_pending"}}}}
+                    .dump() +
+                "\n";
+            std::istringstream input{request};
+            std::ostringstream output;
+            runEngineRpcServer(input, output);
+            const auto response = Json::parse(output.str());
+            REQUIRE(response.contains("error"));
+            REQUIRE(response.at("error").dump().find(
+                        "injected scene-load root disconnect") !=
+                    std::string::npos);
+#endif
+        } else {
+            const auto version = root_case == RootCase::import_v1 ? 1U : 2U;
+            REQUIRE_THROWS_WITH(
+                config.importSceneDocument(
+                    b_document.dump(),
+                    [&](SceneLoadRequest &&request) {
+                        request.scene_id = "B";
+                        return loader.load(std::move(request));
+                    },
+                    version),
+                ContainsSubstring("injected scene-load root disconnect"));
+            REQUIRE(loader.currentScene() == "A");
+        }
+        REQUIRE(injector.saw(SceneLoadFaultPhase::prepare, owner));
+        test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
+        internal::clearPendingEvents();
+        }
+    }
+}
+
+TEST_CASE(
+    "WP380c PelicanCore startup root reaches the executor",
+    "[WP380c][transaction][roots][startup][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"wp380c_startup_root"};
+    writeWp374aProject(project.path, std::nullopt, false, false, false);
+    const Json settings{
+        {"basic_config",
+         {{"window_size", {{"width", 16}, {"height", 16}}},
+          {"scene_data_json", "scene.json"},
+          {"asset_data_json", "assets.json"},
+          {"default_scene_id", "main"},
+          {"rendering_config_json", "hybrid.json"},
+          {"default_rendering_pass", "main_render"}}}};
+
+    auto &launch = FastModuleContainer::get<EngineLaunchConfig>();
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    launch.headless_frames = 1;
+    FastModuleContainer::get<PathResolver>().setup(project.path, false);
+
+    test_support::ManifestSceneLoadFault injector{
+        wp380MutationId("root.startup", "direct_load")};
+    injector.setEnabled(true);
+    struct DefaultInjectorReset {
+        ~DefaultInjectorReset() {
+            test_support::setDefaultSceneLoadFaultInjectorForTesting(nullptr);
+        }
+    } reset_default_injector;
+    test_support::setDefaultSceneLoadFaultInjectorForTesting(&injector);
+    PelicanCore core{settings.dump()};
+    const bool succeeded = core.run();
+
+    REQUIRE_FALSE(succeeded);
+    REQUIRE(injector.saw(SceneLoadFaultPhase::prepare, "root.startup"));
+}
+
+TEST_CASE(
     "WP380 Light publish-drop mutation is visible to B onInit",
     "[WP380][transaction][manifest][mutation][light][gpu]") {
     setupLogger();
@@ -2744,7 +3173,7 @@ TEST_CASE(
         auto &config = GET_MODULE(ProjectBasicConfig);
         injector.resetCalls();
         injector.setEnabled(enabled);
-        loader.setFaultInjectorForTesting(&injector);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
         config.importSceneDocument(
             b_document.dump(), [&](SceneLoadRequest &&request) {
                 request.scene_id = "B";
@@ -2754,7 +3183,7 @@ TEST_CASE(
         REQUIRE(wp380Exports(fixture_path).read_probe(2, &observed_b));
         observed_name_tags[index] = observed_b.light_name_tag;
         REQUIRE(injector.saw(SceneLoadFaultPhase::publish, "light"));
-        loader.setFaultInjectorForTesting(nullptr);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
         internal::clearPendingEvents();
     }
 
@@ -2795,7 +3224,7 @@ TEST_CASE(
             });
         injector.resetCalls();
         injector.setEnabled(enabled);
-        loader.setFaultInjectorForTesting(&injector);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
         REQUIRE_THROWS_WITH(
             config.importSceneDocument(
                 c_document.dump(), [&](SceneLoadRequest &&request) {
@@ -2806,7 +3235,7 @@ TEST_CASE(
         c_entity_live[index] = wp380HasLiveTransformX(30.0F);
         REQUIRE(wp380HasLiveTransformX(20.0F));
         REQUIRE(injector.saw(SceneLoadFaultPhase::publish, "ecs"));
-        loader.setFaultInjectorForTesting(nullptr);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
         internal::clearPendingEvents();
     }
 
@@ -2842,7 +3271,7 @@ TEST_CASE(
             });
         injector.resetCalls();
         injector.setEnabled(enabled);
-        loader.setFaultInjectorForTesting(&injector);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
         REQUIRE_THROWS_WITH(
             config.importSceneDocument(
                 c_document.dump(), [&](SceneLoadRequest &&request) {
@@ -2853,7 +3282,7 @@ TEST_CASE(
         REQUIRE(test_support::authoring(config.sceneDocument()).rawJson() ==
                 (enabled ? c_document : b_document));
         REQUIRE(injector.saw(SceneLoadFaultPhase::commit, "metadata"));
-        loader.setFaultInjectorForTesting(nullptr);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
         internal::clearPendingEvents();
     }
 }
