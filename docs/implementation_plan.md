@@ -22332,6 +22332,111 @@ list のネスト / 添字 identity / 永続 ID(WP304)/ Studio の UI(CARRIER-ST
 (3) `insert_component_field` の inverse が既存 CAS の structural domain で表現できるか / (4) `occurrence_id_v1` の入力(accessor 正規化・variant tag)が本当に単射で、かつ DCC 再出力で安定か(instancing・LOD・skinned)/
 (5) 1 WP に 4 milestone は大きすぎないか(M1+M2 を先に出荷しても意味があるなら分ける。ただし「単独出荷しない」と本文が認める WP は WP ではない = 修正 θ)/ (6) participant seam が WP380b の effect sink と干渉しないか(catalog の prepare は effect を出さないこと)。
 
+
+#### WP382 仕様レビュー第 1 巡(不合格・15 件)と v2 —— **決定差分(v2 が本節の正。v1 と矛盾する箇所は v2 が勝つ)**
+
+仕分け: **直す 14**(#1〜#14)/ **方針を覆す 1**(#15 → 4 WP に分ける。修正 θ を撤回)。
+
+##### 決定 10(#15・#1、修正 θ の撤回): **4 つの WP に分け、enablement gate は最後で開く**
+
+「単独出荷しない WP は WP ではない」は、ABI / journal / model / renderer の **rollback 単位が違う**ものを 1 branch に束ねる理由にならない。
+各 WP は自分の挙動変化と受け入れを持ち、`pelican_ray_instance.overrides` の受理(= 利用者に見える enablement)だけを最後の WP で開く。
+それまで `overrides` を書いた scene は `ray_instance_overrides_not_enabled@1` で名前付き拒否(黙って無視しない)。
+
+| WP | 内容 | 単独の挙動変化 |
+|---|---|---|
+| **WP382a** | ABI v3 入口 + 再帰 `SchemaNode` + `Flags` + fingerprint 契約(決定 11・12) | 実 DLL が `List` / `Flags` を宣言して往復できる(v2 DLL はそのまま load できる) |
+| **WP382b** | `$row` / `$list` envelope + row 指定の 4 op + raw / typed 分離(決定 13・14・15) | list を持つ component を RPC で行編集し undo / redo が bytes まで戻る |
+| **WP382c** | occurrence identity + asset 表の論理名 key + glTF の保持 + model reload の participant 化(決定 16・17) | `get_ray_occurrences` が安定 ID の一覧を返し、model 差し替えで `OccurrenceAbsent` が名前付きで出る |
+| **WP382d** | `overrides` の受理 + presence 意味論 + `ray.as_plan` participant + inventory 一致 + GPU + matrix(決定 18〜22) | 1 object × 2 primitive を別 mask にできる |
+| **WP383** | AS row の material identity の canonical 化(決定 23。carrier と独立なので先行) | gate と lookup が同じ判定をする |
+
+順序: **WP383 ∥ WP382a → WP382b → WP382c → WP382d**。仕様レビュー第 2 巡は 5 節一体で 1 回、以後は各 WP のコードレビュー。
+
+##### 決定 11(#1): 再帰 schema は **`_v3` 入口を足す**。v2 入口と epoch anchor は残す
+
+- `pelican_register_behavior_v3` / `pelican_register_event_v3` / `pelican_register_component_v3` を追加し、descriptor は **`SchemaNode` の木**を受ける。**v2 入口は flat `StructFieldSchema` のまま残し、v2 DLL は今日どおり load できる**(WP381 の「旧名を消す」規則は**同じ struct の layout を変えるとき**の規則。ここでは struct を足す)
+- epoch anchor は `pelican_game_logic_epoch_v2` のまま(anchor を上げると v2 DLL が stale になり、WP380b の frozen v2 fixture と出荷 4 DLL の再 build を強制する。v3 の意味は「v3 入口を import する DLL は再帰 schema を使う」)
+- SDK macro(`PELICAN_REGISTER_*`)は、宣言に `List` / `Flags` が含まれるときだけ v3 入口を選ぶ(`if constexpr`)。含まれなければ v2(既存 DLL の bytes は再 build しても不変)
+- 受け入れ: v2 DLL(frozen v2 fixture)と v3 DLL(現行ヘッダで `List` 宣言)が**同じ host に同時に load** され、両方の component が resolve される。v3 入口を消すと v3 DLL が `game_logic_abi_stale@1`
+
+##### 決定 12(#2): `SchemaNode = Leaf | Flags{vocabulary} | List{RowSchema}` の所有型と fingerprint 契約
+
+- `SchemaNode` は constexpr descriptor(固定長 array + 深さ 2 まで。list の list は compile error)。codec の schema API は `span<const StructFieldSchema>` から `const SchemaNode &` へ(v2 flat は `SchemaNode::fromFlat` で包む)。project 側 `FieldType` も同型に
+- fingerprint は **node tag・全子 field(名・型・順序)・presence・default・range・vocabulary(名と値)**を含む。同じ名前で型だけ違う宣言、vocabulary の値だけ違う宣言は別 fingerprint
+- 受け入れ: fingerprint の入力を 1 つずつ落とす変異(順序 / default / vocabulary 値)がそれぞれ「異なる宣言が同じ fingerprint」で落ちる
+
+##### 決定 13(#5): row id は **永続 high-water mark**。再利用しない
+
+- list container に `"$list": { "v": 1, "next_id": N }` を持ち、insert は `next_id` を採番して進める。削除しても戻さない。save / reload を跨いで保持
+- `$list` の無い list(空、または手書き)は `RowEnvelopeMissing` と同じ扱いで名前付き拒否(insert op だけが `$list` を作る)。`next_id` overflow は `RowIdExhausted`
+- copy / paste は同じ transaction allocator で再採番(決定的)
+- 受け入れ: id 2 を削除 → save → reload → insert で **id 3**(今日 = 2 の再発行)。high-water mark を `max + 1` に戻すと落ちる
+
+##### 決定 14(#6): list の leaf 編集は **row 指定**。添字は名前付き拒否
+
+- list の中を指す op の対象は `{object, component, list_path, row_id, leaf_path}`。JSON pointer の数値 segment で list 要素を指すと `ListIndexAddressingRejected`(`set_component_value` の既存 `.at()` 契約は list 外ではそのまま)
+- row_id → 現在の index の解決は CAS の下で行い、他 client の insert で index が動いても同じ row を指す
+- 受け入れ: client A が row 2 を取得 → client B が先頭に insert → A の set が **row 2 に当たる**(今日 = 別 row)。添字で指すと名前付き拒否
+
+##### 決定 15(#7): bytes の受け入れを **観測可能な 3 つ**に分ける
+
+`AuthoringSceneDocument` は parse で空白を失い、保存は `dump()` なので「元ファイルの空白一致」は検査不能。書き換え:
+(a) 操作直前の `encodeSemanticAuthoring()` と undo 後が一致 / (b) 変更対象外の list subtree の canonical dump が一致 / (c) 文書全体の diff が指定 pointer の値だけ。v1 の「空白を含む bytes 一致」は撤回。
+
+##### 決定 16(#8): occurrence identity の入力を安定なものに置き換える
+
+- `asset` = project asset 表の **論理名**(authored な `CanonicalModelAssetKey{logical_name}`。登録順・path・URI に依存しない)。論理名が無い asset(legacy direct load)は `OccurrenceIdUnrepresentable{reason: asset_key_missing}`
+- `node` = **`NodeIdentity = ExplicitId{node.extras.id} | NamePath{root からの node 名列。重複なら AmbiguousOccurrence} | OrderedContentDigest`**(node index と parent index 列は診断のみ)
+- `variant` = **versioned enum `ImporterVariant_v1 { none, auto_split{k}, lod{n}, skinned, morph_expanded, … }`**(importer が出す全 variant を列挙し、未知は拒否)
+- `content` digest の文法を列挙: topology(mode)、indexed か、attribute の semantic 名順・型・dequantize 済み f32、morph target 数と各 attribute、skin の joints / weights。**version は prefix に埋める**
+- 128 bit は非単射だが衝突は `AmbiguousOccurrence` として検出する(同 scope 内の衝突は必ず両者を載せる)
+- 受け入れ: asset 表の並べ替え / GLB 先頭への node 挿入 / DCC 再出力(primitive 順の入替)の 3 fixture で **ID 不変**。geometry 差し替えで旧 ID は `OccurrenceAbsent`。auto-split の各 variant が別 ID
+
+##### 決定 17(#9): model hot reload は **participant 化**する
+
+`ModelAssetContainer::installBatch → rebuildModelInstances` の直接経路をやめ、model reload batch を **prepare(全 active declaration の occurrence 再解決 + `as_plan` 候補)→ publish(model instance・catalog・as_plan を 1 commit)→ rollback** の participant にする(WP380 決定 10 の「refresh root は範囲外」は、model reload には適用しない。これは scene load ではなく model 差し替えの transaction)。
+受け入れ: 本番 watch reload で model を差し替え → catalog と as_plan が同じ commit で更新され、旧 plan が残る変異が落ちる。
+
+##### 決定 18(#3): occurrence row の presence は **runtime 意味論**
+
+row の各 field は `Inherit | Set(value)`。**absent = Inherit(object-level を継承)**、明示値(空集合・0・canonical default を含む)= Set(置換)。
+修正 2 の「absent と明示 default は runtime で同じ」は **object-level には適用、row には適用しない**(row は継承があるため)。encode は Set の field だけを書く。
+
+##### 決定 19(#4): 同一 scope で同じ `occurrence_id` を指す row は拒否
+
+`DuplicateOccurrenceOverride{occurrence_id, first_row_id, second_row_id}`。先勝ち / 合成はしない。
+
+##### 決定 20(#10): `OccurrenceAbsent` は **scene を開けなくしない**。RT の有効化だけ落ちる
+
+v1 の「prepare 失敗」を撤回。未解決 row は **plan の中で `unresolved` として運ばれ**、その row は効かない(object-level 値のまま)。scene load は成功し、
+`SceneLoadCommitted` の status と `get_ray_occurrences` の `rejected_rows[]` に `OccurrenceAbsent{row_id, occurrence_id, hint}` が名前付きで出る。log は 1 行。
+受け入れ: 消えた occurrence を指す row のある scene が開き、status に 1 件、GPU 出力は object-level 値。unresolved を黙って捨てる変異(status に出ない)が落ちる。
+
+##### 決定 21(#11 #13): inventory の一致は **2 条件**、ownership は固定
+
+- (a) `override の occurrence_id 集合 == 現存 row の有効 occurrence_id 集合 ∪ rejected_rows` / (b) 全 eligible occurrence について as_plan に対応する `q` があり、実効値 == `resolve(defaults, material rule, object, optional row)`
+- **`ray_instance_declarations` は authoring input、`ray.as_plan` は唯一の runtime resolved state**。rollback snapshot と drop 変異の対象は `as_plan`
+
+##### 決定 22(#14): 構成 matrix
+
+| 軸 | 検査 |
+|---|---|
+| `PELICAN_RUNTIME_SHADER_COMPILER` | GPU 受け入れは ON。carrier の CPU 受け入れ(schema / envelope / occurrence)は ON / OFF |
+| flat / xr(`PELICAN_WITH_OPENXR` ON / OFF) | 同じ plan の実効値(xr は 2 view で同じ row) |
+| preview / web | `overrides` は unsupported を**名前付き**で返す(web は subset 原則の明示拒否) |
+| `PELICAN_WITH_IMGUI` ON / OFF、`SKIP_DEVSTUDIO` 両構成、RPC OFF | build + CPU 受け入れ |
+
+##### 決定 23(#12): material identity の truth table を節に書く(WP383)
+
+`D`(document あり)/ `N`(material_name あり)/ `A`(asset + source_material_index あり):
+`D && N → Document{document, material_name}` / `!(D && N) && A && index 有効 → Asset{asset, source_material_index}` / それ以外 → `Unavailable`。
+8 行すべてを parametrized test で固定し、gate([raygrouplayout.cpp:309](../src/core/shader/raygrouplayout.cpp#L309))と lookup が同じ関数を呼ぶ。中段(terra + high)、見積 小。
+
+##### 敵対レビューへの問いの回答を受けた訂正
+
+(1) `List` は flat schema に載らない → 決定 12 / (2) `max + 1` は保証しない → 決定 13 / (3) inverse は row 単位の identity が要る → 決定 14 / (4) 単射でも安定でもない → 決定 16 /
+(5) 1 WP は大きすぎる → 決定 10 / (6) catalog の prepare は **inspect 結果と asset 表 snapshot からの純粋計算**に限定(ID 採番・GPU allocation・registry 更新・effect enqueue を禁止)。WP382c の受け入れに「prepare 中に effect sink へ何も入らない」を足す。
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
 **§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
@@ -22394,7 +22499,7 @@ frozen audit の partial TU(記録)/ 受け入れ文言の統一(記録)/ CARRIE
 **WP375c**(rev375b の後退 2 件 + `attachment_seq`)を投入(worktree `<作業ディレクトリ>/wp375c`。WP375 系はこれで打ち切り。次に実害が出たら WP375b/c を revert)
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
-5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)。rev380b の仕分けが残る。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(仕様レビュー中。参加者 seam は WP380b の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
+5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)。rev380b の仕分けが残る。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(第 1 巡で 4 WP に分割: WP383 ∥ WP382a → b → c → d。enablement は 382d で開く。第 2 巡は 5 節一体。参加者 seam は WP380b/e の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
 
 **既知の穴(WP 化は別途判断)**
 - **frozen header audit に partial TU が混入しうる**(`rev380b` #9)/ **root・Studio・AUDIO OFF の受け入れ文言の不一致**(`rev380b` #10)。WP380e の範囲外として記録
