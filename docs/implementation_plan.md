@@ -22040,6 +22040,87 @@ CMake script test(WP379a の build 拒否テストと同じ形)で固定する�
 #### やらないこと
 
 effect sink / audio / persistence / `CommittedWithEffectFailure` の中身 / onDestroy の snapshot view(すべて WP380b)/ refresh root / CPU-only allocator。
+
+#### WP380c + WP380b 仕様レビュー第 2 巡(不合格・15 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ。v3 が両節の正)**
+
+仕分け: **直す 15**(全件。うち #4 は縮小して直す)。
+
+##### WP380c 決定 7(#2): phase 順序は **production executor の phase trace** で観測する
+
+executor は prepare で **固定長の phase trace**(`std::array<SceneLoadPhase, N>` + count。noexcept)を確保し、各 phase の入口で記録する。
+テストは `SceneLoadCommitted.phase_trace` の **exact sequence**(`prepare, early_publish, publish, activate, commit_metadata, retire, flush, finish`)を比較する。
+sentinel 観測(SceneLoaded 受信時点の destroyDetached)は補助。finish を commit 直後へ戻す変異は trace の順序で落ちる。
+
+##### WP380c 決定 8(#3): manifest の受け入れは **role 別**
+
+| role | 受け入れ |
+|---|---|
+| real participant(call site あり) | injector で ID を有効化 → その行の field が期待値と異なる(parametrized) |
+| stub / absent / excluded / uninstalled | **ID を持たない**(持てば契約テストが落ちる)。role と presence の整合だけ検査 |
+| production root 行 | 決定 3 の root 配線変異で観測 |
+
+「90 行すべてを mutation で異値に」は撤回。real 行だけが対象で、行数は着手時に実測して記録する。
+
+##### WP380c 決定 9(#4): injector の setter は **test-only TU**。core の二重 build はしない
+
+`pelican_core_testinstrumented` は作らない(core の二重 build は CI 時間で釣り合わない)。runtime branch は production に残す(nullptr で定数 false。cost は分岐 1 つ)。
+**setter は `sceneloadfault_testing.cpp`(test target だけに compile される TU)に置き**、`SceneLoader` は friend 宣言で受ける。production binary の export / symbol 一覧に setter が無いことを
+CMake script test で固定する。`PELICAN_TESTING` define は使わない。決定 5 はこれに置換。
+
+##### WP380c 決定 10(#12 #13): release の受け入れは **全所有列の baseline 一致**、report は **固定容量**
+
+- 受け入れは index / static vertex / skinned vertex / morph delta / material / texture の **全列**で「失敗 load 後 == baseline」。morph metadata の `writeBuf` だけ落とす injector で、
+  失敗 allocation 自身の morph range も返却される
+- `ReleaseReport` は heap を使わない: `std::array<ReleaseError, 8>` + `overflow_count`。`ReleaseError = {stage: enum, code: enum, index: uint32}`(文字列なし)。
+  log / status への文字列化は report を受け取った側(allocation して良い文脈)で行う。決定 2 はこれに置換
+
+##### WP380b 決定 18(#1): retire 中の `loadScene` は **解決だけ committed、書き込みは pending_candidate のまま**
+
+`PendingSceneTransactionScope` は解除しない(解除すると flush の `pending_scene_id.swap` が retire 中の要求を上書きする)。
+retire 中は **resolver だけ committed projection に切り替え**、要求は引き続き `active_pending_scene_transaction->candidate` に書き、flush で live に swap する。決定 13 はこれに置換。
+
+##### WP380b 決定 19(#5): import root は `SceneImportResult{revision, SceneLoadResult}` を返す
+
+`importSceneDocument` の戻り値を変える。`requireSceneLoadCommitted` は committed(effect failure 含む)で throw しない。呼び元(RPC `import_scene`、Studio 経路)は
+`effect_errors` を result に載せる。決定 14 の import 行はこれに置換。
+
+##### WP380b 決定 20(#6 #7 #14): `onDestroy` の保証対象は **列挙済み effect API だけ**。storage は prepare で確保
+
+- 保証: 表の shadow+outbox 行と `loadScene` について、staging 失敗は throw せず `effect_errors` に積む。それ以外の API(user code の任意の throw)は今日どおり(`noexcept` 境界で terminate)
+- retire 用の outbox / error storage は **prepare で固定容量を確保**(`N` entry。超過は `effect_outbox_full@1{dropped}` を最後の固定 slot に 1 件)。allocation しない
+- 旧 self への setter(`setLocalTransform` / `setSpriteView` 等)は `SceneRetiredObjectMutationRejected{api, object_id}` を effect error として積み、API は false を返す(表に行を足す)
+- AUDIO / PHYSICS OFF の優先表: `onInit` 中は今日どおり `BuildFeatureDisabledError` を throw、`onDestroy` 中は同じ code を `effect_errors` に積む(phase 別に固定)
+
+##### WP380b 決定 21(#8): outbox は **resource key 単位で coalesce**
+
+- `save_data` / `save_settings`: path ごとに **last-write-wins**(1 entry)
+- `bus_volume`: bus ごとに最終値 1 entry
+- `play` / `stop`: handle ごと(`stop(provisional)` は `play` を消す。`stop(existing)` は 1 entry)
+- error entry は sequence 付きの placeholder を **staging 時に予約**(flush で allocation しない)
+- したがって「同一 resource に複数 call → 前段失敗後に後段だけ残る」は起きない。決定 15 の独立性主張はこれに置換
+
+##### WP380b 決定 22(#9): handle cursor は **非 rollback participant**、gap は名前付き残留
+
+manifest に `audio.handle_cursor`(presence: `non_rollback`)を足し、規範(identity v4 §9 の非保証)に「provisional handle の gap」を明記する。
+決定 8 の「B snapshot」は **voice 集合と bus 値**について。cursor は除外(名前付き)。
+
+##### WP380b 決定 23(#10): pending slot の `listSaves` は **timestamp 0** の canonical sentinel
+
+frozen ABI を保つ。未 flush の slot は `timestamp == 0` で一覧に現れ、flush 後は disk の mtime。規範に明記し、受け入れで `0` を観測する。
+
+##### WP380b 決定 24(#11): 表の各行に **fixture 1 つ + 配線変異 1 つ**
+
+`stopSound(existing)` / `setBusVolume` / `setGameSettings` / `saveSettings` / `loadData` overlay / `listSaves` overlay を含む全行。行ごとに「配線を外す変異がその行のテストだけ落とす」。
+
+##### WP380b 決定 25(#15): 公開 API の完全性は **機械可読 inventory** が権威
+
+`tools/public_api_inventory.py` が `gamecontext.hpp` / `gameobjects.hpp` / `behavior.hpp` の宣言を **exact signature 単位**で列挙して `test/fixtures/public_api_inventory.json` を生成し、
+各 signature に `getter | mutator | host_entrance` の分類を持つ(wildcard 禁止)。テストは (1) header と JSON の一致(script 再実行の diff 0)、(2) `mutator` 全行が manifest に分類を持つこと、を検査する。
+WP381 の inventory generator と同じ運用(生成物をチェックイン、CI で再生成 diff)。
+
+##### 段取り(v3)
+
+WP380c → WP380b の順。**仕様レビューは第 2 巡で打ち切り**(§0 の規約どおり)。WP380c の実装を先に投入し、WP380b は WP380c 統合後に着手する。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
