@@ -22178,6 +22178,18 @@ WP380c → WP380b の順。**仕様レビューは第 2 巡で打ち切り**(§0
 #### 記録のみ
 
 manifest の role 制約は Catch2 実行時保証(static ではない)。ID-A で registry を触るときに static 化を検討する。
+
+
+#### WP380d 完了記録(統合側。2026-09-03、`f85fbbe1`)
+
+- **実装(codex terra + high、中段。2 回に分けて投入)**: 1 回目は shell tool の 120 秒上限で全体 build が止まり、production 側(trace 入口の全 participant 化と `overflow` flag、material / texture の resource 単位隔離、`[[nodiscard]]` + `ReleaseErrorSink`、gate の 3 条件)だけで
+  テストが +1 行のまま報告された。統合側で全体 build(エラー 0)と非 GPU 1280 / 1280 を確認してから、背景 build の指示を付けて差し戻し。2 回目で texture / material injector の OFF / ON と 6 列 baseline、deferred 9 件失敗の `overflow_count == 1`、
+  `objects: []` の 8 要素 trace と `overflow == false` を追加。順序変異 3 種(RNG publish を retire 前 / renderer retirement を flush 後 / Camera publish を activate 後)はいずれも :2499 で赤を確認して復元
+- **agent の検証**: 全体 build、非 GPU 1279 / 1280(1 件は並列時の temp manifest `Access is denied`、単独緑)、GPU 対象 23 / 23、RPC OFF build。`SKIP_DEVSTUDIO=OFF` は sandbox に Qt が無く未実施(統合側)
+- **統合側の変異(`mutation-runner` agent、opus。GPU 含む。基準 24 / 24)**: M1(batch の finish 記録を消す)赤 :2499 / M2(material・texture の隔離を 1 つの try に)赤 :171 :192 / M3(`overflow_count` を sink に渡さない)赤 :227 / M4(overflow flag を常に false)赤 :71 / M5a(別名 setter を production TU に)赤 gate:19 / M5c(release setter を production に)赤 gate:49 / M6(root を常に disconnect)赤 :237(10 テスト)。**生存 1**: M5b-1 = 名前が `ForTesting` で終わらない header inline(`…ForTestingInline`)は gate の regex が名前末尾を固定していたため素通り(inline は symbol も出ない)→ Claude が regex を `set[A-Za-z0-9_]*ForTesting[A-Za-z0-9_]*` + 実 whitespace に修正し、同じ変異で赤・clean で緑を確認(3fcb954d)。指摘: gate テスト名は小文字 `wp380c_…` なので `-R WP380c` では選ばれない。root 側の否定対照は predicate 単体(:237)と別 TEST_CASE の成功経路に分かれており、startup root は ON only(injector を見てから true を返す変異は緑のまま)→ terra に差し戻し。**3 回目**: 5 root とも同一入力で OFF 成功(解決済み scene 値)→ ON 失敗を同じ section に置き、「injector を見てから常に true」の変異が OFF 側で赤(pending :3108 / RPC :3137 / import v1・v2 :3162 / startup :3224)。GPU 24 / 24、非 GPU は `behavior_determinism_four_processes` 1 件(無関係、単独で再確認)
+- **main 取り込み**: main は起票 commit から動いていないので衝突なし
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1613 / 1613**。doclink 153 件追従、未解決 3(docs-writer へ)
+- コードレビュー: 中段のため codex レビューは行わず、統合側変異 + Claude レビューで代替。連鎖は 380d で打ち切り
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
