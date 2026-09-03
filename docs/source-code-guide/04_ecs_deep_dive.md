@@ -531,7 +531,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 | [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L9) | `Transform, Camera` | 最初のcamera Componentをactive Cameraへ反映 |
 | [`SpriteViewRenderSystem`](../../src/core/ecs/predefined/spriteviewsystem.cpp) | `EntityId, Transform, SpriteView` | sprite表示をSpriteSceneへ反映 |
 
-`CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L387) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
+`CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L394) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
 
 ## 4.14 ECS Componentとして保存されないもの
 
@@ -539,13 +539,13 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 | scene component名 | 実際の所有者 |
 |---|---|
-| `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L28) |
-| `collider` | [`PhysWorld`](../../src/core/phys/physworld.hpp#L38) |
+| `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) |
+| `collider` | [`PhysWorld`](../../src/core/phys/physworld.hpp#L39) |
 | `behavior` | [`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L174) |
 
 ### collider
 
-[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L331)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L810)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L241)）。
+[`ColliderComponent`](../../src/core/userpublic/components/collider.hpp#L14) という名前ですが、組み込みComponent ID宣言・ECS登録には含まれません。scene loaderが`name == "collider"`を特別扱いし（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L331)）、`phys_world.bindCollider()`（[同](../../src/core/loader/scene.cpp#L811)）でbindingとして保存します。値のdecode自体は[第3章](03_project_and_loading.md)のcomponent codec経由です（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L241)）。
 
 ### behavior arena ✅実装済み
 
@@ -576,7 +576,7 @@ void unregisterComponents(RegistrationOwner owner) noexcept;
 std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 ```
 
-この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1695)）。
+この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1700)）。
 
 これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L122) の戻り値が `void` → `RegistrationToken` になりました。
 

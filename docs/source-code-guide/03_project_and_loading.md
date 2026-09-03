@@ -20,11 +20,11 @@ Runtime object
 |---|---|---|
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L122) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L634) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
-| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L203) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L456) |
+| scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L203) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L457) |
 | render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2695) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1122) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L53) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
-| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L326) |
+| material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L339) |
 
 新形式を追加するときは、まず`src/project`へGPU非依存の受理/拒否規則を置き、次に`src/core`で実体化するのが既存パターンです。
 
@@ -74,7 +74,7 @@ struct SceneMetadataState {
 mutable SceneMetadataState scene_metadata;
 ```
 
-1 struct にまとまっているのは、scene load の commit がこの struct の **1 回の `noexcept` swap** だからです（[`SceneMetadataState::swap()`](../../src/core/loader/basicconfig.cpp#L519) / [`MetadataCommitToken::commit()`](../../src/core/loader/basicconfig.cpp#L587)）。document だけ、projection だけ、current scene だけを個別に公開する経路は production には無く（[`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L137) の `Impl` は `ProjectBasicConfig` の private）、candidate は [`prepareBorrowedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L598)（committed projection をそのまま使う root）か [`prepareImportedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L611)（snapshot import）が token として作り、§3.5 の scene executor が commit します。失敗した token は捨てられるだけで、live の `scene_metadata` には触れません。
+1 struct にまとまっているのは、scene load の commit がこの struct の **1 回の `noexcept` swap** だからです（[`SceneMetadataState::swap()`](../../src/core/loader/basicconfig.cpp#L519) / [`MetadataCommitToken::commit()`](../../src/core/loader/basicconfig.cpp#L587)）。document だけ、projection だけ、current scene だけを個別に公開する経路は production には無く（[`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L141) の `Impl` は `ProjectBasicConfig` の private）、candidate は [`prepareBorrowedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L598)（committed projection をそのまま使う root）か [`prepareImportedSceneMetadata()`](../../src/core/loader/basicconfig.cpp#L611)（snapshot import）が token として作り、§3.5 の scene executor が commit します。失敗した token は捨てられるだけで、live の `scene_metadata` には触れません。
 
 そのため [`sceneDataJson()`](../../src/core/loader/basicconfig.cpp#L1013) は**生ファイル文字列を返しません**。
 
@@ -242,7 +242,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 
 #### behaviorコンポーネント ✅実装済み
 
-behaviorはobject単位に束ねてから渡します。これは §3.5 の executor の **prepare 段**で、resolved projection から読みます（[prepare 段の呼び出し](../../src/core/loader/scene.cpp#L544)）。
+behaviorはobject単位に束ねてから渡します。これは §3.5 の executor の **prepare 段**で、resolved projection から読みます（[prepare 段の呼び出し](../../src/core/loader/scene.cpp#L545)）。
 
 ```cpp
 const auto behavior_availability =
@@ -264,7 +264,7 @@ ecs_objects = prepareSceneBindings(
 | DLLロード済みで、未登録の型名 | エラー `Unknown behavior type '<type>' on object '<name>'` |
 | DLL不在で、未登録の型名 | warningを出して **pending** 扱いで続行 |
 
-behavior は executor の participant の 1 つです。entity を作った後に `BehaviorAttachmentArena::prepareSceneReconciliation()` で candidate を作り（[early_publish 段末尾の呼び出し](../../src/core/loader/scene.cpp#L851)）、publish 段で `noexcept` に arena へ swap し（[`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L904)）、**activate 段**で `onInit` を走らせます（[`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L926)）。activate は executor で**唯一の失敗しうる段**で、`onInit` が投げると executor の [`rollback` ラムダ](../../src/core/loader/scene.cpp#L605) が **全 participant** を旧世代へ戻し、結果は `PreCommitFailure{phase = activate}` になります（[activate 失敗の戻り値](../../src/core/loader/scene.cpp#L931)）。document / projection / current scene / authority は commit 前なので旧世代のまま、arena も旧 attachment が戻ります。旧経路の [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L1050) は定義が残っていますが `load()` からは呼ばれません。
+behavior は executor の participant の 1 つです。entity を作った後に `BehaviorAttachmentArena::prepareSceneReconciliation()` で candidate を作り（[early_publish 段末尾の呼び出し](../../src/core/loader/scene.cpp#L852)）、publish 段で `noexcept` に arena へ swap し（[`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L908)）、**activate 段**で `onInit` を走らせます（[`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L930)）。activate は executor で**唯一の失敗しうる段**で、`onInit` が投げると executor の [`rollback` ラムダ](../../src/core/loader/scene.cpp#L606) が **全 participant** を旧世代へ戻し、結果は `PreCommitFailure{phase = activate}` になります（[activate 失敗の戻り値](../../src/core/loader/scene.cpp#L935)）。document / projection / current scene / authority は commit 前なので旧世代のまま、arena も旧 attachment が戻ります。旧経路の [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L1061) は定義が残っていますが `load()` からは呼ばれません。
 
 > **設計決定:** game logic DLLが無い状態でsceneを開くのは、ツールや検証では正常なケースです。そこで「DLLが有るのに型名が引けない」ときだけfailにし、DLL不在は保留にしています。ロード可否がビルド構成に依存してぶれない、という線引きです。
 
@@ -283,7 +283,7 @@ behavior は executor の participant の 1 つです。entity を作った後�
 
 ### 3. scene load は 1 つの transaction（WP380a）
 
-[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L456) は「旧 scene を消してから新 scene を作る」形ではありません。[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L164)（committed projection を借りる `Borrowed`、または import の candidate と `MetadataCommitToken` を持つ `Owned`）を受け取り、[`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L130)（`SceneLoadCommitted` / `PreCommitFailure` / `CommittedWithEffectFailure`）を返す **executor** で、段は次の順です。
+[`SceneLoader::load()`](../../src/core/loader/scene.cpp#L457) は「旧 scene を消してから新 scene を作る」形ではありません。[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L168)（committed projection を借りる `Borrowed`、または import の candidate と `MetadataCommitToken` を持つ `Owned`）を受け取り、[`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L134)（`SceneLoadCommitted` / `PreCommitFailure` / `CommittedWithEffectFailure`）を返す **executor** で、段は次の順です。
 
 ```text
 prepare（失敗可）
@@ -296,27 +296,27 @@ prepare（失敗可）
 → finish（noexcept。early_publish で publish 済みの ECS create token を確定し、rollback 権を手放す）
 ```
 
-段を記録するのは executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L507) が early_publish）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L632) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L684) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L729) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L124)）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L278)）、ECS token（[`ECSEntityMutationToken::finish()`](../../src/core/ecs/archetypemigration.cpp#L977)）です。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L127) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L43) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。
+段を記録するのは executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L507) が early_publish）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L632) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L684) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L729) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L124)）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L278)）、ECS token（[`ECSEntityMutationToken::finish()`](../../src/core/ecs/archetypemigration.cpp#L977)）です。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L131) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L46) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。
 
-**prepare**（[prepare 段の先頭](../../src/core/loader/scene.cpp#L509) から [`return fail(SceneLoadPhase::prepare, ...)`](../../src/core/loader/scene.cpp#L602) まで）では、candidate authority を 1 回だけ消費し（[`next_authority_epoch++`](../../src/core/loader/scene.cpp#L472)。失敗しても再利用しません）、metadata token に scene id と authority を書き（[`prepareRuntimeIdentity()`](../../src/core/loader/scene.cpp#L517)）、resolved scene を検証して（[`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L535)）、各 participant の candidate を live に触らずに作ります: renderer（[`prepareSceneReplacement()`](../../src/core/loader/scene.cpp#L552)。model の staging もここ）、camera（[`prepareSceneCameras()`](../../src/core/loader/scene.cpp#L575)）、light（[`LightContainer::prepareLoad()`](../../src/core/loader/scene.cpp#L577)）、SeqPlayer / VatPlayer（[`prepareSceneLoad()`](../../src/core/loader/scene.cpp#L581)）、retirement queue の容量予約（[`reserveOne()`](../../src/core/loader/scene.cpp#L122)）、RNG 列（[`prepareSequence()`](../../src/core/loader/scene.cpp#L593)）、event outbox（[`PreparedEventOutbox`](../../src/core/loader/scene.cpp#L597)。`SceneLoaded` の payload はここで確保します）。model は [`ModelAssetContainer::getModelTemplateByName()`](../../src/core/loader/scene.cpp#L564) で引きますが、`ModelAssetContainer` は **participant ではなく warm cache** です。candidate が失敗しても lazy load された model record / GPU resource は残り、戻しません（manifest の [`model_asset` / `warm_cache` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L148)。どの scene にも束縛されない record なので世代混在にはなりません）。
+**prepare**（[prepare 段の先頭](../../src/core/loader/scene.cpp#L510) から [`return fail(SceneLoadPhase::prepare, ...)`](../../src/core/loader/scene.cpp#L603) まで）では、candidate authority を 1 回だけ消費し（[`next_authority_epoch++`](../../src/core/loader/scene.cpp#L473)。失敗しても再利用しません）、metadata token に scene id と authority を書き（[`prepareRuntimeIdentity()`](../../src/core/loader/scene.cpp#L518)）、resolved scene を検証して（[`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L536)）、各 participant の candidate を live に触らずに作ります: renderer（[`prepareSceneReplacement()`](../../src/core/loader/scene.cpp#L553)。model の staging もここ）、camera（[`prepareSceneCameras()`](../../src/core/loader/scene.cpp#L576)）、light（[`LightContainer::prepareLoad()`](../../src/core/loader/scene.cpp#L578)）、SeqPlayer / VatPlayer（[`prepareSceneLoad()`](../../src/core/loader/scene.cpp#L582)）、retirement queue の容量予約（[`reserveOne()`](../../src/core/loader/scene.cpp#L122)）、RNG 列（[`prepareSequence()`](../../src/core/loader/scene.cpp#L594)）、event outbox（[`PreparedEventOutbox`](../../src/core/loader/scene.cpp#L598)。`SceneLoaded` の payload はここで確保します）。model は [`ModelAssetContainer::getModelTemplateByName()`](../../src/core/loader/scene.cpp#L565) で引きますが、`ModelAssetContainer` は **participant ではなく warm cache** です。candidate が失敗しても lazy load された model record / GPU resource は残り、戻しません（manifest の [`model_asset` / `warm_cache` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L148)。どの scene にも束縛されない record なので世代混在にはなりません）。
 
-**early_publish**（[`renderer.publishPreparedScene()`](../../src/core/loader/scene.cpp#L660) から [`return fail(SceneLoadPhase::early_publish, ...)`](../../src/core/loader/scene.cpp#L861) まで）では、ECS entity を [`ECSEntityMutation::prepareCreate()`](../../src/core/loader/scene.cpp#L669) の populate callback で作って `publish()` し（JSON は各 Component へここでロード）、名前 binding の candidate を集め、親子 transform を投影し（§4）、physics の candidate を作り（[`PhysWorld::prepareSceneBindings()` の呼び出し](../../src/core/loader/scene.cpp#L837)）、behavior の candidate を作り（[`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L851)）、旧 entity を [`prepareDestroy()`](../../src/core/loader/scene.cpp#L855) で unpublish します。ここで投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L605) が inverse token を逆順に消費して戻します。
+**early_publish**（[`renderer.publishPreparedScene()`](../../src/core/loader/scene.cpp#L661) から [`return fail(SceneLoadPhase::early_publish, ...)`](../../src/core/loader/scene.cpp#L862) まで）では、ECS entity を [`ECSEntityMutation::prepareCreate()`](../../src/core/loader/scene.cpp#L670) の populate callback で作って `publish()` し（JSON は各 Component へここでロード）、名前 binding の candidate を集め、親子 transform を投影し（§4）、physics の candidate を作り（[`PhysWorld::prepareSceneBindings()` の呼び出し](../../src/core/loader/scene.cpp#L838)）、behavior の candidate を作り（[`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L852)）、旧 entity を [`prepareDestroy()`](../../src/core/loader/scene.cpp#L856) で unpublish します。ここで投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L606) が inverse token を逆順に消費して戻します。
 
-**publish** は [`static_assert(noexcept(...))`](../../src/core/loader/scene.cpp#L865) で固定された swap の列です（[`object_bindings.swap()`](../../src/core/loader/scene.cpp#L889) → SeqPlayer → VatPlayer → [`Camera::publishPrepared()`](../../src/core/loader/scene.cpp#L895) → Light → [`PhysWorld::publishPrepared()`](../../src/core/loader/scene.cpp#L903) → [`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L904)）。この段は失敗しないので、`PreCommitFailure::phase` に `publish` はありません（[`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L26) は `prepare | early_publish | activate` の 3 値）。
+**publish** は [`static_assert(noexcept(...))`](../../src/core/loader/scene.cpp#L866) で固定された swap の列です（[`object_bindings.swap()`](../../src/core/loader/scene.cpp#L890) → SeqPlayer → VatPlayer → [`Camera::publishPrepared()`](../../src/core/loader/scene.cpp#L895) → Light → [`PhysWorld::publishPrepared()`](../../src/core/loader/scene.cpp#L903) → [`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L908)）。この段は失敗しないので、`PreCommitFailure::phase` に `publish` はありません（[`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L26) は `prepare | early_publish | activate` の 3 値）。
 
-**activate** は [`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L926) の 1 行で、`onInit` はこの時点で **全 participant が candidate に切り替わった状態**を観測します。ここで投げると同じ `rollback` ラムダが全 participant を旧世代へ戻し（[`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L931)）、document / projection / current scene / active authority は commit 前なので旧世代のままです。activate 中の `emit` / RNG / `loadScene()` は live queue ではなく candidate（[`EventOutboxScope`](../../src/core/loader/scene.cpp#L918) / [`RngSequenceScope`](../../src/core/loader/scene.cpp#L919) / [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L160)）へ向くので、rollback で一緒に捨てられます。
+**activate** は [`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L930) の 1 行で、`onInit` はこの時点で **全 participant が candidate に切り替わった状態**を観測します。ここで投げると同じ `rollback` ラムダが全 participant を旧世代へ戻し（[`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L935)）、document / projection / current scene / active authority は commit 前なので旧世代のままです。activate 中の `emit` / RNG / `loadScene()` は live queue ではなく candidate（[`EventOutboxScope`](../../src/core/loader/scene.cpp#L922) / [`RngSequenceScope`](../../src/core/loader/scene.cpp#L923) / [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L160)）へ向くので、rollback で一緒に捨てられます。
 
-**commit_metadata** は [`metadata.commit()`](../../src/core/loader/scene.cpp#L960) の 1 回で、`SceneMetadataState` を丸ごと swap します（§3.2）。以降の段は [`static_assert(noexcept(...))`](../../src/core/loader/scene.cpp#L934) で `noexcept` が固定されており、`PreCommitFailure` は出ません。
+**commit_metadata** は [`metadata.commit()`](../../src/core/loader/scene.cpp#L964) の 1 回で、`SceneMetadataState` を丸ごと swap します（§3.2）。以降の段は [`static_assert(noexcept(...))`](../../src/core/loader/scene.cpp#L938) で `noexcept` が固定されており、`PreCommitFailure` は出ません。
 
-**retire** は旧 state を消すのではなく queue に積むだけです。旧 entity の destroy token と transient model は [`retirement_state->enqueue()`](../../src/core/loader/scene.cpp#L967)（容量は prepare で予約済み）、renderer の旧 instance slot は [`enqueueSceneRetirement()`](../../src/core/loader/scene.cpp#L973) へ入り、消費は次フレームです: [`drainRetirementQueue()`](../../src/core/loader/scene.cpp#L1028) が [`applyPendingLoad()` の先頭](../../src/core/loader/scene.cpp#L1003) と teardown の ecs 段（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L80)）で走り、renderer 側は [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L674) が `triggerUpdate()` の先頭で消費します。そこでの失敗はフレームのエラーであって transaction のエラーではありません（state は既に一貫）。
+**retire** は旧 state を消すのではなく queue に積むだけです。旧 entity の destroy token と transient model は [`retirement_state->enqueue()`](../../src/core/loader/scene.cpp#L971)（容量は prepare で予約済み）、renderer の旧 instance slot は [`enqueueSceneRetirement()`](../../src/core/loader/scene.cpp#L977) へ入り、消費は次フレームです: [`drainRetirementQueue()`](../../src/core/loader/scene.cpp#L1038) が [`applyPendingLoad()` の先頭](../../src/core/loader/scene.cpp#L1013) と teardown の ecs 段（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L80)）で走り、renderer 側は [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L681) が `triggerUpdate()` の先頭で消費します。そこでの失敗はフレームのエラーであって transaction のエラーではありません（state は既に一貫）。
 
-**flush** は [`stageReserved()`](../../src/core/loader/scene.cpp#L976) で prepare 済みの `SceneLoaded` を予約 slot へ移し、RNG 列と pending scene を publish してから [`event_outbox->flush()`](../../src/core/loader/scene.cpp#L979) で live queue へ `noexcept` に push します。
+**flush** は [`stageReserved()`](../../src/core/loader/scene.cpp#L980) で prepare 済みの `SceneLoaded` を予約 slot へ移し、RNG 列と pending scene を publish してから [`event_outbox->flush()`](../../src/core/loader/scene.cpp#L985) で live queue へ `noexcept` に push します。
 
-transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L1226) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
+transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L1238) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
 ### 4. authored local TRSのworld投影
 
-ECS objectを作った後、同じ early_publish 段の中で親子transformのworld解決を済ませます（[親子 transform の投影](../../src/core/loader/scene.cpp#L729)）。behavior の `onInit`（activate 段）や `SceneLoaded` の配送（flush 段）より前です。
+ECS objectを作った後、同じ early_publish 段の中で親子transformのworld解決を済ませます（[親子 transform の投影](../../src/core/loader/scene.cpp#L730)）。behavior の `onInit`（activate 段）や `SceneLoaded` の配送（flush 段）より前です。
 
 ```cpp
 // Project authored local TRS to world before any SceneLoaded observer can
@@ -350,19 +350,19 @@ ECS objectを作った後、同じ early_publish 段の中で親子transformのw
 
 ### 5. 名前binding
 
-名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります。executor は live の map には書かず、early_publish 段で `candidate_object_bindings` に集め（[candidate への emplace](../../src/core/loader/scene.cpp#L720)）、publish 段で [`object_bindings.swap()`](../../src/core/loader/scene.cpp#L889) します（rollback は逆向きの swap）。authoring id → entity の `runtime_object_bindings` も同じ形です。[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L1077) は `load()` からは呼ばれません。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
+名前付きかつ`transform`を持つobjectだけが `object_bindings`へ入ります。executor は live の map には書かず、early_publish 段で `candidate_object_bindings` に集め（[candidate への emplace](../../src/core/loader/scene.cpp#L721)）、publish 段で [`object_bindings.swap()`](../../src/core/loader/scene.cpp#L890) します（rollback は逆向きの swap）。authoring id → entity の `runtime_object_bindings` も同じ形です。[`bindObjectTransform()`](../../src/core/loader/scene.cpp#L1089) は `load()` からは呼ばれません。RPC、camera controller、physicsはこの名前から世代付き`GameObjectId`を引き直します。
 
 bindingは生ポインタを保持しません。アクセス時に`tryComponent<TransformComponent>()`でIDのgenerationとComponent存在を再検証します。
 
 ### 6. SceneLoaded event
 
-[`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) は「ロード完了後にその場で emit」ではありません。payload（`make_shared` と vector の容量）は prepare 段で [`event_outbox->prepare()`](../../src/core/loader/scene.cpp#L599) が確保し、commit 後の flush 段で [`stageReserved()`](../../src/core/loader/scene.cpp#L976) → [`flush()`](../../src/core/loader/scene.cpp#L979) が live queue へ `noexcept` に移します（[`PreparedEventOutbox`](../../src/core/userpublic/details/event/registerer.hpp#L233)。`stageReserved()` / `flush()` の実装は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L260)）。activate 段で behavior が `emit` したものも同じ outbox に入り、`SceneLoaded` はその**後ろ**に並びます。rollback すると outbox ごと捨てられるので、失敗した load の event が旧世代の behavior に届くことはありません。フレーム末尾のpending loadから flush された場合、eventは次フレーム冒頭に届きます。
+[`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) は「ロード完了後にその場で emit」ではありません。payload（`make_shared` と vector の容量）は prepare 段で [`event_outbox->prepare()`](../../src/core/loader/scene.cpp#L600) が確保し、commit 後の flush 段で [`stageReserved()`](../../src/core/loader/scene.cpp#L980) → [`flush()`](../../src/core/loader/scene.cpp#L985) が live queue へ `noexcept` に移します（[`PreparedEventOutbox`](../../src/core/userpublic/details/event/registerer.hpp#L233)。`stageReserved()` / `flush()` の実装は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L260)）。activate 段で behavior が `emit` したものも同じ outbox に入り、`SceneLoaded` はその**後ろ**に並びます。rollback すると outbox ごと捨てられるので、失敗した load の event が旧世代の behavior に届くことはありません。フレーム末尾のpending loadから flush された場合、eventは次フレーム冒頭に届きます。
 
 ## 3.6 即時loadと要求load
 
-- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L133)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1607)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L859)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L439) で `PreCommitFailure` を従来どおりの例外へ戻します。
-- [`requestLoad()`](../../src/core/loader/scene.cpp#L985) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
-- [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1002) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
+- `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L133)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1607)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L859)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L440) で `PreCommitFailure` を従来どおりの例外へ戻します。
+- [`requestLoad()`](../../src/core/loader/scene.cpp#L995) は存在確認後、scene IDだけをpendingへ保存。activate 段の behavior から呼ばれた場合は live ではなく candidate projection に対して存在確認し、要求も candidate 側に積みます（rollback で一緒に捨てる）。
+- [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1012) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
 `GameContext::loadScene()`はrequest型です。RPCの`load_scene`は即時loadです。この違いは、ゲームSystem update中にECS全削除が起きないようにするためです。
 
@@ -442,7 +442,7 @@ tinygltf Model
 >
 > **何をする所か**: 頂点シェーダだけを差し替えた派生マテリアルを登録し、そのIDをモデル内ローカルのmaterial ID空間へ割り当てます。
 >
-> **素朴に読むと**: `using ModelLocalMaterialId = int;`([宣言](../../src/core/model/gltf.cpp#L505))はglTFのmaterial indexをそのまま入れる型に見えます。ところが [同じ構造体](../../src/core/model/gltf.cpp#L528) に `next_generated_material = -2` があり、派生を作るたびに**減って**いきます。ID空間が符号で二分されていて、0以上は「glTFが書いたmaterial」、負は「エンジンが派生させたmaterial」です。`-1` から始めないのは、`-1` がglTF側の『material無し』を表す予約値だからで、採番から外してあります。派生を作る理由はvert shaderの差し替えだけで、skinnedは `skinnedVertShader()`、VATは `vatVertShader()` へ変えた同内容のコピーを `registerMaterial()` し直します — 同じ元materialから最大3種の実体が生まれます。ここで `generated_material_sources` に「派生ID → 元のsource index」を残すのが要です。実行時のマテリアル上書きは authored 側の index で来て、[`polygoninstancecontainer.cpp` 内](../../src/core/renderer/polygoninstancecontainer.cpp#L1603) がその index で初期値表を引き直すため、この表が無いと [`generated_source` の復元](../../src/core/model/gltf.cpp#L2362) で `source_material_index` が `noSourceMaterialIndex` に落ち、skinnedプリミティブにだけ上書きが効かないという片側だけの不具合になります。
+> **素朴に読むと**: `using ModelLocalMaterialId = int;`([宣言](../../src/core/model/gltf.cpp#L505))はglTFのmaterial indexをそのまま入れる型に見えます。ところが [同じ構造体](../../src/core/model/gltf.cpp#L528) に `next_generated_material = -2` があり、派生を作るたびに**減って**いきます。ID空間が符号で二分されていて、0以上は「glTFが書いたmaterial」、負は「エンジンが派生させたmaterial」です。`-1` から始めないのは、`-1` がglTF側の『material無し』を表す予約値だからで、採番から外してあります。派生を作る理由はvert shaderの差し替えだけで、skinnedは `skinnedVertShader()`、VATは `vatVertShader()` へ変えた同内容のコピーを `registerMaterial()` し直します — 同じ元materialから最大3種の実体が生まれます。ここで `generated_material_sources` に「派生ID → 元のsource index」を残すのが要です。実行時のマテリアル上書きは authored 側の index で来て、[`polygoninstancecontainer.cpp` 内](../../src/core/renderer/polygoninstancecontainer.cpp#L1610) がその index で初期値表を引き直すため、この表が無いと [`generated_source` の復元](../../src/core/model/gltf.cpp#L2362) で `source_material_index` が `noSourceMaterialIndex` に落ち、skinnedプリミティブにだけ上書きが効かないという片側だけの不具合になります。
 >
 > **骨子**:
 > ```text
@@ -508,20 +508,20 @@ API面の主な変化は次の通りです。
 | `publishModelInstance()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L305) | `noexcept` の単一公開点 |
 | `prepareTrs()` / `publishPreparedTrs()` / `rollbackPreparedTrs()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L319) | TRS更新のprepare/publish |
 | `isModelInstanceAlive()` | [`polygoninstancecontainer.hpp` 内](../../src/core/renderer/polygoninstancecontainer.hpp#L326) | 生存判定 |
-| `instanceCountForTesting()` | [`advanceMorphHistoryAfterRender()`](../../src/core/renderer/polygoninstancecontainer.hpp#L406) | **live数**（`live_instance_count`）を返す |
-| `slotCountForTesting()` | [`advanceMaterialOverrideHistoryAfterRender()`](../../src/core/renderer/polygoninstancecontainer.hpp#L407) | スロット総数 |
+| `instanceCountForTesting()` | [`advanceMorphHistoryAfterRender()`](../../src/core/renderer/polygoninstancecontainer.hpp#L409) | **live数**（`live_instance_count`）を返す |
+| `slotCountForTesting()` | [`advanceMaterialOverrideHistoryAfterRender()`](../../src/core/renderer/polygoninstancecontainer.hpp#L410) | スロット総数 |
 
 テストは [`test/modelinstance_slotmap_test.cpp`](../../test/modelinstance_slotmap_test.cpp)（GPUラベル）です。
 
 ### `load_gltf` はトランザクション（WP144）
 
-RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L1168) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
+RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L1180) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
 
-1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1182)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
-2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2487) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L395) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
+1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1194)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
+2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2487) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L398) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
 3. [`commit()`](../../src/core/model/gltf.cpp#L2421) でGPU資源を確保し、`stageModelInstance()` でstagingします。
 4. エンティティ生成がthrowしたら `releaseModelGpuResources()` して `transient_models.pop_back()` します。
-5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1236)）。
+5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1249)）。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -607,7 +607,7 @@ sceneと違い、feature合成は「純粋層で済ませてからruntimeへ渡�
 
 [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744) はmaterial v1とoptional surface catalogの整合性を検証します。[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) はfront matter風の宣言部とshader codeを分け、parameter/texture/screen inputを構造化します。
 
-これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L326)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
+これらはruntime接続済みです（WP116〜117, 122）。純粋層はparseと [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140)（OpenPBR写像は [`openpbrmapping.hpp`](../../src/project/openpbrmapping.hpp)）まで、core層はsurface compile（[`surfacecompiler.cpp`](../../src/core/shader/surfacecompiler.cpp)）とvalues SSBO登録（[`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L339)）を担います。hot reloadは `MaterialValuesReloadHandler` / `TextureReloadHandler`（[src/core/material/](../../src/core/material)）です。
 
 material bindingは **USD pathキー**を持ちます（[`materialformat.hpp`](../../src/project/materialformat.hpp#L45) の `usd_path`、[`modeltemplate.cpp`](../../src/core/model/modeltemplate.cpp#L99) で重複/未解決を検証）。これはU-USDレーン（WP119/124）の観測境界です。
 
