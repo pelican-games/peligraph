@@ -19,7 +19,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 
 この違いを無視して全部を「継承関係」として探すとコードを見失います。特に `DECLARE_MODULE` は base class ではなく、型ごとの `static std::optional<T>` を生む macro です。
 
-> **設計決定:** 公開 game API で **継承ベースの interface を使うのは [`Behavior`](../../src/core/userpublic/behavior.hpp#L59) だけ** です(WP155 / BEH0)。System / Component / Event は duck typing(ダックタイピング — 「共通の基底を継承しているか」ではなく「必要なメンバや関数が実際に生えているか」だけで適合を判断する方式) + concept 検出ですが、Behavior は「1 オブジェクトにつき 1 個の多態インスタンスを arena が所有する」形なので仮想基底を選んでいます。上表の分類に当てはまらない唯一の例外として覚えてください。詳細は [第5章 §5.13](05_gameplay_and_services.md)。
+> **設計決定:** 公開 game API で **継承ベースの interface を使うのは [`Behavior`](../../src/core/userpublic/behavior.hpp#L60) だけ** です(WP155 / BEH0)。System / Component / Event は duck typing(ダックタイピング — 「共通の基底を継承しているか」ではなく「必要なメンバや関数が実際に生えているか」だけで適合を判断する方式) + concept 検出ですが、Behavior は「1 オブジェクトにつき 1 個の多態インスタンスを arena が所有する」形なので仮想基底を選んでいます。上表の分類に当てはまらない唯一の例外として覚えてください。詳細は [第5章 §5.13](05_gameplay_and_services.md)。
 
 ## 8.2 名前の読み方
 
@@ -118,7 +118,7 @@ project game code が最優先で参照する層です。内部の `GET_MODULE` 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
 | `GameContext` | public value façade | [`gamecontext.hpp`](../../src/core/userpublic/gamecontext.hpp#L20) | [`gamecontext.cpp`](../../src/core/userpublic/gamecontext.cpp#L1) | time、input、entity、camera、physics(raycast/overlap/shapeCast + `QueryFilter`)、sprite、**light**([`setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.hpp#L50))、pose action、audio、save、RNG を統一 API で公開 |
-| `Behavior` | **仮想基底**(唯一の例外) | [`behavior.hpp`](../../src/core/userpublic/behavior.hpp#L59) | [`behaviorarena.cpp`](../../src/core/gamelogic/behaviorarena.cpp) | `onInit` / `onUpdate` / `onDestroy(noexcept)` |
+| `Behavior` | **仮想基底**(唯一の例外) | [`behavior.hpp`](../../src/core/userpublic/behavior.hpp#L60) | [`behaviorarena.cpp`](../../src/core/gamelogic/behaviorarena.cpp) | `onInit` / `onUpdate` / `onDestroy(noexcept)` |
 | `BehaviorContext` | `GameContext` 派生 | [`BehaviorContext`](../../src/core/userpublic/behavior.hpp#L24) | 同左 | `self()` / `attachment()` / `attachmentSeq()` / `params<T>()` と遅延 create/remove |
 | `BehaviorAttachmentHandle` | typed handle | [`BehaviorAttachmentHandle()`](../../src/core/userpublic/behavior.hpp#L13) | 同左 | attachment identity(`attachment_seq` と対) |
 | `PELICAN_REGISTER_BEHAVIOR` | 自動登録 macro | [`behavior/registerer.hpp`](../../src/core/userpublic/details/behavior/registerer.hpp#L320) | 同 header | stable name + schema version + event handler 収集 |
@@ -132,7 +132,7 @@ project game code が最優先で参照する層です。内部の `GET_MODULE` 
 | `Actions` | named action façade | [`userinput.hpp`](../../src/core/userpublic/userinput.hpp#L108) | [`userinput.cpp`](../../src/core/userpublic/userinput.cpp#L1) | action set stack、button/axis2 evaluation、consumption |
 | `DeterministicRng` | module/service | [`deterministicrng.hpp`](../../src/core/userpublic/deterministicrng.hpp#L12) | [`deterministicrng.cpp`](../../src/core/userpublic/deterministicrng.cpp#L1) | PCG32(permuted congruential generator の 32bit 出力版 — 線形合同法で進めた 64bit 内部状態に xorshift と回転を掛けて出力する、状態が小さく再現しやすい擬似乱数生成器) state と inclusive integer/float API |
 | `Audio` | module + backend interface | [`audio.hpp`](../../src/core/audio/audio.hpp#L23) | [`audio.cpp`](../../src/core/audio/audio.cpp#L255) | sound handle、bus volume。miniaudio/Null backend を pimpl 的(pointer to implementation — 実装クラスを header では前方宣言だけにして `unique_ptr` で持ち、定義を .cpp 側へ隠す書き方。header に miniaudio が漏れません)に選択 |
-| `Persistence` | module/service | [`persistence.hpp`](../../src/core/persistence/persistence.hpp#L28) | [`saveData()`](../../src/core/persistence/persistence.cpp#L281) | settings、audio settings、slot save の検証と atomic replace |
+| `Persistence` | module/service | [`persistence.hpp`](../../src/core/persistence/persistence.hpp#L39) | [`saveData()`](../../src/core/persistence/persistence.cpp#L306) | settings、audio settings、slot save の検証と atomic replace |
 | `PhysWorld` | module/runtime index | [`physworld.hpp`](../../src/core/phys/physworld.hpp#L34) | [`bindCollider()`](../../src/core/phys/physworld.cpp#L377) | object 名、transform、shape を bind し query/debug draw/trigger event へ供給。`PreparedState` による prepare/publish あり([`PreparedState`](../../src/core/phys/physworld.hpp#L48)) |
 | `phys::Shape` | variant geometry | [`physquery.hpp`](../../src/core/phys/physquery.hpp#L38) | [`physquery.cpp`](../../src/core/phys/physquery.cpp#L1) | sphere/box/capsule の raycast/overlap pure algorithm |
 | `phys::QueryFilter` / `ShapeCastHit` | query values | [`physquery.hpp`](../../src/core/phys/physquery.hpp#L76) | [同 header](../../src/core/phys/physquery.hpp#L138) | クエリの include/exclude filter と shapeCast 結果 |

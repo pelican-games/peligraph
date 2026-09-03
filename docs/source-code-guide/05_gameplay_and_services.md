@@ -8,20 +8,20 @@
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
-| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L27) |
-| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L55) |
-| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L67) |
-| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L79) |
-| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L88) |
-| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L154) |
-| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L173) |
-| camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L263) |
-| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L267) |
-| audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L287) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L349) |
-| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L361) |
+| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L28) |
+| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L56) |
+| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L68) |
+| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L80) |
+| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L93) |
+| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L164) |
+| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L183) |
+| camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L273) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L277) |
+| audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L297) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L359) |
+| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L371) |
 | event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L90) |
-| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L365) |
+| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L375) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -545,19 +545,19 @@ busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更�
 
 ## 5.10 Persistence
 
-[`Persistence`](../../src/core/persistence/persistence.hpp#L28) は全て`user://`配下へ保存します。
+[`Persistence`](../../src/core/persistence/persistence.hpp#L39) は全て`user://`配下へ保存します。
 
 ### settings
 
-`user://settings.json`はengine audio設定と任意game JSONを持ちます。ロード失敗は起動失敗にせず、warningと`lastSettingsError`を残してdefaultへ戻します（[`loadSettings()`](../../src/core/persistence/persistence.cpp#L195)）。
+`user://settings.json`はengine audio設定と任意game JSONを持ちます。ロード失敗は起動失敗にせず、warningと`lastSettingsError`を残してdefaultへ戻します（[`loadSettings()`](../../src/core/persistence/persistence.cpp#L219)）。
 
 ### save slot
 
-`saveData(slot, json)`は`user://saves/<slot>.json`へ保存します。slotにはportable filename制約があり、separator、`..`、Windowsで危険な文字などを拒否します（[`validateSlot()`](../../src/core/persistence/persistence.cpp#L168)）。
+`saveData(slot, json)`は`user://saves/<slot>.json`へ保存します。slotにはportable filename制約があり、separator、`..`、Windowsで危険な文字などを拒否します（[`validateSlot()`](../../src/core/persistence/persistence.cpp#L186)）。
 
 ### 原子的書き換え
 
-[`atomicWrite()`](../../src/core/persistence/persistence.cpp#L137) は同directoryの`.tmp`へflush/close後、Windowsでは`MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`、他OSではrenameで置換します。途中失敗ではtempをcleanupします。
+[`atomicWrite()`](../../src/core/persistence/persistence.cpp#L155) は同directoryの`.tmp`へflush/close後、Windowsでは`MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`、他OSではrenameで置換します。途中失敗ではtempをcleanupします。
 
 ## 5.11 Debug text
 
@@ -688,7 +688,7 @@ class PELICAN_API Behavior {
 };
 ```
 
-> **設計決定:** [`Behavior`](../../src/core/userpublic/behavior.hpp#L59) はこのコードベースで数少ない **仮想基底による公開interface** です。他の登録面（System / Component / Event）がduck typing + concept検出なのに対し、Behavior だけは「1オブジェクトにつき1個の多態インスタンスを arena が所有する」形なので継承を選んでいます。[第1章 §1.5](01_architecture_and_build.md) と [第8章 §8.1](08_class_interface_index.md) のinterface分類の例外として読んでください。
+> **設計決定:** [`Behavior`](../../src/core/userpublic/behavior.hpp#L60) はこのコードベースで数少ない **仮想基底による公開interface** です。他の登録面（System / Component / Event）がduck typing + concept検出なのに対し、Behavior だけは「1オブジェクトにつき1個の多態インスタンスを arena が所有する」形なので継承を選んでいます。[第1章 §1.5](01_architecture_and_build.md) と [第8章 §8.1](08_class_interface_index.md) のinterface分類の例外として読んでください。
 
 [`BehaviorContext`](../../src/core/userpublic/behavior.hpp#L24) は`GameContext`をpublic継承し、attachment固有の情報を足します。
 
