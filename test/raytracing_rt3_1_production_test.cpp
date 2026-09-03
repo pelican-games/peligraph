@@ -501,6 +501,60 @@ RaySceneRowSnapshot renderWp374aProductionRows() {
     return *rows;
 }
 
+TEST_CASE(
+    "WP383 material-less glTF keeps source index absent through the production AS route",
+    "[WP383][ray-tracing][rt3-1][scene-loader][production][mutation][gpu]") {
+    setupLogger();
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    // This fixture has geometry but no glTF materials.  It must therefore
+    // retain no source material index all the way from GltfLoader through
+    // PolygonInstanceContainer to the AS resolver; an AS declaration with a
+    // rule makes the resulting Unavailable identity observable.
+    Wp374aProjectRoot project{"wp383_material_less"};
+    writeWp374aProject(project.path, 2, true, true, true);
+    TestGltfFragmentFixture::writeGlb(project.path / "models" / "chair.glb",
+                                      false, true, false, true);
+    auto layout = wp374aLayout(2, true);
+    layout["acceleration_structure"]["rules"] =
+        accelerationDeclaration().at("rules");
+    writeWp374aText(project.path / "ray_layout.json", layout.dump(2));
+
+    FastModuleContainer modules;
+    loadWp374aScene(project.path);
+    GET_MODULE(ECSCore).update();
+    const auto snapshots =
+        GET_MODULE(PolygonInstanceContainer).rayQueryGeometryInstances();
+    REQUIRE_FALSE(snapshots.empty());
+    for (const auto &snapshot : snapshots) {
+        CHECK(snapshot.material_document_reference.empty());
+        CHECK_FALSE(snapshot.source_material_index.has_value());
+    }
+    const auto classification = classifyRayQueryStaticGeometry(snapshots);
+    REQUIRE_FALSE(classification.static_instance_indices.empty());
+
+    // Drive the same production AS snapshot lowering used by the renderer.
+    // It performs the static classification and constructs RaySceneRowInput
+    // from the PIC snapshot before calling resolveRaySceneRows.
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    auto &paths = GET_MODULE(PathResolver);
+    const auto rendering = loadRenderingPassConfigJsonFromString(
+        config.renderingConfigJson(), "WP383 material-less AS snapshot");
+    const auto ray_project = loadRayTracingProjectConfig(
+        rendering,
+        [&paths](std::string_view reference) {
+            return paths.loadText(reference);
+        },
+        PELICAN_RUNTIME_SHADER_COMPILER != 0);
+    CHECK_THROWS_WITH(
+        resolveRayTracingSceneRows(snapshots, *ray_project),
+        ContainsSubstring(
+            "pelican.ray_as_row_material_identity_unavailable@1"));
+    GET_MODULE(VulkanManageCore).waitIdle();
+#else
+    SUCCEED("WP383 production AS route requires the runtime shader compiler");
+#endif
+}
+
 void requireWp374aTlasValues(const RaySceneRowSnapshot &rows,
                              std::uint64_t authoring_object_id,
                              std::uint8_t mask, std::uint32_t flags,

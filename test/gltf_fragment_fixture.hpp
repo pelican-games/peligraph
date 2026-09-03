@@ -20,6 +20,11 @@ inline void appendU32(std::vector<uint8_t> &bytes, uint32_t value) {
     bytes.push_back(static_cast<uint8_t>((value >> 24) & 0xff));
 }
 
+inline void appendU16(std::vector<uint8_t> &bytes, uint16_t value) {
+    bytes.push_back(static_cast<uint8_t>(value & 0xff));
+    bytes.push_back(static_cast<uint8_t>((value >> 8) & 0xff));
+}
+
 inline void appendF32(std::vector<uint8_t> &bytes, float value) {
     uint32_t raw = 0;
     std::memcpy(&raw, &value, sizeof(value));
@@ -36,7 +41,8 @@ inline void writeBytes(const std::filesystem::path &path, const std::vector<uint
 
 inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
                                     bool geometry_only = false,
-                                    bool project_name_collision = false) {
+                                    bool project_name_collision = false,
+                                    bool ray_traceable_geometry = false) {
     std::vector<uint8_t> bin;
     for (const float value : {
              -0.5f, -0.5f, 0.0f,
@@ -44,6 +50,12 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
               0.0f,  0.5f, 0.0f,
          }) {
         detail::appendF32(bin, value);
+    }
+    const auto position_byte_length = bin.size();
+    if (ray_traceable_geometry) {
+        detail::appendU16(bin, 0);
+        detail::appendU16(bin, 1);
+        detail::appendU16(bin, 2);
     }
 
     const std::string second_root = duplicate_root_names ? "RootA" : "RootB";
@@ -114,6 +126,23 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
         json.erase("textures");
         for (auto &mesh : json["meshes"]) {
             for (auto &primitive : mesh["primitives"]) primitive.erase("material");
+        }
+    }
+    if (ray_traceable_geometry) {
+        json["bufferViews"][0]["byteLength"] = position_byte_length;
+        json["bufferViews"].push_back(
+            {{"buffer", 0},
+             {"byteOffset", position_byte_length},
+             {"byteLength", 3 * sizeof(uint16_t)}});
+        json["accessors"].push_back(
+            {{"bufferView", 1},
+             {"componentType", 5123},
+             {"count", 3},
+             {"type", "SCALAR"}});
+        for (auto &mesh : json["meshes"]) {
+            for (auto &primitive : mesh["primitives"]) {
+                primitive["indices"] = 1;
+            }
         }
     }
 
@@ -609,10 +638,11 @@ inline std::vector<uint8_t> makeMaterialRoutingGlb() {
 
 inline void writeGlb(const std::filesystem::path &path, bool duplicate_root_names = false,
                      bool geometry_only = false,
-                     bool project_name_collision = false) {
+                     bool project_name_collision = false,
+                     bool ray_traceable_geometry = false) {
     detail::writeBytes(
         path, makeGlb(duplicate_root_names, geometry_only,
-                      project_name_collision));
+                      project_name_collision, ray_traceable_geometry));
 }
 
 inline void writeNormalizedPositionGlb(

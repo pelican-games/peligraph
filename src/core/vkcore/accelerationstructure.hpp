@@ -37,7 +37,7 @@ struct RayQueryGeometryInstanceSnapshot {
     int resolved_material_handle = -1;
     std::uint64_t resolved_material_generation = 0;
     std::shared_ptr<const void> resolved_material_lease;
-    std::uint32_t source_material_index = 0;
+    std::optional<std::uint32_t> source_material_index;
     std::uint32_t alpha_override_mask = 0;
     std::array<float, 4> alpha_override_base_color_factor{
         1.0F, 1.0F, 1.0F, 1.0F};

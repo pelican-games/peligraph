@@ -1,5 +1,6 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <components/predefined.hpp>
 
 #include "../src/core/appflow/enginetime.hpp"
@@ -187,7 +188,7 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
         CHECK(shifted_pine.q != pine.q);
         CHECK(shifted_pine.instance_custom_index == 0x123456);
     }
-    SECTION("overlapping document and asset rules are ambiguous per row") {
+    SECTION("document identity takes precedence over a matching asset rule") {
         auto declaration = accelerationDeclaration();
         declaration["rules"].push_back({
             {"material",
@@ -195,12 +196,13 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
               {"source_material_index", 1}}},
             {"geometry_flags", Json::array()},
         });
-        const auto ambiguous = v2Layout(std::move(declaration));
-        CHECK_THROWS_WITH(
-            resolveRaySceneRows(inputs, ambiguous, nullptr),
-            ContainsSubstring("pelican.ray_as_rule_ambiguous@1"));
+        const auto canonical = v2Layout(std::move(declaration));
+        const auto canonical_rows =
+            resolveRaySceneRows(inputs, canonical, nullptr);
+        CHECK(rowByAuthor(canonical_rows, 101).geometry_flags ==
+              rayGeometryOpaque);
     }
-    SECTION("rules reject missing or partial row provenance") {
+    SECTION("rules reject rows with neither document nor asset provenance") {
         auto unavailable = inputs;
         unavailable[0].material_document.clear();
         unavailable[0].material_asset.clear();
@@ -209,6 +211,16 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
             ContainsSubstring(
                 "pelican.ray_as_row_material_identity_unavailable@1"));
     }
+    SECTION("an unnamed document remains Document ahead of an asset") {
+        auto document_identified = inputs;
+        document_identified[0].material_name.clear();
+        const auto document_rows =
+            resolveRaySceneRows(document_identified, layout, nullptr);
+        REQUIRE(document_rows.rows.size() == inputs.size());
+        CHECK(rowByAuthor(document_rows, 102).geometry_flags == 0);
+        CHECK(rowByAuthor(document_rows, 102).material_reference ==
+              "document:materials/multi.json");
+    }
     SECTION("complete asset provenance tolerates an unpaired embedded material name") {
         auto asset_identified = inputs;
         asset_identified[0].material_document.clear();
@@ -216,6 +228,125 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
             resolveRaySceneRows(asset_identified, layout, nullptr);
         REQUIRE(asset_rows.rows.size() == inputs.size());
         CHECK(rowByAuthor(asset_rows, 102).geometry_flags == 0);
+    }
+}
+
+TEST_CASE("WP383 canonical material identity drives AS gate and lookup",
+          "[WP383][ray-tracing][resolver][production][param][mutation]") {
+    // Every one of the five input axes goes through the production resolver.
+    // The binding identifies the canonical row kind, while the AS rule makes
+    // the optional document material name observable by the gate.
+    const bool document_present = GENERATE(false, true);
+    const bool material_name_present = GENERATE(false, true);
+    const bool asset_present = GENERATE(false, true);
+    const bool index_present = GENERATE(false, true);
+    const bool index_valid = GENERATE(false, true);
+    CAPTURE(document_present, material_name_present, asset_present,
+            index_present, index_valid);
+
+    // Keep the selector's optional document name independent from the row's
+    // name.  These are deliberately not generator-derived: a selector name
+    // must reject both an absent and a different row name, while an unnamed
+    // selector must still match a named row.  Otherwise removing the name
+    // equality requirement is only caught by the WP374 resolver unit tests.
+    {
+        auto named_declaration = accelerationDeclaration();
+        const auto named_layout = v2Layout(std::move(named_declaration));
+        auto unnamed_row = rowInput("wp383-name-absent", "Oak", 1, 3831);
+        unnamed_row.material_name.clear();
+        const auto unnamed_rows =
+            resolveRaySceneRows(std::array{unnamed_row}, named_layout, nullptr);
+        REQUIRE(unnamed_rows.rows.size() == 1);
+        CHECK(unnamed_rows.rows.front().geometry_flags == 0);
+
+        auto mismatched_row = rowInput("wp383-name-mismatch", "Pine", 1, 3832);
+        const auto mismatched_rows = resolveRaySceneRows(
+            std::array{mismatched_row}, named_layout, nullptr);
+        REQUIRE(mismatched_rows.rows.size() == 1);
+        CHECK(mismatched_rows.rows.front().geometry_flags == 0);
+
+        auto unnamed_declaration = accelerationDeclaration();
+        unnamed_declaration["rules"][0]["material"] =
+            Json{{"document", "materials/multi.json"}};
+        const auto unnamed_layout = v2Layout(std::move(unnamed_declaration));
+        auto named_row = rowInput("wp383-selector-unnamed", "Oak", 1, 3833);
+        const auto named_rows =
+            resolveRaySceneRows(std::array{named_row}, unnamed_layout, nullptr);
+        REQUIRE(named_rows.rows.size() == 1);
+        CHECK(named_rows.rows.front().geometry_flags == rayGeometryOpaque);
+    }
+
+    auto declaration = accelerationDeclaration();
+    if (!material_name_present) {
+        declaration["rules"][0]["material"] =
+            Json{{"document", "materials/multi.json"}};
+    }
+    declaration["rules"].push_back({
+        {"material",
+         {{"asset", "models/chairs.glb"}, {"source_material_index", 1}}},
+        {"geometry_flags", Json::array({"no_duplicate_any_hit_invocation"})},
+    });
+    auto root = layoutRoot();
+    root["groups"] = Json::array({{{"name", "opaque"}},
+                                  {{"name", "document"}},
+                                  {{"name", "asset"}}});
+    root["acceleration_structure"] = std::move(declaration);
+    const auto layout = parseRayGroupLayout(root.dump(), "wp383-layout.json");
+
+    auto input = rowInput("wp383", "Oak", 1, 383);
+    input.material_document =
+        document_present ? "materials/multi.json" : "";
+    input.material_name = material_name_present ? "Oak" : "";
+    input.material_asset = asset_present ? "models/chairs.glb" : "";
+    input.source_material_index =
+        index_present
+            ? std::optional<std::uint32_t>{
+                  index_valid ? 1u : std::numeric_limits<std::uint32_t>::max()}
+            : std::optional<std::uint32_t>{};
+
+    const bool document_identity = document_present;
+    const bool invalid_asset_index =
+        !document_identity && asset_present && index_present && !index_valid;
+    const bool asset_identity =
+        !document_identity && asset_present && index_present && index_valid;
+    if (invalid_asset_index) {
+        CHECK_THROWS_WITH(
+            resolveRaySceneRows(std::array{input}, layout, nullptr),
+            ContainsSubstring("pelican.ray_material_index_out_of_range@1"));
+    } else if (!document_identity && !asset_identity) {
+        CHECK_THROWS_WITH(
+            resolveRaySceneRows(std::array{input}, layout, nullptr),
+            ContainsSubstring(
+                "pelican.ray_as_row_material_identity_unavailable@1"));
+    } else {
+        Json material;
+        if (document_identity) {
+            material = {{"document", "materials/multi.json"}};
+        } else {
+            material = {{"asset", "models/chairs.glb"},
+                        {"source_material_index", 1}};
+        }
+        const auto bindings = parseRayBindings(
+            Json{{"schema", "pelican.ray_bindings"},
+                 {"version", 1},
+                 {"bindings", Json::array({{{"material", std::move(material)},
+                                              {"group", document_identity
+                                                            ? "document"
+                                                            : "asset"},
+                                              {"record", Json::object()}}})}}
+                .dump(),
+            layout, "wp383-bindings.json");
+        const auto rows =
+            resolveRaySceneRows(std::array{input}, layout, &bindings);
+        REQUIRE(rows.rows.size() == 1);
+        CHECK(rows.rows.front().geometry_flags ==
+              (document_identity ? rayGeometryOpaque
+                                 : rayGeometryNoDuplicateAnyHitInvocation));
+        CHECK(rows.rows.front().group_index ==
+              layout.groupIndex(document_identity ? "document" : "asset"));
+        CHECK(rows.rows.front().material_reference ==
+              (document_identity ? "document:materials/multi.json"
+                                 : "asset:models/chairs.glb#1"));
     }
 }
 

@@ -119,7 +119,7 @@ struct ModelTemplate {
     struct MaterialPrimitives {
         GlobalMaterialId material;
         std::vector<PrimitiveRefInfo> primitives;
-        std::uint32_t source_material_index = noSourceMaterialIndex;
+        std::optional<std::uint32_t> source_material_index;
     };
 
     struct NamedMaterial {

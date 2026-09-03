@@ -12110,9 +12110,10 @@ TEST_CASE(
             invalidMaterialId(), invalidMaterialId()};
         std::array<std::size_t, 8> primitive_count{};
         for (const auto &group : loaded.material_primitives) {
-            REQUIRE(group.source_material_index < material_by_source.size());
-            material_by_source[group.source_material_index] = group.material;
-            primitive_count[group.source_material_index] =
+            REQUIRE(group.source_material_index.has_value());
+            REQUIRE(*group.source_material_index < material_by_source.size());
+            material_by_source[*group.source_material_index] = group.material;
+            primitive_count[*group.source_material_index] =
                 group.primitives.size();
         }
         REQUIRE(primitive_count ==

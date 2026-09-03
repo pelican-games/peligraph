@@ -175,7 +175,7 @@ void applyPrimitiveMaterialBindings(
                 resolved.at(primitiveKey(primitive.mesh_index, primitive.primitive_index));
             const auto group_key =
                 (static_cast<std::uint64_t>(static_cast<std::uint32_t>(target.value)) << 32u) |
-                source_group.source_material_index;
+                source_group.source_material_index.value_or(noSourceMaterialIndex);
             const auto [found, inserted] =
                 group_by_material.emplace(group_key, regrouped.size());
             if (inserted) {

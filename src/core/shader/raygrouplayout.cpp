@@ -14,6 +14,28 @@
 #include <tuple>
 
 namespace Pelican {
+
+MaterialRowIdentity materialRowIdentity(const RaySceneRowInput &row) {
+    if (!row.material_document.empty()) {
+        return MaterialRowDocumentIdentity{
+            .document = row.material_document,
+            .material_name = row.material_name,
+        };
+    }
+    if (!row.material_asset.empty() && row.source_material_index) {
+        if (*row.source_material_index ==
+            std::numeric_limits<std::uint32_t>::max()) {
+            throw std::runtime_error(
+                "pelican.ray_material_index_out_of_range@1: source_material_index is outside the valid material index domain");
+        }
+        return MaterialRowAssetIdentity{
+            .asset = row.material_asset,
+            .source_material_index = *row.source_material_index,
+        };
+    }
+    return MaterialRowIdentityUnavailable{};
+}
+
 namespace {
 
 static_assert(alignof(RayMaterialTableRow) == 16);
@@ -306,26 +328,31 @@ std::vector<std::byte> encodeRecord(
     return result;
 }
 
-std::string materialReference(
-    const RaySceneRowInput &row, bool table_key) {
-    if (!row.material_document.empty()) {
-        auto result = "document:" + row.material_document;
-        if (table_key) result += "#" + row.material_name;
+std::string materialReference(const MaterialRowIdentity &identity,
+                              bool table_key) {
+    if (const auto *document =
+            std::get_if<MaterialRowDocumentIdentity>(&identity)) {
+        auto result = "document:" + document->document;
+        if (table_key) result += "#" + document->material_name;
         return result;
     }
-    return "asset:" + row.material_asset + "#" +
-           std::to_string(row.source_material_index);
+    if (const auto *asset = std::get_if<MaterialRowAssetIdentity>(&identity)) {
+        return "asset:" + asset->asset + "#" +
+               std::to_string(asset->source_material_index);
+    }
+    return "unavailable";
 }
 
 bool selectorMatches(
-    const RayBindingSelector &selector, const RaySceneRowInput &row) {
+    const RayBindingSelector &selector, const MaterialRowIdentity &identity) {
     if (selector.kind == RayBindingSelector::Kind::document) {
-        return !row.material_document.empty() &&
-               selector.reference == row.material_document;
+        const auto *document =
+            std::get_if<MaterialRowDocumentIdentity>(&identity);
+        return document != nullptr && selector.reference == document->document;
     }
-    return row.material_document.empty() &&
-           selector.reference == row.material_asset &&
-           selector.source_material_index == row.source_material_index;
+    const auto *asset = std::get_if<MaterialRowAssetIdentity>(&identity);
+    return asset != nullptr && selector.reference == asset->asset &&
+           selector.source_material_index == asset->source_material_index;
 }
 
 [[noreturn]] void rayAsError(std::string_view code,
@@ -468,29 +495,31 @@ RayAccelerationStructureDeclaration parseAccelerationStructure(
         const bool has_name = material.contains("material_name");
         const bool has_asset = material.contains("asset");
         const bool has_index = material.contains("source_material_index");
-        const bool document_shape = has_document && has_name &&
-                                    !has_asset && !has_index;
+        const bool document_shape = has_document && !has_asset && !has_index;
         const bool asset_shape = has_asset && has_index &&
                                  !has_document && !has_name;
         if (!document_shape && !asset_shape) {
             rayAsError("ray_as_rule_malformed", source,
-                       "material selector must be exactly document+material_name or asset+source_material_index");
+                       "material selector must be document with optional material_name or asset+source_material_index");
         }
         RayAsMaterialSelector selector;
         if (document_shape) {
             if (!material.at("document").is_string() ||
                 material.at("document").get_ref<const std::string &>().empty() ||
-                !material.at("material_name").is_string() ||
-                material.at("material_name")
-                    .get_ref<const std::string &>()
-                    .empty()) {
+                (has_name &&
+                 (!material.at("material_name").is_string() ||
+                  material.at("material_name")
+                      .get_ref<const std::string &>()
+                      .empty()))) {
                 rayAsError("ray_as_rule_malformed", source,
-                           "document selector strings must be non-empty");
+                           "document selector strings must be non-empty when present");
             }
             selector.kind = RayAsMaterialSelector::Kind::document_material;
             selector.reference = material.at("document").get<std::string>();
-            selector.material_name =
-                material.at("material_name").get<std::string>();
+            if (has_name) {
+                selector.material_name =
+                    material.at("material_name").get<std::string>();
+            }
         } else {
             if (!material.at("asset").is_string() ||
                 material.at("asset").get_ref<const std::string &>().empty()) {
@@ -531,21 +560,26 @@ RayAccelerationStructureDeclaration parseAccelerationStructure(
 }
 
 bool rayAsSelectorMatches(const RayAsMaterialSelector &selector,
-                          const RaySceneRowInput &row) {
+                          const MaterialRowIdentity &identity) {
     if (selector.kind ==
         RayAsMaterialSelector::Kind::document_material) {
-        return selector.reference == row.material_document &&
-               selector.material_name == row.material_name;
+        const auto *document =
+            std::get_if<MaterialRowDocumentIdentity>(&identity);
+        return document != nullptr && selector.reference == document->document &&
+               (selector.material_name.empty() ||
+                selector.material_name == document->material_name);
     }
-    return selector.reference == row.material_asset &&
-           selector.source_material_index == row.source_material_index;
+    const auto *asset = std::get_if<MaterialRowAssetIdentity>(&identity);
+    return asset != nullptr && selector.reference == asset->asset &&
+           selector.source_material_index == asset->source_material_index;
 }
 
 } // namespace
 
 std::string RayAsMaterialSelector::canonicalKey() const {
     if (kind == Kind::document_material) {
-        return "document:" + reference + "#" + material_name;
+        return "document:" + reference +
+               (material_name.empty() ? "" : "#" + material_name);
     }
     return "asset:" + reference + "#" +
            std::to_string(source_material_index);
@@ -1225,6 +1259,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
     resolved.reserve(inputs.size());
     std::vector<bool> binding_matched(bindings ? bindings->bindings.size() : 0, false);
     for (const auto &input : inputs) {
+        const auto identity = materialRowIdentity(input);
         if (semantic_mode != RayLayoutSemanticMode::LayoutV2 &&
             input.ray_instance) {
             throw std::runtime_error(
@@ -1233,12 +1268,12 @@ RaySceneRowSnapshot resolveRaySceneRows(
         const RayMaterialBinding *chosen = nullptr;
         if (bindings != nullptr) {
             for (std::size_t index = 0; index < bindings->bindings.size(); ++index) {
-                if (!selectorMatches(bindings->bindings[index].selector, input)) continue;
+                if (!selectorMatches(bindings->bindings[index].selector, identity)) continue;
                 binding_matched[index] = true;
                 if (chosen != nullptr) {
                     throw std::runtime_error(
                         "pelican.ray_binding_selector_duplicate@1: material '" +
-                        materialReference(input, layout.usesRayTables()) +
+                        materialReference(identity, layout.usesRayTables()) +
                         "' resolves more than once");
                 }
                 chosen = &bindings->bindings[index];
@@ -1250,17 +1285,13 @@ RaySceneRowSnapshot resolveRaySceneRows(
         auto geometry_flags = as_defaults.geometry_flags;
         if (semantic_mode == RayLayoutSemanticMode::LayoutV2 &&
             !as_rules.empty()) {
-            const bool full_document_identity =
-                !input.material_document.empty() &&
-                !input.material_name.empty();
-            const bool full_asset_identity = !input.material_asset.empty();
-            if (!full_document_identity && !full_asset_identity) {
+            if (std::holds_alternative<MaterialRowIdentityUnavailable>(identity)) {
                 throw std::runtime_error(
-                    "pelican.ray_as_row_material_identity_unavailable@1: AS rules require a complete document/material_name or asset/source_material_index row identity");
+                    "pelican.ray_as_row_material_identity_unavailable@1: AS rules require a document or asset/source_material_index row identity");
             }
             const RayAsGeometryRule *matched = nullptr;
             for (const auto &rule : as_rules) {
-                if (!rayAsSelectorMatches(rule.material, input)) continue;
+                if (!rayAsSelectorMatches(rule.material, identity)) continue;
                 if (matched != nullptr) {
                     throw std::runtime_error(
                         "pelican.ray_as_rule_ambiguous@1: row material identity matches more than one AS rule");
@@ -1307,7 +1338,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
               .geometry_identity = input.geometry_identity,
               .geometry_match_identity = input.geometry_match_identity,
               .material_reference = materialReference(
-                  input, layout.usesRayTables()),
+                  identity, layout.usesRayTables()),
               .material_name = input.material_name,
               .resolved_material_handle =
                   input.resolved_material_handle,

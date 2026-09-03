@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -212,7 +213,9 @@ struct RaySceneRowInput {
     std::string material_document;
     std::string material_asset;
     std::string material_name;
-    std::uint32_t source_material_index = 0;
+    // This is optional before material identity canonicalization.  In
+    // particular, a missing source index must never silently become index 0.
+    std::optional<std::uint32_t> source_material_index;
     int resolved_material_handle = -1;
     std::uint64_t resolved_material_generation = 0;
     std::shared_ptr<const void> resolved_material_lease;
@@ -230,6 +233,28 @@ struct RaySceneRowInput {
         0.0F, 0.0F, 1.0F, 1.0F};
     float alpha_override_uv_rotation = 0.0F;
 };
+
+struct MaterialRowDocumentIdentity {
+    std::string document;
+    std::string material_name;
+};
+
+struct MaterialRowAssetIdentity {
+    std::string asset;
+    std::uint32_t source_material_index = 0;
+};
+
+struct MaterialRowIdentityUnavailable {};
+
+// The only material identity seen by AS rule gating and selector lookup.
+// Canonicalization gives a document (with an optional material name) priority,
+// then asset+valid source index, and otherwise makes the row explicitly
+// unavailable.
+using MaterialRowIdentity =
+    std::variant<MaterialRowDocumentIdentity, MaterialRowAssetIdentity,
+                 MaterialRowIdentityUnavailable>;
+
+MaterialRowIdentity materialRowIdentity(const RaySceneRowInput &row);
 
 struct RaySceneRow {
     RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;

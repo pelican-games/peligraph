@@ -2361,7 +2361,7 @@ struct InternalGltfLoader {
                         ? static_cast<std::uint32_t>(local_material_id)
                         : (generated_source != generated_material_sources.end()
                                ? generated_source->second
-                               : noSourceMaterialIndex),
+                               : std::optional<std::uint32_t>{}),
             });
         }
         for (std::size_t material_index = 0; material_index < material_map.size();

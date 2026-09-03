@@ -351,7 +351,8 @@ DrawItemSnapshot makeDrawItemSnapshot(
         .pipeline_material_key =
             DrawPipelineMaterialKey{
                 .material = material.material,
-                .source_material_index = material.source_material_index,
+                .source_material_index = material.source_material_index.value_or(
+                    noSourceMaterialIndex),
                 .skinned = primitive.skinned,
             },
         .material_asset_reference =
@@ -1459,7 +1460,11 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
                 .resolved_material_lease =
                     item.ray_material_lease,
                 .source_material_index =
-                    item.pipeline_material_key.source_material_index,
+                    item.pipeline_material_key.source_material_index ==
+                            noSourceMaterialIndex
+                        ? std::optional<std::uint32_t>{}
+                        : std::optional<std::uint32_t>{
+                              item.pipeline_material_key.source_material_index},
                 .alpha_override_mask = alpha_override_mask,
                 .alpha_override_base_color_factor =
                     alpha_override_base_color_factor,
