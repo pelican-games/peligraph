@@ -22437,6 +22437,82 @@ v1 の「prepare 失敗」を撤回。未解決 row は **plan の中で `unreso
 
 (1) `List` は flat schema に載らない → 決定 12 / (2) `max + 1` は保証しない → 決定 13 / (3) inverse は row 単位の identity が要る → 決定 14 / (4) 単射でも安定でもない → 決定 16 /
 (5) 1 WP は大きすぎる → 決定 10 / (6) catalog の prepare は **inspect 結果と asset 表 snapshot からの純粋計算**に限定(ID 採番・GPU allocation・registry 更新・effect enqueue を禁止)。WP382c の受け入れに「prepare 中に effect sink へ何も入らない」を足す。
+
+#### WP382 仕様レビュー第 2 巡(不合格・14 件)と v3 —— **決定差分(レビューはここで打ち切り。残余は各 WP のコードレビューへ。v3 > v2 > v1)**
+
+仕分け: **直す 14**(全件)。
+
+##### 決定 24(#1): high-water mark が勝つ。undo の bytes 一致は `$list.next_id` を除く
+
+undo / redo の受け入れ (a) は「操作直前の `encodeSemanticAuthoring()` と undo 後が **`$list.next_id` を除いて**一致」に改める。`next_id` は削除・undo で戻さない(再利用しない契約を優先)。
+それ以外の bytes(row envelope・省略 field・順序)は完全一致。
+
+##### 決定 25(#2): List の wire は **object container**。grammar と validation は WP382a
+
+JSON array は名前付き member を持てないので、List は
+```json
+"overrides": { "$list": { "v": 1, "next_id": 3 }, "rows": [ { "$row": { "id": 1, "v": 1 }, "occurrence_id": "…", "mask": 2 } ] }
+```
+の **object container** とする。素の配列は `ListContainerMissing`、`$list` 無しは `RowEnvelopeMissing`、未知 `v` は `RowEnvelopeUnsupported`。
+**container decoder・envelope の剥がし / 戻し・`$list` / `$row` の validation は WP382a**(schema と同時に永続形式を決める)。WP382b は編集 op と journal だけ。
+出荷 4 project に list は無いので bytes 不変は維持。
+
+##### 決定 26(#3 #4): v3 入口の型を分離し、raw import 診断が v3 を認識する
+
+- v2 の registration record(`BehaviorRegistration` / `EventTypeRegistration` / component の登録 struct)は **layout を凍結**(`static_assert(sizeof)` + frozen v2 fixture が引き続き load できること)
+- v3 は **別型** `BehaviorRegistrationV3` / `EventTypeRegistrationV3` / `ComponentRegistrationV3`(descriptor は `const SchemaNode &`)。再帰 schema を持てるのは behavior params / event payload / ECS component の 3 種すべて。component の v3 経路も WP382a
+- raw import 診断(WP381 の reader)は `pelican_register_*_v3` の import を認識し、**host が v3 入口を export しない構成**(将来の host か、v3 を消す変異)では `game_logic_abi_stale@1{found: "v3", host: "v2"}` を **LoadLibrary より前**に出す。受け入れの「v3 入口を消すと stale」はこの診断で観測(OS loader の一般 load 失敗ではない)
+
+##### 決定 27(#6): presence 代数を 3 値にし、typed value も presence を運ぶ
+
+`FieldPresence = Required | Defaulted | OptionalOverride`。`OptionalOverride` の typed value は `std::optional<T>`(absent = `Inherit`、明示値 = `Set`)。決定 12 の fingerprint 入力に presence 種別を含める。
+occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverride`。object-level の既存 3 field は今日どおり(`Defaulted` 相当。absent == default)。
+
+##### 決定 28(#5): row 指定 op の address に attachment identity と挿入位置を含める
+
+- address = `{ authoring_object_id, component: { type, occurrence, origin }(WP375c の journal identity と同じ witness), list_path, row_id, leaf_path }`。同一 object の複数 attachment を区別する
+- `insert_component_field` は `position: { before: row_id } | { end: true }` を持つ(先頭は `before: <first row id>`、空 list は `end`)。添字は使わない
+- CAS は `{document revision, attachment witness, row_id → index}` の 3 つで判定
+
+##### 決定 29(#7): occurrence identity の byte 仕様(v1)を固定する
+
+- `NodeIdentity` の tag は u8: `1 = ExplicitId(extras.id の NFC UTF-8)` / `2 = NamePath(root からの node 名を `F()` で連結)` / `3 = OrderedContentDigest`。優先: `extras.id` があれば 1、無ければ NamePath が scope 内で一意なら 2、そうでなければ 3。`extras.id` は **新規に parse**する(今日は保持されない)
+- `PrimitiveIdentity` の tag は同じ u8 体系(1 = ExplicitId、3 = OrderedContentDigest)
+- `ImporterVariant_v1` は u8 enum を**省略なく列挙**: `0 none / 1 vrm_split_both / 2 vrm_split_third_person_only / 3 lod{u8 n} / 4 skinned / 5 morph_expanded / 6 vat_deformed`。未知値は `OccurrenceIdUnrepresentable{reason: variant}`
+- digest の入力(順序固定、各 `F()`): `mode(u8)` ‖ `indexed(u8)` ‖ `index_count(u32)` ‖ index bytes(u32le) ‖ attribute 数(u32) ‖ 各 attribute `{semantic 名, 型 tag(u8), 要素数(u32), dequantize 済み f32 bytes}`(semantic 名の byte 順)‖ morph target 数(u32) ‖ 各 target の attribute 同上 ‖ skin `{joints, weights}` 同上
+- node digest = SHA-256 over `F(primitive digest…)` を primitive の正規順(digest の byte 順)で連結
+- 全体式は決定 4(修正 β)のまま。**v1 の式を変える改修は v2 を足す**(v1 の再計算はしない)
+
+##### 決定 30(#8 #9 #10): WP382c の単独受け入れと model reload の境界、共有 diagnostics
+
+- **WP382c の単独価値**: `get_ray_occurrences{object}` と **`resolve_ray_occurrence{occurrence_id}`(production RPC: found{q, …} / absent / ambiguous)**。model 差し替えで **catalog の差分(added / removed / ambiguous)**が status に出る。`OccurrenceAbsent` を override row に対して出すのは **WP382d**(override の受理と同時)
+- **model reload の境界(WP382c の変更対象に `reloadtransaction.*` / `reloadservice.*` を明記)**: `ModelAssetContainer::installBatch` の retire callback 内 rebuild をやめ、watch reload の executor に **prepare token(instance rebuild の候補 + catalog 候補を publish 前に構築。失敗可)→ noexcept publish(registry・instance・catalog を 1 commit)→ rollback(候補を破棄)** を足す。publish 後の callback は禁止(`static_assert(noexcept)`)。generation は commit で 1 つ進む
+- **共有 diagnostics**: `SceneLoadDiagnostics{ rejected_rows: [ { address: RowAddress{object, component witness, list_path, row_id}, error } ], effect_errors: [...] }` を `SceneLoadCommitted` と `CommittedWithEffectFailure` の**両方**が持つ(型を 1 つに寄せてよい)。startup / RPC / pending / import の 4 root で保持し、RPC は result に、startup / pending は log + status に
+
+##### 決定 31(#11): inventory の一致は **row 単位の写像**で比較
+
+`(authoring_object_id, component witness, list_path, row_id, occurrence_id) → (q, 実効 mask / flags / custom_index, resolution status)` を、
+**authored tree と defaults と material 規則から独立に計算した期待値**と比較する(production resolver の結果を期待値に使わない = 決定 1 の「B の実値を正解にしない」と同じ)。
+同じ model を使う object A / B で A だけに row があるとき、B の row に効いていないことをこの写像で観測。
+
+##### 決定 32(#12): 構成 matrix に importer variant を足し、preview / web の拒否 code を固定
+
+- 追加軸: `PELICAN_WITH_VAT` ON / OFF(OFF は VAT model の named reject、ON は `vat_deformed` variant の occurrence)、skinned、morph、VRM auto-split(`both` / `third_person_only`)
+- preview: `overrides` を含む component は `ray_instance_overrides_unsupported@1{surface: preview}`。web: subset 原則の明示拒否(同 code、`surface: web`)。拒否の入口は component decode
+
+##### 決定 33(#13): WP383 の truth table は 3 軸 × D / N
+
+軸: `document(D)` / `material_name(N)` / `asset present(A)` / `index present(I)` / `index valid(V)`。`source_material_index` は canonical 化前は optional。
+規則: `D && N → Document` / `!(D && N) && A && I && V → Asset` / `A && I && !V → MaterialIndexOutOfRange@1(named)` / それ以外 → `Unavailable`。
+検査は production の `resolveRaySceneRows` を通し、gate と lookup が同じ `MaterialRowIdentity` を見ることを 1 つの parametrized test で固定。
+
+##### 決定 34(#14): fingerprint の受け入れは **production の reload validation** で
+
+実 v3 DLL を候補として reload し、default / 順序 / vocabulary 値を 1 項だけ変えた**同 version** の DLL が `schema_changed_without_version_bump` で拒否され、同一宣言は成功することを production test で観測。helper の hash test は補助。
+
+##### 段取り(v3)
+
+**WP383(中段、terra + high)∥ WP382a(上段、sol max)→ WP382b → WP382c → WP382d**。仕様レビューは打ち切り。各 WP は着地後にコードレビュー(上段は codex、中段は統合側変異 + Claude)。
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
 **§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
