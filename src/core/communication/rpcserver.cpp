@@ -1172,15 +1172,20 @@ namespace internal {
 
 nlohmann::json gameLogicParticipantRpcStatus(
     const watch::ReloadService *reload_service) {
+    const auto status = configuredGameLogicStatus();
     if (reload_service != nullptr) {
         const auto reload = reload_service->statusJson();
         if (reload.contains("runtime") && reload.at("runtime").is_object()) {
             const auto found = reload.at("runtime").find(
                 watch::gameLogicReloadParticipantName);
-            if (found != reload.at("runtime").end()) return *found;
+            // Startup initialization runs before the first runtime pass.  Its
+            // saved failure is authoritative while this participant is untried.
+            const auto untried = found != reload.at("runtime").end() &&
+                                 found->value("attempted", std::uint64_t{0}) == 0;
+            if (found != reload.at("runtime").end() &&
+                (!untried || status.error_code.empty())) return *found;
         }
     }
-    const auto status = configuredGameLogicStatus();
     return nlohmann::json{
         {"error_code", status.error_code.empty()
                            ? nlohmann::json(nullptr)

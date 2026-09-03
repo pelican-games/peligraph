@@ -588,6 +588,8 @@ void ReloadService::ensureBuiltInParticipants() {
                         {"configured", status.configured},
                         {"loaded", status.loaded},
                         {"reloading", status.reloading},
+                        {"pending", status.pending},
+                        {"source_busy_retries", status.source_busy_retries},
                         {"generation", status.generation},
                         {"systems", status.system_count},
                         {"source", status.source.empty()

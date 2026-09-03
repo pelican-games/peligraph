@@ -18,6 +18,8 @@ struct GameLogicReloadStatus {
     bool configured = false;
     bool loaded = false;
     bool reloading = false;
+    bool pending = false;
+    std::uint32_t source_busy_retries = 0;
     std::uint64_t generation = 0;
     std::size_t system_count = 0;
     std::filesystem::path source;
@@ -64,6 +66,8 @@ DECLARE_MODULE(GameLogicReloader) {
     std::filesystem::path shadow_directory;
     SourceFingerprint observed_source;
     std::optional<SourceFingerprint> settling_source;
+    std::uint32_t source_busy_retries = 0;
+    bool source_busy_pending = false;
     std::uint64_t copy_sequence = 0;
     std::uint64_t generation = 0;
     std::string last_error;
@@ -82,6 +86,8 @@ DECLARE_MODULE(GameLogicReloader) {
     bool reloadTransaction(const ResetFn &teardown, const ResetFn &rebuild);
     void setLastError(GameLogicErrorInfo error);
     void clearLastError() noexcept;
+    void clearSourceBusy() noexcept;
+    void sweepStaleShadowDirectories() noexcept;
 
   public:
     GameLogicReloader() = default;

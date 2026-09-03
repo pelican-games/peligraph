@@ -198,35 +198,46 @@ void putPeString(std::vector<std::byte> &bytes, std::size_t offset,
     bytes[offset + value.size()] = std::byte{0};
 }
 
-enum class SyntheticHostImport { ordinal, delay_named };
+enum class SyntheticHostImport { named, ordinal, delay_named };
 
 void writeSyntheticPe(const std::filesystem::path &path,
                       std::string_view host,
-                      SyntheticHostImport import_kind) {
+                      SyntheticHostImport import_kind, bool pe32 = false) {
     std::vector<std::byte> bytes(0x800);
     putPeValue<std::uint16_t>(bytes, 0, 0x5a4d);
     putPeValue<std::uint32_t>(bytes, 0x3c, 0x80);
     putPeValue<std::uint32_t>(bytes, 0x80, 0x00004550);
     constexpr std::size_t coff = 0x84;
-    putPeValue<std::uint16_t>(bytes, coff, 0x8664);
+    putPeValue<std::uint16_t>(bytes, coff, pe32 ? 0x14c : 0x8664);
     putPeValue<std::uint16_t>(bytes, coff + 2, 1);
-    putPeValue<std::uint16_t>(bytes, coff + 16, 240);
+    const auto optional_size = pe32 ? 224U : 240U;
+    putPeValue<std::uint16_t>(bytes, coff + 16, optional_size);
     constexpr std::size_t optional = coff + 20;
-    putPeValue<std::uint16_t>(bytes, optional, 0x20b);
-    putPeValue<std::uint64_t>(bytes, optional + 24,
-                              UINT64_C(0x140000000));
+    putPeValue<std::uint16_t>(bytes, optional, pe32 ? 0x10b : 0x20b);
+    if (pe32) {
+        putPeValue<std::uint32_t>(bytes, optional + 28, 0x400000);
+    } else {
+        putPeValue<std::uint64_t>(bytes, optional + 24,
+                                  UINT64_C(0x140000000));
+    }
     putPeValue<std::uint32_t>(bytes, optional + 60, 0x200);
-    putPeValue<std::uint32_t>(bytes, optional + 108, 16);
-    const auto directory_index =
-        import_kind == SyntheticHostImport::ordinal ? 1U : 13U;
-    const auto directory = optional + 112 + directory_index * 8;
-    putPeValue<std::uint32_t>(bytes, directory, 0x1000);
-    putPeValue<std::uint32_t>(bytes, directory + 4,
-                              import_kind == SyntheticHostImport::ordinal
-                                  ? 40U
-                                  : 64U);
+    putPeValue<std::uint32_t>(bytes, optional + (pe32 ? 92 : 108), 16);
+    const auto directories = optional + (pe32 ? 96 : 112);
+    if (import_kind == SyntheticHostImport::named) {
+        putPeValue<std::uint32_t>(bytes, directories + 8, 0x1000);
+        putPeValue<std::uint32_t>(bytes, directories + 12, 40U);
+    } else {
+        const auto directory_index =
+            import_kind == SyntheticHostImport::ordinal ? 1U : 13U;
+        const auto directory = directories + directory_index * 8;
+        putPeValue<std::uint32_t>(bytes, directory, 0x1000);
+        putPeValue<std::uint32_t>(bytes, directory + 4,
+                                  import_kind == SyntheticHostImport::ordinal
+                                      ? 40U
+                                      : 64U);
+    }
 
-    constexpr std::size_t section = optional + 240;
+    const auto section = optional + optional_size;
     putPeValue<std::uint32_t>(bytes, section + 8, 0x600);
     putPeValue<std::uint32_t>(bytes, section + 12, 0x1000);
     putPeValue<std::uint32_t>(bytes, section + 16, 0x600);
@@ -239,16 +250,116 @@ void writeSyntheticPe(const std::filesystem::path &path,
         putPeValue<std::uint32_t>(bytes, descriptor + 16, 0x1100);
         putPeValue<std::uint64_t>(bytes, 0x300,
                                   UINT64_C(0x800000000000017d));
-    } else {
+    } else if (import_kind == SyntheticHostImport::delay_named) {
         putPeValue<std::uint32_t>(bytes, descriptor, 1);
         putPeValue<std::uint32_t>(bytes, descriptor + 4, 0x1080);
         putPeValue<std::uint32_t>(bytes, descriptor + 12, 0x1100);
         putPeValue<std::uint32_t>(bytes, descriptor + 16, 0x1100);
         putPeValue<std::uint64_t>(bytes, 0x300, 0x1180);
         putPeString(bytes, 0x382, gameLogicEpochAnchorSymbol);
+    } else {
+        putPeValue<std::uint32_t>(bytes, descriptor, 0x1100);
+        putPeValue<std::uint32_t>(bytes, descriptor + 12, 0x1080);
+        putPeValue<std::uint32_t>(bytes, descriptor + 16, 0x1100);
+        if (pe32) {
+            putPeValue<std::uint32_t>(bytes, 0x300, 0x1180);
+        } else {
+            putPeValue<std::uint64_t>(bytes, 0x300, 0x1180);
+        }
+        putPeString(bytes, 0x382, gameLogicEpochAnchorSymbol);
     }
     putPeString(bytes, 0x280, host);
 
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    REQUIRE(output.good());
+    output.write(reinterpret_cast<const char *>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(output.good());
+}
+
+void writeCrossSectionDescriptorPe(const std::filesystem::path &path,
+                                   std::string_view host) {
+    std::vector<std::byte> bytes(0x800);
+    putPeValue<std::uint16_t>(bytes, 0, 0x5a4d);
+    putPeValue<std::uint32_t>(bytes, 0x3c, 0x80);
+    putPeValue<std::uint32_t>(bytes, 0x80, 0x00004550);
+    constexpr std::size_t coff = 0x84;
+    putPeValue<std::uint16_t>(bytes, coff, 0x8664);
+    putPeValue<std::uint16_t>(bytes, coff + 2, 2);
+    putPeValue<std::uint16_t>(bytes, coff + 16, 240);
+    constexpr std::size_t optional = coff + 20;
+    putPeValue<std::uint16_t>(bytes, optional, 0x20b);
+    putPeValue<std::uint64_t>(bytes, optional + 24, UINT64_C(0x140000000));
+    putPeValue<std::uint32_t>(bytes, optional + 60, 0x200);
+    putPeValue<std::uint32_t>(bytes, optional + 108, 16);
+    putPeValue<std::uint32_t>(bytes, optional + 112 + 8, 0x1000);
+    putPeValue<std::uint32_t>(bytes, optional + 112 + 12, 60);
+    constexpr std::size_t section = optional + 240;
+    putPeValue<std::uint32_t>(bytes, section + 8, 20);
+    putPeValue<std::uint32_t>(bytes, section + 12, 0x1000);
+    putPeValue<std::uint32_t>(bytes, section + 16, 20);
+    putPeValue<std::uint32_t>(bytes, section + 20, 0x200);
+    constexpr std::size_t next_section = section + 40;
+    putPeValue<std::uint32_t>(bytes, next_section + 8, 0x500);
+    putPeValue<std::uint32_t>(bytes, next_section + 12, 0x1014);
+    putPeValue<std::uint32_t>(bytes, next_section + 16, 0x500);
+    putPeValue<std::uint32_t>(bytes, next_section + 20, 0x214);
+    putPeValue<std::uint32_t>(bytes, 0x200, 0x1100);
+    putPeValue<std::uint32_t>(bytes, 0x200 + 12, 0x1040);
+    putPeValue<std::uint32_t>(bytes, 0x200 + 16, 0x1100);
+    // Descriptor #1 begins in the adjacent raw bytes, but its RVA begins in
+    // the next section. It is otherwise a complete anchor import, so omitting
+    // the same-section guard would make this malformed directory acceptable.
+    putPeValue<std::uint32_t>(bytes, 0x214, 0x1120);
+    putPeValue<std::uint32_t>(bytes, 0x214 + 12, 0x1060);
+    putPeValue<std::uint32_t>(bytes, 0x214 + 16, 0x1120);
+    // The all-zero descriptor at 0x228 terminates the three-entry directory.
+    putPeString(bytes, 0x240, host);
+    putPeString(bytes, 0x260, host);
+    putPeValue<std::uint64_t>(bytes, 0x300, 0x1180);
+    putPeValue<std::uint64_t>(bytes, 0x320, 0x11c0);
+    putPeString(bytes, 0x382, "ordinary_import");
+    putPeString(bytes, 0x3c2, gameLogicEpochAnchorSymbol);
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    REQUIRE(output.good());
+    output.write(reinterpret_cast<const char *>(bytes.data()),
+                 static_cast<std::streamsize>(bytes.size()));
+    REQUIRE(output.good());
+}
+
+void writeThunkLimitPe(const std::filesystem::path &path,
+                       std::string_view host) {
+    constexpr std::size_t thunk_count = 65536;
+    std::vector<std::byte> bytes(0x43000);
+    putPeValue<std::uint16_t>(bytes, 0, 0x5a4d);
+    putPeValue<std::uint32_t>(bytes, 0x3c, 0x80);
+    putPeValue<std::uint32_t>(bytes, 0x80, 0x00004550);
+    constexpr std::size_t coff = 0x84;
+    putPeValue<std::uint16_t>(bytes, coff, 0x14c);
+    putPeValue<std::uint16_t>(bytes, coff + 2, 1);
+    putPeValue<std::uint16_t>(bytes, coff + 16, 224);
+    constexpr std::size_t optional = coff + 20;
+    putPeValue<std::uint16_t>(bytes, optional, 0x10b);
+    putPeValue<std::uint32_t>(bytes, optional + 28, 0x400000);
+    putPeValue<std::uint32_t>(bytes, optional + 60, 0x200);
+    putPeValue<std::uint32_t>(bytes, optional + 92, 16);
+    putPeValue<std::uint32_t>(bytes, optional + 96 + 8, 0x1000);
+    putPeValue<std::uint32_t>(bytes, optional + 96 + 12, 40);
+    constexpr std::size_t section = optional + 224;
+    putPeValue<std::uint32_t>(bytes, section + 8,
+                              static_cast<std::uint32_t>(bytes.size() - 0x200));
+    putPeValue<std::uint32_t>(bytes, section + 12, 0x1000);
+    putPeValue<std::uint32_t>(bytes, section + 16,
+                              static_cast<std::uint32_t>(bytes.size() - 0x200));
+    putPeValue<std::uint32_t>(bytes, section + 20, 0x200);
+    putPeValue<std::uint32_t>(bytes, 0x200, 0x1100);
+    putPeValue<std::uint32_t>(bytes, 0x200 + 12, 0x1080);
+    putPeValue<std::uint32_t>(bytes, 0x200 + 16, 0x1100);
+    putPeString(bytes, 0x280, host);
+    for (std::size_t index = 0; index < thunk_count; ++index) {
+        putPeValue<std::uint32_t>(bytes, 0x300 + index * 4, 0x41200);
+    }
+    putPeString(bytes, 0x40402, "overflow");
     std::ofstream output{path, std::ios::binary | std::ios::trunc};
     REQUIRE(output.good());
     output.write(reinterpret_cast<const char *>(bytes.data()),
@@ -497,7 +608,86 @@ TEST_CASE("WP381 raw PE reader rejects unsupported and unreadable images",
             nlohmann::ordered_json{{"reason", "open_failed"}});
 }
 
+TEST_CASE("WP381a raw PE reader keeps descriptor and work boundaries",
+          "[game-logic-abi][wp381a]") {
+    Sandbox sandbox;
+    const auto host = executableName();
+
+    const auto crossing = sandbox.file("crossing.dll");
+    writeCrossSectionDescriptorPe(crossing, host);
+    const auto crossing_read = internal::readGameLogicImports(crossing);
+    REQUIRE_FALSE(crossing_read.readable());
+    REQUIRE(crossing_read.unreadable_reason == "descriptor_out_of_bounds");
+
+    // PE32 uses four-byte thunk entries, and must take the same bounded path.
+    const auto pe32 = sandbox.file("pe32.dll");
+    writeSyntheticPe(pe32, host, SyntheticHostImport::named, true);
+    REQUIRE(internal::diagnoseGameLogicImports(pe32, host, gameLogicAbiVersion)
+                .accepted());
+
+    const auto too_large = sandbox.file("sparse-too-large.dll");
+    {
+        std::ofstream output{too_large, std::ios::binary | std::ios::trunc};
+        REQUIRE(output.good());
+        output.seekp(256LL * 1024LL * 1024LL);
+        output.put('\0');
+        REQUIRE(output.good());
+    }
+    const auto large_read = internal::readGameLogicImports(too_large);
+    REQUIRE_FALSE(large_read.readable());
+    REQUIRE(large_read.unreadable_reason == "too_large");
+
+    const auto thunk_limit = sandbox.file("thunk-limit.dll");
+    writeThunkLimitPe(thunk_limit, host);
+    const auto thunk_read = internal::readGameLogicImports(thunk_limit);
+    REQUIRE_FALSE(thunk_read.readable());
+    REQUIRE(thunk_read.unreadable_reason == "too_large");
+}
+
 #if PELICAN_WITH_RPC
+TEST_CASE("WP381a RPC exposes startup game-logic failure before runtime polling",
+          "[game-logic-abi][wp381a][rpc]") {
+    setupLogger();
+    Sandbox sandbox;
+    replaceFixture(fixture(PELICAN_WP381_STALE_BEHAVIOR), sandbox.live());
+    FastModuleContainer modules;
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.game_logic_dll = sandbox.live();
+    REQUIRE_FALSE(initializeConfiguredGameLogic());
+    auto &reload_service = GET_MODULE(watch::ReloadService);
+    REQUIRE(reload_service.requestRuntimeReload(
+        watch::gameLogicReloadParticipantName));
+
+    const auto runtime = reload_service.statusJson()
+                             .at("runtime")
+                             .at(std::string{watch::gameLogicReloadParticipantName});
+    REQUIRE(runtime.at("attempted") == 0);
+    REQUIRE(runtime.at("error_code").is_null());
+    REQUIRE(runtime.at("details").at("error_code") ==
+            std::string{internal::gameLogicAbiStaleErrorCode});
+
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer server{input, output};
+    server.setHandler("get_status", [&](const nlohmann::json &params) {
+        if (!params.is_object()) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                                      "get_status params must be an object");
+        }
+        return nlohmann::json{
+            {"participants",
+             {{"game_logic",
+               internal::gameLogicParticipantRpcStatus(&reload_service)}}},
+        };
+    });
+    const auto response = nlohmann::ordered_json::parse(server.processLine(
+        R"({"jsonrpc":"2.0","id":3810,"method":"get_status","params":{}})"));
+    const auto &status = response.at("result").at("participants").at("game_logic");
+    REQUIRE(status.at("error_code") ==
+            std::string{internal::gameLogicAbiStaleErrorCode});
+    REQUIRE(status.at("error_fields").at("found") == "absent");
+}
+
 TEST_CASE("WP381 RPC preserves structured game-logic errors and clears status",
           "[game-logic-abi][wp381][rpc]") {
     setupLogger();
@@ -653,6 +843,8 @@ TEST_CASE("WP381 automatic poll waits for a stable unlocked DLL image",
 
     DllWriter writer{sandbox.live()};
     writer.write(std::span<const char>{bytes.data(), 2});
+    // First poll establishes the stable metadata sample; the following two
+    // denied leases remain silent until the bounded third denial below.
     for (int poll = 0; poll < 3; ++poll) {
         const auto pending = reloader.pollAttempt([] {}, [] {});
         REQUIRE_FALSE(pending.attempted);
@@ -661,6 +853,16 @@ TEST_CASE("WP381 automatic poll waits for a stable unlocked DLL image",
         REQUIRE(reloader.status().generation == 1);
         REQUIRE(reloader.status().error_code.empty());
     }
+    const auto busy = reloader.pollAttempt([] {}, [] {});
+    REQUIRE(busy.attempted);
+    REQUIRE_FALSE(busy.committed);
+    REQUIRE(busy.error_code ==
+            std::string{internal::gameLogicSourceBusyErrorCode});
+    REQUIRE(reloader.status().pending);
+    REQUIRE(reloader.status().source_busy_retries == 3);
+    REQUIRE(reloader.status().error_fields ==
+            nlohmann::ordered_json{{"path", sandbox.live().generic_string()},
+                                   {"retries", 3}});
 
     writer.write(std::span<const char>{bytes.data() + 2, bytes.size() - 2});
     writer.close();
@@ -676,6 +878,33 @@ TEST_CASE("WP381 automatic poll waits for a stable unlocked DLL image",
     REQUIRE(reloader.status().error_code.empty());
     REQUIRE(reloader.status().error_fields ==
             nlohmann::ordered_json::object());
+    REQUIRE_FALSE(reloader.status().pending);
+}
+
+TEST_CASE("WP381a reloader sweeps stale shadow directories and removes its own",
+          "[game-logic-abi][wp381a]") {
+    setupLogger();
+    Sandbox sandbox;
+    const auto current = fixture(PELICAN_WP381_V2_CONTROL);
+    replaceFixture(current, sandbox.live());
+    const auto root = sandbox.live().parent_path() / ".pelican-hot-reload";
+    const auto stale = root / "4294967294";
+    std::error_code error;
+    std::filesystem::create_directories(stale, error);
+    REQUIRE_FALSE(error);
+    {
+        std::ofstream marker{stale / "marker.txt"};
+        marker << "stale";
+    }
+    const auto own = shadowDirectory(sandbox.live());
+    {
+        GameLogicReloader reloader;
+        REQUIRE(reloader.initialize(sandbox.live()));
+        REQUIRE_FALSE(std::filesystem::exists(stale));
+        REQUIRE(std::filesystem::is_directory(own));
+        reloader.shutdown();
+    }
+    REQUIRE_FALSE(std::filesystem::exists(own));
 }
 
 TEST_CASE("WP381 stable unreadable poll result remains named and recoverable",

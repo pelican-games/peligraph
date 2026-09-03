@@ -4,7 +4,8 @@
 
 namespace Pelican {
 
-extern "C" std::uint64_t pelican_game_logic_epoch_v2() noexcept {
+extern "C" std::uint64_t
+PELICAN_GAME_LOGIC_EPOCH_ANCHOR(PELICAN_GAME_LOGIC_ABI_VERSION)() noexcept {
     // ASLR gives each process a different value while the address remains
     // stable for the lifetime of the executable export host. The epoch is
     // mixed in so an accidental constant-fold to zero cannot masquerade as a

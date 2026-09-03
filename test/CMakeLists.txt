@@ -519,6 +519,11 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   # Compile four real reader mutants. Each copy disables exactly one legacy
   # recognizer literal; its matching single-import fixture must then be
   # (incorrectly) accepted, proving the production assertion kills the mutant.
+  # The mutation copies are written at configure time. Without this, editing the
+  # reader leaves the copies stale and the reader mutation tests exercise an old
+  # reader.
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_SOURCE_DIR}/src/core/gamelogic/gamelogicimports.cpp")
   file(READ "${CMAKE_SOURCE_DIR}/src/core/gamelogic/gamelogicimports.cpp"
     wp381_import_reader_source)
   foreach(wp381_mutation IN ITEMS

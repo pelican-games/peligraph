@@ -26,9 +26,12 @@
 #include "../userpublic/gamelogic.hpp"
 
 #include <chrono>
+#include <charconv>
+#include <cerrno>
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <system_error>
 
 #ifdef _WIN32
@@ -152,6 +155,24 @@ bool sourceWriterIsActive(DWORD error) noexcept {
 }
 #endif
 
+constexpr std::uint32_t sourceBusyRetryLimit = 3;
+
+bool processIsAlive(std::uint64_t pid) noexcept {
+#ifdef _WIN32
+    const auto handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                                    static_cast<DWORD>(pid));
+    if (handle == nullptr) {
+        // A live process of another user answers with access denied, exactly
+        // like EPERM on POSIX.  Only a missing process is safe to sweep.
+        return GetLastError() == ERROR_ACCESS_DENIED;
+    }
+    CloseHandle(handle);
+    return true;
+#else
+    return kill(static_cast<pid_t>(pid), 0) == 0 || errno == EPERM;
+#endif
+}
+
 std::string_view registrationKindName(internal::RegistrationKind kind) {
     switch (kind) {
     case internal::RegistrationKind::system:
@@ -223,6 +244,41 @@ void GameLogicReloader::clearLastError() noexcept {
     last_error.clear();
     last_error_code.clear();
     last_error_fields = nlohmann::ordered_json::object();
+}
+
+void GameLogicReloader::clearSourceBusy() noexcept {
+    source_busy_retries = 0;
+    source_busy_pending = false;
+    if (last_error_code == internal::gameLogicSourceBusyErrorCode) {
+        clearLastError();
+    }
+}
+
+void GameLogicReloader::sweepStaleShadowDirectories() noexcept {
+    if (shadow_directory.empty()) return;
+    const auto root = shadow_directory.parent_path();
+    std::error_code ec;
+    std::filesystem::directory_iterator entries{root, ec};
+    if (ec) return; // The directory is created lazily by makeShadowCopy().
+    for (const auto &entry : entries) {
+        if (!entry.is_directory(ec)) {
+            ec.clear();
+            continue;
+        }
+        const auto name = entry.path().filename().string();
+        std::uint64_t pid = 0;
+        const auto parsed = std::from_chars(name.data(), name.data() + name.size(), pid);
+        if (name.empty() || parsed.ec != std::errc{} ||
+            parsed.ptr != name.data() + name.size() || processIsAlive(pid)) {
+            continue;
+        }
+        std::filesystem::remove_all(entry.path(), ec);
+        if (ec && logger != nullptr) {
+            LOG_WARNING(logger, "cannot remove stale game logic shadow directory '{}': {}",
+                        entry.path().string(), ec.message());
+        }
+        ec.clear();
+    }
 }
 
 std::optional<GameLogicReloader::SourceFingerprint>
@@ -366,12 +422,17 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
     const auto requested_shadow =
         requested_source.parent_path() / ".pelican-hot-reload" /
         std::to_string(currentProcessId());
+    const auto shadow_before_sweep = shadow_directory;
+    shadow_directory = requested_shadow;
+    sweepStaleShadowDirectories();
     std::error_code ec;
     const auto requested_fingerprint = sourceFingerprint(requested_source, ec);
     if (!requested_fingerprint) {
         if (!active) {
             source_path = requested_source;
             shadow_directory = requested_shadow;
+        } else {
+            shadow_directory = shadow_before_sweep;
         }
         setLastError({
             .message = "game logic DLL '" + requested_source.string() +
@@ -411,6 +472,7 @@ bool GameLogicReloader::initialize(const std::filesystem::path &source) {
     observed_source = *requested_fingerprint;
     settling_source.reset();
     copy_sequence = 0;
+    clearSourceBusy();
 
     try {
         const auto copy = makeShadowCopy("initial");
@@ -635,6 +697,7 @@ GameLogicReloadAttempt GameLogicReloader::pollAttempt(const ResetFn &teardown,
     std::error_code ec;
     const auto fingerprint = sourceFingerprint(source_path, ec);
     if (!fingerprint) {
+        clearSourceBusy();
         setLastError({
             .message = "game logic DLL '" + source_path.string() +
                        "' stat failed: " + ec.message(),
@@ -665,7 +728,26 @@ GameLogicReloadAttempt GameLogicReloader::pollAttempt(const ResetFn &teardown,
         // then excludes writers while the shadow copy is taken. A busy source
         // is not a failed reload and remains pending for the next poll.
         if (!source_lease.acquire(source_path)) {
-            if (sourceWriterIsActive(source_lease.error())) return {};
+            if (sourceWriterIsActive(source_lease.error())) {
+                source_busy_pending = true;
+                ++source_busy_retries;
+                if (source_busy_retries >= sourceBusyRetryLimit) {
+                    setLastError({
+                        .message = "game logic DLL '" + source_path.string() +
+                                   "' remains busy after " +
+                                   std::to_string(source_busy_retries) + " polls",
+                        .code = std::string{internal::gameLogicSourceBusyErrorCode},
+                        .fields = {{"path", source_path.generic_string()},
+                                   {"retries", source_busy_retries}},
+                    });
+                    return {.attempted = true,
+                            .error = last_error,
+                            .error_code = last_error_code,
+                            .error_fields = last_error_fields};
+                }
+                return {};
+            }
+            clearSourceBusy();
             setLastError({
                 .message = "game logic DLL '" + source_path.string() +
                            "' readiness open failed: Windows error code " +
@@ -686,6 +768,7 @@ GameLogicReloadAttempt GameLogicReloader::pollAttempt(const ResetFn &teardown,
             if (locked_fingerprint) settling_source = *locked_fingerprint;
             return {};
         }
+        clearSourceBusy();
 #endif
     }
     observed_source = *fingerprint;
@@ -716,12 +799,23 @@ void GameLogicReloader::shutdown() noexcept {
         active.reset();
         removeFileNoThrow(path);
     }
+    const auto own_shadow_directory = shadow_directory;
     source_path.clear();
     shadow_directory.clear();
     observed_source = {};
     settling_source.reset();
     clearLastError();
+    source_busy_retries = 0;
+    source_busy_pending = false;
     generation = 0;
+    if (!own_shadow_directory.empty()) {
+        std::error_code ec;
+        std::filesystem::remove_all(own_shadow_directory, ec);
+        if (ec && logger != nullptr) {
+            LOG_WARNING(logger, "cannot remove game logic shadow directory '{}': {}",
+                        own_shadow_directory.string(), ec.message());
+        }
+    }
 }
 
 GameLogicReloadStatus GameLogicReloader::status() const {
@@ -730,6 +824,8 @@ GameLogicReloadStatus GameLogicReloader::status() const {
         .configured = !source_path.empty(),
         .loaded = active.has_value(),
         .reloading = isGameLogicReloadInProgress(),
+        .pending = source_busy_pending,
+        .source_busy_retries = source_busy_retries,
         .generation = generation,
         .system_count = active ? internal::gameSystemRegistrationCount(owner) : 0,
         .source = source_path,

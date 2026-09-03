@@ -8,8 +8,8 @@
 #include <fstream>
 #include <limits>
 #include <optional>
-#include <span>
 #include <system_error>
+#include <vector>
 
 namespace Pelican::internal {
 namespace {
@@ -18,6 +18,12 @@ constexpr std::uint16_t pe32Magic = 0x10b;
 constexpr std::uint16_t pe32PlusMagic = 0x20b;
 constexpr std::size_t importDirectoryIndex = 1;
 constexpr std::size_t delayImportDirectoryIndex = 13;
+// These are parser work limits, not PE format limits.  The reader is a
+// pre-load diagnostic and must never let a malformed input turn into an
+// unbounded allocation or scan.
+constexpr std::uint64_t maxPeFileBytes = 256ULL * 1024ULL * 1024ULL;
+constexpr std::size_t maxImportDescriptors = 4096;
+constexpr std::size_t maxImportThunks = 65536;
 
 struct DataDirectory {
     std::uint32_t rva = 0;
@@ -31,28 +37,6 @@ struct Section {
     std::uint32_t raw_offset = 0;
 };
 
-template <class Value>
-std::optional<Value> readValue(std::span<const std::byte> bytes,
-                               std::size_t offset) noexcept {
-    if (offset > bytes.size() || bytes.size() - offset < sizeof(Value)) {
-        return std::nullopt;
-    }
-    Value value{};
-    std::memcpy(&value, bytes.data() + offset, sizeof(Value));
-    return value;
-}
-
-std::optional<std::string> readCString(std::span<const std::byte> bytes,
-                                       std::size_t offset) {
-    if (offset >= bytes.size()) return std::nullopt;
-    const auto *begin = reinterpret_cast<const char *>(bytes.data() + offset);
-    const auto available = bytes.size() - offset;
-    const auto *end = static_cast<const char *>(
-        std::memchr(begin, '\0', available));
-    if (end == nullptr) return std::nullopt;
-    return std::string{begin, end};
-}
-
 std::string asciiLower(std::string_view value) {
     std::string result;
     result.reserve(value.size());
@@ -65,47 +49,79 @@ std::string asciiLower(std::string_view value) {
 }
 
 class PeReader {
-    std::span<const std::byte> bytes_;
+    std::ifstream &input_;
+    std::uint64_t file_size_ = 0;
     std::vector<Section> sections_;
     std::uint32_t size_of_headers_ = 0;
     std::uint64_t image_base_ = 0;
     bool pe32_plus_ = false;
 
   public:
-    explicit PeReader(std::span<const std::byte> bytes) : bytes_{bytes} {}
+    explicit PeReader(std::ifstream &input, std::uint64_t file_size)
+        : input_{input}, file_size_{file_size} {}
+
+    template <class Value>
+    std::optional<Value> readValue(std::size_t offset) const noexcept {
+        if (offset > file_size_ || sizeof(Value) > file_size_ - offset) {
+            return std::nullopt;
+        }
+        Value value{};
+        input_.clear();
+        input_.seekg(static_cast<std::streamoff>(offset));
+        if (!input_.read(reinterpret_cast<char *>(&value), sizeof(Value))) {
+            return std::nullopt;
+        }
+        return value;
+    }
+
+    std::optional<std::string> readCString(std::size_t offset) const {
+        constexpr std::size_t maxImportStringBytes = 4096;
+        if (offset >= file_size_) return std::nullopt;
+        const auto available = static_cast<std::size_t>(std::min<std::uint64_t>(
+            maxImportStringBytes, file_size_ - offset));
+        std::array<char, maxImportStringBytes> value{};
+        input_.clear();
+        input_.seekg(static_cast<std::streamoff>(offset));
+        if (!input_.read(value.data(), static_cast<std::streamsize>(available))) {
+            return std::nullopt;
+        }
+        const auto *end = static_cast<const char *>(
+            std::memchr(value.data(), '\0', available));
+        if (end == nullptr) return std::nullopt;
+        return std::string(value.data(), static_cast<std::size_t>(end - value.data()));
+    }
 
     bool parseHeaders(DataDirectory &imports, DataDirectory &delay_imports,
                       std::string &reason) {
-        const auto mz = readValue<std::uint16_t>(bytes_, 0);
+        const auto mz = readValue<std::uint16_t>(0);
         if (!mz || *mz != 0x5a4d) {
             reason = "not_pe";
             return false;
         }
-        const auto pe_offset = readValue<std::uint32_t>(bytes_, 0x3c);
-        if (!pe_offset || *pe_offset > bytes_.size() ||
-            bytes_.size() - *pe_offset < 24) {
+        const auto pe_offset = readValue<std::uint32_t>(0x3c);
+        if (!pe_offset || *pe_offset > file_size_ ||
+            file_size_ - *pe_offset < 24) {
             reason = "truncated_pe_header";
             return false;
         }
-        const auto signature = readValue<std::uint32_t>(bytes_, *pe_offset);
+        const auto signature = readValue<std::uint32_t>(*pe_offset);
         if (!signature || *signature != 0x00004550) {
             reason = "invalid_pe_signature";
             return false;
         }
         const auto coff = static_cast<std::size_t>(*pe_offset) + 4;
-        const auto section_count = readValue<std::uint16_t>(bytes_, coff + 2);
-        const auto optional_size = readValue<std::uint16_t>(bytes_, coff + 16);
+        const auto section_count = readValue<std::uint16_t>(coff + 2);
+        const auto optional_size = readValue<std::uint16_t>(coff + 16);
         if (!section_count || !optional_size) {
             reason = "truncated_coff_header";
             return false;
         }
         const auto optional = coff + 20;
-        if (optional > bytes_.size() ||
-            bytes_.size() - optional < *optional_size) {
+        if (optional > file_size_ || file_size_ - optional < *optional_size) {
             reason = "truncated_optional_header";
             return false;
         }
-        const auto magic = readValue<std::uint16_t>(bytes_, optional);
+        const auto magic = readValue<std::uint16_t>(optional);
         if (!magic || (*magic != pe32Magic && *magic != pe32PlusMagic)) {
             reason = "unsupported_optional_header";
             return false;
@@ -118,9 +134,9 @@ class PeReader {
             return false;
         }
         const auto directory_count =
-            readValue<std::uint32_t>(bytes_, optional + number_offset);
+            readValue<std::uint32_t>(optional + number_offset);
         const auto size_of_headers =
-            readValue<std::uint32_t>(bytes_, optional + 60);
+            readValue<std::uint32_t>(optional + 60);
         if (!directory_count || !size_of_headers) {
             reason = "truncated_optional_header";
             return false;
@@ -128,7 +144,7 @@ class PeReader {
         size_of_headers_ = *size_of_headers;
         if (pe32_plus_) {
             const auto image_base =
-                readValue<std::uint64_t>(bytes_, optional + 24);
+                readValue<std::uint64_t>(optional + 24);
             if (!image_base) {
                 reason = "truncated_image_base";
                 return false;
@@ -136,7 +152,7 @@ class PeReader {
             image_base_ = *image_base;
         } else {
             const auto image_base =
-                readValue<std::uint32_t>(bytes_, optional + 28);
+                readValue<std::uint32_t>(optional + 28);
             if (!image_base) {
                 reason = "truncated_image_base";
                 return false;
@@ -152,8 +168,8 @@ class PeReader {
                 optional + *optional_size - entry < 8) {
                 return false;
             }
-            const auto rva = readValue<std::uint32_t>(bytes_, entry);
-            const auto size = readValue<std::uint32_t>(bytes_, entry + 4);
+            const auto rva = readValue<std::uint32_t>(entry);
+            const auto size = readValue<std::uint32_t>(entry + 4);
             if (!rva || !size) return false;
             directory = {*rva, *size};
             return true;
@@ -165,9 +181,9 @@ class PeReader {
         }
 
         const auto section_table = optional + *optional_size;
-        if (section_table > bytes_.size() ||
+        if (section_table > file_size_ ||
             static_cast<std::size_t>(*section_count) >
-                (bytes_.size() - section_table) / 40) {
+                (file_size_ - section_table) / 40) {
             reason = "truncated_section_table";
             return false;
         }
@@ -175,13 +191,13 @@ class PeReader {
         for (std::size_t index = 0; index < *section_count; ++index) {
             const auto offset = section_table + index * 40;
             const auto virtual_size =
-                readValue<std::uint32_t>(bytes_, offset + 8);
+                readValue<std::uint32_t>(offset + 8);
             const auto virtual_address =
-                readValue<std::uint32_t>(bytes_, offset + 12);
+                readValue<std::uint32_t>(offset + 12);
             const auto raw_size =
-                readValue<std::uint32_t>(bytes_, offset + 16);
+                readValue<std::uint32_t>(offset + 16);
             const auto raw_offset =
-                readValue<std::uint32_t>(bytes_, offset + 20);
+                readValue<std::uint32_t>(offset + 20);
             if (!virtual_size || !virtual_address || !raw_size ||
                 !raw_offset) {
                 reason = "truncated_section_table";
@@ -197,8 +213,7 @@ class PeReader {
                                           std::size_t required = 1) const {
         if (rva < size_of_headers_) {
             const auto offset = static_cast<std::size_t>(rva);
-            if (offset <= bytes_.size() &&
-                required <= bytes_.size() - offset) {
+            if (offset <= file_size_ && required <= file_size_ - offset) {
                 return offset;
             }
             return std::nullopt;
@@ -217,11 +232,60 @@ class PeReader {
             }
             const auto offset =
                 static_cast<std::uint64_t>(section.raw_offset) + delta;
-            if (offset > bytes_.size() ||
-                required > bytes_.size() - static_cast<std::size_t>(offset)) {
+            if (offset > file_size_ ||
+                required > file_size_ - static_cast<std::size_t>(offset)) {
                 return std::nullopt;
             }
             return static_cast<std::size_t>(offset);
+        }
+        return std::nullopt;
+    }
+
+    // Import descriptors form a directory-local array in virtual memory.  A
+    // descriptor may not be assembled by walking raw file bytes into a later
+    // section: that can otherwise make an attacker-controlled descriptor look
+    // valid after a section boundary.
+    std::optional<std::size_t> directoryDescriptorOffset(
+        const DataDirectory &directory, std::size_t index,
+        std::size_t descriptor_size) const {
+        if (index >= maxImportDescriptors ||
+            index > std::numeric_limits<std::size_t>::max() / descriptor_size ||
+            index * descriptor_size > directory.size ||
+            descriptor_size > directory.size - index * descriptor_size) {
+            return std::nullopt;
+        }
+        const auto rva64 = static_cast<std::uint64_t>(directory.rva) +
+                           index * descriptor_size;
+        if (rva64 > std::numeric_limits<std::uint32_t>::max()) {
+            return std::nullopt;
+        }
+        const auto descriptor_rva = static_cast<std::uint32_t>(rva64);
+        const auto directory_section = sectionForRva(directory.rva, 1);
+        const auto descriptor_section =
+            sectionForRva(descriptor_rva, descriptor_size);
+        if (!directory_section || !descriptor_section ||
+            *directory_section != *descriptor_section) {
+            return std::nullopt;
+        }
+        return fileOffset(descriptor_rva, descriptor_size);
+    }
+
+    std::optional<std::size_t> sectionForRva(std::uint32_t rva,
+                                             std::size_t required) const {
+        for (std::size_t index = 0; index < sections_.size(); ++index) {
+            const auto &section = sections_[index];
+            const auto span = std::max(section.virtual_size, section.raw_size);
+            if (rva < section.virtual_address ||
+                static_cast<std::uint64_t>(rva) >=
+                    static_cast<std::uint64_t>(section.virtual_address) + span) {
+                continue;
+            }
+            const auto delta = rva - section.virtual_address;
+            if (delta <= section.raw_size &&
+                required <= static_cast<std::size_t>(section.raw_size - delta)) {
+                return index;
+            }
+            return std::nullopt;
         }
         return std::nullopt;
     }
@@ -247,7 +311,7 @@ class PeReader {
         const std::size_t width = pe32_plus_ ? 8 : 4;
         const std::uint64_t ordinal_flag =
             pe32_plus_ ? UINT64_C(0x8000000000000000) : UINT64_C(0x80000000);
-        for (std::uint64_t index = 0;; ++index) {
+        for (std::uint64_t index = 0; index < maxImportThunks; ++index) {
             const auto entry_rva = static_cast<std::uint64_t>(thunk_rva) +
                                    index * width;
             if (entry_rva > std::numeric_limits<std::uint32_t>::max()) {
@@ -262,14 +326,14 @@ class PeReader {
             }
             std::uint64_t value = 0;
             if (pe32_plus_) {
-                const auto entry = readValue<std::uint64_t>(bytes_, *entry_offset);
+                const auto entry = readValue<std::uint64_t>(*entry_offset);
                 if (!entry) {
                     reason = "truncated_import_thunk";
                     return false;
                 }
                 value = *entry;
             } else {
-                const auto entry = readValue<std::uint32_t>(bytes_, *entry_offset);
+                const auto entry = readValue<std::uint32_t>(*entry_offset);
                 if (!entry) {
                     reason = "truncated_import_thunk";
                     return false;
@@ -296,7 +360,7 @@ class PeReader {
                 reason = "truncated_import_name";
                 return false;
             }
-            const auto name = readCString(bytes_, *name_offset + 2);
+            const auto name = readCString(*name_offset + 2);
             if (!name) {
                 reason = "unterminated_import_name";
                 return false;
@@ -308,24 +372,27 @@ class PeReader {
                 .symbol = *name,
             });
         }
+        reason = "too_large";
+        return false;
     }
 
     bool appendNormalImports(const DataDirectory &directory,
                              std::vector<GameLogicPeImport> &output,
                              std::string &reason) const {
         if (directory.rva == 0 || directory.size == 0) return true;
-        const auto directory_offset = fileOffset(directory.rva, 20);
-        if (!directory_offset) {
-            reason = "invalid_import_directory";
+        if (directory.size / 20 > maxImportDescriptors) {
+            reason = "too_large";
             return false;
         }
-        const auto descriptor_limit =
-            std::max<std::size_t>(1, directory.size / 20);
-        for (std::size_t index = 0; index <= descriptor_limit; ++index) {
-            const auto offset = *directory_offset + index * 20;
-            const auto original_thunk = readValue<std::uint32_t>(bytes_, offset);
-            const auto name_rva = readValue<std::uint32_t>(bytes_, offset + 12);
-            const auto first_thunk = readValue<std::uint32_t>(bytes_, offset + 16);
+        for (std::size_t index = 0; index * 20 + 20 <= directory.size; ++index) {
+            const auto offset = directoryDescriptorOffset(directory, index, 20);
+            if (!offset) {
+                reason = "descriptor_out_of_bounds";
+                return false;
+            }
+            const auto original_thunk = readValue<std::uint32_t>(*offset);
+            const auto name_rva = readValue<std::uint32_t>(*offset + 12);
+            const auto first_thunk = readValue<std::uint32_t>(*offset + 16);
             if (!original_thunk || !name_rva || !first_thunk) {
                 reason = "truncated_import_directory";
                 return false;
@@ -335,7 +402,7 @@ class PeReader {
             }
             const auto name_offset = fileOffset(*name_rva);
             const auto module = name_offset
-                                    ? readCString(bytes_, *name_offset)
+                                    ? readCString(*name_offset)
                                     : std::optional<std::string>{};
             if (!module) {
                 reason = "invalid_import_module_name";
@@ -347,7 +414,7 @@ class PeReader {
                 return false;
             }
         }
-        reason = "unterminated_import_directory";
+        reason = "descriptor_out_of_bounds";
         return false;
     }
 
@@ -355,19 +422,20 @@ class PeReader {
                             std::vector<GameLogicPeImport> &output,
                             std::string &reason) const {
         if (directory.rva == 0 || directory.size == 0) return true;
-        const auto directory_offset = fileOffset(directory.rva, 32);
-        if (!directory_offset) {
-            reason = "invalid_delay_import_directory";
+        if (directory.size / 32 > maxImportDescriptors) {
+            reason = "too_large";
             return false;
         }
-        const auto descriptor_limit =
-            std::max<std::size_t>(1, directory.size / 32);
-        for (std::size_t index = 0; index <= descriptor_limit; ++index) {
-            const auto offset = *directory_offset + index * 32;
-            const auto attributes = readValue<std::uint32_t>(bytes_, offset);
-            const auto name_field = readValue<std::uint32_t>(bytes_, offset + 4);
-            const auto iat_field = readValue<std::uint32_t>(bytes_, offset + 12);
-            const auto int_field = readValue<std::uint32_t>(bytes_, offset + 16);
+        for (std::size_t index = 0; index * 32 + 32 <= directory.size; ++index) {
+            const auto offset = directoryDescriptorOffset(directory, index, 32);
+            if (!offset) {
+                reason = "descriptor_out_of_bounds";
+                return false;
+            }
+            const auto attributes = readValue<std::uint32_t>(*offset);
+            const auto name_field = readValue<std::uint32_t>(*offset + 4);
+            const auto iat_field = readValue<std::uint32_t>(*offset + 12);
+            const auto int_field = readValue<std::uint32_t>(*offset + 16);
             if (!attributes || !name_field || !iat_field || !int_field) {
                 reason = "truncated_delay_import_directory";
                 return false;
@@ -386,7 +454,7 @@ class PeReader {
             }
             const auto name_offset = fileOffset(*name_rva);
             const auto module = name_offset
-                                    ? readCString(bytes_, *name_offset)
+                                    ? readCString(*name_offset)
                                     : std::optional<std::string>{};
             if (!module) {
                 reason = "invalid_delay_import_module_name";
@@ -397,7 +465,7 @@ class PeReader {
                 return false;
             }
         }
-        reason = "unterminated_delay_import_directory";
+        reason = "descriptor_out_of_bounds";
         return false;
     }
 };
@@ -459,20 +527,13 @@ readGameLogicImports(const std::filesystem::path &path) noexcept {
             return result;
         }
         const auto size = static_cast<std::uint64_t>(end);
-        if (size > std::numeric_limits<std::size_t>::max()) {
-            result.unreadable_reason = "file_too_large";
+        if (size > maxPeFileBytes ||
+            size > std::numeric_limits<std::size_t>::max()) {
+            result.unreadable_reason = "too_large";
             return result;
         }
-        std::vector<std::byte> bytes(static_cast<std::size_t>(size));
         input.seekg(0);
-        if (!bytes.empty() &&
-            !input.read(reinterpret_cast<char *>(bytes.data()),
-                        static_cast<std::streamsize>(bytes.size()))) {
-            result.unreadable_reason = "read_failed";
-            return result;
-        }
-
-        PeReader reader{bytes};
+        PeReader reader{input, size};
         DataDirectory imports;
         DataDirectory delay_imports;
         if (!reader.parseHeaders(imports, delay_imports,

@@ -51,6 +51,8 @@ inline constexpr std::string_view gameLogicReloadFailedErrorCode =
     "game_logic_reload_failed@1";
 inline constexpr std::string_view gameLogicUnavailableErrorCode =
     "game_logic_unavailable@1";
+inline constexpr std::string_view gameLogicSourceBusyErrorCode =
+    "game_logic_source_busy@1";
 inline constexpr std::string_view gameLogicShadowCopyFailedErrorCode =
     "game_logic_shadow_copy_failed@1";
 inline constexpr std::string_view gameLogicNotConfiguredErrorCode =

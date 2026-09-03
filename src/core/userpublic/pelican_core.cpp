@@ -117,7 +117,12 @@ bool PelicanCore::run() {
 
         configureRayLayoutModeBeforeComponentRegistration();
         GET_MODULE(ECSPredefinedRegistration).reg();
-        (void)initializeConfiguredGameLogic();
+        if (!initializeConfiguredGameLogic()) {
+            const auto status = configuredGameLogicStatus();
+            LOG_ERROR(logger,
+                      "game logic startup initialization failed: error_code='{}' fields={}",
+                      status.error_code, status.error_fields.dump());
+        }
         // Validate and publish the render graph before a transactional scene
         // prepare can instantiate ModelAssetContainer and upload model data.
         // Invalid material routes must remain the first startup failure and
