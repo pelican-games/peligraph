@@ -22047,7 +22047,7 @@ effect sink / audio / persistence / `CommittedWithEffectFailure` の中身 / onD
 
 - **実装(codex sol max、上段)**: executor を `commit_metadata → retire → flush → finish` に並べ替え、prepare で確保した固定長 phase trace を `SceneLoadCommitted` に載せる。
   GPU release は `ReleaseReport{array<ReleaseError,8>, overflow_count}`(heap なし)を返し、geometry は列・primitive ごとに例外を隔離。`ModelAssetContainer` が失敗 candidate の report を集約し
-  `PreCommitFailure.release_errors` へ。5 root(startup / RPC / pending / import v1 / v2)を本番入口で検査。manifest は role 別に整理し、real participant は **実測 11 行**(v1 の「90 行」は
+  `PreCommitFailure.release_errors` へ。5 root(startup / RPC / pending / import v1 / v2)を本番入口で検査。manifest は role 別に整理し、real participant は **実測 10 行**(rev380c で訂正。`increment` を invariant にしたため。v1 の「90 行」は
   stub / absent / excluded / production root を含む数だった)。injector の setter は test-only TU + production archive の dumpbin symbol gate。回帰テストは Studio 依存の順序ケースと
   Studio 非依存の全 6 所有列解放ケースに分割(いずれも GPU lane)
 - **agent の変異**: call site 無し ID の追加 → `12 == 11` で赤 / event_outbox の field mutation 除去 → 赤 / report 容量 8 → 7 → `overflow_count` で赤 / production archive に setter 名混入 → gate 赤
@@ -22055,7 +22055,10 @@ effect sink / audio / persistence / `CommittedWithEffectFailure` の中身 / onD
 - **統合側の変異(`mutation-runner` agent、opus。GPU 含む。1 回目)**: **基準が赤 1**(`rng_sequence.current_seed` / `increment` の行は injector を有効化しても field が変わらない。codex は GPU を走らせていないので未検出)。M2(RPC root を startup に)赤 / M3(pending root)赤 / M4(morph 失敗後の継続を外す)赤 ×2(後続 primitive の index と失敗 allocation 自身の morph range を別々に観測)/ M5(`release_errors` 変換除去)赤。**生存 1**: M1a = finish ループを commit 直後へ戻し `record()` を残す → 全緑(trace は executor の record 文だけが書き、処理と結び付いていない。record も動かす M1b だけ赤)。root 4 つが 1 TEST_CASE の loop で REQUIRE 中断するため独立性が読めない → 3 件を codex(sol)に差し戻し。**2 回目**: trace は各 participant(metadata / renderer publish / behavior publish・activate・finish / retirement enqueue / outbox flush / entity finish)が渡された固定長 trace に自分で記録し、executor には `record()` 文が無い(連続重複は 1 つにまとめる)。`rng_sequence.current_seed` は fixture の behavior が activation 中に `setSeed` で実値を変える。`increment` は固定 PCG stream で独立に変わる production 経路が無いので `invariant` role にして ID を外した。root 4 つは `DYNAMIC_SECTION` に分離。codex 自身の再変異: finish ループを commit 直後へ(record 不変)→ :2499 で赤 / RPC root を startup に → :3089 で赤、他 3 root は緑。GPU 対象 20 / 20、非 GPU 1279 / 1279。統合側の再確認(M1a、finish 2 ループを `metadata.commit(phase_trace)` 直後へ、record は participant 側のまま)→ :2499 の exact sequence で赤。残留 0
 - **main 取り込み**: main は起票 commit から動いていないので衝突なし(merge-resolver 不要)
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1609 / 1609**。doclink は 256 件追従、未解決 12(executor / release / manifest の anchor 移動 → docs-writer)
-- コードレビュー `rev380c`: (記入)
+- コードレビュー `rev380c`(codex sol、上段。`aa7f65a7`): **Reject**(実害 3 + 設計懸念 3 + 仕様不整合 1)。(1) 空 scene で `finish` が記録されず trace が 7 要素 / (2) material・texture の隔離が無く report は常に material 0 の 1 件 /
+  (3) `ReleaseReport` が 6 箇所で捨てられ deferred の `overflow_count` は log されない / (4) trace を受ける participant が phase 内の一部(RNG・pending・renderer retirement・Seq/Vat/Camera/Light/Physics は trace 無し)で順序変異が生存、9 件目は黙って捨てる /
+  (5) root・release テストに injector OFF の否定対照が無い / (6) symbol gate は名前 1 本(別名・header inline・release setter がすり抜け)。仕様不整合: real participant は 10 行(`increment` を invariant にした結果。本記録の 11 は誤り → 訂正)。
+  → **WP380d**(中段、terra + high)で 6 件を直す。連鎖は 380d で打ち切り。壊せなかった: 5 root の配線(startup / RPC 実 handler / frame tick / import)、vertbuf の primitive 別隔離と 6 列 baseline、manifest の role 検査(実行時)、分割テストの登録、出荷 4 project の tree ID 一致
 #### WP380c + WP380b 仕様レビュー第 2 巡(不合格・15 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ。v3 が両節の正)**
 
 仕分け: **直す 15**(全件。うち #4 は縮小して直す)。
@@ -22136,6 +22139,45 @@ WP381 の inventory generator と同じ運用(生成物をチェックイン、C
 ##### 段取り(v3)
 
 WP380c → WP380b の順。**仕様レビューは第 2 巡で打ち切り**(§0 の規約どおり)。WP380c の実装を先に投入し、WP380b は WP380c 統合後に着手する。
+
+### WP380d: executor hardening の取りこぼし(rev380c の実害 3 + 設計懸念 3)
+
+**§4 規則 11 中段(機構は WP380c で確定。隔離の範囲と観測の穴を埋める)。実装者: `gpt-5.6-terra` + `high`。コードレビューは統合側変異 + Claude。見積: 小〜中。連鎖: WP380c → 380d で打ち切り。**
+**依存: WP380c(`aa7f65a7`)統合済み。WP380b(実装中)と executor / manifest を共有するので、**WP380d を先に着地**させ WP380b は merge-resolver で追従する。**
+
+#### 何が壊れているか(`rev380c` が確認)
+
+1. **空 scene で `finish` が記録されない**: `finish` を記録するのは created entity の token loop だけ([scene.cpp:981](../src/core/loader/scene.cpp#L981))。`objects: []` では trace が 7 要素になり exact sequence に合わない
+2. **material / texture の隔離が無い**: `MaterialContainer::releaseModelResources` は全 material・全 texture を 1 つの try で囲み([materialcontainer.cpp:2430](../src/core/material/materialcontainer.cpp#L2430))、report は常に `{material, operation_failed, 0}` の 1 件。texture の失敗も material 0 と誤報
+3. **`ReleaseReport` が 6 箇所で捨てられる**: reload candidate destructor([model.cpp:304](../src/core/asset/model.cpp#L304))/ retired model(model.cpp:422)/ unpublished transient(scene.cpp:387)/ retirement queue(scene.cpp:1038)/ teardown(scene.cpp:1072)/ transient entity 失敗(scene.cpp:1231)。deferred release は `overflow_count` を log しない([vertbufcontainer.cpp:606](../src/core/model/vertbufcontainer.cpp#L606))
+4. **trace が phase 内の一部 participant にしか結び付かない**: flush で trace を受けるのは event outbox だけ。RNG publish / pending swap / renderer retirement / Seq・Vat・Camera・Light・Physics publish は trace 無しで、これらを動かす変異が生き残る。9 件目以降の record は黙って捨てられる
+5. **root / release テストに否定対照が無い**: injector ON だけを走らせ、同じ入口・入力で OFF(成功)を見ていない。入口が常に disconnect error を返す実装でも通る
+6. **symbol gate が名前 1 本**: 別名 / header inline / release 側の `setMorphMetadataReleaseFailureForTesting` はすり抜ける
+
+**仕様の訂正**: real participant は **10 行**(`rng_sequence.increment` を invariant にした結果)。完了記録の「実測 11 行」を 10 に訂正する。
+
+#### 直すこと
+
+1. `finish` は **executor 側の 1 participant(created-entity batch)が 1 回**記録する。token 個別の `finish()` は記録しない。空 scene と非空 scene の両方で exact sequence を検査
+2. material と texture を **別々の失敗境界**にし、resource 単位で `{stage: material|texture, code, index: 実 ID}` を積んで後続を続行。material 失敗・texture 失敗の injector と 6 列 baseline を追加
+3. report を返す API を `[[nodiscard]]` に。同期失敗経路は元の例外 / `PreCommitFailure.release_errors` に集約、destructor / deferred / retirement / teardown 経路は **共通の structured error sink**(`ReleaseErrorSink`: log + `release_errors` 累積カウンタ。status で読める)へ。`overflow_count` は必ず log
+4. scene phase の全 participant に **trace 必須の scene 専用入口**を持たせ(RNG `publishPreparedSequence(trace)`、pending swap、renderer `enqueueSceneRetirement(trace)`、Seq / Vat / Camera / Light / Physics の publish)、executor から trace 無し overload を呼べない構造にする。trace に `overflow` flag を設け、exact test は `overflow == false` を要求。順序変異(RNG publish を retire 前へ / renderer retirement を flush 後へ / Camera publish を activate 後へ)が trace で落ちる
+5. 5 root と release の各テストに **同一入力で injector OFF → 成功 + 解決済み scene 値、ON → 名前付き失敗**の対照を同じ section に置く
+6. gate は (a) test-only source(`sceneloadfault_testing.cpp` / `modelreleasefault_testing.cpp`)が production target の source 集合に無い(CMake の `get_target_property(SOURCES)`)、(b) production header に setter の definition が無い(grep)、(c) archive に両 setter の symbol が無い、の 3 条件
+
+#### 受け入れ(§4 規約 10)
+
+- 1: `objects: []` の scene で exact sequence 8 要素(今日 = 7)。batch 記録を消すと落ちる
+- 2: texture の release を injector で落とす → `{texture, code, id}` が report にあり、material と後続 texture は返却済み(今日 = material 0 の 1 件、後続未返却)。隔離を 1 つの try に戻すと落ちる
+- 3: retirement queue の deferred release で morph primitive 9 個の失敗 → `overflow_count == 1` が log と sink に出る(今日 = 無音)。`[[nodiscard]]` を外した call site が compile warning-as-error で落ちる
+- 4: 上記 3 種の順序変異がそれぞれ trace の exact sequence で落ちる(今日 = 生存)。overflow flag を消すと 9 件目の追加 phase が検出されず落ちる
+- 5: 各 root の section で OFF が成功し ON が失敗する。入口を「常に disconnect」にする変異が OFF 側で落ちる
+- 6: 3 種の混入変異(別名 / header inline / release setter)がそれぞれ gate で落ちる
+- 全数 / 両構成 / RPC OFF / 出荷 4 project bytes 不変
+
+#### 記録のみ
+
+manifest の role 制約は Catch2 実行時保証(static ではない)。ID-A で registry を触るときに static 化を検討する。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
