@@ -701,9 +701,12 @@ class PELICAN_API Behavior {
 
 構造変更APIについてはヘッダのコメントが規範です（[`behavior.hpp` 内](../../src/core/userpublic/behavior.hpp#L50)）。
 
-> Structural changes requested by a behavior callback are applied at the
-> next behavior boundary. A deferred create has no live EntityId yet and
+> Structural changes requested through either BehaviorContext or its
+> GameContext base during a behavior callback are applied at the next
+> behavior boundary. A deferred create has no live EntityId yet and
 > therefore returns invalidGameObjectId.
+
+WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L80) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L93) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1588) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
 
 ### 登録マクロ
 
