@@ -1600,7 +1600,7 @@ RT の1フレームは、compile → pipeline → SBT → AS record → submit �
 
 AS の公開は submission が成功した後です。[`FrameBuild`](../../src/core/vkcore/accelerationstructure.hpp#L176) は publication token で、コマンドと資源は即座に lease されるものの、新しい BLAS/TLAS の集合が active になるのは [`acceleration_structure_build->commit()`](../../src/core/vkcore/renderer.cpp#L5665) を通った後だけです。
 
-> 🚧 **既知の穴(`rev377a` #1、WP384 で対応予定)**: SBT と TLAS descriptor はこの transaction に**乗り切っていません**。`recordFrame()` の前後で [`setRayTracingSceneShaderBindingTables()`](../../src/core/vkcore/renderer.cpp#L4771) と [`setRayQueryAccelerationStructure()`](../../src/core/vkcore/renderer.cpp#L4779) が `FrameResources` を先に書き換えるため、`after_as_record` / `submit` で失敗すると **却下された世代の SBT が active に残り、candidate の TLAS が frame descriptor に書かれたまま runtime だけが旧世代へ戻ります**(RT → 非 RT の clear も同型)。台帳の裁定は「frame 開始時の旧 SBT lease と TLAS descriptor を保持する rollback guard」で、単独 WP(WP384)として起票済みです。ここを触るときは、失敗直後の active SBT / TLAS の同一性を受け入れ条件に入れてください。
+> ✅ **WP384 で閉じた穴(`rev377a` #1)**: 以前は `recordFrame()` の前後で SBT と TLAS descriptor を `FrameResources` に先に書いていたため、`after_as_record` / `submit` の失敗で却下世代の SBT が active に残りました。いまは frame 中の候補を [`FrameResources::FramePublication`](../../src/core/renderer/frameresources.cpp#L399)(immutable な `RtDescriptorBundle` の候補)に束ね、target の三相 `submitLogicalFrame()` → publication callback(noexcept、[renderer.cpp の publication](../../src/core/vkcore/renderer.cpp#L4719) で RT state・staged runtime・bundle を 1 回で flip)→ `publishLogicalFrame()` の中央でだけ active を切り替えます。失敗時は候補の destructor が捨てるだけで、active は旧世代のまま(戻す処理が要らない設計)。却下 candidate は最初の実 submit 成功で seal された `DeletionQueue` の batch の fence で退役します。受け入れは各 fault 点直後の active SBT / TLAS 同一性と、再利用 frame で GPU が新世代を読むこと(`headless_render_test.cpp` の WP384 節)。
 
 ---
 
