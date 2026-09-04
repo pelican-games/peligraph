@@ -25,17 +25,6 @@ v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP1
 
 ## 0. 全 WP 共通規則
 
-
-
-####  完了記録(統合側。2026-09-04、`1d5a0a05`)
-
-- **実装(codex terra + high、中段)**: `MaterialRowIdentity`(typed union)を raygrouplayout に 1 箇所で作り、gate / bindings lookup / AS rule lookup / material reference が同じ値を見る。`source_material_index` を producer(gltf / modeltemplate / polygoninstancecontainer)から AS snapshot まで optional に配線し、欠損を 0 に戻さない。`A && I && !V` は `pelican.ray_material_index_out_of_range@1`。WP374 の「document と asset の同時一致は曖昧」対照は v3 の document 優先に更新。受け入れは production `resolveRaySceneRows` 経由の 5 軸 32 組 parametrized test
-- **agent の変異 / 検証**: gate 無効化 → :269 が 18 件赤 / document lookup 無効化 → :276 が 8 件赤。復元後 54 assertions 緑。**全体 build は 120 秒上限で中断**(背景実行の指示を書いたが従わず)→ 非 GPU 全数・両構成・bytes は統合側
-- **統合側の検証(worktree)**: 全体 build で headless_render_test の 2 行が optional 化に未追随(Claude が修正、d0a4656c)。非 GPU 1290 / 1293 で **WP366 の 3 テストが赤**(`ray_binding_selector_unresolved@1`): 私の truth table `D && N → Document` が name の無い document material を Asset / Unavailable に落としていた = **仕様の誤り**。台帳の決定 33 に訂正(document の存在が勝つ、name は optional。fa2a68f5)を書き、terra に差し戻し。訂正後(1f148b4b): terra は sandbox で background build を完走できず未検証 → 統合側で全体 build エラー 0、非 GPU 1292 / 1293(WP334b は -j flake、単独緑)、WP366 の 3 テストは緑に戻った
-- **統合側の変異(`mutation-runner` agent、opus。GPU 28 件を含む基準 125 / 125)**: M1(訂正前の規則に戻す)赤(WP366 の 3 本 + 5 軸の `D=1,N=0` 8 行)/ M2(document selector の name 一致を外す)赤(WP374 resolver :161 :180 :220)/ M3(out_of_range を Unavailable に畳む)赤 :283 / M5(lookup だけ旧 3 field)赤 :312 の 8 行(`D=1,N=0,A=1,I=1,V=1` で gate=Document・lookup=Asset の食い違いを観測)。**生存**: M4 / M4b / M4c(optional index の欠損分岐は PIC でも gltf でも production 経路で一度も走らない = fixture が無い)。M2 も 5 軸テスト自身は落ちない(selector 側の name が row 側と連動)→ terra に 3 回目の差し戻し。**3 回目**: material 無し(index 付き)の GLB fixture を足し、SceneLoader → PIC → AS row resolver で `source_material_index` が absent、identity が `Unavailable` になることを GPU production test で観測(欠損を `optional{0u}` に戻す変異は PIC / gltf の両方で :530 :551 赤)。5 軸に selector name の独立ケース(欠損・不一致・selector name 無し)を追加(name 一致除去で :260 :266 赤)。指定 ctest 28 / 28(GPU 8)、非 GPU 全数は WP335 / WP331 の -j flake のみ(単独緑)。production source の diff は改行のみで復元済み。所見: **並行 build の MSBuild node reuse で他 worktree の出力がログに混入**し、exit 0 だけでは変異入りバイナリで測った証拠にならない(`MSBUILDDISABLENODEREUSE=1` + obj / exe の mtime で確認)
-- **main 取り込み**: 衝突なし(main は docs のみ)
-- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **100% tests passed, 0 tests failed out of 1628**。doclink 6 件追従、未解決 0
-- コードレビュー: 中段のため codex レビューは行わず、統合側変異(GPU 28 件含む 125 / 125 → 3 回目後 28 / 28)+ Claude レビューで代替
 ### ビルド・テスト
 
 ```sh
@@ -22525,6 +22514,28 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 ##### 段取り(v3)
 
 **WP383(中段、terra + high)∥ WP382a(上段、sol max)→ WP382b → WP382c → WP382d**。仕様レビューは打ち切り。各 WP は着地後にコードレビュー(上段は codex、中段は統合側変異 + Claude)。
+
+
+#### WP383 完了記録(統合側。2026-09-04、`1d5a0a05`)
+
+- **実装(codex terra + high、中段)**: `MaterialRowIdentity`(typed union)を raygrouplayout に 1 箇所で作り、gate / bindings lookup / AS rule lookup / material reference が同じ値を見る。`source_material_index` を producer(gltf / modeltemplate / polygoninstancecontainer)から AS snapshot まで optional に配線し、欠損を 0 に戻さない。`A && I && !V` は `pelican.ray_material_index_out_of_range@1`。WP374 の「document と asset の同時一致は曖昧」対照は v3 の document 優先に更新。受け入れは production `resolveRaySceneRows` 経由の 5 軸 32 組 parametrized test
+- **agent の変異 / 検証**: gate 無効化 → :269 が 18 件赤 / document lookup 無効化 → :276 が 8 件赤。復元後 54 assertions 緑。**全体 build は 120 秒上限で中断**(背景実行の指示を書いたが従わず)→ 非 GPU 全数・両構成・bytes は統合側
+- **統合側の検証(worktree)**: 全体 build で headless_render_test の 2 行が optional 化に未追随(Claude が修正、d0a4656c)。非 GPU 1290 / 1293 で **WP366 の 3 テストが赤**(`ray_binding_selector_unresolved@1`): 私の truth table `D && N → Document` が name の無い document material を Asset / Unavailable に落としていた = **仕様の誤り**。台帳の決定 33 に訂正(document の存在が勝つ、name は optional。fa2a68f5)を書き、terra に差し戻し。訂正後(1f148b4b): terra は sandbox で background build を完走できず未検証 → 統合側で全体 build エラー 0、非 GPU 1292 / 1293(WP334b は -j flake、単独緑)、WP366 の 3 テストは緑に戻った
+- **統合側の変異(`mutation-runner` agent、opus。GPU 28 件を含む基準 125 / 125)**: M1(訂正前の規則に戻す)赤(WP366 の 3 本 + 5 軸の `D=1,N=0` 8 行)/ M2(document selector の name 一致を外す)赤(WP374 resolver :161 :180 :220)/ M3(out_of_range を Unavailable に畳む)赤 :283 / M5(lookup だけ旧 3 field)赤 :312 の 8 行(`D=1,N=0,A=1,I=1,V=1` で gate=Document・lookup=Asset の食い違いを観測)。**生存**: M4 / M4b / M4c(optional index の欠損分岐は PIC でも gltf でも production 経路で一度も走らない = fixture が無い)。M2 も 5 軸テスト自身は落ちない(selector 側の name が row 側と連動)→ terra に 3 回目の差し戻し。**3 回目**: material 無し(index 付き)の GLB fixture を足し、SceneLoader → PIC → AS row resolver で `source_material_index` が absent、identity が `Unavailable` になることを GPU production test で観測(欠損を `optional{0u}` に戻す変異は PIC / gltf の両方で :530 :551 赤)。5 軸に selector name の独立ケース(欠損・不一致・selector name 無し)を追加(name 一致除去で :260 :266 赤)。指定 ctest 28 / 28(GPU 8)、非 GPU 全数は WP335 / WP331 の -j flake のみ(単独緑)。production source の diff は改行のみで復元済み。所見: **並行 build の MSBuild node reuse で他 worktree の出力がログに混入**し、exit 0 だけでは変異入りバイナリで測った証拠にならない(`MSBUILDDISABLENODEREUSE=1` + obj / exe の mtime で確認)
+- **main 取り込み**: 衝突なし(main は docs のみ)
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **100% tests passed, 0 tests failed out of 1628**。doclink 6 件追従、未解決 0
+- コードレビュー: 中段のため codex レビューは行わず、統合側変異(GPU 28 件含む 125 / 125 → 3 回目後 28 / 28)+ Claude レビューで代替
+
+
+####  完了記録(統合側。2026-09-04、`a79360e3`)
+
+- **実装(codex sol max、上段)**: `SchemaNode`(Leaf / Flags / List{RowSchema}、depth 2、list の list は compile 拒否)、presence 3 値(`OptionalOverride` は `std::optional<T>`)、`$` 名予約、`$list` object container(`v` / `next_id` 検証)と `$row` の剥離・復元、重複 row id・素の配列・`$list` 欠落・未知 v の名前付き拒否。behavior / event / component の独立 v3 registration 型と入口(List / Flags を含むときだけ `if constexpr` で v3)、v2 record は `static_assert(sizeof)` で凍結、raw import 診断が v3 入口を認識し host v2 に対して `game_logic_abi_stale@1{found: v3, host: v2}` を LoadLibrary 前に出す。fingerprint は tag・順序・default・presence・range・vocabulary 名と値・全子 node を含み provider descriptor へ伝播。`overrides` は `ray_instance_overrides_not_enabled@1`。fixture: test/fixtures/wp382a_schema/(v3 DLL)
+- **agent の変異 / 検証**: reload guard の `!=` → `==` で同一宣言 :1166 と 4 変異(default / order / vocabulary / presence):1186 が赤、復元後 39 assertions 緑。全体 build / RPC OFF / `SKIP_DEVSTUDIO=OFF` build、非 GPU 1297 / 1297(1 skip)、出荷 4 project 差分なし。deps cache は `C:/pb/off/_deps`(旧 RPC OFF build の cache。worktree 外なので消えない)
+- **統合側の検証(worktree)**: (記入)
+- **統合側の変異(`mutation-runner` agent、opus。基準 83 / 83、GPU 4 件含む)**: M1(reader の v3 認識を v2 に)赤 :1108 / M3(重複 row id 拒否除去)赤 :55 / M4(OptionalOverride の absent を default に)赤 :92 :1136 / M5(vocabulary 値を fingerprint から外す)赤 :1186 / M6(`overrides` を黙って受理)赤 :153 / M7(常に v2)赤 :1103 :1186 / M8(v2 record に field 追加)static_assert で build 落ち(期待どおり)。**生存 1**: M2 = `$list.next_id` の検証 3 箇所を消しても緑(negative テストが `next_id` 欠落と `next_id <= max id` を作っていない)→ Claude が 2 ケースを追加し、v2 branch の fingerprint helper に `static_assert(!schemaRequiresV3)`(再帰 schema が v2 の扉を通れない compile 契約)を足した(21e9818b)。追加後の自己変異: `next_id <= max` の検査を消す → :55 で赤。残留 0
+- **main 取り込み**: 衝突なし(WP383 は別ファイル群)
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1633 / 1633**。doclink 84 件追従、未解決 0
+- コードレビュー `rev382a`(codex sol、上段): (記入)
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
 **§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
@@ -22733,6 +22744,52 @@ lease の待ち上限は **外側の CTest timeout より短くなければな�
 ##### 段取り(v2)
 
 WP384(上段)と WP385(中段)は独立。第 2 巡は両節一体で 1 回、以後打ち切り。
+
+#### WP384 + WP385 仕様レビュー第 2 巡(不合格・11 件)と v3 —— **決定差分(レビューはここで打ち切り。残余はコードレビューへ。v3 > v2 > v1)**
+
+仕分け: **直す 11**(全件)。
+
+##### WP384 決定 10(#1 #2): frame target は **三相**。publication は 1 回の不可逆 commit
+
+`ILogicalFrameTarget` を `submitLogicalFrame()`(全 queue submit。失敗可)→ **publication callback(noexcept。RT state・staged runtime・SBT・descriptor bank の flip を 1 回で不可逆に commit)**→ `publishLogicalFrame()`(present / `xrReleaseSwapchainImage`。失敗は **output recovery**(`design_wsi_epoch_recovery` の経路)で、世代は戻さない)に分ける。
+`StagedRuntimeRollbackGuard` の complete は publication callback の中で行い、publish 失敗で runtime だけ A に戻ることを無くす。注入点に **`after_publication`**(publish 失敗)を足し、受け入れは「世代は B のまま、output recovery が名前付きで走る」。flat / XR multiview / XR sequential の 3 target で同じ三相を実装する(sequential は各 `endView()` の submit を `submitLogicalFrame()` に含める)。
+
+##### WP384 決定 11(#3): DeletionQueue の batch sealing を logical-frame commit から分離
+
+**最初の実 GPU submit が成功した時点**で current batch を seal / advance する(XR sequential なら view 0 の submit 成功で seal)。以後の失敗(view 1 の submit 失敗、publication 前の fault)で却下された candidate は **その sealed batch の fence** で退役する。`confirmSubmission()` を `endLogicalFrame()` 成功だけに依存させない。
+
+##### WP384 決定 12(#4): descriptor bundle は **RT runtime generation が所有する optional な immutable 資源**
+
+常設 topology(v2 決定 5)は撤回(非 RT 世代に RT 資源が常駐し purge 違反)。descriptor set / pool / layout を **`RtDescriptorBundle`(immutable)**にし、RT が有効な generation だけが所有する。非 RT の publication は「bundle 無し」(空 TLAS は作らない)。二重 bank は「候補 bundle と active bundle の 2 つ」であり、RT → 非 RT は「active bundle を持たない generation の publication」。bundle の破棄は generation の退役(決定 11 の fence)で行う。
+
+##### WP384 決定 13(#5): **published bundle の再利用経路**を定義し、そこで B を観測する
+
+成功した B の次 frame で **row digest が不変なら AS / descriptor / SBT を再構築せず published bundle を再利用**する production 経路を定義する(`tlas_build_count` と bundle の generation id が変わらないことを診断で出す)。受け入れは、B 成功 → 再利用 frame で GPU が B を読むこと(A′ を作り直す実装は build count が増えるので落ちる)。bank flip を削る変異はこの経路で赤。
+
+##### WP385 決定 10(#6 #9): listener は **やめる**。GPU test は Catch も含めて **launcher 1 本**で包む
+
+`testCaseStarting` からの FAIL は Catch の契約上安全でなく、listener の削除は json では検出できない。**label `gpu` を持つ全 CTest test(Catch 実行体の discovered command を含む)の command を `pelican_gpu_lease_run` で包む**。`MIXED_GPU` は `[gpu]` lane の ctest test だけが包まれる。Catch の listener・compile definition は作らない。
+json-v1 の検査は **label / `RESOURCE_LOCK` / `TIMEOUT` / command が launcher で始まること**の inventory 一致に限定し、**実 Catch GPU test を 2 process で衝突させる runtime 受け入れ**(launcher を外すと取得区間が重なって赤)を別に持つ。
+
+##### WP385 決定 11(#7): launcher は子孫 process を道連れにする
+
+Windows は **kill-on-close の Job Object**、POSIX は専用 process group + `SIGTERM` / `SIGINT` 転送 + 猶予後 `SIGKILL`。child の exit code を launcher が伝播する。timeout で launcher が死んでも GPU を握った孫 process が残らないことを受け入れに入れる(player を起動する test で観測)。
+
+##### WP385 決定 12(#8): timeout は 1 つの生成 config から
+
+`intrinsic_timeout` の canonical default(**600 s**。既存の個別値がある test はそれ)と `lease_timeout_max`(**1200 s**)を **1 つの generated config**(`test/gpu_lease_config.cmake` → launcher へ引数)から供給し、CTest の `TIMEOUT = lease_timeout_max + intrinsic + 60` を helper が全 gpu-label test に設定する。今日 TIMEOUT の無い Catch GPU test にも付く。
+
+##### WP385 決定 13(#10): 保証範囲と token
+
+Linux の lock は **同一 UID かつ同一 `$XDG_RUNTIME_DIR`** の範囲(明記。別 UID / container は範囲外 = 名前付き制限)。Windows は `Global\` namespace で machine 全体。holder token = **pid + process 開始時刻 + process 内連番**。
+
+##### WP385 決定 14(#11): wrapper は configure manifest を書き、build / test はそれを検査する
+
+`tools/worktree.sh configure` が `build/pelican_worktree_manifest.json`(generator / config / feature option の fingerprint / dependency source root / node reuse 設定)を書き、`build` と `test` は manifest との一致を検査して同じ環境変数を再設定する(直接 `cmake --build` した場合は manifest 不一致で名前付き拒否ではなく、単に wrapper の受け入れの対象外。wrapper を通した経路だけを保証)。dependency remap は **選択した option で存在する source だけ**(OpenXR OFF なら `openxr_sdk-src` を remap しない)。VS と Ninja の両方で configure → build → test の 3 呼び出しを受け入れに入れる。
+
+##### 段取り(v3)
+
+WP385(中段、terra + high)を先に投入(検証ループが速くなる)。WP384(上段、sol max)はその後。仕様レビューは打ち切り。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
