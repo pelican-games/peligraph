@@ -22845,6 +22845,90 @@ WP385(中段、terra + high)を先に投入(検証ループが速くなる)。WP
 #### やらないこと
 
 raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DLL fixture(記録: reader の分類は既存契約で正しいが fixture が無い。WP382c 以降で足す)。
+
+### WP386: RT3-2 —— static AABB + `.rint`(手続き幾何)を、描画されない geometry の AS 供給経路ごと入れる
+
+**§4 規則 11 上段(asset 形式・AS 供給経路・pipeline の group 型・SPIR-V 検査・oracle を触る)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex)2 巡 → 実装 → 統合側変異 → コードレビュー。見積: 大(milestone 3)。**
+**規範: `docs/design_raytracing.md` §4-P(v3 = 4-P.7 が最終)、§11 v4(決定 6(b)・8・13・19: RT3-2 の位置づけ)、§3(shader record・`maxRayHitAttributeSize`)。前提: RT3-1(WP374/374a/377/383)統合済み。CARRIER-RT3 とは独立(per-occurrence override は AABB 行にも後で載るが、本 WP は object 単位)。**
+
+#### 今日の対照(§4 規約 10。実測は HEAD `3a7c158a`)
+
+- `vk::GeometryTypeKHR::eAabbs` は repo に **0 件**。BLAS build は triangles 固定([accelerationstructure.cpp:860](../src/core/renderer/accelerationstructure.cpp#L860))、`BlasVariantKey` は `(geometry_allocation_id, geometry_flags)` で geometry の種別を持たない
+- hit group の schema は `closesthit / anyhit / type("triangles" のみ)`([computetask.cpp:1370](../src/core/renderingpass/computetask.cpp#L1370))。`intersection` は **語彙として存在し必ず拒否**(`pelican.ray_tracing.unsupported_shader_stage@1`。[computetask.cpp:1252](../src/core/renderingpass/computetask.cpp#L1252)、:1458)。pipeline は `eTrianglesHitGroup` だけ作り `intersectionShader = unused`([pipelinefactory.cpp:699](../src/core/shader/pipelinefactory.cpp#L699))
+- hit attribute の検査は triangle 専用(`vec2<f32>` 固定。[raytracingvalidation.cpp:266](../src/core/shader/raytracingvalidation.cpp#L266))
+- AS row は **draw item から**しか作られない([polygoninstancecontainer.cpp:1367](../src/core/renderer/polygoninstancecontainer.cpp#L1367) → [accelerationstructure.cpp:393](../src/core/renderer/accelerationstructure.cpp#L393))。描画されない geometry を AS だけに載せる経路は無い
+- asset 表(`pelican.asset_data` v1)は `models / materials / textures` に固定([assetdataformat.cpp:65](../src/project/assetdataformat.cpp#L65))。geometry source は `.gltf` / `.glb` だけ([scene.cpp:375](../src/core/loader/scene.cpp#L375))
+- SPIR-V の load 時検査は自前 parser(`rtspirvinspection.cpp`)で trace operand の定数性だけ。`NoContraction` の追跡と命令順の保持は無い
+- CPU oracle は三角形専用、候補列挙は predicate 無し / 有りの 2 loop がインライン、一意性は predicate 適用前だけ、`hitKind` は比較しない。fixture generator は 15 行の代数式で名前付き拒否が無い([raytracingoracle.cpp:718](../src/core/shader/raytracingoracle.cpp#L718))
+
+観測(機能が無いとき): 三角形以外の幾何を ray tracing に載せる手段が無い。`intersection` を書くと名前付きで拒否される(これは今日の正しい挙動で、本 WP でその拒否が「procedural group では受理」に変わる)。
+
+#### 決定
+
+##### 決定 1: asset 種別 **`procedural_geometry`** を `pelican.asset_data` に足す。web は明示拒否
+
+```json
+"procedural_geometry": [ { "name": "spheres_a", "kind": "aabb_v1",
+  "entries": [ { "aabb": { "min": [x,y,z], "max": [x,y,z] }, "data": [f32…] } ] } ]
+```
+- `kind = aabb_v1` のみ。`entries[i]` の index が **`primitive_id`**(`gl_PrimitiveID`。4-P 修正 13)。`data` は **authored 静的 record 定数**(RT1b の `pelican.ray_bindings@1` の record 定数と同じ wire。shader record 経由で `.rint` / hit stage に届く。長さは layout の record schema と一致、超過・不足は名前付き拒否)
+- AABB は 4-P.1 の domain(有限、全軸 strict、`aabb_minimum_thickness`)を loader が検査し、違反は `procedural_aabb_degenerate@1{asset, primitive_id}`。f32 に量子化した値を BLAS に渡す(4-P 修正 12 の「量子化後 AABB」)
+- `requireOnlyKeys` の allowlist に足すだけで **version は 1 のまま**(既存 project の bytes 不変)。**web は `procedural_geometry` を対応まで明示拒否**(subset 原則)
+- 受け入れ: 出荷 4 project の asset_data bytes 不変。`procedural_geometry` を持つ fixture project が pelican で開き、web の parser が名前付きで拒否する
+
+##### 決定 2: scene の担体は **`pelican_procedural_geometry` component**(object 単位、固定 leaf)
+
+- `{ "name": "pelican_procedural_geometry", "asset": "spheres_a" }`。object の transform で world に置く(engine は一般の transform を受理する。**golden subset は rigid のみ**で、非 rigid は golden 対象外の分類 `procedural_transform_not_rigid`(拒否ではない)。4-P 修正 11)
+- `pelican_ray_instance`(mask / flags / custom index)は今日どおり object 単位で効く。material 鍵規則(geometry_flags)は procedural に **適用しない**(material が無い)。procedural の geometry_flags は layout の `acceleration_structure.procedural_defaults`(新設。opaque 既定)
+- 受け入れ: component を外すと AS row が消える(GPU で球が写らない)。`asset` が無い名前は `procedural_asset_unresolved@1`
+
+##### 決定 3: AS 供給経路を **draw から独立**させる。`ProceduralGeometryContainer` は scene transaction の participant
+
+- `ProceduralGeometryContainer`(core)が asset の AABB buffer(device)と per-object の instance を持ち、**`RaySceneRowInput` を draw inventory とは別に供給**する(`rayQueryGeometryInstances()` の隣に `proceduralRayInstances()`。AS 側は両方を連結して row 化)。row の identity は `asset@transform` / `asset#primitive_id` の形(三角形と同じ規則で material 部は `Unavailable`)
+- `BlasVariantKey` に **geometry kind(`triangles | aabbs`)**を足す。AABB BLAS は `vk::GeometryTypeKHR::eAabbs` + `AabbPositionsKHR` の device buffer。cache 鍵は `(kind, allocation, flags)`
+- participant: prepare(asset 解決・AABB 検査・buffer 確保)は失敗可、publish / rollback / retire は noexcept、**phase trace に記録**(WP380c/d の入口規則)、manifest に real 行(`procedural.instances`、mutation ID 付き)
+- 受け入れ: scene load の C 失敗で procedural row が rollback される(WP380 の A/B/C fixture に球を足す)。participant を bypass する変異が production test で落ちる
+
+##### 決定 4: hit group に **`type: "procedural"`** を足し、`intersection` はそこでだけ受理
+
+- schema: `type: "procedural"` の group は `intersection`(必須)+ `closesthit`(必須)+ `anyhit`(任意)。`triangles` group に `intersection` があれば今日どおり `unsupported_shader_stage@1`。procedural group に `intersection` が無ければ `procedural_group_requires_intersection@1`
+- pipeline は `eProceduralHitGroup` を作る。AABB row の SBT record は procedural group を指す(row の group 束縛は `pelican.ray_bindings@1` の selector に **`procedural: <asset name>`** を足す。material selector は無い)
+- hit attribute: procedural group の `.rint` が `reportIntersectionEXT(t, hitKind)` に渡す attribute struct と、同 group の closest / any-hit が読む attribute が **一致**し、`maxRayHitAttributeSize` 以下(§3 :362 の未実装分)。不一致は `procedural_hit_attribute_mismatch@1`
+- 受け入れ: procedural group を持つ layout で球が写る(GPU)。`type` を `triangles` に変えると名前付き拒否。attribute 不一致 fixture が拒否される
+
+##### 決定 5: SPIR-V の load 時検査に **`.rint` の命令順と `NoContraction`** を足す(4-P 修正 8)
+
+- `rtspirvinspection.cpp` の Inspector に `SpvDecorationNoContraction` の追跡と、`.rint` entry の関数本体の**命令列**(opcode の順序)保持を足す
+- 規範列(4-P 修正 8)と一致し、対象命令すべてに `NoContraction` がある `.rint` を **golden-eligible** に分類。一致しない `.rint` は **`procedural_oracle_sequence_mismatch@1` で分類(エラーではない。load は成功)**。分類は `get_status` / 診断に出る
+- 受け入れ: 規範列で書いた `.rint` が eligible、`-ffast-math` 相当で compile した `.rint`(FMA 縮約)が mismatch に分類され load は成功する。追跡を消すと両方 eligible になり落ちる
+
+##### 決定 6: CPU oracle を 4-P v3 に合わせて拡張する
+
+- 入力型 `RayTracingOracleSphere{center, radius}`(rigid transform 付き)。**一般形の二次式**(`a = dot(d,d)`)を double 区間で、`sqrt` は両端に有向丸め、f32 4 ulp padding
+- object 空間の slab(4-P 修正 12)、γ_n の判別式 margin(修正 9)、`hitKind` を包含述語に足す(`rayTracingOracleContainsGpuHit` に `hit_kind`)
+- **`enumerateAcceptedCandidates(scene, ray, predicate)` を 1 本**にし、validation(一意性)と最終選択が同じ列を使う。一意性は区間分離(`nearest.upper + ε_t < next.lower`)で、predicate 適用後の accepted に対して再検査(修正 4・13)
+- generator: 球 / AABB / ray の構成的生成 + **名前付き拒否**(`procedural_aabb_degenerate` / `procedural_sphere_tangent`(判別式 margin)/ `procedural_origin_inside` / `procedural_transform_not_rigid` / `interval_width_exceeded` / `oracle_uniqueness_after_predicate`)+ 逐次と FMA の f32 emulate を **production の包含述語**で判定
+- `Contract` に 4-P v3 の定数を同名で足す(`sphere_maximum_center_distance` 等)
+- 受け入れ(4-P.5 + v2/v3 の骨): 球 1・三角形 1・ray 1 の最小 scene で GPU の `t` が CPU 区間に包含 / 球が三角形の手前・奥で record ID と hitKind が入れ替わる / 8 象限の ray / A・B・C の predicate 後一意性(always-accept は通過、A ignore は名前付き拒否)/ padding を消すと f32 の GPU 値が区間から外れる fixture で落ちる / 各拒否条件を 1 つずつ消すと落ちる
+
+##### 決定 7: off / on 対照と構成
+
+- off 対照は **report しない valid な `.rint`**(4-P 修正 7)。同じ AABB・SBT・AS で、on は規範 `.rint`、off は return する `.rint`。最終 SPIR-V の entry digest が切り替わったことも同じテストで観測
+- 構成: `PELICAN_RUNTIME_SHADER_COMPILER` ON(GPU 受け入れ)/ OFF(asset・oracle・分類の CPU 受け入れ。layout 使用 project は ON 要求のまま)、flat / xr、`SKIP_DEVSTUDIO` 両構成、RPC OFF build。layout 無し project の bytes(source / SBT / TLAS instance)三つとも不変
+
+#### milestone(1 branch)
+
+- **M1** 決定 1〜3(asset、component、AS 供給経路、participant、AABB BLAS)
+- **M2** 決定 4・5(procedural group、`eProceduralHitGroup`、attribute 検査、SPIR-V 分類)
+- **M3** 決定 6・7(oracle、generator、GPU golden、off/on、構成)
+
+#### やらないこと
+
+uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体・カプセル(§4-P.4)/ AABB の動的更新(RT5)/ per-occurrence override(CARRIER-RT3)/ Studio の UI / `.rcall`(RT4)/ 法線・uv の比較。
+
+#### 敵対レビューへの問い
+
+(1) `procedural_geometry` を `pelican.asset_data` v1 の allowlist 拡張で入れて subset 原則(web の明示拒否)と bytes 不変が両立するか / (2) `ProceduralGeometryContainer` が draw 経路と row の identity・`q` 採番・SBT digest を共有できるか(§11 決定 1 の「単一 immutable row snapshot」)/ (3) `type: "procedural"` の group と `pelican.ray_bindings@1` の `procedural:` selector が既存 selector(document / asset)と衝突しないか / (4) hit attribute 一致検査が SPIR-V reflection で本当に取れるか / (5) generator の逐次 / FMA emulate と γ 上限が、実 GPU(NVIDIA / AMD / Intel)の `.rint` 出力を包含するか。包含しなかった device をどう分類するか / (6) participant 化で scene load の phase trace の 8 要素が変わらないか(WP380d の exact sequence)。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
@@ -22863,6 +22947,7 @@ raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DL
 2026-09-03 深夜: WP380a(継続で SEGFAULT 解消 + injector 化 + main 取り込み)は統合中。WP381(実装完了。e2e `game_logic_dll_reload` の status clear 抜けを継続中)、WP378(実装完了。worktree で 1239 / 1239 + GPU 9 / 9)、WP379a(実装完了。検証中)は変異と統合待ち。WP380a 統合後に **docs 更新タスク**(source-code guide の scene ロード記述 9 リンクが旧経路のまま → 段落を executor の事実に書き直す。プロンプト `<作業ディレクトリ>/docs_wp380a.txt`)を codex に出す
 4. **WP378**(v3。E-0a): **投入済み**(worktree `<作業ディレクトリ>/wp378`、WP375b 統合直後に自動起動)
 5. **WP380c / WP380d / WP380b は 2026-09-03 に統合済み**(`aa7f65a7` / `f85fbbe1` / `5fed6612`)、**WP380e は 2026-09-04 に統合済み**(`7b84c55d`。380 系はここで打ち切り)。**CARRIER-RT3 = WP382 を 2026-09-03 に起票**(第 1 巡で 4 WP に分割: WP383 ∥ WP382a → b → c → d。enablement は 382d で開く。第 2 巡は 5 節一体。参加者 seam は WP380b/e の sink と WP380c/d の trace 入口に載る)、その後 CARRIER-STUDIO
+6. **RT 系**: §4-P(procedural subset)は v3 で設計を打ち切り、**WP386 = RT3-2(static AABB + `.rint`)を 2026-09-04 に起票**(仕様レビュー待ち)。CARRIER-RT3 とは独立。その後 RT4 / RT5(carrier の list 宣言が前提)→ RT6 → RT7。穴埋め: WP384(frame transaction、仕様確定・未投入)、WP385 は統合済み
 
 **既知の穴(WP 化は別途判断)**
 - **放棄された scene transaction の teardown で GPU test process が hang**(WP380e の統合側変異 M1 / M5: assertion 後に process が終了せず ctest timeout 約 1500 s で回収。effect scope が遅い / callback から例外が抜ける状況で fixture の teardown が待ち続ける)。機能の欠陥ではなく test harness の後始末。次に fixture の teardown を触る WP に同梱
