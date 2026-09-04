@@ -28,7 +28,7 @@ BLAS が保持するのは大域 index / vertex pool のデバイスアドレス
 
 TLAS の行がどこから来るかは、3つの型を順に読むと追えます。宣言面(mask / flags / custom index / material 鍵規則)そのものは[第6章 §6.20](06_rendering_vulkan_shader.md)にあります。
 
-identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。
+identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L208))。詳細は §「`RaySceneRowInput` の identity 3 種」。
 
 ```text
 draw inventory

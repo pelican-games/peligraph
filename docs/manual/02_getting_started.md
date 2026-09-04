@@ -19,6 +19,8 @@
 | Qt6 | Pelican Studio(エディタ)用。6.10 以上。**player だけなら不要** |
 | CMake | ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
 
+この表とこの下に出る外部名を 1 行ずつ: **GLSL**(OpenGL Shading Language)は本リポジトリでシェーダを書くソース言語、**SPIR-V** は Vulkan が実際に読むシェーダの中間バイナリ形式([用語集](14_glossary.md))、**shaderc** はその GLSL を SPIR-V へ変換するコンパイラライブラリ([shadercompiler.cpp](../../src/core/shader/shadercompiler.cpp#L22))、**vma-hpp** は GPU メモリ確保ライブラリ VulkanMemoryAllocator の C++ バインディング([VulkanMemoryAllocator-Hpp](../../src/core/CMakeLists.txt#L72))です。
+
 vma-hpp が v3.3.0 以降でなければならないのは、SDK 1.4 系で vulkan.hpp の例外クラスが
 改名され(`ValidationFailedEXTError` → `ValidationFailedError`)、その版から vma-hpp が例外送出を
 vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L66) のコメントが理由の正)。

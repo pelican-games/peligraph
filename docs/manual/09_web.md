@@ -23,6 +23,8 @@ pelican2 のプロジェクト(`project.json` + passes/scenes/assets)は、ネ�
 | `my_webpage/apps/site/` | Astro サイト。`/lab` ページの **Shader Dock** がビューア本体(Result / Passes ノードグラフ / Code / Buffers タブ) |
 | `my_webpage/docs/` | web 側の設計文書(`implementation_plan_web.md`、`pelican2-webgpu-compat.md` = rendering config 互換の正) |
 
+web 側の作業単位は **WW**(Web Work Package)という番号で `implementation_plan_web.md` に並びます —— エンジン側の WP([第11章 §11.1](11_status.md#111-wp-全台帳))に対応する番号体系ですが、実体は my_webpage リポジトリにあり pelican2 側からは状態を確認できません(一覧は §9.6。名前の正は [../design_project_format_web_profile.md](../design_project_format_web_profile.md) の 「web 側(my_webpage。WW = Web Work Package)」節)。
+
 ## 9.2 サブセット原則(不変条件)
 
 > **設計決定(サブセット原則・[PFW] v1.3 で不変条件に昇格):**
@@ -43,7 +45,7 @@ pelican2 のプロジェクト(`project.json` + passes/scenes/assets)は、ネ�
 2. `apps/site/src/lib/site/shaderDemos.ts` にエントリを追加し、`projectJsonUrl: "/scenes/<name>/project.json"` を指定する。
 3. `npm install`(初回)→ `npm run dev` → `http://localhost:4321/lab/` を開き、デモボタンをクリックすると Shader Dock がプロジェクトをロードします。
 
-ロードに失敗した場合はエラーメッセージ(解決後の完全 URL 付き — native と同じ fail-fast 流儀)が Config 欄に表示されます。
+ロードに失敗した場合はエラーメッセージ(解決後の完全 URL 付き — native と同じ fail-fast 流儀 = 読めるふりをせず、その場で名指しのエラーにして止めるやり方。[第1章](01_overview.md) の設計決定 1)が Config 欄に表示されます。
 
 ### web が検証するもの・無視するもの
 
@@ -61,13 +63,13 @@ pelican2 のプロジェクト(`project.json` + passes/scenes/assets)は、ネ�
 
 web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フォーマット 7 種(**エンジン側は 45 種**)・usage 6 種、パス 3 種 `material` / `fullscreen` / `ui`(**エンジン側は 8 種 + `PELICAN_WITH_IMGUI` ビルド時のみの `imgui` = 8+1 種**)、`push_constants` 3 種、従来の G-buffer 5 枚契約です。native の `pelican.material_outputs` v1（任意枚数・float/SINT/UINT output）と`material_output_states`（output別blend/write-mask）はまだ web 未対応なので、そのキーを持つ config は web 側で**明示的に拒否**する必要があります。未知キーとして読み飛ばして5枚扱いにするとサブセット原則違反です。`shadow_depth` / `debug_draw` / `debug_text` / `features` / `compute_tasks` も web 未対応です。互換の正は `my_webpage/docs/pelican2-webgpu-compat.md` を参照してください。
 
-括弧内のエンジン側の数はサブセット原則の実測値です(2026-07-28 時点。いずれも [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) が正 — RT フォーマットは `stringToFormat` の表、パス種別は `makePassInfo` の分岐)。**web の語彙はエンジンの語彙の真部分集合**であり、これは「web は pelican より厳しくてよいが緩くしてはならない」に適合しています。エンジン側の RT フォーマットとパス種別の説明は [第6章](06_rendering.md) を参照してください。
+括弧内のエンジン側の数はサブセット原則の実測値です(2026-07-28 時点。いずれも [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) が正 — RT フォーマットは `stringToFormat` の表、パス種別は `makePassInfo` の分岐)。**web の語彙はエンジンの語彙の真部分集合**(= web の語はすべてエンジン側にもあり、かつエンジン側と完全一致ではない)であり、これは「web は pelican より厳しくてよいが緩くしてはならない」に適合しています。エンジン側の RT フォーマットとパス種別の説明は [第6章](06_rendering.md) を参照してください。
 
 ## 9.4 シェーダ stem 規約 — 可搬シェーダの書き方
 
 **WGSL**(WebGPU Shading Language)は WebGPU が受け取るシェーダ言語で、native 側の GLSL / SPIR-V に対応する web 側の記述です。**エントリポイント**は「そのシェーダで最初に呼ばれる関数の名前」で、WebGPU はパイプライン作成時にこの名前を要求します。
 
-> **設計決定(stem 参照は共通形式への唯一の追加):** シェーダ参照は拡張子なしの stem で書く。ステージ情報はキー名(`vertex` / `fragment`)が既に持っているため。同じ stem から **native は `<stem>.vert` → `<stem>.vert.spv`**、**web は `<stem>.wgsl`** を解決する。WGSL のエントリポイントは **`vs_main` / `fs_main` / `cs_main` 固定**(自動検出は「2 つ目の関数を書いた瞬間に挙動が変わる」暗黙さを避けるため不採用)。
+> **設計決定(stem 参照は共通形式への唯一の追加):** シェーダ参照は拡張子なしの stem で書く。ステージ情報(= その stem が vertex / fragment のどちらの段のシェーダかという情報)はキー名(`vertex` / `fragment`)が既に持っているため。同じ stem から **native は `<stem>.vert` → `<stem>.vert.spv`**、**web は `<stem>.wgsl`** を解決する。WGSL のエントリポイントは **`vs_main` / `fs_main` / `cs_main` 固定**(自動検出は「2 つ目の関数を書いた瞬間に挙動が変わる」暗黙さを避けるため不採用)。
 
 ```json
 "shader": { "vertex": "engine://fullscreen", "fragment": "shaders/bloom_blur_h" }

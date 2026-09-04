@@ -70,7 +70,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `width` / `height` | 任意(両方セット) | 固定サイズ RT(シャドウマップ等)。片方だけはエラー |
 | `format` | ✔ | 45 種。8/16/32-bit の `R` / `RG` / `RGBA` に対する UNORM・SNORM・UINT・SINT・SFLOAT、sRGB、10/11-bit packed、depth を受理する。完全な正は [`renderingpassjsonhelpers.cpp`](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) の `format_names` |
 | `format_candidates` | 任意 string 配列 | verified Vulkan physical fragment が選択してよい追加 format。`format` は常に自動/default候補として先頭へ補われ、重複は除去される。宣言しただけでは自動formatは変わらない |
-| `format_class` | 任意 | `scene` / `display` / `data` / `explicit(<FORMAT>)`。カラーリゾルバが実 format を決める(§6.3)✅WP73 |
+| `format_class` | 任意 | `scene` / `display` / `data` / `explicit(<FORMAT>)`。カラーリゾルバ(= `format_class` から実 Vulkan format を決める解決器。§6.3 で説明します)が実 format を決める✅WP73 |
 | `role` | 任意 | `color` / `data`。SRGB view / UNORM view の選択 |
 | `history` | 任意 bool | `true` で 2 面持ち。前フレーム面は `<名前>@history` で読める(§6.8)✅WP88 |
 | `clear_color` | 任意 | history RT の初期化色 |
@@ -79,7 +79,7 @@ project.json ──rendering_config_json──▶ rendering config JSON
 | `layers` | 任意 | 正整数。2Dは省略時1でarray容量を表し、XRの内部view数とはphysical loweringで最大値を取る。cubeは省略時6、明示時も6固定 |
 | `usage` | ✔ | `COLOR_ATTACHMENT` / `DEPTH_STENCIL_ATTACHMENT` / `SAMPLED` / `STORAGE` / `TRANSFER_DST` / `TRANSFER_SRC` |
 
-runtime cubemapは資源形状だけを宣言し、六面をViewFamilyの6 viewとはみなしません。
+runtime cubemapは資源形状だけを宣言し、六面をViewFamilyの6 viewとはみなしません(**view** = 1 つの視点、**ViewFamily** = 同じ内容を描く視点の束のこと。§6.12・[用語集](14_glossary.md))。
 
 ```json
 {
@@ -99,7 +99,7 @@ cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2D�
 
 ### pass 共通フィールド
 
-以下で **attachment(アタッチメント)** は「そのパスが描き込む先として GPU に差し込む画像」を指す Vulkan の用語です(`output.color` / `output.depth` に書いた RT がそれになります)。パスが読むだけの画像は attachment ではなく `input` 側です。
+以下で **attachment(アタッチメント)** は「そのパスが描き込む先として GPU のパイプラインに結び付ける画像」を指す Vulkan の用語です(`output.color` / `output.depth` に書いた RT がそれになります)。パスが読むだけの画像は attachment ではなく `input` 側です。
 
 | フィールド | 必須 | 既定 | 内容 |
 |---|---|---|---|
@@ -164,7 +164,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 
 ### type 別の要点
 
-- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
+- **`material`** — シーン内のモデルを描く material パス。`material_outputs` を省略した従来設定は、既定の 5 枚 G-buffer（または forward の scene color 1 枚）をそのまま使います。この 5 枚の内訳を決めるのはエンジンではなくプロジェクトの config とシェーダで、example では `gbuffer_albedo` / `gbuffer_normal` / `gbuffer_material` / `gbuffer_worldpos` / `g_emissive` です([main_rendering_config.json:155](../../projects/example/passes/main_rendering_config.json#L155))。明示した場合は**順序・枚数・数値型を任意に定義**でき、`material_output_states`でfield別のblend/write-maskも指定できます。固定のエンジン上限はなく、実行デバイスの `maxColorAttachments` と各 format/sample capability が物理上限です。詳しくは §6.7。
 - **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む。**入力枚数にエンジン固定の上限はありません**(✅WP238b で `Fullscreen pass has too many inputs` の per-pass 拒否を撤去。残った 8 は descriptor pool のサイズ見積もりで、実上限は選択されたデバイスと pipeline layout が持ちます)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。任意の`raster_state`で1枚のcolor attachmentのblend/write-maskとtopology/cull/front-faceを書けます。深度状態は受理しません。
 - **`raster`** — 汎用ラスタパス(✅WP238b)。シーンのモデルにも全画面 quad にも依らず、`draw` で描画コマンドを、`raster_state` で固定機能状態を直接宣言します。後述の専用項を参照。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。内部契約は`fullscreen`と同じ`raster_state`所有表を共有し、blend/write-mask等を同じ経路で解決します。自動生成される既定ノードは`raster_state`を省略します。
@@ -312,7 +312,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 ## 6.3 カラーパイプライン(✅WP72〜74)
 
-前提の 2 語だけ先に置きます。**sRGB** は PNG やモニタが使う色の符号化で、格納値と実際の光の量が非線形に対応します(暗部に段階を厚く割り当てるため)。**リニア(線形)** はその逆で、値がそのまま光の量に比例します。加算や乗算が物理的に正しくなるのはリニア側なので、計算はリニアで行い、表示の直前だけ sRGB へ符号化する、というのがここでの方針です(用語としての整理は [用語集](14_glossary.md)、Vulkan 側の `*_SRGB` フォーマットの扱いは [ソースコード読解ガイド §10.1](../source-code-guide/10_background_knowledge.md#srgb-フォーマットをスコアで選ぶ理由))。
+前提の 2 語だけ先に置きます。**sRGB** は PNG やモニタが使う色の符号化で、格納値と実際の光の量が非線形に対応します(暗部に段階を厚く割り当てるため。符号化に使う区分関数と色域の規格は **IEC 61966-2-1** で、エンジンの `Pelican::srgb()` も同じ区分点 0.04045 / 12.92 / 1.055 / 2.4 を使います — [color.hpp:33](../../src/core/userpublic/color.hpp#L33))。**リニア(線形)** はその逆で、値がそのまま光の量に比例します。加算や乗算が物理的に正しくなるのはリニア側なので、計算はリニアで行い、表示の直前だけ sRGB へ符号化する、というのがここでの方針です(用語としての整理は [用語集](14_glossary.md)、Vulkan 側の `*_SRGB` フォーマットの扱いは [ソースコード読解ガイド §10.1](../source-code-guide/10_background_knowledge.md#srgb-フォーマットをスコアで選ぶ理由))。
 
 2026-07-11 に **SRGB スワップチェーン + リニアワークフロー**へ全面移行しました(設計の正: [../design_color_pipeline.md](../design_color_pipeline.md) v4)。
 

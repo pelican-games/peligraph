@@ -141,7 +141,12 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 >
 > **何をする所か**: 手順 1 の中身です。base 設定の pass を 8 つの canonical anchor(`sprite` / `post_main` / `tonemap` / `post_ldr` / `pelican_ui` / `debug_draw` / `debug_text` / `imgui`)の区画へ振り分け、`__anchor_*` node と終端 `output_transform` を実体化した 1 本の配列に組み直します。
 >
-> **素朴に読むと**: 戻り値が `size_t` で、**`canonical_anchors.size()`(= 8)が「どの anchor にも属さない = scene pass」の番兵**になっています。配列外の値をわざと返す関数だと気づかないと読めません(index として危険なわけではありません。呼び出し側の `canonicalizePasses()` が `bucket == canonical_anchors.size()` を先に判定して `scene_passes` へ回すので、この値が `buckets[bucket]` の添字に使われる経路はありません)。振り分け規則も「型」「明示 `canonical_anchor` フィールド」「マジックネーム(`lighting_pass` / `HighLuminanceExtraction` / `HorizontalBlur_*` …)」「出力先」の 4 系統混在です。さらに bloom 系の名前を持つ pass は **HDR の有無で別区画に落ちます**(`hdr_enabled ? 1 : 3`)。scene 終端はもう一段ややこしく、HDR では [`prepareHdrSceneOutput()`](../../src/project/featurecompose.cpp#L306) が `canonicalizePasses()` より**前に**その出力を `swapchain` → `scene_ldr_in` へ書き換えるため、`passWritesSwapchain()` がもう当たらず、bucket 3 ではなく **scene 区画にそのまま残ります**(swapchain へ書く役目は、後から `after:tonemap` で挿し込まれる feature 側の `hdr_tonemap` が引き継ぎます)。「HDR にすると終端 pass が bucket 3 から bucket 1 へ移る」ではない、というのがここの読みどころです。
+> **素朴に読むと**: 読みにくさは次の 4 点に分かれます。
+>
+> 1. **番兵**: 戻り値が `size_t` で、**`canonical_anchors.size()`(= 8)が「どの anchor にも属さない = scene pass」の番兵**になっています。配列外の値をわざと返す関数だと気づかないと読めません(index として危険なわけではありません。呼び出し側の `canonicalizePasses()` が `bucket == canonical_anchors.size()` を先に判定して `scene_passes` へ回すので、この値が `buckets[bucket]` の添字に使われる経路はありません)。
+> 2. **振り分け規則**: 「型」「明示 `canonical_anchor` フィールド」「マジックネーム(`lighting_pass` / `HighLuminanceExtraction` / `HorizontalBlur_*` …)」「出力先」の 4 系統混在です。
+> 3. **bloom は HDR で行き先が変わる**: bloom 系の名前を持つ pass は **HDR の有無で別区画に落ちます**(`hdr_enabled ? 1 : 3`)。
+> 4. **scene 終端はもう一段ややこしい**: HDR では [`prepareHdrSceneOutput()`](../../src/project/featurecompose.cpp#L306) が `canonicalizePasses()` より**前に**その出力を `swapchain` → `scene_ldr_in` へ書き換えるため、`passWritesSwapchain()` がもう当たらず、bucket 3 ではなく **scene 区画にそのまま残ります**(swapchain へ書く役目は、後から `after:tonemap` で挿し込まれる feature 側の `hdr_tonemap` が引き継ぎます)。「HDR にすると終端 pass が bucket 3 から bucket 1 へ移る」ではない、というのがここの読みどころです。
 >
 > **骨子**:
 > ```text
@@ -201,7 +206,11 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 >
 > **何をする所か**: 手順 1 と 2 のちょうど間で走ります。render target 宣言の `format_class`(`scene` / `display` / `data` / `explicit(...)`)を HDR の有無と frame target の実サイズから実フォーマットへ解決する、カノニカルなカラーパイプラインの唯一の決定点です。
 >
-> **素朴に読むと**: JSON に `"format": "B8G8R8A8_UNORM"` と書いてあるのに **採用されない**ことがあります。`scene` と `display` では `target["format"]` が**無条件に上書き**され、authored 値は捨てられます(残るのは `data` と `explicit(...)` だけ)。実例として、HDR 有効時に `prepareHdrSceneOutput()` が足す `scene_ldr_in` は `B8G8R8A8_UNORM` と書かれていますが `format_class: "scene"` なので `R16G16B16A16_SFLOAT` に化けます — **`ldr` を含む名前なのに float16** です。名前のほうは嘘ではなく「LDR 化(= tonemap)の**入力**」の意で、中身は HDR の scene です(`hdr_tonemap` がこれを読んで `display` へ書きます)。嘘になるのは authored format だけです。もう 1 つの地雷は、この関数が `frame_target_format` を引数に取りながら**本体で一度も参照していない**ことです。呼び出し側は `getSwapchainFormat()` を渡していますが `display` は常に `B8G8R8A8_SRGB` 固定で、swapchain 側が UNORM に落ちた差は終端の shader fallback が吸収します。「引数が使われていないのはバグでは?」で止まらないでください。
+> **素朴に読むと**: 引っ掛かる所は 3 つです。
+>
+> 1. **authored format が捨てられる**: JSON に `"format": "B8G8R8A8_UNORM"` と書いてあるのに **採用されない**ことがあります。`scene` と `display` では `target["format"]` が**無条件に上書き**され、authored 値は捨てられます(残るのは `data` と `explicit(...)` だけ。[`display` は `B8G8R8A8_SRGB` 固定](../../src/core/renderingpass/rendertargetjsonparser.cpp#L216)、[`scene` は HDR の有無で `R16G16B16A16_SFLOAT` / `B8G8R8A8_SRGB`](../../src/core/renderingpass/rendertargetjsonparser.cpp#L220))。
+> 2. **名前と中身が食い違って見える実例**: HDR 有効時に `prepareHdrSceneOutput()` が足す `scene_ldr_in` は `B8G8R8A8_UNORM` と書かれていますが `format_class: "scene"` なので `R16G16B16A16_SFLOAT` に化けます — **`ldr` を含む名前なのに float16** です。名前のほうは嘘ではなく「LDR 化(= tonemap)の**入力**」の意で、中身は HDR の scene です(`hdr_tonemap` がこれを読んで `display` へ書きます)。嘘になるのは authored format だけです。
+> 3. **使われない引数**: この関数は `frame_target_format` を引数に取りながら**本体で一度も参照していません**。呼び出し側は `getSwapchainFormat()` を渡していますが `display` は常に `B8G8R8A8_SRGB` 固定で、swapchain 側が UNORM に落ちた差は終端の shader fallback が吸収します。「引数が使われていないのはバグでは?」で止まらないでください。
 >
 > **骨子**:
 > ```text
@@ -368,6 +377,8 @@ flowchart LR
 > > Scheduling is scope-execution-major: every node in a fused scope records for
 > > one view before the next sequential view begins. This is required to keep a
 > > native dynamic-rendering scope open across all of its nodes.
+>
+> ここでいう scope を「開く / 閉じる」は、この scheduler ではなくコマンド記録側で起きます。scheduler が作る各 [`LogicalFrameNodeInvocation`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L22) は `scope_node_index` / `scope_node_count` を持ち、[`beginsScopeExecution()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L42)(= `scope_node_index == 0`)の invocation で `Renderer` が [`beginRenderingScope()`](../../src/core/vkcore/renderer.cpp#L1928)、[`endsScopeExecution()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L45)(= `scope_node_index + 1 == scope_node_count`)の invocation で [`endRenderingScope()`](../../src/core/vkcore/renderer.cpp#L2051) を呼びます。つまり fused scope は **(scope, execution=view) の組ごとに 1 回開いて 1 回閉じ**、その間にその scope の node が全部記録されます。
 >
 > もう 1 つが **main と secondary の検査の非対称**です。`$main` の scope は plan 側の `view_execution` / `view_count` / `execution_count` / `view_mask` が**すべて整合していないと例外**([`$main` 側の検査](../../src/core/renderingpass/viewexecutionscheduler.hpp#L232))。対して secondary family の scope は **必ず single-view のテンプレート 1 個**でなければならず、実 view 数は runtime の family cardinality が `sequential` へ展開します([secondary 側の検査](../../src/core/renderingpass/viewexecutionscheduler.hpp#L255))。したがって「shadow cascade 4 枚が物理プランに焼かれている」は誤りで、物理プランは shadow が何カスケードかを**知りません**。この非対称(main は plan が決める / secondary は runtime が決める)を知らないと「同じ scope なのに検査が違う」が読めません。
 >

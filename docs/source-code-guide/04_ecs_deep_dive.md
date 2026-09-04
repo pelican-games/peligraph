@@ -384,7 +384,7 @@ template本体は [`registerSystem<TSystem, TComponents...>()`](../../src/core/u
 
 `SystemId` を返すだけではありません。
 
-1. wrapperへ **`std::string name`** を持たせ、`wrapper.name = typeid(TSystem).name();` を代入します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L585)）。この名前が§4.12のhazard/cycleエラー文言に出ます。`typeid(T).name()` が返す文字列は**実装定義**で、MSVCでは `class MySystem` のような読める形ですが、GCC/Clangではマングル名（`10MySystem` のような装飾済み名）です。診断メッセージの見た目はコンパイラによって変わる、と読んでください。安定した表示名が要る場面（ゲームSystemやBehavior）は、別に `stable_name` を宣言させる形になっています（[第9章 §9.3](09_black_magic_and_gotchas.md)）。
+1. wrapperへ **`std::string name`** を持たせ、`wrapper.name = typeid(TSystem).name();` を代入します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L585)）。この名前が§4.12のhazard/cycleエラー文言に出ます。`typeid(T).name()` が返す文字列は**実装定義**で、MSVCでは `class MySystem` のような読める形ですが、GCC/Clangではマングル名です（マングル = 名前修飾。名前空間・template 引数・型を含めてリンカが扱う 1 個の記号名へ機械的に符号化する規則のことで、Itanium C++ ABI では識別子の前に長さが付くため `MySystem` は `10MySystem` になります）。診断メッセージの見た目はコンパイラによって変わる、と読んでください。安定した表示名が要る場面（ゲームSystemやBehavior）は、別に `stable_name` を宣言させる形になっています（[第9章 §9.3](09_black_magic_and_gotchas.md)）。
 2. [`internal::registerECSSystemComponentDependencies()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L27) を呼び、Componentからの**逆参照テーブル**へ登録します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L565)）。これがComponent登録解除時の「依存Systemが残っている」判定に使われます（§4.15）。
 3. `execution_plan_dirty = true` を立て、実行計画キャッシュを無効化します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L419)）。
 

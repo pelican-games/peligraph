@@ -79,7 +79,7 @@
 
 **retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1043))
 
-**staging(ステージング)** — 「作用を実行せず、実行可能な形にして取っておく」こと。ロード中に `playSound` や `saveData` を呼ぶと、その場では鳴らず・書かず、**実行に必要な準備だけ済ませた entry** がトランザクションに積まれます。初出: [第4章 ロード中の「作用」](04_scene_ecs.md#ロード中の作用はトランザクションに溜まるwp380be)。([PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27))
+**staging(ステージング)** — 「作用を実行せず、実行可能な形にして取っておく」こと。ロード中に `playSound` や `saveData` を呼ぶと、その場では鳴らず・書かず、**実行に必要な準備だけ済ませた entry** がトランザクションに積まれます。溜めた分が実際に外へ出るのは、ロードの 8 段のうち **flush** 段(`commit` に成功したときだけ)です。具体例: `onInit` で `playSound("bgm")` を呼ぶと、その場では voice slot の予約だけが起き、音が鳴るのは flush 段です(ロードが失敗すれば予約ごと消え、鳴りません)。初出: [第4章 ロード中の「作用」](04_scene_ecs.md#ロード中の作用はトランザクションに溜まるwp380be)。([PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) / [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27))
 
 **outbox** — 溜めた作用を入れる固定長のバッファ。容量は 256 で、溢れた分は「溢れた」という 1 件のエラーに畳まれます(黙って捨てません)。初出: [第4章 ロード中の「作用」](04_scene_ecs.md#ロード中の作用はトランザクションに溜まるwp380be)。([effecttransaction.hpp:25](../../src/core/loader/effecttransaction.hpp#L25))
 
@@ -93,7 +93,7 @@
 
 **free list(空きリスト)** — 解放した index を貯めておき、次の生成で再利用するための列。pelican2 では後入れ先出しで取り出すので、**同じ操作列なら同じ再利用順**になります(決定性のため)。初出: [source-code-guide 第4章 free list](../source-code-guide/04_ecs_deep_dive.md#free-list)。([coretemplate.hpp:121](../../src/core/userpublic/details/ecs/coretemplate.hpp#L121))
 
-**arena(アリーナ)** — 同種のものをまとめて置くエンジン側の置き場。behavior は ECS コンポーネントではなく、エンジン所有の `BehaviorAttachmentArena` に連番で並びます。ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(インスタンス状態は失われ、params は authoring 値から再構築)とエディタからの付け外しを安全にするための置き場です。初出: [第8章 §8.5.5](08_gameplay.md#855-実行順とライフサイクル決定性)。([BehaviorAttachmentArena](../../src/core/gamelogic/behaviorarena.hpp#L174))
+**arena(アリーナ)** — 同種のものをまとめて置くエンジン側の置き場。behavior は ECS コンポーネントではなく、エンジン所有の `BehaviorAttachmentArena` に連番で並びます。ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(インスタンス状態は失われ、params は authoring 値から再構築)とエディタからの付け外しを安全にするための置き場です。具体的には、エンジン側の 1 本の `std::vector<Attachment>` がすべての behavior 実体を持ち、ゲームコードは handle 経由でしか触りません([behaviorarena.hpp:193](../../src/core/gamelogic/behaviorarena.hpp#L193))。「arena」という呼び名の由来は設計文書に書かれておらず**未確認**です(この用語集では「置き場」の意味だけで使います)。初出: [第8章 §8.5.5](08_gameplay.md#855-実行順とライフサイクル決定性)。([BehaviorAttachmentArena](../../src/core/gamelogic/behaviorarena.hpp#L174))
 
 **SoA / Chunk / Archetype** — ECS の格納形。**Archetype** は「同じコンポーネントの組み合わせを持つ entity の集合」、**Chunk** はそれを一定個数ずつ区切った箱、**SoA**(Structure of Arrays)は「コンポーネントごとに別の連続配列に置く」並べ方です。1 つのコンポーネントだけを走査するときに無駄なメモリを読まずに済みます。初出: [第4章 §4.4](04_scene_ecs.md#44-ランタイム-ecs-の要点ゲーム開発者向け)、詳細は [source-code-guide 第4章](../source-code-guide/04_ecs_deep_dive.md#chunkはsoa)。([ECSComponentChunk](../../src/core/userpublic/details/ecs/chunk.hpp#L19))
 
@@ -119,7 +119,7 @@
 
 **order(順序値)と総順序** — ゲームシステムの実行順を決める整数。同じ `order` のシステムは**名前の辞書順**で並ぶので、全システムに一意な順序が決まります(= 総順序)。これが決定性の土台の 1 つです。初出: [第8章 §8.3](08_gameplay.md#83-ゲームシステムの登録と実行順序wp43)。
 
-**epoch anchor** — ゲーム DLL が必ず import する**目印のシンボル**(`pelican_game_logic_epoch_v2`)。ロードの前に DLL の import テーブルだけを読み、この目印が無ければ「古い DLL」として `game_logic_abi_stale@1` で拒否します。登録を持たない provider 専用 DLL にはリンカが強制する要素が無いので、この診断が唯一の門番です。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogic.hpp:23](../../src/core/userpublic/gamelogic.hpp#L23))
+**epoch anchor** — ゲーム DLL が必ず import する**目印のシンボル**(`pelican_game_logic_epoch_v2`)。ロードの前に DLL の import テーブルだけを読み、この目印が無ければ「古い DLL」として `game_logic_abi_stale@1` で拒否します。登録を持たない provider 専用 DLL にはリンカが強制する要素が無いので、この診断が唯一の門番です。世代番号は**シンボル名そのものへの文字列連結**で入ります —— マクロが `pelican_game_logic_epoch_v` に ABI 版を貼り付けるので、版が 3 になればシンボルは `pelican_game_logic_epoch_v3` に変わり、`_v2` を import する古い DLL は名前が一致しなくなります([gamelogic.hpp:10](../../src/core/userpublic/gamelogic.hpp#L10))。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogic.hpp:23](../../src/core/userpublic/gamelogic.hpp#L23))
 
 **shadow copy(シャドウコピー)** — 実行中の DLL は Windows では上書きできないため、**原本の複製を作ってそちらをロードする**手口。pelican2 は原本の隣の `.pelican-hot-reload/<プロセス ID>/` へ複製するので、同じプロジェクトを 2 つ起動しても取り合いになりません。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([gamelogicreload.cpp:423](../../src/core/gamelogic/gamelogicreload.cpp#L423))
 
@@ -157,11 +157,11 @@
 
 **canonical anchor(標準アンカー)** — feature がパスを差し込む先として、常に実体化される 8 つの目印ノード(`sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → debug_text → imgui`)。この**全順序はエンジンの契約**で並べ替えられませんが、あいだに挿すのは自由です。初出: [第6章 canonical anchor](06_rendering.md#canonical-anchorwp73)。
 
-**frame graph(フレームグラフ)** — パスの `input` / `output` から依存を自動で導き、実行順・並び・barrier をエンジンが決める仕組み。手書きの barrier は禁止で、JSON の宣言順は依存が許す範囲での**安定タイブレーク**にすぎません。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。
+**frame graph(フレームグラフ)** — パスの `input` / `output` から依存を自動で導き、実行順・並び・barrier をエンジンが決める仕組み。手書きの barrier は禁止で、JSON の宣言順は依存が許す範囲での**安定タイブレーク**にすぎません。「グラフ」の中身は、**ノード** = パスや compute タスク、**辺** = 「ある RT を書く側 → それを読む側」の依存で、プランナはこれをトポロジカルに並べて `nodes`(実行順)・`levels`(依存が無く同じ段に置けるノードの束)・`barriers` を出します([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L153))。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。
 
 **FramePlan** — フレームグラフを解決した結果の**実行計画**。ノード種別は `render` / `compute` / `anchor` / `snapshot_copy` / `output_transform` で、全構成がこの順序で実行されます(旧来の「JSON 宣言順で実行」経路は撤去済み)。RPC の `get_frame_plan` や ImGui の plan viewer で中身を見られます。初出: [第6章 §6.6](06_rendering.md#66-フレームグラフf0f2--wp3335--wp64)。([FramePlan](../../src/core/renderingpass/frameplanner.hpp#L153) / [FramePlanNodeKind](../../src/core/renderingpass/frameplanner.hpp#L14))
 
-**logical plan / physical plan(論理プラン / 物理プラン)** — **論理プラン**はリソースを「値と読み取り範囲」だけで表したデバイス非依存の表現、**物理プラン**はそこへ実フォーマット・サンプル数・scope・view 実行を載せたデバイス依存の表現です。「何を計算するか」と「Vulkan でどう置くか」を分ける層で、物理プランは丸ごと差し替え可能なパッケージとして eject できます。初出: [第6章 target planning と Vulkan plan pin](06_rendering.md#target-planning-と-vulkan-plan-pin)。([CompiledLogicalRenderGraph](../../src/project/logicalrendergraph.hpp#L254) / [VulkanTargetPlan](../../src/project/targetrenderplanning.hpp#L478))
+**logical plan / physical plan(論理プラン / 物理プラン)** — **論理プラン**はリソースを「値と読み取り範囲」だけで表したデバイス非依存の表現、**物理プラン**はそこへ実フォーマット・サンプル数・scope・view 実行を載せたデバイス依存の表現です。「何を計算するか」と「Vulkan でどう置くか」を分ける層で、物理プランは丸ごと差し替え可能なパッケージとして eject できます。違いは型の欄で見るのが早く、論理側の 1 リソースは `name` / `type` / materialization の 3 項だけ([LogicalResourceDesc](../../src/project/logicalrendergraph.hpp#L60))、物理側の同じリソースにはそこへ `format` / `rasterization_samples` / `view_layout` / `mip_levels` / `array_layers` / alias 可否が付きます([VulkanPhysicalResourcePlan](../../src/project/targetrenderplanning.hpp#L202))。例えば `format_class: "scene"` は論理側では文字どおり「scene 用の色」でしかなく、実 format(HDR なら `R16G16B16A16_SFLOAT`、SDR なら `B8G8R8A8_SRGB`)を欄として持つのは物理側です([第6章 §6.3](06_rendering.md))。初出: [第6章 target planning と Vulkan plan pin](06_rendering.md#target-planning-と-vulkan-plan-pin)。([CompiledLogicalRenderGraph](../../src/project/logicalrendergraph.hpp#L254) / [VulkanTargetPlan](../../src/project/targetrenderplanning.hpp#L478))
 
 **scope(スコープ)** — 物理プランの上で、**1 回の dynamic rendering を開いたまま連続して記録するノードの束**。コマンド記録のループは「scope → 実行(view) → その scope の全ノード」の順(scope-execution-major)で、「view ごとに全ノード」ではありません。`scope_edit_mode` はこの束を編集するときにどこまで崩してよいかの指定です。初出: [第6章 Vulkan physical fragment](06_rendering.md#vulkan-physical-fragment-v1--v2--v3)、詳細は [source-code-guide 第6章](../source-code-guide/06_rendering_vulkan_shader.md)。
 

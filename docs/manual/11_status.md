@@ -12,7 +12,14 @@
 
 - **WP 番号の読み方**: WP(Work Package)は開発の作業単位で、**1 WP = 1 ブランチ = 1 マージ**です。番号は連番とは限らず、`238e` `380a-fix` のような枝番が付きます([第1章 §1.0](01_overview.md))。
 - **表の見方**: 表は 3 列(WP / 内容 / 状態)か 5 列(WP / タイトル / 状態 / 1行説明 / ユーザーから見える面)で、状態の凡例は §11.1 の冒頭にあります。「いま使えるか」は**状態**の列だけで判断してください。
-- **タイトルの `U1` `C1a` `F0` `RPE2` `VRM-S1` などは WP 番号ではなくトラック記号**(設計文書側で決めた「どの系統の第何段か」)です。意味は §11.2 の文書マップから該当設計文書と章を辿ってください。
+- **タイトルの `U1` `C1a` `F0` `RPE2` `VRM-S1` などは WP 番号ではなくトラック記号**(設計文書側で決めた「どの系統の第何段か」)です。よく出るものの凡例:
+  - `U1`〜`U4` — プレファブの出荷単位([../design_prefabs.md](../design_prefabs.md) §7)。`U1` = leaf library + ProjectEnvelope の prefabs 保持 + ResolvedScene seam + version 2 ゲート、以降 `U2` unpack、`U3` authoring transaction、`U4` `ctx.spawn`。→ [第13章](13_editor.md)
+  - `C0` / `C1a` / `C1b` — 色パイプラインの実装順([../design_color_pipeline.md](../design_color_pipeline.md) §6)。`C1a` = canonical anchor / format_class / output_transform の構造だけを入れて出力 byte を変えない段、`C1b` = 色意味論の一括移行。→ [第6章 §6.3](06_rendering.md)
+  - `F0`〜`F2` — フレームグラフ(compute task graph)の移行計画([../design_compute_task_graph.md](../design_compute_task_graph.md) §5)。`F0` = プランナを実装して「導出順 = 現行配列順」を assert するだけのシャドー検証、`F1` = compute 実行系、`F2` = 実行順をプランナ由来へ切替。→ [第6章 §6.6](06_rendering.md)
+  - `RPE1`〜`RPE12` — 描画パイプライン拡張性の段階実装([../design_render_pipeline_extensibility.md](../design_render_pipeline_extensibility.md) §12)。`RPE2` = typed `CompiledRenderPipeline` の導入と `composition_metadata` の runtime 読み撤去(WP181)。→ [第6章](06_rendering.md)
+  - `VRM-S0` / `VRM-S1` / `VRMA-*` — VRM 一級化の WP 群([../design_animation_graph.md](../design_animation_graph.md) §4)。`VRM-S1` = per-instance application sink(expression / gaze)。→ [第5章](05_assets.md)
+  - `RPE` は設計文書名 `design_render_pipeline_extensibility.md` の頭字と一致し、`VRM-S` の `S` は設計側の行が `semantic decode/storage` と書いています。`U` / `C` / `F` が何の略かは設計文書に書かれておらず**未確認**です。ここに無い記号は §11.2 の文書マップから該当設計文書と章を辿ってください。
+- **`WW` は web 側(my_webpage リポジトリ)の作業単位** = Web Work Package で、pelican2 の WP とは別系統の番号です([第9章 §9.6](09_web.md#96-実装状況ww-台帳))。
 
 ## この章で学ぶこと
 
