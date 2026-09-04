@@ -221,7 +221,7 @@ TEST_CASE("WP358 parent RpcServer fixture remains byte exact with all 17 types",
     const auto expected = readBinary(
         PELICAN_WP358_RPC_FIXTURE);
     REQUIRE(actual == expected);
-    REQUIRE(actual.size() == 3605);
+    REQUIRE(actual.size() == 3386);
 
     const auto envelope = oneRpcEnvelope(actual);
     std::vector<std::string> types;

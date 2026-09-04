@@ -235,8 +235,9 @@ TEST_CASE("WP360 resolver owns source/effective forms defaults and authored iden
 
     const auto &behavior = object.components.at(1);
     REQUIRE(raw.at(1).at("params") == Json::object());
-    REQUIRE(behavior.source_json_exact.at("params").at("count") == 360);
-    REQUIRE(behavior.source_json_exact.at("params").at("label") ==
+    REQUIRE(behavior.source_json_exact == raw.at(1));
+    REQUIRE(behavior.effective_json.at("params").at("count") == 360);
+    REQUIRE(behavior.effective_json.at("params").at("label") ==
             "parent-default");
     REQUIRE(resolved.behaviorReloadSources().size() == 1);
     REQUIRE(resolved.behaviorReloadSources().front().source_params ==
@@ -617,7 +618,7 @@ TEST_CASE("WP360 current resolved query is byte exact with named parent RpcServe
     REQUIRE(actual.back() == '\n');
     const auto digest = picosha2::hash256_hex_string(actual.begin(), actual.end());
     std::cout << "WP360_PARENT_RPC named_sha="
-              << "447104d0b7ac6a15198dcbe03d84ef113b81a588"
+              << "b33663b3f6fde41abb635cfdb5edffe032f58117cfb0c9118cf2810dd386581c"
               << " bytes=" << actual.size() << " sha256=" << digest
               << '\n';
 }

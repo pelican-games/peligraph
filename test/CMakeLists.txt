@@ -1277,6 +1277,7 @@ add_test(
 pelican_define_test(componentcodec_test GROUP ecs_editor pelican_core glm)
 pelican_define_test(wp378_resolution_test GROUP ecs_editor pelican_core glm)
 pelican_define_test(wp375_editor_projection_test GROUP ecs_editor pelican_core glm)
+pelican_define_test(wp382b_editor_test GROUP ecs_editor pelican_core)
 pelican_define_test(editorprojectiontransaction_test GROUP ecs_editor pelican_core glm
   VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(editorpreviewprojection_test GROUP ecs_editor pelican_core glm)

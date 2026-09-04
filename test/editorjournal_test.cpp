@@ -1394,16 +1394,16 @@ TEST_CASE("WP161 behavior attachment sequence survives spawn undo redo",
             std::vector<std::string>{"onInit", "onDestroy", "onInit"});
 }
 
-TEST_CASE("WP167 params edit expands defaults temporarily and undo restores raw omission",
-          "[editor][journal][wp167][behavior][params][defaults][undo]") {
+TEST_CASE("WP382b params insert materializes only the selected default and undo restores omission",
+          "[editor][journal][wp382b][behavior][params][defaults][undo]") {
     Harness harness;
     const auto edited = harness.commit(
-        {{"op", "set_component_value"},
+        {{"op", "insert_component_field"},
          {"object_id", 4},
          {"component_slot", "behavior"},
          {"attachment_index", 1},
-         {"field_path", "/params/label"},
-         {"value", "expanded"}});
+         {"field_path", "/params/label"}});
+    INFO(edited.dump());
     REQUIRE(edited.at("status") == "committed");
     auto components = harness.target.document.rawJson()
                           .at("scenes")
@@ -1411,7 +1411,8 @@ TEST_CASE("WP167 params edit expands defaults temporarily and undo restores raw 
                           .at("objects")
                           .at(3)
                           .at("components");
-    REQUIRE(components.at(1).at("params").at("label") == "expanded");
+    REQUIRE(components.at(1).at("params").at("label") == "journal-default");
+    REQUIRE(components.at(1).at("params").size() == 1);
     const auto &record = harness.edits->journal().back();
     REQUIRE_FALSE(record.ordered_inverse.front()
                       .at("authored_component")
@@ -1430,10 +1431,9 @@ TEST_CASE("WP167 params edit expands defaults temporarily and undo restores raw 
                      .at(3)
                      .at("components");
     REQUIRE_FALSE(components.at(1).contains("params"));
-    REQUIRE(harness.lifecycle_trace == std::vector<std::string>{
-                                           "event:expanded", "update:expanded",
-                                           "event:journal-default",
-                                           "update:journal-default"});
+    REQUIRE(harness.lifecycle_trace ==
+            std::vector<std::string>{"insert_component_field",
+                                     "insert_component_field"});
 }
 
 TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequences",

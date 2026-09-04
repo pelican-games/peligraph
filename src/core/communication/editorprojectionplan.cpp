@@ -142,7 +142,9 @@ std::vector<AuthoringObjectId> objectIds(const Json &operation) {
 EditorCanonicalOperation canonicalOperation(
     const Json &wire, const SceneProjectionState &state) {
     const auto op = stringField(wire, "op");
-    if (op == "set_component_value") {
+    if (op == "set_component_value" ||
+        op == "insert_component_field" ||
+        op == "remove_component_field") {
         const auto object_id = objectId(wire, "object_id");
         const auto component = stringField(wire, "component_slot");
         const auto scene_id = wire.contains("scene_id")

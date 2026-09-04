@@ -6,6 +6,7 @@
 #include "../ecs/componentinfo.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../loader/componentcodec.hpp"
+#include "../schemanodeadapter.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
 #include "../../project/prefab.hpp"
 
@@ -14,6 +15,7 @@
 #include <concepts>
 #include <exception>
 #include <limits>
+#include <optional>
 #include <random>
 #include <stdexcept>
 #include <type_traits>
@@ -686,6 +688,401 @@ std::uint64_t internalIdentityValue(const Json &operation,
     return found == operation.end() ? 0 : exactUnsigned(*found, context, nonzero);
 }
 
+std::vector<std::string> pointerTokens(std::string_view pointer,
+                                       std::string_view context,
+                                       bool allow_empty = false) {
+    if (pointer.empty()) {
+        if (allow_empty) return {};
+        throw std::invalid_argument(std::string{context} +
+                                    " must be a non-empty JSON pointer");
+    }
+    if (pointer.front() != '/') {
+        throw std::invalid_argument(std::string{context} +
+                                    " must be an RFC6901 JSON pointer");
+    }
+    std::vector<std::string> result;
+    std::size_t begin = 1;
+    while (begin <= pointer.size()) {
+        const auto end = pointer.find('/', begin);
+        const auto encoded = pointer.substr(
+            begin, end == std::string_view::npos ? pointer.size() - begin
+                                                  : end - begin);
+        std::string token;
+        token.reserve(encoded.size());
+        for (std::size_t index = 0; index < encoded.size(); ++index) {
+            if (encoded[index] != '~') {
+                token.push_back(encoded[index]);
+                continue;
+            }
+            if (index + 1 >= encoded.size() ||
+                (encoded[index + 1] != '0' && encoded[index + 1] != '1')) {
+                throw std::invalid_argument(std::string{context} +
+                                            " has an invalid JSON pointer escape");
+            }
+            token.push_back(encoded[++index] == '0' ? '~' : '/');
+        }
+        if (token.empty()) {
+            throw std::invalid_argument(std::string{context} +
+                                        " contains an empty path segment");
+        }
+        result.push_back(std::move(token));
+        if (end == std::string_view::npos) break;
+        begin = end + 1;
+    }
+    return result;
+}
+
+bool decimalIndex(std::string_view token) noexcept {
+    return !token.empty() &&
+           std::all_of(token.begin(), token.end(), [](unsigned char value) {
+               return value >= '0' && value <= '9';
+           });
+}
+
+struct AddressedComponent {
+    ObjectLocation object;
+    std::size_t component_index = 0;
+    std::string component_name;
+    Json component;
+    OrderedJson attachment_identity;
+    std::string list_path;
+    std::vector<std::string> list_tokens;
+    std::optional<std::uint32_t> row_id;
+    std::string leaf_path;
+    std::vector<std::string> leaf_tokens;
+};
+
+std::uint32_t exactU32(const Json &value, std::string_view context,
+                       bool nonzero = false) {
+    const auto raw = exactUnsigned(value, context, nonzero);
+    if (raw > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::invalid_argument(std::string{context} + " exceeds u32");
+    }
+    return static_cast<std::uint32_t>(raw);
+}
+
+AddressedComponent requireComponentAddress(
+    const Json &raw, const AuthoringSceneDocument &document,
+    std::string_view context, bool row_optional) {
+    const auto found = raw.find("address");
+    if (found == raw.end()) {
+        throw std::invalid_argument(std::string{context} + " requires address");
+    }
+    requireOnly(*found,
+                {"authoring_object_id", "component", "list_path", "row_id",
+                 "leaf_path"},
+                std::string{context} + " address");
+    const auto object_id = AuthoringObjectId{exactUnsigned(
+        found->at("authoring_object_id"),
+        std::string{context} + " address authoring_object_id", true)};
+    const auto object = requireObjectLocation(document, object_id);
+    const auto &identity = requireObject(found->at("component"),
+                                         std::string{context} + " component");
+    requireOnly(identity, {"type", "occurrence", "origin"},
+                std::string{context} + " component");
+    const auto stable_type = requireString(identity, "type", context);
+    const auto component_index = static_cast<std::size_t>(exactUnsigned(
+        identity.at("occurrence"), std::string{context} + " occurrence"));
+    const auto &components = object.authored.at("components");
+    if (component_index >= components.size()) {
+        editFailure(EditorEditErrorCode::journal_integrity_error,
+                    {{"reason", "attachment_occurrence"},
+                     {"object", object_id.value},
+                     {"occurrence", component_index}},
+                    "component attachment occurrence no longer exists");
+    }
+    const auto component = components.at(component_index);
+    const auto component_name = component.value("name", std::string{});
+    const auto expected_type = component_name == "behavior"
+                                   ? component.value("type", std::string{})
+                                   : component_name;
+    if (stable_type != expected_type) {
+        editFailure(EditorEditErrorCode::journal_integrity_error,
+                    {{"reason", "attachment_type"},
+                     {"object", object_id.value},
+                     {"expected", expected_type},
+                     {"actual", stable_type}},
+                    "component attachment type witness does not match");
+    }
+    const OrderedJson expected_origin{
+        {"kind", "authored"},
+        {"authoring_component_index", component_index},
+    };
+    if (!identity.at("origin").is_object() ||
+        Json(identity.at("origin")) != Json(expected_origin)) {
+        editFailure(EditorEditErrorCode::journal_integrity_error,
+                    {{"reason", "attachment_origin"},
+                     {"object", object_id.value},
+                     {"expected", expected_origin},
+                     {"actual", identity.at("origin")}},
+                    "component attachment origin witness does not match");
+    }
+
+    AddressedComponent result{
+        .object = object,
+        .component_index = component_index,
+        .component_name = component_name,
+        .component = component,
+        .attachment_identity = behaviorAttachmentWitness(
+            object_id, component_index, expected_type,
+            authoredBehaviorOrigin(component_index)),
+        .list_path = requireString(*found, "list_path", context),
+    };
+    result.list_tokens = pointerTokens(result.list_path,
+                                       std::string{context} + " list_path");
+    if (component_name == "behavior" &&
+        (result.list_tokens.empty() || result.list_tokens.front() != "params")) {
+        result.list_tokens.insert(result.list_tokens.begin(), "params");
+        result.list_path = "/params" + result.list_path;
+    }
+    if (const auto row = found->find("row_id"); row != found->end()) {
+        result.row_id = exactU32(*row, std::string{context} + " row_id", true);
+    } else if (!row_optional) {
+        throw std::invalid_argument(std::string{context} +
+                                    " address requires row_id");
+    }
+    if (const auto leaf = found->find("leaf_path"); leaf != found->end()) {
+        if (!leaf->is_string()) {
+            throw std::invalid_argument(std::string{context} +
+                                        " leaf_path must be a string");
+        }
+        result.leaf_path = leaf->get<std::string>();
+        result.leaf_tokens = pointerTokens(
+            result.leaf_path, std::string{context} + " leaf_path", true);
+    }
+    return result;
+}
+
+// WP382a-fix moved the recursive descriptor to a fixed-capacity constexpr form
+// and made `Schema::Node` the single owning host model.  Row addressing walks
+// the owning model, so the descriptor is converted once per lookup here.
+std::optional<Schema::Node> componentSchema(const AddressedComponent &address) {
+    if (address.component_name == "behavior") {
+        const auto *registration = internal::getBehaviorRegisterer().findByName(
+            address.component.value("type", std::string{}));
+        if (registration == nullptr) return std::nullopt;
+        const auto *node =
+            internal::getBehaviorRegisterer().schemaFor(*registration);
+        if (node == nullptr) return std::nullopt;
+        return *node;
+    }
+    const auto *codec = findComponentCodec(address.component_name);
+    if (codec == nullptr) return std::nullopt;
+    return internal::hostSchemaNode(codec->schemaNode());
+}
+
+Schema::Node requireListSchema(const AddressedComponent &address) {
+    const auto root = componentSchema(address);
+    const Schema::Node *node = root ? &*root : nullptr;
+    if (node == nullptr) {
+        editFailure(EditorEditErrorCode::not_editable,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name}},
+                    "component has no recursive editable schema");
+    }
+    std::size_t token_index = 0;
+    if (address.component_name == "behavior" &&
+        !address.list_tokens.empty() && address.list_tokens.front() == "params") {
+        token_index = 1;
+    }
+    for (; token_index < address.list_tokens.size(); ++token_index) {
+        if (node->tag != Schema::NodeTag::Struct) {
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", address.object.object_id.value},
+                         {"slot", address.component_name},
+                         {"field_path", address.list_path},
+                         {"detail", "list_path does not identify a schema list"}},
+                        "list_path does not identify a schema list");
+        }
+        const auto child = std::find_if(
+            node->children.begin(), node->children.end(), [&](const auto &entry) {
+                return entry.name == address.list_tokens[token_index];
+            });
+        if (child == node->children.end()) {
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", address.object.object_id.value},
+                         {"slot", address.component_name},
+                         {"field_path", address.list_path},
+                         {"detail", "list_path is absent from the schema"}},
+                        "list_path is absent from the schema");
+        }
+        node = &*child;
+    }
+    if (node->tag != Schema::NodeTag::List || node->children.size() != 1U ||
+        node->children.front().tag != Schema::NodeTag::Struct) {
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.list_path},
+                     {"detail", "list_path does not identify a row list"}},
+                    "list_path does not identify a row list");
+    }
+    return *node;
+}
+
+// Returns a reference into `list_schema`, which the caller owns.
+const Schema::Node &requireRowLeafSchema(const AddressedComponent &address,
+                                         const Schema::Node &list_schema) {
+    const Schema::Node *node = &list_schema.children.front();
+    for (std::size_t index = 0; index < address.leaf_tokens.size(); ++index) {
+        if (node->tag == Schema::NodeTag::List) {
+            if (address.leaf_tokens[index] == "rows" &&
+                index + 1U < address.leaf_tokens.size() &&
+                decimalIndex(address.leaf_tokens[index + 1U])) {
+                editFailure(
+                    EditorEditErrorCode::list_index_addressing_rejected,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.leaf_path}},
+                    "ListIndexAddressingRejected: nested list rows require row_id addressing");
+            }
+            break;
+        }
+        if (node->tag != Schema::NodeTag::Struct) break;
+        const auto child = std::find_if(
+            node->children.begin(), node->children.end(), [&](const auto &entry) {
+                return entry.name == address.leaf_tokens[index];
+            });
+        if (child == node->children.end()) break;
+        node = &*child;
+        if (index + 1U == address.leaf_tokens.size()) return *node;
+    }
+    editFailure(EditorEditErrorCode::schema_violation,
+                {{"object", address.object.object_id.value},
+                 {"slot", address.component_name},
+                 {"field_path", address.leaf_path},
+                 {"detail", "leaf_path does not identify a row field"}},
+                "leaf_path does not identify a row field");
+}
+
+Json *findListValue(Json &component, const AddressedComponent &address) {
+    Json *value = &component;
+    for (const auto &token : address.list_tokens) {
+        if (!value->is_object()) return nullptr;
+        const auto found = value->find(token);
+        if (found == value->end()) return nullptr;
+        value = &*found;
+    }
+    return value;
+}
+
+Json &createMissingListValue(Json &component,
+                             const AddressedComponent &address) {
+    Json *value = &component;
+    for (const auto &token : address.list_tokens) {
+        if (!value->is_object()) {
+            throw std::invalid_argument(
+                "list_path parent is not an object and cannot be inserted");
+        }
+        value = &(*value)[token];
+        if (value->is_null()) *value = Json::object();
+    }
+    return *value;
+}
+
+void validateListContainerShape(const Json &list,
+                                const AddressedComponent &address) {
+    const auto payload = [&] {
+        return OrderedJson{{"object", address.object.object_id.value},
+                           {"slot", address.component_name},
+                           {"field_path", address.list_path}};
+    };
+    if (!list.is_object() || !list.contains("rows") ||
+        !list.at("rows").is_array()) {
+        editFailure(EditorEditErrorCode::list_container_missing, payload(),
+                    "ListContainerMissing: list must use an object container");
+    }
+    if (!list.contains("$list") || !list.at("$list").is_object() ||
+        !list.at("$list").contains("v") ||
+        !list.at("$list").contains("next_id")) {
+        editFailure(EditorEditErrorCode::row_envelope_missing, payload(),
+                    "RowEnvelopeMissing: invalid $list envelope");
+    }
+    const auto &meta = list.at("$list");
+    if (exactU32(meta.at("v"), "$list.v") != 1U) {
+        editFailure(EditorEditErrorCode::row_envelope_unsupported, payload(),
+                    "RowEnvelopeUnsupported: unknown $list version");
+    }
+    (void)exactU32(meta.at("next_id"), "$list.next_id", true);
+    for (const auto &row : list.at("rows")) {
+        if (!row.is_object() || !row.contains("$row") ||
+            !row.at("$row").is_object() ||
+            !row.at("$row").contains("id") ||
+            !row.at("$row").contains("v")) {
+            editFailure(EditorEditErrorCode::row_envelope_missing, payload(),
+                        "RowEnvelopeMissing: row has no $row envelope");
+        }
+        if (exactU32(row.at("$row").at("v"), "$row.v") != 1U) {
+            editFailure(EditorEditErrorCode::row_envelope_unsupported,
+                        payload(),
+                        "RowEnvelopeUnsupported: unknown $row version");
+        }
+        (void)exactU32(row.at("$row").at("id"), "$row.id", true);
+    }
+}
+
+std::pair<std::size_t, Json &> requireRow(Json &list, std::uint32_t row_id,
+                                         const AddressedComponent &address) {
+    validateListContainerShape(list, address);
+    auto &rows = list.at("rows");
+    for (std::size_t index = 0; index < rows.size(); ++index) {
+        auto &row = rows.at(index);
+        if (exactU32(row.at("$row").at("id"), "$row.id", true) == row_id) {
+            return {index, row};
+        }
+    }
+    editFailure(EditorEditErrorCode::schema_violation,
+                {{"object", address.object.object_id.value},
+                 {"slot", address.component_name},
+                 {"field_path", address.list_path},
+                 {"row_id", row_id},
+                 {"detail", "row_id is absent from the current list"}},
+                "row_id is absent from the current list");
+}
+
+void validateRawComponent(const Json &component, AuthoringObjectId object_id,
+                          std::string_view component_name) {
+    if (component_name == "behavior") {
+        (void)canonicalBehaviorComponent(component, object_id);
+    } else {
+        (void)canonicalComponent(component, object_id, component_name);
+    }
+}
+
+bool fieldPathUsesListIndex(const Json &component,
+                            std::string_view component_name,
+                            std::string_view field_path) {
+    const auto tokens = pointerTokens(field_path, "set_component_value field_path");
+    std::optional<Schema::Node> owned;
+    const Schema::Node *node = nullptr;
+    std::size_t index = 0;
+    if (component_name == "behavior") {
+        if (tokens.empty() || tokens.front() != "params") return false;
+        const auto *registration = internal::getBehaviorRegisterer().findByName(
+            component.value("type", std::string{}));
+        if (registration == nullptr) return false;
+        node = internal::getBehaviorRegisterer().schemaFor(*registration);
+        index = 1;
+    } else if (const auto *codec = findComponentCodec(component_name)) {
+        owned = internal::hostSchemaNode(codec->schemaNode());
+        node = &*owned;
+    }
+    for (; node != nullptr && index < tokens.size(); ++index) {
+        if (node->tag == Schema::NodeTag::List) {
+            return tokens[index] == "rows" && index + 1 < tokens.size() &&
+                   decimalIndex(tokens[index + 1]);
+        }
+        if (node->tag != Schema::NodeTag::Struct) return false;
+        const auto child = std::find_if(
+            node->children.begin(), node->children.end(), [&](const auto &entry) {
+                return entry.name == tokens[index];
+            });
+        if (child == node->children.end()) return false;
+        node = &*child;
+    }
+    return false;
+}
+
 [[noreturn]] void throwPrefabEditFailure(const PrefabError &error,
                                          AuthoringObjectId object_id,
                                          std::string_view parameter) {
@@ -1151,9 +1548,596 @@ void finalizePreparedUnpack(PreparedOperation &prepared,
     }
 }
 
+std::string addressedTarget(const AddressedComponent &address,
+                            std::optional<std::uint32_t> row_id,
+                            std::string_view leaf_path = {}) {
+    auto result = "/authoring_objects/" +
+                  std::to_string(address.object.object_id.value) +
+                  "/attachments/" + std::to_string(address.component_index) +
+                  address.list_path;
+    if (row_id) result += "/rows/by-id/" + std::to_string(*row_id);
+    if (!leaf_path.empty()) result += std::string{leaf_path};
+    return result;
+}
+
+void copyAddressRuntimeIdentity(const Json &raw, OrderedJson &operation) {
+    for (const auto field : {"attachment_handle", "attachment_seq"}) {
+        if (const auto found = raw.find(field); found != raw.end()) {
+            operation[field] = *found;
+        }
+    }
+}
+
+OrderedJson canonicalAddress(const AddressedComponent &address,
+                             std::optional<std::uint32_t> row_id,
+                             std::string_view leaf_path) {
+    OrderedJson result{
+        {"authoring_object_id", address.object.object_id.value},
+        {"component",
+         {{"type", address.attachment_identity.at("type")},
+          {"occurrence", address.component_index},
+          {"origin", address.attachment_identity.at("origin")}}},
+        {"list_path", address.list_path},
+    };
+    if (row_id) result["row_id"] = *row_id;
+    if (!leaf_path.empty()) result["leaf_path"] = leaf_path;
+    return result;
+}
+
+PreparedOperation addressedPreparedOperation(
+    const Json &raw, const AddressedComponent &address,
+    std::string_view op, const Json &next_component,
+    const Json &inverse_component, std::optional<std::uint32_t> row_id,
+    std::string_view leaf_path, std::optional<Json> value = std::nullopt,
+    std::optional<OrderedJson> position = std::nullopt) {
+    const auto target = addressedTarget(address, row_id, leaf_path);
+    OrderedJson forward{
+        {"op", op},
+        {"object_id", address.object.object_id.value},
+        {"scene_id", address.object.scene_id},
+        {"component_slot", address.component_name},
+        {"attachment_index", address.component_index},
+        {"attachment_identity", address.attachment_identity},
+        {"address", canonicalAddress(address, row_id, leaf_path)},
+        {"authored_component", next_component},
+    };
+    OrderedJson inverse{
+        {"op", op},
+        {"object_id", address.object.object_id.value},
+        {"scene_id", address.object.scene_id},
+        {"component_slot", address.component_name},
+        {"attachment_index", address.component_index},
+        {"attachment_identity", address.attachment_identity},
+        {"address", canonicalAddress(address, row_id, leaf_path)},
+        {"authored_component", inverse_component},
+    };
+    if (value) forward["value"] = *value;
+    if (position) forward["position"] = *position;
+    copyAddressRuntimeIdentity(raw, forward);
+    copyAddressRuntimeIdentity(raw, inverse);
+    return PreparedOperation{
+        .commands = {makeReplaceComponentCommand(
+            address.object, address.component_index, address.component_name,
+            next_component)},
+        .forward = std::move(forward),
+        .inverse = std::move(inverse),
+        .affected = {address.object.object_id},
+        .stable_target = target,
+        .read_set = {target},
+        .write_set = {target},
+        .structural_domain =
+            {{"kind", "component_list_row"},
+             {"object", address.object.object_id.value},
+             {"attachment", address.attachment_identity},
+             {"list_path", address.list_path},
+             {"row_id", row_id ? OrderedJson(*row_id) : OrderedJson(nullptr)},
+             {"leaf_path", leaf_path.empty() ? OrderedJson(nullptr)
+                                               : OrderedJson(leaf_path)}},
+    };
+}
+
+PreparedOperation prepareAddressedSet(
+    const Json &raw, const AuthoringSceneDocument &document) {
+    constexpr auto context = "set_component_value";
+    requireOnly(raw, {"op", "address", "value", "attachment_handle",
+                      "attachment_seq"}, context);
+    if (!raw.contains("value")) {
+        throw std::invalid_argument("set_component_value value is required");
+    }
+    auto address = requireComponentAddress(raw, document, context, false);
+    const auto &list_schema = requireListSchema(address);
+    if (address.leaf_tokens.empty()) {
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.leaf_path},
+                     {"detail", "row leaf_path must identify one leaf field"}},
+                    "row leaf_path must identify a leaf field");
+    }
+    const auto &leaf_schema =
+        requireRowLeafSchema(address, list_schema);
+    if (leaf_schema.tag == Schema::NodeTag::Struct ||
+        leaf_schema.tag == Schema::NodeTag::List) {
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.leaf_path},
+                     {"detail", "leaf_path must identify a scalar field"}},
+                    "leaf_path must identify a scalar field");
+    }
+    Json next = address.component;
+    auto *list = findListValue(next, address);
+    if (list == nullptr) {
+        editFailure(EditorEditErrorCode::row_envelope_missing,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.list_path}},
+                    "RowEnvelopeMissing: list is absent");
+    }
+    auto [row_index, row] = requireRow(*list, *address.row_id, address);
+    (void)row_index;
+    try {
+        const Json::json_pointer pointer{address.leaf_path};
+        (void)row.at(pointer);
+        row[pointer] = raw.at("value");
+    } catch (const std::exception &error) {
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.leaf_path},
+                     {"row_id", *address.row_id},
+                     {"detail", error.what()}},
+                    error.what());
+    }
+    validateRawComponent(next, address.object.object_id,
+                         address.component_name);
+    return addressedPreparedOperation(
+        raw, address, context, next, address.component, address.row_id,
+        address.leaf_path, raw.at("value"));
+}
+
+std::pair<std::size_t, std::uint32_t> insertionPosition(
+    Json &list, const Json &raw, const AddressedComponent &address) {
+    const auto found = raw.find("position");
+    if (found == raw.end()) {
+        throw std::invalid_argument(
+            "insert_component_field requires position for a list row");
+    }
+    requireObject(*found, "insert_component_field position");
+    const bool has_before = found->contains("before");
+    const bool has_end = found->contains("end");
+    if (has_before == has_end) {
+        throw std::invalid_argument(
+            "insert_component_field position requires exactly one of before and end");
+    }
+    if (has_end) {
+        requireOnly(*found, {"end"}, "insert_component_field position");
+        if (!found->at("end").is_boolean() ||
+            !found->at("end").get<bool>()) {
+            throw std::invalid_argument(
+                "insert_component_field position.end must be true");
+        }
+        return {list.at("rows").size(), 0};
+    }
+    requireOnly(*found, {"before"}, "insert_component_field position");
+    const auto before = exactU32(found->at("before"),
+                                 "insert_component_field position.before", true);
+    auto [index, row] = requireRow(list, before, address);
+    (void)row;
+    return {index, before};
+}
+
+std::optional<Schema::Node> fieldSchemaAt(const Json &component,
+                                          std::string_view component_name,
+                                          std::span<const std::string> tokens) {
+    std::optional<Schema::Node> owned;
+    const Schema::Node *node = nullptr;
+    std::size_t index = 0;
+    if (component_name == "behavior") {
+        if (tokens.empty() || tokens.front() != "params") return std::nullopt;
+        const auto *registration = internal::getBehaviorRegisterer().findByName(
+            component.value("type", std::string{}));
+        if (registration == nullptr) return std::nullopt;
+        node = internal::getBehaviorRegisterer().schemaFor(*registration);
+        if (node == nullptr) {
+            // A v2 behavior keeps only the flat schema; lift it into the same
+            // owning model so both paths below read one representation.
+            owned = internal::hostSchemaNode(
+                SchemaNode::fromFlat(registration->params_schema));
+            node = &*owned;
+        }
+        index = 1;
+    } else if (const auto *codec = findComponentCodec(component_name)) {
+        owned = internal::hostSchemaNode(codec->schemaNode());
+        node = &*owned;
+    }
+    for (; node != nullptr && index < tokens.size(); ++index) {
+        if (node->tag != Schema::NodeTag::Struct) return std::nullopt;
+        const auto child = std::find_if(
+            node->children.begin(), node->children.end(), [&](const auto &entry) {
+                return entry.name == tokens[index];
+            });
+        if (child == node->children.end()) return std::nullopt;
+        node = &*child;
+    }
+    if (node == nullptr) return std::nullopt;
+    return *node;
+}
+
+PreparedOperation prepareLegacyFieldMutation(
+    const Json &raw, const AuthoringSceneDocument &document, bool insert) {
+    const auto context = insert ? std::string_view{"insert_component_field"}
+                                : std::string_view{"remove_component_field"};
+    requireOnly(raw, {"op", "object_id", "component_slot", "field_path",
+                      "attachment_index", "attachment_handle",
+                      "attachment_seq", "attachment_identity"}, context);
+    const auto object_id = AuthoringObjectId{exactUnsigned(
+        raw.at("object_id"), std::string{context} + " object_id", true)};
+    const auto component_name = requireString(raw, "component_slot", context);
+    const auto field_path = requireString(raw, "field_path", context);
+    const auto tokens = pointerTokens(field_path,
+                                      std::string{context} + " field_path");
+    if (field_path == "/name" || field_path.starts_with("/name/")) {
+        throw std::invalid_argument(std::string{context} +
+                                    " cannot change component name");
+    }
+    const auto object = requireObjectLocation(document, object_id);
+    const bool behavior = component_name == "behavior";
+    std::pair<std::size_t, Json> located;
+    if (behavior) {
+        const auto found = raw.find("attachment_index");
+        if (found == raw.end()) {
+            throw std::invalid_argument(std::string{context} +
+                                        " behavior target requires attachment_index");
+        }
+        located = requireComponentAt(
+            object,
+            static_cast<std::size_t>(exactUnsigned(
+                *found, std::string{context} + " attachment_index")),
+            component_name);
+    } else {
+        located = requireComponent(object, component_name);
+    }
+    const auto &[component_index, old_component] = located;
+    const auto field = fieldSchemaAt(old_component, component_name, tokens);
+    if (!field || field->tag == Schema::NodeTag::Struct ||
+        field->tag == Schema::NodeTag::List) {
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", object_id.value},
+                     {"slot", component_name},
+                     {"field_path", field_path},
+                     {"detail", "field_path does not identify an editable field"}},
+                    "field_path does not identify an editable field");
+    }
+
+    Json next = old_component;
+    const Json::json_pointer pointer{field_path};
+    if (insert) {
+        try {
+            (void)next.at(pointer);
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", object_id.value},
+                         {"slot", component_name},
+                         {"field_path", field_path},
+                         {"detail", "field already exists"}},
+                        "field already exists");
+        } catch (const EditFailure &) {
+            throw;
+        } catch (const nlohmann::json::out_of_range &) {
+        }
+        Json default_value;
+        if (field->default_value) {
+            default_value = *field->default_value;
+        } else {
+            // Legacy flat schemas do not retain default literals.  Decode to a
+            // temporary typed value solely to discover the selected default;
+            // never publish the resulting canonical component.
+            const auto canonical =
+                behavior ? canonicalBehaviorComponent(old_component, object_id)
+                         : canonicalComponent(old_component, object_id,
+                                              component_name);
+            try {
+                default_value = canonical.at(pointer);
+            } catch (const nlohmann::json::out_of_range &) {
+                editFailure(EditorEditErrorCode::schema_violation,
+                            {{"object", object_id.value},
+                             {"slot", component_name},
+                             {"field_path", field_path},
+                             {"detail", "field has no authored default"}},
+                            "field has no authored default");
+            }
+        }
+        if (behavior && !next.contains("params")) {
+            next["params"] = Json::object();
+        }
+        next[pointer] = std::move(default_value);
+    } else {
+        try {
+            (void)next.at(pointer);
+        } catch (const nlohmann::json::out_of_range &) {
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", object_id.value},
+                         {"slot", component_name},
+                         {"field_path", field_path},
+                         {"detail", "field does not exist"}},
+                        "field does not exist");
+        }
+        Json *parent = &next;
+        for (std::size_t index = 0; index + 1 < tokens.size(); ++index) {
+            parent = &parent->at(tokens[index]);
+        }
+        parent->erase(tokens.back());
+    }
+    validateRawComponent(next, object_id, component_name);
+
+    const auto attachment_handle = internalIdentityValue(
+        raw, "attachment_handle", std::string{context} + " attachment_handle",
+        true);
+    const auto attachment_seq = internalIdentityValue(
+        raw, "attachment_seq", std::string{context} + " attachment_seq");
+    const auto target = behavior
+                            ? stableBehaviorTarget(object_id, component_index,
+                                                   attachment_handle, field_path)
+                            : stableComponentTarget(object_id, component_name,
+                                                    field_path);
+    OrderedJson forward{{"op", context},
+                        {"object_id", object_id.value},
+                        {"scene_id", object.scene_id},
+                        {"component_slot", component_name},
+                        {"field_path", field_path},
+                        {"authored_component", next}};
+    OrderedJson inverse{{"op", context},
+                        {"object_id", object_id.value},
+                        {"scene_id", object.scene_id},
+                        {"component_slot", component_name},
+                        {"field_path", field_path},
+                        {"authored_component", old_component}};
+    if (behavior) {
+        forward["attachment_index"] = component_index;
+        inverse["attachment_index"] = component_index;
+        forward["attachment_handle"] = attachment_handle;
+        inverse["attachment_handle"] = attachment_handle;
+        forward["attachment_seq"] = attachment_seq;
+        inverse["attachment_seq"] = attachment_seq;
+        copyBehaviorAttachmentWitness(raw, forward, inverse);
+    }
+    return PreparedOperation{
+        .commands = {makeReplaceComponentCommand(
+            object, component_index, component_name, next)},
+        .forward = std::move(forward),
+        .inverse = std::move(inverse),
+        .affected = {object_id},
+        .stable_target = target,
+        .read_set = {target},
+        .write_set = {target},
+        .structural_domain =
+            {{"kind", "value_field"},
+             {"object", object_id.value},
+             {"slot", component_name},
+             {"field_path", field_path},
+             {"attachment_index", behavior ? OrderedJson(component_index)
+                                             : OrderedJson(nullptr)}},
+    };
+}
+
+PreparedOperation prepareInsertField(
+    const Json &raw, const AuthoringSceneDocument &document) {
+    constexpr auto context = "insert_component_field";
+    if (!raw.contains("address")) {
+        return prepareLegacyFieldMutation(raw, document, true);
+    }
+    requireOnly(raw, {"op", "address", "value", "position",
+                      "attachment_handle", "attachment_seq"}, context);
+    auto address = requireComponentAddress(raw, document, context, true);
+    const auto &list_schema = requireListSchema(address);
+    Json next = address.component;
+
+    if (!address.row_id) {
+        if (!raw.contains("value") || !raw.at("value").is_object()) {
+            throw std::invalid_argument(
+                "insert_component_field list row value must be an object");
+        }
+        Json *list = findListValue(next, address);
+        const bool list_was_absent = list == nullptr;
+        if (list_was_absent) {
+            if (list_schema.presence != Schema::FieldPresence::Defaulted) {
+                editFailure(EditorEditErrorCode::schema_violation,
+                            {{"object", address.object.object_id.value},
+                             {"slot", address.component_name},
+                             {"field_path", address.list_path},
+                             {"detail", "missing list is not defaulted"}},
+                            "missing list is not defaulted");
+            }
+            list = &createMissingListValue(next, address);
+            *list = Json{{"$list", {{"v", 1}, {"next_id", 1}}},
+                         {"rows", Json::array()}};
+        }
+        validateListContainerShape(*list, address);
+        const auto next_id = exactU32(list->at("$list").at("next_id"),
+                                      "$list.next_id", true);
+        if (next_id == std::numeric_limits<std::uint32_t>::max()) {
+            editFailure(EditorEditErrorCode::row_id_exhausted,
+                        {{"object", address.object.object_id.value},
+                         {"slot", address.component_name},
+                         {"field_path", address.list_path}},
+                        "RowIdExhausted: list row id space is exhausted");
+        }
+        const auto [insert_index, before] =
+            insertionPosition(*list, raw, address);
+        Json authored_row = raw.at("value");
+        Json envelope{{"id", next_id}, {"v", 1}};
+        if (const auto supplied = authored_row.find("$row");
+            supplied != authored_row.end()) {
+            if (!supplied->is_object() || !supplied->contains("id") ||
+                !supplied->contains("v")) {
+                editFailure(EditorEditErrorCode::row_envelope_missing,
+                            {{"object", address.object.object_id.value},
+                             {"slot", address.component_name},
+                             {"field_path", address.list_path}},
+                            "RowEnvelopeMissing: copied row has an invalid $row envelope");
+            }
+            for (auto member = supplied->begin(); member != supplied->end();
+                 ++member) {
+                if (member.key() != "id" && member.key() != "v" &&
+                    member.key() != "hint") {
+                    editFailure(
+                        EditorEditErrorCode::schema_violation,
+                        {{"object", address.object.object_id.value},
+                         {"slot", address.component_name},
+                         {"field_path", address.list_path},
+                         {"detail", "copied $row envelope has an unknown member"}},
+                        "copied $row envelope has an unknown member");
+                }
+            }
+            if (exactU32(supplied->at("v"), "$row.v") != 1U) {
+                editFailure(EditorEditErrorCode::row_envelope_unsupported,
+                            {{"object", address.object.object_id.value},
+                             {"slot", address.component_name},
+                             {"field_path", address.list_path}},
+                            "RowEnvelopeUnsupported: copied row has an unknown $row version");
+            }
+            (void)exactU32(supplied->at("id"), "$row.id", true);
+            if (supplied->contains("hint")) {
+                envelope["hint"] = supplied->at("hint");
+            }
+            authored_row.erase(supplied);
+        }
+        Json row{{"$row", std::move(envelope)}};
+        for (auto field = authored_row.begin(); field != authored_row.end();
+             ++field) {
+            row[field.key()] = field.value();
+        }
+        auto &rows = list->at("rows");
+        rows.insert(rows.begin() + static_cast<Json::difference_type>(insert_index),
+                    std::move(row));
+        (*list)["$list"]["next_id"] = next_id + 1U;
+        validateRawComponent(next, address.object.object_id,
+                             address.component_name);
+
+        Json inverse = address.component;
+        Json *inverse_list = findListValue(inverse, address);
+        if (inverse_list == nullptr) {
+            inverse_list = &createMissingListValue(inverse, address);
+            *inverse_list = Json{{"$list", {{"v", 1},
+                                             {"next_id", next_id + 1U}}},
+                                 {"rows", Json::array()}};
+        } else {
+            (*inverse_list)["$list"]["next_id"] = next_id + 1U;
+        }
+        address.row_id = next_id;
+        const OrderedJson position = before == 0
+                                         ? OrderedJson{{"end", true}}
+                                         : OrderedJson{{"before", before}};
+        return addressedPreparedOperation(
+            raw, address, context, next, inverse, next_id, {},
+            raw.at("value"), position);
+    }
+
+    if (raw.contains("position")) {
+        throw std::invalid_argument(
+            "insert_component_field leaf insertion does not accept position");
+    }
+    if (address.leaf_tokens.empty()) {
+        throw std::invalid_argument(
+            "insert_component_field with row_id requires leaf_path");
+    }
+    Json *list = findListValue(next, address);
+    if (list == nullptr) {
+        editFailure(EditorEditErrorCode::row_envelope_missing,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.list_path}},
+                    "RowEnvelopeMissing: list is absent");
+    }
+    auto [row_index, row] = requireRow(*list, *address.row_id, address);
+    (void)row_index;
+    const auto &field = requireRowLeafSchema(address, list_schema);
+    if (field.tag == Schema::NodeTag::Struct ||
+        field.tag == Schema::NodeTag::List || !field.default_value) {
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.leaf_path},
+                     {"detail", "field has no authored default"}},
+                    "field has no authored default");
+    }
+    const Json::json_pointer pointer{address.leaf_path};
+    try {
+        (void)row.at(pointer);
+        editFailure(EditorEditErrorCode::schema_violation,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.leaf_path},
+                     {"detail", "field already exists"}},
+                    "field already exists");
+    } catch (const EditFailure &) {
+        throw;
+    } catch (const nlohmann::json::out_of_range &) {
+    }
+    row[pointer] = *field.default_value;
+    validateRawComponent(next, address.object.object_id,
+                         address.component_name);
+    return addressedPreparedOperation(
+        raw, address, context, next, address.component, address.row_id,
+        address.leaf_path);
+}
+
+PreparedOperation prepareRemoveField(
+    const Json &raw, const AuthoringSceneDocument &document) {
+    constexpr auto context = "remove_component_field";
+    if (!raw.contains("address")) {
+        return prepareLegacyFieldMutation(raw, document, false);
+    }
+    requireOnly(raw, {"op", "address", "attachment_handle",
+                      "attachment_seq"}, context);
+    auto address = requireComponentAddress(raw, document, context, false);
+    (void)requireListSchema(address);
+    Json next = address.component;
+    auto *list = findListValue(next, address);
+    if (list == nullptr) {
+        editFailure(EditorEditErrorCode::row_envelope_missing,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name},
+                     {"field_path", address.list_path}},
+                    "RowEnvelopeMissing: list is absent");
+    }
+    auto [row_index, row] = requireRow(*list, *address.row_id, address);
+    if (address.leaf_tokens.empty()) {
+        auto &rows = list->at("rows");
+        rows.erase(rows.begin() + static_cast<Json::difference_type>(row_index));
+    } else {
+        const auto row_list_schema = requireListSchema(address);
+        (void)requireRowLeafSchema(address, row_list_schema);
+        const Json::json_pointer pointer{address.leaf_path};
+        try {
+            (void)row.at(pointer);
+        } catch (const nlohmann::json::out_of_range &) {
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", address.object.object_id.value},
+                         {"slot", address.component_name},
+                         {"field_path", address.leaf_path},
+                         {"row_id", *address.row_id},
+                         {"detail", "field does not exist"}},
+                        "field does not exist");
+        }
+        Json *parent = &row;
+        for (std::size_t index = 0;
+             index + 1U < address.leaf_tokens.size(); ++index) {
+            parent = &parent->at(address.leaf_tokens[index]);
+        }
+        parent->erase(address.leaf_tokens.back());
+    }
+    validateRawComponent(next, address.object.object_id,
+                         address.component_name);
+    return addressedPreparedOperation(
+        raw, address, context, next, address.component, address.row_id,
+        address.leaf_path);
+}
+
 PreparedOperation prepareSet(const Json &raw,
                              const AuthoringSceneDocument &document) {
     constexpr auto context = "set_component_value";
+    if (raw.contains("address")) return prepareAddressedSet(raw, document);
     requireOnly(raw, {"op", "object_id", "component_slot", "field_path",
                       "value", "attachment_index", "attachment_handle",
                       "attachment_seq", "attachment_identity"}, context);
@@ -1205,13 +2189,14 @@ PreparedOperation prepareSet(const Json &raw,
                     {{"object", object_id.value}, {"slot", component_name}},
                     "component has no editable codec");
     }
-    // BehaviorParamsPolicy defaults are part of the editable authored view.
-    // Expand them into a temporary before resolving the field pointer, while
-    // retaining old_component verbatim for inverse/raw restoration.
-    Json next_component = behavior
-                              ? canonicalBehaviorComponent(old_component,
-                                                           object_id)
-                              : old_component;
+    Json next_component = old_component;
+    if (fieldPathUsesListIndex(old_component, component_name, field_path)) {
+        editFailure(EditorEditErrorCode::list_index_addressing_rejected,
+                    {{"object", object_id.value},
+                     {"slot", component_name},
+                     {"field_path", field_path}},
+                    "ListIndexAddressingRejected: list rows require row_id addressing");
+    }
     try {
         const Json::json_pointer pointer{field_path};
         (void)next_component.at(pointer);
@@ -1224,10 +2209,7 @@ PreparedOperation prepareSet(const Json &raw,
                      {"detail", error.what()}},
                     error.what());
     }
-    next_component = behavior
-                         ? canonicalBehaviorComponent(next_component, object_id)
-                         : canonicalComponent(next_component, object_id,
-                                              component_name);
+    validateRawComponent(next_component, object_id, component_name);
     const auto attachment_handle = internalIdentityValue(
         raw, "attachment_handle", "set_component_value attachment_handle", true);
     const auto attachment_seq = internalIdentityValue(
@@ -1785,6 +2767,10 @@ PreparedOperation prepareRpcOperation(const Json &raw,
     requireObject(raw, "edit operation");
     const auto op = requireString(raw, "op", "edit operation");
     if (op == "set_component_value") return prepareSet(raw, document);
+    if (op == "insert_component_field")
+        return prepareInsertField(raw, document);
+    if (op == "remove_component_field")
+        return prepareRemoveField(raw, document);
     if (op == "add_component")
         return prepareAdd(raw, document, component_exists);
     if (op == "remove_component") return prepareRemove(raw, document);
@@ -1913,12 +2899,52 @@ Json normalizeBehaviorAttachmentIdentities(
         auto &operation = result.at(command_index);
         if (!operation.is_object()) continue;
         const auto op = operation.value("op", std::string{});
+        const bool addressed = operation.contains("address") &&
+                               (op == "set_component_value" ||
+                                op == "insert_component_field" ||
+                                op == "remove_component_field");
+        if (addressed) {
+            operation.erase("attachment_handle");
+            operation.erase("attachment_seq");
+            const auto address = requireComponentAddress(
+                operation, document, op,
+                op == "insert_component_field");
+            if (address.component_name != "behavior") continue;
+            const auto object_id = address.object.object_id;
+            const auto attachment_index = address.component_index;
+            const auto expected_identity = address.attachment_identity;
+            if (!dependencies.resolve_behavior_attachment) {
+                behaviorAttachmentIntegrityFailure(
+                    "behavior_attachment_resolver_unavailable", object_id,
+                    attachment_index, expected_identity);
+            }
+            const auto identity = dependencies.resolve_behavior_attachment(
+                object_id, attachment_index);
+            if (!identity) {
+                behaviorAttachmentIntegrityFailure(
+                    "behavior_attachment_resolver_missing", object_id,
+                    attachment_index, expected_identity);
+            }
+            if (!sameBehaviorAttachmentWitness(
+                    runtimeBehaviorAttachmentWitness(*identity),
+                    expected_identity)) {
+                behaviorAttachmentIntegrityFailure(
+                    "behavior_attachment_witness_mismatch", object_id,
+                    attachment_index, expected_identity,
+                    runtimeBehaviorAttachmentWitness(*identity));
+            }
+            operation["attachment_handle"] = identity->handle;
+            operation["attachment_seq"] = identity->attachment_seq;
+            continue;
+        }
         const bool add_behavior =
             op == "add_component" && operation.contains("component") &&
             operation.at("component").is_object() &&
             operation.at("component").value("name", std::string{}) == "behavior";
         const bool target_behavior =
-            (op == "remove_component" || op == "set_component_value") &&
+            (op == "remove_component" || op == "set_component_value" ||
+             op == "insert_component_field" ||
+             op == "remove_component_field") &&
             operation.value("component_slot", std::string{}) == "behavior";
         if (!add_behavior && !target_behavior) continue;
 
@@ -2019,7 +3045,9 @@ std::vector<OrderedJson> rebindJournalBehaviorTargets(
     for (auto &operation : result) {
         const auto op = operation.value("op", std::string{});
         if ((op != "remove_component" &&
-             op != "set_component_value") ||
+             op != "set_component_value" &&
+             op != "insert_component_field" &&
+             op != "remove_component_field") ||
             operation.value("component_slot", std::string{}) !=
                 "behavior") {
             continue;
@@ -2093,18 +3121,25 @@ EditorCanonicalOperation freezeJournalOperation(
                                        EditorSetComponentValueOperation> ||
                           std::same_as<Operation,
                                        EditorAddComponentOperation>) {
-                if (operation.component != "behavior") return;
                 const auto &component =
                     operation.wire.at(
                         std::same_as<Operation,
                                      EditorSetComponentValueOperation>
                             ? "authored_component"
                             : "component");
-                const auto canonical =
-                    canonicalBehaviorComponent(component, operation.object_id);
+                const auto canonical = operation.component == "behavior"
+                                           ? canonicalBehaviorComponent(
+                                                 component,
+                                                 operation.object_id)
+                                           : canonicalComponent(
+                                                 component,
+                                                 operation.object_id,
+                                                 operation.component);
                 operation.canonical_component = OrderedJson(canonical).dump();
-                operation.canonical_behavior_params =
-                    OrderedJson(canonical.value("params", Json::object())).dump();
+                if (operation.component == "behavior") {
+                    operation.canonical_behavior_params = OrderedJson(
+                        canonical.value("params", Json::object())).dump();
+                }
             }
         },
         result);
@@ -2238,12 +3273,14 @@ EditorProjectionCommand commandFromCanonical(const Json &operation,
                 ? std::optional<Json>{operation.at("value")}
                 : std::optional<Json>{});
     }
-    if (op == "set_component_value") {
+    if (op == "set_component_value" ||
+        op == "insert_component_field" ||
+        op == "remove_component_field") {
         const auto object_id = AuthoringObjectId{exactUnsigned(
             operation.at("object_id"), "journal object_id", true)};
         const auto object = requireObjectLocation(document, object_id);
         const auto component_name = requireString(operation, "component_slot", op);
-        const auto located = component_name == "behavior"
+        const auto located = operation.contains("attachment_index")
                                  ? requireComponentAt(
                                        object,
                                        static_cast<std::size_t>(exactUnsigned(
@@ -2503,10 +3540,10 @@ OrderedJson targetState(const Json &operations,
                 slot != operation.end() && slot->is_string()) {
                 const auto name = slot->get<std::string>();
                 result["component_slot"] = name;
-                if (name == "behavior" && operation.contains("attachment_index")) {
+                if (operation.contains("attachment_index")) {
                     const auto index = static_cast<std::size_t>(exactUnsigned(
                         operation.at("attachment_index"),
-                        "target behavior attachment_index"));
+                        "target component attachment_index"));
                     const auto &components = object.authored.at("components");
                     const bool exists = index < components.size() &&
                         components.at(index).value("name", std::string{}) == name;
@@ -2705,6 +3742,16 @@ bool structuralDomainsOverlap(const Json &left, const Json &right) {
         left.value("object", std::uint64_t{}) ==
             right.value("object", std::uint64_t{}) &&
         left.value("slot", std::string{}) == right.value("slot", std::string{})) {
+        return true;
+    }
+    if (left_kind == "component_list_row" &&
+        right_kind == "component_list_row" &&
+        left.value("object", std::uint64_t{}) ==
+            right.value("object", std::uint64_t{}) &&
+        left.value("list_path", std::string{}) ==
+            right.value("list_path", std::string{}) &&
+        left.contains("attachment") && right.contains("attachment") &&
+        left.at("attachment") == right.at("attachment")) {
         return true;
     }
     return false;
@@ -3151,6 +4198,15 @@ EditorMutationRequestAst parseEditorMutationRequest(
             continue;
         }
         if (op != "set_component_value") continue;
+        if (operation.contains("address")) {
+            requireOnly(operation, {"op", "address", "value"},
+                        "set_component_value addressed selector");
+            if (!operation.contains("value")) {
+                throw std::invalid_argument(
+                    "set_component_value value is required");
+            }
+            continue;
+        }
         const bool has_slot = operation.contains("component_slot");
         const bool has_generated = operation.contains("generated_id");
         if (has_slot == has_generated) {
@@ -3228,6 +4284,15 @@ std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept {
     case EditorEditErrorCode::undo_conflict: return "undo_conflict";
     case EditorEditErrorCode::not_editable: return "not_editable";
     case EditorEditErrorCode::schema_violation: return "schema_violation";
+    case EditorEditErrorCode::row_envelope_missing:
+        return "RowEnvelopeMissing";
+    case EditorEditErrorCode::row_envelope_unsupported:
+        return "RowEnvelopeUnsupported";
+    case EditorEditErrorCode::row_id_exhausted: return "RowIdExhausted";
+    case EditorEditErrorCode::list_container_missing:
+        return "ListContainerMissing";
+    case EditorEditErrorCode::list_index_addressing_rejected:
+        return "ListIndexAddressingRejected";
     case EditorEditErrorCode::prefab_instance_id_collision:
         return "prefab_instance_id_collision";
     case EditorEditErrorCode::prefab_dependency_mismatch:
@@ -4548,6 +5613,7 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
     Json normalized_operations;
     std::optional<OrderedJson> accepted_unpack_forward;
     std::optional<OrderedJson> accepted_unpack_inverse;
+    OrderedJson inserted_rows = OrderedJson::array();
     try {
         normalized_operations = normalizeBehaviorAttachmentIdentities(
             operations, impl_->document(), base, impl_->dependencies);
@@ -4565,6 +5631,17 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
             (void)impl_->requireProjectionState("unpack_prefab");
             accepted_unpack_forward = batch.forward.front();
             accepted_unpack_inverse = batch.inverse.front();
+        }
+        for (const auto &forward : batch.forward) {
+            if (forward.value("op", std::string{}) !=
+                    "insert_component_field" ||
+                !forward.contains("address") ||
+                !forward.at("address").contains("row_id")) {
+                continue;
+            }
+            inserted_rows.push_back(
+                {{"address", forward.at("address")},
+                 {"row_id", forward.at("address").at("row_id")}});
         }
     } catch (const EditFailure &failure) {
         auto result = impl_->rejected(ticket, actor, base, failure);
@@ -4590,6 +5667,12 @@ OrderedJson EditorEditCoordinator::enqueue(const Json &params) {
                    {"base_revision", base.value},
                    {"status", "accepted"}},
     };
+    if (!inserted_rows.empty()) {
+        pending.result["inserted_rows"] = inserted_rows;
+        if (inserted_rows.size() == 1U) {
+            pending.result["row_id"] = inserted_rows.front().at("row_id");
+        }
+    }
     impl_->results[ticket] = pending.result;
     impl_->pending.push_back(std::move(pending));
     return impl_->results.at(ticket);

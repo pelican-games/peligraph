@@ -87,6 +87,11 @@ enum class EditorEditErrorCode : std::uint8_t {
     trs_unrepresentable,
     preserve_missing,
     method_unavailable,
+    row_envelope_missing,
+    row_envelope_unsupported,
+    row_id_exhausted,
+    list_container_missing,
+    list_index_addressing_rejected,
 };
 
 std::string_view editorEditErrorCodeName(EditorEditErrorCode code) noexcept;

@@ -208,11 +208,11 @@ ResolvedComponent resolveComponent(
             const auto canonical =
                 registration->canonicalize_params(source_params);
             result.behavior_canonical_params = canonical;
-            // This is intentionally the parent RPC representation: the pre-WP360
-            // query completed behavior params before serializing authored_json.
-            result.source_json_exact["params"] =
-                nlohmann::json::parse(canonical);
+            // The authored tree is the persistence authority. Defaults are
+            // materialized only in the runtime view; otherwise resolving an
+            // unrelated edit would silently add omitted behavior parameters.
             result.effective_json = result.source_json_exact;
+            result.effective_json["params"] = nlohmann::json::parse(canonical);
             result.codec = {ComponentCodecState::Registered, true,
                             std::string_view{"behavior_params"}};
         } catch (const std::exception &error) {
