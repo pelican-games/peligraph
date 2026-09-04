@@ -58,7 +58,7 @@ IDは単なる外部識別子ではありません。ECS内部では、次の二
 
 ### runtimeの型消去メタデータ
 
-[`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L38) は次を保持します。
+[`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L39) は次を保持します。
 
 - `size`, `alignment`, `name`
 - default construct
@@ -67,9 +67,9 @@ IDは単なる外部識別子ではありません。ECS内部では、次の二
 - optional `init()`
 - optional `deinit() noexcept`
 - optional JSON `ref(JsonArchiveLoader&)`
-- [`internal::RegistrationOwner owner`](../../src/core/ecs/componentinfo.hpp#L50) と [`internal::RegistrationToken token`](../../src/core/ecs/componentinfo.hpp#L51)（登録解除のための識別、§4.15）
+- [`internal::RegistrationOwner owner`](../../src/core/ecs/componentinfo.hpp#L51) と [`internal::RegistrationToken token`](../../src/core/ecs/componentinfo.hpp#L52)（登録解除のための識別、§4.15）
 
-登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L122) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
+登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
 
 compile時制約は次です。
 
@@ -82,7 +82,7 @@ compile時制約は次です。
 
 ### trivial型と非trivial型のrelocate
 
-登録コードの [`relocate` callback](../../src/core/userpublic/details/component/registerer.hpp#L85) は二分岐します。
+登録コードの [`relocate` callback](../../src/core/userpublic/details/component/registerer.hpp#L120) は二分岐します。
 
 - trivially copyable（自明にcopy可能 — bit列をそのまま複製しても意味が壊れない型。`std::is_trivially_copyable_v`で判定します）: `memcpy`
 - それ以外: destinationへmove constructし、sourceをdestroy
@@ -576,9 +576,9 @@ void unregisterComponents(RegistrationOwner owner) noexcept;
 std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 ```
 
-この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1743)）。
+この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1782)）。
 
-これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L122) の戻り値が `void` → `RegistrationToken` になりました。
+これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) の戻り値が `void` → `RegistrationToken` になりました。
 
 解除は無条件ではありません。[`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L69) は、そのComponentへ依存するECS Systemが残っていると拒否します。
 
