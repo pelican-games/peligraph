@@ -888,7 +888,7 @@ codecの `schema` が返す [`SchemaNode`](../../src/core/userpublic/details/sch
 | `vocabulary` | enum / Flags の名前と値（符号の有無を `signed_value` で持つ） |
 | `children` | `Struct` なら各フィールド、`List` なら行の型のschemaが**1つだけ** |
 
-平坦な列からの持ち上げは [`SchemaNode::fromFlat()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L230)（v2の記録をそのまま包む。子は作りません）、宣言DSLからの構築は [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L944) で、`List` のときだけ行型の schema へ**再帰**します（[その1行](../../src/core/userpublic/details/schema/structfieldjson.hpp#L788)）。[`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L160) は `Flags` か `List` が1つでもあれば真で、これが §2.11 のv3入口の選択に使われます。fingerprintは [`schemaNodeJson()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L983) の `dump()` そのものです（[`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1012)）。
+平坦な列からの持ち上げは [`SchemaNode::fromFlat()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L230)（v2の記録をそのまま包む。子は作りません）、宣言DSLからの構築は [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L944) で、`List` のときだけ行型の schema へ**再帰**します（[その1行](../../src/core/userpublic/details/schema/structfieldjson.hpp)）。[`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L160) は `Flags` か `List` が1つでもあれば真で、これが §2.11 のv3入口の選択に使われます。fingerprintは [`schemaNodeJson()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L983) の `dump()` そのものです（[`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1012)）。
 
 `List` のJSON表現は**オブジェクトのコンテナ**で、行のidを持つ封筒が付きます。
 
