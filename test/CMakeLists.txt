@@ -6,6 +6,33 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(Catch2)
 list(APPEND CMAKE_MODULE_PATH ${catch2_SOURCE_DIR}/extras)
 include(Catch)
+include(${CMAKE_CURRENT_SOURCE_DIR}/gpu_lease_config.cmake)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
+# Every GPU-labelled CTest test runs through this test-only executable.  The
+# target is intentionally independent of pelican_core so a broken production
+# build cannot make the lease disappear.
+add_executable(pelican_gpu_lease_run gpu_lease_run.cpp)
+set_target_properties(pelican_gpu_lease_run PROPERTIES CXX_STANDARD 20)
+
+define_property(GLOBAL PROPERTY PELICAN_GPU_INTRINSIC_TIMEOUTS
+  BRIEF_DOCS "Per-test intrinsic timeouts feeding the generated lease policy"
+  FULL_DOCS "WP385 decision 12: the CTest TIMEOUT of every gpu-labelled test is "
+            "lease_timeout_max + intrinsic + grace, and the inventory gate "
+            "reads the same numbers from one generated file.")
+
+function(pelican_gpu_test_properties test_name intrinsic_timeout)
+  math(EXPR ctest_timeout
+    "${PELICAN_GPU_LEASE_TIMEOUT_MAX} + ${intrinsic_timeout} + ${PELICAN_GPU_CTEST_TIMEOUT_GRACE}")
+  set_property(TEST ${test_name} APPEND PROPERTY LABELS gpu)
+  set_tests_properties(${test_name} PROPERTIES
+    RESOURCE_LOCK pelican_gpu
+    TIMEOUT ${ctest_timeout})
+  if(NOT intrinsic_timeout EQUAL PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT)
+    set_property(GLOBAL APPEND PROPERTY PELICAN_GPU_INTRINSIC_TIMEOUTS
+      "\"${test_name}\": ${intrinsic_timeout}")
+  endif()
+endfunction()
 
 add_test(
   NAME pelican_public_api_inventory
@@ -132,11 +159,13 @@ if(PELICAN_TEST_QT_OFFSCREEN)
 endif()
 if(PELICAN_TEST_GOLDEN OR
    source_name STREQUAL "debugtext_ui_compat_test")
-  # Serialize byte-comparison fixtures so deterministic GPU captures do not contend for the device.
-  list(APPEND discovery_properties RESOURCE_LOCK pelican_golden_gpu)
+  # Golden GPU fixtures are part of the one GPU serialization domain.
+  list(APPEND discovery_properties RESOURCE_LOCK pelican_gpu)
 endif()
 if(PELICAN_TEST_GPU)
-  list(APPEND discovery_properties LABELS gpu)
+  math(EXPR gpu_ctest_timeout
+    "${PELICAN_GPU_LEASE_TIMEOUT_MAX} + ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT} + ${PELICAN_GPU_CTEST_TIMEOUT_GRACE}")
+  list(APPEND discovery_properties LABELS gpu RESOURCE_LOCK pelican_gpu TIMEOUT ${gpu_ctest_timeout})
 endif()
 if(PELICAN_TEST_GPU AND PELICAN_TEST_MIXED_GPU)
   message(FATAL_ERROR
@@ -156,6 +185,10 @@ if(PELICAN_TEST_MIXED_GPU)
   # lanes, but make an empty lane an explicit empty inventory.
   set(_CATCH_DISCOVER_TESTS_SCRIPT
     ${PELICAN_CATCH_DISCOVERY_ALLOW_EMPTY_SCRIPT})
+  math(EXPR mixed_gpu_ctest_timeout
+    "${PELICAN_GPU_LEASE_TIMEOUT_MAX} + ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT} + ${PELICAN_GPU_CTEST_TIMEOUT_GRACE}")
+  set(mixed_gpu_properties ${discovery_properties}
+    LABELS gpu RESOURCE_LOCK pelican_gpu TIMEOUT ${mixed_gpu_ctest_timeout})
   if(discovery_properties)
     catch_discover_tests(${target_name}
       ${discovery_arguments}
@@ -164,7 +197,7 @@ if(PELICAN_TEST_MIXED_GPU)
     catch_discover_tests(${target_name}
       ${discovery_arguments}
       TEST_SPEC "[gpu]"
-      PROPERTIES ${discovery_properties} LABELS gpu)
+      PROPERTIES ${mixed_gpu_properties})
   else()
     catch_discover_tests(${target_name}
       ${discovery_arguments}
@@ -172,7 +205,7 @@ if(PELICAN_TEST_MIXED_GPU)
     catch_discover_tests(${target_name}
       ${discovery_arguments}
       TEST_SPEC "[gpu]"
-      PROPERTIES LABELS gpu)
+      PROPERTIES ${mixed_gpu_properties})
   endif()
 elseif(discovery_properties)
   catch_discover_tests(${target_name}
@@ -180,6 +213,20 @@ elseif(discovery_properties)
     PROPERTIES ${discovery_properties})
 else()
   catch_discover_tests(${target_name} ${discovery_arguments})
+endif()
+
+if(PELICAN_TEST_GPU OR PELICAN_TEST_MIXED_GPU)
+  # Catch writes this file in its POST_BUILD discovery command.  Append our
+  # rewrite command afterwards so the discovered [gpu] CTest entries (and only
+  # those entries for MIXED_GPU targets) start with the launcher.
+  add_dependencies(${target_name} pelican_gpu_lease_run)
+  add_custom_command(TARGET ${target_name} POST_BUILD
+    COMMAND ${Python3_EXECUTABLE}
+      ${CMAKE_CURRENT_SOURCE_DIR}/patch_catch_gpu_lease_tests.py
+      --directory ${CMAKE_CURRENT_BINARY_DIR}
+      --target ${target_name}
+      --launcher $<TARGET_FILE:pelican_gpu_lease_run>
+    VERBATIM)
 endif()
 
 endfunction()
@@ -790,7 +837,7 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
 
     add_test(
       NAME physics_trigger_behavior_e2e
-      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+      COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- powershell -NoProfile -ExecutionPolicy Bypass
         -File ${CMAKE_CURRENT_SOURCE_DIR}/run_physics_trigger_behavior.ps1
         -Player $<TARGET_FILE:pelican_player>
         -Fixture $<TARGET_FILE:pelican_wp179_trigger_behavior_fixture>
@@ -798,7 +845,8 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
         -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/physics_trigger_behavior
     )
     set_tests_properties(physics_trigger_behavior_e2e PROPERTIES
-      TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+      LABELS gpu)
+    pelican_gpu_test_properties(physics_trigger_behavior_e2e 120)
   endif()
 
   function(pelican_add_wp162_behavior_fixture target_name variant)
@@ -830,7 +878,7 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       oninit_rollback)
     add_test(
       NAME behavior_dll_reload_${wp162_case}
-      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+       COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- powershell -NoProfile -ExecutionPolicy Bypass
         -File ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_dll_reload.ps1
         -Case ${wp162_case}
         -Player $<TARGET_FILE:pelican_player>
@@ -845,12 +893,13 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
         -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/behavior_dll_reload_${wp162_case}
     )
     set_tests_properties(behavior_dll_reload_${wp162_case} PROPERTIES
-      TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+      LABELS gpu)
+    pelican_gpu_test_properties(behavior_dll_reload_${wp162_case} 120)
   endforeach()
 
   add_test(
     NAME behavior_project_e2e
-    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+     COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- powershell -NoProfile -ExecutionPolicy Bypass
       -File ${CMAKE_CURRENT_SOURCE_DIR}/run_behavior_project.ps1
       -Player $<TARGET_FILE:pelican_player>
       -Fixture $<TARGET_FILE:pelican_wp155_behavior_fixture>
@@ -858,11 +907,12 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/behavior_project
   )
   set_tests_properties(behavior_project_e2e PROPERTIES
-    TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+    LABELS gpu)
+  pelican_gpu_test_properties(behavior_project_e2e 120)
 
   add_test(
     NAME game_logic_dll_reload
-    COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+     COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- powershell -NoProfile -ExecutionPolicy Bypass
       -File ${CMAKE_CURRENT_SOURCE_DIR}/run_game_logic_reload.ps1
       -Player $<TARGET_FILE:pelican_player>
       -FixtureV1 $<TARGET_FILE:pelican_wp90_fixture_v1>
@@ -873,7 +923,8 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       -OutDir ${CMAKE_BINARY_DIR}/test_artifacts/game_logic_reload
   )
   set_tests_properties(game_logic_dll_reload PROPERTIES
-    TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+    LABELS gpu)
+  pelican_gpu_test_properties(game_logic_dll_reload 120)
 
   # The executable exports the real SDK symbol consumed by fixture DLL static
   # registration. Fixtures include only userpublic headers and link the host's
@@ -1992,7 +2043,7 @@ add_test(
 if(PELICAN_WITH_SEQPLAYER)
     add_test(
         NAME seqplayer_headless_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
@@ -2000,13 +2051,13 @@ if(PELICAN_WITH_SEQPLAYER)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/seqplayer_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_seqplayer_headless.cmake
     )
-    set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(seqplayer_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 endif()
 
 if(PELICAN_WITH_VAT)
     add_test(
         NAME vatplayer_headless_player
-        COMMAND ${CMAKE_COMMAND}
+            COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DWRITER=$<TARGET_FILE:pelican_test_vat_fixture_writer>
@@ -2014,35 +2065,31 @@ if(PELICAN_WITH_VAT)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vatplayer_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vatplayer_headless.cmake
     )
-    set_tests_properties(vatplayer_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(vatplayer_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 endif()
 
 add_test(
     NAME free_camera_runtime_overlay_player
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
         -DEXAMPLE_PASS=${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/free_camera_runtime_overlay
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_free_camera_runtime_overlay.cmake
 )
-set_tests_properties(free_camera_runtime_overlay_player PROPERTIES
-    LABELS gpu
-    RESOURCE_LOCK pelican_gpu
-)
+pelican_gpu_test_properties(free_camera_runtime_overlay_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 if(PELICAN_WITH_RPC)
     add_test(
         NAME modal_transform_record_replay_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DEXAMPLE_PASS=${CMAKE_SOURCE_DIR}/projects/example/passes/main_rendering_config.json
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/modal_transform_record_replay
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_modal_transform_record_replay.cmake
     )
-    set_tests_properties(modal_transform_record_replay_player PROPERTIES
-        TIMEOUT 180 LABELS gpu RESOURCE_LOCK pelican_gpu)
+    pelican_gpu_test_properties(modal_transform_record_replay_player 180)
     add_executable(
         pelican_test_vrm_xr_demo_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
@@ -2057,17 +2104,16 @@ if(PELICAN_WITH_RPC)
     )
     add_test(
         NAME vrm_xr_demo_rpc_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_test_vrm_xr_demo_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/vrm_xr_demo
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/vrm_xr_demo_rpc
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vrm_xr_demo_rpc.cmake
     )
-    set_tests_properties(vrm_xr_demo_rpc_player PROPERTIES
-        TIMEOUT 180 RESOURCE_LOCK pelican_gpu LABELS gpu)
+    pelican_gpu_test_properties(vrm_xr_demo_rpc_player 180)
     add_test(
         NAME rpc_headless_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
@@ -2076,27 +2122,27 @@ if(PELICAN_WITH_RPC)
             -DRENDERDOC_REASON=$<IF:$<BOOL:${PELICAN_WITH_RENDERDOC}>,renderdoc_not_injected,renderdoc_build_disabled>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_headless.cmake
     )
-    set_tests_properties(rpc_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(rpc_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     add_test(
         NAME rpc_set_camera_headless_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_set_camera_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_set_camera_headless.cmake
     )
-    set_tests_properties(rpc_set_camera_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(rpc_set_camera_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     add_test(
         NAME rpc_scene_flow_headless_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_scene_flow_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_scene_flow_headless.cmake
     )
-    set_tests_properties(rpc_scene_flow_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(rpc_scene_flow_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     add_test(
         NAME rpc_scene_flow_normalization_fixtures
         COMMAND ${CMAKE_COMMAND}
@@ -2128,27 +2174,27 @@ if(PELICAN_WITH_RPC)
     )
     add_test(
         NAME rpc_inject_input_headless_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_test_rpc_inject_input_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_rpc_inject_input_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_input_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_input_headless.cmake
     )
-    set_tests_properties(rpc_inject_input_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(rpc_inject_input_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     add_test(
         NAME input_record_replay_headless_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_test_rpc_inject_input_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_rpc_inject_input_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/input_record_replay_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_input_record_replay_headless.cmake
     )
-    set_tests_properties(input_record_replay_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(input_record_replay_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     add_test(
         NAME devcli_bake_camera_replay
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DCLI=$<TARGET_FILE:pelican_cli>
             -DPLAYER=$<TARGET_FILE:pelican_test_camera_replay_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_camera_replay_player>
@@ -2157,7 +2203,7 @@ if(PELICAN_WITH_RPC)
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_bake_camera
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_bake_camera.cmake
     )
-    set_tests_properties(devcli_bake_camera_replay PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(devcli_bake_camera_replay ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     add_executable(
         pelican_test_rpc_inject_event_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
@@ -2171,14 +2217,14 @@ if(PELICAN_WITH_RPC)
     )
     add_test(
         NAME rpc_inject_event_headless_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_test_rpc_inject_event_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_rpc_inject_event_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/rpc_inject_event_headless
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_rpc_inject_event_headless.cmake
     )
-    set_tests_properties(rpc_inject_event_headless_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(rpc_inject_event_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
     add_executable(
         pelican_test_ui_u2_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
@@ -2192,25 +2238,25 @@ if(PELICAN_WITH_RPC)
     )
     add_test(
         NAME ui_u2_rpc_replay_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_test_ui_u2_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_test_ui_u2_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
             -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/ui_u2_rpc_replay
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_ui_u2_rpc_replay.cmake
     )
-    set_tests_properties(ui_u2_rpc_replay_player PROPERTIES LABELS gpu)
+    pelican_gpu_test_properties(ui_u2_rpc_replay_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 endif()
 
 add_test(
     NAME compute_buffer_headless_player
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/compute_buffer_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_compute_headless.cmake
 )
-set_tests_properties(compute_buffer_headless_player PROPERTIES LABELS gpu)
+pelican_gpu_test_properties(compute_buffer_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 pelican_define_test(importmanifest_test GROUP project_formats pelican_project)
 pelican_define_test(importrules_test GROUP project_formats pelican_project)
@@ -2377,24 +2423,24 @@ target_compile_definitions(pelican_test_rendertiming_test PRIVATE
 
 add_test(
     NAME gpu_timing_headless_player
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/gpu_timing_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_gpu_timing_headless.cmake
 )
-set_tests_properties(gpu_timing_headless_player PROPERTIES LABELS gpu)
+pelican_gpu_test_properties(gpu_timing_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 add_test(
     NAME frame_plan_dump_headless_player
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
         -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/example
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/frame_plan_dump_headless
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_frame_plan_dump_headless.cmake
 )
-set_tests_properties(frame_plan_dump_headless_player PROPERTIES LABELS gpu)
+pelican_gpu_test_properties(frame_plan_dump_headless_player ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 pelican_define_test(inputactions_test GROUP core_diagnostics pelican_core)
 target_compile_definitions(pelican_test_inputactions_test PRIVATE
@@ -2412,25 +2458,24 @@ add_test(
 
 add_test(
     NAME devcli_project_init_command
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_project_init
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_init.cmake
 )
-set_tests_properties(devcli_project_init_command PROPERTIES LABELS gpu)
+pelican_gpu_test_properties(devcli_project_init_command ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 add_test(
     NAME animgraph_demo_preset_headless_player
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
         -DRENDER_CONFIG=${CMAKE_SOURCE_DIR}/projects/animgraph_demo/passes/main.json
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/animgraph_demo_preset
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_preset_project_headless.cmake
 )
-set_tests_properties(animgraph_demo_preset_headless_player PROPERTIES
-    TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS gpu)
+pelican_gpu_test_properties(animgraph_demo_preset_headless_player 120)
 
 if(NOT SKIP_DEVSTUDIO)
     add_executable(pelican_test_studio_player_arguments
@@ -2451,7 +2496,7 @@ if(NOT SKIP_DEVSTUDIO)
     endif()
     add_test(
         NAME vulkan_validation_runtime_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
             -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
@@ -2460,10 +2505,8 @@ if(NOT SKIP_DEVSTUDIO)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vulkan_validation_runtime.cmake
     )
     set_tests_properties(vulkan_validation_runtime_player PROPERTIES
-        TIMEOUT 600
-        RESOURCE_LOCK pelican_gpu
-        LABELS gpu
         SKIP_REGULAR_EXPRESSION PELICAN_VULKAN_VALIDATION_RUNTIME_SKIP_NO_DEVICE)
+    pelican_gpu_test_properties(vulkan_validation_runtime_player 600)
 endif()
 
 add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
@@ -2517,7 +2560,7 @@ endif()
 if(TARGET pelican_test_studio_player_arguments)
     add_test(
         NAME project_catalog_headless_smoke
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPNG_NONUNIFORM_CHECK=$<TARGET_FILE:pelican_test_png_nonuniform_check>
             -DSTUDIO_ARGUMENTS_PROBE=$<TARGET_FILE:pelican_test_studio_player_arguments>
@@ -2529,10 +2572,8 @@ if(TARGET pelican_test_studio_player_arguments)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_project_catalog_smoke.cmake
     )
     set_tests_properties(project_catalog_headless_smoke PROPERTIES
-        TIMEOUT 600
-        RESOURCE_LOCK pelican_gpu
-        LABELS gpu
         SKIP_REGULAR_EXPRESSION PELICAN_PROJECT_CATALOG_SMOKE_SKIP_NO_PROJECTS_DIR)
+    pelican_gpu_test_properties(project_catalog_headless_smoke 600)
 endif()
 
 if(PELICAN_WITH_AUDIO)
@@ -2554,13 +2595,13 @@ pelican_define_test(assetsverification_test pelican_core)
 
 add_test(
     NAME devcli_assets_command
-    COMMAND ${CMAKE_COMMAND}
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
         -DPLAYER=$<TARGET_FILE:pelican_player>
         -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/devcli_assets
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_assets.cmake
 )
-set_tests_properties(devcli_assets_command PROPERTIES LABELS gpu)
+pelican_gpu_test_properties(devcli_assets_command ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
 
 pelican_define_test(surfaceformat_test GROUP project_surface pelican_project)
 target_compile_definitions(pelican_test_surfaceformat_test PRIVATE
@@ -2585,7 +2626,7 @@ pelican_define_test(swapchainrecovery_test GROUP frame_lifecycle pelican_core)
 if(WIN32)
     add_test(
         NAME wsi_fault_window_player
-        COMMAND ${CMAKE_COMMAND}
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
             -DPLAYER=$<TARGET_FILE:pelican_player>
             -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
             -DPROJECT_DIR=${CMAKE_SOURCE_DIR}/projects/animgraph_demo
@@ -2593,12 +2634,7 @@ if(WIN32)
             -DCONFIG=$<CONFIG>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wsi_fault_window.cmake
     )
-    set_tests_properties(
-        wsi_fault_window_player
-        PROPERTIES
-            TIMEOUT 180
-            RESOURCE_LOCK pelican_gpu
-            LABELS gpu)
+    pelican_gpu_test_properties(wsi_fault_window_player 180)
 endif()
 pelican_define_test(texturereload_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(materialvaluesreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -2724,6 +2760,18 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
         set_tests_properties(${test_name} PROPERTIES LABELS python)
     endfunction()
 
+    function(pelican_define_gpu_python_test test_name script)
+        add_test(
+            NAME ${test_name}
+            COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND} -E env
+                PYTHONDONTWRITEBYTECODE=1
+                ${Python3_EXECUTABLE} -B
+                ${script} ${ARGN}
+        )
+        set_tests_properties(${test_name} PROPERTIES LABELS "gpu;python")
+        pelican_gpu_test_properties(${test_name} 120)
+    endfunction()
+
     # WP175 boundary contracts are source/fixture checks and require no GPU.
     foreach(contract_gate IN ITEMS openpbr projection engine-mvp)
         pelican_define_python_test(
@@ -2741,16 +2789,34 @@ if(PELICAN_PYTHON_TESTS_AVAILABLE)
         ci_skip_policy_unit
         ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_skip_policy.py
     )
+    pelican_define_python_test(
+        gpu_lease_inventory
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/verify_gpu_lease_inventory.py
+        --build-dir ${CMAKE_BINARY_DIR}
+        --launcher $<TARGET_FILE:pelican_gpu_lease_run>
+        --timeouts ${CMAKE_CURRENT_BINARY_DIR}/gpu_lease_timeouts.json
+        --ctest ${CMAKE_CTEST_COMMAND}
+        --config $<CONFIG>
+    )
+    # The lease's own runtime acceptance drives the real launcher on a
+    # test-scoped lease name, so it needs no GPU and must never carry the gpu
+    # label (that label is exactly the set the launcher wraps).  Serialise the
+    # cases against each other with their own lock.
+    pelican_define_python_test(
+        gpu_lease_runtime
+        ${CMAKE_CURRENT_SOURCE_DIR}/ci/test_gpu_lease_runtime.py
+        --launcher $<TARGET_FILE:pelican_gpu_lease_run>
+    )
+    set_tests_properties(gpu_lease_runtime PROPERTIES
+        TIMEOUT 300 RESOURCE_LOCK pelican_gpu_lease_selftest)
 
     if(PELICAN_WITH_RPC)
-        pelican_define_python_test(
+        pelican_define_gpu_python_test(
             pelican_rpc_smoke
             ${CMAKE_CURRENT_SOURCE_DIR}/pelican_rpc_smoke.py
             --repo-root ${CMAKE_SOURCE_DIR}
             --player $<TARGET_FILE:pelican_player>
         )
-        set_tests_properties(pelican_rpc_smoke PROPERTIES
-            TIMEOUT 120 RESOURCE_LOCK pelican_gpu LABELS "gpu;python")
     endif()
 
     # Golden inventory integrity is deliberately GPU-free and therefore runs
@@ -2798,3 +2864,19 @@ if(MSVC)
                          PROPERTIES TIMEOUT 60)
   endif()
 endif()
+
+# WP385 decision 12: one generated timeout policy.  The CTest TIMEOUT of every
+# gpu-labelled test is lease_timeout_max + intrinsic + grace, and the inventory
+# gate reads these same three numbers instead of repeating them.
+get_property(pelican_gpu_intrinsic_entries GLOBAL
+  PROPERTY PELICAN_GPU_INTRINSIC_TIMEOUTS)
+list(JOIN pelican_gpu_intrinsic_entries ",\n    " pelican_gpu_intrinsic_json)
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/gpu_lease_timeouts.json
+  "{\n"
+  "  \"lease_timeout_max\": ${PELICAN_GPU_LEASE_TIMEOUT_MAX},\n"
+  "  \"default_intrinsic\": ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT},\n"
+  "  \"grace\": ${PELICAN_GPU_CTEST_TIMEOUT_GRACE},\n"
+  "  \"intrinsic\": {\n"
+  "    ${pelican_gpu_intrinsic_json}\n"
+  "  }\n"
+  "}\n")
