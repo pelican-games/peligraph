@@ -192,7 +192,7 @@ core 配下の target はリンクせず、CMake が推移リンクを含めて 
                       project（純粋パース・検証）
 ```
 
-実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L2883) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
+実装上は、`GET_MODULE()` を使うサービスロケータが多いため、C++のコンストラクタ引数だけを見ても依存が全部は分かりません。サービスロケータとは、**必要な相手を引数で渡してもらう（DI）のではなく、共通の取得口から自分で引いてくる**方式のことです。Pelicanの取得口は `GET_MODULE(T)` ひとつで、鍵は文字列名ではなく型 `T`、実体は型ごとの `static std::optional<T>` を初回アクセス時に構築するだけの薄い機構です（[第9章 §9.1](09_black_magic_and_gotchas.md)）。DIコンテナのような登録表・スコープ・差し替え機構は持ちません。たとえば [`Renderer::Renderer()`](../../src/core/vkcore/renderer.cpp#L2911) は一行ですが、そこから設定、Vulkan、render target、shader、pipelineなどが遅延生成されます。
 
 新しい描画コードでは依存を明示する `XxxDependencies` 構造体が増えています。例は [`RenderPassExecutorDependencies`](../../src/core/vkcore/render_pass_executor.hpp#L16)、[`RenderPassDispatchDependencies`](../../src/core/vkcore/render_pass_dispatch.hpp#L29)、[`RenderingPassConfigRegistrationDependencies`](../../src/core/renderingpass/renderingpassconfigregistration.hpp#L65) です。これはグローバル取得を局所化し、純粋テストをしやすくする境界です。
 
@@ -202,7 +202,7 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 | 形式 | 例 | 目的 |
 |---|---|---|
-| 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L89) | windowed/headless/XRの実装差し替え |
+| 仮想基底 | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L90) | windowed/headless/XRの実装差し替え |
 | 依存構造体 | [`MaterialRendererDependencies`](../../src/core/renderer/materialrender.hpp#L22) | 呼び出しに必要な協力オブジェクトを明示 |
 | Concept/duck typing | [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77)、[`HasGameSystemUpdate`](../../src/core/userpublic/details/system/registerer.hpp#L38) | メソッド形だけをcompile時に要求 |
 | `std::variant` | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L320)、[`phys::Shape`](../../src/core/phys/physquery.hpp#L41) | 閉じた型集合を安全に分岐 |

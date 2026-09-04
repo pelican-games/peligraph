@@ -2400,7 +2400,7 @@ scene JSON の `components` に書きます。
 
 ### BLAS variant と `resident_blas_keys` 診断
 
-geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L590))。同じジオメトリでも flags が違えば別 BLAS です。
+geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L596))。同じジオメトリでも flags が違えば別 BLAS です。
 
 プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L534)):
 

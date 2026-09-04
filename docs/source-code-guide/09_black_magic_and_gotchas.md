@@ -576,7 +576,7 @@ reflection は descriptor layout と pipeline layout を source/SPIR-V から自
 
 hot reload は shader compile と pipeline rebuild を transactional にします。しかし descriptor layout を変更する edit は、shader body だけの edit より危険です。
 
-- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2564) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2531) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L5007))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L520) です。
+- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2564) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2531) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L5085))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L520) です。
 - `rebindFullscreenInputs()` が貼り直すのは 3 系統です — 公開済み generation 内の fullscreen / generic raster pass の input resource、material の screen input、compute task の render target。したがって **reload 専用の処理ではありません**。logical target の extent が変わった直後にも同じ関数が呼ばれます([`renderer.cpp` の extent 変更後](../../src/core/vkcore/renderer.cpp#L2634))。逆に言うと、この 3 系統の外側で descriptor を自前 cache している pass は、reload でも resize でも取り残されます。
 - compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2744) 時に一度作り、hot reload path では作り直していません。
 - material は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L397) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
@@ -587,13 +587,13 @@ hot reload は shader compile と pipeline rebuild を transactional にしま�
 
 pipeline、image view、buffer などは、CPU では旧 object に見えても GPU が前 frame の command から参照中かもしれません。[`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は resource type を virtual base([`DeferredResourceBase`](../../src/core/vkcore/deletionqueue.hpp#L22))へ型消去して溜めます。
 
-**溜めた資源の寿命を決めるのは「defer した frame 番号」ではなく「実 submission への紐付け」です。** `DeletionQueueCore` には frame を数える口も、「もう解放してよいものを掃き出す」口もありません。frame を名乗る唯一の残骸は [`currentFrame()`](../../src/core/vkcore/deletionqueue.hpp#L104) ですが、返すのは完了 submission 数です。現在は次の 3 手です。
+**溜めた資源の寿命を決めるのは「defer した frame 番号」ではなく「実 submission への紐付け」です。** `DeletionQueueCore` には frame を数える口も、「もう解放してよいものを掃き出す」口もありません。frame を名乗る唯一の残骸は [`currentFrame()`](../../src/core/vkcore/deletionqueue.hpp#L105) ですが、返すのは完了 submission 数です。現在は次の 3 手です。
 
-1. [`defer()`](../../src/core/vkcore/deletionqueue.hpp#L90) は現在の [`RetirementBatch`](../../src/core/vkcore/deletionqueue.hpp#L50) に積むだけ。
+1. [`defer()`](../../src/core/vkcore/deletionqueue.hpp#L91) は現在の [`RetirementBatch`](../../src/core/vkcore/deletionqueue.hpp#L50) に積むだけ。
 2. [`leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) がその batch を握る [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53)(実体は `shared_ptr<const void>`)を返す。
-3. [`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L73) が次の submission 用に新しい batch へ切り替える。
+3. [`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L78) が次の submission 用に新しい batch へ切り替える。
 
-**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L4787) → [`target.endLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L5419) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5582) です。
+**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L4865) → [`target.endLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L5506) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5357) です。
 
 つまり「何 frame 後に消えるか」を数えるコードは deletion queue からは消えました([`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は `in_flight_frames_num` を一度も参照しません)。ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L110) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1200) が代表的な defer 元です。
 
@@ -603,26 +603,26 @@ pipeline、image view、buffer などは、CPU では旧 object に見えても 
 - new object を公開した後、old object を deletion queue へ移す。
 - **新しい submit 経路を足したら、lease を取って submission 完了まで手放さない。** lease を持たずに `confirmSubmission()` を呼ぶと、その batch は下の難所ブロックの理由で**その場で**破棄されます。
 - queue に入れる object が dependent object より先に破棄されても Vulkan 規約上安全か確認する。
-- shutdown は wait-idle → pending flush → module destruction の順を維持する。[`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L83) は fence も wait-idle も見ずに全 batch を落とすので、呼ぶ側が先に idle にする責任を持ちます(実際 [`loop.cpp` 内](../../src/core/appflow/loop.cpp#L291) は `waitIdle()` の直後、teardown は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) の `wait_idle` を先頭・`deletion_queue` を末尾に置いています)。
+- shutdown は wait-idle → pending flush → module destruction の順を維持する。[`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L88) は fence も wait-idle も見ずに全 batch を落とすので、呼ぶ側が先に idle にする責任を持ちます(実際 [`loop.cpp` 内](../../src/core/appflow/loop.cpp#L291) は `waitIdle()` の直後、teardown は [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) の `wait_idle` を先頭・`deletion_queue` を末尾に置いています)。
 
 ### teardown 開始後の `defer()` はエラー
 
-`DeletionQueueCore` は [`accepting` / `draining`](../../src/core/vkcore/deletionqueue.hpp#L77) フラグと [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L80) を持ちます。**`defer()` だけでなく `leaseForNextSubmission()` と `confirmSubmission()` も先頭でこれを呼ぶ**ので、受け入れ停止後はこの 3 本すべてが `std::logic_error` になります([`deletionqueue_test.cpp` 内](../../test/deletionqueue_test.cpp#L129) が 3 本とも検査しています)。
+`DeletionQueueCore` は [`accepting` / `draining`](../../src/core/vkcore/deletionqueue.hpp#L78) フラグと [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L81) を持ちます。**`defer()` だけでなく `leaseForNextSubmission()` と `confirmSubmission()` も先頭でこれを呼ぶ**ので、受け入れ停止後はこの 3 本すべてが `std::logic_error` になります([`deletionqueue_test.cpp` 内](../../test/deletionqueue_test.cpp#L156) が 3 本とも検査しています)。
 
 teardown の最終段は phase で分岐します。
 
 | phase | 動作 |
 |---|---|
-| `ModuleRuntimePhase::shutting_down` | [`drainForTeardown()`](../../src/core/vkcore/deletionqueue.hpp#L102)。以後 `defer()` 不可 |
+| `ModuleRuntimePhase::shutting_down` | [`drainForTeardown()`](../../src/core/vkcore/deletionqueue.hpp#L103)。以後 `defer()` 不可 |
 | それ以外(`runtime_reset`) | `flushAll()`。queue は再利用可能なまま |
 
 したがって「module の destructor から GPU object を defer する」コードは、terminal shutdown では失敗します。destructor は既に所有している資源で完結させるか、明示 teardown 段階へ移してください。受け入れ状態の確認は `acceptingResources()`(core)/ `acceptingResourcesForTesting()`(module ラッパ)です。
 
-> 🧩 **難所 — 破棄の時刻を決めているのは refcount 1 本**([`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L73) / [`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L83))
+> 🧩 **難所 — 破棄の時刻を決めているのは refcount 1 本**([`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L78) / [`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L88))
 >
 > **何をする所か**: defer された資源を、それを参照している実 GPU submission が完了するまで生かし、完了したものだけ本物のデストラクタへ落とします。
 >
-> **素朴に読むと**: 鍵は [`std::vector<std::weak_ptr<RetirementBatch>> batches`](../../src/core/vkcore/deletionqueue.hpp#L76) が **`weak_ptr` である**ことで、この vector は寿命を一切持ちません。batch を生かしている強参照は 2 本だけ — 次に積む先である [`current_batch`](../../src/core/vkcore/deletionqueue.hpp#L75) と、`leaseForNextSubmission()` が配った `GpuSubmissionLease` です。`confirmSubmission()` は `current_batch` を新しい batch で**上書き**するので、**lease を誰も持っていなければその瞬間に旧 batch の refcount が 0 になり、GPU がまだ読んでいる資源がその場で破棄されます**。「queue に積んだのだから遅延している」と読むと、この 1 本の依存が見えません。`batches` が `weak_ptr` なのは `flushAll()` のためで、生きている batch だけ `releaseAll()` し、失効したものは [`batches.erase(it)`](../../src/core/vkcore/deletionqueue.cpp#L98) で落とします — つまり `batches` は所有者ではなく「まだ破棄されていない batch の台帳」です。
+> **素朴に読むと**: 鍵は [`std::vector<std::weak_ptr<RetirementBatch>> batches`](../../src/core/vkcore/deletionqueue.hpp#L77) が **`weak_ptr` である**ことで、この vector は寿命を一切持ちません。batch を生かしている強参照は 2 本だけ — 次に積む先である [`current_batch`](../../src/core/vkcore/deletionqueue.hpp#L75) と、`leaseForNextSubmission()` が配った `GpuSubmissionLease` です。`confirmSubmission()` は `current_batch` を新しい batch で**上書き**するので、**lease を誰も持っていなければその瞬間に旧 batch の refcount が 0 になり、GPU がまだ読んでいる資源がその場で破棄されます**。「queue に積んだのだから遅延している」と読むと、この 1 本の依存が見えません。`batches` が `weak_ptr` なのは `flushAll()` のためで、生きている batch だけ `releaseAll()` し、失効したものは [`batches.erase(it)`](../../src/core/vkcore/deletionqueue.cpp#L103) で落とします — つまり `batches` は所有者ではなく「まだ破棄されていない batch の台帳」です。
 >
 > もう 1 つが `draining` で、`draining` を立てて 4 行の `DrainScope` で必ず倒す形は「念のための再入禁止」に見えますが、塞いでいるのは具体的な事故です。`release()` の実体は [`resource.reset()`](../../src/core/vkcore/deletionqueue.hpp#L45)、つまり**走るのは寝かせた型のデストラクタで、その中身は各 container のコード**です([`VertBufContainer::releaseModelGeometry()`](../../src/core/model/vertbufcontainer.cpp#L583) が defer する `DeferredRelease` のデストラクタは、lease を取り直したうえで owner のメソッドを呼び戻します)。そこから `defer()` が来ると [`resources.push_back`](../../src/core/vkcore/deletionqueue.hpp#L58) が走査中の vector を再確保し、`confirmSubmission()` が来ると `batches.push_back` が `flushAll()` のイテレータを無効にします。だから 3 本とも先頭で [`DeletionQueueCore::requireAccepting()`](../../src/core/vkcore/deletionqueue.cpp#L54) を呼び、drain 中は `std::logic_error` にします。これは「壊れる」を「その場で分かる」へ変える置き換えで、`DrainScope` が try-catch でなく RAII なのは、`releaseAll()` が throw しても、後から早期 return を足しても、1 か所でフラグを倒せるからです。`flushAll()` 自身の再入も同じく `std::logic_error` です。
 >
@@ -644,7 +644,7 @@ teardown の最終段は phase で分岐します。
 >                          ↑ この中から defer / lease / confirm が来たら logic_error
 > ```
 >
-> **手がかり**: `flushAll()` は fence も wait-idle も見ません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L34) と、`wait_idle` step を先に通す [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) と、それを走査する [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L122))。`pendingCount()` は [`PendingCounter`](../../src/core/vkcore/deletionqueue.hpp#L18) を `DeferredResource` の生成/解放で増減させた live 数で、デストラクタはこれが 0 でなければ WARNING を出して wait-idle → flush する安全網に入ります([`DeletionQueueCore::~DeletionQueueCore()`](../../src/core/vkcore/deletionqueue.cpp#L22))。テストは [`"DeletionQueueCore releases resources only after the bound GPU submission completes"`](../../test/deletionqueue_test.cpp#L37)(lease を手放すまで破棄されない)/ [`"DeletionQueueCore tracks retirement batches by actual submission lease"`](../../test/deletionqueue_test.cpp#L60)(batch ごとに独立して retire する)/ [`"DeletionQueueCore teardown drain closes the queue and rejects late resources"`](../../test/deletionqueue_test.cpp#L118)(drain 後は 3 本とも throw)です。
+> **手がかり**: `flushAll()` は fence も wait-idle も見ません(待つのはデストラクタの [`wait_idle_hook()`](../../src/core/vkcore/deletionqueue.cpp#L34) と、`wait_idle` step を先に通す [`runtime_teardown_order`](../../src/core/appflow/teardown.hpp#L23) と、それを走査する [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp#L122))。`pendingCount()` は [`PendingCounter`](../../src/core/vkcore/deletionqueue.hpp#L18) を `DeferredResource` の生成/解放で増減させた live 数で、デストラクタはこれが 0 でなければ WARNING を出して wait-idle → flush する安全網に入ります([`DeletionQueueCore::~DeletionQueueCore()`](../../src/core/vkcore/deletionqueue.cpp#L22))。テストは [`"DeletionQueueCore releases resources only after the bound GPU submission completes"`](../../test/deletionqueue_test.cpp#L37)(lease を手放すまで破棄されない)/ [`"DeletionQueueCore tracks retirement batches by actual submission lease"`](../../test/deletionqueue_test.cpp#L60)(batch ごとに独立して retire する)/ [`"DeletionQueueCore teardown drain closes the queue and rejects late resources"`](../../test/deletionqueue_test.cpp#L145)(drain 後は 3 本とも throw)です。
 >
 > **不変条件**: submission に紐付けたい資源は `leaseForNextSubmission()` の lease を submission 完了まで保持する(保持しないなら `confirmSubmission()` の時点で破棄されてよい資源だけを defer する)。`draining` を立てる区間には必ず RAII で対になる復帰を置く。`releaseAll()` の実行中に `resources` / `batches` を触らない。`batches` を `shared_ptr` に変えない — 所有しないことが「lease だけが寿命を決める」という契約そのものです。
 
@@ -698,7 +698,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 | `edit` が `stale_revision` | `get_scene_revision` の `EditorWatchToken` | preview lease が `preview_epoch` を進めていないか |
 | windowed で RPC 応答が来ない | フレームが進んでいるか | queue busy 応答(`-32000` / `reason:"busy"`)が来ていないか |
 | RPC event payload が空 | event に `ref(JsonArchiveLoader&)` があるか | default-only JSON loader branch |
-| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3785) | reads/writes、after/before、declaration index |
+| frame graph の順が違う | [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3813) | reads/writes、after/before、declaration index |
 | XR だけ表示が壊れる | `#xr` variant の feature 除外(`xr_excluded_features`) | `graph_variant_transition_trace`、XR feature policy |
 | TAA の ghosting・再投影が乱れる | temporal reset のトリガ(set_time / camera 不連続 / resize / view 数 / variant 切替) | `resetTemporalHistory()`、previous object/skin/morph buffer |
 | game DLL reload 後に状態が消える/残る | `RegistrationOwner` と DLL 内 static の寿命 | engine 側 System の function-local static(こちらは残る) |
@@ -754,7 +754,7 @@ optional build feature には stub 実装もあります。たとえば SeqPlaye
 
 ### XR mirror は「drop 可能な optional sink」
 
-frame の開始は成否 bool ではなく [`FrameBeginResult`](../../src/core/vkcore/frametarget.hpp#L203) を返します([`IFrameTarget::beginFrame()`](../../src/core/vkcore/frametarget.hpp#L290))。判断の軸は [`FrameBeginDisposition`](../../src/core/vkcore/frametarget.hpp#L143) の 4 値で、frame が取れなかった内訳は [`FrameUnavailableReason`](../../src/core/vkcore/frametarget.hpp#L150) の `reason` に別途入ります。mirror はこれを [`classifyMirrorBeginResult()`](../../src/core/openxr/openxrmirrorsink.cpp#L58) で 3 つの行動へ落とします。
+frame の開始は成否 bool ではなく [`FrameBeginResult`](../../src/core/vkcore/frametarget.hpp#L203) を返します([`IFrameTarget::beginFrame()`](../../src/core/vkcore/frametarget.hpp#L291))。判断の軸は [`FrameBeginDisposition`](../../src/core/vkcore/frametarget.hpp#L143) の 4 値で、frame が取れなかった内訳は [`FrameUnavailableReason`](../../src/core/vkcore/frametarget.hpp#L150) の `reason` に別途入ります。mirror はこれを [`classifyMirrorBeginResult()`](../../src/core/openxr/openxrmirrorsink.cpp#L58) で 3 つの行動へ落とします。
 
 | disposition | 行動 | mirror の挙動 |
 |---|---|---|
@@ -764,7 +764,7 @@ frame の開始は成否 bool ではなく [`FrameBeginResult`](../../src/core/v
 
 **mirror 経路にエラー処理を足すときに、`unavailable` を error へ昇格させないでください。** 分類が見るのは `disposition` だけで `reason` は見ないので、`reason` が `surface_lost` であっても `unavailable` なら drop です([テストが 4 分類を明示的に固定しています](../../test/xrfeaturepolicy_test.cpp#L166))。surface の回復は frame target 側の仕事で、mirror から同期的に回復を呼ばないことが設計上の要求です([`docs/design_wsi_epoch_recovery.md`](../design_wsi_epoch_recovery.md) の「9.4 XR mirror」)。
 
-mirror が best-effort でいられるのは、入力が engine 所有の中間 target `__xr_mirror_left` だけで、OpenXR swapchain image を受け取らず、`FrameBeginMode::nonblocking` で開始するため desktop swapchain を待ちもしないからです([`XrMirrorSink`](../../src/core/openxr/openxrmirrorsink.hpp#L39) 直前のコメント)。[`XrMirrorSink::tryPresent()`](../../src/core/openxr/openxrmirrorsink.cpp#L182) は全体が `noexcept` で、例外が出れば frame を [`abandon()`](../../src/core/vkcore/frametarget.hpp#L299) して自分を disable するだけです — HMD 側の logical frame は止めません。集計は [`XrMirrorSinkStats`](../../src/core/openxr/openxrmirrorsink.hpp#L29) に載り、`OpenXR mirror diagnostic: milestone=...` の INFO ログに出ます(WP133 が入れた「mirror は drop してよい」規約を、現在はこの 3 分類が担っています)。
+mirror が best-effort でいられるのは、入力が engine 所有の中間 target `__xr_mirror_left` だけで、OpenXR swapchain image を受け取らず、`FrameBeginMode::nonblocking` で開始するため desktop swapchain を待ちもしないからです([`XrMirrorSink`](../../src/core/openxr/openxrmirrorsink.hpp#L39) 直前のコメント)。[`XrMirrorSink::tryPresent()`](../../src/core/openxr/openxrmirrorsink.cpp#L182) は全体が `noexcept` で、例外が出れば frame を [`abandon()`](../../src/core/vkcore/frametarget.hpp#L313) して自分を disable するだけです — HMD 側の logical frame は止めません。集計は [`XrMirrorSinkStats`](../../src/core/openxr/openxrmirrorsink.hpp#L29) に載り、`OpenXR mirror diagnostic: milestone=...` の INFO ログに出ます(WP133 が入れた「mirror は drop してよい」規約を、現在はこの 3 分類が担っています)。
 
 drop は `beginFrame()` が `ready` を返した後にも起こります。letterbox 矩形が空(destination が 0 サイズ = 最小化)なら、取得済みの frame をそのまま `submit()` してから drop として数えます。**`beginFrame()` で得た frame は必ず `submit()` か `abandon()` へ渡してください** — 渡さなければ `FrameTargetFrame` のデストラクタが abandon 扱いで回収するので壊れはしませんが、どの経路で落ちたのかが追えなくなります。
 
@@ -877,7 +877,7 @@ behavior コールバック実行中 / DLL リロード中の追加ゲートは 
 ## 9.19 preview / `render_preview` の隔離
 
 - `render_preview` は **`Renderer::renderLogicalFrame()` を通りません**([`PreviewGraphProgram`](../../src/core/renderingpass/previewgraph.hpp#L20) 直前のコメント)。したがって temporal history、FrameResources slot、layout tracker などのライブ状態を汚しません。
-- 汚していないことの証明が [`previewStateInventory()`](../../src/core/vkcore/previewexecutor.hpp#L59)(「並び順も診断契約の一部」)と [`Renderer::previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3691) です。
+- 汚していないことの証明が [`previewStateInventory()`](../../src/core/vkcore/previewexecutor.hpp#L59)(「並び順も診断契約の一部」)と [`Renderer::previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3719) です。
 - 上限は 2048px / 16 MiB([`previewexecutor.hpp` 内](../../src/core/vkcore/previewexecutor.hpp#L54))。超過は `PreviewCaptureTooLarge` です。
 - `PreviewCaptureRequest::graph_generation` が `PreviewGraphProgram::generation` と食い違えば `std::invalid_argument("preview graph generation mismatch")` で拒否されます(stale preview の防止)。
 - **現在の出力は CPU 模式ラスタです**([第6章 §6.19](06_rendering_vulkan_shader.md))。material も shader も評価しないので、`render_preview` の画像を最終描画の代用と見なさないでください。
@@ -1085,7 +1085,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 本番コードの分岐上に注入点を置き、「この分岐を壊すとどのテストが赤くなるか」を名指しできるようにする。manifest の `mutation_id` 列がその索引。
 
-**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L166)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L994)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1511)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L522)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2480)。
+**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L166)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L994)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1511)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L522)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2500)。
 
 **読むときの手順**: [第3章「注入口はproductionバイナリに存在しない」](03_project_and_loading.md)を先に読んでください。注入点は「テスト用の別経路」ではなく**本番経路そのもの**で、経路を差し替える方向に直すと A/B が破綻します。
 
@@ -1243,11 +1243,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: main family だけが view ごとに記録されます(sequential 実行・`logical_view_count` を受け取る)。他 family は view 非依存で single_view / view 数 1 として組まれるので、`view_index != 0` を入れると**同じノードを view 数だけ二重記録**します。スケジュールの並び自体は[第6章「スケジュールは scope-execution-major」](06_rendering_vulkan_shader.md)が本体です。
 
-#### [`transaction->generation == 0`](../../src/core/vkcore/renderer.cpp#L3424) — 番兵としての 0
+#### [`transaction->generation == 0`](../../src/core/vkcore/renderer.cpp#L3452) — 番兵としての 0
 
 **分からなくなること**: 世代 0 が「世代が 0 番」なのか「世代が無い」なのか。
 
-**答え**: [`after_publish` フック](../../src/core/vkcore/renderer.cpp#L3406)が未実行、つまりランタイム世代がまだ publish されていない状態を表す**番兵**です。その場合は [`stagedGeneration()`](../../src/core/vkcore/renderer.cpp#L3423) を代用世代として採用し、staged と一致するときだけ staged 扱い(commit ではなく保留)にします。同じ番兵は [`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L2858) 側でも「staged 無し = ロールバック不要」として使われます。
+**答え**: [`after_publish` フック](../../src/core/vkcore/renderer.cpp#L3434)が未実行、つまりランタイム世代がまだ publish されていない状態を表す**番兵**です。その場合は [`stagedGeneration()`](../../src/core/vkcore/renderer.cpp#L3451) を代用世代として採用し、staged と一致するときだけ staged 扱い(commit ではなく保留)にします。同じ番兵は [`StagedRuntimeRollbackGuard`](../../src/core/vkcore/renderer.cpp#L2878) 側でも「staged 無し = ロールバック不要」として使われます。
 
 #### [`buildLogicalFrameViewFamilySchedule()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L111) — multiview と sequential の差
 
@@ -1259,7 +1259,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 3 と 6 という定数が何を数えているのか。
 
-**答え**: 1 スロットあたり **uniform 3 個**(frame UBO / resolution UBO / light UBO)と **storage 3 個**(object / previous object / directional shadow)を消費するので係数 3 です。ray_query 時はスロットごとに通常セットと ray_query セットの 2 セットを確保する(`max_sets = slot_count * 2`)ので 3×2 = 6 になり、加えて acceleration structure を `slot_count` 分積みます。内訳は [frame/resolution UBO の 2 write](../../src/core/renderer/frameresources.cpp#L228) と [`updateSceneDescriptors()` の 4 write](../../src/core/renderer/frameresources.cpp#L343)(storage 3 + light UBO 1)を足すと一致します。
+**答え**: 1 スロットあたり **uniform 3 個**(frame UBO / resolution UBO / light UBO)と **storage 3 個**(object / previous object / directional shadow)を消費するので係数 3 です。ray_query 時はスロットごとに通常セットと ray_query セットの 2 セットを確保する(`max_sets = slot_count * 2`)ので 3×2 = 6 になり、加えて acceleration structure を `slot_count` 分積みます。内訳は [frame/resolution UBO の 2 write](../../src/core/renderer/frameresources.cpp#L228) と [`updateSceneDescriptors()` の 4 write](../../src/core/renderer/frameresources.cpp#L312)(storage 3 + light UBO 1)を足すと一致します。
 
 #### [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53) — 型消去リースが 2 種類ある
 
@@ -1269,7 +1269,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 #### [`RetirementBatch`](../../src/core/vkcore/deletionqueue.hpp#L50) — なぜ weak_ptr で持つのか
 
-**分からなくなること**: [`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L83) の `lock()` が失敗する条件。
+**分からなくなること**: [`flushAll()`](../../src/core/vkcore/deletionqueue.cpp#L88) の `lock()` が失敗する条件。
 
 **答え**: 実所有者は `current_batch` と [`SubmissionLeaseBundle`](../../src/core/vkcore/deletionqueue.hpp#L67) で、キュー自身は weak 参照しか持ちません。submit 失敗でリースが捨てられた場合や、フレームターゲットがフェンス完了後にリースを解放した場合、batch は自動で消えます。`flushAll` の `lock()` はその**既に解放済みバッチ**で失敗し、エントリを erase します。
 
@@ -1297,25 +1297,25 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`resolveFrameResolutionExtents()`](../../src/core/vkcore/renderer.cpp#L689) | render_extent と output_extent | 2 つある理由 | `render_source_resource` と `output_source_resource` を別々に解決し、内部レンダー解像度と最終出力解像度が異なるアップスケール構成を表す。両者はコンパイル済み plan と一致検証される |
 | [jitter の 2 値](../../src/core/vkcore/renderer.cpp#L751) | `view_projection_jittered` と `jitter_ndc` | なぜ両方要るのか | 前者はラスタライズ時にサブピクセルオフセットを掛ける行列、後者はシェーダが速度ベクトルや TAA リプロジェクションでそのオフセットを打ち消すための生の量。→ [第6章「ジッタは w 倍で足す」](06_rendering_vulkan_shader.md) |
 | [`windowOutputFactsChanged()`](../../src/core/vkcore/renderer.cpp#L2581) | fingerprint と compile_facts | 二重比較の理由 | `compile_fingerprint` は安価な一致判定用ハッシュで先に比較し、加えて実体も比較して**ハッシュ衝突と fingerprint 未包含フィールドの差分**を取りこぼさない二段確認 |
-| [companion 3 点セット](../../src/core/vkcore/renderer.cpp#L2963) | companion_participants / claims / apply_with_companions | 3 つの役割 | companion が「一緒に取り込む他参加者(shader / material)」を宣言し、claims が所有リクエストを判定し、apply_with_companions が 1 回で処理する。グラフ・シェーダ・マテリアル値の変更が**同一トランザクション**として一括成否になることを保証(→ §9.23.12) |
-| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L5439) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
-| [`LogicalFrameAbortGuard`](../../src/core/vkcore/renderer.cpp#L2843) | 2 つの RAII ガード | 何が違うのか | 前者は例外離脱時に必ず `abortLogicalFrame()`。後者は `generation != 0` のときだけ runtime を保持し、`complete()` されずに壊れたら rollback する |
+| [companion 3 点セット](../../src/core/vkcore/renderer.cpp#L2991) | companion_participants / claims / apply_with_companions | 3 つの役割 | companion が「一緒に取り込む他参加者(shader / material)」を宣言し、claims が所有リクエストを判定し、apply_with_companions が 1 回で処理する。グラフ・シェーダ・マテリアル値の変更が**同一トランザクション**として一括成否になることを保証(→ §9.23.12) |
+| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L5526) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
+| [`LogicalFrameAbortGuard`](../../src/core/vkcore/renderer.cpp#L2863) | 2 つの RAII ガード | 何が違うのか | 前者は例外離脱時に必ず `abortLogicalFrame()`。後者は `generation != 0` のときだけ runtime を保持し、`complete()` されずに壊れたら rollback する |
 | [record / end の分離](../../src/core/vkcore/renderer.cpp#L1973) | `latest_scene_color/depth` の追跡 | 役割分離の理由 | **未執筆**(根拠がコードにない) |
 | [sprite anchor の layer 計算](../../src/core/vkcore/renderer.cpp#L2099) / [snapshot copy の layer](../../src/core/vkcore/renderer.cpp#L2244) | sequential layer の選択 | いつ view_index が層になるか | sequential 実行で、かつ対象の `array_layers` が view 数以上(snapshot copy 側は source が layered)のときだけ `scheduled.view_index` を層として使い、それ以外は 0。ただし swapchain 出力の color だけは `view_index` をそのまま層として引く。逆順スキャンの理由は[第6章「sprite anchor の逆順スキャン」](06_rendering_vulkan_shader.md) |
 | [`per_view_sort` から `draw_sort_view_index` へ](../../src/core/vkcore/renderer.cpp#L2471) | multiview / sequential の選択 | 対応関係 | → 上記「phase × sort_view_index の直積」と対 |
 | [jitter provider / pattern / phases](../../src/core/vkcore/renderer.cpp#L2736) | ジッタ設定の解決 | 3 つの関係 | → [第6章「ジッタは w 倍で足す」「epoch ペアが reset 信号」](06_rendering_vulkan_shader.md) |
-| [`watched_sources`](../../src/core/vkcore/renderer.cpp#L2931) | 監視対象の集合 | 複数参照を入れる根拠 | **未執筆**(§9.23.12 の claim モデルと対で書く必要がある) |
+| [`watched_sources`](../../src/core/vkcore/renderer.cpp#L2959) | 監視対象の集合 | 複数参照を入れる根拠 | **未執筆**(§9.23.12 の claim モデルと対で書く必要がある) |
 | [`shader_oetf_unorm_fallback`](../../src/core/vkcore/renderer.cpp#L1044) | 出力変換のトレース | 分岐と paired_storage_edges | **未執筆**(§9.23.14 の format スコアリングと対) |
 | [`native_scope_has_work`](../../src/core/vkcore/renderer.cpp#L1193) | 空スコープの判定 | 判定基準 | **未執筆**(根拠がコードにない) |
-| [staged 世代の遷移](../../src/core/vkcore/renderer.cpp#L3224) と [`after_publish`](../../src/core/vkcore/renderer.cpp#L3406) | finalized / ready / runtime_published | 対称性 | 上記「`transaction->generation == 0`」と同じ世代機構。個々の遷移表は**未執筆** |
-| [`graph_variant_policy`](../../src/core/vkcore/renderer.cpp#L4890) | variant と view family の方針 | RenderGraphVariant との対応 | **未執筆**(根拠がコードにない) |
-| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5251) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
-| [family / view ごとの jitter と reset epoch](../../src/core/vkcore/renderer.cpp#L3744) | トレース出力 | なぜ family/view ごとに追うのか | **未執筆**(根拠がコードにない) |
-| [RT 無しの空 diagnostics](../../src/core/vkcore/renderer.cpp#L3933) | `ray_query_acceleration_structures` | 空になる条件 | **未執筆**(根拠がコードにない) |
-| [`sequential_count < count` の拒否](../../src/core/renderer/frameresources.cpp#L117) | スロット数の下限 | 何を保証するか | in-flight frame ごとに sequential_count 個のスロットを確保するので、**main family の全 view が自分専用の frame/resolution UBO スロットを持つ**(view 同士の UBO 別名衝突の防止) |
-| [`updateSceneDescriptors()`](../../src/core/renderer/frameresources.cpp#L343) | 全 set の無条件更新 | 差分検知しない理由 | 呼び出し側に同値比較ガードがあり、buffer identity が変わったときと `configureViewCount` の再構築時にしか来ないので、関数内で差分を取る意味がなく、全スロット書き直しの方が漏れがない |
-| [multiview のスロット分離](../../src/core/renderer/frameresources.hpp#L88) | seq / multiview の別配列 | last_data が vector になる理由 | **未執筆**(上記スロット確保と対で書く必要がある) |
-| [RT SBT のリース](../../src/core/renderer/frameresources.cpp#L417) / [ray query descriptor](../../src/core/renderer/frameresources.cpp#L435) | 世代の保持と二重 bind | 何を指しているのか | **未執筆**(根拠がコードにない) |
+| [staged 世代の遷移](../../src/core/vkcore/renderer.cpp#L3252) と [`after_publish`](../../src/core/vkcore/renderer.cpp#L3434) | finalized / ready / runtime_published | 対称性 | 上記「`transaction->generation == 0`」と同じ世代機構。個々の遷移表は**未執筆** |
+| [`graph_variant_policy`](../../src/core/vkcore/renderer.cpp#L4968) | variant と view family の方針 | RenderGraphVariant との対応 | **未執筆**(根拠がコードにない) |
+| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5329) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
+| [family / view ごとの jitter と reset epoch](../../src/core/vkcore/renderer.cpp#L3746) | トレース出力 | なぜ family/view ごとに追うのか | **未執筆**(根拠がコードにない) |
+| [RT 無しの空 diagnostics](../../src/core/vkcore/renderer.cpp#L3961) | `ray_query_acceleration_structures` | 空になる条件 | **未執筆**(根拠がコードにない) |
+| [`sequential_count < count` の拒否](../../src/core/renderer/frameresources.cpp#L116) | スロット数の下限 | 何を保証するか | in-flight frame ごとに sequential_count 個のスロットを確保するので、**main family の全 view が自分専用の frame/resolution UBO スロットを持つ**(view 同士の UBO 別名衝突の防止) |
+| [`updateSceneDescriptors()`](../../src/core/renderer/frameresources.cpp#L312) | 全 set の無条件更新 | 差分検知しない理由 | 呼び出し側に同値比較ガードがあり、buffer identity が変わったときと `configureViewCount` の再構築時にしか来ないので、関数内で差分を取る意味がなく、全スロット書き直しの方が漏れがない |
+| [multiview のスロット分離](../../src/core/renderer/frameresources.hpp#L114) | seq / multiview の別配列 | last_data が vector になる理由 | **未執筆**(上記スロット確保と対で書く必要がある) |
+| [RT SBT のリース](../../src/core/renderer/frameresources.cpp#L389) / [ray query descriptor](../../src/core/renderer/frameresources.cpp#L435) | 世代の保持と二重 bind | 何を指しているのか | **未執筆**(根拠がコードにない) |
 | [`SubmissionLeaseBundle`](../../src/core/vkcore/deletionqueue.hpp#L67) | 入れ子リースの upstream | 完了順序 | **未執筆**(根拠がコードにない) |
 | [`declaration_ordinal`](../../src/core/renderer/polygoninstancecontainer.cpp#L659) | 単調増加の宣言順 | 単調性が要る理由 | `DrawQueueBuilder` 側の[一意性検査](../../src/core/renderer/drawqueuebuilder.cpp#L504)(重複したら拒否)を満たし、`stableOrderKey` の**最後の要素=同点時の決定的なタイブレーク(宣言順)**になる |
 | [`prepareSceneReplacement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L452) / [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L682) | 次フレーム回収 | いつ実際に解放されるか | **未執筆**(manifest の `next-frame-retirement-queue` 語彙と対で書く必要がある) |
@@ -1362,11 +1362,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: [`CommonVertStruct`](../../src/core/model/vertbufcontainer.hpp#L23)(`vec3 pos; vec3 normal; vec4 tangent; vec2 texcoord; vec4 color`、[サイズ 64・offset 0/12/24/40/48 を static_assert で固定](../../src/core/model/vertbufcontainer.hpp#L36))です。バイトオフセットを word 単位に割ると normal = 3、texcoord = 10、color0 = 12 になります。生成側は [`makeRayGroupLayoutVirtualInclude()`](../../src/core/shader/raygrouplayout.cpp#L853)。
 
-#### [`BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L590) — 一意性と再利用判定
+#### [`BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L596) — 一意性と再利用判定
 
 **分からなくなること**: BLAS のキャッシュキーに transform が入らない理由。
 
-**答え**: BLAS の build 入力は geometry_allocation_id が決める頂点 / インデックス範囲と `VkGeometryFlagsKHR` の 2 つだけで完全に決まるからです(transform は TLAS 側)。[`can_reuse`](../../src/core/renderer/accelerationstructure.cpp#L780) は `active_state_ != nullptr && !pool_invalidated && !model_invalidated` で、この 2 つの世代は[別カウンタ](../../src/core/renderer/accelerationstructure.cpp#L742)として診断に出ます。
+**答え**: BLAS の build 入力は geometry_allocation_id が決める頂点 / インデックス範囲と `VkGeometryFlagsKHR` の 2 つだけで完全に決まるからです(transform は TLAS 側)。[`can_reuse`](../../src/core/renderer/accelerationstructure.cpp#L842) は `active_state_ != nullptr && !pool_invalidated && !model_invalidated` で、この 2 つの世代は[別カウンタ](../../src/core/renderer/accelerationstructure.cpp#L804)として診断に出ます。
 
 #### [`descriptorSetLayoutKeysFor()` の set 数決定](../../src/core/shader/pipelinefactory.cpp#L446) — reflection と ray_layout の階層
 
@@ -1401,8 +1401,8 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
 | [`classifyRayQueryStaticGeometry()`](../../src/core/renderer/accelerationstructure.cpp#L202) | 変形ジオメトリの除外 | skinned / morph / VAT を外す理由 | フレームごとに GPU 側で頂点が書き換わるので、**静的 pool アドレスに対して一度組んだ BLAS が内容と一致しなくなる**。除外理由別に名前を集計して診断へ出す |
-| [`primitiveCount == 0` の TLAS](../../src/core/renderer/accelerationstructure.cpp#L990) | 空 TLAS の確保 | なぜ確保が要るのか | コメントどおり「Vulkan requires a valid, 16-byte-aligned instances address even when primitiveCount is zero」。非アクティブ 1 件分を必ず確保・書き込み、build 時の primitiveCount は 0 のままにして miss 専用の有効な TLAS にする |
-| [`index_count / 3`](../../src/core/renderer/accelerationstructure.cpp#L879) | primitive 数の計算 | 3 で割ってよい前提 | 三角形リスト前提(→ [第10章](10_background_knowledge.md)) |
+| [`primitiveCount == 0` の TLAS](../../src/core/renderer/accelerationstructure.cpp#L1052) | 空 TLAS の確保 | なぜ確保が要るのか | コメントどおり「Vulkan requires a valid, 16-byte-aligned instances address even when primitiveCount is zero」。非アクティブ 1 件分を必ず確保・書き込み、build 時の primitiveCount は 0 のままにして miss 専用の有効な TLAS にする |
+| [`index_count / 3`](../../src/core/renderer/accelerationstructure.cpp#L941) | primitive 数の計算 | 3 で割ってよい前提 | 三角形リスト前提(→ [第10章](10_background_knowledge.md)) |
 | [`validateRayProfileAccelerationStructureFlags()`](../../src/core/renderer/accelerationstructure.cpp#L330) | eOpaque / eForceOpaque | profile 時の制約 | 両者は「片方でも立つと any-hit が省略され得る」点で等価な不透明化指定。profile 有効時は any-hit でのアルファ判定が必須なので、BLAS geometry でも TLAS instance 行でも**どちらのビットも立っていないこと**を要求し、立っていれば `pelican.ray_profile_opaque_as@1` |
 | [`lowerRayTracingTlasInstancePlan()`](../../src/core/renderer/accelerationstructure.cpp#L461) | ray_scene_rows の有無で分岐 | source_index の役割 | source_index は元の instance 配列への戻り参照。分岐の全体像は**未執筆** |
 | [`geometryName()`](../../src/core/renderer/accelerationstructure.cpp#L27) | asset/geometry/mesh/primitive/node | 5 階層の意味 | **未執筆**(§9.23.17 の glTF 階層と対) |
@@ -1496,7 +1496,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: バッファを太らせただけなのに、なぜ世代を進めるのか。
 
-**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L113) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L4759)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
+**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L113) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L4797)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
 
 #### [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) — 固定容量 8 + overflow_count
 
@@ -1742,7 +1742,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: depth は色と違い**レンダーパスの出力ではなく、エンジン側の depth を外部からコピーして XR に渡す**運用だからです。`eUndefined` → `eTransferDstOptimal` へ遷移させ、dstAccess を `eTransferWrite` にしています。
 
-#### [depth extension の 4 値を書く行](../../src/core/openxr/openxrcompositiontarget.cpp#L1230) — minDepth/maxDepth と nearZ/farZ
+#### [depth extension の 4 値を書く行](../../src/core/openxr/openxrcompositiontarget.cpp#L1245) — minDepth/maxDepth と nearZ/farZ
 
 **分からなくなること**: 深度の範囲を表す値が 2 組あること。
 
@@ -1752,18 +1752,18 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 |---|---|---|---|
 | [`pollRetiredEpochs()`](../../src/core/vkcore/swapchainframetarget.cpp#L1559) | quarantine と retire の分岐 | 隔離される条件 | GPU 完了済みだが present 未証明で surface が lost の場合、maintenance1 ありなら present fence が lost 後も完了を証明できるのでポーリング続行。無い場合は**「後続 reacquire は同一 surface 内でしか意味を持たない」ため証明が永久に得られず**、隔離して device teardown まで保持しつつリストからは外す |
 | [`SwapchainEpoch` のメンバー宣言順](../../src/core/vkcore/swapchainframetarget.cpp#L483) | 逆順破棄の設計 | 宣言順が仕様である理由 | (a) `surface_epoch` リースを先頭に置いて全 swapchain 子オブジェクトが `VkSurfaceKHR` より先に壊れるようにし、(b) command_pool を command_buffers より前、(c) swapchain を image view / semaphore / fence より前に置く。**Vulkan の親子生存期間規則を宣言順だけで自動的に守る** |
-| [present 後の注入](../../src/core/vkcore/swapchainframetarget.cpp#L2480) | 戻り値だけ差し替える | 本物を呼ぶ理由 | present は**エラーを返してもセマフォ待ちを実際にキューへ積み**、maintenance1 の present fence も既にシグナル対象になっている。本番と同じリソース lifetime 契約を保ったまま故障を注入するため。→ §9.22「fault injection seam」 |
+| [present 後の注入](../../src/core/vkcore/swapchainframetarget.cpp#L2500) | 戻り値だけ差し替える | 本物を呼ぶ理由 | present は**エラーを返してもセマフォ待ちを実際にキューへ積み**、maintenance1 の present fence も既にシグナル対象になっている。本番と同じリソース lifetime 契約を保ったまま故障を注入するため。→ §9.22「fault injection seam」 |
 | [`recovery_anchor` へ candidate を移す行](../../src/core/vkcore/swapchainframetarget.cpp#L1699) / [anchor 選択](../../src/core/vkcore/swapchainframetarget.cpp#L1725) | framebuffer.revision 不一致 | 捨てずに回す理由 | candidate は完成しているが framebuffer が変わって陳腐化した場合、破棄すると**「非退役 swapchain が 2 つ」になる / ウィンドウが掴まれたままになる**。candidate を `recovery_anchor` に移し、次の再構築の oldSwapchain として再利用しつつリトライを予約する |
 | [format スコアリング](../../src/core/vkcore/swapchainframetarget.cpp#L263) | 20 / 10 / 0 の重み | 数値の根拠 | **未執筆**(スコア値の根拠コメントが無い)。実装は sRGB nonlinear の SRGB を 20、同 colorSpace の UNORM を 10、他 0 で `stable_sort` し、present mode も mailbox を先頭に安定ソートするだけ |
 | [`chooseSwapchainImageCount()`](../../src/core/vkcore/swapchainframetarget.cpp#L175) / [composite alpha](../../src/core/vkcore/swapchainframetarget.cpp#L204) / [preTransform 固定](../../src/core/vkcore/swapchainframetarget.cpp#L338) | swapchain 作成パラメータ | ヒューリスティックの根拠 | image count は Vulkan の一般則(→ [第10章](10_background_knowledge.md))。**composite alpha の優先順と preTransform=current + clipped=VK_TRUE の固定化の根拠は未執筆** |
-| [present fence の pNext](../../src/core/vkcore/swapchainframetarget.cpp#L2442) / [`present_wait_pending`](../../src/core/vkcore/swapchainframetarget.cpp#L2508) | 完了追跡の部品 | 個々の役割 | 上記「present 完了追跡の 2 系統」の一部。詳細は**未執筆** |
-| [acquire の lock](../../src/core/vkcore/swapchainframetarget.cpp#L2065) / [`markSurfaceLost()`](../../src/core/vkcore/swapchainframetarget.cpp#L1405) / [`abandonFrameSerial()`](../../src/core/vkcore/swapchainframetarget.cpp#L2618) | surface_epoch まわり | 一体で何を守るか | 上記 2 項目と一体。詳細は**未執筆** |
+| [present fence の pNext](../../src/core/vkcore/swapchainframetarget.cpp#L2462) / [`present_wait_pending`](../../src/core/vkcore/swapchainframetarget.cpp#L2528) | 完了追跡の部品 | 個々の役割 | 上記「present 完了追跡の 2 系統」の一部。詳細は**未執筆** |
+| [acquire の lock](../../src/core/vkcore/swapchainframetarget.cpp#L2065) / [`markSurfaceLost()`](../../src/core/vkcore/swapchainframetarget.cpp#L1405) / [`abandonFrameSerial()`](../../src/core/vkcore/swapchainframetarget.cpp#L2650) | surface_epoch まわり | 一体で何を守るか | 上記 2 項目と一体。詳細は**未執筆** |
 | [bootstrap epoch](../../src/core/vkcore/swapchainframetarget.cpp#L775) / [BuildRequest](../../src/core/vkcore/swapchainframetarget.cpp#L677) / [nonblocking](../../src/core/vkcore/swapchainframetarget.cpp#L2030) | 初期化と要求の粒度 | 別枠にする理由 | **未執筆**(根拠がコードにない) |
-| [XR swapchain の状態機械](../../src/core/openxr/openxrcompositiontarget.cpp#L738) / [reusable 判定](../../src/core/openxr/openxrcompositiontarget.cpp#L1006) | idle → acquired → waited → submitted → released | 再利用できる状態 | `beginLogicalFrame` は idle / released のみ再利用可。[「wait 成功前の release は不正」](../../src/core/openxr/openxrcompositiontarget.cpp#L814)なので、acquired 止まりの image は release せず `teardown_required` を立てて世代ごと破棄する |
-| [`beginView()`](../../src/core/openxr/openxrcompositiontarget.cpp#L403) / [endView の分岐](../../src/core/openxr/openxrcompositiontarget.cpp#L1117) / [view_family の終端](../../src/core/openxr/openxrcompositiontarget.cpp#L1170) | 順序強制と 2 経路 | sequential と multiview の同期差 | 上記 2 経路の排他性から従う。詳細は**未執筆** |
+| [XR swapchain の状態機械](../../src/core/openxr/openxrcompositiontarget.cpp#L740) / [reusable 判定](../../src/core/openxr/openxrcompositiontarget.cpp#L1008) | idle → acquired → waited → submitted → released | 再利用できる状態 | `beginLogicalFrame` は idle / released のみ再利用可。[「wait 成功前の release は不正」](../../src/core/openxr/openxrcompositiontarget.cpp#L816)なので、acquired 止まりの image は release せず `teardown_required` を立てて世代ごと破棄する |
+| [`beginView()`](../../src/core/openxr/openxrcompositiontarget.cpp#L403) / [endView の分岐](../../src/core/openxr/openxrcompositiontarget.cpp#L1119) / [view_family の終端](../../src/core/openxr/openxrcompositiontarget.cpp#L1172) | 順序強制と 2 経路 | sequential と multiview の同期差 | 上記 2 経路の排他性から従う。詳細は**未執筆** |
 | [`ViewState` と `SwapchainFrameState`](../../src/core/openxr/openxrcompositiontarget.cpp#L481) | フラグ群で表す状態 | 有効な組み合わせ | **未執筆**(遷移グラフの図が要る) |
 | [command buffer slot](../../src/core/openxr/openxrcompositiontarget.cpp#L124) / [`in_flight_frames_num`](../../src/core/openxr/openxrcompositiontarget.cpp#L386) | 索引式と枚数 | 決定基準 | **未執筆**(根拠がコードにない) |
-| [`queryViews()`](../../src/core/openxr/openxrcompositiontarget.cpp#L537) | 両眼で同じ extent を強制 | 揃える理由 | **未執筆**(max(recommended) と min(maxImageRect) の組み合わせという実装以上の根拠がない) |
+| [`queryViews()`](../../src/core/openxr/openxrcompositiontarget.cpp#L538) | 両眼で同じ extent を強制 | 揃える理由 | **未執筆**(max(recommended) と min(maxImageRect) の組み合わせという実装以上の根拠がない) |
 
 ### 9.23.15 physics
 
@@ -1865,7 +1865,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: この ID が指す粒度。
 
-**答え**: 1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L440)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L88)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L4759) 付近で使われます(→ §9.23.5 / §9.23.8)。
+**答え**: 1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L440)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L88)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L4797) 付近で使われます(→ §9.23.5 / §9.23.8)。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|

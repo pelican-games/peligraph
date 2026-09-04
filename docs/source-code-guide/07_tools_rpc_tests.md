@@ -230,7 +230,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L100) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3785))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3813))。
 
 ```text
 get_frame_plan 応答 = pelican.frame_plan v1
@@ -706,9 +706,9 @@ WP174 / TEST0 で `golden_image_test.cpp` は **分割・廃止** されまし�
 | [`golden_cases_test`](../../test/golden_cases_test.cpp) | [`runGoldenImages()`](../../test/golden_harness.hpp#L16) が画像許容差・RGBA8 hash・renderer trace / plan order を 1 回の inventory 走査で検証するほか、GPU draw / shadow / reflection 系 |
 | [`golden_temporal_test`](../../test/golden_temporal_test.cpp) | jitter / TAA / stereo / velocity 系 |
 | [`golden_timing_test`](../../test/golden_timing_test.cpp) | GPU timing の identity / ring / compute / sprite |
-| [`golden_framegraph_test`](../../test/golden_framegraph_test.cpp) | [`runFullscreenRebind()`](../../test/golden_harness.hpp#L28) で hot reload / resize 後の descriptor 再結合 |
-| [`golden_ssao_test`](../../test/golden_ssao_test.cpp) | [`runSsaoFlatGolden()`](../../test/golden_harness.hpp#L29) 以下、SSAO の flat / XR sequential / XR multiview / cube / planar |
-| [`golden_ssao_blur_test`](../../test/golden_ssao_blur_test.cpp) | [`runSsaoBlurFlatOracle()`](../../test/golden_harness.hpp#L34) 以下、SSAO blur の oracle 比較 |
+| [`golden_framegraph_test`](../../test/golden_framegraph_test.cpp) | [`runFullscreenRebind()`](../../test/golden_harness.hpp#L29) で hot reload / resize 後の descriptor 再結合 |
+| [`golden_ssao_test`](../../test/golden_ssao_test.cpp) | [`runSsaoFlatGolden()`](../../test/golden_harness.hpp#L30) 以下、SSAO の flat / XR sequential / XR multiview / cube / planar |
+| [`golden_ssao_blur_test`](../../test/golden_ssao_blur_test.cpp) | [`runSsaoBlurFlatOracle()`](../../test/golden_harness.hpp#L35) 以下、SSAO blur の oracle 比較 |
 
 `test/CMakeLists.txt` の [`pelican_golden_test_sources`](../../test/CMakeLists.txt#L1467) がこの 6 本を列挙し、全て `pelican_define_test(... GROUP golden_runtime GOLDEN GPU RUNTIME_SHADER pelican_golden_harness)` で登録されます。`GOLDEN` は `RESOURCE_LOCK pelican_gpu` を付けます([付与箇所](../../test/CMakeLists.txt#L163)。WP385 の統合前は `pelican_golden_gpu` という別名でした)。なお `golden_bloom_upsample_test` だけは `GROUP golden_bloom_upsample_runtime` の別登録で、このリストには入りません([登録](../../test/CMakeLists.txt#L1482))。
 

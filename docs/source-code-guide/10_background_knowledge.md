@@ -385,7 +385,7 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L19)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L313) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L325)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L45)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L313) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L325)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -401,7 +401,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_multiview`(Vulkan 1.1 コア)は、1 回の描画で複数のビュー(VR の左右目など)へ同時に書くための機能です。`viewMask` の**立っているビットの位置**が、シェーダで読める `gl_ViewIndex` の取りうる値になります。連続する N ビューなら `(1u << N) - 1u` が定型のマスクですが、N が 32 のときは左シフトが未定義になるため `UINT32_MAX` を直接使う分岐が要ります。dynamic rendering では `VkRenderingInfo::viewMask`、パイプライン側では `VkPipelineRenderingCreateInfo::viewMask` に同じ値を置き、両者が一致していなければなりません。
 
-**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L212)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L503) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L510)
+**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L212)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L503) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L629)
 
 ### sampler の filter と address mode
 
@@ -421,7 +421,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L682)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L145)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L86)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L740)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L145)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L86)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 
@@ -435,7 +435,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4637) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L83)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4672) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -539,7 +539,7 @@ OS のハンドル(Win32 の `HANDLE`、POSIX の fd)を確実に閉じるため
 
 **このリポジトリでは**: `src/core/renderer/modelinstance.hpp` の `ModelInstanceId{index, generation, scene_epoch}` と、`src/core/renderer/modelinstanceslots.hpp/.cpp` の `ModelInstanceSlots`(`generations_` / `alive_` / `free_indices_`)。`isLive()`(modelinstanceslots.cpp:10)が「scene_epoch 一致 ∧ `alive_[index]` ∧ `generations_[index] == id.generation`」の 3 条件を O(1) で確認し、外れれば `requireLive()`(15 行)が `"stale ModelInstanceId"` を throw します。`retire()`(62 行)はスロットを殺すとき `generations_` を +1 して `free_indices_` に積み、`nextId()` / `publish()` が空き添字を据え置きのまま世代だけ進めて再利用します。`ModelInstanceId` は公開ハンドルとしてユーザーのゲームコードがフレームや(ゲームロジックの)ホットリロードをまたいで保持するので、スロットが別モデルに再利用された後に古いハンドルを渡しても世代不一致で必ず弾かれ、他人のインスタンスを黙って書き換える ABA 事故を防げます。
 
-同じ形はモデル以外にもあります(2026-09-04 追記): [makeLogicalAssetId()](../../src/core/watch/reloadtransaction.cpp#L19) は index と generation を 64bit の上下 32bit へ詰めて 1 つの id にし、[liveRecord()](../../src/core/watch/reloadtransaction.cpp#L77) が世代不一致を stale として弾きます。フレーム側は [IFrameTarget::consumeFrame()](../../src/core/vkcore/frametarget.hpp#L279) が `expected_serial` を突き合わせて、前フレームのトークンで今フレームを終わらせることを防ぎます。index 空間が `uint32` で有限である以上、再利用のたびに世代を進める側にも枯渇検査が要る、というのは共通の注意点です。
+同じ形はモデル以外にもあります(2026-09-04 追記): [makeLogicalAssetId()](../../src/core/watch/reloadtransaction.cpp#L19) は index と generation を 64bit の上下 32bit へ詰めて 1 つの id にし、[liveRecord()](../../src/core/watch/reloadtransaction.cpp#L77) が世代不一致を stale として弾きます。フレーム側は [IFrameTarget::consumeFrame()](../../src/core/vkcore/frametarget.hpp#L280) が `expected_serial` を突き合わせて、前フレームのトークンで今フレームを終わらせることを防ぎます。index 空間が `uint32` で有限である以上、再利用のたびに世代を進める側にも枯渇検査が要る、というのは共通の注意点です。
 
 ### 単調増加する generation / epoch を「変わったか」の検出に使う
 
@@ -611,7 +611,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L2843) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L2858) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L381)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L2863) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L2878) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L381)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -641,7 +641,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 GPU 資源のように「今すぐには壊せない」ものを溜める破棄キューでは、2 つの考え方が要ります。1 つは**参照カウンタ**で、型消去した要素に仮想 `release()` を持たせたうえで、各要素が共有のカウンタを +1 して生まれ、解放時に -1 する。カウンタが 0 になった瞬間が「この束は全部片付いた」です(仮想関数だけだと「まだ何件残っているか」を数えるのに全要素を舐める必要があり、共有カウンタはそれを O(1) の整数読みにします)。もう 1 つは**受付と排出の分離**で、「新規の受付を止める(accepting = false)」と「溜まったものを流し切る(draining)」は別の遷移です。終了処理では必ず受付を止めてから流し切る順にしないと、排出中に積まれた要素が取り残されます。
 
-**使用場所**: [PendingCounter](../../src/core/vkcore/deletionqueue.hpp#L18) / [RetirementBatch](../../src/core/vkcore/deletionqueue.hpp#L50) / [accepting / draining のフラグ](../../src/core/vkcore/deletionqueue.hpp#L77) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L83)
+**使用場所**: [PendingCounter](../../src/core/vkcore/deletionqueue.hpp#L18) / [RetirementBatch](../../src/core/vkcore/deletionqueue.hpp#L50) / [accepting / draining のフラグ](../../src/core/vkcore/deletionqueue.hpp#L78) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ### moved-from 状態の契約
 
@@ -1140,7 +1140,7 @@ mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シ�
 
 OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメージを使うのに **3 つの呼び出しを必ずこの順で**通します。`xrAcquireSwapchainImage` が「次に書くイメージの添字」を返し、`xrWaitSwapchainImage` が「ランタイムがそのイメージを書き込み可能にし終えた」まで待ち、描画後に `xrReleaseSwapchainImage` でランタイムへ返します。仕様上、**wait が成功する前に release を呼ぶのは違反**で、また acquire していないのに release するのも違反です(`XR_ERROR_CALL_ORDER_INVALID`)。フレームの途中で失敗して抜けるときも、acquire 済みのイメージは必ず release して返さなければならないため、成功経路と失敗経路の両方から呼ばれる後始末を状態で守るのが定型になります。**外部で引くときの名前**は OpenXR 仕様の "Swapchain Image Management" 節です。
 
-**使用場所**: [XrCompositionTarget::Impl::acquireAndWait()](../../src/core/openxr/openxrcompositiontarget.cpp#L829) / [XrCompositionTarget::Impl::releaseSwapchain()](../../src/core/openxr/openxrcompositiontarget.cpp#L738) / [XrCompositionTarget::Impl::abortFrame()](../../src/core/openxr/openxrcompositiontarget.cpp#L766)
+**使用場所**: [XrCompositionTarget::Impl::acquireAndWait()](../../src/core/openxr/openxrcompositiontarget.cpp#L831) / [XrCompositionTarget::Impl::releaseSwapchain()](../../src/core/openxr/openxrcompositiontarget.cpp#L740) / [XrCompositionTarget::Impl::abortFrame()](../../src/core/openxr/openxrcompositiontarget.cpp#L768)
 
 **このコードベースでの注意**: 各 swapchain が `XrSwapchainState`(acquired / waited / released)を持ち、`release_attempted` フラグで二重 release を防いでいます。順序の契約を「呼び出し規約」ではなく状態機械として保持しているので、中断経路から呼んでも安全です。
 
@@ -1148,13 +1148,13 @@ OpenXR の swapchain は Vulkan の WSI とは別の API で、1 枚のイメー
 
 `xrWaitSwapchainImage` は指定した timeout の間にイメージが使えるようにならなかったとき `XR_TIMEOUT_EXPIRED` を返します。これは**成功系の戻り値**(`XR_SUCCEEDED()` が真)であって失敗ではないので、エラーとして扱って抜けるのは誤りです。正しくは、使えるようになるまで再試行します(`XR_INFINITE_DURATION` を渡す選択肢もあります)。OpenXR は成功コードが複数ある API なので、`XR_FAILED()` / `XR_SUCCEEDED()` のマクロで大雑把に判定したあと、`XR_SESSION_LOSS_PENDING` のような「成功だが以後は縮退する」コードを個別に見る、という二段の判定になります。
 
-**使用場所**: [XrCompositionTarget::Impl::acquireAndWait()](../../src/core/openxr/openxrcompositiontarget.cpp#L829)(`if (wait_result == XR_TIMEOUT_EXPIRED) continue;` の無限ループ)
+**使用場所**: [XrCompositionTarget::Impl::acquireAndWait()](../../src/core/openxr/openxrcompositiontarget.cpp#L831)(`if (wait_result == XR_TIMEOUT_EXPIRED) continue;` の無限ループ)
 
 ### XR_KHR_composition_layer_depth(深度をランタイムへ渡す)
 
 `XR_KHR_composition_layer_depth` は、projection layer の各ビューに深度イメージを添える拡張です。`XrCompositionLayerProjectionView::next` に `XrCompositionLayerDepthInfoKHR` を繋いで渡し、ランタイムはこれを再投影(late-stage reprojection / space warp)に使います。ここで 2 種類の値を混同しないことが重要で、`minDepth` / `maxDepth` は**深度イメージに書かれている値の範囲**(通常 0.0 と 1.0)、`nearZ` / `farZ` はその 2 つの値が対応する**メートル単位の距離**です。逆投影(reverse-Z)や無限遠平面を使っている場合、`nearZ` > `farZ` や `farZ = INFINITY` を渡すことになるので、投影行列の作り方と一致させる必要があります。
 
-**使用場所**: [XrCompositionTarget::Impl::endLogicalFrame()](../../src/core/openxr/openxrcompositiontarget.cpp#L1163)(ビューごとの `XrCompositionLayerDepthInfoKHR` を組んで `projection_views[view].next` に繋ぐ)
+**使用場所**: [XrCompositionTarget::Impl::endLogicalFrame()](../../src/core/openxr/openxrcompositiontarget.cpp#L1270)(ビューごとの `XrCompositionLayerDepthInfoKHR` を組んで `projection_views[view].next` に繋ぐ)
 
 ## 関連文書
 

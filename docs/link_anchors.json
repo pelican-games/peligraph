@@ -2158,7 +2158,7 @@
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/rendertiming.hpp|`gpu_timing_history_capacity = 120`": "inline constexpr std::size_t gpu_timing_history_capacity = 120;",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/rendertiming.hpp|`makeGpuTimingSampleLabel()`": "std::string makeGpuTimingSampleLabel(const GpuTimingSampleIdentity &identity);",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/swapchainframetarget.cpp|`outputFacts()`": "OutputCompileFacts outputFacts(",
-    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/swapchainframetarget.cpp|`readbackLastFrameRGBA8()`": "readbackLastFrameRGBA8() {",
+    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/swapchainframetarget.cpp|`readbackLastFrameRGBA8()`": "SwapchainFrameTarget::readbackLastFrameRGBA8() {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/swapchainframetarget.hpp|`SwapchainFrameTarget`": "class SwapchainFrameTarget final : public IFrameTarget {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/swapchainrecovery.cpp|`decideWindowWsiRecovery()`": "WindowWsiRecoveryDecision decideWindowWsiRecovery(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/vkcore/swapchainrecovery.cpp|`swapchainrecovery.cpp` 内": "// Surface/swapchain preparation is failure-contained: it has no",
