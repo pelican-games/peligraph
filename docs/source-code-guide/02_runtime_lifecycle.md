@@ -359,7 +359,7 @@ void updateFrameState() {
 - **位置が固定**: reload公開の後、`freeze_events` の直前。windowed / headless固定フレーム / RPC `step_frame` の全loop面で同じ位置です。
 - **未設置ならzero-state no-op**: hookが無い場合、moduleを生成せずmodule graphも変えません。
 
-実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L4423) の1箇所だけです。
+実装者は現在 [`EditorJournal` の登録箇所](../../src/core/communication/editorjournal.cpp#L5488) の1箇所だけです。
 
 > **設計決定:** 編集の公開点をフレーム境界の1箇所へ寄せることで、「エディタが動いていないビルド／セッションでは編集面が存在しない」状態を保っています。§2.4 のwindowed RPC dispatch（`updateFrameState()` の直後）と合わせて読むと、リクエスト受理→次フレーム冒頭で公開、という往復になります。
 

@@ -278,7 +278,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 - grandfathered の 7 名は `eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view` です。**これ以降エンジンが足すビルトインは必ず `pelican_` で始まります**(`pelican_ray_instance` が最初の適用例)。
 - エンジン所有として登録する registrar([EngineComponentRegisterer](../../src/core/ecs/enginecomponentregistrar.hpp#L15))は **host 専用**で、ゲーム DLL からは include しても**リンク以前にコンパイルが通りません**(`registerEngineComponent` を呼ぶ game DLL は専用のコンパイル失敗テストで守られています)。
-- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L27))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L223))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
+- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L27))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L225))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
 
 ## 4.3 シーンロードの流れ
 
