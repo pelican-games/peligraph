@@ -22950,6 +22950,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 6. **RT 系**: §4-P(procedural subset)は v3 で設計を打ち切り、**WP386 = RT3-2(static AABB + `.rint`)を 2026-09-04 に起票**(仕様レビュー待ち)。CARRIER-RT3 とは独立。その後 RT4 / RT5(carrier の list 宣言が前提)→ RT6 → RT7。穴埋め: WP384(frame transaction、仕様確定・未投入)、WP385 は統合済み
 
 **既知の穴(WP 化は別途判断)**
+- **web(共通形式)の subset 原則が enforcement されていない**(2026-09-04、マニュアル更新時の実測): web 側(`my_webpage/packages/pelican-webgpu`)の `bindPelicanScene()` は codec を持たない component 名を `opaque` として無検証で素通しし、`pelican_ray_instance` / `$list` / `ray_group_layout` の出現は 0 件。設計は「web が新要素を対応まで明示拒否する」ことで subset 原則を満たすとしていたが、いまは web が緩い(追随待ち)。web は別リポジトリなので別件で起票する(named reject を 1 箇所に足す小さな WP)
 - **放棄された scene transaction の teardown で GPU test process が hang**(WP380e の統合側変異 M1 / M5: assertion 後に process が終了せず ctest timeout 約 1500 s で回収。effect scope が遅い / callback から例外が抜ける状況で fixture の teardown が待ち続ける)。機能の欠陥ではなく test harness の後始末。次に fixture の teardown を触る WP に同梱
 - **frozen header audit に partial TU が混入しうる**(`rev380b` #9)/ **root・Studio・AUDIO OFF の受け入れ文言の不一致**(`rev380b` #10)。WP380e の範囲外として記録
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
