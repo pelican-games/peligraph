@@ -22540,6 +22540,16 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
   (4) `Flags` の `contains` が 1 bit 重なりで真、合成値・0 が往復しない / (5) encoder が `$list` invariants を検証せず、`RowIdExhausted` が無い / (6) range の `-0.0` が別 fingerprint /
   (7) `SchemaNode` が所有型で static init 中に heap / (8) v2 凍結が `sizeof` だけ、frozen fixture は component のみ。→ **WP382a-fix**(上段)で 1・3〜8、**WP382b** で 2。連鎖は 382a-fix で打ち切り。
   壊せなかった: reader の v3 分類(v3-only / v2+v3 / delay-load)、`$list` の decode 側拒否(behavior / event / component / prefab 展開後)、`overrides` の拒否、出荷 4 project と golden の tracked bytes
+
+#### WP382b 完了記録(統合側。2026-09-04、`6e44120e`)
+
+- **実装(codex sol max、上段。`622eac4d` + probe `dd82f7de`)**: journal の行 op `insert_component_field` / `remove_component_field`、行 address `{object, component witness, list_path, row_id, leaf_path}`、`before: row_id | end`、永続 high-water `next_id`、raw patch → typed validation → raw / typed atomic publish(authored tree は再 encode しない)、`ListIndexAddressingRejected`(index が実在する leaf を指しても拒否し値は不変。probe で固定)、CAS domain `component_list_row`
+- **統合側の変異**: 圧縮前の変異ランナー報告(3 件)は文脈から失われ、手元に残るのは index guard の変異(`fieldPathUsesListIndex` の呼び出しを外す → `wp382b_editor_test.cpp:629` で赤)だけ。残りの検出力は rev382b(codex)に攻めさせる
+- **main 取り込み(merge-resolver、opus。`3b8097cf`)**: 作業ブランチ(WP385 の lease + **WP382a-fix の `Schema::Node` 所有型**)を merge。textual 衝突 0、意味的衝突 56 件(`editorjournal.cpp` が旧 `SchemaNode` の `tag` / `children` / `presence` / `default_json` を直読み)→ 行 op は `Schema::Node`(`internal::hostSchemaNode` で 1 回変換)を歩く形に。行 op の validator は WP382a-fix が decode / encode 共用にした codec を `canonicalize_params` 経由で通る。非 GPU 1309 / 1311(赤 2 は WP334b の -j16 flake、単独で緑)、WP382 系 59 / 59
+- 全数: 統合 build エラー 0、1656 中 1653 緑。赤 3 のうち `contract_projection_gate` は既知。**`WP357 shipping fullscreen manifest …`(35 → 51)と `project_catalog_headless_smoke`(`pelican_catalog_showcase_game_logic.dll` 欠落)は、作業ツリーに未追跡で置かれた `projects/showcase/`(利用者側の作業中)を test が `projects/` 走査で拾ったもの**で、本 WP の退行ではない(showcase を除けば緑。tracked な 4 project は不変)
+- 記録: `ComponentCodec::schemaNode()` は flat の `SchemaNode` を返すままで、built-in codec の行 address 解決は lookup ごとに `Schema::Node` へ変換している(hot になれば共有 cache。記録のみ)
+- コードレビュー: rev382b(codex、`6e44120e`)
+
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
 **§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
