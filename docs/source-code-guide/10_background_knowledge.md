@@ -4,6 +4,7 @@
 (§10.1 末尾の 5 項目 — cube イメージ / subresource range / mip 数の上限 / タイル常駐 / dynamic rendering local read — のみ 2026-07-31 / 基準コミット `5a4f95e`)
 (§10.4 の 2 項目 — PE の import directory / 名前付き mutex と `Global\` 名前空間 — のみ 2026-09-04 / 基準コミット `d146b8b`)
 (§10.1 の swapchain 4 項目 — maxImageCount の 0 / currentExtent の特別値 / sharing mode / vulkan-hpp の戻り値規約 — のみ 2026-07-31 / 基準コミット `eeaaaaa`。frame target が surface/swapchain の世代管理へ作り替わったのに合わせて書き直したもの)
+(§10.1 の「色空間と伝達関数」と §10.5 の 3 項目 — Floyd–Warshall 法 / GJK と EPA / JSON-RPC 2.0 の予約エラーコード — のみ 2026-09-04 / 基準コミット `00074608`。他章から「第10章へ委譲」と書かれていた一般知識を後から補ったもの)
 
 第2〜9章の「🧩 難所」ブロックが**このコードベース固有の難しさ**を扱うのに対して、この章は **pelican2 のコードが「知っている前提」で書かれている一般知識**をまとめたものです。仕様の細部や定番イディオムの名前を知らないと、コード自体は素直なのに読めない — そういう箇所を拾ってあります。
 
@@ -12,7 +13,7 @@
 > **この章の行番号は追従されません(意図的です)。** 他章は markdown リンクで書かれ
 > [`tools/doclink.py`](../../tools/doclink.py) がコードの移動に追従させますが、この章は
 > `` `chooseSwapchainImageCount()`(175 行) `` の形で 227 箇所を引用しており、その 9 割は
-> 「直前で挙げたファイルの N 行目」です。全部をリンクにすると 69 項目が 3 件超ずつリンクを
+> 「直前で挙げたファイルの N 行目」です。全部をリンクにすると 73 項目が 3 件超ずつリンクを
 > 抱えて解説として読めなくなるため、**追従の代わりに上の基準コミットを宣言する**方を採って
 > います。行番号がずれていたら、その項目の基準コミットで読んでください。
 >
@@ -26,17 +27,23 @@
 
 ### swapchain の maxImageCount が 0 のとき
 
-`vk::SurfaceCapabilitiesKHR` の `minImageCount` / `maxImageCount` は、そのサーフェスに対して作れる swapchain イメージ枚数の範囲です。Vulkan 仕様では `maxImageCount` の 0 は「特別値で、上限がない(メモリなど他の要因が許す限り何枚でもよい)」と定義されています。0 を素直に上限として扱うと `std::min` で枚数が 0 になり、swapchain 作成が即失敗します。そのため「`maxImageCount > 0` のときだけクランプする」という書き方が定型になります。`minImageCount + 1` を狙うのも定型で、最低枚数ちょうどだと presentation engine が 1 枚握っている間 CPU が次のイメージを取得できず待たされるためです。なお `minImageCount` は「これ以上を要求せよ」という下限であり、ドライバはそれより多く返してくることがあるので、実際の枚数は `getSwapchainImagesKHR` の戻り値で数え直す必要があります。
+`vk::SurfaceCapabilitiesKHR` の `minImageCount` / `maxImageCount` は、そのサーフェスに対して作れる swapchain イメージ枚数の範囲です。Vulkan 仕様では `maxImageCount` の 0 は「特別値で、上限がない(メモリなど他の要因が許す限り何枚でもよい)」と定義されています。**仕様上の位置**は "Window System Integration (WSI)" 章 → "Surface Queries" 節 → 構造体 `VkSurfaceCapabilitiesKHR` の項です(章・節の**番号**は仕様の版ごとに動くので、ここでは番号を書きません。HTML 版はアンカー `#VkSurfaceCapabilitiesKHR` で直接引けます。次項の `currentExtent` も同じ構造体の同じ項です)。0 を素直に上限として扱うと `std::min` で枚数が 0 になり、swapchain 作成が即失敗します。そのため「`maxImageCount > 0` のときだけクランプする」という書き方が定型になります。`minImageCount + 1` を狙うのも定型で、最低枚数ちょうどだと presentation engine が 1 枚握っている間 CPU が次のイメージを取得できず待たされるためです。なお `minImageCount` は「これ以上を要求せよ」という下限であり、ドライバはそれより多く返してくることがあるので、実際の枚数は `getSwapchainImagesKHR` の戻り値で数え直す必要があります。
 
 **このリポジトリでは**: `src/core/vkcore/swapchainframetarget.cpp` の `chooseSwapchainImageCount()`(175 行)が `minImageCount + 1` を要求し(177 行)、`maxImageCount > 0` のときだけ `std::min` でクランプします(178〜181 行)。この値は `createSwapchain()` の `create_info.minImageCount`(313 行)へ渡す「下限の要求」でしかなく、実枚数はドライバが返します。数え直しをするのは swapchain 世代を 1 つ組み立てる `buildEpoch()`(963 行)で、`device.getSwapchainImagesKHR()`(1059〜1061 行)の戻りをそのまま `epoch->images` にし、**その個数ぶん**だけ color image view(`createColorImageViews()`、1062 行)・present semaphore(1079〜1081 行)・present 待ちフラグ(1082〜1083 行)・`VK_EXT_swapchain_maintenance1` の present fence(1086〜1095 行)・debug 名(1160〜1171 行)を回します。同じ epoch の中でも acquire semaphore とコマンドバッファは**イメージ枚数ではなく in-flight フレーム数**で回る(1076〜1078 行、1113〜1127 行)ので、「枚数で回るもの」と「フレームスロット数で回るもの」を混同すると present 待ちが 1 本足りない、という壊れ方をします。`+1` を狙うのは presentation engine が 1 枚握っている間も CPU が次のイメージを acquire できるようにするためで、`maxImageCount == 0` を上限として扱うと枚数 0 で swapchain 作成が即失敗し、そもそも表示に入れません。
 
 ### VkSurfaceCapabilitiesKHR::currentExtent の 0xFFFFFFFF
 
-`currentExtent` はサーフェスの現在のサイズですが、仕様では「`width` と `height` がともに `0xFFFFFFFF`(= `UINT32_MAX`)のとき、サーフェスサイズは swapchain 側の `imageExtent` によって決まる」という特別値になっています。これは Wayland のように「ウィンドウのサイズをアプリが決める」プラットフォーム向けの規定です。この場合はアプリが自前でフレームバッファサイズを調べ、`minImageExtent` / `maxImageExtent` の範囲にクランプして渡す必要があります。逆に特別値でなければ `currentExtent` をそのまま使うのが正解で、独自に計算した値を渡すと不一致になります。ウィンドウ最小化時に extent が 0 になる環境もあるため、0 のときはフレームを作らず抜ける、という分岐も定型です。
+`currentExtent` はサーフェスの現在のサイズですが、仕様では「`width` と `height` がともに `0xFFFFFFFF`(= `UINT32_MAX`)のとき、サーフェスサイズは swapchain 側の `imageExtent` によって決まる」という特別値になっています。前項と同じ `VkSurfaceCapabilitiesKHR`("Window System Integration (WSI)" 章 → "Surface Queries" 節、アンカー `#VkSurfaceCapabilitiesKHR`)の記述です。これは Wayland のように「ウィンドウのサイズをアプリが決める」プラットフォーム向けの規定です。この場合はアプリが自前でフレームバッファサイズを調べ、`minImageExtent` / `maxImageExtent` の範囲にクランプして渡す必要があります。逆に特別値でなければ `currentExtent` をそのまま使うのが正解で、独自に計算した値を渡すと不一致になります。ウィンドウ最小化時に extent が 0 になる環境もあるため、0 のときはフレームを作らず抜ける、という分岐も定型です。
 
 **このリポジトリでは**: `chooseSwapchainExtent()`(swapchainframetarget.cpp:185)が `currentExtent.width != std::numeric_limits<uint32_t>::max()` なら presentation engine が決めた `currentExtent` をそのまま採り(188〜191 行)、特別値のときだけ引数のフレームバッファ実サイズを `minImageExtent` / `maxImageExtent` へ `std::clamp` します(192〜201 行)。その実サイズは `Window::framebufferSnapshot()`(`src/core/os/window.cpp`:291)が返す `FramebufferExtentSnapshot`(extent と `revision` の組)で、GLFW の framebuffer size コールバックが mutex 下で書き込み、サイズが実際に変わったときだけ `revision` を進めます(window.cpp 216〜236 行)。決まった extent は epoch の `OutputCompileFacts` になり、publish 時に `Camera::setScreenSize()` へ渡って投影の縦横比になります(初期化 866 行 / epoch 差し替え 1660 行)。
 
 **「非ゼロになるまで待つ」入口はもうありません。**最小化などで extent が 0 のとき、`beginFrame()` は冒頭のスナップショット検査で `FrameBeginDisposition::unavailable` + `FrameUnavailableReason::zero_extent` を返して即座に抜け(2006〜2014 行)、`pumpMaintenance()`(1604 行)が復旧状態機械を `suspended_zero_extent` へ落とします(1853〜1865 行)。非ゼロに戻ったフレームで `resumeFromPositiveExtent()`(1887 行)が復帰し、そこから初めて swapchain の作り直しを予約します。`createSwapchain()` 自身もゼロ extent を `std::invalid_argument` で弾き(231〜235 行)、起動時にゼロだった場合は「bootstrap がエンジンループをブロックできない」として throw します(811〜818 行)。ブロックせず毎フレーム「今は出せない」と答える形にしてあるので、サイズ 0 の swapchain を作らないまま OpenXR のミラー窓もエンジンループも止まりません。
+
+### 色空間と伝達関数(OETF / EOTF)、linear と sRGB
+
+ライティングの加減乗除は「光の量に比例する値」= **linear(リニア)空間**で行わないと合いません。一方で 8 bit の画像や表示装置は、人の明るさ感度に合わせて非線形に符号化した値を扱います。この linear → 符号値の変換を **OETF**(opto-electronic transfer function、光電気伝達関数)、符号値 → linear の逆変換を **EOTF**(electro-optical transfer function、電気光伝達関数)と呼びます。sRGB は「この伝達関数 + 原色(色域) + 白色点」の組で定義された色空間で、伝達関数はよく指数 2.2 のべき乗で近似されますが、規格上は暗部だけを直線にした区分関数です — 順方向は `c <= 0.0031308 ? 12.92*c : 1.055*pow(c, 1/2.4) - 0.055`。したがって `pow(c, 1/2.2)` は近似であって sRGB そのものではありません。8 bit のまま linear で持つと暗部の階調が足りず縞(バンディング)が出るため、「計算は linear の float、保存と表示は符号化した 8 bit」という配分が定番になります。なお色空間は伝達関数だけでなく原色と白色点も含む語なので、「linear か sRGB か」という言い方は厳密には伝達関数の有無の対比です。
+
+**このリポジトリでは**: この区分関数がそのまま `src/core/resources/output_transform.frag` の `linearToSrgb()`(11〜16 行)にあり、swapchain が `*_SRGB` を採れずハードウェアの OETF が使えないときだけ `PELICAN_OUTPUT_UNORM_FALLBACK` 付きで呼ばれます(21 行)。どちらの経路で sRGB になったかは [第6章](06_rendering_vulkan_shader.md) §6.7 の `OutputCompileFacts::encoding_path`(`srgb_hardware` / `srgb_shader_unorm`)が申告し、中間の `display` target を linear 8 bit にしない理由(§6.1 の難所「format_class が format を上書き」)もこの「8 bit は符号化して持つ」に帰着します。
 
 ### sRGB フォーマットをスコアで選ぶ理由
 
@@ -363,6 +370,20 @@ Kahn 法は、入次数(その頂点へ入ってくる辺の数)が 0 の頂点�
 
 **このリポジトリでは**: `src/core/watch/reloadtransaction.cpp` の `topologicalOrder()`(105 行〜)。`ReloadCoordinator::execute()` は 1 トランザクション分のアクタを全部 `stage()` した後にこれを呼び、返ったインデックス順で staged 済みリソースを並べ替えてから `registry_.publish(ordered)`(337 行)へ渡します。各アクタの `after` に並ぶ依存先を `actor_for` から引いて「依存先 → 依存元」の辺を張って入次数を数え、`if (found == actor_for.end()) continue;`(118 行)で同一トランザクション外の依存(外側で既に満たされている前提)を読み飛ばします。この順序が要るのは `publish()` が渡された順に `content_revision` を進めて逆依存辺を張り直すためで、依存先を先に確定させないと依存元が古い版を掴みます。末尾の `result.size() != actors.size()`(137 行)が循環依存のトランザクションを例外にし、ホットリロードの差し替えを「全部通すか、全部やめるか」の原子的な単位に保ちます。
 
+### Floyd–Warshall 法と推移閉包(到達可能性の全点対計算)
+
+Floyd–Warshall 法(フロイド・ウォーシャル法)は、全頂点対の最短距離を求める古典的な動的計画法です。「中継してよい頂点を `0..k` に限ったときの答え」を `k` について 1 つずつ広げていく形をしていて、3 重ループの**最外が中継点 `k`** であることが正しさの条件になります(`k` の反復を 1 つ終えた時点で「中継点として `0..k` だけを使う答え」が完成している、というのが保たれる不変条件です)。距離ではなく「到達できるか否か」だけを bool で持てば同じ骨格が**推移閉包**(a→b と b→c があるなら a→c を張る、を閉じるまで繰り返した関係)の計算になり、更新式は `reach[i][j] |= reach[i][k] && reach[k][j]` になります。計算量は頂点数 V に対して O(V³)、記憶量は O(V²) で、疎なグラフでも密行列を持つぶん重いかわりに、実装が 3 行で済み辺の追加順に依存しません。ループ順を入れ替える(`k` を内側へ動かす)と、まだ更新されていない `reach[i][k]` を読むため閉包が不完全になりますが、**グラフの形によっては正しい答えが出てしまう**ので、テストで気づきにくい壊れ方をします。
+
+**このリポジトリでは**: `src/core/renderingpass/frameplanner.cpp` の `transitiveClosure()` が到達可否版で、`validateWritesAreOrdered()` が「同じ resource に書く 2 node のどちらが先か決まっているか」を `reach(a,b) || reach(b,a)` で検査します。frame graph は node 数が数十なので O(V³) が問題にならず、密行列のほうが読みやすい、という選択です。設計上の意味と壊し方は [第6章](06_rendering_vulkan_shader.md) §6.3 の難所「writes-writes の曖昧検出」にあります。
+
+### GJK と EPA(凸形状の距離計算と貫通量計算)
+
+**GJK**(Gilbert–Johnson–Keerthi 法)は、2 つの**凸**形状が交差しているかを、両者の **Minkowski 差**(片方の全点からもう片方の全点を引いた点集合。2 形状が交差することと、この差集合が原点を含むことは同値です)が原点を含むかどうかの問題に置き換えて解く反復法です。差集合を実際に構築せず、方向ベクトル `d` に対する **support 関数**(その方向で最も遠い点)だけを使って、原点を囲もうとする単体(simplex — 2D なら三角形、3D なら四面体)を少しずつ作り替えます。原点を囲めたら交差、囲めないまま「これ以上原点へ近づけない」に至ったら非交差で、そのとき単体から原点までの距離がそのまま 2 形状間の最短距離になります。凸であることが前提なのは、support 関数が形状全体を代表できるのが凸のときだけだからで、凹形状は凸分解するか凸包で近似する必要があります。
+
+**EPA**(Expanding Polytope Algorithm)は、GJK が「交差している」で終わったときに続けて走らせるアルゴリズムです。GJK が残した単体を種にして、Minkowski 差の境界へ向けて多面体を膨らませ続け、原点に最も近い面を見つけます。その面の法線と距離が、貫通を解消するのに必要な最小の移動 = **MTD**(minimum translation distance、最小移動距離)になります。GJK 単体では「どれだけめり込んでいるか」が出ない(交差の判定で止まる)ので、距離は GJK、貫通量は EPA、という役割分担になるのが定番です。どちらも反復法なので、最大反復数と収束の ε をどう置くかが実装ごとの差になります。
+
+**このリポジトリでは**: `src/core/phys/physquerysweep.cpp` が両方を持ちます。反復上限は定数で `kGjkIterations = 40` / `kEpaIterations = 256`、EPA の収束判定は `kEpaTolerance = 1.0e-6F`(19〜21 行)。GJK 側は 442 行のループで最近接点と分離判定を出し、交差した組だけ `EpaFace` を張り替える `penetration()`(657 行)へ進んで貫通量を求めます。呼び出し面と、ε クラスタや collider identity による順序付けの契約は [第5章](05_gameplay_and_services.md) の physics query 節にあります。
+
 ### CRC-32 の初期値 0xFFFFFFFF と最終反転(なぜ 0 から始めないか)
 
 CRC は本質的にメッセージを多項式とみなした剰余計算なので、レジスタを 0 で初期化すると先頭のゼロバイトが値をまったく動かしません。つまり `00 00 M` と `M` が同じ CRC になり、先頭に 0 が何個あるかを検出できなくなります。初期値を 0xFFFFFFFF にするのはこの盲点をつぶすためで、レジスタに 1 が立った状態から始めることで先頭ゼロもレジスタを撹拌します。最後の反転(0xFFFFFFFF との XOR、C++ では `~crc`)は末尾側に対する同じ対策で、これを入れておくと「メッセージ+CRC」全体を再計算した残差が 0 ではなく固定の非ゼロ値になり、末尾にゼロバイトが付いた破損も検出できます。この 2 つを合わせて CRC-32/ISO-HDLC(zlib・PNG・Ethernet と同じ変種)と呼びます。
@@ -394,6 +415,22 @@ zlib ラッパ(RFC 1950)は deflate データの前に CMF/FLG の 2 バイト�
 ここで効くのが安定ソートです。同じソートキーを持つ要素同士の相対順序が入力順(= 宣言順・走査順)のまま保たれるので、「レイヤが同じなら後に書いたものが上」という直感的な規則が、追加のタイブレーク実装なしで得られます。逆に `std::sort` は等価要素の順序を保証しないため、同じ結果を再現したければ宣言順のシーケンス番号を明示的にキーへ入れる必要があります。
 
 **このリポジトリでは**: `src/core/ui/module.cpp` の `visitNodes()`(84 行)が node.children を DFS でたどり、各ノードの `QuadCommand` に `layer` と `decl_seq` を写して平坦な配列へ push するだけに徹します。`src/core/ui/drawcommands.cpp` の `buildDrawBatch()`(10 行)がそれを `std::stable_sort` で `(layer, decl_seq)` 昇順に並べ直し、隣り合う同一 `key`(テクスチャページ・サンプラ・シザー)を 1 本の `run` にまとめてステート変更を減らします。走査中に正しい順を作ろうとすると layer 指定が親子をまたぐたびに破綻するため両者を分けており、加えて 1 ノードが複数 quad を出す場面(nine-patch の 9 セルや `visitNodes()` のグリフ列は layer も decl_seq も同値)では `std::sort` だと並びが崩れるので、描画順を決定的にするには stable でなければなりません。ヒットテスト用の前順走査は別関心事として `createRuntimeWidgets()`(193 行)が `traversal` に溜めます。
+
+### JSON-RPC 2.0 の予約エラーコード(出典は RFC ではない)
+
+`-32700` のような負の大きな数がエラーコードとして出てくるのは JSON-RPC 2.0 の規約です。まず出典について — **JSON-RPC 2.0 は IETF の RFC ではありません**。JSON-RPC Working Group が jsonrpc.org で公開している仕様(2010-03-26、2013-01-04 修正)で、RFC 番号は割り当てられていません(RFC があるのは JSON のデータ形式のほう = RFC 8259 です)。予約コードは仕様の **§5.1 "Error object"** の表に載っていて、次の 5 つが事前定義です。
+
+```text
+-32700  Parse error       受け取ったテキストが JSON として不正
+-32600  Invalid Request   JSON ではあるが Request object として不正
+-32601  Method not found  そのメソッドが無い
+-32602  Invalid params    パラメータが不正
+-32603  Internal error    サーバ内部エラー
+```
+
+さらに `-32000` から `-32099` が「実装が定義してよいサーバエラー」として予約され、`-32768` から `-32000` までの全体が「仕様側の予約域」です。したがって**アプリ固有のエラーは、予約域の外(`-31999` 以上、あるいは正の値)を使うか、`-32000..-32099` の実装定義枠を使うか**のどちらかになります。この数値がなぜ飛び飛びなのかに意味はなく、既存実装との衝突を避けるために選ばれた区画です。
+
+**このリポジトリでは**: `src/project/jsonrpc.hpp` の `namespace JsonRpcErrorCodes`(12〜19 行)が `parseError = -32700` / `invalidRequest = -32600` / `methodNotFound = -32601` / `invalidParams = -32602` と、実装定義枠の `applicationError = -32000` / `renderDocCaptureError = -32010` を持ちます。事前定義の 4 つは仕様どおりで、後ろ 2 つは `-32000..-32099` の枠内に収めた pelican 固有コードです([第7章](07_tools_rpc_tests.md) の protocol 層)。`-32603` internal error は現在この enum に無く、内部失敗も `applicationError` に寄せています。
 
 ### 正規表現でパスやページ名を検証するときの、区切り文字とドットの扱い
 

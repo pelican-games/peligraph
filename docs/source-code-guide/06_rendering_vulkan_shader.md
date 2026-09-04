@@ -2,7 +2,28 @@
 
 [索引へ戻る](README.md) / [前章](05_gameplay_and_services.md) / [次章](07_tools_rpc_tests.md)
 
-この章は、設定ファイルに書かれた「この順で、この画像へ描く」が、最終的に Vulkan のコマンドへ変換されるまでを追います。Pelican の描画層は、単純な `Renderer` 1 クラスではありません。次の5層に分けて読むと見通しがよくなります。
+この章は、設定ファイルに書かれた「この順で、この画像へ描く」が、最終的に Vulkan のコマンドへ変換されるまでを追います。Pelican の描画層は、単純な `Renderer` 1 クラスではありません。まず地図として、次の 5 層を頭に置いてください。
+
+```text
+(1) コンパイラ program … rendering JSON を GPU に触らずに型付き定義へ落とす
+(2) 計画             … その定義から論理グラフ / 物理ターゲットプラン / FramePlan を作る
+(3) GPU 登録と世代   … 画像・shader・pipeline・descriptor を作り、1 回の publish で差し替える
+(4) pass dispatch    … pass 種別ごとの renderer(Material / Fullscreen / UI …)へ振り分ける
+(5) Vulkan backend   … device、frame target、image layout、コマンド記録を扱う
+```
+
+**先に 1 文だけ定義しておく語。** 以下は第6章の本文が説明なしに使い始める語です。深い扱いは各節にあります。
+
+- **feature** — rendering config に pass・render target・shader define・宣言をまとめて足し引きできる合成単位。`engine://features/*.json` か project 側の JSON として書かれ、外すとその feature が持ち込んだ pass と target が丸ごと消えます([用語集](../manual/14_glossary.md))。
+- **frame graph** — 1 フレームで実行する pass / compute task を node、`reads` / `writes` / `after` / `before` を辺とする有向グラフ。実行順と barrier はここから決まります(§6.3、[用語集](../manual/14_glossary.md))。
+- **view family** — 同じ graph を複数の視点で実行するときの「視点の束」の論理名(`$main`、`$shadow/directional` など)。視点数(cardinality)を決めるのは runtime 側の provider です(§6.4、[用語集](../manual/14_glossary.md))。
+- **論理プラン / 物理プラン** — 論理プラン(`CompiledLogicalRenderGraph`)は resource を SSA 値と read footprint だけで表した device 非依存の表現、物理プラン(`VulkanTargetPlan`)はそこへ実フォーマット・sample 数・scope・view 実行を載せた device 依存の表現です(§6.1)。
+- **SSA** — static single assignment。「1 つの値は 1 回しか書かれない」形のこと。ここでは render target 名に版を付けた `{resource, version}` を 1 個の値として扱い、辺を名前ではなく値で張ります(§6.1 の難所)。
+- **format_class** — render target 宣言に書く色の役割(`scene` / `display` / `data` / `explicit(...)`)。実フォーマットは authored `format` ではなくこれと HDR の有無から決まります(§6.1 の難所)。
+- **scope-execution-major** — コマンド記録のループ順が「scope → 実行(view) → その scope の node 全部」であること。「view ごとに全 node」ではありません(§6.1 の難所)。
+- **置換可能な完全パッケージ** — コンパイラが自動生成した物理プランの代わりに、外部が丸ごと差し込める物理プラン一式。検証を通した証拠は別の marker 型が持ちます(§6.1 の難所)。
+
+層ごとの責務と入口は次のとおりです。
 
 | 層 | 主な責務 | 入口 |
 |---|---|---|
@@ -151,6 +172,26 @@ WP172 で **第3の variant「preview」** が加わりました。同じ `loadR
 > enforceCanonicalOrder(passes):     # 合成の最後に、配列順で 1 パス
 >   通常 pass: after += 直前 anchor;  明示関係が無ければ after += 直前 pass
 > ```
+>
+> **具体例**: 同梱 feature の [`velocity.json`](../../src/core/resources/features/velocity.json)(`"insert": "before:post_main"`)と [`taa.json`](../../src/core/resources/features/taa.json)(`taa_resolve` が `"after:post_main"`、`taa_composite` が `"after:taa_resolve"`)を、この順で合成すると配列はこう動きます。
+>
+> ```text
+> canonical 化直後   … __anchor_sprite, __anchor_post_main, __anchor_tonemap, …
+>
+> velocity_pass  "before:post_main"   前進しない → anchor の直前へ
+>   … __anchor_sprite, velocity_pass, __anchor_post_main, __anchor_tonemap, …
+>   velocity_pass["before"] += "__anchor_post_main"
+>
+> taa_resolve    "after:post_main"    canonical anchor なので次の anchor の手前まで前進
+>   … __anchor_post_main, taa_resolve, __anchor_tonemap, …
+>   taa_resolve["after"] += "__anchor_post_main"
+>
+> taa_composite  "after:taa_resolve"  canonical anchor に無い名前 → 第 2 段(pass 名)で一致
+>   … __anchor_post_main, taa_resolve, taa_composite, __anchor_tonemap, …
+>   taa_composite["after"] += "taa_resolve"
+> ```
+>
+> 依存名に入るのは**一致した node の `name` フィールド**です(canonical anchor なら `__anchor_post_main`、pass 名一致なら `taa_resolve`)。もし `after:` を素朴に「anchor の位置 + 1」で挿していたら、`after:post_main` を持つ feature が 2 つある構成で後から合成した側が前に入り、宣言順と逆になります。
 >
 > **手がかり**: [`findAnchorMatches()`](../../src/project/featurecompose.cpp#L1699) は 2 段構えで、第 1 段が `type == "canonical_anchor"` かつ `anchor` フィールド一致、ヒット 0 のときだけ第 2 段で**任意の pass 名**を見ます(`shadow_directional.json` の `before:lighting_pass`、`taa.json` の `after:taa_resolve` が第 2 段)。複数一致は例外です。`last_active_pass` は配列要素への生ポインタで、`appendAfter()` が要素の中身しか変えないから有効です。ここに `passes.insert` を足すと即ダングリングします。
 >
@@ -855,6 +896,18 @@ headless capture は [`RenderTarget::captureLastFrameToPng()`](../../src/core/vk
 > retire: 後継 epoch の image を再取得できた ⇒ それ以前の epoch を退役してよい
 > ```
 >
+> **具体例**: 同じ `VkResult` が site でどう分かれるかを、実際の決定表([`decideWindowWsiRecovery()`](../../src/core/vkcore/swapchainrecovery.cpp#L87))から 4 行だけ抜くとこうなります。
+>
+> ```text
+> VkResult                 分類                    site=acquire        site=swapchain_create
+> eNotReady / eTimeout     not_ready               drop_frame          retry_later
+> eSuboptimalKHR           refresh_advisory        proceed_and_refresh retry_later
+> eErrorOutOfDateKHR       swapchain_unavailable   replace_swapchain   replace_swapchain
+> (表にない未知のエラー)   fatal                   fatal               retry_later
+> ```
+>
+> つまり window をドラッグでリサイズしている最中の典型列は「present が `eSuboptimalKHR` → **そのフレームは表示したうえで**次の作り直しを予約」→「次の acquire が `eErrorOutOfDateKHR` → `replace_swapchain`」です。同じ `eErrorOutOfDateKHR` でも `surface_create` / `surface_support_query` で観測すれば `replace_surface` になり、swapchain ではなく surface から作り直します。最後の行が site で割れるのは「準備呼び出しは途中まで公開された object を持たないので retry に落とせる、acquire / present は隠せない」という理由で、[`swapchainrecovery.cpp` 内](../../src/core/vkcore/swapchainrecovery.cpp#L139) のコメントが規範です。
+>
 > **手がかり**: zero-wait 経路(XR ミラー)は今も「落としてよい optional sink」で、`beginFrame(..., FrameBeginMode::nonblocking)` として渡されます([`openxrmirrorsink.cpp` 内](../../src/core/openxr/openxrmirrorsink.cpp#L203))。「今回は描かない」は例外ではなく `FrameBeginDisposition::unavailable` + `FrameUnavailableReason` です。[`FrameTargetStatus`](../../src/core/vkcore/frametarget.hpp#L176) の `surface_epoch` / `swapchain_epoch` / `recovery_attempt` / `exact_present_retirement` は**診断ではなく契約**で、テストはこの値を読みます([`swapchainrecovery_test.cpp`](../../test/swapchainrecovery_test.cpp)、プロトコル fake の窓は [`run_wsi_fault_window.cmake`](../../test/run_wsi_fault_window.cmake))。エポック回復プロトコルの全体像は [`docs/design_wsi_epoch_recovery.md`](../design_wsi_epoch_recovery.md) にあります。
 >
 > **不変条件**: 決定表は純粋関数のまま保つこと(実 WSI 経路とプロトコル fake テストが同じ表を共有するのが目的です)。call site を増やしたら決定表側も同時に増やし、呼び出し元で `vk::Result` を直接分岐しないこと。
@@ -888,6 +941,17 @@ frame target の color/depth と、frame graph 設定で宣言する offscreen t
 >                        ? e2DArray : e2D
 > 束縛時: array_view なら getLayeredImageViewForFrame()      # 全 layer の canonical view
 > ```
+>
+> **具体例**: port が `view: "family_array"` を宣言した sampled resource は、producer 側の物理化がどれであっても shader からは 1 種類に見えます。
+>
+> ```text
+> 宣言(.surface の port)   producer の物理化    descriptor に載る次元    shader が書く型
+> family_array             shared_2d        →  family_2d_array       →  sampler2DArray
+> family_array             sequential_2d    →  family_2d_array       →  sampler2DArray
+> family_array             layered_2d_array →  そのまま              →  sampler2DArray
+> ```
+>
+> 2 行目が WP239c で足りていなかった行です。planar reflection の capture target は view を順次実行する `sequential_2d` として物理化されるので、正規化を通さないと descriptor が `e2D` になり、`sampler2DArray` を要求する shader と ABI mismatch で落ちていました。同じ transparent material が main family と planar reflection の secondary family の両方で使われる以上、shader ABI を物理化ごとに変えるわけにいかない、というのがこの正規化の理由です。
 >
 > **手がかり**: 正規化は `descriptor_dimension` だけでなく、descriptor に**保存する `view_dimension` そのもの**も `family_2d_array` へ書き換えます。これが `buildScreenInputDescriptor()` 側の分岐を array 経路へ振り向け、`getLayeredImageViewForFrame()` が選ばれる理由です(片方だけ直すと descriptor 型と束縛 view が食い違います)。緩めたのは sampled resource だけで、input attachment・通常の `shared_2d` / `per_view`・`cube`・layered multiview の検証規則はそのままです。ABI mismatch の例外文には shader 側・解決後 descriptor・宣言 port の 3 つの dimension が並ぶようになったので、次の不一致はメッセージだけで切り分けられます。directional shadow の入力契約が `family_array` であることは [`makeBuiltinMaterialPassInputContract()`](../../src/project/materialscreeninput.cpp#L54) にあり、対応する shader 側は `sampler2DArray` です([`pelican_lighting_v1.glsl` 内](../../src/core/resources/shaders/include/pelican_lighting_v1.glsl#L17))。テストは [`headless_render_test.cpp`](../../test/headless_render_test.cpp) の "hybrid_v1 preset registers and renders a headless frame"(shadow の束縛を `getLayeredImageView()` と比較)、[`golden_cases_test.cpp`](../../test/golden_cases_test.cpp) の "planar reflection executes a clipped secondary view family on the GPU"、CPU 側は [`targetplanning_test.cpp`](../../test/targetplanning_test.cpp)(`directional_shadow` の view policy が `family_array` であることを固定)です。
 >

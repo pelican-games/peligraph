@@ -12,6 +12,14 @@
 
 既存の利用マニュアルや設計文書とは目的を分けるため、[`docs/manual/`](../manual/00_index.md) には追加せず、独立した `docs/source-code-guide/` にまとめています。既存文書を正として言い換えたものではなく、調査時点の実装をソースから逆引きした資料です。
 
+## この解説書の読み方
+
+この文書群が説明せずに使う前提知識は 3 つです — **C++20**(concept、`if constexpr`、fold 式、`consteval`、`<=>`)、**Vulkan の基礎**(instance / device / queue / swapchain / descriptor / pipeline がそれぞれ何であるか)、**ECS の一般概念**(entity と component を分けて持ち、system がその組み合わせを走査する、という考え方)。この 3 つ以外の一般知識は、本文の側に説明を添える方針です。
+
+Pelican が「こう呼んでいる」基本語(scene、asset、feature、render target、frame graph、behavior など)は [`docs/manual/14_glossary.md`](../manual/14_glossary.md) が正で、この解説書はそこを再定義しません。一方、**仕様の細部や定番イディオムを知らなくて読めない**とき(Vulkan の特別値、glTF の `byteStride`、CRTP、SFINAE、トポロジカルソートなど)は [第10章 前提知識の補足](10_background_knowledge.md) を引いてください。
+
+コードベース固有の難しさは各章の `🧩 難所` ブロックにまとめてあります(下の難所インデックス)。
+
 ## このガイドの特徴
 
 - 主要な説明には、実装へ直接ジャンプできる `ファイル#L行番号` リンクがあります。
@@ -34,7 +42,7 @@
 | [第8章 クラス・インターフェース索引](08_class_interface_index.md) | 主要型を責務別に引ける宣言/実装/テスト索引 | 名前から探したい人 |
 | [第9章 黒魔術・制約・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
 | [第10章 前提知識の補足](10_background_knowledge.md) | このコードが当然としている一般知識(Vulkan / glTF / C++ / OS / アルゴリズム / 座標と数値) | コードは素直なのに読めないとき |
-| [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、AS 行の identity(`MaterialRowIdentity`)、2 種の shadow mask、SBT、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
+| [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、AS 行の identity(`MaterialRowIdentity`)、2 種の shadow mask、SBT(shader binding table — RT pipeline が raygen / miss / hit の各 shader group handle を引くための GPU バッファ)、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
 
 ## 難所インデックス(詰まったときの逆引き)
 
@@ -50,12 +58,11 @@
 | [第7章](07_tools_rpc_tests.md) | 曖昧な重なり判定 / `edit` の逐次プリフライト / undo 前提の三段検証 / preview lease の状態機械 / preview の状態不変性検証 |
 | [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 / 捕まるものと捕まらないものが逆に見える |
 
-この表は各章の代表を拾ったものです。表に載っていない難所ブロックもあるので、その章の全件が要るときは
-`難所 —` で検索してください。
+この表に並ぶのは**中身の要約ではなく目印**です(「生成の逆順」「publish を落とさない」のように、そのブロックで一番間違えやすい一点を短く名指ししてあります)。タイトルから内容は復元できないので、章を開いて `難所 —` で検索し、該当ブロックを読んでください。表は各章の代表を拾ったものなので、その章の全件が要るときも同じ検索が要ります。
 
-一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**各章の初出箇所で 1〜2 文の説明を添えてあります**。
+一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**その語が実際に出てくる章の初出箇所で 1〜2 文の説明を添えてあります**(この索引には用語表を置きません)。どの章に出るかは語ごとに違う — たとえば Floyd–Warshall は frame graph の推移閉包を扱う[第6章](06_rendering_vulkan_shader.md)、SFINAE と ADL は登録マクロを扱う[第9章](09_black_magic_and_gotchas.md)です — ので、横断して引くときは `rg '<語>' docs/source-code-guide` が最短です。Pelican 固有の基本語は [`docs/manual/14_glossary.md`](../manual/14_glossary.md)、一般知識の側は[第10章](10_background_knowledge.md)にまとまっています。
 
-難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値の 69 項目)。
+難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値の 73 項目)。
 
 ## 最短の読解ルート
 

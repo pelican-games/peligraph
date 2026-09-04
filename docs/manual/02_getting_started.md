@@ -19,9 +19,14 @@
 | Qt6 | Pelican Studio(エディタ)用。6.10 以上。**player だけなら不要** |
 | CMake | ルートの [CMakeLists.txt](../../CMakeLists.txt) が全体を構成 |
 
+vma-hpp が v3.3.0 以降でなければならないのは、SDK 1.4 系で vulkan.hpp の例外クラスが
+改名され(`ValidationFailedEXTError` → `ValidationFailedError`)、その版から vma-hpp が例外送出を
+vulkan.hpp 側へ委譲して改名の影響を受けなくなったためです([src/core/CMakeLists.txt](../../src/core/CMakeLists.txt#L66) のコメントが理由の正)。
+
 quill / glm / nlohmann_json / argparse / tinyexr / miniaudio などは CMake の
 FetchContent で自動取得されます。shaderc は例外で、Vulkan SDK 同梱版を使います。
-`PELICAN_RUNTIME_SHADER_COMPILER=ON` の PC 開発ビルドには完全な Vulkan SDK が必要です。
+`PELICAN_RUNTIME_SHADER_COMPILER` は「**実行時に GLSL を SPIR-V へコンパイルする shaderc を組み込むか**」の
+CMake フラグです。`ON` の PC 開発ビルドには完全な Vulkan SDK が必要です(無いと configure が名指しで止まります)。
 ホスト PC で事前生成した SPIR-V を消費するモバイル等のターゲットは
 `-DPELICAN_RUNTIME_SHADER_COMPILER=OFF` で shaderc をリンクしません。
 
@@ -61,9 +66,11 @@ cmake . -B build -DSKIP_DEVSTUDIO=ON
 | `pelican_cli.exe` | `dist/`(Debug 構成では `dist_debug/`) |
 | `pelican_studio.exe` | `dist/`(同上) |
 
+**build ツリー**とは CMake が生成物を書き出すディレクトリ(この文書では `build/`)のことです。`pelican_player.exe` はそこに置かれたまま実行し、`dist/` へコピーされるのは `pelican_cli` と `pelican_studio` です([第10章](10_tools.md) §10.1)。
+
 ### 機能ユニット(PELICAN_WITH_*)
 
-エンジンの一部機能は CMake オプションで切り離せる「ビルドユニット」になっています(✅実装済み・WP40/51)。production機能は**既定 ON** なので、開発中は意識する必要はありません。experimental SPIR-V linkerだけは既定OFFです。配布ビルドで OFF にする方法は [第10章](10_tools.md) の `dist-config` を参照してください。
+エンジンの一部機能は CMake オプションで切り離せる「ビルドユニット」になっています(✅実装済み・WP40/51)。**ビルドユニット** = パージ可能なサブシステムを CMake オプション 1 個の単位にしたもので、OFF にするとそのコードはリンクされず、使おうとすると名指しのエラーになります([../design_build_tiers.md](../design_build_tiers.md))。production機能は**既定 ON** なので、開発中は意識する必要はありません。experimental SPIR-V linkerだけは既定OFFです。配布ビルドで OFF にする方法は [第10章](10_tools.md) の `dist-config` を参照してください。
 
 | オプション | 内容 |
 |---|---|
@@ -111,7 +118,7 @@ build/src/player/Debug/pelican_player.exe --project projects/example
 
 `--project` は**任意の作業ディレクトリから**実行できます(パス解決に cwd を使わないため)。相対パスは cwd 基準で絶対化されます。
 
-> **注意(重要):** example の **3D モデルやテクスチャなどのバイナリアセットは git 管理されていません**。「ファイル / サイズ / SHA-256 / 出所 / ライセンス」の一覧表は [../example_assets.md](../example_assets.md) にあるので、記載どおりのファイルを配置してからフルシーンを起動してください。
+> **注意(重要):** example の **3D モデルやテクスチャなどのバイナリアセットは git 管理されていません**。理由は、これらが showcase 用であって clean clone・CPU CI・ビルドユニットのスモークテストの入力ではないこと、そして権利と出所を台帳で管理するためです(リポジトリにも Git LFS にも実バイナリを足さない規約 — [../example_assets.md](../example_assets.md) 冒頭)。「ファイル / サイズ / SHA-256 / 出所 / ライセンス」の一覧表は [../example_assets.md](../example_assets.md) にあるので、記載どおりのファイルを配置してからフルシーンを起動してください。
 
 アセットストアの解決先と、まだ供給されていないファイルは、マニフェスト対応のコマンドで確認できます(手順の正本は [projects/example/README.md](../../projects/example/README.md)):
 
@@ -269,7 +276,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 pelican_player --headless --project mygame --frames 10 --render-out out/%04d.png
 ```
 
-ヘッドレス時は時刻が**固定ステップ**(dt = 1/fps、`--fps` で変更、既定 60)になり、実行が決定的になります。`--camera "px,py,pz,tx,ty,tz,fov_deg"` でカメラを上書きできます。
+ヘッドレス時は時刻が**固定ステップ**(dt = 1/fps、`--fps` で変更、既定 60)になり、実行が決定的になります。固定ステップとは「壁時計を読まず、1 フレームあたりの進み幅を定数にする」ことで、実行速度やマシン性能が結果に混ざらないため、同じ入力からは同じフレーム列が出ます([第1章 §1.0](01_overview.md) の「決定的」)。`--camera "px,py,pz,tx,ty,tz,fov_deg"` でカメラを上書きできます。
 
 さらに `--rpc --headless` で JSON-RPC による外部制御モードになります([第10章](10_tools.md))。
 
@@ -310,7 +317,7 @@ cmake --build ./build --target run_studio
 | `engine_min_version` のエラー | プロジェクトが要求するエンジン版(現行 `0.1.0`)より新しい。`--ignore-engine-version` で WARN に降格可能 |
 | Qt が見つからず configure 失敗 | `-DCMAKE_PREFIX_PATH` に Qt のインストールパスを渡すか、`-DSKIP_DEVSTUDIO=ON` |
 | GPU テストが全部 SKIP | Vulkan デバイスが列挙できない環境(リモートデスクトップ等)。仕様どおりの挙動 |
-| rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用**(ヘッドレスの blocking rpc / ウィンドウのフレーム境界 rpc のどちらも同じ)。ログは cwd の `pelican.log` に出ます(Release ビルドも同様) |
+| rpc モードでログが出ない | rpc モードでは **stdout はプロトコル専用** —— JSON-RPC の応答行以外は何も流れません(ヘッドレスの blocking rpc / ウィンドウのフレーム境界 rpc のどちらも同じ)。ログは cwd の `pelican.log` に出ます(Release ビルドも同様) |
 | `windowed rpc request queue is busy`(`data.reason = "busy"` / `queue_capacity`) | ウィンドウモードの `--rpc` はフレーム境界でのみ処理する**有界キュー**(既定 64)。詰め込みすぎると即エラーで返るので、応答を待ってから次のリクエストを送る([第10章](10_tools.md)) |
 | `--xr on is incompatible with <driver>` | `--xr on` と決定的な駆動モード(rpc / golden / replay / headless)の併用。`--xr auto` にすれば(ログなしで)flat に正規化されます(§2.3) |
 | `Unknown behavior type 'X' on object 'Y'` | シーンの `behavior.type` がゲームロジック DLL に登録されていない。`PELICAN_REGISTER_BEHAVIOR` の登録名と綴りを合わせる([第8章](08_gameplay.md)) |

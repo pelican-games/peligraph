@@ -10,9 +10,11 @@
 - 実装済みの UI 基盤 `pelican.ui` v1(ウィジェット・レイアウト・イベント emit)
 - テキスト HUD(`debug_text`)の使い方
 
+(`WP69` のような **WP** 番号は開発の作業単位です。読み方は [第1章 §1.0](01_overview.md)、状態の一覧は [第11章 §11.1](11_status.md)。)
+
 ## 7.1 入力システムの全体像 — 四層構造
 
-> **設計決定(四層):** 入力は L0(デバイスバックエンド)→ L1(フレーム同期)→ L2(アクション層)→ L3(消費者)の四層。L0 を差し替えても L2 から上は変わらない。アクション層を最初から入れる決め手は **OpenXR がネイティブに action ベース**であること。
+> **設計決定(四層):** 入力は L0(デバイスバックエンド)→ L1(フレーム同期)→ L2(アクション層)→ L3(消費者)の四層。L0 を差し替えても L2 から上は変わらない —— 例えば L0 を GLFW から OpenXR へ替えても、`actions.json` の `move` / `jump` を読むゲームコード(L3)は 1 行も変わりません(下表が各層の実物)。アクション層を最初から入れる決め手は **OpenXR がネイティブに action ベース**であること。
 
 | 層 | 内容 | 状態 |
 |---|---|---|
@@ -24,8 +26,8 @@
 L1 の要点(✅WP69 で改訂):
 
 - フレーム先頭で入力が**凍結**され、フレーム内で不変(決定性の柱)。
-- `FrameInput` は「順序付きイベント列(`ordered_events` — 全イベントに単調増加の `event_seq` が付き、途中座標・発生順が保持される)」と「集約スナップショット」の両方を持ちます。スナップショット側では従来どおり同一フレームの「押して離す」は pressed / released が両方立ちます。
-- **入力消費マスク**: 消費の優先順は ImGui → `pelican.ui` → アクション層。UI がポインタを hit / capture したフレームは、そのポインタがアクション層から見えなくなります。
+- `FrameInput` は「順序付きイベント列(`ordered_events` — 全イベントに単調増加の `event_seq` が付き、途中座標・発生順が保持される)」と「集約スナップショット」の両方を持ちます。**この 2 つは同じフレームの同じ入力を 2 通りに見せたもの**で、重複でも競合でもありません(順番が要るならイベント列、いまの状態が要るならスナップショット)。スナップショット側では従来どおり同一フレームの「押して離す」は pressed / released が両方立ちます。
+- **入力消費マスク**: ここでいう**消費**は「先に受け取った層がその入力を握り、下の層へ渡さない」ことです。消費の優先順は ImGui → `pelican.ui` → アクション層。UI がポインタを hit / capture したフレームは、そのポインタがアクション層から見えなくなります。
 - ImGui が消費者に入るのは**通常ウィンドウ起動のときだけ**です。headless / rpc / リプレイ / golden に加え、✅WP138 以降は **XR session が active な間もエンジンは ImGui frame を begin しません**(XR グラフに `imgui` パスが無いため。論理フレーム境界でゲートが閉じたときは開始済みフレームを閉じてから外します)。この場合の消費順は `pelican.ui` → アクション層になります([第6章](06_rendering.md) §6.12)。
 - フレーム位相は「イベント凍結 → 入力凍結(リプレイ注入→収録)→ アクション確定(ImGui → UI → Actions)→ イベント配送 → ゲーム更新」の固定順で、通常ループと rpc ループで同一です。
 
@@ -91,6 +93,7 @@ L1 の要点(✅WP69 で改訂):
 }
 ```
 
+- **deadzone**(不感帯)は、スティックの中立付近のふらつきを 0 に落とすしきい値です。軸の大きさ(0〜1 に正規化した値。`pad:*_stick` では 2 軸の長さ)がこの値以下なら 0 とし、超えた分は再び 0〜1 に伸ばし直します([applyDeadzone()](../../src/core/os/actionmap.cpp#L660))。`0.2` は「20% 以下は倒していない扱い」の意味です。
 - binding 要素のフィールド: `action` / `binding` + 任意 `deadzone`(数値 [0,1)、pad 軸限定)、`invert_x`(bool、pad 軸なら axis1 / axis2 どちらでも可)/ `invert_y`(bool、axis2 限定)。反転はいずれも deadzone 適用後です。
 - プロファイルの登録と既定は `project.json`: `basic_config.input_profiles`(名前 → ファイルの辞書)と `basic_config.input_profile`(既定名)。
 - 切替は 3 通り: 起動引数 `--input-profile <name>` / rpc `set_input_profile` / ゲームコード `selectInputProfile`。筐体・環境差(アーケード筐体等)は**プロファイルを増やして**表現します。
@@ -102,7 +105,7 @@ L1 の要点(✅WP69 で改訂):
 | 書き方 | 使える type | 意味 |
 |---|---|---|
 | `kbd:a`〜`z`, `0-9`, `space`, `enter`, `escape`, `tab`, `backspace`, `left_shift` 等, 矢印, `f1`-`f12`, `num0`-`num9` | button / axis1 | 単キー |
-| `kbd:wasd`, `kbd:arrows` | axis2 専用 | 組み込み合成([-1,1]) |
+| `kbd:wasd`, `kbd:arrows` | axis2 専用 | 組み込み合成。4 キーの押下を 1 つの 2 次元ベクトル(x・y とも [-1,1])にまとめます |
 | `mouse:left` / `right` / `middle` / `button4`-`button8` | button / axis1 | マウスボタン |
 | `mouse:delta_x` / `delta_y` | axis1 専用 | フレーム内マウス移動量 |
 | `mouse:wheel_x` / `wheel_y` | axis1 専用 | 符号と小数の量を保ち、[-1,1] に clamp するフレーム内ホイール移動量。event のない次フレームは 0 |
@@ -110,7 +113,7 @@ L1 の要点(✅WP69 で改訂):
 | `pad:a, b, x, y, left_bumper, right_bumper, back, start, guide, left_thumb, right_thumb, dpad_up/right/down/left` | button / axis1 | ✅ ゲームパッドボタン 15 種 |
 | `pad:left_x, left_y, right_x, right_y, left_trigger, right_trigger` | axis1 | ✅ パッド軸 6 種 |
 | `pad:left_stick` / `pad:right_stick` | axis2 専用 | ✅ スティック合成(radial deadzone) |
-| `xr:/user/hand/<left\|right>/input/...` | 全 type | ✅WP130。OpenXR 実パス形式(v1 は Touch コントローラのみ)。`xr:/user/hand/` 以外は名指しエラー。flat 起動では未解決として無視されるので、**同じ actions.json / profile が flat でも XR でも通る** |
+| `xr:/user/hand/<left\|right>/input/...` | 全 type | ✅WP130。**OpenXR**(VR / AR ランタイムの業界標準 API)が定める**実パス形式** —— `/user/hand/left/input/thumbstick` のような、入力を指すスラッシュ区切りの文字列をそのまま書きます(v1 は Touch コントローラのみ。実物は [touch.json](../../projects/example/input/profiles/touch.json))。`xr:/user/hand/` 以外は名指しエラー。flat 起動では未解決として無視されるので、**同じ actions.json / profile が flat でも XR でも通る** |
 
 - アクティブな profile に `pad:` binding が 1 つも無ければゲームパッドは**一切ポーリングされません**(パージ可能原則)。切断時は保持ボタンの release + 軸ゼロが発行されます。マッピングは GLFW 内蔵の SDL_GameControllerDB。
 - 修飾 chord は列挙した修飾キーがすべて押されている間だけ成立し、列挙していない修飾キーは無視します。修飾なし binding の従来の意味は変わらないため、同じ set に `mouse:middle` と `mouse:shift+middle` を別 action として置けば Shift+MMB では両方が成立します。pan / orbit 等の意味上の優先順位は利用側で決めます。
@@ -169,7 +172,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 
 > ⚠ **破壊的変更(WP87):** 旧 `ui_overlay.json` の `images` 配列形式は**削除されました**(パースエラーになります)。現行の UI は `pelican.ui` v1 ドキュメントです。ファイル名は従来どおり `basic_config.ui_config_json` で指します。
 
-2026-07-10 時点で「レビュー Reject 中・実装ゼロ」だった `pelican.ui` は、レビュー条件を折り込んだ v8 設計で承認され、U0(CPU 基盤)→ U1(GPU 描画)→ U2(対話ウィジェット)まで実装済みです。
+2026-07-10 時点で「レビュー Reject 中・実装ゼロ」(= 設計レビューで差し戻され、コードが 1 行も無い状態。レビュー記録は [../design_reviews/](../design_reviews/))だった `pelican.ui` は、レビュー条件を折り込んだ v8 設計で承認され、U0(CPU 基盤)→ U1(GPU 描画)→ U2(対話ウィジェット)まで実装済みです。
 
 ### 有効化(2 段)
 
@@ -211,10 +214,11 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
 
 - **機械可読スキーマが正**: [../schemas/pelican.ui.schema.json](../schemas/pelican.ui.schema.json)(`additionalProperties: false` の closed schema — 未知フィールドは拒否)。
 - トップレベル: `schema` / `version: 1` / `key`(1〜256 文字)/ `root` 必須、`revision` / `direction`(`"ltr"` のみ)任意。
-- **ウィジェット語彙 6 種**: `panel` / `image` / `label` / `button` / `gauge` / `stack`。ただし `gauge` は型・レイアウトのみで**描画は 🚧 未実装**。
+- **ウィジェット語彙 6 種**(語彙 = 書ける `type` の値の全集合。これ以外は拒否): `panel` / `image` / `label` / `button` / `gauge` / `stack`。ただし `gauge` は型・レイアウトのみで**描画は 🚧 未実装**。
 - 主なプロパティ: 共通 `id`(`^[a-z0-9_]+$`)/ `layout` / `visibility` / `enabled` / `hit_testable` / `layer` / `emit` / `children`。描画系 `sprite`(atlas 参照は `<name>.atlas.json#sprite/<名前>` 形式)/ `color` / `hover_color` / `pressed_color` / `text` / `text_color` / `nine_patch`(panel)。
 - レイアウト: 軸ごとの `mode: fixed|content|fill`(+ min/max/weight)、`anchor_min/max`、`offsets`、`stack`(horizontal/vertical)+ `gap` / `padding` / `align` / `justify`。計算は決定的(binary64 固定)。
-- 描画: レイヤー + 宣言順のペインターズソート(Z バッファ不使用)、20B 頂点の quad バッチ、nine-patch は 3×3 展開、テキストは debug_text と同じ埋め込みビットマップフォント。atlas は `pelican.atlas` v1([第5章](05_assets.md))。
+  - `mode` は x 軸・y 軸それぞれに書き、その軸の長さの決め方を選びます: **`fixed`** = 書いた `value` をそのまま使う / **`content`** = 中身(子とテキスト・画像)から算出した固有サイズを使う / **`fill`** = 親 `stack` の余りを `weight` の比で分け合う。いずれも `min` / `max` で挟まれます([axisSize()](../../src/core/ui/layout.cpp#L76) と [distribute()](../../src/core/ui/layout.cpp#L93))。`content` の親の下に `fill` の子を置くと循環なので名指しエラーです。
+- 描画: レイヤー + 宣言順の**ペインターズソート**(画家が絵を塗り重ねるように、後に描いたものが上に来る方式。深さの比較をしないので Z バッファ不使用 —— 前後関係は `layer` と JSON の宣言順だけで決まります)、20B 頂点の quad バッチ、nine-patch は 3×3 展開、テキストは debug_text と同じ埋め込みビットマップフォント。atlas は `pelican.atlas` v1([第5章](05_assets.md))。
 
 ### インタラクション(✅U2 = WP93)
 
@@ -225,7 +229,7 @@ pelican_player --project mygame --replay session.jsonl         # リプレイ(�
   "emit": { "on_click": { "event": "MenuStart" } } }
 ```
 
-emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
+emit のソースには static 値のほか `stable_id` / `drag_delta_ui` / `widget_value` が使えます。それぞれ、イベント payload のそのフィールドに **`stable_id`** = 発火したウィジェットの安定 ID(親からの `親id/子id` パス)、**`drag_delta_ui`** = 直前の位置からのドラッグ移動量 `[x, y]`(UI 座標)、**`widget_value(パス)`** = ウィジェット自身の現在値、を入れます([document.cpp](../../src/core/ui/document.cpp#L196) / [module.cpp](../../src/core/ui/module.cpp#L226))。rpc 経由のクリックとリプレイの決定性は結合テストで担保されています。
 
 ### 残っている未実装(明示)
 

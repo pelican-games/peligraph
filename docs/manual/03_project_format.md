@@ -7,12 +7,12 @@
 - 「プロジェクト」という単位の定義と、標準ディレクトリ構成
 - `project.json` の正確なスキーマ(必須/任意/既定値)と検証規則
 - パス参照の分類(素の相対 / `project://` / `engine://` / `user://` / 絶対 / `#` フラグメント)と PathResolver の解決規則
-- asset store(置き場所の間接化)と `.pelican/local.json`
+- asset store(巨大なバイナリを git リポジトリの外へ置くための「置き場所の間接化」。[用語集](14_glossary.md))と `.pelican/local.json`
 - シーン JSON の in-memory 表現(`AuthoringSceneDocument`)と保存の契約(エディタ経路)
 - ユーザー定義コンポーネントの宣言スキーマ v3(`Flags` / `List` の行封筒 `$list` / `$row`)と `$` 予約
 - なぜこの設計なのか — fail-fast、cwd 全廃、絶対パス拒否などの決定事項
 
-正本となる設計文書は [../design_project_format.md](../design_project_format.md)([PF] v6.3・**凍結済み**)です。この章はその実装(`src/core/loader/` と `src/project/`)を基準に書いています。
+正本となる設計文書は [../design_project_format.md](../design_project_format.md)([PF] v6.3・**凍結済み**)です。`[PF]` はこの章を通じてこの設計文書を指す略号で、**凍結済み**は文書側の見出しどおり「設計としてこれ以上改訂しない」の意味です。したがって形式そのものは固まっており、文書と実装が食い違ったときは実装が正になります(§3.8)。この章はその実装(`src/core/loader/` と `src/project/`)を基準に書いています。
 
 ## 3.1 プロジェクトとは
 
@@ -34,7 +34,7 @@
 | `imports/`(規約) | 外部ツールの納品物+manifest | `pelican_cli import` の入力 |
 | `.pelican/` | ツールとエンジンの生成物置き場(**git 非追跡**。`project init` の `.gitignore` に登録済み) | 下記 |
 
-`.pelican/` の住人(すべて生成物で、リポジトリにコミットしません):
+`.pelican/` の住人(すべて生成物で、リポジトリにコミットしません)。先頭のドットは「人が直接編集しない生成物置き場」を示す慣習で、この中の `local.json` の *local* は「このマシンでだけ有効な値」という意味です(§3.4):
 
 | パス | 内容 |
 |---|---|
@@ -83,7 +83,7 @@
 
 ### トップレベルフィールド
 
-検証の正本は `pelican_project` の [projectformat.cpp](../../src/project/projectformat.cpp)(`parseProjectEnvelopeJson` / `parseProjectEnvelopeText`)です。player、engine の `basicconfig.cpp`、`pelican_cli dist-config` はこの同じ実装を呼び、schema/version/`engine_min_version` 規則を持ちません。
+pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の第何版か」を名乗ります(この 2 キーの組を**エンベロープ**と呼びます。[用語集](14_glossary.md))。`schema` の値は `pelican.<形式名>` の形で、`pelican.project`(この章)・`pelican.scene`([第4章](04_scene_ecs.md))・`pelican.asset_data`([第5章](05_assets.md))のように形式ごとに 1 つずつあります。検証の正本は `pelican_project` の [projectformat.cpp](../../src/project/projectformat.cpp)(`parseProjectEnvelopeJson` / `parseProjectEnvelopeText`)です。player、engine の `basicconfig.cpp`、`pelican_cli dist-config` はこの同じ実装を呼び、schema/version/`engine_min_version` 規則を持ちません。
 
 | フィールド | 必須? | 検証・意味 |
 |---|---|---|
@@ -98,6 +98,8 @@
 ### basic_config と「3 段合成」
 
 > **設計決定:** 設定の優先順位は **CLI 設定 > project.json > 埋め込み既定値(`engine://default_config.json`)** の 3 段で、キー単位に上位が勝つ。プロジェクトは差分だけ書けばよい。3 段すべてに無い必須キーは `config not found: ...` で hard error。
+
+ここでいう**合成**はファイルの連結ではなく、**キーごとに 1 つの値を選ぶ**ことです([用語集](14_glossary.md))。たとえば project.json の `basic_config` に `window_title` だけを書けば、`window_title` はプロジェクトの値、`framerate` や `window_size` は埋め込み既定値(60 / 1920×1080)になります。
 
 ※実装上の注意: 3 段の「CLI 層」の実体はエンジン組み込み API(`PelicanCore(settings_str)`)に渡す JSON であり、`pelican_player` は常に空 `{}` を渡します。つまり player の CLI フラグ(`--size` など)は JSON 合成ではなく `EngineLaunchConfig` 経由の**別経路**で、ヘッドレス系にのみ効きます。
 
@@ -127,7 +129,7 @@
 
 ## 3.3 パス参照と PathResolver
 
-すべてのコンテンツ参照(JSON 内・CLI のコンテンツ引数)は同じ解決規則を通ります。規則の正本は `pelican_project` の [ProjectPathResolver](../../src/project/projectpathresolver.hpp)(実装: [projectpathresolver.cpp](../../src/project/projectpathresolver.cpp))です。engine の **PathResolver** モジュール([pathresolver.cpp](../../src/core/loader/pathresolver.cpp))はこれへ委譲し、module寿命、quillログ、`engine://`埋め込みresource loaderだけを接続します。
+すべてのコンテンツ参照(JSON 内・CLI のコンテンツ引数)は同じ解決規則を通ります。ここでいう **resolver(解決器)** は、JSON に書かれた参照文字列 1 本(`assets/models/sponza.glb` など)を実ファイルの絶対パス 1 本に変換する部品のことです。規則の正本は `pelican_project` の [ProjectPathResolver](../../src/project/projectpathresolver.hpp)(実装: [projectpathresolver.cpp](../../src/project/projectpathresolver.cpp))です。engine の **PathResolver** モジュール([pathresolver.cpp](../../src/core/loader/pathresolver.cpp))はこれへ委譲し、module寿命、quillログ、`engine://`埋め込みresource loaderだけを接続します。
 
 この分離によりdevstudioや外部ツールは`pelican_core`をリンクせず、engineと同じproject root、asset store、escape防止、fragment規則を使えます。絶対CLI pathを許可したwarningも純粋層の戻り値であり、純粋層自身はログを出しません。
 
@@ -137,7 +139,7 @@
 
 | 書き方 | 解決先 | 状態 |
 |---|---|---|
-| `assets/a.glb`(素の相対) | プロジェクトルート基準 | ✅実装済み |
+| `assets/a.glb`(素の相対) | プロジェクトルート(= `project.json` があるディレクトリ。§3.1)基準 | ✅実装済み |
 | `project://assets/a.glb` | 素の相対と**完全に等価**(接頭辞を剥がすだけ) | ✅実装済み |
 | `engine://<id>` | エンジン埋め込みリソース(後述) | ✅実装済み |
 | `user://<rel>` | `%APPDATA%/pelican/<name>/<rel>`(Windows) | ✅実装済み(読み書き API も ✅WP65 — [第8章](08_gameplay.md)) |
@@ -184,7 +186,7 @@
 }
 ```
 
-- 意味論は**マウント**: `assets/**` への参照を store の実体ディレクトリに張り替えます。**シーン等の参照の書き方は一切変わりません**(解決レイヤだけの機能)。
+- 意味論は**マウント**: `assets/**` への参照を store の実体ディレクトリに張り替えます。**シーン等の参照の書き方は一切変わりません**(解決レイヤだけの機能)。具体例: 上の宣言に加えて後述の `.pelican/local.json` で `main` の実体を `D:/shared_assets/mygame` にすると、JSON に書かれた `assets/models/sponza.glb` は先頭の `assets/` が剥がされ、`D:/shared_assets/mygame/models/sponza.glb` を読みます([projectpathresolver.cpp](../../src/project/projectpathresolver.cpp) の store 分岐)。store 宣言が無ければ同じ参照が `<プロジェクトルート>/assets/models/sponza.glb` になります。
 - 宣言を省略すれば従来どおり(`assets/` はプロジェクト内)。既存プロジェクトは無変更で動きます。
 - `mount` は相対パスのみ。`"../mygame-assets/"` のような**プロジェクト外への相対は許可**(git worktree の兄弟配置が想定解)。絶対パスは拒否。マウント点の入れ子・重なりは宣言時に hard error。
 - 脱出防止の基準点は store 経由の参照では mount root に付け替わります。
@@ -268,14 +270,14 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ## 3.9 シーンドキュメントと保存(エディタ経路)(✅WP149/158/166/168)
 
-ここまでの節はすべて「ディスク上のファイル形式」の話でした。この節は、その形式をエンジンが**メモリ上でどう保持し、どう書き戻すか**を扱います。**プロジェクト形式(JSON の書き方)は一切変わりません**。エディタ機能を使わないなら読み飛ばして構いません。
+ここまでの節はすべて「ディスク上のファイル形式」の話でした。この節は、その形式をエンジンが**メモリ上でどう保持し、どう書き戻すか**を扱います。以下 **authoring(オーサリング)側**は「人やエディタが編集する JSON そのもの」を、**runtime(ランタイム)側**は「エンジンが実行のために作った ECS の状態」を指します([用語集](14_glossary.md))。**プロジェクト形式(JSON の書き方)は一切変わりません**。エディタ機能を使わないなら読み飛ばして構いません。
 
 > **設計決定(編集の正本は authored JSON):** 編集の正本は `basic_config.scene_data_json` が指すシーン JSON の内容そのもの(`AuthoringSceneDocument`)であり、ランタイムの ECS はその**投影**である。保存はランタイム状態の serialize ではなく、authored ドキュメント全体の決定的エンコードとファイル置換で行う。これにより、エンジンが解釈しないコンポーネント(codec 未登録のもの)の raw JSON も保存で失われない。
 
 `ProjectBasicConfig`([basicconfig.hpp](../../src/core/loader/basicconfig.hpp))が唯一の保持者です。
 
 - **起動時**: PathResolver で読んだシーン JSON の bytes をそのまま `AuthoringSceneDocument` にし、同時にその**ディスク baseline digest** を記録します。
-- `SceneRevision` は編集がコミットされるたびに単調増加します。`AuthoringObjectId` はセッション内で安定した object 識別子で、無名オブジェクト・ライトのみ・コライダのみのオブジェクトにも付きます(ランタイムの `EntityId` は nullable な投影であり、同一性の代用にはしません)。
+- `SceneRevision` は**ドキュメント全体に 1 つ**の版番号で、編集がコミットされるたびに単調増加します(オブジェクト単位ではありません)。`AuthoringObjectId` はセッション内で安定した object 識別子で、無名オブジェクト・ライトのみ・コライダのみのオブジェクトにも付きます(ランタイムの `EntityId` は nullable な投影であり、同一性の代用にはしません)。
 - API は `sceneDocument()` / `updateSceneDocument()` / `importSceneDocument(bytes, reload)` / `saveSceneDocument()` の 4 本です。
 
 ### 保存 — 全文書のアトミック置換
@@ -318,9 +320,29 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 ## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
 
-§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1224))はこの節の対象外です(平坦なフィールド列のまま)。
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。ここでの **v3 はスキーマ宣言機構の版番号**で、シーン JSON の `version`(pelican.scene v1)とは別物です([用語集](14_glossary.md))。従来の登録経路が運べたのは平坦なフィールド列だけで、`Flags` / `List` のように**入れ子の語彙を持つ型**を運べるようにしたのが v3 です。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1224))はこの節の対象外です(平坦なフィールド列のまま)。
 
 登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L169))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L134))。
+
+`Flags<E>` / `List<Row>` は C++ 側の**フィールド型**です。フィクスチャ `test/fixtures/wp382a_schema/v3_fixture.cpp` の宣言を抜粋すると、下の JSON 例と 1 対 1 に対応します:
+
+```cpp
+enum class InstanceFlag : std::uint32_t { CullDisable = 1u, FlipFacing = 2u };
+
+struct OverrideRow {                      // List の 1 行ぶんの型
+    std::string occurrence_id;
+    std::optional<std::uint8_t> mask;
+    std::optional<Pelican::Flags<InstanceFlag>> instance_flags;
+    static constexpr auto schema = Pelican::structFields(/* ... */);
+};
+
+struct CarrierParams {
+    Pelican::List<OverrideRow> overrides;  // ← この型が v3 の入口を選ばせる
+    static constexpr auto schema = Pelican::structFields(/* ... */);
+};
+```
+
+つまり `E` は名前を宣言した enum、`Row` は行スキーマを持つ struct です。
 
 ### `Flags` — 宣言済み名の文字列配列
 

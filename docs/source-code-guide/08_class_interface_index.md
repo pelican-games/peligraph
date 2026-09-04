@@ -8,16 +8,16 @@
 
 Pelican の「interface」は pure virtual class だけではありません。実装は用途ごとに次の形を使い分けています。
 
-| 形 | 代表 | 意味 |
-|---|---|---|
-| process module | [`DECLARE_MODULE`](../../src/core/container.hpp#L15) | process 中に遅延生成される実質 singleton。`GET_MODULE(T)` で取得 |
-| public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22) | game code に内部 module を直接見せない、状態を持たない/薄い value façade |
-| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L89) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 |
-| tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L320) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch |
-| type-erased callback table | [`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L39) | 任意 Component の construct/destroy/relocate/JSON 操作を function pointer 化 |
-| resolver/adaptor | [`RenderTargetNameResolver`](../../src/core/renderingpass/rendertargetnameresolver.hpp#L11) | parser に巨大 container を渡さず、必要な名前解決だけを公開 |
+| 形 | 代表 | 意味 | この形が要る理由 |
+|---|---|---|---|
+| process module | [`DECLARE_MODULE`](../../src/core/container.hpp#L15) | process 中に遅延生成される実質 singleton。`GET_MODULE(T)` で取得 | 実装が「1個しか無い」資源(device、window、ECS world)を、引数で持ち回らずに取れるようにするため |
+| public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22) | game code に内部 module を直接見せない、状態を持たない/薄い value façade | ゲームコードが engine 内部の型に compile 時依存しないようにするため(DLL 境界を細く保つ) |
+| abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L89) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 | 実装の選択が**実行時に**決まる(`--headless` / `--xr`)ので、compile 時の分岐では書けないため |
+| tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L320) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch | 種類が JSON 形式として**固定で列挙できる**ので、派生を後から足せる継承より、全種の網羅を強制できる variant が合うため |
+| type-erased callback table | [`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L39) | 任意 Component の construct/destroy/relocate/JSON 操作を function pointer 化 | 受け取る側(ECS storage)が型 `T` を知らないまま構築・破棄・移動をしなければならないため |
+| resolver/adaptor | [`RenderTargetNameResolver`](../../src/core/renderingpass/rendertargetnameresolver.hpp#L11) | parser に巨大 container を渡さず、必要な名前解決だけを公開 | 純粋な parser/planner を GPU container から切り離して、単体テストできる形に保つため |
 
-この違いを無視して全部を「継承関係」として探すとコードを見失います。特に `DECLARE_MODULE` は base class ではなく、型ごとの `static std::optional<T>` を生む macro です。
+この違いを無視して全部を「継承関係」として探すとコードを見失います。特に `DECLARE_MODULE` は base class ではなく、`class Foo : public ModuleBase<Foo>` へ展開されるだけの macro で、実体は `ModuleBase<T>` 側の**型ごとの `static std::optional<T>`** です。`Foo` のインスタンスはこの optional 1 個だけで、`GET_MODULE(Foo)` の初回が `emplace()`、以降は同じ参照を返します(展開後の全量は[第9章 §9.1](09_black_magic_and_gotchas.md))。
 
 > **設計決定:** 公開 game API で **継承ベースの interface を使うのは [`Behavior`](../../src/core/userpublic/behavior.hpp#L60) だけ** です(WP155 / BEH0)。System / Component / Event は duck typing(ダックタイピング — 「共通の基底を継承しているか」ではなく「必要なメンバや関数が実際に生えているか」だけで適合を判断する方式) + concept 検出ですが、Behavior は「1 オブジェクトにつき 1 個の多態インスタンスを arena が所有する」形なので仮想基底を選んでいます。上表の分類に当てはまらない唯一の例外として覚えてください。詳細は [第5章 §5.13](05_gameplay_and_services.md)。
 
@@ -25,19 +25,19 @@ Pelican の「interface」は pure virtual class だけではありません。�
 
 | suffix/prefix | だいたいの意味 | 例外・注意 |
 |---|---|---|
-| `...Definition` | parse 後、runtime object 作成前の value | Vulkan handle を持たないことが多い |
-| `Compiled...` | name/definition が runtime ID や GPU object と結合済み | 必ずしも machine code の compile ではない |
+| `...Definition` | parse 後、runtime object 作成前の value | Vulkan handle を持たないことが多い。JSON を読み終えて検証も済んだが、まだ GPU も module も触っていない段、という意味です |
+| `Compiled...` | name/definition が runtime ID や GPU object と結合済み | ここでの compile は **名前の解決と束縛**(`"gbuffer"` のような文字列を登録済み ID や `vk::Pipeline` へ差し替えること)で、機械語への翻訳ではありません。GLSL→SPIR-V の方の compile は `ShaderCompiler` が担当します |
 | `...Container` | handle registry、GPU resource owner、state collection | 同じ base interface を持つわけではない |
-| `...Core` | public wrapper から分離した testable implementation | `VulkanManageCore` は低レベル device owner という別の意味 |
+| `...Core` | public wrapper から分離した testable implementation | この規則の例外が 1 つあります。`VulkanManageCore` の `Core` は「wrapper から分離した中身」ではなく**低レベル device owner** の意味で、対になる public wrapper が存在しません |
 | `...Resolver` | ID/name/path/view 変換の小さな read interface | ownership は持たない |
 | `...Registerer` | template 型を runtime catalog へ型消去して登録 | static registration macro から呼ばれる |
 | `...Loader` | file/JSON から runtime object への入口 | pure parser と runtime binding が別 file の場合あり |
 | `...Renderer` | command buffer へ draw/dispatch を記録 | `Renderer` はそれらを束ねる orchestrator |
 | `...Codec` | authored ↔ canonical ↔ runtime の双方向変換関数表 | [`ComponentCodec`](../../src/core/loader/componentcodec.hpp#L222) は 5 点セットが必須 |
-| `...Adapter` | 既存サービスを別の呼び出し面へ橋渡し | `EditorCommandRpcAdapter` / `EditorCommandImGuiFakeAdapter` のように **同じサービス**を複数面へ出すために使う |
-| `...Token` | 世代付きの取り消し可能な引換券 | `RegistrationToken` / `ECSArchetypeMigrationToken`。保持しているだけで有効とは限らない |
-| `Prepared...` | throw しうる準備が済んだ **未公開**の候補 | `publish()` は no-fail、`rollback()` は `noexcept` |
-| `Staged...` | 全割り当てが済み、公開が単一 no-fail 操作になった候補 | `StagedModelInstance` |
+| `...Adapter` | 既存サービスを別の呼び出し面へ橋渡し | 変換するのは**呼び方**であって中身ではありません。`EditorCommandRpcAdapter` は JSON-RPC の 1 行を typed な `EditorCommandService` の呼び出しへ、`EditorCommandImGuiFakeAdapter` は ImGui の操作を同じ呼び出しへ写します。**同じサービス**を複数面へ出し、面ごとに別実装を持たないための型です |
+| `...Token` | 世代付きの取り消し可能な引換券 | `RegistrationToken` / `ECSArchetypeMigrationToken`。**保持しているだけで有効とは限りません** — 相手側が `unregisterComponent(token)` されていたり、DLL reload で owner の世代が進んでいたりすると、同じ値を持ったまま失効します。使う直前に照合するのが前提の型です |
+| `Prepared...` | throw しうる準備が済んだ **未公開**の候補 | `publish()` は no-fail、`rollback()` は `noexcept`。名前が付く3段は「prepare で失敗しうる仕事を全部終える → publish は差し替えるだけ → 失敗経路は rollback」 |
+| `Staged...` | 全割り当てが済み、公開が単一 no-fail 操作になった候補 | `StagedModelInstance`。`Prepared...` と同じ三点セットの一員で、こちらは **確保が 1 つ残らず済んでいる**(公開時に `new` も `push_back` も走らない)ことまで名前で言っています。2 語をどう使い分けるかを規範として書いた文書は見つかっていません(未確認) |
 
 `Prepared...` / `Staged...` / `...Token` の 3 つは、[第9章](09_black_magic_and_gotchas.md)で扱う **prepare / publish(noexcept) / rollback(noexcept) の三点セット** という共通プロトコルの現れです。ECS、レンダラ、behavior、シーン保存、編集投影のすべてで同じ形が使われます。
 
@@ -97,7 +97,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `AuthoringObjectClosure` | 復元用クロージャ | [`AuthoringObjectClosure`](../../src/core/loader/authoringscenedocument.hpp#L63) | 同左 | `removeObject` の可逆情報(同じ `AuthoringObjectId` を同じ宣言区間へ戻す) |
 | `ComponentCodec` | 5 点セットの関数表 | [`componentcodec.hpp`](../../src/core/loader/componentcodec.hpp#L222) | [`componentcodec.cpp`](../../src/core/loader/componentcodec.cpp) | authored ↔ canonical ↔ runtime。`ComponentCodecRuntimeKind`([`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L23))が runtime target 型を決める |
 | `SceneSaveErrorCode` / `SceneSaveError` / `SceneSaveResult` | 保存契約 | [`SceneSaveErrorCode`](../../src/core/loader/basicconfig.hpp#L23) / [`SceneSaveError`](../../src/core/loader/basicconfig.hpp#L29) / [`SceneSaveResult`](../../src/core/loader/basicconfig.hpp#L52) | [`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L913) | `ExternalModification` / `Unavailable` / `IoFailure` の型付き保存エラー |
-| `EditorProjectionAdapterKind` / `EditorProjectionErrorCode` | 投影 transaction | [`EditorProjectionAdapterKind`](../../src/core/loader/editorprojectiontransaction.hpp#L21) / [`EditorProjectionErrorCode`](../../src/core/loader/editorprojectiontransaction.hpp#L40) | [`editorprojectiontransaction.cpp`](../../src/core/loader/editorprojectiontransaction.cpp) | 8 種の adapter と 11 種のエラー。公開方式は `EditorProjectionPublicationMode`([`EditorProjectionPublicationMode`](../../src/core/loader/editorprojectiontransaction.hpp#L35)) |
+| `EditorProjectionAdapterKind` / `EditorProjectionErrorCode` | 投影 transaction | [`EditorProjectionAdapterKind`](../../src/core/loader/editorprojectiontransaction.hpp#L21) / [`EditorProjectionErrorCode`](../../src/core/loader/editorprojectiontransaction.hpp#L40) | [`editorprojectiontransaction.cpp`](../../src/core/loader/editorprojectiontransaction.cpp) | 8 種の adapter と 11 種のエラー。adapter は「1 回の編集が、どの所有者へ投影されるか」の分類で、`EcsExistingValue` / `EcsArchetype` / `TransformClosure` / `RendererModel` / `Camera` / `Light` / `PhysWorld` / `BehaviorAttachment` の 8 つです([`EditorProjectionAdapterKind`](../../src/core/loader/editorprojectiontransaction.hpp#L21))。公開方式は `EditorProjectionPublicationMode`([`EditorProjectionPublicationMode`](../../src/core/loader/editorprojectiontransaction.hpp#L35)) |
 | `VrmaClip` 群 | pure document | [`vrmaanimation.hpp`](../../src/core/model/vrmaanimation.hpp#L87) | header + decoder | `.vrma` decode 結果(body / expression / gaze チャンネル + provenance) |
 | `decodeVrmaAnimation()` / `loadVrmaAnimation()` | free function | [`vrmadecoder.hpp` 内](../../src/core/loader/vrmadecoder.hpp#L25) / [`loadVrmaAnimation()`](../../src/core/loader/vrmadecoder.hpp#L32) | [`vrmadecoder.cpp`](../../src/core/loader/vrmadecoder.cpp) | `.vrma` GLB decode。拡張子ゲートと content hash |
 | `VrmaRetargetProfile` / `retargetVrmaClip()`(retarget = ある骨格向けに作られたアニメーションを、骨構成や rest 姿勢が違う別の骨格で再生できるよう変換すること) | 版付き profile | [`VrmaRetargetProfile`](../../src/core/animation/vrmaretarget.hpp#L67) / [`retargetVrmaClip()`](../../src/core/animation/vrmaretarget.hpp#L124) | [`vrmaretarget.cpp`](../../src/core/animation/vrmaretarget.cpp) | target-rig-local な不変中間クリップ。**`AnimationSource` ではない** |
@@ -133,7 +133,7 @@ project game code が最優先で参照する層です。内部の `GET_MODULE` 
 | `BehaviorAttachmentHandle` | typed handle | [`BehaviorAttachmentHandle()`](../../src/core/userpublic/behavior.hpp#L13) | 同左 | attachment identity(`attachment_seq` と対) |
 | `PELICAN_REGISTER_BEHAVIOR` | 自動登録 macro | [`behavior/registerer.hpp`](../../src/core/userpublic/details/behavior/registerer.hpp#L362) | 同 header | stable name + schema version + event handler 収集 |
 | `BehaviorAttachmentArena` | module | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L168) | [`behaviorarena.cpp`](../../src/core/gamelogic/behaviorarena.cpp) | 生存・初期化・イベント配送・遅延構造変更・owner 解放 |
-| `structFields` / `field` / `required` / `defaulted` / `enumValues` | consteval DSL(consteval = 必ずコンパイル時に評価される関数につける指定で、実行時には呼べません。DSL = 用途を絞った小さな記述言語) | [`structfieldschema.hpp`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L741) | header only | use-site policy 強制つきフィールド schema |
+| `structFields` / `field` / `required` / `defaulted` / `enumValues` | consteval DSL | [`structfieldschema.hpp`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L741) | header only | 型の各フィールドの名前・型・必須/既定を、C++ の式として構造体の中に書かせる小さな記述言語。宣言はコンパイル時に固まり、実行時の schema オブジェクト構築が要りません(consteval = 必ずコンパイル時に評価される関数につける指定で、実行時には呼べません。DSL = 用途を絞った小さな記述言語)。use-site policy を同時に強制します |
 | `eventPayloadPolicy` / `behaviorParamsPolicy` / `componentPolicy()` | policy | [同](../../src/core/userpublic/details/schema/structfieldschema.hpp#L205) / [`behaviorParamsPolicy` の定義](../../src/core/userpublic/details/schema/structfieldschema.hpp#L206) / [`componentPolicy()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L208) | 同左 | 3 種の use-site 制約 |
 | `OverlapEnter` / `OverlapExit` | engine event | [`OverlapEnter`](../../src/core/userpublic/events.hpp#L18) / [`OverlapExit`](../../src/core/userpublic/events.hpp#L23) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L569) | 物理トリガの決定的 Enter/Exit(`self` / `other` は full `EntityId`) |
 | `RegistrationToken` / `RegistrationKind` | 世代付き登録トークン | [`RegistrationToken`](../../src/core/userpublic/details/reload/registrationowner.hpp#L29) / [`RegistrationKind`](../../src/core/userpublic/details/reload/registrationowner.hpp#L14) | [`registrationowner.cpp`](../../src/core/userpublic/details/reload/registrationowner.cpp) | system / component / event / behavior の個別解除。`RegistrationOwner` は上位 32bit=generation、下位 32bit=identity |
@@ -159,7 +159,15 @@ project game code が最優先で参照する層です。内部の `GET_MODULE` 
 
 game system の interface は base class ではなく macro + function signature です。[`PELICAN_REGISTER_SYSTEM`](../../src/core/userpublic/details/system/registerer.hpp#L174) が `void(GameContext&)` callback と phase/order/name を catalog へ登録します。event も [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L371) が型と handler を登録します。registry には `RegistrationOwner` が付き、game DLL reload 時に owner 単位で unregister されます。公開 API の関数/型には [`PELICAN_API`](../../src/core/userpublic/export.hpp)(DLL export 修飾)が必要です。
 
-上表の `Animation::AnimationServiceV1` のような C ABI struct は、`struct_size` による版交渉で DLL とエンジンをつなぎます。この交渉には **3 種類の異なる下限ルール**が混在していて(交渉エントリは 16 バイト、加算的テールを持つ descriptor は手書きの凍結プレフィクス、それ以外は既定の `sizeof(T)`)、しかも [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L15) は同名の別実装が [`ProbeRuntime` 側](../../src/core/animation/animationprobe.cpp#L38)にもあって既定値が違います。この落とし穴の分解は [第9章 §9.2](09_black_magic_and_gotchas.md) の難所ブロック「`struct_size` の 3 段ルール」を参照してください。
+上表の `Animation::AnimationServiceV1` のような C ABI struct は、`struct_size` による版交渉で DLL とエンジンをつなぎます。呼び出し側が「自分はこの大きさの struct を渡す」と書き、エンジンは `struct_size` が**下限以上か**だけを見て受理します。その下限の決め方が 1 つではなく、**3 種類が混在している**のが落とし穴です。
+
+| 対象 | 要求する下限 |
+|---|---|
+| 交渉の入口 3 本(`getApiV1` など) | `sizeof(DescriptorHeaderV1)` = 16 バイト。中身の大きさは問わない |
+| 加算的テールを持つ descriptor(`getClipMetadata`) | 手書きの「凍結プレフィクス」の長さ。テールの有無は問わない |
+| それ以外の全 API | 既定の `sizeof(T)` = **エンジン側の現在サイズ**。テールを 1 つ足した瞬間、古い DLL は弾かれる |
+
+しかも [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L15) は同名の別実装が [`ProbeRuntime` 側](../../src/core/animation/animationprobe.cpp#L38)にもあって既定値が違います。この落とし穴の分解は [第9章 §9.2](09_black_magic_and_gotchas.md) の難所ブロック「`struct_size` の 3 段ルール」を参照してください。
 
 ## 8.6 ECS
 
@@ -167,8 +175,8 @@ game system の interface は base class ではなく macro + function signature
 |---|---|---|---|---|
 | `ECSCore` | module façade | [`ecs/core.hpp`](../../src/core/ecs/core.hpp#L13) | header inline | 内部 `ECSCoreTemplatePublic` を所有し core/scene code へ narrow API を出す |
 | `ECSCoreTemplatePublic` | world implementation | [`coretemplate.hpp`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L97) | [`coretemplate.cpp`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L25) | ID table、generation、archetype/chunk、system query cache、transaction mutation |
-| `ECSComponentChunk` | SoA storage(SoA = structure of arrays) | [`chunk.hpp`](../../src/core/userpublic/details/ecs/chunk.hpp#L19) | [`chunk.cpp`](../../src/core/userpublic/details/ecs/chunk.cpp#L95) | archetype 固有の component arrays、versions、swap-delete(削除した位置へ末尾の要素を移してから縮める方式。並び順は保たれませんが穴が開かず O(1) です)、[`CHUNK_CAPACITY = 4096`](../../src/core/userpublic/details/ecs/chunk.hpp#L69) |
-| `ECSComponentChunk::VariedArray` | aligned type-erased array | [`chunk.hpp`](../../src/core/userpublic/details/ecs/chunk.hpp#L25) | [`chunk.cpp`](../../src/core/userpublic/details/ecs/chunk.cpp#L17) | size/alignment/callback だけで任意 component を格納 |
+| `ECSComponentChunk` | SoA storage(SoA = structure of arrays) | [`chunk.hpp`](../../src/core/userpublic/details/ecs/chunk.hpp#L19) | [`chunk.cpp`](../../src/core/userpublic/details/ecs/chunk.cpp#L95) | 1 つの archetype(= 同じ component の組み合わせ)に属する entity だけを集め、その組み合わせに含まれる component ごとの配列を持ちます。「archetype 固有」とは、この Chunk が他の組み合わせの entity を一切含まない、という意味です。ほかに versions、swap-delete(削除した位置へ末尾の要素を移してから縮める方式。並び順は保たれませんが穴が開かず O(1) です)、[`CHUNK_CAPACITY = 4096`](../../src/core/userpublic/details/ecs/chunk.hpp#L69) |
+| `ECSComponentChunk::VariedArray` | aligned type-erased array | [`chunk.hpp`](../../src/core/userpublic/details/ecs/chunk.hpp#L25) | [`chunk.cpp`](../../src/core/userpublic/details/ecs/chunk.cpp#L17) | Chunk が持つ component 配列 1 本の実体。`std::vector<T>` を使えないのは、Chunk が `T` を知らないからです。代わりに `stride * 4096` バイトの生バッファ 1 個を alignment 付き `operator new` で確保し、要素の扱いは `ComponentInfo` から受け取った construct/destroy/relocate の関数ポインタに任せます。型の代わりに **size / alignment / callback** を持つ、というのが type erasure の中身です |
 | `ECSArchetypeMigration` / `ECSArchetypeMigrationToken` | transaction | [`ECSArchetypeMigration`](../../src/core/ecs/archetypemigration.hpp#L121) / [`ECSArchetypeMigrationToken`](../../src/core/ecs/archetypemigration.hpp#L53) | [`archetypemigration.cpp`](../../src/core/ecs/archetypemigration.cpp) | component 追加/削除の失敗原子性 |
 | `ECSArchetypeMigrationAdapter` | 抽象 | [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) | 実装は各投影 WP | `prepare()`(throw 可) / `rollback()`(noexcept) / `publish()`(no-fail) |
 | `ECSEntityMutation` / `ECSEntityMutationToken` | transaction | [`ECSEntityMutation`](../../src/core/ecs/archetypemigration.hpp#L109) / [`ECSEntityMutationToken`](../../src/core/ecs/archetypemigration.hpp#L83) | 同左 | entity 生成/破棄の prepare/publish |
@@ -205,7 +213,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `InputStateCore` | testable core | [`inputstate.hpp`](../../src/core/os/inputstate.hpp#L206) | [`inputstate.cpp`](../../src/core/os/inputstate.cpp) | ordered event queue から snapshot、edge、mouse delta を構築 |
+| `InputStateCore` | testable core | [`inputstate.hpp`](../../src/core/os/inputstate.hpp#L206) | [`inputstate.cpp`](../../src/core/os/inputstate.cpp) | ordered event queue から snapshot、edge、mouse delta を構築。「testable core」はこのリポジトリの型の分け方で、**module でも GLFW でもない、値を入れて値が出るだけの部分**を別 class に切り出したものを指します。テストは window も module container も起動せずにこの class だけを直接叩けます(module として繋ぐのは下の `InputState` の役目) |
 | `InputState` | module wrapper | [`inputstate.hpp`](../../src/core/os/inputstate.hpp#L259) | [`inputstate.cpp`](../../src/core/os/inputstate.cpp) | `InputStateCore` を module interface として転送 |
 | `InputSnapshot` | immutable-ish frame value | [`inputstate.hpp`](../../src/core/os/inputstate.hpp#L61) | [`inputstate.cpp`](../../src/core/os/inputstate.cpp) | down/pushed/released、cursor、delta、axis |
 | `FrameInput` | scoped borrow | [`inputstate.hpp`](../../src/core/os/inputstate.hpp#L173) | [`inputstate.cpp`](../../src/core/os/inputstate.cpp) | frame generation と borrow state を持ち、次 frame への持ち越しを検出 |
@@ -219,7 +227,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
 | `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L96) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4628) / [`render()`](../../src/core/vkcore/renderer.cpp#L5661) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
-| `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替 |
+| `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替。**flat** は「XR でない通常の 1 画面(ウィンドウまたは headless の 1 枚)」を指すこのリポジトリの語で、**XR composition** は OpenXR ランタイムへ両眼ぶんのレイヤを渡して合成させる側です。同じ frame graph をどちらの出口へ流すかの違いになります |
 | `RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、`$main`+named secondary family集合、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`CompiledRenderPipeline`](../../src/core/renderingpass/previewgraph.hpp#L15) / [coordinated family 側の注記](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |
 | `PreviewExecutor` / `PreviewCaptureRequest` / `PreviewCaptureResult` | 隔離実行 | [`PreviewExecutor`](../../src/core/vkcore/previewexecutor.hpp#L61) / [`PreviewCaptureRequest`](../../src/core/vkcore/previewexecutor.hpp#L25) / [`PreviewCaptureResult`](../../src/core/vkcore/previewexecutor.hpp#L36) | [`previewexecutor.cpp`](../../src/core/vkcore/previewexecutor.cpp) | request-local な資源で preview を描いて返す(現状は CPU 模式ラスタ) |
@@ -254,10 +262,10 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `RenderTarget` | module/bridge | [`rendertarget.hpp`](../../src/core/vkcore/rendertarget.hpp#L26) | [`rendertarget.cpp`](../../src/core/vkcore/rendertarget.cpp#L15) | headless flag で `IFrameTarget` 実装を選び委譲 |
 | `SwapchainFrameTarget` | interface implementation | [`SwapchainFrameTarget`](../../src/core/vkcore/swapchainframetarget.hpp#L9) | [`SwapchainFrameTarget::beginFrame()`](../../src/core/vkcore/swapchainframetarget.cpp#L2863) | acquire、submit、present と epoch 単位の swapchain 再構築(準備は worker thread、退役した epoch は fence 完了後に回収) |
 | `OffscreenFrameTarget` | interface implementation | [`OffscreenFrameTarget`](../../src/core/vkcore/offscreenframetarget.hpp#L14) | [`OffscreenFrameTarget::beginFrame()`](../../src/core/vkcore/offscreenframetarget.cpp#L149) | headless image、submit、RGBA8 readback |
-| `CommandBufWrapper` | RAII/sync wrapper | [`cmdbuf.hpp`](../../src/core/vkcore/cmdbuf.hpp#L8) | [`cmdbuf.cpp`](../../src/core/vkcore/cmdbuf.cpp#L1) | command buffer、queue、fence を一組で begin/submit/wait |
+| `CommandBufWrapper` | RAII/sync wrapper | [`cmdbuf.hpp`](../../src/core/vkcore/cmdbuf.hpp#L8) | [`cmdbuf.cpp`](../../src/core/vkcore/cmdbuf.cpp#L1) | command buffer、queue、fence を一組で begin/submit/wait。ここでの sync は CPU–GPU の同期のことで、同梱の fence で「submit した仕事を GPU が終えたか」を待つところまでを 1 つの型に閉じます(RAII 側は command buffer の確保・解放) |
 | `BufferWrapper` / `ImageWrapper` | RAII value | [`buf.hpp`](../../src/core/vkcore/buf.hpp#L7) / [`image.hpp`](../../src/core/vkcore/image.hpp#L8) | [`VulkanManageCore::allocBuf()`](../../src/core/vkcore/core.cpp#L1311) | Vulkan object と VMA allocation を同居させる |
 | `VulkanUtils` | module/helper | [`util.hpp`](../../src/core/vkcore/util.hpp#L10) | [`util.cpp`](../../src/core/vkcore/util.cpp#L1) | staging copy と image layout transition command |
-| `DeletionQueueCore` | type-erased deferred owner | [`deletionqueue.hpp`](../../src/core/vkcore/deletionqueue.hpp#L17) | [`DeletionQueueCore::leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) / [`DeletionQueueCore::confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L73) | `defer()` した旧 GPU object を submission 単位の retirement batch に積み、その batch を [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53) として frame target に渡す。破棄の時期は frame 番号ではなく lease の寿命で決まり、fence 完了で target が lease を落として最後の参照が消えたときに destructor が走る。teardown 後は [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L80) が `defer()` を拒否 |
+| `DeletionQueueCore` | type-erased deferred owner(**deferred** = 破棄を「C++ 側で不要になった時点」ではなく GPU が使い終わるまで遅らせる、**owner** = その間の所有権をこの queue が持つ、**type-erased** = 何の Vulkan object かを問わず同じ 1 本の queue に積める、という 3 語です) | [`deletionqueue.hpp`](../../src/core/vkcore/deletionqueue.hpp#L17) | [`DeletionQueueCore::leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) / [`DeletionQueueCore::confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L73) | `defer()` した旧 GPU object を submission 単位の retirement batch に積み、その batch を [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53) として frame target に渡す。破棄の時期は frame 番号ではなく lease の寿命で決まり、fence 完了で target が lease を落として最後の参照が消えたときに destructor が走る。teardown 後は [`requireAccepting()`](../../src/core/vkcore/deletionqueue.hpp#L80) が `defer()` を拒否 |
 | `ShaderCompiler` | module/service | [`shadercompiler.hpp`](../../src/core/shader/shadercompiler.hpp#L27) | [`compileFile()`](../../src/core/shader/shadercompiler.cpp#L588) | GLSL source + define/include を SPIR-V へ compile |
 | `ShaderReflection` | value | [`shaderreflection.hpp`](../../src/core/shader/shaderreflection.hpp#L22) | [`reflect()`](../../src/core/shader/shaderreflection.cpp#L152) | descriptor、push constant、vertex input、local size |
 | `ShaderLibrary` | module/registry | [`ShaderLibrary`](../../src/core/shader/shaderlibrary.hpp#L123) | [`load/reload`](../../src/core/shader/shaderlibrary.cpp#L431) | module + reflection + source/version/log の [`ShaderBundle`](../../src/core/shader/shaderlibrary.hpp#L30) 管理 |

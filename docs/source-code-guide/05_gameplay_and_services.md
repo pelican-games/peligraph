@@ -25,9 +25,9 @@
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
-`GameContext`自体は状態を持ちません。各フレームでstack上に作られ、moduleへ到達する窓口として使われます。そのためSystemが`GameContext*`を保存する意味はありません。
+`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L139) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
 
-上の表は**通常フレームでの**委譲先です。scene load transactionが開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
+上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
@@ -40,13 +40,13 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 [[nodiscard]] bool setSpotLightDirection(std::string_view name, vec3 direction) const;
 ```
 
-setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L381) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
+setterは対象ライトのstructを書き換えるだけです（[`LightContainer::setDirectionalLightDirection()`](../../src/core/light/lightcontainer.cpp#L380)）。GPUへ渡るのはframeごとで、[`updateFrameLights()`](../../src/core/vkcore/renderer.cpp#L381) がその時点の現在値をlight UBOへ詰め、shadow用のview-projectionとsky ambientと併せて `LightContainer::update()` を呼びます。ここでの shadow 用 view-projection は、directional shadow の view family に属する各 view（ライト × cascade）の `projection * view` 行列を並べたもので、shading 側が world 座標を shadow map の座標へ写すために使います（組み立ては同関数内の [`view_projections.push_back()`](../../src/core/vkcore/renderer.cpp#L431) の周辺）。ゲームSystemの`update()`から呼べばそのframeの描画に載る、という順序です。
 
 > **設計決定:** ライトの時間変化は**ユーザー空間の責務**です。engine側にライト名（`"KeyLight"`など）を見て時刻から値を書き換える経路はありません。[`LightContainer`](../../src/core/light/lightcontainer.hpp) が持つのは現在値の配列と名前→indexのmapだけで、時刻を受け取るAPIも、scene読み込み時の原本値を控える配列もありません。従ってsetterで上書きした値を元へ戻したければ、ユーザーコード側で覚えておく必要があります。実例は [`updateLightAnimation()`](../../projects/example/code/playercontrol.cpp#L31) で、`ctx.time()`から毎フレーム**絶対値を計算して**4本のsetterへ渡しています。移行時の注意は[第9章](09_black_magic_and_gotchas.md)を参照してください。
 
 ## 5.2 ゲームSystemの形
 
-最小のSystemは次のduck-typed classです。
+最小のSystemは次のduck-typed class（基底クラスを継承せず、必要なメンバ関数が在るかどうかだけで受理される形。C++では概念名で、実際に判定するのは下の Concept です）です。
 
 ```cpp
 class PlayerSystem {
@@ -124,7 +124,7 @@ event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadsc
 
 payloadを値copyしてshared ownershipへ変換するため、emit元のstack objectが消えても次フレームまで安全です。dispatch時に登録済み関数が元のEvent型へcastします。`owner`が付いたことで、game DLL reload時に「消えたownerのqueued event」を選別できます。
 
-teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpublic/details/event/registerer.hpp#L335) が [`EventQueueDrainResult{pending, frozen}`](../../src/core/userpublic/details/event/registerer.hpp#L43) を返し、[第2章](02_runtime_lifecycle.md)のteardown段階から呼ばれます。
+teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpublic/details/event/registerer.hpp#L335) が [`EventQueueDrainResult`](../../src/core/userpublic/details/event/registerer.hpp#L43)（捨てた件数を `pending` と `frozen` の2カウンタで返すだけの構造体。用語は [第2章 §2.3](02_runtime_lifecycle.md)）を返し、[第2章](02_runtime_lifecycle.md)のteardown段階から呼ばれます。
 
 ### 名前と重複
 
@@ -169,7 +169,7 @@ flowchart LR
 
 [`Window`](../../src/core/os/window.hpp#L17) がGLFW callbackを`InputEvent`へ変換します。RPCの`inject_input`も同じ`InputState.queueEvents()`へ合流するため、下流は入力源を区別しません。
 
-XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L505)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。
+XRセッション中は **XR action backend** もこの層に入ります。`syncActions()`の結果を`internal::setInputActionBackendFrame()`と`queuePoseSamples()`でInputStateへ流し込みます（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L505)）。また [`InputSequenceRuntime`](../../src/core/os/inputsequence.hpp#L45) によるrecord/replayが、この層のevent queue境界に挿入されます。record/replayは `--record-input` / `--replay`（[第2章 §2.1](02_runtime_lifecycle.md)）で、記録・再生されるのは**この層の順序付き `InputEvent` 列とフレーム境界のmarker**です — 上位のL3 snapshotやL4のAction結果ではありません（再生時はそれらを記録から復元するのではなく、注入した event 列から**同じ手順で作り直します**）。番号合わせの詳細は次の難所にあります。
 
 ### L2: 順序付きInputEvent
 
@@ -297,7 +297,11 @@ controllerは名前bindingからtarget transformを毎回resolveし、scene遷�
 
 ## 5.7 Physics
 
-physicsはビルドフラグ `PELICAN_WITH_PHYSICS` の配下にあります（OFFではstub実装になり、colliderを含むsceneは明示エラー）。クエリ実装は **provider ABI** で差し替え可能です（WP107系列）。
+physicsはビルドフラグ `PELICAN_WITH_PHYSICS` の配下にあります（OFFでは **stub 実装**、つまり「同じ宣言を持つが中身を持たない差し替え版」に切り替わります。呼ぶと投げる形なので、colliderを含むsceneは明示エラーです。実物は本節末の `physworld_stub.cpp`）。
+
+この章で扱うクエリは3種類です。**raycast** は点と方向（[`Ray`](../../src/core/phys/physquery.hpp#L17)）を飛ばして当たったcolliderを返し、**overlap** はいま重なっているcolliderを列挙し、**shapeCast** はその中間 — Sphere / Box / Capsule を**向きを固定したまま** `delta` だけ平行移動させて、最初に当たるcolliderと接触時刻を返します（「太さのあるraycast」。契約は [`ShapeCastHit` の上のコメント](../../src/core/phys/physquery.hpp#L124) が正で、`delta` がゼロなら「いまの貫通をどれだけ押し出せば解けるか」だけを問う query になります — その押し出し量が後述の MTD です）。
+
+クエリ実装は **provider ABI** で差し替え可能です（WP107系列）。ABI は application binary interface で、ここでは「C互換の関数ポインタ表」という意味です — [`ProviderV2`](../../src/core/userpublic/physics/abi_v2.hpp#L83) は `context` と `raycast_all` / `overlap_all` / `shape_cast_all` の3本を並べた `std::is_standard_layout_v` 固定の構造体で、先頭に `struct_size` と `version` を置いてあります。ヘッダ / クラスではなくこの形にしてあるので、別ビルドのDLLが実装を差し込めます（fixtureが [`test/fixtures/physics_provider_dll/`](../../test/fixtures/physics_provider_dll)）。差し替えても結果の並びが変わらない理由は下の「εクラスタの全順序」にあります（[用語集](../manual/14_glossary.md) の「provider」「ABI」）。
 
 ### provider ABI
 
@@ -359,7 +363,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 
 > 🧩 **難所 — GJK 最近点の全列挙**([`closestToOrigin()`](../../src/core/phys/physquerysweep.cpp#L373) / [`closestForSubset()`](../../src/core/phys/physquerysweep.cpp#L310))
 >
-> **何をする所か**: GJK(Gilbert–Johnson–Keerthi の頭字語 — 凸形状 2 つの距離を、両者の Minkowski 差の上での「原点への最近点探し」へ言い換えて反復的に解くアルゴリズム)の simplex(その上に張る最大 4 頂点の単体)に対し、凸包上で原点に最も近い点を求めます。Minkowski 差とは、片方の全点からもう片方の全点を引いた差 a−b が作る集合のことで、2 形状が交差することと、この集合が原点を含むことが同値になります。sweep 側の距離計算の心臓部です。
+> **何をする所か**: GJK(Gilbert–Johnson–Keerthi の頭字語 — 凸形状 2 つの距離を、両者の Minkowski 差の上での「原点への最近点探し」へ言い換えて反復的に解くアルゴリズム)の simplex(その上に張る最大 4 頂点の単体)に対し、凸包上で原点に最も近い点を求めます。Minkowski 差とは、片方の全点からもう片方の全点を引いた差 a−b が作る集合のことで、2 形状が交差することと、この集合が原点を含むことが同値になります。sweep 側の距離計算の心臓部です。**GJK と EPA が何を解く問題なのか**（GJK が距離、EPA が貫通量、という役割分担がなぜそうなるか）は [第10章 §10.5 の「GJK と EPA」](10_background_knowledge.md) にまとめてあります。ここから先は、この実装がその定番からどう外れているかだけを書きます。
 >
 > **素朴に読むと**: `for (mask = 1; mask < 1U << size; ++mask)` が唐突で、何を列挙しているのかコードからは読めません。実体は**頂点部分集合をビットマスクで全列挙**し、各部分集合について「重心座標の正規方程式を Gauss–Jordan で解く」ものです。教科書の Johnson アルゴリズム(点 / 線分 / 三角形 / 四面体の場合分け)を使っていないのは、分岐が 20 通り近くあり、退化した simplex(ほぼ同一点・ほぼ一直線)で符号判定が破綻して**同じ頂点集合を無限に往復する**のが典型的なバグだからです。ここでは「制約なしで解いて、重心座標に負が出たらその部分集合を棄却」という一様な形にして場合分けを消しています。最後の罠が `richer_tie` で、距離が同点のときは **popcount が大きい部分集合**(popcount = 立っているビットの個数。ここでは部分集合に含まれる頂点の数です)を採ります。辺と面が同じ距離を与える接触では、これが無いとマスク昇順の偶然で小さい部分集合が選ばれ、`reduceSimplex()` が接触フィーチャの一部を捨てて、EPA(expanding polytope algorithm — 貫通しているペアに対して、GJK が残した simplex を原点の外側へ膨らませながら原点に最も近い面を探し、押し出す深さと向きを求める後続アルゴリズム。後述の「難所 — EPA の四面体と面選択」で扱います)の種になる simplex が貧しくなります。
 >
@@ -404,7 +408,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 
 > 🧩 **難所 — EPA の四面体と面選択**([`penetration()`](../../src/core/phys/physquerysweep.cpp#L657) / [`closestCanonicalFace()`](../../src/core/phys/physquerysweep.cpp#L621))
 >
-> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [`physquery.hpp` 内](../../src/core/phys/physquery.hpp#L128) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。`shapeCast` が `initial_overlap = true` で返す `penetration_depth` / `normal` の出どころです。
+> **何をする所か**: 初期貫通しているペアの MTD(minimum translation distance — 貫通を解消する最小の押し出し量。このコードベースでは [`physquery.hpp` 内](../../src/core/phys/physquery.hpp#L128) の契約どおり `normal * penetration_depth`、つまり向きと深さの対を指します)を EPA で求めます。`shapeCast` が `initial_overlap = true` で返す `penetration_depth` / `normal` の出どころです。EPA そのものの説明（GJK が「交差している」で止まった後、その単体を種に多面体を膨らませて原点に最も近い面を探す）は [第10章 §10.5](10_background_knowledge.md) にあります。
 >
 > **素朴に読むと**: 2 か所が初見でまず読めません。(a) [`enclosingTetrahedron()`](../../src/core/phys/physquerysweep.cpp#L544) が **26 方向サンプル + 4 点の総当り**という力技になっている理由。EPA は原点を内包する四面体からしか始められませんが、GJK が返す終端 simplex は点 / 線分 / 三角形かもしれません。通常は次元を 1 つずつ上げる増分構成をしますが退化ケースの分岐が多いので、ここでは {-1,0,1}³ の 26 方向で support 点(support 関数 — 与えた方向 d に対し、形状上で dot(p, d) が最大になる点、つまりその方向の一番端の点を返す関数。凸形状はこの関数だけで完全に表現でき、GJK / EPA の反復はこの関数の呼び出しだけで進みます)を足し、`C(n,4)` を総当りして**最小重心座標が最大**の四面体を選びます。「原点を最も余裕を持って内包する = 最も条件の良い面が張れる」という選び方で、この最大化が抜けるとほぼ退化した四面体を掴み、`makeFace()` が全滅して `faces.size() != 4` で `nullopt` へ落ちます。(b) `closestCanonicalFace()` の三重条件。同心の箱のような対称ペアでは**同じ深さの面が同時に何枚も存在**し、float 誤差と面の生成順で勝者が変わると MTD の向きがコンパイラ依存になります。そこで最小距離から `shapeCastTieEpsilon` 以内の面だけを候補にし、**符号反転した法線**(= 実際に返る MTD 方向)に対する辞書式キー `(dot(n, preferred), n.x, n.y, n.z)` の最大を採ります。`preferred` は `normalize(-delta)`(delta=0 なら +X)なので「動いてきた方向へ押し返す面」が優先されます。条件式の `!canonicalNormalGreater(selected, candidate, ...)` は「先の比較が偽で、かつ逆向きも偽」= キー完全一致 を表す遠回りな書き方で、そのときだけ頂点インデックス三つ組の辞書順で決めます。
 >
@@ -431,7 +435,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 
 queryのたびに [`collectColliders()`](../../src/core/phys/physworld.cpp#L436) がECS transformをresolveし、local collider offset/rotationとworld scaleを合成して純粋`phys::Collider`列を作ります。削除済みentityのbindingはqueryから自然に除外されます。
 
-builtin providerはbroad phase spatial indexを持たず、queryごとに全bindingを走査します。大量colliderではO(N)が支配的です。
+builtin providerは **broad phase spatial index** を持たず、queryごとに全bindingを走査します。broad phase spatial index とは、BVHやgridのような空間索引で「明らかに当たらないcollider」をまとめて落とす前段のことで、その後に残った少数だけを厳密に判定する（= narrow phase）という二段構えの前半です。builtinにはその前段が無く、[`collectColliders()`](../../src/core/phys/physworld.cpp#L436) が全bindingからcollider列を作り、provider側も渡された配列を先頭から1件ずつ判定します（[`builtinphysicsprovider.cpp` の raycast ループ](../../src/core/phys/builtinphysicsprovider.cpp#L67)）。だから1クエリの計算量がcollider数Nに比例し、大量colliderではO(N)が支配的です。
 
 ### trigger event ✅実装済み（WP179 / E2）
 
@@ -479,7 +483,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 > 🧩 **難所 — 滑りと skin の引き算**([`moveAndSlide()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L260) / [`slideRemainder()`](../../src/core/userpublic/platformer/charactercontroller2d.cpp#L227))
 >
-> **何をする所か**: 2D 横スクロール(サイドビュー)の character controller(§5.12 の `platformer/charactercontroller2d.hpp`)です。移動は XY 平面に閉じていて、`delta.z` が `motion_epsilon` を超えると `invalid_argument` を投げます。`shapeCastAll` を最大 `max_iterations`(既定 8)回まで繰り返し、接触ごとに残り移動を接触面へ射影して「進んで滑る」を反復します。
+> **何をする所か**: 2D 横スクロール(サイドビュー)の character controller(§5.12 の `platformer/charactercontroller2d.hpp`)です。移動は XY 平面に閉じていて、`delta.z` が `motion_epsilon` を超えると `invalid_argument` を投げます。`shapeCastAll` を最大 `max_iterations`(既定 8)回まで繰り返し、接触ごとに残り移動を接触面へ射影して「進んで滑る」を反復します。ここで言う **skin**(`skin_width`、既定 1e-4)は形状の周りに常に確保しておく隙間で、宣言側のコメントがそのまま定義です — 「controller は非貫通の cast 接触の**この距離だけ手前**で止まる」([`MoveAndSlide2DSettings::skin_width`](../../src/core/userpublic/platformer/charactercontroller2d.hpp#L34))。押し出し側も `penetration_depth + skin_width` まで戻すので、どちらの経路を通っても体は面から `skin_width` 浮いた状態で反復を終えます。つまり skin は「次の `shapeCastAll` を、面にちょうど接した(あるいは僅かに貫通した)状態から始めない」ための余白です。
 >
 > **素朴に読むと**: 数字の入れ替えが 3 か所あり、どれを間違えても静かに壊れます。(1) 前進は `travel = max(0, |remaining| * toi - skin_width)` なのに、残りは `remainder = remaining * (1 - toi)` で **skin_width を引きません**。ここを `remaining - travel` にすると skin 分が残りへ戻り、次の反復で面を突き抜けるか面際で前後に振動します。skin は「面から浮かせる距離」であって「使った移動量」ではありません。(2) `max(0, ...)` が効くのは接触が skin より近いときで、そのとき**前進はゼロだが滑りは行われます**。負のまま使うと壁にめり込む方向へ後退します。(3) `initial_overlap` 枝は TOI を一切消費せず、`normal * (penetration_depth + skin_width)` だけ押し出して `continue` します。押し出しの後で `slideRemainder()` を通さないと、同じ collider に対して押し出し→再進入を繰り返します。`slideRemainder()` の分岐も理由が深く、上向き(`normal.y > 0`)でも walkable でない接触は「壁」として扱い、法線を水平成分だけへ潰してから射影します。斜面の接線へそのまま射影すると**上向き速度が生成され、`max_slope_degrees` を超える崖を登ってしまう**からです。
 >
@@ -593,6 +597,8 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 `GameContext::debugText(x,y,text)`は [`DebugText::text()`](../../src/core/renderer/debugtext.hpp#L80) へglyphをqueueします。描画configで`debug_text` featureが有効なときだけrendererが`DebugText` moduleを生成し、対応passで描画します。APIを呼べることと、passが画面へ出すことは別条件です。
 
 ## 5.12 ゲームコードの推奨境界
+
+下のリストの先頭3本は名前が似ていますが役割が違うので、先にその関係を書いておきます。**System**（`gamesystem.hpp`、§5.2）は「全entityを横断する毎フレームの処理単位」、**Behavior**（`behavior.hpp`、§5.13）は「scene objectに貼り付く処理単位」で、この二つは並列の登録面です。**GameContext**（`gamecontext.hpp`、§5.1）はどちらでもない — 両者の関数へ引数として渡ってくる公開ファサードで、engineのmoduleへ到達する唯一の窓口です（`BehaviorContext` は `GameContext` を public 継承して `self()` などを足したもの）。「毎フレーム何かする側」を System か Behavior のどちらかで書き、engineへの用事は常に ctx 経由、という形になります。
 
 通常のproject codeは次をincludeし、内部moduleへ直接触れない構成が保守しやすいです。
 

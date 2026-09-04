@@ -27,7 +27,9 @@ GameObjects / SceneLoader / 内部System
 
 ## 4.2 Component IDとComponentInfo
 
-### compile時の型→ID
+### compile時の型→ID: `TransformComponent` と書いた瞬間に番号 1 が決まる仕組み
+
+C++の型名は実行時には残らないので、ECSは型ごとに**整数のComponent ID**を割り当て、以降は番号だけで扱います。その対応表をどこかのmapに持つのではなく、コンパイル時のtemplate特殊化として書いてあるのがこの節です。
 
 型からIDへの対応は [`ComponentIdByType<T>`](../../src/core/userpublic/details/ecs/componentdeclare.hpp#L8) のtemplate特殊化です。
 
@@ -110,7 +112,7 @@ v3 は v2 の `ComponentLoaderInfo` を入れ子で再利用**しません**。h
 
 ### 名前が引けないときは `component_unknown@1`
 
-[`ComponentInfoManager::getComponentIdByName()`](../../src/core/ecs/componentinfo.cpp#L104) は、未登録名に対して `nullptr` や `-1` ではなく [`ComponentUnknownError`](../../src/core/ecs/componentinfo.hpp#L27) を投げます。`what()` は [`componentUnknownErrorCode`](../../src/core/ecs/componentinfo.hpp#L24)（`component_unknown@1`）に `{"name": ...}` の JSON を連結した文字列で、`payload()` からその JSON だけを取れます。「未登録」と「登録済みだが編集できない」を混ぜないための型です。
+[`ComponentInfoManager::getComponentIdByName()`](../../src/core/ecs/componentinfo.cpp#L104) は、未登録名に対して `nullptr` や `-1` ではなく [`ComponentUnknownError`](../../src/core/ecs/componentinfo.hpp#L27) を投げます。`what()` は [`componentUnknownErrorCode`](../../src/core/ecs/componentinfo.hpp#L24)（`component_unknown@1`）に `{"name": ...}` の JSON を連結した文字列で、`payload()` からその JSON だけを取れます。末尾の `@1` はこのリポジトリの名前付きエラーコードに付く**版番号**です（エラーの種類を表す番号ではありません）。`@2` を持つコードは調査時点で `pelican.vulkan_target_plan.logical_graph@2` と `pelican.vulkan_automatic_target_plan@2` の2件だけで、どちらも同名の `@1` はソースに残っていません。**版を上げたときに旧版を残すのかどうかを規範として書いた文書は見つかっていません（未確認）。**「未登録」と「登録済みだが編集できない」を混ぜないための型です。
 
 この2つは編集面で別の code に写ります（[第7章](07_tools_rpc_tests.md)）。
 
@@ -165,13 +167,13 @@ id_table[index]
 5. refあり
 6. chunk/array indexが現在も範囲内
 
-削除済みIDを保持していても、同じindexが再利用された時点でgenerationが変わるため、新しいentityへ誤接続しません。
+削除済みIDを保持していても、同じindexが再利用された時点でgenerationが変わるため、新しいentityへ誤接続しません。`generation` は「この枠が何代目か」を数える通し番号で、値そのものに意味はありません。選び方も単純で、[`releaseId()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L348) が枠を返すたびに1増やすだけです（初期値0、飛び番も乱数もありません）。上の判定4「generation一致」が効くのは、古い`EntityId`が持つ世代と、その枠の現在の世代が違うからです。
 
 ### free list
 
-[`releaseId()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L348) はlive/refを消し、generationを1増やしてindexを`free_indices`へ積みます。この`free_indices`がfree list（空きリスト — 使い終わった枠を実際に解放せず、空いた番号だけを別の入れ物へ貯めておいて次の確保でそこから取り出す方式）で、再利用はvector末尾からなのでLIFO（last in, first out）です。これにより同じ操作列は同じindex再利用順になります（[`Free-list LIFO test`](../../test/ecs_lifecycle_test.cpp#L451)）。
+[`releaseId()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L348) はlive/refを消し、generationを1増やしてindexを`free_indices`へ積みます。この`free_indices`がfree list（空きリスト — 使い終わった枠を実際に解放せず、空いた番号だけを別の入れ物へ貯めておいて次の確保でそこから取り出す方式）で、再利用はvector末尾からなのでLIFO（last in, first out）です。これにより同じ操作列は同じindex再利用順になります（[`Free-list LIFO test`](../../test/ecs_lifecycle_test.cpp#L451)）。順序を決めておく理由は性能ではなく**再現性**です。index再利用順が変わるとentityのChunk内位置が変わり、Systemが走査する順序、ひいてはログ・golden test・replayの結果が変わります。「同じ入力なら同じ出力」を保つ側に倒すため、`std::unordered_set` のような順序非依存の入れ物ではなくvector末尾からのLIFOに固定してあります。
 
-generationが`UINT32_MAX`に達したindexはwrapさせず、永久retireしてfree listへ戻しません。
+generationが`UINT32_MAX`に達したindexは、そこで**永久にretireします**（[`releaseId()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L348) は `++generation` も `free_indices.push_back()` もせずに戻ります）。wrapさせて0へ戻すと、その枠に対する大昔の`EntityId`が再び世代一致して`resolve()`を通り、まったく別のentityへ繋がるためです。retireした枠1つはid_tableの1エントリを占め続けますが、再利用されることはありません。
 
 ## 4.4 ArchetypeとChunk
 
@@ -182,6 +184,8 @@ generationが`UINT32_MAX`に達したindexはwrapさせず、永久retireしてf
 ```cpp
 unordered_map<vector<ComponentId>, vector<ChunkIndex>, VectorHash>
 ```
+
+`std::vector` には標準の `std::hash` 特殊化が無いので、キーに使うには hasher を自分で与える必要があります。それが第3引数の [`VectorHash`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L124) で、ID列を順に畳んで1個の `size_t` にするだけの小さな関数オブジェクトです。
 
 key作成時はComponent IDをsortするため、呼び出し側で指定した順序が違っても同じarchetypeとして見つかります（[`createEntities()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L365)）。一方、Chunk内部の配列順序は作成時のmetadata順を保持します。
 
@@ -224,14 +228,14 @@ Chunkは64 bitのComponent maskを持ちます。Component indexごとに`1ULL <
 
 ### 正常経路
 
-1. [`MutationScope`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L297) で構造変更の再入を禁止。
+1. [`MutationScope`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L297) で構造変更の再入を禁止。`MutationScope` は宣言が [`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L438) にある3行のRAIIガードで、構築時に `mutation_active` が既に立っていれば `std::logic_error("ECS structural mutation is not reentrant")` を投げ、そうでなければ立てて、デストラクタで下ろすだけです。公開APIも仮想関数も持ちません。
 2. 呼び出し側Component列の先頭へ`EntityId`を自動追加。
 3. sort済みcopyで重複IDを検出。
 4. 全IDが登録済みか`ComponentInfoManager`で確認。
 5. free list再利用数と新規ID数を事前計算し、capacity overflowを確認。
 6. 同archetypeで空きのあるChunkを探し、なければ新Chunkを作る。
 7. 最大4096件ずつChunk配列をdefault constructして領域を確保。
-8. IDを割り当てるが、まだ`live = false`のまま。
+8. IDを割り当てるが、まだ`live = false`のまま。`live` は `id_table` の各エントリが持つ bool（[`IdEntry`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L113)）で、**その枠が公開済みか**だけを表します。§4.3 の [`resolve()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L308) が判定3で見るのがこの値なので、`live = false` の間は`EntityId`を持っていてもComponentへは一切辿れません。
 9. 呼び出し側`populate` callbackで初期値を代入。
 10. 各Componentのoptional `init()`をentity順・Component順に呼ぶ。
 11. 全て成功後にIDを`live = true`へ公開。
@@ -310,7 +314,7 @@ GameObjects::add()
 
 ## 4.7 削除は末尾要素での穴埋め
 
-[`ECSCoreTemplatePublic::remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) はO(Component数)で削除します。一般にswap-and-pop（swap-remove）と呼ばれる手法ですが、実装は入れ替えではありません。削除位置をdestroyしてから末尾要素をそこへrelocateし、`count`を1減らす片道の移動で、末尾側へ書き戻すものは何もありません。
+[`ECSCoreTemplatePublic::remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) はO(Component数)で削除します。一般にswap-and-pop（swap-remove — 削除位置と末尾を入れ替えてから末尾を捨てる、穴を作らない定番手法）と呼ばれる形ですが、**この実装は「入れ替え」をしません**。名前どおりの `std::swap` なら削除対象の値が末尾へ移り、そのあと末尾を捨てることになりますが、ここでは削除位置をdestroyしてから末尾要素をそこへrelocateし、`count`を1減らします。移動は末尾→削除位置の片道だけで、末尾側へ書き戻す値がありません（既に消してあるので書き戻す値が存在しない、というのが理由です）。結果は同じで、**移動が2回でなく1回**という違いです。
 
 ```text
 削除前: [A, B, C, D]
@@ -347,7 +351,9 @@ GameObjects::add()
 >
 > **不変条件**: §4.16 の不変条件5（`init()` 成功済みComponentは全経路でちょうど一度だけ `deinit()`）。`rollbackTail` に `deinit` を足す変更はこれを静かに破ります。destroyと `--count` の順序は経路ごとに逆で（`removeAt` / `clear` はdestroy→`--count`、`rollbackTail` は `--count`→destroy）、揃っているのは結果だけです。守るべきは順序そのものではなく「関数を抜けた時点で `count` の範囲に生きたオブジェクトだけが並ぶ」ことで、relocateのdstは必ずdestroy済み＝オブジェクトの居ない領域。
 
-### 生ポインタ保持が危険な理由
+### 生ポインタ保持が危険な理由（上の穴埋めが、無関係なentityのアドレスを動かす）
+
+いま見たとおり削除は末尾要素の移動を伴うので、**自分が消したのでない他のentityのComponentアドレスが変わります**。ここが、`tryComponent()` が返したポインタを持ち回れない理由です。
 
 Chunk自体は固定capacityですが、別entityを削除すると末尾entityが移動します。Componentへのpointer/referenceをフレームを跨いで保存すると、同じアドレスが別entityを指す可能性があります。長期保持するのは`EntityId`で、必要時に`tryComponent()`し直すのが契約です。
 
@@ -366,6 +372,8 @@ Chunk clearはComponent indexの逆順で各要素を`deinit → destroy`しま�
 
 ChunkはComponent indexごとに`component_versions[index]`を一個持ちます。entityごとのversionではなく、**Chunk内のそのComponent列全体のversion**です。どれか一entityを書き換えると、そのChunkを読むSystemはChunk全体を再処理します。
 
+この粒度が何を単純にしているかは、実体を見ると分かります。`component_versions` は Chunk 1 個につき `std::vector<uint64_t>` 1 本（[`chunk.hpp` 内](../../src/core/userpublic/details/ecs/chunk.hpp#L65)）で、長さはComponent数であってentity数ではありません。§4.11 のskip判定も [`max_version < start_last_run_tick`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L551) という整数比較数個で、SystemへはComponent配列の先頭ポインタと`count`をそのまま渡せます。entityごとのversionにすると、この配列が最大4096要素になり、「どの行が変わったか」をSystemへ伝える仕組みが別に要ります。代償は**偽陽性**で、1 entityの変更で同じChunkの最大4096 entity分が再処理されます。**この粒度を選んだ理由を書いた設計文書・台帳記述は見つかっていません（未確認）** — ここに書いたのは実装から読み取れる帰結です。
+
 直接pointerを書き換えて`markComponentChanged()`を忘れると、非force Systemは変更を見逃します。公開 [`GameObjects::setLocalTransform()`](../../src/core/userpublic/gameobjects.cpp#L67) はLocalTransformと内部Transformの両方を更新・markし、描画instanceへも即時反映します。
 
 ## 4.10 内部ECS Systemの登録
@@ -376,9 +384,9 @@ template本体は [`registerSystem<TSystem, TComponents...>()`](../../src/core/u
 
 `SystemId` を返すだけではありません。
 
-1. wrapperへ **`std::string name`** を持たせ、`wrapper.name = typeid(TSystem).name();` を代入します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L438)）。この名前が§4.12のhazard/cycleエラー文言に出ます。
-2. [`internal::registerECSSystemComponentDependencies()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L27) を呼び、Componentからの**逆参照テーブル**へ登録します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L585)）。これがComponent登録解除時の「依存Systemが残っている」判定に使われます（§4.15）。
-3. `execution_plan_dirty = true` を立て、実行計画キャッシュを無効化します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L565)）。
+1. wrapperへ **`std::string name`** を持たせ、`wrapper.name = typeid(TSystem).name();` を代入します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L585)）。この名前が§4.12のhazard/cycleエラー文言に出ます。`typeid(T).name()` が返す文字列は**実装定義**で、MSVCでは `class MySystem` のような読める形ですが、GCC/Clangではマングル名（`10MySystem` のような装飾済み名）です。診断メッセージの見た目はコンパイラによって変わる、と読んでください。安定した表示名が要る場面（ゲームSystemやBehavior）は、別に `stable_name` を宣言させる形になっています（[第9章 §9.3](09_black_magic_and_gotchas.md)）。
+2. [`internal::registerECSSystemComponentDependencies()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L27) を呼び、Componentからの**逆参照テーブル**へ登録します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L565)）。これがComponent登録解除時の「依存Systemが残っている」判定に使われます（§4.15）。
+3. `execution_plan_dirty = true` を立て、実行計画キャッシュを無効化します（[`coretemplate.hpp` 内](../../src/core/userpublic/details/ecs/coretemplate.hpp#L419)）。
 
 対称に、[`unregisterSystem()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L654) は逆参照テーブルから外して `execution_plan_dirty = true` を立て、デストラクタ [`~ECSCoreTemplatePublic()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L293) が `internal::unregisterECSCoreComponentDependencies(this)` を呼びます。
 
@@ -396,7 +404,7 @@ void process(std::tuple<TComponents*...> arrays, size_t count);
 
 判定は [`HasBatchProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L77) と [`HasPerChunkProcess`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L82) です。登録時の [`static_assert`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L419) で「少なくともどちらか」のprocess形が必須になりました。
 
-実装は二つの独立した`if constexpr`なので、両方のsignatureを同時に実装すると両方呼ばれます。通常はどちらか一方だけを実装します。
+実装は二つの独立した`if constexpr`なので、両方のsignatureを同時に実装すると**1フレームに両方が呼ばれます**。これはエラーでも警告でもなく、そう書けばそう動くだけです。ただし同じデータを2回処理することになるので、実際にはほぼ確実に書き間違いです。どちらか一方だけを実装してください。
 
 ### `const`でread/writeを宣言
 
@@ -438,7 +446,7 @@ Component packの型が次を同時に表します。
 
 required Component maskを作り、既存Chunkのmaskが包含すれば`matching_chunk_indices`へ追加します。新Chunk生成時も [`updateSystemChunkCache()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L323) が全Systemへ照合します。
 
-Chunkが空になっても個別削除ではChunk自体を消さないため、matching cacheに空Chunkが残る可能性があります。Systemは`count == 0`も安全に扱う必要があります。
+Chunkが空になっても個別削除ではChunk自体を消さないため、matching cacheに空Chunkが残ります（[`remove()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L550) はcountを減らすだけで、Chunkもcache entryも消しません）。ECS側にこれを取り除く経路は無く、Chunkがまとめて消えるのは §4.8 の `clearEntities()` だけです。したがって**`count == 0` で `process()` が呼ばれるのは正常系**で、その扱いは各System側の責任です。組み込みSystemの実例は [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L9) の早期returnです。
 
 ## 4.11 変更検知
 
@@ -464,7 +472,7 @@ Level 2: F        ── workerへschedule      ── wait
 
 ### read/writeからhazardを検出する
 
-[`conflictingComponents()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L170) が、二つのSystemが**同じcomponent indexへアクセスし、片方でもwriteしている**組み合わせを競合とみなします。ただしこれは*依存edgeの自動導出*ではなく、*hazardの検出*です。既に依存関係で順序が付いている組（[`isOrderedBefore()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L151) が到達可能性で判定）は競合になりません。
+[`conflictingComponents()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L170) が、二つのSystemが**同じcomponent indexへアクセスし、片方でもwriteしている**組み合わせを競合とみなします。ただしこれは*依存edgeの自動導出*ではなく、*hazardの検出*です。**競合とみなすのは、read/writeが重なっていて、かつ依存グラフ上でどちらが先か決まっていない組だけです。** 既に依存関係で順序が付いている組（[`isOrderedBefore()`](../../src/core/userpublic/details/ecs/coretemplate.cpp#L151) が到達可能性で判定）は、実行順が一意に決まっている以上そのまま安全なので、hazardの一覧に載らず、暗黙edgeも例外も発生しません（追加対応が不要、という意味です。判定を飛ばしているわけではありません）。
 
 検出されたhazardの扱いはpolicy次第です。
 
@@ -542,11 +550,13 @@ const auto hazard_policy = [] {
 
 ### prepareフェーズ
 
-level実行前に、そのlevelの**全System**の`prepare_func`がowner threadで呼ばれ、その後にまとめて`JobSystem`へscheduleし、`wait()`します（[`coretemplate.cpp` 内](../../src/core/userpublic/details/ecs/coretemplate.cpp#L735)）。Systemは`prepareEcsWorkerDependencies()`を実装して`GET_MODULE`をowner thread上で済ませ、worker job中のmodule生成（freeze後はエラー）を避けます。例は [`CameraSystem::prepareEcsWorkerDependencies()`](../../src/core/ecs/predefined/camerasystem.cpp#L9) です。
+ここでいう level は、この節の冒頭の図（Level 0 / 1 / 2）の段のことです。依存の無いSystemを同じ段へ集め、段の中は並列、段と段の間は必ず直列、という分け方でした。
+
+level実行前に、その段に入っている**全System**の`prepare_func`がowner threadで呼ばれ、その後にまとめて`JobSystem`へscheduleし、`wait()`します（[`coretemplate.cpp` 内](../../src/core/userpublic/details/ecs/coretemplate.cpp#L735)）。Systemは`prepareEcsWorkerDependencies()`を実装して`GET_MODULE`をowner thread上で済ませ、worker job中のmodule生成（freeze後はエラー）を避けます。例は [`CameraSystem::prepareEcsWorkerDependencies()`](../../src/core/ecs/predefined/camerasystem.cpp#L9) です。
 
 ### 組み込みSystemの依存
 
-現在の組み込み登録はほぼ全順序まで強化されています（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L41)）。
+現在の組み込み登録は**ほぼ全順序**まで強化されています（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L41)）。全順序とは「任意の2つを取ると必ずどちらが先か決まっている」状態、部分順序は「決まっている組と決まっていない組が混ざっている」状態です。下表の6 Systemから作れる15組のうち、依存の連鎖をたどっても前後が決まらないのは `LocalTransformSystem`–`SimpleModelViewUpdateSystem` と `LocalTransformSystem`–`AnimationSystem` の2組だけで、残り13組は決まります。この2組が並列に残るところが「ほぼ」です。
 
 | System | 依存 |
 |---|---|
@@ -574,6 +584,8 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 | [`CameraSystem`](../../src/core/ecs/predefined/camerasystem.cpp#L9) | `Transform, Camera` | 最初のcamera Componentをactive Cameraへ反映 |
 | [`SpriteViewRenderSystem`](../../src/core/ecs/predefined/spriteviewsystem.cpp) | `EntityId, Transform, SpriteView` | sprite表示をSpriteSceneへ反映 |
 
+表に出てくる **model instance** は、ECS Componentではなく**描画側の1件**です。[`PolygonInstanceContainer`](../../src/core/renderer/polygoninstancecontainer.hpp#L253) が所有するGPU描画単位で（model matrix bufferの1行 + indirect draw command）、識別子は [`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L11)（`index + generation + scene_epoch`）です。`SimpleModelViewComponent` はこのIDを持つだけで、実体はChunkの外にあります。ここの組み込みSystem群がしているのは、ECS側の値（transform、アニメーション状態）を毎フレームこの描画側の1件へ書き写すことです。
+
 `CameraSystem`は`count == 0`で早期returnするようになりました（[camerasystem.cpp](../../src/core/ecs/predefined/camerasystem.cpp#L14)）。ただし「先頭1件のみ使用」（`i < 1`固定のループ）は変わりません。scene cameraの主経路は別の [`Camera::loadSceneCameras()`](../../src/core/renderer/camera.cpp#L394) でも管理されており、camera関連には旧内部ECS経路と新scene camera経路が併存しています。
 
 ## 4.14 ECS Componentとして保存されないもの
@@ -592,7 +604,7 @@ level実行前に、そのlevelの**全System**の`prepare_func`がowner thread�
 
 ### behavior arena ✅実装済み
 
-behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` はECS Chunkとは無関係な独自のarenaで、次を保持します（[`behaviorarena.hpp` 内](../../src/core/gamelogic/behaviorarena.hpp#L176)）。
+behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` はECS Chunkとは無関係な独自の **arena**（同じ種類のオブジェクトを1本の連続した入れ物にまとめて置き、個別のポインタではなくハンドルで引き、まとめて解放できる置き場のこと）で、実体は `std::vector<Attachment>` 1本 + ハンドル→添字の解決です。ECS Chunkとの違いは、archetypeで分かれないこと・Systemへ配列として渡さないこと・寿命の単位がentityではなく `RegistrationOwner`（= game logic DLLの1世代）であることです。次を保持します（[`behaviorarena.hpp` 内](../../src/core/gamelogic/behaviorarena.hpp#L176)）。
 
 - `BehaviorAttachmentInfo`（identityとオブジェクト対応）
 - 元の `raw_component` JSON
@@ -633,7 +645,7 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 
 依存の逆参照テーブルは§4.10のSystem登録時に作られたものです。テストは [`test/registration_lifetime_test.cpp`](../../test/registration_lifetime_test.cpp) です。
 
-> 🧩 **難所 — generation 0 を跨がない台帳**([`nextGeneration()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L42) / [`ownerIsCurrentLocked()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L52) / [`releaseRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L109))
+> 🧩 **難所 — generation 0 を跨がない台帳**(= 世代番号を一周させて 0 に戻さない登録台帳。0 を「無効」の予約値に使っているため)([`nextGeneration()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L42) / [`ownerIsCurrentLocked()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L52) / [`releaseRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.cpp#L109))
 >
 > **何をする所か**: System / Component / Event / Behaviorの登録をDLLリロード単位で追跡する台帳で、`RegistrationOwner`（identity + generationの64bit）と `RegistrationToken` を発行・失効させます。
 >
@@ -659,7 +671,7 @@ cannot unregister component '<name>': dependent ECS system '<sys>' remains
 - scene名との対応
 - init/deinit/JSON契約
 - 配布ヘッダの範囲
-- 登録完了前のentity生成を防ぐ初期化順
+- 登録完了前のentity生成を防ぐ初期化順（`registerComponent<T>()` が走る前に、その型を含む `createEntities()` が走らないことを保証する仕組み。現在は静的初期化と scene load の並びで決まっており、**順序を強制する専用の機構は見つかっていません（未確認）**。未登録IDのまま生成しようとすると §4.5 の手順4 が例外にするので、静かに壊れるのではなく落ちます）
 
 ## 4.16 ECSを変更するときの不変条件
 
@@ -774,7 +786,20 @@ archetypeを変えない「値の差し替え」にも同じ形が入りまし�
 
 ## 4.18 scene load transaction から見た entity token
 
-`ECSEntityMutationToken` は ECS 単体の transaction であると同時に、scene load executor の **participant** でもあります。executor 側の phase は [`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) の8値（`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`）で、観測は [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40) という**固定長8スロット**の値です。[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ phase を弾き、溢れたら捨てずに `overflow = true` を立てます（コメントが「順序の観測を黙って捨てるな」と規範を書いています）。
+`ECSEntityMutationToken` は ECS 単体の transaction であると同時に、scene load executor の **participant** でもあります。executor 側の phase は [`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) の8値です。名前だけでは責務が読めないので1句ずつ付けておきます（各段の全量は[第3章 §3.5](03_project_and_loading.md)）。
+
+| phase | その段でやること | 失敗 |
+|---|---|---|
+| `prepare` | live に一切触らず、各 participant の candidate を作る | 可 |
+| `early_publish` | ECS entity だけを先に作って publish する（巻き戻しは inverse token） | 可 |
+| `publish` | prepare 済み storage を swap するだけ | `noexcept` |
+| `activate` | behavior の `onInit` を走らせる。**失敗しうる最後の段** | 可 |
+| `commit_metadata` | `SceneMetadataState` を1回 swap して新世代を確定 | `noexcept` |
+| `retire` | 旧 state を消さず、次フレームの retirement queue へ積む | `noexcept` |
+| `flush` | prepare で確保した outbox slot から `SceneLoaded` と副作用を出す | `noexcept` |
+| `finish` | early_publish で publish 済みの ECS create token を確定し、rollback 権を手放す | `noexcept` |
+
+観測は [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40) という**固定長8スロット**の値です。[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ phase を弾き、溢れたら捨てずに `overflow = true` を立てます（コメントが「順序の観測を黙って捨てるな」と規範を書いています）。
 
 ECS の関わり方には、読み間違えやすい非対称があります。
 

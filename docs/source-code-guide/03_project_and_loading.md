@@ -4,7 +4,7 @@
 
 ## 3.1 純粋パーサとruntime bindingを分ける
 
-データロードの基本形は二段です。
+ここでいう **runtime binding** は、検証済みのデータをエンジンの実体（解決済みpath、ECS Component、GPU資源、module参照）へ結び付ける段のことです。前段の純粋パーサ（`src/project`）はVulkanもquillもmodule containerも知らず、構文・schema・version・形式上の意味検証と正規化だけを行います（§3.3）。「同じ検証規則をエンジン非依存のまま devstudio や CLI からも使う」ためにこの線が引かれています（[用語集](../manual/14_glossary.md) の「結合(binding)」）。データロードの基本形はこの二段です。
 
 ```text
 JSON/テキスト
@@ -84,7 +84,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 }
 ```
 
-返るのはauthoring authorityによるsemantic encodeです。runtimeの読者はraw JSONではなく [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L775) を読み、両者とrevision / resolver generationは同じ `SceneProjectionState` から公開されます。読み書きのAPIは次の通りです。
+返るのはauthoring authorityによるsemantic encodeです。scene を **resolve する**とは、作者が書いた authoring document に prefab の展開と省略値の補完を施し、読み手が場合分けなしに読める不変の形（[`ResolvedScene`](../../src/core/loader/resolvedscene.hpp#L248)）へ畳むことです — 「scene の読み手に影響する authored な省略は、この不変 projection を prepare する時点で全て埋める」がヘッダのコメントの言い分です（[`ResolvedSceneDefaults` の上のコメント](../../src/core/loader/resolvedscene.hpp#L54)）。各componentが authored か生成物かは [`ResolvedComponentOrigin`](../../src/core/loader/resolvedscene.hpp#L178) に残ります。なお [用語集](../manual/14_glossary.md) の「解決(resolve)」は**path参照**をファイルの絶対パスへ確定させる別の用法で、§3.3 の話です。同じ動詞が2つの層で使われています。runtimeの読者はraw JSONではなく [`resolvedScene()`](../../src/core/loader/basicconfig.cpp#L775) を読み、両者とrevision / resolver generationは同じ `SceneProjectionState` から公開されます。読み書きのAPIは次の通りです。
 
 | API | 宣言 | 役割 |
 |---|---|---|
@@ -103,7 +103,7 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 > 🧩 **難所 — 保存のTOCTOU窓**([`saveSceneDocument()`](../../src/core/loader/basicconfig.cpp#L913))
 >
-> **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。
+> **何をする所か**: 編集済み文書を一時ファイル経由でディスクへ書き戻し、原子的に置換してから、メモリ側の文書とbaseline digestを差し替えます。TOCTOU と「一時ファイル + rename による原子的置換」の一般的な背景は [第10章 §10.4](10_background_knowledge.md) にあります。
 >
 > **素朴に読むと**: digest比較が **2回** あるのが冗長に見えます。しかしdigest比較が言えるのは「**比較したその瞬間まで**外部変更が無かった」ことだけで、比較を過ぎてから外部が書いた分については何も保証しません。1回目([`disk_digest` の検査](../../src/core/loader/basicconfig.cpp#L944))は一時ファイルを書く**前**にあるので、これだけにすると一時ファイルの書き込み・読み戻し・意味検証にかかる時間がまるごと TOCTOU 窓(time-of-check to time-of-use の略 — 検査した時点と実際に使う時点がずれるせいで生まれる、その間に外部が書き換えられる隙間)になり、保存処理はその間に外部エディタが書いた内容を、気付かないまま上書きしてしまいます。2回目([置換直前の `stableDiskDigest` 検査](../../src/core/loader/basicconfig.cpp#L995))は置換の直前に置かれていて、窓を実務上無視できる幅まで縮めるためのものです(WP362 からは比較相手が `save_baseline.scene_digest_sha256` —— scene digest と prefab read-set を一体で凍結した不可分 baseline の一部 —— になりました)。もう一つ見落としやすいのが末尾の順序で、ファイル置換([`replaceSceneFileAtomically()` の呼び出し](../../src/core/loader/basicconfig.cpp#L1003))の **後** に [`publishPreparedSceneState(next_state)`](../../src/core/loader/basicconfig.cpp#L759) と [`*scene_metadata.persistence_baseline = std::move(next_baseline)`](../../src/core/loader/basicconfig.cpp#L1009) が来ます(置換の後にあるのは3回目の比較ではありません。baseline を保存したバイト列の digest と prefab read-set へ**更新**する操作です)。この区間を確保・decode・I/Oなしの無throwにしてあり、逆順にすると「置換に失敗したのにメモリ側だけ新しいrevision」が作れてしまいます。pair 公開が `noexcept` の [`publishPreparedSceneState()`](../../src/core/loader/basicconfig.cpp#L759)(中身は `SceneProjectionState` の `swap` と `next_*` カウンタの代入)で、baseline の更新が `ScenePersistenceBaseline`(`std::string` + `std::vector`)丸ごとの **move 代入**なのも同じ理由で、どちらもバッファを移すだけで新しい確保を伴いません(WP380a 前は `scene_baseline_digest->swap()` でした。§3.2 の `SceneMetadataState` に統合された今は optional の中身への move 代入です)。
 >
@@ -142,7 +142,7 @@ std::variant<
 >
 ```
 
-`engine://`はファイルシステム上のpathではなく、実行ファイルへ埋め込まれたresource IDです。また`#kind:name`や`#kind:/full/path`のfragmentを、コンテナ内要素のアドレスとして失わず伝えるためvariantになっています（[`parsePathReference()`](../../src/project/projectpathresolver.cpp#L278)）。
+`engine://`はファイルシステム上のpathではなく、実行ファイルへ埋め込まれたresource IDです。また**fragment**を、コンテナ内要素のアドレスとして失わず伝えるためvariantになっています（[`parsePathReference()`](../../src/project/projectpathresolver.cpp#L278)）。fragmentは参照文字列の `#` 以降の `kind/path` で、「そのファイルの中のどれを指すか」を表します — 例が `assets/character.glb#mesh/Cube`（[`pathresolver_test.cpp` 内](../../test/pathresolver_test.cpp#L486)）で、`kind` が要素の種類、後半が名前です。`/` を含まない後半は名前アドレス、含む場合はコンテナ内のフルパスアドレスになります（[`AssetFragmentAddressKind`](../../src/project/projectpathresolver.hpp#L20)。[用語集](../manual/14_glossary.md) の「フラグメント参照(`#`)」）。`#` が2つある、`kind` だけで後半が無い、後半が全部数字、といった形は受理されません。
 
 ### scheme別の処理
 
@@ -154,7 +154,7 @@ std::variant<
 | CLI由来の絶対path | そのpath | `--allow-absolute-paths`必須 |
 | project JSON内の絶対path | 不許可 | 常に拒否 |
 
-`std::filesystem::weakly_canonical`後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L656)）。
+`std::filesystem::weakly_canonical`（`.` / `..` を畳み、途中までのsymlinkを解決して正規形へ落とす標準関数。末尾が実在しなくても失敗しない点が `canonical` との違いです）後にroot包含判定を行うため、単純な`../`文字列検査より強い境界です（[`ProjectPathResolver::resolveRef()`のproject処理](../../src/project/projectpathresolver.cpp#L656)）。
 
 ### asset store
 
@@ -238,7 +238,7 @@ sceneは実装を追う価値の高い、純粋層とruntime層の典型です�
 - `behavior`: ECSへ入れず、[`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L174) へ（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L336) で特別扱い）
 - その他: `ComponentInfoManager`で文字列名から`ComponentId`へ
 
-このためsceneの見た目はcomponent配列でも、現在のruntime実装ではlight/collider/behaviorがECS Chunkに保存されるわけではありません。
+このためsceneの見た目はcomponent配列でも、現在のruntime実装ではlight/collider/behaviorがECS Chunkに保存されるわけではありません。colliderをECSへ入れない理由は [`docs/design_ecs_lifecycle.md` §4](../design_ecs_lifecycle.md) の決定です — 「PhysWorld は『書き換え → 即 raycast で新位置』という既存契約を維持する」ため、PhysWorld 側が `Binding{name, collider, transform_source}` を持ち続け、query のたびに transform だけを ECS から resolve する形にしてあります（名前の重複検査とraycast結果の公開名がこの形に依存している、と同節が明記）。実装側の形は [§5.7 の World binding 層](05_gameplay_and_services.md) にあります。behavior が component でない理由も同種で、[`docs/design_object_behaviors.md` §0](../design_object_behaviors.md) が「behavior の正本 = engine-owned attachment arena。ECS component ではない。light/collider と同じ special dispatch の仲間」と決めています。
 
 #### behaviorコンポーネント ✅実装済み
 
@@ -263,6 +263,8 @@ ecs_objects = prepareSceneBindings(
 | `"type"` が無い / 文字列でない / 空文字列 | エラー `behavior on object '<name>' requires a non-empty string type` |
 | DLLロード済みで、未登録の型名 | エラー `Unknown behavior type '<type>' on object '<name>'` |
 | DLL不在で、未登録の型名 | warningを出して **pending** 扱いで続行 |
+
+ここでの **pending** は「宣言だけ arena に載っていて、`Behavior` の実体がまだ作られていない attachment」です（[`PreparedSceneBehaviorAttachment::pending`](../../src/core/gamelogic/behaviorarena.hpp#L57)）。activate 段は pending を飛ばし（[`activatePublished()` の先頭の分岐](../../src/core/gamelogic/behaviorarena.cpp#L1017)）、毎フレームの update も `active` なものだけを回す（[`BehaviorAttachmentArena::update()`](../../src/core/gamelogic/behaviorarena.cpp#L1108)）ので、`onInit` / `onUpdate` はどちらも走りません。型名と生JSONは保持されるので、次に scene load か game-logic reload の reconciliation を通ったとき、その時点の registry で `pending` が付け直されます（[reconciliation の再判定](../../src/core/gamelogic/behaviorarena.cpp#L854)）。
 
 behavior は executor の participant の 1 つです。entity を作った後に `BehaviorAttachmentArena::prepareSceneReconciliation()` で candidate を作り（[early_publish 段末尾の呼び出し](../../src/core/loader/scene.cpp#L876)）、publish 段で `noexcept` に arena へ swap し（[`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L932)）、**activate 段**で `onInit` を走らせます（[`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L946)）。activate は executor で**唯一の失敗しうる段**で、`onInit` が投げると executor の [`rollback` ラムダ](../../src/core/loader/scene.cpp#L630) が **全 participant** を旧世代へ戻し、結果は `PreCommitFailure{phase = activate}` になります（[activate 失敗の戻り値](../../src/core/loader/scene.cpp#L951)）。document / projection / current scene / authority は commit 前なので旧世代のまま、arena も旧 attachment が戻ります。旧経路の [`clearRuntimeScene()`](../../src/core/loader/scene.cpp#L1113) は定義が残っていますが `load()` からは呼ばれません。
 
@@ -296,7 +298,7 @@ prepare（失敗可）
 → finish（noexcept。early_publish で publish 済みの ECS create token を確定し、rollback 権を手放す）
 ```
 
-段を記録するのは原則 executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L508) が early_publish、[`enqueueSceneRetirement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L675) が retire）、SeqPlayer / VatPlayer / Camera / Light / Physics の publish（いずれも trace を取る scene 専用 overload。例: [`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388)）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L633) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L685) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L730) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L125)）、RNG（[`publishPreparedSequence()`](../../src/core/userpublic/deterministicrng.cpp#L126) が flush）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L278)）です。executor 自身が書くのは 2 か所だけで、pending swap 直前の [`record(SceneLoadPhase::flush)` の 1 行](../../src/core/loader/scene.cpp#L1000) と、created-entity batch を 1 participant と見なす [`record(SceneLoadPhase::finish)` の 1 行](../../src/core/loader/scene.cpp#L1012) です（WP380d。token 個別の `finish()` は記録しないので、`objects: []` の空 scene でも finish が列に出ます）。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L149) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。枠は 8 段ぶんの固定確保で、9 件目以降は列に入らない代わりに [`overflow`](../../src/core/loader/sceneload.hpp#L45) が立ちます（黙って落としません）。
+段を記録するのは原則 executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L508) が early_publish、[`enqueueSceneRetirement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L675) が retire）、SeqPlayer / VatPlayer / Camera / Light / Physics の publish（いずれも trace を取る scene 専用 overload。例: [`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388)）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L633) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L685) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L730) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L125)）、RNG（[`publishPreparedSequence()`](../../src/core/userpublic/deterministicrng.cpp#L126) が flush）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L278)）です。executor 自身が書くのは 2 か所だけで、pending swap 直前の [`record(SceneLoadPhase::flush)` の 1 行](../../src/core/loader/scene.cpp#L1000) と、created-entity batch を 1 participant と見なす [`record(SceneLoadPhase::finish)` の 1 行](../../src/core/loader/scene.cpp#L1012) です（WP380d。token 個別の `finish()` は記録しないので、`objects: []` の空 scene でも finish が列に出ます）。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L149) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。枠は 8 段ぶんの固定確保で、9 件目以降は列に入らない代わりに [`overflow`](../../src/core/loader/sceneload.hpp#L45) が立ちます（黙って落としません）。8 という数は [`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) の値数そのもの（[`sceneLoadPhaseCount = 8`](../../src/core/loader/sceneload.hpp#L38)）で、`record()` が直前と同じ段を足さない以上、段が上の順に1回ずつ現れる限り必ず収まります。つまり `overflow` が立つのは「一度離れた段へ戻った」ときだけで、確保を増やすべき状況ではなく**順序が壊れた**という信号です。`SceneLoadPhaseTrace` のコメントもそう書いています — `A trace is a fixed pre-commit allocation. Never silently discard an ordering observation: callers must reject an overflowing trace.`
 
 **prepare**（[prepare 段の先頭](../../src/core/loader/scene.cpp#L519) から [`return fail(SceneLoadPhase::prepare, ...)`](../../src/core/loader/scene.cpp#L615) まで）では、candidate authority を 1 回だけ消費し（[`next_authority_epoch++`](../../src/core/loader/scene.cpp#L481)。失敗しても再利用しません）、metadata token に scene id と authority を書き（[`prepareRuntimeIdentity()`](../../src/core/loader/scene.cpp#L527)）、resolved scene を検証して（[`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L545)）、各 participant の candidate を live に触らずに作ります: renderer（[`prepareSceneReplacement()`](../../src/core/loader/scene.cpp#L562)。model の staging もここ）、camera（[`prepareSceneCameras()`](../../src/core/loader/scene.cpp#L585)）、light（[`LightContainer::prepareLoad()`](../../src/core/loader/scene.cpp#L587)）、SeqPlayer / VatPlayer（[`prepareSceneLoad()`](../../src/core/loader/scene.cpp#L591)）、retirement queue の容量予約（[`reserveOne()`](../../src/core/loader/scene.cpp#L123)）、RNG 列（[`prepareSequence()`](../../src/core/loader/scene.cpp#L603)）、event outbox（[`PreparedEventOutbox`](../../src/core/loader/scene.cpp#L607)。`SceneLoaded` の payload はここで確保します）。model は [`ModelAssetContainer::getModelTemplateByName()`](../../src/core/loader/scene.cpp#L574) で引きますが、`ModelAssetContainer` は **participant ではなく warm cache** です。candidate が失敗しても lazy load された model record / GPU resource は残り、戻しません（manifest の [`model_asset` / `warm_cache` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L147)。どの scene にも束縛されない record なので世代混在にはなりません）。
 
@@ -437,7 +439,7 @@ sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/
 
 ## 3.8 Asset modelから描画instanceまで
 
-[`ModelAssetContainer`](../../src/core/asset/model.hpp#L21) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2516) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2505) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L255)）。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2511) が使われます。
+[`ModelAssetContainer`](../../src/core/asset/model.hpp#L21) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2516) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2505) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L255)）。`.vrm` がglTFと同列なのは別形式だからではなく、**VRMがバイナリglTF（GLB）コンテナそのもの**だからです — 拡張が増えているだけなので、同じbinary loader経路がそのまま読みます（受理判定の直前のコメントがそう書いています）。VRM固有の意味（humanoid bone / expression / lookAt / firstPerson）は、読み込んだglTF拡張から後段の [`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) がデコードします。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2511) が使われます。
 
 これらの `loadGltf*()` は、現在は三段APIのラッパです（[`gltf.hpp`](../../src/core/model/gltf.hpp#L53)）。
 
@@ -485,7 +487,7 @@ tinygltf Model
 
 > 🧩 **難所 — 頭に触れたら三角ごと**([`splitVrmAutoTriangles()`](../../src/core/model/vrmfirstperson.cpp#L23) / 呼び出しは [`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1800))
 >
-> **何をする所か**: VRM 1.0 の firstPerson アノテーションが `auto` のメッシュを、「一人称でも見える三角形」と「三人称専用の三角形」の2群へ分けます。
+> **何をする所か**: VRM 1.0 の firstPerson アノテーションが `auto` のメッシュを、「一人称でも見える三角形」と「三人称専用の三角形」の2群へ分けます。firstPerson は VRM が node 単位に付ける「一人称視点でこのメッシュをどう扱うか」の注釈で（[`VrmFirstPersonMeshAnnotation`](../../src/core/model/vrmsemantic.hpp#L76) の `node` + `type`）、`type` が `auto` のときだけ「頭に属する三角形はどれか」の判定がエンジン側の仕事になります。`auto` の規則は「頂点が Head かその子孫に正の重みを持つなら、その三角形は頭グループ」です（[`vrmfirstperson.hpp` のコメント](../../src/core/model/vrmfirstperson.hpp#L27)）。
 >
 > **素朴に読むと**: まず索引が3段に変換されるのが読みづらい所です。`JOINTS_0` の値は**そのskinのjoints配列内のローカル番号**で、`model.skins[skin_index].joints` を引いて初めてglTFのnode indexになり、そこから頭関連ノード表([`headRelatedNodes()`](../../src/core/model/gltf.cpp#L1987))を引いて分類します。もう一つが呼び出し**位置**の制約です。この呼び出しは、直後にある `joints[component] + joint_offset` の書き換え([`gltf.cpp` 内](../../src/core/model/gltf.cpp#L1874))より**前**でなければなりません。offset加算後へ動かすと、渡した `skin_joint_nodes` の範囲外になるか、たまたま範囲内なら別ボーンとして解決されて静かに誤分類されます。この順序制約はコード上どこにも書かれておらず、隣接する2箇所の並びとしてしか表れていません。分類規則自体も非対称です — 重み `> 0` の成分だけを見る(重み0のjointスロットは無視する)一方、頂点が1つでも頭関連なら**三角形ごと** `third_person_only_indices` へ落とします。`first_person_only` の群を作らないのは、VRMの `auto` が「一人称で頭を消す」だけを意味し、逆方向は明示アノテーションでしか作れないからで、[`VrmAutoTriangleSplit`](../../src/core/model/vrmfirstperson.hpp#L22) がバケツを2本しか持たないのはその反映です。
 >
@@ -540,7 +542,7 @@ sceneの`SimpleModelViewComponent`は初期化時にdirtyになり、内部 [`Si
 
 ### `ModelInstanceId` はSlotMapハンドル（WP146）
 
-`ModelInstanceId` は単なる整数の添字ではありません（[`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L11)）。
+`ModelInstanceId` は単なる整数の添字ではありません（[`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L11)）。SlotMap は「配列のスロットを使い回しつつ、スロットごとに世代番号を持たせるハンドル方式」で、詳しい持ち物はこの節の最後（`PolygonInstanceContainer` 側）に書いてあります（[用語集](../manual/14_glossary.md)）。
 
 ```cpp
 struct ModelInstanceId {

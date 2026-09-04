@@ -30,7 +30,7 @@ pelican2 のプロジェクト(`project.json` + passes/scenes/assets)は、ネ�
 > - 形式の正は常にエンジン側([../design_project_format.md](../design_project_format.md) v6 凍結 + 実装)。形式拡張は**常にエンジン先行**で、web は「無視 → 対応」の順に追随する。
 > - web は pelican より**厳しくてよい**が、**緩くしてはならない**(pelican が拒否する入力を web が受理したら規約違反)。
 > - web 専用の形式要素(キー・参照形式・`engine://` id)は作らない。web 固有の表示設定はプロジェクトではなくサイト側(`shaderDemos.ts`)に置く。
-> - web の `engine://` レジストリはエンジンレジストリの**鏡像サブセット**(web 独自 id の追加禁止 — テストで機械検証)。
+> - web の `engine://` レジストリはエンジンレジストリの**鏡像サブセット**(= エンジン側の id 一覧をそのまま写し取った部分集合。写す数は減ってよいが、web 側だけの id を足してはならない — テストで機械検証。下の「鏡像サブセットテスト」)。
 
 原則を機械的に支える仕組み:
 
@@ -64,6 +64,8 @@ web が理解するのは([第6章](06_rendering.md) の語彙のうち): RT フ
 括弧内のエンジン側の数はサブセット原則の実測値です(2026-07-28 時点。いずれも [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) が正 — RT フォーマットは `stringToFormat` の表、パス種別は `makePassInfo` の分岐)。**web の語彙はエンジンの語彙の真部分集合**であり、これは「web は pelican より厳しくてよいが緩くしてはならない」に適合しています。エンジン側の RT フォーマットとパス種別の説明は [第6章](06_rendering.md) を参照してください。
 
 ## 9.4 シェーダ stem 規約 — 可搬シェーダの書き方
+
+**WGSL**(WebGPU Shading Language)は WebGPU が受け取るシェーダ言語で、native 側の GLSL / SPIR-V に対応する web 側の記述です。**エントリポイント**は「そのシェーダで最初に呼ばれる関数の名前」で、WebGPU はパイプライン作成時にこの名前を要求します。
 
 > **設計決定(stem 参照は共通形式への唯一の追加):** シェーダ参照は拡張子なしの stem で書く。ステージ情報はキー名(`vertex` / `fragment`)が既に持っているため。同じ stem から **native は `<stem>.vert` → `<stem>.vert.spv`**、**web は `<stem>.wgsl`** を解決する。WGSL のエントリポイントは **`vs_main` / `fs_main` / `cs_main` 固定**(自動検出は「2 つ目の関数を書いた瞬間に挙動が変わる」暗黙さを避けるため不採用)。
 
@@ -106,14 +108,14 @@ npm run shaders:spirv -- <project-dir>
 | WW5 | naga による WGSL→SPIR-V 変換 CLI | ✅ |
 | WW6 | GUI primitives v1(tokens → primitives → surfaces の三層)+ スタイルガイド | ✅ |
 | WW7 | Shader Dock の primitives 移行 | 🚧 進行中 |
-| WW8 | Plan viewer(web 版) | ❌ **撤回**(2026-07-12 ユーザー決定: プランビューアは**エンジン内 ImGui ツール**として実装 — ✅WP86、[第10章](10_tools.md) §10.6。web 側の着手分は撤去済み) |
+| WW8 | Plan viewer(web 版) | ❌ **撤回**(2026-07-12 **ユーザー決定** = リポジトリ所有者による裁定。方針を覆すには同じ人の決定が要ります([第1章 §1.6](01_overview.md)): プランビューアは**エンジン内 ImGui ツール**として実装 — ✅WP86、[第10章](10_tools.md) §10.6。web 側の着手分は撤去済み) |
 | — | 可搬性 lint / scene・asset JSON 対応 / WebSocket クライアント | 📐 設計のみ |
 
 ## 9.7 既知の問題(1〜4 は 2026-07-10 調査、5〜6 は 2026-07-21 追記、7 は 2026-09-04 追記)
 
 調査で判明した、**修理が必要な箇所**です。チュートリアルどおりに動かない場合はまずここを疑ってください。1〜4 は web 側を実際に見た 2026-07-10 の調査結果で、**その後 web 側は再調査していません**(直っている可能性も、増えている可能性もあります)。
 
-1. **camera キーの世代ズレ(サブセット原則違反の実例)** — web 側のサンプル `public/scenes/hello-project/project.json`、web の型定義、web 同梱の `default_config.json` 写しは旧形式(`fov_y`/`near`/`far`)のままです。web は camera を検証せず素通しするため「web で開けるが pelican で開けない」プロジェクトになっています。新規プロジェクトでは必ず `yfov`(ラジアン)形式で書いてください。
+1. **camera キーの世代ズレ(サブセット原則違反の実例)** — web 側のサンプル `public/scenes/hello-project/project.json`、web の型定義、web 同梱の `default_config.json` 写しは旧形式(`fov_y`/`near`/`far`)のままです。web は camera を検証せず素通しするため「web で開けるが pelican で開けない」プロジェクトになっています。新規プロジェクトでは必ず `yfov`(ラジアン)形式で書いてください —— この名前と単位は pelican 独自ではなく、**glTF 2.0 の `camera.perspective.yfov`(垂直視野角・ラジアン)と 1:1** です([第4章](04_scene_ecs.md) のカメラ)。
 2. **fixture 同期の停滞** — web 側の同期は 2026-07-02 の hash で止まっており、WP63(strict v1)で追加された invalid fixture(旧形式 reject 群)が反映されていません。`npm run sync:pelican-fixtures` の再実行が必要です。
 3. **native ブリッジが非互換** — Shader Dock から native の pelican_player を叩いて比較レンダリングする HTTP ブリッジ(`npm run pelican:bridge`)は、削除済みの `--project-settings` フラグを使っており、camera も旧形式で生成するため、**現行エンジンでは動きません**(要修理)。
 4. **web パーサの拡張語彙** — web の rendering config パーサは `shader_modules` / `scenes` / `active_scene` / インライン `source` などエンジンに存在しないキーを受理します(サイト内デモ専用)。これらをプロジェクトに書くと「web で開けて pelican で開けない」JSON になるため、**プロジェクトでは使わないでください**(形式としての位置づけは未文書化)。

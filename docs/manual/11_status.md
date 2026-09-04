@@ -10,6 +10,10 @@
 > [第5章](05_assets.md)・[第6章](06_rendering.md)・[第10章](10_tools.md)・[第13章](13_editor.md) に出てきます)。
 > **2026-09-03〜04 に統合された分だけ**は §11.1 末尾の追補表に転記してあります。
 
+- **WP 番号の読み方**: WP(Work Package)は開発の作業単位で、**1 WP = 1 ブランチ = 1 マージ**です。番号は連番とは限らず、`238e` `380a-fix` のような枝番が付きます([第1章 §1.0](01_overview.md))。
+- **表の見方**: 表は 3 列(WP / 内容 / 状態)か 5 列(WP / タイトル / 状態 / 1行説明 / ユーザーから見える面)で、状態の凡例は §11.1 の冒頭にあります。「いま使えるか」は**状態**の列だけで判断してください。
+- **タイトルの `U1` `C1a` `F0` `RPE2` `VRM-S1` などは WP 番号ではなくトラック記号**(設計文書側で決めた「どの系統の第何段か」)です。意味は §11.2 の文書マップから該当設計文書と章を辿ってください。
+
 ## この章で学ぶこと
 
 - WP(Work Package)全台帳 — 何が実装済みで、何が登録のみ・予約なのか
@@ -19,13 +23,14 @@
 
 ## 11.1 WP 全台帳
 
-判定は「実装コミット + test 登録 + design_reviews の完了レポート +
+判定は「実装コミット + test 登録 + design_reviews の完了レポート
+(= [../design_reviews/](../design_reviews/) に日付付きで残るレビュー担当の報告)+
 implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180 以降は
 2026-07-31 にコミットと `src/` 上の型の実在で再判定)。
 
-凡例: **済** = マージ済みで機能する / **済(外部 gate 待ち)** = 実装と自動テストは
-完了しているが実機・実測の受け入れが未消化 / **未** = 登録済み・未実装 /
-**予約** = 番号予約のみ。
+凡例: **済** = 実装が統合ブランチにマージ済みで機能する / **済(外部 gate 待ち)** = 実装と自動テストは
+完了しているが実機・実測の受け入れが未消化 / **未** = 台帳に指示書として登録済み・未実装 /
+**予約** = 番号予約のみ(設計文書側で番号だけ押さえた枠。着手前に台帳へ正式記載する — [../implementation_archive.md](../implementation_archive.md))。
 
 ### WP1〜63(基盤期。詳細は各章)
 
@@ -62,7 +67,7 @@ implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180
 | 29 | debug_draw feature + GPU/CPU 計測 | 済 |
 | 30 | HDR / トーンマップ feature | 済 |
 | 31 | shadow directional feature | 済 |
-| 32 | IBL | 予約 |
+| 32 | IBL(Image-Based Lighting — 環境マップを光源として使う照明) | 予約 |
 | 33 | フレームグラフ F0(プランナ) | 済 |
 | 34 | フレームグラフ F1(compute 実行系) | 済 |
 | 35 | フレームグラフ F2(プランダンプ + rpc) | 済 |
@@ -101,14 +106,14 @@ implementation archive」によります(WP1〜179 は 2026-07-19 調査、WP180
 |---|---|---|---|---|
 | 64 | リファクタ R4 — legacy 実行系の撤去 | 済 | 全 rendering config が planned frame graph 実行に一本化(A/B trace 差分ゲート付き) | 純 render 構成でも `before`/`after` 明示エッジが効く(挙動修正) |
 | 65 | 永続化 P1(user:// 設定 + セーブ) | 済 | pelican.settings v1(engine/game 区画・atomic 書き込み)+ user://saves/ | API: `GameContext::saveSettings()` / `saveData(slot,json)` / `loadData(slot)` / `listSaves()` |
-| 66 | assets manifest V2 | 済 | store 走査 → sha256 manifest 生成・照合・起動時検証(INFO/WARN/ERROR、ロードは止めない) | CLI: `pelican_cli assets manifest/verify/status`、起動フラグ `--strict-assets` |
+| 66 | assets manifest V2 | 済 | store(= project.json が宣言するアセットの置き場「asset store」— [第3章](03_project_format.md))走査 → sha256 manifest 生成・照合・起動時検証(INFO/WARN/ERROR、ロードは止めない) | CLI: `pelican_cli assets manifest/verify/status`、起動フラグ `--strict-assets` |
 | 67 | modelview 統合(R5 後続) | 済 | SimpleModelView 2 コンポーネントを統合、隠し自動生成を撤去 | scene JSON の `simplemodelview.model` の書き味は不変 |
 | 68 | マテリアル M2a — .surface パーサ | 済 | `//! pelican.surface v1` ヘッダ(ordered params / textures / screen_inputs)+ material JSON の values 方式 | JSON: `.surface` ヘッダ形式、`.material.json` の `values` |
 | 69 | FrameInput(入力の順序付きイベント化) | 済 | ordered InputEvent + event_seq + 5 段フレーム位相 + 消費マスク API | API: `FrameInput{ordered_events, snapshot}`(通常/rpc loop 位相同一) |
 | 70 | マテリアル M2b-1 — FrameUBO | 済 | set0 b0 FrameUBO 新設(time が全マテリアルへ)、material データの SSBO 化、push constant 64B/64B 分割 | シェーダ契約: FrameUBO(time/dt/frame_index/resolution/camera/view/proj)。shader_contract.md の差分 3 件解消 |
 | 71 | EventPayloadSchema | 済 | イベント payload の explicit descriptor + 構築前 JSON 検証 | Opaque の by-name emit は廃止(typed C++ emit のみ)。rpc emit の payload 検証規則が確定 |
 | 72 | 色 C0 — 色空間監査 | 済 | コード変更なしの全域監査 | 成果物: `docs/color_migration_manifest.json` |
-| 73 | 色 C1a — canonical anchor(構造のみ) | 済 | canonical anchor 列 / format_class / output_transform 常設ノード(golden byte 不変) | frame plan に anchor / output_transform が現れる |
+| 73 | 色 C1a — canonical anchor(構造のみ) | 済 | canonical anchor(「パイプラインのこの位置」を指すエンジン定義の目印。feature の挿入先に使う — [第6章](06_rendering.md))の列 / format_class / output_transform 常設ノード(golden byte 不変) | frame plan に anchor / output_transform が現れる |
 | 74 | 色 C1b — 色意味論の一括移行 | 済 | SRGB swapchain + linear workflow へ全面移行、golden 再基準化(resolver_version: 2) | 画の色が正しくなる(一度きりの再基準化)。SRGB/UNORM の role 別 view |
 | 75 | UI U0 — 純 CPU の UI 基盤 | 済 | pelican.ui schema / layout / 入力状態機械 / semantic validator | JSON: `pelican.ui` v1(schema 正本 = `docs/schemas/pelican.ui.schema.json` ほか) |
 | 76 | マテリアル M2b-2 — values バインダ | 済 | .surface params → std140 SSBO、textures 辞書 binding(SRGB/UNORM view)、render_state | CLI: `pelican_cli dump-lowered-material <surface>` |

@@ -4,7 +4,7 @@
 
 ## この章で学ぶこと
 
-- 二層モデル(ランタイム層/ソース層)— エンジンが読む形式と読まない形式の厳密な線引き
+- 二層モデル(ランタイム層/ソース層)— エンジンが読む形式と読まない形式の厳密な線引き([用語集](14_glossary.md))
 - モデル・テクスチャ・マテリアルの追加方法と `asset_data.json`、および**そこに登録できない形式**(`.vrma`)
 - 起動時ロードの順序と失敗時の GPU 資源(壊れた rendering config ではモデルを upload しない)
 - モデル材質の identity — レイトレの加速構造規則が見る値
@@ -49,14 +49,14 @@
 
 - `schema: "pelican.asset_data"` と `version: 1` は必須です。現行版だけを受理する strict v1 で、旧い未版形式は受理しません。
 - `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
-- **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ファイルが無ければ解決後の絶対パス入りで fail-fast。
+- **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ここでいう**宣言順**は上の `models` 配列に書いた順のことです。パース(CPU)は複数スレッドで走りますが、結果は添字順の配列に置かれ、GPU への登録は全ジョブの合流後にこの順で 1 件ずつ行われます([parallel_prepare.hpp](../../src/core/parallel_prepare.hpp#L20))。スレッドの完了順が実行ごとに揺れても GPU に載る順序は変わらない、というのが「決定的」の中身です([用語集](14_glossary.md))。ファイルが無ければ解決後の絶対パス入りで fail-fast。
 - **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L126))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
 - **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L463))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L132))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
-- 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
+- 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。glTF は「親ノードの行列 × 子ノードの行列 × …」の木で頂点位置を決めますが、ロード時にその積を頂点座標そのものへ掛けてしまい、ランタイムには親子関係のない 1 枚の頂点列だけが残る、という意味です(親を動かして子が付いてくる、という表現はできません。動かしたい単位はシーン側のオブジェクトに分けます)。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
-- **モーフターゲットは ✅WP121 で描画対応**: `primitive.targets` の POSITION/NORMAL/TANGENT delta をデコードし、初期 weight(node > mesh > 0)で material / shadow / velocity の全経路に適用します(変形順は morph → skinning → model)。制限: sparse morph accessor 非対応(名指しエラー)、target 64/primitive・weight 256/instance、同一 primitive の **morph + VAT 併用は拒否**。**アニメクリップの `weights` チャネルは今もロードエラー**で、実行時に weight を動かす公開経路は VRM expression service([第8章](08_gameplay.md) §8.13)だけです。
+- **モーフターゲットは ✅WP121 で描画対応**: `primitive.targets` の POSITION/NORMAL/TANGENT delta をデコードし、初期 weight(node > mesh > 0)で material / shadow / velocity の全経路に適用します(変形順は morph → skinning → model)。制限: sparse morph accessor 非対応(名指しエラー。glTF の **sparse accessor** は「既定値からの差分だけを (添字, 値) の対で持つ」省サイズ表現で、通常の accessor が全要素を並べるのと形式が違います — [ソースコード読解ガイド §10.2](../source-code-guide/10_background_knowledge.md#sparse-accessor))、target 64/primitive・weight 256/instance、同一 primitive の **morph + VAT 併用は拒否**。**アニメクリップの `weights` チャネルは今もロードエラー**で、実行時に weight を動かす公開経路は VRM expression service([第8章](08_gameplay.md) §8.13)だけです。
 - モデルファイル(.glb/.gltf/.vrm)は実行中のホットリロード対象です(✅WP110 — [第10章](10_tools.md) §10.5)。
-- **リロードの世代はアセット単位です(✅WP147)**: スケルタルモデルを差し替えると、**そのモデルのアセットだけ**世代が 1 進みます。以前は 1 件でもスケルタルモデルが含まれると animation registry 全体を破棄していましたが、現在は**無関係なモデルに付いた評価器は止まりません**。差し替えられた側の rig / レイアウト / クリップ / カーソル / ポーズの旧ハンドルは `stale_generation` になります。宣言的な `animation` コンポーネント([第4章](04_scene_ecs.md))は独自レジストリを持つため自動で復帰しますが、`pelican.anim_graph` の評価器は `EvaluatorV1::rebind()` の明示呼び出しが必要です([第8章](08_gameplay.md) §8.13)。
+- **リロードの世代はアセット単位です(✅WP147)**: スケルタルモデルを差し替えると、**そのモデルのアセットだけ**世代が 1 進みます。**animation registry** はスケルタルモデル 1 件ごとに rig・skin binding・クリップのハンドルを保持するプロセス内の表です([`AnimationAssetRegistry`](../../src/core/animation/animationjobs.hpp#L56))。以前は 1 件でもスケルタルモデルが含まれるとこの表を全体ごと破棄していましたが、現在は**無関係なモデルに付いた評価器は止まりません**。差し替えられた側の rig / レイアウト / クリップ / カーソル / ポーズの旧ハンドルは `stale_generation` になります。宣言的な `animation` コンポーネント([第4章](04_scene_ecs.md))は独自レジストリを持つため自動で復帰しますが、`pelican.anim_graph` の評価器は `EvaluatorV1::rebind()` の明示呼び出しが必要です([第8章](08_gameplay.md) §8.13)。
 
 ### テクスチャ・画像と atlas(`textures` セクション ✅WP103)
 
@@ -126,7 +126,7 @@
 
 レイトレーシングを使うプロジェクトでは、ray layout v2 の `acceleration_structure.rules[]` が **material identity** で描画行を選びます([第6章](06_rendering.md) §6.15)。その identity がモデル側のどこから決まるかだけ、ここに書きます。
 
-identity は 3 種の直和で、gate(規則を要求するか)と lookup(どの規則に当たるか)は**同じ値**を見ます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L18)):
+identity は下の 3 種のうち**ちょうど 1 つ**の形を取ります(「直和」= どれか 1 つで、2 つを同時に持つことも、どれでもないこともない)。gate(規則を要求するか)と lookup(どの規則に当たるか)は**同じ値**を見ます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L18)):
 
 | identity | 成立条件 | 由来 |
 |---|---|---|
@@ -148,12 +148,14 @@ identity は 3 種の直和で、gate(規則を要求するか)と lookup(どの
 読み込めるのは**エンジン内部の C++ から import 境界を通した場合だけ**です([vrmadecoder.hpp](../../src/core/loader/vrmadecoder.hpp)):
 
 - 入口は `decodeVrmaAnimation(bytes, container_name, options)` / `loadVrmaAnimation(path, options)`。
-- `VrmaDecodeOptions` は `source_uri` / `import_profile` / `tool_version` の 3 つで、**`import_profile` と `tool_version` は空だと拒否**されます(DCC provenance が必須入力)。`loadVrmaAnimation` は読んだ bytes をそのままハッシュしてデコードするため、provenance が中身と食い違いません。
+- `VrmaDecodeOptions` は `source_uri` / `import_profile` / `tool_version` の 3 つで、**`import_profile` と `tool_version` は空だと拒否**されます(DCC provenance が必須入力)。ここでの **provenance(来歴)** は「この成果物をどのツールのどの版が、どの変換設定で作ったか」の記録のことで、`import_profile` が変換設定の名前、`tool_version` が書き出したツールの版です。再現とデバッグの手がかりとして、値が空のまま素通りすることを許しません。`loadVrmaAnimation` は読んだ bytes をそのままハッシュしてデコードするため、provenance が中身と食い違いません。
 - alias ゲート: コンテナ名の拡張子が `.vrma` でなければ `.vrma alias requires a container name ending in '.vrma'; got '<名前>'`。GLB magic 不在・GLB version 2 以外・宣言長の不一致もすべて名指しエラーです。
 - 選ばれるのは**常に先頭のアニメーション**で、フラグメント識別子は `#animation/0` 固定です。
 - **補間は LINEAR / STEP / CUBICSPLINE の 3 種すべてを受理**します(glb 内蔵クリップの経路と異なる点。この章の冒頭に書いた「補間は LINEAR / STEP のみ」は `.vrma` には当てはまりません)。
 
 #### retarget profile v1(✅WP177)
+
+**retarget(リターゲット)** は、あるリグ(骨の構成)向けに作られたモーションを、骨の長さや初期姿勢が違う別のリグへ移し替えることです。`.vrma` のクリップは「ヒューマノイドの標準骨名」で書かれているので、当てる先の VRM ごとに rest 姿勢の差を吸収する必要があります。**retarget profile** はその吸収のしかた(版・root motion の扱い・来歴)を 1 つの値にまとめたものです。
 
 デコードしたクリップを VRM モデルに適用するには `retargetVrmaClip()`([vrmaretarget.hpp](../../src/core/animation/vrmaretarget.hpp))を通します。ここで生成される **versioned retarget profile v1** が「どう当てたか」の監査可能な成果物です。要点だけ:
 
@@ -179,7 +181,7 @@ identity は 3 種の直和で、gate(規則を要求するか)と lookup(どの
 - 1 行目はヘッダ(`schema` / `version: 1` / `fps` / `objects` すべて必須)。以降はフレーム行で、`transforms` の要素数はヘッダの `objects` と**厳密一致**。
 - transform のキーは `pos` / **`rot`**(xyzw)/ `scale`。※rpc の `update_transforms` は `rotation` で、ファイル形式とライブプロトコルでキー名が異なります(意図的な別スキーマ扱い — 混同注意)。
 - `hidden` は「そのフレームで消すオブジェクトの添字リスト」。scale=0 で消す方式は法線・カリング・物理との意味の混線を理由に**不採用**になった設計決定です。
-- ⚠️ フレーム行の `t` は実装では読み捨てられ、サンプリングは `floor(time × fps)` のフレーム添字で行われます(等間隔前提・補間なし)。不等間隔の `t` を書いても無視されます。
+- ⚠️ フレーム行の `t` は実装では読み捨てられ、サンプリングは `floor(time × fps)` のフレーム添字で行われます(等間隔前提・補間なし)。形式がヘッダで `fps` を必須にしている以上、`n` 行目の時刻は `n / fps` に決まっており、行ごとの `t` はその再掲にすぎないためです。`t` は人間が読むときの目印として残っていますが、**書いた値と `fps` が食い違っても検出されません**(不等間隔の `t` を書いても無視されます)。
 
 再生(プレビュー):
 
@@ -193,7 +195,7 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 ## 5.4 焼き込みアニメーション(2) — pelican.vat v1(✅WP20)
 
-頂点単位のアニメーション(布・破壊・流体の表面など)を **glb 内の VAT(Vertex Animation Texture)** として焼く形式です。仕様の正は [../dcc_integration_qa_2026-06-12.md](../dcc_integration_qa_2026-06-12.md) §6。
+頂点単位のアニメーション(布・破壊・流体の表面など)を **glb 内の VAT(Vertex Animation Texture)** として焼く形式です。形式の規定として最終的に参照すべき文書は [../dcc_integration_qa_2026-06-12.md](../dcc_integration_qa_2026-06-12.md) の §6 で、この節はそこからの要約です(食い違ったら §6 とコードが正)。
 
 メタデータは glb の `meshes[i].primitives[j].extras["pelican.vat"]` に置きます:
 
@@ -208,7 +210,7 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 - テクスチャの実体は **glb バッファ内の raw half-float bufferView**(`position_view` / 任意の `normal_view`)。EXR や KTX2 への依存を増やさないための決定です。
 - 1 primitive = 1 クリップ。`vertex_count` は primitive の実頂点数と照合されます(上限 8192)。トポロジは TRIANGLES のみ。
-- 再生はシェーダ(埋め込みシェーダ `vat.vert.spv` の vertex shader)が `texelFetch` で前後 2 フレームを読んで**手動 lerp** します(ハードウェア線形フィルタは頂点方向に滲むため禁止)。
+- 再生はシェーダ(埋め込みシェーダ `vat.vert.spv` の vertex shader)が `texelFetch` で前後 2 フレームを読んで**手動 lerp**(2 値を自分で線形補間)します。VAT のテクスチャは「横 = 頂点番号・縦 = フレーム番号」の並びなので、GPU の線形フィルタを有効にすると時間方向だけでなく**隣の頂点の値まで混ざります**(頂点方向に滲む)。したがってフィルタは nearest 相当の `texelFetch` に固定し、時間方向の混ぜ合わせだけをシェーダ側で書きます。
 - VAT 付き glb は `--play-vat <path.glb>` でプレビューできるほか、**通常のモデルとして asset_data.json に登録しても動きます**(ローダーが primitive 単位で検出)。
 - `PELICAN_WITH_VAT=OFF` ビルドでは VAT 付き glb 自体が名指しのエラーで拒否されます。
 
@@ -227,11 +229,11 @@ pelican_player --headless --project <dir> --frames 3 --size 160x90 --fps 30 \
 
 > **設計決定(manifest はエンジンが読まない):** エンジン本体(player)は manifest なしで動く。参照はあくまで scene / asset JSON が張る。manifest を読むのは周辺ツール(`pelican_cli` 等)だけ。同様に、`source.file`(元 .hip のパス等)は検証されない — ツール側マシンのパスでよく、「再現の手がかり」として記録される。
 
-> **設計決定(プロデューサ検証):** エンジンは JSON Schema validator を持たない。書き出したツール自身が書き出し直後に検証する。エンジン側は fail-fast(必須欠落・型不一致は throw)+ tolerant reader(未知フィールドは無視)。
+> **設計決定(プロデューサ検証):** エンジンは JSON Schema validator を持たない。検証の責任は**書き出した側(プロデューサ = 出力ツール自身)**にあり、書き出し直後に自分の出力を検証する。エンジン側は fail-fast(必須欠落・型不一致は throw)+ tolerant reader(未知フィールドは無視)。
 
 現状の注意: 変換ツール集 **pelican-import-tools は独立リポジトリとして実装済み**(✅WP81 = K3。Python 製 `psd_extract` + `atlas_pack`、出力は `pelican.atlas` + import manifest)ですが、本リポジトリには含まれません。Houdini アダプタも別リポジトリです。Blender ブリッジは依然 📐(FBX→glb の標準変換レーンは「Blender headless」と決定済み)。エンジン側の受け口(headless 描画・SeqPlayer・VAT・import・rules)はすべて完成しています。
 
-**USD レーン(✅WP118/119/124/240c)**: import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene v1)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変)。delivery の `materials.json` を `asset_data.json` の `materials[]` で索引すれば、engine runtime が OpenPBR material と primitive binding をロードします。`pelican_cli import --rules` のレシピ表に usd はありません。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
+**USD レーン(✅WP118/119/124/240c)**: ここでいう**レーン**は「ある入力形式をランタイム層へ運ぶ、決まった経路一式(外部ツールのレシピ + 納品物の形 + manifest)」のことです。import-tools に production の `usd` レシピが入りました。USD/USDZ を「`model.glb` + `scene.json`(pelican.scene v1)+ `materials.json`(pelican.material v1 — OpenPBR values + routing)+ `material_bindings.json` + PNG 群 + `manifest.json`」の決定的 delivery に変換します(二回ビルドの hash 一致 gate 付き。toolchain は `usd-core==26.5` に pin)。**エンジンは USD を 1 byte も読みません**(二層モデル不変)。delivery の `materials.json` を `asset_data.json` の `materials[]` で索引すれば、engine runtime が OpenPBR material と primitive binding をロードします。`pelican_cli import --rules` のレシピ表に usd はありません。UsdMtlx は Windows wheel 非同梱のため外部 .mtlx は評価されず、authored 値のみ解釈されます。
 
 import manifest の受理拡張: outputs の schema に `pelican.material`(v1)が追加され、**`khronos.ktx2` 出力には `version: 2` が必須**になりました(欠落・不一致は expected/actual 付きの名指しエラー)。
 

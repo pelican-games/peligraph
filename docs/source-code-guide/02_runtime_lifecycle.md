@@ -44,7 +44,7 @@ sequenceDiagram
 - 入力の記録/再生（`--record-input` / `--replay` / `--input-profile`）
 - camera bake（`--bake-camera-output`、headless + replay 必須）
 
-> **設計決定:** `--rpc` は `--headless` を要求しません（WP156）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L276)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
+> **設計決定:** `--rpc` は `--headless` を要求しません（WP156。以後この文書に出る `WP<番号>` は work package = 台帳 [`docs/implementation_plan.md`](../implementation_plan.md) が「独立に依頼できる単位」として採番した作業の番号で、`-fix` / `a` / `b` は同じ作業の分割・追補です。[用語集](../manual/14_glossary.md)）。ヘルプ文言そのものが現在の契約です — `enable stdio JSON-RPC (blocking in headless, frame-boundary in windowed mode)`（[`main.cpp`](../../src/player/main.cpp#L276)）。headlessではRPCがフレーム進行を所有し、windowedではフレーム境界でだけdispatchされます。両者の違いは §2.4 で分解します。
 
 `--project` がなければ、実行ファイルの祖先から `projects/example/project.json` を探索します（[`configureImplicitProject()`](../../src/player/main.cpp#L229)）。明示projectなら、directoryまたは`project.json`そのものを受け付けます（[`configureExplicitProject()`](../../src/player/main.cpp#L243)）。
 
@@ -68,13 +68,13 @@ sequenceDiagram
 2. `StartupMetrics` を開始。
 3. **XR activationを決定**: [`resolveXrActivation()`](../../src/core/xractivation.hpp) がheadless/RPC/replay等のforced-offとOpenXR discovery hookから `launch_config.xr_active` を確定。
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
-5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだrender-authoring documentのtransactionを、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。
+5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだrender-authoring documentのtransactionを、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。ここでいう document set は「rendering config の root 文書と、それが参照する feature JSON 断片を、1つのtransactionでまとめて書き換える単位」です（[`RenderConfigCandidateDocumentSet`](../../src/project/renderconfigdocument.hpp#L102)。ヘッダのコメントが `A render-authoring candidate is a document set, not a replacement string for the root document.` と書いています）。root だけ新版で断片が旧版、という中途半端な組み合わせを誰にも観測させないために、この復旧が最初に来ます。
 6. `Persistence`からsettingsを読み、audio設定を適用。
-7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L130) へ固定します。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（§3.11）。
+7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L130) へ固定します。意味モードは `LegacyNoLayout` / `LayoutV1Q` / `LayoutV2` の3値で（[`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L54)）、「ray layout 文書をどの版の意味規則で読むか」を表します — ray layout 文書が無い（`LegacyNoLayout`）／ある（`LayoutV1Q` / `LayoutV2`）の区別と、その版差です。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（[`builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L139) が真になるのは `LayoutV2` のときだけ。§3.11）。プロセス寿命の間このモードは変えられません（変更しようとすると `pelican.ray_layout_mode_change_requires_restart@1`）。
 8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L21) で組み込みComponent/Systemを登録。
 9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L869) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L122) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
 10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L130)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。
-11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L135) の `Borrowed` requestで即時ロード（§3.5 の 3）。
+11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L135) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L186)）。
 12. `ProjectMaterialAssetContainer` と `ModelAssetContainer` を明示的に生成（並列prepareのcommitを起動スレッドで実施）。
 13. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L106) でwatcherのlive inventoryを種付け。
 14. `Loop::run()`へ入る。
@@ -159,7 +159,7 @@ Renderer
 
 ## 2.3 明示teardownが必要な理由
 
-moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
+moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。ここでの **pending event** は `emit()` されてまだ配送されていない列（[`pending_events`](../../src/core/userpublic/details/event/registerer.hpp#L86)）、**frozen event** はフレーム冒頭の `freeze_events` でそこから移された「今回配送する分」の列（[`deliver_now_events`](../../src/core/userpublic/details/event/registerer.hpp#L87)）です。どちらも payload を `shared_ptr<const void>` と発行元の `RegistrationOwner` で持つ（[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L36)）ので、game DLL 由来のpayloadが列に残ったままDLLを外せない、というのが下の7番の理由です（列の意味は §2.5 の「eventの1フレーム遅延」）。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
 
 1. Vulkan `waitIdle()`
 2. behavior owner callbackを完了
@@ -168,7 +168,7 @@ moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参�
 5. model instanceをclear
 6. behavior deferred mutationをdrain
 7. pending/frozen eventをdrain
-8. GPU deletion queueをdrain
+8. GPU deletion queueをdrain（GPU deletion queue = まだGPUが読んでいるかもしれないVulkan資源を、その場で壊さず「いまのretirement batch」へ預けておく仕組みです。batchは [`leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.hpp#L97) で1回のGPU submissionへ紐付けられ、submission側がleaseを手放したときに解放されます — リングバッファでもスタックでもなく、submission単位のbatchを `weak_ptr` で並べた形です（[`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17)））
 
 terminal shutdownはこの前に`FastModuleContainer::beginShutdown()`で新規module生成を閉じ、最後のdeletion queueもcloseします。game-logic reloadの`runtime_reset`は同じ順で既存workをdrainしますが、module phaseとdeletion queueを再利用可能に保ちます。
 
@@ -345,7 +345,7 @@ void updateFrameState() {
 
 | 順 | `FramePhase` | 実際の処理 | 保証 |
 |---:|---|---|---|
-| 1 | `freeze_events` | pending eventを今回配送分へswap | この後emitされたeventは次フレーム |
+| 1 | `freeze_events` | pending eventを今回配送分（= frozen event）へswap。本節末の「eventの1フレーム遅延」に実体 | この後emitされたeventは次フレーム |
 | 2 | `freeze_input` | `input_sequence.prepareFrame()` → `beginFrame()` → `recordFrame()`（record/replay挿入点） | フレーム中の生入力が不変 |
 | 3 | `freeze_actions` | ImGuiへの入力ルーティング → `ui::UiModule.routeFrameInput()`（toolがポインタを消費していない場合）→ Action mapを一回だけ評価 | 全Systemが同じAction値を見る |
 | 4 | `deliver_events` | frozen eventをゲームSystemへ登録順にdispatch | event handlerがupdateより先 |

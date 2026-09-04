@@ -6,6 +6,7 @@
 
 - `pelican_player` の全 CLI 引数(**29 個**。正は [main.cpp](../../src/player/main.cpp) の `add_argument` 群)
 - JSON-RPC(stdio)による外部制御 — 基盤メソッド、エディタ拡張、実セッション例
+  - **JSON-RPC** は外部プロセスからエンジンを操る制御プロトコル、**stdio** はその通り道です: 起動した `pelican_player --rpc` の標準入力へリクエスト行を書き、標準出力から応答行を読みます(1 行 = 1 リクエスト / 1 応答の NDJSON。詳細は §10.3)
 - `pelican_cli` の **7 サブコマンド系統**(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material` / `vrm`)
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
 - ImGui 開発者 UI(F1)と Frame Plan Viewer
@@ -31,7 +32,7 @@
 | 引数 | 既定 | 意味 |
 |---|---|---|
 | `--project <dir\|project.json>` | (暗黙探索) | プロジェクトを開く。省略時は exe ディレクトリ → 祖先の `projects/example` を探索し、WARN を出す |
-| `--feature-overlay <uri>` | なし | `pelican.render_feature_overlay` v1 の feature bundle を**この起動だけ**重ねる。公開 CLI なので Studio 以外の profiler 等も利用可能 |
+| `--feature-overlay <uri>` | なし | `pelican.render_feature_overlay` v1 の feature bundle(= `schema` / `version` / `name` / `features` だけを持つ小さな JSON。`features` の各要素は feature 参照文字列か `{ref, parameters}` — [renderfeatureoverlay.cpp](../../src/project/renderfeatureoverlay.cpp#L16))を**この起動だけ**重ねる。公開 CLI なので Studio 以外の profiler 等も利用可能 |
 | `--headless` | off | ウィンドウなし実行(時刻は固定ステップになる) |
 | `--rpc` | off | stdio JSON-RPC モード。**`--headless` は不要になりました**(✅WP156): ヘッドレスでは stdin を読み切るまでブロッキング、**ウィンドウモードではフレーム境界処理 + 有界キュー(既定 64 件)**。溢れると `busy` エラーを即返します。※`--rpc` を付けると ImGui UI は無効([第13章](13_editor.md)) |
 | `--frames <n>` | 3 | ヘッドレスのフレーム数。**0 = 無制限** |
@@ -44,7 +45,7 @@
 | `--allow-absolute-paths` | off | CLI 由来のコンテンツ参照に限り絶対パスを許可。JSON 内の絶対パスは常に拒否 |
 | `--user-dir <dir>` | なし | `user://` ルートの差し替え |
 | `--ignore-engine-version` | off | `engine_min_version` 不適合を hard error → WARN に降格 |
-| `--play-seq <path.jsonl>` | なし | `pelican.transform_seq` の再生(SEQPLAYER ユニット必須) |
+| `--play-seq <path.jsonl>` | なし | `pelican.transform_seq` の再生(`PELICAN_WITH_SEQPLAYER` ビルドユニットが ON のビルドでのみ使えます — [第2章](02_getting_started.md) §2.2) |
 | `--seq-mesh <builtin:sphere\|path.glb>` | builtin:sphere | transform_seq 全オブジェクトに使うメッシュ |
 | `--seq-loop` | off | クリップをループ再生 |
 | `--play-vat <path.glb>` | なし | `pelican.vat` 入り GLB の再生(VAT ユニット必須) |
@@ -116,7 +117,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 - batch・notification 非対応。エラーコードは標準 + アプリケーションエラー -32000、RenderDoc capture -32010。ハンドラ内例外は応答に変換されプロセスは落ちません。EOF で正常終了。
 - 1 プロセス 1 クライアント。**ゲーム DLL リロード中は全メソッドがアプリケーションエラーで拒否**されます。
 
-> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)完全一致しなければならない。CI で検証済み。
+> **設計決定(決定性):** 同一の RPC スクリプトを 2 回実行したとき、応答列は(instance_id を除き)**バイト単位で完全一致**しなければならない。CI で検証済み。`instance_id` だけが除外されるのは、それが RPC エンドポイント生成時に振られる UUID v4 で、起動ごとに必ず変わる値だからです([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1993))。
 
 ### 基盤メソッド一覧
 
@@ -127,10 +128,10 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
 | `step_frame` | `{}` | 1 フレーム進める |
 | `render_frame` | `{}` | 時刻を進めず描画のみ |
-| `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけRenderDoc captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
+| `capture_gpu` | `{}` | `render_frame` と同じcurrent-time描画を1回だけ**RenderDoc**(GPU に送った描画コマンドを 1 フレーム分丸ごと記録して後から追える外部デバッガ)で captureし、実際に増えたindexのcanonical `.rdc` pathを返す |
 | `capture` | `{path}` | 直近フレームを PNG 保存(sRGB。応答に `encoding:"srgb"`) |
 | `get_frame_plan` | `{}` | フレームプラン JSON |
-| `pick_object` | `{x, y}` | 最後に完了した ID バッファの 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
+| `pick_object` | `{x, y}` | 最後に完了した **ID バッファ**(色ではなく「そのピクセルに写っているオブジェクトの ID」を書き出す描画出力。`picking` feature が宣言する `R32_UINT` のレンダーターゲット `picking_id` — [picking.json](../../src/core/resources/features/picking.json))の 1 ピクセルを同期読み出し。`engine://features/picking.json` が必要 |
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
@@ -145,10 +146,10 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `stop_input_record` | `{}` | 収録停止。`{path, frames, events}` |
 | `start_input_replay` | `{path}` | リプレイ開始(fixed-step 化・リロードゲート閉鎖) |
 | `stop_input_replay` | `{}` | リプレイ停止 |
-| `export_scene_snapshot` | `{schema_version:1, allow_pending?:false}` | current scene を含む全 authoring document の deterministic semantic bytes、SHA-256、revision を返す |
+| `export_scene_snapshot` | `{schema_version:1, allow_pending?:false}` | current scene を含む全 **authoring document**(= 編集の正本としてメモリ上に持つシーン文書。シーンファイル 1 つにつき 1 文書で、ディスクの実物とは別 — [第13章](13_editor.md) §13.2)の deterministic semantic bytes、SHA-256、revision を返す |
 | `import_scene_snapshot` | `{schema_version:1, semantic_scene_bytes, digest, current_scene_id}` | disk を上書きせず、検証済み snapshot を in-memory scene source として reload する |
 
-`pick_object` の座標は `picking_id` の左上原点で、`x` は右、`y` は下へ増えます。
+`pick_object` の座標は ID バッファ `picking_id` の左上原点で、`x` は右、`y` は下へ増えます。
 両方とも符号なし整数だけを受理し、範囲外は `-32602`、feature 無効または完了済みの
 picking frame が無い場合は `-32000` です。背景は `hit: null`、モデル面は次の形です。
 
@@ -173,7 +174,7 @@ WP258 契約です。authoring 宣言を持たない一時モデルでは三つ�
 GPU 表現は[第6章](06_rendering.md#id-バッファ-pickingwp262)を参照してください。
 
 `set_gizmo` と `query_gizmo_handle` の mode は `translate` / `rotate` / `scale` のいずれかです。
-`GizmoSelection` は次のどちらか**ちょうど一つ**を表すタグ付き object です。記載した鍵以外は
+`GizmoSelection` は次のどちらか**ちょうど一つ**を表すタグ付き object です(**タグ付き** = `kind` の値でどちらの形かが決まり、その形の鍵しか書けない。両方の鍵を混ぜた object は拒否)。記載した鍵以外は
 受理しません。
 
 | `kind` | 厳密な形 | 対象 |
@@ -259,7 +260,7 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 
 上の表の `export_scene_snapshot` / `import_scene_snapshot` はエディタトラックで増えた分です。**総数は挙げません** —— メソッドは増え続けるので、数字を書くと必ず腐ります。登録の実物は `src/core/communication/rpcserver.cpp`(基盤)と `src/core/communication/editorrpchandlers.cpp`(エディタ)です。
 
-シーンの編集・履歴・プレビュー・保存のためのメソッド群です(✅WP154/156/157/158/161/166/168/170/172)。params と戻り値、**エラーが `result.status` に出る**という重要な作法は [第13章](13_editor.md) §13.5〜§13.6 にまとめてあります。
+シーンの編集・履歴・プレビュー・保存のためのメソッド群です(✅WP154/156/157/158/161/166/168/170/172)。params と戻り値、**エラーが `result.status` に出る**という重要な作法は [第13章](13_editor.md) §13.5〜§13.6 にまとめてあります。`edit` 系だけ作法が違うのは、これらが**チケットを返す受付のメソッド**で、呼び出し自体は成功しており、実際の適用がフレーム境界で起きるためです(受付で弾かれた = `rejected` / 適用時に弾かれた = `failed`)。基盤メソッドは呼んだその場で答えが決まるので、失敗は通常の JSON-RPC `error` に出ます。
 
 | 分類 | メソッド |
 |---|---|

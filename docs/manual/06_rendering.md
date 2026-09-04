@@ -6,14 +6,14 @@
 
 - レンダリングパイプラインを **JSON だけ**で定義する方法(rendering config)
 - パス種別(`material` / `fullscreen` / `raster` / `output_transform` / `ui` / `shadow_depth` / `velocity` / `picking` / `gizmo` / `debug_draw` / `debug_text`)と compute タスク
-- カラーパイプライン(SRGB スワップチェーン + リニアワークフロー)で気をつけること
-- feature(1 行で有効化できるパージ可能な GPU 機能)— canonical anchor・パラメータ・named binding
-- フレームグラフ(依存宣言 → 機械最適化 → 手詰め)とプランダンプ
-- シェーダ基盤 — stem 参照・FrameUBO・ホットリロード・descriptor set 規約
-- マテリアル(`.surface` + `pelican.material` + **OpenPBR**)、テンポラル(history / velocity / **projection jitter / 標準 TAA**)、2D スプライト
-- OpenXR ステレオレンダリング(論理フレーム / feature policy / ミラー)
+- カラーパイプライン(表示用の SRGB スワップチェーン + シェーダ内はリニア値、という色の運び方)で気をつけること
+- feature(1 行で有効化できるパージ可能な GPU 機能)— canonical anchor(挿入位置に使える標準の目印)・パラメータ・named binding(feature 側の別名を実 RT に結ぶ仕組み)
+- フレームグラフ(パス同士の依存だけを宣言し、実行順とバリアはエンジンが決める仕組み)とプランダンプ
+- シェーダ基盤 — stem 参照(拡張子を書かないシェーダ参照)・FrameUBO(全シェーダ共通のフレーム定数)・ホットリロード・descriptor set 規約(シェーダへ資源を渡す番号の割り当て)
+- マテリアル(`.surface` + `pelican.material` + **OpenPBR**(業界標準の物理ベース材質モデル))、テンポラル(前フレームの絵を使う技法一式 — history / velocity / **projection jitter / 標準 TAA**)、2D スプライト
+- OpenXR ステレオレンダリング(論理フレーム = 左右眼をまとめた 1 単位 / feature policy / ミラー)
 - グラフ variant(flat / XR / preview)と、GPU デバッグラベル・GPU タイミング・VRAM の見方
-- レイトレーシングの宣言層 — `ray_group_layout` v1 / v2、`acceleration_structure` 規則、`pelican_ray_instance`
+- レイトレーシングの宣言層 — `ray_group_layout` v1 / v2(レイトレのシェーダと資源の並びを宣言する形式の版)、`acceleration_structure` 規則、`pelican_ray_instance`
 
 ## 6.1 全体像
 
@@ -33,11 +33,13 @@ project.json ──rendering_config_json──▶ rendering config JSON
               毎フレーム: プラン順に layout 遷移 → dynamic rendering でパス実行
 ```
 
+ここで **swapchain(スワップチェーン)** は「画面に出す番が来たら OS/ドライバへ渡す画像」の並びのことで、**display** はエンジンが用意する canonical(標準)なレンダーターゲット名です — 終端の `output_transform` が書き込む先で、最終的に swapchain の画像になります([用語集](14_glossary.md))。
+
 `basic_config.default_rendering_pass` が rendering config 内のどのパス列(`rendering_passes[].name`)を使うかを決めます。エンジンは常にパージ不能な終端 `output_transform` ノード(リニア → 表示エンコードの 1 箇所)を生成し、**このノードが終端に来ないパス列を既定に指定すると起動時エラー**です(§6.3)。なお authored な `"swapchain"` 出力は合成時に `display` RT へ置換されるため、`display` を誰も書かない構成はフレームグラフ検証で落ちます(§6.11)。
 
 ## 6.2 rendering config のスキーマ
 
-実物の最小構成([../../projects/example/passes/example_renderingpass_data.json](../../projects/example/passes/example_renderingpass_data.json) — G-buffer → ライティング → UI)は前版と同じ骨格で動きます。example が実際に使う [main_rendering_config.json](../../projects/example/passes/main_rendering_config.json) は SSAO と 4 段ブルームを足した 17 パス構成です(ファイルに書かれた authored 件数。実行時はこれに ui feature のパスと終端 `output_transform` が合成されます)。
+実物の最小構成([../../projects/example/passes/example_renderingpass_data.json](../../projects/example/passes/example_renderingpass_data.json) — G-buffer → ライティング → UI。**G-buffer** は「1 パス目で色・法線・粗さなどを画面サイズの複数枚に書き出し、2 パス目でそれを読んでライティングする」deferred 方式の中間バッファ群のことです。[用語集](14_glossary.md))は前版と同じ骨格で動きます。example が実際に使う [main_rendering_config.json](../../projects/example/passes/main_rendering_config.json) は SSAO と 4 段ブルームを足した 17 パス構成です(ファイルに書かれた authored 件数。実行時はこれに ui feature のパスと終端 `output_transform` が合成されます)。
 
 ### トップレベルキー
 
@@ -96,6 +98,8 @@ runtime cubemapは資源形状だけを宣言し、六面をViewFamilyの6 view�
 cube array、runtime 3D、cube storage imageは現在未対応で、暗黙に2Dへ落とさず起動時に拒否します。
 
 ### pass 共通フィールド
+
+以下で **attachment(アタッチメント)** は「そのパスが描き込む先として GPU に差し込む画像」を指す Vulkan の用語です(`output.color` / `output.depth` に書いた RT がそれになります)。パスが読むだけの画像は attachment ではなく `input` 側です。
 
 | フィールド | 必須 | 既定 | 内容 |
 |---|---|---|---|
@@ -164,7 +168,7 @@ cube targetのface出力も同じ形式です。`layer`は0〜5のface indexで�
 - **`fullscreen`** — 全画面 1 枚描き。`shader: { "vertex": <stem>, "fragment": <stem> }` **必須**。`input` の画像は通常 `resource_ports` で名前を付け、fragment shaderからgenerated `pelican_sample_<port>()`で読む。**入力枚数にエンジン固定の上限はありません**(✅WP238b で `Fullscreen pass has too many inputs` の per-pass 拒否を撤去。残った 8 は descriptor pool のサイズ見積もりで、実上限は選択されたデバイスと pipeline layout が持ちます)。1つのinput resourceへ複数portは割り当てず、mip/layerを変える場合も1 portの`subresource`で選ぶ。raw shaderだけは従来どおりset 1へ配列順でbindする。`uses_light_data: true` と `push_constants`(`"none"` / `"camera_position"` / `"projection_view"`)は**互換キー**として受理されますが、GPU への実際の供給元は常に set 0 の FrameUBO / LightUBO です(§6.4)。任意の`raster_state`で1枚のcolor attachmentのblend/write-maskとtopology/cull/front-faceを書けます。深度状態は受理しません。
 - **`raster`** — 汎用ラスタパス(✅WP238b)。シーンのモデルにも全画面 quad にも依らず、`draw` で描画コマンドを、`raster_state` で固定機能状態を直接宣言します。後述の専用項を参照。
 - **`output_transform`** — リニア → 表示エンコードの終端ノード。**自動付加されるため通常は書きません**(§6.3)。内部契約は`fullscreen`と同じ`raster_state`所有表を共有し、blend/write-mask等を同じ経路で解決します。自動生成される既定ノードは`raster_state`を省略します。
-- **`velocity`** — モーションベクタ出力(§6.8)。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
+- **`velocity`** — モーションベクタ出力(§6.8)。**モーションベクタ(velocity)** は「この画素の中身が前フレームからどれだけ画面上を動いたか」を 2 成分で書いた画像で、TAA やモーションブラーが前フレームの対応画素を引くのに使います。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://velocity` / `engine://velocity_skinned`)。通常は feature 経由。
 - **`picking`** — モデル面へ整数 ID を書く視覚ピッキングパス。フィールドは `shader.{vertex, skinned_vertex, fragment}`(既定 `engine://picking` / `engine://picking_skinned`)。通常は `engine://features/picking.json` 経由(本節後半)。
 - **`gizmo`** — 選択 transform の移動・回転・拡縮ハンドルを canonical display へ重ねる line-list パス。通常は `engine://features/gizmo.json` 経由(本節後半)。
 - **`ui`** — UI オーバーレイ([第7章](07_input_ui.md))。WP87 以降は `engine://features/ui.json` 経由の挿入が標準です。
@@ -278,7 +282,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 | 粒度 | config の書き場所 | 既定 provider | 対象 |
 |---|---|---|---|
-| 1 パスの実装 | pass の `implementation.provider` | `builtin.fullscreen_v1` | **`fullscreen` / `output_transform` 限定**(§6.2)。logical な pass contract を保ったままシェーダ対を差し替える |
+| 1 パスの実装 | pass の `implementation.provider` | `builtin.fullscreen_v1`(`builtin.` はエンジン同梱 provider の namespace、`_v1` は上の `namespace.name@major` と同じ意味の major 版) | **`fullscreen` / `output_transform` 限定**(§6.2)。logical な pass contract を保ったままシェーダ対を差し替える |
 | 連続区間の置換 | pass の `regions[]` + パス列の `region_replacements[]` | `builtin.identity_v1` | **連続した fullscreen パス**を最大 256 パスへ展開・置換する |
 | 論理グラフ全体の変換 | トップレベル `graph_transforms[]` | (省略可) | feature 合成後の config を順序付き chain(最大 32 段)で変換する |
 | renderer の seed 生成 | トップレベル `render_strategy` | `builtin.authored_config_v1` | preset 展開後・feature 合成前の seed config **全体**を provider が生成する |
@@ -308,6 +312,8 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 ## 6.3 カラーパイプライン(✅WP72〜74)
 
+前提の 2 語だけ先に置きます。**sRGB** は PNG やモニタが使う色の符号化で、格納値と実際の光の量が非線形に対応します(暗部に段階を厚く割り当てるため)。**リニア(線形)** はその逆で、値がそのまま光の量に比例します。加算や乗算が物理的に正しくなるのはリニア側なので、計算はリニアで行い、表示の直前だけ sRGB へ符号化する、というのがここでの方針です(用語としての整理は [用語集](14_glossary.md)、Vulkan 側の `*_SRGB` フォーマットの扱いは [ソースコード読解ガイド §10.1](../source-code-guide/10_background_knowledge.md#srgb-フォーマットをスコアで選ぶ理由))。
+
 2026-07-11 に **SRGB スワップチェーン + リニアワークフロー**へ全面移行しました(設計の正: [../design_color_pipeline.md](../design_color_pipeline.md) v4)。
 
 > **設計決定(リニアワークフロー):** 作業空間は linear-sRGB(Rec.709/D65)。**シェーダの入出力はすべてリニア**で、sRGB の encode/decode はハードウェア(`*_SRGB` view)か、終端の `output_transform` ノードの 1 箇所だけが行う。transfer が掛かるのは RGB のみ(alpha は常にリニア straight)。手書きの `pow(x, 2.2)` 等はエンジンシェーダから全廃済み。
@@ -326,13 +332,17 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 ### stem 参照
 
-シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
+**stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
 
-解決順: ① `<stem>.vert`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.vert.spv`(ビルド済み SPIR-V)。どちらも無ければ試行パス一覧付きエラー。
+拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L535))。どちらも無ければ試行パス一覧付きエラー。
+
+(**GLSL** は Vulkan/OpenGL 系のシェーダ言語、**SPIR-V** はそれをコンパイルした GPU 向け中間バイナリ形式です。)
 
 > **設計決定(二層供給):** 開発時 = GLSL 実行時コンパイル(defines によるバリアント可)、配布 = `.spv` 固定 1 バリアント。`.spv` に `shader_defines` を組み合わせると「Shader defines require GLSL source」エラー。feature を使う config は実行時コンパイラ必須。この stem 規約は web プロファイルと共有される可搬形式です([第9章](09_web.md))。
 
 ### 自動リフレクションとキャッシュ
+
+**SPIR-V reflection(リフレクション)** は、コンパイル済みシェーダのバイナリを読み返して「このシェーダはどの番号にどんな資源を要求しているか」を機械的に取り出すことです(C++ 側に同じ宣言を手で書き写さずに済み、書き写しのズレも起きません)。`spirv-reflect` はそれを行う Khronos 公式のライブラリです([用語集](14_glossary.md))。
 
 SPIR-V を spirv-reflect で解析し、**descriptor set layout・pipeline layout・push constant range を全自動生成**します。頂点+フラグメントで binding の型が食い違うと起動時エラー。パイプラインキャッシュ(`pipeline_cache.bin`)に加え、✅WP82 で **SPIR-V ディスクキャッシュ**(`<project>/.pelican/shader_cache/`、SHA-256 キー)が入り、2 回目以降の起動が大幅に短縮されます(破損時は再コンパイルへフォールバック)。
 
@@ -344,13 +354,15 @@ SPIR-V を spirv-reflect で解析し、**descriptor set layout・pipeline layou
 
 ### descriptor set 規約(shader_contract.md が正)
 
+**descriptor set(デスクリプタセット)** は Vulkan で「シェーダに渡す資源(UBO・SSBO・テクスチャ)の束」に付ける番号で、GLSL では `layout(set = N, binding = M)` と書きます。pelican は set 0〜3 の意味を固定し、どの番号に何が来るかをエンジンとシェーダの契約にしています([用語集](14_glossary.md))。この契約の正本はリポジトリ内の [../shader_contract.md](../shader_contract.md)(`docs/shader_contract.md`)で、set/binding の全表・`engineMvp` の規範意味論・生成アクセサの ABI がそこにあります。以下はその要約です。
+
 GLSL からは `#include "pelican_sets.glsl"` / `#include "pelican_frame.glsl"` で定数と構造体を共有します。
 
 | set | 定数 | 用途(✅WP70 で統一済み) |
 |---|---|---|
 | 0 | `PELICAN_SET_FRAME` | **全パイプライン共通の固定 layout**: binding 0 `FrameUBO` / 1 `ObjectBuffer` SSBO / 2 `LightUBO` / 3 `PreviousObjectBuffer`(velocity 用) / 4 `FrameResolutionUBO`。graphics/computeの両方でbindされ、シェーダが宣言する場合は一致必須 |
 | 1 | `PELICAN_SET_PASS_INPUT` | パス入力。fullscreen/compute/materialの通常経路はlogical nameからgenerated bindingへ解決。raw set 1は低レベルescape hatch |
-| 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 = occlusion、8 以降 = `.surface` の custom texture(宣言順) |
+| 2 | `PELICAN_SET_MATERIAL` | binding 0-3 標準 PBR テクスチャ、4-5 VAT(Vertex Animation Texture = 頂点の動きをテクスチャに焼いた形式。[第5章](05_assets.md) §5.4)、**6 = 全マテリアル配列の `MaterialBuffer` SSBO**(標準 96B + custom values 256B / 要素)、7 = occlusion、8 以降 = `.surface` の custom texture(宣言順) |
 | 3 | `PELICAN_SET_FREE` | 名前に反して**大半はエンジンが所有**します: binding 0/1 = debug_draw / debug_text、2/3 = スキンパレット(現 / 前フレーム)、4-8 = morph(instance / weight / previous weight / metadata / delta)、9-11 = per-instance マテリアルオーバーライド(§6.8) |
 
 `FrameUBO`(全シェーダから読める・368B): `time` / `dt` / 64bit `frame_index` / 64bit `view_family_token` / `resolution` + 逆数 / `camera_position` / `view` / `projection` / `previous_view` / `previous_projection` / `jitter_ndc` / `previous_jitter_ndc` / `temporal_reset_epoch` / `previous_temporal_reset_epoch` / `view_index` / `view_count` / `clip_plane`。GLSL上は`frame_index.xy`が論理frame番号、`.zw`がstable family tokenで、`pelican_view_family_token()`から読めます。projection jitter が無効な既定構成では jitter は `(0, 0)` です。
@@ -363,6 +375,8 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 
 ## 6.5 feature — パージ可能な GPU 機能(✅WP28〜31/54/87/88/104/226)
 
+**feature(フィーチャ)** は「RT・パス・compute タスク・シェーダ define をひとまとめにした断片 JSON(+ シェーダ)」で、rendering config の `features` 配列に参照を 1 行書くと、合成時にそのパスが既存のパス列へ挿し込まれます。SSAO や TAA のような描画機能 1 個ぶんの単位だと思ってください。**パージ可能**とは「参照を消せば機構ごと丸ごと消え、出力が feature 導入前と byte 単位で一致する」という意味です([用語集](14_glossary.md))。
+
 > **設計決定(参照 = 存在):** feature は rendering config に**参照を書いたときだけ**存在する。1 つも書かなければ合成機構ごと素通りし、挙動は完全に不変(パージ可能)。golden テストの「feature off = 既存出力の完全維持」で保証されている。
 
 > **設計決定(feature 層 = ユーザー空間、2026-07-12):** エンジンが持つのは**機構語彙**(anchor / history / snapshot / format_class など — 版付きで additive にのみ増える)だけ。feature(JSON + シェーダ)は**ユーザー空間**で、同梱 feature は**特権なしの標準ライブラリ**にすぎない。`engine://features/*.json` をプロジェクトへコピーして改造したら自分のもの、が公式ワークフロー。canonical anchor の全順序・`output_transform` 等の常設ノード・色 invariant・決定性ゲートだけは名前入りエラーで防衛される。
@@ -373,7 +387,7 @@ push constant は 128B(エンジン 64B + シェーダ 64B)で、✅**リフレ�
 { "features": [ "engine://features/shadow_directional.json", "engine://features/velocity.json" ], ... }
 ```
 
-エンジン同梱 feature(16 個・✅すべて実装済み):
+エンジン同梱 feature(16 個・✅すべて実装済み)。表に出る業界用語を先に 1 行ずつ: **SSAO**(screen-space ambient occlusion = 深度と法線から「物が近接して光が届きにくい隅」を推定して暗くする画面空間の手法)、**bloom**(明るい部分をぼかして周囲へにじませる後処理)、**TAA**(temporal anti-aliasing = 毎フレーム微妙に投影をずらして描き、前フレームの結果と混ぜてジャギーを消す手法。§6.8)、**IBL**(image-based lighting = 環境画像を光源として使う照明)、**CSM**(cascaded shadow map = 距離帯ごとに解像度の違う影マップを使い分ける方式)、**cluster**(画面を格子に切って「その格子に効くライトの一覧」を先に作る手法)。いずれも [用語集](14_glossary.md) にも項目があります。
 
 | feature | 内容 |
 |---|---|
@@ -433,6 +447,17 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 
 - feature 側は `parameters`(`pelican.render_feature_parameters` v1)で宣言します: `render_targets`(name / required / default / role / format_class / usage / extent_scale / width / height / sample_count — **RT の named binding**)、`scalars`(`float` / `int` / `bool`。`default` 必須、float/int は `range: [min,max]` 必須、任意で `shader_define`)、`shader_assets`(name / `stage: vertex|fragment|compute` / default)。
 - feature 本文の中では **`$<パラメータ名>`** プレースホルダで参照します(`$scene_color@history` も可)。未解決・型不適合は feature 名・パラメータ名入りの compose エラー。
+- **プレースホルダと named binding は同じ機構の裏表**です。`$<名前>` は「feature 本文の書き方」、named binding は「`parameters.render_targets` 種のパラメータがやること = feature 内の呼び名を、プロジェクト側の実 RT 名に結び直すこと」を指します。同梱 `taa.json` の実物がその両方を見せます:
+
+  ```json
+  "parameters": { "schema": "pelican.render_feature_parameters", "version": 1,
+    "render_targets": [ { "name": "scene_color", "required": false, "default": "lit_color", "usage": ["SAMPLED"] } ] },
+  "passes": [ { "insert": "after:post_main", "pass": {
+      "name": "taa_resolve", "type": "fullscreen",
+      "input": ["$scene_color", "$velocity", "$depth", "taa_accum@history"], ... } } ]
+  ```
+
+  `scene_color` が named binding の宣言、`"$scene_color"` がその使用です。プロジェクトが何も渡さなければ `default` の `lit_color` に、`{"scene_color": "my_hdr"}` を渡せば `my_hdr` に置換されて合成結果に入ります。
 - スカラーの `$名前` は fragment JSON の**どのスカラー位置にも書けます**。文字列が `"$名前"` **ちょうど一致**のときはパラメータの JSON 型がそのまま残るので、シェーダ define だけでなく**物理宣言も 1 つの値で駆動**できます。同梱 feature の実例:
 
   ```json
@@ -671,7 +696,19 @@ feature が作った RT を、**material 側の公開アクセサとして配る
 
 ### canonical anchor(✅WP73)
 
-挿入先には、パス名のほかに**標準アンカー**が使えます。feature 合成は次の 8 アンカーを `__anchor_<name>` ノードとして常時実体化します:
+**canonical anchor(標準アンカー)** は「パイプラインのこの位置」を指すためのエンジン定義の目印です。feature は挿入先に実パス名(プロジェクトごとに違う)ではなくアンカー名を書けるので、どの config へコピーしても同じ場所に入ります([用語集](14_glossary.md))。
+
+ここでいう**実体化**は「描画するパスになる」ことではなく、**何も挿されていなくても `__anchor_<name>` という空ノードがフレームグラフに必ず 1 個ずつ存在する**、という意味です(プランのノード種別 `anchor`。後述 §6.6)。順序の基準点があるので、挿す側は基準点の存在を確かめずに `before:` / `after:` を書けます。
+
+具体例 — 同梱 `engine://features/velocity.json` の挿入指定はこの 1 行です:
+
+```json
+{ "insert": "before:post_main", "pass": { "name": "velocity_pass", "type": "velocity", ... } }
+```
+
+`post_main` という名前のパスがプロジェクトに無くても、`__anchor_post_main` は常にあるので解決できます。
+
+feature 合成は次の 8 アンカーを `__anchor_<name>` ノードとして常時実体化します:
 
 ```
 sprite → post_main → tonemap → post_ldr → pelican_ui → debug_draw → debug_text → imgui
@@ -757,12 +794,22 @@ Studio 側へ保持できます。
 
 ## 6.6 フレームグラフ(✅F0〜F2 = WP33〜35 + WP64)
 
+**フレームグラフ(frame graph)** は「1 フレームぶんのパスと GPU 資源を、ノードと依存辺のグラフとして表したもの」です。DirectX 12 / Vulkan 世代のエンジンで広く使われている考え方で、pelican 固有の発明ではありませんが、**入力は rendering config JSON だけ**(C++ でグラフを組み立てる API は公開されていません)という点が pelican の形です([用語集](14_glossary.md))。
+
+以下 **data edge(データ辺)** は「あるパスが書いた資源を別のパスが読む」という依存の辺を指します。対して `after` / `before` で人が書く辺を**明示エッジ**と呼びます。この 2 種類だけが順序の契約です。
+
 > **設計決定(三層モデル):**
 > 1. **正しさ** — データ依存(reads/writes)と明示エッジ(after/before)**だけ**が順序の契約。手書きバリアは禁止。
 > 2. **機械最適化** — トポロジカルソート・層別・バリア導出はエンジンの仕事。
 > 3. **手詰め** — JSON の宣言順は**安定タイブレーク**。依存が許す範囲で宣言順が尊重される。
 
-依存はパスの `input` / `output`(+ `color_load_op: "load"` は reads 扱い、`@history` はフレーム内依存を作らない)から自動導出されます。writes-writes 競合は起動時 hard error です。
+三層を example の実プラン([test/fixtures/devstudio/example_frame_plan.json](../../test/fixtures/devstudio/example_frame_plan.json))で見ると:
+
+1. **正しさ** — `gbuffer_pass` の `writes` に `gbuffer_normal` があり、`ssao_pass` の `reads` に同じ名前がある。この一致だけが「ssao は gbuffer の後」という契約で、JSON のどこにも順序は書きません。
+2. **機械最適化** — その一致からエンジンが `{"from":"gbuffer_pass", "kind":"read_after_write", "resource":"gbuffer_normal", "to":"ssao_pass"}` というバリアを導き、`levels` に `[["gbuffer_pass"], ["ssao_pass"], ...]` の層を作ります。
+3. **手詰め** — 依存が同点のノード同士は JSON の宣言順で決まります。プランの各ノードは `declaration_index`(JSON 上の位置)と `order`(実行順)の両方を持つので、宣言順がどこまで通ったかをダンプで確認できます。
+
+依存はパスの `input` / `output`(+ `color_load_op: "load"` は reads 扱い、`@history` は**前フレームの面**を読むだけなのでフレーム内依存を作らない。§6.8)から自動導出されます。writes-writes 競合は起動時 hard error です。
 
 ✅WP64 で**実行系はプラン駆動に一本化**されました。旧レガシー経路(compute を含まない構成だけ JSON 宣言順で実行)は撤去済みで、全構成が FramePlan の順序で実行され、純 render 構成でも `before` / `after` 明示エッジが効きます。プランのノード種別は `render` / `compute` / `anchor` / `snapshot_copy` / `output_transform` です。
 
@@ -1195,6 +1242,17 @@ render / compute / transfer / output / marker のノード本体は provider の
 
 ### target planning と Vulkan plan pin
 
+ここから **physical(物理)計画**の話に入るので、先に logical との線引きを置きます。
+
+> **分離基準:** 実デバイスの能力を知らなくても決まることが **logical(論理)plan**、実デバイスの能力を見ないと決められないことが **physical plan**([用語集](14_glossary.md))。
+
+具体例 — rendering config に `gbuffer_albedo` という RT を宣言し、`gbuffer_pass` が書いて `lighting_pass` が読むと書いたとします。
+
+- **logical plan** に載るのは「`gbuffer_albedo` というノードと資源があり、その 2 パスの間に read-after-write の辺がある」ところまでです。GPU が何であっても同じ答えになります。
+- **physical plan** に載るのは「その `gbuffer_albedo` に実際どの VkFormat を割り当てるか」「`materialized_image` / `transient_attachment` / `tile_local_attachment` のどれで実現するか」「どのノードを 1 つの Vulkan dynamic rendering scope にまとめるか」「どの資源同士がメモリ確保を共有(alias)してよいか」です。同じ config でも GPU が違えば違う答えになり得ます。
+
+この線引きは fingerprint にも現れます — `logical_graph_fingerprint` は前者だけから、`automatic_plan_fingerprint` は後者(選ばれた候補・target facts・provider generation)も含めて計算されます。
+
 通常は何も指定せず、`optimized` profile で自動計画します。再現試験や特定部分だけを保守的にしたい場合は、同じ rendering config に portable な `target_planning` を追加できます。
 
 ```json
@@ -1228,10 +1286,25 @@ render / compute / transfer / output / marker のノード本体は provider の
 }
 ```
 
-- profile は `optimized`、`conservative_debug`、`hazard_stress`。`seed` は `hazard_stress` だけに指定できます。
+- profile は `optimized`、`conservative_debug`、`hazard_stress`。3 つの `kind` の意味は次のとおりです([targetplanning.cpp](../../src/project/targetplanning.cpp#L972))。
+  - `optimized`(既定) — 並列化・scope 融合(tile-local)・alias の候補をすべて拾い、安定な順序で採用する。
+  - `conservative_debug` — 並列候補を出さず、rendering scope の融合もしない。つまり「順番に 1 つずつ、資源は共有しない」側へ倒す。バリアや融合を疑うときの対照用です。
+  - `hazard_stress` — **hazard(ハザード)** は「同じ資源への読み書きが正しい順序で並ばないと壊れる関係」を指す GPU 同期の用語で、この profile はその取りこぼしを探すためのものです([用語集](14_glossary.md))。**依存が許す範囲の任意な選択**(実行可能ノードの取り出し順、並列/融合/alias 候補の並び)を `seed` で撹拌し、alias 候補を半分に間引く。順序に暗黙に依存したバグを揺さぶり出すための profile で、`seed` はここでだけ指定できます(同じ seed なら再現します)。
 - node/resource 制約は graph ごとです。`main` と書けば XR variant のコンパイル時には自動的に `main#xr` へ対応し、個々の node/resource 名は変わりません。
 - `serial` / `isolate` / `no_alias` は禁止側だけを明示する設計です。通常 node に `parallel_safe` のような boilerplate は要りません。
 - 未知 graph/node/resource、重複した warning ID、型の違うフラグは runtime object を作る前に compile error になります。
+
+#### 3 つの representation と、その選ばれ方
+
+自動計画は attachment 1 枚ごとに次の 3 つから 1 つを選びます。利用者が直接指定する field はありません。
+
+| representation | 何をしないか | GPU 上の効果 | 選ばれる条件(概略) |
+|---|---|---|---|
+| `materialized_image` | 何も省かない(既定・安全側) | 通常の device-local メモリに 1 枚確保し、内容を保存する | 下の 2 つの条件を満たさないときは常にこれ |
+| `transient_attachment` | 描画区間の外への**内容の永続化**を要求しない | lazily allocated memory を優先し、最後の Store を Discard にする | attachment としてしか使わず、後段の read も history も無い(= 書きっぱなし) |
+| `tile_local_attachment` | メモリへの**書き戻し**自体をしない | producer と consumer が同じ dynamic rendering instance で走り、値がタイル内に留まる | 上に加えて、直後の consumer が全員 `same_pixel` で読み、extent が一致し、device が `VK_KHR_dynamic_rendering_local_read` を持つ |
+
+下へ行くほど得ですが条件が厳しく、1 つでも外れると 1 段上へ自動で戻ります(黙って壊れる方向へは倒れません)。以下はそれぞれの条件の詳細です。
 
 #### 自動 transient attachment
 
@@ -1309,7 +1382,7 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 同じlogical planをlayerごとに実行します。synthetic Vulkan fixtureはlayered local readの
 左右出力を検証しますが、Quest/Meta XR Simulatorでの帯域効果と実表示は外部gateです。
 
-さらに、現在の自動計画が選んだ Vulkan backend candidate を固定したい場合は、まず pin なしで起動し、`get_frame_plan.physical_target_plan.ejectable_pin_package` をそのままコピーします。コピー先は variant 別の `vulkan_plan_pins` 配列です。
+さらに、現在の自動計画が選んだ Vulkan backend candidate を固定したい場合は、まず pin なしで起動し、`get_frame_plan.physical_target_plan.ejectable_pin_package` をそのままコピーします。`get_frame_plan` は実行中の player に stdio で問い合わせる **JSON-RPC メソッド**です([第10章](10_tools.md#基盤メソッド一覧)。Studio の Frame Plan タブと Plan Viewer も同じ JSON を読みます)。`ejectable_pin_package` はその応答に入っている**そのまま貼れる形の JSON 断片**で、「今回の自動計画がどの backend candidate を選んだか」を記録したものです。コピー先は variant 別の `vulkan_plan_pins` 配列です。
 
 ```json
 {
@@ -1330,7 +1403,7 @@ multiview選択時は2-layer image、`viewMask=0b11`、execution count 1とな�
 }
 ```
 
-貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。render strategy の ABI fingerprint から `target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments` は分離されているため、これらを貼ったこと自体では logical fingerprint は変わりません。
+貼り付け後は `physical_target_plan.applied_pin_package` に同じ package が出ます。論理 graph が変わった package は `pin package is stale`、現在の device/provider で成立しない candidate は `pinned backend candidate is infeasible` として失敗し、別 candidate へ黙って fallback しません。ここで **fingerprint** は「対象の内容から計算した短いハッシュ値」で、貼った package が今のグラフ向けかどうかを照合するための鍵です。`logical_graph_fingerprint` は論理グラフ(パスと資源と依存)から計算され、**物理側の指定(`target_planning` / `vulkan_plan_pins` / `vulkan_physical_fragments`)はその計算に入りません**。したがってこれらを貼ったこと自体では logical fingerprint は変わらず、貼った package が直後に stale になることもありません。
 
 v1 pin が固定するのは有限集合の **backend candidate だけ**です。resource/scopeを編集する場合は、次の別schemaを使います。
 
@@ -1385,7 +1458,7 @@ attachment load/storeを扱う既存packageとして引き続き読めます。v
 }
 ```
 
-eject結果は全resource/scope/alias groupを含みますが、手書きpackageの`resources`は変更するresourceだけに減らせます。`scopes`または`alias_groups`自体を省略すると、その部分は自動planを維持します。`alias_groups: []`はaliasなしの明示指定です。`scopes`は全nodeのexact partitionなので、空配列が有効なのはnodeを持たないgraphだけです。
+`scopes[].id` の `manual:` は「自動計画が付けた ID ではなく、人が手で書いた scope である」ことを示す接頭辞です(上の例では `manual:geometry` / `manual:lighting`)。eject結果は全resource/scope/alias groupを含みますが、手書きpackageの`resources`は変更するresourceだけに減らせます。`scopes`または`alias_groups`自体を省略すると、その部分は自動planを維持します。**alias group** は「同じ GPU メモリ確保を使い回してよい resource の組」です。lifetime(生存区間)が重ならない画像同士なら、別々に確保せず 1 つの割り当てを共有できるので VRAM が減ります。`alias_groups: []`はaliasなしの明示指定です。`scopes`は全nodeのexact partitionなので、空配列が有効なのはnodeを持たないgraphだけです。
 
 別formatを選ぶ場合は、先にrender target側で許可する集合を宣言します。
 
@@ -1398,29 +1471,31 @@ eject結果は全resource/scope/alias groupを含みますが、手書きpackage
 }
 ```
 
-その後、自動planからejectしたfragmentの該当resourceを、eject結果と同じcanonical表記
+その後、自動planからejectしたfragmentの該当resourceを、eject結果と同じ**canonical 表記**（fragment 側の format 名の綴り方。render target JSON の `R16G16B16A16_SFLOAT` に対し、fragment では区切り記号の無い綴り）
 （例: `"R16G16B16A16Sfloat"`）へ変更します。render target JSONのformat名をfragmentへ
 推測で転記せず、必ず現在の`ejectable_physical_fragment`を編集してください。
 link時には、対象deviceのrequired image usage（historyなら`TRANSFER_DST`も含む）、
 sample count、array layer上限、external depthなら`TRANSFER_SRC`契約を再照合します。
-候補未宣言、非`materialized_image`、device非対応の変更はfallbackせずrejectされます。
+候補未宣言、非`materialized_image`、device非対応の変更は**黙って別の値へ落とさず(fallback せず)**、名前付きエラーで起動を止めます。「指定は通ったが実際は別の format で動いていた」という状態を作らないためです。
 
 全versionで共通して許可する編集は次です。
 
 - resource representationの維持、または自動`tile_local_attachment` / `transient_attachment`から`materialized_image`への保守的な変更
 - 自動planが選んだformatの保持、または`format_candidates`で宣言され、実device capabilityを満たす`materialized_image` formatへの変更
-- format、representation、sample count、view layout、extentが一致し、論理lifetimeが重ならないresourceだけのalias group
+- format、representation、sample count、view layout、extentが一致し、**論理lifetime**(そのresourceが最初にwriteされるnodeから最後にreadされるnodeまでの、論理グラフ上の区間)が重ならないresourceだけのalias group
 - v2以降では`(node, logical_resource)`で特定したraster attachmentの`load_op` / `store_op`。
   `load_op`は`load|clear|discard`、`store_op`は`store|discard`で、未記述fieldは自動planを維持する
 
-scope編集の意味はversionごとに異なります。
+**scope** はここでは「1 つの Vulkan dynamic rendering instance にまとめて実行するノードの並び」を指します(この節の物理計画の文脈に限った意味です — [用語集](14_glossary.md))。`scope_edit_mode` はその scope をどこまで編集してよいかの指定で、**編集を許す範囲が version ごとに異なります**。
 
-- v1/v2、またはv3の`scope_edit_mode: "split_only"`は、自動scopeをさらに分ける
-  exact ordered partitionだけを許可します。tile-local値が新しい境界をまたぐ場合は、その
+- v1/v2、またはv3の`scope_edit_mode: "split_only"`は、自動scopeをさらに**分ける**
+  exact ordered partitionだけを許可します。**tile-local 値**(scope の中だけで受け渡され、GPU メモリへ書き戻さない attachment の値。上の「自動 tile-local attachment / same-pixel local read」)が新しい境界をまたぐ場合は、その
   resourceを先にmaterializeします。
-- v3の`scope_edit_mode: "dependency_safe"`は、data edgeと明示`after` / `before`をすべて
+- v3の`scope_edit_mode: "dependency_safe"`は、data edge(§6.6 冒頭 — 書いた資源を読む依存)と明示`after` / `before`をすべて
   保つ範囲でnode/scopeを並べ替えられます。宣言順はcorrectness根拠にしませんが、
   feature compositionが通常pass列へ追加した明示`after`も消せません。
+
+  具体例(回帰テスト `test/targetrenderplanning_test.cpp` の 2 ケース): 自動 scope が `[GBuffer, Lighting]` と `[Forward]` に分かれているとき、`split_only` でできるのは `[GBuffer]` と `[Lighting]` へ**割る**ことだけです。`dependency_safe` なら、`Lighting` が書いた `scene_color` を `Forward` が同じ attachment として `load` している(= data edge が保たれる)ので、`{"id": "manual:lighting_forward", "nodes": ["Lighting", "Forward"]}` と書いて 2 ノードを**1 つの scope へ融合**できます。逆に `Forward` を `Lighting` より前へ動かす並べ替えは、同じ data edge に反するので reject されます。
 - 並べ替え後はresource lifetimeを新しい物理順序から再計算し、手書きalias groupをその
   lifetimeへ再照合します。
 - 異なる自動scopeの融合は、内部`materialized_image`だけを使うsingle-sample rendering
@@ -1429,7 +1504,7 @@ scope編集の意味はversionごとに異なります。
   rendering instanceとして実行されます。swapchain、UI/ImGui、MSAA、異なるattachment集合、
   sampled/storage/transfer依存を含む融合はまだ受理しません。
 
-貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentはstale errorとなり、部分的に推測して修復しません。
+貼り付け後は`applied_physical_fragment`で適用内容を再観測できます。logical graphだけでなく、変更前の自動plan、target facts、選択候補、provider generationも`automatic_plan_fingerprint`へ束縛されます。いずれかが変わった古いfragmentは **stale error**(貼った package が前提にしていた plan はもう存在しない、という失敗)となり、部分的に推測して修復しません。直し方は「もう一度 eject してから編集し直す」だけです。
 
 同じ名前のtargetを複数graphやflat/XR variantが共有する場合、全planは同じphysical formatを選ぶ必要があります。異なるformatを同時に使う設計ならtarget名を分けてください。hot reloadでformatを変更した場合は、新しいruntime generationのimage・view・pipelineを作ってから一括publishし、旧generationは既存のGPU lease規則でretireします。
 
@@ -1481,14 +1556,14 @@ void pelican_surface_v1(in PelicanSurfaceInputV1 surface_input, inout PelicanSur
 vec3 pelican_lighting_v1(in PelicanSurfaceV1 surface, in PelicanSurfaceInputV1 surface_input) { ... }
 ```
 
-- ヘッダ語彙: `language` / 順序付き `params[]`(型 `float|vec2|vec3|vec4|int|color`、**`default` 必須**、min/max/hint 任意)/ `textures[]`(`name` / `default` / `color_space: srgb|linear` が**必須** — SRGB/UNORM view を決めるのは `color_space` で、`role: color|data` は任意の整合チェック)/ `screen_inputs[]`(§6.8)/ `resource_ports[]`(下記)/ `render_state`。網羅例は `test/fixtures/surface_format/valid/full.surface`。
-- **フック梯子 v1(凍結)**: `pelican_vertex_displace_v1` / `pelican_surface_v1` / `pelican_brdf_v1` / `pelican_ambient_v1` / `pelican_lighting_v1`。書いた関数がそのまま宣言になります。`brdf` と `lighting` は排他、未知の `pelican_` 関数定義やフックゼロはロードエラー。
-- スニペットはエンジン所有テンプレート(`engine://shaders/material/surface_v1.{vert,frag}`)へ逆 include され、エラーは `#line` で元ファイル名・行番号に翻訳されます。パラメータへは自動生成アクセサ `pelican_param_<name>()` / `pelican_sample_<name>(uv)` でアクセスします。
+- ヘッダ語彙: `language` / 順序付き `params[]`(型 `float|vec2|vec3|vec4|int|color`、**`default` 必須**、min/max/hint 任意)/ `textures[]`(`name` / `default` / `color_space: srgb|linear` が**必須** — テクスチャの中身が sRGB 符号化された色か、そのまま使うリニア値かの申告です(§6.3)。SRGB/UNORM view を決めるのは `color_space` で、`role: color|data` は任意の整合チェック)/ `screen_inputs[]`(§6.8)/ `resource_ports[]`(下記)/ `render_state`。網羅例は `test/fixtures/surface_format/valid/full.surface`。
+- **フック梯子 v1(凍結)**: エンジン側テンプレートが用意した差し込み口(フック)を、頂点変形 → 表面値 → BRDF/環境光 → ライティングの順に**梯子の段のように**並べたもの、という意味の呼び名です。段の名前は `pelican_vertex_displace_v1` / `pelican_surface_v1` / `pelican_brdf_v1` / `pelican_ambient_v1` / `pelican_lighting_v1` の 5 つで、書いた関数がそのまま宣言になります(定義しなかった段はテンプレートの既定のまま)。`brdf` と `lighting` は排他、未知の `pelican_` 関数定義やフックゼロはロードエラー。
+- スニペットはエンジン所有テンプレート(`engine://shaders/material/surface_v1.{vert,frag}`)へ**逆 include** され、エラーは `#line` で元ファイル名・行番号に翻訳されます。**逆**というのは向きのことです — 普通は自分のシェーダが共通ヘッダを `#include` しますが、ここでは**テンプレートの側が利用者の `.surface` を include** します。具体的にはコンパイル時に `.surface` の本文が `__pelican_user_surface.glsl` という仮想ファイル名で登録され([surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp#L69))、テンプレート [surface_v1.frag](../../src/core/resources/shaders/material/surface_v1.frag#L27) の `#include "__pelican_user_surface.glsl"` がそれを取り込みます。取り込んだあと、同ファイル下方の `main()` が `pelican_surface_v1(input_data, surface)` を呼びます。だから `.surface` に `main()` は書きません。パラメータへは自動生成アクセサ `pelican_param_<name>()` / `pelican_sample_<name>(uv)` でアクセスします。
 - 同梱の standard / toon ライティングも**同じ公開経路**で書かれています(特権なし standard library。dogfooding)。
 
 ### 任意 G-buffer / material output ABI・attachment state（✅WP218/219）
 
-G-buffer はエンジン固定の5スロットではありません。material pass が
+ここでの**任意**は「書き出す枚数と各枚の中身をプロジェクトが決めてよい」という意味です(形式が曖昧、という意味ではありません)。G-buffer はエンジン固定の5スロットではありません。**material pass**(= `"type": "material"` のパス。シーン内のモデルを描くパス種別。§6.2)が
 `pelican.material_outputs` v1 を宣言すると、`outputs[]` の配列順が fragment shader の
 `location = 0..N-1` と `output.color` の RT 順になります。`N` にエンジン独自の上限はなく、
 Vulkan デバイスの `maxColorAttachments` と、選択した format / MSAA の capability だけを
@@ -1526,12 +1601,11 @@ Vulkan デバイスの `maxColorAttachments` と、選択した format / MSAA �
 ```
 
 `type` は `float/vec2/vec3/vec4`、`int/ivec2/ivec3/ivec4`、
-`uint/uvec2/uvec3/uvec4`。RT format と floating / SINT / UINT の数値クラスが一致しない
-設定は GPU pipeline 作成前に拒否します。組み込み `source` は
+`uint/uvec2/uvec3/uvec4`。ここでいう**数値クラス**は「その値を浮動小数(floating)・符号付き整数(SINT)・符号なし整数(UINT)のどれとして扱うか」の 3 区分で、成分数(vec2 か vec4 か)とは別の軸です。RT format とこの数値クラスが一致しない
+設定は GPU pipeline 作成前に拒否します(たとえば `"type": "uint"` の出力を `R8G8B8A8_UNORM` の RT へ向けるのは不可)。組み込み `source` は
 `surface.base_color`、`surface.normal`、`surface.normal_encoded`、
 `surface.material`、`input.world_position`、`surface.emissive`、
-`lighting.scene_color`。独自の packing や object ID は `custom` にして `.surface` から
-名前付きフィールドへ代入します。
+`lighting.scene_color`。`source` は「その出力スロットに何を書くか」の指定です。組み込み名を書けばエンジンが対応する値を自動で入れ、`custom` を書いた場合だけ**値の供給を `.surface` 側に委ねます** — 下の `pelican_material_outputs_v1()` を書き、`outputs.<outputs[].name>` へ代入するのが供給の唯一の口です。上の例の `object_id` は `"source": "custom"` なので、次のスニペットの `outputs.object_id = 73u;` がその値になります。代入しなければ未初期化のままなので、`custom` を書いたら必ずこの関数で埋めてください。
 
 ```glsl
 void pelican_material_outputs_v1(
@@ -1542,7 +1616,7 @@ void pelican_material_outputs_v1(
 }
 ```
 
-生成後の SPIR-V reflection は全 location と数値型を宣言スキーマへ照合します。
+生成後の SPIR-V reflection(コンパイル済みシェーダを読み返して要求資源を取り出すこと。§6.4)は全 location と数値型を宣言スキーマへ照合します。
 flat / XR variant は同じ route に同一スキーマを要求します。graph の hot reload で
 生存中 material の schema・format・MSAA・local-read・attachment state contract を
 変える場合、現状は
@@ -1551,8 +1625,8 @@ graph と material surface を同時に再構築する将来の coordinated tran
 
 outputごとにblendまたは書き込みchannelを変える場合は、同じpassへ
 `material_output_states`を追加します。キーはRT名やlocation番号ではなく
-`material_outputs.outputs[].name`です。書かなかったoutputは`.surface`の
-`render_state.blend`と`rgba` writeを継承します。
+`material_outputs.outputs[].name`です。書かなかったoutputは`.surface`ヘッダの
+`render_state`(本節冒頭の「.surface — 自己記述コンテナ」のヘッダ語彙の 1 つ)が持つ`blend`と`rgba` writeを継承します。
 
 ```json
 "material_output_states": {
@@ -1588,7 +1662,7 @@ outputごとにblendまたは書き込みchannelを変える場合は、同じpa
 `blend`には`opaque` / `blend` / `additive` preset、またはcolor/alpha別の
 `src` / `dst` / `op`を指定できます。write maskは`rgba`の任意部分集合または
 `none`です。integer outputでblendを有効にする設定は拒否します。attachment間で
-stateが異なる場合はdeviceの`independentBlend`、blend対象formatには
+stateが異なる場合はdeviceの`independentBlend`(color attachment ごとに別々の blend 設定を持てる、という Vulkan のデバイス機能。無いデバイスでは全 attachment が同じ blend 設定でなければならない)、blend対象formatには
 `COLOR_ATTACHMENT_BLEND` capabilityが必要です。全factor/opと現在含めていない
 blend constant/dual-source blendの境界は
 [WP219実装報告](../design_reviews/2026-07-28_wp219_material_output_states_report.md)
@@ -1606,7 +1680,7 @@ shader compiler を有効にした開発ビルドで使います。shaderc OFF �
 
 ### compute/別passのresourceをmaterialから読む（✅WP207b/220）
 
-`.surface` はgraph固有名ではなく、再利用可能なsemantic portを宣言します。
+`.surface` はgraph固有名ではなく、再利用可能な **semantic port** を宣言します。ここでの *semantic* は「この `.surface` にとっての役割名」という意味で、`displacement` や `simulation_color` のように**使う側の呼び名**を書きます。実際にどの frame-graph resource を挿すかは pass 側の `material_resources` が決めるので、同じ `.surface` を別のグラフへ持っていっても中身を書き換えずに済みます(この対応付けは §6.5 の named binding と同じ考え方です)。
 
 ```glsl
 //! resource_ports:
@@ -1636,6 +1710,8 @@ material pass側で同名portをframe-graph resourceへ割り当てます。
   }
 }
 ```
+
+`footprint`(読み取りの広がり)は「そのシェーダが 1 画素を出すために、入力画像のどこまで読むか」の申告で、値は `same_pixel`(同じ座標の 1 画素だけ)/ `neighborhood`(周囲の限られた範囲。任意で `radius`)/ `arbitrary`(どこでも)/ `temporal`(別フレームの面)です([logicalrendergraph.hpp](../../src/project/logicalrendergraph.hpp#L115))。`same_pixel` だけが tile-local 化の候補になります(§6.6)。`sampling.filter` はテクセル間の補間方法(`linear` = 線形補間 / `nearest` = 最近傍そのまま)、`sampling.address` は範囲外の座標をどう扱うか(`repeat` = 繰り返し / `mirrored_repeat` = 折り返して繰り返し / `clamp_to_edge` = 端の値で止める)で、どちらも Vulkan の sampler 設定そのものです。
 
 bufferはreadonly std430 arrayで`pelican_load_<name>()` /
 `pelican_count_<name>()`、imageは`pelican_sample_<name>()` /
@@ -1811,7 +1887,7 @@ standard / toon に続く**特権なしの standard library surface** として�
 
 ### history RT(`@history` 読み)
 
-RT 宣言に `"history": true` を付けると物理 2 面持ちになり、パスの `input` で `<名前>@history` と書くと**前フレームの面**がバインドされます(`@history` はフレーム内依存を作りません)。実例(golden `temporal_accumulation` の feature):
+**`@history` は RT 名に付ける接尾辞**で、「同じ RT の**前フレームの面**を読む」という意味です。RT 宣言に `"history": true` を付けると物理 2 面持ちになり(今フレーム用と前フレーム用が毎フレーム入れ替わる)、パスの `input` で `<名前>@history` と書くとその前フレームの面がバインドされます(`@history` はフレーム内依存を作りません)。実例(golden `temporal_accumulation` の feature):
 
 ```json
 { "schema": "pelican.render_feature", "version": 1, "name": "accumulation_fixture",
@@ -1837,7 +1913,7 @@ feature JSON のトップレベルで宣言します(同時に有効化できる
 "projection_jitter": { "pattern": "halton23", "phases": 8 }
 ```
 
-- 名前付きパターンは `halton23`。**ユーザー定義数表**も同格です(✅WP115 — 名前付き系列に特権はなく、同じ数表を直書きすると全 byte 一致することが fixture で証明されています):
+- 名前付きパターンは `halton23` — 基数 2 と 3 の **Halton 列**(乱数のように見えて偏りが小さい準乱数列)を x / y に使い、`phases` 個の位相を巡回する、という意味です([projectionjitter.cpp](../../src/core/renderer/projectionjitter.cpp#L11))。毎フレーム投影を 1 画素未満だけずらす目的なので、点が塊にならず均等に散ることが要件になります。**ユーザー定義数表**も同格です(✅WP115 — 名前付き系列に特権はなく、同じ数表を直書きすると全 byte 一致することが fixture で証明されています):
 
 ```json
 "projection_jitter": { "pattern": "table", "offsets_px": [[0.0, -0.1667], [-0.25, 0.1667], [0.25, -0.3889]] }
@@ -1845,8 +1921,8 @@ feature JSON のトップレベルで宣言します(同時に有効化できる
 
 (`offsets_px` は 1〜64 個・各成分 [-0.5, 0.5))
 
-- **consumer 別配送**: メイン raster / SSAO / sprite は jittered、velocity はジッタ減算済み、**shadow・カリング・rpc・ゲームプレイは非ジッタのまま**(カメラ公開 API 不変)。
-- **reset epoch**: 初回・リサイズ・`set_time`・カメラカット等で FrameUBO の epoch ペアが 1 フレームだけ不一致になり、シェーダは stateless に history 無効を判定できます。
+- **consumer 別配送**: メイン raster / SSAO / sprite は jittered、velocity はジッタ減算済み、**shadow・カリング・rpc(外部制御用の JSON-RPC プロトコル。[第10章](10_tools.md) §10.3)・ゲームプレイは非ジッタのまま**(カメラ公開 API 不変)。
+- **reset epoch**: **epoch(エポック)** は単調増加するだけの整数で、「ここで連続性が切れた」を表す世代番号です([ソースコード読解ガイド §10.3](../source-code-guide/10_background_knowledge.md#単調増加する-generation--epoch-を変わったかの検出に使う))。初回・リサイズ・`set_time`・カメラカット等で FrameUBO の epoch ペア(今フレームと前フレームの値)が 1 フレームだけ不一致になるので、シェーダは自前で状態を持たずに「前フレームの絵は使えない」と判定できます。
 
 ### 標準 TAA(✅WP113)
 
@@ -1888,7 +1964,7 @@ vec4 behind = pelican_screen_opaque_color(surface_input.uv + offset);
 (実物: `projects/example/shaders/refract.surface`)。公開アクセサは物理descriptorを固定しません。
 組み込みcontractが`same_pixel`でtarget plannerもtile-localを選んだ入力は、
 同じ関数がinput attachment readになります。`opaque_color`は屈折offsetを許す
-`neighborhood` contractなので、この例は通常のsamplerを維持します。
+`neighborhood` contract(周囲まで読む read footprint。値の一覧は §6.7「compute/別passのresourceをmaterialから読む」)なので、この例は通常のsamplerを維持します。
 
 v1 の制限: snapshot は **1 個だけ・不透明描画後の 1 点のみ**(透明描画後・
 `pelican_ui` 以後はエラー)、逐次屈折は非対応です。
@@ -1903,10 +1979,10 @@ v1 の制限: snapshot は **1 個だけ・不透明描画後の 1 点のみ**(�
 
 (実物: [../../projects/sprite_demo/passes/main.json](../../projects/sprite_demo/passes/main.json))
 
-`sprite.json` は RT もパスも足さない**純ゲート**で、参照すると canonical anchor `sprite` の位置(3D 不透明の後・ポスト処理の前)で、直近の scene color + depth に対して depth test ON / write OFF で描かれます(color/depth が無い構成では名指しエラー)。
+`sprite.json` は RT もパスも足さない**純ゲート**で、参照すると canonical anchor(§6.5)の 8 個のうち先頭の `sprite` の位置(3D 不透明の後・ポスト処理の前)で、直近の scene color + depth に対して depth test ON / write OFF で描かれます(color/depth が無い構成では名指しエラー)。
 
 - **コンポーネント** `sprite_view`(scene v1・closed schema): `texture`(必須。`"demo_atlas#sprite/full"` 形式の atlas 参照)/ `size`(vec2)/ `pivot`(既定 [0.5,0.5])/ `color` / `flip`([flip_x, flip_y])/ `layer`(int16)/ `billboard`(`none|y_axis|full`)。スプライトは常に **XY 平面 + Z 法線**(2026-07-12 決定。床置きは Transform の回転で表現)。ランタイム生成は `GameContext::createSpriteObject(...)`([第8章](08_gameplay.md))。
-- **pixel policy**(✅WP106): `project.json` の `basic_config.sprite.pixels_per_unit`(既定 100.0)と、カメラの `sprite: {"pixel_perfect": "off"|"strict", "sort": "z"|"y_down"|"declaration"}`。`strict` の成立条件(正射影・整数ズーム・nearest・非 billboard 等)が満たされない場合は **silent fallback せず**理由付き WARN + `get_status.sprite` に状態が出ます。
+- **pixel policy**(✅WP106): `project.json` の `basic_config.sprite.pixels_per_unit`(既定 100.0)と、カメラの `sprite: {"pixel_perfect": "off"|"strict", "sort": "z"|"y_down"|"declaration"}`。`strict` の成立条件(正射影・整数ズーム・nearest・非 billboard 等)は、どれも「テクスチャの 1 テクセルが画面上のちょうど整数個のピクセルに落ちる」ために要るものです — 実際の判定は `zoom = (1 / pixels_per_unit) / (1 ピクセルあたりのワールド長)` を計算し、これが**整数・1 以上・縦横で同値**であることを確かめます([pixelpolicy.cpp](../../src/core/userpublic/sprite/pixelpolicy.cpp#L24))。満たされない場合は **silent fallback せず**理由付き WARN + `get_status.sprite` に状態が出ます。
 - **flipbook**(✅WP106): コンポーネントではなく公開 stdlib API `Pelican::sprite::FlipbookClip`(ゲームコードが決定的な local time を渡す)。実例: `projects/sprite_demo/code/flipbook_demo.cpp`。
 - 実例プロジェクト: [../../projects/sprite_demo](../../projects/sprite_demo)(WP109 の横スクロール vertical slice。操作系は [第8章](08_gameplay.md))。golden はスプライト系 9 ケースで回帰保護。
 
@@ -1975,7 +2051,7 @@ pelican_player --headless --project mygame --frames 3 --size 1280x720 --render-o
 
 ## 6.12 OpenXR ステレオレンダリング(✅WP125〜138 / WP203a〜c実装済み)
 
-`--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。
+`--xr on|auto` で起動すると([第2章](02_getting_started.md))、レンダラは**論理フレーム**単位の二眼描画に切り替わります。**論理フレーム**は「左右眼など複数の view をまとめた、時間軸上の 1 単位」です。flat では view が 1 つなので論理フレーム = 描画 1 回ですが、XR では 1 論理フレームが 2 回の view 描画を含みます。アニメーションの更新やテンポラル history の入れ替えのような**時刻に紐づく処理を左右で 2 回走らせない**ための区切りだと考えてください。**ViewFamily** はその中の「同じカメラ設定を共有する view の束」(`$main` の左右眼、影の cascade 群、反射の鏡像群など)です([用語集](14_glossary.md))。
 
 - **論理フレーム / ViewFamily(WP128/WP223〜237)**: `renderLogicalFrame(target, view_families)`が共有更新(アニメ・リロード・共有アップロード・**temporal historyのadvance**)を論理フレームにつき**一回**だけ行います。flatは`$main/$mono`、XRはstable eye ID付き`$main` stereo familyです。pass/taskの`view_family`は汎用runtime registryで解決され、caller-authored familyが常に優先されます。標準directional shadowは`$shadow/directional`のstable `$cascade/N`群、標準planar reflection packageは`$reflection/planar`のstable `$mirror/<source-view>`群、標準cube captureは`$capture/cube`のstable `$face/{+x,-x,+y,-y,+z,-z}`群としてmain cameraから独立して実行されます。projection jitterはmain family modifierとして一度sampleされ、FrameUBOはin-flight × 全family viewのスロットとstable family tokenで相互汚染を防ぎます。clustered selectionもfamily/view別領域を検証して使います。標準planar providerはclip planeをVulkan ZOのoblique near planeへ変換し、cube providerはsquare 90度投影の六方向cameraを作ります。どちらもpackage OFF時はcaller/project providerで全面置換できます。secondary familyの複数viewはsequential実行に対応し、transparent passを持つfamilyは同じ公開sort providerをviewごとに再評価します。secondary multiviewは未対応です。
 - **コンポジション(WP129/203c)**: XR 用は `IFrameTarget` とは別系統の `IXrCompositionTarget`。現在は **2-layer の color array swapchain を一個**使い、一回だけ acquire/wait/release します。左右の projection view は同じ image の `imageArrayIndex=0/1` を参照し、1 つの projection layer・**単一の `xrEndFrame`** で提出します。
@@ -2296,7 +2372,7 @@ scene JSON の `components` に書きます。
 |---|---|---|
 | `mask` | 0〜255 | AS 宣言の `defaults.mask`(AS 宣言が無ければ 255) |
 | `instance_flags` | 文字列配列。`triangle_facing_cull_disable` / `triangle_flip_facing` / `force_opaque` / `force_no_opaque` | `defaults.instance_flags`(無ければ空) |
-| `custom_index` | 0〜`0x00ffffff`(**24 bit**) | 常に 0(AS 宣言の `defaults` に `custom_index` は書けません — allowlist は `mask` / `instance_flags` / `geometry_flags` の 3 キーだけ) |
+| `custom_index` | 0〜`0x00ffffff`(**24 bit** — この値がそのまま Vulkan の TLAS インスタンス記録 `VkAccelerationStructureInstanceKHR::instanceCustomIndex` へ入り、その field 幅が 24 bit だからです。エンジンが決めた上限ではありません) | 常に 0(AS 宣言の `defaults` に `custom_index` は書けません — allowlist は `mask` / `instance_flags` / `geometry_flags` の 3 キーだけ) |
 
 - **3 つとも省略した空のコンポーネントは `pelican.ray_instance_empty@1` で拒否**されます。一方 `"instance_flags": []` は「空という明示的な上書き」として有効です(欠落と空配列は別)。
 - `force_opaque` と `force_no_opaque` の同時指定は `pelican.ray_as_conflicting_instance_flags@1`、未知のフラグ名は `pelican.ray_as_unknown_flag@1`、未知のフィールドは `pelican.ray_instance_unknown_field@1`、範囲外は `pelican.ray_instance_field_range@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1005))。

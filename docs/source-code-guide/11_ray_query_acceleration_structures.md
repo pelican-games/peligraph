@@ -1,5 +1,15 @@
 # Ray query / RT pipeline 用加速構造と静的限定契約
 
+## 先に 1 文だけ定義しておく語
+
+この章は次の 3 組を説明なしに使い始めます。深い扱いは各節にあります。
+
+- **静的ジオメトリ / 動的ジオメトリ** — 静的ジオメトリは `VertBufContainer` に置かれた元姿勢の頂点をそのまま描くプリミティブ、動的ジオメトリは頂点シェーダで形が変わるもの(スキン付き / morph / VAT)です。以下の加速構造に入るのは前者だけで、後者は「除外」として診断に出ます。
+- **BLAS / TLAS** — BLAS(bottom-level acceleration structure)は 1 つのジオメトリ(三角形群)の空間分割を GPU が辿れる形に焼いた下位構造、TLAS(top-level acceleration structure)はその BLAS を変換行列・mask・custom index 付きの**インスタンス行**として並べた上位構造です。ray は TLAS から引き、TLAS の行が BLAS を指します([用語集](../manual/14_glossary.md))。
+- **ray query / ray tracing pipeline** — ray query は通常の fragment / compute シェーダの中から TLAS を辿る使い方(`VK_KHR_ray_query`)、ray tracing pipeline は raygen / miss / closest-hit という専用ステージと **SBT**(shader binding table — どの stage のどの shader を呼ぶかの handle をバイト列へ並べた表)を持ち `vkCmdTraceRaysKHR` で起動する使い方(`VK_KHR_ray_tracing_pipeline`)です。この章は両方を別々の opt-in feature として扱い、同じ影を 2 通りに計算して突き合わせます。
+
+## 静的限定の契約
+
 `RayQueryAccelerationStructureScope` が作る BLAS / TLAS は、静的ジオメトリ専用です。`VertBufContainer` に存在する頂点は元姿勢だけであり、頂点シェーダで変形されるスキン付き、morph、VAT のプリミティブを BLAS に入れてはいけません。入れると、描画と異なるバインドポーズの形状が ray query から見えてしまいます。
 
 この除外は無言のフォールバックではありません。`Renderer::currentFramePlanJson()` の `ray_query_acceleration_structures` 診断には、除外したプリミティブ数・インスタンス数、スキン付き / morph / VAT / `blas_ineligible` 別の件数、および asset / geometry allocation / mesh / primitive / node を含む名前が出ます。`blas_ineligible` は、頂点または索引が空、索引数が三角形を構成できない、あるいは頂点オフセットが負で、ラスタライズはできても BLAS の三角形入力にはできない静的プリミティブです。同じ分類は初回構築時と分類変更時にログにも記録されます。対象外が存在すること自体はエラーではありません。
@@ -18,12 +28,34 @@ BLAS が保持するのは大域 index / vertex pool のデバイスアドレス
 
 TLAS の行がどこから来るかは、3つの型を順に読むと追えます。宣言面(mask / flags / custom index / material 鍵規則)そのものは[第6章 §6.20](06_rendering_vulkan_shader.md)にあります。
 
+identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。
+
 ```text
 draw inventory
-  → RayQueryGeometryInstanceSnapshot   renderer が凍結した生の identity/range
-  → RaySceneRowInput                   identity 文字列と material 4 field
-  → MaterialRowIdentity                gate と lookup が共有する唯一の material identity
-  → RaySceneRow                        q / group / record / 解決済み AS 値
+  ↓ renderer が記録開始前に凍結
+RayQueryGeometryInstanceSnapshot        生の identity と range(model 型・draw inventory 型に依存しない)
+    identity : asset_identity, authoring_object_id, instance_index + instance_generation,
+               scene_epoch
+    material : material_asset_reference, material_document_reference, material_name,
+               source_material_index(std::optional)
+    geometry : geometry_allocation_id, index_offset / index_count,
+               vertex_offset / vertex_count
+  ↓ identity 文字列 3 本 + material 4 field へ整形
+RaySceneRowInput
+    scene_identity          = asset@<canonical transform>
+                              … 永続的な同一性。canonical sort の第1キー(publish 順を含まない)
+    geometry_identity       = asset#allocation:index_offset:vertex_offset:mesh:primitive:node
+                              … 同一 object 内で primitive を区別する第2キー
+    geometry_match_identity = allocation:index_offset:index_count:vertex_offset:vertex_count
+                              @<transform>
+                              … sort キーではなく曖昧性 guard の等価域(物理 GPU 範囲 + 変換のみ)
+  ↓ material 4 field を materialRowIdentity() で 1 つへ正準化
+MaterialRowIdentity   = MaterialRowDocumentIdentity{document, material_name?}
+                      | MaterialRowAssetIdentity{asset, source_material_index}
+                      | MaterialRowIdentityUnavailable
+                      … AS rule の gate も material 表の lookup も、この 1 個だけを見る
+  ↓ canonical sort → 添字 q を付与
+RaySceneRow                             q / group / record / 解決済み AS 値
 ```
 
 ### `RayQueryGeometryInstanceSnapshot`

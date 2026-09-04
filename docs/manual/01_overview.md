@@ -9,6 +9,23 @@
 - レイヤ構造と、コード全体を貫くレイヤ規則
 - 横断的な設計原則(サブセット原則・fail-fast・strict v1・決定性・二層モデルなど)の厳密な定義
 - 開発体制(設計文書 → WP 指示書 → コーディングエージェント)と文書の優先順位
+- この文書全体で使う記号と基本語(WP / D0 / codec / transaction / JSON-RPC / `name@1` / 決定的 / named reject / パージ可能)
+
+## 1.0 この文書で使う記号と基本語
+
+マニュアル全体で断りなく出てくる語です。ここでは 1 語 1〜2 文の最小定義だけを置きます(語の索引は [第14章 用語集](14_glossary.md))。
+
+| 語 | 意味 |
+|---|---|
+| **WP**(Work Package) | 開発の作業単位。台帳 [../implementation_plan.md](../implementation_plan.md) に 1 行として登録され、**1 WP = 1 ブランチ = 1 マージ**です(§1.6)。`WP380a` のような枝番が付きます。状態の一覧は [第11章 §11.1](11_status.md)。 |
+| **D0** | 「**エディタ特権の禁止**」(2026-07-08 ユーザー決定 — [../design_devstudio_direction.md](../design_devstudio_direction.md) §0.5)。標準エディタも公開契約の上に建つ 1 クライアントで、編集操作はまず JSON-RPC メソッドとして定義する、という規則です([第13章](13_editor.md))。 |
+| **codec**(component codec) | シーン JSON のコンポーネント 1 個を受理・検証し、正規形へ直す変換器。engine 同梱のコンポーネントごとに用意され、`decodeAuthored()`(JSON → 値)と `encodeCanonical()`(値 → 正規形 JSON)の対で成り立ちます([componentcodec.hpp](../../src/core/loader/componentcodec.hpp)・[第4章](04_scene_ecs.md) §4.2)。 |
+| **transaction**(トランザクション) | 「**準備(prepare)→ 途中で失敗したら公開状態を変えずに戻す(rollback)→ 全部成功したときだけ一斉に公開(publish)**」という適用の単位。シーンロード・ECS のアーキタイプ移行・ホットリロード・編集の適用がこの形です([第12章](12_codemap.md) §12.6)。 |
+| **JSON-RPC** | 外部プロセスから `pelican_player` を操る制御プロトコル(JSON-RPC 2.0)。stdin/stdout の NDJSON(1 行 = 1 リクエスト)で、stdout はプロトコル専用です(メソッド一覧は [第10章](10_tools.md) §10.3)。 |
+| **`name@1`** | 機械可読な**版付き識別子**の書き方。`@` の前が名前、後ろがその名前の契約の版です。エラーコード(`component_unknown@1`)にも、パスの operation / implementation ID(`pelican.execution.compute@1`)にも使います。 |
+| **決定的**(deterministic) | 同じ入力からは常に同じ結果が出ること。エンジン内部の判定に壁時計・`std::rand` を使わず、固定ループ順序・入力スナップショット・固定ステップ時刻で担保します(下記 設計決定 5、[第8章](08_gameplay.md) §8.10)。 |
+| **named reject**(名指し拒否) | 受理できない入力を黙って無視も推測もせず、**何がどう悪いかを名前(エラーコード・キー名・登録済み id 一覧)付きで**拒否すること(下記 設計決定 1)。 |
+| **purgeable**(パージ可能) | 参照を書いたときだけ機構が存在すること。書かなければ初期化も実行もされず、挙動もコストも変わりません(下記 設計決定 3)。 |
 
 ## 1.1 Pelican2 とは
 
@@ -41,6 +58,8 @@ project.json ──┬─ scene_data_json ──▶ pelican.scene v1 ─▶ ECS(
         code/*.cpp(ゲームシステム)──┘ GameContext 経由で毎フレーム操作
 ```
 
+図の読み方: `──▶` は「左のものが右を作る/右へ渡す」向き、`├▶` `└▶` は 1 つの入力から複数の行き先へ分かれる枝、`▲` と `┘` は下から上への合流(ゲームコード `code/*.cpp` が `GameContext` 経由でその上の実体を毎フレーム操作する)を表します。左端の `project.json` から入って、右端の ECS・描画に着地します。`GameContext` は**ゲームコードに公開される唯一の API 面**(facade)で、時刻・入力・オブジェクト操作はすべてここを通ります([gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp)・[第8章](08_gameplay.md))。
+
 毎フレームの流れ(固定順序 — 決定性の土台):
 
 ```
@@ -49,7 +68,7 @@ project.json ──┬─ scene_data_json ──▶ pelican.scene v1 ─▶ ECS(
 → シーン遷移の適用 → 描画
 ```
 
-`behavior` はシーンのオブジェクトに直接ぶら下がる毎フレーム処理です。シーンロード時に `behavior` コンポーネントだけが ECS の振り分けから外れて BehaviorAttachmentArena に渡り([scene.cpp](../../src/core/loader/scene.cpp) → [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))、実行はゲームシステムと同じ総順序に `order=50` / 名前 `"BehaviorSystem"` で参加します([behavior.hpp](../../src/core/userpublic/behavior.hpp))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
+`behavior` はシーンのオブジェクトに直接ぶら下がる毎フレーム処理です。シーンロード時に `behavior` コンポーネントだけが ECS の振り分けから外れて BehaviorAttachmentArena(**arena** = エンジン側が behavior の実体をまとめて所有する置き場)に渡り([scene.cpp](../../src/core/loader/scene.cpp) → [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp))、実行はゲームシステムと同じ総順序に `order=50` / 名前 `"BehaviorSystem"` で参加します([behavior.hpp](../../src/core/userpublic/behavior.hpp))。ここでいう**総順序**は、登録された全ゲームシステムを `order`(登録時に書く整数)の昇順、同じ `order` なら登録名の辞書順に並べた、1 つに定まる実行順のことです([sortGameSystemRegistrations()](../../src/core/userpublic/details/system/registerer.cpp#L35))。書き方は [第8章](08_gameplay.md)、JSON 側の語彙は [第4章](04_scene_ecs.md) を参照してください。
 
 ## 1.3 リポジトリの地図
 
@@ -123,13 +142,13 @@ vkcore(Vulkan 低層)
 
 > **設計決定 2(strict v1 — 互換受理の追加禁止・2026-07-08 決定):** ランタイムは v1 形式**だけ**を読む。旧キー名・レガシー形式の受理コードを足すことは規約違反で、旧形式の変換は外部ツールの仕事。WP63 で既存の互換受理(カメラの `fov_y` 等)も撤去された。
 
-> **設計決定 3(パージ可能 — 参照 = 存在):** feature・compute・actions・collider などは、**参照を書いたときだけ存在**する。参照しなければ機構ごと素通りし、挙動もコストも完全に不変(ゴールデンテストで機械的に証明)。エンジンに機能を「埋め込まない」。
+> **設計決定 3(パージ可能 — 参照 = 存在):** feature・compute・actions・collider などは、**参照を書いたときだけ存在**する。参照しなければその機構は**初期化も実行もされず**(モジュールごと生成されない)、挙動もコストも完全に不変(ゴールデンテストで機械的に証明)。エンジンに機能を「埋め込まない」。
 
 > **設計決定 4(サブセット原則):** 「web で開けるプロジェクト ⊆ pelican で開けるプロジェクト」。形式拡張は常にエンジン先行。web 専用の形式要素は作らない([第9章](09_web.md))。
 
-> **設計決定 5(決定性):** エンジン内部の判定に壁時計・`std::rand`・`random_device` を使わない。固定ループ順序・入力スナップショット・決定的システム実行順・フレーム境界のイベント配送・PCG32 乱数(既定シード 0)・固定ステップ時刻(ヘッドレス)により、**同じ入力からは常に同じ結果**が出る([第8章](08_gameplay.md) §8.10)。
+> **設計決定 5(決定性):** エンジン内部の判定に壁時計・`std::rand`・`random_device` を使わない。固定ループ順序・入力スナップショット・決定的システム実行順・フレーム境界のイベント配送・PCG32 乱数(既定シード 0 — シードから列が一意に決まる決定的な擬似乱数生成器。[deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp))・固定ステップ時刻(ヘッドレス)により、**同じ入力からは常に同じ結果**が出る([第8章](08_gameplay.md) §8.10)。
 
-> **設計決定 6(二層モデル — アセット):** エンジンが読む形式は閉じた小集合(ランタイム層)。FBX/PSD 等(ソース層)はエンジンに 1 バイトも入れず、外部ツールで変換して着地させる([第5章](05_assets.md))。
+> **設計決定 6(二層モデル — アセット):** エンジンが読む形式は閉じた小集合(ランタイム層 = glb/VRM・PNG/JPG・EXR・WAV・JSON/JSONL・SPIR-V/GLSL)。FBX/PSD 等(ソース層)はエンジンに 1 バイトも入れず、**外部ツール**(`pelican_cli import` や import-tools)で変換し、`imports/` にファイルとして着地させる(隠れインポートキャッシュは作らない。一覧と手順は [第5章](05_assets.md) §5.1)。
 
 > **設計決定 7(プロジェクト読み取り専有):** エンジン実行時、プロジェクトディレクトリには何も書かない。**例外は利用者が明示的に行う編集の保存だけ**(シーンの保存、`features[]` の編集。[第13章](13_editor.md))。書き込み先は `user://` に分離(複数インスタンス並行起動の安全根拠)。パス解決は cwd を使わず、常にプロジェクトルート基準+脱出禁止([第3章](03_project_format.md))。
 

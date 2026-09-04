@@ -67,10 +67,12 @@
 | フィールド | 規則 |
 |---|---|
 | `schema` | **必須**。`"pelican.scene"` 以外は hard error |
-| `version` | **必須**。整数で **`1` ちょうど**(0・負・2 以上は拒否) |
+| `version` | **必須**。整数で **`1` か `2`**(0・負・3 以上は拒否。`2` は prefab(`pelican.prefab` 文書の展開。台帳 WP361)を使う scene 用。v1 に `prefab` を書くと `prefab_requires_scene_v2` で拒否) |
 | `scenes` | **必須**。`{ "<scene_id>": { "objects": [...] }, ... }` |
 
+- **hard error** とは、警告を出して続行するのではなく、その場で例外を投げてロードを打ち切る失敗のことです(エンベロープの検査なら [validateEnvelope](../../src/project/sceneformat.cpp#L52) が `std::runtime_error` を投げます)。シーンロードは 1 つのトランザクションなので(§4.3)、hard error になったシーンが半分だけ構築されて残ることはありません。
 - schema なしのレガシー形式、トップレベル `lights` セクションは **v1 では受理されません**(名指しのエラーで移行先を案内)。※設計文書には「WARN+自動解釈」と書かれていますが、WP63(strict v1 化)で意図的に廃止されており、実装が正です。
+- 本文の `WP63` / `✅WP79` のような `WP<数字>` は、エンジン側の作業単位(work package)に付く通し番号です([用語集](14_glossary.md))。「どの作業で入った仕様か」の目印として本文に添えています。
 - 起動時にロードされるのは `project.json` の `basic_config.default_scene_id` のシーンです。
 
 ### オブジェクトと名前・親子
@@ -124,7 +126,7 @@ codec の表には 8 個目として `pelican_ray_instance` が並んでいま�
 
 ### camera(✅)
 
-CameraComponent 自体はマーカーで、投影・コントローラのパラメータは Camera モジュールがシーン JSON から直接読みます。
+CameraComponent 自体は**マーカー**です。マーカーコンポーネントとは、値を 1 つも持たず「このオブジェクトはカメラである」という印だけを付けるコンポーネントのことで、[CameraComponent](../../src/core/ecs/predefined/camera.hpp#L5) の中身はダミーのフィールド 1 個だけです。投影・コントローラのパラメータは ECS ではなく Camera モジュールがシーン JSON から直接読みます。
 
 | フィールド | 規則 |
 |---|---|
@@ -238,7 +240,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 | フィールド | 必須? | 規則 |
 |---|---|---|
-| `type` | **必須** | `PELICAN_REGISTER_BEHAVIOR` の第 2 引数(永続名)。空文字・非文字列はエラー |
+| `type` | **必須** | `PELICAN_REGISTER_BEHAVIOR`(ゲームコードが `<behavior.hpp>` を include して使うマクロ。定義は [registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L362))の第 2 引数(永続名)。空文字・非文字列はエラー |
 | `params` | 任意 | オブジェクト。省略すると全フィールドが既定値。型・範囲は behavior 側の schema で検証され、違反は `field 'params.speed' is out of range` のようなフィールドパス付きエラー |
 
 - **同じオブジェクトに何個でも書けます**(コンポーネントの中で唯一)。実行順は宣言順です。
@@ -280,17 +282,17 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ## 4.3 シーンロードの流れ
 
-[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L465) は **1 つのトランザクション**です(✅WP380a〜e)。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
+[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L465) は **1 つのトランザクション**です(✅WP380a〜e)。**トランザクション**とは、途中の状態を外から見せず「全部成功して切り替わる」か「1 つも変わらない」かのどちらかにする実行単位のことです([用語集](14_glossary.md))。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
 
 **この経路は 1 本だけ**です。起動時のロード / rpc `load_scene` / `ctx.loadScene()` の遅延適用(pending)/ エディタからのスナップショット import は、入口([SceneLoadRoot](../../src/core/loader/sceneload.hpp#L82))が違うだけで同じ executor を通ります。実際の処理順:
 
 1. **正規化・検証**(解釈レイヤ `sceneformat.cpp`): エンベロープ・識別子・name 一意性をチェック。不正は fail-fast。
 2. **prepare**: 各オブジェクトの components を振り分け: `light` → LightContainer、`collider` → PhysWorld、**`behavior` → BehaviorAttachmentArena**、**それ以外 → ECS**(未知名・未登録の behavior 型名はここでエラー)。ライトだけのオブジェクトは ECS entity を作りませんが、**behavior だけのオブジェクトには作られます**。描画・カメラ・ライト・SeqPlayer/VAT・乱数列・イベント送信箱の候補も、稼働中の状態に触らずここで作ります。モデル資産(`ModelAssetContainer`)だけは候補ではなくキャッシュで、失敗しても読み込んだモデルは残ります(どのシーンにも属さないので世代混在にはなりません)。
-3. **early_publish**: ECS オブジェクトを**トランザクション生成**(§4.4)し、name があり transform を持つオブジェクトの「name → GameObjectId」束縛(rpc の宛先になる)と物理・behavior の候補を作り、旧 entity を unpublish します。JSON 不正はここまでで全部戻して例外。
+3. **early_publish**: ECS オブジェクトを**トランザクション生成**(§4.4)し、name があり transform を持つオブジェクトの「name → GameObjectId」束縛(rpc の宛先になる)と物理・behavior の候補を作り、旧 entity を **unpublish** します。unpublish とは、ID から entity を引けなくすること(id テーブルの live を落とし、generation を 1 つ進める)です。コンポーネントの値はその場では壊さず破棄トークンへ退避され、実際に壊れるのは retire の完了時です([publishDestroy](../../src/core/ecs/archetypemigration.cpp#L760))。JSON 不正はここまでで全部戻して例外。
 4. **publish**(失敗しない): 候補を稼働中の状態と入れ替えます(swap だけ)。
 5. **activate**: **behavior を宣言順に有効化**して `onInit` を呼びます。ここが**失敗しうる最後の段**で、途中で例外が出たら init 済みの分を逆順に `onDestroy` した上で、**描画・ECS・カメラ・ライト・物理・behavior・イベント・乱数・シーン遷移要求の全部**を旧シーンに戻します。document・現在シーン名・authority も旧シーンのままです(`onInit` の `emit` / `loadScene()` も一緒に捨てられます)。
 6. **commit_metadata**: シーン文書・現在シーン名・epoch などの metadata を 1 回の swap で切り替えます。**ここが commit 点**で、以降は `PreCommitFailure` になりません。
-7. **retire**: 旧シーンの entity・モデルインスタンス・一時モデルは即座には消さず、次フレーム(次の pending load 適用時と描画更新の先頭)に消費される retirement queue に積みます。旧 behavior の `onDestroy` はこの段で、`attachment_seq` の逆順に走ります。
+7. **retire**(旧シーンの後片付け): 旧シーンの entity・モデルインスタンス・一時モデルは即座には消さず、次フレーム(次の pending load 適用時と描画更新の先頭)に消費される retirement queue に積みます。旧 behavior の `onDestroy` はこの段で、`attachment_seq` の逆順に走ります。
 8. **flush**: 溜めておいた作用を実際に外へ出します — `SceneLoaded` イベントの emit([第8章](08_gameplay.md))、乱数列の公開、音の再生/停止/バス音量、`user://` への書き込み。
 9. **finish**: 生成済み entity のトークンを確定します。
 
@@ -298,7 +300,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ### ロード中の「作用」はトランザクションに溜まる(✅WP380b〜e)
 
-`onInit`(activate)や、ゲーム DLL が登録したコンポーネントの JSON ローダ(early_publish)からエンジン API を呼ぶと、それは**その場では起きません**。[PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) に staging され、**失敗すれば消え、commit したときだけ flush で実行**されます。
+`onInit`(activate)や、ゲーム DLL が登録したコンポーネントの JSON ローダ(early_publish)からエンジン API を呼ぶと、それは**その場では起きません**。[PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) に **staging** されます。staging とは、API の呼び出しをその場で実行せず、トランザクションの控え(送信箱 = outbox)に積んでおくことです([用語集](14_glossary.md))。積んだ作用は**失敗すれば消え、commit したときだけ flush で実行**されます。
 
 | 呼んだもの | ロード中の扱い |
 |---|---|
@@ -310,7 +312,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 **読み取りは自分の書き込みを見ます。** ロード中の `isPlaying(h)` は「さっき staging した `playSound` のハンドル」に true を返し、その後 `stopSound` すれば false。`loadData(slot)` は staging 済みの `saveData` の中身をそのまま返し、`listSaves()` にも staging 済みスロットが並びます — ただし**まだ書いていないので `timestamp` は 0**([listSaves](../../src/core/loader/effecttransaction.cpp#L407))。`gameSettings()` も同じく shadow を返します。
 
-**構造変更の直接呼び出しは名前付きで拒否されます。** トランザクション中に behavior のコールバック**外**から `GameObjects::create` / `remove` / `setLocalTransform` を呼ぶと [`SceneTransactionMutationRejected{api: ...}`](../../src/core/userpublic/gameobjects.hpp#L20) が飛びます(`removeAll` は behavior のコールバック中でも拒否)。踏むのは主に、ゲーム DLL のコンポーネント JSON ローダから ECS を触ろうとしたときです。
+**構造変更(mutation = entity の生成・削除・localtransform の書き換え)の直接呼び出しは名前付きで拒否されます。** トランザクション中に behavior のコールバック**外**から `GameObjects::create` / `remove` / `setLocalTransform` を呼ぶと、その呼び出し自体が [`SceneTransactionMutationRejected{api: ...}`](../../src/core/userpublic/gameobjects.hpp#L20)(`std::logic_error` の派生。`api` にはねられた API 名が入ります)を投げます([gameobjects.cpp](../../src/core/userpublic/gameobjects.cpp#L14) が入口ごとに判定。`removeAll` は behavior のコールバック中でも拒否)。踏むのは主に、ゲーム DLL のコンポーネント JSON ローダから ECS を触ろうとしたときです。
 
 ### 旧シーンの onDestroy が見えるもの
 
@@ -324,7 +326,7 @@ retire 中の `onDestroy` は「自分の最終状態」を読めます。entity
 flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L135) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1602))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
 
 - 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
-- staging できる作用は 256 件までで、溢れた分は `effect_outbox_full@1{dropped: N}` に畳まれます。
+- staging できる作用は 256 件までです。257 件目からは**控えに積まれず、実行もされません**(`playSound` は無効なハンドルを返します)。捨てた件数だけが `effect_outbox_full@1{dropped: N}` という 1 件のエラーにまとめて記録されます([reserveEntry](../../src/core/loader/effecttransaction.cpp#L114))。
 
 ### シーン遷移(✅・WP52)
 
@@ -345,7 +347,7 @@ flush で音やディスク書き込みが失敗しても、**シーンは新し
 ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲームコードから chunk を直接触る API は公開されていません。**`GameObjects` / `GameContext` ファサード経由**で操作します([第8章](08_gameplay.md) に実例)。知っておくべきことは次の 3 点に要約できます:
 
 1. **GameObjectId はフレームを跨いで保持してよい。** ID は世代付き(index + generation の 8 バイト)で、削除済み ID は安全に「無効」と検出されます(no-op + bool 返却)。
-2. **コンポーネントへのポインタ・参照の保持は禁止。** 内部の詰め替え(relocate)で無効になります。毎回 ID から引き直してください。
+2. **コンポーネントへのポインタ・参照の保持は禁止。** ECS は同じ構成の entity を連続した配列(chunk)に詰めて持つため、entity を 1 つ消すと配列の末尾の entity がその穴へ移されます。この移動が**詰め替え(relocate)**で([publishDestroy](../../src/core/ecs/archetypemigration.cpp#L760))、自分とは無関係な entity の生成・削除でもコンポーネントのアドレスは変わります。毎回 ID から引き直してください。
 3. **`remove()` の戻り値(bool)を見る。** 既に消えていたら false が返ります(例外にはなりません)。
 
 > **設計決定(生成トランザクション):** オブジェクト生成は construct → populate → init → publish の順で行われ、途中で失敗すると**逆順にロールバック**される。publish 前の ID は外から観測できない。正当性を性能予算で緩めない(全スロットの値構築を無条件で行う)ことが規約として明文化されている。
@@ -386,7 +388,7 @@ DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0
 
 コンポーネントや behavior params の schema には、スカラのほかに次の 3 つが宣言できます。C++ の書き方は [第8章](08_gameplay.md) §8.5.3、ここでは **JSON にどう書くか**だけを示します。
 
-**`List<Row>` — 行の集まり。** 素の配列ではなく、**オブジェクトのコンテナ**です:
+**`List<Row>` — 行の集まり。** 素の配列ではなく、**オブジェクトのコンテナ**です。各行が書き換わらない番号 `$row.id` を持つ必要があるためで、添字を行の同一性にすると、先頭に 1 行挿入しただけでエディタの参照や undo が別の行を指してしまいます([../design_declaration_carrier.md](../design_declaration_carrier.md) 決定 2「添字を identity にしない」):
 
 ```json
 "overrides": {
