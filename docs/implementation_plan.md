@@ -22527,7 +22527,7 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 - コードレビュー: 中段のため codex レビューは行わず、統合側変異(GPU 28 件含む 125 / 125 → 3 回目後 28 / 28)+ Claude レビューで代替
 
 
-####  完了記録(統合側。2026-09-04、`a79360e3`)
+#### WP382a 完了記録(統合側。2026-09-04、`a79360e3`)
 
 - **実装(codex sol max、上段)**: `SchemaNode`(Leaf / Flags / List{RowSchema}、depth 2、list の list は compile 拒否)、presence 3 値(`OptionalOverride` は `std::optional<T>`)、`$` 名予約、`$list` object container(`v` / `next_id` 検証)と `$row` の剥離・復元、重複 row id・素の配列・`$list` 欠落・未知 v の名前付き拒否。behavior / event / component の独立 v3 registration 型と入口(List / Flags を含むときだけ `if constexpr` で v3)、v2 record は `static_assert(sizeof)` で凍結、raw import 診断が v3 入口を認識し host v2 に対して `game_logic_abi_stale@1{found: v3, host: v2}` を LoadLibrary 前に出す。fingerprint は tag・順序・default・presence・range・vocabulary 名と値・全子 node を含み provider descriptor へ伝播。`overrides` は `ray_instance_overrides_not_enabled@1`。fixture: test/fixtures/wp382a_schema/(v3 DLL)
 - **agent の変異 / 検証**: reload guard の `!=` → `==` で同一宣言 :1166 と 4 変異(default / order / vocabulary / presence):1186 が赤、復元後 39 assertions 緑。全体 build / RPC OFF / `SKIP_DEVSTUDIO=OFF` build、非 GPU 1297 / 1297(1 skip)、出荷 4 project 差分なし。deps cache は `C:/pb/off/_deps`(旧 RPC OFF build の cache。worktree 外なので消えない)
