@@ -22548,7 +22548,7 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 - **main 取り込み(merge-resolver、opus。`3b8097cf`)**: 作業ブランチ(WP385 の lease + **WP382a-fix の `Schema::Node` 所有型**)を merge。textual 衝突 0、意味的衝突 56 件(`editorjournal.cpp` が旧 `SchemaNode` の `tag` / `children` / `presence` / `default_json` を直読み)→ 行 op は `Schema::Node`(`internal::hostSchemaNode` で 1 回変換)を歩く形に。行 op の validator は WP382a-fix が decode / encode 共用にした codec を `canonicalize_params` 経由で通る。非 GPU 1309 / 1311(赤 2 は WP334b の -j16 flake、単独で緑)、WP382 系 59 / 59
 - 全数: 統合 build エラー 0、1656 中 1653 緑。赤 3 のうち `contract_projection_gate` は既知。**`WP357 shipping fullscreen manifest …`(35 → 51)と `project_catalog_headless_smoke`(`pelican_catalog_showcase_game_logic.dll` 欠落)は、作業ツリーに未追跡で置かれた `projects/showcase/`(利用者側の作業中)を test が `projects/` 走査で拾ったもの**で、本 WP の退行ではない(showcase を除けば緑。tracked な 4 project は不変)
 - 記録: `ComponentCodec::schemaNode()` は flat の `SchemaNode` を返すままで、built-in codec の行 address 解決は lookup ごとに `Schema::Node` へ変換している(hot になれば共有 cache。記録のみ)
-- コードレビュー: rev382b(codex、`6e44120e`)
+- コードレビュー: rev382b(codex、`6e44120e`)= **不合格**。致命 1(legacy `set_component_value` で `/rows/$list/next_id` を巻き戻せて row ID が再利用される)+ 実害 3(add / remove の undo が raw を canonical 再 encode、`structuralDomainsOverlap` が object 一致で先に真、`ListIndexAddressingRejected` が set の 2 形だけ)+ test 1(bytes 比較が構造等価)→ **WP382b-fix** に全件。壊せなかった項目: addressed 3 op の raw 局所 patch、Behavior の `source_json_exact`、row lookup の `$row.id` 走査、出荷 4 project と `src/core/resources` の tree hash 一致
 
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
@@ -22897,6 +22897,40 @@ raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DL
 - **main 取り込み**: 作業ブランチ(WP385 の lease と docs)を merge、衝突 0。worktree で WP 系 72 / 72(GPU 含む)
 - 全数: 統合 build エラー 0、1649 中 1648 緑。赤 1 は `contract_projection_gate`(python。`PELICAN_PYTHON_TESTS=AUTO` を統合側で初めて有効化したため登録された既知の赤。利用者側セッションで修正中)。WP385 の `gpu_lease_inventory` / `gpu_lease_runtime` は緑
 - コードレビュー: 連鎖の最後(WP382a → 382a-fix で打ち切り)なので codex レビューは掛けない。統合側変異(上)と Claude の読みで閉じる
+
+
+### WP382b-fix: legacy の pointer から `$list` を書き換えられる(rev382b の致命 1 + 実害 3 + test 1。連鎖はここで打ち切り)
+
+**§4 規則 11 上段(editor journal の identity / undo 契約)。実装者: `gpt-5.6-sol`。コードレビューは統合側変異 + Claude(連鎖の最後)。見積: 中。連鎖: WP382b → 382b-fix で打ち切り(以後の指摘は記録のみ)。**
+**依存: WP382b(`6e44120e`)統合済み。WP382c(`agent/wp382c`、未着地)は `editorjournal.cpp` を触らないが同じ面の test を持つので、着地順は 384-fix → 382c → 382b-fix。**
+
+#### 何が壊れているか(`rev382b` が確認)
+
+1. **致命**: `fieldPathUsesListIndex()` は `rows/<数値>` だけを拒否し([editorjournal.cpp:1052](../src/core/communication/editorjournal.cpp#L1052))、`prepareSet()` は任意の既存 pointer を直接置換する(:2193)。typed validation は `next_id > 現存最大 id` しか見ない([structfieldjson.hpp:241](../src/core/userpublic/details/schema/structfieldjson.hpp#L241))。**id 3 を insert → remove(`next_id = 4`、現存最大 2)の後に `set_component_value{field_path: "/rows/$list/next_id", value: 3}` が通り、次の insert が id 3 を再発行する。** `/rows` や `/rows/rows` の丸ごと置換も同様に通り、永続 row address が別の行を指す(WP382b 決定 2 の identity 契約の破綻)
+2. `prepareAdd()` は入力 component を canonicalize した結果を raw document と journal forward に載せる(:2287)。`remove_component` の undo は inverse の `add_component` が再び `prepareAdd()` を通るので、`params` を省略した Behavior が undo 後に `params: {label: "journal-default"}` を持つ(raw 非上書き δ と v3 決定 24 の bytes 復元に反する)。spawn 内の非 Behavior component も同経路(:2497)
+3. `structuralDomainsOverlap()` は kind や attachment witness を比べる前に同じ `object` を含むだけで `true` を返す(:3726)ので、`component_list_row` の `{attachment, list_path}` 比較(:3747)は同一 object では到達不能。別 attachment の独立な編集が `undo_conflict` になる
+4. `ListIndexAddressingRejected` は legacy `set_component_value` の数値 index 2 形だけ。legacy `insert_component_field` / `remove_component_field` は `schema_violation`、`-` は index と認識されない(:745)
+5. test: undo / redo の bytes 比較が JSON 再 parse の構造等価で、redo 各時点の bytes を見ていない([wp382b_editor_test.cpp:241](../test/wp382b_editor_test.cpp#L241)、:326、:334)
+
+#### 直すこと
+
+1. **List の構造編集は addressed 3 op だけ**: legacy pointer が List node に到達した時点(list root、`rows`、`$list`、`$row`、数値 index、`-` のすべて)で `ListIndexAddressingRejected`(拒否理由に pointer の分類を載せる)。`next_id` は insert の内部以外から書けない型 / API にする(typed validation に「`next_id` は単調非減少(旧値以上)」を足し、raw patch 側でも `$list` を書ける経路を消す)
+2. canonicalize の結果は typed projection / validation 専用。`add_component` の raw command と journal forward、`remove_component` の inverse、spawn 内 component は **入力 component をそのまま**保存・復元し、canonical typed value は `freezeJournalOperation()` 側だけで作る
+3. `structuralDomainsOverlap()` は細粒度 domain(`component_list_row`、`value_field` など)を kind 別に先に比較し、object 単位の一致は `object_subtree` / destroy / unpack など本当に全 object と衝突する domain だけに適用する
+4. List pointer の分類を全 field op が共有する 1 関数に集約し、数値 segment と `-`、terminal / intermediate の全形を `ListIndexAddressingRejected` に
+
+#### 受け入れ(§4 規約 10)
+
+- 1: 上の再現手順(insert → remove → `next_id` を巻き戻す set)が名前付きで拒否され、次の insert が id 4 を出す(今日 = id 3 が再発行)。`/rows` / `/rows/rows` / `/rows/$list` / `/rows/rows/-` の置換もすべて拒否。`next_id` の単調性検査を消すと落ちる
+- 2: `params` を省略した Behavior を remove → undo して **raw bytes が完全一致**(今日 = `params` が生える)。spawn 内の非 Behavior component も同じ。canonicalize 結果を raw に戻す変異で落ちる
+- 3: 別 attachment(occurrence 0 の insert と occurrence 1 の set)を **別 actor** で行い、片方の undo が通る(今日 = `undo_conflict`)。同じ list への別 actor insert 後の古い undo は今日どおり拒否
+- 4: 6 形 × 3 op の表で全部 `ListIndexAddressingRejected`(今日 = set の 2 形だけ)
+- 5: insert / set / remove 各時点の `encodeSemanticAuthoring()` を保存し、undo と redo の対応時点と **文字列比較**(`next_id` だけ除く)。redo insert が row の `key` を壊す変異で落ちる
+- 全数 / RPC OFF / `SKIP_DEVSTUDIO` 両構成で WP382b test が走る / 出荷 4 project bytes 不変
+
+#### やらないこと
+
+WP382c / d の範囲 / Studio の UI / journal の他 op の見直し。
 
 ### WP386: RT3-2 —— static AABB + `.rint`(手続き幾何)を、描画されない geometry の AS 供給経路ごと入れる
 
