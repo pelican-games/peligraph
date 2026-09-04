@@ -78,6 +78,8 @@ function(pelican_configure_game_logic_target target_name)
     target_sources(${target_name} PRIVATE
         "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/gamelogic_entry.cpp")
     add_dependencies(${target_name} ${game_logic_host_target})
+    target_include_directories(${target_name} PRIVATE
+        "${CMAKE_SOURCE_DIR}/src/schema")
     target_link_libraries(${target_name} PRIVATE
         "$<TARGET_LINKER_FILE:${game_logic_host_target}>"
         glm

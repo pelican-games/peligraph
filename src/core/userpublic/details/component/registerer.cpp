@@ -1,4 +1,5 @@
 #include "registerer.hpp"
+#include "../../../schemanodeadapter.hpp"
 #include "../ecs/componentinfo.hpp"
 #include "../../../ecs/enginecomponentregistrar.hpp"
 
@@ -101,7 +102,8 @@ UserComponentRegistererTemplatePublic::pelican_register_component_v3(
             registration.construct, registration.destroy,
             registration.relocate, registration.init, registration.deinit,
             registration.json_loader}, owner,
-        registration.schema);
+        hostSchemaNode(registration.schema), registration.schema_version,
+        std::move(registration.schema_fingerprint));
 }
 
 RegistrationToken
@@ -114,7 +116,8 @@ UserComponentRegistererTemplatePublic::__registerEngineComponent(
 RegistrationToken
 UserComponentRegistererTemplatePublic::__registerComponentForOwner(
     ComponentId id, size_t sz, ComponentLoaderInfo loader,
-    RegistrationOwner owner, std::optional<SchemaNode> schema) {
+    RegistrationOwner owner, std::optional<Schema::Node> schema,
+    std::uint32_t schema_version, std::string schema_fingerprint) {
     enforceComponentRegistrationPolicy(loader.name, owner);
     Pelican::ComponentInfo info;
     info.id = id;
@@ -129,6 +132,8 @@ UserComponentRegistererTemplatePublic::__registerComponentForOwner(
     info.cb_load_by_json2 = loader.json_loader;
     info.owner = owner;
     info.schema_v3 = std::move(schema);
+    info.schema_version = schema_version;
+    info.schema_fingerprint = std::move(schema_fingerprint);
 
     return GET_MODULE(ComponentInfoManager).registerComponent(std::move(info));
 }

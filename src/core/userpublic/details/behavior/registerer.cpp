@@ -1,4 +1,5 @@
 #include "registerer.hpp"
+#include "../../../schemanodeadapter.hpp"
 
 #include <algorithm>
 
@@ -53,11 +54,11 @@ UserBehaviorRegistererTemplatePublic::pelican_register_behavior_v2(
 RegistrationToken
 UserBehaviorRegistererTemplatePublic::pelican_register_behavior_v3(
     BehaviorRegistrationV3 registration) {
-    const auto &schema = registration.params_schema;
+    auto schema = hostSchemaNode(registration.params_schema);
     const auto token =
         pelican_register_behavior_v2(std::move(registration.callbacks));
     try {
-        v3_schemas.emplace_back(token, schema);
+        v3_schemas.emplace_back(token, std::move(schema));
     } catch (...) {
         unregisterBehavior(token);
         throw;
@@ -83,7 +84,7 @@ const BehaviorRegistration *UserBehaviorRegistererTemplatePublic::findByNameAndO
     return found == behaviors.end() ? nullptr : &*found;
 }
 
-const SchemaNode *UserBehaviorRegistererTemplatePublic::schemaFor(
+const Schema::Node *UserBehaviorRegistererTemplatePublic::schemaFor(
     const BehaviorRegistration &registration) const noexcept {
     const auto found = std::find_if(
         v3_schemas.begin(), v3_schemas.end(),

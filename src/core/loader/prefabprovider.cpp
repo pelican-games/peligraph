@@ -3,6 +3,7 @@
 #include "componentcodec.hpp"
 
 #include "../userpublic/details/behavior/registerer.hpp"
+#include "../ecs/componentinfo.hpp"
 
 #include <picosha2.h>
 
@@ -243,38 +244,6 @@ descriptorSortKey(const BindableDescriptor &descriptor) {
 
 Schema::FieldType leafType(StructFieldType type);
 
-Schema::Node projectSchemaNode(const SchemaNode &source) {
-    Schema::Node result;
-    result.tag = static_cast<Schema::NodeTag>(source.tag);
-    result.name = source.name;
-    result.presence = static_cast<Schema::FieldPresence>(source.presence);
-    if (source.tag == SchemaNodeTag::Leaf) {
-        result.leaf = Schema::FieldDeclaration{
-            .name = source.name,
-            .type = leafType(source.leaf_type),
-            .range = std::visit([](const auto &value) -> Schema::FieldRange {
-                using R = std::decay_t<decltype(value)>;
-                if constexpr (std::same_as<R, std::monostate>) return {};
-                else if constexpr (std::same_as<R, std::pair<std::int64_t, std::int64_t>>)
-                    return Schema::SignedRange{value.first, value.second};
-                else if constexpr (std::same_as<R, std::pair<std::uint64_t, std::uint64_t>>)
-                    return Schema::UnsignedRange{value.first, value.second};
-                else return Schema::FloatingRange{value.first, value.second};
-            }, source.range),
-            .unit = source.unit,
-        };
-    }
-    if (source.default_json)
-        result.default_value = nlohmann::json::parse(*source.default_json);
-    for (const auto &value : source.vocabulary) {
-        result.vocabulary.push_back({value.name, value.value,
-                                     value.signed_value});
-    }
-    for (const auto &child : source.children)
-        result.children.push_back(projectSchemaNode(child));
-    return result;
-}
-
 std::vector<BindableDescriptor> codecDescriptors() {
     // The project-owned table is the shared engine/Studio source. The codec
     // pass below enriches only metadata that is owned by runtime schemas.
@@ -489,22 +458,23 @@ BindableProviderSnapshot buildProductionBindableProviderSnapshot(
                     else if (ch == '/') escaped_name += "~1";
                     else escaped_name.push_back(ch);
                 }
-                auto def = schema.default_json
+                auto def = schema.tag == Schema::NodeTag::Leaf &&
+                                   schema.default_value
                                ? std::optional<OJson>{OJson::parse(
-                                     *schema.default_json)}
+                                     schema.default_value->dump())}
                                : std::optional<OJson>{};
                 descriptors.push_back({
                     .provider_name = "behavior:" + registration.stable_name,
                     .json_pointer = "/params/" + escaped_name,
-                    .type = schema.tag == SchemaNodeTag::Leaf
-                                ? leafType(schema.leaf_type)
+                    .type = schema.tag == Schema::NodeTag::Leaf && schema.leaf
+                                ? schema.leaf->type
                                 : Schema::FieldType::String,
                     .semantic_kind = BindableSemanticKind::Value,
-                    .bindable = schema.tag == SchemaNodeTag::Leaf,
+                    .bindable = schema.tag == Schema::NodeTag::Leaf,
                     .required = schema.presence ==
-                                StructFieldPresence::Required,
+                                Schema::FieldPresence::Required,
                     .canonical_default = std::move(def),
-                    .schema_node = projectSchemaNode(schema),
+                    .schema_node = schema,
                 });
             }
             continue;
@@ -539,6 +509,21 @@ BindableProviderSnapshot buildProductionBindableProviderSnapshot(
                 .enum_values = std::vector<std::string>(
                     schema.enum_values,
                     schema.enum_values + schema.enum_value_count),
+            });
+        }
+    }
+    if (const auto *components =
+            FastModuleContainer::tryGet<ComponentInfoManager>()) {
+        for (const auto &component : components->registeredComponents()) {
+            if (!component.token || !component.schema_v3) continue;
+            descriptors.push_back({
+                .provider_name = "component:" + component.name,
+                .json_pointer = "",
+                .type = Schema::FieldType::String,
+                .semantic_kind = BindableSemanticKind::Value,
+                .bindable = false,
+                .required = false,
+                .schema_node = *component.schema_v3,
             });
         }
     }

@@ -16,6 +16,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <vector>
+#include <schema.hpp>
 
 namespace Pelican {
 
@@ -72,6 +73,7 @@ struct EditorComponentQueryResult {
     std::string codec_name;
     EditorComponentSchemaState schema_state = EditorComponentSchemaState::Missing;
     std::vector<StructFieldSchema> schema_fields;
+    std::optional<Schema::Node> schema_node;
     bool pending = false;
     std::optional<std::uint64_t> behavior_attachment_handle;
     std::optional<std::uint64_t> behavior_attachment_seq;

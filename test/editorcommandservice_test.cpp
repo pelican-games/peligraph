@@ -1,5 +1,10 @@
 #include "../src/core/communication/editorcommandservice.hpp"
+#include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/loader/basicconfig.hpp"
+#include "../src/core/loader/prefabprovider.hpp"
+#include "../src/core/registrationownerhost.hpp"
+#include "../src/core/userpublic/details/component/registerer.hpp"
+#include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "authoringscenetestsupport.hpp"
 
@@ -16,6 +21,40 @@
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+namespace wp382a_catalog_fixture {
+
+enum class Flag : std::uint32_t { A = 1u, B = 2u };
+
+struct Row {
+    std::string key;
+    std::optional<std::uint8_t> mask;
+    std::optional<Pelican::Flags<Flag>> flags;
+    bool row_enabled = false;
+
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::componentPolicy("wp382a_rpc_row"),
+        Pelican::required(Pelican::field<&Row::key>("key")),
+        Pelican::optionalOverride(Pelican::field<&Row::mask>(
+            "mask", Pelican::urange(0, 255))),
+        Pelican::optionalOverride(
+            Pelican::field<&Row::flags>("flags"),
+            Pelican::enumValues(Pelican::enumValue("A", Flag::A),
+                                Pelican::enumValue("B", Flag::B))),
+        Pelican::defaulted(
+            Pelican::field<&Row::row_enabled>("row_enabled"), false));
+};
+
+struct Component {
+    Pelican::List<Row> rows;
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::componentPolicy("wp382a_rpc_component"),
+        Pelican::defaulted(Pelican::field<&Component::rows>("rows")));
+};
+
+} // namespace wp382a_catalog_fixture
+
+DECLARE_COMPONENT(wp382a_catalog_fixture::Component, 62);
 
 #ifndef PELICAN_TEST_SOURCE_DIR
 #define PELICAN_TEST_SOURCE_DIR "."
@@ -196,6 +235,71 @@ TEST_CASE("editor query is deterministic and RPC and ImGui fake adapters are equ
     const auto assets = rpc.listAssets({{"store", "assets"}});
     REQUIRE(assets.dump() == editorQueryJson(imgui.listAssets({.store = "assets"})).dump());
     REQUIRE(assets.at("assets").size() == 2);
+}
+
+TEST_CASE("get_components publishes recursive v3 component catalog nodes",
+          "[editor-command][query][wp382a][schema-v3]") {
+    const auto owner = internal::allocateRegistrationOwner();
+    internal::RegistrationToken token;
+    {
+        internal::ScopedRegistrationOwner owner_scope{owner};
+        token = internal::getComponentRegisterer()
+                    .registerComponent<wp382a_catalog_fixture::Component>(
+                        "wp382a_rpc_component");
+    }
+    const nlohmann::json source{
+        {"schema", "pelican.scene"},
+        {"version", 1},
+        {"scenes",
+         {{"main",
+           {{"objects",
+             nlohmann::json::array(
+                 {{{"name", "CatalogCarrier"},
+                   {"components",
+                    nlohmann::json::array(
+                        {{{"name", "wp382a_rpc_component"},
+                          {"rows",
+                           {{"$list", {{"v", 1}, {"next_id", 1}}},
+                            {"rows", nlohmann::json::array()}}}}})}}})}}}}}};
+    const auto document = AuthoringSceneDocument::load(
+        source.dump(), SceneRevision{382});
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+    const auto response = rpc.getComponents({{"name", "CatalogCarrier"}});
+
+    const auto &catalog_component = response.at("components").at(0);
+    REQUIRE(catalog_component.at("name") == "wp382a_rpc_component");
+    const auto &root = catalog_component.at("schema").at("node");
+    REQUIRE(root.at("tag") == "struct");
+    const auto &list = root.at("children").at(0);
+    REQUIRE(list.at("tag") == "list");
+    REQUIRE(list.at("presence") == "defaulted");
+    REQUIRE(list.at("default").at("$list").at("v") == 1);
+    const auto &row = list.at("children").at(0);
+    REQUIRE(row.at("children").at(1).at("presence") ==
+            "optional_override");
+    const auto &flags = row.at("children").at(2);
+    REQUIRE(flags.at("presence") == "optional_override");
+    REQUIRE(flags.at("vocabulary").at(0).at("name") == "A");
+    REQUIRE(flags.at("vocabulary").at(0).at("value") == 1);
+    REQUIRE(flags.at("vocabulary").at(1).at("value") == 2);
+    REQUIRE(row.at("children").at(3).at("default") == false);
+
+    const auto &component = GET_MODULE(ComponentInfoManager).get(
+        GET_MODULE(ComponentInfoManager)
+            .getComponentIdByName("wp382a_rpc_component"));
+    REQUIRE(component.schema_v3.has_value());
+    const auto providers = buildProductionBindableProviderSnapshot();
+    const auto provider = std::ranges::find_if(
+        providers.descriptors(), [](const auto &entry) {
+            return entry.provider_name == "component:wp382a_rpc_component";
+        });
+    REQUIRE(provider != providers.descriptors().end());
+    REQUIRE(provider->schema_node == component.schema_v3);
+
+    GET_MODULE(ComponentInfoManager).unregisterComponent(token);
+    REQUIRE(internal::releaseRegistrationOwner(owner) ==
+            internal::RegistrationOwnerReleaseResult::released);
 }
 
 TEST_CASE("RPC declaration indices match the direct project view for unnamed example objects",

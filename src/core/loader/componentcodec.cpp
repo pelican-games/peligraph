@@ -1344,11 +1344,15 @@ const SchemaNode &ComponentCodec::schemaNode() const {
 std::vector<StructFieldSchema> ComponentCodec::fieldSchema() const {
     std::vector<StructFieldSchema> result;
     const auto &root = schemaNode();
-    result.reserve(root.children.size());
-    for (const auto &node : root.children) {
-        StructFieldSchema field{node.name, node.leaf_type, node.range, node.unit};
+    result.reserve(root.childCount(0));
+    for (std::size_t ordinal = 0; ordinal < root.childCount(0); ++ordinal) {
+        const auto &node = root.at(root.childIndex(0, ordinal));
+        StructFieldSchema field{node.name, node.leaf_type,
+                                materializeStructFieldRange(node.range),
+                                node.unit};
         field.enum_value_count =
-            std::min(node.vocabulary.size(), maxStructFieldEnumValues);
+            std::min<std::size_t>(node.vocabulary_count,
+                                  maxStructFieldEnumValues);
         for (std::size_t index = 0; index < field.enum_value_count; ++index)
             field.enum_values[index] = node.vocabulary[index].name;
         result.push_back(std::move(field));

@@ -682,26 +682,68 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   target_include_directories(pelican_wp382a_frozen_v2 BEFORE PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v2")
 
-  function(pelican_add_wp382a_v3_fixture target_name variant full_surface)
+  function(pelican_add_wp382a_v3_fixture target_name variant surface)
     add_library(${target_name} SHARED
       fixtures/wp382a_schema/v3_fixture.cpp)
     set_target_properties(${target_name} PROPERTIES OUTPUT_NAME ${target_name})
     target_compile_definitions(${target_name} PRIVATE
-      WP382A_SCHEMA_VARIANT=${variant})
-    if(NOT full_surface)
-      target_compile_definitions(${target_name} PRIVATE WP382A_RELOAD_ONLY=1)
-    endif()
+      WP382A_SCHEMA_VARIANT=${variant}
+      WP382A_SCHEMA_SURFACE=${surface})
     pelican_configure_game_logic_target(${target_name}
       HOST_TARGET pelican_test_game_logic_abi_test
       ROLE wp382a-v3-${variant} NO_INVENTORY)
   endfunction()
 
-  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_full 0 TRUE)
-  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_same 0 FALSE)
-  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_default 1 FALSE)
-  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_order 2 FALSE)
-  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_vocabulary 3 FALSE)
-  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_presence 4 FALSE)
+  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_full 0 3)
+  foreach(wp382a_surface IN ITEMS behavior event component)
+    if(wp382a_surface STREQUAL "behavior")
+      set(wp382a_surface_id 0)
+    elseif(wp382a_surface STREQUAL "event")
+      set(wp382a_surface_id 1)
+    else()
+      set(wp382a_surface_id 2)
+    endif()
+    foreach(wp382a_variant IN ITEMS
+        "same|0" "default|1" "order|2" "vocabulary|3" "presence|4")
+      string(REPLACE "|" ";" wp382a_variant_fields "${wp382a_variant}")
+      list(GET wp382a_variant_fields 0 wp382a_variant_name)
+      list(GET wp382a_variant_fields 1 wp382a_variant_id)
+      pelican_add_wp382a_v3_fixture(
+        pelican_wp382a_v3_${wp382a_surface}_${wp382a_variant_name}
+        ${wp382a_variant_id} ${wp382a_surface_id})
+    endforeach()
+  endforeach()
+
+  foreach(wp382a_negative IN ITEMS
+      "flags_composite|FlagsVocabularyNotOneHot"
+      "flags_zero|FlagsVocabularyNotOneHot"
+      "v2_reordered|FrozenV2FieldOffsetMismatch")
+    string(REPLACE "|" ";" wp382a_negative_fields "${wp382a_negative}")
+    list(GET wp382a_negative_fields 0 wp382a_negative_name)
+    list(GET wp382a_negative_fields 1 wp382a_negative_diagnostic)
+    add_test(
+      NAME wp382a_negative_compile_${wp382a_negative_name}
+      COMMAND ${CMAKE_COMMAND}
+        -DPROJECT_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/game_dll_boundary_compile_fixture
+        -DBUILD_DIR=${CMAKE_CURRENT_BINARY_DIR}/wp382a_negative/${wp382a_negative_name}
+        -DFIXTURE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/wp382a_schema/${wp382a_negative_name}_negative.cpp
+        -DGAME_LOGIC_ENTRY=${CMAKE_SOURCE_DIR}/src/player/gamelogic_entry.cpp
+        -DUSERPUBLIC_INCLUDE=${CMAKE_SOURCE_DIR}/src/core/userpublic
+        -DCORE_INCLUDE=${CMAKE_SOURCE_DIR}/src/core
+        -DNLOHMANN_INCLUDE=${nlohmann_json_SOURCE_DIR}/include
+        -DHOST_IMPORT_LIBRARY=$<TARGET_LINKER_FILE:pelican_test_game_logic_abi_test>
+        -DCONFIG=$<CONFIG>
+        -DTARGET_NAME=pelican_wp382a_negative_${wp382a_negative_name}
+        -DEXPECTED_DIAGNOSTIC=${wp382a_negative_diagnostic}
+        -DGENERATOR=${CMAKE_GENERATOR}
+        -DGENERATOR_INSTANCE=${CMAKE_GENERATOR_INSTANCE}
+        -DGENERATOR_PLATFORM=${CMAKE_GENERATOR_PLATFORM}
+        -DGENERATOR_TOOLSET=${CMAKE_GENERATOR_TOOLSET}
+        -DCXX_COMPILER=${CMAKE_CXX_COMPILER}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_game_dll_boundary_compile.cmake)
+    set_tests_properties(wp382a_negative_compile_${wp382a_negative_name}
+      PROPERTIES LABELS "WP382a;cpu;negative-compile")
+  endforeach()
 
   foreach(wp381_role_target IN ITEMS
       pelican_wp381_legacy_behavior
@@ -759,11 +801,21 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     PELICAN_WP381_CURRENT_USERPUBLIC="${CMAKE_SOURCE_DIR}/src/core/userpublic"
     PELICAN_WP382A_FROZEN_V2="$<TARGET_FILE:pelican_wp382a_frozen_v2>"
     PELICAN_WP382A_V3_FULL="$<TARGET_FILE:pelican_wp382a_v3_full>"
-    PELICAN_WP382A_V3_SAME="$<TARGET_FILE:pelican_wp382a_v3_same>"
-    PELICAN_WP382A_V3_DEFAULT="$<TARGET_FILE:pelican_wp382a_v3_default>"
-    PELICAN_WP382A_V3_ORDER="$<TARGET_FILE:pelican_wp382a_v3_order>"
-    PELICAN_WP382A_V3_VOCABULARY="$<TARGET_FILE:pelican_wp382a_v3_vocabulary>"
-    PELICAN_WP382A_V3_PRESENCE="$<TARGET_FILE:pelican_wp382a_v3_presence>"
+    PELICAN_WP382A_V3_BEHAVIOR_SAME="$<TARGET_FILE:pelican_wp382a_v3_behavior_same>"
+    PELICAN_WP382A_V3_BEHAVIOR_DEFAULT="$<TARGET_FILE:pelican_wp382a_v3_behavior_default>"
+    PELICAN_WP382A_V3_BEHAVIOR_ORDER="$<TARGET_FILE:pelican_wp382a_v3_behavior_order>"
+    PELICAN_WP382A_V3_BEHAVIOR_VOCABULARY="$<TARGET_FILE:pelican_wp382a_v3_behavior_vocabulary>"
+    PELICAN_WP382A_V3_BEHAVIOR_PRESENCE="$<TARGET_FILE:pelican_wp382a_v3_behavior_presence>"
+    PELICAN_WP382A_V3_EVENT_SAME="$<TARGET_FILE:pelican_wp382a_v3_event_same>"
+    PELICAN_WP382A_V3_EVENT_DEFAULT="$<TARGET_FILE:pelican_wp382a_v3_event_default>"
+    PELICAN_WP382A_V3_EVENT_ORDER="$<TARGET_FILE:pelican_wp382a_v3_event_order>"
+    PELICAN_WP382A_V3_EVENT_VOCABULARY="$<TARGET_FILE:pelican_wp382a_v3_event_vocabulary>"
+    PELICAN_WP382A_V3_EVENT_PRESENCE="$<TARGET_FILE:pelican_wp382a_v3_event_presence>"
+    PELICAN_WP382A_V3_COMPONENT_SAME="$<TARGET_FILE:pelican_wp382a_v3_component_same>"
+    PELICAN_WP382A_V3_COMPONENT_DEFAULT="$<TARGET_FILE:pelican_wp382a_v3_component_default>"
+    PELICAN_WP382A_V3_COMPONENT_ORDER="$<TARGET_FILE:pelican_wp382a_v3_component_order>"
+    PELICAN_WP382A_V3_COMPONENT_VOCABULARY="$<TARGET_FILE:pelican_wp382a_v3_component_vocabulary>"
+    PELICAN_WP382A_V3_COMPONENT_PRESENCE="$<TARGET_FILE:pelican_wp382a_v3_component_presence>"
   )
 
   get_filename_component(wp381_msvc_tool_dir "${CMAKE_LINKER}" DIRECTORY)
@@ -1195,6 +1247,18 @@ pelican_define_test(eventlayer_test GROUP ecs_editor pelican_core)
 pelican_define_test(eventpayloadschema_test GROUP ecs_editor pelican_core)
 pelican_define_test(structfieldschema_test GROUP ecs_editor pelican_core)
 pelican_define_test(wp382a_schema_test pelican_core pelican_project)
+add_executable(pelican_test_wp382a_descriptor_allocation_probe
+  wp382a_descriptor_allocation_probe.cpp)
+set_target_properties(pelican_test_wp382a_descriptor_allocation_probe
+  PROPERTIES CXX_STANDARD 20)
+target_include_directories(pelican_test_wp382a_descriptor_allocation_probe
+  PRIVATE "${CMAKE_SOURCE_DIR}/src/core/userpublic")
+target_link_libraries(pelican_test_wp382a_descriptor_allocation_probe
+  PRIVATE nlohmann_json)
+add_test(NAME wp382a_descriptor_static_initialization_allocation_zero
+  COMMAND $<TARGET_FILE:pelican_test_wp382a_descriptor_allocation_probe>)
+set_tests_properties(wp382a_descriptor_static_initialization_allocation_zero
+  PROPERTIES LABELS "WP382a;cpu;schema-v3")
 pelican_define_test(behaviorarena_test GROUP ecs_editor pelican_core)
 
 add_executable(pelican_test_behavior_determinism_probe behavior_determinism_probe.cpp)

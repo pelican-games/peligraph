@@ -20,5 +20,6 @@ target_compile_definitions(${TARGET_NAME} PRIVATE PELICAN_GAME_DLL=1)
 target_include_directories(${TARGET_NAME} PRIVATE
     "${USERPUBLIC_INCLUDE}"
     "${CORE_INCLUDE}"
+    "${CORE_INCLUDE}/../schema"
     "${NLOHMANN_INCLUDE}")
 target_link_libraries(${TARGET_NAME} PRIVATE "${HOST_IMPORT_LIBRARY}")

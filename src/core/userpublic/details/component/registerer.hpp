@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 #include <serialize/jsonarchive.hpp>
 #include <serialize/serialize.hpp>
+#include <schema.hpp>
 #include <cstring>
 #include <memory>
 #include <stdexcept>
@@ -45,6 +46,8 @@ struct ComponentRegistrationV3 {
     void (*init)(void *ptr) = nullptr;
     void (*deinit)(void *ptr) noexcept = nullptr;
     void (*json_loader)(void *component, JsonArchiveLoader &ar) = nullptr;
+    std::uint32_t schema_version = 1;
+    std::string schema_fingerprint;
     const SchemaNode &schema;
 };
 
@@ -88,6 +91,20 @@ class UserComponentRegistererTemplatePublic {
     static_assert(sizeof(ComponentLoaderInfo) ==
                       sizeof(FrozenComponentLoaderInfoV2Layout),
                   "ComponentLoaderInfo is the frozen v2 ABI record");
+    static_assert(alignof(ComponentLoaderInfo) ==
+                      alignof(FrozenComponentLoaderInfoV2Layout));
+#define PELICAN_FREEZE_COMPONENT_V2_FIELD(field)                         \
+    static_assert(offsetof(ComponentLoaderInfo, field) ==                \
+                  offsetof(FrozenComponentLoaderInfoV2Layout, field))
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(name);
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(alignment);
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(construct);
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(destroy);
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(relocate);
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(init);
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(deinit);
+    PELICAN_FREEZE_COMPONENT_V2_FIELD(json_loader);
+#undef PELICAN_FREEZE_COMPONENT_V2_FIELD
 
     PELICAN_API RegistrationToken
     __registerComponent(ComponentId id, size_t sz, ComponentLoaderInfo loader);
@@ -98,8 +115,10 @@ class UserComponentRegistererTemplatePublic {
     RegistrationToken __registerComponentForOwner(ComponentId id, size_t sz,
                                                   ComponentLoaderInfo loader,
                                                   RegistrationOwner owner,
-                                                  std::optional<SchemaNode> schema =
-                                                      std::nullopt);
+                                                  std::optional<Schema::Node> schema =
+                                                      std::nullopt,
+                                                  std::uint32_t schema_version = 0,
+                                                  std::string schema_fingerprint = {});
 
     template <class Component, bool RecursiveSchema = false>
     static ComponentLoaderInfo componentLoader(std::string name) {
@@ -176,7 +195,16 @@ class UserComponentRegistererTemplatePublic {
                 ComponentIdByType<Component>::value, sizeof(Component),
                 std::move(loader.name), loader.alignment, loader.construct,
                 loader.destroy, loader.relocate, loader.init, loader.deinit,
-                loader.json_loader, schema});
+                loader.json_loader,
+                []() consteval {
+                    if constexpr (requires {
+                                      Component::pelican_schema_version;
+                                  })
+                        return static_cast<std::uint32_t>(
+                            Component::pelican_schema_version);
+                    return std::uint32_t{1};
+                }(),
+                schemaNodeFingerprint(schema), schema});
         } else {
             return __registerComponent(
                 ComponentIdByType<Component>::value, sizeof(Component),

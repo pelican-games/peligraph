@@ -441,6 +441,10 @@ endif()
 # main
 ## pelican lib
 add_subdirectory(src/schema)
+# Recursive v3 registry headers expose the common owning Schema::Node lookup
+# alongside the allocation-free DLL descriptor.  Core leaf libraries that
+# include the public registry headers need the schema include root as well.
+include_directories(${CMAKE_SOURCE_DIR}/src/schema)
 add_subdirectory(src/project)
 add_subdirectory(src/core)
 if(PELICAN_WITH_SPIRV_LINK)

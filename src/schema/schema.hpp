@@ -73,16 +73,22 @@ struct TypeRule {
 struct SignedRange {
     std::int64_t min;
     std::int64_t max;
+
+    friend bool operator==(const SignedRange &, const SignedRange &) = default;
 };
 
 struct UnsignedRange {
     std::uint64_t min;
     std::uint64_t max;
+
+    friend bool operator==(const UnsignedRange &, const UnsignedRange &) = default;
 };
 
 struct FloatingRange {
     double min;
     double max;
+
+    friend bool operator==(const FloatingRange &, const FloatingRange &) = default;
 };
 
 using FieldRange =
@@ -95,6 +101,9 @@ struct FieldDeclaration {
     std::string unit;
     std::vector<std::string> enum_values;
     std::optional<nlohmann::json> default_value;
+
+    friend bool operator==(const FieldDeclaration &,
+                           const FieldDeclaration &) = default;
 };
 
 enum class NodeTag : std::uint8_t { Struct, Leaf, Flags, List };

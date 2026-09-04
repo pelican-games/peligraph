@@ -7,6 +7,7 @@
 #include "../loader/basicconfig.hpp"
 #include "../../project/sceneformat.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
+#include "../ecs/componentinfo.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -86,6 +87,59 @@ OrderedJson schemaFieldJson(
             result["enum"].push_back(field.enum_values[index]);
         }
     }
+    return result;
+}
+
+OrderedJson schemaNodeJson(
+    const Schema::Node &node,
+    const EditorCommandRpcAdapter::SchemaTypeNameResolver &resolver) {
+    const auto tag = [&] {
+        switch (node.tag) {
+        case Schema::NodeTag::Struct: return "struct";
+        case Schema::NodeTag::Leaf: return "leaf";
+        case Schema::NodeTag::Flags: return "flags";
+        case Schema::NodeTag::List: return "list";
+        }
+        return "unknown";
+    }();
+    const auto presence = [&] {
+        switch (node.presence) {
+        case Schema::FieldPresence::Required: return "required";
+        case Schema::FieldPresence::Defaulted: return "defaulted";
+        case Schema::FieldPresence::OptionalOverride:
+            return "optional_override";
+        }
+        return "unknown";
+    }();
+    OrderedJson result{{"tag", tag}, {"name", node.name},
+                       {"presence", presence}};
+    if (node.leaf) {
+        result["type"] = resolver(internal::toCoreSchemaType(node.leaf->type));
+        std::visit(
+            [&](const auto &range) {
+                using Range = std::decay_t<decltype(range)>;
+                if constexpr (!std::same_as<Range, std::monostate>)
+                    result["range"] =
+                        OrderedJson::array({range.min, range.max});
+            },
+            node.leaf->range);
+        if (!node.leaf->unit.empty()) result["unit"] = node.leaf->unit;
+    } else if (node.tag == Schema::NodeTag::Flags) {
+        result["type"] = "flags";
+    } else if (node.tag == Schema::NodeTag::List) {
+        result["type"] = "list";
+    }
+    if (node.default_value)
+        result["default"] = OrderedJson::parse(node.default_value->dump());
+    result["vocabulary"] = OrderedJson::array();
+    for (const auto &value : node.vocabulary) {
+        result["vocabulary"].push_back(
+            {{"name", value.name}, {"value", value.value},
+             {"signed", value.signed_value}});
+    }
+    result["children"] = OrderedJson::array();
+    for (const auto &child : node.children)
+        result["children"].push_back(schemaNodeJson(child, resolver));
     return result;
 }
 
@@ -680,6 +734,9 @@ EditorObjectQueryResult EditorCommandService::queryObject(
                 component_result.schema_state =
                     EditorComponentSchemaState::Available;
                 component_result.schema_fields = registration->params_schema;
+                if (const auto *node = internal::getBehaviorRegisterer()
+                                           .schemaFor(*registration))
+                    component_result.schema_node = *node;
             } else {
                 component_result.editable = false;
             }
@@ -687,6 +744,16 @@ EditorObjectQueryResult EditorCommandService::queryObject(
             component_result.schema_state = EditorComponentSchemaState::Available;
             const auto fields = codec->fieldSchema();
             component_result.schema_fields.assign(fields.begin(), fields.end());
+        } else if (const auto *manager =
+                       FastModuleContainer::tryGet<ComponentInfoManager>();
+                   manager != nullptr && manager->hasComponent(name)) {
+            const auto &registration = manager->get(
+                manager->getComponentIdByName(name));
+            if (registration.schema_v3) {
+                component_result.schema_state =
+                    EditorComponentSchemaState::Available;
+                component_result.schema_node = *registration.schema_v3;
+            }
         }
         result.components.push_back(std::move(component_result));
     }
@@ -1504,6 +1571,9 @@ OrderedJson editorComponentQueryJson(
             result["schema"]["fields"].push_back(
                 schemaFieldJson(field, resolver));
         }
+        if (component.schema_node)
+            result["schema"]["node"] =
+                schemaNodeJson(*component.schema_node, resolver);
     }
     result["pending"] = component.pending;
     if (component.name == "behavior") {

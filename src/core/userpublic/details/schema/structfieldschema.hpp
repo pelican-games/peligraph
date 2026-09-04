@@ -9,6 +9,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -69,14 +70,16 @@ enum class StructFieldPresence : std::uint8_t {
     OptionalOverride,
 };
 
-// V3's recursive descriptor is an owning value.  V2 registration records keep
-// carrying StructFieldSchema verbatim; hosts wrap those fields with fromFlat().
-// A field node carries its own name/presence so child order is represented by
-// the vector order and is therefore part of the descriptor contract.
+// V3 descriptors are fixed-capacity constexpr values.  They are deliberately
+// non-owning: every string_view refers to a declaration literal and all tree
+// storage lives in this value.  A host converts the descriptor to its owning
+// Schema::Node model at a v3 entrance.  Keeping this type allocation-free is
+// important because game DLLs construct their descriptors during static
+// initialization.
 enum class SchemaNodeTag : std::uint8_t { Struct, Leaf, Flags, List };
 
 struct SchemaVocabularyValue {
-    std::string name;
+    std::string_view name;
     std::uint64_t value = 0;
     bool signed_value = false;
 
@@ -84,21 +87,96 @@ struct SchemaVocabularyValue {
                            const SchemaVocabularyValue &) = default;
 };
 
-struct SchemaNode {
+enum class SchemaDefaultKind : std::uint8_t {
+    None,
+    EmptyList,
+    Bool,
+    Signed,
+    Unsigned,
+    Floating,
+    String,
+    Enum,
+    Flags,
+    Vector,
+};
+
+namespace internal {
+
+enum class StructFieldRangeKind : std::uint8_t { None, Signed, Unsigned, Floating };
+
+struct StructFieldRangeDescriptor {
+    StructFieldRangeKind kind = StructFieldRangeKind::None;
+    std::int64_t signed_min = 0;
+    std::int64_t signed_max = 0;
+    std::uint64_t unsigned_min = 0;
+    std::uint64_t unsigned_max = 0;
+    double floating_min = 0;
+    double floating_max = 0;
+
+    friend bool operator==(const StructFieldRangeDescriptor &,
+                           const StructFieldRangeDescriptor &) = default;
+};
+
+} // namespace internal
+
+struct SchemaDefaultValue {
+    SchemaDefaultKind kind = SchemaDefaultKind::None;
+    std::int64_t signed_value = 0;
+    std::uint64_t unsigned_value = 0;
+    std::array<double, 4> components{};
+    std::uint8_t component_count = 0;
+    std::string_view string_value;
+
+    friend bool operator==(const SchemaDefaultValue &,
+                           const SchemaDefaultValue &) = default;
+};
+
+inline constexpr std::size_t maxSchemaNodeCount = 64;
+inline constexpr std::size_t maxSchemaVocabularyValues =
+    maxStructFieldEnumValues;
+inline constexpr std::uint16_t noSchemaNodeParent = UINT16_MAX;
+
+struct SchemaNodeEntry {
     SchemaNodeTag tag = SchemaNodeTag::Struct;
-    std::string name;
+    std::string_view name;
     StructFieldPresence presence = StructFieldPresence::Required;
     StructFieldType leaf_type = StructFieldType::String;
-    StructFieldRange range;
-    std::string unit;
-    // Canonical JSON text.  Text rather than nlohmann::json keeps the public
-    // descriptor independent of a particular JSON object layout.
-    std::optional<std::string> default_json;
-    std::vector<SchemaVocabularyValue> vocabulary;
-    std::vector<SchemaNode> children;
+    internal::StructFieldRangeDescriptor range;
+    std::string_view unit;
+    SchemaDefaultValue default_value;
+    std::array<SchemaVocabularyValue, maxSchemaVocabularyValues> vocabulary{};
+    std::uint8_t vocabulary_count = 0;
+    std::uint16_t parent = noSchemaNodeParent;
+
+    friend bool operator==(const SchemaNodeEntry &,
+                           const SchemaNodeEntry &) = default;
+};
+
+struct SchemaNode {
+    std::array<SchemaNodeEntry, maxSchemaNodeCount> nodes{};
+    std::uint16_t node_count = 1;
 
     static SchemaNode fromFlat(std::span<const StructFieldSchema> fields);
     bool recursive() const noexcept;
+
+    constexpr const SchemaNodeEntry &root() const noexcept { return nodes[0]; }
+    constexpr const SchemaNodeEntry &at(std::size_t index) const noexcept {
+        return nodes[index];
+    }
+    constexpr std::size_t childCount(std::size_t parent) const noexcept {
+        std::size_t count = 0;
+        for (std::size_t index = 1; index < node_count; ++index)
+            count += nodes[index].parent == parent;
+        return count;
+    }
+    constexpr std::size_t childIndex(std::size_t parent,
+                                     std::size_t ordinal) const noexcept {
+        for (std::size_t index = 1; index < node_count; ++index) {
+            if (nodes[index].parent != parent) continue;
+            if (ordinal-- == 0) return index;
+        }
+        return node_count;
+    }
 
     friend bool operator==(const SchemaNode &, const SchemaNode &) = default;
 };
@@ -117,7 +195,8 @@ template <class Enum> class Flags {
     constexpr explicit Flags(Storage bits) noexcept : bits_{bits} {}
     constexpr Storage bits() const noexcept { return bits_; }
     constexpr bool contains(Enum value) const noexcept {
-        return (bits_ & static_cast<Storage>(value)) != 0;
+        const auto requested = static_cast<Storage>(value);
+        return (bits_ & requested) == requested;
     }
     constexpr void set(Enum value) noexcept {
         bits_ |= static_cast<Storage>(value);
@@ -151,10 +230,10 @@ template <class Row> struct List {
 inline SchemaNode SchemaNode::fromFlat(
     std::span<const StructFieldSchema> fields) {
     SchemaNode root;
-    root.tag = SchemaNodeTag::Struct;
-    root.children.reserve(fields.size());
+    if (fields.size() + 1 > maxSchemaNodeCount)
+        throw std::length_error("flat schema exceeds SchemaNode capacity");
     for (const auto &field : fields) {
-        SchemaNode child;
+        SchemaNodeEntry child;
         child.tag = field.type == StructFieldType::Flags
                         ? SchemaNodeTag::Flags
                         : (field.type == StructFieldType::List
@@ -162,23 +241,41 @@ inline SchemaNode SchemaNode::fromFlat(
                                : SchemaNodeTag::Leaf);
         child.name = field.name;
         child.leaf_type = field.type;
-        child.range = field.range;
+        child.range = std::visit(
+            [](const auto &range) -> internal::StructFieldRangeDescriptor {
+                using R = std::decay_t<decltype(range)>;
+                if constexpr (std::same_as<R, std::monostate>) return {};
+                else if constexpr (std::same_as<R, std::pair<std::int64_t,
+                                                             std::int64_t>>)
+                    return {.kind = internal::StructFieldRangeKind::Signed,
+                            .signed_min = range.first,
+                            .signed_max = range.second};
+                else if constexpr (std::same_as<R, std::pair<std::uint64_t,
+                                                             std::uint64_t>>)
+                    return {.kind = internal::StructFieldRangeKind::Unsigned,
+                            .unsigned_min = range.first,
+                            .unsigned_max = range.second};
+                else
+                    return {.kind = internal::StructFieldRangeKind::Floating,
+                            .floating_min = range.first,
+                            .floating_max = range.second};
+            }, field.range);
         child.unit = field.unit;
+        child.parent = 0;
         for (std::size_t index = 0; index < field.enum_value_count; ++index) {
-            child.vocabulary.push_back(
-                SchemaVocabularyValue{std::string{field.enum_values[index]},
-                                      index, false});
+            child.vocabulary[child.vocabulary_count++] =
+                SchemaVocabularyValue{field.enum_values[index], index, false};
         }
-        root.children.push_back(std::move(child));
+        root.nodes[root.node_count++] = child;
     }
     return root;
 }
 
 inline bool SchemaNode::recursive() const noexcept {
-    if (tag == SchemaNodeTag::Flags || tag == SchemaNodeTag::List) return true;
-    for (const auto &child : children) {
-        if (child.recursive()) return true;
-    }
+    for (std::size_t index = 0; index < node_count; ++index)
+        if (nodes[index].tag == SchemaNodeTag::Flags ||
+            nodes[index].tag == SchemaNodeTag::List)
+            return true;
     return false;
 }
 
@@ -256,18 +353,6 @@ struct UnsignedStructFieldRange {
 struct FloatingStructFieldRange {
     double min;
     double max;
-};
-
-enum class StructFieldRangeKind : std::uint8_t { None, Signed, Unsigned, Floating };
-
-struct StructFieldRangeDescriptor {
-    StructFieldRangeKind kind = StructFieldRangeKind::None;
-    std::int64_t signed_min = 0;
-    std::int64_t signed_max = 0;
-    std::uint64_t unsigned_min = 0;
-    std::uint64_t unsigned_max = 0;
-    double floating_min = 0;
-    double floating_max = 0;
 };
 
 // POD form used while the owner type is still incomplete. This preserves the
@@ -469,6 +554,22 @@ template <class Enum, std::size_t N> struct StructEnumValues {
     std::array<StructEnumValue<Enum>, N> values;
 };
 
+namespace internal {
+
+template <class Enum, std::size_t N>
+consteval void validateFlagsVocabularyNotOneHot(
+    const std::array<StructEnumValue<Enum>, N> &values) {
+    using Raw = std::underlying_type_t<Enum>;
+    using Unsigned = std::make_unsigned_t<Raw>;
+    for (const auto &entry : values) {
+        const auto bits = static_cast<Unsigned>(entry.value);
+        if (bits == 0 || (bits & (bits - 1)) != 0)
+            throw "FlagsVocabularyNotOneHot: Flags values must be nonzero one-hot bits";
+    }
+}
+
+} // namespace internal
+
 template <class First, class... Rest> consteval auto enumValues(First first, Rest... rest) {
     static_assert((std::same_as<First, Rest> && ...), "enumValues entries must use one enum type");
     using Enum = decltype(first.value);
@@ -524,6 +625,7 @@ consteval auto required(Declaration declaration,
             std::same_as<typename internal::FlagsTraits<Member>::enum_type,
                          Enum>,
             "Flags vocabulary enum must match Flags<Enum>");
+        internal::validateFlagsVocabularyNotOneHot(values.values);
     } else {
         static_assert(std::same_as<Member, Enum>,
                       "enum vocabulary must match the field enum type");
@@ -564,6 +666,7 @@ consteval auto optionalOverride(Declaration declaration,
                           typename internal::FlagsTraits<Value>::enum_type,
                           Enum>,
                       "Flags vocabulary enum must match Flags<Enum>");
+        internal::validateFlagsVocabularyNotOneHot(values.values);
     } else {
         static_assert(std::same_as<Value, Enum>,
                       "enum vocabulary must match the optional enum type");
@@ -597,6 +700,7 @@ consteval auto defaulted(Declaration declaration, Default &&value, StructEnumVal
         static_assert(
             std::same_as<typename internal::FlagsTraits<Member>::enum_type, Enum>,
             "Flags defaults and enumValues must match the field enum type");
+        internal::validateFlagsVocabularyNotOneHot(values.values);
     } else {
         static_assert(std::same_as<Member, Enum>,
                       "enum defaults and enumValues must match the field enum type");

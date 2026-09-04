@@ -6,6 +6,7 @@
 #include "../schema/structfieldjson.hpp"
 
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -16,6 +17,7 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+#include <schema.hpp>
 
 namespace Pelican::internal {
 
@@ -83,6 +85,27 @@ struct FrozenBehaviorRegistrationV2Layout {
 static_assert(sizeof(BehaviorRegistration) ==
                   sizeof(FrozenBehaviorRegistrationV2Layout),
               "BehaviorRegistration is the frozen v2 ABI record");
+static_assert(alignof(BehaviorRegistration) ==
+              alignof(FrozenBehaviorRegistrationV2Layout));
+#define PELICAN_FREEZE_BEHAVIOR_V2_FIELD(field)                         \
+    static_assert(offsetof(BehaviorRegistration, field) ==              \
+                  offsetof(FrozenBehaviorRegistrationV2Layout, field))
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(stable_name);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(schema_version);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(behavior_type);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(params_type);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(params_schema);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(params_schema_fingerprint);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(canonicalize_params);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(create);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(destroy);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(prepare_params);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(apply_prepared_params);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(destroy_prepared_params);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(event_handlers);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(owner);
+PELICAN_FREEZE_BEHAVIOR_V2_FIELD(token);
+#undef PELICAN_FREEZE_BEHAVIOR_V2_FIELD
 
 struct BehaviorRegistrationV3 {
     BehaviorRegistration callbacks;
@@ -214,7 +237,7 @@ std::string materializeBehaviorParamsSchemaFingerprint() {
 
 class UserBehaviorRegistererTemplatePublic {
     std::vector<BehaviorRegistration> behaviors;
-    std::vector<std::pair<RegistrationToken, SchemaNode>> v3_schemas;
+    std::vector<std::pair<RegistrationToken, Schema::Node>> v3_schemas;
 
     PELICAN_API RegistrationToken
     pelican_register_behavior_v2(BehaviorRegistration registration);
@@ -315,7 +338,7 @@ class UserBehaviorRegistererTemplatePublic {
     const BehaviorRegistration *findByName(std::string_view stable_name) const noexcept;
     const BehaviorRegistration *findByNameAndOwner(
         std::string_view stable_name, RegistrationOwner owner) const noexcept;
-    const SchemaNode *schemaFor(const BehaviorRegistration &registration) const
+    const Schema::Node *schemaFor(const BehaviorRegistration &registration) const
         noexcept;
 };
 

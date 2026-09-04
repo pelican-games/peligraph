@@ -9,6 +9,9 @@
 #ifndef WP382A_SCHEMA_VARIANT
 #define WP382A_SCHEMA_VARIANT 0
 #endif
+#ifndef WP382A_SCHEMA_SURFACE
+#define WP382A_SCHEMA_SURFACE 3
+#endif
 
 namespace {
 
@@ -27,7 +30,26 @@ struct OverrideRow {
     std::optional<std::uint8_t> mask;
     std::optional<Pelican::Flags<InstanceFlag>> instance_flags;
     std::optional<std::uint32_t> custom_index;
+    bool row_enabled = false;
 
+#if WP382A_SCHEMA_VARIANT == 2
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::componentPolicy("wp382a_override_row"),
+        Pelican::defaulted(Pelican::field<&OverrideRow::row_enabled>(
+            "row_enabled"), false),
+        Pelican::required(
+            Pelican::field<&OverrideRow::occurrence_id>("occurrence_id")),
+        Pelican::optionalOverride(Pelican::field<&OverrideRow::mask>(
+            "mask", Pelican::urange(0, 255))),
+        Pelican::optionalOverride(
+            Pelican::field<&OverrideRow::instance_flags>("instance_flags"),
+            Pelican::enumValues(
+                Pelican::enumValue("cull_disable", InstanceFlag::CullDisable),
+                Pelican::enumValue("flip_facing", InstanceFlag::FlipFacing),
+                Pelican::enumValue("force_opaque", InstanceFlag::ForceOpaque))),
+        Pelican::optionalOverride(Pelican::field<&OverrideRow::custom_index>(
+            "custom_index", Pelican::urange(0, 0x00ffffffu))));
+#else
     static constexpr auto schema = Pelican::structFields(
         Pelican::componentPolicy("wp382a_override_row"),
         Pelican::required(
@@ -46,7 +68,16 @@ struct OverrideRow {
                 Pelican::enumValue("flip_facing", InstanceFlag::FlipFacing),
                 Pelican::enumValue("force_opaque", InstanceFlag::ForceOpaque))),
         Pelican::optionalOverride(Pelican::field<&OverrideRow::custom_index>(
-            "custom_index", Pelican::urange(0, 0x00ffffffu))));
+            "custom_index", Pelican::urange(0, 0x00ffffffu))),
+        Pelican::defaulted(Pelican::field<&OverrideRow::row_enabled>(
+            "row_enabled"),
+#if WP382A_SCHEMA_VARIANT == 1
+            true
+#else
+            false
+#endif
+            ));
+#endif
 };
 
 struct CarrierParams {
@@ -81,7 +112,7 @@ class CarrierBehavior final : public Pelican::Behavior {
     using Params = CarrierParams;
 };
 
-#if !defined(WP382A_RELOAD_ONLY)
+#if WP382A_SCHEMA_SURFACE == 1 || WP382A_SCHEMA_SURFACE == 3
 struct CarrierEvent {
     Pelican::List<OverrideRow> rows;
 
@@ -93,7 +124,9 @@ struct CarrierEvent {
         archive.prop("rows", rows);
     }
 };
+#endif
 
+#if WP382A_SCHEMA_SURFACE == 2 || WP382A_SCHEMA_SURFACE == 3
 struct CarrierComponent {
     Pelican::List<OverrideRow> rows;
 
@@ -105,7 +138,7 @@ struct CarrierComponent {
 
 } // namespace
 
-#if !defined(WP382A_RELOAD_ONLY)
+#if WP382A_SCHEMA_SURFACE == 2 || WP382A_SCHEMA_SURFACE == 3
 DECLARE_COMPONENT(CarrierComponent, 61);
 
 namespace {
@@ -122,6 +155,10 @@ CarrierComponentRegistration component_registration;
 
 } // namespace
 
+#endif
+#if WP382A_SCHEMA_SURFACE == 1 || WP382A_SCHEMA_SURFACE == 3
 PELICAN_REGISTER_EVENT(CarrierEvent);
 #endif
+#if WP382A_SCHEMA_SURFACE == 0 || WP382A_SCHEMA_SURFACE == 3
 PELICAN_REGISTER_BEHAVIOR(CarrierBehavior, "wp382a_carrier", 1);
+#endif

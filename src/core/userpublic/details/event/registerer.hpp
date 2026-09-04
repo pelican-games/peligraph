@@ -1,6 +1,7 @@
 #pragma once
 
 #include "payloadschema.hpp"
+#include <schema.hpp>
 #include "../reload/registrationowner.hpp"
 #include "../schema/structfieldjson.hpp"
 #include "../../serialize/jsonarchive.hpp"
@@ -74,15 +75,38 @@ struct FrozenEventTypeRegistrationV2Layout {
 static_assert(sizeof(EventTypeRegistration) ==
                   sizeof(FrozenEventTypeRegistrationV2Layout),
               "EventTypeRegistration is the frozen v2 ABI record");
+static_assert(alignof(EventTypeRegistration) ==
+              alignof(FrozenEventTypeRegistrationV2Layout));
+#define PELICAN_FREEZE_EVENT_V2_FIELD(field)                            \
+    static_assert(offsetof(EventTypeRegistration, field) ==             \
+                  offsetof(FrozenEventTypeRegistrationV2Layout, field))
+PELICAN_FREEZE_EVENT_V2_FIELD(name);
+PELICAN_FREEZE_EVENT_V2_FIELD(type);
+PELICAN_FREEZE_EVENT_V2_FIELD(schema_state);
+PELICAN_FREEZE_EVENT_V2_FIELD(schema);
+PELICAN_FREEZE_EVENT_V2_FIELD(load_json_payload);
+PELICAN_FREEZE_EVENT_V2_FIELD(list_ref_fields);
+PELICAN_FREEZE_EVENT_V2_FIELD(owner);
+PELICAN_FREEZE_EVENT_V2_FIELD(token);
+#undef PELICAN_FREEZE_EVENT_V2_FIELD
 
 struct EventTypeRegistrationV3 {
     EventTypeRegistration callbacks;
+    std::uint32_t schema_version = 1;
+    std::string schema_fingerprint;
     const SchemaNode &schema;
+};
+
+struct EventSchemaRegistrationV3 {
+    RegistrationToken token;
+    std::uint32_t schema_version = 1;
+    std::string schema_fingerprint;
+    Schema::Node schema;
 };
 
 class UserEventRegistererTemplatePublic {
     std::vector<EventTypeRegistration> event_types;
-    std::vector<std::pair<RegistrationToken, SchemaNode>> v3_schemas;
+    std::vector<EventSchemaRegistrationV3> v3_schemas;
     std::vector<QueuedEvent> pending_events;
     std::vector<QueuedEvent> deliver_now_events;
     std::size_t payload_load_calls = 0;
@@ -215,7 +239,16 @@ class UserEventRegistererTemplatePublic {
             static const auto schema =
                 materializeSchemaNode(EventType::pelican_payload);
             return pelican_register_event_v3(EventTypeRegistrationV3{
-                std::move(registration), schema});
+                std::move(registration),
+                []() consteval {
+                    if constexpr (requires {
+                                      EventType::pelican_schema_version;
+                                  })
+                        return static_cast<std::uint32_t>(
+                            EventType::pelican_schema_version);
+                    return std::uint32_t{1};
+                }(),
+                schemaNodeFingerprint(schema), schema});
         } else {
             return pelican_register_event_v2(std::move(registration));
         }
@@ -244,8 +277,12 @@ class UserEventRegistererTemplatePublic {
     EventSchemaLookup findEventSchema(std::string_view name) const;
     PELICAN_API const EventTypeRegistration *findByType(std::type_index type) const;
     const EventTypeRegistration *findByName(std::string_view name) const;
-    const SchemaNode *schemaFor(
+    const Schema::Node *schemaFor(
         const EventTypeRegistration &registration) const noexcept;
+    const std::vector<EventSchemaRegistrationV3> &registeredV3Schemas() const
+        noexcept { return v3_schemas; }
+    const std::vector<EventTypeRegistration> &registeredEventTypes() const
+        noexcept { return event_types; }
     void validateCatalogAndFreeze();
     void freezeCatalog() noexcept;
     std::size_t pendingEventCount() const noexcept;

@@ -1,4 +1,5 @@
-add_library(pelican_core log.cpp profiler.cpp job_system.cpp startup.cpp) # [BENCHMARK_ONLY] Added profiler.cpp
+add_library(pelican_core log.cpp profiler.cpp job_system.cpp startup.cpp
+            schemanodeadapter.cpp) # [BENCHMARK_ONLY] Added profiler.cpp
 
 # settings
 set_target_properties(pelican_core PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")

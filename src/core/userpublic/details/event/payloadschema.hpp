@@ -13,6 +13,10 @@
 
 namespace Pelican {
 
+namespace Schema {
+struct Node;
+}
+
 // WP71 names stay source-compatible. Their representation now comes from the
 // use-site-neutral StructFieldSchema layer.
 using PayloadFieldType = StructFieldType;
@@ -94,6 +98,7 @@ struct EventSchemaLookup {
 
     State state = State::UnknownEvent;
     const EventPayloadSchema *schema = nullptr;
+    const Schema::Node *schema_v3 = nullptr;
 };
 
 using EventSchemaState = EventSchemaLookup::State;

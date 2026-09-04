@@ -27,6 +27,7 @@ enum class StructFieldErrorCode : std::uint8_t {
     RowEnvelopeMissing,
     RowEnvelopeUnsupported,
     DuplicateRowId,
+    RowIdExhausted,
 };
 
 class StructFieldValidationError : public std::runtime_error {
@@ -233,6 +234,50 @@ nlohmann::ordered_json encodeStructObject(
     const StructSchemaDescriptor<Policy, PolicyFields...> &schema,
     std::string_view root_path);
 
+// The semantic List invariants are shared by both directions.  Decode first
+// constructs the typed value after checking JSON shape; encode calls the same
+// validator before emitting a byte of wire data.
+template <class Row>
+void validateListValue(const List<Row> &list, const std::string &path) {
+    std::set<std::uint32_t> ids;
+    std::uint32_t maximum_id = 0;
+    for (std::size_t index = 0; index < list.rows.size(); ++index) {
+        const auto &envelope = list.rows[index].envelope;
+        const auto row_path = path + ".rows[" + std::to_string(index) + "]";
+        if (envelope.id == 0)
+            structFieldError(StructFieldErrorCode::OutOfRange, row_path,
+                             "row id must be non-zero");
+        if (envelope.version != 1)
+            structFieldError(StructFieldErrorCode::RowEnvelopeUnsupported,
+                             row_path,
+                             "RowEnvelopeUnsupported: unknown $row version");
+        if (!ids.emplace(envelope.id).second)
+            structFieldError(StructFieldErrorCode::DuplicateRowId, row_path,
+                             "DuplicateRowId: row id is duplicated");
+        maximum_id = std::max(maximum_id, envelope.id);
+        if (envelope.hint_json) {
+            try {
+                if (!nlohmann::json::parse(*envelope.hint_json).is_object())
+                    structFieldError(StructFieldErrorCode::TypeMismatch,
+                                     row_path + ".$row.hint",
+                                     "must be an object");
+            } catch (const StructFieldValidationError &) {
+                throw;
+            } catch (const nlohmann::json::exception &) {
+                structFieldError(StructFieldErrorCode::TypeMismatch,
+                                 row_path + ".$row.hint",
+                                 "must be valid object JSON");
+            }
+        }
+    }
+    if (maximum_id == std::numeric_limits<std::uint32_t>::max())
+        structFieldError(StructFieldErrorCode::RowIdExhausted, path,
+                         "RowIdExhausted: row id high-water reached UINT32_MAX");
+    if (list.next_id <= maximum_id)
+        structFieldError(StructFieldErrorCode::OutOfRange, path,
+                         "$list.next_id must exceed every row id");
+}
+
 template <class PolicyField, class Owner>
 void decodeStructPolicyField(const StructJson &payload, const PolicyField &policy_field, Owner &temporary,
                              std::string_view root_path) {
@@ -438,8 +483,6 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
             structFieldError(StructFieldErrorCode::TypeMismatch, path,
                              "list rows must be an array");
         }
-        std::set<std::uint32_t> ids;
-        std::uint32_t maximum_id = 0;
         for (std::size_t index = 0; index < rows->size(); ++index) {
             const auto &encoded_row = rows->at(index);
             const auto row_path = path + ".rows[" + std::to_string(index) + "]";
@@ -467,21 +510,6 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
             ListRow<Row> row;
             row.envelope.id = read_u32(row_meta.at("id"), "$row.id");
             row.envelope.version = read_u32(row_meta.at("v"), "$row.v");
-            if (row.envelope.id == 0) {
-                structFieldError(StructFieldErrorCode::OutOfRange, row_path,
-                                 "row id must be non-zero");
-            }
-            if (row.envelope.version != 1) {
-                structFieldError(StructFieldErrorCode::RowEnvelopeUnsupported,
-                                 row_path,
-                                 "RowEnvelopeUnsupported: unknown $row version");
-            }
-            if (!ids.emplace(row.envelope.id).second) {
-                structFieldError(StructFieldErrorCode::DuplicateRowId,
-                                 row_path,
-                                 "DuplicateRowId: row id is duplicated");
-            }
-            maximum_id = std::max(maximum_id, row.envelope.id);
             if (const auto hint = row_meta.find("hint"); hint != row_meta.end()) {
                 if (!hint->is_object()) {
                     structFieldError(StructFieldErrorCode::TypeMismatch,
@@ -495,10 +523,7 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
             decodeStructObject(authored_row, row.value, Row::schema, row_path);
             decoded.rows.push_back(std::move(row));
         }
-        if (decoded.next_id <= maximum_id) {
-            structFieldError(StructFieldErrorCode::OutOfRange, path,
-                             "$list.next_id must exceed every row id");
-        }
+        validateListValue(decoded, path);
         member = std::move(decoded);
     } else if constexpr (std::same_as<Member, bool>) {
         if (!value_it->is_boolean()) {
@@ -617,6 +642,7 @@ nlohmann::ordered_json encodeStructPolicyField(const Owner &value, const PolicyF
         return result;
     } else if constexpr (is_list_v<Member>) {
         using Row = typename ListTraits<Member>::row_type;
+        validateListValue(member, path);
         nlohmann::ordered_json result = nlohmann::ordered_json::object();
         result["$list"] = nlohmann::ordered_json{{"v", 1}, {"next_id", member.next_id}};
         result["rows"] = nlohmann::ordered_json::array();
@@ -759,73 +785,204 @@ inline nlohmann::ordered_json schemaRangeJson(const StructFieldRange &range) {
         [](const auto &value) -> nlohmann::ordered_json {
             using Range = std::remove_cvref_t<decltype(value)>;
             if constexpr (std::same_as<Range, std::monostate>) return nullptr;
-            else return nlohmann::ordered_json::array({value.first, value.second});
+            else if constexpr (std::same_as<Range, std::pair<double, double>>) {
+                // JSON has one zero.  A descriptor fingerprint must not depend
+                // on the IEEE sign bit of a zero range endpoint.
+                const auto canonical = [](double endpoint) {
+                    return endpoint == 0.0 ? 0.0 : endpoint;
+                };
+                return nlohmann::ordered_json::array(
+                    {canonical(value.first), canonical(value.second)});
+            } else return nlohmann::ordered_json::array({value.first, value.second});
         },
         range);
 }
 
+inline nlohmann::ordered_json schemaRangeJson(
+    const StructFieldRangeDescriptor &range) {
+    switch (range.kind) {
+    case StructFieldRangeKind::None: return nullptr;
+    case StructFieldRangeKind::Signed:
+        return nlohmann::ordered_json::array(
+            {range.signed_min, range.signed_max});
+    case StructFieldRangeKind::Unsigned:
+        return nlohmann::ordered_json::array(
+            {range.unsigned_min, range.unsigned_max});
+    case StructFieldRangeKind::Floating: {
+        const auto canonical = [](double endpoint) {
+            return endpoint == 0.0 ? 0.0 : endpoint;
+        };
+        return nlohmann::ordered_json::array(
+            {canonical(range.floating_min), canonical(range.floating_max)});
+    }
+    }
+    return nullptr;
+}
+
+template <class T>
+constexpr SchemaDefaultValue schemaDefaultValue(const T &value) {
+    SchemaDefaultValue result;
+    if constexpr (std::same_as<T, EmptyListDefault>) {
+        result.kind = SchemaDefaultKind::EmptyList;
+    } else if constexpr (std::same_as<T, bool>) {
+        result.kind = SchemaDefaultKind::Bool;
+        result.unsigned_value = value ? 1 : 0;
+    } else if constexpr (std::same_as<T, std::string_view>) {
+        result.kind = SchemaDefaultKind::String;
+        result.string_value = value;
+    } else if constexpr (is_flags_v<T>) {
+        result.kind = SchemaDefaultKind::Flags;
+        result.unsigned_value = value.bits();
+    } else if constexpr (std::is_enum_v<T>) {
+        result.kind = SchemaDefaultKind::Enum;
+        using Raw = std::underlying_type_t<T>;
+        if constexpr (std::is_signed_v<Raw>)
+            result.signed_value = static_cast<std::int64_t>(value);
+        else
+            result.unsigned_value = static_cast<std::uint64_t>(value);
+    } else if constexpr (std::is_integral_v<T> && std::is_signed_v<T>) {
+        result.kind = SchemaDefaultKind::Signed;
+        result.signed_value = static_cast<std::int64_t>(value);
+    } else if constexpr (std::is_integral_v<T>) {
+        result.kind = SchemaDefaultKind::Unsigned;
+        result.unsigned_value = static_cast<std::uint64_t>(value);
+    } else if constexpr (std::is_floating_point_v<T>) {
+        result.kind = SchemaDefaultKind::Floating;
+        result.components[0] = value == 0 ? 0.0 : static_cast<double>(value);
+        result.component_count = 1;
+    } else if constexpr (std::same_as<T, vec2>) {
+        result.kind = SchemaDefaultKind::Vector;
+        result.components = {value.x, value.y, 0, 0};
+        result.component_count = 2;
+    } else if constexpr (std::same_as<T, vec3>) {
+        result.kind = SchemaDefaultKind::Vector;
+        result.components = {value.x, value.y, value.z, 0};
+        result.component_count = 3;
+    } else if constexpr (std::same_as<T, vec4> || std::same_as<T, quat>) {
+        result.kind = SchemaDefaultKind::Vector;
+        result.components = {value.x, value.y, value.z, value.w};
+        result.component_count = 4;
+    } else {
+        static_assert(always_false_v<T>, "unsupported SchemaNode default type");
+    }
+    return result;
+}
+
+template <class PolicyField>
+constexpr void populateSchemaNodeEntry(SchemaNodeEntry &node,
+                                       const PolicyField &policy_field) {
+    using Field = std::remove_cvref_t<PolicyField>;
+    using Traits = PolicyFieldTraits<Field>;
+    using Member = unwrap_optional_t<typename Traits::member_type>;
+    node.name = policy_field.field.descriptor.name;
+    node.presence = Traits::presence;
+    node.leaf_type = policy_field.field.descriptor.type;
+    node.range = policy_field.field.descriptor.range;
+    node.unit = policy_field.field.descriptor.unit;
+    if constexpr (is_list_v<Member>) node.tag = SchemaNodeTag::List;
+    else if constexpr (is_flags_v<Member>) node.tag = SchemaNodeTag::Flags;
+    else node.tag = SchemaNodeTag::Leaf;
+
+    if constexpr (Traits::has_enum_values) {
+        for (const auto &entry : policy_field.enum_values.values) {
+            using Enum = std::remove_cvref_t<decltype(entry.value)>;
+            using Raw = std::underlying_type_t<Enum>;
+            SchemaVocabularyValue value{entry.name, 0, std::is_signed_v<Raw>};
+            if constexpr (std::is_signed_v<Raw>)
+                value.value = static_cast<std::uint64_t>(
+                    static_cast<std::int64_t>(entry.value));
+            else
+                value.value = static_cast<std::uint64_t>(entry.value);
+            node.vocabulary[node.vocabulary_count++] = value;
+        }
+    }
+    if constexpr (Traits::presence == StructFieldPresence::Defaulted) {
+        node.default_value = schemaDefaultValue(policy_field.default_value);
+        if constexpr (std::is_enum_v<Member>) {
+            for (const auto &entry : policy_field.enum_values.values)
+                if (entry.value == policy_field.default_value)
+                    node.default_value.string_value = entry.name;
+        }
+    }
+}
+
 template <class Policy, class... PolicyFields>
-SchemaNode materializeSchemaNode(
-    const StructSchemaDescriptor<Policy, PolicyFields...> &schema) {
-    SchemaNode root;
-    root.tag = SchemaNodeTag::Struct;
+constexpr void appendSchemaNodeFields(
+    SchemaNode &result,
+    const StructSchemaDescriptor<Policy, PolicyFields...> &schema,
+    std::uint16_t parent, std::uint8_t recursive_depth = 0) {
     std::apply(
         [&](const auto &...policy_field) {
             ([&] {
+                if (result.node_count >= maxSchemaNodeCount)
+                    throw "SchemaNodeCapacityExceeded";
+                const auto index = result.node_count++;
+                auto &node = result.nodes[index];
+                node.parent = parent;
+                populateSchemaNodeEntry(node, policy_field);
                 using Field = std::remove_cvref_t<decltype(policy_field)>;
-                using Traits = PolicyFieldTraits<Field>;
-                using Member = unwrap_optional_t<typename Traits::member_type>;
-                SchemaNode node;
-                node.name = policy_field.field.descriptor.name;
-                node.presence = Traits::presence;
-                node.leaf_type = policy_field.field.descriptor.type;
-                node.range = materializeStructFieldRange(
-                    policy_field.field.descriptor.range);
-                node.unit = policy_field.field.descriptor.unit;
+                using Member = unwrap_optional_t<
+                    typename PolicyFieldTraits<Field>::member_type>;
                 if constexpr (is_list_v<Member>) {
-                    node.tag = SchemaNodeTag::List;
+                    if (recursive_depth >= 1)
+                        throw "SchemaNodeDepthExceeded";
+                    if (result.node_count >= maxSchemaNodeCount)
+                        throw "SchemaNodeCapacityExceeded";
+                    const auto row_index = result.node_count++;
+                    result.nodes[row_index].tag = SchemaNodeTag::Struct;
+                    result.nodes[row_index].parent = index;
                     using Row = typename ListTraits<Member>::row_type;
-                    node.children.push_back(materializeSchemaNode(Row::schema));
-                } else if constexpr (is_flags_v<Member>) {
-                    node.tag = SchemaNodeTag::Flags;
-                } else {
-                    node.tag = SchemaNodeTag::Leaf;
+                    appendSchemaNodeFields(result, Row::schema, row_index,
+                                           recursive_depth + 1);
                 }
-                if constexpr (Traits::has_enum_values) {
-                    for (const auto &entry : policy_field.enum_values.values) {
-                        using Enum = std::remove_cvref_t<decltype(entry.value)>;
-                        using Raw = std::underlying_type_t<Enum>;
-                        if constexpr (std::is_signed_v<Raw>) {
-                            node.vocabulary.push_back(SchemaVocabularyValue{
-                                std::string{entry.name},
-                                static_cast<std::uint64_t>(
-                                    static_cast<std::int64_t>(entry.value)),
-                                true});
-                        } else {
-                            node.vocabulary.push_back(SchemaVocabularyValue{
-                                std::string{entry.name},
-                                static_cast<std::uint64_t>(entry.value), false});
-                        }
-                    }
-                }
-                if constexpr (Traits::presence ==
-                              StructFieldPresence::Defaulted) {
-                    using FieldOwner = typename Traits::owner_type;
-                    FieldOwner defaults{};
-                    setStructDefault(policy_field, defaults);
-                    node.default_json =
-                        encodeStructPolicyField(defaults, policy_field,
-                                                "schema.default")
-                            .dump();
-                }
-                root.children.push_back(std::move(node));
             }(), ...);
         },
         schema.declarations);
-    return root;
 }
 
-inline nlohmann::ordered_json schemaNodeJson(const SchemaNode &node) {
+template <class Policy, class... PolicyFields>
+consteval SchemaNode materializeSchemaNode(
+    const StructSchemaDescriptor<Policy, PolicyFields...> &schema) {
+    SchemaNode result;
+    appendSchemaNodeFields(result, schema, 0);
+    return result;
+}
+
+inline nlohmann::ordered_json schemaDefaultJson(const SchemaNodeEntry &node) {
+    const auto &value = node.default_value;
+    switch (value.kind) {
+    case SchemaDefaultKind::None: return nullptr;
+    case SchemaDefaultKind::EmptyList:
+        return nlohmann::ordered_json{{"$list", {{"v", 1}, {"next_id", 1}}},
+                                      {"rows", nlohmann::ordered_json::array()}};
+    case SchemaDefaultKind::Bool: return value.unsigned_value != 0;
+    case SchemaDefaultKind::Signed: return value.signed_value;
+    case SchemaDefaultKind::Unsigned: return value.unsigned_value;
+    case SchemaDefaultKind::Floating: return value.components[0];
+    case SchemaDefaultKind::String:
+    case SchemaDefaultKind::Enum: return value.string_value;
+    case SchemaDefaultKind::Flags: {
+        auto result = nlohmann::ordered_json::array();
+        for (std::size_t index = 0; index < node.vocabulary_count; ++index) {
+            const auto &entry = node.vocabulary[index];
+            if ((value.unsigned_value & entry.value) == entry.value)
+                result.push_back(entry.name);
+        }
+        return result;
+    }
+    case SchemaDefaultKind::Vector: {
+        auto result = nlohmann::ordered_json::array();
+        for (std::size_t index = 0; index < value.component_count; ++index)
+            result.push_back(value.components[index]);
+        return result;
+    }
+    }
+    return nullptr;
+}
+
+inline nlohmann::ordered_json schemaNodeJson(const SchemaNode &tree,
+                                             std::size_t node_index = 0) {
+    const auto &node = tree.at(node_index);
     nlohmann::ordered_json result{
         {"tag", static_cast<std::uint8_t>(node.tag)},
         {"name", node.name},
@@ -833,21 +990,21 @@ inline nlohmann::ordered_json schemaNodeJson(const SchemaNode &node) {
         {"type", static_cast<std::uint8_t>(node.leaf_type)},
         {"range", schemaRangeJson(node.range)},
         {"unit", node.unit},
-        {"default", node.default_json
-                        ? nlohmann::ordered_json::parse(*node.default_json)
-                        : nlohmann::ordered_json(nullptr)},
+        {"default", schemaDefaultJson(node)},
     };
     auto vocabulary = nlohmann::ordered_json::array();
-    for (const auto &entry : node.vocabulary) {
+    for (std::size_t index = 0; index < node.vocabulary_count; ++index) {
+        const auto &entry = node.vocabulary[index];
         vocabulary.push_back({{"name", entry.name},
                               {"value", entry.value},
                               {"signed", entry.signed_value}});
     }
     result["vocabulary"] = std::move(vocabulary);
     auto children = nlohmann::ordered_json::array();
-    for (const auto &child : node.children) {
-        children.push_back(schemaNodeJson(child));
-    }
+    for (std::size_t ordinal = 0; ordinal < tree.childCount(node_index);
+         ++ordinal)
+        children.push_back(schemaNodeJson(
+            tree, tree.childIndex(node_index, ordinal)));
     result["children"] = std::move(children);
     return result;
 }

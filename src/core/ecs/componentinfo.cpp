@@ -33,9 +33,26 @@ internal::RegistrationToken ComponentInfoManager::registerComponent(ComponentInf
     }
     const auto index = static_cast<std::size_t>(info.id);
     if (index < infos.size() && infos[index].token) {
-        throw std::runtime_error("component '" + info.name + "' duplicates id " +
-                                 std::to_string(info.id) + " already registered by '" +
-                                 infos[index].name + "'");
+        const auto &active = infos[index];
+        if (active.name != info.name ||
+            active.owner == internal::engineRegistrationOwner ||
+            info.owner == internal::engineRegistrationOwner ||
+            active.owner == info.owner) {
+            throw std::runtime_error("component '" + info.name + "' duplicates id " +
+                                     std::to_string(info.id) + " already registered by '" +
+                                     active.name + "'");
+        }
+        info.token = internal::acquireRegistrationToken(
+            internal::RegistrationKind::component, info.owner, info.name);
+        const auto token = info.token;
+        try {
+            candidate_infos.push_back(std::move(info));
+        } catch (...) {
+            (void)internal::releaseRegistrationToken(
+                token, internal::RegistrationKind::component);
+            throw;
+        }
+        return token;
     }
     if (const auto duplicate_name = name_id_map.find(info.name);
         duplicate_name != name_id_map.end()) {
@@ -68,6 +85,21 @@ internal::RegistrationToken ComponentInfoManager::registerComponent(ComponentInf
 
 void ComponentInfoManager::unregisterComponent(
     internal::RegistrationToken token) {
+    const auto candidate = std::find_if(
+        candidate_infos.begin(), candidate_infos.end(),
+        [token](const ComponentInfo &info) { return info.token == token; });
+    if (candidate != candidate_infos.end()) {
+        candidate_infos.erase(candidate);
+        (void)internal::releaseRegistrationToken(
+            token, internal::RegistrationKind::component);
+        return;
+    }
+    for (const auto &info : candidate_infos) {
+        if (info.token) {
+            (void)internal::releaseRegistrationToken(
+                info.token, internal::RegistrationKind::component);
+        }
+    }
     const auto found = std::find_if(infos.begin(), infos.end(),
                                     [token](const ComponentInfo &info) {
                                         return info.token == token;
@@ -82,8 +114,16 @@ void ComponentInfoManager::unregisterComponent(
                                  "': dependent ECS system '" + dependents.front() +
                                  "' remains");
     }
-    name_id_map.erase(found->name);
-    *found = {};
+    const auto replacement = std::find_if(
+        candidate_infos.begin(), candidate_infos.end(),
+        [&](const ComponentInfo &info) { return info.id == found->id; });
+    if (replacement == candidate_infos.end()) {
+        name_id_map.erase(found->name);
+        *found = {};
+    } else {
+        *found = std::move(*replacement);
+        candidate_infos.erase(replacement);
+    }
     (void)internal::releaseRegistrationToken(
         token, internal::RegistrationKind::component);
 }
@@ -119,6 +159,9 @@ std::vector<std::string> ComponentInfoManager::registrationNames(
     for (const auto &info : infos) {
         if (info.token && info.owner == owner) result.push_back(info.name);
     }
+    for (const auto &info : candidate_infos) {
+        if (info.token && info.owner == owner) result.push_back(info.name);
+    }
     std::ranges::sort(result);
     return result;
 }
@@ -128,7 +171,19 @@ std::size_t ComponentInfoManager::registrationCount(
     return static_cast<std::size_t>(std::count_if(
         infos.begin(), infos.end(), [owner](const ComponentInfo &info) {
             return info.token && info.owner == owner;
+        })) + static_cast<std::size_t>(std::count_if(
+        candidate_infos.begin(), candidate_infos.end(),
+        [owner](const ComponentInfo &info) {
+            return info.token && info.owner == owner;
         }));
+}
+
+std::vector<ComponentInfo> ComponentInfoManager::registeredComponents() const {
+    std::vector<ComponentInfo> result;
+    result.reserve(infos.size() + candidate_infos.size());
+    for (const auto &info : infos) if (info.token) result.push_back(info);
+    result.insert(result.end(), candidate_infos.begin(), candidate_infos.end());
+    return result;
 }
 
 void ComponentInfoManager::loadByJson(void *dst_ptr, const nlohmann::json &hint) const {

@@ -1,4 +1,5 @@
 #include "registerer.hpp"
+#include "../../../schemanodeadapter.hpp"
 #include "../../../loader/sceneload.hpp"
 #include "../behavior/registerer.hpp"
 #include "../system/registerer.hpp"
@@ -346,11 +347,15 @@ RegistrationToken UserEventRegistererTemplatePublic::pelican_register_event_v2(
 
 RegistrationToken UserEventRegistererTemplatePublic::pelican_register_event_v3(
     EventTypeRegistrationV3 registration) {
-    const auto &schema = registration.schema;
+    auto schema = hostSchemaNode(registration.schema);
+    auto schema_fingerprint = std::move(registration.schema_fingerprint);
+    const auto schema_version = registration.schema_version;
     const auto token =
         pelican_register_event_v2(std::move(registration.callbacks));
     try {
-        v3_schemas.emplace_back(token, schema);
+        v3_schemas.push_back(EventSchemaRegistrationV3{
+            token, schema_version, std::move(schema_fingerprint),
+            std::move(schema)});
     } catch (...) {
         unregisterEvent(token);
         throw;
@@ -422,6 +427,7 @@ EventSchemaLookup UserEventRegistererTemplatePublic::findEventSchema(std::string
         .schema = registration->schema_state == EventSchemaState::Typed
                       ? &registration->schema
                       : (registration->schema_state == EventSchemaState::Payloadless ? &empty_schema : nullptr),
+        .schema_v3 = schemaFor(*registration),
     };
 }
 
@@ -439,12 +445,12 @@ const EventTypeRegistration *UserEventRegistererTemplatePublic::findByName(std::
     return it == event_types.end() ? nullptr : &*it;
 }
 
-const SchemaNode *UserEventRegistererTemplatePublic::schemaFor(
+const Schema::Node *UserEventRegistererTemplatePublic::schemaFor(
     const EventTypeRegistration &registration) const noexcept {
     const auto found = std::find_if(
         v3_schemas.begin(), v3_schemas.end(),
-        [&](const auto &entry) { return entry.first == registration.token; });
-    return found == v3_schemas.end() ? nullptr : &found->second;
+        [&](const auto &entry) { return entry.token == registration.token; });
+    return found == v3_schemas.end() ? nullptr : &found->schema;
 }
 
 void UserEventRegistererTemplatePublic::validateCatalogAndFreeze() {
@@ -604,7 +610,7 @@ void unregisterEvent(RegistrationToken token) {
     }
 
     std::erase_if(registerer.v3_schemas,
-                  [token](const auto &entry) { return entry.first == token; });
+                  [token](const auto &entry) { return entry.token == token; });
     registerer.event_types.erase(found);
     (void)releaseRegistrationToken(token, RegistrationKind::event);
 }

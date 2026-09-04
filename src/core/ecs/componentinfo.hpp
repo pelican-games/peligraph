@@ -6,6 +6,7 @@
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 #include <string_view>
+#include <span>
 #include <unordered_map>
 
 #include "component.hpp"
@@ -14,6 +15,7 @@
 #include <details/reload/registrationowner.hpp>
 #include <details/schema/structfieldschema.hpp>
 #include <serialize/jsonarchive.hpp>
+#include <schema.hpp>
 
 namespace Pelican {
 
@@ -50,12 +52,17 @@ struct ComponentInfo {
     void (*cb_load_by_json2)(void *ptr, JsonArchiveLoader &json) = nullptr;
     internal::RegistrationOwner owner = internal::engineRegistrationOwner;
     internal::RegistrationToken token;
-    std::optional<SchemaNode> schema_v3;
+    std::uint32_t schema_version = 0;
+    std::string schema_fingerprint;
+    std::optional<Schema::Node> schema_v3;
 };
 
 DECLARE_MODULE(ComponentInfoManager) {
     friend class internal::UserComponentRegistererTemplatePublic;
     std::vector<ComponentInfo> infos;
+    // A reload candidate may register the same id/name while the active DLL
+    // is still live.  It stays here until active teardown promotes it.
+    std::vector<ComponentInfo> candidate_infos;
     std::unordered_map<std::string, ComponentId> name_id_map;
 
     internal::RegistrationToken registerComponent(ComponentInfo info);
@@ -74,6 +81,7 @@ DECLARE_MODULE(ComponentInfoManager) {
     void loadByJson(void *ptr, const nlohmann::json &json) const;
     void unregisterComponent(internal::RegistrationToken token);
     std::size_t registrationCount(internal::RegistrationOwner owner) const noexcept;
+    std::vector<ComponentInfo> registeredComponents() const;
 };
 
 } // namespace Pelican

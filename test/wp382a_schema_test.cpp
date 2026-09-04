@@ -6,6 +6,7 @@
 
 #include <optional>
 #include <string>
+#include <type_traits>
 
 namespace {
 
@@ -45,6 +46,22 @@ struct CarrierParams {
         behaviorParamsPolicy,
         defaulted(field<&CarrierParams::overrides>("overrides")),
         defaulted(field<&CarrierParams::enabled>("enabled"), false));
+};
+
+struct NegativeZeroRange {
+    float value = 0;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&NegativeZeroRange::value>("value", frange(-0.0, 1.0)),
+                  0.0f));
+};
+
+struct PositiveZeroRange {
+    float value = 0;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy,
+        defaulted(field<&PositiveZeroRange::value>("value", frange(+0.0, 1.0)),
+                  0.0f));
 };
 
 template <class Fn>
@@ -96,12 +113,32 @@ TEST_CASE("WP382a recursive List and Flags round-trip the object container",
     const auto encoded = encodeBehaviorParams(decoded, CarrierParams::schema);
     REQUIRE(nlohmann::json::parse(encoded.dump()) == validParams());
     const auto node = materializeSchemaNode(CarrierParams::schema);
-    REQUIRE(node.tag == SchemaNodeTag::Struct);
-    REQUIRE(node.children.at(0).tag == SchemaNodeTag::List);
-    REQUIRE(node.children.at(0).children.at(0).children.at(2).tag ==
-            SchemaNodeTag::Flags);
-    REQUIRE(node.children.at(0).children.at(0).children.at(1).presence ==
+    static_assert(std::is_trivially_destructible_v<SchemaNode>);
+    REQUIRE(node.root().tag == SchemaNodeTag::Struct);
+    const auto list = node.childIndex(0, 0);
+    const auto row = node.childIndex(list, 0);
+    REQUIRE(node.at(list).tag == SchemaNodeTag::List);
+    REQUIRE(node.at(node.childIndex(row, 2)).tag == SchemaNodeTag::Flags);
+    REQUIRE(node.at(node.childIndex(row, 1)).presence ==
             StructFieldPresence::OptionalOverride);
+
+    auto one_flag = validParams();
+    one_flag["overrides"]["rows"][0]["instance_flags"] =
+        nlohmann::json::array({"cull_disable"});
+    CarrierParams one_flag_value;
+    decodeBehaviorParams(one_flag, one_flag_value, CarrierParams::schema);
+    REQUIRE(one_flag_value.overrides.rows[0].value.instance_flags->contains(
+        InstanceFlag::CullDisable));
+    REQUIRE(nlohmann::json::parse(
+                encodeBehaviorParams(one_flag_value, CarrierParams::schema)
+                    .dump()) == one_flag);
+}
+
+TEST_CASE("WP382a fingerprint canonicalizes signed zero range endpoints",
+          "[WP382a][schema][fingerprint]") {
+    constexpr auto negative = materializeSchemaNode(NegativeZeroRange::schema);
+    constexpr auto positive = materializeSchemaNode(PositiveZeroRange::schema);
+    REQUIRE(schemaNodeFingerprint(negative) == schemaNodeFingerprint(positive));
 }
 
 TEST_CASE("WP382a list grammar has named failures",
@@ -148,6 +185,40 @@ TEST_CASE("WP382a list grammar has named failures",
     requireSchemaFailure(
         [&] { CarrierParams out; decodeBehaviorParams(reused_next_id, out, CarrierParams::schema); },
         StructFieldErrorCode::OutOfRange, "$list.next_id must exceed every row id");
+
+    CarrierParams typed;
+    decodeBehaviorParams(validParams(), typed, CarrierParams::schema);
+    typed.overrides.rows[1].envelope.id = 1;
+    requireSchemaFailure(
+        [&] { (void)encodeBehaviorParams(typed, CarrierParams::schema); },
+        StructFieldErrorCode::DuplicateRowId, "DuplicateRowId");
+
+    decodeBehaviorParams(validParams(), typed, CarrierParams::schema);
+    typed.overrides.rows[0].envelope.version = 2;
+    requireSchemaFailure(
+        [&] { (void)encodeBehaviorParams(typed, CarrierParams::schema); },
+        StructFieldErrorCode::RowEnvelopeUnsupported,
+        "RowEnvelopeUnsupported");
+
+    decodeBehaviorParams(validParams(), typed, CarrierParams::schema);
+    typed.overrides.next_id = 2;
+    requireSchemaFailure(
+        [&] { (void)encodeBehaviorParams(typed, CarrierParams::schema); },
+        StructFieldErrorCode::OutOfRange,
+        "$list.next_id must exceed every row id");
+
+    decodeBehaviorParams(validParams(), typed, CarrierParams::schema);
+    typed.overrides.rows[0].envelope.hint_json = "[]";
+    requireSchemaFailure(
+        [&] { (void)encodeBehaviorParams(typed, CarrierParams::schema); },
+        StructFieldErrorCode::TypeMismatch, "must be an object");
+
+    decodeBehaviorParams(validParams(), typed, CarrierParams::schema);
+    typed.overrides.rows[0].envelope.id = UINT32_MAX;
+    typed.overrides.next_id = UINT32_MAX;
+    requireSchemaFailure(
+        [&] { (void)encodeBehaviorParams(typed, CarrierParams::schema); },
+        StructFieldErrorCode::RowIdExhausted, "RowIdExhausted");
 }
 
 TEST_CASE("WP382a ray overrides remain gated",

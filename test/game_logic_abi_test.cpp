@@ -3,6 +3,7 @@
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/prefabprovider.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/userpublic/details/behavior/registerer.hpp"
 #include "../src/core/userpublic/details/event/registerer.hpp"
@@ -1112,6 +1113,12 @@ TEST_CASE("WP382a frozen v2 and recursive v3 registrations coexist and materiali
     GameLogicReloader frozen_reloader;
     GameLogicReloader recursive_reloader;
     REQUIRE(frozen_reloader.initialize(frozen));
+    REQUIRE(nlohmann::json::parse(internal::canonicalizeBehaviorParams(
+                "wp382a_frozen_v2_behavior", nlohmann::json::object())) ==
+            nlohmann::json{{"value", 7}});
+    const nlohmann::json frozen_event{{"value", 9}};
+    REQUIRE(internal::emitEventByName("FrozenV2Event", &frozen_event) == 1);
+    internal::clearPendingEvents();
     REQUIRE(recursive_reloader.initialize(recursive));
 
     auto &components = GET_MODULE(ComponentInfoManager);
@@ -1120,14 +1127,14 @@ TEST_CASE("WP382a frozen v2 and recursive v3 registrations coexist and materiali
     const auto &component = components.get(
         components.getComponentIdByName("wp382a_v3_component"));
     REQUIRE(component.schema_v3.has_value());
-    REQUIRE(component.schema_v3->children.at(0).tag == SchemaNodeTag::List);
+    REQUIRE(component.schema_v3->children.at(0).tag == Schema::NodeTag::List);
 
     const auto params = nlohmann::json::parse(R"json({
       "overrides": {
         "$list": {"v": 1, "next_id": 2},
         "rows": [{"$row": {"id": 1, "v": 1},
-                  "occurrence_id": "mesh/chair",
-                  "mask": 0, "instance_flags": []}]
+           "occurrence_id": "mesh/chair",
+                  "mask": 0, "instance_flags": [], "row_enabled": false}]
       },
       "enabled": true
     })json");
@@ -1138,6 +1145,33 @@ TEST_CASE("WP382a frozen v2 and recursive v3 registrations coexist and materiali
     const nlohmann::json event_payload{{"rows", params.at("overrides")}};
     REQUIRE_NOTHROW(internal::getEventRegisterer().validateEventPayload(
         "CarrierEvent", &event_payload));
+    const auto event_schema = internal::findEventSchema("CarrierEvent");
+    REQUIRE(event_schema.schema_v3 != nullptr);
+    REQUIRE(event_schema.schema_v3->children.at(0).tag ==
+            Schema::NodeTag::List);
+    const auto &frozen_component = components.get(
+        components.getComponentIdByName("wp382a_frozen_v2_component"));
+    void *frozen_storage = ::operator new(
+        frozen_component.size,
+        std::align_val_t{frozen_component.alignment});
+    frozen_component.cb_construct(frozen_storage);
+    void *relocated_frozen_storage = ::operator new(
+        frozen_component.size,
+        std::align_val_t{frozen_component.alignment});
+    frozen_component.cb_relocate(relocated_frozen_storage, frozen_storage);
+    frozen_component.cb_destroy(relocated_frozen_storage);
+    ::operator delete(relocated_frozen_storage,
+                      std::align_val_t{frozen_component.alignment});
+    ::operator delete(frozen_storage,
+                      std::align_val_t{frozen_component.alignment});
+
+    const auto provider = buildProductionBindableProviderSnapshot();
+    const auto provider_descriptor = std::ranges::find_if(
+        provider.descriptors(), [](const auto &entry) {
+            return entry.provider_name == "component:wp382a_v3_component";
+        });
+    REQUIRE(provider_descriptor != provider.descriptors().end());
+    REQUIRE(provider_descriptor->schema_node == component.schema_v3);
 
     void *storage = ::operator new(component.size,
                                    std::align_val_t{component.alignment});
@@ -1153,43 +1187,52 @@ TEST_CASE("WP382a frozen v2 and recursive v3 registrations coexist and materiali
 TEST_CASE("WP382a production reload fingerprints every recursive schema input",
           "[game-logic-abi][wp382a][schema-v3][reload]") {
     setupLogger();
-    const auto same = fixture(PELICAN_WP382A_V3_SAME);
-
-    SECTION("identical declaration succeeds") {
-        Sandbox sandbox;
-        replaceFixture(same, sandbox.live());
-        GameLogicReloader reloader;
-        REQUIRE(reloader.initialize(sandbox.live()));
-        replaceFixture(same, sandbox.live());
-        const auto attempt = reloader.reloadNowAttempt([] {}, [] {});
-        REQUIRE(attempt.attempted);
-        REQUIRE(attempt.committed);
-        REQUIRE(attempt.error.empty());
-    }
-
-    const std::array mutations{
-        std::pair{"default", fixture(PELICAN_WP382A_V3_DEFAULT)},
-        std::pair{"order", fixture(PELICAN_WP382A_V3_ORDER)},
-        std::pair{"vocabulary-value",
-                  fixture(PELICAN_WP382A_V3_VOCABULARY)},
-        std::pair{"presence", fixture(PELICAN_WP382A_V3_PRESENCE)},
-    };
-    for (const auto &[name, mutation] : mutations) {
-        DYNAMIC_SECTION(name) {
+    const auto verify_surface = [&](std::string_view surface,
+                                    const std::filesystem::path &same,
+                                    const auto &mutations) {
+        DYNAMIC_SECTION(surface << ": identical declaration succeeds") {
             Sandbox sandbox;
             replaceFixture(same, sandbox.live());
             GameLogicReloader reloader;
             REQUIRE(reloader.initialize(sandbox.live()));
-            replaceFixture(mutation, sandbox.live());
+            replaceFixture(same, sandbox.live());
             const auto attempt = reloader.reloadNowAttempt([] {}, [] {});
             REQUIRE(attempt.attempted);
-            REQUIRE_FALSE(attempt.committed);
-            REQUIRE(attempt.error.find(
-                        "schema_changed_without_version_bump") !=
-                    std::string::npos);
-            REQUIRE(reloader.status().generation == 1);
+            REQUIRE(attempt.committed);
+            REQUIRE(attempt.error.empty());
         }
-    }
+        for (const auto &[name, mutation] : mutations) {
+            DYNAMIC_SECTION(surface << ": " << name) {
+                Sandbox sandbox;
+                replaceFixture(same, sandbox.live());
+                GameLogicReloader reloader;
+                REQUIRE(reloader.initialize(sandbox.live()));
+                replaceFixture(mutation, sandbox.live());
+                const auto attempt = reloader.reloadNowAttempt([] {}, [] {});
+                REQUIRE(attempt.attempted);
+                REQUIRE_FALSE(attempt.committed);
+                REQUIRE(attempt.error.find(
+                            "schema_changed_without_version_bump") !=
+                        std::string::npos);
+                REQUIRE(reloader.status().generation == 1);
+            }
+        }
+    };
+
+#define WP382A_MUTATIONS(SURFACE)                                      \
+    std::array{                                                        \
+        std::pair{"default", fixture(PELICAN_WP382A_V3_##SURFACE##_DEFAULT)}, \
+        std::pair{"order", fixture(PELICAN_WP382A_V3_##SURFACE##_ORDER)},     \
+        std::pair{"vocabulary-value",                                 \
+                  fixture(PELICAN_WP382A_V3_##SURFACE##_VOCABULARY)},  \
+        std::pair{"presence", fixture(PELICAN_WP382A_V3_##SURFACE##_PRESENCE)}}
+    verify_surface("behavior", fixture(PELICAN_WP382A_V3_BEHAVIOR_SAME),
+                   WP382A_MUTATIONS(BEHAVIOR));
+    verify_surface("event", fixture(PELICAN_WP382A_V3_EVENT_SAME),
+                   WP382A_MUTATIONS(EVENT));
+    verify_surface("component", fixture(PELICAN_WP382A_V3_COMPONENT_SAME),
+                   WP382A_MUTATIONS(COMPONENT));
+#undef WP382A_MUTATIONS
 }
 
 } // namespace Pelican
