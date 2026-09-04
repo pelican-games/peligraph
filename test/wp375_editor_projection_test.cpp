@@ -378,11 +378,12 @@ Json encodeFoo(const ComponentCodecValue &value) {
                               .value}};
 }
 
-std::span<const StructFieldSchema> fooSchema() {
+const SchemaNode &fooSchema() {
     static const std::array fields{
         StructFieldSchema{"value", StructFieldType::I32, std::monostate{}},
     };
-    return fields;
+    static const auto schema = SchemaNode::fromFlat(fields);
+    return schema;
 }
 
 void applyFoo(const ComponentCodecValue &value, void *target) {

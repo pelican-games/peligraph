@@ -625,6 +625,37 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
   pelican_add_wp381_registration_fixture(
     pelican_wp381_reverse_b 3 reverse-order-b)
 
+  add_library(pelican_wp382a_frozen_v2 SHARED
+    fixtures/wp382a_schema/frozen_v2_fixture.cpp)
+  set_target_properties(pelican_wp382a_frozen_v2 PROPERTIES
+    OUTPUT_NAME pelican_wp382a_frozen_v2)
+  pelican_configure_game_logic_target(pelican_wp382a_frozen_v2
+    HOST_TARGET pelican_test_game_logic_abi_test
+    ROLE wp382a-frozen-v2 NO_INVENTORY)
+  target_include_directories(pelican_wp382a_frozen_v2 BEFORE PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/userpublic_frozen/v2")
+
+  function(pelican_add_wp382a_v3_fixture target_name variant full_surface)
+    add_library(${target_name} SHARED
+      fixtures/wp382a_schema/v3_fixture.cpp)
+    set_target_properties(${target_name} PROPERTIES OUTPUT_NAME ${target_name})
+    target_compile_definitions(${target_name} PRIVATE
+      WP382A_SCHEMA_VARIANT=${variant})
+    if(NOT full_surface)
+      target_compile_definitions(${target_name} PRIVATE WP382A_RELOAD_ONLY=1)
+    endif()
+    pelican_configure_game_logic_target(${target_name}
+      HOST_TARGET pelican_test_game_logic_abi_test
+      ROLE wp382a-v3-${variant} NO_INVENTORY)
+  endfunction()
+
+  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_full 0 TRUE)
+  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_same 0 FALSE)
+  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_default 1 FALSE)
+  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_order 2 FALSE)
+  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_vocabulary 3 FALSE)
+  pelican_add_wp382a_v3_fixture(pelican_wp382a_v3_presence 4 FALSE)
+
   foreach(wp381_role_target IN ITEMS
       pelican_wp381_legacy_behavior
       pelican_wp381_legacy_event
@@ -679,6 +710,13 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     PELICAN_WP381_PROJECT_VRM_XR="$<TARGET_FILE:pelican_wp381_project_vrm_xr_demo>"
     PELICAN_WP381_STALE_SOURCE_DEPENDENCIES="${wp381_stale_source_dependencies}"
     PELICAN_WP381_CURRENT_USERPUBLIC="${CMAKE_SOURCE_DIR}/src/core/userpublic"
+    PELICAN_WP382A_FROZEN_V2="$<TARGET_FILE:pelican_wp382a_frozen_v2>"
+    PELICAN_WP382A_V3_FULL="$<TARGET_FILE:pelican_wp382a_v3_full>"
+    PELICAN_WP382A_V3_SAME="$<TARGET_FILE:pelican_wp382a_v3_same>"
+    PELICAN_WP382A_V3_DEFAULT="$<TARGET_FILE:pelican_wp382a_v3_default>"
+    PELICAN_WP382A_V3_ORDER="$<TARGET_FILE:pelican_wp382a_v3_order>"
+    PELICAN_WP382A_V3_VOCABULARY="$<TARGET_FILE:pelican_wp382a_v3_vocabulary>"
+    PELICAN_WP382A_V3_PRESENCE="$<TARGET_FILE:pelican_wp382a_v3_presence>"
   )
 
   get_filename_component(wp381_msvc_tool_dir "${CMAKE_LINKER}" DIRECTORY)
@@ -1105,6 +1143,7 @@ pelican_define_test(component_namespace_test GROUP ecs_editor pelican_core)
 pelican_define_test(eventlayer_test GROUP ecs_editor pelican_core)
 pelican_define_test(eventpayloadschema_test GROUP ecs_editor pelican_core)
 pelican_define_test(structfieldschema_test GROUP ecs_editor pelican_core)
+pelican_define_test(wp382a_schema_test pelican_core pelican_project)
 pelican_define_test(behaviorarena_test GROUP ecs_editor pelican_core)
 
 add_executable(pelican_test_behavior_determinism_probe behavior_determinism_probe.cpp)

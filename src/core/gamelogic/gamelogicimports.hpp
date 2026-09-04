@@ -65,7 +65,8 @@ readGameLogicImports(const std::filesystem::path &path) noexcept;
 
 GameLogicImportDiagnosis diagnoseGameLogicImports(
     const std::filesystem::path &path, std::string_view host_module,
-    std::uint32_t expected_epoch) noexcept;
+    std::uint32_t expected_epoch,
+    std::uint32_t host_schema_entrance = 3) noexcept;
 
 std::string_view gameLogicPeImportKindName(
     GameLogicPeImportKind kind) noexcept;

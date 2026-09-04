@@ -7,12 +7,15 @@
 #include <concepts>
 #include <cstdint>
 #include <limits>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace Pelican {
 
@@ -36,6 +39,8 @@ enum class StructFieldType : std::uint8_t {
     String,
     Bool,
     Enum,
+    Flags,
+    List,
 };
 
 using StructFieldRange = std::variant<std::monostate, std::pair<std::int64_t, std::int64_t>,
@@ -58,7 +63,124 @@ struct StructFieldSchema {
         : name(field_name), type(field_type), range(std::move(field_range)), unit(field_unit) {}
 };
 
-enum class StructFieldPresence : std::uint8_t { Required, Defaulted };
+enum class StructFieldPresence : std::uint8_t {
+    Required,
+    Defaulted,
+    OptionalOverride,
+};
+
+// V3's recursive descriptor is an owning value.  V2 registration records keep
+// carrying StructFieldSchema verbatim; hosts wrap those fields with fromFlat().
+// A field node carries its own name/presence so child order is represented by
+// the vector order and is therefore part of the descriptor contract.
+enum class SchemaNodeTag : std::uint8_t { Struct, Leaf, Flags, List };
+
+struct SchemaVocabularyValue {
+    std::string name;
+    std::uint64_t value = 0;
+    bool signed_value = false;
+
+    friend bool operator==(const SchemaVocabularyValue &,
+                           const SchemaVocabularyValue &) = default;
+};
+
+struct SchemaNode {
+    SchemaNodeTag tag = SchemaNodeTag::Struct;
+    std::string name;
+    StructFieldPresence presence = StructFieldPresence::Required;
+    StructFieldType leaf_type = StructFieldType::String;
+    StructFieldRange range;
+    std::string unit;
+    // Canonical JSON text.  Text rather than nlohmann::json keeps the public
+    // descriptor independent of a particular JSON object layout.
+    std::optional<std::string> default_json;
+    std::vector<SchemaVocabularyValue> vocabulary;
+    std::vector<SchemaNode> children;
+
+    static SchemaNode fromFlat(std::span<const StructFieldSchema> fields);
+    bool recursive() const noexcept;
+
+    friend bool operator==(const SchemaNode &, const SchemaNode &) = default;
+};
+
+template <class Enum> class Flags {
+    static_assert(std::is_enum_v<Enum>, "Flags vocabulary must be an enum");
+    using Raw = std::underlying_type_t<Enum>;
+    using Storage = std::make_unsigned_t<Raw>;
+    Storage bits_ = 0;
+
+  public:
+    using enum_type = Enum;
+    using storage_type = Storage;
+
+    constexpr Flags() noexcept = default;
+    constexpr explicit Flags(Storage bits) noexcept : bits_{bits} {}
+    constexpr Storage bits() const noexcept { return bits_; }
+    constexpr bool contains(Enum value) const noexcept {
+        return (bits_ & static_cast<Storage>(value)) != 0;
+    }
+    constexpr void set(Enum value) noexcept {
+        bits_ |= static_cast<Storage>(value);
+    }
+    friend constexpr bool operator==(Flags, Flags) noexcept = default;
+};
+
+struct RowEnvelope {
+    std::uint32_t id = 0;
+    std::uint32_t version = 1;
+    std::optional<std::string> hint_json;
+
+    friend bool operator==(const RowEnvelope &, const RowEnvelope &) = default;
+};
+
+template <class Row> struct ListRow {
+    RowEnvelope envelope;
+    Row value;
+
+    friend bool operator==(const ListRow &, const ListRow &) = default;
+};
+
+template <class Row> struct List {
+    using row_type = Row;
+    std::uint32_t next_id = 1;
+    std::vector<ListRow<Row>> rows;
+
+    friend bool operator==(const List &, const List &) = default;
+};
+
+inline SchemaNode SchemaNode::fromFlat(
+    std::span<const StructFieldSchema> fields) {
+    SchemaNode root;
+    root.tag = SchemaNodeTag::Struct;
+    root.children.reserve(fields.size());
+    for (const auto &field : fields) {
+        SchemaNode child;
+        child.tag = field.type == StructFieldType::Flags
+                        ? SchemaNodeTag::Flags
+                        : (field.type == StructFieldType::List
+                               ? SchemaNodeTag::List
+                               : SchemaNodeTag::Leaf);
+        child.name = field.name;
+        child.leaf_type = field.type;
+        child.range = field.range;
+        child.unit = field.unit;
+        for (std::size_t index = 0; index < field.enum_value_count; ++index) {
+            child.vocabulary.push_back(
+                SchemaVocabularyValue{std::string{field.enum_values[index]},
+                                      index, false});
+        }
+        root.children.push_back(std::move(child));
+    }
+    return root;
+}
+
+inline bool SchemaNode::recursive() const noexcept {
+    if (tag == SchemaNodeTag::Flags || tag == SchemaNodeTag::List) return true;
+    for (const auto &child : children) {
+        if (child.recursive()) return true;
+    }
+    return false;
+}
 
 struct EventPayloadPolicy final {};
 struct BehaviorParamsPolicy final {};
@@ -90,6 +212,31 @@ consteval ComponentPolicy componentPolicy(std::string_view codec_name) {
 namespace internal {
 
 template <class> inline constexpr bool always_false_v = false;
+
+template <class T> struct OptionalTraits { static constexpr bool value = false; };
+template <class T> struct OptionalTraits<std::optional<T>> {
+    static constexpr bool value = true;
+    using value_type = T;
+};
+template <class T> inline constexpr bool is_optional_v = OptionalTraits<T>::value;
+
+template <class T> struct FlagsTraits { static constexpr bool value = false; };
+template <class Enum> struct FlagsTraits<Flags<Enum>> {
+    static constexpr bool value = true;
+    using enum_type = Enum;
+};
+template <class T> inline constexpr bool is_flags_v = FlagsTraits<T>::value;
+
+template <class T> struct ListTraits { static constexpr bool value = false; };
+template <class Row> struct ListTraits<List<Row>> {
+    static constexpr bool value = true;
+    using row_type = Row;
+};
+template <class T> inline constexpr bool is_list_v = ListTraits<T>::value;
+
+template <class T> struct UnwrapOptional { using type = T; };
+template <class T> struct UnwrapOptional<std::optional<T>> { using type = T; };
+template <class T> using unwrap_optional_t = typename UnwrapOptional<T>::type;
 
 template <class> struct MemberPointerTraits;
 template <class Owner, class Member> struct MemberPointerTraits<Member Owner::*> {
@@ -135,42 +282,47 @@ struct StructFieldDescriptor {
 };
 
 template <class T> consteval StructFieldType structFieldType() {
-    if constexpr (std::same_as<T, std::int8_t>) {
+    using Value = unwrap_optional_t<T>;
+    if constexpr (is_list_v<Value>) {
+        return StructFieldType::List;
+    } else if constexpr (is_flags_v<Value>) {
+        return StructFieldType::Flags;
+    } else if constexpr (std::same_as<Value, std::int8_t>) {
         return StructFieldType::I8;
-    } else if constexpr (std::same_as<T, std::int16_t>) {
+    } else if constexpr (std::same_as<Value, std::int16_t>) {
         return StructFieldType::I16;
-    } else if constexpr (std::same_as<T, std::int32_t>) {
+    } else if constexpr (std::same_as<Value, std::int32_t>) {
         return StructFieldType::I32;
-    } else if constexpr (std::same_as<T, std::int64_t>) {
+    } else if constexpr (std::same_as<Value, std::int64_t>) {
         return StructFieldType::I64;
-    } else if constexpr (std::same_as<T, std::uint8_t>) {
+    } else if constexpr (std::same_as<Value, std::uint8_t>) {
         return StructFieldType::U8;
-    } else if constexpr (std::same_as<T, std::uint16_t>) {
+    } else if constexpr (std::same_as<Value, std::uint16_t>) {
         return StructFieldType::U16;
-    } else if constexpr (std::same_as<T, std::uint32_t>) {
+    } else if constexpr (std::same_as<Value, std::uint32_t>) {
         return StructFieldType::U32;
-    } else if constexpr (std::same_as<T, std::uint64_t>) {
+    } else if constexpr (std::same_as<Value, std::uint64_t>) {
         return StructFieldType::U64;
-    } else if constexpr (std::same_as<T, float>) {
+    } else if constexpr (std::same_as<Value, float>) {
         return StructFieldType::F32;
-    } else if constexpr (std::same_as<T, double>) {
+    } else if constexpr (std::same_as<Value, double>) {
         return StructFieldType::F64;
-    } else if constexpr (std::same_as<T, vec2>) {
+    } else if constexpr (std::same_as<Value, vec2>) {
         return StructFieldType::Vec2;
-    } else if constexpr (std::same_as<T, vec3>) {
+    } else if constexpr (std::same_as<Value, vec3>) {
         return StructFieldType::Vec3;
-    } else if constexpr (std::same_as<T, vec4>) {
+    } else if constexpr (std::same_as<Value, vec4>) {
         return StructFieldType::Vec4;
-    } else if constexpr (std::same_as<T, quat>) {
+    } else if constexpr (std::same_as<Value, quat>) {
         return StructFieldType::Quat;
-    } else if constexpr (std::same_as<T, std::string>) {
+    } else if constexpr (std::same_as<Value, std::string>) {
         return StructFieldType::String;
-    } else if constexpr (std::same_as<T, bool>) {
+    } else if constexpr (std::same_as<Value, bool>) {
         return StructFieldType::Bool;
-    } else if constexpr (std::is_enum_v<T>) {
+    } else if constexpr (std::is_enum_v<Value>) {
         return StructFieldType::Enum;
     } else {
-        static_assert(always_false_v<T>, "struct field type is not supported");
+        static_assert(always_false_v<Value>, "struct field type is not supported");
     }
 }
 
@@ -254,6 +406,9 @@ consteval auto field(std::string_view name, Range range = {}, std::string_view u
     if (name.empty()) {
         throw "struct field name must not be empty";
     }
+    if (name.starts_with("$")) {
+        throw "ReservedFieldName: struct field names beginning with '$' are reserved";
+    }
 
     internal::StructFieldRangeDescriptor range_descriptor{};
     if constexpr (std::same_as<Range, internal::NoStructFieldRange>) {
@@ -330,9 +485,12 @@ template <class First, class... Rest> consteval auto enumValues(First first, Res
 }
 
 struct NoStructEnumValues {};
+struct EmptyListDefault {};
 
-template <class Declaration> struct RequiredStructField {
+template <class Declaration, class EnumValues = NoStructEnumValues>
+struct RequiredStructField {
     Declaration field;
+    EnumValues enum_values;
 };
 
 template <class Declaration, class Default, class EnumValues = NoStructEnumValues>
@@ -342,10 +500,76 @@ struct DefaultedStructField {
     EnumValues enum_values;
 };
 
+template <class Declaration, class EnumValues = NoStructEnumValues>
+struct OptionalOverrideStructField {
+    Declaration field;
+    EnumValues enum_values;
+};
+
 template <class Declaration> consteval auto required(Declaration declaration) {
     static_assert(requires { typename Declaration::owner_type; typename Declaration::member_type; },
                   "required accepts only values returned by field");
-    return RequiredStructField<Declaration>{.field = declaration};
+    return RequiredStructField<Declaration>{.field = declaration,
+                                             .enum_values = {}};
+}
+
+template <class Declaration, class Enum, std::size_t N>
+consteval auto required(Declaration declaration,
+                        StructEnumValues<Enum, N> values) {
+    static_assert(requires { typename Declaration::owner_type; typename Declaration::member_type; },
+                  "required accepts only values returned by field");
+    using Member = typename Declaration::member_type;
+    if constexpr (internal::is_flags_v<Member>) {
+        static_assert(
+            std::same_as<typename internal::FlagsTraits<Member>::enum_type,
+                         Enum>,
+            "Flags vocabulary enum must match Flags<Enum>");
+    } else {
+        static_assert(std::same_as<Member, Enum>,
+                      "enum vocabulary must match the field enum type");
+    }
+    return RequiredStructField<Declaration, StructEnumValues<Enum, N>>{
+        .field = declaration, .enum_values = values};
+}
+
+template <class Declaration>
+consteval auto optionalOverride(Declaration declaration) {
+    static_assert(requires { typename Declaration::owner_type; typename Declaration::member_type; },
+                  "optionalOverride accepts only values returned by field");
+    using Member = typename Declaration::member_type;
+    static_assert(internal::is_optional_v<Member>,
+                  "OptionalOverride fields must use std::optional<T>");
+    using Value = internal::unwrap_optional_t<Member>;
+    static_assert(!internal::is_flags_v<Value>,
+                  "Flags OptionalOverride fields require enumValues vocabulary");
+    static_assert(!internal::is_list_v<Value>,
+                  "List fields cannot be OptionalOverride");
+    return OptionalOverrideStructField<Declaration>{.field = declaration,
+                                                     .enum_values = {}};
+}
+
+template <class Declaration, class Enum, std::size_t N>
+consteval auto optionalOverride(Declaration declaration,
+                                StructEnumValues<Enum, N> values) {
+    static_assert(requires { typename Declaration::owner_type; typename Declaration::member_type; },
+                  "optionalOverride accepts only values returned by field");
+    using Member = typename Declaration::member_type;
+    static_assert(internal::is_optional_v<Member>,
+                  "OptionalOverride fields must use std::optional<T>");
+    using Value = internal::unwrap_optional_t<Member>;
+    static_assert(internal::is_flags_v<Value> || std::is_enum_v<Value>,
+                  "OptionalOverride vocabulary applies to Enum or Flags<Enum>");
+    if constexpr (internal::is_flags_v<Value>) {
+        static_assert(std::same_as<
+                          typename internal::FlagsTraits<Value>::enum_type,
+                          Enum>,
+                      "Flags vocabulary enum must match Flags<Enum>");
+    } else {
+        static_assert(std::same_as<Value, Enum>,
+                      "enum vocabulary must match the optional enum type");
+    }
+    return OptionalOverrideStructField<Declaration, StructEnumValues<Enum, N>>{
+        .field = declaration, .enum_values = values};
 }
 
 template <class Declaration, class Default> consteval auto defaulted(Declaration declaration, Default &&value) {
@@ -369,29 +593,52 @@ consteval auto defaulted(Declaration declaration, Default &&value, StructEnumVal
     static_assert(requires { typename Declaration::owner_type; typename Declaration::member_type; },
                   "defaulted accepts only values returned by field");
     using Member = typename Declaration::member_type;
-    static_assert(std::same_as<Member, Enum>, "enum defaults and enumValues must match the field enum type");
-    const auto default_value = static_cast<Member>(std::forward<Default>(value));
-    bool found = false;
-    for (const auto &entry : values.values) {
-        found = found || entry.value == default_value;
+    if constexpr (internal::is_flags_v<Member>) {
+        static_assert(
+            std::same_as<typename internal::FlagsTraits<Member>::enum_type, Enum>,
+            "Flags defaults and enumValues must match the field enum type");
+    } else {
+        static_assert(std::same_as<Member, Enum>,
+                      "enum defaults and enumValues must match the field enum type");
     }
-    if (!found) {
-        throw "enum default must be present in enumValues";
+    const auto default_value = static_cast<Member>(std::forward<Default>(value));
+    if constexpr (std::same_as<Member, Enum>) {
+        bool found = false;
+        for (const auto &entry : values.values) {
+            found = found || entry.value == default_value;
+        }
+        if (!found) {
+            throw "enum default must be present in enumValues";
+        }
     }
     return DefaultedStructField<Declaration, Member, StructEnumValues<Enum, N>>{
         .field = declaration, .default_value = default_value, .enum_values = values};
+}
+
+// A List has a fixed empty default, but its runtime representation owns a
+// std::vector. Keep that variable-length value out of the constexpr schema.
+template <class Declaration> consteval auto defaulted(Declaration declaration) {
+    static_assert(requires { typename Declaration::owner_type; typename Declaration::member_type; },
+                  "defaulted accepts only values returned by field");
+    using Member = typename Declaration::member_type;
+    static_assert(internal::is_list_v<Member>,
+                  "the one-argument defaulted form is only for List fields");
+    return DefaultedStructField<Declaration, EmptyListDefault>{
+        .field = declaration, .default_value = {}, .enum_values = {}};
 }
 
 namespace internal {
 
 template <class> struct PolicyFieldTraits;
 
-template <class Declaration> struct PolicyFieldTraits<RequiredStructField<Declaration>> {
+template <class Declaration, class EnumValues>
+struct PolicyFieldTraits<RequiredStructField<Declaration, EnumValues>> {
     using declaration_type = Declaration;
     using owner_type = typename Declaration::owner_type;
     using member_type = typename Declaration::member_type;
     static constexpr StructFieldPresence presence = StructFieldPresence::Required;
-    static constexpr bool has_enum_values = false;
+    static constexpr bool has_enum_values =
+        !std::same_as<EnumValues, NoStructEnumValues>;
 };
 
 template <class Declaration, class Default, class EnumValues>
@@ -401,6 +648,17 @@ struct PolicyFieldTraits<DefaultedStructField<Declaration, Default, EnumValues>>
     using member_type = typename Declaration::member_type;
     static constexpr StructFieldPresence presence = StructFieldPresence::Defaulted;
     static constexpr bool has_enum_values = !std::same_as<EnumValues, NoStructEnumValues>;
+};
+
+template <class Declaration, class EnumValues>
+struct PolicyFieldTraits<OptionalOverrideStructField<Declaration, EnumValues>> {
+    using declaration_type = Declaration;
+    using owner_type = typename Declaration::owner_type;
+    using member_type = typename Declaration::member_type;
+    static constexpr StructFieldPresence presence =
+        StructFieldPresence::OptionalOverride;
+    static constexpr bool has_enum_values =
+        !std::same_as<EnumValues, NoStructEnumValues>;
 };
 
 template <class T> concept PolicyField = requires {
@@ -430,6 +688,44 @@ inline constexpr bool behavior_policy_field_v =
     (!std::is_enum_v<typename PolicyFieldTraits<PolicyField>::member_type> ||
      PolicyFieldTraits<PolicyField>::has_enum_values);
 
+template <class Schema>
+consteval bool schemaContainsList(const Schema &schema) {
+    for (const auto &field : schema.fields) {
+        if (field.type == StructFieldType::List) return true;
+    }
+    return false;
+}
+
+template <class PolicyField>
+consteval bool validRecursivePolicyField() {
+    using Traits = PolicyFieldTraits<PolicyField>;
+    using Member = unwrap_optional_t<typename Traits::member_type>;
+    if constexpr (is_flags_v<Member>) {
+        return Traits::has_enum_values;
+    } else if constexpr (std::is_enum_v<Member>) {
+        return Traits::has_enum_values;
+    } else if constexpr (is_list_v<Member>) {
+        using Row = typename ListTraits<Member>::row_type;
+        if constexpr (!requires { Row::schema; }) {
+            return false;
+        } else {
+            return !schemaContainsList(Row::schema);
+        }
+    }
+    return true;
+}
+
+template <class Schema>
+consteval bool schemaRequiresV3(const Schema &schema) {
+    for (const auto &field : schema.fields) {
+        if (field.type == StructFieldType::Flags ||
+            field.type == StructFieldType::List) {
+            return true;
+        }
+    }
+    return false;
+}
+
 } // namespace internal
 
 template <class Policy, class... PolicyFields> struct StructSchemaDescriptor {
@@ -454,6 +750,8 @@ consteval auto structFields(Policy policy, PolicyFields... policy_fields) {
             static_assert(internal::same_field_owner_v<PolicyFields...>,
                           "all fields in a struct schema must belong to one owner type");
         }
+        static_assert((internal::validRecursivePolicyField<PolicyFields>() && ...),
+                      "ListNestingUnsupported or Flags vocabulary is missing");
         if constexpr (std::same_as<Policy, EventPayloadPolicy>) {
             static_assert((internal::event_policy_field_v<PolicyFields> && ...),
                           "EventPayload fields are all required and cannot use Bool or Enum");

@@ -170,7 +170,10 @@ OJson encodeUnvalidatedCamera(const ComponentCodecValue &value) {
                  {"zfar", *camera.zfar}};
 }
 
-std::span<const StructFieldSchema> noCameraFields() { return {}; }
+const SchemaNode &noCameraFields() {
+    static const SchemaNode schema = SchemaNode::fromFlat({});
+    return schema;
+}
 void applyUnvalidatedCamera(const ComponentCodecValue &, void *) {}
 ComponentCodecValue projectUnvalidatedCamera(const void *) {
     return CameraCodecData{};

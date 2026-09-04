@@ -97,6 +97,36 @@ struct FieldDeclaration {
     std::optional<nlohmann::json> default_value;
 };
 
+enum class NodeTag : std::uint8_t { Struct, Leaf, Flags, List };
+enum class FieldPresence : std::uint8_t {
+    Required,
+    Defaulted,
+    OptionalOverride,
+};
+
+struct VocabularyValue {
+    std::string name;
+    std::uint64_t value = 0;
+    bool signed_value = false;
+
+    friend bool operator==(const VocabularyValue &,
+                           const VocabularyValue &) = default;
+};
+
+// Project-owned recursive wire model.  The core SDK SchemaNode is converted
+// into this type before a descriptor crosses into project/Studio code.
+struct Node {
+    NodeTag tag = NodeTag::Struct;
+    std::string name;
+    FieldPresence presence = FieldPresence::Required;
+    std::optional<FieldDeclaration> leaf;
+    std::optional<nlohmann::json> default_value;
+    std::vector<VocabularyValue> vocabulary;
+    std::vector<Node> children;
+
+    friend bool operator==(const Node &, const Node &) = default;
+};
+
 enum class ErrorCode : std::uint8_t {
     UnknownTypeName,
     InvalidTypeOrdinal,

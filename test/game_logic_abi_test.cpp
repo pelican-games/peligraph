@@ -1,8 +1,11 @@
 #include "../src/core/gamelogic/gamelogicimports.hpp"
 #include "../src/core/gamelogic/gamelogicreload.hpp"
 #include "../src/core/communication/rpcserver.hpp"
+#include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/userpublic/details/behavior/registerer.hpp"
+#include "../src/core/userpublic/details/event/registerer.hpp"
 #include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "../src/core/userpublic/gamelogic.hpp"
 #include "../src/core/watch/reloadservice.hpp"
@@ -1079,6 +1082,113 @@ TEST_CASE("WP381 shipped project game DLLs import the anchor and load",
         REQUIRE(reloader.status().error_code.empty());
         REQUIRE(reloader.status().error_fields ==
                 nlohmann::ordered_json::object());
+    }
+}
+
+TEST_CASE("WP382a frozen v2 and recursive v3 registrations coexist and materialize",
+          "[game-logic-abi][wp382a][schema-v3]") {
+    setupLogger();
+    const auto frozen = fixture(PELICAN_WP382A_FROZEN_V2);
+    const auto recursive = fixture(PELICAN_WP382A_V3_FULL);
+
+    const auto read = internal::readGameLogicImports(recursive);
+    REQUIRE(read.readable());
+    const auto host = executableName();
+    const auto imports = importedSymbols(read, host);
+    for (const std::string_view entrance : {
+             "pelican_register_behavior_v3", "pelican_register_event_v3",
+             "pelican_register_component_v3"}) {
+        REQUIRE(std::ranges::any_of(imports, [&](const auto &symbol) {
+            return symbol.find(entrance) != std::string::npos;
+        }));
+    }
+    const auto stale = internal::diagnoseGameLogicImports(
+        recursive, host, gameLogicAbiVersion, 2);
+    REQUIRE(stale.error_code ==
+            std::string{internal::gameLogicAbiStaleErrorCode});
+    REQUIRE(stale.error_fields ==
+            nlohmann::ordered_json{{"found", "v3"}, {"host", "v2"}});
+
+    GameLogicReloader frozen_reloader;
+    GameLogicReloader recursive_reloader;
+    REQUIRE(frozen_reloader.initialize(frozen));
+    REQUIRE(recursive_reloader.initialize(recursive));
+
+    auto &components = GET_MODULE(ComponentInfoManager);
+    REQUIRE(components.hasComponent("wp382a_frozen_v2_component"));
+    REQUIRE(components.hasComponent("wp382a_v3_component"));
+    const auto &component = components.get(
+        components.getComponentIdByName("wp382a_v3_component"));
+    REQUIRE(component.schema_v3.has_value());
+    REQUIRE(component.schema_v3->children.at(0).tag == SchemaNodeTag::List);
+
+    const auto params = nlohmann::json::parse(R"json({
+      "overrides": {
+        "$list": {"v": 1, "next_id": 2},
+        "rows": [{"$row": {"id": 1, "v": 1},
+                  "occurrence_id": "mesh/chair",
+                  "mask": 0, "instance_flags": []}]
+      },
+      "enabled": true
+    })json");
+    const auto canonical = nlohmann::json::parse(
+        internal::canonicalizeBehaviorParams("wp382a_carrier", params));
+    REQUIRE(canonical == params);
+
+    const nlohmann::json event_payload{{"rows", params.at("overrides")}};
+    REQUIRE_NOTHROW(internal::getEventRegisterer().validateEventPayload(
+        "CarrierEvent", &event_payload));
+
+    void *storage = ::operator new(component.size,
+                                   std::align_val_t{component.alignment});
+    component.cb_construct(storage);
+    const nlohmann::json component_json{
+        {"name", "wp382a_v3_component"},
+        {"rows", params.at("overrides")}};
+    REQUIRE_NOTHROW(components.loadByJson(storage, component_json));
+    component.cb_destroy(storage);
+    ::operator delete(storage, std::align_val_t{component.alignment});
+}
+
+TEST_CASE("WP382a production reload fingerprints every recursive schema input",
+          "[game-logic-abi][wp382a][schema-v3][reload]") {
+    setupLogger();
+    const auto same = fixture(PELICAN_WP382A_V3_SAME);
+
+    SECTION("identical declaration succeeds") {
+        Sandbox sandbox;
+        replaceFixture(same, sandbox.live());
+        GameLogicReloader reloader;
+        REQUIRE(reloader.initialize(sandbox.live()));
+        replaceFixture(same, sandbox.live());
+        const auto attempt = reloader.reloadNowAttempt([] {}, [] {});
+        REQUIRE(attempt.attempted);
+        REQUIRE(attempt.committed);
+        REQUIRE(attempt.error.empty());
+    }
+
+    const std::array mutations{
+        std::pair{"default", fixture(PELICAN_WP382A_V3_DEFAULT)},
+        std::pair{"order", fixture(PELICAN_WP382A_V3_ORDER)},
+        std::pair{"vocabulary-value",
+                  fixture(PELICAN_WP382A_V3_VOCABULARY)},
+        std::pair{"presence", fixture(PELICAN_WP382A_V3_PRESENCE)},
+    };
+    for (const auto &[name, mutation] : mutations) {
+        DYNAMIC_SECTION(name) {
+            Sandbox sandbox;
+            replaceFixture(same, sandbox.live());
+            GameLogicReloader reloader;
+            REQUIRE(reloader.initialize(sandbox.live()));
+            replaceFixture(mutation, sandbox.live());
+            const auto attempt = reloader.reloadNowAttempt([] {}, [] {});
+            REQUIRE(attempt.attempted);
+            REQUIRE_FALSE(attempt.committed);
+            REQUIRE(attempt.error.find(
+                        "schema_changed_without_version_bump") !=
+                    std::string::npos);
+            REQUIRE(reloader.status().generation == 1);
+        }
     }
 }
 

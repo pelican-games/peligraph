@@ -63,6 +63,32 @@ struct BehaviorRegistration {
     RegistrationToken token;
 };
 
+struct FrozenBehaviorRegistrationV2Layout {
+    std::string stable_name;
+    std::uint32_t schema_version;
+    std::type_index behavior_type;
+    std::type_index params_type;
+    std::vector<StructFieldSchema> params_schema;
+    std::string params_schema_fingerprint;
+    BehaviorCanonicalizeParamsFn canonicalize_params;
+    BehaviorCreateFn create;
+    BehaviorDestroyFn destroy;
+    BehaviorPrepareParamsFn prepare_params;
+    BehaviorApplyPreparedParamsFn apply_prepared_params;
+    BehaviorDestroyPreparedParamsFn destroy_prepared_params;
+    std::vector<BehaviorEventHandlerRegistration> event_handlers;
+    RegistrationOwner owner;
+    RegistrationToken token;
+};
+static_assert(sizeof(BehaviorRegistration) ==
+                  sizeof(FrozenBehaviorRegistrationV2Layout),
+              "BehaviorRegistration is the frozen v2 ABI record");
+
+struct BehaviorRegistrationV3 {
+    BehaviorRegistration callbacks;
+    const SchemaNode &params_schema;
+};
+
 template <class Type, class Event>
 concept HasBehaviorEvent = requires(Type &behavior, const Event &event,
                                     BehaviorContext &ctx) {
@@ -133,6 +159,8 @@ inline nlohmann::ordered_json behaviorParamsRangeFingerprint(
 
 template <class Params>
 std::string materializeBehaviorParamsSchemaFingerprint() {
+    static_assert(!schemaRequiresV3(Params::schema),
+                  "a recursive Params::schema must register through the v3 entrance");
     static_assert(
         std::same_as<typename decltype(Params::schema)::policy_type,
                      BehaviorParamsPolicy>,
@@ -186,9 +214,12 @@ std::string materializeBehaviorParamsSchemaFingerprint() {
 
 class UserBehaviorRegistererTemplatePublic {
     std::vector<BehaviorRegistration> behaviors;
+    std::vector<std::pair<RegistrationToken, SchemaNode>> v3_schemas;
 
     PELICAN_API RegistrationToken
     pelican_register_behavior_v2(BehaviorRegistration registration);
+    PELICAN_API RegistrationToken
+    pelican_register_behavior_v3(BehaviorRegistrationV3 registration);
 
     friend void unregisterBehavior(RegistrationToken token);
     friend void unregisterBehaviors(RegistrationOwner owner) noexcept;
@@ -218,14 +249,13 @@ class UserBehaviorRegistererTemplatePublic {
             throw std::runtime_error("behavior schema version must be positive");
         }
 
-        return pelican_register_behavior_v2(BehaviorRegistration{
+        auto registration = BehaviorRegistration{
             .stable_name = std::move(stable_name),
             .schema_version = schema_version,
             .behavior_type = std::type_index{typeid(Type)},
             .params_type = std::type_index{typeid(Params)},
             .params_schema = materializeBehaviorParamsSchema<Params>(),
-            .params_schema_fingerprint =
-                materializeBehaviorParamsSchemaFingerprint<Params>(),
+            .params_schema_fingerprint = {},
             .canonicalize_params = [](const nlohmann::json &params) -> std::string {
                 Params decoded{};
                 decodeBehaviorParams(params, decoded, Params::schema);
@@ -265,7 +295,17 @@ class UserBehaviorRegistererTemplatePublic {
                 prepared = {};
             },
             .event_handlers = std::move(event_handlers),
-        });
+        };
+        if constexpr (schemaRequiresV3(Params::schema)) {
+            static const auto node = materializeSchemaNode(Params::schema);
+            registration.params_schema_fingerprint = schemaNodeFingerprint(node);
+            return pelican_register_behavior_v3(
+                BehaviorRegistrationV3{std::move(registration), node});
+        } else {
+            registration.params_schema_fingerprint =
+                materializeBehaviorParamsSchemaFingerprint<Params>();
+            return pelican_register_behavior_v2(std::move(registration));
+        }
     }
 
     const std::vector<BehaviorRegistration> &registeredBehaviors() const noexcept {
@@ -275,6 +315,8 @@ class UserBehaviorRegistererTemplatePublic {
     const BehaviorRegistration *findByName(std::string_view stable_name) const noexcept;
     const BehaviorRegistration *findByNameAndOwner(
         std::string_view stable_name, RegistrationOwner owner) const noexcept;
+    const SchemaNode *schemaFor(const BehaviorRegistration &registration) const
+        noexcept;
 };
 
 PELICAN_API UserBehaviorRegistererTemplatePublic &getBehaviorRegisterer();

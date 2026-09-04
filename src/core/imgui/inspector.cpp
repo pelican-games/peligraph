@@ -326,6 +326,11 @@ makeInspectorWidgetPlan(const EditorComponentQueryResult &component) {
                 widget.enum_values.emplace_back(field.enum_values[index]);
             }
             break;
+        case StructFieldType::Flags:
+        case StructFieldType::List:
+            // Recursive editors arrive with WP382b.  WP382a exposes the
+            // schema without fabricating a scalar widget for either node.
+            continue;
         }
         result.push_back(std::move(widget));
     }

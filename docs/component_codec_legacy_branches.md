@@ -30,6 +30,7 @@ Generated from `componentCodecLegacyBranches()`; edit the production registry an
 | `pelican_ray_instance.flag_not_string` | `decodeRayInstance` |
 | `pelican_ray_instance.flags_not_array` | `decodeRayInstance` |
 | `pelican_ray_instance.name_mismatch` | `decodeRayInstance` |
+| `pelican_ray_instance.overrides_not_enabled` | `decodeRayInstance` |
 | `pelican_ray_instance.payload_not_object` | `decodeRayInstance` |
 | `pelican_ray_instance.unknown_field` | `decodeRayInstance` |
 | `pelican_ray_instance.unknown_flag` | `decodeRayInstance` |

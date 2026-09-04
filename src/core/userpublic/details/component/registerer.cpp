@@ -87,6 +87,24 @@ RegistrationToken UserComponentRegistererTemplatePublic::__registerComponent(
 }
 
 RegistrationToken
+UserComponentRegistererTemplatePublic::pelican_register_component_v3(
+    ComponentRegistrationV3 registration) {
+    const auto owner = currentRegistrationOwner();
+    if (owner == engineRegistrationOwner) {
+        throw std::logic_error(
+            "component registration requires a host-allocated external owner");
+    }
+    return __registerComponentForOwner(
+        registration.id, registration.size,
+        ComponentLoaderInfo{
+            std::move(registration.name), registration.alignment,
+            registration.construct, registration.destroy,
+            registration.relocate, registration.init, registration.deinit,
+            registration.json_loader}, owner,
+        registration.schema);
+}
+
+RegistrationToken
 UserComponentRegistererTemplatePublic::__registerEngineComponent(
     ComponentId id, size_t sz, ComponentLoaderInfo loader) {
     return __registerComponentForOwner(
@@ -96,7 +114,7 @@ UserComponentRegistererTemplatePublic::__registerEngineComponent(
 RegistrationToken
 UserComponentRegistererTemplatePublic::__registerComponentForOwner(
     ComponentId id, size_t sz, ComponentLoaderInfo loader,
-    RegistrationOwner owner) {
+    RegistrationOwner owner, std::optional<SchemaNode> schema) {
     enforceComponentRegistrationPolicy(loader.name, owner);
     Pelican::ComponentInfo info;
     info.id = id;
@@ -110,6 +128,7 @@ UserComponentRegistererTemplatePublic::__registerComponentForOwner(
     info.cb_deinit = loader.deinit;
     info.cb_load_by_json2 = loader.json_loader;
     info.owner = owner;
+    info.schema_v3 = std::move(schema);
 
     return GET_MODULE(ComponentInfoManager).registerComponent(std::move(info));
 }

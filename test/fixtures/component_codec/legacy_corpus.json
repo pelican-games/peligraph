@@ -25,6 +25,7 @@
   {"legacy_branch_id":"pelican_ray_instance.flag_not_string","codec":"pelican_ray_instance","authored":{"name":"pelican_ray_instance","instance_flags":[1]}},
   {"legacy_branch_id":"pelican_ray_instance.flags_not_array","codec":"pelican_ray_instance","authored":{"name":"pelican_ray_instance","instance_flags":"force_opaque"}},
   {"legacy_branch_id":"pelican_ray_instance.name_mismatch","codec":"pelican_ray_instance","authored":{"name":"ray_instance","mask":1}},
+  {"legacy_branch_id":"pelican_ray_instance.overrides_not_enabled","codec":"pelican_ray_instance","authored":{"name":"pelican_ray_instance","mask":1,"overrides":{}}},
   {"legacy_branch_id":"pelican_ray_instance.payload_not_object","codec":"pelican_ray_instance","authored":[]},
   {"legacy_branch_id":"pelican_ray_instance.unknown_field","codec":"pelican_ray_instance","authored":{"name":"pelican_ray_instance","future":1}},
   {"legacy_branch_id":"pelican_ray_instance.unknown_flag","codec":"pelican_ray_instance","authored":{"name":"pelican_ray_instance","instance_flags":["future"]}},

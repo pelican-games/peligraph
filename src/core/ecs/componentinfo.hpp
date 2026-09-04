@@ -12,6 +12,7 @@
 #include "entity.hpp"
 #include <details/ecs/componentdeclare.hpp>
 #include <details/reload/registrationowner.hpp>
+#include <details/schema/structfieldschema.hpp>
 #include <serialize/jsonarchive.hpp>
 
 namespace Pelican {
@@ -49,6 +50,7 @@ struct ComponentInfo {
     void (*cb_load_by_json2)(void *ptr, JsonArchiveLoader &json) = nullptr;
     internal::RegistrationOwner owner = internal::engineRegistrationOwner;
     internal::RegistrationToken token;
+    std::optional<SchemaNode> schema_v3;
 };
 
 DECLARE_MODULE(ComponentInfoManager) {

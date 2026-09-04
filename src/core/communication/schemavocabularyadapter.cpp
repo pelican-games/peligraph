@@ -60,6 +60,8 @@ Schema::FieldType toLeafSchemaType(StructFieldType type) {
     case StructFieldType::String: return Schema::FieldType::String;
     case StructFieldType::Bool: return Schema::FieldType::Bool;
     case StructFieldType::Enum: return Schema::FieldType::Enum;
+    case StructFieldType::Flags:
+    case StructFieldType::List: invalidCore(type);
     }
     invalidCore(type);
 }
@@ -88,6 +90,8 @@ StructFieldType toCoreSchemaType(Schema::FieldType type) {
 }
 
 std::string schemaTypeName(StructFieldType type) {
+    if (type == StructFieldType::Flags) return "flags";
+    if (type == StructFieldType::List) return "list";
     return std::string{Schema::fieldTypeName(toLeafSchemaType(type))};
 }
 

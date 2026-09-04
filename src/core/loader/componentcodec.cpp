@@ -1017,6 +1017,12 @@ ComponentCodecValue decodeRayInstance(const Json &json) {
     }
     for (const auto &[key, value] : json.items()) {
         (void)value;
+        if (key == "overrides") {
+            legacyReject(
+                "pelican_ray_instance.overrides_not_enabled",
+                "ray_instance_overrides_not_enabled@1: per-occurrence "
+                "overrides require WP382d enablement");
+        }
         if (key != "name" && key != "mask" &&
             key != "instance_flags" && key != "custom_index") {
             rayInstanceCodecError("pelican_ray_instance.unknown_field",
@@ -1171,6 +1177,7 @@ constexpr std::array legacy_branch_descriptors{
     LegacyBranchDescriptor{"pelican_ray_instance.flag_not_string", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.flags_not_array", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.name_mismatch", "decodeRayInstance"},
+    LegacyBranchDescriptor{"pelican_ray_instance.overrides_not_enabled", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.payload_not_object", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.unknown_field", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.unknown_flag", "decodeRayInstance"},
@@ -1217,45 +1224,45 @@ const std::array codecs{
     ComponentCodec{"transform", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::TransformClosure,
                    decodeResult<decodeTransform>, encodeTransform,
-                   [] { return fieldSpan(transform_fields); }, applyTransform,
+                    []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(transform_fields)); return node; }, applyTransform,
                    projectTransform, nullptr, nullptr},
     ComponentCodec{"simplemodelview", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::RendererModel,
                    decodeResult<decodeSimpleModelView>,
-                   encodeSimpleModelView, [] { return fieldSpan(simple_model_view_fields); },
+                    encodeSimpleModelView, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(simple_model_view_fields)); return node; },
                    applySimpleModelView, projectSimpleModelView, nullptr, nullptr},
     ComponentCodec{"camera", ComponentCodecRuntimeKind::Camera,
                    EditorProjectionPolicy::Camera, decodeResult<decodeCamera>,
                    encodeCamera,
-                   [] { return fieldSpan(camera_fields); }, applyCamera,
+                    []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(camera_fields)); return node; }, applyCamera,
                    projectCamera, nullptr, nullptr},
     ComponentCodec{"light", ComponentCodecRuntimeKind::Light,
                    EditorProjectionPolicy::Light, decodeResult<decodeLight>,
                    encodeLight,
-                   [] { return fieldSpan(light_fields); }, applyLight,
+                    []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(light_fields)); return node; }, applyLight,
                    projectLight, nullptr, nullptr},
     ComponentCodec{"collider", ComponentCodecRuntimeKind::Collider,
                    EditorProjectionPolicy::Collider,
                    decodeResult<decodeCollider>,
-                   encodeCollider, [] { return fieldSpan(collider_fields); },
+                    encodeCollider, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(collider_fields)); return node; },
                    applyCollider, projectCollider, nullptr, nullptr},
     ComponentCodec{"animation", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeAnimation>,
-                   encodeAnimation, [] { return fieldSpan(animation_fields); },
+                    encodeAnimation, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(animation_fields)); return node; },
                    applyAnimation, projectAnimation,
                    prepareEcsEditorSwap<AnimationComponent>,
                    swapEcsEditorToken<AnimationComponent>},
     ComponentCodec{"sprite_view", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeSprite>, encodeSprite,
-                   [] { return fieldSpan(sprite_fields); }, applySprite,
+                    []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(sprite_fields)); return node; }, applySprite,
                    projectSprite, prepareEcsEditorSwap<SpriteViewComponent>,
                    swapEcsEditorToken<SpriteViewComponent>},
     ComponentCodec{"pelican_ray_instance", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeRayInstance>, encodeRayInstance,
-                   [] { return fieldSpan(ray_instance_fields); },
+                    []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(ray_instance_fields)); return node; },
                    applyRayInstance, projectRayInstance,
                    prepareEcsEditorSwap<RayInstanceComponent>,
                    swapEcsEditorToken<RayInstanceComponent>},
@@ -1329,9 +1336,24 @@ nlohmann::ordered_json ComponentCodec::encodeCanonical(const ComponentCodecValue
     return encode_canonical(value);
 }
 
-std::span<const StructFieldSchema> ComponentCodec::fieldSchema() const {
+const SchemaNode &ComponentCodec::schemaNode() const {
     if (schema == nullptr) throw std::logic_error("component codec schema callback is missing");
     return schema();
+}
+
+std::vector<StructFieldSchema> ComponentCodec::fieldSchema() const {
+    std::vector<StructFieldSchema> result;
+    const auto &root = schemaNode();
+    result.reserve(root.children.size());
+    for (const auto &node : root.children) {
+        StructFieldSchema field{node.name, node.leaf_type, node.range, node.unit};
+        field.enum_value_count =
+            std::min(node.vocabulary.size(), maxStructFieldEnumValues);
+        for (std::size_t index = 0; index < field.enum_value_count; ++index)
+            field.enum_values[index] = node.vocabulary[index].name;
+        result.push_back(std::move(field));
+    }
+    return result;
 }
 
 void ComponentCodec::applyRuntime(const ComponentCodecValue &value, void *target) const {

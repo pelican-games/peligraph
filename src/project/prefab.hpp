@@ -184,6 +184,7 @@ struct BindableDescriptor {
     Schema::FieldRange range;
     std::vector<std::string> enum_values;
     std::vector<BindableDiscriminant> applicability;
+    std::optional<Schema::Node> schema_node;
 };
 
 PrefabInstanceDeclaration resolvePrefabInstance(

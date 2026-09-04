@@ -50,6 +50,21 @@ UserBehaviorRegistererTemplatePublic::pelican_register_behavior_v2(
     return token;
 }
 
+RegistrationToken
+UserBehaviorRegistererTemplatePublic::pelican_register_behavior_v3(
+    BehaviorRegistrationV3 registration) {
+    const auto &schema = registration.params_schema;
+    const auto token =
+        pelican_register_behavior_v2(std::move(registration.callbacks));
+    try {
+        v3_schemas.emplace_back(token, schema);
+    } catch (...) {
+        unregisterBehavior(token);
+        throw;
+    }
+    return token;
+}
+
 const BehaviorRegistration *UserBehaviorRegistererTemplatePublic::findByName(
     std::string_view stable_name) const noexcept {
     const auto found = std::find_if(
@@ -68,13 +83,22 @@ const BehaviorRegistration *UserBehaviorRegistererTemplatePublic::findByNameAndO
     return found == behaviors.end() ? nullptr : &*found;
 }
 
+const SchemaNode *UserBehaviorRegistererTemplatePublic::schemaFor(
+    const BehaviorRegistration &registration) const noexcept {
+    const auto found = std::find_if(
+        v3_schemas.begin(), v3_schemas.end(),
+        [&](const auto &entry) { return entry.first == registration.token; });
+    return found == v3_schemas.end() ? nullptr : &found->second;
+}
+
 UserBehaviorRegistererTemplatePublic &getBehaviorRegisterer() {
     static UserBehaviorRegistererTemplatePublic registerer;
     return registerer;
 }
 
 void unregisterBehavior(RegistrationToken token) {
-    auto &behaviors = getBehaviorRegisterer().behaviors;
+    auto &registry = getBehaviorRegisterer();
+    auto &behaviors = registry.behaviors;
     const auto found = std::find_if(
         behaviors.begin(), behaviors.end(),
         [token](const BehaviorRegistration &registration) {
@@ -83,12 +107,15 @@ void unregisterBehavior(RegistrationToken token) {
     if (found == behaviors.end()) {
         throw std::runtime_error("stale behavior registration token");
     }
+    std::erase_if(registry.v3_schemas,
+                  [token](const auto &entry) { return entry.first == token; });
     behaviors.erase(found);
     (void)releaseRegistrationToken(token, RegistrationKind::behavior);
 }
 
 void unregisterBehaviors(RegistrationOwner owner) noexcept {
-    auto &behaviors = getBehaviorRegisterer().behaviors;
+    auto &registry = getBehaviorRegisterer();
+    auto &behaviors = registry.behaviors;
     for (const auto token : registrationTokens(owner, RegistrationKind::behavior)) {
         const auto found = std::find_if(
             behaviors.begin(), behaviors.end(),
@@ -96,6 +123,10 @@ void unregisterBehaviors(RegistrationOwner owner) noexcept {
                 return registration.token == token;
             });
         if (found != behaviors.end()) behaviors.erase(found);
+        std::erase_if(registry.v3_schemas,
+                      [token](const auto &entry) {
+                          return entry.first == token;
+                      });
         (void)releaseRegistrationToken(token, RegistrationKind::behavior);
     }
 }

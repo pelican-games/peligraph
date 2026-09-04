@@ -152,6 +152,29 @@ void appendRange(std::vector<unsigned char> &bytes,
     }, range);
 }
 
+void appendSchemaNode(std::vector<unsigned char> &bytes,
+                      const Schema::Node &node) {
+    bytes.push_back(static_cast<unsigned char>(node.tag));
+    appendString(bytes, node.name);
+    bytes.push_back(static_cast<unsigned char>(node.presence));
+    bytes.push_back(node.leaf ? 1U : 0U);
+    if (node.leaf) {
+        bytes.push_back(static_cast<unsigned char>(node.leaf->type));
+        appendRange(bytes, node.leaf->range);
+        appendString(bytes, node.leaf->unit);
+    }
+    bytes.push_back(node.default_value ? 1U : 0U);
+    if (node.default_value) appendString(bytes, node.default_value->dump());
+    appendU32(bytes, static_cast<std::uint32_t>(node.vocabulary.size()));
+    for (const auto &value : node.vocabulary) {
+        appendString(bytes, value.name);
+        appendU64(bytes, value.value);
+        bytes.push_back(value.signed_value ? 1U : 0U);
+    }
+    appendU32(bytes, static_cast<std::uint32_t>(node.children.size()));
+    for (const auto &child : node.children) appendSchemaNode(bytes, child);
+}
+
 void appendDescriptorRecord(std::vector<unsigned char> &bytes,
                             const BindableDescriptor &descriptor) {
     appendString(bytes, descriptor.provider_name);
@@ -193,6 +216,12 @@ void appendDescriptorRecord(std::vector<unsigned char> &bytes,
             bytes.insert(bytes.end(), encoded.begin(), encoded.end());
         }
     }
+    // Preserve the v4 byte contract for every pre-v3 descriptor. Recursive
+    // descriptors append an extension record; absence appends no new byte.
+    if (descriptor.schema_node) {
+        bytes.push_back(1U);
+        appendSchemaNode(bytes, *descriptor.schema_node);
+    }
 }
 
 std::string descriptorFingerprint(std::span<const BindableDescriptor> descriptors) {
@@ -213,6 +242,38 @@ descriptorSortKey(const BindableDescriptor &descriptor) {
 }
 
 Schema::FieldType leafType(StructFieldType type);
+
+Schema::Node projectSchemaNode(const SchemaNode &source) {
+    Schema::Node result;
+    result.tag = static_cast<Schema::NodeTag>(source.tag);
+    result.name = source.name;
+    result.presence = static_cast<Schema::FieldPresence>(source.presence);
+    if (source.tag == SchemaNodeTag::Leaf) {
+        result.leaf = Schema::FieldDeclaration{
+            .name = source.name,
+            .type = leafType(source.leaf_type),
+            .range = std::visit([](const auto &value) -> Schema::FieldRange {
+                using R = std::decay_t<decltype(value)>;
+                if constexpr (std::same_as<R, std::monostate>) return {};
+                else if constexpr (std::same_as<R, std::pair<std::int64_t, std::int64_t>>)
+                    return Schema::SignedRange{value.first, value.second};
+                else if constexpr (std::same_as<R, std::pair<std::uint64_t, std::uint64_t>>)
+                    return Schema::UnsignedRange{value.first, value.second};
+                else return Schema::FloatingRange{value.first, value.second};
+            }, source.range),
+            .unit = source.unit,
+        };
+    }
+    if (source.default_json)
+        result.default_value = nlohmann::json::parse(*source.default_json);
+    for (const auto &value : source.vocabulary) {
+        result.vocabulary.push_back({value.name, value.value,
+                                     value.signed_value});
+    }
+    for (const auto &child : source.children)
+        result.children.push_back(projectSchemaNode(child));
+    return result;
+}
 
 std::vector<BindableDescriptor> codecDescriptors() {
     // The project-owned table is the shared engine/Studio source. The codec
@@ -418,6 +479,35 @@ BindableProviderSnapshot buildProductionBindableProviderSnapshot(
             } catch (const std::exception &) {
                 defaults = nlohmann::json::object();
             }
+        }
+        if (const auto *tree =
+                internal::getBehaviorRegisterer().schemaFor(registration)) {
+            for (const auto &schema : tree->children) {
+                std::string escaped_name;
+                for (const char ch : schema.name) {
+                    if (ch == '~') escaped_name += "~0";
+                    else if (ch == '/') escaped_name += "~1";
+                    else escaped_name.push_back(ch);
+                }
+                auto def = schema.default_json
+                               ? std::optional<OJson>{OJson::parse(
+                                     *schema.default_json)}
+                               : std::optional<OJson>{};
+                descriptors.push_back({
+                    .provider_name = "behavior:" + registration.stable_name,
+                    .json_pointer = "/params/" + escaped_name,
+                    .type = schema.tag == SchemaNodeTag::Leaf
+                                ? leafType(schema.leaf_type)
+                                : Schema::FieldType::String,
+                    .semantic_kind = BindableSemanticKind::Value,
+                    .bindable = schema.tag == SchemaNodeTag::Leaf,
+                    .required = schema.presence ==
+                                StructFieldPresence::Required,
+                    .canonical_default = std::move(def),
+                    .schema_node = projectSchemaNode(schema),
+                });
+            }
+            continue;
         }
         for (const auto &schema : registration.params_schema) {
             std::string escaped_name;

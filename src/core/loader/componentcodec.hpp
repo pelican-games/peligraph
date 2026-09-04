@@ -223,7 +223,7 @@ struct ComponentCodec {
     using DecodeAuthored = ResolutionResult<ComponentCodecValue> (*)(
         const nlohmann::json &);
     using EncodeCanonical = nlohmann::ordered_json (*)(const ComponentCodecValue &);
-    using Schema = std::span<const StructFieldSchema> (*)();
+    using Schema = const SchemaNode &(*)();
     using RuntimeApply = void (*)(const ComponentCodecValue &, void *);
     using RuntimeProject = ComponentCodecValue (*)(const void *);
     using EditorPrepare = ComponentEditorSwapToken (*)(
@@ -246,7 +246,8 @@ struct ComponentCodec {
     ResolutionResult<ComponentCodecValue> decodeAuthored(
         const nlohmann::json &authored) const;
     nlohmann::ordered_json encodeCanonical(const ComponentCodecValue &value) const;
-    std::span<const StructFieldSchema> fieldSchema() const;
+    const SchemaNode &schemaNode() const;
+    std::vector<StructFieldSchema> fieldSchema() const;
     void applyRuntime(const ComponentCodecValue &value, void *target) const;
     ComponentCodecValue projectRuntime(const void *source) const;
     ComponentEditorSwapToken prepareEditorSwap(

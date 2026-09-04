@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <limits>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,6 +22,11 @@ enum class StructFieldErrorCode : std::uint8_t {
     TypeMismatch,
     OutOfRange,
     InvalidEnum,
+    ReservedFieldName,
+    ListContainerMissing,
+    RowEnvelopeMissing,
+    RowEnvelopeUnsupported,
+    DuplicateRowId,
 };
 
 class StructFieldValidationError : public std::runtime_error {
@@ -205,13 +211,27 @@ void setStructDefault(const PolicyField &policy_field, Owner &temporary) {
     if constexpr (Traits::presence == StructFieldPresence::Defaulted) {
         using Declaration = typename Traits::declaration_type;
         using Member = typename Traits::member_type;
-        if constexpr (std::same_as<Member, std::string>) {
+        if constexpr (is_list_v<Member>) {
+            temporary.*Declaration::member = Member{};
+        } else if constexpr (std::same_as<Member, std::string>) {
             temporary.*Declaration::member = std::string{policy_field.default_value};
         } else {
             temporary.*Declaration::member = policy_field.default_value;
         }
     }
 }
+
+template <class Owner, class Policy, class... PolicyFields>
+void decodeStructObject(
+    const StructJson &payload, Owner &destination,
+    const StructSchemaDescriptor<Policy, PolicyFields...> &schema,
+    std::string_view root_path);
+
+template <class Owner, class Policy, class... PolicyFields>
+nlohmann::ordered_json encodeStructObject(
+    const Owner &value,
+    const StructSchemaDescriptor<Policy, PolicyFields...> &schema,
+    std::string_view root_path);
 
 template <class PolicyField, class Owner>
 void decodeStructPolicyField(const StructJson &payload, const PolicyField &policy_field, Owner &temporary,
@@ -234,7 +254,253 @@ void decodeStructPolicyField(const StructJson &payload, const PolicyField &polic
     const auto schema = materializeStructField(descriptor);
     const auto path = childFieldPath(root_path, descriptor.name);
     auto &member = temporary.*Declaration::member;
-    if constexpr (std::same_as<Member, bool>) {
+    if constexpr (is_optional_v<Member>) {
+        using Value = unwrap_optional_t<Member>;
+        Value decoded{};
+        if constexpr (is_flags_v<Value>) {
+            if (!value_it->is_array()) {
+                structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                                 "must be a flag string array");
+            }
+            using Storage = typename Value::storage_type;
+            Storage bits = 0;
+            std::set<std::string> seen;
+            for (const auto &item : *value_it) {
+                if (!item.is_string()) {
+                    structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                                     "flag entries must be strings");
+                }
+                const auto &name = item.template get_ref<const std::string &>();
+                if (!seen.emplace(name).second) {
+                    structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                     "contains a duplicate flag");
+                }
+                bool found = false;
+                for (const auto &entry : policy_field.enum_values.values) {
+                    if (entry.name == name) {
+                        bits |= static_cast<Storage>(entry.value);
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                     "contains an undeclared flag");
+                }
+            }
+            decoded = Value{bits};
+        } else if constexpr (std::is_enum_v<Value>) {
+            if (!value_it->is_string()) {
+                structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                                 "must be an enum string");
+            }
+            bool found = false;
+            for (const auto &entry : policy_field.enum_values.values) {
+                if (entry.name == value_it->template get_ref<const std::string &>()) {
+                    decoded = entry.value;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                 "is not a declared enum value");
+            }
+        } else {
+            // Scalar optional values use the same validation below via a
+            // small local conversion instead of treating absence as default.
+            if constexpr (std::same_as<Value, bool>) {
+                if (!value_it->is_boolean()) structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a boolean");
+                decoded = value_it->template get<bool>();
+            } else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>) {
+                decoded = static_cast<Value>(validateStructSigned(*value_it, schema, path));
+            } else if constexpr (std::is_unsigned_v<Value> && std::is_integral_v<Value>) {
+                decoded = static_cast<Value>(validateStructUnsigned(*value_it, schema, path));
+            } else if constexpr (std::same_as<Value, float> || std::same_as<Value, double>) {
+                decoded = static_cast<Value>(validateStructFloating(*value_it, schema, path, std::same_as<Value, float>));
+            } else if constexpr (std::same_as<Value, std::string>) {
+                if (!value_it->is_string()) structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a string");
+                decoded = value_it->template get_ref<const std::string &>();
+            } else if constexpr (std::same_as<Value, vec2> ||
+                                 std::same_as<Value, vec3> ||
+                                 std::same_as<Value, vec4> ||
+                                 std::same_as<Value, quat>) {
+                if (!value_it->is_array() ||
+                    value_it->size() != structVectorLength(schema.type)) {
+                    structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                                     "has an invalid array shape");
+                }
+                std::array<float, 4> components{};
+                for (std::size_t index = 0; index < value_it->size(); ++index) {
+                    components[index] = static_cast<float>(
+                        validateStructFloating((*value_it)[index], schema,
+                                               path, true));
+                }
+                if constexpr (std::same_as<Value, vec2>)
+                    decoded = {components[0], components[1]};
+                else if constexpr (std::same_as<Value, vec3>)
+                    decoded = {components[0], components[1], components[2]};
+                else
+                    decoded = {components[0], components[1], components[2],
+                               components[3]};
+            } else {
+                static_assert(always_false_v<Value>, "unsupported OptionalOverride field type");
+            }
+        }
+        member = std::move(decoded);
+    } else if constexpr (is_flags_v<Member>) {
+        if (!value_it->is_array()) {
+            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                             "must be a flag string array");
+        }
+        using Storage = typename Member::storage_type;
+        Storage bits = 0;
+        std::set<std::string> seen;
+        for (const auto &item : *value_it) {
+            if (!item.is_string()) {
+                structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                                 "flag entries must be strings");
+            }
+            const auto &name = item.template get_ref<const std::string &>();
+            if (!seen.emplace(name).second) {
+                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                 "contains a duplicate flag");
+            }
+            bool found = false;
+            for (const auto &entry : policy_field.enum_values.values) {
+                if (entry.name == name) {
+                    bits |= static_cast<Storage>(entry.value);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                 "contains an undeclared flag");
+            }
+        }
+        member = Member{bits};
+    } else if constexpr (is_list_v<Member>) {
+        using Row = typename ListTraits<Member>::row_type;
+        if (!value_it->is_object()) {
+            structFieldError(StructFieldErrorCode::ListContainerMissing, path,
+                             "ListContainerMissing: list must use an object container");
+        }
+        for (auto item = value_it->begin(); item != value_it->end(); ++item) {
+            if (item.key() != "$list" && item.key() != "rows") {
+                structFieldError(StructFieldErrorCode::UnknownField,
+                                 childFieldPath(path, item.key()),
+                                 "is not part of a List container");
+            }
+        }
+        const auto list_meta = value_it->find("$list");
+        if (list_meta == value_it->end()) {
+            structFieldError(StructFieldErrorCode::RowEnvelopeMissing, path,
+                             "RowEnvelopeMissing: list container has no $list envelope");
+        }
+        if (!list_meta->is_object() || !list_meta->contains("v") ||
+            !list_meta->contains("next_id")) {
+            structFieldError(StructFieldErrorCode::RowEnvelopeMissing, path,
+                             "RowEnvelopeMissing: invalid $list envelope");
+        }
+        for (auto item = list_meta->begin(); item != list_meta->end(); ++item) {
+            if (item.key() != "v" && item.key() != "next_id") {
+                structFieldError(StructFieldErrorCode::UnknownField,
+                                 childFieldPath(path, "$list." + item.key()),
+                                 "is not part of the $list envelope");
+            }
+        }
+        const auto read_u32 = [&](const StructJson &json,
+                                  std::string child) -> std::uint32_t {
+            if ((!json.is_number_unsigned() && !json.is_number_integer()) ||
+                (json.is_number_integer() && json.get<std::int64_t>() < 0)) {
+                structFieldError(StructFieldErrorCode::TypeMismatch,
+                                 childFieldPath(path, child),
+                                 "must be an unsigned 32-bit integer");
+            }
+            const auto value = json.get<std::uint64_t>();
+            if (value > std::numeric_limits<std::uint32_t>::max()) {
+                structFieldError(StructFieldErrorCode::OutOfRange,
+                                 childFieldPath(path, child),
+                                 "is outside U32");
+            }
+            return static_cast<std::uint32_t>(value);
+        };
+        const auto list_version = read_u32(list_meta->at("v"), "$list.v");
+        if (list_version != 1) {
+            structFieldError(StructFieldErrorCode::RowEnvelopeUnsupported, path,
+                             "RowEnvelopeUnsupported: unknown $list version");
+        }
+        Member decoded;
+        decoded.next_id = read_u32(list_meta->at("next_id"), "$list.next_id");
+        const auto rows = value_it->find("rows");
+        if (rows == value_it->end() || !rows->is_array()) {
+            structFieldError(StructFieldErrorCode::TypeMismatch, path,
+                             "list rows must be an array");
+        }
+        std::set<std::uint32_t> ids;
+        std::uint32_t maximum_id = 0;
+        for (std::size_t index = 0; index < rows->size(); ++index) {
+            const auto &encoded_row = rows->at(index);
+            const auto row_path = path + ".rows[" + std::to_string(index) + "]";
+            if (!encoded_row.is_object() || !encoded_row.contains("$row")) {
+                structFieldError(StructFieldErrorCode::RowEnvelopeMissing,
+                                 row_path,
+                                 "RowEnvelopeMissing: row has no $row envelope");
+            }
+            const auto &row_meta = encoded_row.at("$row");
+            if (!row_meta.is_object() || !row_meta.contains("id") ||
+                !row_meta.contains("v")) {
+                structFieldError(StructFieldErrorCode::RowEnvelopeMissing,
+                                 row_path,
+                                 "RowEnvelopeMissing: invalid $row envelope");
+            }
+            for (auto item = row_meta.begin(); item != row_meta.end(); ++item) {
+                if (item.key() != "id" && item.key() != "v" &&
+                    item.key() != "hint") {
+                    structFieldError(
+                        StructFieldErrorCode::UnknownField,
+                        row_path + ".$row." + item.key(),
+                        "is not part of the $row envelope");
+                }
+            }
+            ListRow<Row> row;
+            row.envelope.id = read_u32(row_meta.at("id"), "$row.id");
+            row.envelope.version = read_u32(row_meta.at("v"), "$row.v");
+            if (row.envelope.id == 0) {
+                structFieldError(StructFieldErrorCode::OutOfRange, row_path,
+                                 "row id must be non-zero");
+            }
+            if (row.envelope.version != 1) {
+                structFieldError(StructFieldErrorCode::RowEnvelopeUnsupported,
+                                 row_path,
+                                 "RowEnvelopeUnsupported: unknown $row version");
+            }
+            if (!ids.emplace(row.envelope.id).second) {
+                structFieldError(StructFieldErrorCode::DuplicateRowId,
+                                 row_path,
+                                 "DuplicateRowId: row id is duplicated");
+            }
+            maximum_id = std::max(maximum_id, row.envelope.id);
+            if (const auto hint = row_meta.find("hint"); hint != row_meta.end()) {
+                if (!hint->is_object()) {
+                    structFieldError(StructFieldErrorCode::TypeMismatch,
+                                     row_path + ".$row.hint",
+                                     "must be an object");
+                }
+                row.envelope.hint_json = hint->dump();
+            }
+            auto authored_row = encoded_row;
+            authored_row.erase("$row");
+            decodeStructObject(authored_row, row.value, Row::schema, row_path);
+            decoded.rows.push_back(std::move(row));
+        }
+        if (decoded.next_id <= maximum_id) {
+            structFieldError(StructFieldErrorCode::OutOfRange, path,
+                             "$list.next_id must exceed every row id");
+        }
+        member = std::move(decoded);
+    } else if constexpr (std::same_as<Member, bool>) {
         if (!value_it->is_boolean()) {
             structFieldError(StructFieldErrorCode::TypeMismatch, path, "must be a boolean");
         }
@@ -295,7 +561,82 @@ nlohmann::ordered_json encodeStructPolicyField(const Owner &value, const PolicyF
     const auto &member = value.*Declaration::member;
     const auto path = childFieldPath(root_path, policy_field.field.descriptor.name);
     const auto schema = materializeStructField(policy_field.field.descriptor);
-    if constexpr (std::same_as<Member, bool>) {
+    if constexpr (is_optional_v<Member>) {
+        if (!member) return nullptr;
+        using Value = unwrap_optional_t<Member>;
+        if constexpr (is_flags_v<Value>) {
+            nlohmann::ordered_json result = nlohmann::ordered_json::array();
+            typename Value::storage_type declared_bits = 0;
+            for (const auto &entry : policy_field.enum_values.values) {
+                declared_bits |=
+                    static_cast<typename Value::storage_type>(entry.value);
+                if (member->contains(entry.value)) result.push_back(entry.name);
+            }
+            if ((member->bits() & ~declared_bits) != 0) {
+                structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                                 "contains bits outside the declared vocabulary");
+            }
+            return result;
+        } else if constexpr (std::is_enum_v<Value>) {
+            for (const auto &entry : policy_field.enum_values.values) {
+                if (entry.value == *member) return entry.name;
+            }
+            structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                             "is not a declared enum value");
+        } else {
+            const StructJson encoded = *member;
+            if constexpr (std::is_unsigned_v<Value> && std::is_integral_v<Value>)
+                (void)validateStructUnsigned(encoded, schema, path);
+            else if constexpr (std::is_signed_v<Value> && std::is_integral_v<Value>)
+                (void)validateStructSigned(encoded, schema, path);
+            else if constexpr (std::same_as<Value, float> || std::same_as<Value, double>)
+                (void)validateStructFloating(encoded, schema, path, std::same_as<Value, float>);
+            else if constexpr (std::same_as<Value, vec2>)
+                return nlohmann::ordered_json::array({member->x, member->y});
+            else if constexpr (std::same_as<Value, vec3>)
+                return nlohmann::ordered_json::array(
+                    {member->x, member->y, member->z});
+            else if constexpr (std::same_as<Value, vec4> ||
+                               std::same_as<Value, quat>)
+                return nlohmann::ordered_json::array(
+                    {member->x, member->y, member->z, member->w});
+            return *member;
+        }
+    } else if constexpr (is_flags_v<Member>) {
+        nlohmann::ordered_json result = nlohmann::ordered_json::array();
+        typename Member::storage_type declared_bits = 0;
+        for (const auto &entry : policy_field.enum_values.values) {
+            declared_bits |=
+                static_cast<typename Member::storage_type>(entry.value);
+            if (member.contains(entry.value)) result.push_back(entry.name);
+        }
+        if ((member.bits() & ~declared_bits) != 0) {
+            structFieldError(StructFieldErrorCode::InvalidEnum, path,
+                             "contains bits outside the declared vocabulary");
+        }
+        return result;
+    } else if constexpr (is_list_v<Member>) {
+        using Row = typename ListTraits<Member>::row_type;
+        nlohmann::ordered_json result = nlohmann::ordered_json::object();
+        result["$list"] = nlohmann::ordered_json{{"v", 1}, {"next_id", member.next_id}};
+        result["rows"] = nlohmann::ordered_json::array();
+        for (const auto &row : member.rows) {
+            nlohmann::ordered_json envelope{{"id", row.envelope.id},
+                                            {"v", row.envelope.version}};
+            if (row.envelope.hint_json) {
+                envelope["hint"] = nlohmann::ordered_json::parse(*row.envelope.hint_json);
+            }
+            nlohmann::ordered_json encoded_row = nlohmann::ordered_json::object();
+            encoded_row["$row"] = std::move(envelope);
+            auto authored = encodeStructObject(row.value, Row::schema,
+                                               path);
+            for (auto &[key, item] : authored.items()) {
+                encoded_row[key] = std::move(item);
+            }
+            result["rows"].push_back(std::move(encoded_row));
+        }
+        return result;
+    } else if constexpr (std::same_as<Member, bool>) {
         return member;
     } else if constexpr (std::is_enum_v<Member>) {
         for (const auto &entry : policy_field.enum_values.values) {
@@ -338,6 +679,185 @@ nlohmann::ordered_json encodeStructPolicyField(const Owner &value, const PolicyF
 
 } // namespace internal
 
+namespace internal {
+
+template <class Owner, class Policy, class... PolicyFields>
+void decodeStructObject(
+    const StructJson &payload, Owner &destination,
+    const StructSchemaDescriptor<Policy, PolicyFields...> &schema,
+    std::string_view root_path) {
+    static_assert(std::default_initializable<Owner>,
+                  "schema owner must be default constructible");
+    static_assert(std::is_nothrow_swappable_v<Owner>,
+                  "schema owner atomic apply requires a noexcept swap");
+    if (!payload.is_object()) {
+        structFieldError(StructFieldErrorCode::PayloadMustBeObject,
+                         std::string{root_path}, "must be an object");
+    }
+    for (auto it = payload.begin(); it != payload.end(); ++it) {
+        bool known = false;
+        for (const auto &field_schema : schema.fields) {
+            known = known || field_schema.name == it.key();
+        }
+        if (!known) {
+            const auto path = childFieldPath(root_path, it.key());
+            if (it.key().starts_with("$")) {
+                structFieldError(StructFieldErrorCode::ReservedFieldName,
+                                 path,
+                                 "ReservedFieldName: '$' names are reserved");
+            }
+            structFieldError(StructFieldErrorCode::UnknownField, path,
+                             "is unknown");
+        }
+    }
+
+    Owner temporary{};
+    std::apply(
+        [&](const auto &...policy_field) {
+            (setStructDefault(policy_field, temporary), ...);
+            (decodeStructPolicyField(payload, policy_field, temporary,
+                                     root_path), ...);
+            ((void)encodeStructPolicyField(temporary, policy_field,
+                                           root_path), ...);
+        },
+        schema.declarations);
+    using std::swap;
+    swap(destination, temporary);
+}
+
+template <class Owner, class Policy, class... PolicyFields>
+nlohmann::ordered_json encodeStructObject(
+    const Owner &value,
+    const StructSchemaDescriptor<Policy, PolicyFields...> &schema,
+    std::string_view root_path) {
+    nlohmann::ordered_json result = nlohmann::ordered_json::object();
+    std::apply(
+        [&](const auto &...policy_field) {
+            ([&] {
+                using Field = std::remove_cvref_t<decltype(policy_field)>;
+                using Member = typename PolicyFieldTraits<Field>::member_type;
+                using Declaration =
+                    typename PolicyFieldTraits<Field>::declaration_type;
+                const auto &member = value.*Declaration::member;
+                if constexpr (is_optional_v<Member>) {
+                    if (!member) return;
+                }
+                result[std::string{policy_field.field.descriptor.name}] =
+                    encodeStructPolicyField(value, policy_field, root_path);
+            }(), ...);
+        },
+        schema.declarations);
+    return result;
+}
+
+} // namespace internal
+
+namespace internal {
+
+inline nlohmann::ordered_json schemaRangeJson(const StructFieldRange &range) {
+    return std::visit(
+        [](const auto &value) -> nlohmann::ordered_json {
+            using Range = std::remove_cvref_t<decltype(value)>;
+            if constexpr (std::same_as<Range, std::monostate>) return nullptr;
+            else return nlohmann::ordered_json::array({value.first, value.second});
+        },
+        range);
+}
+
+template <class Policy, class... PolicyFields>
+SchemaNode materializeSchemaNode(
+    const StructSchemaDescriptor<Policy, PolicyFields...> &schema) {
+    SchemaNode root;
+    root.tag = SchemaNodeTag::Struct;
+    std::apply(
+        [&](const auto &...policy_field) {
+            ([&] {
+                using Field = std::remove_cvref_t<decltype(policy_field)>;
+                using Traits = PolicyFieldTraits<Field>;
+                using Member = unwrap_optional_t<typename Traits::member_type>;
+                SchemaNode node;
+                node.name = policy_field.field.descriptor.name;
+                node.presence = Traits::presence;
+                node.leaf_type = policy_field.field.descriptor.type;
+                node.range = materializeStructFieldRange(
+                    policy_field.field.descriptor.range);
+                node.unit = policy_field.field.descriptor.unit;
+                if constexpr (is_list_v<Member>) {
+                    node.tag = SchemaNodeTag::List;
+                    using Row = typename ListTraits<Member>::row_type;
+                    node.children.push_back(materializeSchemaNode(Row::schema));
+                } else if constexpr (is_flags_v<Member>) {
+                    node.tag = SchemaNodeTag::Flags;
+                } else {
+                    node.tag = SchemaNodeTag::Leaf;
+                }
+                if constexpr (Traits::has_enum_values) {
+                    for (const auto &entry : policy_field.enum_values.values) {
+                        using Enum = std::remove_cvref_t<decltype(entry.value)>;
+                        using Raw = std::underlying_type_t<Enum>;
+                        if constexpr (std::is_signed_v<Raw>) {
+                            node.vocabulary.push_back(SchemaVocabularyValue{
+                                std::string{entry.name},
+                                static_cast<std::uint64_t>(
+                                    static_cast<std::int64_t>(entry.value)),
+                                true});
+                        } else {
+                            node.vocabulary.push_back(SchemaVocabularyValue{
+                                std::string{entry.name},
+                                static_cast<std::uint64_t>(entry.value), false});
+                        }
+                    }
+                }
+                if constexpr (Traits::presence ==
+                              StructFieldPresence::Defaulted) {
+                    using FieldOwner = typename Traits::owner_type;
+                    FieldOwner defaults{};
+                    setStructDefault(policy_field, defaults);
+                    node.default_json =
+                        encodeStructPolicyField(defaults, policy_field,
+                                                "schema.default")
+                            .dump();
+                }
+                root.children.push_back(std::move(node));
+            }(), ...);
+        },
+        schema.declarations);
+    return root;
+}
+
+inline nlohmann::ordered_json schemaNodeJson(const SchemaNode &node) {
+    nlohmann::ordered_json result{
+        {"tag", static_cast<std::uint8_t>(node.tag)},
+        {"name", node.name},
+        {"presence", static_cast<std::uint8_t>(node.presence)},
+        {"type", static_cast<std::uint8_t>(node.leaf_type)},
+        {"range", schemaRangeJson(node.range)},
+        {"unit", node.unit},
+        {"default", node.default_json
+                        ? nlohmann::ordered_json::parse(*node.default_json)
+                        : nlohmann::ordered_json(nullptr)},
+    };
+    auto vocabulary = nlohmann::ordered_json::array();
+    for (const auto &entry : node.vocabulary) {
+        vocabulary.push_back({{"name", entry.name},
+                              {"value", entry.value},
+                              {"signed", entry.signed_value}});
+    }
+    result["vocabulary"] = std::move(vocabulary);
+    auto children = nlohmann::ordered_json::array();
+    for (const auto &child : node.children) {
+        children.push_back(schemaNodeJson(child));
+    }
+    result["children"] = std::move(children);
+    return result;
+}
+
+inline std::string schemaNodeFingerprint(const SchemaNode &node) {
+    return schemaNodeJson(node).dump();
+}
+
+} // namespace internal
+
 template <class Params, class... PolicyFields>
 void decodeBehaviorParams(const nlohmann::json &payload, Params &destination,
                           const StructSchemaDescriptor<BehaviorParamsPolicy, PolicyFields...> &schema,
@@ -346,30 +866,7 @@ void decodeBehaviorParams(const nlohmann::json &payload, Params &destination,
     static_assert(std::is_nothrow_swappable_v<Params>,
                   "BehaviorParams atomic apply requires a noexcept swap");
 
-    if (!payload.is_object()) {
-        internal::structFieldError(StructFieldErrorCode::PayloadMustBeObject, std::string{root_path},
-                                   "must be an object");
-    }
-    for (auto it = payload.begin(); it != payload.end(); ++it) {
-        bool known = false;
-        for (const auto &field_schema : schema.fields) {
-            known = known || field_schema.name == it.key();
-        }
-        if (!known) {
-            const auto path = internal::childFieldPath(root_path, it.key());
-            internal::structFieldError(StructFieldErrorCode::UnknownField, path, "is unknown");
-        }
-    }
-
-    Params temporary{};
-    std::apply([&](const auto &...policy_field) {
-        (internal::setStructDefault(policy_field, temporary), ...);
-        (internal::decodeStructPolicyField(payload, policy_field, temporary, root_path), ...);
-        ((void)internal::encodeStructPolicyField(temporary, policy_field, root_path), ...);
-    }, schema.declarations);
-
-    using std::swap;
-    swap(destination, temporary);
+    internal::decodeStructObject(payload, destination, schema, root_path);
 }
 
 template <class Params, class... PolicyFields>
@@ -377,13 +874,7 @@ nlohmann::ordered_json
 encodeBehaviorParams(const Params &value,
                      const StructSchemaDescriptor<BehaviorParamsPolicy, PolicyFields...> &schema,
                      std::string_view root_path = "params") {
-    nlohmann::ordered_json result = nlohmann::ordered_json::object();
-    std::apply([&](const auto &...policy_field) {
-        ((result[std::string{policy_field.field.descriptor.name}] =
-              internal::encodeStructPolicyField(value, policy_field, root_path)),
-         ...);
-    }, schema.declarations);
-    return result;
+    return internal::encodeStructObject(value, schema, root_path);
 }
 
 } // namespace Pelican

@@ -344,6 +344,20 @@ RegistrationToken UserEventRegistererTemplatePublic::pelican_register_event_v2(
     return token;
 }
 
+RegistrationToken UserEventRegistererTemplatePublic::pelican_register_event_v3(
+    EventTypeRegistrationV3 registration) {
+    const auto &schema = registration.schema;
+    const auto token =
+        pelican_register_event_v2(std::move(registration.callbacks));
+    try {
+        v3_schemas.emplace_back(token, schema);
+    } catch (...) {
+        unregisterEvent(token);
+        throw;
+    }
+    return token;
+}
+
 void UserEventRegistererTemplatePublic::pelican_emit_v2(QueuedEvent event) {
     if (active_event_outbox != nullptr) {
         active_event_outbox->stage(std::move(event));
@@ -385,6 +399,10 @@ UserEventRegistererTemplatePublic::validateByName(std::string_view name, const v
         validationError(EventPayloadErrorCode::PayloadRequired,
                         "typed event requires an object payload: " + std::string{name});
     }
+    if (schemaFor(*registration) != nullptr) {
+        (void)registration->load_json_payload(payload_json);
+        return *registration;
+    }
     validateObject(name, registration->schema, *static_cast<const Json *>(payload_json));
     return *registration;
 }
@@ -421,6 +439,14 @@ const EventTypeRegistration *UserEventRegistererTemplatePublic::findByName(std::
     return it == event_types.end() ? nullptr : &*it;
 }
 
+const SchemaNode *UserEventRegistererTemplatePublic::schemaFor(
+    const EventTypeRegistration &registration) const noexcept {
+    const auto found = std::find_if(
+        v3_schemas.begin(), v3_schemas.end(),
+        [&](const auto &entry) { return entry.first == registration.token; });
+    return found == v3_schemas.end() ? nullptr : &found->second;
+}
+
 void UserEventRegistererTemplatePublic::validateCatalogAndFreeze() {
     if (catalog_frozen) {
         return;
@@ -429,6 +455,7 @@ void UserEventRegistererTemplatePublic::validateCatalogAndFreeze() {
         if (registration.schema_state != EventSchemaState::Typed) {
             continue;
         }
+        if (schemaFor(registration) != nullptr) continue;
         const auto actual = registration.list_ref_fields();
         const auto expected = registration.schema.fields;
         if (actual.size() != expected.size()) {
@@ -576,6 +603,8 @@ void unregisterEvent(RegistrationToken token) {
         }
     }
 
+    std::erase_if(registerer.v3_schemas,
+                  [token](const auto &entry) { return entry.first == token; });
     registerer.event_types.erase(found);
     (void)releaseRegistrationToken(token, RegistrationKind::event);
 }

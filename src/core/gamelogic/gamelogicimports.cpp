@@ -558,7 +558,8 @@ readGameLogicImports(const std::filesystem::path &path) noexcept {
 
 GameLogicImportDiagnosis diagnoseGameLogicImports(
     const std::filesystem::path &path, std::string_view host_module,
-    std::uint32_t expected_epoch) noexcept {
+    std::uint32_t expected_epoch,
+    std::uint32_t host_schema_entrance) noexcept {
     const auto read = readGameLogicImports(path);
     if (!read.readable()) {
         return {
@@ -570,6 +571,7 @@ GameLogicImportDiagnosis diagnoseGameLogicImports(
     const auto expected_module = asciiLower(host_module);
     std::vector<std::string> legacy;
     std::vector<std::uint32_t> epochs;
+    std::uint32_t imported_schema_entrance = 2;
     for (const auto &entry : read.imports) {
         if (asciiLower(entry.module) != expected_module) continue;
         if (entry.kind == GameLogicPeImportKind::delay_named ||
@@ -593,6 +595,24 @@ GameLogicImportDiagnosis diagnoseGameLogicImports(
         if (const auto epoch = importedEpoch(entry.symbol)) {
             epochs.push_back(*epoch);
         }
+        if (entry.symbol.find("pelican_register_behavior_v3") !=
+                std::string_view::npos ||
+            entry.symbol.find("pelican_register_event_v3") !=
+                std::string_view::npos ||
+            entry.symbol.find("pelican_register_component_v3") !=
+                std::string_view::npos) {
+            imported_schema_entrance = 3;
+        }
+    }
+
+    if (imported_schema_entrance > host_schema_entrance) {
+        return {
+            .error_code = std::string{gameLogicAbiStaleErrorCode},
+            .error_fields = {
+                {"found", "v" + std::to_string(imported_schema_entrance)},
+                {"host", "v" + std::to_string(host_schema_entrance)},
+            },
+        };
     }
 
     std::ranges::sort(legacy);
