@@ -22667,6 +22667,72 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 #### やらないこと
 
 device の共有(1 process 内の device 初期化を TEST_CASE 間で使い回すこと。決定性のため今のまま)/ CI 構成の変更 / production コードへの変更。
+
+#### WP384 + WP385 仕様レビュー第 1 巡(不合格・14 件)と v2 —— **決定差分(v2 が両節の正)**
+
+仕分け: **直す 14**(全件)。
+
+##### WP384 決定 4(#1): fault 行列を現行順序に合わせる
+
+| 注入点 | active SBT | descriptor の TLAS | 今日 |
+|---|---|---|---|
+| `after_compile` / `after_pipeline` | 旧 | 旧 | 緑 |
+| `after_sbt` | 旧(まだ set していない) | 旧 | 緑 |
+| `after_as_record` | **候補**(record 後に無条件 set) | 旧 | **赤** |
+| `submit` | **候補** | **候補**(descriptor 書き込み後) | **赤** |
+
+受け入れの「今日赤」は `after_as_record` の SBT と `submit` の SBT / TLAS descriptor に限定する。
+
+##### WP384 決定 5(#3 #4): **descriptor bank を二重化**し、record は候補 bank と候補 SBT を明示的に使う
+
+- `FrameResources` は RT 用 descriptor set を **2 bank**(active / candidate)持つ。frame の prepare で候補 TLAS を **candidate bank に書き**、command buffer の record は **candidate bank と候補 SBT を引数で受け取って**使う(`active` を経由しない)。commit で **active index を flip**(swap)。active bank は frame 中に書き換えない
+- **descriptor topology / pool は常設**にする(RT → 非 RT で破壊しない。[frameresources.cpp:122](../src/core/renderer/frameresources.cpp#L122) の destroy をやめ、RT 無しの frame は bank を「空 TLAS」で使う)。build 時に RT feature が OFF なら topology 自体が無い(purge は保つ)
+- 「`commit()` 時点で初めて選ぶ」(v1 決定 1)は撤回。record・submit は候補で行い、**active の切替だけ**が commit
+
+##### WP384 決定 6(#2): 却下 candidate の寿命は **次の安全な retirement point まで**
+
+候補 TLAS は `DeletionQueue` の batch で退役するので fault 直後に use_count 0 は不可能。受け入れ (c) を **「descriptor の active bank が候補を指していない」+「候補は次の retirement point(fence 後)で解放される(deletion queue の batch を観測)」**に置換。
+
+##### WP384 決定 7(#5): transaction boundary を `ILogicalFrameTarget` に定義する
+
+XR では `submit` 注入点より前に実 submit が終わる。`ILogicalFrameTarget` に **`commitBoundary()`**(全 submission が成功した後、外部可視化(compositor への release)より前)を明示し、`FrameBuild::commit()` と bank flip はこの boundary で行う。受け入れは **flat / XR multiview / XR sequential** の 3 target で別々に持つ(XR は headless composition target fixture)。
+
+##### WP384 決定 8(#6): 受け入れは実 descriptor update を観測する
+
+host mirror の同一性と「もう 1 frame」は代理条件。A / B で **geometry か mask が異なる**入力を使い、fault 直後の frame で GPU が読んだ結果(sentinel / 可視性)が **A のまま**であることを観測する。descriptor update を削る変異と bank flip を SBT だけにする変異が赤。
+
+##### WP384 決定 9(#7): submission lease の受け入れを足す
+
+旧世代 A を in-flight のまま B を commit し、**A の fence 前は A の資源が生存(weak lease が有効)、fence 後に purge** されることを観測する(§11 v4 決定 1 の「旧世代は submission lease で退役」)。
+
+##### WP385 決定 4(#8 #10): lease の対象は **生成後の全 CTest test のうち label `gpu` を持つもの**
+
+- `GPU` target(全 TEST_CASE が GPU)には compile definition `PELICAN_TEST_GPU_LEASE_ALL=1` を渡し、listener は無条件に lease を取る。`MIXED_GPU` target は Catch の `[gpu]` tag で選別(tag は既存の運用どおり)
+- `RESOURCE_LOCK pelican_gpu` の対象集合も同じ定義(MIXED lane の `[gpu]` 側と手書き `add_test` を含む)
+
+##### WP385 決定 5(#9): 非 Catch の GPU test は **lease launcher** で包む
+
+player / CMake script / PowerShell / Python 駆動の GPU test は、test-only の実行体 **`pelican_gpu_lease_run <cmd…>`** が lease を取ってから子 process を起動する形に包む(CMake helper が `LABELS gpu` の `add_test` を自動で包む)。Catch listener は Catch 実行体の中だけ。
+
+##### WP385 決定 6(#11): 集合一致は `ctest --show-only=json-v1` で
+
+`--print-labels` は名前一覧だけ。受け入れは json-v1 を parse し、**test 単位で `gpu` label ⇔ `RESOURCE_LOCK = pelican_gpu` ⇔ lease(launcher か listener)**の 3 条件が一致することを検査する script test。
+
+##### WP385 決定 7(#12): timeout の整合
+
+lease の待ち上限は **外側の CTest timeout より短くなければならない**。CMake helper が GPU test の `TIMEOUT` を **`lease_timeout(1200) + 固有 timeout + 60`** に統一する(固有 timeout は既存値)。受け入れは注入可能な deadline(`PELICAN_GPU_LEASE_TIMEOUT_SECONDS`)で短時間に走らせる。
+
+##### WP385 決定 8(#13): Linux の契約
+
+`$XDG_RUNTIME_DIR` 未設定は **`gpu_lease_runtime_dir_missing@1`**(fallback しない)。lock fd は `O_CLOEXEC`。履歴は run ごとの file(`<dir>/pelican_gpu_lease_v1.<pid>.log`)に **holder token + monotonic 時刻**を書き、排他の受け入れは **collision sentinel**(取得中に共有 file へ自分の token を書き、解放時に自分の token のままであること)で判定する。
+
+##### WP385 決定 9(#14): configure / build / test を同じ環境で回す wrapper
+
+`tools/worktree.sh {configure|build|test} <worktree>` の 1 本にし、環境変数(`MSBUILDDISABLENODEREUSE=1` 等)は wrapper 内で毎回設定する。各 worktree は **別 binary dir**、共有は **read-only の dependency source(main の `_deps/*-src`)だけ**と固定する。build artifact は共有しない。
+
+##### 段取り(v2)
+
+WP384(上段)と WP385(中段)は独立。第 2 巡は両節一体で 1 回、以後打ち切り。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
