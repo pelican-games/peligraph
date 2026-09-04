@@ -25,6 +25,17 @@ v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP1
 
 ## 0. 全 WP 共通規則
 
+
+
+####  完了記録(統合側。2026-09-04、`1d5a0a05`)
+
+- **実装(codex terra + high、中段)**: `MaterialRowIdentity`(typed union)を raygrouplayout に 1 箇所で作り、gate / bindings lookup / AS rule lookup / material reference が同じ値を見る。`source_material_index` を producer(gltf / modeltemplate / polygoninstancecontainer)から AS snapshot まで optional に配線し、欠損を 0 に戻さない。`A && I && !V` は `pelican.ray_material_index_out_of_range@1`。WP374 の「document と asset の同時一致は曖昧」対照は v3 の document 優先に更新。受け入れは production `resolveRaySceneRows` 経由の 5 軸 32 組 parametrized test
+- **agent の変異 / 検証**: gate 無効化 → :269 が 18 件赤 / document lookup 無効化 → :276 が 8 件赤。復元後 54 assertions 緑。**全体 build は 120 秒上限で中断**(背景実行の指示を書いたが従わず)→ 非 GPU 全数・両構成・bytes は統合側
+- **統合側の検証(worktree)**: 全体 build で headless_render_test の 2 行が optional 化に未追随(Claude が修正、d0a4656c)。非 GPU 1290 / 1293 で **WP366 の 3 テストが赤**(`ray_binding_selector_unresolved@1`): 私の truth table `D && N → Document` が name の無い document material を Asset / Unavailable に落としていた = **仕様の誤り**。台帳の決定 33 に訂正(document の存在が勝つ、name は optional。fa2a68f5)を書き、terra に差し戻し。訂正後(1f148b4b): terra は sandbox で background build を完走できず未検証 → 統合側で全体 build エラー 0、非 GPU 1292 / 1293(WP334b は -j flake、単独緑)、WP366 の 3 テストは緑に戻った
+- **統合側の変異(`mutation-runner` agent、opus。GPU 28 件を含む基準 125 / 125)**: M1(訂正前の規則に戻す)赤(WP366 の 3 本 + 5 軸の `D=1,N=0` 8 行)/ M2(document selector の name 一致を外す)赤(WP374 resolver :161 :180 :220)/ M3(out_of_range を Unavailable に畳む)赤 :283 / M5(lookup だけ旧 3 field)赤 :312 の 8 行(`D=1,N=0,A=1,I=1,V=1` で gate=Document・lookup=Asset の食い違いを観測)。**生存**: M4 / M4b / M4c(optional index の欠損分岐は PIC でも gltf でも production 経路で一度も走らない = fixture が無い)。M2 も 5 軸テスト自身は落ちない(selector 側の name が row 側と連動)→ terra に 3 回目の差し戻し。**3 回目**: material 無し(index 付き)の GLB fixture を足し、SceneLoader → PIC → AS row resolver で `source_material_index` が absent、identity が `Unavailable` になることを GPU production test で観測(欠損を `optional{0u}` に戻す変異は PIC / gltf の両方で :530 :551 赤)。5 軸に selector name の独立ケース(欠損・不一致・selector name 無し)を追加(name 一致除去で :260 :266 赤)。指定 ctest 28 / 28(GPU 8)、非 GPU 全数は WP335 / WP331 の -j flake のみ(単独緑)。production source の diff は改行のみで復元済み。所見: **並行 build の MSBuild node reuse で他 worktree の出力がログに混入**し、exit 0 だけでは変異入りバイナリで測った証拠にならない(`MSBUILDDISABLENODEREUSE=1` + obj / exe の mtime で確認)
+- **main 取り込み**: 衝突なし(main は docs のみ)
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **100% tests passed, 0 tests failed out of 1628**。doclink 6 件追従、未解決 0
+- コードレビュー: 中段のため codex レビューは行わず、統合側変異(GPU 28 件含む 125 / 125 → 3 回目後 28 / 28)+ Claude レビューで代替
 ### ビルド・テスト
 
 ```sh

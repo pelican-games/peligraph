@@ -185,6 +185,56 @@ Vulkan は `reportIntersectionEXT` の `t` が AABB slab 内であることを�
 
 - 8 象限の ray / 負方向からの AABB hit / `|l|` 上限と `|l| < 2^7 r` の generator 拒否 / f32 emulate の拒否 / 区間分離の一意性 / any-hit 後の再検査 / rigid でない transform の拒否 / (a)(b) の分離
 - 定数の追加: `sphere_maximum_center_distance = 512`、`sphere_minimum_radius = 0.125`、`sphere_discriminant_margin = 2^-8`、`slab_direction_epsilon = 2^-12`。`Contract` に同名で実装する
+
+#### 4-P.7 設計レビュー第 2 巡(8 件・破綻 1)と v3 —— **v3 が 4-P の最終。設計レビューは 2 巡で打ち切り、残余は RT3-2 の仕様レビューへ**
+
+##### 修正 7(#1): off 対照は **report しない valid な `.rint`**
+
+`intersectionShader = unused` は procedural hit group では VUID 違反で作れない。off / on は **同じ AABB・SBT・AS** のまま、on は規範 `.rint`(`reportIntersectionEXT`)、off は **同じ interface で report せずに return する valid な `.rint`** を同一テストで走らせる。
+最終 SPIR-V と resolved group が実際に切り替わったこと(§11 決定 3 の load 時検査と同じ経路で、`.rint` の entry point digest を読む)も同じテストで検査する。
+
+##### 修正 8(#2 #4): generator の補助検査は **本番の包含述語そのもの**。演算列は SPIR-V で固定し `NoContraction` を要求
+
+- generator の f32 emulate は scalar 包含ではなく、**`rayTracingOracleContainsGpuHit` と同じ述語**(GPU 値を前後 4 ulp に展開した区間が CPU 区間に含まれる)で判定する
+- 規範の演算列を **scalar SPIR-V の命令順**で固定する(`l = c − o` の 3 減算 → `s = l·d` の 3 乗算 + 2 加算 → `ll = l·l` → `m² = ll − s·s` → `disc = r·r − m²` → `sqrt` → `t = (s − sqrt) / a`)。対象命令に **`NoContraction` decoration** を要求し、load 時に最終 SPIR-V の命令順と decoration を検査する(§11 決定 3 と同じ「検査面を SPIR-V に移す」)。検査に通らない SPIR-V(compiler が並べ替えた / FMA に縮約した)は **`procedural_oracle_sequence_mismatch@1`** で golden 対象外(名前付き分類。エラーではない)
+- generator は **逐次 f32** と **FMA 縮約 f32** の両方で emulate し、**両方**が包含述語を満たす fixture だけを golden にする(device の `precise` 実装差を吸収する保険)
+
+##### 修正 9(#3): 誤差上限は演算列ごとの γ_n で導く
+
+`γ_n = n·u / (1 − n·u)`(`u = 2^-24`)。上の演算列で `m²` の絶対誤差上限は `γ_12 · (|l|² + s²) + γ_2 · |l|²`、`disc` はそれに `γ_1 · r²` を足したもの。**disc_min はこの上限の 8 倍以上**(`r² − m² ≥ 8 · (γ_12 (|l|² + s²) + γ_2 |l|² + γ_1 r²)`)かつ従来の `≥ 2^-8 r²` の両方を要求する。v2 の「`4·2^-24·|l|²`」は撤回(反例あり: 比 1.81)。定数は `Contract::sphere_gamma_terms = {12, 2, 1}` として実装し、式を設計と実装で共有する。
+
+##### 修正 10(#5): CPU も GPU も **一般形**(`a = dot(d, d)`)。単位長の仮定を捨てる
+
+CPU oracle は `a` を区間で持ち、`t = (s − sqrt(disc·a … ))` の一般形(`disc = r² a − (|l|² a − s²)`、`t = (s − sqrt(disc)) / a`)で計算する。GPU も同じ一般形。v1 の `a = 1` と v2 の `1e-6` 許容は撤回。generator は方向を正規化するが、**正規化の誤差は一般形が吸収する**ので単位長の検査は要らない。
+
+##### 修正 11(#6): rigid の検査は `RᵀR ≈ I` と `det ≈ +1`
+
+generator は object→world の回転部 `R` について **`|RᵀR − I|_∞ ≤ 2^-20`** と **`det R ∈ [1 − 2^-20, 1 + 2^-20]`**(向きを保つ rigid のみ。reflection は subset 外)を検査する。shear / scale は `procedural_transform_not_rigid` で名前付き拒否。`|det − 1|` だけの検査は撤回(shear の反例あり)。
+
+##### 修正 12(#7): slab は **object 空間**で、量子化後の AABB に対して
+
+- object ray = world ray の逆 rigid 変換(`o_obj = Rᵀ(o − T)`、`d_obj = Rᵀ d`)を **区間で**計算する(`R` の各成分は f32 に量子化した値の double 区間)
+- AABB は **BLAS に渡す f32 の object bounds**(`center ± (r + ε_pad)` を f32 に丸めたもの)
+- `2^-12` の「無限 slab」判定と `o_i ∈ (min_i, max_i)` は object ray に適用。`t_enter / t_exit` は object 空間の `t`(rigid なので world と同値)
+- 修正 6 の (a)「幾何が量子化後 AABB に含まれる」も object 空間で検査する
+
+##### 修正 13(#8): 候補列挙 API は predicate を受け取る 1 本。procedural の `primitive_id` は AABB index
+
+- oracle の候補列挙を **predicate 付きの 1 本**(`enumerateAcceptedCandidates(scene, ray, predicate)`)にし、validation(一意性)と最終選択が同じ列を使う。最近接 accepted の `t.upper + ε_t` を **他の全 accepted の `t.lower` の最小値**と比較する
+- 受け入れ fixture: A(t=8)/ B(t=16)/ C(t=16.005)で、always-accept は通過、A だけ ignore の predicate では B / C の分離不足で **名前付き拒否**(`oracle_uniqueness_after_predicate`)。同一テストで両方
+- procedural の `primitive_id` = **その geometry の AABB buffer 内の index**(`gl_PrimitiveID` と同じ)。1 geometry に複数 AABB を許す(1 AABB = 1 球)。any-hit 述語の整数入力に `primitive_id` をそのまま使う
+
+##### 定数(v3 で確定。`Contract` に同名)
+
+`sphere_maximum_center_distance = 512` / `sphere_minimum_radius = 0.125` / `sphere_discriminant_margin_relative = 2^-8` / `sphere_gamma_terms = {12, 2, 1}` / `sphere_discriminant_margin_factor = 8` /
+`slab_direction_epsilon = 2^-12` / `rigid_orthogonality_epsilon = 2^-20` / `aabb_pad = 2^-7`(v1 の `1.0e-2` を dyadic に変更)/ `aabb_minimum_thickness = 2^-7`。
+
+##### 受け入れの骨(v3 差分。RT3-2 WP へ引き継ぐ)
+
+- off / on: report しない valid `.rint` との対照 + SPIR-V の entry digest 切替の観測
+- SPIR-V 検査: 縮約した SPIR-V(`-ffast-math` 相当で compile した fixture)が `procedural_oracle_sequence_mismatch@1` で golden 対象外に分類され、規範列は通る
+- generator: 逐次 / FMA 両 emulate の包含、γ 上限、`RᵀR`、object 空間 slab、A/B/C の predicate 後一意性。各拒否を 1 つずつ消すと落ちる
+- 数値契約の変更は本節の定数を上げてから。RT3-2 WP の仕様レビューは本節を前提として攻撃してよい(設計レビューは打ち切り)
 ## 5. capability・構成(v2 §4 + 第 2 巡 #8)
 
 - 選択済み feature × 非対応 device = hard reject(property 名・要求値・実値・device 名)
