@@ -22535,7 +22535,11 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 - **統合側の変異(`mutation-runner` agent、opus。基準 83 / 83、GPU 4 件含む)**: M1(reader の v3 認識を v2 に)赤 :1108 / M3(重複 row id 拒否除去)赤 :55 / M4(OptionalOverride の absent を default に)赤 :92 :1136 / M5(vocabulary 値を fingerprint から外す)赤 :1186 / M6(`overrides` を黙って受理)赤 :153 / M7(常に v2)赤 :1103 :1186 / M8(v2 record に field 追加)static_assert で build 落ち(期待どおり)。**生存 1**: M2 = `$list.next_id` の検証 3 箇所を消しても緑(negative テストが `next_id` 欠落と `next_id <= max id` を作っていない)→ Claude が 2 ケースを追加し、v2 branch の fingerprint helper に `static_assert(!schemaRequiresV3)`(再帰 schema が v2 の扉を通れない compile 契約)を足した(21e9818b)。追加後の自己変異: `next_id <= max` の検査を消す → :55 で赤。残留 0
 - **main 取り込み**: 衝突なし(WP383 は別ファイル群)
 - 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1633 / 1633**。doclink 84 件追従、未解決 0
-- コードレビュー `rev382a`(codex sol、上段): (記入)
+- コードレビュー `rev382a`(codex sol、上段。`a79360e3`): **Reject**(致命 1 + 実害 4 + 設計懸念 3)。(1) reload の fingerprint 検証が behavior 専用で、event / component の v3 schema は version bump なしで通る /
+  (2) Behavior の raw authored tree を canonical encode で上書きしたまま(presence が消える)/ (3) presence・再帰 schema が RPC / Studio / event lookup / external component catalog / provider に届かない /
+  (4) `Flags` の `contains` が 1 bit 重なりで真、合成値・0 が往復しない / (5) encoder が `$list` invariants を検証せず、`RowIdExhausted` が無い / (6) range の `-0.0` が別 fingerprint /
+  (7) `SchemaNode` が所有型で static init 中に heap / (8) v2 凍結が `sizeof` だけ、frozen fixture は component のみ。→ **WP382a-fix**(上段)で 1・3〜8、**WP382b** で 2。連鎖は 382a-fix で打ち切り。
+  壊せなかった: reader の v3 分類(v3-only / v2+v3 / delay-load)、`$list` の decode 側拒否(behavior / event / component / prefab 展開後)、`overrides` の拒否、出荷 4 project と golden の tracked bytes
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
 **§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
@@ -22790,6 +22794,46 @@ Linux の lock は **同一 UID かつ同一 `$XDG_RUNTIME_DIR`** の範囲(明�
 ##### 段取り(v3)
 
 WP385(中段、terra + high)を先に投入(検証ループが速くなる)。WP384(上段、sol max)はその後。仕様レビューは打ち切り。
+
+### WP382a-fix: 再帰 schema が reload 検証と catalog に届く(rev382a の致命 1 + 実害 4 + 設計懸念 3)
+
+**§4 規則 11 上段(reload 検証・RPC catalog・ABI 凍結を触る)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後)。見積: 中。連鎖: WP382a → 382a-fix で打ち切り。rev382a #2(raw の上書き)は WP382b の決定 2 が閉じる(ここでは扱わない)。**
+**依存: WP382a(`a79360e3`)統合済み。WP382b は本 WP の後(同じ schema / RPC の面を触るため)。**
+
+#### 何が壊れているか(`rev382a` が確認)
+
+1. **致命**: reload の fingerprint 検証は behavior 専用([gamelogicreload.cpp:388](../src/core/gamelogic/gamelogicreload.cpp#L388)、[behaviorreloadvalidation.cpp:10](../src/core/gamelogic/behaviorreloadvalidation.cpp#L10))。`EventTypeRegistrationV3` / `ComponentRegistrationV3` は fingerprint も version も持たず、event / component の v3 schema は **version bump なしで変更しても通る**。reload fixture は `WP382A_RELOAD_ONLY` で event / component を除外している
+2. presence / 再帰 schema が **RPC / Studio / event lookup / external component catalog / prefab provider** に届かない: query model は flat `StructFieldSchema`([editorcommandservice.hpp:73](../src/core/communication/editorcommandservice.hpp#L73))、RPC JSON は presence / default / children / Flags の数値 vocabulary を出さず、`ComponentInfo::schema_v3` を query が見ない、event lookup は旧 `EventPayloadSchema`、provider の v3 loop は behavior だけ
+3. `Flags` の `contains` が「1 bit でも重なれば真」なので、合成値(`AB = 3`)や `None = 0` を持つ vocabulary は decode → encode で別集合になる([structfieldschema.hpp:119](../src/core/userpublic/details/schema/structfieldschema.hpp#L119))
+4. encoder は `$list` の invariants(重複 id、version、`next_id > max`)を検証せず、decoder が拒否する wire を生成できる。`RowIdExhausted` が `StructFieldErrorCode` に無く `OutOfRange` で代用
+5. range の `-0.0` / `+0.0` が別 fingerprint(provider fingerprint は正規化している。[prefabprovider.cpp:145](../src/core/loader/prefabprovider.cpp#L145))
+6. `SchemaNode` は `std::string` / `std::vector` の所有型で、DLL の static initialization 中に heap allocation して木を作る(決定 12 の「constexpr descriptor」に反する)
+7. v2 layout の凍結は `sizeof` だけ。同サイズ field の並べ替えを通す。frozen v2 fixture は component しか登録せず behavior / event の v2 ABI を実ロードしていない
+
+#### 直すこと
+
+1. **三 registry 共通の schema snapshot** `{key, version, SchemaNode fingerprint}` を candidate publish 前に active と比較する(behavior / event / component)。`EventTypeRegistrationV3` / `ComponentRegistrationV3` に fingerprint と version を持たせる。**event だけ / component だけ**を登録する v3 DLL で、default / 順序 / vocabulary 値 / presence を 1 項変えた同 version が `schema_changed_without_version_bump` になる production reload の否定対照
+2. **共通表現 `Schema::Node`** を RPC query / event lookup / external component catalog / prefab provider の全経路で serialize する(presence 3 値 / default / 全子 / Flags の名前と数値)。`get_components` の JSON schema と `ComponentInfo::schema_v3` と provider descriptor が同じ node を返すことを 1 つのテストで固定。Studio は flat のまま読めなくてよいが、**catalog に列挙は出る**(CARRIER-STUDIO の前提)
+3. `Flags` vocabulary は **consteval で nonzero・one-hot** を要求する(合成値は `FlagsVocabularyNotOneHot` で compile error)。`contains` は全 bit 包含。`None = 0` は禁止(空集合は空配列で表す)
+4. `$list` validator を decode / encode **共用**にし、encoder も重複 / version / `next_id` / hint を名前付きで拒否する。`RowIdExhausted` を `StructFieldErrorCode` に足す(`UINT32_MAX` の high-water)
+5. fingerprint の range で `-0.0 → +0.0` を正規化(provider と同じ規則)
+6. `SchemaNode` の descriptor を **固定容量の constexpr 型**(`std::array` + count、深さ 2)にし、host 側の動的表現への変換は v3 入口の中で行う。DLL の static initialization で heap を使わないことを **operator new を数える test allocator**で固定
+7. v2 record の凍結を `sizeof` + `alignof` + **全 field の `offsetof`** で固定。frozen v2 fixture が behavior / event / component の **3 種を登録して callback まで実行**する
+
+#### 受け入れ(§4 規約 10)
+
+- 1: event-only / component-only の v3 DLL で 4 種の変異が拒否され、同一宣言は成功(今日 = 全部通る)。共通 snapshot の比較を behavior だけに戻すと落ちる
+- 2: `get_components` の JSON に row schema / OptionalOverride / Flags の数値が出て、`wp382a_v3_component` が catalog に現れる(今日 = 消える)。event lookup と provider descriptor が同じ node。serialize から presence を消すと落ちる
+- 3: 合成値 / 0 の vocabulary が compile error(negative compile fixture)。`["A"]` の往復が `["A"]`
+- 4: 不正な typed value を encode → 名前付き拒否(今日 = 不正 wire を生成)。`RowIdExhausted`
+- 5: `frange(-0.0, 1)` と `frange(+0.0, 1)` が同じ fingerprint
+- 6: static initialization 中の allocation 0 回。descriptor を所有型に戻すと落ちる
+- 7: 同サイズ field の並べ替えが `static_assert` で落ちる(negative compile fixture)。frozen v2 の 3 種 callback が走る
+- 全数 / RPC OFF / `SKIP_DEVSTUDIO` 両構成 / 出荷 4 project bytes 不変
+
+#### やらないこと
+
+raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DLL fixture(記録: reader の分類は既存契約で正しいが fixture が無い。WP382c 以降で足す)。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
