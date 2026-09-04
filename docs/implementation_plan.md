@@ -22997,6 +22997,80 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 ##### 段取り(v2)
 
 第 2 巡は v2 を WP386a / b / c 一体で 1 回。以後打ち切り、残余はコードレビューへ。実装は WP386a から(sol max)。
+
+#### WP386 仕様レビュー第 2 巡(不合格・12 件)と v3 —— **決定差分(v3 > v2 > v1。仕様レビューは 2 巡で打ち切り、残余はコードレビューへ)**
+
+仕分け: **直す 12**(全件)。実測 HEAD は `81082d14`(v1 の `3a7c158a` から docs のみ移動、対照の事実は不変)。
+
+##### 決定 17(#1): identity は **scene load generation 内で安定**。永続 object ID は本 WP の範囲外
+
+- 「WP304 の永続 ID」は誤り(WP304 は render graph の node / resource ID)。[design_object_identity.md:27](design_object_identity.md#L27) のとおり `AuthoringObjectId` は load 1 回だけ安定で、永続 object ID は scene 形式に無い。本 WP は **`scene_identity = AuthoringObjectId + component occurrence(authored array index。prefab 由来は `stable_generated_id`)`** とし、**同一 load generation 内**の決定性だけを契約にする(save / reload / snapshot import を跨ぐ永続性は identity 設計の別 WP)
+- 受け入れ: 同一 asset・同一 transform の 2 object を登録順反転で 2 row になり bytes 一致(v2 と同じ)。**reload 永続性は受け入れに置かない**(置けば充足不能)
+
+##### 決定 18(#2): `q` の記述訂正
+
+- **1 asset = 1 BLAS geometry = 1 AABB = primitive 0。各 component occurrence = 1 scene row = 1 q**(`q` は正準化後の row ごと。[raygrouplayout.cpp:1398](../src/core/shader/raygrouplayout.cpp#L1398))。同じ asset の 2 object は 1 BLAS・2 row・2 q
+
+##### 決定 19(#3): 変更行列(「全部変わる」は撤回)
+
+| 変更 | root generation | row digest / SBT | BLAS 入力 | TLAS instance の意味 bytes |
+|---|---|---|---|---|
+| `record` だけ | 変わる | 変わる | **不変** | **不変**(transform / mask / flags / SBT offset) |
+| `aabb` だけ | 変わる | **record 部は不変** | 変わる | BLAS 参照だけ変わってよい |
+
+- 受け入れは上の行列どおりに「変わるもの / 変わらないもの」を両方検査し、全 consumer が **同じ generation token** を参照することを検査する(無関係な generation 値を GPU bytes に混ぜる実装は不変側で落ちる)
+
+##### 決定 20(#4): 単一 pointer の契約は **renderer 所有の `RaySceneGenerationRoot`**
+
+- 現行は geometry snapshot → row resolve → SBT 生成中に index を注入した **別の row snapshot** → `recordFrame` の二段([renderer.cpp:4686](../src/core/vkcore/renderer.cpp#L4686)、[:4721](../src/core/vkcore/renderer.cpp#L4721)、[pipelinefactory.cpp:1323](../src/core/shader/pipelinefactory.cpp#L1323))。resolve 前の raw inventory を同一 pointer で SBT / TLAS まで運ぶ契約(v2 決定 9)は成立しない
+- v3: `RaySceneGenerationRoot{inventory(typed union), resolved_rows, geometry_table, sbt, tlas_plan, generation}` を renderer が 1 回だけ組み立て、**同じ root pointer** を SBT 生成・geometry table・`recordFrame` へ渡す。契約は「root の同一性 + root 内の各段が同じ generation を持つ」。raw inventory pointer の同一性だけを契約にしない
+- 受け入れ: root の generation と SBT / TLAS が読んだ generation の一致。root を二重に組み立てる変異(消費者ごとに resolve)は generation 不一致で落ちる
+
+##### 決定 21(#5): group kind は **layout v3 の `groups:[{name, type}]`** だけが宣言源
+
+- v3 task の `hit_shaders[ray][group].type` は **明示禁止**(`ray_group_type_declared_in_task@1`)。v2 以下の task は今日どおり(per-task `type`、`triangles` のみ)
+- v2 決定 11 の拒否 (b)「pipeline 間で異なる type」は **削除**(宣言源が 1 つになるので作れない)。代わりに「v3 layout の project で task に legacy `type` が残っていれば拒否」。pipeline 横断検査の対象は **stage completeness(procedural group に `.rint` + `.rchit`)と hit attribute ABI** に限定
+- 受け入れ: (a)(c)(d) + legacy type 残存の 4 fixture
+
+##### 決定 22(#6): procedural record の正本は **asset**
+
+- `ray_bindings` v2 の procedural branch は **`{procedural: <asset name>, group: <name>}` だけ**。`record` を書くと `procedural_binding_record_forbidden@1`。SBT の record は asset の `record` を layout の record schema で encode(material branch は今日どおり binding 側の `record`)
+- 受け入れ: asset の `record` を変えると SBT が変わる(決定 19 の行列)。binding に `record` を書いた fixture は拒否
+
+##### 決定 23(#7): 版上げの **正常系 production 受け入れ**
+
+- 最小 project(asset_data v2 + ray_bindings v2 + layout v3 + `pelican_procedural_geometry`)が **production loader**(`loadRayTracingProjectConfig` → scene load → renderer)で読める。同じテストで 3 文書を **1 つずつ旧版に戻す**と、それぞれ名前付き拒否(`asset_data_procedural_requires_v2@1` / `ray_binding_selector_exactly_one@1` / `ray_group_type_requires_layout_v3@1`)
+- `ray_as_declaration_requires_layout_v2@1` の意味を **「minimum v2」**と定義し、`RayLayoutSemanticMode::LayoutV2` との等値比較([raygrouplayout.hpp:54](../src/core/shader/raygrouplayout.hpp#L54)、[scene.cpp:52](../src/core/loader/scene.cpp#L52)、[raygrouplayout.cpp:1263](../src/core/shader/raygrouplayout.cpp#L1263))を「v2 以上」の述語 1 つに集約する(等値比較を 1 箇所でも残すと v3 project で AS / ray instance が無音で消える → 受け入れ: v3 project で `pelican_ray_instance` が効く)
+- 出荷 4 project は asset_data v1、`ray_group_layout` / `ray_bindings` 0 件(確認済み)。bytes 不変 + v1 経路の SBT / TLAS bytes 不変
+
+##### 決定 24(#8): f32 の float mode は **1 組に固定**し、最終 SPIR-V で検査する
+
+- mode tuple = **`RoundingModeRTE 32` + `DenormPreserve 32` + `SignedZeroInfNanPreserve 32`**。CPU oracle は DenormPreserve を模倣する(FTZ は eligible にしない)。device は `VkPhysicalDeviceFloatControlsProperties`(`VkPhysicalDeviceProperties2` の pNext。[core.cpp:353](../src/core/vkcore/core.cpp#L353) の properties chain に足す)で `roundingModeRTEFloat32` / `denormPreserveFloat32` / `signedZeroInfNanPreserveFloat32` を要求。`denormBehaviorIndependence` は別 property(bit 幅間の独立性)であり要求に使わない
+- GLSL 側は **`GL_EXT_spirv_intrinsics` の `spirv_execution_mode(...)`**(SPIR-V 1.5 / Vulkan 1.2)で生成する(`GL_EXT_shader_explicit_arithmetic_types` + `layout(rounding_mode_rte)` は glslang で compile 不能。確認済み)。engine 同梱の規範 `.rint` はこれを含む
+- Inspector は entry の **execution mode と capability を reflection に保持**し([rtspirvinspection.hpp:101](../src/core/shader/rtspirvinspection.hpp#L101) に足す)、golden gate は「最終 SPIR-V に 3 mode すべてがある」ことを `eligible` の条件に含める
+- 受け入れ: property 偽装 → `procedural_oracle_device_unsupported@1` / 最終 SPIR-V から mode を 1 つ除く変異 → harness gate で `procedural_oracle_shader_ineligible@1`
+
+##### 決定 25(#9): 精度の伝播は Contract に置き、padding の受け入れは device 非依存にする
+
+- Vulkan 精度表では `OpFDiv` 2.5 ULP、`sqrt` は `1/inversesqrt`(inversesqrt 2 ULP)からの **継承**で固定 N ULP ではない。継承式を展開した区間伝播(`sqrt(x) ∈ 1 / ((1/√x)(1 ± 2·2^-23)) × (1 ± 2.5·2^-23)` の形)を `Contract` の定数と関数として置く
+- 「padding を消すと GPU 値が外れる」は撤回(区間中央寄りの GPU では赤にならない)。代わりに **device 非依存の受け入れ**: production の包含経路(`rayTracingOracleContainsGpuHit`)へ **規格上許される端点値**(伝播式の上限 / 下限ちょうど)を注入し、padding を消すと外れる。実 GPU の受け入れは「規定区間に包含」だけ。off / on 対照は同じ production harness で維持
+
+##### 決定 26(#10): WP386a は **procedural pipeline まで**含み、外部 feature だけ off
+
+- v2 の「386a は feature gate 閉のまま SBT / TLAS 入力を CPU で検査」は成立しない(production SBT は active owner pipeline と実 device が要る。[renderer.cpp:4710](../src/core/vkcore/renderer.cpp#L4710))。**386a に決定 4(procedural group、`eProceduralHitGroup`)・決定 13(`.rint` 語彙の閉包)・pipeline / SBT を移す**。engine 同梱の **report しない valid な `.rint`**(v1 決定 7 の off 対照)を 386a の唯一の intersection shader とし、GPU 受け入れは「`renderLogicalFrame → SBT → recordFrame` の observer が procedural row を SBT / TLAS に見る + 球は写らない(report しないので)」。hit attribute 検査・分類・status wire(決定 5・14・28)は 386b、規範 `.rint` で球が写るのも 386b
+- 段割り(v3): **386a** = 決定 1(v2)・2・3・4・8〜13・17〜23・26・27 / **386b** = 決定 5・14・28 + 規範 `.rint` の GPU 受け入れ / **386c** = 決定 6・7・15・24・25
+
+##### 決定 27(#11): phase trace の exact 8 は **成功系だけ**
+
+- success / committed-with-effect-failure は exact 8。pre-commit failure(prepare 失敗・early_publish 失敗・publish 前失敗)は **明示した exact prefix**(実行された phase まで)を要求し、未実行 phase を捏造しない。`PreCommitFailure` は今日 phase trace を持たない([sceneload.hpp:128](../src/core/loader/sceneload.hpp#L128))ので、失敗 prefix の観測は participant 側の record(既存 fixture の形)で行う
+
+##### 決定 28(#12): hit attribute 検査と optional stage
+
+- `.rint` と `.rchit` は必須で `HitAttributeKHR` の type / byte size が一致。`.rahit` は **存在する各 stage が一致**すればよく、optional stage の不在は mismatch ではない
+
+##### 段取り(v3)
+
+仕様レビュー打ち切り。WP386a を sol(max)で投入。コードレビューで残余(特に決定 20 の root 型と決定 23 の述語集約)を攻める。
 ### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
