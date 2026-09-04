@@ -2564,7 +2564,7 @@
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/devstudio/viewport/embeddedviewport.hpp|`EmbeddedViewport`": "class EmbeddedViewport final : public QWidget {",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../test/CMakeLists.txt|`catch_discover_tests()`": "catch_discover_tests(${target_name}",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../test/CMakeLists.txt|`pelican_define_test(<name> GPU ...)`": "function(pelican_define_test source_name)",
-    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../test/CMakeLists.txt|`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`": "set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)",
+    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../test/CMakeLists.txt|`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`": "set_tests_properties(wp379a_game_dll_rejects_${wp379a_probe}",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../test/CMakeLists.txt|test/CMakeLists.txt": "foreach(wp379a_probe IN ITEMS engine_owner owner_allocator)",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../test/animation_abi_dll_test.cpp|`descriptor()`": "template <class T> T descriptor() {",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../test/animation_abi_dll_test.cpp|`old and new animation header DLLs preserve the frozen prefix`": "TEST_CASE(\"old and new animation header DLLs preserve the frozen prefix\", \"[animation][a0][abi][dll]\") {",
