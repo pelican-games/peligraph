@@ -176,7 +176,7 @@ pelican2/
 
 ゲームコードが見てよいのは [userpublic/](../../src/core/userpublic) だけです。全 API の入口 = [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22)。オブジェクト生成ビルダーは [gameobjects.hpp](../../src/core/userpublic/gameobjects.hpp)(`GameObjects::add().addComponent<...>().finish()`)、システム/イベント登録マクロは [gamesystem.hpp](../../src/core/userpublic/gamesystem.hpp) と [events.hpp](../../src/core/userpublic/events.hpp)、決定的乱数(PCG32)は [deterministicrng.cpp](../../src/core/userpublic/deterministicrng.cpp)。
 
-オブジェクト単位の毎フレーム処理は [behavior.hpp](../../src/core/userpublic/behavior.hpp) の `Behavior` 基底 + `PELICAN_REGISTER_BEHAVIOR`([`PELICAN_REGISTER_BEHAVIOR()`](../../src/core/userpublic/details/behavior/registerer.hpp#L362))で、`BehaviorContext` は `GameContext` を継承して `self()` / `params<T>()` などを足したものです。パラメータの schema は [details/schema/structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp)(WP150 の共通 field descriptor。component codec と同じ機構を共有しています)。
+オブジェクト単位の毎フレーム処理は [behavior.hpp](../../src/core/userpublic/behavior.hpp) の `Behavior` 基底 + `PELICAN_REGISTER_BEHAVIOR`([`PELICAN_REGISTER_BEHAVIOR()`](../../src/core/userpublic/details/behavior/registerer.hpp#L385))で、`BehaviorContext` は `GameContext` を継承して `self()` / `params<T>()` などを足したものです。パラメータの schema は [details/schema/structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp)(WP150 の共通 field descriptor。component codec と同じ機構を共有しています)。
 
 ### シーンロードのトランザクション(2026-09 の新しい住人)
 
@@ -218,11 +218,11 @@ pelican2/
 component / behavior / event の field descriptor は
 [`details/schema/structfieldschema.hpp`](../../src/core/userpublic/details/schema/structfieldschema.hpp) が正です。
 WP150 の flat な `StructFieldSchema` に加えて、WP382a で
-[`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87)(`Struct` / `Leaf` /
-[`Flags`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L116) /
-[`List`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L143)、**深さ 2 まで**。
+[`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155)(`Struct` / `Leaf` /
+[`Flags`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L194) /
+[`List`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L222)、**深さ 2 まで**。
 list の list は compile 時に拒否)が入りました。wire 側の `$list` エンベロープ(`v` / `next_id` / 行 id)の
-decode / encode は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L390) です。
+decode / encode は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L435) です。
 `List` / `Flags` を含む宣言だけが v3 の登録入口を通り、v2 の record は `static_assert` で凍結されています。
 **engine 同梱の component はまだ 1 つも `List` を宣言していません**(使っているのは
 `test/fixtures/wp382a_schema/` の v3 DLL だけ)。

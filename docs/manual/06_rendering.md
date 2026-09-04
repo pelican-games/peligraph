@@ -2338,7 +2338,7 @@ layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 | version 1 | `LayoutV1Q` | 行の `instance_custom_index` は**常に q(行の正規順の添字)で上書き**され、authored な値を持てない。`acceleration_structure` は書けない |
 | version 2 | `LayoutV2` | `acceleration_structure` と `pelican_ray_instance` が使える |
 
-同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **mode が v2 のときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1394))。codec 表は既定で 7 件、v2 プロジェクトだけ 8 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
+同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **mode が v2 のときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1398))。codec 表は既定で 7 件、v2 プロジェクトだけ 8 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
 
 ### 10 状態表
 

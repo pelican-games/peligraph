@@ -25,7 +25,7 @@
 
 **hard error** — 警告で済ませず**起動・ロードをその場で止める**エラー。スキーマ不一致・バージョン不一致・未知の名前・必須フィールド欠落がこれにあたります。「読めるふりをして一部だけ壊れる」事故を防ぐための方針で、メッセージには必ず手がかり(解決後の絶対パス・登録済み id 一覧・OFF になっているビルドフラグ名)が入ります。初出: [第1章 §1.5](01_overview.md#15-横断的な設計原則)。
 
-**`<name>@<version>` 形式のエラーコード** — `component_unknown@1` / `game_logic_abi_stale@1` / `pelican.ray_tracing.bindings_without_layout@1` のように、**名前 + `@` + 契約の版**でエラーを識別する書き方。`@1` は「このエラーコードの意味の版」であり、エンジンの版でもスキーマの版でもありません。RPC の応答やログにそのまま出るので、コードで検索すれば発生箇所に到達できます。初出: [第4章 §4.5](04_scene_ecs.md#45-よくあるエラー)。([componentinfo.hpp:24](../../src/core/ecs/componentinfo.hpp#L24))
+**`<name>@<version>` 形式のエラーコード** — `component_unknown@1` / `game_logic_abi_stale@1` / `pelican.ray_tracing.bindings_without_layout@1` のように、**名前 + `@` + 契約の版**でエラーを識別する書き方。`@1` は「このエラーコードの意味の版」であり、エンジンの版でもスキーマの版でもありません。RPC の応答やログにそのまま出るので、コードで検索すれば発生箇所に到達できます。初出: [第4章 §4.5](04_scene_ecs.md#45-よくあるエラー)。([componentinfo.hpp:24](../../src/core/ecs/componentinfo.hpp#L26))
 
 **名前入りの拒否(named reject)** — 拒否するときは必ず上の形式のコードを添える、という運用のこと。対義は「黙って素通しする」で、pelican2 は素通しを避ける側に倒しています。ただし web プロファイルだけは未知コンポーネントを `opaque` として素通しします(後述)。初出: [第1章 §1.5](01_overview.md#15-横断的な設計原則)。
 
@@ -49,11 +49,11 @@
 
 **opaque(web)** — web ビューア側で、codec を持たない名前のコンポーネントを**検証せずそのまま通す**扱いのこと。web が closed schema を持つのは組み込み 7 コンポーネントだけなので、`pelican_ray_instance` や `List` フィールドを書いたシーンは「native では拒否されるのに web では黙って通る」状態です。web リポジトリは pelican2 の外にあるため、この点はコードで裏取りできていません(**未確認**)。初出: [第3章 §3.8](03_project_format.md#38-既知の食い違い設計文書-vs-実装)。
 
-**宣言 schema(v2 / v3)** — behavior やユーザー定義コンポーネントの params を「型付きで宣言する」仕組みの版。v3 で `Flags` / `List` / `OptionalOverride` の**再帰的な**入れ子が書けるようになりました。再帰 schema を使う型があると、SDK は自動的に `_v3` 登録入口を選びます。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。([SchemaNode](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87))
+**宣言 schema(v2 / v3)** — behavior やユーザー定義コンポーネントの params を「型付きで宣言する」仕組みの版。v3 で `Flags` / `List` / `OptionalOverride` の**再帰的な**入れ子が書けるようになりました。再帰 schema を使う型があると、SDK は自動的に `_v3` 登録入口を選びます。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。([SchemaNode](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155))
 
-**`Flags`** — 宣言済みの名前の集合を、JSON では**文字列の配列**で書くフィールド型。合成則は OR ではなく**置換**です(上書き側の配列がそのまま新しい値になる)。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。([Flags](../../src/core/userpublic/details/schema/structfieldschema.hpp#L116))
+**`Flags`** — 宣言済みの名前の集合を、JSON では**文字列の配列**で書くフィールド型。合成則は OR ではなく**置換**です(上書き側の配列がそのまま新しい値になる)。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。([Flags](../../src/core/userpublic/details/schema/structfieldschema.hpp#L194))
 
-**`List<Row>` / 行封筒** — 可変長の行の並びを持つフィールド型。JSON では素の配列ではなく `{"$list": ..., "rows": [...]}` という **object コンテナ**で書きます。素の配列にしないのは、行の版や由来を後から足せるようにするためです。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。([List](../../src/core/userpublic/details/schema/structfieldschema.hpp#L143))
+**`List<Row>` / 行封筒** — 可変長の行の並びを持つフィールド型。JSON では素の配列ではなく `{"$list": ..., "rows": [...]}` という **object コンテナ**で書きます。素の配列にしないのは、行の版や由来を後から足せるようにするためです。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。([List](../../src/core/userpublic/details/schema/structfieldschema.hpp#L222))
 
 **wire** — 「ディスク / RPC に出る形」のこと。同じ値でも、C++ の構造体(runtime)・正規化した中間形(canonical)・JSON に出る形(wire)は別物で、codec がこの 3 者を往復させます。「wire モデル」は「JSON に出る形の設計」の意味です。初出: [第3章 §3.10](03_project_format.md#310-コンポーネント宣言スキーマ-v3--flags-と-list-の-wirewp382a)。
 
@@ -195,7 +195,7 @@
 
 **ホットリロード(hot reload)** — 実行を止めずに、保存されたファイルを反映すること。対象はシェーダ・`.surface`・テクスチャ・マテリアル値・モデルコンテナ・ゲームロジック DLL で、**シーンは対象外**です。1 つの変更に影響する全バリアントを準備してからフレーム境界で一括公開し、どれか 1 つでも失敗すれば全体を破棄して旧世代を維持します(fail-soft)。初出: [第10章 §10.5](10_tools.md#105-ホットリロードwp9096110147162178)。
 
-**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L264))
+**チケット(ticket)** — エディタの編集操作を**フレーム境界で適用する**ための受付票。受付時に前提条件を検査し、コミット時にもう一度検査します(受付から適用までの間に世界が動くため)。「トランザクション」という語がシーンロード・作用・編集の 3 か所で使われるので、編集の文脈ではチケットと呼び分けます。初出: [第13章 §13.3](13_editor.md#133-編集の実行モデル--チケットとフレーム境界)。([EditorCommandService](../../src/core/communication/editorcommandservice.hpp#L266))
 
 **headless(ヘッドレス)** — ウィンドウを開かずに描画・実行するモード。時刻が固定ステップ(dt = 1/fps)になるためリプレイと golden テストの土台になり、CI から PNG を取り出せます。初出: [第2章 §2.5](02_getting_started.md#25-ヘッドレス実行ウィンドウなしで-png-を出す)。
 

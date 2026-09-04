@@ -159,7 +159,7 @@ Renderer
 
 ## 2.3 明示teardownが必要な理由
 
-moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。ここでの **pending event** は `emit()` されてまだ配送されていない列（[`pending_events`](../../src/core/userpublic/details/event/registerer.hpp#L86)）、**frozen event** はフレーム冒頭の `freeze_events` でそこから移された「今回配送する分」の列（[`deliver_now_events`](../../src/core/userpublic/details/event/registerer.hpp#L87)）です。どちらも payload を `shared_ptr<const void>` と発行元の `RegistrationOwner` で持つ（[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L36)）ので、game DLL 由来のpayloadが列に残ったままDLLを外せない、というのが下の7番の理由です（列の意味は §2.5 の「eventの1フレーム遅延」）。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
+moduleのC++ destructorだけに任せると、ECS Componentの`deinit()`が参照する描画moduleが先に壊れるほか、pending/frozen event、behavior deferred mutation、GPU deletion callbackがowner/DLLの破棄後まで残る可能性があります。ここでの **pending event** は `emit()` されてまだ配送されていない列（[`pending_events`](../../src/core/userpublic/details/event/registerer.hpp#L110)）、**frozen event** はフレーム冒頭の `freeze_events` でそこから移された「今回配送する分」の列（[`deliver_now_events`](../../src/core/userpublic/details/event/registerer.hpp#L111)）です。どちらも payload を `shared_ptr<const void>` と発行元の `RegistrationOwner` で持つ（[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L37)）ので、game DLL 由来のpayloadが列に残ったままDLLを外せない、というのが下の7番の理由です（列の意味は §2.5 の「eventの1フレーム遅延」）。そこで [`teardownRuntimeNoThrow()`](../../src/core/appflow/teardown.cpp) が、module optionalの存在を確認して次の順で明示解放します。
 
 1. Vulkan `waitIdle()`
 2. behavior owner callbackを完了
@@ -429,7 +429,7 @@ ECSCore::update()
 
 ### eventの1フレーム遅延
 
-`GameContext::emit()`はeventを`pending_events`へ積みます（[`emit()`](../../src/core/userpublic/details/event/registerer.hpp#L224)）。次のフレーム冒頭で[`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L489)が`deliver_now_events`へswapし、配送します（メンバ実装は[`UserEventRegistererTemplatePublic::freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L489)）。
+`GameContext::emit()`はeventを`pending_events`へ積みます（[`emit()`](../../src/core/userpublic/details/event/registerer.hpp#L257)）。次のフレーム冒頭で[`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L495)が`deliver_now_events`へswapし、配送します（メンバ実装は[`UserEventRegistererTemplatePublic::freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L495)）。
 
 - update中にemit → 次フレームで配送
 - event handler内で別eventをemit → さらに次フレームで配送
@@ -526,13 +526,13 @@ game DLL側でこれを**必ず**importさせるのが [`gamelogic_entry.cpp`](.
 
 | 種類 | v2入口 | v3入口 | 選択 |
 |---|---|---|---|
-| behavior | [`pelican_register_behavior_v2`](../../src/core/userpublic/details/behavior/registerer.hpp#L220) | [`pelican_register_behavior_v3`](../../src/core/userpublic/details/behavior/registerer.hpp#L222) | [`schemaRequiresV3(Params::schema)`](../../src/core/userpublic/details/behavior/registerer.hpp#L299) |
-| event | [`pelican_register_event_v2`](../../src/core/userpublic/details/event/registerer.hpp#L92) | [`pelican_register_event_v3`](../../src/core/userpublic/details/event/registerer.hpp#L94) | [`recursive_descriptor`](../../src/core/userpublic/details/event/registerer.hpp#L127) |
-| component | [`__registerComponent`](../../src/core/userpublic/details/component/registerer.hpp#L93)（WP381 の改名対象外。旧名のまま凍結） | [`pelican_register_component_v3`](../../src/core/userpublic/details/component/registerer.hpp#L95) | [`has_recursive_schema`](../../src/core/userpublic/details/component/registerer.hpp#L167) |
+| behavior | [`pelican_register_behavior_v2`](../../src/core/userpublic/details/behavior/registerer.hpp#L243) | [`pelican_register_behavior_v3`](../../src/core/userpublic/details/behavior/registerer.hpp#L245) | [`schemaRequiresV3(Params::schema)`](../../src/core/userpublic/details/behavior/registerer.hpp#L322) |
+| event | [`pelican_register_event_v2`](../../src/core/userpublic/details/event/registerer.hpp#L116) | [`pelican_register_event_v3`](../../src/core/userpublic/details/event/registerer.hpp#L118) | [`recursive_descriptor`](../../src/core/userpublic/details/event/registerer.hpp#L151) |
+| component | [`__registerComponent`](../../src/core/userpublic/details/component/registerer.hpp#L110)（WP381 の改名対象外。旧名のまま凍結） | [`pelican_register_component_v3`](../../src/core/userpublic/details/component/registerer.hpp#L112) | [`has_recursive_schema`](../../src/core/userpublic/details/component/registerer.hpp#L186) |
 | game system | [`pelican_register_system_v2`](../../src/core/userpublic/details/system/registerer.hpp#L96) | — | 常にv2 |
-| event emit | [`pelican_emit_v2`](../../src/core/userpublic/details/event/registerer.hpp#L95) | — | 常にv2 |
+| event emit | [`pelican_emit_v2`](../../src/core/userpublic/details/event/registerer.hpp#L119) | — | 常にv2 |
 
-判定の実体は [`schemaRequiresV3()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L719) で、`Flags` か `List` のフィールドが1つでもあれば真です（§3.11 の `SchemaNode`）。v3経路では平坦な `StructFieldSchema` 列ではなく [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L768) の再帰記述子と、その [fingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L855) を一緒に渡します。v2側のfingerprint関数には [`static_assert(!schemaRequiresV3(...))`](../../src/core/userpublic/details/behavior/registerer.hpp#L162) が置いてあり、再帰schemaがv2入口へ落ちるとコンパイルエラーです。
+判定の実体は [`schemaRequiresV3()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L823) で、`Flags` か `List` のフィールドが1つでもあれば真です（§3.11 の `SchemaNode`）。v3経路では平坦な `StructFieldSchema` 列ではなく [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L944) の再帰記述子と、その [fingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1012) を一緒に渡します。v2側のfingerprint関数には [`static_assert(!schemaRequiresV3(...))`](../../src/core/userpublic/details/behavior/registerer.hpp#L185) が置いてあり、再帰schemaがv2入口へ落ちるとコンパイルエラーです。
 
 > **設計決定:** epoch anchorは `v2` のままで、schemaの入口だけが `v3` です。二つを別の軸にしてあるので、再帰schemaを使わないDLLは再ビルド無しで動き続けます。診断側もこの二軸をそのまま持ちます — [`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559) の `expected_epoch` と `host_schema_entrance`（既定 `3`、[宣言](../../src/core/gamelogic/gamelogicimports.hpp#L69)）は別の引数です。
 

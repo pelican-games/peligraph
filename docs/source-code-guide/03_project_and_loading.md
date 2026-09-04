@@ -298,7 +298,7 @@ prepare（失敗可）
 → finish（noexcept。early_publish で publish 済みの ECS create token を確定し、rollback 権を手放す）
 ```
 
-段を記録するのは原則 executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L508) が early_publish、[`enqueueSceneRetirement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L675) が retire）、SeqPlayer / VatPlayer / Camera / Light / Physics の publish（いずれも trace を取る scene 専用 overload。例: [`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388)）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L633) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L685) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L730) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L125)）、RNG（[`publishPreparedSequence()`](../../src/core/userpublic/deterministicrng.cpp#L126) が flush）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L278)）です。executor 自身が書くのは 2 か所だけで、pending swap 直前の [`record(SceneLoadPhase::flush)` の 1 行](../../src/core/loader/scene.cpp#L1000) と、created-entity batch を 1 participant と見なす [`record(SceneLoadPhase::finish)` の 1 行](../../src/core/loader/scene.cpp#L1012) です（WP380d。token 個別の `finish()` は記録しないので、`objects: []` の空 scene でも finish が列に出ます）。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L149) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。枠は 8 段ぶんの固定確保で、9 件目以降は列に入らない代わりに [`overflow`](../../src/core/loader/sceneload.hpp#L45) が立ちます（黙って落としません）。8 という数は [`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) の値数そのもの（[`sceneLoadPhaseCount = 8`](../../src/core/loader/sceneload.hpp#L38)）で、`record()` が直前と同じ段を足さない以上、段が上の順に1回ずつ現れる限り必ず収まります。つまり `overflow` が立つのは「一度離れた段へ戻った」ときだけで、確保を増やすべき状況ではなく**順序が壊れた**という信号です。`SceneLoadPhaseTrace` のコメントもそう書いています — `A trace is a fixed pre-commit allocation. Never silently discard an ordering observation: callers must reject an overflowing trace.`
+段を記録するのは原則 executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L508) が early_publish、[`enqueueSceneRetirement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L675) が retire）、SeqPlayer / VatPlayer / Camera / Light / Physics の publish（いずれも trace を取る scene 専用 overload。例: [`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388)）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L633) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L685) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L730) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L125)）、RNG（[`publishPreparedSequence()`](../../src/core/userpublic/deterministicrng.cpp#L126) が flush）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L279)）です。executor 自身が書くのは 2 か所だけで、pending swap 直前の [`record(SceneLoadPhase::flush)` の 1 行](../../src/core/loader/scene.cpp#L1000) と、created-entity batch を 1 participant と見なす [`record(SceneLoadPhase::finish)` の 1 行](../../src/core/loader/scene.cpp#L1012) です（WP380d。token 個別の `finish()` は記録しないので、`objects: []` の空 scene でも finish が列に出ます）。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L149) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。枠は 8 段ぶんの固定確保で、9 件目以降は列に入らない代わりに [`overflow`](../../src/core/loader/sceneload.hpp#L45) が立ちます（黙って落としません）。8 という数は [`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) の値数そのもの（[`sceneLoadPhaseCount = 8`](../../src/core/loader/sceneload.hpp#L38)）で、`record()` が直前と同じ段を足さない以上、段が上の順に1回ずつ現れる限り必ず収まります。つまり `overflow` が立つのは「一度離れた段へ戻った」ときだけで、確保を増やすべき状況ではなく**順序が壊れた**という信号です。`SceneLoadPhaseTrace` のコメントもそう書いています — `A trace is a fixed pre-commit allocation. Never silently discard an ordering observation: callers must reject an overflowing trace.`
 
 **prepare**（[prepare 段の先頭](../../src/core/loader/scene.cpp#L519) から [`return fail(SceneLoadPhase::prepare, ...)`](../../src/core/loader/scene.cpp#L615) まで）では、candidate authority を 1 回だけ消費し（[`next_authority_epoch++`](../../src/core/loader/scene.cpp#L481)。失敗しても再利用しません）、metadata token に scene id と authority を書き（[`prepareRuntimeIdentity()`](../../src/core/loader/scene.cpp#L527)）、resolved scene を検証して（[`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L545)）、各 participant の candidate を live に触らずに作ります: renderer（[`prepareSceneReplacement()`](../../src/core/loader/scene.cpp#L562)。model の staging もここ）、camera（[`prepareSceneCameras()`](../../src/core/loader/scene.cpp#L585)）、light（[`LightContainer::prepareLoad()`](../../src/core/loader/scene.cpp#L587)）、SeqPlayer / VatPlayer（[`prepareSceneLoad()`](../../src/core/loader/scene.cpp#L591)）、retirement queue の容量予約（[`reserveOne()`](../../src/core/loader/scene.cpp#L123)）、RNG 列（[`prepareSequence()`](../../src/core/loader/scene.cpp#L603)）、event outbox（[`PreparedEventOutbox`](../../src/core/loader/scene.cpp#L607)。`SceneLoaded` の payload はここで確保します）。model は [`ModelAssetContainer::getModelTemplateByName()`](../../src/core/loader/scene.cpp#L574) で引きますが、`ModelAssetContainer` は **participant ではなく warm cache** です。candidate が失敗しても lazy load された model record / GPU resource は残り、戻しません（manifest の [`model_asset` / `warm_cache` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L147)。どの scene にも束縛されない record なので世代混在にはなりません）。
 
@@ -364,7 +364,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 ### 6. SceneLoaded event
 
-[`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) は「ロード完了後にその場で emit」ではありません。payload（`make_shared` と vector の容量）は prepare 段で [`event_outbox->prepare()`](../../src/core/loader/scene.cpp#L609) が確保し、commit 後の flush 段で [`stageReserved()`](../../src/core/loader/scene.cpp#L997) → [`flush()`](../../src/core/loader/scene.cpp#L1002) が live queue へ `noexcept` に移します（[`PreparedEventOutbox`](../../src/core/userpublic/details/event/registerer.hpp#L287)。`stageReserved()` / `flush()` の実装は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L260)）。activate 段で behavior が `emit` したものも同じ outbox に入り、`SceneLoaded` はその**後ろ**に並びます。rollback すると outbox ごと捨てられるので、失敗した load の event が旧世代の behavior に届くことはありません。フレーム末尾のpending loadから flush された場合、eventは次フレーム冒頭に届きます。
+[`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) は「ロード完了後にその場で emit」ではありません。payload（`make_shared` と vector の容量）は prepare 段で [`event_outbox->prepare()`](../../src/core/loader/scene.cpp#L609) が確保し、commit 後の flush 段で [`stageReserved()`](../../src/core/loader/scene.cpp#L997) → [`flush()`](../../src/core/loader/scene.cpp#L1002) が live queue へ `noexcept` に移します（[`PreparedEventOutbox`](../../src/core/userpublic/details/event/registerer.hpp#L324)。`stageReserved()` / `flush()` の実装は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L261)）。activate 段で behavior が `emit` したものも同じ outbox に入り、`SceneLoaded` はその**後ろ**に並びます。rollback すると outbox ごと捨てられるので、失敗した load の event が旧世代の behavior に届くことはありません。フレーム末尾のpending loadから flush された場合、eventは次フレーム冒頭に届きます。
 
 ### 7. participant manifestとfault injector
 
@@ -410,7 +410,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 > ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
 > ```
 >
-> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L1723) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L17)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[そのループ](../../test/run_wp380c_no_production_fault_setter.cmake#L23)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[そのループ](../../test/run_wp380c_no_production_fault_setter.cmake#L30)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L1787) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L17)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[そのループ](../../test/run_wp380c_no_production_fault_setter.cmake#L23)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[そのループ](../../test/run_wp380c_no_production_fault_setter.cmake#L30)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
 >
 > **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
 
@@ -428,11 +428,11 @@ rootは列挙型として名前を持ちます（[`SceneLoadRoot`](../../src/cor
 
 ## 3.7 ComponentのJSONロード
 
-sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L56) が担います。
+sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/core/ecs/componentinfo.hpp#L60) が担います。
 
 1. runtime登録時に `name → ComponentId` を保存。
 2. `ComponentId → ComponentInfo`からJSON loader callbackを得る。
-3. [`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L134) が`JsonArchiveLoader`を作る。
+3. [`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L189) が`JsonArchiveLoader`を作る。
 4. Componentの`ref(ar)`を型消去callback越しに呼ぶ。
 
 `ref()`を持たないComponentはscene JSONからロードできず、明示エラーになります。JSON archiveの対応型は [`jsonarchive.hpp`](../../src/core/userpublic/serialize/jsonarchive.hpp#L12) に固定されています。
@@ -827,9 +827,9 @@ struct ComponentCodec {
 };
 ```
 
-この五つ（decode / encode / schema / apply / project）が**全codecに必須**です。値の運搬は `ComponentCodecValue = std::any` です。`decode_authored` は例外ではなく [`ResolutionResult<ComponentCodecValue>`](../../src/core/loader/resolutionresult.hpp#L55) を返し、登録テーブルでは `decodeResult<decodeXxx>` が生の decode 関数を包みます。`schema` が返すのは平坦な `StructFieldSchema` 列ではなく**再帰記述子** [`const SchemaNode &`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87) で、平坦な列が要るときだけ [`fieldSchema()`](../../src/core/loader/componentcodec.hpp#L250) が作り直します（後述）。
+この五つ（decode / encode / schema / apply / project）が**全codecに必須**です。値の運搬は `ComponentCodecValue = std::any` です。`decode_authored` は例外ではなく [`ResolutionResult<ComponentCodecValue>`](../../src/core/loader/resolutionresult.hpp#L55) を返し、登録テーブルでは `decodeResult<decodeXxx>` が生の decode 関数を包みます。`schema` が返すのは平坦な `StructFieldSchema` 列ではなく**再帰記述子** [`const SchemaNode &`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155) で、平坦な列が要るときだけ [`fieldSchema()`](../../src/core/loader/componentcodec.hpp#L250) が作り直します（後述）。
 
-`editor_prepare` / `editor_swap` の2本は必須ではありません（transform / simplemodelview / camera / light / collider は `nullptr`）。[`prepareEditorSwap()`](../../src/core/loader/componentcodec.cpp#L1369) は `editor_policy` が `EcsCodec` で、かつ両方が非nullのときだけ通し、そうでなければ `logic_error` です。[`EditorProjectionPolicy`](../../src/core/loader/componentcodec.hpp#L33) に既定値が無いのは意図で、ヘッダのコメントどおり「codecを増やすなら、live projectionを所有するruntime participantを選ぶ」ことを強制します。
+`editor_prepare` / `editor_swap` の2本は必須ではありません（transform / simplemodelview / camera / light / collider は `nullptr`）。[`prepareEditorSwap()`](../../src/core/loader/componentcodec.cpp#L1373) は `editor_policy` が `EcsCodec` で、かつ両方が非nullのときだけ通し、そうでなければ `logic_error` です。[`EditorProjectionPolicy`](../../src/core/loader/componentcodec.hpp#L33) に既定値が無いのは意図で、ヘッダのコメントどおり「codecを増やすなら、live projectionを所有するruntime participantを選ぶ」ことを強制します。
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L23) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
@@ -858,7 +858,7 @@ transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../
 
 ### `pelican_ray_instance` は二重にgateされる ✅実装済み
 
-8番目のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L1394) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L1387) が偽なら `codecs` の**先頭7要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L1399)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L139) で、`configure()` 済みかつモードが `LayoutV2` のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L35)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L282) でgateを迂回できます。
+8番目のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L1398) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L1391) が偽なら `codecs` の**先頭7要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L1403)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L139) で、`configure()` 済みかつモードが `LayoutV2` のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L35)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L282) でgateを迂回できます。
 
 もう一段のgateは**フィールド単位**です。[`decodeRayInstance()`](../../src/core/loader/componentcodec.cpp#L1005) は受理するキーを `name` / `mask` / `instance_flags` / `custom_index` に限りますが、`overrides` だけは「未知フィールド」ではなく専用の拒否へ落ちます（[その分岐](../../src/core/loader/componentcodec.cpp#L1020)）。
 
@@ -877,18 +877,18 @@ if (key == "overrides") {
 
 ### 再帰schema `SchemaNode` と `$list` / `$row` ✅実装済み
 
-codecの `schema` が返す [`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87) は、§5.14 の consteval なフィールド宣言DSLを**実行時の所有値**へ起こしたものです。v2の平坦な `StructFieldSchema` 列と違い、子を持てます。
+codecの `schema` が返す [`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L155) は、§5.14 の consteval なフィールド宣言DSLを**実行時の所有値**へ起こしたものです。v2の平坦な `StructFieldSchema` 列と違い、子を持てます。
 
 | 要素 | 意味 |
 |---|---|
-| `tag` | [`SchemaNodeTag`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L76) = `Struct` / `Leaf` / `Flags` / `List` |
-| `presence` | `Required` / `Defaulted` / `OptionalOverride` の3値（[`StructFieldPresence`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L66)） |
+| `tag` | [`SchemaNodeTag`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L79) = `Struct` / `Leaf` / `Flags` / `List` |
+| `presence` | `Required` / `Defaulted` / `OptionalOverride` の3値（[`StructFieldPresence`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L67)） |
 | `leaf_type` / `range` / `unit` | 平坦な記述子と同じ内容 |
 | `default_json` | `Defaulted` のときだけ入る**正準JSONテキスト**（`nlohmann::json` ではなく文字列） |
 | `vocabulary` | enum / Flags の名前と値（符号の有無を `signed_value` で持つ） |
 | `children` | `Struct` なら各フィールド、`List` なら行の型のschemaが**1つだけ** |
 
-平坦な列からの持ち上げは [`SchemaNode::fromFlat()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L151)（v2の記録をそのまま包む。子は作りません）、宣言DSLからの構築は [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L768) で、`List` のときだけ行型の schema へ**再帰**します（[その1行](../../src/core/userpublic/details/schema/structfieldjson.hpp#L788)）。[`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L177) は `Flags` か `List` が1つでもあれば真で、これが §2.11 のv3入口の選択に使われます。fingerprintは [`schemaNodeJson()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L828) の `dump()` そのものです（[`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L855)）。
+平坦な列からの持ち上げは [`SchemaNode::fromFlat()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L230)（v2の記録をそのまま包む。子は作りません）、宣言DSLからの構築は [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L944) で、`List` のときだけ行型の schema へ**再帰**します（[その1行](../../src/core/userpublic/details/schema/structfieldjson.hpp#L788)）。[`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L160) は `Flags` か `List` が1つでもあれば真で、これが §2.11 のv3入口の選択に使われます。fingerprintは [`schemaNodeJson()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L983) の `dump()` そのものです（[`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1012)）。
 
 `List` のJSON表現は**オブジェクトのコンテナ**で、行のidを持つ封筒が付きます。
 
@@ -900,15 +900,15 @@ codecの `schema` が返す [`SchemaNode`](../../src/core/userpublic/details/sch
     {"$row": {"id": 2, "v": 1, "hint": {"label": "goal"}}, "pos": [1,0,0]}]}}
 ```
 
-decode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L383)）が課す規則は次で、いずれも名前付きの `StructFieldErrorCode` です。
+decode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L428)）が課す規則は次で、いずれも名前付きの `StructFieldErrorCode` です。
 
 - コンテナが object でなければ `ListContainerMissing`。`$list` と `rows` 以外のキーは `UnknownField`。
 - `$list` は `v` と `next_id` の2つだけ（他は `UnknownField`）。`v != 1` は `RowEnvelopeUnsupported`。
 - 各行は `$row` を必須とし、その中身は `id` / `v` / `hint` の3つだけ。`id == 0` は `OutOfRange`、`v != 1` は `RowEnvelopeUnsupported`、`hint` は object のみで、**そのまま文字列として**保持されます（`hint_json`）。
 - `id` の重複は `DuplicateRowId`。最後に `next_id` が**全行のidより大きい**ことを確認し、破れば `OutOfRange`（`$list.next_id must exceed every row id`）。
-- 行の本体は `$row` を除いた残りを行型のschemaで [`decodeStructObject()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L495) へ渡します。エラーのpathは `field.rows[2].member` の形になります。
+- 行の本体は `$row` を除いた残りを行型のschemaで [`decodeStructObject()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L711) へ渡します。エラーのpathは `field.rows[2].member` の形になります。
 
-encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L618)）は逆向きに `$list` → `rows` の順で `ordered_json` を組み、`hint_json` は保存時のテキストを parse し直して戻します。`List` フィールドの既定値は常に**空**です（[`setStructDefault()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L208) の `Member{}`。宣言側も [`EmptyListDefault`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L488) の1引数形しか受け付けません）。行の型がさらに `List` を持つことは [`validRecursivePolicyField()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L700) が拒否するので、入れ子は**1段だけ**です。
+encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L643)）は逆向きに `$list` → `rows` の順で `ordered_json` を組み、`hint_json` は保存時のテキストを parse し直して戻します。`List` フィールドの既定値は常に**空**です（[`setStructDefault()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L209) の `Member{}`。宣言側も [`EmptyListDefault`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L589) の1引数形しか受け付けません）。行の型がさらに `List` を持つことは [`validRecursivePolicyField()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L804) が拒否するので、入れ子は**1段だけ**です。
 
 > **設計決定:** 行のidを配列添字ではなく封筒で持つのは、行を並べ替えても挿入しても外部参照が切れないようにするためです（§3.12 の `AuthoringObjectId` と同じ動機）。`next_id` を単調に保つ検査がその保証の要で、ここを緩めると同じidが再利用され、参照が黙って別の行を指します。
 

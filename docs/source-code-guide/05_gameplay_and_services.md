@@ -103,7 +103,7 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 
 ### event型の契約
 
-登録マクロは [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L371)（IMPLは [L242](../../src/core/userpublic/details/event/registerer.hpp#L356)）です。型は次を満たす必要があります。
+登録マクロは [`PELICAN_REGISTER_EVENT`](../../src/core/userpublic/details/event/registerer.hpp#L408)（IMPLは [L242](../../src/core/userpublic/details/event/registerer.hpp#L393)）です。型は次を満たす必要があります。
 
 - object型
 - pointerでない
@@ -111,24 +111,24 @@ void onEvent(const MyEvent& event, Pelican::GameContext& ctx);
 
 RPCの`inject_event`からpayloadを構築するには、さらにdefault construct可能で、[`ISerializable<Event, JsonArchiveLoader>`](../../src/core/userpublic/serialize/serialize.hpp#L11)、つまり`event.ref(archive)`が必要です。
 
-event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadschema.hpp`](../../src/core/userpublic/details/event/payloadschema.hpp)、[`registerer.hpp` 内](../../src/core/userpublic/details/event/registerer.hpp#L57)）を持てます。compile-time検証のfixtureは [`test/fixtures/event_payload_schema/`](../../test/fixtures/event_payload_schema) です。宣言に`structFields`を使う場合は`eventPayloadPolicy`が必須で、全フィールドが`required(...)`かつ`bool`/enum不可という制約が掛かります（§5.14）。
+event型は宣言的な **payload schema**（EventPayloadSchema v1、[`payloadschema.hpp`](../../src/core/userpublic/details/event/payloadschema.hpp)、[`registerer.hpp` 内](../../src/core/userpublic/details/event/registerer.hpp#L58)）を持てます。compile-time検証のfixtureは [`test/fixtures/event_payload_schema/`](../../test/fixtures/event_payload_schema) です。宣言に`structFields`を使う場合は`eventPayloadPolicy`が必須で、全フィールドが`required(...)`かつ`bool`/enum不可という制約が掛かります（§5.14）。
 
 ### runtime表現
 
-[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L36) は次を持ちます。
+[`QueuedEvent`](../../src/core/userpublic/details/event/registerer.hpp#L37) は次を持ちます。
 
 - `std::type_index`
 - namespaceを外した表示名
 - `shared_ptr<const void>` payload
-- 発行元の [`RegistrationOwner`](../../src/core/userpublic/details/event/registerer.hpp#L40)
+- 発行元の [`RegistrationOwner`](../../src/core/userpublic/details/event/registerer.hpp#L41)
 
 payloadを値copyしてshared ownershipへ変換するため、emit元のstack objectが消えても次フレームまで安全です。dispatch時に登録済み関数が元のEvent型へcastします。`owner`が付いたことで、game DLL reload時に「消えたownerのqueued event」を選別できます。
 
-teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpublic/details/event/registerer.hpp#L335) が [`EventQueueDrainResult`](../../src/core/userpublic/details/event/registerer.hpp#L43)（捨てた件数を `pending` と `frozen` の2カウンタで返すだけの構造体。用語は [第2章 §2.3](02_runtime_lifecycle.md)）を返し、[第2章](02_runtime_lifecycle.md)のteardown段階から呼ばれます。
+teardown経路では [`drainPendingEventsForTeardown()`](../../src/core/userpublic/details/event/registerer.hpp#L372) が [`EventQueueDrainResult`](../../src/core/userpublic/details/event/registerer.hpp#L44)（捨てた件数を `pending` と `frozen` の2カウンタで返すだけの構造体。用語は [第2章 §2.3](02_runtime_lifecycle.md)）を返し、[第2章](02_runtime_lifecycle.md)のteardown段階から呼ばれます。
 
 ### 名前と重複
 
-[`pelican_register_event_v2()`](../../src/core/userpublic/details/event/registerer.cpp#L291) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L21) で最後の`::`以前を除去します（正規化は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L294)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
+[`pelican_register_event_v2()`](../../src/core/userpublic/details/event/registerer.cpp#L292) は [`eventDisplayName()`](../../src/core/userpublic/details/event/registerer.cpp#L22) で最後の`::`以前を除去します（正規化は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L295)）。`Game::Damage`はRPC上`Damage`として見えます。戻り値は`RegistrationToken`です。
 
 - 同じ名前・同じ型の再登録はno-op
 - 同名・別型はerror
@@ -142,7 +142,7 @@ idempotentです。Overlap event は full `EntityId {index,generation}` を
 
 ### queue境界
 
-eventは`pending_events`へ入り、フレーム先頭で`deliver_now_events`へswapし、emit順に配送されます（自由関数 [`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L489)、メンバは [L405](../../src/core/userpublic/details/event/registerer.cpp#L489)）。System側はorder/name順です。従って配送順は次です。
+eventは`pending_events`へ入り、フレーム先頭で`deliver_now_events`へswapし、emit順に配送されます（自由関数 [`freezePendingEventsForFrame()`](../../src/core/userpublic/details/event/registerer.cpp#L495)、メンバは [L405](../../src/core/userpublic/details/event/registerer.cpp#L495)）。System側はorder/name順です。従って配送順は次です。
 
 ```text
 event emit順
@@ -745,15 +745,15 @@ WP380e 以降、遅延は `BehaviorContext` の override だけの性質では�
 
 ### 登録マクロ
 
-[`PELICAN_REGISTER_BEHAVIOR(Type, stable_name, schema_version)`](../../src/core/userpublic/details/behavior/registerer.hpp#L362)（IMPLは [L298](../../src/core/userpublic/details/behavior/registerer.hpp#L341)）です。展開は`PELICAN_REGISTER_SYSTEM`と同じ`__COUNTER__` + event catalog走査方式で、[`collectBehaviorEventHandlers<Type>()`](../../src/core/userpublic/details/behavior/registerer.hpp#L125) が **そのマクロより前に見えているevent型** についてだけ `onEvent(const Event&, BehaviorContext&)` を検出します。
+[`PELICAN_REGISTER_BEHAVIOR(Type, stable_name, schema_version)`](../../src/core/userpublic/details/behavior/registerer.hpp#L385)（IMPLは [L298](../../src/core/userpublic/details/behavior/registerer.hpp#L364)）です。展開は`PELICAN_REGISTER_SYSTEM`と同じ`__COUNTER__` + event catalog走査方式で、[`collectBehaviorEventHandlers<Type>()`](../../src/core/userpublic/details/behavior/registerer.hpp#L148) が **そのマクロより前に見えているevent型** についてだけ `onEvent(const Event&, BehaviorContext&)` を検出します。
 
-compile時制約（[`registerer.hpp` 内](../../src/core/userpublic/details/behavior/registerer.hpp#L233)）:
+compile時制約（[`registerer.hpp` 内](../../src/core/userpublic/details/behavior/registerer.hpp#L256)）:
 
 - `std::derived_from<Type, Behavior>`
 - `Type` / `Params` ともに `std::default_initializable`
 - `Params` が `std::is_nothrow_swappable_v`（DLL reload時のparams差し替えがno-throwである必要があるため）
 
-runtime制約（[同](../../src/core/userpublic/details/behavior/registerer.hpp#L245)）:
+runtime制約（[同](../../src/core/userpublic/details/behavior/registerer.hpp#L268)）:
 
 - `behavior stable name must not be empty`
 - `behavior schema version must be positive`（`schema_version >= 1`）
@@ -840,13 +840,13 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 ### DLL reload
 
-[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L388) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L268) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L10) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L47) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
+[`GameLogicReloader::validateCandidate()`](../../src/core/gamelogic/gamelogicreload.cpp#L388) は [`ResolvedScene::behaviorReloadSources()`](../../src/core/loader/resolvedscene.hpp#L268) からcore-privateな中立DTOを取得し、[`internal::validateBehaviorReloadSources()`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85) へ渡します。DTOはauthored `source_params` とscene / object / authored component indexのprovenanceを保ち、候補DLL側のcodecだけが [`candidate->canonicalize_params(source.source_params)`](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L123) を一度実行します。これにより `schema_version` の差分と型の消滅を候補DLL採用前に検証しつつ、active側の既定値で二重補完することを防ぎます。validatorはcore-privateであり、`src/core/userpublic` の公開面は変更していません。
 
 回帰テストは [`test/run_behavior_dll_reload.ps1`](../../test/run_behavior_dll_reload.ps1) の9ケースです（`test/CMakeLists.txt`の`foreach(wp162_case ...)`）。
 
 `code_only` / `schema_drift` / `version_bump_success` / `version_bump_failure` / `type_removed` / `candidate_lifecycle_zero` / `pending_recovery` / `queued_event_purge` / `oninit_rollback`
 
-> 🧩 **難所 — schema の指紋を採る**([`materializeBehaviorParamsSchemaFingerprint()`](../../src/core/userpublic/details/behavior/registerer.hpp#L161) / [`validateBehaviorReload()`](../../src/core/userpublic/details/behavior/registerer.cpp#L151))
+> 🧩 **難所 — schema の指紋を採る**([`materializeBehaviorParamsSchemaFingerprint()`](../../src/core/userpublic/details/behavior/registerer.hpp#L184) / [`validateBehaviorReload()`](../../src/core/userpublic/details/behavior/registerer.cpp#L152))
 >
 > **何をする所か**: `Params::schema` を 1 本の文字列へ潰します。reload 時に「`schema_version` を据え置いたまま params の形だけ変えた」を検出するための指紋です。
 >
@@ -898,28 +898,28 @@ teardownの8段階（[第2章 §2.3](02_runtime_lifecycle.md)）のうち`owner-
 
 event payload、behavior params、component codecの3か所が、同じ **consteval なフィールド宣言DSL**（`consteval`は「必ずコンパイル時に評価される関数」を宣言するキーワードで、`constexpr`と違って実行時に呼ぶことが一切できません。おかげでフィールド宣言の検査は、ビルドが通った時点で必ず終わっています）を共有します。実体は [`src/core/userpublic/details/schema/structfieldschema.hpp`](../../src/core/userpublic/details/schema/structfieldschema.hpp) で、`behavior.hpp`経由で`Pelican::`名前空間から使えます。
 
-[`structFields(policy, fields...)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L741) は **policy引数が必須** です。
+[`structFields(policy, fields...)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L845) は **policy引数が必須** です。
 
 ```cpp
 template <class Policy, class... PolicyFields>
 consteval auto structFields(Policy policy, PolicyFields... policy_fields);
 ```
 
-policyは可変長パラメータの**手前にある通常の引数**なので、省略して`structFields(required(field<&T::a>("a")))`と書くと`Policy`がフィールド型のほうへ推論されます。関数本体の先頭が`if constexpr (!internal::StructUseSitePolicy<Policy>)`（[`StructUseSitePolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L671) のconcept。`EventPayloadPolicy` / `BehaviorParamsPolicy` / `ComponentPolicy` の3種のみ）で、外れた枝の`static_assert(always_false_v<Policy>, ...)`が`structFields requires an explicit EventPayloadPolicy, BehaviorParamsPolicy, or ComponentPolicy`というメッセージで落とします。同様にフィールド側の`required(...)` / `defaulted(...)`忘れは次の枝の`every struct field requires an explicit required(...) or defaulted(...) policy`です。
+policyは可変長パラメータの**手前にある通常の引数**なので、省略して`structFields(required(field<&T::a>("a")))`と書くと`Policy`がフィールド型のほうへ推論されます。関数本体の先頭が`if constexpr (!internal::StructUseSitePolicy<Policy>)`（[`StructUseSitePolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L775) のconcept。`EventPayloadPolicy` / `BehaviorParamsPolicy` / `ComponentPolicy` の3種のみ）で、外れた枝の`static_assert(always_false_v<Policy>, ...)`が`structFields requires an explicit EventPayloadPolicy, BehaviorParamsPolicy, or ComponentPolicy`というメッセージで落とします。同様にフィールド側の`required(...)` / `defaulted(...)`忘れは次の枝の`every struct field requires an explicit required(...) or defaulted(...) policy`です。
 
 | policy | 取得方法 | 強制されること |
 |---|---|---|
-| event payload | [`Pelican::eventPayloadPolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L205) | 全フィールドが`required(...)`。`bool`とenumは不可 |
-| behavior params | [`Pelican::behaviorParamsPolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L206) | 全フィールドが`defaulted(...)`。enumは`enumValues(...)`必須 |
-| component | [`Pelican::componentPolicy("codec_name")`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L208) | codec名が非空。required / defaulted の混在は可 |
+| event payload | [`Pelican::eventPayloadPolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L302) | 全フィールドが`required(...)`。`bool`とenumは不可 |
+| behavior params | [`Pelican::behaviorParamsPolicy`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L303) | 全フィールドが`defaulted(...)`。enumは`enumValues(...)`必須 |
+| component | [`Pelican::componentPolicy("codec_name")`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L305) | codec名が非空。required / defaulted の混在は可 |
 
-各フィールドは [`required(field<&T::m>("name"))`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L509) か [`defaulted(field<&T::m>("name"), default_value)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L575) のどちらかで包む必要があります。そのほかconsteval検査として、フィールド名の一意性、全フィールドが同一owner型であること、範囲の有限性と順序、`maxStructFieldEnumValues = 8`（[`maxStructFieldEnumValues` の定義](../../src/core/userpublic/details/schema/structfieldschema.hpp#L49)）があります。
+各フィールドは [`required(field<&T::m>("name"))`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L610) か [`defaulted(field<&T::m>("name"), default_value)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L678) のどちらかで包む必要があります。そのほかconsteval検査として、フィールド名の一意性、全フィールドが同一owner型であること、範囲の有限性と順序、`maxStructFieldEnumValues = 8`（[`maxStructFieldEnumValues` の定義](../../src/core/userpublic/details/schema/structfieldschema.hpp#L50)）があります。
 
-> 🧩 **難所 — 不完全型のまま consteval**([`field<&T::m>()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L401) / [`structFields()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L741))
+> 🧩 **難所 — 不完全型のまま consteval**([`field<&T::m>()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486) / [`structFields()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L845))
 >
 > **何をする所か**: `static constexpr auto schema = structFields(policy, required(field<&T::a>("a")), ...)` を**クラス定義の内側で**評価し、フィールド名・型・範囲・required/defaulted をコンパイル時に確定させます。
 >
-> **素朴に読むと**: 「なぜこう書く必要があるのか」が 3 つ重なっています。(1) `throw "文字列リテラル"` が `static_assert` 代わりです。`consteval` 関数の中で throw に到達すると定数式でなくなる → **コンパイルエラー**になります。`static_assert` は関数引数(`name`、`range.min` など)を見られないので、値に依存する検査はこの手しかありません。実行時検証と誤読すると、なぜ実行時に throw が飛ばないのか分からなくなります。(2) POD の `StructFieldDescriptor` と変換後の `StructFieldSchema` が二重に存在する理由。`schema` はクラス定義の中の static データメンバなので、評価時点で owner 型 `T` は**不完全型**です。この状態で `std::variant`(= `StructFieldRange`)を構築すると MSVC が壊れるため、consteval 段階はタグ + 各型の min/max を並べた POD で持ち、[`materializeStructField()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L361) が後段で variant へ起こします(ソースのコメント "POD form used while the owner type is still incomplete" が根拠です)。(3) `structFields()` の `if constexpr` 連鎖は、診断を**1 個だけ**出すための形です。素直に `static_assert` を並べると policy 違反 1 つで数十行のテンプレートエラーが雪崩れます。
+> **素朴に読むと**: 「なぜこう書く必要があるのか」が 3 つ重なっています。(1) `throw "文字列リテラル"` が `static_assert` 代わりです。`consteval` 関数の中で throw に到達すると定数式でなくなる → **コンパイルエラー**になります。`static_assert` は関数引数(`name`、`range.min` など)を見られないので、値に依存する検査はこの手しかありません。実行時検証と誤読すると、なぜ実行時に throw が飛ばないのか分からなくなります。(2) POD の `StructFieldDescriptor` と変換後の `StructFieldSchema` が二重に存在する理由。`schema` はクラス定義の中の static データメンバなので、評価時点で owner 型 `T` は**不完全型**です。この状態で `std::variant`(= `StructFieldRange`)を構築すると MSVC が壊れるため、consteval 段階はタグ + 各型の min/max を並べた POD で持ち、[`materializeStructField()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L446) が後段で variant へ起こします(ソースのコメント "POD form used while the owner type is still incomplete" が根拠です)。(3) `structFields()` の `if constexpr` 連鎖は、診断を**1 個だけ**出すための形です。素直に `static_assert` を並べると policy 違反 1 つで数十行のテンプレートエラーが雪崩れます。
 >
 > **骨子**:
 > ```text
@@ -939,7 +939,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 この節が扱うのは**平坦な**フィールド宣言（v2の `StructFieldSchema` 列）です。`Flags` と `List` を含む宣言は再帰的な `SchemaNode` へ起こされ、`$list` / `$row` の封筒付きJSONを使い、登録もv3入口へ回ります。その形と受理規則は[第3章 §3.11](03_project_and_loading.md) に、DLL境界での入口選択は [§2.11](02_runtime_lifecycle.md) にあります。
 
-> 🧩 **難所 — 3 回舐めてから swap**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L862))
+> 🧩 **難所 — 3 回舐めてから swap**([`decodeBehaviorParams()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1019))
 >
 > **何をする所か**: JSON を `Params` へ復元します。失敗した場合は destination を**一切書き換えません**。成功時の反映は `swap` 1 回で、これが behavior のライブ params 差し替えの原子性そのものです。
 >

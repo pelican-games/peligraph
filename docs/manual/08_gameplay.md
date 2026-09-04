@@ -31,7 +31,7 @@
 - ゲーム DLL がホスト実行ファイルから import する登録入口は `pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_register_system_v2` / `pelican_emit_v2` と、コンポーネントの `__registerComponent` です。加えて **epoch anchor** [`pelican_game_logic_epoch_v2`](../../src/core/userpublic/gamelogic.hpp#L23) を必ず import します(SDK が自動で埋めます)。epoch anchor とは、ABI の世代番号を名前そのものに含んだ関数シンボルのことです([用語集](14_glossary.md))。世代が上がると名前ごと変わるため、古い SDK でビルドされた DLL は「host に存在しない名前を import している DLL」として機械的に見分けられます。
 - ロードの**前**に、DLL の PE import テーブルだけを読む診断([diagnoseGameLogicImports](../../src/core/gamelogic/gamelogicimports.cpp#L559))が走ります。期待する epoch anchor が無い / 旧名の入口(`__registerBehavior` など)が残っている DLL は [`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40) で拒否され、**一度も実行されません**。ordinal import と delay-load import も `game_logic_abi_unsupported_import@1` で拒否です。`game_logic_abi_stale@1` のような `名前@数字` は**エラーコード**で、人間向けのメッセージ本文とは別に、rpc の応答へそのまま出る機械可読な識別子です([用語集](14_glossary.md))。
   - registration を持たない provider 専用の古い DLL には、リンカが強制する要素が無いため、**この診断が唯一の門番**です。
-- **再帰 schema**(フィールドの中にさらにフィールドを持つ、木になった schema)を宣言した型があると、SDK は `_v3` 入口([registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L299))を**自動で選びます**。v2 の入口は平らなフィールド列しか運べないためです。判定は「`List` か `Flags` のフィールドが 1 つでもあるか」だけで([schemaRequiresV3](../../src/core/userpublic/details/schema/structfieldschema.hpp#L719))、§8.5.3 の `List<Row>` は行の型 `Row` が自分の `schema` を持つのでこれに当たります。書き手のコードは変わりません。v3 入口を使う DLL と v2 だけの DLL は同じホストに**同居できます**。
+- **再帰 schema**(フィールドの中にさらにフィールドを持つ、木になった schema)を宣言した型があると、SDK は `_v3` 入口([registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L322))を**自動で選びます**。v2 の入口は平らなフィールド列しか運べないためです。判定は「`List` か `Flags` のフィールドが 1 つでもあるか」だけで([schemaRequiresV3](../../src/core/userpublic/details/schema/structfieldschema.hpp#L823))、§8.5.3 の `List<Row>` は行の型 `Row` が自分の `schema` を持つのでこれに当たります。書き手のコードは変わりません。v3 入口を使う DLL と v2 だけの DLL は同じホストに**同居できます**。
 - 逆に、ホストが古くて v3 入口を持たないのに DLL が v3 を使っていると、`game_logic_abi_stale@1{found: "v3", host: "v2"}` で拒否されます。
 
 実行中の DLL は原本ではなく **shadow copy**(別ディレクトリへ取った複製)を読みます。リロードのたびに連番付きの複製を作ってそちらをロードするので([makeShadowCopy](../../src/core/gamelogic/gamelogicreload.cpp#L295)。`.pdb` も一緒に複製するのでデバッガも繋がります)、エンジンが原本のファイルを掴んだままにならず、走らせたままビルドし直せます。置き場所は原本の隣の `.pelican-hot-reload/<プロセス ID>/` で([gamelogicreload.cpp](../../src/core/gamelogic/gamelogicreload.cpp#L423))、**プロセスごとに別ディレクトリ**なので同じプロジェクトを 2 つ起動しても取り合いになりません(死んだプロセスの残骸は起動時に掃除されます)。ビルドが原本を掴んだままだと、リロードは失敗ではなく保留になり、何度ポーリングしても掴まれたままなら [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicreload.cpp#L739) が status に出ます。
@@ -244,7 +244,7 @@ PELICAN_REGISTER_BEHAVIOR(ProjectBehavior, "wp155_project_behavior", 1);
 | 基底 | `Pelican::Behavior` の継承が必須(コンパイル時 static_assert) |
 | ライフサイクル | `onInit` / `onUpdate` / `onDestroy` は **virtual**(`override` を付ける)。`onDestroy` は **`noexcept` 必須** |
 | イベント購読 | `onEvent(const E&, BehaviorContext&)` は **virtual ではない**(concept で検出され型消去される)。`override` は付けない |
-| `Params` | `Type::Params` と `Params::schema` が必須。default 構築可能かつ **nothrow swappable**(`std::swap` が例外を投げない型であること。[registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L242) が `std::is_nothrow_swappable_v` で検査。差し替えの途中で例外が出ると params が半分だけ新しい状態になるため) |
+| `Params` | `Type::Params` と `Params::schema` が必須。default 構築可能かつ **nothrow swappable**(`std::swap` が例外を投げない型であること。[registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L265) が `std::is_nothrow_swappable_v` で検査。差し替えの途中で例外が出ると params が半分だけ新しい状態になるため) |
 | 登録名 | 空文字は登録時エラー。同名の重複、エンジン側との衝突も名指しエラー |
 | schema バージョン | 1 以上(0 はエラー) |
 
@@ -303,9 +303,9 @@ struct CarrierParams {
 
 (実物: `test/fixtures/wp382a_schema/v3_fixture.cpp`)
 
-- `Flags<Enum>`([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L106))は `enumValues(...)` が**必須**(無いとコンパイルエラー)。語彙は最大 8 個。
-- [`List<Row>`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L143) の `Row` は自分の `schema` を持つ型で、**その中にさらに `List` は置けません**(1 段まで。違反はコンパイルエラー)。
-- [`optionalOverride(...)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L536) のフィールドは `std::optional<T>` で受けます。behavior params の**トップレベルには置けません**(そこは `defaulted` 必須)ので、実際の置き場所は行の schema の中です。
+- `Flags<Enum>`([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L184))は `enumValues(...)` が**必須**(無いとコンパイルエラー)。語彙は最大 8 個。
+- [`List<Row>`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L222) の `Row` は自分の `schema` を持つ型で、**その中にさらに `List` は置けません**(1 段まで。違反はコンパイルエラー)。
+- [`optionalOverride(...)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L638) のフィールドは `std::optional<T>` で受けます。behavior params の**トップレベルには置けません**(そこは `defaulted` 必須)ので、実際の置き場所は行の schema の中です。
 - これらを 1 つでも宣言すると、SDK は登録入口を自動で `_v3` に切り替えます(§8.1)。書き手が指定するものはありません。
 
 ### 8.5.4 BehaviorContext
@@ -353,7 +353,7 @@ struct CarrierParams {
 
 - バージョンを上げたときは、**現在ロードしていないシーンも含めて**全 behavior の params が新 schema で読めることが条件です。
 - リロード後、behavior のインスタンス状態(メンバ変数)は失われ、params は authoring 値から再構築されます(full-reset 方式)。
-- `schema_changed_without_version_bump` の判定は **schema の指紋**(schema の宣言内容を宣言順のまま 1 本の JSON 文字列に書き出したもの — [schemaNodeFingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L855))で、この文字列が 1 文字でも変われば別の schema と見なします。フィールドの型だけでなく**既定値・宣言順・enum 値の割り当て・presence(`defaulted` ↔ `required` ↔ `optionalOverride`)の変更も検出します**([validateBehaviorReloadSources](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L10))。「型は同じだから大丈夫」は通りません。
+- `schema_changed_without_version_bump` の判定は **schema の指紋**(schema の宣言内容を宣言順のまま 1 本の JSON 文字列に書き出したもの — [schemaNodeFingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L1012))で、この文字列が 1 文字でも変われば別の schema と見なします。フィールドの型だけでなく**既定値・宣言順・enum 値の割り当て・presence(`defaulted` ↔ `required` ↔ `optionalOverride`)の変更も検出します**([validateBehaviorReloadSources](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L85))。「型は同じだから大丈夫」は通りません。
 - ⚠️ **この検証は behavior params だけが対象です。** イベントペイロードと ECS コンポーネントの schema を version bump なしで変えても、現状は検出されません(WP382a-fix で追加予定 = 📐**未対応**)。
 
 ### 8.5.7 ゲームシステムとの使い分け
@@ -388,14 +388,14 @@ void onEvent(const DoorOpened &e, Pelican::GameContext &ctx);
 ```
 
 - イベント名は型名の最後の `::` 以降(`Pelican::SceneLoaded` → `"SceneLoaded"`)。名前空間違いの同名型は起動時に衝突エラーになります。
-- ペイロードは値コピーで保持されます(1 フレーム跨ぐため、参照・ポインタは入れない)。型に課される要件は「コピー構築できる object 型」だけです([registerer.hpp](../../src/core/userpublic/details/event/registerer.hpp#L124))。
+- ペイロードは値コピーで保持されます(1 フレーム跨ぐため、参照・ポインタは入れない)。型に課される要件は「コピー構築できる object 型」だけです([registerer.hpp](../../src/core/userpublic/details/event/registerer.hpp#L148))。
 - `ref()` は「どのフィールドがどの名前か」を 1 か所で宣言するメンバ関数です。エンジンはこれを使って JSON からペイロードを組み立てたり、エディタ向けにフィールド名の一覧を取ったりします。
 - **同一翻訳単位内で `PELICAN_REGISTER_EVENT` → 型定義 → `PELICAN_REGISTER_SYSTEM` の順**に書いてください。システム登録マクロは、その時点で見えているイベントカタログだけを購読対象にします。
 - エンジンが発行するイベントは `SceneLoaded { scene_name }` と、
   物理トリガーの `OverlapEnter { self, other }` /
   `OverlapExit { self, other }` です。`self` / `other` は generation を含む
   full `EntityId`(`GameObjectId` の別名 — [entity.hpp](../../src/core/userpublic/details/ecs/entity.hpp#L19))で、同じ pair を両オブジェクト視点へ配送します。
-- rpc の `inject_event` で外部からもイベントを注入できます。ただし**ペイロードを渡せるのは `pelican_payload`([第7章](07_input_ui.md) の EventPayloadSchema)を宣言した型だけ**で、`ref()` しか持たない型は `event type does not expose a payload schema` で拒否されます([validateByName](../../src/core/userpublic/details/event/registerer.cpp#L382))。
+- rpc の `inject_event` で外部からもイベントを注入できます。ただし**ペイロードを渡せるのは `pelican_payload`([第7章](07_input_ui.md) の EventPayloadSchema)を宣言した型だけ**で、`ref()` しか持たない型は `event type does not expose a payload schema` で拒否されます([validateByName](../../src/core/userpublic/details/event/registerer.cpp#L387))。
 - behavior も同じ `onEvent` でイベントを受けられます(§8.5)。書く順序の制約(`PELICAN_REGISTER_EVENT` → 型定義 → 登録マクロ)も同じです。
 - **シーンロード中の `emit` はロードのトランザクションに溜まります**(✅WP380a)。ロードが失敗すれば配送されず、成功すれば commit 後の flush で pending queue に入ります(配送は従来どおり次フレーム頭)。`SceneLoaded` 自身も同じ flush で出ます — 送信箱に入る順は「`onInit` の emit → 旧 behavior の `onDestroy` の emit → `SceneLoaded`」で、配送順は emit 順なので **`SceneLoaded` は最後**に届きます。
 

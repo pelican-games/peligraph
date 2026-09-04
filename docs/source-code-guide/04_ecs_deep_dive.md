@@ -57,13 +57,13 @@ IDは単なる外部識別子ではありません。ECS内部では、次の二
 - **Component ID**: `DECLARE_COMPONENT`で型に与える宣言上の識別子。上の表やscene名と対応する、外向きの番号です。
 - **dense index**: 配列の添字そのもの。`ComponentInfoManager`の`infos[index]`、Chunkの`component_arrays[index]`と`component_versions[index]`、maskの`1ULL << index`は、すべてこちらで引きます（[`chunk.hpp` 内](../../src/core/userpublic/details/ecs/chunk.hpp#L61) の `// Indexed by dense component index.`）。
 
-両者を繋ぐのが [`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L91) で、現在の実装はIDをそのまま添字として返します。つまりIDと添字は**値としては同じですが、概念としては別物**です。IDに欠番（上の表の4〜15）があれば添字にもそのまま穴が空くので、「dense（0から詰まっている）」は名前が示す想定であって、現状の実装が満たしている保証ではありません。コード側の区別も徹底されておらず、[`ECSComponentChunk::has()`](../../src/core/userpublic/details/ecs/chunk.hpp#L83) は引数の型が`ComponentId`ですが、呼び出し側は全てdense indexを渡しています。型名ではなく用途で読んでください。
+両者を繋ぐのが [`ComponentInfoManager::getIndexFromComponentId()`](../../src/core/ecs/componentinfo.cpp#L131) で、現在の実装はIDをそのまま添字として返します。つまりIDと添字は**値としては同じですが、概念としては別物**です。IDに欠番（上の表の4〜15）があれば添字にもそのまま穴が空くので、「dense（0から詰まっている）」は名前が示す想定であって、現状の実装が満たしている保証ではありません。コード側の区別も徹底されておらず、[`ECSComponentChunk::has()`](../../src/core/userpublic/details/ecs/chunk.hpp#L83) は引数の型が`ComponentId`ですが、呼び出し側は全てdense indexを渡しています。型名ではなく用途で読んでください。
 
-ただし**未登録スロットの読み出しは例外になります**。実体は [`getFromIndex()`](../../src/core/ecs/componentinfo.cpp#L94) で、`token` が未設定なら `std::out_of_range("component index N is not registered")` を投げます。「IDがそのままindex」という値の関係は保ちつつ、穴の空いたスロットを黙って読むことはできません。
+ただし**未登録スロットの読み出しは例外になります**。実体は [`getFromIndex()`](../../src/core/ecs/componentinfo.cpp#L134) で、`token` が未設定なら `std::out_of_range("component index N is not registered")` を投げます。「IDがそのままindex」という値の関係は保ちつつ、穴の空いたスロットを黙って読むことはできません。
 
 ### runtimeの型消去メタデータ
 
-[`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L39) は次を保持します。
+[`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L41) は次を保持します。
 
 - `size`, `alignment`, `name`
 - default construct
@@ -72,10 +72,10 @@ IDは単なる外部識別子ではありません。ECS内部では、次の二
 - optional `init()`
 - optional `deinit() noexcept`
 - optional JSON `ref(JsonArchiveLoader&)`
-- [`internal::RegistrationOwner owner`](../../src/core/ecs/componentinfo.hpp#L51) と [`internal::RegistrationToken token`](../../src/core/ecs/componentinfo.hpp#L52)（登録解除のための識別、§4.15）
+- [`internal::RegistrationOwner owner`](../../src/core/ecs/componentinfo.hpp#L53) と [`internal::RegistrationToken token`](../../src/core/ecs/componentinfo.hpp#L54)（登録解除のための識別、§4.15）
 - optional な [`SchemaNode schema_v3`](../../src/core/ecs/componentinfo.hpp#L53)（再帰 schema を持つ外部 Component だけが埋める、後述）
 
-登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
+登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L185) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
 
 compile時制約は次です。
 
@@ -88,31 +88,31 @@ compile時制約は次です。
 
 ### 名前の予約と owner policy（WP379）
 
-Component 名は自由ではありません。登録は必ず [`enforceComponentRegistrationPolicy()`](../../src/core/userpublic/details/component/registerer.cpp#L20) を通り、owner と名前の組で2種類の拒否があります。
+Component 名は自由ではありません。登録は必ず [`enforceComponentRegistrationPolicy()`](../../src/core/userpublic/details/component/registerer.cpp#L21) を通り、owner と名前の組で2種類の拒否があります。
 
 | 状況 | 結果 |
 |---|---|
-| engine owner が `pelican_` で始まらない名前を登録 | [`builtin_name_unprefixed@1`](../../src/core/userpublic/details/component/registerer.cpp#L49) |
-| engine 以外の owner が `pelican_` で始まる名前を登録 | [`reserved_component_namespace@1`](../../src/core/userpublic/details/component/registerer.cpp#L51) |
+| engine owner が `pelican_` で始まらない名前を登録 | [`builtin_name_unprefixed@1`](../../src/core/userpublic/details/component/registerer.cpp#L50) |
+| engine 以外の owner が `pelican_` で始まる名前を登録 | [`reserved_component_namespace@1`](../../src/core/userpublic/details/component/registerer.cpp#L52) |
 
-例外は [`ComponentRegistrationPolicyError`](../../src/core/userpublic/details/component/registerer.hpp#L59) で、`code()` と `payload()`（`{name, owner_kind}`。`owner_kind` は `"engine"` か `"external"` の2値）を持ちます。
+例外は [`ComponentRegistrationPolicyError`](../../src/core/userpublic/details/component/registerer.hpp#L62) で、`code()` と `payload()`（`{name, owner_kind}`。`owner_kind` は `"engine"` か `"external"` の2値）を持ちます。
 
-「engine の組み込み Component は全部 `pelican_` 始まり」ではありません。§4.2 の表の7名は [`grandfathered_engine_names`](../../src/core/userpublic/details/component/registerer.cpp#L15) という固定配列で名指しの例外にしてあります（`eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view`）。この一覧は [`grandfatheredEngineComponentNames()`](../../src/core/userpublic/details/component/registerer.cpp#L42) で読み出せます。**新しく engine 側へ足す Component には `pelican_` が必須**で、上の表の ID 19 が最初の例です。
+「engine の組み込み Component は全部 `pelican_` 始まり」ではありません。§4.2 の表の7名は [`grandfathered_engine_names`](../../src/core/userpublic/details/component/registerer.cpp#L16) という固定配列で名指しの例外にしてあります（`eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view`）。この一覧は [`grandfatheredEngineComponentNames()`](../../src/core/userpublic/details/component/registerer.cpp#L43) で読み出せます。**新しく engine 側へ足す Component には `pelican_` が必須**で、上の表の ID 19 が最初の例です。
 
-owner 側の規則も対称です。公開入口の [`__registerComponent()`](../../src/core/userpublic/details/component/registerer.cpp#L79) は `currentRegistrationOwner()` が engine owner だった場合に `logic_error("component registration requires a host-allocated external owner")` を投げます。engine owner での登録は host 専用の [`__registerEngineComponent()`](../../src/core/userpublic/details/component/registerer.cpp#L108) だけが行い、その入口は `private` + `friend class EngineComponentRegisterer` なので game DLL の公開面には出ません（§4.15）。
+owner 側の規則も対称です。公開入口の [`__registerComponent()`](../../src/core/userpublic/details/component/registerer.cpp#L80) は `currentRegistrationOwner()` が engine owner だった場合に `logic_error("component registration requires a host-allocated external owner")` を投げます。engine owner での登録は host 専用の [`__registerEngineComponent()`](../../src/core/userpublic/details/component/registerer.cpp#L110) だけが行い、その入口は `private` + `friend class EngineComponentRegisterer` なので game DLL の公開面には出ません（§4.15）。
 
 ### 再帰 schema を持つ Component は v3 経路へ分かれる
 
-[`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) は compile 時に `T::schema` を見て2経路に分かれます。
+[`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L185) は compile 時に `T::schema` を見て2経路に分かれます。
 
-- `schemaRequiresV3(T::schema)` が偽 — 従来どおり [`__registerComponent()`](../../src/core/userpublic/details/component/registerer.hpp#L93) に `ComponentLoaderInfo` を渡します。この record の layout は [`FrozenComponentLoaderInfoV2Layout`](../../src/core/userpublic/details/component/registerer.hpp#L24) との `sizeof` 一致で凍結されています。
-- 真 — `static` な [`materializeSchemaNode(Component::schema)`](../../src/core/userpublic/details/component/registerer.hpp#L173) を作り、[`pelican_register_component_v3()`](../../src/core/userpublic/details/component/registerer.hpp#L95) へ [`ComponentRegistrationV3`](../../src/core/userpublic/details/component/registerer.hpp#L37) を渡します。JSON loader も `decodeStructObject()` を使う再帰版へ切り替わります（[`RecursiveSchema` 分岐](../../src/core/userpublic/details/component/registerer.hpp#L147)）。
+- `schemaRequiresV3(T::schema)` が偽 — 従来どおり [`__registerComponent()`](../../src/core/userpublic/details/component/registerer.hpp#L110) に `ComponentLoaderInfo` を渡します。この record の layout は [`FrozenComponentLoaderInfoV2Layout`](../../src/core/userpublic/details/component/registerer.hpp#L25) との `sizeof` 一致で凍結されています。
+- 真 — `static` な [`materializeSchemaNode(Component::schema)`](../../src/core/userpublic/details/component/registerer.hpp#L192) を作り、[`pelican_register_component_v3()`](../../src/core/userpublic/details/component/registerer.hpp#L112) へ [`ComponentRegistrationV3`](../../src/core/userpublic/details/component/registerer.hpp#L38) を渡します。JSON loader も `decodeStructObject()` を使う再帰版へ切り替わります（[`RecursiveSchema` 分岐](../../src/core/userpublic/details/component/registerer.hpp#L166)）。
 
-v3 は v2 の `ComponentLoaderInfo` を入れ子で再利用**しません**。header のコメントが理由を書いています — v2 の入れ子型の修飾名は凍結済み入口シンボルの一部だからです。v3 で渡した `SchemaNode` は [`__registerComponentForOwner()`](../../src/core/userpublic/details/component/registerer.cpp#L115) で `ComponentInfo::schema_v3` に入り、v2 経路では `std::nullopt` のままです。
+v3 は v2 の `ComponentLoaderInfo` を入れ子で再利用**しません**。header のコメントが理由を書いています — v2 の入れ子型の修飾名は凍結済み入口シンボルの一部だからです。v3 で渡した `SchemaNode` は [`__registerComponentForOwner()`](../../src/core/userpublic/details/component/registerer.cpp#L117) で `ComponentInfo::schema_v3` に入り、v2 経路では `std::nullopt` のままです。
 
 ### 名前が引けないときは `component_unknown@1`
 
-[`ComponentInfoManager::getComponentIdByName()`](../../src/core/ecs/componentinfo.cpp#L104) は、未登録名に対して `nullptr` や `-1` ではなく [`ComponentUnknownError`](../../src/core/ecs/componentinfo.hpp#L27) を投げます。`what()` は [`componentUnknownErrorCode`](../../src/core/ecs/componentinfo.hpp#L24)（`component_unknown@1`）に `{"name": ...}` の JSON を連結した文字列で、`payload()` からその JSON だけを取れます。末尾の `@1` はこのリポジトリの名前付きエラーコードに付く**版番号**です（エラーの種類を表す番号ではありません）。`@2` を持つコードは調査時点で `pelican.vulkan_target_plan.logical_graph@2` と `pelican.vulkan_automatic_target_plan@2` の2件だけで、どちらも同名の `@1` はソースに残っていません。**版を上げたときに旧版を残すのかどうかを規範として書いた文書は見つかっていません（未確認）。**「未登録」と「登録済みだが編集できない」を混ぜないための型です。
+[`ComponentInfoManager::getComponentIdByName()`](../../src/core/ecs/componentinfo.cpp#L144) は、未登録名に対して `nullptr` や `-1` ではなく [`ComponentUnknownError`](../../src/core/ecs/componentinfo.hpp#L29) を投げます。`what()` は [`componentUnknownErrorCode`](../../src/core/ecs/componentinfo.hpp#L26)（`component_unknown@1`）に `{"name": ...}` の JSON を連結した文字列で、`payload()` からその JSON だけを取れます。末尾の `@1` はこのリポジトリの名前付きエラーコードに付く**版番号**です（エラーの種類を表す番号ではありません）。`@2` を持つコードは調査時点で `pelican.vulkan_target_plan.logical_graph@2` と `pelican.vulkan_automatic_target_plan@2` の2件だけで、どちらも同名の `@1` はソースに残っていません。**版を上げたときに旧版を残すのかどうかを規範として書いた文書は見つかっていません（未確認）。**「未登録」と「登録済みだが編集できない」を混ぜないための型です。
 
 この2つは編集面で別の code に写ります（[第7章](07_tools_rpc_tests.md)）。
 
@@ -127,7 +127,7 @@ v3 は v2 の `ComponentLoaderInfo` を入れ子で再利用**しません**。h
 
 ### trivial型と非trivial型のrelocate
 
-登録コードの [`relocate` callback](../../src/core/userpublic/details/component/registerer.hpp#L120) は二分岐します。
+登録コードの [`relocate` callback](../../src/core/userpublic/details/component/registerer.hpp#L139) は二分岐します。
 
 - trivially copyable（自明にcopy可能 — bit列をそのまま複製しても意味が壊れない型。`std::is_trivially_copyable_v`で判定します）: `memcpy`
 - それ以外: destinationへmove constructし、sourceをdestroy
@@ -617,7 +617,7 @@ behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` �
 
 ## 4.15 ユーザー独自Componentの現在地
 
-`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。**game DLL からの登録そのものは通ります** — `details/component/registerer.hpp` を直接includeして静的初期化から [`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L166) を呼ぶ形で、実物は [`fixtures/ray_namespace_component/component.cpp`](../../test/fixtures/ray_namespace_component/component.cpp#L12)（WP379 の production 受け入れで実 DLL として動きます）と [`fixtures/wp382a_schema/v3_fixture.cpp`](../../test/fixtures/wp382a_schema/v3_fixture.cpp#L117)、[`fixtures/wp380b_effect/behavior.cpp`](../../test/fixtures/wp380b_effect/behavior.cpp#L69) です。engine 側の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L21)、benchmark、lifecycle testです。
+`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。**game DLL からの登録そのものは通ります** — `details/component/registerer.hpp` を直接includeして静的初期化から [`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L185) を呼ぶ形で、実物は [`fixtures/ray_namespace_component/component.cpp`](../../test/fixtures/ray_namespace_component/component.cpp#L12)（WP379 の production 受け入れで実 DLL として動きます）と [`fixtures/wp382a_schema/v3_fixture.cpp`](../../test/fixtures/wp382a_schema/v3_fixture.cpp#L150)、[`fixtures/wp380b_effect/behavior.cpp`](../../test/fixtures/wp380b_effect/behavior.cpp#L69) です。engine 側の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L21)、benchmark、lifecycle testです。
 
 owner の出どころが両者を分けます。game DLL は自分で owner を確保しません — host が [`ScopedRegistrationOwner registration_scope{owner}`](../../src/core/gamelogic/gamelogicreload.cpp#L345) で `LoadLibrary` を包むので、DLL の静的初期化子はその external owner の下で走ります。game System/Eventの登録も同じ [`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位で、reload時に`unregisterGameSystems(owner)`されます。
 
@@ -631,13 +631,13 @@ void unregisterComponents(RegistrationOwner owner) noexcept;
 std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 ```
 
-この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1833)）。
+この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1897)）。
 
-これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) の戻り値が `void` → `RegistrationToken` になりました。host 側の入口は [`EngineComponentRegisterer::registerComponent<T>()`](../../src/core/ecs/enginecomponentregistrar.hpp#L18) で、`__registerEngineComponent()` を呼ぶのはこの1箇所だけです。header 冒頭のコメントが規範を明記しています — 「この型とこのヘッダの全関数は host 専用。公開 registrar は game-DLL のコードから owner 値を受け取らない」。
+これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L185) の戻り値が `void` → `RegistrationToken` になりました。host 側の入口は [`EngineComponentRegisterer::registerComponent<T>()`](../../src/core/ecs/enginecomponentregistrar.hpp#L18) で、`__registerEngineComponent()` を呼ぶのはこの1箇所だけです。header 冒頭のコメントが規範を明記しています — 「この型とこのヘッダの全関数は host 専用。公開 registrar は game-DLL のコードから owner 値を受け取らない」。
 
 つまり host 専用になったのは「**engine owner として**登録する入口」と「owner を確保する API（[`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13)）」であって、登録そのものではありません。game DLL は host が用意した external owner の下で普通に登録できます（§4.15 冒頭）。名前空間の規則（§4.2 の `pelican_` 予約）と合わせて、外部 owner が登録できる名前と engine が登録できる名前は交わりません。
 
-解除は無条件ではありません。[`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L69) は、そのComponentへ依存するECS Systemが残っていると拒否します。
+解除は無条件ではありません。[`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L86) は、そのComponentへ依存するECS Systemが残っていると拒否します。
 
 ```text
 cannot unregister component '<name>': dependent ECS system '<sys>' remains

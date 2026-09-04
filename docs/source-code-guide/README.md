@@ -62,7 +62,7 @@ Pelican が「こう呼んでいる」基本語(scene、asset、feature、render
 
 一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**その語が実際に出てくる章の初出箇所で 1〜2 文の説明を添えてあります**(この索引には用語表を置きません)。どの章に出るかは語ごとに違う — たとえば Floyd–Warshall は frame graph の推移閉包を扱う[第6章](06_rendering_vulkan_shader.md)、SFINAE と ADL は登録マクロを扱う[第9章](09_black_magic_and_gotchas.md)です — ので、横断して引くときは `rg '<語>' docs/source-code-guide` が最短です。Pelican 固有の基本語は [`docs/manual/14_glossary.md`](../manual/14_glossary.md)、一般知識の側は[第10章](10_background_knowledge.md)にまとまっています。
 
-難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値の 73 項目)。
+難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値・OpenXR の 143 項目。章の冒頭に分類ごとの索引があります)。
 
 ## 最短の読解ルート
 

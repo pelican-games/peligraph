@@ -240,7 +240,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 | フィールド | 必須? | 規則 |
 |---|---|---|
-| `type` | **必須** | `PELICAN_REGISTER_BEHAVIOR`(ゲームコードが `<behavior.hpp>` を include して使うマクロ。定義は [registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L362))の第 2 引数(永続名)。空文字・非文字列はエラー |
+| `type` | **必須** | `PELICAN_REGISTER_BEHAVIOR`(ゲームコードが `<behavior.hpp>` を include して使うマクロ。定義は [registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L385))の第 2 引数(永続名)。空文字・非文字列はエラー |
 | `params` | 任意 | オブジェクト。省略すると全フィールドが既定値。型・範囲は behavior 側の schema で検証され、違反は `field 'params.speed' is out of range` のようなフィールドパス付きエラー |
 
 - **同じオブジェクトに何個でも書けます**(コンポーネントの中で唯一)。実行順は宣言順です。
@@ -269,7 +269,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 ### コンポーネント名の名前空間と所有者(✅WP379/379a)
 
-コンポーネント名は「誰が登録したか」で受理規則が変わります([enforceComponentRegistrationPolicy](../../src/core/userpublic/details/component/registerer.cpp#L20)):
+コンポーネント名は「誰が登録したか」で受理規則が変わります([enforceComponentRegistrationPolicy](../../src/core/userpublic/details/component/registerer.cpp#L21)):
 
 | 登録元 | `pelican_` 接頭辞 | 接頭辞なし |
 |---|---|---|
@@ -278,7 +278,7 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 
 - grandfathered の 7 名は `eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view` です。**これ以降エンジンが足すビルトインは必ず `pelican_` で始まります**(`pelican_ray_instance` が最初の適用例)。
 - エンジン所有として登録する registrar([EngineComponentRegisterer](../../src/core/ecs/enginecomponentregistrar.hpp#L15))は **host 専用**で、ゲーム DLL からは include しても**リンク以前にコンパイルが通りません**(`registerEngineComponent` を呼ぶ game DLL は専用のコンパイル失敗テストで守られています)。
-- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L25))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L223))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
+- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L27))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L223))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
 
 ## 4.3 シーンロードの流れ
 
@@ -358,7 +358,7 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 ### ユーザー定義コンポーネント(✅WP379/382a)
 
-ゲーム DLL から **ECS コンポーネント型を登録できます**。`DECLARE_COMPONENT` で ID を宣言し、[`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L166) を静的初期化で呼びます:
+ゲーム DLL から **ECS コンポーネント型を登録できます**。`DECLARE_COMPONENT` で ID を宣言し、[`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L185) を静的初期化で呼びます:
 
 ```cpp
 #include <details/component/registerer.hpp>
