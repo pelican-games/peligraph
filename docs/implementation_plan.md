@@ -22650,6 +22650,36 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 
 ---
 
+
+### WP384-fix: 三相 publication が RT3-1 の row 更新と descriptor の寿命を壊した(着地後の致命後退。連鎖はここで打ち切り)
+
+**§4 規則 11 上段(renderer の frame transaction)。実装者: `gpt-5.6-sol`。統合側変異 + rev384(codex)で閉じる。見積: 小〜中。連鎖: WP384 → WP384-fix で打ち切り(以後の指摘は記録のみ)。**
+**依存: WP384(`b5abdf9d`)統合済み。WP386a はこの後(同じ renderer / AS の面を触る)。**
+
+#### 何が壊れているか(統合側の全数 1658 で発見。worktree の W1 は WP384 系だけしか回していなかった)
+
+直列でも再現する赤 4 件(`b5abdf9d` の HEAD、`ctest -j1`):
+
+1. `WP374a two same-material chairs honor instance mask and removal in GPU output`([headless_render_test.cpp:14225](../test/headless_render_test.cpp#L14225)): mask を戻した frame で pixel が戻らない(`masked.bytes != restored.bytes` が偽)。→ **row digest が同じでも instance mask / flags / custom index が変わった frame を published bundle の再利用経路(決定 13 `tryReuseFrame`)が「不変」と扱っている**疑い
+2. `WP374a F G F geometry flags rebuild exact resident keys and change any-hit on GPU`([headless_render_test.cpp:13886](../test/headless_render_test.cpp#L13886)): `vkFreeDescriptorSets` の validation error(`descriptorPool-parameter` / `pDescriptorSets-00310`)の後に `waitForFences: ErrorDeviceLost`。→ **`RtDescriptorBundle` の退役で、pool が先に破棄された後に set を free している**(bundle と pool の破棄順、または generation の退役 fence 前に pool を destroy)疑い
+3. `WP374a real RPC bytes drive add set save fresh reload remove into committed TLAS rows`([headless_render_test.cpp:14437](../test/headless_render_test.cpp#L14437)): `active_blas_inputs.size() == 1` が偽 → 再利用 / 退役の混線で BLAS 入力が二重に残る
+4. `WP367 production anyhit A B proves integer predicates occurrence wire SBT and reload`([raytracing_rt3_1_production_test.cpp:568](../test/raytracing_rt3_1_production_test.cpp#L568)): row の `instance_mask` / `instance_flags` / `instance_custom_index` が期待と違う(4 row とも)→ 1 と同根(`pelican_ray_instance` の変更が row に届いていない)
+
+#### 直すこと
+
+1. **再利用の条件**(決定 13): 再利用は「row digest 不変」だけでは足りない。digest に **instance mask / flags / custom index / geometry flags / material generation / descriptor ABI** を含めるか、それらの変更で再利用を諦める述語を 1 箇所に置く。受け入れ: mask を A → B → A と変えた 3 frame で GPU の pixel が追随し、`tlas_build_count` が「変わった frame だけ」進む(WP374a の既存 test がそのまま受け入れ)。digest から mask を落とす変異で赤
+2. **bundle の退役順**(決定 12): `RtDescriptorBundle` は set → pool → layout の順で、**generation の退役 fence 後**に破棄する。pool を持つ generation が生存中に set を free しない。受け入れ: WP374a F G F と RT → 非 RT → RT の往復で validation error 0(既存 test + `VK_LAYER_KHRONOS_validation` の error を harness が数える既存機構)、`ErrorDeviceLost` 無し
+3. 統合側の W1 に **RT3-1 / WP374a / WP367 の GPU test** を含める(着地スクリプトの regex 不足が原因の 1 つ。`land.sh` は RT を触る WP では `RT|WP374|WP367|WP366|WP384|raytracing` を最低限回す)
+
+#### 受け入れ(§4 規約 10)
+
+- 上の 4 test が緑(今日 = 赤)。WP384 の 8 test(`WP384|WP366 renderer A B recovers`)も緑のまま(後退の修正で WP384 の受け入れを緩めない)
+- 変異: 再利用述語から mask を落とす → WP374a chairs 赤 / bundle の破棄順を pool 先に戻す → validation error で赤
+- 全数(GPU 直列)/ `PELICAN_WITH_OPENXR` OFF build / 出荷 4 project bytes 不変
+
+#### やらないこと
+
+WP384 の設計変更(三相・bundle・seal は維持)/ WP386a の内容 / 再利用経路の性能改善。
 ### WP385: GPU テストの process 間 lease —— 2 つの ctest が同じ GPU で偽陽性を出さない
 
 **§4 規則 11 中段(test 基盤。production には触れない)。実装者: `gpt-5.6-terra` + `high`。コードレビューは統合側検証 + Claude。見積: 小。**
