@@ -22846,6 +22846,18 @@ WP385(中段、terra + high)を先に投入(検証ループが速くなる)。WP
 
 raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DLL fixture(記録: reader の分類は既存契約で正しいが fixture が無い。WP382c 以降で足す)。
 
+
+
+#### WP382a-fix 完了記録(統合側。2026-09-04、`036eaad3`)
+
+- **実装(codex sol max、上段)**: 三 registry 共通の reload snapshot `{kind, key, version, fingerprint}`(event / component v3 に version と fingerprint を追加)、固定 descriptor → 所有型 `Schema::Node` の変換を v3 入口で(src/core/schemanodeadapter.*)、RPC serializer が tag / presence / default / 全子 / Flags の名前と数値を出し external component catalog・event lookup・`ComponentInfo::schema_v3`・prefab provider を再帰 node に接続、Flags は consteval で nonzero one-hot(合成値 / 0 の negative compile fixture)、`contains` は全 bit 包含、`$list` validator を decode / encode 共用(`RowIdExhausted` 追加)、range の `-0.0` 正規化、`SchemaNode` を固定容量 constexpr 化(static init の allocation 0 を probe で固定)、v2 record の `sizeof` + `alignof` + 全 `offsetof` 凍結と並べ替えの negative fixture、frozen v2 DLL が 3 種を登録して callback まで実行
+- **agent の変異 / 検証**: snapshot を behavior-only に戻す → :1213 で 8 変異が誤 commit / presence serialize 除去 → :276 / descriptor を所有型に → :116 で compile 失敗。非 GPU 1304 / 1304、RPC OFF・`SKIP_DEVSTUDIO=OFF` build、negative compile + probe 4 / 4、出荷 4 project 差分なし
+- **統合側の検証(worktree)**: 全体 build エラー 0、非 GPU 1299 / 1304(赤 5 は WP331 / 332 / 334b / 335 の render config editor 系 = -j16 flake。隣の worktree の build と重なったため多め。5 件とも単独で緑)
+- **統合側の変異(`mutation-runner` agent、opus。4 件)**: encode 側の `validateListValue` 除去 → `wp382a_schema_test.cpp:189`(`DuplicateRowId` が投げない)で赤 / 符号付き 0 の正規化除去 → :141 で赤 / catalog から `schema_v3` を落とす → `editorcommandservice_test.cpp:271`(`schema.node` 不在)で赤 / `contains` を「1 bit でも重なれば真」に戻す → **緑(等価変異)**: consteval の one-hot 制約が合成値を締め出すので、`contains` の包含形は実行時に観測できない。one-hot を緩める改修があれば `contains` はその瞬間に無検査になる(記録のみ)。**副産物**: `structfieldjson.hpp:783` の `StructFieldRange` 版 `schemaRangeJson` は呼び手が無く、符号付き 0 の規則が死んだ複製として残っている(削除候補。記録のみ、連鎖は打ち切り)
+- **main 取り込み**: 作業ブランチ(WP385 の lease と docs)を merge、衝突 0。worktree で WP 系 72 / 72(GPU 含む)
+- 全数: 統合 build エラー 0、1649 中 1648 緑。赤 1 は `contract_projection_gate`(python。`PELICAN_PYTHON_TESTS=AUTO` を統合側で初めて有効化したため登録された既知の赤。利用者側セッションで修正中)。WP385 の `gpu_lease_inventory` / `gpu_lease_runtime` は緑
+- コードレビュー: 連鎖の最後(WP382a → 382a-fix で打ち切り)なので codex レビューは掛けない。統合側変異(上)と Claude の読みで閉じる
+
 ### WP386: RT3-2 —— static AABB + `.rint`(手続き幾何)を、描画されない geometry の AS 供給経路ごと入れる
 
 **§4 規則 11 上段(asset 形式・AS 供給経路・pipeline の group 型・SPIR-V 検査・oracle を触る)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex)2 巡 → 実装 → 統合側変異 → コードレビュー。見積: 大(milestone 3)。**

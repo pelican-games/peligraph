@@ -1250,6 +1250,7 @@
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/componentinfo.cpp|`~ComponentInfoManager()`": "ComponentInfoManager::~ComponentInfoManager() {",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/componentinfo.hpp|`ComponentInfo`": "struct ComponentInfo {",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/componentinfo.hpp|`ComponentUnknownError`": "class ComponentUnknownError final : public std::runtime_error {",
+    "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/componentinfo.hpp|`Schema::Node schema_v3`": "std::optional<Schema::Node> schema_v3;",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/componentinfo.hpp|`SchemaNode schema_v3`": "std::optional<SchemaNode> schema_v3;",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/componentinfo.hpp|`componentUnknownErrorCode`": "inline constexpr std::string_view componentUnknownErrorCode =",
     "docs/source-code-guide/04_ecs_deep_dive.md|../../src/core/ecs/componentinfo.hpp|`internal::RegistrationOwner owner`": "internal::RegistrationOwner owner = internal::engineRegistrationOwner;",

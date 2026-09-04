@@ -73,7 +73,7 @@ IDは単なる外部識別子ではありません。ECS内部では、次の二
 - optional `deinit() noexcept`
 - optional JSON `ref(JsonArchiveLoader&)`
 - [`internal::RegistrationOwner owner`](../../src/core/ecs/componentinfo.hpp#L53) と [`internal::RegistrationToken token`](../../src/core/ecs/componentinfo.hpp#L54)（登録解除のための識別、§4.15）
-- optional な [`SchemaNode schema_v3`](../../src/core/ecs/componentinfo.hpp#L53)（再帰 schema を持つ外部 Component だけが埋める、後述）
+- optional な [`Schema::Node schema_v3`](../../src/core/ecs/componentinfo.hpp#L57)（再帰 schema を持つ外部 Component だけが埋める、後述）
 
 登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L185) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
 
