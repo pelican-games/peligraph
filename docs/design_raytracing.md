@@ -235,6 +235,13 @@ generator は object→world の回転部 `R` について **`|RᵀR − I|_∞ 
 - SPIR-V 検査: 縮約した SPIR-V(`-ffast-math` 相当で compile した fixture)が `procedural_oracle_sequence_mismatch@1` で golden 対象外に分類され、規範列は通る
 - generator: 逐次 / FMA 両 emulate の包含、γ 上限、`RᵀR`、object 空間 slab、A/B/C の predicate 後一意性。各拒否を 1 つずつ消すと落ちる
 - 数値契約の変更は本節の定数を上げてから。RT3-2 WP の仕様レビューは本節を前提として攻撃してよい(設計レビューは打ち切り)
+#### 4-P.8 RT3-2 の実装段(WP386 仕様レビュー第 1 巡の反映。規範は変えない)
+
+- 1 geometry 複数 AABB(修正 13)は規範のまま、実装は **RT3-2a(1 asset = 1 AABB。`gl_PrimitiveID` は常に 0)→ RT3-2b(`gl_PrimitiveID` で引く primitive table)** に分ける
+- golden の前提は「IEEE 逐次」ではなく **Vulkan の float controls(f32 の RTE、denorm、signed zero / inf / nan の preserve)+ 精度表(Precision and Operation of SPIR-V Instructions)**。満たさない device は `procedural_oracle_device_unsupported@1` で golden 前に分類する。`sqrt` / `div` の区間 padding は精度表の ULP 上限(γ_n は add / mul だけに使う)
+- hit attribute の照合対象は `HitAttributeKHR` 変数の存在と canonical type(`reportIntersectionEXT` の第 2 引数は hitKind)
+- geometry kind → group kind は layout レベルの契約(pipeline ごとの宣言ではない)。procedural row は material join を通らず、triangle / procedural は renderer の row resolve 前に 1 つの typed union snapshot に確定する
+
 ## 5. capability・構成(v2 §4 + 第 2 巡 #8)
 
 - 選択済み feature × 非対応 device = hard reject(property 名・要求値・実値・device 名)
