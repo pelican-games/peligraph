@@ -347,7 +347,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 `VK_EXT_descriptor_indexing`(Vulkan 1.2 でコア入り)は、descriptor 配列を「実行時に決まる添字で引く」ための機能群です。`VkDescriptorSetLayoutBindingFlagsCreateInfo` に立てる `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` は「配列の一部の要素が未書き込みでも、シェーダがその要素を読まない限り有効」という緩和で、テクスチャ枠を N 個ぶん確保しておいて実際には数個しか埋めない bindless 構成には必須です。関連する緩和に `VARIABLE_DESCRIPTOR_COUNT` と `UPDATE_AFTER_BIND` があり、シェーダ側で非一様な添字を使うには `nonuniformEXT()` が要ります。**外部で引くときの名前**は Vulkan 仕様の "Descriptor Set Layout" 節と拡張名 `VK_EXT_descriptor_indexing` です。
 
-**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L167)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::buildRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L963) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1017)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
+**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L167)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L443)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1017)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
 
 ### descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
 
@@ -385,7 +385,7 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L19)(全メンバに `alignas(16)`、直後に offset の `static_assert` 群) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L313) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L325)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L19)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L313) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L325)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -621,7 +621,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 ### compare_exchange による所有権の一度きりの確定
 
-「後始末をする権利は 1 回しか行使されてはならない」を、ロックを取らずに表す方法です。`std::atomic<T*>` に所有者を入れておき、`compare_exchange_strong(expected, nullptr)` が成功した側だけが後始末をします。CAS(compare-and-swap)は成功したスレッドが 1 つだけであることを保証するので、二重解放も取りこぼしも起きません。メモリ順序に `acq_rel` を使うのは、勝った側が相手の書き込みを見るためです(成功側は release + acquire、失敗側の順序は第 2 引数で別に指定します)。
+「後始末をする権利は 1 回しか行使されてはならない」を、ロックを取らずに表す方法です。`std::atomic<T*>` に所有者を入れておき、`compare_exchange_strong(expected, nullptr)` が成功した側だけが後始末をします。CAS(compare-and-swap)は成功したスレッドが 1 つだけであることを保証するので、二重解放も取りこぼしも起きません。メモリ順序に `acq_rel` を使うのは、勝った側が相手の書き込みを見るためです(成功側は release + acquire。失敗時の順序は**別の引数**で指定します — 4 引数版の第 4 引数、つまり 2 つ並ぶメモリ順序引数の後ろの方で、store を伴わないので `acquire` 以下しか渡せません)。
 
 **使用場所**: [FrameTargetFrameCleanup](../../src/core/vkcore/frametarget.hpp#L55)(`detach()` の `compare_exchange_strong(expected, nullptr, acq_rel, acquire)`)
 
@@ -639,7 +639,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 ### 参照カウンタ付きの遅延解放と、受付/排出を分ける状態機械
 
-GPU 資源のように「今すぐには壊せない」ものを溜める破棄キューでは、2 つの考え方が要ります。1 つは**参照カウンタ**で、資源ごとに仮想 `release()` を持たせる代わりに、各要素が共有のカウンタを +1 して生まれ、解放時に -1 する。カウンタが 0 になった瞬間が「この束は全部片付いた」です。もう 1 つは**受付と排出の分離**で、「新規の受付を止める(accepting = false)」と「溜まったものを流し切る(draining)」は別の遷移です。終了処理では必ず受付を止めてから流し切る順にしないと、排出中に積まれた要素が取り残されます。
+GPU 資源のように「今すぐには壊せない」ものを溜める破棄キューでは、2 つの考え方が要ります。1 つは**参照カウンタ**で、型消去した要素に仮想 `release()` を持たせたうえで、各要素が共有のカウンタを +1 して生まれ、解放時に -1 する。カウンタが 0 になった瞬間が「この束は全部片付いた」です(仮想関数だけだと「まだ何件残っているか」を数えるのに全要素を舐める必要があり、共有カウンタはそれを O(1) の整数読みにします)。もう 1 つは**受付と排出の分離**で、「新規の受付を止める(accepting = false)」と「溜まったものを流し切る(draining)」は別の遷移です。終了処理では必ず受付を止めてから流し切る順にしないと、排出中に積まれた要素が取り残されます。
 
 **使用場所**: [PendingCounter](../../src/core/vkcore/deletionqueue.hpp#L18) / [RetirementBatch](../../src/core/vkcore/deletionqueue.hpp#L50) / [accepting / draining のフラグ](../../src/core/vkcore/deletionqueue.hpp#L77) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L83)
 
@@ -677,7 +677,9 @@ C++17 の fold 式は、パラメータパックを 1 つの式に畳み込み�
 
 C++20 の `consteval` 関数は必ず定数評価されます。定数評価の文脈では `throw` に到達できない(到達すると定数式でなくなる)ため、`if (bad) throw "message";` と書いておくと、条件が成立するコードは**コンパイルエラー**になり、しかも文字列がエラーメッセージに現れます。`static_assert` では書きにくい「実行時の値のように見える引数に対する検査」を、静的検査として書くためのイディオムです。投げる型は何でもよく(文字列リテラルがよく使われます)、実行時には決して到達しません。
 
-**使用場所**: [validateFloatingRange()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L414)(範囲が非有限、または min > max なら文字列を throw) / [structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) / [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1209)
+**使用場所**: [validateFloatingRange()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L414)(範囲が非有限、または min > max なら文字列を throw) / [field()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L486)(フィールド名が空、または予約接頭辞 `$` で始まるなら throw)
+
+**このコードベースでの注意**: 同じ `consteval` でも、[structFieldType()](../../src/core/userpublic/details/schema/structfieldschema.hpp#L369) と [legacyBranchDescriptorsAreStrictlyOrdered()](../../src/core/loader/componentcodec.cpp#L1209) は `throw` ではなく `static_assert`(前者は `always_false_v` のフォールバック、後者は戻り値を呼び出し側の `static_assert` が見る形)で落とします。「引数の値に対する検査」は throw、「型やテーブル全体に対する検査」は `static_assert`、という使い分けです。
 
 ### __COUNTER__ と ADL タグディスパッチによる「登録済みの型の列挙」
 
@@ -971,7 +973,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 ### JSON Pointer(RFC 6901)
 
-`/a/b/0` の形でJSON 文書内の 1 か所を指す標準記法が **JSON Pointer(RFC 6901)** です。`/` 区切りの各トークンはオブジェクトのキーか配列の添字で、空文字列のポインタは文書全体を指します。キーに `/` や `~` が含まれる場合のエスケープがあり、**`~0` が `~`、`~1` が `/`** です(この順で復号しないと `~01` の解釈がずれます)。nlohmann::json では `json::json_pointer` 型で表現し、`at(pointer)` は不在で例外、`operator[]` は不在の位置を作ってしまう、という違いがあります。エラー報告の「どのフィールドが悪いか」を機械可読に返す用途で広く使われます。
+`/a/b/0` の形でJSON 文書内の 1 か所を指す標準記法が **JSON Pointer(RFC 6901)** です。`/` 区切りの各トークンはオブジェクトのキーか配列の添字で、空文字列のポインタは文書全体を指します。キーに `/` や `~` が含まれる場合のエスケープがあり、**`~0` が `~`、`~1` が `/`** です。復号は RFC 6901 が順序まで規定していて、**先に `~1` → `/`、後から `~0` → `~`** の順でなければなりません。逆順にすると `~01` が `~1`(正解)ではなく `/` になります。nlohmann::json では `json::json_pointer` 型で表現し、`at(pointer)` は不在で例外、`operator[]` は不在の位置を作ってしまう、という違いがあります。エラー報告の「どのフィールドが悪いか」を機械可読に返す用途で広く使われます。
 
 **使用場所**: [prepareSet()](../../src/core/communication/editorjournal.cpp#L1154)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L3071)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L116)(エラーに `/resolver_inputs/<field>` を載せる)
 
@@ -979,7 +981,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 nlohmann::json は数値を「符号なし整数 / 符号付き整数 / 浮動小数」の 3 つに区別して保持し、`is_number_unsigned()` / `is_number_integer()` / `is_number_float()` で見分けられます(`is_number_integer()` は符号なしにも true を返すので、負値を拒否したいときは順序に注意が要ります)。`nlohmann::ordered_json` は `std::map` ではなく挿入順を保つ連想コンテナを使う別名で、出力の安定性が要るとき(差分を取る、ダイジェストを取る)に選びます。もう 1 つの落とし穴が `std::optional` の出力で、**値が無いときにキーへ代入しないとキー自体が消えます**。「キーはあるが null」を出したいなら明示的に `nullptr` を代入する必要があり、この 2 つは受け手にとって別物です。
 
-**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L67)(3 つの述語で実型を見分ける) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L107) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1531)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
+**使用場所**: [exactUnsigned()](../../src/core/communication/editorjournal.cpp#L67)(`is_number_unsigned()` を先に見て、次に `is_number_integer()` — この順でないと符号なしが符号付き枝へ落ちる) / [validateStructSigned()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L107)(同じ 2 段の順序) / [editorComponentQueryJson()](../../src/core/communication/editorcommandservice.cpp#L1531)(値が無ければ `OrderedJson(nullptr)` を明示的に置く)
 
 ### IEEE 754 の倍精度と JSON の「安全な整数」2^53−1
 
@@ -1128,7 +1130,7 @@ mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シ�
 
 ### view 行列の逆行列とカメラの前方軸
 
-ビュー行列 V は world → view の変換なので、その逆 `world_from_view = inverse(V)` は view → world、つまり**カメラの姿勢そのもの**です。列優先の 4×4 では、第 0・1・2 列がカメラの右・上・前(+Z)軸を world 座標で表し、第 3 列がカメラ位置になります。右手座標系では視線方向は +Z ではなく **−Z** なので、視線ベクトルは `-world_from_view[2]` です(この符号の取り違えが、ソートや背面判定が丸ごと反転するよくある原因です)。ビュー行列が直交かつ一様スケールなら、逆行列は回転部の転置 + 平行移動の付け替えで安く求まりますが、素直に `inverse()` を呼んでも意味は同じです。
+ビュー行列 V は world → view の変換なので、その逆 `world_from_view = inverse(V)` は view → world、つまり**カメラの姿勢そのもの**です。列優先の 4×4 では、第 0・1・2 列が**ビュー空間の +X / +Y / +Z 軸**を world 座標で表し、第 3 列がカメラ位置になります。右手座標系のカメラは −Z を向くので、第 2 列は「前」ではなく**後ろ向き**であり、視線ベクトルは `-world_from_view[2]` です(この符号の取り違えが、ソートや背面判定が丸ごと反転するよくある原因です)。ビュー行列が直交かつ一様スケールなら、逆行列は回転部の転置 + 平行移動の付け替えで安く求まりますが、素直に `inverse()` を呼んでも意味は同じです。
 
 **使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L33)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
 
