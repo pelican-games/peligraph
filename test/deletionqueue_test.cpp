@@ -57,7 +57,7 @@ TEST_CASE("DeletionQueueCore releases resources only after the bound GPU submiss
     REQUIRE(wait_idle_count == 0);
 }
 
-TEST_CASE("DeletionQueueCore tracks retirement batches by actual submission lease",
+TEST_CASE("WP384 DeletionQueue keeps the old generation until its submission fence",
           "[deletionqueue][submission-lifetime]") {
     int destroyed_a = 0;
     int destroyed_b = 0;
@@ -83,6 +83,33 @@ TEST_CASE("DeletionQueueCore tracks retirement batches by actual submission leas
     submission_a.reset();
     REQUIRE(destroyed_a == 1);
     REQUIRE(queue.pendingCount() == 0);
+}
+
+TEST_CASE("WP384 DeletionQueue seals rejected candidates at the first successful submit",
+          "[deletionqueue][submission-lifetime][frame-transaction]") {
+    int destroyed_old = 0;
+    int destroyed_rejected = 0;
+    DeletionQueueCore queue{[]() {}};
+
+    queue.defer(CountingResource{destroyed_old});
+    auto first_view_submission = queue.leaseForNextSubmission({});
+    queue.confirmSubmission();
+
+    // This models a sequential XR frame whose view 0 submit succeeded before
+    // view 1 rejected the candidate publication.
+    queue.defer(CountingResource{destroyed_rejected});
+    REQUIRE(destroyed_old == 0);
+    REQUIRE(destroyed_rejected == 0);
+
+    first_view_submission.reset();
+    REQUIRE(destroyed_old == 1);
+    REQUIRE(destroyed_rejected == 0);
+
+    auto recovery_submission = queue.leaseForNextSubmission({});
+    queue.confirmSubmission();
+    REQUIRE(destroyed_rejected == 0);
+    recovery_submission.reset();
+    REQUIRE(destroyed_rejected == 1);
 }
 
 TEST_CASE("DeletionQueueCore flushAll releases all pending resources without waiting", "[deletionqueue]") {

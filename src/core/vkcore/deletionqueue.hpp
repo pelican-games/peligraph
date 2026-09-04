@@ -73,6 +73,7 @@ class DeletionQueueCore {
     std::function<void()> wait_idle_hook;
     std::shared_ptr<PendingCounter> pending_counter;
     std::shared_ptr<RetirementBatch> current_batch;
+    std::shared_ptr<RetirementBatch> prepared_next_batch;
     std::vector<std::weak_ptr<RetirementBatch>> batches;
     bool accepting = true;
     bool draining = false;
@@ -102,6 +103,12 @@ class DeletionQueueCore {
     void drainForTeardown();
     size_t pendingCount() const;
     uint64_t currentFrame() const { return completed_submissions; }
+    // Identity of the batch that `defer` is currently filling. Sealing the
+    // batch replaces it, so a weak reference taken before a frame tells a test
+    // whether that frame sealed and whether the sealed batch has since retired.
+    std::weak_ptr<const void> currentRetirementBatch() const noexcept {
+        return current_batch;
+    }
     bool acceptingResources() const noexcept { return accepting; }
 };
 
@@ -122,6 +129,10 @@ DECLARE_MODULE(DeletionQueue) {
     }
     size_t pendingCountForTesting() const { return core.pendingCount(); }
     uint64_t currentFrameForTesting() const { return core.currentFrame(); }
+    std::weak_ptr<const void>
+    currentRetirementBatchForTesting() const noexcept {
+        return core.currentRetirementBatch();
+    }
     bool acceptingResourcesForTesting() const {
         return acceptingResources();
     }

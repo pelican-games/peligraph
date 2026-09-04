@@ -63,6 +63,11 @@ void DeletionQueueCore::requireAccepting() const {
 GpuSubmissionLease DeletionQueueCore::leaseForNextSubmission(
     GpuSubmissionLease upstream) {
     requireAccepting();
+    if (!prepared_next_batch) {
+        prepared_next_batch =
+            std::make_shared<RetirementBatch>();
+        batches.push_back(prepared_next_batch);
+    }
     return std::make_shared<SubmissionLeaseBundle>(
         SubmissionLeaseBundle{
             std::move(upstream),
@@ -72,12 +77,12 @@ GpuSubmissionLease DeletionQueueCore::leaseForNextSubmission(
 
 void DeletionQueueCore::confirmSubmission() {
     requireAccepting();
+    if (!prepared_next_batch) {
+        throw std::logic_error(
+            "DeletionQueue submission was not leased before confirmation");
+    }
     ++completed_submissions;
-    if (current_batch->empty()) return;
-
-    auto next_batch = std::make_shared<RetirementBatch>();
-    batches.push_back(next_batch);
-    current_batch = std::move(next_batch);
+    current_batch = std::move(prepared_next_batch);
 }
 
 void DeletionQueueCore::flushAll() {

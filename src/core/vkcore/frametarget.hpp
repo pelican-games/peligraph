@@ -253,6 +253,7 @@ class GpuSubmissionLeaseSlots {
 
 class IFrameTarget {
   protected:
+    std::optional<FrameSubmitResult> legacy_submit_result;
     struct ConsumedFrame {
         FrameRenderContext context;
         std::shared_ptr<const RendererRuntimeGeneration>
@@ -296,6 +297,19 @@ class IFrameTarget {
                                            vk::Format source_format, vk::Extent2D source_extent) = 0;
     virtual FrameSubmitResult submit(
         FrameTargetFrame frame) = 0;
+    virtual void submitFrame(FrameTargetFrame frame) {
+        legacy_submit_result = submit(std::move(frame));
+    }
+    virtual FrameSubmitResult publishFrame() {
+        if (!legacy_submit_result) {
+            throw std::logic_error(
+                "frame target publish called before submit");
+        }
+        auto result = *legacy_submit_result;
+        legacy_submit_result.reset();
+        return result;
+    }
+    virtual void recoverSubmittedFrame() noexcept {}
     virtual void abandon(FrameTargetFrame frame) noexcept = 0;
     virtual FrameTargetCaps caps() const = 0;
     virtual FrameTargetStatus status() const;

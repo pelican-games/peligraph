@@ -16,6 +16,7 @@ void runGpuSegmentedOcclusionHotReload();
 void runGoldenImages();
 void runEditorRuntimeBinding();
 void runLogicalFrameStereo();
+void runLogicalFrameStereoSealedRetirement();
 void runOpenXrTaaTransition();
 void runVelocityFeature();
 void runSetTimeSkinnedVelocity();

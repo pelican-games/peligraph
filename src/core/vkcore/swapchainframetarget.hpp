@@ -30,6 +30,9 @@ class SwapchainFrameTarget final : public IFrameTarget {
         vk::Extent2D source_extent) override;
     FrameSubmitResult submit(
         FrameTargetFrame frame) override;
+    void submitFrame(FrameTargetFrame frame) override;
+    FrameSubmitResult publishFrame() override;
+    void recoverSubmittedFrame() noexcept override;
     void abandon(
         FrameTargetFrame frame) noexcept override;
     FrameTargetCaps caps() const override;

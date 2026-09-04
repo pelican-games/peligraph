@@ -45,6 +45,18 @@ FrameSubmitResult RenderTarget::submit(
     return impl->submit(std::move(frame));
 }
 
+void RenderTarget::submitFrame(FrameTargetFrame frame) {
+    impl->submitFrame(std::move(frame));
+}
+
+FrameSubmitResult RenderTarget::publishFrame() {
+    return impl->publishFrame();
+}
+
+void RenderTarget::recoverSubmittedFrame() noexcept {
+    impl->recoverSubmittedFrame();
+}
+
 void RenderTarget::abandon(
     FrameTargetFrame frame) noexcept {
     impl->abandon(std::move(frame));

@@ -102,15 +102,14 @@ std::vector<std::byte> packFrameResolutionViews(
 }
 
 FrameResources::FrameResources() : device{GET_MODULE(VulkanManageCore).getDevice()} {
-    configureViewCount(1, 1, false);
+    configureViewCount(1, 1);
 }
 
 FrameResources::~FrameResources() = default;
 
 void FrameResources::configureViewCount(
     std::uint32_t count,
-    std::uint32_t sequential_count,
-    bool ray_query) {
+    std::uint32_t sequential_count) {
     if (count == 0) {
         throw std::runtime_error("FrameResources requires at least one view");
     }
@@ -121,8 +120,7 @@ void FrameResources::configureViewCount(
     }
     if (view_count == count &&
         sequential_view_count ==
-            sequential_count &&
-        ray_query_enabled == ray_query) {
+            sequential_count) {
         return;
     }
 
@@ -130,6 +128,7 @@ void FrameResources::configureViewCount(
     frame_slots.clear();
     multiview_frame_slots.clear();
     descriptor_pool.reset();
+    recording_rt_bundle.reset();
 
     const auto sequential_slot_count =
         static_cast<std::uint32_t>(
@@ -147,19 +146,12 @@ void FrameResources::configureViewCount(
         createDescriptorPool(
             device,
             makeFrameDescriptorPoolPlan(
-                descriptor_count, ray_query));
+                descriptor_count, false));
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     const auto layout =
         pipeline_factory.frameDescriptorSetLayout(false);
     std::vector<vk::DescriptorSetLayout> layouts(
         descriptor_count, layout);
-    if (ray_query) {
-        const auto ray_query_layout =
-            pipeline_factory.frameDescriptorSetLayout(true);
-        layouts.insert(
-            layouts.end(), descriptor_count,
-            ray_query_layout);
-    }
     vk::DescriptorSetAllocateInfo allocate_info;
     allocate_info.descriptorPool = descriptor_pool.get();
     allocate_info.setSetLayouts(layouts);
@@ -181,11 +173,6 @@ void FrameResources::configureViewCount(
                 vma::AllocationCreateFlagBits::
                     eHostAccessSequentialWrite);
         frame_slot.descriptor_set = std::move(descriptor_sets[slot]);
-        if (ray_query) {
-            frame_slot.ray_query_descriptor_set =
-                std::move(descriptor_sets[
-                    descriptor_count + slot]);
-        }
 
         const auto frame_index =
             slot / sequential_count;
@@ -201,11 +188,6 @@ void FrameResources::configureViewCount(
             (base + "/resolution_ubo").c_str());
         debug_utils.nameDescriptorSet(frame_slot.descriptor_set.get(),
                                       (base + "/descriptor_set").c_str());
-        if (ray_query) {
-            debug_utils.nameDescriptorSet(
-                frame_slot.ray_query_descriptor_set.get(),
-                (base + "/ray_query_descriptor_set").c_str());
-        }
 
         const std::array buffer_infos{
             vk::DescriptorBufferInfo{
@@ -216,8 +198,7 @@ void FrameResources::configureViewCount(
                 sizeof(FrameResolutionUniformData)},
         };
         const std::array descriptor_sets_to_update{
-            frame_slot.descriptor_set.get(),
-            frame_slot.ray_query_descriptor_set.get()};
+            frame_slot.descriptor_set.get()};
         for (const auto descriptor_set :
              descriptor_sets_to_update) {
             if (!descriptor_set) continue;
@@ -268,12 +249,6 @@ void FrameResources::configureViewCount(
             std::move(
                 descriptor_sets
                     [sequential_slot_count + frame]);
-        if (ray_query) {
-            frame_slot.ray_query_descriptor_set =
-                std::move(descriptor_sets[
-                    descriptor_count +
-                    sequential_slot_count + frame]);
-        }
         frame_slot.last_data.resize(count);
         frame_slot.last_resolution.resize(count);
 
@@ -293,11 +268,6 @@ void FrameResources::configureViewCount(
         debug_utils.nameDescriptorSet(
             frame_slot.descriptor_set.get(),
             (base + "/descriptor_set").c_str());
-        if (ray_query) {
-            debug_utils.nameDescriptorSet(
-                frame_slot.ray_query_descriptor_set.get(),
-                (base + "/ray_query_descriptor_set").c_str());
-        }
 
         const std::array buffer_infos{
             vk::DescriptorBufferInfo{
@@ -308,8 +278,7 @@ void FrameResources::configureViewCount(
                 resolution_byte_size},
         };
         const std::array descriptor_sets_to_update{
-            frame_slot.descriptor_set.get(),
-            frame_slot.ray_query_descriptor_set.get()};
+            frame_slot.descriptor_set.get()};
         for (const auto descriptor_set :
              descriptor_sets_to_update) {
             if (!descriptor_set) continue;
@@ -334,7 +303,7 @@ void FrameResources::configureViewCount(
     view_count = count;
     sequential_view_count =
         sequential_count;
-    ray_query_enabled = ray_query;
+    ++frame_topology_generation;
     active_slot = 0;
     active_multiview_slot = false;
     updateSceneDescriptors();
@@ -374,14 +343,17 @@ void FrameResources::updateSceneDescriptors() {
     };
     for (const auto &slot : frame_slots) {
         update(slot.descriptor_set.get());
-        if (slot.ray_query_descriptor_set) {
-            update(slot.ray_query_descriptor_set.get());
-        }
     }
     for (const auto &slot : multiview_frame_slots) {
         update(slot.descriptor_set.get());
-        if (slot.ray_query_descriptor_set) {
-            update(slot.ray_query_descriptor_set.get());
+    }
+    if (recording_rt_bundle &&
+        recording_rt_bundle != active_rt_bundle) {
+        for (const auto &set : recording_rt_bundle->sequential_sets) {
+            update(set.get());
+        }
+        for (const auto &set : recording_rt_bundle->multiview_sets) {
+            update(set.get());
         }
     }
 }
@@ -420,60 +392,207 @@ void FrameResources::beginLogicalFrame(
     bool ray_query) {
     configureViewCount(
         main_view_count,
-        sequential_count,
-        ray_query);
-    // This lease names the last successfully recorded RT generation. The
-    // renderer replaces it after AS recording succeeds, or explicitly clears
-    // it when the selected generation has no RT layout.
+        sequential_count);
+    (void)ray_query;
 }
 
-void FrameResources::setRayTracingSceneShaderBindingTables(
-    std::shared_ptr<const RayTracingSceneShaderBindingTables> tables) {
-    active_ray_tracing_scene_tables = std::move(tables);
-}
+FrameResources::FramePublication::FramePublication(
+    FrameResources *owner,
+    std::shared_ptr<const RtDescriptorBundle> candidate) noexcept
+    : owner_{owner}, candidate_{std::move(candidate)} {}
 
-void FrameResources::setRayQueryAccelerationStructure(
-    std::uint32_t in_flight_frame_index,
-    vk::AccelerationStructureKHR top_level) {
-    if (!ray_query_enabled) {
-        throw std::logic_error(
-            "ray-query frame descriptor set is not enabled");
+FrameResources::FramePublication::~FramePublication() {
+    if (owner_ != nullptr &&
+        owner_->recording_rt_bundle == candidate_) {
+        owner_->recording_rt_bundle.reset();
     }
+}
+
+FrameResources::FramePublication::FramePublication(
+    FramePublication &&other) noexcept
+    : owner_{std::exchange(other.owner_, nullptr)},
+      candidate_{std::move(other.candidate_)} {}
+
+FrameResources::FramePublication &
+FrameResources::FramePublication::operator=(
+    FramePublication &&other) noexcept {
+    if (this == &other) return *this;
+    if (owner_ != nullptr &&
+        owner_->recording_rt_bundle == candidate_) {
+        owner_->recording_rt_bundle.reset();
+    }
+    owner_ = std::exchange(other.owner_, nullptr);
+    candidate_ = std::move(other.candidate_);
+    return *this;
+}
+
+void FrameResources::FramePublication::commit() noexcept {
+    if (owner_ == nullptr) return;
+    owner_->active_rt_bundle = candidate_;
+    if (owner_->recording_rt_bundle == candidate_) {
+        owner_->recording_rt_bundle.reset();
+    }
+    owner_ = nullptr;
+    candidate_.reset();
+}
+
+static_assert(noexcept(
+    std::declval<FrameResources::FramePublication &>().commit()));
+
+FrameResources::FramePublication
+FrameResources::prepareNonRayTracingPublication() noexcept {
+    recording_rt_bundle.reset();
+    return FramePublication{this, {}};
+}
+
+FrameResources::FramePublication
+FrameResources::prepareRayTracingPublication(
+    std::uint32_t in_flight_frame_index,
+    vk::AccelerationStructureKHR top_level,
+    std::shared_ptr<const RayTracingSceneShaderBindingTables> tables,
+    std::string row_digest) {
     if (!top_level) {
         throw std::runtime_error(
-            "ray-query frame descriptor requires a TLAS");
+            "ray-tracing frame publication requires a TLAS");
     }
     if (in_flight_frame_index >= in_flight_frames_num) {
         throw std::out_of_range(
             "ray-query in-flight frame index is out of range");
     }
+    if (active_rt_bundle &&
+        active_rt_bundle->top_level == top_level &&
+        active_rt_bundle->scene_tables == tables &&
+        active_rt_bundle->row_digest == row_digest &&
+        active_rt_bundle->object_buffer == object_buffer &&
+        active_rt_bundle->previous_object_buffer == previous_object_buffer &&
+        active_rt_bundle->light_buffer == light_buffer &&
+        active_rt_bundle->directional_shadow_buffer ==
+            directional_shadow_buffer &&
+        active_rt_bundle->frame_topology_generation ==
+            frame_topology_generation &&
+        active_rt_bundle->sequential_sets.size() == frame_slots.size() &&
+        active_rt_bundle->multiview_sets.size() ==
+            multiview_frame_slots.size()) {
+        recording_rt_bundle = active_rt_bundle;
+        return FramePublication{this, active_rt_bundle};
+    }
+
+    const auto descriptor_count = static_cast<std::uint32_t>(
+        frame_slots.size() + multiview_frame_slots.size());
+    auto candidate = std::make_shared<RtDescriptorBundle>();
+    candidate->descriptor_pool = createDescriptorPool(
+        device, makeFrameDescriptorPoolPlan(descriptor_count, true));
+    const auto layout = GET_MODULE(PipelineFactory)
+                            .frameDescriptorSetLayout(true);
+    std::vector<vk::DescriptorSetLayout> layouts(
+        descriptor_count, layout);
+    vk::DescriptorSetAllocateInfo allocate_info;
+    allocate_info.descriptorPool = candidate->descriptor_pool.get();
+    allocate_info.setSetLayouts(layouts);
+    auto sets = device.allocateDescriptorSetsUnique(allocate_info);
+    candidate->sequential_sets.reserve(frame_slots.size());
+    candidate->multiview_sets.reserve(multiview_frame_slots.size());
+    for (std::size_t index = 0; index < frame_slots.size(); ++index) {
+        candidate->sequential_sets.push_back(std::move(sets[index]));
+    }
+    for (std::size_t index = 0;
+         index < multiview_frame_slots.size(); ++index) {
+        candidate->multiview_sets.push_back(
+            std::move(sets[frame_slots.size() + index]));
+    }
+    candidate->scene_tables = std::move(tables);
+    candidate->top_level = top_level;
+    candidate->object_buffer = object_buffer;
+    candidate->previous_object_buffer = previous_object_buffer;
+    candidate->light_buffer = light_buffer;
+    candidate->directional_shadow_buffer = directional_shadow_buffer;
+    candidate->generation_id = next_rt_bundle_generation++;
+    candidate->frame_topology_generation = frame_topology_generation;
+    candidate->row_digest = std::move(row_digest);
+
     const std::array acceleration_structures{top_level};
     vk::WriteDescriptorSetAccelerationStructureKHR acceleration_info;
-    acceleration_info.setAccelerationStructures(
-        acceleration_structures);
-    const auto update = [&](vk::DescriptorSet descriptor_set) {
-        vk::WriteDescriptorSet write;
-        write.pNext = &acceleration_info;
-        write.dstSet = descriptor_set;
-        write.dstBinding = PELICAN_RAY_QUERY_TLAS_BINDING;
-        write.descriptorCount = 1;
-        write.descriptorType =
+    acceleration_info.setAccelerationStructures(acceleration_structures);
+    const auto update = [&](vk::DescriptorSet descriptor_set,
+                            vk::Buffer frame_buffer,
+                            vk::DeviceSize frame_size,
+                            vk::Buffer resolution_buffer,
+                            vk::DeviceSize resolution_size) {
+        const std::array frame_buffer_infos{
+            vk::DescriptorBufferInfo{frame_buffer, 0, frame_size},
+            vk::DescriptorBufferInfo{resolution_buffer, 0, resolution_size},
+        };
+        std::array<vk::WriteDescriptorSet, 3> frame_writes{};
+        frame_writes[0].dstSet = descriptor_set;
+        frame_writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING;
+        frame_writes[0].descriptorType =
+            vk::DescriptorType::eUniformBuffer;
+        frame_writes[0].setBufferInfo(frame_buffer_infos[0]);
+        frame_writes[1].dstSet = descriptor_set;
+        frame_writes[1].dstBinding =
+            PELICAN_FRAME_RESOLUTION_UBO_BINDING;
+        frame_writes[1].descriptorType =
+            vk::DescriptorType::eUniformBuffer;
+        frame_writes[1].setBufferInfo(frame_buffer_infos[1]);
+        frame_writes[2].pNext = &acceleration_info;
+        frame_writes[2].dstSet = descriptor_set;
+        frame_writes[2].dstBinding = PELICAN_RAY_QUERY_TLAS_BINDING;
+        frame_writes[2].descriptorCount = 1;
+        frame_writes[2].descriptorType =
             vk::DescriptorType::eAccelerationStructureKHR;
-        device.updateDescriptorSets(write, {});
+        device.updateDescriptorSets(frame_writes, {});
+
+        if (!object_buffer || !previous_object_buffer || !light_buffer ||
+            !directional_shadow_buffer) {
+            return;
+        }
+        const std::array scene_buffer_infos{
+            vk::DescriptorBufferInfo{object_buffer, 0, vk::WholeSize},
+            vk::DescriptorBufferInfo{light_buffer, 0, vk::WholeSize},
+            vk::DescriptorBufferInfo{previous_object_buffer, 0, vk::WholeSize},
+            vk::DescriptorBufferInfo{directional_shadow_buffer, 0, vk::WholeSize},
+        };
+        std::array<vk::WriteDescriptorSet, 4> scene_writes{};
+        const std::array scene_bindings{
+            PELICAN_OBJECT_BUFFER_BINDING,
+            PELICAN_LIGHT_UBO_BINDING,
+            PELICAN_PREVIOUS_OBJECT_BUFFER_BINDING,
+            PELICAN_DIRECTIONAL_SHADOW_DATA_BINDING,
+        };
+        const std::array scene_types{
+            vk::DescriptorType::eStorageBuffer,
+            vk::DescriptorType::eUniformBuffer,
+            vk::DescriptorType::eStorageBuffer,
+            vk::DescriptorType::eStorageBuffer,
+        };
+        for (std::size_t index = 0; index < scene_writes.size(); ++index) {
+            scene_writes[index].dstSet = descriptor_set;
+            scene_writes[index].dstBinding = scene_bindings[index];
+            scene_writes[index].descriptorType = scene_types[index];
+            scene_writes[index].setBufferInfo(scene_buffer_infos[index]);
+        }
+        device.updateDescriptorSets(scene_writes, {});
     };
-    const auto first =
-        static_cast<std::size_t>(in_flight_frame_index) *
-        sequential_view_count;
-    for (std::uint32_t view = 0;
-         view < sequential_view_count; ++view) {
-        update(frame_slots.at(first + view)
-                   .ray_query_descriptor_set.get());
+    for (std::size_t index = 0; index < frame_slots.size(); ++index) {
+        const auto &slot = frame_slots[index];
+        update(candidate->sequential_sets[index].get(),
+               slot.frame_buffer.buffer.get(), sizeof(FrameUniformData),
+               slot.resolution_buffer.buffer.get(),
+               sizeof(FrameResolutionUniformData));
     }
-    if (!multiview_frame_slots.empty()) {
-        update(multiview_frame_slots
-                   .at(in_flight_frame_index)
-                   .ray_query_descriptor_set.get());
+    for (std::size_t index = 0;
+         index < multiview_frame_slots.size(); ++index) {
+        const auto &slot = multiview_frame_slots[index];
+        update(candidate->multiview_sets[index].get(),
+               slot.frame_buffer.buffer.get(),
+               static_cast<vk::DeviceSize>(view_count) *
+                   sizeof(FrameUniformData),
+               slot.resolution_buffer.buffer.get(),
+               static_cast<vk::DeviceSize>(view_count) *
+                   sizeof(FrameResolutionUniformData));
     }
+    recording_rt_bundle = candidate;
+    return FramePublication{this, std::move(candidate)};
 }
 
 void FrameResources::selectView(std::uint32_t in_flight_frame_index,
@@ -599,16 +718,23 @@ void FrameResources::bindFrameDescriptorSet(
             .pipelineLayoutUsesRayQueryFrameSet(
                 pipeline_layout);
     vk::DescriptorSet descriptor_set;
+    const auto &rt_bundle = recording_rt_bundle
+                                ? recording_rt_bundle
+                                : active_rt_bundle;
+    if (ray_query && !rt_bundle) {
+        throw std::runtime_error(
+            "pipeline requires a published ray-query descriptor bundle");
+    }
     if (active_multiview_slot) {
         const auto &slot =
             multiview_frame_slots.at(active_slot);
         descriptor_set =
-            ray_query ? slot.ray_query_descriptor_set.get()
+            ray_query ? rt_bundle->multiview_sets.at(active_slot).get()
                       : slot.descriptor_set.get();
     } else {
         const auto &slot = frame_slots.at(active_slot);
         descriptor_set =
-            ray_query ? slot.ray_query_descriptor_set.get()
+            ray_query ? rt_bundle->sequential_sets.at(active_slot).get()
                       : slot.descriptor_set.get();
     }
     if (!descriptor_set) {
@@ -642,11 +768,14 @@ void FrameResources::bindRayTracing(
     bindFrameDescriptorSet(
         cmd_buf, pipeline_layout,
         vk::PipelineBindPoint::eRayTracingKHR);
-    if (active_ray_tracing_scene_tables &&
-        active_ray_tracing_scene_tables
+    const auto &rt_bundle = recording_rt_bundle
+                                ? recording_rt_bundle
+                                : active_rt_bundle;
+    if (rt_bundle && rt_bundle->scene_tables &&
+        rt_bundle->scene_tables
             ->ray_table_descriptor_set) {
         const auto descriptor_set =
-            active_ray_tracing_scene_tables
+            rt_bundle->scene_tables
                 ->ray_table_descriptor_set.get();
         cmd_buf.bindDescriptorSets(
             vk::PipelineBindPoint::eRayTracingKHR,

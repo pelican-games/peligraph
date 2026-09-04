@@ -974,10 +974,16 @@ registerRenderingPassConfigVariantsData(
                 ? replaced_scope->acceleration_structures
                 : nullptr);
     }
-    const bool joint_ray_transaction =
+    const bool candidate_ray_transaction =
         ray_tracing_project != nullptr &&
         prepared_gpu_scope.acceleration_structures != nullptr;
-    if (joint_ray_transaction) {
+    const bool retires_ray_transaction =
+        replaced_scope != nullptr &&
+        replaced_scope->ray_tracing_project != nullptr &&
+        replaced_scope->acceleration_structures != nullptr;
+    const bool joint_ray_transaction =
+        candidate_ray_transaction || retires_ray_transaction;
+    if (candidate_ray_transaction) {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_pipeline);
     }

@@ -24,6 +24,11 @@ TEST_CASE("logical frame renders Vulkan-backed stereo views without advancing sh
     GoldenHarness::runLogicalFrameStereo();
 }
 
+TEST_CASE("WP384 sequential XR seals the retirement batch at the first successful view submit",
+          "[wp384][headless][stereo][vulkan][frame-transaction]") {
+    GoldenHarness::runLogicalFrameStereoSealedRetirement();
+}
+
 TEST_CASE("OpenXR graph transition excludes TAA and restores flat temporal rendering once",
           "[wp133][openxr][taa][headless][vulkan]") {
     GoldenHarness::runOpenXrTaaTransition();

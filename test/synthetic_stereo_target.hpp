@@ -6,6 +6,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -25,6 +26,10 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         vk::ImageLayout::eUndefined,
         vk::ImageLayout::eUndefined,
     };
+    std::array<vk::ImageLayout, stereo_view_count> view_begin_layouts{
+        vk::ImageLayout::eUndefined,
+        vk::ImageLayout::eUndefined,
+    };
     std::array<bool, stereo_view_count> view_begun{};
     std::array<bool, stereo_view_count> view_ended{};
     std::uint32_t in_flight_frame_index = 0;
@@ -34,6 +39,12 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
     std::uint64_t view_begin_count = 0;
     std::uint64_t view_end_count = 0;
     std::uint64_t submission_count = 0;
+    // Opt-in sequential-XR shape: the target submits inside endView instead of
+    // once per logical frame, so the renderer can seal its retirement batch at
+    // the first successful real submit.
+    bool submit_on_view_end = false;
+    std::optional<std::uint32_t> failing_view_end;
+    std::uint64_t view_submission_count = 0;
 
     static vk::UniqueImageView createColorView(vk::Device device,
                                                 const ImageWrapper &image) {
@@ -138,6 +149,7 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         }
         auto &cmd = command(view_index);
         cmd.recordBegin();
+        view_begin_layouts[view_index] = color_layouts[view_index];
         GET_MODULE(VulkanUtils).changeImageLayoutCmd(
             *cmd, color_images[view_index], color_layouts[view_index],
             vk::ImageLayout::eColorAttachmentOptimal,
@@ -160,10 +172,17 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
 
     void endView(
         std::uint32_t view_index,
-        GpuSubmissionLease) override {
+        GpuSubmissionLease lease) override {
         if (!logical_frame_begun || view_index >= stereo_view_count ||
             !view_begun[view_index] || view_ended[view_index]) {
             throw std::runtime_error("synthetic stereo target view end is out of order");
+        }
+        if (submit_on_view_end && failing_view_end &&
+            *failing_view_end == view_index) {
+            // A later view's submit fails after earlier views already reached
+            // the GPU. Nothing of this view is submitted.
+            throw std::runtime_error(
+                "synthetic stereo target view submit failure");
         }
         auto &cmd = command(view_index);
         GET_MODULE(VulkanUtils).changeImageLayoutCmd(
@@ -172,9 +191,27 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
             transitionInfo(color_layouts[view_index],
                            vk::ImageLayout::eTransferSrcOptimal));
         color_layouts[view_index] = vk::ImageLayout::eTransferSrcOptimal;
-        cmd.recordEnd();
+        if (submit_on_view_end) {
+            // The lease parameter keeps this submission's generation alive
+            // across the synchronous completion wait below, exactly as a real
+            // per-view target must.
+            cmd.recordEndSubmit();
+            ++view_submission_count;
+            if (device.waitForFences({cmd.getFence()}, VK_TRUE, UINT64_MAX) !=
+                vk::Result::eSuccess) {
+                throw std::runtime_error(
+                    "synthetic stereo target view submit wait failed");
+            }
+        } else {
+            cmd.recordEnd();
+        }
+        (void)lease;
         view_ended[view_index] = true;
         ++view_end_count;
+    }
+
+    bool submitsOnViewEnd() const noexcept override {
+        return submit_on_view_end;
     }
 
     void endLogicalFrame(GpuSubmissionLease lease) override {
@@ -185,16 +222,18 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
             throw std::runtime_error(
                 "synthetic stereo target logical frame ended before both views");
         }
-        const std::array command_handles{*command(0), *command(1)};
-        vk::SubmitInfo submit;
-        submit.setCommandBuffers(command_handles);
-        const auto &logical_fence = command(0).getFence();
-        device.resetFences({logical_fence});
-        queue.submit({submit}, logical_fence);
-        ++submission_count;
-        if (device.waitForFences({logical_fence}, VK_TRUE, UINT64_MAX) !=
-            vk::Result::eSuccess) {
-            throw std::runtime_error("synthetic stereo target submit wait failed");
+        if (!submit_on_view_end) {
+            const std::array command_handles{*command(0), *command(1)};
+            vk::SubmitInfo submit;
+            submit.setCommandBuffers(command_handles);
+            const auto &logical_fence = command(0).getFence();
+            device.resetFences({logical_fence});
+            queue.submit({submit}, logical_fence);
+            ++submission_count;
+            if (device.waitForFences({logical_fence}, VK_TRUE, UINT64_MAX) !=
+                vk::Result::eSuccess) {
+                throw std::runtime_error("synthetic stereo target submit wait failed");
+            }
         }
         logical_frame_begun = false;
         ++logical_end_count;
@@ -207,6 +246,9 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
         for (std::uint32_t view = 0; view < stereo_view_count; ++view) {
             if (view_begun[view] && !view_ended[view]) {
                 command(view).abortRecording();
+                // The discarded commands never ran, so the image still holds
+                // the layout it had when this view began.
+                color_layouts[view] = view_begin_layouts[view];
             }
         }
         logical_frame_begun = false;
@@ -251,6 +293,19 @@ class VulkanSyntheticStereoTarget final : public ILogicalFrameTarget {
     std::uint64_t viewBeginCount() const { return view_begin_count; }
     std::uint64_t viewEndCount() const { return view_end_count; }
     std::uint64_t submissionCount() const { return submission_count; }
+
+    // Sequential OpenXR shape. `failing_view` (when set) rejects that view's
+    // submit, so earlier views have already reached the GPU when the logical
+    // frame aborts.
+    void setSequentialViewSubmissionForTesting(
+        bool enabled,
+        std::optional<std::uint32_t> failing_view = std::nullopt) {
+        submit_on_view_end = enabled;
+        failing_view_end = failing_view;
+    }
+    std::uint64_t viewSubmissionCountForTesting() const {
+        return view_submission_count;
+    }
 };
 
 class VulkanSyntheticViewFamilyTarget final

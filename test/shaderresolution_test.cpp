@@ -750,7 +750,10 @@ TEST_CASE("renderer-owned WP354 append covers every family and stripWp354 change
             "engine://shaders/compute/clustered_light_select");
 
     std::vector<std::string> permitted_projection_pointers{
-        "/profile"};
+        "/profile",
+        "/ray_query_acceleration_structures/descriptor_bundle_generation",
+        "/ray_query_acceleration_structures/descriptor_top_level_handle",
+        "/ray_query_acceleration_structures/descriptor_row_digest"};
     for (std::size_t index = 0;
          index < current.at("nodes").size(); ++index) {
         permitted_projection_pointers.push_back(

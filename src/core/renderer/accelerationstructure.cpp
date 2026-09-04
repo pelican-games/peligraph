@@ -558,6 +558,12 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
          diagnostics.geometry_pool_generation},
         {"model_rebuild_generation",
          diagnostics.model_rebuild_generation},
+        {"descriptor_bundle_generation",
+         diagnostics.descriptor_bundle_generation},
+        {"descriptor_top_level_handle",
+         diagnostics.descriptor_top_level_handle},
+        {"descriptor_row_digest",
+         diagnostics.descriptor_row_digest},
         {"geometry_pool_invalidation_count",
          diagnostics.geometry_pool_invalidation_count},
         {"model_rebuild_invalidation_count",
@@ -603,6 +609,8 @@ struct RayQueryAccelerationStructureScope::State {
     std::shared_ptr<const RayTracingGeometrySnapshot>
         geometry_snapshot;
     std::uint32_t ray_type_count = 0;
+    std::uint64_t runtime_generation = 0;
+    bool reusable = true;
     // The dynamic hit records contain device addresses consumed by the same
     // submission as this TLAS.  Retaining them in the unpublished candidate
     // makes the FrameBuild commit the row map, SBT, and TLAS as one unit and
@@ -635,6 +643,26 @@ RayQueryAccelerationStructureScope::FrameBuild::topLevel() const noexcept {
     return candidate_ != nullptr && candidate_->tlas != nullptr
                ? candidate_->tlas->handle.get()
                : vk::AccelerationStructureKHR{};
+}
+
+std::shared_ptr<const RayTracingSceneShaderBindingTables>
+RayQueryAccelerationStructureScope::FrameBuild::sceneTables() const noexcept {
+    return candidate_ != nullptr
+               ? candidate_->ray_tracing_scene_tables
+               : nullptr;
+}
+
+std::shared_ptr<const void>
+RayQueryAccelerationStructureScope::FrameBuild::stateLease() const noexcept {
+    return candidate_;
+}
+
+std::string_view
+RayQueryAccelerationStructureScope::FrameBuild::rowDigest() const noexcept {
+    return candidate_ != nullptr && candidate_->ray_scene_rows != nullptr
+               ? std::string_view{
+                     candidate_->ray_scene_rows->identity_digest_sha256}
+               : std::string_view{};
 }
 
 void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
@@ -678,6 +706,36 @@ void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
 RayQueryAccelerationStructureScope::~RayQueryAccelerationStructureScope() =
     default;
 
+std::optional<RayQueryAccelerationStructureScope::FrameBuild>
+RayQueryAccelerationStructureScope::tryReuseFrame(
+    std::uint64_t geometry_pool_generation,
+    std::uint64_t model_rebuild_generation,
+    const RayTracingGeometrySnapshot &geometry_snapshot,
+    const RaySceneRowSnapshot &ray_scene_rows,
+    std::uint32_t ray_type_count,
+    std::uint64_t runtime_generation) {
+    if (active_state_ == nullptr || !active_state_->reusable ||
+        active_state_->tlas == nullptr ||
+        active_state_->ray_scene_rows == nullptr ||
+        active_state_->geometry_snapshot == nullptr ||
+        active_state_->ray_tracing_scene_tables == nullptr ||
+        diagnostics_.geometry_pool_generation != geometry_pool_generation ||
+        diagnostics_.model_rebuild_generation != model_rebuild_generation ||
+        active_state_->runtime_generation != runtime_generation ||
+        active_state_->ray_type_count != ray_type_count ||
+        active_state_->geometry_snapshot->digest_sha256 !=
+            geometry_snapshot.digest_sha256 ||
+        active_state_->ray_scene_rows->identity_digest_sha256 !=
+            ray_scene_rows.identity_digest_sha256 ||
+        active_state_->ray_scene_rows->material_table_digest_sha256 !=
+            ray_scene_rows.material_table_digest_sha256 ||
+        active_state_->ray_scene_rows->geometry_table_digest_sha256 !=
+            ray_scene_rows.geometry_table_digest_sha256) {
+        return std::nullopt;
+    }
+    return FrameBuild{this, active_state_};
+}
+
 RayQueryAccelerationStructureScope::FrameBuild
 RayQueryAccelerationStructureScope::recordFrame(
     vk::CommandBuffer command_buffer,
@@ -694,7 +752,8 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::uint32_t ray_type_count,
     std::shared_ptr<const RayTracingSceneShaderBindingTables>
         ray_tracing_scene_tables,
-    bool material_alpha_profile_active) {
+    bool material_alpha_profile_active,
+    std::uint64_t runtime_generation) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (!capabilities.ray_query ||
         !capabilities.acceleration_structure ||
@@ -721,6 +780,9 @@ RayQueryAccelerationStructureScope::recordFrame(
     candidate->geometry_snapshot = std::move(geometry_snapshot);
     candidate->ray_scene_rows = std::move(ray_scene_rows);
     candidate->ray_type_count = ray_type_count;
+    candidate->runtime_generation = runtime_generation;
+    candidate->reusable =
+        !rayTracingTlasRecordOffsetOverrideActiveForTesting();
     candidate->ray_tracing_scene_tables =
         std::move(ray_tracing_scene_tables);
     if (candidate->ray_scene_rows && candidate->ray_type_count == 0) {

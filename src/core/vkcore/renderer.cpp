@@ -2760,6 +2760,7 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
     RenderTarget &target;
     std::optional<FrameTargetFrame> frame;
     bool view_begun = false;
+    bool submitted = false;
 
   public:
     explicit FlatLogicalFrameTarget(RenderTarget &target) : target{target} {}
@@ -2808,18 +2809,37 @@ class FlatLogicalFrameTarget final : public ILogicalFrameTarget {
         }
     }
 
-    void endLogicalFrame(GpuSubmissionLease lease) override {
+    void submitLogicalFrame(GpuSubmissionLease lease) override {
         if (!view_begun) {
             throw std::runtime_error("flat IFrameTarget logical frame ended without a view");
         }
         auto token = std::move(*frame);
         frame.reset();
         (void)lease;
-        target.submit(std::move(token));
+        target.submitFrame(std::move(token));
         view_begun = false;
+        submitted = true;
+    }
+
+    void publishLogicalFrame() override {
+        if (!submitted) {
+            throw std::logic_error(
+                "flat IFrameTarget publish called before submit");
+        }
+        (void)target.publishFrame();
+        submitted = false;
+    }
+
+    void endLogicalFrame(GpuSubmissionLease lease) override {
+        submitLogicalFrame(std::move(lease));
+        publishLogicalFrame();
     }
 
     void abortLogicalFrame() noexcept override {
+        if (submitted) {
+            target.recoverSubmittedFrame();
+            submitted = false;
+        }
         if (!frame) return;
         auto token = std::move(*frame);
         frame.reset();
@@ -2876,6 +2896,14 @@ class StagedRuntimeRollbackGuard {
         }
     }
     void complete() noexcept { runtime_ = nullptr; }
+};
+
+struct LogicalFrameSubmissionResources {
+    std::shared_ptr<const RendererRuntimeGeneration> runtime_generation;
+    // The descriptor bundle contains the raw TLAS handle. Keep the immutable
+    // AS State that owns that handle in the exact same fence-backed lease.
+    std::shared_ptr<const void> rt_state;
+    std::shared_ptr<const RtDescriptorBundle> rt_bundle;
 };
 
 } // namespace
@@ -4555,8 +4583,24 @@ Renderer::rayQueryAccelerationStructureDiagnosticsForTesting() const {
     }
     const auto scope = rayQueryAccelerationStructureScope(
         *generation, *program);
-    return scope != nullptr ? scope->diagnostics()
-                            : RayQueryAccelerationStructureDiagnostics{};
+    auto diagnostics =
+        scope != nullptr ? scope->diagnostics()
+                         : RayQueryAccelerationStructureDiagnostics{};
+    if (const auto *frame_resources =
+            FastModuleContainer::tryGet<FrameResources>()) {
+        if (const auto bundle =
+                frame_resources->activeRtDescriptorBundleForTesting()) {
+            diagnostics.descriptor_bundle_generation =
+                bundle->generation_id;
+            diagnostics.descriptor_top_level_handle =
+                reinterpret_cast<std::uint64_t>(
+                    static_cast<VkAccelerationStructureKHR>(
+                        bundle->top_level));
+            diagnostics.descriptor_row_digest =
+                bundle->row_digest;
+        }
+    }
+    return diagnostics;
 }
 
 void Renderer::recreateRenderTargetsAndRebindForTesting(vk::Extent2D extent) {
@@ -4672,15 +4716,22 @@ void Renderer::renderLogicalFrame(
     std::optional<
         RayQueryAccelerationStructureScope::FrameBuild>
         acceleration_structure_build;
+    std::optional<FrameResources::FramePublication>
+        frame_publication;
+    auto submission_resources =
+        std::make_shared<LogicalFrameSubmissionResources>();
+    submission_resources->runtime_generation = runtime_generation;
     const auto record_acceleration_structures =
         [&](vk::CommandBuffer command_buffer,
             std::uint32_t in_flight_frame_index) {
+            // Sequential XR records this hook once per view. The first view
+            // records the AS build and freezes one candidate bundle for the
+            // entire logical frame; later views bind that same candidate.
+            if (frame_publication) return;
             if (acceleration_structures == nullptr) {
-                // A generation without an RT layout must not retain the
-                // previous generation's table buffers, pool, or set through
-                // FrameResources.
-                modules.frame_resources
-                    .setRayTracingSceneShaderBindingTables({});
+                frame_publication.emplace(
+                    modules.frame_resources
+                        .prepareNonRayTracingPublication());
                 return;
             }
             const auto geometry_instances =
@@ -4738,18 +4789,39 @@ void Renderer::renderLogicalFrame(
                     owner_pipelines.push_back(PipelineHandle{
                         static_cast<int>(resource.handle)});
                 }
-                ray_tracing_scene_tables =
-                    GET_MODULE(PipelineFactory)
-                        .createRayTracingSceneShaderBindingTables(
-                            owner_pipelines, ray_scene_rows,
-                            ray_project, geometry_snapshot);
-                ray_scene_rows =
-                    ray_tracing_scene_tables->row_snapshot;
-                injectRayTracingJointTransactionPoint(
-                    RayTracingJointTransactionPoint::after_sbt);
+                auto reused =
+                    rayTracingTlasRecordOffsetOverrideActiveForTesting()
+                        ? std::optional<RayQueryAccelerationStructureScope::FrameBuild>{}
+                        : acceleration_structures->tryReuseFrame(
+                        modules.vert_buf_container
+                            .geometryAddressGeneration(),
+                        modules.instance_container
+                            .rayQueryGeometryGeneration(),
+                        *geometry_snapshot, *ray_scene_rows,
+                        ray_type_count,
+                        runtime_generation->generation);
+                if (reused) {
+                    acceleration_structure_build.emplace(
+                        std::move(*reused));
+                    ray_tracing_scene_tables =
+                        acceleration_structure_build->sceneTables();
+                    ray_scene_rows =
+                        ray_tracing_scene_tables->row_snapshot;
+                } else {
+                    ray_tracing_scene_tables =
+                        GET_MODULE(PipelineFactory)
+                            .createRayTracingSceneShaderBindingTables(
+                                owner_pipelines, ray_scene_rows,
+                                ray_project, geometry_snapshot);
+                    ray_scene_rows =
+                        ray_tracing_scene_tables->row_snapshot;
+                    injectRayTracingJointTransactionPoint(
+                        RayTracingJointTransactionPoint::after_sbt);
+                }
             }
-            acceleration_structure_build.emplace(
-                acceleration_structures->recordFrame(
+            if (!acceleration_structure_build) {
+                acceleration_structure_build.emplace(
+                    acceleration_structures->recordFrame(
                     command_buffer,
                     GET_MODULE(VulkanManageCore),
                     deletion_queue,
@@ -4766,19 +4838,25 @@ void Renderer::renderLogicalFrame(
                     gpu_owner_scope != nullptr &&
                         gpu_owner_scope->ray_tracing_project != nullptr &&
                         gpu_owner_scope->ray_tracing_project->layout
-                            .usesMaterialAlphaProfile()));
-            modules.frame_resources
-                .setRayTracingSceneShaderBindingTables(
-                    ray_tracing_scene_tables);
+                            .usesMaterialAlphaProfile(),
+                    runtime_generation->generation));
+            }
+            frame_publication.emplace(
+                modules.frame_resources.prepareRayTracingPublication(
+                    in_flight_frame_index,
+                    acceleration_structure_build->topLevel(),
+                    acceleration_structure_build->sceneTables(),
+                    std::string{
+                        acceleration_structure_build->rowDigest()}));
+            submission_resources->rt_state =
+                acceleration_structure_build->stateLease();
+            submission_resources->rt_bundle =
+                frame_publication->bundleLease();
             if (gpu_owner_scope != nullptr &&
                 gpu_owner_scope->ray_tracing_project != nullptr) {
                 injectRayTracingJointTransactionPoint(
                     RayTracingJointTransactionPoint::after_as_record);
             }
-            modules.frame_resources
-                .setRayQueryAccelerationStructure(
-                    in_flight_frame_index,
-                    acceleration_structure_build->topLevel());
         };
     // Most output revisions are caught before an image is acquired. The
     // post-begin check remains necessary because acquire itself may replace a
@@ -4835,7 +4913,7 @@ void Renderer::renderLogicalFrame(
     };
     const auto submission_lease =
         deletion_queue.leaseForNextSubmission(
-            runtime_generation);
+            submission_resources);
     std::vector<MaterialDrawTagFilter>
         material_draw_filters;
     std::vector<std::string>
@@ -5273,6 +5351,12 @@ void Renderer::renderLogicalFrame(
                 submission_lease,
         });
     LogicalFrameAbortGuard frame_abort_guard{target};
+    bool retirement_batch_sealed = false;
+    const auto seal_retirement_batch = [&] {
+        if (retirement_batch_sealed) return;
+        deletion_queue.confirmSubmission();
+        retirement_batch_sealed = true;
+    };
     if (use_view_family_execution) {
         const auto render_ctx =
             target.beginViewFamily(view_count);
@@ -5411,6 +5495,9 @@ void Renderer::renderLogicalFrame(
 #endif
         target.endViewFamily(
             submission_lease);
+        if (target.submitsOnViewEnd()) {
+            seal_retirement_batch();
+        }
         if (execution_tracing_for_testing) {
             view_traces.push_back({
                 {"execution", "view_family"},
@@ -5543,6 +5630,9 @@ void Renderer::renderLogicalFrame(
         }
 #endif
         target.endView(view_index, submission_lease);
+        if (target.submitsOnViewEnd()) {
+            seal_retirement_batch();
+        }
 
         if (execution_tracing_for_testing) {
             view_traces.push_back({
@@ -5558,28 +5648,42 @@ void Renderer::renderLogicalFrame(
     }
 
     if (staged_runtime_generation != 0) {
-        injectRayTracingJointTransactionPoint(
-            RayTracingJointTransactionPoint::submit);
-    }
-    target.endLogicalFrame(submission_lease);
-    if (staged_runtime_generation != 0) {
         modules.frame_graph_runtime
             .prepareStagedGenerationCommit(
                 staged_runtime_generation);
+        injectRayTracingJointTransactionPoint(
+            RayTracingJointTransactionPoint::submit);
     }
-    if (acceleration_structure_build) {
-        acceleration_structure_build->commit();
-    }
-    if (staged_runtime_generation != 0) {
-        if (!modules.frame_graph_runtime
-                 .publishStagedGeneration(
-                     staged_runtime_generation)) {
-            std::terminate();
+    target.submitLogicalFrame(submission_lease);
+    seal_retirement_batch();
+
+    const auto publish_frame_generation = [&]() noexcept {
+        // Submission has succeeded. RT state, descriptor/SBT selection, and
+        // the staged renderer root advance exactly once and are never rolled
+        // back by output publication failure.
+        if (acceleration_structure_build) {
+            acceleration_structure_build->commit();
         }
-        staged_runtime_guard.complete();
+        if (frame_publication) {
+            frame_publication->commit();
+        }
+        if (staged_runtime_generation != 0) {
+            if (!modules.frame_graph_runtime
+                     .publishStagedGeneration(
+                         staged_runtime_generation)) {
+                std::terminate();
+            }
+            staged_runtime_guard.complete();
+        }
+    };
+    static_assert(noexcept(publish_frame_generation()));
+    publish_frame_generation();
+    if (staged_runtime_generation != 0) {
+        injectRayTracingJointTransactionPoint(
+            RayTracingJointTransactionPoint::after_publication);
     }
+    target.publishLogicalFrame();
     frame_abort_guard.complete();
-    deletion_queue.confirmSubmission();
     if (picking_pass_active &&
         picking_model_instances_captured) {
         last_picking_target = picking_target;

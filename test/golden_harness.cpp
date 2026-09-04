@@ -11946,6 +11946,118 @@ void GoldenHarness::runLogicalFrameStereo() {
 #endif
 }
 
+void GoldenHarness::runLogicalFrameStereoSealedRetirement() {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
+    setupLogger();
+    requireGoldenVulkanDevice();
+    FastModuleContainer modules;
+    const auto root = makeTempProjectDir("logical_frame_stereo_seal");
+    writeLogicalFrameStereoProject(root);
+    GET_MODULE(PathResolver).setup(root, false);
+    auto project = makeFeatureProjectJson();
+    project["name"] = "logical frame stereo seal fixture";
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.shader_hot_reload = false;
+    launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+    (void)GET_MODULE(VulkanManageCore);
+    launch.xr_active = true;
+
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
+    GET_MODULE(ECSCore).update();
+
+    const auto make_view = [](float view_x, float projection_x,
+                              float camera_x, std::string view_id) {
+        RenderViewParameters result;
+        result.view[3][0] = view_x;
+        result.projection[0][0] = projection_x;
+        result.camera_position = {camera_x, 0.0f, 0.0f};
+        result.view_id = std::move(view_id);
+        return result;
+    };
+    const RenderViewFamily view_family{
+        .family_id = std::string{mainRenderViewFamilyId},
+        .views = {
+            make_view(-0.75f, 0.75f, -1.0f, "$xr/0"),
+            make_view(0.75f, 1.25f, 1.0f, "$xr/1"),
+        },
+    };
+
+    auto &renderer = GET_MODULE(Renderer);
+    renderer.selectGraphVariant(RenderGraphVariant::xr);
+    Test::VulkanSyntheticStereoTarget stereo_target{
+        launch.headless_extent,
+        GET_MODULE(RenderTarget).getSwapchainFormat()};
+    auto &deletion_queue = GET_MODULE(DeletionQueue);
+
+    // A sequential XR target submits inside endView. WP384 decision 11 seals
+    // the retirement batch at the first of those submits, so a healthy frame
+    // seals exactly once even though two views submit.
+    stereo_target.setSequentialViewSubmissionForTesting(true);
+    time.advance();
+    const auto seal_before_healthy =
+        deletion_queue.currentFrameForTesting();
+    const auto healthy_batch =
+        deletion_queue.currentRetirementBatchForTesting();
+    REQUIRE_FALSE(healthy_batch.expired());
+    renderer.renderLogicalFrame(stereo_target, view_family);
+    REQUIRE(stereo_target.viewSubmissionCountForTesting() == 2);
+    REQUIRE(deletion_queue.currentFrameForTesting() ==
+            seal_before_healthy + 1);
+    REQUIRE(healthy_batch.expired());
+
+    // View 0's submit succeeds and view 1's fails. The batch must already be
+    // sealed by view 0, so the rejected frame still advances the retirement
+    // batch and everything it deferred retires on the fence view 0 signalled.
+    // Sealing at logical-frame completion instead leaves the counter unmoved
+    // and the rejected candidate resident in the still-current batch.
+    time.advance();
+    stereo_target.setSequentialViewSubmissionForTesting(true, 1);
+    const auto seal_before_fault =
+        deletion_queue.currentFrameForTesting();
+    const auto fault_batch =
+        deletion_queue.currentRetirementBatchForTesting();
+    REQUIRE_FALSE(fault_batch.expired());
+    std::string fault_message;
+    try {
+        renderer.renderLogicalFrame(stereo_target, view_family);
+    } catch (const std::exception &error) {
+        fault_message = error.what();
+    }
+    INFO("logical frame fault message: " << fault_message);
+    REQUIRE(fault_message.find(
+                "synthetic stereo target view submit failure") !=
+            std::string::npos);
+    CHECK(stereo_target.viewSubmissionCountForTesting() == 3);
+    CHECK(deletion_queue.currentFrameForTesting() ==
+          seal_before_fault + 1);
+    CHECK(fault_batch.expired());
+    CHECK_FALSE(
+        deletion_queue.currentRetirementBatchForTesting().expired());
+
+    // The rejection is recoverable: the next frame submits both views again
+    // and seals its own batch exactly once.
+    time.advance();
+    stereo_target.setSequentialViewSubmissionForTesting(true);
+    const auto seal_before_recovery =
+        deletion_queue.currentFrameForTesting();
+    renderer.renderLogicalFrame(stereo_target, view_family);
+    CHECK(stereo_target.viewSubmissionCountForTesting() == 5);
+    CHECK(deletion_queue.currentFrameForTesting() ==
+          seal_before_recovery + 1);
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+    std::filesystem::remove_all(root);
+#else
+    SKIP("logical-frame stereo fixture requires the runtime shader compiler and OpenXR");
+#endif
+}
+
 void GoldenHarness::runOpenXrTaaTransition() {
 #if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_OPENXR
     setupLogger();

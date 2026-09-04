@@ -2081,6 +2081,10 @@ std::uint32_t overrideRayTracingTlasRecordOffsetForTesting(
                : correct_offset;
 }
 
+bool rayTracingTlasRecordOffsetOverrideActiveForTesting() noexcept {
+    return static_cast<bool>(tlas_record_offset_override);
+}
+
 ScopedRayTracingJointTransactionInjector::
     ScopedRayTracingJointTransactionInjector(
         RayTracingJointTransactionInjector injector)

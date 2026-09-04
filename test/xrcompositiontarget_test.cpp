@@ -531,7 +531,7 @@ void submitBoth(Pelican::OpenXr::XrCompositionTarget &target) {
 
 } // namespace
 
-TEST_CASE("OpenXR composition owns one two-layer color swapchain and one projection layer",
+TEST_CASE("WP384 OpenXR sequential target separates submit from publication",
           "[openxr][composition]") {
     FakeRuntime fake;
     FakeScope scope{fake};
@@ -567,7 +567,12 @@ TEST_CASE("OpenXR composition owns one two-layer color swapchain and one project
     auto frame = beginFrame(fake, session);
     target.prepareFrame(frame.timing, frame.views);
     submitBoth(target);
-    target.endLogicalFrame();
+    target.submitLogicalFrame();
+    CHECK(fake.calls == std::vector<std::string>{
+                            "acquire:color", "wait:color",
+                            "begin:L", "submit:L", "begin:R", "submit:R",
+                            "gpu_wait:L", "gpu_wait:R"});
+    target.publishLogicalFrame();
 
     CHECK(fake.calls == std::vector<std::string>{
                             "acquire:color", "wait:color",
@@ -583,7 +588,7 @@ TEST_CASE("OpenXR composition owns one two-layer color swapchain and one project
     CHECK_FALSE(target.generationTeardownRequired());
 }
 
-TEST_CASE("OpenXR composition submits both array layers through one view-family command",
+TEST_CASE("WP384 OpenXR multiview target separates submit from publication",
           "[openxr][composition][view-family]") {
     FakeRuntime fake;
     FakeScope scope{fake};
@@ -602,7 +607,13 @@ TEST_CASE("OpenXR composition submits both array layers through one view-family 
     CHECK(context.color_array_layers == 2);
     CHECK(context.color_layer_attachments.size() == 2);
     target.endViewFamily();
-    target.endLogicalFrame();
+    target.submitLogicalFrame();
+    CHECK(fake.calls ==
+          std::vector<std::string>{
+              "acquire:color", "wait:color",
+              "begin:family", "submit:family",
+              "gpu_wait:family"});
+    target.publishLogicalFrame();
 
     CHECK(fake.calls ==
           std::vector<std::string>{
@@ -702,7 +713,7 @@ TEST_CASE("OpenXR keeps an available depth swapchain idle for a color-only graph
           Pelican::OpenXr::XrSwapchainState::idle);
 }
 
-TEST_CASE("OpenXR composition retains a submitted generation until both view fences complete",
+TEST_CASE("WP384 OpenXR retains a submitted generation through publication",
           "[openxr][composition][submission-lifetime]") {
     FakeRuntime fake;
     FakeScope scope{fake};
@@ -724,7 +735,9 @@ TEST_CASE("OpenXR composition retains a submitted generation until both view fen
     (void)target.beginView(1);
     target.endView(1);
     CHECK_FALSE(observed.expired());
-    target.endLogicalFrame();
+    target.submitLogicalFrame();
+    CHECK_FALSE(observed.expired());
+    target.publishLogicalFrame();
     CHECK(observed.expired());
 }
 
@@ -758,7 +771,7 @@ TEST_CASE("OpenXR swapchain wait timeout retries the same acquired image",
     }
 }
 
-TEST_CASE("OpenXR partial failures unwind each swapchain legally and close zero-layer",
+TEST_CASE("WP384 OpenXR publication failure runs named output recovery",
           "[openxr][composition][unwind]") {
     struct Case {
         const char *failure;

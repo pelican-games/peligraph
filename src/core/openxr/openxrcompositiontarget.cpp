@@ -505,6 +505,7 @@ class XrCompositionTarget::Impl {
     std::uint32_t next_view = 0;
     bool frame_prepared = false;
     bool logical_frame_begun = false;
+    bool logical_frame_submitted = false;
     bool view_family_begun = false;
     bool view_family_ended = false;
     bool view_family_submission_complete = false;
@@ -724,6 +725,7 @@ class XrCompositionTarget::Impl {
     void resetFrameFlags() noexcept {
         frame_prepared = false;
         logical_frame_begun = false;
+        logical_frame_submitted = false;
         next_view = 0;
         view_family_begun = false;
         view_family_ended = false;
@@ -1160,7 +1162,7 @@ class XrCompositionTarget::Impl {
         }
     }
 
-    void endLogicalFrame(GpuSubmissionLease lease) {
+    void submitLogicalFrame(GpuSubmissionLease lease) {
         if (!logical_frame_begun || next_view != xr_stereo_view_count) {
             throw std::logic_error(
                 "OpenXR composition logical frame ended before both submissions");
@@ -1180,6 +1182,19 @@ class XrCompositionTarget::Impl {
                     views[view].submission_complete = true;
                 }
             }
+            logical_frame_submitted = true;
+        } catch (...) {
+            abortFrame();
+            throw;
+        }
+    }
+
+    void publishLogicalFrame() {
+        if (!logical_frame_begun || !logical_frame_submitted) {
+            throw std::logic_error(
+                "OpenXR composition publish requires successful submission");
+        }
+        try {
             if (depth_submission_active &&
                 !releaseSwapchain(depth)) {
                 throw std::runtime_error(
@@ -1250,6 +1265,11 @@ class XrCompositionTarget::Impl {
         }
         submission_lease.reset();
         resetFrameFlags();
+    }
+
+    void endLogicalFrame(GpuSubmissionLease lease) {
+        submitLogicalFrame(std::move(lease));
+        publishLogicalFrame();
     }
 
     vk::Format colorFormat(std::uint32_t view_index) const {
@@ -1339,6 +1359,15 @@ void XrCompositionTarget::endView(
 void XrCompositionTarget::endViewFamily(
     GpuSubmissionLease lease) {
     impl->endViewFamily(std::move(lease));
+}
+
+void XrCompositionTarget::submitLogicalFrame(
+    GpuSubmissionLease lease) {
+    impl->submitLogicalFrame(std::move(lease));
+}
+
+void XrCompositionTarget::publishLogicalFrame() {
+    impl->publishLogicalFrame();
 }
 
 void XrCompositionTarget::endLogicalFrame(GpuSubmissionLease lease) {

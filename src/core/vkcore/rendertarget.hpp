@@ -30,6 +30,9 @@ DECLARE_MODULE(RenderTarget) {
     void recordOutputTransformCopy(vk::CommandBuffer cmd_buf, vk::Image source,
                                    vk::Format source_format, vk::Extent2D source_extent);
     FrameSubmitResult submit(FrameTargetFrame frame);
+    void submitFrame(FrameTargetFrame frame);
+    FrameSubmitResult publishFrame();
+    void recoverSubmittedFrame() noexcept;
     void abandon(FrameTargetFrame frame) noexcept;
 
     vk::Format getSwapchainFormat() const;

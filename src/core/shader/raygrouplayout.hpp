@@ -527,6 +527,7 @@ class ScopedRayTracingTlasRecordOffsetOverrideForTesting {
 
 std::uint32_t overrideRayTracingTlasRecordOffsetForTesting(
     std::uint32_t q, std::uint32_t correct_offset);
+bool rayTracingTlasRecordOffsetOverrideActiveForTesting() noexcept;
 
 enum class RayTracingJointTransactionPoint : std::uint8_t {
     after_compile,
@@ -534,13 +535,14 @@ enum class RayTracingJointTransactionPoint : std::uint8_t {
     after_sbt,
     after_as_record,
     submit,
+    after_publication,
 };
 
 using RayTracingJointTransactionInjector =
     std::function<void(RayTracingJointTransactionPoint)>;
 
 // Test delegate installed around real production registration/rendering.  It
-// is deliberately invoked only at the five joint-transaction boundaries;
+// is deliberately invoked only at the six joint-transaction boundaries;
 // throwing exercises the same rollback guards as a real failure there.
 class ScopedRayTracingJointTransactionInjector {
     RayTracingJointTransactionInjector previous_;

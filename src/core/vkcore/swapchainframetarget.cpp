@@ -2345,7 +2345,7 @@ struct SwapchainFrameTarget::Impl {
             true;
     }
 
-    FrameSubmitResult submit(
+    void submitFrame(
         FrameTargetFrame frame) {
         SwapchainFrameTarget::validateFrameTarget(
             frame, frame_cleanup,
@@ -2426,6 +2426,26 @@ struct SwapchainFrameTarget::Impl {
                 active.slot, std::move(lease));
             epoch->submission_pending[active.slot] =
                 true;
+
+        } catch (...) {
+            abandonFrameSerial(active.serial);
+            throw;
+        }
+    }
+
+    FrameSubmitResult publishFrame() {
+        if (!active_frame ||
+            active_frame->phase != ActiveFramePhase::submitted) {
+            throw std::logic_error(
+                "swapchain frame target publish called before submit");
+        }
+        const auto active = *active_frame;
+        auto epoch = active.epoch;
+        try {
+            const auto present_semaphore =
+                epoch->present_semaphores[
+                    active.image_index]
+                    .get();
 
             vk::PresentInfoKHR present_info;
             const auto raw_swapchain =
@@ -2612,6 +2632,18 @@ struct SwapchainFrameTarget::Impl {
         } catch (...) {
             abandonFrameSerial(active.serial);
             throw;
+        }
+    }
+
+    FrameSubmitResult submit(FrameTargetFrame frame) {
+        submitFrame(std::move(frame));
+        return publishFrame();
+    }
+
+    void recoverSubmittedFrame() noexcept {
+        if (active_frame &&
+            active_frame->phase == ActiveFramePhase::submitted) {
+            abandonFrameSerial(active_frame->serial);
         }
     }
 
@@ -2883,6 +2915,19 @@ void SwapchainFrameTarget::recordOutputTransformCopy(
 FrameSubmitResult SwapchainFrameTarget::submit(
     FrameTargetFrame frame) {
     return impl_->submit(std::move(frame));
+}
+
+void SwapchainFrameTarget::submitFrame(
+    FrameTargetFrame frame) {
+    impl_->submitFrame(std::move(frame));
+}
+
+FrameSubmitResult SwapchainFrameTarget::publishFrame() {
+    return impl_->publishFrame();
+}
+
+void SwapchainFrameTarget::recoverSubmittedFrame() noexcept {
+    impl_->recoverSubmittedFrame();
 }
 
 void SwapchainFrameTarget::abandon(

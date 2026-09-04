@@ -155,6 +155,9 @@ struct RayQueryAccelerationStructureDiagnostics {
     std::uint64_t model_rebuild_generation = 0;
     std::uint64_t geometry_pool_invalidation_count = 0;
     std::uint64_t model_rebuild_invalidation_count = 0;
+    std::uint64_t descriptor_bundle_generation = 0;
+    std::uint64_t descriptor_top_level_handle = 0;
+    std::string descriptor_row_digest;
     RayQueryGeometryExclusionDiagnostics excluded;
     std::vector<RayQueryBlasInputDiagnostics> active_blas_inputs;
 };
@@ -187,6 +190,10 @@ class RayQueryAccelerationStructureScope {
         FrameBuild &operator=(const FrameBuild &) = delete;
 
         vk::AccelerationStructureKHR topLevel() const noexcept;
+        std::shared_ptr<const RayTracingSceneShaderBindingTables>
+        sceneTables() const noexcept;
+        std::shared_ptr<const void> stateLease() const noexcept;
+        std::string_view rowDigest() const noexcept;
         void commit() noexcept;
     };
 
@@ -219,7 +226,15 @@ class RayQueryAccelerationStructureScope {
         std::uint32_t ray_type_count = 0,
         std::shared_ptr<const RayTracingSceneShaderBindingTables>
             ray_tracing_scene_tables = {},
-        bool material_alpha_profile_active = false);
+        bool material_alpha_profile_active = false,
+        std::uint64_t runtime_generation = 0);
+    std::optional<FrameBuild> tryReuseFrame(
+        std::uint64_t geometry_pool_generation,
+        std::uint64_t model_rebuild_generation,
+        const RayTracingGeometrySnapshot &geometry_snapshot,
+        const RaySceneRowSnapshot &ray_scene_rows,
+        std::uint32_t ray_type_count,
+        std::uint64_t runtime_generation);
 
     const RayQueryAccelerationStructureDiagnostics &
     diagnostics() const noexcept {

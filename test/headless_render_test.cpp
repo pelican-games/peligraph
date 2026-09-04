@@ -11092,7 +11092,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP366 renderer A B recovers q r group miss and authored record bytes in one submission",
+    "WP366 renderer A B recovers q r group miss and WP384 preserves frame publication",
     "[headless][gpu][ray-tracing][rt1b][renderer][sentinel][transaction]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -11498,6 +11498,7 @@ TEST_CASE(
                   .renderingConfigJson() == authored_config);
         CHECK(runtime.activeGeneration() ==
               authored.staged_generation);
+        REQUIRE(writes.size() == 2);
         // The submit above publishes the new generation after executing the
         // old one. Render once with the newly published target ownership
         // before reading it back.
@@ -11510,13 +11511,11 @@ TEST_CASE(
         CHECK(renderer.readRenderTargetForTesting(
                   "wp366_b", ImageSubresourceRange{}).bytes ==
               output_b.bytes);
-        REQUIRE(writes.size() == 2);
+        REQUIRE(writes.empty());
 
-        // Rebuild the same authored scene in reverse publication order.  The
-        // production row resolver, both production SBT writes, TLAS q*R, and
-        // renderer output must all remain byte-identical.
-        const auto forward_writes = writes;
-
+        // Re-present the same authored scene in reverse publication order.
+        // Its canonical row digest is unchanged, so the published TLAS/SBT
+        // bundle is reused and the renderer output remains byte-identical.
         // Replace the production TLAS base q*R with the tempting wrong q.
         // One geometry is enough to hit neighboring records, so both actual
         // pipelines must expose the addressing error in their GPU payloads.
@@ -11571,17 +11570,7 @@ TEST_CASE(
             "wp366_b", ImageSubresourceRange{});
         CHECK(reverse_output_a.bytes == output_a.bytes);
         CHECK(reverse_output_b.bytes == output_b.bytes);
-        REQUIRE(writes.size() == forward_writes.size());
-        for (std::size_t index = 0; index < writes.size(); ++index) {
-            CHECK(writes[index].row_digest_sha256 ==
-                  forward_writes[index].row_digest_sha256);
-            CHECK(writes[index].record_index_stride ==
-                  forward_writes[index].record_index_stride);
-            CHECK(writes[index].record_byte_stride ==
-                  forward_writes[index].record_byte_stride);
-            CHECK((writes[index].hit_bytes ==
-                   forward_writes[index].hit_bytes));
-        }
+        REQUIRE(writes.empty());
 
         // Removing an authored row and its selector must shrink Q*R in the
         // same staged publication.  A stale foliage row would keep the
@@ -11603,6 +11592,8 @@ TEST_CASE(
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
+        REQUIRE(writes.size() == 2);
+        const auto removed_writes = writes;
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
@@ -11622,8 +11613,8 @@ TEST_CASE(
                          std::bit_cast<std::uint32_t>(1.0f)});
         CHECK(pixel(removed_output_b, 1) ==
               std::array{1281u, 0xffffffffu, 1u, 0u});
-        REQUIRE(writes.size() == 2);
-        for (const auto &write : writes) {
+        REQUIRE(writes.empty());
+        for (const auto &write : removed_writes) {
             CHECK(write.record_count == 2);
             CHECK(write.hit_bytes.size() ==
                   static_cast<std::size_t>(
@@ -11644,6 +11635,8 @@ TEST_CASE(
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
+        REQUIRE(writes.size() == 2);
+        const auto restored_writes = writes;
         writes.clear();
         renderer.render();
         vkcore.waitIdle();
@@ -11653,8 +11646,8 @@ TEST_CASE(
         CHECK(renderer.readRenderTargetForTesting(
                   "wp366_b", ImageSubresourceRange{}).bytes ==
               output_b.bytes);
-        REQUIRE(writes.size() == 2);
-        for (const auto &write : writes) {
+        REQUIRE(writes.empty());
+        for (const auto &write : restored_writes) {
             CHECK(write.record_count == 4);
         }
 
@@ -11702,6 +11695,8 @@ TEST_CASE(
                 REQUIRE(runtime.stagedGeneration() == 0);
                 REQUIRE(runtime.activeGeneration() ==
                         before_root->generation + 1);
+                REQUIRE(writes.size() == 2);
+                const auto generation_writes = writes;
                 writes.clear();
                 renderer.render();
                 vkcore.waitIdle();
@@ -11726,8 +11721,8 @@ TEST_CASE(
                 CHECK(renderer.readRenderTargetForTesting(
                           "wp366_b", ImageSubresourceRange{}).bytes ==
                       output_b.bytes);
-                REQUIRE(writes.size() == 2);
-                for (const auto &write : writes) {
+                REQUIRE(writes.empty());
+                for (const auto &write : generation_writes) {
                     CHECK(write.record_count == 4);
                 }
             };
@@ -11830,6 +11825,25 @@ TEST_CASE(
             stable_scope->acceleration_structures
                 ->topLevelDeviceAddress();
         REQUIRE(stable_tlas != 0);
+        auto &frame_resources = GET_MODULE(FrameResources);
+        const auto stable_sbt =
+            frame_resources
+                .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        const auto stable_descriptor_bundle =
+            frame_resources.activeRtDescriptorBundleForTesting();
+        REQUIRE(stable_sbt != nullptr);
+        REQUIRE(stable_descriptor_bundle != nullptr);
+        REQUIRE(stable_descriptor_bundle->scene_tables == stable_sbt);
+        REQUIRE(stable_descriptor_bundle->top_level ==
+                stable_scope->acceleration_structures->topLevel());
+        const auto stable_diagnostics =
+            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        REQUIRE(stable_diagnostics.descriptor_bundle_generation != 0);
+        // WP384 decision 11 seals the retirement batch at the first successful
+        // real GPU submit, not at logical-frame completion. The seal counter
+        // and the identity of the batch `defer` is currently filling are the
+        // two production values that pin that point down.
+        auto &frame_deletion_queue = GET_MODULE(DeletionQueue);
         constexpr std::array transaction_points{
             RayTracingJointTransactionPoint::after_compile,
             RayTracingJointTransactionPoint::after_pipeline,
@@ -11857,6 +11871,12 @@ TEST_CASE(
             const auto stable_config =
                 GET_MODULE(ProjectBasicConfig)
                     .renderingConfigJson();
+            const auto before_seal_count =
+                frame_deletion_queue.currentFrameForTesting();
+            const auto before_batch =
+                frame_deletion_queue
+                    .currentRetirementBatchForTesting();
+            REQUIRE_FALSE(before_batch.expired());
             bool accepted = false;
             {
                 const ScopedRayTracingJointTransactionInjector injector{
@@ -11894,6 +11914,15 @@ TEST_CASE(
             CHECK(runtime.stagedGeneration() == 0);
             CHECK(stable_scope->acceleration_structures
                       ->topLevelDeviceAddress() == before_tlas);
+            CHECK(frame_resources
+                      .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
+                  stable_sbt);
+            const auto after_fault_bundle =
+                frame_resources.activeRtDescriptorBundleForTesting();
+            REQUIRE(after_fault_bundle != nullptr);
+            CHECK(after_fault_bundle == stable_descriptor_bundle);
+            CHECK(after_fault_bundle->top_level ==
+                  stable_descriptor_bundle->top_level);
             const auto after_status =
                 reload_service.statusJson()
                     .at("runtime")
@@ -11914,6 +11943,13 @@ TEST_CASE(
             CHECK(GET_MODULE(ProjectBasicConfig)
                       .renderingConfigJson() == stable_config);
             CHECK(renderer.currentFramePlanJson() == before_plan);
+            // Every one of these five points faults before the frame's first
+            // real GPU submit, so nothing may be sealed: the rejected
+            // candidate stays in the still-current batch and retires with the
+            // next frame's fence rather than being orphaned or freed early.
+            CHECK(frame_deletion_queue.currentFrameForTesting() ==
+                  before_seal_count);
+            CHECK_FALSE(before_batch.expired());
 
             // Render once more after each rejected point. A candidate pass
             // id, config, watch set, temporal reset, or applied counter leak
@@ -11926,6 +11962,19 @@ TEST_CASE(
             CHECK(renderer.readRenderTargetForTesting(
                       "wp366_b", ImageSubresourceRange{}).bytes ==
                   output_b.bytes);
+            const auto reused =
+                renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+            CHECK(reused.tlas_build_count ==
+                  stable_diagnostics.tlas_build_count);
+            CHECK(reused.descriptor_bundle_generation ==
+                  stable_diagnostics.descriptor_bundle_generation);
+            // The recovery frame is the first real submit after the rejection.
+            // It seals the batch the rejected frame was still filling, and the
+            // offscreen target has already waited on that submission's fence,
+            // so the rejected candidate is gone by the time render() returns.
+            CHECK(frame_deletion_queue.currentFrameForTesting() ==
+                  before_seal_count + 1);
+            CHECK(before_batch.expired());
         }
 
         // Feed malformed trace operands through the real config loader,
@@ -12024,6 +12073,7 @@ TEST_CASE(
             temp_dir / "shaders" /
             "wp366_opaque_primary.rchit";
         auto wrong_hit = readTextFile(wrong_hit_path);
+        const auto valid_wrong_hit = wrong_hit;
         const auto flags_declaration =
             wrong_hit.find("    uint flags;\n");
         REQUIRE(flags_declaration != std::string::npos);
@@ -12043,6 +12093,7 @@ TEST_CASE(
         CHECK(runtime.stagedGeneration() == 0);
         CHECK(stable_scope->acceleration_structures
                   ->topLevelDeviceAddress() == before_wrong_hit_tlas);
+        writeTextFile(wrong_hit_path, valid_wrong_hit);
 
         // The two authored material selectors deliberately share one asset
         // and geometry.  Making their persistent scene identity coincide must
@@ -12061,6 +12112,155 @@ TEST_CASE(
         CHECK(runtime.snapshot() == stable_root);
         CHECK(stable_scope->acceleration_structures
                   ->topLevelDeviceAddress() == before_ambiguous_tlas);
+
+        const auto pre_b_output_a =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        const auto pre_b_output_b =
+            renderer.readRenderTargetForTesting(
+                "wp366_b", ImageSubresourceRange{});
+        instances.setTrs(restored_b, {20.0f, 0.0f, 0.0f},
+                         glm::quat{1.0f, 0.0f, 0.0f, 0.0f}, glm::vec3{1.0f});
+        // A fault after the no-fail publication callback is an output fault,
+        // not a generation rollback.  The next frame must reuse exactly the
+        // newly published TLAS/SBT/descriptor bundle.
+        layout_bytes += " ";
+        writeTextFile(layout_path, layout_bytes);
+        const auto seal_before_publication_fault =
+            frame_deletion_queue.currentFrameForTesting();
+        const auto publication_fault_batch =
+            frame_deletion_queue.currentRetirementBatchForTesting();
+        REQUIRE_FALSE(publication_fault_batch.expired());
+        {
+            const ScopedRayTracingJointTransactionInjector injector{
+                [](RayTracingJointTransactionPoint observed) {
+                    if (observed ==
+                        RayTracingJointTransactionPoint::after_publication) {
+                        throw std::runtime_error(
+                            "injected WP384 output publication failure");
+                    }
+                }};
+            REQUIRE(reload_service.applyRequestForTesting(
+                watch::ReloadRequest{
+                    watch::makeAssetKey("ray_layout.json"),
+                    watch::ReloadKind::modified, {}, 100}));
+            CHECK_THROWS_WITH(
+                renderer.render(),
+                Catch::Matchers::ContainsSubstring(
+                    "injected WP384 output publication failure"));
+        }
+        // WP384 decision 11 observed at the production seal point. This frame's
+        // real GPU submit succeeded and only the output publication faulted, so
+        // the batch must have been sealed by that submit rather than by
+        // logical-frame completion, which this frame never reached. The
+        // offscreen target already waited on that submission's fence, so the
+        // sealed batch, and everything the aborted frame deferred into it,
+        // is retired by the time render() returns. Moving the seal back after
+        // `frame_abort_guard.complete()` leaves the counter unmoved and keeps
+        // the rejected candidate resident in the still-current batch.
+        CHECK(frame_deletion_queue.currentFrameForTesting() ==
+              seal_before_publication_fault + 1);
+        CHECK(publication_fault_batch.expired());
+        CHECK_FALSE(frame_deletion_queue
+                        .currentRetirementBatchForTesting()
+                        .expired());
+        const auto published_b = runtime.snapshot();
+        REQUIRE(published_b != nullptr);
+        CHECK(published_b != stable_root);
+        CHECK(runtime.stagedGeneration() == 0);
+        const auto published_b_bundle =
+            frame_resources.activeRtDescriptorBundleForTesting();
+        const auto published_b_sbt =
+            frame_resources
+                .rayTracingSceneShaderBindingTablesLeaseForTesting();
+        REQUIRE(published_b_bundle != nullptr);
+        REQUIRE(published_b_sbt != nullptr);
+        CHECK(published_b_bundle != stable_descriptor_bundle);
+        CHECK(published_b_sbt != stable_sbt);
+        const auto published_b_diagnostics =
+            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        renderer.render();
+        vkcore.waitIdle();
+        const auto reused_b_diagnostics =
+            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(reused_b_diagnostics.tlas_build_count ==
+              published_b_diagnostics.tlas_build_count);
+        CHECK(reused_b_diagnostics.descriptor_bundle_generation ==
+              published_b_diagnostics.descriptor_bundle_generation);
+        CHECK(frame_resources.activeRtDescriptorBundleForTesting() ==
+              published_b_bundle);
+        CHECK(frame_resources
+                  .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
+              published_b_sbt);
+        const auto reused_b_output_a =
+            renderer.readRenderTargetForTesting(
+                "wp366_a", ImageSubresourceRange{});
+        const auto reused_b_output_b =
+            renderer.readRenderTargetForTesting(
+                "wp366_b", ImageSubresourceRange{});
+        CHECK(pixel(reused_b_output_a, 1) != pixel(pre_b_output_a, 1));
+        CHECK(pixel(reused_b_output_b, 1) != pixel(pre_b_output_b, 1));
+
+        // RT -> non-RT is the same publication transaction with an empty
+        // optional bundle. A pre-submit fault must leave B selected; the
+        // following successful frame publishes the bundle-less generation.
+        auto non_rt_config = nlohmann::json::parse(
+            readTextFile(temp_dir / "hybrid.json"));
+        non_rt_config.erase("ray_group_layout");
+        non_rt_config.erase("ray_bindings");
+        non_rt_config["compute_tasks"] = nlohmann::json::array();
+        non_rt_config["target_planning"]["graphs"]["main_render"]
+                     ["required_capabilities"] = nlohmann::json::array();
+        writeTextFile(temp_dir / "hybrid.json", non_rt_config.dump(2));
+        REQUIRE(reload_service.applyRequestForTesting(
+            watch::ReloadRequest{
+                watch::makeAssetKey("hybrid.json"),
+                watch::ReloadKind::modified, {}, 101}));
+        REQUIRE(runtime.stagedGeneration() != 0);
+        const auto seal_before_clear_fault =
+            frame_deletion_queue.currentFrameForTesting();
+        const auto clear_fault_batch =
+            frame_deletion_queue.currentRetirementBatchForTesting();
+        REQUIRE_FALSE(clear_fault_batch.expired());
+        {
+            const ScopedRayTracingJointTransactionInjector injector{
+                [](RayTracingJointTransactionPoint observed) {
+                    if (observed ==
+                        RayTracingJointTransactionPoint::submit) {
+                        throw std::runtime_error(
+                            "injected WP384 RT clear submit failure");
+                    }
+                }};
+            CHECK_THROWS_WITH(
+                renderer.render(),
+                Catch::Matchers::ContainsSubstring(
+                    "injected WP384 RT clear submit failure"));
+        }
+        // The mirrored control: this fault precedes the frame's only submit,
+        // so no seal may happen and the batch stays current.
+        CHECK(frame_deletion_queue.currentFrameForTesting() ==
+              seal_before_clear_fault);
+        CHECK_FALSE(clear_fault_batch.expired());
+        CHECK(runtime.snapshot() == published_b);
+        CHECK(frame_resources.activeRtDescriptorBundleForTesting() ==
+              published_b_bundle);
+        CHECK(frame_resources
+                  .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
+              published_b_sbt);
+        CHECK(runtime.stagedGeneration() == 0);
+        REQUIRE(reload_service.applyRequestForTesting(
+            watch::ReloadRequest{
+                watch::makeAssetKey("hybrid.json"),
+                watch::ReloadKind::modified, {}, 102}));
+        REQUIRE(runtime.stagedGeneration() != 0);
+        renderer.render();
+        vkcore.waitIdle();
+        CHECK(runtime.stagedGeneration() == 0);
+        CHECK(frame_resources.activeRtDescriptorBundleForTesting() ==
+              nullptr);
+        CHECK(frame_resources
+                  .rayTracingSceneShaderBindingTablesLeaseForTesting() ==
+              nullptr);
 
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {

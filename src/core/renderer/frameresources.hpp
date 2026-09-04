@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <string>
 #include <type_traits>
 #include <glm/glm.hpp>
 #include <vector>
@@ -15,6 +16,31 @@ namespace Pelican {
 
 struct PipelineHandle;
 struct RayTracingSceneShaderBindingTables;
+
+// An RT generation owns the descriptor topology that names its TLAS together
+// with the SBT consumed by the same recorded commands.  The bundle is prepared
+// privately and is immutable after construction; FramePublication only swaps
+// the shared owner at the post-submit publication boundary.
+struct RtDescriptorBundle {
+    vk::UniqueDescriptorPool descriptor_pool;
+    std::vector<vk::UniqueDescriptorSet> sequential_sets;
+    std::vector<vk::UniqueDescriptorSet> multiview_sets;
+    std::shared_ptr<const RayTracingSceneShaderBindingTables> scene_tables;
+    vk::AccelerationStructureKHR top_level;
+    vk::Buffer object_buffer;
+    vk::Buffer previous_object_buffer;
+    vk::Buffer light_buffer;
+    vk::Buffer directional_shadow_buffer;
+    std::uint64_t generation_id = 0;
+    std::uint64_t frame_topology_generation = 0;
+    std::string row_digest;
+
+    ~RtDescriptorBundle() noexcept {
+        multiview_sets.clear();
+        sequential_sets.clear();
+        descriptor_pool.reset();
+    }
+};
 
 struct alignas(16) FrameUniformData {
     alignas(16) glm::vec4 time_delta{0.0f};
@@ -89,7 +115,6 @@ DECLARE_MODULE(FrameResources) {
         BufferWrapper frame_buffer;
         BufferWrapper resolution_buffer;
         vk::UniqueDescriptorSet descriptor_set;
-        vk::UniqueDescriptorSet ray_query_descriptor_set;
         FrameUniformData last_data;
         FrameResolutionUniformData last_resolution;
     };
@@ -97,7 +122,6 @@ DECLARE_MODULE(FrameResources) {
         BufferWrapper frame_buffer;
         BufferWrapper resolution_buffer;
         vk::UniqueDescriptorSet descriptor_set;
-        vk::UniqueDescriptorSet ray_query_descriptor_set;
         std::vector<FrameUniformData> last_data;
         std::vector<FrameResolutionUniformData>
             last_resolution;
@@ -116,14 +140,14 @@ DECLARE_MODULE(FrameResources) {
     std::uint32_t sequential_view_count = 0;
     std::size_t active_slot = 0;
     bool active_multiview_slot = false;
-    bool ray_query_enabled = false;
-    std::shared_ptr<const RayTracingSceneShaderBindingTables>
-        active_ray_tracing_scene_tables;
+    std::shared_ptr<const RtDescriptorBundle> active_rt_bundle;
+    std::shared_ptr<const RtDescriptorBundle> recording_rt_bundle;
+    std::uint64_t next_rt_bundle_generation = 1;
+    std::uint64_t frame_topology_generation = 0;
 
     void configureViewCount(
         std::uint32_t count,
-        std::uint32_t sequential_count,
-        bool ray_query);
+        std::uint32_t sequential_count);
     void updateSceneDescriptors();
     void bindFrameDescriptorSet(
         vk::CommandBuffer cmd_buf,
@@ -131,6 +155,29 @@ DECLARE_MODULE(FrameResources) {
         vk::PipelineBindPoint bind_point) const;
 
   public:
+    class FramePublication {
+        friend class FrameResources;
+        FrameResources *owner_ = nullptr;
+        std::shared_ptr<const RtDescriptorBundle> candidate_;
+
+        FramePublication(
+            FrameResources *owner,
+            std::shared_ptr<const RtDescriptorBundle> candidate) noexcept;
+
+      public:
+        FramePublication() noexcept = default;
+        ~FramePublication();
+        FramePublication(FramePublication &&) noexcept;
+        FramePublication &operator=(FramePublication &&) noexcept;
+        FramePublication(const FramePublication &) = delete;
+        FramePublication &operator=(const FramePublication &) = delete;
+
+        void commit() noexcept;
+        std::shared_ptr<const RtDescriptorBundle> bundleLease() const noexcept {
+            return candidate_;
+        }
+    };
+
     FrameResources();
     ~FrameResources();
 
@@ -145,18 +192,30 @@ DECLARE_MODULE(FrameResources) {
         std::uint32_t main_view_count,
         std::uint32_t sequential_count,
         bool ray_query);
-    void setRayQueryAccelerationStructure(
+    FramePublication prepareRayTracingPublication(
         std::uint32_t in_flight_frame_index,
-        vk::AccelerationStructureKHR top_level);
-    void setRayTracingSceneShaderBindingTables(
-        std::shared_ptr<const RayTracingSceneShaderBindingTables> tables);
+        vk::AccelerationStructureKHR top_level,
+        std::shared_ptr<const RayTracingSceneShaderBindingTables> tables,
+        std::string row_digest);
+    FramePublication prepareNonRayTracingPublication() noexcept;
     const RayTracingSceneShaderBindingTables *
     rayTracingSceneShaderBindingTables() const noexcept {
-        return active_ray_tracing_scene_tables.get();
+        const auto &bundle = recording_rt_bundle
+                                 ? recording_rt_bundle
+                                 : active_rt_bundle;
+        return bundle ? bundle->scene_tables.get() : nullptr;
     }
     std::shared_ptr<const RayTracingSceneShaderBindingTables>
     rayTracingSceneShaderBindingTablesLeaseForTesting() const noexcept {
-        return active_ray_tracing_scene_tables;
+        return active_rt_bundle ? active_rt_bundle->scene_tables : nullptr;
+    }
+    std::shared_ptr<const RtDescriptorBundle>
+    activeRtDescriptorBundleForTesting() const noexcept {
+        return active_rt_bundle;
+    }
+    std::shared_ptr<const RtDescriptorBundle>
+    recordingRtDescriptorBundleLease() const noexcept {
+        return recording_rt_bundle ? recording_rt_bundle : active_rt_bundle;
     }
     void selectView(std::uint32_t in_flight_frame_index, std::uint32_t view_index);
     void selectSequentialView(

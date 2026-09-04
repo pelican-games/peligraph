@@ -19,6 +19,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace Pelican {
@@ -118,6 +119,16 @@ class ILogicalFrameTarget {
         throw std::runtime_error(
             "logical-frame target does not support view-family execution");
     }
+    // Some targets (OpenXR sequential/multiview) submit in endView/endViewFamily.
+    // This lets the renderer seal the retirement batch at the first successful
+    // real submit rather than at logical-frame publication.
+    virtual bool submitsOnViewEnd() const noexcept { return false; }
+    // Three-phase logical-frame boundary.  Legacy fixtures can continue to
+    // implement endLogicalFrame; production targets override these two calls.
+    virtual void submitLogicalFrame(GpuSubmissionLease lease = {}) {
+        endLogicalFrame(std::move(lease));
+    }
+    virtual void publishLogicalFrame() {}
     // Implementations must capture the lease before returning (or throwing)
     // after any successful GPU submit, and release it only after completion.
     virtual void endLogicalFrame(GpuSubmissionLease lease = {}) = 0;
