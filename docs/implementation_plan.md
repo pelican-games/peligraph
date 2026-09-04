@@ -22795,6 +22795,17 @@ Linux の lock は **同一 UID かつ同一 `$XDG_RUNTIME_DIR`** の範囲(明�
 
 WP385(中段、terra + high)を先に投入(検証ループが速くなる)。WP384(上段、sol max)はその後。仕様レビューは打ち切り。
 
+
+
+#### WP385 完了記録(統合側。2026-09-04、`bbf0dc66`)
+
+- **実装(codex terra + high、中段。1 回目)**: `pelican_gpu_lease_run`(test/gpu_lease_run.cpp: `Globalpelican_gpu_lease_v1` named mutex、holder pid、既定 20 分、`PELICAN_GPU_LEASE=off`、Job Object kill-on-close + suspended child → Job 登録 → resume、Linux は flock + `XDG_RUNTIME_DIR` 必須 + token / sentinel / log)、`RESOURCE_LOCK` を `pelican_gpu` に統一、GPU label の timeout を `1200 + intrinsic + 60`、Catch discovery 出力の GPU lane を launcher で包む後処理(patch_catch_gpu_lease_tests.py)、json-v1 inventory 検査(test/ci/verify_gpu_lease_inventory.py)、gpu_lease_config.cmake、tools/worktree.sh(manifest)。production は不変。**全体 build は 120 秒で止まり**(bg helper 導入前の run)、Catch GPU lane・衝突・timeout・Job Object・変異は未実施
+- **2 回目(Claude Opus general-purpose subagent)**: 後処理 script の 2 バグ(discovery 出力の glob が `POST_BUILD` の実名 `{target}-<hash>_tests.cmake` に合わず 0 件 / `add_test( [==[…]==]` と裸の `LABELS gpu` に regex が合わない)を token 化で修正し、マッチ 0 件は build を落とす guard。inventory gate は label ⇔ lock ⇔ launcher の 3 者一致と `TIMEOUT` の厳密一致(生成物 `gpu_lease_timeouts.json`)。launcher に acquire / release の monotonic log、Windows の collision sentinel、holder section の session namespace fallback(非昇格で `holder_pid=0` になっていた)、token = pid + 開始時刻 + 連番、`PELICAN_GPU_LEASE_NAME`。wrapper は generator 不一致も拒否。受け入れ: 実 Catch GPU test × 2 process で区間が重ならず(gap 1.16 ms)、off では 1.33 s 重なる対照 / ctest 2 本並走で両方 exit 0 / timeout 5 s で exit 124 + `gpu_lease_timeout@1{holder_pid, waited_seconds}` / Job Object で孫が消える / json-v1 197 / 197 / 197 / manifest の generator 差替えで拒否。変異 7 種すべて赤。非 GPU 1306 / 1307(赤は `contract_projection_gate` = **main でも同じ 17 行で赤**。WP385 の範囲外、既知の穴へ)、GPU 対象 6 / 6
+- **統合側の検証(worktree、1 回目後)**: 全体 build エラー 0、非 GPU 1304 / 1306(script test `contract_projection_gate` と `gpu_lease_inventory` が赤)。json-v1 を数えると gpu label 197 件、lock 197 件、**launcher で包まれているのは 33 件**(Catch discovery 由来の GPU test に後処理が効いていない)→ 2 回目は codex terra ではなく **Claude Opus subagent** に引き継ぎ(利用者「余裕があるのは claude 側」)
+- **統合側の変異**: 2 回目の subagent が 7 種(mutex を即時取得 / `return 124` を 0 に / Job の kill フラグ除去 / 包装を 1 件外す / TIMEOUT を 1800 に / rewriter の `_is_gpu` を false に / glob を旧バグに戻す = build が名前付きで落ちる / manifest 検査から generator を落とす)を当てて全部赤を確認。統合側の追加変異は省略(test 基盤で production 不変)
+- **main 取り込み**: 衝突なし。codex の 1 回目が `.claude/agents/mutation-runner.md` を stub で追跡していたので index から外した(main の untracked の手順書を潰さない)
+- 全数(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列): **1633 / 1633**(WP385 の runtime test は `SKIP_DEVSTUDIO=OFF` 構成でも登録され緑)。doclink 11 件追従、未解決 1(docs-writer へ)。以後、変異ランナー 2 本と着地の GPU 並走が可能
+- コードレビュー: 中段のため codex レビューは行わず、統合側変異 + Claude レビューで代替
 ### WP382a-fix: 再帰 schema が reload 検証と catalog に届く(rev382a の致命 1 + 実害 4 + 設計懸念 3)
 
 **§4 規則 11 上段(reload 検証・RPC catalog・ABI 凍結を触る)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後)。見積: 中。連鎖: WP382a → 382a-fix で打ち切り。rev382a #2(raw の上書き)は WP382b の決定 2 が閉じる(ここでは扱わない)。**
