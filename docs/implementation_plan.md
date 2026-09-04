@@ -23105,6 +23105,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 **既知の穴(WP 化は別途判断)**
 - **web(共通形式)の subset 原則が enforcement されていない**(2026-09-04、マニュアル更新時の実測): web 側(`my_webpage/packages/pelican-webgpu`)の `bindPelicanScene()` は codec を持たない component 名を `opaque` として無検証で素通しし、`pelican_ray_instance` / `$list` / `ray_group_layout` の出現は 0 件。設計は「web が新要素を対応まで明示拒否する」ことで subset 原則を満たすとしていたが、いまは web が緩い(追随待ち)。web は別リポジトリなので別件で起票する(named reject を 1 箇所に足す小さな WP)
+- **AS row の transform identity が `-0.0` と `+0.0` を別物にする**(2026-09-04、guide 10 の敵対検証で発見): [`canonicalTransformIdentity()`](../src/core/renderer/accelerationstructure.cpp#L351) は 16 成分の f32 bit pattern をそのまま hex 化するので、同じ姿勢でも符号付き 0 を含む行列は別の identity 文字列になり、row の正準順が入力の計算経路に依存する(resolver 側の `appendResolverFloat()` と provider fingerprint は正規化している)。WP386a の決定 17(identity)で `-0.0 → +0.0` を同じ規則で正規化し、`-0.0` を含む transform の 2 object が同じ順で並ぶ受け入れを足す(記録。WP386a に同梱、単独起票しない)
 - **放棄された scene transaction の teardown で GPU test process が hang**(WP380e の統合側変異 M1 / M5: assertion 後に process が終了せず ctest timeout 約 1500 s で回収。effect scope が遅い / callback から例外が抜ける状況で fixture の teardown が待ち続ける)。機能の欠陥ではなく test harness の後始末。次に fixture の teardown を触る WP に同梱
 - **frozen header audit に partial TU が混入しうる**(`rev380b` #9)/ **root・Studio・AUDIO OFF の受け入れ文言の不一致**(`rev380b` #10)。WP380e の範囲外として記録
 - compiler OFF で guard の無い GPU テスト 25 件(WP377 完了記録の matrix 参照)
