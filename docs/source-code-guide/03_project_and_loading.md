@@ -296,13 +296,13 @@ prepare（失敗可）
 → finish（noexcept。early_publish で publish 済みの ECS create token を確定し、rollback 権を手放す）
 ```
 
-段を記録するのは原則 executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L508) が early_publish、[`enqueueSceneRetirement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L675) が retire）、SeqPlayer / VatPlayer / Camera / Light / Physics の publish（いずれも trace を取る scene 専用 overload。例: [`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388)）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L633) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L685) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L730) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L125)）、RNG（[`publishPreparedSequence()`](../../src/core/userpublic/deterministicrng.cpp#L126) が flush）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L278)）です。executor 自身が書くのは 2 か所だけで、pending swap 直前の [`record(SceneLoadPhase::flush)` の 1 行](../../src/core/loader/scene.cpp#L1000) と、created-entity batch を 1 participant と見なす [`record(SceneLoadPhase::finish)` の 1 行](../../src/core/loader/scene.cpp#L1012) です（WP380d。token 個別の `finish()` は記録しないので、`objects: []` の空 scene でも finish が列に出ます）。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L144) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。枠は 8 段ぶんの固定確保で、9 件目以降は列に入らない代わりに [`overflow`](../../src/core/loader/sceneload.hpp#L45) が立ちます（黙って落としません）。
+段を記録するのは原則 executor ではなく participant 自身で、`SceneLoadPhaseTrace` へ書くのは metadata token（[`prepareRuntimeIdentity()`](../../src/core/loader/basicconfig.cpp#L562) が prepare、[`commit()`](../../src/core/loader/basicconfig.cpp#L593) が commit_metadata）、renderer（[`publishPreparedScene()`](../../src/core/renderer/polygoninstancecontainer.cpp#L508) が early_publish、[`enqueueSceneRetirement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L675) が retire）、SeqPlayer / VatPlayer / Camera / Light / Physics の publish（いずれも trace を取る scene 専用 overload。例: [`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388)）、behavior arena（[`publish()`](../../src/core/gamelogic/behaviorarena.cpp#L633) / [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L685) / [`finish()`](../../src/core/gamelogic/behaviorarena.cpp#L730) が publish / activate / retire）、retirement queue（[`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L125)）、RNG（[`publishPreparedSequence()`](../../src/core/userpublic/deterministicrng.cpp#L126) が flush）、event outbox（[`PreparedEventOutbox::flush()`](../../src/core/userpublic/details/event/registerer.cpp#L278)）です。executor 自身が書くのは 2 か所だけで、pending swap 直前の [`record(SceneLoadPhase::flush)` の 1 行](../../src/core/loader/scene.cpp#L1000) と、created-entity batch を 1 participant と見なす [`record(SceneLoadPhase::finish)` の 1 行](../../src/core/loader/scene.cpp#L1012) です（WP380d。token 個別の `finish()` は記録しないので、`objects: []` の空 scene でも finish が列に出ます）。結果は [`SceneLoadCommitted::phase_trace`](../../src/core/loader/sceneload.hpp#L149) として返り、[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ段なら足さないので、同じ段を複数の participant が通っても列は 1 つにまとまります。枠は 8 段ぶんの固定確保で、9 件目以降は列に入らない代わりに [`overflow`](../../src/core/loader/sceneload.hpp#L45) が立ちます（黙って落としません）。
 
 **prepare**（[prepare 段の先頭](../../src/core/loader/scene.cpp#L519) から [`return fail(SceneLoadPhase::prepare, ...)`](../../src/core/loader/scene.cpp#L615) まで）では、candidate authority を 1 回だけ消費し（[`next_authority_epoch++`](../../src/core/loader/scene.cpp#L481)。失敗しても再利用しません）、metadata token に scene id と authority を書き（[`prepareRuntimeIdentity()`](../../src/core/loader/scene.cpp#L527)）、resolved scene を検証して（[`validateResolvedSceneFeatureBindings()`](../../src/core/loader/scene.cpp#L545)）、各 participant の candidate を live に触らずに作ります: renderer（[`prepareSceneReplacement()`](../../src/core/loader/scene.cpp#L562)。model の staging もここ）、camera（[`prepareSceneCameras()`](../../src/core/loader/scene.cpp#L585)）、light（[`LightContainer::prepareLoad()`](../../src/core/loader/scene.cpp#L587)）、SeqPlayer / VatPlayer（[`prepareSceneLoad()`](../../src/core/loader/scene.cpp#L591)）、retirement queue の容量予約（[`reserveOne()`](../../src/core/loader/scene.cpp#L123)）、RNG 列（[`prepareSequence()`](../../src/core/loader/scene.cpp#L603)）、event outbox（[`PreparedEventOutbox`](../../src/core/loader/scene.cpp#L607)。`SceneLoaded` の payload はここで確保します）。model は [`ModelAssetContainer::getModelTemplateByName()`](../../src/core/loader/scene.cpp#L574) で引きますが、`ModelAssetContainer` は **participant ではなく warm cache** です。candidate が失敗しても lazy load された model record / GPU resource は残り、戻しません（manifest の [`model_asset` / `warm_cache` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L147)。どの scene にも束縛されない record なので世代混在にはなりません）。
 
 **early_publish**（[`renderer.publishPreparedScene()`](../../src/core/loader/scene.cpp#L685) から [`return fail(SceneLoadPhase::early_publish, ...)`](../../src/core/loader/scene.cpp#L886) まで）では、ECS entity を [`ECSEntityMutation::prepareCreate()`](../../src/core/loader/scene.cpp#L694) の populate callback で作って `publish()` し（JSON は各 Component へここでロード）、名前 binding の candidate を集め、親子 transform を投影し（§4）、physics の candidate を作り（[`PhysWorld::prepareSceneBindings()` の呼び出し](../../src/core/loader/scene.cpp#L862)）、behavior の candidate を作り（[`prepareSceneReconciliation()`](../../src/core/loader/scene.cpp#L876)）、旧 entity を [`prepareDestroy()`](../../src/core/loader/scene.cpp#L880) で unpublish します。ここで投げると [`rollback` ラムダ](../../src/core/loader/scene.cpp#L630) が inverse token を逆順に消費して戻します。
 
-**publish** は [`static_assert(noexcept(...))`](../../src/core/loader/scene.cpp#L890) で固定された swap の列です（[`object_bindings.swap()`](../../src/core/loader/scene.cpp#L914) → SeqPlayer → VatPlayer → [`Camera::publishPrepared()`](../../src/core/loader/scene.cpp#L922) → Light → [`PhysWorld::publishPrepared()`](../../src/core/loader/scene.cpp#L930) → [`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L932)）。WP380d 以降、executor が呼ぶのは `SceneLoadPhaseTrace &` を取る scene 専用 overload だけで、`publish` を記録するのは呼ばれた participant 自身です（[`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388) / [`PhysWorld::publishPrepared()`](../../src/core/phys/physworld.cpp#L364)）。rollback 側は同じ swap を trace 無しの overload で戻すので、戻した分が `publish` として trace に増えることはありません。この段は失敗しないので、`PreCommitFailure::phase` に `publish` はありません（[`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) は `prepare | early_publish | activate` の 3 値）。
+**publish** は [`static_assert(noexcept(...))`](../../src/core/loader/scene.cpp#L890) で固定された swap の列です（[`object_bindings.swap()`](../../src/core/loader/scene.cpp#L914) → SeqPlayer → VatPlayer → [`Camera::publishPrepared()`](../../src/core/loader/scene.cpp#L922) → Light → [`PhysWorld::publishPrepared()`](../../src/core/loader/scene.cpp#L930) → [`behavior_candidate->publish()`](../../src/core/loader/scene.cpp#L932)）。WP380d 以降、executor が呼ぶのは `SceneLoadPhaseTrace &` を取る scene 専用 overload だけで、`publish` を記録するのは呼ばれた participant 自身です（[`Camera::publishPrepared()`](../../src/core/renderer/camera.cpp#L388) / [`PhysWorld::publishPrepared()`](../../src/core/phys/physworld.cpp#L364)）。rollback 側は同じ swap を trace 無しの overload で戻すので、戻した分が `publish` として trace に増えることはありません。この段は失敗しないので、`PreCommitFailure::phase` に `publish` はありません（[`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) 自体は 8 値ですが、`PreCommitFailure` に載りうるのは `prepare` / `early_publish` / `activate` の 3 つだけです）。
 
 **activate** は [`behavior_candidate->activate()`](../../src/core/loader/scene.cpp#L946) の 1 行で、`onInit` はこの時点で **全 participant が candidate に切り替わった状態**を観測します。ここで投げると同じ `rollback` ラムダが全 participant を旧世代へ戻し（[`PreCommitFailure{phase = activate}`](../../src/core/loader/scene.cpp#L951)）、document / projection / current scene / active authority は commit 前なので旧世代のままです。activate 中の `emit` / RNG / `loadScene()` は live queue ではなく candidate（[`EventOutboxScope`](../../src/core/loader/scene.cpp#L625) / [`RngSequenceScope`](../../src/core/loader/scene.cpp#L627) / [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L161)）へ向くので、rollback で一緒に捨てられます。
 
@@ -312,9 +312,9 @@ prepare（失敗可）
 
 **flush** は [`stageReserved()`](../../src/core/loader/scene.cpp#L997) で prepare 済みの `SceneLoaded` を予約 slot へ移し、RNG 列と pending scene を publish してから [`event_outbox->flush()`](../../src/core/loader/scene.cpp#L1002) で live queue へ `noexcept` に push します。
 
-**effect transaction**（audio / persistence / `loadScene` などの副作用）は、この段の列と同じ寿命で 1 つだけ開きます。[`EffectTransactionScope`](../../src/core/loader/scene.cpp#L626) は prepare の直後・`early_publish` に入る**前**に張られるので、component の JSON loader が早期 publish 中に呼ぶ副作用も、behavior の `onInit` と同じ transaction-local な sink を観測します（[executor 側のコメント](../../src/core/loader/scene.cpp#L618)）。実際の適用は flush で、[`effect_transaction->flush()`](../../src/core/loader/scene.cpp#L1007) が staging 時と同じ sequence 順（`0..next_sequence_`）に entry を消化します。したがって pre-commit で投げれば副作用は 1 つも出ず、scene と一緒に巻き戻ります。
+**effect transaction**（audio / persistence / `loadScene` などの副作用）は、この段の列と同じ寿命で 1 つだけ開きます。[`EffectTransactionScope`](../../src/core/loader/scene.cpp#L626) は prepare の直後・`early_publish` に入る**前**に張られるので、component の JSON loader が早期 publish 中に呼ぶ副作用も、behavior の `onInit` と同じ transaction-local な sink を観測します（[executor 側のコメント](../../src/core/loader/scene.cpp#L618)）。実際の適用は flush で、[`effect_transaction->flush()`](../../src/core/loader/scene.cpp#L1007) が staging 時と同じ sequence 順（`0..next_sequence_`）に entry を消化します。したがって pre-commit で投げれば副作用は 1 つも出ず、scene と一緒に巻き戻ります。sink 側（どの公開 API がこの transaction を読み、何が shadow になり何が拒否されるか、coalesce の規則）は [§5.15](05_gameplay_and_services.md) にまとめてあります。
 
-診断の記録は **allocation 禁止** です。[`record()`](../../src/core/loader/effecttransaction.cpp#L92) は [`errors_`](../../src/core/loader/effecttransaction.hpp#L125)（`sceneEffectCapacity + 1` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L107)）の固定 slot を 1 つ取って、文字列も `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけで、`std::string` も `json` も作りません。容量を超えた分は黙って消えず、末尾の 1 slot が [`effect_outbox_full`](../../src/core/loader/effecttransaction.cpp#L114) として落とした件数（`dropped`）を数えます。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1017) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L137) へ変換します。
+診断の記録は **allocation 禁止** です。[`record()`](../../src/core/loader/effecttransaction.cpp#L92) は [`errors_`](../../src/core/loader/effecttransaction.hpp#L125)（`sceneEffectCapacity + 1` 個の [`FixedEffectError`](../../src/core/loader/effecttransaction.hpp#L107)）の固定 slot を 1 つ取って、文字列も `FixedText<512>` / `FixedText<384>` へ `memcpy` するだけで、`std::string` も `json` も作りません。末尾の 1 slot は診断用ではなく **outbox 溢れ専用**で、[`reserveEntry()`](../../src/core/loader/effecttransaction.cpp#L114) が 256 件を超えて積めなかった**副作用の**件数を `effect_outbox_full@1` の `dropped` として数え続けます（診断そのものが 256 件を超えた場合は数えずに落ちます。非対称の理由は §5.15）。公開用の文字列と JSON は commit 後に初めて作られます — [`effectErrors()`](../../src/core/loader/scene.cpp#L1017) の呼び出しは `noexcept` の commit tail（`flush` / `finish`）を通過した**後**にあり、そこで固定 slot を sequence 順に並べて [`CommittedWithEffectFailure::EffectError`](../../src/core/loader/sceneload.hpp#L137) へ変換します。
 
 副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L135) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L141)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1071)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L1622) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L239) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
@@ -364,6 +364,54 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 [`SceneLoaded`](../../src/core/userpublic/events.hpp#L10) は「ロード完了後にその場で emit」ではありません。payload（`make_shared` と vector の容量）は prepare 段で [`event_outbox->prepare()`](../../src/core/loader/scene.cpp#L609) が確保し、commit 後の flush 段で [`stageReserved()`](../../src/core/loader/scene.cpp#L997) → [`flush()`](../../src/core/loader/scene.cpp#L1002) が live queue へ `noexcept` に移します（[`PreparedEventOutbox`](../../src/core/userpublic/details/event/registerer.hpp#L287)。`stageReserved()` / `flush()` の実装は [`registerer.cpp` 内](../../src/core/userpublic/details/event/registerer.cpp#L260)）。activate 段で behavior が `emit` したものも同じ outbox に入り、`SceneLoaded` はその**後ろ**に並びます。rollback すると outbox ごと捨てられるので、失敗した load の event が旧世代の behavior に届くことはありません。フレーム末尾のpending loadから flush された場合、eventは次フレーム冒頭に届きます。
 
+### 7. participant manifestとfault injector
+
+上の段の列は「誰が何を持ち替えるか」を散らして持っているので、それを1枚の表として**runtime側に**持っているのが [`sceneParticipantManifest()`](../../src/core/loader/sceneparticipantmanifest.hpp#L53) です。テスト用の別ファイルではなく production の TU にあるので、テストと実装が別々の真実を持つことはありません。
+
+1行が1つの**独立に観測できるフィールド**（またはビルドrootの1本）で、列は `owner` / `field` / `presence` / `role` / `prepare_owner` / `publication` / `rollback` / `retirement` / `snapshot_schema` / `mutation_id` です（[`SceneParticipantManifestEntry`](../../src/core/loader/sceneparticipantmanifest.hpp#L32)）。粒度を粗くしない理由はソースのコメントが書いています — `"renderer state"` のようにまとめた1行を作ると、後から足したカウンタがsnapshot比較にもmutationテストにも掛からずに逃げます（[そのコメント](../../src/core/loader/sceneparticipantmanifest.cpp#L52)）。
+
+`presence` は4値で、**ビルド構成から導かれます**（[`SceneParticipantPresence`](../../src/core/loader/sceneparticipantmanifest.hpp#L9)）。physics / seqplayer / vatplayer は `real` か `stub`、XRとRPCは `real` か `absent`、audioは `real` か `uninstalled` です（[先頭の `#if` 群](../../src/core/loader/sceneparticipantmanifest.cpp#L9)）。「このビルドには無い」と「このビルドでは別物が入っている」を1つの `bool` へ潰さない、という区別です。
+
+`role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L16)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L231)）、**executorの外に居るものも明示的に載る**のが要点です。
+
+| role | 意味 | 例 |
+|---|---|---|
+| `participant` | 段の列に参加し、rollbackで戻る | `metadata.document`、`camera.*`、`ecs.entity_liveness` |
+| `invariant` | 参加はするが値が変わらない | [`rng_sequence.increment`](../../src/core/loader/sceneparticipantmanifest.cpp#L142) |
+| `cache` | participantではない。失敗しても戻さない | [`model_asset.warm_cache`](../../src/core/loader/sceneparticipantmanifest.cpp#L147) |
+| `effect` | effect transactionのoutbox経由。flushで初めて外へ出る | [`audio.play`](../../src/core/loader/sceneparticipantmanifest.cpp#L149) / `persistence.save_data` |
+| `non_rollback` | 一度消費したら戻さない | [`audio.handle_cursor`](../../src/core/loader/sceneparticipantmanifest.cpp#L152)（`u64-gap-named-v1` = 失敗すると番号に穴が空く、と明記） |
+| `read_only` | outboxを重ねて読むだけ | [`persistence.load_data_overlay`](../../src/core/loader/sceneparticipantmanifest.cpp#L156) / `list_saves_overlay` |
+| `reject` | transaction中は拒否する面 | [`gameobjects.direct_mutation`](../../src/core/loader/sceneparticipantmanifest.cpp#L158) / [`behavior_context.retired_self_setters`](../../src/core/loader/sceneparticipantmanifest.cpp#L159) |
+| `frame_lifetime` | フレーム寿命でtransactionの外 | [`debug_text.frame_text`](../../src/core/loader/sceneparticipantmanifest.cpp#L160) |
+| `production_root` | executorを呼ぶ**入口**の側 | [`root.startup` / `root.rpc` / `root.pending` / `root.import.unversioned` / `root.import.versioned`](../../src/core/loader/sceneparticipantmanifest.cpp#L162) |
+| `excluded_wp380b` | 明示的な除外枠 | **現在この role の行は1つもありません**（enumと名前だけが存在） |
+
+`mutation_id` は「この行が主張する挙動を、実際に壊せる注入点」の名前です（[`scene_load_mutation`](../../src/core/loader/sceneload.hpp#L91)）。埋まっているのは実質のparticipant行だけで、`invariant` / `cache` / `non_rollback` / `reject` / `frame_lifetime` / `read_only` と `presence != real` の行では**空でなければならない**、というのが契約テスト側の要求です（[`scene_transaction_contract_test.cpp` 内](../../test/scene_transaction_contract_test.cpp#L140)。`real` なparticipantでmutation付きの行はちょうど10という数まで固定されています）。ビルドで消える面のIDも条件式で空になります（例: `rpc_presence == real ? scene_load_mutation::root_rpc : std::string_view{}`）。
+
+注入側は [`SceneLoadFaultInjector`](../../src/core/loader/sceneload.hpp#L74) の1メソッド `shouldMutate(phase, participant_name, mutation_id)` だけです。ここで使う [`SceneLoadFaultPhase`](../../src/core/loader/sceneload.hpp#L65) が `PreCommitFailure` の3値と**わざと別**である点が重要で、`prepare | publish | activate | commit | retire | flush` の6値、つまり `noexcept` のcommit末尾まで名前を持ちます（[そのコメント](../../src/core/loader/sceneload.hpp#L61)）。「外へ報告する段」と「壊せる辺」は同じ粒度ではない、という割り切りです。
+
+判定のヘルパは [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33)（injectorが`nullptr`なら常に偽）と、rootごとの切断を引く [`sceneLoadRootDisconnected()`](../../src/core/loader/sceneloadfault.cpp#L41) で、後者は [`root_mutations`](../../src/core/loader/sceneloadfault.cpp#L16) の表で `SceneLoadRoot` からmutation IDを引きます。加えて `rollbackScene*()` の3本は、**わざと間違ったrollback**（outboxをflushしてしまう / RNG候補を公開してしまう / pending sceneを入れ替えてしまう）を実装したもので、ヘッダのコメントがそう宣言しています（[`sceneloadfault.hpp` 内](../../src/core/loader/sceneloadfault.hpp#L20)）。「正しい実装を消して赤を見る」のではなく、「間違った実装を名前付きで用意して、テストがそれを選ぶ」形です。
+
+> 🧩 **難所 — 注入口はproductionバイナリに存在しない**([`SceneLoader::fault_injector`](../../src/core/loader/scene.hpp#L58) / [`test/sceneloadfault_testing.cpp`](../../test/sceneloadfault_testing.cpp#L5))
+>
+> **何をする所か**: fault injectorをloaderへ差す唯一の口です。差し口はメンバ変数 `fault_injector` と、staticな既定値 [`default_fault_injector_for_testing`](../../src/core/loader/scene.hpp#L59) の2つで、後者はconstructorが各インスタンスへコピーします（[constructorの初期化子](../../src/core/loader/scene.cpp#L137)）。
+>
+> **素朴に読むと**: 「テスト専用のsetterがproductionヘッダに宣言されている」ので、出荷バイナリにも入っていそうに見えます。実際には**宣言だけ**で、定義は `src/` の外の [`test/sceneloadfault_testing.cpp`](../../test/sceneloadfault_testing.cpp#L5) にしかありません。ヘッダ側は `namespace test_support` の2関数を前方宣言し、`SceneLoader` がそれを [`friend`](../../src/core/loader/scene.hpp#L63) にするだけです。したがって production の `pelican_core` をリンクしても、シンボルはどこにも現れません — 「無効化されている」ではなく「**存在しない**」が正確です。既定値がnullptrなので、production経路の `sceneLoadMutationEnabled()` は最初の `injector != nullptr` で必ず偽になります。
+>
+> **骨子**:
+> ```text
+> scene.hpp        : test_support::set...ForTesting(...) の宣言 + friend 宣言だけ
+> scene.cpp        : default_fault_injector_for_testing = nullptr
+> test/....cpp     : 定義本体(loader.fault_injector = injector)
+> pelican_core     : 上の test TU をソースに含めない
+> ctest wp380c_... : dumpbin /symbols で「入っていないこと」を検査
+> ```
+>
+> **手がかり**: それを機械で確かめるのが [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L1723) で、検査は3種類あります。(1) `dumpbin /symbols` の出力に `SceneLoadFaultInjectorForTesting`（およびmodel release側の3つ）が現れないこと（[その `string(FIND)`](../../test/run_wp380c_no_production_fault_setter.cmake#L17)）。(2) test-onlyのTUが `pelican_core` の `SOURCES` に混ざっていないこと（[そのループ](../../test/run_wp380c_no_production_fault_setter.cmake#L23)）。(3) productionヘッダ側に `set...ForTesting(...) {` という**定義**が書かれていないこと — 正規表現で本体つき定義を探します（[そのループ](../../test/run_wp380c_no_production_fault_setter.cmake#L30)）。3番目があるのは、ヘッダにinline定義を1行書くだけで(1)も(2)もすり抜けられるからです。この検査はWindows（`dumpbin` がある構成）限定です。
+>
+> **不変条件**: setterの定義をヘッダへ書かない（inlineでも）。test-onlyのTUを `pelican_core` のソースへ足さない。`default_fault_injector_for_testing` の既定値をnullptr以外にしない。
+
 ## 3.6 即時loadと要求load
 
 - `SceneLoader::load(SceneLoadRequest)`はその場で全sceneを置換（commit まで到達した場合。§3.5 の 3）。production の root は startup（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L133)）/ RPC `load_scene`（[`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1608)）/ pending apply / snapshot import（[`importSceneDocument()` からの `Owned` request](../../src/core/loader/basicconfig.cpp#L859)）で、いずれも [`requireSceneLoadCommitted()`](../../src/core/loader/scene.cpp#L441) で `PreCommitFailure` を従来どおりの例外へ戻します。
@@ -371,6 +419,10 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 - [`applyPendingLoad()`](../../src/core/loader/scene.cpp#L1057) はフレームのゲーム更新末尾で、まず前回 commit 分の retirement queue を消費し、apply 時点の committed projection に late-bind した `Borrowed` request で実際にload。
 
 `GameContext::loadScene()`はrequest型です。RPCの`load_scene`は即時loadです。この違いは、ゲームSystem update中にECS全削除が起きないようにするためです。
+
+rootは列挙型として名前を持ちます（[`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)）。`unspecified` を除く5値がそのまま §3.5 の 7 の `production_root` 行に対応し、importだけは snapshot schema version で2つに割れます — [`importSceneDocument()`](../../src/core/loader/basicconfig.cpp#L799) が `snapshot_schema_version == 1` なら `import_unversioned`、それ以外なら `import_versioned` を選びます（[その三項演算子](../../src/core/loader/basicconfig.cpp#L861)）。
+
+結果の扱いもrootごとに違います。startup / RPC / pending / import はいずれも [`requireSceneLoadCommitted()`](../../src/core/loader/sceneload.hpp#L259) を通して `PreCommitFailure` だけを例外へ戻しますが（ヘッダのコメントが規範 — 「pre-commit失敗は従来どおりthrow、commit済みのeffect失敗は成功なので呼び手へ返す」）、`CommittedWithEffectFailure` の運び方は分かれます。importは [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L239) が `revision` と `load_result` を**組で**返すので、呼び手は「revisionは進んだが副作用が失敗した」を1つの値として受け取れます。`SceneRevision` への暗黙変換演算子があるため、revisionだけ見ていた既存の呼び手はそのまま動きます。startup と pending は `LOG_ERROR`、RPCは `effect_errors` 配列でJSONに載せます（§3.5 の 3）。
 
 ## 3.7 ComponentのJSONロード
 
@@ -407,6 +459,10 @@ tinygltf Model
 ```
 
 執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L328) が担います。この API は `[[nodiscard]]` で、返り値の [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) は固定容量 8 の `ReleaseError`（`{stage, code, index}`。`index` は実 ID）と、9 件目以降を数える `overflow_count` だけを持ち、報告のために確保しません。[`releaseModelResources()` の本体](../../src/core/material/materialcontainer.cpp#L2431) は material も texture も resource 1 件ずつ try で囲むので、1 件の失敗で後続の返却が止まりません。同期経路は失敗を例外（`ModelResourceReleaseException`）に載せて運び、[`releaseErrorStatus()`](../../src/core/loader/scene.cpp#L186) が stage 名の列（溢れた分は `overflow:N`）へ畳んで [`PreCommitFailure::release_errors`](../../src/core/loader/sceneload.hpp#L132) に入れます。呼び元へ report を返せない destructor / deferred release / retirement queue / teardown の各経路は [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.cpp#L11)（log + `release_errors` / `overflow_count` の累積カウンタ。[`status()`](../../src/core/model/modelresourcerelease.cpp#L28) で読めます）へ渡します（WP380d）。
+
+失敗したときに**誰が解放するか**も、この API の一部です（WP380a-fix）。`ModelAssetContainer` は §3.5 の 3 のとおり participant ではなく warm cache なので、scene load が失敗しても cache は戻りません。ただし「戻さない」と「作りかけを残す」は別です。[constructor](../../src/core/asset/model.cpp#L428) は宣言を1件ずつ commit していき、途中で投げたときに二段で GPU 資源を返します — 内側の catch が**その1件**（[`releaseModelGpuResources(model, false)`](../../src/core/asset/model.cpp#L463)）、外側の catch が**それまでに登録済みの全件**（[`impl_->releaseAllModels()`](../../src/core/asset/model.cpp#L474)）です。どちらも report が空でなければ `ModelResourceReleaseException` に載せ替えて投げ直します。加えて `Impl` の [destructor](../../src/core/asset/model.cpp#L335) と、公開前の reload candidate を持つ [`ModelPayload` の destructor](../../src/core/asset/model.cpp#L302) が `ReleaseErrorSink` 経由で同じ解放を行います。**公開されなかった `ModelAssetContainer` は cache になりません**（moduleとして `__ready()` が立たない。§2.2）ので、部分状態を再利用するより資源を戻すほうが正しい、という選択です。
+
+同じ WP の残り半分は**順序**です。起動経路では render graph の検証と公開が scene の prepare より**前**にあります（[`(void)GET_MODULE(Renderer)`](../../src/core/userpublic/pelican_core.cpp#L130) とその上のコメント。§2.1 の 10番）。この2つが逆だと、rendering config が壊れているプロジェクトでも先に model を upload してしまい、(a) 利用者が最初に見る fatal が material route の失敗ではなく morph 頂点 pool の容量超過にすり替わり、(b) 同一プロセスでの再試行ごとに pool の offset が積み上がります。順序と解放は独立した2つの性質で、片方だけ戻すともう片方のテストが落ちます。
 
 > 🧩 **難所 — 128枚の結合palette**([`selectSkin()`](../../src/core/model/gltf.cpp#L1320) / [`loadMesh()`](../../src/core/model/gltf.cpp#L2014))
 >
@@ -750,35 +806,45 @@ componentのJSONをどう受理し、どう書き戻し、どうruntimeへ当て
 
 ```cpp
 struct ComponentCodec {
-    using DecodeAuthored = ComponentCodecValue (*)(const nlohmann::json &);
+    using DecodeAuthored = ResolutionResult<ComponentCodecValue> (*)(
+        const nlohmann::json &);
     using EncodeCanonical = nlohmann::ordered_json (*)(const ComponentCodecValue &);
-    using Schema = std::span<const StructFieldSchema> (*)();
+    using Schema = const SchemaNode &(*)();
     using RuntimeApply = void (*)(const ComponentCodecValue &, void *);
     using RuntimeProject = ComponentCodecValue (*)(const void *);
+    using EditorPrepare = ComponentEditorSwapToken (*)(
+        void *ecs, std::uint32_t entity_index,
+        std::uint32_t entity_generation, const ComponentCodecValue &);
+    using EditorSwap = void (*)(ComponentEditorSwapToken &,
+                                EditorCodecSwapPhase) noexcept;
 
     std::string_view name;
     ComponentCodecRuntimeKind runtime_kind;
+    EditorProjectionPolicy editor_policy;
     ...
 };
 ```
 
-この五つ（decode / encode / schema / apply / project）が**全codecに必須**です。値の運搬は `ComponentCodecValue = std::any` です。
+この五つ（decode / encode / schema / apply / project）が**全codecに必須**です。値の運搬は `ComponentCodecValue = std::any` です。`decode_authored` は例外ではなく [`ResolutionResult<ComponentCodecValue>`](../../src/core/loader/resolutionresult.hpp#L55) を返し、登録テーブルでは `decodeResult<decodeXxx>` が生の decode 関数を包みます。`schema` が返すのは平坦な `StructFieldSchema` 列ではなく**再帰記述子** [`const SchemaNode &`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87) で、平坦な列が要るときだけ [`fieldSchema()`](../../src/core/loader/componentcodec.hpp#L250) が作り直します（後述）。
+
+`editor_prepare` / `editor_swap` の2本は必須ではありません（transform / simplemodelview / camera / light / collider は `nullptr`）。[`prepareEditorSwap()`](../../src/core/loader/componentcodec.cpp#L1369) は `editor_policy` が `EcsCodec` で、かつ両方が非nullのときだけ通し、そうでなければ `logic_error` です。[`EditorProjectionPolicy`](../../src/core/loader/componentcodec.hpp#L33) に既定値が無いのは意図で、ヘッダのコメントどおり「codecを増やすなら、live projectionを所有するruntime participantを選ぶ」ことを強制します。
 
 `runtime_apply` と `runtime_project` がどの型を指すかは [`ComponentCodecRuntimeKind`](../../src/core/loader/componentcodec.hpp#L23) が決めます。ヘッダのコメントが規範です — transform は `TransformCodecTarget`、その他のECS codecはそのcomponent自身、camera/light は `CameraCodecData` / `LightCodecData`、collider は `ColliderComponent` です。
 
 この中でtransformだけが、componentを直接指さずに [`TransformCodecTarget`](../../src/core/loader/componentcodec.hpp#L68)（`world` / `local` / `parent_world` の三つのポインタ）を経由します。authoredなのは **local TRS** ですが、ランタイムで全員が読むのは world の `TransformComponent` で、`LocalTransformComponent` は親を持つobjectにしか付かない、という食い違いがあるためです（[`editorruntimefactory.cpp` 内](../../src/core/communication/editorruntimefactory.cpp#L891) の `tryComponent<LocalTransformComponent>` はrootではnullになります）。そのため `runtime_apply` は local へ書いたうえで world も自分で合成し直し（[`applyTransform()`](../../src/core/loader/componentcodec.cpp#L375)）、`runtime_project` は local があればそれを返し、無ければ `parent_world` を使って world から逆算します（[`projectTransform()`](../../src/core/loader/componentcodec.cpp#L400)）。`parent_world` は両方向の変換に必要な係数で、これが無いと親の下のobjectについてlocalとworldを行き来できません。
 
-現在の登録は7種です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1223)）。
+登録テーブルは8行です（[`componentcodec.cpp` 内](../../src/core/loader/componentcodec.cpp#L1223)）。ただし**見えるのは常に8行とは限りません**（最後の行だけは後述のgate付きです）。
 
-| codec名 | `runtime_kind` |
-|---|---|
-| `transform` | `Ecs` |
-| `simplemodelview` | `Ecs` |
-| `camera` | `Camera` |
-| `light` | `Light` |
-| `collider` | `Collider` |
-| `animation` | `Ecs` |
-| `sprite_view` | `Ecs` |
+| codec名 | `runtime_kind` | `editor_policy` | editor swap |
+|---|---|---|---|
+| `transform` | `Ecs` | `TransformClosure` | なし |
+| `simplemodelview` | `Ecs` | `RendererModel` | なし |
+| `camera` | `Camera` | `Camera` | なし |
+| `light` | `Light` | `Light` | なし |
+| `collider` | `Collider` | `Collider` | なし |
+| `animation` | `Ecs` | `EcsCodec` | あり |
+| `sprite_view` | `Ecs` | `EcsCodec` | あり |
+| `pelican_ray_instance` | `Ecs` | `EcsCodec` | あり（gate付き） |
 
 transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../src/core/loader/componentcodec.hpp#L306) を持ちます。
 
@@ -787,6 +853,64 @@ transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../
 未登録の名前を問い合わせても例外にはならず、[`componentCodecQueryMetadata()`](../../src/core/loader/componentcodec.hpp#L278) が [`ComponentCodecState::Missing`](../../src/core/loader/componentcodec.hpp#L48) を返します。エディタは「知らないcomponentは編集不可として表示する」ことができ、未知componentを含むsceneを開けなくなることがありません。
 
 テストは [`test/componentcodec_test.cpp`](../../test/componentcodec_test.cpp)、fixtureは [`test/fixtures/component_codec/`](../../test/fixtures/component_codec) の `valid.json` / `invalid.json` です。
+
+### `pelican_ray_instance` は二重にgateされる ✅実装済み
+
+8番目のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L1394) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L1387) が偽なら `codecs` の**先頭7要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L1399)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L139) で、`configure()` 済みかつモードが `LayoutV2` のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L35)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L282) でgateを迂回できます。
+
+もう一段のgateは**フィールド単位**です。[`decodeRayInstance()`](../../src/core/loader/componentcodec.cpp#L1005) は受理するキーを `name` / `mask` / `instance_flags` / `custom_index` に限りますが、`overrides` だけは「未知フィールド」ではなく専用の拒否へ落ちます（[その分岐](../../src/core/loader/componentcodec.cpp#L1020)）。
+
+```cpp
+if (key == "overrides") {
+    legacyReject(
+        "pelican_ray_instance.overrides_not_enabled",
+        "ray_instance_overrides_not_enabled@1: per-occurrence "
+        "overrides require WP382d enablement");
+}
+```
+
+判定の順序が要点です — `overrides` の検査は unknown field 検査の**前**にあるので、`ray_instance_unknown_field` ではなく `ray_instance_overrides_not_enabled@1` が出ます。「知らないから拒否した」ではなく「知っているが、この版では有効化されていない」を別のコードで表す形で、legacy branch ID は [`legacy_branch_descriptors`](../../src/core/loader/componentcodec.cpp#L1180) に登録されています（IDの一意性と整列は [`static_assert`](../../src/core/loader/componentcodec.cpp#L1220) と実行時ループの両方で検査されます）。
+
+そのほかの受理規則も全て名前付きの legacy branch で拒否します: `instance_flags` は文字列配列のみ、重複flagは拒否、未知flag名は `ray_as_unknown_flag`、`force_opaque` と `force_no_opaque` の同時指定は `ray_as_conflicting_instance_flags`（[その検査](../../src/core/loader/componentcodec.cpp#L976)）、`mask` は 0..255、`custom_index` は `rayCustomIndexMaximum` まで、そして**3つとも省略された宣言**は `ray_instance_empty` です（[その検査](../../src/core/loader/componentcodec.cpp#L1049)）。
+
+### 再帰schema `SchemaNode` と `$list` / `$row` ✅実装済み
+
+codecの `schema` が返す [`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87) は、§5.14 の consteval なフィールド宣言DSLを**実行時の所有値**へ起こしたものです。v2の平坦な `StructFieldSchema` 列と違い、子を持てます。
+
+| 要素 | 意味 |
+|---|---|
+| `tag` | [`SchemaNodeTag`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L76) = `Struct` / `Leaf` / `Flags` / `List` |
+| `presence` | `Required` / `Defaulted` / `OptionalOverride` の3値（[`StructFieldPresence`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L66)） |
+| `leaf_type` / `range` / `unit` | 平坦な記述子と同じ内容 |
+| `default_json` | `Defaulted` のときだけ入る**正準JSONテキスト**（`nlohmann::json` ではなく文字列） |
+| `vocabulary` | enum / Flags の名前と値（符号の有無を `signed_value` で持つ） |
+| `children` | `Struct` なら各フィールド、`List` なら行の型のschemaが**1つだけ** |
+
+平坦な列からの持ち上げは [`SchemaNode::fromFlat()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L151)（v2の記録をそのまま包む。子は作りません）、宣言DSLからの構築は [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L768) で、`List` のときだけ行型の schema へ**再帰**します（[その1行](../../src/core/userpublic/details/schema/structfieldjson.hpp#L788)）。[`recursive()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L177) は `Flags` か `List` が1つでもあれば真で、これが §2.11 のv3入口の選択に使われます。fingerprintは [`schemaNodeJson()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L828) の `dump()` そのものです（[`schemaNodeFingerprint()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L855)）。
+
+`List` のJSON表現は**オブジェクトのコンテナ**で、行のidを持つ封筒が付きます。
+
+```json
+{"waypoints": {
+  "$list": {"v": 1, "next_id": 3},
+  "rows": [
+    {"$row": {"id": 1, "v": 1}, "pos": [0,0,0]},
+    {"$row": {"id": 2, "v": 1, "hint": {"label": "goal"}}, "pos": [1,0,0]}]}}
+```
+
+decode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L383)）が課す規則は次で、いずれも名前付きの `StructFieldErrorCode` です。
+
+- コンテナが object でなければ `ListContainerMissing`。`$list` と `rows` 以外のキーは `UnknownField`。
+- `$list` は `v` と `next_id` の2つだけ（他は `UnknownField`）。`v != 1` は `RowEnvelopeUnsupported`。
+- 各行は `$row` を必須とし、その中身は `id` / `v` / `hint` の3つだけ。`id == 0` は `OutOfRange`、`v != 1` は `RowEnvelopeUnsupported`、`hint` は object のみで、**そのまま文字列として**保持されます（`hint_json`）。
+- `id` の重複は `DuplicateRowId`。最後に `next_id` が**全行のidより大きい**ことを確認し、破れば `OutOfRange`（`$list.next_id must exceed every row id`）。
+- 行の本体は `$row` を除いた残りを行型のschemaで [`decodeStructObject()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L495) へ渡します。エラーのpathは `field.rows[2].member` の形になります。
+
+encode（[list の枝](../../src/core/userpublic/details/schema/structfieldjson.hpp#L618)）は逆向きに `$list` → `rows` の順で `ordered_json` を組み、`hint_json` は保存時のテキストを parse し直して戻します。`List` フィールドの既定値は常に**空**です（[`setStructDefault()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L208) の `Member{}`。宣言側も [`EmptyListDefault`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L488) の1引数形しか受け付けません）。行の型がさらに `List` を持つことは [`validRecursivePolicyField()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L700) が拒否するので、入れ子は**1段だけ**です。
+
+> **設計決定:** 行のidを配列添字ではなく封筒で持つのは、行を並べ替えても挿入しても外部参照が切れないようにするためです（§3.12 の `AuthoringObjectId` と同じ動機）。`next_id` を単調に保つ検査がその保証の要で、ここを緩めると同じidが再利用され、参照が黙って別の行を指します。
+
+なお `ComponentCodec::fieldSchema()` が返す平坦な列は **rootの直下の子だけ**を写します（[その実装](../../src/core/loader/componentcodec.cpp#L1344)）。`List` の行schemaはそこに現れないので、平坦な列を消費する側（schema駆動のinspectorなど）は再帰schemaを完全には表現できません。
 
 ## 3.12 AuthoringSceneDocument ✅実装済み
 

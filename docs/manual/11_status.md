@@ -1,7 +1,14 @@
 # 第11章 実装状況と文書マップ
 
-対象: pelican2(2026-07-31 時点・WP238e 完了地点、HEAD=`d1c8081`、branch
+対象: pelican2(HEAD=`d146b8bd`・2026-09-04、branch
 `codex/render-target-runtime-slice`)/ このマニュアルはコードを正とする
+
+> **この章の鮮度:** §11.1 の**行単位の WP 表は 2026-07-31・WP238e までしか転記していません**。
+> WP239〜374(2026-08 のエディタ / prefab / ray tracing / 宣言担体トラック)は本章に行が無く、
+> [../implementation_plan.md](../implementation_plan.md) の完了記録が唯一の正です
+> (他章は個別に追随しており、例えば WP240c / 248 / 262 / 274 / 275 / 289 / 297 は
+> [第5章](05_assets.md)・[第6章](06_rendering.md)・[第10章](10_tools.md)・[第13章](13_editor.md) に出てきます)。
+> **2026-09-03〜04 に統合された分だけ**は §11.1 末尾の追補表に転記してあります。
 
 ## この章で学ぶこと
 
@@ -313,6 +320,55 @@ manual platform gate 待ち)です。未着手は WP211 `dist-bake`(配布・Que
 WP212 VRS/foveation(Quest SA2 の device 待ち)。予約 = WP22 pointcache /
 WP32 IBL / WP36 GPU particle。**
 
+> ⚠ **上の「要するに」は 2026-07-31 時点の要約です。**その後 WP239〜386 が着地しており、
+> 未着手・予約の判定もこの段落の外で動いています。行単位の正は
+> [../implementation_plan.md](../implementation_plan.md) です。
+
+### WP239〜374(2026-08。本章には行を転記していない)
+
+エディタ / prefab / ray tracing(RT1〜RT3)/ 宣言担体のトラックです。**本章には 1 行も
+転記していません** —— 各 WP の完了記録は [../implementation_plan.md](../implementation_plan.md)
+にあり、それが唯一の正です。他章に既に反映されているもの(この一覧は網羅ではありません):
+WP240c(project material)= [第5章](05_assets.md) §5.2 / WP248(`pelican_project`)=
+[第12章](12_codemap.md) §12.2 / WP262(ID バッファ picking)・WP274(gizmo feature)=
+[第6章](06_rendering.md) §6.5 / WP249/251/264/266/275(Qt Studio)=
+[第13章](13_editor.md) §13.12 / WP289(editor feature overlay)・WP297(`--vulkan-validation`)=
+[第10章](10_tools.md)・[第6章](06_rendering.md)。
+
+### WP375c〜386(scene load transaction / game DLL ABI / 宣言 schema v3 / GPU lease、2026-09-03〜04)
+
+統合済みのものだけを挙げます。commit は `main` の squash です。
+
+| WP | タイトル | 状態 | 1行説明 | ユーザーから見える面 |
+|---|---|---|---|---|
+| 375c | preview の拒否順序と journal identity | 済(`25d2f967`) | lifecycle preview の判定を inactive の `DocumentOnly` shortcut より前へ。journal identity は object ID + authored component の occurrence / type / origin | inactive scene の add / remove / reparent preview が `editor_preview_unsupported@1`。forced abort の restore 失敗は `editor_preview_forced_abort_failed@1` |
+| 378 | 利用者の誤りを例外ではなく値で返す | 済(`a8b8102e`) | move-only [`ResolutionResult<T, E>`](../../src/core/loader/resolutionresult.hpp#L55) + `UserDataViolation` / `LegacyResolutionText`。camera の cross-field 規則は純粋関数 1 つを 4 箇所から呼ぶ | `get_components` の各 component に `resolution_error`、`load_scene` の失敗は `error.data`([第13章](13_editor.md) §13.6) |
+| 379 | RAY-NAMESPACE | 済(`51841eb3`) | builtin を `pelican_ray_instance` に統一し、`pelican_` 接頭辞を owner-aware に予約。未登録 component の共通 cause を [`component_unknown@1`](../../src/core/ecs/componentinfo.hpp#L24) に一本化 | scene の component 名が `pelican_ray_instance`(**旧名 `ray_instance` を builtin として解釈する経路・alias は残していません**。外部 owner が同名を登録すればそれは普通の外部 component です)。外部 owner の `pelican_*` 登録は `reserved_component_namespace@1` |
+| 379a | engine registrar を game DLL 公開面から外す | 済(`da115e69`) | owner allocator と engine registrar を host 専用ヘッダ([registrationownerhost.hpp](../../src/core/registrationownerhost.hpp) / [enginecomponentregistrar.hpp](../../src/core/ecs/enginecomponentregistrar.hpp))へ。RPC に production registry の存在確認を注入 | 外部 DLL は engine owner を**リンクできない**。RPC が「登録済みだが editor codec 無し」を `not_editable`、「未登録」を `component_unknown@1` に分ける |
+| 380a | scene load を 1 つのトランザクションに | 済(`80dc33c3`) | [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L186) = `Borrowed` / `Owned`、scene 専用 executor、participant ごとの prepared state と inverse rollback | 途中で失敗した scene load が世代を混ぜない([第4章](04_scene_ecs.md) §4.3) |
+| 380a-fix | 失敗した load が vertex pool を消費する | 済(`f8cd134d`) | Renderer の検証・publish を scene prepare より前へ戻し、失敗 candidate の GPU 資源を解放 | 壊れた rendering config の fatal が `morph vertex …` の別 fatal に隠れない |
+| 380b | behavior の副作用をトランザクションに入れる | 済(`5fed6612`) | [`EffectTransaction`](../../src/core/loader/effecttransaction.hpp#L27) を scene load に設置し、audio / persistence / event / RNG / pending scene を outbox 化 | `load_scene` / `import_scene_snapshot` の result に `committed` と `effect_errors`([第13章](13_editor.md) §13.13) |
+| 380c | executor が順序を自分で証明する | 済(`aa7f65a7`) | phase を `commit_metadata → retire → flush → finish` に並べ替え、固定長の [phase trace](../../src/core/loader/sceneload.hpp#L38) を commit 結果に載せる。GPU 解放は heap を使わない [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) | 失敗した load の解放エラーが `PreCommitFailure.release_errors` に出る |
+| 380d | trace 入口と隔離の穴 6 件 | 済(`f85fbbe1`) | 全 participant が自分で trace に記録、material / texture を resource 単位で隔離、fault injector の setter を symbol gate で production から締め出す | 見えない |
+| 380e | effect transaction の取りこぼし | 済(`7b84c55d`) | scope を**最初の game-DLL callback より前**へ。診断は固定 slot に enum + 整数で書き(allocation-free)、JSON 化は commit 後 | `effect_outbox_full@1{dropped}` / `persistence_read_failed@1{path, reason}` —— 壊れた save slot が「不在」に化けない |
+| 381 | GLABI-2(古い game DLL をロード**前**に弾く) | 済(`e06c7b08`) | `pelican_game_logic_epoch_v2()` anchor + 4 入口の v2 改名。PE の import directory を直接読む [reader](../../src/core/gamelogic/gamelogicimports.hpp#L64)が `LoadLibrary` を呼ばずに診断 | 古い DLL は**ロードされる前に** `game_logic_abi_stale@1` 等で拒否。shadow dir が `.pelican-hot-reload/<pid>`。RPC の attempt / result / status に `error_code` / `error_fields` |
+| 381a | reader の境界と busy な source | 済(`11fd0071`) | descriptor 範囲・同一 section・ファイル境界と 4 種の上限。sharing violation 3 回で [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicimports.hpp#L54) を pending status に出し、解除後の poll で再試行 | ビルド中の DLL 差し替えが「失敗」にならず次の poll で通る。dead pid の shadow directory を起動時に掃除 |
+| 382a | 宣言 schema v3(`List` / `Flags`) | 済(`a79360e3`) | [`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87)(Leaf / Flags / List、深さ 2)、presence 3 値、`$list` object container、behavior / event / component の独立した v3 registration 入口 | **まだ engine 同梱の component は List を宣言しません**。`pelican_ray_instance.overrides` は [`ray_instance_overrides_not_enabled@1`](../../src/core/loader/componentcodec.cpp#L1020) |
+| 383 | AS row の material identity | 済(`1d5a0a05`) | `MaterialRowIdentity` を 1 箇所で作り、gate / bindings lookup / AS rule / material reference が同じ値を見る。`source_material_index` を producer から AS snapshot まで optional で運ぶ | `pelican.ray_material_index_out_of_range@1` |
+| 385 | GPU テストの process 間 lease | 済(`bbf0dc66`) | `gpu` label の CTest を launcher [`pelican_gpu_lease_run`](../../test/gpu_lease_run.cpp#L157) 経由にし、Windows では machine-wide の lease を 1 本だけ取る | 別 worktree の `ctest` と同時に走っても GPU が重ならない([第10章](10_tools.md) §10.9) |
+
+**未統合(2026-09-04 時点)。使えると書いてはいけないもの:**
+
+| WP | 状態 | 内容 |
+|---|---|---|
+| 382a-fix | 🚧 実装中 | `rev382a` の致命 1 + 実害 4 + 設計懸念 3。三 registry 共通の schema snapshot、presence / 再帰 schema を RPC catalog へ、`Flags` の one-hot 強制、`$list` validator の encode 共用 |
+| 382b | 🚧 実装中 | raw / typed の分離。**`set_component_value` で行を作れるようにするのはここ**(現状は既存 pointer の値置換のみ) |
+| 384 | 🚧 実装中 | frame transaction の rollback guard(却下された世代の SBT / TLAS descriptor が active に残らない) |
+| 382c / 382d | 起票済み・未着手 | occurrence identity の行編集と enablement。`pelican_ray_instance.overrides` が受理されるのは **382d** |
+| 386 | 起票済み・仕様レビュー待ち | RT3-2。static AABB + `.rint`(手続き幾何)。`pelican.asset_data` の `procedural_geometry` と hit group `type: "procedural"` は**まだ存在しません** |
+
+全数の基準は **1633 / 1633**(`SKIP_DEVSTUDIO=OFF`、projects dir、GPU 直列。WP382a / WP385 の完了記録)。
+
 WP 番号外の 2026-07-15 リファクタ群(design_reviews/ にレポートあり): module access hardening、PhysQuery 決定的クエリ基盤、purgeable physics provider boundary + provider DLL lifecycle。
 
 今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md)が
@@ -328,7 +384,9 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 
 矛盾時の優先順位: **凍結済み > ドラフト、設計文書 > 指示書**。
 実装状態はレンダリング系が 2026-07-31、それ以外が 2026-07-19 の
-コード・test・完了レポート基準です。
+コード・test・完了レポート基準です。**WP239 以降(2026-08〜09)の着地は下の表に
+反映していません** —— 例えば `design_object_identity.md` / `design_declaration_carrier.md` /
+`design_raytracing.md` は表に行がありませんが、WP374〜386 の規範として実際に使われています。
 
 ### 凍結・規範文書
 
@@ -458,7 +516,9 @@ web 側(my_webpage)の WW 台帳は [第9章](09_web.md) §9.6 を参照して�
 **2026-07-16 に WP64〜110**、**2026-07-17 に WP111〜137**、
 **2026-07-19 に WP138〜179 の状態・event/physics/VRMA 差分**、
 **2026-07-31 に WP180〜238e(レンダラ再構築。前回の宣言基準 `d13fc26` 以降 230 コミット
-= merge を除く)**を反映しました。
+= merge を除く)**を反映しました。**2026-09-04 に WP375c〜385(scene load transaction /
+game DLL ABI / 宣言 schema v3 / GPU lease)を §11.1 の追補表として足しました** ——
+このとき **WP239〜374 は行として転記していません**(§11.1 冒頭の注記が正)。
 維持のためのルール:
 
 1. **コードが正。** 設計文書と食い違ったら、実装を確認してマニュアルを実装に合わせる(意図の説明として設計文書を引用するのは可)。

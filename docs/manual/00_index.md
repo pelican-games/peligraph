@@ -1,9 +1,15 @@
 # Pelican2 マニュアル
 
-対象: pelican2(2026-07-19・WP179 完了地点、branch
-`codex/rendering-phase1-refactor`)/ 初版 2026-07-10、WP64〜111 反映
+対象: pelican2(HEAD=`d146b8bd`・2026-09-04、branch
+`codex/render-target-runtime-slice`)/ 初版 2026-07-10、WP64〜111 反映
 2026-07-16、WP112〜137 反映 2026-07-17、WP138〜179 の状態差分を
-2026-07-19 に同期
+2026-07-19 に同期、WP180〜238e(レンダラ再構築)を 2026-07-31、
+WP375c〜385(scene load transaction / game DLL ABI / 宣言 schema v3 /
+GPU lease)を 2026-09-04 に反映
+
+> ⚠ **章ごとに鮮度が違います。**各章の冒頭「対象:」行がその章の基準です。
+> **WP239〜374(2026-08)は [第11章](11_status.md) の WP 表に行として転記されていません** ——
+> WP 単位の正は [../implementation_plan.md](../implementation_plan.md) です。
 
 より深いクラス単位のコード解説は姉妹文書 [../source-code-guide/](../source-code-guide/README.md) にあります(本マニュアル = 使い方と現状、source-code-guide = 内部構造の深掘り)。
 
@@ -25,7 +31,7 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 | [第7章 入力と UI](07_input_ui.md) | 入力四層、actions.json、アクションセットスタック、UI の現状、debug_text HUD |
 | [第8章 ゲームロジック](08_gameplay.md) | ゲームコードの書き方(システムと **オブジェクト behavior**)、GameContext、イベント、カメラ、物理クエリ、決定性、オーディオ、永続化 |
 | [第9章 Web プロファイル](09_web.md) | サブセット原則、web ビューアでの開き方、シェーダ stem と WGSL、web 互換チェックリスト |
-| [第10章 ツールリファレンス](10_tools.md) | pelican_player 全 CLI、JSON-RPC 全メソッド、pelican_cli、配布ビルド、Studio、テスト基盤 |
+| [第10章 ツールリファレンス](10_tools.md) | pelican_player 全 CLI、JSON-RPC 全メソッド、pelican_cli、配布ビルド、Studio、テスト基盤、`tools/` の保守スクリプト |
 | [第11章 実装状況と文書マップ](11_status.md) | WP 全台帳、設計文書⇔章の対応表、既知の食い違い一覧、本マニュアルの更新ルール |
 | [第12章 コード読解ガイド](12_codemap.md) | **技術解説書**。リポジトリ地図、起動〜1フレームの追跡ルート、JSON→パーサ対応表、実装パターン(ソースへのジャンプリンク付き) |
 | [第13章 エディタとエディタ RPC](13_editor.md) | 実行中のシーンを編集する API(オーサリング文書・チケット・undo/redo・プレビュー・保存)、ImGui のインスペクタ、Python クライアント |
@@ -49,4 +55,4 @@ Pelican2 の**使い方と設計を人間向けに解説する公式マニュア
 
 ## 更新について
 
-更新ルール(バッジの更新タイミング・章の追加方法・食い違い台帳の運用)は [第11章 §11.4](11_status.md) にあります。直近では、**チケットプレビューの対象拡大・`render_preview` の実描画化・GUI と RPC の同居**([第13章](13_editor.md) §13.12)、および HR2-I / U3(ホットリロードの残件)のマージ時に該当章の書き換えが必要です。
+更新ルール(バッジの更新タイミング・章の追加方法・食い違い台帳の運用)は [第11章 §11.4](11_status.md) にあります。直近では、**チケットプレビューの対象拡大・`render_preview` の実描画化・GUI と RPC の同居**([第13章](13_editor.md) §13.12)、および HR2-I / U3(ホットリロードの残件)のマージ時に該当章の書き換えが必要です。加えて、**WP382b(可変長宣言の行編集)が着地したら [第13章](13_editor.md) §13.3 の「行は作れない」注記**を、**WP386 が着地したら [第9章](09_web.md) §9.7 の `procedural_geometry` 記述と [第5章](05_assets.md) の asset 種別**を書き換えてください。

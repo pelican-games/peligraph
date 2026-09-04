@@ -1,11 +1,13 @@
 # 第5章 アセットパイプライン
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 に全域再確認、2026-09-04 に §5.2 の起動時ロード順序・解放と material identity(WP380a-fix / WP383)を追記。HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - 二層モデル(ランタイム層/ソース層)— エンジンが読む形式と読まない形式の厳密な線引き
 - モデル・テクスチャ・マテリアルの追加方法と `asset_data.json`、および**そこに登録できない形式**(`.vrma`)
+- 起動時ロードの順序と失敗時の GPU 資源(壊れた rendering config ではモデルを upload しない)
+- モデル材質の identity — レイトレの加速構造規則が見る値
 - DCC(Blender / Houdini)連携 — glTF ハブ、`pelican.import` manifest、`pelican_cli import`
 - 焼き込みアニメーション 2 形式: `pelican.transform_seq`(JSONL)と `pelican.vat`(GLB 内 VAT)
 - `#` フラグメント参照・アセットコンテナの現状
@@ -48,6 +50,8 @@
 - `schema: "pelican.asset_data"` と `version: 1` は必須です。現行版だけを受理する strict v1 で、旧い未版形式は受理しません。
 - `models` 配列は必須、各要素は `name` と `path`(プロジェクトルート基準)の両方が必須です。`path` には `#` フラグメント(§5.6)も書けます: `{"name":"selected","path":"assets/models/city.glb#mesh/LampPost"}`。任意キー `material_bindings`(`pelican.material_bindings` v1 への参照 — プリミティブ → マテリアルの whole-model 契約。✅WP116、fragment モデルには不可)も書けます。
 - **起動時に全件ロード**されます(✅WP82 で CPU 側は並列化・GPU 登録は宣言順直列 = 決定的)。ファイルが無ければ解決後の絶対パス入りで fail-fast。
+- **rendering config が壊れているとモデルは 1 件も upload されません(✅WP380a-fix)**: 起動時、レンダーグラフの検証と publish は scene の prepare より**前**に走ります([pelican_core.cpp](../../src/core/userpublic/pelican_core.cpp#L126))。マテリアル経路の誤りのような config の失敗が常に最初の起動エラーになり、頂点プールを消費しません。
+- **失敗した load は GPU 資源を返します**: ロード途中で例外が出ると、その候補モデル(と登録済みモデル)の index / vertex / skinned vertex / morph delta / material / texture が解放されます([model.cpp](../../src/core/asset/model.cpp#L463))。**失敗した候補を warm cache として残さない**ので、同じプロセスで再試行しても頂点プールの使用量は増えません。解放そのものに失敗した分は固定容量 8 の報告([modelresourcerelease.hpp](../../src/core/model/modelresourcerelease.hpp#L36))へ畳まれ、scene load 失敗の結果に `release_errors`(stage 名の列。溢れた分は `overflow:N`)として現れます([sceneload.hpp](../../src/core/loader/sceneload.hpp#L132))。呼び元へ返せないデストラクタ経路の分は `ReleaseErrorSink` の累積カウンタに積まれます。
 - 静的メッシュはノード階層の変換が**頂点に焼き込まれて平坦化**されます。マテリアルは 5 テクスチャ(baseColor / metallicRoughness / normal / emissive / occlusion)として登録されます。occlusion は metallicRoughness の R から推測せず、glTF の独立した `occlusionTexture` を使います(色テクスチャは SRGB view、metallicRoughness / normal / occlusion は UNORM view — [第6章](06_rendering.md) §6.3)。
 - **スケルタルアニメーションは ✅WP38 で実装済み**: glTF の `skins` + `animations` を読み、シーンの `animation` コンポーネント([第4章](04_scene_ecs.md))で再生します。skinned プリミティブはスケルトンを保持します(焼き込まない)。制限: 補間は LINEAR / STEP のみ(CUBICSPLINE はロードエラー)、joint 上限 128、クリップはモデルと同一 glb のみ。※この 3 つの制限は **glb 内蔵クリップ + `animation` コンポーネントの経路に限った話**です。`.vrma` は別経路で、CUBICSPLINE も受理します(後述)。
 - **モーフターゲットは ✅WP121 で描画対応**: `primitive.targets` の POSITION/NORMAL/TANGENT delta をデコードし、初期 weight(node > mesh > 0)で material / shadow / velocity の全経路に適用します(変形順は morph → skinning → model)。制限: sparse morph accessor 非対応(名指しエラー)、target 64/primitive・weight 256/instance、同一 primitive の **morph + VAT 併用は拒否**。**アニメクリップの `weights` チャネルは今もロードエラー**で、実行時に weight を動かす公開経路は VRM expression service([第8章](08_gameplay.md) §8.13)だけです。
@@ -117,6 +121,23 @@
   `{opaque,mask,blend}_{single,double}` と一致しない binding は拒否されます。
 - material values と参照 texture は既存のファイル監視経路へ登録され、実行中の
   hot reload 対象です。surface/routing/文書構造の変更は values reload の範囲外です。
+
+### モデル材質の identity — レイトレの AS 規則が見る値(✅WP383)
+
+レイトレーシングを使うプロジェクトでは、ray layout v2 の `acceleration_structure.rules[]` が **material identity** で描画行を選びます([第6章](06_rendering.md) §6.15)。その identity がモデル側のどこから決まるかだけ、ここに書きます。
+
+identity は 3 種の直和で、gate(規則を要求するか)と lookup(どの規則に当たるか)は**同じ値**を見ます([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L18)):
+
+| identity | 成立条件 | 由来 |
+|---|---|---|
+| `Document{document, material_name?}` | その行に **project material 文書の参照がある**(名前は任意) | 上記 `materials` セクション経由で解決された material 文書 |
+| `Asset{asset, source_material_index}` | document が無く、asset 参照と `source_material_index` の両方がある | `asset_data.json` の `path` から作った**プロジェクト相対の正規キー**(fragment 付きなら `#kind/path` 込み)と、glTF の material 添字 |
+| `Unavailable` | どちらも成立しない | material 無しの glTF プリミティブなど |
+
+- **document の存在が勝ちます。** 単一 material の `.mat.json` のように `material_name` が無い document でも `Document` になり、`asset` 側へは落ちません。
+- `asset` に入るのは `asset_data.json` の `name`(`"sponza"` 等)ではなく `path` 由来の参照です。マシン依存の絶対パスにならないよう、解決前の authored 参照を保ったまま運びます([model.cpp](../../src/core/asset/model.cpp#L263))。
+- **`source_material_index` は optional のまま運ばれ、欠損は 0 に潰されません**([modeltemplate.hpp](../../src/core/model/modeltemplate.hpp#L122) → [accelerationstructure.hpp](../../src/core/vkcore/accelerationstructure.hpp#L40))。内部の「無し」番兵(`0xffffffff`)が identity まで届いた場合は `pelican.ray_material_index_out_of_range@1` で失敗します。
+- material の付いていないモデルはレイトレの規則で選べません(`Unavailable`)。AS 規則を 1 つでも書いた v2 プロジェクトにそういう行が混ざると `pelican.ray_as_row_material_identity_unavailable@1` になります。規則を書かなければ identity は要求されません。
 
 ### `.vrma`(VRM Animation)— 宣言レーンのないランタイム層形式(🚧WP176/177/178)
 

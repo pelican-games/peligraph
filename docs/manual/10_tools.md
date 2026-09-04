@@ -1,15 +1,16 @@
 # 第10章 ツールリファレンス
 
-対象: pelican2(2026-07-17 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-04 時点、HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
-- `pelican_player` の全 CLI 引数(23 個)
+- `pelican_player` の全 CLI 引数(**29 個**。正は [main.cpp](../../src/player/main.cpp) の `add_argument` 群)
 - JSON-RPC(stdio)による外部制御 — 基盤メソッド、エディタ拡張、実セッション例
-- `pelican_cli` の 6 サブコマンド系統(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material`)
+- `pelican_cli` の **7 サブコマンド系統**(`project init` / `import` / `dist-config` / `assets` / `bake-camera` / `dump-lowered-material` / `vrm`)
 - ホットリロード(シェーダ・テクスチャ・マテリアル・モデル・ゲーム DLL)と起動高速化
 - ImGui 開発者 UI(F1)と Frame Plan Viewer
 - 配布ビルド、Pelican Studio の現状、テスト基盤
+- リポジトリ保守スクリプト(`tools/` — worktree ラッパ・切り離し build・API inventory・doclink)
 
 ## 10.1 実行物の一覧
 
@@ -55,6 +56,7 @@
 | `--input-profile <name>` | project.json の既定 | アクティブ入力プロファイルの上書き(✅WP91) |
 | `--input-action-overlay <uri>` | なし | `pelican.input_action_overlay` v1 の action/profile bundle を**この起動だけ** project 入力へ重ねる |
 | `--free-camera [blender\|unity]` | off (`blender` が省略時 preset) | project 入力と並存する runtime-only の `orbit` camera と同梱入力 overlay を有効化 |
+| `--editor-transform [blender\|grab]` | off (`blender` が省略時 preset) | runtime の transform 編集アクションを有効化。`grab` は handle のドラッグだけを残す |
 | `--xr off\|auto\|on` | off | OpenXR(PCVR)起動(✅WP125。`auto` = 不在なら flat 続行 / `on` = 不在・headless・rpc・リプレイでは名指しエラー — [第2章](02_getting_started.md)) |
 | `--bake-camera-output <path.jsonl>` | なし | リプレイ中のカメラ軌跡を transform_seq v1 で出力。`--headless` + `--replay` 必須(✅WP89) |
 
@@ -120,7 +122,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 
 | メソッド | params | 動作 |
 |---|---|---|
-| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{...}, reload:{...}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
+| `get_status` | `{}` | `{instance_id, project_root, scene, frame, time, seed, renderdoc, diagnostics:{renderdoc:{...}}, debug_utils:{...}, vulkan_validation:{layer, available, enabled, synchronization, reason}, stores, input:{...}, reload:{...}, participants:{game_logic:{...}}, sprite:{...}, color:{...}, startup:{...}, xr:{active, reference_space, floor_semantics, ...}}` ※rpc は常に flat 駆動のため `xr.active=true` は rpc からは観測できない |
 | `set_seed` | `{seed}` | 決定的乱数のシード設定 |
 | `set_time` | `{t}` | 仮想時刻の直接設定(dt=0) |
 | `step_frame` | `{}` | 1 フレーム進める |
@@ -132,7 +134,7 @@ free-camera preset は overlay 側を選ぶため、両者は併用できます�
 | `set_gizmo` | `{selection:GizmoSelection\|null, mode}` | 選択 transform のギズモ表示を設定/解除。`engine://features/gizmo.json` が必要 |
 | `query_gizmo_handle` | `{selection:GizmoSelection, mode, x, y}` | 指定した選択・mode・物理 pixel にある handle を状態なしで問い合わせ。同 feature が必要 |
 | `load_gltf` | `{path, name?}` | glb の一時ロード(プロジェクト相対のみ) |
-| `load_scene` | `{name}` | シーン切替 |
+| `load_scene` | `{name}` | シーン切替。応答は `{name, committed, effect_errors[]}`(✅WP380b/380e。commit 後の副作用の失敗は error ではなく result に出ます — [第13章](13_editor.md) §13.13) |
 | `set_camera` | `{name}` | シーン内カメラへ切替 |
 | `update_transforms` | `{objects, transforms}` | 次フレーム境界で適用。`rot` は名指し拒否(`rotation`) |
 | `inject_input` | `{events:[...]}` | 入力注入。`key_*` / `mouse_*` / `axis` + **`gamepadButtonDown` / `gamepadUp` / `gamepadAxis`**(リプレイ中は拒否) |
@@ -269,6 +271,10 @@ selection の硬いエラーは `error.data.code` でも判別できます。宣
 | 保存 | `save_scene` |
 
 既存メソッドの変化: `get_status` に `scene_source`(シーンは**ホットリロード対象外**・保存は `save_scene`)が追加、`step_frame` の応答に `edit_results[]` が追加、`load_scene` / `reload_game_logic` / `start_input_replay` は進行中のプレビューを強制中止します。
+2026-09 の追加(詳細は [第13章](13_editor.md) §13.13): `get_status` に `participants.game_logic`
+(`error_code` / `error_fields`。**起動時の初期化失敗も未試行の状態で出ます**)、`load_scene` と
+`import_scene_snapshot` の result に `committed` / `effect_errors`、`get_components` の各
+component に `resolution_error`。
 
 ### 実セッション例
 
@@ -374,7 +380,7 @@ AuthoringObjectId は scratch session 内で新しく採番されます。採用
 ## 10.4 pelican_cli リファレンス
 
 ```
-pelican_cli <assets|bake-camera|import|dist-config|project|dump-lowered-material> ...
+pelican_cli <assets|bake-camera|import|dist-config|project|dump-lowered-material|vrm> ...
 ```
 
 エラーは stderr+終了コード -1、成功は 1 行サマリ+終了コード 0。
@@ -429,6 +435,12 @@ cmake --build build-dist --config Release
 ```
 
 ※ AUDIO / PHYSICS 系は導出対象外(常に既定 ON)。B3(embed サブセット)・B4(shaderc OFF 焼き込み配布)は 📐設計のみ。
+
+### `pelican_cli vrm dump <model.vrm>`(✅WP111)
+
+VRM 1.0(`VRMC_vrm`)の humanoid / expressions / lookAt を検証して canonical dump を出します
+(レンダラへの適用はしません)。引数は `dump` と 1 ファイルちょうどで、それ以外は usage を出して失敗します。
+詳細は [第5章](05_assets.md)。
 
 ## 10.5 ホットリロード(✅WP90/96〜110/147/162/178)
 
@@ -610,13 +622,93 @@ HEAD が動くと configure が再実行される。
 ## 10.9 テスト基盤
 
 - 単体テスト: Catch2 v3(`pelican_define_test`)。**GPU 必須テストは Vulkan デバイス列挙失敗時に `SKIP()`**。
-- **GPU テストの直列化(WP385)**: `gpu` label の付く CTest は launcher `pelican_gpu_lease_run`(`test/gpu_lease_run.cpp`)経由で起動し、Windows では machine-wide(`Global\` 名前空間)の lease を 1 本だけ取ります。CTest の `RESOURCE_LOCK pelican_gpu` は 1 つの `ctest` 実行の中しか直列化しないので、**別 worktree の `ctest` と同時に走っても GPU が重ならない**のはこの lease の側です。lease 待ちが締め切りを越えたら skip ではなく失敗(`gpu_lease_timeout@1`、exit 124)で、worktree ごとの configure / build / test は [`tools/worktree.sh`](../../tools/worktree.sh) が担当します。
+- **GPU テストの直列化(WP385)**: `gpu` label の付く CTest は launcher `pelican_gpu_lease_run`(`test/gpu_lease_run.cpp`)経由で起動し、Windows では machine-wide(`Global\` 名前空間)の lease を 1 本だけ取ります。CTest の `RESOURCE_LOCK pelican_gpu` は 1 つの `ctest` 実行の中しか直列化しないので、**別 worktree の `ctest` と同時に走っても GPU が重ならない**のはこの lease の側です。lease 待ちが締め切りを越えたら skip ではなく失敗(`gpu_lease_timeout@1{holder_pid, waited_seconds}`、exit 124)で、worktree ごとの configure / build / test は [`tools/worktree.sh`](../../tools/worktree.sh) が担当します(§10.10)。既定の lease 名は `pelican_gpu_lease_v1`、既定の待ち時間は **1200 秒**で、`PELICAN_GPU_LEASE_NAME` / `PELICAN_GPU_LEASE_TIMEOUT_SECONDS` で変えられます。**`PELICAN_GPU_LEASE=off` を置くと lease を取らずに素通し**します(対照実験用。off だと 2 process の GPU 区間が実際に重なります)。launcher は子プロセスを Job Object(kill-on-close)に入れてから resume するので、**孫プロセスが取り残されません**。
 - 結合テスト: `test/run_*.cmake` が player / cli を子プロセス起動して検証。2026-07-10 以降の追加: `run_devcli_assets`(WP66)/ `run_event_schema_compile`(WP71)/ `run_dump_lowered_material`(WP76)/ `run_devcli_gltf_extract`(WP79)/ `run_spvlink_golden`(WP80)/ `run_devcli_rules_import`(WP84)/ `run_devcli_bake_camera` + `run_input_record_replay_headless`(WP89)/ `run_ui_u2_rpc_replay`(WP93)など。
 - ゴールデンイメージテスト(**`inventory.json` の `cases[]` に登録されたものだけが対象。ディレクトリを置くだけでは走らない**。件数は [第6章](06_rendering.md) §6.10 が正)。
 - ctest 非登録のスモーク: `run_build_units_smoke.cmake`(IMGUI / PHYSICS 系を含む単独 OFF ビルド検証)、`run_project_code_smoke.cmake`。
 - **CI(✅WP137/165)**: push/PRのWindows CPU gateに加え、手動/週次の
   build-unit OFF/Jolt/project-code/clean-clone matrixがあります。GPU testは
   `gpu` labelで除外し、`SKIP`はexact allowlist、retryなし。GPU CI2は未。
+
+## 10.10 リポジトリ保守スクリプト(`tools/`)
+
+`tools/` はエンジンの実行物ではなく、**この repo を触る人(と coding agent)のための道具**です。
+どれも production にはリンクされません。
+
+| スクリプト | 何をするか |
+|---|---|
+| [`pelican_rpc.py`](../../tools/pelican_rpc.py) | Python 3.12 標準ライブラリだけの JSON-RPC クライアント(✅WP160。§10.3) |
+| [`worktree.sh`](../../tools/worktree.sh) | worktree ごとの configure / build / test ラッパ(✅WP385) |
+| [`codex_bg_build.sh`](../../tools/codex_bg_build.sh) / [`codex_bg_status.sh`](../../tools/codex_bg_status.sh) | 長い build を切り離して起動し、あとから状態を見る |
+| [`public_api_inventory.py`](../../tools/public_api_inventory.py) | 公開 context API の exact inventory を生成・照合(✅WP380b/380e) |
+| [`doclink.py`](../../tools/doclink.py) | docs 内の `#L<行番号>` リンクを追随させる |
+
+### `tools/worktree.sh` — worktree ごとの configure / build / test
+
+```sh
+tools/worktree.sh configure <worktree> [追加の cmake 引数...]
+tools/worktree.sh build     <worktree> [--target ...]
+tools/worktree.sh test      <worktree> [-R ...]
+```
+
+- **依存ソースを primary worktree から借ります。** `git worktree list` の先頭を primary とみなし、
+  その `build/_deps/<dep>-src` を `FETCHCONTENT_SOURCE_DIR_*` で指します。**別 worktree の
+  `_deps` を掴んだまま消されると configure が壊れ、古いバイナリで偽緑になる**ので、
+  この向き(primary から借りる)を守ってください。
+- `MSBUILDDISABLENODEREUSE=1` を必ず立てます。並行 build で MSBuild の node が再利用されると、
+  **別 worktree の出力が自分のログに混ざります**(exit 0 だけでは何を測ったか分かりません)。
+- `configure` は `build/pelican_worktree_manifest.json` に generator / 依存ソース根 /
+  node reuse / 引数の fingerprint を書きます。`build` と `test` は**その半分を計算し直して
+  食い違ったら名前付きで止まります**(別 generator・別依存根・別 feature 集合の manifest を拒否)。
+  manifest が無ければ「先に configure しろ」と言って exit 2 です。
+- `PELICAN_WORKTREE_GENERATOR=Ninja` のときだけ、Git Bash が保持できない `vcvars64` を
+  `cmd.exe` 側で立ててから CMake を呼びます。
+
+### `tools/codex_bg_build.sh` / `codex_bg_status.sh` — 切り離した build
+
+coding agent のシェルは約 120 秒で切られますが、全体 build はそれより長くかかります
+(実際に WP383 / WP385 では 120 秒上限で build が中断し、**変異を当てたはずのバイナリで
+測っていない**報告が出ました)。
+
+```sh
+tools/codex_bg_build.sh <tag> <command...>   # 起動して即戻る
+tools/codex_bg_status.sh <tag> [tail 行数]   # RUNNING か DONE:<exit> と log の末尾
+```
+
+ログと終了状態は `build/.codex_bg/<tag>.log` / `.status`(`CODEX_BG_DIR` で変更可)に置かれます。
+
+### `tools/public_api_inventory.py` — 公開 API の inventory
+
+`GameContext` / `GameObjects` / `BehaviorContext` の **public メンバ関数を exact signature で
+列挙**し、`test/fixtures/public_api_inventory.json` に書きます。
+
+```sh
+uv run tools/public_api_inventory.py           # 照合(古ければ非 0)
+uv run tools/public_api_inventory.py --write   # 生成
+```
+
+各行は `getter` / `mutator` / `host_entrance` に分類され、**mutator と host_entrance は
+[`sceneparticipantmanifest.cpp`](../../src/core/loader/sceneparticipantmanifest.cpp) の runtime manifest に
+対応する行が無いと生成が失敗します**。逆に manifest にあって inventory に無い API も失敗です
+(双方向。✅WP380e)。ゲーム API に mutator を足したら、scene transaction 側の分類も同時に足す、
+という結び付きをこの 1 本が強制しています。
+
+### `tools/doclink.py` — 行番号リンクの追随
+
+docs 内の `../../src/...#L<行番号>` は refactor のたびに腐り、**腐ったリンクは無いリンクより悪い**
+(黙って無関係なコードを指すため)ので、行番号は「アンカーが今どこにいるか」のキャッシュとして扱います。
+
+```sh
+uv run tools/doclink.py check     # 検証(腐っていたら非 0)
+uv run tools/doclink.py update    # 行番号を書き直し、台帳を更新
+uv run tools/doclink.py audit
+uv run tools/doclink.py update --staged   # git index にある docs だけ(pre-commit フック)
+```
+
+アンカーは 2 段です。リンクテキストが C++ 識別子(`Foo::bar()`)ならその**定義行**を探し直し、
+そうでなければ [docs/link_anchors.json](../link_anchors.json) が覚えている**行のテキスト**を探し直します。
+どちらでも決められないときは**書き換えずにそのリンクを名指しで報告**します。uv が interpreter を
+用意するので、システムの Python は要りません。
 
 ## 関連文書
 

@@ -1,6 +1,6 @@
 # 第3章 プロジェクト形式
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 に全域再確認、2026-09-04 に §3.7 の「エンジン先行」段落と §3.10(宣言スキーマ v3)を追記。HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -9,6 +9,7 @@
 - パス参照の分類(素の相対 / `project://` / `engine://` / `user://` / 絶対 / `#` フラグメント)と PathResolver の解決規則
 - asset store(置き場所の間接化)と `.pelican/local.json`
 - シーン JSON の in-memory 表現(`AuthoringSceneDocument`)と保存の契約(エディタ経路)
+- ユーザー定義コンポーネントの宣言スキーマ v3(`Flags` / `List` の行封筒 `$list` / `$row`)と `$` 予約
 - なぜこの設計なのか — fail-fast、cwd 全廃、絶対パス拒否などの決定事項
 
 正本となる設計文書は [../design_project_format.md](../design_project_format.md)([PF] v6.3・**凍結済み**)です。この章はその実装(`src/core/loader/` と `src/project/`)を基準に書いています。
@@ -254,6 +255,8 @@ example の README にあった手書き sha256 表の役目は、この manifes
 
 この原則の詳細と web ビューアでの開き方は [第9章](09_web.md) を参照してください。
 
+「エンジン先行」の現在地(2026-09-04 にコードを読んで確認):**§3.10 の `Flags` / `List` 行封筒も、レイトレの `pelican_ray_instance`([第6章](06_rendering.md) §6.15)も、web 側パーサはまだ知りません。** web の scene パーサが closed schema を持つのは組み込み 7 コンポーネント(`transform` / `light` / `camera` / `simplemodelview` / `collider` / `animation` / `sprite_view`)だけで、codec を持たない名前のコンポーネントは検証せず `opaque` として素通しします(`my_webpage/packages/pelican-webgpu/src/pelican2/componentCodec.ts` の codec 集合と `sceneFormat.ts` の `bindPelicanScene()`)。したがって `pelican_ray_instance` や `List` フィールドを持つコンポーネントを書いた scene は、**native では scene load 時に検証・拒否されるのに web では黙って通る**状態で、「明示拒否まで実装済み」ではありません。サブセット原則の向きとしては web が緩い側なので、web 側の追随待ちの項目です(web リポジトリは pelican2 の外にあるため、この 1 段落だけは pelican2 のコードでは検証できません)。
+
 ## 3.8 既知の食い違い(設計文書 vs 実装)
 
 調査(2026-07-10)で判明した主な差分です。**コードが正**として読んでください。全体の一覧は [第11章](11_status.md) にあります。
@@ -312,6 +315,61 @@ example の README にあった手書き sha256 表の役目は、この manifes
 シーン JSON はファイル監視の対象外です([第10章](10_tools.md) §10.5)。書き戻しの経路は保存 API(rpc の `save_scene`)だけで、これは rpc の `get_status` にも `scene_source: {"hot_reload": false, "save_method": "save_scene"}` として現れます。
 
 編集操作・リビジョンの排他制御・プレビュー・rpc メソッドの詳細は [第10章](10_tools.md) と [第13章](13_editor.md) を参照してください。
+
+## 3.10 コンポーネント宣言スキーマ v3 — `Flags` と `List` の wire(✅WP382a)
+
+§3.9 まではドキュメント全体の話でした。この節は **1 個のコンポーネントの中身**をどう書くかです。対象は**ゲームコード側が登録するコンポーネント**(と event payload / behavior params)で、エンジン組み込みの codec 表のコンポーネント(既定 7 件 + ray layout v2 のときだけ増える `pelican_ray_instance`。[componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1224))はこの節の対象外です(平坦なフィールド列のまま)。
+
+登録側の `schema` に `Flags<E>` か `List<Row>` が 1 つでも含まれると、登録は自動的に **v3 の入口**へ切り替わります([registerer.hpp](../../src/core/userpublic/details/component/registerer.hpp#L169))。判定は `schemaRequiresV3()` のコンパイル時定数なので、含まないコンポーネントの wire は 1 バイトも変わりません。scene JSON からの入口は従来と同じ「コンポーネント JSON をそのまま渡す」経路です([`ComponentInfoManager::loadByJson()`](../../src/core/ecs/componentinfo.cpp#L134))。
+
+### `Flags` — 宣言済み名の文字列配列
+
+```json
+{"name": "my_component", "instance_flags": ["cull_disable", "flip_facing"]}
+```
+
+空配列 `[]` も「明示的に空」という値で、キーごと省略するのとは別物です。重複する名前・宣言されていない名前はどちらも `InvalidEnum` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L351))。
+
+### `List` — object コンテナ + 行封筒
+
+素の配列は書けません。`List` フィールドは必ず次の形です:
+
+```json
+"overrides": {
+  "$list": {"v": 1, "next_id": 3},
+  "rows": [
+    {"$row": {"id": 1, "v": 1, "hint": {"node": "chair"}}, "occurrence_id": "occ-a", "mask": 0},
+    {"$row": {"id": 2, "v": 1}, "occurrence_id": "occ-b", "custom_index": 7}
+  ]
+}
+```
+
+- コンテナ直下に置けるキーは `$list` と `rows` の 2 つだけ。`rows` は配列必須です。
+- `$list` は `v` と `next_id` のちょうど 2 キー。`$row` は `id` / `v` 必須 + `hint`(object)任意。
+- 行の中身は `$row` を剥がした残りのキーで、行スキーマとして検証されます。
+- `hint` は object のまま保存され、エンジンは中身を解釈しません(オーサリング側の覚え書き用)。
+
+> **設計決定(行の同一性は id であって添字ではない):** 行の identity は配列添字ではなく `$row.id` が持つ。`$list.next_id` は「次に採番する id」で、**現存するどの行 id よりも大きい**ことが検証される。添字を identity にすると、行の挿入や並べ替えが外部からの参照を静かに壊すため。
+
+失敗は名前付きです([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L383)):
+
+| コード | 起きる条件 |
+|---|---|
+| `ListContainerMissing` | `List` フィールドが object でない(素の配列を書いた) |
+| `RowEnvelopeMissing` | `$list` が無い / `$list` に `v` か `next_id` が無い / 行に `$row` が無い / `$row` に `id` か `v` が無い |
+| `RowEnvelopeUnsupported` | `$list.v` または `$row.v` が 1 以外 |
+| `DuplicateRowId` | 同じ `$row.id` を持つ行が 2 つ以上ある |
+| `OutOfRange` | `$row.id` が 0 / `next_id` が最大 id 以下 / id・`next_id` が U32 を超える |
+| `UnknownField` | コンテナ・`$list`・`$row` のいずれかの封筒に未知キーがある |
+| `TypeMismatch` | `rows` が配列でない / `id`・`next_id` が非負整数でない / `hint` が object でない |
+
+### `$` で始まるフィールド名はエンジン予約
+
+スキーマ宣言側で `$` 始まりの名前を使うとコンパイル時に弾かれ([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L409))、JSON 側に未知の `$` キーがあると `UnknownField` ではなく `ReservedFieldName` で拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L704))。将来増える封筒キーを、利用者のフィールド名と衝突させないためです。
+
+保存でこの形は往復します。エンコードは `$list` → `rows` の順、各行は `$row` → authored フィールドの順に書き出します([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L618))。
+
+> ⚠ **`List` を使う最初の利用者はまだ居ません。** レイトレの `pelican_ray_instance` に per-occurrence の `overrides`(`List`)を載せる計画はありますが、現行実装は `overrides` キーを `ray_instance_overrides_not_enabled@1` で拒否します([第6章](06_rendering.md) §6.15)。この節の機構はその受け皿として先に着地したものです。
 
 ## 関連文書
 

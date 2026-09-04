@@ -2,6 +2,7 @@
 
 調査時点: 2026-07-21 / 基準コミット: `8819779`
 (§10.1 末尾の 5 項目 — cube イメージ / subresource range / mip 数の上限 / タイル常駐 / dynamic rendering local read — のみ 2026-07-31 / 基準コミット `5a4f95e`)
+(§10.4 の 2 項目 — PE の import directory / 名前付き mutex と `Global\` 名前空間 — のみ 2026-09-04 / 基準コミット `d146b8b`)
 (§10.1 の swapchain 4 項目 — maxImageCount の 0 / currentExtent の特別値 / sharing mode / vulkan-hpp の戻り値規約 — のみ 2026-07-31 / 基準コミット `eeaaaaa`。frame target が surface/swapchain の世代管理へ作り替わったのに合わせて書き直したもの)
 
 第2〜9章の「🧩 難所」ブロックが**このコードベース固有の難しさ**を扱うのに対して、この章は **pelican2 のコードが「知っている前提」で書かれている一般知識**をまとめたものです。仕様の細部や定番イディオムの名前を知らないと、コード自体は素直なのに読めない — そういう箇所を拾ってあります。
@@ -11,7 +12,7 @@
 > **この章の行番号は追従されません(意図的です)。** 他章は markdown リンクで書かれ
 > [`tools/doclink.py`](../../tools/doclink.py) がコードの移動に追従させますが、この章は
 > `` `chooseSwapchainImageCount()`(175 行) `` の形で 227 箇所を引用しており、その 9 割は
-> 「直前で挙げたファイルの N 行目」です。全部をリンクにすると 67 項目が 3 件超ずつリンクを
+> 「直前で挙げたファイルの N 行目」です。全部をリンクにすると 69 項目が 3 件超ずつリンクを
 > 抱えて解説として読めなくなるため、**追従の代わりに上の基準コミットを宣言する**方を採って
 > います。行番号がずれていたら、その項目の基準コミットで読んでください。
 >
@@ -321,6 +322,18 @@ POSIX のプロセスは必ずいずれかの **プロセスグループ** に�
 Windows には「プロセスツリーをまとめて殺す」API が素直な形では無く、`CREATE_NEW_PROCESS_GROUP` は名前に反して kill の単位ではありません — これは `GenerateConsoleCtrlEvent` による Ctrl+C / Ctrl+Break の配送単位を分けるだけのフラグです。ツリー単位の生殺与奪を担うのは **Job オブジェクト**で、`CreateJobObject` で作り `AssignProcessToJobObject` でプロセスを入れると、以後そのプロセスが作る子孫も自動的に同じ Job に入ります。`TerminateJobObject` で全員を、`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を設定しておけば最後の Job ハンドルを閉じた時点でも全員を終了させられます。ここで `CREATE_SUSPENDED` で起動し、Job へ入れてから `ResumeThread` するのは必須のイディオムです。そうしないと、割り当て前の一瞬に子がさらに孫を起動して Job の外に取り逃がす競合が残ります。
 
 **このリポジトリでは**: `src/devcli/processrunner.cpp` の Windows 版 `runPlatformProcess()` が `CreateJobObjectW`(171 行)→ `SetInformationJobObject`(177 行)で `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` を立て、`CreateProcessW(..., CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW, ...)`(197〜198 行)→ `AssignProcessToJobObject`(208 行)→ `ResumeThread`(215 行)の順に進めます。`CREATE_SUSPENDED` で止めてから Job へ入れて再開するので、割り当て前に子が孫を起動して取り逃がす競合が消えます。タイムアウト時は `TerminateJobObject`(241 行)で全員を、正常終了時も `UniqueHandle job` の破棄(`job.reset()`、260 行)が KILL_ON_JOB_CLOSE を発火させて生き残った子孫ごと片づけ、両方のキャプチャパイプを EOF へ到達させます(258〜259 行のコメント)。
+
+### PE の import directory / delay-import directory を、イメージをマップせずに読む
+
+Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0` シグネチャ、COFF ヘッダ、optional ヘッダを持ち、optional ヘッダの末尾に **data directory** の配列が並びます。この配列の 1 番が import directory、13 番が delay-import directory です。どちらのエントリも `(RVA, size)` の組で、RVA(relative virtual address)は「イメージがメモリへマップされたときの、イメージ先頭からの相対アドレス」を指します。**ファイルをそのまま読む場合、RVA はファイルオフセットではありません** — section テーブルを走査し、RVA を含む section を見つけて `raw_offset + (rva - virtual_address)` へ翻訳する必要があります。import directory の各記述子(20 byte)は「元 thunk 配列の RVA」「モジュール名の RVA」「first thunk の RVA」を持ち、thunk 配列の各要素は最上位ビットが立っていれば **ordinal import**(下位 16 bit が序数)、そうでなければ「hint(2 byte) + NUL 終端名」を指す RVA、つまり **named import** です。要素の幅は PE32 で 4 byte、PE32+(64bit)で 8 byte です。delay-import 記述子は歴史的経緯で、フィールドが RVA の版と**絶対アドレス**の版があり、後者は `image_base` を引いて RVA へ直す必要があります。
+
+**このリポジトリでは**: `src/core/gamelogic/gamelogicimports.cpp` が `LoadLibraryW` の前に走る診断用の最小 reader を持ちます。`importDirectoryIndex = 1` / `delayImportDirectoryIndex = 13`(19〜20 行)で 2 つの directory だけを取り、`fileOffset()`(212 行)が section テーブル経由で RVA をファイルオフセットへ翻訳します。`appendThunkImports()`(306 行)が PE32 / PE32+ の幅と ordinal フラグ(`0x80000000` / `0x8000000000000000`)を分け、`GameLogicPeImportKind` の 4 種へ分類します。delay 側の `delayFieldRva()`(293 行)が「絶対アドレス版」を `image_base` の減算で RVA へ直します。ファイルは 256 MiB、記述子は 4096 件、thunk は 65536 件で打ち切りますが、コメントが明記しているとおり **これは PE 形式の制限ではなく parser の作業量制限**で、壊れた入力が無制限の走査や確保にならないようにするためのものです。`directoryDescriptorOffset()`(248 行)が「directory と記述子が同じ section にあること」まで見るのも同じ理由(section 境界を越えた記述子を正当に見せないため)です。この reader が読むのは top-level の import だけで、`GetProcAddress` や依存 DLL 経由の解決は範囲外です。
+
+### Windows の名前付き mutex と `Global\` 名前空間(machine-wide の相互排他)
+
+`CreateMutexA/W` の第 3 引数に名前を渡すと、その名前がプロセスを跨ぐ待ち合わせ点になります。名前は kernel object namespace に属し、接頭辞で可視範囲が変わります — `Local\` は呼び出し元のログオンセッション内、`Global\` はマシン全体(全セッション)です。接頭辞を省くと Terminal Services の設定次第で `Local\` 相当になるため、「同じマシンで走る別セッションのプロセスと排他したい」なら `Global\` を明示します。所有スレッドが `ReleaseMutex` せずに終了すると、次に待っていたスレッドは `WAIT_ABANDONED` を受け取ります。これは失敗ではなく **「取れたが、前の所有者が異常終了した」** の意味で、多くの用途では `WAIT_OBJECT_0` と同じに扱います。注意が要るのは *section*(file mapping)オブジェクトで、`Global\` 名前空間に**新規作成**するには `SeCreateGlobalPrivilege` が要ります。mutex と違って、昇格していないプロセスは `Global\` の名前付き共有メモリを作れません。POSIX 側に直接の対応物は無く、`flock` / `fcntl` のファイルロックや `$XDG_RUNTIME_DIR` 下のロックファイルで、UID とセッションに閉じた範囲を作るのが定番です。
+
+**このリポジトリでは**: `test/gpu_lease_run.cpp` が GPU テストの直列化に使います。`CreateMutexA(nullptr, FALSE, ("Global\\" + name).c_str())`(157 行)が **lease の本体**で、待ちは `WaitForSingleObject`(172 行)、`WAIT_OBJECT_0` と `WAIT_ABANDONED` を**どちらも取得成功**として扱います(前の holder が落ちても GPU が永久にロックされないため)。診断用の holder レコード(保持者 pid とトークン)は別の file mapping で、コメントが明記しているとおり `Global\` の section 作成には `SeCreateGlobalPrivilege` が要り、昇格していないテスト実行では作れません。そこでまず `Global\` を試し、失敗したらセッション名前空間へ落として(164〜169 行)、少なくとも timeout メッセージが pid 0 ではなく実際の保持者を名指しできるようにしています。**lease 自体は常に `Global\` の mutex なので、この fallback で排他が弱まることはありません。** POSIX 側は同じファイルの別実装で、UID と `$XDG_RUNTIME_DIR` に閉じた範囲であることを冒頭のコントラクト(6〜7 行)が明記しています。待ち時間が締め切りを超えたら skip ではなく `gpu_lease_timeout@1{holder_pid=...}` / exit 124 の失敗にする、というのがこの lease の設計判断です。
 
 ### 子プロセスのパイプ読みとデッドロック回避
 

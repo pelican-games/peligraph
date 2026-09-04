@@ -1418,6 +1418,115 @@ fixture は [`test/fixtures/gpu_timing_attribution.json`](../../test/fixtures/gp
 >
 > **不変条件**: adler32 は圧縮前、CRC32 は `type + data`、無圧縮ブロックは 65535 byte 以下。エンコーダが入力だけで決まる純粋関数であること — 外部の圧縮器に置き換えると同じ入力から同じバイト列が出る保証が消えます(テストは [`editorpreview_test.cpp`](../../test/editorpreview_test.cpp)、base64 が `iVBORw0KGgo` で始まる = PNG シグネチャ一致を固定)。
 
+## 6.20 RT3-1: 加速構造の宣言面(`ray_group_layout` version 2)
+
+WP374 系(RT3-1)より前は、BLAS/TLAS に載る値をプロジェクトが宣言できませんでした。mask は `0xff` 固定、`instanceCustomIndex` には canonical 行番号 `q` がそのまま入っていました。version 2 の layout はこの2つを利用者の宣言へ移します。加速構造そのものの作り方は[第11章](11_ray_query_acceleration_structures.md)、ここでは**宣言がどう解決されるか**だけを扱います。
+
+### 担体は粒度で分かれる
+
+| 値 | 粒度 | 担体 |
+|---|---|---|
+| `mask`(U8) / `instance_flags` / `custom_index`(24 bit) | instance | scene の `pelican_ray_instance` component([`RayInstanceComponent`](../../src/core/userpublic/components/rayinstance.hpp#L37)) |
+| `geometry_flags` | geometry | layout の `acceleration_structure.rules`(material 鍵規則) |
+
+省略時の値は1箇所にまとまっています。[`rayAccelerationStructureCanonicalDefaults`](../../src/core/userpublic/components/rayinstance.hpp#L32) が `mask = 0xff` / `instance_flags = 0` / `custom_index = 0` / `geometry_flags = 0` で、layout parse・component 解決・TLAS lowering・テストがすべて**この値を参照し、リテラルを書き直しません**(コメントが規範)。
+
+flag の語彙は Vulkan の operand bit そのものです([`rayInstanceTriangleFacingCullDisable` 以下](../../src/core/userpublic/components/rayinstance.hpp#L11))。authoring 層と scene 層が Vulkan ヘッダに依存せず解決済み宣言を運べて、AS builder はそのまま渡せる、という選択です。
+
+### layout 側の `acceleration_structure`
+
+```json
+{ "schema": "pelican.ray_group_layout", "version": 2,
+  "acceleration_structure": {
+    "defaults": { "mask": 255, "instance_flags": [], "geometry_flags": [] },
+    "rules": [
+      { "material": {"document": "materials/multi.json", "material_name": "Oak"},
+        "geometry_flags": ["opaque"] },
+      { "material": {"asset": "models/tree.glb", "source_material_index": 7},
+        "geometry_flags": [] } ] } }
+```
+
+型は [`RayAccelerationStructureDeclaration`](../../src/core/shader/raygrouplayout.hpp#L84) で、`defaults` と [`RayAsGeometryRule`](../../src/core/shader/raygrouplayout.hpp#L77) の列だけです。selector は [`RayAsMaterialSelector`](../../src/core/shader/raygrouplayout.hpp#L62) の typed union(`document_material` か `asset_material`)で、**同一 exact key の重複規則は first-match にせず拒否**します([`ray_as_duplicate_rule`](../../src/core/shader/raygrouplayout.cpp#L551))。照合の実体は [`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L562) で、document selector は `material_name` が空なら名前を問わず一致し、名前付きなら一致を要求します。
+
+### 優先順位は `defaults < material rule < instance override`
+
+解決は [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1246) の1関数に閉じています。行ごとに defaults を置き、v2 かつ rule があれば `geometry_flags` だけを上書きし、v2 かつ `pelican_ray_instance` があれば **field 単位で** mask / instance_flags / custom_index を上書きします。`RayInstanceComponent` の3つが `std::optional` なのはこのためで、「authored の空配列 `instance_flags: []` は本物の override、component 全体が空なら codec が拒否」という規則がヘッダのコメントに書いてあります([`RayInstanceComponent` 直前](../../src/core/userpublic/components/rayinstance.hpp#L35))。
+
+### 10 状態
+
+layout の版と宣言の有無で、解決値と名前付き拒否は次のように決まります。
+
+| # | 入力 | 結果 |
+|---:|---|---|
+| 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L476)) |
+| 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1405)) |
+| 3 | v1 layout、`acceleration_structure` 有り | parse で [`pelican.ray_as_declaration_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L653)。`ray_as_declaration_requires_layout@1` という code は作られていません(`acceleration_structure` は layout 内の field なので、その構文が存在しない) |
+| 4 | v2 でない layout の row に `pelican_ray_instance` がある | [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L1266)。builtin 宣言側は scene load 時点で[同 code](../../src/core/loader/scene.cpp#L79) |
+| 5 | v2 layout、`acceleration_structure` 無し | 全 row が canonical defaults。**`custom_index` は 0 であって `q` ではありません** |
+| 6 | v2 + `defaults` だけ | `defaults` の4値がそのまま全 row へ |
+| 7 | v2 + material rule が1つ当たる | その row の `geometry_flags` だけが rule 値へ([rule 値の代入](../../src/core/shader/raygrouplayout.cpp#L1301)) |
+| 8 | v2 + rules 有り、row の material identity が `Unavailable` | [`pelican.ray_as_row_material_identity_unavailable@1`](../../src/core/shader/raygrouplayout.cpp#L1290)。黙って defaults へ落としません |
+| 9 | v2 + 2つ以上の rule が一致 | [`pelican.ray_as_rule_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1297) |
+| 10 | v2 + `pelican_ray_instance` の override | field 単位で defaults / rule の上に載る([`ray_instance` 分岐](../../src/core/shader/raygrouplayout.cpp#L1303)) |
+
+override 側には3つの範囲・整合検査が続きます。`custom_index` が [`rayCustomIndexMaximum`](../../src/core/userpublic/components/rayinstance.hpp#L17)(`0x00ffffff`)を超えると [`pelican.ray_instance_field_range@1`](../../src/core/shader/raygrouplayout.cpp#L1314)、`force_opaque` と `force_no_opaque` を同時に立てると [`pelican.ray_as_conflicting_instance_flags@1`](../../src/core/shader/raygrouplayout.cpp#L1323)、portable alpha profile が有効な layout で `force_opaque` を使うと [`pelican.ray_profile_opaque_as@1`](../../src/core/shader/raygrouplayout.cpp#L1328) です。
+
+> **設計決定:** 自動移行はしません。既存 project は layout を書き換えない限り 1 か「layout 無し」のままで、`custom_index == q` を固定していたテストは **v1 のテストとして残されて**います。v1 と v2 の意味論は [`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L54) として型で運ばれ、immutable な row と TLAS plan まで届きます。
+
+### `custom_index` の供給源は `q` ではない
+
+v2 では `gl_InstanceCustomIndexEXT` に出るのは**宣言値**です。`q`(canonical 行番号)は SBT の record base を決める値であって、shader へ公開する識別子ではありません。実装上この2つは同じ `RaySceneRow` に並んでいるので混ざりやすく、テスト側に専用の seam が置かれています。
+
+- [`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.hpp#L449) が SBT 側の `q * R`。
+- [`ScopedRayTracingTlasRecordOffsetOverrideForTesting`](../../src/core/shader/raygrouplayout.hpp#L515) が、TLAS lowering が消費するその値だけを差し替える test-only seam です。コメントが目的を書いています — **TLAS の base が誤って `q` になっていないこと**を、GPU の end-to-end sentinel で証明するためのものです。
+
+したがって「row を追加して `q` がずれても宣言した `custom_index` は不変」と「SBT の sentinel は独立に正しい」を、同じ GPU テストで同時に見る形になっています。
+
+### BLAS variant: 鍵は `(allocation, geometry_flags)`
+
+`geometry_flags` は BLAS の build 入力なので、同じ geometry でも flags が違えば別の BLAS が要ります。cache の鍵は [`State::BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L590) の `(geometry_allocation_id, geometry_flags)` です。allocation id だけを鍵にしていた頃は、**flags だけを変えた reload が古い BLAS を再利用して宣言が無効になる**という穴がありました。
+
+purge は「geometry が消えたら落とす」ではなく、**そのフレームで実際に参照された variant 集合との差分**です。手順は次の形です。
+
+```text
+planned_instances = lowerRayTracingTlasInstancePlan(...)          ← 解決済み flags を含む
+required_variants = { (allocation, geometry_flags) | planned }    ← std::set
+for variant in required_variants:
+    再利用可 かつ active_state_ に有れば candidate へ持ち越す
+    無ければ build して candidate へ入れる
+candidate->blas は required_variants と厳密に一致する               ← ここが purge
+```
+
+持ち越しは [`active_state_->blas.find(variant)`](../../src/core/renderer/accelerationstructure.cpp#L851) の一致だけで、`candidate` には required 以外が入りません。commit で `candidate` が active を置き換えるので、**規則の reload で参照されなくなった variant は自動的に落ちます**。「消し忘れ」を検出するのではなく「必要なものだけを作り直す」側で閉じている、という構造です。
+
+### 診断: `resident_blas_keys`
+
+frame plan の `ray_query_acceleration_structures` に、この variant 集合がそのまま出ます([`rayQueryAccelerationStructureDiagnosticsToJson()`](../../src/core/renderer/accelerationstructure.cpp#L534))。
+
+| キー | 意味 |
+|---|---|
+| `blas_variant_count` | candidate が持つ BLAS 数(= required variant 数) |
+| [`resident_blas_keys`](../../src/core/renderer/accelerationstructure.cpp#L555) | 各 variant の `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}` |
+| `active_blas_inputs` | 同じ配列(旧キー名。互換のため両方出ます) |
+| `blas_build_count` / `tlas_build_count` | 実際に build した回数 |
+
+配列は `(allocation_id, geometry_flags)` で [sort](../../src/core/renderer/accelerationstructure.cpp#L921) されるので、診断の並びはフレーム間で決定的です。「同一 allocation を opaque と mask で共有したら BLAS build が 2 になる」「規則を戻したら variant が消える」を、この2キーで外から確認できます。
+
+### WP377: SBT と TLAS の frame transaction、および既知の穴
+
+RT の1フレームは、compile → pipeline → SBT → AS record → submit の5点をまたぐ1つの transaction です。各境界にはテスト用の注入点が置かれています([`RayTracingJointTransactionPoint`](../../src/core/shader/raygrouplayout.hpp#L531))。コメントが規範を書いています — **この5点でだけ呼ばれ、throw すれば実際の失敗と同じ rollback ガードを通る**。
+
+| 点 | 呼び出し位置 |
+|---|---|
+| `after_compile` / `after_pipeline` | [registration 側](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L840) / [同](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L981) |
+| `after_sbt` | [`createRayTracingSceneShaderBindingTables()` の直後](../../src/core/vkcore/renderer.cpp#L4748) |
+| `after_as_record` | [`recordFrame()` の直後](../../src/core/vkcore/renderer.cpp#L4775) |
+| `submit` | [logical frame の締め](../../src/core/vkcore/renderer.cpp#L5561) |
+
+AS の公開は submission が成功した後です。[`FrameBuild`](../../src/core/vkcore/accelerationstructure.hpp#L173) は publication token で、コマンドと資源は即座に lease されるものの、新しい BLAS/TLAS の集合が active になるのは [`acceleration_structure_build->commit()`](../../src/core/vkcore/renderer.cpp#L5571) を通った後だけです。
+
+> 🚧 **既知の穴(`rev377a` #1、WP384 で対応予定)**: SBT と TLAS descriptor はこの transaction に**乗り切っていません**。`recordFrame()` の前後で [`setRayTracingSceneShaderBindingTables()`](../../src/core/vkcore/renderer.cpp#L4771) と [`setRayQueryAccelerationStructure()`](../../src/core/vkcore/renderer.cpp#L4779) が `FrameResources` を先に書き換えるため、`after_as_record` / `submit` で失敗すると **却下された世代の SBT が active に残り、candidate の TLAS が frame descriptor に書かれたまま runtime だけが旧世代へ戻ります**(RT → 非 RT の clear も同型)。台帳の裁定は「frame 開始時の旧 SBT lease と TLAS descriptor を保持する rollback guard」で、単独 WP(WP384)として起票済みです。ここを触るときは、失敗直後の active SBT / TLAS の同一性を受け入れ条件に入れてください。
+
 ---
 
 描画層は object 数が多いですが、境界は一貫しています。JSON は「定義」、planner は「順序」、runtime compiler は「GPU object」、executor は「コマンド記録」、frame target は「提出先と同期」を担当します。

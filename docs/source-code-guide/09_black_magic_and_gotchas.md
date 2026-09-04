@@ -929,7 +929,95 @@ rg -n -A3 "catch \(const std::exception" test --glob "*.cpp" | rg -B1 "SKIP\("
 
 skip が緑を汚さない以上、`ctest` の exit code だけでは検出できません。そのため gate 側が **許可した名前以外の skip をすべて失敗にする**方針を持っています。判定は [`validate_skip_policy()`](../../test/ci/skip_policy.py#L74)(CPU/GPU 両 gate 共通)で、GPU 側の driver が [`run_gpu_gate.py`](../../test/ci/run_gpu_gate.py)、許可リストが [`test/ci/gpu_skip_allowlist.txt`](../../test/ci/gpu_skip_allowlist.txt) です。現在の GPU allowlist は、clone / worktree 外の corpus を `PELICAN_TEST_PROJECTS_DIR` で指定する `project_catalog_headless_smoke` の未指定 skip だけを載せています。上の 4 件の broad exception skip は載せません。entry を消せば未指定時の skip が非許可になり、逆にテスト名自体が現れなければ stale entry として失敗するので、リストは腐りません([`skip_policy.py` 内](../../test/ci/skip_policy.py#L83))。
 
-なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L77) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L193) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`set_tests_properties(seqplayer_headless_player PROPERTIES LABELS gpu)`](../../test/CMakeLists.txt#L1861) の形で個別に付けるもので(現在 22 か所)、この場合の CTest 名は `add_test()` の名前です。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
+なお `gpu` ラベルは Catch2 の `[gpu]` タグではなく CTest の LABELS で、付き方が 2 通りある点に注意してください。Catch2 テストは [`pelican_define_test(<name> GPU ...)`](../../test/CMakeLists.txt#L77) が target 単位で付け、CTest 名は [`catch_discover_tests()`](../../test/CMakeLists.txt#L193) が `TEST_CASE` の文字列をそのまま使います。もう一方は `add_test()` で登録した e2e / player テストに [`pelican_gpu_test_properties(seqplayer_headless_player ...)`](../../test/CMakeLists.txt#L2054) の形で個別に付けるもので(呼び出しは 26 か所。うち 1 つは `foreach` の中なので、登録されるテスト数はこれより多くなります)、この場合の CTest 名は `add_test()` の名前です。この関数は label だけでなく `RESOURCE_LOCK pelican_gpu` と生成した `TIMEOUT` も同時に付けます([定義](../../test/CMakeLists.txt#L24))。allowlist は完全一致の名前を要求するので、どちらの経路で付いたラベルかで書くべき名前が変わります。gate の起動方法は [`docs/ci.md`](../ci.md) にあります。
+
+
+## 9.21 prepare / publish 世代のコードで踏む新しい罠
+
+§9.17 までの落とし穴は「型と寿命」でしたが、scene load transaction・schema wire・登録 ABI の周りには**同じ形をした別の罠**が増えています。どれも「素直に書くと通ってしまう」ものです。
+
+### `OptionalOverride` の absent と「0 を set した」は別
+
+`std::optional<T>` の schema field には [`StructFieldPresence::OptionalOverride`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L66) が付きます。decode は、キーが**無ければ何も代入せず**(`std::nullopt` のまま)、あれば値を decode して `member = decoded` します([decode の presence 分岐](../../src/core/userpublic/details/schema/structfieldjson.hpp#L247))。encode は逆で、`if (!member) return;` により**キーごと出しません**([encode の skip](../../src/core/userpublic/details/schema/structfieldjson.hpp#L742))。
+
+つまり次の3つはすべて別の状態です。
+
+```text
+{}                          → nullopt          「宣言していない」
+{"custom_index": 0}         → optional{0}      「0 を宣言した」
+{"instance_flags": []}      → optional{空集合}  「フラグ無しを宣言した」
+```
+
+`optional<T>` を `value_or(0)` や `.value_or(T{})` で読み出した瞬間、この区別は消えます。`pelican_ray_instance` が field ごとに optional なのはまさにこのためで([第6章 §6.20](06_rendering_vulkan_shader.md))、ヘッダのコメントが「authored の空の `instance_flags` 配列は本物の override」と明記しています。同じ理由で AS row の [`source_material_index`](../../src/core/shader/raygrouplayout.hpp#L216) も optional のまま運ばれ、コメントが「**欠損した index が黙って 0 になってはいけない**」と規範を書いています。0 に丸めると、たまたま 0 番 material を指す asset selector が誤って一致します。
+
+### `$list.next_id` は「行の最大値より大きい」しか強制されない
+
+`List<Row>` の wire は object container で、`$list` 封筒に `v` と `next_id`、各行に `$row` 封筒(`id` / `v` / 任意の `hint`)が付きます。decode が拒否するのは、未知キー・`$row` 欠落・`id == 0`・重複 id・未知 version、そして最後の [`$list.next_id must exceed every row id`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L500) です。
+
+ここが読み違えやすい点です。`next_id` は **id を発行するための水位**であって、「削除したら戻る」値ではありません。行を消しても `next_id` を下げずに配れば id は再利用されず、`hint` や外部参照が別の行へ付け替わることもありません。ただし **codec がその単調性を検査しているわけではありません** — 最大 id の行を消したあとに `next_id` を下げた文書は、decode を通ります。encode 側も [`{{"v", 1}, {"next_id", member.next_id}}`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L621) を verbatim に書くだけです。単調性は**生成側の契約**であって、wire の検査で守られてはいません。
+
+### phase trace は participant が記録する。executor に `record` 文を足さない
+
+[`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40) の各 phase を記録するのは、その phase を実際に実行する participant です。`publishPrepared(candidate, phase_trace)` のように **trace を引数で受け取る側**が [`record()`](../../src/core/loader/sceneload.hpp#L47) を呼びます。executor 本体に `phase_trace.record(...)` を書き足すと、participant を丸ごと bypass する変異が trace 上は正常に見えてしまい、順序テストが変異を検出しなくなります。
+
+現行の executor に残っている裸の `record` は2行だけで、どちらもコメント付きの例外です。
+
+| 行 | 理由 |
+|---|---|
+| [`phase_trace.record(SceneLoadPhase::flush)`](../../src/core/loader/scene.cpp#L1000) | 直後の `pending_scene_id.swap()` は participant 型を持たない |
+| [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1011) | **退役 batch 自体が 1 人の participant**。entity 0 件の scene でも `finish` を観測できるようにする |
+
+逆向きの例も1つあります。[`PreparedEffectTransaction::flush()`](../../src/core/loader/effecttransaction.cpp#L492) は `phase_trace` を受け取りながら `(void)phase_trace;` で**使いません**。コメントが理由を書いています — `flush` の印は `EventOutbox` が1つだけ持つ、という取り決めです。「引数にあるのだから記録すべきだ」と足すと、`record()` の重複抑止に助けられて症状は出ないまま、印の所有者が2人になります。
+
+### `ReleaseReport` は heap を使わない — 8 件 + `overflow_count`
+
+解放の失敗は `std::vector<std::string>` ではなく [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) に積みます。`std::array<ReleaseError, 8>` + `error_count` + `overflow_count` の固定 record で、[`add()`](../../src/core/model/modelresourcerelease.hpp#L43) と [`append()`](../../src/core/model/modelresourcerelease.hpp#L51) は `static_assert` で `noexcept` が固定されています。9 件目以降は捨てるのではなく `overflow_count` を増やします。
+
+「8 件を超えたら vector に切り替える」という善意の改修が、**`noexcept` の destructor / 遅延解放経路から `bad_alloc` を投げる**形になります。報告先を返せない経路(destructor、deferred release)は戻り値ではなく process 全体の [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.hpp#L74) へ積む、という分担もヘッダのコメントが規範です。件数は `ReleaseErrorSinkStatus` で観測できるので、**溢れたこと自体はテストで見えます**。
+
+### effect sink の有効範囲は「early publish の前から flush まで」
+
+scene load 中に game DLL のコールバック(component の JSON loader を含む)が `playSound()` や `saveData()` を呼ぶと、それは即時実行ではなく [`PreparedEffectTransaction`](../../src/core/loader/effecttransaction.hpp#L27) に溜まります。scope を張る位置が要点で、[`EffectTransactionScope`](../../src/core/loader/scene.cpp#L626) は **early publish より前**、prepare が終わった直後に張られます。コメントが規範です — 「early publication が呼ぶ component JSON loader を含め、**すべての game-DLL コールバックが同じ transaction-local な effect を観測**しなければならない」。
+
+したがって「publish の直前で張れば十分」という縮め方は誤りです。prepare 中の loader が本物の audio / persistence を直接叩き、rollback しても戻らない副作用が残ります。逆側の端は [`effect_transaction->flush(...)`](../../src/core/loader/scene.cpp#L1007) で、commit 後の noexcept tail の中にあります。
+
+### `noexcept` の commit tail の中で文字列や JSON を作らない
+
+metadata の commit 以降は「失敗しない尾部」です。executor はその区間の全操作が `noexcept` であることを [`static_assert` の列](../../src/core/loader/scene.cpp#L956)で固定しています。ここで `std::string` を組んだり `nlohmann::json` を作ったりすると、`bad_alloc` が `noexcept` 関数から伝播して `std::terminate` になります。
+
+実装はその制約を明示しています。effect のエラーは固定長 record([`FixedText<512>` / `FixedText<384>`](../../src/core/loader/effecttransaction.hpp#L102))に詰めておき、**公開用の文字列と JSON は tail を抜けてから**作ります([`effectErrors()` の呼び出し](../../src/core/loader/scene.cpp#L1017) の直前のコメントが「deliberately materialized only after the noexcept commit tail」)。同じ理由で `SceneLoadPhaseTrace` も固定長です。
+
+### `createObject()` は基底の `GameContext` から呼んでも defer される
+
+`BehaviorContext::createObject()` が [`deferCreateObject()`](../../src/core/gamelogic/behaviorarena.cpp#L1495) に落ちるのは自然に見えます。見落としやすいのは**基底側**で、[`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L80) も先頭で `internal::behaviorCallbackActive()` を見て、真なら同じ defer をして `invalidGameObjectId` を返します。
+
+つまり behavior のコールバック中は、`BehaviorContext` を捨てて `GameContext&` として呼んでも即時生成にはなりません。**戻り値が invalid であること自体が仕様**で、これを「基底なら即時に作れる」と読んで戻り値を使うと、`resolve()` に弾かれる ID を掴みます。生成された entity を触りたいなら次フレーム以降に名前や別の手段で引き直します。
+
+### persistence の key は case-fold した canonical path — ただし Windows だけ
+
+同じファイルを別の綴りで指した保存要求を1つに畳むため、`Persistence` の resource key は [`canonicalResourceKey()`](../../src/core/persistence/persistence.cpp#L40) が作ります。`weakly_canonical()` で正規化し、`generic_string()`(区切りは `/`)にしたうえで、**`_WIN32` のときだけ** `std::tolower` を全体に掛け、`"path:"` を前置します。
+
+罠は2つあります。(1) case-fold は `#ifdef _WIN32` の内側なので、**key の同一性ドメインがプラットフォームで違います**。「大文字小文字違いの2つの save slot」は Windows では衝突し、Linux では別物です。(2) `weakly_canonical()` は失敗しうるので、この関数は `std::runtime_error("failed to canonicalize persistence path: ...")` を投げます — key を作る処理が例外を出す点は、`noexcept` の中で呼ばないための前提です。
+
+### `sizeof` だけの ABI 凍結は、同サイズ field の並べ替えを通す
+
+game DLL 境界の v2 record は「凍結」と書かれていますが、実際に固定しているのは**大きさだけ**です。
+
+| record | 凍結 |
+|---|---|
+| [`ComponentLoaderInfo`](../../src/core/userpublic/details/component/registerer.hpp#L78) | `sizeof(FrozenComponentLoaderInfoV2Layout)` と一致 |
+| [`BehaviorRegistration`](../../src/core/userpublic/details/behavior/registerer.hpp#L48) | `sizeof(FrozenBehaviorRegistrationV2Layout)` と一致 |
+| [`EventTypeRegistration`](../../src/core/userpublic/details/event/registerer.hpp#L53) | `sizeof(FrozenEventTypeRegistrationV2Layout)` と一致 |
+
+`BehaviorRegistration` の `create` と `destroy` のように**同じ大きさの隣接 field を入れ替えても `static_assert` は通ります**。古い DLL は入れ替え前の順で書き込み、host は入れ替え後の順で読むので、症状は「関数ポインタが 1 つずれて呼ばれる」という追いにくい形になります。台帳の裁定は `sizeof` + `alignof` + **全 field の `offsetof`** へ移すこと(WP382a-fix。起票済み・未着地)で、既に同じ形を採っている面もあります(例: [`offsetof(ProviderV2, shape_cast_all) == offsetof(ProviderV2, overlap_all) + sizeof(...)`](../../src/core/userpublic/physics/abi_v2.hpp#L162))。ここを触るときは「大きさが変わらないから安全」と読まないでください。
+
+### raw import 診断は provider-only な旧 DLL の唯一の enforcement
+
+game DLL のロード前診断([`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559))は、OS loader の重複だと読まれがちですが、そうではありません。SDK 入口か epoch anchor を import する DLL なら未解決 import になるので loader 自身が拒否します。一方 **`getApiV1` 系を export するだけで SDK 入口を import しない旧 DLL** は未解決 import を持たないため loader は素通しで、この診断([`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40))だけが止めます。
+
+だから診断は無効化できず、`LoadLibraryW` の**前**に走ります(constructor を動かさないため)。reader は PE の import directory と delay-import directory だけを読み、[`GameLogicPeImportKind`](../../src/core/gamelogic/gamelogicimports.hpp#L12) の 4 種(`named` / `ordinal` / `delay_named` / `delay_ordinal`)へ分類します。host module への delay-load / ordinal import は unsupported として拒否します。
+
+Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗しない provider-only な旧 `.so` を止める仕組みは、**今のところありません**([第1章](01_architecture_and_build.md))。
 
 ---
 

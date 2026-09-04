@@ -1,8 +1,8 @@
 # 第9章 Web プロファイル
 
-対象: pelican2(エンジン側 2026-07-21 時点、HEAD=`d13fc26`)+ my_webpage リポジトリ / このマニュアルはコードを正とする
+対象: pelican2(エンジン側 2026-07-21 時点、HEAD=`d13fc26`。2026-09-04 に §9.7 の 7 だけ HEAD=`d146b8bd` で追記)+ my_webpage リポジトリ / このマニュアルはコードを正とする
 
-> **この章の鮮度について:** エンジン側(pelican2 リポジトリ)の数値・語彙は 2026-07-21 に再確認しました。**web 側(my_webpage リポジトリ)は 2026-07-10 の調査のまま再調査していません** — §9.1 / §9.3 の「web の扱い」列・§9.6 の WW 台帳・§9.7 の 1〜4 は当時の観測です。
+> **この章の鮮度について:** エンジン側(pelican2 リポジトリ)の数値・語彙は 2026-07-21 に再確認し、**2026-09-04 に §9.7 の 7(`List` / `$list` / `pelican_ray_instance.overrides` / `procedural_geometry`)を追記**しました。**web 側(my_webpage リポジトリ)は 2026-07-10 の調査のまま再調査していません** — §9.1 / §9.3 の「web の扱い」列・§9.6 の WW 台帳・§9.7 の 1〜4 は当時の観測です。§9.7 の 7 も**エンジン側の事実だけ**で、web パーサの実挙動は未確認です。
 
 ## この章で学ぶこと
 
@@ -109,7 +109,7 @@ npm run shaders:spirv -- <project-dir>
 | WW8 | Plan viewer(web 版) | ❌ **撤回**(2026-07-12 ユーザー決定: プランビューアは**エンジン内 ImGui ツール**として実装 — ✅WP86、[第10章](10_tools.md) §10.6。web 側の着手分は撤去済み) |
 | — | 可搬性 lint / scene・asset JSON 対応 / WebSocket クライアント | 📐 設計のみ |
 
-## 9.7 既知の問題(1〜4 は 2026-07-10 調査、5〜6 は 2026-07-21 追記)
+## 9.7 既知の問題(1〜4 は 2026-07-10 調査、5〜6 は 2026-07-21 追記、7 は 2026-09-04 追記)
 
 調査で判明した、**修理が必要な箇所**です。チュートリアルどおりに動かない場合はまずここを疑ってください。1〜4 は web 側を実際に見た 2026-07-10 の調査結果で、**その後 web 側は再調査していません**(直っている可能性も、増えている可能性もあります)。
 
@@ -124,6 +124,11 @@ scene JSON の web 対応(WW4)は未着手のままですが、**その間にエ
 
 5. **scene v1 に `behavior` コンポーネントが入った(✅WP155/162/167)** — オブジェクトの `components` に `{"name": "behavior", "type": "<登録名>", "params": {...}}` を書けるようになりました。`type` は必須の非空文字列、`params` は任意 object です。振り分けは [src/core/loader/scene.cpp](../../src/core/loader/scene.cpp)(`behavior` だけ ECS 経路から外れる)、受理は [src/core/gamelogic/behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp) の `prepareSceneBehaviorAttachments()` が担当します。詳細は [第4章](04_scene_ecs.md) / [第8章](08_gameplay.md)。
 6. **コンポーネントの受理仕様が component codec に一本化され、closed schema になった(✅WP151)** — `transform` / `simplemodelview` / `camera` / `light` / `collider` / `animation` / `sprite_view` の 7 コンポーネントは [src/core/loader/componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec テーブルが受理仕様の正です。いずれも**未知キーを名指しで拒否する closed schema**で、フィールドの必須/任意と既定値は codec ごとに決まります(例: `transform` の `pos` / `rotation` / `scale` はすべて任意で既定値あり)。web が scene を読むときは、コンポーネント側の `ref()` 実装ではなくこの codec テーブルを鏡像の元にしてください。
+7. **可変長の宣言(`List` / `$list`)と `procedural_geometry` は、まだ「エンジンにも無い」ものです(2026-09-04 追記)** —— サブセット原則の適用先を間違えないための注記です。
+   - **`List` / `Flags` の schema と `$list` の wire 形は engine に入りました**(✅WP382a)。オブジェクト container `{"$list":{"v":1,"next_id":N},"rows":[{"$row":…, …}]}` で、`$list` / `rows` 以外のキー・素の配列・重複した行 id・未知の `v` は名前付きで拒否されます([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L390))。ただし **engine 同梱のコンポーネントで `List` を宣言しているものは 1 つもありません**(使っているのは test fixture の v3 game DLL だけ)。したがって**出荷 scene JSON に `$list` は現れず、web が今すぐ対応すべきものはありません**。
+   - **`pelican_ray_instance.overrides` は engine が明示的に拒否します** —— [componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1020) が `ray_instance_overrides_not_enabled@1` を返します(受理されるのは WP382d 以降)。`pelican_ray_instance` 自体は `name` / `mask` / `instance_flags` / `custom_index` の closed schema です(✅WP379。旧名 `ray_instance` は builtin としては受理されません)。
+   - **`procedural_geometry`(`pelican.asset_data` の第 4 の種別)は存在しません** —— [assetdataformat.cpp](../../src/project/assetdataformat.cpp#L65) の allowlist は `schema` / `version` / `models` / `materials` / `textures` だけで、未知キーは拒否されます。WP386 の起票時点の決定では「足すときに **web は明示拒否**」とされていますが、**エンジン側にまだ実装がありません**。
+   - ⚠ これら 3 つについて **web パーサが実際にどう振る舞うかは未確認**です(web は別リポジトリ `my_webpage` にあり、この repo からは確認できません)。ここに書いたのは**エンジン側の事実だけ**です。
 
 ## 関連文書
 

@@ -1,6 +1,6 @@
 # 第13章 エディタとエディタ RPC
 
-対象: pelican2(2026-08-20 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-04 時点、HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -78,9 +78,10 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 - **ウィンドウモードでは `step_frame` を呼ばないでください**。フレームは自然に進んでいるので、`step_frame` は余分に 1 フレーム進めてしまいます。代わりに `get_edit_result` / `get_scene_revision` をポーリングします。
 - ヘッドレスでは `step_frame` を呼んで進め、応答の `edit_results[]` で結果を受け取るのが基本形です。
 
-### 編集操作(operations)の 6 種
+### 編集操作(operations)の 9 種
 
-`edit` の `operations[]` には次の 6 種を並べます。1 回の `edit` は**全部成功か全部失敗**です。
+`edit` の `operations[]` には次の 9 種を並べます(正は
+[`editorjournal.cpp` の op 分岐](../../src/core/communication/editorjournal.cpp#L1787))。1 回の `edit` は**全部成功か全部失敗**です。
 
 | op | 主なフィールド | 意味 |
 |---|---|---|
@@ -90,6 +91,14 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `spawn` | `object`(+ `scene_id`) | オブジェクト生成。ID は engine が採番 |
 | `destroy` | `object_id` | 子孫ごと削除(逆操作用に全 JSON を保存) |
 | `reparent` | `object_id`, `new_parent_id`(null = ルート), `preserve`(`"local"` / `"world"`) | 親子の付け替え |
+| `set_prefab_parameter` | `object`(**`object_id` ではない**), `parameter`, `value` | prefab インスタンスのパラメータ上書き |
+| `unset_prefab_parameter` | `object`, `parameter` | 上書きを外して prefab 側の既定へ戻す(既定が無ければ拒否) |
+| `unpack_prefab` | `object`(このほかのキーは拒否) | prefab インスタンスを素のオブジェクトへ展開 |
+
+> ⚠ **`set_component_value` は「既にある値を置き換える」だけ**です。`field_path` は
+> **今の component JSON に実在する pointer** を指す必要があり、**行(配列要素)を新しく作ることはできません**。
+> 可変長の宣言(`List` / `$list`。[第11章](11_status.md) §11.1 の WP382a)を編集する
+> 行の追加・削除・並べ替えは **WP382b で入る予定で、いまは未対応**です。
 
 実物(`test/editorjournal_test.cpp` より):
 
@@ -137,6 +146,16 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 `declaration_index` は scene の `objects` 配列における 0 始まりの宣言位置です。直リンクで読んだ木との対応には `(scene_id, declaration_index)` を使います。`authoring_object_id` はセッション内で安定した別の参照なので、挿入・並べ替え後は両者が一致するとは限らず、どちらも応答に残ります。
 
 `get_components` が返すコンポーネントには、**`schema`(フィールド名・型・範囲・単位)と `editable` フラグ**が含まれます。インスペクタのウィジェットはこれだけで組み立てられます(§13.9)。
+
+**解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
+`resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1484))。形は 2 通りで、
+typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
+`{legacy_branch_id, message}` です(正は
+[`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
+**`resolution_error` を含む応答はキー順が保存されます** —— `RpcServer` が応答木を走査して
+`resolution_error` を見つけたら ordered JSON で直列化するためです
+([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1104))。
 
 ### セッションと編集
 
@@ -215,7 +234,20 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 - `rejected` = **受付の時点**で弾かれた / `failed` = **フレーム境界の実行時**に弾かれた、という区別です。
 - **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
-- **シーン編集**の安定コードは 21 種(`stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`)。
+- **シーン編集**の安定コードは **43 種**です(正は
+  [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L46) と、その名前を返す
+  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L3218)。**列挙子の名前とワイヤ上の
+  コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
+  - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
+  - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**はこれで拒否されます)
+  - prefab: `prefab_instance_id_collision` / `prefab_dependency_mismatch` / `prefab_provider_stale` / `prefab_parameter_required` / `prefab_parameter_unknown` / `prefab_parameter_type` / `unpack_must_be_singleton@1` / `prefab_digest_changed@1` / `prefab_provider_changed@1` / `prefab_behavior_dependency_changed@1`
+  - origin 遷移(undo/redo の同一性検査): `origin_transition_*@1` 8 種
+  - そのほか: `journal_integrity_error@1` / `behavior_type_unknown@1` / `runtime_binding_missing@1`
+- **`not_editable` と `component_unknown@1` の切り分け(✅WP379/379a)**: `add_component` は
+  production の component registry に問い合わせます。**登録されているが editor codec が無い**なら
+  `not_editable`、**そもそも登録されていない**なら `component_unknown@1{"name": "…"}` です
+  ([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L223))。以前は実 DLL が登録した
+  codec 無しコンポーネントも一律「未登録」と報告していました。
 - **`edit_render_features` はこの 21 種では尽きない別系統**です。共通するのは `gate_closed` だけで、ほかに `unknown_render_feature` / `restart_required_feature` / `render_feature_unavailable` / `render_feature_not_enabled` / `external_modification` / `stale_source_digest` / `render_pipeline_preflight_failed` / `render_config_rollback_failed` / `render_pipeline_commit_protocol_error` を返します(§13.5)。
 - 保存・スナップショット側も別系統(`save_busy` / `runtime_only_data` / `external_modification` / `digest_mismatch` / `snapshot_too_large` など)。
 
@@ -346,6 +378,73 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | ID バッファピッキングの engine/RPC 基盤 | ✅WP262 |
 | Qt Studio の viewport / Outliner 選択同期 | ✅WP264 |
 | 汎用 gizmo feature/RPC と Qt Studio のドラッグ操作 | ✅WP274/275 |
+| 解決失敗を値で返す(`resolution_error`) | ✅WP378 |
+| `not_editable` / `component_unknown@1` の切り分け | ✅WP379/379a |
+| scene load の commit 後 effect 失敗を result で返す | ✅WP380b/380e |
+| game DLL の startup / ロード前診断を status に出す | ✅WP381/381a |
+| 可変長宣言(`List` / `$list`)の**行編集** | 📐未実装(WP382b) |
+
+## 13.13 シーン遷移とゲームロジックの結果(✅WP378/380b/380e/381/381a)
+
+RPC クライアントから見て、2026-09-03〜04 に**応答の形が変わった**ところです。
+
+### `load_scene` / `import_scene_snapshot` の `committed` と `effect_errors`
+
+scene のロードは 1 つのトランザクションになりました([第4章](04_scene_ecs.md) §4.3)。
+**commit よりも前に失敗したもの**と、**commit は済んだが behavior の副作用の flush に失敗したもの**は
+別扱いです。後者は**エラーではなく成功応答の中身**として返ります。
+
+```jsonc
+// (例)load_scene の成功応答 —— 効果の失敗が 1 件あった場合。鍵の並びは実装どおり
+{"jsonrpc":"2.0","id":4,"result":{
+  "name":"main","committed":true,
+  "effect_errors":[{"api":"saveData","error_code":"persistence_write_failed@1",
+                    "error_fields":{"path":"user://saves/auto.json","reason":"…"},
+                    "phase":"flush"}]}}
+```
+
+- `committed` は**成功応答では常に `true`** です(commit 前に失敗したら JSON-RPC の `error` になります)。
+  「シーンは切り替わったが、`onInit` が呼んだ `playSound` / `saveData` / `setBusVolume` の一部が失敗した」
+  ことを表すのが `effect_errors` で、**空配列なら全部成功**です。
+- 1 要素は `{api, error_code, error_fields, phase}` の 4 鍵ちょうどです(正は
+  [`effectErrorsJson()`](../../src/core/loader/scene.cpp#L453))。`api` は
+  `playSound` / `saveData` / `loadScene` などの**公開 API 名**、`phase` は
+  `activate` / `destroy` / `flush` の 3 値、`error_fields` はコードごとに決まった固定の鍵
+  (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
+  [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L686))です。
+- `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1706))。
+  **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
+  厳密一致のクライアントは壊れます。**
+- 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/
+  `persistence_read_failed@1{path, reason}`(壊れた save slot。以前は「slot 不在」に化けていました)。
+
+### `get_status.participants.game_logic` の `error_code` / `error_fields`
+
+`get_status` に `participants.game_logic` が入りました。**まだ 1 度も reload を試していない
+起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1173))。
+
+- 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
+  `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /
+  `domain_error` / `error_code` / `error_fields`)がそのまま入ります
+  ([reloadservice.cpp](../../src/core/watch/reloadservice.cpp#L586))。
+- 未試行なら `{error_code, error_fields}` の 2 鍵だけで、値は起動時に保存された失敗です。
+  成功すると `error_code` は `null` に戻ります(clear される)。
+- `reload_game_logic` の失敗も同じ語彙で、`error.data` が `{error_code, error_fields}` です。
+
+### ロード前に弾かれる game DLL(`game_logic_abi_stale@1` ほか)
+
+ABI の照合が `LoadLibrary` の**前**に移りました(✅WP381)。DLL の PE import directory を
+直接読んで、`pelican_game_logic_epoch_v2()` anchor と v2 入口が揃っているかを見ます
+([gamelogicimports.hpp](../../src/core/gamelogic/gamelogicimports.hpp#L64))。したがって
+**古い DLL の static initializer は 1 行も走りません**。エラーコードは
+`game_logic_abi_stale@1{expected_epoch, found, legacy_symbols[]}` /
+`game_logic_abi_unsupported_import@1{kind}` / `game_logic_abi_unreadable@1{reason}` /
+`game_logic_load_failed@1{os_code}` です。
+
+**ビルド中の DLL は「失敗」になりません(✅WP381a)。** ファイルが writer に掴まれている間は
+`game_logic_source_busy@1{path, retries}` が **pending status** として出て、解除後の poll で
+自動的に再試行されます。この間 active な DLL は差し替わりません。
 
 ## 関連文書
 

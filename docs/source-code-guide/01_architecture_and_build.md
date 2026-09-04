@@ -21,6 +21,8 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 
 ```mermaid
 flowchart TD
+    SchemaLeaf["pelican_schema_leaf\nschema wire model（葉）"]
+    SchemaAdapter["pelican_schema_core_adapter"]
     ProjectLib["pelican_project\n形式の純粋ロジック"]
     CoreLib["pelican_core\nエンジン本体"]
     OpenXRLib["pelican_openxr\nOpenXR unit (static)"]
@@ -31,6 +33,9 @@ flowchart TD
     Studio["pelican_studio"]
     Tests["pelican_test_*"]
 
+    SchemaLeaf -->|PUBLIC| ProjectLib
+    SchemaLeaf -->|PUBLIC| SchemaAdapter
+    SchemaAdapter -->|PRIVATE| CoreLib
     ProjectLib --> CoreLib
     OpenXRLib -->|PRIVATE| CoreLib
     CoreLib --> Player
@@ -45,6 +50,12 @@ flowchart TD
 ### `pelican_project`
 
 宣言は [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) です。交換形式を扱うコードをまとめ、playerだけでなくCLIやテストからも再利用します。
+
+### `pelican_schema_leaf` と `pelican_schema_core_adapter`
+
+宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L101) / [`Node`](../../src/schema/schema.hpp#L118) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L56)）。
+
+core 側からこの葉を使うための橋が [`pelican_schema_core_adapter`](../../src/core/communication/CMakeLists.txt#L1) で、`schemavocabularyadapter` 1 対だけを持つ別 STATIC ターゲットです。`pelican_core` へは PRIVATE にリンクされ（[同 L20](../../src/core/communication/CMakeLists.txt#L20)）、この 1 ターゲットだけが `/we4061 /we4062`（GCC/Clang では `-Wswitch-enum -Werror=switch-enum`）で **enum の網羅を error に上げて**います。語彙の追加が黙って落ちないようにするための局所設定です。
 
 ### `pelican_core`
 
@@ -199,7 +210,9 @@ Pelicanは継承ベースのinterfaceを多用しません。実際には次の�
 
 ## 1.6 ビルド機能フラグ
 
-機能フラグの定義は [`NAME PELICAN_RUNTIME_SHADER_COMPILER` 以下のregistry](../../cmake/pelican_feature_registry.cmake#L103) です。トップレベルはregistryからCMake optionを宣言します。
+機能フラグの定義は [`NAME PELICAN_RUNTIME_SHADER_COMPILER` 以下のregistry](../../cmake/pelican_feature_registry.cmake#L103) です。トップレベルはregistryからCMake optionを宣言します。現在の登録は15件で、下表の13件に加えて [`NAME PELICAN_WITH_SPIRV_LINK`](../../cmake/pelican_feature_registry.cmake#L110) と [`NAME SKIP_DEVSTUDIO`](../../cmake/pelican_feature_registry.cmake#L208) が入ります。
+
+この2件は「機能のON/OFF」ではなく開発基準との差である点が他と違います。`PELICAN_WITH_SPIRV_LINK` は `BASELINE ON` でありながら `OPTION_DEFAULT OFF` で、**開発基準ではONだが通常の利用者にはopt-in**という宣言です（registry冒頭のコメントが理由）。`SKIP_DEVSTUDIO` は `BASELINE OFF` / `CONTRAST ON`、つまり対照ビルドの方がQtを外す側です。`BASELINE` と `OPTION_DEFAULT` を混同すると「既定でONのはず」を読み違えます。
 
 | フラグ | ON時 | OFF時の動作 |
 |---|---|---|
@@ -300,6 +313,22 @@ cmake --build build --target pelican_player
 
 `projects/example/code/CMakeLists.txt` から [`pelican_game_sources(playercontrol.cpp)`](../../projects/example/code/CMakeLists.txt#L1) が呼ばれます。登録マクロの挙動を追うには、この「ソースが `pelican_game_logic` DLLへ入り、playerが実行時にロードする」という点が重要です。ビルド済みDLLを別パスから読ませたい場合は起動オプション `--game-logic` を指定します。
 
+### 複数 worktree を並行させるときの `tools/worktree.sh`
+
+同じリポジトリの worktree を並べて `cmake` を回すと、依存ソース（`build/_deps`）の重複取得と MSBuild の node 再利用が事故になります。[`tools/worktree.sh`](../../tools/worktree.sh#L2) がその環境を**呼び出しごとに明示する**ラッパです（冒頭コメントが「shell profile の副作用へ置き換えるな」と規範を書いています）。
+
+```bash
+tools/worktree.sh configure <worktree> [追加のcmake引数...]
+tools/worktree.sh build     <worktree> [--target ...]
+tools/worktree.sh test      <worktree> [-R ...]
+```
+
+`configure` は primary worktree（`git worktree list` の先頭）の `build/_deps/<dep>-src` を `FETCHCONTENT_SOURCE_DIR_<DEP>` で指し直し、`MSBUILDDISABLENODEREUSE=1` を立てます。そのうえで **manifest** `build/pelican_worktree_manifest.json` を書きます（[`write_manifest`](../../tools/worktree.sh#L41)）。中身は generator、config、依存ソース root、node reuse の有無、ラッパが決めた引数の fingerprint、追加引数の fingerprint です。
+
+`build` / `test` は先に [`check_manifest`](../../tools/worktree.sh#L54) を通し、ラッパ側の半分を再計算して**一致しなければ名指しで止まります**（`WP385: worktree manifest mismatch; reconfigure through tools/worktree.sh configure`）。manifest が無ければ `configure` を促して exit 2 です。狙いは「別の generator・別の依存 root・node reuse 有効のまま作ったビルドツリーへ、あとから build/test だけ掛ける」という取り違えを、緑のまま通さないことです。
+
+`PELICAN_WORKTREE_GENERATOR=Ninja` のときだけ、Git Bash が `vcvars64.bat` の環境を保持できないため `cmd.exe` に `call vcvars && cmake` を1プロセスで実行させます。
+
 `PELICAN_PROJECT` に指定できるプロジェクトは [`projects/`](../../projects) 直下にあります。
 
 | プロジェクト | 用途 |
@@ -331,6 +360,30 @@ configuration smokeはregistry matrix生成、対照build、clean-cloneの3 job�
 
 - **機能フラグの対照matrix**: [`cmake/pelican_feature_registry.cmake`](../../cmake/pelican_feature_registry.cmake) の全行を、共通基準から対象だけ（宣言済み連動を除く）動かしてビルドします。CI matrix自体もregistryから生成されます。ドライバは [`test/run_build_units_smoke.cmake`](../../test/run_build_units_smoke.cmake) と [`test/run_project_code_smoke.cmake`](../../test/run_project_code_smoke.cmake) です。build-unit側はQtとSPIR-V linker用Pythonを用意してC++ probeを残しつつ`PELICAN_PYTHON_TESTS=OFF`、project-code側は`BUILD_TESTING=OFF`かつPython探索禁止です。`fail-fast: false` で、自動リトライはありません。
 - **clean-clone job**: 新規checkoutに重いexample assetが混ざっていないことを確認したうえで、ポリシーチェッカ → golden inventory → configure → build → `run_cpu_gate.py` を順に流します。
+
+### GPU テストの直列化: label と `RESOURCE_LOCK` と launcher の三点一致
+
+`gpu` ラベルの付いた CTest は、1つの `ctest` 実行の中では [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L29) で直列化され、**プロセスを跨ぐ側**は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L15) という launcher が machine-wide の lease で担います。この launcher は意図的に `pelican_core` へ依存しません（本番ビルドが壊れても lease が消えないため）。
+
+ビルド構成として押さえるのは次の3点です。lease 自体の状態機械は[第7章](07_tools_rpc_tests.md)にあります。
+
+- `gpu` label / `RESOURCE_LOCK=pelican_gpu` / launcher 起動の3つは**必ず同時に成立**していなければならず、[`verify_gpu_lease_inventory.py`](../../test/ci/verify_gpu_lease_inventory.py#L6) が CTest の inventory を読んで食い違いを落とします。
+- 手書きの `add_test()` は [`pelican_gpu_test_properties(<test> <intrinsic>)`](../../test/CMakeLists.txt#L24) を呼び、Catch2 が discover した分は build 後に `add_test()` 行を書き換えて launcher を差し込みます。
+- CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成し、3つの数値の出所は [`test/gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の1ファイルだけです。
+
+### test-only TU: `PELICAN_TESTING` は使わない
+
+fault injection の setter のように「テストからだけ触れて、製品バイナリには存在してはいけない」入口があります。この repo は **`PELICAN_TESTING` のような define を使いません**（リポジトリ全体に不在です）。代わりに、setter の定義を `test/` 側の TU（`sceneloadfault_testing.cpp` / `modelreleasefault_testing.cpp`）にだけ置き、production 側は `friend` 宣言で受けます。core を二重にビルドすることもしません。
+
+強制は CMake script test [`wp380c_production_has_no_fault_setter_symbol`](../../test/CMakeLists.txt#L1722) の3条件です（[`run_wp380c_no_production_fault_setter.cmake`](../../test/run_wp380c_no_production_fault_setter.cmake#L1)）。
+
+| 条件 | 見るもの |
+|---|---|
+| test-only source が製品ターゲットに混ざっていない | `pelican_core` の `SOURCES` プロパティと test 側 TU のパス照合（[同 L23](../../test/run_wp380c_no_production_fault_setter.cmake#L23)） |
+| production header に setter の**定義**が無い | `scene.hpp` / `vertbufcontainer.hpp` を正規表現 `set[A-Za-z0-9_]*ForTesting[A-Za-z0-9_]*` + 実引数 + `{` で検査（[同 L36](../../test/run_wp380c_no_production_fault_setter.cmake#L36)） |
+| archive に symbol が無い | `dumpbin /symbols` の出力から4つの setter 名を探す（[同 L43](../../test/run_wp380c_no_production_fault_setter.cmake#L43)） |
+
+3条件が要るのは、1条件ずつでは抜け道が残るからです。symbol 検査だけでは header inline（symbol が出ない）を通し、source 検査だけでは別名の setter を通します。この gate 自体は Windows（`dumpbin` のある構成）でのみ登録されます。
 
 > **設計決定:** 機能フラグ対照ビルドはPRゲートに入れず週次にしています。ビルド構成の組み合わせ爆発をPRの待ち時間へ持ち込まず、それでも「対照ビルドが静かに壊れたまま放置される」状態は防ぐ、という配分です。CIの運用ルールは [`docs/ci.md`](../ci.md) が正です。
 

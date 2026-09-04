@@ -1,10 +1,10 @@
 # Pelican2 ソースコード読解ガイド
 
-調査時点: 2026-07-31
+調査時点: 2026-09-04
 
 対象ブランチ: `codex/render-target-runtime-slice`
 
-基準コミット: `dbbf82a`
+基準コミット: `d146b8b`
 
 章によっては冒頭に自前の調査時点を書いています(第10章)。その章についてはそちらの日付とコミットが正です。
 
@@ -34,7 +34,7 @@
 | [第8章 クラス・インターフェース索引](08_class_interface_index.md) | 主要型を責務別に引ける宣言/実装/テスト索引 | 名前から探したい人 |
 | [第9章 黒魔術・制約・変更時の注意](09_black_magic_and_gotchas.md) | マクロ展開、型消去、静的初期化、寿命、現在の未実装点 | 深い改修をする人 |
 | [第10章 前提知識の補足](10_background_knowledge.md) | このコードが当然としている一般知識(Vulkan / glTF / C++ / OS / アルゴリズム / 座標と数値) | コードは素直なのに読めないとき |
-| [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、2 種の shadow mask、SBT、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
+| [第11章 Ray query / RT pipeline 用加速構造](11_ray_query_acceleration_structures.md) | 静的限定 BLAS / TLAS、AS 行の identity(`MaterialRowIdentity`)、2 種の shadow mask、SBT、set 0 契約、raster shadow との差 | ray query / RT pipeline の土台や shadow feature を変更する人 |
 
 ## 難所インデックス(詰まったときの逆引き)
 
@@ -48,14 +48,14 @@
 | [第5章](05_gameplay_and_services.md) | provider 索引の再マップ / ε クラスタの全順序 / GJK 最近点の全列挙 / 保守的前進で TOI を出す / EPA の四面体と面選択 / 差分は 1 パスのマージ / 滑りと skin の引き算 / one-way 足場の進入側 / N-way ブレンドの符号正準化 / 親 index < 子 index / publish しない publish / 割り込みとスナップショット / schema の指紋を採る / 不完全型のまま consteval / 3 回舐めてから swap |
 | [第6章](06_rendering_vulkan_shader.md) | preview 除外は 1 語差 / canonical bucket の番兵 / anchor 挿入と暗黙 after / format_class が format を上書き / writes-writes の曖昧検出 / barrier は後追いで作る / 決定性は set のキー / level は order で回す / `@history` は edge を作らない / sprite anchor の逆順スキャン / 量子化するのはアンカーだけ / 消さないための空呼び出し / リンクの向きは二方向 / push の先頭 64 byte / reload の swap は 3 回 / ジッタは w 倍で足す / epoch ペアが reset 信号 |
 | [第7章](07_tools_rpc_tests.md) | 曖昧な重なり判定 / `edit` の逐次プリフライト / undo 前提の三段検証 / preview lease の状態機械 / preview の状態不変性検証 |
-| [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 |
+| [第9章](09_black_magic_and_gotchas.md) | 遅延生成の 49 行 / handle の CRTP と穴 / generation は 0 を跨がない / `struct_size` の 3 段ルール / `decltype` で catalog を掃く / void payload の消し方 / 捕まるものと捕まらないものが逆に見える |
 
 この表は各章の代表を拾ったものです。表に載っていない難所ブロックもあるので、その章の全件が要るときは
 `難所 —` で検索してください。
 
 一般的でない専門用語(Floyd–Warshall・SFINAE・ADL・TOI・MTD・GJK/EPA・CAS・TOCTOU・ABA・Halton 列など)は、**各章の初出箇所で 1〜2 文の説明を添えてあります**。
 
-難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値の 67 項目)。
+難所ブロックが「このコードベース固有の難しさ」を扱うのに対して、**コード自体は素直なのに仕様や定番イディオムを知らなくて読めない**ときは [第10章 前提知識の補足](10_background_knowledge.md) を引いてください(Vulkan・glTF・C++・OS・アルゴリズム・座標と数値の 69 項目)。
 
 ## 最短の読解ルート
 

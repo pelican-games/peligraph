@@ -1,6 +1,7 @@
 # 第12章 コード読解ガイド(技術解説書)
 
-対象: pelican2(2026-07-21 時点、HEAD=`d13fc26`)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 に全域再測定、2026-09-04 に scene transaction / game DLL ABI /
+schema v3 / GPU lease の新入りを追記。HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
 
 この章は他章と目的が違います。第1〜11章が「エンジンを**使う**ための説明書」なのに対し、この章は「エンジンの**中身を読む**ための地図」です。より深いクラス単位の解説(ライフサイクル・インターフェース索引・落とし穴集)は [../source-code-guide/](../source-code-guide/README.md) にあります — 本章は入口・概観、詳細はそちらへ。すべての節にソースへの相対リンクを張ってあるので、エディタ(VS Code 等)や GitHub 上でクリックしながら読み進められます。
 
@@ -34,7 +35,10 @@ pelican2/
     vrm_xr_demo/   … VRM キャラ + OpenXR デモ(flat-first。表情・視線・一人称)
   test/          … Catch2 単体 + golden + fixtures + run_*.cmake/.ps1 結合テスト
                    + ci/(CPU ゲートと機械 gate の Python)
-  tools/         … 開発者向けスクリプト(pelican_rpc.py = 薄型 JSON-RPC クライアント)
+                   + gpu_lease_run.cpp(GPU テストを直列化する launcher。WP385)
+  tools/         … 開発者向けスクリプト(pelican_rpc.py = 薄型 JSON-RPC クライアント /
+                   worktree.sh / codex_bg_*.sh / public_api_inventory.py / doclink.py。
+                   一覧は[第10章](10_tools.md) §10.10)
   .github/
     workflows/   … GitHub Actions(cpu-gate.yml = CI0 / configuration-smoke.yml = CI1)
   docs/          … 設計文書(design_*.md)・指示書・本マニュアル・ci.md
@@ -51,8 +55,8 @@ pelican2/
 | [renderingpass/](../../src/core/renderingpass) | rendering config のパーサ群 + フレームグラフ(プランナ/ランタイム)+ preview グラフ variant | [frameplanner.hpp](../../src/core/renderingpass/frameplanner.hpp), [previewgraph.hpp](../../src/core/renderingpass/previewgraph.hpp) |
 | [renderer/](../../src/core/renderer) | パス種別ごとの描画実装・カメラ・debug 描画・UI 描画 | [materialrender.hpp](../../src/core/renderer/materialrender.hpp), [camera.hpp](../../src/core/renderer/camera.hpp) |
 | [fullscreenpass/](../../src/core/fullscreenpass) | fullscreen パスのコンテナ | [fullscreenpasscontainer.hpp](../../src/core/fullscreenpass/fullscreenpasscontainer.hpp) |
-| [loader/](../../src/core/loader) | project.json・パス解決・シーンバインド・画像読み込み・**コンポーネント受理仕様(codec)**・authoring シーン文書・`.vrma` デコード | [basicconfig.cpp](../../src/core/loader/basicconfig.cpp), [pathresolver.hpp](../../src/core/loader/pathresolver.hpp), [componentcodec.hpp](../../src/core/loader/componentcodec.hpp) |
-| [ecs/](../../src/core/ecs) | ECS コア(chunk 実体は userpublic/details/ecs 側)+ エンジン内部システム + アーキタイプ移行トランザクション | [core.hpp](../../src/core/ecs/core.hpp), [predefined/](../../src/core/ecs/predefined), [archetypemigration.hpp](../../src/core/ecs/archetypemigration.hpp) |
+| [loader/](../../src/core/loader) | project.json・パス解決・シーンバインド・画像読み込み・**コンポーネント受理仕様(codec)**・authoring シーン文書・`.vrma` デコード・**scene load トランザクション**(✅WP380a〜e) | [basicconfig.cpp](../../src/core/loader/basicconfig.cpp), [pathresolver.hpp](../../src/core/loader/pathresolver.hpp), [componentcodec.hpp](../../src/core/loader/componentcodec.hpp), [sceneload.hpp](../../src/core/loader/sceneload.hpp) |
+| [ecs/](../../src/core/ecs) | ECS コア(chunk 実体は userpublic/details/ecs 側)+ エンジン内部システム + アーキタイプ移行トランザクション + **builtin 登録の host 専用入口**(✅WP379a) | [core.hpp](../../src/core/ecs/core.hpp), [predefined/](../../src/core/ecs/predefined), [archetypemigration.hpp](../../src/core/ecs/archetypemigration.hpp), [enginecomponentregistrar.hpp](../../src/core/ecs/enginecomponentregistrar.hpp) |
 | [userpublic/](../../src/core/userpublic) | **ゲームコードに公開される唯一の API 面**(facade)。システム / イベント / **behavior** / 共通 field schema / **アニメーショングラフ評価器の実体** | [gamecontext.hpp](../../src/core/userpublic/gamecontext.hpp), [behavior.hpp](../../src/core/userpublic/behavior.hpp), [animation/animgraph.cpp](../../src/core/userpublic/animation/animgraph.cpp) |
 | [appflow/](../../src/core/appflow) | フレームループ・時刻・フレームレート・終了処理 | [loop.cpp](../../src/core/appflow/loop.cpp) |
 | [phys/](../../src/core/phys) | 物理クエリ(raycast/overlap)と PhysWorld(`trigger:true` collider の `OverlapEnter` / `OverlapExit` 発行を含む) | [physquery.hpp](../../src/core/phys/physquery.hpp), [physworld.hpp](../../src/core/phys/physworld.hpp)(`PELICAN_WITH_PHYSICS=OFF` 時は `physworld_stub.cpp` / `physicsservice_stub.cpp`) |
@@ -63,13 +67,13 @@ pelican2/
 | [ui/](../../src/core/ui) | UI ランタイム(pelican.ui レイアウト・atlas) | — |
 | [imgui/](../../src/core/imgui) | ImGui 開発 UI + Plan Viewer + Object Tree / Inspector(編集可)/ Asset Browser(PELICAN_WITH_IMGUI) | [inspector.hpp](../../src/core/imgui/inspector.hpp), [assetbrowser.hpp](../../src/core/imgui/assetbrowser.hpp) |
 | [watch/](../../src/core/watch) | アセットホットリロード基盤(FileWatcher / ReloadService) | — |
-| [gamelogic/](../../src/core/gamelogic) | ゲームロジック DLL のロード・ホットリロード(G2)+ behavior アタッチメントアリーナ | [behaviorarena.hpp](../../src/core/gamelogic/behaviorarena.hpp) |
+| [gamelogic/](../../src/core/gamelogic) | ゲームロジック DLL のロード・ホットリロード(G2)+ behavior アタッチメントアリーナ + **`LoadLibrary` 前の PE import 診断**(✅WP381/381a) | [behaviorarena.hpp](../../src/core/gamelogic/behaviorarena.hpp), [gamelogicimports.hpp](../../src/core/gamelogic/gamelogicimports.hpp) |
 | [renderdoc/](../../src/core/renderdoc) | RenderDoc の受動検出と F11 / RPC からのキャプチャ状態機械(PELICAN_WITH_RENDERDOC) | [renderdoccapture.hpp](../../src/core/renderdoc/renderdoccapture.hpp)(OFF 時は `renderdoccapture_stub.cpp`) |
 | [persistence/](../../src/core/persistence) | user:// 設定・セーブ(pelican.settings v1) | — |
 | [openxr/](../../src/core/openxr) | OpenXR(discovery / session / composition / viewspace / action / feature policy / mirror) | [openxrsession.hpp](../../src/core/openxr/openxrsession.hpp)。activation 判定は [xractivation.hpp](../../src/core/xractivation.hpp)、XR フレーム順序は [loop.cpp](../../src/core/appflow/loop.cpp) |
 | [communication/](../../src/core/communication) | stdio JSON-RPC サーバ + エディタ編集サービス(command / journal / preview / asset query)+ ウィンドウモード RPC ホスト | [rpcserver.cpp](../../src/core/communication/rpcserver.cpp), [editorcommandservice.hpp](../../src/core/communication/editorcommandservice.hpp) |
 | [resources/](../../src/core/resources) | `engine://` 埋め込みリソースの実体(シェーダ・feature JSON・既定設定) | [features/](../../src/core/resources/features) |
-| 直下 | モジュール機構・ハンドル・ログ・起動設定 | [container.hpp](../../src/core/container.hpp), [handle.hpp](../../src/core/handle.hpp), [launchconfig.hpp](../../src/core/launchconfig.hpp) |
+| 直下 | モジュール機構・ハンドル・ログ・起動設定 + **登録 owner の host 専用 API**(✅WP379a) | [container.hpp](../../src/core/container.hpp), [handle.hpp](../../src/core/handle.hpp), [launchconfig.hpp](../../src/core/launchconfig.hpp), [registrationownerhost.hpp](../../src/core/registrationownerhost.hpp) |
 
 ## 12.2 レイヤ構造と依存規則
 
@@ -172,6 +176,67 @@ pelican2/
 
 オブジェクト単位の毎フレーム処理は [behavior.hpp](../../src/core/userpublic/behavior.hpp) の `Behavior` 基底 + `PELICAN_REGISTER_BEHAVIOR`([`PELICAN_REGISTER_BEHAVIOR()`](../../src/core/userpublic/details/behavior/registerer.hpp#L362))で、`BehaviorContext` は `GameContext` を継承して `self()` / `params<T>()` などを足したものです。パラメータの schema は [details/schema/structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp)(WP150 の共通 field descriptor。component codec と同じ機構を共有しています)。
 
+### シーンロードのトランザクション(2026-09 の新しい住人)
+
+`SceneLoader::load()` は 1 つの executor になりました(✅WP380a〜e。利用者向けの説明は
+[第4章](04_scene_ecs.md) §4.3)。読み順:
+
+1. [`sceneload.hpp`](../../src/core/loader/sceneload.hpp) —— **型だけのヘッダ**。
+   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L186)(`Borrowed` = 既に commit 済みの
+   projection を借りる / `Owned` = 候補 metadata を `MetadataCommitToken` ごと持ち込む)、
+   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L152) =
+   `SceneLoadCommitted` | [`PreCommitFailure`](../../src/core/loader/sceneload.hpp#L128) |
+   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L135)、
+   固定長の [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40)(8 要素。溢れたら
+   `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
+   [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
+   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L239)。
+2. [`scene.cpp`](../../src/core/loader/scene.cpp#L465) の `SceneLoader::load` —— executor 本体。
+   phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
+   **記録するのは executor ではなく各 participant** です(WP380c/d)。
+3. [`effecttransaction.hpp`](../../src/core/loader/effecttransaction.hpp#L27) —— behavior が
+   `onInit` / `onDestroy` で起こした副作用(audio / persistence / event / RNG / pending scene)の outbox。
+   [`EffectTransactionScope`](../../src/core/loader/effecttransaction.hpp#L188) は
+   **最初の game-DLL callback より前**に張られ、rollback なら捨て、commit なら flush します。
+   診断は固定 slot に enum + 整数で書く(`flush()` は noexcept かつ allocation-free)。
+4. [`sceneparticipantmanifest.hpp`](../../src/core/loader/sceneparticipantmanifest.hpp#L32) ——
+   **build から生成される participant の表**。誰が prepare / publish / rollback / retire を持つかと、
+   [公開 API 行の分類](../../src/core/loader/sceneparticipantmanifest.hpp#L46)を持ちます。
+   [`tools/public_api_inventory.py`](../../tools/public_api_inventory.py) がこの表と公開ヘッダを
+   双方向に突き合わせます([第10章](10_tools.md) §10.10)。
+5. [`sceneloadfault.hpp`](../../src/core/loader/sceneloadfault.hpp#L12) —— テスト専用の fault injection
+   (`phase × participant × mutation ID`)。**production では injector は nullptr** で、setter が
+   production archive に出ていないことを symbol gate が検査します。
+6. [`modelresourcerelease.hpp`](../../src/core/model/modelresourcerelease.hpp#L36) ——
+   失敗した候補の GPU 資源を返すときの `ReleaseReport`(**heap を使わない**固定 8 件 +
+   `overflow_count`)。`PreCommitFailure.release_errors` に集約されます。
+
+### 宣言 schema(v2 と v3)
+
+component / behavior / event の field descriptor は
+[`details/schema/structfieldschema.hpp`](../../src/core/userpublic/details/schema/structfieldschema.hpp) が正です。
+WP150 の flat な `StructFieldSchema` に加えて、WP382a で
+[`SchemaNode`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L87)(`Struct` / `Leaf` /
+[`Flags`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L116) /
+[`List`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L143)、**深さ 2 まで**。
+list の list は compile 時に拒否)が入りました。wire 側の `$list` エンベロープ(`v` / `next_id` / 行 id)の
+decode / encode は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L390) です。
+`List` / `Flags` を含む宣言だけが v3 の登録入口を通り、v2 の record は `static_assert` で凍結されています。
+**engine 同梱の component はまだ 1 つも `List` を宣言していません**(使っているのは
+`test/fixtures/wp382a_schema/` の v3 DLL だけ)。
+
+### ゲームロジック DLL のロード前診断
+
+[`gamelogicimports.hpp`](../../src/core/gamelogic/gamelogicimports.hpp#L64) の
+`readGameLogicImports()` / `diagnoseGameLogicImports()` は、**PE の top-level import /
+delay-import directory だけを読みます**(image を map せず、`LoadLibrary` も呼ばず、
+imported module も辿りません)。したがって古い DLL の static initializer は 1 行も走りません。
+エラーコードは同ヘッダの
+[`gameLogicSourceBusyErrorCode`](../../src/core/gamelogic/gamelogicimports.hpp#L54) 付近に並んでいます。
+owner の払い出しと builtin 登録は game DLL のヘッダから外れ、
+[`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L13) と
+[`enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L15) に移りました(✅WP379a)。
+
 ### RPC(外部ツールの操作面)
 
 エンベロープ検証(JSON-RPC 2.0 / NDJSON)は純ロジック [project/jsonrpc.cpp](../../src/project/jsonrpc.cpp)、メソッド実装とエンジンへのバインドは [`rpcserver.cpp` 内](../../src/core/communication/rpcserver.cpp#L1276) の `configureEngineRpcHandlers`(`runEngineRpcServer` はこれを組み立てて回すだけの薄いエントリです)。`RpcServer(istream, ostream) + setHandler` の汎用ディスパッチャ構造なので、メソッド追加はハンドラ登録 1 箇所です。OFF ビルド時のスタブは [rpcserver_stub.cpp](../../src/core/communication/rpcserver_stub.cpp)。
@@ -228,9 +293,9 @@ pelican2/
       "expected_png_sha256": "2d6f3715483b91e4444c11085fd13444ac343803574403008ade21672a299e78",
       "tolerance": true, "vat": "on_and_off", "traces": ["rgba8"] }
     ```
-- **ツールの使い方の実例** → [test/](../../test) の `run_*.cmake` / `run_*.ps1`(player / pelican_cli を実際に子プロセス起動する結合テスト。現在 **42 本**)。特に `run_rpc_headless.cmake` は RPC セッションの生きたサンプル、`run_physics_trigger_behavior.ps1` は scene の `behavior` コンポーネント + トリガーイベントの最小実例です
+- **ツールの使い方の実例** → [test/](../../test) の `run_*.cmake` / `run_*.ps1`(player / pelican_cli を実際に子プロセス起動する結合テスト。現在 **49 本** = `.cmake` 45 + `.ps1` 4)。特に `run_rpc_headless.cmake` は RPC セッションの生きたサンプル、`run_physics_trigger_behavior.ps1` は scene の `behavior` コンポーネント + トリガーイベントの最小実例です
 - **CI gate を読む** → [test/ci/run_cpu_gate.py](../../test/ci/run_cpu_gate.py)(CPU ゲートのローカル再現)/ [test/ci/test_golden_inventory.py](../../test/ci/test_golden_inventory.py)(golden 登録の gate)/ [test/contract_boundary_gate.py](../../test/contract_boundary_gate.py)(境界契約の機械 gate。依存の pin や ABI の offset/size をコードから独立に検査)。ワークフロー定義は [.github/workflows/](../../.github/workflows)、運用の正は [../ci.md](../ci.md)
-- テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt)。現在 **161 件**)。GPU 必須テストはデバイス列挙失敗時 SKIP
+- テスト登録は `pelican_define_test(<name> [libs...])`([test/CMakeLists.txt](../../test/CMakeLists.txt)。**呼び出し 183 箇所**。※これは「登録した実行ファイル」の数で、`ctest` の件数ではありません —— Catch2 の TEST_CASE ごとに登録されるため、全数は構成によって変わります。直近の全数実測は **1633 / 1633**、[第11章](11_status.md) §11.1)。GPU 必須テストはデバイス列挙失敗時 SKIP で、`gpu` label のものは launcher の lease 経由で直列化されます([第10章](10_tools.md) §10.9)
 
 ## 関連文書
 

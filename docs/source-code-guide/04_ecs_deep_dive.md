@@ -46,6 +46,9 @@ DECLARE_COMPONENT(型, 数値ID)
 | 16 | `LocalTransformComponent` | `localtransform` | 公開API用transform |
 | 17 | `AnimationComponent` | `animation` | アニメーション再生状態 |
 | 18 | `SpriteViewComponent` | `sprite_view` | 2D sprite表示（登録は [`registerSpriteViewComponent()`](../../src/core/userpublic/components/spriteview.cpp#L136) 経由） |
+| 19 | [`RayInstanceComponent`](../../src/core/userpublic/components/rayinstance.hpp#L37) | `pelican_ray_instance` | ray tracing の instance 宣言（mask / instance flags / custom index）。**条件付き登録** |
+
+最後の1件だけは無条件ではありません。[`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L21) は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L139) が真のとき、すなわち起動時に `ray_group_layout` version 2 が configure されたときにだけ [`registerComponent<RayInstanceComponent>("pelican_ray_instance")`](../../src/core/ecs/predefined.cpp#L36) を呼びます。したがって v2 layout を持たないプロジェクトでは、この Component は**そもそも登録されていません**。scene 側に宣言があると [`scene.cpp` の gate](../../src/core/loader/scene.cpp#L79) が `pelican.ray_instance_requires_layout_v2@1` で止めます（意味論は[第6章](06_rendering_vulkan_shader.md)）。
 
 IDは単なる外部識別子ではありません。ECS内部では、次の二つの番号を使い分けます。
 
@@ -68,6 +71,7 @@ IDは単なる外部識別子ではありません。ECS内部では、次の二
 - optional `deinit() noexcept`
 - optional JSON `ref(JsonArchiveLoader&)`
 - [`internal::RegistrationOwner owner`](../../src/core/ecs/componentinfo.hpp#L51) と [`internal::RegistrationToken token`](../../src/core/ecs/componentinfo.hpp#L52)（登録解除のための識別、§4.15）
+- optional な [`SchemaNode schema_v3`](../../src/core/ecs/componentinfo.hpp#L53)（再帰 schema を持つ外部 Component だけが埋める、後述）
 
 登録は [`UserComponentRegistererTemplatePublic::registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) です。template内で型付きlambdaを関数ポインタへ変換し、`ComponentInfoManager`へ型消去（type erasure — 具体的な型`T`を`void*`と関数ポインタの組へ畳み、受け取る側が`T`を知らないまま構築・破棄・移動だけは正しく行えるようにする手法）して渡します。戻り値は `void` ではなく `RegistrationToken` です。
 
@@ -79,6 +83,45 @@ compile時制約は次です。
 - `deinit()`があるならnoexcept
 
 これらは削除・rollback・teardownを例外なしで完遂するための契約です。
+
+### 名前の予約と owner policy（WP379）
+
+Component 名は自由ではありません。登録は必ず [`enforceComponentRegistrationPolicy()`](../../src/core/userpublic/details/component/registerer.cpp#L20) を通り、owner と名前の組で2種類の拒否があります。
+
+| 状況 | 結果 |
+|---|---|
+| engine owner が `pelican_` で始まらない名前を登録 | [`builtin_name_unprefixed@1`](../../src/core/userpublic/details/component/registerer.cpp#L49) |
+| engine 以外の owner が `pelican_` で始まる名前を登録 | [`reserved_component_namespace@1`](../../src/core/userpublic/details/component/registerer.cpp#L51) |
+
+例外は [`ComponentRegistrationPolicyError`](../../src/core/userpublic/details/component/registerer.hpp#L59) で、`code()` と `payload()`（`{name, owner_kind}`。`owner_kind` は `"engine"` か `"external"` の2値）を持ちます。
+
+「engine の組み込み Component は全部 `pelican_` 始まり」ではありません。§4.2 の表の7名は [`grandfathered_engine_names`](../../src/core/userpublic/details/component/registerer.cpp#L15) という固定配列で名指しの例外にしてあります（`eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view`）。この一覧は [`grandfatheredEngineComponentNames()`](../../src/core/userpublic/details/component/registerer.cpp#L42) で読み出せます。**新しく engine 側へ足す Component には `pelican_` が必須**で、上の表の ID 19 が最初の例です。
+
+owner 側の規則も対称です。公開入口の [`__registerComponent()`](../../src/core/userpublic/details/component/registerer.cpp#L79) は `currentRegistrationOwner()` が engine owner だった場合に `logic_error("component registration requires a host-allocated external owner")` を投げます。engine owner での登録は host 専用の [`__registerEngineComponent()`](../../src/core/userpublic/details/component/registerer.cpp#L108) だけが行い、その入口は `private` + `friend class EngineComponentRegisterer` なので game DLL の公開面には出ません（§4.15）。
+
+### 再帰 schema を持つ Component は v3 経路へ分かれる
+
+[`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) は compile 時に `T::schema` を見て2経路に分かれます。
+
+- `schemaRequiresV3(T::schema)` が偽 — 従来どおり [`__registerComponent()`](../../src/core/userpublic/details/component/registerer.hpp#L93) に `ComponentLoaderInfo` を渡します。この record の layout は [`FrozenComponentLoaderInfoV2Layout`](../../src/core/userpublic/details/component/registerer.hpp#L24) との `sizeof` 一致で凍結されています。
+- 真 — `static` な [`materializeSchemaNode(Component::schema)`](../../src/core/userpublic/details/component/registerer.hpp#L173) を作り、[`pelican_register_component_v3()`](../../src/core/userpublic/details/component/registerer.hpp#L95) へ [`ComponentRegistrationV3`](../../src/core/userpublic/details/component/registerer.hpp#L37) を渡します。JSON loader も `decodeStructObject()` を使う再帰版へ切り替わります（[`RecursiveSchema` 分岐](../../src/core/userpublic/details/component/registerer.hpp#L147)）。
+
+v3 は v2 の `ComponentLoaderInfo` を入れ子で再利用**しません**。header のコメントが理由を書いています — v2 の入れ子型の修飾名は凍結済み入口シンボルの一部だからです。v3 で渡した `SchemaNode` は [`__registerComponentForOwner()`](../../src/core/userpublic/details/component/registerer.cpp#L115) で `ComponentInfo::schema_v3` に入り、v2 経路では `std::nullopt` のままです。
+
+### 名前が引けないときは `component_unknown@1`
+
+[`ComponentInfoManager::getComponentIdByName()`](../../src/core/ecs/componentinfo.cpp#L104) は、未登録名に対して `nullptr` や `-1` ではなく [`ComponentUnknownError`](../../src/core/ecs/componentinfo.hpp#L27) を投げます。`what()` は [`componentUnknownErrorCode`](../../src/core/ecs/componentinfo.hpp#L24)（`component_unknown@1`）に `{"name": ...}` の JSON を連結した文字列で、`payload()` からその JSON だけを取れます。「未登録」と「登録済みだが編集できない」を混ぜないための型です。
+
+この2つは編集面で別の code に写ります（[第7章](07_tools_rpc_tests.md)）。
+
+| 状況 | 編集エラー |
+|---|---|
+| そもそも Component 名を知らない | [`component_unknown@1`](../../src/core/communication/editorjournal.cpp#L228)（`ComponentUnknownError::payload()` をそのまま運ぶ） |
+| Component は存在するが、編集用の codec が無い | [`not_editable`](../../src/core/communication/editorjournal.cpp#L222)（`{object, slot}`） |
+
+判定順が要点です。[`canonicalComponent()`](../../src/core/communication/editorjournal.cpp#L216) は codec が見つからないとき、まず `component_exists` コールバックで **ECS 側に登録があるか**を問い合わせ、あれば `not_editable`、無ければ `component_unknown@1` を出します。逆にすると「codec が無いだけの既知 Component」が「そんな Component は無い」と報告されます。
+
+なお `ComponentUnknownError` を**握り潰す**正当な場所も1つあります。[`scene.cpp` の builtin ray-instance gate](../../src/core/loader/scene.cpp#L67) は「`pelican_ray_instance` を外部 owner が登録しているか」を名前解決の成否で判定するので、未登録は例外ではなく「外部 owner 不在」を意味します。
 
 ### trivial型と非trivial型のrelocate
 
@@ -562,9 +605,9 @@ behaviorも**ECS Componentではありません**。`BehaviorAttachmentArena` �
 
 ## 4.15 ユーザー独自Componentの現在地
 
-`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。実際の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L21)、benchmark、lifecycle testです。
+`DECLARE_COMPONENT`と型付きregistererは実装されていますが、通常のゲームコード向けに安定した自動Component登録マクロはまだ公開されていません（`PELICAN_REGISTER_COMPONENT`はリポジトリ全体に不在）。**game DLL からの登録そのものは通ります** — `details/component/registerer.hpp` を直接includeして静的初期化から [`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L166) を呼ぶ形で、実物は [`fixtures/ray_namespace_component/component.cpp`](../../test/fixtures/ray_namespace_component/component.cpp#L12)（WP379 の production 受け入れで実 DLL として動きます）と [`fixtures/wp382a_schema/v3_fixture.cpp`](../../test/fixtures/wp382a_schema/v3_fixture.cpp#L117)、[`fixtures/wp380b_effect/behavior.cpp`](../../test/fixtures/wp380b_effect/behavior.cpp#L69) です。engine 側の登録箇所は組み込み [`predefined.cpp`](../../src/core/ecs/predefined.cpp#L21)、benchmark、lifecycle testです。
 
-なお、game System/Eventの登録はDLL化後、[`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位でreload時に`unregisterGameSystems(owner)`されるようになりましたが、Componentを**登録する**側は依然としてengine側のみです。
+owner の出どころが両者を分けます。game DLL は自分で owner を確保しません — host が [`ScopedRegistrationOwner registration_scope{owner}`](../../src/core/gamelogic/gamelogicreload.cpp#L345) で `LoadLibrary` を包むので、DLL の静的初期化子はその external owner の下で走ります。game System/Eventの登録も同じ [`RegistrationOwner`](../../src/core/userpublic/details/reload/registrationowner.hpp#L11) 単位で、reload時に`unregisterGameSystems(owner)`されます。
 
 ### 登録解除APIは入った（WP163 / ECS1）
 
@@ -578,7 +621,9 @@ std::size_t componentRegistrationCount(RegistrationOwner owner) noexcept;
 
 この3つはWP379aでgame DLL公開面から外れ、host専用の [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) にあります（同じくowner確保の [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) はhost専用の [`registrationownerhost.hpp`](../../src/core/registrationownerhost.hpp#L11)）。game DLLからは宣言が見えずbuildが通りません。それを保つのが `wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator` の2本で、実SHARED DLLをbuildして期待した診断（`registerEngineComponent` / `allocateRegistrationOwner`）で落ちることを確認します（[test/CMakeLists.txt](../../test/CMakeLists.txt#L1833)）。
 
-これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) の戻り値が `void` → `RegistrationToken` になりました。
+これに伴い [`registerComponent<T>()`](../../src/core/userpublic/details/component/registerer.hpp#L166) の戻り値が `void` → `RegistrationToken` になりました。host 側の入口は [`EngineComponentRegisterer::registerComponent<T>()`](../../src/core/ecs/enginecomponentregistrar.hpp#L18) で、`__registerEngineComponent()` を呼ぶのはこの1箇所だけです。header 冒頭のコメントが規範を明記しています — 「この型とこのヘッダの全関数は host 専用。公開 registrar は game-DLL のコードから owner 値を受け取らない」。
+
+つまり host 専用になったのは「**engine owner として**登録する入口」と「owner を確保する API（[`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13)）」であって、登録そのものではありません。game DLL は host が用意した external owner の下で普通に登録できます（§4.15 冒頭）。名前空間の規則（§4.2 の `pelican_` 予約）と合わせて、外部 owner が登録できる名前と engine が登録できる名前は交わりません。
 
 解除は無条件ではありません。[`ComponentInfoManager::unregisterComponent()`](../../src/core/ecs/componentinfo.cpp#L69) は、そのComponentへ依存するECS Systemが残っていると拒否します。
 
@@ -726,3 +771,22 @@ archetypeを変えない「値の差し替え」にも同じ形が入りまし�
 [`isolationSnapshot()`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L192) が [`IsolationSnapshot`](../../src/core/userpublic/details/ecs/coretemplate.hpp#L162) として `global_tick` / `free_indices` / entity slot / chunkのmask+versionを露出します。transactionの前後でこれを比較すれば、「rollbackが本当に元へ戻したか」を外から検証できます。
 
 テストは [`test/ecs_migration_test.cpp`](../../test/ecs_migration_test.cpp)、[`test/ecs_scheduler_test.cpp`](../../test/ecs_scheduler_test.cpp)、[`test/registration_lifetime_test.cpp`](../../test/registration_lifetime_test.cpp) です。
+
+## 4.18 scene load transaction から見た entity token
+
+`ECSEntityMutationToken` は ECS 単体の transaction であると同時に、scene load executor の **participant** でもあります。executor 側の phase は [`SceneLoadPhase`](../../src/core/loader/sceneload.hpp#L27) の8値（`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`）で、観測は [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40) という**固定長8スロット**の値です。[`record()`](../../src/core/loader/sceneload.hpp#L47) は直前と同じ phase を弾き、溢れたら捨てずに `overflow = true` を立てます（コメントが「順序の観測を黙って捨てるな」と規範を書いています）。
+
+ECS の関わり方には、読み間違えやすい非対称があります。
+
+| 操作 | trace への記録 |
+|---|---|
+| [`ECSEntityMutation::prepareDestroy()`](../../src/core/ecs/archetypemigration.hpp#L117) → [`publish()`](../../src/core/ecs/archetypemigration.cpp#L973)（＝ early publish） | **しない** |
+| [`ECSEntityMutationToken::finish()`](../../src/core/ecs/archetypemigration.cpp#L981)（trace 無しの overload） | **しない** |
+| [`ECSEntityMutationToken::finish(phase_trace)`](../../src/core/ecs/archetypemigration.cpp#L991) | `SceneLoadPhase::finish` |
+| 退役 batch の [`RetirementState::enqueue()`](../../src/core/loader/scene.cpp#L125) | `SceneLoadPhase::retire` |
+
+本番の executor は、生成した entity に対して**trace 無しの `finish()` を呼びます**（[`for (auto &token : created_entities) token.finish();`](../../src/core/loader/scene.cpp#L1012)）。`finish` を trace へ書くのは、その直前に executor が明示的に置いた [`phase_trace.record(SceneLoadPhase::finish)`](../../src/core/loader/scene.cpp#L1011) の1行です。コメントが理由を書いています — **batch 自体が1人の participant** であり、entity が0件の scene でも `finish` が観測できる必要がある一方、token 個々の完了は batch の実装詳細だからです。
+
+`early_publish` も同じ考え方です。ECS の3行（`entity_liveness` / `component_values` / `component_versions`）は [participant manifest](../../src/core/loader/sceneparticipantmanifest.cpp#L72) 上で `early_publish` の participant として宣言されていますが、`publish()` 自体は trace を触りません。executor 側で `early_publish` が現れるのは失敗経路の [`fail(SceneLoadPhase::early_publish, ...)`](../../src/core/loader/scene.cpp#L886) と、同じ段で走る [`PolygonInstanceContainer` 側の記録](../../src/core/renderer/polygoninstancecontainer.cpp#L511) です。
+
+**触るときの不変条件**: token の `publish()` / `finish()` / `rollback()` は全て `noexcept` で、executor はそれを [`static_assert`](../../src/core/loader/scene.cpp#L961) で固定しています。trace を足したくなったら、`record` 文を executor に書くのではなく participant の側へ渡します（[第9章](09_black_magic_and_gotchas.md)の落とし穴）。

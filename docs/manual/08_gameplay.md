@@ -1,10 +1,11 @@
 # 第8章 ゲームロジック
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-04 時点、HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - ゲームコード(C++)の書き方 — システム登録・`GameContext`・オブジェクト操作・DLL ホットリロード
+- ゲーム DLL の ABI(登録入口・epoch anchor・古い DLL の拒否)と schema の宣言面
 - **オブジェクト behavior**(`PELICAN_REGISTER_BEHAVIOR` — シーンに貼れる振る舞い。✅WP155/162/167)
 - イベント層(emit と購読、フレーム境界配送)
 - シーン遷移・カメラ(コントローラ含む)・物理クエリ(shapeCast / moveAndSlide)の使い方
@@ -20,6 +21,20 @@
 > **設計決定(レイヤ規則):** ゲームコードが include してよいのは `src/core/userpublic/` のヘッダのみ。エンジン内部のモジュール取得(`GET_MODULE`)をゲームコードから直接呼ぶことは禁止で、入力・時刻・オブジェクト・物理・音・シーン・乱数はすべて **`GameContext`** ファサードを通す。
 
 ビルドの組み込み方([第2章](02_getting_started.md) §2.4):`code/CMakeLists.txt` に `pelican_game_sources(<ソース>...)` と書き、CMake configure 時に `-DPELICAN_PROJECT=<プロジェクトパス>` を渡します。
+
+### ゲーム DLL の ABI(✅WP381/381a/382a)
+
+ふだん意識する必要はありませんが、**古い DLL が黙って動く事故を防ぐ**ための仕掛けがあるので、エラーが出たときのために書いておきます。
+
+- ゲーム DLL がホスト実行ファイルから import する登録入口は `pelican_register_behavior_v2` / `pelican_register_event_v2` / `pelican_register_system_v2` / `pelican_emit_v2` と、コンポーネントの `__registerComponent` です。加えて **epoch anchor** [`pelican_game_logic_epoch_v2`](../../src/core/userpublic/gamelogic.hpp#L23) を必ず import します(SDK が自動で埋めます)。
+- ロードの**前**に、DLL の PE import テーブルだけを読む診断([diagnoseGameLogicImports](../../src/core/gamelogic/gamelogicimports.cpp#L559))が走ります。期待する epoch anchor が無い / 旧名の入口(`__registerBehavior` など)が残っている DLL は [`game_logic_abi_stale@1`](../../src/core/gamelogic/gamelogicimports.hpp#L40) で拒否され、**一度も実行されません**。ordinal import と delay-load import も `game_logic_abi_unsupported_import@1` で拒否です。
+  - registration を持たない provider 専用の古い DLL には、リンカが強制する要素が無いため、**この診断が唯一の門番**です。
+- 再帰 schema(§8.5.3 の `List` / `Flags` / `OptionalOverride`)を宣言した型があると、SDK は `_v3` 入口([registerer.hpp](../../src/core/userpublic/details/behavior/registerer.hpp#L299))を**自動で選びます**。書き手のコードは変わりません。v3 入口を使う DLL と v2 だけの DLL は同じホストに**同居できます**。
+- 逆に、ホストが古くて v3 入口を持たないのに DLL が v3 を使っていると、`game_logic_abi_stale@1{found: "v3", host: "v2"}` で拒否されます。
+
+実行中の DLL は原本ではなく **shadow copy** を読みます。置き場所は原本の隣の `.pelican-hot-reload/<プロセス ID>/` で([gamelogicreload.cpp](../../src/core/gamelogic/gamelogicreload.cpp#L423))、**プロセスごとに別ディレクトリ**なので同じプロジェクトを 2 つ起動しても取り合いになりません(死んだプロセスの残骸は起動時に掃除されます)。ビルドが原本を掴んだままだと、リロードは失敗ではなく保留になり、何度ポーリングしても掴まれたままなら [`game_logic_source_busy@1`](../../src/core/gamelogic/gamelogicreload.cpp#L739) が status に出ます。
+
+エラーコードは rpc の `get_status` の reload 節と `reload_game_logic` のエラーに出ます([第10章](10_tools.md) §10.5)。
 
 ## 8.2 最小の実例 — WASD でキャラクターを動かす
 
@@ -129,7 +144,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | 物理 | `raycastClosest(ray)` / `raycastClosest(ray, filter)` / `raycastAll(ray, filter)` / `overlapAll(shape)` / `overlapAllHits(shape, filter)` / `shapeCastAll` / `shapeCastClosest` | §8.8。filter 付き overload は stable identity 付きヒットを返す |
 | カメラ | `setCamera(name)` | §8.9 |
 | 乱数 | `random()` / `randomInt(min,max)` / `randomFloat(min,max)` / `setSeed(u64)` / `seed()` | §8.10 |
-| 音 | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `isPlaying(h)` | §8.11 |
+| 音 | `playSound(path)`→SoundHandle / `stopSound(h)` / `setBusVolume(bus,v)` / `busVolume(bus)` / `isPlaying(h)` | §8.11 |
 | シーン | `loadScene(name)` / `currentScene()` | §8.7 |
 | 永続化 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` / `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()` | §8.12(✅WP65) |
 | ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
@@ -152,6 +167,8 @@ if (head.valid && head.source == Pelican::ActionPoseSource::synthetic_head) {
 - 実例は [projects/vrm_xr_demo](../../projects/vrm_xr_demo) の視線追従(head pose を優先し、flat では authored camera 基準にフォールバック)。
 
 未知の名前(アクション・シーン・カメラ・オブジェクト・イベント)は**すべて名前入りの例外**になります。「静かに無視」はこのエンジンには存在しません(fail-fast の一貫した文化)。
+
+> **シーンロードの最中だけ、この表の意味が変わります(✅WP380b〜e)。** `onInit` から呼んだ `emit` / `setSeed` / `loadScene` / `playSound` / `stopSound` / `setBusVolume` / `setGameSettings` / `saveData` / `saveSettings` は**その場では起きず**、シーンロードのトランザクションに溜まります。ロードが失敗すれば全部消え、成功したときだけ実行されます。読み取り(`isPlaying` / `loadData` / `listSaves` / `gameSettings`)は自分が溜めた書き込みを見ます。詳細は [第4章 §4.3](04_scene_ecs.md)。
 
 ## 8.5 オブジェクト behavior — もう一つのゲームコードの書き方(✅WP155/162/167)
 
@@ -242,11 +259,51 @@ static constexpr auto schema = Pelican::structFields(
 (例 — 書式は `test/behaviorarena_test.cpp` の実物に準拠)
 
 - **すべてのフィールドが `defaulted(...)` 必須**です(`required(...)` はコンパイルエラー)。シーン JSON 側で `params` を省略しても全部既定値で成立します。イベントペイロード([第7章](07_input_ui.md)の EventPayloadSchema)とは逆の規約なので注意してください。
-- 使える型: 整数各種 / `F32` / `F64` / `Vec2〜4` / `Quat` / `String` / **`Bool`** / **`Enum`**(`enumValues(...)` 必須・最大 8 個)。ネストした構造体・配列・任意 JSON は使えません。
+- 使える型: 整数各種 / `F32` / `F64` / `Vec2〜4` / `Quat` / `String` / **`Bool`** / **`Enum`**(`enumValues(...)` 必須・最大 8 個)。任意 JSON は使えません。
+- ✅WP382a で **`Flags<Enum>` と `List<Row>`** が加わりました(下記)。素の配列・任意ネスト構造体は今も使えません。
 - 範囲は `irange` / `urange` / `frange`、単位文字列は `field<&P::x>("x", range, "m/s")` の第 3 引数。これらは**インスペクタのウィジェットにそのまま反映**されます([第13章](13_editor.md))。
 - 未知キー・型不一致・範囲外はすべて `field 'params.speed' is out of range` の形式で**フィールドパス付きの名指しエラー**になります。
 - 適用は「既定値で構築 → 存在するキーだけ適用 → 全検証成功後に swap」。途中で失敗しても既存の値は一切変わりません。
 - `ctx.params<Params>()` は非 const 参照を返すので実行中に書き換えられますが、**その変更は永続化されません**(リロードやシーン再構築で authoring 値に戻ります)。
+
+#### 行と旗(✅WP382a)
+
+「同じ形のレコードを何行か持たせたい」「複数の旗を立てたい」ときは、素の `std::vector` ではなく専用の型を使います。JSON の書式は [第4章](04_scene_ecs.md) §4.4 です。
+
+```cpp
+enum class InstanceFlag : std::uint32_t { CullDisable = 1u, FlipFacing = 2u };
+
+struct OverrideRow {                       // 行の型は自分の schema を持つ
+    std::string occurrence_id;
+    std::optional<std::uint8_t> mask;      // OptionalOverride は optional で受ける
+    std::optional<Pelican::Flags<InstanceFlag>> instance_flags;
+
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::componentPolicy("my_override_row"),
+        Pelican::required(Pelican::field<&OverrideRow::occurrence_id>("occurrence_id")),
+        Pelican::optionalOverride(
+            Pelican::field<&OverrideRow::mask>("mask", Pelican::urange(0, 255))),
+        Pelican::optionalOverride(
+            Pelican::field<&OverrideRow::instance_flags>("instance_flags"),
+            Pelican::enumValues(
+                Pelican::enumValue("cull_disable", InstanceFlag::CullDisable),
+                Pelican::enumValue("flip_facing", InstanceFlag::FlipFacing))));
+};
+
+struct CarrierParams {
+    Pelican::List<OverrideRow> overrides;
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::behaviorParamsPolicy,
+        Pelican::defaulted(Pelican::field<&CarrierParams::overrides>("overrides")));
+};
+```
+
+(実物: `test/fixtures/wp382a_schema/v3_fixture.cpp`)
+
+- `Flags<Enum>`([structfieldschema.hpp](../../src/core/userpublic/details/schema/structfieldschema.hpp#L106))は `enumValues(...)` が**必須**(無いとコンパイルエラー)。語彙は最大 8 個。
+- [`List<Row>`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L143) の `Row` は自分の `schema` を持つ型で、**その中にさらに `List` は置けません**(1 段まで。違反はコンパイルエラー)。
+- [`optionalOverride(...)`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L536) のフィールドは `std::optional<T>` で受けます。behavior params の**トップレベルには置けません**(そこは `defaulted` 必須)ので、実際の置き場所は行の schema の中です。
+- これらを 1 つでも宣言すると、SDK は登録入口を自動で `_v3` に切り替えます(§8.1)。書き手が指定するものはありません。
 
 ### 8.5.4 BehaviorContext
 
@@ -266,8 +323,20 @@ static constexpr auto schema = Pelican::structFields(
 - behavior 全体は **`"BehaviorSystem"`(order = 50)という 1 個のゲームシステム**として、他のゲームシステムと同じ `(order, 型名)` の全順序に並びます。つまり `order < 50` のシステムは全 behavior より前、`order > 50` は後に走ります(ビルトインのカメラコントローラは 10000)。
 - attachment どうしの順序は `attachment_seq` の昇順。シーンロード時の seq は**宣言順**(オブジェクト順 → コンポーネント順)から決まります。
 - **生成**: シーンの entity/collider/light を publish した後、`attachment_seq` 昇順に `onInit`。途中で例外が出たら、それまでに init 済みのものを逆順に `onDestroy` して全部巻き戻し、例外を投げ直します(このとき失敗した本人の `onDestroy` は呼ばれません)。巻き戻るのは behavior だけではなく、scene load 全体が旧シーンに戻ります(entity・collider・light・カメラ・描画・`onInit` 中の `emit` / `loadScene()` も。✅WP380a、[第4章 §4.3](04_scene_ecs.md))。`SceneLoaded` の emit は commit の後です。
-- **破棄**: `attachment_seq` の**逆順**に `onDestroy`。**entity がまだ生きているうち**に呼ばれるので、`ctx.self()` から transform や物理を触れます。
+- **破棄**: `attachment_seq` の**逆順**に `onDestroy`([destroyDetached](../../src/core/gamelogic/behaviorarena.cpp#L337))。`ctx.self()` から自分の transform / sprite を読めます — シーン切替の retire 段では entity は既に unpublish 済みなので、読めるのは**破棄トークンが持つ最終スナップショット**です(下記)。
 - 更新・イベント配送はどちらも開始時に有効な attachment のスナップショットを取ってから走るため、途中で消えたオブジェクトは安全にスキップされます。
+
+#### `onInit` / `onDestroy` から呼べること(✅WP380b〜e)
+
+シーンロードの最中は、`GameContext` の作用がトランザクションに溜まります(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。behavior から見た要点:
+
+- `onInit` で `playSound` すると**音はまだ鳴りません**。ロードが commit したあとの flush で鳴ります。直後に `ctx.isPlaying(handle)` を呼べば true が返り、`stopSound` すればその予約ごと消えます(鳴らずに終わる)。
+- `onInit` で `saveData` した内容は、同じ `onInit` の中の `loadData` で読めます。`listSaves()` にも並びますが、**まだ書いていないので `timestamp` は 0** です。
+- `onInit` が例外を投げると、これらの作用は**すべて捨てられます**(予約した voice は解放され、`user://` の中身も設定も変わりません)。シーンも旧シーンに戻ります。
+- **`onDestroy` は破棄されるオブジェクトの最終状態を読めます。** `ctx.localTransform(ctx.self())` / `ctx.spriteView(ctx.self())` は破棄トークンのスナップショットを返します。書き込み側は throw せず `false` を返します。
+- `onDestroy` は `noexcept` なので、この段で `playSound` や `saveData` が失敗しても**例外にはならず**、ロード結果の `effect_errors` に名前付きで積まれます。
+- `onDestroy` の中の `loadScene(name)` は、**もう commit された新しいシーン集合**に対して解決されます。旧シーンにしか無い名前は拒否され、`scene_retire_load_rejected@1` として記録されます。
+- ⚠️ ロード中に `GameObjects::` の静的 API を直接呼ぶと `SceneTransactionMutationRejected{api: ...}` です。オブジェクト操作は `BehaviorContext`(= `GameContext`)経由で書いてください。
 
 ### 8.5.6 DLL ホットリロードとの関係(✅WP162)
 
@@ -281,6 +350,8 @@ static constexpr auto schema = Pelican::structFields(
 
 - バージョンを上げたときは、**現在ロードしていないシーンも含めて**全 behavior の params が新 schema で読めることが条件です。
 - リロード後、behavior のインスタンス状態(メンバ変数)は失われ、params は authoring 値から再構築されます(full-reset 方式)。
+- `schema_changed_without_version_bump` の判定は **schema の指紋**で、フィールドの型だけでなく**既定値・宣言順・enum 値の割り当て・presence(`defaulted` ↔ `required` ↔ `optionalOverride`)の変更も検出します**([validateBehaviorReloadSources](../../src/core/gamelogic/behaviorreloadvalidation.cpp#L10))。「型は同じだから大丈夫」は通りません。
+- ⚠️ **この検証は behavior params だけが対象です。** イベントペイロードと ECS コンポーネントの schema を version bump なしで変えても、現状は検出されません(WP382a-fix で追加予定 = 📐**未対応**)。
 
 ### 8.5.7 ゲームシステムとの使い分け
 
@@ -322,6 +393,7 @@ void onEvent(const DoorOpened &e, Pelican::GameContext &ctx);
   full `EntityId` で、同じ pair を両オブジェクト視点へ配送します。
 - rpc の `inject_event` で外部からもイベントを注入できます(`ref()` を持つ型は JSON からペイロード構築)。
 - behavior も同じ `onEvent` でイベントを受けられます(§8.5)。書く順序の制約(`PELICAN_REGISTER_EVENT` → 型定義 → 登録マクロ)も同じです。
+- **シーンロード中の `emit` はロードのトランザクションに溜まります**(✅WP380a)。ロードが失敗すれば配送されず、成功すれば commit 後の flush で pending queue に入ります(配送は従来どおり次フレーム頭)。`SceneLoaded` 自身も同じ flush で出ます — 送信箱に入る順は「`onInit` の emit → 旧 behavior の `onDestroy` の emit → `SceneLoaded`」で、配送順は emit 順なので **`SceneLoaded` は最後**に届きます。
 
 ### 使い分けの作法(フレーム境界配送を前提にした設計)
 
@@ -338,6 +410,7 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 - 適用は**フレーム末尾**(ゲームシステム実行後・描画前)。同フレームに複数回呼ぶと最後の 1 件が勝ちます。
 - 切替では全 GameObject・物理・描画インスタンス・名前束縛が破棄され、**起動時と同じロード経路**で新シーンが構築されます(第 2 経路を作らない方針)。
+- 切替は **1 つのトランザクション**です(✅WP380a)。途中で失敗したら document・ライト・カメラ・ECS・物理・描画・behavior が**まるごと旧シーンのまま**で、中途半端な状態にはなりません(読み込み済みのモデル資産だけはキャッシュなので残ります)。commit 後に音やセーブの書き出しだけが失敗した場合は「シーンは新しいまま + `effect_errors`」になります([第4章 §4.3](04_scene_ecs.md))。
 - **`EngineTime` は継続**します(時刻・フレーム番号はリセットされない)。シーンローカル時間が欲しければ `SceneLoaded` 受信時の時刻を覚えてください。
 - 非同期ロード(`loadSceneAsync`)は 📐S2 未実装です。
 
@@ -454,6 +527,7 @@ ctx.stopSound(h);
 - ヘッドレス / rpc 実行では自動的に **null バックエンド**(無音・API は全部動く)になります。テストの決定性のためです。
 - `PELICAN_WITH_AUDIO=OFF` ビルドで音 API を呼ぶと、どのフラグで無効化されたかを言うエラーになります。
 - ⚠️ 現状の制限: `playMusic`(ループ BGM)は未実装で、**すべての再生は se バス固定**です。`setBusVolume("bgm")` は受理されますが、bgm バスに音を載せる手段がまだありません。Ogg/ストリーミング/3D 音響も 📐未実装です。
+- **シーンロード中(behavior の `onInit` / `onDestroy`)に呼ぶと、再生・停止・バス音量はロードの成功後にまとめて適用されます**(§8.4 の囲み・[第4章 §4.3](04_scene_ecs.md))。`isPlaying` / `busVolume` はその予約を反映した値を返します。
 
 ## 8.12 永続化(✅WP65)
 
@@ -490,6 +564,7 @@ auto slots  = ctx.listSaves();                           // {slot, timestamp} �
 - スロット名はポータブルなファイル名検証付き(`.`/`..`・末尾ドット/空白・`/ \ # : " < > | ? *`・制御文字は例外)。中身はエンベロープなしの任意 JSON です。
 - **例外挙動の非対称に注意**: 書き込み系(`saveSettings` / `saveData`)は失敗で例外、読み込み系(`loadData`)は throw せず `nullopt` を返します(起動フローを壊さないため)。
 - 書き込みはすべて atomic(tmp + rename)。削除 API(`deleteSave`)や rpc 経由の永続化メソッドはまだありません。
+- **シーンロード中に書くと、ディスクへの反映はロードの成功後**です(§8.4 の囲み)。同じロードの中では `loadData` が書いた値を返し、`listSaves()` にも並びますが、その `timestamp` は **0**(まだファイルが無い)です。`onDestroy` から書いた場合、失敗しても例外にはならず `effect_errors` に記録されます。
 
 ## 8.13 アニメーション再生(✅WP38/94/97/101/102/176〜178)
 

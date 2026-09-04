@@ -68,17 +68,23 @@ sequenceDiagram
 2. `StartupMetrics` を開始。
 3. **XR activationを決定**: [`resolveXrActivation()`](../../src/core/xractivation.hpp) がheadless/RPC/replay等のforced-offとOpenXR discovery hookから `launch_config.xr_active` を確定。
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
-5. `Persistence`からsettingsを読み、audio設定を適用。
-6. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L21) で組み込みComponent/Systemを登録。
-7. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L869) でgame DLLをロード**（WP110系列）。
-8. `ProjectBasicConfig.defaultSceneId()` のsceneを即時ロードし、`ModelAssetContainer` を明示的に先行生成（並列prepareのcommitを起動スレッドで実施）。
-9. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L106) でwatcherのlive inventoryを種付け。
-10. `Loop::run()`へ入る。
-11. loop終了後、Vulkan deviceをidleまで待つ。
-12. [`teardown.run()`](../../src/core/userpublic/pelican_core.cpp#L65) でruntime資源を順序付き解放し、続けて [`shutdownConfiguredGameLogic()`](../../src/core/userpublic/pelican_core.cpp#L66)。
-13. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
+5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだrender-authoring documentのtransactionを、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。
+6. `Persistence`からsettingsを読み、audio設定を適用。
+7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L130) へ固定します。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（§3.11）。
+8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L21) で組み込みComponent/Systemを登録。
+9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L869) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L122) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
+10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L130)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。
+11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L135) の `Borrowed` requestで即時ロード（§3.5 の 3）。
+12. `ProjectMaterialAssetContainer` と `ModelAssetContainer` を明示的に生成（並列prepareのcommitを起動スレッドで実施）。
+13. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L106) でwatcherのlive inventoryを種付け。
+14. `Loop::run()`へ入る。
+15. loop終了後、Vulkan deviceをidleまで待つ。
+16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L64) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
+17. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-12番はtry-catchの**外**にあります。`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L85)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
+16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L2007)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
+
+`RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L85)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
 標準例外も非標準例外もここで捕捉され、ログを出して`false`を返します。したがって、playerの終了コードは `pl.run() ? 0 : 1` です。
 
@@ -505,3 +511,89 @@ flat / xr の `RenderingPassId` に対して、preview は**データだけの�
 - 実行と隔離キャプチャは [`PreviewExecutor`](../../src/core/vkcore/previewexecutor.hpp#L61) が担当します。
 
 つまりpreviewは「フレームループの外側で、同じ宣言から作った別プログラムを動かす」構造で、通常フレームの決定性やtemporal historyへは触れません。
+
+## 2.11 game logic DLLの入口・実行前診断・ホットリロード ✅実装済み
+
+§2.1 の 9番（起動）と §2.4 のF5、RPCの `reload_game_logic`（[第7章](07_tools_rpc_tests.md)）が入る先です。DLLの中身の話は §5.2 / §5.13、ここでは**プロセス寿命の側**だけを見ます。
+
+### 入口は「epoch anchor」と「v2 / v3 の登録関数」
+
+SDKのepochは単一定義から導かれます。[`gameLogicAbiVersion`](../../src/core/userpublic/gamelogic.hpp#L21) が `2` で、そこから anchor のシンボル名 `pelican_game_logic_epoch_v2` を作るのが [`PELICAN_GAME_LOGIC_EPOCH_ANCHOR`](../../src/core/userpublic/gamelogic.hpp#L11) と [`gameLogicEpochAnchorSymbol`](../../src/core/userpublic/gamelogic.hpp#L23) です。宣言は `extern "C"` の [1関数](../../src/core/userpublic/gamelogic.hpp#L28) で、実体はhost（player実行ファイル）側にあります。
+
+game DLL側でこれを**必ず**importさせるのが [`gamelogic_entry.cpp`](../../src/player/gamelogic_entry.cpp#L17) です。exportされた非inline関数 `pelican_game_logic_epoch_nonce()` の中でanchorを呼ぶので、登録を1つも持たないDLLでも通常・直接・名前付きのimportが残ります。コメントが理由をそのまま書いています — OS loaderはDLLのinitializerを走らせる**前**にこのimportを解決します。
+
+登録の入口はepochとは別軸で、schemaが再帰的かどうかでコンパイル時に選ばれます。
+
+| 種類 | v2入口 | v3入口 | 選択 |
+|---|---|---|---|
+| behavior | [`pelican_register_behavior_v2`](../../src/core/userpublic/details/behavior/registerer.hpp#L220) | [`pelican_register_behavior_v3`](../../src/core/userpublic/details/behavior/registerer.hpp#L222) | [`schemaRequiresV3(Params::schema)`](../../src/core/userpublic/details/behavior/registerer.hpp#L299) |
+| event | [`pelican_register_event_v2`](../../src/core/userpublic/details/event/registerer.hpp#L92) | [`pelican_register_event_v3`](../../src/core/userpublic/details/event/registerer.hpp#L94) | [`recursive_descriptor`](../../src/core/userpublic/details/event/registerer.hpp#L127) |
+| component | [`__registerComponent`](../../src/core/userpublic/details/component/registerer.hpp#L93)（WP381 の改名対象外。旧名のまま凍結） | [`pelican_register_component_v3`](../../src/core/userpublic/details/component/registerer.hpp#L95) | [`has_recursive_schema`](../../src/core/userpublic/details/component/registerer.hpp#L167) |
+| game system | [`pelican_register_system_v2`](../../src/core/userpublic/details/system/registerer.hpp#L96) | — | 常にv2 |
+| event emit | [`pelican_emit_v2`](../../src/core/userpublic/details/event/registerer.hpp#L95) | — | 常にv2 |
+
+判定の実体は [`schemaRequiresV3()`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L719) で、`Flags` か `List` のフィールドが1つでもあれば真です（§3.11 の `SchemaNode`）。v3経路では平坦な `StructFieldSchema` 列ではなく [`materializeSchemaNode()`](../../src/core/userpublic/details/schema/structfieldjson.hpp#L768) の再帰記述子と、その [fingerprint](../../src/core/userpublic/details/schema/structfieldjson.hpp#L855) を一緒に渡します。v2側のfingerprint関数には [`static_assert(!schemaRequiresV3(...))`](../../src/core/userpublic/details/behavior/registerer.hpp#L162) が置いてあり、再帰schemaがv2入口へ落ちるとコンパイルエラーです。
+
+> **設計決定:** epoch anchorは `v2` のままで、schemaの入口だけが `v3` です。二つを別の軸にしてあるので、再帰schemaを使わないDLLは再ビルド無しで動き続けます。診断側もこの二軸をそのまま持ちます — [`diagnoseGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L559) の `expected_epoch` と `host_schema_entrance`（既定 `3`、[宣言](../../src/core/gamelogic/gamelogicimports.hpp#L69)）は別の引数です。
+
+### ロード前のraw import診断（Windowsのみ）
+
+[`loadCopy()`](../../src/core/gamelogic/gamelogicreload.cpp#L327) は `LoadLibraryW` を呼ぶ**前**に [`diagnoseGameLogicImports(path, currentExecutableName(), gameLogicAbiVersion)`](../../src/core/gamelogic/gamelogicreload.cpp#L330) を通します。読むのは [`readGameLogicImports()`](../../src/core/gamelogic/gamelogicimports.cpp#L516) で、imageをmapせず、importしたモジュールも辿らず、PEのimport directory（index 1）とdelay-import directory（index 13）だけを `std::ifstream` で読みます。
+
+作業量の上限はPE形式の制限ではなく**パーサの自衛**です（[先頭の3定数](../../src/core/gamelogic/gamelogicimports.cpp#L24)。4 つ目の `maxImportStringBytes` だけは [`readCString()`](../../src/core/gamelogic/gamelogicimports.cpp#L77) の中のローカル定数です）。
+
+```text
+maxPeFileBytes       = 256 MiB  # 超えたら unreadable_reason = "too_large"
+maxImportDescriptors = 4096     # descriptor 数と directory.size / 20(delay は 32) の両方に効く
+maxImportThunks      = 65536    # 1 モジュールあたりの thunk 走査上限
+maxImportStringBytes = 4096     # readCString() の 1 文字列上限
+```
+
+読めない場合は `game_logic_abi_unreadable@1` に `reason`（`not_pe` / `truncated_pe_header` / `invalid_pe_signature` / `too_large` / `reader_exception` など）が入ります。読めた場合の判定は、**hostモジュール名（ASCII小文字化して比較）宛てのimportだけ**を対象に次の順です。
+
+1. delay import（`delay_named` / `delay_ordinal`）→ `game_logic_abi_unsupported_import@1`、`kind: "delay_load"`（[その分岐](../../src/core/gamelogic/gamelogicimports.cpp#L577)）。delay importはOS loaderが起動時に解決しないので、「anchorをimportしていればloaderが弾く」という前提が崩れます。
+2. 序数import → 同じerror codeで `kind: "ordinal"`（[その分岐](../../src/core/gamelogic/gamelogicimports.cpp#L585)）。名前が無ければanchorかどうかを判定できません。
+3. `pelican_register_behavior_v3` / `pelican_register_event_v3` / `pelican_register_component_v3` のいずれかを含むなら、そのDLLのschema entranceを `3` と見なします（[その検出](../../src/core/gamelogic/gamelogicimports.cpp#L598)）。`imported_schema_entrance > host_schema_entrance` なら `game_logic_abi_stale@1` に `{found: "v3", host: "v2"}` を載せます — 新しいDLLを古いhostへ差した側の検出です。
+4. anchorのepochは [`importedEpoch()`](../../src/core/gamelogic/gamelogicimports.cpp#L486) が `pelican_game_logic_epoch_v<N>` の `<N>` を `from_chars` で読みます。期待epochが1つも見つからない、または旧v1名（[`legacyEntrance()`](../../src/core/gamelogic/gamelogicimports.cpp#L473) の `__registerBehavior` / `__registerEvent` / `__emit` / `__registerSystem`）が残っていれば `game_logic_abi_stale@1` です。`found` はepochが空なら文字列 `"absent"`、あれば `"v<最小>"` で、旧名は `legacy_symbols` に並びます。
+
+診断が落ちた場合は `LoadLibraryW` へ進まないので、**旧DLLのconstructorは走りません**。Linux側にこのreaderは無く、`RTLD_NOW` が解決に失敗しないDLLは止まりません（[第1章](01_architecture_and_build.md) の同じ話）。
+
+### shadow copyはpidごとのディレクトリ
+
+[`initialize()`](../../src/core/gamelogic/gamelogicreload.cpp#L419) が決めるshadow directoryは `<DLLの親ディレクトリ>/.pelican-hot-reload/<pid>` です（[その組み立て](../../src/core/gamelogic/gamelogicreload.cpp#L422)）。pidを挟むので、同じDLLを複数プロセスが同時に開いてもコピー名が衝突しません。
+
+directoryを決めた直後に [`sweepStaleShadowDirectories()`](../../src/core/gamelogic/gamelogicreload.cpp#L257) が親を1階層だけ走査し、**名前が10進数として完全にparseでき、かつそのpidが生きていない**ディレクトリを `remove_all` します（[判定](../../src/core/gamelogic/gamelogicreload.cpp#L270)）。数字以外の名前や生存プロセスのdirectoryには触りません。親directoryがまだ無い場合は「`makeShadowCopy()` が遅延生成する」というコメント付きで黙って戻ります。
+
+コピー名は [`makeShadowCopy(purpose)`](../../src/core/gamelogic/gamelogicreload.cpp#L295) が `<stem>_<purpose>_<copy_sequence><拡張子>` で作ります。`purpose` は `"initial"` か `"candidate"`、`copy_sequence` は単調増加なので、現行DLLと候補DLLが必ず別パスになります（同じパスならOSは同じ `HMODULE` を返し、2世代を同時に持てません。[第10章](10_background_knowledge.md)）。`.pdb` も追随しますが、そちらの失敗はwarningどまりです。
+
+正常終了では [`shutdown()`](../../src/core/gamelogic/gamelogicreload.cpp#L795) がロード済みコピーを消したうえで、**自分のpid directoryを丸ごと**削除します。
+
+### 自動pollは「2回一致 → read lease → busyなら保留」
+
+[`pollAttempt()`](../../src/core/gamelogic/gamelogicreload.cpp#L694) は `force` でなければ次を順に見ます。
+
+```text
+指紋 = (last_write_time, file_size)
+指紋 == observed_source            -> 何もしない(settling を捨てる)
+settling が無い / 指紋が違う        -> settling = 指紋 で return   # 1 回目の観測
+(Windows) read lease を取れない:
+    writer が居る -> pending にして source_busy_retries++
+                     3 回目で game_logic_source_busy@1 を last_error へ
+    それ以外      -> game_logic_unavailable@1(readiness_open_failed)
+lease 保持中に取り直した指紋が違う  -> settling を更新して return
+ここまで通れば observed_source を更新して reloadTransaction()
+```
+
+2回続けて同じ指紋を見るのは、リンカがtruncate→refillしている最中の部分的なDLLを診断へ渡さないためです。それでも足りないので、コピーを取る間だけwriterを排除するread leaseを重ねます（[そのコメント](../../src/core/gamelogic/gamelogicreload.cpp#L726) が規範）。busyは**失敗ではなく保留**で、[`sourceBusyRetryLimit = 3`](../../src/core/gamelogic/gamelogicreload.cpp#L158) 回連続して初めて `game_logic_source_busy@1`（`path` と `retries` 付き）を公開し、writerが閉じれば次のpollで [`clearSourceBusy()`](../../src/core/gamelogic/gamelogicreload.cpp#L249) がその error code だけを消します。状態は [`GameLogicReloadStatus`](../../src/core/gamelogic/gamelogicreload.hpp#L17) の `pending` / `source_busy_retries` から読めます。
+
+pollを駆動するのはreload serviceのruntime participant `game_logic` で（[登録箇所](../../src/core/watch/reloadservice.cpp#L558)）、境界は `frame_start` です。**headless / RPC では `poll` triggerが無視され**（[その早期return](../../src/core/watch/reloadservice.cpp#L569)）、明示コマンドだけが効きます。windowedのF5は「要求」を出すだけで、実際の適用はフレーム境界です（[F5の呼び出し](../../src/core/appflow/loop.cpp#L470)）。
+
+### 起動時の失敗はRPC `status` まで運ばれる
+
+`initializeConfiguredGameLogic()` が `false` を返しても `run()` は続きます（§2.1 の 9番）。失敗の内容は `GameLogicReloader` に保存され、[`configuredGameLogicStatus()`](../../src/core/gamelogic/gamelogicreload.cpp#L903) から読めます。RPC `status` の `participants.game_logic`（[組み立て箇所](../../src/core/communication/rpcserver.cpp#L1417)）を作るのは [`gameLogicParticipantRpcStatus()`](../../src/core/communication/rpcserver.cpp#L1173) で、規則はコメントが規範です。
+
+- reload serviceのruntime participant行があり、その `attempted` が0でない（= 一度は走った）なら、その行をそのまま返す。
+- participantが**まだ一度も試されていない**（`attempted == 0`）場合に限り、保存済みの起動時失敗（`status.error_code`）を優先する。
+- どちらも無ければ `{error_code: null, error_fields: {}}`。
+
+つまり「起動で失敗し、その後まだ誰もreloadしていない」状態でも、エディタ側は最初の失敗理由を読めます。逆に一度でもreloadを試したら、そちらの結果が正になります。

@@ -1,13 +1,14 @@
 # 第4章 シーンと ECS
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-09-04 時点、HEAD=`d146b8bd`)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
 - シーン形式 `pelican.scene` v1 の正確なスキーマと実物例
 - v1 で書けるコンポーネント全種類(必須/任意フィールド・既定値・単位)— **`behavior` を含む**
-- シーンがロードされてから ECS・ライト・物理に振り分けられるまでの流れ
+- シーンがロードされてから ECS・ライト・物理に振り分けられるまでの流れ — **1 つのトランザクション**としての scene load
 - ランタイム ECS(世代付き ID・生成トランザクション)の、ゲーム開発者が知るべき要点
+- ゲーム DLL から ECS コンポーネントを登録する方法と、名前空間の規則
 - シーン遷移(`loadScene`)の仕組み
 
 正本の設計文書は [../design_scene_format.md](../design_scene_format.md)(v1.1)ですが、コンポーネントの受理仕様の多くはコードにのみ存在するため、この章の表は実装から採録しています。正本の所在は、エンベロープと識別子が [sceneformat.cpp](../../src/project/sceneformat.cpp)、**コンポーネントの受理仕様が [componentcodec.cpp](../../src/core/loader/componentcodec.cpp)**、振り分けが [scene.cpp](../../src/core/loader/scene.cpp)、behavior が [behaviorarena.cpp](../../src/core/gamelogic/behaviorarena.cpp) です。
@@ -96,6 +97,8 @@
 ## 4.2 コンポーネント一覧(v1 で書けるものすべて)
 
 > **設計決定(受理仕様は component codec が正・✅WP151):** `transform` / `simplemodelview` / `camera` / `light` / `collider` / `animation` / `sprite_view` の 7 種は、**[componentcodec.cpp](../../src/core/loader/componentcodec.cpp) の codec が受理仕様の正**です(以前は各コンポーネントの `ref()` が正でした)。7 種はいずれも **closed schema** — 表に無いキーを書くと名指しのエラーになります。エディタの読み書き・インスペクタのウィジェット・保存の往復もすべてこの codec を通ります([第13章](13_editor.md))。`localtransform` だけは従来どおり `ref()` 経路です。
+
+codec の表には 8 個目として `pelican_ray_instance` が並んでいますが、これは **ビルトイン ray instance が有効なときだけ**カタログに現れます(無効なら `componentCodecs()` が末尾 1 個を落とすため、名前自体が未知になります)。詳細は下の `pelican_ray_instance` の項を見てください。
 
 ### transform(✅)
 
@@ -242,18 +245,86 @@ skinned glTF モデルと組み合わせて、クリップを宣言的に再生�
 - light / collider と同じく **ECS を経由しません**(エンジン所有の attachment arena に入ります)。ただし light と違い、**behavior だけを持つオブジェクトにも ECS entity が作られます**。
 - ゲームロジック DLL に無い `type` を書くと `Unknown behavior type 'X' on object 'Y'` で起動が止まります。DLL がまだロードされていない場合だけは WARNING を出して保留され、ロード後に有効化されます。
 
+### pelican_ray_instance(条件付き)— ray tracing のインスタンス属性
+
+**プロジェクトの ray tracing 設定が ray layout の LayoutV2 セマンティクスで構成されているときだけ**登録される ECS コンポーネントです([predefined.cpp](../../src/core/ecs/predefined.cpp#L36) が `builtinRayInstanceEnabled()` を見ています。ray layout 自体は [第6章](06_rendering.md))。構成されていなければ登録も codec も無いので、書くと `component_unknown@1` です。
+
+```json
+{ "name": "pelican_ray_instance", "mask": 255,
+  "instance_flags": ["force_opaque"], "custom_index": 12 }
+```
+
+| フィールド | 規則 |
+|---|---|
+| `mask` | 任意 uint(0..255) |
+| `instance_flags` | 任意。**文字列配列**。語彙は `triangle_facing_cull_disable` / `triangle_flip_facing` / `force_opaque` / `force_no_opaque` |
+| `custom_index` | 任意 uint(0..0x00ffffff) |
+| `overrides` | **現状は必ず拒否**(下記) |
+
+- 3 つとも省略可ですが、**1 つも書かないとエラー**(`pelican.ray_instance_empty@1`)です。closed schema で、上記以外のキーは `pelican.ray_instance_unknown_field@1`、範囲外の値は `pelican.ray_instance_field_range@1` になります。
+- `instance_flags` は配列でないと `pelican.ray_instance_field_type@1`、重複も同じコード、未知の名前は `pelican.ray_as_unknown_flag@1`、`force_opaque` と `force_no_opaque` の併記は `pelican.ray_as_conflicting_instance_flags@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1005))。この codec の名前付き拒否は `pelican.` 接頭辞 + `@1` が付きますが、**`overrides` の拒否だけは接頭辞が付きません**(下記)。
+- ⚠️ **`overrides`(オカレンス単位の上書き)は書けません。** キーが存在するだけで `ray_instance_overrides_not_enabled@1` で拒否されます(このコードだけは `pelican.` 接頭辞が付きません)。CARRIER-RT3 トラックの **WP382d** で有効化されるまでの意図的な閉鎖で、schema の宣言側(`List` / `OptionalOverride`)は先に用意されています(§4.4)。
+
+### コンポーネント名の名前空間と所有者(✅WP379/379a)
+
+コンポーネント名は「誰が登録したか」で受理規則が変わります([enforceComponentRegistrationPolicy](../../src/core/userpublic/details/component/registerer.cpp#L20)):
+
+| 登録元 | `pelican_` 接頭辞 | 接頭辞なし |
+|---|---|---|
+| エンジン(host) | OK | `builtin_name_unprefixed@1`(既存 7 名だけ grandfathered) |
+| 外部(ゲーム DLL など) | `reserved_component_namespace@1` で拒否 | OK |
+
+- grandfathered の 7 名は `eid` / `transform` / `localtransform` / `simplemodelview` / `camera` / `animation` / `sprite_view` です。**これ以降エンジンが足すビルトインは必ず `pelican_` で始まります**(`pelican_ray_instance` が最初の適用例)。
+- エンジン所有として登録する registrar([EngineComponentRegisterer](../../src/core/ecs/enginecomponentregistrar.hpp#L15))は **host 専用**で、ゲーム DLL からは include しても**リンク以前にコンパイルが通りません**(`registerEngineComponent` を呼ぶ game DLL は専用のコンパイル失敗テストで守られています)。
+- シーン JSON に**未登録の名前**を書くと `component_unknown@1{"name":"X"}`([componentinfo.hpp](../../src/core/ecs/componentinfo.hpp#L25))。**登録済みだが codec が無い**名前は、ロードはできてもエディタからは編集できず `not_editable`([editorjournal.cpp](../../src/core/communication/editorjournal.cpp#L223))になります。ゲーム DLL が登録した独自コンポーネントは(codec を持たないため)この状態です。
+
 ## 4.3 シーンロードの流れ
 
-`SceneLoader::load(SceneLoadRequest)`([scene.cpp](../../src/core/loader/scene.cpp))は **1 つのトランザクション**です(✅WP380a)。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。実際の処理順:
+[`SceneLoader::load(SceneLoadRequest)`](../../src/core/loader/scene.cpp#L465) は **1 つのトランザクション**です(✅WP380a〜e)。「旧シーンを消してから新シーンを作る」のではなく、新シーンの候補を全部作って一斉に切り替え、失敗したら全部を旧シーンに戻します。
+
+**この経路は 1 本だけ**です。起動時のロード / rpc `load_scene` / `ctx.loadScene()` の遅延適用(pending)/ エディタからのスナップショット import は、入口([SceneLoadRoot](../../src/core/loader/sceneload.hpp#L82))が違うだけで同じ executor を通ります。実際の処理順:
 
 1. **正規化・検証**(解釈レイヤ `sceneformat.cpp`): エンベロープ・識別子・name 一意性をチェック。不正は fail-fast。
 2. **prepare**: 各オブジェクトの components を振り分け: `light` → LightContainer、`collider` → PhysWorld、**`behavior` → BehaviorAttachmentArena**、**それ以外 → ECS**(未知名・未登録の behavior 型名はここでエラー)。ライトだけのオブジェクトは ECS entity を作りませんが、**behavior だけのオブジェクトには作られます**。描画・カメラ・ライト・SeqPlayer/VAT・乱数列・イベント送信箱の候補も、稼働中の状態に触らずここで作ります。モデル資産(`ModelAssetContainer`)だけは候補ではなくキャッシュで、失敗しても読み込んだモデルは残ります(どのシーンにも属さないので世代混在にはなりません)。
 3. **early_publish**: ECS オブジェクトを**トランザクション生成**(§4.4)し、name があり transform を持つオブジェクトの「name → GameObjectId」束縛(rpc の宛先になる)と物理・behavior の候補を作り、旧 entity を unpublish します。JSON 不正はここまでで全部戻して例外。
 4. **publish**(失敗しない): 候補を稼働中の状態と入れ替えます(swap だけ)。
 5. **activate**: **behavior を宣言順に有効化**して `onInit` を呼びます。ここが**失敗しうる最後の段**で、途中で例外が出たら init 済みの分を逆順に `onDestroy` した上で、**描画・ECS・カメラ・ライト・物理・behavior・イベント・乱数・シーン遷移要求の全部**を旧シーンに戻します。document・現在シーン名・authority も旧シーンのままです(`onInit` の `emit` / `loadScene()` も一緒に捨てられます)。
-6. **commit**: シーン文書・現在シーン名・epoch などの metadata を 1 回の swap で切り替えます。以降は失敗しません。
-7. **retire**: 旧シーンの entity・モデルインスタンス・一時モデルは即座には消さず、次フレーム(次の pending load 適用時と描画更新の先頭)に消費される retirement queue に積みます。旧 behavior の `onDestroy` はこの段で走ります。
-8. **flush**: `SceneLoaded` イベントを emit([第8章](08_gameplay.md))。ペイロードは prepare で確保済みなので、ここでの確保失敗はありません。
+6. **commit_metadata**: シーン文書・現在シーン名・epoch などの metadata を 1 回の swap で切り替えます。**ここが commit 点**で、以降は `PreCommitFailure` になりません。
+7. **retire**: 旧シーンの entity・モデルインスタンス・一時モデルは即座には消さず、次フレーム(次の pending load 適用時と描画更新の先頭)に消費される retirement queue に積みます。旧 behavior の `onDestroy` はこの段で、`attachment_seq` の逆順に走ります。
+8. **flush**: 溜めておいた作用を実際に外へ出します — `SceneLoaded` イベントの emit([第8章](08_gameplay.md))、乱数列の公開、音の再生/停止/バス音量、`user://` への書き込み。
+9. **finish**: 生成済み entity のトークンを確定します。
+
+2〜9 の 8 段が [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27) の 8 値(`prepare` / `early_publish` / `publish` / `activate` / `commit_metadata` / `retire` / `flush` / `finish`)にそのまま対応します(1 は executor に入る前の解釈レイヤなので phase ではありません)。ロード結果に付く phase trace は内部の順序検証(と fault injection)のためのもので、rpc には出ていません。
+
+### ロード中の「作用」はトランザクションに溜まる(✅WP380b〜e)
+
+`onInit`(activate)や、ゲーム DLL が登録したコンポーネントの JSON ローダ(early_publish)からエンジン API を呼ぶと、それは**その場では起きません**。[PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) に staging され、**失敗すれば消え、commit したときだけ flush で実行**されます。
+
+| 呼んだもの | ロード中の扱い |
+|---|---|
+| `emit(...)` | 送信箱に staging。flush で pending queue へ(配送は従来どおり次フレーム頭) |
+| `setSeed` / `random()` 系 | 候補の乱数列に対して進む。commit 後に公開 |
+| `loadScene(name)` | 候補の pending 要求として保持(名前の存在チェックは即時) |
+| `playSound` / `stopSound` / `setBusVolume` | 音は鳴らず、voice slot だけ予約。flush で実際に再生 |
+| `setGameSettings` / `saveSettings` / `saveData` | shadow に書き、ディスクへは flush で atomic 書き込み |
+
+**読み取りは自分の書き込みを見ます。** ロード中の `isPlaying(h)` は「さっき staging した `playSound` のハンドル」に true を返し、その後 `stopSound` すれば false。`loadData(slot)` は staging 済みの `saveData` の中身をそのまま返し、`listSaves()` にも staging 済みスロットが並びます — ただし**まだ書いていないので `timestamp` は 0**([listSaves](../../src/core/loader/effecttransaction.cpp#L407))。`gameSettings()` も同じく shadow を返します。
+
+**構造変更の直接呼び出しは名前付きで拒否されます。** トランザクション中に behavior のコールバック**外**から `GameObjects::create` / `remove` / `setLocalTransform` を呼ぶと [`SceneTransactionMutationRejected{api: ...}`](../../src/core/userpublic/gameobjects.hpp#L20) が飛びます(`removeAll` は behavior のコールバック中でも拒否)。踏むのは主に、ゲーム DLL のコンポーネント JSON ローダから ECS を触ろうとしたときです。
+
+### 旧シーンの onDestroy が見えるもの
+
+retire 中の `onDestroy` は「自分の最終状態」を読めます。entity はもう unpublish されていますが、`ctx.localTransform(self)` / `ctx.spriteView(self)` は**破棄トークンが持つスナップショット**を返します([retiredComponent](../../src/core/loader/effecttransaction.cpp#L462))。書き込み側(`setLocalTransform` / `setSpriteView` / `setSpriteTexture`)は throw せず **false** を返し、`SceneRetiredObjectMutationRejected` として `effect_errors` に積まれます([rejectRetiredMutation](../../src/core/loader/effecttransaction.cpp#L473))。
+
+- `onDestroy` は `noexcept` なので、この段の fallible API(`playSound` / `saveData` など)は**例外を投げずに `effect_errors` へ**回されます。呼び出し側のゲームコードは戻り値だけ見ればよく、握りつぶしではなく記録されます。
+- retire 中の `loadScene(name)` は、**commit 済みのシーン集合**に対して解決されます([requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1043))。旧シーンにしか無い名前を書くと `scene not found in committed projection: X` になり、`scene_retire_load_rejected@1` として記録されます。
+
+### commit したのに作用が失敗したとき
+
+flush で音やディスク書き込みが失敗しても、**シーンは新しいまま**です。この結果は [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L135) として返り、rpc の `load_scene` は例外ではなく `{"name": ..., "committed": true, "effect_errors": [...]}` を返します([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1602))。`effect_errors` の各要素は `{api, error_code, error_fields, phase}` で、`api` は `playSound` / `saveData` などの公開 API 名、`phase` は `activate` / `destroy` / `flush` のどれかです。
+
+- 「シーンは切り替わらなかった」= commit 前の失敗は従来どおり**例外**です。両者を混同しないでください。
+- staging できる作用は 256 件までで、溢れた分は `effect_outbox_full@1{dropped: N}` に畳まれます。
 
 ### シーン遷移(✅・WP52)
 
@@ -283,11 +354,69 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 
 エンジン内部の ECS システム(transform → 描画反映、カメラ反映など)は依存グラフをトポロジカルソートして JobSystem で並列実行されます。ゲームロジックはこれとは別の「ゲームシステム」(`PELICAN_REGISTER_SYSTEM`)として決定的な順序で実行されます([第8章](08_gameplay.md))。
 
-### ユーザー定義コンポーネント
+### ユーザー定義コンポーネント(✅WP379/382a)
 
-**プロジェクトから新しい ECS コンポーネント型を登録する公開 API は今もありません**(📐構想段階)。ただし、**オブジェクト固有の authored データと毎フレーム処理は `behavior` で書けます**(§4.2・[第8章](08_gameplay.md) §8.5)。シーン全体にまたがる状態はゲームシステムのメンバ変数として持ちます。
+ゲーム DLL から **ECS コンポーネント型を登録できます**。`DECLARE_COMPONENT` で ID を宣言し、[`registerComponent<T>(name)`](../../src/core/userpublic/details/component/registerer.hpp#L166) を静的初期化で呼びます:
+
+```cpp
+#include <details/component/registerer.hpp>
+#include <details/ecs/componentdeclare.hpp>
+
+struct MyComponent {
+    std::string label;
+    static constexpr auto schema = Pelican::structFields(
+        Pelican::componentPolicy("my_component"),
+        Pelican::defaulted(Pelican::field<&MyComponent::label>("label"), ""));
+};
+DECLARE_COMPONENT(MyComponent, 61);   // 0..63 の空き番号(エンジンは 0..19 を使用中)
+// 静的初期化で: Pelican::internal::getComponentRegisterer()
+//                   .registerComponent<MyComponent>("my_component");
+```
+
+(実物: `test/fixtures/wp382a_schema/v3_fixture.cpp` / `test/fixtures/ray_namespace_component/component.cpp`)
+
+- 名前は `pelican_` で始められません(§4.2 の名前空間表)。ID はエンジンと共有の 64 スロット(`MAX_COMPONENTS = 64`)から選びます。
+- 登録すればシーン JSON に `{"name": "my_component", ...}` と書けます。**エンジン側の codec は無い**ので、受理仕様は自分の `schema`(または `ref()`)が正で、エディタからは `not_editable` です。
+- ⚠️ ここは `PELICAN_REGISTER_SYSTEM` / `PELICAN_REGISTER_BEHAVIOR` のような専用マクロがまだ無く、`details/` のヘッダを直接叩く形です。**ユーザー空間ではあるが、まだ整った SDK 面ではありません。**
+- 「オブジェクト固有の authored データと毎フレーム処理」だけが欲しいなら、今も `behavior`(§4.2・[第8章](08_gameplay.md) §8.5)の方が短く書けます。シーン全体にまたがる状態はゲームシステムのメンバ変数です。
 
 なお、稼働中の entity に対するコンポーネントの追加・削除は、内部的には失敗時に完全巻き戻しできるトランザクション機構(✅WP152)として実装済みですが、**公開 API はまだ無く、エディタ経路だけが使っています**([第13章](13_editor.md))。
+
+### schema が使える値の形(JSON 側・✅WP382a)
+
+コンポーネントや behavior params の schema には、スカラのほかに次の 3 つが宣言できます。C++ の書き方は [第8章](08_gameplay.md) §8.5.3、ここでは **JSON にどう書くか**だけを示します。
+
+**`List<Row>` — 行の集まり。** 素の配列ではなく、**オブジェクトのコンテナ**です:
+
+```json
+"overrides": {
+  "$list": { "v": 1, "next_id": 3 },
+  "rows": [
+    { "$row": { "id": 1, "v": 1 }, "occurrence_id": "mesh/chair", "mask": 0 },
+    { "$row": { "id": 2, "v": 1 }, "occurrence_id": "mesh/table" }
+  ]
+}
+```
+
+| 書き間違い | 結果 |
+|---|---|
+| 素の配列で書く | `ListContainerMissing` |
+| `$list` が無い / `v`・`next_id` が欠ける | `RowEnvelopeMissing` |
+| `$list.v` や `$row.v` が 1 以外 | `RowEnvelopeUnsupported` |
+| `$list` / `rows` 以外のキー、`$row` に `id`/`v`/`hint` 以外のキー | 名指しの unknown field |
+| 行の `id` が重複 | `DuplicateRowId` |
+| `id` が 0 | 範囲エラー |
+| `next_id` がどの行 `id` より大きくない | `$list.next_id must exceed every row id` |
+
+**行 id は挿入するときだけ書きます。** 既存行の値を編集するときに id を振り直してはいけません(id は行の同一性そのもので、`next_id` はまだ使っていない番号の目印です)。ネストは 1 段まで — 行の schema がさらに `List` を持つ宣言はコンパイルエラーです。
+
+**`Flags<Vocab>` — 文字列の配列。** 宣言した語彙名だけを並べます。配列でない・要素が文字列でない・重複・未知の名前はすべて名指しエラー。**合成則は置換**です — 書いた配列がそのフィールドの値そのものになり、既定値と OR で足し合わされることはありません(`[]` は「何も立っていない」)。語彙は最大 8 個です。
+
+```json
+"instance_flags": ["cull_disable", "flip_facing"]
+```
+
+**`OptionalOverride` — 省略が「継承」を意味するフィールド。** キーを書かなければ「指定なし」のまま残り、書けばその値で確定します(`null` を書くのは型エラーで、「指定なし」の書き方ではありません)。上書き行(row)の中で「この行だけ mask を差し替える」といった使い方をします。behavior params の**トップレベル**には置けません(そこは全フィールド `defaulted` 必須 — §8.5.3)。`List` を `OptionalOverride` にすることもできません。
 
 ## 4.5 よくあるエラー
 
@@ -302,6 +431,11 @@ ECS の実装(WP62・R5-core ✅)は archetype/chunk 方式ですが、ゲーム
 | `duplicate object name 'X' in scene 'Y'` | name 重複 |
 | `Light 'X' requires vec3 field: Y` | ライトの必須フィールド欠落 |
 | `'size' is not supported in v1; use 'half_extents'` | collider の旧キー名 |
+| `reserved_component_namespace@1` | ゲーム DLL が `pelican_` で始まる名前で ECS コンポーネントを登録した(§4.2) |
+| `ray_instance_overrides_not_enabled@1` | `pelican_ray_instance` に `overrides` を書いた(WP382d まで閉鎖) |
+| `ListContainerMissing` / `RowEnvelopeMissing` / `DuplicateRowId` | `List` フィールドを素の配列で書いた・`$list`/`$row` 欠落・行 id 重複(§4.4) |
+| `SceneTransactionMutationRejected{api: create}` | シーンロード中に `GameObjects::*` を直接呼んだ(§4.3) |
+| `scene not found in committed projection: <id>` | 旧シーンの `onDestroy` から、新シーンに無い名前で `loadScene` した(§4.3) |
 
 ## 4.6 既知の注意点
 

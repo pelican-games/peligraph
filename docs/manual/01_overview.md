@@ -1,6 +1,6 @@
 # 第1章 エンジン全体像
 
-対象: pelican2(2026-07-21 時点)/ このマニュアルはコードを正とする
+対象: pelican2(2026-07-21 に全域再確認、2026-09-04 に §1.5 の進捗を更新)/ このマニュアルはコードを正とする
 
 ## この章で学ぶこと
 
@@ -92,6 +92,8 @@ pelican2/
 │   └── spvlink/          # pelican-spv-link CLI(experimental、build unitは既定OFF)
 ├── projects/             # example / sprite_demo / animgraph_demo / vrm_xr_demo(JSON 例の出典)
 ├── docs/                 # 設計文書(索引: docs/README.md)+ 本マニュアル(manual/)+ コード解説(source-code-guide/)
+├── tools/                # 開発者・エージェント用スクリプト(RPC クライアント / worktree ラッパ /
+│                         #   切り離し build / 公開 API inventory / doclink)。第10章 §10.10
 └── test/                 # Catch2 単体 + fixture + golden + 結合スクリプト(run_*)。件数は第12章
 ```
 
@@ -144,8 +146,8 @@ vkcore(Vulkan 低層)
 このリポジトリは**マルチエージェント開発**で作られています([../agent_operations.md](../agent_operations.md)):
 
 - **ユーザー(enjoyoriori)** = 意思決定。**Claude** = 設計文書・WP(Work Package)指示書・レビュー・マージ。**codex** = 実装・監査・敵対レビュー。
-- 作業単位は WP。**1 WP = 1 ブランチ(`agent/wpNN-slug`)= 1 マージ**で、受け入れ基準 = マージ基準。現在 **WP179** まで実装が着地しています([第11章](11_status.md) に全台帳。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md))。
-- 統合ブランチは `codex/rendering-phase1-refactor`(事実上の開発本線)。
+- 作業単位は WP。**1 WP = 1 ブランチ = 1 マージ**で、受け入れ基準 = マージ基準。2026-09-04 時点で **WP385 まで**が着地しています(番号は連番ではなく、`380a` `380a-fix` のような枝番が付きます。**行単位の正は [../implementation_plan.md](../implementation_plan.md)** で、[第11章](11_status.md) の表は WP238e までしか転記していません。今後の候補は [../roadmap_backlog_2026-07.md](../roadmap_backlog_2026-07.md))。
+- 統合ブランチは `codex/render-target-runtime-slice`(事実上の開発本線)。
 
 文書の優先順位(矛盾したときの規則):
 
