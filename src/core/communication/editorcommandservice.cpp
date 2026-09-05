@@ -1424,6 +1424,11 @@ OrderedJson EditorCommandService::getRenderAuthoringContext(
     return render_config_editor_->getRenderAuthoringContext(params);
 }
 
+OrderedJson EditorCommandService::forkRenderPipeline(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->forkRenderPipeline(params);
+}
+
 OrderedJson EditorCommandService::getRayCallableRecords(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getRayCallableRecords(params);
@@ -2244,6 +2249,11 @@ OrderedJson EditorCommandRpcAdapter::editRenderFeatures(
         throw std::logic_error("editor RPC adapter is read-only");
     }
     return mutable_service_->editRenderFeatures(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::forkRenderPipeline(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->forkRenderPipeline(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getRayCallableRecords(const Json &params) const {

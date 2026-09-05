@@ -543,7 +543,15 @@ rootの`ray_task_acceleration_structures`はtask名からAS名へのobjectで、
 task名はvariant suffix付与前の宣言名。通常compute taskと未知taskへの指定は拒否する。
 getの`task_connections[]`はname・acceleration_structure・authored_acceleration_structureを返す。
 editの省略可能な`task_connections` objectはrootの接続指定全体を置換し、空objectで元宣言へ戻す。
-ASごとの実行nodeはcompilerが生成する。graphのfork/CAS操作は引き続き未実装。
+ASごとの実行nodeはcompilerが生成する。
+Studioの「Fork preset...」は選択中のpreset文書を新しいprojectファイルへコピーし、
+rootの`pipeline.preset`を同じ保存transactionで切り替える。
+`fork_render_pipeline`は`base_source_digest`、`base_preset_digest`、
+`destination_reference`を受ける。元presetのdigestは`get_render_authoring_context`の
+`pipeline_preset.source_digest`から取得する。受付時と保存時に元presetを照合する。
+コピー対象はfeature合成前の文書で、rootのsettings・features・RT上書き指定は保持する。
+コピー先は未作成の`project://`ファイルに限り、保存失敗時には新規ファイルとroot変更を戻す。
+コピーしたpresetは通常のproject資産として残る。任意のnode移動・edge編集はまだ含まない。
 
 ## 9. エラー文言・受け入れゲート
 

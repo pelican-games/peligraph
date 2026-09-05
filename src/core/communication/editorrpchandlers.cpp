@@ -166,6 +166,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_render_authoring_context", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getRenderAuthoringContext(params); });
     });
+    server.setHandler("fork_render_pipeline", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.forkRenderPipeline(params); });
+    });
     server.setHandler("get_ray_callable_records", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getRayCallableRecords(params); });
     });

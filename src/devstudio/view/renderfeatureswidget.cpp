@@ -29,6 +29,8 @@
 #include <QVBoxLayout>
 
 #include <optional>
+#include <functional>
+#include <utility>
 #include <stdexcept>
 
 namespace PelicanStudio {
@@ -71,6 +73,169 @@ std::optional<QJsonObject> decodeObject(
     }
     return document.object();
 }
+
+class PresetForkDialog final : public QDialog {
+  EmbeddedViewport &viewport;
+  std::function<void()> on_committed;
+  QLabel *notice;
+  QLineEdit *destination;
+  QPushButton *apply;
+  QPushButton *refresh;
+  QTimer poll;
+  QString root_digest, preset_digest, ticket, committed_reference;
+  qint64 request_id = 0;
+  enum class Request { Context, Fork, Result } request_kind = Request::Context;
+  void controls() {
+    const bool idle = request_id == 0 && ticket.isEmpty();
+    destination->setEnabled(idle);
+    apply->setEnabled(idle && viewport.rpcReady() && !root_digest.isEmpty() &&
+                      !preset_digest.isEmpty());
+    refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+  }
+  void request(Request kind, const QString &method,
+               const QJsonObject &params = {}) {
+    if (request_id)
+      return;
+    QString error;
+    request_kind = kind;
+    request_id = viewport.requestRpc(method, params, &error);
+    if (!request_id) {
+      poll.stop();
+      notice->setText(error);
+    }
+    controls();
+  }
+  void result() {
+    if (!ticket.isEmpty())
+      request(Request::Result, QStringLiteral("get_edit_result"),
+              {{"ticket", ticket}});
+  }
+  void read() {
+    if (!ticket.isEmpty())
+      result();
+    else
+      request(Request::Context, QStringLiteral("get_render_authoring_context"));
+  }
+  void receive(qint64 id, const QByteArray &bytes) {
+    if (!id || id != request_id)
+      return;
+    request_id = 0;
+    QString error;
+    const auto response = decodeObject(bytes, &error);
+    if (!response) {
+      poll.stop();
+      notice->setText(error);
+      controls();
+      return;
+    }
+    if (request_kind == Request::Context) {
+      root_digest.clear();
+      preset_digest.clear();
+      if (response->value("config_kind").toString() != "preset") {
+        notice->setText(tr("This project uses a direct rendering config. There "
+                           "is no preset to fork."));
+      } else {
+        const auto preset = response->value("pipeline_preset").toObject();
+        root_digest =
+            response->value("source_digest").toObject()["hex"].toString();
+        preset_digest = preset["source_digest"].toObject()["hex"].toString();
+        notice->setText(
+            tr("Source preset: %1\nCopy this preset into the project and "
+               "switch its reference. Existing project settings are retained.")
+                .arg(preset["reference"].toString()));
+        if (root_digest.isEmpty() || preset_digest.isEmpty())
+          notice->setText(tr("The engine did not provide the source digests "
+                             "needed to fork this preset."));
+      }
+    } else if (request_kind == Request::Fork) {
+      if (response->value("status").toString() == "accepted") {
+        ticket = response->value("ticket").toString();
+        committed_reference = response->value("preset_reference").toString();
+        if (!ticket.isEmpty()) {
+          poll.start();
+          result();
+        } else
+          notice->setText(tr("The engine returned no edit ticket."));
+      } else
+        notice->setText(responseError(*response));
+    } else if (response->value("status").toString() != "pending") {
+      poll.stop();
+      ticket.clear();
+      if (response->value("status").toString() == "committed" &&
+          response->value("committed").toBool()) {
+        root_digest.clear();
+        preset_digest.clear();
+        notice->setText(
+            tr("Preset copied and selected: %1").arg(committed_reference));
+        on_committed();
+      } else
+        notice->setText(responseError(*response));
+    }
+    controls();
+  }
+
+public:
+  PresetForkDialog(EmbeddedViewport &embedded, QWidget *parent,
+                   std::function<void()> committed)
+      : QDialog(parent), viewport(embedded),
+        on_committed(std::move(committed)) {
+    setAttribute(Qt::WA_DeleteOnClose);
+    setObjectName(QStringLiteral("pelican.presetFork"));
+    setWindowTitle(tr("Fork preset into project"));
+    resize(560, 210);
+    auto *layout = new QVBoxLayout(this);
+    notice = new QLabel(tr("Loading preset..."), this);
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+    layout->addWidget(new QLabel(tr("New project preset reference"), this));
+    destination =
+        new QLineEdit(QStringLiteral("project://pipelines/custom.json"), this);
+    destination->setObjectName(
+        QStringLiteral("pelican.presetFork.destination"));
+    layout->addWidget(destination);
+    auto *buttons = new QHBoxLayout;
+    refresh = new QPushButton(tr("Refresh source"), this);
+    apply = new QPushButton(tr("Fork preset"), this);
+    apply->setObjectName(QStringLiteral("pelican.presetFork.apply"));
+    buttons->addWidget(refresh);
+    buttons->addWidget(apply);
+    layout->addLayout(buttons);
+    connect(refresh, &QPushButton::clicked, this, [this] { read(); });
+    connect(apply, &QPushButton::clicked, this, [this] {
+      request(Request::Fork, QStringLiteral("fork_render_pipeline"),
+              {{"base_source_digest", root_digest},
+               {"base_preset_digest", preset_digest},
+               {"destination_reference", destination->text()}});
+    });
+    poll.setInterval(100);
+    connect(&poll, &QTimer::timeout, this, [this] { result(); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
+            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
+            [this](qint64 id, const QString &error) {
+              if (!id || id != request_id)
+                return;
+              request_id = 0;
+              poll.stop();
+              notice->setText(error);
+              controls();
+            });
+    connect(
+        &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this, [this] {
+          request_id = 0;
+          poll.stop();
+          ticket.clear();
+          root_digest.clear();
+          preset_digest.clear();
+          notice->setText(tr(
+              "Engine disconnected. Refresh the source after reconnecting."));
+          controls();
+        });
+    connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
+            [this] { controls(); });
+    read();
+  }
+};
 
 class CallableRecordsDialog final : public QDialog {
   EmbeddedViewport &viewport;
@@ -710,6 +875,13 @@ struct RenderFeaturesWidget::Impl {
         apply->setObjectName(
             QStringLiteral("pelican.renderFeatures.apply"));
         actions->addWidget(refresh);
+        auto *fork_preset = new QPushButton(owner.tr("Fork preset..."), &owner);
+        fork_preset->setObjectName(QStringLiteral("pelican.renderFeatures.forkPreset"));
+        actions->addWidget(fork_preset);
+        QObject::connect(fork_preset, &QPushButton::clicked, &owner, [this] {
+            auto *dialog = new PresetForkDialog(viewport, &owner, [this] { requestRefresh(); });
+            dialog->show();
+        });
         auto *scene_as = new QPushButton(owner.tr("Scene AS..."), &owner);
         auto *callable_records = new QPushButton(owner.tr("Callable Records..."), &owner);
         actions->addWidget(callable_records);

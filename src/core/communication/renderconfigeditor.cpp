@@ -6,6 +6,7 @@
 #include "../vkcore/renderer_config.hpp"
 
 #include <algorithm>
+#include <array>
 #include <fstream>
 #include <iterator>
 #include <ranges>
@@ -507,7 +508,9 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
 
 OrderedJson RenderConfigEditorService::queueRootEdit(
     const std::string &base_digest, const std::string &operation,
-    const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform) {
+    const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform,
+    std::span<const RenderConfigCandidateDocument> additional_documents,
+    std::optional<std::string> base_preset_digest) {
     if (!isLowerHexDigest(base_digest))
         throw std::invalid_argument(operation + " base_source_digest must be 64 lowercase hex characters");
     const auto gate = gateSnapshot();
@@ -555,6 +558,7 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
             "render config edit candidate lost its root document");
     }
     root_document->bytes = candidate.bytes();
+    candidate_documents.insert(candidate_documents.begin(), additional_documents.begin(), additional_documents.end());
     pending_.push_back(Ticket{
         .id = ticket_id,
         .accepted_gate_epoch = gate.epoch,
@@ -566,6 +570,7 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
                 source_normalized_reference_,
                 std::move(candidate_documents)},
         .operation = operation,
+        .base_preset_digest = std::move(base_preset_digest),
     });
     auto accepted = OrderedJson{
         {"ticket", ticket_id},
@@ -821,8 +826,53 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
             {"name", resolved.pipeline_preset->name},
             {"version", resolved.pipeline_preset->version},
         };
+        if (resolved.pipeline_preset_bytes)
+            result["pipeline_preset"]["source_digest"] = digestJson(renderConfigSourceDigest(*resolved.pipeline_preset_bytes));
     }
     return result;
+}
+
+OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "destination_reference"},
+        "fork_render_pipeline");
+    const auto base_digest = requireString(params, "base_source_digest", "fork_render_pipeline");
+    const auto preset_digest = requireString(params, "base_preset_digest", "fork_render_pipeline");
+    const auto destination = requireString(params, "destination_reference", "fork_render_pipeline");
+    if (!isLowerHexDigest(preset_digest))
+        throw std::invalid_argument("fork_render_pipeline base_preset_digest must be 64 lowercase hex characters");
+    if (!dependencies_.resolve_authoring_context || !dependencies_.normalize_reference || !dependencies_.resolve_document_path)
+        return rejection("method_unavailable", "fork_render_pipeline requires the project document resolver");
+    if (!destination.starts_with("project://") || destination.find('#') != std::string::npos)
+        return rejection("invalid_preset_destination", "Choose a new project:// file for the preset");
+    try {
+        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        if (!current.pipeline_preset || !current.pipeline_preset_bytes)
+            return rejection("pipeline_preset_required", "The current rendering config does not select a preset");
+        if (renderConfigSourceDigest(*current.pipeline_preset_bytes) != preset_digest)
+            return rejection("external_modification", "The selected preset changed since it was read");
+        const auto path = dependencies_.resolve_document_path(destination);
+        if (std::filesystem::exists(path))
+            return rejection("preset_destination_exists", "The destination already exists: " + destination);
+        const std::array documents{RenderConfigCandidateDocument{
+            .reference = destination,
+            .normalized_reference = dependencies_.normalize_reference(destination),
+            .path = path,
+            .operation = RenderConfigDocumentOperation::create,
+            .expected = {RenderConfigDocumentExistence::missing, {}},
+            .bytes = *current.pipeline_preset_bytes,
+        }};
+        auto result = queueRootEdit(base_digest, "fork_render_pipeline",
+            [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+                auto pipeline = Json::parse(candidate.bytes()).at("pipeline");
+                pipeline["preset"] = destination;
+                candidate = candidate.withRootValue("pipeline", pipeline.dump(2));
+                return std::nullopt;
+            }, documents, preset_digest);
+        if (result.at("status") == "accepted") result["preset_reference"] = destination;
+        return result;
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
 }
 
 OrderedJson RenderConfigEditorService::addAuthoredPass(
@@ -1394,10 +1444,25 @@ void RenderConfigEditorService::commitPending() noexcept {
                 std::move(ticket));
             const auto project_root =
                 dependencies_.project_root;
+            std::function<void()> verify_preset;
+            if (transaction->ticket.base_preset_digest) {
+                verify_preset = [resolve = dependencies_.resolve_authoring_context,
+                                 baseline = currentDocumentSet(),
+                                 expected = *transaction->ticket.base_preset_digest] {
+                    try {
+                        const auto source = resolve(baseline);
+                        if (!source.pipeline_preset_bytes || renderConfigSourceDigest(*source.pipeline_preset_bytes) != expected)
+                            throw RenderConfigExternalModification("The source preset changed before the fork was saved");
+                    } catch (const std::exception &error) {
+                        throw RenderConfigExternalModification(error.what());
+                    }
+                };
+            }
             const auto source_commit =
-                [transaction, project_root] {
+                [transaction, project_root, verify_preset = std::move(verify_preset)] {
                 transaction->source_commit_called = true;
                 try {
+                    if (verify_preset) verify_preset();
                     if (!transaction->ticket.candidate_documents) {
                         throw std::logic_error(
                             "render config edit ticket has no candidate document set");

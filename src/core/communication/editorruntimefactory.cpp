@@ -2065,6 +2065,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                         runtime->modules.path_resolver,
                                         reference);
                                 };
+                            std::optional<std::string> preset_bytes;
                             auto composed = composeRenderFeatureConfig(
                                 nlohmann::json::parse(
                                     documents.rootDocument().bytes),
@@ -2075,7 +2076,10 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
 #else
                                     .runtime_shader_compiler_enabled = false,
 #endif
-                                    .load_pipeline_json = loader,
+                                    .load_pipeline_json = [&](std::string_view reference) {
+                                        preset_bytes = loader(reference);
+                                        return *preset_bytes;
+                                    },
                                     .validate_feature =
                                         [](std::string_view name,
                                            const nlohmann::json &feature) {
@@ -2089,6 +2093,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                     std::move(composed.pipeline_preset),
                                 .pass_provenance =
                                     std::move(composed.pass_provenance),
+                                .pipeline_preset_bytes = std::move(preset_bytes),
                             };
                         },
                     .feature_catalog = [] {

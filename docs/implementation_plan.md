@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 callable initial editing):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。名前付きTLAS実行nodeは628206edに統合済み。Callable record初期値のproject所有上書き・RPC・Studio編集を接続し、実GPUで保存反映とResetを確認。次はpresetをproject側へforkする編集経路、一般graphのfork/CAS、component追加などの残機能。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 preset fork):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。Callable初期値編集は7b867176に統合済み。選択presetをproject側へforkするRPCとStudio操作を追加。次はcomponent追加、一般graphのnode移動・edge編集などの残機能。学習サンプルは後回し。
+
+**RT7 preset fork (2026-09-06):**
+- `fork_render_pipeline`とRender FeaturesのFork preset操作を追加。合成前のpreset bytesを新規projectファイルへコピーし、rootの`pipeline.preset`を同じtransactionで切り替える。settings/features/RT上書き指定を保持し、featureの二重合成を避ける。
+- root/presetのdigest照合、既存保存先の拒否、保存時の元preset再照合を既存candidate保存・publication/rollbackに接続。新しい保存基盤・互換分岐は追加しない。
+- Player/Studio build成功。CPU関連26/26、684 assertions成功（`build/.codex_bg/rt7fork-build.log`、`rt7fork-testbuild-final.log`、`rt7fork-cpu-final.log`）。保存・再読込・実行構成維持・保存後失敗の復元・元preset外部変更・既存宛先保護を確認。最初の比較失敗は意図したpreset参照と出所変更まで同一としたテストを修正して解消。
+- doclink check 3869件成功。auditの既存4件は不変。新dialogの実操作・実GPUのfork操作は未確認。任意のnode移動・edge編集を完了とはしない。
 
 **RT7 callable initial editing (2026-09-06):**
 - rootの`ray_task_callable_records`で、variant suffix前のtask名にcallable順の初期値配列を指定。既存schema・shader数は変更せず、共有featureを編集しない。宣言の読み込みとoverride/RPC検査はencodeRayCallableRecordsを共用。unknown task・件数・型・数値範囲を検査する。

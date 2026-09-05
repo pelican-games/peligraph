@@ -13,6 +13,7 @@
 #include <string>
 #include <string_view>
 #include <optional>
+#include <span>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -57,6 +58,7 @@ struct ResolvedRenderConfigAuthoringContext {
     nlohmann::json config = nlohmann::json::object();
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     std::vector<RenderPassProvenance> pass_provenance;
+    std::optional<std::string> pipeline_preset_bytes;
 };
 
 struct RenderConfigEditorDependencies {
@@ -98,6 +100,7 @@ class RenderConfigEditorService {
         std::optional<RenderConfigCandidateDocumentSet> candidate_documents;
         std::string operation;
         std::string fragment_reference;
+        std::optional<std::string> base_preset_digest;
     };
 
     struct ManagedDocumentBaseline {
@@ -149,7 +152,9 @@ class RenderConfigEditorService {
     GateSnapshot gateSnapshot();
     nlohmann::ordered_json queueRootEdit(
         const std::string &base_digest, const std::string &operation,
-        const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform);
+        const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,
+        std::span<const RenderConfigCandidateDocument> additional_documents = {},
+        std::optional<std::string> base_preset_digest = std::nullopt);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
@@ -163,6 +168,7 @@ class RenderConfigEditorService {
 
   public:
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
+    nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);

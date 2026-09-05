@@ -496,13 +496,17 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                             return loadRenderConfigCandidateText(
                                 documents, resolver, reference);
                         };
+                    std::optional<std::string> preset_bytes;
                     auto composition = composeRenderFeatureConfig(
                         Json::parse(documents.rootDocument().bytes),
                         RenderFeatureComposeDependencies{
                             .load_feature_json = loader,
                             .runtime_shader_compiler_enabled =
                                 runtime.runtime_shader_compiler_enabled,
-                            .load_pipeline_json = loader,
+                            .load_pipeline_json = [&](std::string_view reference) {
+                                preset_bytes = loader(reference);
+                                return *preset_bytes;
+                            },
                             .validate_feature =
                                 [&runtime](std::string_view name,
                                            const Json &feature) {
@@ -517,6 +521,7 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                             std::move(composition.pipeline_preset),
                         .pass_provenance =
                             std::move(composition.pass_provenance),
+                        .pipeline_preset_bytes = std::move(preset_bytes),
                     };
                 },
             .feature_catalog = [&runtime] {
@@ -1657,6 +1662,94 @@ TEST_CASE(
     REQUIRE(frame_results.front().at("ticket") == ticket);
 }
 #endif
+
+TEST_CASE("Pipeline fork saves the original preset and switches the root atomically",
+          "[render-config-editor][preset-fork]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto before = service->getRenderAuthoringContext(Json::object());
+    const auto root_before = readBytes(project.render_config);
+    const auto plan_before = runtime.frame_plan;
+    const auto check_structure = [&] {
+        REQUIRE(runtime.frame_plan.at("nodes").size() == plan_before.at("nodes").size());
+        for (std::size_t i = 0; i < plan_before.at("nodes").size(); ++i) {
+            for (const auto *key : {"name", "kind", "reads", "writes"})
+                REQUIRE(runtime.frame_plan.at("nodes").at(i).at(key) == plan_before.at("nodes").at(i).at(key));
+        }
+        REQUIRE(runtime.frame_plan.at("resources").size() == plan_before.at("resources").size());
+        for (std::size_t i = 0; i < plan_before.at("resources").size(); ++i)
+            REQUIRE(runtime.frame_plan.at("resources").at(i).at("name") == plan_before.at("resources").at(i).at("name"));
+    };
+    const auto preset_bytes = resolver.loadText(
+        before.at("pipeline_preset").at("reference").get<std::string>());
+    const auto destination = project.root / "passes" / "local-pipeline.json";
+    const Json request{
+        {"base_source_digest", before.at("source_digest").at("hex")},
+        {"base_preset_digest", before.at("pipeline_preset").at("source_digest").at("hex")},
+        {"destination_reference", "project://passes/local-pipeline.json"}};
+
+    SECTION("publish and reopen preserve features without composing them twice") {
+        const auto accepted = service->forkRenderPipeline(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        REQUIRE_FALSE(std::filesystem::exists(destination));
+        REQUIRE(readBytes(project.render_config) == root_before);
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        REQUIRE(readBytes(destination) == preset_bytes);
+        auto expected_root = Json::parse(root_before);
+        expected_root["pipeline"]["preset"] = request.at("destination_reference");
+        REQUIRE(Json::parse(readBytes(project.render_config)) == expected_root);
+        check_structure();
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        REQUIRE(service->getRenderAuthoringContext(Json::object())
+                    .at("pipeline_preset").at("reference") == request.at("destination_reference"));
+        check_structure();
+    }
+    SECTION("failed publication rolls back both files") {
+        runtime.fail_after_source_commit = true;
+        const auto accepted = service->forkRenderPipeline(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        REQUIRE_FALSE(std::filesystem::exists(destination));
+        REQUIRE(readBytes(project.render_config) == root_before);
+        REQUIRE(runtime.frame_plan == plan_before);
+    }
+    SECTION("existing destination is never overwritten") {
+        writeBytes(destination, "user file");
+        REQUIRE(service->forkRenderPipeline(request).at("status") == "rejected");
+        REQUIRE(readBytes(destination) == "user file");
+        REQUIRE(readBytes(project.render_config) == root_before);
+    }
+    SECTION("source preset changes while queued reject the fork") {
+        const auto source = project.root / "passes" / "source-preset.json";
+        writeBytes(source, preset_bytes);
+        auto local_root = Json::parse(root_before);
+        local_root["pipeline"]["preset"] = "project://passes/source-preset.json";
+        writeBytes(project.render_config, local_root.dump());
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        auto local_request = request;
+        local_request["base_source_digest"] = service->getRenderAuthoringContext(Json::object()).at("source_digest").at("hex");
+        const auto accepted = service->forkRenderPipeline(local_request);
+        REQUIRE(accepted.at("status") == "accepted");
+        writeBytes(source, preset_bytes + "\n");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == false);
+        REQUIRE_FALSE(std::filesystem::exists(destination));
+        REQUIRE(Json::parse(readBytes(project.render_config)) == local_root);
+        REQUIRE(readBytes(source) == preset_bytes + "\n");
+    }
+}
 
 TEST_CASE(
     "WP334b animgraph preset authored pass appears only after save and purges without an orphan",
