@@ -610,6 +610,7 @@ struct RayQueryAccelerationStructureScope::State {
         geometry_snapshot;
     std::uint32_t ray_type_count = 0;
     std::uint64_t runtime_generation = 0;
+    std::uint64_t ray_tracing_pipeline_generation = 0;
     bool reusable = true;
     // The dynamic hit records contain device addresses consumed by the same
     // submission as this TLAS.  Retaining them in the unpublished candidate
@@ -667,9 +668,13 @@ RayQueryAccelerationStructureScope::FrameBuild::rowDigest() const noexcept {
 
 void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
     if (owner_ == nullptr || candidate_ == nullptr) return;
-    owner_->active_state_ = candidate_;
-    owner_->diagnostics_ = std::move(candidate_->diagnostics);
-    if (candidate_->log_static_only_classification && logger != nullptr) {
+    const auto publishes_candidate = owner_->active_state_ != candidate_;
+    if (publishes_candidate) {
+        owner_->active_state_ = candidate_;
+        owner_->diagnostics_ = std::move(candidate_->diagnostics);
+    }
+    if (publishes_candidate && candidate_->log_static_only_classification &&
+        logger != nullptr) {
         try {
             const auto &excluded =
                 owner_->diagnostics_.excluded;
@@ -713,7 +718,32 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
     const RayTracingGeometrySnapshot &geometry_snapshot,
     const RaySceneRowSnapshot &ray_scene_rows,
     std::uint32_t ray_type_count,
-    std::uint64_t runtime_generation) {
+    std::uint64_t runtime_generation,
+    std::uint64_t ray_tracing_pipeline_generation) {
+    const auto row_inputs_match = [&] {
+        if (active_state_ == nullptr ||
+            active_state_->ray_scene_rows == nullptr ||
+            active_state_->ray_scene_rows->rows.size() !=
+                ray_scene_rows.rows.size()) {
+            return false;
+        }
+        for (std::size_t index = 0;
+             index < ray_scene_rows.rows.size(); ++index) {
+            const auto &active =
+                active_state_->ray_scene_rows->rows[index];
+            const auto &candidate = ray_scene_rows.rows[index];
+            if (active.instance_mask != candidate.instance_mask ||
+                active.instance_flags != candidate.instance_flags ||
+                active.instance_custom_index !=
+                    candidate.instance_custom_index ||
+                active.geometry_flags != candidate.geometry_flags ||
+                active.resolved_material_generation !=
+                    candidate.resolved_material_generation) {
+                return false;
+            }
+        }
+        return true;
+    };
     if (active_state_ == nullptr || !active_state_->reusable ||
         active_state_->tlas == nullptr ||
         active_state_->ray_scene_rows == nullptr ||
@@ -722,6 +752,8 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
         diagnostics_.geometry_pool_generation != geometry_pool_generation ||
         diagnostics_.model_rebuild_generation != model_rebuild_generation ||
         active_state_->runtime_generation != runtime_generation ||
+        active_state_->ray_tracing_pipeline_generation !=
+            ray_tracing_pipeline_generation ||
         active_state_->ray_type_count != ray_type_count ||
         active_state_->geometry_snapshot->digest_sha256 !=
             geometry_snapshot.digest_sha256 ||
@@ -730,7 +762,8 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
         active_state_->ray_scene_rows->material_table_digest_sha256 !=
             ray_scene_rows.material_table_digest_sha256 ||
         active_state_->ray_scene_rows->geometry_table_digest_sha256 !=
-            ray_scene_rows.geometry_table_digest_sha256) {
+            ray_scene_rows.geometry_table_digest_sha256 ||
+        !row_inputs_match()) {
         return std::nullopt;
     }
     return FrameBuild{this, active_state_};
@@ -753,7 +786,8 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::shared_ptr<const RayTracingSceneShaderBindingTables>
         ray_tracing_scene_tables,
     bool material_alpha_profile_active,
-    std::uint64_t runtime_generation) {
+    std::uint64_t runtime_generation,
+    std::uint64_t ray_tracing_pipeline_generation) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (!capabilities.ray_query ||
         !capabilities.acceleration_structure ||
@@ -781,6 +815,8 @@ RayQueryAccelerationStructureScope::recordFrame(
     candidate->ray_scene_rows = std::move(ray_scene_rows);
     candidate->ray_type_count = ray_type_count;
     candidate->runtime_generation = runtime_generation;
+    candidate->ray_tracing_pipeline_generation =
+        ray_tracing_pipeline_generation;
     candidate->reusable =
         !rayTracingTlasRecordOffsetOverrideActiveForTesting();
     candidate->ray_tracing_scene_tables =

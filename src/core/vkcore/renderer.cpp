@@ -4758,6 +4758,9 @@ void Renderer::renderLogicalFrame(
             std::shared_ptr<const RayTracingSceneShaderBindingTables>
                 ray_tracing_scene_tables;
             std::uint32_t ray_type_count = 0;
+            const auto ray_tracing_pipeline_generation =
+                GET_MODULE(PipelineFactory)
+                    .rayTracingPipelineGeneration();
             if (gpu_owner_scope != nullptr &&
                 gpu_owner_scope->ray_tracing_project != nullptr) {
                 const auto &ray_project =
@@ -4799,7 +4802,8 @@ void Renderer::renderLogicalFrame(
                             .rayQueryGeometryGeneration(),
                         *geometry_snapshot, *ray_scene_rows,
                         ray_type_count,
-                        runtime_generation->generation);
+                        runtime_generation->generation,
+                        ray_tracing_pipeline_generation);
                 if (reused) {
                     acceleration_structure_build.emplace(
                         std::move(*reused));
@@ -4839,7 +4843,8 @@ void Renderer::renderLogicalFrame(
                         gpu_owner_scope->ray_tracing_project != nullptr &&
                         gpu_owner_scope->ray_tracing_project->layout
                             .usesMaterialAlphaProfile(),
-                    runtime_generation->generation));
+                    runtime_generation->generation,
+                    ray_tracing_pipeline_generation));
             }
             frame_publication.emplace(
                 modules.frame_resources.prepareRayTracingPublication(

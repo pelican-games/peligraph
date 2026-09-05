@@ -1182,6 +1182,11 @@ PipelineHandle PipelineFactory::createCompute(const ComputePipelineDesc &desc) {
 
 PipelineHandle PipelineFactory::createRayTracing(
     const RayTracingPipelineDesc &desc) {
+    if (ray_tracing_pipeline_generation ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "ray-tracing pipeline generation space exhausted");
+    }
     pipeline_handles.reserve(pipeline_handles.size() + 1);
     auto record = buildRayTracingPipeline(desc);
     const auto layout = static_cast<VkPipelineLayout>(
@@ -1194,11 +1199,20 @@ PipelineHandle PipelineFactory::createRayTracing(
         throw;
     }
     pipeline_handles.push_back(handle);
+    ++ray_tracing_pipeline_generation;
     return handle;
 }
 
 void PipelineFactory::replacePipeline(PipelineHandle handle, PipelineRecord replacement) {
     auto &current = pipelines.get(handle);
+    const auto replaces_ray_tracing_pipeline =
+        std::holds_alternative<RayTracingPipelineDesc>(replacement.desc);
+    if (replaces_ray_tracing_pipeline &&
+        ray_tracing_pipeline_generation ==
+            std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error(
+            "ray-tracing pipeline generation space exhausted");
+    }
     const auto old_layout = static_cast<VkPipelineLayout>(
         current.layout.get());
     const auto replacement_layout =
@@ -1213,6 +1227,9 @@ void PipelineFactory::replacePipeline(PipelineHandle handle, PipelineRecord repl
     auto retired_layout = std::move(current.layout);
 
     current = std::move(replacement);
+    if (replaces_ray_tracing_pipeline) {
+        ++ray_tracing_pipeline_generation;
+    }
     if (old_layout != replacement_layout ||
         !current.ray_query_frame_set) {
         ray_query_pipeline_layouts.erase(old_layout);
@@ -1813,6 +1830,8 @@ PipelineFactory::checkpointRegistrations() const {
     checkpoint.pipeline_count = pipeline_handles.size();
     checkpoint.descriptor_set_layout_creation_count =
         descriptor_set_layout_creation_count;
+    checkpoint.ray_tracing_pipeline_generation =
+        ray_tracing_pipeline_generation;
     checkpoint.descriptor_set_layout_keys.reserve(
         descriptor_set_layout_cache.size());
     for (const auto &[key, layout] :
@@ -1838,6 +1857,8 @@ void PipelineFactory::rollbackRegistrations(
         (void)pipelines.extract(handle, false);
         pipeline_handles.pop_back();
     }
+    ray_tracing_pipeline_generation =
+        checkpoint.ray_tracing_pipeline_generation;
     for (auto found = descriptor_set_layout_cache.begin();
          found != descriptor_set_layout_cache.end();) {
         if (std::find(

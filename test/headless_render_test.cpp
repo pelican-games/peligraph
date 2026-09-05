@@ -14204,10 +14204,20 @@ TEST_CASE(
         const auto left = placeWp374aChair(instances, model, -2.0f);
         const auto right = placeWp374aChair(instances, model, 2.0f);
         instances.setRayInstanceDeclaration(left, 374011, std::nullopt);
-        instances.setRayInstanceDeclaration(
-            right, 374012, RayInstanceComponent{.mask = std::uint8_t{0}});
+        instances.setRayInstanceDeclaration(right, 374012, std::nullopt);
 
         auto &renderer = GET_MODULE(Renderer);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto visible = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        CHECK(wp374aPixel(visible, 0)[0] == 0xa0u);
+        CHECK(wp374aPixel(visible, 1)[0] == 0xa0u);
+        const auto visible_diagnostics =
+            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+
+        instances.setRayInstanceDeclaration(
+            right, 374012, RayInstanceComponent{.mask = std::uint8_t{0}});
         renderer.render();
         vkcore.waitIdle();
         const auto masked = renderer.readRenderTargetForTesting(
@@ -14215,6 +14225,10 @@ TEST_CASE(
         CHECK(wp374aPixel(masked, 0)[0] == 0xa0u);
         CHECK(wp374aPixel(masked, 1) ==
               std::array{1280u, 0xffffffffu, 0u, 0u});
+        const auto masked_diagnostics =
+            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(masked_diagnostics.tlas_build_count ==
+              visible_diagnostics.tlas_build_count + 1);
 
         instances.setRayInstanceDeclaration(right, 374012, std::nullopt);
         renderer.render();
@@ -14224,6 +14238,20 @@ TEST_CASE(
         CHECK(wp374aPixel(restored, 0)[0] == 0xa0u);
         CHECK(wp374aPixel(restored, 1)[0] == 0xa0u);
         CHECK(masked.bytes != restored.bytes);
+        const auto restored_diagnostics =
+            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(restored_diagnostics.tlas_build_count ==
+              masked_diagnostics.tlas_build_count + 1);
+
+        renderer.render();
+        vkcore.waitIdle();
+        const auto reused = renderer.readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        const auto reused_diagnostics =
+            renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(reused.bytes == restored.bytes);
+        CHECK(reused_diagnostics.tlas_build_count ==
+              restored_diagnostics.tlas_build_count);
         std::filesystem::remove_all(temp_dir);
     } catch (const std::exception &error) {
         std::filesystem::remove_all(temp_dir);

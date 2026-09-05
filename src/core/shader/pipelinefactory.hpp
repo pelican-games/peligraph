@@ -252,6 +252,9 @@ DECLARE_MODULE(PipelineFactory) {
     // caller can therefore prove that a rejected capability contract ran
     // before object creation, not merely that the cache was restored later.
     std::uint64_t descriptor_set_layout_creation_count = 0;
+    // Changes whenever a ray-tracing VkPipeline (and therefore its shader
+    // group handles) is created or replaced in place.
+    std::uint64_t ray_tracing_pipeline_generation = 0;
     ResourceContainer<PipelineHandle, PipelineRecord> pipelines;
     std::vector<PipelineHandle> pipeline_handles;
     std::unordered_set<VkPipelineLayout>
@@ -291,6 +294,7 @@ DECLARE_MODULE(PipelineFactory) {
         std::vector<DescriptorSetLayoutKey>
             descriptor_set_layout_keys;
         std::uint64_t descriptor_set_layout_creation_count = 0;
+        std::uint64_t ray_tracing_pipeline_generation = 0;
     };
 
     PipelineFactory();
@@ -300,6 +304,10 @@ DECLARE_MODULE(PipelineFactory) {
     PipelineHandle createCompute(const ComputePipelineDesc &desc);
     PipelineHandle createRayTracing(
         const RayTracingPipelineDesc &desc);
+
+    std::uint64_t rayTracingPipelineGeneration() const noexcept {
+        return ray_tracing_pipeline_generation;
+    }
 
     vk::Pipeline pipeline(PipelineHandle handle) const;
     vk::PipelineLayout layout(PipelineHandle handle) const;

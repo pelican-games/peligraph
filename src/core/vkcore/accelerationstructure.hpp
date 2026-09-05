@@ -227,14 +227,16 @@ class RayQueryAccelerationStructureScope {
         std::shared_ptr<const RayTracingSceneShaderBindingTables>
             ray_tracing_scene_tables = {},
         bool material_alpha_profile_active = false,
-        std::uint64_t runtime_generation = 0);
+        std::uint64_t runtime_generation = 0,
+        std::uint64_t ray_tracing_pipeline_generation = 0);
     std::optional<FrameBuild> tryReuseFrame(
         std::uint64_t geometry_pool_generation,
         std::uint64_t model_rebuild_generation,
         const RayTracingGeometrySnapshot &geometry_snapshot,
         const RaySceneRowSnapshot &ray_scene_rows,
         std::uint32_t ray_type_count,
-        std::uint64_t runtime_generation);
+        std::uint64_t runtime_generation,
+        std::uint64_t ray_tracing_pipeline_generation);
 
     const RayQueryAccelerationStructureDiagnostics &
     diagnostics() const noexcept {
