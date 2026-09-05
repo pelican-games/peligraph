@@ -1751,6 +1751,77 @@ TEST_CASE("Pipeline fork saves the original preset and switches the root atomica
     }
 }
 
+TEST_CASE("Compute task creation and removal publish project features transactionally",
+          "[render-config-editor][compute-task-create]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto before = readBytes(project.render_config);
+    const auto path = project.root / "passes" / "created.json";
+    const Json task{{"name", "created_compute"}, {"shader", "project://shaders/probe"},
+                    {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
+    const Json request{{"base_source_digest", renderConfigSourceDigest(before)},
+                       {"destination_reference", "project://passes/created.json"}, {"task", task}};
+    SECTION("create remove and reopen") {
+        REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks").empty());
+        const auto accepted = service->addComputeTask(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        REQUIRE_FALSE(std::filesystem::exists(path));
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        REQUIRE(hasProvider(runtime.frame_plan, "created_compute"));
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        const auto catalog = service->getComputeTaskAuthoring(Json::object());
+        REQUIRE(catalog.at("tasks").size() == 1);
+        REQUIRE(catalog.at("tasks")[0].at("declaration") == task);
+        auto duplicate = request;
+        duplicate["base_source_digest"] = catalog.at("source_digest").at("hex");
+        duplicate["destination_reference"] = "project://passes/duplicate.json";
+        REQUIRE(service->addComputeTask(duplicate).at("status") == "rejected");
+        const auto root_after_add = readBytes(project.render_config);
+        const Json removal{{"base_source_digest", catalog.at("source_digest").at("hex")},
+                           {"base_task_source_digest", catalog.at("tasks")[0].at("source_digest").at("hex")},
+                           {"task_name", "created_compute"}};
+        const auto removed = service->removeComputeTask(removal);
+        REQUIRE(removed.at("status") == "accepted");
+        service->commitPending();
+        const auto removal_result = service->getResult({{"ticket", removed.at("ticket")}});
+        INFO(removal_result.dump());
+        REQUIRE(removal_result.at("committed") == true);
+        REQUIRE_FALSE(hasProvider(runtime.frame_plan, "created_compute"));
+        REQUIRE(readBytes(project.render_config) == root_after_add);
+        REQUIRE(Json::parse(readBytes(path)).at("compute_tasks").empty());
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks").empty());
+        REQUIRE(service->removeComputeTask(removal).at("status") == "rejected");
+    }
+    SECTION("failed publication restores root and removes created file") {
+        runtime.fail_after_source_commit = true;
+        const auto accepted = service->addComputeTask(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        REQUIRE(readBytes(project.render_config) == before);
+        REQUIRE_FALSE(std::filesystem::exists(path));
+    }
+    SECTION("a file created after acceptance is not overwritten") {
+        const auto accepted = service->addComputeTask(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        writeBytes(path, "external file");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        REQUIRE(readBytes(project.render_config) == before);
+        REQUIRE(readBytes(path) == "external file");
+    }
+}
+
 TEST_CASE("Compute task editing resolves direct roots and project presets",
           "[render-config-editor][compute-task-edit]") {
     for (const bool use_preset : {false, true}) {
@@ -1790,6 +1861,16 @@ TEST_CASE("Compute task editing resolves direct roots and project presets",
         service.reset();
         service = makeProjectService(project, resolver, runtime);
         REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks")[0].at("declaration") == changed);
+        const auto updated = service->getComputeTaskAuthoring(Json::object());
+        const auto removed = service->removeComputeTask({
+            {"base_source_digest", updated.at("source_digest").at("hex")},
+            {"base_task_source_digest", updated.at("tasks")[0].at("source_digest").at("hex")},
+            {"task_name", "owned_compute"}});
+        REQUIRE(removed.at("status") == "accepted");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", removed.at("ticket")}}).at("committed") == true);
+        REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks").empty());
+        if (use_preset) REQUIRE(readBytes(project.render_config) == root_before);
     }
 }
 

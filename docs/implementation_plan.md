@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 compute/RT task編集):** preset pass編集はff493be4に統合済み。compute/RT taskの全宣言をprojectの元ファイルへ保存するRPCとStudio詳細画面を接続し、実GPUでshader/dispatch変更を確認。次は視覚的なport接続・dispatchフォーム、task追加削除、AS配置を含むnode移動、必須asset入力・behavior追加など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 compute/RT task追加削除):** task編集は64649f47に統合済み。追加・削除のRPCとStudio操作を接続し、保存と実GPUの削除・再作成を確認。次は視覚的なport接続・dispatchフォーム、AS配置を含むnode移動、必須asset入力・behavior追加など。学習サンプルは後回し。
+
+**RT7 compute/RT task追加削除 (2026-09-06):**
+- `add_compute_task`は新規project featureの作成とroot参照追加を一緒に保存する。`remove_compute_task`は元文書から対象宣言だけを削除し、featureファイルを残す。編集と削除の元文書解決・CAS・保存処理は共通化し、新しいruntime経路を追加しない。
+- Studio TasksにNew compute / New ray tracing、保存先入力、Create task / Delete taskを追加。shader/resourceは既存参照をJSONで指定する。未編集の新規草稿はcontext更新に追随し、編集済みは取得時digestと一緒に保持する。
+- 最後のRT task削除後もray layoutを持つsceneにGPU tableを割り当てようとしてframeが失敗する不具合を修正。CPU snapshotと世代は保持し、RT ownerがある場合だけ専用buffer/descriptorを作る。既存のRT owner layout検証とin-flight bundle所有は維持。
+- CPU関連30/30（797 assertions、`build/.codex_bg/rt7taskcreate-cpu.log`）。作成・削除・再読込・外部変更・publication失敗の復元、root/preset/featureの保存先を確認。実GPU2/2（90 assertions、`rt7taskcreate-final-gpu.log`）で両kindを削除して別featureへ再作成し、直接2レーン・間接2レーンの出力を確認。修正前は最後のRT削除でscene_generation_mismatchを再現（`rt7taskcreate-gpu.log`）。
+- Player/Studio build成功（最終`rt7taskcreate-owner-build.log`）。doclink check3869件成功、audit既存4件不変。feature flag変更がないため全数・構成matrixは反復しない。Tasks画面の手動操作・GUIからGPUまでの通し確認は未実施。RT初期草稿はprojectのray group layoutに合わせる必要がある。
 
 **RT7 compute/RT task編集 (2026-09-06):**
 - `get_compute_task_authoring`はprovenanceから元taskとproject feature/preset/rootを解決し、元宣言・保存先・digest・編集可否を返す。engine共有文書と元宣言のない生成taskは読み取り専用。`edit_compute_task`は名前を保って全宣言を置換し、既存compiler/CAS/transactionで保存・公開する。

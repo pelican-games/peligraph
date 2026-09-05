@@ -1156,6 +1156,41 @@ void main() { pelican_resource_args.values[0] = uvec4(0u, 1u, 2u, 1u); }
     edit_task("wp386_trace", [](Json &task) { task["dispatch"] = {{"rays", {2, 1, 1}}}; });
     check_lanes(2, 1, 1);
     CHECK(readWp374aText(project.path / "hybrid.json") == root_before);
+    const auto commit_task_change = [&](const Json &accepted) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        GET_MODULE(ECSCore).update();
+        GET_MODULE(ECSCore).update();
+        GET_MODULE(Renderer).render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+        const auto changed = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+        INFO(changed.dump());
+        REQUIRE(changed.at("committed") == true);
+    };
+    // Remove both kinds through the live editor, then recreate them in separate project features.
+    const auto catalog = runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object());
+    for (const auto &entry : catalog.at("tasks")) {
+        const auto current = runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object());
+        const auto &tasks = current.at("tasks");
+        const auto selected = std::find_if(tasks.begin(), tasks.end(), [&](const auto &task) { return task.at("name") == entry.at("name"); });
+        REQUIRE(selected != tasks.end());
+        commit_task_change(runWp374aRpcBytes(*service, rpc_id++, "remove_compute_task", {
+            {"base_source_digest", current.at("source_digest").at("hex")},
+            {"base_task_source_digest", selected->at("source_digest").at("hex")},
+            {"task_name", entry.at("name")}}));
+    }
+    REQUIRE(runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object()).at("tasks").empty());
+    for (const auto &entry : catalog.at("tasks")) {
+        const auto current = runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object());
+        commit_task_change(runWp374aRpcBytes(*service, rpc_id++, "add_compute_task", {
+            {"base_source_digest", current.at("source_digest").at("hex")},
+            {"destination_reference", "project://features/new_" + entry.at("name").get<std::string>() + ".json"},
+            {"task", entry.at("declaration")}}));
+    }
+    check_lanes(2, 1, 1);
+    edit_task("wp386_trace", [](Json &task) { task["dispatch"] = {{"indirect", {{"buffer", "ray_args"}, {"offset", 4}}}}; });
+    check_lanes(1, 2, 1);
 #else
     SKIP("RT6 indirect production shader fixture requires the runtime compiler");
 #endif

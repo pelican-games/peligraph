@@ -151,6 +151,7 @@ class RenderConfigEditorService {
     };
 
     GateSnapshot gateSnapshot();
+    nlohmann::ordered_json changeComputeTask(const nlohmann::json &params, bool remove);
     nlohmann::ordered_json queueRootEdit(
         const std::string &base_digest, const std::string &operation,
         const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,
@@ -173,6 +174,8 @@ class RenderConfigEditorService {
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
+    nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
+    nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);

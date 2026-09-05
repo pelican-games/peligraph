@@ -175,7 +175,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 **解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
 `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
-([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1644))。形は 2 通りで、
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1654))。形は 2 通りで、
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
@@ -226,6 +226,8 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 | `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`と`input`・`output`・`shader`でproject所有preset内のfullscreen passを編集する |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
+| `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
+| `remove_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`で元文書からtaskを削除する |
 
 Render Features → **Fork preset...**でコピー元を確認し、`project://pipelines/custom.json`など
 未作成の保存先を指定します。元presetの文書をコピーするので、既存featureの二重適用はしません。
@@ -245,6 +247,9 @@ Render Featuresの **Tasks...** またはFrame Planの **Edit task...** からco
 task切替や失敗時には入力を保持し、**Refresh**で破棄・再取得します。保持した入力のdigestも維持するため、
 他の保存が先行した場合は古い入力のまま上書きせず競合になります。
 共有engine文書は読み取り専用です。実行時名と元task名が異なる場合は一覧から元taskを選びます。
+**New compute / New ray tracing**では名前・既存shader参照・新しい`project://`保存先を設定してtaskを作成します。
+保存先featureとrootへの参照追加は一緒に確定します。shaderファイルやresource自体は自動生成しません。
+**Delete task**は選択した宣言を削除します。featureファイルと他の宣言は残り、依存関係が壊れる削除はcompilerが拒否します。
 
 **シーン編集との違い:**
 
@@ -468,7 +473,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
   [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L686))です。
 - `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
-  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1869))。
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1879))。
   **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
   厳密一致のクライアントは壊れます。**
 - 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/

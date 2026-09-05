@@ -358,6 +358,8 @@ class EditorCommandService {
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
+    nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
+    nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);
     nlohmann::ordered_json getRenderAuthoringContext(
@@ -429,6 +431,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params) const;
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params) const;
+    nlohmann::ordered_json addComputeTask(const nlohmann::json &params) const;
+    nlohmann::ordered_json removeComputeTask(const nlohmann::json &params) const;
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json getRenderAuthoringContext(

@@ -565,6 +565,9 @@ compute/RT taskは`get_compute_task_authoring`で元宣言と保存先digestを�
 provenanceからproject feature・project preset・直接記述rootを解決し、engine所有文書は読み取り専用。
 rootとtask元ファイルのCAS、candidate document overlay、保存・GPU publication/rollbackは既存処理を共用する。
 StudioのTasks詳細画面とFrame Plan選択から呼び出す。視覚的なport接続操作・node配置編集は別途残る。
+`add_compute_task`は新規project featureにtaskを保存し、rootのfeatures参照を同じtransactionで追加する。
+`remove_compute_task`は元文書の宣言だけを削除し、空になったfeatureも通常のproject assetとして残す。
+追加・削除も合成とcompilerを通すため、名前重複や未解決依存を公開せず、既存task編集と保存経路を共有する。
 
 ## 9. エラー文言・受け入れゲート
 

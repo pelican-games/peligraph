@@ -1469,6 +1469,16 @@ OrderedJson EditorCommandService::editComputeTask(const Json &params) {
     return render_config_editor_->editComputeTask(params);
 }
 
+OrderedJson EditorCommandService::addComputeTask(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->addComputeTask(params);
+}
+
+OrderedJson EditorCommandService::removeComputeTask(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->removeComputeTask(params);
+}
+
 OrderedJson EditorCommandService::getRayCallableRecords(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getRayCallableRecords(params);
@@ -2313,6 +2323,16 @@ OrderedJson EditorCommandRpcAdapter::getComputeTaskAuthoring(const Json &params)
 OrderedJson EditorCommandRpcAdapter::editComputeTask(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->editComputeTask(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::addComputeTask(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->addComputeTask(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::removeComputeTask(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->removeComputeTask(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getRayCallableRecords(const Json &params) const {

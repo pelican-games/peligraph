@@ -84,26 +84,84 @@ class ComputeTaskDialog final : public QDialog {
   QLabel *notice;
   QPushButton *apply;
   QPushButton *refresh;
+  QPushButton *new_compute;
+  QPushButton *new_ray_tracing;
+  QPushButton *remove;
+  QLineEdit *destination;
   QJsonArray tasks;
   struct TaskDraft {
     QString text;
     QString root_digest;
     QString source_digest;
   };
+  std::array<TaskDraft, 2> new_drafts;
+  std::array<bool, 2> new_dirty{};
+  std::array<QString, 2> destinations;
+  QString submitted_name;
+  int submitted_creation = -1;
+  bool discard_new_drafts_on_read = false;
   QHash<QString, TaskDraft> drafts;
   QHash<QString, TaskDraft> retained_drafts;
   QString root_digest, ticket, requested_task;
   QTimer poll;
   qint64 request_id = 0;
   enum class Request { Read, Submit, Result } request_kind = Request::Read;
+  int creationIndex() const {
+    const int index = task_box->currentIndex() - tasks.size();
+    return index >= 0 && index < 2 ? index : -1;
+  }
+  void initializeNewDraft(int index) {
+    if (!new_drafts[index].root_digest.isEmpty())
+      return;
+    QJsonObject task{{"name", index == 0 ? "new_compute" : "new_ray_tracing"}};
+    if (index == 0) {
+      task.insert("shader", "project://shaders/compute");
+      task.insert("dispatch", QJsonObject{{"groups", QJsonArray{1, 1, 1}}});
+    } else {
+      task.insert(
+          "ray_tracing",
+          QJsonObject{{"raygen", "project://shaders/raygen"},
+                      {"miss", QJsonArray{"project://shaders/miss"}},
+                      {"closesthit", QJsonArray{"project://shaders/hit"}}});
+      task.insert("dispatch", QJsonObject{{"rays", QJsonArray{1, 1, 1}}});
+    }
+    if (index == 1) {
+      for (const auto &entry : tasks) {
+        const auto declaration =
+            entry.toObject().value("declaration").toObject();
+        if (!declaration.contains("ray_tracing"))
+          continue;
+        task = declaration;
+        task.insert("name", "new_ray_tracing");
+        break;
+      }
+    }
+    new_drafts[index] = {
+        QString::fromUtf8(QJsonDocument(task).toJson(QJsonDocument::Indented)),
+        root_digest,
+        {}};
+    destinations[index] = index == 0
+                              ? "project://features/new_compute.json"
+                              : "project://features/new_ray_tracing.json";
+  }
   QJsonObject selected() const {
     const int index = task_box->currentIndex();
-    return index < 0 ? QJsonObject{} : tasks[index].toObject();
+    return index < 0 || index >= tasks.size() ? QJsonObject{}
+                                              : tasks[index].toObject();
   }
   void controls() {
     const bool idle = request_id == 0 && ticket.isEmpty();
     task_box->setEnabled(idle);
-    const bool editable = selected().value("editable").toBool();
+    const bool creating = creationIndex() >= 0;
+    const bool editable = creating || selected().value("editable").toBool();
+    destination->setVisible(creating);
+    destination->setEnabled(idle);
+    apply->setText(creating ? tr("Create task") : tr("Apply task"));
+    new_compute->setEnabled(idle && viewport.rpcReady() &&
+                            !root_digest.isEmpty());
+    new_ray_tracing->setEnabled(new_compute->isEnabled());
+    remove->setEnabled(idle && viewport.rpcReady() && !creating && editable &&
+                       !root_digest.isEmpty());
     editor->setReadOnly(!idle || !editable);
     apply->setEnabled(idle && viewport.rpcReady() && editable &&
                       !root_digest.isEmpty());
@@ -112,6 +170,19 @@ class ComputeTaskDialog final : public QDialog {
   void showTask() {
     const auto task = selected();
     const QSignalBlocker blocker(editor);
+    if (const int index = creationIndex(); index >= 0) {
+      initializeNewDraft(index);
+      editor->setPlainText(new_drafts[index].text);
+      const QSignalBlocker destination_blocker(destination);
+      destination->setText(destinations[index]);
+      source->setText(tr("Create a task in a new project feature file."));
+      notice->setText(tr("Set a unique task name, destination, and existing "
+                         "shader references. Add resources and other task "
+                         "settings in JSON as needed. For ray tracing, match "
+                         "the project ray group layout."));
+      controls();
+      return;
+    }
     editor->setPlainText(drafts.value(task.value("name").toString()).text);
     source->setText(tr("%1 (%2)\nSource: %3")
                         .arg(task.value("name").toString(),
@@ -131,6 +202,8 @@ class ComputeTaskDialog final : public QDialog {
     request_kind = kind;
     request_id = viewport.requestRpc(method, params, &error);
     if (!request_id) {
+      if (kind == Request::Read)
+        discard_new_drafts_on_read = false;
       poll.stop();
       notice->setText(error);
     }
@@ -158,6 +231,16 @@ class ComputeTaskDialog final : public QDialog {
                           .arg(error.offset));
       return;
     }
+    submitted_creation = creationIndex();
+    submitted_name = document.object().value("name").toString();
+    if (submitted_creation >= 0) {
+      request(
+          Request::Submit, QStringLiteral("add_compute_task"),
+          {{"base_source_digest", new_drafts[submitted_creation].root_digest},
+           {"destination_reference", destination->text()},
+           {"task", document.object()}});
+      return;
+    }
     if (document.object().value("name") != task.value("name")) {
       notice->setText(tr("The task name cannot be changed."));
       return;
@@ -169,6 +252,18 @@ class ComputeTaskDialog final : public QDialog {
              {"task_name", task.value("name")},
              {"task", document.object()}});
   }
+  void removeTask() {
+    const auto task = selected();
+    if (!task.value("editable").toBool())
+      return;
+    submitted_creation = -1;
+    submitted_name = task.value("name").toString();
+    const auto draft = drafts.value(submitted_name);
+    request(Request::Submit, QStringLiteral("remove_compute_task"),
+            {{"base_source_digest", draft.root_digest},
+             {"base_task_source_digest", draft.source_digest},
+             {"task_name", submitted_name}});
+  }
   void receive(qint64 id, const QByteArray &bytes) {
     if (!id || id != request_id)
       return;
@@ -176,6 +271,8 @@ class ComputeTaskDialog final : public QDialog {
     QString error;
     const auto response = decodeObject(bytes, &error);
     if (!response) {
+      if (request_kind == Request::Read)
+        discard_new_drafts_on_read = false;
       poll.stop();
       notice->setText(error);
       controls();
@@ -185,6 +282,7 @@ class ComputeTaskDialog final : public QDialog {
       const auto digest =
           response->value("source_digest").toObject().value("hex").toString();
       if (digest.isEmpty() || !response->value("tasks").isArray()) {
+        discard_new_drafts_on_read = false;
         notice->setText(
             tr("The engine returned an invalid task authoring context."));
       } else {
@@ -193,6 +291,15 @@ class ComputeTaskDialog final : public QDialog {
         root_digest = digest;
         tasks = response->value("tasks").toArray();
         drafts.clear();
+        if (discard_new_drafts_on_read) {
+          new_drafts = {};
+          new_dirty = {};
+          discard_new_drafts_on_read = false;
+        }
+        for (int index = 0; index < 2; ++index) {
+          if (!new_dirty[index])
+            new_drafts[index] = {};
+        }
         {
           const QSignalBlocker blocker(task_box);
           task_box->clear();
@@ -214,6 +321,8 @@ class ComputeTaskDialog final : public QDialog {
                             .value("hex")
                             .toString()}));
           }
+          task_box->addItem(tr("(New compute task)"));
+          task_box->addItem(tr("(New ray tracing task)"));
           const int index = task_box->findText(previous);
           if (index >= 0)
             task_box->setCurrentIndex(index);
@@ -246,9 +355,13 @@ class ComputeTaskDialog final : public QDialog {
           const auto original = QString::fromUtf8(
               QJsonDocument(task.value("declaration").toObject())
                   .toJson(QJsonDocument::Indented));
-          if (name != selected().value("name").toString() &&
-              drafts.value(name).text != original)
+          if (name != submitted_name && drafts.value(name).text != original)
             retained_drafts.insert(name, drafts.value(name));
+        }
+        if (submitted_creation >= 0) {
+          new_drafts[submitted_creation] = {};
+          new_dirty[submitted_creation] = false;
+          requested_task = submitted_name;
         }
         committed();
         read();
@@ -274,6 +387,13 @@ public:
     source = new QLabel(this);
     source->setWordWrap(true);
     layout->addWidget(source);
+    destination = new QLineEdit(this);
+    destination->setObjectName(
+        QStringLiteral("pelican.computeTasks.destination"));
+    destination->setPlaceholderText(tr("New project:// feature file"));
+    destination->setToolTip(tr(
+        "A new project:// JSON file; existing files cannot be overwritten."));
+    layout->addWidget(destination);
     editor = new QPlainTextEdit(this);
     editor->setObjectName(QStringLiteral("pelican.computeTasks.declaration"));
     layout->addWidget(editor);
@@ -287,20 +407,53 @@ public:
     apply->setObjectName(QStringLiteral("pelican.computeTasks.apply"));
     refresh->setToolTip(
         tr("Reload declarations and discard local edits for all tasks."));
+    new_compute = new QPushButton(tr("New compute"), this);
+    new_ray_tracing = new QPushButton(tr("New ray tracing"), this);
+    remove = new QPushButton(tr("Delete task"), this);
+    new_compute->setObjectName(
+        QStringLiteral("pelican.computeTasks.newCompute"));
+    new_ray_tracing->setObjectName(
+        QStringLiteral("pelican.computeTasks.newRayTracing"));
+    remove->setObjectName(QStringLiteral("pelican.computeTasks.remove"));
+    remove->setToolTip(tr("Delete the selected task from its source document. "
+                          "The feature file remains."));
+    buttons->addWidget(new_compute);
+    buttons->addWidget(new_ray_tracing);
+    buttons->addWidget(remove);
     buttons->addWidget(refresh);
     buttons->addWidget(apply);
     layout->addLayout(buttons);
     connect(task_box, &QComboBox::currentIndexChanged, this,
             [this] { showTask(); });
     connect(editor, &QPlainTextEdit::textChanged, this, [this] {
-      if (task_box->currentIndex() >= 0)
+      if (const int index = creationIndex(); index >= 0) {
+        new_drafts[index].text = editor->toPlainText();
+        new_dirty[index] = true;
+      } else if (task_box->currentIndex() >= 0)
         drafts[selected().value("name").toString()].text =
             editor->toPlainText();
     });
     connect(refresh, &QPushButton::clicked, this, [this] {
+      if (!ticket.isEmpty()) {
+        result();
+        return;
+      }
       retained_drafts.clear();
+      discard_new_drafts_on_read = true;
       read();
     });
+    connect(destination, &QLineEdit::textChanged, this,
+            [this](const QString &text) {
+              if (const int index = creationIndex(); index >= 0) {
+                destinations[index] = text;
+                new_dirty[index] = true;
+              }
+            });
+    connect(new_compute, &QPushButton::clicked, this,
+            [this] { task_box->setCurrentIndex(tasks.size()); });
+    connect(new_ray_tracing, &QPushButton::clicked, this,
+            [this] { task_box->setCurrentIndex(tasks.size() + 1); });
+    connect(remove, &QPushButton::clicked, this, [this] { removeTask(); });
     connect(apply, &QPushButton::clicked, this, [this] { submit(); });
     poll.setInterval(100);
     connect(&poll, &QTimer::timeout, this, [this] { result(); });
@@ -311,6 +464,8 @@ public:
               if (!id || id != request_id)
                 return;
               request_id = 0;
+              if (request_kind == Request::Read)
+                discard_new_drafts_on_read = false;
               poll.stop();
               notice->setText(error);
               controls();
@@ -318,6 +473,7 @@ public:
     connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
             [this] {
               request_id = 0;
+              discard_new_drafts_on_read = false;
               ticket.clear();
               root_digest.clear();
               poll.stop();

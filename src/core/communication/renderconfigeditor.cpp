@@ -956,14 +956,60 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
 }
 
 OrderedJson RenderConfigEditorService::editComputeTask(const Json &params) {
-    constexpr auto method = "edit_compute_task";
-    requireOnly(params, {"base_source_digest", "base_task_source_digest", "task_name", "task"}, method);
+    requireOnly(params, {"base_source_digest", "base_task_source_digest", "task_name", "task"}, "edit_compute_task");
+    return changeComputeTask(params, false);
+}
+
+OrderedJson RenderConfigEditorService::removeComputeTask(const Json &params) {
+    requireOnly(params, {"base_source_digest", "base_task_source_digest", "task_name"}, "remove_compute_task");
+    return changeComputeTask(params, true);
+}
+
+OrderedJson RenderConfigEditorService::addComputeTask(const Json &params) {
+    constexpr auto method = "add_compute_task";
+    requireOnly(params, {"base_source_digest", "destination_reference", "task"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto destination = requireString(params, "destination_reference", method);
+    if (!params.contains("task") || !params.at("task").is_object())
+        return rejection("invalid_compute_task", "Provide a task declaration object");
+    const auto name = requireString(params.at("task"), "name", method);
+    if (name.empty()) return rejection("invalid_compute_task", "The task name must not be empty");
+    if (!destination.starts_with("project://") || destination.find('#') != std::string::npos)
+        return rejection("invalid_task_destination", "Choose a new project:// file for the task feature");
+    try {
+        const auto catalog = getComputeTaskAuthoring(Json::object());
+        for (const auto &task : catalog.at("tasks"))
+            if (task.at("name") == name)
+                return rejection("compute_task_exists", "A task already uses this name: " + name);
+        const auto path = dependencies_.resolve_document_path(destination);
+        if (std::filesystem::exists(path))
+            return rejection("task_destination_exists", "The destination already exists: " + destination);
+        const OrderedJson feature{{"schema", "pelican.render_feature"}, {"version", 1},
+            {"name", name}, {"compute_tasks", OrderedJson::array({params.at("task")})}};
+        const std::array documents{RenderConfigCandidateDocument{
+            .reference = destination, .normalized_reference = dependencies_.normalize_reference(destination),
+            .path = path, .operation = RenderConfigDocumentOperation::create,
+            .expected = {RenderConfigDocumentExistence::missing, {}}, .bytes = feature.dump(2)}};
+        return queueRootEdit(base_digest, method,
+            [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+                if (!candidate.hasFeaturesArray())
+                    candidate = AuthoredRenderConfigDocument::initialize(candidate.bytes());
+                candidate = candidate.withFeatureAdded(destination);
+                return std::nullopt;
+            }, documents);
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
+}
+
+OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, bool remove) {
+    const auto method = remove ? "remove_compute_task" : "edit_compute_task";
     const auto base_digest = requireString(params, "base_source_digest", method);
     const auto task_digest = requireString(params, "base_task_source_digest", method);
     const auto name = requireString(params, "task_name", method);
     if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(task_digest))
-        throw std::invalid_argument("edit_compute_task requires 64 lowercase hex source digests");
-    if (!params.contains("task") || !params.at("task").is_object() || params.at("task").value("name", std::string{}) != name)
+        throw std::invalid_argument(std::string{method} + " requires 64 lowercase hex source digests");
+    if (!remove && (!params.contains("task") || !params.at("task").is_object() || params.at("task").value("name", std::string{}) != name))
         return rejection("invalid_compute_task", "The task declaration must retain its name");
     try {
         const auto catalog = getComputeTaskAuthoring(Json::object());
@@ -985,7 +1031,8 @@ OrderedJson RenderConfigEditorService::editComputeTask(const Json &params) {
         auto &declarations = config.at("compute_tasks");
         const auto original = std::find_if(declarations.begin(), declarations.end(), [&](const auto &entry) { return entry.at("name") == name; });
         if (original == declarations.end()) return rejection("compute_task_not_editable", "The source task is absent");
-        *original = params.at("task");
+        if (remove) declarations.erase(original);
+        else *original = params.at("task");
         if (root) {
             return queueRootEdit(base_digest, method,
                 [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {

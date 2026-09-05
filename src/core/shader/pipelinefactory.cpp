@@ -1443,7 +1443,6 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
     const auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (project.layout.usesRayTables()) {
-        requireRayMaterialBindlessDevice(capabilities);
         if (!geometry) {
             throw std::invalid_argument(
                 "pelican.ray_geometry_snapshot_invalid@1: ray tables require the immutable AS geometry snapshot");
@@ -1469,105 +1468,105 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
                 std::move(table_build.scene_rows));
         result->geometry_snapshot = std::move(geometry);
 
-        const auto allocate_table = [&](std::span<const std::byte> bytes,
-                                        std::size_t minimum_size) {
-            const auto allocation_size = std::max(bytes.size(), minimum_size);
-            auto buffer = vkcore.allocBuf(
-                allocation_size,
-                vk::BufferUsageFlagBits::eStorageBuffer,
-                vma::MemoryUsage::eAutoPreferHost,
-                vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
-            if (bytes.empty()) {
-                std::vector<std::byte> zero(allocation_size, std::byte{0});
-                vkcore.writeBuf(buffer, zero.data(), 0, zero.size());
-            } else {
-                vkcore.writeBuf(buffer, bytes.data(), 0, bytes.size());
-            }
-            return std::make_shared<BufferWrapper>(std::move(buffer));
-        };
-        result->material_table_buffer = allocate_table(
-            std::span<const std::byte>{
-                result->ray_tables.material_bytes},
-            project.layout.usesMaterialAlphaProfile()
-                ? sizeof(RayProfileMaterialTableRow)
-                : sizeof(RayMaterialTableRow));
-        result->geometry_table_buffer = allocate_table(
-            std::span<const std::byte>{
-                result->ray_tables.geometry_bytes},
-            sizeof(RayGeometryTableRow));
-
-        std::array<vk::DescriptorPoolSize, 2> pool_sizes{
-            vk::DescriptorPoolSize{
-                vk::DescriptorType::eStorageBuffer, 2},
-            vk::DescriptorPoolSize{
-                vk::DescriptorType::eCombinedImageSampler,
-                rayBindlessTextureCapacity},
-        };
-        vk::DescriptorPoolCreateInfo pool_info;
-        pool_info.flags =
-            vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-        pool_info.maxSets = 1;
-        pool_info.setPoolSizes(pool_sizes);
-        result->ray_table_descriptor_pool =
-            device.createDescriptorPoolUnique(pool_info);
-
+        // A scene can retain its ray layout while its last RT task is removed.
+        // Keep the shared row snapshot, but allocate shader tables only for consumers.
         const auto layout_pipeline = std::find_if(
             active_owner_pipelines.begin(), active_owner_pipelines.end(),
             [&](const auto handle) {
                 const auto &record = pipelines.get(handle);
-                const auto *desc =
-                    std::get_if<RayTracingPipelineDesc>(&record.desc);
+                const auto *desc = std::get_if<RayTracingPipelineDesc>(&record.desc);
                 return desc != nullptr && desc->ray_tracing_project &&
                        desc->ray_tracing_project->layout.usesRayTables();
             });
-        if (layout_pipeline == active_owner_pipelines.end()) {
-            throw std::runtime_error(
-                "pelican.ray_tracing.scene_generation_mismatch@1: active ray-table generation has no owner pipeline layout");
-        }
-        const auto set_layout = descriptorSetLayout(*layout_pipeline, 3);
-        const std::array set_layouts{set_layout};
-        vk::DescriptorSetAllocateInfo allocation_info;
-        allocation_info.descriptorPool =
-            result->ray_table_descriptor_pool.get();
-        allocation_info.setSetLayouts(set_layouts);
-        auto descriptor_sets =
-            device.allocateDescriptorSetsUnique(allocation_info);
-        result->ray_table_descriptor_set =
-            std::move(descriptor_sets.front());
+        if (layout_pipeline != active_owner_pipelines.end()) {
+            requireRayMaterialBindlessDevice(capabilities);
+            const auto allocate_table = [&](std::span<const std::byte> bytes,
+                                            std::size_t minimum_size) {
+                const auto allocation_size = std::max(bytes.size(), minimum_size);
+                auto buffer = vkcore.allocBuf(
+                    allocation_size,
+                    vk::BufferUsageFlagBits::eStorageBuffer,
+                    vma::MemoryUsage::eAutoPreferHost,
+                    vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+                if (bytes.empty()) {
+                    std::vector<std::byte> zero(allocation_size, std::byte{0});
+                    vkcore.writeBuf(buffer, zero.data(), 0, zero.size());
+                } else {
+                    vkcore.writeBuf(buffer, bytes.data(), 0, bytes.size());
+                }
+                return std::make_shared<BufferWrapper>(std::move(buffer));
+            };
+            result->material_table_buffer = allocate_table(
+                std::span<const std::byte>{
+                    result->ray_tables.material_bytes},
+                project.layout.usesMaterialAlphaProfile()
+                    ? sizeof(RayProfileMaterialTableRow)
+                    : sizeof(RayMaterialTableRow));
+            result->geometry_table_buffer = allocate_table(
+                std::span<const std::byte>{
+                    result->ray_tables.geometry_bytes},
+                sizeof(RayGeometryTableRow));
 
-        std::array<vk::DescriptorBufferInfo, 2> buffer_infos{
-            vk::DescriptorBufferInfo{
-                result->material_table_buffer->buffer.get(), 0,
-                vk::WholeSize},
-            vk::DescriptorBufferInfo{
-                result->geometry_table_buffer->buffer.get(), 0,
-                vk::WholeSize},
-        };
-        std::vector<vk::DescriptorImageInfo> image_infos;
-        image_infos.reserve(result->ray_tables.textures.size());
-        for (const auto &texture : result->ray_tables.textures) {
-            image_infos.emplace_back(
-                texture.sampler, texture.srgb_view,
-                vk::ImageLayout::eShaderReadOnlyOptimal);
+            std::array<vk::DescriptorPoolSize, 2> pool_sizes{
+                vk::DescriptorPoolSize{
+                    vk::DescriptorType::eStorageBuffer, 2},
+                vk::DescriptorPoolSize{
+                    vk::DescriptorType::eCombinedImageSampler,
+                    rayBindlessTextureCapacity},
+            };
+            vk::DescriptorPoolCreateInfo pool_info;
+            pool_info.flags =
+                vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+            pool_info.maxSets = 1;
+            pool_info.setPoolSizes(pool_sizes);
+            result->ray_table_descriptor_pool =
+                device.createDescriptorPoolUnique(pool_info);
+
+            const auto set_layout = descriptorSetLayout(*layout_pipeline, 3);
+            const std::array set_layouts{set_layout};
+            vk::DescriptorSetAllocateInfo allocation_info;
+            allocation_info.descriptorPool =
+                result->ray_table_descriptor_pool.get();
+            allocation_info.setSetLayouts(set_layouts);
+            auto descriptor_sets =
+                device.allocateDescriptorSetsUnique(allocation_info);
+            result->ray_table_descriptor_set =
+                std::move(descriptor_sets.front());
+
+            std::array<vk::DescriptorBufferInfo, 2> buffer_infos{
+                vk::DescriptorBufferInfo{
+                    result->material_table_buffer->buffer.get(), 0,
+                    vk::WholeSize},
+                vk::DescriptorBufferInfo{
+                    result->geometry_table_buffer->buffer.get(), 0,
+                    vk::WholeSize},
+            };
+            std::vector<vk::DescriptorImageInfo> image_infos;
+            image_infos.reserve(result->ray_tables.textures.size());
+            for (const auto &texture : result->ray_tables.textures) {
+                image_infos.emplace_back(
+                    texture.sampler, texture.srgb_view,
+                    vk::ImageLayout::eShaderReadOnlyOptimal);
+            }
+            std::vector<vk::WriteDescriptorSet> writes{
+                vk::WriteDescriptorSet{
+                    result->ray_table_descriptor_set.get(), 0, 0, 1,
+                    vk::DescriptorType::eStorageBuffer, nullptr,
+                    &buffer_infos[0]},
+                vk::WriteDescriptorSet{
+                    result->ray_table_descriptor_set.get(), 2, 0, 1,
+                    vk::DescriptorType::eStorageBuffer, nullptr,
+                    &buffer_infos[1]},
+            };
+            if (!image_infos.empty()) {
+                writes.emplace_back(
+                    result->ray_table_descriptor_set.get(), 1, 0,
+                    static_cast<std::uint32_t>(image_infos.size()),
+                    vk::DescriptorType::eCombinedImageSampler,
+                    image_infos.data());
+            }
+            device.updateDescriptorSets(writes, {});
         }
-        std::vector<vk::WriteDescriptorSet> writes{
-            vk::WriteDescriptorSet{
-                result->ray_table_descriptor_set.get(), 0, 0, 1,
-                vk::DescriptorType::eStorageBuffer, nullptr,
-                &buffer_infos[0]},
-            vk::WriteDescriptorSet{
-                result->ray_table_descriptor_set.get(), 2, 0, 1,
-                vk::DescriptorType::eStorageBuffer, nullptr,
-                &buffer_infos[1]},
-        };
-        if (!image_infos.empty()) {
-            writes.emplace_back(
-                result->ray_table_descriptor_set.get(), 1, 0,
-                static_cast<std::uint32_t>(image_infos.size()),
-                vk::DescriptorType::eCombinedImageSampler,
-                image_infos.data());
-        }
-        device.updateDescriptorSets(writes, {});
     }
     if (!result->row_snapshot) {
         result->row_snapshot = std::move(rows);
