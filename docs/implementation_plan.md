@@ -23248,8 +23248,8 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 2. **WP382c は 23cb5153 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
 3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
 4. **WP382b-fix は 36ad3444 に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
-5. **WP382d。** 382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。
-6. **WP386b/c とその後。** 386a の後続として進め、RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
+5. **WP382d 実装中。** `<作業ディレクトリ>/wp382d` / `codex/wp382d`、基点 `763556e8`。382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。並行エージェントが実装し、commitは統合側のみ。
+6. **WP386b 実装中、386cは後続。** `<作業ディレクトリ>/wp386b` / `codex/wp386b`、基点 `763556e8`。まずhit attributeのstage間ABI検査と、materialを持たないproceduralへの生成any-hit誤適用を閉じる。分類/status wire、規範shader、386aレビュー残余は未完でありfeature完成と扱わない。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
 
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
