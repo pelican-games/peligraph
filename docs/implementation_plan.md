@@ -23209,19 +23209,34 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 ##### 2026-09-05 利用者方針による受け入れの訂正
 
 未公開の旧 SBT 行番号 `q` を維持するためだけの互換分岐は不要。決定23等の旧 SBT / TLAS bytes 不変要求は、旧割り当ての固定としては撤回する。現行割り当ての決定性、GPU が意図した形状 / shader / record を読むこと、誤った SBT offset の検出、保存した設定の意味と出荷 source を保つ。旧内部番号に合わせた期待値はこれらの意味を検査する形へ改める。今回 layout v3 にだけ新 identity を適用する互換分岐案を撤回し、全 layout で同じ identity 生成を使う。永続 row ID と保存 bytes の契約を緩める裁定ではない。保守的な分岐・重複検査の整理方針は [v1 開発方針](v1_development_plan.md)を参照。
+##### WP386a 統合・レビュー記録 (2026-09-05、残余あり)
+
+コードは `b7cb1825` に squash。元実装 `60118cb6` に WP384-fix / WP382c を mergeし、renderer・AS の3競合を解消。WP384の共同publication、submission lease、reuse判定と、procedural kind / generation rootを両立させた。`-0.0` を identity で正規化。layoutなしで procedural component が通る欠落は、実SceneLoaderで `ray_group_type_requires_layout_v3@1` に拒否する対照を追加して修正した。
+
+- ビルド: merge後と最終worktree build成功。非GPU全数 **1324件中成功1323・skip1・失敗0** (72.49秒、最終のload gate / 試験調整前)。最終W1は **60/60成功**、GPU17件を含む、69.49秒。ログは `<作業ディレクトリ>/wp386a_resume_cpu.log`、`<作業ディレクトリ>/wp386a_final_build.log`、`<作業ディレクトリ>/wp386a_final_w1.log`。
+- 旧qの固定を外したGPU対照: WP366はGPUが返したqの範囲・一意性を確かめ、既知の形状のmarker / record / tintと該当SBTを照合。誤ったq*Rオフセットは実GPUで検出。WP374aは現行の正準順で先行するobjectを追加し、qが変わってもcustom indexとrecordが保たれることを検査。旧番号を保つためのlayout別分岐は入れていない。
+- 統合側変異4件: 符号付き0正規化除去、ASのroot所有を除去、procedural publishを除去、scene identityからobject IDを除去。すべて対象production testが赤、exe mtimeがbuild開始後であることを確認、復元後1/1成功。`<作業ディレクトリ>/wp386a_mutations_20260905/` と `<作業ディレクトリ>/wp386a_mutations_run.log`。独立の同一asset2個体はproduction renderで2 rowとなることを確認。手でinventoryを反転したresolver対照を、全rendererの登録順反転試験の代用とはしない。
+- rev386a: Fable 5.1の読み取りレビュー。確定した致命的実害の報告なし、実害候補と受け入れ不足あり。原文とCodex裁定は `<作業ディレクトリ>/rev386a_fable_20260905/review.md`。元実装報告の「範囲内やり残しなし」は採用しない。
+- 統合Studio ON build / 全数は **実行中**。`<作業ディレクトリ>/int_wp386a_20260905/` の `build_done` / `done` と各logで確認する。worktree結果を統合全数成功とは扱わない。
+
+**後続のfeature有効化前に閉じる残余:**
+1. procedural componentのeditor projection participantが未接続。destroy / remove / asset変更後のruntime追随を本番edit→renderで確認・実装する。frame例外を握り潰して行を黙って捨てる処理は足さない。
+2. 決定19のrecord単独 / AABB単独の変更行列、activate失敗後に旧procedural stateが残る対照、productionでの登録順反転は未検証。既存drop mutationやresolver直呼びの成功で置き換えない。決定17のtriangle component occurrenceの設定範囲も確認する。
+3. record型不整合の検査時機は初回renderに残る。生成anyhitがproceduralのmaterial sentinelを読む可能性は、386bでreportするshaderを導入する前に閉じる。386aのno-report shaderではhitしない。
+4. table使用時のreuse阻害はrev384既知残余のまま。現行digestを比較する時点を整理し、判定を消すだけの修正はしない。layout無し経路のGPU寿命破壊は未実測であり確定欠陥と呼ばない(当該入力は今回load時に拒否)。
+
 ### 未了項目と再開順
 
 #### 2026-09-05 現況(下の再開履歴より優先)
 
-作業ブランチは `codex/render-target-runtime-slice`、最新のコード着地は `23cb5153`(WP382c)。
+作業ブランチは `codex/render-target-runtime-slice`、最新のコード着地は `b7cb1825`(WP386a)。
 引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。
 Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
 `<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
 
 1. **WP384-fix の検証・記録・rev384 は収束。** 全数1658件中、成功1656・skip1・既知の contract_projection_gate 失敗1。修正対象4件とsequential XRは成功。残余とレビュー裁定は上の完了記録。WP382cの結果は次項。
 2. **WP382c は 23cb5153 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
-3. **WP386a 統合準備 → 変異 → 着地 → rev386a。** worktree `<作業ディレクトリ>/wp386a`、HEAD `60118cb6` を確認。renderer/AS の WP384-fix と procedural root/kind の両方を残して merge する。
-   **今回コードで確認:** `canonicalTransformIdentity()` は float bits を直接出力し、`-0.0` 正規化はまだ無い。決定 17 の範囲で実装・受け入れが必要。未統合状態で済と記録しない。
+3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60、統合全数は実行中。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
 4. **WP382b-fix。** `<作業ディレクトリ>/wp382bfix`、HEAD `e30a41ed`。3 ファイル +418/-64 行の未 commit 差分を確認。未検証の途中実装として diff と最終受け入れから再開する。旧 CLI の再開プロンプトは `<作業ディレクトリ>/wp382bfix2.txt`。今回 CLI の再起動・更新はしていない。
 5. **WP382d。** 382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。
 6. **WP386b/c とその後。** 386a の後続として進め、RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
