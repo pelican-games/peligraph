@@ -31,7 +31,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 |---|---|---|---|
 | RT1 / RT2 | raygen・miss・closest-hit・any-hit、再帰、SBT addressing、material ABI | 台帳 WP364〜368 に実装・検証記録あり。今回の統合ログで WP367 の本番 any-hit 試験が成功 | stage/record/material の結び付きの可視化、設定変更と GPU 結果を試す教材は完了未判定 |
 | RT3-1 | instance mask/flags/custom index と geometry flags | WP374/374a 着地済み。WP384-fix 後の対象 GPU/RPC 4 件が統合ログで成功 | 個体編集→GPU 効果→保存→再読込を GUI から通す。既存 RPC の証拠を GUI 完了とは扱わない |
-| CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix 途中、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d 未着手 | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。CARRIER-STUDIO との接続を確認 |
+| CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 36ad3444 に着地(関連37/37、レビュー残余あり)、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d 未着手 | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
 | RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a を b7cb1825 に統合(W1 60/60、レビュー残余あり)。現段階は no-report shader。386b/c は後続、設計 §4-P は数値検証の対象部分集合を定義 | bounds と実際の hit の違い、report 有無、mixed geometry を試す。editor追随・変更行列等の残余は有効化前に閉じる。未完成の oracle を製品全体の対応範囲と混同しない |
 | RT4 | callable、per-in-flight の動的 record | 設計計画あり。今回確認した現行 pipelinefactory の callable region は空。段全体の実装完了は未確認 | callable 入出力、record 更新、frame 間の寿命を編集・観測する経路の設計が必要 |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | 計画あり。既存の静的 BLAS build を動的更新の完了証拠にはしない | animation/変形と RT 結果の追随、更新方式と負荷の比較を通す |

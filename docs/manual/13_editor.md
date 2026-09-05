@@ -91,7 +91,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 ### 編集操作(operations)の 9 種
 
 `edit` の `operations[]` には次の 9 種を並べます(正は
-[`editorjournal.cpp` の op 分岐](../../src/core/communication/editorjournal.cpp#L2769))。1 回の `edit` は**全部成功か全部失敗**です。
+[`editorjournal.cpp` の op 分岐](../../src/core/communication/editorjournal.cpp#L2884))。1 回の `edit` は**全部成功か全部失敗**です。
 
 | op | 主なフィールド | 意味 |
 |---|---|---|
@@ -250,7 +250,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 - **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
 - **シーン編集**の安定コードは **43 種**です(正は
   [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L46) と、その名前を返す
-  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L4274)。**列挙子の名前とワイヤ上の
+  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L4475)。**列挙子の名前とワイヤ上の
   コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
   - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
   - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**はこれで拒否されます)

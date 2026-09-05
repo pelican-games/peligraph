@@ -22980,6 +22980,16 @@ raw / typed 分離(WP382b)/ Studio の UI / mixed v2+v3 と delay-load v3 の DL
 
 WP382c / d の範囲 / Studio の UI / journal の他 op の見直し。
 
+#### 2026-09-05 WP382b-fix 統合・レビュー記録
+
+`36ad3444` に統合。legacy pointer の List 構造編集拒否を共通化し、add / remove / spawn の raw を保存、undo / redo でも row ID の高水位を維持する。独立した attachment の undo は許可し、object 破棄等の構造衝突は残す。
+
+- 元の修正: 関連35/35、非GPU全数1316件(成功1315・skip1)、変異5件が期待どおり失敗して復元後成功。RPC OFF / Studio ON でもbuildと関連35/35成功。報告 `<作業ディレクトリ>/wp382bfix_report_20260905.md`。
+- WP386a統合後の作業ツリー: RPC ON / Studio ON の全buildとRT family込みW1 65/65成功。`<作業ディレクトリ>/wp382bfix_integrate_build.log`、`<作業ディレクトリ>/wp382bfix_integrate_w1.log`。
+- Fable review #2の新規過少衝突を実入口で再現: AのBehavior行編集後、Bが同indexへ同値Behaviorを追加すると、AのundoがBのコピーを変更する。domainにcomponent slotを持たせ、Behavior行とattachment構造変更を衝突させて修正。同じattachmentならundo成功、別componentの独立行もundo成功を対照とした。最終関連37/37・883 assertions成功。`<作業ディレクトリ>/wp382bfix_review2_report.md`。同じ全数と変異5件は反復していない。
+- レビュー残余(連鎖を延長しない): #1 spawn/add→List編集を含む複合undo/redoで高水位のpostconditionが過剰衝突する既存問題、#3 legacy Behavior field編集が別attachmentまで過剰衝突する既存問題をGUI接続・v1前の残項目とする。#4 rawで省略されたDefaulted fieldへのlegacy setはinsertが先に必要という現行方針に整合し、救済分岐は追加しない。Studio呼出元の適合は未確認。詳細 `<作業ディレクトリ>/rev382bfix_fable_20260905/review.md`。
+- 統合先 `36ad3444`: playerと影響するecs_editor実行体のbuild成功、関連37/37・883 assertions成功。`<作業ディレクトリ>/wp382bfix_primary_build.log`、`<作業ディレクトリ>/wp382bfix_primary_tests.log`。全数1677件の記録は直前WP386a時点のものを参照し、今回のHEADで全数成功したとは扱わない。doclinkは3873件すべて有効。
+
 ### WP386: RT3-2 —— static AABB + `.rint`(手続き幾何)を、描画されない geometry の AS 供給経路ごと入れる
 
 **§4 規則 11 上段(asset 形式・AS 供給経路・pipeline の group 型・SPIR-V 検査・oracle を触る)。実装者: `gpt-5.6-sol` + max。仕様レビュー(codex)2 巡 → 実装 → 統合側変異 → コードレビュー。見積: 大(milestone 3)。**
@@ -23229,7 +23239,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 2026-09-05 現況(下の再開履歴より優先)
 
-作業ブランチは `codex/render-target-runtime-slice`、最新のコード着地は `b7cb1825`(WP386a)。
+作業ブランチは `codex/render-target-runtime-slice`、最新のコード着地は `36ad3444`(WP382b-fix、WP386aは `b7cb1825`)。
 引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。
 Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
 `<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
@@ -23237,7 +23247,7 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 1. **WP384-fix の検証・記録・rev384 は収束。** 全数1658件中、成功1656・skip1・既知の contract_projection_gate 失敗1。修正対象4件とsequential XRは成功。残余とレビュー裁定は上の完了記録。WP382cの結果は次項。
 2. **WP382c は 23cb5153 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
 3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
-4. **WP382b-fix。** `<作業ディレクトリ>/wp382bfix`、HEAD `e30a41ed`。3 ファイル +418/-64 行の未 commit 差分を確認。未検証の途中実装として diff と最終受け入れから再開する。旧 CLI の再開プロンプトは `<作業ディレクトリ>/wp382bfix2.txt`。今回 CLI の再起動・更新はしていない。
+4. **WP382b-fix は 36ad3444 に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
 5. **WP382d。** 382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。
 6. **WP386b/c とその後。** 386a の後続として進め、RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
 
