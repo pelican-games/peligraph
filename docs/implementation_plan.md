@@ -23251,7 +23251,13 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 5. **WP382d 実装中。** `<作業ディレクトリ>/wp382d` / `codex/wp382d`、基点 `763556e8`。382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。並行エージェントが実装し、commitは統合側のみ。
 6. **WP386b 実装中、386cは後続。** `<作業ディレクトリ>/wp386b` / `codex/wp386b`、基点 `763556e8`。まずhit attributeのstage間ABI検査と、materialを持たないproceduralへの生成any-hit誤適用を閉じる。分類/status wire、規範shader、386aレビュー残余は未完でありfeature完成と扱わない。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
 
-WP386bの入口安全性はworktreeで実装・検証済み(未commit・未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。最終fixture調整後もGPU1/1成功。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。WP382dはcore初回buildまで成功、runtime plan / participant / RPCの接続を継続中。
+WP386bの入口安全性はworktreeで実装・検証済み(未commit・未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。最終fixture調整後もGPU1/1成功。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。
+
+**WP382d 接続の進捗:** scene/editor/model reloadの候補と共通inventory/AS plan、RPCのq・実効値・component witness・共有拒否行診断を接続。描画前の一覧、行削除直後の反映、AfterPublication失敗後の旧plan/inventoryとRPC保持をGPUで確認した。geometry全消滅後も行が消えないよう、旧witness mapを独立した宣言catalogへ置換した。連続scene importの対照でretire待ちslotを再利用可能と誤認する二重解放を発見し、free listの再構築を削除して修正。release側assertは維持。最終slot/GPU/preview対照3/3成功、編集・ECSは通常CTest164/164成功。ログと再開入口は `<作業ディレクトリ>/wp382d_connection_progress_20260905.md`、実装側詳細は `<作業ディレクトリ>/wp382d_report.md`。
+
+slot修正後の関連59/59成功(GPU label31件、`<作業ディレクトリ>/wp382d_verified_connection_ctest.log`)。初回の不足fixture DLLとexample assetを揃えた後の結果であり、全数/matrix完了とは扱わない。catalog/AS planのprepareを各々欠落させると描画前の完全性条件が落ち、解除すると戻る対照も成功。
+
+WP382dは引き続き未commit・未統合。構成matrix、一般component追加削除とprocedural lifecycle、startup/pendingの診断表示、previewの構造化拒否codeとdecode入口、別repoのweb拒否は未完。previewは現時点でmethod_unavailableとメッセージ内のnamed causeによる拒否まで。scene/frameの別config parseによる初回再resolveも残る。旧overrides gateを外した差分をこの状態のまま着地させない。
 
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
