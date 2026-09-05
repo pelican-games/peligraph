@@ -23257,7 +23257,13 @@ WP386bの入口安全性はworktreeで実装・検証済み(未commit・未統�
 
 slot修正後の関連59/59成功(GPU label31件、`<作業ディレクトリ>/wp382d_verified_connection_ctest.log`)。初回の不足fixture DLLとexample assetを揃えた後の結果であり、全数/matrix完了とは扱わない。catalog/AS planのprepareを各々欠落させると描画前の完全性条件が落ち、解除すると戻る対照も成功。
 
-WP382dは引き続き未commit・未統合。構成matrix、一般component追加削除とprocedural lifecycle、startup/pendingの診断表示、previewの構造化拒否codeとdecode入口、別repoのweb拒否は未完。previewは現時点でmethod_unavailableとメッセージ内のnamed causeによる拒否まで。scene/frameの別config parseによる初回再resolveも残る。旧overrides gateを外した差分をこの状態のまま着地させない。
+**追加の収束:** simplemodelview/ray componentの追加・削除と失敗時のrollbackを実RPCで確認し、次tickの不要なmodel再生成も解消した。previewの拒否は共通component decodeへ移し、構造化code `ray_instance_overrides_unsupported@1` と `surface=preview` を返す。無効codec時にも同じsurface制約を使う。startup/pendingの共通commit warningとroot別status保持を接続し、pending実入口を検証済み。実importer由来のstatic/skinned/morph/VRM both・third_person_only/VATを共通plan・共有診断へ結ぶ対照2/2と、VAT OFF実GLB拒否1/1が成功した。
+
+構成確認は `<作業ディレクトリ>/wp382d_matrix` / `codex/wp382d-matrix` のsnapshotで実施。RPC OFF/VAT OFF/compiler ONのCPU/GPU5/5、3機能すべてOFFの最終CPU6/6成功。後者の証拠は `<作業ディレクトリ>/wp382d_matrix_final_cpu_ctest.log`。再configure前のproduction exeが残るため、単なるCTest全列挙をOFF構成の証拠にしない。各variantで同じRPC試験を反復せず、実importer→plan/共有診断と共通RPCの実入口対照を組み合わせる。
+
+Fableの所有/rollback限定レビュー(`<作業ディレクトリ>/wp382d_fable_connection_review.json`)は完了。非authored instanceのtransformをidentityへ潰す代入を削除、clear後の旧plan/catalog残留を解消、migration participantとcomponent deinitの二重remove所有を削除。token/participantのmember破棄順も修正した。null planの仮説的再利用への追加防御や仕様レビューの再開は行わず、初回config parse整理時の再評価事項とした。修正後の関連64/64成功(GPU label35件、83.01秒、`<作業ディレクトリ>/wp382d_review_final_ctest.log`)。検証・裁定の詳細は接続進捗文書を参照。
+
+WP382dは引き続き未commit・未統合。残りは全procedural lifecycle、startup実起動での診断観測、外部webアプリへの拒否接続、scene/frameの別config parseによる初回再resolve。共通codecのweb拒否は実装・検証済みだが、別repoのwebアプリまで完了とは扱わない。旧overrides gateを外した差分を残余未確認のまま着地させない。
 
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
