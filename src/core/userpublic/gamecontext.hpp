@@ -76,6 +76,11 @@ class PELICAN_API GameContext {
     void setRayTracingCallableRecord(std::string_view task_name, std::uint32_t index,
                                     const nlohmann::json &values) const;
 
+    // Updates an explicit dispatch.rays task on the game/update thread.
+    // Image-derived tasks and scene transactions cannot be overridden.
+    void setRayTracingDispatchExtent(std::string_view task_name, std::uint32_t width,
+                                    std::uint32_t height, std::uint32_t depth) const;
+
     double random();
     int randomInt(int min, int max);
     float randomFloat(float min, float max);

@@ -718,6 +718,8 @@ struct ComputeDispatchDefinition {
     // local-size conversion.
     std::optional<ComputeImageExtentDispatchDefinition>
         rays_from;
+    // Explicit ray launch dimensions, independent of any image resource.
+    std::optional<std::array<std::uint32_t, 3>> rays;
     std::optional<ComputeIndirectDispatchDefinition>
         indirect;
 };

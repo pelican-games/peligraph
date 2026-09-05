@@ -638,6 +638,67 @@ struct Wp380RuntimeCleanup {
     }
 };
 
+TEST_CASE("RT6 explicit ray launch dimensions and runtime edits reach every 3D lane",
+          "[rt6][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"rt6_launch_extent"};
+    writeWp386aProceduralProject(project.path);
+    const auto feature_path = project.path / "features/wp386_procedural.json";
+    auto feature = Json::parse(readWp374aText(feature_path));
+    feature["compute_tasks"][0]["dispatch"] = {{"rays", {2, 3, 2}}};
+    writeWp374aText(feature_path, feature.dump());
+    auto raygen = RayTracingRt31Fixture::wp366RaygenSource(
+        "0u", "0u", "pelican_resource_wp386_out");
+    const std::string pixel = "ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);";
+    raygen.replace(raygen.find(pixel), pixel.size(), R"glsl(
+    uint lane = gl_LaunchIDEXT.x + gl_LaunchSizeEXT.x *
+                (gl_LaunchIDEXT.y + gl_LaunchSizeEXT.y * gl_LaunchIDEXT.z);
+    ivec2 pixel = ivec2(lane, 0);
+)glsl");
+    const std::string result = "uvec4(payload.marker, payload.q, payload.flags, payload.tint)";
+    raygen.replace(raygen.find(result), result.size(), R"glsl(
+        uvec4(payload.marker + gl_LaunchIDEXT.x, gl_LaunchIDEXT.y, gl_LaunchIDEXT.z,
+              gl_LaunchSizeEXT.x + 256u * gl_LaunchSizeEXT.y + 65536u * gl_LaunchSizeEXT.z)
+)glsl");
+    writeWp374aText(project.path / "shaders/wp386.rgen", raygen);
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    const auto check_lanes = [&](std::uint32_t width, std::uint32_t height,
+                                 std::uint32_t depth) {
+        (void)renderWp374aProductionRows();
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+            "wp386_out", ImageSubresourceRange{});
+        const auto lane_count = width * height * depth;
+        REQUIRE(image.bytes.size() >= lane_count * 4 * sizeof(std::uint32_t));
+        for (std::uint32_t z = 0; z < depth; ++z) {
+            for (std::uint32_t y = 0; y < height; ++y) {
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    const auto lane = x + width * (y + height * z);
+                    CAPTURE(x, y, z);
+                    std::array<std::uint32_t, 4> actual{};
+                    std::memcpy(actual.data(), image.bytes.data() + lane * sizeof(actual),
+                                sizeof(actual));
+                    const std::array<std::uint32_t, 4> expected{
+                        0x386au + x, y, z, width + 256u * height + 65536u * depth};
+                    CHECK(actual == expected);
+                }
+            }
+        }
+    };
+    check_lanes(2, 3, 2);
+    const GameContext context;
+    context.setRayTracingDispatchExtent("wp386_trace", 3, 1, 2);
+    check_lanes(3, 1, 2);
+    CHECK_THROWS(context.setRayTracingDispatchExtent("wp386_trace", 3, 1, 0));
+    check_lanes(3, 1, 2);
+#else
+    SUCCEED("RT6 production shader fixture requires the runtime compiler");
+#endif
+}
+
 TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph deformation",
           "[rt5][ray-tracing][production][gpu]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

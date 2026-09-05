@@ -1184,6 +1184,30 @@ TEST_CASE(
     REQUIRE(tasks.front().dispatch.rays_from.has_value());
     CHECK(tasks.front().dispatch.rays_from->port == "mask");
 
+    auto explicit_rays = config;
+    explicit_rays["compute_tasks"][0]["dispatch"] = {{"rays", {2, 3, 4}}};
+    const auto ray_tasks = parseComputeTaskDefinitionsFromConfigJson(explicit_rays);
+    REQUIRE(ray_tasks[0].dispatch.rays.has_value());
+    CHECK(*ray_tasks[0].dispatch.rays == std::array<std::uint32_t, 3>{2, 3, 4});
+    CHECK_FALSE(ray_tasks[0].dispatch.rays_from.has_value());
+    for (const auto &bad : std::vector<nlohmann::json>{
+            {0, 1, 1}, {-1, 1, 1}, {1.5, 1, 1}, {4294967296ULL, 1, 1},
+            {1, 1}, {1, 1, 1, 1}, "2,3,4"}) {
+        auto invalid = explicit_rays;
+        invalid["compute_tasks"][0]["dispatch"]["rays"] = bad;
+        CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(invalid),
+            Catch::Matchers::ContainsSubstring("invalid_trace_dispatch"));
+    }
+    auto mixed_rays = explicit_rays;
+    mixed_rays["compute_tasks"][0]["dispatch"]["rays_from"] = {{"port", "mask"}};
+    CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(mixed_rays),
+        Catch::Matchers::ContainsSubstring("invalid_trace_dispatch"));
+    auto compute_rays = explicit_rays;
+    compute_rays["compute_tasks"][0].erase("ray_tracing");
+    compute_rays["compute_tasks"][0]["shader"] = "shaders/compute";
+    CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(compute_rays),
+        Catch::Matchers::ContainsSubstring("invalid_trace_dispatch"));
+
     auto explicit_depth = config;
     explicit_depth["compute_tasks"][0]["ray_tracing"]
                   ["max_recursion"] = 2;

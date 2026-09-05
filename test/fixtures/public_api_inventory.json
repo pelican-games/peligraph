@@ -227,6 +227,13 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
+      "signature": "void setRayTracingDispatchExtent(std::string_view task_name,std::uint32_t width,std::uint32_t height,std::uint32_t depth)const",
+      "classification": "mutator",
+      "manifest": "reject.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
       "signature": "double random()",
       "classification": "mutator",
       "manifest": "covered.rng-sequence"

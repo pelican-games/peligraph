@@ -167,6 +167,20 @@ bool GameContext::setDirectionalLightDirection(std::string_view name, vec3 direc
         std::string{name}, glm::vec3{direction.x, direction.y, direction.z});
 }
 
+void GameContext::setRayTracingDispatchExtent(
+    std::string_view task_name, std::uint32_t width, std::uint32_t height,
+    std::uint32_t depth) const {
+    if (internal::activeEffectTransaction() != nullptr)
+        throw SceneTransactionMutationRejected{"setRayTracingDispatchExtent"};
+    auto &tasks = GET_MODULE(ComputeTaskContainer);
+    const auto task = tasks.getComputeTaskIdByName(std::string{task_name});
+    if (task.value < 0) {
+        throw std::invalid_argument(
+            "pelican.ray_tracing.task_not_found@1: task '" + std::string{task_name} + "'");
+    }
+    tasks.setRayTracingDispatchExtent(task, width, height, depth);
+}
+
 void GameContext::setRayTracingCallableRecord(
     std::string_view task_name, std::uint32_t index, const nlohmann::json &values) const {
     if (internal::activeEffectTransaction() != nullptr) {

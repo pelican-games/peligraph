@@ -1670,7 +1670,7 @@ ComputeDispatchDefinition parseDispatch(
             throw std::runtime_error(
                 "pelican.ray_tracing.trace_extent_required@1: compute "
                 "task '" +
-                name + "' requires dispatch.rays_from");
+                name + "' requires dispatch.rays_from or dispatch.rays");
         }
         return dispatch;
     }
@@ -1680,6 +1680,29 @@ ComputeDispatchDefinition parseDispatch(
         throw std::runtime_error("compute task dispatch must be an object: " + name);
     }
 
+    if (json.contains("rays")) {
+        if (!ray_tracing || json.size() != 1) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.invalid_trace_dispatch@1: dispatch.rays requires a ray_tracing task and cannot be combined with other dispatch fields: " + name);
+        }
+        const auto &rays = json.at("rays");
+        if (!rays.is_array() || rays.size() != 3) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.invalid_trace_dispatch@1: dispatch.rays must contain three positive uint32 dimensions: " + name);
+        }
+        std::array<std::uint32_t, 3> extent;
+        for (std::size_t i = 0; i < extent.size(); ++i) {
+            const auto &value = rays.at(i);
+            if (!value.is_number_integer() || value <= 0 ||
+                value > std::numeric_limits<std::uint32_t>::max()) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.invalid_trace_dispatch@1: dispatch.rays must contain three positive uint32 dimensions: " + name);
+            }
+            extent[i] = value.get<std::uint32_t>();
+        }
+        dispatch.rays = extent;
+        return dispatch;
+    }
     if (json.contains("rays_from")) {
         if (!ray_tracing) {
             throw std::runtime_error(
@@ -1718,7 +1741,7 @@ ComputeDispatchDefinition parseDispatch(
     if (ray_tracing) {
         throw std::runtime_error(
             "pelican.ray_tracing.trace_extent_required@1: compute task '" +
-            name + "' requires dispatch.rays_from");
+            name + "' requires dispatch.rays_from or dispatch.rays");
     }
 
     if (json.contains("indirect")) {
@@ -3088,6 +3111,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
             definition.dispatch.groups_y,
             definition.dispatch.groups_z,
         };
+    if (definition.dispatch.rays) dispatch_groups = *definition.dispatch.rays;
     std::optional<ImageExtentDispatchRecord>
         image_extent_dispatch;
     if (definition.dispatch.groups_from ||
@@ -3387,6 +3411,25 @@ ComputeTaskId ComputeTaskContainer::getComputeTaskIdByName(const std::string &na
     return ComputeTaskId{-1};
 }
 
+void ComputeTaskContainer::setRayTracingDispatchExtent(
+    ComputeTaskId task_id, std::uint32_t width, std::uint32_t height,
+    std::uint32_t depth) {
+    const auto found = tasks.find(task_id.value);
+    if (found == tasks.end()) throw std::runtime_error("Compute task not found");
+    auto &task = found->second;
+    if (!task.ray_tracing || !task.definition.dispatch.rays) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.explicit_extent_required@1: runtime extent updates require dispatch.rays");
+    }
+    const std::array extent{width, height, depth};
+    validateRayTracingInitialExtent(extent,
+        GET_MODULE(VulkanManageCore).getRuntimeCapabilities().ray_tracing_facts);
+    task.dispatch_x = width;
+    task.dispatch_y = height;
+    task.dispatch_z = depth;
+    task.definition.dispatch.rays = extent;
+}
+
 void ComputeTaskContainer::setDispatchGroups(ComputeTaskId task_id, uint32_t x, uint32_t y, uint32_t z) {
     if (x == 0 || y == 0 || z == 0) {
         throw std::runtime_error("compute dispatch group counts must be positive");
@@ -3398,7 +3441,7 @@ void ComputeTaskContainer::setDispatchGroups(ComputeTaskId task_id, uint32_t x, 
     if (found->second.ray_tracing) {
         throw std::runtime_error(
             "pelican.ray_tracing.fixed_trace_extent_unsupported@1: trace "
-            "dimensions are derived from dispatch.rays_from");
+            "use setRayTracingDispatchExtent for explicit ray dimensions");
     }
     if (found->second.indirect_dispatch) {
         throw std::runtime_error(

@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT5 VAT接続):** 学習サンプルは後回し。skin/morphに続いてVATの変形後頂点もBLASへ接続。次はRT5のrefitと更新負荷の削減。Studioのrecord編集UI、RT6/RT7は残る。下の旧記録にあるサンプル優先は本指示で更新する。
+**最新の入口 (2026-09-06、RT6 explicit dispatch):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。skin/morph/VATに続き、画像と独立した3Dレイ起動とゲームAPIからのサイズ変更を接続。次はRT6のindirect、ASノード・複数AS構成。RT5 refit、Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+
+**RT6 explicit dispatch (2026-09-06):**
+- `dispatch.rays:[width,height,depth]` を追加。`rays_from` と排他的で、画像サイズを必要とせず正のuint32の3次元で起動する。既存のdevice dimension/総invocation上限検査を再利用。
+- `GameContext::setRayTracingDispatchExtent` を追加。明示サイズのRT taskのみ更新し、不正値は前のサイズを保持して拒否。scene effect transaction中は既存の公開API規約で拒否。rebindは明示サイズを維持する。
+- 実GPUで2×3×2の全laneとlaunch size、APIからの3×1×2への変更、depth=0拒否後の維持を確認（1件28 assertions）。設定解析4/4（72 assertions）、effect transaction 9/9（402 assertions）、公開API inventory 1/1成功。Player/Studioのbuild成功。
+- RT indirectやASノード等まで完了したとは扱わない。
 
 **RT5 VAT (2026-09-06):**
 - VAT texture・再生時刻・bounds・base vertexをcomputeへ渡し、VAT → morph → skinの頂点出力をASへ接続。VATの位置・法線補間、loop/clampをラスタと共有するGLSL helperへ抽出した。

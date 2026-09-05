@@ -938,7 +938,21 @@ RT pipeline task も最上位 `compute_tasks` を使います。これは `vkCmd
 }
 ```
 
-stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` / `indirect` との併記はエラーです。trace 幅・高さは `rays_from` が指す image mip の実 extent で、resize/rebind 後も再計算されます。`any_hit` / `intersection` / `callable` は現 ABI の範囲外で、宣言すると `pelican.ray_tracing.unsupported_shader_stage@1` です。現在の固定 resource ABI、capability、SBT alignment、ray query 版との完全一致条件は[ソースコード読解ガイド第11章](../source-code-guide/11_ray_query_acceleration_structures.md#rt_shadow_mask_pipeline-feature)を参照してください。
+stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` / `indirect` との併記はエラーです。`rays_from` は指定image mipの幅・高さから実行サイズを決め、resize/rebind後に再計算します。callableは`ray_tracing.callable`、any-hit/intersectionはray group layoutから指定します。[加速構造とRT pipelineの説明](../source-code-guide/11_ray_query_acceleration_structures.md)も参照してください。
+
+画像と独立した3D領域を走査する場合は、代わりに次を指定します。値は正のuint32で、デバイスの各次元上限・総起動数上限も検査します。
+
+```json
+"dispatch": {"rays": [32, 16, 8]}
+```
+
+`rays`と`rays_from`は排他的です。`gl_LaunchIDEXT`と`gl_LaunchSizeEXT`は指定した3次元をそのまま反映します。画像への書込み座標はshader側で決めます。
+
+ゲーム/updateスレッドからは、明示サイズのタスクを次のように変更できます。不正な値は現在の実行サイズを保持したまま拒否します。画像由来のサイズ変更とscene activation/destruction transaction中の呼出しは対象外です。
+
+```cpp
+context.setRayTracingDispatchExtent("trace_grid", 64, 16, 8);
+```
 
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
 typed command buffer と `dispatch.indirect` を使います。

@@ -293,6 +293,8 @@ DECLARE_MODULE(ComputeTaskContainer) {
     ComputeTaskId getComputeTaskIdByName(const std::string &name) const;
     // Render-thread update. Published GPU records remain immutable until their submission completes.
     void setCallableRecord(ComputeTaskId task_id, std::uint32_t index, const nlohmann::json &values);
+    void setRayTracingDispatchExtent(ComputeTaskId task_id, std::uint32_t width,
+                                     std::uint32_t height, std::uint32_t depth);
     void setDispatchGroups(ComputeTaskId task_id, uint32_t x, uint32_t y, uint32_t z);
     void setDispatchGroups(const std::string &task_name, uint32_t x, uint32_t y, uint32_t z);
 
