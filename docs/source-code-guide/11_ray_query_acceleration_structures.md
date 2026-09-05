@@ -5,7 +5,7 @@
 この章は次の 3 組を説明なしに使い始めます。深い扱いは各節にあります。
 
 - **静的ジオメトリ / 動的ジオメトリ** — 静的ジオメトリは元の頂点をそのまま使います。スキン付き / morph / VAT は compute で変形後の頂点を生成して加速構造へ渡します。
-- **BLAS / TLAS** — BLAS(bottom-level acceleration structure)は 1 つのジオメトリ(三角形群)の空間分割を GPU が辿れる形に焼いた下位構造、TLAS(top-level acceleration structure)はその BLAS を変換行列・mask・custom index 付きの**インスタンス行**として並べた上位構造です。ray は TLAS から引き、TLAS の行が BLAS を指します([用語集](../manual/14_glossary.md))。
+- **BLAS / TLAS** — BLAS(bottom-level acceleration structure)はジオメトリ群の空間分割を GPU が辿れる形に焼いた下位構造、TLAS(top-level acceleration structure)はその BLAS を変換行列・mask・custom index 付きの**インスタンス行**として並べた上位構造です。ray は TLAS から引き、TLAS の行が BLAS を指します([用語集](../manual/14_glossary.md))。
 - **ray query / ray tracing pipeline** — ray query は通常の fragment / compute シェーダの中から TLAS を辿る使い方(`VK_KHR_ray_query`)、ray tracing pipeline は raygen / miss / closest-hit という専用ステージと **SBT**(shader binding table — どの stage のどの shader を呼ぶかの handle をバイト列へ並べた表)を持ち `vkCmdTraceRaysKHR` で起動する使い方(`VK_KHR_ray_tracing_pipeline`)です。この章は両方を別々の opt-in feature として扱い、同じ影を 2 通りに計算して突き合わせます。
 
 ## 変形ジオメトリの契約
@@ -17,6 +17,8 @@
 変形出力はインスタンスごと・論理フレームごとに作成します。同じ個体・元geometry・topologyなら前回BLASを読み取り元に、新規BLASへrefitします。初回とモデル・geometry poolの変更時はrebuildします。同じメッシュの別インスタンスの姿勢は独立します。出力・compute descriptor・pipeline・refit元はsubmission完了まで保持し、使用中のASを書き換えません。静的BLASの再利用は維持します。変形出力が無いまま元姿勢をASに渡すことはエラーにします。
 
 frame planの`blas_build_count`と`blas_update_count`で、作り直しとrefitの累積回数を区別できます。refitはVulkanの[out-of-place UPDATE](https://docs.vulkan.org/spec/latest/chapters/accelstructures.html)を使い、出力bufferの再確保は残ります。
+
+同じ個体のtriangle行は、連続q・同一transform・同一instance制御の条件で1つのBLASへ結合します。materialとgeometry flagsは個別に保ち、SBTは`q_base + gl_GeometryIndexEXT`の行を参照します。静的共有と動的refitのkeyはgeometry列全体で比較します。診断の`geometry_count`で結合数が分かり、`tlas_instance_count`は結合後の件数です。姿勢やmaskの違いで分割された場合は、新しいgeometry列のBLASを用意します。
 
 構築処理はframe graphの`__scene_acceleration_structure` nodeで実行します。変形computeからAS/SBTのpublicationまでを含み、後続nodeより先に実行します。XRでは論理フレーム内で共有します。ray queryだけをshaderから使う場合も、graphの`required_capabilities`へ`pelican.vulkan.ray_query@1`を宣言して構築依存を明示します。
 

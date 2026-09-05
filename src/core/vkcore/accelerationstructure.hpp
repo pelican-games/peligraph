@@ -212,6 +212,7 @@ struct RayQueryBlasInputDiagnostics {
     std::uint32_t geometry_flags = 0;
     std::uint64_t index_device_address = 0;
     std::uint64_t vertex_device_address = 0;
+    std::size_t geometry_count = 1;
 
     bool operator==(
         const RayQueryBlasInputDiagnostics &) const = default;
@@ -275,6 +276,8 @@ class RayQueryAccelerationStructureScope {
 
   private:
     std::shared_ptr<State> active_state_;
+    std::uint64_t max_geometry_count_ = 0;
+    std::uint64_t max_primitive_count_ = 0;
     RayQueryAccelerationStructureDiagnostics diagnostics_{
         .requested = true,
     };

@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT6 named query):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。mask別の名前付きTLASとRT task別選択をfe42304bに統合し、compute ray queryの選択も実装・実GPU確認済み。次はRT6の複数geometry BLAS。AS単位の編集node、Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT6 multiple geometry):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。名前付きTLASはfe42304b、compute ray query選択は01561d95に統合済み。複数triangle geometryのBLAS結合・refitを実装・実GPU確認した。次はAS単位の編集nodeとRT7の編集接続。Studioのrecord編集UI、component/GUIの残機能も対象。学習サンプルは後回し。
+
+**RT6 multiple geometry (2026-09-06):**
+- 同一個体/component・同一world transform・同一instance mask/flags/custom indexの連続qをまとめる。geometry配列順=q順、TLAS offset=先頭q×Rとして、material/geometry flags/recordの個別性を保持。deviceのgeometry数・総primitive数上限で分割。layout v1はcustom index=qが異なるためsingletonを維持。
+- 単独geometryも複数geometryも同じvector key・build range経路へ統一。静的共有・再利用と、geometry列全体のsource identity/topology/flagsに基づく別allocationへのrefitを実装。AS/入力/submissionの寿命は既存所有に載せる。診断にBLASごとのgeometry_countを追加。
+- 新GPU fixtureは1個体2primitive/2materialを左右に置き、primary/shadow両方のshader marker・非ゼロgeometryIndex・material record対応を確認。静的BLAS1個の再利用と、morph後に新しい位置へhitが追随するrefit1回を確認。結合を外せばgeometryIndex/BLAS数、geometry strideを外せばrecord対応、refitを外せば変形hit/更新数が落ちる。
+- 最終RT4/5/6・occurrence個体制御の関連9/9（370 assertions、`build/.codex_bg/rt6geometry-final-gpu.log`）成功。AS/影/transaction6/6（4984 assertions、`rt6geometry-regression.log`）成功。Player/Studio build成功（`rt6geometry-appbuild.log`）。初回fixtureのOpaque ray flagをprofile規約へ修正し、対象外のTLAS再構築回数固定を除いた。静的BLASの再利用確認は保持。GPU全数と新規数値oracleは追加しない。
+- AABBの複数geometry化、異なるtransformを含むgeometry結合、layout無しquery専用の結合、AS単位の編集は未実装。BLAS診断は先頭geometry情報と結合数であり、全member一覧のUI完成とは扱わない。
 
 **RT6 named query (2026-09-06):**
 - compute taskの`ray_query.acceleration_structure`から名前付きTLASまたは`scene`を選択し、必要なray query capabilityとAS構築を宣言から有効にする。未知名・不正な宣言・ray_tracingとの併記を拒否する。fragmentの選択は未対応。

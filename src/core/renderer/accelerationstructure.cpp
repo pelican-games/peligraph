@@ -153,7 +153,7 @@ void recordBuild(
     vk::CommandBuffer command_buffer,
     VulkanManageCore &vkcore,
     vk::AccelerationStructureBuildGeometryInfoKHR build_info,
-    const vk::AccelerationStructureBuildRangeInfoKHR &range,
+    std::span<const vk::AccelerationStructureBuildRangeInfoKHR> ranges,
     vk::DeviceSize scratch_size,
     std::vector<BufferWrapper> &transient_buffers) {
     std::optional<AddressedBuffer> scratch;
@@ -169,7 +169,7 @@ void recordBuild(
         build_info.scratchData =
             vk::DeviceOrHostAddressKHR{scratch->address};
     }
-    const auto *range_pointer = &range;
+    const auto *range_pointer = ranges.data();
     command_buffer.buildAccelerationStructuresKHR(
         1, &build_info, &range_pointer,
         vkcore.getAccelerationStructureDispatch());
@@ -708,6 +708,7 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
             {"geometry_allocation_id",
              input.geometry_allocation_id},
             {"geometry_flags", input.geometry_flags},
+            {"geometry_count", input.geometry_count},
             {"index_device_address",
              input.index_device_address},
             {"vertex_device_address",
@@ -776,7 +777,7 @@ struct RayQueryAccelerationStructureScope::State {
         std::uint32_t vertex_count = 0;
         auto operator<=>(const DeformedBlasKey &) const = default;
     };
-    std::map<DeformedBlasKey, std::shared_ptr<AccelerationStructureResource>> deformed_blas;
+    std::map<std::vector<DeformedBlasKey>, std::shared_ptr<AccelerationStructureResource>> deformed_blas;
 
     struct BlasVariantKey {
         RayGeometryKind geometry_kind = RayGeometryKind::triangles;
@@ -787,7 +788,7 @@ struct RayQueryAccelerationStructureScope::State {
     };
 
     std::map<
-        BlasVariantKey,
+        std::vector<BlasVariantKey>,
         std::shared_ptr<AccelerationStructureResource>>
         blas;
     std::shared_ptr<AccelerationStructureResource> tlas;
@@ -1153,104 +1154,114 @@ RayQueryAccelerationStructureScope::recordFrame(
         : lowerRayTracingTlasInstancePlan(
               instances, classification.eligible_instance_indices,
               candidate->ray_scene_rows.get(), candidate->ray_type_count);
-    std::map<std::uint64_t, const RayQueryGeometryInstanceSnapshot *> deformed_instances;
-    for (const auto index : classification.eligible_instance_indices) {
-        const auto &source = instances[index];
-        if (source.geometry_kind == RayGeometryKind::triangles &&
-            source.deformed_vertex_address != 0 && source.deformation_source_geometry_id != 0)
-            deformed_instances.emplace(source.geometry_allocation_id, &source);
+    if (max_geometry_count_ == 0) {
+        const auto properties = vkcore.getPhysDevice().getProperties2<
+            vk::PhysicalDeviceProperties2, vk::PhysicalDeviceAccelerationStructurePropertiesKHR>()
+            .get<vk::PhysicalDeviceAccelerationStructurePropertiesKHR>();
+        max_geometry_count_ = properties.maxGeometryCount;
+        max_primitive_count_ = properties.maxPrimitiveCount;
     }
-    std::set<State::BlasVariantKey> required_variants;
-    for (const auto &planned : planned_instances) {
-        required_variants.emplace(State::BlasVariantKey{
-            .geometry_kind = instances[planned.source_index].geometry_kind,
-            .geometry_allocation_id =
-                instances[planned.source_index]
-                    .geometry_allocation_id,
-            .geometry_flags = planned.geometry_flags,
-        });
+    struct BlasGroup {
+        std::vector<std::size_t> plan_indices;
+        std::vector<State::BlasVariantKey> key;
+        std::uint64_t primitive_count = 0;
+    };
+    std::vector<BlasGroup> groups;
+    for (std::size_t plan_index = 0; plan_index < planned_instances.size(); ++plan_index) {
+        const auto &planned = planned_instances[plan_index];
+        const auto &source = instances[planned.source_index];
+        const auto primitives = source.geometry_kind == RayGeometryKind::triangles ? source.index_count / 3u : 1u;
+        if (primitives > max_primitive_count_)
+            throw std::runtime_error("ray geometry exceeds device maxPrimitiveCount");
+        bool append = false;
+        if (!groups.empty() && source.geometry_kind == RayGeometryKind::triangles) {
+            const auto &group = groups.back();
+            const auto &previous = planned_instances[group.plan_indices.back()];
+            const auto &first = instances[planned_instances[group.plan_indices.front()].source_index];
+            append = first.geometry_kind == RayGeometryKind::triangles &&
+                first.authoring_object_id == source.authoring_object_id &&
+                first.component_occurrence == source.component_occurrence &&
+                first.instance_index == source.instance_index &&
+                first.instance_generation == source.instance_generation &&
+                first.scene_epoch == source.scene_epoch &&
+                first.world_transform == source.world_transform &&
+                previous.instance_mask == planned.instance_mask &&
+                previous.instance_flags == planned.instance_flags &&
+                previous.instance_custom_index == planned.instance_custom_index &&
+                previous.q + 1 == planned.q &&
+                previous.instance_sbt_record_offset + ray_type_count == planned.instance_sbt_record_offset &&
+                group.key.size() < max_geometry_count_ &&
+                group.primitive_count + primitives <= max_primitive_count_;
+        }
+        if (!append) groups.emplace_back();
+        auto &group = groups.back();
+        group.plan_indices.push_back(plan_index);
+        group.key.push_back({source.geometry_kind, source.geometry_allocation_id, planned.geometry_flags});
+        group.primitive_count += primitives;
     }
 
-    for (const auto &variant : required_variants) {
-        const auto identity = variant.geometry_allocation_id;
-        const auto geometry_found = unique_geometry.find(identity);
-        if (geometry_found == unique_geometry.end()) {
-            throw std::runtime_error(
-                "pelican.ray_geometry_snapshot_invalid@1: BLAS variant has no geometry row");
-        }
-        const auto *instance = geometry_found->second;
-        const auto geometry_flags =
-            vk::GeometryFlagsKHR{variant.geometry_flags};
-        validateRayProfileAccelerationStructureFlags(
-            material_alpha_profile_active, geometry_flags, {},
-            RayProfileAccelerationStructureFlagSite::blas_geometry,
-            identity);
-        std::optional<State::DeformedBlasKey> deformation_key;
-        std::shared_ptr<AccelerationStructureResource> update_source;
-        if (const auto found = deformed_instances.find(identity); found != deformed_instances.end()) {
-            const auto &source = *found->second;
-            deformation_key = State::DeformedBlasKey{
-                source.deformation_source_geometry_id, source.scene_epoch,
-                source.instance_index, source.instance_generation, source.node_index,
-                variant.geometry_flags,
-                source.index_count, source.index_offset, source.vertex_offset, source.vertex_count};
-            if (can_reuse) {
-                const auto previous = active_state_->deformed_blas.find(*deformation_key);
-                if (previous != active_state_->deformed_blas.end()) update_source = previous->second;
-            }
+    for (const auto &group : groups) {
+        const auto &key = group.key;
+        if (candidate->blas.contains(key)) continue;
+        std::vector<State::DeformedBlasKey> deformation_key;
+        bool dynamic = false;
+        for (const auto plan_index : group.plan_indices) {
+            const auto &planned = planned_instances[plan_index];
+            const auto &source = instances[planned.source_index];
+            validateRayProfileAccelerationStructureFlags(material_alpha_profile_active,
+                vk::GeometryFlagsKHR{planned.geometry_flags}, {},
+                RayProfileAccelerationStructureFlagSite::blas_geometry, source.geometry_allocation_id);
+            const bool deformed = source.deformed_vertex_address != 0 && source.deformation_source_geometry_id != 0;
+            dynamic |= deformed;
+            deformation_key.push_back({
+                deformed ? source.deformation_source_geometry_id : source.geometry_allocation_id,
+                source.scene_epoch, source.instance_index, source.instance_generation, source.node_index,
+                planned.geometry_flags, source.index_count, source.index_offset,
+                source.vertex_offset, source.vertex_count});
         }
         if (can_reuse) {
-            const auto existing =
-                active_state_->blas.find(variant);
+            const auto existing = active_state_->blas.find(key);
             if (existing != active_state_->blas.end()) {
-                candidate->blas.emplace(variant,
-                                        existing->second);
-                if (deformation_key)
-                    candidate->deformed_blas.emplace(*deformation_key, existing->second);
+                candidate->blas.emplace(key, existing->second);
+                if (dynamic) candidate->deformed_blas.emplace(deformation_key, existing->second);
                 continue;
             }
         }
-        const auto index_address = instance->gpu.index_address;
-        const auto vertex_address = instance->gpu.vertex_address;
-        vk::AccelerationStructureGeometryKHR geometry_info;
-        vk::AccelerationStructureGeometryTrianglesDataKHR triangles;
-        vk::AccelerationStructureGeometryAabbsDataKHR aabbs;
-        std::uint32_t primitive_count = 0;
-        if (variant.geometry_kind == RayGeometryKind::aabbs) {
-            aabbs = vk::AccelerationStructureGeometryAabbsDataKHR{
-                vk::DeviceOrHostAddressConstKHR{vertex_address},
-                sizeof(vk::AabbPositionsKHR)};
-            geometry_info = vk::AccelerationStructureGeometryKHR{
-                vk::GeometryTypeKHR::eAabbs,
-                vk::AccelerationStructureGeometryDataKHR{aabbs},
-                geometry_flags};
-            primitive_count = 1;
-        } else {
-            triangles = vk::AccelerationStructureGeometryTrianglesDataKHR{
-                vk::Format::eR32G32B32Sfloat,
-                vk::DeviceOrHostAddressConstKHR{vertex_address},
-                sizeof(CommonVertStruct),
-                instance->vertex_count - 1,
-                vk::IndexType::eUint32,
-                vk::DeviceOrHostAddressConstKHR{index_address}};
-            geometry_info = vk::AccelerationStructureGeometryKHR{
-                vk::GeometryTypeKHR::eTriangles,
-                vk::AccelerationStructureGeometryDataKHR{triangles},
-                geometry_flags};
-            primitive_count = instance->index_count / 3;
+        std::shared_ptr<AccelerationStructureResource> update_source;
+        if (dynamic && can_reuse) {
+            const auto previous = active_state_->deformed_blas.find(deformation_key);
+            if (previous != active_state_->deformed_blas.end()) update_source = previous->second;
+        }
+        std::vector<vk::AccelerationStructureGeometryKHR> geometries;
+        std::vector<vk::AccelerationStructureBuildRangeInfoKHR> ranges;
+        std::vector<std::uint32_t> primitive_counts;
+        for (const auto &member : key) {
+            const auto &geometry = *unique_geometry.at(member.geometry_allocation_id);
+            const vk::GeometryFlagsKHR flags{member.geometry_flags};
+            std::uint32_t count = 1;
+            if (member.geometry_kind == RayGeometryKind::aabbs) {
+                geometries.emplace_back(vk::GeometryTypeKHR::eAabbs,
+                    vk::AccelerationStructureGeometryDataKHR{vk::AccelerationStructureGeometryAabbsDataKHR{
+                        vk::DeviceOrHostAddressConstKHR{geometry.gpu.vertex_address}, sizeof(vk::AabbPositionsKHR)}}, flags);
+            } else {
+                geometries.emplace_back(vk::GeometryTypeKHR::eTriangles,
+                    vk::AccelerationStructureGeometryDataKHR{vk::AccelerationStructureGeometryTrianglesDataKHR{
+                        vk::Format::eR32G32B32Sfloat, vk::DeviceOrHostAddressConstKHR{geometry.gpu.vertex_address},
+                        sizeof(CommonVertStruct), geometry.vertex_count - 1, vk::IndexType::eUint32,
+                        vk::DeviceOrHostAddressConstKHR{geometry.gpu.index_address}}}, flags);
+                count = geometry.index_count / 3;
+            }
+            primitive_counts.push_back(count);
+            ranges.emplace_back(count, 0, 0, 0);
         }
         vk::AccelerationStructureBuildGeometryInfoKHR build_info{
             vk::AccelerationStructureTypeKHR::eBottomLevel,
-            vk::BuildAccelerationStructureFlagBitsKHR::
-                ePreferFastTrace,
-            vk::BuildAccelerationStructureModeKHR::eBuild,
-            {}, {}, 1, &geometry_info};
-        if (deformation_key) build_info.flags |= vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
+            vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace,
+            update_source ? vk::BuildAccelerationStructureModeKHR::eUpdate : vk::BuildAccelerationStructureModeKHR::eBuild};
+        build_info.setGeometries(geometries);
+        if (dynamic) build_info.flags |= vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
         if (update_source) {
-            build_info.mode = vk::BuildAccelerationStructureModeKHR::eUpdate;
             build_info.srcAccelerationStructure = update_source->handle.get();
-            // The previous submission built this source; traces may keep reading
-            // it while this update writes a distinct destination allocation.
             recordMemoryBarrier(command_buffer,
                 vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
                 vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
@@ -1259,25 +1270,18 @@ RayQueryAccelerationStructureScope::recordFrame(
             recorded->update_sources.push_back(update_source);
         }
         vk::AccelerationStructureBuildSizesInfoKHR sizes;
-        device.getAccelerationStructureBuildSizesKHR(
-            vk::AccelerationStructureBuildTypeKHR::eDevice,
-            &build_info, &primitive_count, &sizes,
-            vkcore.getAccelerationStructureDispatch());
-        auto blas = createAccelerationStructure(
-            vkcore,
-            vk::AccelerationStructureTypeKHR::eBottomLevel,
+        device.getAccelerationStructureBuildSizesKHR(vk::AccelerationStructureBuildTypeKHR::eDevice,
+            &build_info, primitive_counts.data(), &sizes, vkcore.getAccelerationStructureDispatch());
+        auto blas = createAccelerationStructure(vkcore, vk::AccelerationStructureTypeKHR::eBottomLevel,
             sizes.accelerationStructureSize);
-        blas->index_input_address = index_address;
-        blas->vertex_input_address = vertex_address;
+        const auto &first_geometry = *unique_geometry.at(key.front().geometry_allocation_id);
+        blas->index_input_address = first_geometry.gpu.index_address;
+        blas->vertex_input_address = first_geometry.gpu.vertex_address;
         build_info.dstAccelerationStructure = blas->handle.get();
-        recordBuild(
-            command_buffer, vkcore, build_info,
-            vk::AccelerationStructureBuildRangeInfoKHR{
-                primitive_count, 0, 0, 0},
-            update_source ? sizes.updateScratchSize : sizes.buildScratchSize,
-            recorded->transient_buffers);
-        if (deformation_key) candidate->deformed_blas.emplace(*deformation_key, blas);
-        candidate->blas.emplace(variant, std::move(blas));
+        recordBuild(command_buffer, vkcore, build_info, ranges,
+            update_source ? sizes.updateScratchSize : sizes.buildScratchSize, recorded->transient_buffers);
+        if (dynamic) candidate->deformed_blas.emplace(deformation_key, blas);
+        candidate->blas.emplace(key, std::move(blas));
         if (update_source) ++candidate->diagnostics.blas_update_count;
         else ++candidate->diagnostics.blas_build_count;
     }
@@ -1289,7 +1293,8 @@ RayQueryAccelerationStructureScope::recordFrame(
     candidate->diagnostics.active_blas_inputs.clear();
     candidate->diagnostics.active_blas_inputs.reserve(
         candidate->blas.size());
-    for (const auto &[variant, blas] : candidate->blas) {
+    for (const auto &[members, blas] : candidate->blas) {
+        const auto &variant = members.front();
         candidate->diagnostics.active_blas_inputs.push_back(
             RayQueryBlasInputDiagnostics{
                 .geometry_kind = variant.geometry_kind,
@@ -1300,6 +1305,7 @@ RayQueryAccelerationStructureScope::recordFrame(
                     blas->index_input_address,
                 .vertex_device_address =
                     blas->vertex_input_address,
+                .geometry_count = members.size(),
             });
     }
     std::ranges::sort(
@@ -1327,16 +1333,10 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::vector<vk::AccelerationStructureInstanceKHR>
         tlas_instances;
     tlas_instances.reserve(classification.eligible_instance_indices.size());
-    for (const auto &planned : planned_instances) {
+    for (const auto &group : groups) {
+        const auto &planned = planned_instances[group.plan_indices.front()];
         const auto &instance = instances[planned.source_index];
-        const State::BlasVariantKey blas_key{
-            .geometry_kind = instance.geometry_kind,
-            .geometry_allocation_id =
-                instance.geometry_allocation_id,
-            .geometry_flags = planned.geometry_flags,
-        };
-        const auto blas = candidate->blas.find(
-            blas_key);
+        const auto blas = candidate->blas.find(group.key);
         if (blas == candidate->blas.end()) {
             throw std::runtime_error(
                 "static ray-query TLAS instance has no BLAS");
@@ -1425,8 +1425,8 @@ RayQueryAccelerationStructureScope::recordFrame(
             tlas->handle.get();
         recordBuild(
             command_buffer, vkcore, build_info,
-            vk::AccelerationStructureBuildRangeInfoKHR{
-                primitive_count, 0, 0, 0},
+            std::array{vk::AccelerationStructureBuildRangeInfoKHR{
+                primitive_count, 0, 0, 0}},
             sizes.buildScratchSize,
             recorded->transient_buffers);
         recorded->transient_buffers.push_back(
@@ -1434,6 +1434,7 @@ RayQueryAccelerationStructureScope::recordFrame(
         ++candidate->diagnostics.tlas_build_count;
         return tlas;
     };
+    candidate->diagnostics.tlas_instance_count = tlas_instances.size();
     candidate->tlas = build_tlas(tlas_instances);
     for (const auto &definition : named_definitions) {
         std::vector<vk::AccelerationStructureInstanceKHR> selected_instances;

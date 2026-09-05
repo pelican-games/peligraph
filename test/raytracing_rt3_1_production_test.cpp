@@ -638,6 +638,157 @@ struct Wp380RuntimeCleanup {
     }
 };
 
+void writeRt6MultiGeometryGlb(const std::filesystem::path &path, bool deformed) {
+    const auto original = TestMorphFixture::makeGlb();
+    std::uint32_t json_size = 0;
+    std::memcpy(&json_size, original.data() + 12, sizeof(json_size));
+    auto document = Json::parse(original.begin() + 20, original.begin() + 20 + json_size);
+    std::vector<std::uint8_t> binary(original.begin() + 28 + json_size, original.end());
+    const auto primitive = document["meshes"][0]["primitives"][0];
+    document["meshes"][0]["primitives"] = Json::array();
+    auto material = document["materials"][0];
+    material["name"] = "SecondMaterial";
+    document["materials"].push_back(material);
+    for (int side = 0; side < 2; ++side) {
+        const auto offset = binary.size();
+        const float center = side == 0 ? -2.0F : 2.0F;
+        for (const auto &position : std::array{
+                glm::vec3{center - 0.6F, -0.6F, 0.0F}, glm::vec3{center + 0.6F, -0.6F, 0.0F},
+                glm::vec3{center - 0.6F, 0.6F, 0.0F}, glm::vec3{center + 0.6F, 0.6F, 0.0F}})
+            TestMorphFixture::detail::raw(binary, position);
+        const auto view = document["bufferViews"].size();
+        document["bufferViews"].push_back({{"buffer", 0}, {"byteOffset", offset},
+            {"byteLength", binary.size() - offset}});
+        const auto accessor = document["accessors"].size();
+        document["accessors"].push_back({{"bufferView", view}, {"componentType", 5126},
+            {"count", 4}, {"type", "VEC3"},
+            {"min", {center - 0.6F, -0.6F, 0.0F}}, {"max", {center + 0.6F, 0.6F, 0.0F}}});
+        auto part = primitive;
+        part["attributes"]["POSITION"] = accessor;
+        part["material"] = side;
+        if (!deformed) part.erase("targets");
+        document["meshes"][0]["primitives"].push_back(part);
+    }
+    if (!deformed) document["meshes"][0].erase("weights");
+    document["buffers"][0]["byteLength"] = binary.size();
+    auto json = document.dump();
+    while (json.size() % 4) json.push_back(' ');
+    std::vector<std::uint8_t> glb;
+    TestMorphFixture::detail::u32(glb, 0x46546c67);
+    TestMorphFixture::detail::u32(glb, 2);
+    TestMorphFixture::detail::u32(glb, static_cast<std::uint32_t>(28 + json.size() + binary.size()));
+    TestMorphFixture::detail::u32(glb, static_cast<std::uint32_t>(json.size()));
+    TestMorphFixture::detail::u32(glb, 0x4e4f534a);
+    glb.insert(glb.end(), json.begin(), json.end());
+    TestMorphFixture::detail::u32(glb, static_cast<std::uint32_t>(binary.size()));
+    TestMorphFixture::detail::u32(glb, 0x004e4942);
+    glb.insert(glb.end(), binary.begin(), binary.end());
+    TestGltfFragmentFixture::detail::writeBytes(path, glb);
+}
+
+TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
+          "[rt6][multi-geometry][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    bool deformed = false;
+    SECTION("static mesh") {}
+    SECTION("morph mesh refit") { deformed = true; }
+    setupLogger();
+    Wp374aProjectRoot project{"rt6_multi_geometry"};
+    writeWp374aProject(project.path, 2, true, true, true,
+        Json{{"name", "pelican_ray_instance"}, {"custom_index", 71}}, true);
+    writeRt6MultiGeometryGlb(project.path / "models/chair.glb", deformed);
+    auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
+    scene["scenes"]["main"]["objects"][0]["components"][0]["pos"] = {0.0, 0.0, 8.0};
+    writeWp374aText(project.path / "scene.json", scene.dump());
+    const auto feature_path = project.path / "features/wp377_profile_owner.json";
+    auto feature = Json::parse(readWp374aText(feature_path));
+    const auto target_template = feature["render_targets"][0];
+    feature["render_targets"] = Json::array();
+    feature["compute_tasks"] = Json::array();
+    for (const std::string ray_type : {"primary", "shadow"}) {
+        const auto output = "multi_" + ray_type;
+        auto target = target_template;
+        target["name"] = output;
+        target["usage"] = {"STORAGE", "TRANSFER_SRC"};
+        feature["render_targets"].push_back(target);
+        feature["compute_tasks"].push_back(RayTracingRt31Fixture::wp366TypedRayTracingTask(
+            "trace_" + ray_type, output, "project://shaders/" + output, false));
+        auto raygen = RayTracingRt31Fixture::wp366RaygenSource(
+            "PELICAN_RAY_TYPE_" + ray_type, "PELICAN_MISS_sky", "pelican_resource_" + output);
+        const std::string opaque = "gl_RayFlagsOpaqueEXT";
+        raygen.replace(raygen.find(opaque), opaque.size(), "gl_RayFlagsNoneEXT");
+        const std::string origin = "vec3(x, 0.0, 0.0)";
+        raygen.replace(raygen.find(origin), origin.size(), "vec3(x, 0.4, 0.0)");
+        const std::string lane = "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
+        raygen.replace(raygen.find(lane), lane.size(),
+            "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : -1.1);");
+        writeWp374aText(project.path / ("shaders/" + output + ".rgen"), raygen);
+        auto hit = RayTracingRt31Fixture::wp366ClosestHitSource(
+            ray_type == "primary" ? 100u : 200u, true, false);
+        const std::string values = "0u, 0u";
+        hit.replace(hit.find(values), values.size(), "gl_GeometryIndexEXT, ray_record.material_index");
+        writeWp374aText(project.path / ("shaders/wp366_opaque_" + ray_type + ".rchit"), hit);
+    }
+    writeWp374aText(feature_path, feature.dump());
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    const auto sample = [&](bool moved) {
+        const auto rows = renderWp374aProductionRows();
+        REQUIRE(rows.rows.size() == 2);
+        REQUIRE(rows.rows[0].material_index != rows.rows[1].material_index);
+        for (const std::string ray_type : {"primary", "shadow"}) {
+            CAPTURE(ray_type, moved);
+            const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+                "multi_" + ray_type, ImageSubresourceRange{});
+            REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
+            std::array<std::uint32_t, 12> pixels{};
+            std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+            CHECK(pixels[0] == (ray_type == "primary" ? 100u : 200u));
+            CHECK(pixels[4] == pixels[0]);
+            CHECK(pixels[1] == 71u);
+            CHECK(pixels[5] == 71u);
+            REQUIRE(pixels[2] < 2u);
+            REQUIRE(pixels[6] < 2u);
+            CHECK(pixels[2] != pixels[6]);
+            CHECK(pixels[3] == rows.rows[pixels[2]].material_index);
+            CHECK(pixels[7] == rows.rows[pixels[6]].material_index);
+            CHECK((pixels[9] != 0xffffffffu) == moved);
+        }
+        const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(diagnostics.active_blas_count == 1);
+        CHECK(diagnostics.tlas_instance_count == 1);
+        CHECK(diagnostics.blas_build_count == 1);
+        REQUIRE(diagnostics.active_blas_inputs.size() == 1);
+        CHECK(diagnostics.active_blas_inputs[0].geometry_count == 2);
+        return diagnostics;
+    };
+    const auto first = sample(false);
+    CHECK(first.blas_update_count == 0);
+    if (deformed) {
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto inventory = instances.rayQueryGeometryInstances();
+        REQUIRE(inventory.size() == 2);
+        const auto id = instances.modelInstanceIdAt(inventory[0].instance_index);
+        REQUIRE(id);
+        const float weight = 1.0F;
+        PublishMorphWeightFrameDescV1 frame;
+        frame.layout_generation = instances.morphLayoutGenerationForTesting(*id);
+        frame.frame_revision = 1;
+        frame.weights = &weight;
+        frame.weight_count = 1;
+        REQUIRE(instances.publishMorphWeightFrame(*id, frame) == Animation::Status::ok);
+        const auto updated = sample(true);
+        CHECK(updated.blas_update_count == 1);
+    } else {
+        const auto reused = sample(false);
+        CHECK(reused.blas_update_count == 0);
+    }
+#else
+    SKIP("RT6 multi geometry fixture requires the runtime compiler");
+#endif
+}
+
 TEST_CASE("compute ray query declares its acceleration structure", "[rendercompiler][rt6][named-query]") {
     using Json = nlohmann::json;
     Json task{{"name", "query"}, {"shader", "query"},

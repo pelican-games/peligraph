@@ -977,6 +977,12 @@ compute shaderのray queryでも、taskへ`"ray_query":{"acceleration_structure"
 指定して同じ集合を選べます。この宣言でray query用のAS構築も有効になります。
 詳細は[名前付きTLAS](../design_raytracing.md)を参照してください。
 
+ray layoutを使う同じモデル個体のgeometryは、姿勢とinstance設定が共通でrecord行が連続なら、
+エンジンが同じBLASへまとめます。
+materialやgeometry flagsは個別に保持します。hit shaderの`gl_GeometryIndexEXT`はBLAS内の
+geometry番号で、materialやgeometry tableの参照には対応するshader recordを使います。
+変形する複数geometryもrefit対象です。
+
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
 typed command buffer と `dispatch.indirect` を使います。
 
@@ -2437,7 +2443,7 @@ scene JSON の `components` に書きます。
 
 ### BLAS variant と `resident_blas_keys` 診断
 
-geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L781))。同じジオメトリでも flags が違えば別 BLAS です。
+geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L782))。同じジオメトリでも flags が違えば別 BLAS です。
 
 プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L699)):
 

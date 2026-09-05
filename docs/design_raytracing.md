@@ -12,7 +12,7 @@
 RT**。到達点は視覚的正しさと表現の自由度。リアルタイム性能は制約にしない。
 恒常制約: パージ性を下げない / fail-fast / 名前付きエラー / 決定性 / D0。
 
-## 1. 現状の固定点(2 巡で検算済み)
+## 1. 設計開始時の固定点(2 巡で検算済み)
 
 v2 §1 に同じ。追加の検算事実: 再帰は pipelinefactory.cpp:625 で 1 固定 /
 SBT record は handle と 1:1(pipelinefactory.cpp:682)/ TLAS offset・mask・
@@ -48,10 +48,10 @@ v2 §2 に同じ(変形 geometry を含む。denoiser・motion blur AS・SER は
 - **全 pipeline の SBT は同じ `q` 配列を共有**する(handle 列だけが pipeline 差)。
   これにより task ごとの group 並び差は存在せず、TLAS は一意に書ける
 - **miss は grid の外**: miss record は独立配列で、task が `miss_index` 順に宣言する
-- **当面の恒久制約として「1 BLAS = 1 geometry」を明記**(現行どおり)。
-  `geometryIndex` 項は常に 0 であり、複数 geometry BLAS の導入(するなら
-  `q = q_base + geometryIndex`)は RT6 で再訪する。sentinel 検査の対象からも
-  この項は「制約により恒等 0」と明示して除外する
+- **RT6で複数geometry BLASを導入する。** 互換な連続qの行をgeometry配列に並べ、
+  `q = q_base + geometryIndex`とする。TLAS offsetは先頭q×R、shaderのstrideはRを保つ。
+  これにより既存のphysical hit record indexとper-geometry recordを変更しない。
+  詳しい結合条件は以下のRT6節に記す。
 
 ### ray_group_layout(project 所有)
 
@@ -458,7 +458,7 @@ ray queryをshaderから使うgraphは`target_planning.graphs`の`required_capab
 reflectionだけでASが必要になった場合、graph外で暗黙に構築せずロード時に明示拒否する。
 
 このnodeはcompiler生成で、現在sceneのdefault TLASと以下の名前付きTLASをまとめて構築する。
-AS単位の編集node・BLAS geometry結合・編集RPCは残る。
+AS単位の編集node・編集RPCは残る。BLAS geometry結合は以下のRT6節に記す。
 
 ### RT6: 名前付きTLASの選択（2026-09-06）
 
@@ -490,6 +490,27 @@ compute taskは`ray_query: {"acceleration_structure":"actors"}`で同じ名前�
 `ray_query`は`ray_tracing`と併記できず、`acceleration_structure`以外のキーは受理しない。
 graphでは共通のAS構築nodeが全TLASを用意する。個別ASへの編集・依存表示は後続であり、
 複数sceneを同時にロードする機能や任意object predicateの選択まで完了したとは扱わない。
+
+### RT6: 複数geometry BLAS（2026-09-06）
+
+同じモデル個体・componentのtriangle行が連続qを持ち、world transformと
+instance mask/flags/custom indexが一致するとき、1つのBLASへまとめる。
+geometryごとのmaterial、record、geometry flagsは独立のまま保持する。
+配列順はq順であり、shaderの`gl_GeometryIndexEXT`はこのBLAS内の位置を返す。
+SBTの参照はVulkanの[instance offset + geometryIndex × stride + ray type](https://docs.vulkan.org/spec/latest/chapters/raytracing.html)
+に従い、2番目以後のgeometryも元のqに対応するrecordを読む。
+
+静的BLASはgeometry allocationとflagsの列をkeyとして共有・再利用する。
+変形を含むBLASは初回buildをAllowUpdateで作り、以後はgeometry列全体の
+source identity・順序・topology・flagsが一致するとき別allocationへrefitする。
+前frameのASと入力bufferはsubmission完了まで保持する。
+
+異なる姿勢・mask・個体設定は別TLAS instanceへ分割する。layout v1のcustom index=qも
+同じ条件により分割され、既存の意味を変えない。AABBは現在singletonのまま。
+deviceのmaxGeometryCountと総maxPrimitiveCountに達する前にgroupを分割する。
+単独geometry自体がprimitive上限を超える場合は拒否する。
+診断の`geometry_count`はBLAS内のgeometry数、`tlas_instance_count`は結合後の実instance数を示す。
+AS単位の編集node、異なるtransformのgeometryをまとめる操作、AABBの複数geometry化は残る。
 
 ## 9. エラー文言・受け入れゲート
 
