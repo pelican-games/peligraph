@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -721,6 +722,8 @@ struct ComputeDispatchDefinition {
         indirect;
 };
 
+struct RayCallableRecordLayout;
+
 struct RayTracingTaskShaderDefinition {
     // The sole production default literal for RT recursion.
     std::uint32_t max_recursion = 1;
@@ -730,6 +733,8 @@ struct RayTracingTaskShaderDefinition {
     std::vector<ShaderReference> misses;
     std::vector<ShaderReference> closest_hits;
     std::vector<ShaderReference> callables;
+    std::shared_ptr<const RayCallableRecordLayout> callable_record_layout;
+    std::vector<std::vector<std::byte>> callable_records;
     bool uses_group_layout = false;
     std::vector<std::uint32_t> traced_ray_type_indices;
     // H[g,r], group-major. Null slots are materialized as valid generated

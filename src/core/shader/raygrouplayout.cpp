@@ -185,6 +185,42 @@ RayRecordMemberLayout appendRecordMember(
     return result;
 }
 
+std::vector<RayRecordMemberLayout> parseRecordMembers(
+    const json &record, std::uint32_t &cursor, bool reserve_engine_names,
+    std::string_view source) {
+    if (!record.is_array()) {
+        layoutError(source, "record must be an array");
+    }
+    std::vector<RayRecordMemberLayout> members;
+    std::set<std::string> member_names;
+    for (const auto &encoded : record) {
+        requireObjectFields(encoded, {"name", "type"}, "record member", source);
+        if (!encoded.contains("name") || !encoded.at("name").is_string() ||
+            !validName(encoded.at("name").get_ref<const std::string &>()) ||
+            !encoded.contains("type") || !encoded.at("type").is_string()) {
+            layoutError(source,
+                        "record member requires valid name and string type");
+        }
+        auto name = encoded.at("name").get<std::string>();
+        if (reserve_engine_names &&
+            (name == "material_index" || name == "geometry_index" ||
+             name == "geometry_kind")) {
+            throw std::runtime_error(
+                "pelican.ray_record_name_reserved@1: authored record member '" +
+                name + "' is reserved for the engine");
+        }
+        if (!member_names.emplace(name).second) {
+            layoutError(source,
+                        "record contains duplicate member '" + name + "'");
+        }
+        const auto facts = typeFacts(encoded.at("type").get_ref<const std::string &>(),
+                                     source);
+        auto member = appendRecordMember(std::move(name), facts, cursor);
+        members.push_back(std::move(member));
+    }
+    return members;
+}
+
 std::vector<std::string> parseNameStrings(
     const json &value, std::string_view field,
     std::string_view source) {
@@ -302,20 +338,21 @@ float checkedFloat(const json &value, std::string_view member,
 }
 
 std::vector<std::byte> encodeRecord(
-    const json &record, const RayGroupLayout &layout,
+    const json &record, std::span<const RayRecordMemberLayout> members,
+    std::uint32_t data_size,
     std::string_view source) {
-    if (!record.is_object() || record.size() != layout.record.size()) {
+    if (!record.is_object() || record.size() != members.size()) {
         bindingRecordError(source,
                            "record member set does not match layout");
     }
     for (auto field = record.begin(); field != record.end(); ++field) {
-        if (std::none_of(layout.record.begin(), layout.record.end(),
+        if (std::none_of(members.begin(), members.end(),
                          [&](const auto &member) { return member.name == field.key(); })) {
             bindingRecordError(source, "unknown record member '" + field.key() + "'");
         }
     }
-    std::vector<std::byte> result(layout.data_size, std::byte{0});
-    for (const auto &member : layout.record) {
+    std::vector<std::byte> result(data_size, std::byte{0});
+    for (const auto &member : members) {
         if (!record.contains(member.name)) {
             bindingRecordError(source, "missing record member '" + member.name + "'");
         }
@@ -362,6 +399,12 @@ std::vector<std::byte> encodeRecord(
         }
     }
     return result;
+}
+
+std::vector<std::byte> encodeRecord(
+    const json &record, const RayGroupLayout &layout,
+    std::string_view source) {
+    return encodeRecord(record, layout.record, layout.data_size, source);
 }
 
 std::string materialReference(const MaterialRowIdentity &identity,
@@ -681,6 +724,24 @@ std::optional<std::uint32_t> RayGroupLayout::engineRecordOffset(
     return found->offset;
 }
 
+RayCallableRecordLayout parseRayCallableRecordLayout(
+    const nlohmann::json &members, std::string_view diagnostic) {
+    std::uint32_t cursor = 0;
+    RayCallableRecordLayout result;
+    result.members = parseRecordMembers(members, cursor, false, diagnostic);
+    std::uint32_t alignment = 1;
+    for (const auto &member : result.members)
+        alignment = std::max(alignment, member.alignment);
+    result.data_size = alignUp(cursor, alignment, "pelican.ray_group_layout_invalid@1");
+    return result;
+}
+
+std::vector<std::byte> encodeRayCallableRecord(
+    const nlohmann::json &values, const RayCallableRecordLayout &layout,
+    std::string_view diagnostic) {
+    return encodeRecord(values, layout.members, layout.data_size, diagnostic);
+}
+
 RayGroupLayout parseRayGroupLayout(
     std::string_view raw_bytes, std::string source_reference) {
     json root;
@@ -844,7 +905,6 @@ RayGroupLayout parseRayGroupLayout(
     if (!record.is_array()) {
         layoutError(result.source_reference, "record must be an array");
     }
-    std::set<std::string> member_names;
     std::uint32_t cursor = 0;
     const TypeFacts engine_facts{RayRecordType::u32, 4, 4, 1};
     for (const auto field : result.engine_record) {
@@ -852,31 +912,9 @@ RayGroupLayout parseRayGroupLayout(
             std::string{engineRecordFieldName(field)}, engine_facts,
             cursor));
     }
-    for (const auto &encoded : record) {
-        requireObjectFields(encoded, {"name", "type"}, "record member", result.source_reference);
-        if (!encoded.contains("name") || !encoded.at("name").is_string() ||
-            !validName(encoded.at("name").get_ref<const std::string &>()) ||
-            !encoded.contains("type") || !encoded.at("type").is_string()) {
-            layoutError(result.source_reference,
-                        "record member requires valid name and string type");
-        }
-        auto name = encoded.at("name").get<std::string>();
-        if (name == "material_index" || name == "geometry_index" ||
-            name == "geometry_kind") {
-            throw std::runtime_error(
-                "pelican.ray_record_name_reserved@1: authored record member '" +
-                name + "' is reserved for the engine");
-        }
-        if (!member_names.emplace(name).second) {
-            layoutError(result.source_reference,
-                        "record contains duplicate member '" + name + "'");
-        }
-        const auto facts = typeFacts(encoded.at("type").get_ref<const std::string &>(),
-                                     result.source_reference);
-        auto member = appendRecordMember(std::move(name), facts, cursor);
-        result.record.push_back(member);
-        result.physical_record.push_back(std::move(member));
-    }
+    result.record = parseRecordMembers(record, cursor, true, result.source_reference);
+    result.physical_record.insert(result.physical_record.end(),
+                                  result.record.begin(), result.record.end());
     // A struct's std430 base alignment is the maximum member alignment; the
     // final size is rounded to that alignment. Empty records have size zero.
     std::uint32_t struct_alignment = 1;

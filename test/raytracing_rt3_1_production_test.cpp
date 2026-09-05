@@ -45,12 +45,14 @@
 #include "../src/core/phys/physworld.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/renderingpassconfigloader.hpp"
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/proceduralgeometrycontainer.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/shader/pipelinefactory.hpp"
+#include "../src/core/shader/raytracingvalidation.hpp"
 #include "../src/core/terminalshutdown.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -5027,12 +5029,18 @@ namespace Pelican {
 #if PELICAN_WITH_RPC && PELICAN_RUNTIME_SHADER_COMPILER
 TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implementation",
           "[rt4][ray-tracing][production][gpu]") {
+    const bool dynamic_records = GENERATE(false, true);
+    CAPTURE(dynamic_records);
     setupLogger();
     Wp374aProjectRoot project{"rt4_callable"};
     writeWp386aProceduralProject(project.path);
     auto feature = Json::parse(readWp374aText(project.path / "features/wp386_procedural.json"));
     auto &ray = feature["compute_tasks"][0]["ray_tracing"];
     ray["callable"] = {"project://shaders/first", "project://shaders/second"};
+    if (dynamic_records) {
+        ray["callable_record"] = Json::array({{{"name", "increment"}, {"type", "u32"}}});
+        ray["callable_records"] = Json::array({{{"increment", 100}}, {{"increment", 200}}});
+    }
     ray["hit_shaders"]["primary"]["sphere"]["intersection"] = "project://shaders/hit";
     writeWp374aText(project.path / "features/wp386_procedural.json", feature.dump());
     writeWp374aText(project.path / "shaders/hit.rint", R"glsl(#version 460
@@ -5051,14 +5059,21 @@ void main() {
 }
 )glsl");
     writeWp374aText(project.path / "shaders/wp386.rchit", closest);
-    const auto callable_source = [](std::uint32_t increment) {
+    const auto callable_source = [&](std::uint32_t increment) {
+        if (dynamic_records) {
+            return std::string{R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+layout(location=0) callableDataInEXT uint value;
+layout(shaderRecordEXT, std430) buffer CallableRecord { uint increment; } record;
+void main() { value += record.increment * )glsl"} + std::to_string(increment) + "u; }\n";
+        }
         return std::string{R"glsl(#version 460
 #extension GL_EXT_ray_tracing : require
 layout(location=0) callableDataInEXT uint value;
 void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     };
-    writeWp374aText(project.path / "shaders/first.rcall", callable_source(100));
-    writeWp374aText(project.path / "shaders/second.rcall", callable_source(200));
+    writeWp374aText(project.path / "shaders/first.rcall", callable_source(dynamic_records ? 1 : 100));
+    writeWp374aText(project.path / "shaders/second.rcall", callable_source(dynamic_records ? 1 : 200));
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     (void)configureWp374aRuntime(project.path);
@@ -5075,7 +5090,19 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         return value;
     };
     CHECK(marker() == 207u);
-    writeWp374aText(project.path / "shaders/second.rcall", callable_source(300));
+    if (dynamic_records) {
+        std::size_t pipeline_creates = 0;
+        ScopedRayTracingPipelineCreateObserver observer{
+            [&](const RayTracingPipelineCreateObservation &) { ++pipeline_creates; }};
+        auto &tasks = GET_MODULE(ComputeTaskContainer);
+        const auto task = tasks.getComputeTaskIdByName("wp386_trace");
+        tasks.setCallableRecord(task, 1, Json{{"increment", 400}});
+        CHECK(marker() == 407u);
+        CHECK_THROWS(tasks.setCallableRecord(task, 1, Json{{"increment", "invalid"}}));
+        CHECK(marker() == 407u);
+        CHECK(pipeline_creates == 0);
+    }
+    writeWp374aText(project.path / "shaders/second.rcall", callable_source(dynamic_records ? 3 : 300));
     auto prepared = GET_MODULE(ShaderLibrary).prepareReloadAll();
     std::erase_if(prepared.candidates, [](const auto &candidate) {
         return candidate.replacement.source_path.filename() != "second.rcall";
@@ -5084,7 +5111,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     const auto rebuilt = GET_MODULE(PipelineFactory).rebuildPrepared(std::move(prepared));
     REQUIRE(rebuilt.committed);
     REQUIRE(rebuilt.failed_pipelines == 0);
-    CHECK(marker() == 307u);
+    CHECK(marker() == (dynamic_records ? 1207u : 307u));
 }
 
 TEST_CASE("WP386b sphere reports hits and reload publishes final entry classification",

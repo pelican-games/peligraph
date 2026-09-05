@@ -42,6 +42,18 @@ struct RayRecordMemberLayout {
     bool operator==(const RayRecordMemberLayout &) const = default;
 };
 
+// Callable records have their own std430 schema, without hit-group engine fields.
+struct RayCallableRecordLayout {
+    std::vector<RayRecordMemberLayout> members;
+    std::uint32_t data_size = 0;
+};
+
+RayCallableRecordLayout parseRayCallableRecordLayout(
+    const nlohmann::json &members, std::string_view diagnostic = {});
+std::vector<std::byte> encodeRayCallableRecord(
+    const nlohmann::json &values, const RayCallableRecordLayout &layout,
+    std::string_view diagnostic = {});
+
 enum class RayEngineRecordField : std::uint8_t {
     material_index,
     geometry_index,

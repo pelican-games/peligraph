@@ -414,7 +414,17 @@ WP354 drill-through の投影)。
 
 callable dataは既存の構造型比較を使用する。定数indexは対象のincoming dataと比較し、動的indexはtable全体の型が一致する場合に受理する(実行時indexの範囲はshader側の責任)。callable内の呼び出しとtraceも同じinterface検査を通す。shader単独のreloadでpipelineとSBTを更新する。
 
-この段階のcallable recordはhandleのみ。shaderRecordEXTによるcallable独自データは未対応として診断する。per-in-flight動的recordはRT4の次の実装であり、RT4全体の完了には含めない。最新の利用者指示により学習サンプルの追加よりエンジン中核の機能完成を優先する。
+callable独自データは `callable_record` にmember配列、`callable_records` にcallable順の初期値を宣言する。型は既存hit recordと同じi32/u32/f32/vec2/vec3/vec4、配置はstd430。shaderRecordEXTのmember型・offsetをこのschemaと照合する。schemaなしのデータ宣言は拒否する。
+
+```json
+"callable": ["project://shaders/shade"],
+"callable_record": [{"name": "gain", "type": "f32"}],
+"callable_records": [{"gain": 1.0}]
+```
+
+実行時はrender threadから `ComputeTaskContainer::setCallableRecord(task_id, index, values)` で1recordを更新する。型不正なら変更せず、同値ならGPU bufferも維持する。更新後のdispatchで新しいSBTを作り、旧SBTはそれを使うGPU submissionのleaseで完了まで保持する。固定のframe数に依存せず、未変更なら同じimmutable SBTを再利用する。shader reloadでpipeline世代が変わった場合は、新しいhandleでrecordを再配置する。record更新自体はpipeline再作成を伴わない。
+
+これはエンジン内部の更新APIであり、Studioのrecord編集UIやゲーム用public APIへの接続を完了とするものではない。最新の利用者指示により学習サンプルの追加よりエンジン中核の機能完成を優先する。
 
 ### RT3〜RT7
 

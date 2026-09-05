@@ -1208,6 +1208,17 @@ TEST_CASE(
     const auto callable_tasks = parseComputeTaskDefinitionsFromConfigJson(with_callable);
     REQUIRE(callable_tasks[0].ray_tracing->callables.size() == 2);
     CHECK(callable_tasks[0].ray_tracing->callables[1].stage == ShaderStage::callable);
+    with_callable["compute_tasks"][0]["ray_tracing"]["callable_record"] = {
+        {{"name", "increment"}, {"type", "u32"}}};
+    with_callable["compute_tasks"][0]["ray_tracing"]["callable_records"] = {
+        {{"increment", 100}}, {{"increment", 200}}};
+    const auto record_tasks = parseComputeTaskDefinitionsFromConfigJson(with_callable);
+    REQUIRE(record_tasks[0].ray_tracing->callable_records.size() == 2);
+    CHECK(record_tasks[0].ray_tracing->callable_records[1].size() == 4);
+    with_callable["compute_tasks"][0]["ray_tracing"]["callable_records"].erase(1);
+    CHECK_THROWS_WITH(parseComputeTaskDefinitionsFromConfigJson(with_callable),
+        Catch::Matchers::ContainsSubstring("callable_records_invalid"));
+
 
     for (const auto *unsupported :
          {"any_hit", "intersection"}) {

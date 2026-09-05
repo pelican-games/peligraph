@@ -846,6 +846,11 @@ PipelineFactory::createRayTracingShaderBindingTable(
             hit_handle_offset + static_cast<std::size_t>(group_counts.hit) *
                 capabilities.shader_group_handle_size));
 
+    const auto callable_handle_offset = hit_handle_offset +
+        static_cast<std::size_t>(group_counts.hit) * capabilities.shader_group_handle_size;
+    std::vector<std::byte> callable_group_handles(
+        handles.begin() + static_cast<std::ptrdiff_t>(callable_handle_offset), handles.end());
+
     const auto padding =
         capabilities.shader_group_base_alignment - 1u;
     auto buffer = vkcore.allocBuf(
@@ -885,6 +890,7 @@ PipelineFactory::createRayTracingShaderBindingTable(
             .callable = make_region(layout.callable),
         },
         .hit_group_handles = std::move(hit_group_handles),
+        .callable_group_handles = std::move(callable_group_handles),
     };
 }
 
@@ -1119,6 +1125,7 @@ PipelineFactory::buildRayTracingPipeline(
                     desc.traced_ray_type_indices,
                 .hit_group_occurrences = hit_occurrences,
                 .callables = callable_occurrences,
+                .callable_record_layout = desc.callable_record_layout.get(),
             },
             capabilities.ray_tracing_facts);
 
@@ -1691,11 +1698,65 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
     return result;
 }
 
+std::shared_ptr<const RayTracingCallableRecords> PipelineFactory::prepareCallableRecords(
+    PipelineHandle handle, std::span<const std::vector<std::byte>> records,
+    std::shared_ptr<const RayTracingCallableRecords> previous) const {
+    const auto &pipeline = pipelines.get(handle);
+    const auto &desc = std::get<RayTracingPipelineDesc>(pipeline.desc);
+    const auto &sbt = pipeline.ray_tracing_sbt.value();
+    // The caller invalidates previous when its record values change.
+    if (previous && previous->pipeline_records == sbt.buffer) return previous;
+    if (!desc.callable_record_layout || records.size() != desc.callables.size() || records.empty()) {
+        throw std::runtime_error("pelican.ray_tracing.callable_records_invalid@1: callable record count/schema mismatch");
+    }
+    const auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto &caps = vkcore.getRuntimeCapabilities();
+    const auto alignment = caps.shader_group_handle_alignment;
+    const auto align = [alignment](std::uint64_t size) {
+        return (size + alignment - 1) / alignment * alignment;
+    };
+    const auto data_start = align(caps.shader_group_handle_size);
+    const auto stride = align(data_start + desc.callable_record_layout->data_size);
+    if (stride > caps.ray_tracing_facts.max_shader_group_stride) {
+        throw std::runtime_error("pelican.ray_tracing.shader_group_stride_limit@1: callable record exceeds maxShaderGroupStride");
+    }
+    const auto padding = caps.shader_group_base_alignment - 1u;
+    if (records.size() > (std::numeric_limits<std::size_t>::max() - padding) / stride) {
+        throw std::overflow_error("pelican.sbt.layout_overflow@1: callable record allocation overflow");
+    }
+    std::vector<std::byte> packed(records.size() * stride);
+    for (std::size_t index = 0; index < records.size(); ++index) {
+        if (records[index].size() != desc.callable_record_layout->data_size) {
+            throw std::runtime_error("pelican.ray_tracing.callable_records_invalid@1: callable record byte size mismatch");
+        }
+        std::memcpy(packed.data() + index * stride,
+            sbt.callable_group_handles.data() + index * caps.shader_group_handle_size,
+            caps.shader_group_handle_size);
+        if (!records[index].empty()) {
+            std::memcpy(packed.data() + index * stride + data_start,
+                records[index].data(), records[index].size());
+        }
+    }
+    auto buffer = vkcore.allocBuf(packed.size() + padding,
+        vk::BufferUsageFlagBits::eShaderBindingTableKHR | vk::BufferUsageFlagBits::eShaderDeviceAddress,
+        vma::MemoryUsage::eAutoPreferHost, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+    const auto address = device.getBufferAddress(vk::BufferDeviceAddressInfo{buffer.buffer.get()});
+    const auto offset = (caps.shader_group_base_alignment - address % caps.shader_group_base_alignment) %
+        caps.shader_group_base_alignment;
+    vkcore.writeBuf(buffer, packed.data(), offset, packed.size());
+    return std::make_shared<RayTracingCallableRecords>(RayTracingCallableRecords{
+        .pipeline_records = sbt.buffer,
+        .buffer = std::make_shared<BufferWrapper>(std::move(buffer)),
+        .region = {address + offset, stride, packed.size()},
+    });
+}
+
 void PipelineFactory::traceRays(
     vk::CommandBuffer command_buffer, PipelineHandle handle,
     std::uint32_t width, std::uint32_t height,
     std::uint32_t depth,
-    const RayTracingSceneShaderBindingTables *scene_tables) const {
+    const RayTracingSceneShaderBindingTables *scene_tables,
+    const RayTracingCallableRecords *callable_records) const {
     validateRayTracingFinalCommandExtent(
         {width, height, depth},
         GET_MODULE(VulkanManageCore)
@@ -1714,9 +1775,12 @@ void PipelineFactory::traceRays(
     const auto &regions = scene_regions != nullptr
                               ? *scene_regions
                               : rayTracingShaderBindingTableRegions(handle);
+    if (desc && desc->callable_record_layout && !callable_records) {
+        throw std::runtime_error("pelican.ray_tracing.callable_records_unavailable@1: dispatch requires prepared callable records");
+    }
     command_buffer.traceRaysKHR(
         regions.raygen, regions.miss, regions.hit,
-        regions.callable, width, height, depth,
+        callable_records ? callable_records->region : regions.callable, width, height, depth,
         GET_MODULE(VulkanManageCore)
             .getRayTracingPipelineDispatch());
 }

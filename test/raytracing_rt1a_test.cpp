@@ -1527,6 +1527,18 @@ TEST_CASE("Callable data validation resolves static and dynamic target tables",
         .members = {{.type = f32, .offset = 0}}};
     CHECK_THROWS_WITH(validateRayTracingPipelineInterfaces(request, generousFacts()),
         Catch::Matchers::ContainsSubstring("callable_record_unsupported"));
+    const auto layout = parseRayCallableRecordLayout(
+        nlohmann::json::array({{{"name", "gain"}, {"type", "f32"}}}));
+    request.callable_record_layout = &layout;
+    // A callable that does not read record fields may omit its block.
+    CHECK_NOTHROW(validateRayTracingPipelineInterfaces(request, generousFacts()));
+    callees[0].shader_record->members[0].offset = 4;
+    CHECK_THROWS_WITH(validateRayTracingPipelineInterfaces(request, generousFacts()),
+        Catch::Matchers::ContainsSubstring("shader_record_abi_mismatch"));
+    callees[0].shader_record->members[0].offset = 0;
+    callees[0].shader_record->members[0].type = u32;
+    CHECK_THROWS_WITH(validateRayTracingPipelineInterfaces(request, generousFacts()),
+        Catch::Matchers::ContainsSubstring("shader_record_abi_mismatch"));
 }
 
 TEST_CASE(

@@ -151,6 +151,40 @@ RayTracingCanonicalType canonicalRecordType(RayRecordType type) {
         occurrenceName(occurrence) + " " + std::move(message));
 }
 
+void validateRecordMembers(
+    const RayTracingShaderOccurrence &occurrence,
+    const RayTracingShaderRecordReflection &actual,
+    std::span<const RayRecordMemberLayout> expected) {
+    if (actual.members.size() != expected.size()) {
+        failShaderRecord(
+            occurrence, "member_count=" +
+                            std::to_string(actual.members.size()) +
+                            " expected=" +
+                            std::to_string(expected.size()));
+    }
+    for (std::size_t member = 0;
+         member < expected.size(); ++member) {
+        const auto expected_type =
+            canonicalRecordType(expected[member].type);
+        if (actual.members[member].offset !=
+                expected[member].offset ||
+            actual.members[member].type != expected_type) {
+            failShaderRecord(
+                occurrence, "member=" + std::to_string(member) +
+                                " offset=" +
+                                std::to_string(actual.members[member].offset) +
+                                " expected_offset=" +
+                                std::to_string(expected[member].offset) +
+                                " type=" +
+                                describeRayTracingCanonicalType(
+                                    actual.members[member].type) +
+                                " expected_type=" +
+                                describeRayTracingCanonicalType(
+                                    expected_type));
+        }
+    }
+}
+
 void hashAppend(std::uint64_t &hash, std::string_view text) {
     for (const auto byte : text) {
         hash ^= static_cast<unsigned char>(byte);
@@ -270,12 +304,17 @@ std::string validateRayTracingPipelineInterfaces(
         validate_occurrence(occurrence);
     for (const auto &occurrence : request.callables) {
         validate_occurrence(occurrence);
-        if (occurrence.entry->shader_record &&
-            !occurrence.entry->shader_record->members.empty()) {
-            throw std::runtime_error(
-                "pelican.ray_tracing.callable_record_unsupported@1: " +
-                occurrenceName(occurrence) +
-                " declares shader-record data, but callable records currently contain only shader handles");
+        const auto &record = occurrence.entry->shader_record;
+        if (record) {
+            if (request.callable_record_layout) {
+                validateRecordMembers(occurrence, *record,
+                                      request.callable_record_layout->members);
+            } else if (!record->members.empty()) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.callable_record_unsupported@1: " +
+                    occurrenceName(occurrence) +
+                    " declares shader-record data without a callable_record schema");
+            }
         }
     }
     const auto validate_triangle_hit_stage = [&](const auto &occurrence) {
@@ -442,34 +481,7 @@ std::string validateRayTracingPipelineInterfaces(
                         occurrence,
                         "declares shader-record storage where it is forbidden");
                 }
-                if (actual->members.size() != layout.physical_record.size()) {
-                    failShaderRecord(
-                        occurrence, "member_count=" +
-                                        std::to_string(actual->members.size()) +
-                                        " expected=" +
-                                        std::to_string(layout.physical_record.size()));
-                }
-                for (std::size_t member = 0;
-                     member < layout.physical_record.size(); ++member) {
-                    const auto expected_type =
-                        canonicalRecordType(layout.physical_record[member].type);
-                    if (actual->members[member].offset !=
-                            layout.physical_record[member].offset ||
-                        actual->members[member].type != expected_type) {
-                        failShaderRecord(
-                            occurrence, "member=" + std::to_string(member) +
-                                            " offset=" +
-                                            std::to_string(actual->members[member].offset) +
-                                            " expected_offset=" +
-                                            std::to_string(layout.physical_record[member].offset) +
-                                            " type=" +
-                                            describeRayTracingCanonicalType(
-                                                actual->members[member].type) +
-                                            " expected_type=" +
-                                            describeRayTracingCanonicalType(
-                                                expected_type));
-                    }
-                }
+                validateRecordMembers(occurrence, *actual, layout.physical_record);
             };
         validate_record(request.raygen, false, false);
         for (const auto &miss : request.misses)

@@ -48,6 +48,7 @@ struct RayTracingPipelineInterfaceRequest {
     // adapter above, preserving RT1a/RT1b callers and their digest bytes.
     std::span<const RayTracingHitGroupOccurrence> hit_group_occurrences;
     std::span<const RayTracingShaderOccurrence> callables;
+    const RayCallableRecordLayout *callable_record_layout = nullptr;
 };
 
 // Returns a stable digest of the validated structural contract. Equality is

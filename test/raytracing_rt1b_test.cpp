@@ -1547,5 +1547,37 @@ TEST_CASE("WP366/WP367 final SPIR-V hit-pair ABI is a load-time invariant",
 
 #endif
 
+TEST_CASE("Callable record schema packs std430 values and rejects malformed updates",
+          "[ray-tracing][rt4][record]") {
+    const auto schema = nlohmann::json::array({
+        {{"name", "gain"}, {"type", "f32"}},
+        {{"name", "color"}, {"type", "vec3"}},
+        {{"name", "mode"}, {"type", "u32"}},
+    });
+    const auto layout = parseRayCallableRecordLayout(schema, "callable test");
+    REQUIRE(layout.members.size() == 3);
+    CHECK(layout.members[0].offset == 0);
+    CHECK(layout.members[1].offset == 16);
+    CHECK(layout.members[2].offset == 28);
+    CHECK(layout.data_size == 32);
+    nlohmann::json values{{"gain", 2.0}, {"color", {0.25, 0.5, 1.0}}, {"mode", 7}};
+    const auto bytes = encodeRayCallableRecord(values, layout);
+    REQUIRE(bytes.size() == 32);
+    CHECK(readU32(std::span{bytes}.subspan(0, 4)) == std::bit_cast<std::uint32_t>(2.0f));
+    CHECK(readU32(std::span{bytes}.subspan(16, 4)) == std::bit_cast<std::uint32_t>(0.25f));
+    CHECK(readU32(std::span{bytes}.subspan(28, 4)) == 7u);
+    CHECK(std::all_of(bytes.begin() + 4, bytes.begin() + 16,
+                      [](std::byte value) { return value == std::byte{0}; }));
+    values["color"] = {0.25, 0.5};
+    CHECK_THROWS(encodeRayCallableRecord(values, layout));
+    values.erase("color");
+    CHECK_THROWS(encodeRayCallableRecord(values, layout));
+    auto duplicate = schema;
+    duplicate.push_back(schema[0]);
+    CHECK_THROWS(parseRayCallableRecordLayout(duplicate));
+    CHECK(encodeRayCallableRecord(nlohmann::json::object(),
+        parseRayCallableRecordLayout(nlohmann::json::array())).empty());
+}
+
 } // namespace
 } // namespace Pelican

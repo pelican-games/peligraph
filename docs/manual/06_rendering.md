@@ -2304,7 +2304,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
-- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L698))。
+- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L759))。
 
 layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 
@@ -2412,7 +2412,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1368))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1406))。
 
 ## 関連文書
 

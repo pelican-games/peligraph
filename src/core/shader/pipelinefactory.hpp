@@ -134,6 +134,7 @@ struct RayTracingPipelineDesc {
     std::vector<ShaderBundleId> misses;
     std::vector<ShaderBundleId> closest_hits;
     std::vector<ShaderBundleId> callables;
+    std::shared_ptr<const RayCallableRecordLayout> callable_record_layout;
     // Empty for the legacy RT1a form; otherwise aligned with closest_hits.
     std::vector<std::optional<ShaderBundleId>> any_hits;
     std::vector<std::optional<ShaderBundleId>> intersections;
@@ -153,6 +154,12 @@ struct RayTracingShaderBindingTableRegions {
 };
 
 PELICAN_DEFINE_HANDLE(PipelineHandle, int);
+
+struct RayTracingCallableRecords {
+    std::shared_ptr<BufferWrapper> pipeline_records;
+    std::shared_ptr<BufferWrapper> buffer;
+    vk::StridedDeviceAddressRegionKHR region;
+};
 
 struct RayTracingSceneShaderBindingTableEntry {
     PipelineHandle pipeline;
@@ -229,6 +236,7 @@ DECLARE_MODULE(PipelineFactory) {
             // H[g,r] for a layout pipeline; tightly packed and independent of
             // raygen/miss records. Empty for legacy lowering.
             std::vector<std::byte> hit_group_handles;
+            std::vector<std::byte> callable_group_handles;
         };
 
         std::variant<GraphicsPipelineDesc, ComputePipelineDesc,
@@ -343,12 +351,16 @@ DECLARE_MODULE(PipelineFactory) {
         std::shared_ptr<const RayTracingGeometrySnapshot>
             geometry,
         std::shared_ptr<RaySceneGenerationRoot> generation_root = {}) const;
+    std::shared_ptr<const RayTracingCallableRecords> prepareCallableRecords(
+        PipelineHandle handle, std::span<const std::vector<std::byte>> records,
+        std::shared_ptr<const RayTracingCallableRecords> previous = {}) const;
     void traceRays(vk::CommandBuffer command_buffer,
                    PipelineHandle handle, std::uint32_t width,
                    std::uint32_t height,
                    std::uint32_t depth = 1,
                    const RayTracingSceneShaderBindingTables *scene_tables =
-                       nullptr) const;
+                       nullptr,
+                   const RayTracingCallableRecords *callable_records = nullptr) const;
     const ShaderReflection &reflection(PipelineHandle handle) const;
     GraphicsPipelineDesc graphicsDesc(
         PipelineHandle handle) const;

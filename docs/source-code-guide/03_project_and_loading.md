@@ -858,7 +858,7 @@ transformだけは専用の投影関数 [`projectTransformRuntimeJson()`](../../
 
 ### `pelican_ray_instance` は二重にgateされる ✅実装済み
 
-8番目のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L1543) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L1536) が偽なら `codecs` の**先頭7要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L1548)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L161) で、`configure()` 済みかつモードが `LayoutV2` のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L38)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L287) でgateを迂回できます。
+8番目のcodecだけは、**テーブルに載っていても引けるとは限りません**。[`componentCodecs()`](../../src/core/loader/componentcodec.cpp#L1543) は [`rayInstanceCodecEnabled()`](../../src/core/loader/componentcodec.cpp#L1536) が偽なら `codecs` の**先頭7要素だけ**を span として返します（[その `first()`](../../src/core/loader/componentcodec.cpp#L1548)）。判定は [`RayLayoutRuntimeState::builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L173) で、`configure()` 済みかつモードが `LayoutV2` のときだけ真です。モードを固定するのは起動の1点だけで、組み込みComponent登録より前です（§2.1 の 7番）。同じ述語がECS側の登録も分けるので（[`predefined.cpp` 内](../../src/core/ecs/predefined.cpp#L38)）、「codecはあるがComponentが無い」状態は作られません。テストからは [`findComponentCodecIncludingDisabled()`](../../src/core/loader/componentcodec.hpp#L287) でgateを迂回できます。
 
 WP382dから[`decodeRayInstance()`](../../src/core/loader/componentcodec.cpp#L1077)は`overrides`を可変長の行として受理します。省略した値は継承し、明示した0や空のflagsは上書きとして保持します。実行時のcatalogとAS planをscene/editorの候補に含め、公開・rollbackで一緒に切り替えます。
 

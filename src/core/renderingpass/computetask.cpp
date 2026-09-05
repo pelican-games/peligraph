@@ -1235,13 +1235,35 @@ void parseRayTracingRecursion(
     result.max_recursion = static_cast<std::uint32_t>(encoded);
 }
 
+void parseCallableRecords(const nlohmann::json &pipeline, const std::string &name,
+                          RayTracingTaskShaderDefinition &result) {
+    if (!pipeline.contains("callable_record") && !pipeline.contains("callable_records")) return;
+    if (result.callables.empty() || !pipeline.contains("callable_record") ||
+        !pipeline.contains("callable_records")) {
+        throw std::runtime_error("pelican.ray_tracing.callable_records_invalid@1: task '" + name +
+            "' requires callable, callable_record and callable_records together");
+    }
+    auto layout = std::make_shared<RayCallableRecordLayout>(
+        parseRayCallableRecordLayout(pipeline.at("callable_record"), name));
+    const auto &records = pipeline.at("callable_records");
+    if (!records.is_array() || records.size() != result.callables.size()) {
+        throw std::runtime_error("pelican.ray_tracing.callable_records_invalid@1: task '" + name +
+            "' callable_records must contain one record per callable");
+    }
+    for (const auto &record : records) {
+        result.callable_records.push_back(encodeRayCallableRecord(record, *layout, name));
+    }
+    result.callable_record_layout = std::move(layout);
+}
+
 RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
     const nlohmann::json &pipeline_json, const std::string &name,
     const RayTracingProjectConfig &project) {
     for (auto field = pipeline_json.begin(); field != pipeline_json.end(); ++field) {
         if (field.key() == "raygen" || field.key() == "traced_ray_types" ||
             field.key() == "misses" || field.key() == "hit_shaders" ||
-            field.key() == "max_recursion" || field.key() == "callable") {
+            field.key() == "max_recursion" || field.key() == "callable" ||
+            field.key() == "callable_record" || field.key() == "callable_records") {
             continue;
         }
         if (field.key() == "miss" || field.key() == "closesthit") {
@@ -1468,6 +1490,7 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
             reference = makeLayoutShaderReference(reference.ref, ShaderStage::callable, name);
         }
     }
+    parseCallableRecords(pipeline_json, name, result);
     parseRayTracingRecursion(pipeline_json, name, result);
     return result;
 }
@@ -1491,7 +1514,8 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
          field != pipeline_json.end(); ++field) {
         if (field.key() == "raygen" || field.key() == "miss" ||
             field.key() == "closesthit" ||
-            field.key() == "max_recursion" || field.key() == "callable") {
+            field.key() == "max_recursion" || field.key() == "callable" ||
+            field.key() == "callable_record" || field.key() == "callable_records") {
             continue;
         }
         if (field.key() == "any_hit" || field.key() == "anyhit" ||
@@ -1523,6 +1547,7 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
         result.callables = parseRayTracingShaderList(
             pipeline_json, "callable", ShaderStage::callable, name);
     }
+    parseCallableRecords(pipeline_json, name, result);
     if (const auto recursion = pipeline_json.find("max_recursion");
         recursion != pipeline_json.end()) {
         const auto positive_signed =
@@ -3038,6 +3063,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 .misses = std::move(misses),
                 .closest_hits = std::move(closest_hits),
                 .callables = std::move(callables),
+                .callable_record_layout = definition.ray_tracing->callable_record_layout,
                 .any_hits = std::move(any_hits),
                 .intersections = std::move(intersections),
                 .shader_defines = shader_defines,
@@ -3461,6 +3487,20 @@ void ComputeTaskContainer::transitionResourcesForDispatch(vk::CommandBuffer cmd_
     }
 }
 
+void ComputeTaskContainer::setCallableRecord(
+    ComputeTaskId task_id, std::uint32_t index, const nlohmann::json &values) {
+    auto &record = tasks.at(task_id.value);
+    auto &ray = record.definition.ray_tracing;
+    if (!ray || !ray->callable_record_layout || index >= ray->callable_records.size()) {
+        throw std::runtime_error("pelican.ray_tracing.callable_records_invalid@1: task '" +
+            record.definition.name + "' has no callable record at index " + std::to_string(index));
+    }
+    auto bytes = encodeRayCallableRecord(values, *ray->callable_record_layout, record.definition.name);
+    if (ray->callable_records[index] == bytes) return;
+    ray->callable_records[index] = std::move(bytes);
+    record.callable_records.reset();
+}
+
 void ComputeTaskContainer::dispatch(
     vk::CommandBuffer cmd_buf, ComputeTaskId task_id,
     const FrameResources &frame_resources,
@@ -3511,11 +3551,18 @@ void ComputeTaskContainer::dispatch(
                                    {});
     }
     if (record.ray_tracing) {
+        if (record.definition.ray_tracing->callable_record_layout) {
+            record.callable_records = pipeline_factory.prepareCallableRecords(
+                record.pipeline, record.definition.ray_tracing->callable_records,
+                record.callable_records);
+            GET_MODULE(DeletionQueue).defer(record.callable_records);
+        }
         pipeline_factory.traceRays(
             cmd_buf, record.pipeline,
             record.dispatch_x, record.dispatch_y,
             record.dispatch_z,
-            frame_resources.rayTracingSceneShaderBindingTables());
+            frame_resources.rayTracingSceneShaderBindingTables(),
+            record.callable_records.get());
     } else if (record.indirect_dispatch) {
         const auto &indirect =
             *record.indirect_dispatch;

@@ -239,6 +239,7 @@ DECLARE_MODULE(ComputeTaskContainer) {
             bound_image_views;
         std::uint64_t binding_revision = 0;
         bool ray_tracing = false;
+        mutable std::shared_ptr<const RayTracingCallableRecords> callable_records;
         uint32_t dispatch_x = 1;
         uint32_t dispatch_y = 1;
         uint32_t dispatch_z = 1;
@@ -290,6 +291,8 @@ DECLARE_MODULE(ComputeTaskContainer) {
     void rebindRenderTargets(RenderTargetContainer &render_target_container);
     const ComputeTaskDefinition &definition(ComputeTaskId task_id) const;
     ComputeTaskId getComputeTaskIdByName(const std::string &name) const;
+    // Render-thread update. Published GPU records remain immutable until their submission completes.
+    void setCallableRecord(ComputeTaskId task_id, std::uint32_t index, const nlohmann::json &values);
     void setDispatchGroups(ComputeTaskId task_id, uint32_t x, uint32_t y, uint32_t z);
     void setDispatchGroups(const std::string &task_name, uint32_t x, uint32_t y, uint32_t z);
 
