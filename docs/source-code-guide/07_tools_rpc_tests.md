@@ -438,7 +438,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 #### 編集系(29) ✅実装済み(WP153〜WP172)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L374) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L280) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L375) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L280) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
@@ -450,20 +450,20 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `import_scene_snapshot` | [取り込み](../../src/core/communication/rpcserver.cpp#L1449) | digest 検証つき置換 |
 | `save_scene` | [原子的保存](../../src/core/communication/rpcserver.cpp#L1457) | 原子的な全文書保存 |
 | `open_editor_session` / `resume_editor_session` | [session 開始](../../src/core/communication/rpcserver.cpp#L1477) / [session 再開](../../src/core/communication/rpcserver.cpp#L1293) | actor 登録・再接続 |
-| `can_edit` / `can_preview` | [編集可否](../../src/core/communication/rpcserver.cpp#L1483) / [preview 可否](../../src/core/communication/editorrpchandlers.cpp#L112) | 編集ゲート判定 |
+| `can_edit` / `can_preview` | [編集可否](../../src/core/communication/rpcserver.cpp#L1483) / [preview 可否](../../src/core/communication/editorrpchandlers.cpp#L115) | 編集ゲート判定 |
 | `eval_preview` | [局所評価](../../src/core/communication/rpcserver.cpp#L1489) | 公開せずリクエストローカルに評価 |
-| `render_preview` | [preview 描画](../../src/core/communication/editorrpchandlers.cpp#L118) | preview グラフでキャプチャ(第6章 §6.19) |
+| `render_preview` | [preview 描画](../../src/core/communication/editorrpchandlers.cpp#L121) | preview グラフでキャプチャ(第6章 §6.19) |
 | `edit` | [コマンド適用](../../src/core/communication/rpcserver.cpp#L1495) | 正準コマンド列の適用(`base_revision` による CAS。ズレていれば `stale_revision` で弾きます) |
 | `undo` / `redo` | [`internal::selectInputProfile()`](../../src/core/communication/rpcserver.cpp#L1498) / [redo の登録](../../src/core/communication/rpcserver.cpp#L1501) | actor 単位 |
-| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L145) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L154) | preview ticket(lease)の発行・更新・確定・破棄 |
-| `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L157) | authored feature 構成と編集 token を返す |
-| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L160) | 追加可能な render feature の catalog を返す |
-| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L163) | render feature 構成を編集する |
+| `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L148) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L157) | preview ticket(lease)の発行・更新・確定・破棄 |
+| `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L160) | authored feature 構成と編集 token を返す |
+| `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L163) | 追加可能な render feature の catalog を返す |
+| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L166) | render feature 構成を編集する |
 | `get_scene_acceleration_structures` / `edit_scene_acceleration_structures` | 名前付きASの取得・編集 | AS定義とdigestを取得し、既存render config ticketで変更・保存する |
-| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L166) | authored pass 編集に必要な target / resource context を返す |
-| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L184) | authored pass を追加する |
-| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L187) | authored pass を削除する |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L190) / [preview 結果](../../src/core/communication/rpcserver.cpp#L1519) | 非同期結果取得 |
+| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L169) | authored pass 編集に必要な target / resource context を返す |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L187) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L190) | authored pass を削除する |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L193) / [preview 結果](../../src/core/communication/rpcserver.cpp#L1519) | 非同期結果取得 |
 | `query_journal` | [journal 照会](../../src/core/communication/rpcserver.cpp#L1522) | ジャーナル照会 |
 
 > 🧩 **難所 — 曖昧な重なり判定**([`stablePathsOverlap()`](../../src/core/communication/editorjournal.cpp#L3790) / [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L3861) / [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L3947))
@@ -912,7 +912,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L441) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L443) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.

@@ -37,7 +37,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、名前付きTLASごとの構築node・選択、同一個体の複数triangle geometry BLASとrefitを実装・実GPU確認 | AS構築位置の任意編集、AABB結合、異なるtransformのgeometry結合は残る |
 | RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きAS・task接続・Callable初期値の編集RPCとStudio編集を接続。ASごとの構築nodeを生成。選択presetのprojectへのforkとroot/presetのCASを追加 | 任意のnode移動・edge編集は残る。新dialogの実操作も未確認 |
-| ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。代表ゲームでの一連の制作経路は今回未確認 | 実制作で詰まる操作を GUI 改善の優先順位に使う |
+| ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。Inspectorに既定値で作れるcomponentの候補取得・追加を接続。削除・Undo/Redo・保存は既存journalを使用 | 必須asset入力・behavior追加UIと、代表ゲームでの一連の制作経路は残る |
 
 確認した実装入口: [pipelinefactory.cpp](../src/core/shader/pipelinefactory.cpp)、
 [RT dispatch](../src/core/vkcore/raytracingpipelinedispatch.hpp)、

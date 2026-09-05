@@ -321,6 +321,7 @@ class EditorCommandService {
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const;
     EditorSceneRevisionResult getSceneRevision() const;
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
+    nlohmann::ordered_json getComponentAddCandidates(const EditorGetComponentsRequest &request) const;
     EditorRayOccurrencesResult getRayOccurrences(
         const EditorGetComponentsRequest &request) const;
     RayOccurrenceResolution resolveRayOccurrence(
@@ -390,6 +391,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json sceneTree(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneRevision(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
+    nlohmann::ordered_json getComponentAddCandidates(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayOccurrences(const nlohmann::json &params) const;
     nlohmann::ordered_json resolveRayOccurrence(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;

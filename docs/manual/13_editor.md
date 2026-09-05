@@ -34,6 +34,18 @@ gizmo からもこの章と同じ編集 RPC / preview lease を呼びます([第
 1. **編集 RPC**(この章の §13.3〜§13.8)
 2. **エンジン内蔵の ImGui パネル**(§13.9 — Object Tree / Inspector / Asset Browser)
 
+### Studioでcomponentを追加する
+
+Inspectorの **Add component...** で登録済みの型を選び、**Add**で追加します。
+初期値はエンジンのcomponent codecから取得し、追加後は通常のInspectorで編集できます。
+追加は既存のjournalに記録され、Undo/Redoで取り消し・再適用できます。ディスクへの保存にはSaveを使います。
+
+`get_component_add_candidates`は`get_components`と同じobject指定を受け、
+`object_id`・`scene_revision`・`candidates[]`を返します。各候補は`name`・`available`と、
+追加可能なら初期`component` JSON、不可能なら`unavailable_reason`を持ちます。
+装着済みの型は候補に含めません。必須asset参照などを持つ型の入力フォームとbehavior追加は、
+この操作にはまだ含めていません。候補取得はruntime objectを生成しません。
+
 ### 起動のしかた
 
 ```sh
@@ -163,7 +175,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 **解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
 `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
-([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1604))。形は 2 通りで、
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1629))。形は 2 通りで、
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
@@ -439,7 +451,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
   [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L686))です。
 - `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
-  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1829))。
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1854))。
   **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
   厳密一致のクライアントは壊れます。**
 - 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/

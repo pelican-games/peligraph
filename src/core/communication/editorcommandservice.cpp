@@ -162,8 +162,8 @@ EditorSceneTreeRequest parseSceneTreeRequest(const Json &params) {
     return {.scene_id = optionalString(params, "scene_id", method)};
 }
 
-EditorGetComponentsRequest parseGetComponentsRequest(const Json &params) {
-    constexpr auto method = "get_components";
+EditorGetComponentsRequest parseGetComponentsRequest(
+    const Json &params, std::string_view method = "get_components") {
     requireObjectParams(params, method);
     requireOnlyFields(params, {"scene_id", "authoring_object_id", "name"}, method);
     EditorGetComponentsRequest request{.scene_id = optionalString(params, "scene_id", method),
@@ -820,6 +820,31 @@ EditorCommandService::getComponents(const EditorGetComponentsRequest &request) c
                                  "object not found in scene: " + scene.scene_id};
     }
     return queryObject(source, scene, *found);
+}
+
+OrderedJson EditorCommandService::getComponentAddCandidates(
+    const EditorGetComponentsRequest &request) const {
+    const auto object = getComponents(request);
+    auto candidates = OrderedJson::array();
+    for (const auto &codec : componentCodecs()) {
+        if (codec.name == "behavior" || std::any_of(object.components.begin(), object.components.end(),
+                [&](const auto &component) { return component.name == codec.name; })) continue;
+        OrderedJson candidate{{"name", codec.name}, {"available", false}};
+        try {
+            auto decoded = codec.decodeAuthored(Json{{"name", codec.name}});
+            if (decoded) {
+                candidate["component"] = codec.encodeCanonical(decoded.value());
+                candidate["available"] = true;
+            } else {
+                candidate["unavailable_reason"] = decoded.error().leaf_message;
+            }
+        } catch (const LegacyRejectException &error) {
+            candidate["unavailable_reason"] = error.what();
+        }
+        candidates.push_back(std::move(candidate));
+    }
+    return {{"object_id", object.authoring_object_id.value},
+            {"scene_revision", object.scene_revision.value}, {"candidates", std::move(candidates)}};
 }
 
 EditorRayOccurrencesResult
@@ -1869,6 +1894,11 @@ OrderedJson EditorCommandRpcAdapter::getSceneRevision(const Json &params) const 
     requireObjectParams(params, "get_scene_revision");
     requireOnlyFields(params, {}, "get_scene_revision");
     return editorQueryJson(service_.getSceneRevision());
+}
+
+OrderedJson EditorCommandRpcAdapter::getComponentAddCandidates(const Json &params) const {
+    return service_.getComponentAddCandidates(
+        parseGetComponentsRequest(params, "get_component_add_candidates"));
 }
 
 OrderedJson EditorCommandRpcAdapter::getComponents(const Json &params) const {

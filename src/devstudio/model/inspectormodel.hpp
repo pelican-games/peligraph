@@ -140,6 +140,10 @@ class InspectorModel {
                            nlohmann::json value);
     bool canRemoveComponent(std::size_t component_index) const noexcept;
     bool removeComponent(std::size_t component_index);
+    bool canRequestComponentAddCandidates() const noexcept;
+    bool requestComponentAddCandidates();
+    const std::optional<nlohmann::json> &componentAddCandidates() const noexcept;
+    bool addComponent(std::string_view name);
     void abortActivePreview();
     void undo();
     void redo();

@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDoubleSpinBox>
+#include <QDialog>
 #include <QEvent>
 #include <QFormLayout>
 #include <QFrame>
@@ -21,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QPointer>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -89,6 +91,15 @@ struct InspectorWidget::Impl {
     QLabel *notice_label = nullptr;
     QScrollArea *scroll = nullptr;
     QPushButton *refresh_button = nullptr;
+    QPushButton *add_component_button = nullptr;
+    QPointer<QDialog> add_component_dialog;
+    QComboBox *component_types = nullptr;
+    QLabel *component_description = nullptr;
+    QPushButton *confirm_add_component = nullptr;
+    QPushButton *refresh_component_types = nullptr;
+    std::optional<Json> displayed_candidates;
+    std::string adding_scene;
+    std::uint64_t adding_object = 0;
     QPushButton *undo_button = nullptr;
     QPushButton *redo_button = nullptr;
     QPushButton *cancel_preview_button = nullptr;
@@ -138,6 +149,12 @@ struct InspectorWidget::Impl {
         toolbar->addWidget(cancel_preview_button);
         toolbar->addStretch();
         layout->addLayout(toolbar);
+        add_component_button = new QPushButton(owner.tr("Add component..."), &owner);
+        add_component_button->setObjectName(QStringLiteral("pelican.inspectorAddComponent"));
+        layout->addWidget(add_component_button);
+        QObject::connect(add_component_button, &QPushButton::clicked, &owner, [this] {
+            openComponentAddDialog();
+        });
 
         notice_label = new QLabel(&owner);
         notice_label->setObjectName(QStringLiteral("pelican.inspectorNotice"));
@@ -380,7 +397,97 @@ struct InspectorWidget::Impl {
         }
     }
 
+    void openComponentAddDialog() {
+        if (add_component_dialog) {
+            add_component_dialog->raise();
+            return;
+        }
+        if (!model.requestComponentAddCandidates()) return;
+        adding_scene = model.snapshot()->scene_id;
+        adding_object = model.snapshot()->authoring_object_id;
+        displayed_candidates.reset();
+        auto *dialog = new QDialog(&owner);
+        add_component_dialog = dialog;
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(owner.tr("Add component"));
+        dialog->setObjectName(QStringLiteral("pelican.componentAddDialog"));
+        dialog->setWindowModality(Qt::WindowModal);
+        dialog->resize(460, 180);
+        auto *layout = new QVBoxLayout(dialog);
+        component_types = new QComboBox(dialog);
+        component_types->setObjectName(QStringLiteral("pelican.componentAddTypes"));
+        layout->addWidget(component_types);
+        component_description = plainLabel(owner.tr("Loading component types..."), dialog);
+        layout->addWidget(component_description);
+        auto *buttons = new QHBoxLayout;
+        refresh_component_types = new QPushButton(owner.tr("Refresh types"), dialog);
+        confirm_add_component = new QPushButton(owner.tr("Add"), dialog);
+        confirm_add_component->setObjectName(QStringLiteral("pelican.componentAddConfirm"));
+        buttons->addWidget(refresh_component_types);
+        buttons->addWidget(confirm_add_component);
+        layout->addLayout(buttons);
+        QObject::connect(component_types, &QComboBox::currentIndexChanged, dialog, [this] {
+            synchronizeComponentAddDialog();
+        });
+        QObject::connect(refresh_component_types, &QPushButton::clicked, dialog, [this] {
+            model.requestComponentAddCandidates();
+            synchronize();
+            dispatchRequests();
+        });
+        QObject::connect(confirm_add_component, &QPushButton::clicked, dialog, [this] {
+            if (model.addComponent(component_types->currentData().toString().toStdString()))
+                add_component_dialog->close();
+            synchronize();
+            dispatchRequests();
+        });
+        synchronizeComponentAddDialog();
+        dialog->show();
+        dispatchRequests();
+    }
+
+    void synchronizeComponentAddDialog() {
+        if (!add_component_dialog) return;
+        if (!model.snapshot() || model.snapshot()->scene_id != adding_scene ||
+            model.snapshot()->authoring_object_id != adding_object) {
+            add_component_dialog->close();
+            return;
+        }
+        const auto &catalog = model.componentAddCandidates();
+        if (catalog != displayed_candidates) {
+            displayed_candidates = catalog;
+            const QSignalBlocker blocker{component_types};
+            component_types->clear();
+            if (catalog) {
+                for (const auto &candidate : catalog->at("candidates")) {
+                    const auto name = QString::fromStdString(candidate.at("name").get<std::string>());
+                    component_types->addItem(name, name);
+                }
+            }
+        }
+        const bool ready = model.canRequestComponentAddCandidates();
+        refresh_component_types->setEnabled(ready);
+        component_types->setEnabled(ready && catalog.has_value());
+        confirm_add_component->setEnabled(false);
+        if (!catalog) {
+            component_description->setText(QString::fromStdString(model.notice().message));
+            return;
+        }
+        const int index = component_types->currentIndex();
+        if (index < 0) {
+            component_description->setText(owner.tr("No additional registered component types."));
+            return;
+        }
+        const auto &candidate = catalog->at("candidates").at(static_cast<std::size_t>(index));
+        const bool available = candidate.at("available").get<bool>();
+        confirm_add_component->setEnabled(ready && available);
+        component_description->setText(available
+            ? owner.tr("Add with the engine defaults, then edit its properties in the Inspector.")
+            : QString::fromStdString(candidate.at("unavailable_reason").get<std::string>()));
+    }
+
     void synchronize() {
+        add_component_button->setEnabled(model.canRequestComponentAddCandidates());
+        synchronizeComponentAddDialog();
         const InspectorNotice &notice = model.notice();
         notice_label->setText(QString::fromStdString(notice.message));
         notice_label->setVisible(!notice.message.empty());

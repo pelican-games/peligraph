@@ -310,6 +310,7 @@ struct InspectorModel::Impl {
         OpenSession,
         SceneTree,
         Components,
+        ComponentAddCandidates,
         WatchPoll,
         WatchSync,
         EditSubmit,
@@ -366,6 +367,7 @@ struct InspectorModel::Impl {
     std::optional<OutlinerObjectKey> pending_selection;
     bool pending_selection_set = false;
     std::optional<InspectorObjectSnapshot> snapshot;
+    std::optional<Json> component_add_candidates;
     InspectorNotice notice;
     std::uint64_t content_revision = 0;
     std::uint64_t selection_generation = 0;
@@ -390,6 +392,7 @@ struct InspectorModel::Impl {
     }
 
     void clearSnapshot() {
+        component_add_candidates.reset();
         if (snapshot) {
             snapshot.reset();
             ++content_revision;
@@ -1097,6 +1100,7 @@ struct InspectorModel::Impl {
         }
 
         snapshot = parseObject(result);
+        component_add_candidates.reset();
         ++content_revision;
         staged_operations.clear();
         refresh_in_flight = false;
@@ -1207,6 +1211,17 @@ struct InspectorModel::Impl {
         case RequestPurpose::Components:
             handleComponents(state, result);
             break;
+        case RequestPurpose::ComponentAddCandidates:
+            if (snapshot && result.at("object_id") == snapshot->authoring_object_id &&
+                result.at("scene_revision") == snapshot->scene_revision &&
+                result.at("candidates").is_array()) {
+                component_add_candidates = result;
+                setNotice(InspectorNoticeKind::None, {});
+            } else {
+                setNotice(InspectorNoticeKind::Information,
+                          "The object changed. Refresh the Inspector and load component types again.");
+            }
+            break;
         case RequestPurpose::WatchPoll:
         case RequestPurpose::WatchSync:
             handleWatch(state, result);
@@ -1274,6 +1289,9 @@ struct InspectorModel::Impl {
             requestRefresh(true);
             break;
         case RequestPurpose::Save:
+            break;
+        case RequestPurpose::ComponentAddCandidates:
+            component_add_candidates.reset();
             break;
         }
         setNotice(InspectorNoticeKind::Error, std::move(message));
@@ -1597,6 +1615,47 @@ bool InspectorModel::removeComponent(std::size_t component_index) {
                    {"component_slot", component.name}};
     if (component.name == "behavior") operation["attachment_index"] = component_index;
     impl_->enqueueEdit(std::move(operation), "Remove " + component.title, component.name);
+    return true;
+}
+
+bool InspectorModel::canRequestComponentAddCandidates() const noexcept {
+    return canEdit() && !busy() && !refreshBlocked() && !impl_->refresh_in_flight &&
+           std::none_of(impl_->requests.begin(), impl_->requests.end(), [](const auto &request) {
+               return request.second.purpose == Impl::RequestPurpose::ComponentAddCandidates;
+           });
+}
+
+bool InspectorModel::requestComponentAddCandidates() {
+    if (!canRequestComponentAddCandidates()) return false;
+    impl_->component_add_candidates.reset();
+    impl_->queue("get_component_add_candidates",
+                 Json{{"scene_id", impl_->snapshot->scene_id},
+                      {"authoring_object_id", impl_->snapshot->authoring_object_id}},
+                 {.purpose = Impl::RequestPurpose::ComponentAddCandidates,
+                  .selection_generation = impl_->selection_generation});
+    impl_->setNotice(InspectorNoticeKind::Information, "Loading component types...");
+    return true;
+}
+
+const std::optional<Json> &InspectorModel::componentAddCandidates() const noexcept {
+    return impl_->component_add_candidates;
+}
+
+bool InspectorModel::addComponent(std::string_view name) {
+    if (!canRequestComponentAddCandidates() || !impl_->component_add_candidates) return false;
+    const auto &catalog = *impl_->component_add_candidates;
+    if (catalog.at("object_id") != impl_->snapshot->authoring_object_id ||
+        catalog.at("scene_revision") != impl_->snapshot->scene_revision) return false;
+    const auto &candidates = catalog.at("candidates");
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [name](const auto &candidate) {
+        return candidate.at("name").template get_ref<const std::string &>() == name;
+    });
+    if (found == candidates.end() || !found->value("available", false)) return false;
+    Json operation{{"op", "add_component"},
+                   {"object_id", impl_->snapshot->authoring_object_id},
+                   {"component", found->at("component")}};
+    impl_->enqueueEdit(std::move(operation), "Add " + std::string{name}, std::string{name});
+    impl_->component_add_candidates.reset();
     return true;
 }
 

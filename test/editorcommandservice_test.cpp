@@ -175,6 +175,36 @@ nlohmann::json importRequestJson(
 
 } // namespace
 
+TEST_CASE("component addition catalog uses codec defaults and excludes attached slots",
+          "[editor-command][query][component-addition]") {
+    const auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+    const auto response = rpc.getComponentAddCandidates({{"name", "MixedObject"}});
+    CHECK(response.at("scene_revision") == 41);
+    const auto &candidates = response.at("candidates");
+    CHECK(std::none_of(candidates.begin(), candidates.end(), [](const auto &candidate) {
+        return candidate.at("name") == "transform" || candidate.at("name") == "behavior";
+    }));
+    const auto collider = std::find_if(candidates.begin(), candidates.end(), [](const auto &candidate) {
+        return candidate.at("name") == "collider";
+    });
+    REQUIRE(collider != candidates.end());
+    REQUIRE(collider->at("available") == true);
+    const auto &codec = requireComponentCodec("collider");
+    const auto decoded = codec.decodeAuthored(collider->at("component"));
+    REQUIRE(decoded.hasValue());
+    CHECK(codec.encodeCanonical(decoded.value()) == collider->at("component"));
+    const auto model = std::find_if(candidates.begin(), candidates.end(), [](const auto &candidate) {
+        return candidate.at("name") == "simplemodelview";
+    });
+    REQUIRE(model != candidates.end());
+    CHECK(model->at("available") == false);
+    CHECK_FALSE(model->at("unavailable_reason").get<std::string>().empty());
+    CHECK_FALSE(model->contains("component"));
+}
+
 TEST_CASE("editor query is deterministic and RPC and ImGui fake adapters are equivalent",
           "[editor-command][query][wp154]") {
     const auto document =

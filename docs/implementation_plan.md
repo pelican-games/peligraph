@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 preset fork):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。Callable初期値編集は7b867176に統合済み。選択presetをproject側へforkするRPCとStudio操作を追加。次はcomponent追加、一般graphのnode移動・edge編集などの残機能。学習サンプルは後回し。
+**最新の入口 (2026-09-06、component追加):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。preset forkはa4d4404eに統合済み。Inspectorにcomponent候補取得・追加を接続。次はforkしたproject presetの既存fullscreen passの入出力・shader編集、一般graphのnode移動・edge編集、必須asset入力・behavior追加など。学習サンプルは後回し。
+
+**Inspector component追加 (2026-09-06):**
+- `get_component_add_candidates`は既存object selectorから未装着codecを列挙し、最小宣言を既存decoder/encoderで初期component JSONへ変換する。runtime constructorや別default生成器は使用しない。必須入力不足は理由付きで返し、behaviorは別registryのため今回の候補外。
+- InspectorのAdd component dialogから既存`add_component` journalへ送信。選択世代・object ID・revisionを確認し、preview/pending/refresh時には追加しない。成功後は既存snapshot更新・Undo/Redo・Save経路を使う。
+- CPU query14/14（242 assertions）、既存journal9/9（401 assertions）、Inspector17/17成功。ログ`build/.codex_bg/componentadd-cpu.log`、`componentadd-journal.log`、`componentadd-inspector-ctest.log`。Studioは`componentadd-studio-build.log`、Playerは`componentadd-player-build.log`で確認。最初のMSVC JSON/string_view比較の曖昧性はstring参照の明示で解消。
+- doclink check3869件成功。新dialogの実操作、候補から実GPU runtimeへの追加・保存の通し操作は未確認。既存codec/journalの経路を接続した範囲であり、必須asset入力・behavior追加UIの完了とはしない。
+- 次のRT7 slice案: `get_render_authoring_context`からproject所有presetの元graph/nameを解決し、既存fullscreen passのinput/output/shaderのみ編集する。未表示のraster state等を全置換で消さない。AS/anchor/feature由来nodeは別扱い。`queueRootEdit`を利用する場合、root bytesが同一でもpreset置換があるのでcommitPendingのno-change判定を見直す必要がある。
 
 **RT7 preset fork (2026-09-06):**
 - `fork_render_pipeline`とRender FeaturesのFork preset操作を追加。合成前のpreset bytesを新規projectファイルへコピーし、rootの`pipeline.preset`を同じtransactionで切り替える。settings/features/RT上書き指定を保持し、featureの二重合成を避ける。

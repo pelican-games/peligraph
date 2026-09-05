@@ -1074,3 +1074,52 @@ TEST_CASE("Studio removes authored components through the editor journal",
         exercise(false);
     }
 }
+
+TEST_CASE("Studio adds a catalog component through the existing revision and ticket flow",
+          "[devstudio][inspector][component-addition]") {
+    InspectorHarness harness;
+    harness.open();
+    const Json component{{"name", "collider"}, {"type", "box"}};
+    Json catalog{{"object_id", 41}, {"scene_revision", 1},
+                 {"candidates", Json::array({
+                     {{"name", "collider"}, {"available", true}, {"component", component}},
+                     {{"name", "simplemodelview"}, {"available", false},
+                      {"unavailable_reason", "A model reference is required."}}})}};
+    REQUIRE(harness.model.requestComponentAddCandidates());
+    const auto query = harness.take("get_component_add_candidates");
+    CHECK(query.params == Json{{"scene_id", "main"}, {"authoring_object_id", 41}});
+    CHECK_FALSE(harness.model.requestComponentAddCandidates());
+
+    SECTION("available choice submits once and refreshes after commit") {
+        harness.reply(query, catalog);
+        CHECK_FALSE(harness.model.addComponent("simplemodelview"));
+        REQUIRE(harness.model.addComponent("collider"));
+        const auto edit = harness.take("edit");
+        CHECK(edit.params.at("actor_id") == 9);
+        CHECK(edit.params.at("base_revision") == 1);
+        CHECK(edit.params.at("operations") == Json::array({
+            {{"op", "add_component"}, {"object_id", 41}, {"component", component}}}));
+        CHECK_FALSE(harness.model.addComponent("collider"));
+        harness.reply(edit, {{"status", "accepted"}, {"ticket", "add:1"}});
+        harness.model.pollPendingOperations();
+        harness.reply(harness.take("get_edit_result"),
+                      {{"status", "committed"}, {"committed_revision", 2}});
+        harness.completeRefresh(1.0, 2);
+        CHECK_FALSE(harness.model.componentAddCandidates());
+        harness.model.undo();
+        CHECK(harness.take("undo").params == Json{{"actor_id", 9}, {"base_revision", 2}});
+    }
+    SECTION("a newer scene revision requires refreshing the Inspector") {
+        catalog["scene_revision"] = 2;
+        harness.reply(query, catalog);
+        CHECK_FALSE(harness.model.componentAddCandidates());
+        CHECK_FALSE(harness.model.addComponent("collider"));
+        CHECK(harness.model.takeRpcRequests().empty());
+    }
+    SECTION("selection changes discard an outstanding catalog") {
+        harness.model.selectObject(std::nullopt);
+        harness.reply(query, catalog);
+        CHECK_FALSE(harness.model.componentAddCandidates());
+        CHECK_FALSE(harness.model.addComponent("collider"));
+    }
+}

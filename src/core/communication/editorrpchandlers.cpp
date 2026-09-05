@@ -57,6 +57,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_scene_revision", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getSceneRevision(params); });
     });
+    server.setHandler("get_component_add_candidates", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getComponentAddCandidates(params); });
+    });
     server.setOrderedHandler("get_components", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getComponents(params); });
     });
