@@ -2199,9 +2199,46 @@ TEST_CASE("Sphere oracle contains Vulkan sqrt and division precision endpoints",
     const auto root = proceduralSphereSqrtInterval({1.0, 1.0});
     CHECK(root.contains(upper));
     CHECK(root.contains(2.0 - upper));
+    // Flushing a subnormal numerator is observable after division by a
+    // normal denominator. Separately exercise a normal input whose result
+    // is subnormal, so input and output flushing cannot mask each other.
+    const auto input_flush = proceduralSphereDivisionInterval(
+        {0x1p-127, 0x1p-127}, {0x1p-126, 0x1p-126});
+    CHECK(input_flush.contains(0.0));
+    CHECK(input_flush.contains(0.5));
+    const auto output_flush = proceduralSphereDivisionInterval(
+        {0x1p-126, 0x1p-126}, {2.0, 2.0});
+    CHECK(output_flush.contains(0.0));
+    CHECK(output_flush.contains(0x1p-127));
 }
 
-TEST_CASE("Sphere oracle bounds nonunit directions and flushable inputs",
+TEST_CASE("Sphere oracle pads comparison endpoints for the shared GPU predicate",
+          "[WP386c][ray-tracing][cpu]") {
+    const auto result = traceProceduralSphereOracle(
+        {{2.0, 0.0, 0.0}, {0.0, 0.0, 1.0}}, {0.0, 0.0, 8.0}, 4.0, 23);
+    REQUIRE(result.hit.has_value());
+    const auto &hit = *result.hit;
+    // Review counterexamples: both floats are inside the original arithmetic
+    // interval [4.5358679654961076, 4.5359288042565513], but the shared
+    // predicate rejected them when the sphere omitted comparison padding.
+    CHECK(rayTracingOracleContainsGpuHit(hit, 4.535868167877197265625f, 23));
+    CHECK(rayTracingOracleContainsGpuHit(hit, 4.5359287261962890625f, 23));
+    // Comparison endpoints must be outward f32 endpoints, just as for the
+    // triangle oracle, to absorb expandGpuRayT's four-ULP comparison guard.
+    CHECK(hit.t_interval.lower == static_cast<double>(static_cast<float>(hit.t_interval.lower)));
+    CHECK(hit.t_interval.upper == static_cast<double>(static_cast<float>(hit.t_interval.upper)));
+    for (const bool lower : {true, false}) {
+        const float outward = lower ? -std::numeric_limits<float>::infinity()
+                                    : std::numeric_limits<float>::infinity();
+        float endpoint = static_cast<float>(lower ? hit.t_interval.lower : hit.t_interval.upper);
+        for (int i = 0; i < RayTracingOracleContract::endpoint_f32_ulp_padding; ++i)
+            endpoint = std::nextafter(endpoint, -outward);
+        CHECK(rayTracingOracleContainsGpuHit(hit, endpoint, 23));
+        CHECK_FALSE(rayTracingOracleContainsGpuHit(hit, std::nextafter(endpoint, outward), 23));
+    }
+}
+
+TEST_CASE("Sphere oracle bounds nonunit directions and tiny offsets",
           "[WP386c][ray-tracing][cpu]") {
     const double speed = GENERATE(0.5, 1.0, 2.0);
     const double offset = GENERATE(-2.0, 2.0);
@@ -2214,14 +2251,6 @@ TEST_CASE("Sphere oracle bounds nonunit directions and flushable inputs",
     CHECK(rayTracingOracleContainsGpuHit(*result.hit, static_cast<float>(analytical_t), 23));
     CHECK_FALSE(rayTracingOracleContainsGpuHit(*result.hit, static_cast<float>(analytical_t), 24));
     CHECK_FALSE(rayTracingOracleContainsGpuHit(*result.hit, static_cast<float>(analytical_t + 0.01), 23));
-    // Both signs of sqrt/div error must fit; an exact scalar expected value
-    // or a padding-free point interval cannot pass this check.
-    for (const float sign : {-1.0f, 1.0f}) {
-        float endpoint = static_cast<float>(analytical_t);
-        for (int i = 0; i < 5; ++i)
-            endpoint = std::nextafter(endpoint, sign * std::numeric_limits<float>::infinity());
-        CHECK(result.hit->t_interval.contains(endpoint));
-    }
     CHECK_FALSE(traceProceduralSphereOracle({{8.0, 0.0, 0.0}, {0.0, 0.0, speed}},
                                            {0.0, 0.0, 8.0}, 4.0, 23).hit);
     CHECK_THROWS_WITH(traceProceduralSphereOracle({{4.0, 0.0, 0.0}, {0.0, 0.0, speed}},

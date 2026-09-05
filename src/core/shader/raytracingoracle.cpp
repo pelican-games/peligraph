@@ -782,7 +782,8 @@ double maximumF32Ulp(Interval value) {
     const float endpoint = static_cast<float>(magnitude);
     if (!std::isfinite(endpoint))
         throw std::runtime_error("sphere oracle arithmetic is not finite");
-    return static_cast<double>(std::nextafter(endpoint, INFINITY)) - endpoint;
+    return static_cast<double>(std::nextafter(
+               endpoint, std::numeric_limits<float>::infinity())) - endpoint;
 }
 
 Interval sphereRounded(Interval value, double ulps = 0.5) {
@@ -862,7 +863,7 @@ RayTracingOracleResult traceProceduralSphereOracle(
     if (t.upper - t.lower > Contract::maximum_relative_interval_width * midpoint)
         throw std::runtime_error("sphere oracle interval is too wide");
     return {.hit = RayTracingOracleHit{.record_id = record_id,
-                                      .t_mid = midpoint, .t_interval = t}};
+                                      .t_mid = midpoint, .t_interval = padEndpoints(t)}};
 }
 
 } // namespace Pelican

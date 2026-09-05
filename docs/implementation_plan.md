@@ -23257,9 +23257,18 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 - コンポーネント宣言のslot別vectorを撤去し、既存のimmutable catalogへ一本化。snapshot/publish/rollbackの所有境界は維持。CPU oracleはtest専用static targetへ移し、4つの利用test executableだけにリンク。Playerがwhole-archiveするcore libraryのmember一覧にもoracle objectがないことを確認した。
 - RT1a CPU最終 **21ケース/416 assertions成功**、既存RT1b **18ケース/578 assertions成功**。関連CTest **21/21成功**(GPU15、30.00秒)、既存oracleのheadless GPU呼出し **2/2成功**。Player/Studioと4利用testのbuild成功。全構成・全数の反復は行わず、同じ条件分岐の過去の構成証拠を引き継ぐ。
 - div paddingとinversesqrt paddingを独立に外した2変異は規格端点テストでそれぞれ失敗(exit42、exe mtime確認)。復元build後21ケース再成功。ログは `build/.codex_bg/wp386c_{related_ctest,linkage_ctest,restored_cpu,rt1b}.log` と `wp386c_mutations.json`、buildは `wp386c_build3.log` / `wp386c_studio_build.log`。
-- Fable読み取りレビューは未コミットsourceの外部送信について自動承認審査に拒否され未実施。ローカル独立レビューでは今回の限定subsetに重大な包含漏れは見つからず、sqrt補正の独立否定対照が弱い指摘を受けて前項の端点変異を追加した。外部レビュー済みとは扱わない。
+- 初回のFable読み取りレビューは未コミットsourceの外部送信について自動承認審査に拒否された。その後、利用者が球の数値計算・SPIR-V検査・対応テストをClaude/Fableへ送るレビューを明示承認し、下記の再開レビューを実施。承認はこの送信範囲に継続適用する。ローカル独立レビューで指摘されたsqrt補正の独立否定対照は前項の端点変異で補強済み。
 - 最終レビューでRelaxedPrecisionを持つmoduleをf32数値subsetから除外し、対照を追加(通常loadの拒否ではない)。`device_unsupported`は分類関数で確認済みだが、要求float capabilityに非対応の実機ではpipeline作成が先に拒否され得る。そうした実機でもstatus wireへ必ず分類が出る保証は未確認で、golden前の入口整理の残項目とする。
 - 長期既知の `contract_projection_gate` 失敗は棚卸しの未追従17件だった。新consumer14経路を登録し、間接利用等の3経路は理由付き `scan:false` としてanchor検査を維持。checker/scan範囲を弱めず、3gateと既存checker試験4件(未登録sourceの否定対照を含む)成功、通常CTestの同gate **1/1成功**(2.43秒)。この成功を描画全体や過去の全数成功へ読み替えない。
+
+**WP386c Fable再開レビュー (`f3efb908` 後、2026-09-05):**
+- `claude-fable-5-1` / high、safe-mode、tools無効、session保存なし。承認されたsource/testのみを明示payloadとして送信し、追加のファイル探索や編集はさせていない。原文は `build/.codex_bg/wp386c_fable_authorized.json`。
+- 指摘1を採用: 球の算術区間をそのまま共通GPU包含述語へ渡すと、GPU側の4 ULP拡張によって実効許容域が狭くなっていた。三角形と同じ `padEndpoints` を球の返却時にも適用。**算術区間と、比較用に外向きf32丸め+4 ULPを施した `hit.t_interval` は区別する。** `t` の分岐/幅判定は従来どおり算術区間で行う。
+- 指摘2を採用: 小さなy offsetの球だけではFTZ処理の検出力を証明できなかった。入力FTZは `(2^-127)/(2^-126)` の0/0.5、出力FTZは `(2^-126)/2` の0/2^-127をscalar精度関数へ直接注入。球テストはtiny offsetの包含確認という名称へ訂正。
+- FTZ処理の撤去で上記0包含が2件失敗、球の比較padding撤去で共通述語へ注入した端点2件とf32端点確認2件が失敗。各exit42、exe mtime確認、復元後CPU **22ケース/429 assertions成功**、既存球GPU **1/1成功**(2.91秒)。新たなruntimeの回復処理や出荷targetは追加していない。ログ `build/.codex_bg/wp386c_review_{mutations.json,restored_cpu.log,fixed_gpu.log}`。
+- 分類の限界を記録: Inspectorは演算形/精度を検査するが、葉オペランドが必ずcenter/origin/direction/radius由来であることや、任意の分岐を通った実行が必ず規範列であることまでは証明しない。現goldenは既知の参考sourceとその最終digestを結び付ける。任意の `eligible` shaderを球oracleで認定する機能は未実装とする。raygenのtmin=0.001/tmax=4096、pixel0/1のorigin x=-2/+2は呼出し元で確認済み。object変換の全device精度保証は未了のtransform契約へ残す。
+- 論点を2件に絞ったFable再確認は両指摘の解消、新たな具体的欠陥なし。`build/.codex_bg/wp386c_fable_confirm.json`。比較用paddingを含む±5 ULP確認は精度モデルの証拠として弱く、独立したscalar端点試験と重複するため削除。tiny offsetの球ケースは単に包含確認であり、FTZの検出力は新しいdivisionケースと撤去変異を根拠にする。
+- 重複確認を削除した最終CPUは **22ケース/405 assertions成功** (`build/.codex_bg/wp386c_review_final_cpu.log`)。変更はtest専用oracleと対応試験のみで、Player/Studioのコードは変わらず再build/全数の反復は行わない。
 
 **WP386b 統合・rev386b (2026-09-05、以下の未統合履歴より優先):**
 - コード `6d25d9e0`。通常loadを拒否しない演算列分類とactive pipelineの診断、球のGPU on/off/reload、AABB共有修正、record/AABB変更行列、同一identityでの登録順反転、SceneLoader activate失敗時の旧state復元を確認。配布用の検査ツールや新しい回復経路は追加していない。
