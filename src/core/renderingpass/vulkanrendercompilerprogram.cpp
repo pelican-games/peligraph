@@ -710,6 +710,13 @@ compileDefaultVulkanVariant(
         std::move(render_target_definitions);
     auto frame_plans =
         framePlansByName(graph_definitions);
+    if (logical.composed_config.contains("rendering_passes")) {
+        for (const auto &pass_set : logical.composed_config.at("rendering_passes")) {
+            validateFramePlanPassInputsProduced(
+                frame_plans.at(pass_set.at("name").get<std::string>()),
+                pass_set, buffer_names);
+        }
+    }
     auto execution_plans =
         frameExecutionPlansByName(
             graph_definitions,

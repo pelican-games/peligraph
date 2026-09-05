@@ -27,7 +27,6 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
 
     std::vector<PassDefinition> passes;
     std::unordered_set<std::string> pass_names;
-    ProducedRenderTargetSet produced_targets;
     for (const auto &pass_json : passes_json) {
         const std::string pass_name = parseStringField(pass_json, "name", "pass");
         validateName(pass_name, "Pass");
@@ -49,10 +48,6 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
             if (!isConcreteRenderTarget(source) || !isConcreteRenderTarget(destination)) {
                 throw std::runtime_error("Snapshot copy references an unknown render target: " + pass_name);
             }
-            if (!produced_targets.contains(source)) {
-                throw std::runtime_error("Snapshot source is not produced before copy: " + source_name +
-                                         " in snapshot: " + pass_name);
-            }
             const auto source_meta = rt_metadata.get(source);
             const auto destination_meta = rt_metadata.get(destination);
             if (!(source_meta.usage & vk::ImageUsageFlagBits::eTransferSrc) ||
@@ -64,13 +59,12 @@ std::vector<PassDefinition> parsePassSequenceFromJson(const nlohmann::json &pass
                 source_meta.extent != destination_meta.extent) {
                 throw std::runtime_error("Snapshot copy source/destination mismatch: " + pass_name);
             }
-            produced_targets.insert(destination);
             continue;
         }
 
         auto parsed_pass = parsePassDefinitionFromJson(pass_json, rt_resolver, rt_metadata, buffer_names);
-        validatePassInputsProduced(parsed_pass, produced_targets, rt_metadata);
-        recordPassOutputs(parsed_pass, produced_targets);
+        // Producer ordering is validated against the complete CPU frame plan,
+        // which also contains compute and ray-tracing task outputs.
         passes.push_back(std::move(parsed_pass));
     }
 

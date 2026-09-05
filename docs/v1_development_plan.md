@@ -32,7 +32,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT1 / RT2 | raygen・miss・closest-hit・any-hit、再帰、SBT addressing、material ABI | 台帳 WP364〜368 に実装・検証記録あり。今回の統合ログで WP367 の本番 any-hit 試験が成功 | stage/record/material の結び付きの可視化、設定変更と GPU 結果を試す教材は完了未判定 |
 | RT3-1 | instance mask/flags/custom index と geometry flags | WP374/374a 着地済み。WP384-fix 後の対象 GPU/RPC 4 件が統合ログで成功 | 個体編集→GPU 効果→保存→再読込を GUI から通す。既存 RPC の証拠を GUI 完了とは扱わない |
 | CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 36ad3444 に着地(関連37/37、レビュー残余あり)、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d は4ce4117dに統合(W1 95/95) | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
-| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a は b7cb1825、386b は 6d25d9e0 に統合。球のreport・reload・最終shader分類・statusと変更行列を確認。386cの数値区間とdevice条件を実装中 | bounds と実際の hit の違い、report 有無、mixed geometry を試す。数値検証の残条件は386cで閉じる。未完成の oracle を製品全体の対応範囲と混同しない |
+| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列を確認し、386cの数値基礎はae29fc98まで保存。数値基盤の追加実装は保留 | Playerで開ける学習サンプルを入口に、配置・サイズ・bounds・mixed geometryを実描画で確認する。数値oracleの完成を次機能の条件にしない |
 | RT4 | callable、per-in-flight の動的 record | 設計計画あり。今回確認した現行 pipelinefactory の callable region は空。段全体の実装完了は未確認 | callable 入出力、record 更新、frame 間の寿命を編集・観測する経路の設計が必要 |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | 計画あり。既存の静的 BLAS build を動的更新の完了証拠にはしない | animation/変形と RT 結果の追随、更新方式と負荷の比較を通す |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 計画あり。現行 RT dispatch table は direct trace の入口。compute/draw indirect の既存完了を RT indirect の完了に流用しない | AS 構築→依存→trace をノードで接続・観測する。複数構成の学習価値と契約を具体化する |
@@ -58,6 +58,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 
 ## 機能を保って開発負担を減らす規則
 
+- **2026-09-05 利用者裁定(数値検証の拡張を停止):** v1の目的はグラフィックスを学び、編集して使えることであり、Vulkan数値適合性の認証ではない。WP386cのrigid区間、slab区間、predicate後の数学的一意性、constructive generator、任意SPIR-Vの意味認定を新たに作る作業は保留し、RT4以降へ進む必須条件から外す。既存の有用な回帰テストは維持する。配置・AABB・混在シーンは既存描画経路と実際の編集・保存で確認し、発見した実害を修正する。機能の正しさ、GPU寿命、不正入力への必要な診断は引き続き確認する。本裁定が旧WPの数値golden完遂要件に優先する。
 - **2026-09-05 利用者方針:** 保守的な処理の積み重ねで可読性が落ちている箇所は、実装・修正時に現行契約と呼び出し元を確認して整理する。不要な旧版分岐、重複検査、到達不能な救済、方針転換で不要になったコードは維持を目的に残さない。保存内容の保護と GPU 寿命等の必要な処理は責務・条件をまとめて読みやすくする。対象外の大規模整理は混ぜない。
 - 未公開版の内部 SBT 行番号 `q` や内部 bytes の旧値を、互換契約として固定しない。現行方式での決定性、形状 / shader / record の対応、保存設定の意味、誤った addressing の検出を維持する。永続 row ID、undo による raw 復元、実際に公開した ABI 等の契約とは区別する。
 - 同じ変更・構成・故障経路について有効な証拠が既にあれば、理由なく同じ検証を反復しない。

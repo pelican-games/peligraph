@@ -2963,7 +2963,7 @@ TEST_CASE("pass definition JSON parser rejects invalid pass object", "[rendering
                       std::runtime_error);
 }
 
-TEST_CASE("pass sequence JSON parser validates produced input order", "[renderingpass]") {
+TEST_CASE("pass sequence JSON parser resolves input target references", "[renderingpass]") {
     const auto name_resolver = RenderTargetNameResolver{[](const std::string &name) {
         if (name == "source_color") {
             return GlobalRenderTargetId{3};
@@ -3004,6 +3004,13 @@ TEST_CASE("pass sequence JSON parser validates produced input order", "[renderin
     REQUIRE(passes[0].name == "source");
     REQUIRE(passes[1].input_targets.size() == 1);
     REQUIRE(passes[1].input_targets[0] == GlobalRenderTargetId{3});
+
+    // Its producer may be a compute/ray task outside this raster-only list.
+    const auto consumer_only = parsePassSequenceFromJson(
+        nlohmann::json{{"passes", nlohmann::json::array({pass_set_json["passes"][1]})}},
+        "main", name_resolver, metadata_resolver);
+    REQUIRE(consumer_only.size() == 1);
+    REQUIRE(consumer_only[0].input_targets[0] == GlobalRenderTargetId{3});
 }
 
 TEST_CASE("pass sequence JSON parser allows depth output as later input", "[renderingpass]") {

@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace Pelican {
@@ -164,6 +165,9 @@ FrameGraphDefinition parseFrameGraphDefinitionFromJson(const nlohmann::json &gra
 std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const nlohmann::json &config_json);
 
 FramePlan planFrameGraph(const FrameGraphDefinition &definition);
+void validateFramePlanPassInputsProduced(
+    const FramePlan &plan, const nlohmann::json &pass_set_json,
+    const std::unordered_set<std::string> &buffer_names = {});
 std::vector<std::string> framePlanOrder(const FramePlan &plan);
 nlohmann::json framePlanToJson(
     const FramePlan &plan,

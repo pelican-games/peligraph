@@ -1,0 +1,33 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+
+layout(shaderRecordEXT, std430) buffer SphereRecord {
+    PELICAN_RAY_ENGINE_RECORD_MEMBERS
+    float radius;
+    vec3 center;
+} sphere;
+hitAttributeEXT vec2 hit_attribute;
+
+void main() {
+    // Solve |origin + t * direction - center|^2 = radius^2 in object space.
+    // Transforming a ray can change its direction length, so keep a explicitly.
+    vec3 offset = gl_ObjectRayOriginEXT - sphere.center;
+    vec3 direction = gl_ObjectRayDirectionEXT;
+    float a = dot(direction, direction);
+    float halfB = dot(offset, direction);
+    float c = dot(offset, offset) - sphere.radius * sphere.radius;
+    float discriminant = halfB * halfB - a * c;
+    if (discriminant < 0.0) return;
+
+    float root = sqrt(discriminant);
+    float t = (-halfB - root) / a;
+    if (t < gl_RayTminEXT || t > gl_RayTmaxEXT) {
+        // A ray starting inside the sphere exits through the farther root.
+        t = (-halfB + root) / a;
+        if (t < gl_RayTminEXT || t > gl_RayTmaxEXT) return;
+    }
+    hit_attribute = vec2(t, 0.0);
+    reportIntersectionEXT(t, 0u);
+}

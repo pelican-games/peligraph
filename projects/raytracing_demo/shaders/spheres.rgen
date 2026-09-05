@@ -1,0 +1,25 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+
+layout(set=0, binding=6) uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(rgba16f, set=1, binding=0) writeonly uniform image2D pelican_resource_ray_color;
+layout(location=0) rayPayloadEXT vec3 color;
+
+const vec3 cameraOrigin = vec3(0.0, 0.0, 0.0);
+const float verticalFieldOfViewDegrees = 45.0;
+
+void main() {
+    vec2 size = vec2(gl_LaunchSizeEXT.xy);
+    vec2 screen = (vec2(gl_LaunchIDEXT.xy) + 0.5) / size * 2.0 - 1.0;
+    screen.x *= size.x / size.y;
+    // Fixed teaching camera at the origin, looking along +Z; world +Y is up.
+    float imagePlaneScale = tan(radians(verticalFieldOfViewDegrees) * 0.5);
+    vec3 direction = normalize(vec3(screen.x * imagePlaneScale, -screen.y * imagePlaneScale, 1.0));
+    color = vec3(0.0);
+    traceRayEXT(pelicanRayTracingScene, gl_RayFlagsOpaqueEXT, 0xffu,
+                0u, pelican_ray_type_count, 0u,
+                cameraOrigin, 0.001, direction, 100.0, 0);
+    imageStore(pelican_resource_ray_color, ivec2(gl_LaunchIDEXT.xy), vec4(color, 1.0));
+}

@@ -348,32 +348,4 @@ void validateMaterialPassAttachments(const PassDefinition &pass_def, const Rende
     }
 }
 
-void validatePassInputsProduced(const PassDefinition &pass_def,
-                                const ProducedRenderTargetSet &produced_targets,
-                                const RenderTargetMetadataResolver &rt_metadata) {
-    for (size_t i = 0; i < pass_def.input_targets.size(); ++i) {
-        const auto rt_id = pass_def.input_targets[i];
-        if (pass_def.input_target_history.at(i)) continue;
-        if (produced_targets.find(rt_id) == produced_targets.end()) {
-            const auto rt = rt_metadata.get(rt_id);
-            throw std::runtime_error("Pass input target is not produced as an earlier output: " + rt.name +
-                                     " in pass: " + pass_def.name);
-        }
-    }
-}
-
-void recordPassOutputs(const PassDefinition &pass_def, ProducedRenderTargetSet &produced_targets) {
-    for (const auto &rt_id : pass_def.output_color) {
-        if (isConcreteRenderTarget(
-                rt_id.target)) {
-            produced_targets.insert(
-                rt_id.target);
-        }
-    }
-    if (isConcreteRenderTarget(pass_def.output_depth)) {
-        produced_targets.insert(
-            pass_def.output_depth.target);
-    }
-}
-
 } // namespace Pelican

@@ -690,6 +690,43 @@ TEST_CASE("frame planner emits barriers for explicit compute to render resource 
     REQUIRE(plan.barriers.front().to == "present");
 }
 
+TEST_CASE("frame plan validates pass image producers including ray tasks",
+          "[frameplanner][renderingpass]") {
+    auto authored = nlohmann::json::parse(R"json({
+      "name": "ray_to_present",
+      "render_targets": [{"name": "ray_color"}],
+      "passes": [{"name": "present", "type": "fullscreen", "input": ["ray_color"],
+                  "output": {"color": "swapchain", "depth": null}}],
+      "compute_tasks": [{"name": "trace", "writes": ["ray_color"], "before": ["present"]}]
+    })json");
+    const auto validate = [&] {
+        const auto plan = planFrameGraph(parseFrameGraphDefinitionFromJson(authored));
+        validateFramePlanPassInputsProduced(plan, authored);
+    };
+    SECTION("scheduled task output feeds the first raster pass") {
+        REQUIRE_NOTHROW(validate());
+    }
+    SECTION("declaring an image does not initialize it") {
+        authored.erase("compute_tasks");
+        REQUIRE_THROWS_WITH(validate(), Catch::Matchers::ContainsSubstring(
+            "not produced as an earlier output: ray_color"));
+    }
+    SECTION("a producer scheduled after its reader is rejected") {
+        authored["compute_tasks"][0].erase("before");
+        authored["compute_tasks"][0]["after"] = {"present"};
+        REQUIRE_THROWS_WITH(validate(), Catch::Matchers::ContainsSubstring(
+            "not produced as an earlier output: ray_color"));
+    }
+    SECTION("snapshot sources also accept task outputs") {
+        authored["passes"][0] = {{"name", "present"}, {"type", "snapshot_copy"},
+            {"source", "ray_color"}, {"destination", "copied_color"}, {"snapshot_after", "trace"}};
+        REQUIRE_NOTHROW(validate());
+        authored.erase("compute_tasks");
+        REQUIRE_THROWS_WITH(validate(), Catch::Matchers::ContainsSubstring(
+            "not produced as an earlier output: ray_color"));
+    }
+}
+
 TEST_CASE("frame planner emits a barrier for ordered write-after-write",
           "[frameplanner][synchronization]") {
     const auto graph =

@@ -1801,6 +1801,38 @@ FramePlan planFrameGraph(const FrameGraphDefinition &definition) {
     return plan;
 }
 
+void validateFramePlanPassInputsProduced(
+    const FramePlan &plan, const nlohmann::json &pass_set_json,
+    const std::unordered_set<std::string> &buffer_names) {
+    std::unordered_map<std::string, std::vector<std::string>> required_inputs;
+    for (const auto &pass : pass_set_json.at("passes")) {
+        const auto name = requireString(pass, "name", "pass");
+        if (pass.value("type", "") == "snapshot_copy") {
+            required_inputs[name] = {requireString(pass, "source", "snapshot copy")};
+        } else {
+            required_inputs[name] = parseOptionalStringList(pass, "input", "pass");
+        }
+    }
+
+    // Only authored pass inputs and snapshot sources belong to this check.
+    // Buffers and previous-frame inputs retain their existing import semantics.
+    std::unordered_set<std::string> produced;
+    for (const auto &node : plan.nodes) {
+        if (const auto inputs = required_inputs.find(node.name);
+            inputs != required_inputs.end()) {
+            for (const auto &resource : inputs->second) {
+                if (resource.ends_with("@history") || buffer_names.contains(resource)) continue;
+                if (!produced.contains(resource)) {
+                    throw std::runtime_error(
+                        "Pass input target is not produced as an earlier output: " + resource +
+                        " in pass: " + node.name);
+                }
+            }
+        }
+        produced.insert(node.writes.begin(), node.writes.end());
+    }
+}
+
 std::vector<std::string> framePlanOrder(const FramePlan &plan) {
     std::vector<std::string> order;
     order.reserve(plan.nodes.size());

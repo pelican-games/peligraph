@@ -1,0 +1,21 @@
+{
+  "schema": "pelican.render_feature", "version": 1,
+  "name": "procedural_spheres", "runtime_shader_compiler": "required",
+  "required_capabilities": ["pelican.vulkan.ray_tracing_pipeline@1"],
+  "render_targets": [{"name": "ray_color", "extent_scale": 1.0,
+    "format": "R16G16B16A16_SFLOAT", "format_class": "explicit(R16G16B16A16_SFLOAT)",
+    "usage": ["STORAGE", "SAMPLED"]}],
+  "compute_tasks": [{
+    "name": "trace_spheres", "before": ["present"],
+    "ray_tracing": {
+      "raygen": "project://shaders/spheres", "traced_ray_types": ["primary"],
+      "misses": {"sky": "project://shaders/spheres"},
+      "hit_shaders": {"primary": {"sphere": {
+        "closesthit": "project://shaders/spheres", "intersection": "project://shaders/sphere"
+      }}}
+    },
+    "writes": ["ray_color"],
+    "resource_ports": {"ray_color": {"resource": "ray_color", "access": "storage"}},
+    "dispatch": {"rays_from": {"port": "ray_color"}}
+  }]
+}
