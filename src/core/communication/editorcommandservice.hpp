@@ -247,6 +247,7 @@ struct EditorSceneRevisionResult {
 };
 
 struct RaySceneRowSnapshot;
+class ProceduralAssetEditorService;
 
 struct EditorRayOccurrencesResult {
     std::vector<RayOccurrenceCatalogEntry> entries;
@@ -265,6 +266,7 @@ struct EditorCommandServiceDependencies {
     std::optional<EditorEditRuntimeDependencies> edit;
     std::optional<EditorPreviewServiceDependencies> preview;
     std::shared_ptr<RenderConfigEditorService> render_config_editor;
+    std::shared_ptr<ProceduralAssetEditorService> procedural_asset_editor;
     std::function<SceneImportResult(std::string_view, std::string_view)>
         import_scene_snapshot;
     std::function<SceneImportResult(std::string_view, std::string_view,
@@ -294,6 +296,7 @@ class EditorCommandService {
 
     EditorCommandServiceDependencies dependencies_;
     std::shared_ptr<RenderConfigEditorService> render_config_editor_;
+    std::shared_ptr<ProceduralAssetEditorService> procedural_asset_editor_;
     std::unique_ptr<EditorEditCoordinator> edit_;
     std::unique_ptr<EditorPreviewService> preview_;
     std::unordered_map<std::uint64_t, std::string> actor_display_names_;
@@ -373,6 +376,8 @@ class EditorCommandService {
     nlohmann::ordered_json queryJournal(const nlohmann::json &params) const;
     std::vector<nlohmann::ordered_json> takeCompletedEditResults();
     void commitPendingEdits() noexcept;
+    nlohmann::ordered_json getProceduralAssets(const nlohmann::json &params) const;
+    nlohmann::ordered_json editProceduralAsset(const nlohmann::json &params);
     bool forceAbortPreview(std::string reason);
     EditorEditCoordinator *editCoordinator() noexcept { return edit_.get(); }
     const EditorEditCoordinator *editCoordinator() const noexcept { return edit_.get(); }
@@ -433,6 +438,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params) const;
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params) const;
+    nlohmann::ordered_json getProceduralAssets(const nlohmann::json &params) const;
+    nlohmann::ordered_json editProceduralAsset(const nlohmann::json &params) const;
     nlohmann::ordered_json getFrameNodeOrder(const nlohmann::json &params) const;
     nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params) const;
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params) const;

@@ -227,13 +227,14 @@ void ProceduralGeometryContainer::clear() noexcept {
 }
 
 std::vector<RayQueryGeometryInstanceSnapshot>
-ProceduralGeometryContainer::proceduralRayInstances() const {
+ProceduralGeometryContainer::proceduralRayInstances(const PreparedSceneState *prepared) const {
+    const auto &state = prepared ? prepared->state : active_;
     std::vector<RayQueryGeometryInstanceSnapshot> result;
-    if (!active_ || active_->instances.empty()) return result;
+    if (!state || state->instances.empty()) return result;
     const auto &bindings = GET_MODULE(SceneLoader).runtimeObjectBindings();
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
-    result.reserve(active_->instances.size());
-    for (const auto &instance : active_->instances) {
+    result.reserve(state->instances.size());
+    for (const auto &instance : state->instances) {
         const auto binding = std::find_if(
             bindings.begin(), bindings.end(), [&](const auto &candidate) {
                 return candidate.authoring_object_id.value ==
@@ -243,8 +244,8 @@ ProceduralGeometryContainer::proceduralRayInstances() const {
             throw std::runtime_error(
                 "pelican.procedural_instance_unbound@1: authoring object has no runtime entity");
         }
-        const auto asset = active_->assets.find(instance.asset);
-        if (asset == active_->assets.end()) {
+        const auto asset = state->assets.find(instance.asset);
+        if (asset == state->assets.end()) {
             throw std::logic_error("published procedural asset is missing");
         }
         const auto *transform =
@@ -260,7 +261,7 @@ ProceduralGeometryContainer::proceduralRayInstances() const {
                                 ? std::optional<RayInstanceComponent>{
                                       *ray_instance}
                                 : std::nullopt,
-            .scene_epoch = active_->allocation_generation,
+            .scene_epoch = state->allocation_generation,
             .geometry_allocation_id = asset->second.allocation_id,
             .procedural_asset = asset->second.declaration.name,
             .procedural_record = asset->second.declaration.record,

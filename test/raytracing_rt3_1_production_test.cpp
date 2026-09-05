@@ -1,3 +1,4 @@
+#include "../src/core/communication/proceduralassetpublication.hpp"
 #include <catch2/catch_test_macros.hpp>
 #include "../src/core/shader/raytracingoracle.hpp"
 #include <catch2/generators/catch_generators.hpp>
@@ -6153,29 +6154,96 @@ void main() {
     };
     const auto initial = sample(1.0f);
     CHECK(sample(1.0f).blas_build_count == initial.blas_build_count);
-    auto assets = parseAssetDataFormatJson(assets_json);
-    const auto *scene = GET_MODULE(ProjectBasicConfig).resolvedScene().findScene("main");
-    REQUIRE(scene);
-    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
-    auto &vkcore = GET_MODULE(VulkanManageCore);
-    SceneLoadPhaseTrace trace;
-    const auto publish = [&] {
-        // Asset editing has no RPC yet; use the existing scene participant transaction.
-        auto prepared = procedural.prepareScene(assets, *scene, &vkcore,
-            procedural.allocationGeneration() + 1, trace);
-        procedural.publishPrepared(prepared, trace);
-        procedural.enqueueRetirement(std::move(prepared), trace);
+    auto service = makeEditorRuntimeService({.render_config_editing = true});
+    std::uint64_t rpc_id = 386600;
+    const auto catalog = [&] {
+        return runWp374aRpcBytes(*service, rpc_id++, "get_procedural_assets", Json::object());
     };
-    assets.procedural_geometry.front().record["radius"] = 1.125;
-    publish();
+    const auto finish = [&](const Json &submitted) {
+        if (submitted.at("status") != "accepted") return submitted;
+        service->commitPendingEdits();
+        return runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", submitted.at("ticket")}});
+    };
+    const auto edit = [&](const Json &fields) {
+        auto request = fields;
+        request["asset_name"] = "sphere_asset";
+        request["base_source_digest"] = catalog().at("source_digest").at("hex");
+        return finish(runWp374aRpcBytes(*service, rpc_id++, "edit_procedural_asset", request));
+    };
+    const auto entity = GET_MODULE(SceneLoader).objectId("Sphere");
+    REQUIRE(entity);
+    auto *live_transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);
+    REQUIRE(live_transform);
+    live_transform->pos.z = 2.0f;
+    const auto check_live_transform = [&] {
+        const auto inventory = GET_MODULE(PolygonInstanceContainer).rayAsInventory();
+        REQUIRE(inventory);
+        REQUIRE(inventory->instances.size() == 2);
+        for (const auto &instance : inventory->instances)
+            CHECK(instance.world_transform[3].z == 2.0f);
+    };
+    auto record = left.at("record");
+    record["radius"] = 1.125;
+    const auto record_result = edit({{"record", record}});
+    INFO(record_result.dump());
+    REQUIRE(record_result.at("status") == "committed");
+    check_live_transform();
     const auto record_edit = sample(1.125f);
     CHECK(record_edit.blas_build_count == initial.blas_build_count);
     CHECK(record_edit.blas_update_count == initial.blas_update_count);
-    assets.procedural_geometry.front().aabb_min[0] -= 0.125f;
-    publish();
+    const auto asset_path = project.path / "assets.json";
+    CHECK(Json::parse(readWp374aText(asset_path))["procedural_geometry"][0]["record"] == record);
+    auto bounds = left.at("aabb");
+    bounds["min"][0] = -3.625;
+    const auto bounds_result = edit({{"aabb", bounds}});
+    INFO(bounds_result.dump());
+    REQUIRE(bounds_result.at("status") == "committed");
+    check_live_transform();
     const auto bounds_edit = sample(1.125f);
     CHECK(bounds_edit.blas_build_count == record_edit.blas_build_count + 1);
     CHECK(bounds_edit.blas_update_count == record_edit.blas_update_count);
+    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+    const auto stable_instances = procedural.proceduralRayInstances();
+    const auto stable_cache = GET_MODULE(ProjectBasicConfig).assetDataJson();
+    const auto stable_bytes = readWp374aText(asset_path);
+    auto invalid_record = record;
+    invalid_record["radius"] = "not a float";
+    const auto rejected = edit({{"record", invalid_record}});
+    CHECK(rejected.at("status") != "committed");
+    CHECK(readWp374aText(asset_path) == stable_bytes);
+    CHECK(GET_MODULE(ProjectBasicConfig).assetDataJson() == stable_cache);
+    CHECK(procedural.proceduralRayInstances() == stable_instances);
+    CHECK(sample(1.125f).blas_build_count == bounds_edit.blas_build_count);
+
+    auto uncommitted_assets = Json::parse(stable_bytes);
+    uncommitted_assets["procedural_geometry"][0]["aabb"]["min"][0] = -3.75;
+    {
+        auto prepared = PreparedProceduralAssetPublication::prepare(
+            GET_MODULE(ProjectBasicConfig), GET_MODULE(PathResolver), procedural,
+            GET_MODULE(PolygonInstanceContainer), &GET_MODULE(VulkanManageCore), "main", uncommitted_assets.dump());
+        CHECK_THROWS_WITH(prepared->commit([] { throw std::runtime_error("source write failed"); }), "source write failed");
+    }
+    CHECK(procedural.proceduralRayInstances() == stable_instances);
+    CHECK(GET_MODULE(ProjectBasicConfig).assetDataJson() == stable_cache);
+    CHECK(readWp374aText(asset_path) == stable_bytes);
+    CHECK(sample(1.125f).blas_build_count == bounds_edit.blas_build_count);
+
+    const auto stale_digest = catalog().at("source_digest").at("hex");
+    const auto external_bytes = stable_bytes + "\n";
+    writeWp374aText(asset_path, external_bytes);
+    const auto stale = finish(runWp374aRpcBytes(*service, rpc_id++, "edit_procedural_asset",
+        {{"base_source_digest", stale_digest}, {"asset_name", "sphere_asset"}, {"record", record}}));
+    CHECK(stale.at("status") != "committed");
+    CHECK(readWp374aText(asset_path) == external_bytes);
+    CHECK(GET_MODULE(ProjectBasicConfig).assetDataJson() == stable_cache);
+    CHECK(procedural.proceduralRayInstances() == stable_instances);
+    CHECK(sample(1.125f).blas_build_count == bounds_edit.blas_build_count);
+    service.reset();
+    auto externally_changed = Json::parse(stable_bytes);
+    externally_changed["procedural_geometry"][0]["record"]["radius"] = 1.375;
+    writeWp374aText(asset_path, externally_changed.dump());
+    service = makeEditorRuntimeService({.render_config_editing = true});
+    CHECK_FALSE(catalog().at("editable").get<bool>());
 }
 
 TEST_CASE("WP386b sphere reports hits and reload publishes final entry classification",

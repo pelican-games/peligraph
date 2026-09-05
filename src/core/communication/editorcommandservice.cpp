@@ -5,6 +5,7 @@
 #include "schemavocabularyadapter.hpp"
 
 #include "renderconfigeditor.hpp"
+#include "proceduralasseteditor.hpp"
 #include "../loader/basicconfig.hpp"
 #include "../../project/sceneformat.hpp"
 #include "../userpublic/details/behavior/registerer.hpp"
@@ -578,21 +579,24 @@ EditorCommandError::EditorCommandError(EditorCommandErrorCode code,
 EditorCommandService::EditorCommandService(EditorCommandServiceDependencies dependencies)
     : dependencies_{std::move(dependencies)},
       render_config_editor_{
-          std::move(dependencies_.render_config_editor)} {
+          std::move(dependencies_.render_config_editor)},
+      procedural_asset_editor_{std::move(dependencies_.procedural_asset_editor)} {
     if (!dependencies_.document || !dependencies_.current_scene_id) {
         throw std::invalid_argument("EditorCommandService requires document and current_scene_id providers");
     }
     if (dependencies_.edit) {
-        if (render_config_editor_) {
+        if (render_config_editor_ || procedural_asset_editor_) {
             auto previous = std::move(
                 dependencies_.edit->frame_boundary_extension);
             const auto render_config_editor =
                 render_config_editor_;
+            const auto asset_editor = procedural_asset_editor_;
             dependencies_.edit->frame_boundary_extension =
-                [previous = std::move(previous),
-                 render_config_editor] {
+                [this, previous = std::move(previous),
+                 render_config_editor, asset_editor] {
                     if (previous) previous();
-                    render_config_editor->commitPending();
+                    if (render_config_editor) render_config_editor->commitPending();
+                    if (asset_editor && !edit_->hasOpenPreviewLease()) asset_editor->commitPending();
                 };
         }
         edit_ = std::make_unique<EditorEditCoordinator>(
@@ -1570,6 +1574,9 @@ OrderedJson EditorCommandService::removeAuthoredPass(
 }
 
 OrderedJson EditorCommandService::getEditResult(const Json &params) const {
+    if (procedural_asset_editor_ && params.is_object() && params.contains("ticket") &&
+        params.at("ticket").is_string() && params.at("ticket").get<std::string>().starts_with("procedural-asset-edit-"))
+        return procedural_asset_editor_->result(params);
     if (render_config_editor_ && params.is_object()) {
         const auto found = params.find("ticket");
         if (found != params.end() && found->is_string()) {
@@ -1599,6 +1606,10 @@ std::vector<OrderedJson> EditorCommandService::takeCompletedEditResults() {
     auto result =
         edit_ ? edit_->takeCompletedResults()
               : std::vector<OrderedJson>{};
+    if (procedural_asset_editor_) {
+        auto assets = procedural_asset_editor_->takeCompletedResults();
+        result.insert(result.end(), std::make_move_iterator(assets.begin()), std::make_move_iterator(assets.end()));
+    }
     if (render_config_editor_) {
         auto render_results =
             render_config_editor_->takeCompletedResults();
@@ -1613,9 +1624,28 @@ void EditorCommandService::commitPendingEdits() noexcept {
     if (edit_) {
         edit_->commitPending();
         synchronizePreviewWatch();
-    } else if (render_config_editor_) {
-        render_config_editor_->commitPending();
+    } else {
+        if (render_config_editor_) render_config_editor_->commitPending();
+        if (procedural_asset_editor_) procedural_asset_editor_->commitPending();
     }
+}
+
+OrderedJson EditorCommandService::getProceduralAssets(const Json &params) const {
+    if (!procedural_asset_editor_) throw std::logic_error("Procedural asset editing is unavailable");
+    return procedural_asset_editor_->get(params);
+}
+OrderedJson EditorCommandService::editProceduralAsset(const Json &params) {
+    if (!procedural_asset_editor_) throw std::logic_error("Procedural asset editing is unavailable");
+    if (edit_ && edit_->hasOpenPreviewLease())
+        return {{"status", "rejected"}, {"error", {{"code", "preview_lease_conflict"}, {"message", "Finish the preview before editing assets"}}}};
+    return procedural_asset_editor_->edit(params);
+}
+OrderedJson EditorCommandRpcAdapter::getProceduralAssets(const Json &params) const {
+    return service_.getProceduralAssets(params);
+}
+OrderedJson EditorCommandRpcAdapter::editProceduralAsset(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("Editor service is read-only");
+    return mutable_service_->editProceduralAsset(params);
 }
 
 bool EditorCommandService::forceAbortPreview(std::string reason) {

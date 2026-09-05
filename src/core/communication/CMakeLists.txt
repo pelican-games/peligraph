@@ -33,6 +33,8 @@ endif()
 
 target_sources(pelican_core PRIVATE
     editorassetqueryruntime.cpp
+    proceduralasseteditor.cpp
+    proceduralassetpublication.cpp
     editorcommandservice.cpp
     editorjournal.cpp
     editorpreviewservice.cpp

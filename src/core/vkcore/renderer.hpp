@@ -190,6 +190,7 @@ DECLARE_MODULE(Renderer) {
              RenderingPassId rendering_pass_id);
     ~Renderer();
     nlohmann::json currentFramePlanJson() const;
+    bool hasPendingRenderPipelinePublication() const noexcept;
     RenderPipelineAuthoringApplyResult
     applyRenderPipelineAuthoringCandidate(
         RenderConfigCandidateDocumentSet candidate_documents,

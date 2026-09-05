@@ -19,6 +19,7 @@
 namespace Pelican {
 
 class ProjectBasicConfigProjectionTarget;
+class PathResolver;
 
 enum class SceneSaveErrorCode : std::uint8_t {
     ExternalModification,
@@ -172,6 +173,9 @@ DECLARE_MODULE(ProjectBasicConfig) {
     }
     std::string sceneDataJson() const;
     std::string assetDataJson() const;
+    std::string assetDataReference() const;
+    std::string prepareAssetDataJson(std::string_view raw_json, PathResolver &resolver) const;
+    void publishAssetDataJson(std::string prepared_json) noexcept;
     std::string renderingConfigJson() const;
     std::string renderingConfigReference() const;
     void publishRenderingConfigJson(

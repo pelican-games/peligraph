@@ -995,6 +995,16 @@ geometry番号で、materialやgeometry tableの参照には対応するshader r
 AABB geometryを同じBLASへまとめます。別objectの行を一つのTLAS instanceにはまとめず、triangleとの混合groupも作りません。
 AABB boundsの変更はBLASを再構築し、recordだけの変更ではBLASを再利用します。
 
+既存procedural assetのbounds・recordは、編集RPCから実行中に変更できます。
+`get_procedural_assets({})`の`source_digest.hex`とasset名を使い、
+`edit_procedural_asset`へ`base_source_digest`、`asset_name`、更新する`aabb`または`record`を渡します。
+`aabb`は`min`/`max`、`record`はそのassetのrecord object全体を指定します。
+返されたticketを`get_edit_result`で確認します。成功時はassets元ファイルへの保存とruntime更新を行い、
+次の描画で変更が使われます。componentのSave sceneとは別の操作です。
+名前・kindや他assetは保持し、ファイル競合・不正record・保存失敗時は現在の描画状態を保持します。
+recordのshader型照合は現在sceneに装着したassetが対象で、未装着assetは装着時に検査します。
+プレビュー中やrender pipelineの公開待ち中は編集できません。専用のStudio編集画面は未実装です。
+
 StudioのRender Features画面から「Scene AS...」を開くと、名前付きTLASの名前とmaskを
 表で編集できます。Add／Removeで行を増減し、Applyで再コンパイルと保存を行います。
 不正な定義や使用中のASを削除する変更は適用されず、失敗時は表の編集内容を保持します。

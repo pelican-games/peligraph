@@ -187,6 +187,12 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_compute_task", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editComputeTask(params); });
     });
+    server.setHandler("get_procedural_assets", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getProceduralAssets(params); });
+    });
+    server.setHandler("edit_procedural_asset", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editProceduralAsset(params); });
+    });
     server.setHandler("add_compute_task", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.addComputeTask(params); });
     });

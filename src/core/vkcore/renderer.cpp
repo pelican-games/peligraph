@@ -93,6 +93,10 @@ struct RenderPipelineReloadState {
     std::string last_error;
 };
 
+bool Renderer::hasPendingRenderPipelinePublication() const noexcept {
+    return render_pipeline_reload_state && render_pipeline_reload_state->staged_generation != 0;
+}
+
 // Everything read by a delayed ray-layout publication hook is owned here.
 // In particular, ReloadService's batch vectors and the authoring call's
 // candidate/source callback are gone by the time the submitted frame commits.

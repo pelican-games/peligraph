@@ -5,6 +5,9 @@
 #include "editorcommandservice.hpp"
 #include "editorassetqueryruntime.hpp"
 #include "renderconfigeditor.hpp"
+#include "proceduralasseteditor.hpp"
+#include "proceduralassetpublication.hpp"
+#include "../renderer/proceduralgeometrycontainer.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../asset/model.hpp"
 #include "../container.hpp"
@@ -31,6 +34,7 @@
 #include "../userpublic/components/predefined.hpp"
 #include "../userpublic/details/event/registerer.hpp"
 #include "../vkcore/renderer.hpp"
+#include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/rendertiming.hpp"
 #include "../watch/reloadgate.hpp"
@@ -2053,6 +2057,35 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 });
         }
     }
+    std::shared_ptr<ProceduralAssetEditorService> procedural_asset_editor;
+    if (options.render_config_editing) {
+        const auto reference = runtime->modules.project_config.assetDataReference();
+        const auto resolved = runtime->modules.path_resolver.resolveExistingFileReference(reference);
+        if (const auto *path = std::get_if<std::filesystem::path>(&resolved)) {
+            const auto raw_assets = runtime->modules.path_resolver.loadText(reference);
+            const bool source_matches_runtime = runtime->modules.project_config.prepareAssetDataJson(
+                raw_assets, runtime->modules.path_resolver) == runtime->modules.project_config.assetDataJson();
+            procedural_asset_editor = std::make_shared<ProceduralAssetEditorService>(ProceduralAssetEditorDependencies{
+                .reference = reference,
+                .normalized_reference = runtime->modules.path_resolver.normalizedReference(reference),
+                .path = *path,
+                .project_root = runtime->modules.path_resolver.projectRoot(),
+                .source_bytes = raw_assets,
+                .gate = [runtime, source_matches_runtime] {
+                    const auto gate = editorGateObservation(runtime->modules);
+                    return RenderConfigEditorGateObservation{
+                        .can_edit = source_matches_runtime && gate.reasons == 0 && !runtime->modules.renderer.hasPendingRenderPipelinePublication(),
+                        .transition_epoch = gate.transition_epoch};
+                },
+                .apply = [runtime](std::string_view bytes, const std::function<void()> &source_commit) {
+                    auto prepared = PreparedProceduralAssetPublication::prepare(
+                        runtime->modules.project_config, runtime->modules.path_resolver,
+                        GET_MODULE(ProceduralGeometryContainer), runtime->modules.polygon_instances,
+                        FastModuleContainer::tryGet<VulkanManageCore>(), runtime->modules.scene_loader.currentScene(), bytes);
+                    prepared->commit(source_commit);
+                }});
+        }
+    }
     return std::make_unique<EditorCommandService>(EditorCommandServiceDependencies{
         .document = [runtime]() -> const AuthoringSceneDocument & {
             return runtime->modules.project_config.sceneDocument();
@@ -2275,6 +2308,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
         },
         .render_config_editor =
             std::move(render_config_editor),
+        .procedural_asset_editor = std::move(procedural_asset_editor),
         .import_scene_snapshot =
             [runtime](std::string_view bytes,
                       std::string_view current_scene_id) {

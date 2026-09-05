@@ -121,6 +121,8 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `set_component_value` | `object_id`, `component_slot`, `field_path`(JSON pointer), `value` | 値の変更。`/name` への書き込みは拒否 |
 | `add_component` | `object_id`, `component`(コンポーネント JSON) | コンポーネント追加 |
 | `remove_component` | `object_id`, `component_slot`(behavior は `attachment_index` も必須) | コンポーネント削除 |
+| `get_procedural_assets` | なし | procedural asset宣言と編集元digest |
+| `edit_procedural_asset` | `base_source_digest`, `asset_name`, `aabb`/`record` | 既存procedural assetの編集・保存・runtime反映 |
 | `spawn` | `object`(+ `scene_id`) | オブジェクト生成。ID は engine が採番 |
 | `destroy` | `object_id` | 子孫ごと削除(逆操作用に全 JSON を保存) |
 | `reparent` | `object_id`, `new_parent_id`(null = ルート), `preserve`(`"local"` / `"world"`) | 親子の付け替え |
@@ -186,7 +188,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 **解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
 `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
-([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1706))。形は 2 通りで、
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1736))。形は 2 通りで、
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
@@ -502,7 +504,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
   [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L686))です。
 - `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
-  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1931))。
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1961))。
   **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
   厳密一致のクライアントは壊れます。**
 - 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/

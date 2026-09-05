@@ -49,7 +49,7 @@ DECLARE_MODULE(ProceduralGeometryContainer) {
     void clear() noexcept;
 
     std::vector<RayQueryGeometryInstanceSnapshot>
-    proceduralRayInstances() const;
+    proceduralRayInstances(const PreparedSceneState *prepared = nullptr) const;
     std::vector<RayQueryGeometryInstanceSnapshot> preparedRayInstances(
         const ResolvedSceneView &scene,
         const PreparedSceneState *prepared = nullptr) const;

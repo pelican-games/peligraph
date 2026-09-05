@@ -322,11 +322,10 @@ std::string resolveExistingModelReferenceString(PathResolver &resolver, const st
     return std::get<std::filesystem::path>(resolved).string();
 }
 
-std::string rewriteAssetPaths(std::string data) {
+std::string rewriteAssetPaths(std::string data, PathResolver &resolver) {
     auto json = nlohmann::json::parse(data);
     (void)parseAssetDataFormatJson(json);
 
-    auto &resolver = GET_MODULE(PathResolver);
     for (auto &model : json.at("models")) {
         if (model.is_object() && model.contains("path") && model.at("path").is_string()) {
             model["path"] =
@@ -1016,9 +1015,21 @@ std::string ProjectBasicConfig::sceneDataJson() const {
 
 std::string ProjectBasicConfig::assetDataJson() const {
     if (!asset_data_json) {
-        asset_data_json = rewriteAssetPaths(GET_MODULE(PathResolver).loadText(asset_data_json_ref));
+        asset_data_json = rewriteAssetPaths(GET_MODULE(PathResolver).loadText(asset_data_json_ref), GET_MODULE(PathResolver));
     }
     return *asset_data_json;
+}
+
+std::string ProjectBasicConfig::assetDataReference() const {
+    return asset_data_json_ref;
+}
+
+std::string ProjectBasicConfig::prepareAssetDataJson(std::string_view raw_json, PathResolver &resolver) const {
+    return rewriteAssetPaths(std::string{raw_json}, resolver);
+}
+
+void ProjectBasicConfig::publishAssetDataJson(std::string prepared_json) noexcept {
+    asset_data_json = std::move(prepared_json);
 }
 
 std::string ProjectBasicConfig::renderingConfigJson() const {

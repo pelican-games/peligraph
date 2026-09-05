@@ -23237,13 +23237,20 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、port接続表):** procedural複数asset/BLAS結合は54300bb5、Inspector asset選択は8b5b2995へ統合済み。Tasksのport接続表を追加。次はprocedural asset定義編集、視覚的な線での接続、AS公開境界を越える配置など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、procedural asset編集):** port接続表はbc2e1a09へ統合済み。既存procedural assetのaabb/recordを編集・保存・runtime反映するRPCを追加し、実GPU確認。次は専用Studio編集画面、視覚的な線での接続、AS公開境界を越える配置など。学習サンプルは後回し。
+
+**Procedural asset bounds/record編集 (2026-09-06):**
+- get_procedural_assets / edit_procedural_assetと既存get_edit_resultへ接続。原文digestのCAS、既存document transactionのatomic保存・回復を再利用。編集対象は既存assetのaabb/recordに限定し、他assetと参照表記を保持。scene journalのUndo/Saveとは別操作、専用Studio画面は未実装。
+- frame boundaryで候補asset cache、ProceduralGeometryContainerとPolygonInstanceContainerのprepared stateを準備。typed record/row解決成功後にsource commit、その後noexcept公開と既存retirement。source失敗なら候補破棄。pipeline公開待ちはgateで拒否、preview中は新規編集拒否・受理済みcommitを延期する。
+- assetだけの変更で保存時transformを再適用しない。proceduralRayInstancesの既存live ECS経路に候補stateを渡し、rendererはsnapshotの宣言・transformを保持したままinventoryを再解決。service生成時には原文を既存パス書換えで正規化しロード済みcacheと一致しない場合編集を無効化。
+- 最終GPU4/4（327 assertions、build/.codex_bg/proceduraledit-final-gpu.log）。既存multi-AABB caseを実RPCへ変更し、recordヒット変化/BLAS reuse、bounds rebuild、不正record・CAS・source失敗でdisk/cache/runtime保持、live transformのcommit直後保持、外部変更後の新service無効化を確認。関連triangle/static/refitも成功。初回156 assertions成功後、transform/baseline回帰を追加。
+- CPU既存編集17/17（280 assertions、proceduraledit-cpu.log）。Player/Studioとtest target build成功（proceduraledit-build2.log）、最終GPU test再buildはproceduraledit-test-build.log。初回buildのPathResolver前方宣言位置・VulkanManageCore include不備を修正。新test target/配布test toolは追加なし。
 
 **RT7 task resource接続表 (2026-09-06):**
 - Tasksにport名・ABI固定列と接続先resource入力を追加。同じ元resourceのaliasをまとめ、Update connections JSONで草稿へ反映。Apply taskの既存CAS・compiler検証を使用する。resource候補一覧や線を引く編集は未実装。
 - 純粋JSON helperでcompact/object/implicit resource指定、reads/writes、read_footprintsキー、dispatch.indirect.bufferを元値mapから一括更新。groups_from/rays_fromのport名、ABI、未知項目、uint64 offsetは保持する。footprint衝突は草稿を変更せず診断。
 - 接続map連鎖・swap・alias・ABI/整数保持・衝突の2caseを含む既存Frame Plan target18/18成功（build/.codex_bg/connections-model.log）。Studioとtest target build成功（connections-build.log）。GUI実操作は未確認、GPU/runtime変更なし。
-- 次候補のprocedural asset編集は未実装。ProjectBasicConfig::assetDataJson()はパス書換え済みなので保存元にしない。原文CAS、cache更新、ProceduralGeometryContainer/ray plan公開を同じrollback単位へ参加させる必要がある。既存RendererModelProjectionAdapterはscene component変更時だけprepareするため、asset候補を渡す入口を追加してbounds/record編集から進める。
+- この時点の次候補だったprocedural asset編集は上記RPCへ接続。ProjectBasicConfig::assetDataJson()はパス書換え済みなので保存元に使わず、原文のCASを使用する。
 
 **Inspector asset選択 (2026-09-06):**
 - component候補に型別asset選択情報を追加。Studioで一覧から選び、Use selected assetsで草稿の参照項目だけを更新する。procedural単数はasset、複数はassets。Add/Undo/Redo/Saveは既存journalを使用する。
