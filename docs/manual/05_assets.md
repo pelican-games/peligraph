@@ -136,7 +136,7 @@ identity は下の 3 種のうち**ちょうど 1 つ**の形を取ります(「
 
 - **document の存在が勝ちます。** 単一 material の `.mat.json` のように `material_name` が無い document でも `Document` になり、`asset` 側へは落ちません。
 - `asset` に入るのは `asset_data.json` の `name`(`"sponza"` 等)ではなく `path` 由来の参照です。マシン依存の絶対パスにならないよう、解決前の authored 参照を保ったまま運びます([model.cpp](../../src/core/asset/model.cpp#L290))。
-- **`source_material_index` は optional のまま運ばれ、欠損は 0 に潰されません**([modeltemplate.hpp](../../src/core/model/modeltemplate.hpp#L127) → [accelerationstructure.hpp](../../src/core/vkcore/accelerationstructure.hpp#L49))。内部の「無し」番兵(`0xffffffff`)が identity まで届いた場合は `pelican.ray_material_index_out_of_range@1` で失敗します。
+- **`source_material_index` は optional のまま運ばれ、欠損は 0 に潰されません**([modeltemplate.hpp](../../src/core/model/modeltemplate.hpp#L127) → [accelerationstructure.hpp](../../src/core/vkcore/accelerationstructure.hpp#L50))。内部の「無し」番兵(`0xffffffff`)が identity まで届いた場合は `pelican.ray_material_index_out_of_range@1` で失敗します。
 - material の付いていないモデルはレイトレの規則で選べません(`Unavailable`)。AS 規則を 1 つでも書いた v2 プロジェクトにそういう行が混ざると `pelican.ray_as_row_material_identity_unavailable@1` になります。規則を書かなければ identity は要求されません。
 
 ### `.vrma`(VRM Animation)— 宣言レーンのないランタイム層形式(🚧WP176/177/178)

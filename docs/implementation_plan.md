@@ -23237,7 +23237,15 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT6 scene AS node):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。間接レイトレ・変形BLAS refitに続き、現在sceneのAS構築をframe graphの実行nodeへ接続。次はRT6のAS明示選択・複数TLAS・複数geometry BLAS。Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT6 named TLAS):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。AS構築nodeに続き、mask別の名前付きTLASとRT task別の明示選択を接続。次はRT6の複数geometry BLAS。AS単位の編集node、Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+
+**RT6 named TLAS (2026-09-06):**
+- project rendering configの`scene_acceleration_structures`でnameとinstance_maskを宣言し、RT taskの`ray_tracing.acceleration_structure`から選択。省略時`scene`は全scene。mask0は空集合。名前重複・予約名・未知選択・不正maskは拒否する。
+- 同じBLASからdefaultと名前付きTLASを構築し、元のmask/custom index/flags/SBT offsetを保持。q・geometry・SBTを共通化したまま、専用frame descriptorをtaskのbind時に選択する。使用中descriptorを書き換えない。
+- 全TLASをAS State、全descriptorを親bundleに保持し、論理フレームの同じpublication/取消し/submission leaseで所有。reuseは名前付き定義・handleも比較する。名前別instance件数を診断へ追加。
+- 新GPUテスト1/1（19 assertions）で同一frameのleft/right/empty task、識別値とhit/miss、default2件・named1/1/0件、TLAS4構築に対しBLAS2構築を確認。RT4/5/6既存5/5（117 assertions）、AS/影/transaction6/6（4984 assertions）成功。CPU compiler6/6（143 assertions）、Player/Studio build成功。
+- 新テストを保存中のコンパイルが古いTUを取り込んだため、test一覧で未収録を検出し、mtime更新・単独再build後に新テストを実行した。古い実行結果を新機能の証拠には使わない。
+- 通常のfragment/compute ray queryの名前付き選択、任意object predicate、AS単位の編集node、複数geometry BLASは残る。複数sceneの同時ロードの完了ではない。
 
 **RT6 scene AS node (2026-09-06):**
 - `acceleration_structure`種別とcompiler生成の`__scene_acceleration_structure`を追加。ray project / RT task / ray capabilityからvariant内のgraphへ生成し、既存nodeから依存を張る。変形compute・AS・SBT publicationをグラフ外の先行処理からこのnodeの実行へ移した。

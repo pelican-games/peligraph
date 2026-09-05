@@ -4718,6 +4718,7 @@ void Renderer::renderLogicalFrame(
         throw std::runtime_error(
             "Renderer logical frame requires a compiled render pipeline");
     }
+    const auto &named_scene_as = program->frame_graph.render_pipeline->scene_acceleration_structures;
     const bool graph_builds_scene_as = std::any_of(
         program->frame_graph.nodes.begin(), program->frame_graph.nodes.end(),
         [](const auto &node) { return node.kind == FramePlanNodeKind::acceleration_structure; });
@@ -4841,7 +4842,7 @@ void Renderer::renderLogicalFrame(
                         *geometry_snapshot, *ray_scene_rows,
                         ray_type_count,
                         runtime_generation->generation,
-                        ray_tracing_pipeline_generation);
+                        ray_tracing_pipeline_generation, named_scene_as);
                 if (reused) {
                     acceleration_structure_build.emplace(
                         std::move(*reused));
@@ -4894,7 +4895,7 @@ void Renderer::renderLogicalFrame(
                             .usesMaterialAlphaProfile(),
                     runtime_generation->generation,
                     ray_tracing_pipeline_generation,
-                    ray_scene_rows ? generation_root : nullptr));
+                    ray_scene_rows ? generation_root : nullptr, named_scene_as));
             }
             frame_publication.emplace(
                 modules.frame_resources.prepareRayTracingPublication(
@@ -4902,7 +4903,8 @@ void Renderer::renderLogicalFrame(
                     acceleration_structure_build->topLevel(),
                     acceleration_structure_build->sceneTables(),
                     std::string{
-                        acceleration_structure_build->rowDigest()}));
+                        acceleration_structure_build->rowDigest()},
+                    acceleration_structure_build->namedTopLevels()));
             submission_resources->rt_state =
                 acceleration_structure_build->stateLease();
             submission_resources->rt_bundle =

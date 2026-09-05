@@ -2,6 +2,7 @@
 #include <map>
 
 #include "../shader/raygrouplayout.hpp"
+#include "../../project/sceneaccelerationstructure.hpp"
 
 #include <array>
 #include <cstddef>
@@ -224,6 +225,7 @@ struct RayQueryAccelerationStructureDiagnostics {
     std::size_t active_blas_count = 0;
     std::size_t blas_variant_count = 0;
     std::size_t tlas_instance_count = 0;
+    std::map<std::string, std::size_t> named_tlas_instance_counts;
     std::uint64_t geometry_pool_generation = 0;
     std::uint64_t model_rebuild_generation = 0;
     std::uint64_t geometry_pool_invalidation_count = 0;
@@ -263,6 +265,7 @@ class RayQueryAccelerationStructureScope {
         FrameBuild &operator=(const FrameBuild &) = delete;
 
         vk::AccelerationStructureKHR topLevel() const noexcept;
+        std::map<std::string, vk::AccelerationStructureKHR> namedTopLevels() const;
         std::shared_ptr<const RayTracingSceneShaderBindingTables>
         sceneTables() const noexcept;
         std::shared_ptr<const void> stateLease() const noexcept;
@@ -302,7 +305,8 @@ class RayQueryAccelerationStructureScope {
         bool material_alpha_profile_active = false,
         std::uint64_t runtime_generation = 0,
         std::uint64_t ray_tracing_pipeline_generation = 0,
-        std::shared_ptr<const RaySceneGenerationRoot> generation_root = {});
+        std::shared_ptr<const RaySceneGenerationRoot> generation_root = {},
+        std::span<const SceneAccelerationStructureDefinition> named_definitions = {});
     std::optional<FrameBuild> tryReuseFrame(
         std::uint64_t geometry_pool_generation,
         std::uint64_t model_rebuild_generation,
@@ -310,7 +314,8 @@ class RayQueryAccelerationStructureScope {
         const RaySceneRowSnapshot &ray_scene_rows,
         std::uint32_t ray_type_count,
         std::uint64_t runtime_generation,
-        std::uint64_t ray_tracing_pipeline_generation);
+        std::uint64_t ray_tracing_pipeline_generation,
+        std::span<const SceneAccelerationStructureDefinition> named_definitions = {});
 
     const RayQueryAccelerationStructureDiagnostics &
     diagnostics() const noexcept {

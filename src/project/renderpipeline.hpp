@@ -7,6 +7,7 @@
 #include "materialoutput.hpp"
 #include "passfieldownership.hpp"
 #include "samplecountplanning.hpp"
+#include "sceneaccelerationstructure.hpp"
 #include "targetplanning.hpp"
 #include "targetrenderplanning.hpp"
 #include "xrtargetpolicy.hpp"
@@ -371,6 +372,7 @@ struct CompiledRenderPipeline {
     CompiledDrawSorting draw_sorting;
     SampleCountPolicy sample_count_policy;
     TargetPlanningPolicy target_planning;
+    std::vector<SceneAccelerationStructureDefinition> scene_acceleration_structures;
     std::vector<VulkanTargetPlanPinPackage>
         vulkan_plan_pins;
     std::vector<VulkanPhysicalFragmentPackage>

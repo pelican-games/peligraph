@@ -727,6 +727,7 @@ struct ComputeDispatchDefinition {
 struct RayCallableRecordLayout;
 
 struct RayTracingTaskShaderDefinition {
+    std::string acceleration_structure = "scene";
     // The sole production default literal for RT recursion.
     std::uint32_t max_recursion = 1;
     ShaderReference raygen{

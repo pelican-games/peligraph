@@ -457,9 +457,36 @@ ray queryをshaderから使うgraphは`target_planning.graphs`の`required_capab
 `pelican.vulkan.ray_query@1`を宣言する。宣言もRT taskもray projectも無いまま
 reflectionだけでASが必要になった場合、graph外で暗黙に構築せずロード時に明示拒否する。
 
-この段階のnodeはcompiler生成で、現在sceneのASを1組構築する。任意のAS名・instance選択・
-複数TLAS・BLAS geometry結合・編集RPCは残る。現在の固定bindingと共通q/SBT契約を
-複数ASに拡張したときに、選択ASをconsumerの明示的な資源依存へ接続する。
+このnodeはcompiler生成で、現在sceneのdefault TLASと以下の名前付きTLASをまとめて構築する。
+AS単位の編集node・BLAS geometry結合・編集RPCは残る。
+
+### RT6: 名前付きTLASの選択（2026-09-06）
+
+projectのrendering configに`scene_acceleration_structures`を宣言する。preset使用時も
+project側が所有する。各行は`name`と`instance_mask`（省略時255、整数0〜255）を持つ。
+名前の重複・空文字・予約名`scene`は拒否する。
+
+```json
+"scene_acceleration_structures": [
+  {"name": "actors", "instance_mask": 1},
+  {"name": "world", "instance_mask": 2}
+]
+```
+
+RT taskは`ray_tracing.acceleration_structure`にこの名前を指定する。省略時の`scene`は
+現在scene全体を指す。名前付きTLASは、instanceのmaskと宣言maskのbit ANDが非ゼロの
+行を含む。mask 0は空のTLASを作る。選択後も元のinstance mask・custom index・flags・
+SBT offsetを保持し、shaderのray cull maskは通常どおり適用される。
+
+すべてのTLASは共通のBLASとgeometry/record/SBTを使用し、`q`を詰め直さない。
+各TLASに独立したframe descriptorを用意し、taskのbind時に選ぶ。shaderのAS bindingは
+変更せず、別taskの選択で使用中descriptorを書き換えない。ASとdescriptor群は一つの
+論理フレームpublication・submission leaseで所有する。定義・instance mask変更時は
+reuse条件を再評価し、対象集合を更新する。
+
+通常のfragment/compute ray queryは現在`scene`を参照する。名前付き選択はRT taskに対応。
+graphでは共通のAS構築nodeが全TLASを用意する。個別ASへの編集・依存表示は後続であり、
+複数sceneを同時にロードする機能や任意object predicateの選択まで完了したとは扱わない。
 
 ## 9. エラー文言・受け入れゲート
 

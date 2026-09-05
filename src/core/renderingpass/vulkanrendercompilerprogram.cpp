@@ -681,6 +681,34 @@ compileDefaultVulkanVariant(
         requireRayMaterialBindlessForGraphs(
             logical.compiled_pipeline, graph_names);
     }
+    const auto &scene_as = logical.compiled_pipeline.scene_acceleration_structures;
+    for (const auto &task : compute_task_definitions) {
+        if (!task.ray_tracing || task.ray_tracing->acceleration_structure == "scene") continue;
+        const auto &selected = task.ray_tracing->acceleration_structure;
+        if (std::none_of(scene_as.begin(), scene_as.end(), [&](const auto &definition) {
+                return definition.name == selected;
+            }))
+            throw std::runtime_error("Ray tracing task '" + task.name +
+                "' selects unknown scene acceleration structure '" + selected + "'");
+    }
+    if (!scene_as.empty()) {
+        for (const auto &graph : graph_definitions) {
+            auto &constraints = logical.compiled_pipeline.target_planning.graphs;
+            auto found = std::find_if(constraints.begin(), constraints.end(), [&](const auto &entry) {
+                return entry.graph == graph.name;
+            });
+            if (found == constraints.end()) {
+                constraints.push_back(PlanningGraphConstraints{.graph = graph.name});
+                found = std::prev(constraints.end());
+            }
+            const std::string capability = "pelican.vulkan.ray_query@1";
+            auto &required = found->required_capabilities;
+            if (std::find(required.begin(), required.end(), capability) == required.end()) {
+                required.push_back(capability);
+                std::sort(required.begin(), required.end());
+            }
+        }
+    }
     detail::namespaceComputeTasks(
         compute_task_definitions,
         graph_definitions,

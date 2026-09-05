@@ -24,6 +24,32 @@
 #include <iterator>
 
 namespace Pelican {
+TEST_CASE("named scene AS definitions validate mask and preserve metadata", "[rendercompiler][rt6][multi-tlas]") {
+    ResolvedRenderPipeline resolved;
+    resolved.normalized_config["scene_acceleration_structures"] = nlohmann::json::array({
+        {{"name", "actors"}, {"instance_mask", 1}}, {{"name", "everything"}},
+        {{"name", "empty"}, {"instance_mask", 0}}});
+    const auto compiled = compileRenderPipeline(resolved);
+    REQUIRE(compiled.scene_acceleration_structures.size() == 3);
+    CHECK(compiled.scene_acceleration_structures[0].instance_mask == 1);
+    CHECK(compiled.scene_acceleration_structures[1].instance_mask == 255);
+    CHECK(compiled.scene_acceleration_structures[2].instance_mask == 0);
+    const auto metadata = serializeCompiledRenderPipelineMetadata(compiled);
+    CHECK(metadata.at("scene_acceleration_structures")[0].at("name") == "actors");
+    for (const auto &entry : nlohmann::json::array({
+            {{"name", "scene"}}, {{"name", ""}},
+            {{"name", "bad"}, {"instance_mask", -1}},
+            {{"name", "bad"}, {"instance_mask", 256}},
+            {{"name", "bad"}, {"instance_mask", 1.5}},
+            {{"name", "bad"}, {"unknown", 1}}})) {
+        resolved.normalized_config["scene_acceleration_structures"] = nlohmann::json::array({entry});
+        CHECK_THROWS(compileRenderPipeline(resolved));
+    }
+    resolved.normalized_config["scene_acceleration_structures"] = nlohmann::json::array({
+        {{"name", "same"}}, {{"name", "same"}}});
+    CHECK_THROWS(compileRenderPipeline(resolved));
+}
+
 TEST_CASE("scene AS operation follows variant-wide ray requirements", "[rendercompiler][rt6][as-node]") {
     std::vector<FrameGraphDefinition> graphs{
         {.name = "main", .nodes = {{.name = "draw", .kind = FramePlanNodeKind::render}}},

@@ -355,6 +355,10 @@ void FrameResources::updateSceneDescriptors() {
         for (const auto &set : recording_rt_bundle->multiview_sets) {
             update(set.get());
         }
+        for (const auto &[name, bundle] : recording_rt_bundle->named_bundles) {
+            for (const auto &set : bundle->sequential_sets) update(set.get());
+            for (const auto &set : bundle->multiview_sets) update(set.get());
+        }
     }
 }
 
@@ -450,7 +454,8 @@ FrameResources::prepareRayTracingPublication(
     std::uint32_t in_flight_frame_index,
     vk::AccelerationStructureKHR top_level,
     std::shared_ptr<const RayTracingSceneShaderBindingTables> tables,
-    std::string row_digest) {
+    std::string row_digest,
+    const std::map<std::string, vk::AccelerationStructureKHR> &named_top_levels) {
     if (!top_level) {
         throw std::runtime_error(
             "ray-tracing frame publication requires a TLAS");
@@ -459,7 +464,14 @@ FrameResources::prepareRayTracingPublication(
         throw std::out_of_range(
             "ray-query in-flight frame index is out of range");
     }
-    if (active_rt_bundle &&
+    const bool named_levels_match = active_rt_bundle &&
+        active_rt_bundle->named_bundles.size() == named_top_levels.size() &&
+        std::all_of(named_top_levels.begin(), named_top_levels.end(), [&](const auto &entry) {
+            const auto found = active_rt_bundle->named_bundles.find(entry.first);
+            return found != active_rt_bundle->named_bundles.end() &&
+                   found->second->top_level == entry.second;
+        });
+    if (active_rt_bundle && named_levels_match &&
         active_rt_bundle->top_level == top_level &&
         active_rt_bundle->scene_tables == tables &&
         active_rt_bundle->row_digest == row_digest &&
@@ -477,6 +489,17 @@ FrameResources::prepareRayTracingPublication(
         return FramePublication{this, active_rt_bundle};
     }
 
+    auto candidate = createRayTracingBundle(top_level, tables, row_digest);
+    for (const auto &[name, named_level] : named_top_levels)
+        candidate->named_bundles.emplace(name, createRayTracingBundle(named_level, tables, row_digest));
+    recording_rt_bundle = candidate;
+    return FramePublication{this, std::move(candidate)};
+}
+
+std::shared_ptr<RtDescriptorBundle> FrameResources::createRayTracingBundle(
+    vk::AccelerationStructureKHR top_level,
+    std::shared_ptr<const RayTracingSceneShaderBindingTables> tables,
+    std::string row_digest) {
     const auto descriptor_count = static_cast<std::uint32_t>(
         frame_slots.size() + multiview_frame_slots.size());
     auto candidate = std::make_shared<RtDescriptorBundle>();
@@ -591,8 +614,7 @@ FrameResources::prepareRayTracingPublication(
                static_cast<vk::DeviceSize>(view_count) *
                    sizeof(FrameResolutionUniformData));
     }
-    recording_rt_bundle = candidate;
-    return FramePublication{this, std::move(candidate)};
+    return candidate;
 }
 
 void FrameResources::selectView(std::uint32_t in_flight_frame_index,
@@ -709,18 +731,26 @@ void FrameResources::updateMultiviewResolutions(
         data.begin(), data.end());
 }
 
+const RtDescriptorBundle *FrameResources::selectedRayTracingBundle(std::string_view name) const {
+    const auto &bundle = recording_rt_bundle ? recording_rt_bundle : active_rt_bundle;
+    if (name == "scene") return bundle.get();
+    if (bundle) {
+        const auto found = bundle->named_bundles.find(name);
+        if (found != bundle->named_bundles.end()) return found->second.get();
+    }
+    throw std::runtime_error("pelican.ray_tracing.unknown_acceleration_structure@1: " + std::string{name});
+}
+
 void FrameResources::bindFrameDescriptorSet(
     vk::CommandBuffer cmd_buf,
     vk::PipelineLayout pipeline_layout,
-    vk::PipelineBindPoint bind_point) const {
+    vk::PipelineBindPoint bind_point, std::string_view acceleration_structure) const {
     const auto ray_query =
         GET_MODULE(PipelineFactory)
             .pipelineLayoutUsesRayQueryFrameSet(
                 pipeline_layout);
     vk::DescriptorSet descriptor_set;
-    const auto &rt_bundle = recording_rt_bundle
-                                ? recording_rt_bundle
-                                : active_rt_bundle;
+    const auto *rt_bundle = selectedRayTracingBundle(acceleration_structure);
     if (ray_query && !rt_bundle) {
         throw std::runtime_error(
             "pipeline requires a published ray-query descriptor bundle");
@@ -763,14 +793,12 @@ void FrameResources::bindCompute(
 }
 
 void FrameResources::bindRayTracing(
-    vk::CommandBuffer cmd_buf,
-    vk::PipelineLayout pipeline_layout) const {
+    vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
+    std::string_view acceleration_structure) const {
     bindFrameDescriptorSet(
         cmd_buf, pipeline_layout,
-        vk::PipelineBindPoint::eRayTracingKHR);
-    const auto &rt_bundle = recording_rt_bundle
-                                ? recording_rt_bundle
-                                : active_rt_bundle;
+        vk::PipelineBindPoint::eRayTracingKHR, acceleration_structure);
+    const auto *rt_bundle = selectedRayTracingBundle(acceleration_structure);
     if (rt_bundle && rt_bundle->scene_tables &&
         rt_bundle->scene_tables
             ->ray_table_descriptor_set) {

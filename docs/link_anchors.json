@@ -3453,7 +3453,7 @@
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|`index_count / 3`": "const auto primitive_count = instance->index_count / 3;",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|`lowerRayTracingTlasInstancePlan()`": "lowerRayTracingTlasInstancePlan(",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|`overrideRayTracingTlasRecordOffsetForTesting`": "overrideRayTracingTlasRecordOffsetForTesting(",
-    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|`primitiveCount == 0` の TLAS": "if (tlas_instances.empty()) {",
+    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|`primitiveCount == 0` の TLAS": "// the zero build count makes the resulting TLAS a valid miss-only scene.",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|`row.q != canonical_index` の拒否": "if (row.q != canonical_index ||",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|`validateRayProfileAccelerationStructureFlags()`": "void validateRayProfileAccelerationStructureFlags(",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/renderer/accelerationstructure.cpp|コードコメント": "// Authored/content identity only: instance slot, generation, and",

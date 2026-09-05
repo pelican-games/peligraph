@@ -638,6 +638,81 @@ struct Wp380RuntimeCleanup {
     }
 };
 
+TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared records",
+          "[rt6][named-tlas][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"rt6_named_tlas"};
+    writeWp374aProject(project.path, 2, true, true, true,
+        Json{{"name", "pelican_ray_instance"}, {"mask", 1}, {"custom_index", 71}}, true);
+    TestMorphFixture::writeGlb(project.path / "models/chair.glb");
+    auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
+    auto left = scene["scenes"]["main"]["objects"][0];
+    left["name"] = "Left";
+    left["components"][0]["pos"] = {-2.0, 0.0, 8.0};
+    auto right = left;
+    right["name"] = "Right";
+    right["components"][0]["pos"] = {2.0, 0.0, 8.0};
+    right["components"][2]["mask"] = 2;
+    right["components"][2]["custom_index"] = 82;
+    scene["scenes"]["main"]["objects"] = Json::array({left, right});
+    writeWp374aText(project.path / "scene.json", scene.dump());
+    auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
+    rendering["scene_acceleration_structures"] = Json::array({
+        {{"name", "left"}, {"instance_mask", 1}},
+        {{"name", "right"}, {"instance_mask", 2}},
+        {{"name", "empty"}, {"instance_mask", 0}}});
+    writeWp374aText(project.path / "hybrid.json", rendering.dump());
+    const auto feature_path = project.path / "features/wp377_profile_owner.json";
+    auto feature = Json::parse(readWp374aText(feature_path));
+    const auto target_template = feature["render_targets"][0];
+    feature["render_targets"] = Json::array();
+    feature["compute_tasks"] = Json::array();
+    for (const std::string name : {"left", "right", "empty"}) {
+        const auto output = "rt6_" + name;
+        auto target = target_template;
+        target["name"] = output;
+        target["usage"] = {"STORAGE", "TRANSFER_SRC"};
+        feature["render_targets"].push_back(target);
+        auto task = RayTracingRt31Fixture::wp366TypedRayTracingTask(
+            "trace_" + name, output, "project://shaders/" + output, false);
+        task["ray_tracing"]["acceleration_structure"] = name;
+        feature["compute_tasks"].push_back(task);
+        auto shader = RayTracingRt31Fixture::wp366RaygenSource(
+            "PELICAN_RAY_TYPE_primary", "PELICAN_MISS_sky", "pelican_resource_" + output);
+        const std::string opaque = "gl_RayFlagsOpaqueEXT";
+        shader.replace(shader.find(opaque), opaque.size(), "gl_RayFlagsNoneEXT");
+        writeWp374aText(project.path / ("shaders/" + output + ".rgen"), shader);
+    }
+    writeWp374aText(feature_path, feature.dump());
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    const auto rows = renderWp374aProductionRows();
+    REQUIRE(rows.rows.size() == 2);
+    for (const std::string name : {"left", "right", "empty"}) {
+        CAPTURE(name);
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+            "rt6_" + name, ImageSubresourceRange{});
+        REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
+        std::array<std::uint32_t, 12> pixels{};
+        std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+        CHECK(pixels[1] == (name == "left" ? 71u : 0xffffffffu));
+        CHECK(pixels[5] == (name == "right" ? 82u : 0xffffffffu));
+        CHECK(pixels[9] == 0xffffffffu);
+    }
+    const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+    CHECK(diagnostics.tlas_instance_count == 2);
+    CHECK(diagnostics.named_tlas_instance_counts.at("left") == 1);
+    CHECK(diagnostics.named_tlas_instance_counts.at("right") == 1);
+    CHECK(diagnostics.named_tlas_instance_counts.at("empty") == 0);
+    CHECK(diagnostics.tlas_build_count == 4);
+    CHECK(diagnostics.blas_build_count == 2);
+#else
+    SKIP("RT6 named TLAS fixture requires the runtime compiler");
+#endif
+}
+
 TEST_CASE("RT6 GPU generated indirect ray dimensions reach every 3D lane",
           "[rt6][indirect][ray-tracing][production][gpu]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER

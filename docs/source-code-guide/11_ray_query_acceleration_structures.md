@@ -18,7 +18,9 @@
 
 frame planの`blas_build_count`と`blas_update_count`で、作り直しとrefitの累積回数を区別できます。refitはVulkanの[out-of-place UPDATE](https://docs.vulkan.org/spec/latest/chapters/accelstructures.html)を使い、出力bufferの再確保は残ります。
 
-構築処理はframe graphの`__scene_acceleration_structure` nodeで実行します。変形computeからAS/SBTのpublicationまでを含み、後続nodeより先に実行します。XRでは論理フレーム内で共有します。ray queryだけをshaderから使う場合も、graphの`required_capabilities`へ`pelican.vulkan.ray_query@1`を宣言して構築依存を明示します。nodeは現在sceneのAS一組に対応し、複数ASの選択は後続です。
+構築処理はframe graphの`__scene_acceleration_structure` nodeで実行します。変形computeからAS/SBTのpublicationまでを含み、後続nodeより先に実行します。XRでは論理フレーム内で共有します。ray queryだけをshaderから使う場合も、graphの`required_capabilities`へ`pelican.vulkan.ray_query@1`を宣言して構築依存を明示します。
+
+`scene_acceleration_structures`を宣言すると、同じBLAS群からinstance mask別の名前付きTLASも構築します。RT taskの`ray_tracing.acceleration_structure`で選択し、省略時は全sceneです。qとSBTは共通のまま、TLAS別のdescriptor bundleをbindします。全TLAS・descriptorを同じpublicationで所有し、task間で使用中descriptorを変更しません。`named_tlas_instance_counts`に各集合の件数が出ます。
 
 加速構造 scope は、物理計画が `pelican.vulkan.ray_query@1` を要求するか、登録したシェーダの reflection が frame set の TLAS binding を検出した場合に `RenderPipelineGpuResourceScope` へ登録されます。後者により、独自パスが feature manifest の能力宣言を経由しなくても TLAS layout だけを作って実行時に欠けることはありません。同じ reflection 判定が拡張 frame-set layout、実デバイスの能力確認、owner scope 登録を決めます。どちらも要求しないプロジェクトでは scope 自体が無く、BLAS / TLAS の構築回数は 0 のままです。scope の差し替えは既存 GPU owner scope の purge に従います。
 
@@ -64,13 +66,13 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 
 ### `RayQueryGeometryInstanceSnapshot`
 
-[`RayQueryGeometryInstanceSnapshot`](../../src/core/vkcore/accelerationstructure.hpp#L30) は、記録が始まる前に renderer 側で凍結される値です。ヘッダのコメントが境界を規範として書いています — **vkcore は安定した identity と range だけを見て、model 型や draw inventory 型には依存しない**。
+[`RayQueryGeometryInstanceSnapshot`](../../src/core/vkcore/accelerationstructure.hpp#L31) は、記録が始まる前に renderer 側で凍結される値です。ヘッダのコメントが境界を規範として書いています — **vkcore は安定した identity と range だけを見て、model 型や draw inventory 型には依存しない**。
 
 | 区分 | field |
 |---|---|
 | identity | `asset_identity`、`authoring_object_id`、`instance_index` / `instance_generation`、`scene_epoch` |
-| 宣言 | [`std::optional<RayInstanceComponent> ray_instance`](../../src/core/vkcore/accelerationstructure.hpp#L37) |
-| material selector | `material_asset_reference`、`material_document_reference`、`material_name`、[`std::optional<std::uint32_t> source_material_index`](../../src/core/vkcore/accelerationstructure.hpp#L49)、`resolved_material_handle` / `_generation` / `_lease` |
+| 宣言 | [`std::optional<RayInstanceComponent> ray_instance`](../../src/core/vkcore/accelerationstructure.hpp#L38) |
+| material selector | `material_asset_reference`、`material_document_reference`、`material_name`、[`std::optional<std::uint32_t> source_material_index`](../../src/core/vkcore/accelerationstructure.hpp#L50)、`resolved_material_handle` / `_generation` / `_lease` |
 | geometry | `geometry_allocation_id`、`index_count` / `index_offset`、`vertex_offset` / `vertex_count`、`attribute_presence` |
 | 変形方式 | `skinned` / `morph_deformed` / `vat_deformed` |
 | 名前付けと配置 | `mesh_index`、`primitive_index`、`node_index`、`world_transform` |

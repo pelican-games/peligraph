@@ -35,7 +35,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列を確認し、386cの数値基礎はae29fc98まで保存。数値基盤の追加実装は保留 | Playerで開ける学習サンプルを入口に、配置・サイズ・bounds・mixed geometryを実描画で確認する。数値oracleの完成を次機能の条件にしない |
 | RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。ゲームDLLからの更新を実GPUで確認 | Studioのrecord編集UIは残る。次はRT5の変形geometry |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
-| RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 画像由来・明示3Dサイズ、GameContextからの変更、間接起動を実装。現在sceneのAS構築をcompiler生成の実行nodeへ接続 | ASの明示選択・編集、複数TLAS・複数geometry BLASは残る |
+| RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、AS構築node、mask別の名前付きTLASとRT task別選択を実装・実GPU確認。BLASとSBTは共有 | AS単位の編集node、複数geometry BLASは残る |
 | RT7 | ノードの一級化、編集 RPC、fork/CAS | 計画あり。Studio に frame plan model/graphics/read capability は存在するが、RT 全面編集の証拠ではない | 接続編集・診断・保存・再読込・失敗時の内容保持を通す。画面上のノード移動と実行 graph の編集を区別 |
 | ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。代表ゲームでの一連の制作経路は今回未確認 | 実制作で詰まる操作を GUI 改善の優先順位に使う |
 

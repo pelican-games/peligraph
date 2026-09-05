@@ -1265,7 +1265,8 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
         if (field.key() == "raygen" || field.key() == "traced_ray_types" ||
             field.key() == "misses" || field.key() == "hit_shaders" ||
             field.key() == "max_recursion" || field.key() == "callable" ||
-            field.key() == "callable_record" || field.key() == "callable_records") {
+            field.key() == "callable_record" || field.key() == "callable_records" ||
+            field.key() == "acceleration_structure") {
             continue;
         }
         if (field.key() == "miss" || field.key() == "closesthit") {
@@ -1517,7 +1518,8 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
         if (field.key() == "raygen" || field.key() == "miss" ||
             field.key() == "closesthit" ||
             field.key() == "max_recursion" || field.key() == "callable" ||
-            field.key() == "callable_record" || field.key() == "callable_records") {
+            field.key() == "callable_record" || field.key() == "callable_records" ||
+            field.key() == "acceleration_structure") {
             continue;
         }
         if (field.key() == "any_hit" || field.key() == "anyhit" ||
@@ -2157,6 +2159,9 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
                 parseRayTracingShaders(
                     task_json, definition.name,
                     ray_tracing_project);
+            if (task_json.at("ray_tracing").contains("acceleration_structure"))
+                definition.ray_tracing->acceleration_structure = requireString(
+                    task_json.at("ray_tracing"), "acceleration_structure", definition.name);
         } else {
             definition.shader = makeShaderReference(
                 requireString(
@@ -3583,8 +3588,8 @@ void ComputeTaskContainer::dispatch(
         bind_point, pipeline_factory.pipeline(record.pipeline));
     if (record.ray_tracing) {
         frame_resources.bindRayTracing(
-            cmd_buf,
-            pipeline_factory.layout(record.pipeline));
+            cmd_buf, pipeline_factory.layout(record.pipeline),
+            record.definition.ray_tracing->acceleration_structure);
     } else {
         frame_resources.bindCompute(
             cmd_buf,

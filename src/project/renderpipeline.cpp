@@ -723,9 +723,9 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                      "render_strategy", "target_planning",
                      "vulkan_plan_pins",
                      "vulkan_physical_fragments", "xr",
-                     "ray_group_layout", "ray_bindings"},
+                     "ray_group_layout", "ray_bindings", "scene_acceleration_structures"},
                     "rendering config using pipeline preset");
-    for (const auto key : {"ray_group_layout", "ray_bindings"}) {
+    for (const auto key : {"ray_group_layout", "ray_bindings", "scene_acceleration_structures"}) {
         if (resolved.contains(key)) {
             throw std::runtime_error(
                 "render pipeline presets cannot own " +
@@ -1987,6 +1987,33 @@ void synchronizeRenderPipelineProvenance(
     resources = std::move(synchronized_resources);
 }
 
+static std::vector<SceneAccelerationStructureDefinition> parseSceneAccelerationStructures(
+    const nlohmann::json &config) {
+    std::vector<SceneAccelerationStructureDefinition> result;
+    if (!config.contains("scene_acceleration_structures")) return result;
+    const auto &definitions = config.at("scene_acceleration_structures");
+    if (!definitions.is_array())
+        throw std::runtime_error("scene_acceleration_structures must be an array");
+    std::unordered_set<std::string> names;
+    for (const auto &entry : definitions) {
+        if (!entry.is_object())
+            throw std::runtime_error("scene_acceleration_structures entries must be objects");
+        requireOnlyKeys(entry, {"name", "instance_mask"}, "scene_acceleration_structures entry");
+        auto name = requireString(entry, "name", "scene_acceleration_structures entry");
+        if (name.empty() || name == "scene" || !names.insert(name).second)
+            throw std::runtime_error("scene_acceleration_structures name is empty, reserved, or duplicated: " + name);
+        std::uint32_t mask = 255;
+        if (entry.contains("instance_mask")) {
+            const auto &value = entry.at("instance_mask");
+            if (!value.is_number_integer() || value < 0 || value > 255)
+                throw std::runtime_error("scene_acceleration_structures instance_mask must be an integer in 0..255: " + name);
+            mask = value.get<std::uint32_t>();
+        }
+        result.push_back({std::move(name), mask});
+    }
+    return result;
+}
+
 CompiledRenderPipeline compileRenderPipeline(
     const ResolvedRenderPipeline &pipeline) {
     if (renderPipelineGraphVariantName(
@@ -2072,6 +2099,7 @@ CompiledRenderPipeline compileRenderPipeline(
     result.sample_count_policy = pipeline.sample_count_policy;
     result.target_planning =
         canonical_target_planning;
+    result.scene_acceleration_structures = parseSceneAccelerationStructures(pipeline.normalized_config);
     result.vulkan_plan_pins =
         canonical_vulkan_plan_pins;
     result.vulkan_physical_fragments =
@@ -2096,6 +2124,12 @@ CompiledRenderPipeline compileRenderPipeline(
 nlohmann::json serializeCompiledRenderPipelineMetadata(
     const CompiledRenderPipeline &pipeline) {
     nlohmann::json metadata = nlohmann::json::object();
+    if (!pipeline.scene_acceleration_structures.empty()) {
+        metadata["scene_acceleration_structures"] = nlohmann::json::array();
+        for (const auto &definition : pipeline.scene_acceleration_structures)
+            metadata["scene_acceleration_structures"].push_back({
+                {"name", definition.name}, {"instance_mask", definition.instance_mask}});
+    }
     if (pipeline.render_compiler_program) {
         const auto &selection =
             *pipeline.render_compiler_program;

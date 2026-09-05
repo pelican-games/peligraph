@@ -310,7 +310,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 `remaining` をそのまま Vulkan へ渡さず先に解決するのは、キャッシュ鍵として比較するときに「同じ範囲なのに別の鍵」になるのを避けるためで、宣言側の相対表現と物理側の絶対値をこの 1 か所で切り離しています。
 
-同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiontarget.cpp#L99) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2554) と [MaterialContainer::buildScreenInputDescriptor()](../../src/core/material/materialcontainer.cpp#L4168) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
+同じ「1 枚のイメージを複数の窓から見る」使い分けは render target の外にもあります(2026-09-04 追記): [VulkanXrCompositionGraphics](../../src/core/openxr/openxrcompositiontarget.cpp#L99) は OpenXR が返す 1 枚の配列イメージから、`layerCount = 2` の 2D array ビューと、レイヤごとの `layerCount = 1` の 2D ビューを両方作ります。[ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2559) と [MaterialContainer::buildScreenInputDescriptor()](../../src/core/material/materialcontainer.cpp#L4168) も、`baseArrayLayer` / `layerCount` を変えたビューで同じイメージの別レイヤを descriptor へ載せます。
 
 ### mip 数の上限は `floor(log2(max(w,h))) + 1`
 
@@ -339,7 +339,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取ります。CPU 側はその (set, binding) に対して `VkWriteDescriptorSet`(`dstSet` / `dstBinding` / `descriptorType` / バッファまたはイメージの情報)を組んで `vkUpdateDescriptorSets` を呼び、set の形そのものは `VkDescriptorSetLayout` が、確保元は `VkDescriptorPool` が持ちます。**仕様上の位置**は Vulkan 仕様 "Resource Descriptors" 章(HTML 版のアンカー `#VkWriteDescriptorSet` / `#VkDescriptorSetLayoutBinding`)です。GLSL 側の数値と C++ 側の数値が一致しているかをコンパイラは検査しないので、両方から読まれる定数表を 1 つ置いてそれを唯一の出所にする、というのが定型になります。
 
-**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L226) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2554)
+**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L226) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2559)
 
 **このコードベースでの注意**: 定数表は GLSL のヘッダ側にあり、C++ からも同じマクロ名で読まれます。番号を動かすときは、シェーダと C++ の両方が同じヘッダを見ていることが前提です。
 
@@ -353,13 +353,13 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 同じイメージでも、シェーダからの触り方によって descriptor type が変わります。読み取りサンプリングは `COMBINED_IMAGE_SAMPLER`(イメージとサンプラを 1 つの descriptor に束ねる)、計算シェーダからの書き込みは `STORAGE_IMAGE`、そしてイメージとサンプラを別々の descriptor(`SAMPLED_IMAGE` + `SAMPLER`)に分ける形の 3 通りが基本です。分離型は「同じ画像を複数のサンプラで引く」「サンプラだけ差し替える」ときに効き、bindless なテクスチャ配列とサンプラ配列を独立に組める代わりに binding が 1 本増えます。**仕様上の位置**は "Descriptor Types" 節(`VK_DESCRIPTOR_TYPE_*` の列挙)です。
 
-**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L1868)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2554)
+**使用場所**: [MaterialContainer::registerMaterial()](../../src/core/material/materialcontainer.cpp#L1868)(`split_custom_samplers` のとき `eSampledImage` + `eSampler` の 2 binding へ割る) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2559)
 
 ### pNext チェーンと vulkan-hpp の StructureChain / unlink
 
 Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構造体を `pNext` で数珠つなぎにして 1 回の呼び出しに載せます。vulkan-hpp の `vk::StructureChain<A, B, C>` はこの連結を型で表現したもので、`get<B>()` で要素を取り出し、`unlink<B>()` で**実行時に**その要素を鎖から外せます(`relink<B>()` で戻せます)。外すことは「その機能を要求しない」という意味になるので、拡張の無い環境で同じコードを通す常套手段です。逆に鎖へ残したまま非対応のデバイスへ渡すと、検証レイヤに叱られるか、そのまま失敗します。
 
-**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L562)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L515) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L399)(descriptor write の `pNext` に acceleration structure 情報を足す)
+**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L562)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L515) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L403)(descriptor write の `pNext` に acceleration structure 情報を足す)
 
 ### 機能照会(getFeatures2 の chain)と拡張関数の動的解決
 
@@ -385,7 +385,7 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L45)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L373) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L385)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L373) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L385)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -401,13 +401,13 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_multiview`(Vulkan 1.1 コア)は、1 回の描画で複数のビュー(VR の左右目など)へ同時に書くための機能です。`viewMask` の**立っているビットの位置**が、シェーダで読める `gl_ViewIndex` の取りうる値になります。連続する N ビューなら `(1u << N) - 1u` が定型のマスクですが、N が 32 のときは左シフトが未定義になるため `UINT32_MAX` を直接使う分岐が要ります。dynamic rendering では `VkRenderingInfo::viewMask`、パイプライン側では `VkPipelineRenderingCreateInfo::viewMask` に同じ値を置き、両者が一致していなければなりません。
 
-**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L214)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L515) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L629)
+**使用場所**: [validateGraphicsReflection()](../../src/core/shader/pipelinefactory.cpp#L214)(view_count が [2,32] であること、マスクが連続であること、シェーダが `gl_ViewIndex` を消費することを検査) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L515) / [FrameResources::selectMultiview()](../../src/core/renderer/frameresources.cpp#L651)
 
 ### sampler の filter と address mode
 
 `VkSamplerCreateInfo` の `magFilter` / `minFilter` は拡大・縮小時の補間で、`VK_FILTER_NEAREST` はテクセルをそのまま読み、`VK_FILTER_LINEAR` は近傍を線形補間します。`addressModeU/V/W` は [0,1] の外を引いたときの折り返し方(repeat / clamp to edge / mirror / clamp to border)で、3 軸ぶん独立に指定できますが、3D テクスチャや cube では 3 軸を揃えないと軸ごとに違う挙動になります。`mipmapMode` と `minLod` / `maxLod` は別軸で、mip を持たないイメージでも指定自体は必要です。
 
-**使用場所**: [createSampler()](../../src/core/renderingpass/computetask.cpp#L1037) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2554)
+**使用場所**: [createSampler()](../../src/core/renderingpass/computetask.cpp#L1037) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2559)
 
 ### レイトレーシング: shader group と SBT(handle size / stride / base alignment)
 
@@ -421,7 +421,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L960)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L152)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L93)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L976)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L152)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L93)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 

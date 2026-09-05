@@ -5,6 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <map>
+#include <string_view>
 #include <span>
 #include <string>
 #include <type_traits>
@@ -22,6 +24,7 @@ struct RayTracingSceneShaderBindingTables;
 // privately and is immutable after construction; FramePublication only swaps
 // the shared owner at the post-submit publication boundary.
 struct RtDescriptorBundle {
+    std::map<std::string, std::shared_ptr<const RtDescriptorBundle>, std::less<>> named_bundles;
     vk::UniqueDescriptorPool descriptor_pool;
     std::vector<vk::UniqueDescriptorSet> sequential_sets;
     std::vector<vk::UniqueDescriptorSet> multiview_sets;
@@ -152,7 +155,13 @@ DECLARE_MODULE(FrameResources) {
     void bindFrameDescriptorSet(
         vk::CommandBuffer cmd_buf,
         vk::PipelineLayout pipeline_layout,
-        vk::PipelineBindPoint bind_point) const;
+        vk::PipelineBindPoint bind_point,
+        std::string_view acceleration_structure = "scene") const;
+    const RtDescriptorBundle *selectedRayTracingBundle(std::string_view name) const;
+    std::shared_ptr<RtDescriptorBundle> createRayTracingBundle(
+        vk::AccelerationStructureKHR top_level,
+        std::shared_ptr<const RayTracingSceneShaderBindingTables> tables,
+        std::string row_digest);
 
   public:
     class FramePublication {
@@ -196,7 +205,8 @@ DECLARE_MODULE(FrameResources) {
         std::uint32_t in_flight_frame_index,
         vk::AccelerationStructureKHR top_level,
         std::shared_ptr<const RayTracingSceneShaderBindingTables> tables,
-        std::string row_digest);
+        std::string row_digest,
+        const std::map<std::string, vk::AccelerationStructureKHR> &named_top_levels = {});
     FramePublication prepareNonRayTracingPublication() noexcept;
     const RayTracingSceneShaderBindingTables *
     rayTracingSceneShaderBindingTables() const noexcept {
@@ -234,8 +244,8 @@ DECLARE_MODULE(FrameResources) {
     void bindCompute(vk::CommandBuffer cmd_buf,
                      vk::PipelineLayout pipeline_layout) const;
     void bindRayTracing(
-        vk::CommandBuffer cmd_buf,
-        vk::PipelineLayout pipeline_layout) const;
+        vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
+        std::string_view acceleration_structure = "scene") const;
 
     std::uint32_t viewCountForTesting() const { return view_count; }
     std::uint32_t sequentialViewCountForTesting() const {
