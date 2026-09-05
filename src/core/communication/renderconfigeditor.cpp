@@ -446,10 +446,6 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
                 "edit_render_features");
     const auto base_digest = requireString(
         params, "base_source_digest", "edit_render_features");
-    if (!isLowerHexDigest(base_digest)) {
-        throw std::invalid_argument(
-            "edit_render_features base_source_digest must be 64 lowercase hex characters");
-    }
     const auto operations = params.find("operations");
     if (operations == params.end() || !operations->is_array() ||
         operations->size() > 1) {
@@ -457,11 +453,67 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
             "edit_render_features operations must be an array containing at most one element in v1");
     }
 
+    return queueRootEdit(base_digest, "edit_render_features",
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            candidate = document_.hasFeaturesArray()
+                                 ? document_
+                                 : AuthoredRenderConfigDocument::initialize(
+                                       document_.bytes());
+            if (!operations->empty()) {
+                const auto &operation = operations->front();
+                requireOnly(operation, {"op", "feature"},
+                            "edit_render_features operation");
+                const auto op = requireString(operation, "op",
+                                              "edit_render_features operation");
+                const auto feature = requireString(
+                    operation, "feature", "edit_render_features operation");
+                if (op == "add") {
+                    const auto *catalog = findCatalogReference(feature);
+                    if (catalog == nullptr) {
+                        return rejection(
+                            "unknown_render_feature",
+                            "render feature is not present in the engine catalog: " +
+                                feature,
+                            {{"feature", feature}});
+                    }
+                    if (!candidate.containsFeature(feature) &&
+                        !catalog->available) {
+                        return rejection(
+                            catalog->requires_runtime_module
+                                ? "restart_required_feature"
+                                : "render_feature_unavailable",
+                            catalog->unavailable_reason,
+                            {{"feature", catalog->name},
+                             {"reference", catalog->reference}});
+                    }
+                    candidate = candidate.withFeatureAdded(feature);
+                } else if (op == "remove") {
+                    try {
+                        candidate = candidate.withFeatureRemoved(feature);
+                    } catch (const std::invalid_argument &error) {
+                        return rejection("render_feature_not_enabled", error.what(),
+                                         {{"feature", feature}});
+                    }
+                } else {
+                    throw std::invalid_argument(
+                        "edit_render_features operation op must be 'add' or 'remove'");
+                }
+            }
+
+            return std::nullopt;
+        });
+}
+
+OrderedJson RenderConfigEditorService::queueRootEdit(
+    const std::string &base_digest, const std::string &operation,
+    const std::function<std::optional<OrderedJson>(AuthoredRenderConfigDocument &)> &transform) {
+    if (!isLowerHexDigest(base_digest))
+        throw std::invalid_argument(operation + " base_source_digest must be 64 lowercase hex characters");
     const auto gate = gateSnapshot();
     if (!gate.can_edit) {
         return rejection(
-            "gate_closed", "render feature editing is currently disabled",
-            {{"method", "edit_render_features"},
+            "gate_closed", "render config editing is currently disabled",
+            {{"method", operation},
              {"reason", primaryReason(gate.reasons)},
              {"gate_epoch", gate.epoch}});
     }
@@ -486,53 +538,10 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
         return rejection("external_modification", error.what());
     }
 
-    auto candidate = document_.hasFeaturesArray()
-                         ? document_
-                         : AuthoredRenderConfigDocument::initialize(
-                               document_.bytes());
-    if (!operations->empty()) {
-        const auto &operation = operations->front();
-        requireOnly(operation, {"op", "feature"},
-                    "edit_render_features operation");
-        const auto op = requireString(operation, "op",
-                                      "edit_render_features operation");
-        const auto feature = requireString(
-            operation, "feature", "edit_render_features operation");
-        if (op == "add") {
-            const auto *catalog = findCatalogReference(feature);
-            if (catalog == nullptr) {
-                return rejection(
-                    "unknown_render_feature",
-                    "render feature is not present in the engine catalog: " +
-                        feature,
-                    {{"feature", feature}});
-            }
-            if (!candidate.containsFeature(feature) &&
-                !catalog->available) {
-                return rejection(
-                    catalog->requires_runtime_module
-                        ? "restart_required_feature"
-                        : "render_feature_unavailable",
-                    catalog->unavailable_reason,
-                    {{"feature", catalog->name},
-                     {"reference", catalog->reference}});
-            }
-            candidate = candidate.withFeatureAdded(feature);
-        } else if (op == "remove") {
-            try {
-                candidate = candidate.withFeatureRemoved(feature);
-            } catch (const std::invalid_argument &error) {
-                return rejection("render_feature_not_enabled", error.what(),
-                                 {{"feature", feature}});
-            }
-        } else {
-            throw std::invalid_argument(
-                "edit_render_features operation op must be 'add' or 'remove'");
-        }
-    }
-
+    auto candidate = document_;
+    if (auto rejected = transform(candidate)) return *rejected;
     const auto ticket_id =
-        "render-feature-edit-" + std::to_string(next_ticket_++);
+        "render-config-edit-" + std::to_string(next_ticket_++);
     auto candidate_documents = currentDocumentSet().documents();
     const auto root_document = std::find_if(
         candidate_documents.begin(), candidate_documents.end(),
@@ -542,7 +551,7 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
         });
     if (root_document == candidate_documents.end()) {
         throw std::logic_error(
-            "render feature edit candidate lost its root document");
+            "render config edit candidate lost its root document");
     }
     root_document->bytes = candidate.bytes();
     pending_.push_back(Ticket{
@@ -555,7 +564,7 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
             RenderConfigCandidateDocumentSet{
                 source_normalized_reference_,
                 std::move(candidate_documents)},
-        .operation = "edit_render_features",
+        .operation = operation,
     });
     auto accepted = OrderedJson{
         {"ticket", ticket_id},
@@ -564,6 +573,33 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
     };
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
     return accepted;
+}
+
+OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json &params) const {
+    requireOnly(params, {}, "get_scene_acceleration_structures");
+    const auto root = Json::parse(document_.bytes());
+    return {{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(document_.sourceDigest())},
+            {"definitions", root.value("scene_acceleration_structures", Json::array())}};
+}
+
+OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Json &params) {
+    requireOnly(params, {"base_source_digest", "definitions"}, "edit_scene_acceleration_structures");
+    const auto base_digest = requireString(params, "base_source_digest", "edit_scene_acceleration_structures");
+    if (!params.contains("definitions"))
+        throw std::invalid_argument("edit_scene_acceleration_structures requires definitions");
+    return queueRootEdit(base_digest, "edit_scene_acceleration_structures",
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            ResolvedRenderPipeline validation;
+            validation.normalized_config["scene_acceleration_structures"] = params.at("definitions");
+            try {
+                (void)compileRenderPipeline(validation);
+            } catch (const std::exception &error) {
+                return rejection("invalid_scene_acceleration_structures", error.what());
+            }
+            candidate = candidate.withRootValue("scene_acceleration_structures", params.at("definitions").dump(2));
+            return std::nullopt;
+        });
 }
 
 OrderedJson RenderConfigEditorService::getRenderAuthoringContext(

@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT6 multiple geometry):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。名前付きTLASはfe42304b、compute ray query選択は01561d95に統合済み。複数triangle geometryのBLAS結合・refitを実装・実GPU確認した。次はAS単位の編集nodeとRT7の編集接続。Studioのrecord編集UI、component/GUIの残機能も対象。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 AS editing):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。複数geometry BLAS/refitは10cc058eに統合済み。名前付きASの編集RPCとStudioの表編集を接続し、保存・競合・取消し・実GPU対象変更を確認。次はtaskのAS接続編集、AS単位の実行nodeとgraph編集。Studioのrecord編集UI、component/GUIの残機能も対象。学習サンプルは後回し。
+
+**RT7 AS editing (2026-09-06):**
+- `get_scene_acceleration_structures` / `edit_scene_acceleration_structures`をengine service・RPC adapter・handlerへ接続。definitions配列のname/maskを既存compiler schemaで検査し、base_source_digestで競合を検出。既存render feature編集とgate/CAS/candidate/ticket処理を共通化し、別transactionを増やさない。
+- AuthoredRenderConfigDocumentの既存scannerで任意root値のspan置換・欠如時追加を実装。対象外bytesを保持。既存featuresのduplicate拒否と他keyのlast-wins受理を維持。新しいAS編集はfeaturesの初期化を強制しない。
+- StudioのRender FeaturesにScene AS...を追加。nameと0〜255maskの表、Add/Remove/Apply/Refresh、非同期ticket照会。失敗時はローカル編集行を保持し、成功時にengineから再取得。taskの接続や独立AS実行nodeを編集する画面ではない。
+- CPU編集関連23/23（424 assertions、`build/.codex_bg/rt7as-cpu.log`）成功。追加変更削除・再読込・不正定義・gate・stale digest・外部file変更・source置換後の失敗復元を確認。新実GPU51 assertions/1case（`rt7as-gpu-final.log`）は実RPCでmaskを交換し、保存と新世代のhit対象変更、参照中AS削除の拒否を確認。新世代はpublication後のframeで描画してreadbackする。
+- Player/Studio build、既存Studio render feature画面2/2（`rt7as-studio-ctest.log`）成功。新dialogの手動操作・見た目は未確認。直接test exe起動はQt DLL探索不足で失敗し、CTestの既存環境で実行して解消。全GPU反復は行わない。
 
 **RT6 multiple geometry (2026-09-06):**
 - 同一個体/component・同一world transform・同一instance mask/flags/custom indexの連続qをまとめる。geometry配列順=q順、TLAS offset=先頭q×Rとして、material/geometry flags/recordの個別性を保持。deviceのgeometry数・総primitive数上限で分割。layout v1はcustom index=qが異なるためsingletonを維持。

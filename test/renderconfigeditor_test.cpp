@@ -575,6 +575,124 @@ std::string emptyHybridConfig() {
 } // namespace
 
 #if PELICAN_WITH_RPC
+TEST_CASE("scene AS edits use render publication and source CAS", "[render-config-editor][rt7][scene-as]") {
+    TemporaryConfig source{emptyHybridConfig()};
+    const auto original = readBytes(source.path);
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(original);
+    bool gate_open = true;
+    auto service = makeService(source, runtime, [&] {
+        return RenderConfigEditorGateObservation{.can_edit = gate_open};
+    });
+    const auto before = service->getSceneAccelerationStructures(Json::object());
+    const auto digest = before.at("source_digest").at("hex").get<std::string>();
+    REQUIRE(before.at("definitions").empty());
+    const Json definitions = Json::array({{{"name", "actors"}, {"instance_mask", 1}}});
+    const auto submit = [&](const Json &value) {
+        return service->editSceneAccelerationStructures({{"base_source_digest", digest}, {"definitions", value}});
+    };
+    SECTION("add modify remove and reopen") {
+        auto accepted = submit(definitions);
+        REQUIRE(accepted.at("status") == "accepted");
+        CHECK(readBytes(source.path) == original);
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+        CHECK(service->getSceneAccelerationStructures(Json::object()).at("definitions") == definitions);
+        CHECK(Json::parse(readBytes(source.path)).at("scene_acceleration_structures") == definitions);
+        const auto generation = runtime.snapshot.published_generation;
+        CHECK(submit(definitions).at("error").at("code") == "external_modification");
+        auto updated = definitions;
+        updated[0]["instance_mask"] = 2;
+        for (const auto &value : {updated, Json::array()}) {
+            const auto current = service->getSceneAccelerationStructures(Json::object());
+            accepted = service->editSceneAccelerationStructures({
+                {"base_source_digest", current.at("source_digest").at("hex")}, {"definitions", value}});
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+            CHECK(Json::parse(readBytes(source.path)).at("scene_acceleration_structures") == value);
+        }
+        CHECK(runtime.snapshot.published_generation == generation + 2);
+        auto reopened = makeService(source, runtime);
+        CHECK(reopened->getSceneAccelerationStructures(Json::object()).at("definitions").empty());
+    }
+    SECTION("failed publication restores the exact source") {
+        runtime.fail_after_source_commit = true;
+        const auto generation = runtime.snapshot.published_generation;
+        const auto accepted = submit(definitions);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(source.path) == original);
+        CHECK(service->getSceneAccelerationStructures(Json::object()) == before);
+        CHECK(runtime.snapshot.published_generation == generation);
+    }
+    SECTION("invalid definitions and closed gate do not write") {
+        for (const auto &invalid : Json::array({
+                Json::array({{{"name", "scene"}}}), Json::array({{{"name", "x"}, {"instance_mask", 256}}}),
+                Json::array({{{"name", "x"}}, {{"name", "x"}}})}))
+            CHECK(submit(invalid).at("error").at("code") == "invalid_scene_acceleration_structures");
+        gate_open = false;
+        CHECK(submit(definitions).at("error").at("code") == "gate_closed");
+        CHECK(runtime.apply_calls == 0);
+        CHECK(readBytes(source.path) == original);
+    }
+    SECTION("external file edit after admission is preserved") {
+        const auto accepted = submit(definitions);
+        REQUIRE(accepted.at("status") == "accepted");
+        const auto external = original + "\n";
+        writeBytes(source.path, external);
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(source.path) == external);
+    }
+}
+
+TEST_CASE("authored render root value edits preserve unrelated lexical bytes",
+          "[renderconfig][document][root-value]") {
+    const std::string original =
+        "{\r\n  \"features\" : [ \"keep\" ],\r\n"
+        "  \"scene_acceleration_structures\" : [ {\"name\":\"old\"} ],\r\n"
+        "  \"nested\": {\"scene_acceleration_structures\": [1,2], \"text\": \"} ]\"}\r\n}\r\n";
+    const auto document = AuthoredRenderConfigDocument::parse(original);
+    SECTION("replace only the existing value including nested JSON") {
+        const std::string value = R"json([{"name":"actors","instance_mask":1,"nested":{"list":[null,true,"}"]}}])json";
+        const auto edited = document.withRootValue("scene_acceleration_structures", value);
+        auto expected = original;
+        const std::string old_value = "[ {\"name\":\"old\"} ]";
+        expected.replace(expected.find(old_value), old_value.size(), value);
+        CHECK(edited.bytes() == expected);
+        CHECK(edited.featureReferences() == document.featureReferences());
+        CHECK(edited.sourceDigest() != document.sourceDigest());
+        CHECK(document.bytes() == original);
+    }
+    SECTION("insert absent member without adding features or changing existing whitespace") {
+        const auto source = AuthoredRenderConfigDocument::inspect("{\r\n\t\"keep\" : 1\r\n}\r\n");
+        const auto edited = source.withRootValue("scene_acceleration_structures", " [] ");
+        CHECK(edited.bytes() == "{\r\n\t\"keep\" : 1,\r\n\t\"scene_acceleration_structures\": []\r\n}\r\n");
+        CHECK_FALSE(edited.hasFeaturesArray());
+    }
+    SECTION("empty object and escaped key") {
+        const std::string key = "quoted\"\\\nkey";
+        const auto edited = AuthoredRenderConfigDocument::inspect("{ }").withRootValue(key, "42");
+        CHECK(Json::parse(edited.bytes()).at(key) == 42);
+        CHECK(edited.bytes() == "{ " + Json(key).dump() + ": 42}");
+    }
+    SECTION("duplicate non-feature keys keep existing last-wins contract") {
+        const auto source = AuthoredRenderConfigDocument::inspect("{\"x\":1, \"x\":2}");
+        CHECK(source.withRootValue("x", "3").bytes() == "{\"x\":1, \"x\":3}");
+        CHECK_THROWS_AS(AuthoredRenderConfigDocument::inspect("{\"features\":[],\"features\":[]}"), std::invalid_argument);
+    }
+    SECTION("invalid or multiple JSON values reject without changing source") {
+        for (const auto value : {"", "[", "false true", "{\"x\":}", "NaN"}) {
+            CAPTURE(value);
+            CHECK_THROWS_AS(document.withRootValue("scene_acceleration_structures", value), std::invalid_argument);
+        }
+        CHECK_THROWS_AS(document.withRootValue("features", "null"), std::invalid_argument);
+        CHECK(document.bytes() == original);
+    }
+}
+
 TEST_CASE(
     "WP335 RPC startup is read-only and the first requested edit initializes features",
     "[render-config-editor][wp335][rpc][byte-lossless][initialization]") {

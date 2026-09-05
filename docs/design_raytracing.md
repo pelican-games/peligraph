@@ -512,6 +512,19 @@ deviceのmaxGeometryCountと総maxPrimitiveCountに達する前にgroupを分割
 診断の`geometry_count`はBLAS内のgeometry数、`tlas_instance_count`は結合後の実instance数を示す。
 AS単位の編集node、異なるtransformのgeometryをまとめる操作、AABBの複数geometry化は残る。
 
+### RT7: 名前付きASの編集（2026-09-06）
+
+StudioのRender Features内「Scene AS...」でname/maskの追加・変更・削除を行う。
+`get_scene_acceleration_structures`はrootのdefinitionsとsource digestを返し、
+`edit_scene_acceleration_structures`はbase_source_digestとdefinitions配列を受け取る。
+定義は既存compilerのschemaで検査し、rootの該当JSON値だけを置換する。
+他の設定のbytesを保持し、既存のrender config ticket・candidate compile・複数file保存・
+publication/rollbackを共用する。使用中ASを削除してtask参照が解決できなければ適用しない。
+
+GUIは失敗時にローカル行を保持し、成功時にengineの値を再取得する。
+未公開のticket名はfeature固有からrender-config-editへ共通化する。
+ASごとの独立実行node、taskのAS接続編集、graphのfork/CAS操作は引き続き未実装。
+
 ## 9. エラー文言・受け入れゲート
 
 v2 §7 に同じ + §5 の matrix + 「off/on は同一テスト内」+ sentinel 表。

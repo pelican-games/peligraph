@@ -1,6 +1,7 @@
 #include "renderconfigdocument.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <cctype>
 #include <nlohmann/json.hpp>
 #include <picosha2.h>
@@ -165,7 +166,7 @@ class JsonCursor {
     }
 };
 
-struct FeaturesLocation {
+struct RootLocation {
     bool found = false;
     std::size_t open = 0;
     std::size_t close = 0;
@@ -175,12 +176,16 @@ struct FeaturesLocation {
     std::size_t last_member_key = 0;
     std::size_t last_member_value_end = 0;
     bool has_members = false;
+    bool selected_found = false;
+    std::size_t selected_begin = 0;
+    std::size_t selected_end = 0;
 };
 
-FeaturesLocation locateTopLevelFeatures(std::string_view bytes) {
+RootLocation locateRootMembers(std::string_view bytes,
+    std::optional<std::string_view> selected_key = std::nullopt) {
     JsonCursor cursor{bytes};
     cursor.skipWhitespace();
-    FeaturesLocation result;
+    RootLocation result;
     result.root_open = cursor.position();
     cursor.require('{');
     cursor.skipWhitespace();
@@ -196,6 +201,7 @@ FeaturesLocation locateTopLevelFeatures(std::string_view bytes) {
             cursor.skipWhitespace();
             cursor.require(':');
             cursor.skipWhitespace();
+            const auto value_begin = cursor.position();
             if (key.value == "features") {
                 if (result.found) {
                     throw std::invalid_argument(
@@ -238,6 +244,12 @@ FeaturesLocation locateTopLevelFeatures(std::string_view bytes) {
                 cursor.skipValue();
             }
             result.last_member_value_end = cursor.position();
+            if (selected_key && key.value == *selected_key) {
+                // Match the semantic parser's last-wins behavior for non-feature keys.
+                result.selected_found = true;
+                result.selected_begin = value_begin;
+                result.selected_end = cursor.position();
+            }
 
             cursor.skipWhitespace();
             if (cursor.peek() == '}') {
@@ -297,9 +309,8 @@ struct RootInsertion {
     std::string bytes;
 };
 
-RootInsertion missingFeaturesInsertion(
-    std::string_view bytes, const FeaturesLocation &location) {
-    constexpr std::string_view member = "\"features\": []";
+RootInsertion missingRootMemberInsertion(
+    std::string_view bytes, const RootLocation &location, std::string_view member) {
     if (!location.has_members) {
         const auto interior = bytes.substr(
             location.root_open + 1,
@@ -491,7 +502,7 @@ AuthoredRenderConfigDocument::AuthoredRenderConfigDocument(
             std::string{"render config is not valid JSON: "} + error.what());
     }
 
-    const auto location = locateTopLevelFeatures(bytes_);
+    const auto location = locateRootMembers(bytes_);
     if (!location.found) {
         if (require_features) {
             throw std::invalid_argument(
@@ -536,8 +547,8 @@ AuthoredRenderConfigDocument::initialize(std::string bytes) {
             error.what());
     }
 
-    const auto location = locateTopLevelFeatures(bytes);
-    const auto insertion = missingFeaturesInsertion(bytes, location);
+    const auto location = locateRootMembers(bytes);
+    const auto insertion = missingRootMemberInsertion(bytes, location, "\"features\": []");
     bytes.insert(insertion.offset, insertion.bytes);
     return parse(std::move(bytes));
 }
@@ -550,6 +561,27 @@ AuthoredRenderConfigDocument::inspect(std::string bytes) {
 AuthoredRenderConfigDocument
 AuthoredRenderConfigDocument::parse(std::string bytes) {
     return AuthoredRenderConfigDocument{std::move(bytes), true};
+}
+
+AuthoredRenderConfigDocument AuthoredRenderConfigDocument::withRootValue(
+    std::string_view key, std::string_view json_value) const {
+    if (!nlohmann::json::accept(json_value))
+        throw std::invalid_argument("render config root replacement must be one valid JSON value");
+    JsonCursor value_cursor{json_value};
+    value_cursor.skipWhitespace();
+    const auto value_begin = value_cursor.position();
+    value_cursor.skipValue();
+    const auto value = json_value.substr(value_begin, value_cursor.position() - value_begin);
+    const auto location = locateRootMembers(bytes_, key);
+    auto edited = bytes_;
+    if (location.selected_found) {
+        edited.replace(location.selected_begin, location.selected_end - location.selected_begin, value);
+    } else {
+        const auto member = encodedJsonString(key) + ": " + std::string{value};
+        const auto insertion = missingRootMemberInsertion(bytes_, location, member);
+        edited.insert(insertion.offset, insertion.bytes);
+    }
+    return inspect(std::move(edited));
 }
 
 bool AuthoredRenderConfigDocument::containsFeature(

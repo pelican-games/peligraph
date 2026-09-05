@@ -147,6 +147,9 @@ class RenderConfigEditorService {
     };
 
     GateSnapshot gateSnapshot();
+    nlohmann::ordered_json queueRootEdit(
+        const std::string &base_digest, const std::string &operation,
+        const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform);
     nlohmann::ordered_json rejection(
         std::string code, std::string message,
         nlohmann::ordered_json details = nlohmann::ordered_json::object()) const;
@@ -159,6 +162,8 @@ class RenderConfigEditorService {
         RenderConfigRuntimeApplyResult applied) noexcept;
 
   public:
+    nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
+    nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);
     explicit RenderConfigEditorService(
         RenderConfigEditorDependencies dependencies);
     ~RenderConfigEditorService();

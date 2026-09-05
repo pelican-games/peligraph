@@ -351,6 +351,8 @@ class EditorCommandService {
     nlohmann::ordered_json getRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json listRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params);
+    nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
+    nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);
     nlohmann::ordered_json getRenderAuthoringContext(
         const nlohmann::json &params) const;
     nlohmann::ordered_json addAuthoredPass(const nlohmann::json &params);
@@ -413,6 +415,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json listRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params) const;
+    nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
+    nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json getRenderAuthoringContext(
         const nlohmann::json &params) const;
     nlohmann::ordered_json addAuthoredPass(

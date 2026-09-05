@@ -36,7 +36,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。ゲームDLLからの更新を実GPUで確認 | Studioのrecord編集UIは残る。次はRT5の変形geometry |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、AS構築node、名前付きTLAS選択、同一個体の複数triangle geometry BLASとrefitを実装・実GPU確認 | AS単位の編集node、AABB結合、異なるtransformのgeometry結合は残る |
-| RT7 | ノードの一級化、編集 RPC、fork/CAS | 計画あり。Studio に frame plan model/graphics/read capability は存在するが、RT 全面編集の証拠ではない | 接続編集・診断・保存・再読込・失敗時の内容保持を通す。画面上のノード移動と実行 graph の編集を区別 |
+| RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きASの編集RPCとStudio表編集を接続。digest競合・保存・取消し・mask変更の実GPU反映を確認 | task接続、AS単位の実行node、graph fork/CASとrecord編集は残る。新dialogの実操作も未確認 |
 | ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。代表ゲームでの一連の制作経路は今回未確認 | 実制作で詰まる操作を GUI 改善の優先順位に使う |
 
 確認した実装入口: [pipelinefactory.cpp](../src/core/shader/pipelinefactory.cpp)、

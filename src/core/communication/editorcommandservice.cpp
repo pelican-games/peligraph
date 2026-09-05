@@ -1420,11 +1420,18 @@ OrderedJson EditorCommandService::editRenderFeatures(
 
 OrderedJson EditorCommandService::getRenderAuthoringContext(
     const Json &params) const {
-    if (!render_config_editor_) {
-        throw std::logic_error(
-            "render config editor service is unavailable");
-    }
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getRenderAuthoringContext(params);
+}
+
+OrderedJson EditorCommandService::getSceneAccelerationStructures(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getSceneAccelerationStructures(params);
+}
+
+OrderedJson EditorCommandService::editSceneAccelerationStructures(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editSceneAccelerationStructures(params);
 }
 
 OrderedJson EditorCommandService::addAuthoredPass(
@@ -1450,7 +1457,7 @@ OrderedJson EditorCommandService::getEditResult(const Json &params) const {
         const auto found = params.find("ticket");
         if (found != params.end() && found->is_string()) {
             const auto ticket = found->get<std::string>();
-            if (ticket.starts_with("render-feature-edit-") ||
+            if (ticket.starts_with("render-config-edit-") ||
                 render_config_editor_->ownsTicket(ticket)) {
                 return render_config_editor_->getResult(params);
             }
@@ -2227,6 +2234,15 @@ OrderedJson EditorCommandRpcAdapter::editRenderFeatures(
         throw std::logic_error("editor RPC adapter is read-only");
     }
     return mutable_service_->editRenderFeatures(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getSceneAccelerationStructures(const Json &params) const {
+    return service_.getSceneAccelerationStructures(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editSceneAccelerationStructures(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->editSceneAccelerationStructures(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getRenderAuthoringContext(

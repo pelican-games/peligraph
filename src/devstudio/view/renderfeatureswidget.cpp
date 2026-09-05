@@ -3,6 +3,10 @@
 #include "../viewport/embeddedviewport.hpp"
 
 #include <QAbstractItemView>
+#include <QDialog>
+#include <QSpinBox>
+#include <QTableWidget>
+#include <QSet>
 #include <QByteArray>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -61,6 +65,193 @@ std::optional<QJsonObject> decodeObject(
     }
     return document.object();
 }
+
+class SceneAccelerationStructuresDialog final : public QDialog {
+    EmbeddedViewport &viewport;
+    QTableWidget *table;
+    QLabel *notice;
+    QPushButton *add;
+    QPushButton *remove;
+    QPushButton *apply;
+    QPushButton *refresh;
+    QTimer poll;
+    QString digest;
+    QString ticket;
+    qint64 request_id = 0;
+    enum class Request { Read, Submit, Result } request_kind = Request::Read;
+
+    void controls() {
+        const bool busy = request_id != 0 || !ticket.isEmpty();
+        table->setEnabled(!busy);
+        add->setEnabled(!busy);
+        remove->setEnabled(!busy);
+        refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+        apply->setEnabled(viewport.rpcReady() && !busy && !digest.isEmpty());
+    }
+    void row(const QString &name, int mask) {
+        const int index = table->rowCount();
+        table->insertRow(index);
+        table->setItem(index, 0, new QTableWidgetItem(name));
+        auto *value = new QSpinBox(table);
+        value->setRange(0, 255);
+        value->setValue(mask);
+        table->setCellWidget(index, 1, value);
+    }
+    void request(Request kind, const QString &method, const QJsonObject &params = {}) {
+        if (request_id != 0) return;
+        QString error;
+        request_id = viewport.requestRpc(method, params, &error);
+        request_kind = kind;
+        if (!request_id) {
+            poll.stop();
+            notice->setText(error);
+        }
+        controls();
+    }
+    void read() {
+        if (!ticket.isEmpty()) {
+            result();
+            return;
+        }
+        request(Request::Read, QStringLiteral("get_scene_acceleration_structures"));
+    }
+    void result() {
+        if (!ticket.isEmpty())
+            request(Request::Result, QStringLiteral("get_edit_result"),
+                    {{QStringLiteral("ticket"), ticket}});
+    }
+    void submit() {
+        QJsonArray definitions;
+        QSet<QString> names;
+        for (int index = 0; index < table->rowCount(); ++index) {
+            const auto name = table->item(index, 0)->text();
+            if (name.isEmpty() || name == QStringLiteral("scene") || names.contains(name)) {
+                notice->setText(tr("Use unique names. The name scene is reserved."));
+                return;
+            }
+            names.insert(name);
+            definitions.append(QJsonObject{{QStringLiteral("name"), name},
+                {QStringLiteral("instance_mask"),
+                 static_cast<QSpinBox *>(table->cellWidget(index, 1))->value()}});
+        }
+        request(Request::Submit, QStringLiteral("edit_scene_acceleration_structures"),
+            {{QStringLiteral("base_source_digest"), digest},
+             {QStringLiteral("definitions"), definitions}});
+    }
+    void receive(qint64 id, const QByteArray &bytes) {
+        if (id != request_id || !request_id) return;
+        request_id = 0;
+        QString error;
+        const auto response = decodeObject(bytes, &error);
+        if (!response) {
+            poll.stop();
+            notice->setText(error);
+            controls();
+            return;
+        }
+        if (request_kind == Request::Read) {
+            const auto next_digest = response->value(QStringLiteral("source_digest"))
+                .toObject().value(QStringLiteral("hex")).toString();
+            const auto definitions = response->value(QStringLiteral("definitions"));
+            if (next_digest.isEmpty() || !definitions.isArray()) {
+                notice->setText(tr("The engine did not return an editable scene AS document."));
+            } else {
+                digest = next_digest;
+                table->setRowCount(0);
+                for (const auto &entry : definitions.toArray()) {
+                    const auto definition = entry.toObject();
+                    row(definition.value(QStringLiteral("name")).toString(),
+                        definition.value(QStringLiteral("instance_mask")).toInt(255));
+                }
+                notice->setText(response->value(QStringLiteral("source_reference")).toString());
+            }
+        } else if (request_kind == Request::Submit) {
+            if (response->value(QStringLiteral("status")).toString() == QStringLiteral("accepted")) {
+                ticket = response->value(QStringLiteral("ticket")).toString();
+                if (!ticket.isEmpty()) {
+                    notice->setText(tr("Applying scene acceleration structures..."));
+                    poll.start();
+                    result();
+                } else notice->setText(tr("The engine returned no edit ticket."));
+            } else notice->setText(responseError(*response));
+        } else {
+            const auto status = response->value(QStringLiteral("status")).toString();
+            if (status != QStringLiteral("pending")) {
+                poll.stop();
+                ticket.clear();
+                if (status == QStringLiteral("committed") &&
+                    response->value(QStringLiteral("committed")).toBool()) read();
+                else notice->setText(responseError(*response));
+            }
+        }
+        controls();
+    }
+  public:
+    SceneAccelerationStructuresDialog(EmbeddedViewport &embedded, QWidget *parent)
+        : QDialog(parent), viewport(embedded) {
+        setAttribute(Qt::WA_DeleteOnClose);
+        setObjectName(QStringLiteral("pelican.sceneAccelerationStructures"));
+        setWindowTitle(tr("Scene acceleration structures"));
+        resize(560, 380);
+        auto *layout = new QVBoxLayout(this);
+        auto *description = new QLabel(tr("Create named scene subsets using instance mask bits. The default scene includes all geometry."), this);
+        description->setWordWrap(true);
+        layout->addWidget(description);
+        table = new QTableWidget(0, 2, this);
+        table->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.table"));
+        table->setHorizontalHeaderLabels({tr("Name"), tr("Instance mask (0-255)")});
+        table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setSelectionMode(QAbstractItemView::SingleSelection);
+        layout->addWidget(table);
+        notice = new QLabel(this);
+        notice->setWordWrap(true);
+        layout->addWidget(notice);
+        auto *buttons = new QHBoxLayout;
+        add = new QPushButton(tr("Add"), this);
+        remove = new QPushButton(tr("Remove"), this);
+        refresh = new QPushButton(tr("Refresh"), this);
+        apply = new QPushButton(tr("Apply"), this);
+        add->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.add"));
+        remove->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.remove"));
+        refresh->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.refresh"));
+        apply->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.apply"));
+        refresh->setToolTip(tr("Reload from the engine and replace local edits."));
+        for (auto *button : {add, remove, refresh, apply}) buttons->addWidget(button);
+        layout->addLayout(buttons);
+        poll.setInterval(100);
+        connect(add, &QPushButton::clicked, this, [this] { row({}, 255); });
+        connect(remove, &QPushButton::clicked, this, [this] {
+            if (table->currentRow() >= 0) table->removeRow(table->currentRow());
+        });
+        connect(refresh, &QPushButton::clicked, this, [this] { read(); });
+        connect(apply, &QPushButton::clicked, this, [this] { submit(); });
+        connect(&poll, &QTimer::timeout, this, [this] { result(); });
+        connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
+            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
+        connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
+            [this](qint64 id, const QString &message) {
+                if (id != request_id || !id) return;
+                request_id = 0;
+                poll.stop();
+                notice->setText(message);
+                controls();
+            });
+        connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
+            [this](const QString &message) {
+                request_id = 0;
+                ticket.clear();
+                digest.clear();
+                poll.stop();
+                notice->setText(message);
+                controls();
+            });
+        connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this, [this] { controls(); });
+        controls();
+        if (viewport.rpcReady()) read();
+        else notice->setText(tr("Connect the engine, then Refresh to load scene acceleration structures."));
+    }
+};
 
 } // namespace
 
@@ -178,6 +369,13 @@ struct RenderFeaturesWidget::Impl {
         apply->setObjectName(
             QStringLiteral("pelican.renderFeatures.apply"));
         actions->addWidget(refresh);
+        auto *scene_as = new QPushButton(owner.tr("Scene AS..."), &owner);
+        scene_as->setObjectName(QStringLiteral("pelican.renderFeatures.sceneAccelerationStructures"));
+        actions->addWidget(scene_as);
+        QObject::connect(scene_as, &QPushButton::clicked, &owner, [this] {
+            auto *dialog = new SceneAccelerationStructuresDialog(viewport, &owner);
+            dialog->show();
+        });
         actions->addStretch();
         actions->addWidget(apply);
         layout->addLayout(actions);

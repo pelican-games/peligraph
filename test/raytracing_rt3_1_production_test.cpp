@@ -912,6 +912,43 @@ void main() {
     CHECK(diagnostics.named_tlas_instance_counts.at("empty") == 0);
     CHECK(diagnostics.tlas_build_count == 4);
     CHECK(diagnostics.blas_build_count == 2);
+#if PELICAN_WITH_RPC
+    if (!query) {
+        auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+        std::uint64_t rpc_id = 70000;
+        auto before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
+        auto definitions = before.at("definitions");
+        definitions[0]["instance_mask"] = 2;
+        definitions[1]["instance_mask"] = 1;
+        const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_scene_acceleration_structures", {
+            {"base_source_digest", before.at("source_digest").at("hex")}, {"definitions", definitions}});
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        (void)renderWp374aProductionRows();
+        const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+        REQUIRE(result.at("committed") == true);
+        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("scene_acceleration_structures") == definitions);
+        // Publication retires the old targets at the frame boundary; draw the new generation.
+        (void)renderWp374aProductionRows();
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("rt6_left", ImageSubresourceRange{});
+        std::array<std::uint32_t, 12> pixels{};
+        REQUIRE(image.bytes.size() >= sizeof(pixels));
+        std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+        CHECK(pixels[1] == 0xffffffffu);
+        CHECK(pixels[5] == 82u);
+        // Removing a referenced AS must leave the source and active graph intact.
+        before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
+        const auto source_before_failure = readWp374aText(project.path / "hybrid.json");
+        const auto removal = runWp374aRpcBytes(*service, rpc_id++, "edit_scene_acceleration_structures", {
+            {"base_source_digest", before.at("source_digest").at("hex")}, {"definitions", Json::array()}});
+        REQUIRE(removal.at("status") == "accepted");
+        service->commitPendingEdits();
+        const auto rejected = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", removal.at("ticket")}});
+        REQUIRE(rejected.at("committed") == false);
+        CHECK(readWp374aText(project.path / "hybrid.json") == source_before_failure);
+        CHECK(runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object()) == before);
+    }
+#endif
 #else
     SKIP("RT6 named TLAS fixture requires the runtime compiler");
 #endif
