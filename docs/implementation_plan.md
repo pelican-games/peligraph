@@ -23237,7 +23237,19 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 AS editing):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。複数geometry BLAS/refitは10cc058eに統合済み。名前付きASの編集RPCとStudioの表編集を接続し、保存・競合・取消し・実GPU対象変更を確認。次はtaskのAS接続編集、AS単位の実行nodeとgraph編集。Studioのrecord編集UI、component/GUIの残機能も対象。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 task AS connections):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。名前付きAS編集は9255ed28に統合済み。taskのAS接続をproject側で上書き・保存する経路を追加し、RT/query両方の実GPU反映を確認。Inspectorのcomponent削除も接続。次はAS単位の実行nodeとgraph編集、record編集UI、component追加などの残機能。学習サンプルは後回し。
+
+**RT7 task AS connections (2026-09-06):**
+- rootの`ray_task_acceleration_structures` objectで、variant suffix前のtask名からAS名を指定。preset使用時もprojectが所有し、共有featureの宣言は変更しない。既存RT/query宣言だけを対象とし、未知task・通常compute・空名を拒否。ASの実在は既存compilerの検査を共用。
+- 既存AS編集RPCへtask_connections取得・一括置換を追加。Studioの同じdialogでAS定義と接続をまとめて保存。元の接続先へ戻すと上書きを除く。一般graphのedge編集や独立ASnodeは含めない。
+- CPU編集関連24/24（452 assertions、`build/.codex_bg/rt7connections-cpu.log`）成功。実GPUを含む対象3/3（91 assertions、`rt7connections-gpu.log`）成功。RT/query双方のmask変更と接続変更でhit個体が変わり、共有feature bytesは不変。上書き適用を取り消すと接続変更後のhit検査が落ちる。参照中AS削除の拒否も維持。
+- Core・Player・対象テストbuild成功（`rt7connections-build.log`）。Studio・UI対象buildも成功（`rt7connections-studio-build.log`）。新dialogの手動操作は未確認。
+
+**Studio component removal (2026-09-06):**
+- InspectorのRemove componentを既存remove_component操作へ接続。behaviorは表示行のattachment_indexを指定。生成component・編集不可・pending・preview/refresh中は削除不可。独自transactionや保存経路は増やさず、既存ticket・refresh・Undo/Redo・Saveを共用。
+- 対象Studio/Inspector13/13成功（`build/.codex_bg/rt7connections-studio-final-ctest.log`）。新model試験で通常component/behaviorの送信先、pending/編集不可/生成の拒否、確定後の再取得とUndoのrevisionを確認。既存保存・preview・AS画面配置も回帰確認。実画面のクリックから保存再読込までを新たに通したという証拠ではない。
+- 初回はCatchのNoAssertions設定に対してsetupだけのSECTIONが失敗。共通検証を各SECTION内から呼ぶ構造へ直し、対象だけ再buildして解消（`component-removal-test-build.log`）。次は汎用component追加など。削除RPCそのものや新しいテスト道具は追加しない。
+- doclink checkは3869件clean。auditは変更対象外の3リンクlabel不一致とWeb側bindPelicanSceneの不在を報告（`rt7connections-doc-audit.log`）。今回の新規参照不備とは扱わず、既存文書整備事項として残す。
 
 **RT7 AS editing (2026-09-06):**
 - `get_scene_acceleration_structures` / `edit_scene_acceleration_structures`をengine service・RPC adapter・handlerへ接続。definitions配列のname/maskを既存compiler schemaで検査し、base_source_digestで競合を検出。既存render feature編集とgate/CAS/candidate/ticket処理を共通化し、別transactionを増やさない。

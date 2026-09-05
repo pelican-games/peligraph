@@ -486,6 +486,8 @@ TEST_CASE("WP361 Studio ingests the real generated union without mutation widget
     REQUIRE(harness.model.snapshot()->components.size() == 1);
     const auto &generated = harness.model.snapshot()->components.front();
     REQUIRE(generated.generated);
+    REQUIRE_FALSE(harness.model.canRemoveComponent(generated.component_index));
+    REQUIRE_FALSE(harness.model.removeComponent(generated.component_index));
     REQUIRE_FALSE(generated.editable);
     REQUIRE(generated.widgets.empty());
     REQUIRE(generated.stable_generated_id ==
@@ -1010,5 +1012,65 @@ TEST_CASE("Devstudio modal gizmo commit survives save and a fresh authoring relo
                     .at("components")
                     .at(0)
                     .at("pos") == edited_position);
+    }
+}
+
+TEST_CASE("Studio removes authored components through the editor journal",
+          "[devstudio][inspector][component-removal]") {
+    InspectorHarness harness;
+    harness.open();
+    auto response = componentResult();
+    auto &component = response["components"][1];
+    const auto exercise = [&](bool removable) {
+        harness.model.requestRefresh();
+        harness.reply(harness.take("scene_tree"), sceneTreeResult());
+        harness.reply(harness.take("get_components"), response);
+        harness.reply(harness.take("get_scene_revision"),
+                      {{"scene_revision", 1}, {"preview_epoch", 0}});
+        CHECK(harness.model.canRemoveComponent(1) == removable);
+        CHECK(harness.model.removeComponent(1) == removable);
+        if (removable) {
+            const auto edit = harness.take("edit");
+            CHECK(edit.params.at("actor_id") == 9);
+            CHECK(edit.params.at("base_revision") == 1);
+            Json expected{{"op", "remove_component"}, {"object_id", 41},
+                          {"component_slot", component.at("name")}};
+            if (component.at("name") == "behavior") expected["attachment_index"] = 1;
+            CHECK(edit.params.at("operations") == Json::array({expected}));
+            CHECK_FALSE(harness.model.removeComponent(1));
+            CHECK(harness.model.takeRpcRequests().empty());
+            harness.reply(edit, {{"status", "accepted"}, {"ticket", "remove:1"}});
+            harness.model.pollPendingOperations();
+            harness.reply(harness.take("get_edit_result"),
+                          {{"status", "committed"}, {"committed_revision", 2}});
+            harness.reply(harness.take("scene_tree"), sceneTreeResult(2));
+            response["scene_revision"] = 2;
+            response["components"].erase(1);
+            harness.reply(harness.take("get_components"), response);
+            harness.reply(harness.take("get_scene_revision"),
+                          {{"scene_revision", 2}, {"preview_epoch", 0}});
+            CHECK(harness.model.snapshot()->components.size() == 1);
+            CHECK_FALSE(harness.model.canRemoveComponent(1));
+            harness.model.undo();
+            CHECK(harness.take("undo").params == Json{{"actor_id", 9}, {"base_revision", 2}});
+        } else {
+            CHECK(harness.model.takeRpcRequests().empty());
+        }
+    };
+    SECTION("ordinary component") {
+        exercise(true);
+    }
+    SECTION("behavior attachment uses its authored index") {
+        component["name"] = "behavior";
+        component["authored_json"]["type"] = "fixture";
+        exercise(true);
+    }
+    SECTION("pending component remains disabled") {
+        component["pending"] = true;
+        exercise(false);
+    }
+    SECTION("noneditable component remains disabled") {
+        component["editable"] = false;
+        exercise(false);
     }
 }

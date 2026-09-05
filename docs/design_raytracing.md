@@ -523,7 +523,13 @@ publication/rollbackを共用する。使用中ASを削除してtask参照が解
 
 GUIは失敗時にローカル行を保持し、成功時にengineの値を再取得する。
 未公開のticket名はfeature固有からrender-config-editへ共通化する。
-ASごとの独立実行node、taskのAS接続編集、graphのfork/CAS操作は引き続き未実装。
+taskの接続先は同じ画面で選び、definitionsと一度に保存する。
+rootの`ray_task_acceleration_structures`はtask名からAS名へのobjectで、共有featureの
+元設定を変更せず`ray_tracing.acceleration_structure`または`ray_query.acceleration_structure`を上書きする。
+task名はvariant suffix付与前の宣言名。通常compute taskと未知taskへの指定は拒否する。
+getの`task_connections[]`はname・acceleration_structure・authored_acceleration_structureを返す。
+editの省略可能な`task_connections` objectはrootの接続指定全体を置換し、空objectで元宣言へ戻す。
+ASごとの独立実行node、graphのfork/CAS操作は引き続き未実装。
 
 ## 9. エラー文言・受け入れゲート
 

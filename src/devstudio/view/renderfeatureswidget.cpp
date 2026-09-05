@@ -4,6 +4,7 @@
 
 #include <QAbstractItemView>
 #include <QDialog>
+#include <QComboBox>
 #include <QSpinBox>
 #include <QTableWidget>
 #include <QSet>
@@ -69,6 +70,7 @@ std::optional<QJsonObject> decodeObject(
 class SceneAccelerationStructuresDialog final : public QDialog {
     EmbeddedViewport &viewport;
     QTableWidget *table;
+    QTableWidget *connections;
     QLabel *notice;
     QPushButton *add;
     QPushButton *remove;
@@ -83,10 +85,26 @@ class SceneAccelerationStructuresDialog final : public QDialog {
     void controls() {
         const bool busy = request_id != 0 || !ticket.isEmpty();
         table->setEnabled(!busy);
+        connections->setEnabled(!busy);
         add->setEnabled(!busy);
         remove->setEnabled(!busy);
         refresh->setEnabled(viewport.rpcReady() && request_id == 0);
         apply->setEnabled(viewport.rpcReady() && !busy && !digest.isEmpty());
+    }
+    void connectionOptions() {
+        QStringList options{QStringLiteral("scene")};
+        for (int i = 0; i < table->rowCount(); ++i)
+            if (table->item(i, 0) && !table->item(i, 0)->text().isEmpty())
+                options.append(table->item(i, 0)->text());
+        options.removeDuplicates();
+        for (int i = 0; i < connections->rowCount(); ++i) {
+            auto *combo = static_cast<QComboBox *>(connections->cellWidget(i, 1));
+            const auto selected = combo->currentText();
+            combo->clear();
+            combo->addItems(options);
+            if (!options.contains(selected) && !selected.isEmpty()) combo->addItem(selected);
+            combo->setCurrentText(selected);
+        }
     }
     void row(const QString &name, int mask) {
         const int index = table->rowCount();
@@ -134,9 +152,16 @@ class SceneAccelerationStructuresDialog final : public QDialog {
                 {QStringLiteral("instance_mask"),
                  static_cast<QSpinBox *>(table->cellWidget(index, 1))->value()}});
         }
+        QJsonObject task_connections;
+        for (int i = 0; i < connections->rowCount(); ++i) {
+            const auto selected = static_cast<QComboBox *>(connections->cellWidget(i, 1))->currentText();
+            if (selected != connections->item(i, 0)->data(Qt::UserRole).toString())
+                task_connections.insert(connections->item(i, 0)->text(), selected);
+        }
         request(Request::Submit, QStringLiteral("edit_scene_acceleration_structures"),
             {{QStringLiteral("base_source_digest"), digest},
-             {QStringLiteral("definitions"), definitions}});
+             {QStringLiteral("definitions"), definitions},
+             {QStringLiteral("task_connections"), task_connections}});
     }
     void receive(qint64 id, const QByteArray &bytes) {
         if (id != request_id || !request_id) return;
@@ -163,6 +188,21 @@ class SceneAccelerationStructuresDialog final : public QDialog {
                     row(definition.value(QStringLiteral("name")).toString(),
                         definition.value(QStringLiteral("instance_mask")).toInt(255));
                 }
+                connections->setRowCount(0);
+                for (const auto &entry : response->value(QStringLiteral("task_connections")).toArray()) {
+                    const auto task = entry.toObject();
+                    const auto index = connections->rowCount();
+                    connections->insertRow(index);
+                    auto *name = new QTableWidgetItem(task.value(QStringLiteral("name")).toString());
+                    name->setFlags(name->flags() & ~Qt::ItemIsEditable);
+                    name->setData(Qt::UserRole, task.value(QStringLiteral("authored_acceleration_structure")).toString());
+                    name->setToolTip(tr("Authored AS: %1").arg(task.value(QStringLiteral("authored_acceleration_structure")).toString()));
+                    connections->setItem(index, 0, name);
+                    auto *combo = new QComboBox(connections);
+                    combo->addItem(task.value(QStringLiteral("acceleration_structure")).toString());
+                    connections->setCellWidget(index, 1, combo);
+                }
+                connectionOptions();
                 notice->setText(response->value(QStringLiteral("source_reference")).toString());
             }
         } else if (request_kind == Request::Submit) {
@@ -204,6 +244,12 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         table->setSelectionBehavior(QAbstractItemView::SelectRows);
         table->setSelectionMode(QAbstractItemView::SingleSelection);
         layout->addWidget(table);
+        connections = new QTableWidget(0, 2, this);
+        connections->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.connections"));
+        connections->setHorizontalHeaderLabels({tr("Ray task"), tr("Scene AS")});
+        connections->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+        layout->addWidget(connections);
+        connect(table, &QTableWidget::itemChanged, this, [this] { connectionOptions(); });
         notice = new QLabel(this);
         notice->setWordWrap(true);
         layout->addWidget(notice);
@@ -223,6 +269,7 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         connect(add, &QPushButton::clicked, this, [this] { row({}, 255); });
         connect(remove, &QPushButton::clicked, this, [this] {
             if (table->currentRow() >= 0) table->removeRow(table->currentRow());
+            connectionOptions();
         });
         connect(refresh, &QPushButton::clicked, this, [this] { read(); });
         connect(apply, &QPushButton::clicked, this, [this] { submit(); });

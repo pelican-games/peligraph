@@ -591,6 +591,21 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
     const auto submit = [&](const Json &value) {
         return service->editSceneAccelerationStructures({{"base_source_digest", digest}, {"definitions", value}});
     };
+    SECTION("task connection mapping rejects invalid values and accepts clearing overrides") {
+        CHECK(before.at("task_connections").empty());
+        for (const auto &mapping : Json::array({Json::array(), Json{{"unknown", "scene"}}, Json{{"unknown", ""}}})) {
+            const auto rejected = service->editSceneAccelerationStructures({
+                {"base_source_digest", digest}, {"definitions", definitions}, {"task_connections", mapping}});
+            CHECK(rejected.at("status") == "rejected");
+            CHECK(readBytes(source.path) == original);
+        }
+        const auto accepted = service->editSceneAccelerationStructures({
+            {"base_source_digest", digest}, {"definitions", definitions}, {"task_connections", Json::object()}});
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+        CHECK(Json::parse(readBytes(source.path)).at("ray_task_acceleration_structures") == Json::object());
+    }
     SECTION("add modify remove and reopen") {
         auto accepted = submit(definitions);
         REQUIRE(accepted.at("status") == "accepted");

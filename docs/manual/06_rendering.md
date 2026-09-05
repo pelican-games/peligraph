@@ -987,7 +987,9 @@ StudioのRender Features画面から「Scene AS...」を開くと、名前付き
 表で編集できます。Add／Removeで行を増減し、Applyで再コンパイルと保存を行います。
 不正な定義や使用中のASを削除する変更は適用されず、失敗時は表の編集内容を保持します。
 別の編集で元ファイルが変わった場合は競合として拒否します。Refreshはengineの現在値で
-表を読み直す操作です。task側のAS選択とgraphの接続編集は、この画面の対象外です。
+表を読み直す操作です。下段のRay task表ではtaskごとのASを選択できます。
+接続先はprojectの`ray_task_acceleration_structures`に保存され、共有featureの設定は変更しません。
+元のASへ戻すと、そのtaskの上書き指定を除きます。一般のgraph接続編集は未対応です。
 
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
 typed command buffer と `dispatch.indirect` を使います。

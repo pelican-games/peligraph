@@ -1568,6 +1568,38 @@ bool InspectorModel::commitWidgetValue(std::string_view field_key,
     return true;
 }
 
+bool InspectorModel::canRemoveComponent(std::size_t component_index) const noexcept {
+    if (!canEdit() || busy() || refreshBlocked() || impl_->refresh_in_flight) {
+        return false;
+    }
+    const auto &components = impl_->snapshot->components;
+    const auto found = std::find_if(components.begin(), components.end(),
+        [component_index](const auto &component) {
+            return component.component_index == component_index;
+        });
+    return found != components.end() && found->editable && !found->pending &&
+           !found->generated;
+}
+
+bool InspectorModel::removeComponent(std::size_t component_index) {
+    if (!canRemoveComponent(component_index)) {
+        impl_->setNotice(InspectorNoticeKind::Error,
+                         "Component removal requires an editable authored component and an idle inspector.");
+        return false;
+    }
+    const auto &components = impl_->snapshot->components;
+    const auto &component = *std::find_if(components.begin(), components.end(),
+        [component_index](const auto &candidate) {
+            return candidate.component_index == component_index;
+        });
+    Json operation{{"op", "remove_component"},
+                   {"object_id", impl_->snapshot->authoring_object_id},
+                   {"component_slot", component.name}};
+    if (component.name == "behavior") operation["attachment_index"] = component_index;
+    impl_->enqueueEdit(std::move(operation), "Remove " + component.title, component.name);
+    return true;
+}
+
 void InspectorModel::abortActivePreview() {
     if (!impl_->preview) {
         return;

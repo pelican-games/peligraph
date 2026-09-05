@@ -578,13 +578,26 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
 OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json &params) const {
     requireOnly(params, {}, "get_scene_acceleration_structures");
     const auto root = Json::parse(document_.bytes());
+    Json connections = Json::array();
+    const auto config = dependencies_.resolve_authoring_context
+        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config : root;
+    const auto overrides = root.value("ray_task_acceleration_structures", Json::object());
+    for (const auto &task : config.value("compute_tasks", Json::array())) {
+        if (!task.contains("ray_tracing") && !task.contains("ray_query")) continue;
+        const auto name = task.at("name").get<std::string>();
+        const auto &ray = task.at(task.contains("ray_tracing") ? "ray_tracing" : "ray_query");
+        const auto authored = ray.value("acceleration_structure", std::string{"scene"});
+        connections.push_back({{"name", name}, {"authored_acceleration_structure", authored},
+            {"acceleration_structure", overrides.value(name, authored)}});
+    }
     return {{"source_reference", dependencies_.source_reference},
             {"source_digest", digestJson(document_.sourceDigest())},
+            {"task_connections", connections},
             {"definitions", root.value("scene_acceleration_structures", Json::array())}};
 }
 
 OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Json &params) {
-    requireOnly(params, {"base_source_digest", "definitions"}, "edit_scene_acceleration_structures");
+    requireOnly(params, {"base_source_digest", "definitions", "task_connections"}, "edit_scene_acceleration_structures");
     const auto base_digest = requireString(params, "base_source_digest", "edit_scene_acceleration_structures");
     if (!params.contains("definitions"))
         throw std::invalid_argument("edit_scene_acceleration_structures requires definitions");
@@ -596,6 +609,24 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
                 (void)compileRenderPipeline(validation);
             } catch (const std::exception &error) {
                 return rejection("invalid_scene_acceleration_structures", error.what());
+            }
+            if (params.contains("task_connections")) {
+                const auto &connections = params.at("task_connections");
+                if (!connections.is_object())
+                    return rejection("invalid_task_connections", "task_connections must be an object");
+                const auto context = getSceneAccelerationStructures(Json::object());
+                for (const auto &[name, selected] : connections.items()) {
+                    if (!selected.is_string() || selected.get_ref<const std::string &>().empty())
+                        return rejection("invalid_task_connections", "AS names must be nonempty strings");
+                    const auto &tasks = context.at("task_connections");
+                    if (std::none_of(tasks.begin(), tasks.end(), [&](const auto &task) { return task.at("name") == name; }))
+                        return rejection("invalid_task_connections", "Unknown ray task: " + name);
+                    const auto target = selected.get<std::string>();
+                    if (target != "scene" && std::none_of(params.at("definitions").begin(), params.at("definitions").end(),
+                        [&](const auto &definition) { return definition.at("name") == target; }))
+                        return rejection("invalid_task_connections", "Unknown scene acceleration structure: " + target);
+                }
+                candidate = candidate.withRootValue("ray_task_acceleration_structures", connections.dump(2));
             }
             candidate = candidate.withRootValue("scene_acceleration_structures", params.at("definitions").dump(2));
             return std::nullopt;

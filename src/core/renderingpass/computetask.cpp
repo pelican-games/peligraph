@@ -2119,10 +2119,7 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
     const nlohmann::json &config_json,
     const RayTracingProjectConfig *ray_tracing_project) {
     std::vector<ComputeTaskDefinition> definitions;
-    if (!config_json.contains("compute_tasks")) {
-        return definitions;
-    }
-    const auto &tasks = config_json.at("compute_tasks");
+    const auto tasks = config_json.value("compute_tasks", nlohmann::json::array());
     if (!tasks.is_array()) {
         throw std::runtime_error("compute_tasks must be an array");
     }
@@ -2252,6 +2249,25 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
             }
         }
         definitions.push_back(std::move(definition));
+    }
+    if (const auto connections = config_json.find("ray_task_acceleration_structures");
+        connections != config_json.end()) {
+        if (!connections->is_object())
+            throw std::runtime_error("ray_task_acceleration_structures must be an object");
+        for (const auto &[name, selected] : connections->items()) {
+            if (name.empty() || !selected.is_string() || selected.get_ref<const std::string &>().empty())
+                throw std::runtime_error("ray_task_acceleration_structures requires nonempty task and AS names");
+            const auto task = std::find_if(definitions.begin(), definitions.end(),
+                [&](const auto &entry) { return entry.name == name; });
+            if (task == definitions.end())
+                throw std::runtime_error("ray_task_acceleration_structures references unknown task '" + name + "'");
+            if (task->ray_tracing)
+                task->ray_tracing->acceleration_structure = selected.get<std::string>();
+            else if (task->ray_query_acceleration_structure)
+                task->ray_query_acceleration_structure = selected.get<std::string>();
+            else
+                throw std::runtime_error("ray_task_acceleration_structures task '" + name + "' does not declare ray_tracing or ray_query");
+        }
     }
     return definitions;
 }

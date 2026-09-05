@@ -789,6 +789,29 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
 #endif
 }
 
+TEST_CASE("project AS connections override authored ray query tasks", "[rendercompiler][rt7][task-as]") {
+    nlohmann::json config = {{"compute_tasks", nlohmann::json::array({
+        {{"name", "query"}, {"shader", "project://shaders/query"},
+         {"dispatch", {{"groups", {1, 1, 1}}}},
+         {"ray_query", {{"acceleration_structure", "scene"}}}}
+    })}};
+    const auto parse = [&] { return parseComputeTaskDefinitionsFromConfigJson(config, nullptr); };
+    REQUIRE(parse().front().ray_query_acceleration_structure == "scene");
+    config["ray_task_acceleration_structures"] = {{"query", "actors"}};
+    CHECK(parse().front().ray_query_acceleration_structure == "actors");
+    CHECK(config["compute_tasks"][0]["ray_query"]["acceleration_structure"] == "scene");
+    for (const auto &bad : nlohmann::json::array({
+            nlohmann::json::array(), {{"query", ""}}, {{"query", 1}}, {{"missing", "scene"}}})) {
+        config["ray_task_acceleration_structures"] = bad;
+        CHECK_THROWS(parse());
+    }
+    config["ray_task_acceleration_structures"] = {{"query", "actors"}};
+    config["compute_tasks"][0].erase("ray_query");
+    CHECK_THROWS_WITH(parse(), Catch::Matchers::ContainsSubstring("does not declare"));
+    config.erase("compute_tasks");
+    CHECK_THROWS_WITH(parse(), Catch::Matchers::ContainsSubstring("unknown task"));
+}
+
 TEST_CASE("compute ray query declares its acceleration structure", "[rendercompiler][rt6][named-query]") {
     using Json = nlohmann::json;
     Json task{{"name", "query"}, {"shader", "query"},
@@ -913,7 +936,7 @@ void main() {
     CHECK(diagnostics.tlas_build_count == 4);
     CHECK(diagnostics.blas_build_count == 2);
 #if PELICAN_WITH_RPC
-    if (!query) {
+    {
         auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
         std::uint64_t rpc_id = 70000;
         auto before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
@@ -936,6 +959,26 @@ void main() {
         std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
         CHECK(pixels[1] == 0xffffffffu);
         CHECK(pixels[5] == 82u);
+        // Project-owned connections override the shared feature task without editing it.
+        before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
+        const auto feature_before_connection = readWp374aText(feature_path);
+        const Json connections = {{query ? "query_left" : "trace_left", "right"}};
+        const auto connected = runWp374aRpcBytes(*service, rpc_id++, "edit_scene_acceleration_structures", {
+            {"base_source_digest", before.at("source_digest").at("hex")},
+            {"definitions", definitions}, {"task_connections", connections}});
+        REQUIRE(connected.at("status") == "accepted");
+        service->commitPendingEdits();
+        (void)renderWp374aProductionRows();
+        REQUIRE(runWp374aRpcBytes(*service, rpc_id++, "get_edit_result",
+            {{"ticket", connected.at("ticket")}}).at("committed") == true);
+        (void)renderWp374aProductionRows();
+        const auto connected_image = GET_MODULE(Renderer).readRenderTargetForTesting("rt6_left", ImageSubresourceRange{});
+        REQUIRE(connected_image.bytes.size() >= sizeof(pixels));
+        std::memcpy(pixels.data(), connected_image.bytes.data(), sizeof(pixels));
+        CHECK(pixels[1] == 71u);
+        CHECK(pixels[5] == 0xffffffffu);
+        CHECK(readWp374aText(feature_path) == feature_before_connection);
+        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("ray_task_acceleration_structures") == connections);
         // Removing a referenced AS must leave the source and active graph intact.
         before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
         const auto source_before_failure = readWp374aText(project.path / "hybrid.json");

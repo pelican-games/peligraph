@@ -723,9 +723,11 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
                      "render_strategy", "target_planning",
                      "vulkan_plan_pins",
                      "vulkan_physical_fragments", "xr",
-                     "ray_group_layout", "ray_bindings", "scene_acceleration_structures"},
+                     "ray_group_layout", "ray_bindings", "scene_acceleration_structures",
+                     "ray_task_acceleration_structures"},
                     "rendering config using pipeline preset");
-    for (const auto key : {"ray_group_layout", "ray_bindings", "scene_acceleration_structures"}) {
+    for (const auto key : {"ray_group_layout", "ray_bindings", "scene_acceleration_structures",
+                           "ray_task_acceleration_structures"}) {
         if (resolved.contains(key)) {
             throw std::runtime_error(
                 "render pipeline presets cannot own " +

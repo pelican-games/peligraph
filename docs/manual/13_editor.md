@@ -206,8 +206,8 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 | `get_render_features` | 著作 config の現在の `features[]`、`source_reference`、`source_digest`、runtime の状態を返す |
 | `list_render_features` | **engine が可用性を判定した**カタログ。各項目に `available` が付き、**`unavailable_reason` は `available` が false の項目にだけ現れる**(使える項目には鍵ごと無い) |
 | `edit_render_features` | `base_source_digest` と `operations[]` を受け、**チケットを返す**。結果は `get_edit_result` か `step_frame` の `edit_results[]` |
-| `get_scene_acceleration_structures` | 名前付きTLASの`definitions[]`と編集元の`source_digest`を返す |
-| `edit_scene_acceleration_structures` | `base_source_digest`と`definitions[]`で名前付きTLASを置換し、既存の編集ticketを返す |
+| `get_scene_acceleration_structures` | 名前付きTLASの`definitions[]`、taskの接続先`task_connections[]`、編集元の`source_digest`を返す |
+| `edit_scene_acceleration_structures` | `base_source_digest`と`definitions[]`、任意の`task_connections` objectでTLASと接続先を置換し、既存の編集ticketを返す |
 
 **シーン編集との違い:**
 

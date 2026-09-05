@@ -101,6 +101,7 @@ struct InspectorWidget::Impl {
     std::vector<std::unique_ptr<NumericBinding>> numeric_bindings;
     std::vector<std::unique_ptr<TextBinding>> text_bindings;
     std::vector<QWidget *> direct_editors;
+    std::vector<std::pair<QPushButton *, std::size_t>> remove_buttons;
     std::unordered_map<QObject *, NumericBinding *> numeric_events;
     std::unordered_map<QObject *, TextBinding *> text_events;
 
@@ -403,6 +404,9 @@ struct InspectorWidget::Impl {
 
         refresh_button->setEnabled(model.selection().has_value() &&
                                    !model.refreshBlocked() && !model.busy());
+        for (const auto &[button, index] : remove_buttons) {
+            button->setEnabled(model.canRemoveComponent(index));
+        }
         undo_button->setEnabled(model.canUndoRedo());
         redo_button->setEnabled(model.canUndoRedo());
         cancel_preview_button->setEnabled(model.busy() &&
@@ -433,6 +437,7 @@ struct InspectorWidget::Impl {
         numeric_events.clear();
         text_events.clear();
         direct_editors.clear();
+        remove_buttons.clear();
         numeric_bindings.clear();
         text_bindings.clear();
     }
@@ -528,6 +533,19 @@ struct InspectorWidget::Impl {
                 QString::fromStdString(component.read_only_reason), group);
             reason->setStyleSheet(QStringLiteral("color: #b36b00;"));
             form->addRow(reason);
+        }
+        if (!component.generated) {
+            auto *remove = new QPushButton(owner.tr("Remove component"), group);
+            remove->setObjectName(QStringLiteral("pelican.inspectorRemoveComponent"));
+            const auto index = component.component_index;
+            remove->setEnabled(model.canRemoveComponent(index));
+            remove_buttons.emplace_back(remove, index);
+            QObject::connect(remove, &QPushButton::clicked, &owner, [this, index] {
+                model.removeComponent(index);
+                synchronize();
+                dispatchRequests();
+            });
+            form->addRow(remove);
         }
         for (const InspectorWidgetDescriptor &descriptor : component.widgets) {
             addField(*form, group, descriptor);

@@ -138,6 +138,8 @@ class InspectorModel {
                           bool commit_staged = true);
     bool commitWidgetValue(std::string_view field_key,
                            nlohmann::json value);
+    bool canRemoveComponent(std::size_t component_index) const noexcept;
+    bool removeComponent(std::size_t component_index);
     void abortActivePreview();
     void undo();
     void redo();

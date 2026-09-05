@@ -534,6 +534,11 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 使わないため、無名 object も別々に選択できます。WP264 の時点では枠線や gizmo を描きませんでしたが、
 現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
+Inspectorの各componentにある「Remove component」で、選択objectからcomponentを削除できます。
+削除は既存の編集journalを通り、Undo／Redoで取り消し・再実行できます。シーンファイルへの
+書き出しにはSaveを使います。生成されたcomponentは対象外で、編集不可・処理待ち・他の編集中は
+削除ボタンを無効にします。behaviorが複数ある場合も、押した行のattachmentだけを指定します。
+
 選択は engine/game の共有状態ではなく、各ツールが持つ client-session の注視対象です。engine に
 Studio 専用の selection state/RPC を足さず、公開 RPC と `pelican_project` の identity だけから
 任意の client が同じ状態を作れる形にしたのが D0 上の理由です。背景への成功 pick は選択を解除します。
