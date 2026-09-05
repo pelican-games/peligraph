@@ -406,7 +406,10 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
     QString broken_status;
     {
         EnvironmentVariableGuard player_arguments{
-            "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{"--headless"}};
+            // Exercise Studio's windowed launch path. A headless child can
+            // never satisfy native-window discovery, so loading large models
+            // may kill it before the intended material-pass failure occurs.
+            "PELICAN_STUDIO_PLAYER_ARGUMENTS", QByteArray{"--size 320x180"}};
         EmbeddedViewport viewport;
         FramePlanWidget frame_plan{&viewport};
         auto *status = frame_plan.findChild<QLabel *>(
@@ -433,6 +436,8 @@ TEST_CASE("Studio receives the running example fatal text while RPC stdout stays
 
     REQUIRE(broken.stopped);
     const QString engine_fatal = lastFatalLine(broken.standard_error);
+    INFO("engine stderr: " << broken.standard_error.toStdString());
+    INFO("Studio process output: " << broken.studio_output.toStdString());
     INFO("running engine fatal line: " << engine_fatal.toStdString());
     REQUIRE_FALSE(engine_fatal.isEmpty());
     REQUIRE(engine_fatal.contains(QStringLiteral("forward_transparent")));
