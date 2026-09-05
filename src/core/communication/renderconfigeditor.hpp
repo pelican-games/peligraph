@@ -162,6 +162,8 @@ class RenderConfigEditorService {
         RenderConfigRuntimeApplyResult applied) noexcept;
 
   public:
+    nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
+    nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);
     explicit RenderConfigEditorService(

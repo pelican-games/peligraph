@@ -185,7 +185,7 @@
 
 **SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L173))
 
-**`ray_group_layout`(ray layout v1 / v2)** — レイトレの宣言層の入口となる JSON。version は 1 か 2 だけを受理し、**プロセス一生ものの 3 値**(layout 無し / v1 / v2)として起動時に確定します。v2 のときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L164))
+**`ray_group_layout`(ray layout v1 / v2)** — レイトレの宣言層の入口となる JSON。version は 1 か 2 だけを受理し、**プロセス一生ものの 3 値**(layout 無し / v1 / v2)として起動時に確定します。v2 のときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L167))
 
 ---
 

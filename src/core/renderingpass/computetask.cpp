@@ -1247,14 +1247,8 @@ void parseCallableRecords(const nlohmann::json &pipeline, const std::string &nam
     }
     auto layout = std::make_shared<RayCallableRecordLayout>(
         parseRayCallableRecordLayout(pipeline.at("callable_record"), name));
-    const auto &records = pipeline.at("callable_records");
-    if (!records.is_array() || records.size() != result.callables.size()) {
-        throw std::runtime_error("pelican.ray_tracing.callable_records_invalid@1: task '" + name +
-            "' callable_records must contain one record per callable");
-    }
-    for (const auto &record : records) {
-        result.callable_records.push_back(encodeRayCallableRecord(record, *layout, name));
-    }
+    result.callable_records = encodeRayCallableRecords(
+        pipeline.at("callable_records"), *layout, result.callables.size(), name);
     result.callable_record_layout = std::move(layout);
 }
 
@@ -2267,6 +2261,18 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
                 task->ray_query_acceleration_structure = selected.get<std::string>();
             else
                 throw std::runtime_error("ray_task_acceleration_structures task '" + name + "' does not declare ray_tracing or ray_query");
+        }
+    }
+    if (const auto records = config_json.find("ray_task_callable_records"); records != config_json.end()) {
+        if (!records->is_object())
+            throw std::runtime_error("ray_task_callable_records must be an object");
+        for (const auto &[name, values] : records->items()) {
+            const auto task = std::find_if(definitions.begin(), definitions.end(),
+                [&](const auto &entry) { return entry.name == name; });
+            if (task == definitions.end() || !task->ray_tracing || !task->ray_tracing->callable_record_layout)
+                throw std::runtime_error("ray_task_callable_records references task without a callable record schema: " + name);
+            auto &ray = *task->ray_tracing;
+            ray.callable_records = encodeRayCallableRecords(values, *ray.callable_record_layout, ray.callables.size(), name);
         }
     }
     return definitions;

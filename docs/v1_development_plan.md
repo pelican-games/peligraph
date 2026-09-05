@@ -32,11 +32,11 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT1 / RT2 | raygen・miss・closest-hit・any-hit、再帰、SBT addressing、material ABI | 台帳 WP364〜368 に実装・検証記録あり。今回の統合ログで WP367 の本番 any-hit 試験が成功 | stage/record/material の結び付きの可視化、設定変更と GPU 結果を試す教材は完了未判定 |
 | RT3-1 | instance mask/flags/custom index と geometry flags | WP374/374a 着地済み。WP384-fix 後の対象 GPU/RPC 4 件が統合ログで成功 | 個体編集→GPU 効果→保存→再読込を GUI から通す。既存 RPC の証拠を GUI 完了とは扱わない |
 | CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 36ad3444 に着地(関連37/37、レビュー残余あり)、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d は4ce4117dに統合(W1 95/95) | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
-| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列を確認し、386cの数値基礎はae29fc98まで保存。数値基盤の追加実装は保留 | Playerで開ける学習サンプルを入口に、配置・サイズ・bounds・mixed geometryを実描画で確認する。数値oracleの完成を次機能の条件にしない |
-| RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。ゲームDLLからの更新を実GPUで確認 | Studioのrecord編集UIは残る。次はRT5の変形geometry |
+| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列を確認し、386cの数値基礎はae29fc98まで保存。数値基盤の追加実装は保留 | 配置・サイズ・bounds・mixed geometryの実編集経路を完成させる。学習サンプルは後回し、数値oracleの完成を次機能の条件にしない |
+| RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。Studioから初期値の永続編集も接続 | 新しい初期値dialogの実操作確認は残る |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
-| RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、AS構築node、名前付きTLAS選択、同一個体の複数triangle geometry BLASとrefitを実装・実GPU確認 | AS単位の編集node、AABB結合、異なるtransformのgeometry結合は残る |
-| RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きASとtask接続の編集RPC・Studio表編集を接続。ASごとの構築nodeを生成し、project側に接続先を保存 | graph fork/CASとrecord編集は残る。新dialogの実操作も未確認 |
+| RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、名前付きTLASごとの構築node・選択、同一個体の複数triangle geometry BLASとrefitを実装・実GPU確認 | AS構築位置の任意編集、AABB結合、異なるtransformのgeometry結合は残る |
+| RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きAS・task接続・Callable初期値の編集RPCとStudio編集を接続。ASごとの構築nodeを生成し、project側に設定を保存 | graph fork/CASは残る。新dialogの実操作も未確認 |
 | ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。代表ゲームでの一連の制作経路は今回未確認 | 実制作で詰まる操作を GUI 改善の優先順位に使う |
 
 確認した実装入口: [pipelinefactory.cpp](../src/core/shader/pipelinefactory.cpp)、

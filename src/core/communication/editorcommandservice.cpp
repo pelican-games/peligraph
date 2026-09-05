@@ -1424,6 +1424,16 @@ OrderedJson EditorCommandService::getRenderAuthoringContext(
     return render_config_editor_->getRenderAuthoringContext(params);
 }
 
+OrderedJson EditorCommandService::getRayCallableRecords(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getRayCallableRecords(params);
+}
+
+OrderedJson EditorCommandService::editRayCallableRecords(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editRayCallableRecords(params);
+}
+
 OrderedJson EditorCommandService::getSceneAccelerationStructures(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getSceneAccelerationStructures(params);
@@ -2234,6 +2244,15 @@ OrderedJson EditorCommandRpcAdapter::editRenderFeatures(
         throw std::logic_error("editor RPC adapter is read-only");
     }
     return mutable_service_->editRenderFeatures(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getRayCallableRecords(const Json &params) const {
+    return service_.getRayCallableRecords(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editRayCallableRecords(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
+    return mutable_service_->editRayCallableRecords(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getSceneAccelerationStructures(const Json &params) const {

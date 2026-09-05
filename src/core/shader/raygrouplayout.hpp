@@ -53,6 +53,9 @@ RayCallableRecordLayout parseRayCallableRecordLayout(
 std::vector<std::byte> encodeRayCallableRecord(
     const nlohmann::json &values, const RayCallableRecordLayout &layout,
     std::string_view diagnostic = {});
+std::vector<std::vector<std::byte>> encodeRayCallableRecords(
+    const nlohmann::json &records, const RayCallableRecordLayout &layout,
+    std::size_t callable_count, std::string_view diagnostic = {});
 
 enum class RayEngineRecordField : std::uint8_t {
     material_index,

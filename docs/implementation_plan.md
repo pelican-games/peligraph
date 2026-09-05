@@ -23237,7 +23237,15 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 named AS nodes):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。taskのAS接続編集とInspectorのcomponent削除は55145251に統合済み。名前付きTLASごとの実行nodeを追加し、実GPUで確認。次はCallable record初期値の永続編集、graph fork/CAS、component追加などの残機能。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 callable initial editing):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。名前付きTLAS実行nodeは628206edに統合済み。Callable record初期値のproject所有上書き・RPC・Studio編集を接続し、実GPUで保存反映とResetを確認。次はpresetをproject側へforkする編集経路、一般graphのfork/CAS、component追加などの残機能。学習サンプルは後回し。
+
+**RT7 callable initial editing (2026-09-06):**
+- rootの`ray_task_callable_records`で、variant suffix前のtask名にcallable順の初期値配列を指定。既存schema・shader数は変更せず、共有featureを編集しない。宣言の読み込みとoverride/RPC検査はencodeRayCallableRecordsを共用。unknown task・件数・型・数値範囲を検査する。
+- get_ray_callable_records / edit_ray_callable_recordsをservice・adapter・RPCへ追加し、既存root CAS/ticket/candidate publicationへ接続。getは元宣言と実効初期値を返し、ゲーム実行中の更新を混ぜない。単一文字列のcallable宣言もarrayに正規化する。
+- StudioのCallable Records...からtask/record別にscalar/vectorを編集。切替時も入力を保持し、Applyで全上書きを保存、Reset task→Applyで元宣言へ戻す。u32全域の文字列表示とi32/f32/vec範囲を扱う。schema自体・shader一覧のGUI編集ではない。
+- CPU編集関連25/25（464 assertions、`build/.codex_bg/rt7callableedit-cpu.log`）成功。実GPUを含む対象2/2（50 assertions、`rt7callableedit-gpu-final.log`）成功。保存済み250→ゲーム更新400→shader reload→保存初期値600→Reset200のhit markerを確認。共有feature bytes不変、stale CAS・不正値拒否、serviceを開き直した初期値再取得を確認。overrideを取り消すと初回markerと編集後markerが落ちる。
+- Core/Player/Studio/Qt対象build成功（`rt7callableedit-appbuild.log`）。GPU試験の最終buildは`rt7callableedit-finalbuild.log`。Studio既存配置2/2（`rt7callableedit-studio-ctest.log`）成功。新dialogの手動操作とprocess再起動は未確認。初回試験の構文・Catch byte表示リンク・service二重installはテスト側を修正し、追加のテスト道具は導入しない。
+- 次のfork案は、合成前のpreset宣言をprojectへコピーしrootの参照を同じtransactionで切替える操作。feature効果を焼き込んだ合成後configのコピーは二重適用になるため使わない。任意graph複製・resource改名・AS node位置編集をこのコピー操作の完成とは扱わない。
 
 **RT7 named AS nodes (2026-09-06):**
 - compilerが共有構築nodeと名前付きTLASごとの`__scene_acceleration_structure:<name>`を生成。名前付きnodeは共有nodeに依存し、全consumerはAS集合の完成に依存する。AS定義と接続編集からこの構成を再生成する。任意node移動や一般graph edge編集までの完成とは扱わない。

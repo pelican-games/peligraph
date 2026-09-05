@@ -430,7 +430,15 @@ callable独自データは `callable_record` にmember配列、`callable_records
 context.setRayTracingCallableRecord("trace_lighting", 0, {{"gain", 0.8f}});
 ```
 
-Studioのrecord編集UIは未実装。最新の利用者指示により学習サンプルの追加よりエンジン中核の機能完成を優先する。
+StudioのRender Features内「Callable Records...」で、taskとcallableを選び、schemaに沿って
+初期値を編集する。Applyでproject rootの`ray_task_callable_records`を保存する。
+このobjectはvariant suffix付与前のtask名から、callable順のrecord配列への上書き指定である。
+schemaとshader数は元宣言のまま、共有featureのbytesは変更しない。Reset taskは元の宣言値へ戻し、
+Applyで上書き指定を除く。ゲームコードの実行時更新はここに表示・保存しない。
+`get_ray_callable_records`はsource digestとtaskごとのschema・callables配列・authored_records・recordsを返す。
+`edit_ray_callable_records`はbase_source_digestとtask_records objectを受け、既存の設定編集ticketで
+再構築・公開・保存する。型や件数の不一致は、読み込みと同じencoderで拒否する。
+学習サンプルの追加よりエンジン中核の機能完成を優先する。
 
 ### RT3〜RT7
 

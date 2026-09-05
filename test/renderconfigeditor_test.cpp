@@ -575,6 +575,29 @@ std::string emptyHybridConfig() {
 } // namespace
 
 #if PELICAN_WITH_RPC
+TEST_CASE("Callable editor normalizes one shader and rejects invalid record values",
+          "[render-config-editor][rt7][callable-records]") {
+    auto config = Json::parse(emptyHybridConfig());
+    Json task{{"name", "callable_task"}};
+    task["ray_tracing"] = {
+        {"callable", "shaders/gain.rcall"},
+        {"callable_record", Json::array({{{"name", "count"}, {"type", "u32"}}})},
+        {"callable_records", Json::array({{{"count", 1}}})}};
+    config["compute_tasks"] = Json::array({task});
+    TemporaryConfig source{config.dump(2)};
+    ActualCpuRenderRuntime runtime;
+    auto service = makeService(source, runtime);
+    const auto context = service->getRayCallableRecords(Json::object());
+    REQUIRE(context.at("tasks").size() == 1);
+    CHECK(context.at("tasks")[0].at("callables") == Json::array({"shaders/gain.rcall"}));
+    const auto rejected = service->editRayCallableRecords({
+        {"base_source_digest", context.at("source_digest").at("hex")},
+        {"task_records", {{"callable_task", Json::array({{{"count", -1}}})}}}});
+    CHECK(rejected.at("status") == "rejected");
+    CHECK(rejected.at("error").at("code") == "invalid_callable_records");
+    CHECK(Json::parse(readBytes(source.path)) == config);
+}
+
 TEST_CASE("scene AS edits use render publication and source CAS", "[render-config-editor][rt7][scene-as]") {
     TemporaryConfig source{emptyHybridConfig()};
     const auto original = readBytes(source.path);
@@ -591,6 +614,20 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
     const auto submit = [&](const Json &value) {
         return service->editSceneAccelerationStructures({{"base_source_digest", digest}, {"definitions", value}});
     };
+    SECTION("callable record editing rejects unknown tasks and persists override reset") {
+        const auto callable = service->getRayCallableRecords(Json::object());
+        CHECK(callable.at("tasks").empty());
+        const auto rejected = service->editRayCallableRecords({
+            {"base_source_digest", digest}, {"task_records", {{"missing", Json::array()}}}});
+        CHECK(rejected.at("status") == "rejected");
+        CHECK(readBytes(source.path) == original);
+        const auto accepted = service->editRayCallableRecords({
+            {"base_source_digest", digest}, {"task_records", Json::object()}});
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+        CHECK(Json::parse(readBytes(source.path)).at("ray_task_callable_records") == Json::object());
+    }
     SECTION("task connection mapping rejects invalid values and accepts clearing overrides") {
         CHECK(before.at("task_connections").empty());
         for (const auto &mapping : Json::array({Json::array(), Json{{"unknown", "scene"}}, Json{{"unknown", ""}}})) {

@@ -6,6 +6,11 @@
 #include <QDialog>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QLineEdit>
+#include <QSignalBlocker>
+#include <cmath>
+#include <array>
+#include <limits>
 #include <QTableWidget>
 #include <QSet>
 #include <QByteArray>
@@ -66,6 +71,295 @@ std::optional<QJsonObject> decodeObject(
     }
     return document.object();
 }
+
+class CallableRecordsDialog final : public QDialog {
+  EmbeddedViewport &viewport;
+  QComboBox *task_box;
+  QComboBox *record_box;
+  QTableWidget *fields;
+  QLabel *notice;
+  QPushButton *apply;
+  QPushButton *refresh;
+  QPushButton *reset;
+  QJsonArray tasks;
+  QTimer poll;
+  QString digest, ticket;
+  qint64 request_id = 0;
+  enum class Request { Read, Submit, Result } request_kind = Request::Read;
+  void controls() {
+    const bool idle = request_id == 0 && ticket.isEmpty();
+    for (QWidget *widget :
+         std::array<QWidget *, 4>{task_box, record_box, fields, reset})
+      widget->setEnabled(idle);
+    apply->setEnabled(idle && viewport.rpcReady() && !digest.isEmpty());
+    refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+  }
+  void request(Request kind, const QString &method, QJsonObject params = {}) {
+    if (request_id)
+      return;
+    QString error;
+    request_kind = kind;
+    request_id = viewport.requestRpc(method, params, &error);
+    if (!request_id) {
+      poll.stop();
+      notice->setText(error);
+    }
+    controls();
+  }
+  void read() {
+    if (!ticket.isEmpty())
+      result();
+    else
+      request(Request::Read, QStringLiteral("get_ray_callable_records"));
+  }
+  void result() {
+    if (!ticket.isEmpty())
+      request(Request::Result, QStringLiteral("get_edit_result"),
+              {{"ticket", ticket}});
+  }
+  void showRecord() {
+    fields->setRowCount(0);
+    const int ti = task_box->currentIndex(), ri = record_box->currentIndex();
+    if (ti < 0 || ri < 0)
+      return;
+    const auto task = tasks[ti].toObject();
+    const auto record = task["records"].toArray()[ri].toObject();
+    for (const auto &entry : task["schema"].toArray()) {
+      const auto member = entry.toObject();
+      const auto name = member["name"].toString(),
+                 type = member["type"].toString();
+      const auto value = record[name];
+      const auto values = value.isArray() ? value.toArray() : QJsonArray{value};
+      for (int c = 0; c < values.size(); ++c) {
+        const int row = fields->rowCount();
+        fields->insertRow(row);
+        auto *label = new QTableWidgetItem(
+            value.isArray()
+                ? QStringLiteral("%1[%2] (%3)").arg(name).arg(c).arg(type)
+                : name + " (" + type + ")");
+        label->setFlags(label->flags() & ~Qt::ItemIsEditable);
+        fields->setItem(row, 0, label);
+        auto *input = new QLineEdit(
+            values[c].isString()
+                ? values[c].toString()
+                : QString::number(values[c].toDouble(), 'g',
+                                  type == "u32" || type == "i32" ? 17 : 9),
+            fields);
+        input->setObjectName(QStringLiteral("pelican.callableRecords.value"));
+        fields->setCellWidget(row, 1, input);
+        connect(input, &QLineEdit::textEdited, this,
+                [this, ti, ri, name, c,
+                 vector = value.isArray()](const QString &text) {
+                  auto task = tasks[ti].toObject();
+                  auto records = task["records"].toArray();
+                  auto record = records[ri].toObject();
+                  if (vector) {
+                    auto values = record[name].toArray();
+                    values[c] = text;
+                    record[name] = values;
+                  } else
+                    record[name] = text;
+                  records[ri] = record;
+                  task["records"] = records;
+                  tasks[ti] = task;
+                });
+      }
+    }
+  }
+  void showTask() {
+    const QSignalBlocker blocker(record_box);
+    record_box->clear();
+    if (task_box->currentIndex() >= 0) {
+      const auto callables =
+          tasks[task_box->currentIndex()].toObject()["callables"].toArray();
+      for (int i = 0; i < callables.size(); ++i)
+        record_box->addItem(
+            QStringLiteral("%1: %2").arg(i).arg(callables[i].toString()));
+    }
+    showRecord();
+  }
+  void submit() {
+    QJsonObject mapping;
+    for (const auto &entry : tasks) {
+      const auto task = entry.toObject();
+      auto records = task["records"].toArray();
+      for (int i = 0; i < records.size(); ++i) {
+        auto record = records[i].toObject();
+        for (const auto &entry : task["schema"].toArray()) {
+          const auto member = entry.toObject();
+          const auto name = member["name"].toString(),
+                     type = member["type"].toString();
+          const auto value = record[name];
+          auto values = value.isArray() ? value.toArray() : QJsonArray{value};
+          for (int c = 0; c < values.size(); ++c) {
+            bool ok = true;
+            const double number = values[c].isString()
+                                      ? values[c].toString().toDouble(&ok)
+                                      : values[c].toDouble();
+            const bool integer = type == "i32" || type == "u32";
+            const double minimum =
+                type == "u32"   ? 0.0
+                : type == "i32" ? -2147483648.0
+                                : -double(std::numeric_limits<float>::max());
+            const double maximum =
+                type == "u32"   ? 4294967295.0
+                : type == "i32" ? 2147483647.0
+                                : double(std::numeric_limits<float>::max());
+            if (!ok || !std::isfinite(number) || number < minimum ||
+                number > maximum || (integer && std::floor(number) != number)) {
+              notice->setText(
+                  tr("Invalid %1 value in task %2, record %3, field %4.")
+                      .arg(type, task["name"].toString())
+                      .arg(i)
+                      .arg(name));
+              return;
+            }
+            values[c] = number;
+          }
+          record[name] =
+              value.isArray() ? QJsonValue(values) : QJsonValue(values[0]);
+        }
+        records[i] = record;
+      }
+      if (records != task["authored_records"].toArray())
+        mapping.insert(task["name"].toString(), records);
+    }
+    request(Request::Submit, QStringLiteral("edit_ray_callable_records"),
+            {{"base_source_digest", digest}, {"task_records", mapping}});
+  }
+  void receive(qint64 id, const QByteArray &bytes) {
+    if (!id || id != request_id)
+      return;
+    request_id = 0;
+    QString error;
+    const auto response = decodeObject(bytes, &error);
+    if (!response) {
+      poll.stop();
+      notice->setText(error);
+      controls();
+      return;
+    }
+    if (request_kind == Request::Read) {
+      const auto next_digest =
+          response->value("source_digest").toObject()["hex"].toString();
+      if (next_digest.isEmpty() || !response->value("tasks").isArray())
+        notice->setText(tr("Invalid callable record document."));
+      else {
+        digest = next_digest;
+        tasks = response->value("tasks").toArray();
+        {
+          const QSignalBlocker blocker(task_box);
+          task_box->clear();
+          for (const auto &task : tasks)
+            task_box->addItem(task.toObject()["name"].toString());
+        }
+        showTask();
+        notice->setText(tasks.isEmpty()
+                            ? tr("No tasks declare callable records.")
+                            : response->value("source_reference").toString());
+      }
+    } else if (request_kind == Request::Submit) {
+      if (response->value("status").toString() == "accepted") {
+        ticket = response->value("ticket").toString();
+        if (!ticket.isEmpty()) {
+          poll.start();
+          result();
+        } else
+          notice->setText(tr("The engine returned no edit ticket."));
+      } else
+        notice->setText(responseError(*response));
+    } else if (response->value("status").toString() != "pending") {
+      poll.stop();
+      ticket.clear();
+      if (response->value("committed").toBool() &&
+          response->value("status").toString() == "committed")
+        read();
+      else
+        notice->setText(responseError(*response));
+    }
+    controls();
+  }
+
+public:
+  CallableRecordsDialog(EmbeddedViewport &embedded, QWidget *parent)
+      : QDialog(parent), viewport(embedded) {
+    setAttribute(Qt::WA_DeleteOnClose);
+    setObjectName(QStringLiteral("pelican.callableRecords"));
+    setWindowTitle(tr("Callable record initial values"));
+    resize(600, 440);
+    auto *layout = new QVBoxLayout(this);
+    auto *description = new QLabel(tr("Edit saved initial values. Live changes "
+                                      "made by game logic are not shown here."),
+                                   this);
+    description->setWordWrap(true);
+    layout->addWidget(description);
+    task_box = new QComboBox(this);
+    record_box = new QComboBox(this);
+    task_box->setObjectName(QStringLiteral("pelican.callableRecords.task"));
+    record_box->setObjectName(QStringLiteral("pelican.callableRecords.record"));
+    layout->addWidget(task_box);
+    layout->addWidget(record_box);
+    fields = new QTableWidget(0, 2, this);
+    fields->setHorizontalHeaderLabels({tr("Field / type"), tr("Value")});
+    fields->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    layout->addWidget(fields);
+    notice = new QLabel(this);
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+    auto *buttons = new QHBoxLayout;
+    reset = new QPushButton(tr("Reset task"), this);
+    refresh = new QPushButton(tr("Refresh"), this);
+    apply = new QPushButton(tr("Apply"), this);
+    reset->setObjectName(QStringLiteral("pelican.callableRecords.reset"));
+    refresh->setObjectName(QStringLiteral("pelican.callableRecords.refresh"));
+    apply->setObjectName(QStringLiteral("pelican.callableRecords.apply"));
+    for (auto *button : {reset, refresh, apply})
+      buttons->addWidget(button);
+    layout->addLayout(buttons);
+    refresh->setToolTip(
+        tr("Replace local edits with the saved initial values."));
+    connect(task_box, &QComboBox::currentIndexChanged, this,
+            [this] { showTask(); });
+    connect(record_box, &QComboBox::currentIndexChanged, this,
+            [this] { showRecord(); });
+    connect(reset, &QPushButton::clicked, this, [this] {
+      const int i = task_box->currentIndex();
+      if (i < 0)
+        return;
+      auto task = tasks[i].toObject();
+      task["records"] = task["authored_records"];
+      tasks[i] = task;
+      showRecord();
+    });
+    connect(refresh, &QPushButton::clicked, this, [this] { read(); });
+    connect(apply, &QPushButton::clicked, this, [this] { submit(); });
+    poll.setInterval(100);
+    connect(&poll, &QTimer::timeout, this, [this] { result(); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
+            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
+            [this](qint64 id, const QString &error) {
+              if (!id || id != request_id)
+                return;
+              request_id = 0;
+              poll.stop();
+              notice->setText(error);
+              controls();
+            });
+    connect(
+        &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this, [this] {
+          request_id = 0;
+          ticket.clear();
+          digest.clear();
+          poll.stop();
+          notice->setText(tr("Engine disconnected. Local edits are retained."));
+          controls();
+        });
+    connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
+            [this] { controls(); });
+    read();
+  }
+};
 
 class SceneAccelerationStructuresDialog final : public QDialog {
     EmbeddedViewport &viewport;
@@ -417,6 +711,12 @@ struct RenderFeaturesWidget::Impl {
             QStringLiteral("pelican.renderFeatures.apply"));
         actions->addWidget(refresh);
         auto *scene_as = new QPushButton(owner.tr("Scene AS..."), &owner);
+        auto *callable_records = new QPushButton(owner.tr("Callable Records..."), &owner);
+        actions->addWidget(callable_records);
+        QObject::connect(callable_records, &QPushButton::clicked, &owner, [this] {
+            auto *dialog = new CallableRecordsDialog(viewport, &owner);
+            dialog->show();
+        });
         scene_as->setObjectName(QStringLiteral("pelican.renderFeatures.sceneAccelerationStructures"));
         actions->addWidget(scene_as);
         QObject::connect(scene_as, &QPushButton::clicked, &owner, [this] {

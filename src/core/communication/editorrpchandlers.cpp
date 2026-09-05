@@ -166,6 +166,12 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("get_render_authoring_context", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getRenderAuthoringContext(params); });
     });
+    server.setHandler("get_ray_callable_records", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRayCallableRecords(params); });
+    });
+    server.setHandler("edit_ray_callable_records", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editRayCallableRecords(params); });
+    });
     server.setHandler("get_scene_acceleration_structures", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getSceneAccelerationStructures(params); });
     });

@@ -812,6 +812,31 @@ TEST_CASE("project AS connections override authored ray query tasks", "[renderco
     CHECK_THROWS_WITH(parse(), Catch::Matchers::ContainsSubstring("unknown task"));
 }
 
+TEST_CASE("project callable initial values use the declared record schema", "[rendercompiler][rt7][callable-edit]") {
+    Json config{{"compute_tasks", Json::array({{
+        {"name", "trace"}, {"dispatch", {{"rays", {1, 1, 1}}}},
+        {"ray_tracing", {{"raygen", "raygen"}, {"miss", {"miss"}}, {"closesthit", {"hit"}},
+            {"callable", {"call"}},
+            {"callable_record", Json::array({{{"name", "value"}, {"type", "u32"}}})},
+            {"callable_records", Json::array({{{"value", 1}}})}}}
+    }})}};
+    const auto parse = [&] { return parseComputeTaskDefinitionsFromConfigJson(config); };
+    const auto original = parse().front().ray_tracing->callable_records;
+    config["ray_task_callable_records"] = {{"trace", Json::array({{{"value", 4294967295u}}})}};
+    CHECK(bool(parse().front().ray_tracing->callable_records != original));
+    CHECK(config["compute_tasks"][0]["ray_tracing"]["callable_records"][0]["value"] == 1);
+    for (const auto &invalid : Json::array({Json::array(),
+            Json{{"missing", Json::array({{{"value", 1}}})}},
+            Json{{"trace", Json::array()}},
+            Json{{"trace", Json::array({{{"value", -1}}})}},
+            Json{{"trace", Json::array({{{"value", 4294967296ull}}})}}})) {
+        config["ray_task_callable_records"] = invalid;
+        CHECK_THROWS(parse());
+    }
+    config["ray_task_callable_records"] = Json::object();
+    CHECK(bool(parse().front().ray_tracing->callable_records == original));
+}
+
 TEST_CASE("compute ray query declares its acceleration structure", "[rendercompiler][rt6][named-query]") {
     using Json = nlohmann::json;
     Json task{{"name", "query"}, {"shader", "query"},
@@ -5720,6 +5745,10 @@ TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implemen
     if (dynamic_records) {
         ray["callable_record"] = Json::array({{{"name", "increment"}, {"type", "u32"}}});
         ray["callable_records"] = Json::array({{{"increment", 100}}, {{"increment", 200}}});
+        auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        rendering["ray_task_callable_records"] = {{"wp386_trace",
+            Json::array({{{"increment", 100}}, {{"increment", 250}}})}};
+        writeWp374aText(project.path / "hybrid.json", rendering.dump());
     }
     ray["hit_shaders"]["primary"]["sphere"]["intersection"] = "project://shaders/hit";
     writeWp374aText(project.path / "features/wp386_procedural.json", feature.dump());
@@ -5776,7 +5805,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         std::memcpy(&value, output.bytes.data(), sizeof(value));
         return value;
     };
-    CHECK(marker() == 207u);
+    CHECK(marker() == (dynamic_records ? 257u : 207u));
     if (dynamic_records) {
         std::size_t pipeline_creates = 0;
         ScopedRayTracingPipelineCreateObserver observer{
@@ -5810,6 +5839,46 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     REQUIRE(rebuilt.committed);
     REQUIRE(rebuilt.failed_pipelines == 0);
     CHECK(marker() == (dynamic_records ? 1207u : 307u));
+    if (dynamic_records) {
+        auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+        std::uint64_t rpc_id = 90000;
+        auto before = runWp374aRpcBytes(*service, rpc_id++, "get_ray_callable_records", Json::object());
+        REQUIRE(before.at("tasks").size() == 1);
+        CHECK(before.at("tasks")[0].at("authored_records")[1].at("increment") == 200);
+        CHECK(before.at("tasks")[0].at("records")[1].at("increment") == 250);
+        const auto feature_path = project.path / "features/wp386_procedural.json";
+        const auto feature_bytes = readWp374aText(feature_path);
+        const Json records = Json::array({{{"increment", 100}}, {{"increment", 600}}});
+        const Json mapping{{"wp386_trace", records}};
+        const auto edit = [&](const Json &overrides) {
+            const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_ray_callable_records", {
+                {"base_source_digest", before.at("source_digest").at("hex")}, {"task_records", overrides}});
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPendingEdits();
+            (void)renderWp374aProductionRows();
+            REQUIRE(runWp374aRpcBytes(*service, rpc_id++, "get_edit_result",
+                {{"ticket", accepted.at("ticket")}}).at("committed") == true);
+        };
+        edit(mapping);
+        CHECK(marker() == 1807u);
+        CHECK(readWp374aText(feature_path) == feature_bytes);
+        CHECK(Json::parse(readWp374aText(project.path / "hybrid.json")).at("ray_task_callable_records") == mapping);
+        CHECK(runWp374aRpcBytes(*service, rpc_id++, "edit_ray_callable_records", {
+            {"base_source_digest", before.at("source_digest").at("hex")},
+            {"task_records", mapping}}).at("status") == "rejected");
+        service.reset();
+        service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+        before = runWp374aRpcBytes(*service, rpc_id++, "get_ray_callable_records", Json::object());
+        CHECK(before.at("tasks")[0].at("records") == records);
+        auto invalid = mapping;
+        invalid["wp386_trace"][1]["increment"] = -1;
+        CHECK(runWp374aRpcBytes(*service, rpc_id++, "edit_ray_callable_records", {
+            {"base_source_digest", before.at("source_digest").at("hex")},
+            {"task_records", invalid}}).at("status") == "rejected");
+        CHECK(marker() == 1807u);
+        edit(Json::object());
+        CHECK(marker() == 607u);
+    }
 }
 
 TEST_CASE("WP386b sphere reports hits and reload publishes final entry classification",

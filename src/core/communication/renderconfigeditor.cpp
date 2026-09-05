@@ -1,3 +1,4 @@
+#include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
 #include "renderconfigtransaction.hpp"
 
@@ -573,6 +574,55 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
     };
     results_[ticket_id] = {{"ticket", ticket_id}, {"status", "pending"}};
     return accepted;
+}
+
+OrderedJson RenderConfigEditorService::getRayCallableRecords(const Json &params) const {
+    requireOnly(params, {}, "get_ray_callable_records");
+    const auto root = Json::parse(document_.bytes());
+    const auto config = dependencies_.resolve_authoring_context
+        ? dependencies_.resolve_authoring_context(currentDocumentSet()).config : root;
+    const auto overrides = root.value("ray_task_callable_records", Json::object());
+    auto tasks = Json::array();
+    for (const auto &task : config.value("compute_tasks", Json::array())) {
+        if (!task.contains("ray_tracing")) continue;
+        const auto &ray = task.at("ray_tracing");
+        if (!ray.contains("callable_record")) continue;
+        const auto name = task.at("name").get<std::string>();
+        const auto &declared_callables = ray.at("callable");
+        const auto callables = declared_callables.is_array() ? declared_callables : Json::array({declared_callables});
+        tasks.push_back({{"name", name}, {"schema", ray.at("callable_record")},
+            {"callables", callables}, {"authored_records", ray.at("callable_records")},
+            {"records", overrides.value(name, ray.at("callable_records"))}});
+    }
+    return {{"source_reference", dependencies_.source_reference},
+            {"source_digest", digestJson(document_.sourceDigest())}, {"tasks", tasks}};
+}
+
+OrderedJson RenderConfigEditorService::editRayCallableRecords(const Json &params) {
+    requireOnly(params, {"base_source_digest", "task_records"}, "edit_ray_callable_records");
+    const auto digest = requireString(params, "base_source_digest", "edit_ray_callable_records");
+    return queueRootEdit(digest, "edit_ray_callable_records",
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            if (!params.contains("task_records") || !params.at("task_records").is_object())
+                return rejection("invalid_callable_records", "task_records must be an object");
+            const auto context = getRayCallableRecords(Json::object());
+            const auto &tasks = context.at("tasks");
+            for (const auto &[name, records] : params.at("task_records").items()) {
+                const auto task = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) {
+                    return entry.at("name") == name;
+                });
+                if (task == tasks.end())
+                    return rejection("invalid_callable_records", "Unknown callable record task: " + name);
+                try {
+                    const auto layout = parseRayCallableRecordLayout(task->at("schema"), name);
+                    (void)encodeRayCallableRecords(records, layout, task->at("callables").size(), name);
+                } catch (const std::exception &error) {
+                    return rejection("invalid_callable_records", error.what());
+                }
+            }
+            candidate = candidate.withRootValue("ray_task_callable_records", params.at("task_records").dump(2));
+            return std::nullopt;
+        });
 }
 
 OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json &params) const {

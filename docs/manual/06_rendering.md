@@ -940,6 +940,13 @@ RT pipeline task も最上位 `compute_tasks` を使います。これは `vkCmd
 
 stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` の指定はエラーです。`rays_from` は指定image mipの幅・高さから実行サイズを決め、resize/rebind後に再計算します。callableは`ray_tracing.callable`、any-hit/intersectionはray group layoutから指定します。[加速構造とRT pipelineの説明](../source-code-guide/11_ray_query_acceleration_structures.md)も参照してください。
 
+Callable recordの初期値は、StudioのRender Features → Callable Records...で編集できます。
+taskとcallableを選び、表示された型に沿って値を入力し、Applyで保存・反映します。
+整数はi32/u32、実数はf32、vectorは成分ごとに入力します。Reset taskは元宣言の値に戻し、
+Applyでそのtaskの上書きを除きます。Refreshはローカルの編集を保存済み初期値で置き換えます。
+保存先はprojectの`ray_task_callable_records`で、共有featureを変更しません。
+ゲームコードが実行中に更新した値は、この初期値編集画面には表示されません。
+
 画像と独立した3D領域を走査する場合は、代わりに次を指定します。値は正のuint32で、デバイスの各次元上限・総起動数上限も検査します。
 
 ```json
@@ -2360,7 +2367,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
-- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L759))。
+- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L772))。
 
 layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 
@@ -2468,7 +2475,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1406))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1419))。
 
 ## 関連文書
 

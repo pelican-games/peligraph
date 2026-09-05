@@ -742,6 +742,19 @@ std::vector<std::byte> encodeRayCallableRecord(
     return encodeRecord(values, layout.members, layout.data_size, diagnostic);
 }
 
+std::vector<std::vector<std::byte>> encodeRayCallableRecords(
+    const nlohmann::json &records, const RayCallableRecordLayout &layout,
+    std::size_t callable_count, std::string_view diagnostic) {
+    if (!records.is_array() || records.size() != callable_count)
+        throw std::runtime_error("pelican.ray_tracing.callable_records_invalid@1: task '" +
+            std::string{diagnostic} + "' callable_records must contain one record per callable");
+    std::vector<std::vector<std::byte>> result;
+    result.reserve(records.size());
+    for (const auto &record : records)
+        result.push_back(encodeRayCallableRecord(record, layout, diagnostic));
+    return result;
+}
+
 RayGroupLayout parseRayGroupLayout(
     std::string_view raw_bytes, std::string source_reference) {
     json root;
