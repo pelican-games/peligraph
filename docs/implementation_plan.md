@@ -23251,6 +23251,8 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 5. **WP382d 実装中。** `<作業ディレクトリ>/wp382d` / `codex/wp382d`、基点 `763556e8`。382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。並行エージェントが実装し、commitは統合側のみ。
 6. **WP386b 実装中、386cは後続。** `<作業ディレクトリ>/wp386b` / `codex/wp386b`、基点 `763556e8`。まずhit attributeのstage間ABI検査と、materialを持たないproceduralへの生成any-hit誤適用を閉じる。分類/status wire、規範shader、386aレビュー残余は未完でありfeature完成と扱わない。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
 
+WP386bの入口安全性はworktreeで実装・検証済み(未commit・未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。最終fixture調整後もGPU1/1成功。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。WP382dはcore初回buildまで成功、runtime plan / participant / RPCの接続を継続中。
+
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
 #### 2026-09-02〜04 の再開履歴(現況は上記)
