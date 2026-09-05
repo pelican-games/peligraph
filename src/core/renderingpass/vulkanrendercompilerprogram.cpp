@@ -291,10 +291,20 @@ void detail::insertSceneAccelerationStructureNodes(
                 return std::find(as_nodes.begin(), as_nodes.end(), node.name) != as_nodes.end();
             }))
             throw std::runtime_error("Reserved scene acceleration-structure node name: " + node_name);
-        // Descriptors are published as one immutable frame bundle after every
-        // AS operation. Consumers cannot observe a partly rebuilt set.
-        for (auto &node : graph.nodes)
-            node.after.insert(node.after.end(), as_nodes.begin(), as_nodes.end());
+        // Every node requires the shared scene; named consumers additionally
+        // wait for the particular TLAS selected by their task declaration.
+        for (auto &node : graph.nodes) {
+            node.after.push_back(node_name);
+            if (node.kind != FramePlanNodeKind::compute) continue;
+            const auto task = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) {
+                return entry.name == node.name;
+            });
+            if (task == tasks.end()) continue;
+            const auto selected = task->ray_tracing
+                ? task->ray_tracing->acceleration_structure
+                : task->ray_query_acceleration_structure.value_or("scene");
+            if (selected != "scene") node.after.push_back(node_name + ":" + selected);
+        }
         std::vector<FrameGraphNodeDefinition> operations;
         for (const auto &name : as_nodes) {
             operations.push_back(FrameGraphNodeDefinition{

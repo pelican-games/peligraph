@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、procedural asset編集画面):** bounds/record編集RPCは0b6b9e85へ統合済み。StudioのProcedural assets画面へ接続。次は視覚的な線での接続、AS公開境界を越える配置など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、名前付きAS交互配置):** procedural asset画面はefed7abbへ統合済み。名前付きAS構築とconsumerの交互配置を追加し実GPU確認。次は視覚的な線での接続、共有ASより前の通常node配置、残る制作操作など。学習サンプルは後回し。
+
+**RT6/RT7 名前付きASとconsumerの交互配置 (2026-09-06):**
+- compilerの全AS→全通常node依存を廃止。全nodeは共有ASを待ち、名前付きASを選択したRT/query taskはそのASだけを追加で待つ。left AS→left consumer→right ASを既存frame_node_order/RPC/Studioで指定できる。自分のAS前へのconsumer移動はcycle拒否。共有ASより前への通常node移動は未対応。
+- rendererはAS nodeごとにimmutable recording bundleを用意。既に記録したbundle全てをLogicalFrameSubmissionResourcesのvectorでfence完了まで保持し、最後のbundle/ASだけを既存submission成功境界でactiveへcommit。XR後続viewは記録済みnode集合で再利用する。after_as_record fault点は全AS記録後の意味を保持。
+- CPU5/5（92 assertions、build/.codex_bg/asinterleave-cpu.log）。named TLAS GPU1caseのRT/query両section（137 assertions、asinterleave-gpu.log）で実行traceと左右hitを確認。既存WP366/WP384の公開・rollback GPU1/1（4490 assertions、asinterleave-rollback-gpu.log）も成功。新規test targetなし。
+- Player/Studioと対象test build成功（asinterleave-build.log）。headless実行groupはasinterleave-headless-build.logで再リンクしてから実行。専用GUI変更なし、既存Order nodesを使用する。node移動を無制約にしたとの主張ではない。
 
 **Procedural asset Studio画面 (2026-09-06):**
 - Render FeaturesのProcedural assets...から既存assetを選び、Min/Max XYZとrecord JSONを編集してApply。前述RPCの保存・runtime公開を使用し、独立した実行経路は追加しない。

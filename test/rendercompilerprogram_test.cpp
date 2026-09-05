@@ -115,7 +115,28 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
             CHECK(nodes[i].after == std::vector<std::string>{nodes[0].name});
             CHECK(nodes[i].declaration_index == i);
         }
-        CHECK(nodes[3].after == std::vector<std::string>{nodes[0].name, nodes[1].name, nodes[2].name});
+        CHECK(nodes[3].after == std::vector<std::string>{nodes[0].name});
+    }
+    SECTION("named consumers can execute before an unrelated TLAS") {
+        ComputeTaskDefinition task;
+        task.name = "trace";
+        task.ray_tracing.emplace();
+        task.ray_tracing->acceleration_structure = "actors";
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true, definitions);
+        CHECK(graphs[0].nodes.back().after == std::vector<std::string>{"__scene_acceleration_structure", "__scene_acceleration_structure:actors"});
+        detail::applyFrameNodeOrder(graphs, {{"main", {"__scene_acceleration_structure:actors", "trace", "__scene_acceleration_structure:world"}}});
+        const auto plan = planFrameGraph(graphs[0]);
+        REQUIRE(plan.nodes.size() == 4);
+        CHECK(plan.nodes[2].name == "trace");
+        CHECK(plan.nodes[3].name == "__scene_acceleration_structure:world");
+    }
+    SECTION("query consumers cannot precede their selected TLAS") {
+        ComputeTaskDefinition task;
+        task.name = "trace";
+        task.ray_query_acceleration_structure = "actors";
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true, definitions);
+        detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}});
+        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
     }
     SECTION("generated named operation cannot collide with an authored node") {
         graphs[0].nodes[0].name = "__scene_acceleration_structure:actors";

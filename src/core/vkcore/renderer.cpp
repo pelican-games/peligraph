@@ -2917,7 +2917,7 @@ struct LogicalFrameSubmissionResources {
     // The descriptor bundle contains the raw TLAS handle. Keep the immutable
     // AS State that owns that handle in the exact same fence-backed lease.
     std::shared_ptr<const void> rt_state;
-    std::shared_ptr<const RtDescriptorBundle> rt_bundle;
+    std::vector<std::shared_ptr<const RtDescriptorBundle>> rt_bundles;
 };
 
 } // namespace
@@ -4743,8 +4743,8 @@ void Renderer::renderLogicalFrame(
     const auto record_acceleration_structures =
         [&](vk::CommandBuffer command_buffer,
             std::uint32_t in_flight_frame_index) {
-            // Shared geometry and SBT are prepared once. Named TLAS nodes
-            // finish this candidate before the immutable bundle is published.
+            // Shared geometry and SBT are prepared once. Each named TLAS
+            // extends the frame's AS state at its own execution node.
             if (acceleration_structure_build) return;
             if (acceleration_structures == nullptr) {
                 frame_publication.emplace(
@@ -4912,18 +4912,15 @@ void Renderer::renderLogicalFrame(
                 acceleration_structure_build->namedTopLevels()));
         submission_resources->rt_state =
             acceleration_structure_build->stateLease();
-        submission_resources->rt_bundle =
-            frame_publication->bundleLease();
-        if (gpu_owner_scope != nullptr &&
-            gpu_owner_scope->ray_tracing_project != nullptr) {
-            injectRayTracingJointTransactionPoint(
-                RayTracingJointTransactionPoint::after_as_record);
-        }
+        // Earlier commands may already bind an earlier immutable bundle.
+        // Replacing the recording selection must retain all of those pools
+        // through the same submission fence as the AS state.
+        submission_resources->rt_bundles.push_back(frame_publication->bundleLease());
     };
-    std::size_t named_as_remaining = named_scene_as.size();
+    std::set<std::string> recorded_as_nodes;
     const auto record_scene_as = [&](const FrameRenderContext &context, std::string_view node_name) {
-        // A logical frame publishes once; later XR views reuse the same bundle.
-        if (frame_publication) return false;
+        // Later XR views reuse the AS operations already recorded this frame.
+        if (recorded_as_nodes.contains(std::string{node_name})) return false;
         constexpr std::string_view base_node = "__scene_acceleration_structure";
         bool recorded = true;
         if (node_name == base_node) {
@@ -4934,10 +4931,13 @@ void Renderer::renderLogicalFrame(
             recorded = acceleration_structure_build->recordNamedTopLevel(
                 context.cmd_buf, GET_MODULE(VulkanManageCore), deletion_queue,
                 node_name.substr(base_node.size() + 1));
-            --named_as_remaining;
         }
-        if (!frame_publication && named_as_remaining == 0)
+        recorded_as_nodes.emplace(node_name);
+        if (acceleration_structure_build)
             publish_acceleration_structures(context.in_flight_frame_index);
+        if (recorded_as_nodes.size() == named_scene_as.size() + 1 &&
+            gpu_owner_scope != nullptr && gpu_owner_scope->ray_tracing_project != nullptr)
+            injectRayTracingJointTransactionPoint(RayTracingJointTransactionPoint::after_as_record);
         return recorded;
     };
     // Most output revisions are caught before an image is acquired. The

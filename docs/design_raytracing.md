@@ -469,10 +469,13 @@ compilerは共有構築nodeに続けて、以下の名前付きTLASごとに
 `__scene_acceleration_structure:<name>`を生成する。共有nodeは変形・BLAS・default TLASを構築し、
 名前付きnodeはそのBLASとinstance列を使って対象TLASだけを構築する。再利用可能な集合では
 名前付きnodeはbuild commandを再発行しない。各nodeの実行traceで記録の有無を観測できる。
-全consumerはAS集合の完成を待ち、最後のAS操作で一つのdescriptor bundleを公開する。
-途中失敗では既存のframe transactionが公開を取り消し、記録済み資源はsubmissionまで保持する。
-AS定義とtask接続は編集RPCから変更できるが、生成nodeの任意移動や独立した公開・
-一般のgraph edge編集は未実装。BLAS geometry結合は以下のRT6節に記す。
+各consumerは共有構築と選択した名前付きTLASを待ち、無関係なTLASは待たない。
+AS nodeごとに、その時点で構築済みのTLASを指すimmutable descriptor bundleを記録用に用意する。
+既にbindしたbundleは全て同じsubmission leaseで保持し、descriptor poolを途中解放しない。
+submission成功後は最後のbundleとAS集合だけを原子的にactiveへ公開する。
+途中失敗では既存のframe transactionが公開を取り消す。
+AS定義・task接続・node順序は編集RPCから変更でき、consumerと無関係な名前付きASを交互配置できる。
+共有構築より前への通常node移動や一般のgraph edge編集は未実装。BLAS geometry結合は以下のRT6節に記す。
 
 ### RT6: 名前付きTLASの選択（2026-09-06）
 
@@ -584,7 +587,8 @@ flat/XR等のgraph指定は各variantへ分配し、全出力graphを照合し�
 元のnode配列は変更せず、宣言順から導かれるresource依存を保持する。
 部分配列も許可し、空配列は制約なし、空objectは全指定解除。
 未知の名前・重複・不正な型や依存cycleはcompilerで拒否する。
-共有AS→名前付きAS集合→通常nodeという既存の公開境界は維持し、名前付きAS同士の順序は変更できる。
+共有ASを先に構築し、各consumerは選択した名前付きASより後に置く。別の名前付きASの構築前にconsumerを置ける。
+記録中のbundleはAS nodeごとに切り替わるが、active世代はsubmission成功後に一度だけ公開する。
 
 `get_frame_node_order`でroot digest・published generation・保存済み指定を取得し、
 `edit_frame_node_order`の`orders`を既存CAS/transactionで保存する。

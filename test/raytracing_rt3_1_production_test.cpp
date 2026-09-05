@@ -989,14 +989,20 @@ void main() {
             INFO(result.dump());
             REQUIRE(result.at("committed") == true);
         };
-        set_as_order({{"main_render", {"__scene_acceleration_structure:right",
-                                       "__scene_acceleration_structure:left", "__scene_acceleration_structure:empty"}}});
+        const std::string left_consumer = query ? "query_left" : "trace_left";
+        set_as_order({{"main_render", {"__scene_acceleration_structure:left", left_consumer,
+                                       "__scene_acceleration_structure:right", "__scene_acceleration_structure:empty"}}});
         // Publication replaces the targets at the boundary; read the next completed frame.
         (void)renderWp374aProductionRows();
         const auto ordered_nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
-        CHECK(ordered_nodes[1].at("name") == "__scene_acceleration_structure:right");
-        CHECK(ordered_nodes[2].at("name") == "__scene_acceleration_structure:left");
-        CHECK(ordered_nodes[3].at("name") == "__scene_acceleration_structure:empty");
+        const auto execution_position = [&](const std::string &name) {
+            const auto found = std::find_if(ordered_nodes.begin(), ordered_nodes.end(), [&](const auto &node) { return node.at("name") == name; });
+            REQUIRE(found != ordered_nodes.end());
+            return std::distance(ordered_nodes.begin(), found);
+        };
+        CHECK(execution_position("__scene_acceleration_structure:left") < execution_position(left_consumer));
+        CHECK(execution_position(left_consumer) < execution_position("__scene_acceleration_structure:right"));
+        CHECK(execution_position("__scene_acceleration_structure:right") < execution_position("__scene_acceleration_structure:empty"));
         for (const std::string name : {"left", "right"}) {
             const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("rt6_" + name, ImageSubresourceRange{});
             std::array<std::uint32_t, 12> pixels{};

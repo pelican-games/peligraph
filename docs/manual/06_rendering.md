@@ -1017,11 +1017,14 @@ StudioのRender Features画面から「Scene AS...」を開くと、名前付き
 別の編集で元ファイルが変わった場合は競合として拒否します。Refreshはengineの現在値で
 表を読み直す操作です。下段のRay task表ではtaskごとのASを選択できます。
 接続先はprojectの`ray_task_acceleration_structures`に保存され、共有featureの設定は変更しません。
-元のASへ戻すと、そのtaskの上書き指定を除きます。一般のgraph接続編集は未対応です。
+元のASへ戻すと、そのtaskの上書き指定を除きます。
+Frame Planの **Order nodes...** では、名前付きASの構築とconsumerを交互に配置できます。
+例えばleft AS→leftを使うtask→right ASという順序が可能です。
+consumerを自身の接続先ASより前に置く変更は拒否します。共有ASは通常nodeより先に構築します。
 
 frame graphには、共有BLASとdefault TLASを作る`__scene_acceleration_structure`と、
 名前付きTLASごとの`__scene_acceleration_structure:<name>`が表示されます。
-各名前付きnodeでそのTLASを構築し、全ASの準備後に描画へ渡します。実行traceの`recorded`が
+各名前付きnodeでそのTLASを構築し、以降のconsumerから利用できます。実行traceの`recorded`が
 falseなら、その操作で新しいbuild commandは記録していません（既存ASや後続XR viewでの再利用）。
 
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
