@@ -23231,7 +23231,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 **後続のfeature有効化前に閉じる残余:**
 1. procedural componentのeditor projection participantはWP382dで接続済み。destroy / remove / asset変更後のruntime追随と失敗時rollbackの記録はWP382dを参照。frame例外を握り潰して行を黙って捨てる処理は足さない。
-2. 決定19のrecord単独 / AABB単独はWP386b worktreeの `29e7a322` でparticipant→production rendererの変更行列を検証済み。record変更でAABB bufferまで再確保する実害を修正し、SBT実bytes・BLAS入力・TLAS意味planの変化/不変を確認。asset JSONはcacheされるためfile hot-reloadの証拠とはしない。activate失敗後に旧procedural stateが残るSceneLoader全経路の対照と、productionでの登録順反転は未検証。participant単独rollbackやresolver直呼びで置き換えない。決定17のtriangle component occurrenceの設定範囲も確認する。
+2. 決定19のrecord単独 / AABB単独はWP386b worktreeの `29e7a322` でparticipant→production rendererの変更行列を検証済み。record変更でAABB bufferまで再確保する実害を修正し、SBT実bytes・BLAS入力・TLAS意味planの変化/不変を確認。asset JSONはcacheされるためfile hot-reloadの証拠とはしない。`dcf17205` で既存BehaviorのonInit例外によるSceneLoader activate失敗→旧state/plan/inventory復元→再描画を確認。同じauthoring ID/epochを保ちparticipantの登録入力を反転→production renderした対照も成功。独立import間のID永続性の証拠とはしない。決定17のtriangle component occurrenceの設定範囲はWP382dの接続記録も照合する。
 3. record型不整合はWP382dのscene prepare → 共通AS plan → record encodeで読み込み時に拒否される。WP386bのproduction対照でも描画前の `pelican.ray_binding_record_invalid@1` を確認済み。検査経路の追加は不要。生成anyhitのproceduralへの誤適用はWP386b worktreeで修正・検証済み、統合は未了。
 4. table使用時のreuse阻害はrev384既知残余のまま。現行digestを比較する時点を整理し、判定を消すだけの修正はしない。layout無し経路のGPU寿命破壊は未実測であり確定欠陥と呼ばない(当該入力は今回load時に拒否)。
 
@@ -23253,7 +23253,9 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 
 WP386bの入口安全性はworktreeで実装・検証済み(上記commit、未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。球/classification/statusは統合側が `ae6ebe4b` に保存。status公開を外す変異は実RPCの件数確認で赤、復元build後の最終関連7/7成功(GPU5件、14.79秒)。RT1a全18件・RT2b全13件も成功。最終ログ `<作業ディレクトリ>/wp386b_sphere_restored_ctest.log`。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。分類のeligibleは演算列の適格性であり、device float controlsと誤差区間を含むgoldenの適格性は386cで接続する。変更行列・portableなattribute上限対照・統合検証は残る。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。
 
-**WP386b 追加収束 (`29e7a322`、未統合):** record変更時の不要なAABB buffer再確保を修正。修正前はbuffer共有/アドレスの2確認で赤、修正後はparticipant→rendererの変更行列が成功。固定64byteのattribute負例も実機上限から計算する配列へ変更。最終関連5/5成功(GPU4、13.03秒)、`<作業ディレクトリ>/wp386b_matrix_final_ctest.log`。新しい出荷用検査経路やcacheは追加していない。次はSceneLoader activate失敗・登録順反転の残余、構成別確認、統合/review。前段の「変更行列・portable上限対照が残る」は本記録で更新する。
+**WP386b 追加収束 (`29e7a322`、未統合):** record変更時の不要なAABB buffer再確保を修正。修正前はbuffer共有/アドレスの2確認で赤、修正後はparticipant→rendererの変更行列が成功。固定64byteのattribute負例も実機上限から計算する配列へ変更。最終関連5/5成功(GPU4、13.03秒)、`<作業ディレクトリ>/wp386b_matrix_final_ctest.log`。新しい出荷用検査経路やcacheは追加していない。前段の「変更行列・portable上限対照が残る」は本記録で更新する。
+
+**WP386b 続報 (`dcf17205`、未統合):** 登録順反転とSceneLoader activate失敗の残余を既存実装で確認し、製品コードの例外処理は追加していない。RPC OFF/compiler OFF/Studio OFFのcoreとRT1a/RT2bを再build、18+11ケースが成功(`<作業ディレクトリ>/wp386b_off_rt1a.log` / `wp386b_off_rt2b.log`)。RPC ON/compiler ONへ復元してproduction/RT1a/RT2bを再buildし、最終関連6/6成功(GPU5、15.20秒、`<作業ディレクトリ>/wp386b_activation_on_final_ctest.log`)。作業ツリーの構成はONへ復元済み。次は統合用Studio/build確認とW1、review/着地。混在ON/OFF・Studio ON・全数の新たな成功はまだ主張しない。
 
 **WP382d 接続の進捗:** scene/editor/model reloadの候補と共通inventory/AS plan、RPCのq・実効値・component witness・共有拒否行診断を接続。描画前の一覧、行削除直後の反映、AfterPublication失敗後の旧plan/inventoryとRPC保持をGPUで確認した。geometry全消滅後も行が消えないよう、旧witness mapを独立した宣言catalogへ置換した。連続scene importの対照でretire待ちslotを再利用可能と誤認する二重解放を発見し、free listの再構築を削除して修正。release側assertは維持。最終slot/GPU/preview対照3/3成功、編集・ECSは通常CTest164/164成功。ログと再開入口は `<作業ディレクトリ>/wp382d_connection_progress_20260905.md`、実装側詳細は `<作業ディレクトリ>/wp382d_report.md`。
 
