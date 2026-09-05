@@ -973,6 +973,8 @@ RT taskごとに対象の集合を変える場合は、rendering configの`scene
 `"acceleration_structure":"actors"`を指定します。instanceのmaskと指定maskのbit ANDが
 非ゼロの個体だけが対象です。省略時は`"scene"`（シーン全体）。定義のmaskは0〜255で、
 0は空の集合、省略時は255です。BLASとSBTは共有し、TLASと選択用descriptorを分けます。
+compute shaderのray queryでも、taskへ`"ray_query":{"acceleration_structure":"actors"}`を
+指定して同じ集合を選べます。この宣言でray query用のAS構築も有効になります。
 詳細は[名前付きTLAS](../design_raytracing.md)を参照してください。
 
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の

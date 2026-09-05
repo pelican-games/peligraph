@@ -776,6 +776,8 @@ std::string generateShaderResourcePortInclude(
             stream << "writeonly ";
         }
         stream << "uniform "
+               << (format.value_type == "uvec4" ? "u" :
+                   format.value_type == "ivec4" ? "i" : "")
                << imageType(
                       binding.descriptor,
                       binding.image_view_dimension)

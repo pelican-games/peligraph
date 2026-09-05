@@ -683,15 +683,20 @@ compileDefaultVulkanVariant(
     }
     const auto &scene_as = logical.compiled_pipeline.scene_acceleration_structures;
     for (const auto &task : compute_task_definitions) {
-        if (!task.ray_tracing || task.ray_tracing->acceleration_structure == "scene") continue;
-        const auto &selected = task.ray_tracing->acceleration_structure;
+        const auto selected = task.ray_tracing
+            ? task.ray_tracing->acceleration_structure
+            : task.ray_query_acceleration_structure.value_or("scene");
+        if (selected == "scene") continue;
         if (std::none_of(scene_as.begin(), scene_as.end(), [&](const auto &definition) {
                 return definition.name == selected;
             }))
-            throw std::runtime_error("Ray tracing task '" + task.name +
+            throw std::runtime_error("Compute task '" + task.name +
                 "' selects unknown scene acceleration structure '" + selected + "'");
     }
-    if (!scene_as.empty()) {
+    if (!scene_as.empty() || std::any_of(compute_task_definitions.begin(),
+            compute_task_definitions.end(), [](const auto &task) {
+                return task.ray_query_acceleration_structure.has_value();
+            })) {
         for (const auto &graph : graph_definitions) {
             auto &constraints = logical.compiled_pipeline.target_planning.graphs;
             auto found = std::find_if(constraints.begin(), constraints.end(), [&](const auto &entry) {

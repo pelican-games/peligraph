@@ -786,10 +786,11 @@ void FrameResources::bindGraphics(
 
 void FrameResources::bindCompute(
     vk::CommandBuffer cmd_buf,
-    vk::PipelineLayout pipeline_layout) const {
+    vk::PipelineLayout pipeline_layout,
+    std::string_view acceleration_structure) const {
     bindFrameDescriptorSet(
         cmd_buf, pipeline_layout,
-        vk::PipelineBindPoint::eCompute);
+        vk::PipelineBindPoint::eCompute, acceleration_structure);
 }
 
 void FrameResources::bindRayTracing(

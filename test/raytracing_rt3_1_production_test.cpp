@@ -638,9 +638,32 @@ struct Wp380RuntimeCleanup {
     }
 };
 
+TEST_CASE("compute ray query declares its acceleration structure", "[rendercompiler][rt6][named-query]") {
+    using Json = nlohmann::json;
+    Json task{{"name", "query"}, {"shader", "query"},
+        {"dispatch", {{"groups", {1, 1, 1}}}},
+        {"ray_query", {{"acceleration_structure", "actors"}}}};
+    const auto parse = [&] {
+        return parseComputeTaskDefinitionsFromConfigJson({{"compute_tasks", Json::array({task})}});
+    };
+    REQUIRE(parse().front().ray_query_acceleration_structure == "actors");
+    for (const auto &bad : Json::array({Json::object(), "actors",
+            {{"acceleration_structure", ""}}, {{"acceleration_structure", 1}},
+            {{"acceleration_structure", "actors"}, {"unknown", 1}}})) {
+        task["ray_query"] = bad;
+        CHECK_THROWS(parse());
+    }
+    task["ray_query"] = {{"acceleration_structure", "actors"}};
+    task["ray_tracing"] = Json::object();
+    CHECK_THROWS(parse());
+}
+
 TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared records",
           "[rt6][named-tlas][ray-tracing][production][gpu]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
+    bool query = false;
+    SECTION("ray tracing pipeline") {}
+    SECTION("compute ray query") { query = true; }
     setupLogger();
     Wp374aProjectRoot project{"rt6_named_tlas"};
     writeWp374aProject(project.path, 2, true, true, true,
@@ -677,6 +700,35 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
         auto task = RayTracingRt31Fixture::wp366TypedRayTracingTask(
             "trace_" + name, output, "project://shaders/" + output, false);
         task["ray_tracing"]["acceleration_structure"] = name;
+        if (query) {
+            feature["compute_tasks"].push_back(task);
+            task["name"] = "query_" + name;
+            task["after"] = {"trace_" + name};
+            task.erase("ray_tracing");
+            task["shader"] = "project://shaders/" + output;
+            task["ray_query"] = {{"acceleration_structure", name}};
+            task["dispatch"] = {{"groups", {3, 1, 1}}};
+            std::string query_shader = R"glsl(#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_resource_ports.glsl"
+layout(set=0,binding=6) uniform accelerationStructureEXT pelicanRayTracingScene;
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query, pelicanRayTracingScene, gl_RayFlagsOpaqueEXT,
+        255u, vec3(x, 0.0, 0.0), 0.001, vec3(0.0, 0.0, 1.0), 4096.0);
+    while (rayQueryProceedEXT(query)) {}
+    uint custom = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT
+        ? 0xffffffffu : rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+    imageStore(OUTPUT, pixel, uvec4(0u, custom, 0u, 0u));
+}
+)glsl";
+            query_shader.replace(query_shader.find("OUTPUT"), 6, "pelican_resource_" + output);
+            writeWp374aText(project.path / ("shaders/" + output + ".comp"), query_shader);
+        }
         feature["compute_tasks"].push_back(task);
         auto shader = RayTracingRt31Fixture::wp366RaygenSource(
             "PELICAN_RAY_TYPE_primary", "PELICAN_MISS_sky", "pelican_resource_" + output);
@@ -700,6 +752,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
         CHECK(pixels[1] == (name == "left" ? 71u : 0xffffffffu));
         CHECK(pixels[5] == (name == "right" ? 82u : 0xffffffffu));
         CHECK(pixels[9] == 0xffffffffu);
+        if (query) CHECK(pixels[0] == 0u);
     }
     const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
     CHECK(diagnostics.tlas_instance_count == 2);

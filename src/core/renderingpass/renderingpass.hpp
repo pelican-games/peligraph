@@ -767,6 +767,7 @@ struct ComputeTaskDefinition {
     // the frame plan because both execution kinds must run outside dynamic
     // rendering.
     std::optional<RayTracingTaskShaderDefinition> ray_tracing;
+    std::optional<std::string> ray_query_acceleration_structure;
     bool shader_declaration_parsed = false;
     std::vector<DeclaredShaderReference> declared_shader_refs;
     std::vector<std::string> reads;

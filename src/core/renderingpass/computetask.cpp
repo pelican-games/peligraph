@@ -2147,6 +2147,19 @@ std::vector<ComputeTaskDefinition> parseComputeTaskDefinitionsFromConfigJson(
         }
         const auto ray_tracing =
             task_json.contains("ray_tracing");
+        if (task_json.contains("ray_query")) {
+            const auto &query = task_json.at("ray_query");
+            if (ray_tracing || !query.is_object() || query.size() != 1 ||
+                !query.contains("acceleration_structure")) {
+                throw std::runtime_error("Compute task '" + definition.name +
+                    "' ray_query requires only acceleration_structure and cannot accompany ray_tracing");
+            }
+            definition.ray_query_acceleration_structure =
+                requireString(query, "acceleration_structure", definition.name);
+            if (definition.ray_query_acceleration_structure->empty())
+                throw std::runtime_error("Compute task '" + definition.name +
+                    "' ray_query acceleration_structure must not be empty");
+        }
         if (ray_tracing && task_json.contains("shader")) {
             throw std::runtime_error(
                 "pelican.ray_tracing.ambiguous_pipeline_declaration@1: "
@@ -3593,7 +3606,8 @@ void ComputeTaskContainer::dispatch(
     } else {
         frame_resources.bindCompute(
             cmd_buf,
-            pipeline_factory.layout(record.pipeline));
+            pipeline_factory.layout(record.pipeline),
+            record.definition.ray_query_acceleration_structure.value_or("scene"));
     }
     const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
     if (record.descriptor_sets

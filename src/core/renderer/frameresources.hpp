@@ -242,7 +242,8 @@ DECLARE_MODULE(FrameResources) {
         std::span<const FrameResolutionUniformData> data);
     void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
     void bindCompute(vk::CommandBuffer cmd_buf,
-                     vk::PipelineLayout pipeline_layout) const;
+                     vk::PipelineLayout pipeline_layout,
+                     std::string_view acceleration_structure = "scene") const;
     void bindRayTracing(
         vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
         std::string_view acceleration_structure = "scene") const;

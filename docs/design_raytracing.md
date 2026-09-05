@@ -484,7 +484,10 @@ SBT offsetを保持し、shaderのray cull maskは通常どおり適用される
 論理フレームpublication・submission leaseで所有する。定義・instance mask変更時は
 reuse条件を再評価し、対象集合を更新する。
 
-通常のfragment/compute ray queryは現在`scene`を参照する。名前付き選択はRT taskに対応。
+compute taskは`ray_query: {"acceleration_structure":"actors"}`で同じ名前を選択できる。
+この宣言はray query capabilityとAS構築nodeを有効にする。`scene`の明示指定も可能で、
+宣言省略時の既存compute ray queryとfragment ray queryは`scene`を参照する。
+`ray_query`は`ray_tracing`と併記できず、`acceleration_structure`以外のキーは受理しない。
 graphでは共通のAS構築nodeが全TLASを用意する。個別ASへの編集・依存表示は後続であり、
 複数sceneを同時にロードする機能や任意object predicateの選択まで完了したとは扱わない。
 

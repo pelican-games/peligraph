@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT6 named TLAS):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。AS構築nodeに続き、mask別の名前付きTLASとRT task別の明示選択を接続。次はRT6の複数geometry BLAS。AS単位の編集node、Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT6 named query):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。mask別の名前付きTLASとRT task別選択をfe42304bに統合し、compute ray queryの選択も実装・実GPU確認済み。次はRT6の複数geometry BLAS。AS単位の編集node、Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+
+**RT6 named query (2026-09-06):**
+- compute taskの`ray_query.acceleration_structure`から名前付きTLASまたは`scene`を選択し、必要なray query capabilityとAS構築を宣言から有効にする。未知名・不正な宣言・ray_tracingとの併記を拒否する。fragmentの選択は未対応。
+- 既存のframe descriptorとsubmission leaseを使用。実GPU確認で見つかった整数storage imageの生成不備（rgba32uiにimage2Dを生成）を修正し、unsigned/signed形式にはuimage/iimageを出力する。
+- 対象2/2（48 assertions、`build/.codex_bg/rt6query-final.log`）成功。既存GPU fixtureを拡張し、RT pipelineとcompute queryのleft/right/empty選択、queryによる出力更新、BLAS非重複と不正宣言を確認。CPU compiler6/6（143 assertions、`rt6query-cpu.log`）、Player/Studio build成功。GPU全数は反復しない。初回の整数画像shaderエラーと空名受理は修正済み。
+- このGPU fixtureはRT pipelineとqueryの併用。ray_group_layoutでray tableを宣言したまま所有RT pipelineを全て除去する設定は既存のowner不在診断になる。query専用projectでは不要なRT layoutを宣言しない。fragmentの名前付き選択やquery専用構成の実GPU確認まで完了としない。
+- 次の複数geometry BLASは同じ個体・同じ姿勢・同じinstance制御を持つ連続qのtriangle行から開始する。geometry順=q順、TLASのSBT base=q先頭×Rを保つ。異なるmask/姿勢/custom indexは分割し、layout v1のcustom index=qを壊さない。動的refitのkeyはgeometry列全体のtopologyを含める必要がある。
 
 **RT6 named TLAS (2026-09-06):**
 - project rendering configの`scene_acceleration_structures`でnameとinstance_maskを宣言し、RT taskの`ray_tracing.acceleration_structure`から選択。省略時`scene`は全scene。mask0は空集合。名前重複・予約名・未知選択・不正maskは拒否する。
