@@ -73,6 +73,7 @@
     "rt_shadow_mask_pipeline.rchit.spv",
     "procedural_no_report.rint",
     "procedural_no_report.rint.spv",
+    "procedural_sphere.rint",
     "sky_ambient.frag",
     "sky_ambient.frag.spv",
     "output_transform.frag",

@@ -3,4 +3,5 @@
 
 // WP386a's deliberate off control: this is a valid intersection shader with
 // the production interface, but it never calls reportIntersectionEXT.
-void main() {}
+hitAttributeEXT vec2 hit_attribute;
+void main() { hit_attribute = vec2(0.0); }

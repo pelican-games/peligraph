@@ -241,6 +241,13 @@ DECLARE_MODULE(PipelineFactory) {
             pipeline;
         std::optional<RayTracingShaderBindingTable>
             ray_tracing_sbt;
+        struct ProceduralOracleEntry {
+            std::uint32_t group_index;
+            std::string entry_name;
+            std::string entry_digest;
+            ProceduralOracleClassification classification;
+        };
+        std::vector<ProceduralOracleEntry> procedural_oracle;
         bool ray_query_frame_set = false;
     };
 
@@ -322,6 +329,8 @@ DECLARE_MODULE(PipelineFactory) {
     bool pipelineUsesRayQueryFrameSet(
         PipelineHandle handle) const;
     bool pipelineIsRayTracing(PipelineHandle handle) const;
+    nlohmann::ordered_json proceduralOracleStatus(
+        std::span<const PipelineHandle> active_pipelines) const;
     const RayTracingShaderBindingTableRegions &
     rayTracingShaderBindingTableRegions(
         PipelineHandle handle) const;

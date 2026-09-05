@@ -1422,7 +1422,8 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                 makeLayoutShaderReference(group.at("closesthit"),
                                           ShaderStage::closesthit, name);
             if (const auto anyhit = group.find("anyhit"); anyhit != group.end()) {
-                if (layout.usesMaterialAlphaProfile()) {
+                if (layout.usesMaterialAlphaProfile() &&
+                    group_type == RayGroupType::triangles) {
                     throw std::runtime_error(
                         "pelican.ray_profile_authored_anyhit@1: compute task '" +
                         name + "' group='" + group_name +
@@ -1444,6 +1445,10 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
         for (const auto ray_index : result.traced_ray_type_indices) {
             for (std::size_t group_index = 0;
                  group_index < layout.groups.size(); ++group_index) {
+                // Procedural rows have no material. The generated material
+                // alpha shader must never dereference their sentinel index.
+                if (layout.group_types[group_index] == RayGroupType::procedural)
+                    continue;
                 const auto slot_index =
                     group_index * ray_count + ray_index;
                 result.any_hit_shader_slots[slot_index] =
@@ -2950,6 +2955,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                     static constexpr std::string_view source =
                         "#version 460\n"
                         "#extension GL_EXT_ray_tracing : require\n"
+                        "hitAttributeEXT vec2 hit_attribute;\n"
                         "void main() {}\n";
                     no_op = shader_library.loadGeneratedSource(
                         source, ShaderStage::closesthit,

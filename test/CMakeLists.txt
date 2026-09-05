@@ -1775,6 +1775,9 @@ pelican_define_test(raytracing_rt3_1_production_test
                     MIXED_GPU
                     pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+if(MSVC)
+    target_compile_options(pelican_test_raytracing_rt3_1_production_test PRIVATE /bigobj)
+endif()
 target_sources(pelican_test_raytracing_rt3_1_production_test PRIVATE
     sceneloadfault_testing.cpp
     modelreleasefault_testing.cpp)

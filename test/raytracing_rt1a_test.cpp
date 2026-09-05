@@ -7,6 +7,7 @@
 #include "../src/project/featurecompose.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <spirv_reflect.h>
 
@@ -2081,6 +2082,92 @@ TEST_CASE(
         rejects(fixture,
                 "nearest-hit uniqueness margin is not constructive");
     }
+}
+
+
+TEST_CASE("WP386b procedural golden classification follows final scalar SPIR-V",
+          "[WP386b][ray-tracing][spirv][cpu]") {
+    auto words = moduleHeader();
+    appendMainEntry(words, SpvExecutionModelIntersectionKHR, 10);
+    // Import string with its result id, independently of source compilation.
+    appendInstruction(words, SpvOpExtInstImport,
+                      {9, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0});
+    appendInstruction(words, SpvOpTypeFloat, {1, 32});
+    std::vector<std::size_t> decorations;
+    for (std::uint32_t id = 30; id <= 56; ++id) {
+        if (id == 54) continue; // Sqrt is an extended instruction.
+        decorations.push_back(words.size());
+        appendInstruction(words, SpvOpDecorate, {id, SpvDecorationNoContraction});
+    }
+    appendInstruction(words, SpvOpFunction, {0, 10, 0, 0});
+    std::vector<std::size_t> operations;
+    const auto binary = [&](SpvOp op, std::uint32_t id,
+                            std::uint32_t left, std::uint32_t right) {
+        operations.push_back(words.size());
+        appendInstruction(words, op, {1, id, left, right});
+    };
+    // l = c-o; s = l.d; ll = l.l; a = d.d.
+    binary(SpvOpFSub, 30, 60, 63);
+    binary(SpvOpFSub, 31, 61, 64);
+    binary(SpvOpFSub, 32, 62, 65);
+    binary(SpvOpFMul, 33, 30, 66);
+    binary(SpvOpFMul, 34, 31, 67);
+    binary(SpvOpFMul, 35, 32, 68);
+    binary(SpvOpFAdd, 36, 33, 34);
+    binary(SpvOpFAdd, 37, 36, 35);
+    binary(SpvOpFMul, 38, 30, 30);
+    binary(SpvOpFMul, 39, 31, 31);
+    binary(SpvOpFMul, 40, 32, 32);
+    binary(SpvOpFAdd, 41, 38, 39);
+    binary(SpvOpFAdd, 42, 41, 40);
+    binary(SpvOpFMul, 43, 66, 66);
+    binary(SpvOpFMul, 44, 67, 67);
+    binary(SpvOpFMul, 45, 68, 68);
+    binary(SpvOpFAdd, 46, 43, 44);
+    binary(SpvOpFAdd, 47, 46, 45);
+    binary(SpvOpFMul, 48, 37, 37);
+    binary(SpvOpFMul, 49, 42, 47);
+    binary(SpvOpFSub, 50, 49, 48);
+    binary(SpvOpFMul, 51, 69, 69);
+    binary(SpvOpFMul, 52, 51, 47);
+    binary(SpvOpFSub, 53, 52, 50);
+    appendInstruction(words, SpvOpExtInst, {1, 54, 9, 31, 53});
+    binary(SpvOpFSub, 55, 37, 54);
+    binary(SpvOpFDiv, 56, 55, 47);
+    appendInstruction(words, SpvOpReportIntersectionKHR, {2, 57, 56, 70});
+    appendInstruction(words, SpvOpFunctionEnd, {});
+    const auto inspect = [](const auto &module) {
+        return selectRayTracingEntryPoint(
+            inspectRayTracingSpirv(module, "memory://sphere.spv"),
+            ShaderStage::intersection, "main", "memory://sphere.spv");
+    };
+    const auto control = inspect(words);
+    REQUIRE(control.procedural_oracle == ProceduralOracleClassification::eligible);
+    REQUIRE_FALSE(control.entry_body_opcodes.empty());
+    REQUIRE_FALSE(control.entry_digest.empty());
+    const auto mutation = GENERATE(0, 1, 2, 3);
+    CAPTURE(mutation);
+    if (mutation == 0) {
+        words[decorations.front() + 1] = 90;
+    }
+    if (mutation == 1) {
+        words[operations[19] + 4] = 37; // ll*s instead of ll*a.
+    }
+    if (mutation == 2) {
+        const auto at = operations[6];
+        words.erase(words.begin() + at, words.begin() + at + 5);
+        const std::array<std::uint32_t, 8> fma{
+            (8u << 16u) | SpvOpExtInst, 1, 36, 9, 50, 30, 66, 34};
+        words.insert(words.begin() + at, fma.begin(), fma.end());
+    }
+    if (mutation == 3) {
+        words[words.size() - 3] = 55;
+    }
+    const auto changed = inspect(words);
+    REQUIRE(changed.procedural_oracle == ProceduralOracleClassification::sequence_mismatch);
+    CHECK(std::string{proceduralOracleClassificationCode(*changed.procedural_oracle)} ==
+          "procedural_oracle_sequence_mismatch@1");
+    CHECK(changed.entry_digest != control.entry_digest);
 }
 
 } // namespace Pelican

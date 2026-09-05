@@ -1067,6 +1067,37 @@ TEST_CASE(
         CHECK(multi_slots[slot]->kind ==
               ShaderReferenceKind::engine_generated);
     }
+    // Material alpha belongs only to triangle rows. A procedural group has
+    // no material index and may instead supply its own optional any-hit.
+    auto mixed_project = multi_project;
+    mixed_project.layout.semantic_mode = RayLayoutSemanticMode::LayoutV3;
+    mixed_project.layout.group_types[1] = RayGroupType::procedural;
+    auto mixed_task = multi_task;
+    for (const auto *ray_name : {"primary", "secondary"}) {
+        for (const auto *group_name : {"opaque", "foliage"})
+            mixed_task["compute_tasks"][0]["ray_tracing"]
+                      ["hit_shaders"][ray_name][group_name].erase("type");
+        auto &group = mixed_task["compute_tasks"][0]["ray_tracing"]
+                                ["hit_shaders"][ray_name]["foliage"];
+        group["intersection"] = "project://shaders/sphere";
+    }
+    const auto mixed_tasks = parseComputeTaskDefinitionsFromConfigJson(
+        mixed_task, &mixed_project);
+    const auto &mixed_slots = mixed_tasks.front().ray_tracing->any_hit_shader_slots;
+    REQUIRE(mixed_slots.size() == 4);
+    CHECK(mixed_slots[0].has_value());
+    CHECK(mixed_slots[1].has_value());
+    CHECK_FALSE(mixed_slots[2].has_value());
+    CHECK_FALSE(mixed_slots[3].has_value());
+    mixed_task["compute_tasks"][0]["ray_tracing"]
+              ["hit_shaders"]["primary"]["foliage"]["anyhit"] =
+        "project://shaders/procedural_filter";
+    const auto filtered_tasks = parseComputeTaskDefinitionsFromConfigJson(
+        mixed_task, &mixed_project);
+    const auto &filter = filtered_tasks.front().ray_tracing->any_hit_shader_slots[2];
+    REQUIRE(filter.has_value());
+    CHECK(filter->ref == "project://shaders/procedural_filter");
+
     auto authored_multi = multi_task;
     authored_multi["compute_tasks"][0]["ray_tracing"]
                   ["hit_shaders"]["secondary"]["foliage"]["anyhit"] =

@@ -98,8 +98,17 @@ struct RayTracingShaderRecordReflection {
         const RayTracingShaderRecordReflection &) const = default;
 };
 
+enum class ProceduralOracleClassification { eligible, sequence_mismatch };
+
+std::string_view proceduralOracleClassificationName(ProceduralOracleClassification classification);
+std::string_view proceduralOracleClassificationCode(ProceduralOracleClassification classification);
+
 struct RayTracingEntryPointReflection {
     SpirvEntryPointKey key;
+    std::string entry_digest;
+    // Intersection-only golden classification; it never rejects shader loading.
+    std::optional<ProceduralOracleClassification> procedural_oracle;
+    std::vector<std::uint32_t> entry_body_opcodes;
     std::vector<RayTracingInterfaceVariable> interfaces;
     std::vector<RayTracingTraceCall> trace_calls;
     std::optional<RayTracingShaderRecordReflection> shader_record;

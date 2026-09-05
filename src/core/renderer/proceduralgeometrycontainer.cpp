@@ -125,8 +125,13 @@ ProceduralGeometryContainer::prepareScene(
         if (candidate->assets.contains(instance.asset)) continue;
         const auto &declaration = *declarations.at(instance.asset);
         if (const auto existing = active_->assets.find(instance.asset);
-            existing != active_->assets.end() && existing->second.declaration == declaration) {
-            candidate->assets.emplace(instance.asset, existing->second);
+            existing != active_->assets.end() &&
+            existing->second.declaration.aabb_min == declaration.aabb_min &&
+            existing->second.declaration.aabb_max == declaration.aabb_max) {
+            // Record bytes belong to SBT state, not the BLAS input buffer.
+            auto reused = existing->second;
+            reused.declaration = declaration;
+            candidate->assets.emplace(instance.asset, std::move(reused));
             continue;
         }
         vk::AabbPositionsKHR aabb{

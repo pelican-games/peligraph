@@ -83,6 +83,7 @@ constexpr auto registered_ids =
     "rt_shadow_mask_pipeline.rchit.spv",
     "procedural_no_report.rint",
     "procedural_no_report.rint.spv",
+    "procedural_sphere.rint",
     "sky_ambient.frag",
     "sky_ambient.frag.spv",
     "output_transform.frag",
@@ -250,6 +251,7 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("rt_shadow_mask_pipeline.rchit.spv")
     PELICAN_ENGINE_RESOURCE("procedural_no_report.rint")
     PELICAN_ENGINE_RESOURCE("procedural_no_report.rint.spv")
+    PELICAN_ENGINE_RESOURCE("procedural_sphere.rint")
     PELICAN_ENGINE_RESOURCE("sky_ambient.frag")
     PELICAN_ENGINE_RESOURCE("sky_ambient.frag.spv")
     PELICAN_ENGINE_RESOURCE("output_transform.frag")

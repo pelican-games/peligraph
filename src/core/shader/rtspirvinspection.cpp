@@ -1,6 +1,7 @@
 #include "rtspirvinspection.hpp"
 
 #include <spirv_reflect.h>
+#include <picosha2.h>
 
 #include <algorithm>
 #include <array>
@@ -262,6 +263,9 @@ class Inspector {
     std::vector<RawEntry> entries_;
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> calls_;
     std::vector<RawTraceCall> trace_calls_;
+    std::unordered_set<std::uint32_t> no_contraction_;
+    std::unordered_set<std::uint32_t> glsl_imports_;
+    std::unordered_map<std::uint32_t, std::vector<std::vector<std::uint32_t>>> function_bodies_;
     std::unordered_map<std::uint32_t, RayTracingCanonicalType>
         canonical_cache_;
     std::unordered_set<std::uint32_t> canonical_stack_;
@@ -509,6 +513,87 @@ class Inspector {
         return result;
     }
 
+    ProceduralOracleClassification classifyProcedural(
+        const std::vector<std::vector<std::uint32_t>> &body) const {
+        // General quadratic from 4-P correction 10. Local aliases preserve
+        // operand dependencies through unoptimized GLSL loads and stores.
+        constexpr auto mismatch = ProceduralOracleClassification::sequence_mismatch;
+        constexpr std::array expected{
+            SpvOpFSub, SpvOpFSub, SpvOpFSub,
+            SpvOpFMul, SpvOpFMul, SpvOpFMul, SpvOpFAdd, SpvOpFAdd,
+            SpvOpFMul, SpvOpFMul, SpvOpFMul, SpvOpFAdd, SpvOpFAdd,
+            SpvOpFMul, SpvOpFMul, SpvOpFMul, SpvOpFAdd, SpvOpFAdd,
+            SpvOpFMul, SpvOpFMul, SpvOpFSub, SpvOpFMul, SpvOpFMul,
+            SpvOpFSub, SpvOpExtInst, SpvOpFSub, SpvOpFDiv};
+        struct Arithmetic { std::uint32_t result, left, right; };
+        std::vector<Arithmetic> arithmetic;
+        std::unordered_map<std::uint32_t, std::uint32_t> aliases;
+        const auto value = [&](std::uint32_t id) {
+            const auto found = aliases.find(id);
+            return found == aliases.end() ? id : found->second;
+        };
+        std::vector<std::uint32_t> reports;
+        for (const auto &words : body) {
+            const auto op = static_cast<SpvOp>(words[0] & 0xffffu);
+            if (op == SpvOpFunctionCall || op == SpvOpPhi) return mismatch;
+            if (op == SpvOpStore && words.size() >= 3) {
+                aliases.insert_or_assign(words[1], value(words[2]));
+            } else if ((op == SpvOpLoad || op == SpvOpCopyObject) && words.size() >= 4) {
+                aliases.insert_or_assign(words[2], value(words[3]));
+            } else if (op == SpvOpReportIntersectionKHR && words.size() >= 5) {
+                reports.push_back(value(words[3]));
+            }
+            const bool basic = op == SpvOpFAdd || op == SpvOpFSub ||
+                               op == SpvOpFMul || op == SpvOpFDiv;
+            const bool extended = op == SpvOpExtInst;
+            if (op == SpvOpDot || op == SpvOpVectorTimesScalar ||
+                op == SpvOpFNegate || op == SpvOpFRem || op == SpvOpFMod)
+                return mismatch;
+            if (!basic && !extended) continue;
+            const auto index = arithmetic.size();
+            if (index >= expected.size() || op != expected[index] ||
+                words.size() < (extended ? 6u : 5u)) return mismatch;
+            const auto type = types_.find(words[1]);
+            if (type == types_.end() || type->second.opcode != SpvOpTypeFloat ||
+                type->second.operands != std::vector<std::uint32_t>{32}) return mismatch;
+            if (extended) {
+                // GLSL.std.450 Sqrt = 31; NoContraction does not apply to ExtInst.
+                if (!glsl_imports_.contains(words[3]) || words[4] != 31u)
+                    return mismatch;
+                arithmetic.push_back({words[2], value(words[5]), 0});
+            } else {
+                if (!no_contraction_.contains(words[2])) return mismatch;
+                arithmetic.push_back({words[2], value(words[3]), value(words[4])});
+            }
+        }
+        if (arithmetic.size() != expected.size() || reports.size() != 1 ||
+            reports.front() != arithmetic.back().result) return mismatch;
+        const auto result = [&](std::size_t i) { return arithmetic[i].result; };
+        const auto operands = [&](std::size_t i, std::uint32_t l, std::uint32_t r) {
+            return arithmetic[i].left == l && arithmetic[i].right == r;
+        };
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            if (arithmetic[3 + axis].left != result(axis) ||
+                !operands(8 + axis, result(axis), result(axis)) ||
+                !operands(13 + axis, arithmetic[3 + axis].right,
+                          arithmetic[3 + axis].right)) return mismatch;
+        }
+        for (const auto base : {3u, 8u, 13u}) {
+            if (!operands(base + 3, result(base), result(base + 1)) ||
+                !operands(base + 4, result(base + 3), result(base + 2))) return mismatch;
+        }
+        if (!operands(18, result(7), result(7)) ||
+            !operands(19, result(12), result(17)) ||
+            !operands(20, result(19), result(18)) ||
+            arithmetic[21].left != arithmetic[21].right ||
+            !operands(22, result(21), result(17)) ||
+            !operands(23, result(22), result(20)) ||
+            arithmetic[24].left != result(23) ||
+            !operands(25, result(7), result(24)) ||
+            !operands(26, result(25), result(17))) return mismatch;
+        return ProceduralOracleClassification::eligible;
+    }
+
     void parse() {
         if (words_.size() < 5 || words_[0] != spirv_magic) {
             failUnsupported(uri_, "is not a SPIR-V module");
@@ -542,7 +627,17 @@ class Inspector {
                 }
             };
 
+            if (current_function && opcode != SpvOpFunctionEnd) {
+                function_bodies_[*current_function].emplace_back(instruction.begin(), instruction.end());
+            }
             switch (opcode) {
+            case SpvOpExtInstImport: {
+                std::size_t consumed = 0;
+                if (instruction.size() >= 3 &&
+                    decodeLiteralString(instruction, 2, consumed, uri_) == "GLSL.std.450")
+                    glsl_imports_.insert(instruction[1]);
+                break;
+            }
             case SpvOpEntryPoint: {
                 if (instruction.size() < 4) {
                     failUnsupported(uri_, "has malformed OpEntryPoint");
@@ -566,6 +661,8 @@ class Inspector {
                 break;
             }
             case SpvOpDecorate:
+                if (instruction.size() >= 3 && instruction[2] == SpvDecorationNoContraction)
+                    no_contraction_.insert(instruction[1]);
                 if (instruction.size() >= 4 &&
                     instruction[2] == SpvDecorationLocation) {
                     locations_.insert_or_assign(instruction[1],
@@ -707,6 +804,21 @@ class Inspector {
         RayTracingModuleReflection result;
         for (const auto &raw_entry : entries_) {
             RayTracingEntryPointReflection entry{.key = raw_entry.key};
+            std::vector<unsigned char> digest_bytes;
+            const auto append_word = [&](std::uint32_t word) {
+                for (unsigned shift = 0; shift < 32; shift += 8)
+                    digest_bytes.push_back(static_cast<unsigned char>(word >> shift));
+            };
+            for (const auto word : words_) append_word(word);
+            append_word(raw_entry.key.execution_model);
+            digest_bytes.insert(digest_bytes.end(), raw_entry.key.name.begin(), raw_entry.key.name.end());
+            entry.entry_digest = picosha2::hash256_hex_string(digest_bytes);
+            if (raw_entry.key.execution_model == SpvExecutionModelIntersectionKHR) {
+                const auto &body = function_bodies_[raw_entry.function_id];
+                for (const auto &instruction : body)
+                    entry.entry_body_opcodes.push_back(instruction[0] & 0xffffu);
+                entry.procedural_oracle = classifyProcedural(body);
+            }
             std::set<std::pair<RayTracingInterfaceStorage, std::uint32_t>>
                 seen_interfaces;
             std::array<std::uint32_t, 3> storage_counts{};
@@ -827,6 +939,22 @@ RayTracingModuleReflection inspectRayTracingSpirv(
     std::span<const std::uint32_t> spirv,
     std::string_view diagnostic_uri) {
     return Inspector{spirv, diagnostic_uri}.run();
+}
+
+std::string_view proceduralOracleClassificationName(ProceduralOracleClassification classification) {
+    switch (classification) {
+    case ProceduralOracleClassification::eligible: return "eligible";
+    case ProceduralOracleClassification::sequence_mismatch: return "sequence_mismatch";
+    }
+    throw std::logic_error("unknown procedural oracle classification");
+}
+
+std::string_view proceduralOracleClassificationCode(ProceduralOracleClassification classification) {
+    switch (classification) {
+    case ProceduralOracleClassification::eligible: return {};
+    case ProceduralOracleClassification::sequence_mismatch: return "procedural_oracle_sequence_mismatch@1";
+    }
+    throw std::logic_error("unknown procedural oracle classification");
 }
 
 std::uint32_t spirvExecutionModelForShaderStage(ShaderStage stage) {

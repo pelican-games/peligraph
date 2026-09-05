@@ -1,0 +1,53 @@
+#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+
+layout(shaderRecordEXT, std430) buffer SphereRecord {
+    PELICAN_RAY_ENGINE_RECORD_MEMBERS
+    float radius;
+    vec3 center;
+} sphere;
+hitAttributeEXT vec2 hit_attribute;
+
+// General quadratic form: object-ray directions need not have unit length.
+// Keep scalar operations explicit for the final SPIR-V oracle classification.
+// This reference subset reports the near root for rays originating outside.
+void main() {
+    float dx = gl_ObjectRayDirectionEXT.x;
+    float dy = gl_ObjectRayDirectionEXT.y;
+    float dz = gl_ObjectRayDirectionEXT.z;
+    float radius = sphere.radius;
+    precise float lx = sphere.center.x - gl_ObjectRayOriginEXT.x;
+    precise float ly = sphere.center.y - gl_ObjectRayOriginEXT.y;
+    precise float lz = sphere.center.z - gl_ObjectRayOriginEXT.z;
+    precise float sx = lx * dx;
+    precise float sy = ly * dy;
+    precise float sz = lz * dz;
+    precise float sxy = sx + sy;
+    precise float s = sxy + sz;
+    precise float llx = lx * lx;
+    precise float lly = ly * ly;
+    precise float llz = lz * lz;
+    precise float llxy = llx + lly;
+    precise float ll = llxy + llz;
+    precise float ax = dx * dx;
+    precise float ay = dy * dy;
+    precise float az = dz * dz;
+    precise float axy = ax + ay;
+    precise float a = axy + az;
+    precise float ss = s * s;
+    precise float lla = ll * a;
+    precise float m2 = lla - ss;
+    precise float rr = radius * radius;
+    precise float rra = rr * a;
+    precise float disc = rra - m2;
+    if (disc < 0.0) return;
+    precise float root = sqrt(disc);
+    precise float numerator = s - root;
+    precise float t = numerator / a;
+    if (t < gl_RayTminEXT) return;
+    if (t > gl_RayTmaxEXT) return;
+    hit_attribute = vec2(t, 0.0);
+    reportIntersectionEXT(t, 0u);
+}

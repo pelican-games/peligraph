@@ -1,4 +1,5 @@
 #include "pipelinefactory.hpp"
+#include <set>
 #include "raygrouplayout.hpp"
 #include "raytracingvalidation.hpp"
 #include "../vkcore/buf.hpp"
@@ -1066,6 +1067,13 @@ PipelineFactory::buildRayTracingPipeline(
                     : std::nullopt,
         });
     }
+    std::vector<PipelineRecord::ProceduralOracleEntry> procedural_oracle;
+    for (const auto &hit : hit_occurrences) {
+        if (!hit.intersection) continue;
+        const auto &entry = *hit.intersection->entry;
+        procedural_oracle.push_back({hit.intersection->group_index,
+            entry.key.name, entry.entry_digest, entry.procedural_oracle.value()});
+    }
     const auto validator_digest =
         validateRayTracingPipelineInterfaces(
             {
@@ -1161,8 +1169,26 @@ PipelineFactory::buildRayTracingPipeline(
         .layout = std::move(pipeline_layout),
         .pipeline = std::move(pipeline_object),
         .ray_tracing_sbt = std::move(sbt),
+        .procedural_oracle = std::move(procedural_oracle),
         .ray_query_frame_set = true,
     };
+}
+
+nlohmann::ordered_json PipelineFactory::proceduralOracleStatus(
+    std::span<const PipelineHandle> active_pipelines) const {
+    auto result = nlohmann::ordered_json::array();
+    std::set<int> seen;
+    for (const auto handle : active_pipelines) {
+        if (!seen.insert(handle.value).second) continue;
+        for (const auto &entry : pipelines.get(handle).procedural_oracle) {
+            result.push_back({{"pipeline_id", handle.value},
+                {"group_index", entry.group_index}, {"entry_name", entry.entry_name},
+                {"entry_digest", entry.entry_digest},
+                {"classification", proceduralOracleClassificationName(entry.classification)},
+                {"code", proceduralOracleClassificationCode(entry.classification)}});
+        }
+    }
+    return result;
 }
 
 void PipelineFactory::savePipelineCache() noexcept {

@@ -124,6 +124,7 @@ Json wp360aProjectJson(float up_y = 1.0f, float zfar = 1000.0f,
 void setupWp360aProject(const Wp360aSandbox &sandbox,
                         const Json &project, const Json &scene) {
     writeWp360aText(sandbox.root / "scene.json", scene.dump());
+    writeWp360aText(sandbox.root / "passes/main_rendering_config.json", "{}");
     GET_MODULE(PathResolver).setup(sandbox.root, false);
     GET_MODULE(ProjectSource).setProjectData(project.dump());
 }

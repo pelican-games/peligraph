@@ -1,5 +1,9 @@
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include "../src/project/assetdataformat.hpp"
 #include <catch2/catch_approx.hpp>
+#include <bit>
+#include <cmath>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <components/predefined.hpp>
 
@@ -965,6 +969,264 @@ TEST_CASE(
     }
 #else
     SUCCEED("WP386a GPU acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE("WP386b procedural record edits preserve AABB inputs and bounds edits preserve records",
+          "[WP386b][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"wp386b_change_matrix"};
+    writeWp386aProceduralProject(project.path);
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    auto assets = parseAssetDataFormatJson(Json::parse(readWp374aText(project.path / "assets.json")));
+    const auto *scene = GET_MODULE(ProjectBasicConfig).resolvedScene().findScene("main");
+    REQUIRE(scene != nullptr);
+    // Exercise changed asset declarations at the real participant boundary.
+    // ProjectBasicConfig currently caches asset JSON; this is not an asset-file reload test.
+    const auto capture = [&] {
+        (void)renderWp374aProductionRows();
+        const auto runtime = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+        REQUIRE(runtime);
+        REQUIRE(runtime->gpu_arena);
+        const auto owner = std::ranges::find_if(runtime->gpu_arena->scopes,
+            [](const auto &scope) { return scope.ray_tracing_project != nullptr; });
+        REQUIRE(owner != runtime->gpu_arena->scopes.end());
+        const auto *root = owner->acceleration_structures->activeGenerationRootForTesting();
+        REQUIRE(root);
+        REQUIRE(root->inventory);
+        REQUIRE(root->resolved_rows);
+        REQUIRE(root->sbt);
+        REQUIRE(root->sbt->pipelines.size() == 1);
+        REQUIRE(root->geometry_table);
+        CHECK(root->inventory->generation == root->generation);
+        CHECK(root->geometry_table->generation == root->generation);
+        CHECK(root->sbt->generation == root->generation);
+        CHECK(root->tlas_plan_generation == root->generation);
+        REQUIRE(root->inventory->instances.size() == 1);
+        REQUIRE(root->resolved_rows->rows.size() == 1);
+        return *root;
+    };
+    const auto original = capture();
+    SceneLoadPhaseTrace trace;
+    const auto publish = [&] {
+        auto prepared = procedural.prepareScene(assets, *scene, &vkcore,
+            procedural.allocationGeneration() + 1, trace);
+        procedural.publishPrepared(prepared, trace);
+        procedural.enqueueRetirement(std::move(prepared), trace);
+    };
+    assets.procedural_geometry.front().record["radius"] = 2.0;
+    publish();
+    const auto record_edit = capture();
+    CHECK(record_edit.generation != original.generation);
+    CHECK(record_edit.resolved_rows->identity_digest_sha256 != original.resolved_rows->identity_digest_sha256);
+    CHECK(bool(record_edit.resolved_rows->rows.front().record_data != original.resolved_rows->rows.front().record_data));
+    CHECK(bool(record_edit.sbt->pipelines.front().packed_hit.bytes != original.sbt->pipelines.front().packed_hit.bytes));
+    const auto &original_geometry = original.inventory->instances.front();
+    const auto &record_geometry = record_edit.inventory->instances.front();
+    CHECK(record_geometry.geometry_lease == original_geometry.geometry_lease);
+    CHECK(record_geometry.aabb_buffer_address == original_geometry.aabb_buffer_address);
+    CHECK(record_geometry.geometry_allocation_id == original_geometry.geometry_allocation_id);
+    CHECK(record_geometry.world_transform == original_geometry.world_transform);
+    CHECK(record_edit.tlas_plan == original.tlas_plan);
+
+    assets.procedural_geometry.front().aabb_max[0] += 1.0f;
+    publish();
+    const auto bounds_edit = capture();
+    CHECK(bounds_edit.generation != record_edit.generation);
+    CHECK(bool(bounds_edit.resolved_rows->rows.front().record_data == record_edit.resolved_rows->rows.front().record_data));
+    CHECK(bool(bounds_edit.sbt->pipelines.front().packed_hit.bytes == record_edit.sbt->pipelines.front().packed_hit.bytes));
+    const auto &bounds_geometry = bounds_edit.inventory->instances.front();
+    CHECK(bounds_geometry.geometry_lease != record_geometry.geometry_lease);
+    CHECK(bounds_geometry.aabb_buffer_address != record_geometry.aabb_buffer_address);
+    CHECK(bounds_geometry.geometry_allocation_id != record_geometry.geometry_allocation_id);
+    CHECK(bounds_geometry.world_transform == record_geometry.world_transform);
+    CHECK(bounds_edit.tlas_plan == record_edit.tlas_plan);
+
+    // Publication rollback must retain the old buffer and record together.
+    const auto before_rollback = procedural.proceduralRayInstances();
+    const auto before_generation = procedural.allocationGeneration();
+    assets.procedural_geometry.front().record["radius"] = 3.0;
+    auto rejected = procedural.prepareScene(assets, *scene, &vkcore,
+        before_generation + 1, trace);
+    procedural.publishPrepared(rejected, trace);
+    procedural.rollbackPrepared(rejected);
+    CHECK(procedural.proceduralRayInstances() == before_rollback);
+    CHECK(procedural.allocationGeneration() == before_generation);
+#else
+    SUCCEED("procedural change matrix requires the runtime compiler");
+#endif
+}
+
+TEST_CASE("WP386b procedural registration order and activation rollback preserve rendered state",
+          "[WP386b][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && defined(PELICAN_WP380_BEHAVIOR_FIXTURE)
+    setupLogger();
+    Wp374aProjectRoot project{"wp386b_activation"};
+    writeWp386aProceduralProject(project.path);
+    auto document = Json::parse(readWp374aText(project.path / "scene.json"));
+    auto &objects = document["scenes"]["main"]["objects"];
+    auto second = objects.front();
+    second["name"] = "SecondSphere";
+    objects.push_back(second);
+    writeWp374aText(project.path / "scene.json", document.dump());
+    auto assets_json = Json::parse(readWp374aText(project.path / "assets.json"));
+    auto alternate = assets_json["procedural_geometry"][0];
+    alternate["name"] = "alternate";
+    alternate["record"]["radius"] = 2.0;
+    alternate["aabb"]["max"] = {18.0, 18.0, 3.0};
+    assets_json["procedural_geometry"].push_back(alternate);
+    writeWp374aText(project.path / "assets.json", assets_json.dump());
+    auto bindings = Json::parse(readWp374aText(project.path / "ray_bindings.json"));
+    bindings["bindings"] = Json::array();
+    writeWp374aText(project.path / "ray_bindings.json", bindings.dump());
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path, std::filesystem::path{PELICAN_WP380_BEHAVIOR_FIXTURE});
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    auto &loader = GET_MODULE(SceneLoader);
+    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+    auto &renderer = GET_MODULE(PolygonInstanceContainer);
+    const auto original_rows = renderWp374aProductionRows();
+    REQUIRE(original_rows.rows.size() == 2);
+    CHECK(original_rows.rows[0].scene_identity != original_rows.rows[1].scene_identity);
+    const auto original_instances = procedural.proceduralRayInstances();
+    REQUIRE(original_instances.size() == 2);
+    CHECK(original_instances[0].geometry_lease == original_instances[1].geometry_lease);
+    auto reversed = *config.resolvedScene().findScene("main");
+    std::reverse(reversed.objects.begin(), reversed.objects.end());
+    SceneLoadPhaseTrace trace;
+    auto reordered = procedural.prepareScene(parseAssetDataFormatJson(assets_json), reversed,
+        &GET_MODULE(VulkanManageCore), procedural.allocationGeneration(), trace);
+    procedural.publishPrepared(reordered, trace);
+    procedural.enqueueRetirement(std::move(reordered), trace);
+    const auto reordered_rows = renderWp374aProductionRows();
+    CHECK(reordered_rows.identity_digest_sha256 == original_rows.identity_digest_sha256);
+    CHECK(procedural.proceduralRayInstances() == original_instances);
+
+    const auto old_plan = renderer.rayAsPlan();
+    const auto old_inventory = renderer.rayAsInventory();
+    const auto old_generation = procedural.allocationGeneration();
+    const auto old_retirements = procedural.retirementCount();
+    auto rejected = document;
+    auto &candidate = rejected["scenes"]["main"]["objects"][0]["components"];
+    for (auto &component : candidate) {
+        if (component["name"] == "pelican_procedural_geometry") component["asset"] = "alternate";
+    }
+    candidate.push_back({{"name", "behavior"}, {"type", "wp380_scene_transaction_behavior"},
+        {"params", {{"scene_tag", 3}, {"fail_after_effects", true}, {"pending_scene", "main"}}}});
+    REQUIRE_THROWS_WITH(config.importSceneDocument(rejected.dump(), [&](SceneLoadRequest &&request) {
+        request.scene_id = "main";
+        return loader.load(std::move(request));
+    }), ContainsSubstring("WP380 fixture activation failure"));
+    CHECK(procedural.proceduralRayInstances() == original_instances);
+    CHECK(procedural.allocationGeneration() == old_generation);
+    CHECK(procedural.retirementCount() == old_retirements);
+    CHECK(renderer.rayAsPlan() == old_plan);
+    CHECK(renderer.rayAsInventory() == old_inventory);
+    const auto restored_rows = renderWp374aProductionRows();
+    CHECK(restored_rows.identity_digest_sha256 == reordered_rows.identity_digest_sha256);
+#else
+    SUCCEED("procedural activation acceptance requires the runtime compiler and behavior fixture");
+#endif
+}
+
+TEST_CASE("WP386b production pipeline validates procedural hit attributes across stages",
+          "[WP386b][ray-tracing][rt3-2b][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    struct Case {
+        std::string_view name;
+        std::string_view intersection_type;
+        std::string_view closest_type;
+        std::string_view any_type;
+        std::string_view diagnostic;
+    };
+    constexpr std::array cases{
+        Case{"optional anyhit absent", "vec2", "vec2", "", ""},
+        Case{"optional anyhit present", "vec2", "vec2", "vec2", ""},
+        Case{"intersection missing", "", "vec2", "", "mismatch"},
+        Case{"closest missing", "vec2", "", "", "mismatch"},
+        Case{"closest mismatch", "vec2", "vec3", "", "mismatch"},
+        Case{"anyhit mismatch", "vec2", "vec2", "vec3", "mismatch"},
+        Case{"attribute exceeds device limit", "mat4", "mat4", "", "too_large"},
+    };
+    for (const auto &entry : cases) {
+        DYNAMIC_SECTION(entry.name) {
+            setupLogger();
+            Wp374aProjectRoot project{"wp386b_attributes"};
+            writeWp386aProceduralProject(project.path);
+            const auto declaration = [](std::string_view type) {
+                return type.empty() ? std::string{} :
+                    "hitAttributeEXT " + std::string{type} + " hit_attribute;\n";
+            };
+            writeWp374aText(project.path / "shaders/wp386.rint",
+                "#version 460\n#extension GL_EXT_ray_tracing : require\n" +
+                declaration(entry.intersection_type) + "void main() {" +
+                (entry.intersection_type.empty() ? std::string{} :
+                    "hit_attribute = " + std::string{entry.intersection_type} + "(0.0);") + "}\n");
+            auto closest = readWp374aText(project.path / "shaders/wp386.rchit");
+            const std::string original = "hitAttributeEXT vec2 hit_attribute;";
+            closest.replace(closest.find(original), original.size(),
+                            declaration(entry.closest_type));
+            writeWp374aText(project.path / "shaders/wp386.rchit", closest);
+            const auto feature_path = project.path / "features/wp386_procedural.json";
+            auto feature = Json::parse(readWp374aText(feature_path));
+            auto &group = feature["compute_tasks"][0]["ray_tracing"]
+                                 ["hit_shaders"]["primary"]["sphere"];
+            group["intersection"] = "project://shaders/wp386";
+            if (!entry.any_type.empty()) {
+                group["anyhit"] = "project://shaders/wp386";
+                writeWp374aText(project.path / "shaders/wp386.rahit",
+                    "#version 460\n#extension GL_EXT_ray_tracing : require\n"
+                    "struct Payload { uint marker; uint q; uint flags; uint tint; };\n"
+                    "layout(location=0) rayPayloadInEXT Payload payload;\n" +
+                    declaration(entry.any_type) +
+                    "layout(shaderRecordEXT, std430) buffer RayRecord {\n"
+                    "uint material_index; uint geometry_index; uint geometry_kind; float radius;\n"
+                    "} ray_record;\n"
+                    "void main() { if (hit_attribute.x < -1e20) ignoreIntersectionEXT; }\n");
+            }
+            writeWp374aText(feature_path, feature.dump());
+            FastModuleContainer modules;
+            const auto render = [&] {
+                try {
+                    loadWp374aScene(project.path);
+                    if (entry.diagnostic == "too_large") {
+                        const auto limit = GET_MODULE(VulkanManageCore).getRuntimeCapabilities()
+                            .ray_tracing_facts.max_ray_hit_attribute_size;
+                        const auto count = static_cast<std::uint64_t>(limit) / 16 + 1;
+                        const auto oversized = "struct OversizedAttribute { vec4 values[" +
+                            std::to_string(count) + "]; };\nhitAttributeEXT OversizedAttribute hit_attribute;\n";
+                        writeWp374aText(project.path / "shaders/wp386.rint",
+                            "#version 460\n#extension GL_EXT_ray_tracing : require\n" + oversized +
+                            "void main() { hit_attribute.values[0] = vec4(0.0); }\n");
+                        auto oversized_closest = closest;
+                        const auto previous = declaration(entry.closest_type);
+                        oversized_closest.replace(oversized_closest.find(previous), previous.size(), oversized);
+                        writeWp374aText(project.path / "shaders/wp386.rchit", oversized_closest);
+                    }
+                    (void)renderWp374aProductionRows();
+                } catch (const std::exception &error) {
+                    TestSupport::skipIfVulkanDeviceUnavailable(
+                        error, "Vulkan WP386b attribute fixture unavailable");
+                    throw;
+                }
+            };
+            if (entry.diagnostic.empty()) {
+                CHECK_NOTHROW(render());
+            } else {
+                CHECK_THROWS_WITH(render(), ContainsSubstring(
+                    "pelican.procedural_hit_attribute_" +
+                    std::string{entry.diagnostic} + "@1"));
+            }
+        }
+    }
+#else
+    SUCCEED("WP386b GPU acceptance is compiler-ON only");
 #endif
 }
 
@@ -4753,6 +5015,133 @@ TEST_CASE("WP382d procedural editor lifecycle publishes and rolls back AABB stat
 #else
     SUCCEED("procedural editor lifecycle requires the runtime compiler");
 #endif
+}
+#endif
+} // namespace Pelican
+
+namespace Pelican {
+#if PELICAN_WITH_RPC && PELICAN_RUNTIME_SHADER_COMPILER
+TEST_CASE("WP386b sphere reports hits and reload publishes final entry classification",
+          "[WP386b][ray-tracing][production][gpu]") {
+    const bool invalid_record = GENERATE(false, true);
+    CAPTURE(invalid_record);
+    setupLogger();
+    Wp374aProjectRoot project{"wp386b_sphere"};
+    writeWp386aProceduralProject(project.path);
+    auto assets = Json::parse(readWp374aText(project.path / "assets.json"));
+    auto &sphere = assets["procedural_geometry"][0];
+    sphere["aabb"] = {{"min", {-4.125, -4.125, 3.875}}, {"max", {4.125, 4.125, 12.125}}};
+    sphere["record"] = {{"radius", 4.0}, {"center", {0.0, 0.0, 8.0}}};
+    if (invalid_record) sphere["record"]["radius"] = "not a float";
+    writeWp374aText(project.path / "assets.json", assets.dump());
+    auto layout = Json::parse(readWp374aText(project.path / "ray_layout.json"));
+    layout["record"].push_back({{"name", "center"}, {"type", "vec3"}});
+    writeWp374aText(project.path / "ray_layout.json", layout.dump());
+    auto feature = Json::parse(readWp374aText(project.path / "features/wp386_procedural.json"));
+    feature["compute_tasks"][0]["ray_tracing"]["hit_shaders"]["primary"]["sphere"]["intersection"] = "project://shaders/sphere";
+    writeWp374aText(project.path / "features/wp386_procedural.json", feature.dump());
+    writeWp374aText(project.path / "shaders/wp386.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer SphereRecord {
+    PELICAN_RAY_ENGINE_RECORD_MEMBERS
+    float radius;
+    vec3 center;
+} sphere;
+void main() {
+    payload.marker = 0x386bu;
+    payload.q = floatBitsToUint(gl_HitTEXT);
+    payload.flags = gl_HitKindEXT;
+    payload.tint = floatBitsToUint(sphere.radius);
+}
+)glsl");
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    (void)configureWp374aRuntime(project.path);
+    const auto off_source = GET_MODULE(PathResolver).loadText("engine://procedural_no_report.rint");
+    const auto on_source = GET_MODULE(PathResolver).loadText("engine://procedural_sphere.rint");
+    writeWp374aText(project.path / "shaders/sphere.rint", off_source);
+    TestSupport::requireVulkanDevice("WP386b sphere acceptance");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    if (invalid_record) {
+        REQUIRE_THROWS_WITH(test_support::loadScene(GET_MODULE(SceneLoader), "main"),
+            ContainsSubstring("pelican.ray_binding_record_invalid@1"));
+        return;
+    }
+    test_support::loadScene(GET_MODULE(SceneLoader), "main");
+    const auto geometry = GET_MODULE(ProceduralGeometryContainer).proceduralRayInstances();
+    const auto status = [&] {
+        std::istringstream input{Json{{"jsonrpc", "2.0"}, {"id", 3862},
+            {"method", "get_status"}, {"params", Json::object()}}.dump() + "\n"};
+        std::ostringstream output;
+        runEngineRpcServer(input, output);
+        const auto response = Json::parse(output.str());
+        REQUIRE_FALSE(response.contains("error"));
+        return response.at("result").at("ray_tracing").at("procedural_oracle");
+    };
+    const auto pixels = [&] {
+        (void)renderWp374aProductionRows();
+        const auto output = GET_MODULE(Renderer).readRenderTargetForTesting("wp386_out", ImageSubresourceRange{});
+        std::array<std::uint32_t, 12> values{};
+        REQUIRE(output.bytes.size() >= sizeof(values));
+        std::memcpy(values.data(), output.bytes.data(), sizeof(values));
+        return values;
+    };
+    CHECK(pixels()[0] == 0x386au);
+    const auto off_status = status();
+    REQUIRE(off_status.size() == 1);
+    CHECK(off_status[0]["classification"] == "sequence_mismatch");
+    const auto off_digest = off_status[0]["entry_digest"].get<std::string>();
+    const auto reload = [&](const std::string &source) {
+        writeWp374aText(project.path / "shaders/sphere.rint", source);
+        auto prepared = GET_MODULE(ShaderLibrary).prepareReloadAll();
+        std::string digest;
+        for (const auto &candidate : prepared.candidates) {
+            if (candidate.replacement.expected_stage != ShaderStage::intersection) continue;
+            digest = selectRayTracingEntryPoint(candidate.replacement.reflection.ray_tracing_module,
+                ShaderStage::intersection, "main", "sphere reload").entry_digest;
+        }
+        REQUIRE_FALSE(digest.empty());
+        const auto rebuilt = GET_MODULE(PipelineFactory).rebuildPrepared(std::move(prepared));
+        REQUIRE(rebuilt.committed);
+        REQUIRE(rebuilt.failed_pipelines == 0);
+        return digest;
+    };
+    const auto on_digest = reload(on_source);
+    REQUIRE(on_digest != off_digest);
+    const auto on_status = status();
+    const auto require_eligible = [&](const Json &wire) {
+        if (wire.size() != 1 || wire[0].value("entry_digest", "") != on_digest ||
+            wire[0].value("classification", "") != "eligible")
+            throw std::runtime_error("procedural_oracle_shader_ineligible@1");
+    };
+    REQUIRE_NOTHROW(require_eligible(on_status));
+    REQUIRE_THROWS_WITH(require_eligible(Json::array()), "procedural_oracle_shader_ineligible@1");
+    auto stale = on_status;
+    stale[0]["entry_digest"] = off_digest;
+    REQUIRE_THROWS_WITH(require_eligible(stale), "procedural_oracle_shader_ineligible@1");
+    const auto hit = pixels();
+    CHECK(hit[0] == 0x386bu);
+    CHECK(hit[4] == 0x386bu);
+    CHECK(hit[8] == 0x386au);
+    CHECK(std::bit_cast<float>(hit[1]) == Catch::Approx(8.0 - std::sqrt(12.0)).epsilon(0.00001));
+    CHECK(hit[2] == 0u);
+    CHECK(std::bit_cast<float>(hit[3]) == 4.0f);
+    auto relaxed_source = on_source;
+    for (auto at = relaxed_source.find("precise "); at != std::string::npos;
+         at = relaxed_source.find("precise "))
+        relaxed_source.erase(at, std::string_view{"precise "}.size());
+    CHECK(reload(relaxed_source) != on_digest);
+    CHECK(status()[0]["classification"] == "sequence_mismatch");
+    CHECK(pixels()[0] == 0x386bu); // Ineligible for the oracle still loads and renders.
+    CHECK(reload(off_source) == off_digest);
+    CHECK(pixels()[0] == 0x386au);
+    CHECK(status()[0]["classification"] == "sequence_mismatch");
+    CHECK(GET_MODULE(ProceduralGeometryContainer).proceduralRayInstances() == geometry);
 }
 #endif
 } // namespace Pelican

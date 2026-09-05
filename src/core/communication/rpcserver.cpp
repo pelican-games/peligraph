@@ -36,6 +36,8 @@
 #include "../phys/physworld.hpp"
 #include "../renderingpass/renderingpassjsonhelpers.hpp"
 #include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
+#include "../shader/pipelinefactory.hpp"
 #include "../renderdoc/renderdoccapture.hpp"
 #include "../renderer/spritescene.hpp"
 #include "../renderer/camera.hpp"
@@ -344,6 +346,8 @@ struct EngineRpcModules {
     RenderingPassContainer &rendering_passes;
     SeqPlayer &seq_player;
     VulkanManageCore &vulkan;
+    FrameGraphRuntimeContainer &frame_graph;
+    PipelineFactory &pipelines;
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -375,6 +379,8 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(RenderingPassContainer),
         GET_MODULE(SeqPlayer),
         GET_MODULE(VulkanManageCore),
+        GET_MODULE(FrameGraphRuntimeContainer),
+        GET_MODULE(PipelineFactory),
     };
 }
 
@@ -1290,6 +1296,16 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
 
     server.setHandler("get_status", [instance_id, &modules](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
+        std::vector<PipelineHandle> active_pipelines;
+        const auto runtime = modules.frame_graph.snapshot();
+        if (runtime && runtime->gpu_arena) {
+            for (const auto &scope : runtime->gpu_arena->scopes) {
+                for (const auto &resource : scope.resources) {
+                    if (resource.kind == RenderPipelineGpuResourceKind::pipeline)
+                        active_pipelines.push_back(PipelineHandle{static_cast<int>(resource.handle)});
+                }
+            }
+        }
         const auto color_caps = modules.render_target.caps();
         const auto output_status =
             modules.render_target.status();
@@ -1320,6 +1336,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         };
         return nlohmann::json{
             {"instance_id", instance_id},
+            {"ray_tracing", {{"procedural_oracle",
+                modules.pipelines.proceduralOracleStatus(active_pipelines)}}},
             {"project_root", projectRootString(modules.path_resolver)},
             {"scene", modules.scene_loader.currentScene()},
             {"scene_source", {{"hot_reload", false},

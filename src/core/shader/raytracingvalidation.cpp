@@ -314,6 +314,31 @@ std::string validateRayTracingPipelineInterfaces(
                     "pelican.procedural_group_requires_intersection@1: procedural hit group has no intersection stage");
             }
             validate_occurrence(*intersections[index]);
+            const auto *intersection_attribute = findInterface(
+                *intersections[index]->entry,
+                RayTracingInterfaceStorage::hit_attribute);
+            const auto validate_procedural_attribute = [&](const auto &stage) {
+                const auto *attribute = findInterface(
+                    *stage.entry, RayTracingInterfaceStorage::hit_attribute);
+                if (!intersection_attribute || !attribute ||
+                    attribute->type != intersection_attribute->type) {
+                    throw std::runtime_error(
+                        "pelican.procedural_hit_attribute_mismatch@1: " +
+                        occurrenceName(stage) + " must declare the same hit attribute as " +
+                        occurrenceName(*intersections[index]));
+                }
+                if (attribute->byte_size > facts.max_ray_hit_attribute_size) {
+                    throw std::runtime_error(
+                        "pelican.procedural_hit_attribute_too_large@1: " +
+                        occurrenceName(stage) + " hit attribute bytes=" +
+                        std::to_string(attribute->byte_size) +
+                        " exceeds maxRayHitAttributeSize=" +
+                        std::to_string(facts.max_ray_hit_attribute_size) +
+                        " device='" + deviceName(facts) + "'");
+                }
+            };
+            validate_procedural_attribute(hit_groups[index]);
+            if (any_hits[index]) validate_procedural_attribute(*any_hits[index]);
         } else {
             if (intersections[index]) {
                 throw std::runtime_error(
