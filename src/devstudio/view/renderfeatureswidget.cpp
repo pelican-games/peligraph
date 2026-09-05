@@ -1,4 +1,5 @@
 #include "renderfeatureswidget.hpp"
+#include "taskresourceconnections.hpp"
 
 #include "../viewport/embeddedviewport.hpp"
 
@@ -286,6 +287,9 @@ class ComputeTaskDialog final : public QDialog {
   QLineEdit *dispatch_offset;
   QPushButton *update_dispatch;
   QWidget *dispatch_form;
+  QTableWidget *connections;
+  QPushButton *update_connections;
+  QString connections_source;
   using Json = nlohmann::json;
   QJsonArray tasks;
   struct TaskDraft {
@@ -500,6 +504,58 @@ class ComputeTaskDialog final : public QDialog {
     }
     return true;
   }
+  void loadConnections() {
+    connections_source = editor->toPlainText();
+    const auto task = Json::parse(connections_source.toStdString(), nullptr, false);
+    const QSignalBlocker blocker(connections);
+    connections->setRowCount(0);
+    if (!task.is_object() || !task.contains("resource_ports")) return;
+    try {
+      (void)rebindTaskResources(task, {});
+      std::map<std::string, QStringList> aliases;
+      for (const auto &[port, declaration] : task.at("resource_ports").items()) {
+        const auto resource = declaration.is_string() ? declaration.get<std::string>() : declaration.value("resource", port);
+        auto label = QString::fromStdString(port);
+        if (declaration.is_object()) {
+          auto abi = declaration;
+          abi.erase("resource");
+          if (!abi.empty()) label += " " + QString::fromStdString(abi.dump());
+        }
+        aliases[resource].push_back(label);
+      }
+      for (const auto &[resource, ports] : aliases) {
+        const int row = connections->rowCount();
+        connections->insertRow(row);
+        auto *names = new QTableWidgetItem(ports.join("\n"));
+        names->setFlags(names->flags() & ~Qt::ItemIsEditable);
+        names->setData(Qt::UserRole, QString::fromStdString(resource));
+        connections->setItem(row, 0, names);
+        connections->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(resource)));
+      }
+      connections->resizeRowsToContents();
+    } catch (const std::exception &) {
+      // The JSON editor remains authoritative for malformed declarations.
+      connections->setRowCount(0);
+    }
+  }
+  void updateConnections() {
+    if (connections_source != editor->toPlainText()) {
+      notice->setText(tr("The JSON draft changed; reload its connections before applying.")); return;
+    }
+    const auto task = Json::parse(connections_source.toStdString(), nullptr, false);
+    std::map<std::string, std::string> replacements;
+    for (int row = 0; row < connections->rowCount(); ++row) {
+      replacements.emplace(connections->item(row, 0)->data(Qt::UserRole).toString().toStdString(),
+                           connections->item(row, 1)->text().toStdString());
+    }
+    try {
+      const auto rebound = rebindTaskResources(task, replacements);
+      editor->setPlainText(QString::fromStdString(rebound.dump(2)));
+      notice->setText(tr("Connections updated in the JSON draft. Apply task to validate and save."));
+    } catch (const std::exception &error) {
+      notice->setText(QString::fromUtf8(error.what()));
+    }
+  }
   void controls() {
     const bool idle = request_id == 0 && ticket.isEmpty();
     task_box->setEnabled(idle);
@@ -514,6 +570,8 @@ class ComputeTaskDialog final : public QDialog {
     remove->setEnabled(idle && viewport.rpcReady() && !creating && editable &&
                        !root_digest.isEmpty());
     editor->setReadOnly(!idle || !editable);
+    connections->setEnabled(idle && editable);
+    update_connections->setEnabled(idle && editable && connections->rowCount() > 0);
     dispatch_form->setEnabled(
         idle && editable &&
         Json::parse(editor->toPlainText().toStdString(), nullptr, false)
@@ -536,6 +594,7 @@ class ComputeTaskDialog final : public QDialog {
                          "settings in JSON as needed. For ray tracing, match "
                          "the project ray group layout."));
       loadDispatch();
+      loadConnections();
       controls();
       return;
     }
@@ -550,6 +609,7 @@ class ComputeTaskDialog final : public QDialog {
             : task.value("read_only_reason")
                   .toString(tr("This task source is read-only.")));
     loadDispatch();
+    loadConnections();
     controls();
   }
   void request(Request kind, const QString &method, QJsonObject params = {}) {
@@ -789,6 +849,17 @@ public:
             [this] { dispatchFields(); });
     connect(update_dispatch, &QPushButton::clicked, this,
             [this] { updateDispatch(); });
+    connections = new QTableWidget(0, 2, this);
+    connections->setObjectName("pelican.computeTasks.connections");
+    connections->setHorizontalHeaderLabels({tr("Ports / ABI (fixed)"), tr("Resource")});
+    connections->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    connections->setMaximumHeight(180);
+    connections->setToolTip(tr("All ports sharing an original resource are reconnected together. Resource compatibility is checked when applying the task."));
+    layout->addWidget(connections);
+    update_connections = new QPushButton(tr("Update connections JSON"), this);
+    update_connections->setObjectName("pelican.computeTasks.updateConnections");
+    layout->addWidget(update_connections);
+    connect(update_connections, &QPushButton::clicked, this, [this] { updateConnections(); });
     notice = new QLabel(this);
     notice->setWordWrap(true);
     layout->addWidget(notice);
@@ -819,6 +890,7 @@ public:
             [this] { showTask(); });
     connect(editor, &QPlainTextEdit::textChanged, this, [this] {
       loadDispatch();
+      loadConnections();
       controls();
       if (const int index = creationIndex(); index >= 0) {
         new_drafts[index].text = editor->toPlainText();

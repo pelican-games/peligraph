@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、asset選択):** procedural複数asset/BLAS結合は54300bb5へ統合済み。Inspectorのmodel・texture・procedural asset選択を追加。次はtaskのport接続フォーム、AS公開境界を越える配置、asset定義編集など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、port接続表):** procedural複数asset/BLAS結合は54300bb5、Inspector asset選択は8b5b2995へ統合済み。Tasksのport接続表を追加。次はprocedural asset定義編集、視覚的な線での接続、AS公開境界を越える配置など。学習サンプルは後回し。
+
+**RT7 task resource接続表 (2026-09-06):**
+- Tasksにport名・ABI固定列と接続先resource入力を追加。同じ元resourceのaliasをまとめ、Update connections JSONで草稿へ反映。Apply taskの既存CAS・compiler検証を使用する。resource候補一覧や線を引く編集は未実装。
+- 純粋JSON helperでcompact/object/implicit resource指定、reads/writes、read_footprintsキー、dispatch.indirect.bufferを元値mapから一括更新。groups_from/rays_fromのport名、ABI、未知項目、uint64 offsetは保持する。footprint衝突は草稿を変更せず診断。
+- 接続map連鎖・swap・alias・ABI/整数保持・衝突の2caseを含む既存Frame Plan target18/18成功（build/.codex_bg/connections-model.log）。Studioとtest target build成功（connections-build.log）。GUI実操作は未確認、GPU/runtime変更なし。
+- 次候補のprocedural asset編集は未実装。ProjectBasicConfig::assetDataJson()はパス書換え済みなので保存元にしない。原文CAS、cache更新、ProceduralGeometryContainer/ray plan公開を同じrollback単位へ参加させる必要がある。既存RendererModelProjectionAdapterはscene component変更時だけprepareするため、asset候補を渡す入口を追加してbounds/record編集から進める。
 
 **Inspector asset選択 (2026-09-06):**
 - component候補に型別asset選択情報を追加。Studioで一覧から選び、Use selected assetsで草稿の参照項目だけを更新する。procedural単数はasset、複数はassets。Add/Undo/Redo/Saveは既存journalを使用する。

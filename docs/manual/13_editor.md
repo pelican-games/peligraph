@@ -265,6 +265,12 @@ task切替や失敗時には入力を保持し、**Refresh**で破棄・再取�
 Tasksのdispatchフォームでは、computeのworkgroup数／RTのray数（X・Y・Z）、画像portからの寸法取得、
 indirect bufferとbyte offsetを設定できます。computeは省略時の1×1×1にも戻せます。
 **Update dispatch JSON**で草稿へ反映し、**Apply task**で保存します。その他のtask設定は保持します。
+
+Tasksの接続表は`resource_ports`のport名と型・アクセス設定、接続先resourceを表示します。
+接続先を入力し、**Update connections JSON**で草稿へ反映してから**Apply task**で保存します。
+同じresourceを使うportは1行にまとめ、関連するreads/writes、read_footprints、間接dispatchのbuffer参照も更新します。
+port名と型・アクセス等は保持するため、groups_from/rays_fromのport指定は変わりません。
+接続先の存在や型の適合性は保存時にcompilerが検査します。read_footprintsのキーが衝突する変更は草稿を変更せず診断します。
 画像から寸法を取る場合はresource名ではなくport名を入力します。indirectのoffsetは4byte境界です。
 不正なJSONは修正するまでフォームから上書きしません。StudioのRPCで正確に表せない整数を含む草稿は、丸めて送信せず診断を表示します。
 

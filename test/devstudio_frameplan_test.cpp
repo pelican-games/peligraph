@@ -1,4 +1,5 @@
 #include "frameplanmodel.hpp"
+#include "../src/devstudio/view/taskresourceconnections.hpp"
 #include "executionplanwire.hpp"
 #include "frameresolutionwire.hpp"
 #include "physicaltargetplanwire.hpp"
@@ -23,6 +24,54 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+
+TEST_CASE("Task resource reconnect updates aliases and dependencies without changing port ABI",
+          "[studio][task-connections]") {
+    using nlohmann::json;
+    const json task = {
+        {"name", "trace"},
+        {"resource_ports", {
+            {"input", {{"resource", "a"}, {"kind", "image"}, {"access", "sampled"},
+                       {"element", "float4"}, {"view", "2d"}, {"custom", 17}}},
+            {"alias", "a"}, {"b", {{"access", "storage"}}}}},
+        {"reads", json::array({"a", "unrelated"})}, {"writes", "b"},
+        {"read_footprints", {{"a", "pixel"}}},
+        {"dispatch", {{"indirect", {{"buffer", "a"}, {"offset", std::uint64_t{9007199254740996}}}},
+                      {"groups_from", "input"}}},
+        {"custom", {{"resource", "a"}}}};
+    CHECK(PelicanStudio::rebindTaskResources(task, {}) == task);
+    const auto result = PelicanStudio::rebindTaskResources(task, {{"a", "b"}, {"b", "c"}});
+    CHECK(result.at("resource_ports").at("input").at("resource") == "b");
+    CHECK(result.at("resource_ports").at("alias") == "b");
+    CHECK(result.at("resource_ports").at("b").at("resource") == "c");
+    auto original_port = task.at("resource_ports").at("input");
+    original_port["resource"] = "b";
+    CHECK(result.at("resource_ports").at("input") == original_port);
+    CHECK(result.at("reads") == json::array({"b", "unrelated"}));
+    CHECK(result.at("writes") == "c");
+    CHECK(result.at("read_footprints") == json{{"b", "pixel"}});
+    CHECK(result.at("dispatch").at("indirect").at("buffer") == "b");
+    CHECK(result.at("dispatch").at("indirect").at("offset") == std::uint64_t{9007199254740996});
+    CHECK(result.at("dispatch").at("groups_from") == "input");
+    CHECK(result.at("custom") == task.at("custom"));
+    CHECK(task.at("resource_ports").at("alias") == "a");
+}
+
+TEST_CASE("Task resource reconnect rejects ambiguous footprints without modifying the draft",
+          "[studio][task-connections]") {
+    const nlohmann::json task = {
+        {"resource_ports", {{"input", "a"}, {"other", "b"}}},
+        {"reads", {"a", "b"}},
+        {"read_footprints", {{"a", "pixel"}, {"b", "neighborhood"}}}};
+    const auto original = task;
+    CHECK_THROWS_AS(PelicanStudio::rebindTaskResources(task, {{"a", "b"}}), std::invalid_argument);
+    CHECK_THROWS_AS(PelicanStudio::rebindTaskResources(task, {{"a", ""}}), std::invalid_argument);
+    CHECK_THROWS_AS(PelicanStudio::rebindTaskResources(task, {{"missing", "c"}}), std::invalid_argument);
+    CHECK(task == original);
+    const auto swapped = PelicanStudio::rebindTaskResources(task, {{"a", "b"}, {"b", "a"}});
+    CHECK(swapped.at("read_footprints").at("b") == "pixel");
+    CHECK(swapped.at("read_footprints").at("a") == "neighborhood");
+}
 
 using namespace PelicanStudio;
 using Catch::Matchers::ContainsSubstring;
