@@ -124,6 +124,58 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
     }
 }
 
+TEST_CASE("frame node ordering adds constraints without rewriting resource dependencies",
+          "[rendercompiler][rt7][node-order]") {
+    using Json = nlohmann::json;
+    std::vector<FrameGraphDefinition> graphs{{.name = "main", .nodes = {
+        {.name = "first", .kind = FramePlanNodeKind::compute, .declaration_index = 0},
+        {.name = "second", .kind = FramePlanNodeKind::compute, .declaration_index = 1}}}};
+    SECTION("independent nodes execute in the requested order") {
+        detail::applyFrameNodeOrder(graphs, {{"main", {"second", "first"}}});
+        CHECK(graphs[0].nodes[0].name == "first");
+        CHECK(graphs[0].nodes[0].declaration_index == 0);
+        const auto plan = planFrameGraph(graphs[0]);
+        REQUIRE(plan.nodes.size() == 2);
+        CHECK(plan.nodes[0].name == "second");
+        CHECK(plan.nodes[1].name == "first");
+    }
+    SECTION("reversing producer and consumer is rejected") {
+        graphs[0].declared_resources = {"result"};
+        graphs[0].nodes[0].writes = {"result"};
+        graphs[0].nodes[1].reads = {"result"};
+        detail::applyFrameNodeOrder(graphs, {{"main", {"second", "first"}}});
+        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+    }
+    SECTION("named AS order changes within the shared publication boundary") {
+        const std::vector<SceneAccelerationStructureDefinition> definitions{{.name = "left"}, {.name = "right"}};
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
+        detail::applyFrameNodeOrder(graphs, {{"main", {"__scene_acceleration_structure:right", "__scene_acceleration_structure:left"}}});
+        const auto plan = planFrameGraph(graphs[0]);
+        REQUIRE(plan.nodes.size() == 5);
+        CHECK(plan.nodes[0].name == "__scene_acceleration_structure");
+        CHECK(plan.nodes[1].name == "__scene_acceleration_structure:right");
+        CHECK(plan.nodes[2].name == "__scene_acceleration_structure:left");
+    }
+    SECTION("consumer cannot precede AS publication") {
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true);
+        detail::applyFrameNodeOrder(graphs, {{"main", {"first", "__scene_acceleration_structure"}}});
+        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+    }
+    SECTION("partial and empty orders retain unspecified nodes") {
+        detail::applyFrameNodeOrder(graphs, {{"main", Json::array()}});
+        detail::applyFrameNodeOrder(graphs, {{"main", {"second"}}});
+        CHECK(planFrameGraph(graphs[0]).nodes[0].name == "first");
+    }
+    SECTION("malformed or stale runtime names are rejected") {
+        for (const auto &order : std::vector<Json>{
+                 Json::array(), {{"missing", Json::array()}}, {{"main", "first"}},
+                 {{"main", {1}}}, {{"main", {""}}}, {{"main", {"missing"}}},
+                 {{"main", {"first", "first"}}}}) {
+            CHECK_THROWS(detail::applyFrameNodeOrder(graphs, order));
+        }
+    }
+}
+
 namespace {
 
 nlohmann::json readJsonFixture(

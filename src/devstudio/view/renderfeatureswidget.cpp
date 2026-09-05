@@ -75,6 +75,196 @@ std::optional<QJsonObject> decodeObject(
     return document.object();
 }
 
+class FrameNodeOrderDialog final : public QDialog {
+  EmbeddedViewport &viewport;
+  std::function<void()> committed;
+  QString graph, digest, ticket;
+  const quint64 expected_generation;
+  QJsonObject orders;
+  QListWidget *nodes;
+  QLabel *notice;
+  QPushButton *up, *down, *apply, *reset, *retry;
+  QTimer poll;
+  qint64 request_id = 0;
+  enum class Request {
+    Context,
+    Submit,
+    Result
+  } request_kind = Request::Context;
+
+  void controls() {
+    const bool idle = request_id == 0 && ticket.isEmpty();
+    const int row = nodes->currentRow();
+    nodes->setEnabled(idle);
+    up->setEnabled(idle && row > 0);
+    down->setEnabled(idle && row >= 0 && row + 1 < nodes->count());
+    apply->setEnabled(idle && viewport.rpcReady() && !digest.isEmpty());
+    reset->setEnabled(apply->isEnabled());
+    retry->setEnabled(viewport.rpcReady() && request_id == 0);
+  }
+  void request(Request kind, const QString &method,
+               const QJsonObject &params = {}) {
+    if (request_id)
+      return;
+    QString error;
+    request_kind = kind;
+    request_id = viewport.requestRpc(method, params, &error);
+    if (!request_id) {
+      poll.stop();
+      notice->setText(error);
+    }
+    controls();
+  }
+  void readResult() {
+    if (!ticket.isEmpty())
+      request(Request::Result, "get_edit_result", {{"ticket", ticket}});
+  }
+  void submit(bool dependency_order) {
+    auto edited = orders;
+    if (dependency_order)
+      edited.remove(graph);
+    else {
+      QJsonArray names;
+      for (int row = 0; row < nodes->count(); ++row)
+        names.append(nodes->item(row)->text());
+      edited.insert(graph, names);
+    }
+    request(Request::Submit, "edit_frame_node_order",
+            {{"base_source_digest", digest}, {"orders", edited}});
+  }
+  void receive(qint64 id, const QByteArray &bytes) {
+    if (!id || id != request_id)
+      return;
+    request_id = 0;
+    QString error;
+    const auto response = decodeObject(bytes, &error);
+    if (!response) {
+      poll.stop();
+      notice->setText(error);
+      controls();
+      return;
+    }
+    if (request_kind == Request::Context) {
+      const auto next_digest =
+          response->value("source_digest").toObject().value("hex").toString();
+      const auto published_generation = response->value("published_generation").toInteger(-1);
+      digest.clear();
+      if (published_generation <= 0 || static_cast<quint64>(published_generation) != expected_generation) {
+        notice->setText(tr("The Frame Plan is stale. Refresh the Frame Plan and reopen this dialog."));
+      } else if (next_digest.isEmpty() || !response->value("orders").isObject()) {
+        notice->setText(tr("Invalid node order response."));
+      } else {
+        digest = next_digest;
+        orders = response->value("orders").toObject();
+        notice->setText(
+            tr("Move nodes, then Apply. Data dependencies and the AS "
+               "publication boundary are enforced by the compiler."));
+      }
+    } else if (request_kind == Request::Submit) {
+      if (response->value("status").toString() == "accepted") {
+        ticket = response->value("ticket").toString();
+        if (ticket.isEmpty())
+          notice->setText(tr("The engine returned no edit ticket."));
+        else {
+          poll.start();
+          readResult();
+        }
+      } else
+        notice->setText(responseError(*response));
+    } else if (response->value("status").toString() != "pending") {
+      poll.stop();
+      ticket.clear();
+      if (response->value("status").toString() == "committed" &&
+          response->value("committed").toBool()) {
+        committed();
+        close();
+        return;
+      }
+      notice->setText(responseError(*response));
+    }
+    controls();
+  }
+
+public:
+  FrameNodeOrderDialog(EmbeddedViewport &embedded, QWidget *parent,
+                       QString graph_name, const QStringList &names, quint64 generation,
+                       std::function<void()> on_committed)
+      : QDialog(parent), viewport(embedded), committed(std::move(on_committed)),
+        graph(std::move(graph_name)), expected_generation(generation) {
+    setAttribute(Qt::WA_DeleteOnClose);
+    setWindowTitle(tr("Node order: %1").arg(graph));
+    setObjectName("pelican.frameNodeOrder");
+    resize(560, 480);
+    auto *layout = new QVBoxLayout(this);
+    nodes = new QListWidget(this);
+    nodes->setObjectName("pelican.frameNodeOrder.nodes");
+    nodes->addItems(names);
+    layout->addWidget(nodes);
+    notice = new QLabel(tr("Loading saved orders..."), this);
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+    auto *buttons = new QHBoxLayout;
+    up = new QPushButton(tr("Up"), this);
+    down = new QPushButton(tr("Down"), this);
+    apply = new QPushButton(tr("Apply"), this);
+    reset = new QPushButton(tr("Use dependency order"), this);
+    retry = new QPushButton(tr("Retry"), this);
+    up->setObjectName("pelican.frameNodeOrder.up");
+    down->setObjectName("pelican.frameNodeOrder.down");
+    apply->setObjectName("pelican.frameNodeOrder.apply");
+    reset->setObjectName("pelican.frameNodeOrder.reset");
+    retry->setObjectName("pelican.frameNodeOrder.retry");
+    for (auto *button : {up, down, apply, reset, retry})
+      buttons->addWidget(button);
+    layout->addLayout(buttons);
+    connect(nodes, &QListWidget::currentRowChanged, this,
+            [this] { controls(); });
+    const auto move = [this](int offset) {
+      const int row = nodes->currentRow();
+      if (row < 0 || row + offset < 0 || row + offset >= nodes->count())
+        return;
+      nodes->insertItem(row + offset, nodes->takeItem(row));
+      nodes->setCurrentRow(row + offset);
+    };
+    connect(up, &QPushButton::clicked, this, [move] { move(-1); });
+    connect(down, &QPushButton::clicked, this, [move] { move(1); });
+    connect(apply, &QPushButton::clicked, this, [this] { submit(false); });
+    connect(reset, &QPushButton::clicked, this, [this] { submit(true); });
+    connect(retry, &QPushButton::clicked, this, [this] {
+      if (!ticket.isEmpty())
+        readResult();
+      else
+        request(Request::Context, "get_frame_node_order");
+    });
+    poll.setInterval(100);
+    connect(&poll, &QTimer::timeout, this, [this] { readResult(); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
+            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
+            [this](qint64 id, const QString &error) {
+              if (!id || id != request_id)
+                return;
+              request_id = 0;
+              poll.stop();
+              notice->setText(error);
+              controls();
+            });
+    connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
+            [this] {
+              request_id = 0;
+              ticket.clear();
+              digest.clear();
+              poll.stop();
+              notice->setText(tr("Engine disconnected. The order is retained; "
+                                 "retry after reconnecting."));
+              controls();
+            });
+    connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
+            [this] { controls(); });
+    request(Request::Context, "get_frame_node_order");
+  }
+};
+
 class ComputeTaskDialog final : public QDialog {
   EmbeddedViewport &viewport;
   std::function<void()> committed;
@@ -1761,7 +1951,15 @@ RenderFeaturesWidget::~RenderFeaturesWidget() = default;
 void RenderFeaturesWidget::editComputeTask(const QString &name) {
     auto *dialog = new ComputeTaskDialog(impl_->viewport, this, name, [this] {
         impl_->requestRefresh();
-        emit computeTaskCommitted();
+        emit renderConfigCommitted();
+    });
+    dialog->show();
+}
+
+void RenderFeaturesWidget::editFrameNodeOrder(const QString &graph, const QStringList &names, quint64 generation) {
+    auto *dialog = new FrameNodeOrderDialog(impl_->viewport, this, graph, names, generation, [this] {
+        impl_->requestRefresh();
+        emit renderConfigCommitted();
     });
     dialog->show();
 }

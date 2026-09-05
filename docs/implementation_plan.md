@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、behavior追加):** task追加削除はaa5f45ed、component必須入力はd9b4cbb5に統合済み。登録behaviorの候補・初期params取得とInspectorからの同型/別型追加を実装し、CPU/Inspector試験とPlayer/Studio buildを確認。次は視覚的なport接続・dispatchフォーム、AS配置を含むnode移動、asset選択フォームなど。学習サンプルは後回し。
+**最新の入口 (2026-09-06、node順序編集):** behavior追加は7709469bに統合済み。依存を維持する描画node順序編集をRPC/Studioへ接続し、通常RT nodeと名前付きASの順序変更を実GPU確認。次はdispatchフォーム、視覚的なport接続、AS公開境界を越える配置、asset選択フォームなど。学習サンプルは後回し。
+
+**RT7 node順序編集 (2026-09-06):**
+- rootの`frame_node_order`にgraph別の実行時node名配列を保存。元node配列やresource依存を変更せず隣接`after`制約を追加する。部分指定・解除に対応し、不明名・重複・依存cycleを既存compilerで拒否する。
+- `get_frame_node_order` / `edit_frame_node_order`とStudioのOrder nodesを接続。画面とpublished generationの一致を確認し、失敗時は入力を保持。Use dependency orderは当該graphだけ解除する。順序に含むnodeの削除・改名は先に指定解除が必要。
+- CPU関連32/32（852 assertions、`build/.codex_bg/nodeorder-cpu.log`）、最終保存case1/1（36 assertions、`nodeorder-final-cpu.log`）成功。逆順実行・再読込・解除、既存resource依存を逆転するcycle、外部変更・publication失敗後の旧状態保持を確認。
+- 実GPUのindirect case成功（100 assertions、`nodeorder-final-gpu.log`の2件中1件）。名前付きASは最終1/1（RT/queryの両経路、`nodeorder-namedas-final-gpu.log`）成功。AS順を変更しても左右のinstance選択と出力を保持。初回の既定順の誤認と、世代公開直後の未描画target読み戻しはテスト側を修正した。
+- Player/Studio buildは`nodeorder-final-build.log`、最終GPU exeは`nodeorder-namedas-build.log`。新しいテストtargetや配布用ツールは追加なし。手動GUI通し操作とAS公開境界を越える配置は未実施・未実装として残す。
 
 **Inspector behavior追加 (2026-09-06):**
 - 既存component候補RPCに登録behaviorを含める。通常componentのkeyはname、behaviorは`behavior:登録名`とし、同型attachmentが装着済みでも候補を残す。scene decoderと同じ登録を選び、初期paramsの正規化とschema取得だけを行う。behavior instanceは生成しない。

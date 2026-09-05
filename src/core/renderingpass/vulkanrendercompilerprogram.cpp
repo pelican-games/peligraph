@@ -307,6 +307,43 @@ void detail::insertSceneAccelerationStructureNodes(
     }
 }
 
+void detail::applyFrameNodeOrder(
+    std::vector<FrameGraphDefinition> &graphs,
+    const nlohmann::json &order) {
+    if (!order.is_object())
+        throw std::runtime_error("frame_node_order must be an object");
+    for (const auto &[graph_name, names] : order.items()) {
+        const auto graph = std::find_if(graphs.begin(), graphs.end(), [&](const auto &entry) {
+            return entry.name == graph_name;
+        });
+        if (graph == graphs.end())
+            throw std::runtime_error("frame_node_order unknown graph: " + graph_name);
+        if (!names.is_array())
+            throw std::runtime_error("frame_node_order graph must contain an array: " + graph_name);
+        std::unordered_set<std::string> seen;
+        std::vector<std::size_t> indices;
+        for (const auto &value : names) {
+            if (!value.is_string() || value.get_ref<const std::string &>().empty())
+                throw std::runtime_error("frame_node_order node must be a nonempty string: " + graph_name);
+            const auto &name = value.get_ref<const std::string &>();
+            if (!seen.insert(name).second)
+                throw std::runtime_error("frame_node_order duplicate node: " + graph_name + "/" + name);
+            const auto node = std::find_if(graph->nodes.begin(), graph->nodes.end(), [&](const auto &entry) {
+                return entry.name == name;
+            });
+            if (node == graph->nodes.end())
+                throw std::runtime_error("frame_node_order unknown node: " + graph_name + "/" + name);
+            indices.push_back(static_cast<std::size_t>(node - graph->nodes.begin()));
+        }
+        for (std::size_t index = 1; index < indices.size(); ++index) {
+            auto &node = graph->nodes[indices[index]];
+            const auto &previous = graph->nodes[indices[index - 1]].name;
+            if (std::find(node.after.begin(), node.after.end(), previous) == node.after.end())
+                node.after.push_back(previous);
+        }
+    }
+}
+
 void detail::namespaceComputeTasks(
     std::vector<ComputeTaskDefinition> &tasks,
     std::vector<FrameGraphDefinition> &graphs,
@@ -735,6 +772,10 @@ compileDefaultVulkanVariant(
         graph_definitions, logical.compiled_pipeline.target_planning,
         compute_task_definitions, input.ray_tracing_project != nullptr,
         logical.compiled_pipeline.scene_acceleration_structures);
+    if (const auto order = logical.composed_config.find("frame_node_order");
+        order != logical.composed_config.end()) {
+        detail::applyFrameNodeOrder(graph_definitions, *order);
+    }
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
             std::move(logical.compiled_pipeline));

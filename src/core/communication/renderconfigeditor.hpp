@@ -173,6 +173,8 @@ class RenderConfigEditorService {
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
+    nlohmann::ordered_json getFrameNodeOrder(const nlohmann::json &params) const;
+    nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params);
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json addComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json removeComputeTask(const nlohmann::json &params);

@@ -955,6 +955,26 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
     return {{"source_digest", digestJson(document_.sourceDigest())}, {"tasks", std::move(tasks)}};
 }
 
+OrderedJson RenderConfigEditorService::getFrameNodeOrder(const Json &params) const {
+    requireOnly(params, {}, "get_frame_node_order");
+    return {{"source_digest", digestJson(document_.sourceDigest())},
+            {"published_generation", dependencies_.runtime_snapshot().published_generation},
+            {"orders", Json::parse(document_.bytes()).value("frame_node_order", Json::object())}};
+}
+
+OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
+    constexpr auto method = "edit_frame_node_order";
+    requireOnly(params, {"base_source_digest", "orders"}, method);
+    const auto digest = requireString(params, "base_source_digest", method);
+    if (!params.contains("orders") || !params.at("orders").is_object())
+        return rejection("invalid_frame_node_order", "Provide an object mapping graph names to node arrays");
+    return queueRootEdit(digest, method,
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            candidate = candidate.withRootValue("frame_node_order", params.at("orders").dump(2));
+            return std::nullopt;
+        });
+}
+
 OrderedJson RenderConfigEditorService::editComputeTask(const Json &params) {
     requireOnly(params, {"base_source_digest", "base_task_source_digest", "task_name", "task"}, "edit_compute_task");
     return changeComputeTask(params, false);

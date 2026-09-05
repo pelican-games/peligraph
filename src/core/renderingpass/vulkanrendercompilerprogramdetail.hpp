@@ -12,6 +12,11 @@ void insertSceneAccelerationStructureNodes(
     bool has_ray_project,
     std::span<const SceneAccelerationStructureDefinition> named_definitions = {});
 
+// Applies runtime-name ordering as additional dependencies without changing dataflow inference.
+void applyFrameNodeOrder(
+    std::vector<FrameGraphDefinition> &graphs,
+    const nlohmann::json &order);
+
 // Internal CPU test seam for XR compute namespacing. Keeping this out of the
 // package API lets the non-GPU provenance regression exercise the production
 // transform without requiring a Vulkan physical device.

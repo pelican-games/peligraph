@@ -405,6 +405,7 @@ struct FramePlanWidget::Impl {
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     std::function<void(const QString &)> task_edit_action;
+    std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
     qint64 pending_request = 0;
     qint64 pending_gpu_timing_request = 0;
 
@@ -462,6 +463,19 @@ struct FramePlanWidget::Impl {
         zoom_status->setObjectName(
             QStringLiteral("pelican.framePlanZoomStatus"));
         toolbar->addWidget(zoom_status);
+        auto *order_nodes = new QPushButton(owner.tr("Order nodes..."), &owner);
+        order_nodes->setObjectName(QStringLiteral("pelican.framePlanOrderNodes"));
+        toolbar->addWidget(order_nodes);
+        QObject::connect(order_nodes, &QPushButton::clicked, &owner, [this] {
+            if (!model || !node_order_action) return;
+            if (!model->runtime_generation || *model->runtime_generation == 0) {
+                status->setText(owner.tr("Node ordering requires a published runtime generation. Refresh the Frame Plan first."));
+                return;
+            }
+            QStringList names;
+            for (const auto &node : model->nodes) names.push_back(QString::fromStdString(node.name));
+            node_order_action(QString::fromStdString(model->graph), names, *model->runtime_generation);
+        });
         auto *edit_task = new QPushButton(owner.tr("Edit task..."), &owner);
         edit_task->setObjectName(QStringLiteral("pelican.framePlanEditTask"));
         toolbar->addWidget(edit_task);
@@ -1650,6 +1664,10 @@ void FramePlanWidget::setProjectRoot(
 }
 
 void FramePlanWidget::refresh() { impl_->requestRefresh(); }
+
+void FramePlanWidget::setNodeOrderAction(std::function<void(const QString &, const QStringList &, quint64)> action) {
+    impl_->node_order_action = std::move(action);
+}
 
 void FramePlanWidget::setTaskEditAction(std::function<void(const QString &)> action) {
     impl_->task_edit_action = std::move(action);

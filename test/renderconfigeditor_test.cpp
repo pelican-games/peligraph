@@ -8,6 +8,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/featurecompose.hpp"
@@ -253,6 +254,8 @@ struct ActualCpuRenderRuntime {
         }
         auto graphs = parseFrameGraphDefinitionsFromConfigJson(
             composition.config);
+        if (const auto order = composition.config.find("frame_node_order"); order != composition.config.end())
+            detail::applyFrameNodeOrder(graphs, *order);
         const auto graph = std::find_if(
             graphs.begin(), graphs.end(), [](const auto &candidate) {
                 return candidate.name == "main_render";
@@ -1748,6 +1751,77 @@ TEST_CASE("Pipeline fork saves the original preset and switches the root atomica
         REQUIRE_FALSE(std::filesystem::exists(destination));
         REQUIRE(Json::parse(readBytes(project.render_config)) == local_root);
         REQUIRE(readBytes(source) == preset_bytes + "\n");
+    }
+}
+
+TEST_CASE("Frame node order edits persist and preserve the old state on invalid order",
+          "[render-config-editor][frame-node-order]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto path = project.root / "passes" / "order_tasks.json";
+    Json tasks = Json::array();
+    for (const auto *name : {"order_first", "order_second"})
+        tasks.push_back({{"name", name}, {"shader", "project://shaders/probe"},
+                         {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}});
+    writeBytes(path, Json{{"schema", "pelican.render_feature"}, {"version", 1},
+                         {"name", "order_tasks"}, {"compute_tasks", tasks}}.dump(2));
+    auto root = Json::parse(readBytes(project.render_config));
+    root["features"].push_back("project://passes/order_tasks.json");
+    writeBytes(project.render_config, root.dump(2));
+    const auto before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto position = [&](std::string_view name) {
+        const auto &nodes = runtime.frame_plan.at("nodes");
+        const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) {
+            return node.at("name").template get_ref<const std::string &>() == name;
+        });
+        REQUIRE(found != nodes.end());
+        return found - nodes.begin();
+    };
+    REQUIRE(position("order_first") < position("order_second"));
+    const auto context = service->getFrameNodeOrder(Json::object());
+    REQUIRE(context.at("orders").empty());
+    Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                 {"orders", {{"main_render", {"order_second", "order_first"}}}}};
+    SECTION("save reopen and clear") {
+        const auto accepted = service->editFrameNodeOrder(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        CHECK(position("order_second") < position("order_first"));
+        CHECK(service->editFrameNodeOrder(request).at("status") == "rejected");
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        CHECK(service->getFrameNodeOrder(Json::object()).at("orders") == request.at("orders"));
+        CHECK(position("order_second") < position("order_first"));
+        request["base_source_digest"] = service->getFrameNodeOrder(Json::object()).at("source_digest").at("hex");
+        request["orders"] = Json::object();
+        const auto cleared = service->editFrameNodeOrder(request);
+        REQUIRE(cleared.at("status") == "accepted");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", cleared.at("ticket")}}).at("committed") == true);
+        CHECK(position("order_first") < position("order_second"));
+    }
+    SECTION("unknown node cannot replace the source") {
+        request["orders"]["main_render"] = {"missing"};
+        const auto accepted = service->editFrameNodeOrder(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(project.render_config) == before);
+        CHECK(position("order_first") < position("order_second"));
+    }
+    SECTION("publication failure restores the source") {
+        runtime.fail_after_source_commit = true;
+        const auto accepted = service->editFrameNodeOrder(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(project.render_config) == before);
     }
 }
 

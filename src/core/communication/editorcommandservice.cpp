@@ -1492,6 +1492,16 @@ OrderedJson EditorCommandService::getComputeTaskAuthoring(const Json &params) co
     return render_config_editor_->getComputeTaskAuthoring(params);
 }
 
+OrderedJson EditorCommandService::getFrameNodeOrder(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getFrameNodeOrder(params);
+}
+
+OrderedJson EditorCommandService::editFrameNodeOrder(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editFrameNodeOrder(params);
+}
+
 OrderedJson EditorCommandService::editComputeTask(const Json &params) {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->editComputeTask(params);
@@ -2346,6 +2356,15 @@ OrderedJson EditorCommandRpcAdapter::editPresetPass(const Json &params) const {
 
 OrderedJson EditorCommandRpcAdapter::getComputeTaskAuthoring(const Json &params) const {
     return service_.getComputeTaskAuthoring(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getFrameNodeOrder(const Json &params) const {
+    return service_.getFrameNodeOrder(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editFrameNodeOrder(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->editFrameNodeOrder(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::editComputeTask(const Json &params) const {

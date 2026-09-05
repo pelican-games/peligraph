@@ -3,6 +3,7 @@
 #include "../toollayoutpreset.hpp"
 
 #include <QWidget>
+#include <QStringList>
 
 #include <filesystem>
 #include <functional>
@@ -37,6 +38,7 @@ class FramePlanWidget final : public QWidget {
     // widget materializes it with the same pelican_project resolver only when
     // the user presses Open.
     void refresh();
+    void setNodeOrderAction(std::function<void(const QString &, const QStringList &, quint64)> action);
     void setTaskEditAction(std::function<void(const QString &)> action);
     void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     void setProjectRoot(const std::filesystem::path &project_root);

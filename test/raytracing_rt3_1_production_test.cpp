@@ -976,6 +976,35 @@ void main() {
     {
         auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
         std::uint64_t rpc_id = 70000;
+        REQUIRE(execution_nodes[1].at("name") == "__scene_acceleration_structure:empty");
+        const auto set_as_order = [&](const Json &orders) {
+            const auto context = runWp374aRpcBytes(*service, rpc_id++, "get_frame_node_order", Json::object());
+            const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_frame_node_order", {
+                {"base_source_digest", context.at("source_digest").at("hex")}, {"orders", orders}});
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPendingEdits();
+            (void)renderWp374aProductionRows();
+            const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+        };
+        set_as_order({{"main_render", {"__scene_acceleration_structure:right",
+                                       "__scene_acceleration_structure:left", "__scene_acceleration_structure:empty"}}});
+        // Publication replaces the targets at the boundary; read the next completed frame.
+        (void)renderWp374aProductionRows();
+        const auto ordered_nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
+        CHECK(ordered_nodes[1].at("name") == "__scene_acceleration_structure:right");
+        CHECK(ordered_nodes[2].at("name") == "__scene_acceleration_structure:left");
+        CHECK(ordered_nodes[3].at("name") == "__scene_acceleration_structure:empty");
+        for (const std::string name : {"left", "right"}) {
+            const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("rt6_" + name, ImageSubresourceRange{});
+            std::array<std::uint32_t, 12> pixels{};
+            REQUIRE(image.bytes.size() >= sizeof(pixels));
+            std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+            CHECK(pixels[1] == (name == "left" ? 71u : 0xffffffffu));
+            CHECK(pixels[5] == (name == "right" ? 82u : 0xffffffffu));
+        }
+        set_as_order(Json::object());
         auto before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
         auto definitions = before.at("definitions");
         definitions[0]["instance_mask"] = 2;
@@ -1191,6 +1220,31 @@ void main() { pelican_resource_args.values[0] = uvec4(0u, 1u, 2u, 1u); }
     check_lanes(2, 1, 1);
     edit_task("wp386_trace", [](Json &task) { task["dispatch"] = {{"indirect", {{"buffer", "ray_args"}, {"offset", 4}}}}; });
     check_lanes(1, 2, 1);
+    const auto execution_position = [&](const std::string &name) {
+        const auto &nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
+        const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) { return node.at("name") == name; });
+        REQUIRE(found != nodes.end());
+        return found - nodes.begin();
+    };
+    REQUIRE(execution_position("scene_present") < execution_position("wp386_trace"));
+    const auto order_context = runWp374aRpcBytes(*service, rpc_id++, "get_frame_node_order", Json::object());
+    Json order_request{{"base_source_digest", order_context.at("source_digest").at("hex")},
+                       {"orders", {{"main_render", {"wp386_trace", "scene_present"}}}}};
+    commit_task_change(runWp374aRpcBytes(*service, rpc_id++, "edit_frame_node_order", order_request));
+    check_lanes(1, 2, 1);
+    CHECK(execution_position("wp386_trace") < execution_position("scene_present"));
+    const auto ordered_root = readWp374aText(project.path / "hybrid.json");
+    order_request["base_source_digest"] = runWp374aRpcBytes(*service, rpc_id++, "get_frame_node_order", Json::object()).at("source_digest").at("hex");
+    order_request["orders"]["main_render"] = {"wp386_trace", "build_ray_args"};
+    const auto rejected_order = runWp374aRpcBytes(*service, rpc_id++, "edit_frame_node_order", order_request);
+    REQUIRE(rejected_order.at("status") == "accepted");
+    service->commitPendingEdits();
+    check_lanes(1, 2, 1);
+    const auto order_result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", rejected_order.at("ticket")}});
+    INFO(order_result.dump());
+    CHECK(order_result.at("committed") == false);
+    CHECK(readWp374aText(project.path / "hybrid.json") == ordered_root);
+    CHECK(execution_position("wp386_trace") < execution_position("scene_present"));
 #else
     SKIP("RT6 indirect production shader fixture requires the runtime compiler");
 #endif

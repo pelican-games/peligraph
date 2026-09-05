@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QWidget>
+#include <QStringList>
 
 #include <memory>
 
@@ -27,11 +28,12 @@ class RenderFeaturesWidget final : public QWidget {
 
     // Applies the successful list_render_features payload. Production RPC
     // delivery and focused widget tests intentionally share this entry.
+    void editFrameNodeOrder(const QString &graph, const QStringList &names, quint64 generation);
     void editComputeTask(const QString &name);
     void receiveCatalogResult(const QByteArray &result_json);
 
   signals:
-    void computeTaskCommitted();
+    void renderConfigCommitted();
 };
 
 } // namespace PelicanStudio

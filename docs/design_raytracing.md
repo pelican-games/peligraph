@@ -569,6 +569,21 @@ StudioのTasks詳細画面とFrame Plan選択から呼び出す。視覚的なpo
 `remove_compute_task`は元文書の宣言だけを削除し、空になったfeatureも通常のproject assetとして残す。
 追加・削除も合成とcompilerを通すため、名前重複や未解決依存を公開せず、既存task編集と保存経路を共有する。
 
+### RT7: 描画ノードの順序編集（2026-09-06）
+
+rootの`frame_node_order`はgraph名から実行時node名の配列への対応表とする。
+variantの名前解決とAS node挿入後、配列の隣接要素に`after`制約を加える。
+元のnode配列は変更せず、宣言順から導かれるresource依存を保持する。
+部分配列も許可し、空配列は制約なし、空objectは全指定解除。
+未知の名前・重複・不正な型や依存cycleはcompilerで拒否する。
+共有AS→名前付きAS集合→通常nodeという既存の公開境界は維持し、名前付きAS同士の順序は変更できる。
+
+`get_frame_node_order`でroot digest・published generation・保存済み指定を取得し、
+`edit_frame_node_order`の`orders`を既存CAS/transactionで保存する。
+StudioのFrame Planの**Order nodes...**は現在の実行順を編集し、**Use dependency order**で当該graphの指定を解除する。
+画面のruntime generationと取得結果が異なる場合は再取得して開き直す。
+指定済みnodeの削除・改名では該当順序指定も先に解除する。
+
 ## 9. エラー文言・受け入れゲート
 
 v2 §7 に同じ + §5 の matrix + 「off/on は同一テスト内」+ sentinel 表。
