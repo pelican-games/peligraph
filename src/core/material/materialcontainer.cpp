@@ -1569,7 +1569,8 @@ GlobalTextureId MaterialContainer::registerTexture(vk::Extent3D extent, const vo
         .old_layout = vk::ImageLayout::eUndefined,
         .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
         .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                     vk::PipelineStageFlagBits::eFragmentShader,
+                     vk::PipelineStageFlagBits::eFragmentShader |
+                     vk::PipelineStageFlagBits::eComputeShader,
         .dst_access = vk::AccessFlagBits::eShaderRead,
     };
     if (rgba8) {
@@ -1801,7 +1802,8 @@ MaterialContainer::createTextureResource(const LoadedImage &loaded, std::string_
         VulkanUtils::ImageTransferInfo{.old_layout = vk::ImageLayout::eUndefined,
                                        .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
                                        .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                                                    vk::PipelineStageFlagBits::eFragmentShader,
+                                                    vk::PipelineStageFlagBits::eFragmentShader |
+                                                    vk::PipelineStageFlagBits::eComputeShader,
                                        .dst_access = vk::AccessFlagBits::eShaderRead});
 
     const auto linear_format = rgba8 ? vk::Format::eR8G8B8A8Unorm
@@ -1845,6 +1847,22 @@ GlobalTextureId MaterialContainer::registerReloadableTextureFile(
     }
     texture_reload_handler->track(key, path, texture);
     return texture;
+}
+
+MaterialContainer::RayDeformationMaterial MaterialContainer::rayDeformationMaterial(
+    GlobalMaterialId material) const {
+    const auto &entry = materials.get(material);
+    const auto fallback = entry.texture_bindings.front().texture;
+    const std::array ids{
+        entry.vat ? entry.vat->position_texture : fallback,
+        entry.vat ? entry.vat->normal_texture : fallback};
+    RayDeformationMaterial result{.vat = entry.vat};
+    for (std::size_t i = 0; i < ids.size(); ++i) {
+        result.images[i] = vk::DescriptorImageInfo{
+            nearest_sampler.get(), textures.get(ids[i]).linear_view.get(),
+            vk::ImageLayout::eShaderReadOnlyOptimal};
+    }
+    return result;
 }
 
 GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
@@ -2720,7 +2738,8 @@ void MaterialContainer::uploadTextureInPlace(GlobalTextureId texture,
             .old_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
             .new_layout = vk::ImageLayout::eShaderReadOnlyOptimal,
             .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                         vk::PipelineStageFlagBits::eFragmentShader,
+                         vk::PipelineStageFlagBits::eFragmentShader |
+                         vk::PipelineStageFlagBits::eComputeShader,
             .dst_access = vk::AccessFlagBits::eShaderRead});
 }
 
@@ -2999,7 +3018,8 @@ std::vector<uint8_t> MaterialContainer::texturePixelsForTesting(
                 command, resource.image, vk::ImageLayout::eShaderReadOnlyOptimal,
                 vk::ImageLayout::eTransferSrcOptimal,
                 {.src_stage = vk::PipelineStageFlagBits::eVertexShader |
-                              vk::PipelineStageFlagBits::eFragmentShader,
+                              vk::PipelineStageFlagBits::eFragmentShader |
+                              vk::PipelineStageFlagBits::eComputeShader,
                  .dst_stage = vk::PipelineStageFlagBits::eTransfer,
                  .src_access = vk::AccessFlagBits::eShaderRead,
                  .dst_access = vk::AccessFlagBits::eTransferRead});
@@ -3015,7 +3035,8 @@ std::vector<uint8_t> MaterialContainer::texturePixelsForTesting(
                 vk::ImageLayout::eShaderReadOnlyOptimal,
                 {.src_stage = vk::PipelineStageFlagBits::eTransfer,
                  .dst_stage = vk::PipelineStageFlagBits::eVertexShader |
-                              vk::PipelineStageFlagBits::eFragmentShader,
+                              vk::PipelineStageFlagBits::eFragmentShader |
+                              vk::PipelineStageFlagBits::eComputeShader,
                  .src_access = vk::AccessFlagBits::eTransferRead,
                  .dst_access = vk::AccessFlagBits::eShaderRead});
         },

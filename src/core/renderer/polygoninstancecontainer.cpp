@@ -1682,8 +1682,7 @@ PolygonInstanceContainer::rayOccurrences(
     for (std::size_t index = 0; index < snapshots.size(); ++index) {
         const auto &snapshot = snapshots[index];
         if (snapshot.geometry_kind != RayGeometryKind::triangles) continue;
-        const bool ray_eligible = !snapshot.vat_deformed &&
-                                  snapshot.geometry_allocation_id != 0 &&
+        const bool ray_eligible = snapshot.geometry_allocation_id != 0 &&
                                   snapshot.vertex_offset >= 0 &&
                                   snapshot.vertex_count != 0 &&
                                   snapshot.index_count != 0 &&
@@ -1725,8 +1724,7 @@ PolygonInstanceContainer::rayOccurrences(
                                : snapshot.occurrence_error;
         } else if (!ray_eligible || !entry.q) {
             entry.eligibility = RayOccurrenceEligibilityKind::not_ray_traced;
-            if (snapshot.vat_deformed) entry.reason = "vat_deformed";
-            else if (!ray_eligible) entry.reason = "blas_ineligible";
+            if (!ray_eligible) entry.reason = "blas_ineligible";
             else entry.reason = plan ? "not_in_as_plan" : "as_plan_unavailable";
         }
         result.push_back(std::move(entry));

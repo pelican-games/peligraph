@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT5 skin/morph接続):** 学習サンプルは後回し。RT4のゲームDLL更新に続き、skin/morph の変形後頂点からBLASを再構築する経路を実装。次はRT5のVAT対応と更新負荷の削減。Studioのrecord編集UI、RT6/RT7は残る。下の旧記録にあるサンプル優先は本指示で更新する。
+**最新の入口 (2026-09-06、RT5 VAT接続):** 学習サンプルは後回し。skin/morphに続いてVATの変形後頂点もBLASへ接続。次はRT5のrefitと更新負荷の削減。Studioのrecord編集UI、RT6/RT7は残る。下の旧記録にあるサンプル優先は本指示で更新する。
+
+**RT5 VAT (2026-09-06):**
+- VAT texture・再生時刻・bounds・base vertexをcomputeへ渡し、VAT → morph → skinの頂点出力をASへ接続。VATの位置・法線補間、loop/clampをラスタと共有するGLSL helperへ抽出した。
+- material textureの転送後バリアにcompute読取りを追加。既存のmaterial遅延解放とAS出力のsubmission所有権を利用し、別の寿命管理層は増やさない。
+- VATを一律に除外する旧分類を削除。変形出力なし、VAT playback materialなしは明示エラー。不適格な三角形範囲の除外は維持する。
+- GPUのskin/morphとVAT loop/clampは2/2（43 assertions）、既存の影・AS回帰は5/5（旧診断件数の修正後、該当2件を再実行）、VAT Playerは1/1成功。CPUの分類2/2、RT3-1 8/8、RT1b 19/19成功。Player/Studioのbuild成功。refitは未実装であり、RT5全体の完了扱いにはしない。
 
 **RT5 skin/morph (2026-09-06):**
 - ラスタと共有するGLSL helperで morph → skin をcompute実行し、BLASとhit属性へ同じ頂点出力を渡す。compute shaderはbuild時にSPIR-Vへ埋め込む。

@@ -99,7 +99,7 @@ inline void writeBytes(const std::filesystem::path &path, const std::vector<uint
 
 } // namespace detail
 
-inline std::vector<uint8_t> makeTinyVatGlb() {
+inline std::vector<uint8_t> makeTinyVatGlb(bool loop = false) {
     std::vector<uint8_t> bin;
     const auto position_offset = detail::appendFloats(bin, {
         -0.8f, -0.4f, 0.0f,
@@ -149,7 +149,7 @@ inline std::vector<uint8_t> makeTinyVatGlb() {
                       {"vertex_count", 3},
                       {"bounds_min", {-0.8, -0.4, -0.1}},
                       {"bounds_max", {0.8, 0.4, 0.1}},
-                      {"loop", false},
+                      {"loop", loop},
                       {"position_view", 4}}}}},
               }}},
          }}},
@@ -193,8 +193,8 @@ inline std::vector<uint8_t> makeTinyVatGlb() {
     return glb;
 }
 
-inline void writeTinyVatGlb(const std::filesystem::path &path) {
-    detail::writeBytes(path, makeTinyVatGlb());
+inline void writeTinyVatGlb(const std::filesystem::path &path, bool loop = false) {
+    detail::writeBytes(path, makeTinyVatGlb(loop));
 }
 
 } // namespace Pelican::TestVatFixture

@@ -4,10 +4,13 @@
 #define PELICAN_DEFORMATION_COMPUTE
 #include "pelican_skinning.glsl"
 #include "pelican_morph.glsl"
+#include "pelican_vat.glsl"
 
 layout(local_size_x = 64) in;
 layout(set = 3, binding = 0, std430) readonly buffer SourceVertices { uint words[]; } sourceVertices;
 layout(set = 3, binding = 1, std430) writeonly buffer DeformedVertices { uint words[]; } deformedVertices;
+layout(set = 3, binding = 9) uniform sampler2D vatPositionSampler;
+layout(set = 3, binding = 10) uniform sampler2D vatNormalSampler;
 layout(push_constant) uniform DeformationJob {
     uint vertexOffset;
     uint vertexCount;
@@ -16,6 +19,11 @@ layout(push_constant) uniform DeformationJob {
     uint sourceStrideWords;
     uint jointOffsetWords;
     uint weightOffsetWords;
+    uint vat;
+    vec4 vatBoundsMinFrameCount;
+    vec4 vatBoundsExtentFps;
+    ivec4 vatFlags;
+    float time;
 } job;
 
 vec3 loadVec3(uint offset) {
@@ -37,8 +45,18 @@ void main() {
     for (uint word = 0; word < 16; ++word)
         deformedVertices.words[destination + word] = sourceVertices.words[source + word];
 
+    vec3 position = loadVec3(source);
+    vec3 normal = loadVec3(source + 3);
+    if (job.vat != 0) {
+        PelicanVatVertex vatVertex = pelican_vat_vertex(
+            vatPositionSampler, vatNormalSampler,
+            job.vatBoundsMinFrameCount, job.vatBoundsExtentFps, job.vatFlags,
+            job.time, int(originalVertex), normal);
+        position = vatVertex.position;
+        normal = vatVertex.normal;
+    }
     PelicanMorphedVertex result = pelican_morph_vertex_for_instance(
-        loadVec3(source), loadVec3(source + 3), loadVec3(source + 6),
+        position, normal, loadVec3(source + 6),
         int(originalVertex), false, job.instanceIndex);
     if (job.skinned != 0) {
         uint packed0 = sourceVertices.words[source + job.jointOffsetWords];

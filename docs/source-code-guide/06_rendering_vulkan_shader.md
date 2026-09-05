@@ -936,7 +936,7 @@ frame target の color/depth と、frame graph 設定で宣言する offscreen t
 
 後者の「1 layer でも layered」が WP239b の変更点です。それまでは layer 数 1 の family array に対してだけ `layer_count = 1` の `e2DArray` subresource view を別途生成していました。descriptor の shape(`e2DArray`)は変わらないので、これは束縛の意味を変える修正ではなく、同じ範囲の view を二重に作るのをやめる整理です。実際に落ちていたのは期待値の側でした — `hybrid_v1` の GPU テストが producer view-family array 導入前の scalar 契約のまま `getImageView()`(array target でも layer 0 の `e2D`)と比較しており、shader ABI が要求する layered view と一致しませんでした。WP239b はこの期待値を `getLayeredImageView()` へ直しています。現在は 1 layer でも canonical layered view へ統一され、同じ範囲の subresource view を重複生成しません。
 
-> 🧩 **難所 — `family_array` は物理 layout をまたいで 1 つの descriptor に正規化する**([`ensureScreenInputDescriptor()`](../../src/core/material/materialcontainer.cpp#L4482) / [`buildScreenInputDescriptor()`](../../src/core/material/materialcontainer.cpp#L4147))
+> 🧩 **難所 — `family_array` は物理 layout をまたいで 1 つの descriptor に正規化する**([`ensureScreenInputDescriptor()`](../../src/core/material/materialcontainer.cpp#L4503) / [`buildScreenInputDescriptor()`](../../src/core/material/materialcontainer.cpp#L4168))
 >
 > **何をする所か**: material が読む pass input(screen input)について、`.surface` の resource port が宣言した view 種別([`ShaderResourcePortView`](../../src/project/shaderresourceport.hpp#L24))と、pass 側の物理 view 種別([`PassInputViewDimension`](../../src/core/renderingpass/renderingpass.hpp#L348))を突き合わせ、実際に束縛する `vk::ImageView` と descriptor の次元を決めます。
 >
@@ -1200,7 +1200,7 @@ Renderer::render() (render start)
   -> publish通知をconsumeしfullscreen input descriptorをrebind
 ```
 
-shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1052)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1805) が担当します。material peer の準備は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L397) が担います。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
+shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1052)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1805) が担当します。material peer の準備は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L403) が担います。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
 
 > 🧩 **難所 — reload の swap は 3 回**([`rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1805) / [`ShaderLibrary::activatePrepared()`](../../src/core/shader/shaderlibrary.cpp#L1113))
 >
@@ -1533,7 +1533,7 @@ layout の版と宣言の有無で、解決値と名前付き拒否は次のよ�
 
 | # | 入力 | 結果 |
 |---:|---|---|
-| 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L593)) |
+| 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L592)) |
 | 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1616)) |
 | 3 | v1 layout、`acceleration_structure` 有り | parse で [`pelican.ray_as_declaration_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L767)。`ray_as_declaration_requires_layout@1` という code は作られていません(`acceleration_structure` は layout 内の field なので、その構文が存在しない) |
 | 4 | v2 でない layout の row に `pelican_ray_instance` がある | [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L1431)。builtin 宣言側は scene load 時点で[同 code](../../src/core/loader/scene.cpp#L93) |
@@ -1559,7 +1559,7 @@ v2 では `gl_InstanceCustomIndexEXT` に出るのは**宣言値**です。`q`(c
 
 ### BLAS variant: 鍵は `(allocation, geometry_flags)`
 
-`geometry_flags` は BLAS の build 入力なので、同じ geometry でも flags が違えば別の BLAS が要ります。cache の鍵は [`State::BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L765) の `(geometry_allocation_id, geometry_flags)` です。allocation id だけを鍵にしていた頃は、**flags だけを変えた reload が古い BLAS を再利用して宣言が無効になる**という穴がありました。
+`geometry_flags` は BLAS の build 入力なので、同じ geometry でも flags が違えば別の BLAS が要ります。cache の鍵は [`State::BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L764) の `(geometry_allocation_id, geometry_flags)` です。allocation id だけを鍵にしていた頃は、**flags だけを変えた reload が古い BLAS を再利用して宣言が無効になる**という穴がありました。
 
 purge は「geometry が消えたら落とす」ではなく、**そのフレームで実際に参照された variant 集合との差分**です。手順は次の形です。
 
@@ -1572,20 +1572,20 @@ for variant in required_variants:
 candidate->blas は required_variants と厳密に一致する               ← ここが purge
 ```
 
-持ち越しは [`active_state_->blas.find(variant)`](../../src/core/renderer/accelerationstructure.cpp#L1149) の一致だけで、`candidate` には required 以外が入りません。commit で `candidate` が active を置き換えるので、**規則の reload で参照されなくなった variant は自動的に落ちます**。「消し忘れ」を検出するのではなく「必要なものだけを作り直す」側で閉じている、という構造です。
+持ち越しは [`active_state_->blas.find(variant)`](../../src/core/renderer/accelerationstructure.cpp#L1148) の一致だけで、`candidate` には required 以外が入りません。commit で `candidate` が active を置き換えるので、**規則の reload で参照されなくなった variant は自動的に落ちます**。「消し忘れ」を検出するのではなく「必要なものだけを作り直す」側で閉じている、という構造です。
 
 ### 診断: `resident_blas_keys`
 
-frame plan の `ray_query_acceleration_structures` に、この variant 集合がそのまま出ます([`rayQueryAccelerationStructureDiagnosticsToJson()`](../../src/core/renderer/accelerationstructure.cpp#L699))。
+frame plan の `ray_query_acceleration_structures` に、この variant 集合がそのまま出ます([`rayQueryAccelerationStructureDiagnosticsToJson()`](../../src/core/renderer/accelerationstructure.cpp#L698))。
 
 | キー | 意味 |
 |---|---|
 | `blas_variant_count` | candidate が持つ BLAS 数(= required variant 数) |
-| [`resident_blas_keys`](../../src/core/renderer/accelerationstructure.cpp#L724) | 各 variant の `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}` |
+| [`resident_blas_keys`](../../src/core/renderer/accelerationstructure.cpp#L723) | 各 variant の `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}` |
 | `active_blas_inputs` | 同じ配列(旧キー名。互換のため両方出ます) |
 | `blas_build_count` / `tlas_build_count` | 実際に build した回数 |
 
-配列は `(allocation_id, geometry_flags)` で [sort](../../src/core/renderer/accelerationstructure.cpp#L1233) されるので、診断の並びはフレーム間で決定的です。「同一 allocation を opaque と mask で共有したら BLAS build が 2 になる」「規則を戻したら variant が消える」を、この2キーで外から確認できます。
+配列は `(allocation_id, geometry_flags)` で [sort](../../src/core/renderer/accelerationstructure.cpp#L1232) されるので、診断の並びはフレーム間で決定的です。「同一 allocation を opaque と mask で共有したら BLAS build が 2 になる」「規則を戻したら variant が消える」を、この2キーで外から確認できます。
 
 ### WP377: SBT と TLAS の frame transaction、および既知の穴
 

@@ -1035,7 +1035,7 @@ TEST_CASE("WP366 production AS lowering is publish-order independent",
 
     SECTION("legacy null-layout bytes number only included instances") {
         auto legacy = forward_inputs;
-        legacy[0].vat_deformed = true;
+        legacy[0].index_count = 0;
         const auto classification =
             classifyRayQueryGeometry(legacy);
         REQUIRE(classification.eligible_instance_indices ==

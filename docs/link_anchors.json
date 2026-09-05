@@ -340,7 +340,7 @@
     "docs/source-code-guide/01_architecture_and_build.md|../../src/core/resources/CMakeLists.txt|`b_embed(pelican_resources render_pipelines/hybrid_v1.json)`": "b_embed(pelican_resources default_config.json)",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/core/resources/CMakeLists.txt|`b_embed_proxy_target(pelican_core pelican_resources)`": "b_embed_proxy_target(pelican_core pelican_resources)",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/core/resources/CMakeLists.txt|`b_embed_proxy_target(pelican_core pelican_resources)`|#1": "b_embed_proxy_target(pelican_core pelican_resources)",
-    "docs/source-code-guide/01_architecture_and_build.md|../../src/core/resources/CMakeLists.txt|`embed_shader(vat.vert)`": "embed_shader(vat.vert)",
+    "docs/source-code-guide/01_architecture_and_build.md|../../src/core/resources/CMakeLists.txt|`embed_shader(vat.vert)`": "function(embed_shader file_name)",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/core/resources/render_algorithms/standard_algorithms.cmake|`PELICAN_STANDARD_RENDER_ALGORITHM_RESOURCES`": "set(PELICAN_STANDARD_RENDER_ALGORITHM_RESOURCES",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/core/shader/pipelinefactory.hpp|`PipelineFactory`": "DECLARE_MODULE(PipelineFactory) {",
     "docs/source-code-guide/01_architecture_and_build.md|../../src/core/shader/shadercompiler.hpp|`ShaderCompiler`": "DECLARE_MODULE(ShaderCompiler) {",

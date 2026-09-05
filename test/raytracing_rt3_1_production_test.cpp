@@ -64,6 +64,7 @@
 #include "../src/core/userpublic/pelican_core.hpp"
 #include "gltf_fragment_fixture.hpp"
 #include "morph_fixture.hpp"
+#include "vat_fixture.hpp"
 
 #include <algorithm>
 #include <array>
@@ -725,6 +726,60 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
     CHECK(restored[2]);
 #else
     SUCCEED("RT5 production shader fixture requires the runtime compiler");
+#endif
+}
+
+TEST_CASE("RT5 VAT ray hits follow interpolated playback with loop and clamp",
+          "[rt5][vat][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_VAT
+    const bool loop = GENERATE(false, true);
+    CAPTURE(loop);
+    setupLogger();
+    Wp374aProjectRoot project{"rt5_vat"};
+    writeWp374aProject(project.path, 2, true, false, true, std::nullopt, true);
+    TestVatFixture::writeTinyVatGlb(project.path / "models/chair.glb", loop);
+    auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
+    scene["scenes"]["main"]["objects"][0]["components"][0]["pos"] = {0.0, 0.0, 8.0};
+    writeWp374aText(project.path / "scene.json", scene.dump());
+    const auto feature_path = project.path / "features/wp377_profile_owner.json";
+    auto feature = Json::parse(readWp374aText(feature_path));
+    feature["render_targets"][0]["usage"].push_back("TRANSFER_SRC");
+    writeWp374aText(feature_path, feature.dump());
+    auto raygen = RayTracingRt31Fixture::wp366RaygenSource(
+        "PELICAN_RAY_TYPE_primary", "PELICAN_MISS_sky", "pelican_resource_wp366_a");
+    const std::string lane = "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
+    raygen.replace(raygen.find(lane), lane.size(),
+        "float x = pixel.x == 0 ? -0.65 : (pixel.x == 1 ? -0.25 : 0.15);");
+    const std::string opaque_flag = "gl_RayFlagsOpaqueEXT";
+    raygen.replace(raygen.find(opaque_flag), opaque_flag.size(), "gl_RayFlagsNoneEXT");
+    writeWp374aText(project.path / "shaders/wp366_a.rgen", raygen);
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    const auto sample = [&](double time) {
+        GET_MODULE(EngineTime).setTime(time);
+        (void)renderWp374aProductionRows();
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
+        std::array<std::uint32_t, 12> pixels{};
+        std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+        return std::array{pixels[1] != 0xffffffffu, pixels[5] != 0xffffffffu,
+                          pixels[9] != 0xffffffffu};
+    };
+    // Each lane intersects only one of the start, interpolated, and final poses.
+    // Reading bind-pose vertices or choosing a whole VAT frame fails this sequence.
+    CHECK((sample(0.0) == std::array{true, false, false}));
+    CHECK((sample(0.5) == std::array{false, true, false}));
+    CHECK((sample(1.0) == std::array{false, false, true}));
+    CHECK((sample(1.5) == (loop ? std::array{false, true, false}
+                               : std::array{false, false, true})));
+    CHECK((sample(2.5) == (loop ? std::array{false, true, false}
+                               : std::array{false, false, true})));
+    CHECK((sample(3.0) == std::array{false, false, true}));
+#else
+    SUCCEED("RT5 VAT production fixture requires VAT and the runtime compiler");
 #endif
 }
 

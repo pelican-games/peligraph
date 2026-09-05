@@ -267,7 +267,7 @@ RayQueryGeometryClassification classifyRayQueryGeometry(
     for (std::size_t index = 0; index < instances.size(); ++index) {
         const auto &instance = instances[index];
         const bool invalid_geometry = isBlasIneligibleGeometry(instance);
-        if (!instance.vat_deformed && !invalid_geometry) {
+        if (!invalid_geometry) {
             result.eligible_instance_indices.push_back(index);
             continue;
         }
@@ -326,7 +326,7 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
             throw std::runtime_error(
                 "pelican.ray_geometry_snapshot_invalid@1: geometry has invalid allocation/range metadata");
         }
-        if ((instance.skinned || instance.morph_deformed) &&
+        if ((instance.skinned || instance.morph_deformed || instance.vat_deformed) &&
             instance.deformed_vertex_address == 0) {
             throw std::runtime_error(
                 "pelican.ray_geometry_snapshot_invalid@1: deformed geometry must be recorded before AS construction");
@@ -469,7 +469,6 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
             instance.authoring_object_id, false);
         (void)inserted;
         const bool eligible =
-            !instance.vat_deformed &&
             !isBlasIneligibleGeometry(instance);
         target->second = target->second || eligible;
     }
@@ -856,7 +855,7 @@ void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
                 "Ray-query acceleration structures: "
                 "active_blas={}, tlas_instances={}, excluded_primitives={}, "
                 "excluded_instances={}, skinned={} [{}], morph={} [{}], "
-                "VAT={} [{}], BLAS-ineligible={} [{}]. VAT and invalid "
+                "VAT={} [{}], BLAS-ineligible={} [{}]. Invalid "
                 "triangle ranges remain raster-only.",
                 owner_->diagnostics_.active_blas_count,
                 owner_->diagnostics_.tlas_instance_count,

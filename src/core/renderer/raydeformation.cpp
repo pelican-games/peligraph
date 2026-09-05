@@ -1,6 +1,8 @@
 #include "polygoninstancecontainer.hpp"
 
 #include "../loader/engineresources.hpp"
+#include "../material/materialcontainer.hpp"
+#include "../appflow/enginetime.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../vkcore/core.hpp"
 #include <array>
@@ -26,7 +28,16 @@ struct DeformationJob {
     std::uint32_t source_stride_words;
     std::uint32_t joint_offset_words;
     std::uint32_t weight_offset_words;
+    std::uint32_t vat;
+    glm::vec4 vat_bounds_min_frame_count;
+    glm::vec4 vat_bounds_extent_fps;
+    glm::ivec4 vat_flags;
+    float time;
 };
+
+static_assert(offsetof(DeformationJob, vat) == 28);
+static_assert(offsetof(DeformationJob, vat_bounds_min_frame_count) == 32);
+static_assert(offsetof(DeformationJob, time) == 80);
 
 // The scene inventory retains this object until the submitted frame completes.
 // Keeping the pool and pipeline here also covers reload and aborted publication.
@@ -40,10 +51,11 @@ struct DeformedGeometry {
 std::shared_ptr<RayDeformationPipeline> createPipeline(vk::Device device) {
     auto result = std::make_shared<RayDeformationPipeline>();
     result->empty_layout = device.createDescriptorSetLayoutUnique({});
-    std::array<vk::DescriptorSetLayoutBinding, 9> bindings;
+    std::array<vk::DescriptorSetLayoutBinding, 11> bindings;
     for (std::uint32_t binding = 0; binding < bindings.size(); ++binding) {
         bindings[binding] = vk::DescriptorSetLayoutBinding{
-            binding, vk::DescriptorType::eStorageBuffer, 1,
+            binding, binding < 9 ? vk::DescriptorType::eStorageBuffer
+                                 : vk::DescriptorType::eCombinedImageSampler, 1,
             vk::ShaderStageFlagBits::eCompute};
     }
     vk::DescriptorSetLayoutCreateInfo descriptor_info;
@@ -86,7 +98,7 @@ void PolygonInstanceContainer::recordRayDeformation(
     bool dispatched = false;
     for (auto &instance : instances) {
         if (instance.geometry_kind != RayGeometryKind::triangles ||
-            instance.vat_deformed || (!instance.skinned && !instance.morph_deformed) ||
+            (!instance.vat_deformed && !instance.skinned && !instance.morph_deformed) ||
             instance.vertex_count == 0 || instance.vertex_offset < 0 ||
             instance.index_count == 0 || instance.index_count % 3u != 0)
             continue;
@@ -102,7 +114,9 @@ void PolygonInstanceContainer::recordRayDeformation(
                 vk::BufferUsageFlagBits::eShaderDeviceAddress |
                 vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
             vma::MemoryUsage::eAutoPreferDevice, {});
-        const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eStorageBuffer, 9};
+        const std::array pool_size{
+            vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 9},
+            vk::DescriptorPoolSize{vk::DescriptorType::eCombinedImageSampler, 2}};
         vk::DescriptorPoolCreateInfo pool_info;
         pool_info.maxSets = 1;
         pool_info.setPoolSizes(pool_size);
@@ -123,7 +137,7 @@ void PolygonInstanceContainer::recordRayDeformation(
             geometry.morphMetadataBuffer(instance.skinned).buffer.get(),
             geometry.morphDeltaBuffer().buffer.get()};
         std::array<vk::DescriptorBufferInfo, 9> buffer_infos;
-        std::array<vk::WriteDescriptorSet, 9> writes;
+        std::array<vk::WriteDescriptorSet, 11> writes;
         for (std::uint32_t binding = 0; binding < buffers.size(); ++binding) {
             buffer_infos[binding] = vk::DescriptorBufferInfo{buffers[binding], 0, VK_WHOLE_SIZE};
             writes[binding].dstSet = set;
@@ -131,8 +145,18 @@ void PolygonInstanceContainer::recordRayDeformation(
             writes[binding].descriptorType = vk::DescriptorType::eStorageBuffer;
             writes[binding].setBufferInfo(buffer_infos[binding]);
         }
+        const auto material = GET_MODULE(MaterialContainer).rayDeformationMaterial(
+            GlobalMaterialId{instance.resolved_material_handle});
+        if (instance.vat_deformed && !material.vat)
+            throw std::runtime_error("VAT ray geometry requires VAT playback material");
+        for (std::uint32_t i = 0; i < 2; ++i) {
+            writes[9 + i].dstSet = set;
+            writes[9 + i].dstBinding = 9 + i;
+            writes[9 + i].descriptorType = vk::DescriptorType::eCombinedImageSampler;
+            writes[9 + i].setImageInfo(material.images[i]);
+        }
         device.updateDescriptorSets(writes, {});
-        const DeformationJob job{
+        DeformationJob job{
             static_cast<std::uint32_t>(instance.vertex_offset),
             instance.vertex_count, instance.instance_index,
             instance.skinned ? 1u : 0u,
@@ -140,6 +164,14 @@ void PolygonInstanceContainer::recordRayDeformation(
                 ? sizeof(CommonSkinningVertStruct) : sizeof(CommonVertStruct)) / 4),
             static_cast<std::uint32_t>(offsetof(CommonSkinningVertStruct, joint) / 4),
             static_cast<std::uint32_t>(offsetof(CommonSkinningVertStruct, weight) / 4)};
+        job.vat = instance.vat_deformed ? 1u : 0u;
+        job.time = static_cast<float>(GET_MODULE(EngineTime).now());
+        if (job.vat) {
+            const auto &vat = *material.vat;
+            job.vat_bounds_min_frame_count = glm::vec4{vat.bounds_min, float(vat.frame_count)};
+            job.vat_bounds_extent_fps = glm::vec4{vat.bounds_max - vat.bounds_min, vat.fps};
+            job.vat_flags = glm::ivec4{vat.base_vertex, vat.loop, vat.has_normal, 0};
+        }
         cmd_buf.bindPipeline(vk::PipelineBindPoint::eCompute,
                              ray_deformation_pipeline->pipeline.get());
         cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute,

@@ -5,7 +5,7 @@
 namespace Pelican {
 
 TEST_CASE(
-    "ray-query geometry policy supports skin and morph while excluding VAT",
+    "ray-query geometry policy supports skin morph and VAT",
     "[rt5][ray-query]") {
     const std::vector<RayQueryGeometryInstanceSnapshot> instances{
         RayQueryGeometryInstanceSnapshot{
@@ -58,19 +58,10 @@ TEST_CASE(
     const auto classified =
         classifyRayQueryGeometry(instances);
     REQUIRE(classified.eligible_instance_indices ==
-            std::vector<std::size_t>{0, 1, 2, 3});
-    CHECK(classified.excluded.primitive_count == 1);
-    CHECK(classified.excluded.instance_count == 1);
-    CHECK(classified.excluded.skinned_primitive_count == 0);
-    CHECK(classified.excluded.morph_primitive_count == 0);
-    CHECK(classified.excluded.vat_primitive_count == 1);
-    CHECK(classified.excluded.blas_ineligible_primitive_count == 0);
-    CHECK(classified.excluded.skinned_names.empty());
-    CHECK(classified.excluded.morph_names.empty());
-    REQUIRE(classified.excluded.vat_names.size() == 1);
-    CHECK(classified.excluded.vat_names.front().find(
-              "asset[281]/geometry[4]/mesh[3]/primitive[0]") !=
-          std::string::npos);
+            std::vector<std::size_t>{0, 1, 2, 3, 4});
+    CHECK(classified.excluded.instance_count == 0);
+    CHECK(classified.excluded.primitive_count == 0);
+
 }
 
 TEST_CASE(

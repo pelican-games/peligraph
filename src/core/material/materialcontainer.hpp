@@ -310,6 +310,12 @@ DECLARE_MODULE(MaterialContainer) {
     GlobalTextureId registerReloadableTextureFile(const watch::AssetKey &key,
                                                   const std::filesystem::path &path);
     GlobalMaterialId registerMaterial(MaterialInfo info);
+    struct RayDeformationMaterial {
+        std::optional<MaterialInfo::VatPlaybackInfo> vat;
+        std::array<vk::DescriptorImageInfo, 2> images;
+    };
+    RayDeformationMaterial rayDeformationMaterial(GlobalMaterialId material) const;
+
     struct NamedMaterialVariantRegistration {
         std::string name;
         MaterialInfo material;

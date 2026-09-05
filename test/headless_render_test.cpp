@@ -10071,7 +10071,7 @@ TEST_CASE(
             makeScreenQuad(0.2F, 0.0F));
         vat_primitive.mesh_index = 2;
         vat_primitive.primitive_index = 0;
-        vat_primitive.vat_deformed = true;
+        vat_primitive.index_count = 1;
 
         auto skinned_data = makeScreenQuad(0.2F, 0.0F);
         skinned_data.joint.assign(
@@ -10128,12 +10128,12 @@ TEST_CASE(
         CHECK(initial.excluded.instance_count == 2);
         CHECK(initial.excluded.skinned_primitive_count == 0);
         CHECK(initial.excluded.morph_primitive_count == 0);
-        CHECK(initial.excluded.vat_primitive_count == 1);
-        CHECK(initial.excluded.blas_ineligible_primitive_count == 1);
+        CHECK(initial.excluded.vat_primitive_count == 0);
+        CHECK(initial.excluded.blas_ineligible_primitive_count == 2);
         REQUIRE(initial.excluded.skinned_names.empty());
         REQUIRE(initial.excluded.morph_names.empty());
-        REQUIRE(initial.excluded.vat_names.size() == 1);
-        REQUIRE(initial.excluded.blas_ineligible_names.size() == 1);
+        REQUIRE(initial.excluded.vat_names.empty());
+        REQUIRE(initial.excluded.blas_ineligible_names.size() == 2);
         REQUIRE(initial.active_blas_inputs.size() == 3);
         const auto old_blas_input =
             initial.active_blas_inputs.front();
@@ -10269,7 +10269,7 @@ TEST_CASE(
                   .at("primitive_count") == 2);
         CHECK(plan.at("ray_query_acceleration_structures")
                   .at("excluded")
-                  .at("blas_ineligible_primitive_count") == 1);
+                  .at("blas_ineligible_primitive_count") == 2);
         bool registered = false;
         for (const auto &scope :
              plan.at("gpu_resource_arena").at("scopes")) {
@@ -10297,7 +10297,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "ray query and RT pipeline shadow masks include skin and morph but exclude VAT",
+    "ray query and RT pipeline shadow masks include skin and morph but exclude invalid ranges",
     "[headless][gpu][wp283][wp284][wp285][ray-query][ray-tracing][pixel]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -10309,7 +10309,7 @@ TEST_CASE(
             static_geometry,
             skinned,
             morph,
-            vat,
+            invalid_geometry,
         };
         struct RenderResult {
             R8RenderTargetReadback mask;
@@ -10366,7 +10366,7 @@ TEST_CASE(
             };
             if (blocker == BlockerKind::static_geometry ||
                 blocker == BlockerKind::morph ||
-                blocker == BlockerKind::vat) {
+                blocker == BlockerKind::invalid_geometry) {
                 auto blocker_data = makeScreenQuad(0.18F, 0.5F);
                 for (auto &position : blocker_data.pos) {
                     position.x -= 0.25F;
@@ -10377,8 +10377,7 @@ TEST_CASE(
                 candidate.primitive_index = 0;
                 candidate.morph_deformed =
                     blocker == BlockerKind::morph;
-                candidate.vat_deformed =
-                    blocker == BlockerKind::vat;
+                if (blocker == BlockerKind::invalid_geometry) candidate.index_count = 1;
                 opaque.primitives.push_back(candidate);
             }
             model.material_primitives.push_back(
@@ -10472,8 +10471,8 @@ TEST_CASE(
             render(BlockerKind::skinned, false);
         const auto morph =
             render(BlockerKind::morph, false);
-        const auto vat =
-            render(BlockerKind::vat, false);
+        const auto invalid =
+            render(BlockerKind::invalid_geometry, false);
         const auto require_pipeline_match =
             [](const RenderResult &result) {
                 REQUIRE(result.pipeline_mask.extent ==
@@ -10487,7 +10486,7 @@ TEST_CASE(
         require_pipeline_match(far_static);
         require_pipeline_match(skinned);
         require_pipeline_match(morph);
-        require_pipeline_match(vat);
+        require_pipeline_match(invalid);
         REQUIRE(baseline.mask.extent.width == 32);
         REQUIRE(baseline.mask.extent.height == 32);
         REQUIRE(dark_count(baseline.mask.pixels) == 0);
@@ -10503,10 +10502,10 @@ TEST_CASE(
         // Skin and morph blockers now participate in both ray paths.
         REQUIRE(r8PixelAt(skinned.mask, 16, 16) < 64);
         REQUIRE(r8PixelAt(morph.mask, 16, 16) < 64);
-        REQUIRE(dark_count(vat.mask.pixels) == 0);
+        REQUIRE(dark_count(invalid.mask.pixels) == 0);
         REQUIRE(skinned.diagnostics.excluded.skinned_primitive_count == 0);
         REQUIRE(morph.diagnostics.excluded.morph_primitive_count == 0);
-        REQUIRE(vat.diagnostics.excluded.vat_primitive_count == 1);
+        REQUIRE(invalid.diagnostics.excluded.blas_ineligible_primitive_count == 1);
 
         const auto raster =
             render(BlockerKind::static_geometry, true);
@@ -10556,7 +10555,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "ray query and RT pipeline shadow masks match for an excluded VAT scene",
+    "ray query and RT pipeline shadow masks match for an ineligible geometry scene",
     "[headless][gpu][wp284][wp285][ray-query][ray-tracing][empty]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -10597,7 +10596,7 @@ TEST_CASE(
         auto primitive =
             GET_MODULE(VertBufContainer)
                 .addSkinnedPrimitiveEntry(std::move(data));
-        primitive.vat_deformed = true;
+        primitive.index_count = 1;
         primitive.mesh_index = 0;
         primitive.primitive_index = 0;
         ModelTemplate model;
@@ -10651,7 +10650,7 @@ TEST_CASE(
         REQUIRE(diagnostics.tlas_instance_count == 0);
         REQUIRE(diagnostics.excluded.instance_count == 1);
         REQUIRE(
-            diagnostics.excluded.vat_primitive_count == 1);
+            diagnostics.excluded.blas_ineligible_primitive_count == 1);
         const auto plan = renderer.currentFramePlanJson();
         REQUIRE(
             plan.at("ray_query_acceleration_structures")
