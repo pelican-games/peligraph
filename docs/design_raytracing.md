@@ -196,10 +196,12 @@ Vulkan は `reportIntersectionEXT` の `t` が AABB slab 内であることを�
 ##### 修正 8(#2 #4): generator の補助検査は **本番の包含述語そのもの**。演算列は SPIR-V で固定し `NoContraction` を要求
 
 - generator の f32 emulate は scalar 包含ではなく、**`rayTracingOracleContainsGpuHit` と同じ述語**(GPU 値を前後 4 ulp に展開した区間が CPU 区間に含まれる)で判定する
-- 規範の演算列を **scalar SPIR-V の命令順**で固定する(`l = c − o` の 3 減算 → `s = l·d` の 3 乗算 + 2 加算 → `ll = l·l` → `m² = ll − s·s` → `disc = r·r − m²` → `sqrt` → `t = (s − sqrt) / a`)。対象命令に **`NoContraction` decoration** を要求し、load 時に最終 SPIR-V の命令順と decoration を検査する(§11 決定 3 と同じ「検査面を SPIR-V に移す」)。検査に通らない SPIR-V(compiler が並べ替えた / FMA に縮約した)は **`procedural_oracle_sequence_mismatch@1`** で golden 対象外(名前付き分類。エラーではない)
+- 規範の演算列を **scalar SPIR-V の命令順**で固定する。修正10の一般形を正とし、`l = c − o` の3減算 → `s = l·d` の3乗算+2加算 → `ll = l·l` の3乗算+2加算 → `a = d·d` の3乗算+2加算 → `ss = s*s` → `lla = ll*a` → `m² = lla − ss` → `rr = r*r` → `rra = rr*a` → `disc = rra − m²` → `sqrt(disc)` → `numerator = s − sqrt` → `t = numerator/a` の**27演算**とする。基本浮動小数点演算に **`NoContraction` decoration** を要求する(`GLSL.std.450 Sqrt`は対象外)。load時に最終SPIR-Vの命令順・operand依存・decorationを検査する。検査に通らないSPIR-Vは **`procedural_oracle_sequence_mismatch@1`** でgolden対象外(名前付き分類。通常loadのエラーではない)。旧記述の `m² = ll − s*s` と `disc = r*r − m²` は撤回。
 - generator は **逐次 f32** と **FMA 縮約 f32** の両方で emulate し、**両方**が包含述語を満たす fixture だけを golden にする(device の `precise` 実装差を吸収する保険)
 
 ##### 修正 9(#3): 誤差上限は演算列ごとの γ_n で導く
+
+以下は修正10以前の単位長を仮定した履歴式であり、一般形のgolden受け入れにそのまま使用しない。WP386cで `a` を含む27演算とsqrt/divの精度上限から導き直して確定する。
 
 `γ_n = n·u / (1 − n·u)`(`u = 2^-24`)。上の演算列で `m²` の絶対誤差上限は `γ_12 · (|l|² + s²) + γ_2 · |l|²`、`disc` はそれに `γ_1 · r²` を足したもの。**disc_min はこの上限の 8 倍以上**(`r² − m² ≥ 8 · (γ_12 (|l|² + s²) + γ_2 |l|² + γ_1 r²)`)かつ従来の `≥ 2^-8 r²` の両方を要求する。v2 の「`4·2^-24·|l|²`」は撤回(反例あり: 比 1.81)。定数は `Contract::sphere_gamma_terms = {12, 2, 1}` として実装し、式を設計と実装で共有する。
 

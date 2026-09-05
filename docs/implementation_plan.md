@@ -23239,7 +23239,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 2026-09-05 現況(下の再開履歴より優先)
 
-作業ブランチは `codex/render-target-runtime-slice`、最新の機能着地は `4ce4117d`(WP382d、WP382b-fixは `36ad3444`、WP386aは `b7cb1825`)。
+作業ブランチは `codex/render-target-runtime-slice`、最新の機能着地は `6d25d9e0`(WP386b、WP382dは `4ce4117d`、WP382b-fixは `36ad3444`、WP386aは `b7cb1825`)。
 引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。
 Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
 `<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
@@ -23249,7 +23249,14 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
 4. **WP382b-fix は 36ad3444 に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
 5. **WP382d は4ce4117dに統合。** overrides / presence / participant / inventoryを接続し、W1 95/95成功。Web専用拒否はWeb側への引き継ぎ事項で統合条件に含めない。実装とレビュー裁定、後続の効率整理、統合先の検証は下の記録を参照。次はWP386b。
-6. **WP386b 実装中、386cは後続。** `<作業ディレクトリ>/wp386b` / `codex/wp386b`。入口ABI修正を統合側が `5fedb8a3` に保存し、WP382dを含む作業ブランチ `1a4be75f` をmerge済み。final SPIR-Vのscalar演算列・NoContraction・operand依存関係の分類、entry digest、active pipelineの `get_status.ray_tracing.procedural_oracle`、球のnear-root参考shaderを実装。GPUのno-report→球→no-reportとreload時のdigest/classification更新を確認済み。未統合でありfeature完成と扱わない。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
+6. **WP386b は `6d25d9e0` に統合、次はWP386c。** final SPIR-Vのscalar演算列・NoContraction・operand依存関係の分類、entry digest、active pipelineの `get_status.ray_tracing.procedural_oracle`、球のnear-root参考shader、hit attribute ABIとproceduralへの生成anyhit誤適用防止を接続。統合/rev386bの結果は直下の最新記録を正とする。RT3c全体のfeature enableはdevice float controls/interval oracleを担当する386cの後。旧worktree `<作業ディレクトリ>/wp386b` は保存のみとし、次の実装は作業ブランチから始める。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
+
+**WP386b 統合・rev386b (2026-09-05、以下の未統合履歴より優先):**
+- コード `6d25d9e0`。通常loadを拒否しない演算列分類とactive pipelineの診断、球のGPU on/off/reload、AABB共有修正、record/AABB変更行列、同一identityでの登録順反転、SceneLoader activate失敗時の旧state復元を確認。配布用の検査ツールや新しい回復経路は追加していない。
+- worktree全buildとW1 **67/67成功**(87.28秒)。統合Studio ON全build成功、レビュー追加後の統合W1 **69/69成功**(GPU25、89.33秒、Studio2件を含む)。ログ `<作業ディレクトリ>/wp386b_w1_ctest.log` / `wp386b_integrated_w1_ctest.log`。RPC composition最終修正後もPlayer/Studio再build成功(`build/.codex_bg/wp386b_shipping_final.status` = DONE:0)。
+- 統合の非GPU広域確認は **1474件中1469成功・1skip・4失敗**(124.33秒)。今回のRPC直接module取得を既存のcompositionへ移し、旧scene fixtureの描画設定欠落2件を修正。最終関連 **9/9成功**(16.70秒、`<作業ディレクトリ>/wp386b_final_recheck_ctest.log`)。残りは既知の `contract_projection_gate`。広域全数の再実行成功とは扱わない。RPC/compiler両OFFの18+11ケース成功は前記構成証拠を引き継ぐ。
+- Fable 5.1読み取りreviewは確定した致命的実害なし。実compilerでpreciseを外した球をreloadし、mismatchと通常描画継続を同時に確認する指摘を採用、統合GPUで成功。CLIの日本語文字化けはUTF-8 byte入出力で再確認済み。最終応答 `<作業ディレクトリ>/rev386b_confirm.json`、裁定 `<作業ディレクトリ>/rev386b_adjudication.md`。
+- §4-P修正8を一般形27演算へ訂正。旧修正9の単位長誤差式は履歴と明記し、386cでa/sqrt/divを含む区間評価を導き直す。device_unsupported/float modes、hitKind sentinel、RPC OFF時のgolden入口は386cで確定する。保守的なcompiler別mismatchやstale handleの未再現懸念に、黙って継続するfallbackは足していない。
 
 WP386bの入口安全性はworktreeで実装・検証済み(上記commit、未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。球/classification/statusは統合側が `ae6ebe4b` に保存。status公開を外す変異は実RPCの件数確認で赤、復元build後の最終関連7/7成功(GPU5件、14.79秒)。RT1a全18件・RT2b全13件も成功。最終ログ `<作業ディレクトリ>/wp386b_sphere_restored_ctest.log`。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。分類のeligibleは演算列の適格性であり、device float controlsと誤差区間を含むgoldenの適格性は386cで接続する。変更行列・portableなattribute上限対照・統合検証は残る。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。
 

@@ -169,7 +169,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
 **`resolution_error` を含む応答はキー順が保存されます** —— `RpcServer` が応答木を走査して
 `resolution_error` を見つけたら ordered JSON で直列化するためです
-([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1104))。
+([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1110))。
 
 ### セッションと編集
 
@@ -438,7 +438,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
 ### `get_status.participants.game_logic` の `error_code` / `error_fields`
 
 `get_status` に `participants.game_logic` が入りました。**まだ 1 度も reload を試していない
-起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1173))。
+起動直後でも、startup の初期化失敗がここに出ます**([rpcserver.cpp](../../src/core/communication/rpcserver.cpp#L1179))。
 
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /
