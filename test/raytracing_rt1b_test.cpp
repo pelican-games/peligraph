@@ -1008,14 +1008,14 @@ TEST_CASE("WP366 production AS lowering is publish-order independent",
     }
 
     const auto forward_classification =
-        classifyRayQueryStaticGeometry(forward_inputs);
+        classifyRayQueryGeometry(forward_inputs);
     const auto reverse_classification =
-        classifyRayQueryStaticGeometry(reverse_inputs);
+        classifyRayQueryGeometry(reverse_inputs);
     const auto forward_tlas = lowerRayTracingTlasInstancePlan(
-        forward_inputs, forward_classification.static_instance_indices,
+        forward_inputs, forward_classification.eligible_instance_indices,
         &forward_rows, 2);
     const auto reverse_tlas = lowerRayTracingTlasInstancePlan(
-        reverse_inputs, reverse_classification.static_instance_indices,
+        reverse_inputs, reverse_classification.eligible_instance_indices,
         &reverse_rows, 2);
     REQUIRE(forward_tlas.size() == 2);
     REQUIRE(reverse_tlas.size() == 2);
@@ -1035,13 +1035,13 @@ TEST_CASE("WP366 production AS lowering is publish-order independent",
 
     SECTION("legacy null-layout bytes number only included instances") {
         auto legacy = forward_inputs;
-        legacy[0].skinned = true;
+        legacy[0].vat_deformed = true;
         const auto classification =
-            classifyRayQueryStaticGeometry(legacy);
-        REQUIRE(classification.static_instance_indices ==
+            classifyRayQueryGeometry(legacy);
+        REQUIRE(classification.eligible_instance_indices ==
                 std::vector<std::size_t>{1});
         const auto planned = lowerRayTracingTlasInstancePlan(
-            legacy, classification.static_instance_indices,
+            legacy, classification.eligible_instance_indices,
             nullptr, 0);
         REQUIRE(planned.size() == 1);
         CHECK(planned[0].source_index == 1);

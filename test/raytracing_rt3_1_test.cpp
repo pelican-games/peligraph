@@ -581,7 +581,7 @@ TEST_CASE("WP382d occurrence rows preserve presence and resolve within their aut
         excluded.ray_instance->mask.reset();
         excluded.ray_instance->instance_flags.reset();
         excluded.ray_instance->custom_index.reset();
-        excluded.skinned = true;
+        excluded.vat_deformed = true;
         const auto unresolved = resolveRayTracingSceneRows(std::span{&excluded, 1}, project);
         CHECK(unresolved.rows.empty());
         REQUIRE(unresolved.occurrence_overrides.size() == 3);
@@ -597,7 +597,7 @@ TEST_CASE("WP382d occurrence rows preserve presence and resolve within their aut
     }
 }
 
-TEST_CASE("WP374 non-ray-traced declarations fail before static filtering",
+TEST_CASE("RT5 declarations support deformation and reject ineligible geometry",
           "[WP374][ray-tracing][rt3-1][classification][production][mutation]") {
     RayTracingProjectConfig project{.layout = v2Layout(std::nullopt)};
     auto instance = RayQueryGeometryInstanceSnapshot{
@@ -615,17 +615,33 @@ TEST_CASE("WP374 non-ray-traced declarations fail before static filtering",
     };
     SECTION("skinned") {
         instance.skinned = true;
-        CHECK_THROWS_WITH(resolveRayTracingSceneRows(
-                              std::span{&instance, std::size_t{1}}, project),
-                          ContainsSubstring(
-                              "pelican.ray_instance_not_ray_traced@1"));
+        const auto rows = resolveRayTracingSceneRows(
+            std::span{&instance, std::size_t{1}}, project);
+        REQUIRE(rows.rows.size() == 1);
+        CHECK(rows.rows.front().instance_mask == 1);
+        CHECK_THROWS_WITH(makeRayTracingGeometrySnapshot(
+            std::span{&instance, std::size_t{1}}, 0x1000, 0x2000),
+            ContainsSubstring("deformed geometry must be recorded"));
+        instance.deformed_vertex_address = 0x4000;
+        const auto geometry = makeRayTracingGeometrySnapshot(
+            std::span{&instance, std::size_t{1}}, 0x1000, 0x2000);
+        REQUIRE(geometry.rows.size() == 1);
+        CHECK(geometry.rows.front().gpu.vertex_address == 0x4000);
     }
     SECTION("morph") {
         instance.morph_deformed = true;
-        CHECK_THROWS_WITH(resolveRayTracingSceneRows(
-                              std::span{&instance, std::size_t{1}}, project),
-                          ContainsSubstring(
-                              "pelican.ray_instance_not_ray_traced@1"));
+        const auto rows = resolveRayTracingSceneRows(
+            std::span{&instance, std::size_t{1}}, project);
+        REQUIRE(rows.rows.size() == 1);
+        CHECK(rows.rows.front().instance_mask == 1);
+        CHECK_THROWS_WITH(makeRayTracingGeometrySnapshot(
+            std::span{&instance, std::size_t{1}}, 0x1000, 0x2000),
+            ContainsSubstring("deformed geometry must be recorded"));
+        instance.deformed_vertex_address = 0x4000;
+        const auto geometry = makeRayTracingGeometrySnapshot(
+            std::span{&instance, std::size_t{1}}, 0x1000, 0x2000);
+        REQUIRE(geometry.rows.size() == 1);
+        CHECK(geometry.rows.front().gpu.vertex_address == 0x4000);
     }
     SECTION("VAT") {
         instance.vat_deformed = true;
@@ -643,7 +659,7 @@ TEST_CASE("WP374 non-ray-traced declarations fail before static filtering",
     }
     SECTION("mixed static and excluded applies only to static") {
         auto excluded = instance;
-        excluded.skinned = true;
+        excluded.vat_deformed = true;
         std::array mixed{instance, excluded};
         const auto rows = resolveRayTracingSceneRows(mixed, project);
         REQUIRE(rows.rows.size() == 1);

@@ -1,0 +1,168 @@
+#include "polygoninstancecontainer.hpp"
+
+#include "../loader/engineresources.hpp"
+#include "../model/vertbufcontainer.hpp"
+#include "../vkcore/core.hpp"
+#include <array>
+#include <cstring>
+#include <stdexcept>
+
+namespace Pelican {
+
+struct RayDeformationPipeline {
+    vk::UniqueDescriptorSetLayout empty_layout;
+    vk::UniqueDescriptorSetLayout descriptor_layout;
+    vk::UniquePipelineLayout layout;
+    vk::UniquePipeline pipeline;
+};
+
+namespace {
+
+struct DeformationJob {
+    std::uint32_t vertex_offset;
+    std::uint32_t vertex_count;
+    std::uint32_t instance_index;
+    std::uint32_t skinned;
+    std::uint32_t source_stride_words;
+    std::uint32_t joint_offset_words;
+    std::uint32_t weight_offset_words;
+};
+
+// The scene inventory retains this object until the submitted frame completes.
+// Keeping the pool and pipeline here also covers reload and aborted publication.
+struct DeformedGeometry {
+    std::shared_ptr<RayDeformationPipeline> pipeline;
+    std::shared_ptr<const void> source_lease;
+    BufferWrapper vertices;
+    vk::UniqueDescriptorPool descriptors;
+};
+
+std::shared_ptr<RayDeformationPipeline> createPipeline(vk::Device device) {
+    auto result = std::make_shared<RayDeformationPipeline>();
+    result->empty_layout = device.createDescriptorSetLayoutUnique({});
+    std::array<vk::DescriptorSetLayoutBinding, 9> bindings;
+    for (std::uint32_t binding = 0; binding < bindings.size(); ++binding) {
+        bindings[binding] = vk::DescriptorSetLayoutBinding{
+            binding, vk::DescriptorType::eStorageBuffer, 1,
+            vk::ShaderStageFlagBits::eCompute};
+    }
+    vk::DescriptorSetLayoutCreateInfo descriptor_info;
+    descriptor_info.setBindings(bindings);
+    result->descriptor_layout = device.createDescriptorSetLayoutUnique(descriptor_info);
+    const std::array layouts{
+        result->empty_layout.get(), result->empty_layout.get(),
+        result->empty_layout.get(), result->descriptor_layout.get()};
+    const vk::PushConstantRange push{
+        vk::ShaderStageFlagBits::eCompute, 0, sizeof(DeformationJob)};
+    vk::PipelineLayoutCreateInfo layout_info;
+    layout_info.setSetLayouts(layouts).setPushConstantRanges(push);
+    result->layout = device.createPipelineLayoutUnique(layout_info);
+
+    const auto embedded = engineResourceOrThrow("ray_deform.comp.spv");
+    std::vector<std::uint32_t> words(embedded.size() / sizeof(std::uint32_t));
+    std::memcpy(words.data(), embedded.data(), embedded.size());
+    vk::ShaderModuleCreateInfo module_info;
+    module_info.setCode(words);
+    auto module = device.createShaderModuleUnique(module_info);
+    vk::ComputePipelineCreateInfo pipeline_info;
+    pipeline_info.stage = vk::PipelineShaderStageCreateInfo{
+        {}, vk::ShaderStageFlagBits::eCompute, module.get(), "main"};
+    pipeline_info.layout = result->layout.get();
+    auto pipeline = device.createComputePipelineUnique({}, pipeline_info);
+    if (pipeline.result != vk::Result::eSuccess)
+        throw std::runtime_error("failed to create ray geometry deformation pipeline");
+    result->pipeline = std::move(pipeline.value);
+    return result;
+}
+
+} // namespace
+
+void PolygonInstanceContainer::recordRayDeformation(
+    vk::CommandBuffer cmd_buf,
+    std::vector<RayQueryGeometryInstanceSnapshot> &instances) {
+    auto &core = GET_MODULE(VulkanManageCore);
+    auto &geometry = GET_MODULE(VertBufContainer);
+    const auto device = core.getDevice();
+    bool dispatched = false;
+    for (auto &instance : instances) {
+        if (instance.geometry_kind != RayGeometryKind::triangles ||
+            instance.vat_deformed || (!instance.skinned && !instance.morph_deformed) ||
+            instance.vertex_count == 0 || instance.vertex_offset < 0 ||
+            instance.index_count == 0 || instance.index_count % 3u != 0)
+            continue;
+        if (!ray_deformation_pipeline)
+            ray_deformation_pipeline = createPipeline(device);
+
+        auto output = std::make_shared<DeformedGeometry>();
+        output->pipeline = ray_deformation_pipeline;
+        output->source_lease = instance.geometry_lease;
+        output->vertices = core.allocBuf(
+            vk::DeviceSize{instance.vertex_count} * sizeof(CommonVertStruct),
+            vk::BufferUsageFlagBits::eStorageBuffer |
+                vk::BufferUsageFlagBits::eShaderDeviceAddress |
+                vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+            vma::MemoryUsage::eAutoPreferDevice, {});
+        const vk::DescriptorPoolSize pool_size{vk::DescriptorType::eStorageBuffer, 9};
+        vk::DescriptorPoolCreateInfo pool_info;
+        pool_info.maxSets = 1;
+        pool_info.setPoolSizes(pool_size);
+        output->descriptors = device.createDescriptorPoolUnique(pool_info);
+        const auto set_layout = ray_deformation_pipeline->descriptor_layout.get();
+        vk::DescriptorSetAllocateInfo allocate_info;
+        allocate_info.descriptorPool = output->descriptors.get();
+        allocate_info.setSetLayouts(set_layout);
+        const auto set = device.allocateDescriptorSets(allocate_info).front();
+        const std::array buffers{
+            geometry.vertexBuffer(instance.skinned).buffer.get(),
+            output->vertices.buffer.get(),
+            skin_palette_buffer.buffer.get(),
+            previous_skin_palette_buffer.buffer.get(),
+            morph_instance_buffer.buffer.get(),
+            morph_weight_buffer.buffer.get(),
+            previous_morph_weight_buffer.buffer.get(),
+            geometry.morphMetadataBuffer(instance.skinned).buffer.get(),
+            geometry.morphDeltaBuffer().buffer.get()};
+        std::array<vk::DescriptorBufferInfo, 9> buffer_infos;
+        std::array<vk::WriteDescriptorSet, 9> writes;
+        for (std::uint32_t binding = 0; binding < buffers.size(); ++binding) {
+            buffer_infos[binding] = vk::DescriptorBufferInfo{buffers[binding], 0, VK_WHOLE_SIZE};
+            writes[binding].dstSet = set;
+            writes[binding].dstBinding = binding;
+            writes[binding].descriptorType = vk::DescriptorType::eStorageBuffer;
+            writes[binding].setBufferInfo(buffer_infos[binding]);
+        }
+        device.updateDescriptorSets(writes, {});
+        const DeformationJob job{
+            static_cast<std::uint32_t>(instance.vertex_offset),
+            instance.vertex_count, instance.instance_index,
+            instance.skinned ? 1u : 0u,
+            static_cast<std::uint32_t>((instance.skinned
+                ? sizeof(CommonSkinningVertStruct) : sizeof(CommonVertStruct)) / 4),
+            static_cast<std::uint32_t>(offsetof(CommonSkinningVertStruct, joint) / 4),
+            static_cast<std::uint32_t>(offsetof(CommonSkinningVertStruct, weight) / 4)};
+        cmd_buf.bindPipeline(vk::PipelineBindPoint::eCompute,
+                             ray_deformation_pipeline->pipeline.get());
+        cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eCompute,
+            ray_deformation_pipeline->layout.get(), 3, set, {});
+        cmd_buf.pushConstants(ray_deformation_pipeline->layout.get(),
+            vk::ShaderStageFlagBits::eCompute, 0, sizeof(job), &job);
+        cmd_buf.dispatch((instance.vertex_count + 63u) / 64u, 1, 1);
+        instance.deformed_vertex_address = device.getBufferAddress(
+            vk::BufferDeviceAddressInfo{output->vertices.buffer.get()});
+        instance.geometry_allocation_id = geometry.reserveGeometryAllocationId();
+        instance.geometry_lease = std::move(output);
+        dispatched = true;
+    }
+    if (dispatched) {
+        const vk::MemoryBarrier barrier{
+            vk::AccessFlagBits::eShaderWrite,
+            vk::AccessFlagBits::eAccelerationStructureReadKHR |
+                vk::AccessFlagBits::eShaderRead};
+        cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+            vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR |
+                vk::PipelineStageFlagBits::eAllCommands,
+            {}, barrier, {}, {});
+    }
+}
+
+} // namespace Pelican

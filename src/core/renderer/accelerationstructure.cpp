@@ -45,7 +45,7 @@ void appendUnique(std::set<std::uint64_t> &identities,
     }
 }
 
-bool isBlasIneligibleStaticGeometry(
+bool isBlasIneligibleGeometry(
     const RayQueryGeometryInstanceSnapshot &instance) noexcept {
     if (instance.geometry_kind == RayGeometryKind::aabbs) {
         return instance.aabb_buffer_address == 0 ||
@@ -255,10 +255,10 @@ RaySceneInventorySnapshot makeRaySceneInventorySnapshot(
     return result;
 }
 
-RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
+RayQueryGeometryClassification classifyRayQueryGeometry(
     std::span<const RayQueryGeometryInstanceSnapshot> instances) {
-    RayQueryStaticGeometryClassification result;
-    result.static_instance_indices.reserve(instances.size());
+    RayQueryGeometryClassification result;
+    result.eligible_instance_indices.reserve(instances.size());
     std::set<std::uint64_t> excluded;
     std::set<std::uint64_t> skinned;
     std::set<std::uint64_t> morph;
@@ -266,13 +266,9 @@ RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
     std::set<std::uint64_t> blas_ineligible;
     for (std::size_t index = 0; index < instances.size(); ++index) {
         const auto &instance = instances[index];
-        const bool deformed = instance.skinned ||
-                              instance.morph_deformed ||
-                              instance.vat_deformed;
-        const bool invalid_static_geometry =
-            !deformed && isBlasIneligibleStaticGeometry(instance);
-        if (!deformed && !invalid_static_geometry) {
-            result.static_instance_indices.push_back(index);
+        const bool invalid_geometry = isBlasIneligibleGeometry(instance);
+        if (!instance.vat_deformed && !invalid_geometry) {
+            result.eligible_instance_indices.push_back(index);
             continue;
         }
         ++result.excluded.instance_count;
@@ -289,7 +285,7 @@ RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
             appendUnique(vat, result.excluded.vat_names,
                          instance);
         }
-        if (invalid_static_geometry) {
+        if (invalid_geometry) {
             appendUnique(
                 blas_ineligible,
                 result.excluded.blas_ineligible_names,
@@ -316,10 +312,10 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
     static_assert(modelPrimitiveAttributeColor0 ==
                   rayGeometryAttributeColor0);
     const auto classification =
-        classifyRayQueryStaticGeometry(instances);
+        classifyRayQueryGeometry(instances);
     std::map<std::uint64_t, RayTracingGeometrySnapshotRow> unique;
     for (const auto source_index :
-         classification.static_instance_indices) {
+         classification.eligible_instance_indices) {
         const auto &instance = instances[source_index];
         if (instance.geometry_allocation_id == 0 ||
             (instance.geometry_kind == RayGeometryKind::triangles &&
@@ -328,7 +324,12 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
             (instance.geometry_kind == RayGeometryKind::aabbs &&
              instance.aabb_buffer_address == 0)) {
             throw std::runtime_error(
-                "pelican.ray_geometry_snapshot_invalid@1: static geometry has invalid allocation/range metadata");
+                "pelican.ray_geometry_snapshot_invalid@1: geometry has invalid allocation/range metadata");
+        }
+        if ((instance.skinned || instance.morph_deformed) &&
+            instance.deformed_vertex_address == 0) {
+            throw std::runtime_error(
+                "pelican.ray_geometry_snapshot_invalid@1: deformed geometry must be recorded before AS construction");
         }
         RayTracingGeometrySnapshotRow row{
             .geometry_kind = instance.geometry_kind,
@@ -343,7 +344,9 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
                     .vertex_address = instance.geometry_kind ==
                                               RayGeometryKind::aabbs
                                           ? instance.aabb_buffer_address
-                                          : vertex_pool_address +
+                                          : instance.deformed_vertex_address != 0
+                                                ? instance.deformed_vertex_address
+                                                : vertex_pool_address +
                                                 sizeof(CommonVertStruct) *
                                                     static_cast<std::uint32_t>(
                                                         instance.vertex_offset),
@@ -466,22 +469,21 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
             instance.authoring_object_id, false);
         (void)inserted;
         const bool eligible =
-            !instance.skinned && !instance.morph_deformed &&
             !instance.vat_deformed &&
-            !isBlasIneligibleStaticGeometry(instance);
+            !isBlasIneligibleGeometry(instance);
         target->second = target->second || eligible;
     }
-    for (const auto &[authoring_object_id, has_static_geometry] :
+    for (const auto &[authoring_object_id, has_geometry] :
          declared_targets) {
-        if (authoring_object_id == 0 || !has_static_geometry) {
+        if (authoring_object_id == 0 || !has_geometry) {
             throw std::runtime_error(
                 "pelican.ray_instance_not_ray_traced@1: pelican_ray_instance authoring object " +
                 std::to_string(authoring_object_id) +
-                " has no BLAS-eligible static geometry");
+                " has no BLAS-eligible geometry");
         }
     }
     const auto classification =
-        classifyRayQueryStaticGeometry(instances);
+        classifyRayQueryGeometry(instances);
     std::vector<RayOccurrenceOverrideResolution> override_resolutions;
     std::map<std::size_t, const RayOccurrenceOverride *> source_overrides;
     for (const auto &[object, declaration] : declarations) {
@@ -508,9 +510,9 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
             if (match) resolution.component_occurrence = instances[*match].component_occurrence;
             if (resolution.error.empty()) {
                 if (!match) resolution.error = "OccurrenceAbsent";
-                else if (std::find(classification.static_instance_indices.begin(),
-                                  classification.static_instance_indices.end(), *match) ==
-                         classification.static_instance_indices.end())
+                else if (std::find(classification.eligible_instance_indices.begin(),
+                                  classification.eligible_instance_indices.end(), *match) ==
+                         classification.eligible_instance_indices.end())
                     resolution.error = "OccurrenceNotRayTraced";
                 else source_overrides.emplace(*match, &row.value);
             }
@@ -518,9 +520,9 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
         }
     }
     std::vector<RaySceneRowInput> inputs;
-    inputs.reserve(classification.static_instance_indices.size());
+    inputs.reserve(classification.eligible_instance_indices.size());
     for (const auto source_index :
-         classification.static_instance_indices) {
+         classification.eligible_instance_indices) {
         const auto &instance = instances[source_index];
         std::optional<RayInstanceComponent> effective_declaration;
         if (const auto declaration = declarations.find(instance.authoring_object_id);
@@ -623,13 +625,13 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
 std::vector<RayTracingTlasInstancePlanEntry>
 lowerRayTracingTlasInstancePlan(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
-    std::span<const std::size_t> static_instance_indices,
+    std::span<const std::size_t> eligible_instance_indices,
     const RaySceneRowSnapshot *ray_scene_rows,
     std::uint32_t ray_type_count) {
     std::vector<RayTracingTlasInstancePlanEntry> result;
-    result.reserve(static_instance_indices.size());
+    result.reserve(eligible_instance_indices.size());
     if (ray_scene_rows == nullptr) {
-        for (const auto source_index : static_instance_indices) {
+        for (const auto source_index : eligible_instance_indices) {
             if (source_index >= instances.size() ||
                 result.size() > 0x00ffffffu) {
                 throw std::runtime_error(
@@ -652,12 +654,12 @@ lowerRayTracingTlasInstancePlan(
         return result;
     }
     if (ray_type_count == 0 ||
-        ray_scene_rows->rows.size() != static_instance_indices.size()) {
+        ray_scene_rows->rows.size() != eligible_instance_indices.size()) {
         throw std::runtime_error(
             "pelican.sbt.row_snapshot_invalid@1: TLAS row count or ray type count does not match the static scene");
     }
     std::vector<bool> is_static(instances.size(), false);
-    for (const auto index : static_instance_indices) {
+    for (const auto index : eligible_instance_indices) {
         if (index >= instances.size() || is_static[index]) {
             throw std::runtime_error(
                 "pelican.sbt.row_snapshot_invalid@1: static scene indices are invalid or duplicated");
@@ -773,6 +775,8 @@ struct RayQueryAccelerationStructureScope::State {
         std::shared_ptr<AccelerationStructureResource>>
         blas;
     std::shared_ptr<AccelerationStructureResource> tlas;
+    // Ray-query-only scenes have no layout generation root to own their inputs.
+    std::vector<std::shared_ptr<const void>> geometry_leases;
     std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows;
     std::shared_ptr<const RayTracingGeometrySnapshot>
         geometry_snapshot;
@@ -790,7 +794,7 @@ struct RayQueryAccelerationStructureScope::State {
     RayQueryAccelerationStructureDiagnostics diagnostics{
         .requested = true,
     };
-    bool log_static_only_classification = false;
+    bool log_geometry_classification = false;
 };
 
 RayQueryAccelerationStructureScope::FrameBuild::FrameBuild() noexcept =
@@ -842,18 +846,17 @@ void RayQueryAccelerationStructureScope::FrameBuild::commit() noexcept {
         owner_->active_state_ = candidate_;
         owner_->diagnostics_ = std::move(candidate_->diagnostics);
     }
-    if (publishes_candidate && candidate_->log_static_only_classification &&
+    if (publishes_candidate && candidate_->log_geometry_classification &&
         logger != nullptr) {
         try {
             const auto &excluded =
                 owner_->diagnostics_.excluded;
             LOG_INFO(
                 logger,
-                "Ray-query acceleration structures are static-only: "
+                "Ray-query acceleration structures: "
                 "active_blas={}, tlas_instances={}, excluded_primitives={}, "
                 "excluded_instances={}, skinned={} [{}], morph={} [{}], "
-                "VAT={} [{}], BLAS-ineligible={} [{}]. A compute deform "
-                "pass for deformed geometry is future work; invalid static "
+                "VAT={} [{}], BLAS-ineligible={} [{}]. VAT and invalid "
                 "triangle ranges remain raster-only.",
                 owner_->diagnostics_.active_blas_count,
                 owner_->diagnostics_.tlas_instance_count,
@@ -971,8 +974,12 @@ RayQueryAccelerationStructureScope::recordFrame(
     }
 
     const auto classification =
-        classifyRayQueryStaticGeometry(instances);
+        classifyRayQueryGeometry(instances);
     auto candidate = std::make_shared<State>();
+    for (const auto index : classification.eligible_instance_indices) {
+        if (instances[index].geometry_lease)
+            candidate->geometry_leases.push_back(instances[index].geometry_lease);
+    }
     if (!geometry_snapshot) {
         const auto device = vkcore.getDevice();
         geometry_snapshot =
@@ -1020,7 +1027,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     candidate->diagnostics.requested = true;
     candidate->diagnostics.excluded = classification.excluded;
     candidate->diagnostics.tlas_instance_count =
-        classification.static_instance_indices.size();
+        classification.eligible_instance_indices.size();
 
     const bool first_frame = active_state_ == nullptr;
     const bool pool_invalidated =
@@ -1043,14 +1050,14 @@ RayQueryAccelerationStructureScope::recordFrame(
         geometry_pool_generation;
     candidate->diagnostics.model_rebuild_generation =
         model_rebuild_generation;
-    candidate->log_static_only_classification =
+    candidate->log_geometry_classification =
         first_frame ||
         diagnostics_.excluded != classification.excluded;
 
     auto recorded =
         std::make_shared<RecordedSubmissionResources>();
     const auto device = vkcore.getDevice();
-    if (!classification.static_instance_indices.empty()) {
+    if (!classification.eligible_instance_indices.empty()) {
         recordMemoryBarrier(
             command_buffer,
             vk::PipelineStageFlagBits::eHost,
@@ -1073,7 +1080,7 @@ RayQueryAccelerationStructureScope::recordFrame(
             geometry.geometry_allocation_id, &geometry);
     }
     for (const auto index :
-         classification.static_instance_indices) {
+         classification.eligible_instance_indices) {
         const auto &instance = instances[index];
         if (instance.geometry_allocation_id == 0) {
             throw std::runtime_error(
@@ -1098,7 +1105,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     }
     std::set<std::uint64_t> instance_allocations;
     for (const auto index :
-         classification.static_instance_indices) {
+         classification.eligible_instance_indices) {
         instance_allocations.emplace(
             instances[index].geometry_allocation_id);
     }
@@ -1110,7 +1117,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     const auto planned_instances = candidate->generation_root
         ? candidate->generation_root->tlas_plan
         : lowerRayTracingTlasInstancePlan(
-              instances, classification.static_instance_indices,
+              instances, classification.eligible_instance_indices,
               candidate->ray_scene_rows.get(), candidate->ray_type_count);
     std::set<State::BlasVariantKey> required_variants;
     for (const auto &planned : planned_instances) {
@@ -1232,7 +1239,7 @@ RayQueryAccelerationStructureScope::recordFrame(
                             right.geometry_kind, right.geometry_flags);
         });
 
-    if (!classification.static_instance_indices.empty()) {
+    if (!classification.eligible_instance_indices.empty()) {
         recordMemoryBarrier(
             command_buffer,
             vk::PipelineStageFlagBits::
@@ -1247,7 +1254,7 @@ RayQueryAccelerationStructureScope::recordFrame(
 
     std::vector<vk::AccelerationStructureInstanceKHR>
         tlas_instances;
-    tlas_instances.reserve(classification.static_instance_indices.size());
+    tlas_instances.reserve(classification.eligible_instance_indices.size());
     for (const auto &planned : planned_instances) {
         const auto &instance = instances[planned.source_index];
         const State::BlasVariantKey blas_key{

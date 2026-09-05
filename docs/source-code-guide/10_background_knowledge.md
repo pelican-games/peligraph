@@ -393,7 +393,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VkPipelineVertexInputStateCreateInfo` は 2 つの配列で頂点レイアウトを表します。`VkVertexInputBindingDescription` が「何番のバッファを 1 頂点あたり何バイト進めて読むか」(binding と stride)、`VkVertexInputAttributeDescription` が「その binding の何バイト目から、どの形式で、シェーダの `location` いくつへ渡すか」です。stride は頂点構造体の `sizeof`、offset は `offsetof` に一致していなければならず、ここがずれるとコンパイルも検証も通ったまま形状だけが壊れます。
 
-**使用場所**: [CommonVertStruct](../../src/core/model/vertbufcontainer.hpp#L23)(`pos` / `normal` / `tangent` / `texcoord` / `color` が offset 0 / 12 / 24 / 40 / 48、`sizeof` 64 を `static_assert` で固定) / [VertBufContainer::getDescription()](../../src/core/model/vertbufcontainer.cpp#L644)(その offset から attribute description を組む) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L381)
+**使用場所**: [CommonVertStruct](../../src/core/model/vertbufcontainer.hpp#L23)(`pos` / `normal` / `tangent` / `texcoord` / `color` が offset 0 / 12 / 24 / 40 / 48、`sizeof` 64 を `static_assert` で固定) / [VertBufContainer::getDescription()](../../src/core/model/vertbufcontainer.cpp#L645)(その offset から attribute description を組む) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)
 
 **このコードベースでの注意**: 順序は vec3 pos / vec3 normal / **vec4 tangent** / vec2 texcoord / vec4 color です(tangent が texcoord より前)。この 64 バイトの並びは、パイプラインの attribute description・シェーダの `layout(location=)`・レイトレーシング側が頂点バッファを生バイトとして引くときの word オフセット、という 3 か所の共通の出所になっています。
 
@@ -421,7 +421,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L942)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L151)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L92)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L945)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L151)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L92)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 
@@ -429,7 +429,7 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1010)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L403) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1132)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1010)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L406) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1132)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
@@ -511,7 +511,7 @@ glTF のアニメーションは channel(何を動かすか)と sampler(いつ�
 
 スキンメッシュの頂点属性 `JOINTS_0` は 4 本ぶんの joint 番号、`WEIGHTS_0` はそれに対応する 4 つの重みです。ここで押さえるべきは 2 点あります。1 つ目、**JOINTS_0 の番号は `skin.joints` 配列の中の添字**であって、glTF のノード番号でも、複数の skin を 1 本のパレットへ詰めたときの絶対番号でもありません。複数 skin を同じ行列パレットに載せるなら、skin ごとの先頭オフセットを足して絶対番号へ直す必要があります。2 つ目、**重みは合計 1** でなければ、パレット合成が伸び縮みします(仕様も正規化を要求しています)。合計が 0 の頂点は「スキンされていない」ので、割り算をしてはいけません。
 
-**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2056)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L446)(`sum > 0` のときだけ 4 成分を合計で割る)
+**使用場所**: [InternalGltfLoader::loadMesh()](../../src/core/model/gltf.cpp#L2056)(joint 番号の範囲検査と `joint_offset` の加算) / [VertBufContainer::addSkinnedPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L451)(`sum > 0` のときだけ 4 成分を合計で割る)
 
 ## 10.3 C++ とビルドのイディオム
 
@@ -611,7 +611,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L2864) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L2879) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L381)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L2864) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L2879) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 
@@ -721,7 +721,7 @@ DLL 境界を越えて渡す構造体は、両側が同じレイアウトでビ�
 
 C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビット列をそのまま読み替えます(`reinterpret_cast` や union 経由と違い未定義動作になりません)。浮動小数点をハッシュやダイジェストに入れるとき必ず問題になるのが `-0.0` で、`-0.0 == +0.0` は true なのにビット列は違うため、素直にバイト化すると「等しい値なのに違うダイジェスト」が出ます。バイト化の直前に `if (v == 0.0f) v = 0.0f;` と書いて符号を落とすのが定型です(NaN も同様にビット表現が一意でないので、そもそも弾くのが安全です)。
 
-**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L137)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L424) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L340)
+**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L137)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L427) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L340)
 
 ### 整数オーバーフローの事前検査
 
@@ -745,7 +745,7 @@ C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビッ�
 
 デストラクタや遅延解放のように「例外を投げられない・投げたくない」経路では、`std::string` や `std::vector` の確保が失敗しうること自体が問題になります。そこで、固定容量の配列 + 現在の件数、というだけの型を用意し、溢れたぶんは中身を捨てて**件数だけ数える**、という設計にします。診断情報の完全性を捨てて、失敗しないことと `noexcept` を取るわけです。読む側は「なぜここだけ `std::string` でないのか」の答えがこれだと分かっている必要があります。
 
-**使用場所**: [FixedEffectError](../../src/core/loader/effecttransaction.hpp#L107)(固定長の文字列 2 本を持つ) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(容量 8、溢れは `overflow_count` に数える) / [VertBufContainer::releaseGeometryNow()](../../src/core/model/vertbufcontainer.cpp#L525)
+**使用場所**: [FixedEffectError](../../src/core/loader/effecttransaction.hpp#L107)(固定長の文字列 2 本を持つ) / [ReleaseReport](../../src/core/model/modelresourcerelease.hpp#L36)(容量 8、溢れは `overflow_count` に数える) / [VertBufContainer::releaseGeometryNow()](../../src/core/model/vertbufcontainer.cpp#L526)
 
 ### 自己参照ラムダによる再帰
 
@@ -1112,7 +1112,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2207)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L430)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2203)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L430)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 

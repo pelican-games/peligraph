@@ -28,6 +28,7 @@ namespace Pelican {
 
 struct SceneLoadPhaseTrace;
 struct ResolvedSceneView;
+struct RayDeformationPipeline;
 
 struct RayScenePlanState {
     std::shared_ptr<const RayTracingProjectConfig> project;
@@ -328,6 +329,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<bool> morph_history_valid;
     std::uint64_t temporal_history_advance_count = 0;
     BufferWrapper skin_palette_buffer;
+    std::shared_ptr<RayDeformationPipeline> ray_deformation_pipeline;
     BufferWrapper previous_skin_palette_buffer;
     BufferWrapper morph_instance_buffer;
     BufferWrapper morph_weight_buffer;
@@ -510,6 +512,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         Animation::InstanceHandle instance) const;
     void bindDeformation(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
                          bool skinned) const;
+    void recordRayDeformation(
+        vk::CommandBuffer cmd_buf,
+        std::vector<RayQueryGeometryInstanceSnapshot> &instances);
     void bindMaterialInstanceResources(vk::CommandBuffer cmd_buf,
                                        vk::PipelineLayout pipeline_layout,
                                        bool skinned) const;

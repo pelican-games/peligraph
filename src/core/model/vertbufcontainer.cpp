@@ -378,17 +378,22 @@ void VertBufContainer::ensureVertexCapacity(uint32_t required, bool skinned) {
              skinned ? "skinned" : "static");
 }
 
+std::uint64_t VertBufContainer::reserveGeometryAllocationId() {
+    if (next_geometry_allocation_id ==
+        std::numeric_limits<std::uint64_t>::max()) {
+        throw std::runtime_error(
+            "model geometry allocation identity exhausted");
+    }
+    return next_geometry_allocation_id++;
+}
+
 ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVertData &&data) {
     validateVertexStreams(data, false);
     const auto attribute_presence =
         (data.normal.empty() ? 0u : modelPrimitiveAttributeNormal) |
         (data.texcoord.empty() ? 0u : modelPrimitiveAttributeUv0) |
         (data.color.empty() ? 0u : modelPrimitiveAttributeColor0);
-    if (next_geometry_allocation_id ==
-        std::numeric_limits<std::uint64_t>::max()) {
-        throw std::runtime_error(
-            "model geometry allocation identity exhausted");
-    }
+    const auto allocation_id = reserveGeometryAllocationId();
     const auto bounds_source = makePrimitiveBoundsSource(data);
     const bool morph_deformed = !data.morph_targets.empty();
     const auto vertex_count = static_cast<uint32_t>(data.pos.size());
@@ -438,7 +443,7 @@ ModelGeometryAllocation VertBufContainer::addPrimitiveAllocation(CommonPolygonVe
     primitive.vertex_count = vertex_count;
     primitive.morph_deformed = morph_deformed;
     primitive.geometry_allocation_id =
-        next_geometry_allocation_id++;
+        allocation_id;
     primitive.ray_attribute_presence = attribute_presence;
     return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }
@@ -449,11 +454,7 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
         (data.normal.empty() ? 0u : modelPrimitiveAttributeNormal) |
         (data.texcoord.empty() ? 0u : modelPrimitiveAttributeUv0) |
         (data.color.empty() ? 0u : modelPrimitiveAttributeColor0);
-    if (next_geometry_allocation_id ==
-        std::numeric_limits<std::uint64_t>::max()) {
-        throw std::runtime_error(
-            "model geometry allocation identity exhausted");
-    }
+    const auto allocation_id = reserveGeometryAllocationId();
     const auto bounds_source = makePrimitiveBoundsSource(data);
     const bool morph_deformed = !data.morph_targets.empty();
     const auto vertex_count = static_cast<uint32_t>(data.pos.size());
@@ -509,7 +510,7 @@ ModelGeometryAllocation VertBufContainer::addSkinnedPrimitiveAllocation(CommonPo
     primitive.vertex_count = vertex_count;
     primitive.morph_deformed = morph_deformed;
     primitive.geometry_allocation_id =
-        next_geometry_allocation_id++;
+        allocation_id;
     primitive.ray_attribute_presence = attribute_presence;
     return {std::move(primitive), vertex_count, morph_offset, morph_count};
 }

@@ -10120,25 +10120,25 @@ TEST_CASE(
         auto initial = renderer
                            .rayQueryAccelerationStructureDiagnosticsForTesting();
         REQUIRE(initial.requested);
-        CHECK(initial.blas_build_count == 1);
+        CHECK(initial.blas_build_count == 3);
         CHECK(initial.tlas_build_count == 1);
-        CHECK(initial.active_blas_count == 1);
-        CHECK(initial.tlas_instance_count == 1);
-        CHECK(initial.excluded.primitive_count == 4);
-        CHECK(initial.excluded.instance_count == 4);
-        CHECK(initial.excluded.skinned_primitive_count == 1);
-        CHECK(initial.excluded.morph_primitive_count == 1);
+        CHECK(initial.active_blas_count == 3);
+        CHECK(initial.tlas_instance_count == 3);
+        CHECK(initial.excluded.primitive_count == 2);
+        CHECK(initial.excluded.instance_count == 2);
+        CHECK(initial.excluded.skinned_primitive_count == 0);
+        CHECK(initial.excluded.morph_primitive_count == 0);
         CHECK(initial.excluded.vat_primitive_count == 1);
         CHECK(initial.excluded.blas_ineligible_primitive_count == 1);
-        REQUIRE(initial.excluded.skinned_names.size() == 1);
-        REQUIRE(initial.excluded.morph_names.size() == 1);
+        REQUIRE(initial.excluded.skinned_names.empty());
+        REQUIRE(initial.excluded.morph_names.empty());
         REQUIRE(initial.excluded.vat_names.size() == 1);
         REQUIRE(initial.excluded.blas_ineligible_names.size() == 1);
-        REQUIRE(initial.active_blas_inputs.size() == 1);
+        REQUIRE(initial.active_blas_inputs.size() == 3);
         const auto old_blas_input =
             initial.active_blas_inputs.front();
 
-        // Transform changes are TLAS data, not a BLAS invalidation source.
+        // Static geometry is reused; the two deformed primitives rebuild each frame.
         instances.setTrs(
             model_instance, {0.1F, 0.0F, 0.0F},
             glm::quat{1.0F, 0.0F, 0.0F, 0.0F},
@@ -10148,7 +10148,7 @@ TEST_CASE(
             renderer
                 .rayQueryAccelerationStructureDiagnosticsForTesting();
         CHECK(transformed.blas_build_count ==
-              initial.blas_build_count);
+              initial.blas_build_count + 2);
         CHECK(transformed.tlas_build_count ==
               initial.tlas_build_count + 1);
         CHECK(transformed.geometry_pool_invalidation_count == 0);
@@ -10166,7 +10166,7 @@ TEST_CASE(
             renderer
                 .rayQueryAccelerationStructureDiagnosticsForTesting();
         CHECK(rebuilt.blas_build_count ==
-              transformed.blas_build_count + 1);
+              transformed.blas_build_count + 3);
         CHECK(rebuilt.model_rebuild_invalidation_count == 1);
 
         const auto old_index_capacity =
@@ -10235,8 +10235,8 @@ TEST_CASE(
                 .rayQueryAccelerationStructureDiagnosticsForTesting();
         CHECK(reallocated.geometry_pool_invalidation_count == 1);
         CHECK(reallocated.blas_build_count ==
-              rebuilt.blas_build_count + 1);
-        REQUIRE(reallocated.active_blas_inputs.size() == 1);
+              rebuilt.blas_build_count + 3);
+        REQUIRE(reallocated.active_blas_inputs.size() == 3);
         const auto &new_blas_input =
             reallocated.active_blas_inputs.front();
         CHECK(new_blas_input.index_device_address !=
@@ -10266,7 +10266,7 @@ TEST_CASE(
                   .at("static_only") == true);
         CHECK(plan.at("ray_query_acceleration_structures")
                   .at("excluded")
-                  .at("primitive_count") == 4);
+                  .at("primitive_count") == 2);
         CHECK(plan.at("ray_query_acceleration_structures")
                   .at("excluded")
                   .at("blas_ineligible_primitive_count") == 1);
@@ -10297,7 +10297,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "ray query and RT pipeline shadow masks match pixel-exactly across the static-only boundary",
+    "ray query and RT pipeline shadow masks include skin and morph but exclude VAT",
     "[headless][gpu][wp283][wp284][wp285][ray-query][ray-tracing][pixel]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -10500,14 +10500,12 @@ TEST_CASE(
         REQUIRE(r8PixelAt(static_only.mask, 5, 16) > 192);
         REQUIRE(r8PixelAt(far_static.mask, 16, 16) < 64);
         REQUIRE(r8PixelAt(far_static.mask, 5, 16) > 192);
-        // These blockers are still rasterized into gbuffer_worldpos, but the
-        // WP281/WP282 static-only TLAS deliberately omits them. Their missing
-        // shadows are an asserted image contract, not a blessed golden.
-        REQUIRE(dark_count(skinned.mask.pixels) == 0);
-        REQUIRE(dark_count(morph.mask.pixels) == 0);
+        // Skin and morph blockers now participate in both ray paths.
+        REQUIRE(r8PixelAt(skinned.mask, 16, 16) < 64);
+        REQUIRE(r8PixelAt(morph.mask, 16, 16) < 64);
         REQUIRE(dark_count(vat.mask.pixels) == 0);
-        REQUIRE(skinned.diagnostics.excluded.skinned_primitive_count == 1);
-        REQUIRE(morph.diagnostics.excluded.morph_primitive_count == 1);
+        REQUIRE(skinned.diagnostics.excluded.skinned_primitive_count == 0);
+        REQUIRE(morph.diagnostics.excluded.morph_primitive_count == 0);
         REQUIRE(vat.diagnostics.excluded.vat_primitive_count == 1);
 
         const auto raster =
@@ -10558,7 +10556,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "ray query and RT pipeline shadow masks match for an empty static scene",
+    "ray query and RT pipeline shadow masks match for an excluded VAT scene",
     "[headless][gpu][wp284][wp285][ray-query][ray-tracing][empty]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     setupLogger();
@@ -10599,6 +10597,7 @@ TEST_CASE(
         auto primitive =
             GET_MODULE(VertBufContainer)
                 .addSkinnedPrimitiveEntry(std::move(data));
+        primitive.vat_deformed = true;
         primitive.mesh_index = 0;
         primitive.primitive_index = 0;
         ModelTemplate model;
@@ -10652,7 +10651,7 @@ TEST_CASE(
         REQUIRE(diagnostics.tlas_instance_count == 0);
         REQUIRE(diagnostics.excluded.instance_count == 1);
         REQUIRE(
-            diagnostics.excluded.skinned_primitive_count == 1);
+            diagnostics.excluded.vat_primitive_count == 1);
         const auto plan = renderer.currentFramePlanJson();
         REQUIRE(
             plan.at("ray_query_acceleration_structures")

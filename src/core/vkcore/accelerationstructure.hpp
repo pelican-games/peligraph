@@ -58,6 +58,7 @@ struct RayQueryGeometryInstanceSnapshot {
     nlohmann::ordered_json procedural_record =
         nlohmann::ordered_json::object();
     std::uint64_t aabb_buffer_address = 0;
+    std::uint64_t deformed_vertex_address = 0;
     std::shared_ptr<const void> geometry_lease;
     std::uint32_t index_count = 0;
     std::uint32_t index_offset = 0;
@@ -124,12 +125,12 @@ struct RayQueryGeometryExclusionDiagnostics {
         const RayQueryGeometryExclusionDiagnostics &) const = default;
 };
 
-struct RayQueryStaticGeometryClassification {
-    std::vector<std::size_t> static_instance_indices;
+struct RayQueryGeometryClassification {
+    std::vector<std::size_t> eligible_instance_indices;
     RayQueryGeometryExclusionDiagnostics excluded;
 };
 
-RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
+RayQueryGeometryClassification classifyRayQueryGeometry(
     std::span<const RayQueryGeometryInstanceSnapshot> instances);
 
 struct RaySceneDeclaration {
@@ -140,7 +141,7 @@ struct RaySceneDeclaration {
 using RaySceneDeclarationCatalog = std::map<std::uint64_t, RaySceneDeclaration>;
 
 // Production scene lowering shared by SBT packing and TLAS construction.
-// Only BLAS-eligible static rows participate, and source_index always points
+// Only BLAS-eligible rows participate, and source_index always points
 // back into the supplied immutable AS snapshot.
 RaySceneRowSnapshot resolveRayTracingSceneRows(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
@@ -199,7 +200,7 @@ struct RaySceneGenerationRoot {
 std::vector<RayTracingTlasInstancePlanEntry>
 lowerRayTracingTlasInstancePlan(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
-    std::span<const std::size_t> static_instance_indices,
+    std::span<const std::size_t> eligible_instance_indices,
     const RaySceneRowSnapshot *ray_scene_rows,
     std::uint32_t ray_type_count);
 
@@ -235,7 +236,7 @@ struct RayQueryAccelerationStructureDiagnostics {
 nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
     const RayQueryAccelerationStructureDiagnostics &diagnostics);
 
-// Owner-scope resource for the static-only ray-query scene. FrameBuild is a
+// Owner-scope resource for the ray-query scene. FrameBuild is a
 // publication token: commands and their resources are leased immediately,
 // but the new BLAS/TLAS set becomes active only after the real submission
 // succeeds.

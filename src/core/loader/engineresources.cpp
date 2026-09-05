@@ -84,6 +84,8 @@ constexpr auto registered_ids =
     "procedural_no_report.rint",
     "procedural_no_report.rint.spv",
     "procedural_sphere.rint",
+    "ray_deform.comp",
+    "ray_deform.comp.spv",
     "sky_ambient.frag",
     "sky_ambient.frag.spv",
     "output_transform.frag",
@@ -252,6 +254,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("procedural_no_report.rint")
     PELICAN_ENGINE_RESOURCE("procedural_no_report.rint.spv")
     PELICAN_ENGINE_RESOURCE("procedural_sphere.rint")
+    PELICAN_ENGINE_RESOURCE("ray_deform.comp")
+    PELICAN_ENGINE_RESOURCE("ray_deform.comp.spv")
     PELICAN_ENGINE_RESOURCE("sky_ambient.frag")
     PELICAN_ENGINE_RESOURCE("sky_ambient.frag.spv")
     PELICAN_ENGINE_RESOURCE("output_transform.frag")

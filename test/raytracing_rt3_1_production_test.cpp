@@ -637,6 +637,97 @@ struct Wp380RuntimeCleanup {
     }
 };
 
+TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph deformation",
+          "[rt5][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"rt5_deformation"};
+    writeWp374aProject(project.path, 2, true, false, true, std::nullopt, true);
+    TestMorphFixture::writeGlb(project.path / "models/chair.glb", {.skinned = true});
+    auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
+    auto left = scene["scenes"]["main"]["objects"][0];
+    left["name"] = "Left";
+    left["components"][0]["pos"] = {-2.0, 0.0, 8.0};
+    auto right = left;
+    right["name"] = "Right";
+    right["components"][0]["pos"] = {2.0, 0.0, 8.0};
+    scene["scenes"]["main"]["objects"] = Json::array({left, right});
+    writeWp374aText(project.path / "scene.json", scene.dump());
+    const auto feature_path = project.path / "features/wp377_profile_owner.json";
+    auto feature = Json::parse(readWp374aText(feature_path));
+    feature["render_targets"][0]["usage"].push_back("TRANSFER_SRC");
+    writeWp374aText(feature_path, feature.dump());
+    auto raygen = RayTracingRt31Fixture::wp366RaygenSource(
+        "PELICAN_RAY_TYPE_primary", "PELICAN_MISS_sky", "pelican_resource_wp366_a");
+    const std::string lane = "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
+    raygen.replace(raygen.find(lane), lane.size(),
+        "float x = pixel.x == 0 ? -0.9 : (pixel.x == 1 ? 3.6 : -1.7);");
+    const std::string origin = "vec3(x, 0.0, 0.0)";
+    raygen.replace(raygen.find(origin), origin.size(), "vec3(x, 0.5, 0.0)");
+    const std::string opaque_flag = "gl_RayFlagsOpaqueEXT";
+    raygen.replace(raygen.find(opaque_flag), opaque_flag.size(), "gl_RayFlagsNoneEXT");
+    writeWp374aText(project.path / "shaders/wp366_a.rgen", raygen);
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto sample = [&] {
+        (void)renderWp374aProductionRows();
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+            "wp366_a", ImageSubresourceRange{});
+        REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
+        std::array<std::uint32_t, 12> pixels{};
+        std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+        return std::array{pixels[1] != 0xffffffffu, pixels[5] != 0xffffffffu,
+                          pixels[9] != 0xffffffffu};
+    };
+    const auto initial = sample();
+    CHECK_FALSE(initial[0]);
+    CHECK_FALSE(initial[1]);
+    CHECK(initial[2]);
+    auto inventory = instances.rayQueryGeometryInstances();
+    REQUIRE(inventory.size() == 2);
+    REQUIRE(inventory[0].geometry_allocation_id == inventory[1].geometry_allocation_id);
+    if (inventory[0].world_transform[3].x > inventory[1].world_transform[3].x)
+        std::swap(inventory[0], inventory[1]);
+    const auto left_id = instances.modelInstanceIdAt(inventory[0].instance_index);
+    const auto right_id = instances.modelInstanceIdAt(inventory[1].instance_index);
+    REQUIRE(left_id.has_value());
+    REQUIRE(right_id.has_value());
+    REQUIRE(*left_id != *right_id);
+    const auto publish_morph = [&](float weight, std::uint64_t revision) {
+        PublishMorphWeightFrameDescV1 frame;
+        frame.layout_generation = instances.morphLayoutGenerationForTesting(*left_id);
+        frame.frame_revision = revision;
+        frame.weights = &weight;
+        frame.weight_count = 1;
+        REQUIRE(instances.publishMorphWeightFrame(*left_id, frame) == Animation::Status::ok);
+    };
+    glm::mat4 left_skin{1.0F};
+    left_skin[3].x = 0.3F;
+    glm::mat4 right_skin{1.0F};
+    right_skin[3].x = 1.1F;
+    instances.setSkinningPalette(*left_id, std::array{left_skin});
+    instances.setSkinningPalette(*right_id, std::array{right_skin});
+    publish_morph(1.0F, 1);
+    // The left ray requires both morph and skin; the right uses skin alone.
+    // Sharing either instance's output makes at least one of these rays miss.
+    const auto deformed = sample();
+    CHECK(deformed[0]);
+    CHECK(deformed[1]);
+    CHECK(deformed[2]);
+    publish_morph(0.0F, 2);
+    instances.setSkinningPalette(*right_id, std::array{glm::mat4{1.0F}});
+    const auto restored = sample();
+    CHECK_FALSE(restored[0]);
+    CHECK_FALSE(restored[1]);
+    CHECK(restored[2]);
+#else
+    SUCCEED("RT5 production shader fixture requires the runtime compiler");
+#endif
+}
+
 TEST_CASE("WP382d authored occurrence masks and custom indices reach the production GPU",
           "[WP382d][ray-tracing][rt3-1][production][gpu]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -1394,8 +1485,8 @@ TEST_CASE(
         CHECK(snapshot.material_document_reference.empty());
         CHECK_FALSE(snapshot.source_material_index.has_value());
     }
-    const auto classification = classifyRayQueryStaticGeometry(snapshots);
-    REQUIRE_FALSE(classification.static_instance_indices.empty());
+    const auto classification = classifyRayQueryGeometry(snapshots);
+    REQUIRE_FALSE(classification.eligible_instance_indices.empty());
 
     // Drive the same production AS snapshot lowering used by the renderer.
     // It performs the static classification and constructs RaySceneRowInput

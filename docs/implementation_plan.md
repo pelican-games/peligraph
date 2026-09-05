@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT4 public API接続後):** 学習サンプルは後回し。callableの実行・単独reload・動的recordとゲームDLLからの更新まで確認済み。次はRT5の変形geometry。Studioのrecord編集UIは残る。下の旧記録にあるサンプル優先は本指示で更新する。詳細は本節のRT4最新記録を参照。
+**最新の入口 (2026-09-06、RT5 skin/morph接続):** 学習サンプルは後回し。RT4のゲームDLL更新に続き、skin/morph の変形後頂点からBLASを再構築する経路を実装。次はRT5のVAT対応と更新負荷の削減。Studioのrecord編集UI、RT6/RT7は残る。下の旧記録にあるサンプル優先は本指示で更新する。
+
+**RT5 skin/morph (2026-09-06):**
+- ラスタと共有するGLSL helperで morph → skin をcompute実行し、BLASとhit属性へ同じ頂点出力を渡す。compute shaderはbuild時にSPIR-Vへ埋め込む。
+- 変形出力は個体・論理フレームごとに独立。静的BLASは再利用し、変形BLASはrebuild。XRでは同じ論理フレームの出力を共有する。
+- ray query単独経路も含め、AS stateが変形出力・descriptor・compute pipelineをGPU処理完了まで保持する。元姿勢への暗黙フォールバックを禁止。skin/morphのray instance宣言・occurrenceも有効にする。
+- 実GPUの共有メッシュ2個体で、異なるskin/morph変形と復元を3フレーム確認済み（1件19 assertions）。既存の影・空TLAS・AS再利用も5/5成功（診断の旧除外数1箇所を修正後、該当2件を再実行）。CPUの分類2/2、RT3-1は8/8、RT1bは19/19成功。Player/Studioのbuild成功。
+- 残りはVATとrefit/更新負荷。RT5全体の完了扱いにはしない。
 
 **2026-09-05 最新の利用者裁定:** 数値検証基盤の拡張は停止。WP386cの残りの区間oracle/generator/任意SPIR-V意味認定を、機能提供やRT4以降の必須条件から外す。未実装を完了にはせず保留とする。まずPlayer/Studioから開けるレイトレ学習サンプルを作り、配置・サイズ・AABB・混在を実際の描画と編集で確認する。その後callableと動的record(RT4)、変形geometry(RT5)、ノード編集へ進む。旧再開順の「386cの数値golden完成後にfeature enable」はこの裁定で更新する。[v1開発方針](v1_development_plan.md)を参照。
 

@@ -1,24 +1,24 @@
-# Ray query / RT pipeline 用加速構造と静的限定契約
+# Ray query / RT pipeline 用加速構造と変形ジオメトリ
 
 ## 先に 1 文だけ定義しておく語
 
 この章は次の 3 組を説明なしに使い始めます。深い扱いは各節にあります。
 
-- **静的ジオメトリ / 動的ジオメトリ** — 静的ジオメトリは `VertBufContainer` に置かれた元姿勢の頂点をそのまま描くプリミティブ、動的ジオメトリは頂点シェーダで形が変わるもの(スキン付き / morph / VAT)です。以下の加速構造に入るのは前者だけで、後者は「除外」として診断に出ます。
+- **静的ジオメトリ / 動的ジオメトリ** — 静的ジオメトリは元の頂点をそのまま使います。スキン付き / morph は compute で変形後の頂点を生成して加速構造へ渡します。VAT は未対応で、除外診断に出ます。
 - **BLAS / TLAS** — BLAS(bottom-level acceleration structure)は 1 つのジオメトリ(三角形群)の空間分割を GPU が辿れる形に焼いた下位構造、TLAS(top-level acceleration structure)はその BLAS を変換行列・mask・custom index 付きの**インスタンス行**として並べた上位構造です。ray は TLAS から引き、TLAS の行が BLAS を指します([用語集](../manual/14_glossary.md))。
 - **ray query / ray tracing pipeline** — ray query は通常の fragment / compute シェーダの中から TLAS を辿る使い方(`VK_KHR_ray_query`)、ray tracing pipeline は raygen / miss / closest-hit という専用ステージと **SBT**(shader binding table — どの stage のどの shader を呼ぶかの handle をバイト列へ並べた表)を持ち `vkCmdTraceRaysKHR` で起動する使い方(`VK_KHR_ray_tracing_pipeline`)です。この章は両方を別々の opt-in feature として扱い、同じ影を 2 通りに計算して突き合わせます。
 
-## 静的限定の契約
+## 変形ジオメトリの契約
 
-`RayQueryAccelerationStructureScope` が作る BLAS / TLAS は、静的ジオメトリ専用です。`VertBufContainer` に存在する頂点は元姿勢だけであり、頂点シェーダで変形されるスキン付き、morph、VAT のプリミティブを BLAS に入れてはいけません。入れると、描画と異なるバインドポーズの形状が ray query から見えてしまいます。
+`PolygonInstanceContainer::recordRayDeformation` は、AS 構築前に現在の morph weight と skin palette を読み、morph → skin の順で変形します。計算式はラスタ描画の GLSL helper と共有します。出力は位置・法線・接線・UV・色を持つ `CommonVertStruct` で、BLAS と hit shader の属性参照は同じ頂点バッファを使います。
 
 この除外は無言のフォールバックではありません。`Renderer::currentFramePlanJson()` の `ray_query_acceleration_structures` 診断には、除外したプリミティブ数・インスタンス数、スキン付き / morph / VAT / `blas_ineligible` 別の件数、および asset / geometry allocation / mesh / primitive / node を含む名前が出ます。`blas_ineligible` は、頂点または索引が空、索引数が三角形を構成できない、あるいは頂点オフセットが負で、ラスタライズはできても BLAS の三角形入力にはできない静的プリミティブです。同じ分類は初回構築時と分類変更時にログにも記録されます。対象外が存在すること自体はエラーではありません。
 
-変形後ジオメトリを生成する compute deform pass と、その出力からの BLAS 構築は後続 WP の範囲です。現時点でスキン付き、morph、VAT を静的 BLAS に代入する経路はありません。
+変形出力はインスタンスごと・論理フレームごとに作成し、新しい allocation identity で BLAS を rebuild します。同じメッシュの別インスタンスの姿勢は独立します。出力・compute descriptor・pipeline は AS の submission 所有権で保持します。静的 BLAS の再利用は維持し、変形 BLAS の refit と VAT は後続です。変形出力が無いまま元姿勢を AS に渡すことはエラーにします。
 
 加速構造 scope は、物理計画が `pelican.vulkan.ray_query@1` を要求するか、登録したシェーダの reflection が frame set の TLAS binding を検出した場合に `RenderPipelineGpuResourceScope` へ登録されます。後者により、独自パスが feature manifest の能力宣言を経由しなくても TLAS layout だけを作って実行時に欠けることはありません。同じ reflection 判定が拡張 frame-set layout、実デバイスの能力確認、owner scope 登録を決めます。どちらも要求しないプロジェクトでは scope 自体が無く、BLAS / TLAS の構築回数は 0 のままです。scope の差し替えは既存 GPU owner scope の purge に従います。
 
-適格な静的インスタンスが 0 件でもエラーにはしません。Vulkan が 0 primitive の build にも要求する有効な instance-data address を inactive record で与え、0-instance の miss-only TLAS を構築します。したがって descriptor は常に有効で ray はすべて miss し、マスクは全面可視になります。`tlas_instance_count == 0` と変形 / BLAS-ineligible の除外件数は通常どおり診断へ出ます。
+適格なインスタンスが 0 件でもエラーにはしません。Vulkan が 0 primitive の build にも要求する有効な instance-data address を inactive record で与え、0-instance の miss-only TLAS を構築します。したがって descriptor は常に有効で ray はすべて miss し、マスクは全面可視になります。`tlas_instance_count == 0` と VAT / BLAS-ineligible の除外件数は通常どおり診断へ出ます。
 
 BLAS が保持するのは大域 index / vertex pool のデバイスアドレスです。そのため `VertBufContainer::ensureIndexCapacity` または `VertBufContainer::ensureVertexCapacity` がプールを再確保すると、全 BLAS を破棄して現在のアドレスから作り直します。`PolygonInstanceContainer::rebuildModelInstances` も同じく BLAS 無効化世代を進めます。一方、transform は BLAS を無効化せず、フレームごとに再構築する TLAS のインスタンス行列へ反映します。
 
@@ -71,11 +71,11 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 | 除外分類 | `skinned` / `morph_deformed` / `vat_deformed` |
 | 名前付けと配置 | `mesh_index`、`primitive_index`、`node_index`、`world_transform` |
 
-`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な静的 geometry を持たないとき、黙って無視せず [`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L478) で止めます。分類フィルタが先に走ると「除外された primitive にだけ付いた宣言」が消えてしまうため、この検査は分類の**前**に置かれています。
+`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な geometry を持たないとき、[`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L480) で止めます。skin/morph は適格として宣言を解決し、GPU記録時に変形出力の存在を確認します。
 
 ### `RaySceneRowInput` の identity 3 種
 
-[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L239) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L440))。
+[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L239) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L443))。
 
 | field | 形 | 役割 |
 |---|---|---|
@@ -122,7 +122,7 @@ feature は早期の target planning のため `pelican.vulkan.ray_query@1` を 
 
 マスクは可視なら 1、最初の交差があれば 0 の hard shadow です。`gbuffer_worldpos.a` は被覆信号で、標準 `deferred_geometry` は背景を 0 で clear し、材質シェーダは描いた画素へ 1 を書きます。背景は TLAS へ ray を出しません。
 
-ray origin は射線方向ではなく、光の側へ向けた G-buffer 法線方向にずらします。bias は最小 0.01 に加えて `max(abs(world_position)) / 512` を使います。これは `R16G16B16A16_SFLOAT` の world position を原点から 100 以上離したときにも約 2 ULP を確保し、量子化された受け面への自己ヒットを避けるためです。最大距離は 10000 で、現時点では先頭の directional light だけを扱います。static receiver と static blocker の画素テストでは、影になる固定領域と可視の固定領域を別々に assertion します。一方、同じ位置に置いた skinned / morph / VAT blocker は G-buffer には描かれても TLAS に無いため、マスクに影が生じないことを個別の画素 assertion と除外診断の両方で固定しています。これは一時的な静的限定を見える形にした契約であり、golden による黙示的な正当化ではありません。
+ray origin は光の側へ向けた G-buffer 法線方向にずらします。bias は最小 0.01 に加えて `max(abs(world_position)) / 512` を使います。これは半精度の world position の量子化による自己ヒットを避けるためです。最大距離は 10000 で、現時点では先頭の directional light だけを扱います。static / skinned / morph blocker は影を作り、未対応の VAT blocker は除外診断に出ます。
 
 ## `rt_shadow_mask_pipeline` feature
 
@@ -130,7 +130,7 @@ ray origin は射線方向ではなく、光の側へ向けた G-buffer 法線�
 
 この処理を fullscreen pass にしてはいけません。`vkCmdTraceRaysKHR` は dynamic rendering scope 内へ記録できないため、feature は既存の最上位 `compute_tasks` に ray-tracing 宣言を載せます。frame plan 上の kind は `compute` のままであり、通常の compute dispatch と同じく render pass の外で実行されます。`dispatch.rays_from.port` が選んだ image mip の幅・高さをそのまま trace dimensions にし、1 画素につき 1 raygen invocation を起動します。workgroup の切り上げ除算は行いません。
 
-raygen は ray query shader と同じ被覆判定、先頭 directional light、法線側 bias、最大距離 10000、opaque/first-hit flag を使います。miss は payload へ 1、closest-hit は 0 を書き、raygen が storage image へ保存します。したがって受け入れテストの許容差は 0 です。同一フレームから 2 枚の R8 target を読み戻し、背景、影、可視域、原点から 128 離した scene、静的対象 0 件、skinned/morph/VAT 除外の全ケースで byte vector の完全一致を検証します。`PELICAN_RUNTIME_SHADER_COMPILER=OFF` でも同じ比較を埋め込み SPIR-V で実行します。
+raygen は ray query shader と同じ被覆判定、先頭 directional light、法線側 bias、最大距離 10000、opaque/first-hit flag を使います。miss は payload へ 1、closest-hit は 0 を書き、raygen が storage image へ保存します。既存テストは背景・影・可視域・遠方のscene・空のTLAS・skin/morph・VAT除外について、両経路のR8 targetを比較します。埋め込みSPIR-Vの経路もあります。
 
 設定で使える RT stage は `raygen` / `miss` / `closesthit` だけです。`any_hit` / `intersection` / `callable` を `ray_tracing` 内または task 直下に宣言すると `pelican.ray_tracing.unsupported_shader_stage@1` で停止します。未知の stage も無視しません。
 
@@ -142,6 +142,6 @@ SBT の byte layout は [`shaderbindingtable.cpp`](../../src/core/shader/shaderb
 
 - ray mask は二値の 0 / 1 ですが、現在の raster lighting は shadow visibility 0.35 / 1 を BRDF に掛けます。
 - raster は cascade の投影範囲、shadow-map 解像度、depth bias の影響を受けます。ray query は world-space origin bias と最大距離を使うため、輪郭と接触部がずれます。
-- ray query は静的 TLAS と opaque ray flag を使います。raster 側で扱える変形 geometry や material/shadow-caster の条件とは対象集合が異なります。
+- ray query は opaque ray flag を使います。VAT や material/shadow-caster の条件は raster 側と対象集合が異なります。
 
 このため raster shadow との比較テストは同一性ではなく、同じ scene で raster の暗化画素が存在すること、ray mask と重なる画素が存在すること、かつ異なる画素も存在することを検証します。一方、ray query 版と RT pipeline 版の比較は前述のとおり完全一致です。

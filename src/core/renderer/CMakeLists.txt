@@ -8,6 +8,7 @@ target_sources(pelican_core PRIVATE
     debugtext.cpp
     drawqueuebuilder.cpp
     accelerationstructure.cpp
+    raydeformation.cpp
     renderpolicyregistry.cpp
     modelinstanceslots.cpp
     indirectdrawlimits.cpp

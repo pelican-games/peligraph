@@ -34,7 +34,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 36ad3444 に着地(関連37/37、レビュー残余あり)、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d は4ce4117dに統合(W1 95/95) | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
 | RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列を確認し、386cの数値基礎はae29fc98まで保存。数値基盤の追加実装は保留 | Playerで開ける学習サンプルを入口に、配置・サイズ・bounds・mixed geometryを実描画で確認する。数値oracleの完成を次機能の条件にしない |
 | RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。ゲームDLLからの更新を実GPUで確認 | Studioのrecord編集UIは残る。次はRT5の変形geometry |
-| RT5 | 変形 geometry の毎 frame rebuild/refit | 計画あり。既存の静的 BLAS build を動的更新の完了証拠にはしない | animation/変形と RT 結果の追随、更新方式と負荷の比較を通す |
+| RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph の compute 変形 → BLAS rebuild を接続。同じメッシュの個体別変形とフレーム間のヒット追随を実GPUで確認 | VAT、refit と更新負荷の削減が残る |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 計画あり。現行 RT dispatch table は direct trace の入口。compute/draw indirect の既存完了を RT indirect の完了に流用しない | AS 構築→依存→trace をノードで接続・観測する。複数構成の学習価値と契約を具体化する |
 | RT7 | ノードの一級化、編集 RPC、fork/CAS | 計画あり。Studio に frame plan model/graphics/read capability は存在するが、RT 全面編集の証拠ではない | 接続編集・診断・保存・再読込・失敗時の内容保持を通す。画面上のノード移動と実行 graph の編集を区別 |
 | ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。代表ゲームでの一連の制作経路は今回未確認 | 実制作で詰まる操作を GUI 改善の優先順位に使う |

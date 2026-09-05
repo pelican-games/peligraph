@@ -57,10 +57,9 @@ readonly buffer PelicanMorphDeltas {
     PelicanMorphDelta deltas[];
 } pelicanMorphDeltas;
 
-PelicanMorphedVertex pelican_morph_vertex(vec3 position, vec3 normal, vec3 tangent,
-                                          int vertex_index, bool previous) {
+PelicanMorphedVertex pelican_morph_vertex_for_instance(vec3 position, vec3 normal, vec3 tangent,
+                                          int vertex_index, bool previous, uint instance_index) {
     PelicanMorphedVertex result = PelicanMorphedVertex(position, normal, tangent);
-    uint instance_index = uint(gl_BaseInstance);
     PelicanMorphInstance instance = pelicanMorphInstances.instances[instance_index];
     if (instance.weight_count == 0 || vertex_index < 0 ||
         uint(vertex_index) >= PELICAN_MAX_MORPH_VERTICES) {
@@ -84,5 +83,13 @@ PelicanMorphedVertex pelican_morph_vertex(vec3 position, vec3 normal, vec3 tange
     }
     return result;
 }
+
+#ifndef PELICAN_DEFORMATION_COMPUTE
+PelicanMorphedVertex pelican_morph_vertex(vec3 position, vec3 normal, vec3 tangent,
+                                          int vertex_index, bool previous) {
+    return pelican_morph_vertex_for_instance(position, normal, tangent,
+        vertex_index, previous, uint(gl_BaseInstance));
+}
+#endif
 
 #endif

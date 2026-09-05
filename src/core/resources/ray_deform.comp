@@ -1,0 +1,58 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+
+#define PELICAN_DEFORMATION_COMPUTE
+#include "pelican_skinning.glsl"
+#include "pelican_morph.glsl"
+
+layout(local_size_x = 64) in;
+layout(set = 3, binding = 0, std430) readonly buffer SourceVertices { uint words[]; } sourceVertices;
+layout(set = 3, binding = 1, std430) writeonly buffer DeformedVertices { uint words[]; } deformedVertices;
+layout(push_constant) uniform DeformationJob {
+    uint vertexOffset;
+    uint vertexCount;
+    uint instanceIndex;
+    uint skinned;
+    uint sourceStrideWords;
+    uint jointOffsetWords;
+    uint weightOffsetWords;
+} job;
+
+vec3 loadVec3(uint offset) {
+    return uintBitsToFloat(uvec3(sourceVertices.words[offset],
+        sourceVertices.words[offset + 1], sourceVertices.words[offset + 2]));
+}
+void storeVec3(uint offset, vec3 value) {
+    uvec3 bits = floatBitsToUint(value);
+    deformedVertices.words[offset] = bits.x;
+    deformedVertices.words[offset + 1] = bits.y;
+    deformedVertices.words[offset + 2] = bits.z;
+}
+void main() {
+    uint vertex = gl_GlobalInvocationID.x;
+    if (vertex >= job.vertexCount) return;
+    uint originalVertex = job.vertexOffset + vertex;
+    uint source = originalVertex * job.sourceStrideWords;
+    uint destination = vertex * 16;
+    for (uint word = 0; word < 16; ++word)
+        deformedVertices.words[destination + word] = sourceVertices.words[source + word];
+
+    PelicanMorphedVertex result = pelican_morph_vertex_for_instance(
+        loadVec3(source), loadVec3(source + 3), loadVec3(source + 6),
+        int(originalVertex), false, job.instanceIndex);
+    if (job.skinned != 0) {
+        uint packed0 = sourceVertices.words[source + job.jointOffsetWords];
+        uint packed1 = sourceVertices.words[source + job.jointOffsetWords + 1];
+        ivec4 joints = ivec4(int(packed0 << 16) >> 16, int(packed0) >> 16,
+                            int(packed1 << 16) >> 16, int(packed1) >> 16);
+        uint weights = source + job.weightOffsetWords;
+        vec4 weight = vec4(loadVec3(weights), uintBitsToFloat(sourceVertices.words[weights + 3]));
+        mat4 skin = pelican_skin_matrix_for_instance(joints, weight, job.instanceIndex);
+        result.position = (skin * vec4(result.position, 1.0)).xyz;
+        result.normal = mat3(skin) * result.normal;
+        result.tangent = mat3(skin) * result.tangent;
+    }
+    storeVec3(destination, result.position);
+    storeVec3(destination + 3, result.normal);
+    storeVec3(destination + 6, result.tangent);
+}

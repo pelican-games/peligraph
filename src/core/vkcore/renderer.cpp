@@ -4736,9 +4736,11 @@ void Renderer::renderLogicalFrame(
                         .prepareNonRayTracingPublication());
                 return;
             }
-            const auto triangle_instances =
+            auto triangle_instances =
                 modules.instance_container
                     .rayQueryGeometryInstances();
+            modules.instance_container.recordRayDeformation(
+                command_buffer, triangle_instances);
             auto procedural_instances =
                 GET_MODULE(ProceduralGeometryContainer)
                     .proceduralRayInstances();
@@ -4847,11 +4849,11 @@ void Renderer::renderLogicalFrame(
                     generation_root->resolved_rows = ray_scene_rows;
                     generation_root->sbt = ray_tracing_scene_tables;
                     const auto classification =
-                        classifyRayQueryStaticGeometry(geometry_instances);
+                        classifyRayQueryGeometry(geometry_instances);
                     generation_root->tlas_plan =
                         lowerRayTracingTlasInstancePlan(
                             geometry_instances,
-                            classification.static_instance_indices,
+                            classification.eligible_instance_indices,
                             ray_scene_rows.get(), ray_type_count);
                     generation_root->tlas_plan_generation = generation;
                     injectRayTracingJointTransactionPoint(

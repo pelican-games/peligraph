@@ -89,6 +89,7 @@ DECLARE_MODULE(VertBufContainer) {
                     bool skinned, uint32_t &delta_offset, uint32_t &delta_count);
 
   public:
+    std::uint64_t reserveGeometryAllocationId();
     VertBufContainer();
     ~VertBufContainer();
     ModelTemplate::PrimitiveRefInfo addPrimitiveEntry(CommonPolygonVertData &&data);
