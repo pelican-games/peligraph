@@ -18,10 +18,12 @@ bool pathIsWithin(const std::filesystem::path &path, const std::filesystem::path
     return !relative.empty() && *relative.begin() != "..";
 }
 
-std::vector<EditorAssetQueryResult> collectEditorAssets(const ProjectBasicConfig &project_config,
+} // namespace
+
+std::vector<EditorAssetQueryResult> collectEditorAssets(std::string_view asset_data_json,
                                                         const PathResolver &path_resolver) {
     std::vector<EditorAssetQueryResult> result;
-    const auto asset_data = nlohmann::json::parse(project_config.assetDataJson());
+    const auto asset_data = nlohmann::json::parse(asset_data_json);
     const auto stores = path_resolver.stores();
     if (!asset_data.is_object()) return result;
 
@@ -31,11 +33,16 @@ std::vector<EditorAssetQueryResult> collectEditorAssets(const ProjectBasicConfig
         if (kind.size() > 1 && kind.back() == 's') kind.pop_back();
 
         for (const auto &entry : category.value()) {
-            if (!entry.is_object() || !entry.contains("name") ||
-                !entry.at("name").is_string() || !entry.contains("path") ||
-                !entry.at("path").is_string()) {
+            if (!entry.is_object() || !entry.contains("name") || !entry.at("name").is_string()) {
                 continue;
             }
+
+            if (category.key() == "procedural_geometry") {
+                result.push_back({.id = entry.at("name").get<std::string>(),
+                    .kind = "procedural_geometry", .store = "project", .status = "declared"});
+                continue;
+            }
+            if (!entry.contains("path") || !entry.at("path").is_string()) continue;
 
             const auto path_text = entry.at("path").get<std::string>();
             std::filesystem::path resolved_path{path_text};
@@ -83,8 +90,6 @@ std::vector<EditorAssetQueryResult> collectEditorAssets(const ProjectBasicConfig
     return result;
 }
 
-} // namespace
-
 std::unique_ptr<EditorCommandService> makeInteractiveEditorAssetQueryService() {
     auto &project_config = GET_MODULE(ProjectBasicConfig);
     auto &path_resolver = GET_MODULE(PathResolver);
@@ -97,7 +102,7 @@ std::unique_ptr<EditorCommandService> makeInteractiveEditorAssetQueryService() {
         },
         .current_scene_id = [&project_config] { return project_config.defaultSceneId(); },
         .assets = [&project_config, &path_resolver] {
-            return collectEditorAssets(project_config, path_resolver);
+            return collectEditorAssets(project_config.assetDataJson(), path_resolver);
         },
     });
 }

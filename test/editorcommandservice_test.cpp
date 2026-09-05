@@ -1,4 +1,6 @@
 #include "../src/core/communication/editorcommandservice.hpp"
+#include "../src/core/communication/editorassetqueryruntime.hpp"
+#include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/ecs/componentinfo.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/prefabprovider.hpp"
@@ -132,17 +134,20 @@ explicitResolvedProvider(const AuthoringSceneDocument &document) {
     };
 }
 
-EditorCommandService makeQueryService(const AuthoringSceneDocument &document) {
+EditorCommandService makeQueryService(const AuthoringSceneDocument &document,
+                                    std::vector<EditorAssetQueryResult> extra_assets = {}) {
     return EditorCommandService{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & { return document; },
         .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
         .runtime_query = fakeRuntime,
-        .assets = [] {
-            return std::vector<EditorAssetQueryResult>{
+        .assets = [extra_assets = std::move(extra_assets)] {
+            auto assets = std::vector<EditorAssetQueryResult>{
                 {.id = "crate", .kind = "model", .path = "assets/crate.glb", .store = "assets", .status = "loaded"},
                 {.id = "missing", .kind = "texture", .path = "assets/missing.png", .store = "assets", .status = "missing"},
             };
+            assets.insert(assets.end(), extra_assets.begin(), extra_assets.end());
+            return assets;
         },
         .snapshot_state = [] { return EditorSnapshotState{.preview_epoch = 3}; },
     }};
@@ -216,6 +221,9 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
         return candidate.at("name") == "simplemodelview";
     });
     REQUIRE(model != candidates.end());
+    CHECK(model->at("asset_selection").at("field") == "model");
+    REQUIRE(model->at("asset_selection").at("choices").size() == 1);
+    CHECK(model->at("asset_selection").at("choices")[0].at("id") == "crate");
     CHECK(model->at("available") == false);
     CHECK_FALSE(model->at("unavailable_reason").get<std::string>().empty());
     CHECK_FALSE(model->contains("component"));
@@ -227,6 +235,57 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     const auto model_decoded = requireComponentCodec("simplemodelview").decodeAuthored(authored_model);
     REQUIRE(model_decoded.hasValue());
     CHECK(requireComponentCodec("simplemodelview").encodeCanonical(model_decoded.value()) == authored_model);
+}
+
+TEST_CASE("component asset choices include inline procedural assets and retain missing texture status",
+          "[editor-command][query][component-addition][asset-picker]") {
+    const auto document = AuthoringSceneDocument::load(readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const auto service = makeQueryService(document, {
+        {.id = "left", .kind = "procedural_geometry", .store = "project", .status = "declared"},
+        {.id = "right", .kind = "procedural_geometry", .store = "project", .status = "declared"}});
+    const auto catalog = service.getComponentAddCandidates({.name = "MixedObject"});
+    const auto &candidates = catalog.at("candidates");
+    const auto find = [&](std::string_view name) -> const nlohmann::ordered_json & {
+        const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const auto &candidate) {
+            return candidate.at("name").template get<std::string>() == name;
+        });
+        REQUIRE(found != candidates.end());
+        return *found;
+    };
+    const auto &selection = find("pelican_procedural_geometry").at("asset_selection");
+    CHECK(selection.at("field") == "assets");
+    CHECK(selection.at("multiple") == true);
+    CHECK(selection.at("single_field") == "asset");
+    REQUIRE(selection.at("choices").size() == 2);
+    CHECK(selection.at("choices")[0].at("id") == "left");
+    CHECK(selection.at("choices")[0].at("path") == "");
+    CHECK(selection.at("choices")[0].at("status") == "declared");
+    const auto &texture = find("sprite_view").at("asset_selection");
+    REQUIRE(texture.at("choices").size() == 1);
+    CHECK(texture.at("choices")[0].at("status") == "missing");
+}
+
+TEST_CASE("editor asset collection includes inline geometry without requiring a file",
+          "[editor-command][asset-picker]") {
+    PathResolver resolver;
+    const auto assets = collectEditorAssets(nlohmann::json{
+        {"procedural_geometry", {{{"name", "sphere"}}}},
+        {"models", {{{"name", "existing"}, {"path", authoringFixturePath().string()}},
+                    {{"name", "no_file"}}}}}.dump(), resolver);
+    REQUIRE(assets.size() == 2);
+    const auto geometry = std::find_if(assets.begin(), assets.end(), [](const auto &asset) {
+        return asset.id == "sphere";
+    });
+    REQUIRE(geometry != assets.end());
+    CHECK(geometry->kind == "procedural_geometry");
+    CHECK(geometry->path.empty());
+    CHECK(geometry->status == "declared");
+    const auto model = std::find_if(assets.begin(), assets.end(), [](const auto &asset) {
+        return asset.id == "existing";
+    });
+    REQUIRE(model != assets.end());
+    CHECK(model->kind == "model");
+    CHECK(model->status == "loaded");
 }
 
 TEST_CASE("behavior addition catalog provides defaults without constructing an attachment",

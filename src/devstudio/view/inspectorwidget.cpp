@@ -21,6 +21,7 @@
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QPushButton>
 #include <QPointer>
 #include <QPlainTextEdit>
@@ -97,6 +98,11 @@ struct InspectorWidget::Impl {
     QComboBox *component_types = nullptr;
     QLabel *component_description = nullptr;
     QPlainTextEdit *component_declaration = nullptr;
+    QListWidget *component_assets = nullptr;
+    QPushButton *use_component_assets = nullptr;
+    QLabel *component_assets_notice = nullptr;
+    std::optional<Json> displayed_asset_selection;
+    QString asset_selection_component;
     QHash<QString, QString> component_drafts;
     QString displayed_component;
     QPushButton *confirm_add_component = nullptr;
@@ -412,6 +418,8 @@ struct InspectorWidget::Impl {
         displayed_candidates.reset();
         component_drafts.clear();
         displayed_component.clear();
+        displayed_asset_selection.reset();
+        asset_selection_component.clear();
         auto *dialog = new QDialog(&owner);
         add_component_dialog = dialog;
         dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -430,6 +438,18 @@ struct InspectorWidget::Impl {
         layout->addWidget(component_declaration);
         QObject::connect(component_declaration, &QPlainTextEdit::textChanged, dialog, [this] {
             if (!displayed_component.isEmpty()) component_drafts[displayed_component] = component_declaration->toPlainText();
+        });
+        component_assets_notice = plainLabel({}, dialog);
+        layout->addWidget(component_assets_notice);
+        component_assets = new QListWidget(dialog);
+        component_assets->setObjectName(QStringLiteral("pelican.componentAddAssets"));
+        component_assets->setMaximumHeight(140);
+        layout->addWidget(component_assets);
+        use_component_assets = new QPushButton(owner.tr("Use selected assets"), dialog);
+        use_component_assets->setObjectName(QStringLiteral("pelican.componentAddUseAssets"));
+        layout->addWidget(use_component_assets);
+        QObject::connect(use_component_assets, &QPushButton::clicked, dialog, [this] {
+            useSelectedComponentAssets();
         });
         auto *buttons = new QHBoxLayout;
         refresh_component_types = new QPushButton(owner.tr("Refresh types"), dialog);
@@ -464,6 +484,74 @@ struct InspectorWidget::Impl {
         dispatchRequests();
     }
 
+    void useSelectedComponentAssets() {
+        if (!model.canRequestComponentAddCandidates() || !displayed_asset_selection) return;
+        const auto &catalog = model.componentAddCandidates();
+        if (!catalog || component_types->currentData().toString() != asset_selection_component) return;
+        auto declaration = Json::parse(component_declaration->toPlainText().toStdString(), nullptr, false);
+        if (!declaration.is_object()) {
+            component_assets_notice->setText(owner.tr("Fix the component JSON before choosing assets; the draft is unchanged."));
+            return;
+        }
+        const auto selected = component_assets->selectedItems();
+        if (selected.isEmpty()) {
+            component_assets_notice->setText(owner.tr("Select an asset first."));
+            return;
+        }
+        const auto &selection = *displayed_asset_selection;
+        const auto field = selection.at("field").get<std::string>();
+        if (selection.at("multiple").get<bool>()) {
+            const auto single = selection.value("single_field", std::string{});
+            declaration.erase(field);
+            if (!single.empty()) declaration.erase(single);
+            if (selected.size() == 1 && !single.empty()) {
+                declaration[single] = selected.front()->data(Qt::UserRole).toString().toStdString();
+            } else {
+                auto values = Json::array();
+                for (const auto *item : selected) values.push_back(item->data(Qt::UserRole).toString().toStdString());
+                declaration[field] = std::move(values);
+            }
+        } else {
+            declaration[field] = selected.front()->data(Qt::UserRole).toString().toStdString();
+        }
+        component_declaration->setPlainText(QString::fromStdString(declaration.dump(2)));
+        component_assets_notice->setText(owner.tr("Asset selection copied to the draft. Press Add to submit it."));
+    }
+
+    void synchronizeComponentAssets(const Json &candidate, bool ready) {
+        const auto selection = candidate.find("asset_selection");
+        const bool present = selection != candidate.end();
+        component_assets->setVisible(present);
+        component_assets_notice->setVisible(present);
+        use_component_assets->setVisible(present);
+        if (!present) {
+            displayed_asset_selection.reset();
+            asset_selection_component.clear();
+            return;
+        }
+        const auto key = QString::fromStdString(candidate.at("key").get<std::string>());
+        if (asset_selection_component != key || !displayed_asset_selection || *displayed_asset_selection != *selection) {
+            asset_selection_component = key;
+            displayed_asset_selection = *selection;
+            component_assets->clear();
+            component_assets->setSelectionMode(selection->at("multiple").get<bool>()
+                ? QAbstractItemView::ExtendedSelection : QAbstractItemView::SingleSelection);
+            for (const auto &choice : selection->at("choices")) {
+                const auto id = QString::fromStdString(choice.at("id").get<std::string>());
+                const auto path = QString::fromStdString(choice.at("path").get<std::string>());
+                const auto status = QString::fromStdString(choice.at("status").get<std::string>());
+                auto *item = new QListWidgetItem(QStringLiteral("%1 [%2]").arg(id, status), component_assets);
+                item->setToolTip(path);
+                item->setData(Qt::UserRole, id);
+            }
+            component_assets_notice->setText(component_assets->count() == 0
+                ? owner.tr("No registered assets are available for this component.")
+                : owner.tr("Choose registered assets, then use the selection to update only the asset field in the JSON draft."));
+        }
+        component_assets->setEnabled(ready);
+        use_component_assets->setEnabled(ready && component_assets->count() > 0);
+    }
+
     void synchronizeComponentAddDialog() {
         if (!add_component_dialog) return;
         if (!model.snapshot() || model.snapshot()->scene_id != adding_scene ||
@@ -492,6 +580,8 @@ struct InspectorWidget::Impl {
         refresh_component_types->setEnabled(ready);
         component_types->setEnabled(ready && catalog.has_value());
         confirm_add_component->setEnabled(false);
+        component_assets->setEnabled(false);
+        use_component_assets->setEnabled(false);
         component_declaration->setReadOnly(!ready || !catalog);
         if (!catalog) {
             component_description->setText(QString::fromStdString(model.notice().message));
@@ -503,6 +593,7 @@ struct InspectorWidget::Impl {
             return;
         }
         const auto &candidate = catalog->at("candidates").at(static_cast<std::size_t>(index));
+        synchronizeComponentAssets(candidate, ready);
         const auto name = QString::fromStdString(candidate.at("key").get<std::string>());
         if (displayed_component != name || !component_drafts.contains(name)) {
             displayed_component = name;

@@ -38,7 +38,11 @@ gizmo からもこの章と同じ編集 RPC / preview lease を呼びます([第
 
 Inspectorの **Add component...** で登録済みの型を選び、**Add**で追加します。
 初期値はエンジンのcomponent codecから取得し、追加後は通常のInspectorで編集できます。
-モデルなど入力が必要な型は、追加画面の宣言JSONに登録asset名などを入力して追加できます。
+モデル・sprite・procedural geometryは登録assetの一覧から選び、**Use selected assets**で宣言JSONへ反映できます。
+procedural geometryは複数選択でき、1件なら`asset`、複数なら`assets`を設定します。
+選択はassetの項目だけを更新し、その他の入力は保持します。**Add**を押すまでは草稿です。
+ファイルの無いassetも`missing`として表示し、inlineのprocedural assetは`declared`と表示します。
+登録asset名などを宣言JSONに直接入力する操作も利用できます。
 入力内容は通常のcomponent codecで検査します。
 追加は既存のjournalに記録され、Undo/Redoで取り消し・再適用できます。ディスクへの保存にはSaveを使います。
 
@@ -46,6 +50,8 @@ Inspectorの **Add component...** で登録済みの型を選び、**Add**で追
 `object_id`・`scene_revision`・`candidates[]`を返します。各候補は選択用の`key`、componentの`name`・`available`と、
 既定値だけで追加可能なら初期`component` JSON、追加の入力が必要なら`unavailable_reason`を持ちます。
 全候補の`component_template`を宣言の初期値にし、`schema_fields`から項目名と型を取得します。
+asset選択に対応する型は`asset_selection`に対象`field`、`multiple`、`choices`(id/path/status)を返します。
+procedural geometryの`single_field`は1件選択時に使う項目名です。
 通常componentの装着済み型は候補に含めません。behaviorは登録済みの各型を **Behavior: 型名** として表示し、
 既に装着した型も追加できます。`params`に初期パラメータを指定し、`name`と`type`は選択した型のままにします。
 behavior候補の`key`は`behavior:型名`、`behavior_type`は登録名です。`schema_fields`はparamsの項目で、
@@ -180,7 +186,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 
 **解決に失敗したコンポーネントも消えません(✅WP378)。** authored / generated のどちらの直下にも
 `resolution_error` が付き、`get_components` は**成功応答のまま**それを返します
-([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1692))。形は 2 通りで、
+([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1706))。形は 2 通りで、
 typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化していない旧分岐は
 `{legacy_branch_id, message}` です(正は
 [`resolutionFailureJson()`](../../src/core/loader/resolutionresult.hpp#L114))。
@@ -490,7 +496,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は
   [effecttransaction.cpp](../../src/core/loader/effecttransaction.cpp#L686))です。
 - `import_scene_snapshot` の応答にも同じ `committed` / `effect_errors` が付きます
-  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1917))。
+  ([editorcommandservice.cpp](../../src/core/communication/editorcommandservice.cpp#L1931))。
   **`{"status":"imported","scene_revision":N,"current_scene_id":"…"}` だけを期待する
   厳密一致のクライアントは壊れます。**
 - 代表的な `error_code`: `effect_outbox_full@1{dropped}`(1 回の scene load で 256 件を超えた分)/

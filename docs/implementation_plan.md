@@ -23237,7 +23237,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、複数AABB BLAS):** node順序編集は584f5829、dispatchフォームと元task名・variant順序修正はcfc44261に統合済み。procedural componentの複数asset指定とAABB BLAS結合を追加し、実GPUで個別record・再利用・bounds変更時の再構築を確認。次は視覚的なport接続、AS公開境界を越える配置、asset選択フォームなど。学習サンプルは後回し。
+**最新の入口 (2026-09-06、asset選択):** procedural複数asset/BLAS結合は54300bb5へ統合済み。Inspectorのmodel・texture・procedural asset選択を追加。次はtaskのport接続フォーム、AS公開境界を越える配置、asset定義編集など。学習サンプルは後回し。
+
+**Inspector asset選択 (2026-09-06):**
+- component候補に型別asset選択情報を追加。Studioで一覧から選び、Use selected assetsで草稿の参照項目だけを更新する。procedural単数はasset、複数はassets。Add/Undo/Redo/Saveは既存journalを使用する。
+- 重複していたinteractive/headlessのasset列挙を共通化し、ファイルを持たないprocedural定義もdeclaredとして表示。missing textureの診断を保持する。behaviorの任意文字列からasset参照を推測しない。
+- 関連CPU17/17（280 assertions、build/.codex_bg/assetpicker-cpu.log）、Inspector既存18/18（assetpicker-inspector.log）成功。Player/Studioと両test targetのbuild成功（assetpicker-build.log）。GPU経路は変更なし、新フォームの手動操作は未確認。新しい配布用test toolは追加していない。
 
 **RT6 procedural複数asset・AABB BLAS結合 (2026-09-06):**
 - `pelican_procedural_geometry`は単一`asset`または非空・重複なしの`assets`配列を受理する。内部はvectorに正規化し、canonicalは単数asset/複数assets。既存codecのruntime copy/swapとSceneLoader参加者を使用する。schemaに任意asset/stringとassets/listを公開し、排他はcodecで確認する。

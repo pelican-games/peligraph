@@ -3,6 +3,7 @@
 #include "../registrationownerhost.hpp"
 
 #include "editorcommandservice.hpp"
+#include "editorassetqueryruntime.hpp"
 #include "renderconfigeditor.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../asset/model.hpp"
@@ -948,64 +949,8 @@ EditorRuntimeObjectState queryEditorRuntime(const EditorRuntimeModules &modules,
     return result;
 }
 
-bool pathIsWithin(const std::filesystem::path &path, const std::filesystem::path &root) {
-    const auto relative = path.lexically_relative(root);
-    return !relative.empty() && *relative.begin() != "..";
-}
-
 std::vector<EditorAssetQueryResult> collectEditorAssets(const EditorRuntimeModules &modules) {
-    std::vector<EditorAssetQueryResult> result;
-    const auto asset_data = nlohmann::json::parse(modules.project_config.assetDataJson());
-    const auto stores = modules.path_resolver.stores();
-    if (!asset_data.is_object()) return result;
-    for (auto category = asset_data.begin(); category != asset_data.end(); ++category) {
-        if (!category.value().is_array()) continue;
-        auto kind = category.key();
-        if (kind.size() > 1 && kind.back() == 's') kind.pop_back();
-        for (const auto &entry : category.value()) {
-            if (!entry.is_object() || !entry.contains("name") || !entry.at("name").is_string() ||
-                !entry.contains("path") || !entry.at("path").is_string()) {
-                continue;
-            }
-            const auto path_text = entry.at("path").get<std::string>();
-            std::filesystem::path resolved_path{path_text};
-            bool exists = false;
-            if (resolved_path.is_absolute()) {
-                exists = std::filesystem::exists(resolved_path);
-            } else {
-                try {
-                    const auto resolved = modules.path_resolver.resolveExistingFileReference(path_text);
-                    if (const auto *path = std::get_if<std::filesystem::path>(&resolved)) {
-                        resolved_path = *path;
-                        exists = std::filesystem::exists(resolved_path);
-                    } else if (const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved)) {
-                        resolved_path = fragment->path;
-                        exists = std::filesystem::exists(resolved_path);
-                    } else {
-                        exists = true;
-                    }
-                } catch (const std::exception &) {
-                    exists = false;
-                }
-            }
-
-            std::string store = "project";
-            if (resolved_path.is_absolute()) {
-                for (const auto &candidate : stores) {
-                    if (pathIsWithin(resolved_path.lexically_normal(), candidate.root.lexically_normal())) {
-                        store = candidate.name;
-                        break;
-                    }
-                }
-            }
-            result.push_back(EditorAssetQueryResult{.id = entry.at("name").get<std::string>(),
-                                                    .kind = kind,
-                                                    .path = path_text,
-                                                    .store = std::move(store),
-                                                    .status = exists ? "loaded" : "missing"});
-        }
-    }
-    return result;
+    return collectEditorAssets(modules.project_config.assetDataJson(), modules.path_resolver);
 }
 
 struct EditorRuntimeState {

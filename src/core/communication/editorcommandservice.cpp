@@ -826,6 +826,7 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
     const EditorGetComponentsRequest &request) const {
     const auto object = getComponents(request);
     auto candidates = OrderedJson::array();
+    const auto assets = dependencies_.assets ? dependencies_.assets() : std::vector<EditorAssetQueryResult>{};
     const auto schema_type_name = schemaTypeResolverOrDefault({});
     for (const auto &codec : componentCodecs()) {
         if (codec.name == "behavior" || std::any_of(object.components.begin(), object.components.end(),
@@ -846,6 +847,19 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
         candidate["schema_fields"] = OrderedJson::array();
         for (const auto &field : codec.fieldSchema())
             candidate["schema_fields"].push_back(schemaFieldJson(field, schema_type_name));
+        std::string_view asset_kind, asset_field;
+        if (codec.name == "simplemodelview") { asset_kind = "model"; asset_field = "model"; }
+        else if (codec.name == "sprite_view") { asset_kind = "texture"; asset_field = "texture"; }
+        else if (codec.name == "pelican_procedural_geometry") { asset_kind = "procedural_geometry"; asset_field = "assets"; }
+        if (!asset_kind.empty()) {
+            const bool multiple = codec.name == "pelican_procedural_geometry";
+            OrderedJson selection{{"field", asset_field}, {"multiple", multiple}, {"choices", OrderedJson::array()}};
+            if (multiple) selection["single_field"] = "asset";
+            for (const auto &asset : assets)
+                if (asset.kind == asset_kind)
+                    selection["choices"].push_back({{"id", asset.id}, {"path", asset.path}, {"status", asset.status}});
+            candidate["asset_selection"] = std::move(selection);
+        }
         candidates.push_back(std::move(candidate));
     }
     const auto &behaviors = internal::getBehaviorRegisterer();
