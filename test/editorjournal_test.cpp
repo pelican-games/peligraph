@@ -35,6 +35,23 @@ class JournalBehavior final : public Behavior {
 
 PELICAN_REGISTER_BEHAVIOR(JournalBehavior, "wp167_journal_behavior", 1);
 
+struct JournalListRow {
+    std::string label;
+    static constexpr auto schema = structFields(
+        componentPolicy("journal_list_row"),
+        defaulted(field<&JournalListRow::label>("label"), "initial"));
+};
+struct JournalListParams {
+    List<JournalListRow> rows;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy, defaulted(field<&JournalListParams::rows>("rows")));
+};
+class JournalListBehavior final : public Behavior {
+  public:
+    using Params = JournalListParams;
+};
+PELICAN_REGISTER_BEHAVIOR(JournalListBehavior, "wp382b_journal_list_behavior", 1);
+
 Json editorFixture() {
     return Json::parse(R"json({
       "schema":"pelican.scene",
@@ -1434,6 +1451,105 @@ TEST_CASE("WP382b params insert materializes only the selected default and undo 
     REQUIRE(harness.lifecycle_trace ==
             std::vector<std::string>{"insert_component_field",
                                      "insert_component_field"});
+}
+
+TEST_CASE("WP382b behavior remove undo preserves the exact authored component",
+          "[WP382b][editor][journal][behavior][raw][remove][undo]") {
+    Harness harness;
+    const auto before = harness.target.document.encodeSemantic();
+    const auto removed = harness.commit(
+        {{"op", "remove_component"},
+         {"object_id", 4},
+         {"component_slot", "behavior"},
+         {"attachment_index", 1}});
+    REQUIRE(removed.at("status") == "committed");
+
+    const auto accepted = harness.edits->enqueueUndo(
+        {{"actor_id", harness.actor},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", removed.at("transaction_id")}});
+    REQUIRE(accepted.at("status") == "accepted");
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", accepted.at("ticket")}})
+                .at("status") == "committed");
+    REQUIRE(harness.target.document.encodeSemantic() == before);
+    const auto &component = harness.target.document.rawJson()
+                                .at("scenes")
+                                .at("main")
+                                .at("objects")
+                                .at(3)
+                                .at("components")
+                                .at(1);
+    REQUIRE_FALSE(component.contains("params"));
+    const auto authored_component = component;
+    REQUIRE(harness.commit({{"op", "add_component"},
+                            {"object_id", 4},
+                            {"component", authored_component}})
+                .at("status") == "committed");
+    REQUIRE(harness.target.document.rawJson().at("scenes").at("main")
+                .at("objects").at(3).at("components").back().dump() ==
+            authored_component.dump());
+}
+
+TEST_CASE("WP382b behavior attachment insertion rejects an older list undo",
+          "[WP382b][editor][journal][behavior][list][two-actor]") {
+    Harness harness;
+    const Json rows{{"$list", {{"v", 1}, {"next_id", 2}}},
+        {"rows", Json::array({{{"$row", {{"v", 1}, {"id", 1}}},
+            {"label", "original"}}})}};
+    const Json initial{{"name", "behavior"},
+        {"type", "wp382b_journal_list_behavior"}, {"params", {{"rows", rows}}}};
+    harness.commit({{"op", "add_component"}, {"object_id", 4},
+        {"component", initial}});
+    const auto edited = harness.commit({{"op", "set_component_value"},
+        {"address", {{"authoring_object_id", 4},
+            {"component", {{"type", "wp382b_journal_list_behavior"},
+                {"occurrence", 2}, {"origin", {{"kind", "authored"},
+                    {"authoring_component_index", 2}}}}},
+            {"list_path", "/rows"}, {"row_id", 1}, {"leaf_path", "/label"}}},
+        {"value", "edited"}});
+    INFO(edited.dump());
+    REQUIRE(edited.at("status") == "committed");
+    SECTION("the unchanged attachment can undo its own row edit") {
+        const auto undo = harness.edits->enqueueUndo({{"actor_id", harness.actor},
+            {"base_revision", harness.target.document.revision().value},
+            {"transaction_id", edited.at("transaction_id")}});
+        REQUIRE(undo.at("status") == "accepted");
+        harness.edits->commitPending();
+        REQUIRE(harness.edits->getResult({{"ticket", undo.at("ticket")}})
+                    .at("status") == "committed");
+        REQUIRE(harness.target.document.rawJson().at("scenes").at("main")
+            .at("objects").at(3).at("components").at(2).at("params")
+            .at("rows").at("rows").at(0).at("label") == "original");
+        return;
+    }
+    SECTION("an inserted copy cannot receive the older attachment's undo") {
+    const auto actor_a_token = harness.reconnect_token;
+    const auto actor_a = harness.actor;
+    const Json copy = harness.target.document.rawJson().at("scenes").at("main")
+        .at("objects").at(3).at("components").at(2);
+    const auto [actor_b, actor_b_token] = harness.bindNewActor("actor-b");
+    (void)actor_b_token;
+    harness.actor = actor_b;
+    harness.commit({{"op", "add_component"}, {"object_id", 4},
+        {"component_index", 2}, {"component", copy}});
+    harness.bind(actor_a_token);
+    harness.actor = actor_a;
+    const auto before = harness.target.document.encodeSemantic();
+    const auto result = harness.edits->enqueueUndo({{"actor_id", harness.actor},
+        {"base_revision", harness.target.document.revision().value},
+        {"transaction_id", edited.at("transaction_id")}});
+    INFO(result.dump());
+    if (result.at("status") == "accepted") {
+        harness.edits->commitPending();
+        INFO(harness.edits->getResult({{"ticket", result.at("ticket")}}).dump());
+        INFO(harness.target.document.encodeSemantic());
+        REQUIRE(result.at("status") == "rejected");
+    }
+    REQUIRE(result.at("status") == "rejected");
+    REQUIRE(result.at("error").at("code") == "undo_conflict");
+    REQUIRE(harness.target.document.encodeSemantic() == before);
+    }
 }
 
 TEST_CASE("WP167 direct behavior attachment edits keep exact handles and sequences",

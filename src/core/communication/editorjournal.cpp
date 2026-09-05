@@ -1049,18 +1049,92 @@ void validateRawComponent(const Json &component, AuthoringObjectId object_id,
     }
 }
 
-bool fieldPathUsesListIndex(const Json &component,
-                            std::string_view component_name,
-                            std::string_view field_path) {
-    const auto tokens = pointerTokens(field_path, "set_component_value field_path");
+void validateListHighWaterMonotonic(const Json &previous, Json &next,
+                                    const Schema::Node &schema,
+                                    AuthoringObjectId object_id,
+                                    std::string_view component_name,
+                                    const std::string &path,
+                                    bool preserve_on_replay = false) {
+    if (schema.tag == Schema::NodeTag::List) {
+        if (!previous.is_object() || !next.is_object() ||
+            !previous.contains("$list") || !next.contains("$list")) {
+            return;
+        }
+        const auto old_next_id = exactU32(
+            previous.at("$list").at("next_id"), "$list.next_id", true);
+        const auto new_next_id =
+            exactU32(next.at("$list").at("next_id"), "$list.next_id", true);
+        if (new_next_id < old_next_id) {
+            if (preserve_on_replay) {
+                next.at("$list")["next_id"] = old_next_id;
+                return;
+            }
+            editFailure(EditorEditErrorCode::schema_violation,
+                        {{"object", object_id.value},
+                         {"slot", component_name},
+                         {"field_path", path + "/$list/next_id"},
+                         {"detail", "$list.next_id must not decrease"},
+                         {"previous", old_next_id},
+                         {"next", new_next_id}},
+                        "$list.next_id must not decrease");
+        }
+        return;
+    }
+    if (schema.tag != Schema::NodeTag::Struct || !previous.is_object() ||
+        !next.is_object()) {
+        return;
+    }
+    for (const auto &child : schema.children) {
+        const auto old_member = previous.find(child.name);
+        const auto new_member = next.find(child.name);
+        if (old_member == previous.end() || new_member == next.end()) continue;
+        validateListHighWaterMonotonic(
+            *old_member, *new_member, child, object_id, component_name,
+            path + "/" + child.name, preserve_on_replay);
+    }
+}
+
+void validateRawComponentTransition(const Json &previous, Json &next,
+                                    AuthoringObjectId object_id,
+                                    std::string_view component_name,
+                                    bool preserve_on_replay = false) {
+    validateRawComponent(next, object_id, component_name);
+    std::optional<Schema::Node> owned;
+    const Schema::Node *schema = nullptr;
+    const Json *old_root = &previous;
+    Json *new_root = &next;
+    if (component_name == "behavior") {
+        const auto *registration = internal::getBehaviorRegisterer().findByName(
+            next.value("type", std::string{}));
+        if (registration == nullptr) return;
+        schema = internal::getBehaviorRegisterer().schemaFor(*registration);
+        if (schema == nullptr || !previous.contains("params") ||
+            !next.contains("params")) {
+            return;
+        }
+        old_root = &previous.at("params");
+        new_root = &next.at("params");
+    } else if (const auto *codec = findComponentCodec(component_name)) {
+        owned = internal::hostSchemaNode(codec->schemaNode());
+        schema = &*owned;
+    }
+    if (schema != nullptr) {
+        validateListHighWaterMonotonic(*old_root, *new_root, *schema, object_id,
+                                       component_name, {}, preserve_on_replay);
+    }
+}
+
+std::optional<std::string_view> classifyLegacyListPointer(
+    const Json &component, std::string_view component_name,
+    std::span<const std::string> tokens) {
     std::optional<Schema::Node> owned;
     const Schema::Node *node = nullptr;
     std::size_t index = 0;
     if (component_name == "behavior") {
-        if (tokens.empty() || tokens.front() != "params") return false;
+        if (tokens.empty() || tokens.front() != "params") return std::nullopt;
         const auto *registration = internal::getBehaviorRegisterer().findByName(
             component.value("type", std::string{}));
-        if (registration == nullptr) return false;
+        if (registration == nullptr) return std::nullopt;
         node = internal::getBehaviorRegisterer().schemaFor(*registration);
         index = 1;
     } else if (const auto *codec = findComponentCodec(component_name)) {
@@ -1068,19 +1142,47 @@ bool fieldPathUsesListIndex(const Json &component,
         node = &*owned;
     }
     for (; node != nullptr && index < tokens.size(); ++index) {
-        if (node->tag == Schema::NodeTag::List) {
-            return tokens[index] == "rows" && index + 1 < tokens.size() &&
-                   decimalIndex(tokens[index + 1]);
-        }
-        if (node->tag != Schema::NodeTag::Struct) return false;
+        if (node->tag != Schema::NodeTag::Struct) return std::nullopt;
         const auto child = std::find_if(
             node->children.begin(), node->children.end(), [&](const auto &entry) {
                 return entry.name == tokens[index];
             });
-        if (child == node->children.end()) return false;
+        if (child == node->children.end()) return std::nullopt;
         node = &*child;
+        if (node->tag != Schema::NodeTag::List) continue;
+
+        if (index + 1U == tokens.size()) return "list_root";
+        const auto &container_member = tokens[index + 1U];
+        if (container_member == "$list") return "list_envelope";
+        if (container_member == "$row") return "row_envelope";
+        if (container_member != "rows") return "list_root";
+        if (index + 2U == tokens.size()) return "rows_container";
+
+        const auto &row_selector = tokens[index + 2U];
+        if (row_selector == "-") return "append_index";
+        if (!decimalIndex(row_selector)) return "rows_container";
+        if (index + 3U < tokens.size() && tokens[index + 3U] == "$row") {
+            return "row_envelope";
+        }
+        return "numeric_index";
     }
-    return false;
+    return std::nullopt;
+}
+
+void rejectLegacyListPointer(const Json &component,
+                             std::string_view component_name,
+                             std::span<const std::string> tokens,
+                             AuthoringObjectId object_id,
+                             std::string_view field_path) {
+    const auto classification =
+        classifyLegacyListPointer(component, component_name, tokens);
+    if (!classification) return;
+    editFailure(EditorEditErrorCode::list_index_addressing_rejected,
+                {{"object", object_id.value},
+                 {"slot", component_name},
+                 {"field_path", field_path},
+                 {"pointer_classification", *classification}},
+                "ListIndexAddressingRejected: list structure requires addressed row operations");
 }
 
 [[noreturn]] void throwPrefabEditFailure(const PrefabError &error,
@@ -1628,6 +1730,7 @@ PreparedOperation addressedPreparedOperation(
         .structural_domain =
             {{"kind", "component_list_row"},
              {"object", address.object.object_id.value},
+             {"slot", address.component_name},
              {"attachment", address.attachment_identity},
              {"list_path", address.list_path},
              {"row_id", row_id ? OrderedJson(*row_id) : OrderedJson(nullptr)},
@@ -1689,8 +1792,9 @@ PreparedOperation prepareAddressedSet(
                      {"detail", error.what()}},
                     error.what());
     }
-    validateRawComponent(next, address.object.object_id,
-                         address.component_name);
+    validateRawComponentTransition(address.component, next,
+                                   address.object.object_id,
+                                   address.component_name);
     return addressedPreparedOperation(
         raw, address, context, next, address.component, address.row_id,
         address.leaf_path, raw.at("value"));
@@ -1799,6 +1903,8 @@ PreparedOperation prepareLegacyFieldMutation(
         located = requireComponent(object, component_name);
     }
     const auto &[component_index, old_component] = located;
+    rejectLegacyListPointer(old_component, component_name, tokens, object_id,
+                            field_path);
     const auto field = fieldSchemaAt(old_component, component_name, tokens);
     if (!field || field->tag == Schema::NodeTag::Struct ||
         field->tag == Schema::NodeTag::List) {
@@ -1868,7 +1974,8 @@ PreparedOperation prepareLegacyFieldMutation(
         }
         parent->erase(tokens.back());
     }
-    validateRawComponent(next, object_id, component_name);
+    validateRawComponentTransition(old_component, next, object_id,
+                                   component_name);
 
     const auto attachment_handle = internalIdentityValue(
         raw, "attachment_handle", std::string{context} + " attachment_handle",
@@ -2011,8 +2118,9 @@ PreparedOperation prepareInsertField(
         rows.insert(rows.begin() + static_cast<Json::difference_type>(insert_index),
                     std::move(row));
         (*list)["$list"]["next_id"] = next_id + 1U;
-        validateRawComponent(next, address.object.object_id,
-                             address.component_name);
+        validateRawComponentTransition(address.component, next,
+                                       address.object.object_id,
+                                       address.component_name);
 
         Json inverse = address.component;
         Json *inverse_list = findListValue(inverse, address);
@@ -2075,8 +2183,9 @@ PreparedOperation prepareInsertField(
     } catch (const nlohmann::json::out_of_range &) {
     }
     row[pointer] = *field.default_value;
-    validateRawComponent(next, address.object.object_id,
-                         address.component_name);
+    validateRawComponentTransition(address.component, next,
+                                   address.object.object_id,
+                                   address.component_name);
     return addressedPreparedOperation(
         raw, address, context, next, address.component, address.row_id,
         address.leaf_path);
@@ -2127,8 +2236,9 @@ PreparedOperation prepareRemoveField(
         }
         parent->erase(address.leaf_tokens.back());
     }
-    validateRawComponent(next, address.object.object_id,
-                         address.component_name);
+    validateRawComponentTransition(address.component, next,
+                                   address.object.object_id,
+                                   address.component_name);
     return addressedPreparedOperation(
         raw, address, context, next, address.component, address.row_id,
         address.leaf_path);
@@ -2190,13 +2300,10 @@ PreparedOperation prepareSet(const Json &raw,
                     "component has no editable codec");
     }
     Json next_component = old_component;
-    if (fieldPathUsesListIndex(old_component, component_name, field_path)) {
-        editFailure(EditorEditErrorCode::list_index_addressing_rejected,
-                    {{"object", object_id.value},
-                     {"slot", component_name},
-                     {"field_path", field_path}},
-                    "ListIndexAddressingRejected: list rows require row_id addressing");
-    }
+    const auto tokens = pointerTokens(field_path,
+                                      "set_component_value field_path");
+    rejectLegacyListPointer(old_component, component_name, tokens, object_id,
+                            field_path);
     try {
         const Json::json_pointer pointer{field_path};
         (void)next_component.at(pointer);
@@ -2209,7 +2316,8 @@ PreparedOperation prepareSet(const Json &raw,
                      {"detail", error.what()}},
                     error.what());
     }
-    validateRawComponent(next_component, object_id, component_name);
+    validateRawComponentTransition(old_component, next_component, object_id,
+                                   component_name);
     const auto attachment_handle = internalIdentityValue(
         raw, "attachment_handle", "set_component_value attachment_handle", true);
     const auto attachment_seq = internalIdentityValue(
@@ -2284,10 +2392,15 @@ PreparedOperation prepareAdd(const Json &raw,
                     {{"object", object_id.value}, {"slot", component_name}},
                     "component slot already exists");
     }
-    auto canonical = behavior ? canonicalBehaviorComponent(component, object_id)
-                              : canonicalComponent(component, object_id,
-                                                   component_name,
-                                                   component_exists);
+    // Decode/canonicalize only to validate the typed projection.  The authored
+    // component itself is the command and journal payload so omitted defaults,
+    // list envelopes, and member order survive remove/undo and replay.
+    if (behavior) {
+        (void)canonicalBehaviorComponent(component, object_id);
+    } else {
+        (void)canonicalComponent(component, object_id, component_name,
+                                 component_exists);
+    }
     auto component_index = object.authored.at("components").size();
     if (const auto found = raw.find("component_index"); found != raw.end()) {
         component_index = static_cast<std::size_t>(exactUnsigned(
@@ -2319,7 +2432,7 @@ PreparedOperation prepareAdd(const Json &raw,
                         {"scene_id", object.scene_id},
                         {"component_slot", component_name},
                         {"component_index", component_index},
-                        {"component", canonical}};
+                        {"component", component}};
     OrderedJson inverse{{"op", "remove_component"},
                         {"object_id", object_id.value},
                         {"scene_id", object.scene_id},
@@ -2334,7 +2447,7 @@ PreparedOperation prepareAdd(const Json &raw,
         copyBehaviorAttachmentWitness(raw, forward, inverse);
     }
     return PreparedOperation{
-        .commands = {makeInsertComponentCommand(object, component_index, canonical)},
+        .commands = {makeInsertComponentCommand(object, component_index, component)},
         .forward = std::move(forward),
         .inverse = std::move(inverse),
         .affected = {object_id},
@@ -2494,8 +2607,10 @@ Json canonicalSpawnObject(const Json &value, std::string_view scene_id,
                         "spawn component names must be unique");
         }
         if (component_name == "behavior") continue;
-        component = canonicalComponent(component, AuthoringObjectId{},
-                                       component_name, component_exists);
+        // Validation produces the typed projection later; spawn must retain
+        // the exact authored component instead of publishing its defaults.
+        (void)canonicalComponent(component, AuthoringObjectId{}, component_name,
+                                 component_exists);
     }
     return result;
 }
@@ -3390,7 +3505,27 @@ commandsFromCanonical(std::span<const OrderedJson> operations,
         canonical_operations->clear();
         canonical_operations->reserve(operations.size());
     }
-    for (const auto &operation : operations) {
+    for (auto operation : operations) {
+        // Journal snapshots restore authored values, not the allocator's past.
+        // Reconcile before freezing so typed projection and raw commands see
+        // the same high water, including each step of a multi-operation undo.
+        if (operation.contains("authored_component")) {
+            const auto object_id = AuthoringObjectId{exactUnsigned(
+                operation.at("object_id"), "journal object_id", true)};
+            const auto object = requireObjectLocation(
+                local->projectionDocument(), object_id);
+            const auto component_name = requireString(
+                operation, "component_slot", "journal operation");
+            const auto located = operation.contains("attachment_index")
+                ? requireComponentAt(object, static_cast<std::size_t>(
+                    exactUnsigned(operation.at("attachment_index"),
+                                  "journal attachment_index")), component_name)
+                : requireComponent(object, component_name);
+            Json next = operation.at("authored_component");
+            validateRawComponentTransition(located.second, next, object_id,
+                                           component_name, true);
+            operation["authored_component"] = std::move(next);
+        }
         if (canonical_operations != nullptr) {
             canonical_operations->push_back(
                 freezeJournalOperation(operation,
@@ -3724,9 +3859,80 @@ bool intersects(const std::vector<Value> &left, const std::vector<Value> &right)
 }
 
 bool structuralDomainsOverlap(const Json &left, const Json &right) {
+    const auto left_kind = left.value("kind", std::string{});
+    const auto right_kind = right.value("kind", std::string{});
     const auto left_objects = domainObjects(left);
     const auto right_objects = domainObjects(right);
-    if (intersects(left_objects, right_objects)) return true;
+    const auto same_object = [&] {
+        return left.value("object", std::uint64_t{}) != 0 &&
+               left.value("object", std::uint64_t{}) ==
+                   right.value("object", std::uint64_t{});
+    };
+
+    // Fine-grained domains decide overlap before any object-wide domain does.
+    // In particular, two list attachments on one object are independent.
+    if (left_kind == "component_list_row" &&
+        right_kind == "component_list_row") {
+        return same_object() &&
+               left.value("list_path", std::string{}) ==
+                   right.value("list_path", std::string{}) &&
+               left.contains("attachment") && right.contains("attachment") &&
+               left.at("attachment") == right.at("attachment");
+    }
+
+    const auto component_value_domain = [](std::string_view kind) {
+        return kind == "component_slot" || kind == "value_field";
+    };
+    if (component_value_domain(left_kind) &&
+        component_value_domain(right_kind)) {
+        return same_object() &&
+               left.value("slot", std::string{}) ==
+                   right.value("slot", std::string{});
+    }
+    if ((left_kind == "component_list_row" &&
+         component_value_domain(right_kind)) ||
+        (right_kind == "component_list_row" &&
+         component_value_domain(left_kind))) {
+        const auto &list = left_kind == "component_list_row" ? left : right;
+        const auto &component = left_kind == "component_list_row" ? right : left;
+        return same_object() && list.contains("attachment") &&
+               list.at("attachment").value("type", std::string{}) ==
+                   component.value("slot", std::string{});
+    }
+
+    if (left_kind == "prefab_parameter" && right_kind == "prefab_parameter") {
+        return same_object() &&
+               left.value("parameter", std::string{}) ==
+                   right.value("parameter", std::string{});
+    }
+    if (left_kind == "behavior_params" && right_kind == "behavior_params") {
+        return same_object() &&
+               left.value("attachment_index", std::uint64_t{}) ==
+                   right.value("attachment_index", std::uint64_t{});
+    }
+    const auto behavior_value_domain = [](const Json &domain, std::string_view kind) {
+        return kind == "behavior_params" ||
+               (kind == "component_list_row" &&
+                domain.value("slot", std::string{}) == "behavior");
+    };
+    if ((left_kind == "behavior_attachment" &&
+         right_kind == "behavior_attachment") ||
+        (left_kind == "behavior_attachment" &&
+         behavior_value_domain(right, right_kind)) ||
+        (right_kind == "behavior_attachment" &&
+         behavior_value_domain(left, left_kind))) {
+        // Adding or removing an attachment changes the authored occurrence
+        // sequence, so every behavior attachment on that object conflicts.
+        return same_object();
+    }
+
+    const auto object_wide = [](std::string_view kind) {
+        return kind == "object_subtree" || kind == "parent_edge";
+    };
+    if ((object_wide(left_kind) || object_wide(right_kind)) &&
+        intersects(left_objects, right_objects)) {
+        return true;
+    }
 
     const auto left_scene = left.value("scene_id", std::string{});
     const auto right_scene = right.value("scene_id", std::string{});
@@ -3735,25 +3941,6 @@ bool structuralDomainsOverlap(const Json &left, const Json &right) {
         if (intersects(domainIndices(left), domainIndices(right))) return true;
     }
 
-    const auto left_kind = left.value("kind", std::string{});
-    const auto right_kind = right.value("kind", std::string{});
-    if ((left_kind == "component_slot" || left_kind == "value_field") &&
-        (right_kind == "component_slot" || right_kind == "value_field") &&
-        left.value("object", std::uint64_t{}) ==
-            right.value("object", std::uint64_t{}) &&
-        left.value("slot", std::string{}) == right.value("slot", std::string{})) {
-        return true;
-    }
-    if (left_kind == "component_list_row" &&
-        right_kind == "component_list_row" &&
-        left.value("object", std::uint64_t{}) ==
-            right.value("object", std::uint64_t{}) &&
-        left.value("list_path", std::string{}) ==
-            right.value("list_path", std::string{}) &&
-        left.contains("attachment") && right.contains("attachment") &&
-        left.at("attachment") == right.at("attachment")) {
-        return true;
-    }
     return false;
 }
 
@@ -3777,8 +3964,22 @@ bool postconditionsHold(const EditorJournalRecord &record,
                         const AuthoringSceneDocument &document) {
     if (record.commands.size() != record.forward_postconditions.size()) return false;
     for (const auto &command : record.commands) {
-        if (targetState(Json::array({command.forward}), document) !=
-            command.forward_postcondition) {
+        const auto observed = targetState(Json::array({command.forward}), document);
+        auto expected = command.forward_postcondition;
+        if (observed.contains("authored_component") &&
+            expected.contains("authored_component")) {
+            // Undoing a later insertion leaves its allocator high water behind.
+            // That alone must not invalidate an older command's postcondition;
+            // every authored value and row identity must still match exactly.
+            Json component = expected.at("authored_component");
+            validateRawComponentTransition(
+                observed.at("authored_component"), component,
+                AuthoringObjectId{command.forward.at("object_id")
+                                      .get<std::uint64_t>()},
+                command.forward.at("component_slot").get<std::string>(), true);
+            expected["authored_component"] = std::move(component);
+        }
+        if (observed != expected) {
             return false;
         }
     }

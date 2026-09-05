@@ -5,11 +5,13 @@
 #include "../src/core/loader/componentcodec.hpp"
 #include "../src/core/loader/editorprojectiontransaction.hpp"
 #include "../src/core/userpublic/details/schema/structfieldjson.hpp"
+#include "../src/core/userpublic/behavior.hpp"
 #include "authoringscenetestsupport.hpp"
 
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <regex>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -18,6 +20,18 @@ namespace Pelican {
 namespace {
 
 using Json = nlohmann::ordered_json;
+
+struct Wp382bIndependentParams {
+    std::string label;
+    static constexpr auto schema = structFields(behaviorParamsPolicy,
+        defaulted(field<&Wp382bIndependentParams::label>("label"), "independent"));
+};
+class Wp382bIndependentBehavior final : public Behavior {
+  public:
+    using Params = Wp382bIndependentParams;
+};
+PELICAN_REGISTER_BEHAVIOR(Wp382bIndependentBehavior,
+                         "wp382b_independent_behavior", 1);
 
 struct Wp382bRow {
     std::string key;
@@ -148,15 +162,14 @@ Json address(std::size_t occurrence, std::string list_path,
     return result;
 }
 
-void eraseHighWater(nlohmann::json &value) {
-    if (value.is_object()) {
-        if (value.contains("$list") && value.at("$list").is_object()) {
-            value["$list"].erase("next_id");
-        }
-        for (auto &entry : value) eraseHighWater(entry);
-    } else if (value.is_array()) {
-        for (auto &entry : value) eraseHighWater(entry);
-    }
+std::string semanticWithoutHighWater(const AuthoringSceneDocument &document) {
+    // Preserve the actual semantic bytes: reparsing and dumping would hide
+    // changes in their representation. Only the allocator's numeric token is
+    // allowed to differ across undo/redo. The semantic encoder sorts keys, so
+    // next_id is the first member of these fixtures' $list envelopes.
+    static const std::regex high_water{R"(("\$list":\{"next_id":)[0-9]+)"};
+    return std::regex_replace(AuthoringSceneAuthority::encodeSemantic(document),
+                              high_water, "$1<high-water>");
 }
 
 struct CoordinatorFixture {
@@ -165,7 +178,9 @@ struct CoordinatorFixture {
     std::uint64_t actor = 0;
     std::string reconnect_token;
 
-    explicit CoordinatorFixture(AuthoringSceneDocument document)
+    explicit CoordinatorFixture(AuthoringSceneDocument document,
+        decltype(EditorEditRuntimeDependencies::allocate_behavior_attachment)
+            allocate_behavior = {})
         : target{std::move(document)},
           edits{EditorEditRuntimeDependencies{
               .document = [&]() -> const AuthoringSceneDocument & {
@@ -182,6 +197,7 @@ struct CoordinatorFixture {
                   return transaction.commit(request.commands, adapters);
               },
               .gate = [] { return EditorGateObservation{}; },
+              .allocate_behavior_attachment = std::move(allocate_behavior),
           }} {
         const auto session = edits.openSession({{"display_name", "wp382b"}});
         actor = session.at("actor_id").get<std::uint64_t>();
@@ -230,15 +246,21 @@ struct CoordinatorFixture {
     }
 };
 
+#if PELICAN_WITH_RPC
 TEST_CASE("WP382b row RPC operations retain raw bytes and journal high water",
           "[WP382b][editor][journal][wire]") {
+#else
+TEST_CASE("WP382b row coordinator operations retain raw bytes and journal high water",
+          "[WP382b][editor][journal][rpc-off]") {
+#endif
     auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(),
                                                componentCodecs().end()};
     codecs.push_back(carrierCodec());
     testing::ScopedComponentCodecCatalog catalog{std::move(codecs)};
     CoordinatorFixture fixture{carrierDocument()};
 
-    auto before = nlohmann::json::parse(fixture.target.document.encodeSemantic());
+    const auto before = semanticWithoutHighWater(fixture.target.document);
+#if PELICAN_WITH_RPC
     std::istringstream input;
     std::ostringstream output;
     RpcServer rpc{input, output};
@@ -266,6 +288,17 @@ TEST_CASE("WP382b row RPC operations retain raw bytes and journal high water",
         REQUIRE_FALSE(response.contains("error"));
         return response.at("result");
     };
+#else
+    // RPC is absent from this product configuration. Exercise the same edit
+    // and journal contract through its available coordinator entry points.
+    const auto call = [&](std::string_view method, Json params) -> Json {
+        if (method == "edit") return fixture.edits.enqueue(params);
+        if (method == "undo") return fixture.edits.enqueueUndo(params);
+        if (method == "redo") return fixture.edits.enqueueRedo(params);
+        REQUIRE(std::string{method} == "get_edit_result");
+        return fixture.edits.getResult(params);
+    };
+#endif
     const auto rpc_edit = [&](Json operation) {
         const auto accepted = call(
             "edit", {{"actor_id", fixture.actor},
@@ -303,6 +336,8 @@ TEST_CASE("WP382b row RPC operations retain raw bytes and journal high water",
     REQUIRE(accepted.at("row_id") == 3);
     REQUIRE(component(fixture.target).at("rows").at("rows").at(0)
                 .at("$row").at("id") == 3);
+    const auto after_insert =
+        semanticWithoutHighWater(fixture.target.document);
 
     const auto [set_accepted, set] = rpc_edit(
         {{"op", "set_component_value"},
@@ -311,6 +346,7 @@ TEST_CASE("WP382b row RPC operations retain raw bytes and journal high water",
     (void)set_accepted;
     REQUIRE(component(fixture.target).at("rows").at("rows").at(0)
                 .at("amount") == 9);
+    const auto after_set = semanticWithoutHighWater(fixture.target.document);
 
     const auto [remove_accepted, removed] = rpc_edit(
         {{"op", "remove_component_field"},
@@ -319,26 +355,54 @@ TEST_CASE("WP382b row RPC operations retain raw bytes and journal high water",
     REQUIRE(component(fixture.target).at("rows").at("rows").size() == 2);
     REQUIRE(component(fixture.target).at("rows").at("$list").at("next_id") ==
             4);
+    const auto after_remove =
+        semanticWithoutHighWater(fixture.target.document);
 
     const auto undo_remove = rpc_revert("undo", removed);
+    REQUIRE(semanticWithoutHighWater(fixture.target.document) == after_set);
     const auto undo_set = rpc_revert("undo", set);
+    REQUIRE(semanticWithoutHighWater(fixture.target.document) == after_insert);
     const auto undo_insert = rpc_revert("undo", inserted);
-    auto undone =
-        nlohmann::json::parse(fixture.target.document.encodeSemantic());
     REQUIRE(component(fixture.target).at("rows").at("$list").at("next_id") ==
             4);
-    eraseHighWater(before);
-    eraseHighWater(undone);
-    REQUIRE(undone == before);
+    REQUIRE(semanticWithoutHighWater(fixture.target.document) == before);
 
     const auto redo_insert = rpc_revert("redo", undo_insert);
+    REQUIRE(semanticWithoutHighWater(fixture.target.document) == after_insert);
     const auto redo_set = rpc_revert("redo", undo_set);
+    REQUIRE(semanticWithoutHighWater(fixture.target.document) == after_set);
     (void)rpc_revert("redo", undo_remove);
+    REQUIRE(semanticWithoutHighWater(fixture.target.document) == after_remove);
     REQUIRE(component(fixture.target).at("rows").at("rows").size() == 2);
     REQUIRE(component(fixture.target).at("rows").at("$list").at("next_id") ==
             4);
     REQUIRE(redo_insert.at("status") == "committed");
     REQUIRE(redo_set.at("status") == "committed");
+
+    // Reproduce the production RPC-bytes escape: legacy set_component_value
+    // must not be able to rewind the allocator after row 3 was removed.
+    const auto rewind = call(
+        "edit", {{"actor_id", fixture.actor},
+                 {"base_revision",
+                  fixture.target.projectionState().revision().value},
+                 {"operations",
+                  Json::array({{{"op", "set_component_value"},
+                                {"object_id", 1},
+                                {"component_slot", "wp382b_carrier"},
+                                {"field_path", "/rows/$list/next_id"},
+                                {"value", 3}}})}});
+    REQUIRE(rewind.at("status") == "rejected");
+    REQUIRE(rewind.at("error").at("code") ==
+            "ListIndexAddressingRejected");
+    REQUIRE(rewind.at("error").at("payload").at("pointer_classification") ==
+            "list_envelope");
+    const auto [next_accepted, next_insert] = rpc_edit(
+        {{"op", "insert_component_field"},
+         {"address", address(0, "/rows")},
+         {"position", {{"end", true}}},
+         {"value", {{"key", "after-rejected-rewind"}, {"amount", 4}}}});
+    (void)next_insert;
+    REQUIRE(next_accepted.at("row_id") == 4);
 }
 
 TEST_CASE("WP382b field insertion uses schema defaults and batch allocation is monotonic",
@@ -390,6 +454,25 @@ TEST_CASE("WP382b field insertion uses schema defaults and batch allocation is m
     REQUIRE(rows.back().at("$row").at("hint").at("copy") == true);
     REQUIRE(component(fixture.target).at("rows").at("$list").at("next_id") ==
             5);
+
+    const auto inserted =
+        fixture.edits.getResult({{"ticket", accepted.at("ticket")}});
+    (void)fixture.undo(inserted);
+    Json next_accepted;
+    const auto first_after_undo = fixture.commit(
+        {{"op", "insert_component_field"},
+         {"address", address(0, "/rows")},
+         {"position", {{"end", true}}},
+         {"value", {{"key", "after-batch-undo"}}}}, &next_accepted);
+    REQUIRE(next_accepted.at("row_id") == 5);
+    const auto second_after_undo = fixture.commit(
+        {{"op", "insert_component_field"},
+         {"address", address(0, "/rows")},
+         {"position", {{"end", true}}},
+         {"value", {{"key", "after-first-undo"}}}});
+    (void)fixture.undo(second_after_undo);
+    (void)fixture.undo(first_after_undo);
+    REQUIRE(component(fixture.target).at("rows").at("$list").at("next_id") == 7);
 }
 
 TEST_CASE("WP382b list edit failures retain their protocol names",
@@ -547,6 +630,69 @@ TEST_CASE("WP382b row identity survives insertion and attachment witnesses disam
                 .at("amount") == 222);
 }
 
+TEST_CASE("WP382b separate attachments do not create a false undo conflict",
+          "[WP382b][editor][journal][attachment][two-actor][undo]") {
+    auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(),
+                                               componentCodecs().end()};
+    codecs.push_back(carrierCodec());
+    testing::ScopedComponentCodecCatalog catalog{std::move(codecs)};
+    CoordinatorFixture fixture{carrierDocument(true)};
+
+    const auto actor_a_insert = fixture.commit(
+        {{"op", "insert_component_field"},
+         {"address", address(0, "/rows")},
+         {"position", {{"end", true}}},
+         {"value", {{"key", "actor-a"}, {"amount", 3}}}});
+    const auto actor_b_session =
+        fixture.edits.openSession({{"display_name", "actor-b"}});
+    const auto actor_b_set = fixture.edits.enqueue(
+        {{"actor_id", actor_b_session.at("actor_id")},
+         {"base_revision", fixture.target.projectionState().revision().value},
+         {"operations",
+          Json::array({{{"op", "set_component_value"},
+                        {"address", address(1, "/rows", 2, "/amount")},
+                        {"value", 222}}})}});
+    REQUIRE(actor_b_set.at("status") == "accepted");
+    fixture.edits.commitPending();
+    REQUIRE(fixture.edits.getResult({{"ticket", actor_b_set.at("ticket")}})
+                .at("status") == "committed");
+    (void)fixture.edits.resumeSession(
+        {{"reconnect_token", fixture.reconnect_token}});
+
+    const auto undone = fixture.undo(actor_a_insert);
+    REQUIRE(undone.at("status") == "committed");
+    REQUIRE(component(fixture.target, 0).at("rows").at("rows").size() == 2);
+    REQUIRE(component(fixture.target, 1).at("rows").at("rows").at(1)
+                .at("amount") == 222);
+}
+
+TEST_CASE("WP382b behavior insertion leaves an independent component list undo available",
+          "[WP382b][editor][journal][attachment][two-actor][undo]") {
+    auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(),
+                                               componentCodecs().end()};
+    codecs.push_back(carrierCodec());
+    testing::ScopedComponentCodecCatalog catalog{std::move(codecs)};
+    CoordinatorFixture fixture{carrierDocument(),
+        [](std::uint64_t revision, std::size_t, std::size_t occurrence) {
+            return EditorBehaviorAttachmentIdentity{
+                .handle = revision, .attachment_seq = occurrence};
+        }};
+    const auto edited = fixture.commit({{"op", "set_component_value"},
+        {"address", address(0, "/rows", 2, "/amount")}, {"value", 99}});
+    const auto actor_a = fixture.actor;
+    fixture.actor = fixture.edits.openSession({{"display_name", "actor-b"}})
+                        .at("actor_id").get<std::uint64_t>();
+    fixture.commit({{"op", "add_component"}, {"object_id", 1},
+        {"component", {{"name", "behavior"},
+                       {"type", "wp382b_independent_behavior"}}}});
+    (void)fixture.edits.resumeSession({{"reconnect_token", fixture.reconnect_token}});
+    fixture.actor = actor_a;
+    (void)fixture.undo(edited);
+    REQUIRE(component(fixture.target).at("rows").at("rows").at(1)
+                .at("amount") == 2);
+    REQUIRE(component(fixture.target, 1).at("type") == "wp382b_independent_behavior");
+}
+
 TEST_CASE("WP382b later client list structure prevents a stale row undo",
           "[WP382b][editor][cas][journal]") {
     auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(),
@@ -670,6 +816,102 @@ TEST_CASE("WP382b scalar raw patch preserves list subtrees and named negatives",
     REQUIRE(missing_row_leaf.at("error").at("code") == "schema_violation");
     REQUIRE_FALSE(component(fixture.target).at("rows").at("rows").at(0)
                       .contains("amount"));
+}
+
+TEST_CASE("WP382b legacy field operations reject every list pointer class",
+          "[WP382b][editor][negative][pointer][matrix]") {
+    auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(),
+                                               componentCodecs().end()};
+    codecs.push_back(carrierCodec());
+    testing::ScopedComponentCodecCatalog catalog{std::move(codecs)};
+    CoordinatorFixture fixture{carrierDocument()};
+
+    struct PointerCase {
+        const char *path;
+        const char *classification;
+    };
+    const std::vector<PointerCase> pointers{
+        {"/rows", "list_root"},
+        {"/rows/rows", "rows_container"},
+        {"/rows/$list", "list_envelope"},
+        {"/rows/rows/0/$row", "row_envelope"},
+        {"/rows/rows/0/amount", "numeric_index"},
+        {"/rows/rows/-", "append_index"},
+    };
+    for (const auto op : {"set_component_value", "insert_component_field",
+                          "remove_component_field"}) {
+        for (const auto &pointer : pointers) {
+            DYNAMIC_SECTION(op << " " << pointer.path) {
+                Json operation{{"op", op},
+                               {"object_id", 1},
+                               {"component_slot", "wp382b_carrier"},
+                               {"field_path", pointer.path}};
+                if (std::string_view{op} == "set_component_value") {
+                    operation["value"] = 0;
+                }
+                const auto before =
+                    fixture.target.document.encodeSemantic();
+                const auto rejected = fixture.edits.enqueue(
+                    {{"actor_id", fixture.actor},
+                     {"base_revision",
+                      fixture.target.projectionState().revision().value},
+                     {"operations", Json::array({std::move(operation)})}});
+                REQUIRE(rejected.at("status") == "rejected");
+                REQUIRE(rejected.at("error").at("code") ==
+                        "ListIndexAddressingRejected");
+                REQUIRE(rejected.at("error")
+                            .at("payload")
+                            .at("pointer_classification") ==
+                        pointer.classification);
+                REQUIRE(fixture.target.document.encodeSemantic() ==
+                        before);
+            }
+        }
+    }
+}
+
+TEST_CASE("WP382b spawn preserves a non-behavior component authored form",
+          "[WP382b][editor][journal][spawn][raw][undo][redo]") {
+    auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(),
+                                               componentCodecs().end()};
+    codecs.push_back(carrierCodec());
+    testing::ScopedComponentCodecCatalog catalog{std::move(codecs)};
+    CoordinatorFixture fixture{carrierDocument()};
+
+    const Json authored_component{
+        {"name", "wp382b_carrier"},
+        {"rows", list(2, Json::array({row(1, "spawned")}))},
+    };
+    const auto before = fixture.target.document.encodeSemantic();
+    const auto spawned = fixture.commit(
+        {{"op", "spawn"},
+         {"scene_id", "main"},
+         {"object",
+          {{"name", "SpawnedRaw"},
+           {"components", Json::array({authored_component})}}}});
+    const auto &spawned_component = fixture.target.document.rawJson()
+                                        .at("scenes")
+                                        .at("main")
+                                        .at("objects")
+                                        .back()
+                                        .at("components")
+                                        .at(0);
+    REQUIRE(spawned_component == authored_component);
+    REQUIRE_FALSE(spawned_component.contains("scalar"));
+    REQUIRE_FALSE(spawned_component.contains("untouched"));
+    const auto after = fixture.target.document.encodeSemantic();
+
+    const auto undone = fixture.undo(spawned);
+    REQUIRE(fixture.target.document.encodeSemantic() == before);
+    (void)fixture.redo(undone);
+    REQUIRE(fixture.target.document.encodeSemantic() == after);
+    REQUIRE(fixture.target.document.rawJson()
+                .at("scenes")
+                .at("main")
+                .at("objects")
+                .back()
+                .at("components")
+                .at(0) == authored_component);
 }
 
 TEST_CASE("WP382b persisted list high water is not recomputed from rows",
