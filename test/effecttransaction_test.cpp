@@ -117,6 +117,8 @@ TEST_CASE("WP380b effect sink rollback keeps the committed semantic snapshot",
         internal::PreparedEffectTransaction transaction{persistence, loader};
         internal::EffectTransactionScope scope{transaction};
         failed_handle = context.playSound("project://tone.wav");
+        REQUIRE_THROWS_AS(context.setRayTracingCallableRecord("trace", 0, {}),
+                          SceneTransactionMutationRejected);
         REQUIRE(context.isPlaying(failed_handle));
         context.stopSound(failed_handle);
         REQUIRE_FALSE(context.isPlaying(failed_handle));

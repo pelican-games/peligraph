@@ -1709,6 +1709,7 @@
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/gamecontext.cpp|`GameContext::debugText()`": "void GameContext::debugText(int x, int y, std::string_view text) const {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/gamecontext.cpp|`GameContext::gameSettings()`": "GameContext::Json GameContext::gameSettings() const {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/gamecontext.cpp|`GameContext::loadScene()`": "void GameContext::loadScene(std::string_view name) const {",
+    "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/gamecontext.cpp|`GameContext::localTransform()`": "LocalTransformComponent GameContext::localTransform(GameObjectId id) const {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/gamecontext.cpp|`GameContext::logInfo()`": "void GameContext::logInfo(std::string_view message) const {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/gamecontext.cpp|`GameContext::playSound()`": "SoundHandle GameContext::playSound(std::string_view path) const {",
     "docs/source-code-guide/05_gameplay_and_services.md|../../src/core/userpublic/gamecontext.cpp|`GameContext::random()`": "double GameContext::random() {",

@@ -220,6 +220,13 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
+      "signature": "void setRayTracingCallableRecord(std::string_view task_name,std::uint32_t index,const nlohmann::json&values)const",
+      "classification": "mutator",
+      "manifest": "reject.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
       "signature": "double random()",
       "classification": "mutator",
       "manifest": "covered.rng-sequence"

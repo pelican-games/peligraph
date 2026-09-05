@@ -424,7 +424,13 @@ callable独自データは `callable_record` にmember配列、`callable_records
 
 実行時はrender threadから `ComputeTaskContainer::setCallableRecord(task_id, index, values)` で1recordを更新する。型不正なら変更せず、同値ならGPU bufferも維持する。更新後のdispatchで新しいSBTを作り、旧SBTはそれを使うGPU submissionのleaseで完了まで保持する。固定のframe数に依存せず、未変更なら同じimmutable SBTを再利用する。shader reloadでpipeline世代が変わった場合は、新しいhandleでrecordを再配置する。record更新自体はpipeline再作成を伴わない。
 
-これはエンジン内部の更新APIであり、Studioのrecord編集UIやゲーム用public APIへの接続を完了とするものではない。最新の利用者指示により学習サンプルの追加よりエンジン中核の機能完成を優先する。
+ゲーム側は `GameContext::setRayTracingCallableRecord(task_name, index, values)` を使用する。`BehaviorContext` からも継承した同じAPIを呼べる。内部task handleやVulkan型への依存は不要。ゲーム更新threadから呼び、存在しないtask・範囲外index・不正な値は例外で通知し、前のrecordを維持する。シーンactivate/destroyのtransaction内ではlive taskを更新せず `SceneTransactionMutationRejected` を返す。初期値は宣言の `callable_records` に置く。
+
+```cpp
+context.setRayTracingCallableRecord("trace_lighting", 0, {{"gain", 0.8f}});
+```
+
+Studioのrecord編集UIは未実装。最新の利用者指示により学習サンプルの追加よりエンジン中核の機能完成を優先する。
 
 ### RT3〜RT7
 

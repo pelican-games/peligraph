@@ -189,6 +189,7 @@ constexpr std::array public_api_manifest{
     ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setPointLightPosition(std::string_view name,vec3 position)const", "covered.candidate"},
     ScenePublicApiManifestEntry{"GameContext", "[[nodiscard]] bool setSpotLightDirection(std::string_view name,vec3 direction)const", "covered.candidate"},
     ScenePublicApiManifestEntry{"GameContext", "void setCamera(std::string_view name)const", "covered.candidate"},
+    ScenePublicApiManifestEntry{"GameContext", "void setRayTracingCallableRecord(std::string_view task_name,std::uint32_t index,const nlohmann::json&values)const", "reject.transaction-scope"},
     ScenePublicApiManifestEntry{"GameContext", "double random()", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"GameContext", "int randomInt(int min,int max)", "covered.rng-sequence"},
     ScenePublicApiManifestEntry{"GameContext", "float randomFloat(float min,float max)", "covered.rng-sequence"},

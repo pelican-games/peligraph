@@ -3359,6 +3359,7 @@ Json wp380Document(std::int32_t tag, std::string_view scene_name,
 struct Wp380FixtureExports {
     PelicanWp380ReadProbeFn read_probe = nullptr;
     PelicanWp380ReadExpectedFn read_expected = nullptr;
+    PelicanWp380SetCallableRecordFn set_callable_record = nullptr;
 };
 
 Wp380FixtureExports wp380Exports(const std::filesystem::path &path) {
@@ -3381,6 +3382,8 @@ Wp380FixtureExports wp380Exports(const std::filesystem::path &path) {
             GetProcAddress(module, "pelican_wp380_fixture_read_probe")),
         .read_expected = reinterpret_cast<PelicanWp380ReadExpectedFn>(
             GetProcAddress(module, "pelican_wp380_fixture_read_expected")),
+        .set_callable_record = reinterpret_cast<PelicanWp380SetCallableRecordFn>(
+            GetProcAddress(module, "pelican_wp380_fixture_set_callable_record")),
     };
     if (result.read_probe == nullptr || result.read_expected == nullptr) {
         throw std::runtime_error(
@@ -5079,6 +5082,13 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     (void)configureWp374aRuntime(project.path);
     TestSupport::requireVulkanDevice("RT4 callable dispatch");
     GET_MODULE(ECSPredefinedRegistration).reg();
+#ifdef PELICAN_WP380_BEHAVIOR_FIXTURE
+    if (dynamic_records) {
+        GET_MODULE(EngineLaunchConfig).game_logic_dll =
+            std::filesystem::path{PELICAN_WP380_BEHAVIOR_FIXTURE};
+        REQUIRE(initializeConfiguredGameLogic());
+    }
+#endif
     test_support::loadScene(GET_MODULE(SceneLoader), "main");
     const auto marker = [&] {
         (void)renderWp374aProductionRows();
@@ -5094,11 +5104,22 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         std::size_t pipeline_creates = 0;
         ScopedRayTracingPipelineCreateObserver observer{
             [&](const RayTracingPipelineCreateObservation &) { ++pipeline_creates; }};
-        auto &tasks = GET_MODULE(ComputeTaskContainer);
-        const auto task = tasks.getComputeTaskIdByName("wp386_trace");
-        tasks.setCallableRecord(task, 1, Json{{"increment", 400}});
+        const GameContext context;
+#ifdef PELICAN_WP380_BEHAVIOR_FIXTURE
+        const std::filesystem::path fixture_path{PELICAN_WP380_BEHAVIOR_FIXTURE};
+        const auto fixture = wp380Exports(fixture_path);
+        REQUIRE(fixture.set_callable_record != nullptr);
+        fixture.set_callable_record("wp386_trace", 1, 400);
+#else
+        context.setRayTracingCallableRecord("wp386_trace", 1, Json{{"increment", 400}});
+#endif
         CHECK(marker() == 407u);
-        CHECK_THROWS(tasks.setCallableRecord(task, 1, Json{{"increment", "invalid"}}));
+        CHECK_THROWS(context.setRayTracingCallableRecord(
+            "missing_ray_task", 1, Json{{"increment", 500}}));
+        CHECK_THROWS(context.setRayTracingCallableRecord(
+            "wp386_trace", 2, Json{{"increment", 500}}));
+        CHECK_THROWS(context.setRayTracingCallableRecord(
+            "wp386_trace", 1, Json{{"increment", "invalid"}}));
         CHECK(marker() == 407u);
         CHECK(pipeline_creates == 0);
     }

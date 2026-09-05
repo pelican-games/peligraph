@@ -70,6 +70,12 @@ class PELICAN_API GameContext {
         const phys::Shape &shape, const phys::QueryFilter &filter) const;
     void setCamera(std::string_view name) const;
 
+    // Call from the game/update thread. Values must match the task's
+    // callable_record schema; invalid updates leave the previous values intact.
+    // Scene activation/destruction transactions cannot modify live RT tasks.
+    void setRayTracingCallableRecord(std::string_view task_name, std::uint32_t index,
+                                    const nlohmann::json &values) const;
+
     double random();
     int randomInt(int min, int max);
     float randomFloat(float min, float max);

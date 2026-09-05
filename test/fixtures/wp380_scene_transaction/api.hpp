@@ -59,3 +59,5 @@ using PelicanWp380ReadProbeFn = bool (*)(
     std::int32_t scene_tag, Pelican::Wp380Fixture::ProbeV1 *probe);
 using PelicanWp380ReadExpectedFn = bool (*)(
     std::int32_t scene_tag, Pelican::Wp380Fixture::ProbeV1 *probe);
+using PelicanWp380SetCallableRecordFn = void (*)(
+    const char *task_name, std::uint32_t index, std::uint32_t increment);

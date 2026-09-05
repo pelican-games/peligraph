@@ -20,6 +20,7 @@
 #endif
 #include "../renderer/camera.hpp"
 #include "../renderer/debugtext.hpp"
+#include "../renderingpass/computetask.hpp"
 
 #include <utility>
 
@@ -164,6 +165,20 @@ bool GameContext::setSpriteTexture(GameObjectId id, std::string_view texture) co
 bool GameContext::setDirectionalLightDirection(std::string_view name, vec3 direction) const {
     return GET_MODULE(LightContainer).setDirectionalLightDirection(
         std::string{name}, glm::vec3{direction.x, direction.y, direction.z});
+}
+
+void GameContext::setRayTracingCallableRecord(
+    std::string_view task_name, std::uint32_t index, const nlohmann::json &values) const {
+    if (internal::activeEffectTransaction() != nullptr) {
+        throw SceneTransactionMutationRejected{"setRayTracingCallableRecord"};
+    }
+    auto &tasks = GET_MODULE(ComputeTaskContainer);
+    const auto task = tasks.getComputeTaskIdByName(std::string{task_name});
+    if (task.value < 0) {
+        throw std::invalid_argument(
+            "pelican.ray_tracing.task_not_found@1: task '" + std::string{task_name} + "'");
+    }
+    tasks.setCallableRecord(task, index, values);
 }
 
 bool GameContext::setDirectionalLightIntensity(std::string_view name, float intensity) const {

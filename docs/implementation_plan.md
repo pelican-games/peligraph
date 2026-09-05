@@ -23237,7 +23237,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (RT4 動的record中核の実装後):** 学習サンプルは後回し。callableの実行・単独reloadと動的recordの中核まで確認済み。次はゲーム側public APIとの接続、その後RT5。下の旧記録にあるサンプル優先は本指示で更新する。詳細は本節のRT4最新記録を参照。
+**最新の入口 (2026-09-06、RT4 public API接続後):** 学習サンプルは後回し。callableの実行・単独reload・動的recordとゲームDLLからの更新まで確認済み。次はRT5の変形geometry。Studioのrecord編集UIは残る。下の旧記録にあるサンプル優先は本指示で更新する。詳細は本節のRT4最新記録を参照。
 
 **2026-09-05 最新の利用者裁定:** 数値検証基盤の拡張は停止。WP386cの残りの区間oracle/generator/任意SPIR-V意味認定を、機能提供やRT4以降の必須条件から外す。未実装を完了にはせず保留とする。まずPlayer/Studioから開けるレイトレ学習サンプルを作り、配置・サイズ・AABB・混在を実際の描画と編集で確認する。その後callableと動的record(RT4)、変形geometry(RT5)、ノード編集へ進む。旧再開順の「386cの数値golden完成後にfeature enable」はこの裁定で更新する。[v1開発方針](v1_development_plan.md)を参照。
 
@@ -23264,6 +23264,13 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 - 初回のFable読み取りレビューは未コミットsourceの外部送信について自動承認審査に拒否された。その後、利用者が球の数値計算・SPIR-V検査・対応テストをClaude/Fableへ送るレビューを明示承認し、下記の再開レビューを実施。承認はこの送信範囲に継続適用する。ローカル独立レビューで指摘されたsqrt補正の独立否定対照は前項の端点変異で補強済み。
 - 最終レビューでRelaxedPrecisionを持つmoduleをf32数値subsetから除外し、対照を追加(通常loadの拒否ではない)。`device_unsupported`は分類関数で確認済みだが、要求float capabilityに非対応の実機ではpipeline作成が先に拒否され得る。そうした実機でもstatus wireへ必ず分類が出る保証は未確認で、golden前の入口整理の残項目とする。
 - 長期既知の `contract_projection_gate` 失敗は棚卸しの未追従17件だった。新consumer14経路を登録し、間接利用等の3経路は理由付き `scan:false` としてanchor検査を維持。checker/scan範囲を弱めず、3gateと既存checker試験4件(未登録sourceの否定対照を含む)成功、通常CTestの同gate **1/1成功**(2.43秒)。この成功を描画全体や過去の全数成功へ読み替えない。
+
+**RT4 public API接続 (2026-09-06):**
+- `GameContext::setRayTracingCallableRecord(task_name, index, values)` を追加。BehaviorContextも継承して使用でき、ゲームコードにinternal task handleやVulkan型を露出しない。既存の更新処理へ委譲し、別の値輸送やcacheは作らない。
+- 未知taskは名前付きエラー、index/値の検査は既存の中核を使用。シーンactivate/destroy transaction内のlive task変更は既存SceneTransactionMutationRejectedで拒否し、失敗したscene候補から現在の描画値へ変更が漏れる経路を閉じる。初期値はcallable_recordsで設定する。
+- 既存のゲームDLL fixtureから実際に新APIをimportして更新。GPU **1/1** (static/dynamic、24 assertions) 成功。407への更新、不正task/index/値後の407維持、pipeline再作成0件、単独shader reload後1207を確認。
+- 既存effect/transaction試験 **9/9** (401 assertions)、public API inventoryとcontract projection **2/2**、Player/StudioとDLL build成功。ログ `build/.codex_bg/rt4_public_{build,gpu,effect,contract}.log`。新しいfixture targetやテストツールは追加しない。
+- 次はRT5の変形geometryを既存animation/AS更新経路へ接続する。Studioのrecord編集UIはこの完了に含めない。
 
 **RT4 動的callable record中核 (2026-09-05):**
 - `callable_record` の共通member schemaと `callable_records` のcallable順初期値を追加。既存hit recordとmember解析・std430パッキング・shader reflection比較を共通化し、別の数値基盤は作らない。

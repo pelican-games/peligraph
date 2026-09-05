@@ -113,3 +113,9 @@ PELICAN_WP380_FIXTURE_API bool pelican_wp380_fixture_read_expected(
     *probe = expected(scene_tag);
     return true;
 }
+
+PELICAN_WP380_FIXTURE_API void pelican_wp380_fixture_set_callable_record(
+    const char *task_name, std::uint32_t index, std::uint32_t increment) {
+    Pelican::GameContext{}.setRayTracingCallableRecord(
+        task_name, index, nlohmann::json{{"increment", increment}});
+}

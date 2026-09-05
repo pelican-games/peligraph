@@ -374,7 +374,7 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 `presence` は4値で、**ビルド構成から導かれます**（[`SceneParticipantPresence`](../../src/core/loader/sceneparticipantmanifest.hpp#L9)）。physics / seqplayer / vatplayer は `real` か `stub`、XRとRPCは `real` か `absent`、audioは `real` か `uninstalled` です（[先頭の `#if` 群](../../src/core/loader/sceneparticipantmanifest.cpp#L9)）。「このビルドには無い」と「このビルドでは別物が入っている」を1つの `bool` へ潰さない、という区別です。
 
-`role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L16)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L238)）、**executorの外に居るものも明示的に載る**のが要点です。
+`role` は10値あり（[`SceneManifestRole`](../../src/core/loader/sceneparticipantmanifest.hpp#L16)、名前は [`sceneManifestRoleName()`](../../src/core/loader/sceneparticipantmanifest.cpp#L239)）、**executorの外に居るものも明示的に載る**のが要点です。
 
 | role | 意味 | 例 |
 |---|---|---|
