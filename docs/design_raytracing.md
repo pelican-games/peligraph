@@ -457,8 +457,14 @@ ray queryをshaderから使うgraphは`target_planning.graphs`の`required_capab
 `pelican.vulkan.ray_query@1`を宣言する。宣言もRT taskもray projectも無いまま
 reflectionだけでASが必要になった場合、graph外で暗黙に構築せずロード時に明示拒否する。
 
-このnodeはcompiler生成で、現在sceneのdefault TLASと以下の名前付きTLASをまとめて構築する。
-AS単位の編集node・編集RPCは残る。BLAS geometry結合は以下のRT6節に記す。
+compilerは共有構築nodeに続けて、以下の名前付きTLASごとに
+`__scene_acceleration_structure:<name>`を生成する。共有nodeは変形・BLAS・default TLASを構築し、
+名前付きnodeはそのBLASとinstance列を使って対象TLASだけを構築する。再利用可能な集合では
+名前付きnodeはbuild commandを再発行しない。各nodeの実行traceで記録の有無を観測できる。
+全consumerはAS集合の完成を待ち、最後のAS操作で一つのdescriptor bundleを公開する。
+途中失敗では既存のframe transactionが公開を取り消し、記録済み資源はsubmissionまで保持する。
+AS定義とtask接続は編集RPCから変更できるが、生成nodeの任意移動や独立した公開・
+一般のgraph edge編集は未実装。BLAS geometry結合は以下のRT6節に記す。
 
 ### RT6: 名前付きTLASの選択（2026-09-06）
 
@@ -510,7 +516,7 @@ source identity・順序・topology・flagsが一致するとき別allocationへ
 deviceのmaxGeometryCountと総maxPrimitiveCountに達する前にgroupを分割する。
 単独geometry自体がprimitive上限を超える場合は拒否する。
 診断の`geometry_count`はBLAS内のgeometry数、`tlas_instance_count`は結合後の実instance数を示す。
-AS単位の編集node、異なるtransformのgeometryをまとめる操作、AABBの複数geometry化は残る。
+異なるtransformのgeometryをまとめる操作、AABBの複数geometry化は残る。
 
 ### RT7: 名前付きASの編集（2026-09-06）
 
@@ -529,7 +535,7 @@ rootの`ray_task_acceleration_structures`はtask名からAS名へのobjectで、
 task名はvariant suffix付与前の宣言名。通常compute taskと未知taskへの指定は拒否する。
 getの`task_connections[]`はname・acceleration_structure・authored_acceleration_structureを返す。
 editの省略可能な`task_connections` objectはrootの接続指定全体を置換し、空objectで元宣言へ戻す。
-ASごとの独立実行node、graphのfork/CAS操作は引き続き未実装。
+ASごとの実行nodeはcompilerが生成する。graphのfork/CAS操作は引き続き未実装。
 
 ## 9. エラー文言・受け入れゲート
 

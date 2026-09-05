@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 task AS connections):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。名前付きAS編集は9255ed28に統合済み。taskのAS接続をproject側で上書き・保存する経路を追加し、RT/query両方の実GPU反映を確認。Inspectorのcomponent削除も接続。次はAS単位の実行nodeとgraph編集、record編集UI、component追加などの残機能。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 named AS nodes):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。taskのAS接続編集とInspectorのcomponent削除は55145251に統合済み。名前付きTLASごとの実行nodeを追加し、実GPUで確認。次はCallable record初期値の永続編集、graph fork/CAS、component追加などの残機能。学習サンプルは後回し。
+
+**RT7 named AS nodes (2026-09-06):**
+- compilerが共有構築nodeと名前付きTLASごとの`__scene_acceleration_structure:<name>`を生成。名前付きnodeは共有nodeに依存し、全consumerはAS集合の完成に依存する。AS定義と接続編集からこの構成を再生成する。任意node移動や一般graph edge編集までの完成とは扱わない。
+- recordFrameは共有BLAS/default TLASを記録し、FrameBuild::recordNamedTopLevelが当該nodeで指定TLASだけを記録。instance列とBLASを共有し、TLAS helper/barrierを共通化。全AS完成後に一度だけdescriptor bundleを公開。XRのview-independent実行と既存publication/rollbackを維持する。
+- scratch/instance入力/build先ASはcommand記録前にsubmissionへleaseし、後続nodeの失敗でも保持。全named集合が揃うStateだけを再利用し、再利用nodeではbuildを発行しない。
+- CPU3/3（64 assertions、`build/.codex_bg/rt7asnodes-cpu.log`）、実GPU3/3（237 assertions、`rt7asnodes-gpu-final.log`）成功。初回失敗は独立AS同士の固定順序を要求した試験であり、必要な依存順と各nodeの実build検査へ修正。旧一括buildへ戻せばnamed nodeのrecorded=true検査が落ちる。mask/接続変更のhit、複数geometry/refit、indirectを同時確認。
+- 既存AS/影/transaction7/7（4996 assertions、`rt7asnodes-regression.log`）成功。Core/Player/Studio/関連target build成功（`rt7asnodes-build.log`、試験修正後の`rt7asnodes-test-build.log`）。新たな実XR機器の確認は行っていない。
 
 **RT7 task AS connections (2026-09-06):**
 - rootの`ray_task_acceleration_structures` objectで、variant suffix前のtask名からAS名を指定。preset使用時もprojectが所有し、共有featureの宣言は変更しない。既存RT/query宣言だけを対象とし、未知task・通常compute・空名を拒否。ASの実在は既存compilerの検査を共用。

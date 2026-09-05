@@ -259,7 +259,8 @@ void detail::insertSceneAccelerationStructureNodes(
     std::vector<FrameGraphDefinition> &graphs,
     const TargetPlanningPolicy &target_planning,
     const std::vector<ComputeTaskDefinition> &tasks,
-    bool has_ray_project) {
+    bool has_ray_project,
+    std::span<const SceneAccelerationStructureDefinition> named_definitions) {
     const std::string node_name = "__scene_acceleration_structure";
     const bool requires_as = has_ray_project || std::any_of(graphs.begin(), graphs.end(), [&](const auto &graph) {
         const bool required_capability = std::any_of(
@@ -282,14 +283,25 @@ void detail::insertSceneAccelerationStructureNodes(
         return required_capability || has_ray_task;
     });
     if (!requires_as) return;
+    std::vector<std::string> as_nodes{node_name};
+    for (const auto &definition : named_definitions)
+        as_nodes.push_back(node_name + ":" + definition.name);
     for (auto &graph : graphs) {
         if (std::any_of(graph.nodes.begin(), graph.nodes.end(), [&](const auto &node) {
-                return node.name == node_name;
+                return std::find(as_nodes.begin(), as_nodes.end(), node.name) != as_nodes.end();
             }))
             throw std::runtime_error("Reserved scene acceleration-structure node name: " + node_name);
-        for (auto &node : graph.nodes) node.after.push_back(node_name);
-        graph.nodes.insert(graph.nodes.begin(), FrameGraphNodeDefinition{
-            .name = node_name, .kind = FramePlanNodeKind::acceleration_structure});
+        // Descriptors are published as one immutable frame bundle after every
+        // AS operation. Consumers cannot observe a partly rebuilt set.
+        for (auto &node : graph.nodes)
+            node.after.insert(node.after.end(), as_nodes.begin(), as_nodes.end());
+        std::vector<FrameGraphNodeDefinition> operations;
+        for (const auto &name : as_nodes) {
+            operations.push_back(FrameGraphNodeDefinition{
+                .name = name, .kind = FramePlanNodeKind::acceleration_structure});
+            if (name != node_name) operations.back().after.push_back(node_name);
+        }
+        graph.nodes.insert(graph.nodes.begin(), operations.begin(), operations.end());
         for (std::size_t i = 0; i < graph.nodes.size(); ++i)
             graph.nodes[i].declaration_index = i;
     }
@@ -721,7 +733,8 @@ compileDefaultVulkanVariant(
         logical.compiled_pipeline);
     detail::insertSceneAccelerationStructureNodes(
         graph_definitions, logical.compiled_pipeline.target_planning,
-        compute_task_definitions, input.ray_tracing_project != nullptr);
+        compute_task_definitions, input.ray_tracing_project != nullptr,
+        logical.compiled_pipeline.scene_acceleration_structures);
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
             std::move(logical.compiled_pipeline));

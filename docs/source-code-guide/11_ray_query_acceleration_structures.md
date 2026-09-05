@@ -20,7 +20,7 @@ frame planの`blas_build_count`と`blas_update_count`で、作り直しとrefit�
 
 同じ個体のtriangle行は、連続q・同一transform・同一instance制御の条件で1つのBLASへ結合します。materialとgeometry flagsは個別に保ち、SBTは`q_base + gl_GeometryIndexEXT`の行を参照します。静的共有と動的refitのkeyはgeometry列全体で比較します。診断の`geometry_count`で結合数が分かり、`tlas_instance_count`は結合後の件数です。姿勢やmaskの違いで分割された場合は、新しいgeometry列のBLASを用意します。
 
-構築処理はframe graphの`__scene_acceleration_structure` nodeで実行します。変形computeからAS/SBTのpublicationまでを含み、後続nodeより先に実行します。XRでは論理フレーム内で共有します。ray queryだけをshaderから使う場合も、graphの`required_capabilities`へ`pelican.vulkan.ray_query@1`を宣言して構築依存を明示します。
+構築処理はframe graphの`__scene_acceleration_structure` nodeと、名前付きTLASごとの`__scene_acceleration_structure:<name>` nodeで実行します。前者が変形compute・共有BLAS・default TLAS・SBTを用意し、後者が対象TLASを構築します。最後のAS操作でdescriptor bundleをまとめて公開し、全consumerはその完成を待ちます。XRでは論理フレーム内で共有します。ray queryだけをshaderから使う場合も、graphの`required_capabilities`へ`pelican.vulkan.ray_query@1`を宣言して構築依存を明示します。
 
 `scene_acceleration_structures`を宣言すると、同じBLAS群からinstance mask別の名前付きTLASも構築します。RT taskの`ray_tracing.acceleration_structure`で選択し、省略時は全sceneです。qとSBTは共通のまま、TLAS別のdescriptor bundleをbindします。全TLAS・descriptorを同じpublicationで所有し、task間で使用中descriptorを変更しません。`named_tlas_instance_counts`に各集合の件数が出ます。
 
@@ -79,11 +79,11 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 | 変形方式 | `skinned` / `morph_deformed` / `vat_deformed` |
 | 名前付けと配置 | `mesh_index`、`primitive_index`、`node_index`、`world_transform` |
 
-`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な geometry を持たないとき、[`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L480) で止めます。skin/morph は適格として宣言を解決し、GPU記録時に変形出力の存在を確認します。
+`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な geometry を持たないとき、[`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L584) で止めます。skin/morph は適格として宣言を解決し、GPU記録時に変形出力の存在を確認します。
 
 ### `RaySceneRowInput` の identity 3 種
 
-[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L239) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L444))。
+[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L239) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L548))。
 
 | field | 形 | 役割 |
 |---|---|---|

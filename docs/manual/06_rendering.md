@@ -991,6 +991,11 @@ StudioのRender Features画面から「Scene AS...」を開くと、名前付き
 接続先はprojectの`ray_task_acceleration_structures`に保存され、共有featureの設定は変更しません。
 元のASへ戻すと、そのtaskの上書き指定を除きます。一般のgraph接続編集は未対応です。
 
+frame graphには、共有BLASとdefault TLASを作る`__scene_acceleration_structure`と、
+名前付きTLASごとの`__scene_acceleration_structure:<name>`が表示されます。
+各名前付きnodeでそのTLASを構築し、全ASの準備後に描画へ渡します。実行traceの`recorded`が
+falseなら、その操作で新しいbuild commandは記録していません（既存ASや後続XR viewでの再利用）。
+
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
 typed command buffer と `dispatch.indirect` を使います。
 
@@ -2451,9 +2456,9 @@ scene JSON の `components` に書きます。
 
 ### BLAS variant と `resident_blas_keys` 診断
 
-geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L782))。同じジオメトリでも flags が違えば別 BLAS です。
+geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L886))。同じジオメトリでも flags が違えば別 BLAS です。
 
-プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L699)):
+プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L803)):
 
 - `blas_variant_count` — 常駐している variant の数
 - `resident_blas_keys` — variant ごとの `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}`。同じ配列が `active_blas_inputs` というキーにも出ます(同一内容の 2 キー)

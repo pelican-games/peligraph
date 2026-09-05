@@ -267,6 +267,10 @@ class RayQueryAccelerationStructureScope {
 
         vk::AccelerationStructureKHR topLevel() const noexcept;
         std::map<std::string, vk::AccelerationStructureKHR> namedTopLevels() const;
+        bool recordNamedTopLevel(vk::CommandBuffer command_buffer,
+                                 VulkanManageCore &vkcore,
+                                 DeletionQueue &deletion_queue,
+                                 std::string_view name);
         std::shared_ptr<const RayTracingSceneShaderBindingTables>
         sceneTables() const noexcept;
         std::shared_ptr<const void> stateLease() const noexcept;

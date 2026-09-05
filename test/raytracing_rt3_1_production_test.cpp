@@ -914,8 +914,20 @@ void main() {
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     loadWp374aScene(project.path);
+    GET_MODULE(Renderer).setExecutionTracingForTesting(true);
     const auto rows = renderWp374aProductionRows();
     REQUIRE(rows.rows.size() == 2);
+    const auto &execution_nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
+    REQUIRE(execution_nodes.size() >= 4);
+    CHECK(execution_nodes[0].at("name") == "__scene_acceleration_structure");
+    for (const auto *name : {"left", "right", "empty"}) {
+        CAPTURE(name);
+        const auto node = std::find_if(execution_nodes.begin() + 1, execution_nodes.begin() + 4,
+            [&](const auto &entry) { return entry.at("name") == std::string{"__scene_acceleration_structure:"} + name; });
+        REQUIRE(node != execution_nodes.begin() + 4);
+        CHECK(node->at("kind") == "acceleration_structure");
+        CHECK(node->at("recorded") == true);
+    }
     for (const std::string name : {"left", "right", "empty"}) {
         CAPTURE(name);
         const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(

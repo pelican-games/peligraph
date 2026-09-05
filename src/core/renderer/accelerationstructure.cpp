@@ -82,6 +82,9 @@ struct RecordedSubmissionResources {
     std::shared_ptr<const void> state;
     std::vector<BufferWrapper> transient_buffers;
     std::vector<std::shared_ptr<AccelerationStructureResource>> update_sources;
+    // A command may be recorded before candidate map insertion allocates.
+    // Keep its destination alive even when that insertion subsequently fails.
+    std::vector<std::shared_ptr<AccelerationStructureResource>> build_targets;
 };
 
 struct AddressedBuffer {
@@ -169,14 +172,13 @@ void recordBuild(
         build_info.scratchData =
             vk::DeviceOrHostAddressKHR{scratch->address};
     }
+    if (scratch) {
+        transient_buffers.push_back(std::move(scratch->buffer));
+    }
     const auto *range_pointer = ranges.data();
     command_buffer.buildAccelerationStructuresKHR(
         1, &build_info, &range_pointer,
         vkcore.getAccelerationStructureDispatch());
-    if (scratch) {
-        transient_buffers.push_back(
-            std::move(scratch->buffer));
-    }
 }
 
 vk::TransformMatrixKHR toVulkanTransform(
@@ -202,6 +204,108 @@ void recordMemoryBarrier(
         source_stage, destination_stage, {},
         vk::MemoryBarrier{source_access, destination_access},
         {}, {});
+}
+
+std::shared_ptr<AccelerationStructureResource> recordTopLevel(
+    vk::CommandBuffer command_buffer, VulkanManageCore &vkcore,
+    std::span<const vk::AccelerationStructureInstanceKHR> selected_instances,
+    RecordedSubmissionResources &recorded) {
+    // Vulkan requires a valid, 16-byte-aligned instances address even when
+    // primitiveCount is zero. Keep one inactive record as backing storage;
+    // the zero build count makes the resulting TLAS a valid miss-only scene.
+    const auto instance_capacity = std::max<std::size_t>(
+        selected_instances.size(), 1);
+    auto instance_buffer = allocateAddressedBuffer(
+        vkcore,
+        sizeof(vk::AccelerationStructureInstanceKHR) *
+            instance_capacity,
+        vk::BufferUsageFlagBits::
+                eAccelerationStructureBuildInputReadOnlyKHR |
+            vk::BufferUsageFlagBits::eShaderDeviceAddress,
+        vma::MemoryUsage::eAutoPreferDevice,
+        vma::AllocationCreateFlagBits::
+            eHostAccessSequentialWrite,
+        16);
+    if (selected_instances.empty()) {
+        const vk::AccelerationStructureInstanceKHR inactive{};
+        vkcore.writeBuf(
+            instance_buffer.buffer, &inactive,
+            instance_buffer.offset, sizeof(inactive));
+    } else {
+        vkcore.writeBuf(
+            instance_buffer.buffer, selected_instances.data(),
+            instance_buffer.offset,
+            sizeof(vk::AccelerationStructureInstanceKHR) *
+                selected_instances.size());
+    }
+    recorded.transient_buffers.push_back(std::move(instance_buffer.buffer));
+    recordMemoryBarrier(
+        command_buffer,
+        vk::PipelineStageFlagBits::eHost,
+        vk::PipelineStageFlagBits::
+            eAccelerationStructureBuildKHR,
+        vk::AccessFlagBits::eHostWrite,
+        vk::AccessFlagBits::
+            eAccelerationStructureReadKHR);
+
+    const vk::AccelerationStructureGeometryInstancesDataKHR
+        instance_data{
+            false,
+            vk::DeviceOrHostAddressConstKHR{
+                instance_buffer.address}};
+    const vk::AccelerationStructureGeometryKHR geometry_info{
+        vk::GeometryTypeKHR::eInstances,
+        vk::AccelerationStructureGeometryDataKHR{
+            instance_data},
+        {}};
+    vk::AccelerationStructureBuildGeometryInfoKHR build_info{
+        vk::AccelerationStructureTypeKHR::eTopLevel,
+        vk::BuildAccelerationStructureFlagBitsKHR::
+            ePreferFastTrace,
+        vk::BuildAccelerationStructureModeKHR::eBuild,
+        {}, {}, 1, &geometry_info};
+    const auto primitive_count = static_cast<std::uint32_t>(
+        selected_instances.size());
+    vk::AccelerationStructureBuildSizesInfoKHR sizes;
+    vkcore.getDevice().getAccelerationStructureBuildSizesKHR(
+        vk::AccelerationStructureBuildTypeKHR::eDevice,
+        &build_info, &primitive_count, &sizes,
+        vkcore.getAccelerationStructureDispatch());
+    auto tlas = createAccelerationStructure(
+        vkcore,
+        vk::AccelerationStructureTypeKHR::eTopLevel,
+        sizes.accelerationStructureSize);
+    build_info.dstAccelerationStructure =
+        tlas->handle.get();
+    recorded.build_targets.push_back(tlas);
+    recordBuild(
+        command_buffer, vkcore, build_info,
+        std::array{vk::AccelerationStructureBuildRangeInfoKHR{
+            primitive_count, 0, 0, 0}},
+        sizes.buildScratchSize,
+        recorded.transient_buffers);
+    return tlas;
+}
+
+void recordTopLevelConsumerBarrier(vk::CommandBuffer command_buffer,
+                                   VulkanManageCore &vkcore) {
+    vk::PipelineStageFlags ray_consumer_stages =
+        vk::PipelineStageFlagBits::eFragmentShader |
+        vk::PipelineStageFlagBits::eComputeShader;
+    if (vkcore.getRuntimeCapabilities()
+            .ray_tracing_pipeline) {
+        ray_consumer_stages |=
+            vk::PipelineStageFlagBits::eRayTracingShaderKHR;
+    }
+    recordMemoryBarrier(
+        command_buffer,
+        vk::PipelineStageFlagBits::
+            eAccelerationStructureBuildKHR,
+        ray_consumer_stages,
+        vk::AccessFlagBits::
+            eAccelerationStructureWriteKHR,
+        vk::AccessFlagBits::
+            eAccelerationStructureReadKHR);
 }
 
 } // namespace
@@ -794,6 +898,7 @@ struct RayQueryAccelerationStructureScope::State {
     std::shared_ptr<AccelerationStructureResource> tlas;
     std::map<std::string, std::shared_ptr<AccelerationStructureResource>> named_tlas;
     std::vector<SceneAccelerationStructureDefinition> named_definitions;
+    std::vector<vk::AccelerationStructureInstanceKHR> tlas_instances;
     // Ray-query-only scenes have no layout generation root to own their inputs.
     std::vector<std::shared_ptr<const void>> geometry_leases;
     std::shared_ptr<const RaySceneRowSnapshot> ray_scene_rows;
@@ -846,6 +951,29 @@ RayQueryAccelerationStructureScope::FrameBuild::namedTopLevels() const {
             result.emplace(name, resource->handle.get());
     }
     return result;
+}
+
+bool RayQueryAccelerationStructureScope::FrameBuild::recordNamedTopLevel(
+    vk::CommandBuffer command_buffer, VulkanManageCore &vkcore,
+    DeletionQueue &deletion_queue, std::string_view name) {
+    if (!candidate_) throw std::logic_error("named TLAS build requires a scene frame build");
+    const auto definition = std::find_if(candidate_->named_definitions.begin(),
+        candidate_->named_definitions.end(), [name](const auto &entry) { return entry.name == name; });
+    if (definition == candidate_->named_definitions.end())
+        throw std::runtime_error("undeclared scene acceleration structure: " + std::string{name});
+    if (candidate_->named_tlas.contains(definition->name)) return false;
+    std::vector<vk::AccelerationStructureInstanceKHR> selected;
+    for (const auto &instance : candidate_->tlas_instances)
+        if ((instance.mask & definition->instance_mask) != 0) selected.push_back(instance);
+    auto recorded = std::make_shared<RecordedSubmissionResources>();
+    recorded->state = candidate_;
+    deletion_queue.defer(recorded);
+    auto tlas = recordTopLevel(command_buffer, vkcore, selected, *recorded);
+    recordTopLevelConsumerBarrier(command_buffer, vkcore);
+    candidate_->named_tlas.emplace(definition->name, std::move(tlas));
+    candidate_->diagnostics.named_tlas_instance_counts.emplace(definition->name, selected.size());
+    ++candidate_->diagnostics.tlas_build_count;
+    return true;
 }
 
 std::shared_ptr<const RayTracingSceneShaderBindingTables>
@@ -949,6 +1077,7 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
     if (active_state_ == nullptr || !active_state_->reusable ||
         !std::equal(active_state_->named_definitions.begin(), active_state_->named_definitions.end(),
                     named_definitions.begin(), named_definitions.end()) ||
+        active_state_->named_tlas.size() != named_definitions.size() ||
         active_state_->tlas == nullptr ||
         active_state_->ray_scene_rows == nullptr ||
         active_state_->geometry_snapshot == nullptr ||
@@ -1091,6 +1220,10 @@ RayQueryAccelerationStructureScope::recordFrame(
 
     auto recorded =
         std::make_shared<RecordedSubmissionResources>();
+    recorded->state = candidate;
+    // Lease before recording: failure after any build must retain its inputs
+    // and destination until the renderer retires this command batch.
+    deletion_queue.defer(recorded);
     const auto device = vkcore.getDevice();
     if (!classification.eligible_instance_indices.empty()) {
         recordMemoryBarrier(
@@ -1278,6 +1411,7 @@ RayQueryAccelerationStructureScope::recordFrame(
         blas->index_input_address = first_geometry.gpu.index_address;
         blas->vertex_input_address = first_geometry.gpu.vertex_address;
         build_info.dstAccelerationStructure = blas->handle.get();
+        recorded->build_targets.push_back(blas);
         recordBuild(command_buffer, vkcore, build_info, ranges,
             update_source ? sizes.updateScratchSize : sizes.buildScratchSize, recorded->transient_buffers);
         if (dynamic) candidate->deformed_blas.emplace(deformation_key, blas);
@@ -1356,118 +1490,11 @@ RayQueryAccelerationStructureScope::recordFrame(
             blas->second->address);
     }
 
-    const auto build_tlas = [&](std::span<const vk::AccelerationStructureInstanceKHR> selected_instances) {
-        // Vulkan requires a valid, 16-byte-aligned instances address even when
-        // primitiveCount is zero. Keep one inactive record as backing storage;
-        // the zero build count makes the resulting TLAS a valid miss-only scene.
-        const auto instance_capacity = std::max<std::size_t>(
-            selected_instances.size(), 1);
-        auto instance_buffer = allocateAddressedBuffer(
-            vkcore,
-            sizeof(vk::AccelerationStructureInstanceKHR) *
-                instance_capacity,
-            vk::BufferUsageFlagBits::
-                    eAccelerationStructureBuildInputReadOnlyKHR |
-                vk::BufferUsageFlagBits::eShaderDeviceAddress,
-            vma::MemoryUsage::eAutoPreferDevice,
-            vma::AllocationCreateFlagBits::
-                eHostAccessSequentialWrite,
-            16);
-        if (selected_instances.empty()) {
-            const vk::AccelerationStructureInstanceKHR inactive{};
-            vkcore.writeBuf(
-                instance_buffer.buffer, &inactive,
-                instance_buffer.offset, sizeof(inactive));
-        } else {
-            vkcore.writeBuf(
-                instance_buffer.buffer, selected_instances.data(),
-                instance_buffer.offset,
-                sizeof(vk::AccelerationStructureInstanceKHR) *
-                    selected_instances.size());
-        }
-        recordMemoryBarrier(
-            command_buffer,
-            vk::PipelineStageFlagBits::eHost,
-            vk::PipelineStageFlagBits::
-                eAccelerationStructureBuildKHR,
-            vk::AccessFlagBits::eHostWrite,
-            vk::AccessFlagBits::
-                eAccelerationStructureReadKHR);
-
-        const vk::AccelerationStructureGeometryInstancesDataKHR
-            instance_data{
-                false,
-                vk::DeviceOrHostAddressConstKHR{
-                    instance_buffer.address}};
-        const vk::AccelerationStructureGeometryKHR geometry_info{
-            vk::GeometryTypeKHR::eInstances,
-            vk::AccelerationStructureGeometryDataKHR{
-                instance_data},
-            {}};
-        vk::AccelerationStructureBuildGeometryInfoKHR build_info{
-            vk::AccelerationStructureTypeKHR::eTopLevel,
-            vk::BuildAccelerationStructureFlagBitsKHR::
-                ePreferFastTrace,
-            vk::BuildAccelerationStructureModeKHR::eBuild,
-            {}, {}, 1, &geometry_info};
-        const auto primitive_count = static_cast<std::uint32_t>(
-            selected_instances.size());
-        vk::AccelerationStructureBuildSizesInfoKHR sizes;
-        device.getAccelerationStructureBuildSizesKHR(
-            vk::AccelerationStructureBuildTypeKHR::eDevice,
-            &build_info, &primitive_count, &sizes,
-            vkcore.getAccelerationStructureDispatch());
-        auto tlas = createAccelerationStructure(
-            vkcore,
-            vk::AccelerationStructureTypeKHR::eTopLevel,
-            sizes.accelerationStructureSize);
-        build_info.dstAccelerationStructure =
-            tlas->handle.get();
-        recordBuild(
-            command_buffer, vkcore, build_info,
-            std::array{vk::AccelerationStructureBuildRangeInfoKHR{
-                primitive_count, 0, 0, 0}},
-            sizes.buildScratchSize,
-            recorded->transient_buffers);
-        recorded->transient_buffers.push_back(
-            std::move(instance_buffer.buffer));
-        ++candidate->diagnostics.tlas_build_count;
-        return tlas;
-    };
-    candidate->diagnostics.tlas_instance_count = tlas_instances.size();
-    candidate->tlas = build_tlas(tlas_instances);
-    for (const auto &definition : named_definitions) {
-        std::vector<vk::AccelerationStructureInstanceKHR> selected_instances;
-        for (const auto &instance : tlas_instances) {
-            if ((instance.mask & definition.instance_mask) != 0)
-                selected_instances.push_back(instance);
-        }
-        candidate->diagnostics.named_tlas_instance_counts.emplace(definition.name, selected_instances.size());
-        candidate->named_tlas.emplace(definition.name, build_tlas(selected_instances));
-    }
-    vk::PipelineStageFlags ray_consumer_stages =
-        vk::PipelineStageFlagBits::eFragmentShader |
-        vk::PipelineStageFlagBits::eComputeShader;
-    if (vkcore.getRuntimeCapabilities()
-            .ray_tracing_pipeline) {
-        ray_consumer_stages |=
-            vk::PipelineStageFlagBits::eRayTracingShaderKHR;
-    }
-    recordMemoryBarrier(
-        command_buffer,
-        vk::PipelineStageFlagBits::
-            eAccelerationStructureBuildKHR,
-        ray_consumer_stages,
-        vk::AccessFlagBits::
-            eAccelerationStructureWriteKHR,
-        vk::AccessFlagBits::
-            eAccelerationStructureReadKHR);
-
-    recorded->state = candidate;
-    // The renderer leased this exact current batch before target acquisition.
-    // Scratch, instance data, and candidate AS handles therefore retire at the
-    // submission fence; no frame-count lifetime is introduced here.
-    deletion_queue.defer(std::move(recorded));
+    candidate->tlas_instances = std::move(tlas_instances);
+    candidate->diagnostics.tlas_instance_count = candidate->tlas_instances.size();
+    candidate->tlas = recordTopLevel(command_buffer, vkcore, candidate->tlas_instances, *recorded);
+    ++candidate->diagnostics.tlas_build_count;
+    recordTopLevelConsumerBarrier(command_buffer, vkcore);
     return FrameBuild{this, std::move(candidate)};
 }
 

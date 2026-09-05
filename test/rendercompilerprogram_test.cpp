@@ -99,6 +99,31 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
     }
 }
 
+TEST_CASE("named AS operations depend on shared construction and precede consumers", "[rendercompiler][rt7][named-as-node]") {
+    std::vector<FrameGraphDefinition> graphs{
+        {.name = "main", .nodes = {{.name = "trace", .kind = FramePlanNodeKind::compute}}}};
+    const std::vector<SceneAccelerationStructureDefinition> definitions{
+        {.name = "actors", .instance_mask = 1}, {.name = "world", .instance_mask = 2}};
+    SECTION("one executable operation per named AS") {
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
+        REQUIRE(graphs[0].nodes.size() == 4);
+        const auto &nodes = graphs[0].nodes;
+        CHECK(nodes[0].name == "__scene_acceleration_structure");
+        for (std::size_t i = 1; i < 3; ++i) {
+            CHECK(nodes[i].name == "__scene_acceleration_structure:" + definitions[i - 1].name);
+            CHECK(nodes[i].kind == FramePlanNodeKind::acceleration_structure);
+            CHECK(nodes[i].after == std::vector<std::string>{nodes[0].name});
+            CHECK(nodes[i].declaration_index == i);
+        }
+        CHECK(nodes[3].after == std::vector<std::string>{nodes[0].name, nodes[1].name, nodes[2].name});
+    }
+    SECTION("generated named operation cannot collide with an authored node") {
+        graphs[0].nodes[0].name = "__scene_acceleration_structure:actors";
+        CHECK_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions),
+            Catch::Matchers::ContainsSubstring("Reserved scene acceleration-structure node name"));
+    }
+}
+
 namespace {
 
 nlohmann::json readJsonFixture(

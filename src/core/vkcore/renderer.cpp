@@ -1422,7 +1422,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               const CompiledRenderingPass &rendering_pass,
                               const CompiledFrameGraphExecution &frame_graph,
                               RenderFrameModules &modules,
-                              const std::function<bool(const FrameRenderContext &)> &record_scene_as,
+                              const std::function<bool(const FrameRenderContext &, std::string_view)> &record_scene_as,
                               vk::Format frame_target_format,
                               RenderTargetLayoutTracker &layout_tracker,
                               const RenderPassExecutorDependencies &pass_executor_dependencies,
@@ -2081,7 +2081,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                                       layout_tracker));
             }
         } else if (execution_node.kind == FramePlanNodeKind::acceleration_structure) {
-            const bool recorded = record_scene_as(render_ctx);
+            const bool recorded = record_scene_as(render_ctx, execution_node.name);
             if (node_trace != nullptr) {
                 node_trace->push_back({{"name", execution_node.name},
                     {"kind", "acceleration_structure"}, {"order", node_index},
@@ -2350,7 +2350,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             const CompiledRenderingPass &rendering_pass,
                             const CompiledFrameGraphExecution &frame_graph,
                             RenderFrameModules &modules,
-                              const std::function<bool(const FrameRenderContext &)> &record_scene_as,
+                              const std::function<bool(const FrameRenderContext &, std::string_view)> &record_scene_as,
                             std::span<const RenderViewFamilyExecutionState>
                                 view_family_states,
                             vk::Format frame_target_format,
@@ -4739,10 +4739,9 @@ void Renderer::renderLogicalFrame(
     const auto record_acceleration_structures =
         [&](vk::CommandBuffer command_buffer,
             std::uint32_t in_flight_frame_index) {
-            // Sequential XR records this hook once per view. The first view
-            // records the AS build and freezes one candidate bundle for the
-            // entire logical frame; later views bind that same candidate.
-            if (frame_publication) return;
+            // Shared geometry and SBT are prepared once. Named TLAS nodes
+            // finish this candidate before the immutable bundle is published.
+            if (acceleration_structure_build) return;
             if (acceleration_structures == nullptr) {
                 frame_publication.emplace(
                     modules.frame_resources
@@ -4897,27 +4896,44 @@ void Renderer::renderLogicalFrame(
                     ray_tracing_pipeline_generation,
                     ray_scene_rows ? generation_root : nullptr, named_scene_as));
             }
-            frame_publication.emplace(
-                modules.frame_resources.prepareRayTracingPublication(
-                    in_flight_frame_index,
-                    acceleration_structure_build->topLevel(),
-                    acceleration_structure_build->sceneTables(),
-                    std::string{
-                        acceleration_structure_build->rowDigest()},
-                    acceleration_structure_build->namedTopLevels()));
-            submission_resources->rt_state =
-                acceleration_structure_build->stateLease();
-            submission_resources->rt_bundle =
-                frame_publication->bundleLease();
-            if (gpu_owner_scope != nullptr &&
-                gpu_owner_scope->ray_tracing_project != nullptr) {
-                injectRayTracingJointTransactionPoint(
-                    RayTracingJointTransactionPoint::after_as_record);
-            }
         };
-    const auto record_scene_as = [&](const FrameRenderContext &context) {
-        const bool recorded = !frame_publication.has_value();
-        record_acceleration_structures(context.cmd_buf, context.in_flight_frame_index);
+    const auto publish_acceleration_structures = [&](std::uint32_t in_flight_frame_index) {
+        frame_publication.emplace(
+            modules.frame_resources.prepareRayTracingPublication(
+                in_flight_frame_index,
+                acceleration_structure_build->topLevel(),
+                acceleration_structure_build->sceneTables(),
+                std::string{
+                    acceleration_structure_build->rowDigest()},
+                acceleration_structure_build->namedTopLevels()));
+        submission_resources->rt_state =
+            acceleration_structure_build->stateLease();
+        submission_resources->rt_bundle =
+            frame_publication->bundleLease();
+        if (gpu_owner_scope != nullptr &&
+            gpu_owner_scope->ray_tracing_project != nullptr) {
+            injectRayTracingJointTransactionPoint(
+                RayTracingJointTransactionPoint::after_as_record);
+        }
+    };
+    std::size_t named_as_remaining = named_scene_as.size();
+    const auto record_scene_as = [&](const FrameRenderContext &context, std::string_view node_name) {
+        // A logical frame publishes once; later XR views reuse the same bundle.
+        if (frame_publication) return false;
+        constexpr std::string_view base_node = "__scene_acceleration_structure";
+        bool recorded = true;
+        if (node_name == base_node) {
+            record_acceleration_structures(context.cmd_buf, context.in_flight_frame_index);
+        } else {
+            if (!acceleration_structure_build || !node_name.starts_with(std::string{base_node} + ":"))
+                throw std::logic_error("Named AS operation requires the shared scene build: " + std::string{node_name});
+            recorded = acceleration_structure_build->recordNamedTopLevel(
+                context.cmd_buf, GET_MODULE(VulkanManageCore), deletion_queue,
+                node_name.substr(base_node.size() + 1));
+            --named_as_remaining;
+        }
+        if (!frame_publication && named_as_remaining == 0)
+            publish_acceleration_structures(context.in_flight_frame_index);
         return recorded;
     };
     // Most output revisions are caught before an image is acquired. The
@@ -5460,7 +5476,7 @@ void Renderer::renderLogicalFrame(
                     material_draw_filters,
             });
         if (acceleration_structures == nullptr)
-            record_scene_as(render_ctx);
+            record_scene_as(render_ctx, "__scene_acceleration_structure");
         capture_picking_model_instances();
         prepareSecondaryViewFamilyDraws(
             modules.instance_container,
@@ -5606,7 +5622,7 @@ void Renderer::renderLogicalFrame(
                     material_draw_filters,
             });
             if (acceleration_structures == nullptr)
-                record_scene_as(render_ctx);
+                record_scene_as(render_ctx, "__scene_acceleration_structure");
             capture_picking_model_instances();
             prepareSecondaryViewFamilyDraws(
                 modules.instance_container,

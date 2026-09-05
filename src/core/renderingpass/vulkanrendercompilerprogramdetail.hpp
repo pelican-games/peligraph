@@ -4,12 +4,13 @@
 
 namespace Pelican::detail {
 
-// Inserts the whole-scene AS operation before its fixed-binding consumers.
+// Inserts shared scene construction and one operation for each named TLAS.
 void insertSceneAccelerationStructureNodes(
     std::vector<FrameGraphDefinition> &graphs,
     const TargetPlanningPolicy &target_planning,
     const std::vector<ComputeTaskDefinition> &tasks,
-    bool has_ray_project);
+    bool has_ray_project,
+    std::span<const SceneAccelerationStructureDefinition> named_definitions = {});
 
 // Internal CPU test seam for XR compute namespacing. Keeping this out of the
 // package API lets the non-GPU provenance regression exercise the production
