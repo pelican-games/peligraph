@@ -60,18 +60,18 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 
 ### `RayQueryGeometryInstanceSnapshot`
 
-[`RayQueryGeometryInstanceSnapshot`](../../src/core/vkcore/accelerationstructure.hpp#L29) は、記録が始まる前に renderer 側で凍結される値です。ヘッダのコメントが境界を規範として書いています — **vkcore は安定した identity と range だけを見て、model 型や draw inventory 型には依存しない**。
+[`RayQueryGeometryInstanceSnapshot`](../../src/core/vkcore/accelerationstructure.hpp#L30) は、記録が始まる前に renderer 側で凍結される値です。ヘッダのコメントが境界を規範として書いています — **vkcore は安定した identity と range だけを見て、model 型や draw inventory 型には依存しない**。
 
 | 区分 | field |
 |---|---|
 | identity | `asset_identity`、`authoring_object_id`、`instance_index` / `instance_generation`、`scene_epoch` |
-| 宣言 | [`std::optional<RayInstanceComponent> ray_instance`](../../src/core/vkcore/accelerationstructure.hpp#L36) |
-| material selector | `material_asset_reference`、`material_document_reference`、`material_name`、[`std::optional<std::uint32_t> source_material_index`](../../src/core/vkcore/accelerationstructure.hpp#L46)、`resolved_material_handle` / `_generation` / `_lease` |
+| 宣言 | [`std::optional<RayInstanceComponent> ray_instance`](../../src/core/vkcore/accelerationstructure.hpp#L37) |
+| material selector | `material_asset_reference`、`material_document_reference`、`material_name`、[`std::optional<std::uint32_t> source_material_index`](../../src/core/vkcore/accelerationstructure.hpp#L49)、`resolved_material_handle` / `_generation` / `_lease` |
 | geometry | `geometry_allocation_id`、`index_count` / `index_offset`、`vertex_offset` / `vertex_count`、`attribute_presence` |
 | 除外分類 | `skinned` / `morph_deformed` / `vat_deformed` |
 | 名前付けと配置 | `mesh_index`、`primitive_index`、`node_index`、`world_transform` |
 
-`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な静的 geometry を持たないとき、黙って無視せず [`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L462) で止めます。分類フィルタが先に走ると「除外された primitive にだけ付いた宣言」が消えてしまうため、この検査は分類の**前**に置かれています。
+`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な静的 geometry を持たないとき、黙って無視せず [`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L478) で止めます。分類フィルタが先に走ると「除外された primitive にだけ付いた宣言」が消えてしまうため、この検査は分類の**前**に置かれています。
 
 ### `RaySceneRowInput` の identity 3 種
 

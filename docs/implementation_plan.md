@@ -23248,7 +23248,7 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 2. **WP382c は 23cb5153 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
 3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
 4. **WP382b-fix は 36ad3444 に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
-5. **WP382d 実装中。** `<作業ディレクトリ>/wp382d` / `codex/wp382d`、基点 `763556e8`。382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。並行エージェントが実装し、commitは統合側のみ。
+5. **WP382d は4ce4117dに統合。** overrides / presence / participant / inventoryを接続し、W1 95/95成功。Web専用拒否はWeb側への引き継ぎ事項で統合条件に含めない。実装とレビュー裁定、後続の効率整理、統合先の検証は下の記録を参照。次はWP386b。
 6. **WP386b 実装中、386cは後続。** `<作業ディレクトリ>/wp386b` / `codex/wp386b`、基点 `763556e8`。まずhit attributeのstage間ABI検査と、materialを持たないproceduralへの生成any-hit誤適用を閉じる。分類/status wire、規範shader、386aレビュー残余は未完でありfeature完成と扱わない。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
 
 WP386bの入口安全性はworktreeで実装・検証済み(未commit・未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。最終fixture調整後もGPU1/1成功。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。
@@ -23267,7 +23267,7 @@ procedural geometryのasset変更・component追加削除・object spawn/destroy
 
 **2026-09-05 利用者との責任範囲の裁定:** Web専用エラー対応は別repoのWeb側へ引き継ぐ。WP382dのエンジン統合条件には含めない。決定32のWeb用code/surfaceはWeb側の追随仕様であり、このrepoの着地待ち条件ではない。my_webpageはbindPelicanSceneで未登録pelican_ray_instanceをunknown componentとして拒否することをコード確認済みで、黙殺ではない。共通codecのsurface制約とnative previewの専用拒否は実装・検証済み。別repoは変更せず、専用code/surfaceの対応はWeb担当への引き継ぎ事項とする。
 
-WP382dは統合準備へ進む。scene/frame別config parseは現在設定の独立prepareにより古いGPU owner設定の流用を避けており、初回再resolveの効率整理として後続へ記録する。意味論比較用の追加digestやfallbackを今回導入しない。検証済みのエンジン変更をW1確認後に統合し、統合後のbuild結果を別途記録する。
+**WP382dは4ce4117dに統合済み。** 正本docsを作業treeへ取り込んだ後、W1の不足RT targetをbuildし、最終95/95成功(37 GPU label、92.83秒、`<作業ディレクトリ>/wp382d_w1_final_ctest.log`)でsquashした。初回の4件Not Runは未build targetであり、最終実行で解消。scene/frame別config parseは現在設定の独立prepareにより古いGPU owner設定の流用を避けており、初回再resolveの効率整理として後続へ記録する。意味論比較用の追加digestやfallbackは今回導入しない。統合先のplayer/Studioと対象test実行ファイルのbuildは成功。`build/.codex_bg/wp382d_integrated.log`と`wp382d_integrated_extra.log`が証拠。初回統合試験は136/136だったが41件に旧exeが含まれるため、その41件を再buildして別実行した。40/41成功、唯一の失敗は既存manifest試験の固定件数14(現16)だった。`1f34a8bc`で必要mutation IDの存在確認へ変更し、再build後1/1成功。したがって最新exeで確認した内訳は95 + 40 + 修正1 = 136件。ログは`<作業ディレクトリ>/wp382d_integrated_ctest.log`、`<作業ディレクトリ>/wp382d_integrated_extra_ctest.log`、`<作業ディレクトリ>/wp382d_manifest_contract_ctest.log`。全数・構成matrixはこの統合で再実行したとは扱わない。
 
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
