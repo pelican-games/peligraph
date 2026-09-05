@@ -6072,6 +6072,112 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     }
 }
 
+TEST_CASE("RT6 procedural geometries share one BLAS with independent records",
+          "[rt6][multi-aabb][ray-tracing][production][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"rt6_multi_aabb"};
+    writeWp386aProceduralProject(project.path);
+    auto assets_json = Json::parse(readWp374aText(project.path / "assets.json"));
+    auto left = assets_json["procedural_geometry"][0];
+    left["aabb"] = {{"min", {-3.5, -1.5, 6.5}}, {"max", {-0.5, 1.5, 9.5}}};
+    left["record"] = {{"radius", 1.0}, {"center", {-2.0, 0.0, 8.0}}};
+    auto right = left;
+    right["name"] = "right_sphere";
+    right["aabb"] = {{"min", {0.5, -1.5, 6.5}}, {"max", {3.5, 1.5, 9.5}}};
+    right["record"] = {{"radius", 1.25}, {"center", {2.0, 0.0, 8.0}}};
+    assets_json["procedural_geometry"] = Json::array({left, right});
+    writeWp374aText(project.path / "assets.json", assets_json.dump());
+    auto scene_json = Json::parse(readWp374aText(project.path / "scene.json"));
+    for (auto &component : scene_json["scenes"]["main"]["objects"][0]["components"])
+        if (component.at("name") == "pelican_procedural_geometry") {
+            component.erase("asset");
+            component["assets"] = {left.at("name"), "right_sphere"};
+        }
+    scene_json["scenes"]["main"]["objects"][0]["components"].push_back(
+        {{"name", "pelican_ray_instance"}, {"custom_index", 71}});
+    writeWp374aText(project.path / "scene.json", scene_json.dump());
+    auto layout = Json::parse(readWp374aText(project.path / "ray_layout.json"));
+    layout["record"].push_back({{"name", "center"}, {"type", "vec3"}});
+    writeWp374aText(project.path / "ray_layout.json", layout.dump());
+    auto feature = Json::parse(readWp374aText(project.path / "features/wp386_procedural.json"));
+    feature["compute_tasks"][0]["ray_tracing"]["hit_shaders"]["primary"]["sphere"]["intersection"] = "engine://procedural_sphere";
+    writeWp374aText(project.path / "features/wp386_procedural.json", feature.dump());
+    writeWp374aText(project.path / "shaders/wp386.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer SphereRecord {
+    PELICAN_RAY_ENGINE_RECORD_MEMBERS
+    float radius;
+    vec3 center;
+} sphere;
+void main() {
+    payload.marker = 0xaabb6u;
+    payload.q = sphere.geometry_index;
+    payload.flags = gl_GeometryIndexEXT;
+    payload.tint = floatBitsToUint(sphere.radius);
+}
+)glsl");
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    const auto sample = [&](float left_radius) {
+        const auto rows = renderWp374aProductionRows();
+        REQUIRE(rows.rows.size() == 2);
+        CHECK(rows.rows[0].scene_identity == rows.rows[1].scene_identity);
+        CHECK(rows.rows[0].geometry_index != rows.rows[1].geometry_index);
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("wp386_out", ImageSubresourceRange{});
+        std::array<std::uint32_t, 12> pixels{};
+        REQUIRE(image.bytes.size() >= sizeof(pixels));
+        std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+        CHECK(pixels[0] == 0xaabb6u);
+        CHECK(pixels[4] == 0xaabb6u);
+        CHECK(pixels[8] == 0x386au);
+        REQUIRE(pixels[1] < 2u);
+        REQUIRE(pixels[5] < 2u);
+        CHECK(pixels[1] != pixels[5]);
+        CHECK(pixels[2] == pixels[1]);
+        CHECK(pixels[6] == pixels[5]);
+        CHECK(std::bit_cast<float>(pixels[3]) == left_radius);
+        CHECK(std::bit_cast<float>(pixels[7]) == 1.25f);
+        const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(diagnostics.active_blas_count == 1);
+        CHECK(diagnostics.tlas_instance_count == 1);
+        REQUIRE(diagnostics.active_blas_inputs.size() == 1);
+        CHECK(diagnostics.active_blas_inputs[0].geometry_kind == RayGeometryKind::aabbs);
+        CHECK(diagnostics.active_blas_inputs[0].geometry_count == 2);
+        return diagnostics;
+    };
+    const auto initial = sample(1.0f);
+    CHECK(sample(1.0f).blas_build_count == initial.blas_build_count);
+    auto assets = parseAssetDataFormatJson(assets_json);
+    const auto *scene = GET_MODULE(ProjectBasicConfig).resolvedScene().findScene("main");
+    REQUIRE(scene);
+    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    SceneLoadPhaseTrace trace;
+    const auto publish = [&] {
+        // Asset editing has no RPC yet; use the existing scene participant transaction.
+        auto prepared = procedural.prepareScene(assets, *scene, &vkcore,
+            procedural.allocationGeneration() + 1, trace);
+        procedural.publishPrepared(prepared, trace);
+        procedural.enqueueRetirement(std::move(prepared), trace);
+    };
+    assets.procedural_geometry.front().record["radius"] = 1.125;
+    publish();
+    const auto record_edit = sample(1.125f);
+    CHECK(record_edit.blas_build_count == initial.blas_build_count);
+    CHECK(record_edit.blas_update_count == initial.blas_update_count);
+    assets.procedural_geometry.front().aabb_min[0] -= 0.125f;
+    publish();
+    const auto bounds_edit = sample(1.125f);
+    CHECK(bounds_edit.blas_build_count == record_edit.blas_build_count + 1);
+    CHECK(bounds_edit.blas_update_count == record_edit.blas_update_count);
+}
+
 TEST_CASE("WP386b sphere reports hits and reload publishes final entry classification",
           "[WP386b][ray-tracing][production][gpu]") {
     const bool invalid_record = GENERATE(false, true);

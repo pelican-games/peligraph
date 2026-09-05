@@ -48,7 +48,7 @@ std::string readRepositoryText(const std::filesystem::path &relative) {
     // The generated document is compared byte-for-byte with the registry
     // output; a checkout with core.autocrlf must not turn that into a
     // line-ending diff.
-    std::erase(text, '');
+    std::erase(text, '\r');
     return text;
 }
 
@@ -327,6 +327,34 @@ TEST_CASE("every component codec rejects invalid type range and unknown key fixt
         for (const auto kind : {"type", "range", "unknown"}) {
             REQUIRE(covered.contains(std::string{codec.name} + "/" + kind));
         }
+    }
+}
+
+TEST_CASE("procedural geometry codec normalizes a single asset or a unique asset list",
+          "[component-codec][procedural][multi-aabb]") {
+    using Json = nlohmann::json;
+    const auto *codec = findComponentCodec("pelican_procedural_geometry");
+    REQUIRE(codec);
+    const Json single{{"name", "pelican_procedural_geometry"}, {"asset", "left"}};
+    CHECK(Json(codec->encodeCanonical(decodeOrThrow(*codec, single))) == single);
+    CHECK(Json(codec->encodeCanonical(decodeOrThrow(*codec,
+        {{"name", "pelican_procedural_geometry"}, {"assets", {"left"}}}))) == single);
+    const Json multiple{{"name", "pelican_procedural_geometry"}, {"assets", {"left", "right"}}};
+    const auto decoded = decodeOrThrow(*codec, multiple);
+    ProceduralGeometryComponent runtime;
+    codec->applyRuntime(decoded, &runtime);
+    CHECK(runtime.assets == std::vector<std::string>{"left", "right"});
+    CHECK(Json(codec->encodeCanonical(codec->projectRuntime(&runtime))) == multiple);
+    const auto &schema = codec->schemaNode();
+    REQUIRE(schema.childCount(0) == 2);
+    CHECK(schema.at(schema.childIndex(0, 1)).tag == SchemaNodeTag::List);
+    CHECK(schema.at(schema.childIndex(0, 0)).presence == StructFieldPresence::OptionalOverride);
+    for (const auto &fields : std::vector<Json>{Json::object(), {{"asset", ""}},
+             {{"asset", "left"}, {"assets", {"right"}}}, {{"assets", Json::array()}},
+             {{"assets", "left"}}, {{"assets", {"left", "left"}}}, {{"assets", {"left", 1}}}}) {
+        auto authored = fields;
+        authored["name"] = "pelican_procedural_geometry";
+        CHECK_THROWS(decodeOrThrow(*codec, authored));
     }
 }
 

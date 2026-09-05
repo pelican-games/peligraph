@@ -103,17 +103,17 @@ ProceduralGeometryContainer::prepareScene(
             if (component.name != "pelican_procedural_geometry") continue;
             const auto &value = std::any_cast<const ProceduralGeometryComponent &>(
                 component.requireRuntimeValue());
-            const auto found = declarations.find(value.asset);
-            if (found == declarations.end()) {
-                throw std::runtime_error(
-                    "pelican.procedural_asset_unresolved@1: asset='" +
-                    value.asset + "'");
+            for (const auto &asset : value.assets) {
+                if (!declarations.contains(asset)) {
+                    throw std::runtime_error(
+                        "pelican.procedural_asset_unresolved@1: asset='" + asset + "'");
+                }
+                candidate->instances.push_back(State::Instance{
+                    .authoring_object_id = object.authoring_object_id.value,
+                    .occurrence = componentOccurrence(component),
+                    .asset = asset,
+                });
             }
-            candidate->instances.push_back(State::Instance{
-                .authoring_object_id = object.authoring_object_id.value,
-                .occurrence = componentOccurrence(component),
-                .asset = value.asset,
-            });
         }
     }
 

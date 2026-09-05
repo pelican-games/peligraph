@@ -509,6 +509,9 @@ graphでは共通のAS構築nodeが全TLASを用意する。個別ASへの編集
 
 同じモデル個体・componentのtriangle行が連続qを持ち、world transformと
 instance mask/flags/custom indexが一致するとき、1つのBLASへまとめる。
+procedural AABBも、同じcomponentの`assets`配列に含まれ同じ条件を満たせばまとめる。
+component occurrenceは共通で、assetごとのgeometry identityとrecord行を独立に保持する。
+配列位置をidentityには使わない。単一指定の`asset`と配列指定の`assets`は排他的に受理する。
 geometryごとのmaterial、record、geometry flagsは独立のまま保持する。
 配列順はq順であり、shaderの`gl_GeometryIndexEXT`はこのBLAS内の位置を返す。
 SBTの参照はVulkanの[instance offset + geometryIndex × stride + ray type](https://docs.vulkan.org/spec/latest/chapters/raytracing.html)
@@ -520,11 +523,12 @@ source identity・順序・topology・flagsが一致するとき別allocationへ
 前frameのASと入力bufferはsubmission完了まで保持する。
 
 異なる姿勢・mask・個体設定は別TLAS instanceへ分割する。layout v1のcustom index=qも
-同じ条件により分割され、既存の意味を変えない。AABBは現在singletonのまま。
+同じ条件により分割され、既存の意味を変えない。triangleとAABBの混合groupは作らない。
+AABB bounds変更はgeometry allocationの変更でgroupをrebuildし、recordだけの変更は既存BLASを再利用する。
 deviceのmaxGeometryCountと総maxPrimitiveCountに達する前にgroupを分割する。
 単独geometry自体がprimitive上限を超える場合は拒否する。
 診断の`geometry_count`はBLAS内のgeometry数、`tlas_instance_count`は結合後の実instance数を示す。
-異なるtransformのgeometryをまとめる操作、AABBの複数geometry化は残る。
+異なるtransformのgeometryをまとめる操作は残る。
 
 ### RT7: 名前付きASの編集（2026-09-06）
 

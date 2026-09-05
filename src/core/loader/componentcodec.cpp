@@ -116,10 +116,6 @@ inline constexpr auto simple_model_view_schema = structFields(
     componentPolicy("simplemodelview"),
     required(field<&SimpleModelViewCodecData::model>("model")));
 
-inline constexpr auto procedural_geometry_schema = structFields(
-    componentPolicy("pelican_procedural_geometry"),
-    required(field<&ProceduralGeometryComponent::asset>("asset")));
-
 inline constexpr auto camera_schema = structFields(
     componentPolicy("camera"),
     defaulted(field<&CameraSchemaFields::type>("type"), CameraProjectionKind::Perspective,
@@ -208,8 +204,6 @@ auto materializeSchema(const Schema &schema) {
 
 const auto transform_fields = materializeSchema(transform_schema);
 const auto simple_model_view_fields = materializeSchema(simple_model_view_schema);
-const auto procedural_geometry_fields =
-    materializeSchema(procedural_geometry_schema);
 const auto camera_fields = materializeSchema(camera_schema);
 const auto light_fields = materializeSchema(light_schema);
 const auto collider_fields = materializeSchema(collider_schema);
@@ -504,24 +498,56 @@ ComponentCodecValue projectSimpleModelView(const void *raw_source) {
 ComponentCodecValue decodeProceduralGeometry(const Json &json) {
     requireObjectAndName(json, "pelican_procedural_geometry");
     requireClosed(json, "pelican_procedural_geometry",
-                  std::array<std::string_view, 2>{"name", "asset"});
+                  std::array<std::string_view, 3>{"name", "asset", "assets"});
+    if (json.contains("asset") == json.contains("assets"))
+        codecError(StructFieldErrorCode::OutOfRange, "pelican_procedural_geometry",
+                   "provide exactly one of asset or assets");
     ProceduralGeometryComponent result;
-    result.asset = readString(
-        requireField(json, "pelican_procedural_geometry", "asset"),
-        "pelican_procedural_geometry.asset", true);
+    if (json.contains("asset")) {
+        result.assets.push_back(readString(json.at("asset"), "pelican_procedural_geometry.asset", true));
+    } else {
+        const auto &assets = json.at("assets");
+        if (!assets.is_array())
+            codecError(StructFieldErrorCode::TypeMismatch, "pelican_procedural_geometry.assets", "must be an array of asset names");
+        if (assets.empty())
+            codecError(StructFieldErrorCode::OutOfRange, "pelican_procedural_geometry.assets", "must not be empty");
+        for (std::size_t index = 0; index < assets.size(); ++index) {
+            auto asset = readString(assets.at(index), "pelican_procedural_geometry.assets[" + std::to_string(index) + "]", true);
+            if (std::find(result.assets.begin(), result.assets.end(), asset) != result.assets.end())
+                codecError(StructFieldErrorCode::OutOfRange, "pelican_procedural_geometry.assets", "asset names must be unique");
+            result.assets.push_back(std::move(asset));
+        }
+    }
     return result;
 }
 
 OrderedJson encodeProceduralGeometry(const ComponentCodecValue &value) {
-    const auto &data = codecValue<ProceduralGeometryComponent>(
-        value, "pelican_procedural_geometry");
-    if (data.asset.empty()) {
-        codecError(StructFieldErrorCode::OutOfRange,
-                   "pelican_procedural_geometry.asset",
-                   "must not be empty");
+    const auto &data = codecValue<ProceduralGeometryComponent>(value, "pelican_procedural_geometry");
+    if (data.assets.empty())
+        codecError(StructFieldErrorCode::OutOfRange, "pelican_procedural_geometry.assets", "must not be empty");
+    for (std::size_t index = 0; index < data.assets.size(); ++index) {
+        if (data.assets[index].empty() || std::find(data.assets.begin(), data.assets.begin() + index, data.assets[index]) != data.assets.begin() + index)
+            codecError(StructFieldErrorCode::OutOfRange, "pelican_procedural_geometry.assets", "asset names must be nonempty and unique");
     }
-    return OrderedJson{{"name", "pelican_procedural_geometry"},
-                       {"asset", data.asset}};
+    if (data.assets.size() == 1)
+        return OrderedJson{{"name", "pelican_procedural_geometry"}, {"asset", data.assets.front()}};
+    return OrderedJson{{"name", "pelican_procedural_geometry"}, {"assets", data.assets}};
+}
+
+const SchemaNode &proceduralGeometrySchema() {
+    static const auto schema = [] {
+        SchemaNode result;
+        // The codec enforces the exclusive choice; neither field alone is required.
+        result.nodes[1] = {.tag = SchemaNodeTag::Leaf, .name = "asset",
+            .presence = StructFieldPresence::OptionalOverride, .leaf_type = StructFieldType::String, .parent = 0};
+        result.nodes[2] = {.tag = SchemaNodeTag::List, .name = "assets",
+            .presence = StructFieldPresence::OptionalOverride, .leaf_type = StructFieldType::List, .parent = 0};
+        result.nodes[3] = {.tag = SchemaNodeTag::Leaf, .name = "asset",
+            .leaf_type = StructFieldType::String, .parent = 2};
+        result.node_count = 4;
+        return result;
+    }();
+    return schema;
 }
 
 void applyProceduralGeometry(const ComponentCodecValue &value,
@@ -1352,11 +1378,7 @@ const std::array codecs{
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeProceduralGeometry>,
                    encodeProceduralGeometry,
-                   []() -> const SchemaNode & {
-                       static const auto node = SchemaNode::fromFlat(
-                           fieldSpan(procedural_geometry_fields));
-                       return node;
-                   },
+                   proceduralGeometrySchema,
                    applyProceduralGeometry, projectProceduralGeometry,
                    prepareEcsEditorSwap<ProceduralGeometryComponent>,
                    swapEcsEditorToken<ProceduralGeometryComponent>},

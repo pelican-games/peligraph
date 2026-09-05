@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、dispatchフォーム):** node順序編集は584f5829に統合済み。TasksのdispatchフォームとFrame Planから元task名への接続を実装。flat/XRの順序指定を相互に誤拒否する問題も修正。次はRT6の複数AABB geometry BLAS、視覚的なport接続、AS公開境界を越える配置、asset選択フォームなど。学習サンプルは後回し。
+**最新の入口 (2026-09-06、複数AABB BLAS):** node順序編集は584f5829、dispatchフォームと元task名・variant順序修正はcfc44261に統合済み。procedural componentの複数asset指定とAABB BLAS結合を追加し、実GPUで個別record・再利用・bounds変更時の再構築を確認。次は視覚的なport接続、AS公開境界を越える配置、asset選択フォームなど。学習サンプルは後回し。
+
+**RT6 procedural複数asset・AABB BLAS結合 (2026-09-06):**
+- `pelican_procedural_geometry`は単一`asset`または非空・重複なしの`assets`配列を受理する。内部はvectorに正規化し、canonicalは単数asset/複数assets。既存codecのruntime copy/swapとSceneLoader参加者を使用する。schemaに任意asset/stringとassets/listを公開し、排他はcodecで確認する。
+- 同componentのassetを同じoccurrenceと独立geometry identityで展開。既存triangle用BLAS groupのgeometry kind限定を拡張し、occurrence・transform・instance制御・連続q/SBT・device上限は維持。record変更はBLAS再利用、bounds変更はgroup rebuild。異objectを同一TLAS instanceへまとめず、triangleとの混合groupも作らない。
+- 新GPU1/1（82 assertions、`build/.codex_bg/multiaabb-carrier-gpu.log`）成功。左右の実intersectionと個別record、BLAS1/geometry2/TLAS1、2frame再利用・record変更再利用・bounds変更時build+1を確認。asset変更RPCは未実装なので変更確認は既存scene participantを使用。既存triangle/static/refit・単一AABB・別objectの3/3（160 assertions、`multiaabb-final-regression-gpu.log`）も成功。
+- CPU既存24件成功と追加case修正後1/1（15 assertions）成功で異なる25件。ログ`multiaabb-cpu.log` / `multiaabb-final-cpu.log`。初回は新テストがordered JSONと通常JSONの比較、codecの例外契約を誤っていたため修正。テストファイル編集時の文字literal破損も復元した。最初のGPU試案の同型component2個はECSが拒否したため、実際に使える単一componentの配列宣言へ変更した。
+- Player/Studio build成功（`multiaabb-final-build.log`）、GPU exeは`multiaabb-carrier-build.log`、最終CPU exeは`multiaabb-cpu-build.log`。doclink check3869件成功。新test targetや配布用ツールは追加なし。asset pickerとasset定義編集RPCは残る。
 
 **RT7 dispatchフォーム・元task名 (2026-09-06):**
 - Tasksにcompute groups/RT rays、画像port由来、indirect buffer+offsetのフォームを追加。Update dispatch JSONで既存草稿のdispatchを更新しApply taskで保存。他task設定と未知fieldを保持し、整数入力と不正JSONを確認する。元宣言は`declaration_json`文字列でQt数値変換を避け、送信時に整数が丸まる草稿は保持して拒否する。

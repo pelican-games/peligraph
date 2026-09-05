@@ -1307,11 +1307,11 @@ RayQueryAccelerationStructureScope::recordFrame(
         if (primitives > max_primitive_count_)
             throw std::runtime_error("ray geometry exceeds device maxPrimitiveCount");
         bool append = false;
-        if (!groups.empty() && source.geometry_kind == RayGeometryKind::triangles) {
+        if (!groups.empty()) {
             const auto &group = groups.back();
             const auto &previous = planned_instances[group.plan_indices.back()];
             const auto &first = instances[planned_instances[group.plan_indices.front()].source_index];
-            append = first.geometry_kind == RayGeometryKind::triangles &&
+            append = first.geometry_kind == source.geometry_kind &&
                 first.authoring_object_id == source.authoring_object_id &&
                 first.component_occurrence == source.component_occurrence &&
                 first.instance_index == source.instance_index &&
