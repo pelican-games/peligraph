@@ -23230,16 +23230,16 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 統合Studio ON build成功。全数 **1677件中成功1674・skip1・失敗2**、848.90秒。既知の `contract_projection_gate` と、WP334b multi-document transactionの一時ファイル置換 `Access is denied`。後者は同じ実行物の単独再実行で1/1成功(0.08秒)、原因は未確定で保存処理や合格条件は変更していない。Studio fatal伝達試験は43.67秒で成功。ログは `<作業ディレクトリ>/int_wp386a_20260905/ctest.log`、`wp334b_recheck.log`、`build_done` / `done`。全数成功とは記録しない。
 
 **後続のfeature有効化前に閉じる残余:**
-1. procedural componentのeditor projection participantが未接続。destroy / remove / asset変更後のruntime追随を本番edit→renderで確認・実装する。frame例外を握り潰して行を黙って捨てる処理は足さない。
+1. procedural componentのeditor projection participantはWP382dで接続済み。destroy / remove / asset変更後のruntime追随と失敗時rollbackの記録はWP382dを参照。frame例外を握り潰して行を黙って捨てる処理は足さない。
 2. 決定19のrecord単独 / AABB単独の変更行列、activate失敗後に旧procedural stateが残る対照、productionでの登録順反転は未検証。既存drop mutationやresolver直呼びの成功で置き換えない。決定17のtriangle component occurrenceの設定範囲も確認する。
-3. record型不整合の検査時機は初回renderに残る。生成anyhitがproceduralのmaterial sentinelを読む可能性は、386bでreportするshaderを導入する前に閉じる。386aのno-report shaderではhitしない。
+3. record型不整合はWP382dのscene prepare → 共通AS plan → record encodeで読み込み時に拒否される。WP386bのproduction対照でも描画前の `pelican.ray_binding_record_invalid@1` を確認済み。検査経路の追加は不要。生成anyhitのproceduralへの誤適用はWP386b worktreeで修正・検証済み、統合は未了。
 4. table使用時のreuse阻害はrev384既知残余のまま。現行digestを比較する時点を整理し、判定を消すだけの修正はしない。layout無し経路のGPU寿命破壊は未実測であり確定欠陥と呼ばない(当該入力は今回load時に拒否)。
 
 ### 未了項目と再開順
 
 #### 2026-09-05 現況(下の再開履歴より優先)
 
-作業ブランチは `codex/render-target-runtime-slice`、最新のコード着地は `36ad3444`(WP382b-fix、WP386aは `b7cb1825`)。
+作業ブランチは `codex/render-target-runtime-slice`、最新の機能着地は `4ce4117d`(WP382d、WP382b-fixは `36ad3444`、WP386aは `b7cb1825`)。
 引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。
 Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
 `<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
@@ -23249,9 +23249,9 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
 4. **WP382b-fix は 36ad3444 に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
 5. **WP382d は4ce4117dに統合。** overrides / presence / participant / inventoryを接続し、W1 95/95成功。Web専用拒否はWeb側への引き継ぎ事項で統合条件に含めない。実装とレビュー裁定、後続の効率整理、統合先の検証は下の記録を参照。次はWP386b。
-6. **WP386b 実装中、386cは後続。** `<作業ディレクトリ>/wp386b` / `codex/wp386b`、基点 `763556e8`。まずhit attributeのstage間ABI検査と、materialを持たないproceduralへの生成any-hit誤適用を閉じる。分類/status wire、規範shader、386aレビュー残余は未完でありfeature完成と扱わない。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
+6. **WP386b 実装中、386cは後続。** `<作業ディレクトリ>/wp386b` / `codex/wp386b`。入口ABI修正を統合側が `5fedb8a3` に保存し、WP382dを含む作業ブランチ `1a4be75f` をmerge済み。final SPIR-Vのscalar演算列・NoContraction・operand依存関係の分類、entry digest、active pipelineの `get_status.ray_tracing.procedural_oracle`、球のnear-root参考shaderを実装。GPUのno-report→球→no-reportとreload時のdigest/classification更新を確認済み。未統合でありfeature完成と扱わない。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
 
-WP386bの入口安全性はworktreeで実装・検証済み(未commit・未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。最終fixture調整後もGPU1/1成功。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。
+WP386bの入口安全性はworktreeで実装・検証済み(上記commit、未統合)。関連5/5成功、型検査とmaterial-alpha選択の2変異で意図した失敗、復元後成功。球/classification/statusは統合側が `ae6ebe4b` に保存。status公開を外す変異は実RPCの件数確認で赤、復元build後の最終関連7/7成功(GPU5件、14.79秒)。RT1a全18件・RT2b全13件も成功。最終ログ `<作業ディレクトリ>/wp386b_sphere_restored_ctest.log`。RPC ON / Studio OFFのみで、全数/matrix/レビュー完了とは扱わない。分類のeligibleは演算列の適格性であり、device float controlsと誤差区間を含むgoldenの適格性は386cで接続する。変更行列・portableなattribute上限対照・統合検証は残る。詳細と次の入口は `<作業ディレクトリ>/wp386b_progress_20260905.md`。
 
 **WP382d 接続の進捗:** scene/editor/model reloadの候補と共通inventory/AS plan、RPCのq・実効値・component witness・共有拒否行診断を接続。描画前の一覧、行削除直後の反映、AfterPublication失敗後の旧plan/inventoryとRPC保持をGPUで確認した。geometry全消滅後も行が消えないよう、旧witness mapを独立した宣言catalogへ置換した。連続scene importの対照でretire待ちslotを再利用可能と誤認する二重解放を発見し、free listの再構築を削除して修正。release側assertは維持。最終slot/GPU/preview対照3/3成功、編集・ECSは通常CTest164/164成功。ログと再開入口は `<作業ディレクトリ>/wp382d_connection_progress_20260905.md`、実装側詳細は `<作業ディレクトリ>/wp382d_report.md`。
 
