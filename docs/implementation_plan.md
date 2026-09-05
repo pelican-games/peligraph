@@ -23125,7 +23125,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ##### 決定 16(#10 + 問い 6): 段割り・transform・manifest・phase trace
 
-- **1 branch は撤回。3 WP**: **WP386a** = 決定 1(v2)・2・3・8〜12(asset v2、ray_bindings v2、union inventory、identity、AABB BLAS、participant)。**feature gate は閉じたまま**(procedural row は AS / SBT に入るが `.rint` が無いので pipeline は作れない → 受け入れは CPU の row / SBT / TLAS 入力 bytes と participant の rollback。GPU の球は置かない)/ **WP386b** = 決定 4・5・13・14(`.rint` 語彙、procedural group、reflection、分類、status wire)/ **WP386c** = 決定 6・7・15(oracle、generator、GPU golden、float controls、feature enable)。各 WP で全構成が build・全数緑
+- **1 branch は撤回。3 WP**: **WP386a** = 決定 1(v2)・2・3・8〜12(asset v2、ray_bindings v2、union inventory、identity、AABB BLAS、participant)。**feature gate は閉じたまま**(procedural row は AS / SBT に入るが `.rint` が無いので pipeline は作れない → 受け入れは CPU の row / SBT / TLAS 入力 bytes と participant の rollback。GPU の球は置かない)/ **WP386b** = 決定 4・5・13・14(`.rint` 語彙、procedural group、reflection、分類、status wire)/ **WP386c** = 決定 6・7・15(oracle、generator、GPU golden、float controls、feature enable)。各WPは変更したtargetと条件分岐に対応する構成を検証し、広域確認は統合の節目にまとめる。同じ構成・故障経路の証拠は、前提が変わらなければ再利用する(v1開発方針の2026-09-05運用更新)
 - transform: prepare では asset 解決・AABB 検査・buffer 確保だけ。world transform は draw instance と同じ projection 経路(ECS → renderer の transform update)で publish 後に届く(親階層を prepare で再計算しない)。codec の runtime kind は draw の model instance と同じ、editor projection は既存 component と同じ
 - manifest: `procedural.aabb_buffer` / `procedural.allocation_generation` / `procedural.instance_snapshot` / `procedural.retire_queue` を **別 row・別 mutation ID** で列挙する(grouped row 1 行は撤回)
 - phase trace: 新 phase は足さない。prepare / publish / retire / finish の既存区間内で record し、成功・prepare 失敗・publish 前失敗・commit 後 retire の 4 経路で **exact 8 sequence** を要求する(early_publish / activate / commit_metadata との相対位置を固定)
@@ -23187,11 +23187,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - `ray_as_declaration_requires_layout_v2@1` の意味を **「minimum v2」**と定義し、`RayLayoutSemanticMode::LayoutV2` との等値比較([raygrouplayout.hpp:54](../src/core/shader/raygrouplayout.hpp#L54)、[scene.cpp:52](../src/core/loader/scene.cpp#L52)、[raygrouplayout.cpp:1263](../src/core/shader/raygrouplayout.cpp#L1263))を「v2 以上」の述語 1 つに集約する(等値比較を 1 箇所でも残すと v3 project で AS / ray instance が無音で消える → 受け入れ: v3 project で `pelican_ray_instance` が効く)
 - 出荷 4 project は asset_data v1、`ray_group_layout` / `ray_bindings` 0 件(確認済み)。bytes 不変 + v1 経路の SBT / TLAS bytes 不変
 
-##### 決定 24(#8): f32 の float mode は **1 組に固定**し、最終 SPIR-V で検査する
+##### 決定 24(#8): f32 の float mode を最終 SPIR-V で検査する(2026-09-05 更新)
 
-- mode tuple = **`RoundingModeRTE 32` + `DenormPreserve 32` + `SignedZeroInfNanPreserve 32`**。CPU oracle は DenormPreserve を模倣する(FTZ は eligible にしない)。device は `VkPhysicalDeviceFloatControlsProperties`(`VkPhysicalDeviceProperties2` の pNext。[core.cpp:353](../src/core/vkcore/core.cpp#L353) の properties chain に足す)で `roundingModeRTEFloat32` / `denormPreserveFloat32` / `signedZeroInfNanPreserveFloat32` を要求。`denormBehaviorIndependence` は別 property(bit 幅間の独立性)であり要求に使わない
+- mode tuple = **`RoundingModeRTE 32` + `SignedZeroInfNanPreserve 32`**。旧DenormPreserve必須は撤回する。実機RTX 5080はf32 RTE/preserve特殊値に対応する一方、denormPreserveはfalse。CPU oracleは各演算の入力・結果がsubnormal域と交わると0を区間へ含め、保持/FTZの双方を包含する。分岐の確定できないfixtureは拒否する。deviceは `VkPhysicalDeviceFloatControlsProperties` でRTEと特殊値preserveを要求し、denorm対応は事実として記録する。vendor名やbit幅間の独立性では適格性を決めない。この変更は数値fixtureの対応条件であり、未完のtransform/AABB/候補一意性を完了にはしない。
 - GLSL 側は **`GL_EXT_spirv_intrinsics` の `spirv_execution_mode(...)`**(SPIR-V 1.5 / Vulkan 1.2)で生成する(`GL_EXT_shader_explicit_arithmetic_types` + `layout(rounding_mode_rte)` は glslang で compile 不能。確認済み)。engine 同梱の規範 `.rint` はこれを含む
-- Inspector は entry の **execution mode と capability を reflection に保持**し([rtspirvinspection.hpp:101](../src/core/shader/rtspirvinspection.hpp#L101) に足す)、golden gate は「最終 SPIR-V に 3 mode すべてがある」ことを `eligible` の条件に含める
+- Inspectorはentryのexecution modeとmodule capabilityを検査し、上記2modeと対応capabilityを `eligible` の条件に含める。解析用のmode/capability配列を公開reflectionへ重複保存せず、消費者には分類とdigestを渡す。
 - 受け入れ: property 偽装 → `procedural_oracle_device_unsupported@1` / 最終 SPIR-V から mode を 1 つ除く変異 → harness gate で `procedural_oracle_shader_ineligible@1`
 
 ##### 決定 25(#9): 精度の伝播は Contract に置き、padding の受け入れは device 非依存にする
@@ -23250,6 +23250,16 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 4. **WP382b-fix は 36ad3444 に着地。** 高水位・raw復元・List pointer拒否・独立undoを修正。Fableが指摘したBehaviorコピーへの誤undoも実再現して修正、最終関連37/37成功。レビュー残余と構成別の証拠は上の統合記録。旧CLIプロンプトから再開しない。
 5. **WP382d は4ce4117dに統合。** overrides / presence / participant / inventoryを接続し、W1 95/95成功。Web専用拒否はWeb側への引き継ぎ事項で統合条件に含めない。実装とレビュー裁定、後続の効率整理、統合先の検証は下の記録を参照。次はWP386b。
 6. **WP386b は `6d25d9e0` に統合、次はWP386c。** final SPIR-Vのscalar演算列・NoContraction・operand依存関係の分類、entry digest、active pipelineの `get_status.ray_tracing.procedural_oracle`、球のnear-root参考shader、hit attribute ABIとproceduralへの生成anyhit誤適用防止を接続。統合/rev386bの結果は直下の最新記録を正とする。RT3c全体のfeature enableはdevice float controls/interval oracleを担当する386cの後。旧worktree `<作業ディレクトリ>/wp386b` は保存のみとし、次の実装は作業ブランチから始める。RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
+
+**WP386c 数値基礎と開発負担の整理 (2026-09-05 再開):**
+- object-space・外起点・near-rootの球について、一般形27演算をf32丸め区間で評価する基礎を追加。sqrtはinversesqrt 2 ULPとdiv 2.5 ULPの継承を対称化、各演算の入力/出力のsubnormal保持・FTZを包含する。旧DenormPreserve必須を撤回し、最終entryのRTE/特殊値preserve mode・capabilityと実device propertiesを分類へ接続。RTX 5080の実GPUで球を包含した。
+- **WP386c全体は未完。** rigid transformの区間、object AABB/slab、mixed geometryのpredicate後候補一意性、constructive generator、hitKind/RPC OFFの入口は後続。今回の `eligible` はshader/deviceの入口条件であり、任意のsceneを数値goldenとして認定しない。
+- コンポーネント宣言のslot別vectorを撤去し、既存のimmutable catalogへ一本化。snapshot/publish/rollbackの所有境界は維持。CPU oracleはtest専用static targetへ移し、4つの利用test executableだけにリンク。Playerがwhole-archiveするcore libraryのmember一覧にもoracle objectがないことを確認した。
+- RT1a CPU最終 **21ケース/416 assertions成功**、既存RT1b **18ケース/578 assertions成功**。関連CTest **21/21成功**(GPU15、30.00秒)、既存oracleのheadless GPU呼出し **2/2成功**。Player/Studioと4利用testのbuild成功。全構成・全数の反復は行わず、同じ条件分岐の過去の構成証拠を引き継ぐ。
+- div paddingとinversesqrt paddingを独立に外した2変異は規格端点テストでそれぞれ失敗(exit42、exe mtime確認)。復元build後21ケース再成功。ログは `build/.codex_bg/wp386c_{related_ctest,linkage_ctest,restored_cpu,rt1b}.log` と `wp386c_mutations.json`、buildは `wp386c_build3.log` / `wp386c_studio_build.log`。
+- Fable読み取りレビューは未コミットsourceの外部送信について自動承認審査に拒否され未実施。ローカル独立レビューでは今回の限定subsetに重大な包含漏れは見つからず、sqrt補正の独立否定対照が弱い指摘を受けて前項の端点変異を追加した。外部レビュー済みとは扱わない。
+- 最終レビューでRelaxedPrecisionを持つmoduleをf32数値subsetから除外し、対照を追加(通常loadの拒否ではない)。`device_unsupported`は分類関数で確認済みだが、要求float capabilityに非対応の実機ではpipeline作成が先に拒否され得る。そうした実機でもstatus wireへ必ず分類が出る保証は未確認で、golden前の入口整理の残項目とする。
+- 長期既知の `contract_projection_gate` 失敗は棚卸しの未追従17件だった。新consumer14経路を登録し、間接利用等の3経路は理由付き `scan:false` としてanchor検査を維持。checker/scan範囲を弱めず、3gateと既存checker試験4件(未登録sourceの否定対照を含む)成功、通常CTestの同gate **1/1成功**(2.43秒)。この成功を描画全体や過去の全数成功へ読み替えない。
 
 **WP386b 統合・rev386b (2026-09-05、以下の未統合履歴より優先):**
 - コード `6d25d9e0`。通常loadを拒否しない演算列分類とactive pipelineの診断、球のGPU on/off/reload、AABB共有修正、record/AABB変更行列、同一identityでの登録順反転、SceneLoader activate失敗時の旧state復元を確認。配布用の検査ツールや新しい回復経路は追加していない。

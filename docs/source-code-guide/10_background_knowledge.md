@@ -220,7 +220,7 @@
 
 Vulkan では、`*_SRGB` 形式のイメージに書き込むと線形値→sRGB 伝達関数のエンコードがハードウェアで自動的に掛かり、シェーダからサンプリングすると逆にデコードされて線形値が返ります(変換対象は RGB のみで、アルファには掛かりません)。つまり sRGB フォーマットを選べば、シェーダ側は最後までリニア空間で計算したままでよく、`pow(c, 1/2.2)` 相当を自前で書かなくて済みます。UNORM 形式を選ぶとこの自動変換がないので、同じシェーダのままだと画面が暗く沈みます。一方 `colorSpace` の `eSrgbNonlinear` は「presentation engine はこのイメージのデータを sRGB エンコード済みとして扱う」という別の宣言で、フォーマットとセットで意味を持ちます。サーフェスが返すフォーマット一覧に希望のものがあるとは限らないため、「必須」ではなくスコア付けして降順に並べ、先頭を採る書き方にしておくと、非対応環境でも起動だけはできます。
 
-**このリポジトリでは**: `createSwapchain()` の `pred_fmt` / `score_func`(swapchainframetarget.cpp:56〜68)が sRGB+`eSrgbNonlinear` に 20、UNORM+`eSrgbNonlinear` に 10、他に 0 を付け、`std::stable_sort` の降順で `surface_fmts[0]` を採ります(69・81 行)。採れた経路は `caps().color_path` が `"srgb"` / `"unorm_fallback"` として報告します(434〜444 行)。オフスクリーン側は `OffscreenFrameTarget` コンストラクタが `eR8G8B8A8Srgb` を第一候補にし、feature が無ければ `eR8G8B8A8Unorm` に落とします(offscreenframetarget.cpp:102・108〜116)。sRGB を採れればシェーダはリニアのまま書き込み、HW が sRGB エンコードするので `pow(c, 1/2.2)` を持たずに済み、ヘッドレスとオンスクリーンで同じシェーダ・同じ絵になります。UNORM しか無い環境でも起動は通し、`color_path` でどちらの経路だったかをテスト側が判別できます。同じ「加点して `stable_sort` で降順、先頭を採る」形は物理デバイスの選択にも使われていて(2026-09-04 追記)、[pickPhysicalDevice()](../../src/core/vkcore/core.cpp#L515) が「graphics と present が同一 queue family」に +100 のような重みを付けます。こちらは `(score, index)` のペアを逆順イテレータで `stable_sort` する形なので、同点でも添字が並び順を決め、同じマシンでは毎回同じ GPU が選ばれます。
+**このリポジトリでは**: `createSwapchain()` の `pred_fmt` / `score_func`(swapchainframetarget.cpp:56〜68)が sRGB+`eSrgbNonlinear` に 20、UNORM+`eSrgbNonlinear` に 10、他に 0 を付け、`std::stable_sort` の降順で `surface_fmts[0]` を採ります(69・81 行)。採れた経路は `caps().color_path` が `"srgb"` / `"unorm_fallback"` として報告します(434〜444 行)。オフスクリーン側は `OffscreenFrameTarget` コンストラクタが `eR8G8B8A8Srgb` を第一候補にし、feature が無ければ `eR8G8B8A8Unorm` に落とします(offscreenframetarget.cpp:102・108〜116)。sRGB を採れればシェーダはリニアのまま書き込み、HW が sRGB エンコードするので `pow(c, 1/2.2)` を持たずに済み、ヘッドレスとオンスクリーンで同じシェーダ・同じ絵になります。UNORM しか無い環境でも起動は通し、`color_path` でどちらの経路だったかをテスト側が判別できます。同じ「加点して `stable_sort` で降順、先頭を採る」形は物理デバイスの選択にも使われていて(2026-09-04 追記)、[pickPhysicalDevice()](../../src/core/vkcore/core.cpp#L520) が「graphics と present が同一 queue family」に +100 のような重みを付けます。こちらは `(score, index)` のペアを逆順イテレータで `stable_sort` する形なので、同点でも添字が並び順を決め、同じマシンでは毎回同じ GPU が選ばれます。
 
 ### present mode で必ず存在するのは FIFO だけ
 
@@ -359,13 +359,13 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構造体を `pNext` で数珠つなぎにして 1 回の呼び出しに載せます。vulkan-hpp の `vk::StructureChain<A, B, C>` はこの連結を型で表現したもので、`get<B>()` で要素を取り出し、`unlink<B>()` で**実行時に**その要素を鎖から外せます(`relink<B>()` で戻せます)。外すことは「その機能を要求しない」という意味になるので、拡張の無い環境で同じコードを通す常套手段です。逆に鎖へ残したまま非対応のデバイスへ渡すと、検証レイヤに叱られるか、そのまま失敗します。
 
-**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L554)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L505) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L399)(descriptor write の `pNext` に acceleration structure 情報を足す)
+**使用場所**: [createLogicalDevice()](../../src/core/vkcore/core.cpp#L559)(feature 構造体を chain に積み、非対応なら `unlink()`) / [PipelineFactory::createGraphicsPipeline()](../../src/core/shader/pipelinefactory.cpp#L505) / [FrameResources::FramePublication](../../src/core/renderer/frameresources.cpp#L399)(descriptor write の `pNext` に acceleration structure 情報を足す)
 
 ### 機能照会(getFeatures2 の chain)と拡張関数の動的解決
 
 「この GPU がその機能を持つか」は `vkGetPhysicalDeviceFeatures2` に feature 構造体を `pNext` で繋いで問い合わせます。chain 全体が一度に埋まるので、複数の拡張を 1 回で照会できます。重要なのは **照会しただけでは有効にならない**ことで、`vkCreateDevice` の `pNext` に同じ構造体を(true にして)渡して初めて使えます。拡張のエントリポイントは Vulkan のローダに静的リンクされていないことがあるため、`vkGetDeviceProcAddr` で取得し、null なら「その拡張は無い」と判断します(vulkan-hpp では dispatcher に取り込みます)。
 
-**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L316)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L554)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L913)
+**使用場所**: [queryDeviceFeatureSupport()](../../src/core/vkcore/core.cpp#L316)(照会側) / [createLogicalDevice()](../../src/core/vkcore/core.cpp#L559)(有効化側) / [VulkanManageCore::VulkanManageCore()](../../src/core/vkcore/core.cpp#L918)
 
 **このコードベースでの注意**: 必須の feature が 1 つでも欠ける物理デバイスは選外にし、optional なもの(dynamic rendering local read など)だけ `unlink()` で落とします。「必須」と「あれば使う」がこの 2 つの経路で分かれています。
 
@@ -373,7 +373,7 @@ Vulkan の構造体は `sType` と `pNext` を持ち、拡張機能ぶんの構�
 
 VMA は Vulkan のメモリタイプ選択とサブアロケーションを引き受ける定番ライブラリ(AMD 製、構造体名 `VmaAllocationCreateInfo`)です。`VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE` は「デバイスローカルを優先しつつ、必要なら他のヒープへ落ちてよい」という意図の宣言で、`VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT` は「CPU からは前へ前へと書くだけで読み返さない」という宣言です。この 2 つを組むと write-combined なホスト可視メモリが選ばれやすくなり、ステージングバッファを別に持たずに直接書けます(読み返すと極端に遅いのが write-combined の性質です)。budget 追跡(`VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT`)や buffer device address(`VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT`)はアロケータ作成時に宣言が要ります。
 
-**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L809) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
+**使用場所**: [createAllocator()](../../src/core/vkcore/core.cpp#L814) / [createIndexBuf()](../../src/core/model/vertbufcontainer.cpp#L29) / [createVertBuf()](../../src/core/model/vertbufcontainer.cpp#L38)
 
 ### buffer device address と usage flags
 
@@ -665,7 +665,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [schemaRangeJson()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L783) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L3229) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1704) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [schemaRangeJson()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L783) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L3229) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1705) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 
@@ -963,13 +963,13 @@ C++ の `std::regex` は既定で ECMAScript 文法です。この文法では `
 
 型が型を含む構造(構造体のメンバがまた構造体、など)を再帰的に辿るとき、循環があると無限再帰になります。定石は「いま辿っている経路上の型」をスタックに積んでおき、これから降りようとする型がすでにスタックに載っていれば閉路として失敗させることです。**訪問済み集合ではなく訪問中スタック**である点が肝で、同じ型が兄弟として 2 回現れるのは循環ではありません(訪問済み集合で弾くと、正当な共有を誤検出します)。降りる前に積み、戻るときに降ろす、という対称性が崩れると誤検出になります。
 
-**使用場所**: [Inspector::canonicalType()](../../src/core/shader/rtspirvinspection.cpp#L325)(SPIR-V の型 id を辿りながら訪問中スタックで閉路を止める)
+**使用場所**: [Inspector::canonicalType()](../../src/core/shader/rtspirvinspection.cpp#L329)(SPIR-V の型 id を辿りながら訪問中スタックで閉路を止める)
 
 ### SPIR-V のバイナリ形式
 
 SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘッダ(magic `0x07230203`、バージョン、生成器 ID、id の上限、予約語)で、以降は命令が並びます。各命令の**先頭ワードは `word_count << 16 | opcode`** で、`word_count` はその命令自身を含む総ワード数なので、次の命令へはこの数だけ進めます(命令の中身を解釈しなくても走査できるのがこの形式の利点です)。文字列リテラルは 1 ワード 4 バイトのリトルエンディアンに詰めた NUL 終端で、末尾はワード境界まで 0 で埋められます。**外部で引くときの名前**は "SPIR-V Specification" の Physical Layout 節です。
 
-**使用場所**: [Inspector::parse()](../../src/core/shader/rtspirvinspection.cpp#L597)(word_count で命令列を走査) / [decodeLiteralString()](../../src/core/shader/rtspirvinspection.cpp#L215)
+**使用場所**: [Inspector::parse()](../../src/core/shader/rtspirvinspection.cpp#L604)(word_count で命令列を走査) / [decodeLiteralString()](../../src/core/shader/rtspirvinspection.cpp#L216)
 
 ### JSON Pointer(RFC 6901)
 
@@ -1112,7 +1112,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2219)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L430)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2207)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L430)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 

@@ -317,8 +317,6 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     RendererInternal::ModelInstanceSlots instance_slots;
     std::vector<ModelAssetId> model_asset_ids;
     std::vector<std::uint64_t> ray_authoring_object_ids;
-    std::vector<std::optional<RayInstanceComponent>>
-        ray_instance_declarations;
     std::shared_ptr<const RaySceneDeclarationCatalog> ray_scene_declarations =
         std::make_shared<const RaySceneDeclarationCatalog>();
     std::shared_ptr<const RayScenePlanState> ray_scene_plan;
@@ -379,8 +377,6 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         RendererInternal::ModelInstanceSlots instance_slots;
         std::vector<ModelAssetId> model_asset_ids;
         std::vector<std::uint64_t> ray_authoring_object_ids;
-        std::vector<std::optional<RayInstanceComponent>>
-            ray_instance_declarations;
         std::shared_ptr<const RaySceneDeclarationCatalog> ray_scene_declarations =
         std::make_shared<const RaySceneDeclarationCatalog>();
         std::shared_ptr<const RayScenePlanState> ray_scene_plan;

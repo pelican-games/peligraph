@@ -184,6 +184,19 @@ RayTracingOracleResult traceRayTracingOracleWithIntersectorForTesting(
     const RayTracingOracleIntersectorForTesting &intersector);
 
 RayTracingOracleInterval expandGpuRayT(float value);
+
+// Reference shader's outside-origin near root, with object-space f32 inputs.
+// Bounds include both preserved and flushed subnormals. Ambiguous branches
+// are outside this numerical fixture subset, not unsupported engine scenes.
+RayTracingOracleResult traceProceduralSphereOracle(
+    const RayTracingOracleRay &object_ray, RayTracingOracleVec3 center,
+    double radius, std::uint32_t record_id);
+
+// Scalar precision bounds, also used to inject normative endpoint values
+// independently of accumulated geometric error in the test-only oracle.
+RayTracingOracleInterval proceduralSphereDivisionInterval(
+    RayTracingOracleInterval numerator, RayTracingOracleInterval denominator);
+RayTracingOracleInterval proceduralSphereSqrtInterval(RayTracingOracleInterval value);
 bool rayTracingOracleContainsGpuHit(
     const RayTracingOracleHit &cpu, float gpu_t,
     std::uint32_t gpu_record_id) noexcept;

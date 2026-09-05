@@ -4,6 +4,7 @@
 #include "../src/core/shader/raytracingvalidation.hpp"
 #include "../src/core/shader/shadercompiler.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/vkcore/runtimecapabilities.hpp"
 #include "../src/project/featurecompose.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -2089,6 +2090,12 @@ TEST_CASE("WP386b procedural golden classification follows final scalar SPIR-V",
           "[WP386b][ray-tracing][spirv][cpu]") {
     auto words = moduleHeader();
     appendMainEntry(words, SpvExecutionModelIntersectionKHR, 10);
+    const auto float_capability = words.size();
+    appendInstruction(words, SpvOpCapability, {SpvCapabilityRoundingModeRTE});
+    appendInstruction(words, SpvOpCapability, {SpvCapabilitySignedZeroInfNanPreserve});
+    const auto float_mode = words.size();
+    appendInstruction(words, SpvOpExecutionMode, {10, SpvExecutionModeRoundingModeRTE, 32});
+    appendInstruction(words, SpvOpExecutionMode, {10, SpvExecutionModeSignedZeroInfNanPreserve, 32});
     // Import string with its result id, independently of source compilation.
     appendInstruction(words, SpvOpExtInstImport,
                       {9, 0x4c534c47u, 0x6474732eu, 0x3035342eu, 0});
@@ -2145,7 +2152,7 @@ TEST_CASE("WP386b procedural golden classification follows final scalar SPIR-V",
     REQUIRE(control.procedural_oracle == ProceduralOracleClassification::eligible);
     REQUIRE_FALSE(control.entry_body_opcodes.empty());
     REQUIRE_FALSE(control.entry_digest.empty());
-    const auto mutation = GENERATE(0, 1, 2, 3);
+    const auto mutation = GENERATE(0, 1, 2, 3, 4, 5, 6);
     CAPTURE(mutation);
     if (mutation == 0) {
         words[decorations.front() + 1] = 90;
@@ -2163,11 +2170,79 @@ TEST_CASE("WP386b procedural golden classification follows final scalar SPIR-V",
     if (mutation == 3) {
         words[words.size() - 3] = 55;
     }
+    if (mutation == 4) {
+        words[float_mode + 3] = 64; // A mode for f64 does not qualify f32.
+    }
+    if (mutation == 5) {
+        words[float_capability + 1] = SpvCapabilityShader;
+    }
+    if (mutation == 6) {
+        const std::array<std::uint32_t, 3> relaxed{
+            (3u << 16u) | SpvOpDecorate, 54, SpvDecorationRelaxedPrecision};
+        words.insert(words.begin() + decorations.front(), relaxed.begin(), relaxed.end());
+    }
     const auto changed = inspect(words);
     REQUIRE(changed.procedural_oracle == ProceduralOracleClassification::sequence_mismatch);
     CHECK(std::string{proceduralOracleClassificationCode(*changed.procedural_oracle)} ==
           "procedural_oracle_sequence_mismatch@1");
     CHECK(changed.entry_digest != control.entry_digest);
+}
+
+TEST_CASE("Sphere oracle contains Vulkan sqrt and division precision endpoints",
+          "[WP386c][ray-tracing][cpu]") {
+    const auto quotient = proceduralSphereDivisionInterval({1.0, 1.0}, {1.0, 1.0});
+    CHECK(quotient.contains(1.0 - 2.5 * 0x1p-23));
+    CHECK(quotient.contains(1.0 + 2.5 * 0x1p-23));
+    // At x=1, inversesqrt may return 1-2 ULP. Division may then add
+    // 2.5 ULP. Inherited precision permits the symmetric negative error too.
+    const double upper = 1.0 / (1.0 - 2.0 * 0x1p-23) + 2.5 * 0x1p-23;
+    const auto root = proceduralSphereSqrtInterval({1.0, 1.0});
+    CHECK(root.contains(upper));
+    CHECK(root.contains(2.0 - upper));
+}
+
+TEST_CASE("Sphere oracle bounds nonunit directions and flushable inputs",
+          "[WP386c][ray-tracing][cpu]") {
+    const double speed = GENERATE(0.5, 1.0, 2.0);
+    const double offset = GENERATE(-2.0, 2.0);
+    const double tiny = GENERATE(0.0, static_cast<double>(std::numeric_limits<float>::denorm_min()));
+    const RayTracingOracleRay ray{{offset, tiny, 0.0}, {0.0, 0.0, speed}};
+    const auto result = traceProceduralSphereOracle(ray, {0.0, 0.0, 8.0}, 4.0, 23);
+    REQUIRE(result.hit.has_value());
+    const double analytical_t = (8.0 - std::sqrt(12.0)) / speed;
+    CHECK(result.hit->t_interval.contains(analytical_t));
+    CHECK(rayTracingOracleContainsGpuHit(*result.hit, static_cast<float>(analytical_t), 23));
+    CHECK_FALSE(rayTracingOracleContainsGpuHit(*result.hit, static_cast<float>(analytical_t), 24));
+    CHECK_FALSE(rayTracingOracleContainsGpuHit(*result.hit, static_cast<float>(analytical_t + 0.01), 23));
+    // Both signs of sqrt/div error must fit; an exact scalar expected value
+    // or a padding-free point interval cannot pass this check.
+    for (const float sign : {-1.0f, 1.0f}) {
+        float endpoint = static_cast<float>(analytical_t);
+        for (int i = 0; i < 5; ++i)
+            endpoint = std::nextafter(endpoint, sign * std::numeric_limits<float>::infinity());
+        CHECK(result.hit->t_interval.contains(endpoint));
+    }
+    CHECK_FALSE(traceProceduralSphereOracle({{8.0, 0.0, 0.0}, {0.0, 0.0, speed}},
+                                           {0.0, 0.0, 8.0}, 4.0, 23).hit);
+    CHECK_THROWS_WITH(traceProceduralSphereOracle({{4.0, 0.0, 0.0}, {0.0, 0.0, speed}},
+                                                {0.0, 0.0, 8.0}, 4.0, 23),
+                      "sphere oracle discriminant branch is ambiguous");
+}
+
+TEST_CASE("Procedural oracle qualification uses the device float controls",
+          "[WP386c][ray-tracing][cpu]") {
+    RayTracingRuntimeFacts device;
+    device.rounding_mode_rte_float32 = true;
+    device.signed_zero_inf_nan_preserve_float32 = true;
+    CHECK(qualifyProceduralOracle(ProceduralOracleClassification::eligible, device) ==
+          ProceduralOracleClassification::eligible);
+    const auto missing = GENERATE(0, 1);
+    if (missing == 0) device.rounding_mode_rte_float32 = false;
+    else device.signed_zero_inf_nan_preserve_float32 = false;
+    CHECK(qualifyProceduralOracle(ProceduralOracleClassification::eligible, device) ==
+          ProceduralOracleClassification::device_unsupported);
+    CHECK(qualifyProceduralOracle(ProceduralOracleClassification::sequence_mismatch, device) ==
+          ProceduralOracleClassification::sequence_mismatch);
 }
 
 } // namespace Pelican

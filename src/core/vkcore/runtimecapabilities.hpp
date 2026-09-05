@@ -16,6 +16,9 @@ struct RayTracingRuntimeFacts {
     std::uint64_t max_ray_dispatch_invocation_count = 0;
     std::array<std::uint64_t, 3> max_dispatch_dimensions{};
     std::string device_name;
+    bool rounding_mode_rte_float32 = false;
+    bool signed_zero_inf_nan_preserve_float32 = false;
+    bool denorm_preserve_float32 = false;
 
     bool operator==(const RayTracingRuntimeFacts &) const = default;
 };

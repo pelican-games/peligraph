@@ -11,7 +11,7 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 | 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L536)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L12)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
 | 純粋ロジック | JSONやテキスト形式のパース・検証・合成。Vulkan不要 | [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) |
 | エンジン本体 | ECS、入力、scene、描画、音声、物理、保存、RPC | [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) |
-| ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L57) |
+| ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L70) |
 
 この分離で最も重要なのは `pelican_project` です。[`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) を見ると、依存は主に `nlohmann_json` とハッシュ用の `picosha2` だけです。project.json封筒とパス参照、scene形式、render feature合成、material/surface形式、JSON-RPCエンベロープ、import/assets manifestをGPUなしで扱えます。
 
@@ -253,7 +253,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 
 | ライブラリ | 使用箇所 |
 |---|---|
-| Vulkan-Hpp / VMA-Hpp | GPU APIとメモリ管理（[`VulkanManageCore`](../../src/core/vkcore/core.cpp#L913)） |
+| Vulkan-Hpp / VMA-Hpp | GPU APIとメモリ管理（[`VulkanManageCore`](../../src/core/vkcore/core.cpp#L918)） |
 | GLFW | window、入力、surface（[`Window`](../../src/core/os/window.hpp#L17)） |
 | GLM | 行列・quaternion・vectorの内部演算 |
 | nlohmann/json | project/scene/rendering/RPC/保存など全JSON |
@@ -368,12 +368,12 @@ configuration smokeはregistry matrix生成、対照build、clean-cloneの3 job�
 
 ### GPU テストの直列化: label と `RESOURCE_LOCK` と launcher の三点一致
 
-`gpu` ラベルの付いた CTest は、1つの `ctest` 実行の中では [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L29) で直列化され、**プロセスを跨ぐ側**は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L15) という launcher が machine-wide の lease で担います。この launcher は意図的に `pelican_core` へ依存しません（本番ビルドが壊れても lease が消えないため）。
+`gpu` ラベルの付いた CTest は、1つの `ctest` 実行の中では [`RESOURCE_LOCK pelican_gpu`](../../test/CMakeLists.txt#L42) で直列化され、**プロセスを跨ぐ側**は [`pelican_gpu_lease_run`](../../test/CMakeLists.txt#L28) という launcher が machine-wide の lease で担います。この launcher は意図的に `pelican_core` へ依存しません（本番ビルドが壊れても lease が消えないため）。
 
 ビルド構成として押さえるのは次の3点です。lease 自体の状態機械は[第7章](07_tools_rpc_tests.md)にあります。
 
 - `gpu` label / `RESOURCE_LOCK=pelican_gpu` / launcher 起動の3つは**必ず同時に成立**していなければならず、[`verify_gpu_lease_inventory.py`](../../test/ci/verify_gpu_lease_inventory.py#L6) が CTest の inventory を読んで食い違いを落とします。
-- 手書きの `add_test()` は [`pelican_gpu_test_properties(<test> <intrinsic>)`](../../test/CMakeLists.txt#L24) を呼び、Catch2 が discover した分は build 後に `add_test()` 行を書き換えて launcher を差し込みます。
+- 手書きの `add_test()` は [`pelican_gpu_test_properties(<test> <intrinsic>)`](../../test/CMakeLists.txt#L37) を呼び、Catch2 が discover した分は build 後に `add_test()` 行を書き換えて launcher を差し込みます。
 - CTest の `TIMEOUT` は `lease_timeout_max + intrinsic + grace` で生成し、3つの数値の出所は [`test/gpu_lease_config.cmake`](../../test/gpu_lease_config.cmake#L3) の1ファイルだけです。
 
 ### test-only TU: `PELICAN_TESTING` は使わない

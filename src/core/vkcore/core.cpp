@@ -372,7 +372,8 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         const auto properties =
             physical_device.getProperties2<
                 vk::PhysicalDeviceProperties2,
-                vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
+                vk::PhysicalDeviceRayTracingPipelinePropertiesKHR,
+                vk::PhysicalDeviceFloatControlsProperties>();
         const auto &ray_tracing_properties =
             properties.get<
                 vk::PhysicalDeviceRayTracingPipelinePropertiesKHR>();
@@ -400,6 +401,10 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
         }
         ray_tracing_facts.device_name =
             core_properties.deviceName.data();
+        const auto &float_controls = properties.get<vk::PhysicalDeviceFloatControlsProperties>();
+        ray_tracing_facts.rounding_mode_rte_float32 = float_controls.shaderRoundingModeRTEFloat32;
+        ray_tracing_facts.signed_zero_inf_nan_preserve_float32 = float_controls.shaderSignedZeroInfNanPreserveFloat32;
+        ray_tracing_facts.denorm_preserve_float32 = float_controls.shaderDenormPreserveFloat32;
     }
     DeviceFeatureSupport result{
         .required =

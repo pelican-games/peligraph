@@ -1072,7 +1072,8 @@ PipelineFactory::buildRayTracingPipeline(
         if (!hit.intersection) continue;
         const auto &entry = *hit.intersection->entry;
         procedural_oracle.push_back({hit.intersection->group_index,
-            entry.key.name, entry.entry_digest, entry.procedural_oracle.value()});
+            entry.key.name, entry.entry_digest,
+            qualifyProceduralOracle(entry.procedural_oracle.value(), capabilities.ray_tracing_facts)});
     }
     const auto validator_digest =
         validateRayTracingPipelineInterfaces(

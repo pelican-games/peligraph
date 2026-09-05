@@ -98,7 +98,11 @@ struct RayTracingShaderRecordReflection {
         const RayTracingShaderRecordReflection &) const = default;
 };
 
-enum class ProceduralOracleClassification { eligible, sequence_mismatch };
+enum class ProceduralOracleClassification { eligible, sequence_mismatch, device_unsupported };
+
+struct RayTracingRuntimeFacts;
+ProceduralOracleClassification qualifyProceduralOracle(
+    ProceduralOracleClassification shader, const RayTracingRuntimeFacts &device);
 
 std::string_view proceduralOracleClassificationName(ProceduralOracleClassification classification);
 std::string_view proceduralOracleClassificationCode(ProceduralOracleClassification classification);

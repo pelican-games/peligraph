@@ -32,7 +32,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT1 / RT2 | raygen・miss・closest-hit・any-hit、再帰、SBT addressing、material ABI | 台帳 WP364〜368 に実装・検証記録あり。今回の統合ログで WP367 の本番 any-hit 試験が成功 | stage/record/material の結び付きの可視化、設定変更と GPU 結果を試す教材は完了未判定 |
 | RT3-1 | instance mask/flags/custom index と geometry flags | WP374/374a 着地済み。WP384-fix 後の対象 GPU/RPC 4 件が統合ログで成功 | 個体編集→GPU 効果→保存→再読込を GUI から通す。既存 RPC の証拠を GUI 完了とは扱わない |
 | CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 36ad3444 に着地(関連37/37、レビュー残余あり)、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d は4ce4117dに統合(W1 95/95) | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
-| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a を b7cb1825 に統合(W1 60/60、レビュー残余あり)。現段階は no-report shader。386b/c は後続、設計 §4-P は数値検証の対象部分集合を定義 | bounds と実際の hit の違い、report 有無、mixed geometry を試す。editor追随・変更行列等の残余は有効化前に閉じる。未完成の oracle を製品全体の対応範囲と混同しない |
+| RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a は b7cb1825、386b は 6d25d9e0 に統合。球のreport・reload・最終shader分類・statusと変更行列を確認。386cの数値区間とdevice条件を実装中 | bounds と実際の hit の違い、report 有無、mixed geometry を試す。数値検証の残条件は386cで閉じる。未完成の oracle を製品全体の対応範囲と混同しない |
 | RT4 | callable、per-in-flight の動的 record | 設計計画あり。今回確認した現行 pipelinefactory の callable region は空。段全体の実装完了は未確認 | callable 入出力、record 更新、frame 間の寿命を編集・観測する経路の設計が必要 |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | 計画あり。既存の静的 BLAS build を動的更新の完了証拠にはしない | animation/変形と RT 結果の追随、更新方式と負荷の比較を通す |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 計画あり。現行 RT dispatch table は direct trace の入口。compute/draw indirect の既存完了を RT indirect の完了に流用しない | AS 構築→依存→trace をノードで接続・観測する。複数構成の学習価値と契約を具体化する |
@@ -63,7 +63,8 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 - 同じ変更・構成・故障経路について有効な証拠が既にあれば、理由なく同じ検証を反復しない。
   GPU 寿命・rollback・保存・ABI 等の故障経路を区別し、単純な「1 主張 1 テスト」は強制しない。
 - §4 規約 10 の否定対照は維持する。本番を写経するテスト、同じ実装から期待値を作るテストは受け入れの代用にしない。
-  GPU 全数を内周で毎回回さず、既存の変更対象 gate と統合 gate を使う。今回未完の全数は省略対象ではない。
+  GPU 全数を内周で毎回回さず、変更対象の既存テストを使う。広域確認は統合の節目にまとめる。
+- **2026-09-05 再開時の運用更新:** 各WPで全構成・全数を繰り返す旧要件は、影響範囲に基づく確認へ改める。変更した条件分岐・依存・設定を通る構成を選び、構成間で共通のコードだけの変更は同じ証拠を再利用する。機能フラグ自体や公開・保存境界を変えたときは対応する対照構成を確認する。実行した対象・省略理由・既知失敗を記録し、未実行を成功とはしない。前回未完だった全数は台帳の完走・既知失敗記録で閉じ、恒久的な再実行義務にしない。
 - 厳密一致は保存契約・ID・ABI・決定性等、厳密である必要がある対象に使う。
   描画は目的に応じて数値許容や可視効果を使う。旧 source/SBT/TLAS の不変要求は、移行用の一時条件か現行製品契約かを判定する。
 - 旧版受理の廃止と ABI 不一致の検出を区別する。単一現行版という共通方針と、RT/layout や DLL 入口の個別仕様の不整合は、参照と移行先を調べてから明示裁定する。

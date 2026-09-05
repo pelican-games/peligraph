@@ -121,6 +121,8 @@
   "sources": [
     {
       "source": "src/core/appflow/loop.cpp",
+      "scan": false,
+      "scan_reason": "Indirect view-family delivery; projection symbols live in the provider.",
       "consumer": "view_provider",
       "role": "OpenXR per-eye view provider delivery",
       "needles": ["OpenXr::buildMainRenderViewFamily(", "renderer.renderLogicalFrame("]
@@ -253,6 +255,8 @@
     },
     {
       "source": "src/project/passfieldownership.cpp",
+      "scan": false,
+      "scan_reason": "Project parser is outside the src/core discovery root.",
       "consumer": "legacy_fullscreen_config",
       "role": "deprecated projection declaration validation",
       "needles": ["use push_constants: projection_view"]
@@ -271,6 +275,8 @@
     },
     {
       "source": "src/core/resources/shaders/include/pelican_lighting_v1.glsl",
+      "scan": false,
+      "scan_reason": "Helper-based light projection remains checked by the semantic anchors.",
       "consumer": "shadow",
       "role": "shared forward/deferred light-space shadow projection consumer",
       "needles": ["bool pelican_directional_shadow_projection(", "pelican_directional_shadow_cascade(", "pelican_directional_shadow_matrix("]
@@ -390,6 +396,90 @@
       "consumer": "view_provider",
       "role": "flat/XR projection input boundary",
       "needles": ["struct RenderViewParameters", "struct RenderViewFamily", "glm::mat4 projection{1.0f};"]
+    },
+    {
+      "source": "src/core/communication/rpcserver.cpp",
+      "consumer": "culling_rpc_rays",
+      "role": "RPC gizmo interaction uses the stable camera view-projection",
+      "needles": ["modules.camera.getVPMatrix()"]
+    },
+    {
+      "source": "src/core/render_algorithms/cube_capture/cubecaptureview.cpp",
+      "consumer": "view_provider",
+      "role": "Cube-face projection provider before render snapshot jitter",
+      "needles": ["buildCubeCaptureViewFamily(", ".projection = projection"]
+    },
+    {
+      "source": "src/core/render_algorithms/planar_reflection/planarreflectionview.cpp",
+      "consumer": "view_provider",
+      "role": "Reflection and oblique near-plane projection provider",
+      "needles": ["buildPlanarReflectionViewFamily(", "tryBuildObliqueNearPlaneProjectionZO(", "reflected_projection"]
+    },
+    {
+      "source": "src/core/renderer/directionalshadowcascade.cpp",
+      "consumer": "shadow",
+      "role": "Stable source-view frustum feeds light-space cascade projections",
+      "needles": ["glm::inverse(view.projection)", "RenderViewParameters cascadeView("]
+    },
+    {
+      "source": "src/core/renderer/directionalshadowviewprovider.cpp",
+      "consumer": "shadow",
+      "role": "Light-space shadow view-family provider",
+      "needles": [".projection = source.projection", "RenderViewParameters{"]
+    },
+    {
+      "source": "src/core/renderer/drawqueuebuilder.cpp",
+      "consumer": "culling_rpc_rays",
+      "role": "World bounds tested against the supplied stable view clip frustum",
+      "needles": ["intersectsZeroToOneClipFrustum(", "view_projection * glm::vec4{world, 1.0F}"]
+    },
+    {
+      "source": "src/core/renderer/drawqueuebuilder.hpp",
+      "consumer": "culling_rpc_rays",
+      "role": "Clip-frustum query projection argument",
+      "needles": ["intersectsZeroToOneClipFrustum(", "const glm::mat4 &view_projection"]
+    },
+    {
+      "source": "src/core/renderer/gizmo.cpp",
+      "consumer": "culling_rpc_rays",
+      "role": "Interaction geometry projects stable world points and axes into screen space",
+      "needles": ["view_projection * glm::vec4{world, 1.0f}", "view_projection * glm::vec4{axis, 0.0f}"]
+    },
+    {
+      "source": "src/core/renderer/gizmo.hpp",
+      "consumer": "culling_rpc_rays",
+      "role": "Gizmo projection argument transport",
+      "needles": ["const glm::mat4 &view_projection"]
+    },
+    {
+      "source": "src/core/renderer/polygoninstancecontainer.cpp",
+      "consumer": "culling_rpc_rays",
+      "role": "Per-view culling consumes provider projection before snapshot jitter",
+      "needles": ["view.projection * view.view", "intersectsZeroToOneClipFrustum("]
+    },
+    {
+      "source": "src/core/renderer/polygoninstancecontainer.hpp",
+      "consumer": "culling_rpc_rays",
+      "role": "Per-view culling and sort view input",
+      "needles": ["const RenderViewParameters &view"]
+    },
+    {
+      "source": "src/core/resources/picking.vert",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "Rigid picking world-to-clip uses the render frame projection",
+      "needles": ["gl_Position = pelicanFrame.projection * pelicanFrame.view * model *"]
+    },
+    {
+      "source": "src/core/resources/picking_skinned.vert",
+      "consumer": "snapshot_and_frame_transport",
+      "role": "Skinned picking world-to-clip uses the render frame projection",
+      "needles": ["gl_Position = pelicanFrame.projection * pelicanFrame.view * model *"]
+    },
+    {
+      "source": "src/core/userpublic/modaltransformsystem.cpp",
+      "consumer": "culling_rpc_rays",
+      "role": "Modal transform interaction projects with the stable camera matrix",
+      "needles": ["camera.getVPMatrix()"]
     }
   ]
 }

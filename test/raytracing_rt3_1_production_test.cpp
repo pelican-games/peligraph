@@ -1,4 +1,5 @@
 #include <catch2/catch_test_macros.hpp>
+#include "../src/core/shader/raytracingoracle.hpp"
 #include <catch2/generators/catch_generators.hpp>
 #include "../src/project/assetdataformat.hpp"
 #include <catch2/catch_approx.hpp>
@@ -684,8 +685,11 @@ TEST_CASE("WP382d authored occurrence masks and custom indices reach the product
     REQUIRE(catalog.size() == 2);
     REQUIRE(catalog[0].material == catalog[1].material);
     auto candidate = GET_MODULE(PolygonInstanceContainer).snapshotPreparedScene();
-    for (auto &row : candidate.ray_instance_declarations)
-        if (row) row->mask = 0;
+    auto candidate_declarations =
+        std::make_shared<RaySceneDeclarationCatalog>(*candidate.ray_scene_declarations);
+    for (auto &[object, row] : *candidate_declarations)
+        row.value.mask = 0;
+    candidate.ray_scene_declarations = std::move(candidate_declarations);
     const auto candidate_inventory = GET_MODULE(PolygonInstanceContainer)
         .rayQueryGeometryInstances(&candidate);
     REQUIRE(candidate_inventory.size() == 2);
@@ -5128,7 +5132,14 @@ void main() {
     CHECK(hit[0] == 0x386bu);
     CHECK(hit[4] == 0x386bu);
     CHECK(hit[8] == 0x386au);
-    CHECK(std::bit_cast<float>(hit[1]) == Catch::Approx(8.0 - std::sqrt(12.0)).epsilon(0.00001));
+    for (std::size_t index = 0; index < 2; ++index) {
+        const auto oracle = traceProceduralSphereOracle(
+            {{index == 0 ? -2.0 : 2.0, 0.0, 0.0}, {0.0, 0.0, 1.0}},
+            {0.0, 0.0, 8.0}, 4.0, 0x386bu);
+        REQUIRE(oracle.hit.has_value());
+        CHECK(rayTracingOracleContainsGpuHit(*oracle.hit,
+              std::bit_cast<float>(hit[index * 4 + 1]), hit[index * 4]));
+    }
     CHECK(hit[2] == 0u);
     CHECK(std::bit_cast<float>(hit[3]) == 4.0f);
     auto relaxed_source = on_source;

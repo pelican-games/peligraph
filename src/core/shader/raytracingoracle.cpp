@@ -764,4 +764,105 @@ RayTracingRecursionSentinel rayTracingRecursionSentinel(
     };
 }
 
+namespace {
+
+// Conservative per-operation f32 bounds. Expanding through zero accounts for
+// devices that flush subnormal operands/results without DenormPreserve.
+Interval includeFlushedSubnormals(Interval value) {
+    constexpr double normal = std::numeric_limits<float>::min();
+    if (value.lower < normal && value.upper > -normal) {
+        value.lower = std::min(value.lower, 0.0);
+        value.upper = std::max(value.upper, 0.0);
+    }
+    return value;
+}
+
+double maximumF32Ulp(Interval value) {
+    const double magnitude = std::max(std::abs(value.lower), std::abs(value.upper));
+    const float endpoint = static_cast<float>(magnitude);
+    if (!std::isfinite(endpoint))
+        throw std::runtime_error("sphere oracle arithmetic is not finite");
+    return static_cast<double>(std::nextafter(endpoint, INFINITY)) - endpoint;
+}
+
+Interval sphereRounded(Interval value, double ulps = 0.5) {
+    // One extra double step covers host evaluation at each endpoint. The
+    // maximum ulp over the interval also covers a binade boundary.
+    const double error = ulps * maximumF32Ulp(value);
+    return includeFlushedSubnormals(
+        {nextDown(value.lower - error), nextUp(value.upper + error)});
+}
+
+Interval sphereAdd(Interval x, Interval y) {
+    return sphereRounded(add(includeFlushedSubnormals(x), includeFlushedSubnormals(y)));
+}
+Interval sphereSub(Interval x, Interval y) {
+    return sphereRounded(subtract(includeFlushedSubnormals(x), includeFlushedSubnormals(y)));
+}
+Interval sphereMul(Interval x, Interval y) {
+    return sphereRounded(multiply(includeFlushedSubnormals(x), includeFlushedSubnormals(y)));
+}
+} // namespace
+
+Interval proceduralSphereDivisionInterval(Interval x, Interval y) {
+    constexpr double largest_denominator = 0x1p126;
+    if (y.lower < std::numeric_limits<float>::min() || y.upper > largest_denominator)
+        throw std::runtime_error("sphere oracle division outside Vulkan precision domain");
+    return sphereRounded(divide(includeFlushedSubnormals(x), y), 2.5);
+}
+Interval proceduralSphereSqrtInterval(Interval x) {
+    const Interval root{nextDown(std::sqrt(x.lower)), nextUp(std::sqrt(x.upper))};
+    const auto inverse = sphereRounded(divide(exact(1.0), root), 2.0);
+    const auto inherited = proceduralSphereDivisionInterval(exact(1.0), inverse);
+    // Vulkan's inherited precision is symmetric around the exact answer,
+    // even when 1/inversesqrt produces asymmetric endpoint errors.
+    const double error = std::max(root.upper - inherited.lower,
+                                  inherited.upper - root.lower);
+    return includeFlushedSubnormals(
+        {nextDown(root.lower - error), nextUp(root.upper + error)});
+}
+
+RayTracingOracleResult traceProceduralSphereOracle(
+    const RayTracingOracleRay &object_ray, Vec3 center,
+    double radius, std::uint32_t record_id) {
+    const auto input = [](double value) {
+        const double rounded = quantize(value);
+        if (!std::isfinite(rounded) || std::abs(rounded) > Contract::coordinate_limit)
+            throw std::runtime_error("sphere oracle input outside finite coordinate subset");
+        return includeFlushedSubnormals(exact(rounded));
+    };
+    radius = quantize(radius);
+    if (!(radius >= 0.125 && radius <= 512.0))
+        throw std::runtime_error("sphere oracle radius outside fixture subset");
+    const auto lx = sphereSub(input(center.x), input(object_ray.origin.x));
+    const auto ly = sphereSub(input(center.y), input(object_ray.origin.y));
+    const auto lz = sphereSub(input(center.z), input(object_ray.origin.z));
+    const auto dx = input(object_ray.direction.x);
+    const auto dy = input(object_ray.direction.y);
+    const auto dz = input(object_ray.direction.z);
+    const auto s = sphereAdd(sphereAdd(sphereMul(lx, dx), sphereMul(ly, dy)), sphereMul(lz, dz));
+    const auto ll = sphereAdd(sphereAdd(sphereMul(lx, lx), sphereMul(ly, ly)), sphereMul(lz, lz));
+    const auto a = sphereAdd(sphereAdd(sphereMul(dx, dx), sphereMul(dy, dy)), sphereMul(dz, dz));
+    const auto rr = sphereMul(exact(radius), exact(radius));
+    if (ll.lower <= rr.upper || a.lower <= 0.0)
+        throw std::runtime_error("sphere oracle requires an outside origin and nonzero direction");
+    const auto m2 = sphereSub(sphereMul(ll, a), sphereMul(s, s));
+    const auto disc = sphereSub(sphereMul(rr, a), m2);
+    if (disc.upper < 0.0) return {};
+    if (disc.lower <= 0.0)
+        throw std::runtime_error("sphere oracle discriminant branch is ambiguous");
+    const auto t = proceduralSphereDivisionInterval(
+        sphereSub(s, proceduralSphereSqrtInterval(disc)), a);
+    const double t_min = quantize(Contract::t_min);
+    const double t_max = quantize(Contract::t_max);
+    if (t.upper < t_min || t.lower > t_max) return {};
+    if (t.lower < t_min || t.upper > t_max)
+        throw std::runtime_error("sphere oracle ray-range branch is ambiguous");
+    const double midpoint = (t.lower + t.upper) / 2.0;
+    if (t.upper - t.lower > Contract::maximum_relative_interval_width * midpoint)
+        throw std::runtime_error("sphere oracle interval is too wide");
+    return {.hit = RayTracingOracleHit{.record_id = record_id,
+                                      .t_mid = midpoint, .t_interval = t}};
+}
+
 } // namespace Pelican

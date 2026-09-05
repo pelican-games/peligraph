@@ -9,6 +9,19 @@ include(Catch)
 include(${CMAKE_CURRENT_SOURCE_DIR}/gpu_lease_config.cmake)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+# CPU reference math and fixture generators belong only to the tests that
+# consume them; pelican_player whole-archives pelican_core for SDK exports.
+add_library(pelican_test_raytracing_oracle STATIC
+    ${CMAKE_SOURCE_DIR}/src/core/shader/raytracingoracle.cpp)
+set_target_properties(pelican_test_raytracing_oracle PROPERTIES
+    CXX_STANDARD 20
+    MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+if(MSVC)
+    target_compile_options(pelican_test_raytracing_oracle PRIVATE /fp:strict)
+else()
+    target_compile_options(pelican_test_raytracing_oracle PRIVATE -ffp-contract=off)
+endif()
+
 # Every GPU-labelled CTest test runs through this test-only executable.  The
 # target is intentionally independent of pelican_core so a broken production
 # build cannot make the lease disappear.
@@ -1523,6 +1536,7 @@ target_sources(pelican_test_gltf_scene_extract_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devcli/gltfsceneextract.cpp
 )
 pelican_define_test(headless_render_test GROUP headless_gpu GPU pelican_core
+                    pelican_test_raytracing_oracle
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_headless_render_test PRIVATE
     VULKAN_HPP_DISPATCH_LOADER_STATIC_TYPE=::vk::detail::DispatchLoaderStatic
@@ -1735,8 +1749,10 @@ if(PELICAN_RUNTIME_SHADER_COMPILER)
         pelican_copy_test_shaderc_runtime(pelican_test_shader_compiler_reflection_test)
     endif()
 endif()
-pelican_define_test(raytracing_rt1a_test pelican_core spirv-reflect-static picosha2)
+pelican_define_test(raytracing_rt1a_test pelican_core spirv-reflect-static picosha2
+                    pelican_test_raytracing_oracle)
 pelican_define_test(raytracing_rt1b_test pelican_core picosha2
+                    pelican_test_raytracing_oracle
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(raytracing_rt2b_test pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
@@ -1773,7 +1789,7 @@ target_compile_definitions(pelican_test_raytracing_rt3_1_test PRIVATE
 # into the non-GPU lane.
 pelican_define_test(raytracing_rt3_1_production_test
                     MIXED_GPU
-                    pelican_core picosha2
+                    pelican_core picosha2 pelican_test_raytracing_oracle
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 if(MSVC)
     target_compile_options(pelican_test_raytracing_rt3_1_production_test PRIVATE /bigobj)

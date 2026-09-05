@@ -439,7 +439,6 @@ PolygonInstanceContainer::snapshotPreparedScene() const {
         .instance_slots = instance_slots,
         .model_asset_ids = model_asset_ids,
         .ray_authoring_object_ids = ray_authoring_object_ids,
-        .ray_instance_declarations = ray_instance_declarations,
         .ray_scene_declarations = ray_scene_declarations,
         .ray_scene_plan = ray_scene_plan,
         .material_initial_value_tables = material_initial_value_tables,
@@ -497,7 +496,6 @@ void PolygonInstanceContainer::publishPreparedScene(
     swap(instance_slots, prepared.instance_slots);
     model_asset_ids.swap(prepared.model_asset_ids);
     ray_authoring_object_ids.swap(prepared.ray_authoring_object_ids);
-    ray_instance_declarations.swap(prepared.ray_instance_declarations);
     ray_scene_declarations.swap(prepared.ray_scene_declarations);
     ray_scene_plan.swap(prepared.ray_scene_plan);
     material_initial_value_tables.swap(
@@ -597,7 +595,6 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     prepared.instance_slots.reserve(capacity);
     prepared.model_asset_ids.reserve(capacity);
     prepared.ray_authoring_object_ids.reserve(capacity);
-    prepared.ray_instance_declarations.reserve(capacity);
     prepared.material_initial_value_tables.reserve(capacity);
     prepared.vrm_semantics.reserve(capacity);
     prepared.morph_layouts.reserve(capacity);
@@ -636,7 +633,6 @@ void PolygonInstanceContainer::publishPreparedSceneModel(
         prepared.animation_generations.push_back(1);
         prepared.model_asset_ids.push_back(candidate.asset_id);
         prepared.ray_authoring_object_ids.push_back(0);
-        prepared.ray_instance_declarations.emplace_back();
         prepared.material_initial_value_tables.push_back(
             std::move(candidate.material_initial_values));
         prepared.vrm_semantics.push_back(std::move(candidate.vrm_semantic));
@@ -654,7 +650,6 @@ void PolygonInstanceContainer::publishPreparedSceneModel(
         prepared.previous_animation_revisions[index] = 0;
         prepared.model_asset_ids[index] = candidate.asset_id;
         prepared.ray_authoring_object_ids[index] = 0;
-        prepared.ray_instance_declarations[index].reset();
         prepared.material_initial_value_tables[index] =
             std::move(candidate.material_initial_values);
         prepared.vrm_semantics[index] = std::move(candidate.vrm_semantic);
@@ -802,7 +797,6 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     instance_slots.reserve(instance_capacity);
     model_asset_ids.reserve(instance_capacity);
     ray_authoring_object_ids.reserve(instance_capacity);
-    ray_instance_declarations.reserve(instance_capacity);
     material_initial_value_tables.reserve(instance_capacity);
     vrm_semantics.reserve(instance_capacity);
     morph_layouts.reserve(instance_capacity);
@@ -848,7 +842,6 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         animation_generations.push_back(1);
         model_asset_ids.push_back(candidate.asset_id);
         ray_authoring_object_ids.push_back(0);
-        ray_instance_declarations.emplace_back();
         material_initial_value_tables.push_back(
             std::move(candidate.material_initial_values));
         vrm_semantics.push_back(std::move(candidate.vrm_semantic));
@@ -866,7 +859,6 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         previous_animation_revisions[index] = 0;
         model_asset_ids[index] = candidate.asset_id;
         ray_authoring_object_ids[index] = 0;
-        ray_instance_declarations[index].reset();
         material_initial_value_tables[index] =
             std::move(candidate.material_initial_values);
         vrm_semantics[index] = std::move(candidate.vrm_semantic);
@@ -900,7 +892,6 @@ void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
     previous_animation_revisions[index] = 0;
     model_asset_ids[index] = {};
     ray_authoring_object_ids[index] = 0;
-    ray_instance_declarations[index].reset();
     material_initial_value_tables[index].reset();
     vrm_semantics[index].reset();
     if (++animation_generations[index] == 0) ++animation_generations[index];
@@ -1455,14 +1446,12 @@ void PolygonInstanceContainer::prepareRayScenePlan(
     std::span<const RayQueryGeometryInstanceSnapshot> procedurals,
     SceneLoadPhaseTrace *phase_trace) {
     if (phase_trace) phase_trace->record(SceneLoadPhase::prepare);
-    std::unordered_map<std::uint64_t, const ResolvedComponent *> declarations;
     if (scene) {
         const auto transforms = resolvedSceneWorldTransforms(*scene);
         auto candidate_declarations = std::make_shared<RaySceneDeclarationCatalog>();
         for (const auto &object : scene->objects) {
             for (const auto &component : object.components) {
                 if (component.name == "pelican_ray_instance") {
-                    declarations.emplace(object.authoring_object_id.value, &component);
                     candidate_declarations->emplace(object.authoring_object_id.value,
                         RaySceneDeclaration{std::any_cast<const RayInstanceComponent &>(
                             component.requireRuntimeValue()), resolvedComponentWitness(component)});
@@ -1473,11 +1462,6 @@ void PolygonInstanceContainer::prepareRayScenePlan(
         for (std::size_t index = 0; index < prepared.ray_authoring_object_ids.size(); ++index) {
             if (!prepared.instance_slots.alive(static_cast<std::uint32_t>(index))) continue;
             const auto object = prepared.ray_authoring_object_ids[index];
-            const auto declaration = declarations.find(object);
-            prepared.ray_instance_declarations[index] = declaration == declarations.end()
-                ? std::nullopt : std::optional<RayInstanceComponent>{
-                    std::any_cast<const RayInstanceComponent &>(
-                        declaration->second->requireRuntimeValue())};
             if (const auto found = transforms.find(object); found != transforms.end()) {
                 const auto &world = found->second;
                 prepared.model_instances_data[index] =
@@ -1513,8 +1497,8 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
         prepared ? prepared->instance_slots : this->instance_slots;
     const auto &ray_authoring_object_ids =
         prepared ? prepared->ray_authoring_object_ids : this->ray_authoring_object_ids;
-    const auto &ray_instance_declarations =
-        prepared ? prepared->ray_instance_declarations : this->ray_instance_declarations;
+    const auto &declarations =
+        *(prepared ? prepared->ray_scene_declarations : ray_scene_declarations);
     const auto &material_absolute_override_frames = prepared
         ? prepared->material_absolute_override_frames : this->material_absolute_override_frames;
     const auto &material_override_frames =
@@ -1587,16 +1571,18 @@ PolygonInstanceContainer::rayQueryGeometryInstances(
                     values.uv_rotation;
             }
         }
+        const auto authoring_object = ray_authoring_object_ids.at(instance);
+        const auto declaration = declarations.find(authoring_object);
         result.push_back(
             RayQueryGeometryInstanceSnapshot{
                 .asset_identity =
                     model_asset_ids[instance].value,
                 .authoring_object_id =
-                    ray_authoring_object_ids.at(instance),
-                .ray_instance =
-                    ray_instance_declarations.at(instance),
-                .ray_instance_component_witness =
-                    rayComponentWitness(ray_authoring_object_ids.at(instance), prepared),
+                    authoring_object,
+                .ray_instance = declaration == declarations.end()
+                    ? std::nullopt : std::optional{declaration->second.value},
+                .ray_instance_component_witness = declaration == declarations.end()
+                    ? nlohmann::ordered_json::object() : declaration->second.component_witness,
                 .instance_index =
                     item.stable_identity.instance.index,
                 .instance_generation =
@@ -1773,8 +1759,11 @@ void PolygonInstanceContainer::setRayInstanceDeclaration(
     ModelInstanceId id, std::uint64_t authoring_object_id,
     std::optional<RayInstanceComponent> declaration) {
     const auto index = requireLive(id, "setRayInstanceDeclaration");
-    if (ray_authoring_object_ids[index] == authoring_object_id &&
-        ray_instance_declarations[index] == declaration) {
+    const auto current = ray_scene_declarations->find(authoring_object_id);
+    const bool unchanged = declaration
+        ? current != ray_scene_declarations->end() && current->second.value == *declaration
+        : current == ray_scene_declarations->end();
+    if (ray_authoring_object_ids[index] == authoring_object_id && unchanged) {
         return;
     }
     auto declarations = std::make_shared<RaySceneDeclarationCatalog>(*ray_scene_declarations);
@@ -1784,7 +1773,6 @@ void PolygonInstanceContainer::setRayInstanceDeclaration(
     } else declarations->erase(authoring_object_id);
     ray_scene_declarations = std::move(declarations);
     ray_authoring_object_ids[index] = authoring_object_id;
-    ray_instance_declarations[index] = std::move(declaration);
 }
 
 void PolygonInstanceContainer::rebuildModelInstances(

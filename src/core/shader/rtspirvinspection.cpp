@@ -1,4 +1,5 @@
 #include "rtspirvinspection.hpp"
+#include "../vkcore/runtimecapabilities.hpp"
 
 #include <spirv_reflect.h>
 #include <picosha2.h>
@@ -261,9 +262,12 @@ class Inspector {
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
         member_offsets_;
     std::vector<RawEntry> entries_;
+    std::unordered_map<std::uint32_t, std::vector<std::vector<std::uint32_t>>> execution_modes_;
+    std::vector<std::uint32_t> capabilities_;
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> calls_;
     std::vector<RawTraceCall> trace_calls_;
     std::unordered_set<std::uint32_t> no_contraction_;
+    bool has_relaxed_precision_ = false;
     std::unordered_set<std::uint32_t> glsl_imports_;
     std::unordered_map<std::uint32_t, std::vector<std::vector<std::uint32_t>>> function_bodies_;
     std::unordered_map<std::uint32_t, RayTracingCanonicalType>
@@ -518,6 +522,9 @@ class Inspector {
         // General quadratic from 4-P correction 10. Local aliases preserve
         // operand dependencies through unoptimized GLSL loads and stores.
         constexpr auto mismatch = ProceduralOracleClassification::sequence_mismatch;
+        // The reference numerical subset is f32 throughout, including loads
+        // and record members. Mixed-precision modules can still render.
+        if (has_relaxed_precision_) return mismatch;
         constexpr std::array expected{
             SpvOpFSub, SpvOpFSub, SpvOpFSub,
             SpvOpFMul, SpvOpFMul, SpvOpFMul, SpvOpFAdd, SpvOpFAdd,
@@ -631,6 +638,14 @@ class Inspector {
                 function_bodies_[*current_function].emplace_back(instruction.begin(), instruction.end());
             }
             switch (opcode) {
+            case SpvOpCapability:
+                if (instruction.size() != 2) failUnsupported(uri_, "has malformed capability");
+                capabilities_.push_back(instruction[1]);
+                break;
+            case SpvOpExecutionMode:
+                if (instruction.size() < 3) failUnsupported(uri_, "has malformed execution mode");
+                execution_modes_[instruction[1]].emplace_back(instruction.begin() + 2, instruction.end());
+                break;
             case SpvOpExtInstImport: {
                 std::size_t consumed = 0;
                 if (instruction.size() >= 3 &&
@@ -661,6 +676,8 @@ class Inspector {
                 break;
             }
             case SpvOpDecorate:
+                if (instruction.size() >= 3 && instruction[2] == SpvDecorationRelaxedPrecision)
+                    has_relaxed_precision_ = true;
                 if (instruction.size() >= 3 && instruction[2] == SpvDecorationNoContraction)
                     no_contraction_.insert(instruction[1]);
                 if (instruction.size() >= 4 &&
@@ -670,6 +687,8 @@ class Inspector {
                 }
                 break;
             case SpvOpMemberDecorate:
+                if (instruction.size() >= 4 && instruction[3] == SpvDecorationRelaxedPrecision)
+                    has_relaxed_precision_ = true;
                 if (instruction.size() >= 5 &&
                     instruction[3] == SpvDecorationOffset) {
                     member_offsets_.insert_or_assign(
@@ -818,6 +837,15 @@ class Inspector {
                 for (const auto &instruction : body)
                     entry.entry_body_opcodes.push_back(instruction[0] & 0xffffu);
                 entry.procedural_oracle = classifyProcedural(body);
+                const auto &modes = execution_modes_[raw_entry.function_id];
+                const auto has_mode = [&](SpvExecutionMode mode, SpvCapability capability) {
+                    return std::ranges::find(modes,
+                               std::vector<std::uint32_t>{static_cast<std::uint32_t>(mode), 32u}) != modes.end() &&
+                           std::ranges::find(capabilities_, static_cast<std::uint32_t>(capability)) != capabilities_.end();
+                };
+                if (!has_mode(SpvExecutionModeRoundingModeRTE, SpvCapabilityRoundingModeRTE) ||
+                    !has_mode(SpvExecutionModeSignedZeroInfNanPreserve, SpvCapabilitySignedZeroInfNanPreserve))
+                    entry.procedural_oracle = ProceduralOracleClassification::sequence_mismatch;
             }
             std::set<std::pair<RayTracingInterfaceStorage, std::uint32_t>>
                 seen_interfaces;
@@ -945,6 +973,7 @@ std::string_view proceduralOracleClassificationName(ProceduralOracleClassificati
     switch (classification) {
     case ProceduralOracleClassification::eligible: return "eligible";
     case ProceduralOracleClassification::sequence_mismatch: return "sequence_mismatch";
+    case ProceduralOracleClassification::device_unsupported: return "device_unsupported";
     }
     throw std::logic_error("unknown procedural oracle classification");
 }
@@ -953,8 +982,17 @@ std::string_view proceduralOracleClassificationCode(ProceduralOracleClassificati
     switch (classification) {
     case ProceduralOracleClassification::eligible: return {};
     case ProceduralOracleClassification::sequence_mismatch: return "procedural_oracle_sequence_mismatch@1";
+    case ProceduralOracleClassification::device_unsupported: return "procedural_oracle_device_unsupported@1";
     }
     throw std::logic_error("unknown procedural oracle classification");
+}
+
+ProceduralOracleClassification qualifyProceduralOracle(
+    ProceduralOracleClassification shader, const RayTracingRuntimeFacts &device) {
+    if (shader == ProceduralOracleClassification::eligible &&
+        (!device.rounding_mode_rte_float32 || !device.signed_zero_inf_nan_preserve_float32))
+        return ProceduralOracleClassification::device_unsupported;
+    return shader;
 }
 
 std::uint32_t spirvExecutionModelForShaderStage(ShaderStage stage) {

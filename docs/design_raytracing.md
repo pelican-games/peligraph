@@ -240,10 +240,10 @@ generator は object→world の回転部 `R` について **`|RᵀR − I|_∞ 
 #### 4-P.8 RT3-2 の実装段(WP386 仕様レビュー第 1 巡の反映。規範は変えない)
 
 - 1 geometry 複数 AABB(修正 13)は規範のまま、実装は **RT3-2a(1 asset = 1 AABB。`gl_PrimitiveID` は常に 0)→ RT3-2b(`gl_PrimitiveID` で引く primitive table)** に分ける
-- golden の前提は「IEEE 逐次」ではなく **Vulkan の float controls(f32 の RTE、denorm、signed zero / inf / nan の preserve)+ 精度表(Precision and Operation of SPIR-V Instructions)**。満たさない device は `procedural_oracle_device_unsupported@1` で golden 前に分類する。`sqrt` / `div` の区間 padding は精度表の ULP 上限(γ_n は add / mul だけに使う)
+- golden の前提は **Vulkan のfloat controls(f32 RTEとsigned zero / inf / nanのpreserve) + 精度表**。満たさないdeviceは `procedural_oracle_device_unsupported@1`。2026-09-05の対応条件見直しでDenormPreserve必須を撤回し、演算入力・結果のsubnormal保持/FTZ双方をCPU区間に含める。曖昧な分岐はfixture対象外。`sqrt` / `div`には精度表の誤差を伝播し、単位長を仮定した旧γ式は使わない。
 - hit attribute の照合対象は `HitAttributeKHR` 変数の存在と canonical type(`reportIntersectionEXT` の第 2 引数は hitKind)
 - geometry kind → group kind は layout レベルの契約(pipeline ごとの宣言ではない)。procedural row は material join を通らず、triangle / procedural は renderer の row resolve 前に 1 つの typed union snapshot に確定する
-- 第 2 巡の反映: identity は scene load generation 内で安定(永続 object ID は別設計)。1 asset = 1 BLAS geometry、各 component occurrence = 1 row = 1 q。f32 の float mode は `RTE + DenormPreserve + SignedZeroInfNanPreserve` の 1 組に固定し `GL_EXT_spirv_intrinsics` で生成、最終 SPIR-V を Inspector が検査する。`sqrt` は `1/inversesqrt` 継承の区間伝播を Contract に置き、padding の受け入れは規格端点値の注入(device 非依存)で行う
+- 第2巡のidentityとgeometry単位は維持。float modeは上記更新後の `RTE + SignedZeroInfNanPreserve` を `GL_EXT_spirv_intrinsics` で生成し、最終SPIR-VをInspectorが検査する。`sqrt`は `1/inversesqrt` の継承式による誤差を厳密値の両側へ対称に広げる。paddingはdevice非依存の規格端点値で検証する。出典: [Vulkan SPIR-V精度表](https://github.khronos.org/Vulkan-Site/spec/latest/appendices/spirvenv.html)。
 
 ## 5. capability・構成(v2 §4 + 第 2 巡 #8)
 
