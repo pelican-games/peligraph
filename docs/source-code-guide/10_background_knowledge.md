@@ -421,7 +421,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L740)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L145)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L86)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L773)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L145)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L86)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 
@@ -665,7 +665,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::variant` の中身で分岐する定型は、`std::visit` に総称ラムダを渡し、その中で `using T = std::decay_t<decltype(value)>;` として `if constexpr (std::same_as<T, X>)` で枝を書く形です。`std::visit` は全ての候補型を扱えることをコンパイル時に要求するので、型を足したときに「その枝を書き忘れた」がコンパイルエラーになります(`switch` の default と違って取りこぼせません)。`std::monostate` は「値が入っていない」を表すための空の型で、必ず別扱いの枝が要ります。総称ラムダの中で `if constexpr` を使うと、偽の枝は実体化されないので、その型に無いメンバを参照する枝も書けます。これは同じ理由でテンプレート引数ごとのコード生成一般に使われ、依存名の中でメンバーテンプレートを呼ぶときは `obj.template f<...>()` の `.template` 修飾が要ります(パーサに「これはテンプレート」と教えるため)。
 
-**使用場所**: [schemaRangeJson()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L783) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L3114) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1596) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
+**使用場所**: [schemaRangeJson()](../../src/core/userpublic/details/schema/structfieldjson.hpp#L783) / [freezeJournalOperation()](../../src/core/communication/editorjournal.cpp#L3114) / [PipelineFactory::rebuildPrepared()](../../src/core/shader/pipelinefactory.cpp#L1613) / [appendBehaviorEventHandlerAt()](../../src/core/userpublic/details/behavior/registerer.hpp#L137)(`if constexpr` の枝と `lookup.template operator()<Index>()`)
 
 ### fold 式と std::apply(タプルライク型の全要素処理)
 

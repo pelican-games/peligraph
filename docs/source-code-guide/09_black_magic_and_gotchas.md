@@ -576,7 +576,7 @@ reflection は descriptor layout と pipeline layout を source/SPIR-V から自
 
 hot reload は shader compile と pipeline rebuild を transactional にします。しかし descriptor layout を変更する edit は、shader body だけの edit より危険です。
 
-- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2564) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2531) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L5085))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L520) です。
+- shader reload の runtime 公開は **`RuntimeReloadBoundary::render_start`** の 1 点に集約されています。[`consumeShaderReloadPublication()`](../../src/core/vkcore/renderer.cpp#L2564) が `ReloadService::applyRuntimeBoundary(render_start)` を呼び、**その summary の `committed` が 0 でないときだけ** [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2531) が走ります。呼び出しは view の記録へ入る前([`renderer.cpp` の frame 前段](../../src/core/vkcore/renderer.cpp#L5090))で、shader 側の participant がこの boundary を宣言している箇所は [`reloadservice.cpp` の shader participant 登録](../../src/core/watch/reloadservice.cpp#L520) です。
 - `rebindFullscreenInputs()` が貼り直すのは 3 系統です — 公開済み generation 内の fullscreen / generic raster pass の input resource、material の screen input、compute task の render target。したがって **reload 専用の処理ではありません**。logical target の extent が変わった直後にも同じ関数が呼ばれます([`renderer.cpp` の extent 変更後](../../src/core/vkcore/renderer.cpp#L2634))。逆に言うと、この 3 系統の外側で descriptor を自前 cache している pass は、reload でも resize でも取り残されます。
 - compute descriptor set は [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2744) 時に一度作り、hot reload path では作り直していません。
 - material は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L397) により surface/material 連動 reload に対応しました。UI/debug の descriptor ownership は各 container に分散したままです。
@@ -593,9 +593,9 @@ pipeline、image view、buffer などは、CPU では旧 object に見えても 
 2. [`leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) がその batch を握る [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53)(実体は `shared_ptr<const void>`)を返す。
 3. [`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L78) が次の submission 用に新しい batch へ切り替える。
 
-**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L4865) → [`target.endLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L5506) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5357) です。
+**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L4870) → [`target.endLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L5511) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5362) です。
 
-つまり「何 frame 後に消えるか」を数えるコードは deletion queue からは消えました([`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は `in_flight_frames_num` を一度も参照しません)。ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L110) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1200) が代表的な defer 元です。
+つまり「何 frame 後に消えるか」を数えるコードは deletion queue からは消えました([`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は `in_flight_frames_num` を一度も参照しません)。ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L110) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1206) が代表的な defer 元です。
 
 変更時の原則は次です。
 
@@ -1061,7 +1061,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 後に触ったものから先に戻す。既に live へ公開したものを逆トークン/逆 swap で旧世代へ戻すのが *cleanup*、一度も公開していない候補をスコープ終了で捨てるだけなのが *discard* で、後者は「何もしない」のが正しい rollback。
 
-**どこに出るか**: [`scene.cpp` の rollback ラムダ](../../src/core/loader/scene.cpp#L630) は behavior → 候補 swap → renderer → destroyed_entities を `rbegin` から → created_entities を `rbegin` から、の順。ECS は [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229)、behavior arena は [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L639) の失敗時に `activated` を逆順に破棄、シェーダは [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1632) が「今回追加した分だけ」を消し、journal は [子孫を declaration_index 降順に並べてから削除](../../src/core/communication/editorjournal.cpp#L2618)。
+**どこに出るか**: [`scene.cpp` の rollback ラムダ](../../src/core/loader/scene.cpp#L630) は behavior → 候補 swap → renderer → destroyed_entities を `rbegin` から → created_entities を `rbegin` から、の順。ECS は [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229)、behavior arena は [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L639) の失敗時に `activated` を逆順に破棄、シェーダは [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1649) が「今回追加した分だけ」を消し、journal は [子孫を declaration_index 降順に並べてから削除](../../src/core/communication/editorjournal.cpp#L2618)。
 
 **読むときの手順**: rollback の本体を読む前に「この参加者は公開済みか」を判定してください。event outbox / rng / pending scene のように**何もしないのが正しい**参加者を「巻き戻し漏れ」と誤読するのが最も多い間違いです。
 
@@ -1085,7 +1085,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 本番コードの分岐上に注入点を置き、「この分岐を壊すとどのテストが赤くなるか」を名指しできるようにする。manifest の `mutation_id` 列がその索引。
 
-**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L166)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L994)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1511)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L522)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2500)。
+**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L166)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L994)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1528)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L522)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2500)。
 
 **読むときの手順**: [第3章「注入口はproductionバイナリに存在しない」](03_project_and_loading.md)を先に読んでください。注入点は「テスト用の別経路」ではなく**本番経路そのもの**で、経路を差し替える方向に直すと A/B が破綻します。
 
@@ -1298,7 +1298,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [jitter の 2 値](../../src/core/vkcore/renderer.cpp#L751) | `view_projection_jittered` と `jitter_ndc` | なぜ両方要るのか | 前者はラスタライズ時にサブピクセルオフセットを掛ける行列、後者はシェーダが速度ベクトルや TAA リプロジェクションでそのオフセットを打ち消すための生の量。→ [第6章「ジッタは w 倍で足す」](06_rendering_vulkan_shader.md) |
 | [`windowOutputFactsChanged()`](../../src/core/vkcore/renderer.cpp#L2581) | fingerprint と compile_facts | 二重比較の理由 | `compile_fingerprint` は安価な一致判定用ハッシュで先に比較し、加えて実体も比較して**ハッシュ衝突と fingerprint 未包含フィールドの差分**を取りこぼさない二段確認 |
 | [companion 3 点セット](../../src/core/vkcore/renderer.cpp#L2991) | companion_participants / claims / apply_with_companions | 3 つの役割 | companion が「一緒に取り込む他参加者(shader / material)」を宣言し、claims が所有リクエストを判定し、apply_with_companions が 1 回で処理する。グラフ・シェーダ・マテリアル値の変更が**同一トランザクション**として一括成否になることを保証(→ §9.23.12) |
-| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L5526) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
+| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L5531) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
 | [`LogicalFrameAbortGuard`](../../src/core/vkcore/renderer.cpp#L2863) | 2 つの RAII ガード | 何が違うのか | 前者は例外離脱時に必ず `abortLogicalFrame()`。後者は `generation != 0` のときだけ runtime を保持し、`complete()` されずに壊れたら rollback する |
 | [record / end の分離](../../src/core/vkcore/renderer.cpp#L1973) | `latest_scene_color/depth` の追跡 | 役割分離の理由 | **未執筆**(根拠がコードにない) |
 | [sprite anchor の layer 計算](../../src/core/vkcore/renderer.cpp#L2099) / [snapshot copy の layer](../../src/core/vkcore/renderer.cpp#L2244) | sequential layer の選択 | いつ view_index が層になるか | sequential 実行で、かつ対象の `array_layers` が view 数以上(snapshot copy 側は source が layered)のときだけ `scheduled.view_index` を層として使い、それ以外は 0。ただし swapchain 出力の color だけは `view_index` をそのまま層として引く。逆順スキャンの理由は[第6章「sprite anchor の逆順スキャン」](06_rendering_vulkan_shader.md) |
@@ -1308,8 +1308,8 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`shader_oetf_unorm_fallback`](../../src/core/vkcore/renderer.cpp#L1044) | 出力変換のトレース | 分岐と paired_storage_edges | **未執筆**(§9.23.14 の format スコアリングと対) |
 | [`native_scope_has_work`](../../src/core/vkcore/renderer.cpp#L1193) | 空スコープの判定 | 判定基準 | **未執筆**(根拠がコードにない) |
 | [staged 世代の遷移](../../src/core/vkcore/renderer.cpp#L3252) と [`after_publish`](../../src/core/vkcore/renderer.cpp#L3434) | finalized / ready / runtime_published | 対称性 | 上記「`transaction->generation == 0`」と同じ世代機構。個々の遷移表は**未執筆** |
-| [`graph_variant_policy`](../../src/core/vkcore/renderer.cpp#L4968) | variant と view family の方針 | RenderGraphVariant との対応 | **未執筆**(根拠がコードにない) |
-| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5329) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
+| [`graph_variant_policy`](../../src/core/vkcore/renderer.cpp#L4973) | variant と view family の方針 | RenderGraphVariant との対応 | **未執筆**(根拠がコードにない) |
+| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5334) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
 | [family / view ごとの jitter と reset epoch](../../src/core/vkcore/renderer.cpp#L3746) | トレース出力 | なぜ family/view ごとに追うのか | **未執筆**(根拠がコードにない) |
 | [RT 無しの空 diagnostics](../../src/core/vkcore/renderer.cpp#L3961) | `ray_query_acceleration_structures` | 空になる条件 | **未執筆**(根拠がコードにない) |
 | [`sequential_count < count` の拒否](../../src/core/renderer/frameresources.cpp#L116) | スロット数の下限 | 何を保証するか | in-flight frame ごとに sequential_count 個のスロットを確保するので、**main family の全 view が自分専用の frame/resolution UBO スロットを持つ**(view 同士の UBO 別名衝突の防止) |
@@ -1366,7 +1366,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: BLAS のキャッシュキーに transform が入らない理由。
 
-**答え**: BLAS の build 入力は geometry_allocation_id が決める頂点 / インデックス範囲と `VkGeometryFlagsKHR` の 2 つだけで完全に決まるからです(transform は TLAS 側)。[`can_reuse`](../../src/core/renderer/accelerationstructure.cpp#L842) は `active_state_ != nullptr && !pool_invalidated && !model_invalidated` で、この 2 つの世代は[別カウンタ](../../src/core/renderer/accelerationstructure.cpp#L804)として診断に出ます。
+**答え**: BLAS の build 入力は geometry_allocation_id が決める頂点 / インデックス範囲と `VkGeometryFlagsKHR` の 2 つだけで完全に決まるからです(transform は TLAS 側)。[`can_reuse`](../../src/core/renderer/accelerationstructure.cpp#L878) は `active_state_ != nullptr && !pool_invalidated && !model_invalidated` で、この 2 つの世代は[別カウンタ](../../src/core/renderer/accelerationstructure.cpp#L840)として診断に出ます。
 
 #### [`descriptorSetLayoutKeysFor()` の set 数決定](../../src/core/shader/pipelinefactory.cpp#L446) — reflection と ray_layout の階層
 
@@ -1401,8 +1401,8 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
 | [`classifyRayQueryStaticGeometry()`](../../src/core/renderer/accelerationstructure.cpp#L202) | 変形ジオメトリの除外 | skinned / morph / VAT を外す理由 | フレームごとに GPU 側で頂点が書き換わるので、**静的 pool アドレスに対して一度組んだ BLAS が内容と一致しなくなる**。除外理由別に名前を集計して診断へ出す |
-| [`primitiveCount == 0` の TLAS](../../src/core/renderer/accelerationstructure.cpp#L1052) | 空 TLAS の確保 | なぜ確保が要るのか | コメントどおり「Vulkan requires a valid, 16-byte-aligned instances address even when primitiveCount is zero」。非アクティブ 1 件分を必ず確保・書き込み、build 時の primitiveCount は 0 のままにして miss 専用の有効な TLAS にする |
-| [`index_count / 3`](../../src/core/renderer/accelerationstructure.cpp#L941) | primitive 数の計算 | 3 で割ってよい前提 | 三角形リスト前提(→ [第10章](10_background_knowledge.md)) |
+| [`primitiveCount == 0` の TLAS](../../src/core/renderer/accelerationstructure.cpp#L1088) | 空 TLAS の確保 | なぜ確保が要るのか | コメントどおり「Vulkan requires a valid, 16-byte-aligned instances address even when primitiveCount is zero」。非アクティブ 1 件分を必ず確保・書き込み、build 時の primitiveCount は 0 のままにして miss 専用の有効な TLAS にする |
+| [`index_count / 3`](../../src/core/renderer/accelerationstructure.cpp#L977) | primitive 数の計算 | 3 で割ってよい前提 | 三角形リスト前提(→ [第10章](10_background_knowledge.md)) |
 | [`validateRayProfileAccelerationStructureFlags()`](../../src/core/renderer/accelerationstructure.cpp#L330) | eOpaque / eForceOpaque | profile 時の制約 | 両者は「片方でも立つと any-hit が省略され得る」点で等価な不透明化指定。profile 有効時は any-hit でのアルファ判定が必須なので、BLAS geometry でも TLAS instance 行でも**どちらのビットも立っていないこと**を要求し、立っていれば `pelican.ray_profile_opaque_as@1` |
 | [`lowerRayTracingTlasInstancePlan()`](../../src/core/renderer/accelerationstructure.cpp#L461) | ray_scene_rows の有無で分岐 | source_index の役割 | source_index は元の instance 配列への戻り参照。分岐の全体像は**未執筆** |
 | [`geometryName()`](../../src/core/renderer/accelerationstructure.cpp#L27) | asset/geometry/mesh/primitive/node | 5 階層の意味 | **未執筆**(§9.23.17 の glTF 階層と対) |
@@ -1420,12 +1420,12 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`validName()`](../../src/core/shader/raygrouplayout.cpp#L89) | 名前の文字集合 | どこ由来の制約か | 外部ツール契約 R7(`docs/external_tools_requirements.md`)と同系統。→ §9.23.11 |
 | [`ePartiallyBound` を binding 1 だけに](../../src/core/shader/pipelinefactory.cpp#L167) | set 3(ray material)の binding flags | なぜ binding 1 だけか | binding 1 だけが `rayBindlessTextureCapacity` 個の bindless サンプラ配列で、使うスロットはシーン依存でまばら。全スロットに有効な descriptor を書く義務を外すため必要で、単一 descriptor の binding 0/2 には不要 |
 | [`ray_query_frame_set` 必須化](../../src/core/shader/pipelinefactory.cpp#L1079) | frame set の TLAS binding | 無いと作成拒否になる理由 | RT パイプラインは frame set の TLAS binding を必ず参照する契約なので、reflection に現れなければ `pelican.ray_tracing.frame_tlas_required@1`(descriptor が無ければシーンをトレースできない)。この検査を通した後、ray table 使用時は続けて[bindless device 要件](../../src/core/shader/pipelinefactory.cpp#L1089)も検証する |
-| [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1511) | SBT 書き込み直前の通知 | 本番に観測点がある理由 | コメントどおり「removing the actual GPU write or routing different bytes makes its A/B test fail」。→ §9.22「fault injection seam」 |
-| [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1632) | descriptor layout キャッシュの巻き戻し | all-or-nothing の作り方 | 開始時のキー集合を控え、失敗時に**今回追加された分だけ**消す。→ [第6章「reload の swap は 3 回」](06_rendering_vulkan_shader.md) |
-| [`allocate_table`](../../src/core/shader/pipelinefactory.cpp#L1332) | minimum_size より大きく確保 | 余分に取る理由 | **未執筆**(根拠がコードにない) |
-| [`active_owner_pipelines` の検索](../../src/core/shader/pipelinefactory.cpp#L1374) / [hit table の pack](../../src/core/shader/pipelinefactory.cpp#L1459) | 線形探索と row snapshot | 意図 | **未執筆**(根拠がコードにない) |
+| [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1528) | SBT 書き込み直前の通知 | 本番に観測点がある理由 | コメントどおり「removing the actual GPU write or routing different bytes makes its A/B test fail」。→ §9.22「fault injection seam」 |
+| [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1649) | descriptor layout キャッシュの巻き戻し | all-or-nothing の作り方 | 開始時のキー集合を控え、失敗時に**今回追加された分だけ**消す。→ [第6章「reload の swap は 3 回」](06_rendering_vulkan_shader.md) |
+| [`allocate_table`](../../src/core/shader/pipelinefactory.cpp#L1349) | minimum_size より大きく確保 | 余分に取る理由 | **未執筆**(根拠がコードにない) |
+| [`active_owner_pipelines` の検索](../../src/core/shader/pipelinefactory.cpp#L1391) / [hit table の pack](../../src/core/shader/pipelinefactory.cpp#L1476) | 線形探索と row snapshot | 意図 | **未執筆**(根拠がコードにない) |
 | [`RayTracingHitGroupOccurrence::any_hit`](../../src/core/shader/raytracingvalidation.hpp#L37) | any_hit を optional に | 省略できる理由 | §9.23.6 の any_hit 自動生成と対。**未執筆** |
-| [blend attachment 分岐](../../src/core/shader/pipelinefactory.cpp#L269) / [hot reload の差し替え](../../src/core/shader/pipelinefactory.cpp#L1769) | 生成と再構築 | 分岐の基準 | **未執筆**(根拠がコードにない) |
+| [blend attachment 分岐](../../src/core/shader/pipelinefactory.cpp#L269) / [hot reload の差し替え](../../src/core/shader/pipelinefactory.cpp#L1786) | 生成と再構築 | 分岐の基準 | **未執筆**(根拠がコードにない) |
 | [`directUint32Constant()`](../../src/core/shader/rtspirvinspection.cpp#L277) | OpConstant / OpConstantNull のみ許可 | 動的値を拒む理由 | 配列長や trace 呼び出しの sbtRecordOffset / missIndex は**静的検証で確定値が要る**ため。実行時に決まる命令結果を許すと SBT / インタフェース契約を静的に検証できない(`trace_operand_dynamic@1` / `interface_type_unsupported@1`) |
 | [`canonicalType()`](../../src/core/shader/rtspirvinspection.cpp#L321) | `SpvOpTypeRuntimeArray` の拒否 | なぜ失敗にするのか | 要素数がコンパイル時に決まらず、payload / hit attribute のサイズとレイアウトを確定できないため |
 | [`ScalarLayout`](../../src/core/shader/rtspirvinspection.cpp#L76) | boolean を 4 バイト扱い | 根拠 | SPIR-V の `OpTypeBool` には**メモリ表現が規定されていない**(bit_width も持たない)ので、ホスト / GLSL の慣行に合わせて 4 バイトに固定する。他のスカラーは bit_width/8 で、8 の倍数でなければ「byte-addressable でない」として拒否 |
@@ -1496,7 +1496,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: バッファを太らせただけなのに、なぜ世代を進めるのか。
 
-**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L113) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L4797)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
+**答え**: **バッファを作り直すとデバイスアドレスが変わり、旧アドレス上に構築された BLAS が無効になる**からです。値は [`geometryAddressGeneration()`](../../src/core/model/vertbufcontainer.hpp#L113) として [renderer 側へ渡され](../../src/core/vkcore/renderer.cpp#L4800)、ray-query のジオメトリ / BLAS キャッシュ無効化キーになります。頂点側とインデックス側で[2 か所](../../src/core/model/vertbufcontainer.cpp#L376)進みます。
 
 #### [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) — 固定容量 8 + overflow_count
 
@@ -1865,7 +1865,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: この ID が指す粒度。
 
-**答え**: 1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L440)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L88)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L4797) 付近で使われます(→ §9.23.5 / §9.23.8)。
+**答え**: 1 回のジオメトリ suballocation(index / vertex レンジの組)を識別する単調 ID で、[払い出しは vertbufcontainer 側](../../src/core/model/vertbufcontainer.cpp#L440)、[`modeltemplate.hpp` のコメント](../../src/core/model/modeltemplate.hpp#L88)どおり **ray-query の BLAS キャッシュキー**として [renderer](../../src/core/vkcore/renderer.cpp#L4800) 付近で使われます(→ §9.23.5 / §9.23.8)。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
