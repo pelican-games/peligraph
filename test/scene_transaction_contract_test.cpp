@@ -118,7 +118,7 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
     REQUIRE_FALSE(rows.empty());
     std::set<std::pair<std::string, std::string>> keys;
     std::set<std::string> mutations;
-    std::size_t real_participant_mutation_rows = 0;
+    std::set<std::string> participant_mutations;
     for (const auto &row : rows) {
         REQUIRE_FALSE(row.owner.empty());
         REQUIRE_FALSE(row.field.empty());
@@ -135,7 +135,7 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
         if (row.role == SceneManifestRole::participant &&
             row.presence == SceneParticipantPresence::real &&
             !row.mutation_id.empty()) {
-            ++real_participant_mutation_rows;
+            participant_mutations.emplace(row.mutation_id);
         }
         if (row.presence != SceneParticipantPresence::real ||
             row.role == SceneManifestRole::invariant ||
@@ -152,10 +152,28 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
                     (row.presence != SceneParticipantPresence::real));
         }
     }
-    // WP380c v3 measures only real participant rows backed by an executor
-    // mutation call site. The other manifest rows are presence/schema
-    // inventory, not pretend mutation participants.
-    REQUIRE(real_participant_mutation_rows == 14);
+    // Check required participants by identity: additions must not break this
+    // contract, and a missing participant cannot be hidden by an unrelated row.
+    for (const auto required : {
+             scene_load_mutation::metadata_document,
+             scene_load_mutation::metadata_projection,
+             scene_load_mutation::transient_retire,
+             scene_load_mutation::ecs_liveness,
+             scene_load_mutation::light_directional_names,
+             scene_load_mutation::procedural_aabb_buffer,
+             scene_load_mutation::procedural_allocation_generation,
+             scene_load_mutation::procedural_instance_snapshot,
+             scene_load_mutation::procedural_retire_queue,
+             scene_load_mutation::ray_occurrence_catalog,
+             scene_load_mutation::ray_as_plan,
+             scene_load_mutation::behavior_attachments,
+             scene_load_mutation::event_pending,
+             scene_load_mutation::rng_current_seed,
+             scene_load_mutation::rng_state,
+             scene_load_mutation::pending_scene}) {
+        INFO(std::string{required});
+        REQUIRE(participant_mutations.contains(std::string{required}));
+    }
 
     REQUIRE_FALSE(manifestRow("rng_sequence", "current_seed")
                       .mutation_id.empty());
