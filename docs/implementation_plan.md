@@ -23265,7 +23265,9 @@ Fableの所有/rollback限定レビュー(`<作業ディレクトリ>/wp382d_fab
 
 procedural geometryのasset変更・component追加削除・object spawn/destroyを既存editor transactionへ接続。同一assetのAABB bufferを共有し、通常ray編集では再prepareしない。実RPCで見つかったSceneLoaderのauthoring→entity binding更新漏れは、既存lifecycle adapterのpublish/rollbackにvector swapを接続して修正した。各操作のAfterPublication失敗でplan/inventory・AABB状態・bindingが戻り、同操作を成功させる対照を確認。PelicanCore::runの実startupも最初のRT frameまで通し、row ID 3 / OccurrenceAbsentの診断保持と実warningを観測。対象2/2成功(`<作業ディレクトリ>/wp382d_binding_ctest.log`)。関連targetを再buildした最終回帰は66/66成功(GPU label37件、86.24秒、`<作業ディレクトリ>/wp382d_procedural_final_ctest.log`)。全数やOFF構成再検証の証拠には流用しない。
 
-WP382dは引き続き未commit・未統合。残りは外部webアプリへの専用拒否code接続、scene/frameの別config parseによる初回再resolve、統合前の最終裁定。共通codecのweb拒否は実装・検証済み。別repoのmy_webpageはbindPelicanSceneで未登録pelican_ray_instanceをunknown componentとして拒否することをコード確認したが、専用code/surfaceは未接続であり別repoを変更していない。旧overrides gateを外した差分を残余未確認のまま着地させない。
+**2026-09-05 利用者との責任範囲の裁定:** Web専用エラー対応は別repoのWeb側へ引き継ぐ。WP382dのエンジン統合条件には含めない。決定32のWeb用code/surfaceはWeb側の追随仕様であり、このrepoの着地待ち条件ではない。my_webpageはbindPelicanSceneで未登録pelican_ray_instanceをunknown componentとして拒否することをコード確認済みで、黙殺ではない。共通codecのsurface制約とnative previewの専用拒否は実装・検証済み。別repoは変更せず、専用code/surfaceの対応はWeb担当への引き継ぎ事項とする。
+
+WP382dは統合準備へ進む。scene/frame別config parseは現在設定の独立prepareにより古いGPU owner設定の流用を避けており、初回再resolveの効率整理として後続へ記録する。意味論比較用の追加digestやfallbackを今回導入しない。検証済みのエンジン変更をW1確認後に統合し、統合後のbuild結果を別途記録する。
 
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
