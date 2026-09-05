@@ -2,6 +2,7 @@
 #include "../loader/sceneload.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
+#include "../model/occurrenceidentity.hpp"
 #include "../shader/pelican_sets.hpp"
 #include "../vkcore/core.hpp"
 #include "../../project/viewfamilyrelation.hpp"
@@ -338,6 +339,7 @@ DrawItemSnapshot makeDrawItemSnapshot(
                 .mesh_index = primitive.mesh_index,
                 .primitive_index = primitive.primitive_index,
                 .node_index = primitive.node_index,
+                .occurrence = primitive.occurrence,
             },
         .declaration_ordinal = declaration_ordinal,
         .indexed =
@@ -1210,7 +1212,8 @@ bool PolygonInstanceContainer::canRebuildModelInstances(
     return command_count <= maxRenderCommands;
 }
 
-void PolygonInstanceContainer::rebuildModelInstances(
+PolygonInstanceContainer::PreparedSceneState
+PolygonInstanceContainer::prepareModelInstanceRebuild(
     std::span<const ModelInstanceRebuild> replacements) {
     if (!replacements.empty() &&
         ray_query_geometry_generation ==
@@ -1220,6 +1223,33 @@ void PolygonInstanceContainer::rebuildModelInstances(
     }
     if (!canRebuildModelInstances(replacements))
         throw std::runtime_error("Render command capacity exceeded by model reload batch");
+    auto prepared = snapshotPreparedScene();
+    auto &draw_inventory = prepared.draw_inventory;
+    auto &next_draw_declaration_ordinal =
+        prepared.next_draw_declaration_ordinal;
+    auto &ray_query_geometry_generation =
+        prepared.ray_query_geometry_generation;
+    auto &model_instances_data = prepared.model_instances_data;
+    auto &previous_model_instances_data =
+        prepared.previous_model_instances_data;
+    auto &model_history_valid = prepared.model_history_valid;
+    auto &skin_palettes = prepared.skin_palettes;
+    auto &previous_skin_palettes = prepared.previous_skin_palettes;
+    auto &animation_revisions = prepared.animation_revisions;
+    auto &previous_animation_revisions =
+        prepared.previous_animation_revisions;
+    auto &animation_generations = prepared.animation_generations;
+    auto &instance_slots = prepared.instance_slots;
+    auto &model_asset_ids = prepared.model_asset_ids;
+    auto &material_initial_value_tables =
+        prepared.material_initial_value_tables;
+    auto &vrm_semantics = prepared.vrm_semantics;
+    auto &morph_layouts = prepared.morph_layouts;
+    auto &morph_weight_frames = prepared.morph_weight_frames;
+    auto &morph_history_valid = prepared.morph_history_valid;
+    auto &material_override_frames = prepared.material_override_frames;
+    auto &material_absolute_override_frames =
+        prepared.material_absolute_override_frames;
     std::unordered_map<std::uint64_t, const ModelTemplate *> by_asset;
     std::unordered_map<std::uint64_t, std::vector<glm::mat4>> rest_palettes;
     for (const auto &replacement : replacements) {
@@ -1298,12 +1328,6 @@ void PolygonInstanceContainer::rebuildModelInstances(
         const auto &rest_palette = rest_palettes.at(model_asset_ids[instance].value);
         next_skin_palettes[instance] = rest_palette;
         next_previous_skin_palettes[instance] = rest_palette;
-        if (!rest_palette.empty()) {
-            GET_MODULE(VulkanManageCore).writeBuf(
-                skin_palette_buffer, rest_palette.data(),
-                sizeof(glm::mat4) * maxSkinJoints * instance,
-                sizeof(glm::mat4) * rest_palette.size());
-        }
         next_animation_revisions[instance] = 0;
         next_previous_animation_revisions[instance] = 0;
         if (++next_animation_generations[instance] == 0)
@@ -1333,10 +1357,6 @@ void PolygonInstanceContainer::rebuildModelInstances(
                       [identity](const auto &entry) {
                           return entry.first.instance_identity == identity;
                       });
-        const MaterialInstanceOverrideGpuData empty{};
-        GET_MODULE(VulkanManageCore).writeBuf(
-            material_override_buffer, &empty,
-            sizeof(MaterialInstanceOverrideGpuData) * instance, sizeof(empty));
         next_previous_models[instance] = model_instances_data[instance];
         next_history_valid[instance] = false;
     }
@@ -1361,6 +1381,13 @@ void PolygonInstanceContainer::rebuildModelInstances(
     if (!replacements.empty()) {
         ++ray_query_geometry_generation;
     }
+    return prepared;
+}
+
+void PolygonInstanceContainer::rebuildModelInstances(
+    std::span<const ModelInstanceRebuild> replacements) {
+    auto prepared = prepareModelInstanceRebuild(replacements);
+    publishPreparedScene(std::move(prepared));
     uploadMaterialAbsoluteOverrides();
 }
 
@@ -1490,10 +1517,111 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
                     item.stable_identity.primitive_index,
                 .node_index =
                     item.stable_identity.node_index,
+                .occurrence_id =
+                    item.stable_identity.occurrence
+                        ? item.stable_identity.occurrence->occurrence_id
+                        : std::string{},
+                .occurrence_asset =
+                    item.stable_identity.occurrence &&
+                            item.stable_identity.occurrence->asset
+                        ? item.stable_identity.occurrence->asset->logical_name
+                        : std::string{},
+                .occurrence_node_path =
+                    item.stable_identity.occurrence
+                        ? item.stable_identity.occurrence->node_name_path
+                        : std::vector<std::string>{},
+                .occurrence_variant =
+                    item.stable_identity.occurrence
+                        ? importerVariantV1Name(
+                              item.stable_identity.occurrence->variant)
+                        : std::string{},
+                .occurrence_error =
+                    item.stable_identity.occurrence &&
+                            item.stable_identity.occurrence->error
+                        ? item.stable_identity.occurrence->error->reason
+                        : std::string{},
+                .occurrence_ambiguous =
+                    item.stable_identity.occurrence &&
+                    item.stable_identity.occurrence->ambiguous,
                 .world_transform =
                     model_instances_data[instance],
             });
     }
+    return result;
+}
+
+std::vector<RayOccurrenceCatalogEntry>
+PolygonInstanceContainer::rayOccurrences(
+    std::uint64_t authoring_object_id) const {
+    const auto snapshots = rayQueryGeometryInstances();
+    std::vector<RayOccurrenceCatalogEntry> result;
+    result.reserve(snapshots.size());
+    std::size_t q = 0;
+    for (const auto &snapshot : snapshots) {
+        const bool ray_eligible = !snapshot.skinned &&
+                                  !snapshot.morph_deformed &&
+                                  !snapshot.vat_deformed &&
+                                  snapshot.geometry_allocation_id != 0 &&
+                                  snapshot.vertex_offset >= 0 &&
+                                  snapshot.vertex_count != 0 &&
+                                  snapshot.index_count != 0 &&
+                                  snapshot.index_count % 3u == 0;
+        const auto current_q = q;
+        if (ray_eligible) ++q;
+        if (authoring_object_id != 0 &&
+            snapshot.authoring_object_id != authoring_object_id)
+            continue;
+        RayOccurrenceCatalogEntry entry{
+            .occurrence_id = snapshot.occurrence_id,
+            .display_name =
+                snapshot.occurrence_asset + ":" +
+                (snapshot.occurrence_node_path.empty()
+                     ? std::string{"<unnamed>"}
+                     : snapshot.occurrence_node_path.back()) +
+                "/" + std::to_string(snapshot.primitive_index),
+            .asset = snapshot.occurrence_asset,
+            .node_path = snapshot.occurrence_node_path,
+            .mesh = snapshot.mesh_index,
+            .primitive = snapshot.primitive_index,
+            .material = snapshot.material_name,
+            .variant = snapshot.occurrence_variant,
+            .q = current_q,
+            .authoring_object_id = snapshot.authoring_object_id,
+        };
+        if (snapshot.occurrence_ambiguous) {
+            entry.eligibility = RayOccurrenceEligibilityKind::ambiguous;
+            entry.reason = "collision";
+        } else if (snapshot.occurrence_id.empty()) {
+            entry.eligibility = RayOccurrenceEligibilityKind::unrepresentable;
+            entry.reason = snapshot.occurrence_error.empty()
+                               ? "asset_key_missing"
+                               : snapshot.occurrence_error;
+        } else if (!ray_eligible) {
+            entry.eligibility = RayOccurrenceEligibilityKind::not_ray_traced;
+            if (snapshot.skinned) entry.reason = "skinned";
+            else if (snapshot.morph_deformed) entry.reason = "morph_deformed";
+            else if (snapshot.vat_deformed) entry.reason = "vat_deformed";
+            else entry.reason = "blas_ineligible";
+        }
+        result.push_back(std::move(entry));
+    }
+    return result;
+}
+
+RayOccurrenceResolution PolygonInstanceContainer::resolveRayOccurrence(
+    std::string_view occurrence_id) const {
+    RayOccurrenceResolution result;
+    if (occurrence_id.empty()) return result;
+    for (auto entry : rayOccurrences()) {
+        if (entry.occurrence_id == occurrence_id)
+            result.candidates.push_back(std::move(entry));
+    }
+    if (result.candidates.empty()) return result;
+    result.state = result.candidates.size() == 1 &&
+                           result.candidates.front().eligibility !=
+                               RayOccurrenceEligibilityKind::ambiguous
+                       ? RayOccurrenceResolveState::found
+                       : RayOccurrenceResolveState::ambiguous;
     return result;
 }
 

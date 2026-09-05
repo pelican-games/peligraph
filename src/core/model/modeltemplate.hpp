@@ -17,6 +17,8 @@
 
 namespace Pelican {
 
+struct ModelOccurrenceIdentityInfo;
+
 inline constexpr std::uint32_t modelPrimitiveAttributeNormal = 1u << 0u;
 inline constexpr std::uint32_t modelPrimitiveAttributeUv0 = 1u << 1u;
 inline constexpr std::uint32_t modelPrimitiveAttributeColor0 = 1u << 2u;
@@ -83,6 +85,9 @@ struct ModelPrimitiveRefInfo {
     std::uint32_t mesh_index = 0;
     std::uint32_t primitive_index = 0;
     std::uint32_t node_index = noSourceNodeIndex;
+    // Stable authored occurrence identity and its source metadata. The legacy
+    // indices above remain diagnostic coordinates only.
+    std::shared_ptr<ModelOccurrenceIdentityInfo> occurrence;
     PrimitiveViewVisibility view_visibility = PrimitiveViewVisibility::both;
     std::shared_ptr<const ModelPrimitiveBoundsSource> bounds_source;
     // Ray-query BLAS input metadata. The allocation identity is never reused,

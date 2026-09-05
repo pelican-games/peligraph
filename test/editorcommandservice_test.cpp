@@ -237,6 +237,61 @@ TEST_CASE("editor query is deterministic and RPC and ImGui fake adapters are equ
     REQUIRE(assets.at("assets").size() == 2);
 }
 
+TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolution",
+          "[editor-command][rpc][wp382c]") {
+    auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{1});
+    const auto occurrence = RayOccurrenceCatalogEntry{
+        .occurrence_id = "0123456789abcdef0123456789abcdef",
+        .display_name = "hero:Body/0",
+        .asset = "hero",
+        .node_path = {"Root", "Body"},
+        .mesh = 2,
+        .primitive = 0,
+        .material = "body",
+        .variant = "none",
+        .eligibility = RayOccurrenceEligibilityKind::ok,
+        .q = 7,
+        .authoring_object_id = 1,
+    };
+    const EditorCommandService service{EditorCommandServiceDependencies{
+        .document = [&document]() -> const AuthoringSceneDocument & {
+            return document;
+        },
+        .resolved_scene = explicitResolvedProvider(document),
+        .current_scene_id = [] { return std::string{"main"}; },
+        .ray_occurrences = [occurrence](std::uint64_t) {
+            return std::vector{occurrence};
+        },
+        .resolve_ray_occurrence = [occurrence](std::string_view id) {
+            if (id != occurrence.occurrence_id)
+                return RayOccurrenceResolution{};
+            return RayOccurrenceResolution{
+                .state = RayOccurrenceResolveState::found,
+                .candidates = {occurrence},
+            };
+        },
+    }};
+    const EditorCommandRpcAdapter rpc{service};
+    const auto inventory = rpc.getRayOccurrences(
+        nlohmann::json{{"name", "MixedObject"}});
+    REQUIRE(inventory.at("entries").size() == 1);
+    REQUIRE(inventory.at("entries").at(0).at("occurrence_id") ==
+            occurrence.occurrence_id);
+    REQUIRE(inventory.at("entries").at(0).at("eligibility") == "ok");
+
+    const auto found = rpc.resolveRayOccurrence(
+        nlohmann::json{{"occurrence_id", occurrence.occurrence_id}});
+    REQUIRE(found.at("status") == "found");
+    REQUIRE(found.at("q") == 7);
+    const auto absent = rpc.resolveRayOccurrence(nlohmann::json{
+        {"occurrence_id", "ffffffffffffffffffffffffffffffff"}});
+    REQUIRE(absent == nlohmann::ordered_json{
+                          {"status", "absent"},
+                          {"occurrence_id",
+                           "ffffffffffffffffffffffffffffffff"}});
+}
+
 TEST_CASE("get_components publishes recursive v3 component catalog nodes",
           "[editor-command][query][wp382a][schema-v3]") {
     const auto owner = internal::allocateRegistrationOwner();

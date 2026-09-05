@@ -139,8 +139,8 @@ bool PelicanCore::run() {
             if (const auto *failure =
                     std::get_if<CommittedWithEffectFailure>(&result)) {
                 LOG_ERROR(logger,
-                          "startup scene committed with effect failure: error_code='committed_with_effect_failure@1' effect_errors={}",
-                          effectErrorsJson(failure->effect_errors).dump());
+                          "startup scene committed with effect failure: error_code='committed_with_effect_failure@1' diagnostics={}",
+                          sceneLoadDiagnosticsJson(failure->diagnostics).dump());
             }
         }
         // Model CPU preparation is parallel, but its Vulkan/resource commit is

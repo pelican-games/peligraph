@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     gltf.cpp
     gltfimage.cpp
     modeltemplate.cpp
+    occurrenceidentity.cpp
     skeletalanimation.cpp
     vrmaanimation.hpp
     vrmfirstperson.cpp
@@ -23,3 +24,6 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(tinygltf)
 
 target_link_libraries(pelican_core PRIVATE tinygltf)
+if(WIN32)
+target_link_libraries(pelican_core PRIVATE Normaliz)
+endif()

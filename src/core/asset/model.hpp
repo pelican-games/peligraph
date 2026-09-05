@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <nlohmann/json_fwd.hpp>
 #include <string>
 
 namespace Pelican::watch {
@@ -40,6 +41,7 @@ DECLARE_MODULE(ModelAssetContainer) {
     ModelAssetId assetIdForTesting(const std::string &name) const;
     std::uint64_t contentRevisionForTesting(const std::string &name) const;
     std::uint64_t compatibilityRevisionForTesting(const std::string &name) const;
+    nlohmann::json occurrenceCatalogStatus() const;
 };
 
 } // namespace Pelican

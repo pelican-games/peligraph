@@ -184,16 +184,16 @@ pelican2/
 [第4章](04_scene_ecs.md) §4.3)。読み順:
 
 1. [`sceneload.hpp`](../../src/core/loader/sceneload.hpp) —— **型だけのヘッダ**(関数の実装を持たず、要求・結果・トレースの型定義だけを置く)。
-   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L186)(`Borrowed` = 既に commit 済みの
+   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L208)(`Borrowed` = 既に commit 済みの
    projection を借りる / `Owned` = 候補 metadata を `MetadataCommitToken` ごと持ち込む)、
-   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L152) =
+   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L174) =
    `SceneLoadCommitted` | [`PreCommitFailure`](../../src/core/loader/sceneload.hpp#L128) |
-   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L135)、
+   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L160)、
    固定長の [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40)(8 要素。溢れたら
    `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
-   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L239)。
-2. [`scene.cpp`](../../src/core/loader/scene.cpp#L465) の `SceneLoader::load` —— executor 本体。
+   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L261)。
+2. [`scene.cpp`](../../src/core/loader/scene.cpp#L484) の `SceneLoader::load` —— executor 本体。
    phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
    **記録するのは executor ではなく各 participant** です(WP380c/d)。
 3. [`effecttransaction.hpp`](../../src/core/loader/effecttransaction.hpp#L27) —— behavior が

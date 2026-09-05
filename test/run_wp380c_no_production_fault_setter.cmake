@@ -20,14 +20,15 @@ if(NOT setter_index EQUAL -1)
     "test-only scene-load fault setter leaked into pelican_core")
 endif()
 
-foreach(test_source IN ITEMS "${SCENE_FAULT_TEST_SOURCE}" "${MODEL_RELEASE_FAULT_TEST_SOURCE}")
+foreach(test_source IN ITEMS "${SCENE_FAULT_TEST_SOURCE}" "${MODEL_RELEASE_FAULT_TEST_SOURCE}"
+                            "${MODEL_RELOAD_FAULT_TEST_SOURCE}")
   string(FIND "${PRODUCTION_SOURCES}" "${test_source}" source_index)
   if(NOT source_index EQUAL -1)
     message(FATAL_ERROR "test-only fault source leaked into pelican_core: ${test_source}")
   endif()
 endforeach()
 
-foreach(header IN ITEMS "${SCENE_HEADER}" "${RELEASE_HEADER}")
+foreach(header IN ITEMS "${SCENE_HEADER}" "${RELEASE_HEADER}" "${INSTANCE_HEADER}")
   if(NOT EXISTS "${header}")
     message(FATAL_ERROR "production fault header is missing: ${header}")
   endif()
@@ -43,7 +44,8 @@ endforeach()
 foreach(setter IN ITEMS "SceneLoadFaultInjectorForTesting"
                             "MorphMetadataReleaseFailureForTesting"
                             "MaterialReleaseFailureForTesting"
-                            "TextureReleaseFailureForTesting")
+                            "TextureReleaseFailureForTesting"
+                            "setRayQueryGeometryGenerationForTesting")
   string(FIND "${symbols}" "${setter}" setter_index)
   if(NOT setter_index EQUAL -1)
     message(FATAL_ERROR "test-only fault setter leaked into pelican_core: ${setter}")

@@ -1041,12 +1041,17 @@ nlohmann::json ReloadService::statusJson() const {
                           {"kind", resources.last_reload_error->kind},
                           {"message", resources.last_reload_error->message}};
     }
+    auto model_catalog = nlohmann::json(nullptr);
+    if (const auto *models =
+            FastModuleContainer::tryGet<ModelAssetContainer>())
+        model_catalog = models->occurrenceCatalogStatus();
     if (!watcher_) {
         return {{"state", "disabled"}, {"epoch", gate.epoch},
                 {"error", gate.reason.empty() ? nlohmann::json(nullptr) : nlohmann::json(gate.reason)},
                 {"applied", resources.applied}, {"failed", resources.failed},
                 {"participants", participantNames()},
                 {"runtime", runtimeStatusJson()},
+                {"model_catalog", model_catalog},
                 {"last_reload_error", std::move(resource_error)}};
     }
     const auto status = watcher_->status();
@@ -1055,6 +1060,7 @@ nlohmann::json ReloadService::statusJson() const {
             {"applied", resources.applied}, {"failed", resources.failed},
             {"participants", participantNames()},
             {"runtime", runtimeStatusJson()},
+            {"model_catalog", model_catalog},
             {"last_reload_error", std::move(resource_error)}};
 }
 

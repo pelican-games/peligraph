@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../loader/pathresolver.hpp"
 #include "modeltemplate.hpp"
+#include "occurrenceidentity.hpp"
 #include "modelresourcerelease.hpp"
 #include <memory>
 #include <optional>
@@ -51,11 +52,14 @@ DECLARE_MODULE(GltfLoader) {
   public:
     GltfLoader();
     PreparedGltf prepareGltfBinary(std::string path,
-                                   std::optional<AssetFragmentRef> fragment = std::nullopt) const;
+                                   std::optional<AssetFragmentRef> fragment = std::nullopt,
+                                   std::optional<CanonicalModelAssetKey> asset_key = std::nullopt) const;
     PreparedGltf prepareGltfBinarySceneNode(std::string path,
-                                            AssetFragmentRef fragment) const;
+                                            AssetFragmentRef fragment,
+                                            std::optional<CanonicalModelAssetKey> asset_key = std::nullopt) const;
     PreparedGltf prepareGltf(std::string path,
-                             std::optional<AssetFragmentRef> fragment = std::nullopt) const;
+                             std::optional<AssetFragmentRef> fragment = std::nullopt,
+                             std::optional<CanonicalModelAssetKey> asset_key = std::nullopt) const;
     // Runs fragment selection, accessor extraction, rig construction, and
     // primitive/material validation without allocating or uploading GPU
     // resources. The returned template contains candidate topology/rig data

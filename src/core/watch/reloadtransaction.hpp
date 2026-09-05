@@ -12,6 +12,8 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace Pelican::watch {
@@ -122,15 +124,41 @@ struct ReloadActor {
 };
 
 class ReloadTransactionGroup {
+    struct NoexceptActionBase {
+        virtual ~NoexceptActionBase() = default;
+        virtual void invoke() noexcept = 0;
+    };
+    template <class F> struct NoexceptAction final : NoexceptActionBase {
+        F function;
+        explicit NoexceptAction(F value) : function{std::move(value)} {}
+        void invoke() noexcept override { function(); }
+    };
+
   public:
     explicit ReloadTransactionGroup(std::string name);
     void add(ReloadActor actor);
     const std::string &name() const noexcept { return name_; }
+    void setPreparePublish(std::function<void()> prepare) {
+        prepare_publish_ = std::move(prepare);
+    }
+    template <class F> void setPublish(F publish) {
+        static_assert(std::is_nothrow_invocable_v<F &>,
+                      "reload publication must be noexcept");
+        publish_ = std::make_unique<NoexceptAction<F>>(std::move(publish));
+    }
+    template <class F> void setRollback(F rollback) {
+        static_assert(std::is_nothrow_invocable_v<F &>,
+                      "reload rollback must be noexcept");
+        rollback_ = std::make_unique<NoexceptAction<F>>(std::move(rollback));
+    }
 
   private:
     friend class ReloadCoordinator;
     std::string name_;
     std::vector<ReloadActor> actors_;
+    std::function<void()> prepare_publish_;
+    std::unique_ptr<NoexceptActionBase> publish_;
+    std::unique_ptr<NoexceptActionBase> rollback_;
 };
 
 class ReloadCoordinator {

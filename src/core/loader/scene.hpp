@@ -6,6 +6,7 @@
 #include "sceneload.hpp"
 #include <details/ecs/entity.hpp>
 
+#include <array>
 #include <filesystem>
 #include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
@@ -56,6 +57,7 @@ DECLARE_MODULE(SceneLoader) {
     std::uint64_t next_authority_epoch = 1;
     std::uint64_t run_nonce = 0;
     SceneLoadFaultInjector *fault_injector = nullptr;
+    std::array<SceneLoadDiagnostics, 6> diagnostics_by_root;
     static SceneLoadFaultInjector *default_fault_injector_for_testing;
     struct RetirementState;
     std::unique_ptr<RetirementState> retirement_state;
@@ -91,6 +93,7 @@ DECLARE_MODULE(SceneLoader) {
     }
     std::uint64_t runtimeSceneEpoch() const noexcept;
     SceneAuthority activeAuthority() const noexcept;
+    nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;
     }

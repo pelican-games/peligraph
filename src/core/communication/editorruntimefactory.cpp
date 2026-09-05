@@ -2392,6 +2392,14 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                 .scene_hot_reload = false,
             };
         },
+        .ray_occurrences = [runtime](std::uint64_t object) {
+            return runtime->modules.polygon_instances
+                .rayOccurrences(object);
+        },
+        .resolve_ray_occurrence = [runtime](std::string_view occurrence_id) {
+            return runtime->modules.polygon_instances
+                .resolveRayOccurrence(occurrence_id);
+        },
     });
 }
 

@@ -114,6 +114,7 @@ struct DrawStableIdentity {
     std::uint32_t mesh_index = 0;
     std::uint32_t primitive_index = 0;
     std::uint32_t node_index = noSourceNodeIndex;
+    std::shared_ptr<ModelOccurrenceIdentityInfo> occurrence;
 
     bool operator==(const DrawStableIdentity &) const = default;
 };

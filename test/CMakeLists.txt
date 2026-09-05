@@ -1489,7 +1489,10 @@ target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(gltfimage_test pelican_core tinygltf)
+pelican_define_test(wp382c_occurrence_test pelican_core glm)
 pelican_define_test(modelhotreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+target_sources(pelican_test_modelhotreload_test PRIVATE
+    modelreloadfault_testing.cpp)
 pelican_define_test(model_resource_release_test GPU pelican_core
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_sources(pelican_test_model_resource_release_test PRIVATE
@@ -1792,6 +1795,8 @@ if(WIN32)
             -DPRODUCTION_SOURCES="$<JOIN:$<TARGET_PROPERTY:pelican_core,SOURCES>,|>"
             -DSCENE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/sceneloadfault_testing.cpp
             -DMODEL_RELEASE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/modelreleasefault_testing.cpp
+            -DMODEL_RELOAD_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/modelreloadfault_testing.cpp
+            -DINSTANCE_HEADER=${CMAKE_SOURCE_DIR}/src/core/renderer/polygoninstancecontainer.hpp
             -DSCENE_HEADER=${CMAKE_SOURCE_DIR}/src/core/loader/scene.hpp
             -DRELEASE_HEADER=${CMAKE_SOURCE_DIR}/src/core/model/vertbufcontainer.hpp
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_wp380c_no_production_fault_setter.cmake)

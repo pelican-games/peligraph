@@ -3,6 +3,7 @@
 #include "../container.hpp"
 #include "../material/material.hpp"
 #include "../model/modeltemplate.hpp"
+#include "../model/occurrenceidentity.hpp"
 #include "../userpublic/animation/abi_v1.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/accelerationstructure.hpp"
@@ -26,6 +27,18 @@
 namespace Pelican {
 
 struct SceneLoadPhaseTrace;
+
+class PolygonInstanceContainer;
+namespace test_support {
+// WP382c fault seam. The counter it writes is a production field and the
+// throw it reaches ("ray-query model rebuild generation exhausted") is
+// production code in prepareModelInstanceRebuild; only the write is
+// test-only. Defined in a test-only translation unit so no production TU
+// carries the symbol (guarded by
+// wp380c_production_has_no_fault_setter_symbol).
+void setRayQueryGeometryGenerationForTesting(
+    PolygonInstanceContainer &instances, std::uint64_t generation) noexcept;
+} // namespace test_support
 
 inline constexpr std::uint32_t morphWeightDescriptorVersionV1 = 1;
 inline constexpr std::uint32_t morphCommitResetHistory = 1u << 0u;
@@ -272,6 +285,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         draw_queue_material_filters;
     std::uint64_t next_draw_declaration_ordinal = 0;
     std::uint64_t ray_query_geometry_generation = 1;
+    friend void test_support::setRayQueryGeometryGenerationForTesting(
+        PolygonInstanceContainer &instances,
+        std::uint64_t generation) noexcept;
     BufferWrapper indirect_buf;
     BufferWrapper view_family_indirect_buf;
     std::map<std::string,
@@ -411,10 +427,16 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void advanceTemporalHistoryAfterRender();
     void resetTemporalHistory();
     bool canRebuildModelInstances(std::span<const ModelInstanceRebuild> replacements) const;
+    PreparedSceneState prepareModelInstanceRebuild(
+        std::span<const ModelInstanceRebuild> replacements);
     void rebuildModelInstances(std::span<const ModelInstanceRebuild> replacements);
     void rebuildModelInstances(ModelAssetId asset_id, const ModelTemplate &replacement);
     std::vector<RayQueryGeometryInstanceSnapshot>
     rayQueryGeometryInstances() const;
+    std::vector<RayOccurrenceCatalogEntry> rayOccurrences(
+        std::uint64_t authoring_object_id = 0) const;
+    RayOccurrenceResolution resolveRayOccurrence(
+        std::string_view occurrence_id) const;
     void setRayInstanceDeclaration(
         ModelInstanceId id, std::uint64_t authoring_object_id,
         std::optional<RayInstanceComponent> declaration);

@@ -180,6 +180,89 @@ TEST_CASE("Transaction runs parse validate stage phases and retires in topologic
     REQUIRE(*coordinator.registry().snapshot().find(right)->payloadAs<int>() == 21);
 }
 
+// Coordinator mechanics only: the actors, prepare, publish and rollback below
+// are test lambdas, so nothing here reaches ModelAssetContainer. The production
+// acceptance for the model participant lives in modelhotreload_test.cpp
+// ("WP382c model reload rollback ...", decision 30).
+TEST_CASE("WP382c coordinator mechanics: publication prepares instance and catalog candidates before one commit",
+          "[wp382c][reload-participant][cpu]") {
+    ReloadCoordinator coordinator;
+    const auto model = coordinator.registry().declareResource(
+        "models", makeAssetKey("models/hero.glb"), number(1));
+    struct PublishedState {
+        int instance = 1;
+        std::vector<std::string> catalog{"old"};
+        std::uint64_t generation = 7;
+    } published;
+    struct Candidate {
+        int instance = 0;
+        std::vector<std::string> catalog;
+    } candidate;
+    int effect_sink_count = 0;
+    bool prepared = false;
+
+    ReloadTransactionGroup group{"wp382c-model"};
+    group.add(replace(model, 2));
+    group.setPreparePublish([&] {
+        REQUIRE(*coordinator.registry().snapshot().find(model)->payloadAs<int>() == 1);
+        candidate = Candidate{2, {"new"}};
+        prepared = true;
+        REQUIRE(effect_sink_count == 0);
+    });
+    group.setPublish([&]() noexcept {
+        published.instance = candidate.instance;
+        published.catalog.swap(candidate.catalog);
+        ++published.generation;
+    });
+    group.setRollback([&]() noexcept { candidate = {}; });
+    coordinator.enqueue(std::move(group));
+
+    REQUIRE(coordinator.applyFrame() == 1);
+    REQUIRE(prepared);
+    REQUIRE(*coordinator.registry().snapshot().find(model)->payloadAs<int>() == 2);
+    REQUIRE(published.instance == 2);
+    REQUIRE(published.catalog == std::vector<std::string>{"new"});
+    REQUIRE(published.generation == 8);
+    REQUIRE(effect_sink_count == 0);
+}
+
+// Coordinator mechanics only: the failure below is thrown by a test lambda in
+// prepare_publish, not by ModelAssetContainer. The production rollback
+// acceptance is modelhotreload_test.cpp ("WP382c model reload rollback ...").
+TEST_CASE("WP382c coordinator mechanics: failed model preparation retains registry instance and catalog",
+          "[wp382c][reload-participant][rollback][cpu]") {
+    ReloadCoordinator coordinator;
+    const auto model = coordinator.registry().declareResource(
+        "models", makeAssetKey("models/hero.glb"), number(1));
+    int instance = 1;
+    std::vector<std::string> catalog{"old"};
+    std::vector<std::string> candidate;
+    bool rolled_back = false;
+
+    ReloadTransactionGroup group{"wp382c-model-failure"};
+    group.add(replace(model, 2));
+    group.setPreparePublish([&] {
+        candidate = {"new"};
+        throw std::runtime_error("catalog prepare failed");
+    });
+    group.setPublish([&]() noexcept {
+        instance = 2;
+        catalog.swap(candidate);
+    });
+    group.setRollback([&]() noexcept {
+        candidate.clear();
+        rolled_back = true;
+    });
+    coordinator.enqueue(std::move(group));
+
+    REQUIRE(coordinator.applyFrame() == 1);
+    REQUIRE(rolled_back);
+    REQUIRE(*coordinator.registry().snapshot().find(model)->payloadAs<int>() == 1);
+    REQUIRE(instance == 1);
+    REQUIRE(catalog == std::vector<std::string>{"old"});
+    REQUIRE(candidate.empty());
+}
+
 TEST_CASE("Frame barrier never exposes half-committed revisions across logical tables",
           "[wp98][barrier]") {
     ReloadCoordinator coordinator;

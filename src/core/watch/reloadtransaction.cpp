@@ -316,6 +316,7 @@ void ReloadCoordinator::recordFailure(std::string path, std::string message) {
 
 bool ReloadCoordinator::execute(ReloadTransactionGroup &group, const RetireSink &retire) {
     const auto started = std::chrono::steady_clock::now();
+    bool publication_prepared = false;
     try {
         if (group.actors_.empty()) throw std::runtime_error("reload transaction group is empty");
         for (auto &actor : group.actors_) if (actor.parse) actor.parse();
@@ -334,7 +335,13 @@ bool ReloadCoordinator::execute(ReloadTransactionGroup &group, const RetireSink 
         std::vector<StagedResource> ordered;
         ordered.reserve(staged.size());
         for (const auto index : order) ordered.push_back(std::move(staged[index]));
+        if (group.prepare_publish_) {
+            publication_prepared = true;
+            group.prepare_publish_();
+        }
         auto retired = registry_.publish(ordered);
+        if (group.publish_) group.publish_->invoke();
+        publication_prepared = false;
         if (retire) for (auto &payload : retired) retire(std::move(payload));
         {
             std::scoped_lock lock{mutex_};
@@ -345,6 +352,8 @@ bool ReloadCoordinator::execute(ReloadTransactionGroup &group, const RetireSink 
         if (logger) LOG_INFO(logger, "reload: {} ok ({}ms)", group.name_, elapsed);
         return true;
     } catch (const std::exception &error) {
+        if (publication_prepared && group.rollback_)
+            group.rollback_->invoke();
         recordFailure(group.name_, error.what());
         const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             std::chrono::steady_clock::now() - started).count();

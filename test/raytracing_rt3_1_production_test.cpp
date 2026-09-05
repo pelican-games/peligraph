@@ -62,6 +62,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <picosha2.h>
@@ -3639,6 +3640,170 @@ TEST_CASE(
 }
 #endif
 
+
+TEST_CASE(
+    "WP382c resolve_ray_occurrence answers found, absent and ambiguous from the production scene",
+    "[WP382c][wp382c][ray-tracing][rt3-1][scene-loader][production][mutation][gpu]") {
+    setupLogger();
+    // Decision 30 makes resolve_ray_occurrence part of WP382c's standalone
+    // value, and decision 4 forbids first-wins on a colliding occurrence.
+    // Everything below runs on the real composition: a loaded scene, the
+    // production PolygonInstanceContainer inventory, and the same
+    // resolveRayOccurrence the RPC dependency in editorruntimefactory.cpp
+    // forwards to.
+    Wp374aProjectRoot project{"wp382c_resolve"};
+    writeWp374aProject(project.path, 2, true, false, true);
+    std::filesystem::create_directories(project.path / "models");
+    // "chair" is authored twice in the scene: each of its occurrences is
+    // reachable through two instances, so resolving one must stay ambiguous
+    // without either instance winning.
+    TestGltfFragmentFixture::writeGlb(project.path / "models" / "chair.glb",
+                                      false, false, false, true);
+    // "twin" duplicates the root node name, so both of its primitives encode
+    // to the same occurrence id inside one model and the loader flags them.
+    TestGltfFragmentFixture::writeGlb(project.path / "models" / "twin.glb",
+                                      true, false, false, true);
+    // "solo" is authored once, so each of its occurrences resolves uniquely.
+    TestGltfFragmentFixture::writeGlb(project.path / "models" / "solo.glb",
+                                      false, false, false, true);
+    const auto renderable = [](std::string_view name,
+                               std::string_view model) {
+        return Json{
+            {"name", std::string{name}},
+            {"components",
+             Json::array(
+                 {{{"name", "transform"},
+                   {"pos", {0.0, 0.0, 0.0}},
+                   {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                   {"scale", {1.0, 1.0, 1.0}}},
+                  {{"name", "simplemodelview"},
+                   {"model", std::string{model}}}})}};
+    };
+    writeWp374aText(
+        project.path / "scene.json",
+        Json{{"schema", "pelican.scene"},
+             {"version", 1},
+             {"scenes",
+              {{"main",
+                {{"objects",
+                  Json::array({renderable("ChairA", "chair"),
+                               renderable("ChairB", "chair"),
+                               renderable("Twin", "twin"),
+                               renderable("Solo", "solo")})}}}}}}
+            .dump(2));
+    writeWp374aText(
+        project.path / "assets.json",
+        Json{{"schema", "pelican.asset_data"},
+             {"version", 1},
+             {"models",
+              Json::array({{{"name", "chair"}, {"path", "models/chair.glb"}},
+                           {{"name", "twin"}, {"path", "models/twin.glb"}},
+                           {{"name", "solo"}, {"path", "models/solo.glb"}}})},
+             {"textures", Json::array()}}
+            .dump(2));
+
+    FastModuleContainer modules;
+    loadWp374aScene(project.path);
+    GET_MODULE(ECSCore).update();
+    const auto &instances = GET_MODULE(PolygonInstanceContainer);
+
+    // The catalog is the authored expectation, not the resolver's answer:
+    // four objects x two primitives each.
+    const auto inventory = instances.rayOccurrences();
+    REQUIRE(inventory.size() == 8);
+    std::map<std::string, std::vector<RayOccurrenceCatalogEntry>> by_id;
+    for (const auto &entry : inventory) {
+        REQUIRE_FALSE(entry.occurrence_id.empty());
+        by_id[entry.occurrence_id].push_back(entry);
+    }
+    // chair: 2 ids x 2 instances, twin: 1 collided id x 2 primitives,
+    // solo: 2 ids x 1 instance.
+    REQUIRE(by_id.size() == 5);
+
+    std::string unique_id;
+    std::string duplicated_instance_id;
+    std::string collided_id;
+    for (const auto &[id, entries] : by_id) {
+        const bool flagged =
+            entries.front().eligibility ==
+            RayOccurrenceEligibilityKind::ambiguous;
+        if (entries.size() == 1) unique_id = id;
+        else if (flagged) collided_id = id;
+        else duplicated_instance_id = id;
+    }
+    INFO("unique=" << unique_id << " duplicated=" << duplicated_instance_id
+                   << " collided=" << collided_id);
+    REQUIRE_FALSE(unique_id.empty());
+    REQUIRE_FALSE(duplicated_instance_id.empty());
+    REQUIRE_FALSE(collided_id.empty());
+
+    // found{q}: one candidate, and the q it reports is the inventory's q.
+    const auto found = instances.resolveRayOccurrence(unique_id);
+    REQUIRE(found.state == RayOccurrenceResolveState::found);
+    REQUIRE(found.candidates.size() == 1);
+    REQUIRE(found.candidates.front().occurrence_id == unique_id);
+    REQUIRE(found.candidates.front().eligibility ==
+            RayOccurrenceEligibilityKind::ok);
+    REQUIRE(found.candidates.front().q == by_id.at(unique_id).front().q);
+
+    // absent: a well-formed id that no occurrence carries.
+    const auto absent = instances.resolveRayOccurrence(
+        "ffffffffffffffffffffffffffffffff");
+    REQUIRE(absent.state == RayOccurrenceResolveState::absent);
+    REQUIRE(absent.candidates.empty());
+
+    // ambiguous, case 1: two eligible instances share the id. Neither wins;
+    // both candidates come back, and their q values differ, so a first-wins
+    // resolver cannot answer this by picking one.
+    const auto duplicated =
+        instances.resolveRayOccurrence(duplicated_instance_id);
+    REQUIRE(duplicated.state == RayOccurrenceResolveState::ambiguous);
+    REQUIRE(duplicated.candidates.size() == 2);
+    REQUIRE(duplicated.candidates.front().eligibility ==
+            RayOccurrenceEligibilityKind::ok);
+    REQUIRE(duplicated.candidates.front().q !=
+            duplicated.candidates.back().q);
+
+    // ambiguous, case 2: the loader itself flagged the collision inside one
+    // model, so the resolver must not report it as found either.
+    const auto collided = instances.resolveRayOccurrence(collided_id);
+    REQUIRE(collided.state == RayOccurrenceResolveState::ambiguous);
+    REQUIRE(collided.candidates.size() == 2);
+    REQUIRE(collided.candidates.front().eligibility ==
+            RayOccurrenceEligibilityKind::ambiguous);
+
+#if PELICAN_WITH_RPC
+    // The same three states through the production RPC composition. The
+    // dependency built in editorruntimefactory.cpp forwards
+    // resolve_ray_occurrence straight to the container queried above, so this
+    // is the wiring the injected lambda in editorcommandservice_test.cpp
+    // stands in for.
+    std::uint64_t rpc_id = 382700;
+    auto service = makeEditorRuntimeService();
+    const auto rpc_found = runWp374aRpcBytes(
+        *service, rpc_id++, "resolve_ray_occurrence",
+        {{"occurrence_id", unique_id}});
+    REQUIRE(rpc_found.at("status") == "found");
+    REQUIRE(rpc_found.at("occurrence_id") == unique_id);
+    REQUIRE(rpc_found.at("q") == found.candidates.front().q);
+    const auto rpc_absent = runWp374aRpcBytes(
+        *service, rpc_id++, "resolve_ray_occurrence",
+        {{"occurrence_id", "ffffffffffffffffffffffffffffffff"}});
+    REQUIRE(rpc_absent.at("status") == "absent");
+    const auto rpc_duplicated = runWp374aRpcBytes(
+        *service, rpc_id++, "resolve_ray_occurrence",
+        {{"occurrence_id", duplicated_instance_id}});
+    REQUIRE(rpc_duplicated.at("status") == "ambiguous");
+    REQUIRE(rpc_duplicated.at("candidates").size() == 2);
+    const auto rpc_collided = runWp374aRpcBytes(
+        *service, rpc_id++, "resolve_ray_occurrence",
+        {{"occurrence_id", collided_id}});
+    REQUIRE(rpc_collided.at("status") == "ambiguous");
+    wp375FinishRuntime(service);
+#endif
+
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
 
 } // namespace Pelican
 

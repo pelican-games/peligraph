@@ -227,6 +227,16 @@ VatPrimitiveMeta tinyGltfValueToVatMeta(const tinygltf::Value &extras) {
     return meta;
 }
 
+std::optional<std::string> tinyGltfExtrasId(const tinygltf::Value &extras) {
+    if (!extras.IsObject()) return std::nullopt;
+    const auto &object = extras.Get<tinygltf::Value::Object>();
+    const auto *value = objectMember(object, "id");
+    if (value == nullptr) return std::nullopt;
+    if (!value->IsString())
+        throw std::runtime_error("glTF extras.id must be a string");
+    return value->Get<std::string>();
+}
+
 void rejectVatModelIfDisabled(const tinygltf::Model &model) {
 #if PELICAN_WITH_VAT
     (void)model;
@@ -259,13 +269,15 @@ struct PreparedGltf::Impl {
     std::string error;
     bool scene_node_instance = false;
     VrmSemanticDecodeResult vrm;
+    std::optional<CanonicalModelAssetKey> asset_key;
 };
 
 namespace {
 
 std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
                                                     std::optional<AssetFragmentRef> fragment,
-                                                    bool binary) {
+                                                    bool binary,
+                                                    std::optional<CanonicalModelAssetKey> asset_key) {
     auto extension = std::filesystem::path{path}.extension().string();
     std::transform(extension.begin(), extension.end(), extension.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
@@ -279,6 +291,7 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     auto prepared = std::make_shared<PreparedGltf::Impl>();
     prepared->source_path = std::move(path);
     prepared->fragment = std::move(fragment);
+    prepared->asset_key = std::move(asset_key);
     tinygltf::TinyGLTF loader;
     GltfInternal::EncodedImages encoded_images;
     loader.SetImageLoader(GltfInternal::retainEncodedImage, &encoded_images);
@@ -512,6 +525,7 @@ struct InternalGltfLoader {
     tinygltf::Model &model;
     std::string source_path;
     std::optional<std::string> authored_reference;
+    std::optional<CanonicalModelAssetKey> asset_key;
     std::optional<AssetFragmentRef> fragment;
     bool scene_node_instance = false;
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
@@ -545,6 +559,8 @@ struct InternalGltfLoader {
     struct NodeOccurrence {
         int node_index = -1;
         std::string full_path;
+        std::vector<std::string> name_path;
+        std::vector<std::uint32_t> parent_index_path;
         glm::mat4 parent_transform{1.0f};
     };
 
@@ -553,6 +569,8 @@ struct InternalGltfLoader {
         int node_index = -1;
         std::string full_path;
         std::vector<std::string> aliases;
+        std::vector<std::string> name_path;
+        std::vector<std::uint32_t> parent_index_path;
         glm::mat4 parent_transform{1.0f};
     };
 
@@ -562,6 +580,8 @@ struct InternalGltfLoader {
         glm::mat4 parent_transform{1.0f};
         bool subtree = true;
         bool apply_node_transform = true;
+        std::vector<std::string> name_path;
+        std::vector<std::uint32_t> parent_index_path;
     };
 
     struct LoadSelection {
@@ -1372,6 +1392,8 @@ struct InternalGltfLoader {
 
     void collectNodeOccurrence(int node_index, const glm::mat4 &parent_transform,
                                const std::string &parent_path,
+                               const std::vector<std::string> &parent_name_path,
+                               const std::vector<std::uint32_t> &parent_index_path,
                                std::vector<NodeOccurrence> &occurrences,
                                std::set<std::pair<int, std::string>> &seen) {
         if (node_index < 0 || node_index >= static_cast<int>(model.nodes.size())) {
@@ -1381,12 +1403,19 @@ struct InternalGltfLoader {
         const auto full_path = parent_path.empty()
                                    ? node.name
                                    : node.name.empty() ? parent_path : parent_path + "/" + node.name;
+        auto name_path = parent_name_path;
+        name_path.push_back(node.name);
         if (seen.emplace(node_index, full_path).second) {
-            occurrences.push_back(NodeOccurrence{node_index, full_path, parent_transform});
+            occurrences.push_back(NodeOccurrence{node_index, full_path,
+                                                  name_path, parent_index_path,
+                                                  parent_transform});
         }
         const auto world_transform = parent_transform * nodeTransform(node);
+        auto child_index_path = parent_index_path;
+        child_index_path.push_back(static_cast<std::uint32_t>(node_index));
         for (const auto child : node.children) {
-            collectNodeOccurrence(child, world_transform, full_path, occurrences, seen);
+            collectNodeOccurrence(child, world_transform, full_path, name_path,
+                                  child_index_path, occurrences, seen);
         }
     }
 
@@ -1404,12 +1433,14 @@ struct InternalGltfLoader {
 
         for (const auto &scene : model.scenes) {
             for (const auto root : scene.nodes) {
-                collectNodeOccurrence(root, glm::mat4{1.0f}, {}, occurrences, seen);
+                collectNodeOccurrence(root, glm::mat4{1.0f}, {}, {}, {},
+                                      occurrences, seen);
             }
         }
         for (int i = 0; i < static_cast<int>(model.nodes.size()); ++i) {
             if (!is_child[i]) {
-                collectNodeOccurrence(i, glm::mat4{1.0f}, {}, occurrences, seen);
+                collectNodeOccurrence(i, glm::mat4{1.0f}, {}, {}, {},
+                                      occurrences, seen);
             }
         }
         return occurrences;
@@ -1428,6 +1459,8 @@ struct InternalGltfLoader {
                     occurrence.node_index,
                     occurrence.full_path,
                     {node.name},
+                    occurrence.name_path,
+                    occurrence.parent_index_path,
                     occurrence.parent_transform,
                 });
             }
@@ -1456,13 +1489,16 @@ struct InternalGltfLoader {
                     occurrence.node_index,
                     occurrence.full_path,
                     std::move(aliases),
+                    occurrence.name_path,
+                    occurrence.parent_index_path,
                     occurrence.parent_transform,
                 });
             }
             for (int i = 0; i < static_cast<int>(model.meshes.size()); ++i) {
                 if (!referenced[i] && !model.meshes[i].name.empty()) {
                     candidates.push_back(FragmentCandidate{
-                        i, -1, model.meshes[i].name, {model.meshes[i].name}, glm::mat4{1.0f}});
+                        i, -1, model.meshes[i].name, {model.meshes[i].name},
+                        {}, {}, glm::mat4{1.0f}});
                 }
             }
             return candidates;
@@ -1472,7 +1508,8 @@ struct InternalGltfLoader {
             for (int i = 0; i < static_cast<int>(objects.size()); ++i) {
                 if (!objects[i].name.empty()) {
                     candidates.push_back(FragmentCandidate{
-                        i, -1, objects[i].name, {objects[i].name}, glm::mat4{1.0f}});
+                        i, -1, objects[i].name, {objects[i].name}, {}, {},
+                        glm::mat4{1.0f}});
                 }
             }
         };
@@ -1575,7 +1612,8 @@ struct InternalGltfLoader {
                      ++node) {
                     if (!is_child[static_cast<std::size_t>(node)]) {
                         selection.roots.push_back(
-                            RootSelection{node, -1, glm::mat4{1.0f}, true, true});
+                            RootSelection{node, -1, glm::mat4{1.0f}, true, true,
+                                          {model.nodes[node].name}, {}});
                     }
                 }
                 return selection;
@@ -1588,7 +1626,8 @@ struct InternalGltfLoader {
             for (const auto node : model.scenes.at(
                      static_cast<std::size_t>(scene_index)).nodes) {
                 selection.roots.push_back(
-                    RootSelection{node, -1, glm::mat4{1.0f}, true, true});
+                    RootSelection{node, -1, glm::mat4{1.0f}, true, true,
+                                  {model.nodes[node].name}, {}});
             }
             return selection;
         }
@@ -1597,13 +1636,16 @@ struct InternalGltfLoader {
         LoadSelection selection;
         if (fragment->kind == "node") {
             selection.roots.push_back(scene_node_instance
-                                          ? RootSelection{selected.node_index, -1, glm::mat4{1.0f}, false, false}
+                                          ? RootSelection{selected.node_index, -1, glm::mat4{1.0f}, false, false,
+                                                          selected.name_path, selected.parent_index_path}
                                           : RootSelection{selected.node_index, -1, selected.parent_transform, true,
-                                                          true});
+                                                          true, selected.name_path,
+                                                          selected.parent_index_path});
         } else if (fragment->kind == "mesh") {
             selection.roots.push_back(
                 RootSelection{selected.node_index, selected.object_index,
-                              selected.parent_transform, false, true});
+                              selected.parent_transform, false, true,
+                              selected.name_path, selected.parent_index_path});
         } else if (fragment->kind == "material") {
             selection.material_only = selected.object_index;
         } else if (fragment->kind == "animation") {
@@ -2011,7 +2053,10 @@ struct InternalGltfLoader {
         return *head_related_nodes;
     }
 
-    void loadMesh(int mesh_index, const glm::mat4 &world_transform, int node_index = -1) {
+    void loadMesh(int mesh_index, const glm::mat4 &world_transform,
+                  int node_index = -1,
+                  std::vector<std::string> node_name_path = {},
+                  std::vector<std::uint32_t> parent_index_path = {}) {
         const auto &mesh = model.meshes.at(mesh_index);
         const auto morph_target_count = meshMorphTargetCount(mesh_index);
         const auto morph_weight_offset =
@@ -2127,6 +2172,10 @@ struct InternalGltfLoader {
             const auto vat_meta = tinyGltfValueToVatMeta(primitive.extras);
             const auto primitive_mode =
                 primitive.mode < 0 ? TINYGLTF_MODE_TRIANGLES : primitive.mode;
+            const auto source_primitive_digest = primitiveContentDigestV1(
+                static_cast<std::uint8_t>(primitive_mode), dat);
+            const auto primitive_explicit_id =
+                tinyGltfExtrasId(primitive.extras);
 #if PELICAN_WITH_VAT
             const auto vat_info = parseVatPrimitiveExtras(
                 vat_meta, static_cast<uint32_t>(dat.pos.size()), vatBufferViewInfos());
@@ -2217,6 +2266,37 @@ struct InternalGltfLoader {
                     node_index < 0 ? noSourceNodeIndex
                                    : static_cast<std::uint32_t>(node_index);
                 primitive_info.view_visibility = variant.visibility;
+                ImporterVariant importer_variant{};
+                if (auto_split) {
+                    importer_variant.kind =
+                        variant.visibility == PrimitiveViewVisibility::both
+                            ? ImporterVariantV1::vrm_split_both
+                            : ImporterVariantV1::vrm_split_third_person_only;
+#if PELICAN_WITH_VAT
+                } else if (vat_info) {
+                    importer_variant.kind = ImporterVariantV1::vat_deformed;
+#endif
+                } else if (!primitive.targets.empty()) {
+                    importer_variant.kind = ImporterVariantV1::morph_expanded;
+                } else if (skinned) {
+                    importer_variant.kind = ImporterVariantV1::skinned;
+                }
+                primitive_info.occurrence =
+                    std::make_shared<ModelOccurrenceIdentityInfo>(
+                        ModelOccurrenceIdentityInfo{
+                            .asset = asset_key,
+                            .node_name_path = node_name_path,
+                            .diagnostic_parent_path = parent_index_path,
+                            .node_explicit_id =
+                                node_index < 0
+                                    ? std::optional<std::string>{}
+                                    : tinyGltfExtrasId(
+                                          model.nodes.at(node_index).extras),
+                            .primitive_explicit_id = primitive_explicit_id,
+                            .primitive_content_digest =
+                                source_primitive_digest,
+                            .variant = importer_variant,
+                        });
 #if PELICAN_WITH_VAT
                 // vat_info only exists in this configuration. With VAT compiled
                 // out a GLB carrying pelican.vat extras is rejected at load, so
@@ -2275,18 +2355,100 @@ struct InternalGltfLoader {
         }
     }
 
-    void loadNode(int node_index, const glm::mat4 &parent_transform, bool subtree = true,
-                  bool apply_node_transform = true) {
+    void loadNode(int node_index, const glm::mat4 &parent_transform,
+                  bool subtree = true, bool apply_node_transform = true,
+                  std::vector<std::string> name_path = {},
+                  std::vector<std::uint32_t> parent_index_path = {}) {
         const auto &node = model.nodes.at(node_index);
+        if (name_path.empty()) name_path.push_back(node.name);
         const auto world_transform = apply_node_transform ? parent_transform * nodeTransform(node) : parent_transform;
         if (subtree) {
             for (const auto child_index : node.children) {
-                loadNode(child_index, world_transform);
+                auto child_name_path = name_path;
+                child_name_path.push_back(model.nodes.at(child_index).name);
+                auto child_index_path = parent_index_path;
+                child_index_path.push_back(
+                    static_cast<std::uint32_t>(node_index));
+                loadNode(child_index, world_transform, true, true,
+                         std::move(child_name_path),
+                         std::move(child_index_path));
             }
         }
         if (node.mesh >= 0) {
-            loadMesh(node.mesh, world_transform, node_index);
+            loadMesh(node.mesh, world_transform, node_index,
+                     std::move(name_path),
+                     std::move(parent_index_path));
         }
+    }
+
+    void finalizeOccurrenceIdentities(ModelTemplate &loaded) {
+        using Info = ModelOccurrenceIdentityInfo;
+        struct SourcePrimitiveInfo {
+            std::uint32_t diagnostic_primitive_index = 0;
+            std::shared_ptr<Info> info;
+        };
+        std::map<std::string, std::vector<SourcePrimitiveInfo>> by_node;
+        std::map<std::vector<std::string>, std::set<std::string>> path_nodes;
+        for (auto &material : loaded.material_primitives) {
+            for (auto &primitive : material.primitives) {
+                auto info = primitive.occurrence;
+                if (!info) continue;
+                std::string node_key = std::to_string(primitive.node_index);
+                for (const auto index : info->diagnostic_parent_path)
+                    node_key += ":" + std::to_string(index);
+                by_node[node_key].push_back(
+                    {primitive.primitive_index, info});
+                if (!info->node_name_path.empty() &&
+                    std::none_of(info->node_name_path.begin(),
+                                 info->node_name_path.end(),
+                                 [](const auto &part) { return part.empty(); })) {
+                    path_nodes[info->node_name_path].insert(node_key);
+                }
+            }
+        }
+        for (auto &[_, records] : by_node) {
+            std::map<std::uint32_t, OccurrenceDigest> source_primitives;
+            for (const auto &record : records) {
+                const auto [found, inserted] = source_primitives.emplace(
+                    record.diagnostic_primitive_index,
+                    record.info->primitive_content_digest);
+                if (!inserted &&
+                    found->second != record.info->primitive_content_digest)
+                    throw std::logic_error(
+                        "one source primitive produced inconsistent occurrence digests");
+            }
+            std::vector<OccurrenceDigest> primitive_digests;
+            primitive_digests.reserve(source_primitives.size());
+            for (const auto &[_, digest] : source_primitives)
+                primitive_digests.push_back(digest);
+            const auto node_digest = nodeContentDigestV1(primitive_digests);
+            for (auto &record : records)
+                record.info->node_content_digest = node_digest;
+        }
+
+        std::vector<std::shared_ptr<Info>> catalog;
+        for (auto &material : loaded.material_primitives) {
+            for (auto &primitive : material.primitives) {
+                auto &info = *primitive.occurrence;
+                const bool unique_name_path =
+                    path_nodes.contains(info.node_name_path) &&
+                    path_nodes.at(info.node_name_path).size() == 1;
+                auto result = occurrenceIdV1(OccurrenceIdentityInput{
+                    .asset = info.asset,
+                    .node_explicit_id = info.node_explicit_id,
+                    .node_name_path = info.node_name_path,
+                    .node_name_path_unique = unique_name_path,
+                    .node_content_digest = info.node_content_digest,
+                    .primitive_explicit_id = info.primitive_explicit_id,
+                    .primitive_content_digest = info.primitive_content_digest,
+                    .variant = info.variant,
+                });
+                info.occurrence_id = std::move(result.occurrence_id);
+                info.error = std::move(result.error);
+                catalog.push_back(primitive.occurrence);
+            }
+        }
+        detectOccurrenceIdCollisions(catalog);
     }
 
     ModelTemplate load() {
@@ -2342,7 +2504,9 @@ struct InternalGltfLoader {
 
         for (const auto &root : selection.roots) {
             if (root.node_index >= 0) {
-                loadNode(root.node_index, root.parent_transform, root.subtree, root.apply_node_transform);
+                loadNode(root.node_index, root.parent_transform, root.subtree,
+                         root.apply_node_transform, root.name_path,
+                         root.parent_index_path);
             } else if (root.mesh_index >= 0) {
                 loadMesh(root.mesh_index, glm::mat4{1.0f});
             }
@@ -2391,6 +2555,8 @@ struct InternalGltfLoader {
         m.vrm_semantic = vrm_semantic;
         m.gpu_resources = resources.finish();
 
+        finalizeOccurrenceIdentities(m);
+
         return m;
     }
 };
@@ -2398,22 +2564,28 @@ struct InternalGltfLoader {
 GltfLoader::GltfLoader() {}
 
 PreparedGltf GltfLoader::prepareGltfBinary(std::string path,
-                                           std::optional<AssetFragmentRef> fragment) const {
-    return PreparedGltf{prepareGltfImpl(std::move(path), std::move(fragment), true)};
+                                           std::optional<AssetFragmentRef> fragment,
+                                           std::optional<CanonicalModelAssetKey> asset_key) const {
+    return PreparedGltf{prepareGltfImpl(std::move(path), std::move(fragment),
+                                        true, std::move(asset_key))};
 }
 
 PreparedGltf GltfLoader::prepareGltf(std::string path,
-                                     std::optional<AssetFragmentRef> fragment) const {
-    return PreparedGltf{prepareGltfImpl(std::move(path), std::move(fragment), false)};
+                                     std::optional<AssetFragmentRef> fragment,
+                                     std::optional<CanonicalModelAssetKey> asset_key) const {
+    return PreparedGltf{prepareGltfImpl(std::move(path), std::move(fragment),
+                                        false, std::move(asset_key))};
 }
 
 PreparedGltf GltfLoader::prepareGltfBinarySceneNode(std::string path,
-                                                     AssetFragmentRef fragment) const {
+                                                     AssetFragmentRef fragment,
+                                                     std::optional<CanonicalModelAssetKey> asset_key) const {
     if (fragment.kind != "node") {
         throw std::runtime_error("scene node model reference requires #node fragment: " + path + "#" +
                                  fragment.kind + "/" + fragment.path);
     }
-    auto prepared = prepareGltfBinary(std::move(path), std::move(fragment));
+    auto prepared = prepareGltfBinary(std::move(path), std::move(fragment),
+                                      std::move(asset_key));
     prepared.impl->scene_node_instance = true;
     return prepared;
 }
@@ -2457,6 +2629,7 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared,
         prepared.impl->model,
         prepared.impl->source_path,
         authored_value,
+        prepared.impl->asset_key,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
         prepared.impl->vrm.semantic,
@@ -2493,6 +2666,7 @@ ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {
         prepared.impl->model,
         prepared.impl->source_path,
         std::nullopt,
+        prepared.impl->asset_key,
         prepared.impl->fragment,
         prepared.impl->scene_node_instance,
         prepared.impl->vrm.semantic,

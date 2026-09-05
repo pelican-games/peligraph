@@ -57,6 +57,15 @@ struct RayQueryGeometryInstanceSnapshot {
     std::uint32_t primitive_index = 0;
     std::uint32_t node_index =
         std::numeric_limits<std::uint32_t>::max();
+    // Raw occurrence metadata copied from DrawStableIdentity. vkcore remains
+    // independent from model importer types while retaining the stable key in
+    // the immutable AS snapshot.
+    std::string occurrence_id;
+    std::string occurrence_asset;
+    std::vector<std::string> occurrence_node_path;
+    std::string occurrence_variant;
+    std::string occurrence_error;
+    bool occurrence_ambiguous = false;
     glm::mat4 world_transform{1.0F};
 };
 

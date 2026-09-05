@@ -30,7 +30,10 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <nlohmann/json.hpp>
+#include <set>
 
 #ifndef PELICAN_TEST_SOURCE_DIR
 #define PELICAN_TEST_SOURCE_DIR "."
@@ -82,6 +85,60 @@ struct TempDirGuard {
     std::filesystem::path path;
     ~TempDirGuard() { std::filesystem::remove_all(path); }
 };
+
+std::uint32_t fixtureU32(const std::vector<std::uint8_t> &bytes,
+                         std::size_t offset) {
+    return static_cast<std::uint32_t>(bytes.at(offset)) |
+           (static_cast<std::uint32_t>(bytes.at(offset + 1)) << 8) |
+           (static_cast<std::uint32_t>(bytes.at(offset + 2)) << 16) |
+           (static_cast<std::uint32_t>(bytes.at(offset + 3)) << 24);
+}
+
+std::vector<std::uint8_t> mutateFixtureGlb(
+    std::vector<std::uint8_t> source,
+    const std::function<void(nlohmann::json &)> &mutate_json,
+    const std::function<void(std::vector<std::uint8_t> &)> &mutate_bin = {}) {
+    const auto json_size = fixtureU32(source, 12);
+    const auto bin_header = 20 + json_size;
+    const auto bin_size = fixtureU32(source, bin_header);
+    auto document = nlohmann::json::parse(
+        source.begin() + 20, source.begin() + bin_header);
+    std::vector<std::uint8_t> bin(
+        source.begin() + static_cast<std::ptrdiff_t>(bin_header + 8),
+        source.begin() + static_cast<std::ptrdiff_t>(bin_header + 8 + bin_size));
+    mutate_json(document);
+    if (mutate_bin) mutate_bin(bin);
+    auto json_bytes = document.dump();
+    while (json_bytes.size() % 4 != 0) json_bytes.push_back(' ');
+    while (bin.size() % 4 != 0) bin.push_back(0);
+    std::vector<std::uint8_t> result;
+    TestGltfFragmentFixture::detail::appendU32(result, 0x46546c67);
+    TestGltfFragmentFixture::detail::appendU32(result, 2);
+    TestGltfFragmentFixture::detail::appendU32(
+        result, static_cast<std::uint32_t>(12 + 8 + json_bytes.size() +
+                                           8 + bin.size()));
+    TestGltfFragmentFixture::detail::appendU32(
+        result, static_cast<std::uint32_t>(json_bytes.size()));
+    TestGltfFragmentFixture::detail::appendU32(result, 0x4e4f534a);
+    result.insert(result.end(), json_bytes.begin(), json_bytes.end());
+    TestGltfFragmentFixture::detail::appendU32(
+        result, static_cast<std::uint32_t>(bin.size()));
+    TestGltfFragmentFixture::detail::appendU32(result, 0x004e4942);
+    result.insert(result.end(), bin.begin(), bin.end());
+    return result;
+}
+
+std::set<std::string> occurrenceIds(const ModelTemplate &model) {
+    std::set<std::string> result;
+    for (const auto &material : model.material_primitives) {
+        for (const auto &primitive : material.primitives) {
+            REQUIRE(primitive.occurrence);
+            REQUIRE_FALSE(primitive.occurrence->occurrence_id.empty());
+            result.insert(primitive.occurrence->occurrence_id);
+        }
+    }
+    return result;
+}
 
 } // namespace
 
@@ -543,6 +600,198 @@ TEST_CASE("U-USD0c generated delivery parses material and binding then loads the
     Pelican::test_support::loadScene(scene, "default_scene");
     GET_MODULE(ECSCore).update();
     REQUIRE(scene.objectId("World_CoatTriangle"));
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("WP382c glTF occurrence identity survives authored reorderings and reports collisions",
+          "[wp382c][gltf][gpu]") {
+    setupLogger();
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+                          ("pelican_wp382c_" + std::to_string(
+                              std::chrono::steady_clock::now()
+                                  .time_since_epoch().count()));
+    std::filesystem::create_directories(temp_dir);
+    const TempDirGuard temp_guard{temp_dir};
+    auto base = TestGltfFragmentFixture::makeGlb(false, false, false, true);
+    base = mutateFixtureGlb(std::move(base), [](nlohmann::json &json) {
+        json["nodes"][1]["extras"] = {{"id", "body-node"}};
+        json["meshes"][0]["primitives"][0]["extras"] =
+            {{"id", "body-a"}};
+        auto second = json["meshes"][0]["primitives"][0];
+        second["extras"] = {{"id", "body-b"}};
+        json["meshes"][0]["primitives"].push_back(std::move(second));
+    });
+    const auto leading_node = mutateFixtureGlb(
+        base, [](nlohmann::json &json) {
+            auto nodes = nlohmann::json::array();
+            nodes.push_back({{"name", "Unrelated"}});
+            for (auto node : json["nodes"]) {
+                if (node.contains("children"))
+                    for (auto &child : node["children"])
+                        child = child.get<int>() + 1;
+                nodes.push_back(std::move(node));
+            }
+            json["nodes"] = std::move(nodes);
+            for (auto &root : json["scenes"][0]["nodes"])
+                root = root.get<int>() + 1;
+        });
+    const auto primitive_reorder = mutateFixtureGlb(
+        base, [](nlohmann::json &json) {
+            auto &primitives = json["meshes"][0]["primitives"];
+            std::swap(primitives[0], primitives[1]);
+        });
+    const auto geometry_replacement = mutateFixtureGlb(
+        base,
+        [](nlohmann::json &json) {
+            for (auto &primitive : json["meshes"][0]["primitives"])
+                primitive.erase("extras");
+        },
+        [](std::vector<std::uint8_t> &bin) {
+            const float replacement = -0.25F;
+            std::memcpy(bin.data(), &replacement, sizeof(replacement));
+        });
+    const auto ambiguous = mutateFixtureGlb(
+        TestGltfFragmentFixture::makeGlb(false, false, false, true),
+        [](nlohmann::json &json) {
+            json["meshes"][0]["primitives"].push_back(
+                json["meshes"][0]["primitives"][0]);
+        });
+    const auto write = [&](std::string_view name,
+                           const std::vector<std::uint8_t> &bytes) {
+        const auto path = temp_dir / name;
+        TestGltfFragmentFixture::detail::writeBytes(path, bytes);
+        return path;
+    };
+    const auto base_path = write("base.glb", base);
+    const auto leading_path = write("leading.glb", leading_node);
+    const auto reordered_path = write("reordered.glb", primitive_reorder);
+    const auto replaced_path = write("replaced.glb", geometry_replacement);
+    const auto ambiguous_path = write("ambiguous.glb", ambiguous);
+
+    FastModuleContainer modules;
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice(
+        "Vulkan glTF occurrence inspection unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    auto &loader = GET_MODULE(GltfLoader);
+    const auto inspect = [&](const std::filesystem::path &path) {
+        return loader.inspect(loader.prepareGltfBinary(
+            path.string(), std::nullopt,
+            CanonicalModelAssetKey{"logical.hero"}));
+    };
+
+    const auto original = inspect(base_path);
+    const auto asset_table_reordered = inspect(base_path);
+    REQUIRE(occurrenceIds(asset_table_reordered) == occurrenceIds(original));
+    REQUIRE(occurrenceIds(inspect(leading_path)) == occurrenceIds(original));
+    REQUIRE(occurrenceIds(inspect(reordered_path)) == occurrenceIds(original));
+    REQUIRE(occurrenceIds(inspect(replaced_path)) != occurrenceIds(original));
+
+    bool parsed_node_extras = false;
+    bool parsed_primitive_extras = false;
+    for (const auto &material : original.material_primitives) {
+        for (const auto &primitive : material.primitives) {
+            parsed_node_extras |=
+                primitive.occurrence->node_explicit_id == "body-node";
+            parsed_primitive_extras |=
+                primitive.occurrence->primitive_explicit_id == "body-a" ||
+                primitive.occurrence->primitive_explicit_id == "body-b";
+        }
+    }
+    REQUIRE(parsed_node_extras);
+    REQUIRE(parsed_primitive_extras);
+
+    const auto collision = inspect(ambiguous_path);
+    std::size_t ambiguous_count = 0;
+    for (const auto &material : collision.material_primitives)
+        for (const auto &primitive : material.primitives)
+            ambiguous_count += primitive.occurrence->ambiguous ? 1 : 0;
+    REQUIRE(ambiguous_count == 2);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("WP382c glTF node extras.id drives occurrence identity through the production loader",
+          "[wp382c][gltf][gpu]") {
+    setupLogger();
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+                          ("pelican_wp382c_extras_" + std::to_string(
+                              std::chrono::steady_clock::now()
+                                  .time_since_epoch().count()));
+    std::filesystem::create_directories(temp_dir);
+    const TempDirGuard temp_guard{temp_dir};
+
+    // Decision 29 orders NodeIdentity as tag 1 (extras.id) before tag 2
+    // (name path). These three GLBs isolate that order on the production
+    // GltfLoader::inspect route: node 1 is "RootA/Cube" in every one of them
+    // and node 3 ("RootB/Cube") is never touched, so it pins the comparison.
+    const auto authored = [&](std::string_view id,
+                              bool rename_path) {
+        return mutateFixtureGlb(
+            TestGltfFragmentFixture::makeGlb(false, false, false, true),
+            [id, rename_path](nlohmann::json &json) {
+                json["nodes"][1]["extras"] = {{"id", std::string{id}}};
+                if (rename_path) {
+                    json["nodes"][0]["name"] = "RenamedRoot";
+                    json["nodes"][1]["name"] = "RenamedCube";
+                }
+            });
+    };
+    const auto write = [&](std::string_view name,
+                           const std::vector<std::uint8_t> &bytes) {
+        const auto path = temp_dir / name;
+        TestGltfFragmentFixture::detail::writeBytes(path, bytes);
+        return path;
+    };
+    const auto alpha_path = write("alpha.glb", authored("alpha", false));
+    const auto beta_path = write("beta.glb", authored("beta", false));
+    const auto renamed_path =
+        write("alpha_renamed.glb", authored("alpha", true));
+
+    FastModuleContainer modules;
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice(
+        "Vulkan glTF occurrence inspection unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    auto &loader = GET_MODULE(GltfLoader);
+    const auto inspect = [&](const std::filesystem::path &path) {
+        return loader.inspect(loader.prepareGltfBinary(
+            path.string(), std::nullopt,
+            CanonicalModelAssetKey{"logical.hero"}));
+    };
+
+    const auto alpha = inspect(alpha_path);
+    const auto beta = inspect(beta_path);
+    const auto renamed = inspect(renamed_path);
+    const auto alpha_ids = occurrenceIds(alpha);
+    const auto beta_ids = occurrenceIds(beta);
+    const auto renamed_ids = occurrenceIds(renamed);
+    REQUIRE(alpha_ids.size() == 2);
+    REQUIRE(beta_ids.size() == 2);
+
+    bool parsed_alpha = false;
+    for (const auto &material : alpha.material_primitives)
+        for (const auto &primitive : material.primitives)
+            parsed_alpha |=
+                primitive.occurrence->node_explicit_id == "alpha";
+    REQUIRE(parsed_alpha);
+
+    // Same name path, same content, different extras.id: different occurrence.
+    // Exactly one of the two nodes moves, so the untouched RootB/Cube node
+    // stays shared and the symmetric difference is the authored node only.
+    REQUIRE(alpha_ids != beta_ids);
+    std::set<std::string> shared;
+    std::set_intersection(alpha_ids.begin(), alpha_ids.end(),
+                          beta_ids.begin(), beta_ids.end(),
+                          std::inserter(shared, shared.end()));
+    REQUIRE(shared.size() == 1);
+
+    // Same extras.id, different node names: the same occurrence. The name
+    // path is not an input to the identity once extras.id is authored.
+    REQUIRE(renamed_ids == alpha_ids);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

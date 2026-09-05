@@ -132,21 +132,43 @@ struct PreCommitFailure {
     std::vector<std::string> release_errors;
 };
 
+struct SceneLoadEffectError {
+    std::string api;
+    std::string error_code;
+    nlohmann::ordered_json error_fields;
+    std::string phase;
+};
+
+struct SceneRejectedRowAddress {
+    std::uint64_t object = 0;
+    nlohmann::ordered_json component_witness =
+        nlohmann::ordered_json::object();
+    std::string list_path;
+    std::uint32_t row_id = 0;
+};
+
+struct SceneRejectedRow {
+    SceneRejectedRowAddress address;
+    nlohmann::ordered_json error = nlohmann::ordered_json::object();
+};
+
+struct SceneLoadDiagnostics {
+    std::vector<SceneRejectedRow> rejected_rows;
+    std::vector<SceneLoadEffectError> effect_errors;
+};
+
 struct CommittedWithEffectFailure {
     SceneAuthority active_authority{};
-    struct EffectError {
-        std::string api;
-        std::string error_code;
-        nlohmann::ordered_json error_fields;
-        std::string phase;
-    };
+    using EffectError = SceneLoadEffectError;
     std::vector<EffectError> effect_errors;
     SceneLoadPhaseTrace phase_trace{};
+    SceneLoadDiagnostics diagnostics;
 };
 
 struct SceneLoadCommitted {
     SceneAuthority active_authority{};
     SceneLoadPhaseTrace phase_trace{};
+    SceneLoadDiagnostics diagnostics;
 };
 
 using SceneLoadResult =
@@ -259,5 +281,7 @@ struct SceneImportResult {
 const SceneLoadResult &requireSceneLoadCommitted(const SceneLoadResult &result);
 nlohmann::ordered_json effectErrorsJson(
     std::span<const CommittedWithEffectFailure::EffectError> errors);
+nlohmann::ordered_json sceneLoadDiagnosticsJson(
+    const SceneLoadDiagnostics &diagnostics);
 
 } // namespace Pelican

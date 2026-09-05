@@ -60,6 +60,12 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setOrderedHandler("get_components", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getComponents(params); });
     });
+    server.setOrderedHandler("get_ray_occurrences", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getRayOccurrences(params); });
+    });
+    server.setOrderedHandler("resolve_ray_occurrence", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.resolveRayOccurrence(params); });
+    });
     server.setHandler("list_assets", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.listAssets(params); });
     });

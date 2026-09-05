@@ -4,6 +4,7 @@
 #include "editorpreviewservice.hpp"
 #include "../loader/resolvedscene.hpp"
 #include "../loader/sceneload.hpp"
+#include "../model/occurrenceidentity.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -189,6 +190,7 @@ struct ImportSceneSnapshotResult {
     SceneRevision scene_revision{};
     std::string current_scene_id;
     std::vector<CommittedWithEffectFailure::EffectError> effect_errors;
+    SceneLoadDiagnostics diagnostics;
 };
 
 struct EditorRuntimeBehaviorAttachmentState {
@@ -261,6 +263,10 @@ struct EditorCommandServiceDependencies {
                                    std::uint64_t)>
         import_scene_snapshot_versioned;
     std::function<SaveSceneResult()> save_scene;
+    std::function<std::vector<RayOccurrenceCatalogEntry>(std::uint64_t)>
+        ray_occurrences;
+    std::function<RayOccurrenceResolution(std::string_view)>
+        resolve_ray_occurrence;
 };
 
 class EditorCommandService {
@@ -307,6 +313,10 @@ class EditorCommandService {
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const;
     EditorSceneRevisionResult getSceneRevision() const;
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
+    std::vector<RayOccurrenceCatalogEntry> getRayOccurrences(
+        const EditorGetComponentsRequest &request) const;
+    RayOccurrenceResolution resolveRayOccurrence(
+        std::string_view occurrence_id) const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
     ExportSceneSnapshotResponseV1 exportSceneSnapshot(const ExportSceneSnapshotRequestV1 &request) const;
     ExportSceneSnapshotResponseV2 exportSceneSnapshotV2(
@@ -367,6 +377,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json sceneTree(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneRevision(const nlohmann::json &params) const;
     nlohmann::ordered_json getComponents(const nlohmann::json &params) const;
+    nlohmann::ordered_json getRayOccurrences(const nlohmann::json &params) const;
+    nlohmann::ordered_json resolveRayOccurrence(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
     nlohmann::ordered_json importSceneSnapshot(const nlohmann::json &params) const;

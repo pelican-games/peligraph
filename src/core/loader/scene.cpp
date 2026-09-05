@@ -462,6 +462,25 @@ nlohmann::ordered_json effectErrorsJson(
     return result;
 }
 
+nlohmann::ordered_json sceneLoadDiagnosticsJson(
+    const SceneLoadDiagnostics &diagnostics) {
+    auto rejected_rows = nlohmann::ordered_json::array();
+    for (const auto &row : diagnostics.rejected_rows) {
+        rejected_rows.push_back({
+            {"address",
+             {{"object", row.address.object},
+              {"component", row.address.component_witness},
+              {"list_path", row.address.list_path},
+              {"row_id", row.address.row_id}}},
+            {"error", row.error},
+        });
+    }
+    return {
+        {"rejected_rows", std::move(rejected_rows)},
+        {"effect_errors", effectErrorsJson(diagnostics.effect_errors)},
+    };
+}
+
 SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     SceneLoadPhaseTrace phase_trace;
     auto *const injector = fault_injector;
@@ -1016,11 +1035,20 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     // noexcept commit tail has completed.
     auto effect_errors = effect_transaction->effectErrors();
     if (!effect_errors.empty()) {
-        return CommittedWithEffectFailure{candidate_authority,
-                                          std::move(effect_errors),
-                                          phase_trace};
+        auto diagnostics = SceneLoadDiagnostics{
+            .effect_errors = effect_errors,
+        };
+        diagnostics_by_root.at(static_cast<std::size_t>(request.root)) =
+            diagnostics;
+        return CommittedWithEffectFailure{
+            candidate_authority, std::move(effect_errors), phase_trace,
+            std::move(diagnostics)};
     }
-    return SceneLoadCommitted{candidate_authority, phase_trace};
+    SceneLoadDiagnostics diagnostics;
+    diagnostics_by_root.at(static_cast<std::size_t>(request.root)) =
+        diagnostics;
+    return SceneLoadCommitted{candidate_authority, phase_trace,
+                              std::move(diagnostics)};
 }
 
 void SceneLoader::requestLoad(SceneId scene_id) {
@@ -1069,10 +1097,21 @@ bool SceneLoader::applyPendingLoad() {
     if (const auto *failure =
             std::get_if<CommittedWithEffectFailure>(&result)) {
         LOG_ERROR(logger,
-                  "pending scene committed with effect failure: error_code='committed_with_effect_failure@1' effect_errors={}",
-                  effectErrorsJson(failure->effect_errors).dump());
+                  "pending scene committed with effect failure: error_code='committed_with_effect_failure@1' diagnostics={}",
+                  sceneLoadDiagnosticsJson(failure->diagnostics).dump());
     }
     return true;
+}
+
+nlohmann::ordered_json SceneLoader::diagnosticsStatusJson() const {
+    static constexpr std::array<std::string_view, 6> names{
+        "unspecified", "startup", "rpc", "pending",
+        "import_unversioned", "import_versioned"};
+    auto result = nlohmann::ordered_json::object();
+    for (std::size_t index = 0; index < names.size(); ++index)
+        result[std::string{names[index]}] =
+            sceneLoadDiagnosticsJson(diagnostics_by_root[index]);
+    return result;
 }
 
 const SceneId &SceneLoader::currentScene() const {

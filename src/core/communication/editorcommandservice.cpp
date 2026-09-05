@@ -821,6 +821,20 @@ EditorCommandService::getComponents(const EditorGetComponentsRequest &request) c
     return queryObject(source, scene, *found);
 }
 
+std::vector<RayOccurrenceCatalogEntry>
+EditorCommandService::getRayOccurrences(
+    const EditorGetComponentsRequest &request) const {
+    if (!dependencies_.ray_occurrences) return {};
+    const auto object = getComponents(request);
+    return dependencies_.ray_occurrences(object.authoring_object_id.value);
+}
+
+RayOccurrenceResolution EditorCommandService::resolveRayOccurrence(
+    std::string_view occurrence_id) const {
+    if (!dependencies_.resolve_ray_occurrence) return {};
+    return dependencies_.resolve_ray_occurrence(occurrence_id);
+}
+
 EditorListAssetsResult EditorCommandService::listAssets(const EditorListAssetsRequest &request) const {
     EditorListAssetsResult result;
     if (!dependencies_.assets) return result;
@@ -1032,6 +1046,14 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshot(
                 ? std::move(std::get<CommittedWithEffectFailure>(
                                 imported.load_result).effect_errors)
                 : std::vector<CommittedWithEffectFailure::EffectError>{},
+            .diagnostics = std::holds_alternative<CommittedWithEffectFailure>(
+                               imported.load_result)
+                               ? std::get<CommittedWithEffectFailure>(
+                                     imported.load_result)
+                                     .diagnostics
+                               : std::get<SceneLoadCommitted>(
+                                     imported.load_result)
+                                     .diagnostics,
         };
     } catch (const EditorCommandError &) {
         throw;
@@ -1137,7 +1159,15 @@ ImportSceneSnapshotResult EditorCommandService::importSceneSnapshotV2(
                         imported.load_result)
                     ? std::move(std::get<CommittedWithEffectFailure>(
                                     imported.load_result).effect_errors)
-                    : std::vector<CommittedWithEffectFailure::EffectError>{}};
+                    : std::vector<CommittedWithEffectFailure::EffectError>{},
+                .diagnostics =
+                    std::holds_alternative<CommittedWithEffectFailure>(
+                        imported.load_result)
+                        ? std::get<CommittedWithEffectFailure>(
+                              imported.load_result)
+                              .diagnostics
+                        : std::get<SceneLoadCommitted>(imported.load_result)
+                              .diagnostics};
     } catch (const EditorCommandError &) {
         throw;
     } catch (const PrefabError &error) {
@@ -1780,6 +1810,7 @@ OrderedJson editorQueryJson(const ImportSceneSnapshotResult &snapshot) {
         {"scene_revision", snapshot.scene_revision.value},
         {"current_scene_id", snapshot.current_scene_id},
         {"effect_errors", effectErrorsJson(snapshot.effect_errors)},
+        {"diagnostics", sceneLoadDiagnosticsJson(snapshot.diagnostics)},
     };
 }
 
@@ -1821,6 +1852,86 @@ OrderedJson EditorCommandRpcAdapter::getComponents(const Json &params) const {
     return editorObjectQueryJson(
         service_.getComponents(parseGetComponentsRequest(params)),
         schema_type_name_resolver_);
+}
+
+namespace {
+
+OrderedJson rayOccurrenceJson(const RayOccurrenceCatalogEntry &entry) {
+    OrderedJson eligibility;
+    switch (entry.eligibility) {
+    case RayOccurrenceEligibilityKind::ok:
+        eligibility = "ok";
+        break;
+    case RayOccurrenceEligibilityKind::not_ray_traced:
+        eligibility = OrderedJson{{"state", "not_ray_traced"},
+                                  {"reason", entry.reason}};
+        break;
+    case RayOccurrenceEligibilityKind::ambiguous:
+        eligibility = OrderedJson{{"state", "ambiguous"},
+                                  {"reason", entry.reason}};
+        break;
+    case RayOccurrenceEligibilityKind::unrepresentable:
+        eligibility = OrderedJson{{"state", "unrepresentable"},
+                                  {"reason", entry.reason}};
+        break;
+    }
+    return OrderedJson{
+        {"occurrence_id", entry.occurrence_id.empty()
+                              ? OrderedJson(nullptr)
+                              : OrderedJson(entry.occurrence_id)},
+        {"display_name", entry.display_name},
+        {"asset", entry.asset.empty() ? OrderedJson(nullptr)
+                                        : OrderedJson(entry.asset)},
+        {"node_path", entry.node_path},
+        {"mesh", entry.mesh},
+        {"primitive", entry.primitive},
+        {"material", entry.material},
+        {"variant", entry.variant},
+        {"eligibility", std::move(eligibility)},
+    };
+}
+
+} // namespace
+
+OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
+    const Json &params) const {
+    auto entries = OrderedJson::array();
+    for (const auto &entry :
+         service_.getRayOccurrences(parseGetComponentsRequest(params)))
+        entries.push_back(rayOccurrenceJson(entry));
+    return OrderedJson{{"entries", std::move(entries)}};
+}
+
+OrderedJson EditorCommandRpcAdapter::resolveRayOccurrence(
+    const Json &params) const {
+    requireObjectParams(params, "resolve_ray_occurrence");
+    requireOnlyFields(params, {"occurrence_id"},
+                      "resolve_ray_occurrence");
+    const auto found = params.find("occurrence_id");
+    if (found == params.end() || !found->is_string() ||
+        found->get_ref<const std::string &>().empty())
+        invalidParams("resolve_ray_occurrence occurrence_id must be a non-empty string");
+    const auto resolved = service_.resolveRayOccurrence(
+        found->get_ref<const std::string &>());
+    if (resolved.state == RayOccurrenceResolveState::absent)
+        return OrderedJson{{"status", "absent"},
+                           {"occurrence_id", *found}};
+    if (resolved.state == RayOccurrenceResolveState::found) {
+        auto entry = rayOccurrenceJson(resolved.candidates.front());
+        entry["status"] = "found";
+        entry["q"] = resolved.candidates.front().q;
+        return entry;
+    }
+    auto candidates = OrderedJson::array();
+    for (const auto &entry : resolved.candidates) {
+        auto value = rayOccurrenceJson(entry);
+        value["q"] = entry.q;
+        value["authoring_object_id"] = entry.authoring_object_id;
+        candidates.push_back(std::move(value));
+    }
+    return OrderedJson{{"status", "ambiguous"},
+                       {"occurrence_id", *found},
+                       {"candidates", std::move(candidates)}};
 }
 
 OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {

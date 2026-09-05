@@ -24,7 +24,9 @@
 #include <filesystem>
 #include <fstream>
 #include <glm/gtc/quaternion.hpp>
+#include <limits>
 #include <nlohmann/json.hpp>
+#include <set>
 #include <string_view>
 
 namespace Pelican {
@@ -75,6 +77,15 @@ bool sameMatrix(const glm::mat4 &left, const glm::mat4 &right) {
 std::size_t primitiveCount(const ModelTemplate &model) {
     std::size_t result = 0;
     for (const auto &material : model.material_primitives) result += material.primitives.size();
+    return result;
+}
+
+std::set<std::string> modelOccurrenceIds(const ModelTemplate &model) {
+    std::set<std::string> result;
+    for (const auto &material : model.material_primitives)
+        for (const auto &primitive : material.primitives)
+            if (primitive.occurrence)
+                result.insert(primitive.occurrence->occurrence_id);
     return result;
 }
 
@@ -216,6 +227,10 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     instances.advanceTemporalHistoryAfterRender();
     const auto matrix = instances.currentModelMatrixForTesting(instance);
     const auto generation = instances.animationGenerationForTesting(instance);
+    const auto old_occurrences =
+        modelOccurrenceIds(models.getModelTemplateByName("live"));
+    const auto old_catalog_generation =
+        models.occurrenceCatalogStatus().at("generation").get<std::uint64_t>();
     REQUIRE_FALSE(models.getModelTemplateByName("live").skeletal);
     REQUIRE(primitiveCount(models.getModelTemplateByName("live")) == 2);
 
@@ -231,6 +246,93 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     REQUIRE(instances.animationGenerationForTesting(instance) == generation + 1);
     REQUIRE(instances.currentAnimationRevisionForTesting(instance) == 0);
     REQUIRE(instances.previousAnimationRevisionForTesting(instance) == 0);
+    const auto new_occurrences =
+        modelOccurrenceIds(models.getModelTemplateByName("live"));
+    const auto catalog = models.occurrenceCatalogStatus();
+    REQUIRE(new_occurrences != old_occurrences);
+    REQUIRE(catalog.at("generation") == old_catalog_generation + 1);
+    REQUIRE(catalog.at("added").get<std::vector<std::string>>() ==
+            std::vector<std::string>(new_occurrences.begin(),
+                                     new_occurrences.end()));
+    REQUIRE(catalog.at("removed").get<std::vector<std::string>>() ==
+            std::vector<std::string>(old_occurrences.begin(),
+                                     old_occurrences.end()));
+    const auto inventory = instances.rayOccurrences();
+    std::set<std::string> active_occurrences;
+    for (const auto &entry : inventory)
+        active_occurrences.insert(entry.occurrence_id);
+    REQUIRE(active_occurrences == new_occurrences);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("WP382c model reload rollback keeps the published occurrence catalog and instances",
+          "[wp382c][model-reload][rollback][gpu]") {
+    setupLogger();
+    auto sandbox = makeSandbox("catalog_rollback");
+    const auto glb = sandbox.root / "model.glb";
+    TestGltfFragmentFixture::writeGlb(glb);
+
+    FastModuleContainer modules;
+    configureProject(sandbox.root,
+                     nlohmann::json::array({{{"name", "live"}, {"path", "model.glb"}}}));
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    const auto asset = models.assetIdForTesting("live");
+    const auto instance =
+        instances.placeModelInstance(models.getModelTemplateByName("live"));
+    (void)instance;
+    REQUIRE_FALSE(models.getModelTemplateByName("live").skeletal);
+    const auto old_occurrences =
+        modelOccurrenceIds(models.getModelTemplateByName("live"));
+    REQUIRE_FALSE(old_occurrences.empty());
+    const auto old_catalog = models.occurrenceCatalogStatus();
+    const auto old_primitives =
+        primitiveCount(models.getModelTemplateByName("live"));
+    std::set<std::string> old_active;
+    for (const auto &entry : instances.rayOccurrences())
+        old_active.insert(entry.occurrence_id);
+    REQUIRE(old_active == old_occurrences);
+
+    // Decision 30: the model participant's prepare_publish builds the whole
+    // publication (instance rebuild list, candidate catalog diff, staged
+    // payloads) and only then asks the renderer for the prepared scene. Arming
+    // the production exhaustion check in prepareModelInstanceRebuild is the
+    // one failure that lands in the coordinator's rollback branch with a
+    // fully prepared publication in hand, so it is the only way to observe
+    // that rollback drops the candidate catalog instead of committing it.
+    test_support::setRayQueryGeometryGenerationForTesting(
+        instances, std::numeric_limits<std::uint64_t>::max());
+
+    TestSkeletalFixture::writeGlb(glb);
+    REQUIRE_FALSE(reload.applyRequestForTesting(modified("model.glb")));
+
+    // The live model is still the pre-reload one.
+    REQUIRE(models.assetIdForTesting("live") == asset);
+    REQUIRE(models.contentRevisionForTesting("live") == 1);
+    REQUIRE(models.compatibilityRevisionForTesting("live") == 0);
+    REQUIRE_FALSE(models.getModelTemplateByName("live").skeletal);
+    REQUIRE(primitiveCount(models.getModelTemplateByName("live")) ==
+            old_primitives);
+    REQUIRE(modelOccurrenceIds(models.getModelTemplateByName("live")) ==
+            old_occurrences);
+
+    // ... and so is the published occurrence catalog: no generation step and
+    // no candidate diff.
+    const auto catalog = models.occurrenceCatalogStatus();
+    REQUIRE(catalog.at("generation") == old_catalog.at("generation"));
+    REQUIRE(catalog.at("added") == old_catalog.at("added"));
+    REQUIRE(catalog.at("removed") == old_catalog.at("removed"));
+    REQUIRE(catalog.at("ambiguous") == old_catalog.at("ambiguous"));
+
+    // The active mapping is still the old one, so the renderer candidate was
+    // dropped with the catalog rather than published on its own.
+    std::set<std::string> active;
+    for (const auto &entry : instances.rayOccurrences())
+        active.insert(entry.occurrence_id);
+    REQUIRE(active == old_occurrences);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

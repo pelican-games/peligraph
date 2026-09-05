@@ -26,6 +26,7 @@
 #include <utility>
 #include <variant>
 #include <vector>
+#include <type_traits>
 
 namespace Pelican {
 namespace {
@@ -70,6 +71,7 @@ void logReleaseReport(std::string_view context,
 }
 
 struct ModelDeclaration {
+    CanonicalModelAssetKey asset_key;
     std::string name;
     std::string reference;
     std::filesystem::path path;
@@ -131,11 +133,15 @@ PreparedGltf prepareDeclaration(const ModelDeclaration &declaration) {
     // constructor is waiting for those workers.
     GltfLoader loader;
     if (declaration.ascii)
-        return loader.prepareGltf(declaration.path.string(), declaration.fragment);
+        return loader.prepareGltf(declaration.path.string(), declaration.fragment,
+                                  declaration.asset_key);
     if (declaration.scene_node_instance && declaration.fragment)
         return loader.prepareGltfBinarySceneNode(declaration.path.string(),
-                                                 *declaration.fragment);
-    return loader.prepareGltfBinary(declaration.path.string(), declaration.fragment);
+                                                 *declaration.fragment,
+                                                 declaration.asset_key);
+    return loader.prepareGltfBinary(declaration.path.string(),
+                                    declaration.fragment,
+                                    declaration.asset_key);
 }
 
 PrimitiveMaterialBindingDocument loadMaterialBindings(std::string_view reference,
@@ -193,6 +199,27 @@ void applyDeclarationBindings(ModelTemplate &model,
         fragment.empty() ? std::nullopt
                          : std::optional<std::string_view>{fragment},
         project_materials);
+}
+
+std::set<std::string> occurrenceIds(const ModelTemplate &model) {
+    std::set<std::string> result;
+    for (const auto &material : model.material_primitives)
+        for (const auto &primitive : material.primitives)
+            if (primitive.occurrence &&
+                !primitive.occurrence->occurrence_id.empty())
+                result.insert(primitive.occurrence->occurrence_id);
+    return result;
+}
+
+std::set<std::string> ambiguousOccurrenceIds(
+    const ModelTemplate &model) {
+    std::set<std::string> result;
+    for (const auto &material : model.material_primitives)
+        for (const auto &primitive : material.primitives)
+            if (primitive.occurrence && primitive.occurrence->ambiguous &&
+                !primitive.occurrence->occurrence_id.empty())
+                result.insert(primitive.occurrence->occurrence_id);
+    return result;
 }
 
 ModelDeclaration resolveDeclaration(std::string name, std::string reference,
@@ -266,6 +293,7 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
                               fragment->path;
     }
     auto declaration = ModelDeclaration{
+        .asset_key = CanonicalModelAssetKey{name},
         .name = std::move(name),
         .reference = std::move(authored_reference),
         .path = std::move(physical),
@@ -287,15 +315,13 @@ struct ModelAssetContainer::Impl {
     struct PayloadTracker {
         std::unordered_set<const void *> values;
     };
-    struct CommitBatch {
-        std::vector<std::string> names;
-        bool instance_capacity_checked = false;
-        bool installed = false;
-    };
+    struct CommitBatch;
     struct ModelPayload {
         std::string name;
         ModelTemplate candidate;
-        std::shared_ptr<CommitBatch> batch;
+        std::set<std::string> occurrence_ids;
+        std::set<std::string> ambiguous_occurrence_ids;
+        std::weak_ptr<CommitBatch> batch;
         std::shared_ptr<PayloadTracker> tracker;
         bool owns_candidate = false;
 
@@ -312,6 +338,27 @@ struct ModelAssetContainer::Impl {
         std::shared_ptr<const void> live_payload;
         bool declared = false;
     };
+    struct CommitBatch {
+        struct Installation {
+            Record *record = nullptr;
+            std::shared_ptr<ModelPayload> payload;
+            std::shared_ptr<const void> registry_payload;
+            // Filled in by the publish commit. ModelTemplate::skeletal is a
+            // shared_ptr, so the pointee address survives the template move
+            // and stays valid while the retired payload owns it.
+            const SkeletalModelData *retired_skeletal = nullptr;
+        };
+        std::vector<std::string> names;
+        std::map<std::string, std::shared_ptr<ModelPayload>> staged_payloads;
+        std::vector<Installation> installs;
+        std::optional<PolygonInstanceContainer::PreparedSceneState>
+            renderer_candidate;
+        std::vector<std::string> added;
+        std::vector<std::string> removed;
+        std::vector<std::string> ambiguous;
+        bool instance_capacity_checked = false;
+        bool installed = false;
+    };
     struct PendingCandidate {
         PreparedGltf prepared;
         ModelTemplate preview;
@@ -323,6 +370,10 @@ struct ModelAssetContainer::Impl {
     watch::ReloadCoordinator *coordinator = nullptr;
     std::shared_ptr<PayloadTracker> tracker = std::make_shared<PayloadTracker>();
     std::uint64_t next_asset_identity = 1;
+    std::uint64_t catalog_generation = 1;
+    std::vector<std::string> catalog_added;
+    std::vector<std::string> catalog_removed;
+    std::vector<std::string> catalog_ambiguous;
 
     ReleaseReport releaseAllModels(bool deferred = false) noexcept {
         ReleaseReport report;
@@ -372,56 +423,45 @@ struct ModelAssetContainer::Impl {
         declare(found->second);
     }
 
-    void installBatch(const std::shared_ptr<CommitBatch> &batch) {
+    void publishBatch(const std::shared_ptr<CommitBatch> &batch) noexcept {
         if (!batch || batch->installed) return;
-        struct Installation {
-            Record *record{};
-            std::shared_ptr<ModelPayload> payload;
-            std::shared_ptr<const void> registry_payload;
-        };
-        std::vector<Installation> installs;
-        installs.reserve(batch->names.size());
-        const auto snapshot = coordinator->registry().snapshot();
-        std::vector<ModelInstanceRebuild> rebuilds;
-        for (const auto &name : batch->names) {
-            auto &record = records.at(name);
-            const auto current = snapshot.find(record.logical);
-            if (!current || !tracker->values.contains(current->payload.get()))
-                throw std::runtime_error("published model reload payload is missing");
-            auto payload = std::static_pointer_cast<const ModelPayload>(current->payload);
-            auto mutable_payload = std::const_pointer_cast<ModelPayload>(payload);
-            if (mutable_payload->batch.get() != batch.get() || !mutable_payload->owns_candidate)
-                throw std::runtime_error("published model reload batch is incomplete");
-            rebuilds.push_back({record.model.asset_id, &mutable_payload->candidate});
-            installs.push_back({&record, std::move(mutable_payload), current->payload});
+        static_assert(std::is_nothrow_move_assignable_v<ModelTemplate>);
+        if (batch->renderer_candidate) {
+            FastModuleContainer::tryGet<PolygonInstanceContainer>()
+                ->publishPreparedScene(
+                    std::move(*batch->renderer_candidate));
+            batch->renderer_candidate.reset();
         }
-
-        if (auto *instances = FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
-            if (!instances->canRebuildModelInstances(rebuilds))
-                throw std::runtime_error("Render command capacity exceeded by model reload batch");
-            instances->rebuildModelInstances(rebuilds);
-        }
-
-        std::vector<ModelTemplate> retired;
-        retired.reserve(installs.size());
-        for (auto &install : installs) {
-            retired.push_back(std::move(install.record->model));
-            install.record->model = std::move(install.payload->candidate);
+        for (auto &install : batch->installs) {
+            auto retired_payload = std::const_pointer_cast<ModelPayload>(
+                std::static_pointer_cast<const ModelPayload>(
+                    install.record->live_payload));
+            install.retired_skeletal = install.record->model.skeletal.get();
+            retired_payload->candidate =
+                std::move(install.record->model);
+            retired_payload->owns_candidate = true;
+            install.record->model =
+                std::move(install.payload->candidate);
             install.payload->owns_candidate = false;
             install.record->live_payload = std::move(install.registry_payload);
         }
-        batch->installed = true;
-        for (std::size_t index = 0; index < installs.size(); ++index) {
-            const auto *previous = retired[index].skeletal.get();
-            const auto *replacement = installs[index].record->model.skeletal.get();
-            if (previous || replacement) {
-                Animation::animationServiceRuntime().reloadAsset(
-                    installs[index].record->model.asset_id, previous,
-                    replacement);
-            }
+        // The animation rig generation advances inside the same commit that
+        // swaps the templates: one publish, one generation step. Handles that
+        // named the retired rig answer stale_generation from here on.
+        for (const auto &install : batch->installs) {
+            const auto *previous = install.retired_skeletal;
+            const auto *replacement = install.record->model.skeletal.get();
+            if (!previous && !replacement) continue;
+            Animation::animationServiceRuntime().reloadAsset(
+                install.record->model.asset_id, previous, replacement);
         }
-        for (auto &model : retired) ReleaseErrorSink::record(
-            "retired model release", releaseModelGpuResources(model, true));
+        catalog_added.swap(batch->added);
+        catalog_removed.swap(batch->removed);
+        catalog_ambiguous.swap(batch->ambiguous);
+        ++catalog_generation;
+        batch->installed = true;
+        batch->installs.clear();
+        batch->staged_payloads.clear();
     }
 };
 
@@ -558,6 +598,12 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
 
                 auto &record = impl_->records.at(name);
                 auto &item = pending->at(name);
+                // Catalog preparation is a pure projection of the inspect
+                // result and its authored asset key. Do it before commit can
+                // allocate any GPU-backed model resources.
+                auto candidate_occurrences = occurrenceIds(item.preview);
+                auto candidate_ambiguous =
+                    ambiguousOccurrenceIds(item.preview);
                 auto model = GET_MODULE(GltfLoader).commit(
                     item.prepared,
                     GltfAuthoredAssetReference{
@@ -571,8 +617,13 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
                                                (item.rig_changed ? 1u : 0u);
                 auto payload = impl_->makePayload(name);
                 payload->candidate = std::move(model);
+                payload->occurrence_ids =
+                    std::move(candidate_occurrences);
+                payload->ambiguous_occurrence_ids =
+                    std::move(candidate_ambiguous);
                 payload->batch = batch;
                 payload->owns_candidate = true;
+                batch->staged_payloads[name] = payload;
                 return watch::StagedResourceData{
                     payload, {record.declaration.container_key},
                     payload->candidate.compatibility_revision,
@@ -580,6 +631,59 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
             },
         });
     }
+    group.setPreparePublish([this, batch] {
+        batch->installs.clear();
+        batch->installs.reserve(batch->names.size());
+        std::vector<ModelInstanceRebuild> rebuilds;
+        rebuilds.reserve(batch->names.size());
+        std::set<std::string> old_ids;
+        std::set<std::string> new_ids;
+        std::set<std::string> ambiguous;
+        for (const auto &name : batch->names) {
+            auto &record = impl_->records.at(name);
+            const auto payload = batch->staged_payloads.at(name);
+            if (!payload || !payload->owns_candidate)
+                throw std::runtime_error(
+                    "model reload candidate batch is incomplete");
+            rebuilds.push_back(
+                {record.model.asset_id, &payload->candidate});
+            batch->installs.push_back(
+                {&record, payload, payload});
+            const auto previous = occurrenceIds(record.model);
+            const auto &replacement = payload->occurrence_ids;
+            old_ids.insert(previous.begin(), previous.end());
+            new_ids.insert(replacement.begin(), replacement.end());
+            const auto &candidate_ambiguous =
+                payload->ambiguous_occurrence_ids;
+            ambiguous.insert(candidate_ambiguous.begin(),
+                             candidate_ambiguous.end());
+        }
+        batch->added.clear();
+        batch->removed.clear();
+        std::set_difference(new_ids.begin(), new_ids.end(),
+                            old_ids.begin(), old_ids.end(),
+                            std::back_inserter(batch->added));
+        std::set_difference(old_ids.begin(), old_ids.end(),
+                            new_ids.begin(), new_ids.end(),
+                            std::back_inserter(batch->removed));
+        batch->ambiguous.assign(ambiguous.begin(), ambiguous.end());
+        if (impl_->catalog_generation ==
+            std::numeric_limits<std::uint64_t>::max())
+            throw std::runtime_error(
+                "model occurrence catalog generation exhausted");
+        if (auto *instances =
+                FastModuleContainer::tryGet<PolygonInstanceContainer>())
+            batch->renderer_candidate =
+                instances->prepareModelInstanceRebuild(rebuilds);
+    });
+    group.setPublish([this, batch]() noexcept {
+        impl_->publishBatch(batch);
+    });
+    group.setRollback([batch]() noexcept {
+        batch->renderer_candidate.reset();
+        batch->installs.clear();
+        batch->staged_payloads.clear();
+    });
     coordinator.enqueue(std::move(group));
     return true;
 }
@@ -590,16 +694,14 @@ bool ModelAssetContainer::retireReloadPayload(
         !impl_->tracker->values.contains(payload.get()))
         return false;
     try {
-        std::shared_ptr<Impl::CommitBatch> batch;
-        for (const auto &[_, record] : impl_->records) {
-            if (record.live_payload.get() != payload.get()) continue;
-            const auto current = coordinator.registry().snapshot().find(record.logical);
-            if (!current || !impl_->tracker->values.contains(current->payload.get()))
-                throw std::runtime_error("model reload publication is missing");
-            batch = std::static_pointer_cast<const Impl::ModelPayload>(current->payload)->batch;
-            break;
+        auto retired = std::const_pointer_cast<Impl::ModelPayload>(
+            std::static_pointer_cast<const Impl::ModelPayload>(payload));
+        if (retired->owns_candidate) {
+            ReleaseErrorSink::record(
+                "retired model release",
+                releaseModelGpuResources(retired->candidate, true));
+            retired->owns_candidate = false;
         }
-        if (batch) impl_->installBatch(batch);
         return true;
     } catch (const std::exception &error) {
         if (logger) LOG_ERROR(logger, "model reload retirement failed: {}", error.what());
@@ -620,6 +722,15 @@ std::uint64_t ModelAssetContainer::contentRevisionForTesting(const std::string &
 
 std::uint64_t ModelAssetContainer::compatibilityRevisionForTesting(const std::string &name) const {
     return impl_->records.at(name).model.compatibility_revision;
+}
+
+nlohmann::json ModelAssetContainer::occurrenceCatalogStatus() const {
+    return {
+        {"generation", impl_->catalog_generation},
+        {"added", impl_->catalog_added},
+        {"removed", impl_->catalog_removed},
+        {"ambiguous", impl_->catalog_ambiguous},
+    };
 }
 
 } // namespace Pelican

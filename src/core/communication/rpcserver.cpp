@@ -1329,7 +1329,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             {"seed", GameContext{}.seed()},
             {"xr", openXrStatusJson(modules.launch_config)},
             {"renderdoc", renderdoc.status},
-            {"diagnostics", {{"renderdoc", std::move(renderdoc_diagnostics)}}},
+            {"diagnostics", {{"renderdoc", std::move(renderdoc_diagnostics)},
+                              {"scene_load", modules.scene_loader.diagnosticsStatusJson()}}},
             {"debug_utils", {{"available", debug_utils.available},
                              {"enabled", debug_utils.enabled},
                              {"reason", debug_utils.reason},
@@ -1620,8 +1621,12 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         if (const auto *failure =
                 std::get_if<CommittedWithEffectFailure>(&scene_result)) {
             response["effect_errors"] = effectErrorsJson(failure->effect_errors);
+            response["diagnostics"] =
+                sceneLoadDiagnosticsJson(failure->diagnostics);
         } else {
             response["effect_errors"] = nlohmann::json::array();
+            response["diagnostics"] = sceneLoadDiagnosticsJson(
+                std::get<SceneLoadCommitted>(scene_result).diagnostics);
         }
         return response;
     });
