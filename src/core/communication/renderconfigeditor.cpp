@@ -570,7 +570,20 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
             "render config edit candidate lost its root document");
     }
     root_document->bytes = candidate.bytes();
-    candidate_documents.insert(candidate_documents.begin(), additional_documents.begin(), additional_documents.end());
+    for (const auto &extra : additional_documents) {
+        if (extra.normalized_reference == source_normalized_reference_)
+            return rejection("invalid_render_document", "Additional documents cannot replace the root edit");
+        const auto existing = std::find_if(candidate_documents.begin(), candidate_documents.end(), [&](const auto &entry) {
+            return entry.normalized_reference == extra.normalized_reference;
+        });
+        if (existing == candidate_documents.end()) {
+            candidate_documents.insert(candidate_documents.begin(), extra);
+        } else {
+            if (existing->expected.digest != extra.expected.digest)
+                return rejection("external_modification", "The managed document changed outside the editor: " + extra.reference);
+            *existing = extra;
+        }
+    }
     pending_.push_back(Ticket{
         .id = ticket_id,
         .accepted_gate_epoch = gate.epoch,
@@ -583,6 +596,7 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
                 std::move(candidate_documents)},
         .operation = operation,
         .base_preset_digest = std::move(base_preset_digest),
+        .edits_additional_documents = !additional_documents.empty(),
     });
     auto accepted = OrderedJson{
         {"ticket", ticket_id},
@@ -893,6 +907,98 @@ OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
             }, documents, preset_digest);
         if (result.at("status") == "accepted") result["preset_reference"] = destination;
         return result;
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
+}
+
+OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &params) const {
+    requireOnly(params, {}, "get_compute_task_authoring");
+    if (!dependencies_.resolve_authoring_context)
+        throw std::logic_error("render authoring context resolver is unavailable");
+    const auto context = dependencies_.resolve_authoring_context(currentDocumentSet());
+    auto tasks = OrderedJson::array();
+    for (const auto &task : context.config.value("compute_tasks", Json::array())) {
+        const auto name = task.at("name").get<std::string>();
+        const auto provenance = std::find_if(context.pass_provenance.begin(), context.pass_provenance.end(),
+            [&](const auto &entry) { return entry.name == name; });
+        const bool from_feature = provenance != context.pass_provenance.end() &&
+            provenance->source == RenderPipelineProvenanceSource::feature;
+        const bool from_preset = !from_feature && context.pipeline_preset.has_value();
+        const auto reference = from_feature ? provenance->provider_reference
+            : from_preset ? context.pipeline_preset->reference : dependencies_.source_reference;
+        OrderedJson entry{{"name", name}, {"kind", task.contains("ray_tracing") ? "ray_tracing" : "compute"},
+                          {"source_reference", reference}, {"editable", false}, {"declaration", task}};
+        if (reference.starts_with("engine://")) {
+            entry["read_only_reason"] = "This task belongs to a shared engine document. Copy it into the project to edit it.";
+        } else {
+            try {
+                const auto bytes = reference == dependencies_.source_reference ? document_.bytes()
+                    : from_preset && context.pipeline_preset_bytes ? *context.pipeline_preset_bytes
+                    : readFileBytes(dependencies_.resolve_document_path(reference));
+                const auto source = OrderedJson::parse(bytes);
+                const auto &config = from_preset ? source.at("config") : source;
+                const auto declarations = config.find("compute_tasks");
+                if (declarations == config.end()) throw std::runtime_error("The task is generated, not declared in this document");
+                const auto original = std::find_if(declarations->begin(), declarations->end(),
+                    [&](const auto &candidate) { return candidate.at("name") == name; });
+                if (original == declarations->end()) throw std::runtime_error("The task is no longer present in its source document");
+                entry["declaration"] = *original;
+                entry["source_digest"] = digestJson(renderConfigSourceDigest(bytes));
+                entry["editable"] = true;
+            } catch (const std::exception &error) {
+                entry["read_only_reason"] = error.what();
+            }
+        }
+        tasks.push_back(std::move(entry));
+    }
+    return {{"source_digest", digestJson(document_.sourceDigest())}, {"tasks", std::move(tasks)}};
+}
+
+OrderedJson RenderConfigEditorService::editComputeTask(const Json &params) {
+    constexpr auto method = "edit_compute_task";
+    requireOnly(params, {"base_source_digest", "base_task_source_digest", "task_name", "task"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto task_digest = requireString(params, "base_task_source_digest", method);
+    const auto name = requireString(params, "task_name", method);
+    if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(task_digest))
+        throw std::invalid_argument("edit_compute_task requires 64 lowercase hex source digests");
+    if (!params.contains("task") || !params.at("task").is_object() || params.at("task").value("name", std::string{}) != name)
+        return rejection("invalid_compute_task", "The task declaration must retain its name");
+    try {
+        const auto catalog = getComputeTaskAuthoring(Json::object());
+        const auto &tasks = catalog.at("tasks");
+        const auto selected = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) { return entry.at("name") == name; });
+        if (selected == tasks.end() || !selected->at("editable").get<bool>())
+            return rejection("compute_task_not_editable", "Select a task declared in a project-owned document");
+        if (selected->at("source_digest").at("hex") != task_digest)
+            return rejection("external_modification", "The task source changed since it was read");
+        const auto reference = selected->at("source_reference").get<std::string>();
+        const bool root = reference == dependencies_.source_reference;
+        const auto path = root ? dependencies_.source_path : dependencies_.resolve_document_path(reference);
+        const auto bytes = root ? document_.bytes() : readFileBytes(path);
+        if (renderConfigSourceDigest(bytes) != task_digest)
+            return rejection("external_modification", "The task source changed while the edit was prepared");
+        auto source = OrderedJson::parse(bytes);
+        const bool preset = source.value("schema", std::string{}) == "pelican.render_pipeline";
+        auto &config = preset ? source.at("config") : source;
+        auto &declarations = config.at("compute_tasks");
+        const auto original = std::find_if(declarations.begin(), declarations.end(), [&](const auto &entry) { return entry.at("name") == name; });
+        if (original == declarations.end()) return rejection("compute_task_not_editable", "The source task is absent");
+        *original = params.at("task");
+        if (root) {
+            return queueRootEdit(base_digest, method,
+                [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+                    candidate = candidate.withRootValue("compute_tasks", declarations.dump(2));
+                    return std::nullopt;
+                });
+        }
+        const std::array documents{RenderConfigCandidateDocument{
+            .reference = reference, .normalized_reference = dependencies_.normalize_reference(reference),
+            .path = path, .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present, task_digest}, .bytes = source.dump(2)}};
+        return queueRootEdit(base_digest, method,
+            [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; }, documents);
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what());
     }
@@ -1489,7 +1595,7 @@ void RenderConfigEditorService::commitPending() noexcept {
 
             // A preset edit can change another document while the root stays
             // byte-identical. It must still compile, check its CAS and publish.
-            if (!ticket.base_preset_digest && ticket.candidate.sourceDigest() ==
+            if (!ticket.edits_additional_documents && ticket.candidate.sourceDigest() ==
                 document_.sourceDigest()) {
                 const auto runtime =
                     dependencies_.runtime_snapshot();

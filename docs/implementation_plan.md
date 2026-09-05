@@ -23237,7 +23237,15 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 preset pass編集):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。Inspectorのcomponent候補取得・追加はba494c04に統合済み。project presetの既存fullscreen passの入出力・shader編集をRPC/Frame Plan選択から接続し、実GPU反映を確認。次はAS/compute/RTを含む一般node編集・配置、resource_ports編集、必須asset入力・behavior追加など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 compute/RT task編集):** preset pass編集はff493be4に統合済み。compute/RT taskの全宣言をprojectの元ファイルへ保存するRPCとStudio詳細画面を接続し、実GPUでshader/dispatch変更を確認。次は視覚的なport接続・dispatchフォーム、task追加削除、AS配置を含むnode移動、必須asset入力・behavior追加など。学習サンプルは後回し。
+
+**RT7 compute/RT task編集 (2026-09-06):**
+- `get_compute_task_authoring`はprovenanceから元taskとproject feature/preset/rootを解決し、元宣言・保存先・digest・編集可否を返す。engine共有文書と元宣言のない生成taskは読み取り専用。`edit_compute_task`は名前を保って全宣言を置換し、既存compiler/CAS/transactionで保存・公開する。
+- 追加documentと既存managed baselineをnormalized referenceで統合し、baseline不一致とrootの別経路置換を拒否。root不変のpreset/task編集を共通のadditional-document判定で扱い、別の保存処理は追加しない。
+- Render FeaturesのTasks詳細画面とFrame PlanのEdit task操作を接続。JSONでshader/resource_ports/reads/writes/dispatch等を編集可能。task別の未保存入力は取得時のroot/source両digestと一緒に保持し、明示Refreshだけで破棄する。実行時名が宣言名と異なる場合は一覧選択。
+- CPU関連28/28（756 assertions、`build/.codex_bg/rt7taskedit-cpu.log`）、追加のroot/preset経路を含む対象2/2（`rt7taskedit-cpu-sources.log`）成功。合計の異なるcaseは29件。保存・再読込・外部変更・publication失敗の復元を確認。
+- 実GPU2/2（60 assertions、`rt7taskedit-gpu.log`）。既存RT6間接dispatch caseを拡張し、compute shader編集で12→2レーン、続くRT task編集で直接dispatch 2レーンへ切替、古いdigest拒否を確認。共通保存経路の既存preset編集も成功。Player/Studio build成功（`rt7taskedit-build.log`）。
+- doclink check3869件成功、audit既存4件不変。今回のTasks画面の手動操作・GUIから実GPUまでの通し確認は未実施。詳細JSON編集を視覚的port接続操作やtask追加削除の完了とは扱わない。
 
 **RT7 project preset pass編集 (2026-09-06):**
 - `edit_preset_pass`はproject所有presetのraw graph/nameでfullscreen passを解決し、input/output/shaderのみ変更する。その他の描画設定は保持。root bytesが同じでもpreset変更をcompiler・CAS・保存・publicationへ通すようno-change判定を修正。

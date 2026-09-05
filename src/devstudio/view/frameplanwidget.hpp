@@ -37,6 +37,7 @@ class FramePlanWidget final : public QWidget {
     // widget materializes it with the same pelican_project resolver only when
     // the user presses Open.
     void refresh();
+    void setTaskEditAction(std::function<void(const QString &)> action);
     void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     void setProjectRoot(const std::filesystem::path &project_root);
     void setShaderSourceOpenAction(ShaderSourceOpenAction action);

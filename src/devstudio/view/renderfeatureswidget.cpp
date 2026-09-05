@@ -7,6 +7,7 @@
 #include <QComboBox>
 #include <QSpinBox>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QSignalBlocker>
 #include <cmath>
 #include <array>
@@ -73,6 +74,262 @@ std::optional<QJsonObject> decodeObject(
     }
     return document.object();
 }
+
+class ComputeTaskDialog final : public QDialog {
+  EmbeddedViewport &viewport;
+  std::function<void()> committed;
+  QComboBox *task_box;
+  QPlainTextEdit *editor;
+  QLabel *source;
+  QLabel *notice;
+  QPushButton *apply;
+  QPushButton *refresh;
+  QJsonArray tasks;
+  struct TaskDraft {
+    QString text;
+    QString root_digest;
+    QString source_digest;
+  };
+  QHash<QString, TaskDraft> drafts;
+  QHash<QString, TaskDraft> retained_drafts;
+  QString root_digest, ticket, requested_task;
+  QTimer poll;
+  qint64 request_id = 0;
+  enum class Request { Read, Submit, Result } request_kind = Request::Read;
+  QJsonObject selected() const {
+    const int index = task_box->currentIndex();
+    return index < 0 ? QJsonObject{} : tasks[index].toObject();
+  }
+  void controls() {
+    const bool idle = request_id == 0 && ticket.isEmpty();
+    task_box->setEnabled(idle);
+    const bool editable = selected().value("editable").toBool();
+    editor->setReadOnly(!idle || !editable);
+    apply->setEnabled(idle && viewport.rpcReady() && editable &&
+                      !root_digest.isEmpty());
+    refresh->setEnabled(viewport.rpcReady() && request_id == 0);
+  }
+  void showTask() {
+    const auto task = selected();
+    const QSignalBlocker blocker(editor);
+    editor->setPlainText(drafts.value(task.value("name").toString()).text);
+    source->setText(tr("%1 (%2)\nSource: %3")
+                        .arg(task.value("name").toString(),
+                             task.value("kind").toString(),
+                             task.value("source_reference").toString()));
+    notice->setText(
+        task.value("editable").toBool()
+            ? tr("Edit the task declaration. Keep its name unchanged.")
+            : task.value("read_only_reason")
+                  .toString(tr("This task source is read-only.")));
+    controls();
+  }
+  void request(Request kind, const QString &method, QJsonObject params = {}) {
+    if (request_id)
+      return;
+    QString error;
+    request_kind = kind;
+    request_id = viewport.requestRpc(method, params, &error);
+    if (!request_id) {
+      poll.stop();
+      notice->setText(error);
+    }
+    controls();
+  }
+  void result() {
+    if (!ticket.isEmpty())
+      request(Request::Result, QStringLiteral("get_edit_result"),
+              {{"ticket", ticket}});
+  }
+  void read() {
+    if (!ticket.isEmpty())
+      result();
+    else
+      request(Request::Read, QStringLiteral("get_compute_task_authoring"));
+  }
+  void submit() {
+    const auto task = selected();
+    QJsonParseError error;
+    const auto document =
+        QJsonDocument::fromJson(editor->toPlainText().toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject()) {
+      notice->setText(tr("Task JSON must be an object. %1 (byte %2)")
+                          .arg(error.errorString())
+                          .arg(error.offset));
+      return;
+    }
+    if (document.object().value("name") != task.value("name")) {
+      notice->setText(tr("The task name cannot be changed."));
+      return;
+    }
+    const auto draft = drafts.value(task.value("name").toString());
+    request(Request::Submit, QStringLiteral("edit_compute_task"),
+            {{"base_source_digest", draft.root_digest},
+             {"base_task_source_digest", draft.source_digest},
+             {"task_name", task.value("name")},
+             {"task", document.object()}});
+  }
+  void receive(qint64 id, const QByteArray &bytes) {
+    if (!id || id != request_id)
+      return;
+    request_id = 0;
+    QString error;
+    const auto response = decodeObject(bytes, &error);
+    if (!response) {
+      poll.stop();
+      notice->setText(error);
+      controls();
+      return;
+    }
+    if (request_kind == Request::Read) {
+      const auto digest =
+          response->value("source_digest").toObject().value("hex").toString();
+      if (digest.isEmpty() || !response->value("tasks").isArray()) {
+        notice->setText(
+            tr("The engine returned an invalid task authoring context."));
+      } else {
+        const auto previous =
+            requested_task.isEmpty() ? task_box->currentText() : requested_task;
+        root_digest = digest;
+        tasks = response->value("tasks").toArray();
+        drafts.clear();
+        {
+          const QSignalBlocker blocker(task_box);
+          task_box->clear();
+          for (const auto &entry : tasks) {
+            const auto task = entry.toObject();
+            const auto name = task.value("name").toString();
+            task_box->addItem(name);
+            drafts.insert(
+                name,
+                retained_drafts.value(
+                    name,
+                    TaskDraft{
+                        QString::fromUtf8(
+                            QJsonDocument(task.value("declaration").toObject())
+                                .toJson(QJsonDocument::Indented)),
+                        root_digest,
+                        task.value("source_digest")
+                            .toObject()
+                            .value("hex")
+                            .toString()}));
+          }
+          const int index = task_box->findText(previous);
+          if (index >= 0)
+            task_box->setCurrentIndex(index);
+        }
+        retained_drafts.clear();
+        showTask();
+        if (!requested_task.isEmpty() && task_box->findText(requested_task) < 0)
+          notice->setText(tr("Select the authored task corresponding to %1.")
+                              .arg(requested_task));
+        requested_task.clear();
+      }
+    } else if (request_kind == Request::Submit) {
+      if (response->value("status").toString() == "accepted") {
+        ticket = response->value("ticket").toString();
+        if (!ticket.isEmpty()) {
+          poll.start();
+          result();
+        } else
+          notice->setText(tr("The engine returned no edit ticket."));
+      } else
+        notice->setText(responseError(*response));
+    } else if (response->value("status").toString() != "pending") {
+      poll.stop();
+      ticket.clear();
+      if (response->value("status").toString() == "committed" &&
+          response->value("committed").toBool()) {
+        for (const auto &entry : tasks) {
+          const auto task = entry.toObject();
+          const auto name = task.value("name").toString();
+          const auto original = QString::fromUtf8(
+              QJsonDocument(task.value("declaration").toObject())
+                  .toJson(QJsonDocument::Indented));
+          if (name != selected().value("name").toString() &&
+              drafts.value(name).text != original)
+            retained_drafts.insert(name, drafts.value(name));
+        }
+        committed();
+        read();
+      } else
+        notice->setText(responseError(*response));
+    }
+    controls();
+  }
+
+public:
+  ComputeTaskDialog(EmbeddedViewport &embedded, QWidget *parent, QString task,
+                    std::function<void()> on_committed)
+      : QDialog(parent), viewport(embedded), committed(std::move(on_committed)),
+        requested_task(std::move(task)) {
+    setAttribute(Qt::WA_DeleteOnClose);
+    setWindowTitle(tr("Compute and ray tracing tasks"));
+    setObjectName(QStringLiteral("pelican.computeTasks"));
+    resize(720, 600);
+    auto *layout = new QVBoxLayout(this);
+    task_box = new QComboBox(this);
+    task_box->setObjectName(QStringLiteral("pelican.computeTasks.task"));
+    layout->addWidget(task_box);
+    source = new QLabel(this);
+    source->setWordWrap(true);
+    layout->addWidget(source);
+    editor = new QPlainTextEdit(this);
+    editor->setObjectName(QStringLiteral("pelican.computeTasks.declaration"));
+    layout->addWidget(editor);
+    notice = new QLabel(this);
+    notice->setWordWrap(true);
+    layout->addWidget(notice);
+    auto *buttons = new QHBoxLayout;
+    refresh = new QPushButton(tr("Refresh"), this);
+    apply = new QPushButton(tr("Apply task"), this);
+    refresh->setObjectName(QStringLiteral("pelican.computeTasks.refresh"));
+    apply->setObjectName(QStringLiteral("pelican.computeTasks.apply"));
+    refresh->setToolTip(
+        tr("Reload declarations and discard local edits for all tasks."));
+    buttons->addWidget(refresh);
+    buttons->addWidget(apply);
+    layout->addLayout(buttons);
+    connect(task_box, &QComboBox::currentIndexChanged, this,
+            [this] { showTask(); });
+    connect(editor, &QPlainTextEdit::textChanged, this, [this] {
+      if (task_box->currentIndex() >= 0)
+        drafts[selected().value("name").toString()].text =
+            editor->toPlainText();
+    });
+    connect(refresh, &QPushButton::clicked, this, [this] {
+      retained_drafts.clear();
+      read();
+    });
+    connect(apply, &QPushButton::clicked, this, [this] { submit(); });
+    poll.setInterval(100);
+    connect(&poll, &QTimer::timeout, this, [this] { result(); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcSucceeded, this,
+            [this](qint64 id, const QByteArray &bytes) { receive(id, bytes); });
+    connect(&viewport, &EmbeddedViewport::inspectorRpcFailed, this,
+            [this](qint64 id, const QString &error) {
+              if (!id || id != request_id)
+                return;
+              request_id = 0;
+              poll.stop();
+              notice->setText(error);
+              controls();
+            });
+    connect(&viewport, &EmbeddedViewport::engineRpcBecameUnavailable, this,
+            [this] {
+              request_id = 0;
+              ticket.clear();
+              root_digest.clear();
+              poll.stop();
+              notice->setText(tr("Engine disconnected. Local edits are "
+                                 "retained; refresh after reconnecting."));
+              controls();
+            });
+    connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable, this,
+            [this] { controls(); });
+    read();
+  }
+};
 
 class PresetForkDialog final : public QDialog {
   EmbeddedViewport &viewport;
@@ -875,6 +1132,10 @@ struct RenderFeaturesWidget::Impl {
         apply->setObjectName(
             QStringLiteral("pelican.renderFeatures.apply"));
         actions->addWidget(refresh);
+        auto *tasks = new QPushButton(owner.tr("Tasks..."), &owner);
+        tasks->setObjectName(QStringLiteral("pelican.renderFeatures.tasks"));
+        actions->addWidget(tasks);
+        QObject::connect(tasks, &QPushButton::clicked, &owner, [this] { owner.editComputeTask({}); });
         auto *fork_preset = new QPushButton(owner.tr("Fork preset..."), &owner);
         fork_preset->setObjectName(QStringLiteral("pelican.renderFeatures.forkPreset"));
         actions->addWidget(fork_preset);
@@ -1340,6 +1601,14 @@ RenderFeaturesWidget::RenderFeaturesWidget(
 }
 
 RenderFeaturesWidget::~RenderFeaturesWidget() = default;
+
+void RenderFeaturesWidget::editComputeTask(const QString &name) {
+    auto *dialog = new ComputeTaskDialog(impl_->viewport, this, name, [this] {
+        impl_->requestRefresh();
+        emit computeTaskCommitted();
+    });
+    dialog->show();
+}
 
 void RenderFeaturesWidget::receiveCatalogResult(
     const QByteArray &result_json) {

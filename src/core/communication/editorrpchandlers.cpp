@@ -175,6 +175,12 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_preset_pass", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editPresetPass(params); });
     });
+    server.setHandler("get_compute_task_authoring", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getComputeTaskAuthoring(params); });
+    });
+    server.setHandler("edit_compute_task", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editComputeTask(params); });
+    });
     server.setHandler("get_ray_callable_records", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getRayCallableRecords(params); });
     });

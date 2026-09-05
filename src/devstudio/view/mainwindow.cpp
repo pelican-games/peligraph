@@ -241,6 +241,8 @@ void MainWindow::createWorkspace() {
         this, tr("Fullscreen Pass JSON"),
         QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
     fullscreen_pass_->setCommittedAction([this] { frame_plan_->refresh(); });
+    connect(render_features_, &RenderFeaturesWidget::computeTaskCommitted, this, [this] { frame_plan_->refresh(); });
+    frame_plan_->setTaskEditAction([this](const QString &task) { render_features_->editComputeTask(task); });
     frame_plan_->setPresetPassEditAction([this](const QString &graph, const QString &pass) {
         fullscreen_pass_->editPresetPass(graph, pass);
         docks_[FullscreenPassDock]->show();

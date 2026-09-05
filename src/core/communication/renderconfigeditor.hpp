@@ -101,6 +101,7 @@ class RenderConfigEditorService {
         std::string operation;
         std::string fragment_reference;
         std::optional<std::string> base_preset_digest;
+        bool edits_additional_documents = false;
     };
 
     struct ManagedDocumentBaseline {
@@ -170,6 +171,8 @@ class RenderConfigEditorService {
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
+    nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
+    nlohmann::ordered_json editComputeTask(const nlohmann::json &params);
     nlohmann::ordered_json editRayCallableRecords(const nlohmann::json &params);
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json editSceneAccelerationStructures(const nlohmann::json &params);

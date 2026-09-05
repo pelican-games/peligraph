@@ -1751,6 +1751,116 @@ TEST_CASE("Pipeline fork saves the original preset and switches the root atomica
     }
 }
 
+TEST_CASE("Compute task editing resolves direct roots and project presets",
+          "[render-config-editor][compute-task-edit]") {
+    for (const bool use_preset : {false, true}) {
+        CAPTURE(use_preset);
+        TemporaryAnimgraphProject project;
+        PathResolver resolver;
+        resolver.setup(project.root, false);
+        auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+        const Json task{{"name", "owned_compute"}, {"shader", "project://shaders/probe"},
+                        {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
+        preset["config"]["compute_tasks"] = Json::array({task});
+        const auto preset_path = project.root / "passes" / "owned.json";
+        writeBytes(preset_path, preset.dump(2));
+        writeBytes(project.render_config, use_preset
+            ? Json{{"pipeline", {{"preset", "project://passes/owned.json"}}}}.dump(2)
+            : preset.at("config").dump(2));
+        const auto root_before = readBytes(project.render_config);
+        ActualCpuRenderRuntime runtime;
+        auto service = makeProjectService(project, resolver, runtime);
+        const auto catalog = service->getComputeTaskAuthoring(Json::object());
+        REQUIRE(catalog.at("tasks").size() == 1);
+        const auto &selected = catalog.at("tasks")[0];
+        REQUIRE(selected.at("editable") == true);
+        auto changed = task;
+        changed["dispatch"]["groups"] = {2, 1, 1};
+        const auto accepted = service->editComputeTask({
+            {"base_source_digest", catalog.at("source_digest").at("hex")},
+            {"base_task_source_digest", selected.at("source_digest").at("hex")},
+            {"task_name", "owned_compute"}, {"task", changed}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        if (use_preset) REQUIRE(readBytes(project.render_config) == root_before);
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks")[0].at("declaration") == changed);
+    }
+}
+
+TEST_CASE("Compute task source edits preserve other declarations and reject conflicting saves",
+          "[render-config-editor][compute-task-edit]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const Json task{{"name", "editable_compute"}, {"shader", "project://shaders/probe"},
+                    {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
+    const auto source_path = project.root / "passes" / "compute.json";
+    const Json feature{{"schema", "pelican.render_feature"}, {"version", 1}, {"name", "compute_edit"},
+                       {"compute_tasks", Json::array({task})}};
+    writeBytes(source_path, feature.dump(2));
+    auto root = Json::parse(readBytes(project.render_config));
+    root["features"].push_back("project://passes/compute.json");
+    writeBytes(project.render_config, root.dump(2));
+    const auto root_before = readBytes(project.render_config);
+    const auto source_before = readBytes(source_path);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto catalog = service->getComputeTaskAuthoring(Json::object());
+    REQUIRE(catalog.at("tasks").size() == 1);
+    const auto &selected = catalog.at("tasks").at(0);
+    REQUIRE(selected.at("editable") == true);
+    REQUIRE(selected.at("declaration") == task);
+    Json changed = task;
+    changed["dispatch"]["groups"] = {2, 3, 1};
+    Json request{{"base_source_digest", catalog.at("source_digest").at("hex")},
+                 {"base_task_source_digest", selected.at("source_digest").at("hex")},
+                 {"task_name", "editable_compute"}, {"task", changed}};
+    SECTION("save and reopen") {
+        const auto accepted = service->editComputeTask(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        auto expected = feature;
+        expected["compute_tasks"][0] = changed;
+        REQUIRE(Json::parse(readBytes(source_path)) == expected);
+        REQUIRE(readBytes(project.render_config) == root_before);
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks")[0].at("declaration") == changed);
+        REQUIRE(service->editComputeTask(request).at("status") == "rejected");
+    }
+    SECTION("external change after acceptance") {
+        const auto accepted = service->editComputeTask(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        writeBytes(source_path, source_before + "\n");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        REQUIRE(readBytes(source_path) == source_before + "\n");
+    }
+    SECTION("failed publication restores the source") {
+        runtime.fail_after_source_commit = true;
+        const auto accepted = service->editComputeTask(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        REQUIRE(readBytes(source_path) == source_before);
+    }
+    SECTION("renaming is rejected") {
+        request["task"]["name"] = "different";
+        REQUIRE(service->editComputeTask(request).at("status") == "rejected");
+        REQUIRE(readBytes(source_path) == source_before);
+    }
+}
+
 TEST_CASE("Project preset pass edits publish without changing the root document",
           "[render-config-editor][preset-pass-edit]") {
     TemporaryAnimgraphProject project;

@@ -5,6 +5,7 @@
 #include <memory>
 
 class QByteArray;
+class QString;
 
 namespace PelicanStudio {
 
@@ -26,7 +27,11 @@ class RenderFeaturesWidget final : public QWidget {
 
     // Applies the successful list_render_features payload. Production RPC
     // delivery and focused widget tests intentionally share this entry.
+    void editComputeTask(const QString &name);
     void receiveCatalogResult(const QByteArray &result_json);
+
+  signals:
+    void computeTaskCommitted();
 };
 
 } // namespace PelicanStudio

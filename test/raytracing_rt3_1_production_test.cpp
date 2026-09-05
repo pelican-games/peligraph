@@ -1121,6 +1121,41 @@ void main() {
         }
     };
     check_lanes(2, 3, 2);
+    auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 93000;
+    const auto edit_task = [&](const std::string &name, const std::function<void(Json &)> &modify) {
+        const auto catalog = runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object());
+        const auto &tasks = catalog.at("tasks");
+        const auto selected = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) { return entry.at("name") == name; });
+        REQUIRE(selected != tasks.end());
+        REQUIRE(selected->at("editable") == true);
+        auto declaration = selected->at("declaration");
+        modify(declaration);
+        const Json request{{"base_source_digest", catalog.at("source_digest").at("hex")},
+                           {"base_task_source_digest", selected->at("source_digest").at("hex")},
+                           {"task_name", name}, {"task", declaration}};
+        const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_compute_task", request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        (void)renderWp374aProductionRows();
+        const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        CHECK(runWp374aRpcBytes(*service, rpc_id++, "edit_compute_task", request).at("status") == "rejected");
+    };
+    writeWp374aText(project.path / "shaders/edited_ray_args.comp", R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+void main() { pelican_resource_args.values[0] = uvec4(0u, 1u, 2u, 1u); }
+)glsl");
+    const auto root_before = readWp374aText(project.path / "hybrid.json");
+    edit_task("build_ray_args", [](Json &task) { task["shader"] = "project://shaders/edited_ray_args"; });
+    check_lanes(1, 2, 1);
+    edit_task("wp386_trace", [](Json &task) { task["dispatch"] = {{"rays", {2, 1, 1}}}; });
+    check_lanes(2, 1, 1);
+    CHECK(readWp374aText(project.path / "hybrid.json") == root_before);
 #else
     SKIP("RT6 indirect production shader fixture requires the runtime compiler");
 #endif

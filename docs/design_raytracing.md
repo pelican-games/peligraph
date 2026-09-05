@@ -560,6 +560,12 @@ rootとpresetのdigestを照合し、保存失敗は既存複数文書transactio
 StudioはFrame Planで選択したnodeから既存fullscreenフォームへ接続する。
 contextの`preset_declaration`をフォームの値に使い、合成後の値を元設定へ逆流させない。
 
+compute/RT taskは`get_compute_task_authoring`で元宣言と保存先digestを取得し、
+`edit_compute_task`で宣言全体を置換する。名前は維持し、shader/resource_ports/dispatch等は既存compilerで検査する。
+provenanceからproject feature・project preset・直接記述rootを解決し、engine所有文書は読み取り専用。
+rootとtask元ファイルのCAS、candidate document overlay、保存・GPU publication/rollbackは既存処理を共用する。
+StudioのTasks詳細画面とFrame Plan選択から呼び出す。視覚的なport接続操作・node配置編集は別途残る。
+
 ## 9. エラー文言・受け入れゲート
 
 v2 §7 に同じ + §5 の matrix + 「off/on は同一テスト内」+ sentinel 表。
