@@ -23217,7 +23217,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 旧qの固定を外したGPU対照: WP366はGPUが返したqの範囲・一意性を確かめ、既知の形状のmarker / record / tintと該当SBTを照合。誤ったq*Rオフセットは実GPUで検出。WP374aは現行の正準順で先行するobjectを追加し、qが変わってもcustom indexとrecordが保たれることを検査。旧番号を保つためのlayout別分岐は入れていない。
 - 統合側変異4件: 符号付き0正規化除去、ASのroot所有を除去、procedural publishを除去、scene identityからobject IDを除去。すべて対象production testが赤、exe mtimeがbuild開始後であることを確認、復元後1/1成功。`<作業ディレクトリ>/wp386a_mutations_20260905/` と `<作業ディレクトリ>/wp386a_mutations_run.log`。独立の同一asset2個体はproduction renderで2 rowとなることを確認。手でinventoryを反転したresolver対照を、全rendererの登録順反転試験の代用とはしない。
 - rev386a: Fable 5.1の読み取りレビュー。確定した致命的実害の報告なし、実害候補と受け入れ不足あり。原文とCodex裁定は `<作業ディレクトリ>/rev386a_fable_20260905/review.md`。元実装報告の「範囲内やり残しなし」は採用しない。
-- 統合Studio ON build / 全数は **実行中**。`<作業ディレクトリ>/int_wp386a_20260905/` の `build_done` / `done` と各logで確認する。worktree結果を統合全数成功とは扱わない。
+- 統合Studio ON build成功。全数 **1677件中成功1674・skip1・失敗2**、848.90秒。既知の `contract_projection_gate` と、WP334b multi-document transactionの一時ファイル置換 `Access is denied`。後者は同じ実行物の単独再実行で1/1成功(0.08秒)、原因は未確定で保存処理や合格条件は変更していない。Studio fatal伝達試験は43.67秒で成功。ログは `<作業ディレクトリ>/int_wp386a_20260905/ctest.log`、`wp334b_recheck.log`、`build_done` / `done`。全数成功とは記録しない。
 
 **後続のfeature有効化前に閉じる残余:**
 1. procedural componentのeditor projection participantが未接続。destroy / remove / asset変更後のruntime追随を本番edit→renderで確認・実装する。frame例外を握り潰して行を黙って捨てる処理は足さない。
@@ -23236,7 +23236,7 @@ Codex の同時実行は 2 本まで、fast は使わない。実装者は commi
 
 1. **WP384-fix の検証・記録・rev384 は収束。** 全数1658件中、成功1656・skip1・既知の contract_projection_gate 失敗1。修正対象4件とsequential XRは成功。残余とレビュー裁定は上の完了記録。WP382cの結果は次項。
 2. **WP382c は 23cb5153 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
-3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60、統合全数は実行中。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
+3. **WP386a は b7cb1825 に着地、変異4件と rev386a の裁定済み。** `-0.0` 正規化を含む。W1 60/60。統合全数1677件は既知gateと一時Access deniedの2件失敗、後者は単独再実行成功。残余は直上の記録に集約し、386bのfeature有効化前に閉じる。
 4. **WP382b-fix。** `<作業ディレクトリ>/wp382bfix`、HEAD `e30a41ed`。3 ファイル +418/-64 行の未 commit 差分を確認。未検証の途中実装として diff と最終受け入れから再開する。旧 CLI の再開プロンプトは `<作業ディレクトリ>/wp382bfix2.txt`。今回 CLI の再起動・更新はしていない。
 5. **WP382d。** 382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。
 6. **WP386b/c とその後。** 386a の後続として進め、RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
