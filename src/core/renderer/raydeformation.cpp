@@ -181,6 +181,7 @@ void PolygonInstanceContainer::recordRayDeformation(
         cmd_buf.dispatch((instance.vertex_count + 63u) / 64u, 1, 1);
         instance.deformed_vertex_address = device.getBufferAddress(
             vk::BufferDeviceAddressInfo{output->vertices.buffer.get()});
+        instance.deformation_source_geometry_id = instance.geometry_allocation_id;
         instance.geometry_allocation_id = geometry.reserveGeometryAllocationId();
         instance.geometry_lease = std::move(output);
         dispatched = true;

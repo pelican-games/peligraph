@@ -14,7 +14,9 @@
 
 この除外は無言のフォールバックではありません。`Renderer::currentFramePlanJson()` の `ray_query_acceleration_structures` 診断には、除外したプリミティブ数・インスタンス数、スキン付き / morph / VAT / `blas_ineligible` 別の件数、および asset / geometry allocation / mesh / primitive / node を含む名前が出ます。`blas_ineligible` は、頂点または索引が空、索引数が三角形を構成できない、あるいは頂点オフセットが負で、ラスタライズはできても BLAS の三角形入力にはできない静的プリミティブです。同じ分類は初回構築時と分類変更時にログにも記録されます。対象外が存在すること自体はエラーではありません。
 
-変形出力はインスタンスごと・論理フレームごとに作成し、新しい allocation identity で BLAS を rebuild します。同じメッシュの別インスタンスの姿勢は独立します。出力・compute descriptor・pipeline は AS の submission 所有権で保持します。静的 BLAS の再利用は維持し、変形 BLAS の refit は後続です。変形出力が無いまま元姿勢を AS に渡すことはエラーにします。
+変形出力はインスタンスごと・論理フレームごとに作成します。同じ個体・元geometry・topologyなら前回BLASを読み取り元に、新規BLASへrefitします。初回とモデル・geometry poolの変更時はrebuildします。同じメッシュの別インスタンスの姿勢は独立します。出力・compute descriptor・pipeline・refit元はsubmission完了まで保持し、使用中のASを書き換えません。静的BLASの再利用は維持します。変形出力が無いまま元姿勢をASに渡すことはエラーにします。
+
+frame planの`blas_build_count`と`blas_update_count`で、作り直しとrefitの累積回数を区別できます。refitはVulkanの[out-of-place UPDATE](https://docs.vulkan.org/spec/latest/chapters/accelstructures.html)を使い、出力bufferの再確保は残ります。
 
 加速構造 scope は、物理計画が `pelican.vulkan.ray_query@1` を要求するか、登録したシェーダの reflection が frame set の TLAS binding を検出した場合に `RenderPipelineGpuResourceScope` へ登録されます。後者により、独自パスが feature manifest の能力宣言を経由しなくても TLAS layout だけを作って実行時に欠けることはありません。同じ reflection 判定が拡張 frame-set layout、実デバイスの能力確認、owner scope 登録を決めます。どちらも要求しないプロジェクトでは scope 自体が無く、BLAS / TLAS の構築回数は 0 のままです。scope の差し替えは既存 GPU owner scope の purge に従います。
 
@@ -71,11 +73,11 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 | 変形方式 | `skinned` / `morph_deformed` / `vat_deformed` |
 | 名前付けと配置 | `mesh_index`、`primitive_index`、`node_index`、`world_transform` |
 
-`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な geometry を持たないとき、[`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L479) で止めます。skin/morph は適格として宣言を解決し、GPU記録時に変形出力の存在を確認します。
+`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な geometry を持たないとき、[`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L480) で止めます。skin/morph は適格として宣言を解決し、GPU記録時に変形出力の存在を確認します。
 
 ### `RaySceneRowInput` の identity 3 種
 
-[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L239) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L443))。
+[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L239) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L444))。
 
 | field | 形 | 役割 |
 |---|---|---|

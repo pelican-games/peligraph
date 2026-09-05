@@ -31,7 +31,7 @@
 | 計画(3系統が並行) | 論理グラフ+物理ターゲットプラン / FramePlan / FrameExecutionPlan | [`compileDefaultVulkanVariant()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L562) |
 | GPU 登録と世代 publish | 画像実体・buffer・shader・pipeline・descriptor を作り、不変な publication root を差し替える | [`registerPreparedRenderingPassConfigVariant()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L390) / [`prepareGeneration()`](../../src/core/renderingpass/framegraphruntime.cpp#L258) |
 | pass dispatch | pass 種別を Material、Fullscreen、UI などの renderer へ振り分ける | [`renderDynamicPassDrawCalls()`](../../src/core/vkcore/render_pass_dispatch.cpp#L177) |
-| Vulkan backend | device、frame target、image layout、pipeline、GPU resource を扱う | [`VulkanManageCore::VulkanManageCore()`](../../src/core/vkcore/core.cpp#L918) |
+| Vulkan backend | device、frame target、image layout、pipeline、GPU resource を扱う | [`VulkanManageCore::VulkanManageCore()`](../../src/core/vkcore/core.cpp#L925) |
 
 **ただし、この 5 層は一本道ではありません。**「JSON → 論理グラフ → 変換 → 物理プラン → Vulkan」という直線で読むと必ず外します。実際は [`FrameGraphDefinition`](../../src/core/renderingpass/frameplanner.hpp#L117) が **ハブ** で、そこから 3 本が **並行に** 枝分かれします。
 
@@ -340,7 +340,7 @@ flowchart LR
 >   → verified がある graph だけ prepareVulkanNativeScopeExecutors() が走る
 > ```
 >
-> **手がかり**: `verify()` は論理グラフ・topology・自動プラン・format capability・**その device で実際に有効化された extension 名**という「private な device facts」を全部要求します。外部 compiler にそれを再構成させないため、WP238e で [`RenderingTargetPlanVerificationContext`](../../src/core/renderingpass/renderingsamplecount.hpp#L117) が導入されました。[`compileRenderingTargetPlans()`](../../src/core/renderingpass/renderingsamplecount.cpp#L1664) が plan を作るのと同じループで、その plan を作った**正確な入力**を `RenderingTargetPlanCompilation::verification_contexts` に並べて残します([`renderingsamplecount.cpp` 内](../../src/core/renderingpass/renderingsamplecount.cpp#L2066))。`enabled_device_extensions` だけは target planner ではなく Vulkan compiler 層が後から埋め([`compileDefaultVulkanVariant()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L562) の [verification context を埋めるループ](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L699))、その値は [`getEnabledDeviceExtensions()`](../../src/core/vkcore/core.hpp#L119) が返す実際の enable 済み配列です。差し替える側は [`requireVulkanTargetPlanVerificationContext()`](../../src/core/renderingpass/vulkanrendercompilerpackage.hpp#L107) で graph 名から引き、[`installVerifiedVulkanCompletePhysicalPlanPackage()`](../../src/core/renderingpass/vulkanrendercompilerpackage.hpp#L114) に候補 package を渡すだけで、verify → apply → index 更新が 1 回の package 変更として行われます。
+> **手がかり**: `verify()` は論理グラフ・topology・自動プラン・format capability・**その device で実際に有効化された extension 名**という「private な device facts」を全部要求します。外部 compiler にそれを再構成させないため、WP238e で [`RenderingTargetPlanVerificationContext`](../../src/core/renderingpass/renderingsamplecount.hpp#L117) が導入されました。[`compileRenderingTargetPlans()`](../../src/core/renderingpass/renderingsamplecount.cpp#L1664) が plan を作るのと同じループで、その plan を作った**正確な入力**を `RenderingTargetPlanCompilation::verification_contexts` に並べて残します([`renderingsamplecount.cpp` 内](../../src/core/renderingpass/renderingsamplecount.cpp#L2066))。`enabled_device_extensions` だけは target planner ではなく Vulkan compiler 層が後から埋め([`compileDefaultVulkanVariant()`](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L562) の [verification context を埋めるループ](../../src/core/renderingpass/vulkanrendercompilerprogram.cpp#L699))、その値は [`getEnabledDeviceExtensions()`](../../src/core/vkcore/core.hpp#L120) が返す実際の enable 済み配列です。差し替える側は [`requireVulkanTargetPlanVerificationContext()`](../../src/core/renderingpass/vulkanrendercompilerpackage.hpp#L107) で graph 名から引き、[`installVerifiedVulkanCompletePhysicalPlanPackage()`](../../src/core/renderingpass/vulkanrendercompilerpackage.hpp#L114) に候補 package を渡すだけで、verify → apply → index 更新が 1 回の package 変更として行われます。
 >
 > 判定は 🚧 のままです。**既定の Vulkan compiler program はこの経路を使いません**。`verified_complete_physical_plans` を埋める `installVerifiedVulkanCompletePhysicalPlanPackage()` を呼ぶのは現状テストだけで([`headless_native_scope_test.cpp` 内](../../test/headless_native_scope_test.cpp#L408))、engine 同梱の provider は [`builtinVulkanNoopMarkerNativeScope`](../../src/core/renderingpass/vulkannativescopeexecutor.hpp#L32)(`builtin.vulkan.noop_marker@1`)という空 marker だけです。本番で NativeScope 実行が発火するのは **独自の `RenderCompilerProgram` を差した時だけ**で、「Vulkan コマンドが provider に差し替え可能になった」と無条件に読むと過大評価になります。ただし WP238e で「差せば実 Vulkan コマンドが出る」ことまでは実測で閉じました。唯一の TEST_CASE が [`headless_native_scope_test.cpp`](../../test/headless_native_scope_test.cpp) の `"WP238e NativeScope records Vulkan commands and rebuilds through renderer generations"` で、テスト所有 provider `pelican.test.vulkan.clear_attachment@1` が `beginRendering` の `loadOp = eClear` で実際に塗り、16x16 headless の中心画素を readback して色を確認し、compiler を差し替えた 2 世代目で色が変わること・in-flight lease が退役してから旧 executor が破棄されることまで同じ TEST_CASE で見ています。NativeScope の `implementation_config` は宣言境界の外から不透明で、engine 側はそれを解釈しません([`vulkancompletephysicalplan.hpp` 内](../../src/project/vulkancompletephysicalplan.hpp#L16))。
 >
@@ -734,7 +734,7 @@ module 解決、GPU 登録、pass のすべてが起動せず、feature-private 
 6. variant に応じた draw call を記録する。
 7. `endRendering()` を呼ぶ。
 
-つまり旧来の `VkRenderPass` / `VkFramebuffer` object を組み立てる方式ではなく、Vulkan Dynamic Rendering を使います。logical device 生成時にも [`vk::PhysicalDeviceDynamicRenderingFeatures` を有効化](../../src/core/vkcore/core.cpp#L708) しています。
+つまり旧来の `VkRenderPass` / `VkFramebuffer` object を組み立てる方式ではなく、Vulkan Dynamic Rendering を使います。logical device 生成時にも [`vk::PhysicalDeviceDynamicRenderingFeatures` を有効化](../../src/core/vkcore/core.cpp#L713) しています。
 
 UI pass だけは [`RenderPassExecutor` の特別分岐](../../src/core/vkcore/render_pass_executor.cpp#L329) で早期 return します。UI renderer 自身が rendering scope を管理するため、通常 pass と同じ `beginRendering()` を二重に呼ばないためです。同様に ImGui pass も [専用分岐](../../src/core/vkcore/render_pass_executor.cpp#L25) で処理されます。
 
@@ -1000,7 +1000,7 @@ layout transition は単なる状態ラベルではありません。[`makeTrans
 
 ### 現在の image barrier の注意点
 
-compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetask.cpp#L3469) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L179) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp#L3625) で、buffer でなければ return します。
+compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetask.cpp#L3477) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L179) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp#L3641) で、buffer でなければ return します。
 
 したがって調査時点では、同じ storage image を `GENERAL` のまま連続 compute task で write → read する場合、graph 上の順序は付きますが、その依存専用の image memory barrier は発行されません。layout が変わる compute → render などとは事情が違います。これは「設定に edge を書けば全 resource の同期も完全」という意味ではない、現在実装上の制約です。
 
@@ -1025,7 +1025,7 @@ compute target は [`transitionResourcesForDispatch()`](../../src/core/rendering
 
 ## 6.8 Compute task
 
-compute の JSON は [`parseComputeTaskDefinitionsFromConfigJson()`](../../src/core/renderingpass/computetask.cpp#L2110) で次へ変換されます。
+compute の JSON は [`parseComputeTaskDefinitionsFromConfigJson()`](../../src/core/renderingpass/computetask.cpp#L2116) で次へ変換されます。
 
 - `shader`: extensionless stem
 - `reads`, `writes`: buffer または concrete render target の名前
@@ -1033,23 +1033,23 @@ compute の JSON は [`parseComputeTaskDefinitionsFromConfigJson()`](../../src/c
 - `dispatch.groups`: x/y/z group 数
 - `schedule`: 現在は `per_frame` のみ
 
-descriptor は shader reflection の set 1、すなわち `PELICAN_SET_PASS_INPUT` だけを読み、binding 順に構築します。[`resourceForBinding()`](../../src/core/renderingpass/computetask.cpp#L804) の対応規則は次の優先順です。
+descriptor は shader reflection の set 1、すなわち `PELICAN_SET_PASS_INPUT` だけを読み、binding 順に構築します。[`resourceForBinding()`](../../src/core/renderingpass/computetask.cpp#L806) の対応規則は次の優先順です。
 
 1. reflection された binding 名と宣言 resource 名が一致すれば、その resource。
 2. resource が1個だけなら、それを使用。
 3. それ以外は binding の順番と resource 配列の順番を対応。
 
-buffer は storage buffer、render target は storage image でなければ [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2543) が例外にします。task 実行は graphics frame の command buffer 上で pipeline と set 1 を bind し、[`dispatch()`](../../src/core/renderingpass/computetask.cpp#L3547) を記録します。
+buffer は storage buffer、render target は storage image でなければ [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2554) が例外にします。task 実行は graphics frame の command buffer 上で pipeline と set 1 を bind し、[`dispatch()`](../../src/core/renderingpass/computetask.cpp#L3555) を記録します。
 
 ### buffer 宣言の実装済み範囲
 
-[`FrameGraphResourceContainer::registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L2305) は `size > 0` の buffer を一度だけ device local memory に確保します。
+[`FrameGraphResourceContainer::registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L2311) は `size > 0` の buffer を一度だけ device local memory に確保します。
 
 - 文字列だけ、または size 0 の宣言は graph の既知名にはなりますが、実 buffer を確保しません。
-- `lifetime: persistent|transient` は [`parseFrameGraphBufferDefinitionsFromJson()`](../../src/core/renderingpass/computetask.cpp#L1916) で読みますが、登録側は調査時点で `persistent` を参照していません。transient の frame 単位 recycle は未実装です。
+- `lifetime: persistent|transient` は [`parseFrameGraphBufferDefinitionsFromJson()`](../../src/core/renderingpass/computetask.cpp#L1922) で読みますが、登録側は調査時点で `persistent` を参照していません。transient の frame 単位 recycle は未実装です。
 - `dispatch.groups_from: {"port": "..."}` は typed image resource port の選択 mip extent と shader reflection の `local_size` から `ceil(extent / local_size)` を導出します。render target resize と compute shader reload の rebind 時にも再計算されます。
 - `dispatch.local_size` は受理しません。workgroup size の authority は compute shader の `layout(local_size_*=...)` と SPIR-V reflection です。
-- 実行後に group 数を変える API は [`setDispatchGroups()`](../../src/core/renderingpass/computetask.cpp#L3433) です。
+- 実行後に group 数を変える API は [`setDispatchGroups()`](../../src/core/renderingpass/computetask.cpp#L3441) です。
 
 設定 schema に項目があることと、runtime behavior が完成していることを区別して読む必要があります。
 
@@ -1200,13 +1200,13 @@ Renderer::render() (render start)
   -> publish通知をconsumeしfullscreen input descriptorをrebind
 ```
 
-shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1052)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1805) が担当します。material peer の準備は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L403) が担います。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
+shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1052)、group-wide な pipeline publish は [`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1827) が担当します。material peer の準備は [`MaterialContainer::prepareSurfaceMaterialReload()`](../../src/core/material/materialcontainer.hpp#L403) が担います。compile error、pipeline 作成失敗、material peer の検証失敗のいずれでも、最後に成功した世代を残します。cache hit/miss と追跡中の unit/bundle/dependency 数は `get_status.reload.runtime.pelican.shaders.details` から確認できます。
 
-> 🧩 **難所 — reload の swap は 3 回**([`rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1805) / [`ShaderLibrary::activatePrepared()`](../../src/core/shader/shaderlibrary.cpp#L1113))
+> 🧩 **難所 — reload の swap は 3 回**([`rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1827) / [`ShaderLibrary::activatePrepared()`](../../src/core/shader/shaderlibrary.cpp#L1113))
 >
 > **何をする所か**: 上の疑似コードの「全成功時だけ一括 publish」を、shader bundle・pipeline・cross-domain な material candidate をまたいだ 1 トランザクションとして実現します。
 >
-> **素朴に読むと**: `activatePrepared()` が **idempotent な「有効化」ではなく `std::swap` の反復適用(= 対合)**(idempotent は「何回呼んでも 1 回呼んだのと同じ」、対合(involution)は「2 回呼ぶと元に戻る」で、ここでは対照的な性質です)だと気づかないと、この関数は読めません。実装は `swap(bundles.get(candidate.id), candidate.replacement)` の 1 行だけで、呼ぶたびに live 側と candidate 側が入れ替わります。したがって意味は「呼んだ回数の偶奇」で決まり、成功経路では **3 回**呼ばれます([1 回目は候補構築の直前](../../src/core/shader/pipelinefactory.cpp#L1853) / [2 回目はその復帰コメントの直後](../../src/core/shader/pipelinefactory.cpp#L1948) / [3 回目は finalize の直前](../../src/core/shader/pipelinefactory.cpp#L1969))。1 回足したり消したりすると、旧 SPIR-V を指したまま publish する / 新世代を捨てたつもりが live に残る、という**例外も log も出ない静かな**破壊になります。
+> **素朴に読むと**: `activatePrepared()` が **idempotent な「有効化」ではなく `std::swap` の反復適用(= 対合)**(idempotent は「何回呼んでも 1 回呼んだのと同じ」、対合(involution)は「2 回呼ぶと元に戻る」で、ここでは対照的な性質です)だと気づかないと、この関数は読めません。実装は `swap(bundles.get(candidate.id), candidate.replacement)` の 1 行だけで、呼ぶたびに live 側と candidate 側が入れ替わります。したがって意味は「呼んだ回数の偶奇」で決まり、成功経路では **3 回**呼ばれます([1 回目は候補構築の直前](../../src/core/shader/pipelinefactory.cpp#L1875) / [2 回目はその復帰コメントの直後](../../src/core/shader/pipelinefactory.cpp#L1970) / [3 回目は finalize の直前](../../src/core/shader/pipelinefactory.cpp#L1991))。1 回足したり消したりすると、旧 SPIR-V を指したまま publish する / 新世代を捨てたつもりが live に残る、という**例外も log も出ない静かな**破壊になります。
 >
 > **骨子**:
 > ```text
@@ -1219,7 +1219,7 @@ shader candidate は [`ShaderLibrary::prepareReload()`](../../src/core/shader/sh
 >                              swap を呼ばずに discard_new_layouts() だけして return
 > ```
 >
-> **手がかり**: 「Restore the live shader table while the cross-domain material candidate commits.」というコメント([該当行](../../src/core/shader/pipelinefactory.cpp#L1948))が swap#2 の理由そのものです。読み飛ばさないでください。上の (a) と (b) の**非対称**も同じくらい重要で、(b) の経路([`before_publish` の失敗処理](../../src/core/shader/pipelinefactory.cpp#L1953))は `activatePrepared()` を**呼びません** — 呼ぶと偶奇が狂って新世代が live に残ります。対になる非トランザクション版が `rebuildDirty()` で、こちらは pipeline ごとに try/catch していて「一部だけ更新される」— 両者の差を意識して読みます。現在は `graphics_overrides`([`GraphicsPipelineReloadOverride`](../../src/core/shader/pipelinefactory.hpp#L196))と `before_publish` コールバックが引数に加わり、graph 再コンパイルと shader reload が同じトランザクションに束ねられています。公開後の旧 pipeline/layout は即破棄せず [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1315) が DeletionQueue へ回します(§6.11)。境界の全体像は [第9章](09_black_magic_and_gotchas.md)。
+> **手がかり**: 「Restore the live shader table while the cross-domain material candidate commits.」というコメント([該当行](../../src/core/shader/pipelinefactory.cpp#L1970))が swap#2 の理由そのものです。読み飛ばさないでください。上の (a) と (b) の**非対称**も同じくらい重要で、(b) の経路([`before_publish` の失敗処理](../../src/core/shader/pipelinefactory.cpp#L1975))は `activatePrepared()` を**呼びません** — 呼ぶと偶奇が狂って新世代が live に残ります。対になる非トランザクション版が `rebuildDirty()` で、こちらは pipeline ごとに try/catch していて「一部だけ更新される」— 両者の差を意識して読みます。現在は `graphics_overrides`([`GraphicsPipelineReloadOverride`](../../src/core/shader/pipelinefactory.hpp#L196))と `before_publish` コールバックが引数に加わり、graph 再コンパイルと shader reload が同じトランザクションに束ねられています。公開後の旧 pipeline/layout は即破棄せず [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1315) が DeletionQueue へ回します(§6.11)。境界の全体像は [第9章](09_black_magic_and_gotchas.md)。
 >
 > **不変条件**: 成功経路の `activatePrepared()` 呼び出しは奇数回で終わること。publish フェーズは **絶対に throw しない**(throw しうる処理はすべて `before_publish` までに済ませる)。失敗経路は必ず `discard_new_layouts()` を通すこと — 通らないと live でない descriptor set layout が cache に居座ります。
 
@@ -1244,24 +1244,24 @@ GPU:           frame N が参照 ----- 完了 -----|
 
 ## 6.12 Vulkan 初期化と resource wrapper
 
-[`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) が instance、physical device、logical device、queues、command pools、VMA allocator(VMA = Vulkan Memory Allocator — GPU メモリを大きくまとめて確保し、buffer/image へ小分けに配る定番ライブラリ。`vk::DeviceMemory` を自前で管理せずに済みます)を所有します。constructor は [`core.cpp` 内](../../src/core/vkcore/core.cpp#L918) です。
+[`VulkanManageCore`](../../src/core/vkcore/core.hpp#L36) が instance、physical device、logical device、queues、command pools、VMA allocator(VMA = Vulkan Memory Allocator — GPU メモリを大きくまとめて確保し、buffer/image へ小分けに配る定番ライブラリ。`vk::DeviceMemory` を自前で管理せずに済みます)を所有します。constructor は [`core.cpp` 内](../../src/core/vkcore/core.cpp#L925) です。
 
 - Vulkan API version は [`1.3.283`](../../cmake/pelican_target_environment.cmake)。
 - [`selectVulkanValidation()`](../../src/core/vkcore/vulkanvalidation.hpp) が validation layer と synchronization validation を一体で選択します。未指定は従来どおり `_DEBUG` だけ ON、`--vulkan-validation=on|off` は構成を問わず上書きします。生成に成功した instance の結果は [`getVulkanValidationStatus()`](../../src/core/vkcore/core.hpp) から `get_status.vulkan_validation` へ公開されます。要求時に `VK_LAYER_KHRONOS_validation` が無ければ `pelican.vulkan.validation_layer_unavailable@1` で停止します。
 - window mode のみ surface と swapchain extension を要求します。
-- 起動時に [`selectDebugUtilsExtension(launch_config.gpu_labels, supportedInstanceExtensions())`](../../src/core/vkcore/core.cpp#L614) を評価し、有効なときだけ `VK_EXT_debug_utils` を instance extension へ足します(flat: [`core.cpp` 内](../../src/core/vkcore/core.cpp#L61)、XR: [もう 1 箇所](../../src/core/vkcore/core.cpp#L110))。詳細は §6.16。
+- 起動時に [`selectDebugUtilsExtension(launch_config.gpu_labels, supportedInstanceExtensions())`](../../src/core/vkcore/core.cpp#L617) を評価し、有効なときだけ `VK_EXT_debug_utils` を instance extension へ足します(flat: [`core.cpp` 内](../../src/core/vkcore/core.cpp#L61)、XR: [もう 1 箇所](../../src/core/vkcore/core.cpp#L110))。詳細は §6.16。
 - physical device は window mode の swapchain extension と、`multiDrawIndirect`、`drawIndirectFirstInstance`、`shaderDrawParameters`、`dynamicRendering` の全 feature を満たす候補だけを選びます。OpenXR runtime が device を選ぶ経路でも同じ検査を行います。
 - logical device では上記 4 feature を明示的に有効化します。
 - graphics、presentation、compute queue family を [`pickQueues()`](../../src/core/vkcore/core.cpp#L228) で選び、それぞれの queue を取得します。
 - graphics と compute command pool を別に作ります。
-- device 生成後に [`debug_utils = DebugUtilsDispatch::resolve(instance, device, selection)`](../../src/core/vkcore/core.cpp#L642)。取得は [`getDebugUtils()`](../../src/core/vkcore/core.hpp#L103) です。
+- device 生成後に [`debug_utils = DebugUtilsDispatch::resolve(instance, device, selection)`](../../src/core/vkcore/core.cpp#L645)。取得は [`getDebugUtils()`](../../src/core/vkcore/core.hpp#L104) です。
 - XR active 時は [`bootstrap.hpp`](../../src/core/vkcore/bootstrap.hpp) 経由で、OpenXR runtime の graphics requirements に従って instance/device を生成する経路が加わりました(core.cpp には flat/XR 用の 2 つの app_info があります)。
 
-[`VulkanManageCore::setCurrentFrameIndex(logical_frame)`](../../src/core/vkcore/core.hpp#L134) は毎フレーム `engine_time.advance()` の直後に呼ばれ(第2章 §2.4)、**debug-utils ラベルと GPU timing に共通の論理フレーム軸**を与えます。
+[`VulkanManageCore::setCurrentFrameIndex(logical_frame)`](../../src/core/vkcore/core.hpp#L135) は毎フレーム `engine_time.advance()` の直後に呼ばれ(第2章 §2.4)、**debug-utils ラベルと GPU timing に共通の論理フレーム軸**を与えます。
 
 buffer/image memory は VMA を使います。[`BufferWrapper`](../../src/core/vkcore/buf.hpp#L7) と [`ImageWrapper`](../../src/core/vkcore/image.hpp#L8) が Vulkan resource と VMA allocation を同じ struct に持ち、RAII で一緒に解放します。
 
-調査時点の compute task は独立 compute submission ではなく、[`FrameRenderContext::cmd_buf`](../../src/core/vkcore/frametarget.hpp#L23) へ dispatch を記録します。この command buffer は [`allocCmdBufs()`](../../src/core/vkcore/core.cpp#L1283) が graphics pool/queue 用に作るものです。したがって frame graph compute は async compute pipeline ではなく、graphics queue 上の直列 compute と理解するのが正確です。
+調査時点の compute task は独立 compute submission ではなく、[`FrameRenderContext::cmd_buf`](../../src/core/vkcore/frametarget.hpp#L23) へ dispatch を記録します。この command buffer は [`allocCmdBufs()`](../../src/core/vkcore/core.cpp#L1299) が graphics pool/queue 用に作るものです。したがって frame graph compute は async compute pipeline ではなく、graphics queue 上の直列 compute と理解するのが正確です。
 
 ## 6.13 描画を変更するときの実践的な追い方
 
@@ -1276,7 +1276,7 @@ buffer/image memory は VMA を使います。[`BufferWrapper`](../../src/core/v
 ### 新しい compute resource を増やす
 
 1. planner の resource declaration/known-resource 検証を拡張。
-2. descriptor reflection type と resource object の対応を [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2543) へ追加。
+2. descriptor reflection type と resource object の対応を [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2554) へ追加。
 3. resource ごとの正しい access/stage barrier を実装。
 4. resize、hot reload、teardown 時の寿命を定義。
 
@@ -1533,7 +1533,7 @@ layout の版と宣言の有無で、解決値と名前付き拒否は次のよ�
 
 | # | 入力 | 結果 |
 |---:|---|---|
-| 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L592)) |
+| 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L593)) |
 | 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1616)) |
 | 3 | v1 layout、`acceleration_structure` 有り | parse で [`pelican.ray_as_declaration_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L767)。`ray_as_declaration_requires_layout@1` という code は作られていません(`acceleration_structure` は layout 内の field なので、その構文が存在しない) |
 | 4 | v2 でない layout の row に `pelican_ray_instance` がある | [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L1431)。builtin 宣言側は scene load 時点で[同 code](../../src/core/loader/scene.cpp#L93) |
@@ -1559,7 +1559,7 @@ v2 では `gl_InstanceCustomIndexEXT` に出るのは**宣言値**です。`q`(c
 
 ### BLAS variant: 鍵は `(allocation, geometry_flags)`
 
-`geometry_flags` は BLAS の build 入力なので、同じ geometry でも flags が違えば別の BLAS が要ります。cache の鍵は [`State::BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L764) の `(geometry_allocation_id, geometry_flags)` です。allocation id だけを鍵にしていた頃は、**flags だけを変えた reload が古い BLAS を再利用して宣言が無効になる**という穴がありました。
+`geometry_flags` は BLAS の build 入力なので、同じ geometry でも flags が違えば別の BLAS が要ります。cache の鍵は [`State::BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L780) の `(geometry_allocation_id, geometry_flags)` です。allocation id だけを鍵にしていた頃は、**flags だけを変えた reload が古い BLAS を再利用して宣言が無効になる**という穴がありました。
 
 purge は「geometry が消えたら落とす」ではなく、**そのフレームで実際に参照された variant 集合との差分**です。手順は次の形です。
 
@@ -1572,20 +1572,20 @@ for variant in required_variants:
 candidate->blas は required_variants と厳密に一致する               ← ここが purge
 ```
 
-持ち越しは [`active_state_->blas.find(variant)`](../../src/core/renderer/accelerationstructure.cpp#L1148) の一致だけで、`candidate` には required 以外が入りません。commit で `candidate` が active を置き換えるので、**規則の reload で参照されなくなった variant は自動的に落ちます**。「消し忘れ」を検出するのではなく「必要なものだけを作り直す」側で閉じている、という構造です。
+持ち越しは [`active_state_->blas.find(variant)`](../../src/core/renderer/accelerationstructure.cpp#L1185) の一致だけで、`candidate` には required 以外が入りません。commit で `candidate` が active を置き換えるので、**規則の reload で参照されなくなった variant は自動的に落ちます**。「消し忘れ」を検出するのではなく「必要なものだけを作り直す」側で閉じている、という構造です。
 
 ### 診断: `resident_blas_keys`
 
-frame plan の `ray_query_acceleration_structures` に、この variant 集合がそのまま出ます([`rayQueryAccelerationStructureDiagnosticsToJson()`](../../src/core/renderer/accelerationstructure.cpp#L698))。
+frame plan の `ray_query_acceleration_structures` に、この variant 集合がそのまま出ます([`rayQueryAccelerationStructureDiagnosticsToJson()`](../../src/core/renderer/accelerationstructure.cpp#L699))。
 
 | キー | 意味 |
 |---|---|
 | `blas_variant_count` | candidate が持つ BLAS 数(= required variant 数) |
-| [`resident_blas_keys`](../../src/core/renderer/accelerationstructure.cpp#L723) | 各 variant の `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}` |
+| [`resident_blas_keys`](../../src/core/renderer/accelerationstructure.cpp#L724) | 各 variant の `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}` |
 | `active_blas_inputs` | 同じ配列(旧キー名。互換のため両方出ます) |
 | `blas_build_count` / `tlas_build_count` | 実際に build した回数 |
 
-配列は `(allocation_id, geometry_flags)` で [sort](../../src/core/renderer/accelerationstructure.cpp#L1232) されるので、診断の並びはフレーム間で決定的です。「同一 allocation を opaque と mask で共有したら BLAS build が 2 になる」「規則を戻したら variant が消える」を、この2キーで外から確認できます。
+配列は `(allocation_id, geometry_flags)` で [sort](../../src/core/renderer/accelerationstructure.cpp#L1286) されるので、診断の並びはフレーム間で決定的です。「同一 allocation を opaque と mask で共有したら BLAS build が 2 になる」「規則を戻したら variant が消える」を、この2キーで外から確認できます。
 
 ### WP377: SBT と TLAS の frame transaction、および既知の穴
 
@@ -1598,7 +1598,7 @@ RT の1フレームは、compile → pipeline → SBT → AS record → submit �
 | `after_as_record` | [`recordFrame()` の直後](../../src/core/vkcore/renderer.cpp#L4859) |
 | `submit` | [logical frame の締め](../../src/core/vkcore/renderer.cpp#L5697) |
 
-AS の公開は submission が成功した後です。[`FrameBuild`](../../src/core/vkcore/accelerationstructure.hpp#L247) は publication token で、コマンドと資源は即座に lease されるものの、新しい BLAS/TLAS の集合が active になるのは [`acceleration_structure_build->commit()`](../../src/core/vkcore/renderer.cpp#L5708) を通った後だけです。
+AS の公開は submission が成功した後です。[`FrameBuild`](../../src/core/vkcore/accelerationstructure.hpp#L249) は publication token で、コマンドと資源は即座に lease されるものの、新しい BLAS/TLAS の集合が active になるのは [`acceleration_structure_build->commit()`](../../src/core/vkcore/renderer.cpp#L5708) を通った後だけです。
 
 > ✅ **WP384 で閉じた穴(`rev377a` #1)**: 以前は `recordFrame()` の前後で SBT と TLAS descriptor を `FrameResources` に先に書いていたため、`after_as_record` / `submit` の失敗で却下世代の SBT が active に残りました。いまは frame 中の候補を [`FrameResources::FramePublication`](../../src/core/renderer/frameresources.cpp#L399)(immutable な `RtDescriptorBundle` の候補)に束ね、target の三相 `submitLogicalFrame()` → publication callback(noexcept、[renderer.cpp の publication](../../src/core/vkcore/renderer.cpp#L4720) で RT state・staged runtime・bundle を 1 回で flip)→ `publishLogicalFrame()` の中央でだけ active を切り替えます。失敗時は候補の destructor が捨てるだけで、active は旧世代のまま(戻す処理が要らない設計)。却下 candidate は最初の実 submit 成功で seal された `DeletionQueue` の batch の fence で退役します。受け入れは各 fault 点直後の active SBT / TLAS 同一性と、再利用 frame で GPU が新世代を読むこと(`headless_render_test.cpp` の WP384 節)。
 

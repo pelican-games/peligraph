@@ -938,7 +938,7 @@ RT pipeline task も最上位 `compute_tasks` を使います。これは `vkCmd
 }
 ```
 
-stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` / `indirect` との併記はエラーです。`rays_from` は指定image mipの幅・高さから実行サイズを決め、resize/rebind後に再計算します。callableは`ray_tracing.callable`、any-hit/intersectionはray group layoutから指定します。[加速構造とRT pipelineの説明](../source-code-guide/11_ray_query_acceleration_structures.md)も参照してください。
+stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv`）へ解決されます。`shader` との併記、compute 用 `groups` / `groups_from` の指定はエラーです。`rays_from` は指定image mipの幅・高さから実行サイズを決め、resize/rebind後に再計算します。callableは`ray_tracing.callable`、any-hit/intersectionはray group layoutから指定します。[加速構造とRT pipelineの説明](../source-code-guide/11_ray_query_acceleration_structures.md)も参照してください。
 
 画像と独立した3D領域を走査する場合は、代わりに次を指定します。値は正のuint32で、デバイスの各次元上限・総起動数上限も検査します。
 
@@ -953,6 +953,20 @@ stage stem は順に `.rgen` / `.rmiss` / `.rchit`（または埋め込み `.spv
 ```cpp
 context.setRayTracingDispatchExtent("trace_grid", 64, 16, 8);
 ```
+
+GPUに起動数を決めさせるRT taskでは、`command_layout: "ray_dispatch"` のbufferと `dispatch.indirect` を使います。
+
+```json
+"buffers": [{"name": "ray_args", "size": 12, "command_layout": "ray_dispatch"}]
+```
+
+```json
+"dispatch": {"indirect": {"buffer": "ray_args", "offset": 0}}
+```
+
+指定offsetから幅・高さ・奥行きのuint32を3個並べます。offsetは4-byte整列、コマンドは12 bytesです。bufferを書き込む独立したcompute taskをRT taskより前に宣言すると、frame graphがproducer→RT consumerの依存と間接コマンド読取りへのbarrierを作ります。`rays` / `rays_from` / `indirect`は排他的です。GPUが生成する値はCPUへ読み戻さないため、デバイスの次元・総起動数上限はproducer shaderで守ります。
+
+この経路にはVulkanの`rayTracingPipelineTraceRaysIndirect`機能が必要です。非対応GPUでは`pelican.ray_tracing.indirect_unavailable@1`で拒否し、通常のdirect RTは引き続き使用できます。
 
 GPU が同じフレーム内で次の compute task の dispatch 数を決める場合は、12 byte 以上の
 typed command buffer と `dispatch.indirect` を使います。
@@ -2414,9 +2428,9 @@ scene JSON の `components` に書きます。
 
 ### BLAS variant と `resident_blas_keys` 診断
 
-geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L764))。同じジオメトリでも flags が違えば別 BLAS です。
+geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L780))。同じジオメトリでも flags が違えば別 BLAS です。
 
-プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L698)):
+プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L699)):
 
 - `blas_variant_count` — 常駐している variant の数
 - `resident_blas_keys` — variant ごとの `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}`。同じ配列が `active_blas_inputs` というキーにも出ます(同一内容の 2 キー)

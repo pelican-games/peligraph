@@ -33,6 +33,7 @@ struct VulkanRuntimeCapabilities {
     bool ray_query = false;
     bool buffer_device_address = false;
     bool ray_tracing_pipeline = false;
+    bool ray_tracing_indirect = false;
     bool runtime_descriptor_array = false;
     bool shader_sampled_image_array_non_uniform_indexing = false;
     bool descriptor_binding_partially_bound = false;

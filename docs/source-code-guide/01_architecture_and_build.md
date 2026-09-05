@@ -253,7 +253,7 @@ registryの各行が持つキーのうち、この節で効くのは2つです�
 
 | ライブラリ | 使用箇所 |
 |---|---|
-| Vulkan-Hpp / VMA-Hpp | GPU APIとメモリ管理（[`VulkanManageCore`](../../src/core/vkcore/core.cpp#L918)） |
+| Vulkan-Hpp / VMA-Hpp | GPU APIとメモリ管理（[`VulkanManageCore`](../../src/core/vkcore/core.cpp#L925)） |
 | GLFW | window、入力、surface（[`Window`](../../src/core/os/window.hpp#L17)） |
 | GLM | 行列・quaternion・vectorの内部演算 |
 | nlohmann/json | project/scene/rendering/RPC/保存など全JSON |

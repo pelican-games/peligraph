@@ -69,6 +69,8 @@ RayQueryDeviceSelection selectRayQueryDeviceFeatures(
     result.ray_query = true;
     result.buffer_device_address = true;
     result.ray_tracing_pipeline = ray_tracing_pipeline_enabled;
+    result.ray_tracing_indirect =
+        ray_tracing_pipeline_enabled && support.ray_tracing_indirect_feature;
     result.min_acceleration_structure_scratch_offset_alignment =
         support.min_acceleration_structure_scratch_offset_alignment;
     result.shader_group_handle_size =

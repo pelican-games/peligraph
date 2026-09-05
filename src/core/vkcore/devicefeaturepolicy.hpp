@@ -21,6 +21,7 @@ struct RayQueryDeviceSupport {
     bool deferred_host_operations_extension = false;
     bool ray_tracing_pipeline_feature = false;
     bool ray_tracing_pipeline_extension = false;
+    bool ray_tracing_indirect_feature = false;
     bool runtime_descriptor_array_feature = false;
     bool shader_sampled_image_array_non_uniform_indexing_feature = false;
     bool descriptor_binding_partially_bound_feature = false;
@@ -46,6 +47,7 @@ struct RayQueryDeviceSelection {
     bool ray_query = false;
     bool buffer_device_address = false;
     bool ray_tracing_pipeline = false;
+    bool ray_tracing_indirect = false;
     bool runtime_descriptor_array = false;
     bool shader_sampled_image_array_non_uniform_indexing = false;
     bool descriptor_binding_partially_bound = false;

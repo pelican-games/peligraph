@@ -354,6 +354,15 @@ DECLARE_MODULE(PipelineFactory) {
     std::shared_ptr<const RayTracingCallableRecords> prepareCallableRecords(
         PipelineHandle handle, std::span<const std::vector<std::byte>> records,
         std::shared_ptr<const RayTracingCallableRecords> previous = {}) const;
+  private:
+    RayTracingShaderBindingTableRegions resolveTraceRegions(
+        PipelineHandle handle, const RayTracingSceneShaderBindingTables *scene_tables,
+        const RayTracingCallableRecords *callable_records) const;
+  public:
+    void traceRaysIndirect(vk::CommandBuffer command_buffer, PipelineHandle handle,
+                          vk::DeviceAddress address,
+                          const RayTracingSceneShaderBindingTables *scene_tables = nullptr,
+                          const RayTracingCallableRecords *callable_records = nullptr) const;
     void traceRays(vk::CommandBuffer command_buffer,
                    PipelineHandle handle, std::uint32_t width,
                    std::uint32_t height,

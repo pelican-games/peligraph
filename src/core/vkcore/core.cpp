@@ -443,6 +443,9 @@ static DeviceFeatureSupport queryDeviceFeatureSupport(vk::PhysicalDevice physica
                 VK_TRUE,
             .ray_tracing_pipeline_extension =
                 ray_tracing_pipeline_extension,
+            .ray_tracing_indirect_feature =
+                ray_tracing_pipeline.rayTracingPipelineTraceRaysIndirect ==
+                VK_TRUE,
             .runtime_descriptor_array_feature =
                 vk12.runtimeDescriptorArray == VK_TRUE,
             .shader_sampled_image_array_non_uniform_indexing_feature =
@@ -692,6 +695,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         ray_query_selection.ray_tracing_pipeline
             ? VK_TRUE
             : VK_FALSE;
+    ray_tracing_pipeline_features.rayTracingPipelineTraceRaysIndirect =
+        ray_query_selection.ray_tracing_indirect ? VK_TRUE : VK_FALSE;
     vk::PhysicalDeviceDynamicRenderingLocalReadFeaturesKHR local_read_features;
     local_read_features.dynamicRenderingLocalRead =
         feature_support.dynamic_rendering_local_read ? VK_TRUE : VK_FALSE;
@@ -742,6 +747,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             ray_query_selection.buffer_device_address,
         .ray_tracing_pipeline =
             ray_query_selection.ray_tracing_pipeline,
+        .ray_tracing_indirect =
+            ray_query_selection.ray_tracing_indirect,
         .runtime_descriptor_array =
             ray_query_selection.runtime_descriptor_array,
         .shader_sampled_image_array_non_uniform_indexing =
@@ -1063,12 +1070,19 @@ VulkanManageCore::VulkanManageCore() {
         cmd_trace_rays =
             reinterpret_cast<PFN_vkCmdTraceRaysKHR>(
                 load("vkCmdTraceRaysKHR"));
+        if (runtime_capabilities.ray_tracing_indirect) {
+            cmd_trace_rays_indirect =
+                reinterpret_cast<PFN_vkCmdTraceRaysIndirectKHR>(
+                    load("vkCmdTraceRaysIndirectKHR"));
+        }
         destroy_pipeline =
             reinterpret_cast<PFN_vkDestroyPipeline>(
                 load("vkDestroyPipeline"));
         if (create_ray_tracing_pipelines == nullptr ||
             get_ray_tracing_shader_group_handles == nullptr ||
             cmd_trace_rays == nullptr ||
+            (runtime_capabilities.ray_tracing_indirect &&
+             cmd_trace_rays_indirect == nullptr) ||
             destroy_pipeline == nullptr) {
             throw std::runtime_error(
                 "pelican.vulkan.ray_tracing_pipeline_entry_points_unavailable@1: "
@@ -1081,6 +1095,7 @@ VulkanManageCore::VulkanManageCore() {
             .vkGetRayTracingShaderGroupHandlesKHR =
                 get_ray_tracing_shader_group_handles,
             .vkCmdTraceRaysKHR = cmd_trace_rays,
+            .vkCmdTraceRaysIndirectKHR = cmd_trace_rays_indirect,
             .vkDestroyPipeline = destroy_pipeline,
         };
     }
@@ -1111,13 +1126,14 @@ VulkanManageCore::VulkanManageCore() {
     LOG_INFO(
         logger,
         "Vulkan ray query: acceleration_structure={}, ray_query={}, "
-        "buffer_device_address={}, ray_tracing_pipeline={}, "
+        "buffer_device_address={}, ray_tracing_pipeline={}, ray_tracing_indirect={}, "
         "scratch_alignment={}, shader_group_handle_size={}, "
         "shader_group_base_alignment={}, shader_group_handle_alignment={}",
         runtime_capabilities.acceleration_structure,
         runtime_capabilities.ray_query,
         runtime_capabilities.buffer_device_address,
         runtime_capabilities.ray_tracing_pipeline,
+        runtime_capabilities.ray_tracing_indirect,
         runtime_capabilities
             .min_acceleration_structure_scratch_offset_alignment,
         runtime_capabilities.shader_group_handle_size,

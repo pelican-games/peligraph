@@ -40,6 +40,7 @@ static_assert(
 static_assert(
     frameGraphIndexedDrawCommandBytes ==
     sizeof(std::uint32_t) * 5);
+static_assert(sizeof(vk::TraceRaysIndirectCommandKHR) == compute_dispatch_command_size);
 static_assert(frameGraphDrawCountBytes == 4);
 static_assert(frameGraphSceneDrawBoundsV1Bytes == 32);
 static_assert(frameGraphSceneDrawSegmentV1Bytes == 32);
@@ -106,6 +107,7 @@ parseBufferCommandLayout(
         return FrameGraphBufferCommandLayout::
             compute_dispatch;
     }
+    if (value == "ray_dispatch") return FrameGraphBufferCommandLayout::ray_dispatch;
     if (value == "indexed_draw") {
         return FrameGraphBufferCommandLayout::
             indexed_draw;
@@ -1670,7 +1672,7 @@ ComputeDispatchDefinition parseDispatch(
             throw std::runtime_error(
                 "pelican.ray_tracing.trace_extent_required@1: compute "
                 "task '" +
-                name + "' requires dispatch.rays_from or dispatch.rays");
+                name + "' requires dispatch.rays_from, dispatch.rays, or dispatch.indirect");
         }
         return dispatch;
     }
@@ -1738,13 +1740,15 @@ ComputeDispatchDefinition parseDispatch(
                 .port = std::move(port)};
         return dispatch;
     }
-    if (ray_tracing) {
+    if (ray_tracing && !json.contains("indirect")) {
         throw std::runtime_error(
             "pelican.ray_tracing.trace_extent_required@1: compute task '" +
-            name + "' requires dispatch.rays_from or dispatch.rays");
+            name + "' requires dispatch.rays_from, dispatch.rays, or dispatch.indirect");
     }
 
     if (json.contains("indirect")) {
+        if (ray_tracing && json.size() != 1)
+            throw std::runtime_error("pelican.ray_tracing.invalid_trace_dispatch@1: indirect trace cannot be combined with other dispatch fields: " + name);
         if (json.contains("groups") ||
             json.contains("groups_from") ||
             json.contains("local_size")) {
@@ -1890,6 +1894,8 @@ std::string_view frameGraphBufferCommandLayoutName(
     case FrameGraphBufferCommandLayout::
         compute_dispatch:
         return "compute_dispatch";
+    case FrameGraphBufferCommandLayout::ray_dispatch:
+        return "ray_dispatch";
     case FrameGraphBufferCommandLayout::
         indexed_draw:
         return "indexed_draw";
@@ -1993,15 +1999,15 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                 " host_source requires a non-zero size");
         }
         if (definition.command_layout &&
-            *definition.command_layout ==
-                FrameGraphBufferCommandLayout::
-                    compute_dispatch &&
+            (*definition.command_layout == FrameGraphBufferCommandLayout::compute_dispatch ||
+             *definition.command_layout == FrameGraphBufferCommandLayout::ray_dispatch) &&
             definition.size <
                 compute_dispatch_command_size) {
             throw std::runtime_error(
                 context +
-                " command_layout 'compute_dispatch' requires at "
-                "least " +
+                " command_layout '" +
+                std::string{frameGraphBufferCommandLayoutName(*definition.command_layout)} +
+                "' requires at least " +
                 std::to_string(
                     compute_dispatch_command_size) +
                 " bytes");
@@ -2265,16 +2271,16 @@ void validateComputeTaskBufferContracts(
                 "' indirect dispatch references unknown buffer '" +
                 indirect.buffer + "'");
         }
-        if (!buffer->command_layout ||
-            *buffer->command_layout !=
-                FrameGraphBufferCommandLayout::
-                    compute_dispatch) {
+        const auto expected_layout = task.ray_tracing
+            ? FrameGraphBufferCommandLayout::ray_dispatch
+            : FrameGraphBufferCommandLayout::compute_dispatch;
+        if (buffer->command_layout != expected_layout) {
             throw std::runtime_error(
                 "compute task '" + task.name +
                 "' indirect dispatch buffer '" +
                 indirect.buffer +
-                "' requires command_layout "
-                "'compute_dispatch'");
+                "' requires command_layout '" +
+                std::string{frameGraphBufferCommandLayoutName(expected_layout)} + "'");
         }
         if (indirect.offset %
                 frameGraphIndirectCommandAlignment !=
@@ -2336,6 +2342,11 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
         if (definition.command_layout) {
             usage |= vk::BufferUsageFlagBits::
                 eIndirectBuffer;
+        }
+        if (definition.command_layout == FrameGraphBufferCommandLayout::ray_dispatch) {
+            if (!vkcore.getRuntimeCapabilities().ray_tracing_indirect)
+                throw std::runtime_error("pelican.ray_tracing.indirect_unavailable@1: device does not support indirect ray dispatch");
+            usage |= vk::BufferUsageFlagBits::eShaderDeviceAddress;
         }
         auto buffer = vkcore.allocBuf(
             definition.size,
@@ -2860,13 +2871,9 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
     std::optional<IndirectDispatchRecord>
         indirect_dispatch;
     if (definition.dispatch.indirect) {
-        if (definition.ray_tracing) {
-            throw std::runtime_error(
-                "pelican.ray_tracing.indirect_trace_unsupported@1: ray "
-                "tracing task '" +
-                definition.name +
-                "' cannot declare compute indirect dispatch");
-        }
+        if (definition.ray_tracing &&
+            !GET_MODULE(VulkanManageCore).getRuntimeCapabilities().ray_tracing_indirect)
+            throw std::runtime_error("pelican.ray_tracing.indirect_unavailable@1: device does not support indirect ray dispatch");
         const auto &authored =
             *definition.dispatch.indirect;
         if (std::find(
@@ -2891,15 +2898,16 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         const auto &buffer_definition =
             dependencies.frame_graph_resources
                 .definition(buffer);
-        if (buffer_definition.command_layout !=
-            FrameGraphBufferCommandLayout::
-                compute_dispatch) {
+        const auto expected_layout = definition.ray_tracing
+            ? FrameGraphBufferCommandLayout::ray_dispatch
+            : FrameGraphBufferCommandLayout::compute_dispatch;
+        if (buffer_definition.command_layout != expected_layout) {
             throw std::runtime_error(
                 "Compute task '" + definition.name +
                 "' indirect dispatch buffer '" +
                 authored.buffer +
-                "' requires command_layout "
-                "'compute_dispatch'");
+                "' requires command_layout '" +
+                std::string{frameGraphBufferCommandLayoutName(expected_layout)} + "'");
         }
         if (authored.offset %
                 frameGraphIndirectCommandAlignment !=
@@ -3143,7 +3151,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                     resolved_dispatch.mip_level,
             };
     }
-    if (definition.ray_tracing) {
+    if (definition.ray_tracing && !indirect_dispatch) {
         validateRayTracingInitialExtent(
             dispatch_groups,
             GET_MODULE(VulkanManageCore)
@@ -3600,12 +3608,20 @@ void ComputeTaskContainer::dispatch(
                 record.callable_records);
             GET_MODULE(DeletionQueue).defer(record.callable_records);
         }
-        pipeline_factory.traceRays(
-            cmd_buf, record.pipeline,
-            record.dispatch_x, record.dispatch_y,
-            record.dispatch_z,
-            frame_resources.rayTracingSceneShaderBindingTables(),
-            record.callable_records.get());
+        if (record.indirect_dispatch) {
+            const auto &indirect = *record.indirect_dispatch;
+            const auto &buffer = GET_MODULE(FrameGraphResourceContainer).buffer(indirect.buffer);
+            const auto address = GET_MODULE(VulkanManageCore).getDevice().getBufferAddress(
+                vk::BufferDeviceAddressInfo{buffer.buffer.get()}) + indirect.offset;
+            pipeline_factory.traceRaysIndirect(cmd_buf, record.pipeline, address,
+                frame_resources.rayTracingSceneShaderBindingTables(), record.callable_records.get());
+        } else {
+            pipeline_factory.traceRays(
+                cmd_buf, record.pipeline,
+                record.dispatch_x, record.dispatch_y, record.dispatch_z,
+                frame_resources.rayTracingSceneShaderBindingTables(),
+                record.callable_records.get());
+        }
     } else if (record.indirect_dispatch) {
         const auto &indirect =
             *record.indirect_dispatch;
@@ -3639,9 +3655,8 @@ void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf
         resource_container.definition(resource);
     const auto indirect_compute =
         to_kind == FramePlanNodeKind::compute &&
-        definition.command_layout ==
-            FrameGraphBufferCommandLayout::
-                compute_dispatch;
+        (definition.command_layout == FrameGraphBufferCommandLayout::compute_dispatch ||
+         definition.command_layout == FrameGraphBufferCommandLayout::ray_dispatch);
     const auto indirect_draw =
         to_kind == FramePlanNodeKind::render &&
         (definition.command_layout ==

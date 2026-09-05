@@ -23,6 +23,7 @@ std::string_view frameGraphHostBufferSourceName(
 // project authoring.
 enum class FrameGraphBufferCommandLayout : std::uint8_t {
     compute_dispatch,
+    ray_dispatch,
     indexed_draw,
     draw_count,
 };

@@ -1,3 +1,4 @@
+#include <catch2/generators/catch_generators.hpp>
 #include "../src/core/renderingpass/fullscreenpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/genericrasterpassinfojsonparser.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
@@ -1485,9 +1486,9 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "typed indirect compute dispatch creates a graph read and validates its command buffer",
+    "typed indirect compute and ray dispatch create graph reads and validate command buffers",
     "[renderingpass][compute][indirect][wp210]") {
-    const auto config =
+    auto config =
         nlohmann::json::parse(R"json({
           "buffers": [
             {
@@ -1521,6 +1522,14 @@ TEST_CASE(
           ]
         })json");
 
+    const bool ray = GENERATE(false, true);
+    if (ray) {
+        config["buffers"][0]["command_layout"] = "ray_dispatch";
+        config["compute_tasks"][1].erase("shader");
+        config["compute_tasks"][1]["ray_tracing"] = {
+            {"raygen", "shaders/trace"}, {"miss", "shaders/miss"},
+            {"closesthit", "shaders/hit"}};
+    }
     const auto buffers =
         parseFrameGraphBufferDefinitionsFromJson(
             config);
@@ -1529,13 +1538,13 @@ TEST_CASE(
             config);
     REQUIRE(
         buffers.at(0).command_layout ==
-        FrameGraphBufferCommandLayout::
-            compute_dispatch);
+        (ray ? FrameGraphBufferCommandLayout::ray_dispatch
+             : FrameGraphBufferCommandLayout::compute_dispatch));
     REQUIRE(
         std::string{
             frameGraphBufferCommandLayoutName(
                 *buffers.at(0).command_layout)} ==
-        "compute_dispatch");
+        (ray ? "ray_dispatch" : "compute_dispatch"));
     REQUIRE(tasks.at(1).dispatch.indirect.has_value());
     REQUIRE(
         tasks.at(1).dispatch.indirect->buffer ==

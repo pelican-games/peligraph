@@ -1751,6 +1751,43 @@ std::shared_ptr<const RayTracingCallableRecords> PipelineFactory::prepareCallabl
     });
 }
 
+RayTracingShaderBindingTableRegions PipelineFactory::resolveTraceRegions(
+    PipelineHandle handle, const RayTracingSceneShaderBindingTables *scene_tables,
+    const RayTracingCallableRecords *callable_records) const {
+    const auto &record = pipelines.get(handle);
+    const auto *desc =
+        std::get_if<RayTracingPipelineDesc>(&record.desc);
+    const auto *scene_regions =
+        scene_tables != nullptr ? scene_tables->find(handle) : nullptr;
+    if (desc != nullptr && desc->ray_tracing_project &&
+        scene_regions == nullptr) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.scene_sbt_unavailable@1: layout pipeline dispatch has no jointly prepared scene SBT");
+    }
+    auto regions = scene_regions != nullptr
+                              ? *scene_regions
+                              : rayTracingShaderBindingTableRegions(handle);
+    if (desc && desc->callable_record_layout && !callable_records) {
+        throw std::runtime_error("pelican.ray_tracing.callable_records_unavailable@1: dispatch requires prepared callable records");
+    }
+    if (callable_records) regions.callable = callable_records->region;
+    return regions;
+}
+
+void PipelineFactory::traceRaysIndirect(
+    vk::CommandBuffer command_buffer, PipelineHandle handle, vk::DeviceAddress address,
+    const RayTracingSceneShaderBindingTables *scene_tables,
+    const RayTracingCallableRecords *callable_records) const {
+    const auto &core = GET_MODULE(VulkanManageCore);
+    if (!core.getRuntimeCapabilities().ray_tracing_indirect)
+        throw std::runtime_error("pelican.ray_tracing.indirect_unavailable@1: device does not support indirect ray dispatch");
+    if (address == 0 || address % 4 != 0)
+        throw std::runtime_error("pelican.ray_tracing.invalid_indirect_address@1: indirect address must be nonzero and 4-byte aligned");
+    const auto regions = resolveTraceRegions(handle, scene_tables, callable_records);
+    command_buffer.traceRaysIndirectKHR(regions.raygen, regions.miss, regions.hit,
+        regions.callable, address, core.getRayTracingPipelineDispatch());
+}
+
 void PipelineFactory::traceRays(
     vk::CommandBuffer command_buffer, PipelineHandle handle,
     std::uint32_t width, std::uint32_t height,
@@ -1762,25 +1799,10 @@ void PipelineFactory::traceRays(
         GET_MODULE(VulkanManageCore)
             .getRuntimeCapabilities()
             .ray_tracing_facts);
-    const auto &record = pipelines.get(handle);
-    const auto *desc =
-        std::get_if<RayTracingPipelineDesc>(&record.desc);
-    const auto *scene_regions =
-        scene_tables != nullptr ? scene_tables->find(handle) : nullptr;
-    if (desc != nullptr && desc->ray_tracing_project &&
-        scene_regions == nullptr) {
-        throw std::runtime_error(
-            "pelican.ray_tracing.scene_sbt_unavailable@1: layout pipeline dispatch has no jointly prepared scene SBT");
-    }
-    const auto &regions = scene_regions != nullptr
-                              ? *scene_regions
-                              : rayTracingShaderBindingTableRegions(handle);
-    if (desc && desc->callable_record_layout && !callable_records) {
-        throw std::runtime_error("pelican.ray_tracing.callable_records_unavailable@1: dispatch requires prepared callable records");
-    }
+    const auto regions = resolveTraceRegions(handle, scene_tables, callable_records);
     command_buffer.traceRaysKHR(
         regions.raygen, regions.miss, regions.hit,
-        callable_records ? callable_records->region : regions.callable, width, height, depth,
+        regions.callable, width, height, depth,
         GET_MODULE(VulkanManageCore)
             .getRayTracingPipelineDispatch());
 }

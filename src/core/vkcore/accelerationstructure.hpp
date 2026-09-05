@@ -59,6 +59,7 @@ struct RayQueryGeometryInstanceSnapshot {
         nlohmann::ordered_json::object();
     std::uint64_t aabb_buffer_address = 0;
     std::uint64_t deformed_vertex_address = 0;
+    std::uint64_t deformation_source_geometry_id = 0;
     std::shared_ptr<const void> geometry_lease;
     std::uint32_t index_count = 0;
     std::uint32_t index_offset = 0;
@@ -218,6 +219,7 @@ struct RayQueryBlasInputDiagnostics {
 struct RayQueryAccelerationStructureDiagnostics {
     bool requested = false;
     std::uint64_t blas_build_count = 0;
+    std::uint64_t blas_update_count = 0;
     std::uint64_t tlas_build_count = 0;
     std::size_t active_blas_count = 0;
     std::size_t blas_variant_count = 0;

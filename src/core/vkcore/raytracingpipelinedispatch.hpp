@@ -14,6 +14,7 @@ struct RayTracingPipelineDispatch {
     PFN_vkGetRayTracingShaderGroupHandlesKHR
         vkGetRayTracingShaderGroupHandlesKHR = nullptr;
     PFN_vkCmdTraceRaysKHR vkCmdTraceRaysKHR = nullptr;
+    PFN_vkCmdTraceRaysIndirectKHR vkCmdTraceRaysIndirectKHR = nullptr;
     PFN_vkDestroyPipeline vkDestroyPipeline = nullptr;
 
     std::uint32_t getVkHeaderVersion() const noexcept {

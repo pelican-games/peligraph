@@ -193,7 +193,7 @@ void attachRayQueryAccelerationStructures(
             .kind = RenderPipelineGpuResourceKind::
                 acceleration_structure,
             .handle = 0,
-            .name = "ray_query_scene_static_only",
+            .name = "ray_query_scene",
             .declared_bytes = 0,
         });
     scope.resource_leases.push_back(

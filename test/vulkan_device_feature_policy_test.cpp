@@ -31,6 +31,7 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
     REQUIRE_FALSE(disabled.ray_query);
     REQUIRE_FALSE(disabled.buffer_device_address);
     REQUIRE_FALSE(disabled.ray_tracing_pipeline);
+    REQUIRE_FALSE(disabled.ray_tracing_indirect);
     REQUIRE(disabled.ray_tracing_facts == RayTracingRuntimeFacts{});
     REQUIRE(disabled.device_extensions.empty());
 
@@ -108,6 +109,7 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
             .deferred_host_operations_extension = true,
             .ray_tracing_pipeline_feature = true,
             .ray_tracing_pipeline_extension = true,
+            .ray_tracing_indirect_feature = true,
             .shader_group_handle_size = 32,
             .shader_group_base_alignment = 64,
             .shader_group_handle_alignment = 0,
@@ -123,6 +125,7 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
             selectRayQueryDeviceFeatures(supported);
         CHECK(selection.ray_query);
         CHECK_FALSE(selection.ray_tracing_pipeline);
+        CHECK_FALSE(selection.ray_tracing_indirect);
         CHECK(selection.ray_tracing_facts ==
               RayTracingRuntimeFacts{});
         CHECK_FALSE(hasExtension(
@@ -154,6 +157,7 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
         const auto selection =
             selectRayQueryDeviceFeatures(supported);
         CHECK(selection.ray_tracing_pipeline);
+        CHECK_FALSE(selection.ray_tracing_indirect);
         CHECK(selection.shader_group_handle_size == 32);
         CHECK(selection.shader_group_base_alignment == 64);
         CHECK(selection.shader_group_handle_alignment == 32);
@@ -162,6 +166,14 @@ TEST_CASE("ray query bootstrap stays optional and enables its dependency set ato
         CHECK(hasExtension(
             selection,
             VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME));
+        auto indirect_supported = supported;
+        indirect_supported.ray_tracing_indirect_feature = true;
+        const auto indirect_selection =
+            selectRayQueryDeviceFeatures(indirect_supported);
+        CHECK(indirect_selection.ray_tracing_pipeline);
+        CHECK(indirect_selection.ray_tracing_indirect);
+        CHECK(indirect_selection.device_extensions ==
+              selection.device_extensions);
     }
 }
 

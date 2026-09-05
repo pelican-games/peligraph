@@ -638,6 +638,91 @@ struct Wp380RuntimeCleanup {
     }
 };
 
+TEST_CASE("RT6 GPU generated indirect ray dimensions reach every 3D lane",
+          "[rt6][indirect][ray-tracing][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"rt6_indirect_launch"};
+    writeWp386aProceduralProject(project.path);
+    const auto feature_path = project.path / "features/wp386_procedural.json";
+    auto feature = Json::parse(readWp374aText(feature_path));
+    feature["buffers"] = Json::array({{
+        {"name", "ray_args"}, {"size", 16}, {"lifetime", "persistent"},
+        {"command_layout", "ray_dispatch"}
+    }});
+    feature["compute_tasks"][0]["dispatch"] = {
+        {"indirect", {{"buffer", "ray_args"}, {"offset", 4}}}};
+    feature["compute_tasks"].insert(feature["compute_tasks"].begin(), Json{
+        {"name", "build_ray_args"},
+        {"shader", "project://shaders/build_ray_args"},
+        {"writes", {"ray_args"}},
+        {"resource_ports", {{"args", {
+            {"resource", "ray_args"}, {"kind", "buffer"},
+            {"element", "uvec4"}, {"access", "storage"}}}}},
+        {"dispatch", {{"groups", {1, 1, 1}}}},
+        {"schedule", "per_frame"}
+    });
+    writeWp374aText(project.path / "shaders/build_ray_args.comp", R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+void main() {
+    pelican_resource_args.values[0] = uvec4(0u, 2u, 3u, 2u);
+}
+)glsl");
+    writeWp374aText(feature_path, feature.dump());
+    auto raygen = RayTracingRt31Fixture::wp366RaygenSource(
+        "0u", "0u", "pelican_resource_wp386_out");
+    const std::string pixel = "ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);";
+    raygen.replace(raygen.find(pixel), pixel.size(), R"glsl(
+    uint lane = gl_LaunchIDEXT.x + gl_LaunchSizeEXT.x *
+                (gl_LaunchIDEXT.y + gl_LaunchSizeEXT.y * gl_LaunchIDEXT.z);
+    ivec2 pixel = ivec2(lane, 0);
+)glsl");
+    const std::string result = "uvec4(payload.marker, payload.q, payload.flags, payload.tint)";
+    raygen.replace(raygen.find(result), result.size(), R"glsl(
+        uvec4(payload.marker + gl_LaunchIDEXT.x, gl_LaunchIDEXT.y, gl_LaunchIDEXT.z,
+              gl_LaunchSizeEXT.x + 256u * gl_LaunchSizeEXT.y + 65536u * gl_LaunchSizeEXT.z)
+)glsl");
+    writeWp374aText(project.path / "shaders/wp386.rgen", raygen);
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    (void)configureWp374aRuntime(project.path);
+    TestSupport::requireVulkanDevice("RT6 indirect ray launch");
+    if (!GET_MODULE(VulkanManageCore).getRuntimeCapabilities().ray_tracing_indirect) {
+        SKIP("rayTracingPipelineTraceRaysIndirect is unavailable");
+    }
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    test_support::loadScene(GET_MODULE(SceneLoader), "main");
+    const auto check_lanes = [&](std::uint32_t width, std::uint32_t height,
+                                 std::uint32_t depth) {
+        (void)renderWp374aProductionRows();
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
+            "wp386_out", ImageSubresourceRange{});
+        const auto lane_count = width * height * depth;
+        REQUIRE(image.bytes.size() >= lane_count * 4 * sizeof(std::uint32_t));
+        for (std::uint32_t z = 0; z < depth; ++z) {
+            for (std::uint32_t y = 0; y < height; ++y) {
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    const auto lane = x + width * (y + height * z);
+                    CAPTURE(x, y, z);
+                    std::array<std::uint32_t, 4> actual{};
+                    std::memcpy(actual.data(), image.bytes.data() + lane * sizeof(actual),
+                                sizeof(actual));
+                    const std::array<std::uint32_t, 4> expected{
+                        0x386au + x, y, z, width + 256u * height + 65536u * depth};
+                    CHECK(actual == expected);
+                }
+            }
+        }
+    };
+    check_lanes(2, 3, 2);
+#else
+    SKIP("RT6 indirect production shader fixture requires the runtime compiler");
+#endif
+}
+
 TEST_CASE("RT6 explicit ray launch dimensions and runtime edits reach every 3D lane",
           "[rt6][ray-tracing][production][gpu]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
@@ -745,6 +830,9 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
                           pixels[9] != 0xffffffffu};
     };
     const auto initial = sample();
+    const auto first_as = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+    CHECK(first_as.blas_build_count == 2);
+    CHECK(first_as.blas_update_count == 0);
     CHECK_FALSE(initial[0]);
     CHECK_FALSE(initial[1]);
     CHECK(initial[2]);
@@ -776,12 +864,16 @@ TEST_CASE("RT5 shared skinned mesh instances trace their current skin and morph 
     // The left ray requires both morph and skin; the right uses skin alone.
     // Sharing either instance's output makes at least one of these rays miss.
     const auto deformed = sample();
+    const auto updated_as = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+    CHECK(updated_as.blas_build_count == first_as.blas_build_count);
+    CHECK(updated_as.blas_update_count == 2);
     CHECK(deformed[0]);
     CHECK(deformed[1]);
     CHECK(deformed[2]);
     publish_morph(0.0F, 2);
     instances.setSkinningPalette(*right_id, std::array{glm::mat4{1.0F}});
     const auto restored = sample();
+    CHECK(GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting().blas_update_count == 4);
     CHECK_FALSE(restored[0]);
     CHECK_FALSE(restored[1]);
     CHECK(restored[2]);

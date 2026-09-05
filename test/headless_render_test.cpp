@@ -10138,7 +10138,7 @@ TEST_CASE(
         const auto old_blas_input =
             initial.active_blas_inputs.front();
 
-        // Static geometry is reused; the two deformed primitives rebuild each frame.
+        // Static geometry is reused; the two deformed primitives refit each frame.
         instances.setTrs(
             model_instance, {0.1F, 0.0F, 0.0F},
             glm::quat{1.0F, 0.0F, 0.0F, 0.0F},
@@ -10147,8 +10147,8 @@ TEST_CASE(
         const auto transformed =
             renderer
                 .rayQueryAccelerationStructureDiagnosticsForTesting();
-        CHECK(transformed.blas_build_count ==
-              initial.blas_build_count + 2);
+        CHECK(transformed.blas_build_count == initial.blas_build_count);
+        CHECK(transformed.blas_update_count == initial.blas_update_count + 2);
         CHECK(transformed.tlas_build_count ==
               initial.tlas_build_count + 1);
         CHECK(transformed.geometry_pool_invalidation_count == 0);
@@ -10167,6 +10167,7 @@ TEST_CASE(
                 .rayQueryAccelerationStructureDiagnosticsForTesting();
         CHECK(rebuilt.blas_build_count ==
               transformed.blas_build_count + 3);
+        CHECK(rebuilt.blas_update_count == transformed.blas_update_count);
         CHECK(rebuilt.model_rebuild_invalidation_count == 1);
 
         const auto old_index_capacity =
@@ -10262,8 +10263,6 @@ TEST_CASE(
                           static_primitive.vert_offset));
 
         const auto plan = renderer.currentFramePlanJson();
-        CHECK(plan.at("ray_query_acceleration_structures")
-                  .at("static_only") == true);
         CHECK(plan.at("ray_query_acceleration_structures")
                   .at("excluded")
                   .at("primitive_count") == 2);

@@ -82,7 +82,7 @@ sequenceDiagram
 16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L64) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
 17. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L3079)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
+16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L3171)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
 
 `RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L85)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
@@ -378,7 +378,7 @@ ECSCore::update()
 
 ### `freeze_actions` とImGuiゲートの後始末
 
-`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L57) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L75)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L152) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L623)）。ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L60)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
+`freeze_actions` でImGuiへ入力をルーティングする前に、[`resolveFrameStateModules()`](../../src/core/appflow/framephase.cpp#L57) がゲートの開閉を判定します。ゲートの実体は [`isImGuiRuntimeEnabled(config)`](../../src/core/imgui/imguiruntime.cpp#L9) で、`EngineLaunchConfig` の `headless` / `rpc` / `input_replay` / `golden_mode` / `xr_active` を読むだけの述語です（この関数自身は何も書き換えません）。ここでの「開いている」はこの述語が真で、そのフレームの `FrameStateModules.imgui_system` に [`GET_MODULE(ImGuiSystem)` が入る](../../src/core/appflow/framephase.cpp#L75)状態、「閉じている」は偽で `imgui_system` が nullptr のまま（= `freeze_actions` の [`routeInputAndBeginFrame()`](../../src/core/appflow/framephase.cpp#L152) が呼ばれず、そのフレームで ImGui フレームが始まらない）状態を指します。開閉が変わるのは、読んでいる側のlaunch configが変わったときです（例: XRのVulkan bootstrapが失敗してflatへ落ちる [`core.cpp` 内](../../src/core/vkcore/core.cpp#L626)）。ImGuiゲートが閉じたフレームでは、開始済みのImGuiフレームを [`ImGuiSystem::endFrameIfStarted()`](../../src/core/imgui/imguisystem.hpp#L31) で畳みます（[`framephase.cpp` 内](../../src/core/appflow/framephase.cpp#L60)）。守っている対応関係は「`freeze_actions` の `routeInputAndBeginFrame()` が立てた `frame_started` は、そのフレームの `ImGuiSystem::render()` が必ず倒す」で、ImGuiパスを持たないグラフへ持ち越すと `render()` が呼ばれず、立ったままのフレームへ次の `NewFrame()` が重なります。
 
 > **設計決定:** ゲートは論理フレーム境界で閉じ得るため、「開始済みのImGuiフレームを、ImGui passを持たないグラフへ持ち越さない」ことを明示的に保証しています。ソース中のコメントがそのまま契約です。
 
@@ -480,7 +480,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 - 形式の不正、GPU初期化失敗、Component不正は基本的に`std::runtime_error`でfail-fastです。
 - `PelicanCore::run()`がruntime全体の最終catchです。
 - job workerの例外は [`JobSystem` が例外を退避する箇所](../../src/core/job_system.cpp#L51) で`exception_ptr`に保持し、main threadの`wait()`で再throwします。
-- shader hot reload失敗だけは旧shader/pipelineを維持してwarningにします（[`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1052)、[`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1805)）。
+- shader hot reload失敗だけは旧shader/pipelineを維持してwarningにします（[`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1052)、[`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1827)）。
 - teardownは例外を外へ出しません。
 
 この違いは「初回構築に失敗した不完全なruntimeは続けないが、稼働中の編集失敗では最後の正常版を守る」という方針です。

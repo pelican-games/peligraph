@@ -74,6 +74,7 @@ DECLARE_MODULE(VulkanManageCore) {
     PFN_vkGetRayTracingShaderGroupHandlesKHR
         get_ray_tracing_shader_group_handles = nullptr;
     PFN_vkCmdTraceRaysKHR cmd_trace_rays = nullptr;
+    PFN_vkCmdTraceRaysIndirectKHR cmd_trace_rays_indirect = nullptr;
     PFN_vkDestroyPipeline destroy_pipeline = nullptr;
     RayTracingPipelineDispatch
         ray_tracing_pipeline_dispatch;

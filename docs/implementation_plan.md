@@ -23237,7 +23237,20 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT6 explicit dispatch):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。skin/morph/VATに続き、画像と独立した3Dレイ起動とゲームAPIからのサイズ変更を接続。次はRT6のindirect、ASノード・複数AS構成。RT5 refit、Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT6 indirect / RT5 refit):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。GPUが生成する起動数による間接レイトレと変形BLASのrefitを接続。次はRT6のASノード・複数AS構成。Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+
+**RT5 refit (2026-09-06):**
+- skin/morph/VATのBLASを初回はAllowUpdateで構築し、同一個体・元geometry・topology・flagsなら前回ASを読み取り元に新規ASへUPDATE。pool/model変更はrebuild。静的geometryは従来どおり再利用。
+- 使用中のASを変更せず、UPDATE元をsubmission完了まで保持。世代のStateを連鎖保持せず、必要なAS資源だけを所有。AS書込み→次UPDATE読取りのbarrierを追加した。
+- `blas_update_count`でrefit回数を公開し、`blas_build_count`は作り直しの回数を維持。現行機能と矛盾する`static_only`診断とarenaの旧名称を除去。
+- 実GPUのRT5/RT6は4/4（89 assertions）。共有meshの2個体のskin/morph変形・復元、初回build→以後refit、VAT loop/clamp、direct/indirectを確認。AS/影の既存回帰5/5（494 assertions）でモデル差替え・pool再確保時のrebuildも確認。Player/Studio build成功。
+- 出力頂点・ASの新規確保は残る。性能の定量改善は未測定であり、allocation削減やAS graph nodeまで完了したとは扱わない。
+
+**RT6 indirect dispatch (2026-09-06):**
+- `command_layout:ray_dispatch` とRT taskの `dispatch.indirect` を接続。GPU bufferのwidth/height/depthをCPUへ読み戻さず使用。buffer usage、device address、offsetと12-byte範囲、compute書込みから間接コマンド読取りへの同期を既存frame graphへ統合。
+- optional device featureを個別に有効化し、非対応時はindirectのみ明示拒否。direct/callableのSBT選択を共通化した。
+- 実GPUでcomputeが書いた2×3×2の全laneを非ゼロoffsetから実行。RT6は2/2（41 assertions）、共通経路のRT4 callableも成功。設定解析4/4（92 assertions）、device policy 1/1（70 assertions）、Player/Studio build成功。
+- 検証fixtureのproducer後置で全laneゼロになることを確認し、既存の宣言順RAW規約に合わせproducerを先に宣言。JSON insertのoverload修正後に上記GPU成功。plannerの仕様拡張や新検証基盤は追加しない。
 
 **RT6 explicit dispatch (2026-09-06):**
 - `dispatch.rays:[width,height,depth]` を追加。`rays_from` と排他的で、画像サイズを必要とせず正のuint32の3次元で起動する。既存のdevice dimension/総invocation上限検査を再利用。

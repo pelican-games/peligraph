@@ -81,6 +81,7 @@ struct AccelerationStructureResource {
 struct RecordedSubmissionResources {
     std::shared_ptr<const void> state;
     std::vector<BufferWrapper> transient_buffers;
+    std::vector<std::shared_ptr<AccelerationStructureResource>> update_sources;
 };
 
 struct AddressedBuffer {
@@ -715,8 +716,8 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
     }
     return {
         {"requested", diagnostics.requested},
-        {"static_only", true},
         {"blas_build_count", diagnostics.blas_build_count},
+        {"blas_update_count", diagnostics.blas_update_count},
         {"tlas_build_count", diagnostics.tlas_build_count},
         {"active_blas_count", diagnostics.active_blas_count},
         {"blas_variant_count", diagnostics.blas_variant_count},
@@ -761,6 +762,21 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
 }
 
 struct RayQueryAccelerationStructureScope::State {
+    struct DeformedBlasKey {
+        std::uint64_t source_geometry_id = 0;
+        std::uint64_t scene_epoch = 0;
+        std::uint32_t instance_index = 0;
+        std::uint32_t instance_generation = 0;
+        std::uint32_t node_index = 0;
+        std::uint32_t geometry_flags = 0;
+        std::uint32_t index_count = 0;
+        std::uint32_t index_offset = 0;
+        std::int32_t vertex_offset = 0;
+        std::uint32_t vertex_count = 0;
+        auto operator<=>(const DeformedBlasKey &) const = default;
+    };
+    std::map<DeformedBlasKey, std::shared_ptr<AccelerationStructureResource>> deformed_blas;
+
     struct BlasVariantKey {
         RayGeometryKind geometry_kind = RayGeometryKind::triangles;
         std::uint64_t geometry_allocation_id = 0;
@@ -1118,6 +1134,13 @@ RayQueryAccelerationStructureScope::recordFrame(
         : lowerRayTracingTlasInstancePlan(
               instances, classification.eligible_instance_indices,
               candidate->ray_scene_rows.get(), candidate->ray_type_count);
+    std::map<std::uint64_t, const RayQueryGeometryInstanceSnapshot *> deformed_instances;
+    for (const auto index : classification.eligible_instance_indices) {
+        const auto &source = instances[index];
+        if (source.geometry_kind == RayGeometryKind::triangles &&
+            source.deformed_vertex_address != 0 && source.deformation_source_geometry_id != 0)
+            deformed_instances.emplace(source.geometry_allocation_id, &source);
+    }
     std::set<State::BlasVariantKey> required_variants;
     for (const auto &planned : planned_instances) {
         required_variants.emplace(State::BlasVariantKey{
@@ -1143,12 +1166,28 @@ RayQueryAccelerationStructureScope::recordFrame(
             material_alpha_profile_active, geometry_flags, {},
             RayProfileAccelerationStructureFlagSite::blas_geometry,
             identity);
+        std::optional<State::DeformedBlasKey> deformation_key;
+        std::shared_ptr<AccelerationStructureResource> update_source;
+        if (const auto found = deformed_instances.find(identity); found != deformed_instances.end()) {
+            const auto &source = *found->second;
+            deformation_key = State::DeformedBlasKey{
+                source.deformation_source_geometry_id, source.scene_epoch,
+                source.instance_index, source.instance_generation, source.node_index,
+                variant.geometry_flags,
+                source.index_count, source.index_offset, source.vertex_offset, source.vertex_count};
+            if (can_reuse) {
+                const auto previous = active_state_->deformed_blas.find(*deformation_key);
+                if (previous != active_state_->deformed_blas.end()) update_source = previous->second;
+            }
+        }
         if (can_reuse) {
             const auto existing =
                 active_state_->blas.find(variant);
             if (existing != active_state_->blas.end()) {
                 candidate->blas.emplace(variant,
                                         existing->second);
+                if (deformation_key)
+                    candidate->deformed_blas.emplace(*deformation_key, existing->second);
                 continue;
             }
         }
@@ -1187,6 +1226,19 @@ RayQueryAccelerationStructureScope::recordFrame(
                 ePreferFastTrace,
             vk::BuildAccelerationStructureModeKHR::eBuild,
             {}, {}, 1, &geometry_info};
+        if (deformation_key) build_info.flags |= vk::BuildAccelerationStructureFlagBitsKHR::eAllowUpdate;
+        if (update_source) {
+            build_info.mode = vk::BuildAccelerationStructureModeKHR::eUpdate;
+            build_info.srcAccelerationStructure = update_source->handle.get();
+            // The previous submission built this source; traces may keep reading
+            // it while this update writes a distinct destination allocation.
+            recordMemoryBarrier(command_buffer,
+                vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
+                vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
+                vk::AccessFlagBits::eAccelerationStructureWriteKHR,
+                vk::AccessFlagBits::eAccelerationStructureReadKHR);
+            recorded->update_sources.push_back(update_source);
+        }
         vk::AccelerationStructureBuildSizesInfoKHR sizes;
         device.getAccelerationStructureBuildSizesKHR(
             vk::AccelerationStructureBuildTypeKHR::eDevice,
@@ -1203,10 +1255,12 @@ RayQueryAccelerationStructureScope::recordFrame(
             command_buffer, vkcore, build_info,
             vk::AccelerationStructureBuildRangeInfoKHR{
                 primitive_count, 0, 0, 0},
-            sizes.buildScratchSize,
+            update_source ? sizes.updateScratchSize : sizes.buildScratchSize,
             recorded->transient_buffers);
+        if (deformation_key) candidate->deformed_blas.emplace(*deformation_key, blas);
         candidate->blas.emplace(variant, std::move(blas));
-        ++candidate->diagnostics.blas_build_count;
+        if (update_source) ++candidate->diagnostics.blas_update_count;
+        else ++candidate->diagnostics.blas_build_count;
     }
 
     candidate->diagnostics.active_blas_count =
