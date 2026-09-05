@@ -1203,8 +1203,14 @@ TEST_CASE(
                 "pelican.ray_tracing.invalid_recursion@1"));
     }
 
+    auto with_callable = config;
+    with_callable["compute_tasks"][0]["ray_tracing"]["callable"] = {"shaders/a", "shaders/b"};
+    const auto callable_tasks = parseComputeTaskDefinitionsFromConfigJson(with_callable);
+    REQUIRE(callable_tasks[0].ray_tracing->callables.size() == 2);
+    CHECK(callable_tasks[0].ray_tracing->callables[1].stage == ShaderStage::callable);
+
     for (const auto *unsupported :
-         {"any_hit", "intersection", "callable"}) {
+         {"any_hit", "intersection"}) {
         auto invalid = config;
         invalid["compute_tasks"][0]["ray_tracing"]
                [unsupported] = "shaders/unsupported";

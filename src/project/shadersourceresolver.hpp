@@ -22,6 +22,7 @@ enum class ShaderSourceStage {
     closesthit,
     anyhit,
     intersection,
+    callable,
 };
 
 enum class ShaderSourceOpenReason {

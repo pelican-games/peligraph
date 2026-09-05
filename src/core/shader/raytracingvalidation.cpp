@@ -254,6 +254,7 @@ std::string validateRayTracingPipelineInterfaces(
         }
         for (const auto storage : {
                  RayTracingInterfaceStorage::incoming_ray_payload,
+                 RayTracingInterfaceStorage::incoming_callable_data,
                  RayTracingInterfaceStorage::hit_attribute}) {
             if (interfaceCount(*occurrence.entry, storage) > 1) {
                 throw std::runtime_error(
@@ -267,6 +268,16 @@ std::string validateRayTracingPipelineInterfaces(
     validate_occurrence(request.raygen);
     for (const auto &occurrence : request.misses)
         validate_occurrence(occurrence);
+    for (const auto &occurrence : request.callables) {
+        validate_occurrence(occurrence);
+        if (occurrence.entry->shader_record &&
+            !occurrence.entry->shader_record->members.empty()) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.callable_record_unsupported@1: " +
+                occurrenceName(occurrence) +
+                " declares shader-record data, but callable records currently contain only shader handles");
+        }
+    }
     const auto validate_triangle_hit_stage = [&](const auto &occurrence) {
         validate_occurrence(occurrence);
         for (const auto &interface : occurrence.entry->interfaces) {
@@ -546,9 +557,45 @@ std::string validateRayTracingPipelineInterfaces(
         for (const auto &trace : caller.entry->trace_calls) {
             validate_trace(caller, trace);
         }
+        for (const auto &call : caller.entry->callable_calls) {
+            const auto compare = [&](std::size_t index) {
+                if (index >= request.callables.size()) {
+                    throw std::runtime_error(
+                        "pelican.ray_tracing.callable_index_out_of_range@1: " +
+                        occurrenceName(caller) + " instruction " +
+                        std::to_string(call.instruction_number) + " callable index=" +
+                        std::to_string(index) + " table size=" +
+                        std::to_string(request.callables.size()));
+                }
+                const auto &target = request.callables[index];
+                const auto *incoming = findInterface(*target.entry,
+                    RayTracingInterfaceStorage::incoming_callable_data);
+                if (!incoming || incoming->type != call.data_type) {
+                    throw std::runtime_error(
+                        "pelican.ray_tracing.callable_data_mismatch@1: " +
+                        occurrenceName(caller) + " instruction " +
+                        std::to_string(call.instruction_number) + " calls " +
+                        occurrenceName(target) + " with " +
+                        describeRayTracingCanonicalType(call.data_type) +
+                        "; incoming=" + (incoming ?
+                            describeRayTracingCanonicalType(incoming->type) : "<missing>"));
+                }
+            };
+            if (call.callable_index) {
+                compare(*call.callable_index);
+            } else {
+                // The shader owns dynamic index bounds, as for other shader
+                // array accesses. Validate every possible table interface.
+                if (request.callables.empty()) compare(0);
+                for (std::size_t index = 0; index < request.callables.size(); ++index)
+                    compare(index);
+            }
+        }
     };
     validate_traces(request.raygen);
     for (const auto &occurrence : request.misses)
+        validate_traces(occurrence);
+    for (const auto &occurrence : request.callables)
         validate_traces(occurrence);
     for (std::size_t index = 0; index < hit_groups.size(); ++index) {
         validate_traces(hit_groups[index]);
@@ -574,6 +621,8 @@ std::string validateRayTracingPipelineInterfaces(
     };
     digest_occurrence(request.raygen);
     for (const auto &occurrence : request.misses)
+        digest_occurrence(occurrence);
+    for (const auto &occurrence : request.callables)
         digest_occurrence(occurrence);
     for (std::size_t index = 0; index < hit_groups.size(); ++index) {
         digest_occurrence(hit_groups[index]);
@@ -618,6 +667,19 @@ std::string validateRayTracingPipelineInterfaces(
             }
         };
     const auto digest_traces = [&](const auto &caller) {
+        for (const auto &call : caller.entry->callable_calls) {
+            hashAppend(hash, "executeCallable");
+            hashAppend(hash, std::to_string(call.instruction_number));
+            hashAppend(hash, describeRayTracingCanonicalType(call.data_type));
+            hashAppend(hash, call.callable_index ?
+                std::to_string(*call.callable_index) : "<dynamic>");
+            if (call.callable_index) {
+                digest_indexed_target("callableTarget", *call.callable_index, request.callables);
+            } else {
+                for (std::uint32_t index = 0; index < request.callables.size(); ++index)
+                    digest_indexed_target("callableTarget", index, request.callables);
+            }
+        }
         for (const auto &trace : caller.entry->trace_calls) {
             hashAppend(hash, "trace");
             hashAppend(hash,
@@ -661,6 +723,8 @@ std::string validateRayTracingPipelineInterfaces(
     };
     digest_traces(request.raygen);
     for (const auto &occurrence : request.misses)
+        digest_traces(occurrence);
+    for (const auto &occurrence : request.callables)
         digest_traces(occurrence);
     for (std::size_t index = 0; index < hit_groups.size(); ++index) {
         digest_traces(hit_groups[index]);

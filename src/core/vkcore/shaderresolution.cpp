@@ -47,6 +47,8 @@ std::string_view wireStageName(DeclaredShaderStage stage) {
         return "anyhit";
     case DeclaredShaderStage::intersection:
         return "intersection";
+    case DeclaredShaderStage::callable:
+        return "callable";
     }
     throw std::runtime_error("unknown declared shader stage");
 }
@@ -281,6 +283,12 @@ Json computeShaderResolution(
                  ShaderSourceStage::closesthit});
         }
     }
+    if (ray_definition) {
+        for (std::size_t index = 0; index < ray_definition->callables.size(); ++index) {
+            stages.push_back({DeclaredShaderStage::callable, index,
+                ray_definition->callables[index].ref, ShaderSourceStage::callable});
+        }
+    }
     auto result = resolvedStages(
         std::move(stages), task.declared_shader_refs,
         false, task.shader_declaration_parsed,
@@ -383,7 +391,7 @@ shaderResolutionFamilyContracts() {
     static constexpr std::string_view skinned[] = {
         "vertex", "skinned_vertex", "fragment"};
     static constexpr std::string_view compute_or_ray[] = {
-        "compute", "raygen", "miss[index]*", "closesthit[index]*",
+        "compute", "raygen", "miss[index]*", "closesthit[index]*", "callable[index]*",
         "hit_slot_count?", "closesthit_slots[hit_slot]*",
         "intersection_slots[hit_slot]*",
         "anyhit_slots[hit_slot]*"};

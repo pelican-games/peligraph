@@ -1461,6 +1461,74 @@ TEST_CASE(
     }
 }
 
+TEST_CASE("Callable reflection follows helper calls and captures data types",
+          "[ray-tracing][rt4][reflection]") {
+    auto words = moduleHeader();
+    appendMainEntry(words, SpvExecutionModelCallableKHR, 10, {4});
+    appendInstruction(words, SpvOpTypeFloat, {1, 32});
+    appendInstruction(words, SpvOpTypePointer,
+                      {2, SpvStorageClassIncomingCallableDataKHR, 1});
+    appendInstruction(words, SpvOpVariable,
+                      {2, 4, SpvStorageClassIncomingCallableDataKHR});
+    appendInstruction(words, SpvOpTypeInt, {5, 32, 0});
+    appendInstruction(words, SpvOpConstant, {5, 6, 1});
+    appendInstruction(words, SpvOpFunction, {0, 10, 0, 0});
+    appendInstruction(words, SpvOpFunctionCall, {0, 20, 11});
+    appendInstruction(words, SpvOpFunctionEnd, {});
+    appendInstruction(words, SpvOpFunction, {0, 11, 0, 0});
+    appendInstruction(words, SpvOpExecuteCallableKHR, {6, 4});
+    appendInstruction(words, SpvOpExecuteCallableKHR, {99, 4});
+    appendInstruction(words, SpvOpFunctionEnd, {});
+    const auto module = inspectRayTracingSpirv(words, "memory://callable");
+    const auto &entry = selectRayTracingEntryPoint(
+        module, ShaderStage::callable, "main", "memory://callable");
+    REQUIRE(entry.interfaces.size() == 1);
+    CHECK(entry.interfaces[0].storage ==
+          RayTracingInterfaceStorage::incoming_callable_data);
+    REQUIRE(entry.callable_calls.size() == 2);
+    CHECK(entry.callable_calls[0].callable_index == 1u);
+    CHECK(entry.callable_calls[0].data_type ==
+          scalar(RayTracingCanonicalTypeKind::floating, 32));
+    CHECK_FALSE(entry.callable_calls[1].callable_index);
+}
+
+TEST_CASE("Callable data validation resolves static and dynamic target tables",
+          "[ray-tracing][rt4][validation]") {
+    const auto f32 = scalar(RayTracingCanonicalTypeKind::floating, 32);
+    const auto u32 = scalar(RayTracingCanonicalTypeKind::unsigned_integer, 32);
+    RayTracingEntryPointReflection raygen;
+    raygen.callable_calls = {{.data_type = f32, .callable_index = 0}};
+    std::array<RayTracingEntryPointReflection, 2> callees;
+    for (auto &callee : callees)
+        callee.interfaces = {interfaceVariable(
+            RayTracingInterfaceStorage::incoming_callable_data, 0, f32)};
+    const std::array<RayTracingShaderOccurrence, 2> occurrences{{
+        {.stage = ShaderStage::callable, .group_index = 1,
+         .diagnostic_uri = "first", .entry = &callees[0]},
+        {.stage = ShaderStage::callable, .group_index = 2,
+         .diagnostic_uri = "second", .entry = &callees[1]},
+    }};
+    RayTracingPipelineInterfaceRequest request{
+        .raygen = {.entry = &raygen}, .callables = occurrences};
+    CHECK_NOTHROW(validateRayTracingPipelineInterfaces(request, generousFacts()));
+    callees[1].interfaces[0].type = u32;
+    // A constant call does not impose its type on unrelated records.
+    CHECK_NOTHROW(validateRayTracingPipelineInterfaces(request, generousFacts()));
+    raygen.callable_calls[0].callable_index.reset();
+    CHECK_THROWS_WITH(validateRayTracingPipelineInterfaces(request, generousFacts()),
+        Catch::Matchers::ContainsSubstring("callable_data_mismatch"));
+    callees[1].interfaces[0].type = f32;
+    CHECK_NOTHROW(validateRayTracingPipelineInterfaces(request, generousFacts()));
+    raygen.callable_calls[0].callable_index = 2;
+    CHECK_THROWS_WITH(validateRayTracingPipelineInterfaces(request, generousFacts()),
+        Catch::Matchers::ContainsSubstring("callable_index_out_of_range"));
+    raygen.callable_calls[0].callable_index = 0;
+    callees[0].shader_record = RayTracingShaderRecordReflection{
+        .members = {{.type = f32, .offset = 0}}};
+    CHECK_THROWS_WITH(validateRayTracingPipelineInterfaces(request, generousFacts()),
+        Catch::Matchers::ContainsSubstring("callable_record_unsupported"));
+}
+
 TEST_CASE(
     "RT interface arrays and incoming counts fail with fixed named codes",
     "[ray-tracing][rt1a][reflection][negative]") {

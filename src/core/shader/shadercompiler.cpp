@@ -74,6 +74,8 @@ shaderc_shader_kind toShadercKind(vk::ShaderStageFlagBits stage) {
         return shaderc_anyhit_shader;
     case vk::ShaderStageFlagBits::eIntersectionKHR:
         return shaderc_intersection_shader;
+    case vk::ShaderStageFlagBits::eCallableKHR:
+        return shaderc_callable_shader;
     default:
         throw std::runtime_error("Unsupported shader stage for shaderc");
     }
@@ -583,6 +585,9 @@ std::optional<vk::ShaderStageFlagBits> inferShaderStageFromPath(const std::files
     }
     if (ext == ".rahit") {
         return vk::ShaderStageFlagBits::eAnyHitKHR;
+    }
+    if (ext == ".rcall") {
+        return vk::ShaderStageFlagBits::eCallableKHR;
     }
     if (ext == ".rint") {
         return vk::ShaderStageFlagBits::eIntersectionKHR;

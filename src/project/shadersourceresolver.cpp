@@ -66,6 +66,8 @@ std::string_view shaderSourceStageExtension(ShaderSourceStage stage) {
         return ".rahit";
     case ShaderSourceStage::intersection:
         return ".rint";
+    case ShaderSourceStage::callable:
+        return ".rcall";
     }
     throw std::runtime_error("unknown shader source stage");
 }
@@ -121,7 +123,7 @@ bool isCanonicalShaderSourceOpenReference(
     return extension == ".vert" || extension == ".frag" ||
            extension == ".comp" || extension == ".rgen" ||
            extension == ".rmiss" || extension == ".rchit" ||
-           extension == ".rahit" || extension == ".rint";
+           extension == ".rahit" || extension == ".rint" || extension == ".rcall";
 }
 
 bool isCanonicalShaderSourceOpenReference(

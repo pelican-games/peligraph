@@ -3996,7 +3996,7 @@
     "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|PipelineFactory::createRayTracingPipeline()": "PipelineFactory::createRayTracingPipeline(",
     "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|PipelineFactory::createRayTracingShaderBindingTable()": "PipelineFactory::createRayTracingShaderBindingTable(",
     "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|PipelineFactory::createRayTracingShaderBindingTable()|#1": "PipelineFactory::createRayTracingShaderBindingTable(",
-    "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|PipelineFactory::descriptorSetLayoutKeysFor()": "PipelineFactory::descriptorSetLayoutKeysFor(",
+    "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|PipelineFactory::descriptorSetLayoutKeysFor()": "PipelineFactory::descriptorSetLayoutKeysFor(const ShaderReflection &reflection) const {",
     "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|PipelineFactory::rebuildPrepared()": "PipelineRebuildResult PipelineFactory::rebuildPrepared(",
     "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|hashCombine()": "size_t hashCombine(size_t seed, size_t value) {",
     "docs/source-code-guide/10_background_knowledge.md|../../src/core/shader/pipelinefactory.cpp|rayMaterialDescriptorBindingFlags()": "rayMaterialDescriptorBindingFlags() {",

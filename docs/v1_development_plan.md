@@ -33,7 +33,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT3-1 | instance mask/flags/custom index と geometry flags | WP374/374a 着地済み。WP384-fix 後の対象 GPU/RPC 4 件が統合ログで成功 | 個体編集→GPU 効果→保存→再読込を GUI から通す。既存 RPC の証拠を GUI 完了とは扱わない |
 | CARRIER-RT3 | 再帰 schema、可変長行、occurrence、個体ごとの geometry override | WP382a/b/383 着地済み。382b-fix は 36ad3444 に着地(関連37/37、レビュー残余あり)、382c は 23cb5153 に着地(W1 98/98、レビュー残余あり)、382d は4ce4117dに統合(W1 95/95) | 行の追加・削除・移動、対象 geometry の選択、override の出所表示。複合undo等の残余を閉じ、CARRIER-STUDIO との接続を確認 |
 | RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列を確認し、386cの数値基礎はae29fc98まで保存。数値基盤の追加実装は保留 | Playerで開ける学習サンプルを入口に、配置・サイズ・bounds・mixed geometryを実描画で確認する。数値oracleの完成を次機能の条件にしない |
-| RT4 | callable、per-in-flight の動的 record | 設計計画あり。今回確認した現行 pipelinefactory の callable region は空。段全体の実装完了は未確認 | callable 入出力、record 更新、frame 間の寿命を編集・観測する経路の設計が必要 |
+| RT4 | callable、per-in-flight の動的 record | callableの宣言・コンパイル・SBT・実行・単独reloadを実装、実GPUで確認。動的recordは未実装 | 動的recordの宣言・更新・frame間の寿命管理が次の実装 |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | 計画あり。既存の静的 BLAS build を動的更新の完了証拠にはしない | animation/変形と RT 結果の追随、更新方式と負荷の比較を通す |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 計画あり。現行 RT dispatch table は direct trace の入口。compute/draw indirect の既存完了を RT indirect の完了に流用しない | AS 構築→依存→trace をノードで接続・観測する。複数構成の学習価値と契約を具体化する |
 | RT7 | ノードの一級化、編集 RPC、fork/CAS | 計画あり。Studio に frame plan model/graphics/read capability は存在するが、RT 全面編集の証拠ではない | 接続編集・診断・保存・再読込・失敗時の内容保持を通す。画面上のノード移動と実行 graph の編集を区別 |
@@ -85,3 +85,5 @@ Codex が調査・実装・検証・統合・利用者への報告を担当し�
 採用・保留・不採用と根拠を残す。二者の合意はコードや実測の代わりにならない。
 2026-09-05 の接続試験は Claude Code 2.1.260 / claude-fable-5-1、fast OFF、読み取り限定で成功。
 原文はローカル `<作業ディレクトリ>/fable_trial_20260905/discussion.md`。共有可能な判断は本書と台帳に残す。
+
+**2026-09-05 最新の優先順位:** 利用者の指示により、学習サンプルの作成・拡充は後回し。エンジン中核のRT4以降の機能完成を優先する。callableの宣言・コンパイル・SBT・実行・単独reloadを実装し、実GPUで確認。per-in-flight動的recordは次の実装とする。

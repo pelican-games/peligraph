@@ -443,6 +443,7 @@ enum class DeclaredShaderStage : std::uint8_t {
     closesthit,
     anyhit,
     intersection,
+    callable,
 };
 
 struct DeclaredShaderReference {
@@ -728,6 +729,7 @@ struct RayTracingTaskShaderDefinition {
         ShaderReferenceKind::explicit_file, false};
     std::vector<ShaderReference> misses;
     std::vector<ShaderReference> closest_hits;
+    std::vector<ShaderReference> callables;
     bool uses_group_layout = false;
     std::vector<std::uint32_t> traced_ray_type_indices;
     // H[g,r], group-major. Null slots are materialized as valid generated

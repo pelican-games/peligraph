@@ -1241,7 +1241,7 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
     for (auto field = pipeline_json.begin(); field != pipeline_json.end(); ++field) {
         if (field.key() == "raygen" || field.key() == "traced_ray_types" ||
             field.key() == "misses" || field.key() == "hit_shaders" ||
-            field.key() == "max_recursion") {
+            field.key() == "max_recursion" || field.key() == "callable") {
             continue;
         }
         if (field.key() == "miss" || field.key() == "closesthit") {
@@ -1250,7 +1250,7 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                 name + "' must use traced_ray_types/misses/hit_shaders");
         }
         if (field.key() == "any_hit" || field.key() == "anyhit" ||
-            field.key() == "intersection" || field.key() == "callable") {
+            field.key() == "intersection") {
             throw std::runtime_error(
                 "pelican.ray_tracing.unsupported_shader_stage@1: compute task '" +
                 name + "' declares unsupported ray tracing stage '" +
@@ -1461,6 +1461,13 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
             }
         }
     }
+    if (pipeline_json.contains("callable")) {
+        result.callables = parseRayTracingShaderList(
+            pipeline_json, "callable", ShaderStage::callable, name);
+        for (auto &reference : result.callables) {
+            reference = makeLayoutShaderReference(reference.ref, ShaderStage::callable, name);
+        }
+    }
     parseRayTracingRecursion(pipeline_json, name, result);
     return result;
 }
@@ -1484,12 +1491,11 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
          field != pipeline_json.end(); ++field) {
         if (field.key() == "raygen" || field.key() == "miss" ||
             field.key() == "closesthit" ||
-            field.key() == "max_recursion") {
+            field.key() == "max_recursion" || field.key() == "callable") {
             continue;
         }
         if (field.key() == "any_hit" || field.key() == "anyhit" ||
-            field.key() == "intersection" ||
-            field.key() == "callable") {
+            field.key() == "intersection") {
             throw std::runtime_error(
                 "pelican.ray_tracing.unsupported_shader_stage@1: compute "
                 "task '" +
@@ -1513,6 +1519,10 @@ RayTracingTaskShaderDefinition parseRayTracingShaders(
             pipeline_json, "closesthit",
             ShaderStage::closesthit, name),
     };
+    if (pipeline_json.contains("callable")) {
+        result.callables = parseRayTracingShaderList(
+            pipeline_json, "callable", ShaderStage::callable, name);
+    }
     if (const auto recursion = pipeline_json.find("max_recursion");
         recursion != pipeline_json.end()) {
         const auto positive_signed =
@@ -1561,6 +1571,11 @@ void captureDeclaredComputeShaderReferences(
     const auto &pipeline = task_json.at("ray_tracing");
     append(DeclaredShaderStage::raygen,
            pipeline.at("raygen"));
+    for (std::size_t index = 0; index < definition.ray_tracing->callables.size(); ++index) {
+        definition.declared_shader_refs.push_back(
+            {.stage = DeclaredShaderStage::callable, .index = index,
+             .ref = definition.ray_tracing->callables[index].ref});
+    }
     if (definition.ray_tracing->uses_group_layout) {
         for (std::size_t index = 0;
              index < definition.ray_tracing->misses.size(); ++index) {
@@ -3010,6 +3025,10 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 closest_hits.push_back(load_shader(reference));
             }
         }
+        std::vector<ShaderBundleId> callables;
+        for (const auto &reference : definition.ray_tracing->callables) {
+            callables.push_back(load_shader(reference));
+        }
         pipeline = pipeline_factory.createRayTracing(
             RayTracingPipelineDesc{
                 .max_recursion =
@@ -3018,6 +3037,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                     definition.ray_tracing->raygen),
                 .misses = std::move(misses),
                 .closest_hits = std::move(closest_hits),
+                .callables = std::move(callables),
                 .any_hits = std::move(any_hits),
                 .intersections = std::move(intersections),
                 .shader_defines = shader_defines,

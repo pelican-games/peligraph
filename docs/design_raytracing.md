@@ -408,6 +408,14 @@ v2 §3-2 の全部(bindless material table・geometry access・
 `pelican.ray_bindings@1` overlay・`data(q)` への material/geometry index 充填・
 WP354 drill-through の投影)。
 
+### RT4 callable の実装契約 (2026-09-05)
+
+`ray_tracing.callable` は省略可能なshader参照文字列または非空配列。layout有無の両方で使え、配列の宣言順が `executeCallableEXT` のSBT indexになる。拡張子は `.rcall`。callableは独立したgeneral groupとしてhit領域の後ろに配置し、pipeline世代と同じ寿命のSBT bufferを共有する。
+
+callable dataは既存の構造型比較を使用する。定数indexは対象のincoming dataと比較し、動的indexはtable全体の型が一致する場合に受理する(実行時indexの範囲はshader側の責任)。callable内の呼び出しとtraceも同じinterface検査を通す。shader単独のreloadでpipelineとSBTを更新する。
+
+この段階のcallable recordはhandleのみ。shaderRecordEXTによるcallable独自データは未対応として診断する。per-in-flight動的recordはRT4の次の実装であり、RT4全体の完了には含めない。最新の利用者指示により学習サンプルの追加よりエンジン中核の機能完成を優先する。
+
 ### RT3〜RT7
 
 v2 §6 の RT3(AS 宣言面: geometry_flags/instance_flags 分離・mask・

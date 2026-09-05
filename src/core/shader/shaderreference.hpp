@@ -14,6 +14,7 @@ enum class ShaderStage {
     closesthit,
     anyhit,
     intersection,
+    callable,
 };
 
 enum class ShaderReferenceKind {

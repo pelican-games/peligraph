@@ -48,6 +48,8 @@ enum class RayTracingInterfaceStorage {
     ray_payload,
     incoming_ray_payload,
     hit_attribute,
+    callable_data,
+    incoming_callable_data,
 };
 
 struct RayTracingInterfaceVariable {
@@ -83,6 +85,16 @@ struct RayTracingTraceCall {
     bool operator==(const RayTracingTraceCall &) const = default;
 };
 
+struct RayTracingCallableCall {
+    SpirvEntryPointKey caller_entry;
+    std::uint32_t instruction_number = 0;
+    RayTracingCanonicalType data_type;
+    // Dynamic indices require a compatible interface across the callable table.
+    std::optional<std::uint32_t> callable_index;
+
+    bool operator==(const RayTracingCallableCall &) const = default;
+};
+
 struct RayTracingShaderRecordMemberReflection {
     RayTracingCanonicalType type;
     std::uint32_t offset = 0;
@@ -115,6 +127,7 @@ struct RayTracingEntryPointReflection {
     std::vector<std::uint32_t> entry_body_opcodes;
     std::vector<RayTracingInterfaceVariable> interfaces;
     std::vector<RayTracingTraceCall> trace_calls;
+    std::vector<RayTracingCallableCall> callable_calls;
     std::optional<RayTracingShaderRecordReflection> shader_record;
 
     bool operator==(const RayTracingEntryPointReflection &) const = default;

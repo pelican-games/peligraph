@@ -46,6 +46,7 @@ ShaderStage shaderStageFromPath(const std::filesystem::path &path) {
     if (extension == ".rchit") return ShaderStage::closesthit;
     if (extension == ".rahit") return ShaderStage::anyhit;
     if (extension == ".rint") return ShaderStage::intersection;
+    if (extension == ".rcall") return ShaderStage::callable;
     throw std::runtime_error(
         "Shader path does not encode an expected stage: " +
         path.string());
@@ -94,6 +95,8 @@ vk::ShaderStageFlagBits toVkStage(ShaderStage stage) {
         return vk::ShaderStageFlagBits::eAnyHitKHR;
     case ShaderStage::intersection:
         return vk::ShaderStageFlagBits::eIntersectionKHR;
+    case ShaderStage::callable:
+        return vk::ShaderStageFlagBits::eCallableKHR;
     }
     throw std::runtime_error("unknown shader stage");
 }
@@ -116,6 +119,8 @@ ShaderSourceStage sourceStage(ShaderStage stage) {
         return ShaderSourceStage::anyhit;
     case ShaderStage::intersection:
         return ShaderSourceStage::intersection;
+    case ShaderStage::callable:
+        return ShaderSourceStage::callable;
     }
     throw std::runtime_error("unknown shader stage");
 }

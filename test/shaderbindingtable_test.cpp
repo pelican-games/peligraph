@@ -25,6 +25,15 @@ TEST_CASE(
         CHECK(layout.total_size == 192);
     }
 
+    SECTION("callable records follow hit records at their own aligned base") {
+        const auto layout = calculateShaderBindingTableLayout(
+            24, 32, 128, {.raygen = 1, .miss = 2, .hit = 1, .callable = 2});
+        CHECK(layout.callable.offset == 384);
+        CHECK(layout.callable.stride == 32);
+        CHECK(layout.callable.size == 64);
+        CHECK(layout.total_size == 448);
+    }
+
     SECTION("region base alignment exceeds handle alignment") {
         const auto layout = calculateShaderBindingTableLayout(
             32, 32, 128,

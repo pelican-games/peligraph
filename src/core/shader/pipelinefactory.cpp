@@ -354,6 +354,10 @@ bool pipelineUsesShader(
                            dirty_shaders,
                            pipeline_desc.raygen) ||
                        std::any_of(
+                           pipeline_desc.callables.begin(),
+                           pipeline_desc.callables.end(),
+                           [&](const auto shader) { return containsShader(dirty_shaders, shader); }) ||
+                       std::any_of(
                            pipeline_desc.misses.begin(),
                            pipeline_desc.misses.end(),
                            [&](const auto shader) {
@@ -366,6 +370,12 @@ bool pipelineUsesShader(
                            [&](const auto shader) {
                                return containsShader(
                                    dirty_shaders, shader);
+                           }) ||
+                       std::any_of(
+                           pipeline_desc.intersections.begin(),
+                           pipeline_desc.intersections.end(),
+                           [&](const auto &shader) {
+                               return shader && containsShader(dirty_shaders, *shader);
                            }) ||
                        std::any_of(
                            pipeline_desc.any_hits.begin(),
@@ -701,6 +711,11 @@ PipelineFactory::createRayTracingPipeline(
                      vk::ShaderStageFlagBits::eIntersectionKHR);
     }
 
+    const auto callable_stage_start = static_cast<std::uint32_t>(stages.size());
+    for (const auto shader : desc.callables) {
+        append_stage(shader, vk::ShaderStageFlagBits::eCallableKHR);
+    }
+
     std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
     groups.reserve(stages.size());
     const auto unused = VK_SHADER_UNUSED_KHR;
@@ -733,6 +748,10 @@ PipelineFactory::createRayTracingPipeline(
         group.anyHitShader = any_hit_stage_indices[index];
         group.intersectionShader = intersection_stage_indices[index];
         groups.push_back(group);
+    }
+
+    for (std::uint32_t index = 0; index < desc.callables.size(); ++index) {
+        append_general(callable_stage_start + index);
     }
 
     vk::RayTracingPipelineCreateInfoKHR create_info;
@@ -770,7 +789,7 @@ PipelineFactory::createRayTracingShaderBindingTable(
         group_counts);
     const auto group_count =
         static_cast<std::uint64_t>(group_counts.raygen) +
-        group_counts.miss + group_counts.hit;
+        group_counts.miss + group_counts.hit + group_counts.callable;
     if (group_count >
             std::numeric_limits<std::uint32_t>::max() ||
         group_count >
@@ -815,6 +834,7 @@ PipelineFactory::createRayTracingShaderBindingTable(
     copy_region(layout.raygen);
     copy_region(layout.miss);
     copy_region(layout.hit);
+    copy_region(layout.callable);
     const auto hit_handle_offset =
         static_cast<std::size_t>(group_counts.raygen +
                                  group_counts.miss) *
@@ -822,7 +842,9 @@ PipelineFactory::createRayTracingShaderBindingTable(
     std::vector<std::byte> hit_group_handles(
         handles.begin() +
             static_cast<std::ptrdiff_t>(hit_handle_offset),
-        handles.end());
+        handles.begin() + static_cast<std::ptrdiff_t>(
+            hit_handle_offset + static_cast<std::size_t>(group_counts.hit) *
+                capabilities.shader_group_handle_size));
 
     const auto padding =
         capabilities.shader_group_base_alignment - 1u;
@@ -860,7 +882,7 @@ PipelineFactory::createRayTracingShaderBindingTable(
             .raygen = make_region(layout.raygen),
             .miss = make_region(layout.miss),
             .hit = make_region(layout.hit),
-            .callable = {},
+            .callable = make_region(layout.callable),
         },
         .hit_group_handles = std::move(hit_group_handles),
     };
@@ -1014,6 +1036,9 @@ PipelineFactory::buildRayTracingPipeline(
     if (desc.misses.size() >
             std::numeric_limits<std::uint32_t>::max() ||
         desc.closest_hits.size() >
+            std::numeric_limits<std::uint32_t>::max() ||
+        desc.callables.size() > std::numeric_limits<std::uint32_t>::max() ||
+        1ULL + desc.misses.size() + desc.closest_hits.size() + desc.callables.size() >
             std::numeric_limits<std::uint32_t>::max()) {
         throw std::overflow_error(
             "pelican.ray_tracing.shader_group_count_overflow@1: ray "
@@ -1041,6 +1066,12 @@ PipelineFactory::buildRayTracingPipeline(
     for (std::uint32_t index = 0; index < desc.misses.size(); ++index) {
         miss_occurrences.push_back(occurrence(
             desc.misses[index], ShaderStage::miss, 1 + index));
+    }
+    std::vector<RayTracingShaderOccurrence> callable_occurrences;
+    for (std::uint32_t index = 0; index < desc.callables.size(); ++index) {
+        callable_occurrences.push_back(occurrence(
+            desc.callables[index], ShaderStage::callable,
+            1 + static_cast<std::uint32_t>(desc.misses.size() + desc.closest_hits.size()) + index));
     }
     std::vector<RayTracingHitGroupOccurrence> hit_occurrences;
     hit_occurrences.reserve(desc.closest_hits.size());
@@ -1087,6 +1118,7 @@ PipelineFactory::buildRayTracingPipeline(
                 .traced_ray_type_indices =
                     desc.traced_ray_type_indices,
                 .hit_group_occurrences = hit_occurrences,
+                .callables = callable_occurrences,
             },
             capabilities.ray_tracing_facts);
 
@@ -1116,6 +1148,9 @@ PipelineFactory::buildRayTracingPipeline(
         if (shader) {
             reflections.push_back(shader_library.get(*shader).reflection);
         }
+    }
+    for (const auto shader : desc.callables) {
+        reflections.push_back(shader_library.get(shader).reflection);
     }
     auto reflection = merge(reflections);
     validateFrameBindings(reflection);
@@ -1159,6 +1194,7 @@ PipelineFactory::buildRayTracingPipeline(
                 desc.misses.size()),
             .hit = static_cast<std::uint32_t>(
                 desc.closest_hits.size()),
+            .callable = static_cast<std::uint32_t>(desc.callables.size()),
         });
     if (!desc.ray_tracing_project) {
         sbt.hit_group_handles.clear();
@@ -1580,7 +1616,7 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
             .raygen = static_sbt.regions.raygen,
             .miss = static_sbt.regions.miss,
             .hit = {},
-            .callable = {},
+            .callable = static_sbt.regions.callable,
         };
         std::shared_ptr<BufferWrapper> hit_buffer;
         if (!packed.bytes.empty()) {

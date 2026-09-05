@@ -47,6 +47,7 @@ struct RayTracingPipelineInterfaceRequest {
     // Production RT2a input. Empty retains the legacy closest-hit-only
     // adapter above, preserving RT1a/RT1b callers and their digest bytes.
     std::span<const RayTracingHitGroupOccurrence> hit_group_occurrences;
+    std::span<const RayTracingShaderOccurrence> callables;
 };
 
 // Returns a stable digest of the validated structural contract. Equality is

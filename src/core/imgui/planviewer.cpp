@@ -98,6 +98,7 @@ int shaderStageOrder(std::string_view stage) {
     if (stage == "raygen") return 4;
     if (stage == "miss") return 5;
     if (stage == "closesthit") return 6;
+    if (stage == "callable") return 7;
     return -1;
 }
 
@@ -111,6 +112,7 @@ ShaderSourceStage sourceStageForWireStage(std::string_view stage) {
     if (stage == "miss") return ShaderSourceStage::miss;
     if (stage == "closesthit") return ShaderSourceStage::closesthit;
     if (stage == "anyhit") return ShaderSourceStage::anyhit;
+    if (stage == "callable") return ShaderSourceStage::callable;
     throw std::logic_error("unknown validated plan viewer shader stage");
 }
 
@@ -265,6 +267,7 @@ PlanViewerShaderResolution readShaderResolution(
     std::set<std::pair<std::string, std::optional<std::size_t>>> identities;
     std::size_t next_miss = 0;
     std::size_t next_hit = 0;
+    std::size_t next_callable = 0;
     for (const auto &entry : wire.at("stages")) {
         for (auto field = entry.begin(); entry.is_object() &&
              field != entry.end(); ++field) {
@@ -300,7 +303,7 @@ PlanViewerShaderResolution readShaderResolution(
         }
         previous_order = order;
         const bool indexed =
-            stage.stage == "miss" || stage.stage == "closesthit";
+            stage.stage == "miss" || stage.stage == "closesthit" || stage.stage == "callable";
         if (indexed) {
             if (!entry.contains("index") ||
                 !entry.at("index").is_number_unsigned()) {
@@ -320,6 +323,9 @@ PlanViewerShaderResolution readShaderResolution(
         if (stage.stage == "miss" && *stage.index != next_miss++) {
             throw std::runtime_error(
                 "plan viewer miss indices must preserve authored order");
+        }
+        if (stage.stage == "callable" && *stage.index != next_callable++) {
+            throw std::runtime_error("plan viewer callable indices must preserve authored order");
         }
         if (stage.stage == "closesthit" && *stage.index != next_hit++) {
             throw std::runtime_error(

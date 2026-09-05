@@ -45,6 +45,8 @@ std::string_view shaderStageSourceExtension(ShaderStage stage) {
         return shaderSourceStageExtension(ShaderSourceStage::anyhit);
     case ShaderStage::intersection:
         return shaderSourceStageExtension(ShaderSourceStage::intersection);
+    case ShaderStage::callable:
+        return shaderSourceStageExtension(ShaderSourceStage::callable);
     }
     throw std::runtime_error("unknown shader stage");
 }
@@ -67,6 +69,8 @@ std::string shaderStageName(ShaderStage stage) {
         return "anyhit";
     case ShaderStage::intersection:
         return "intersection";
+    case ShaderStage::callable:
+        return "callable";
     }
     throw std::runtime_error("unknown shader stage");
 }
@@ -75,7 +79,7 @@ bool hasKnownShaderExtension(std::string_view ref) {
     const auto ext = lowerExtension(ref);
     return ext == ".spv" || ext == ".vert" || ext == ".frag" ||
            ext == ".comp" || ext == ".rgen" || ext == ".rmiss" ||
-           ext == ".rchit" || ext == ".rahit" || ext == ".rint" ||
+           ext == ".rchit" || ext == ".rahit" || ext == ".rint" || ext == ".rcall" ||
            ext == ".wgsl";
 }
 

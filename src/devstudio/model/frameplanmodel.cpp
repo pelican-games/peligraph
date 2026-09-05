@@ -528,7 +528,7 @@ bool knownShaderStage(std::string_view value) {
     return value == "vertex" || value == "skinned_vertex" ||
            value == "fragment" || value == "compute" ||
            value == "raygen" || value == "miss" ||
-           value == "closesthit" || value == "anyhit";
+           value == "closesthit" || value == "anyhit" || value == "callable";
 }
 
 Pelican::ShaderSourceStage sourceStageForWireStage(
@@ -544,6 +544,7 @@ Pelican::ShaderSourceStage sourceStageForWireStage(
         return Pelican::ShaderSourceStage::closesthit;
     }
     if (value == "anyhit") return Pelican::ShaderSourceStage::anyhit;
+    if (value == "callable") return Pelican::ShaderSourceStage::callable;
     throw std::logic_error("unknown validated shader stage");
 }
 
@@ -555,6 +556,7 @@ int shaderStageOrder(std::string_view value) {
     if (value == "raygen") return 4;
     if (value == "miss") return 5;
     if (value == "closesthit") return 6;
+    if (value == "callable") return 7;
     return -1;
 }
 
@@ -588,7 +590,7 @@ FramePlanShaderStage parseShaderStage(
 
     const bool indexed_ray_stage =
         result.stage == "miss" || result.stage == "closesthit" ||
-        result.stage == "anyhit";
+        result.stage == "anyhit" || result.stage == "callable";
     const auto index = value.find("index");
     if (indexed_ray_stage) {
         if (index == value.end()) {
@@ -719,6 +721,7 @@ FramePlanShaderResolution parseShaderResolution(
     std::set<std::pair<std::string, std::optional<std::size_t>>> identities;
     std::size_t next_miss_index = 0;
     std::size_t next_closesthit_index = 0;
+    std::size_t next_callable_index = 0;
     for (std::size_t index = 0; index < stages.size(); ++index) {
         auto stage = parseShaderStage(
             stages.at(index), std::string{context} + ".stages[" +
@@ -743,6 +746,9 @@ FramePlanShaderResolution parseShaderResolution(
             throw invalid(std::string{context} +
                           ".stages miss indices must be contiguous authored "
                           "order starting at 0");
+        }
+        if (stage.stage == "callable" && *stage.index != next_callable_index++) {
+            throw invalid(std::string{context} + ".stages callable indices must be contiguous authored order starting at 0");
         }
         if (stage.stage == "closesthit" &&
             *stage.index != next_closesthit_index++) {

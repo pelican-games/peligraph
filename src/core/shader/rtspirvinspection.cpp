@@ -213,6 +213,13 @@ struct RawTraceCall {
     std::uint32_t ray_flags_id = 0;
 };
 
+struct RawCallableCall {
+    std::uint32_t function_id = 0;
+    std::uint32_t instruction_number = 0;
+    std::uint32_t index_id = 0;
+    std::uint32_t data_id = 0;
+};
+
 std::string decodeLiteralString(
     std::span<const std::uint32_t> words, std::size_t first_word,
     std::size_t &consumed_words, std::string_view uri) {
@@ -266,6 +273,7 @@ class Inspector {
     std::vector<std::uint32_t> capabilities_;
     std::unordered_map<std::uint32_t, std::vector<std::uint32_t>> calls_;
     std::vector<RawTraceCall> trace_calls_;
+    std::vector<RawCallableCall> callable_calls_;
     std::unordered_set<std::uint32_t> no_contraction_;
     bool has_relaxed_precision_ = false;
     std::unordered_set<std::uint32_t> glsl_imports_;
@@ -438,9 +446,12 @@ class Inspector {
             return RayTracingInterfaceStorage::incoming_ray_payload;
         case SpvStorageClassHitAttributeKHR:
             return RayTracingInterfaceStorage::hit_attribute;
+        case SpvStorageClassCallableDataKHR:
+            return RayTracingInterfaceStorage::callable_data;
+        case SpvStorageClassIncomingCallableDataKHR:
+            return RayTracingInterfaceStorage::incoming_callable_data;
         default:
-            // CallableDataKHR and IncomingCallableDataKHR are deliberately
-            // carved out until RT4, along with all non-RT storage classes.
+            // Non-RT storage classes do not participate in this contract.
             return std::nullopt;
         }
     }
@@ -763,6 +774,13 @@ class Inspector {
                     .ray_flags_id = instruction[2],
                 });
                 break;
+            case SpvOpExecuteCallableKHR:
+                if (!current_function || instruction.size() != 3) {
+                    failUnsupported(uri_, "has malformed or global OpExecuteCallableKHR");
+                }
+                callable_calls_.push_back({*current_function, instruction_number,
+                                           instruction[1], instruction[2]});
+                break;
             default:
                 break;
             }
@@ -849,7 +867,7 @@ class Inspector {
             }
             std::set<std::pair<RayTracingInterfaceStorage, std::uint32_t>>
                 seen_interfaces;
-            std::array<std::uint32_t, 3> storage_counts{};
+            std::array<std::uint32_t, 5> storage_counts{};
             for (const auto variable_id : raw_entry.interfaces) {
                 const auto variable = variables_.find(variable_id);
                 if (variable == variables_.end()) continue;
@@ -888,6 +906,11 @@ class Inspector {
                                    "declares more than one incoming ray payload");
             }
             if (storage_counts[static_cast<std::size_t>(
+                    RayTracingInterfaceStorage::incoming_callable_data)] > 1) {
+                failInterfaceCount(uri_, raw_entry.key,
+                                   "declares more than one incoming callable data variable");
+            }
+            if (storage_counts[static_cast<std::size_t>(
                     RayTracingInterfaceStorage::hit_attribute)] > 1) {
                 failInterfaceCount(uri_, raw_entry.key,
                                    "declares more than one hit attribute");
@@ -924,6 +947,24 @@ class Inspector {
                     .sbt_record_offset = trace.offset,
                     .sbt_record_stride = trace.stride,
                     .ray_flags = trace.ray_flags,
+                });
+            }
+            for (const auto &call : callable_calls_) {
+                if (!reachable.contains(call.function_id)) continue;
+                const auto variable = variables_.find(call.data_id);
+                if (variable == variables_.end() ||
+                    (variable->second.storage != SpvStorageClassCallableDataKHR &&
+                     variable->second.storage != SpvStorageClassIncomingCallableDataKHR)) {
+                    failUnsupported(uri_, "OpExecuteCallableKHR instruction " +
+                        std::to_string(call.instruction_number) +
+                        " data operand must be a direct callable data variable");
+                }
+                entry.callable_calls.push_back({
+                    .caller_entry = raw_entry.key,
+                    .instruction_number = call.instruction_number,
+                    .data_type = canonicalType(variable->second.pointer_type_id,
+                                               call.instruction_number),
+                    .callable_index = tryDirectUint32Constant(call.index_id),
                 });
             }
             if (!result.entries.emplace(raw_entry.key, std::move(entry)).second) {
@@ -1013,6 +1054,8 @@ std::uint32_t spirvExecutionModelForShaderStage(ShaderStage stage) {
         return SpvExecutionModelAnyHitKHR;
     case ShaderStage::intersection:
         return SpvExecutionModelIntersectionKHR;
+    case ShaderStage::callable:
+        return SpvExecutionModelCallableKHR;
     }
     throw std::runtime_error("unknown shader stage");
 }

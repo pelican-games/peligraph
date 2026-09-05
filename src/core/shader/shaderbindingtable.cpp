@@ -83,6 +83,8 @@ ShaderBindingTableLayout calculateShaderBindingTableLayout(
     result.hit = appendRegion(
         cursor, stride, shader_group_base_alignment,
         group_counts.hit);
+    result.callable = appendRegion(
+        cursor, stride, shader_group_base_alignment, group_counts.callable);
     result.total_size = cursor;
     return result;
 }

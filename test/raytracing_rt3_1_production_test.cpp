@@ -5025,6 +5025,68 @@ TEST_CASE("WP382d procedural editor lifecycle publishes and rolls back AABB stat
 
 namespace Pelican {
 #if PELICAN_WITH_RPC && PELICAN_RUNTIME_SHADER_COMPILER
+TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implementation",
+          "[rt4][ray-tracing][production][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"rt4_callable"};
+    writeWp386aProceduralProject(project.path);
+    auto feature = Json::parse(readWp374aText(project.path / "features/wp386_procedural.json"));
+    auto &ray = feature["compute_tasks"][0]["ray_tracing"];
+    ray["callable"] = {"project://shaders/first", "project://shaders/second"};
+    ray["hit_shaders"]["primary"]["sphere"]["intersection"] = "project://shaders/hit";
+    writeWp374aText(project.path / "features/wp386_procedural.json", feature.dump());
+    writeWp374aText(project.path / "shaders/hit.rint", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+hitAttributeEXT vec2 hit_attribute;
+void main() { hit_attribute = vec2(0); reportIntersectionEXT(1.5, 0u); }
+)glsl");
+    auto closest = readWp374aText(project.path / "shaders/wp386.rchit");
+    const std::string old_main = "void main() { payload.marker = 0xdead386au; }";
+    closest.replace(closest.find(old_main), old_main.size(), R"glsl(
+layout(location=0) callableDataEXT uint value;
+void main() {
+    value = 7u;
+    executeCallableEXT(1u, 0);
+    payload.marker = value;
+}
+)glsl");
+    writeWp374aText(project.path / "shaders/wp386.rchit", closest);
+    const auto callable_source = [](std::uint32_t increment) {
+        return std::string{R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+layout(location=0) callableDataInEXT uint value;
+void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
+    };
+    writeWp374aText(project.path / "shaders/first.rcall", callable_source(100));
+    writeWp374aText(project.path / "shaders/second.rcall", callable_source(200));
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    (void)configureWp374aRuntime(project.path);
+    TestSupport::requireVulkanDevice("RT4 callable dispatch");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    test_support::loadScene(GET_MODULE(SceneLoader), "main");
+    const auto marker = [&] {
+        (void)renderWp374aProductionRows();
+        const auto output = GET_MODULE(Renderer).readRenderTargetForTesting(
+            "wp386_out", ImageSubresourceRange{});
+        REQUIRE(output.bytes.size() >= sizeof(std::uint32_t));
+        std::uint32_t value;
+        std::memcpy(&value, output.bytes.data(), sizeof(value));
+        return value;
+    };
+    CHECK(marker() == 207u);
+    writeWp374aText(project.path / "shaders/second.rcall", callable_source(300));
+    auto prepared = GET_MODULE(ShaderLibrary).prepareReloadAll();
+    std::erase_if(prepared.candidates, [](const auto &candidate) {
+        return candidate.replacement.source_path.filename() != "second.rcall";
+    });
+    REQUIRE(prepared.candidates.size() == 1);
+    const auto rebuilt = GET_MODULE(PipelineFactory).rebuildPrepared(std::move(prepared));
+    REQUIRE(rebuilt.committed);
+    REQUIRE(rebuilt.failed_pipelines == 0);
+    CHECK(marker() == 307u);
+}
+
 TEST_CASE("WP386b sphere reports hits and reload publishes final entry classification",
           "[WP386b][ray-tracing][production][gpu]") {
     const bool invalid_record = GENERATE(false, true);
@@ -5103,6 +5165,9 @@ void main() {
     const auto reload = [&](const std::string &source) {
         writeWp374aText(project.path / "shaders/sphere.rint", source);
         auto prepared = GET_MODULE(ShaderLibrary).prepareReloadAll();
+        std::erase_if(prepared.candidates, [](const auto &candidate) {
+            return candidate.replacement.expected_stage != ShaderStage::intersection;
+        });
         std::string digest;
         for (const auto &candidate : prepared.candidates) {
             if (candidate.replacement.expected_stage != ShaderStage::intersection) continue;

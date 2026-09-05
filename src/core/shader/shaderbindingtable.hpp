@@ -8,6 +8,7 @@ struct ShaderBindingTableGroupCounts {
     std::uint32_t raygen = 1;
     std::uint32_t miss = 0;
     std::uint32_t hit = 0;
+    std::uint32_t callable = 0;
 
     bool operator==(
         const ShaderBindingTableGroupCounts &) const = default;
@@ -27,6 +28,7 @@ struct ShaderBindingTableLayout {
     ShaderBindingTableRegionLayout raygen;
     ShaderBindingTableRegionLayout miss;
     ShaderBindingTableRegionLayout hit;
+    ShaderBindingTableRegionLayout callable;
     std::uint64_t total_size = 0;
 
     bool operator==(
