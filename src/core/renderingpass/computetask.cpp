@@ -1338,6 +1338,7 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
     const auto ray_count = layout.ray_types.size();
     result.hit_shader_slots.resize(layout.groups.size() * ray_count);
     result.any_hit_shader_slots.resize(layout.groups.size() * ray_count);
+    result.intersection_shader_slots.resize(layout.groups.size() * ray_count);
     for (const auto ray_index : result.traced_ray_type_indices) {
         const auto &ray_name = layout.ray_types.at(ray_index);
         if (!hit_shaders.contains(ray_name) ||
@@ -1368,11 +1369,12 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                     "' available=" + availableObjectKeys(groups));
             }
             const auto &group = groups.at(group_name);
+            const auto group_type = layout.group_types.at(group_index);
             const auto invalid_group = [&] {
                 throw std::runtime_error(
                     "pelican.ray_tracing.ray_hit_group_invalid@1: compute task '" +
                     name + "' group='" + group_name + "' ray_type='" + ray_name +
-                    "' requires closesthit, optional anyhit, and optional type='triangles'");
+                    "' has an invalid stage set for its layout group type");
             };
             if (!group.contains("closesthit") ||
                 !group.at("closesthit").is_string() ||
@@ -1381,19 +1383,39 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
             }
             for (auto field = group.begin(); field != group.end(); ++field) {
                 if (field.key() != "closesthit" && field.key() != "anyhit" &&
-                    field.key() != "type") {
+                    field.key() != "intersection" && field.key() != "type") {
                     invalid_group();
                 }
             }
-            if (const auto type = group.find("type"); type != group.end() &&
-                (!type->is_string() ||
-                 type->get_ref<const std::string &>() != "triangles")) {
-                invalid_group();
+            if (const auto type = group.find("type"); type != group.end()) {
+                if (layout.semantic_mode == RayLayoutSemanticMode::LayoutV3) {
+                    throw std::runtime_error(
+                        "pelican.ray_group_type_declared_in_task@1: layout v3 group type is declared only in ray_group_layout");
+                }
+                if (!type->is_string() ||
+                    type->get_ref<const std::string &>() != "triangles") {
+                    invalid_group();
+                }
             }
             if (const auto anyhit = group.find("anyhit"); anyhit != group.end() &&
                 (!anyhit->is_string() ||
                  anyhit->get_ref<const std::string &>().empty())) {
                 invalid_group();
+            }
+            const auto intersection = group.find("intersection");
+            if (group_type == RayGroupType::procedural) {
+                if (intersection == group.end() || !intersection->is_string() ||
+                    intersection->get_ref<const std::string &>().empty()) {
+                    throw std::runtime_error(
+                        "pelican.procedural_group_requires_intersection@1: procedural hit group requires intersection and closesthit stages");
+                }
+            } else if (intersection != group.end()) {
+                if (layout.semantic_mode !=
+                    RayLayoutSemanticMode::LayoutV3) {
+                    invalid_group();
+                }
+                throw std::runtime_error(
+                    "pelican.ray_tracing.unsupported_shader_stage@1: triangles hit group cannot declare intersection");
             }
             const auto slot_index = group_index * ray_count + ray_index;
             result.hit_shader_slots[slot_index] =
@@ -1410,6 +1432,11 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                 }
                 result.any_hit_shader_slots[slot_index] =
                     makeLayoutShaderReference(*anyhit, ShaderStage::anyhit, name);
+            }
+            if (intersection != group.end()) {
+                result.intersection_shader_slots[slot_index] =
+                    makeLayoutShaderReference(
+                        *intersection, ShaderStage::intersection, name);
             }
         }
     }
@@ -1558,6 +1585,17 @@ void captureDeclaredComputeShaderReferences(
             }
             definition.declared_shader_refs.push_back(
                 {.stage = DeclaredShaderStage::anyhit,
+                 .index = index,
+                 .ref = slot->ref});
+        }
+        for (std::size_t index = 0;
+             index < definition.ray_tracing->intersection_shader_slots.size();
+             ++index) {
+            const auto &slot =
+                definition.ray_tracing->intersection_shader_slots[index];
+            if (!slot) continue;
+            definition.declared_shader_refs.push_back(
+                {.stage = DeclaredShaderStage::intersection,
                  .index = index,
                  .ref = slot->ref});
         }
@@ -2897,6 +2935,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
         }
         std::vector<ShaderBundleId> closest_hits;
         std::vector<std::optional<ShaderBundleId>> any_hits;
+        std::vector<std::optional<ShaderBundleId>> intersections;
         if (definition.ray_tracing->uses_group_layout) {
             closest_hits.reserve(
                 definition.ray_tracing->hit_shader_slots.size());
@@ -2928,6 +2967,35 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                                              load_shader(*slot)}
                                        : std::nullopt);
             }
+            intersections.reserve(
+                definition.ray_tracing->intersection_shader_slots.size());
+            std::optional<ShaderBundleId> no_report_intersection;
+            const auto &layout = dependencies.ray_tracing_project->layout;
+            const auto ray_count = layout.ray_types.size();
+            for (std::size_t slot_index = 0;
+                 slot_index < definition.ray_tracing
+                                  ->intersection_shader_slots.size();
+                 ++slot_index) {
+                const auto &slot = definition.ray_tracing
+                                       ->intersection_shader_slots[slot_index];
+                if (slot) {
+                    intersections.push_back(load_shader(*slot));
+                    continue;
+                }
+                const auto group_index = slot_index / ray_count;
+                if (layout.group_types.at(group_index) !=
+                    RayGroupType::procedural) {
+                    intersections.push_back(std::nullopt);
+                    continue;
+                }
+                if (!no_report_intersection) {
+                    no_report_intersection = load_shader(ShaderReference{
+                        "engine://procedural_no_report",
+                        ShaderStage::intersection,
+                        ShaderReferenceKind::stem, false});
+                }
+                intersections.push_back(*no_report_intersection);
+            }
         } else {
             closest_hits.reserve(
                 definition.ray_tracing->closest_hits.size());
@@ -2945,6 +3013,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 .misses = std::move(misses),
                 .closest_hits = std::move(closest_hits),
                 .any_hits = std::move(any_hits),
+                .intersections = std::move(intersections),
                 .shader_defines = shader_defines,
                 .resource_interface = resource_interface,
                 .ray_tracing_project =

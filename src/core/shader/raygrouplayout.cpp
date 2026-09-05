@@ -153,6 +153,8 @@ std::string_view engineRecordFieldName(
         return "material_index";
     case RayEngineRecordField::geometry_index:
         return "geometry_index";
+    case RayEngineRecordField::geometry_kind:
+        return "geometry_kind";
     }
     return "unknown";
 }
@@ -229,6 +231,40 @@ std::vector<std::string> parseNamedObjects(
         result.push_back(std::move(name));
     }
     return result;
+}
+
+std::pair<std::vector<std::string>, std::vector<RayGroupType>>
+parseTypedGroupObjects(const json &value, std::string_view source) {
+    if (!value.is_array() || value.empty()) {
+        layoutError(source, "groups must be a non-empty array");
+    }
+    std::vector<std::string> names;
+    std::vector<RayGroupType> types;
+    std::set<std::string> unique;
+    for (const auto &entry : value) {
+        requireObjectFields(entry, {"name", "type"}, "groups", source);
+        if (!entry.contains("name") || !entry.at("name").is_string() ||
+            !validName(entry.at("name").get_ref<const std::string &>()) ||
+            !entry.contains("type") || !entry.at("type").is_string()) {
+            layoutError(source, "groups require valid name and type");
+        }
+        auto name = entry.at("name").get<std::string>();
+        if (!unique.emplace(name).second) {
+            layoutError(source, "groups contains duplicate name '" + name +
+                                    "'");
+        }
+        const auto &type = entry.at("type").get_ref<const std::string &>();
+        if (type == "triangles") {
+            types.push_back(RayGroupType::triangles);
+        } else if (type == "procedural") {
+            types.push_back(RayGroupType::procedural);
+        } else {
+            layoutError(source,
+                        "group type must be 'triangles' or 'procedural'");
+        }
+        names.push_back(std::move(name));
+    }
+    return {std::move(names), std::move(types)};
 }
 
 std::uint32_t findIndex(
@@ -344,7 +380,12 @@ std::string materialReference(const MaterialRowIdentity &identity,
 }
 
 bool selectorMatches(
-    const RayBindingSelector &selector, const MaterialRowIdentity &identity) {
+    const RayBindingSelector &selector, const MaterialRowIdentity &identity,
+    std::string_view procedural_asset) {
+    if (selector.kind == RayBindingSelector::Kind::procedural) {
+        return !procedural_asset.empty() &&
+               selector.reference == procedural_asset;
+    }
     if (selector.kind == RayBindingSelector::Kind::document) {
         const auto *document =
             std::get_if<MaterialRowDocumentIdentity>(&identity);
@@ -433,7 +474,7 @@ std::uint8_t parseRayMask(const json &encoded, std::string_view source) {
 
 RayAccelerationStructureDeclaration parseAccelerationStructure(
     const json &encoded, std::string_view source) {
-    requireObjectFields(encoded, {"defaults", "rules"},
+    requireObjectFields(encoded, {"defaults", "procedural_defaults", "rules"},
                         "acceleration_structure", source);
     if (!encoded.contains("defaults")) {
         rayAsError("ray_as_rule_malformed", source,
@@ -454,6 +495,17 @@ RayAccelerationStructureDeclaration parseAccelerationStructure(
     if (const auto flags = defaults.find("geometry_flags");
         flags != defaults.end()) {
         result.defaults.geometry_flags = parseRayFlags(*flags, true, source);
+    }
+    if (const auto procedural = encoded.find("procedural_defaults");
+        procedural != encoded.end()) {
+        requireObjectFields(*procedural, {"geometry_flags"},
+                            "acceleration_structure.procedural_defaults",
+                            source);
+        if (const auto flags = procedural->find("geometry_flags");
+            flags != procedural->end()) {
+            result.procedural_defaults.geometry_flags =
+                parseRayFlags(*flags, true, source);
+        }
     }
     const auto rules = encoded.find("rules");
     if (rules == encoded.end()) return result;
@@ -644,14 +696,22 @@ RayGroupLayout parseRayGroupLayout(
                         "layout", source_reference);
     if (!root.contains("schema") || root.at("schema") != "pelican.ray_group_layout" ||
         !root.contains("version") || !root.at("version").is_number_integer() ||
-        (root.at("version") != 1 && root.at("version") != 2)) {
+        (root.at("version") != 1 && root.at("version") != 2 &&
+         root.at("version") != 3)) {
         layoutError(source_reference,
-                    "schema must be pelican.ray_group_layout version 1 or 2");
+                    "schema must be pelican.ray_group_layout version 1, 2, or 3");
     }
     const auto version = root.at("version").get<std::uint32_t>();
     if (version == 1 && root.contains("acceleration_structure")) {
         rayAsError("ray_as_declaration_requires_layout_v2", source_reference,
                    "acceleration_structure requires layout version 2");
+    }
+    if (version < 3 && root.contains("acceleration_structure") &&
+        root.at("acceleration_structure").is_object() &&
+        root.at("acceleration_structure").contains(
+            "procedural_defaults")) {
+        throw std::runtime_error(
+            "pelican.ray_group_type_requires_layout_v3@1: procedural_defaults requires layout version 3");
     }
     for (const auto required : {"ray_types", "default_group", "groups", "misses", "record"}) {
         if (!root.contains(required)) {
@@ -661,8 +721,11 @@ RayGroupLayout parseRayGroupLayout(
     RayGroupLayout result;
     result.source_reference = std::move(source_reference);
     result.version = version;
-    result.semantic_mode = version == 1 ? RayLayoutSemanticMode::LayoutV1Q
-                                        : RayLayoutSemanticMode::LayoutV2;
+    result.semantic_mode = version == 1
+                               ? RayLayoutSemanticMode::LayoutV1Q
+                               : version == 2
+                                     ? RayLayoutSemanticMode::LayoutV2
+                                     : RayLayoutSemanticMode::LayoutV3;
     if (version == 1) {
         // Preserve the exact v1 ABI/digest behavior byte-for-byte.
         result.digest_sha256 =
@@ -703,7 +766,17 @@ RayGroupLayout parseRayGroupLayout(
             RayPortableProfile::material_alpha_v1;
     }
     result.ray_types = parseNameStrings(root.at("ray_types"), "ray_types", result.source_reference);
-    result.groups = parseNamedObjects(root.at("groups"), "groups", result.source_reference);
+    if (version == 3) {
+        auto [names, types] =
+            parseTypedGroupObjects(root.at("groups"), result.source_reference);
+        result.groups = std::move(names);
+        result.group_types = std::move(types);
+    } else {
+        result.groups = parseNamedObjects(root.at("groups"), "groups",
+                                          result.source_reference);
+        result.group_types.assign(result.groups.size(),
+                                  RayGroupType::triangles);
+    }
     result.misses = parseNamedObjects(root.at("misses"), "misses", result.source_reference);
     if (!root.at("default_group").is_string() ||
         !validName(root.at("default_group").get_ref<const std::string &>())) {
@@ -734,6 +807,8 @@ RayGroupLayout parseRayGroupLayout(
                 field = RayEngineRecordField::material_index;
             } else if (name == "geometry_index") {
                 field = RayEngineRecordField::geometry_index;
+            } else if (name == "geometry_kind") {
+                field = RayEngineRecordField::geometry_kind;
             } else {
                 throw std::runtime_error(
                     "pelican.ray_engine_record_unknown@1: unknown engine record field '" +
@@ -747,7 +822,8 @@ RayGroupLayout parseRayGroupLayout(
         }
     }
     for (const auto field : {RayEngineRecordField::material_index,
-                             RayEngineRecordField::geometry_index}) {
+                             RayEngineRecordField::geometry_index,
+                             RayEngineRecordField::geometry_kind}) {
         if (requested_engine_fields.contains(field)) {
             result.engine_record.push_back(field);
         }
@@ -785,7 +861,8 @@ RayGroupLayout parseRayGroupLayout(
                         "record member requires valid name and string type");
         }
         auto name = encoded.at("name").get<std::string>();
-        if (name == "material_index" || name == "geometry_index") {
+        if (name == "material_index" || name == "geometry_index" ||
+            name == "geometry_kind") {
             throw std::runtime_error(
                 "pelican.ray_record_name_reserved@1: authored record member '" +
                 name + "' is reserved for the engine");
@@ -1102,30 +1179,75 @@ RayBindings parseRayBindings(
     }
     if (!root.contains("schema") || root.at("schema") != "pelican.ray_bindings" ||
         !root.contains("version") || !root.at("version").is_number_integer() ||
-        root.at("version") != 1 || !root.contains("bindings") ||
+        (root.at("version") != 1 && root.at("version") != 2) ||
+        !root.contains("bindings") ||
         !root.at("bindings").is_array()) {
         throw std::runtime_error(
-            "pelican.ray_bindings_invalid@1: schema must be pelican.ray_bindings version 1 with bindings array");
+            "pelican.ray_bindings_invalid@1: schema must be pelican.ray_bindings version 1 or 2 with bindings array");
     }
+    const auto version = root.at("version").get<std::uint32_t>();
     RayBindings result;
     result.source_reference = std::move(source_reference);
+    result.version = version;
     result.digest_sha256 = picosha2::hash256_hex_string(raw_bytes.begin(), raw_bytes.end());
+    std::set<std::string, std::less<>> procedural_selectors;
     for (const auto &entry : root.at("bindings")) {
         if (!entry.is_object()) {
             throw std::runtime_error("pelican.ray_bindings_invalid@1: binding must be an object");
         }
         for (auto field = entry.begin(); field != entry.end(); ++field) {
-            if (field.key() != "material" && field.key() != "group" &&
+            if (field.key() != "material" && field.key() != "procedural" &&
+                field.key() != "group" &&
                 field.key() != "record") {
                 throw std::runtime_error(
                     "pelican.ray_bindings_invalid@1: binding has unknown field '" + field.key() + "'");
             }
         }
-        if (!entry.contains("material") || !entry.at("material").is_object() ||
-            !entry.contains("group") || !entry.at("group").is_string() ||
+        const auto has_material = entry.contains("material");
+        const auto has_procedural = entry.contains("procedural");
+        if (has_material == has_procedural) {
+            throw std::runtime_error(
+                "pelican.ray_binding_selector_exactly_one@1: binding requires exactly one of material or procedural");
+        }
+        if (!entry.contains("group") || !entry.at("group").is_string() ||
+            entry.at("group").get_ref<const std::string &>().empty()) {
+            throw std::runtime_error(
+                "pelican.ray_bindings_invalid@1: binding requires non-empty group");
+        }
+        const auto group_index = layout.groupIndex(
+            entry.at("group").get_ref<const std::string &>());
+        if (has_procedural) {
+            if (version != 2) {
+                throw std::runtime_error(
+                    "pelican.ray_binding_selector_exactly_one@1: procedural selectors require ray_bindings version 2");
+            }
+            if (entry.contains("record")) {
+                throw std::runtime_error(
+                    "pelican.procedural_binding_record_forbidden@1: procedural record data is owned by asset_data");
+            }
+            if (!entry.at("procedural").is_string() ||
+                entry.at("procedural").get_ref<const std::string &>().empty()) {
+                throw std::runtime_error(
+                    "pelican.ray_bindings_invalid@1: procedural selector must be a non-empty asset name");
+            }
+            auto asset = entry.at("procedural").get<std::string>();
+            if (!procedural_selectors.emplace(asset).second) {
+                throw std::runtime_error(
+                    "pelican.procedural_selector_duplicate@1: duplicate procedural selector '" +
+                    asset + "'");
+            }
+            result.bindings.push_back({
+                .selector = RayBindingSelector{
+                    .kind = RayBindingSelector::Kind::procedural,
+                    .reference = std::move(asset)},
+                .group_index = group_index,
+            });
+            continue;
+        }
+        if (!entry.at("material").is_object() ||
             !entry.contains("record")) {
             throw std::runtime_error(
-                "pelican.ray_bindings_invalid@1: binding requires material, group, and record");
+                "pelican.ray_bindings_invalid@1: material binding requires selector, group, and record");
         }
         const auto &material = entry.at("material");
         for (auto field = material.begin(); field != material.end(); ++field) {
@@ -1178,7 +1300,7 @@ RayBindings parseRayBindings(
         }
         result.bindings.push_back(
             {.selector = std::move(selector),
-             .group_index = layout.groupIndex(entry.at("group").get_ref<const std::string &>()),
+             .group_index = group_index,
              .record_data = encodeRecord(entry.at("record"), layout, result.source_reference)});
     }
     return result;
@@ -1260,7 +1382,12 @@ RaySceneRowSnapshot resolveRaySceneRows(
     std::vector<bool> binding_matched(bindings ? bindings->bindings.size() : 0, false);
     for (const auto &input : inputs) {
         const auto identity = materialRowIdentity(input);
-        if (semantic_mode != RayLayoutSemanticMode::LayoutV2 &&
+        if (input.geometry_kind == RayGeometryKind::aabbs &&
+            semantic_mode != RayLayoutSemanticMode::LayoutV3) {
+            throw std::runtime_error(
+                "pelican.ray_group_type_requires_layout_v3@1: procedural rows require ray_group_layout version 3");
+        }
+        if (!requiresRayLayoutV2(semantic_mode) &&
             input.ray_instance) {
             throw std::runtime_error(
                 "pelican.ray_instance_requires_layout_v2@1: pelican_ray_instance is only available with ray_group_layout version 2");
@@ -1268,12 +1395,17 @@ RaySceneRowSnapshot resolveRaySceneRows(
         const RayMaterialBinding *chosen = nullptr;
         if (bindings != nullptr) {
             for (std::size_t index = 0; index < bindings->bindings.size(); ++index) {
-                if (!selectorMatches(bindings->bindings[index].selector, identity)) continue;
+                if (!selectorMatches(bindings->bindings[index].selector,
+                                     identity, input.procedural_asset))
+                    continue;
                 binding_matched[index] = true;
                 if (chosen != nullptr) {
                     throw std::runtime_error(
-                        "pelican.ray_binding_selector_duplicate@1: material '" +
-                        materialReference(identity, layout.usesRayTables()) +
+                        "pelican.ray_binding_selector_duplicate@1: row '" +
+                        (input.geometry_kind == RayGeometryKind::aabbs
+                             ? input.procedural_asset
+                             : materialReference(identity,
+                                                 layout.usesRayTables())) +
                         "' resolves more than once");
                 }
                 chosen = &bindings->bindings[index];
@@ -1282,8 +1414,14 @@ RaySceneRowSnapshot resolveRaySceneRows(
         auto instance_mask = as_defaults.mask;
         auto instance_flags = as_defaults.instance_flags;
         auto instance_custom_index = as_defaults.custom_index;
-        auto geometry_flags = as_defaults.geometry_flags;
-        if (semantic_mode == RayLayoutSemanticMode::LayoutV2 &&
+        auto geometry_flags =
+            input.geometry_kind == RayGeometryKind::aabbs &&
+                    layout.acceleration_structure
+                ? layout.acceleration_structure->procedural_defaults
+                      .geometry_flags
+                : as_defaults.geometry_flags;
+        if (input.geometry_kind == RayGeometryKind::triangles &&
+            requiresRayLayoutV2(semantic_mode) &&
             !as_rules.empty()) {
             if (std::holds_alternative<MaterialRowIdentityUnavailable>(identity)) {
                 throw std::runtime_error(
@@ -1300,7 +1438,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
             }
             if (matched != nullptr) geometry_flags = matched->geometry_flags;
         }
-        if (semantic_mode == RayLayoutSemanticMode::LayoutV2 &&
+        if (requiresRayLayoutV2(semantic_mode) &&
             input.ray_instance) {
             if (input.ray_instance->mask) {
                 instance_mask = *input.ray_instance->mask;
@@ -1327,18 +1465,46 @@ RaySceneRowSnapshot resolveRaySceneRows(
             throw std::runtime_error(
                 "pelican.ray_profile_opaque_as@1: portable alpha profile forbids force_opaque AS instance flags");
         }
+        const auto group_index =
+            chosen ? chosen->group_index
+                   : layout.groupIndex(layout.default_group);
+        const auto required_group_type =
+            input.geometry_kind == RayGeometryKind::aabbs
+                ? RayGroupType::procedural
+                : RayGroupType::triangles;
+        if (group_index >= layout.group_types.size() ||
+            layout.group_types[group_index] != required_group_type) {
+            if (input.geometry_kind == RayGeometryKind::aabbs &&
+                chosen == nullptr) {
+                throw std::runtime_error(
+                    "pelican.procedural_group_unresolved@1: procedural asset '" +
+                    input.procedural_asset +
+                    "' has no procedural selector or procedural default group");
+            }
+            throw std::runtime_error(
+                "pelican.procedural_group_kind_conflict@1: row geometry kind does not match resolved layout group type");
+        }
         resolved.push_back(
             {.semantic_mode = semantic_mode,
+             .geometry_kind = input.geometry_kind,
              .source_index = input.source_index,
-             .group_index = chosen ? chosen->group_index
-                                   : layout.groupIndex(layout.default_group),
-             .record_data = chosen ? chosen->record_data
-                                   : std::vector<std::byte>(layout.data_size, std::byte{0}),
+             .group_index = group_index,
+             .record_data =
+                 input.geometry_kind == RayGeometryKind::aabbs
+                     ? encodeRecord(input.procedural_record, layout,
+                                    input.procedural_asset)
+                     : chosen
+                           ? chosen->record_data
+                           : std::vector<std::byte>(layout.data_size,
+                                                   std::byte{0}),
              .scene_identity = input.scene_identity,
               .geometry_identity = input.geometry_identity,
               .geometry_match_identity = input.geometry_match_identity,
-              .material_reference = materialReference(
-                  identity, layout.usesRayTables()),
+              .material_reference =
+                  input.geometry_kind == RayGeometryKind::aabbs
+                      ? std::string{}
+                      : materialReference(identity,
+                                          layout.usesRayTables()),
               .material_name = input.material_name,
               .resolved_material_handle =
                   input.resolved_material_handle,
@@ -1366,6 +1532,13 @@ RaySceneRowSnapshot resolveRaySceneRows(
         for (std::size_t index = 0; index < binding_matched.size(); ++index) {
             if (!binding_matched[index]) {
                 const auto &selector = bindings->bindings[index].selector;
+                if (selector.kind ==
+                    RayBindingSelector::Kind::procedural) {
+                    throw std::runtime_error(
+                        "pelican.procedural_group_unresolved@1: procedural selector '" +
+                        selector.reference +
+                        "' did not resolve to a scene row");
+                }
                 throw std::runtime_error(
                     "pelican.ray_binding_selector_unresolved@1: selector '" +
                     selector.reference + "' did not resolve to a scene row");
@@ -1408,6 +1581,8 @@ RaySceneRowSnapshot resolveRaySceneRows(
                  << resolved[index].geometry_identity << '\0'
                  << resolved[index].geometry_match_identity << '\0'
                  << resolved[index].material_reference << '\0'
+                 << static_cast<unsigned>(resolved[index].geometry_kind)
+                 << '\0'
                  << resolved[index].group_index << '\n';
         for (const auto byte : resolved[index].record_data)
             identity << static_cast<char>(byte);
@@ -1634,6 +1809,17 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
     } else {
         result.profile_material_rows.reserve(scene_rows.rows.size());
         for (const auto &scene_row : scene_rows.rows) {
+            if (scene_row.geometry_kind == RayGeometryKind::aabbs) {
+                const auto key =
+                    "procedural:" + std::to_string(scene_row.q);
+                result.material_keys.push_back(key);
+                result.profile_material_rows.emplace_back();
+                result.material_leases.emplace_back();
+                result.material_row_digests.push_back(hash_bytes(
+                    key, &result.profile_material_rows.back(),
+                    sizeof(RayProfileMaterialTableRow)));
+                continue;
+            }
             const auto source = source_by_handle.find(
                 {scene_row.resolved_material_handle,
                  scene_row.resolved_material_generation,
@@ -1799,6 +1985,10 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
         geometry_identity.begin(), geometry_identity.end());
 
     for (auto &scene_row : scene_rows.rows) {
+        if (scene_row.geometry_kind == RayGeometryKind::aabbs) {
+            scene_row.material_index =
+                std::numeric_limits<std::uint32_t>::max();
+        } else {
         const auto material_source = source_by_handle.find(
             {scene_row.resolved_material_handle,
              scene_row.resolved_material_generation,
@@ -1829,6 +2019,7 @@ RayTracingTableBuildResult buildRayTracingTableSnapshot(
             }
             scene_row.material_index = static_cast<std::uint32_t>(
                 material - result.material_keys.begin());
+        }
         }
 
         const auto geometry_row = std::lower_bound(
@@ -2021,7 +2212,8 @@ RayTracingPackedHitTable packRayTracingHitTable(
                     destination + data_start, layout.data_size);
                 if (const auto offset = layout.engineRecordOffset(
                         RayEngineRecordField::material_index)) {
-                    if (row.material_index == rayMissingTextureIndex) {
+                    if (row.material_index == rayMissingTextureIndex &&
+                        row.geometry_kind != RayGeometryKind::aabbs) {
                         throw std::runtime_error(
                             "pelican.sbt.row_snapshot_invalid@1: material_index was not finalized");
                     }
@@ -2036,6 +2228,12 @@ RayTracingPackedHitTable packRayTracingHitTable(
                     }
                     writeU32(physical.subspan(*offset, 4),
                              row.geometry_index);
+                }
+                if (const auto offset = layout.engineRecordOffset(
+                        RayEngineRecordField::geometry_kind)) {
+                    writeU32(physical.subspan(*offset, 4),
+                             static_cast<std::uint32_t>(
+                                 row.geometry_kind));
                 }
             }
         }

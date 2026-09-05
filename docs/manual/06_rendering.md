@@ -334,7 +334,7 @@ color attachment stateは「未指定」の空表現を保ちます。省略をo
 
 **stem(ステム)** はファイル名から拡張子を落とした部分のことです([用語集](14_glossary.md))。シェーダは**拡張子なしの stem** で参照します(例: `"shaders/lava"`、`"engine://ssao"`)。`.vert` / `.frag` / `.spv` などの拡張子を書くと「use an extensionless <stage> shader stem」エラーになります(WP63)。
 
-拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L535))。どちらも無ければ試行パス一覧付きエラー。
+拡張子は stem ではなく、**その参照を書いた場所(どのシェーダステージか)**が決めます。`shader.vertex` に書いた `"shaders/lava"` なら `.vert`、`shader.fragment` なら `.frag`、compute の `shader` なら `.comp` です。そのうえで解決順は ① `<stem>.<ステージ拡張子>`(GLSL ソース → 実行時コンパイル)→ ② `<stem>.<ステージ拡張子>.spv`(ビルド済み SPIR-V)。つまり fragment に `"shaders/lava"` と書くと `shaders/lava.frag` → `shaders/lava.frag.spv` の順に探します。①の候補は**実行時コンパイラを含むビルドでのみ**列に入る(`PELICAN_RUNTIME_SHADER_COMPILER` — [第2章](02_getting_started.md))ので、配布ビルドでは実質 `.spv` だけです([shaderlibrary.cpp](../../src/core/shader/shaderlibrary.cpp#L540))。どちらも無ければ試行パス一覧付きエラー。
 
 (**GLSL** は Vulkan/OpenGL 系のシェーダ言語、**SPIR-V** はそれをコンパイルした GPU 向け中間バイナリ形式です。)
 
@@ -2304,7 +2304,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
-- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L646))。
+- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L698))。
 
 layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 
@@ -2338,7 +2338,7 @@ layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 | version 1 | `LayoutV1Q` | 行の `instance_custom_index` は**常に q(行の正規順の添字)で上書き**され、authored な値を持てない。`acceleration_structure` は書けない |
 | version 2 | `LayoutV2` | `acceleration_structure` と `pelican_ray_instance` が使える |
 
-同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **mode が v2 のときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1398))。codec 表は既定で 7 件、v2 プロジェクトだけ 8 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
+同一プロセス内で mode が変わる差し替え(グラフのリロード等)は `pelican.ray_layout_mode_change_requires_restart@1` で拒否されます。組み込みの `pelican_ray_instance` codec は **mode が v2 のときだけ codec 表に載ります**([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1460))。codec 表は既定で 7 件、v2 プロジェクトだけ 8 件目としてこれが載る、という形です([第4章](04_scene_ecs.md) §4.2 に「条件付き」として別項があります)。
 
 ### 10 状態表
 
@@ -2357,7 +2357,7 @@ layout(無し / v1 / v2)× `acceleration_structure` 宣言 × `pelican_ray_insta
 | 9 | v2 | 有 | 無 | 成功 |
 | 10 | v2 | 有 | 有 | 成功 |
 
-2 と 4 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L52))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
+2 と 4 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L55))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
 
 ### `pelican_ray_instance` コンポーネント
 
@@ -2375,7 +2375,7 @@ scene JSON の `components` に書きます。
 | `custom_index` | 0〜`0x00ffffff`(**24 bit** — この値がそのまま Vulkan の TLAS インスタンス記録 `VkAccelerationStructureInstanceKHR::instanceCustomIndex` へ入り、その field 幅が 24 bit だからです。エンジンが決めた上限ではありません) | 常に 0(AS 宣言の `defaults` に `custom_index` は書けません — allowlist は `mask` / `instance_flags` / `geometry_flags` の 3 キーだけ) |
 
 - **3 つとも省略した空のコンポーネントは `pelican.ray_instance_empty@1` で拒否**されます。一方 `"instance_flags": []` は「空という明示的な上書き」として有効です(欠落と空配列は別)。
-- `force_opaque` と `force_no_opaque` の同時指定は `pelican.ray_as_conflicting_instance_flags@1`、未知のフラグ名は `pelican.ray_as_unknown_flag@1`、未知のフィールドは `pelican.ray_instance_unknown_field@1`、範囲外は `pelican.ray_instance_field_range@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1005))。
+- `force_opaque` と `force_no_opaque` の同時指定は `pelican.ray_as_conflicting_instance_flags@1`、未知のフラグ名は `pelican.ray_as_unknown_flag@1`、未知のフィールドは `pelican.ray_instance_unknown_field@1`、範囲外は `pelican.ray_instance_field_range@1` です([componentcodec.cpp](../../src/core/loader/componentcodec.cpp#L1054))。
 - **`overrides` キーは現状拒否です**: `ray_instance_overrides_not_enabled@1`。per-occurrence の上書きは未着地で、その受け皿になる `List` の wire だけが先に入っています([第3章](03_project_format.md) §3.10)。
 - `simplemodelview` の無いオブジェクトに付けると `pelican.ray_instance_not_ray_traced@1`。BLAS 適格な静的ジオメトリが 1 つも無い場合も同じコードです(スキン / morph / VAT のプリミティブは静的 BLAS に入りません — [ソースコード読解ガイド第11章](../source-code-guide/11_ray_query_acceleration_structures.md))。
 - 上書きは**フィールド単位**です。書かなかったフィールドは AS 宣言の `defaults`(それも無ければ canonical 既定 mask=255 / flags なし / custom_index=0)になります([rayinstance.hpp](../../src/core/userpublic/components/rayinstance.hpp#L22))。
@@ -2400,9 +2400,9 @@ scene JSON の `components` に書きます。
 
 ### BLAS variant と `resident_blas_keys` 診断
 
-geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L596))。同じジオメトリでも flags が違えば別 BLAS です。
+geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L678))。同じジオメトリでも flags が違えば別 BLAS です。
 
-プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L534)):
+プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L612)):
 
 - `blas_variant_count` — 常駐している variant の数
 - `resident_blas_keys` — variant ごとの `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}`。同じ配列が `active_blas_inputs` というキーにも出ます(同一内容の 2 キー)
@@ -2412,7 +2412,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1246))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1368))。
 
 ## 関連文書
 

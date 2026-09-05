@@ -11362,16 +11362,21 @@ TEST_CASE(
                         sizeof(result));
             return result;
         };
+        const auto q_a = pixel(output_a, 0)[1];
+        const auto q_b = pixel(output_a, 1)[1];
+        REQUIRE(q_a < 2);
+        REQUIRE(q_b < 2);
+        REQUIRE(q_a != q_b);
         CHECK(pixel(output_a, 0) ==
-              std::array{0xa0u, 1u, 101u, std::bit_cast<std::uint32_t>(1.0f)});
+              std::array{0xa0u, q_a, 101u, std::bit_cast<std::uint32_t>(1.0f)});
         CHECK(pixel(output_a, 1) ==
-              std::array{0xb0u, 0u, 202u, std::bit_cast<std::uint32_t>(0.0f)});
+              std::array{0xb0u, q_b, 202u, std::bit_cast<std::uint32_t>(0.0f)});
         CHECK(pixel(output_a, 2) ==
               std::array{1280u, 0xffffffffu, 0u, 0u});
         CHECK(pixel(output_b, 0) ==
-              std::array{0xa1u, 1u, 101u, std::bit_cast<std::uint32_t>(1.0f)});
+              std::array{0xa1u, q_a, 101u, std::bit_cast<std::uint32_t>(1.0f)});
         CHECK(pixel(output_b, 1) ==
-              std::array{0xb1u, 0u, 202u, std::bit_cast<std::uint32_t>(0.0f)});
+              std::array{0xb1u, q_b, 202u, std::bit_cast<std::uint32_t>(0.0f)});
         CHECK(pixel(output_b, 2) ==
               std::array{1281u, 0xffffffffu, 1u, 0u});
 
@@ -11402,9 +11407,9 @@ TEST_CASE(
                     std::memcpy(&flags,
                                 write.hit_bytes.data() + at + sizeof(tint),
                                 sizeof(flags));
-                    CHECK(flags == (q == 0 ? 202u : 101u));
-                    CHECK(tint[0] == (q == 0 ? 0.0f : 1.0f));
-                    CHECK(tint[1] == (q == 0 ? 1.0f : 0.0f));
+                    CHECK(flags == (q == q_a ? 101u : 202u));
+                    CHECK(tint[0] == (q == q_a ? 1.0f : 0.0f));
+                    CHECK(tint[1] == (q == q_a ? 0.0f : 1.0f));
                 }
             }
         }
@@ -11534,12 +11539,14 @@ TEST_CASE(
         const auto wrong_tlas_output_b =
             renderer.readRenderTargetForTesting(
                 "wp366_b", ImageSubresourceRange{});
-        CHECK(pixel(wrong_tlas_output_a, 0) ==
-              std::array{0xb1u, 1u, 202u,
-                         std::bit_cast<std::uint32_t>(0.0f)});
-        CHECK(pixel(wrong_tlas_output_b, 0) ==
-              std::array{0xa0u, 1u, 101u,
-                         std::bit_cast<std::uint32_t>(1.0f)});
+        // The bad base affects q=1, whichever authored object owns it.
+        const auto q_one_pixel = q_a == 1u ? 0u : 1u;
+        const auto q_zero_pixel = 1u - q_one_pixel;
+        auto wrong_a_expected = pixel(output_b, q_zero_pixel);
+        wrong_a_expected[1] = 1u; // custom index comes from the hit instance
+        CHECK(pixel(wrong_tlas_output_a, q_one_pixel) == wrong_a_expected);
+        CHECK(pixel(wrong_tlas_output_b, q_one_pixel) ==
+              pixel(output_a, q_one_pixel));
         CHECK(wrong_tlas_output_a.bytes != output_a.bytes);
         CHECK(wrong_tlas_output_b.bytes != output_b.bytes);
 
@@ -14362,7 +14369,8 @@ TEST_CASE(
         CHECK(wp374aPixel(first, 0)[1] == declared_index);
 
         const auto inserted = placeWp374aChair(instances, model, 8.0f);
-        instances.setRayInstanceDeclaration(inserted, 374033, std::nullopt);
+        // Insert an authored identity before the target in canonical order.
+        instances.setRayInstanceDeclaration(inserted, 374030, std::nullopt);
         writes.clear();
         renderer.render();
         vkcore.waitIdle();

@@ -155,7 +155,7 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
     // WP380c v3 measures only real participant rows backed by an executor
     // mutation call site. The other manifest rows are presence/schema
     // inventory, not pretend mutation participants.
-    REQUIRE(real_participant_mutation_rows == 10);
+    REQUIRE(real_participant_mutation_rows == 14);
 
     REQUIRE_FALSE(manifestRow("rng_sequence", "current_seed")
                       .mutation_id.empty());
@@ -176,6 +176,14 @@ TEST_CASE("WP380 field manifest is unique complete and build-derived",
     REQUIRE(manifestRow("audio", "play").presence ==
             expected_audio);
     REQUIRE(manifestRow("root.rpc", "direct_load").presence == expected_rpc);
+    REQUIRE_FALSE(manifestRow("procedural", "aabb_buffer")
+                      .mutation_id.empty());
+    REQUIRE_FALSE(manifestRow("procedural", "allocation_generation")
+                      .mutation_id.empty());
+    REQUIRE_FALSE(manifestRow("procedural", "instance_snapshot")
+                      .mutation_id.empty());
+    REQUIRE_FALSE(manifestRow("procedural", "retire_queue")
+                      .mutation_id.empty());
 }
 
 TEST_CASE("WP380 manifest fixes exclusions and all five production call sites",

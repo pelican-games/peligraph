@@ -172,6 +172,7 @@ DECLARE_MODULE(Renderer) {
     std::uint64_t last_picking_frame_index = 0;
     std::vector<std::optional<PickingModelInstanceToken>>
         last_picking_model_instances;
+    std::uint64_t next_ray_scene_generation = 1;
 
     TemporalViewFamilyHistory &activeTemporalHistory();
     const TemporalViewFamilyHistory &activeTemporalHistory() const;

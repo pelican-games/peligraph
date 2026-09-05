@@ -12,6 +12,7 @@ target_sources(pelican_core PRIVATE
     modelinstanceslots.cpp
     indirectdrawlimits.cpp
     polygoninstancecontainer.cpp
+    proceduralgeometrycontainer.cpp
     projectionjitter.cpp
     viewfamily.cpp
     viewfamilyproviderregistry.cpp

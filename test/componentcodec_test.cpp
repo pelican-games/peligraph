@@ -1,5 +1,6 @@
 #include "../src/core/ecs/predefined/transform.hpp"
 #include "../src/core/loader/componentcodec.hpp"
+#include "../src/core/renderer/proceduralgeometrycomponent.hpp"
 #include "../src/core/userpublic/components/animation.hpp"
 #include "../src/core/userpublic/components/collider.hpp"
 #include "../src/core/userpublic/components/localtransform.hpp"
@@ -110,6 +111,10 @@ nlohmann::ordered_json canonicalThroughRuntime(const ComponentCodec &codec,
         SpriteViewComponent runtime;
         codec.applyRuntime(decoded, &runtime);
         projected = codec.projectRuntime(&runtime);
+    } else if (codec.name == "pelican_procedural_geometry") {
+        ProceduralGeometryComponent runtime;
+        codec.applyRuntime(decoded, &runtime);
+        projected = codec.projectRuntime(&runtime);
     } else {
         throw std::logic_error("unhandled codec in fixture");
     }
@@ -126,7 +131,7 @@ void requireVec3(glm::vec3 actual, glm::vec3 expected) {
 
 TEST_CASE("component codec registry exposes runtime and editor projection policy", "[component-codec][wp151][WP375]") {
     const auto codecs = componentCodecs();
-    REQUIRE(codecs.size() == 7);
+    REQUIRE(codecs.size() == 8);
     std::unordered_set<std::string_view> names;
     for (const auto &codec : codecs) {
         REQUIRE(names.insert(codec.name).second);
@@ -201,7 +206,7 @@ TEST_CASE("WP378 legacy descriptor corpus is a configuration-independent bijecti
             generated.str());
 }
 
-TEST_CASE("seven component codecs roundtrip authored runtime canonical and fresh load",
+TEST_CASE("eight component codecs roundtrip authored runtime canonical and fresh load",
           "[component-codec][roundtrip][wp151]") {
     for (const auto &entry : readFixture("valid.json")) {
         const auto name = entry.at("name").get<std::string>();

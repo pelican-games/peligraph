@@ -1742,6 +1742,8 @@ pelican_define_test(raytracing_rt2b_test pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 pelican_define_test(raytracing_rt3_1_test pelican_core picosha2
                     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+pelican_define_test(raytracing_rt3_2a_test pelican_core picosha2
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_raytracing_rt1b_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_WITH_SPIRV_LINK=$<BOOL:${PELICAN_WITH_SPIRV_LINK}>

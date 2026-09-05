@@ -10,6 +10,11 @@
     "canonical": {"name":"simplemodelview","model":"hero_model"}
   },
   {
+    "name": "pelican_procedural_geometry",
+    "authored": {"name":"pelican_procedural_geometry","asset":"sphere_asset"},
+    "canonical": {"name":"pelican_procedural_geometry","asset":"sphere_asset"}
+  },
+  {
     "name": "camera",
     "authored": {"name":"camera","type":"perspective","yfov":1.0,"znear":0.25,"zfar":250.0,"aspect":1.5,"sprite":{"pixel_perfect":"strict","sort":"declaration"},"controller":{"type":"orbit","target":"hero","distance":6.0,"yaw":0.5,"pitch":-0.25,"sensitivity":2.0}},
     "canonical": {"name":"camera","type":"perspective","yfov":1.0,"znear":0.25,"zfar":250.0,"aspect":1.5,"sprite":{"pixel_perfect":"strict","sort":"declaration"},"controller":{"type":"orbit","damping":0.0,"target":"hero","distance":6.0,"yaw":0.5,"pitch":-0.25,"sensitivity":2.0}}

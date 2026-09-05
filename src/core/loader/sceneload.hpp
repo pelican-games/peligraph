@@ -106,6 +106,14 @@ inline constexpr std::string_view behavior_attachments =
     "behavior.attachments.bypass";
 inline constexpr std::string_view transient_retire =
     "loader.transient-retire.bypass";
+inline constexpr std::string_view procedural_aabb_buffer =
+    "procedural.aabb-buffer.bypass";
+inline constexpr std::string_view procedural_allocation_generation =
+    "procedural.allocation-generation.bypass";
+inline constexpr std::string_view procedural_instance_snapshot =
+    "procedural.instance-snapshot.bypass";
+inline constexpr std::string_view procedural_retire_queue =
+    "procedural.retire-queue.bypass";
 inline constexpr std::string_view root_startup = "root.startup.disconnect";
 inline constexpr std::string_view root_rpc = "root.rpc.disconnect";
 inline constexpr std::string_view root_pending = "root.pending.disconnect";

@@ -20,7 +20,10 @@
 #include "../build_features.hpp"
 #include "../phys/physworld.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../renderer/proceduralgeometrycontainer.hpp"
 #include "../shader/raygrouplayout.hpp"
+#include "../vkcore/core.hpp"
+#include "../../project/assetdataformat.hpp"
 #include "../userpublic/events.hpp"
 #include "../userpublic/deterministicrng.hpp"
 #include "../userpublic/details/event/registerer.hpp"
@@ -56,7 +59,17 @@ void internal::validateResolvedSceneFeatureBindings(
     const auto ray_mode = ray_layout != nullptr && ray_layout->configured()
                               ? ray_layout->mode()
                               : RayLayoutSemanticMode::LegacyNoLayout;
-    if (ray_mode != RayLayoutSemanticMode::LayoutV2) {
+    if (ray_mode != RayLayoutSemanticMode::LayoutV3) {
+        for (const auto &object : scene.objects) {
+            for (const auto &component : object.components) {
+                if (component.name == "pelican_procedural_geometry") {
+                    throw std::runtime_error(
+                        "pelican.ray_group_type_requires_layout_v3@1: procedural geometry requires layout version 3");
+                }
+            }
+        }
+    }
+    if (!requiresRayLayoutV2(ray_mode)) {
         bool external_owner = false;
         if (const auto *components =
                 FastModuleContainer::tryGet<ComponentInfoManager>()) {
@@ -92,7 +105,13 @@ void internal::validateResolvedSceneFeatureBindings(
                 [](const auto &component) {
                     return component.name == "simplemodelview";
                 });
-            if (has_ray_instance && !has_model) {
+            const bool has_procedural = std::any_of(
+                object.components.begin(), object.components.end(),
+                [](const auto &component) {
+                    return component.name ==
+                           "pelican_procedural_geometry";
+                });
+            if (has_ray_instance && !has_model && !has_procedural) {
                 throw std::runtime_error(
                     "pelican.ray_instance_not_ray_traced@1: pelican_ray_instance object has no ray-traceable model component");
             }
@@ -509,6 +528,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     Camera::PreparedSceneState camera_candidate;
     LightContainer::PreparedLoad light_candidate;
     PolygonInstanceContainer::PreparedSceneState renderer_candidate;
+    ProceduralGeometryContainer::PreparedSceneState procedural_candidate;
     std::vector<std::uint32_t> renderer_retire_indices;
     SeqPlayer::PreparedSceneState seq_candidate;
     VatPlayer::PreparedSceneState vat_candidate;
@@ -525,6 +545,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     std::unique_ptr<PreparedBehaviorSceneReconciliation> behavior_candidate;
     DeterministicRng *rng = nullptr;
     bool renderer_published = false;
+    bool procedural_published = false;
     bool light_published = false;
     bool candidates_published = false;
 
@@ -562,6 +583,26 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
             throw std::runtime_error("scene not found: " + request.scene_id);
         }
         internal::validateResolvedSceneFeatureBindings(*scene);
+        const bool has_procedural = std::any_of(
+            scene->objects.begin(), scene->objects.end(), [](const auto &object) {
+                return std::any_of(
+                    object.components.begin(), object.components.end(),
+                    [](const auto &component) {
+                        return component.name ==
+                               "pelican_procedural_geometry";
+                    });
+            });
+        AssetDataFormatDocument asset_data;
+        VulkanManageCore *procedural_vkcore = nullptr;
+        if (has_procedural) {
+            asset_data = parseAssetDataFormatJson(
+                nlohmann::json::parse(config.assetDataJson()));
+            procedural_vkcore = &GET_MODULE(VulkanManageCore);
+        }
+        procedural_candidate =
+            GET_MODULE(ProceduralGeometryContainer).prepareScene(
+                asset_data, *scene, procedural_vkcore,
+                candidate_authority.scene_epoch, phase_trace);
 
         std::vector<LightLoadEntry> light_entries;
         auto &component_info_manager = GET_MODULE(ComponentInfoManager);
@@ -669,6 +710,10 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         if (renderer_published) {
             GET_MODULE(PolygonInstanceContainer).publishPreparedScene(
                 std::move(renderer_candidate));
+        }
+        if (procedural_published) {
+            GET_MODULE(ProceduralGeometryContainer)
+                .rollbackPrepared(procedural_candidate);
         }
         for (auto it = destroyed_entities.rbegin();
              it != destroyed_entities.rend(); ++it) {
@@ -920,6 +965,10 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         std::declval<LightContainer::PreparedLoad &&>())));
     static_assert(noexcept(std::declval<PhysWorld &>().publishPrepared(
         std::declval<PhysWorld::PreparedState &&>())));
+    static_assert(noexcept(std::declval<ProceduralGeometryContainer &>()
+                               .publishPrepared(
+                                   std::declval<ProceduralGeometryContainer::PreparedSceneState &>(),
+                                   std::declval<SceneLoadPhaseTrace &>())));
     static_assert(noexcept(std::declval<PreparedBehaviorSceneReconciliation &>()
                                .publish()));
     static_assert(noexcept(object_bindings.swap(
@@ -948,6 +997,27 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     }
     GET_MODULE(PhysWorld).publishPrepared(std::move(physics_candidate),
                                           phase_trace);
+    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+    if (internal::sceneLoadMutationEnabled(
+            injector, SceneLoadFaultPhase::publish, "procedural",
+            scene_load_mutation::procedural_aabb_buffer)) {
+        procedural.dropPreparedAabbBuffersForMutation(
+            procedural_candidate);
+    }
+    if (internal::sceneLoadMutationEnabled(
+            injector, SceneLoadFaultPhase::publish, "procedural",
+            scene_load_mutation::procedural_allocation_generation)) {
+        procedural.dropPreparedAllocationGenerationForMutation(
+            procedural_candidate);
+    }
+    if (internal::sceneLoadMutationEnabled(
+            injector, SceneLoadFaultPhase::publish, "procedural",
+            scene_load_mutation::procedural_instance_snapshot)) {
+        procedural.dropPreparedInstancesForMutation(
+            procedural_candidate);
+    }
+    procedural.publishPrepared(procedural_candidate, phase_trace);
+    procedural_published = true;
     behavior_candidate->publish(phase_trace);
     candidates_published = true;
 
@@ -1012,6 +1082,12 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     }, phase_trace);
     GET_MODULE(PolygonInstanceContainer).enqueueSceneRetirement(
         std::move(renderer_retire_indices), phase_trace);
+    if (!internal::sceneLoadMutationEnabled(
+            injector, SceneLoadFaultPhase::retire, "procedural",
+            scene_load_mutation::procedural_retire_queue)) {
+        GET_MODULE(ProceduralGeometryContainer).enqueueRetirement(
+            std::move(procedural_candidate), phase_trace);
+    }
 
     event_outbox->stageReserved(std::move(scene_loaded_event));
     GET_MODULE(DeterministicRng).publishPreparedSequence(rng_candidate,
@@ -1147,6 +1223,10 @@ void SceneLoader::drainRetirementQueue() {
             FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
         renderer->drainSceneRetirements();
     }
+    if (auto *procedural =
+            FastModuleContainer::tryGet<ProceduralGeometryContainer>()) {
+        procedural->drainRetirements();
+    }
 }
 
 void SceneLoader::clearRuntimeScene() {
@@ -1166,6 +1246,7 @@ void SceneLoader::clearRuntimeScene() {
 #endif
     GameObjects::removeAll();
     GET_MODULE(PolygonInstanceContainer).clear();
+    GET_MODULE(ProceduralGeometryContainer).clear();
     releaseTransientModels(true);
 }
 

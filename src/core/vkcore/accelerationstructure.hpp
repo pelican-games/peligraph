@@ -11,6 +11,7 @@
 #include <nlohmann/json_fwd.hpp>
 #include <span>
 #include <string>
+#include <variant>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -20,13 +21,18 @@ class DeletionQueue;
 class VulkanManageCore;
 struct BufferWrapper;
 struct RayTracingSceneShaderBindingTables;
+struct RayTracingTlasInstancePlanEntry;
 
 // Renderer-owned data frozen before recording begins. vkcore deliberately
 // sees only raw stable identities/ranges and has no dependency on model or
 // draw-inventory types.
 struct RayQueryGeometryInstanceSnapshot {
+    RayGeometryKind geometry_kind = RayGeometryKind::triangles;
     std::uint64_t asset_identity = 0;
     std::uint64_t authoring_object_id = 0;
+    // Stable component occurrence within the authoring object.  Together
+    // with authoring_object_id this is the RT3-2 scene-row identity.
+    std::string component_occurrence = "0";
     std::optional<RayInstanceComponent> ray_instance;
     std::uint32_t instance_index = 0;
     std::uint32_t instance_generation = 0;
@@ -45,6 +51,11 @@ struct RayQueryGeometryInstanceSnapshot {
         0.0F, 0.0F, 1.0F, 1.0F};
     float alpha_override_uv_rotation = 0.0F;
     std::uint64_t geometry_allocation_id = 0;
+    std::string procedural_asset;
+    nlohmann::ordered_json procedural_record =
+        nlohmann::ordered_json::object();
+    std::uint64_t aabb_buffer_address = 0;
+    std::shared_ptr<const void> geometry_lease;
     std::uint32_t index_count = 0;
     std::uint32_t index_offset = 0;
     std::int32_t vertex_offset = 0;
@@ -68,6 +79,30 @@ struct RayQueryGeometryInstanceSnapshot {
     bool occurrence_ambiguous = false;
     glm::mat4 world_transform{1.0F};
 };
+
+struct TriangleRow {
+    RayQueryGeometryInstanceSnapshot instance;
+};
+
+struct ProceduralRow {
+    RayQueryGeometryInstanceSnapshot instance;
+};
+
+using RaySceneInventoryRow = std::variant<TriangleRow, ProceduralRow>;
+
+struct RaySceneInventorySnapshot {
+    std::uint64_t generation = 0;
+    std::string identity_digest_sha256;
+    std::vector<RaySceneInventoryRow> rows;
+    // Canonical projection of rows, retained so every downstream consumer
+    // observes the exact inventory ordering owned by the generation root.
+    std::vector<RayQueryGeometryInstanceSnapshot> instances;
+};
+
+RaySceneInventorySnapshot makeRaySceneInventorySnapshot(
+    std::span<const RayQueryGeometryInstanceSnapshot> triangles,
+    std::span<const RayQueryGeometryInstanceSnapshot> procedurals,
+    std::uint64_t generation);
 
 struct RayQueryGeometryExclusionDiagnostics {
     std::size_t primitive_count = 0;
@@ -133,6 +168,16 @@ struct RayTracingTlasInstancePlanEntry {
         const RayTracingTlasInstancePlanEntry &) const = default;
 };
 
+struct RaySceneGenerationRoot {
+    std::uint64_t generation = 0;
+    std::shared_ptr<const RaySceneInventorySnapshot> inventory;
+    std::shared_ptr<const RaySceneRowSnapshot> resolved_rows;
+    std::shared_ptr<const RayTracingGeometrySnapshot> geometry_table;
+    std::shared_ptr<const RayTracingSceneShaderBindingTables> sbt;
+    std::vector<RayTracingTlasInstancePlanEntry> tlas_plan;
+    std::uint64_t tlas_plan_generation = 0;
+};
+
 // Exact CPU lowering consumed by recordFrame immediately before Vulkan TLAS
 // instance records are emitted. With a row snapshot it returns canonical q
 // order and q*R bases; without one it preserves the RT1a legacy order/zeros.
@@ -144,6 +189,7 @@ lowerRayTracingTlasInstancePlan(
     std::uint32_t ray_type_count);
 
 struct RayQueryBlasInputDiagnostics {
+    RayGeometryKind geometry_kind = RayGeometryKind::triangles;
     std::uint64_t geometry_allocation_id = 0;
     std::uint32_t geometry_flags = 0;
     std::uint64_t index_device_address = 0;
@@ -237,7 +283,8 @@ class RayQueryAccelerationStructureScope {
             ray_tracing_scene_tables = {},
         bool material_alpha_profile_active = false,
         std::uint64_t runtime_generation = 0,
-        std::uint64_t ray_tracing_pipeline_generation = 0);
+        std::uint64_t ray_tracing_pipeline_generation = 0,
+        std::shared_ptr<const RaySceneGenerationRoot> generation_root = {});
     std::optional<FrameBuild> tryReuseFrame(
         std::uint64_t geometry_pool_generation,
         std::uint64_t model_rebuild_generation,
@@ -255,6 +302,8 @@ class RayQueryAccelerationStructureScope {
     activeRaySceneRowsForTesting() const noexcept;
     const RayTracingGeometrySnapshot *
     activeGeometrySnapshotForTesting() const noexcept;
+    const RaySceneGenerationRoot *
+    activeGenerationRootForTesting() const noexcept;
     vk::AccelerationStructureKHR topLevel() const noexcept;
     vk::DeviceAddress topLevelDeviceAddress() const noexcept;
 };

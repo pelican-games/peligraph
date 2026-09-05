@@ -9,7 +9,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
-#include <nlohmann/json_fwd.hpp>
+#include <nlohmann/json.hpp>
 #include <optional>
 #include <span>
 #include <string>
@@ -45,6 +45,7 @@ struct RayRecordMemberLayout {
 enum class RayEngineRecordField : std::uint8_t {
     material_index,
     geometry_index,
+    geometry_kind,
 };
 
 enum class RayPortableProfile : std::uint8_t {
@@ -55,6 +56,23 @@ enum class RayLayoutSemanticMode : std::uint8_t {
     LegacyNoLayout,
     LayoutV1Q,
     LayoutV2,
+    LayoutV3,
+};
+
+constexpr bool requiresRayLayoutV2(
+    RayLayoutSemanticMode mode) noexcept {
+    return mode == RayLayoutSemanticMode::LayoutV2 ||
+           mode == RayLayoutSemanticMode::LayoutV3;
+}
+
+enum class RayGeometryKind : std::uint8_t {
+    triangles,
+    aabbs,
+};
+
+enum class RayGroupType : std::uint8_t {
+    triangles,
+    procedural,
 };
 
 struct RayTracingProjectConfig;
@@ -83,6 +101,8 @@ struct RayAsGeometryRule {
 
 struct RayAccelerationStructureDeclaration {
     RayAccelerationStructureCanonicalDefaults defaults;
+    RayAccelerationStructureCanonicalDefaults procedural_defaults{
+        .geometry_flags = rayGeometryOpaque};
     std::vector<RayAsGeometryRule> rules;
 
     bool operator==(const RayAccelerationStructureDeclaration &) const =
@@ -98,12 +118,14 @@ struct RayGroupLayout {
     std::vector<std::string> ray_types;
     std::string default_group;
     std::vector<std::string> groups;
+    std::vector<RayGroupType> group_types;
     std::vector<std::string> misses;
     // Authored members retain their authored order, but their offsets are the
     // offsets in the one physical std430 shader-record struct.
     std::vector<RayRecordMemberLayout> record;
     // Canonical physical order: requested engine fields first in
-    // [material_index, geometry_index] order, followed by authored members.
+    // [material_index, geometry_index, geometry_kind] order, followed by
+    // authored members.
     std::vector<RayEngineRecordField> engine_record;
     std::vector<RayRecordMemberLayout> physical_record;
     std::uint32_t data_size = 0;
@@ -137,7 +159,7 @@ DECLARE_MODULE(RayLayoutRuntimeState) {
     bool configured() const noexcept { return configured_; }
     RayLayoutSemanticMode mode() const noexcept { return mode_; }
     bool builtinRayInstanceEnabled() const noexcept {
-        return configured_ && mode_ == RayLayoutSemanticMode::LayoutV2;
+        return configured_ && requiresRayLayoutV2(mode_);
     }
 };
 
@@ -160,6 +182,7 @@ struct RayBindingSelector {
     enum class Kind : std::uint8_t {
         document,
         asset_material,
+        procedural,
     };
 
     Kind kind = Kind::document;
@@ -177,6 +200,7 @@ struct RayMaterialBinding {
 
 struct RayBindings {
     std::string source_reference;
+    std::uint32_t version = 1;
     std::string digest_sha256;
     std::vector<RayMaterialBinding> bindings;
 };
@@ -201,6 +225,7 @@ loadRayTracingProjectConfig(
     bool runtime_shader_compiler_enabled);
 
 struct RaySceneRowInput {
+    RayGeometryKind geometry_kind = RayGeometryKind::triangles;
     // Persistent scene identity: object name followed by the merged-component
     // ordinal. It deliberately excludes draw-inventory publication order.
     std::string scene_identity;
@@ -220,6 +245,10 @@ struct RaySceneRowInput {
     std::uint64_t resolved_material_generation = 0;
     std::shared_ptr<const void> resolved_material_lease;
     std::uint64_t geometry_allocation_id = 0;
+    std::string procedural_asset;
+    nlohmann::ordered_json procedural_record =
+        nlohmann::ordered_json::object();
+    std::uint64_t aabb_buffer_address = 0;
     std::uint64_t authoring_object_id = 0;
     std::optional<RayInstanceComponent> ray_instance;
     std::size_t source_index = 0;
@@ -258,6 +287,7 @@ MaterialRowIdentity materialRowIdentity(const RaySceneRowInput &row);
 
 struct RaySceneRow {
     RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;
+    RayGeometryKind geometry_kind = RayGeometryKind::triangles;
     std::uint32_t q = 0;
     std::size_t source_index = 0;
     std::uint32_t group_index = 0;
@@ -293,6 +323,7 @@ struct RaySceneRow {
 };
 
 struct RaySceneRowSnapshot {
+    std::uint64_t generation = 0;
     RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LegacyNoLayout;
     std::string identity_digest_sha256;
     std::string material_table_digest_sha256;
@@ -348,6 +379,7 @@ struct alignas(8) RayGeometryTableRow {
 };
 
 struct RayTracingGeometrySnapshotRow {
+    RayGeometryKind geometry_kind = RayGeometryKind::triangles;
     std::uint64_t geometry_allocation_id = 0;
     std::uint32_t index_count = 0;
     std::uint32_t index_offset = 0;
@@ -362,6 +394,7 @@ struct RayTracingGeometrySnapshotRow {
 // the set-3 geometry table. Addresses already point at the subranges, so every
 // Vulkan/GLSL offset is zero and double addition is structurally impossible.
 struct RayTracingGeometrySnapshot {
+    std::uint64_t generation = 0;
     std::string digest_sha256;
     std::vector<RayTracingGeometrySnapshotRow> rows;
 };

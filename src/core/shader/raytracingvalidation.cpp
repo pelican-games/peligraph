@@ -230,16 +230,20 @@ std::string validateRayTracingPipelineInterfaces(
     }
     std::vector<RayTracingShaderOccurrence> hit_groups;
     std::vector<std::optional<RayTracingShaderOccurrence>> any_hits;
+    std::vector<std::optional<RayTracingShaderOccurrence>> intersections;
     if (!request.hit_group_occurrences.empty()) {
         hit_groups.reserve(request.hit_group_occurrences.size());
         any_hits.reserve(request.hit_group_occurrences.size());
+        intersections.reserve(request.hit_group_occurrences.size());
         for (const auto &pair : request.hit_group_occurrences) {
             hit_groups.push_back(pair.closest_hit);
             any_hits.push_back(pair.any_hit);
+            intersections.push_back(pair.intersection);
         }
     } else {
         hit_groups.assign(request.hit_groups.begin(), request.hit_groups.end());
         any_hits.resize(hit_groups.size());
+        intersections.resize(hit_groups.size());
     }
     const auto validate_occurrence = [](const auto &occurrence) {
         if (occurrence.entry == nullptr) {
@@ -292,9 +296,33 @@ std::string validateRayTracingPipelineInterfaces(
         }
     };
     for (std::size_t index = 0; index < hit_groups.size(); ++index) {
-        validate_triangle_hit_stage(hit_groups[index]);
-        if (any_hits[index]) {
-            validate_triangle_hit_stage(*any_hits[index]);
+        bool procedural = false;
+        if (request.group_layout != nullptr &&
+            !request.group_layout->ray_types.empty() &&
+            index / request.group_layout->ray_types.size() <
+                request.group_layout->group_types.size()) {
+            procedural = request.group_layout->group_types[
+                             index /
+                             request.group_layout->ray_types.size()] ==
+                         RayGroupType::procedural;
+        }
+        if (procedural) {
+            validate_occurrence(hit_groups[index]);
+            if (any_hits[index]) validate_occurrence(*any_hits[index]);
+            if (!intersections[index]) {
+                throw std::runtime_error(
+                    "pelican.procedural_group_requires_intersection@1: procedural hit group has no intersection stage");
+            }
+            validate_occurrence(*intersections[index]);
+        } else {
+            if (intersections[index]) {
+                throw std::runtime_error(
+                    "pelican.ray_tracing.unsupported_shader_stage@1: triangles hit group has an intersection stage");
+            }
+            validate_triangle_hit_stage(hit_groups[index]);
+            if (any_hits[index]) {
+                validate_triangle_hit_stage(*any_hits[index]);
+            }
         }
     }
 
@@ -420,6 +448,13 @@ std::string validateRayTracingPipelineInterfaces(
             if (any_hits[index]) {
                 validate_record(*any_hits[index], traced, traced);
             }
+            if (intersections[index]) {
+                // An intersection shader may consume the hit-group record,
+                // but a generic implementation (including the engine's
+                // no-report procedural control shader) need not declare it.
+                // If present, keep enforcing the same physical ABI.
+                validate_record(*intersections[index], traced, false);
+            }
         }
     }
 
@@ -493,6 +528,7 @@ std::string validateRayTracingPipelineInterfaces(
     for (std::size_t index = 0; index < hit_groups.size(); ++index) {
         validate_traces(hit_groups[index]);
         if (any_hits[index]) validate_traces(*any_hits[index]);
+        if (intersections[index]) validate_traces(*intersections[index]);
     }
 
     std::uint64_t hash = 14695981039346656037ull;
@@ -517,6 +553,7 @@ std::string validateRayTracingPipelineInterfaces(
     for (std::size_t index = 0; index < hit_groups.size(); ++index) {
         digest_occurrence(hit_groups[index]);
         if (any_hits[index]) digest_occurrence(*any_hits[index]);
+        if (intersections[index]) digest_occurrence(*intersections[index]);
     }
 
     const auto digest_target = [&](std::string_view domain,
@@ -603,6 +640,7 @@ std::string validateRayTracingPipelineInterfaces(
     for (std::size_t index = 0; index < hit_groups.size(); ++index) {
         digest_traces(hit_groups[index]);
         if (any_hits[index]) digest_traces(*any_hits[index]);
+        if (intersections[index]) digest_traces(*intersections[index]);
     }
     std::ostringstream result;
     result << (request.group_layout ? "rt1b-fnv1a64:"

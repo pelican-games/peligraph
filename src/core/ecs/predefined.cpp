@@ -7,6 +7,7 @@
 #include "predefined/transform.hpp"
 #include "enginecomponentregistrar.hpp"
 #include "../shader/raygrouplayout.hpp"
+#include "../renderer/proceduralgeometrycomponent.hpp"
 #include "../userpublic/components/rayinstance.hpp"
 
 #include "predefined/camerasystem.hpp"
@@ -30,6 +31,8 @@ void ECSPredefinedRegistration::reg() {
     components.registerComponent<CameraComponent>("camera");
     components.registerComponent<AnimationComponent>("animation");
     registerSpriteViewComponent();
+    components.registerComponent<ProceduralGeometryComponent>(
+        "pelican_procedural_geometry");
     if (const auto *ray_layout =
             FastModuleContainer::tryGet<RayLayoutRuntimeState>();
         ray_layout != nullptr && ray_layout->builtinRayInstanceEnabled()) {

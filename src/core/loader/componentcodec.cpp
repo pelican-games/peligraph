@@ -1,4 +1,5 @@
 #include "componentcodec.hpp"
+#include "../renderer/proceduralgeometrycomponent.hpp"
 
 #include "../ecs/core.hpp"
 #include "../ecs/predefined/transform.hpp"
@@ -114,6 +115,10 @@ inline constexpr auto simple_model_view_schema = structFields(
     componentPolicy("simplemodelview"),
     required(field<&SimpleModelViewCodecData::model>("model")));
 
+inline constexpr auto procedural_geometry_schema = structFields(
+    componentPolicy("pelican_procedural_geometry"),
+    required(field<&ProceduralGeometryComponent::asset>("asset")));
+
 inline constexpr auto camera_schema = structFields(
     componentPolicy("camera"),
     defaulted(field<&CameraSchemaFields::type>("type"), CameraProjectionKind::Perspective,
@@ -202,6 +207,8 @@ auto materializeSchema(const Schema &schema) {
 
 const auto transform_fields = materializeSchema(transform_schema);
 const auto simple_model_view_fields = materializeSchema(simple_model_view_schema);
+const auto procedural_geometry_fields =
+    materializeSchema(procedural_geometry_schema);
 const auto camera_fields = materializeSchema(camera_schema);
 const auto light_fields = materializeSchema(light_schema);
 const auto collider_fields = materializeSchema(collider_schema);
@@ -469,6 +476,48 @@ ComponentCodecValue projectSimpleModelView(const void *raw_source) {
     if (raw_source == nullptr) throw std::invalid_argument("simplemodelview runtime source is null");
     return SimpleModelViewCodecData{
         .model = static_cast<const SimpleModelViewComponent *>(raw_source)->model_name};
+}
+
+ComponentCodecValue decodeProceduralGeometry(const Json &json) {
+    requireObjectAndName(json, "pelican_procedural_geometry");
+    requireClosed(json, "pelican_procedural_geometry",
+                  std::array<std::string_view, 2>{"name", "asset"});
+    ProceduralGeometryComponent result;
+    result.asset = readString(
+        requireField(json, "pelican_procedural_geometry", "asset"),
+        "pelican_procedural_geometry.asset", true);
+    return result;
+}
+
+OrderedJson encodeProceduralGeometry(const ComponentCodecValue &value) {
+    const auto &data = codecValue<ProceduralGeometryComponent>(
+        value, "pelican_procedural_geometry");
+    if (data.asset.empty()) {
+        codecError(StructFieldErrorCode::OutOfRange,
+                   "pelican_procedural_geometry.asset",
+                   "must not be empty");
+    }
+    return OrderedJson{{"name", "pelican_procedural_geometry"},
+                       {"asset", data.asset}};
+}
+
+void applyProceduralGeometry(const ComponentCodecValue &value,
+                             void *raw_target) {
+    if (raw_target == nullptr) {
+        throw std::invalid_argument(
+            "pelican_procedural_geometry runtime target is null");
+    }
+    *static_cast<ProceduralGeometryComponent *>(raw_target) =
+        codecValue<ProceduralGeometryComponent>(
+            value, "pelican_procedural_geometry");
+}
+
+ComponentCodecValue projectProceduralGeometry(const void *raw_source) {
+    if (raw_source == nullptr) {
+        throw std::invalid_argument(
+            "pelican_procedural_geometry runtime source is null");
+    }
+    return *static_cast<const ProceduralGeometryComponent *>(raw_source);
 }
 
 const Json *optionalObject(const Json &json, std::string_view root, std::string_view field) {
@@ -1231,6 +1280,19 @@ const std::array codecs{
                    decodeResult<decodeSimpleModelView>,
                     encodeSimpleModelView, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(simple_model_view_fields)); return node; },
                    applySimpleModelView, projectSimpleModelView, nullptr, nullptr},
+    ComponentCodec{"pelican_procedural_geometry",
+                   ComponentCodecRuntimeKind::Ecs,
+                   EditorProjectionPolicy::EcsCodec,
+                   decodeResult<decodeProceduralGeometry>,
+                   encodeProceduralGeometry,
+                   []() -> const SchemaNode & {
+                       static const auto node = SchemaNode::fromFlat(
+                           fieldSpan(procedural_geometry_fields));
+                       return node;
+                   },
+                   applyProceduralGeometry, projectProceduralGeometry,
+                   prepareEcsEditorSwap<ProceduralGeometryComponent>,
+                   swapEcsEditorToken<ProceduralGeometryComponent>},
     ComponentCodec{"camera", ComponentCodecRuntimeKind::Camera,
                    EditorProjectionPolicy::Camera, decodeResult<decodeCamera>,
                    encodeCamera,

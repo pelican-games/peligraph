@@ -99,6 +99,11 @@ constexpr std::array manifest{
     SceneParticipantManifestEntry{"physics", "active_trigger_pairs", physics_presence, participant, "prepare", swap_publish, swap_rollback, no_retire, "entity-pair-set-v1", {}},
     SceneParticipantManifestEntry{"physics", "next_collider_id", physics_presence, participant, "prepare", swap_publish, swap_rollback, no_retire, "u64", {}},
 
+    SceneParticipantManifestEntry{"procedural", "aabb_buffer", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "aabb-positions-khr-v1", scene_load_mutation::procedural_aabb_buffer},
+    SceneParticipantManifestEntry{"procedural", "allocation_generation", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "u64", scene_load_mutation::procedural_allocation_generation},
+    SceneParticipantManifestEntry{"procedural", "instance_snapshot", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "authoring-id+component-occurrence-v1", scene_load_mutation::procedural_instance_snapshot},
+    SceneParticipantManifestEntry{"procedural", "retire_queue", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "procedural-state-queue-v1", scene_load_mutation::procedural_retire_queue},
+
     SceneParticipantManifestEntry{"renderer.flat", "draw_inventory", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "draw-inventory-v1", {}},
     SceneParticipantManifestEntry{"renderer.flat", "compiled_draw_queue", real, participant, "prepare", swap_publish, swap_rollback, no_retire, "compiled-draw-queue-v1", {}},
     SceneParticipantManifestEntry{"renderer.flat", "draw_queue_material_filters", real, participant, "prepare", swap_publish, swap_rollback, no_retire, "material-filter-list-v1", {}},

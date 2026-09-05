@@ -3,6 +3,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <initializer_list>
 #include <set>
 #include <stdexcept>
@@ -14,7 +16,8 @@ namespace {
 
 constexpr std::string_view assetDataSchema =
     "pelican.asset_data";
-constexpr int assetDataVersion = 1;
+constexpr int assetDataCurrentVersion = 2;
+constexpr float proceduralAabbMinimumThickness = 0x1p-7F;
 
 void requireOnlyKeys(
     const nlohmann::json &object,
@@ -53,6 +56,28 @@ std::string requireNonEmptyString(
     return found->get<std::string>();
 }
 
+std::array<float, 3> requireF32Vec3(
+    const nlohmann::json &value, std::string_view context) {
+    if (!value.is_array() || value.size() != 3) {
+        throw std::runtime_error(std::string{context} +
+                                 " must be a three-element array");
+    }
+    std::array<float, 3> result{};
+    for (std::size_t axis = 0; axis < result.size(); ++axis) {
+        if (!value.at(axis).is_number()) {
+            throw std::runtime_error(std::string{context} +
+                                     " entries must be numbers");
+        }
+        const auto authored = value.at(axis).get<double>();
+        result[axis] = static_cast<float>(authored);
+        if (!std::isfinite(authored) || !std::isfinite(result[axis])) {
+            throw std::runtime_error(std::string{context} +
+                                     " entries must be finite f32 values");
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 AssetDataFormatDocument
@@ -65,7 +90,7 @@ parseAssetDataFormatJson(
     requireOnlyKeys(
         document,
         {"schema", "version", "models",
-         "materials", "textures"},
+         "materials", "textures", "procedural_geometry"},
         "asset_data.json");
     if (document.value(
             "schema", std::string{}) !=
@@ -75,12 +100,18 @@ parseAssetDataFormatJson(
             "'pelican.asset_data'");
     }
     if (!document.contains("version") ||
-        !document.at("version")
-             .is_number_integer() ||
-        document.at("version").get<int>() !=
-            assetDataVersion) {
+        !document.at("version").is_number_integer()) {
         throw std::runtime_error(
-            "asset_data.json version must be exactly 1");
+            "asset_data.json version must be exactly 1 or 2");
+    }
+    const auto version = document.at("version").get<int>();
+    if (version < 1 || version > assetDataCurrentVersion) {
+        throw std::runtime_error(
+            "asset_data.json version must be exactly 1 or 2");
+    }
+    if (version == 1 && document.contains("procedural_geometry")) {
+        throw std::runtime_error(
+            "pelican.asset_data_procedural_requires_v2@1: procedural_geometry requires asset_data version 2");
     }
     if (!document.contains("models") ||
         !document.at("models").is_array()) {
@@ -97,8 +128,14 @@ parseAssetDataFormatJson(
         throw std::runtime_error(
             "asset_data.json materials must be an array");
     }
+    if (document.contains("procedural_geometry") &&
+        !document.at("procedural_geometry").is_array()) {
+        throw std::runtime_error(
+            "asset_data.json procedural_geometry must be an array");
+    }
 
     AssetDataFormatDocument result;
+    result.version = static_cast<std::uint32_t>(version);
     const auto &models = document.at("models");
     result.models.reserve(models.size());
     std::set<std::string, std::less<>>
@@ -153,37 +190,87 @@ parseAssetDataFormatJson(
         });
     }
 
-    if (!document.contains("materials")) {
-        return result;
+    if (document.contains("materials")) {
+        const auto &materials = document.at("materials");
+        result.materials.reserve(materials.size());
+        std::set<std::string, std::less<>> material_paths;
+        for (std::size_t index = 0; index < materials.size(); ++index) {
+            const auto &entry = materials.at(index);
+            const auto context = "asset_data.json materials[" +
+                                 std::to_string(index) + "]";
+            if (!entry.is_object()) {
+                throw std::runtime_error(context + " must be an object");
+            }
+            requireOnlyKeys(entry, {"path"}, context);
+            auto path = requireNonEmptyString(entry, "path", context);
+            if (!material_paths.insert(path).second) {
+                throw std::runtime_error(
+                    "asset_data.json has duplicate material document path '" +
+                    path + "'");
+            }
+            result.materials.push_back({.path = std::move(path)});
+        }
     }
-    const auto &materials =
-        document.at("materials");
-    result.materials.reserve(materials.size());
-    std::set<std::string, std::less<>>
-        material_paths;
-    for (std::size_t index = 0;
-         index < materials.size(); ++index) {
-        const auto &entry =
-            materials.at(index);
-        const auto context =
-            "asset_data.json materials[" +
-            std::to_string(index) + "]";
+
+    if (!document.contains("procedural_geometry")) return result;
+    const auto &procedural = document.at("procedural_geometry");
+    result.procedural_geometry.reserve(procedural.size());
+    std::set<std::string, std::less<>> procedural_names;
+    for (std::size_t index = 0; index < procedural.size(); ++index) {
+        const auto &entry = procedural.at(index);
+        const auto context = "asset_data.json procedural_geometry[" +
+                             std::to_string(index) + "]";
         if (!entry.is_object()) {
-            throw std::runtime_error(
-                context + " must be an object");
+            throw std::runtime_error(context + " must be an object");
         }
-        requireOnlyKeys(
-            entry, {"path"}, context);
-        auto path = requireNonEmptyString(
-            entry, "path", context);
-        if (!material_paths.insert(path).second) {
+        if (entry.contains("entries")) {
             throw std::runtime_error(
-                "asset_data.json has duplicate "
-                "material document path '" +
-                path + "'");
+                "pelican.procedural_geometry_entries_unsupported@1: " +
+                context + " uses the RT3-2b entries form");
         }
-        result.materials.push_back({
-            .path = std::move(path),
+        requireOnlyKeys(entry, {"name", "kind", "aabb", "record"},
+                        context);
+        auto name = requireNonEmptyString(entry, "name", context);
+        if (!procedural_names.emplace(name).second) {
+            throw std::runtime_error(
+                "asset_data.json has duplicate procedural geometry name '" +
+                name + "'");
+        }
+        auto kind = requireNonEmptyString(entry, "kind", context);
+        if (kind != "aabb_v1") {
+            throw std::runtime_error(context + " kind must be 'aabb_v1'");
+        }
+        if (!entry.contains("aabb") || !entry.at("aabb").is_object()) {
+            throw std::runtime_error(context + " requires object 'aabb'");
+        }
+        const auto &aabb = entry.at("aabb");
+        requireOnlyKeys(aabb, {"min", "max"}, context + " aabb");
+        if (!aabb.contains("min") || !aabb.contains("max")) {
+            throw std::runtime_error(context + " aabb requires min and max");
+        }
+        const auto minimum = requireF32Vec3(aabb.at("min"),
+                                            context + " aabb.min");
+        const auto maximum = requireF32Vec3(aabb.at("max"),
+                                            context + " aabb.max");
+        for (std::size_t axis = 0; axis < minimum.size(); ++axis) {
+            if (!(minimum[axis] < maximum[axis]) ||
+                maximum[axis] - minimum[axis] <
+                    proceduralAabbMinimumThickness) {
+                throw std::runtime_error(
+                    "pelican.procedural_aabb_degenerate@1: asset='" + name +
+                    "' primitive_id=0");
+            }
+        }
+        if (!entry.contains("record") || !entry.at("record").is_object()) {
+            throw std::runtime_error(context +
+                                     " record must be a named object");
+        }
+        result.procedural_geometry.push_back({
+            .name = std::move(name),
+            .kind = std::move(kind),
+            .aabb_min = minimum,
+            .aabb_max = maximum,
+            .record = entry.at("record"),
         });
     }
     return result;

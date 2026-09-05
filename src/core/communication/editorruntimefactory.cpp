@@ -1259,6 +1259,7 @@ EditorProjectionContext makeEditorProjectionContext(
                 layout_mode = EditorLayoutSemanticMode::LayoutV1;
                 break;
             case RayLayoutSemanticMode::LayoutV2:
+            case RayLayoutSemanticMode::LayoutV3:
                 layout_mode = EditorLayoutSemanticMode::LayoutV2;
                 break;
             }

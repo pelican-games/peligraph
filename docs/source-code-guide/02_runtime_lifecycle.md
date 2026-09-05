@@ -70,11 +70,11 @@ sequenceDiagram
 4. constructorへ渡されたsettings JSONを`ProjectSource`の上書きsourceへ設定し、[`watch::ReloadGate.configureFromLaunch()`](../../src/core/watch/reloadgate.hpp) を呼ぶ。
 5. [`recoverRenderConfigDocumentTransaction()`](../../src/core/userpublic/pelican_core.cpp#L108) — プロセスのクラッシュをまたいだrender-authoring documentのtransactionを、`ProjectBasicConfig` や `Renderer` がdocument setのどれかを観測する**前**に決着させます。ここでいう document set は「rendering config の root 文書と、それが参照する feature JSON 断片を、1つのtransactionでまとめて書き換える単位」です（[`RenderConfigCandidateDocumentSet`](../../src/project/renderconfigdocument.hpp#L102)。ヘッダのコメントが `A render-authoring candidate is a document set, not a replacement string for the root document.` と書いています）。root だけ新版で断片が旧版、という中途半端な組み合わせを誰にも観測させないために、この復旧が最初に来ます。
 6. `Persistence`からsettingsを読み、audio設定を適用。
-7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L130) へ固定します。意味モードは `LegacyNoLayout` / `LayoutV1Q` / `LayoutV2` の3値で（[`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L54)）、「ray layout 文書をどの版の意味規則で読むか」を表します — ray layout 文書が無い（`LegacyNoLayout`）／ある（`LayoutV1Q` / `LayoutV2`）の区別と、その版差です。どの値になるかは次の3つの判定だけで決まります。(1) rendering config の root に `ray_group_layout` key が無ければ [`loadRayTracingProjectConfig()` が空を返し](../../src/core/shader/raygrouplayout.cpp#L1198)、[`rayLayoutSemanticMode()` の `config == nullptr` 枝](../../src/core/shader/raygrouplayout.cpp#L606)が `LegacyNoLayout` を返します（`ray_bindings` だけ書くと `pelican.ray_tracing.bindings_without_layout@1` で拒否）。(2) key があれば参照先の layout 文書を [`parseRayGroupLayout()`](../../src/core/shader/raygrouplayout.cpp#L632) が読み、[文書の版から意味モードを決める1行](../../src/core/shader/raygrouplayout.cpp#L664)で `version` が 1 なら `LayoutV1Q`、2 なら `LayoutV2` になります。(3) `version` がそれ以外なら[そもそも schema エラー](../../src/core/shader/raygrouplayout.cpp#L647)で、4値目はありません。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（[`builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L139) が真になるのは `LayoutV2` のときだけ。§3.11）。プロセス寿命の間このモードは変えられません（変更しようとすると `pelican.ray_layout_mode_change_requires_restart@1`）。
-8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L21) で組み込みComponent/Systemを登録。
+7. [`configureRayLayoutModeBeforeComponentRegistration()`](../../src/core/userpublic/pelican_core.cpp#L38) — rendering configから ray layout の意味モードを求めて [`RayLayoutRuntimeState`](../../src/core/shader/raygrouplayout.hpp#L152) へ固定します。意味モードは `LegacyNoLayout` / `LayoutV1Q` / `LayoutV2` / `LayoutV3` の4値で（[`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L55)）、「ray layout 文書をどの版の意味規則で読むか」を表します — ray layout 文書が無い（`LegacyNoLayout`）／ある（`LayoutV1Q` / `LayoutV2` / `LayoutV3`）の区別と、その版差です。どの値になるかは次の3つの判定だけで決まります。(1) rendering config の root に `ray_group_layout` key が無ければ [`loadRayTracingProjectConfig()` が空を返し](../../src/core/shader/raygrouplayout.cpp#L1320)、[`rayLayoutSemanticMode()` の `config == nullptr` 枝](../../src/core/shader/raygrouplayout.cpp#L658)が `LegacyNoLayout` を返します（`ray_bindings` だけ書くと `pelican.ray_tracing.bindings_without_layout@1` で拒否）。(2) key があれば参照先の layout 文書を [`parseRayGroupLayout()`](../../src/core/shader/raygrouplayout.cpp#L684) が読み、[v1〜v3 の意味モード選択](../../src/core/shader/raygrouplayout.cpp#L724)で `version` が 1 なら `LayoutV1Q`、2 なら `LayoutV2`、3 なら `LayoutV3` になります。(3) `version` がそれ以外なら[対応版以外は schema エラー](../../src/core/shader/raygrouplayout.cpp#L701)になります。組み込みComponent登録より前に置くのは、`pelican_ray_instance` の登録可否がこのモードで決まるためです（[`builtinRayInstanceEnabled()`](../../src/core/shader/raygrouplayout.hpp#L161) が真になるのは `LayoutV2` または `LayoutV3` のとき。§3.11）。プロセス寿命の間このモードは変えられません（変更しようとすると `pelican.ray_layout_mode_change_requires_restart@1`）。
+8. [`ECSPredefinedRegistration::reg()`](../../src/core/ecs/predefined.cpp#L22) で組み込みComponent/Systemを登録。
 9. **[`initializeConfiguredGameLogic()`](../../src/core/gamelogic/gamelogicreload.cpp#L869) でgame DLLをロード**（WP110系列。§2.11）。失敗しても`run()`は続行し、`error_code` と `error_fields` を添えて [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L122) するだけです。保存された失敗はRPC `status` から読めます（§2.11）。
 10. **`(void)GET_MODULE(Renderer)`**（[この1行](../../src/core/userpublic/pelican_core.cpp#L130)） — render graphの検証と公開を、scene loadのprepareが `ModelAssetContainer` を実体化してmodelをuploadするより**前**に済ませます（WP380a-fix。§3.8）。
-11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L135) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L208)）。
+11. `ProjectBasicConfig.defaultSceneId()` のsceneを [`SceneLoadRoot::startup`](../../src/core/userpublic/pelican_core.cpp#L135) の `Borrowed` requestで即時ロード（§3.5 の 3）。`Borrowed` は scene load 要求の2種別のうち「いま commit 済みの projection をそのまま借りて読む」側で、新しい document を持ち込む `Owned`（import 経路）と対です（[`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L216)）。
 12. `ProjectMaterialAssetContainer` と `ModelAssetContainer` を明示的に生成（並列prepareのcommitを起動スレッドで実施）。
 13. [`watch::ReloadService.setup()`](../../src/core/watch/reloadservice.hpp#L106) でwatcherのlive inventoryを種付け。
 14. `Loop::run()`へ入る。
@@ -82,7 +82,7 @@ sequenceDiagram
 16. [`internal::runTerminalShutdown(teardown)`](../../src/core/userpublic/pelican_core.cpp#L64) — `teardown.run()` でruntime資源を順序付き解放し、続けて `shutdownConfiguredGameLogic()`。
 17. 関数を抜けるとmodule containerがmoduleを生成逆順に破棄。
 
-16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L2008)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
+16番はtry-catchの**外**にあります（[呼び出し箇所](../../src/core/userpublic/pelican_core.cpp#L169)）。この2手を [`terminalshutdown.hpp`](../../src/core/terminalshutdown.hpp#L10) の `noexcept` 関数1本にまとめてあるのはWP379aで、ヘッダのコメントが規範です — playerとlifecycleの受け入れテストが**同じ終了順序**を共有します（テスト側の呼び出しは [`raytracing_rt3_1_production_test.cpp` 内](../../test/raytracing_rt3_1_production_test.cpp#L2348)）。順序が2箇所に書かれていれば、テストだけが正しい順で終わる状態を作れてしまいます。
 
 `RuntimeTeardownGuard` は関数冒頭（[`pelican_core.cpp` 内](../../src/core/userpublic/pelican_core.cpp#L85)）で `RuntimeTeardownMode::terminal_shutdown` として作られ、`FastModuleContainer::beginShutdown()` はguardの外ではなく [`RuntimeTeardownGuard::run()`](../../src/core/appflow/teardown.cpp#L149) の内部で、8段階の解放へ入る直前に呼ばれます（[`teardown.cpp` 内](../../src/core/appflow/teardown.cpp#L158)）。したがって初期化途中で例外が出ても、同じ「新規module生成を閉じてから順序解放」という経路を通ります。
 
@@ -105,7 +105,7 @@ sequenceDiagram
 
 [`FastModuleContainer::get<T>()`](../../src/core/container.hpp#L149) はoptionalが空なら`emplace()`し、破棄関数をstaticな`cleaners`へ積みます。従って、**最初に`GET_MODULE(T)`を呼んだ瞬間がTのconstructor実行時点**です。
 
-例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L2911) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L396) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L237) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L251) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
+例として [`Renderer` のconstructor](../../src/core/vkcore/renderer.cpp#L2912) は [`loadRenderGraphVariantsFromConfig()`](../../src/core/vkcore/renderer_config.cpp#L396) を呼ぶだけに見えますが、その内部で次のmoduleが連鎖的に生成されます。ただし現在は、[`Renderer::prepareRuntimeModules()`](../../src/core/vkcore/renderer.hpp#L238) と [`prepareRuntimeModuleGraph()`](../../src/core/appflow/loop.cpp#L251) により「render前に依存を全解決してから、以後の新規module生成を禁止する（module graphを凍結する）」方式へ変わっています。
 
 ```text
 Renderer
@@ -448,7 +448,7 @@ ECSCore::update()
 - `realtime`: `steady_clock`差分。異常に長い停止は0.1秒へclamp（[`advance()`](../../src/core/appflow/enginetime.cpp#L30)）。
 - `fixed_step`: `1 / launch_config.fps`を毎回加算。headless/RPC/replayの再現性に使う。
 
-`advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L57) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1407)）。
+`advance()`後に`current_time += delta_time`、`frame_index++`です。最初の更新フレームはindex 1になります。RPCの`set_time`は時刻だけを直接変更し、deltaを0へ戻します。この不連続は [`timeSetRevision()`](../../src/core/appflow/enginetime.cpp#L57) で観測でき、rendererはこれとcamera不連続をまとめて検知してtemporal history（前フレームのview/projection行列やcamera位置をview単位で覚えておく履歴。前フレームの描画結果を今フレームへ再投影して混ぜる処理が使うので、時刻やcameraが飛ぶと対応関係が崩れて捨てる必要があります）をリセットします（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1408)）。
 
 ## 2.7 ゲームSystemと内部ECS Systemは別の更新列
 
@@ -463,7 +463,7 @@ ECSCore::update()
 
 ## 2.8 描画フレーム
 
-状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L5770) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L310) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4672) です。
+状態更新後に [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L5802) が呼ばれます（windowedでは [`renderFlatFrameWithOptionalCapture()`](../../src/core/appflow/loop.cpp#L310) 経由）。WP128以降、`render()`は1-viewのアダプタで、実体は [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4673) です。
 
 1. `DeletionQueue.beginFrame()`で安全になった旧GPU資源を解放。
 2. view数変化・`set_time`・camera不連続を検知してtemporal historyをリセット。
@@ -480,7 +480,7 @@ flat画面では`render()`がactive Cameraを1-view providerとして渡しま�
 - 形式の不正、GPU初期化失敗、Component不正は基本的に`std::runtime_error`でfail-fastです。
 - `PelicanCore::run()`がruntime全体の最終catchです。
 - job workerの例外は [`JobSystem` が例外を退避する箇所](../../src/core/job_system.cpp#L51) で`exception_ptr`に保持し、main threadの`wait()`で再throwします。
-- shader hot reload失敗だけは旧shader/pipelineを維持してwarningにします（[`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1042)、[`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1613)）。
+- shader hot reload失敗だけは旧shader/pipelineを維持してwarningにします（[`ShaderLibrary::prepareReload()`](../../src/core/shader/shaderlibrary.cpp#L1047)、[`PipelineFactory::rebuildPrepared()`](../../src/core/shader/pipelinefactory.cpp#L1678)）。
 - teardownは例外を外へ出しません。
 
 この違いは「初回構築に失敗した不完全なruntimeは続けないが、稼働中の編集失敗では最後の正常版を守る」という方針です。

@@ -9,6 +9,7 @@
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 #include "../vkcore/devicefeaturepolicy.hpp"
+#include "../vkcore/accelerationstructure.hpp"
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -659,8 +660,11 @@ PipelineFactory::createRayTracingPipeline(
     const auto any_hit_count = static_cast<std::size_t>(std::count_if(
         desc.any_hits.begin(), desc.any_hits.end(),
         [](const auto &shader) { return shader.has_value(); }));
+    const auto intersection_count = static_cast<std::size_t>(std::count_if(
+        desc.intersections.begin(), desc.intersections.end(),
+        [](const auto &shader) { return shader.has_value(); }));
     stages.reserve(1 + desc.misses.size() + desc.closest_hits.size() +
-                   any_hit_count);
+                   any_hit_count + intersection_count);
     const auto append_stage = [&](ShaderBundleId shader,
                                   vk::ShaderStageFlagBits stage) {
         stages.push_back(
@@ -686,6 +690,15 @@ PipelineFactory::createRayTracingPipeline(
         append_stage(*desc.any_hits[index],
                      vk::ShaderStageFlagBits::eAnyHitKHR);
     }
+    std::vector<std::uint32_t> intersection_stage_indices(
+        desc.closest_hits.size(), VK_SHADER_UNUSED_KHR);
+    for (std::uint32_t index = 0; index < desc.intersections.size(); ++index) {
+        if (!desc.intersections[index]) continue;
+        intersection_stage_indices[index] =
+            static_cast<std::uint32_t>(stages.size());
+        append_stage(*desc.intersections[index],
+                     vk::ShaderStageFlagBits::eIntersectionKHR);
+    }
 
     std::vector<vk::RayTracingShaderGroupCreateInfoKHR> groups;
     groups.reserve(stages.size());
@@ -707,14 +720,17 @@ PipelineFactory::createRayTracingPipeline(
     for (std::uint32_t index = 0;
          index < desc.closest_hits.size(); ++index) {
         vk::RayTracingShaderGroupCreateInfoKHR group;
-        group.type =
-            vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup;
+        const auto procedural =
+            intersection_stage_indices[index] != VK_SHADER_UNUSED_KHR;
+        group.type = procedural
+                         ? vk::RayTracingShaderGroupTypeKHR::eProceduralHitGroup
+                         : vk::RayTracingShaderGroupTypeKHR::eTrianglesHitGroup;
         group.generalShader = unused;
         group.closestHitShader =
             1 + static_cast<std::uint32_t>(desc.misses.size()) +
             index;
         group.anyHitShader = any_hit_stage_indices[index];
-        group.intersectionShader = unused;
+        group.intersectionShader = intersection_stage_indices[index];
         groups.push_back(group);
     }
 
@@ -989,6 +1005,11 @@ PipelineFactory::buildRayTracingPipeline(
         throw std::runtime_error(
             "pelican.ray_tracing.hit_grid_invalid@1: any-hit slot count does not equal closest-hit slot count");
     }
+    if (!desc.intersections.empty() &&
+        desc.intersections.size() != desc.closest_hits.size()) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.hit_grid_invalid@1: intersection slot count does not equal closest-hit slot count");
+    }
     if (desc.misses.size() >
             std::numeric_limits<std::uint32_t>::max() ||
         desc.closest_hits.size() >
@@ -1036,6 +1057,13 @@ PipelineFactory::buildRayTracingPipeline(
                                             ShaderStage::anyhit,
                                             group_index)}
                            : std::nullopt,
+            .intersection =
+                !desc.intersections.empty() && desc.intersections[index]
+                    ? std::optional<RayTracingShaderOccurrence>{
+                          occurrence(*desc.intersections[index],
+                                     ShaderStage::intersection,
+                                     group_index)}
+                    : std::nullopt,
         });
     }
     const auto validator_digest =
@@ -1055,7 +1083,13 @@ PipelineFactory::buildRayTracingPipeline(
 
     std::vector<ShaderReflection> reflections;
     reflections.reserve(1 + desc.misses.size() + desc.closest_hits.size() +
-                        any_hit_count);
+                        any_hit_count +
+                        static_cast<std::size_t>(std::count_if(
+                            desc.intersections.begin(),
+                            desc.intersections.end(),
+                            [](const auto &shader) {
+                                return shader.has_value();
+                            })));
     reflections.push_back(
         shader_library.get(desc.raygen).reflection);
     for (const auto shader : desc.misses) {
@@ -1065,6 +1099,11 @@ PipelineFactory::buildRayTracingPipeline(
         reflections.push_back(shader_library.get(shader).reflection);
     }
     for (const auto &shader : desc.any_hits) {
+        if (shader) {
+            reflections.push_back(shader_library.get(*shader).reflection);
+        }
+    }
+    for (const auto &shader : desc.intersections) {
         if (shader) {
             reflections.push_back(shader_library.get(*shader).reflection);
         }
@@ -1311,10 +1350,23 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
     std::span<const PipelineHandle> active_owner_pipelines,
     std::shared_ptr<const RaySceneRowSnapshot> rows,
     const RayTracingProjectConfig &project,
-    std::shared_ptr<const RayTracingGeometrySnapshot> geometry) const {
+    std::shared_ptr<const RayTracingGeometrySnapshot> geometry,
+    std::shared_ptr<RaySceneGenerationRoot> generation_root) const {
     if (!rows) {
         throw std::invalid_argument(
             "pelican.sbt.row_snapshot_invalid@1: production SBT requires a row snapshot");
+    }
+    if (generation_root &&
+        (!generation_root->inventory || !geometry ||
+         generation_root->generation == 0 ||
+         generation_root->inventory->generation !=
+             generation_root->generation ||
+         generation_root->resolved_rows.get() != rows.get() ||
+         generation_root->geometry_table.get() != geometry.get() ||
+         rows->generation != generation_root->generation ||
+         geometry->generation != generation_root->generation)) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.scene_generation_mismatch@1: SBT input does not belong to its generation root");
     }
     auto result =
         std::make_shared<RayTracingSceneShaderBindingTables>();
@@ -1330,6 +1382,7 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
         material_sources.reserve(rows->rows.size());
         const auto &materials = GET_MODULE(MaterialContainer);
         for (const auto &row : rows->rows) {
+            if (row.geometry_kind == RayGeometryKind::aabbs) continue;
             material_sources.push_back(
                 materials.rayMaterialTableSource(
                     GlobalMaterialId{row.resolved_material_handle},
@@ -1449,6 +1502,14 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
     if (!result->row_snapshot) {
         result->row_snapshot = std::move(rows);
     }
+    if (result->geometry_snapshot &&
+        result->geometry_snapshot->generation != 0 &&
+        result->row_snapshot->generation !=
+            result->geometry_snapshot->generation) {
+        throw std::runtime_error(
+            "pelican.ray_tracing.scene_generation_mismatch@1: SBT row and geometry generations differ");
+    }
+    result->generation = result->row_snapshot->generation;
     std::unordered_set<int> seen;
     for (const auto handle : active_owner_pipelines) {
         if (!seen.emplace(handle.value).second) continue;
@@ -1559,6 +1620,10 @@ PipelineFactory::createRayTracingSceneShaderBindingTables(
                 .regions = regions,
                 .packed_hit = std::move(packed),
             });
+    }
+    if (generation_root) {
+        generation_root->resolved_rows = result->row_snapshot;
+        generation_root->sbt = result;
     }
     return result;
 }

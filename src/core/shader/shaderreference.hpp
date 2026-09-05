@@ -13,6 +13,7 @@ enum class ShaderStage {
     miss,
     closesthit,
     anyhit,
+    intersection,
 };
 
 enum class ShaderReferenceKind {

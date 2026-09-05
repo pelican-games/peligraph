@@ -205,7 +205,7 @@ TEST_CASE("WP354 publishes the complete 14 pass family plus compute task contrac
             {"imgui", {"resolved", {"vertex", "fragment"}}},
             {"canonical_anchor", {"not_applicable", {}}},
             {"snapshot_copy", {"not_applicable", {}}},
-            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*", "hit_slot_count?", "closesthit_slots[hit_slot]*", "anyhit_slots[hit_slot]*"}}},
+            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*", "hit_slot_count?", "closesthit_slots[hit_slot]*", "intersection_slots[hit_slot]*", "anyhit_slots[hit_slot]*"}}},
         };
     for (const auto &contract : contracts) {
         const auto found = expected.find(std::string{contract.family});

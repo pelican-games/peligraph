@@ -7,6 +7,10 @@
   {"name":"simplemodelview","kind":"range","authored":{"name":"simplemodelview","model":""}},
   {"name":"simplemodelview","kind":"unknown","authored":{"name":"simplemodelview","model":"hero","extra":1}},
 
+  {"name":"pelican_procedural_geometry","kind":"type","authored":{"name":"pelican_procedural_geometry","asset":3}},
+  {"name":"pelican_procedural_geometry","kind":"range","authored":{"name":"pelican_procedural_geometry","asset":""}},
+  {"name":"pelican_procedural_geometry","kind":"unknown","authored":{"name":"pelican_procedural_geometry","asset":"sphere_asset","extra":1}},
+
   {"name":"camera","kind":"type","authored":{"name":"camera","type":"perspective","yfov":"wide"}},
   {"name":"camera","kind":"range","authored":{"name":"camera","type":"perspective","znear":1.0,"zfar":0.5}},
   {"name":"camera","kind":"unknown","authored":{"name":"camera","extra":1}},

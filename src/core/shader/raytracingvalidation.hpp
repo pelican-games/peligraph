@@ -35,6 +35,7 @@ struct RayTracingShaderOccurrence {
 struct RayTracingHitGroupOccurrence {
     RayTracingShaderOccurrence closest_hit;
     std::optional<RayTracingShaderOccurrence> any_hit;
+    std::optional<RayTracingShaderOccurrence> intersection;
 };
 
 struct RayTracingPipelineInterfaceRequest {

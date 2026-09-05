@@ -2,6 +2,7 @@
 
 #include "../log.hpp"
 #include "../model/vertbufcontainer.hpp"
+#include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
 
@@ -17,6 +18,7 @@
 #include <set>
 #include <sstream>
 #include <stdexcept>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 
@@ -45,6 +47,10 @@ void appendUnique(std::set<std::uint64_t> &identities,
 
 bool isBlasIneligibleStaticGeometry(
     const RayQueryGeometryInstanceSnapshot &instance) noexcept {
+    if (instance.geometry_kind == RayGeometryKind::aabbs) {
+        return instance.aabb_buffer_address == 0 ||
+               instance.geometry_allocation_id == 0;
+    }
     return instance.vertex_count == 0 || instance.index_count == 0 ||
            instance.index_count % 3 != 0 || instance.vertex_offset < 0;
 }
@@ -199,6 +205,56 @@ void recordMemoryBarrier(
 
 } // namespace
 
+RaySceneInventorySnapshot makeRaySceneInventorySnapshot(
+    std::span<const RayQueryGeometryInstanceSnapshot> triangles,
+    std::span<const RayQueryGeometryInstanceSnapshot> procedurals,
+    std::uint64_t generation) {
+    RaySceneInventorySnapshot result;
+    result.generation = generation;
+    result.rows.reserve(triangles.size() + procedurals.size());
+    for (auto instance : triangles) {
+        instance.geometry_kind = RayGeometryKind::triangles;
+        result.rows.emplace_back(TriangleRow{std::move(instance)});
+    }
+    for (auto instance : procedurals) {
+        instance.geometry_kind = RayGeometryKind::aabbs;
+        result.rows.emplace_back(ProceduralRow{std::move(instance)});
+    }
+    const auto key = [](const RaySceneInventoryRow &row) {
+        return std::visit([](const auto &typed) {
+            return std::tuple{
+                typed.instance.authoring_object_id,
+                typed.instance.component_occurrence,
+                static_cast<std::uint8_t>(typed.instance.geometry_kind),
+                typed.instance.geometry_allocation_id};
+        }, row);
+    };
+    std::stable_sort(result.rows.begin(), result.rows.end(),
+                     [&](const auto &left, const auto &right) {
+                         return key(left) < key(right);
+                     });
+    std::string identity;
+    result.instances.reserve(result.rows.size());
+    for (const auto &row : result.rows) {
+        std::visit([&](const auto &typed) {
+            result.instances.push_back(typed.instance);
+            identity += std::to_string(typed.instance.authoring_object_id);
+            identity.push_back(':');
+            identity += typed.instance.component_occurrence;
+            identity.push_back(':');
+            identity += std::to_string(static_cast<std::uint8_t>(
+                typed.instance.geometry_kind));
+            identity.push_back(':');
+            identity += std::to_string(
+                typed.instance.geometry_allocation_id);
+            identity.push_back('\n');
+        }, row);
+    }
+    result.identity_digest_sha256 = picosha2::hash256_hex_string(
+        identity.begin(), identity.end());
+    return result;
+}
+
 RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
     std::span<const RayQueryGeometryInstanceSnapshot> instances) {
     RayQueryStaticGeometryClassification result;
@@ -266,12 +322,16 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
          classification.static_instance_indices) {
         const auto &instance = instances[source_index];
         if (instance.geometry_allocation_id == 0 ||
-            instance.vertex_offset < 0 || instance.vertex_count == 0 ||
-            instance.index_count == 0 || instance.index_count % 3u != 0) {
+            (instance.geometry_kind == RayGeometryKind::triangles &&
+             (instance.vertex_offset < 0 || instance.vertex_count == 0 ||
+              instance.index_count == 0 || instance.index_count % 3u != 0)) ||
+            (instance.geometry_kind == RayGeometryKind::aabbs &&
+             instance.aabb_buffer_address == 0)) {
             throw std::runtime_error(
                 "pelican.ray_geometry_snapshot_invalid@1: static geometry has invalid allocation/range metadata");
         }
         RayTracingGeometrySnapshotRow row{
+            .geometry_kind = instance.geometry_kind,
             .geometry_allocation_id =
                 instance.geometry_allocation_id,
             .index_count = instance.index_count,
@@ -280,19 +340,30 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
             .vertex_count = instance.vertex_count,
             .gpu =
                 RayGeometryTableRow{
-                    .vertex_address =
-                        vertex_pool_address +
-                        sizeof(CommonVertStruct) *
-                            static_cast<std::uint32_t>(
-                                instance.vertex_offset),
-                    .index_address =
-                        index_pool_address +
-                        sizeof(std::uint32_t) *
-                            instance.index_offset,
-                    .vertex_stride = static_cast<std::uint32_t>(
-                        sizeof(CommonVertStruct)),
-                    .index_type = static_cast<std::uint32_t>(
-                        vk::IndexType::eUint32),
+                    .vertex_address = instance.geometry_kind ==
+                                              RayGeometryKind::aabbs
+                                          ? instance.aabb_buffer_address
+                                          : vertex_pool_address +
+                                                sizeof(CommonVertStruct) *
+                                                    static_cast<std::uint32_t>(
+                                                        instance.vertex_offset),
+                    .index_address = instance.geometry_kind ==
+                                             RayGeometryKind::aabbs
+                                         ? 0
+                                         : index_pool_address +
+                                               sizeof(std::uint32_t) *
+                                                   instance.index_offset,
+                    .vertex_stride = instance.geometry_kind ==
+                                             RayGeometryKind::aabbs
+                                         ? static_cast<std::uint32_t>(
+                                               sizeof(vk::AabbPositionsKHR))
+                                         : static_cast<std::uint32_t>(
+                                               sizeof(CommonVertStruct)),
+                    .index_type = instance.geometry_kind ==
+                                          RayGeometryKind::aabbs
+                                      ? 0
+                                      : static_cast<std::uint32_t>(
+                                            vk::IndexType::eUint32),
                     .attribute_presence =
                         instance.attribute_presence,
                 },
@@ -311,6 +382,8 @@ RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
         result.rows.push_back(row);
         encoded.append(reinterpret_cast<const char *>(&identity),
                        sizeof(identity));
+        encoded.append(reinterpret_cast<const char *>(&row.geometry_kind),
+                       sizeof(row.geometry_kind));
         encoded.append(reinterpret_cast<const char *>(&row.index_count),
                        sizeof(row.index_count));
         encoded.append(reinterpret_cast<const char *>(&row.index_offset),
@@ -357,7 +430,8 @@ std::string canonicalTransformIdentity(const glm::mat4 &transform) {
         for (glm::length_t row = 0; row < 4; ++row) {
             output << std::setw(8)
                    << std::bit_cast<std::uint32_t>(
-                          transform[column][row]);
+                          transform[column][row] == 0.0F
+                              ? 0.0F : transform[column][row]);
         }
     }
     return output.str();
@@ -403,11 +477,12 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
                       std::to_string(instance.asset_identity)
                 : instance.material_asset_reference;
         inputs.push_back(RaySceneRowInput{
+            .geometry_kind = instance.geometry_kind,
             // Authored/content identity only: instance slot, generation, and
             // draw publication ordinal would make q depend on publish order.
             .scene_identity =
-                asset + "@" +
-                canonicalTransformIdentity(instance.world_transform),
+                std::to_string(instance.authoring_object_id) + ":" +
+                instance.component_occurrence,
             .geometry_identity =
                 asset + "#" +
                 std::to_string(instance.geometry_allocation_id) + ":" +
@@ -438,6 +513,9 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
                 instance.resolved_material_lease,
             .geometry_allocation_id =
                 instance.geometry_allocation_id,
+            .procedural_asset = instance.procedural_asset,
+            .procedural_record = instance.procedural_record,
+            .aabb_buffer_address = instance.aabb_buffer_address,
             .authoring_object_id =
                 instance.authoring_object_id,
             .ray_instance = instance.ray_instance,
@@ -536,6 +614,10 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
     nlohmann::json inputs = nlohmann::json::array();
     for (const auto &input : diagnostics.active_blas_inputs) {
         inputs.push_back({
+            {"geometry_kind",
+             input.geometry_kind == RayGeometryKind::aabbs
+                 ? "aabbs"
+                 : "triangles"},
             {"geometry_allocation_id",
              input.geometry_allocation_id},
             {"geometry_flags", input.geometry_flags},
@@ -594,6 +676,7 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
 
 struct RayQueryAccelerationStructureScope::State {
     struct BlasVariantKey {
+        RayGeometryKind geometry_kind = RayGeometryKind::triangles;
         std::uint64_t geometry_allocation_id = 0;
         std::uint32_t geometry_flags = 0;
 
@@ -618,6 +701,7 @@ struct RayQueryAccelerationStructureScope::State {
     // keeps the buffers alive through the submission lease.
     std::shared_ptr<const RayTracingSceneShaderBindingTables>
         ray_tracing_scene_tables;
+    std::shared_ptr<const RaySceneGenerationRoot> generation_root;
     RayQueryAccelerationStructureDiagnostics diagnostics{
         .requested = true,
     };
@@ -787,7 +871,8 @@ RayQueryAccelerationStructureScope::recordFrame(
         ray_tracing_scene_tables,
     bool material_alpha_profile_active,
     std::uint64_t runtime_generation,
-    std::uint64_t ray_tracing_pipeline_generation) {
+    std::uint64_t ray_tracing_pipeline_generation,
+    std::shared_ptr<const RaySceneGenerationRoot> generation_root) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (!capabilities.ray_query ||
         !capabilities.acceleration_structure ||
@@ -821,6 +906,7 @@ RayQueryAccelerationStructureScope::recordFrame(
         !rayTracingTlasRecordOffsetOverrideActiveForTesting();
     candidate->ray_tracing_scene_tables =
         std::move(ray_tracing_scene_tables);
+    candidate->generation_root = std::move(generation_root);
     if (candidate->ray_scene_rows && candidate->ray_type_count == 0) {
         throw std::runtime_error(
             "pelican.sbt.row_snapshot_invalid@1: layout scene requires a non-zero ray type count");
@@ -829,6 +915,21 @@ RayQueryAccelerationStructureScope::recordFrame(
         static_cast<bool>(candidate->ray_tracing_scene_tables)) {
         throw std::runtime_error(
             "pelican.ray_tracing.scene_generation_mismatch@1: row snapshot and complete SBT must be prepared together");
+    }
+    if (candidate->generation_root) {
+        const auto &root = *candidate->generation_root;
+        if (!root.inventory || root.generation == 0 ||
+            root.inventory->generation != root.generation ||
+            root.resolved_rows.get() != candidate->ray_scene_rows.get() ||
+            root.geometry_table.get() != candidate->geometry_snapshot.get() ||
+            root.sbt.get() != candidate->ray_tracing_scene_tables.get() ||
+            root.resolved_rows->generation != root.generation ||
+            root.geometry_table->generation != root.generation ||
+            root.sbt->generation != root.generation ||
+            root.tlas_plan_generation != root.generation) {
+            throw std::runtime_error(
+                "pelican.ray_tracing.scene_generation_mismatch@1: inventory, rows, geometry, SBT, and TLAS plan must share one generation root");
+        }
     }
     candidate->diagnostics = diagnostics_;
     candidate->diagnostics.requested = true;
@@ -896,12 +997,16 @@ RayQueryAccelerationStructureScope::recordFrame(
         const auto found = unique_geometry.find(
             instance.geometry_allocation_id);
         if (found == unique_geometry.end() ||
+            found->second->geometry_kind != instance.geometry_kind ||
             found->second->index_count != instance.index_count ||
             found->second->index_offset != instance.index_offset ||
             found->second->vertex_offset != instance.vertex_offset ||
             found->second->vertex_count != instance.vertex_count ||
             found->second->gpu.attribute_presence !=
-                instance.attribute_presence) {
+                instance.attribute_presence ||
+            (instance.geometry_kind == RayGeometryKind::aabbs &&
+             found->second->gpu.vertex_address !=
+                 instance.aabb_buffer_address)) {
             throw std::runtime_error(
                 "pelican.ray_geometry_snapshot_invalid@1: AS input does not match the immutable geometry snapshot");
         }
@@ -917,12 +1022,15 @@ RayQueryAccelerationStructureScope::recordFrame(
             "pelican.ray_geometry_snapshot_invalid@1: immutable geometry snapshot has missing or extra allocation rows");
     }
 
-    const auto planned_instances = lowerRayTracingTlasInstancePlan(
-        instances, classification.static_instance_indices,
-        candidate->ray_scene_rows.get(), candidate->ray_type_count);
+    const auto planned_instances = candidate->generation_root
+        ? candidate->generation_root->tlas_plan
+        : lowerRayTracingTlasInstancePlan(
+              instances, classification.static_instance_indices,
+              candidate->ray_scene_rows.get(), candidate->ray_type_count);
     std::set<State::BlasVariantKey> required_variants;
     for (const auto &planned : planned_instances) {
         required_variants.emplace(State::BlasVariantKey{
+            .geometry_kind = instances[planned.source_index].geometry_kind,
             .geometry_allocation_id =
                 instances[planned.source_index]
                     .geometry_allocation_id,
@@ -955,26 +1063,39 @@ RayQueryAccelerationStructureScope::recordFrame(
         }
         const auto index_address = instance->gpu.index_address;
         const auto vertex_address = instance->gpu.vertex_address;
-        const vk::AccelerationStructureGeometryTrianglesDataKHR
-            triangles{
+        vk::AccelerationStructureGeometryKHR geometry_info;
+        vk::AccelerationStructureGeometryTrianglesDataKHR triangles;
+        vk::AccelerationStructureGeometryAabbsDataKHR aabbs;
+        std::uint32_t primitive_count = 0;
+        if (variant.geometry_kind == RayGeometryKind::aabbs) {
+            aabbs = vk::AccelerationStructureGeometryAabbsDataKHR{
+                vk::DeviceOrHostAddressConstKHR{vertex_address},
+                sizeof(vk::AabbPositionsKHR)};
+            geometry_info = vk::AccelerationStructureGeometryKHR{
+                vk::GeometryTypeKHR::eAabbs,
+                vk::AccelerationStructureGeometryDataKHR{aabbs},
+                geometry_flags};
+            primitive_count = 1;
+        } else {
+            triangles = vk::AccelerationStructureGeometryTrianglesDataKHR{
                 vk::Format::eR32G32B32Sfloat,
                 vk::DeviceOrHostAddressConstKHR{vertex_address},
                 sizeof(CommonVertStruct),
                 instance->vertex_count - 1,
                 vk::IndexType::eUint32,
-                vk::DeviceOrHostAddressConstKHR{index_address},
-            };
-        const vk::AccelerationStructureGeometryKHR geometry_info{
-            vk::GeometryTypeKHR::eTriangles,
-            vk::AccelerationStructureGeometryDataKHR{triangles},
-            geometry_flags};
+                vk::DeviceOrHostAddressConstKHR{index_address}};
+            geometry_info = vk::AccelerationStructureGeometryKHR{
+                vk::GeometryTypeKHR::eTriangles,
+                vk::AccelerationStructureGeometryDataKHR{triangles},
+                geometry_flags};
+            primitive_count = instance->index_count / 3;
+        }
         vk::AccelerationStructureBuildGeometryInfoKHR build_info{
             vk::AccelerationStructureTypeKHR::eBottomLevel,
             vk::BuildAccelerationStructureFlagBitsKHR::
                 ePreferFastTrace,
             vk::BuildAccelerationStructureModeKHR::eBuild,
             {}, {}, 1, &geometry_info};
-        const auto primitive_count = instance->index_count / 3;
         vk::AccelerationStructureBuildSizesInfoKHR sizes;
         device.getAccelerationStructureBuildSizesKHR(
             vk::AccelerationStructureBuildTypeKHR::eDevice,
@@ -1007,6 +1128,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     for (const auto &[variant, blas] : candidate->blas) {
         candidate->diagnostics.active_blas_inputs.push_back(
             RayQueryBlasInputDiagnostics{
+                .geometry_kind = variant.geometry_kind,
                 .geometry_allocation_id =
                     variant.geometry_allocation_id,
                 .geometry_flags = variant.geometry_flags,
@@ -1020,9 +1142,9 @@ RayQueryAccelerationStructureScope::recordFrame(
         candidate->diagnostics.active_blas_inputs,
         [](const auto &left, const auto &right) {
             return std::tie(left.geometry_allocation_id,
-                            left.geometry_flags) <
+                            left.geometry_kind, left.geometry_flags) <
                    std::tie(right.geometry_allocation_id,
-                            right.geometry_flags);
+                            right.geometry_kind, right.geometry_flags);
         });
 
     if (!classification.static_instance_indices.empty()) {
@@ -1044,6 +1166,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     for (const auto &planned : planned_instances) {
         const auto &instance = instances[planned.source_index];
         const State::BlasVariantKey blas_key{
+            .geometry_kind = instance.geometry_kind,
             .geometry_allocation_id =
                 instance.geometry_allocation_id,
             .geometry_flags = planned.geometry_flags,
@@ -1190,6 +1313,14 @@ RayQueryAccelerationStructureScope::
     activeGeometrySnapshotForTesting() const noexcept {
     return active_state_ && active_state_->geometry_snapshot
                ? active_state_->geometry_snapshot.get()
+               : nullptr;
+}
+
+const RaySceneGenerationRoot *
+RayQueryAccelerationStructureScope::
+    activeGenerationRootForTesting() const noexcept {
+    return active_state_ && active_state_->generation_root
+               ? active_state_->generation_root.get()
                : nullptr;
 }
 

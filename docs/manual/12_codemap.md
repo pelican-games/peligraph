@@ -127,11 +127,11 @@ pelican2/
 | `.vrma`(VRM Animation GLB) | [第5章](05_assets.md) | デコード: [loader/vrmadecoder.cpp](../../src/core/loader/vrmadecoder.cpp)(拡張子 `.vrma` が alias ゲート)/ リターゲット: [animation/vrmaretarget.cpp](../../src/core/animation/vrmaretarget.cpp)(版付き profile v1)/ 統合: [animation/animationservice.cpp](../../src/core/animation/animationservice.cpp) |
 | rendering config | [第6章](06_rendering.md) | [renderingpass/](../../src/core/renderingpass) の *jsonparser 群(RT フォーマット 45 種: [renderingpassjsonhelpers.cpp](../../src/core/renderingpass/renderingpassjsonhelpers.cpp) `format_names` / パス種別 **14 種**: 一覧と鍵の所有は [project/passfieldownership.hpp](../../src/project/passfieldownership.hpp)。形の規則の正本は [project/passshapepolicy.cpp](../../src/project/passshapepolicy.cpp)) |
 | feature fragment(pelican.render_feature) | [第6章](06_rendering.md) | 純ロジック: [project/featurecompose.cpp](../../src/project/featurecompose.cpp) |
-| シェーダ stem 参照 | [第6章](06_rendering.md) | [`makeShaderReference()`](../../src/core/shader/shaderreference.cpp#L90) `makeShaderReference`(拡張子 hard error はここ) |
+| シェーダ stem 参照 | [第6章](06_rendering.md) | [`makeShaderReference()`](../../src/core/shader/shaderreference.cpp#L96) `makeShaderReference`(拡張子 hard error はここ) |
 | `input/actions.json`(pelican.input_actions) | [第7章](07_input_ui.md) | [os/actionmap.cpp](../../src/core/os/actionmap.cpp)(schema/version ゲートは `input_actions_schema` の照合箇所) |
 | `ui/ui_overlay.json` | [第7章](07_input_ui.md) | [loader/basicconfig.cpp](../../src/core/loader/basicconfig.cpp) `uiConfigJson()` → [renderer/uicontainer.cpp](../../src/core/renderer/uicontainer.cpp) |
-| collider コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L829) `decodeCollider`(**closed schema** = 列挙した鍵以外を拒否する schema。未知の鍵を黙って無視する open な受理はしない)。ランタイム型は [userpublic/components/collider.cpp](../../src/core/userpublic/components/collider.cpp) |
-| camera コンポーネント / controller | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L553) `decodeCamera`(closed schema。ネスト `perspective` / `orthographic` を含む)。controller の解釈は [renderer/camera.cpp](../../src/core/renderer/camera.cpp) `parseSceneCameraController` |
+| collider コンポーネント | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCollider()`](../../src/core/loader/componentcodec.cpp#L878) `decodeCollider`(**closed schema** = 列挙した鍵以外を拒否する schema。未知の鍵を黙って無視する open な受理はしない)。ランタイム型は [userpublic/components/collider.cpp](../../src/core/userpublic/components/collider.cpp) |
+| camera コンポーネント / controller | [第4章](04_scene_ecs.md)・[第8章](08_gameplay.md) | 受理の正: [`decodeCamera()`](../../src/core/loader/componentcodec.cpp#L602) `decodeCamera`(closed schema。ネスト `perspective` / `orthographic` を含む)。controller の解釈は [renderer/camera.cpp](../../src/core/renderer/camera.cpp) `parseSceneCameraController` |
 | pelican.transform_seq(JSONL) | [第5章](05_assets.md) | [playback/seqplayer.cpp](../../src/core/playback/seqplayer.cpp) `TransformSequence::fromJsonLines` |
 | pelican.vat(GLB extras) | [第5章](05_assets.md) | 純ロジック: [model/vatformat.cpp](../../src/core/model/vatformat.cpp) / 再生: [playback/vatplayer.cpp](../../src/core/playback/vatplayer.cpp) |
 | pelican.material / `.surface` | [第6章](06_rendering.md) | 純ロジック: [project/materialformat.cpp](../../src/project/materialformat.cpp)・[project/surfaceformat.cpp](../../src/project/surfaceformat.cpp)・[project/materiallowering.cpp](../../src/project/materiallowering.cpp) / 接続: [shader/surfacecompiler.cpp](../../src/core/shader/surfacecompiler.cpp)・[material/](../../src/core/material) |
@@ -184,16 +184,16 @@ pelican2/
 [第4章](04_scene_ecs.md) §4.3)。読み順:
 
 1. [`sceneload.hpp`](../../src/core/loader/sceneload.hpp) —— **型だけのヘッダ**(関数の実装を持たず、要求・結果・トレースの型定義だけを置く)。
-   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L208)(`Borrowed` = 既に commit 済みの
+   [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L216)(`Borrowed` = 既に commit 済みの
    projection を借りる / `Owned` = 候補 metadata を `MetadataCommitToken` ごと持ち込む)、
-   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L174) =
-   `SceneLoadCommitted` | [`PreCommitFailure`](../../src/core/loader/sceneload.hpp#L128) |
-   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L160)、
+   結果の [`SceneLoadResult`](../../src/core/loader/sceneload.hpp#L182) =
+   `SceneLoadCommitted` | [`PreCommitFailure`](../../src/core/loader/sceneload.hpp#L136) |
+   [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L168)、
    固定長の [`SceneLoadPhaseTrace`](../../src/core/loader/sceneload.hpp#L40)(8 要素。溢れたら
    `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
-   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L261)。
-2. [`scene.cpp`](../../src/core/loader/scene.cpp#L484) の `SceneLoader::load` —— executor 本体。
+   import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L269)。
+2. [`scene.cpp`](../../src/core/loader/scene.cpp#L503) の `SceneLoader::load` —— executor 本体。
    phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
    **記録するのは executor ではなく各 participant** です(WP380c/d)。
 3. [`effecttransaction.hpp`](../../src/core/loader/effecttransaction.hpp#L27) —— behavior が

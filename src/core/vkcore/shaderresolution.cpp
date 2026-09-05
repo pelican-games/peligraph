@@ -45,6 +45,8 @@ std::string_view wireStageName(DeclaredShaderStage stage) {
         return "closesthit";
     case DeclaredShaderStage::anyhit:
         return "anyhit";
+    case DeclaredShaderStage::intersection:
+        return "intersection";
     }
     throw std::runtime_error("unknown declared shader stage");
 }
@@ -350,6 +352,20 @@ Json computeShaderResolution(
         if (!anyhit_slots.empty()) {
             result["anyhit_slots"] = std::move(anyhit_slots);
         }
+        Json intersection_slots = Json::array();
+        for (std::size_t hit_slot = 0;
+             hit_slot < ray_definition->intersection_shader_slots.size();
+             ++hit_slot) {
+            const auto &shader =
+                ray_definition->intersection_shader_slots[hit_slot];
+            if (!shader) continue;
+            intersection_slots.push_back(encode_slot(
+                DeclaredShaderStage::intersection,
+                ShaderSourceStage::intersection, hit_slot, *shader));
+        }
+        if (!intersection_slots.empty()) {
+            result["intersection_slots"] = std::move(intersection_slots);
+        }
     }
     return result;
 }
@@ -369,6 +385,7 @@ shaderResolutionFamilyContracts() {
     static constexpr std::string_view compute_or_ray[] = {
         "compute", "raygen", "miss[index]*", "closesthit[index]*",
         "hit_slot_count?", "closesthit_slots[hit_slot]*",
+        "intersection_slots[hit_slot]*",
         "anyhit_slots[hit_slot]*"};
     static constexpr ShaderResolutionFamilyContract contracts[] = {
         {"material", "material_owned", "material_owned", no_stages},

@@ -43,7 +43,9 @@
 #include "../src/core/renderingpass/renderingpassconfigloader.hpp"
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
+#include "../src/core/renderer/proceduralgeometrycontainer.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
+#include "../src/core/shader/pipelinefactory.hpp"
 #include "../src/core/terminalshutdown.hpp"
 #include "../src/core/vkcore/accelerationstructure.hpp"
 #include "../src/core/vkcore/core.hpp"
@@ -59,6 +61,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -87,6 +90,10 @@ using Catch::Matchers::ContainsSubstring;
 using Json = nlohmann::json;
 using RayTracingRt31Fixture::accelerationDeclaration;
 using RayTracingRt31Fixture::layoutRoot;
+
+std::string_view wp380MutationId(std::string_view owner,
+                                 std::string_view field);
+void requireWp380CommittedPhaseTrace(const SceneLoadCommitted &committed);
 
 class Wp374aProjectRoot {
   public:
@@ -278,6 +285,110 @@ void writeWp374aProject(const std::filesystem::path &root,
         };
     }
     writeWp374aText(root / "hybrid.json", rendering.dump(2));
+}
+
+void writeWp386aProceduralProject(const std::filesystem::path &root) {
+    writeWp374aProject(root, 3, true, false, false);
+    writeWp374aText(root / "scene.json", Json{
+        {"schema", "pelican.scene"}, {"version", 1},
+        {"scenes", {{"main", {{"objects", Json::array({{
+            {"name", "Sphere"},
+            {"components", Json::array({
+                Json{{"name", "transform"}, {"pos", {0, 0, 0}},
+                     {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}},
+                Json{{"name", "pelican_procedural_geometry"},
+                     {"asset", "sphere_asset"}}
+            })}
+        }})}}}}}
+    }.dump(2));
+    writeWp374aText(root / "assets.json", Json{
+        {"schema", "pelican.asset_data"}, {"version", 2},
+        {"models", Json::array()}, {"textures", Json::array()},
+        {"materials", Json::array()},
+        {"procedural_geometry", Json::array({{
+            {"name", "sphere_asset"}, {"kind", "aabb_v1"},
+            {"aabb", {{"min", {-16.0, -16.0, 1.0}},
+                      {"max", {16.0, 16.0, 2.0}}}},
+            {"record", {{"radius", 1.0}}}
+        }})}
+    }.dump(2));
+    writeWp374aText(root / "ray_layout.json", Json{
+        {"schema", "pelican.ray_group_layout"}, {"version", 3},
+        {"ray_types", {"primary"}}, {"default_group", "sphere"},
+        {"groups", Json::array({{{"name", "sphere"},
+                                  {"type", "procedural"}}})},
+        {"misses", Json::array({{{"name", "sky"}}})},
+        {"engine_record", {"material_index", "geometry_index",
+                            "geometry_kind"}},
+        {"record", Json::array({{{"name", "radius"}, {"type", "f32"}}})},
+        {"acceleration_structure", {
+            {"defaults", {{"mask", 255},
+                           {"instance_flags", Json::array()},
+                           {"geometry_flags", Json::array()}}},
+            {"procedural_defaults", {{"geometry_flags", {"opaque"}}}},
+            {"rules", Json::array()}}}
+    }.dump(2));
+    writeWp374aText(root / "ray_bindings.json", R"json({
+      "schema":"pelican.ray_bindings","version":2,
+      "bindings":[{"procedural":"sphere_asset","group":"sphere"}]
+    })json");
+    writeWp374aText(root / "shaders" / "wp386.rgen",
+        RayTracingRt31Fixture::wp366RaygenSource(
+            "0u", "0u", "pelican_resource_wp386_out"));
+    writeWp374aText(root / "shaders" / "wp386.rmiss",
+        RayTracingRt31Fixture::wp366MissSource("0x386au", "0u"));
+    writeWp374aText(root / "shaders" / "wp386.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer RayRecord {
+    uint material_index;
+    uint geometry_index;
+    uint geometry_kind;
+    float radius;
+} ray_record;
+void main() { payload.marker = 0xdead386au; }
+)glsl");
+    const Json feature{
+        {"schema", "pelican.render_feature"}, {"version", 1},
+        {"name", "wp386_procedural"},
+        {"runtime_shader_compiler", "required"},
+        {"required_capabilities", Json::array({
+             "pelican.vulkan.ray_tracing_pipeline@1"})},
+        {"render_targets", Json::array({{
+             {"name", "wp386_out"}, {"extent_scale", 1.0},
+             {"format", "R32G32B32A32_UINT"}, {"format_class", "data"},
+             {"role", "data"}, {"usage", {"STORAGE", "TRANSFER_SRC"}}
+        }})},
+        {"compute_tasks", Json::array({{
+             {"name", "wp386_trace"},
+             {"ray_tracing", {
+                 {"raygen", "project://shaders/wp386"},
+                 {"traced_ray_types", {"primary"}},
+                 {"misses", {{"sky", "project://shaders/wp386"}}},
+                 {"hit_shaders", {{"primary", {{"sphere", {
+                     {"closesthit", "project://shaders/wp386"},
+                     {"intersection", "engine://procedural_no_report"}
+                 }}}}}}
+             }},
+             {"writes", {"wp386_out"}},
+             {"resource_ports", {{"wp386_out", {{"resource", "wp386_out"},
+                                                   {"access", "storage"}}}}},
+             {"dispatch", {{"rays_from", {{"port", "wp386_out"}}}}}
+        }})}
+    };
+    writeWp374aText(root / "features" / "wp386_procedural.json",
+                    feature.dump(2));
+    writeWp374aText(root / "hybrid.json", Json{
+        {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+        {"features", {"project://features/wp386_procedural.json"}},
+        {"ray_group_layout", "ray_layout.json"},
+        {"ray_bindings", "ray_bindings.json"},
+        {"target_planning", {{"graphs", {{"main_render", {
+            {"required_capabilities", Json::array({
+                 "pelican.vulkan.ray_query@1"})}}}}}}}
+    }.dump(2));
 }
 
 std::shared_ptr<const RayTracingProjectConfig>
@@ -500,6 +611,235 @@ RaySceneRowSnapshot renderWp374aProductionRows() {
         throw std::runtime_error("WP374a committed TLAS row plan is absent");
     }
     return *rows;
+}
+
+TEST_CASE(
+    "WP386a production render carries one procedural generation through SBT and TLAS while no-report stays invisible",
+    "[WP386a][ray-tracing][rt3-2a][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"wp386a_procedural"};
+    writeWp386aProceduralProject(project.path);
+    auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
+    auto &objects = scene["scenes"]["main"]["objects"];
+    auto second = objects.front();
+    second["name"] = "SphereSecond";
+    objects.push_back(std::move(second));
+    writeWp374aText(project.path / "scene.json", scene.dump());
+    FastModuleContainer modules;
+    try {
+        loadWp374aScene(project.path);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) {
+            SKIP("pelican.vulkan.ray_tracing_pipeline@1 is unavailable");
+        }
+        std::vector<RayTracingSbtWriteObservation> writes;
+        const ScopedRayTracingSbtWriteObserver observer{
+            [&](const auto &write) { writes.push_back(write); }};
+        const auto rows = renderWp374aProductionRows();
+        REQUIRE(rows.rows.size() == 2);
+        CHECK(rows.rows[0].scene_identity != rows.rows[1].scene_identity);
+        CHECK(rows.rows[0].geometry_kind == RayGeometryKind::aabbs);
+        CHECK(rows.rows[0].material_index ==
+              rayMissingTextureIndex);
+        REQUIRE_FALSE(writes.empty());
+        CHECK(writes.front().record_count == 2);
+
+        const auto runtime = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+        REQUIRE(runtime != nullptr);
+        REQUIRE(runtime->gpu_arena != nullptr);
+        const auto owner = std::ranges::find_if(
+            runtime->gpu_arena->scopes,
+            [](const auto &scope) {
+                return scope.ray_tracing_project != nullptr;
+            });
+        REQUIRE(owner != runtime->gpu_arena->scopes.end());
+        REQUIRE(owner->acceleration_structures != nullptr);
+        const auto *root = owner->acceleration_structures
+                               ->activeGenerationRootForTesting();
+        REQUIRE(root != nullptr);
+        CHECK(root->generation == rows.generation);
+        REQUIRE(root->sbt != nullptr);
+        CHECK(root->sbt->generation == root->generation);
+        CHECK(root->tlas_plan_generation == root->generation);
+        REQUIRE(root->tlas_plan.size() == 2);
+        REQUIRE(root->inventory != nullptr);
+        // Feed the scene loader's two real occurrences back through the AS
+        // row resolver with reversed publication order and equivalent zeros.
+        // Object identity must preserve both rows; float spelling must not
+        // change their matching keys or canonical order.
+        auto reordered = root->inventory->instances;
+        REQUIRE(reordered.size() == 2);
+        REQUIRE(reordered[0].authoring_object_id !=
+                reordered[1].authoring_object_id);
+        const auto original_rows = resolveRayTracingSceneRows(
+            reordered, *owner->ray_tracing_project);
+        std::reverse(reordered.begin(), reordered.end());
+        for (auto &instance : reordered) {
+            for (glm::length_t column = 0; column < 4; ++column) {
+                for (glm::length_t row = 0; row < 4; ++row) {
+                    if (instance.world_transform[column][row] == 0.0F)
+                        instance.world_transform[column][row] = -0.0F;
+                }
+            }
+        }
+        const auto reordered_rows = resolveRayTracingSceneRows(
+            reordered, *owner->ray_tracing_project);
+        REQUIRE(reordered_rows.rows.size() == 2);
+        CHECK(reordered_rows.identity_digest_sha256 ==
+              original_rows.identity_digest_sha256);
+        for (std::size_t index = 0; index < 2; ++index) {
+            CHECK(reordered_rows.rows[index].geometry_match_identity ==
+                  original_rows.rows[index].geometry_match_identity);
+            CHECK(reordered_rows.rows[index].scene_identity ==
+                  original_rows.rows[index].scene_identity);
+        }
+
+        const auto output = GET_MODULE(Renderer).readRenderTargetForTesting(
+            "wp386_out", ImageSubresourceRange{});
+        REQUIRE(output.bytes.size() >= sizeof(std::uint32_t));
+        std::uint32_t marker = 0;
+        std::memcpy(&marker, output.bytes.data(), sizeof(marker));
+        CHECK(marker == 0x386au);
+        CHECK(marker != 0xdead386au);
+    } catch (const std::exception &error) {
+        TestSupport::skipIfVulkanDeviceUnavailable(
+            error, "Vulkan WP386a procedural fixture unavailable");
+        throw;
+    }
+#else
+    SUCCEED("WP386a GPU acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE(
+    "WP386a production loader rejects each independently downgraded procedural document",
+    "[WP386a][ray-tracing][rt3-2a][production][version][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    struct Downgrade {
+        std::string_view file;
+        std::string_view diagnostic;
+    };
+    constexpr std::array cases{
+        Downgrade{"assets.json",
+                  "pelican.asset_data_procedural_requires_v2@1"},
+        Downgrade{"ray_bindings.json",
+                  "pelican.ray_binding_selector_exactly_one@1"},
+        Downgrade{"ray_layout.json",
+                  "pelican.ray_group_type_requires_layout_v3@1"},
+    };
+    for (const auto &entry : cases) {
+        DYNAMIC_SECTION(entry.file) {
+            setupLogger();
+            Wp374aProjectRoot project{"wp386a_version_downgrade"};
+            writeWp386aProceduralProject(project.path);
+            const auto path = project.path / entry.file;
+            auto document = Json::parse(readWp374aText(path));
+            document["version"] = entry.file == "ray_layout.json" ? 2 : 1;
+            writeWp374aText(path, document.dump(2));
+            FastModuleContainer modules;
+            CHECK_THROWS_WITH(
+                loadWp374aScene(project.path),
+                ContainsSubstring(std::string{entry.diagnostic}));
+        }
+    }
+    {
+        setupLogger();
+        Wp374aProjectRoot project{"wp386a_missing_layout_reject"};
+        writeWp386aProceduralProject(project.path);
+        auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        rendering.erase("ray_group_layout");
+        rendering.erase("ray_bindings");
+        writeWp374aText(project.path / "hybrid.json", rendering.dump());
+        FastModuleContainer modules;
+        CHECK_THROWS_WITH(loadWp374aScene(project.path),
+            ContainsSubstring("pelican.ray_group_type_requires_layout_v3@1"));
+    }
+    {
+        setupLogger();
+        Wp374aProjectRoot project{"wp386a_task_type_reject"};
+        writeWp386aProceduralProject(project.path);
+        const auto path =
+            project.path / "features" / "wp386_procedural.json";
+        auto feature = Json::parse(readWp374aText(path));
+        feature["compute_tasks"][0]["ray_tracing"]["hit_shaders"]
+               ["primary"]["sphere"]["type"] = "procedural";
+        writeWp374aText(path, feature.dump(2));
+        FastModuleContainer modules;
+        CHECK_THROWS_WITH(
+            (loadWp374aScene(project.path), renderWp374aProductionRows()),
+            ContainsSubstring("pelican.ray_group_type_declared_in_task@1"));
+    }
+#else
+    SUCCEED("WP386a production version acceptance is compiler-ON only");
+#endif
+}
+
+TEST_CASE(
+    "WP386a procedural participant exposes four independent manifest mutations and exact success trace",
+    "[WP386a][transaction][manifest][mutation][gpu]") {
+    enum class Field {
+        aabb_buffer,
+        allocation_generation,
+        instance_snapshot,
+        retire_queue,
+    };
+    struct MutationCase {
+        std::string_view field;
+        SceneLoadFaultPhase phase;
+        Field value;
+    };
+    constexpr std::array cases{
+        MutationCase{"aabb_buffer", SceneLoadFaultPhase::publish,
+                     Field::aabb_buffer},
+        MutationCase{"allocation_generation", SceneLoadFaultPhase::publish,
+                     Field::allocation_generation},
+        MutationCase{"instance_snapshot", SceneLoadFaultPhase::publish,
+                     Field::instance_snapshot},
+        MutationCase{"retire_queue", SceneLoadFaultPhase::retire,
+                     Field::retire_queue},
+    };
+    for (const auto &entry : cases) {
+        DYNAMIC_SECTION(entry.field) {
+            setupLogger();
+            Wp374aProjectRoot project{"wp386a_participant_mutation"};
+            writeWp386aProceduralProject(project.path);
+            FastModuleContainer modules;
+            (void)configureWp374aRuntime(project.path);
+            TestSupport::requireVulkanDevice(
+                "WP386a procedural participant acceptance");
+            GET_MODULE(ECSPredefinedRegistration).reg();
+            auto &loader = GET_MODULE(SceneLoader);
+            test_support::ManifestSceneLoadFault injector{
+                wp380MutationId("procedural", entry.field)};
+            injector.setEnabled(true);
+            test_support::setSceneLoadFaultInjectorForTesting(loader,
+                                                               &injector);
+            const auto result = loader.load(SceneLoadRequest::borrowed(
+                "main", GET_MODULE(ProjectBasicConfig).sceneProjectionState(),
+                SceneLoadRoot::startup));
+            test_support::setSceneLoadFaultInjectorForTesting(loader,
+                                                               nullptr);
+            const auto *committed = std::get_if<SceneLoadCommitted>(&result);
+            REQUIRE(committed != nullptr);
+            requireWp380CommittedPhaseTrace(*committed);
+            auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+            if (entry.value == Field::aabb_buffer) {
+                const auto instances = procedural.proceduralRayInstances();
+                REQUIRE(instances.size() == 1);
+                CHECK(instances[0].aabb_buffer_address == 0);
+                CHECK_FALSE(instances[0].geometry_lease);
+            } else if (entry.value == Field::allocation_generation) {
+                CHECK(procedural.allocationGeneration() == 0);
+            } else if (entry.value == Field::instance_snapshot) {
+                CHECK(procedural.instanceCount() == 0);
+            } else {
+                CHECK(procedural.retirementCount() == 0);
+            }
+            REQUIRE(injector.saw(entry.phase, "procedural"));
+            GET_MODULE(VulkanManageCore).waitIdle();
+        }
+    }
 }
 
 TEST_CASE(

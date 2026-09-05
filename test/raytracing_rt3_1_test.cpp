@@ -386,7 +386,7 @@ TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
     FastModuleContainer modules;
     auto &mode = GET_MODULE(RayLayoutRuntimeState);
     mode.configure(RayLayoutSemanticMode::LayoutV2);
-    REQUIRE(componentCodecs().size() == 8);
+    REQUIRE(componentCodecs().size() == 9);
     const auto &codec = requireComponentCodec("pelican_ray_instance");
     const auto decoded = decodeRayCodecOrThrow(codec, {
         {"name", "pelican_ray_instance"},

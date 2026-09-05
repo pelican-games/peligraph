@@ -442,6 +442,7 @@ enum class DeclaredShaderStage : std::uint8_t {
     miss,
     closesthit,
     anyhit,
+    intersection,
 };
 
 struct DeclaredShaderReference {
@@ -735,6 +736,7 @@ struct RayTracingTaskShaderDefinition {
     // Optional any-hit stage paired with the same physical H[g,r]
     // occurrence. The vector is empty for legacy RT1a definitions.
     std::vector<std::optional<ShaderReference>> any_hit_shader_slots;
+    std::vector<std::optional<ShaderReference>> intersection_shader_slots;
 };
 
 enum class ComputeTaskSchedule : std::uint8_t {

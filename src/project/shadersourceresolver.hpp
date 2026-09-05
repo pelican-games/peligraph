@@ -21,6 +21,7 @@ enum class ShaderSourceStage {
     miss,
     closesthit,
     anyhit,
+    intersection,
 };
 
 enum class ShaderSourceOpenReason {

@@ -845,6 +845,8 @@ std::uint32_t spirvExecutionModelForShaderStage(ShaderStage stage) {
         return SpvExecutionModelClosestHitKHR;
     case ShaderStage::anyhit:
         return SpvExecutionModelAnyHitKHR;
+    case ShaderStage::intersection:
+        return SpvExecutionModelIntersectionKHR;
     }
     throw std::runtime_error("unknown shader stage");
 }

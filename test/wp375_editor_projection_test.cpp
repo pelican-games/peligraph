@@ -188,6 +188,8 @@ constexpr std::array literal_component_routes{
     LiteralComponentRoute{"collider", EditorProjectionRouteKind::Collider,
                           false},
     LiteralComponentRoute{"light", EditorProjectionRouteKind::Light, true},
+    LiteralComponentRoute{"pelican_procedural_geometry",
+                          EditorProjectionRouteKind::EcsCodec, false},
     LiteralComponentRoute{"pelican_ray_instance", EditorProjectionRouteKind::EcsCodec,
                           false},
     LiteralComponentRoute{"simplemodelview",
@@ -274,6 +276,8 @@ Json setOperation(AuthoringObjectId object_id, std::string_view component) {
     if (component == "behavior") {
         authored["type"] = "wp375_matrix_behavior";
         authored["params"] = Json{{"value", 4}};
+    } else if (component == "pelican_procedural_geometry") {
+        authored["asset"] = "sphere_asset";
     }
     return Json{{"op", "set_component_value"},
                 {"object_id", object_id.value},

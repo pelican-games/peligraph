@@ -27,6 +27,7 @@
 namespace Pelican {
 
 struct RayTracingProjectConfig;
+struct RaySceneGenerationRoot;
 
 struct BufferWrapper;
 
@@ -134,6 +135,7 @@ struct RayTracingPipelineDesc {
     std::vector<ShaderBundleId> closest_hits;
     // Empty for the legacy RT1a form; otherwise aligned with closest_hits.
     std::vector<std::optional<ShaderBundleId>> any_hits;
+    std::vector<std::optional<ShaderBundleId>> intersections;
     std::vector<std::string> shader_defines;
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface;
@@ -161,6 +163,7 @@ struct RayTracingSceneShaderBindingTableEntry {
 };
 
 struct RayTracingSceneShaderBindingTables {
+    std::uint64_t generation = 0;
     std::shared_ptr<const RaySceneRowSnapshot> row_snapshot;
     std::shared_ptr<const RayTracingGeometrySnapshot>
         geometry_snapshot;
@@ -328,7 +331,8 @@ DECLARE_MODULE(PipelineFactory) {
         std::shared_ptr<const RaySceneRowSnapshot> rows,
         const RayTracingProjectConfig &project,
         std::shared_ptr<const RayTracingGeometrySnapshot>
-            geometry) const;
+            geometry,
+        std::shared_ptr<RaySceneGenerationRoot> generation_root = {}) const;
     void traceRays(vk::CommandBuffer command_buffer,
                    PipelineHandle handle, std::uint32_t width,
                    std::uint32_t height,

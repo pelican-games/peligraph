@@ -28,7 +28,7 @@ BLAS が保持するのは大域 index / vertex pool のデバイスアドレス
 
 TLAS の行がどこから来るかは、3つの型を順に読むと追えます。宣言面(mask / flags / custom index / material 鍵規則)そのものは[第6章 §6.20](06_rendering_vulkan_shader.md)にあります。
 
-identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L208))。詳細は §「`RaySceneRowInput` の identity 3 種」。
+identity が層ごとに姿を変えるのがこの経路の読みどころです。同じ 1 行を指す identity が、snapshot では**構造化された field 群**、`RaySceneRowInput` では**3 本の文字列**、material 側では**1 つの typed union** になります。名前が似ていて役割が違うので、まず全体をこの形で掴んでから各節へ入ってください。3 本に分かれているのは、`scene_identity` と `geometry_identity` が **canonical sort の第1/第2キー**であるのに対し、3 本目の `geometry_match_identity` は sort キーではなく**曖昧性 guard の等価域**だからで、ヘッダのコメントがその理由を書いています — 「authored 側の asset / mesh / node の別名が、同じ位置にある同じ geometry を別物に見せてはいけない」([`RaySceneRowInput` の `geometry_match_identity` の上](../../src/core/shader/raygrouplayout.hpp#L233))。詳細は §「`RaySceneRowInput` の identity 3 種」。
 
 ```text
 draw inventory
@@ -60,36 +60,36 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 
 ### `RayQueryGeometryInstanceSnapshot`
 
-[`RayQueryGeometryInstanceSnapshot`](../../src/core/vkcore/accelerationstructure.hpp#L27) は、記録が始まる前に renderer 側で凍結される値です。ヘッダのコメントが境界を規範として書いています — **vkcore は安定した identity と range だけを見て、model 型や draw inventory 型には依存しない**。
+[`RayQueryGeometryInstanceSnapshot`](../../src/core/vkcore/accelerationstructure.hpp#L29) は、記録が始まる前に renderer 側で凍結される値です。ヘッダのコメントが境界を規範として書いています — **vkcore は安定した identity と range だけを見て、model 型や draw inventory 型には依存しない**。
 
 | 区分 | field |
 |---|---|
 | identity | `asset_identity`、`authoring_object_id`、`instance_index` / `instance_generation`、`scene_epoch` |
-| 宣言 | [`std::optional<RayInstanceComponent> ray_instance`](../../src/core/vkcore/accelerationstructure.hpp#L30) |
-| material selector | `material_asset_reference`、`material_document_reference`、`material_name`、[`std::optional<std::uint32_t> source_material_index`](../../src/core/vkcore/accelerationstructure.hpp#L40)、`resolved_material_handle` / `_generation` / `_lease` |
+| 宣言 | [`std::optional<RayInstanceComponent> ray_instance`](../../src/core/vkcore/accelerationstructure.hpp#L36) |
+| material selector | `material_asset_reference`、`material_document_reference`、`material_name`、[`std::optional<std::uint32_t> source_material_index`](../../src/core/vkcore/accelerationstructure.hpp#L46)、`resolved_material_handle` / `_generation` / `_lease` |
 | geometry | `geometry_allocation_id`、`index_count` / `index_offset`、`vertex_offset` / `vertex_count`、`attribute_presence` |
 | 除外分類 | `skinned` / `morph_deformed` / `vat_deformed` |
 | 名前付けと配置 | `mesh_index`、`primitive_index`、`node_index`、`world_transform` |
 
-`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な静的 geometry を持たないとき、黙って無視せず [`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L388) で止めます。分類フィルタが先に走ると「除外された primitive にだけ付いた宣言」が消えてしまうため、この検査は分類の**前**に置かれています。
+`authoring_object_id` が入っているのは、`pelican_ray_instance` が **object 単位**の宣言だからです。宣言を持つ authoring object が1つも BLAS 適格な静的 geometry を持たないとき、黙って無視せず [`pelican.ray_instance_not_ray_traced@1`](../../src/core/renderer/accelerationstructure.cpp#L462) で止めます。分類フィルタが先に走ると「除外された primitive にだけ付いた宣言」が消えてしまうため、この検査は分類の**前**に置かれています。
 
 ### `RaySceneRowInput` の identity 3 種
 
-[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L203) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([組み立て位置](../../src/core/renderer/accelerationstructure.cpp#L409))。
+[`RaySceneRowInput`](../../src/core/shader/raygrouplayout.hpp#L227) は identity 文字列を3本持ちます。名前が似ていますが役割は別で、混ぜると壊れます([resolveRayTracingSceneRows()](../../src/core/renderer/accelerationstructure.cpp#L440))。
 
 | field | 形 | 役割 |
 |---|---|---|
-| [`scene_identity`](../../src/core/shader/raygrouplayout.hpp#L206) | `asset@<canonical transform>` | 永続的な scene 上の同一性。`q` の canonical sort の第1キー。**draw inventory の publish 順を意図的に含みません**(instance slot / generation / 公開順序を入れると `q` が公開順に依存します) |
+| [`scene_identity`](../../src/core/shader/raygrouplayout.hpp#L231) | `asset@<canonical transform>` | 永続的な scene 上の同一性。`q` の canonical sort の第1キー。**draw inventory の publish 順を意図的に含みません**(instance slot / generation / 公開順序を入れると `q` が公開順に依存します) |
 | `geometry_identity` | `asset#allocation:index_offset:vertex_offset:mesh:primitive:node` | 同一 object 内で primitive を区別する第2キー |
-| [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L212) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
+| [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L237) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
 
-3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1389) で止めます。
+3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1562) で止めます。
 
-`q` は sort 後の添字で、行数が 2^24 を超えると [`pelican.ray_row_count_limit@1`](../../src/core/shader/raygrouplayout.cpp#L1400) です(instance SBT offset が 24 bit のため)。
+`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1574) です(instance SBT offset が 24 bit のため)。
 
 ### `MaterialRowIdentity`: gate と lookup が同じ値を見る
 
-material 側は元々 `{document, material_name, asset, source_material_index}` の4 field がバラバラに使われていて、AS rule の gate と material lookup が別の解釈をする組み合わせがありました。WP383 で正準化し、[`MaterialRowIdentity`](../../src/core/shader/raygrouplayout.hpp#L253) という **1つの typed union** に寄せてあります。
+material 側は元々 `{document, material_name, asset, source_material_index}` の4 field がバラバラに使われていて、AS rule の gate と material lookup が別の解釈をする組み合わせがありました。WP383 で正準化し、[`MaterialRowIdentity`](../../src/core/shader/raygrouplayout.hpp#L282) という **1つの typed union** に寄せてあります。
 
 ```cpp
 using MaterialRowIdentity =
@@ -101,16 +101,16 @@ using MaterialRowIdentity =
 
 | 入力 | 結果 |
 |---|---|
-| `material_document` が非空 | [`MaterialRowDocumentIdentity{document, material_name}`](../../src/core/shader/raygrouplayout.hpp#L237)。**document の存在が勝ちます** |
-| document が空、`material_asset` が非空、`source_material_index` が有る | [`MaterialRowAssetIdentity{asset, source_material_index}`](../../src/core/shader/raygrouplayout.hpp#L242) |
+| `material_document` が非空 | [`MaterialRowDocumentIdentity{document, material_name}`](../../src/core/shader/raygrouplayout.hpp#L266)。**document の存在が勝ちます** |
+| document が空、`material_asset` が非空、`source_material_index` が有る | [`MaterialRowAssetIdentity{asset, source_material_index}`](../../src/core/shader/raygrouplayout.hpp#L271) |
 | 同上で index が `UINT32_MAX` | [`pelican.ray_material_index_out_of_range@1`](../../src/core/shader/raygrouplayout.cpp#L29) |
-| それ以外 | [`MaterialRowIdentityUnavailable`](../../src/core/shader/raygrouplayout.hpp#L247) |
+| それ以外 | [`MaterialRowIdentityUnavailable`](../../src/core/shader/raygrouplayout.hpp#L276) |
 
-**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L562))。
+**`material_name` は optional**です。単一 material の `.mat.json` のように名前を持たない document material があるので、「document かつ名前あり」を Document の条件にすると、それが Asset か Unavailable へ落ちて document selector が解決できなくなります。document selector 側も、名前が空なら名前を問わず一致し、名前付きなら一致を要求する非対称になっています([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L614))。
 
 もう1つの要点は `source_material_index` が `RaySceneRowInput` / snapshot の両方で `std::optional` であることです。コメントが規範を書いています — **欠損した index が黙って 0 になってはいけません**。glTF の直読みなどで material が無い primitive は index を持たず、identity は `Unavailable` になります。0 に丸めると、たまたま 0 番 material を指す asset selector が誤って一致します。
 
-この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L562))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L346))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
+この単一 identity は、AS rule の gate([`rayAsSelectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L614))、ray bindings の selector 照合([`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L382))、`material_reference` の生成、material 表の lookup がすべて同じ値を見ます。
 
 ## `rt_shadow_mask` feature
 

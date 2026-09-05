@@ -77,7 +77,7 @@
 
 **prepare / publish / commit** — pelican2 全体で繰り返される 3 点セット。**prepare** で「投げうる準備(確保・コピー・検証)」を全部済ませ、**publish** は失敗しようのない差し替えだけにし、**commit** で外から見える状態を確定させます。publish が no-throw なので「半分だけ適用された状態」が原理的に作れません。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。
 
-**retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1071))
+**retire(退役)** — 旧シーンを片付ける段。ここで旧オブジェクトの `onDestroy` が走り、旧 entity は既に unpublish 済みなので**新シーンからは見えません**。retire 中に新たなシーンロードを要求しても拒否されます。初出: [第4章 §4.3](04_scene_ecs.md#43-シーンロードの流れ)。([scene.cpp の requestLoadDuringRetire](../../src/core/loader/scene.cpp#L1147))
 
 **staging(ステージング)** — 「作用を実行せず、実行可能な形にして取っておく」こと。ロード中に `playSound` や `saveData` を呼ぶと、その場では鳴らず・書かず、**実行に必要な準備だけ済ませた entry** がトランザクションに積まれます。溜めた分が実際に外へ出るのは、ロードの 8 段のうち **flush** 段(`commit` に成功したときだけ)です。具体例: `onInit` で `playSound("bgm")` を呼ぶと、その場では voice slot の予約だけが起き、音が鳴るのは flush 段です(ロードが失敗すれば予約ごと消え、鳴りません)。初出: [第4章 ロード中の「作用」](04_scene_ecs.md#ロード中の作用はトランザクションに溜まるwp380be)。([PreparedEffectTransaction](../../src/core/loader/effecttransaction.hpp#L27) / [SceneLoadPhase](../../src/core/loader/sceneload.hpp#L27))
 
@@ -181,11 +181,11 @@
 
 **IBL(image-based lighting)** — 環境を写した画像から、拡散・鏡面の環境光を作るライティング手法。**pelican2 では未実装**です(WP32 は番号予約のみ)。同梱の `sky_ambient.json` は単色の環境光であって IBL ではありません。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
 
-**AS / BLAS / TLAS(加速構造)** — レイトレーシングで「レイがどの三角形に当たるか」を高速に絞るための木構造。**BLAS**(bottom-level)は 1 つのジオメトリの中身、**TLAS**(top-level)は BLAS のインスタンスを世界に並べた表で、**AS** はその総称です。pelican2 の AS は**静的ジオメトリ専用**で、transform を動かしても BLAS は無効化されません(TLAS の行が変わるだけ)。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L78))
+**AS / BLAS / TLAS(加速構造)** — レイトレーシングで「レイがどの三角形に当たるか」を高速に絞るための木構造。**BLAS**(bottom-level)は 1 つのジオメトリの中身、**TLAS**(top-level)は BLAS のインスタンスを世界に並べた表で、**AS** はその総称です。pelican2 の AS は**静的ジオメトリ専用**で、transform を動かしても BLAS は無効化されません(TLAS の行が変わるだけ)。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L113))
 
-**SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L163))
+**SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L165))
 
-**`ray_group_layout`(ray layout v1 / v2)** — レイトレの宣言層の入口となる JSON。version は 1 か 2 だけを受理し、**プロセス一生ものの 3 値**(layout 無し / v1 / v2)として起動時に確定します。v2 のときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L130))
+**`ray_group_layout`(ray layout v1 / v2)** — レイトレの宣言層の入口となる JSON。version は 1 か 2 だけを受理し、**プロセス一生ものの 3 値**(layout 無し / v1 / v2)として起動時に確定します。v2 のときだけ `acceleration_structure` 宣言と `pelican_ray_instance` コンポーネントが使えます。プロセス途中でのモード変更は拒否されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayLayoutRuntimeState](../../src/core/shader/raygrouplayout.hpp#L152))
 
 ---
 

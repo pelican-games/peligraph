@@ -5,6 +5,7 @@
 #include "../renderer/frameresources.hpp"
 #include "../renderer/materialrender.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../renderer/proceduralgeometrycontainer.hpp"
 #include "../renderer/shadowdepthpasscontainer.hpp"
 #include "../renderer/skyambientlighting.hpp"
 #include "../renderer/spriterenderer.hpp"
@@ -4734,16 +4735,30 @@ void Renderer::renderLogicalFrame(
                         .prepareNonRayTracingPublication());
                 return;
             }
-            const auto geometry_instances =
+            const auto triangle_instances =
                 modules.instance_container
                     .rayQueryGeometryInstances();
+            const auto procedural_instances =
+                GET_MODULE(ProceduralGeometryContainer)
+                    .proceduralRayInstances();
+            const auto generation = next_ray_scene_generation++;
+            auto inventory =
+                std::make_shared<RaySceneInventorySnapshot>(
+                    makeRaySceneInventorySnapshot(
+                        triangle_instances, procedural_instances,
+                        generation));
+            const auto &geometry_instances = inventory->instances;
+            auto generation_root =
+                std::make_shared<RaySceneGenerationRoot>();
+            generation_root->generation = generation;
+            generation_root->inventory = inventory;
             const auto &index_buffer =
                 modules.vert_buf_container.indexBuffer();
             const auto &vertex_buffer =
                 modules.vert_buf_container.vertexBuffer(false);
             const auto device =
                 GET_MODULE(VulkanManageCore).getDevice();
-            const auto geometry_snapshot =
+            auto geometry_snapshot =
                 std::make_shared<RayTracingGeometrySnapshot>(
                     makeRayTracingGeometrySnapshot(
                         geometry_instances,
@@ -4753,6 +4768,8 @@ void Renderer::renderLogicalFrame(
                         device.getBufferAddress(
                             vk::BufferDeviceAddressInfo{
                                 vertex_buffer.buffer.get()})));
+            geometry_snapshot->generation = generation;
+            generation_root->geometry_table = geometry_snapshot;
             std::shared_ptr<const RaySceneRowSnapshot>
                 ray_scene_rows;
             std::shared_ptr<const RayTracingSceneShaderBindingTables>
@@ -4776,6 +4793,9 @@ void Renderer::renderLogicalFrame(
                     std::make_shared<RaySceneRowSnapshot>(
                         resolveRayTracingSceneRows(
                             geometry_instances, ray_project));
+                const_cast<RaySceneRowSnapshot &>(*ray_scene_rows)
+                    .generation = generation;
+                generation_root->resolved_rows = ray_scene_rows;
                 std::vector<PipelineHandle> owner_pipelines;
                 for (const auto &resource :
                      gpu_owner_scope->resources) {
@@ -4816,9 +4836,20 @@ void Renderer::renderLogicalFrame(
                         GET_MODULE(PipelineFactory)
                             .createRayTracingSceneShaderBindingTables(
                                 owner_pipelines, ray_scene_rows,
-                                ray_project, geometry_snapshot);
+                                ray_project, geometry_snapshot,
+                                generation_root);
                     ray_scene_rows =
                         ray_tracing_scene_tables->row_snapshot;
+                    generation_root->resolved_rows = ray_scene_rows;
+                    generation_root->sbt = ray_tracing_scene_tables;
+                    const auto classification =
+                        classifyRayQueryStaticGeometry(geometry_instances);
+                    generation_root->tlas_plan =
+                        lowerRayTracingTlasInstancePlan(
+                            geometry_instances,
+                            classification.static_instance_indices,
+                            ray_scene_rows.get(), ray_type_count);
+                    generation_root->tlas_plan_generation = generation;
                     injectRayTracingJointTransactionPoint(
                         RayTracingJointTransactionPoint::after_sbt);
                 }
@@ -4844,7 +4875,8 @@ void Renderer::renderLogicalFrame(
                         gpu_owner_scope->ray_tracing_project->layout
                             .usesMaterialAlphaProfile(),
                     runtime_generation->generation,
-                    ray_tracing_pipeline_generation));
+                    ray_tracing_pipeline_generation,
+                    ray_scene_rows ? generation_root : nullptr));
             }
             frame_publication.emplace(
                 modules.frame_resources.prepareRayTracingPublication(

@@ -43,6 +43,8 @@ std::string_view shaderStageSourceExtension(ShaderStage stage) {
             ShaderSourceStage::closesthit);
     case ShaderStage::anyhit:
         return shaderSourceStageExtension(ShaderSourceStage::anyhit);
+    case ShaderStage::intersection:
+        return shaderSourceStageExtension(ShaderSourceStage::intersection);
     }
     throw std::runtime_error("unknown shader stage");
 }
@@ -63,6 +65,8 @@ std::string shaderStageName(ShaderStage stage) {
         return "closesthit";
     case ShaderStage::anyhit:
         return "anyhit";
+    case ShaderStage::intersection:
+        return "intersection";
     }
     throw std::runtime_error("unknown shader stage");
 }
@@ -71,7 +75,8 @@ bool hasKnownShaderExtension(std::string_view ref) {
     const auto ext = lowerExtension(ref);
     return ext == ".spv" || ext == ".vert" || ext == ".frag" ||
            ext == ".comp" || ext == ".rgen" || ext == ".rmiss" ||
-           ext == ".rchit" || ext == ".rahit" || ext == ".wgsl";
+           ext == ".rchit" || ext == ".rahit" || ext == ".rint" ||
+           ext == ".wgsl";
 }
 
 bool hasKnownShaderExtension(
@@ -84,6 +89,7 @@ bool hasKnownShaderExtension(
     // resolution behavior.  All older explicit suffixes retain their
     // historical, stage-independent rejection.
     if (ext == ".rahit") return stage == ShaderStage::anyhit;
+    if (ext == ".rint") return stage == ShaderStage::intersection;
     return hasKnownShaderExtension(ref);
 }
 
