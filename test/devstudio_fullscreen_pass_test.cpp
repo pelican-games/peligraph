@@ -229,6 +229,9 @@ struct AuthoringHarness {
                     return request(QStringLiteral("remove_authored_pass"),
                                    params);
                 },
+            .editPresetPass = [request](const QJsonObject &params, QString *) mutable {
+                return request(QStringLiteral("edit_preset_pass"), params);
+            },
             .requestEditResult =
                 [request](const QString &ticket, QString *) mutable {
                     return request(
@@ -2241,6 +2244,54 @@ TEST_CASE(
         QByteArray::fromStdString(first_rebound_plan.dump()));
     REQUIRE(name_after_failure.text() ==
             QStringLiteral("new_after_failure"));
+}
+
+TEST_CASE("Studio edits a preset pass with its source digest and retains hidden settings",
+          "[devstudio][fullscreen-pass][preset-pass-edit]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    const Json original{{"name", "existing"}, {"type", "fullscreen"},
+                        {"input", Json::array({"input"})},
+                        {"output", {{"color", Json::array({"output"})}, {"depth", nullptr}}},
+                        {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}},
+                        {"clear_color", {0.1, 0.2, 0.3, 1.0}}};
+    Json graph{{"name", "edit_graph"},
+               {"passes", Json::array({{{"name", "existing"}, {"declaration", original},
+                   {"editable_preset_pass", true}, {"preset_declaration", original}}})},
+               {"anchor_candidates", Json::array({{{"position", 0}, {"insert", "before:existing"}}})}};
+    Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
+                 {"pipeline_preset", {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+                 {"graphs", Json::array({graph})}};
+    authoring.succeed(authoring.requests.back().id, context);
+    auto plan = minimalFramePlan("edit_graph", Json::array({resource("input"), resource("output")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    form.editPresetPass(QStringLiteral("edit_graph"), QStringLiteral("existing"));
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+    REQUIRE(name.text() == QStringLiteral("existing"));
+    REQUIRE(name.isReadOnly());
+    auto &fragment = required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment");
+    fragment.setText(QStringLiteral("project://shaders/changed"));
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method == QStringLiteral("edit_preset_pass"));
+    const auto params = Json::parse(QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+    CHECK(params.at("base_preset_digest") == std::string(64, 'b'));
+    CHECK(params.at("pass_name") == "existing");
+    CHECK(params.at("output") == original.at("output"));
+    CHECK(params.at("shader").at("fragment") == "project://shaders/changed");
+    CHECK_FALSE(params.contains("clear_color"));
+    authoring.succeed(authoring.requests.back().id,
+        {{"status", "rejected"}, {"error", {{"message", "test rejection"}}}});
+    required<QPushButton>(form, "pelican.fullscreenPass.refresh").click();
+    plan["resources"].push_back(resource("another_target"));
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    CHECK(name.text() == QStringLiteral("existing"));
+    CHECK(fragment.text() == QStringLiteral("engine://fullscreen"));
 }
 
 } // namespace PelicanStudio

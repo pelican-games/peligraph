@@ -6,6 +6,7 @@
 #include <QWidget>
 
 #include <memory>
+#include <functional>
 
 class QByteArray;
 class QString;
@@ -40,6 +41,8 @@ class FullscreenPassWidget final : public QWidget {
 
     // Deterministic projection-test boundaries. Production authoring context
     // arrives only through RenderPassAuthoringCapability.
+    void setCommittedAction(std::function<void()> action);
+    void editPresetPass(const QString &graph, const QString &pass_name);
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);
 };

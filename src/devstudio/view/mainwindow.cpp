@@ -240,6 +240,12 @@ void MainWindow::createWorkspace() {
     docks_[FullscreenPassDock] = makeDock(
         this, tr("Fullscreen Pass JSON"),
         QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
+    fullscreen_pass_->setCommittedAction([this] { frame_plan_->refresh(); });
+    frame_plan_->setPresetPassEditAction([this](const QString &graph, const QString &pass) {
+        fullscreen_pass_->editPresetPass(graph, pass);
+        docks_[FullscreenPassDock]->show();
+        docks_[FullscreenPassDock]->raise();
+    });
     connect(viewport_, &EmbeddedViewport::engineOutputReceived, this,
             [this](const QString &output) { appendEngineOutput(output); });
     connect(viewport_, &EmbeddedViewport::engineProcessExitedWithFailure, this,

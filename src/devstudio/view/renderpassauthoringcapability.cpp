@@ -42,6 +42,9 @@ RenderPassAuthoringCapability renderPassAuthoringCapability(
             return viewport.requestRpc(
                 QStringLiteral("remove_authored_pass"), params, error);
         },
+        .editPresetPass = [&viewport](const QJsonObject &params, QString *error) {
+            return viewport.requestRpc(QStringLiteral("edit_preset_pass"), params, error);
+        },
         .requestEditResult = [&viewport](const QString &ticket,
                                         QString *error) {
             return viewport.requestRpc(

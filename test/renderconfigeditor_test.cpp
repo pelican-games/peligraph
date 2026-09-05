@@ -1751,6 +1751,104 @@ TEST_CASE("Pipeline fork saves the original preset and switches the root atomica
     }
 }
 
+TEST_CASE("Project preset pass edits publish without changing the root document",
+          "[render-config-editor][preset-pass-edit]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    auto &passes = preset["config"]["rendering_passes"][0]["passes"];
+    auto original = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+        return pass.at("name") == "scene_present";
+    });
+    REQUIRE(original != passes.end());
+    (*original)["clear_color"] = Json::array({0.2, 0.3, 0.4, 1.0});
+    const auto preset_path = project.root / "passes" / "editable.json";
+    writeBytes(preset_path, preset.dump(2));
+    auto root = Json::parse(readBytes(project.render_config));
+    root["pipeline"]["preset"] = "project://passes/editable.json";
+    writeBytes(project.render_config, root.dump(2));
+    const auto root_before = readBytes(project.render_config);
+    const auto preset_before = readBytes(preset_path);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    const auto &context_passes = context.at("graphs").at(0).at("passes");
+    const auto editable = std::find_if(context_passes.begin(), context_passes.end(), [](const auto &pass) {
+        return pass.at("name") == "scene_present";
+    });
+    REQUIRE(editable != context_passes.end());
+    REQUIRE(editable->at("editable_preset_pass") == true);
+    REQUIRE(editable->at("preset_declaration") == *original);
+    const auto plan_before = runtime.frame_plan;
+    Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                 {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                 {"graph", "main_render"}, {"pass_name", "scene_present"},
+                 {"input", Json::array({"gbuffer_albedo"})},
+                 {"output", original->at("output")},
+                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}}};
+    SECTION("valid edit changes the runtime connection and survives reopen") {
+        const auto accepted = service->editPresetPass(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        REQUIRE(readBytes(preset_path) == preset_before);
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        REQUIRE(result.at("source_commit_called") == true);
+        for (const auto *key : {"input", "output", "shader"}) (*original)[key] = request.at(key);
+        REQUIRE(Json::parse(readBytes(preset_path)) == preset);
+        REQUIRE(readBytes(project.render_config) == root_before);
+        const auto nodes = runtime.frame_plan.at("nodes");
+        const auto node = std::find_if(nodes.begin(), nodes.end(), [](const auto &value) {
+            return value.at("name") == "scene_present";
+        });
+        REQUIRE(node != nodes.end());
+        REQUIRE(node->at("reads") == Json::array({"gbuffer_albedo"}));
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        REQUIRE(runtime.frame_plan.at("nodes") == nodes);
+        REQUIRE(service->editPresetPass(request).at("error").at("code") == "external_modification");
+    }
+    SECTION("generated and feature nodes cannot be edited as preset passes") {
+        request["pass_name"] = "__anchor_tonemap";
+        REQUIRE(service->editPresetPass(request).at("status") == "rejected");
+        request["pass_name"] = "pelican_ui";
+        REQUIRE(service->editPresetPass(request).at("status") == "rejected");
+        REQUIRE(readBytes(preset_path) == preset_before);
+    }
+    SECTION("an invalid connection fails before source replacement") {
+        request["input"] = Json::array({"missing_target"});
+        const auto accepted = service->editPresetPass(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        REQUIRE(result.at("committed") == false);
+        REQUIRE(readBytes(preset_path) == preset_before);
+        REQUIRE(runtime.frame_plan == plan_before);
+    }
+    SECTION("publication failure restores preset and runtime") {
+        runtime.fail_after_source_commit = true;
+        const auto accepted = service->editPresetPass(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        REQUIRE(readBytes(preset_path) == preset_before);
+        REQUIRE(readBytes(project.render_config) == root_before);
+        REQUIRE(runtime.frame_plan == plan_before);
+    }
+    SECTION("a queued edit cannot overwrite an external preset change") {
+        const auto accepted = service->editPresetPass(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        writeBytes(preset_path, preset_before + "\n");
+        service->commitPending();
+        REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        REQUIRE(readBytes(preset_path) == preset_before + "\n");
+        REQUIRE(runtime.frame_plan == plan_before);
+    }
+}
+
 TEST_CASE(
     "WP334b animgraph preset authored pass appears only after save and purges without an orphan",
     "[render-config-editor][wp334b][integration][preset][overlay][purge]") {

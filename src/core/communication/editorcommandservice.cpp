@@ -1454,6 +1454,11 @@ OrderedJson EditorCommandService::forkRenderPipeline(const Json &params) {
     return render_config_editor_->forkRenderPipeline(params);
 }
 
+OrderedJson EditorCommandService::editPresetPass(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editPresetPass(params);
+}
+
 OrderedJson EditorCommandService::getRayCallableRecords(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getRayCallableRecords(params);
@@ -2284,6 +2289,11 @@ OrderedJson EditorCommandRpcAdapter::editRenderFeatures(
 OrderedJson EditorCommandRpcAdapter::forkRenderPipeline(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("editor RPC adapter is read-only");
     return mutable_service_->forkRenderPipeline(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editPresetPass(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->editPresetPass(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getRayCallableRecords(const Json &params) const {

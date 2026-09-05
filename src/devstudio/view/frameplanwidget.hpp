@@ -9,6 +9,7 @@
 #include <memory>
 
 class QByteArray;
+class QString;
 
 namespace PelicanStudio {
 
@@ -35,6 +36,8 @@ class FramePlanWidget final : public QWidget {
     // source_open_ref remains a portable logical reference on the wire. The
     // widget materializes it with the same pelican_project resolver only when
     // the user presses Open.
+    void refresh();
+    void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     void setProjectRoot(const std::filesystem::path &project_root);
     void setShaderSourceOpenAction(ShaderSourceOpenAction action);
 

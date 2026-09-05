@@ -20,6 +20,18 @@ namespace {
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
+OrderedJson *findPresetFullscreenPass(OrderedJson &preset, const std::string &graph_name,
+                                      const std::string &pass_name) {
+    for (auto &graph : preset.at("config").at("rendering_passes")) {
+        if (graph.at("name") != graph_name) continue;
+        for (auto &pass : graph.at("passes")) {
+            if (pass.value("name", std::string{}) == pass_name &&
+                pass.value("type", std::string{}) == "fullscreen") return &pass;
+        }
+    }
+    return nullptr;
+}
+
 void requireObject(const Json &params, std::string_view method) {
     if (!params.is_object()) {
         throw std::invalid_argument(std::string{method} +
@@ -699,6 +711,12 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         dependencies_.resolve_authoring_context(currentDocumentSet());
     const auto runtime = dependencies_.runtime_snapshot();
 
+    std::optional<OrderedJson> editable_preset;
+    if (resolved.pipeline_preset && resolved.pipeline_preset_bytes &&
+        resolved.pipeline_preset->reference.starts_with("project://")) {
+        editable_preset = OrderedJson::parse(*resolved.pipeline_preset_bytes);
+    }
+
     std::unordered_map<std::string, const RenderPassProvenance *>
         provenance;
     for (const auto &entry : resolved.pass_provenance) {
@@ -735,6 +753,11 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
                 {"declaration_index", index},
                 {"declaration", pass},
             };
+            auto *preset_pass = editable_preset
+                ? findPresetFullscreenPass(*editable_preset, graph.at("name").get<std::string>(), name)
+                : nullptr;
+            encoded["editable_preset_pass"] = preset_pass != nullptr;
+            if (preset_pass) encoded["preset_declaration"] = *preset_pass;
             const auto source = provenance.find(name);
             if (source != provenance.end()) {
                 encoded["provenance"] = {
@@ -870,6 +893,48 @@ OrderedJson RenderConfigEditorService::forkRenderPipeline(const Json &params) {
             }, documents, preset_digest);
         if (result.at("status") == "accepted") result["preset_reference"] = destination;
         return result;
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
+}
+
+OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
+    constexpr auto method = "edit_preset_pass";
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto preset_digest = requireString(params, "base_preset_digest", method);
+    const auto graph = requireString(params, "graph", method);
+    const auto name = requireString(params, "pass_name", method);
+    if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(preset_digest))
+        throw std::invalid_argument("edit_preset_pass requires 64 lowercase hex source digests");
+    for (const auto *key : {"input", "output", "shader"}) {
+        if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
+    }
+    if (!dependencies_.resolve_authoring_context || !dependencies_.normalize_reference || !dependencies_.resolve_document_path)
+        return rejection("method_unavailable", "edit_preset_pass requires the project document resolver");
+    try {
+        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        if (!current.pipeline_preset || !current.pipeline_preset_bytes ||
+            !current.pipeline_preset->reference.starts_with("project://"))
+            return rejection("project_preset_required", "Fork the selected preset into the project before editing its passes");
+        if (renderConfigSourceDigest(*current.pipeline_preset_bytes) != preset_digest)
+            return rejection("external_modification", "The selected preset changed since it was read");
+        auto preset = OrderedJson::parse(*current.pipeline_preset_bytes);
+        auto *pass = findPresetFullscreenPass(preset, graph, name);
+        if (!pass) return rejection("preset_pass_not_editable", "The selected node is not a fullscreen pass in the project preset");
+        for (const auto *key : {"input", "output", "shader"}) (*pass)[key] = params.at(key);
+        const auto &reference = current.pipeline_preset->reference;
+        const std::array documents{RenderConfigCandidateDocument{
+            .reference = reference,
+            .normalized_reference = dependencies_.normalize_reference(reference),
+            .path = dependencies_.resolve_document_path(reference),
+            .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present, preset_digest},
+            .bytes = preset.dump(2),
+        }};
+        return queueRootEdit(base_digest, method,
+            [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; },
+            documents, preset_digest);
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what());
     }
@@ -1422,7 +1487,9 @@ void RenderConfigEditorService::commitPending() noexcept {
                 continue;
             }
 
-            if (ticket.candidate.sourceDigest() ==
+            // A preset edit can change another document while the root stays
+            // byte-identical. It must still compile, check its CAS and publish.
+            if (!ticket.base_preset_digest && ticket.candidate.sourceDigest() ==
                 document_.sourceDigest()) {
                 const auto runtime =
                     dependencies_.runtime_snapshot();
@@ -1452,7 +1519,7 @@ void RenderConfigEditorService::commitPending() noexcept {
                     try {
                         const auto source = resolve(baseline);
                         if (!source.pipeline_preset_bytes || renderConfigSourceDigest(*source.pipeline_preset_bytes) != expected)
-                            throw RenderConfigExternalModification("The source preset changed before the fork was saved");
+                            throw RenderConfigExternalModification("The source preset changed before the edit was saved");
                     } catch (const std::exception &error) {
                         throw RenderConfigExternalModification(error.what());
                     }

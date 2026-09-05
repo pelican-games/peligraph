@@ -403,6 +403,7 @@ struct FramePlanWidget::Impl {
     std::optional<FramePlanModel> model;
     std::optional<Pelican::ProjectPathResolver> project_resolver;
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
+    std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     qint64 pending_request = 0;
     qint64 pending_gpu_timing_request = 0;
 
@@ -460,6 +461,14 @@ struct FramePlanWidget::Impl {
         zoom_status->setObjectName(
             QStringLiteral("pelican.framePlanZoomStatus"));
         toolbar->addWidget(zoom_status);
+        auto *edit_pass = new QPushButton(owner.tr("Edit preset pass..."), &owner);
+        edit_pass->setObjectName(QStringLiteral("pelican.framePlanEditPresetPass"));
+        toolbar->addWidget(edit_pass);
+        QObject::connect(edit_pass, &QPushButton::clicked, &owner, [this] {
+            const auto &selected = logical_scene->selectedNode();
+            if (selected && preset_pass_edit_action)
+                preset_pass_edit_action(QString::fromStdString(selected->graph), QString::fromStdString(selected->name));
+        });
         layout->addLayout(toolbar);
 
         status = new QLabel(&owner);
@@ -1630,6 +1639,12 @@ void FramePlanWidget::setProjectRoot(
     Pelican::ProjectPathResolver resolver;
     resolver.setup(project_root, false, parsed.envelope);
     impl_->project_resolver = std::move(resolver);
+}
+
+void FramePlanWidget::refresh() { impl_->requestRefresh(); }
+
+void FramePlanWidget::setPresetPassEditAction(std::function<void(const QString &, const QString &)> action) {
+    impl_->preset_pass_edit_action = std::move(action);
 }
 
 void FramePlanWidget::setShaderSourceOpenAction(

@@ -31,6 +31,7 @@ struct RenderPassAuthoringCapability {
         addAuthoredPass;
     std::function<qint64(const QJsonObject &params, QString *error)>
         removeAuthoredPass;
+    std::function<qint64(const QJsonObject &params, QString *error)> editPresetPass;
     std::function<qint64(const QString &ticket, QString *error)>
         requestEditResult;
     std::function<void(QObject *context, ResultHandler handler)> result;

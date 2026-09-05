@@ -5732,6 +5732,73 @@ TEST_CASE("WP382d procedural editor lifecycle publishes and rolls back AABB stat
 
 namespace Pelican {
 #if PELICAN_WITH_RPC && PELICAN_RUNTIME_SHADER_COMPILER
+TEST_CASE("RT7 project preset pass shader edits publish to the production renderer",
+          "[rt7][preset-pass-edit][production][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"rt7_preset_edit"};
+    writeWp374aProject(project.path, std::nullopt, false, false, false);
+    for (const auto &[name, color] : std::array{
+             std::pair{"red", "1,0,0,1"}, std::pair{"green", "0,1,0,1"}}) {
+        writeWp374aText(project.path / "shaders" / (std::string{name} + ".frag"),
+            std::string{"#version 450\nlayout(location=0) out vec4 color;\nvoid main(){color=vec4("} + color + ");}\n");
+    }
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    (void)configureWp374aRuntime(project.path);
+    TestSupport::requireVulkanDevice("RT7 preset pass editing");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    test_support::loadScene(GET_MODULE(SceneLoader), "main");
+    const auto render = [] {
+        GET_MODULE(ECSCore).update();
+        GET_MODULE(ECSCore).update();
+        GET_MODULE(Renderer).render();
+        GET_MODULE(VulkanManageCore).waitIdle();
+    };
+    render();
+    auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 91000;
+    auto context = runWp374aRpcBytes(*service, rpc_id++, "get_render_authoring_context", Json::object());
+    const auto publish = [&](const Json &accepted) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        render();
+        const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+    };
+    publish(runWp374aRpcBytes(*service, rpc_id++, "fork_render_pipeline", {
+        {"base_source_digest", context.at("source_digest").at("hex")},
+        {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+        {"destination_reference", "project://pipelines/local.json"}}));
+    const auto root_bytes = readWp374aText(project.path / "hybrid.json");
+    for (const auto *color : {"red", "green"}) {
+        context = runWp374aRpcBytes(*service, rpc_id++, "get_render_authoring_context", Json::object());
+        const auto &passes = context.at("graphs").at(0).at("passes");
+        const auto selected = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+            return pass.at("name") == "scene_present";
+        });
+        REQUIRE(selected != passes.end());
+        publish(runWp374aRpcBytes(*service, rpc_id++, "edit_preset_pass", {
+            {"base_source_digest", context.at("source_digest").at("hex")},
+            {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+            {"graph", "main_render"}, {"pass_name", "scene_present"}, {"input", Json::array()},
+            {"output", selected->at("preset_declaration").at("output")},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", std::string{"project://shaders/"} + color}}}}));
+        const auto pixels = GET_MODULE(Renderer).readRenderTargetForTesting("display", ImageSubresourceRange{});
+        REQUIRE(pixels.format == vk::Format::eB8G8R8A8Srgb);
+        REQUIRE(pixels.bytes.size() >= 4);
+        CHECK((pixels.bytes[1] > 240) == (std::string_view{color} == "green"));
+        CHECK(readWp374aText(project.path / "hybrid.json") == root_bytes);
+    }
+    service.reset();
+    service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+    const auto reopened = runWp374aRpcBytes(*service, rpc_id++, "get_render_authoring_context", Json::object());
+    CHECK(reopened.at("pipeline_preset").at("reference") == "project://pipelines/local.json");
+    render();
+    CHECK(GET_MODULE(Renderer).readRenderTargetForTesting("display", ImageSubresourceRange{}).bytes[1] > 240);
+}
+
 TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implementation",
           "[rt4][ray-tracing][production][gpu]") {
     const bool dynamic_records = GENERATE(false, true);

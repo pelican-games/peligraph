@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、component追加):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。preset forkはa4d4404eに統合済み。Inspectorにcomponent候補取得・追加を接続。次はforkしたproject presetの既存fullscreen passの入出力・shader編集、一般graphのnode移動・edge編集、必須asset入力・behavior追加など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT7 preset pass編集):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。Inspectorのcomponent候補取得・追加はba494c04に統合済み。project presetの既存fullscreen passの入出力・shader編集をRPC/Frame Plan選択から接続し、実GPU反映を確認。次はAS/compute/RTを含む一般node編集・配置、resource_ports編集、必須asset入力・behavior追加など。学習サンプルは後回し。
+
+**RT7 project preset pass編集 (2026-09-06):**
+- `edit_preset_pass`はproject所有presetのraw graph/nameでfullscreen passを解決し、input/output/shaderのみ変更する。その他の描画設定は保持。root bytesが同じでもpreset変更をcompiler・CAS・保存・publicationへ通すようno-change判定を修正。
+- contextにeditable_preset_pass/preset_declarationを追加。Frame Plan選択から既存fullscreenフォームへ接続し、名前/配置/raster stateを固定して保存する。保存成功時にcontextと両Frame Planを更新。source再取得時はdigestと元宣言・フォームを一緒に更新し、resource構成変更時に空フォームが残る問題も修正。
+- CPU27/27（730 assertions、`build/.codex_bg/rt7presetedit-cpu.log`）。本番RPC/実GPU1/1（18 assertions、`rt7presetedit-gpu-final.log`）でengine presetのfork、赤/緑fragment差し替え、display readbackの変化、root保持、service再生成後の設定保持を確認。初回GPU比較はdisplayのsRGB形式をUNORMと誤認したテスト側を修正。
+- Studioは既存21/21と新規1/1（`rt7presetedit-studio-ctest.log`、`rt7presetedit-studio-newtest.log`）。新fixtureの括弧/widget名/初回取得前の空配列参照を修正し、停止した該当test processだけを回収した。Player buildは`rt7presetedit-build.log`、最終Studioは`rt7presetedit-studio-final-build.log`。新規testの最終buildは`rt7presetedit-studio-testbuild.log`。
+- doclink check3869件成功、auditの既存4件は不変。手動GUI通し操作は未確認。object形式のdepth attachmentのフォーム、resource_ports、AS/compute/RT nodeの一般編集、node移動は残る。
 
 **Inspector component追加 (2026-09-06):**
 - `get_component_add_candidates`は既存object selectorから未装着codecを列挙し、最小宣言を既存decoder/encoderで初期component JSONへ変換する。runtime constructorや別default生成器は使用しない。必須入力不足は理由付きで返し、behaviorは別registryのため今回の候補外。

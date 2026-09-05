@@ -553,6 +553,13 @@ rootの`pipeline.preset`を同じ保存transactionで切り替える。
 コピー先は未作成の`project://`ファイルに限り、保存失敗時には新規ファイルとroot変更を戻す。
 コピーしたpresetは通常のproject資産として残る。任意のnode移動・edge編集はまだ含まない。
 
+project所有presetの既存fullscreen passは`edit_preset_pass`で`input`・`output`・`shader`を編集する。
+対象は合成前presetのgraph/nameで解決し、その他のpass設定は保持する。
+root bytesが変化しない場合もpresetの置換・compiler検査・publicationを実行する。
+rootとpresetのdigestを照合し、保存失敗は既存複数文書transactionで復元する。
+StudioはFrame Planで選択したnodeから既存fullscreenフォームへ接続する。
+contextの`preset_declaration`をフォームの値に使い、合成後の値を元設定へ逆流させない。
+
 ## 9. エラー文言・受け入れゲート
 
 v2 §7 に同じ + §5 の matrix + 「off/on は同一テスト内」+ sentinel 表。

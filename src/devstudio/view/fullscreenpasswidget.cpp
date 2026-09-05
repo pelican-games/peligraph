@@ -1,3 +1,4 @@
+#include <set>
 #include "fullscreenpasswidget.hpp"
 
 #include "../model/frameplanmodel.hpp"
@@ -120,6 +121,7 @@ struct FullscreenPassWidget::Impl {
 
     FullscreenPassWidget &owner;
     FramePlanReadCapability frame_plan;
+    std::function<void()> committed_action;
     RenderPassAuthoringCapability authoring;
     Pelican::PassShapePolicy shape_policy;
     QPushButton *refresh = nullptr;
@@ -173,7 +175,12 @@ struct FullscreenPassWidget::Impl {
         std::string insert;
     };
     std::map<std::string, std::vector<Anchor>, std::less<>> anchors;
-    std::string source_digest;
+    std::string source_digest, preset_digest;
+    std::map<std::pair<std::string, std::string>, Json> preset_passes;
+    std::optional<std::pair<std::string, std::string>> editing_preset_pass;
+    bool load_edit_requested = false;
+    Json original_preset_pass;
+
     bool authoring_available = false;
     bool authoring_rpc_available = false;
     bool refresh_available = false;
@@ -184,6 +191,7 @@ struct FullscreenPassWidget::Impl {
         context,
         add,
         remove,
+        edit,
         result,
     };
     AuthoringRequest pending_authoring_kind = AuthoringRequest::none;
@@ -473,6 +481,15 @@ struct FullscreenPassWidget::Impl {
             "Calls remove_authored_pass. Only engine-reported managed "
             "fragments are offered here."));
         authoring_controls->addWidget(save);
+        auto *new_pass = new QPushButton(owner.tr("New pass"), &owner);
+        authoring_controls->addWidget(new_pass);
+        QObject::connect(new_pass, &QPushButton::clicked, &owner, [this] {
+            if (pending_authoring_request || !pending_ticket.isEmpty()) return;
+            editing_preset_pass.reset(); load_edit_requested = false;
+            name->setReadOnly(false); position->setEnabled(true); raster_state->setEnabled(true);
+            save->setText(owner.tr("Save authored pass"));
+            clearDraft(); updateDraft();
+        });
         authoring_controls->addWidget(remove_fragment, 1);
         authoring_controls->addWidget(remove_authored);
         layout->addLayout(authoring_controls);
@@ -913,8 +930,8 @@ struct FullscreenPassWidget::Impl {
             const auto &authored = authored_passes.at(plan->graph);
             const bool authored_collision =
                 authored.contains(name->text().toStdString());
-            const bool collision = authored_collision ||
-                                   runtime_collision != plan->nodes.end();
+            const bool collision = !editing_preset_pass && (authored_collision ||
+                                   runtime_collision != plan->nodes.end());
             setAxis(*name_collision, owner.tr("Same-graph name collision"),
                     collision ? "invalid" : "valid",
                     !collision
@@ -1037,7 +1054,9 @@ struct FullscreenPassWidget::Impl {
                           pending_ticket.isEmpty();
         save->setEnabled(
             authoring_rpc_available && authoring_available && idle &&
-            source_digest.size() == 64 && selected_anchor &&
+            source_digest.size() == 64 &&
+            (editing_preset_pass ? bool(authoring.editPresetPass) && preset_digest.size() == 64 && !load_edit_requested &&
+                preset_passes.contains(*editing_preset_pass) : selected_anchor) &&
             (validation == QStringLiteral("valid") ||
              validation == QStringLiteral("partial")));
         remove_authored->setEnabled(
@@ -1095,6 +1114,7 @@ struct FullscreenPassWidget::Impl {
 
     void requestAddAuthoredPass() {
         if (!save->isEnabled() || !plan) return;
+        if (editing_preset_pass) { requestEditPresetPass(); return; }
         const auto anchor = selectedAnchor();
         if (!anchor) {
             authoringError(
@@ -1131,29 +1151,116 @@ struct FullscreenPassWidget::Impl {
         updateAuthoringButtons();
     }
 
-    void requestRemoveAuthoredPass() {
-        if (!remove_authored->isEnabled()) return;
-        const auto reference =
-            remove_fragment->currentData().toString();
-        if (reference.isEmpty()) return;
-        const QJsonObject params{
-            {QStringLiteral("base_source_digest"),
-             QString::fromStdString(source_digest)},
-            {QStringLiteral("fragment_reference"), reference},
-        };
+    void requestEditPresetPass() {
+      if (!authoring.editPresetPass || !editing_preset_pass)
+        return;
+      try {
+        auto draft = draftJson();
+        auto output = original_preset_pass.value("output", Json::object());
+        output["color"] = draft.at("output").at("color");
+        output["depth"] = draft.at("output").at("depth");
+        auto shader = original_preset_pass.value("shader", Json::object());
+        shader["vertex"] = draft.at("shader").at("vertex");
+        shader["fragment"] = draft.at("shader").at("fragment");
+        Json params{{"base_source_digest", source_digest},
+                    {"base_preset_digest", preset_digest},
+                    {"graph", editing_preset_pass->first},
+                    {"pass_name", editing_preset_pass->second},
+                    {"input", draft.at("input")},
+                    {"output", output},
+                    {"shader", shader}};
         QString error;
-        pending_authoring_kind = AuthoringRequest::remove;
-        pending_authoring_request =
-            authoring.removeAuthoredPass(params, &error);
-        if (pending_authoring_request == 0) {
-            pending_authoring_kind = AuthoringRequest::none;
-            authoringError(error);
-            return;
-        }
-        authoring_status->setStyleSheet({});
-        authoring_status->setText(
-            owner.tr("Submitting the managed-fragment removal..."));
+        pending_authoring_kind = AuthoringRequest::edit;
+        pending_authoring_request = authoring.editPresetPass(
+            QJsonDocument::fromJson(QByteArray::fromStdString(params.dump()))
+                .object(),
+            &error);
+        if (!pending_authoring_request)
+          authoringError(error);
         updateAuthoringButtons();
+      } catch (const std::exception &error) {
+        authoringError(QString::fromUtf8(error.what()));
+      }
+    }
+
+    void loadPresetPass() {
+      if (!load_edit_requested || !editing_preset_pass || !plan ||
+          !authoring_available || pending_request != 0)
+        return;
+      if (plan->graph != editing_preset_pass->first) {
+        authoringError(owner.tr("The selected graph is no longer active."));
+        return;
+      }
+      if (!preset_passes.contains(*editing_preset_pass)) {
+        authoringError(owner.tr(
+            "This node is not a fullscreen pass owned by the project preset."));
+        return;
+      }
+      const auto &declaration = preset_passes.at(*editing_preset_pass);
+      const auto output = declaration.value("output", Json::object());
+      if (output.contains("depth") && !output.at("depth").is_null() &&
+          !output.at("depth").is_string()) {
+        authoringError(
+            owner.tr("This depth attachment requires JSON editing."));
+        return;
+      }
+      clearDraft();
+      updating = true;
+      original_preset_pass = declaration;
+      name->setText(text(editing_preset_pass->second));
+      name->setReadOnly(true);
+      position->setEnabled(false);
+      raster_state->setEnabled(false);
+      vertex_shader->setText(
+          text(declaration.at("shader").at("vertex").get<std::string>()));
+      fragment_shader->setText(
+          text(declaration.at("shader").at("fragment").get<std::string>()));
+      for (const auto &input : declaration.value("input", Json::array()))
+        inputs->addItem(text(input.get<std::string>()));
+      const auto color = output.value("color", Json::array());
+      const auto entries = color.is_array() ? color : Json::array({color});
+      for (const auto &entry : entries)
+        colors->addItem(text(entry.is_string()
+                                 ? entry.get<std::string>()
+                                 : entry.at("target").get<std::string>()));
+      if (std::any_of(entries.begin(), entries.end(),
+                      [](const auto &entry) { return entry.is_object(); }))
+        color_attachment_references->setPlainText(text(color.dump()));
+      if (output.contains("depth") && output.at("depth").is_string()) {
+        const auto target = text(output.at("depth").get<std::string>());
+        if (depth->findText(target) < 0)
+          depth->addItem(target);
+        depth->setCurrentText(target);
+      }
+      load_edit_requested = false;
+      updating = false;
+      save->setText(owner.tr("Save preset pass"));
+      updateDraft();
+    }
+
+    void requestRemoveAuthoredPass() {
+      if (!remove_authored->isEnabled())
+        return;
+      const auto reference = remove_fragment->currentData().toString();
+      if (reference.isEmpty())
+        return;
+      const QJsonObject params{
+          {QStringLiteral("base_source_digest"),
+           QString::fromStdString(source_digest)},
+          {QStringLiteral("fragment_reference"), reference},
+      };
+      QString error;
+      pending_authoring_kind = AuthoringRequest::remove;
+      pending_authoring_request = authoring.removeAuthoredPass(params, &error);
+      if (pending_authoring_request == 0) {
+        pending_authoring_kind = AuthoringRequest::none;
+        authoringError(error);
+        return;
+      }
+      authoring_status->setStyleSheet({});
+      authoring_status->setText(
+          owner.tr("Submitting the managed-fragment removal..."));
+      updateAuthoringButtons();
     }
 
     void requestTicketResult() {
@@ -1193,6 +1300,8 @@ struct FullscreenPassWidget::Impl {
                 "render authoring context digest must contain 64 hex characters");
         }
 
+        preset_passes.clear();
+        preset_digest = context.value("pipeline_preset", Json::object()).value("source_digest", Json::object()).value("hex", std::string{});
         decltype(authored_passes) next_passes;
         decltype(authored_pass_counts) next_counts;
         decltype(anchors) next_anchors;
@@ -1228,6 +1337,7 @@ struct FullscreenPassWidget::Impl {
                 }
                 const auto pass_name =
                     pass_value.at("name").get<std::string>();
+                if (pass_value.value("editable_preset_pass", false)) preset_passes.emplace(std::pair{graph_name, pass_name}, pass_value.at("preset_declaration"));
                 const Json &declaration =
                     pass_value.contains("declaration")
                         ? pass_value.at("declaration")
@@ -1316,6 +1426,8 @@ struct FullscreenPassWidget::Impl {
                       .arg(provenance_summary.join(
                           QStringLiteral(", "))));
         configurePosition();
+        if (editing_preset_pass) load_edit_requested = true;
+        loadPresetPass();
         updateDraft();
     }
 
@@ -1338,7 +1450,8 @@ struct FullscreenPassWidget::Impl {
                     "render authoring response must be an object");
             }
             const auto status = response.value("status", std::string{});
-            if (completed_kind == AuthoringRequest::add ||
+            if (completed_kind == AuthoringRequest::edit ||
+                completed_kind == AuthoringRequest::add ||
                 completed_kind == AuthoringRequest::remove) {
                 if (status != "accepted" ||
                     !response.contains("ticket") ||
@@ -1376,8 +1489,10 @@ struct FullscreenPassWidget::Impl {
                     owner.tr("Authored pass transaction committed and "
                              "published."));
                 updateAuthoringButtons();
+                if (editing_preset_pass) { load_edit_requested = true; authoring_available = false; }
                 requestAuthoringContext();
                 requestRefresh();
+                if (committed_action) committed_action();
             }
         } catch (const std::exception &error) {
             pending_ticket.clear();
@@ -1561,6 +1676,7 @@ struct FullscreenPassWidget::Impl {
             resource_kinds = std::move(next_kinds);
             if (changed) {
                 clearDraft();
+                if (editing_preset_pass) load_edit_requested = true;
             }
             populateRoleCandidates();
             if (!changed && !previous_depth.isEmpty()) {
@@ -1625,6 +1741,7 @@ struct FullscreenPassWidget::Impl {
         }
         pending_request = 0;
         consumeResult(result_json);
+        loadPresetPass();
     }
 
     void receiveRefreshFailure(qint64 request_id, const QString &message) {
@@ -1785,6 +1902,21 @@ FullscreenPassWidget::FullscreenPassWidget(
 }
 
 FullscreenPassWidget::~FullscreenPassWidget() = default;
+
+void FullscreenPassWidget::setCommittedAction(std::function<void()> action) {
+    impl_->committed_action = std::move(action);
+}
+
+void FullscreenPassWidget::editPresetPass(const QString &graph, const QString &pass_name) {
+    if (impl_->pending_authoring_request || !impl_->pending_ticket.isEmpty()) {
+        impl_->authoringError(tr("Finish the current request before selecting a pass.")); return;
+    }
+    impl_->editing_preset_pass = std::pair{graph.toStdString(), pass_name.toStdString()};
+    impl_->load_edit_requested = true;
+    impl_->authoring_available = false;
+    impl_->requestAuthoringContext();
+    impl_->requestRefresh();
+}
 
 void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {
     impl_->pending_request = 0;
