@@ -1,5 +1,7 @@
 # 実装指示書(コーディングエージェント向け)
 
+> **2026-09-05 の製品方針:** v1 は RT 機能を十分に完成させ、最新の graphics pipeline をノードで操作・観測・学習できるものとする。RT3〜RT7 を小さなゲームの最小要件だけで削らない。[v1 の完成条件・棚卸し・開発順序](v1_development_plan.md)を参照。作業再開は末尾「未了項目と再開順」の **2026-09-05 現況**から読む。
+
 > 完了済み WP の逐語記録は [implementation_archive.md](implementation_archive.md) を参照。本書は未完了 WP と共通・運用規則だけを扱う。
 
 対象読者: 実装を担当するコーディングエージェント。各 Work Package (WP) は独立に依頼できる単位として書かれている。
@@ -22665,6 +22667,12 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 3. `WP374a real RPC bytes drive add set save fresh reload remove into committed TLAS rows`([headless_render_test.cpp:14437](../test/headless_render_test.cpp#L14437)): `active_blas_inputs.size() == 1` が偽 → 再利用 / 退役の混線で BLAS 入力が二重に残る
 4. `WP367 production anyhit A B proves integer predicates occurrence wire SBT and reload`([raytracing_rt3_1_production_test.cpp:568](../test/raytracing_rt3_1_production_test.cpp#L568)): row の `instance_mask` / `instance_flags` / `instance_custom_index` が期待と違う(4 row とも)→ 1 と同根(`pelican_ray_instance` の変更が row に届いていない)
 
+**2026-09-05 原因・着地の追記:** 上記は起票時の疑い。引き継ぎの原因調査では (2) の pool 破棄順は主因でなく、DeviceLost 後の二次症状だった。
+実際には同じ handle の RT pipeline 内容が hot reload で変わったときも旧 SBT を再利用していた。
+`6a881375` では instance/geometry flags 等と material generation に加え **RT pipeline 内容世代**を再利用条件へ加え、active diagnostics の move も修正した。
+今回 `renderer.cpp` の pipeline generation の輸送と `tryReuseFrame()` の比較を確認した。
+統合ログで上記 4 件は全て Passed。全数は途中異常終了のため未完了であり、完了記録・rev384 は末尾の再開順に従って閉じる。
+
 #### 直すこと
 
 1. **再利用の条件**(決定 13): 再利用は「row digest 不変」だけでは足りない。digest に **instance mask / flags / custom index / geometry flags / material generation / descriptor ABI** を含めるか、それらの変更で再利用を諦める述語を 1 箇所に置く。受け入れ: mask を A → B → A と変えた 3 frame で GPU の pixel が追随し、`tlas_build_count` が「変わった frame だけ」進む(WP374a の既存 test がそのまま受け入れ)。digest から mask を落とす変異で赤
@@ -23157,7 +23165,31 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 ##### 段取り(v3)
 
 仕様レビュー打ち切り。WP386a を sol(max)で投入。コードレビューで残余(特に決定 20 の root 型と決定 23 の述語集約)を攻める。
-### 未了項目と再開順(2026-09-02 夜。codex は使用上限で停止 → 同夜に利用者がリセットして再開。**以後 fast(service_tier=priority)は使わない**)
+### 未了項目と再開順
+
+#### 2026-09-05 現況(下の再開履歴より優先)
+
+作業ブランチは `codex/render-target-runtime-slice`、確認時 HEAD は `c89d4f70`。
+引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。
+Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
+`<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
+
+1. **WP384-fix 全数確認 → 記録 → rev384。** `6a881375` に squash 済み。
+   `<作業ディレクトリ>/int_wp384fix/w_ctest.log` は 52 件失敗 0、うち sequential XR の 1 件は Skipped(52 件全て実行成功ではない)。
+   統合 `ctest.log` 冒頭で修正対象 4 件(WP374a F G F / chairs / RPC rows、WP367 production anyhit)の Passed を確認。
+   ただし同ログは 1537/1658 後で途切れ、1490 件目から `0xc0000142` が連続。`done` と終了集計は無く、確認時に ctest/MSBuild process は見つからない。
+   **全数成功は未確認。** 最初の異常終了試験 `GPU timing on and off preserve bytes and publish ordered node identity` を現在の build で単独・GPU 直列再実行すると 1/1 Passed(4.35 秒)。連続失敗の原因は未特定で、WP384-fix の退行とも環境起因とも断定しない。
+   次は実行環境・既知失敗を確認して統合全数を完走させ、対象 4 件の成功と全数の残結果を分けて完了記録を書く。対象 4 件だけを同じ目的で反復しない。
+2. **WP382c 着地 → 記録 → rev382c。** worktree `<作業ディレクトリ>/wp382c`、HEAD `6e1fa40c` を確認。引き継ぎでは受け入れ・変異済み、今回は再実測していない。統合手順で現ブランチを取り込み、RT family を含む W1 を通す。`reloadAsset` の noexcept/OOM 懸念は記録と実装修正を混同しない。
+3. **WP386a 統合準備 → 変異 → 着地 → rev386a。** worktree `<作業ディレクトリ>/wp386a`、HEAD `60118cb6` を確認。renderer/AS の WP384-fix と procedural root/kind の両方を残して merge する。
+   **今回コードで確認:** `canonicalTransformIdentity()` は float bits を直接出力し、`-0.0` 正規化はまだ無い。決定 17 の範囲で実装・受け入れが必要。未統合状態で済と記録しない。
+4. **WP382b-fix。** `<作業ディレクトリ>/wp382bfix`、HEAD `e30a41ed`。3 ファイル +418/-64 行の未 commit 差分を確認。未検証の途中実装として diff と最終受け入れから再開する。旧 CLI の再開プロンプトは `<作業ディレクトリ>/wp382bfix2.txt`。今回 CLI の再起動・更新はしていない。
+5. **WP382d。** 382c と 382b-fix を踏まえて overrides / presence / participant / inventory を閉じる。仕様レビューを再開しない。
+6. **WP386b/c とその後。** 386a の後続として進め、RT4/RT5 → RT6 → RT7 と CARRIER-STUDIO の対応を [v1 棚卸し](v1_development_plan.md)から具体化する。観測と最小 GUI 編集を engine 完成後まで一括延期しない。
+
+既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
+
+#### 2026-09-02〜04 の再開履歴(現況は上記)
 **WP380b の入力(rev380a、2026-09-03)**: 起票時に次を範囲へ入れる。(a) executor の phase 順序を v3 決定(commit_metadata → retire → flush → finish)に合わせ、旧 behavior の `onDestroy` が旧 entity を見られることを本番 root で観測する / (b) 失敗 candidate の解放は処理ごとに名前付きで失敗を数え、二次失敗を握り潰さない / (c) 5 root の受け入れは本番 root(startup / RPC / pending / import v1 / v2)を実際に通す / (d) manifest の mutation ID を executor の call site と 1:1 に照合する契約テスト、trigger pair を持つ fixture / (e) FaultInjector の setter を test-only build に閉じる / (f) fix の回帰テストを CPU gate と `SKIP_DEVSTUDIO=ON` でも走る形に分割((a)(b) 同一 TEST_CASE の分割と併せて)
 
 2026-09-02 深夜 再開: `rev377a` `rev375a` を再投入、**WP379 と WP380a を並列投入**(worktree `<作業ディレクトリ>/wp379` / `<作業ディレクトリ>/wp380a`)。
