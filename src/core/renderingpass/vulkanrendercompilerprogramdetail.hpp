@@ -15,7 +15,8 @@ void insertSceneAccelerationStructureNodes(
 // Applies runtime-name ordering as additional dependencies without changing dataflow inference.
 void applyFrameNodeOrder(
     std::vector<FrameGraphDefinition> &graphs,
-    const nlohmann::json &order);
+    const nlohmann::json &order,
+    bool require_all_graphs = true);
 
 // Internal CPU test seam for XR compute namespacing. Keeping this out of the
 // package API lets the non-GPU provenance regression exercise the production

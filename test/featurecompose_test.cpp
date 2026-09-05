@@ -692,6 +692,7 @@ TEST_CASE(
         flat.synchronized_provenance.at("nodes"),
         "compute_provenance_task");
     REQUIRE(flat_compute != nullptr);
+    REQUIRE(flat_compute->at("authored_name") == "compute_provenance_task");
     REQUIRE(
         flat_compute->at("source") ==
         "feature:compute_provenance_probe");
@@ -719,6 +720,7 @@ TEST_CASE(
         xr.synchronized_provenance.at("nodes"),
         "compute_provenance_task#xr");
     REQUIRE(xr_compute != nullptr);
+    REQUIRE(xr_compute->at("authored_name") == "compute_provenance_task");
     REQUIRE(
         xr_compute->at("source") ==
         "feature:compute_provenance_probe");

@@ -950,6 +950,8 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
                 entry["read_only_reason"] = error.what();
             }
         }
+        // Qt's JSON transport cannot represent every uint64 task value as a number.
+        entry["declaration_json"] = entry.at("declaration").dump(2);
         tasks.push_back(std::move(entry));
     }
     return {{"source_digest", digestJson(document_.sourceDigest())}, {"tasks", std::move(tasks)}};

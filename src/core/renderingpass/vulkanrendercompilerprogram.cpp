@@ -309,15 +309,18 @@ void detail::insertSceneAccelerationStructureNodes(
 
 void detail::applyFrameNodeOrder(
     std::vector<FrameGraphDefinition> &graphs,
-    const nlohmann::json &order) {
+    const nlohmann::json &order,
+    bool require_all_graphs) {
     if (!order.is_object())
         throw std::runtime_error("frame_node_order must be an object");
     for (const auto &[graph_name, names] : order.items()) {
         const auto graph = std::find_if(graphs.begin(), graphs.end(), [&](const auto &entry) {
             return entry.name == graph_name;
         });
-        if (graph == graphs.end())
-            throw std::runtime_error("frame_node_order unknown graph: " + graph_name);
+        if (graph == graphs.end()) {
+            if (require_all_graphs)
+                throw std::runtime_error("frame_node_order unknown graph: " + graph_name);
+        }
         if (!names.is_array())
             throw std::runtime_error("frame_node_order graph must contain an array: " + graph_name);
         std::unordered_set<std::string> seen;
@@ -328,6 +331,7 @@ void detail::applyFrameNodeOrder(
             const auto &name = value.get_ref<const std::string &>();
             if (!seen.insert(name).second)
                 throw std::runtime_error("frame_node_order duplicate node: " + graph_name + "/" + name);
+            if (graph == graphs.end()) continue;
             const auto node = std::find_if(graph->nodes.begin(), graph->nodes.end(), [&](const auto &entry) {
                 return entry.name == name;
             });
@@ -774,7 +778,8 @@ compileDefaultVulkanVariant(
         logical.compiled_pipeline.scene_acceleration_structures);
     if (const auto order = logical.composed_config.find("frame_node_order");
         order != logical.composed_config.end()) {
-        detail::applyFrameNodeOrder(graph_definitions, *order);
+        // Other variants own their graph keys; validate the complete set below.
+        detail::applyFrameNodeOrder(graph_definitions, *order, false);
     }
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
@@ -912,6 +917,25 @@ class DefaultVulkanRenderCompilerProgram final
             output.variants.push_back(
                 compileDefaultVulkanVariant(
                     input, backend, request));
+        }
+        if (const auto order = input.rendering_config.find("frame_node_order");
+            order != input.rendering_config.end()) {
+            if (!order->is_object())
+                throw std::runtime_error("frame_node_order must be an object");
+            std::unordered_set<std::string> graph_names;
+            std::vector<FrameGraphDefinition> no_graphs;
+            detail::applyFrameNodeOrder(no_graphs, *order, false);
+            for (const auto &variant : output.variants) {
+                for (const auto &[name, plan] : variant.frame_plans)
+                    graph_names.insert(name);
+                if (variant.frame_plans.empty())
+                    for (const auto &graph : parseFrameGraphDefinitionsFromConfigJson(variant.normalized_config))
+                        graph_names.insert(graph.name);
+            }
+            for (const auto &[name, nodes] : order->items()) {
+                if (!graph_names.contains(name))
+                    throw std::runtime_error("frame_node_order unknown graph: " + name);
+            }
         }
         return output;
     }

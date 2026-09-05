@@ -1971,11 +1971,20 @@ TEST_CASE("Compute task source edits preserve other declarations and reject conf
     const auto &selected = catalog.at("tasks").at(0);
     REQUIRE(selected.at("editable") == true);
     REQUIRE(selected.at("declaration") == task);
+    REQUIRE(Json::parse(selected.at("declaration_json").get<std::string>()) == task);
     Json changed = task;
     changed["dispatch"]["groups"] = {2, 3, 1};
     Json request{{"base_source_digest", catalog.at("source_digest").at("hex")},
                  {"base_task_source_digest", selected.at("source_digest").at("hex")},
                  {"task_name", "editable_compute"}, {"task", changed}};
+    SECTION("authoring text preserves uint64 values across JSON transports") {
+        auto external = feature;
+        constexpr std::uint64_t offset = UINT64_MAX - 3;
+        external["compute_tasks"][0]["dispatch"] = {{"indirect", {{"buffer", "args"}, {"offset", offset}}}};
+        writeBytes(source_path, external.dump(2));
+        const auto exact = service->getComputeTaskAuthoring(Json::object()).at("tasks")[0].at("declaration_json").get<std::string>();
+        REQUIRE(Json::parse(exact).at("dispatch").at("indirect").at("offset").get<std::uint64_t>() == offset);
+    }
     SECTION("save and reopen") {
         const auto accepted = service->editComputeTask(request);
         INFO(accepted.dump());

@@ -915,6 +915,7 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         }
         FramePlanNode node;
         node.name = requireStringField(value, "name", context);
+        node.authored_name = optionalStringField(value, "authored_name", context);
         node.kind = requireStringField(value, "kind", context);
         node.source = optionalStringField(value, "source", context);
         node.provider_feature =

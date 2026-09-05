@@ -1872,6 +1872,8 @@ void synchronizeRenderPipelineProvenance(
                 .source = default_source,
             });
         }
+        if (synchronized_passes.back().authored_name.empty())
+            synchronized_passes.back().authored_name = name;
     };
     if (const auto rendering_passes = config.find("rendering_passes");
         rendering_passes != config.end()) {

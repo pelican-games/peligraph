@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、node順序編集):** behavior追加は7709469bに統合済み。依存を維持する描画node順序編集をRPC/Studioへ接続し、通常RT nodeと名前付きASの順序変更を実GPU確認。次はdispatchフォーム、視覚的なport接続、AS公開境界を越える配置、asset選択フォームなど。学習サンプルは後回し。
+**最新の入口 (2026-09-06、dispatchフォーム):** node順序編集は584f5829に統合済み。TasksのdispatchフォームとFrame Planから元task名への接続を実装。flat/XRの順序指定を相互に誤拒否する問題も修正。次はRT6の複数AABB geometry BLAS、視覚的なport接続、AS公開境界を越える配置、asset選択フォームなど。学習サンプルは後回し。
+
+**RT7 dispatchフォーム・元task名 (2026-09-06):**
+- Tasksにcompute groups/RT rays、画像port由来、indirect buffer+offsetのフォームを追加。Update dispatch JSONで既存草稿のdispatchを更新しApply taskで保存。他task設定と未知fieldを保持し、整数入力と不正JSONを確認する。元宣言は`declaration_json`文字列でQt数値変換を避け、送信時に整数が丸まる草稿は保持して拒否する。
+- compilerのprovenanceに`authored_name`を保持しFrame Planへ公開。StudioのEdit taskは元宣言名を使い、XR suffixの推測や利用者による選び直しを不要にする。
+- node順序指定をvariantごとに適用し、全出力graph集合で未知名を拒否。data-onlyにも構文検査を通す。追加試験のXR raster node名までsuffixを付けた誤認はtest側を修正した。
+- CPU関連の最終結果は`build/.codex_bg/taskforms-final-related.log`、Studio元名model case1/1は`taskforms-model.log`。Player/Studioの最終buildは`taskforms-variants-build.log`、最終test exeは`taskforms-variants-final-build.log`。同じGPU dispatch・保存経路は既存RT6/RT7の確認を引き継ぎ、新フォームの手動GUI通し確認は未実施。
+- doclink check3869件成功、audit既存4件不変。新しいtest targetや配布用ツール、別のdispatch実行系は追加していない。
 
 **RT7 node順序編集 (2026-09-06):**
 - rootの`frame_node_order`にgraph別の実行時node名配列を保存。元node配列やresource依存を変更せず隣接`after`制約を追加する。部分指定・解除に対応し、不明名・重複・依存cycleを既存compilerで拒否する。

@@ -1872,6 +1872,8 @@ nlohmann::json framePlanToJson(
         if (const auto found = pass_provenance.find(node.name);
             found != pass_provenance.end()) {
             const auto &provenance = *found->second;
+            if (!provenance.authored_name.empty())
+                node_json["authored_name"] = provenance.authored_name;
             node_json["source"] =
                 renderPipelineProvenanceSourceName(
                     provenance.source,

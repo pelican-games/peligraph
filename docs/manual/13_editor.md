@@ -251,10 +251,16 @@ Render Featuresの **Tasks...** またはFrame Planの **Edit task...** からco
 別task・他設定は保持し、compilerが受理しない変更や外部変更は適用しません。
 task切替や失敗時には入力を保持し、**Refresh**で破棄・再取得します。保持した入力のdigestも維持するため、
 他の保存が先行した場合は古い入力のまま上書きせず競合になります。
-共有engine文書は読み取り専用です。実行時名と元task名が異なる場合は一覧から元taskを選びます。
+共有engine文書は読み取り専用です。Frame PlanのEdit taskはcompilerが公開する`authored_name`で元taskを選び、XR用の実行時名からも同じ宣言を開きます。
 **New compute / New ray tracing**では名前・既存shader参照・新しい`project://`保存先を設定してtaskを作成します。
 保存先featureとrootへの参照追加は一緒に確定します。shaderファイルやresource自体は自動生成しません。
 **Delete task**は選択した宣言を削除します。featureファイルと他の宣言は残り、依存関係が壊れる削除はcompilerが拒否します。
+
+Tasksのdispatchフォームでは、computeのworkgroup数／RTのray数（X・Y・Z）、画像portからの寸法取得、
+indirect bufferとbyte offsetを設定できます。computeは省略時の1×1×1にも戻せます。
+**Update dispatch JSON**で草稿へ反映し、**Apply task**で保存します。その他のtask設定は保持します。
+画像から寸法を取る場合はresource名ではなくport名を入力します。indirectのoffsetは4byte境界です。
+不正なJSONは修正するまでフォームから上書きしません。StudioのRPCで正確に表せない整数を含む草稿は、丸めて送信せず診断を表示します。
 
 Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並べ、Applyで保存できます。
 データ依存とAS構築の必要順序は維持され、矛盾する並べ替えは拒否されます。

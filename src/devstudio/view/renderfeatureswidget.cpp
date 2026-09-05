@@ -6,6 +6,8 @@
 #include <QDialog>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QFormLayout>
+#include <nlohmann/json.hpp>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QSignalBlocker>
@@ -278,6 +280,13 @@ class ComputeTaskDialog final : public QDialog {
   QPushButton *new_ray_tracing;
   QPushButton *remove;
   QLineEdit *destination;
+  QComboBox *dispatch_mode;
+  std::array<QLineEdit *, 3> dispatch_axes;
+  QLineEdit *dispatch_reference;
+  QLineEdit *dispatch_offset;
+  QPushButton *update_dispatch;
+  QWidget *dispatch_form;
+  using Json = nlohmann::json;
   QJsonArray tasks;
   struct TaskDraft {
     QString text;
@@ -291,6 +300,7 @@ class ComputeTaskDialog final : public QDialog {
   int submitted_creation = -1;
   bool discard_new_drafts_on_read = false;
   QHash<QString, TaskDraft> drafts;
+  QHash<QString, QString> original_declarations;
   QHash<QString, TaskDraft> retained_drafts;
   QString root_digest, ticket, requested_task;
   QTimer poll;
@@ -315,14 +325,19 @@ class ComputeTaskDialog final : public QDialog {
                       {"closesthit", QJsonArray{"project://shaders/hit"}}});
       task.insert("dispatch", QJsonObject{{"rays", QJsonArray{1, 1, 1}}});
     }
+    QString exact_ray_template;
     if (index == 1) {
       for (const auto &entry : tasks) {
         const auto declaration =
             entry.toObject().value("declaration").toObject();
         if (!declaration.contains("ray_tracing"))
           continue;
-        task = declaration;
-        task.insert("name", "new_ray_tracing");
+        auto exact =
+            Json::parse(original_declarations
+                            .value(entry.toObject().value("name").toString())
+                            .toStdString());
+        exact["name"] = "new_ray_tracing";
+        exact_ray_template = QString::fromStdString(exact.dump(2));
         break;
       }
     }
@@ -330,6 +345,8 @@ class ComputeTaskDialog final : public QDialog {
         QString::fromUtf8(QJsonDocument(task).toJson(QJsonDocument::Indented)),
         root_digest,
         {}};
+    if (!exact_ray_template.isEmpty())
+      new_drafts[index].text = exact_ray_template;
     destinations[index] = index == 0
                               ? "project://features/new_compute.json"
                               : "project://features/new_ray_tracing.json";
@@ -338,6 +355,150 @@ class ComputeTaskDialog final : public QDialog {
     const int index = task_box->currentIndex();
     return index < 0 || index >= tasks.size() ? QJsonObject{}
                                               : tasks[index].toObject();
+  }
+  void loadDispatch() {
+    const auto task =
+        Json::parse(editor->toPlainText().toStdString(), nullptr, false);
+    const QSignalBlocker blocker(dispatch_mode);
+    dispatch_mode->clear();
+    if (!task.is_object()) {
+      dispatch_form->setEnabled(false);
+      return;
+    }
+    const bool ray = task.contains("ray_tracing");
+    if (!ray)
+      dispatch_mode->addItem(tr("Default (1, 1, 1)"), "default");
+    dispatch_mode->addItem(ray ? tr("Ray dimensions") : tr("Workgroup counts"),
+                           ray ? "rays" : "groups");
+    dispatch_mode->addItem(tr("From image port"),
+                           ray ? "rays_from" : "groups_from");
+    dispatch_mode->addItem(tr("Indirect buffer"), "indirect");
+    const auto dispatch = task.value("dispatch", Json::object());
+    QString mode = ray ? "rays" : "default";
+    if (dispatch.is_object()) {
+      for (const auto *key :
+           {"groups", "groups_from", "rays", "rays_from", "indirect"})
+        if (dispatch.contains(key))
+          mode = key;
+      for (int index = 0; index < 3; ++index) {
+        Json value = 1;
+        const auto dimensions = dispatch.find(ray ? "rays" : "groups");
+        if (dimensions != dispatch.end()) {
+          if (dimensions->is_array() && dimensions->size() == 3)
+            value = dimensions->at(index);
+          else if (dimensions->is_object())
+            value =
+                dimensions->value(std::array{"x", "y", "z"}[index], Json(1));
+        }
+        dispatch_axes[index]->setText(QString::fromStdString(value.dump()));
+      }
+      const auto detail = dispatch.value(mode.toStdString(), Json::object());
+      dispatch_reference->clear();
+      dispatch_offset->setText("0");
+      if (detail.is_object()) {
+        const auto reference =
+            detail.find(mode == "indirect" ? "buffer" : "port");
+        if (reference != detail.end() && reference->is_string())
+          dispatch_reference->setText(
+              QString::fromStdString(reference->get<std::string>()));
+        if (detail.contains("offset"))
+          dispatch_offset->setText(
+              QString::fromStdString(detail.at("offset").dump()));
+      }
+    }
+    dispatch_mode->setCurrentIndex(dispatch_mode->findData(mode));
+    dispatchFields();
+  }
+  void dispatchFields() {
+    const auto mode = dispatch_mode->currentData().toString();
+    for (auto *axis : dispatch_axes)
+      axis->setEnabled(mode == "groups" || mode == "rays");
+    dispatch_reference->setEnabled(mode.endsWith("_from") ||
+                                   mode == "indirect");
+    dispatch_reference->setPlaceholderText(mode == "indirect"
+                                               ? tr("Buffer resource name")
+                                               : tr("Image port name"));
+    dispatch_offset->setEnabled(mode == "indirect");
+  }
+  void updateDispatch() {
+    auto task =
+        Json::parse(editor->toPlainText().toStdString(), nullptr, false);
+    if (!task.is_object()) {
+      notice->setText(tr("Fix the task JSON before updating dispatch."));
+      return;
+    }
+    auto dispatch = task.value("dispatch", Json::object());
+    if (!dispatch.is_object()) {
+      notice->setText(tr("Dispatch must be a JSON object."));
+      return;
+    }
+    const auto mode = dispatch_mode->currentData().toString();
+    if (mode.isEmpty())
+      return;
+    const auto previous = dispatch.value(mode.toStdString(), Json::object());
+    for (const auto *key :
+         {"groups", "groups_from", "rays", "rays_from", "indirect"})
+      dispatch.erase(key);
+    if (mode == "groups" || mode == "rays") {
+      auto dimensions = Json::array();
+      for (auto *axis : dispatch_axes) {
+        bool valid = false;
+        const auto number = axis->text().toULongLong(&valid);
+        if (!valid || number == 0 || number > UINT32_MAX) {
+          notice->setText(
+              tr("Each dimension must be an integer from 1 to 4294967295."));
+          return;
+        }
+        dimensions.push_back(number);
+      }
+      dispatch[mode.toStdString()] = dimensions;
+    } else if (mode != "default") {
+      if (dispatch_reference->text().isEmpty()) {
+        notice->setText(tr("Enter a port or buffer name."));
+        return;
+      }
+      auto detail = previous.is_object() ? previous : Json::object();
+      detail[mode == "indirect" ? "buffer" : "port"] =
+          dispatch_reference->text().toStdString();
+      if (mode == "indirect") {
+        bool valid = false;
+        const auto offset = dispatch_offset->text().toULongLong(&valid);
+        if (!valid || offset % 4 != 0) {
+          notice->setText(tr("Offset must be a nonnegative uint64 integer "
+                             "aligned to 4 bytes."));
+          return;
+        }
+        detail["offset"] = offset;
+      }
+      dispatch[mode.toStdString()] = detail;
+    }
+    if (mode == "default" && dispatch.empty())
+      task.erase("dispatch");
+    else
+      task["dispatch"] = dispatch;
+    editor->setPlainText(QString::fromStdString(task.dump(2)));
+    notice->setText(
+        tr("Dispatch updated in the JSON draft. Apply task to save."));
+  }
+  static bool integersPreserved(const Json &original, const Json &converted) {
+    if (original.is_number_integer())
+      return converted.is_number_integer() &&
+             original.dump() == converted.dump();
+    if (original.is_structured()) {
+      if (original.type() != converted.type() ||
+          original.size() != converted.size())
+        return false;
+      if (original.is_array()) {
+        for (std::size_t index = 0; index < original.size(); ++index)
+          if (!integersPreserved(original[index], converted[index]))
+            return false;
+      } else
+        for (const auto &[key, value] : original.items())
+          if (!converted.contains(key) ||
+              !integersPreserved(value, converted.at(key)))
+            return false;
+    }
+    return true;
   }
   void controls() {
     const bool idle = request_id == 0 && ticket.isEmpty();
@@ -353,6 +514,10 @@ class ComputeTaskDialog final : public QDialog {
     remove->setEnabled(idle && viewport.rpcReady() && !creating && editable &&
                        !root_digest.isEmpty());
     editor->setReadOnly(!idle || !editable);
+    dispatch_form->setEnabled(
+        idle && editable &&
+        Json::parse(editor->toPlainText().toStdString(), nullptr, false)
+            .is_object());
     apply->setEnabled(idle && viewport.rpcReady() && editable &&
                       !root_digest.isEmpty());
     refresh->setEnabled(viewport.rpcReady() && request_id == 0);
@@ -370,6 +535,7 @@ class ComputeTaskDialog final : public QDialog {
                          "shader references. Add resources and other task "
                          "settings in JSON as needed. For ray tracing, match "
                          "the project ray group layout."));
+      loadDispatch();
       controls();
       return;
     }
@@ -383,6 +549,7 @@ class ComputeTaskDialog final : public QDialog {
             ? tr("Edit the task declaration. Keep its name unchanged.")
             : task.value("read_only_reason")
                   .toString(tr("This task source is read-only.")));
+    loadDispatch();
     controls();
   }
   void request(Request kind, const QString &method, QJsonObject params = {}) {
@@ -419,6 +586,17 @@ class ComputeTaskDialog final : public QDialog {
       notice->setText(tr("Task JSON must be an object. %1 (byte %2)")
                           .arg(error.errorString())
                           .arg(error.offset));
+      return;
+    }
+    const auto original =
+        Json::parse(editor->toPlainText().toStdString(), nullptr, false);
+    const auto transported = Json::parse(
+        document.toJson(QJsonDocument::Compact).toStdString(), nullptr, false);
+    if (original.is_discarded() || transported.is_discarded() ||
+        !integersPreserved(original, transported)) {
+      notice->setText(tr(
+          "An integer in this task cannot be represented exactly by the Studio "
+          "RPC transport. Reduce it before applying; the draft is unchanged."));
       return;
     }
     submitted_creation = creationIndex();
@@ -481,6 +659,7 @@ class ComputeTaskDialog final : public QDialog {
         root_digest = digest;
         tasks = response->value("tasks").toArray();
         drafts.clear();
+        original_declarations.clear();
         if (discard_new_drafts_on_read) {
           new_drafts = {};
           new_dirty = {};
@@ -497,19 +676,14 @@ class ComputeTaskDialog final : public QDialog {
             const auto task = entry.toObject();
             const auto name = task.value("name").toString();
             task_box->addItem(name);
-            drafts.insert(
-                name,
-                retained_drafts.value(
-                    name,
-                    TaskDraft{
-                        QString::fromUtf8(
-                            QJsonDocument(task.value("declaration").toObject())
-                                .toJson(QJsonDocument::Indented)),
-                        root_digest,
-                        task.value("source_digest")
-                            .toObject()
-                            .value("hex")
-                            .toString()}));
+            const auto original_text = task.value("declaration_json").toString();
+            original_declarations.insert(name, original_text);
+            drafts.insert(name, retained_drafts.value(
+                                    name, TaskDraft{original_text, root_digest,
+                                                    task.value("source_digest")
+                                                        .toObject()
+                                                        .value("hex")
+                                                        .toString()}));
           }
           task_box->addItem(tr("(New compute task)"));
           task_box->addItem(tr("(New ray tracing task)"));
@@ -542,9 +716,7 @@ class ComputeTaskDialog final : public QDialog {
         for (const auto &entry : tasks) {
           const auto task = entry.toObject();
           const auto name = task.value("name").toString();
-          const auto original = QString::fromUtf8(
-              QJsonDocument(task.value("declaration").toObject())
-                  .toJson(QJsonDocument::Indented));
+          const auto original = original_declarations.value(name);
           if (name != submitted_name && drafts.value(name).text != original)
             retained_drafts.insert(name, drafts.value(name));
         }
@@ -587,6 +759,36 @@ public:
     editor = new QPlainTextEdit(this);
     editor->setObjectName(QStringLiteral("pelican.computeTasks.declaration"));
     layout->addWidget(editor);
+    dispatch_form = new QWidget(this);
+    auto *dispatch_layout = new QFormLayout(dispatch_form);
+    dispatch_mode = new QComboBox(dispatch_form);
+    dispatch_mode->setObjectName("pelican.computeTasks.dispatchMode");
+    dispatch_layout->addRow(tr("Dispatch"), dispatch_mode);
+    auto *axes = new QWidget(dispatch_form);
+    auto *axes_layout = new QHBoxLayout(axes);
+    axes_layout->setContentsMargins(0, 0, 0, 0);
+    for (int index = 0; index < 3; ++index) {
+      dispatch_axes[index] = new QLineEdit("1", axes);
+      dispatch_axes[index]->setObjectName(
+          QString("pelican.computeTasks.dispatchAxis%1").arg(index));
+      axes_layout->addWidget(dispatch_axes[index]);
+    }
+    dispatch_layout->addRow(tr("X / Y / Z"), axes);
+    dispatch_reference = new QLineEdit(dispatch_form);
+    dispatch_reference->setObjectName("pelican.computeTasks.dispatchReference");
+    dispatch_layout->addRow(tr("Port / buffer"), dispatch_reference);
+    dispatch_offset = new QLineEdit("0", dispatch_form);
+    dispatch_offset->setObjectName("pelican.computeTasks.dispatchOffset");
+    dispatch_layout->addRow(tr("Byte offset"), dispatch_offset);
+    update_dispatch =
+        new QPushButton(tr("Update dispatch JSON"), dispatch_form);
+    update_dispatch->setObjectName("pelican.computeTasks.updateDispatch");
+    dispatch_layout->addRow(update_dispatch);
+    layout->addWidget(dispatch_form);
+    connect(dispatch_mode, &QComboBox::currentIndexChanged, this,
+            [this] { dispatchFields(); });
+    connect(update_dispatch, &QPushButton::clicked, this,
+            [this] { updateDispatch(); });
     notice = new QLabel(this);
     notice->setWordWrap(true);
     layout->addWidget(notice);
@@ -616,6 +818,8 @@ public:
     connect(task_box, &QComboBox::currentIndexChanged, this,
             [this] { showTask(); });
     connect(editor, &QPlainTextEdit::textChanged, this, [this] {
+      loadDispatch();
+      controls();
       if (const int index = creationIndex(); index >= 0) {
         new_drafts[index].text = editor->toPlainText();
         new_dirty[index] = true;

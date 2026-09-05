@@ -565,6 +565,9 @@ compute/RT taskは`get_compute_task_authoring`で元宣言と保存先digestを�
 provenanceからproject feature・project preset・直接記述rootを解決し、engine所有文書は読み取り専用。
 rootとtask元ファイルのCAS、candidate document overlay、保存・GPU publication/rollbackは既存処理を共用する。
 StudioのTasks詳細画面とFrame Plan選択から呼び出す。視覚的なport接続操作・node配置編集は別途残る。
+Frame Planは`authored_name`で元taskを特定し、variant接尾辞の推測をしない。
+Tasksのdispatchフォームはgroups/rays・画像port由来・indirectを草稿のdispatchへ反映する。
+`declaration_json`は元宣言の整数値をQtの数値変換に通さず草稿へ渡す文字列で、保存は既存のtask置換を使う。
 `add_compute_task`は新規project featureにtaskを保存し、rootのfeatures参照を同じtransactionで追加する。
 `remove_compute_task`は元文書の宣言だけを削除し、空になったfeatureも通常のproject assetとして残す。
 追加・削除も合成とcompilerを通すため、名前重複や未解決依存を公開せず、既存task編集と保存経路を共有する。
@@ -573,6 +576,7 @@ StudioのTasks詳細画面とFrame Plan選択から呼び出す。視覚的なpo
 
 rootの`frame_node_order`はgraph名から実行時node名の配列への対応表とする。
 variantの名前解決とAS node挿入後、配列の隣接要素に`after`制約を加える。
+flat/XR等のgraph指定は各variantへ分配し、全出力graphを照合して未知graphを拒否する。
 元のnode配列は変更せず、宣言順から導かれるresource依存を保持する。
 部分配列も許可し、空配列は制約なし、空objectは全指定解除。
 未知の名前・重複・不正な型や依存cycleはcompilerで拒否する。

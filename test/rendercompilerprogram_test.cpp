@@ -491,6 +491,41 @@ TEST_CASE(
     CHECK(runtime.activeGeneration() == 0);
 }
 
+TEST_CASE("Frame node orders are scoped to their compiled graph variants",
+          "[rendercompiler][node-order][variants]") {
+    ProgramInputFixture fixture;
+    fixture.config = readJsonFixture(
+        std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+        "test/production_fixtures/pass_field_ownership/gpu_draw_material.json");
+    fixture.backend_context = VulkanRenderCompilerBackendContext{
+        vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 64}, {}, {}, {},
+        VulkanRenderCompilerDevicePlanningMode::compiler_only};
+    fixture.variants = {{.graph_variant = RenderPipelineGraphVariant::flat}};
+    fixture.config["frame_node_order"] = {{"main", {"build_visible_draws", "gpu_geometry"}}};
+    SECTION("flat and XR accept independent graph orders") {
+#if PELICAN_WITH_OPENXR
+        fixture.variants.push_back({.graph_variant = RenderPipelineGraphVariant::xr});
+        fixture.config["frame_node_order"]["main#xr"] = {"build_visible_draws#xr", "gpu_geometry"};
+#endif
+        const auto output = runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input());
+        REQUIRE(output.variants.front().frame_plans.contains("main"));
+#if PELICAN_WITH_OPENXR
+        REQUIRE(output.variants.back().frame_plans.contains("main#xr"));
+#endif
+    }
+    SECTION("unknown graph is still rejected across the program") {
+        fixture.config["frame_node_order"]["unknown"] = nlohmann::json::array();
+        REQUIRE_THROWS_WITH(runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
+                            Catch::Matchers::ContainsSubstring("frame_node_order unknown graph: unknown"));
+    }
+    SECTION("data-only compilation still rejects duplicate names") {
+        fixture.variants.front().artifact = RenderCompilerProgramArtifact::data_only;
+        fixture.config["frame_node_order"]["main"] = {"gpu_geometry", "gpu_geometry"};
+        REQUIRE_THROWS_WITH(runRenderCompilerProgram(defaultVulkanRenderCompilerProgram(), fixture.input()),
+                            Catch::Matchers::ContainsSubstring("frame_node_order duplicate node"));
+    }
+}
+
 TEST_CASE(
     "WP311 production compiler retains GPU draw reads and pins final buffer IDs",
     "[wp311][render-compiler][gpu-draw][pass-field-ownership]") {

@@ -481,7 +481,13 @@ struct FramePlanWidget::Impl {
         toolbar->addWidget(edit_task);
         QObject::connect(edit_task, &QPushButton::clicked, &owner, [this] {
             const auto &selected = logical_scene->selectedNode();
-            if (selected && task_edit_action) task_edit_action(QString::fromStdString(selected->name));
+            if (!selected || !model || !task_edit_action) return;
+            const auto node = std::ranges::find(model->nodes, selected->name, &FramePlanNode::name);
+            if (node == model->nodes.end() || node->kind != "compute" || node->authored_name.empty()) {
+                status->setText(owner.tr("Select a task with a source declaration to edit."));
+                return;
+            }
+            task_edit_action(QString::fromStdString(node->authored_name));
         });
         auto *edit_pass = new QPushButton(owner.tr("Edit preset pass..."), &owner);
         edit_pass->setObjectName(QStringLiteral("pelican.framePlanEditPresetPass"));

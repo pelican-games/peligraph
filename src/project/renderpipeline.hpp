@@ -156,6 +156,8 @@ struct RenderPassProvenance {
         RenderPipelineProvenanceSource::engine;
     std::string provider_feature;
     std::string provider_reference;
+    // Source declaration identity survives runtime variant namespacing.
+    std::string authored_name;
 
     bool operator==(const RenderPassProvenance &) const = default;
 };

@@ -95,6 +95,7 @@ struct FramePlanShaderResolution {
 
 struct FramePlanNode {
     std::string name;
+    std::string authored_name;
     std::string kind;
     std::string source;
     std::string provider_feature;

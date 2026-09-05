@@ -504,6 +504,18 @@ TEST_CASE(
     REQUIRE(absent_target->source.empty());
 }
 
+TEST_CASE("Studio retains authored node identity without guessing variant suffixes",
+          "[devstudio][frame-plan][authored-name]") {
+    auto wire = Json::parse(capturedResponse());
+    wire["nodes"][0]["authored_name"] = "task#custom";
+    const auto runtime_name = wire["nodes"][0]["name"].get<std::string>();
+    const auto model = buildFramePlanModel(wire.dump());
+    REQUIRE(findNode(model, runtime_name)->authored_name == "task#custom");
+    wire["nodes"][0].erase("authored_name");
+    const auto absent = buildFramePlanModel(wire.dump());
+    REQUIRE(findNode(absent, runtime_name)->authored_name.empty());
+}
+
 TEST_CASE(
     "Devstudio exposes physical reasons and rejected backend failures from the captured response",
     "[devstudio][frame-plan][wp299][negative-contrast]") {
