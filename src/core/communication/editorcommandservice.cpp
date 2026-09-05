@@ -830,7 +830,7 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
     for (const auto &codec : componentCodecs()) {
         if (codec.name == "behavior" || std::any_of(object.components.begin(), object.components.end(),
                 [&](const auto &component) { return component.name == codec.name; })) continue;
-        OrderedJson candidate{{"name", codec.name}, {"available", false}};
+        OrderedJson candidate{{"key", codec.name}, {"name", codec.name}, {"available", false}};
         try {
             auto decoded = codec.decodeAuthored(Json{{"name", codec.name}});
             if (decoded) {
@@ -846,6 +846,29 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
         candidate["schema_fields"] = OrderedJson::array();
         for (const auto &field : codec.fieldSchema())
             candidate["schema_fields"].push_back(schemaFieldJson(field, schema_type_name));
+        candidates.push_back(std::move(candidate));
+    }
+    const auto &behaviors = internal::getBehaviorRegisterer();
+    for (const auto &registration : behaviors.registeredBehaviors()) {
+        // Match the registration that scene decoding would actually select.
+        if (behaviors.findByName(registration.stable_name) != &registration) continue;
+        OrderedJson declaration{{"name", "behavior"}, {"type", registration.stable_name},
+                                {"params", OrderedJson::object()}};
+        OrderedJson candidate{{"key", "behavior:" + registration.stable_name},
+            {"name", "behavior"}, {"behavior_type", registration.stable_name},
+            {"available", false}, {"schema_fields", OrderedJson::array()}};
+        try {
+            declaration["params"] = OrderedJson::parse(registration.canonicalize_params(Json::object()));
+            candidate["available"] = true;
+            candidate["component"] = declaration;
+        } catch (const std::exception &error) {
+            candidate["unavailable_reason"] = error.what();
+        }
+        candidate["component_template"] = std::move(declaration);
+        for (const auto &field : registration.params_schema)
+            candidate["schema_fields"].push_back(schemaFieldJson(field, schema_type_name));
+        if (const auto *node = behaviors.schemaFor(registration))
+            candidate["schema_node"] = schemaNodeJson(*node, schema_type_name);
         candidates.push_back(std::move(candidate));
     }
     return {{"object_id", object.authoring_object_id.value},

@@ -177,6 +177,9 @@ if (head.valid && head.source == Pelican::ActionPoseSource::synthetic_head) {
 
 ゲームシステム(§8.3)が「プロセスに 1 個・シーン全体を見る処理」なのに対し、**behavior は「オブジェクトに貼りつける振る舞い」**です。シーン JSON にパラメータごと書けて、エディタから付け外しもできます。
 
+StudioではInspectorの **Add component...** から **Behavior: 登録名** を選び、宣言JSONの`params`を設定して追加できます。
+同じ型を複数装着でき、追加・削除・Undo/Redo・保存は通常のシーン編集を使います。詳細は[第13章](13_editor.md)を参照してください。
+
 > **設計決定(engine-owned arena):** behavior は ECS コンポーネントではなく、light / collider と同じ「特別扱いのコンポーネント」としてエンジン所有の attachment arena に入る(arena = 同種のものをまとめて置くエンジン側の置き場。ここでは attachment を連番で並べる [BehaviorAttachmentArena](../../src/core/gamelogic/behaviorarena.hpp#L174))。理由は、ゲーム DLL の型をエンジンの ECS チャンクに載せずに、ホットリロード時の世代交代(§8.5.6)とエディタからの付け外しを安全に行うため。
 
 ### 8.5.1 最小の実例

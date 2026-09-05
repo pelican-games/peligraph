@@ -478,8 +478,11 @@ struct InspectorWidget::Impl {
             component_types->clear();
             if (catalog) {
                 for (const auto &candidate : catalog->at("candidates")) {
-                    const auto name = QString::fromStdString(candidate.at("name").get<std::string>());
-                    component_types->addItem(name, name);
+                    const auto key = QString::fromStdString(candidate.at("key").get<std::string>());
+                    const auto label = candidate.contains("behavior_type")
+                        ? owner.tr("Behavior: %1").arg(QString::fromStdString(candidate.at("behavior_type").get<std::string>()))
+                        : QString::fromStdString(candidate.at("name").get<std::string>());
+                    component_types->addItem(label, key);
                 }
                 const int previous = component_types->findData(displayed_component);
                 if (previous >= 0) component_types->setCurrentIndex(previous);
@@ -500,7 +503,7 @@ struct InspectorWidget::Impl {
             return;
         }
         const auto &candidate = catalog->at("candidates").at(static_cast<std::size_t>(index));
-        const auto name = QString::fromStdString(candidate.at("name").get<std::string>());
+        const auto name = QString::fromStdString(candidate.at("key").get<std::string>());
         if (displayed_component != name || !component_drafts.contains(name)) {
             displayed_component = name;
             if (!component_drafts.contains(name)) {
@@ -518,7 +521,8 @@ struct InspectorWidget::Impl {
         }
         confirm_add_component->setEnabled(ready);
         QString description = owner.tr("Edit the declaration, then Add. Use registered asset names for asset fields; the engine validates the values.");
-        if (!fields.isEmpty()) description += owner.tr(" Fields: %1.").arg(fields.join(", "));
+        if (!fields.isEmpty()) description += (candidate.contains("behavior_type")
+            ? owner.tr(" Params fields: %1.") : owner.tr(" Fields: %1.")).arg(fields.join(", "));
         if (!candidate.value("available", false))
             description += "\n" + QString::fromStdString(candidate.value("unavailable_reason", ""));
         if (model.notice().kind == InspectorNoticeKind::Error)

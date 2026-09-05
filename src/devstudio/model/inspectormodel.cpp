@@ -1641,33 +1641,36 @@ const std::optional<Json> &InspectorModel::componentAddCandidates() const noexce
     return impl_->component_add_candidates;
 }
 
-bool InspectorModel::addComponent(std::string_view name) {
+bool InspectorModel::addComponent(std::string_view key) {
     if (!impl_->component_add_candidates) return false;
     const auto &catalog = *impl_->component_add_candidates;
     const auto &candidates = catalog.at("candidates");
-    const auto found = std::find_if(candidates.begin(), candidates.end(), [name](const auto &candidate) {
-        return candidate.at("name").template get_ref<const std::string &>() == name;
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [key](const auto &candidate) {
+        return candidate.at("key").template get_ref<const std::string &>() == key;
     });
     if (found == candidates.end() || !found->value("available", false)) return false;
-    return addComponent(name, found->at("component"));
+    return addComponent(key, found->at("component"));
 }
 
-bool InspectorModel::addComponent(std::string_view name, const Json &declaration) {
+bool InspectorModel::addComponent(std::string_view key, const Json &declaration) {
     if (!canRequestComponentAddCandidates() || !impl_->component_add_candidates) return false;
     const auto &catalog = *impl_->component_add_candidates;
     if (catalog.at("object_id") != impl_->snapshot->authoring_object_id ||
         catalog.at("scene_revision") != impl_->snapshot->scene_revision) return false;
     const auto &candidates = catalog.at("candidates");
-    const auto found = std::find_if(candidates.begin(), candidates.end(), [name](const auto &candidate) {
-        return candidate.at("name").template get_ref<const std::string &>() == name;
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [key](const auto &candidate) {
+        return candidate.at("key").template get_ref<const std::string &>() == key;
     });
     if (found == candidates.end() || !declaration.is_object() ||
         !declaration.contains("name") || !declaration.at("name").is_string() ||
-        declaration.at("name").get_ref<const std::string &>() != name) return false;
+        declaration.at("name") != found->at("name")) return false;
+    if (found->contains("behavior_type") &&
+        (!declaration.contains("type") || declaration.at("type") != found->at("behavior_type"))) return false;
+    const auto &component_name = found->at("name").get_ref<const std::string &>();
     Json operation{{"op", "add_component"},
                    {"object_id", impl_->snapshot->authoring_object_id},
                    {"component", declaration}};
-    impl_->enqueueEdit(std::move(operation), "Add " + std::string{name}, std::string{name});
+    impl_->enqueueEdit(std::move(operation), "Add " + std::string{key}, component_name);
     impl_->component_add_candidates.reset();
     return true;
 }

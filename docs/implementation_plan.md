@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、component必須入力):** task追加削除はaa5f45edに統合済み。Inspectorで必須asset名等の宣言JSONを入力してcomponentを追加する操作を実装し、CPU/Inspector試験とPlayer/Studio buildを確認。次は視覚的なport接続・dispatchフォーム、AS配置を含むnode移動、asset選択フォーム・behavior追加など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、behavior追加):** task追加削除はaa5f45ed、component必須入力はd9b4cbb5に統合済み。登録behaviorの候補・初期params取得とInspectorからの同型/別型追加を実装し、CPU/Inspector試験とPlayer/Studio buildを確認。次は視覚的なport接続・dispatchフォーム、AS配置を含むnode移動、asset選択フォームなど。学習サンプルは後回し。
+
+**Inspector behavior追加 (2026-09-06):**
+- 既存component候補RPCに登録behaviorを含める。通常componentのkeyはname、behaviorは`behavior:登録名`とし、同型attachmentが装着済みでも候補を残す。scene decoderと同じ登録を選び、初期paramsの正規化とschema取得だけを行う。behavior instanceは生成しない。
+- Studioは候補keyで選択と草稿を管理し、behavior型を表示。宣言JSONのname/typeと選択型を照合して既存add_componentへ送る。既存component追加と同じ失敗時入力保持・scene revision・Undo/Save経路を使う。再帰schemaも候補RPCに返すが、追加画面の入力はJSON。
+- CPU26/26（402 assertions、`build/.codex_bg/behavioradd-cpu.log`）成功。登録behaviorの既定params取得、既存attachmentと異なる初期値、instance非生成、既存journal追加・削除・Undoを確認。Inspector18/18（`behavioradd-inspector.log`）で同型/別型の追加payloadと型すり替え拒否を含めて成功。Player/Studio buildは`behavioradd-build.log`。
+- doclink check3869件成功、audit既存4件不変。手動GUIからbehavior lifecycleまでの通し操作は未実施。runtime追加経路は変更せず既存journal/arenaを使い、新しいGPU処理やfeature flagは追加していない。
 
 **Inspector component必須入力 (2026-09-06):**
 - 候補RPCに`component_template`と既存codec由来の`schema_fields`を追加。`available`は既定値だけで追加可能かを示す。値不足の型も利用者の宣言JSONを既存`add_component`操作へ送る。登録名・scene revision・idle条件は共通入口で確認し、独立validatorやruntime経路は追加しない。

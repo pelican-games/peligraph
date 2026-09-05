@@ -1082,9 +1082,9 @@ TEST_CASE("Studio adds a catalog component through the existing revision and tic
     const Json component{{"name", "collider"}, {"type", "box"}};
     Json catalog{{"object_id", 41}, {"scene_revision", 1},
                  {"candidates", Json::array({
-                     {{"name", "collider"}, {"available", true}, {"component", component},
+                     {{"key", "collider"}, {"name", "collider"}, {"available", true}, {"component", component},
                       {"component_template", component}, {"schema_fields", Json::array()}},
-                     {{"name", "simplemodelview"}, {"available", false},
+                     {{"key", "simplemodelview"}, {"name", "simplemodelview"}, {"available", false},
                       {"component_template", {{"name", "simplemodelview"}}},
                       {"schema_fields", Json::array({{{"name", "model"}, {"type", "string"}}})},
                       {"unavailable_reason", "A model reference is required."}}})}};
@@ -1146,5 +1146,37 @@ TEST_CASE("Studio adds a catalog component through the existing revision and tic
         harness.reply(query, catalog);
         CHECK_FALSE(harness.model.componentAddCandidates());
         CHECK_FALSE(harness.model.addComponent("collider"));
+    }
+}
+
+TEST_CASE("Studio adds behavior attachments by catalog key without replacing existing attachments",
+          "[devstudio][inspector][component-addition][behavior]") {
+    for (const auto &type : {std::string{"existing_behavior"}, std::string{"other_behavior"}}) {
+        InspectorHarness harness;
+        harness.open();
+        auto components = componentResult();
+        components["components"][1]["name"] = "behavior";
+        components["components"][1]["authored_json"] = {{"name", "behavior"}, {"type", "existing_behavior"}, {"params", Json::object()}};
+        harness.model.requestRefresh();
+        harness.reply(harness.take("scene_tree"), sceneTreeResult());
+        harness.reply(harness.take("get_components"), components);
+        harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
+        const std::string key = "behavior:" + type;
+        const Json declaration{{"name", "behavior"}, {"type", type}, {"params", {{"speed", 2.5}}}};
+        const Json catalog{{"object_id", 41}, {"scene_revision", 1},
+            {"candidates", Json::array({{{"key", key}, {"name", "behavior"}, {"behavior_type", type},
+                {"available", false}, {"component_template", {{"name", "behavior"}, {"type", type}, {"params", Json::object()}}},
+                {"schema_fields", Json::array()}, {"unavailable_reason", "Set speed."}}})}};
+        REQUIRE(harness.model.requestComponentAddCandidates());
+        harness.reply(harness.take("get_component_add_candidates"), catalog);
+        auto wrong = declaration;
+        wrong["type"] = "unregistered_behavior";
+        CHECK_FALSE(harness.model.addComponent(key, wrong));
+        CHECK_FALSE(harness.model.addComponent("behavior", declaration));
+        REQUIRE(harness.model.addComponent(key, declaration));
+        const auto edit = harness.take("edit");
+        CHECK(edit.params.at("operations") == Json::array({
+            {{"op", "add_component"}, {"object_id", 41}, {"component", declaration}}}));
+        CHECK(harness.model.snapshot()->components[1].name == "behavior");
     }
 }

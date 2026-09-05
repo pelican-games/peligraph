@@ -4,6 +4,7 @@
 #include "../src/core/loader/prefabprovider.hpp"
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/userpublic/details/component/registerer.hpp"
+#include "../src/core/userpublic/details/behavior/registerer.hpp"
 #include "../src/core/userpublic/details/ecs/componentdeclare.hpp"
 #include "../src/project/sceneformat.hpp"
 #include "authoringscenetestsupport.hpp"
@@ -62,6 +63,19 @@ DECLARE_COMPONENT(wp382a_catalog_fixture::Component, 62);
 
 namespace Pelican {
 namespace {
+
+struct CatalogBehaviorParams {
+    float speed = 0.0f;
+    static constexpr auto schema = structFields(behaviorParamsPolicy,
+        defaulted(field<&CatalogBehaviorParams::speed>("speed"), 2.0f));
+};
+
+class CatalogBehavior final : public Behavior {
+  public:
+    using Params = CatalogBehaviorParams;
+    static inline int constructions = 0;
+    CatalogBehavior() { ++constructions; }
+};
 
 nlohmann::json readJson(const std::filesystem::path &path) {
     std::ifstream input{path, std::ios_base::binary};
@@ -185,12 +199,13 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     CHECK(response.at("scene_revision") == 41);
     const auto &candidates = response.at("candidates");
     CHECK(std::none_of(candidates.begin(), candidates.end(), [](const auto &candidate) {
-        return candidate.at("name") == "transform" || candidate.at("name") == "behavior";
+        return candidate.at("name") == "transform";
     }));
     const auto collider = std::find_if(candidates.begin(), candidates.end(), [](const auto &candidate) {
         return candidate.at("name") == "collider";
     });
     REQUIRE(collider != candidates.end());
+    CHECK(collider->at("key") == "collider");
     REQUIRE(collider->at("available") == true);
     const auto &codec = requireComponentCodec("collider");
     const auto decoded = codec.decodeAuthored(collider->at("component"));
@@ -212,6 +227,39 @@ TEST_CASE("component addition catalog uses codec defaults and excludes attached 
     const auto model_decoded = requireComponentCodec("simplemodelview").decodeAuthored(authored_model);
     REQUIRE(model_decoded.hasValue());
     CHECK(requireComponentCodec("simplemodelview").encodeCanonical(model_decoded.value()) == authored_model);
+}
+
+TEST_CASE("behavior addition catalog provides defaults without constructing an attachment",
+          "[editor-command][query][component-addition][behavior]") {
+    auto &registry = internal::getBehaviorRegisterer();
+    const std::string type = "editor_catalog_behavior";
+    const auto token = registry.registerBehavior<CatalogBehavior>(type, 1, {});
+    struct Cleanup {
+        internal::RegistrationToken token;
+        ~Cleanup() { internal::unregisterBehavior(token); }
+    } cleanup{token};
+    const auto constructions = CatalogBehavior::constructions;
+    auto source = readJson(authoringFixturePath());
+    source["scenes"]["main"]["objects"][1]["components"].push_back(
+        {{"name", "behavior"}, {"type", type}, {"params", {{"speed", 9.0}}}});
+    const auto document = AuthoringSceneDocument::load(source.dump(), SceneRevision{41});
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+    const auto catalog = rpc.getComponentAddCandidates({{"name", "MixedObject"}});
+    const auto &candidates = catalog.at("candidates");
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [&](const auto &candidate) {
+        return candidate.at("key") == "behavior:" + type;
+    });
+    REQUIRE(found != candidates.end());
+    CHECK(found->at("available") == true);
+    CHECK(found->at("name") == "behavior");
+    CHECK(found->at("behavior_type") == type);
+    CHECK(found->at("component_template") == nlohmann::ordered_json{
+        {"name", "behavior"}, {"type", type}, {"params", {{"speed", 2.0}}}});
+    CHECK(found->at("component") == found->at("component_template"));
+    REQUIRE(found->at("schema_fields").size() == 1);
+    CHECK(found->at("schema_fields")[0].at("name") == "speed");
+    CHECK(CatalogBehavior::constructions == constructions);
 }
 
 TEST_CASE("editor query is deterministic and RPC and ImGui fake adapters are equivalent",
