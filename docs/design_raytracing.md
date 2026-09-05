@@ -442,6 +442,25 @@ RT6(dispatch 一般化・indirect・AS graph node 化・複数 TLAS・
 
 依存: RT1a → RT1b → RT2a → RT2b → RT3 → {RT4, RT5} → RT6 → RT7。
 
+### RT6: scene ASの実行ノード（2026-09-06）
+
+現在のscene全体・固定のframe AS bindingに対応する構築処理は、frame graphの
+`__scene_acceleration_structure`（kind: `acceleration_structure`）として実行する。
+ray project、RT task、またはgraphのray query / ray tracing pipeline capabilityから
+compilerが生成し、同じvariantの各graphへ挿入する。既存nodeはこのnodeに依存する。
+変形compute、BLAS build/refit、TLAS、対応するSBTとframe publicationをまとめて扱う。
+単なる表示用nodeではなく、rendererのこのnodeの実行箇所でcommandを記録する。
+
+XRではview非依存の処理とし、同じ論理フレームの後続viewは同じpublicationを使う。
+submission完了までのAS/SBT所有権と、失敗時のpublication取消しは従来のtransactionに載せる。
+ray queryをshaderから使うgraphは`target_planning.graphs`の`required_capabilities`へ
+`pelican.vulkan.ray_query@1`を宣言する。宣言もRT taskもray projectも無いまま
+reflectionだけでASが必要になった場合、graph外で暗黙に構築せずロード時に明示拒否する。
+
+この段階のnodeはcompiler生成で、現在sceneのASを1組構築する。任意のAS名・instance選択・
+複数TLAS・BLAS geometry結合・編集RPCは残る。現在の固定bindingと共通q/SBT契約を
+複数ASに拡張したときに、選択ASをconsumerの明示的な資源依存へ接続する。
+
 ## 9. エラー文言・受け入れゲート
 
 v2 §7 に同じ + §5 の matrix + 「off/on は同一テスト内」+ sentinel 表。

@@ -131,6 +131,8 @@ targetViewExecutionRequest(
                 independent_candidates.insert(
                     node.name);
             }
+            if (node.kind == FramePlanNodeKind::acceleration_structure)
+                independent_candidates.insert(node.name);
             if (node.kind == FramePlanNodeKind::anchor &&
                 (!sprite_enabled ||
                  node.name != "__anchor_sprite")) {
@@ -252,6 +254,46 @@ frameExecutionPlansByName(
 }
 
 } // namespace
+
+void detail::insertSceneAccelerationStructureNodes(
+    std::vector<FrameGraphDefinition> &graphs,
+    const TargetPlanningPolicy &target_planning,
+    const std::vector<ComputeTaskDefinition> &tasks,
+    bool has_ray_project) {
+    const std::string node_name = "__scene_acceleration_structure";
+    const bool requires_as = has_ray_project || std::any_of(graphs.begin(), graphs.end(), [&](const auto &graph) {
+        const bool required_capability = std::any_of(
+            target_planning.graphs.begin(), target_planning.graphs.end(),
+            [&](const auto &constraints) {
+                return constraints.graph == graph.name && std::any_of(
+                    constraints.required_capabilities.begin(), constraints.required_capabilities.end(),
+                    [](const auto &capability) {
+                        return capability == "pelican.vulkan.ray_query@1" ||
+                               capability == "pelican.vulkan.ray_tracing_pipeline@1";
+                    });
+            });
+        const bool has_ray_task = std::any_of(graph.nodes.begin(), graph.nodes.end(),
+            [&](const auto &node) {
+                return node.kind == FramePlanNodeKind::compute && std::any_of(
+                    tasks.begin(), tasks.end(), [&](const auto &task) {
+                        return task.name == node.name && task.ray_tracing.has_value();
+                    });
+            });
+        return required_capability || has_ray_task;
+    });
+    if (!requires_as) return;
+    for (auto &graph : graphs) {
+        if (std::any_of(graph.nodes.begin(), graph.nodes.end(), [&](const auto &node) {
+                return node.name == node_name;
+            }))
+            throw std::runtime_error("Reserved scene acceleration-structure node name: " + node_name);
+        for (auto &node : graph.nodes) node.after.push_back(node_name);
+        graph.nodes.insert(graph.nodes.begin(), FrameGraphNodeDefinition{
+            .name = node_name, .kind = FramePlanNodeKind::acceleration_structure});
+        for (std::size_t i = 0; i < graph.nodes.size(); ++i)
+            graph.nodes[i].declaration_index = i;
+    }
+}
 
 void detail::namespaceComputeTasks(
     std::vector<ComputeTaskDefinition> &tasks,
@@ -644,6 +686,9 @@ compileDefaultVulkanVariant(
         graph_definitions,
         logical.composed_config,
         logical.compiled_pipeline);
+    detail::insertSceneAccelerationStructureNodes(
+        graph_definitions, logical.compiled_pipeline.target_planning,
+        compute_task_definitions, input.ray_tracing_project != nullptr);
     auto compiled_pipeline =
         std::make_shared<const CompiledRenderPipeline>(
             std::move(logical.compiled_pipeline));

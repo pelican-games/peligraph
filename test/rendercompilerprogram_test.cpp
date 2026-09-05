@@ -11,6 +11,7 @@
 #include "../src/core/renderingpass/rendertargetnameresolver.hpp"
 #include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
+#include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/project/renderconfigdocument.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -23,6 +24,55 @@
 #include <iterator>
 
 namespace Pelican {
+TEST_CASE("scene AS operation follows variant-wide ray requirements", "[rendercompiler][rt6][as-node]") {
+    std::vector<FrameGraphDefinition> graphs{
+        {.name = "main", .nodes = {{.name = "draw", .kind = FramePlanNodeKind::render}}},
+        {.name = "aux", .nodes = {{.name = "copy", .kind = FramePlanNodeKind::anchor}}}};
+    TargetPlanningPolicy policy;
+    std::vector<ComputeTaskDefinition> tasks;
+    const auto require_as_nodes = [&] {
+        for (const auto &graph : graphs) {
+            REQUIRE(graph.nodes.size() == 2);
+            CHECK(graph.nodes[0].kind == FramePlanNodeKind::acceleration_structure);
+            CHECK(graph.nodes[0].name == "__scene_acceleration_structure");
+            CHECK(graph.nodes[0].declaration_index == 0);
+            CHECK(graph.nodes[1].declaration_index == 1);
+            CHECK(graph.nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
+        }
+    };
+    SECTION("non-ray variant is unchanged") {
+        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, false);
+        REQUIRE(graphs[0].nodes.size() == 1);
+        CHECK(graphs[0].nodes[0].name == "draw");
+        CHECK(graphs[1].nodes.size() == 1);
+    }
+    SECTION("one ray graph creates operations for the whole owner") {
+        policy.graphs.push_back({.graph = "main",
+            .required_capabilities = {"pelican.vulkan.ray_query@1"}});
+        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, false);
+        require_as_nodes();
+    }
+    SECTION("ray project creates operations") {
+        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, true);
+        require_as_nodes();
+    }
+    SECTION("ray task creates operations") {
+        ComputeTaskDefinition task;
+        task.name = "trace";
+        task.ray_tracing.emplace();
+        tasks.push_back(std::move(task));
+        graphs[0].nodes[0].name = "trace";
+        graphs[0].nodes[0].kind = FramePlanNodeKind::compute;
+        detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, false);
+        require_as_nodes();
+    }
+    SECTION("reserved name collision is rejected") {
+        graphs[0].nodes[0].name = "__scene_acceleration_structure";
+        REQUIRE_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, true),
+            Catch::Matchers::ContainsSubstring("Reserved scene acceleration-structure node name"));
+    }
+}
+
 namespace {
 
 nlohmann::json readJsonFixture(

@@ -697,7 +697,14 @@ void main() {
     test_support::loadScene(GET_MODULE(SceneLoader), "main");
     const auto check_lanes = [&](std::uint32_t width, std::uint32_t height,
                                  std::uint32_t depth) {
+        auto &renderer = GET_MODULE(Renderer);
+        renderer.setExecutionTracingForTesting(true);
         (void)renderWp374aProductionRows();
+        const auto &nodes = renderer.lastExecutionTraceForTesting().at("nodes");
+        REQUIRE_FALSE(nodes.empty());
+        CHECK(nodes.front().at("kind") == "acceleration_structure");
+        CHECK(nodes.front().at("recorded") == true);
+        CHECK(nodes.front().at("name") == "__scene_acceleration_structure");
         const auto image = GET_MODULE(Renderer).readRenderTargetForTesting(
             "wp386_out", ImageSubresourceRange{});
         const auto lane_count = width * height * depth;

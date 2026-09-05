@@ -968,6 +968,19 @@ registerRenderingPassConfigVariantsData(
         });
     if (plan_requires_ray_query ||
         reflection_requires_ray_query) {
+        const bool graph_builds_scene_as = std::any_of(
+            program_preparations.begin(), program_preparations.end(),
+            [](const auto &program) {
+                return std::any_of(program.frame_plan.nodes.begin(), program.frame_plan.nodes.end(),
+                    [](const auto &node) {
+                        return node.kind == FramePlanNodeKind::acceleration_structure;
+                    });
+            });
+        if (!graph_builds_scene_as) {
+            throw std::runtime_error(
+                "pelican.ray_query.graph_requirement_missing@1: ray-query shaders require "
+                "pelican.vulkan.ray_query@1 in target_planning graph required_capabilities");
+        }
         attachRayQueryAccelerationStructures(
             prepared_gpu_scope,
             replaced_scope != nullptr

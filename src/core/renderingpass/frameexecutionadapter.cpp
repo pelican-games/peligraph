@@ -52,6 +52,7 @@ std::string_view semanticDialect(
     case FramePlanNodeKind::output_transform:
         return "pelican.logical.render@1";
     case FramePlanNodeKind::compute:
+    case FramePlanNodeKind::acceleration_structure:
         return "pelican.logical.compute@1";
     case FramePlanNodeKind::snapshot_copy:
         return "pelican.logical.transfer@1";
@@ -67,6 +68,8 @@ std::string_view selectedImplementation(
         return "pelican.execution.frame_render@1";
     case FramePlanNodeKind::compute:
         return "pelican.execution.frame_compute@1";
+    case FramePlanNodeKind::acceleration_structure:
+        return "pelican.execution.acceleration_structure@1";
     case FramePlanNodeKind::anchor:
         return "pelican.execution.frame_anchor@1";
     case FramePlanNodeKind::snapshot_copy:
@@ -85,6 +88,7 @@ std::vector<std::string> requiredCapabilities(
     case FramePlanNodeKind::anchor:
         return {std::string{kGraphicsCapability}};
     case FramePlanNodeKind::compute:
+    case FramePlanNodeKind::acceleration_structure:
         return {std::string{kComputeCapability}};
     case FramePlanNodeKind::snapshot_copy:
         return {std::string{kTransferCapability}};

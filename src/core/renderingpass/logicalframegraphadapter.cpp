@@ -15,7 +15,9 @@ namespace {
 LogicalGraphNodeKind logicalNodeKind(FramePlanNodeKind kind) {
     switch (kind) {
     case FramePlanNodeKind::render: return LogicalGraphNodeKind::render;
-    case FramePlanNodeKind::compute: return LogicalGraphNodeKind::compute;
+    case FramePlanNodeKind::compute:
+    case FramePlanNodeKind::acceleration_structure:
+        return LogicalGraphNodeKind::compute;
     case FramePlanNodeKind::anchor: return LogicalGraphNodeKind::anchor;
     case FramePlanNodeKind::snapshot_copy:
         return LogicalGraphNodeKind::snapshot_copy;

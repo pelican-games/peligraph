@@ -467,7 +467,8 @@ void appendShaderResolution(
         }
         const auto name = node.at("name").get<std::string>();
         const auto kind = node.at("kind").get<std::string>();
-        if (kind == "anchor" || kind == "snapshot_copy") {
+        if (kind == "anchor" || kind == "snapshot_copy" ||
+            kind == "acceleration_structure") {
             node["shader_resolution"] =
                 Json{{"state", "not_applicable"}};
             continue;

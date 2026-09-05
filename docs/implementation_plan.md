@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT6 indirect / RT5 refit):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。GPUが生成する起動数による間接レイトレと変形BLASのrefitを接続。次はRT6のASノード・複数AS構成。Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+**最新の入口 (2026-09-06、RT6 scene AS node):** 利用者の「未実装機能をどんどん追加」に従い、機能追加を優先。間接レイトレ・変形BLAS refitに続き、現在sceneのAS構築をframe graphの実行nodeへ接続。次はRT6のAS明示選択・複数TLAS・複数geometry BLAS。Studioのrecord編集UI、RT7は残る。学習サンプルは後回し。
+
+**RT6 scene AS node (2026-09-06):**
+- `acceleration_structure`種別とcompiler生成の`__scene_acceleration_structure`を追加。ray project / RT task / ray capabilityからvariant内のgraphへ生成し、既存nodeから依存を張る。変形compute・AS・SBT publicationをグラフ外の先行処理からこのnodeの実行へ移した。
+- XRのview非依存処理として扱い、論理フレーム内でpublicationを共有。既存submission leaseと取消し・commitは維持。frame plan表示・shader診断も専用種別を認識し、ユーザーshaderの無い処理として表示する。
+- ray query shaderだけを使う場合はgraph required_capabilitiesへ`pelican.vulkan.ray_query@1`を宣言する。宣言もRT taskもray projectも無いreflection-only設定はロード時に明示拒否し、隠れたグラフ外構築を残さない。
+- GPU RT5/RT6は4/4（93 assertions）で実行traceの先頭AS nodeと実描画を確認。AS/影の回帰5/5（494 assertions）、既存WP384 transactionケースも成功。後者はXRとpublicationの取消しを含む。初回に計画表示4件が新種別のshader owner検索で失敗し、診断修正後に該当5件を再実行した。
+- CPU render compilerは5/5（131 assertions）。新テストのSECTION早期returnを除去して全分岐を確認。Player/Studio buildとdoclink（未解決0）成功。現在scene一組の自動nodeであり、任意AS名・選択・複数AS・編集RPCの完了ではない。
 
 **RT5 refit (2026-09-06):**
 - skin/morph/VATのBLASを初回はAllowUpdateで構築し、同一個体・元geometry・topology・flagsなら前回ASを読み取り元に新規ASへUPDATE。pool/model変更はrebuild。静的geometryは従来どおり再利用。

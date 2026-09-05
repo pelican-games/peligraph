@@ -1664,6 +1664,8 @@ std::string framePlanNodeKindName(FramePlanNodeKind kind) {
         return "render";
     case FramePlanNodeKind::compute:
         return "compute";
+    case FramePlanNodeKind::acceleration_structure:
+        return "acceleration_structure";
     case FramePlanNodeKind::anchor:
         return "anchor";
     case FramePlanNodeKind::snapshot_copy:

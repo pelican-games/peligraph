@@ -18,6 +18,8 @@
 
 frame planの`blas_build_count`と`blas_update_count`で、作り直しとrefitの累積回数を区別できます。refitはVulkanの[out-of-place UPDATE](https://docs.vulkan.org/spec/latest/chapters/accelstructures.html)を使い、出力bufferの再確保は残ります。
 
+構築処理はframe graphの`__scene_acceleration_structure` nodeで実行します。変形computeからAS/SBTのpublicationまでを含み、後続nodeより先に実行します。XRでは論理フレーム内で共有します。ray queryだけをshaderから使う場合も、graphの`required_capabilities`へ`pelican.vulkan.ray_query@1`を宣言して構築依存を明示します。nodeは現在sceneのAS一組に対応し、複数ASの選択は後続です。
+
 加速構造 scope は、物理計画が `pelican.vulkan.ray_query@1` を要求するか、登録したシェーダの reflection が frame set の TLAS binding を検出した場合に `RenderPipelineGpuResourceScope` へ登録されます。後者により、独自パスが feature manifest の能力宣言を経由しなくても TLAS layout だけを作って実行時に欠けることはありません。同じ reflection 判定が拡張 frame-set layout、実デバイスの能力確認、owner scope 登録を決めます。どちらも要求しないプロジェクトでは scope 自体が無く、BLAS / TLAS の構築回数は 0 のままです。scope の差し替えは既存 GPU owner scope の purge に従います。
 
 適格なインスタンスが 0 件でもエラーにはしません。Vulkan が 0 primitive の build にも要求する有効な instance-data address を inactive record で与え、0-instance の miss-only TLAS を構築します。したがって descriptor は常に有効で ray はすべて miss し、マスクは全面可視になります。`tlas_instance_count == 0` と BLAS-ineligible の除外件数は通常どおり診断へ出ます。

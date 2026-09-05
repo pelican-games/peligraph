@@ -167,7 +167,8 @@ CompiledFrameGraphExecution compileExecution(
             execution.nodes.push_back(FrameGraphExecutionNode{
                 node.kind, node.name, found->second, {},
                 node.view_family});
-        } else if (node.kind == FramePlanNodeKind::anchor ||
+        } else if (node.kind == FramePlanNodeKind::acceleration_structure ||
+                   node.kind == FramePlanNodeKind::anchor ||
                    node.kind == FramePlanNodeKind::snapshot_copy ||
                    node.kind == FramePlanNodeKind::output_transform) {
             execution.nodes.push_back(FrameGraphExecutionNode{

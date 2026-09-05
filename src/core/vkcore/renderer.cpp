@@ -1422,6 +1422,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                               const CompiledRenderingPass &rendering_pass,
                               const CompiledFrameGraphExecution &frame_graph,
                               RenderFrameModules &modules,
+                              const std::function<bool(const FrameRenderContext &)> &record_scene_as,
                               vk::Format frame_target_format,
                               RenderTargetLayoutTracker &layout_tracker,
                               const RenderPassExecutorDependencies &pass_executor_dependencies,
@@ -2079,6 +2080,13 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 node_trace->push_back(renderNodeTrace(pass, node_index, modules.render_target_container,
                                                       layout_tracker));
             }
+        } else if (execution_node.kind == FramePlanNodeKind::acceleration_structure) {
+            const bool recorded = record_scene_as(render_ctx);
+            if (node_trace != nullptr) {
+                node_trace->push_back({{"name", execution_node.name},
+                    {"kind", "acceleration_structure"}, {"order", node_index},
+                    {"recorded", recorded}});
+            }
         } else if (execution_node.kind == FramePlanNodeKind::compute) {
             const auto &task = rendering_pass.compute_tasks.at(execution_node.index);
             modules.compute_task_container.transitionResourcesForDispatch(
@@ -2342,6 +2350,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             const CompiledRenderingPass &rendering_pass,
                             const CompiledFrameGraphExecution &frame_graph,
                             RenderFrameModules &modules,
+                              const std::function<bool(const FrameRenderContext &)> &record_scene_as,
                             std::span<const RenderViewFamilyExecutionState>
                                 view_family_states,
                             vk::Format frame_target_format,
@@ -2520,7 +2529,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
             };
     }
 
-    executePlannedFrameGraph(render_ctx, rendering_pass, frame_graph, modules,
+    executePlannedFrameGraph(render_ctx, rendering_pass, frame_graph, modules, record_scene_as,
                              frame_target_format, layout_tracker,
                              pass_executor_dependencies, node_trace, logical_frame,
                              graph_variant, default_view_index,
@@ -4709,9 +4718,12 @@ void Renderer::renderLogicalFrame(
         throw std::runtime_error(
             "Renderer logical frame requires a compiled render pipeline");
     }
-    const auto acceleration_structures =
-        rayQueryAccelerationStructureScope(
-            *runtime_generation, *program);
+    const bool graph_builds_scene_as = std::any_of(
+        program->frame_graph.nodes.begin(), program->frame_graph.nodes.end(),
+        [](const auto &node) { return node.kind == FramePlanNodeKind::acceleration_structure; });
+    const auto acceleration_structures = graph_builds_scene_as
+        ? rayQueryAccelerationStructureScope(*runtime_generation, *program)
+        : nullptr;
     const auto *gpu_owner_scope =
         renderPipelineGpuOwnerScope(*runtime_generation, *program);
     std::optional<
@@ -4901,6 +4913,11 @@ void Renderer::renderLogicalFrame(
                     RayTracingJointTransactionPoint::after_as_record);
             }
         };
+    const auto record_scene_as = [&](const FrameRenderContext &context) {
+        const bool recorded = !frame_publication.has_value();
+        record_acceleration_structures(context.cmd_buf, context.in_flight_frame_index);
+        return recorded;
+    };
     // Most output revisions are caught before an image is acquired. The
     // post-begin check remains necessary because acquire itself may replace a
     // blocking legacy WP215 swapchain; WP216 removes that mutable cutover.
@@ -5440,9 +5457,8 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
-        record_acceleration_structures(
-            render_ctx.cmd_buf,
-            render_ctx.in_flight_frame_index);
+        if (acceleration_structures == nullptr)
+            record_scene_as(render_ctx);
         capture_picking_model_instances();
         prepareSecondaryViewFamilyDraws(
             modules.instance_container,
@@ -5506,7 +5522,7 @@ void Renderer::renderLogicalFrame(
         }
         executeRenderingPasses(
             render_ctx, rendering_pass,
-            frame_graph, modules,
+            frame_graph, modules, record_scene_as,
             view_family_states,
             frame_target_format,
             render_target_layout_tracker,
@@ -5587,9 +5603,8 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
-            record_acceleration_structures(
-                render_ctx.cmd_buf,
-                render_ctx.in_flight_frame_index);
+            if (acceleration_structures == nullptr)
+                record_scene_as(render_ctx);
             capture_picking_model_instances();
             prepareSecondaryViewFamilyDraws(
                 modules.instance_container,
@@ -5641,7 +5656,7 @@ void Renderer::renderLogicalFrame(
             node_trace = nlohmann::json::array();
             node_trace_ptr = &node_trace;
         }
-        executeRenderingPasses(render_ctx, rendering_pass, frame_graph, modules,
+        executeRenderingPasses(render_ctx, rendering_pass, frame_graph, modules, record_scene_as,
                                view_family_states,
                                frame_target_format,
                                render_target_layout_tracker,

@@ -19,6 +19,7 @@ const char *nodeKindName(FramePlanNodeKind kind) {
     switch (kind) {
     case FramePlanNodeKind::render: return "render";
     case FramePlanNodeKind::compute: return "compute";
+    case FramePlanNodeKind::acceleration_structure: return "acceleration_structure";
     case FramePlanNodeKind::anchor: return "anchor";
     case FramePlanNodeKind::snapshot_copy: return "snapshot_copy";
     case FramePlanNodeKind::output_transform: return "output_transform";

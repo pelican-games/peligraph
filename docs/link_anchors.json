@@ -1880,7 +1880,7 @@
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/logicalframegraphadapter.cpp|footprint の既定選択": "const auto declared =",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/logicalframegraphadapter.cpp|read+write の融合判定": "const auto attachment_read_write =",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/logicalframegraphadapter.cpp|write ポートの版付け": "auto &version = current_versions.at(resource);",
-    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/logicalframegraphadapter.cpp|その decision の生成": "result.decisions.push_back(LogicalCompileDecision{",
+    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/logicalframegraphadapter.cpp|その decision の生成": "\"shadow_graph_only\", result.name,",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/previewgraph.hpp|`precompilePreviewGraph()`": "PreviewGraphProgram precompilePreviewGraph(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/previewgraph.hpp|`previewgraph.hpp` 内": "// A third, startup-compiled graph program. Unlike flat/xr RenderingPassId it",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/renderingpass/rendercompilerprogram.cpp|`rendercompilerprogram.cpp` 内": "validateFrameExecutionPlanCompatibility(",

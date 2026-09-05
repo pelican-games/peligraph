@@ -15,6 +15,7 @@ namespace Pelican {
 enum class FramePlanNodeKind {
     render,
     compute,
+    acceleration_structure,
     anchor,
     snapshot_copy,
     output_transform,
