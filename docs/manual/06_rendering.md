@@ -1003,7 +1003,13 @@ AABB boundsの変更はBLASを再構築し、recordだけの変更ではBLASを�
 次の描画で変更が使われます。componentのSave sceneとは別の操作です。
 名前・kindや他assetは保持し、ファイル競合・不正record・保存失敗時は現在の描画状態を保持します。
 recordのshader型照合は現在sceneに装着したassetが対象で、未装着assetは装着時に検査します。
-プレビュー中やrender pipelineの公開待ち中は編集できません。専用のStudio編集画面は未実装です。
+プレビュー中やrender pipelineの公開待ち中は編集できません。
+StudioではRender Featuresの **Procedural assets...** からassetを選び、
+Min/MaxのX・Y・ZとRecord JSONを編集して **Apply** で保存・反映します。
+assetを切り替えても入力内容は保持します。**Refresh / retry** は一覧と編集結果を取得し、
+未保存の草稿とその元の保存世代は保持します。
+**Reset selected** は選択中の草稿だけを、最後に取得した保存済みの値へ戻します。
+他のassetの保存によって競合した草稿も自動的に上書き・再送しません。
 
 StudioのRender Features画面から「Scene AS...」を開くと、名前付きTLASの名前とmaskを
 表で編集できます。Add／Removeで行を増減し、Applyで再コンパイルと保存を行います。

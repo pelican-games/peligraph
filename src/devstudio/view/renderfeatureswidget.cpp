@@ -1,4 +1,6 @@
 #include "renderfeatureswidget.hpp"
+#include "proceduralassetdialog.hpp"
+#include "jsonrpcrequest.hpp"
 #include "taskresourceconnections.hpp"
 
 #include "../viewport/embeddedviewport.hpp"
@@ -484,26 +486,6 @@ class ComputeTaskDialog final : public QDialog {
     notice->setText(
         tr("Dispatch updated in the JSON draft. Apply task to save."));
   }
-  static bool integersPreserved(const Json &original, const Json &converted) {
-    if (original.is_number_integer())
-      return converted.is_number_integer() &&
-             original.dump() == converted.dump();
-    if (original.is_structured()) {
-      if (original.type() != converted.type() ||
-          original.size() != converted.size())
-        return false;
-      if (original.is_array()) {
-        for (std::size_t index = 0; index < original.size(); ++index)
-          if (!integersPreserved(original[index], converted[index]))
-            return false;
-      } else
-        for (const auto &[key, value] : original.items())
-          if (!converted.contains(key) ||
-              !integersPreserved(value, converted.at(key)))
-            return false;
-    }
-    return true;
-  }
   void loadConnections() {
     connections_source = editor->toPlainText();
     const auto task = Json::parse(connections_source.toStdString(), nullptr, false);
@@ -648,15 +630,11 @@ class ComputeTaskDialog final : public QDialog {
                           .arg(error.offset));
       return;
     }
-    const auto original =
-        Json::parse(editor->toPlainText().toStdString(), nullptr, false);
-    const auto transported = Json::parse(
-        document.toJson(QJsonDocument::Compact).toStdString(), nullptr, false);
-    if (original.is_discarded() || transported.is_discarded() ||
-        !integersPreserved(original, transported)) {
-      notice->setText(tr(
-          "An integer in this task cannot be represented exactly by the Studio "
-          "RPC transport. Reduce it before applying; the draft is unchanged."));
+    QJsonObject exact_task;
+    try {
+      exact_task = exactJsonRpcObject(Json::parse(editor->toPlainText().toStdString()));
+    } catch (const std::exception &error) {
+      notice->setText(QString::fromUtf8(error.what()));
       return;
     }
     submitted_creation = creationIndex();
@@ -666,7 +644,7 @@ class ComputeTaskDialog final : public QDialog {
           Request::Submit, QStringLiteral("add_compute_task"),
           {{"base_source_digest", new_drafts[submitted_creation].root_digest},
            {"destination_reference", destination->text()},
-           {"task", document.object()}});
+           {"task", exact_task}});
       return;
     }
     if (document.object().value("name") != task.value("name")) {
@@ -678,7 +656,7 @@ class ComputeTaskDialog final : public QDialog {
             {{"base_source_digest", draft.root_digest},
              {"base_task_source_digest", draft.source_digest},
              {"task_name", task.value("name")},
-             {"task", document.object()}});
+             {"task", exact_task}});
   }
   void removeTask() {
     const auto task = selected();
@@ -1754,6 +1732,16 @@ struct RenderFeaturesWidget::Impl {
         apply->setObjectName(
             QStringLiteral("pelican.renderFeatures.apply"));
         actions->addWidget(refresh);
+        auto *procedural_assets = new QPushButton(owner.tr("Procedural assets..."), &owner);
+        procedural_assets->setObjectName(QStringLiteral("pelican.renderFeatures.proceduralAssets"));
+        actions->addWidget(procedural_assets);
+        QObject::connect(procedural_assets, &QPushButton::clicked, &owner, [this] {
+            auto *dialog = new ProceduralAssetDialog(viewport, &owner, [this] {
+                requestRefresh();
+                emit owner.renderConfigCommitted();
+            });
+            dialog->show();
+        });
         auto *tasks = new QPushButton(owner.tr("Tasks..."), &owner);
         tasks->setObjectName(QStringLiteral("pelican.renderFeatures.tasks"));
         actions->addWidget(tasks);

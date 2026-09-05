@@ -23237,10 +23237,15 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、procedural asset編集):** port接続表はbc2e1a09へ統合済み。既存procedural assetのaabb/recordを編集・保存・runtime反映するRPCを追加し、実GPU確認。次は専用Studio編集画面、視覚的な線での接続、AS公開境界を越える配置など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、procedural asset編集画面):** bounds/record編集RPCは0b6b9e85へ統合済み。StudioのProcedural assets画面へ接続。次は視覚的な線での接続、AS公開境界を越える配置など。学習サンプルは後回し。
+
+**Procedural asset Studio画面 (2026-09-06):**
+- Render FeaturesのProcedural assets...から既存assetを選び、Min/Max XYZとrecord JSONを編集してApply。前述RPCの保存・runtime公開を使用し、独立した実行経路は追加しない。
+- assets_json文字列を正確にparseして初期値を取得。assetごとの草稿・元保存世代を維持し、Refresh/retryや失敗後に暗黙rebaseしない。Reset selectedで選択中だけ最後に取得した保存値へ戻す。切断時の草稿保持、pending ticket再照会、空一覧・エラー表示を実装。
+- Tasksにあった整数丸め確認をjsonrpcrequest.hppへ抽出し共用。実Qt変換でrecordの数値/配列保持と非表現uint64拒否を確認（既存Qt target追加case1/1、build/.codex_bg/proceduralgui-rpc.log）。Studio/test target build成功（proceduralgui-build.log）。新画面の手動GUI操作は未確認。GPU/runtimeは変更せず0b6b9e85の証拠を引き継ぐ。
 
 **Procedural asset bounds/record編集 (2026-09-06):**
-- get_procedural_assets / edit_procedural_assetと既存get_edit_resultへ接続。原文digestのCAS、既存document transactionのatomic保存・回復を再利用。編集対象は既存assetのaabb/recordに限定し、他assetと参照表記を保持。scene journalのUndo/Saveとは別操作、専用Studio画面は未実装。
+- get_procedural_assets / edit_procedural_assetと既存get_edit_resultへ接続。原文digestのCAS、既存document transactionのatomic保存・回復を再利用。編集対象は既存assetのaabb/recordに限定し、他assetと参照表記を保持。scene journalのUndo/Saveとは別操作。専用Studio画面は上記の後続で接続。
 - frame boundaryで候補asset cache、ProceduralGeometryContainerとPolygonInstanceContainerのprepared stateを準備。typed record/row解決成功後にsource commit、その後noexcept公開と既存retirement。source失敗なら候補破棄。pipeline公開待ちはgateで拒否、preview中は新規編集拒否・受理済みcommitを延期する。
 - assetだけの変更で保存時transformを再適用しない。proceduralRayInstancesの既存live ECS経路に候補stateを渡し、rendererはsnapshotの宣言・transformを保持したままinventoryを再解決。service生成時には原文を既存パス書換えで正規化しロード済みcacheと一致しない場合編集を無効化。
 - 最終GPU4/4（327 assertions、build/.codex_bg/proceduraledit-final-gpu.log）。既存multi-AABB caseを実RPCへ変更し、recordヒット変化/BLAS reuse、bounds rebuild、不正record・CAS・source失敗でdisk/cache/runtime保持、live transformのcommit直後保持、外部変更後の新service無効化を確認。関連triangle/static/refitも成功。初回156 assertions成功後、transform/baseline回帰を追加。

@@ -13,6 +13,8 @@ add_library(pelican_studio_view STATIC
     fullscreenpasswidget.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
+    proceduralassetdialog.cpp
+    proceduralassetdialog.hpp
     renderfeatureswidget.cpp
     renderfeatureswidget.hpp
 )

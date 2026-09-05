@@ -21,6 +21,7 @@
 
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
+#include "jsonrpcrequest.hpp"
 
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -38,6 +39,21 @@
 #include "../src/project/renderpipeline.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+
+TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport",
+          "[studio][rpc-json]") {
+    using nlohmann::json;
+    const json request = {{"asset_name", "sphere"}, {"record", {
+        {"radius", 1.125}, {"mask", 4294967295u},
+        {"nested", json::array({"text", true, nullptr, -17})}}}};
+    const auto converted = PelicanStudio::exactJsonRpcObject(request);
+    CHECK(json::parse(QJsonDocument(converted).toJson().toStdString()) == request);
+    auto large = request;
+    large["record"]["nested"].push_back(std::uint64_t{18446744073709551615ull});
+    CHECK_THROWS_AS(PelicanStudio::exactJsonRpcObject(large), std::invalid_argument);
+    CHECK(large["record"]["nested"].back() == std::uint64_t{18446744073709551615ull});
+    CHECK_THROWS_AS(PelicanStudio::exactJsonRpcObject(json::array()), std::invalid_argument);
+}
 #include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
