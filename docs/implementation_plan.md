@@ -22671,7 +22671,7 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 実際には同じ handle の RT pipeline 内容が hot reload で変わったときも旧 SBT を再利用していた。
 `6a881375` では instance/geometry flags 等と material generation に加え **RT pipeline 内容世代**を再利用条件へ加え、active diagnostics の move も修正した。
 今回 `renderer.cpp` の pipeline generation の輸送と `tryReuseFrame()` の比較を確認した。
-統合ログで上記 4 件は全て Passed。全数は途中異常終了のため未完了であり、完了記録・rev384 は末尾の再開順に従って閉じる。
+統合ログで上記 4 件は全て Passed。後続の再実行で全数を完走した。既知 gate の失敗と rev384 の残余は下の完了記録を参照。
 
 #### 直すこと
 
@@ -22688,6 +22688,26 @@ frame transaction を WP380 の executor に載せ替えること(別機構の�
 #### やらないこと
 
 WP384 の設計変更(三相・bundle・seal は維持)/ WP386a の内容 / 再利用経路の性能改善。
+#### WP384 / WP384-fix 完了記録(2026-09-05、既知 gate 失敗と残余を区別)
+
+実装は `b5abdf9d` / `6a881375`、文書追従 `c89d4f70`。三相 submit → publication callback → output publication、immutable RT descriptor bundle、最初の実 submit での retirement batch seal を導入し、fix で instance/geometry flags と material/pipeline 内容世代を再利用判定へ加えた。
+起票時の pool 破棄順の疑いは主因ではなく、pipeline 内容更新後の旧 SBT 再利用による DeviceLost の二次症状だった(引き継ぎの原因調査)。
+
+- **今回の統合全数:** HEAD `108cfc48`、既存 Debug build、OpenXR ON / Studio ON / SPIRV_LINK ON / Python AUTO。`ctest -j4` が **1658 件中 Passed 1656、Skipped 1、Failed 1**、658.35 秒で完走。ログは `<作業ディレクトリ>/int_wp384fix_resume_20260905/ctest.log`、`done` は `EXIT=8`。
+- 失敗は既知の `contract_projection_gate` のみ(source inventory の不一致)。前回の `0xc0000142` 連続異常終了は今回は再現せず。原因の解明完了とは扱わない。
+- WP374a F G F / chairs / RPC rows と WP367 production anyhit の修正対象 4 件は全て Passed。WP384 sequential XR seal も今回は Passed。引き継ぎで showcase 由来とされた shipping manifest / project catalog の 2 件も今回は Passed。利用者の project は変更していない。
+- スキップは `PathResolver rejects symlink escapes after canonicalization`。旧 W1 は 52 件失敗 0、うち sequential XR 1 skip。OpenXR OFF と変異 4 種の実測は引き継ぎ報告によるもので、今回再実行したものとは区別する。
+- WP384 の統合側変異 7 件は引き継ぎ §6 に記録。等価変異 1 件と、seal 除去を検出できずテスト追加後に赤になった経緯を含む。今回の作業で同じ変異を反復していない。
+- **rev384:** Fable 5.1 に読み取り限定で依頼し、Codex が主張をコードで追認・仕分け。下記の残余を記録し、連鎖上限で追加修正は起票しない。検証・レビュー記録の収束であり、既知 gate を含む全試験成功や欠陥ゼロを意味しない。
+
+**rev384 の残余と裁定:**
+1. **記録のみ(性能):** table 使用構成では `tryReuseFrame()` が table 生成前の空 digest と active の生成済み digest を比較し、再利用を妨げる。renderer → PipelineFactory → active row の流れをコード確認。描画破壊は未実測。比較を単純に外すと alpha override 等が stale になり得るので、削除案をそのまま採用しない。
+2. **記録のみ(未閉鎖):** submit 前の `before_publish` は companion shader/material reload の commit を呼ぶ。submit 失敗時の副作用まで復元されることは今回未証明。runtime generation rollback と effect 全体の rollback を混同しない。具体的重大後退を実測した場合は revert を含め判断する。
+3. **やらない:** `confirmSubmission()` を将来誤用する仮定だけで修正を追加しない。現在の呼び出し契約の欠陥は示されていない。
+4. **記録のみ(未確認):** record 後の scene buffer 再割当が reuse descriptor に反映されるかという懸念。到達経路と実害は未確認。
+
+原文と裁定は `<作業ディレクトリ>/rev384_fable_20260905/review.md`。関連箇所は `src/core/renderer/accelerationstructure.cpp`、`src/core/vkcore/renderer.cpp`、`src/core/shader/pipelinefactory.cpp`、`src/core/watch/reloadservice.cpp`。
+
 ### WP385: GPU テストの process 間 lease —— 2 つの ctest が同じ GPU で偽陽性を出さない
 
 **§4 規則 11 中段(test 基盤。production には触れない)。実装者: `gpt-5.6-terra` + `high`。コードレビューは統合側検証 + Claude。見積: 小。**
@@ -23174,12 +23194,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
 `<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
 
-1. **WP384-fix 全数確認 → 記録 → rev384。** `6a881375` に squash 済み。
-   `<作業ディレクトリ>/int_wp384fix/w_ctest.log` は 52 件失敗 0、うち sequential XR の 1 件は Skipped(52 件全て実行成功ではない)。
-   統合 `ctest.log` 冒頭で修正対象 4 件(WP374a F G F / chairs / RPC rows、WP367 production anyhit)の Passed を確認。
-   ただし同ログは 1537/1658 後で途切れ、1490 件目から `0xc0000142` が連続。`done` と終了集計は無く、確認時に ctest/MSBuild process は見つからない。
-   **全数成功は未確認。** 最初の異常終了試験 `GPU timing on and off preserve bytes and publish ordered node identity` を現在の build で単独・GPU 直列再実行すると 1/1 Passed(4.35 秒)。連続失敗の原因は未特定で、WP384-fix の退行とも環境起因とも断定しない。
-   次は実行環境・既知失敗を確認して統合全数を完走させ、対象 4 件の成功と全数の残結果を分けて完了記録を書く。対象 4 件だけを同じ目的で反復しない。
+1. **WP384-fix の検証・記録・rev384 は収束。** 全数1658件中、成功1656・skip1・既知の contract_projection_gate 失敗1。修正対象4件とsequential XRは成功。残余とレビュー裁定は上の完了記録。次はWP382cのW1と着地。
 2. **WP382c 着地 → 記録 → rev382c。** worktree `<作業ディレクトリ>/wp382c`、HEAD `6e1fa40c` を確認。引き継ぎでは受け入れ・変異済み、今回は再実測していない。統合手順で現ブランチを取り込み、RT family を含む W1 を通す。`reloadAsset` の noexcept/OOM 懸念は記録と実装修正を混同しない。
 3. **WP386a 統合準備 → 変異 → 着地 → rev386a。** worktree `<作業ディレクトリ>/wp386a`、HEAD `60118cb6` を確認。renderer/AS の WP384-fix と procedural root/kind の両方を残して merge する。
    **今回コードで確認:** `canonicalTransformIdentity()` は float bits を直接出力し、`-0.0` 正規化はまだ無い。決定 17 の範囲で実装・受け入れが必要。未統合状態で済と記録しない。
