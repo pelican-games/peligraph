@@ -144,6 +144,7 @@ class InspectorModel {
     bool requestComponentAddCandidates();
     const std::optional<nlohmann::json> &componentAddCandidates() const noexcept;
     bool addComponent(std::string_view name);
+    bool addComponent(std::string_view name, const nlohmann::json &declaration);
     void abortActivePreview();
     void undo();
     void redo();

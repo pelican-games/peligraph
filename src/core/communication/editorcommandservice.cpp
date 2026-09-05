@@ -826,6 +826,7 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
     const EditorGetComponentsRequest &request) const {
     const auto object = getComponents(request);
     auto candidates = OrderedJson::array();
+    const auto schema_type_name = schemaTypeResolverOrDefault({});
     for (const auto &codec : componentCodecs()) {
         if (codec.name == "behavior" || std::any_of(object.components.begin(), object.components.end(),
                 [&](const auto &component) { return component.name == codec.name; })) continue;
@@ -841,6 +842,10 @@ OrderedJson EditorCommandService::getComponentAddCandidates(
         } catch (const LegacyRejectException &error) {
             candidate["unavailable_reason"] = error.what();
         }
+        candidate["component_template"] = candidate.value("component", OrderedJson{{"name", codec.name}});
+        candidate["schema_fields"] = OrderedJson::array();
+        for (const auto &field : codec.fieldSchema())
+            candidate["schema_fields"].push_back(schemaFieldJson(field, schema_type_name));
         candidates.push_back(std::move(candidate));
     }
     return {{"object_id", object.authoring_object_id.value},

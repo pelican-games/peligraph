@@ -1082,8 +1082,11 @@ TEST_CASE("Studio adds a catalog component through the existing revision and tic
     const Json component{{"name", "collider"}, {"type", "box"}};
     Json catalog{{"object_id", 41}, {"scene_revision", 1},
                  {"candidates", Json::array({
-                     {{"name", "collider"}, {"available", true}, {"component", component}},
+                     {{"name", "collider"}, {"available", true}, {"component", component},
+                      {"component_template", component}, {"schema_fields", Json::array()}},
                      {{"name", "simplemodelview"}, {"available", false},
+                      {"component_template", {{"name", "simplemodelview"}}},
+                      {"schema_fields", Json::array({{{"name", "model"}, {"type", "string"}}})},
                       {"unavailable_reason", "A model reference is required."}}})}};
     REQUIRE(harness.model.requestComponentAddCandidates());
     const auto query = harness.take("get_component_add_candidates");
@@ -1108,6 +1111,28 @@ TEST_CASE("Studio adds a catalog component through the existing revision and tic
         CHECK_FALSE(harness.model.componentAddCandidates());
         harness.model.undo();
         CHECK(harness.take("undo").params == Json{{"actor_id", 9}, {"base_revision", 2}});
+    }
+    SECTION("custom required fields use the same edit and allow retry after rejection") {
+        harness.reply(query, catalog);
+        const Json declaration{{"name", "simplemodelview"}, {"model", "chair"}};
+        CHECK_FALSE(harness.model.addComponent("unknown", declaration));
+        CHECK_FALSE(harness.model.addComponent("collider", declaration));
+        REQUIRE(harness.model.addComponent("simplemodelview", declaration));
+        const auto edit = harness.take("edit");
+        CHECK(edit.params.at("base_revision") == 1);
+        CHECK(edit.params.at("operations") == Json::array({
+            {{"op", "add_component"}, {"object_id", 41}, {"component", declaration}}}));
+        harness.reply(edit, {{"status", "accepted"}, {"ticket", "custom:1"}});
+        harness.model.pollPendingOperations();
+        harness.reply(harness.take("get_edit_result"),
+                      {{"status", "failed"}, {"error", {{"code", "invalid_model"}, {"message", "Model does not exist"}}}});
+        CHECK(harness.model.notice().kind == InspectorNoticeKind::Error);
+        CHECK(harness.model.snapshot()->scene_revision == 1);
+        harness.completeRefresh(1.0, 1);
+        REQUIRE(harness.model.requestComponentAddCandidates());
+        harness.reply(harness.take("get_component_add_candidates"), catalog);
+        REQUIRE(harness.model.addComponent("simplemodelview", declaration));
+        CHECK(harness.take("edit").params.at("operations").at(0).at("component") == declaration);
     }
     SECTION("a newer scene revision requires refreshing the Inspector") {
         catalog["scene_revision"] = 2;

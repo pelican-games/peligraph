@@ -1642,6 +1642,17 @@ const std::optional<Json> &InspectorModel::componentAddCandidates() const noexce
 }
 
 bool InspectorModel::addComponent(std::string_view name) {
+    if (!impl_->component_add_candidates) return false;
+    const auto &catalog = *impl_->component_add_candidates;
+    const auto &candidates = catalog.at("candidates");
+    const auto found = std::find_if(candidates.begin(), candidates.end(), [name](const auto &candidate) {
+        return candidate.at("name").template get_ref<const std::string &>() == name;
+    });
+    if (found == candidates.end() || !found->value("available", false)) return false;
+    return addComponent(name, found->at("component"));
+}
+
+bool InspectorModel::addComponent(std::string_view name, const Json &declaration) {
     if (!canRequestComponentAddCandidates() || !impl_->component_add_candidates) return false;
     const auto &catalog = *impl_->component_add_candidates;
     if (catalog.at("object_id") != impl_->snapshot->authoring_object_id ||
@@ -1650,10 +1661,12 @@ bool InspectorModel::addComponent(std::string_view name) {
     const auto found = std::find_if(candidates.begin(), candidates.end(), [name](const auto &candidate) {
         return candidate.at("name").template get_ref<const std::string &>() == name;
     });
-    if (found == candidates.end() || !found->value("available", false)) return false;
+    if (found == candidates.end() || !declaration.is_object() ||
+        !declaration.contains("name") || !declaration.at("name").is_string() ||
+        declaration.at("name").get_ref<const std::string &>() != name) return false;
     Json operation{{"op", "add_component"},
                    {"object_id", impl_->snapshot->authoring_object_id},
-                   {"component", found->at("component")}};
+                   {"component", declaration}};
     impl_->enqueueEdit(std::move(operation), "Add " + std::string{name}, std::string{name});
     impl_->component_add_candidates.reset();
     return true;

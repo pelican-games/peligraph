@@ -23,6 +23,7 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QPointer>
+#include <QPlainTextEdit>
 #include <QScrollArea>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -95,6 +96,9 @@ struct InspectorWidget::Impl {
     QPointer<QDialog> add_component_dialog;
     QComboBox *component_types = nullptr;
     QLabel *component_description = nullptr;
+    QPlainTextEdit *component_declaration = nullptr;
+    QHash<QString, QString> component_drafts;
+    QString displayed_component;
     QPushButton *confirm_add_component = nullptr;
     QPushButton *refresh_component_types = nullptr;
     std::optional<Json> displayed_candidates;
@@ -406,19 +410,27 @@ struct InspectorWidget::Impl {
         adding_scene = model.snapshot()->scene_id;
         adding_object = model.snapshot()->authoring_object_id;
         displayed_candidates.reset();
+        component_drafts.clear();
+        displayed_component.clear();
         auto *dialog = new QDialog(&owner);
         add_component_dialog = dialog;
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setWindowTitle(owner.tr("Add component"));
         dialog->setObjectName(QStringLiteral("pelican.componentAddDialog"));
         dialog->setWindowModality(Qt::WindowModal);
-        dialog->resize(460, 180);
+        dialog->resize(560, 440);
         auto *layout = new QVBoxLayout(dialog);
         component_types = new QComboBox(dialog);
         component_types->setObjectName(QStringLiteral("pelican.componentAddTypes"));
         layout->addWidget(component_types);
         component_description = plainLabel(owner.tr("Loading component types..."), dialog);
         layout->addWidget(component_description);
+        component_declaration = new QPlainTextEdit(dialog);
+        component_declaration->setObjectName(QStringLiteral("pelican.componentAddDeclaration"));
+        layout->addWidget(component_declaration);
+        QObject::connect(component_declaration, &QPlainTextEdit::textChanged, dialog, [this] {
+            if (!displayed_component.isEmpty()) component_drafts[displayed_component] = component_declaration->toPlainText();
+        });
         auto *buttons = new QHBoxLayout;
         refresh_component_types = new QPushButton(owner.tr("Refresh types"), dialog);
         confirm_add_component = new QPushButton(owner.tr("Add"), dialog);
@@ -435,8 +447,15 @@ struct InspectorWidget::Impl {
             dispatchRequests();
         });
         QObject::connect(confirm_add_component, &QPushButton::clicked, dialog, [this] {
-            if (model.addComponent(component_types->currentData().toString().toStdString()))
-                add_component_dialog->close();
+            const auto declaration = Json::parse(component_declaration->toPlainText().toStdString(), nullptr, false);
+            if (declaration.is_discarded() || !declaration.is_object()) {
+                component_description->setText(owner.tr("Component JSON must be a valid object."));
+                return;
+            }
+            if (!model.addComponent(component_types->currentData().toString().toStdString(), declaration)) {
+                component_description->setText(owner.tr("Keep the selected component name unchanged and refresh types if the scene changed."));
+                return;
+            }
             synchronize();
             dispatchRequests();
         });
@@ -462,12 +481,15 @@ struct InspectorWidget::Impl {
                     const auto name = QString::fromStdString(candidate.at("name").get<std::string>());
                     component_types->addItem(name, name);
                 }
+                const int previous = component_types->findData(displayed_component);
+                if (previous >= 0) component_types->setCurrentIndex(previous);
             }
         }
         const bool ready = model.canRequestComponentAddCandidates();
         refresh_component_types->setEnabled(ready);
         component_types->setEnabled(ready && catalog.has_value());
         confirm_add_component->setEnabled(false);
+        component_declaration->setReadOnly(!ready || !catalog);
         if (!catalog) {
             component_description->setText(QString::fromStdString(model.notice().message));
             return;
@@ -478,11 +500,30 @@ struct InspectorWidget::Impl {
             return;
         }
         const auto &candidate = catalog->at("candidates").at(static_cast<std::size_t>(index));
-        const bool available = candidate.at("available").get<bool>();
-        confirm_add_component->setEnabled(ready && available);
-        component_description->setText(available
-            ? owner.tr("Add with the engine defaults, then edit its properties in the Inspector.")
-            : QString::fromStdString(candidate.at("unavailable_reason").get<std::string>()));
+        const auto name = QString::fromStdString(candidate.at("name").get<std::string>());
+        if (displayed_component != name || !component_drafts.contains(name)) {
+            displayed_component = name;
+            if (!component_drafts.contains(name)) {
+                const auto initial = candidate.at("component_template");
+                component_drafts.insert(name, QString::fromStdString(initial.dump(2)));
+            }
+            const QSignalBlocker blocker{component_declaration};
+            component_declaration->setPlainText(component_drafts.value(name));
+        }
+        QStringList fields;
+        for (const auto &field : candidate.at("schema_fields")) {
+            fields.push_back(QStringLiteral("%1 (%2)").arg(
+                QString::fromStdString(field.value("name", "")),
+                QString::fromStdString(field.value("type", ""))));
+        }
+        confirm_add_component->setEnabled(ready);
+        QString description = owner.tr("Edit the declaration, then Add. Use registered asset names for asset fields; the engine validates the values.");
+        if (!fields.isEmpty()) description += owner.tr(" Fields: %1.").arg(fields.join(", "));
+        if (!candidate.value("available", false))
+            description += "\n" + QString::fromStdString(candidate.value("unavailable_reason", ""));
+        if (model.notice().kind == InspectorNoticeKind::Error)
+            description += "\n" + QString::fromStdString(model.notice().message);
+        component_description->setText(description);
     }
 
     void synchronize() {

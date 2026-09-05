@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、RT7 compute/RT task追加削除):** task編集は64649f47に統合済み。追加・削除のRPCとStudio操作を接続し、保存と実GPUの削除・再作成を確認。次は視覚的なport接続・dispatchフォーム、AS配置を含むnode移動、必須asset入力・behavior追加など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、component必須入力):** task追加削除はaa5f45edに統合済み。Inspectorで必須asset名等の宣言JSONを入力してcomponentを追加する操作を実装し、CPU/Inspector試験とPlayer/Studio buildを確認。次は視覚的なport接続・dispatchフォーム、AS配置を含むnode移動、asset選択フォーム・behavior追加など。学習サンプルは後回し。
+
+**Inspector component必須入力 (2026-09-06):**
+- 候補RPCに`component_template`と既存codec由来の`schema_fields`を追加。`available`は既定値だけで追加可能かを示す。値不足の型も利用者の宣言JSONを既存`add_component`操作へ送る。登録名・scene revision・idle条件は共通入口で確認し、独立validatorやruntime経路は追加しない。
+- Studioの追加画面に宣言JSONと項目名/type案内を追加。型切替や追加失敗時に草稿を保持し、Refresh types後に修正・再送できる。asset参照は登録名を入力する。専用asset選択フォームとbehavior追加は残る。
+- CPU関連14/14（248 assertions、`build/.codex_bg/componentinput-cpu.log`）成功。Inspectorは既存16件成功と追加case修正後1/1成功（`componentinput-inspector.log`、`componentinput-inspector-final.log`）。追加caseは既定値だけでは拒否する型へmodel名を入力し、payload・名前不一致拒否・失敗後の再取得と再送を確認。最初の失敗はtestが既存の失敗後自動refreshを完了させていなかったため修正した。
+- Player/Studio build成功（`componentinput-final-build.log`）、最終Inspector testbuildは`componentinput-testbuild.log`。doclink check3869件成功、audit既存4件不変。runtimeのcomponent追加・asset解決は変更せず、既存WP382dのGPU追加削除と既存journalの証拠を引き継ぐ。新しいJSON追加画面の手動GUI通し操作は未実施。
 
 **RT7 compute/RT task追加削除 (2026-09-06):**
 - `add_compute_task`は新規project featureの作成とroot参照追加を一緒に保存する。`remove_compute_task`は元文書から対象宣言だけを削除し、featureファイルを残す。編集と削除の元文書解決・CAS・保存処理は共通化し、新しいruntime経路を追加しない。
