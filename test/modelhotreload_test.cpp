@@ -17,6 +17,7 @@
 #include "../src/core/userpublic/details/reload/registrationowner.hpp"
 #include "gltf_fragment_fixture.hpp"
 #include "skeletal_fixture.hpp"
+#include "raytracing_rt3_1_fixture.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -234,6 +235,27 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     REQUIRE_FALSE(models.getModelTemplateByName("live").skeletal);
     REQUIRE(primitiveCount(models.getModelTemplateByName("live")) == 2);
 
+    RayInstanceComponent declaration;
+    declaration.overrides.emplace();
+    declaration.overrides->next_id = 2;
+    declaration.overrides->rows.push_back({
+        .envelope = {.id = 1},
+        .value = {.occurrence_id = *old_occurrences.begin(), .mask = 9},
+    });
+    instances.setRayInstanceDeclaration(instance, 382, declaration);
+    auto ray_candidate = instances.snapshotPreparedScene();
+    auto ray_project = std::make_shared<RayTracingProjectConfig>();
+    ray_project->layout = RayTracingRt31Fixture::v2Layout();
+    instances.prepareRayScenePlan(ray_candidate, ray_project);
+    instances.publishPreparedScene(std::move(ray_candidate));
+    const auto old_ray_plan = instances.rayAsPlan();
+    const auto old_ray_inventory = instances.rayAsInventory();
+    REQUIRE(old_ray_plan);
+    REQUIRE_FALSE(old_ray_plan->rows.empty());
+    REQUIRE(old_ray_plan->occurrence_overrides.size() == 1);
+    REQUIRE(old_ray_plan->occurrence_overrides.front().q.has_value());
+    CHECK(old_ray_plan->occurrence_overrides.front().mask == 9);
+
     TestSkeletalFixture::writeGlb(glb);
     REQUIRE(reload.applyRequestForTesting(modified("model.glb")));
     REQUIRE(models.assetIdForTesting("live") == asset);
@@ -262,6 +284,19 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     for (const auto &entry : inventory)
         active_occurrences.insert(entry.occurrence_id);
     REQUIRE(active_occurrences == new_occurrences);
+    REQUIRE(instances.rayAsPlan() != old_ray_plan);
+    REQUIRE(instances.rayAsInventory() != old_ray_inventory);
+    REQUIRE(instances.rayAsPlan()->generation > old_ray_plan->generation);
+    REQUIRE(instances.rayAsPlan()->rows.empty());
+    REQUIRE(instances.rayAsInventory()->instances.size() == 1);
+    REQUIRE(instances.rayAsInventory()->instances.front().skinned);
+    REQUIRE(instances.rayAsPlan()->occurrence_overrides.size() == 1);
+    const auto &unresolved = instances.rayAsPlan()->occurrence_overrides.front();
+    CHECK(unresolved.authoring_object_id == 382);
+    CHECK(unresolved.row_id == 1);
+    CHECK(unresolved.occurrence_id == *old_occurrences.begin());
+    CHECK(unresolved.error == "OccurrenceAbsent");
+    CHECK_FALSE(unresolved.q.has_value());
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
@@ -295,6 +330,16 @@ TEST_CASE("WP382c model reload rollback keeps the published occurrence catalog a
     for (const auto &entry : instances.rayOccurrences())
         old_active.insert(entry.occurrence_id);
     REQUIRE(old_active == old_occurrences);
+
+    auto ray_candidate = instances.snapshotPreparedScene();
+    auto ray_project = std::make_shared<RayTracingProjectConfig>();
+    ray_project->layout = RayTracingRt31Fixture::v2Layout();
+    instances.prepareRayScenePlan(ray_candidate, ray_project);
+    instances.publishPreparedScene(std::move(ray_candidate));
+    const auto old_ray_plan = instances.rayAsPlan();
+    const auto old_ray_inventory = instances.rayAsInventory();
+    REQUIRE(old_ray_plan);
+    REQUIRE_FALSE(old_ray_plan->rows.empty());
 
     // Decision 30: the model participant's prepare_publish builds the whole
     // publication (instance rebuild list, candidate catalog diff, staged
@@ -333,6 +378,8 @@ TEST_CASE("WP382c model reload rollback keeps the published occurrence catalog a
     for (const auto &entry : instances.rayOccurrences())
         active.insert(entry.occurrence_id);
     REQUIRE(active == old_occurrences);
+    REQUIRE(instances.rayAsPlan() == old_ray_plan);
+    REQUIRE(instances.rayAsInventory() == old_ray_inventory);
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

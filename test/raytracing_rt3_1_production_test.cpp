@@ -613,6 +613,262 @@ RaySceneRowSnapshot renderWp374aProductionRows() {
     return *rows;
 }
 
+struct Wp380RuntimeCleanup {
+    ~Wp380RuntimeCleanup() {
+        try {
+            if (auto *scene = FastModuleContainer::tryGet<SceneLoader>())
+                scene->drainRetirementQueue();
+            if (auto *arena =
+                    FastModuleContainer::tryGet<BehaviorAttachmentArena>())
+                arena->deactivateAll();
+            shutdownConfiguredGameLogic();
+            if (auto *vulkan =
+                    FastModuleContainer::tryGet<VulkanManageCore>())
+                vulkan->waitIdle();
+        } catch (...) {
+        }
+    }
+};
+
+TEST_CASE("WP382d authored occurrence masks and custom indices reach the production GPU",
+          "[WP382d][ray-tracing][rt3-1][production][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"wp382d_occurrence_masks"};
+    writeWp374aProject(project.path, 2, true, true, true,
+        Json{{"name", "pelican_ray_instance"}, {"mask", 3}}, true);
+    const auto feature_path = project.path / "features" / "wp377_profile_owner.json";
+    auto feature = Json::parse(readWp374aText(feature_path));
+    feature["render_targets"][0]["usage"].push_back("TRANSFER_SRC");
+    writeWp374aText(feature_path, feature.dump());
+    // Reuse the existing importer fixture, retaining two named occurrences of
+    // the same material at two independently visible positions.
+    auto glb = TestGltfFragmentFixture::makeGlb(false, false, false, true);
+    std::uint32_t json_size = 0;
+    std::memcpy(&json_size, glb.data() + 12, sizeof(json_size));
+    auto model = Json::parse(glb.begin() + 20, glb.begin() + 20 + json_size);
+    model["nodes"][0]["translation"] = {-2.0, 0.0, 8.0};
+    model["nodes"][2]["translation"] = {2.0, 0.0, 8.0};
+    model["meshes"][1]["primitives"][0]["material"] = 0;
+    auto json_bytes = model.dump();
+    while (json_bytes.size() % 4) json_bytes.push_back(' ');
+    const std::vector<std::uint8_t> bin_chunk(glb.begin() + 20 + json_size, glb.end());
+    glb.clear();
+    for (const auto word : {0x46546c67u, 2u,
+             static_cast<std::uint32_t>(20 + json_bytes.size() + bin_chunk.size()),
+             static_cast<std::uint32_t>(json_bytes.size()), 0x4e4f534au})
+        TestGltfFragmentFixture::detail::appendU32(glb, word);
+    glb.insert(glb.end(), json_bytes.begin(), json_bytes.end());
+    glb.insert(glb.end(), bin_chunk.begin(), bin_chunk.end());
+    TestGltfFragmentFixture::detail::writeBytes(project.path / "models" / "chair.glb", glb);
+
+    auto raygen = RayTracingRt31Fixture::wp366RaygenSource(
+        "PELICAN_RAY_TYPE_primary", "PELICAN_MISS_sky", "pelican_resource_wp366_a");
+    const std::string lane = "float x = pixel.x == 0 ? -2.0 : (pixel.x == 1 ? 2.0 : 8.0);";
+    raygen.replace(raygen.find(lane), lane.size(),
+        "float x = (pixel.x % 2) == 0 ? -2.0 : 2.0;");
+    const std::string mask = "gl_RayFlagsOpaqueEXT, 0xffu";
+    raygen.replace(raygen.find(mask), mask.size(),
+        "gl_RayFlagsNoneEXT, pixel.x < 2 ? 1u : 2u");
+    writeWp374aText(project.path / "shaders" / "wp366_a.rgen", raygen);
+
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    (void)renderWp374aProductionRows();
+    const auto catalog = GET_MODULE(PolygonInstanceContainer).rayOccurrences();
+    REQUIRE(catalog.size() == 2);
+    REQUIRE(catalog[0].material == catalog[1].material);
+    auto candidate = GET_MODULE(PolygonInstanceContainer).snapshotPreparedScene();
+    for (auto &row : candidate.ray_instance_declarations)
+        if (row) row->mask = 0;
+    const auto candidate_inventory = GET_MODULE(PolygonInstanceContainer)
+        .rayQueryGeometryInstances(&candidate);
+    REQUIRE(candidate_inventory.size() == 2);
+    CHECK(candidate_inventory[0].ray_instance->mask == 0);
+    CHECK(GET_MODULE(PolygonInstanceContainer).rayQueryGeometryInstances()[0]
+        .ray_instance->mask == 3);
+    auto document = Json::parse(readWp374aText(project.path / "scene.json"));
+    auto &declaration = document["scenes"]["main"]["objects"][0]["components"][2];
+    declaration["overrides"] = {{"$list", {{"v", 1}, {"next_id", 3}}},
+        {"rows", Json::array()}};
+    for (std::size_t index = 0; index < catalog.size(); ++index) {
+        const bool left = catalog[index].node_path.front() == "RootA";
+        declaration["overrides"]["rows"].push_back({
+            {"$row", {{"id", index + 1}, {"v", 1}}},
+            {"occurrence_id", catalog[index].occurrence_id},
+            {"mask", left ? 1 : 2}, {"custom_index", left ? 71 : 82}});
+    }
+    const auto apply = [&] {
+        return GET_MODULE(ProjectBasicConfig).importSceneDocument(document.dump(),
+            [&](SceneLoadRequest &&request) {
+                request.scene_id = "main";
+                return GET_MODULE(SceneLoader).load(std::move(request));
+            });
+    };
+    REQUIRE(std::holds_alternative<SceneLoadCommitted>(apply().load_result));
+#if PELICAN_WITH_RPC
+    struct RowPublicationFailure final : EditorProjectionFaultInjector {
+        bool armed = false;
+        bool fired = false;
+        bool shouldFail(EditorProjectionFaultPoint point,
+                        std::string_view adapter_name) noexcept override {
+            if (!armed || point != EditorProjectionFaultPoint::AfterPublication ||
+                adapter_name != "scene_pair") return false;
+            armed = false;
+            fired = true;
+            return true;
+        }
+    } fault;
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.projection_fault_injector = &fault});
+    std::uint64_t rpc_id = 382000;
+    const auto tree = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
+    const auto inventory_query = [&] {
+        return runWp374aRpcBytes(*service, rpc_id++, "get_ray_occurrences",
+            {{"name", document.at("scenes").at("main").at("objects").at(0).at("name")}});
+    };
+    // Read immediately after scene commit, before ECS update or rendering.
+    const auto committed_inventory = inventory_query();
+    REQUIRE(committed_inventory.at("overrides").size() == 2);
+    CHECK(committed_inventory.at("rejected_rows").empty());
+    for (const auto &row : committed_inventory.at("overrides")) {
+        CHECK(row.at("address").at("component").at("type") == "pelican_ray_instance");
+        CHECK(row.at("address").at("component").at("occurrence") == 2);
+        CHECK(row.at("address").at("list_path") == "/overrides");
+        REQUIRE(row.at("q").is_number_unsigned());
+    }
+#endif
+    const auto overridden = renderWp374aProductionRows();
+    REQUIRE(overridden.occurrence_overrides.size() == 2);
+    for (const auto &row : overridden.occurrence_overrides) {
+        REQUIRE(row.q.has_value());
+        CHECK(overridden.rows.at(*row.q).instance_mask == row.mask);
+    }
+    auto output = GET_MODULE(Renderer).readRenderTargetForTesting("wp366_a", ImageSubresourceRange{});
+    REQUIRE(output.bytes.size() >= 16 * sizeof(std::uint32_t));
+    std::array<std::uint32_t, 16> pixels{};
+    std::memcpy(pixels.data(), output.bytes.data(), sizeof(pixels));
+    CHECK(pixels[1] == 71); // left, ray mask 1
+    CHECK(pixels[5] == 0xffffffffu); // right, ray mask 1
+    CHECK(pixels[9] == 0xffffffffu); // left, ray mask 2
+    CHECK(pixels[13] == 82); // right, ray mask 2
+
+#if PELICAN_WITH_RPC
+    for (const auto &entry : committed_inventory.at("entries")) {
+        const bool left = entry.at("node_path").at(0) == "RootA";
+        REQUIRE(entry.at("q").is_number_unsigned());
+        const auto q = entry.at("q").get<std::uint32_t>();
+        const auto row = std::ranges::find(overridden.rows, q, &RaySceneRow::q);
+        REQUIRE(row != overridden.rows.end());
+        CHECK(entry.at("effective").at("mask") == (left ? 1 : 2));
+        CHECK(entry.at("effective").at("custom_index") == (left ? 71 : 82));
+        CHECK(row->instance_mask == (left ? 1 : 2));
+        CHECK(row->instance_custom_index == (left ? 71 : 82));
+    }
+    const auto session = runWp374aRpcBytes(*service, rpc_id++, "open_editor_session",
+                                         {{"display_name", "WP382d row deletion"}});
+    auto operations = Json::array();
+    for (const auto &row : committed_inventory.at("overrides")) {
+        auto address = row.at("address");
+        address["authoring_object_id"] = address.at("object");
+        address.erase("object");
+        operations.push_back({{"op", "remove_component_field"}, {"address", address}});
+    }
+    const auto before_plan = GET_MODULE(PolygonInstanceContainer).rayAsPlan();
+    const auto before_inventory = GET_MODULE(PolygonInstanceContainer).rayAsInventory();
+    const auto before_rpc = inventory_query();
+    fault.armed = true;
+    const auto rejected_edit = finishWp374aEdit(*service, rpc_id,
+        session.at("actor_id").get<std::uint64_t>(),
+        tree.at("scene_revision").get<std::uint64_t>(), operations);
+    REQUIRE(rejected_edit.at("status") == "failed");
+    REQUIRE(fault.fired);
+    CHECK(GET_MODULE(PolygonInstanceContainer).rayAsPlan() == before_plan);
+    CHECK(GET_MODULE(PolygonInstanceContainer).rayAsInventory() == before_inventory);
+    CHECK(inventory_query() == before_rpc);
+    const auto edited = finishWp374aEdit(*service, rpc_id,
+        session.at("actor_id").get<std::uint64_t>(),
+        tree.at("scene_revision").get<std::uint64_t>(), std::move(operations));
+    REQUIRE(edited.at("status") == "committed");
+    const auto erased_inventory = inventory_query();
+    CHECK(erased_inventory.at("overrides").empty());
+    for (const auto &entry : erased_inventory.at("entries"))
+        CHECK(entry.at("effective").at("mask") == 3);
+#else
+    declaration["overrides"]["rows"] = Json::array();
+    REQUIRE(std::holds_alternative<SceneLoadCommitted>(apply().load_result));
+#endif
+    const auto restored = renderWp374aProductionRows();
+    REQUIRE(restored.rows.size() == 2);
+    for (const auto &row : restored.rows) CHECK(row.instance_mask == 3);
+    output = GET_MODULE(Renderer).readRenderTargetForTesting("wp366_a", ImageSubresourceRange{});
+    std::memcpy(pixels.data(), output.bytes.data(), sizeof(pixels));
+    for (const auto lane_index : {1, 5, 9, 13}) CHECK(pixels[lane_index] != 0xffffffffu);
+#if PELICAN_WITH_RPC
+    service.reset();
+#endif
+    declaration["overrides"] = {{"$list", {{"v", 1}, {"next_id", 4}}},
+        {"rows", Json::array({{{"$row", {{"v", 1}, {"id", 3}}},
+            {"occurrence_id", "ffffffffffffffffffffffffffffffff"}, {"mask", 0}}})}};
+    const auto unresolved_import = apply();
+    REQUIRE(std::holds_alternative<SceneLoadCommitted>(unresolved_import.load_result));
+    const auto &diagnostics = std::get<SceneLoadCommitted>(unresolved_import.load_result).diagnostics;
+    REQUIRE(diagnostics.rejected_rows.size() == 1);
+    CHECK(diagnostics.rejected_rows[0].address.row_id == 3);
+    CHECK(diagnostics.rejected_rows[0].address.component_witness.at("occurrence") == 2);
+    CHECK(diagnostics.rejected_rows[0].error.at("code") == "OccurrenceAbsent");
+#if PELICAN_WITH_RPC
+    service = makeEditorRuntimeService();
+    const auto unresolved_inventory = inventory_query();
+    REQUIRE(unresolved_inventory.at("rejected_rows").size() == 1);
+    CHECK(unresolved_inventory.at("rejected_rows").at(0).at("error").at("code") == "OccurrenceAbsent");
+    CHECK(unresolved_inventory.at("overrides").at(0).at("q").is_null());
+    service.reset();
+#endif
+    const auto unresolved_rows = renderWp374aProductionRows();
+    for (const auto &row : unresolved_rows.rows) CHECK(row.instance_mask == 3);
+    // The scene commit must supply both halves before a frame can repair them.
+    auto &loader = GET_MODULE(SceneLoader);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    for (const auto mutation : {scene_load_mutation::ray_occurrence_catalog,
+                                scene_load_mutation::ray_as_plan}) {
+        INFO("removed participant: " << mutation);
+        test_support::ManifestSceneLoadFault injector{mutation};
+        struct ResetInjector {
+            SceneLoader &loader;
+            ~ResetInjector() {
+                test_support::setSceneLoadFaultInjectorForTesting(loader, nullptr);
+            }
+        } reset{loader};
+        const auto complete = [&] {
+            const auto plan = instances.rayAsPlan();
+            const auto inventory = instances.rayAsInventory();
+            return plan && inventory && plan->rows.size() == 2 &&
+                   inventory->instances.size() == 2;
+        };
+        REQUIRE(complete());
+        injector.setEnabled(true);
+        test_support::setSceneLoadFaultInjectorForTesting(loader, &injector);
+        REQUIRE(std::holds_alternative<SceneLoadCommitted>(apply().load_result));
+        CHECK(injector.saw(SceneLoadFaultPhase::prepare, "ray"));
+        CHECK_FALSE(complete());
+        injector.setEnabled(false);
+        REQUIRE(std::holds_alternative<SceneLoadCommitted>(apply().load_result));
+        CHECK(complete());
+    }
+    loader.requestLoad("main");
+    REQUIRE(loader.applyPendingLoad());
+    const auto pending_diagnostics = loader.diagnosticsStatusJson().at("pending");
+    REQUIRE(pending_diagnostics.at("rejected_rows").size() == 1);
+    CHECK(pending_diagnostics.at("rejected_rows").at(0).at("address").at("row_id") == 3);
+    CHECK(pending_diagnostics.at("rejected_rows").at(0).at("error").at("code") == "OccurrenceAbsent");
+    GET_MODULE(VulkanManageCore).waitIdle();
+#else
+    SUCCEED("layout-v2 production execution requires the runtime compiler");
+#endif
+}
+
 TEST_CASE(
     "WP386a production render carries one procedural generation through SBT and TLAS while no-report stays invisible",
     "[WP386a][ray-tracing][rt3-2a][production][gpu]") {
@@ -2908,22 +3164,7 @@ void requireWp380CommittedPhaseTrace(const SceneLoadCommitted &committed) {
     REQUIRE_FALSE(committed.phase_trace.overflow);
 }
 
-struct Wp380RuntimeCleanup {
-    ~Wp380RuntimeCleanup() {
-        try {
-            if (auto *scene = FastModuleContainer::tryGet<SceneLoader>())
-                scene->drainRetirementQueue();
-            if (auto *arena =
-                    FastModuleContainer::tryGet<BehaviorAttachmentArena>())
-                arena->deactivateAll();
-            shutdownConfiguredGameLogic();
-            if (auto *vulkan =
-                    FastModuleContainer::tryGet<VulkanManageCore>())
-                vulkan->waitIdle();
-        } catch (...) {
-        }
-    }
-};
+
 
 TEST_CASE(
     "WP380d empty scene commits the complete executor trace without overflow",
@@ -3644,6 +3885,48 @@ TEST_CASE(
     REQUIRE(injector.saw(SceneLoadFaultPhase::prepare, "root.startup"));
 }
 
+TEST_CASE(
+    "WP382d startup retains unresolved override diagnostics through the first frame",
+    "[WP382d][transaction][startup][gpu]") {
+    setupLogger();
+    Wp374aProjectRoot project{"wp382d_startup_diagnostics"};
+    const Json declaration{
+        {"name", "pelican_ray_instance"}, {"mask", 9},
+        {"overrides", {{"$list", {{"v", 1}, {"next_id", 4}}},
+            {"rows", Json::array({{{"$row", {{"v", 1}, {"id", 3}}},
+                {"occurrence_id", "ffffffffffffffffffffffffffffffff"},
+                {"mask", 0}}})}}}};
+    writeWp374aProject(project.path, 2, true, true, true, declaration, true);
+    const Json settings{
+        {"basic_config",
+         {{"window_size", {{"width", 16}, {"height", 16}}},
+          {"scene_data_json", "scene.json"},
+          {"asset_data_json", "assets.json"},
+          {"default_scene_id", "main"},
+          {"rendering_config_json", "hybrid.json"},
+          {"default_rendering_pass", "main_render"}}}};
+    auto &launch = FastModuleContainer::get<EngineLaunchConfig>();
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    launch.headless_frames = 1;
+    FastModuleContainer::get<PathResolver>().setup(project.path, false);
+
+    // Observe the startup result from the real first frame, before terminal
+    // teardown destroys SceneLoader. No alternate startup path is used.
+    std::optional<Json> startup_diagnostics;
+    const ScopedRayTracingSbtWriteObserver observer{[&](const auto &) {
+        startup_diagnostics = GET_MODULE(SceneLoader)
+                                  .diagnosticsStatusJson().at("startup");
+    }};
+    PelicanCore core{settings.dump()};
+    REQUIRE(core.run());
+    REQUIRE(startup_diagnostics.has_value());
+    const auto &rejected = startup_diagnostics->at("rejected_rows");
+    REQUIRE(rejected.size() == 1);
+    CHECK(rejected.at(0).at("address").at("row_id") == 3);
+    CHECK(rejected.at(0).at("error").at("code") == "OccurrenceAbsent");
+}
+
 #if defined(PELICAN_WP380B_EFFECT_FIXTURE) && PELICAN_WITH_AUDIO
 namespace {
 
@@ -4125,7 +4408,8 @@ TEST_CASE(
         {{"occurrence_id", unique_id}});
     REQUIRE(rpc_found.at("status") == "found");
     REQUIRE(rpc_found.at("occurrence_id") == unique_id);
-    REQUIRE(rpc_found.at("q") == found.candidates.front().q);
+    REQUIRE(found.candidates.front().q.has_value());
+    REQUIRE(rpc_found.at("q") == *found.candidates.front().q);
     const auto rpc_absent = runWp374aRpcBytes(
         *service, rpc_id++, "resolve_ray_occurrence",
         {{"occurrence_id", "ffffffffffffffffffffffffffffffff"}});
@@ -4194,3 +4478,281 @@ PELICAN_WP380_HOST_API void pelican_wp380_host_read_probe(
     probe->behavior_count =
         GET_MODULE(BehaviorAttachmentArena).snapshot().size();
 }
+
+namespace Pelican {
+#if PELICAN_WITH_RPC
+TEST_CASE("WP382d component lifecycle publishes the candidate ray plan before a frame",
+          "[WP382d][ray-tracing][rt3-1][rpc][production][component-lifecycle][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"wp382d_component_lifecycle"};
+    writeWp374aProject(project.path, 2, true, false, true);
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    auto &renderer = GET_MODULE(PolygonInstanceContainer);
+    const auto original_plan = renderer.rayAsPlan();
+    REQUIRE(original_plan);
+    REQUIRE_FALSE(original_plan->rows.empty());
+    const auto original_count = original_plan->rows.size();
+    const auto occurrence = renderer.rayAsInventory()->instances.front().occurrence_id;
+    REQUIRE_FALSE(occurrence.empty());
+
+    struct PublicationFailure final : EditorProjectionFaultInjector {
+        bool armed = false;
+        bool fired = false;
+        bool shouldFail(EditorProjectionFaultPoint point,
+                        std::string_view name) noexcept override {
+            if (!armed || point != EditorProjectionFaultPoint::AfterPublication ||
+                name != "scene_pair") return false;
+            armed = false;
+            fired = true;
+            return true;
+        }
+    } fault;
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.projection_fault_injector = &fault});
+    std::uint64_t rpc_id = 382400;
+    const auto tree = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
+    const auto object = tree.at("objects").at(0).at("authoring_object_id").get<std::uint64_t>();
+    const auto session = runWp374aRpcBytes(*service, rpc_id++, "open_editor_session",
+                                         {{"display_name", "WP382d component lifecycle"}});
+    const auto actor = session.at("actor_id").get<std::uint64_t>();
+    const auto query = [&] {
+        return runWp374aRpcBytes(*service, rpc_id++, "get_ray_occurrences", {{"name", "Chair"}});
+    };
+    const auto edit = [&](const Json &operation) {
+        const auto current = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
+        return finishWp374aEdit(*service, rpc_id, actor,
+            current.at("scene_revision").get<std::uint64_t>(), Json::array({operation}));
+    };
+    const Json override_row{{"$row", {{"id", 1}, {"v", 1}}},
+                            {"occurrence_id", occurrence}};
+    const Json ray_component{{"name", "pelican_ray_instance"}, {"mask", 9},
+        {"overrides", {{"$list", {{"v", 1}, {"next_id", 2}}},
+                       {"rows", Json::array({override_row})}}}};
+    REQUIRE(edit({{"op", "add_component"}, {"object_id", object},
+                  {"component", ray_component}}).at("status") == "committed");
+    REQUIRE(renderer.rayAsPlan()->rows.size() == original_count);
+    CHECK(renderer.rayAsPlan()->rows.front().instance_mask == 9);
+    const auto added_ray = query();
+    REQUIRE(added_ray.at("overrides").size() == 1);
+    CHECK(added_ray.at("overrides").at(0).at("q").is_number_unsigned());
+
+    const Json remove_model{{"op", "remove_component"}, {"object_id", object},
+                            {"component_slot", "simplemodelview"}};
+    const Json add_model{{"op", "add_component"}, {"object_id", object},
+                         {"component", {{"name", "simplemodelview"}, {"model", "chair"}}}};
+    const auto check_failed_edit = [&](const Json &operation) {
+        const auto before_plan = renderer.rayAsPlan();
+        const auto before_inventory = renderer.rayAsInventory();
+        const auto before_rpc = query();
+        const auto before_live = renderer.liveModelInstanceCountForTesting();
+        fault.armed = true;
+        fault.fired = false;
+        const auto failed = edit(operation);
+        CHECK(failed.at("status") != "committed");
+        REQUIRE(fault.fired);
+        CHECK(renderer.rayAsPlan() == before_plan);
+        CHECK(renderer.rayAsInventory() == before_inventory);
+        CHECK(renderer.liveModelInstanceCountForTesting() == before_live);
+        CHECK(query() == before_rpc);
+    };
+    check_failed_edit(remove_model);
+    REQUIRE(edit(remove_model).at("status") == "committed");
+    REQUIRE(renderer.rayAsPlan()->rows.empty());
+    REQUIRE(renderer.rayAsInventory()->instances.empty());
+    CHECK(renderer.liveModelInstanceCountForTesting() == 0);
+    const auto removed = query();
+    REQUIRE(removed.at("overrides").size() == 1);
+    CHECK(removed.at("overrides").at(0).at("q").is_null());
+    REQUIRE(removed.at("rejected_rows").size() == 1);
+    CHECK(removed.at("rejected_rows").at(0).at("error").at("code") == "OccurrenceAbsent");
+
+    check_failed_edit(add_model);
+    REQUIRE(edit(add_model).at("status") == "committed");
+    REQUIRE(renderer.rayAsPlan()->rows.size() == original_count);
+    CHECK(renderer.rayAsPlan()->rows.front().instance_mask == 9);
+    CHECK(renderer.liveModelInstanceCountForTesting() == 1);
+    const auto restored = query();
+    CHECK(restored.at("rejected_rows").empty());
+    REQUIRE(restored.at("overrides").size() == 1);
+    CHECK(restored.at("overrides").at(0).at("q").is_number_unsigned());
+
+    const auto entity = GET_MODULE(SceneLoader).objectId("Chair");
+    REQUIRE(entity);
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    const auto model_before_frame = ecs.tryComponent<SimpleModelViewComponent>(*entity)->model_instance_id;
+    GET_MODULE(ECSCore).update();
+    CHECK(ecs.tryComponent<SimpleModelViewComponent>(*entity)->model_instance_id == model_before_frame);
+
+    REQUIRE(edit({{"op", "remove_component"}, {"object_id", object},
+                  {"component_slot", "pelican_ray_instance"}}).at("status") == "committed");
+    REQUIRE(renderer.rayAsPlan()->rows.size() == original_count);
+    CHECK(renderer.rayAsPlan()->rows.front().instance_mask == 127);
+    const auto removed_ray = query();
+    CHECK(removed_ray.at("overrides").empty());
+    CHECK(removed_ray.at("rejected_rows").empty());
+    // An unrelated authored edit must preserve an independently placed model.
+    const auto transient = renderer.placeModelInstance(
+        GET_MODULE(ModelAssetContainer).getModelTemplateByName("chair"));
+    renderer.setTrs(transient, {8.0F, 9.0F, 10.0F},
+                    glm::quat{1.0F, 0.0F, 0.0F, 0.0F}, {1.0F, 1.0F, 1.0F});
+    const auto transient_matrix = renderer.currentModelMatrixForTesting(transient);
+    REQUIRE(edit({{"op", "add_component"}, {"object_id", object},
+                  {"component", ray_component}}).at("status") == "committed");
+    CHECK((renderer.currentModelMatrixForTesting(transient) == transient_matrix));
+    const auto transient_inventory = renderer.rayAsInventory();
+    const auto transient_row = std::find_if(transient_inventory->instances.begin(),
+        transient_inventory->instances.end(), [&](const auto &row) {
+            return row.instance_index == transient.index;
+        });
+    REQUIRE(transient_row != transient_inventory->instances.end());
+    CHECK((transient_row->world_transform == transient_matrix));
+    GET_MODULE(SceneLoader).drainRetirementQueue();
+    renderer.clear();
+    CHECK_FALSE(renderer.rayAsPlan());
+    CHECK_FALSE(renderer.rayAsInventory());
+    CHECK(renderer.rayOccurrences().empty());
+    // Every publication was queried before a frame; the one ECS update above
+    // also verifies that a committed model is not recreated on the next tick.
+    service.reset();
+#else
+    SUCCEED("ray component lifecycle requires the runtime compiler");
+#endif
+}
+#endif
+} // namespace Pelican
+
+namespace Pelican {
+#if PELICAN_WITH_RPC
+TEST_CASE("WP382d procedural editor lifecycle publishes and rolls back AABB state with its plan",
+          "[WP382d][ray-tracing][rt3-2a][rpc][production][procedural-lifecycle][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    Wp374aProjectRoot project{"wp382d_procedural_editor"};
+    writeWp386aProceduralProject(project.path);
+    auto assets = Json::parse(readWp374aText(project.path / "assets.json"));
+    auto alternate = assets.at("procedural_geometry").at(0);
+    alternate["name"] = "alternate";
+    alternate["aabb"]["max"] = {18.0, 18.0, 3.0};
+    alternate["record"]["radius"] = 2.0;
+    assets["procedural_geometry"].push_back(alternate);
+    writeWp374aText(project.path / "assets.json", assets.dump());
+    auto bindings = Json::parse(readWp374aText(project.path / "ray_bindings.json"));
+    // This lifecycle intentionally removes every instance of either asset.
+    // Use the existing procedural default group, with no unmatched selector.
+    bindings["bindings"] = Json::array();
+    writeWp374aText(project.path / "ray_bindings.json", bindings.dump());
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    auto &renderer = GET_MODULE(PolygonInstanceContainer);
+    auto &procedural = GET_MODULE(ProceduralGeometryContainer);
+    REQUIRE(procedural.instanceCount() == 1);
+    REQUIRE(renderer.rayAsPlan()->rows.size() == 1);
+    const auto original_record = renderer.rayAsPlan()->rows.front().record_data;
+    struct PublicationFailure final : EditorProjectionFaultInjector {
+        bool armed = false;
+        bool fired = false;
+        bool shouldFail(EditorProjectionFaultPoint point, std::string_view name) noexcept override {
+            if (!armed || point != EditorProjectionFaultPoint::AfterPublication || name != "scene_pair")
+                return false;
+            armed = false;
+            fired = true;
+            return true;
+        }
+    } fault;
+    auto service = makeEditorRuntimeService(
+        EditorRuntimeServiceOptions{.projection_fault_injector = &fault});
+    std::uint64_t rpc_id = 382600;
+    const auto tree = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
+    const auto object = tree.at("objects").at(0).at("authoring_object_id").get<std::uint64_t>();
+    const auto session = runWp374aRpcBytes(*service, rpc_id++, "open_editor_session",
+                                         {{"display_name", "WP382d procedural lifecycle"}});
+    const auto actor = session.at("actor_id").get<std::uint64_t>();
+    const auto edit = [&](const Json &operation) {
+        const auto current = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
+        return finishWp374aEdit(*service, rpc_id, actor,
+            current.at("scene_revision").get<std::uint64_t>(), Json::array({operation}));
+    };
+    const auto fail_then_commit = [&](const Json &operation) {
+        const auto old_plan = renderer.rayAsPlan();
+        const auto old_inventory = renderer.rayAsInventory();
+        const auto old_instances = procedural.proceduralRayInstances();
+        const auto old_generation = procedural.allocationGeneration();
+        const auto old_retirements = procedural.retirementCount();
+        const auto loaded_bindings = GET_MODULE(SceneLoader).runtimeObjectBindings();
+        const std::vector<SceneRuntimeObjectBinding> old_bindings{
+            loaded_bindings.begin(), loaded_bindings.end()};
+        fault.armed = true;
+        fault.fired = false;
+        const auto failed = edit(operation);
+        CHECK(failed.at("status") != "committed");
+        REQUIRE(fault.fired);
+        CHECK(renderer.rayAsPlan() == old_plan);
+        CHECK(renderer.rayAsInventory() == old_inventory);
+        CHECK(procedural.proceduralRayInstances() == old_instances);
+        CHECK(procedural.allocationGeneration() == old_generation);
+        CHECK(procedural.retirementCount() == old_retirements);
+        const auto restored_bindings = GET_MODULE(SceneLoader).runtimeObjectBindings();
+        CHECK(std::equal(old_bindings.begin(), old_bindings.end(),
+            restored_bindings.begin(), restored_bindings.end(), [](const auto &left, const auto &right) {
+                return left.authoring_object_id == right.authoring_object_id && left.object_id == right.object_id;
+            }));
+        REQUIRE(edit(operation).at("status") == "committed");
+        CHECK(renderer.rayAsPlan()->rows.size() == procedural.instanceCount());
+        CHECK(renderer.rayAsInventory()->instances.size() == procedural.instanceCount());
+    };
+    fail_then_commit({{"op", "set_component_value"}, {"object_id", object},
+        {"component_slot", "pelican_procedural_geometry"}, {"field_path", "/asset"},
+        {"value", "alternate"}});
+    REQUIRE(procedural.instanceCount() == 1);
+    CHECK(procedural.proceduralRayInstances().front().procedural_asset == "alternate");
+    CHECK(renderer.rayAsInventory()->instances.front().procedural_record.at("radius") == 2.0);
+    CHECK(bool(renderer.rayAsPlan()->rows.front().record_data != original_record));
+
+    fail_then_commit({{"op", "remove_component"}, {"object_id", object},
+                      {"component_slot", "pelican_procedural_geometry"}});
+    CHECK(procedural.instanceCount() == 0);
+    fail_then_commit({{"op", "add_component"}, {"object_id", object},
+        {"component", {{"name", "pelican_procedural_geometry"}, {"asset", "alternate"}}}});
+    REQUIRE(procedural.instanceCount() == 1);
+    const auto shared_buffer = procedural.proceduralRayInstances().front().geometry_lease;
+    REQUIRE(shared_buffer);
+    fail_then_commit({{"op", "spawn"}, {"scene_id", "main"},
+        {"object", {{"name", "SecondSphere"}, {"components", Json::array({
+            {{"name", "transform"}, {"pos", {4, 0, 0}},
+             {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}},
+            {{"name", "pelican_procedural_geometry"}, {"asset", "alternate"}}
+        })}}}});
+    REQUIRE(procedural.instanceCount() == 2);
+    for (const auto &instance : procedural.proceduralRayInstances()) {
+        CHECK(instance.geometry_lease == shared_buffer);
+        CHECK(instance.aabb_buffer_address != 0);
+    }
+    const auto spawned_tree = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
+    const auto spawned = std::find_if(spawned_tree.at("objects").begin(), spawned_tree.at("objects").end(),
+        [](const auto &entry) { return entry.at("name") == "SecondSphere"; });
+    REQUIRE(spawned != spawned_tree.at("objects").end());
+    fail_then_commit({{"op", "destroy"},
+        {"object_id", spawned->at("authoring_object_id").template get<std::uint64_t>()}});
+    REQUIRE(procedural.instanceCount() == 1);
+    const auto before_ray_edit = procedural.allocationGeneration();
+    REQUIRE(edit({{"op", "add_component"}, {"object_id", object},
+        {"component", {{"name", "pelican_ray_instance"}, {"mask", 7}}}}).at("status") == "committed");
+    CHECK(procedural.allocationGeneration() == before_ray_edit);
+    CHECK(procedural.proceduralRayInstances().front().geometry_lease == shared_buffer);
+    REQUIRE(renderer.rayAsPlan()->rows.size() == 1);
+    CHECK(renderer.rayAsPlan()->rows.front().instance_mask == 7);
+    service.reset();
+    GET_MODULE(VulkanManageCore).waitIdle();
+    procedural.drainRetirements();
+    CHECK(procedural.retirementCount() == 0);
+    CHECK(procedural.proceduralRayInstances().front().geometry_lease == shared_buffer);
+#else
+    SUCCEED("procedural editor lifecycle requires the runtime compiler");
+#endif
+}
+#endif
+} // namespace Pelican

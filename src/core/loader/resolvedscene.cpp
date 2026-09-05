@@ -17,6 +17,27 @@
 
 namespace Pelican {
 
+nlohmann::ordered_json resolvedComponentWitness(const ResolvedComponent &component) {
+    nlohmann::ordered_json origin;
+    if (const auto *authored = component.origin.authored()) {
+        origin = {{"kind", "authored"},
+                  {"authoring_component_index", authored->authoring_component_index}};
+    } else {
+        const auto &generated = *component.origin.generated();
+        origin = {{"kind", "generated"},
+                  {"stable_generated_id", generated.stable_generated_id},
+                  {"prefab", generated.prefab},
+                  {"instance_id", generated.instance_id},
+                  {"component_key", generated.component_key},
+                  {"digest_sha256", generated.digest_sha256}};
+    }
+    return {{"type", component.name == "behavior"
+                         ? component.effective_json.at("type").get<std::string>()
+                         : component.name},
+            {"occurrence", component.merged_component_index},
+            {"origin", std::move(origin)}};
+}
+
 std::string_view resolvedSceneErrorCodeName(
     ResolvedSceneErrorCode code) noexcept {
     switch (code) {
@@ -170,7 +191,7 @@ ResolvedComponent resolveComponent(
     ResolvedComponentOrigin origin,
     const SceneComponentProvenance &provenance,
     std::vector<BehaviorReloadSourceParams> &behavior_sources,
-    const ResolvedSceneDefaults &defaults) {
+    const ResolvedSceneDefaults &defaults, ComponentDecodeSurface surface) {
     if (!origin.isGenerated() && requestsGeneratedComponent(authored)) {
         ResolvedSceneResolver::resolveGeneratedComponent();
     }
@@ -228,6 +249,11 @@ ResolvedComponent resolveComponent(
 
     const auto *codec = findComponentCodec(result.name);
     if (codec == nullptr) {
+        // Surface restrictions still apply when this runtime has no decoder
+        // registered for the component (for example RT-disabled preview).
+        if (auto violation = componentDecodeSurfaceViolation(result.name, authored, surface))
+            retainResolutionFailure(result,
+                prependResolutionPath(std::move(*violation), componentPathPrefix(provenance)), authored);
         // External ECS components retain identity. Their component registrar
         // remains the only decoder; no core default is invented here.
         return result;
@@ -236,7 +262,7 @@ ResolvedComponent resolveComponent(
     result.runtime_codec = codec;
     const auto path_prefix = componentPathPrefix(provenance);
     try {
-        auto decoded = codec->decodeAuthored(authored);
+        auto decoded = codec->decodeAuthored(authored, surface);
         if (!decoded) {
             retainResolutionFailure(
                 result,
@@ -835,7 +861,8 @@ std::string resolverInputsFingerprint(
 ResolvedScene ResolvedSceneResolver::resolve(
     const AuthoringSceneDocument &document,
     SceneResolverGeneration generation, ResolvedSceneDefaults defaults,
-    PrefabRegistrySnapshot registry, BindableProviderSnapshot provider) {
+    PrefabRegistrySnapshot registry, BindableProviderSnapshot provider,
+    ComponentDecodeSurface surface) {
     if (generation.value == 0) {
         throw std::invalid_argument(
             "SceneResolverGeneration must be non-zero");
@@ -1097,7 +1124,7 @@ ResolvedScene ResolvedSceneResolver::resolve(
                         .object_index = source_object.declaration_index,
                         .component_index = component_index,
                     },
-                    result.behavior_reload_sources_, scene_camera_defaults));
+                    result.behavior_reload_sources_, scene_camera_defaults, surface));
                 if (!first_camera_resolved &&
                     object.components.back().name == "camera") {
                     scene_camera_defaults = cameraDefaultsAfter(
@@ -1202,9 +1229,9 @@ ResolvedScene ResolvedSceneResolver::resolve(
 SceneProjectionState ResolvedSceneResolver::prepare(
     AuthoringSceneDocument document, SceneResolverGeneration generation,
     ResolvedSceneDefaults defaults, PrefabRegistrySnapshot registry,
-    BindableProviderSnapshot provider) {
+    BindableProviderSnapshot provider, ComponentDecodeSurface surface) {
     auto resolved = resolve(document, generation, defaults, std::move(registry),
-                            std::move(provider));
+                            std::move(provider), surface);
     return SceneProjectionState{std::move(document), std::move(resolved)};
 }
 

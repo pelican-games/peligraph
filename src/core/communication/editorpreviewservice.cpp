@@ -324,12 +324,16 @@ void resolveCamera(const Json &camera, const PreparedProjection &prepared,
 }
 
 EditorPreviewError translateProjection(const EditorPreviewProjectionError &source) {
-    const auto code = source.code() == EditorPreviewProjectionErrorCode::schema_violation
+    auto code = source.code() == EditorPreviewProjectionErrorCode::schema_violation
                           ? EditorPreviewErrorCode::schema_violation
                           : EditorPreviewErrorCode::method_unavailable;
     auto payload = OrderedJson::object();
     payload["field"] = source.field();
     payload["adapter"] = source.adapter();
+    if (source.code() == EditorPreviewProjectionErrorCode::ray_instance_overrides_unsupported) {
+        code = EditorPreviewErrorCode::ray_instance_overrides_unsupported;
+        payload["surface"] = "preview";
+    }
     return EditorPreviewError{code, source.what(), std::move(payload)};
 }
 
@@ -339,6 +343,8 @@ std::string_view editorPreviewErrorCodeName(EditorPreviewErrorCode code) noexcep
     switch (code) {
     case EditorPreviewErrorCode::schema_violation: return "schema_violation";
     case EditorPreviewErrorCode::method_unavailable: return "method_unavailable";
+    case EditorPreviewErrorCode::ray_instance_overrides_unsupported:
+        return "ray_instance_overrides_unsupported@1";
     case EditorPreviewErrorCode::gate_closed: return "gate_closed";
     case EditorPreviewErrorCode::xr_active_unsupported: return "xr_active_unsupported";
     case EditorPreviewErrorCode::capture_schema_violation: return "capture_schema_violation";

@@ -440,12 +440,28 @@ std::string canonicalTransformIdentity(const glm::mat4 &transform) {
 RaySceneRowSnapshot resolveRayTracingSceneRows(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
     const RayTracingProjectConfig &project) {
+    RaySceneDeclarationCatalog declarations;
+    for (const auto &instance : instances) {
+        if (instance.ray_instance)
+            declarations.try_emplace(instance.authoring_object_id,
+                RaySceneDeclaration{*instance.ray_instance, instance.ray_instance_component_witness});
+    }
+    return resolveRayTracingSceneRows(instances, project, declarations);
+}
+
+RaySceneRowSnapshot resolveRayTracingSceneRows(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    const RayTracingProjectConfig &project,
+    const RaySceneDeclarationCatalog &declarations) {
     // Validate authored instance declarations before static classification.
     // Otherwise a component attached only to an excluded primitive would be
     // erased by the classification filter and silently ignored.
     std::map<std::uint64_t, bool> declared_targets;
     for (const auto &instance : instances) {
-        if (!instance.ray_instance) continue;
+        const auto declaration = declarations.find(instance.authoring_object_id);
+        if (declaration == declarations.end()) continue;
+        const auto &value = declaration->second.value;
+        if (!value.mask && !value.instance_flags && !value.custom_index) continue;
         auto [target, inserted] = declared_targets.emplace(
             instance.authoring_object_id, false);
         (void)inserted;
@@ -466,11 +482,64 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
     }
     const auto classification =
         classifyRayQueryStaticGeometry(instances);
+    std::vector<RayOccurrenceOverrideResolution> override_resolutions;
+    std::map<std::size_t, const RayOccurrenceOverride *> source_overrides;
+    for (const auto &[object, declaration] : declarations) {
+        if (!declaration.value.overrides) continue;
+        for (const auto &row : declaration.value.overrides->rows) {
+            RayOccurrenceOverrideResolution resolution{
+                .authoring_object_id = object,
+                .ray_instance_component_witness = declaration.component_witness,
+                .row_id = row.envelope.id,
+                .occurrence_id = row.value.occurrence_id,
+            };
+            std::optional<std::size_t> match;
+            for (std::size_t index = 0; index < instances.size(); ++index) {
+                const auto &candidate = instances[index];
+                if (candidate.authoring_object_id != object ||
+                    candidate.occurrence_id != row.value.occurrence_id)
+                    continue;
+                if (match || candidate.occurrence_ambiguous) {
+                    resolution.error = "OccurrenceAmbiguous";
+                    break;
+                }
+                match = index;
+            }
+            if (match) resolution.component_occurrence = instances[*match].component_occurrence;
+            if (resolution.error.empty()) {
+                if (!match) resolution.error = "OccurrenceAbsent";
+                else if (std::find(classification.static_instance_indices.begin(),
+                                  classification.static_instance_indices.end(), *match) ==
+                         classification.static_instance_indices.end())
+                    resolution.error = "OccurrenceNotRayTraced";
+                else source_overrides.emplace(*match, &row.value);
+            }
+            override_resolutions.push_back(std::move(resolution));
+        }
+    }
     std::vector<RaySceneRowInput> inputs;
     inputs.reserve(classification.static_instance_indices.size());
     for (const auto source_index :
          classification.static_instance_indices) {
         const auto &instance = instances[source_index];
+        std::optional<RayInstanceComponent> effective_declaration;
+        if (const auto declaration = declarations.find(instance.authoring_object_id);
+            declaration != declarations.end()) {
+            const auto &value = declaration->second.value;
+            effective_declaration = RayInstanceComponent{
+                .mask = value.mask,
+                .instance_flags = value.instance_flags,
+                .custom_index = value.custom_index,
+            };
+        }
+        if (const auto found = source_overrides.find(source_index);
+            found != source_overrides.end()) {
+            const auto &row = *found->second;
+            if (row.mask) effective_declaration->mask = row.mask;
+            if (row.instance_flags)
+                effective_declaration->instance_flags = row.instance_flags->bits();
+            if (row.custom_index) effective_declaration->custom_index = row.custom_index;
+        }
         const auto asset =
             instance.material_asset_reference.empty()
                 ? "asset-id:" +
@@ -518,7 +587,7 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
             .aabb_buffer_address = instance.aabb_buffer_address,
             .authoring_object_id =
                 instance.authoring_object_id,
-            .ray_instance = instance.ray_instance,
+            .ray_instance = std::move(effective_declaration),
             .source_index = source_index,
             .alpha_override_mask =
                 instance.alpha_override_mask,
@@ -530,9 +599,25 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
                 instance.alpha_override_uv_rotation,
         });
     }
-    return resolveRaySceneRows(
+    auto result = resolveRaySceneRows(
         inputs, project.layout,
         project.bindings ? &*project.bindings : nullptr);
+    for (auto &resolution : override_resolutions) {
+        if (!resolution.error.empty()) continue;
+        const auto found = std::find_if(result.rows.begin(), result.rows.end(),
+            [&](const auto &resolved) {
+                const auto &source = instances[resolved.source_index];
+                return source.authoring_object_id == resolution.authoring_object_id &&
+                    source.component_occurrence == resolution.component_occurrence &&
+                    source.occurrence_id == resolution.occurrence_id;
+            });
+        resolution.q = found->q;
+        resolution.mask = found->instance_mask;
+        resolution.instance_flags = found->instance_flags;
+        resolution.custom_index = found->instance_custom_index;
+    }
+    result.occurrence_overrides = std::move(override_resolutions);
+    return result;
 }
 
 std::vector<RayTracingTlasInstancePlanEntry>

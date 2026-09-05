@@ -13,6 +13,7 @@ namespace Pelican {
 
 class BehaviorAttachmentArena;
 class Camera;
+class SceneLoader;
 class ComponentInfoManager;
 class ECSCoreTemplatePublic;
 class EditorCommandService;
@@ -47,6 +48,7 @@ struct EditorProjectionModules {
     LightContainer *lights = nullptr;
     PhysWorld *physics = nullptr;
     BehaviorAttachmentArena *behavior_arena = nullptr;
+    SceneLoader *scene_loader = nullptr;
 };
 
 struct EditorRuntimeBindingState {

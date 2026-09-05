@@ -221,17 +221,30 @@ TEST_CASE("WP382a list grammar has named failures",
         StructFieldErrorCode::RowIdExhausted, "RowIdExhausted");
 }
 
-TEST_CASE("WP382a ray overrides remain gated",
+TEST_CASE("WP382d ray overrides require the List envelope",
           "[WP382a][ray][enablement]") {
     const auto *codec = testing::findComponentCodecIncludingDisabled(
         "pelican_ray_instance");
     REQUIRE(codec != nullptr);
-    REQUIRE_THROWS_WITH(
-        codec->decodeAuthored(nlohmann::json{
+    const auto rejected = codec->decodeAuthored(nlohmann::json{
             {"name", "pelican_ray_instance"},
             {"mask", 1},
             {"overrides", nlohmann::json::object()},
-        }),
-        Catch::Matchers::ContainsSubstring(
-            "ray_instance_overrides_not_enabled@1"));
+        });
+    REQUIRE_FALSE(rejected);
+    CHECK(rejected.error().leaf_message.find("RowEnvelopeMissing") != std::string::npos);
+    const nlohmann::json supported{{"name", "pelican_ray_instance"}, {"mask", 1}};
+    auto overridden = supported;
+    overridden["overrides"] = {{"$list", {{"v", 1}, {"next_id", 1}}},
+                               {"rows", nlohmann::json::array()}};
+    REQUIRE(codec->decodeAuthored(overridden));
+    for (const auto surface : {ComponentDecodeSurface::preview, ComponentDecodeSurface::web}) {
+        REQUIRE(codec->decodeAuthored(supported, surface));
+        const auto unsupported = codec->decodeAuthored(overridden, surface);
+        REQUIRE_FALSE(unsupported);
+        CHECK(unsupported.error().code == "ray_instance_overrides_unsupported@1");
+        CHECK(unsupported.error().tokens == std::vector<std::string>{"overrides"});
+        CHECK(unsupported.error().fields.at("surface") ==
+              (surface == ComponentDecodeSurface::preview ? "preview" : "web"));
+    }
 }

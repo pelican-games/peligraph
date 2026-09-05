@@ -212,6 +212,7 @@ EditorProjectionModules editorProjectionModules(EditorRuntimeModules &modules) {
         .lights = &modules.lights,
         .physics = &modules.physics,
         .behavior_arena = &modules.behavior_arena,
+        .scene_loader = &modules.scene_loader,
     };
 }
 
@@ -313,7 +314,6 @@ class SimpleModelMigrationParticipant final
     ECSArchetypeMigrationKind original_kind_;
     std::optional<StagedModelInstance> staged_;
     std::optional<ModelInstanceId> next_id_;
-    std::optional<ModelInstanceId> old_id_;
     bool published_ = false;
 
   public:
@@ -328,6 +328,7 @@ class SimpleModelMigrationParticipant final
                 context.staged_component);
             auto &model = models_.getModelTemplateByName(component->model_name);
             staged_.emplace(renderer_.stageModelInstance(model));
+            renderer_.setStagedAuthoringObject(*staged_, component->authoring_object_id);
             glm::mat4 matrix{1.0F};
             if (const auto *transform =
                     context.core.tryComponent<TransformComponent>(context.entity)) {
@@ -338,17 +339,13 @@ class SimpleModelMigrationParticipant final
             renderer_.setStagedModelMatrix(*staged_, matrix);
             next_id_ = staged_->id();
             component->model_instance_id = next_id_;
-        } else {
-            const auto *component = static_cast<const SimpleModelViewComponent *>(
-                context.live_component);
-            old_id_ = component->model_instance_id;
+            component->dirty = 0;
         }
     }
 
     void rollback(const ECSArchetypeMigrationPrepareContext &) noexcept override {
         staged_.reset();
         next_id_.reset();
-        old_id_.reset();
         published_ = false;
     }
 
@@ -367,12 +364,8 @@ class SimpleModelMigrationParticipant final
     }
 
     void finish() noexcept {
-        if (original_kind_ == ECSArchetypeMigrationKind::remove && old_id_) {
-            (void)renderer_.removeModelInstance(*old_id_);
-        }
         staged_.reset();
         next_id_.reset();
-        old_id_.reset();
         published_ = false;
     }
 };
@@ -390,8 +383,8 @@ class EditorEcsMigrationProjectionAdapter final
     nlohmann::ordered_json operation_;
     ECSArchetypeMigrationKind kind_ = ECSArchetypeMigrationKind::add;
     std::string name_;
-    std::optional<ECSArchetypeMigrationToken> token_;
     std::optional<SimpleModelMigrationParticipant> simple_model_;
+    std::optional<ECSArchetypeMigrationToken> token_;
 
   public:
     EditorEcsMigrationProjectionAdapter(
@@ -1522,6 +1515,10 @@ EditorProjectionResult materializeEditorProjection(
             };
 
         for (const auto &route : plan.routes) {
+            // The ray plan also depends on declarations, transforms and
+            // object lifecycle, not only on model component replacement.
+            if (route.kind != EditorProjectionRouteKind::DocumentOnly)
+                renderer_scenes.insert(route.scene_id);
             switch (route.kind) {
             case EditorProjectionRouteKind::DocumentOnly:
                 break;
@@ -1595,6 +1592,7 @@ EditorProjectionResult materializeEditorProjection(
                         modules.camera, modules.lights, modules.physics,
                         route.scene_id, route.object_id, runtime_bindings,
                         participants);
+                if (modules.scene_loader) adapter->connectRuntimeBindings(*modules.scene_loader);
                 auto *raw = adapter.get();
                 adapters.push_back(std::move(adapter));
                 lifecycle_updates.push_back(
@@ -2394,8 +2392,12 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
             };
         },
         .ray_occurrences = [runtime](std::uint64_t object) {
-            return runtime->modules.polygon_instances
-                .rayOccurrences(object);
+            const auto &instances = runtime->modules.polygon_instances;
+            return EditorRayOccurrencesResult{
+                .entries = instances.rayOccurrences(object),
+                .plan = instances.rayAsPlan(),
+                .authoring_object_id = object,
+            };
         },
         .resolve_ray_occurrence = [runtime](std::string_view occurrence_id) {
             return runtime->modules.polygon_instances

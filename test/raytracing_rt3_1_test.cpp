@@ -467,6 +467,136 @@ TEST_CASE("WP379 pelican_ray_instance codec is strict and version gated",
                  PELICAN_WP374_SKIP_DEVSTUDIO == 1);
 }
 
+TEST_CASE("WP382d occurrence rows preserve presence and resolve within their authoring object",
+          "[WP382d][ray-tracing][rt3-1][resolver][component-codec]") {
+    const auto *codec = testing::findComponentCodecIncludingDisabled("pelican_ray_instance");
+    REQUIRE(codec != nullptr);
+    Json authored = {
+        {"name", "pelican_ray_instance"}, {"mask", 17},
+        {"instance_flags", {"triangle_flip_facing"}}, {"custom_index", 93},
+        {"overrides", {{"$list", {{"v", 1}, {"next_id", 4}}},
+            {"rows", Json::array({
+                {{"$row", {{"id", 1}, {"v", 1}}}, {"occurrence_id", "first"},
+                 {"mask", 0}, {"instance_flags", Json::array()}, {"custom_index", 0}},
+                {{"$row", {{"id", 2}, {"v", 1}}}, {"occurrence_id", "second"}},
+                {{"$row", {{"id", 3}, {"v", 1}}}, {"occurrence_id", "removed"}}
+            })}}}
+    };
+    const auto decoded = decodeRayCodecOrThrow(*codec, authored);
+    CHECK(Json(codec->encodeCanonical(decoded)) == authored);
+    const auto declaration = std::any_cast<RayInstanceComponent>(decoded);
+    REQUIRE(declaration.overrides.has_value());
+    REQUIRE(declaration.overrides->rows.size() == 3);
+    CHECK(declaration.overrides->rows[0].value.mask == 0);
+    CHECK_FALSE(declaration.overrides->rows[1].value.mask.has_value());
+    auto duplicate = authored;
+    duplicate["overrides"]["rows"][1]["occurrence_id"] = "first";
+    const auto rejected = codec->decodeAuthored(duplicate);
+    REQUIRE_FALSE(rejected);
+    CHECK(rejected.error().code == "DuplicateOccurrenceOverride");
+    CHECK(rejected.error().fields.at("first_row_id") == 1);
+    CHECK(rejected.error().fields.at("second_row_id") == 2);
+
+    RayTracingProjectConfig project{.layout = v2Layout(std::nullopt)};
+    RayQueryGeometryInstanceSnapshot first{
+        .asset_identity = 1, .authoring_object_id = 7,
+        .ray_instance = declaration,
+        .material_asset_reference = "model.glb", .material_name = "same",
+        .resolved_material_handle = 1, .resolved_material_generation = 1,
+        .resolved_material_lease = std::make_shared<const int>(1),
+        .source_material_index = 0,
+        .geometry_allocation_id = 1, .index_count = 3, .vertex_count = 3,
+        .occurrence_id = "first",
+    };
+    auto second = first;
+    second.primitive_index = 1;
+    second.index_offset = 3;
+    second.occurrence_id = "second";
+    auto other = first;
+    other.authoring_object_id = 8;
+    other.ray_instance = RayInstanceComponent{.mask = 29};
+    other.world_transform[3][0] = 4.0f;
+    std::array instances{second, other, first};
+    const auto resolved = resolveRayTracingSceneRows(instances, project);
+    REQUIRE(resolved.rows.size() == 3);
+    const auto by_source = [&](std::size_t source) -> const RaySceneRow & {
+        const auto found = std::ranges::find(resolved.rows, source, &RaySceneRow::source_index);
+        REQUIRE(found != resolved.rows.end());
+        return *found;
+    };
+    CHECK(by_source(2).instance_mask == 0);
+    CHECK(by_source(2).instance_flags == 0);
+    CHECK(by_source(2).instance_custom_index == 0);
+    CHECK(by_source(0).instance_mask == 17);
+    CHECK(by_source(0).instance_flags == rayInstanceTriangleFlipFacing);
+    CHECK(by_source(0).instance_custom_index == 93);
+    CHECK(by_source(1).instance_mask == 29);
+    REQUIRE(resolved.occurrence_overrides.size() == 3);
+    CHECK(resolved.occurrence_overrides[0].q == by_source(2).q);
+    CHECK(resolved.occurrence_overrides[2].error == "OccurrenceAbsent");
+    CHECK_FALSE(resolved.occurrence_overrides[2].q.has_value());
+    for (auto &instance : instances) {
+        if (instance.authoring_object_id == 7)
+            instance.ray_instance->overrides->rows.erase(instance.ray_instance->overrides->rows.begin());
+    }
+    const auto deleted = resolveRayTracingSceneRows(instances, project);
+    const auto restored = std::ranges::find(deleted.rows, std::size_t{2}, &RaySceneRow::source_index);
+    REQUIRE(restored != deleted.rows.end());
+    CHECK(restored->instance_mask == 17);
+    CHECK(restored->instance_flags == rayInstanceTriangleFlipFacing);
+    CHECK(restored->instance_custom_index == 93);
+
+    SECTION("authored override diagnostics survive loss of every geometry") {
+        const nlohmann::ordered_json witness = {
+            {"type", "pelican_ray_instance"}, {"occurrence", 1},
+            {"origin", {{"kind", "authored"}, {"authoring_component_index", 1}}}};
+        const RaySceneDeclarationCatalog declarations{{7, {declaration, witness}}};
+        auto geometry_only = first;
+        geometry_only.ray_instance.reset();
+        const auto present = resolveRayTracingSceneRows(std::span{&geometry_only, 1}, project, declarations);
+        REQUIRE(present.rows.size() == 1);
+        CHECK(present.rows[0].instance_mask == 0);
+        CHECK(present.rows[0].instance_flags == 0);
+        CHECK(present.rows[0].instance_custom_index == 0);
+        CHECK(present.occurrence_overrides[0].error.empty());
+        const auto unresolved = resolveRayTracingSceneRows({}, project, declarations);
+        CHECK(unresolved.rows.empty());
+        REQUIRE(unresolved.occurrence_overrides.size() == 3);
+        for (const auto &row : unresolved.occurrence_overrides) {
+            CHECK(row.error == "OccurrenceAbsent");
+            CHECK_FALSE(row.q.has_value());
+            CHECK(row.ray_instance_component_witness == witness);
+        }
+        const auto diagnostics = rayScenePlanDiagnostics(unresolved, 7);
+        REQUIRE(diagnostics.rejected_rows.size() == 3);
+        CHECK(diagnostics.rejected_rows[0].address.row_id == 1);
+        CHECK(diagnostics.rejected_rows[0].address.component_witness == witness);
+        // A different object with the old occurrence does not rescue the row.
+        const auto unrelated = resolveRayTracingSceneRows(std::span{&other, 1}, project, declarations);
+        REQUIRE(unrelated.occurrence_overrides.size() == 3);
+        CHECK(unrelated.occurrence_overrides[0].error == "OccurrenceAbsent");
+    }
+    SECTION("row-only declarations retain ineligible targets as diagnostics") {
+        auto excluded = first;
+        excluded.ray_instance->mask.reset();
+        excluded.ray_instance->instance_flags.reset();
+        excluded.ray_instance->custom_index.reset();
+        excluded.skinned = true;
+        const auto unresolved = resolveRayTracingSceneRows(std::span{&excluded, 1}, project);
+        CHECK(unresolved.rows.empty());
+        REQUIRE(unresolved.occurrence_overrides.size() == 3);
+        CHECK(unresolved.occurrence_overrides[0].error == "OccurrenceNotRayTraced");
+    }
+    SECTION("ambiguous occurrence does not arbitrarily select a primitive") {
+        auto ambiguous = first;
+        ambiguous.occurrence_ambiguous = true;
+        const auto unresolved = resolveRayTracingSceneRows(std::span{&ambiguous, 1}, project);
+        REQUIRE(unresolved.rows.size() == 1);
+        CHECK(unresolved.rows[0].instance_mask == 17);
+        CHECK(unresolved.occurrence_overrides[0].error == "OccurrenceAmbiguous");
+    }
+}
+
 TEST_CASE("WP374 non-ray-traced declarations fail before static filtering",
           "[WP374][ray-tracing][rt3-1][classification][production][mutation]") {
     RayTracingProjectConfig project{.layout = v2Layout(std::nullopt)};

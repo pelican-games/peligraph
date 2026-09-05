@@ -122,6 +122,8 @@ constexpr std::array manifest{
     SceneParticipantManifestEntry{"renderer.flat", "model_asset_ids", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "model-asset-id-list-v1", {}},
     SceneParticipantManifestEntry{"renderer.flat", "ray_authoring_object_ids", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "u64-list", {}},
     SceneParticipantManifestEntry{"renderer.flat", "ray_instance_declarations", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "ray-instance-list-v1", {}},
+    SceneParticipantManifestEntry{"ray", "occurrence_catalog", real, participant, "prepare", swap_publish, swap_rollback, "shared-snapshot-release", "ray-inventory-v1", scene_load_mutation::ray_occurrence_catalog},
+    SceneParticipantManifestEntry{"ray", "as_plan", real, participant, "prepare", swap_publish, swap_rollback, "shared-snapshot-release", "resolved-ray-rows-v1", scene_load_mutation::ray_as_plan},
     SceneParticipantManifestEntry{"renderer.flat", "material_initial_value_tables", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "material-initial-table-list-v1", {}},
     SceneParticipantManifestEntry{"renderer.flat", "vrm_semantics", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "vrm-semantic-list-v1", {}},
     SceneParticipantManifestEntry{"renderer.flat", "morph_layouts", real, participant, "prepare", swap_publish, swap_rollback, "next-frame-retirement-queue", "morph-layout-list-v1", {}},

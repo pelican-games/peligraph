@@ -91,6 +91,9 @@ DECLARE_MODULE(SceneLoader) {
         noexcept {
         return runtime_object_bindings;
     }
+    void publishRuntimeObjectBindings(std::vector<SceneRuntimeObjectBinding> &prepared) noexcept {
+        runtime_object_bindings.swap(prepared);
+    }
     std::uint64_t runtimeSceneEpoch() const noexcept;
     SceneAuthority activeAuthority() const noexcept;
     nlohmann::ordered_json diagnosticsStatusJson() const;

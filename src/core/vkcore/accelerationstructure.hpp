@@ -1,4 +1,5 @@
 #pragma once
+#include <map>
 
 #include "../shader/raygrouplayout.hpp"
 
@@ -34,6 +35,8 @@ struct RayQueryGeometryInstanceSnapshot {
     // with authoring_object_id this is the RT3-2 scene-row identity.
     std::string component_occurrence = "0";
     std::optional<RayInstanceComponent> ray_instance;
+    nlohmann::ordered_json ray_instance_component_witness =
+        nlohmann::ordered_json::object();
     std::uint32_t instance_index = 0;
     std::uint32_t instance_generation = 0;
     std::uint64_t scene_epoch = 0;
@@ -78,6 +81,7 @@ struct RayQueryGeometryInstanceSnapshot {
     std::string occurrence_error;
     bool occurrence_ambiguous = false;
     glm::mat4 world_transform{1.0F};
+    bool operator==(const RayQueryGeometryInstanceSnapshot &) const = default;
 };
 
 struct TriangleRow {
@@ -128,12 +132,23 @@ struct RayQueryStaticGeometryClassification {
 RayQueryStaticGeometryClassification classifyRayQueryStaticGeometry(
     std::span<const RayQueryGeometryInstanceSnapshot> instances);
 
+struct RaySceneDeclaration {
+    RayInstanceComponent value;
+    nlohmann::ordered_json component_witness = nlohmann::ordered_json::object();
+    bool operator==(const RaySceneDeclaration &) const = default;
+};
+using RaySceneDeclarationCatalog = std::map<std::uint64_t, RaySceneDeclaration>;
+
 // Production scene lowering shared by SBT packing and TLAS construction.
 // Only BLAS-eligible static rows participate, and source_index always points
 // back into the supplied immutable AS snapshot.
 RaySceneRowSnapshot resolveRayTracingSceneRows(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,
     const RayTracingProjectConfig &project);
+RaySceneRowSnapshot resolveRayTracingSceneRows(
+    std::span<const RayQueryGeometryInstanceSnapshot> instances,
+    const RayTracingProjectConfig &project,
+    const RaySceneDeclarationCatalog &declarations);
 
 RayTracingGeometrySnapshot makeRayTracingGeometrySnapshot(
     std::span<const RayQueryGeometryInstanceSnapshot> instances,

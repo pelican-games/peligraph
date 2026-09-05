@@ -14,6 +14,7 @@ namespace Pelican {
 enum class EditorPreviewProjectionErrorCode : std::uint8_t {
     schema_violation,
     method_unavailable,
+    ray_instance_overrides_unsupported,
 };
 
 std::string_view editorPreviewProjectionErrorCodeName(

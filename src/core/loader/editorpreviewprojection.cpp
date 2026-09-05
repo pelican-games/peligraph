@@ -720,6 +720,8 @@ std::string_view editorPreviewProjectionErrorCodeName(
         return "schema_violation";
     case EditorPreviewProjectionErrorCode::method_unavailable:
         return "method_unavailable";
+    case EditorPreviewProjectionErrorCode::ray_instance_overrides_unsupported:
+        return "ray_instance_overrides_unsupported@1";
     }
     return "method_unavailable";
 }
@@ -773,11 +775,19 @@ PreparedProjection prepareEditorPreviewProjection(
     auto state = ResolvedSceneResolver::prepare(
         std::move(staged),
         SceneResolverGeneration{base_document.revision().value + 1},
-        defaults, std::move(registry), std::move(provider));
+        defaults, std::move(registry), std::move(provider), ComponentDecodeSurface::preview);
     for (const auto &scene : state.resolved().scenes()) {
         for (const auto &object : scene.objects) {
             for (const auto &component : object.components) {
                 if (component.runtime_resolution_error) {
+                    if (const auto *violation = std::get_if<UserDataViolation>(
+                            &*component.runtime_resolution_error);
+                        violation && violation->code == "ray_instance_overrides_unsupported@1") {
+                        throw EditorPreviewProjectionError{
+                            EditorPreviewProjectionErrorCode::ray_instance_overrides_unsupported,
+                            resolutionJsonPointer(violation->tokens), "component_codec",
+                            violation->leaf_message};
+                    }
                     const ResolutionFailureException error{
                         *component.runtime_resolution_error};
                     const auto field =

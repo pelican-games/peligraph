@@ -1,5 +1,6 @@
 #include "polygoninstancecontainer.hpp"
 #include "../loader/sceneload.hpp"
+#include "../loader/editorprojectiontransaction.hpp"
 #include "../material/materialcontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../model/occurrenceidentity.hpp"
@@ -382,6 +383,7 @@ DrawItemSnapshot makeDrawItemSnapshot(
 
 struct StagedModelInstance::Impl {
     ModelInstanceId id{};
+    std::uint64_t authoring_object_id = 0;
     glm::mat4 model_matrix{1.0F};
     std::vector<glm::mat4> skin_palette;
     ModelAssetId asset_id{};
@@ -438,6 +440,8 @@ PolygonInstanceContainer::snapshotPreparedScene() const {
         .model_asset_ids = model_asset_ids,
         .ray_authoring_object_ids = ray_authoring_object_ids,
         .ray_instance_declarations = ray_instance_declarations,
+        .ray_scene_declarations = ray_scene_declarations,
+        .ray_scene_plan = ray_scene_plan,
         .material_initial_value_tables = material_initial_value_tables,
         .vrm_semantics = vrm_semantics,
         .morph_layouts = morph_layouts,
@@ -494,6 +498,8 @@ void PolygonInstanceContainer::publishPreparedScene(
     model_asset_ids.swap(prepared.model_asset_ids);
     ray_authoring_object_ids.swap(prepared.ray_authoring_object_ids);
     ray_instance_declarations.swap(prepared.ray_instance_declarations);
+    ray_scene_declarations.swap(prepared.ray_scene_declarations);
+    ray_scene_plan.swap(prepared.ray_scene_plan);
     material_initial_value_tables.swap(
         prepared.material_initial_value_tables);
     vrm_semantics.swap(prepared.vrm_semantics);
@@ -657,6 +663,7 @@ void PolygonInstanceContainer::publishPreparedSceneModel(
             std::move(candidate.morph_weight_frame);
         prepared.morph_history_valid[index] = false;
     }
+    prepared.ray_authoring_object_ids[index] = candidate.authoring_object_id;
     prepared.instance_slots.publish(candidate.id);
     for (auto &item : candidate.draw_items) {
         item.declaration_ordinal =
@@ -867,6 +874,7 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         morph_weight_frames[index] = std::move(candidate.morph_weight_frame);
         morph_history_valid[index] = false;
     }
+    ray_authoring_object_ids[index] = candidate.authoring_object_id;
     instance_slots.publish(candidate.id);
     for (auto &item : candidate.draw_items) {
         item.declaration_ordinal = next_draw_declaration_ordinal++;
@@ -928,6 +936,7 @@ bool PolygonInstanceContainer::removeModelInstance(ModelInstanceId id) {
 }
 
 void PolygonInstanceContainer::clear() {
+    auto empty_declarations = std::make_shared<const RaySceneDeclarationCatalog>();
     instance_slots.prepareClear();
     draw_inventory.clear();
     compiled_draw_queue = {};
@@ -938,6 +947,8 @@ void PolygonInstanceContainer::clear() {
         }
     }
     instance_slots.clearPrepared();
+    ray_scene_plan.reset();
+    ray_scene_declarations = std::move(empty_declarations);
     material_override_frames.clear();
     material_absolute_override_frames.clear();
     const std::vector<MaterialInstanceOverrideGpuData> empty(maxModelInstances);
@@ -1381,7 +1392,21 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
     if (!replacements.empty()) {
         ++ray_query_geometry_generation;
     }
+    std::vector<RayQueryGeometryInstanceSnapshot> procedurals;
+    if (prepared.ray_scene_plan) {
+        for (const auto &instance : prepared.ray_scene_plan->inventory->instances)
+            if (instance.geometry_kind == RayGeometryKind::aabbs)
+                procedurals.push_back(instance);
+    }
+    prepareRayScenePlan(prepared,
+        prepared.ray_scene_plan ? prepared.ray_scene_plan->project : nullptr,
+        nullptr, procedurals);
     return prepared;
+}
+
+void PolygonInstanceContainer::setStagedAuthoringObject(
+    StagedModelInstance &staged, std::uint64_t object) noexcept {
+    staged.impl_->authoring_object_id = object;
 }
 
 void PolygonInstanceContainer::rebuildModelInstances(
@@ -1391,8 +1416,109 @@ void PolygonInstanceContainer::rebuildModelInstances(
     uploadMaterialAbsoluteOverrides();
 }
 
+std::shared_ptr<const RayScenePlanState>
+PolygonInstanceContainer::prepareFrameRayScenePlan(
+    std::shared_ptr<const RayTracingProjectConfig> project,
+    std::shared_ptr<const RaySceneInventorySnapshot> inventory,
+    std::shared_ptr<const RaySceneDeclarationCatalog> declarations) const {
+    if (!declarations) declarations = ray_scene_declarations;
+    if (ray_scene_plan && ray_scene_plan->project == project &&
+        *ray_scene_plan->declarations == *declarations &&
+        ray_scene_plan->inventory->instances == inventory->instances)
+        return ray_scene_plan;
+    auto candidate = std::make_shared<RayScenePlanState>();
+    candidate->project = std::move(project);
+    candidate->inventory = std::move(inventory);
+    candidate->declarations = std::move(declarations);
+    if (candidate->project) {
+        auto resolved = std::make_shared<RaySceneRowSnapshot>(
+            resolveRayTracingSceneRows(candidate->inventory->instances,
+                                      *candidate->project, *candidate->declarations));
+        resolved->generation = ray_scene_plan && ray_scene_plan->resolved_rows
+            ? ray_scene_plan->resolved_rows->generation + 1 : 1;
+        candidate->resolved_rows = std::move(resolved);
+    }
+    return candidate;
+}
+
+nlohmann::ordered_json PolygonInstanceContainer::rayComponentWitness(
+    std::uint64_t object, const PreparedSceneState *prepared) const {
+    const auto &declarations = *(prepared ? prepared->ray_scene_declarations : ray_scene_declarations);
+    const auto found = declarations.find(object);
+    return found == declarations.end() ? nlohmann::ordered_json::object() : found->second.component_witness;
+}
+
+void PolygonInstanceContainer::prepareRayScenePlan(
+    PreparedSceneState &prepared,
+    std::shared_ptr<const RayTracingProjectConfig> project,
+    const ResolvedSceneView *scene,
+    std::span<const RayQueryGeometryInstanceSnapshot> procedurals,
+    SceneLoadPhaseTrace *phase_trace) {
+    if (phase_trace) phase_trace->record(SceneLoadPhase::prepare);
+    std::unordered_map<std::uint64_t, const ResolvedComponent *> declarations;
+    if (scene) {
+        const auto transforms = resolvedSceneWorldTransforms(*scene);
+        auto candidate_declarations = std::make_shared<RaySceneDeclarationCatalog>();
+        for (const auto &object : scene->objects) {
+            for (const auto &component : object.components) {
+                if (component.name == "pelican_ray_instance") {
+                    declarations.emplace(object.authoring_object_id.value, &component);
+                    candidate_declarations->emplace(object.authoring_object_id.value,
+                        RaySceneDeclaration{std::any_cast<const RayInstanceComponent &>(
+                            component.requireRuntimeValue()), resolvedComponentWitness(component)});
+                }
+            }
+        }
+        prepared.ray_scene_declarations = std::move(candidate_declarations);
+        for (std::size_t index = 0; index < prepared.ray_authoring_object_ids.size(); ++index) {
+            if (!prepared.instance_slots.alive(static_cast<std::uint32_t>(index))) continue;
+            const auto object = prepared.ray_authoring_object_ids[index];
+            const auto declaration = declarations.find(object);
+            prepared.ray_instance_declarations[index] = declaration == declarations.end()
+                ? std::nullopt : std::optional<RayInstanceComponent>{
+                    std::any_cast<const RayInstanceComponent &>(
+                        declaration->second->requireRuntimeValue())};
+            if (const auto found = transforms.find(object); found != transforms.end()) {
+                const auto &world = found->second;
+                prepared.model_instances_data[index] =
+                    glm::translate(glm::mat4{1.0F}, world.pos) *
+                    glm::toMat4(world.rotation) * glm::scale(glm::mat4{1.0F}, world.scale);
+            }
+        }
+    }
+    auto inventory = std::make_shared<RaySceneInventorySnapshot>(
+        makeRaySceneInventorySnapshot(rayQueryGeometryInstances(&prepared), procedurals,
+                                     prepared.ray_query_geometry_generation));
+    for (std::size_t index = 0; index < inventory->instances.size(); ++index) {
+        auto &instance = inventory->instances[index];
+        instance.ray_instance_component_witness = rayComponentWitness(instance.authoring_object_id, &prepared);
+        std::visit([&](auto &row) { row.instance = instance; }, inventory->rows[index]);
+    }
+    prepared.ray_scene_plan = prepareFrameRayScenePlan(std::move(project), std::move(inventory),
+                                                      prepared.ray_scene_declarations);
+}
+
 std::vector<RayQueryGeometryInstanceSnapshot>
-PolygonInstanceContainer::rayQueryGeometryInstances() const {
+PolygonInstanceContainer::rayQueryGeometryInstances(
+    const PreparedSceneState *prepared) const {
+    // Scene and model reload prepare the same inventory shape as the live
+    // renderer without temporarily publishing their candidate.
+    const auto &draw_inventory =
+        prepared ? prepared->draw_inventory : this->draw_inventory;
+    const auto &model_instances_data =
+        prepared ? prepared->model_instances_data : this->model_instances_data;
+    const auto &model_asset_ids =
+        prepared ? prepared->model_asset_ids : this->model_asset_ids;
+    const auto &instance_slots =
+        prepared ? prepared->instance_slots : this->instance_slots;
+    const auto &ray_authoring_object_ids =
+        prepared ? prepared->ray_authoring_object_ids : this->ray_authoring_object_ids;
+    const auto &ray_instance_declarations =
+        prepared ? prepared->ray_instance_declarations : this->ray_instance_declarations;
+    const auto &material_absolute_override_frames = prepared
+        ? prepared->material_absolute_override_frames : this->material_absolute_override_frames;
+    const auto &material_override_frames =
+        prepared ? prepared->material_override_frames : this->material_override_frames;
     std::vector<RayQueryGeometryInstanceSnapshot> result;
     result.reserve(draw_inventory.size());
     for (const auto &item : draw_inventory) {
@@ -1469,6 +1595,8 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
                     ray_authoring_object_ids.at(instance),
                 .ray_instance =
                     ray_instance_declarations.at(instance),
+                .ray_instance_component_witness =
+                    rayComponentWitness(ray_authoring_object_ids.at(instance), prepared),
                 .instance_index =
                     item.stable_identity.instance.index,
                 .instance_generation =
@@ -1553,11 +1681,21 @@ PolygonInstanceContainer::rayQueryGeometryInstances() const {
 std::vector<RayOccurrenceCatalogEntry>
 PolygonInstanceContainer::rayOccurrences(
     std::uint64_t authoring_object_id) const {
-    const auto snapshots = rayQueryGeometryInstances();
+    const auto plan = rayAsPlan();
+    const auto inventory = rayAsInventory();
+    const auto fallback = inventory ? std::vector<RayQueryGeometryInstanceSnapshot>{}
+                                    : rayQueryGeometryInstances();
+    const auto &snapshots = inventory ? inventory->instances : fallback;
+    std::vector<const RaySceneRow *> resolved_rows(snapshots.size(), nullptr);
+    if (plan) {
+        for (const auto &row : plan->rows)
+            resolved_rows.at(row.source_index) = &row;
+    }
     std::vector<RayOccurrenceCatalogEntry> result;
     result.reserve(snapshots.size());
-    std::size_t q = 0;
-    for (const auto &snapshot : snapshots) {
+    for (std::size_t index = 0; index < snapshots.size(); ++index) {
+        const auto &snapshot = snapshots[index];
+        if (snapshot.geometry_kind != RayGeometryKind::triangles) continue;
         const bool ray_eligible = !snapshot.skinned &&
                                   !snapshot.morph_deformed &&
                                   !snapshot.vat_deformed &&
@@ -1566,8 +1704,6 @@ PolygonInstanceContainer::rayOccurrences(
                                   snapshot.vertex_count != 0 &&
                                   snapshot.index_count != 0 &&
                                   snapshot.index_count % 3u == 0;
-        const auto current_q = q;
-        if (ray_eligible) ++q;
         if (authoring_object_id != 0 &&
             snapshot.authoring_object_id != authoring_object_id)
             continue;
@@ -1585,9 +1721,16 @@ PolygonInstanceContainer::rayOccurrences(
             .primitive = snapshot.primitive_index,
             .material = snapshot.material_name,
             .variant = snapshot.occurrence_variant,
-            .q = current_q,
             .authoring_object_id = snapshot.authoring_object_id,
         };
+        if (const auto *row = resolved_rows[index]) {
+            entry.q = row->q;
+            entry.effective = RayOccurrenceEffectiveValues{
+                .mask = row->instance_mask,
+                .instance_flags = row->instance_flags,
+                .custom_index = row->instance_custom_index,
+            };
+        }
         if (snapshot.occurrence_ambiguous) {
             entry.eligibility = RayOccurrenceEligibilityKind::ambiguous;
             entry.reason = "collision";
@@ -1596,12 +1739,13 @@ PolygonInstanceContainer::rayOccurrences(
             entry.reason = snapshot.occurrence_error.empty()
                                ? "asset_key_missing"
                                : snapshot.occurrence_error;
-        } else if (!ray_eligible) {
+        } else if (!ray_eligible || !entry.q) {
             entry.eligibility = RayOccurrenceEligibilityKind::not_ray_traced;
             if (snapshot.skinned) entry.reason = "skinned";
             else if (snapshot.morph_deformed) entry.reason = "morph_deformed";
             else if (snapshot.vat_deformed) entry.reason = "vat_deformed";
-            else entry.reason = "blas_ineligible";
+            else if (!ray_eligible) entry.reason = "blas_ineligible";
+            else entry.reason = plan ? "not_in_as_plan" : "as_plan_unavailable";
         }
         result.push_back(std::move(entry));
     }
@@ -1633,6 +1777,12 @@ void PolygonInstanceContainer::setRayInstanceDeclaration(
         ray_instance_declarations[index] == declaration) {
         return;
     }
+    auto declarations = std::make_shared<RaySceneDeclarationCatalog>(*ray_scene_declarations);
+    if (declaration) {
+        auto &owner = (*declarations)[authoring_object_id];
+        owner.value = *declaration;
+    } else declarations->erase(authoring_object_id);
+    ray_scene_declarations = std::move(declarations);
     ray_authoring_object_ids[index] = authoring_object_id;
     ray_instance_declarations[index] = std::move(declaration);
 }

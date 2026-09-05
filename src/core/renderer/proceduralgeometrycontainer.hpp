@@ -50,6 +50,9 @@ DECLARE_MODULE(ProceduralGeometryContainer) {
 
     std::vector<RayQueryGeometryInstanceSnapshot>
     proceduralRayInstances() const;
+    std::vector<RayQueryGeometryInstanceSnapshot> preparedRayInstances(
+        const ResolvedSceneView &scene,
+        const PreparedSceneState *prepared = nullptr) const;
     std::uint64_t allocationGeneration() const noexcept;
     std::size_t instanceCount() const noexcept;
     std::size_t retirementCount() const noexcept;

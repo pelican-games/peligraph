@@ -216,6 +216,8 @@ struct ResolvedComponent {
     const ComponentCodecValue &requireRuntimeValue() const;
 };
 
+nlohmann::ordered_json resolvedComponentWitness(const ResolvedComponent &component);
+
 struct ResolvedPrefabParameter {
     std::string name;
     nlohmann::ordered_json value_resolved;
@@ -332,12 +334,14 @@ class ResolvedSceneResolver {
                                  SceneResolverGeneration generation,
                                  ResolvedSceneDefaults defaults = {},
                                  PrefabRegistrySnapshot registry = {},
-                                 BindableProviderSnapshot provider = {});
+                                 BindableProviderSnapshot provider = {},
+                                 ComponentDecodeSurface surface = ComponentDecodeSurface::runtime);
     static SceneProjectionState prepare(AuthoringSceneDocument document,
                                         SceneResolverGeneration generation,
                                         ResolvedSceneDefaults defaults = {},
                                         PrefabRegistrySnapshot registry = {},
-                                        BindableProviderSnapshot provider = {});
+                                        BindableProviderSnapshot provider = {},
+                                        ComponentDecodeSurface surface = ComponentDecodeSurface::runtime);
 
     [[noreturn]] static void resolveGeneratedComponent();
 };

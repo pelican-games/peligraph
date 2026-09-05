@@ -252,4 +252,42 @@ TEST_CASE("SeqPlayer releases playback-owned model instances at scene boundary",
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+TEST_CASE("ModelInstanceSlots successive scene replacements preserve withheld slots",
+          "[model-instance][scene-replacement][retirement]") {
+    RendererInternal::ModelInstanceSlots slots;
+    slots.reserve(2);
+    const auto first = slots.nextId(0);
+    slots.publish(first);
+    const auto free = slots.nextId(1);
+    slots.publish(free);
+    slots.retire(free);
+
+    std::vector<std::uint32_t> first_retirement;
+    auto next = slots.prepareSceneReplacement(first_retirement);
+    REQUIRE(first_retirement == std::vector<std::uint32_t>{first.index});
+    // An already free slot remains reusable while the old live slot is held.
+    REQUIRE(next.hasReusableSlot());
+    const auto replacement = next.nextId(2);
+    REQUIRE(replacement.index == free.index);
+    next.publish(replacement);
+
+    std::vector<std::uint32_t> second_retirement;
+    auto last = next.prepareSceneReplacement(second_retirement);
+    REQUIRE(second_retirement == std::vector<std::uint32_t>{replacement.index});
+    // Neither retirement has drained, so neither dead slot may be reused.
+    REQUIRE_FALSE(last.hasReusableSlot());
+    REQUIRE(last.nextId(2).index == 2);
+    last.releaseWithheld(first_retirement.front());
+    REQUIRE(last.nextId(2).index == first.index);
+    last.releaseWithheld(second_retirement.front());
+    const auto reused = last.nextId(2);
+    REQUIRE(reused.index == replacement.index);
+    last.publish(reused);
+    const auto reused_first = last.nextId(2);
+    REQUIRE(reused_first.index == first.index);
+    last.publish(reused_first);
+    REQUIRE_FALSE(last.hasReusableSlot());
+    REQUIRE(last.liveCount() == 2);
+}
+
 } // namespace Pelican

@@ -13,10 +13,14 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <unordered_map>
 
 namespace Pelican {
 
 class ProjectBasicConfig;
+
+std::unordered_map<std::uint64_t, TransformComponent>
+resolvedSceneWorldTransforms(const ResolvedSceneView &scene);
 
 enum class EditorProjectionAdapterKind : std::uint8_t {
     EcsExistingValue,

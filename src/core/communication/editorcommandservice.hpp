@@ -246,6 +246,14 @@ struct EditorSceneRevisionResult {
     std::optional<EditorPreviewLeaseResult> preview_lease;
 };
 
+struct RaySceneRowSnapshot;
+
+struct EditorRayOccurrencesResult {
+    std::vector<RayOccurrenceCatalogEntry> entries;
+    std::shared_ptr<const RaySceneRowSnapshot> plan;
+    std::uint64_t authoring_object_id = 0;
+};
+
 struct EditorCommandServiceDependencies {
     std::function<const AuthoringSceneDocument &()> document;
     std::function<const ResolvedScene &()> resolved_scene;
@@ -263,7 +271,7 @@ struct EditorCommandServiceDependencies {
                                    std::uint64_t)>
         import_scene_snapshot_versioned;
     std::function<SaveSceneResult()> save_scene;
-    std::function<std::vector<RayOccurrenceCatalogEntry>(std::uint64_t)>
+    std::function<EditorRayOccurrencesResult(std::uint64_t)>
         ray_occurrences;
     std::function<RayOccurrenceResolution(std::string_view)>
         resolve_ray_occurrence;
@@ -313,7 +321,7 @@ class EditorCommandService {
     EditorSceneTreeResult sceneTree(const EditorSceneTreeRequest &request = {}) const;
     EditorSceneRevisionResult getSceneRevision() const;
     EditorObjectQueryResult getComponents(const EditorGetComponentsRequest &request) const;
-    std::vector<RayOccurrenceCatalogEntry> getRayOccurrences(
+    EditorRayOccurrencesResult getRayOccurrences(
         const EditorGetComponentsRequest &request) const;
     RayOccurrenceResolution resolveRayOccurrence(
         std::string_view occurrence_id) const;

@@ -1,4 +1,5 @@
 #include "proceduralgeometrycontainer.hpp"
+#include "../loader/editorprojectiontransaction.hpp"
 
 #include "proceduralgeometrycomponent.hpp"
 #include "../ecs/core.hpp"
@@ -90,6 +91,7 @@ ProceduralGeometryContainer::prepareScene(
     phase_trace.record(SceneLoadPhase::prepare);
     auto candidate = std::make_shared<State>();
     candidate->allocation_generation = allocation_generation;
+    retire_queue_.reserve(retire_queue_.size() + 1);
 
     std::map<std::string, const AssetDataProceduralGeometryDeclaration *,
              std::less<>> declarations;
@@ -122,6 +124,11 @@ ProceduralGeometryContainer::prepareScene(
         }
         if (candidate->assets.contains(instance.asset)) continue;
         const auto &declaration = *declarations.at(instance.asset);
+        if (const auto existing = active_->assets.find(instance.asset);
+            existing != active_->assets.end() && existing->second.declaration == declaration) {
+            candidate->assets.emplace(instance.asset, existing->second);
+            continue;
+        }
         vk::AabbPositionsKHR aabb{
             declaration.aabb_min[0], declaration.aabb_min[1],
             declaration.aabb_min[2], declaration.aabb_max[0],
@@ -255,6 +262,43 @@ ProceduralGeometryContainer::proceduralRayInstances() const {
             .aabb_buffer_address = asset->second.buffer_address,
             .geometry_lease = asset->second.aabb_buffer,
             .world_transform = worldMatrix(transform),
+        });
+    }
+    return result;
+}
+
+std::vector<RayQueryGeometryInstanceSnapshot>
+ProceduralGeometryContainer::preparedRayInstances(
+    const ResolvedSceneView &scene, const PreparedSceneState *prepared) const {
+    const auto &state = prepared ? prepared->state : active_;
+    std::vector<RayQueryGeometryInstanceSnapshot> result;
+    if (!state) return result;
+    const auto transforms = resolvedSceneWorldTransforms(scene);
+    for (const auto &instance : state->instances) {
+        const auto object = std::find_if(scene.objects.begin(), scene.objects.end(),
+            [&](const auto &candidate) {
+                return candidate.authoring_object_id.value == instance.authoring_object_id;
+            });
+        if (object == scene.objects.end()) continue;
+        const auto declaration = std::find_if(object->components.begin(), object->components.end(),
+            [](const auto &component) { return component.name == "pelican_ray_instance"; });
+        const auto &asset = state->assets.at(instance.asset);
+        const auto transform = transforms.find(instance.authoring_object_id);
+        result.push_back(RayQueryGeometryInstanceSnapshot{
+            .geometry_kind = RayGeometryKind::aabbs,
+            .asset_identity = asset.asset_identity,
+            .authoring_object_id = instance.authoring_object_id,
+            .component_occurrence = instance.occurrence,
+            .ray_instance = declaration == object->components.end() ? std::nullopt
+                : std::optional<RayInstanceComponent>{std::any_cast<const RayInstanceComponent &>(
+                    declaration->requireRuntimeValue())},
+            .scene_epoch = state->allocation_generation,
+            .geometry_allocation_id = asset.allocation_id,
+            .procedural_asset = asset.declaration.name,
+            .procedural_record = asset.declaration.record,
+            .aabb_buffer_address = asset.buffer_address,
+            .geometry_lease = asset.aabb_buffer,
+            .world_transform = worldMatrix(transform == transforms.end() ? nullptr : &transform->second),
         });
     }
     return result;

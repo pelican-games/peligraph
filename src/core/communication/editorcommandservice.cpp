@@ -1,6 +1,7 @@
 #include "editorcommandservice.hpp"
 
 #include "../loader/sceneauthoringadapter.hpp"
+#include "../shader/raygrouplayout.hpp"
 #include "schemavocabularyadapter.hpp"
 
 #include "renderconfigeditor.hpp"
@@ -821,7 +822,7 @@ EditorCommandService::getComponents(const EditorGetComponentsRequest &request) c
     return queryObject(source, scene, *found);
 }
 
-std::vector<RayOccurrenceCatalogEntry>
+EditorRayOccurrencesResult
 EditorCommandService::getRayOccurrences(
     const EditorGetComponentsRequest &request) const {
     if (!dependencies_.ray_occurrences) return {};
@@ -1888,6 +1889,13 @@ OrderedJson rayOccurrenceJson(const RayOccurrenceCatalogEntry &entry) {
         {"material", entry.material},
         {"variant", entry.variant},
         {"eligibility", std::move(eligibility)},
+        {"authoring_object_id", entry.authoring_object_id},
+        {"q", entry.q ? OrderedJson(*entry.q) : OrderedJson(nullptr)},
+        {"effective", entry.effective
+            ? OrderedJson{{"mask", entry.effective->mask},
+                          {"instance_flags", entry.effective->instance_flags},
+                          {"custom_index", entry.effective->custom_index}}
+            : OrderedJson(nullptr)},
     };
 }
 
@@ -1896,10 +1904,35 @@ OrderedJson rayOccurrenceJson(const RayOccurrenceCatalogEntry &entry) {
 OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
     const Json &params) const {
     auto entries = OrderedJson::array();
-    for (const auto &entry :
-         service_.getRayOccurrences(parseGetComponentsRequest(params)))
+    const auto inventory = service_.getRayOccurrences(parseGetComponentsRequest(params));
+    for (const auto &entry : inventory.entries)
         entries.push_back(rayOccurrenceJson(entry));
-    return OrderedJson{{"entries", std::move(entries)}};
+    auto overrides = OrderedJson::array();
+    auto rejected_rows = OrderedJson::array();
+    if (inventory.plan) {
+        for (const auto &row : inventory.plan->occurrence_overrides) {
+            if (row.authoring_object_id != inventory.authoring_object_id) continue;
+            overrides.push_back({
+                {"address", {{"object", row.authoring_object_id},
+                             {"component", row.ray_instance_component_witness},
+                             {"list_path", "/overrides"}, {"row_id", row.row_id}}},
+                {"occurrence_id", row.occurrence_id},
+                {"q", row.q ? OrderedJson(*row.q) : OrderedJson(nullptr)},
+                {"status", row.error.empty() ? "resolved" : "rejected"},
+                {"effective", row.error.empty()
+                    ? OrderedJson{{"mask", row.mask}, {"instance_flags", row.instance_flags},
+                                  {"custom_index", row.custom_index}}
+                    : OrderedJson(nullptr)},
+            });
+        }
+        rejected_rows = sceneLoadDiagnosticsJson(rayScenePlanDiagnostics(
+            *inventory.plan, inventory.authoring_object_id)).at("rejected_rows");
+    }
+    return OrderedJson{{"entries", std::move(entries)},
+                       {"overrides", std::move(overrides)},
+                       {"rejected_rows", std::move(rejected_rows)},
+                       {"generation", inventory.plan ? OrderedJson(inventory.plan->generation)
+                                                      : OrderedJson(nullptr)}};
 }
 
 OrderedJson EditorCommandRpcAdapter::resolveRayOccurrence(
@@ -1919,14 +1952,11 @@ OrderedJson EditorCommandRpcAdapter::resolveRayOccurrence(
     if (resolved.state == RayOccurrenceResolveState::found) {
         auto entry = rayOccurrenceJson(resolved.candidates.front());
         entry["status"] = "found";
-        entry["q"] = resolved.candidates.front().q;
         return entry;
     }
     auto candidates = OrderedJson::array();
     for (const auto &entry : resolved.candidates) {
         auto value = rayOccurrenceJson(entry);
-        value["q"] = entry.q;
-        value["authoring_object_id"] = entry.authoring_object_id;
         candidates.push_back(std::move(value));
     }
     return OrderedJson{{"status", "ambiguous"},

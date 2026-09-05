@@ -219,6 +219,10 @@ class ComponentEditorSwapToken {
 // runtime_project use the target documented by runtime_kind:
 //   transform -> TransformCodecTarget, other ECS codecs -> their component,
 //   camera/light -> CameraCodecData/LightCodecData, collider -> ColliderComponent.
+enum class ComponentDecodeSurface : std::uint8_t { runtime, preview, web };
+std::optional<UserDataViolation> componentDecodeSurfaceViolation(
+    std::string_view name, const nlohmann::json &authored, ComponentDecodeSurface surface);
+
 struct ComponentCodec {
     using DecodeAuthored = ResolutionResult<ComponentCodecValue> (*)(
         const nlohmann::json &);
@@ -244,7 +248,8 @@ struct ComponentCodec {
     EditorSwap editor_swap;
 
     ResolutionResult<ComponentCodecValue> decodeAuthored(
-        const nlohmann::json &authored) const;
+        const nlohmann::json &authored,
+        ComponentDecodeSurface surface = ComponentDecodeSurface::runtime) const;
     nlohmann::ordered_json encodeCanonical(const ComponentCodecValue &value) const;
     const SchemaNode &schemaNode() const;
     std::vector<StructFieldSchema> fieldSchema() const;

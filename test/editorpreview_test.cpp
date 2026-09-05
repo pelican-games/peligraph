@@ -1,5 +1,6 @@
 #include "../src/core/communication/editorpreviewservice.hpp"
 #include "../src/core/renderingpass/previewgraph.hpp"
+#include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -182,6 +183,37 @@ TEST_CASE("WP172 preview graph is a third startup program with an exclusion poli
     for (std::size_t index = 0; index < expected.size(); ++index) {
         REQUIRE(inventory.at(index).at("state") == std::string{expected[index]});
     }
+}
+
+TEST_CASE("WP382d eval_preview explicitly rejects occurrence overrides without changing the document",
+          "[WP382d][eval-preview][service]") {
+    auto source = sceneFixture();
+    auto &components = source["scenes"]["main"]["objects"][0]["components"];
+    components.push_back({{"name", "pelican_ray_instance"}, {"mask", 3}});
+    auto document = AuthoringSceneDocument::load(source.dump(), SceneRevision{382});
+    const auto graph = graphFixture();
+    const auto shared = exactSharedStateFixture();
+    EditorPreviewService service{{
+        .document = [&]() -> const AuthoringSceneDocument & { return document; },
+        .preview_graph = [&]() -> const PreviewGraphProgram & { return graph; },
+        .xr_active = [] { return false; },
+        .engine_time = [] { return PreviewEngineTimeSnapshot{}; },
+        .shared_state_snapshot = [&] { return shared; },
+    }};
+    CHECK(service.evalPreview(Json::object(), [] { return openGate(); }).at("status") == "evaluated");
+    components.back()["overrides"] = {{"$list", {{"v", 1}, {"next_id", 1}}},
+                                       {"rows", Json::array()}};
+    document = AuthoringSceneDocument::load(source.dump(), SceneRevision{383});
+    const auto before = test_support::authoring(document).encodeSemantic();
+    try {
+        (void)service.evalPreview(Json::object(), [] { return openGate(); });
+        FAIL("preview accepted unsupported occurrence overrides");
+    } catch (const EditorPreviewError &error) {
+        CHECK(std::string{editorPreviewErrorCodeName(error.code())} == "ray_instance_overrides_unsupported@1");
+        CHECK(error.payload().at("surface") == "preview");
+    }
+    CHECK(test_support::authoring(document).encodeSemantic() == before);
+    CHECK(document.revision() == SceneRevision{383});
 }
 
 TEST_CASE("WP172 typed eval_preview consumes the gate twice and never publishes",

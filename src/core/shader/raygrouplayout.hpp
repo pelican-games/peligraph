@@ -322,6 +322,22 @@ struct RaySceneRow {
         std::numeric_limits<std::uint32_t>::max();
 };
 
+struct RayOccurrenceOverrideResolution {
+    std::uint64_t authoring_object_id = 0;
+    std::string component_occurrence;
+    nlohmann::ordered_json ray_instance_component_witness =
+        nlohmann::ordered_json::object();
+    std::uint32_t row_id = 0;
+    std::string occurrence_id;
+    std::optional<std::uint32_t> q;
+    std::uint8_t mask = 0;
+    std::uint32_t instance_flags = 0;
+    std::uint32_t custom_index = 0;
+    // Empty for an applied row. Unresolved rows retain their authored address
+    // while the geometry uses object/default values.
+    std::string error;
+};
+
 struct RaySceneRowSnapshot {
     std::uint64_t generation = 0;
     RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LegacyNoLayout;
@@ -329,6 +345,7 @@ struct RaySceneRowSnapshot {
     std::string material_table_digest_sha256;
     std::string geometry_table_digest_sha256;
     std::vector<RaySceneRow> rows;
+    std::vector<RayOccurrenceOverrideResolution> occurrence_overrides;
 };
 
 inline constexpr std::uint32_t rayGeometryAttributeNormal = 1u << 0u;

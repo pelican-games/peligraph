@@ -22,6 +22,7 @@
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../renderer/proceduralgeometrycontainer.hpp"
 #include "../shader/raygrouplayout.hpp"
+#include "../renderingpass/renderingpassconfigloader.hpp"
 #include "../vkcore/core.hpp"
 #include "../../project/assetdataformat.hpp"
 #include "../userpublic/events.hpp"
@@ -500,6 +501,24 @@ nlohmann::ordered_json sceneLoadDiagnosticsJson(
     };
 }
 
+SceneLoadDiagnostics rayScenePlanDiagnostics(
+    const RaySceneRowSnapshot &plan, std::uint64_t authoring_object_id) {
+    SceneLoadDiagnostics result;
+    for (const auto &row : plan.occurrence_overrides) {
+        if (row.error.empty() ||
+            (authoring_object_id != 0 && row.authoring_object_id != authoring_object_id))
+            continue;
+        result.rejected_rows.push_back({
+            .address = {.object = row.authoring_object_id,
+                        .component_witness = row.ray_instance_component_witness,
+                        .list_path = "/overrides", .row_id = row.row_id},
+            .error = {{"code", row.error}, {"occurrence_id", row.occurrence_id},
+                      {"hint", "Select an eligible occurrence from get_ray_occurrences or remove this override."}},
+        });
+    }
+    return result;
+}
+
 SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     SceneLoadPhaseTrace phase_trace;
     auto *const injector = fault_injector;
@@ -639,8 +658,30 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                 object.prepared_model_instance = staged.id();
                 renderer.publishPreparedSceneModel(renderer_candidate,
                                                     std::move(staged));
+                renderer_candidate.ray_authoring_object_ids.at(
+                    object.prepared_model_instance->index) = object.authoring_object_id.value;
                 break;
             }
+        }
+        const auto ray_project = loadRayTracingProjectConfig(
+            loadRenderingPassConfigJsonFromString(config.renderingConfigJson(),
+                                                 "scene ray plan prepare"),
+            [](std::string_view reference) { return GET_MODULE(PathResolver).loadText(reference); },
+            PELICAN_RUNTIME_SHADER_COMPILER != 0);
+        renderer.prepareRayScenePlan(renderer_candidate, ray_project, scene,
+            GET_MODULE(ProceduralGeometryContainer).preparedRayInstances(*scene, &procedural_candidate),
+            &phase_trace);
+        if (internal::sceneLoadMutationEnabled(injector, SceneLoadFaultPhase::prepare,
+                "ray", scene_load_mutation::ray_occurrence_catalog)) {
+            auto dropped = std::make_shared<RayScenePlanState>(*renderer_candidate.ray_scene_plan);
+            dropped->inventory = std::make_shared<RaySceneInventorySnapshot>();
+            renderer_candidate.ray_scene_plan = std::move(dropped);
+        }
+        if (internal::sceneLoadMutationEnabled(injector, SceneLoadFaultPhase::prepare,
+                "ray", scene_load_mutation::ray_as_plan)) {
+            auto dropped = std::make_shared<RayScenePlanState>(*renderer_candidate.ray_scene_plan);
+            dropped->resolved_rows.reset();
+            renderer_candidate.ray_scene_plan = std::move(dropped);
         }
         camera_candidate = GET_MODULE(Camera).prepareSceneCameras(
             request.scene_id, scene_document);
@@ -1110,17 +1151,22 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     // Public strings and JSON are deliberately materialized only after the
     // noexcept commit tail has completed.
     auto effect_errors = effect_transaction->effectErrors();
+    const auto ray_plan = GET_MODULE(PolygonInstanceContainer).rayAsPlan();
+    auto diagnostics = ray_plan ? rayScenePlanDiagnostics(*ray_plan) : SceneLoadDiagnostics{};
+    if (!diagnostics.rejected_rows.empty() &&
+        (request.root == SceneLoadRoot::startup || request.root == SceneLoadRoot::pending)) {
+        LOG_WARNING(logger, "{} scene committed with unresolved ray occurrence overrides: diagnostics={}",
+                    request.root == SceneLoadRoot::startup ? "startup" : "pending",
+                    sceneLoadDiagnosticsJson(diagnostics).dump());
+    }
     if (!effect_errors.empty()) {
-        auto diagnostics = SceneLoadDiagnostics{
-            .effect_errors = effect_errors,
-        };
+        diagnostics.effect_errors = effect_errors;
         diagnostics_by_root.at(static_cast<std::size_t>(request.root)) =
             diagnostics;
         return CommittedWithEffectFailure{
             candidate_authority, std::move(effect_errors), phase_trace,
             std::move(diagnostics)};
     }
-    SceneLoadDiagnostics diagnostics;
     diagnostics_by_root.at(static_cast<std::size_t>(request.root)) =
         diagnostics;
     return SceneLoadCommitted{candidate_authority, phase_trace,

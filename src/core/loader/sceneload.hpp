@@ -114,6 +114,9 @@ inline constexpr std::string_view procedural_instance_snapshot =
     "procedural.instance-snapshot.bypass";
 inline constexpr std::string_view procedural_retire_queue =
     "procedural.retire-queue.bypass";
+inline constexpr std::string_view ray_occurrence_catalog =
+    "ray.occurrence-catalog.bypass";
+inline constexpr std::string_view ray_as_plan = "ray.as-plan.bypass";
 inline constexpr std::string_view root_startup = "root.startup.disconnect";
 inline constexpr std::string_view root_rpc = "root.rpc.disconnect";
 inline constexpr std::string_view root_pending = "root.pending.disconnect";
@@ -164,6 +167,10 @@ struct SceneLoadDiagnostics {
     std::vector<SceneRejectedRow> rejected_rows;
     std::vector<SceneLoadEffectError> effect_errors;
 };
+
+struct RaySceneRowSnapshot;
+SceneLoadDiagnostics rayScenePlanDiagnostics(
+    const RaySceneRowSnapshot &plan, std::uint64_t authoring_object_id = 0);
 
 struct CommittedWithEffectFailure {
     SceneAuthority active_authority{};

@@ -417,6 +417,16 @@ EditorProjectionError errorFromException(EditorProjectionErrorCode fallback,
 
 } // namespace
 
+std::unordered_map<std::uint64_t, TransformComponent>
+resolvedSceneWorldTransforms(const ResolvedSceneView &scene) {
+    const auto projected = buildResolvedTransformNodes(scene);
+    std::unordered_map<std::uint64_t, TransformComponent> result;
+    result.reserve(projected.nodes.size());
+    for (const auto &node : projected.nodes)
+        result.emplace(node.authoring_object_id.value, node.world);
+    return result;
+}
+
 std::string_view editorProjectionAdapterKindName(
     EditorProjectionAdapterKind kind) noexcept {
     switch (kind) {

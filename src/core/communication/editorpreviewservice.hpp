@@ -16,6 +16,7 @@ namespace Pelican {
 enum class EditorPreviewErrorCode : std::uint8_t {
     schema_violation,
     method_unavailable,
+    ray_instance_overrides_unsupported,
     gate_closed,
     xr_active_unsupported,
     capture_schema_violation,

@@ -19,6 +19,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -224,6 +225,28 @@ const std::array ray_instance_fields{
                       std::pair<std::uint64_t, std::uint64_t>{
                           0, rayCustomIndexMaximum}},
 };
+
+struct RayOverrideCarrier {
+    List<RayOccurrenceOverride> overrides;
+    static constexpr auto schema = structFields(
+        componentPolicy("ray_override_carrier"),
+        defaulted(field<&RayOverrideCarrier::overrides>("overrides")));
+};
+
+const SchemaNode &rayInstanceSchema() {
+    static const auto schema = [] {
+        auto result = SchemaNode::fromFlat(std::span<const StructFieldSchema>{ray_instance_fields});
+        const auto carrier = internal::materializeSchemaNode(RayOverrideCarrier::schema);
+        const auto offset = result.node_count - 1;
+        for (std::size_t index = 1; index < carrier.node_count; ++index) {
+            auto node = carrier.nodes[index];
+            if (node.parent != 0) node.parent += offset;
+            result.nodes[result.node_count++] = node;
+        }
+        return result;
+    }();
+    return schema;
+}
 
 [[noreturn]] void codecError(StructFieldErrorCode code, std::string path, std::string_view detail) {
     internal::structFieldError(code, std::move(path), detail);
@@ -1066,20 +1089,59 @@ ComponentCodecValue decodeRayInstance(const Json &json) {
     }
     for (const auto &[key, value] : json.items()) {
         (void)value;
-        if (key == "overrides") {
-            legacyReject(
-                "pelican_ray_instance.overrides_not_enabled",
-                "ray_instance_overrides_not_enabled@1: per-occurrence "
-                "overrides require WP382d enablement");
-        }
         if (key != "name" && key != "mask" &&
-            key != "instance_flags" && key != "custom_index") {
+            key != "instance_flags" && key != "custom_index" && key != "overrides") {
             rayInstanceCodecError("pelican_ray_instance.unknown_field",
                                   "ray_instance_unknown_field",
                                   "unknown field '" + key + "'");
         }
     }
     RayInstanceComponent result;
+    if (const auto overrides = json.find("overrides"); overrides != json.end()) {
+        RayOverrideCarrier carrier;
+        try {
+            internal::decodeStructObject(Json{{"overrides", *overrides}}, carrier,
+                RayOverrideCarrier::schema, "pelican_ray_instance");
+        } catch (const StructFieldValidationError &error) {
+            rejectDecodedUserData(UserDataViolation{
+                .code = "ray_instance_override_schema_invalid@1",
+                .tokens = {"overrides"},
+                .fields = {{"field_path", error.path()}},
+                .leaf_message = error.what(),
+            });
+        }
+        std::map<std::string, std::uint32_t> occurrences;
+        for (const auto &row : carrier.overrides.rows) {
+            if (row.value.occurrence_id.empty()) {
+                rejectDecodedUserData(UserDataViolation{
+                    .code = "OccurrenceIdUnrepresentable",
+                    .tokens = {"overrides"},
+                    .fields = {{"row_id", row.envelope.id}, {"reason", "empty"}},
+                    .leaf_message = "occurrence_id is empty",
+                });
+            }
+            const auto [found, inserted] = occurrences.emplace(
+                row.value.occurrence_id, row.envelope.id);
+            if (!inserted) {
+                rejectDecodedUserData(UserDataViolation{
+                    .code = "DuplicateOccurrenceOverride",
+                    .tokens = {"overrides"},
+                    .fields = {{"occurrence_id", row.value.occurrence_id},
+                         {"first_row_id", found->second},
+                         {"second_row_id", row.envelope.id}},
+                    .leaf_message = "override occurrence_id must be unique within its component",
+                });
+            }
+            if (row.value.instance_flags &&
+                row.value.instance_flags->contains(RayInstanceFlag::ForceOpaque) &&
+                row.value.instance_flags->contains(RayInstanceFlag::ForceNoOpaque)) {
+                rayInstanceCodecError("pelican_ray_instance.conflicting_flags",
+                    "ray_as_conflicting_instance_flags",
+                    "force_opaque and force_no_opaque are mutually exclusive");
+            }
+        }
+        result.overrides = std::move(carrier.overrides);
+    }
     if (const auto mask = json.find("mask"); mask != json.end()) {
         result.mask = static_cast<std::uint8_t>(decodeRayInstanceUnsigned(
             *mask, 0xffu, "mask"));
@@ -1093,7 +1155,8 @@ ComponentCodecValue decodeRayInstance(const Json &json) {
         result.custom_index = decodeRayInstanceUnsigned(
             *custom, rayCustomIndexMaximum, "custom_index");
     }
-    if (!result.mask && !result.instance_flags && !result.custom_index) {
+    if (!result.mask && !result.instance_flags && !result.custom_index &&
+        !result.overrides) {
         rayInstanceCodecError("pelican_ray_instance.empty",
                               "ray_instance_empty",
                               "pelican_ray_instance must declare at least one field");
@@ -1119,6 +1182,11 @@ OrderedJson encodeRayInstance(const ComponentCodecValue &value) {
         result["instance_flags"] = std::move(flags);
     }
     if (data.custom_index) result["custom_index"] = *data.custom_index;
+    if (data.overrides) {
+        result["overrides"] = internal::encodeStructObject(
+            RayOverrideCarrier{*data.overrides}, RayOverrideCarrier::schema,
+            "pelican_ray_instance").at("overrides");
+    }
     return result;
 }
 
@@ -1226,7 +1294,6 @@ constexpr std::array legacy_branch_descriptors{
     LegacyBranchDescriptor{"pelican_ray_instance.flag_not_string", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.flags_not_array", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.name_mismatch", "decodeRayInstance"},
-    LegacyBranchDescriptor{"pelican_ray_instance.overrides_not_enabled", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.payload_not_object", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.unknown_field", "decodeRayInstance"},
     LegacyBranchDescriptor{"pelican_ray_instance.unknown_flag", "decodeRayInstance"},
@@ -1324,7 +1391,7 @@ const std::array codecs{
     ComponentCodec{"pelican_ray_instance", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeRayInstance>, encodeRayInstance,
-                    []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(ray_instance_fields)); return node; },
+                   rayInstanceSchema,
                    applyRayInstance, projectRayInstance,
                    prepareEcsEditorSwap<RayInstanceComponent>,
                    swapEcsEditorToken<RayInstanceComponent>},
@@ -1383,9 +1450,25 @@ ScopedComponentCodecCanonicalDefaults::~ScopedComponentCodecCanonicalDefaults()
 
 } // namespace testing
 
+std::optional<UserDataViolation> componentDecodeSurfaceViolation(
+    std::string_view name, const nlohmann::json &authored, ComponentDecodeSurface surface) {
+    if (surface != ComponentDecodeSurface::runtime &&
+        name == "pelican_ray_instance" && authored.contains("overrides")) {
+        return UserDataViolation{
+            .code = "ray_instance_overrides_unsupported@1",
+            .tokens = {"overrides"},
+            .fields = {{"surface", surface == ComponentDecodeSurface::preview ? "preview" : "web"}},
+            .leaf_message = "Ray occurrence overrides are unavailable on this surface",
+        };
+    }
+    return std::nullopt;
+}
+
 ResolutionResult<ComponentCodecValue> ComponentCodec::decodeAuthored(
-    const nlohmann::json &authored) const {
+    const nlohmann::json &authored, ComponentDecodeSurface surface) const {
     if (decode_authored == nullptr) throw std::logic_error("component codec decode callback is missing");
+    if (auto violation = componentDecodeSurfaceViolation(name, authored, surface))
+        return ResolutionResult<ComponentCodecValue>::failure(std::move(*violation));
     try {
         return decode_authored(authored);
     } catch (const StructFieldValidationError &error) {

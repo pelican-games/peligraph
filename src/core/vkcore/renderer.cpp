@@ -4719,6 +4719,7 @@ void Renderer::renderLogicalFrame(
         acceleration_structure_build;
     std::optional<FrameResources::FramePublication>
         frame_publication;
+    std::shared_ptr<const RayScenePlanState> ray_plan_publication;
     auto submission_resources =
         std::make_shared<LogicalFrameSubmissionResources>();
     submission_resources->runtime_generation = runtime_generation;
@@ -4738,9 +4739,12 @@ void Renderer::renderLogicalFrame(
             const auto triangle_instances =
                 modules.instance_container
                     .rayQueryGeometryInstances();
-            const auto procedural_instances =
+            auto procedural_instances =
                 GET_MODULE(ProceduralGeometryContainer)
                     .proceduralRayInstances();
+            for (auto &instance : procedural_instances)
+                instance.ray_instance_component_witness = modules.instance_container
+                    .rayComponentWitness(instance.authoring_object_id);
             const auto generation = next_ray_scene_generation++;
             auto inventory =
                 std::make_shared<RaySceneInventorySnapshot>(
@@ -4789,10 +4793,10 @@ void Renderer::renderLogicalFrame(
                 }
                 ray_type_count = static_cast<std::uint32_t>(
                     ray_project.layout.ray_types.size());
-                ray_scene_rows =
-                    std::make_shared<RaySceneRowSnapshot>(
-                        resolveRayTracingSceneRows(
-                            geometry_instances, ray_project));
+                ray_plan_publication = modules.instance_container.prepareFrameRayScenePlan(
+                    gpu_owner_scope->ray_tracing_project, inventory);
+                ray_scene_rows = std::make_shared<RaySceneRowSnapshot>(
+                    *ray_plan_publication->resolved_rows);
                 const_cast<RaySceneRowSnapshot &>(*ray_scene_rows)
                     .generation = generation;
                 generation_root->resolved_rows = ray_scene_rows;
@@ -5704,6 +5708,8 @@ void Renderer::renderLogicalFrame(
         if (frame_publication) {
             frame_publication->commit();
         }
+        if (ray_plan_publication)
+            modules.instance_container.publishRayScenePlan(ray_plan_publication);
         if (staged_runtime_generation != 0) {
             if (!modules.frame_graph_runtime
                      .publishStagedGeneration(

@@ -11,6 +11,7 @@
 namespace Pelican {
 
 class Camera;
+class SceneLoader;
 class BehaviorAttachmentArena;
 enum class BehaviorRegistryAvailability;
 class ComponentInfoManager;
@@ -76,6 +77,7 @@ class SceneObjectProjectionAdapter final : public EditorProjectionAdapter {
         std::string scene_id, AuthoringObjectId target_object,
         std::vector<EditorProjectionRuntimeObjectBinding> bindings);
     ~SceneObjectProjectionAdapter();
+    void connectRuntimeBindings(SceneLoader &loader) noexcept;
 
     EditorProjectionAdapterKind kind() const noexcept override;
     std::string_view name() const noexcept override;

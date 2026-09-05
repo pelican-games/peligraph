@@ -1,7 +1,14 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "editorprojectionadapters.hpp"
+#include "../renderer/proceduralgeometrycontainer.hpp"
 
 #include "componentcodec.hpp"
+#include "basicconfig.hpp"
+#include "sceneload.hpp"
+#include "scene.hpp"
+#include "../../project/assetdataformat.hpp"
+#include "../vkcore/core.hpp"
+#include <limits>
 #include "../asset/model.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../ecs/archetypemigration.hpp"
@@ -56,6 +63,20 @@ const ResolvedComponent *findResolvedComponent(const ResolvedObject *object,
         if (component.name == component_name) return &component;
     }
     return nullptr;
+}
+
+Json proceduralComponents(const ResolvedSceneView *scene) {
+    auto components = Json::array();
+    if (!scene) return components;
+    for (const auto &object : scene->objects) {
+        for (const auto &component : object.components) {
+            if (component.name == "pelican_procedural_geometry")
+                components.push_back({{"object", object.authoring_object_id.value},
+                    {"component", resolvedComponentWitness(component)},
+                    {"value", component.effective_json}});
+        }
+    }
+    return components;
 }
 
 std::unordered_map<std::uint64_t, EntityId> bindingMap(
@@ -143,6 +164,8 @@ struct SceneObjectProjectionAdapter::Impl {
     std::string adapter_name;
     std::vector<EditorProjectionRuntimeObjectBinding> bindings;
     std::vector<EditorProjectionRuntimeObjectBinding> next_bindings;
+    SceneLoader *scene_loader = nullptr;
+    std::vector<SceneRuntimeObjectBinding> loader_bindings;
 
     std::optional<ECSEntityMutationToken> entity;
     std::optional<StagedModelInstance> staged_model;
@@ -261,6 +284,7 @@ struct SceneObjectProjectionAdapter::Impl {
                         model_load->decoded);
                 auto &model = models->getModelTemplateByName(data.model);
                 staged_model.emplace(renderer->stageModelInstance(model));
+                renderer->setStagedAuthoringObject(*staged_model, prepared_target.value);
                 staged_model_id = staged_model->id();
 
                 glm::mat4 matrix{1.0F};
@@ -310,6 +334,7 @@ struct SceneObjectProjectionAdapter::Impl {
                         auto &model = *static_cast<SimpleModelViewComponent *>(
                             values[index]);
                         model.model_instance_id = staged_model_id;
+                        model.authoring_object_id = prepared_target.value;
                         model.dirty = 0;
                         continue;
                     }
@@ -560,6 +585,10 @@ SceneObjectProjectionAdapter::SceneObjectProjectionAdapter(
                                ? std::string{"auto"}
                                : std::to_string(impl_->target_object.value));
 }
+void SceneObjectProjectionAdapter::connectRuntimeBindings(SceneLoader &loader) noexcept {
+    impl_->scene_loader = &loader;
+}
+
 std::span<const EditorProjectionRuntimeObjectBinding>
 SceneObjectProjectionAdapter::preparedRuntimeBindings() const noexcept {
     // ECS archetype inverse tokens are published during the prepare walk to
@@ -631,6 +660,19 @@ void SceneObjectProjectionAdapter::prepare(
         impl_->prepareDestroy();
     }
     impl_->prepareSpecials(context, base_scene, next_scene);
+    if (impl_->scene_loader) {
+        // Earlier lifecycle tokens may already have published during prepare.
+        // Apply this one object's change to the current canonical bindings.
+        const auto current = impl_->scene_loader->runtimeObjectBindings();
+        impl_->loader_bindings.assign(current.begin(), current.end());
+        std::erase_if(impl_->loader_bindings, [&](const auto &binding) {
+            return binding.authoring_object_id == impl_->prepared_target;
+        });
+        const auto replacement = std::find_if(impl_->next_bindings.begin(), impl_->next_bindings.end(),
+            [&](const auto &binding) { return binding.authoring_object_id == impl_->prepared_target; });
+        if (replacement != impl_->next_bindings.end())
+            impl_->loader_bindings.push_back({replacement->authoring_object_id, replacement->entity});
+    }
 }
 
 void SceneObjectProjectionAdapter::publish() noexcept {
@@ -653,11 +695,13 @@ void SceneObjectProjectionAdapter::publish() noexcept {
         impl_->physics_published = true;
     }
     impl_->bindings.swap(impl_->next_bindings);
+    if (impl_->scene_loader) impl_->scene_loader->publishRuntimeObjectBindings(impl_->loader_bindings);
     impl_->bindings_published = true;
 }
 
 void SceneObjectProjectionAdapter::rollback() noexcept {
     if (impl_->bindings_published) {
+        if (impl_->scene_loader) impl_->scene_loader->publishRuntimeObjectBindings(impl_->loader_bindings);
         impl_->bindings.swap(impl_->next_bindings);
     }
     if (impl_->physics_published) {
@@ -942,10 +986,8 @@ struct RendererModelProjectionAdapter::Impl {
     struct Prepared {
         ECSCoreTemplatePublic::PreparedComponentSwap<SimpleModelViewComponent>
             ecs_value;
-        StagedModelInstance staged;
         ModelInstanceId next_id{};
         std::optional<ModelInstanceId> old_id;
-        bool renderer_published = false;
     };
 
     ECSCoreTemplatePublic &ecs;
@@ -955,6 +997,11 @@ struct RendererModelProjectionAdapter::Impl {
     std::string adapter_name;
     std::vector<EditorProjectionRuntimeObjectBinding> bindings;
     std::vector<Prepared> prepared;
+    std::optional<PolygonInstanceContainer::PreparedSceneState> candidate;
+    ProceduralGeometryContainer *procedural = nullptr;
+    std::optional<ProceduralGeometryContainer::PreparedSceneState> procedural_candidate;
+    SceneLoadPhaseTrace procedural_trace;
+    bool published = false;
 };
 
 RendererModelProjectionAdapter::RendererModelProjectionAdapter(
@@ -989,6 +1036,10 @@ RendererModelProjectionAdapter::publicationMode() const noexcept {
 void RendererModelProjectionAdapter::prepare(
     const EditorProjectionPrepareContext &context) {
     impl_->prepared.clear();
+    impl_->candidate = impl_->renderer.snapshotPreparedScene();
+    impl_->procedural = FastModuleContainer::tryGet<ProceduralGeometryContainer>();
+    impl_->procedural_candidate.reset();
+    impl_->published = false;
     const auto *base_scene =
         findResolvedScene(context.base_resolved, impl_->scene_id);
     const auto *next_scene =
@@ -1018,21 +1069,10 @@ void RendererModelProjectionAdapter::prepare(
         if (data.model == live->model_name) continue;
 
         auto &model = impl_->models.getModelTemplateByName(data.model);
-        auto staged = impl_->renderer.stageModelInstance(model);
-        glm::mat4 matrix{1.0F};
-        if (live->model_instance_id &&
-            impl_->renderer.isModelInstanceAlive(*live->model_instance_id)) {
-            matrix = impl_->renderer.currentModelMatrixForTesting(
-                *live->model_instance_id);
-        } else if (const auto *transform =
-                       impl_->ecs.tryComponent<TransformComponent>(
-                           binding.entity)) {
-            matrix = glm::translate(glm::mat4{1.0F}, transform->pos) *
-                     glm::toMat4(transform->rotation) *
-                     glm::scale(glm::mat4{1.0F}, transform->scale);
-        }
-        impl_->renderer.setStagedModelMatrix(staged, matrix);
+        auto staged = impl_->renderer.stagePreparedSceneModel(*impl_->candidate, model);
+        impl_->renderer.setStagedAuthoringObject(staged, binding.authoring_object_id.value);
         const auto next_id = staged.id();
+        impl_->renderer.publishPreparedSceneModel(*impl_->candidate, std::move(staged));
         auto next_value = *live;
         next_value.model_name = data.model;
         next_value.dirty = 0;
@@ -1040,28 +1080,73 @@ void RendererModelProjectionAdapter::prepare(
         impl_->prepared.push_back(Impl::Prepared{
             .ecs_value = impl_->ecs.prepareComponentSwap(binding.entity,
                                                          next_value),
-            .staged = std::move(staged),
             .next_id = next_id,
             .old_id = live->model_instance_id,
         });
     }
+    // Retiring instances must be absent from the candidate inventory before
+    // its ray plan is resolved. Their live storage remains in the inverse.
+    for (const auto &value : impl_->prepared) {
+        if (!value.old_id) continue;
+        std::erase_if(impl_->candidate->draw_inventory, [&](const auto &item) {
+            return item.stable_identity.instance == *value.old_id;
+        });
+    }
+    if (next_scene) {
+        // Component migration retains removed model storage until finish so
+        // rollback can restore it. Its geometry must already leave this plan.
+        std::erase_if(impl_->candidate->draw_inventory, [&](const auto &item) {
+            const auto object = impl_->candidate->ray_authoring_object_ids.at(
+                item.stable_identity.instance.index);
+            if (object == 0) return false;
+            return findResolvedComponent(
+                findResolvedObject(next_scene, AuthoringObjectId{object}),
+                "simplemodelview") == nullptr;
+        });
+        const auto next_procedural = proceduralComponents(next_scene);
+        if (proceduralComponents(base_scene) != next_procedural) {
+            if (!impl_->procedural)
+                throw std::runtime_error("editor_projection_participant_missing@1: procedural_geometry");
+            const auto generation = impl_->procedural->allocationGeneration();
+            if (generation == std::numeric_limits<std::uint64_t>::max())
+                throw std::overflow_error("procedural allocation generation exhausted");
+            AssetDataFormatDocument assets;
+            if (!next_procedural.empty())
+                assets = parseAssetDataFormatJson(Json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()));
+            impl_->procedural_candidate = impl_->procedural->prepareScene(assets, *next_scene,
+                FastModuleContainer::tryGet<VulkanManageCore>(), generation + 1,
+                impl_->procedural_trace);
+        }
+        const auto procedurals = impl_->procedural
+            ? impl_->procedural->preparedRayInstances(*next_scene,
+                impl_->procedural_candidate ? &*impl_->procedural_candidate : nullptr)
+            : std::vector<RayQueryGeometryInstanceSnapshot>{};
+        impl_->renderer.prepareRayScenePlan(*impl_->candidate,
+            impl_->candidate->ray_scene_plan ? impl_->candidate->ray_scene_plan->project : nullptr,
+            next_scene, procedurals);
+    }
 }
 
 void RendererModelProjectionAdapter::publish() noexcept {
+    if (impl_->procedural_candidate)
+        impl_->procedural->publishPrepared(*impl_->procedural_candidate, impl_->procedural_trace);
+    if (impl_->candidate) {
+        impl_->renderer.publishPreparedScene(std::move(*impl_->candidate));
+        impl_->published = true;
+    }
     for (auto &value : impl_->prepared) {
-        impl_->renderer.publishModelInstance(std::move(value.staged));
-        value.renderer_published = true;
         value.ecs_value.publish();
     }
 }
 void RendererModelProjectionAdapter::rollback() noexcept {
     for (auto it = impl_->prepared.rbegin(); it != impl_->prepared.rend(); ++it) {
         it->ecs_value.rollback();
-        if (it->renderer_published) {
-            (void)impl_->renderer.removeModelInstance(it->next_id);
-            it->renderer_published = false;
-        }
     }
+    if (impl_->published) impl_->renderer.publishPreparedScene(std::move(*impl_->candidate));
+    if (impl_->procedural_candidate) impl_->procedural->rollbackPrepared(*impl_->procedural_candidate);
+    impl_->procedural_candidate.reset();
+    impl_->candidate.reset();
+    impl_->published = false;
     impl_->prepared.clear();
 }
 void RendererModelProjectionAdapter::finish() noexcept {
@@ -1071,7 +1156,12 @@ void RendererModelProjectionAdapter::finish() noexcept {
             (void)impl_->renderer.removeModelInstance(*value.old_id);
         }
     }
+    if (impl_->procedural_candidate)
+        impl_->procedural->enqueueRetirement(std::move(*impl_->procedural_candidate), impl_->procedural_trace);
+    impl_->procedural_candidate.reset();
     impl_->prepared.clear();
+    impl_->candidate.reset();
+    impl_->published = false;
 }
 
 struct CameraProjectionAdapter::Impl {

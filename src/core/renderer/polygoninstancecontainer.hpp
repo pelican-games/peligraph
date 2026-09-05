@@ -27,6 +27,14 @@
 namespace Pelican {
 
 struct SceneLoadPhaseTrace;
+struct ResolvedSceneView;
+
+struct RayScenePlanState {
+    std::shared_ptr<const RayTracingProjectConfig> project;
+    std::shared_ptr<const RaySceneInventorySnapshot> inventory;
+    std::shared_ptr<const RaySceneDeclarationCatalog> declarations;
+    std::shared_ptr<const RaySceneRowSnapshot> resolved_rows;
+};
 
 class PolygonInstanceContainer;
 namespace test_support {
@@ -311,6 +319,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint64_t> ray_authoring_object_ids;
     std::vector<std::optional<RayInstanceComponent>>
         ray_instance_declarations;
+    std::shared_ptr<const RaySceneDeclarationCatalog> ray_scene_declarations =
+        std::make_shared<const RaySceneDeclarationCatalog>();
+    std::shared_ptr<const RayScenePlanState> ray_scene_plan;
     std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
         material_initial_value_tables;
     std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
@@ -370,6 +381,9 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         std::vector<std::uint64_t> ray_authoring_object_ids;
         std::vector<std::optional<RayInstanceComponent>>
             ray_instance_declarations;
+        std::shared_ptr<const RaySceneDeclarationCatalog> ray_scene_declarations =
+        std::make_shared<const RaySceneDeclarationCatalog>();
+        std::shared_ptr<const RayScenePlanState> ray_scene_plan;
         std::vector<std::shared_ptr<const SourceMaterialInitialValueTable>>
             material_initial_value_tables;
         std::vector<std::shared_ptr<const VrmSemanticData>> vrm_semantics;
@@ -432,7 +446,27 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void rebuildModelInstances(std::span<const ModelInstanceRebuild> replacements);
     void rebuildModelInstances(ModelAssetId asset_id, const ModelTemplate &replacement);
     std::vector<RayQueryGeometryInstanceSnapshot>
-    rayQueryGeometryInstances() const;
+    rayQueryGeometryInstances(const PreparedSceneState *prepared = nullptr) const;
+    nlohmann::ordered_json rayComponentWitness(std::uint64_t object,
+        const PreparedSceneState *prepared = nullptr) const;
+    void prepareRayScenePlan(PreparedSceneState &prepared,
+        std::shared_ptr<const RayTracingProjectConfig> project,
+        const ResolvedSceneView *scene = nullptr,
+        std::span<const RayQueryGeometryInstanceSnapshot> procedurals = {},
+        SceneLoadPhaseTrace *phase_trace = nullptr);
+    std::shared_ptr<const RaySceneRowSnapshot> rayAsPlan() const noexcept {
+        return ray_scene_plan ? ray_scene_plan->resolved_rows : nullptr;
+    }
+    std::shared_ptr<const RaySceneInventorySnapshot> rayAsInventory() const noexcept {
+        return ray_scene_plan ? ray_scene_plan->inventory : nullptr;
+    }
+    std::shared_ptr<const RayScenePlanState> prepareFrameRayScenePlan(
+        std::shared_ptr<const RayTracingProjectConfig> project,
+        std::shared_ptr<const RaySceneInventorySnapshot> inventory,
+        std::shared_ptr<const RaySceneDeclarationCatalog> declarations = nullptr) const;
+    void publishRayScenePlan(std::shared_ptr<const RayScenePlanState> &prepared) noexcept {
+        ray_scene_plan.swap(prepared);
+    }
     std::vector<RayOccurrenceCatalogEntry> rayOccurrences(
         std::uint64_t authoring_object_id = 0) const;
     RayOccurrenceResolution resolveRayOccurrence(
@@ -440,6 +474,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     void setRayInstanceDeclaration(
         ModelInstanceId id, std::uint64_t authoring_object_id,
         std::optional<RayInstanceComponent> declaration);
+    void setStagedAuthoringObject(StagedModelInstance &staged,
+                                 std::uint64_t object) noexcept;
     std::uint64_t rayQueryGeometryGeneration() const noexcept {
         return ray_query_geometry_generation;
     }

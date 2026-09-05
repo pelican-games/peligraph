@@ -261,7 +261,8 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
         .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
         .ray_occurrences = [occurrence](std::uint64_t) {
-            return std::vector{occurrence};
+            return EditorRayOccurrencesResult{.entries = {occurrence},
+                                              .authoring_object_id = 1};
         },
         .resolve_ray_occurrence = [occurrence](std::string_view id) {
             if (id != occurrence.occurrence_id)

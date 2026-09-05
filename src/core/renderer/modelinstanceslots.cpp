@@ -109,7 +109,8 @@ ModelInstanceSlots ModelInstanceSlots::prepareSceneReplacement(
     ModelInstanceSlots candidate = *this;
     withheld_live_indices.clear();
     withheld_live_indices.reserve(live_count_);
-    candidate.free_indices_.clear();
+    // Dead slots can still be withheld by an earlier scene retirement.
+    // Preserve the actual free list instead of reconstructing it from alive_.
     candidate.free_indices_.reserve(generations_.size());
     for (std::uint32_t index = 0; index < alive_.size(); ++index) {
         if (alive_[index]) {
@@ -119,9 +120,6 @@ ModelInstanceSlots ModelInstanceSlots::prepareSceneReplacement(
                 ++candidate.generations_[index];
                 withheld_live_indices.push_back(index);
             }
-        } else if (candidate.generations_[index] !=
-                   std::numeric_limits<std::uint32_t>::max()) {
-            candidate.free_indices_.push_back(index);
         }
     }
     candidate.live_count_ = 0;

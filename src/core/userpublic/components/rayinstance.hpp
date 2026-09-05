@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include "../details/schema/structfieldschema.hpp"
 
 namespace Pelican {
 
@@ -32,12 +33,42 @@ struct RayAccelerationStructureCanonicalDefaults {
 inline constexpr RayAccelerationStructureCanonicalDefaults
     rayAccelerationStructureCanonicalDefaults{};
 
+enum class RayInstanceFlag : std::uint32_t {
+    CullDisable = rayInstanceTriangleFacingCullDisable,
+    FlipFacing = rayInstanceTriangleFlipFacing,
+    ForceOpaque = rayInstanceForceOpaque,
+    ForceNoOpaque = rayInstanceForceNoOpaque,
+};
+
+struct RayOccurrenceOverride {
+    std::string occurrence_id;
+    std::optional<std::uint8_t> mask;
+    std::optional<Flags<RayInstanceFlag>> instance_flags;
+    std::optional<std::uint32_t> custom_index;
+
+    static constexpr auto schema = structFields(
+        componentPolicy("ray_occurrence_override"),
+        required(field<&RayOccurrenceOverride::occurrence_id>("occurrence_id")),
+        optionalOverride(field<&RayOccurrenceOverride::mask>("mask", urange(0, 255))),
+        optionalOverride(field<&RayOccurrenceOverride::instance_flags>("instance_flags"),
+            enumValues(
+                enumValue("triangle_facing_cull_disable", RayInstanceFlag::CullDisable),
+                enumValue("triangle_flip_facing", RayInstanceFlag::FlipFacing),
+                enumValue("force_opaque", RayInstanceFlag::ForceOpaque),
+                enumValue("force_no_opaque", RayInstanceFlag::ForceNoOpaque))),
+        optionalOverride(field<&RayOccurrenceOverride::custom_index>(
+            "custom_index", urange(0, rayCustomIndexMaximum))));
+
+    bool operator==(const RayOccurrenceOverride &) const = default;
+};
+
 // Presence is field-wise: an authored empty instance_flags array is a real
 // override, while an entirely empty component is rejected by the codec.
 struct RayInstanceComponent {
     std::optional<std::uint8_t> mask;
     std::optional<std::uint32_t> instance_flags;
     std::optional<std::uint32_t> custom_index;
+    std::optional<List<RayOccurrenceOverride>> overrides;
 
     bool operator==(const RayInstanceComponent &) const = default;
 };

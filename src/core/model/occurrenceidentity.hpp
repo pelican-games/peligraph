@@ -92,6 +92,12 @@ enum class RayOccurrenceEligibilityKind : std::uint8_t {
     unrepresentable,
 };
 
+struct RayOccurrenceEffectiveValues {
+    std::uint8_t mask = 0;
+    std::uint32_t instance_flags = 0;
+    std::uint32_t custom_index = 0;
+};
+
 struct RayOccurrenceCatalogEntry {
     std::string occurrence_id;
     std::string display_name;
@@ -104,8 +110,9 @@ struct RayOccurrenceCatalogEntry {
     RayOccurrenceEligibilityKind eligibility =
         RayOccurrenceEligibilityKind::ok;
     std::string reason;
-    std::size_t q = 0;
+    std::optional<std::uint32_t> q;
     std::uint64_t authoring_object_id = 0;
+    std::optional<RayOccurrenceEffectiveValues> effective;
 };
 
 enum class RayOccurrenceResolveState : std::uint8_t {

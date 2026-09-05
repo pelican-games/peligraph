@@ -22,6 +22,8 @@
 #include "skeletal_fixture.hpp"
 #include "vulkan_test_support.hpp"
 #include "vat_fixture.hpp"
+#include "raytracing_rt3_1_fixture.hpp"
+#include "../src/core/renderer/polygoninstancecontainer.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -792,6 +794,128 @@ TEST_CASE("WP382c glTF node extras.id drives occurrence identity through the pro
     // Same extras.id, different node names: the same occurrence. The name
     // path is not an input to the identity once extras.id is authored.
     REQUIRE(renamed_ids == alpha_ids);
+    GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("WP382d imported variants retain every override in the shared ray plan",
+          "[WP382d][gltf][occurrence][importer-matrix]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_wp382d_variants_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const TempDirGuard guard{root};
+    TestGltfFragmentFixture::writeGlb(root / "static.glb");
+    TestSkeletalFixture::writeGlb(root / "skinned.glb");
+    TestMorphFixture::writeGlb(root / "morph.glb");
+    TestMorphFixture::writeGlb(root / "split.vrm",
+        {.skinned = true, .vrm_first_person = true});
+    struct VariantCase {
+        std::string file;
+        std::vector<ImporterVariantV1> variants;
+        bool eligible;
+    };
+    std::vector<VariantCase> cases{
+        {"static.glb", {ImporterVariantV1::none, ImporterVariantV1::none}, true},
+        {"skinned.glb", {ImporterVariantV1::skinned}, false},
+        {"morph.glb", {ImporterVariantV1::morph_expanded}, false},
+        {"split.vrm", {ImporterVariantV1::vrm_split_both,
+                       ImporterVariantV1::vrm_split_third_person_only}, false},
+    };
+#if PELICAN_WITH_VAT
+    TestVatFixture::writeTinyVatGlb(root / "vat.glb");
+    cases.push_back({"vat.glb", {ImporterVariantV1::vat_deformed}, false});
+#endif
+    FastModuleContainer modules;
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("Vulkan importer matrix unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    auto &loader = GET_MODULE(GltfLoader);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    auto project = std::make_shared<RayTracingProjectConfig>();
+    project->layout = RayTracingRt31Fixture::v2Layout(std::nullopt);
+    constexpr std::uint64_t object = 382;
+    const nlohmann::ordered_json witness{
+        {"type", "pelican_ray_instance"}, {"occurrence", 1},
+        {"origin", {{"kind", "authored"}, {"authoring_component_index", 1}}}};
+    for (const auto &test : cases) {
+        CAPTURE(test.file);
+        auto model = loader.commit(loader.prepareGltfBinary(
+            (root / test.file).string(), std::nullopt,
+            CanonicalModelAssetKey{"matrix." + test.file}));
+        std::vector<ImporterVariantV1> variants;
+        std::set<std::string> occurrence_ids;
+        RayInstanceComponent declaration;
+        declaration.overrides.emplace();
+        std::uint32_t next_row = 1;
+        for (const auto &material : model.material_primitives) {
+            for (const auto &primitive : material.primitives) {
+                REQUIRE(primitive.occurrence);
+                REQUIRE_FALSE(primitive.occurrence->error);
+                REQUIRE_FALSE(primitive.occurrence->occurrence_id.empty());
+                variants.push_back(primitive.occurrence->variant.kind);
+                REQUIRE(occurrence_ids.insert(primitive.occurrence->occurrence_id).second);
+                declaration.overrides->rows.push_back({
+                    .envelope = {.id = next_row++},
+                    .value = {.occurrence_id = primitive.occurrence->occurrence_id, .mask = 9},
+                });
+            }
+        }
+        declaration.overrides->next_id = next_row;
+        std::sort(variants.begin(), variants.end());
+        auto expected = test.variants;
+        std::sort(expected.begin(), expected.end());
+        REQUIRE(variants == expected);
+        const auto id = instances.placeModelInstance(model);
+        instances.setRayInstanceDeclaration(id, object, declaration);
+        auto candidate = instances.snapshotPreparedScene();
+        candidate.ray_scene_declarations = std::make_shared<const RaySceneDeclarationCatalog>(
+            RaySceneDeclarationCatalog{{object, {declaration, witness}}});
+        instances.prepareRayScenePlan(candidate, project);
+        instances.publishPreparedScene(std::move(candidate));
+        const auto plan = instances.rayAsPlan();
+        const auto inventory = instances.rayAsInventory();
+        REQUIRE(plan);
+        REQUIRE(inventory->instances.size() == occurrence_ids.size());
+        REQUIRE(plan->occurrence_overrides.size() == occurrence_ids.size());
+        const auto diagnostics = rayScenePlanDiagnostics(*plan, object);
+        if (test.eligible) {
+            REQUIRE(plan->rows.size() == occurrence_ids.size());
+            CHECK(diagnostics.rejected_rows.empty());
+        } else {
+            CHECK(plan->rows.empty());
+            REQUIRE(diagnostics.rejected_rows.size() == occurrence_ids.size());
+        }
+        std::set<std::string> resolved_ids;
+        for (const auto &row : plan->occurrence_overrides) {
+            resolved_ids.insert(row.occurrence_id);
+            CHECK(row.ray_instance_component_witness == witness);
+            if (test.eligible) {
+                REQUIRE(row.q.has_value());
+                CHECK(row.error.empty());
+                const auto found = std::find_if(plan->rows.begin(), plan->rows.end(),
+                    [&](const auto &value) { return value.q == *row.q; });
+                REQUIRE(found != plan->rows.end());
+                CHECK(inventory->instances.at(found->source_index).occurrence_id == row.occurrence_id);
+                CHECK(found->instance_mask == 9);
+            } else {
+                CHECK_FALSE(row.q.has_value());
+                CHECK(row.error == "OccurrenceNotRayTraced");
+                const auto rejected = std::find_if(diagnostics.rejected_rows.begin(),
+                    diagnostics.rejected_rows.end(), [&](const auto &value) {
+                        return value.address.row_id == row.row_id;
+                    });
+                REQUIRE(rejected != diagnostics.rejected_rows.end());
+                CHECK(rejected->address.component_witness == witness);
+                CHECK(rejected->error.at("code") == "OccurrenceNotRayTraced");
+                CHECK(rejected->error.at("occurrence_id") == row.occurrence_id);
+            }
+        }
+        CHECK(resolved_ids == occurrence_ids);
+        REQUIRE(instances.removeModelInstance(id));
+    }
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

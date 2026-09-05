@@ -1,4 +1,11 @@
 #include "../src/core/model/occurrenceidentity.hpp"
+#include "../src/core/model/gltf.hpp"
+#include "../src/core/build_features.hpp"
+#include "../src/core/log.hpp"
+#include "gltf_fragment_fixture.hpp"
+#include "vat_fixture.hpp"
+#include <chrono>
+#include <filesystem>
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -164,6 +171,36 @@ TEST_CASE("unrepresentable occurrence inputs are named and never default",
         std::numeric_limits<float>::quiet_NaN();
     REQUIRE_THROWS_WITH(primitiveContentDigestV1(4, invalid),
                         "OccurrenceIdUnrepresentable: float");
+}
+
+TEST_CASE("WP382d VAT build feature gate reads actual GLB input before GPU staging",
+          "[WP382d][occurrence][importer-matrix][cpu][vat-feature]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_wp382d_vat_gate_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    struct Cleanup {
+        std::filesystem::path path;
+        ~Cleanup() { std::filesystem::remove_all(path); }
+    } cleanup{root};
+    const auto static_path = root / "static.glb";
+    const auto vat_path = root / "vat.glb";
+    TestGltfFragmentFixture::writeGlb(static_path);
+    TestVatFixture::writeTinyVatGlb(vat_path);
+    GltfLoader loader;
+    REQUIRE_NOTHROW(loader.prepareGltfBinary(static_path.string()));
+#if PELICAN_WITH_VAT
+    REQUIRE_NOTHROW(loader.prepareGltfBinary(vat_path.string()));
+#else
+    try {
+        (void)loader.prepareGltfBinary(vat_path.string());
+        FAIL("VAT-disabled importer accepted a VAT GLB");
+    } catch (const BuildFeatureDisabledError &error) {
+        CHECK(error.feature() == "PELICAN_WITH_VAT");
+        CHECK_THAT(error.what(), Catch::Matchers::ContainsSubstring("GLB contains pelican.vat primitive extras"));
+    }
+#endif
 }
 
 } // namespace Pelican
