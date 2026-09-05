@@ -23263,7 +23263,9 @@ slot修正後の関連59/59成功(GPU label31件、`<作業ディレクトリ>/w
 
 Fableの所有/rollback限定レビュー(`<作業ディレクトリ>/wp382d_fable_connection_review.json`)は完了。非authored instanceのtransformをidentityへ潰す代入を削除、clear後の旧plan/catalog残留を解消、migration participantとcomponent deinitの二重remove所有を削除。token/participantのmember破棄順も修正した。null planの仮説的再利用への追加防御や仕様レビューの再開は行わず、初回config parse整理時の再評価事項とした。修正後の関連64/64成功(GPU label35件、83.01秒、`<作業ディレクトリ>/wp382d_review_final_ctest.log`)。検証・裁定の詳細は接続進捗文書を参照。
 
-WP382dは引き続き未commit・未統合。残りは全procedural lifecycle、startup実起動での診断観測、外部webアプリへの拒否接続、scene/frameの別config parseによる初回再resolve。共通codecのweb拒否は実装・検証済みだが、別repoのwebアプリまで完了とは扱わない。旧overrides gateを外した差分を残余未確認のまま着地させない。
+procedural geometryのasset変更・component追加削除・object spawn/destroyを既存editor transactionへ接続。同一assetのAABB bufferを共有し、通常ray編集では再prepareしない。実RPCで見つかったSceneLoaderのauthoring→entity binding更新漏れは、既存lifecycle adapterのpublish/rollbackにvector swapを接続して修正した。各操作のAfterPublication失敗でplan/inventory・AABB状態・bindingが戻り、同操作を成功させる対照を確認。PelicanCore::runの実startupも最初のRT frameまで通し、row ID 3 / OccurrenceAbsentの診断保持と実warningを観測。対象2/2成功(`<作業ディレクトリ>/wp382d_binding_ctest.log`)。関連targetを再buildした最終回帰は66/66成功(GPU label37件、86.24秒、`<作業ディレクトリ>/wp382d_procedural_final_ctest.log`)。全数やOFF構成再検証の証拠には流用しない。
+
+WP382dは引き続き未commit・未統合。残りは外部webアプリへの専用拒否code接続、scene/frameの別config parseによる初回再resolve、統合前の最終裁定。共通codecのweb拒否は実装・検証済み。別repoのmy_webpageはbindPelicanSceneで未登録pelican_ray_instanceをunknown componentとして拒否することをコード確認したが、専用code/surfaceは未接続であり別repoを変更していない。旧overrides gateを外した差分を残余未確認のまま着地させない。
 
 既知失敗の引き継ぎ: `contract_projection_gate` と showcase を走査する 2 件は利用者作業との関連が報告されている。今回の全数ログの未完・連続異常終了を、それら 3 件だけの既知失敗と扱わない。利用者データを変更して試験を緑にしない。
 
