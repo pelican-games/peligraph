@@ -22552,6 +22552,26 @@ occurrence row の `mask` / `instance_flags` / `custom_index` は `OptionalOverr
 - 記録: `ComponentCodec::schemaNode()` は flat の `SchemaNode` を返すままで、built-in codec の行 address 解決は lookup ごとに `Schema::Node` へ変換している(hot になれば共有 cache。記録のみ)
 - コードレビュー: rev382b(codex、`6e44120e`)= **不合格**。致命 1(legacy `set_component_value` で `/rows/$list/next_id` を巻き戻せて row ID が再利用される)+ 実害 3(add / remove の undo が raw を canonical 再 encode、`structuralDomainsOverlap` が object 一致で先に真、`ListIndexAddressingRejected` が set の 2 形だけ)+ test 1(bytes 比較が構造等価)→ **WP382b-fix** に全件。壊せなかった項目: addressed 3 op の raw 局所 patch、Behavior の `source_json_exact`、row lookup の `$row.id` 走査、出荷 4 project と `src/core/resources` の tree hash 一致
 
+#### WP382c 統合・検証記録(2026-09-05、残余あり)
+
+`23cb5153` に squash。旧 worktree の実装 `6e1fa40c` に現ブランチを取り込み、コード競合なし、文書 4 件の競合を統合側正本で解消。移動・変更された 5 箇所の文書参照と model reload の説明を現行経路へ更新した。レビュー対象 `a3bd913c` と squash の `src/`・`test/` は同一(追加 merge は文書だけ)。着地後、未保存差分なしとコード一致を確認し `<作業ディレクトリ>/wp382c` / `agent/wp382c` を削除済み。ログ・レビューは worktree 外に保存。
+
+- 実装: `CanonicalModelAssetKey`、`occurrence_id_v1`、glTF の extras.id / path / accessor digest、共有 scene diagnostics、`get_ray_occurrences` / `resolve_ray_occurrence`、model reload participant、catalog と instance の一括 publish。
+- merge 後 worktree build 成功。非 GPU **1319 件中成功 1318・skip 1・失敗 0**、89.08 秒。RT family / occurrence / reload の W1 は **98/98 成功**、163.54 秒(GPU ラベル 44 件)。対象 exe の更新時刻も確認。出荷 projects と `src/core/resources/` の差分なし。
+- ログ: `<作業ディレクトリ>/wp382c_resume_build_20260905.log`、`<作業ディレクトリ>/wp382c_resume_cpu_20260905.log`、`<作業ディレクトリ>/wp382c_resume_w1_20260905.log`。統合 Studio ON build も成功(`<作業ディレクトリ>/int_wp382c_build_20260905.log`)。
+- 統合全数 **1669 件中成功 1666・skip 1・失敗 2**、698.60 秒。`<作業ディレクトリ>/int_wp382c_20260905/ctest.log` と `done` に保存。既知の `contract_projection_gate` に加え、Studio の fatal 伝達試験が失敗した。下記の試験修正後、当該試験は **1/1 成功**。全数を修正後に再走した結果とは扱わない。
+- **統合時の試験修正(`13aad5b7`):** Studio の fatal 伝達試験は `--headless` で子プロセスを起動していたが、EmbeddedViewport は 15 秒で native window が現れなければ kill する。WP382c 後のモデル読み込みがこの期限を超え、fatal が出る前に打ち切られた。単独再実行でも再現し、stderr で読み込み途中の終了を確認。壊れた設定側も製品と同じ windowed 起動へ変更し、fatal 本文 / Frame Plan 表示 / RPC stdout の既存条件と正常設定の対照を全て維持した。再 build 後の exe 更新時刻を確認し、**1/1 成功、46.31 秒**。ログは `<作業ディレクトリ>/wp382c_studio_diag_20260905.log`(修正前)と `<作業ディレクトリ>/wp382c_studio_windowed_20260905.log`(修正後)。この起動条件変更を取り消すと既存の fatal 非空条件で落ちることを実測済み。製品の timeout やエラー処理は変更していない。読み込みの性能評価は別途必要で、今回性能改善をしたとは扱わない。
+- 変異 M1/M2/M3a/M3b の赤実測、RPC OFF / Studio ON の検証は引き継ぎ報告。今回同じ変異を反復していない。`Animation::reloadAsset()` は publish の noexcept 内で呼ばれるが自身は noexcept ではなく、OOM 等で terminate しうる既知残余を維持。
+- **rev382c:** Fable 5.1、読み取り限定。致命的な欠陥は報告なし。ただし下記の指摘があり、無指摘合格ではない。Codex がコードと仕様を照合し、追加 WP の全件起票はしない。原文と裁定は `<作業ディレクトリ>/rev382c_fable_20260905/review.md`。
+
+**rev382c の残余(公開前に閉じるものと未確認を区別):**
+1. **記録・優先、次の model reload 修正で扱う:** participant の publish は CPU snapshot の swap だけになり、旧 rebuild にあった skin palette / material override の GPU 書き込みが抜けている。direct rebuild にだけ absolute override upload が残る。コード差分は確認済み、watch reload 後の描画後退は未実測。override 付き / skinned instance の本番 reload と GPU 結果を対照にして再現し、noexcept publish に throw 可能な `writeBuf` を戻さず描画前の反映経路で閉じる。既存 W1 の成功だけでは保証しない。
+2. **記録・仕様不整合、次の occurrence/carrier 変更で扱う:** `getModelTemplateByName()` の direct scene-node load は `resolveDeclaration(name, name, true)` を通り、URI が asset key に入る。決定 16 の論理名 / `asset_key_missing` と異なる。asset 表経由と直接参照を区別する修正と対照が必要。絶対 path 入力の到達・描画影響は今回未実測。
+3. **記録・要仕様確認:** 非文字列 `extras.id` と非有限数の accessor は loader の digest 生成で throw する。決定 20 は `OccurrenceAbsent` の意味論であって、あらゆる不正入力を描画へ通す根拠ではない。包括 catch による継続案は採用せず、正当な既存 asset を拒否する範囲と名前付き診断を確認する。
+4. **WP382d へ:** RPC inventory の `q` と AS plan の `q` の一致は未実測。決定 21 の inventory / as_plan 一致で確認する。shared_ptr を含む draw identity の比較、非 Windows の NFC も未確認の残余として扱う。
+
+1・2 は v1 公開前に閉じる。現時点では致命後退の実測は無く、修正連鎖を増やさず台帳に集約する。重大な実行破壊を再現した場合は既存の連鎖上限に従って revert を含め判断する。
+
 ### WP380e: effect transaction の取りこぼし(rev380b の致命 2 + 実害 5 + 設計懸念 1)
 
 **§4 規則 11 上段(executor の scope 配置と noexcept 契約を変える)。実装者: `gpt-5.6-sol` + max。コードレビューは統合側変異 + Claude(連鎖の最後なので codex レビューは掛けない)。見積: 中。連鎖: WP380b → 380e で打ち切り(以後の指摘は記録のみ)。**
@@ -23189,13 +23209,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 2026-09-05 現況(下の再開履歴より優先)
 
-作業ブランチは `codex/render-target-runtime-slice`、確認時 HEAD は `c89d4f70`。
+作業ブランチは `codex/render-target-runtime-slice`、最新のコード着地は `23cb5153`(WP382c)。
 引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。
 Codex の同時実行は 2 本まで、fast は使わない。実装者は commit せず統合側が記録・commit する。
 `<作業ディレクトリ>/wp336` と利用者の `projects/showcase/` は触らない。
 
-1. **WP384-fix の検証・記録・rev384 は収束。** 全数1658件中、成功1656・skip1・既知の contract_projection_gate 失敗1。修正対象4件とsequential XRは成功。残余とレビュー裁定は上の完了記録。次はWP382cのW1と着地。
-2. **WP382c 着地 → 記録 → rev382c。** worktree `<作業ディレクトリ>/wp382c`、HEAD `6e1fa40c` を確認。引き継ぎでは受け入れ・変異済み、今回は再実測していない。統合手順で現ブランチを取り込み、RT family を含む W1 を通す。`reloadAsset` の noexcept/OOM 懸念は記録と実装修正を混同しない。
+1. **WP384-fix の検証・記録・rev384 は収束。** 全数1658件中、成功1656・skip1・既知の contract_projection_gate 失敗1。修正対象4件とsequential XRは成功。残余とレビュー裁定は上の完了記録。WP382cの結果は次項。
+2. **WP382c は 23cb5153 に着地、統合検証と rev382c の記録済み。** merge後build、非GPU1319件失敗0(1skip)、W1 98/98成功。全数1669件では既知gateとStudio試験の2件失敗。Studio試験のheadless/window待機の不整合を修正し、単独1/1成功を確認した。レビュー残余は上の統合・検証記録へ分類。次はWP386a。
 3. **WP386a 統合準備 → 変異 → 着地 → rev386a。** worktree `<作業ディレクトリ>/wp386a`、HEAD `60118cb6` を確認。renderer/AS の WP384-fix と procedural root/kind の両方を残して merge する。
    **今回コードで確認:** `canonicalTransformIdentity()` は float bits を直接出力し、`-0.0` 正規化はまだ無い。決定 17 の範囲で実装・受け入れが必要。未統合状態で済と記録しない。
 4. **WP382b-fix。** `<作業ディレクトリ>/wp382bfix`、HEAD `e30a41ed`。3 ファイル +418/-64 行の未 commit 差分を確認。未検証の途中実装として diff と最終受け入れから再開する。旧 CLI の再開プロンプトは `<作業ディレクトリ>/wp382bfix2.txt`。今回 CLI の再起動・更新はしていない。
