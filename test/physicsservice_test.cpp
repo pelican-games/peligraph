@@ -854,12 +854,16 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
     REQUIRE(hits.size() == 1);
     CHECK(hits[0].distance == Catch::Approx(3));
 #endif
-    struct State { int calls = 0; bool malformed = false; } state;
+    struct State {
+        int calls = 0;
+        bool malformed = false;
+        phys::Capsule capsule_cast{};
+    } state;
     Physics::ProviderV3 provider;
     provider.base.name_utf8 = "mesh.fake";
     provider.base.name_size = 9;
     provider.base.context = &state;
-    provider.mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all | Physics::query_mesh_box_shape_cast_all;
+    provider.mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all | Physics::query_mesh_box_shape_cast_all | Physics::query_mesh_capsule_shape_cast_all;
     provider.mesh_raycast_all = +[](void *context, const Physics::ProviderMeshRaycastQueryV3 *query,
         Physics::ProviderRaycastHitV1 *output, std::uint32_t capacity, std::uint32_t *count) noexcept {
         auto &state = *static_cast<State *>(context);
@@ -938,6 +942,23 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
         }
         return Physics::Status::ok;
     };
+    provider.mesh_capsule_shape_cast_all = +[](void *context,
+        const Physics::ProviderMeshCapsuleShapeCastQueryV3 *query,
+        Physics::ProviderShapeCastHitV2 *output, std::uint32_t capacity, std::uint32_t *count) noexcept {
+        auto &state = *static_cast<State *>(context);
+        state.capsule_cast = {{query->center.x, query->center.y, query->center.z},
+            {query->rotation.x, query->rotation.y, query->rotation.z, query->rotation.w},
+            query->half_height, query->radius};
+        *count = query->collider_count;
+        if (capacity < *count) return Physics::Status::buffer_too_small;
+        for (std::uint32_t i = 0; i < *count; ++i) {
+            output[i] = {};
+            output[i].collider_index = i;
+            output[i].time_of_impact = state.malformed ? -1.0F : query->radius / query->delta.z;
+            output[i].normal = {0, 0, -1};
+        }
+        return Physics::Status::ok;
+    };
     const auto owner = internal::allocateRegistrationOwner();
     struct Cleanup { internal::RegistrationOwner owner; ~Cleanup() { physics_internal::releaseProviderOwner(owner); } } cleanup{owner};
     Physics::ProviderHandleV2 handle;
@@ -959,7 +980,7 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
     std::vector<phys::OverlapHit> overlap_hits;
     const phys::Sphere distant_sphere{{100, 0, 0}, 1};
     const phys::Box distant_box{{100, 0, 0}, {0, 0, 0, 1}, {1, 1, 1}};
-    const phys::Capsule distant_capsule{{100, 0, 0}, {0, 0, 0, 1}, 1, 0.5F};
+    const phys::Capsule distant_capsule{{100, 0, 0}, {1, 0, 0, 1}, 1.5F, 0.5F};
     REQUIRE(physics_internal::overlapMeshes(distant_capsule, meshes, identities,
         metadata, nullptr, overlap_hits) == Physics::Status::ok);
     REQUIRE(overlap_hits.size() == 1);
@@ -992,9 +1013,23 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
     REQUIRE(physics_internal::shapeCastMeshes(distant_box, {0, 0, 4}, meshes,
         identities, metadata, &filter, cast_hits) == Physics::Status::ok);
     CHECK(cast_hits.empty());
-    CHECK(physics_internal::shapeCastMeshes(distant_capsule, {0, 0, 4}, meshes,
-        identities, metadata, nullptr, cast_hits) == Physics::Status::unavailable);
+    REQUIRE(physics_internal::shapeCastMeshes(distant_capsule, {0, 0, 4}, meshes,
+        identities, metadata, nullptr, cast_hits) == Physics::Status::ok);
+    REQUIRE(cast_hits.size() == 1);
+    CHECK(cast_hits[0].identity.collider_id.value == 47);
+    CHECK(cast_hits[0].time_of_impact == 0.125F);
+    CHECK(state.capsule_cast.center.x == 100);
+    CHECK(state.capsule_cast.half_height == 1.5F);
+    CHECK(state.capsule_cast.radius == 0.5F);
+    CHECK(state.capsule_cast.rotation.x == Catch::Approx(0.70710678F));
+    CHECK(state.capsule_cast.rotation.w == Catch::Approx(0.70710678F));
+    REQUIRE(physics_internal::shapeCastMeshes(distant_capsule, {0, 0, 4}, meshes,
+        identities, metadata, &filter, cast_hits) == Physics::Status::ok);
+    CHECK(cast_hits.empty());
     state.malformed = true;
+    CHECK(physics_internal::shapeCastMeshes(distant_capsule, {0, 0, 4}, meshes,
+        identities, metadata, nullptr, cast_hits) == Physics::Status::provider_error);
+    CHECK(cast_hits.empty());
     CHECK(physics_internal::shapeCastMeshes(distant_box, {0, 0, 4}, meshes,
         identities, metadata, nullptr, cast_hits) == Physics::Status::provider_error);
     CHECK(cast_hits.empty());

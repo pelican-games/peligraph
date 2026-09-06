@@ -12,6 +12,7 @@ inline constexpr std::uint64_t query_mesh_box_overlap_all = 1ULL << 2U;
 inline constexpr std::uint64_t query_mesh_capsule_overlap_all = 1ULL << 3U;
 inline constexpr std::uint64_t query_mesh_sphere_shape_cast_all = 1ULL << 4U;
 inline constexpr std::uint64_t query_mesh_box_shape_cast_all = 1ULL << 5U;
+inline constexpr std::uint64_t query_mesh_capsule_shape_cast_all = 1ULL << 6U;
 
 // Borrowed, immutable memory valid for the callback duration. Explicit index
 // triples describe double-sided triangles. Normals follow transformed winding.
@@ -113,6 +114,23 @@ using ProviderMeshBoxShapeCastAllV3Fn = Status (*)(
     void *, const ProviderMeshBoxShapeCastQueryV3 *, ProviderShapeCastHitV2 *,
     std::uint32_t, std::uint32_t *) noexcept;
 
+// Local Y is the capsule axis; half_height excludes the spherical caps.
+// Fixed orientation and initial penetration behavior match the queries above.
+struct ProviderMeshCapsuleShapeCastQueryV3 {
+    Vec3V1 center{};
+    QuatV1 rotation{};
+    float half_height = 0;
+    float radius = 0;
+    Vec3V1 delta{};
+    const TriangleMeshV3 *colliders = nullptr;
+    std::uint32_t collider_count = 0;
+    std::uint32_t reserved = 0;
+};
+
+using ProviderMeshCapsuleShapeCastAllV3Fn = Status (*)(
+    void *, const ProviderMeshCapsuleShapeCastQueryV3 *, ProviderShapeCastHitV2 *,
+    std::uint32_t, std::uint32_t *) noexcept;
+
 struct ProviderV3 {
     std::uint32_t struct_size = sizeof(ProviderV3);
     std::uint32_t version = descriptorVersionV1;
@@ -131,6 +149,7 @@ struct ProviderV3 {
     ProviderMeshCapsuleOverlapAllV3Fn mesh_capsule_overlap_all = nullptr;
     ProviderMeshSphereShapeCastAllV3Fn mesh_sphere_shape_cast_all = nullptr;
     ProviderMeshBoxShapeCastAllV3Fn mesh_box_shape_cast_all = nullptr;
+    ProviderMeshCapsuleShapeCastAllV3Fn mesh_capsule_shape_cast_all = nullptr;
 };
 
 using RegisterProviderV3Fn = Status (*)(void *, const ProviderV3 *, ProviderHandleV2 *) noexcept;

@@ -34,6 +34,99 @@ TEST_CASE("Triangle mesh raycast tests triangle surfaces, both sides and paramet
     REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 2}, {1, 0, 0}, 10}));
 }
 
+TEST_CASE("Capsule mesh sweep catches body face edge and vertex contacts",
+          "[physics][trianglemesh][capsule-mesh-sweep]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    // Neither endpoint sphere reaches the triangle; the body must hit.
+    const Capsule parallel{{0.5F,0.5F,0},{0,0,0,1},3,0.25F};
+    const auto face = mesh.shapeCast(parallel,{0,0,10},identity);
+    REQUIRE(face);
+    REQUIRE(face->time_of_impact == Catch::Approx(0.175F));
+    REQUIRE(face->position.z == Catch::Approx(2));
+    REQUIRE(face->position.x >= 0);
+    REQUIRE(face->position.y >= 0);
+    REQUIRE(face->position.x+face->position.y <= 2.00001F);
+    REQUIRE(face->normal.z == Catch::Approx(-1));
+    REQUIRE_FALSE(mesh.shapeCast(parallel,{0,0,1.7F},identity));
+    const auto edge = mesh.shapeCast(Capsule{{-1,0.5F,2},{0,0,0,1},3,0.25F},{2,0,0},identity);
+    REQUIRE(edge);
+    REQUIRE(edge->time_of_impact == Catch::Approx(0.375F));
+    REQUIRE(edge->position.x == Catch::Approx(0).margin(1e-6));
+    REQUIRE(edge->normal.x == Catch::Approx(-1));
+    const quat axisZ{0.70710678F,0,0,0.70710678F};
+    const auto vertex = mesh.shapeCast(Capsule{{-1,-1,2},axisZ,1,0.25F},{2,2,0},identity);
+    REQUIRE(vertex);
+    REQUIRE(vertex->time_of_impact == Catch::Approx((1-0.25F/std::sqrt(2.0F))/2));
+    REQUIRE(vertex->position.x == Catch::Approx(0).margin(1e-6));
+    REQUIRE(vertex->position.y == Catch::Approx(0).margin(1e-6));
+    REQUIRE(vertex->position.z == Catch::Approx(2));
+    const auto grazing = mesh.shapeCast(Capsule{{-1,-0.25F,2},axisZ,1,0.25F},{2,0,0},identity);
+    REQUIRE(grazing);
+    REQUIRE(grazing->time_of_impact == Catch::Approx(0.5F));
+    REQUIRE_FALSE(mesh.shapeCast(Capsule{{1.8F,1.8F,0},axisZ,0.5F,0.1F},{0,0,4},identity));
+}
+
+TEST_CASE("Capsule mesh sweep preserves rotated caps transforms and contact semantics",
+          "[physics][trianglemesh][capsule-mesh-sweep]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    const quat axisZ{0.70710678F,0,0,0.70710678F};
+    Capsule capsule{{0.5F,0.5F,0},axisZ,0.5F,0.25F};
+    const auto cap = mesh.shapeCast(capsule,{0,0,4},identity);
+    REQUIRE(cap);
+    REQUIRE(cap->time_of_impact == Catch::Approx(0.3125F));
+    REQUIRE(cap->position.z == Catch::Approx(2));
+    const auto endpoint = mesh.shapeCast(capsule,{0,0,1.25F},identity);
+    REQUIRE(endpoint);
+    REQUIRE(endpoint->time_of_impact == Catch::Approx(1));
+    capsule.center.z = 1.25F;
+    const auto approach = mesh.shapeCast(capsule,{0,0,1},identity);
+    REQUIRE(approach);
+    REQUIRE(approach->time_of_impact == 0);
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{},identity));
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{0,0,-1},identity));
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{1,0,0},identity));
+    // The axis crosses the triangle while its endpoints and the center-to-prism
+    // boundary distances are all larger than the radius.
+    capsule.center.z = 2; capsule.half_height = 2; capsule.radius = 0.1F;
+    REQUIRE_THROWS_AS(mesh.shapeCast(capsule,{},identity),std::domain_error);
+    capsule.radius = 0;
+    REQUIRE_THROWS_AS(mesh.shapeCast(capsule,{0,0,1},identity),std::domain_error);
+    capsule.center.z = 0; capsule.half_height = 0.5F;
+    const auto segment = mesh.shapeCast(capsule,{0,0,4},identity);
+    REQUIRE(segment);
+    REQUIRE(segment->time_of_impact == Catch::Approx(0.375F));
+    capsule.center.z = 1.5F;
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{0,0,-1},identity));
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{},identity));
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{1,0,0},identity));
+    const auto segmentApproach = mesh.shapeCast(capsule,{0,0,1},identity);
+    REQUIRE(segmentApproach);
+    REQUIRE(segmentApproach->time_of_impact == 0);
+    REQUIRE(segmentApproach->normal.z == Catch::Approx(-1));
+    glm::mat4 transform{1};
+    transform[0][0] = -2; transform[1][0] = 0.5F;
+    transform[2][2] = 3; transform[3][2] = 2;
+    capsule.center = {-0.75F,0.5F,10}; capsule.radius = 0.25F;
+    const auto transformed = mesh.shapeCast(capsule,{0,0,-4},transform);
+    REQUIRE(transformed);
+    REQUIRE(transformed->time_of_impact == Catch::Approx(0.3125F));
+    REQUIRE(transformed->position.z == Catch::Approx(8));
+    REQUIRE(transformed->normal.z == Catch::Approx(1));
+    capsule.half_height = 0;
+    const auto zeroLength = mesh.shapeCast(capsule,{0,0,-4},transform);
+    const auto sphere = mesh.shapeCast(Sphere{capsule.center,capsule.radius},{0,0,-4},transform);
+    REQUIRE(zeroLength);
+    REQUIRE(sphere);
+    REQUIRE(zeroLength->time_of_impact == sphere->time_of_impact);
+    REQUIRE(zeroLength->position.z == sphere->position.z);
+    capsule.half_height = -1;
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{0,0,-4},transform));
+    capsule.half_height = 1; capsule.rotation = {0,0,0,0};
+    REQUIRE_FALSE(mesh.shapeCast(capsule,{0,0,-4},transform));
+}
+
 TEST_CASE("Box mesh sweep uses continuous face and edge separation axes",
           "[physics][trianglemesh][box-mesh-sweep]") {
     const TriangleMesh mesh(triangle,indices);

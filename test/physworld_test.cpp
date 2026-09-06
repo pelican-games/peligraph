@@ -724,7 +724,28 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     CHECK(cast_hits[0].penetration_depth == 0);
     CHECK(cast_hits[0].flags == 0);
     cast_query.shape.kind = Physics::ShapeKindV1::capsule;
+    cast_query.shape.half_height = 0.5F;
+    cast_query.shape.center = {0, 0, 0};
+    cast_query.delta = {0, 0, 10};
+    REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
+    REQUIRE(count == 2);
+    CHECK(cast_hits[0].identity.collider_id == identity.value);
+    CHECK(cast_hits[0].time_of_impact == Catch::Approx(0.275F));
+    CHECK(cast_hits[0].position.z == Catch::Approx(3));
+    CHECK(cast_hits[0].normal.z == Catch::Approx(-1));
+    CHECK(cast_hits[1].time_of_impact == Catch::Approx(0.475F));
+    REQUIRE(world.queryShapeCastAll(phys::Capsule{{0, 0, 0}, {0, 0, 0, 1}, 0.5F, 0.25F},
+        {0, 0, 10}, &self_filter, cast_result) == Physics::Status::ok);
+    REQUIRE(cast_result.size() == 1);
+    CHECK(cast_result[0].id == "sphere");
+    cast_query.shape.center.x = 5;
+    REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
+    CHECK(count == 0);
+    cast_query.shape.center = {0, 0, 3};
     CHECK(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::unavailable);
+    CHECK(world.queryShapeCastAll(phys::Capsule{{0, 0, 3}, {0, 0, 0, 1}, 0.5F, 0.25F},
+        {0, 0, 10}, nullptr, cast_result) == Physics::Status::unavailable);
+    CHECK(cast_result.empty());
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {5, 0, 0};
     hits = world.raycastAll(ray);
     REQUIRE(hits.size() == 1);

@@ -54,6 +54,114 @@ bool intersectsBounds(const Ray &ray, vec3 minimum, vec3 maximum, double limit) 
     return true;
 }
 
+struct SphereTriangleStart {
+    double distance = std::numeric_limits<double>::infinity();
+    glm::dvec3 normal{0};
+};
+
+struct SphereTriangleHit {
+    double time;
+    glm::dvec3 position, normal;
+};
+
+std::optional<SphereTriangleHit> castSphereTriangle(
+    glm::dvec3 origin, glm::dvec3 motion, double radius,
+    glm::dvec3 a, glm::dvec3 b, glm::dvec3 c,
+    const glm::dvec3 *initialOutwardNormal = nullptr,
+    SphereTriangleStart *initial = nullptr) {
+    const auto squared = [](glm::dvec3 v) { return glm::dot(v,v); };
+    const auto closestEdge = [&](glm::dvec3 p, glm::dvec3 a, glm::dvec3 b) {
+        const auto edge = b-a;
+        const double length2 = squared(edge);
+        return a+(length2 == 0 ? 0 : std::clamp(glm::dot(p-a,edge)/length2,0.0,1.0))*edge;
+    };
+    double nearest = 1;
+    std::optional<SphereTriangleHit> result;
+    auto faceNormal = glm::cross(b-a,c-a);
+    const double normalLength = glm::length(faceNormal);
+    if (normalLength == 0) return std::nullopt;
+    faceNormal /= normalLength;
+    const auto inside = [&](glm::dvec3 p) {
+        return glm::dot(glm::cross(b-a,p-a),faceNormal) >= 0 &&
+               glm::dot(glm::cross(c-b,p-b),faceNormal) >= 0 &&
+               glm::dot(glm::cross(a-c,p-c),faceNormal) >= 0;
+    };
+    const auto accept = [&](double t, glm::dvec3 position, glm::dvec3 normal) {
+        if (t < 0 || t > nearest || (t == nearest && result)) return;
+        // Future grazing contact is a hit; stationary/separating
+        // contact at the start is not a depenetration result.
+        if (t == 0 && glm::dot(motion,normal) >= 0) return;
+        nearest = t;
+        result = SphereTriangleHit{t,position,normal};
+    };
+    const double height = glm::dot(origin-a,faceNormal);
+    auto closest = origin-height*faceNormal;
+    if (!inside(closest)) {
+        closest = closestEdge(origin,a,b);
+        for (auto p : {closestEdge(origin,b,c),closestEdge(origin,c,a)})
+            if (squared(origin-p) < squared(origin-closest)) closest = p;
+    }
+    const double distance = glm::length(origin-closest);
+    if (radius-distance > shapeCastContactEpsilon)
+        throw std::domain_error("sphere mesh initial depenetration is unavailable");
+    auto initialNormal = faceNormal;
+    if (distance > 0) initialNormal = (origin-closest)/distance;
+    else if (glm::dot(initialNormal,motion) > 0) initialNormal = -initialNormal;
+    if (initialOutwardNormal) initialNormal = *initialOutwardNormal;
+    if (initial) *initial = {distance,initialNormal};
+    if (distance <= radius+shapeCastContactEpsilon) {
+        accept(0,closest,initialNormal);
+        return result;
+    }
+    // The rounded triangle consists of two offset faces, three finite
+    // edge cylinders and three vertex spheres. Solve each analytically.
+    const double velocity = glm::dot(motion,faceNormal);
+    if (velocity != 0) {
+        for (double side : {-1.0,1.0}) {
+            const double t = (side*radius-height)/velocity;
+            const auto normal = side*faceNormal;
+            const auto p = origin+t*motion-radius*normal;
+            if (glm::dot(motion,normal) <= 0 && inside(p)) accept(t,p,normal);
+        }
+    }
+    const auto firstRoot = [&](glm::dvec3 offset, glm::dvec3 velocityVector) -> std::optional<double> {
+        const double qa = squared(velocityVector), qb = glm::dot(offset,velocityVector);
+        const double qc = squared(offset)-radius*radius;
+        if (qa == 0 || qb >= 0) return std::nullopt;
+        const double discriminant = qb*qb-qa*qc;
+        if (discriminant < 0) return std::nullopt;
+        // Stable smaller root avoids cancellation for near contacts.
+        return qc/(-qb+std::sqrt(discriminant));
+    };
+    const std::array<glm::dvec3,3> corners{a,b,c};
+    for (std::size_t edgeIndex = 0; edgeIndex < 3; ++edgeIndex) {
+        const auto start = corners[edgeIndex], end = corners[(edgeIndex+1)%3];
+        const auto edge = end-start;
+        const double length2 = squared(edge);
+        if (length2 != 0) {
+            const auto offset = origin-start;
+            const auto perpendicularOffset = offset-edge*(glm::dot(offset,edge)/length2);
+            const auto perpendicularMotion = motion-edge*(glm::dot(motion,edge)/length2);
+            if (const auto t = firstRoot(perpendicularOffset,perpendicularMotion)) {
+                const auto center = origin+*t*motion;
+                const double u = glm::dot(center-start,edge)/length2;
+                if (u >= 0 && u <= 1) {
+                    const auto p = start+u*edge;
+                    const auto separation = center-p;
+                    const double length = glm::length(separation);
+                    accept(*t,p,length > 0 ? separation/length : (velocity > 0 ? -faceNormal : faceNormal));
+                }
+            }
+        }
+        if (const auto t = firstRoot(origin-start,motion)) {
+            const auto separation = origin+*t*motion-start;
+            const double length = glm::length(separation);
+            accept(*t,start,length > 0 ? separation/length : (velocity > 0 ? -faceNormal : faceNormal));
+        }
+    }
+    return result;
+}
+
 } // namespace
 
 TriangleMesh::TriangleMesh(std::span<const vec3> vertices,
@@ -238,8 +346,13 @@ std::optional<RaycastHit> TriangleMesh::raycast(
 
 std::optional<ShapeCastHit> TriangleMesh::shapeCast(
     const Sphere &sphere, vec3 delta, const glm::mat4 &local_to_world) const {
-    if (nodes_.empty() || !finite(sphere.center) || !finite(delta) ||
-        !std::isfinite(sphere.radius) || sphere.radius < 0) return std::nullopt;
+    return shapeCast(Capsule{sphere.center,{0,0,0,1},0,sphere.radius},delta,local_to_world);
+}
+
+std::optional<ShapeCastHit> TriangleMesh::shapeCast(
+    const Capsule &capsule, vec3 delta, const glm::mat4 &local_to_world) const {
+    if (nodes_.empty() || !finite(capsule.center) || !finite(delta) ||
+        !std::isfinite(capsule.radius) || capsule.radius < 0) return std::nullopt;
     for (int c = 0; c < 4; ++c)
         for (int r = 0; r < 4; ++r)
             if (!std::isfinite(local_to_world[c][r])) return std::nullopt;
@@ -248,24 +361,23 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
     const glm::dmat4 matrix{local_to_world};
     const double determinant = glm::determinant(matrix);
     if (!std::isfinite(determinant) || determinant == 0) return std::nullopt;
-    const glm::dvec3 origin{sphere.center.x, sphere.center.y, sphere.center.z};
+    if (!std::isfinite(capsule.half_height) || capsule.half_height < 0) return std::nullopt;
+    const glm::dquat rotation{capsule.rotation.w,capsule.rotation.x,capsule.rotation.y,capsule.rotation.z};
+    const double rotation2 = glm::dot(rotation,rotation);
+    if (!std::isfinite(rotation2) || rotation2 == 0) return std::nullopt;
+    const auto offset = (rotation/std::sqrt(rotation2))*glm::dvec3{0,capsule.half_height,0};
+    const glm::dvec3 origin{capsule.center.x, capsule.center.y, capsule.center.z};
     const glm::dvec3 motion{delta.x, delta.y, delta.z};
-    const double radius = sphere.radius;
-    const auto squared = [](glm::dvec3 v) { return glm::dot(v,v); };
+    const double radius = capsule.radius;
     const auto worldPoint = [&](vec3 p) { return glm::dvec3(matrix * glm::dvec4{p.x,p.y,p.z,1}); };
     const auto toFloat = [](glm::dvec3 v) { return vec3{static_cast<float>(v.x),static_cast<float>(v.y),static_cast<float>(v.z)}; };
-    const auto closestEdge = [&](glm::dvec3 p, glm::dvec3 a, glm::dvec3 b) {
-        const auto edge = b-a;
-        const double length2 = squared(edge);
-        return a + (length2 == 0 ? 0 : std::clamp(glm::dot(p-a,edge)/length2,0.0,1.0))*edge;
-    };
     double nearest = 1.0;
     std::size_t bestTriangle = std::numeric_limits<std::size_t>::max();
     std::optional<ShapeCastHit> result;
     // Traverse the swept world-space AABB. This remains conservative under
-    // shear and nonuniform scale without changing the sphere into an ellipsoid.
-    const auto low = glm::min(origin,origin+motion)-glm::dvec3(radius+shapeCastContactEpsilon);
-    const auto high = glm::max(origin,origin+motion)+glm::dvec3(radius+shapeCastContactEpsilon);
+    // shear and nonuniform scale while preserving the world-space capsule.
+    const auto low = glm::min(origin,origin+motion)-(glm::abs(offset)+glm::dvec3(radius+shapeCastContactEpsilon));
+    const auto high = glm::max(origin,origin+motion)+(glm::abs(offset)+glm::dvec3(radius+shapeCastContactEpsilon));
     std::array<std::size_t, std::numeric_limits<std::size_t>::digits + 1> pending{};
     std::size_t pendingCount = 1;
     while (pendingCount != 0) {
@@ -290,88 +402,83 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
             const auto a = worldPoint(vertices_[indices_[triangle*3]]);
             const auto b = worldPoint(vertices_[indices_[triangle*3+1]]);
             const auto c = worldPoint(vertices_[indices_[triangle*3+2]]);
-            auto faceNormal = glm::cross(b-a,c-a);
-            const double normalLength = glm::length(faceNormal);
-            if (normalLength == 0) continue;
-            faceNormal /= normalLength;
-            const auto inside = [&](glm::dvec3 p) {
-                return glm::dot(glm::cross(b-a,p-a),faceNormal) >= 0 &&
-                       glm::dot(glm::cross(c-b,p-b),faceNormal) >= 0 &&
-                       glm::dot(glm::cross(a-c,p-c),faceNormal) >= 0;
+            // capsule = axis segment + sphere. Move the segment to the
+            // triangle using the Minkowski difference, yielding a triangular
+            // prism. Cast its sphere against the prism boundary, without a
+            // temporary mesh/BVH or temporal sampling.
+            const std::array<glm::dvec3,6> prism{a-offset,b-offset,c-offset,
+                                                a+offset,b+offset,c+offset};
+            constexpr std::array<std::array<std::size_t,3>,8> facets{{
+                {0,1,2},{3,4,5},{0,1,4},{0,4,3},
+                {1,2,5},{1,5,4},{2,0,3},{2,3,5}}};
+            const std::array originals{a,b,c};
+            const std::size_t facetCount = capsule.half_height == 0 ? 1 : facets.size();
+            // A center inside the prism can be far from every boundary facet,
+            // yet its capsule axis already crosses the original triangle.
+            bool insidePrism = false;
+            const auto centroid = (a+b+c)/3.0;
+            const auto outwardNormal = [&](glm::dvec3 p, glm::dvec3 q, glm::dvec3 r) {
+                auto normal = glm::cross(q-p,r-p);
+                const double length = glm::length(normal);
+                if (length != 0) normal /= length;
+                if (glm::dot(normal,centroid-p) > 0) normal = -normal;
+                return normal;
             };
-            const auto accept = [&](double t, glm::dvec3 position, glm::dvec3 normal) {
-                if (t < 0 || t > nearest || (t == nearest && triangle >= bestTriangle)) return;
-                // Future grazing contact is a hit; stationary/separating
-                // contact at the start is not a depenetration result.
-                if (t == 0 && glm::dot(motion,normal) >= 0) return;
-                const auto p = toFloat(position), n = toFloat(normal);
-                if (!finite(p) || !finite(n)) return;
-                nearest = t;
-                bestTriangle = triangle;
-                result = ShapeCastHit{static_cast<float>(t),0,p,n,false};
-            };
-            const double height = glm::dot(origin-a,faceNormal);
-            auto closest = origin-height*faceNormal;
-            if (!inside(closest)) {
-                closest = closestEdge(origin,a,b);
-                for (auto p : {closestEdge(origin,b,c),closestEdge(origin,c,a)})
-                    if (squared(origin-p) < squared(origin-closest)) closest = p;
-            }
-            const double distance = glm::length(origin-closest);
-            if (radius-distance > shapeCastContactEpsilon)
-                throw std::domain_error("sphere mesh initial depenetration is unavailable");
-            if (distance <= radius+shapeCastContactEpsilon) {
-                auto normal = faceNormal;
-                if (distance > 0) normal = (origin-closest)/distance;
-                else if (glm::dot(normal,motion) > 0) normal = -normal;
-                accept(0,closest,normal);
-                continue;
-            }
-            // The rounded triangle consists of two offset faces, three finite
-            // edge cylinders and three vertex spheres. Solve each analytically.
-            const double velocity = glm::dot(motion,faceNormal);
-            if (velocity != 0) {
-                for (double side : {-1.0,1.0}) {
-                    const double t = (side*radius-height)/velocity;
-                    const auto normal = side*faceNormal;
-                    const auto p = origin+t*motion-radius*normal;
-                    if (glm::dot(motion,normal) <= 0 && inside(p)) accept(t,p,normal);
-                }
-            }
-            const auto firstRoot = [&](glm::dvec3 offset, glm::dvec3 velocityVector) -> std::optional<double> {
-                const double qa = squared(velocityVector), qb = glm::dot(offset,velocityVector);
-                const double qc = squared(offset)-radius*radius;
-                if (qa == 0 || qb >= 0) return std::nullopt;
-                const double discriminant = qb*qb-qa*qc;
-                if (discriminant < 0) return std::nullopt;
-                // Stable smaller root avoids cancellation for near contacts.
-                return qc/(-qb+std::sqrt(discriminant));
-            };
-            const std::array<glm::dvec3,3> corners{a,b,c};
-            for (std::size_t edgeIndex = 0; edgeIndex < 3; ++edgeIndex) {
-                const auto start = corners[edgeIndex], end = corners[(edgeIndex+1)%3];
-                const auto edge = end-start;
-                const double length2 = squared(edge);
-                if (length2 != 0) {
-                    const auto offset = origin-start;
-                    const auto perpendicularOffset = offset-edge*(glm::dot(offset,edge)/length2);
-                    const auto perpendicularMotion = motion-edge*(glm::dot(motion,edge)/length2);
-                    if (const auto t = firstRoot(perpendicularOffset,perpendicularMotion)) {
-                        const auto center = origin+*t*motion;
-                        const double u = glm::dot(center-start,edge)/length2;
-                        if (u >= 0 && u <= 1) {
-                            const auto p = start+u*edge;
-                            const auto separation = center-p;
-                            const double length = glm::length(separation);
-                            accept(*t,p,length > 0 ? separation/length : (velocity > 0 ? -faceNormal : faceNormal));
-                        }
+            if (glm::dot(offset,glm::cross(b-a,c-a)) != 0) {
+                double maximumDistance = -std::numeric_limits<double>::infinity();
+                bool approaching = false, separating = false;
+                for (const auto &facet : facets) {
+                    const auto p = prism[facet[0]], q = prism[facet[1]], r = prism[facet[2]];
+                    const auto normal = outwardNormal(p,q,r);
+                    if (glm::dot(normal,normal) == 0) continue;
+                    const double distance = glm::dot(normal,origin-p);
+                    maximumDistance = std::max(maximumDistance,distance);
+                    if (distance >= -shapeCastContactEpsilon) {
+                        approaching |= glm::dot(normal,motion) < 0;
+                        separating |= glm::dot(normal,motion) > 0;
                     }
                 }
-                if (const auto t = firstRoot(origin-start,motion)) {
-                    const auto separation = origin+*t*motion-start;
-                    const double length = glm::length(separation);
-                    accept(*t,start,length > 0 ? separation/length : (velocity > 0 ? -faceNormal : faceNormal));
-                }
+                insidePrism = maximumDistance <= 0;
+                if (insidePrism && radius-maximumDistance > shapeCastContactEpsilon)
+                    throw std::domain_error("capsule mesh initial depenetration is unavailable");
+                // A zero-radius segment touching the prism boundary must move
+                // inward. Unlike a point against a two-sided triangle, moving
+                // away from any active boundary is separating contact.
+                if (insidePrism && (separating || !approaching)) continue;
+            }
+            SphereTriangleStart closestStart;
+            double triangleTime = nearest;
+            std::optional<ShapeCastHit> triangleHit;
+            for (std::size_t f = 0; f < facetCount; ++f) {
+                const auto &facet = facets[f];
+                const auto p = prism[facet[0]], q = prism[facet[1]], r = prism[facet[2]];
+                const auto outward = insidePrism ? outwardNormal(p,q,r) : glm::dvec3{0};
+                SphereTriangleStart initial;
+                const auto hit = castSphereTriangle(origin,motion,radius,p,q,r,
+                    insidePrism ? &outward : nullptr, &initial);
+                if (initial.distance < closestStart.distance) closestStart = initial;
+                if (!hit || hit->time > triangleTime ||
+                    (hit->time == triangleTime && (triangleHit || triangle >= bestTriangle))) continue;
+                // Carry barycentric coordinates back to the original triangle:
+                // the prism witness itself is not a point on the mesh.
+                const auto normal = glm::cross(q-p,r-p);
+                const double denominator = glm::dot(normal,normal);
+                const double u = glm::dot(glm::cross(hit->position-p,r-p),normal)/denominator;
+                const double v = glm::dot(glm::cross(q-p,hit->position-p),normal)/denominator;
+                const auto witness = (1-u-v)*originals[facet[0]%3]+u*originals[facet[1]%3]+v*originals[facet[2]%3];
+                const auto position = toFloat(witness), worldNormal = toFloat(hit->normal);
+                if (!finite(position) || !finite(worldNormal)) continue;
+                triangleTime = hit->time;
+                triangleHit = ShapeCastHit{static_cast<float>(hit->time),0,position,worldNormal,false};
+            }
+            // The prism is convex: a tangential/separating initial contact
+            // cannot become an entering hit at another facet later in the cast.
+            if (closestStart.distance <= radius+shapeCastContactEpsilon &&
+                glm::dot(motion,closestStart.normal) >= 0) continue;
+            if (triangleHit) {
+                nearest = triangleTime;
+                bestTriangle = triangle;
+                result = triangleHit;
             }
         }
     }

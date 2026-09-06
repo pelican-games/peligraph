@@ -175,4 +175,29 @@ Physics::Status builtinMeshBoxShapeCastAll(
         });
 }
 
+Physics::Status builtinMeshCapsuleShapeCastAll(
+    void *context, const Physics::ProviderMeshCapsuleShapeCastQueryV3 *query,
+    Physics::ProviderShapeCastHitV2 *hits, std::uint32_t capacity,
+    std::uint32_t *out_count) noexcept {
+    return builtinMeshQuery(context, query, hits, capacity, out_count,
+        [](const phys::TriangleMesh &mesh, const glm::mat4 &transform,
+           const Physics::ProviderMeshCapsuleShapeCastQueryV3 &query, std::uint32_t index)
+            -> std::optional<Physics::ProviderShapeCastHitV2> {
+            const auto hit = mesh.shapeCast(
+                phys::Capsule{{query.center.x, query.center.y, query.center.z},
+                    {query.rotation.x, query.rotation.y, query.rotation.z, query.rotation.w},
+                    query.half_height, query.radius},
+                {query.delta.x, query.delta.y, query.delta.z}, transform);
+            if (!hit) return std::nullopt;
+            Physics::ProviderShapeCastHitV2 result;
+            result.collider_index = index;
+            result.time_of_impact = hit->time_of_impact;
+            result.penetration_depth = hit->penetration_depth;
+            result.position = {hit->position.x, hit->position.y, hit->position.z};
+            result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
+            result.flags = hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0;
+            return result;
+        });
+}
+
 } // namespace Pelican::physics_internal

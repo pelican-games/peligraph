@@ -23242,6 +23242,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**Capsuleと静的meshのSweep (2026-09-07):**
+- TriangleMesh→ProviderV3→既存Shape Cast公開ServiceV2へCapsule sweepを接続。回転固定の軸線を三角形側へ移したprismの境界に対してSphere Sweepを行う。Sphereの面・辺・頂点の解析式を共通関数へ抽出し、半長ゼロも同じ経路へ集約。prismは固定長配列で扱い、一時mesh/BVHの生成や時間サンプリングを使わない。接触点はprism面の重心座標から元の三角形上へ戻す。
+- ProviderV3へquery_mesh_capsule_shape_cast_allとcallbackを追加。radius・half_height・正規化rotationを転送し、filter・identity・結果検査・primitiveとの統合を共有。利用DLLは現行headerで再ビルドする。prism内部の初期軸交差を検出し、mesh全体のMTDとして未実装の深い初期貫通はunavailableを維持する。
+- Player・runtime_services Debug build成功。関連31case/493assertion成功。両端が三角形外の胴体接触、面・辺・頂点・接線、回転した半球、移動終端、非一様scale/反転/shear、半長ゼロ、半径ゼロ、軸中央の初期交差、公開serviceの混在順序・filter・独自providerへの値転送と不正結果拒否を確認。半径ゼロの離反誤判定と、初期接線移動を後続面のhitとして返す不具合を修正した。
+- prism側面を外すと両端が届かない胴体接触を失い、prism内部検査を外すと境界から離れた軸中央の初期交差がunavailableにならない対照。個別変異・provider-only別build・Studio通し操作・性能計測は未実施。Sphere/Boxの関連回帰は成功。mesh初期貫通MTD・mesh triggerは残し、Capsuleの非貫通開始Sweepを今回の区切りとする。
+
 **Boxと静的meshのSweep (2026-09-07):**
 - TriangleMesh→ProviderV3→既存Shape Cast公開ServiceV2へBox sweepを接続。回転を固定し、箱3軸・三角形法線・辺の外積9軸の重複時間区間を交差して最初の接触を求める。BVHは箱座標で移動全体を絞る。衝突時の箱で三角形をclipした頂点からmesh表面上の接触位置を求め、clipには固定長配列を使用する。
 - ProviderV3にquery_mesh_box_shape_cast_allとcallbackを追加。filter・identity・primitiveとの統合・結果検査は既存経路を共有する。利用DLLは現行headerで再ビルドする。Sphereと同じく深い初期貫通はunavailable、静止・離反の初期接触はhitなし。ゼロ寸法の投影区間は既存法線tie規約で片側を選ぶ。

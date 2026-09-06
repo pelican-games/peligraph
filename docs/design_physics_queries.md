@@ -102,7 +102,13 @@ Box sweepも同じ公開serviceへ接続。回転は移動中固定し、箱3軸
 投影区間が重なる時間帯から最初の接触を求める。衝突時の箱で三角形をclipし、mesh表面上の接触位置を返す。
 ProviderV3の`query_mesh_box_shape_cast_all`と`mesh_box_shape_cast_all`を使用する。
 Sphereと同じ初期接触・初期貫通の制約を持ち、Boxの半寸法はworld単位を保つ。
-Capsule sweep・mesh全体の初期貫通MTD・mesh triggerは未実装。
+Capsule sweepも公開serviceへ接続。回転固定の軸線を三角形側へ移したprismと球のSweepへ変換し、
+面・辺・頂点の解析式をSphereと共有する。半長ゼロはSphereと同じ経路を使う。
+prism面の接触点は重心座標で元の三角形上へ戻す。軸中央での接触も扱い、時間の離散サンプリングは使わない。
+ProviderV3の`query_mesh_capsule_shape_cast_all`と`mesh_capsule_shape_cast_all`を使用する。
+prism内部にある初期軸交差は、境界面から離れていてもunavailableにする。半径ゼロの境界接触は外向き法線で
+接近・離反を区別し、接線方向の初期移動が後続面のhitとして返ることも防ぐ。
+mesh全体の初期貫通MTD・mesh triggerは未実装。
 
 2026-09-06: RPC `raycast`を既存PhysWorldへ接続。paramsは`origin`・`direction`（各3数値）と`max_distance`（有限・非負）。方向は正規化する。結果は`hit: null`またはname/distance/position/normal/collider_id/shape_ordinal/trigger/one_wayを持つhit。現在のtransformを問い合わせ、raycast既定のlayer/mask・trigger/one-way包含規則を使用する。P3のメッシュ/BVH/glb extras規約の完了を意味しない。
 
