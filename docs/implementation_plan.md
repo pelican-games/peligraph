@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はScene AS画面のAABB geometry/world切替と保存。変換record宣言済みのlayout v3で使用できる。詳細は下の「RT7 AABB worldモードのGUI・保存」を参照。AABB world結合は `7f2a2dc6`、triangle geometry/worldのGUI・保存は `c20a2432` に統合済み。
+- 最新の追加はproject presetのmaterial contract・設定・routing編集。詳細は下の「RT7 material contract・routing編集」を参照。AABB geometry/world GUIは `23c8cf68`、AABB world結合は `7f2a2dc6`、triangle geometry/world GUIは `c20a2432` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 AABB worldモードのGUI・保存 (2026-09-06):**
+**RT7 material contract・routing編集 (2026-09-06):**
+- project presetのmaterial pass編集画面にcontract選択とmaterial settings JSON、preset全graph共通のrouting JSONを追加。対象範囲・filter・variant・出力schema/state・resource宣言を編集し、削除したキーはnull patchで既定へ戻す。routing空欄は表を削除する。
+- edit_preset_passにmaterial_settingsとmaterial_routingを追加。既存preset候補の同一保存・検証・CAS・publicationへ載せ、他フィールドを保持する。routingはpreset.configへ保存し、contextのpreset_material_routingで返す。rootによるrouting上書きは既存schemaで許可されていない。非material passからの変更を拒否する。
+- Player/Studio・対象CPU/Qt build成功（build/.codex_bg/material-contract-editor-build.log）。CPU2/2・325 assertions成功（material-contract-editor-cpu.log）：contract/routing同時変更、削除・復元・再読込、設定保持、不整合と不存在route拒否、保存後失敗の復元。Qt2/2・148 assertions成功（material-contract-editor-qt.log）：フォーム編集・不正JSON・送信内容と既存material/raster編集を確認。Qt初回はDLL検索パス不足で起動できず、Qt binをPATHへ追加して実行した。
+- 対照: settings/routingを候補へ渡さなければ保存・再読込が落ち、null削除を外せば復元が落ちる。個別変異は未実行。runtime描画コードは変更せず、GPU全数は反復していない。実エンジン接続下のGUI手動操作・描画確認は残る。
+
+**RT7 AABB worldモードのGUI・保存 (2026-09-06、23c8cf68):**
 - Scene AS画面にAABB coordinate spaceを追加。getのprocedural_geometryで値・参照元・編集可否・理由を返し、procedural_spaceと共通base_layout_digestで既存のlayout保存へ接続する。triangle_spaceとの同時変更も一つの候補文書として保存・publicationする。
 - project layout v3かつengine_record procedural_transform宣言済みを編集対象とする。ABIを変える暗黙のrecord追加やshader書換えはしない。未対応layoutは理由を表示し、対応shaderの変換helper使用を案内する。
 - Player/Studio・関連test build成功（build/.codex_bg/aabb-editor-build.log、aabb-editor-cpu-build.log）。CPUのscene-as対象成功（aabb-editor-cpu.log）。両座標系の同時保存、AABBだけの変更、再読込、ABI・他設定の保持、未対応layout拒否と既存CAS・rollbackを確認。GPUは1/1・157 assertions成功（aabb-editor-gpu.log）。本番RPCで両方向の切替と保存、交差距離保持・TLAS個体数の反映を確認。

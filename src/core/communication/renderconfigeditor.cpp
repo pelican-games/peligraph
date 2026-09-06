@@ -947,6 +947,9 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         {"managed_fragments", std::move(fragments)},
     };
     if (resolved.pipeline_preset) {
+        result["preset_material_routing"] = resolved.pipeline_preset_bytes
+            ? Json::parse(*resolved.pipeline_preset_bytes).at("config").value("material_routing", Json(nullptr))
+            : Json(nullptr);
         result["pipeline_preset"] = {
             {"reference", resolved.pipeline_preset->reference},
             {"name", resolved.pipeline_preset->name},
@@ -1175,7 +1178,7 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
 
 OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     constexpr auto method = "edit_preset_pass";
-    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query"}, method);
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query", "material_settings", "material_routing"}, method);
     (void)parseRasterRayQuery(params);
     const auto base_digest = requireString(params, "base_source_digest", method);
     const auto preset_digest = requireString(params, "base_preset_digest", method);
@@ -1196,6 +1199,7 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         auto *pass = findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
         if (pass->at("type") == "raster") {
+            requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query"}, method);
             bool changed = false;
             for (const auto *key : {"input", "output", "shader", "draw", "raster_state", "ray_query"}) {
                 if (!params.contains(key)) continue;
@@ -1209,11 +1213,26 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
             (void)parseRasterPassContract(Json(*pass), color.is_array() ? color.size() : 1,
                 output.contains("depth") && !output.at("depth").is_null(), "edit_preset_pass");
         } else if (pass->at("type") == "material") {
-            requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "ray_query"}, method);
-            if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query"))
-                throw std::invalid_argument("Pass connection editing requires input, output or ray_query");
+            requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "ray_query", "material_settings", "material_routing"}, method);
+            if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query") &&
+                !params.contains("material_settings") && !params.contains("material_routing"))
+                throw std::invalid_argument("Material pass editing requires at least one editable field");
             for (const auto *key : {"input", "output"})
                 if (params.contains(key)) (*pass)[key] = params.at(key);
+            if (params.contains("material_settings")) {
+                const auto &settings = params.at("material_settings");
+                requireOnly(settings, {"material_range", "material_filter", "material_variant", "material_contract",
+                    "gpu_draw_source", "material_outputs", "material_output_states", "screen_inputs",
+                    "surface_resources", "material_resources"}, "material_settings");
+                for (const auto &[key, value] : settings.items()) {
+                    if (value.is_null()) pass->erase(key);
+                    else (*pass)[key] = value;
+                }
+            }
+            if (params.contains("material_routing")) {
+                if (params.at("material_routing").is_null()) preset.at("config").erase("material_routing");
+                else preset.at("config")["material_routing"] = params.at("material_routing");
+            }
         } else {
             requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "ray_query"}, method);
             for (const auto *key : {"input", "output", "shader"}) {

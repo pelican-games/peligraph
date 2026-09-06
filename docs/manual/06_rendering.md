@@ -1053,6 +1053,12 @@ Frame Planの **Order nodes...** では、名前付きASの構築とconsumerを�
 例えばleft AS→leftを使うtask→right ASという順序が可能です。
 consumerを自身の接続先ASより前に置く変更は拒否します。ASを使わないcompute・通常anchor・copyは、
 データ依存に反しなければ共有ASより前へ配置できます。
+Studioでprojectへforkしたpresetのmaterial passを編集すると、**Material contract**で描画契約を選択できます。
+**Material settings (JSON)**では対象範囲・tag filter・variant・出力schema/state・resource宣言を編集します。
+欄からキーを除くと、その設定を削除して既定動作へ戻します。入出力接続やray query設定も同時に保存できます。
+**Preset material routing (JSON)**は全graph共通の`hybrid_auto_v1` routing表です。空欄にすると表を削除します。
+contractとrouteの不整合、存在しないpass参照などは既存のpipeline検証で拒否され、適用に失敗した変更は保存されません。
+
 material・fullscreen・raster・output_transformのshaderでscene全体のray queryを使う場合は、passへ`"ray_query": true`を指定します。
 materialの宣言も省略時はfalseです。ASを読むsurfaceを使う場合は、そのmaterialが描画される各passに宣言してください。
 ASを使わないmaterial passは、他のデータ依存に反しなければAS構築前にも配置できます。

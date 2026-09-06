@@ -142,6 +142,10 @@ struct FullscreenPassWidget::Impl {
     QLineEdit *ray_query_scene = nullptr;
     QPlainTextEdit *draw = nullptr;
     QPlainTextEdit *raster_state = nullptr;
+    QComboBox *material_contract = nullptr;
+    QPlainTextEdit *material_settings = nullptr;
+    QPlainTextEdit *material_routing = nullptr;
+    Json preset_material_routing = nullptr;
     QComboBox *input_candidate = nullptr;
     QLabel *connection_hint = nullptr;
     std::optional<QStringList> input_filter;
@@ -334,6 +338,24 @@ struct FullscreenPassWidget::Impl {
         form->addRow(owner.tr("Draw settings (JSON)"), draw);
         draw->hide();
         form->setRowVisible(draw, false);
+        material_contract = new QComboBox(&owner);
+        material_contract->setObjectName("pelican.fullscreenPass.materialContract");
+        material_contract->addItem(owner.tr("Default (no explicit contract)"), QString{});
+        for (const auto *contract : {"legacy_gbuffer_v1", "deferred_geometry_v1", "forward_opaque_v1", "forward_transparent_v1"})
+            material_contract->addItem(QString::fromLatin1(contract), QString::fromLatin1(contract));
+        form->addRow(owner.tr("Material contract"), material_contract);
+        material_settings = new QPlainTextEdit(&owner);
+        material_settings->setObjectName("pelican.fullscreenPass.materialSettings");
+        material_settings->setMaximumHeight(140);
+        material_settings->setPlaceholderText(owner.tr("Material selection, variant, outputs and resources (JSON object). Remove a key to use its default."));
+        form->addRow(owner.tr("Material settings (JSON)"), material_settings);
+        material_routing = new QPlainTextEdit(&owner);
+        material_routing->setObjectName("pelican.fullscreenPass.materialRouting");
+        material_routing->setMaximumHeight(110);
+        material_routing->setToolTip(owner.tr("Preset-wide routing shared by all graphs. Select distinct deferred_geometry, forward_opaque and forward_transparent passes using policy hybrid_auto_v1. Blank removes the routing table."));
+        form->addRow(owner.tr("Preset material routing (JSON)"), material_routing);
+        for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
+            form->setRowVisible(field, false);
         layout->addLayout(form);
 
         targets = new QGroupBox(owner.tr("Frame-plan targets"), &owner);
@@ -539,6 +561,9 @@ struct FullscreenPassWidget::Impl {
         QObject::connect(fragment_shader, &QLineEdit::textChanged, &owner,
                          [this] { updateDraft(); });
         QObject::connect(draw, &QPlainTextEdit::textChanged, &owner, [this] { updateDraft(); });
+        QObject::connect(material_contract, qOverload<int>(&QComboBox::currentIndexChanged), &owner, [this] { updateDraft(); });
+        QObject::connect(material_settings, &QPlainTextEdit::textChanged, &owner, [this] { updateDraft(); });
+        QObject::connect(material_routing, &QPlainTextEdit::textChanged, &owner, [this] { updateDraft(); });
         QObject::connect(raster_state, &QPlainTextEdit::textChanged, &owner,
                          [this] { updateDraft(); });
         QObject::connect(color_attachment_references,
@@ -634,6 +659,22 @@ struct FullscreenPassWidget::Impl {
         return editing_preset_pass && original_preset_pass.value("type", std::string{}) == "raster";
     }
 
+    bool editingMaterialPass() const {
+        return editing_preset_pass && original_preset_pass.value("type", std::string{}) == "material";
+    }
+
+    static constexpr std::array materialSettingKeys{
+        "material_range", "material_filter", "material_variant", "gpu_draw_source",
+        "material_outputs", "material_output_states", "screen_inputs", "surface_resources", "material_resources"};
+
+    Json routingDraft() const {
+        const auto bytes = material_routing->toPlainText().trimmed();
+        auto result = bytes.isEmpty() ? Json(nullptr) : Json::parse(bytes.toStdString());
+        if (!result.is_null() && !result.is_object())
+            throw std::runtime_error("Material routing must be a JSON object or blank.");
+        return result;
+    }
+
     void showPresetFields(bool preserve_declaration) {
         type->setText(preserve_declaration ? text(original_preset_pass.at("type").get<std::string>()) : QStringLiteral("fullscreen"));
         for (auto *field : std::array<QWidget *, 5>{position, location, vertex_shader, fragment_shader, raster_state})
@@ -643,6 +684,8 @@ struct FullscreenPassWidget::Impl {
                 form->setRowVisible(field, true);
         }
         form->setRowVisible(draw, editingRasterPass());
+        for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
+            form->setRowVisible(field, editingMaterialPass());
         targets->setVisible(true);
         validation->setVisible(true);
     }
@@ -735,6 +778,22 @@ struct FullscreenPassWidget::Impl {
             draft["draw"] = Json::parse(draw->toPlainText().toStdString());
             if (raster_text.isEmpty()) draft.erase("raster_state");
             else draft["raster_state"] = Json::parse(raster_text.toStdString());
+        }
+        if (editingMaterialPass()) {
+            const auto bytes = material_settings->toPlainText().trimmed();
+            const auto settings = bytes.isEmpty() ? Json::object() : Json::parse(bytes.toStdString());
+            if (!settings.is_object()) throw std::runtime_error("Material settings must be a JSON object.");
+            for (const auto &[key, value] : settings.items())
+                if (std::find(materialSettingKeys.begin(), materialSettingKeys.end(), key) == materialSettingKeys.end())
+                    throw std::runtime_error("Unknown material setting: " + key);
+            for (const auto *key : materialSettingKeys) {
+                if (settings.contains(key) && !settings.at(key).is_null()) draft[key] = settings.at(key);
+                else draft.erase(key);
+            }
+            const auto contract = material_contract->currentData().toString();
+            if (contract.isEmpty()) draft.erase("material_contract");
+            else draft["material_contract"] = contract.toStdString();
+            (void)routingDraft();
         }
         return draft;
     }
@@ -1255,6 +1314,19 @@ struct FullscreenPassWidget::Impl {
                     {"pass_name", editing_preset_pass->second},
                     {"ray_query", rayQueryDeclaration()}};
         if (preservesPresetDeclaration()) {
+            if (editingMaterialPass()) {
+                auto settings = Json::object();
+                const auto collect = [&](const char *key) {
+                    if (draft.contains(key)) {
+                        if (!original_preset_pass.contains(key) || draft.at(key) != original_preset_pass.at(key)) settings[key] = draft.at(key);
+                    } else if (original_preset_pass.contains(key)) settings[key] = nullptr;
+                };
+                for (const auto *key : materialSettingKeys) collect(key);
+                collect("material_contract");
+                if (!settings.empty()) params["material_settings"] = std::move(settings);
+                const auto routing = routingDraft();
+                if (routing != preset_material_routing) params["material_routing"] = routing;
+            }
             for (const auto *key : {"input", "output", "shader", "draw", "raster_state"}) {
                 if (draft.contains(key) && (!original_preset_pass.contains(key) || draft.at(key) != original_preset_pass.at(key)))
                     params[key] = draft.at(key);
@@ -1327,6 +1399,14 @@ struct FullscreenPassWidget::Impl {
       updating = true;
       original_preset_pass = declaration;
       showPresetFields(preserve_declaration);
+      if (editingMaterialPass()) {
+        material_contract->setCurrentIndex(material_contract->findData(text(declaration.value("material_contract", std::string{}))));
+        auto settings = Json::object();
+        for (const auto *key : materialSettingKeys)
+            if (declaration.contains(key)) settings[key] = declaration.at(key);
+        material_settings->setPlainText(text(settings.dump(2)));
+        material_routing->setPlainText(preset_material_routing.is_null() ? QString{} : text(preset_material_routing.dump(2)));
+      }
       const auto query = declaration.value("ray_query", Json(false));
       ray_query->setChecked(query.is_object() || (query.is_boolean() && query.get<bool>()));
       ray_query_scene->setText(query.is_object()
@@ -1430,6 +1510,7 @@ struct FullscreenPassWidget::Impl {
         }
 
         preset_passes.clear();
+        preset_material_routing = context.value("preset_material_routing", Json(nullptr));
         preset_digest = context.value("pipeline_preset", Json::object()).value("source_digest", Json::object()).value("hex", std::string{});
         decltype(authored_passes) next_passes;
         decltype(authored_pass_counts) next_counts;
@@ -1746,6 +1827,9 @@ struct FullscreenPassWidget::Impl {
         ray_query_scene->setText("scene");
         raster_state->clear();
         draw->clear();
+        material_contract->setCurrentIndex(0);
+        material_settings->clear();
+        material_routing->clear();
         color_attachment_references->clear();
         inputs->clear();
         colors->clear();

@@ -17,8 +17,8 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 区分 | 内容 |
 |---|---|
 | 実装済み | callableと動的record・公開API、skin/morph/VATとBLAS refit、3D/間接dispatch、名前付きTLASとASノード、複数geometry BLAS、world triangle/AABB結合（AABBは明示的な変換recordを使用）、AS前のcompute/material/raster/sprite描画 |
-| 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、material/raster passの入出力・ray query/TLAS選択、rasterのshader参照・draw/state JSON編集、Frame Planドラッグ接続、triangle geometry/world切替とlayout同時保存 |
-| 機能の残り | feature所有ノードの編集範囲、material routing/contractの専用編集、その他の補助描画のAS依存細分化。生成output_transformの編集要否は既存色管理設定との関係を整理して判断 |
+| 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、material/raster passの入出力・ray query/TLAS選択、material contract・対象/出力/resource設定・routing表編集、rasterのshader参照・draw/state JSON編集、Frame Planドラッグ接続、triangle geometry/world切替とlayout同時保存 |
+| 機能の残り | feature所有ノードの編集範囲、その他の補助描画のAS依存細分化。生成output_transformの編集要否は既存色管理設定との関係を整理して判断 |
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 

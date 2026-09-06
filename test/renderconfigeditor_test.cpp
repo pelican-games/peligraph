@@ -2368,6 +2368,97 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
         REQUIRE(service->editPresetPass(request).at("status") == "rejected");
         REQUIRE(readBytes(preset_path) == preset_before);
     }
+    SECTION("material contract and preset routing edits publish together and reopen") {
+        auto material = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+            return pass.at("name") == "forward_transparent";
+        });
+        REQUIRE(material != passes.end());
+        const auto routing = preset.at("config").at("material_routing");
+        CHECK(context.at("preset_material_routing") == routing);
+        const auto patches = Json::array({
+            Json{{"material_settings", {{"material_contract", "forward_opaque_v1"},
+                                         {"material_filter", {{"include", Json::array({"outlined"})}}}}},
+                 {"material_routing", nullptr}},
+            Json{{"material_settings", {{"material_contract", "forward_transparent_v1"}, {"material_filter", nullptr}}},
+                 {"material_routing", routing}}});
+        for (const auto &patch : patches) {
+            const auto current = service->getRenderAuthoringContext(Json::object());
+            Json material_request{
+                {"base_source_digest", current.at("source_digest").at("hex")},
+                {"base_preset_digest", current.at("pipeline_preset").at("source_digest").at("hex")},
+                {"graph", "main_render"}, {"pass_name", "forward_transparent"}};
+            material_request.update(patch);
+            const auto accepted = service->editPresetPass(material_request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            for (const auto &[key, value] : patch.at("material_settings").items()) {
+                if (value.is_null()) material->erase(key);
+                else (*material)[key] = value;
+            }
+            if (patch.at("material_routing").is_null()) preset["config"].erase("material_routing");
+            else preset["config"]["material_routing"] = patch.at("material_routing");
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            CHECK(readBytes(project.render_config) == root_before);
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            const auto reopened = service->getRenderAuthoringContext(Json::object());
+            CHECK(reopened.at("preset_material_routing") == patch.at("material_routing"));
+            const auto &reopened_passes = reopened.at("graphs").at(0).at("passes");
+            const auto saved = std::find_if(reopened_passes.begin(), reopened_passes.end(), [](const auto &pass) {
+                return pass.at("name") == "forward_transparent";
+            });
+            REQUIRE(saved != reopened_passes.end());
+            CHECK(Json(saved->at("preset_declaration")) == *material);
+        }
+    }
+    SECTION("invalid material contract and routing fail before preset replacement") {
+        auto invalid_routing = preset.at("config").at("material_routing");
+        invalid_routing["routes"]["forward_transparent"] = "missing_pass";
+        for (const auto &patch : Json::array({
+                 Json{{"material_settings", {{"material_contract", "forward_opaque_v1"}}}},
+                 Json{{"material_routing", invalid_routing}}})) {
+            Json material_request{{"base_source_digest", context.at("source_digest").at("hex")},
+                {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                {"graph", "main_render"}, {"pass_name", "forward_transparent"}};
+            material_request.update(patch);
+            const auto accepted = service->editPresetPass(material_request);
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+            CHECK(readBytes(preset_path) == preset_before);
+            CHECK(readBytes(project.render_config) == root_before);
+            CHECK(runtime.frame_plan == plan_before);
+        }
+    }
+    SECTION("material settings publication failure restores the preset") {
+        runtime.fail_after_source_commit = true;
+        const Json material_request{{"base_source_digest", context.at("source_digest").at("hex")},
+            {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+            {"graph", "main_render"}, {"pass_name", "forward_transparent"},
+            {"material_settings", {{"material_contract", "forward_opaque_v1"}}}, {"material_routing", nullptr}};
+        const auto accepted = service->editPresetPass(material_request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        CHECK(result.at("error").at("message") == "injected failure after source replacement");
+        CHECK(readBytes(preset_path) == preset_before);
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
+    SECTION("fullscreen passes cannot change material settings or routing") {
+        for (const auto *key : {"material_settings", "material_routing"}) {
+            auto invalid = request;
+            invalid[key] = Json::object();
+            CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        }
+        CHECK(readBytes(preset_path) == preset_before);
+    }
     SECTION("material query edits preserve the rendering contract and survive reopen") {
         auto material = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
             return pass.at("name") == "deferred_geometry";
@@ -2638,6 +2729,16 @@ TEST_CASE("Project raster preset edits preserve omitted fields and reopen",
             REQUIRE(saved != reopened_passes.end());
             CHECK(Json(saved->at("preset_declaration")) == raster);
         }
+    }
+    SECTION("raster passes cannot change material settings or routing") {
+        for (const auto *key : {"material_settings", "material_routing"}) {
+            auto invalid = request;
+            invalid["ray_query"] = false;
+            invalid[key] = Json::object();
+            CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        }
+        CHECK(readBytes(preset_path) == preset_before);
+        CHECK(runtime.frame_plan == plan_before);
     }
     SECTION("invalid raster draw is rejected before publication") {
         request["draw"] = {{"operation", "direct"}, {"vertex_count", 0}};

@@ -2346,7 +2346,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
     Json original{{"name", "material_pass"}, {"type", pass_type},
-        {"material_contract", "forward_scene_color_v1"},
+        {"material_contract", "forward_opaque_v1"},
         {"ray_query", named ? Json{{"acceleration_structure", "actors"}} : Json(false)},
         {"output", {{"color", Json::array({"output"})},
                     {"depth", {{"target", "depth"}, {"load_op", "Load"}}}}}};
@@ -2422,6 +2422,18 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
         required<QPlainTextEdit>(form, "pelican.fullscreenPass.rasterState").clear();
         expected.erase("raster_state");
     }
+    if (pass_type == "material" && named) {
+        auto &settings = required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialSettings");
+        settings.setPlainText("[]");
+        CHECK_FALSE(save.isEnabled());
+        settings.setPlainText(R"({"material_filter":{"include":["actors"]}})");
+        expected["material_filter"] = {{"include", {"actors"}}};
+        auto &contract = required<QComboBox>(form, "pelican.fullscreenPass.materialContract");
+        contract.setCurrentIndex(contract.findData("forward_transparent_v1"));
+        expected["material_contract"] = "forward_transparent_v1";
+        required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialRouting").setPlainText(
+            R"({"policy":"hybrid_auto_v1","routes":{"deferred_geometry":"geometry","forward_opaque":"opaque","forward_transparent":"material_pass"}})");
+    }
     INFO(required<QLabel>(form, "pelican.fullscreenPass.validationSummary").text().toStdString());
     INFO(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString());
     REQUIRE(save.isEnabled());
@@ -2439,6 +2451,10 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
         expected_params["shader"] = expected.at("shader");
         expected_params["draw"] = expected.at("draw");
         expected_params["raster_state"] = nullptr;
+    }
+    if (pass_type == "material" && named) {
+        expected_params["material_settings"] = {{"material_filter", expected.at("material_filter")}, {"material_contract", "forward_transparent_v1"}};
+        expected_params["material_routing"] = {{"policy", "hybrid_auto_v1"}, {"routes", {{"deferred_geometry", "geometry"}, {"forward_opaque", "opaque"}, {"forward_transparent", "material_pass"}}}};
     }
     CHECK(params == expected_params);
     CHECK(Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString()) == expected);
