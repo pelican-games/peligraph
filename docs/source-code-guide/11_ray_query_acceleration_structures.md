@@ -91,9 +91,9 @@ RaySceneRow                             q / group / record / 解決済み AS 値
 | `geometry_identity` | `asset#allocation:index_offset:vertex_offset:mesh:primitive:node` | 同一 object 内で primitive を区別する第2キー |
 | [`geometry_match_identity`](../../src/core/shader/raygrouplayout.hpp#L256) | `allocation:index_offset:index_count:vertex_offset:vertex_count@<transform>` | **曖昧性 guard の等価域**。canonical sort キーと違い、物理的な GPU geometry 範囲と canonical transform だけを含みます |
 
-3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1691) で止めます。
+3本目だけ設計意図が違います。コメントが理由を書いています — authored 側の asset / mesh / node の別名が、**同じ位置にある同じ geometry を別物に見せてはいけない**からです。sort 後に隣接行を突き合わせ、`geometry_match_identity` が一致するのに group か record data が違えば [`pelican.ray_row_binding_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1692) で止めます。
 
-`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1703) です(instance SBT offset が 24 bit のため)。
+`q` は sort 後の添字で、行数が 2^24 を超えると [scene row q の24-bit上限診断](../../src/core/shader/raygrouplayout.cpp#L1704) です(instance SBT offset が 24 bit のため)。
 
 ### `MaterialRowIdentity`: gate と lookup が同じ値を見る
 

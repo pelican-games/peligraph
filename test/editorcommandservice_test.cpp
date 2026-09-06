@@ -402,11 +402,17 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
         .q = 7,
         .authoring_object_id = 1,
     };
-    auto plan = std::make_shared<RaySceneRowSnapshot>();
-    plan->record_members = {{"signed", RayRecordType::i32, 0, 4, 4},
+    RayGroupLayout layout;
+    layout.source_reference = "layout.json";
+    layout.groups = {"default", "surface"};
+    layout.group_types = {RayGroupType::triangles, RayGroupType::triangles};
+    layout.default_group = "default";
+    layout.data_size = 32;
+    layout.record = {{"signed", RayRecordType::i32, 0, 4, 4},
         {"weight", RayRecordType::f32, 4, 4, 4}, {"color", RayRecordType::vec3, 16, 12, 16}};
-    RaySceneRow row;
-    row.q = 7;
+    RayMaterialBinding row;
+    row.selector.reference = "body.json";
+    row.group_index = 1;
     row.record_data.resize(32);
     const std::int32_t signed_value = -12;
     const float weight = 0.5F;
@@ -414,7 +420,15 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
     std::memcpy(row.record_data.data(), &signed_value, 4);
     std::memcpy(row.record_data.data() + 4, &weight, 4);
     std::memcpy(row.record_data.data() + 16, color, 12);
-    plan->rows.push_back(std::move(row));
+    RayBindings authored_bindings;
+    authored_bindings.source_reference = "bindings.json";
+    authored_bindings.bindings.push_back(std::move(row));
+    const std::array inputs{RaySceneRowInput{
+        .scene_identity = "MixedObject", .material_document = "body.json"}};
+    auto plan = std::make_shared<RaySceneRowSnapshot>(
+        resolveRaySceneRows(inputs, layout, &authored_bindings));
+    REQUIRE(plan->rows.size() == 1);
+    plan->rows[0].q = 7;
     const EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & {
             return document;
@@ -444,11 +458,29 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
 
     const auto &binding = inventory.at("entries").at(0).at("binding");
     CHECK(binding.at("record_source") == "scene_plan");
+    CHECK(binding.at("group_name") == "surface");
+    CHECK(binding.at("group_source") == "binding");
+    CHECK(binding.at("layout_reference") == "layout.json");
+    CHECK(binding.at("binding_reference") == "bindings.json");
+    CHECK(binding.at("binding_index") == 0);
+    CHECK(binding.at("record_value_source") == "binding");
     REQUIRE(binding.at("record_fields").size() == 3);
     CHECK(binding.at("record_fields").at(0).at("value") == -12);
     CHECK(binding.at("record_fields").at(1).at("value") == 0.5);
     CHECK(binding.at("record_fields").at(2).at("value") == nlohmann::json::array({1, 2, 3}));
     CHECK(binding.at("record_fields").at(2).at("offset") == 16);
+
+    *plan = resolveRaySceneRows(inputs, layout, nullptr);
+    REQUIRE(plan->rows.size() == 1);
+    plan->rows[0].q = 7;
+    const auto defaults = rpc.getRayOccurrences(nlohmann::json{{"name", "MixedObject"}});
+    const auto &default_binding = defaults.at("entries").at(0).at("binding");
+    CHECK(default_binding.at("group_name") == "default");
+    CHECK(default_binding.at("group_source") == "layout_default");
+    CHECK(default_binding.at("binding_index").is_null());
+    CHECK(default_binding.at("binding_reference").is_null());
+    CHECK(default_binding.at("record_value_source") == "zero_default");
+    CHECK(default_binding.at("record_fields").at(0).at("value") == 0);
 
     const auto found = rpc.resolveRayOccurrence(
         nlohmann::json{{"occurrence_id", occurrence.occurrence_id}});

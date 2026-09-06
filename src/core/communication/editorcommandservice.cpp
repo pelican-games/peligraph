@@ -2121,6 +2121,13 @@ OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
                 const auto &row = *found->second;
                 encoded["binding"] = {
                     {"group_index", row.group_index},
+                    {"group_name", inventory.plan->group_names.at(row.group_index)},
+                    {"group_source", row.binding_index ? "binding" : "layout_default"},
+                    {"layout_reference", inventory.plan->layout_reference},
+                    {"binding_reference", row.binding_index ? OrderedJson(inventory.plan->bindings_reference) : OrderedJson(nullptr)},
+                    {"binding_index", row.binding_index ? OrderedJson(*row.binding_index) : OrderedJson(nullptr)},
+                    {"record_value_source", row.geometry_kind == RayGeometryKind::aabbs
+                        ? "procedural_record" : row.binding_index ? "binding" : "zero_default"},
                     {"material_reference", row.material_reference},
                     {"material_name", row.material_name},
                     {"material_index", row.material_index == std::numeric_limits<std::uint32_t>::max()

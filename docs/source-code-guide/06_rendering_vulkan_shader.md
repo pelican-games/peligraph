@@ -1534,7 +1534,7 @@ layout の版と宣言の有無で、解決値と名前付き拒否は次のよ�
 | # | 入力 | 結果 |
 |---:|---|---|
 | 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L718)) |
-| 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1707)) |
+| 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1708)) |
 | 3 | v1 layout、`acceleration_structure` 有り | parse で [`pelican.ray_as_declaration_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L805)。`ray_as_declaration_requires_layout@1` という code は作られていません(`acceleration_structure` は layout 内の field なので、その構文が存在しない) |
 | 4 | v2 でない layout の row に `pelican_ray_instance` がある | [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L1498)。builtin 宣言側は scene load 時点で[同 code](../../src/core/loader/scene.cpp#L94) |
 | 5 | v2 layout、`acceleration_structure` 無し | 全 row が canonical defaults。**`custom_index` は 0 であって `q` ではありません** |
@@ -1552,8 +1552,8 @@ override 側には3つの範囲・整合検査が続きます。`custom_index` �
 
 v2 では `gl_InstanceCustomIndexEXT` に出るのは**宣言値**です。`q`(canonical 行番号)は SBT の record base を決める値であって、shader へ公開する識別子ではありません。実装上この2つは同じ `RaySceneRow` に並んでいるので混ざりやすく、テスト側に専用の seam が置かれています。
 
-- [`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.hpp#L521) が SBT 側の `q * R`。
-- [`ScopedRayTracingTlasRecordOffsetOverrideForTesting`](../../src/core/shader/raygrouplayout.hpp#L587) が、TLAS lowering が消費するその値だけを差し替える test-only seam です。コメントが目的を書いています — **TLAS の base が誤って `q` になっていないこと**を、GPU の end-to-end sentinel で証明するためのものです。
+- [`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.hpp#L525) が SBT 側の `q * R`。
+- [`ScopedRayTracingTlasRecordOffsetOverrideForTesting`](../../src/core/shader/raygrouplayout.hpp#L591) が、TLAS lowering が消費するその値だけを差し替える test-only seam です。コメントが目的を書いています — **TLAS の base が誤って `q` になっていないこと**を、GPU の end-to-end sentinel で証明するためのものです。
 
 したがって「row を追加して `q` がずれても宣言した `custom_index` は不変」と「SBT の sentinel は独立に正しい」を、同じ GPU テストで同時に見る形になっています。
 
@@ -1590,7 +1590,7 @@ frame planの`ray_query_acceleration_structures`へ、BLASごとの先頭geometr
 
 ### WP377: SBT と TLAS の frame transaction、および既知の穴
 
-RT の1フレームは、compile → pipeline → SBT → AS record → submit の5点をまたぐ1つの transaction です。各境界にはテスト用の注入点が置かれています([`RayTracingJointTransactionPoint`](../../src/core/shader/raygrouplayout.hpp#L604))。コメントが規範を書いています — **この5点でだけ呼ばれ、throw すれば実際の失敗と同じ rollback ガードを通る**。
+RT の1フレームは、compile → pipeline → SBT → AS record → submit の5点をまたぐ1つの transaction です。各境界にはテスト用の注入点が置かれています([`RayTracingJointTransactionPoint`](../../src/core/shader/raygrouplayout.hpp#L608))。コメントが規範を書いています — **この5点でだけ呼ばれ、throw すれば実際の失敗と同じ rollback ガードを通る**。
 
 | 点 | 呼び出し位置 |
 |---|---|

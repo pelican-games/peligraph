@@ -23271,6 +23271,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - shader stage参照との対応、優先規則の出所表示、動的recordの観測はまだ残る。
 - Debugのecs_editor・Studio build成功。editor-command 17 cases / 286 assertions成功。既存RPCテストで負の整数、小数、std430の余白を含むvec3を確認。RPCの値復元を取り消すと追加検証が成立しない。resolverからのschema転送はコード確認のみ。実GUI操作とGPU動的値の検証はこの結果に含めない。
 
+**RT binding適用元表示 (2026-09-06):**
+- scene-plan snapshotにlayout/bindings参照・group名、各rowに選択されたbindingの0始まりindexを保持。get_ray_occurrencesと既存Inspectorでgroup名、binding指定/layout既定値の区別、recordの入力元(binding/procedural_record/zero_default)を表示する。
+- proceduralのgroup選択とrecord入力元を区別する。shader参照はtask/pipeline側の情報であり、このsnapshotから推測しない。shader stageへの接続とAS設定の優先規則全体は引き続き残件。
+- 既存RPCテストをresolver経由へ変更し、bindingありと既定値の対照で値・適用元を確認する。
+- Debugのecs_editor・Studio build成功。editor-command 17 cases / 300 assertions成功。resolverのschema転送・binding選択元の保持を取り消すと追加確認が成立しない。procedural入力元分岐はコード確認のみで、実GUI操作・GPU値の検証を含めない。
+
 **P3球mesh overlapのprovider/service接続 (2026-09-06):**
 - ProviderV3へsphere-mesh overlap capabilityを追加し、既存owner/dispatch/identity/filterとBuiltin BVH再利用を通す。PhysWorldのmesh descriptor収集をray/overlapで共有し、C++およびGame DLLのoverlap serviceを同じ問い合わせへ接続する。
 - まだsphereだけがmesh overlapに対応。meshを含むworldでbox/capsuleを問い合わせた場合、公開serviceはunavailableを返す。従来のC++ wrapperはunavailableを空結果へ変換する既存仕様。未対応meshを無視したprimitive部分結果をokとして返さない。triggerとsweepは未接続。

@@ -306,6 +306,7 @@ using MaterialRowIdentity =
 MaterialRowIdentity materialRowIdentity(const RaySceneRowInput &row);
 
 struct RaySceneRow {
+    std::optional<std::size_t> binding_index;
     RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;
     RayGeometryKind geometry_kind = RayGeometryKind::triangles;
     std::uint32_t q = 0;
@@ -359,6 +360,9 @@ struct RayOccurrenceOverrideResolution {
 };
 
 struct RaySceneRowSnapshot {
+    std::string layout_reference;
+    std::string bindings_reference;
+    std::vector<std::string> group_names;
     // Authored schema captured with these row bytes, excluding engine-owned fields.
     std::vector<RayRecordMemberLayout> record_members;
     std::uint64_t generation = 0;

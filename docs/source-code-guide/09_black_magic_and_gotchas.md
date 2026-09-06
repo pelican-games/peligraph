@@ -1077,7 +1077,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: (a) 内容の同一性を決める canonical key、(b) それを固定長にした digest、(c) 実行時の生存を証明する handle / lease。片方だけでは「内容は同じだが実体が死んでいる」と「実体は生きているが内容が変わった」を区別できない。
 
-**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1789)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L1879) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L838)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournal.cpp#L1980) の 3 本立て。
+**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1793)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L1879) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L838)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournal.cpp#L1980) の 3 本立て。
 
 **読むときの手順**: 「どちらが欠けたときにどのエラーコードになるか」を先に引いてください。三層のどれを検査しているかは、エラー名(`*_stale` / `*_ambiguous` / `*_mismatch`)がほぼそのまま表しています。
 
@@ -1336,9 +1336,9 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: `q` が何番なのか、SBT のレコード番号とどう繋がるのか。
 
-**答え**: `q` は**正準ソート済み scene row 列の 0 起点連番**そのものです。この検査は TLAS 行が「静的シーンの正準置換」であることを保証し、q を配列添字として SBT / マテリアル表へ読み替えられるようにします。[`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.cpp#L2234) = `q * ray_type_count` は、1 インスタンスあたり ray_type_count 本の hit record を連続確保する前提での先頭 record 番号です。
+**答え**: `q` は**正準ソート済み scene row 列の 0 起点連番**そのものです。この検査は TLAS 行が「静的シーンの正準置換」であることを保証し、q を配列添字として SBT / マテリアル表へ読み替えられるようにします。[`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.cpp#L2238) = `q * ray_type_count` は、1 インスタンスあたり ray_type_count 本の hit record を連続確保する前提での先頭 record 番号です。
 
-#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1701) — 24 ビットの出所
+#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1702) — 24 ビットの出所
 
 **分からなくなること**: なぜ 2^24 なのか(エンジン都合か Vulkan 都合か)。
 
@@ -1350,11 +1350,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: geometry_match_identity は「同じ GPU ジオメトリ範囲が同じ transform で置かれている」ことしか意味しません。**物理的に区別できない同一ヒットに異なる group_index / record_data が割り当てられると、どちらのマテリアル束縛が当たるか決められない**ので、`pelican.ray_row_binding_ambiguous@1` で拒否します。
 
-#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L2140) — なぜ `material_index == q` になるか
+#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L2144) — なぜ `material_index == q` になるか
 
 **分からなくなること**: 通常モードとの表の作り方の違い。
 
-**答え**: profile では alpha override が **scene row ごとに異なり得る**(base_factor_a / uv_offset_scale / uv_rotation を行単位で上書きし、`uses_vertex_color` も行のジオメトリ属性依存)ため、1 行 1 エントリの per-row 表になります。キーが `"row:<q>:<material_reference>"` なので material_index は必然的に q と一致します。通常モードは行固有の上書きが無いので canonical key で参照し、同一マテリアルを 1 エントリに共有化してテーブルを縮めます([表の構築](../../src/core/shader/raygrouplayout.cpp#L1729))。
+**答え**: profile では alpha override が **scene row ごとに異なり得る**(base_factor_a / uv_offset_scale / uv_rotation を行単位で上書きし、`uses_vertex_color` も行のジオメトリ属性依存)ため、1 行 1 エントリの per-row 表になります。キーが `"row:<q>:<material_reference>"` なので material_index は必然的に q と一致します。通常モードは行固有の上書きが無いので canonical key で参照し、同一マテリアルを 1 エントリに共有化してテーブルを縮めます([表の構築](../../src/core/shader/raygrouplayout.cpp#L1733))。
 
 #### [硬コードされた頂点オフセット](../../src/core/shader/raygrouplayout.cpp#L1154) — `10u` / `3u` / `12u` の出所
 
@@ -1408,13 +1408,13 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`geometryName()`](../../src/core/renderer/accelerationstructure.cpp#L49) | asset/geometry/mesh/primitive/node | 5 階層の意味 | **未執筆**(§9.23.17 の glTF 階層と対) |
 | [`RaySceneRow`](../../src/core/shader/raygrouplayout.hpp#L308) | uint32 max 初期化 | 何を表す値か | 「未解決」の sentinel。詳細は**未執筆** |
 | [`MaterialRowDocumentIdentity`](../../src/core/shader/raygrouplayout.hpp#L286) | document / asset / unavailable | 3 状態の使い分け | → [第11章「`MaterialRowIdentity`: gate と lookup が同じ値を見る」](11_ray_query_acceleration_structures.md) |
-| [`resolveRaySceneRows()` の宣言](../../src/core/shader/raygrouplayout.hpp#L504) | 引数と optional bindings | 何が任意なのか | **未執筆**(根拠がコードにない) |
+| [`resolveRaySceneRows()` の宣言](../../src/core/shader/raygrouplayout.hpp#L508) | 引数と optional bindings | 何が任意なのか | **未執筆**(根拠がコードにない) |
 | [v2 digest から AS 宣言を外すコメント](../../src/core/shader/raygrouplayout.cpp#L833) | ダイジェストの分離 | なぜ AS だけ外すのか | コメントどおり **AS 宣言はシェーダ / SBT の ABI に影響しない**ので、AS だけを変えたときにシェーダ・SBT のダイジェストが動いて不要な再コンパイル / 再構築が起きないよう構造的に分離する(AS 側は独立ダイジェスト) |
-| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1789) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
-| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1852) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
-| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2186) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
-| [`alpha_override_mask`](../../src/core/shader/raygrouplayout.cpp#L2014) | override を行に持つ | material 側でない理由 | override は**マテリアルの改変ではなく「そのインスタンス配置におけるアルファの上書き」**で、同じマテリアルを共有する他の行に波及させてはいけないため、行に持って per-row 表に焼き込む |
-| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L1978) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1816)は WP368a の authored reference 由来であることを要求する |
+| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1793) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
+| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1856) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
+| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2190) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
+| [`alpha_override_mask`](../../src/core/shader/raygrouplayout.cpp#L2018) | override を行に持つ | material 側でない理由 | override は**マテリアルの改変ではなく「そのインスタンス配置におけるアルファの上書き」**で、同じマテリアルを共有する他の行に波及させてはいけないため、行に持って per-row 表に焼き込む |
+| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L1982) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1820)は WP368a の authored reference 由来であることを要求する |
 | [material selector の 2 形態(document_material / asset_material)](../../src/core/shader/raygrouplayout.cpp#L617) / [`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L428) | document 形式と asset 形式 | 比較方法が違う理由 | **未執筆**(§9.23.7 の canonical key と対) |
 | [engine フィールドの必須化](../../src/core/shader/raygrouplayout.cpp#L926) | profile 有効時 | material_index と geometry_index の両方が要る理由 | **未執筆**(根拠がコードにない) |
 | [`validName()`](../../src/core/shader/raygrouplayout.cpp#L90) | 名前の文字集合 | どこ由来の制約か | 外部ツール契約 R7(`docs/external_tools_requirements.md`)と同系統。→ §9.23.11 |

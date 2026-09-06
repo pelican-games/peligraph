@@ -1590,7 +1590,8 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 "pelican.procedural_group_kind_conflict@1: row geometry kind does not match resolved layout group type");
         }
         resolved.push_back(
-            {.semantic_mode = semantic_mode,
+            {.binding_index = chosen ? std::optional<std::size_t>(chosen - bindings->bindings.data()) : std::nullopt,
+             .semantic_mode = semantic_mode,
              .geometry_kind = input.geometry_kind,
              .source_index = input.source_index,
              .group_index = group_index,
@@ -1718,6 +1719,9 @@ RaySceneRowSnapshot resolveRaySceneRows(
     }
     RaySceneRowSnapshot result;
     result.record_members = layout.record;
+    result.layout_reference = layout.source_reference;
+    result.bindings_reference = bindings ? bindings->source_reference : std::string{};
+    result.group_names = layout.groups;
     result.semantic_mode = semantic_mode;
     const auto encoded = identity.str();
     result.identity_digest_sha256 =
