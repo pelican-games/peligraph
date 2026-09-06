@@ -161,6 +161,22 @@ class Wp361EscapedBehavior final : public Behavior {
     using Params = Wp361EscapedParams;
 };
 
+struct UnpackListRow {
+    std::string label;
+    static constexpr auto schema = structFields(
+        componentPolicy("unpack_list_row"),
+        defaulted(field<&UnpackListRow::label>("label"), "initial"));
+};
+struct UnpackListParams {
+    List<UnpackListRow> rows;
+    static constexpr auto schema = structFields(
+        behaviorParamsPolicy, defaulted(field<&UnpackListParams::rows>("rows")));
+};
+class UnpackListBehavior final : public Behavior {
+  public:
+    using Params = UnpackListParams;
+};
+
 void ensureBehavior() {
     static const bool registered = [] {
         auto &registry = internal::getBehaviorRegisterer();
@@ -4578,6 +4594,133 @@ TEST_CASE("WP372b transition validation binds entries to their component source"
     inverse["dependency_witness"].erase("prefab_digest_sha256");
     REQUIRE(unpackJournalIntegrityFailure(forward, inverse) ==
             std::optional<std::string>{"dependency_witness"});
+}
+
+TEST_CASE("Prefab unpack undo preserves List allocator history",
+          "[wp372b][unpack][list-undo]") {
+    ensureBehavior();
+    auto &behaviors = internal::getBehaviorRegisterer();
+    if (behaviors.findByName("unpack_list_behavior") == nullptr) {
+        (void)behaviors.registerBehavior<UnpackListBehavior>(
+            "unpack_list_behavior", 1, {});
+    }
+    auto prefab = wp372bPrefabFixture();
+    prefab["components"][0]["type"] = "unpack_list_behavior";
+    prefab["parameters"] = Json::array();
+    prefab["components"][0]["params"] = {
+        {"rows", {{"$list", {{"v", 1}, {"next_id", 2}}},
+                  {"rows", Json::array({
+                      {{"$row", {{"v", 1}, {"id", 1}}}, {"label", "retained"}}
+                  })}}}};
+    auto scene = wp372bSceneFixture();
+    scene["scenes"]["main"]["objects"][1]["prefab"]["parameters"] = Json::object();
+    PrefabProjectionTarget target{
+        AuthoringSceneDocument::load(scene.dump(), SceneRevision{1}),
+        registryFor(prefab), buildProductionBindableProviderSnapshot(1)};
+    const auto object_id =
+        instanceObject(target.projectionResolvedScene()).authoring_object_id;
+    EditorEditCoordinator edits{EditorEditRuntimeDependencies{
+        .document = [&]() -> const AuthoringSceneDocument & {
+            return target.projectionDocument();
+        },
+        .projection_state = [&]() -> const SceneProjectionState & {
+            return target.projectionState();
+        },
+        .current_scene_id = [] { return std::string{"main"}; },
+        .execute = [&](const EditorEditExecutionRequest &request) {
+            EditorProjectionTransaction transaction{target, request.base_revision};
+            std::vector<EditorProjectionAdapter *> adapters;
+            return transaction.commit(request.commands, adapters);
+        },
+        .gate = [] { return EditorGateObservation{}; },
+        .resolve_behavior_attachment = [&](AuthoringObjectId id, std::size_t index)
+            -> std::optional<EditorBehaviorAttachmentIdentity> {
+            const auto &object = instanceObject(target.projectionResolvedScene());
+            if (id != object_id || index != 1 || object.prefab_instance) return std::nullopt;
+            return EditorBehaviorAttachmentIdentity{
+                .handle = 1, .attachment_seq = 1,
+                .authoring_object_id = id, .authored_component_occurrence = index,
+                .stable_type = "unpack_list_behavior",
+                .origin = {.authoring_component_index = index}};
+        },
+        .prefab_registry = [&] {
+            return target.projectionResolvedScene().prefabRegistry();
+        },
+        .bindable_provider = [&] {
+            return target.projectionResolvedScene().bindableProvider();
+        },
+        .closure_generation = [&] {
+            return target.projectionResolvedScene().prefabClosure().generation;
+        },
+    }};
+    const auto actor = edits.openSession({{"display_name", "unpack List"}})
+                           .at("actor_id").get<std::uint64_t>();
+    const auto cas = [&] {
+        const auto &resolved = target.projectionResolvedScene();
+        return Json{{"actor_id", actor},
+                    {"scene_revision", target.projectionDocument().revision().value},
+                    {"closure_generation", resolved.prefabClosure().generation},
+                    {"provider_generation", resolved.bindableProvider().generation()}};
+    };
+    const auto finish = [&](const Json &accepted) {
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        edits.commitPending();
+        const auto result = edits.getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+    };
+    const auto commit = [&](Json operation) {
+        auto request = cas();
+        request["operations"] = Json::array({std::move(operation)});
+        finish(edits.enqueue(request));
+    };
+    const auto rows = [&]() -> Json {
+        return AuthoringSceneAuthority::rawView(target.projectionDocument()).documentJson().at("scenes").at("main")
+            .at("objects").at(1).at("components").at(1).at("params").at("rows");
+    };
+    commit({{"op", "unpack_prefab"}, {"object", object_id.value}});
+    const Json address{{"authoring_object_id", object_id.value},
+        {"component", {{"type", "unpack_list_behavior"}, {"occurrence", 1},
+            {"origin", {{"kind", "authored"}, {"authoring_component_index", 1}}}}},
+        {"list_path", "/rows"}};
+    commit({{"op", "insert_component_field"}, {"address", address},
+            {"position", {{"end", true}}}, {"value", {{"label", "inserted"}}}});
+    finish(edits.enqueueUndo(cas()));
+    REQUIRE(rows().at("rows").size() == 1);
+    REQUIRE(rows().at("$list").at("next_id") == 3);
+
+    SECTION("allocator-only difference permits full undo and redo") {
+        finish(edits.enqueueUndo(cas()));
+        REQUIRE(instanceObject(target.projectionResolvedScene()).prefab_instance.has_value());
+        finish(edits.enqueueRedo(cas()));
+        REQUIRE_FALSE(instanceObject(target.projectionResolvedScene()).prefab_instance.has_value());
+        finish(edits.enqueueRedo(cas()));
+        const auto result = rows();
+        REQUIRE(result.at("rows").size() == 2);
+        REQUIRE(result.at("rows").at(0).at("$row").at("id") == 1);
+        REQUIRE(result.at("rows").at(0).at("label") == "retained");
+        REQUIRE(result.at("rows").at(1).at("$row").at("id") == 2);
+        REQUIRE(result.at("rows").at(1).at("label") == "inserted");
+        REQUIRE(result.at("$list").at("next_id") == 3);
+    }
+    SECTION("an externally changed row value still prevents unpack undo") {
+        const std::array<EditorProjectionCommand, 1> commands{{{
+            .object_path = "/authoring_objects/" + std::to_string(object_id.value),
+            .apply = [](Json &document) {
+                document["scenes"]["main"]["objects"][1]["components"][1]
+                    ["params"]["rows"]["rows"][0]["label"] = "external";
+            },
+        }}};
+        EditorProjectionTransaction transaction{target, target.projectionDocument().revision()};
+        std::vector<EditorProjectionAdapter *> adapters;
+        REQUIRE(transaction.commit(commands, adapters).committed());
+        const auto rejected = edits.enqueueUndo(cas());
+        INFO(rejected.dump());
+        REQUIRE(rejected.at("status") == "rejected");
+        REQUIRE(rows().at("rows").at(0).at("label") == "external");
+        REQUIRE_FALSE(instanceObject(target.projectionResolvedScene()).prefab_instance.has_value());
+    }
 }
 
 TEST_CASE("WP372b inverse checks dependency closure in named priority order",

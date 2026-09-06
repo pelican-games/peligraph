@@ -32,7 +32,7 @@ geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実�
 |---|---|
 | RTの実行機能 | RT4のcallable/動的record、RT5の変形/refit、RT6のdispatch/名前付きAS/geometry結合、RT7のtask/接続編集には実装・統合記録がある。旧記録だけを根拠に再実装しない。残る組合せは具体的な利用操作と現行コードから判断する |
 | 次に優先する機能 | geometryからshader/record設定の適用結果を追う観測。get_ray_occurrencesは同じscene-plan snapshotのrecordフィールド名・型・offset・値、group名、layout/bindings参照と選択行、group/recordの適用元をInspectorへ返す。Frame Planのshader slotにgroup/ray名を併記しshader参照との対応を表示する。geometryからtaskへの選択連動、AS設定の優先規則全体、GPU動的値の観測は残る。世代の異なるGPU情報を混ぜない |
-| コンポーネント | Inspectorに追加・削除・Add default・List追加/削除/移動・override候補選択がある。これらを未実装へ戻さない。複合Undoやunpack/destroy等は、専用確認がないことと機能がないことを区別する |
+| コンポーネント | Inspectorに追加・削除・Add default・List追加/削除/移動・override候補選択がある。unpack後のList追加をUndoすると採番値の差でunpack Undoが失敗する不具合を修正し、全順序のUndo/Redoと実値変更時の拒否を確認した。destroy等は専用確認がないことと機能がないことを区別する |
 | 機能完成後の確認 | 実エンジン接続下の新画面操作、保存・再読み込みを含む制作経路、性能・配布。確認だけのために新しい機能開発を止めたり、広域テストを毎回繰り返したりしない |
 | 物理の現在地 | mesh raycastのscene/import/reload・BVH保持、sphere mesh overlapのprovider/service接続まで399798baに統合。box/capsule mesh overlap・sweep・trigger等は未完として保持するが、RT観測との優先順位を見直してから再開する |
 | 後の段階 | 学習サンプル・代表ゲーム・GUI操作感の仕上げ。動的剛体シミュレーションは既存仕様の将来トラック。これらを今の残件探索から自動的に着手対象へ広げない |

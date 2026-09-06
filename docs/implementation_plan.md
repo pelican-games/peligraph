@@ -23244,6 +23244,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
+**unpack後List編集の複合Undo (2026-09-06):**
+- unpack→List行追加→行追加Undoでnext_idだけが進むと、unpack Undoのexpanded component比較とorigin authority比較が拒否する経路を確認。
+- restore_prefabのjournal再生準備でschemaが定めるList採番値だけを現在のauthored componentから繰り上げ、commandとauthorityの両方へ同じ内容を渡す。出所検証の共通比較や行ID・値・attachmentの一致条件は緩和しない。
+- DebugのStudio・prefab test build成功。新しいList複合Undo/Redoは1 case / 36 assertions成功。元の行と追加行のID・値・next_idを確認し、外部から変更した行の値がある場合のUndo拒否も確認。再生時の採番値調整を除くと復元時のbody比較が成立しない。個別変異と実GUI操作は未実施。
+- 関連unpack回帰5 cases / 554 assertions成功（build/.codex_bg/unpack-regression-test.log）。
+
 **公開debugTextの色・倍率 (2026-09-06):**
 - GameContext::debugTextの色/scale指定を既存DebugTextへ接続。既定値は白・等倍、scaleのclampとfeature無効時no-opは既存処理へ委ねる。公開C++関数の引数を拡張したため、game DLLは更新したheader/libraryで再ビルドする。
 - Playerと既存DebugText/UI描画test build成功（build/.codex_bg/debugtext-public-build.log）。既存fixtureをGameContext経由へ変更し、1件7 assertions成功（debugtext-public-test.log）。色・倍率を落とせば既存の描画比較が落ちる。新しい画像認証基盤やテスト行列は追加しない。個別変異は未実行。

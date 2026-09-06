@@ -3562,6 +3562,26 @@ commandsFromCanonical(std::span<const OrderedJson> operations,
                                            component_name, true);
             operation["authored_component"] = std::move(next);
         }
+        if (operation.at("op") == "restore_prefab") {
+            const auto object_id = AuthoringObjectId{exactUnsigned(
+                operation.at("object"), "journal unpack object", true)};
+            const auto object = requireObjectLocation(local->projectionDocument(), object_id);
+            const auto &components = object.authored.at("components");
+            auto authority = unpackAuthorityFromJson(operation.at("expanded_components"));
+            if (components.size() >= authority.size()) {
+                const auto first = components.size() - authority.size();
+                for (std::size_t index = 0; index < authority.size(); ++index) {
+                    Json expected = authority[index].body;
+                    validateRawComponentTransition(components.at(first + index), expected,
+                        object_id, expected.at("name").get<std::string>(), true);
+                    authority[index].body = std::move(expected);
+                }
+                // Keep the inverse command and origin authority identical.
+                // Only schema-defined List allocators advance; body equality
+                // still rejects changed row IDs, values, or attachments.
+                operation["expanded_components"] = unpackExpandedComponentsJson(authority);
+            }
+        }
         if (canonical_operations != nullptr) {
             canonical_operations->push_back(
                 freezeJournalOperation(operation,
