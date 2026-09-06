@@ -23265,6 +23265,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3メッシュBVH再利用 (2026-09-06):**
+- PhysWorldのbinding prepare時にBuiltin/Jolt用immutable BVHを構築し、元geometryと一緒に保持。同じgeometryのcandidateはBVHを共有し、別geometryへ変更されたcandidateでは再構築する。
+- runtimeの内部入力に対応BVHのborrowed spanを追加。filter後のmesh indexに合わせ、既定CPU callbackのcontextで渡す。公開ProviderV3のpayloadや外部providerの選択を変えず、外部callbackへ内部pointerを渡さない。
+- 登録時に検証済みのgeometryはquery時の全vertex/index走査を省略。変換・ray・provider結果の検証は残る。raw descriptorのみの内部queryでは従来の構築経路を使用。
+- runtime_services/modelhotreload build成功。物理関連29件366 assertions（build/.codex_bg/mesh-bvh-cache-cpu.log）、実scene reload1件16 assertions（mesh-bvh-cache-scene.log）成功。同一geometryでBVH共有、別geometryでBVH差し替え、形状reload後の距離変更を確認。差し替えを戻すとBVH identity対照とsceneの距離が落ちる。個別変異は未実施。
+- provider-onlyはBVH構築をコンパイルしない。別構成buildと性能数値の計測は未実施。モデルinstance間のgeometry集約・共有、runtime-only glTF、mesh overlap/sweep/triggerは残る。
+
 **P3メッシュscene/reload統合確認 (2026-09-06):**
 - 既存modelhotreload testのglTF fixtureへ任意collision node距離を追加。実SceneLoaderで配置し、ReloadServiceから実ファイル変更を反映するケースを追加した。
 - GPUデバイス上で、初期hit距離3→reload後7、collider ID保持、壊れたglTFのrollback後7、collision削除によるmiss、再追加後4、live object移動によるmissを確認。単独1件16 assertions成功（build/.codex_bg/mesh-scene-reload-test.log）。既存model reloadのstress以外も含め7件187 assertions成功（mesh-scene-reload-regression.log）。buildはmesh-scene-reload-build.logで成功。

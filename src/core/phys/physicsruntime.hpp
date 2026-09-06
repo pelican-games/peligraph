@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+namespace Pelican::phys { class TriangleMesh; }
+
 namespace Pelican::physics_internal {
 
 Physics::Status registerProvider(const Physics::ProviderV2 &provider,
@@ -33,7 +35,10 @@ Physics::Status raycastMeshes(
     std::span<const phys::ColliderIdentity> identities,
     std::span<const phys::ColliderQueryMetadata> metadata,
     const phys::QueryFilter *filter,
-    std::vector<phys::RaycastQueryHit> &out_hits) noexcept;
+    std::vector<phys::RaycastQueryHit> &out_hits,
+    // Optional engine-owned immutable BVHs matching the mesh descriptors.
+    // External provider callbacks continue to receive only the public payload.
+    std::span<const phys::TriangleMesh *const> acceleration = {}) noexcept;
 
 Physics::Status raycastAll(const phys::Ray &ray,
                            std::span<const phys::Collider> colliders,

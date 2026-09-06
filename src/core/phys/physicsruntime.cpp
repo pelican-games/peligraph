@@ -432,11 +432,13 @@ Physics::Status raycastMeshes(
     std::span<const phys::ColliderIdentity> identities,
     std::span<const phys::ColliderQueryMetadata> metadata,
     const phys::QueryFilter *filter,
-    std::vector<phys::RaycastQueryHit> &out_hits) noexcept {
+    std::vector<phys::RaycastQueryHit> &out_hits,
+    std::span<const phys::TriangleMesh *const> acceleration) noexcept {
     using Physics::Status;
     out_hits.clear();
     try {
-        if (meshes.size() != identities.size() || meshes.size() != metadata.size() ||
+        if ((!acceleration.empty() && acceleration.size() != meshes.size()) ||
+            meshes.size() != identities.size() || meshes.size() != metadata.size() ||
             !finite(toAbi(ray.origin)) || !finite(toAbi(ray.direction)) ||
             !std::isfinite(ray.max_distance) || ray.max_distance < 0.0F)
             return Status::invalid_argument;
@@ -445,6 +447,7 @@ Physics::Status raycastMeshes(
         Physics::Vec3V1 direction{};
         if (!normalized(toAbi(ray.direction), direction)) return Status::ok;
         std::vector<Physics::TriangleMeshV3> selected;
+        std::vector<const phys::TriangleMesh *> selected_acceleration;
         std::vector<std::size_t> source_indices;
         std::vector<phys::ColliderIdentity> selected_identities;
         for (std::size_t index = 0; index < meshes.size(); ++index) {
@@ -459,10 +462,15 @@ Physics::Status raycastMeshes(
             if (mesh.reserved0 != 0 || mesh.reserved1 != 0 || mesh.index_count % 3 != 0 ||
                 (mesh.vertex_count != 0 && mesh.vertices == nullptr) ||
                 (mesh.index_count != 0 && mesh.indices == nullptr)) return Status::invalid_argument;
-            for (std::uint32_t vertex = 0; vertex < mesh.vertex_count; ++vertex)
-                if (!finite(mesh.vertices[vertex])) return Status::invalid_argument;
-            for (std::uint32_t corner = 0; corner < mesh.index_count; ++corner)
-                if (mesh.indices[corner] >= mesh.vertex_count) return Status::invalid_argument;
+            const auto *cached = acceleration.empty() ? nullptr : acceleration[index];
+            // Prepared engine geometry was validated before publication.
+            if (cached == nullptr) {
+                for (std::uint32_t vertex = 0; vertex < mesh.vertex_count; ++vertex)
+                    if (!finite(mesh.vertices[vertex])) return Status::invalid_argument;
+                for (std::uint32_t corner = 0; corner < mesh.index_count; ++corner)
+                    if (mesh.indices[corner] >= mesh.vertex_count) return Status::invalid_argument;
+            }
+            selected_acceleration.push_back(cached);
             for (const auto value : mesh.local_to_world)
                 if (!std::isfinite(value)) return Status::invalid_argument;
             const auto *m = mesh.local_to_world;
@@ -487,6 +495,9 @@ Physics::Status raycastMeshes(
             auto &value = registry();
             std::shared_lock lock{value.mutex};
             const ProviderDispatch *dispatch = nullptr;
+#if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
+            BuiltinMeshQueryContext mesh_context{selected_acceleration};
+#endif
             if (const auto *game = activeGameProviderLocked(value);
                 game != nullptr && (game->dispatch.mesh_capability_bits & Physics::query_mesh_raycast_all) != 0)
                 dispatch = &game->dispatch;
@@ -496,7 +507,8 @@ Physics::Status raycastMeshes(
                     dispatch = &engine->dispatch;
             }
 #if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
-            static const ProviderDispatch builtin_mesh{
+            const ProviderDispatch builtin_mesh{
+                .context = &mesh_context,
                 .mesh_capability_bits = Physics::query_mesh_raycast_all,
                 .mesh_raycast_all = builtinMeshRaycastAll,
             };

@@ -18,6 +18,7 @@
 
 namespace Pelican {
 struct SceneLoadPhaseTrace;
+namespace phys { class TriangleMesh; }
 
 class DebugDraw;
 class GameContext;
@@ -51,6 +52,8 @@ DECLARE_MODULE(PhysWorld) {
         ColliderComponent collider;
         std::variant<GameObjectId, PhysWorldTransform> transform_source;
         std::shared_ptr<const MeshGeometry> mesh;
+        std::shared_ptr<const MeshGeometry> accelerated_source;
+        std::shared_ptr<const phys::TriangleMesh> mesh_acceleration;
     };
 
     struct PreparedState {

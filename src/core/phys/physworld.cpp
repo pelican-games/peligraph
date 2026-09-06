@@ -1,5 +1,8 @@
 #include "physworld.hpp"
 #include "physicsruntime.hpp"
+#if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
+#include "trianglemesh.hpp"
+#endif
 #include "physqueryinternal.hpp"
 
 #include "../ecs/predefined/transform.hpp"
@@ -315,8 +318,19 @@ PhysWorld::PreparedState PhysWorld::prepareBindings(
             for (const auto index : mesh.indices)
                 if (index >= mesh.vertices.size())
                     throw std::invalid_argument("Mesh collider index out of range");
+#if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
+            if (!binding.mesh_acceleration || binding.accelerated_source != binding.mesh) {
+                std::vector<vec3> vertices;
+                vertices.reserve(mesh.vertices.size());
+                for (const auto &v : mesh.vertices) vertices.push_back({v.x, v.y, v.z});
+                binding.mesh_acceleration = std::make_shared<const phys::TriangleMesh>(vertices, mesh.indices);
+                binding.accelerated_source = binding.mesh;
+            }
+#endif
         } else {
             binding.collider.validate();
+            binding.mesh_acceleration.reset();
+            binding.accelerated_source.reset();
         }
         if (const auto *object_id =
                 std::get_if<GameObjectId>(&binding.transform_source)) {
@@ -479,6 +493,7 @@ Physics::Status PhysWorld::queryRaycastAll(
     std::vector<phys::RaycastQueryHit> &hits) const {
     hits.clear();
     std::vector<Physics::TriangleMeshV3> meshes;
+    std::vector<const phys::TriangleMesh *> acceleration;
     std::vector<phys::ColliderIdentity> identities;
     std::vector<phys::ColliderQueryMetadata> metadata;
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
@@ -505,6 +520,7 @@ Physics::Status PhysWorld::queryRaycastAll(
             for (int r = 0; r < 4; ++r)
                 descriptor.local_to_world[c * 4 + r] = matrix[c][r];
         meshes.push_back(descriptor);
+        acceleration.push_back(binding.mesh_acceleration.get());
         identities.push_back(binding.identity);
         metadata.push_back(binding.metadata);
     }
@@ -519,7 +535,7 @@ Physics::Status PhysWorld::queryRaycastAll(
     if (!meshes.empty()) {
         std::vector<phys::RaycastQueryHit> mesh_hits;
         const auto status = physics_internal::raycastMeshes(
-            ray, meshes, identities, metadata, filter, mesh_hits);
+            ray, meshes, identities, metadata, filter, mesh_hits, acceleration);
         if (status != Physics::Status::ok) return status;
         result.insert(result.end(), std::make_move_iterator(mesh_hits.begin()),
                       std::make_move_iterator(mesh_hits.end()));

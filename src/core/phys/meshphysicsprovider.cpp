@@ -9,7 +9,7 @@
 namespace Pelican::physics_internal {
 
 Physics::Status builtinMeshRaycastAll(
-    void *, const Physics::ProviderMeshRaycastQueryV3 *query,
+    void *context, const Physics::ProviderMeshRaycastQueryV3 *query,
     Physics::ProviderRaycastHitV1 *hits, std::uint32_t capacity,
     std::uint32_t *out_count) noexcept {
     using namespace Physics;
@@ -26,19 +26,26 @@ Physics::Status builtinMeshRaycastAll(
                 (source.index_count != 0 && source.indices == nullptr) ||
                 source.reserved0 != 0 || source.reserved1 != 0)
                 return Status::invalid_argument;
-            std::vector<vec3> vertices;
-            vertices.reserve(source.vertex_count);
-            for (std::uint32_t vertex = 0; vertex < source.vertex_count; ++vertex) {
-                const auto value = source.vertices[vertex];
-                vertices.push_back({value.x, value.y, value.z});
+            const auto *cached = static_cast<const BuiltinMeshQueryContext *>(context);
+            const phys::TriangleMesh *mesh = cached && index < cached->acceleration.size()
+                ? cached->acceleration[index] : nullptr;
+            std::optional<phys::TriangleMesh> temporary;
+            if (mesh == nullptr) {
+                std::vector<vec3> vertices;
+                vertices.reserve(source.vertex_count);
+                for (std::uint32_t vertex = 0; vertex < source.vertex_count; ++vertex) {
+                    const auto value = source.vertices[vertex];
+                    vertices.push_back({value.x, value.y, value.z});
+                }
+                temporary.emplace(vertices, std::span{source.indices, source.index_count});
+                mesh = &*temporary;
             }
-            const phys::TriangleMesh mesh(vertices, {source.indices, source.index_count});
             glm::mat4 transform;
             for (int column = 0; column < 4; ++column)
                 for (int row = 0; row < 4; ++row)
                     transform[column][row] = source.local_to_world[column * 4 + row];
             const auto &ray = query->ray;
-            const auto hit = mesh.raycast(
+            const auto hit = mesh->raycast(
                 phys::Ray{{ray.origin.x, ray.origin.y, ray.origin.z},
                           {ray.direction.x, ray.direction.y, ray.direction.z}, ray.max_distance},
                 transform);

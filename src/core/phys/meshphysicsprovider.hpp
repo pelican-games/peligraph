@@ -2,7 +2,14 @@
 
 #include "../userpublic/physics/abi_v3.hpp"
 
+#include <span>
+namespace Pelican::phys { class TriangleMesh; }
+
 namespace Pelican::physics_internal {
+
+struct BuiltinMeshQueryContext {
+    std::span<const phys::TriangleMesh *const> acceleration;
+};
 
 Physics::Status builtinMeshRaycastAll(
     void *, const Physics::ProviderMeshRaycastQueryV3 *,

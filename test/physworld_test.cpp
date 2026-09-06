@@ -669,6 +669,10 @@ TEST_CASE("Model collision replacements prepare additions removals and stable id
     replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
     auto candidate = world.prepareBindings(std::move(bindings));
     const auto id = candidate.bindings.at(0).identity.collider_id;
+    const auto acceleration = candidate.bindings.at(0).mesh_acceleration;
+    REQUIRE(acceleration);
+    auto unchanged = world.prepareBindings(candidate.bindings);
+    CHECK(unchanged.bindings.at(0).mesh_acceleration == acceleration);
     const phys::Ray ray{{0, 0, 0}, {0, 0, 1}, 10};
     CHECK_FALSE(world.raycastClosest(ray));
     world.publishPrepared(std::move(candidate));
@@ -681,6 +685,8 @@ TEST_CASE("Model collision replacements prepare additions removals and stable id
     replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
     candidate = world.prepareBindings(std::move(bindings));
     CHECK(candidate.bindings.at(0).identity.collider_id == id);
+    REQUIRE(candidate.bindings.at(0).mesh_acceleration);
+    CHECK(candidate.bindings.at(0).mesh_acceleration != acceleration);
     CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));
     world.publishPrepared(std::move(candidate));
     REQUIRE(world.raycastClosest(ray));
