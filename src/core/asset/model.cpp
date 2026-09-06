@@ -1,4 +1,8 @@
 #include "model.hpp"
+#include "../loader/modelphysicsbinding.hpp"
+#include "../loader/scene.hpp"
+#include "../loader/componentcodec.hpp"
+#include "../loader/authoringscenedocument.hpp"
 
 #include "../animation/animationservice.hpp"
 #include "../loader/basicconfig.hpp"
@@ -352,6 +356,7 @@ struct ModelAssetContainer::Impl {
         std::vector<Installation> installs;
         std::optional<PolygonInstanceContainer::PreparedSceneState>
             renderer_candidate;
+        std::optional<PhysWorld::PreparedState> physics_candidate;
         std::vector<std::string> added;
         std::vector<std::string> removed;
         std::vector<std::string> ambiguous;
@@ -430,6 +435,11 @@ struct ModelAssetContainer::Impl {
                 ->publishPreparedScene(
                     std::move(*batch->renderer_candidate));
             batch->renderer_candidate.reset();
+        }
+        if (batch->physics_candidate) {
+            FastModuleContainer::tryGet<PhysWorld>()->publishPrepared(
+                std::move(*batch->physics_candidate));
+            batch->physics_candidate.reset();
         }
         for (auto &install : batch->installs) {
             auto retired_payload = std::const_pointer_cast<ModelPayload>(
@@ -676,12 +686,43 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
                 FastModuleContainer::tryGet<PolygonInstanceContainer>())
             batch->renderer_candidate =
                 instances->prepareModelInstanceRebuild(rebuilds);
+        auto *physics = FastModuleContainer::tryGet<PhysWorld>();
+        const auto *loader = FastModuleContainer::tryGet<SceneLoader>();
+        const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();
+        if (physics && loader && config) {
+            const auto *scene = config->resolvedScene().findScene(loader->currentScene());
+            if (scene) {
+                auto next = physics->snapshotPrepared();
+                bool changed = false;
+                for (const auto &object : scene->objects) {
+                    const auto runtime = std::find_if(loader->runtimeObjectBindings().begin(),
+                        loader->runtimeObjectBindings().end(), [&](const auto &binding) {
+                            return binding.authoring_object_id == object.authoring_object_id;
+                        });
+                    if (runtime == loader->runtimeObjectBindings().end()) continue;
+                    for (const auto &component : object.components) {
+                        if (component.name != "simplemodelview") continue;
+                        const auto &data = std::any_cast<const SimpleModelViewCodecData &>(
+                            component.requireRuntimeValue());
+                        const auto candidate = batch->staged_payloads.find(data.model);
+                        if (candidate == batch->staged_payloads.end()) continue;
+                        replaceModelPhysicsBinding(next.bindings, candidate->second->candidate,
+                            runtimeObjectIdentityName(loader->currentScene(),
+                                object.authoring_object_id, object.name.value_or(std::string{})),
+                            runtime->object_id);
+                        changed = true;
+                    }
+                }
+                if (changed) batch->physics_candidate = physics->prepareBindings(std::move(next.bindings));
+            }
+        }
     });
     group.setPublish([this, batch]() noexcept {
         impl_->publishBatch(batch);
     });
     group.setRollback([batch]() noexcept {
         batch->renderer_candidate.reset();
+        batch->physics_candidate.reset();
         batch->installs.clear();
         batch->staged_payloads.clear();
     });

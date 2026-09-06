@@ -4,6 +4,7 @@
 #include "../phys/physworld.hpp"
 
 #include <limits>
+#include <algorithm>
 #include <stdexcept>
 
 namespace Pelican {
@@ -32,6 +33,27 @@ inline std::optional<PhysWorld::Binding> makeModelPhysicsBinding(
     binding.transform_source = std::move(transform);
     binding.mesh = std::move(geometry);
     return binding;
+}
+
+inline void replaceModelPhysicsBinding(
+    std::vector<PhysWorld::Binding> &bindings, const ModelTemplate &model,
+    const std::string &object_name,
+    std::variant<GameObjectId, PhysWorldTransform> transform) {
+    auto replacement = makeModelPhysicsBinding(model, object_name, std::move(transform));
+    const auto name = object_name + "/mesh";
+    const auto old = std::find_if(bindings.begin(), bindings.end(), [&](const auto &binding) {
+        return binding.mesh && binding.identity.name == name;
+    });
+    if (old != bindings.end()) {
+        if (replacement) {
+            replacement->identity.collider_id = old->identity.collider_id;
+            *old = std::move(*replacement);
+        } else {
+            bindings.erase(old);
+        }
+    } else if (replacement) {
+        bindings.push_back(std::move(*replacement));
+    }
 }
 
 } // namespace Pelican

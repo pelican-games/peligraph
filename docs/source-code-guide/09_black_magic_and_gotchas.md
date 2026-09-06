@@ -1045,7 +1045,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 失敗しうる作業(確保・検証・容量チェック・id 採番)を prepare に全部集め、publish を `noexcept` の swap 列にして「公開後は失敗しない」を型で固定し、finish は「もう巻き戻さない」と決まってから初めて破棄・`deinit` を行う。
 
-**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L524) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L538) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L283)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L375)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L577)。
+**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L524) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L538) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L283)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L375)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L587)。
 
 **読むときの手順**: まず `publish` の宣言に `noexcept` が付いているかを見て、付いていれば「この関数より前に全ての失敗が済んでいる」と読み替えます。次に、その関数が触るメンバが *candidate* 側か *live* 側かを 1 つずつ確かめてください。
 
@@ -1504,11 +1504,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: デストラクタや deferred 解放経路は `noexcept` で、そこで動的確保すると `bad_alloc` を投げうるため**報告自体が失敗します**。固定 8 要素のインライン配列なら確保も例外もなしに記録でき、溢れは件数だけ残します。同じ設計は §9.21「`ReleaseReport` は heap を使わない」でも扱っています。
 
-#### [parse → validate → stage](../../src/core/asset/model.cpp#L577) — 3 段階と `sameRigLayout`
+#### [parse → validate → stage](../../src/core/asset/model.cpp#L587) — 3 段階と `sameRigLayout`
 
 **分からなくなること**: どの段で GPU に触るのか、どの差分が `compatibility_revision` を進めるのか。
 
-**答え**: parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#L577) は `inspect` で **GPU コミットなしのプレビュー template** を作って `sameRigLayout` でリグ差分を判定、[`stage`](../../src/core/asset/model.cpp#L585) で初めて実 GPU コミットとリビジョン付与です。失敗しても live に触れずに巻き戻せます。rig_changed(joint_nodes・親子・skin_bindings のレイアウト一致)**だけ**が `compatibility_revision` を進めます。
+**答え**: parse は IO / デコードのみ、[`validate`](../../src/core/asset/model.cpp#L587) は `inspect` で **GPU コミットなしのプレビュー template** を作って `sameRigLayout` でリグ差分を判定、[`stage`](../../src/core/asset/model.cpp#L595) で初めて実 GPU コミットとリビジョン付与です。失敗しても live に触れずに巻き戻せます。rig_changed(joint_nodes・親子・skin_bindings のレイアウト一致)**だけ**が `compatibility_revision` を進めます。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
@@ -1519,16 +1519,16 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`allocateRange()`](../../src/core/model/vertbufcontainer.cpp#L95) | free list + high water mark | 2 系統ある理由 | まず free list を first-fit で走査して解放済みレンジを再利用し(**リロード周回でバッファが際限なく伸びるのを防ぐ**)、合う穴が無いときだけ high water mark を進め、そこで初めて `ensure*Capacity` の再確保が起きる |
 | [`content_revision` / `compatibility_revision`](../../src/core/model/modeltemplate.hpp#L159) | 2 本の版 | 分ける理由 | content は毎リロード必ず進む「中身が変わった」印、compatibility はリグレイアウトが変わったときだけ進む「バインドを張り直す必要がある」印。後者だけが staged resource の互換性キーとして公開されるので、**内容だけの更新で依存側の再解決を誘発しない** |
 | [importer mapping の安定座標](../../src/core/model/modeltemplate.hpp#L83) | mesh/primitive/node index | 「regrouping を生き延びる」の意味 | ソース GLB 上の**安定座標**で、GPU 側の allocation offset とは意図的に分離されている。再グループ化で offset が変わっても、それらの座標で addressing されたインポータ由来のマテリアル割当はそのまま解決できる |
-| [`publishBatch()`](../../src/core/asset/model.cpp#L425) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L692) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
+| [`publishBatch()`](../../src/core/asset/model.cpp#L430) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L733) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
 | [`DeferredRelease` の `acquire()`](../../src/core/model/vertbufcontainer.cpp#L588) | lease semantics | null のとき何が起きたか | §9.23.4 の `GpuSubmissionLease` と同じ(フェンス完了まで生かす券)。lease が null なら既に回収済み |
 | [`deferOldBuffer()`](../../src/core/model/vertbufcontainer.cpp#L135) | 旧バッファの遅延破棄 | いつ drain されるか | DeletionQueue(submission fence 完了時)。→ §9.12 |
 | [例外時の morph range](../../src/core/model/vertbufcontainer.cpp#L390) | 部分 cleanup | 解放されない範囲がある | **未執筆**(`vertex_allocated` フラグの cleanup 範囲を確かめる必要がある) |
 | [morph metadata の空 vector 埋め](../../src/core/model/vertbufcontainer.cpp#L562) | ゼロクリア | なぜ空 vector か | **未執筆**(根拠がコードにない) |
 | [`deferred_callbacks` の初期化位置](../../src/core/model/vertbufcontainer.cpp#L74) | メンバ初期化順 | なぜその位置か | **未執筆**(根拠がコードにない) |
-| [`Impl` の所有関係](../../src/core/asset/model.cpp#L313) | PayloadTracker / CommitBatch / ModelPayload / PendingCandidate | 誰が誰を持つか | **未執筆**(3 段階 staging の実装詳細) |
-| [`const void*` での payload 追跡](../../src/core/asset/model.cpp#L566) | 型を消した比較 | なぜ型を消すのか | **未執筆**(根拠がコードにない) |
+| [`Impl` の所有関係](../../src/core/asset/model.cpp#L317) | PayloadTracker / CommitBatch / ModelPayload / PendingCandidate | 誰が誰を持つか | **未執筆**(3 段階 staging の実装詳細) |
+| [`const void*` での payload 追跡](../../src/core/asset/model.cpp#L576) | 型を消した比較 | なぜ型を消すのか | **未執筆**(根拠がコードにない) |
 | [`source_material_index` が optional](../../src/core/model/modeltemplate.hpp#L134) / [bounds](../../src/core/model/modeltemplate.hpp#L70) | 任意性と空間 | bounds は local か world か | **未執筆**。ただし「スキニングは後で現在のパレットから適用」とコメントされているので local space と読める |
-| [material bindings のパス解決](../../src/core/asset/model.cpp#L147) | reference からの解決 | fragment を返しうるか | **未執筆**(根拠がコードにない) |
+| [material bindings のパス解決](../../src/core/asset/model.cpp#L151) | reference からの解決 | fragment を返しうるか | **未執筆**(根拠がコードにない) |
 
 ### 9.23.9 editor journal
 

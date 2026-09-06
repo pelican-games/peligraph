@@ -23265,6 +23265,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3モデルcollisionのreload接続 (2026-09-06):**
+- ModelAssetContainerのreload batch prepareで、現在sceneのsimplemodelviewとruntime entityを照合し、更新対象モデルのmesh bindingを物理candidateへ追加・置換・削除する。形状変更で既存collider IDを保ち、collisionなしからの追加にも対応。
+- renderer candidateと同じnoexcept publish内で物理candidateをswap。prepare失敗時にはcandidateを破棄して現在のgeometryを維持する。通常のprimitive colliderは置換しない。
+- Player/runtime_services build成功。関連29件362 assertions成功（build/.codex_bg/mesh-reload-test.log）。CPU replacement helperを通して追加・距離3→7の変更・ID保持・削除・再追加を確認し、候補準備だけでは現在のhitが変わらないことを確認。置換を戻すと距離7の対照が落ちる。個別変異と実reload coordinator/GPU sceneの統合試験は未実施。
+- ファイル監視からGPU sceneまでの統合試験、runtime-only transient glTFの物理登録、BVH再利用、mesh overlap/sweep/triggerは残る。
+
 **P3モデルcollisionのシーン登録 (2026-09-06):**
 - model-spaceへ変換済みの各glTF collision nodeのtrianglesを1つのinstance meshへまとめ、indexを補正。通常colliderと独立したruntime object名/meshのbindingを作る。collision宣言のないモデルには登録しない。
 - scene prepareでモデルのCPU geometryを物理candidateへ保持。lifecycleとcollider編集の全一覧再構築にも同じ変換を接続し、残存instanceのcollider IDを維持する。失敗candidateの公開は行わず、既存prepared publicationを使用。

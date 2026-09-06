@@ -653,4 +653,52 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     CHECK(world.raycastAll(ray).empty());
 }
 
+TEST_CASE("Model collision replacements prepare additions removals and stable identities", "[physworld][mesh-reload]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    ModelTemplate model;
+    auto sources = std::make_shared<std::vector<ModelCollisionMesh>>();
+    ModelCollisionMesh source;
+    source.positions = {{-1, -1, 3}, {1, -1, 3}, {0, 1, 3}};
+    source.indices = {0, 1, 2};
+    sources->push_back(source);
+    model.collision_meshes = sources;
+    auto bindings = world.snapshotPrepared().bindings;
+    replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
+    auto candidate = world.prepareBindings(std::move(bindings));
+    const auto id = candidate.bindings.at(0).identity.collider_id;
+    const phys::Ray ray{{0, 0, 0}, {0, 0, 1}, 10};
+    CHECK_FALSE(world.raycastClosest(ray));
+    world.publishPrepared(std::move(candidate));
+    REQUIRE(world.raycastClosest(ray));
+    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));
+    auto replacement = std::make_shared<std::vector<ModelCollisionMesh>>(*sources);
+    for (auto &vertex : replacement->at(0).positions) vertex.z = 7;
+    model.collision_meshes = replacement;
+    bindings = world.snapshotPrepared().bindings;
+    replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
+    candidate = world.prepareBindings(std::move(bindings));
+    CHECK(candidate.bindings.at(0).identity.collider_id == id);
+    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));
+    world.publishPrepared(std::move(candidate));
+    REQUIRE(world.raycastClosest(ray));
+    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(7));
+    model.collision_meshes.reset();
+    bindings = world.snapshotPrepared().bindings;
+    replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
+    auto removed = world.prepareBindings(std::move(bindings));
+    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(7));
+    world.publishPrepared(std::move(removed));
+    CHECK_FALSE(world.raycastClosest(ray));
+    // A collision declaration can be added again after a collision-free reload.
+    model.collision_meshes = sources;
+    bindings = world.snapshotPrepared().bindings;
+    replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
+    world.publishPrepared(world.prepareBindings(std::move(bindings)));
+    REQUIRE(world.raycastClosest(ray));
+    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));
+}
+
 } // namespace Pelican
