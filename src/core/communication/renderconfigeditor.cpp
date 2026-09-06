@@ -22,15 +22,23 @@ namespace {
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
+bool isEditableAuxiliaryPass(std::string_view type) {
+    return type == "debug_draw" || type == "debug_text" || type == "gizmo" ||
+           type == "shadow_depth" || type == "velocity" || type == "picking";
+}
+
+bool isEditablePassType(std::string_view type) {
+    return type == "fullscreen" || type == "material" || type == "raster" ||
+           isEditableAuxiliaryPass(type);
+}
+
 OrderedJson *findPresetEditablePass(OrderedJson &preset, const std::string &graph_name,
                                       const std::string &pass_name) {
     for (auto &graph : preset.at("config").at("rendering_passes")) {
         if (graph.at("name") != graph_name) continue;
         for (auto &pass : graph.at("passes")) {
             if (pass.value("name", std::string{}) == pass_name &&
-                (pass.value("type", std::string{}) == "fullscreen" ||
-                 pass.value("type", std::string{}) == "material" ||
-                 pass.value("type", std::string{}) == "raster")) return &pass;
+                isEditablePassType(pass.value("type", std::string{}))) return &pass;
         }
     }
     return nullptr;
@@ -48,7 +56,7 @@ OrderedJson *findFeatureEditablePass(OrderedJson &feature, std::string_view name
         auto &pass = entry.at("pass");
         const auto type = pass.value("type", std::string{});
         if (pass.value("name", std::string{}) != name ||
-            (type != "fullscreen" && type != "material" && type != "raster")) continue;
+            !isEditablePassType(type)) continue;
         if (found) throw std::runtime_error("The feature has ambiguous source pass declarations");
         found = &pass;
     }
@@ -1363,7 +1371,30 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         auto preset = OrderedJson::parse(bytes);
         auto *pass = feature_edit ? findFeatureEditablePass(preset, authored_name) : findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
-        if (pass->at("type") == "raster") {
+        if (isEditableAuxiliaryPass(pass->at("type").get<std::string>())) {
+            requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "output", "shader", "ray_query"}, method);
+            bool changed = false;
+            for (const auto *key : {"output", "shader", "ray_query"}) {
+                if (!params.contains(key)) continue;
+                changed = true;
+                if (std::string_view{key} == "shader") {
+                    const auto type = pass->at("type").get<std::string>();
+                    if (type == "shadow_depth") requireOnly(params.at(key), {"vertex"}, "shadow_depth shader");
+                    else if (type == "velocity" || type == "picking")
+                        requireOnly(params.at(key), {"vertex", "fragment", "skinned_vertex"}, "geometry shader");
+                    else requireOnly(params.at(key), {"vertex", "fragment"}, "auxiliary shader");
+                    if (!pass->contains(key)) {
+                        (*pass)[key] = {{"vertex", "engine://" + type}};
+                        if (type != "shadow_depth") (*pass)[key]["fragment"] = "engine://" + type;
+                    }
+                    for (const auto &[field, value] : params.at(key).items()) {
+                        if (field == "skinned_vertex" && value.is_null()) (*pass)[key].erase(field);
+                        else (*pass)[key][field] = value;
+                    }
+                } else (*pass)[key] = params.at(key);
+            }
+            if (!changed) throw std::invalid_argument("Auxiliary pass editing requires at least one editable field");
+        } else if (pass->at("type") == "raster") {
             requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query"}, method);
             bool changed = false;
             for (const auto *key : {"input", "output", "shader", "draw", "raster_state", "ray_query"}) {

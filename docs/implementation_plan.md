@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はpickingの明示ray queryとImGuiのAS非依存化。shadow_depth/velocityは `06e19992`、補助shaderのdescriptor契約検査は `ea05340a`、debug_text/gizmoは `ea61aa74`、サイズ混在解析とdebug_draw組込みGLSLは `9e5c363b`、debug_drawは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
+- 最新の追加は6種の補助描画のGUI/RPC編集。picking/ImGuiのAS対応は `aad939ab`、shadow_depth/velocityは `06e19992`、補助shaderのdescriptor契約検査は `ea05340a`、debug_text/gizmoは `ea61aa74`、サイズ混在解析とdebug_draw組込みGLSLは `9e5c363b`、debug_drawは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT6 pickingのAS宣言とImGui依存解除 (2026-09-06):**
+**RT7 補助描画のGUI/RPC編集 (2026-09-06):**
+- debug_draw/debug_text/gizmo/shadow_depth/velocity/pickingを、project preset/plain featureの既存編集経路に追加。出力・shader・ray_queryを部分更新し、省略項目・CAS・engine/parameterized featureの制限を維持。shader未指定からの一部overrideは他stageの既定値を保持し、skinned_vertexのnullはoverride削除となる。
+- Studioは元のtype/宣言を保持して出力先とshader/queryを編集する。shadowはfragment/色出力を隠し、velocity/pickingはスキンshader欄を持つ。通常inputを持たない既存形状に従って入力欄を隠し、RPCもinput編集を拒否。depthを使わない補助型の欄も隠す。
+- Player/Studio・CPU/Qt最終build成功（build/.codex_bg/aux-editor-final-build.log、aux-editor-cpu-build.log）。保存/再読込・feature CAS等のCPU成功（aux-editor-cpu.log）、補助6型と既存preset編集のQt3件・365 assertions成功（aux-editor-qt.log）。実エンジンに接続した手動操作は未実行。runtime変更はないため直前に成功済みのGPU描画試験を反復しない。
+- 初回fixtureに非対応input/depthを入れていた点を既存仕様へ修正した。保存比較はordered_jsonのキー順一致からJSON内容の一致へ改めた。対照は省略field保持・skinned override削除・CAS拒否・shadow形状保持であり、個別変異は未実行。
+- 次は計画の未了記録と現行コードを再照合し、実際の機能残件を確定する。古い「fullscreen以外」「生成variant editor」の記述を根拠に完了済みの作業を再実施しない。機能全体の完了は未判定。
+
+**RT6 pickingのAS宣言とImGui依存解除 (2026-09-06、aad939ab):**
 - pickingにray_query所有・JSON/typed lowering・runtime登録の伝播を追加し、既存VelocityPassContainerのpass別AS bindingを使用する。skinned_vertexの解析は維持。ImGuiは独自ImGui_ImplVulkan描画でframe ASを使わないため、UI同様にplannerで非依存とする。
 - Player/Studio・CPU/GPU build成功（build/.codex_bg/picking-query-build.log）。CPU2件・189 assertions成功（picking-query-cpu.log）：6種の宣言とUI/ImGuiのAS前順序。GPU pickingの5section・432 assertions成功（picking-query-gpu.log）：通常ID描画のAS前実行、左右/空TLASの選択、未宣言query拒否。ImGuiの実ウィンドウ描画は今回未実行。
 - 対照: passのAS伝播を外せばqueryの拒否/選択結果が落ち、依存解除を戻せばAS前順序が成立しない。個別変異は未実行。

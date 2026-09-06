@@ -2497,4 +2497,70 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden());
 }
 
+TEST_CASE("Studio edits auxiliary shader and query fields without changing pass shape",
+          "[devstudio][fullscreen-pass][auxiliary-pass-edit]") {
+    (void)application();
+    const std::string kind = GENERATE(std::string{"debug_draw"}, std::string{"debug_text"},
+        std::string{"gizmo"}, std::string{"shadow_depth"}, std::string{"velocity"}, std::string{"picking"});
+    const bool shadow = kind == "shadow_depth";
+    const bool skinned = kind == "velocity" || kind == "picking";
+    const bool feature = kind == "debug_text" || kind == "shadow_depth" || kind == "picking";
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    Json original{{"name", "aux"}, {"type", kind}, {"depth_store_op", "store"},
+        {"output", {{"color", shadow ? Json(nullptr) : Json::array({"output"})},
+                    {"depth", shadow || skinned ? Json("depth") : Json(nullptr)}}},
+        {"shader", {{"vertex", "engine://" + kind}}}};
+    if (!shadow) original["shader"]["fragment"] = "engine://" + kind;
+    if (skinned) original["shader"]["skinned_vertex"] = "project://old_skin";
+    Json entry{{"name", "aux"}, {"declaration", original},
+        {feature ? "editable_feature_pass" : "editable_preset_pass", true},
+        {feature ? "feature_declaration" : "preset_declaration", original}};
+    if (feature) {
+        entry["feature_source_digest"] = {{"hex", std::string(64, 'c')}};
+        entry["feature_source_reference"] = "project://features/aux.json";
+    }
+    const Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
+        {"pipeline_preset", {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+        {"graphs", Json::array({{{"name", "edit_graph"}, {"passes", Json::array({entry})},
+            {"anchor_candidates", Json::array()}}})}};
+    authoring.succeed(authoring.requests.back().id, context);
+    const auto plan = minimalFramePlan("edit_graph", Json::array({resource("output"), resource("depth")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    form.editPresetPass("edit_graph", "aux");
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text().toStdString() == kind);
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden() == shadow);
+    auto &skin = required<QLineEdit>(form, "pelican.fullscreenPass.shader.skinnedVertex");
+    CHECK(skin.isHidden() == !skinned);
+    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden());
+    CHECK(required<QComboBox>(form, "pelican.fullscreenPass.inputTarget").isHidden());
+    required<QLineEdit>(form, "pelican.fullscreenPass.shader.vertex").setText("project://changed_vertex");
+    if (skinned) skin.clear();
+    required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery").setChecked(true);
+    required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene").setText("actors");
+    const auto draft = Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString());
+    CHECK(draft.at("type") == kind);
+    CHECK(draft.at("output") == original.at("output"));
+    CHECK(draft.at("depth_store_op") == "store");
+    CHECK(draft.at("shader").contains("fragment") == !shadow);
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method == "edit_preset_pass");
+    const auto params = Json::parse(QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+    CHECK(params.at(feature ? "base_feature_digest" : "base_preset_digest") == std::string(64, feature ? 'c' : 'b'));
+    CHECK(params.at("shader").at("vertex") == "project://changed_vertex");
+    if (skinned) CHECK(params.at("shader").at("skinned_vertex").is_null());
+    CHECK(params.at("ray_query") == Json{{"acceleration_structure", "actors"}});
+    CHECK_FALSE(params.contains("output"));
+    CHECK_FALSE(params.contains("depth_store_op"));
+    authoring.succeed(authoring.requests.back().id, {{"status", "rejected"}, {"error", {{"message", "test rejection"}}}});
+    required<QPushButton>(form, "pelican.fullscreenPass.new").click();
+    CHECK(skin.isHidden());
+    CHECK_FALSE(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
+}
+
 } // namespace PelicanStudio

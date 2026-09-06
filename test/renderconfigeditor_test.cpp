@@ -2775,14 +2775,17 @@ TEST_CASE("Feature parameter overrides publish through the shared binder and pre
 
 TEST_CASE("Project feature pass edits publish their source and retain the rendering root",
           "[render-config-editor][feature-pass-edit]") {
-    for (const auto *type : {"fullscreen", "raster", "material"}) {
+    for (const auto *type : {"fullscreen", "raster", "material", "debug_draw", "debug_text", "gizmo"}) {
         CAPTURE(type);
+        const bool auxiliary = std::string_view{type} == "debug_draw" ||
+            std::string_view{type} == "debug_text" || std::string_view{type} == "gizmo";
         TemporaryAnimgraphProject project;
         PathResolver resolver;
         resolver.setup(project.root, false);
         Json pass{{"name", "feature_probe"}, {"type", type},
                   {"input", Json::array({"gbuffer_normal"})},
                   {"output", {{"color", Json::array({"lit_color"})}, {"depth", nullptr}}}};
+        if (auxiliary) pass.erase("input");
         if (std::string_view{type} == "material") {
             pass["material_contract"] = "forward_opaque_v1";
             pass["output"]["depth"] = "scene_depth";
@@ -2813,6 +2816,10 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
                      {"graph", "main_render"}, {"pass_name", "feature_probe"},
                      {"input", Json::array({"gbuffer_albedo"})}, {"output", pass.at("output")}};
         if (std::string_view{type} == "fullscreen") request["shader"] = pass.at("shader");
+        if (auxiliary) {
+            request.erase("input");
+            request["ray_query"] = true;
+        }
         auto invalid = request;
         invalid["material_routing"] = nullptr;
         CHECK(service->editPresetPass(invalid).at("status") == "rejected");
@@ -2828,7 +2835,8 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
         const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
         INFO(result.dump());
         REQUIRE(result.at("committed") == true);
-        feature["passes"][0]["pass"]["input"] = request.at("input");
+        if (auxiliary) feature["passes"][0]["pass"]["ray_query"] = true;
+        else feature["passes"][0]["pass"]["input"] = request.at("input");
         CHECK(Json::parse(readBytes(feature_path)) == feature);
         CHECK(readBytes(project.render_config) == root_before);
         CHECK(service->editPresetPass(request).at("error").at("code") == "external_modification");
@@ -2838,9 +2846,10 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
         const auto &reopened_passes = reopened.at("graphs").at(0).at("passes");
         const auto saved = std::find_if(reopened_passes.begin(), reopened_passes.end(), [](const auto &value) { return value.at("name") == "feature_probe"; });
         REQUIRE(saved != reopened_passes.end());
-        CHECK(saved->at("feature_declaration") == feature.at("passes")[0].at("pass"));
+    CHECK(nlohmann::json(saved->at("feature_declaration")) == nlohmann::json(feature.at("passes")[0].at("pass")));
         request["base_feature_digest"] = saved->at("feature_source_digest").at("hex");
-        request["input"] = Json::array({"gbuffer_normal"});
+        if (auxiliary) request["ray_query"] = false;
+        else request["input"] = Json::array({"gbuffer_normal"});
         const auto queued = service->editPresetPass(request);
         REQUIRE(queued.at("status") == "accepted");
         const auto external = readBytes(feature_path) + "\n";
@@ -2849,6 +2858,91 @@ TEST_CASE("Project feature pass edits publish their source and retain the render
         CHECK(service->getResult({{"ticket", queued.at("ticket")}}).at("committed") == false);
         CHECK(readBytes(feature_path) == external);
         CHECK(readBytes(project.render_config) == root_before);
+    }
+}
+
+TEST_CASE("Project auxiliary preset edits preserve declarations and reopen",
+          "[render-config-editor][preset-pass-edit][auxiliary-pass-edit]") {
+    for (const auto *type : {"debug_draw", "debug_text", "gizmo", "shadow_depth", "velocity", "picking"}) {
+        CAPTURE(type);
+        TemporaryAnimgraphProject project;
+        PathResolver resolver;
+        resolver.setup(project.root, false);
+        auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+        const bool shadow = std::string_view{type} == "shadow_depth";
+        const bool geometry = shadow || std::string_view{type} == "velocity" || std::string_view{type} == "picking";
+        preset["config"]["render_targets"].push_back({
+            {"name", "aux_color"}, {"extent_scale", 1.0},
+            {"format", std::string_view{type} == "picking" ? "R32_UINT" : "R16G16B16A16_SFLOAT"},
+            {"format_class", "data"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
+        Json declaration{{"name", "aux_probe"}, {"type", type},
+            {"output", {{"color", shadow ? Json(nullptr) : Json::array({"aux_color"})},
+                        {"depth", geometry ? Json("scene_depth") : Json(nullptr)}}}};
+        if (std::string_view{type} != "debug_draw") {
+            declaration["shader"] = {{"vertex", "engine://" + std::string{type}}};
+            if (!shadow) declaration["shader"]["fragment"] = "engine://" + std::string{type};
+        }
+        if (geometry && !shadow) declaration["shader"]["skinned_vertex"] = "engine://" + std::string{type} + "_skinned";
+        preset["config"]["rendering_passes"][0]["passes"].push_back(declaration);
+        const auto path = project.root / "passes" / "auxiliary.json";
+        writeBytes(path, preset.dump(2));
+        auto root = Json::parse(readBytes(project.render_config));
+        root["pipeline"]["preset"] = "project://passes/auxiliary.json";
+        writeBytes(project.render_config, root.dump(2));
+        const auto root_before = readBytes(project.render_config);
+        ActualCpuRenderRuntime runtime;
+        auto service = makeProjectService(project, resolver, runtime);
+        auto request = [&] {
+            const auto context = service->getRenderAuthoringContext(Json::object());
+            return Json{{"base_source_digest", context.at("source_digest").at("hex")},
+                {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                {"graph", "main_render"}, {"pass_name", "aux_probe"}};
+        };
+        auto patch = request();
+        patch["output"] = declaration.at("output");
+        patch["ray_query"] = true;
+        if (declaration.contains("shader")) patch["shader"] = {{"vertex", declaration.at("shader").at("vertex")}};
+        else patch["shader"] = {{"fragment", "engine://debug_draw"}};
+        const auto accepted = service->editPresetPass(patch);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        declaration["ray_query"] = true;
+        if (!declaration.contains("shader")) declaration["shader"] = {
+            {"vertex", "engine://debug_draw"}, {"fragment", "engine://debug_draw"}};
+        preset["config"]["rendering_passes"][0]["passes"].back() = declaration;
+        CHECK(Json::parse(readBytes(path)) == preset);
+        CHECK(readBytes(project.render_config) == root_before);
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        const auto context = service->getRenderAuthoringContext(Json::object());
+        const auto &passes = context.at("graphs")[0].at("passes");
+        const auto saved = std::find_if(passes.begin(), passes.end(), [](const auto &pass) { return pass.at("name") == "aux_probe"; });
+        REQUIRE(saved != passes.end());
+        CHECK(saved->at("editable_preset_pass") == true);
+    CHECK(nlohmann::json(saved->at("preset_declaration")) == nlohmann::json(declaration));
+        const auto before = readBytes(path);
+        auto invalid = request();
+        invalid["input"] = Json::array({"gbuffer_normal"});
+        CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        invalid = request();
+        invalid["shader"] = {{shadow ? "fragment" : "unsupported", "engine://fullscreen"}};
+        CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        CHECK(readBytes(path) == before);
+        if (geometry && !shadow) {
+            auto reset = request();
+            reset["shader"] = {{"skinned_vertex", nullptr}};
+            const auto ticket = service->editPresetPass(reset);
+            REQUIRE(ticket.at("status") == "accepted");
+            service->commitPending();
+            REQUIRE(service->getResult({{"ticket", ticket.at("ticket")}}).at("committed") == true);
+            declaration["shader"].erase("skinned_vertex");
+            preset["config"]["rendering_passes"][0]["passes"].back() = declaration;
+            CHECK(Json::parse(readBytes(path)) == preset);
+        }
     }
 }
 
