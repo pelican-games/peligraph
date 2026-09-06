@@ -43,11 +43,13 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
     const auto digest = params.at("base_source_digest").get<std::string>();
     const auto name = params.at("asset_name").get<std::string>();
     const auto operation = params.value("operation", std::string{"update"});
-    if (operation != "update" && operation != "create")
-        throw std::invalid_argument("Procedural asset operation must be update or create");
+    if (operation != "update" && operation != "create" && operation != "delete")
+        throw std::invalid_argument("Procedural asset operation must be update, create or delete");
+    if (operation == "delete" && (params.contains("aabb") || params.contains("record")))
+        throw std::invalid_argument("Deleting a procedural asset does not accept aabb or record");
     if (operation == "create" && (!params.contains("aabb") || !params.contains("record")))
         throw std::invalid_argument("Creating a procedural asset requires aabb and record");
-    if (!params.contains("aabb") && !params.contains("record"))
+    if (operation != "delete" && !params.contains("aabb") && !params.contains("record"))
         throw std::invalid_argument("Provide aabb or record to edit");
     const auto gate = dependencies_.gate();
     if (!gate.can_edit) return rejectAsset("gate_closed", "Asset editing is currently disabled");
@@ -57,6 +59,8 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
     auto candidate = nlohmann::ordered_json::parse(dependencies_.source_bytes);
     if (operation == "create" && !candidate.contains("procedural_geometry"))
         candidate["procedural_geometry"] = nlohmann::ordered_json::array();
+    if (!candidate.contains("procedural_geometry"))
+        return rejectAsset("asset_not_found", "Unknown procedural asset: " + name);
     auto &assets = candidate.at("procedural_geometry");
     auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) {
         return asset.at("name").template get<std::string>() == name;
@@ -68,7 +72,8 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
         candidate["version"] = 2;
     } else {
         if (found == assets.end()) return rejectAsset("asset_not_found", "Unknown procedural asset: " + name);
-        for (const auto *field : {"aabb", "record"})
+        if (operation == "delete") assets.erase(found);
+        else for (const auto *field : {"aabb", "record"})
             if (params.contains(field)) (*found)[field] = params.at(field);
     }
     (void)parseAssetDataFormatJson(Json(candidate));

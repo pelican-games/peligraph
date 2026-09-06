@@ -37,6 +37,27 @@ nlohmann::json v3Layout() {
 
 } // namespace
 
+TEST_CASE("Triangle AS coordinate space is explicit and changes only the AS digest",
+          "[ray-tracing][rt6][cpu]") {
+    auto encoded = v3Layout();
+    const auto implicit = parseRayGroupLayout(encoded.dump(), "layout.json");
+    REQUIRE(implicit.acceleration_structure);
+    CHECK_FALSE(implicit.acceleration_structure->triangle_world_space);
+    encoded["acceleration_structure"]["triangle_space"] = "geometry";
+    const auto geometry = parseRayGroupLayout(encoded.dump(), "layout.json");
+    CHECK_FALSE(geometry.acceleration_structure->triangle_world_space);
+    encoded["acceleration_structure"]["triangle_space"] = "world";
+    const auto world = parseRayGroupLayout(encoded.dump(), "layout.json");
+    CHECK(world.acceleration_structure->triangle_world_space);
+    CHECK(world.acceleration_structure_digest_sha256 != geometry.acceleration_structure_digest_sha256);
+    CHECK(world.digest_sha256 == geometry.digest_sha256);
+    for (const auto &invalid : nlohmann::json::array({"local", "", 1, true, nullptr, nlohmann::json::object()})) {
+        encoded["acceleration_structure"]["triangle_space"] = invalid;
+        CHECK_THROWS_WITH(parseRayGroupLayout(encoded.dump(), "layout.json"),
+                          Catch::Matchers::ContainsSubstring("triangle_space"));
+    }
+}
+
 TEST_CASE("WP386a layout v3 and binding v2 resolve procedural rows without a material join",
           "[WP386a][ray-tracing][rt3-2a][cpu]") {
     const auto layout = parseRayGroupLayout(v3Layout().dump(), "layout.json");
@@ -188,7 +209,7 @@ TEST_CASE("WP386a procedural component is one strict fixed leaf",
     REQUIRE(decoded.hasValue());
     CHECK(std::any_cast<const ProceduralGeometryComponent &>(
               decoded.value())
-              .asset == "sphere_asset");
+              .assets == std::vector<std::string>{"sphere_asset"});
     CHECK_THROWS_WITH(codec->decodeAuthored(nlohmann::json{
         {"name", "pelican_procedural_geometry"},
         {"asset", "sphere_asset"},

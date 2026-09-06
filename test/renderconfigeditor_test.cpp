@@ -1982,6 +1982,21 @@ TEST_CASE("Procedural asset creation upgrades an empty asset document atomically
         CHECK(saved.at("version") == 2);
         CHECK(saved.at("models") == original.at("models"));
         CHECK(service.get(Json::object()).at("assets")[0].at("kind") == "aabb_v1");
+        const Json remove{{"operation", "delete"}, {"asset_name", "new_sphere"},
+            {"base_source_digest", service.get(Json::object()).at("source_digest").at("hex")}};
+        auto invalid_remove = remove;
+        invalid_remove["record"] = Json::object();
+        CHECK_THROWS(service.edit(invalid_remove));
+        CHECK(readBytes(path) == published);
+        const auto deleted = service.edit(remove);
+        REQUIRE(deleted.at("status") == "accepted");
+        service.commitPending();
+        REQUIRE(service.result({{"ticket", deleted.at("ticket")}}).at("committed") == true);
+        CHECK(service.get(Json::object()).at("assets").empty());
+        CHECK(Json::parse(readBytes(path)).at("models") == original.at("models"));
+        auto missing = remove;
+        missing["base_source_digest"] = service.get(Json::object()).at("source_digest").at("hex");
+        CHECK(service.edit(missing).at("error").at("code") == "asset_not_found");
     }
     SECTION("invalid bounds do not write or publish") {
         request["aabb"]["max"] = {-2, -2, -2};
@@ -2143,6 +2158,24 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
         service = makeProjectService(project, resolver, runtime);
         REQUIRE(runtime.frame_plan.at("nodes") == nodes);
         REQUIRE(service->editPresetPass(request).at("error").at("code") == "external_modification");
+    }
+    SECTION("scene query declaration can be enabled and disabled without replacing other pass settings") {
+        for (const bool enabled : {true, false}) {
+            const auto current = service->getRenderAuthoringContext(Json::object());
+            request["base_preset_digest"] = current.at("pipeline_preset").at("source_digest").at("hex");
+            request["ray_query"] = enabled;
+            const auto accepted = service->editPresetPass(request);
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            for (const auto *key : {"input", "output", "shader", "ray_query"}) (*original)[key] = request.at(key);
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            CHECK(readBytes(project.render_config) == root_before);
+        }
+        request["ray_query"] = "true";
+        CHECK_THROWS(service->editPresetPass(request));
     }
     SECTION("generated and feature nodes cannot be edited as preset passes") {
         request["pass_name"] = "__anchor_tonemap";

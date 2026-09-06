@@ -122,7 +122,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `add_component` | `object_id`, `component`(コンポーネント JSON) | コンポーネント追加 |
 | `remove_component` | `object_id`, `component_slot`(behavior は `attachment_index` も必須) | コンポーネント削除 |
 | `get_procedural_assets` | なし | procedural asset宣言と編集元digest |
-| `edit_procedural_asset` | `base_source_digest`, `asset_name`, `aabb`/`record`、新規時は`operation: "create"`と両方の値 | procedural assetの新規作成・編集・保存・runtime反映 |
+| `edit_procedural_asset` | `base_source_digest`, `asset_name`。編集は`aabb`/`record`、新規時は`operation: "create"`と両方の値、削除は`operation: "delete"`のみ | procedural assetの新規作成・編集・削除・保存・runtime反映 |
 | `spawn` | `object`(+ `scene_id`) | オブジェクト生成。ID は engine が採番 |
 | `destroy` | `object_id` | 子孫ごと削除(逆操作用に全 JSON を保存) |
 | `reparent` | `object_id`, `new_parent_id`(null = ルート), `preserve`(`"local"` / `"world"`) | 親子の付け替え |
@@ -236,7 +236,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 | `get_ray_callable_records` | taskごとのCallable schema、shader一覧、元宣言と実効初期値、rootの`source_digest`を返す |
 | `edit_ray_callable_records` | `base_source_digest`と`task_records` objectで初期値の上書き指定全体を置換。既存の編集ticketを返す |
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`と`input`・`output`・`shader`でproject所有preset内のfullscreen passを編集する |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`と`input`・`output`・`shader`、任意の`ray_query`（boolまたは`acceleration_structure`名のobject）でproject所有preset内のfullscreen passを編集する |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
@@ -269,6 +269,13 @@ indirect bufferとbyte offsetを設定できます。computeは省略時の1×1�
 **Update dispatch JSON**で草稿へ反映し、**Apply task**で保存します。その他のtask設定は保持します。
 
 Tasksの接続表は`resource_ports`のport名と型・アクセス設定、接続先resourceを表示します。
+Frame Planでは **Shift＋左ドラッグ** で出力元ノードからcompute／RTタスクへ線を引くと、
+そのタスクの編集画面を開きます。出力元が書くresourceだけを候補にして、portグループと接続先を選びます。
+**Apply task**で保存するまでは草稿です。Escapeでドラッグを取り消せます。通常のドラッグは従来どおりノードを移動します。
+project presetのfullscreen passへドラッグすると、そのpassの編集画面を開きます。
+入力候補はドラッグ元の出力に絞られます。既存入力は保持され、**Add input**で追加し、保存で確定します。
+適合する出力がない場合は候補なしと表示します。通常の **Edit preset pass** で開き直すと絞り込みを解除します。
+グループ・自身・別graphへの接続は対象外です。共有定義やfullscreen以外の描画passは既存の編集制約に従います。
 接続図には合成後の画像・バッファ候補を表示します。左のportグループを選び、右のresourceをクリックすると接続線とJSON草稿を更新します。
 宣言が見つからない接続先はunresolvedと表示します。既知の画像・バッファ間の変更は図で拒否し、詳細なABI適合性はApply task時にcompilerが検査します。
 接続先を入力し、**Update connections JSON**で草稿へ反映してから**Apply task**で保存します。

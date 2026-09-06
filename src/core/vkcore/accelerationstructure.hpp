@@ -313,7 +313,8 @@ class RayQueryAccelerationStructureScope {
         std::uint64_t runtime_generation = 0,
         std::uint64_t ray_tracing_pipeline_generation = 0,
         std::shared_ptr<const RaySceneGenerationRoot> generation_root = {},
-        std::span<const SceneAccelerationStructureDefinition> named_definitions = {});
+        std::span<const SceneAccelerationStructureDefinition> named_definitions = {},
+        bool triangle_world_space = false);
     std::optional<FrameBuild> tryReuseFrame(
         std::uint64_t geometry_pool_generation,
         std::uint64_t model_rebuild_generation,
@@ -322,7 +323,8 @@ class RayQueryAccelerationStructureScope {
         std::uint32_t ray_type_count,
         std::uint64_t runtime_generation,
         std::uint64_t ray_tracing_pipeline_generation,
-        std::span<const SceneAccelerationStructureDefinition> named_definitions = {});
+        std::span<const SceneAccelerationStructureDefinition> named_definitions = {},
+        bool triangle_world_space = false);
 
     const RayQueryAccelerationStructureDiagnostics &
     diagnostics() const noexcept {

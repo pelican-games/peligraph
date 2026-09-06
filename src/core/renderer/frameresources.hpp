@@ -240,7 +240,8 @@ DECLARE_MODULE(FrameResources) {
         std::span<const FrameUniformData> data);
     void updateMultiviewResolutions(
         std::span<const FrameResolutionUniformData> data);
-    void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout) const;
+    void bindGraphics(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
+                      std::string_view acceleration_structure = "scene") const;
     void bindCompute(vk::CommandBuffer cmd_buf,
                      vk::PipelineLayout pipeline_layout,
                      std::string_view acceleration_structure = "scene") const;

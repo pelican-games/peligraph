@@ -115,6 +115,7 @@ struct RayAsGeometryRule {
 };
 
 struct RayAccelerationStructureDeclaration {
+    bool triangle_world_space = false;
     RayAccelerationStructureCanonicalDefaults defaults;
     RayAccelerationStructureCanonicalDefaults procedural_defaults{
         .geometry_flags = rayGeometryOpaque};

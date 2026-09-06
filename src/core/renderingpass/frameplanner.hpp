@@ -103,6 +103,10 @@ struct FrameGraphNodeDefinition {
     std::string snapshot_after;
     std::size_t byte_size = 0;
     bool raster_geometry = false;
+    // Material/fullscreen/generic passes declare queries before physical planning.
+    // Unspecified auxiliary draw implementations retain their AS dependency.
+    std::optional<bool> ray_query;
+    std::string ray_query_acceleration_structure = "scene";
     RenderResolutionDomain resolution_domain =
         RenderResolutionDomain::unclassified;
     std::optional<MaterialDrawTagFilter> material_filter;

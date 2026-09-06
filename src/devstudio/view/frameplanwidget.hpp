@@ -39,6 +39,8 @@ class FramePlanWidget final : public QWidget {
     // the user presses Open.
     void refresh();
     void setNodeOrderAction(std::function<void(const QString &, const QStringList &, quint64)> action);
+    void setTaskConnectionAction(std::function<void(const QString &, const QStringList &)> action);
+    void setPresetPassConnectionAction(std::function<void(const QString &, const QString &, const QStringList &)> action);
     void setTaskEditAction(std::function<void(const QString &)> action);
     void setPresetPassEditAction(std::function<void(const QString &, const QString &)> action);
     void setProjectRoot(const std::filesystem::path &project_root);

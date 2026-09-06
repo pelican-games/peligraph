@@ -57,6 +57,7 @@ struct MaterialPassShaderInputBinding {
 
 struct MaterialPassRenderingBinding {
     std::string pass_name;
+    bool ray_query = false;
     vk::SampleCountFlagBits rasterization_samples =
         vk::SampleCountFlagBits::e1;
     CompiledPassRenderingContract rendering;
@@ -77,6 +78,8 @@ DECLARE_MODULE(RenderingPassContainer) {
     std::atomic<
         std::shared_ptr<const RendererRuntimePublication>>
         runtime_publication;
+    std::shared_ptr<const RendererRuntimeGeneration>
+    preparationGeneration() const noexcept;
 
   public:
     RenderingPassContainer();

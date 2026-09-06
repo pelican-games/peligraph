@@ -188,12 +188,13 @@ FullscreenPassContainer::registerFullscreenPass(vk::Format colorFormat, ShaderBu
                                                 ShaderBundleId fragShader,
                                                 std::vector<std::string> shader_defines,
                                                 vk::SampleCountFlagBits samples,
-                                                GraphicsPipelineViewContract view) {
+                                                GraphicsPipelineViewContract view,
+                                                bool allow_ray_query) {
     return registerFullscreenPass(
         {colorFormat}, std::nullopt,
         vertShader, fragShader,
         std::move(shader_defines),
-        samples, view, {});
+        samples, view, {}, {}, allow_ray_query);
 }
 
 FullscreenPassContainer::PipelineId
@@ -208,8 +209,10 @@ FullscreenPassContainer::registerFullscreenPass(
     GraphicsPipelineRenderingLocalReadContract
         local_read,
     std::vector<ShaderResourceInterfaceBinding>
-        resource_interface) {
+        resource_interface,
+    bool allow_ray_query) {
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = allow_ray_query;
     desc.vert = vert_shader;
     desc.frag = frag_shader;
     desc.color_formats =

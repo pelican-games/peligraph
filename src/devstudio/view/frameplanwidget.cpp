@@ -405,6 +405,8 @@ struct FramePlanWidget::Impl {
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
     std::function<void(const QString &)> task_edit_action;
+    std::function<void(const QString &, const QStringList &)> task_connection_action;
+    std::function<void(const QString &, const QString &, const QStringList &)> pass_connection_action;
     std::function<void(const QString &, const QStringList &, quint64)> node_order_action;
     qint64 pending_request = 0;
     qint64 pending_gpu_timing_request = 0;
@@ -463,6 +465,7 @@ struct FramePlanWidget::Impl {
         zoom_status->setObjectName(
             QStringLiteral("pelican.framePlanZoomStatus"));
         toolbar->addWidget(zoom_status);
+        toolbar->addWidget(new QLabel(owner.tr("Shift-drag: connect resources"), &owner));
         auto *order_nodes = new QPushButton(owner.tr("Order nodes..."), &owner);
         order_nodes->setObjectName(QStringLiteral("pelican.framePlanOrderNodes"));
         toolbar->addWidget(order_nodes);
@@ -512,6 +515,29 @@ struct FramePlanWidget::Impl {
         logical_splitter->setObjectName(
             QStringLiteral("pelican.framePlanLogicalSplitter"));
         logical_scene = new FramePlanGraphicsScene(&owner);
+        logical_scene->connectionFeedback = [this](const QString &message) { status->setText(message); };
+        logical_scene->connectionRequested = [this](const FramePlanNodeKey &from, const FramePlanNodeKey &to) {
+            if (!model || (!task_connection_action && !pass_connection_action)) {
+                status->setText(owner.tr("Resource connection editing is unavailable."));
+                return;
+            }
+            const auto producer = std::find_if(model->nodes.begin(), model->nodes.end(), [&](const auto &node) { return node.name == from.name; });
+            const auto consumer = std::find_if(model->nodes.begin(), model->nodes.end(), [&](const auto &node) { return node.name == to.name; });
+            if (from.graph != model->graph || to.graph != model->graph ||
+                producer == model->nodes.end() || consumer == model->nodes.end() ||
+                producer->writes.empty()) {
+                status->setText(owner.tr("Drag from a node with resource outputs to a task or fullscreen preset pass."));
+                return;
+            }
+            QStringList outputs;
+            for (const auto &resource : producer->writes) outputs.push_back(QString::fromStdString(resource));
+            if (consumer->kind == "compute" && !consumer->authored_name.empty() && task_connection_action)
+                task_connection_action(QString::fromStdString(consumer->authored_name), outputs);
+            else if (consumer->kind == "render" && pass_connection_action)
+                pass_connection_action(QString::fromStdString(model->graph), QString::fromStdString(consumer->name), outputs);
+            else
+                status->setText(owner.tr("Select an authored task or fullscreen preset pass as the destination."));
+        };
         logical = new FramePlanGraphicsView(logical_scene, logical_splitter);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));
         logical->setRenderHint(QPainter::Antialiasing, true);
@@ -526,7 +552,9 @@ struct FramePlanWidget::Impl {
         leave_group->setShortcutContext(Qt::WidgetWithChildrenShortcut);
         owner.addAction(leave_group);
         QObject::connect(leave_group, &QAction::triggered, &owner,
-                         [this] { logical_scene->leaveGroup(); });
+                         [this] {
+                             if (!logical_scene->cancelConnectionGesture()) logical_scene->leaveGroup();
+                         });
         logical->setZoomObserver(
             [this](qreal scale, const QString &boundary) {
                 zoom_status->setText(
@@ -1673,6 +1701,14 @@ void FramePlanWidget::refresh() { impl_->requestRefresh(); }
 
 void FramePlanWidget::setNodeOrderAction(std::function<void(const QString &, const QStringList &, quint64)> action) {
     impl_->node_order_action = std::move(action);
+}
+
+void FramePlanWidget::setTaskConnectionAction(std::function<void(const QString &, const QStringList &)> action) {
+    impl_->task_connection_action = std::move(action);
+}
+
+void FramePlanWidget::setPresetPassConnectionAction(std::function<void(const QString &, const QString &, const QStringList &)> action) {
+    impl_->pass_connection_action = std::move(action);
 }
 
 void FramePlanWidget::setTaskEditAction(std::function<void(const QString &)> action) {

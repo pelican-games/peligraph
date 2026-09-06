@@ -4,6 +4,7 @@
 #include "renderpassauthoringcapability.hpp"
 
 #include <QWidget>
+#include <QStringList>
 
 #include <memory>
 #include <functional>
@@ -43,6 +44,7 @@ class FullscreenPassWidget final : public QWidget {
     // arrives only through RenderPassAuthoringCapability.
     void setCommittedAction(std::function<void()> action);
     void editPresetPass(const QString &graph, const QString &pass_name);
+    void editPresetPassConnection(const QString &graph, const QString &pass_name, const QStringList &outputs);
     void receiveResult(const QByteArray &result_json);
     void receiveAuthoringConfig(const QByteArray &config_json);
 };

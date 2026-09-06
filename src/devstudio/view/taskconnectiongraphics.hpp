@@ -24,6 +24,7 @@ public:
   explicit TaskConnectionGraphics(QWidget *parent = nullptr);
   void setConnections(std::vector<PortGroup> groups,
                       std::vector<Resource> resources);
+  void setTargetFilter(QStringList names);
   std::function<void(QString, QString)> resourceRebound;
   std::function<void(QString)> diagnostic;
 
@@ -35,6 +36,7 @@ private:
   QString kindOf(const QString &name) const;
   std::vector<PortGroup> groups_;
   std::vector<Resource> resources_;
+  QStringList target_filter_;
   QString selected_;
 };
 

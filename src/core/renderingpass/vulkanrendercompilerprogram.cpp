@@ -280,7 +280,8 @@ void detail::insertSceneAccelerationStructureNodes(
                         return task.name == node.name && task.ray_tracing.has_value();
                     });
             });
-        return required_capability || has_ray_task;
+        return required_capability || has_ray_task || std::any_of(graph.nodes.begin(), graph.nodes.end(),
+            [](const auto &node) { return node.ray_query == true; });
     });
     if (!requires_as) return;
     std::vector<std::string> as_nodes{node_name};
@@ -294,8 +295,17 @@ void detail::insertSceneAccelerationStructureNodes(
         // Raster passes can use scene queries through material shaders. Compute
         // tasks declare their AS dependency; pipeline reflection enforces it.
         for (auto &node : graph.nodes) {
-            if (node.kind == FramePlanNodeKind::render || node.name == "__anchor_sprite")
+            if ((node.kind == FramePlanNodeKind::render || node.kind == FramePlanNodeKind::output_transform) &&
+                node.ray_query.value_or(true))
                 node.after.push_back(node_name);
+            if (node.ray_query == true && node.ray_query_acceleration_structure != "scene") {
+                const auto &selected = node.ray_query_acceleration_structure;
+                if (std::none_of(named_definitions.begin(), named_definitions.end(),
+                    [&](const auto &definition) { return definition.name == selected; }))
+                    throw std::runtime_error("Raster pass '" + node.name +
+                        "' selects unknown scene acceleration structure '" + selected + "'");
+                node.after.push_back(node_name + ":" + selected);
+            }
             if (node.kind != FramePlanNodeKind::compute) continue;
             const auto task = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) {
                 return entry.name == node.name;
@@ -758,7 +768,10 @@ compileDefaultVulkanVariant(
             throw std::runtime_error("Compute task '" + task.name +
                 "' selects unknown scene acceleration structure '" + selected + "'");
     }
-    if (!scene_as.empty() || std::any_of(compute_task_definitions.begin(),
+    const bool raster_query = std::any_of(graph_definitions.begin(), graph_definitions.end(), [](const auto &graph) {
+        return std::any_of(graph.nodes.begin(), graph.nodes.end(), [](const auto &node) { return node.ray_query == true; });
+    });
+    if (raster_query || !scene_as.empty() || std::any_of(compute_task_definitions.begin(),
             compute_task_definitions.end(), [](const auto &task) {
                 return task.ray_query_acceleration_structure.has_value();
             })) {

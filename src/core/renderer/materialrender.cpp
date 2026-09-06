@@ -273,7 +273,7 @@ void renderMaterialDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
             material_container.pipelineLayout(
                 pass, draw_call.material);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
-        dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
+        dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout, pass.ray_query_acceleration_structure);
         instance_container.bindMaterialInstanceResources(cmd_buf, pipeline_layout,
                                                          draw_call.skinned);
         const PushConstantStruct engine_push{dependencies.view_projection};

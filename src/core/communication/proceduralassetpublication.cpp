@@ -4,10 +4,12 @@
 #include "../loader/pathresolver.hpp"
 #include "../loader/resolvedscene.hpp"
 #include "../renderer/proceduralgeometrycontainer.hpp"
+#include "../renderer/proceduralgeometrycomponent.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../../project/assetdataformat.hpp"
 
 #include <limits>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -38,6 +40,26 @@ std::unique_ptr<PreparedProceduralAssetPublication> PreparedProceduralAssetPubli
     auto state = std::make_unique<State>(State{config, procedural, renderer});
     state->cache = config.prepareAssetDataJson(raw_assets, resolver);
     const auto assets = parseAssetDataFormatJson(nlohmann::json::parse(state->cache));
+    const auto previous_assets = parseAssetDataFormatJson(nlohmann::json::parse(config.assetDataJson()));
+    std::set<std::string, std::less<>> removed;
+    for (const auto &asset : previous_assets.procedural_geometry) removed.insert(asset.name);
+    for (const auto &asset : assets.procedural_geometry) removed.erase(asset.name);
+    if (!removed.empty()) {
+        for (const auto &view : config.resolvedScene().scenes()) {
+            for (const auto &object : view.objects) {
+                for (const auto &component : object.components) {
+                    if (component.name != "pelican_procedural_geometry") continue;
+                    const auto &value = std::any_cast<const ProceduralGeometryComponent &>(
+                        component.requireRuntimeValue());
+                    for (const auto &asset : value.assets) {
+                        if (removed.contains(asset))
+                            throw std::invalid_argument("Cannot delete procedural asset '" + asset +
+                                "': referenced by scene '" + view.scene_id + "'.");
+                    }
+                }
+            }
+        }
+    }
     state->procedural_state = procedural.prepareScene(assets, *scene, vkcore,
         procedural.allocationGeneration() + 1, state->trace);
     state->renderer_state = renderer.snapshotPreparedScene();

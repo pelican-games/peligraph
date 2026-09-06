@@ -291,6 +291,7 @@ void writeEmbeddedRtShadowMaskTestProject(
         {
           "name": "rt_shadow_mask",
           "type": "fullscreen",
+          "ray_query": true,
           "output": {"color": "rt_shadow_mask", "depth": null},
           "input": ["gbuffer_worldpos", "gbuffer_normal"],
           "input_sampling": [

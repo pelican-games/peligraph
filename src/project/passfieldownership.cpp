@@ -12,6 +12,7 @@ namespace {
 using namespace std::literals;
 
 constexpr std::array material_fields{
+    "ray_query"sv,
     "material_range"sv,
     "material_filter"sv,
     "material_variant"sv,
@@ -24,6 +25,7 @@ constexpr std::array material_fields{
     "material_resources"sv,
 };
 constexpr std::array fullscreen_fields{
+    "ray_query"sv,
     "input_sampling"sv,
     "resource_ports"sv,
     "shader"sv,
@@ -33,6 +35,7 @@ constexpr std::array fullscreen_fields{
     "raster_state"sv,
 };
 constexpr std::array raster_fields{
+    "ray_query"sv,
     "resource_ports"sv,
     "draw"sv,
     "raster_state"sv,
@@ -48,6 +51,7 @@ constexpr std::array snapshot_copy_fields{
 };
 
 constexpr std::array fullscreen_authoring_projection_fields{
+    "ray_query"sv,
     "name"sv,
     "type"sv,
     "input"sv,

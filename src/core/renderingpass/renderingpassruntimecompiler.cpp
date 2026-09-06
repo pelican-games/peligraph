@@ -2134,6 +2134,7 @@ PassId registerFullscreenPipeline(
         resource_interface);
     if (fullscreen_info.raster_state) {
         GraphicsPipelineDesc desc;
+        desc.allow_ray_query = pass_def.ray_query;
         desc.vert = shaders.vert_shader;
         desc.frag = shaders.frag_shader;
         desc.color_formats = color_formats;
@@ -2182,7 +2183,8 @@ PassId registerFullscreenPipeline(
         graphicsLocalReadContract(rendering),
         std::vector<ShaderResourceInterfaceBinding>{
             resource_interface.begin(),
-            resource_interface.end()});
+            resource_interface.end()},
+        pass_def.ray_query);
     return fullscreenPipelineValueToPassId(pipeline_id.value);
 }
 
@@ -2219,6 +2221,7 @@ PassId registerGenericRasterPipeline(
             dependencies, resource_interface);
 
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = pass_def.ray_query;
     desc.vert = shaders.vert_shader;
     desc.frag = shaders.frag_shader;
     desc.color_formats =

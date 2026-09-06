@@ -778,10 +778,10 @@ void FrameResources::bindFrameDescriptorSet(
 
 void FrameResources::bindGraphics(
     vk::CommandBuffer cmd_buf,
-    vk::PipelineLayout pipeline_layout) const {
+    vk::PipelineLayout pipeline_layout, std::string_view acceleration_structure) const {
     bindFrameDescriptorSet(
         cmd_buf, pipeline_layout,
-        vk::PipelineBindPoint::eGraphics);
+        vk::PipelineBindPoint::eGraphics, acceleration_structure);
 }
 
 void FrameResources::bindCompute(

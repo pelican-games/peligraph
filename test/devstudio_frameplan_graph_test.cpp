@@ -6286,6 +6286,91 @@ TEST_CASE("Task connection graph reconnects a selected port group and rejects re
     CHECK(draft.at("resource_ports").at("input") == "image_b");
     CHECK(draft.at("resource_ports").at("alias") == "image_b");
     CHECK(draft.at("reads") == Json::array({"image_b"}));
+    view.setTargetFilter({"image_a"});
+    for (auto *item : view.scene()->items())
+        CHECK_FALSE((item->data(TaskConnectionNameRole).toString() == "args" &&
+                     item->data(TaskConnectionSideRole).toInt() == 2));
+    click("image_b", 1);
+    click("image_a", 2);
+    CHECK(edits == 2);
+    CHECK(draft.at("resource_ports").at("input") == "image_a");
+}
+
+TEST_CASE("Frame Plan Shift drag requests a connection without moving nodes and Escape cancels",
+          "[devstudio][frame-plan][connection-drag]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1400, 900);
+    widget.show();
+    auto wire = mixedMembershipFramePlan(false);
+    for (auto &node : wire["nodes"]) {
+        if (node.at("name") == "wp343_mixed_b") {
+            node["kind"] = "compute";
+            node["authored_name"] = "authored_consumer";
+        }
+    }
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    targetSelector(widget).setCurrentText("wp343_mixed_d_output");
+    subtreeDepth(widget).setValue(64);
+    QApplication::processEvents();
+    auto &logical = dynamic_cast<FramePlanGraphicsScene &>(scene(widget));
+    auto &view = logicalView(widget);
+    auto *first = nodeItem(logical, "wp343_mixed_a");
+    auto *second = nodeItem(logical, "wp343_mixed_b");
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    const auto base = logical.itemsBoundingRect().bottomRight() + QPointF{400, 200};
+    first->setPos(base);
+    second->setPos(base + QPointF{400, 0});
+    QApplication::processEvents();
+    view.fitInView(first->sceneBoundingRect().united(second->sceneBoundingRect()).adjusted(-40, -40, 40, 40), Qt::KeepAspectRatio);
+    const auto firstPosition = first->pos();
+    const auto secondPosition = second->pos();
+    int requests = 0;
+    widget.setTaskConnectionAction([&](const QString &task, const QStringList &outputs) {
+        CHECK(task == "authored_consumer");
+        CHECK(outputs == QStringList{"wp343_mixed_a_output"});
+        ++requests;
+    });
+    const auto start = view.mapFromScene(first->sceneBoundingRect().center());
+    const auto end = view.mapFromScene(second->sceneBoundingRect().center());
+    REQUIRE(view.viewport()->rect().contains(start));
+    REQUIRE(view.viewport()->rect().contains(end));
+    const auto gesture = [&](QPoint destination, bool cancel) {
+        QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, start);
+        QTest::mouseMove(view.viewport(), (start + destination) / 2, 1);
+        if (cancel) QTest::keyClick(view.viewport(), Qt::Key_Escape);
+        QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, destination);
+        QApplication::processEvents();
+    };
+    gesture(end, false);
+    CHECK(requests == 1);
+    CHECK(first->pos() == firstPosition);
+    CHECK(second->pos() == secondPosition);
+    gesture(end, true);
+    CHECK(requests == 1);
+    gesture(start, false);
+    CHECK(requests == 1);
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, end);
+    QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, start);
+    QApplication::processEvents();
+    CHECK(requests == 1); // A raster pass is not an editable task destination.
+    int pass_requests = 0;
+    widget.setPresetPassConnectionAction([&](const QString &graph, const QString &pass, const QStringList &outputs) {
+        CHECK(graph.toStdString() == wire.at("graph").get<std::string>());
+        CHECK(pass == "wp343_mixed_a");
+        CHECK(outputs == QStringList{"wp343_mixed_b_output"});
+        ++pass_requests;
+    });
+    QTest::mousePress(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, end);
+    QTest::mouseMove(view.viewport(), (start + end) / 2, 1);
+    QTest::mouseRelease(view.viewport(), Qt::LeftButton, Qt::ShiftModifier, start);
+    QApplication::processEvents();
+    CHECK(pass_requests == 1);
+    CHECK(first->pos() == firstPosition);
+    CHECK(second->pos() == secondPosition);
 }
 
 } // namespace PelicanStudio

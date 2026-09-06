@@ -246,8 +246,16 @@ void MainWindow::createWorkspace() {
         render_features_->editFrameNodeOrder(graph, names, generation);
     });
     frame_plan_->setTaskEditAction([this](const QString &task) { render_features_->editComputeTask(task); });
+    frame_plan_->setTaskConnectionAction([this](const QString &task, const QStringList &outputs) {
+        render_features_->editComputeTaskConnection(task, outputs);
+    });
     frame_plan_->setPresetPassEditAction([this](const QString &graph, const QString &pass) {
         fullscreen_pass_->editPresetPass(graph, pass);
+        docks_[FullscreenPassDock]->show();
+        docks_[FullscreenPassDock]->raise();
+    });
+    frame_plan_->setPresetPassConnectionAction([this](const QString &graph, const QString &pass, const QStringList &outputs) {
+        fullscreen_pass_->editPresetPassConnection(graph, pass, outputs);
         docks_[FullscreenPassDock]->show();
         docks_[FullscreenPassDock]->raise();
     });

@@ -1,5 +1,6 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
+#include "../../project/rasterrayquery.hpp"
 #include "renderconfigtransaction.hpp"
 
 #include "../loader/engineresources.hpp"
@@ -1086,7 +1087,8 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
 
 OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     constexpr auto method = "edit_preset_pass";
-    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader"}, method);
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "ray_query"}, method);
+    (void)parseRasterRayQuery(params);
     const auto base_digest = requireString(params, "base_source_digest", method);
     const auto preset_digest = requireString(params, "base_preset_digest", method);
     const auto graph = requireString(params, "graph", method);
@@ -1109,6 +1111,7 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         auto *pass = findPresetFullscreenPass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not a fullscreen pass in the project preset");
         for (const auto *key : {"input", "output", "shader"}) (*pass)[key] = params.at(key);
+        if (params.contains("ray_query")) (*pass)["ray_query"] = params.at("ray_query");
         const auto &reference = current.pipeline_preset->reference;
         const std::array documents{RenderConfigCandidateDocument{
             .reference = reference,

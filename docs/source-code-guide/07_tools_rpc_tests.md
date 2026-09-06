@@ -246,7 +246,7 @@ attachment load/store、material route、backend 非依存 execution facts へ�
 `physical_target_plan.attachments/resources` から昇格しますが、native scope、alias、physical decision
 など Compiled Plan Viewer 相当の低レベル情報は UI へ出しません。
 
-[`FullscreenPassWidget`](../../src/devstudio/view/fullscreenpasswidget.hpp#L20) は `fullscreen` 型に固定した
+[`FullscreenPassWidget`](../../src/devstudio/view/fullscreenpasswidget.hpp#L21) は `fullscreen` 型に固定した
 下書きフォームです。対象候補は `get_frame_plan` の `resources[]` から作り、フィールド所有、同一 graph
 の名前衝突、target 名／`frame_target` を Studio 単独で検査します。target usage、input の生成順、shader
 stem 解決は軸名付きの `Not checked` として残します。出力はフォームが表現した部分 JSON と、読み取り専用の
@@ -285,7 +285,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L457) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L465) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L120) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの

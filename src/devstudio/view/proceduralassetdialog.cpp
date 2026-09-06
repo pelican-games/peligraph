@@ -7,6 +7,7 @@
 #include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -38,6 +39,7 @@ struct ProceduralAssetDialog::Impl {
   QPushButton *refresh;
   QPushButton *reset;
   QPushButton *create;
+  QPushButton *remove;
   std::string catalog_digest;
   QTimer poll;
   std::map<std::string, Draft> drafts;
@@ -64,6 +66,7 @@ struct ProceduralAssetDialog::Impl {
       field->setReadOnly(!writable);
     record->setReadOnly(!writable);
     apply->setEnabled(writable && viewport.rpcReady());
+    remove->setEnabled(writable && viewport.rpcReady() && !is_new);
     refresh->setEnabled(viewport.rpcReady() && !request_id);
   }
   void changed() {
@@ -141,6 +144,34 @@ struct ProceduralAssetDialog::Impl {
     else
       request(Request::Read, "get_procedural_assets");
   }
+  void submitRequest(const Json &params) {
+    const auto wire = exactJsonRpcObject(params);
+    submitted = selected();
+    request(Request::Submit, "edit_procedural_asset", wire);
+  }
+  void deleteAsset() {
+    if (!remove->isEnabled())
+      return;
+    const auto name = selected();
+    const auto digest = drafts.at(name).digest;
+    const auto answer = QMessageBox::question(
+        &owner, owner.tr("Delete procedural asset"),
+        owner
+            .tr("Delete asset '%1' from the project? Assets used by scene "
+                "components cannot be deleted.")
+            .arg(QString::fromStdString(name)),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (answer != QMessageBox::Yes || !remove->isEnabled() ||
+        selected() != name)
+      return;
+    try {
+      submitRequest({{"operation", "delete"},
+                     {"asset_name", name},
+                     {"base_source_digest", digest}});
+    } catch (const std::exception &error) {
+      notice->setText(QString::fromUtf8(error.what()));
+    }
+  }
   void submit() {
     try {
       const auto &draft = drafts.at(selected());
@@ -165,9 +196,7 @@ struct ProceduralAssetDialog::Impl {
                   {"record", data}};
       if (draft.is_new)
         params["operation"] = "create";
-      const auto wire = exactJsonRpcObject(params);
-      submitted = selected();
-      request(Request::Submit, "edit_procedural_asset", wire);
+      submitRequest(params);
     } catch (const std::exception &error) {
       notice->setText(QString::fromUtf8(error.what()));
     }
@@ -312,6 +341,8 @@ struct ProceduralAssetDialog::Impl {
     auto *buttons = new QHBoxLayout;
     create = new QPushButton(owner.tr("New..."), &owner);
     create->setObjectName("pelican.proceduralAssets.new");
+    remove = new QPushButton(owner.tr("Delete asset"), &owner);
+    remove->setObjectName("pelican.proceduralAssets.delete");
     apply = new QPushButton(owner.tr("Apply"), &owner);
     reset = new QPushButton(owner.tr("Reset selected"), &owner);
     reset->setObjectName("pelican.proceduralAssets.reset");
@@ -322,6 +353,7 @@ struct ProceduralAssetDialog::Impl {
     apply->setObjectName("pelican.proceduralAssets.apply");
     refresh->setObjectName("pelican.proceduralAssets.refresh");
     buttons->addWidget(create);
+    buttons->addWidget(remove);
     buttons->addWidget(refresh);
     buttons->addWidget(reset);
     buttons->addWidget(apply);
@@ -330,6 +362,8 @@ struct ProceduralAssetDialog::Impl {
                      [this] { show(); });
     QObject::connect(record, &QPlainTextEdit::textChanged, &owner,
                      [this] { changed(); });
+    QObject::connect(remove, &QPushButton::clicked, &owner,
+                     [this] { deleteAsset(); });
     QObject::connect(create, &QPushButton::clicked, &owner,
                      [this] { newAsset(); });
     QObject::connect(reset, &QPushButton::clicked, &owner, [this] {

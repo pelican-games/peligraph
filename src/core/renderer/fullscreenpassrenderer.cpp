@@ -49,7 +49,8 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
     const auto pipeline_layout = container.getPipelineLayout(pass_id);
 
     container.bindResource(cmd_buf, pass_id, invocation);
-    dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
+    dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout,
+        pass_def.ray_query_acceleration_structure);
 
     if (!pass_def.isGenericRaster()) {
         const auto draw =

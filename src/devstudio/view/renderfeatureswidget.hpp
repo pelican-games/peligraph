@@ -30,6 +30,7 @@ class RenderFeaturesWidget final : public QWidget {
     // delivery and focused widget tests intentionally share this entry.
     void editFrameNodeOrder(const QString &graph, const QStringList &names, quint64 generation);
     void editComputeTask(const QString &name);
+    void editComputeTaskConnection(const QString &name, const QStringList &outputs);
     void receiveCatalogResult(const QByteArray &result_json);
 
   signals:

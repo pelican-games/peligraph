@@ -48,6 +48,11 @@ void TaskConnectionGraphics::setConnections(std::vector<PortGroup> groups,
   redraw();
 }
 
+void TaskConnectionGraphics::setTargetFilter(QStringList names) {
+  target_filter_ = std::move(names);
+  redraw();
+}
+
 void TaskConnectionGraphics::redraw() {
   scene()->clear();
   const auto textColor = palette().color(QPalette::Text);
@@ -58,11 +63,14 @@ void TaskConnectionGraphics::redraw() {
   };
   heading(tr("Task ports (select a group)"), 0);
   heading(tr("Declared resources (click to connect)"), Right);
-  auto displayed = resources_;
+  std::vector<Resource> displayed;
+  for (const auto &resource : resources_)
+    if (target_filter_.isEmpty() || target_filter_.contains(resource.name))
+      displayed.push_back(resource);
   for (const auto &group : groups_) {
     if (std::none_of(displayed.begin(), displayed.end(),
                      [&](const auto &r) { return r.name == group.resource; }))
-      displayed.push_back({group.resource, {}});
+      displayed.push_back({group.resource, kindOf(group.resource)});
   }
   std::map<QString, qreal> positions;
   auto box = [&](qreal x, qreal y, const QString &label, const QString &name,
@@ -96,7 +104,8 @@ void TaskConnectionGraphics::redraw() {
     const auto kind = !declared ? tr("unresolved")
                                 : (resource.kind.isEmpty() ? tr("unknown kind")
                                                            : resource.kind);
-    box(Right, y, resource.name + "\n" + kind, resource.name, declared ? 2 : 0,
+    const bool selectable = declared && (target_filter_.isEmpty() || target_filter_.contains(resource.name));
+    box(Right, y, resource.name + "\n" + kind, resource.name, selectable ? 2 : 0,
         false);
   }
   for (std::size_t i = 0; i < groups_.size(); ++i) {

@@ -15,6 +15,7 @@
 #include <QByteArray>
 #include <QClipboard>
 #include <QComboBox>
+#include <QCheckBox>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -134,8 +135,12 @@ struct FullscreenPassWidget::Impl {
     QLineEdit *name = nullptr;
     QLineEdit *vertex_shader = nullptr;
     QLineEdit *fragment_shader = nullptr;
+    QCheckBox *ray_query = nullptr;
+    QLineEdit *ray_query_scene = nullptr;
     QPlainTextEdit *raster_state = nullptr;
     QComboBox *input_candidate = nullptr;
+    QLabel *connection_hint = nullptr;
+    std::optional<QStringList> input_filter;
     QPushButton *add_input = nullptr;
     QPushButton *add_history_input = nullptr;
     QListWidget *inputs = nullptr;
@@ -300,6 +305,13 @@ struct FullscreenPassWidget::Impl {
         fragment_shader->setPlaceholderText(
             owner.tr("enter a stem; assets are not enumerated here"));
         form->addRow(owner.tr("Fragment shader stem"), fragment_shader);
+        ray_query = new QCheckBox(owner.tr("Use scene ray query"), &owner);
+        ray_query->setObjectName("pelican.fullscreenPass.rayQuery");
+        form->addRow(ray_query);
+        ray_query_scene = new QLineEdit("scene", &owner);
+        ray_query_scene->setObjectName("pelican.fullscreenPass.rayQueryScene");
+        ray_query_scene->setEnabled(false);
+        form->addRow(owner.tr("Scene acceleration structure"), ray_query_scene);
 
         raster_state = new QPlainTextEdit(&owner);
         raster_state->setObjectName(
@@ -387,6 +399,10 @@ struct FullscreenPassWidget::Impl {
         target_layout->addWidget(remove_input, 4, 0);
         target_layout->addWidget(remove_color, 4, 1);
         target_layout->addWidget(add_history_input, 5, 0);
+        connection_hint = new QLabel(targets);
+        connection_hint->setObjectName("pelican.fullscreenPass.connectionHint");
+        connection_hint->setWordWrap(true);
+        target_layout->addWidget(connection_hint, 8, 0, 1, 3);
         color_attachment_references = new QPlainTextEdit(targets);
         color_attachment_references->setObjectName(QStringLiteral(
             "pelican.fullscreenPass.colorAttachmentReferences"));
@@ -486,6 +502,7 @@ struct FullscreenPassWidget::Impl {
         QObject::connect(new_pass, &QPushButton::clicked, &owner, [this] {
             if (pending_authoring_request || !pending_ticket.isEmpty()) return;
             editing_preset_pass.reset(); load_edit_requested = false;
+            input_filter.reset(); populateRoleCandidates();
             name->setReadOnly(false); position->setEnabled(true); raster_state->setEnabled(true);
             save->setText(owner.tr("Save authored pass"));
             clearDraft(); updateDraft();
@@ -498,6 +515,11 @@ struct FullscreenPassWidget::Impl {
                          [this] { requestRefresh(); });
         QObject::connect(position, qOverload<int>(&QSpinBox::valueChanged),
                          &owner, [this](int) { updateDraft(); });
+        QObject::connect(ray_query, &QCheckBox::toggled, &owner, [this](bool enabled) {
+            ray_query_scene->setEnabled(enabled);
+            updateDraft();
+        });
+        QObject::connect(ray_query_scene, &QLineEdit::textChanged, &owner, [this] { updateDraft(); });
         QObject::connect(name, &QLineEdit::textChanged, &owner,
                          [this] { updateDraft(); });
         QObject::connect(vertex_shader, &QLineEdit::textChanged, &owner,
@@ -631,6 +653,11 @@ struct FullscreenPassWidget::Impl {
         draft["name"] = name->text().toStdString();
         draft["type"] = std::string{Pelican::renderPassTypeName(
             Pelican::RenderPassType::fullscreen)};
+        if (ray_query->isChecked()) {
+            const auto selected_scene = ray_query_scene->text().trimmed();
+            if (selected_scene.isEmpty()) throw std::runtime_error("Scene acceleration structure name must not be empty.");
+            draft["ray_query"] = {{"acceleration_structure", selected_scene.toStdString()}};
+        }
         draft["input"] = selectedSequence(*inputs);
         draft["output"] = Json{
             {"color", std::move(color_output)},
@@ -1168,7 +1195,8 @@ struct FullscreenPassWidget::Impl {
                     {"pass_name", editing_preset_pass->second},
                     {"input", draft.at("input")},
                     {"output", output},
-                    {"shader", shader}};
+                    {"shader", shader},
+                    {"ray_query", draft.contains("ray_query") ? draft.at("ray_query") : Json(false)}};
         QString error;
         pending_authoring_kind = AuthoringRequest::edit;
         pending_authoring_request = authoring.editPresetPass(
@@ -1181,6 +1209,21 @@ struct FullscreenPassWidget::Impl {
       } catch (const std::exception &error) {
         authoringError(QString::fromUtf8(error.what()));
       }
+    }
+
+    void beginPresetPassEdit(const QString &graph_name, const QString &pass_name,
+                             std::optional<QStringList> outputs) {
+        if (pending_authoring_request || !pending_ticket.isEmpty()) {
+            authoringError(owner.tr("Finish the current request before selecting a pass."));
+            return;
+        }
+        input_filter = std::move(outputs);
+        populateRoleCandidates();
+        editing_preset_pass = std::pair{graph_name.toStdString(), pass_name.toStdString()};
+        load_edit_requested = true;
+        authoring_available = false;
+        requestAuthoringContext();
+        requestRefresh();
     }
 
     void loadPresetPass() {
@@ -1207,6 +1250,10 @@ struct FullscreenPassWidget::Impl {
       clearDraft();
       updating = true;
       original_preset_pass = declaration;
+      const auto query = declaration.value("ray_query", Json(false));
+      ray_query->setChecked(query.is_object() || (query.is_boolean() && query.get<bool>()));
+      ray_query_scene->setText(query.is_object()
+          ? text(query.at("acceleration_structure").get<std::string>()) : QStringLiteral("scene"));
       name->setText(text(editing_preset_pass->second));
       name->setReadOnly(true);
       position->setEnabled(false);
@@ -1576,9 +1623,17 @@ struct FullscreenPassWidget::Impl {
     }
 
     void populateRoleCandidates() {
-        populateCandidates(
-            *input_candidate,
-            candidatesForRole(Pelican::PassShapeResourceRole::input));
+        auto input_names = candidatesForRole(Pelican::PassShapeResourceRole::input);
+        if (input_filter) {
+            std::erase_if(input_names, [&](const auto &name) {
+                return !input_filter->contains(QString::fromStdString(name));
+            });
+        }
+        populateCandidates(*input_candidate, input_names);
+        connection_hint->setVisible(input_filter.has_value());
+        connection_hint->setText(input_names.empty()
+            ? owner.tr("The producer has no outputs usable as inputs in this graph. Existing inputs are unchanged.")
+            : owner.tr("Input choices are limited to the dragged producer. Add or remove inputs, then save the pass."));
         populateCandidates(
             *color_candidate,
             candidatesForRole(
@@ -1603,6 +1658,8 @@ struct FullscreenPassWidget::Impl {
         name->clear();
         vertex_shader->clear();
         fragment_shader->clear();
+        ray_query->setChecked(false);
+        ray_query_scene->setText("scene");
         raster_state->clear();
         color_attachment_references->clear();
         inputs->clear();
@@ -1908,14 +1965,12 @@ void FullscreenPassWidget::setCommittedAction(std::function<void()> action) {
 }
 
 void FullscreenPassWidget::editPresetPass(const QString &graph, const QString &pass_name) {
-    if (impl_->pending_authoring_request || !impl_->pending_ticket.isEmpty()) {
-        impl_->authoringError(tr("Finish the current request before selecting a pass.")); return;
-    }
-    impl_->editing_preset_pass = std::pair{graph.toStdString(), pass_name.toStdString()};
-    impl_->load_edit_requested = true;
-    impl_->authoring_available = false;
-    impl_->requestAuthoringContext();
-    impl_->requestRefresh();
+    impl_->beginPresetPassEdit(graph, pass_name, std::nullopt);
+}
+
+void FullscreenPassWidget::editPresetPassConnection(const QString &graph, const QString &pass_name,
+                                                   const QStringList &outputs) {
+    impl_->beginPresetPassEdit(graph, pass_name, outputs);
 }
 
 void FullscreenPassWidget::receiveResult(const QByteArray &result_json) {

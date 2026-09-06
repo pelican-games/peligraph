@@ -23237,14 +23237,79 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、procedural asset新規作成):** 共有AS前の独立computeはd34df9ffへ統合済み。procedural assetの新規作成・component装着を実GPU確認、StudioへNewを接続。次は下記embed再生成修正、Frame Plan全体のnode間接続、残る制作操作など。学習サンプルは後回し。
+**2026-09-06 運用更新:** 利用者が「適切な頻度でコミットしてね」と明示許可。これ以降は本タスクが統合担当として、実装・影響範囲の確認・記録が揃った単位でcommitする。以前のcommit保留は解除。独立したembed再生成修正は `b0c000a9` に保存した。
+
+**RT6 spriteのAS前描画 (2026-09-06):**
+- 固定sprite shaderはASを参照しないため、sprite anchorへの一律AS依存を削除。pipelineにallow_ray_query=falseを明示し、color/depth producerへの依存は維持する。
+- 初回RT世代がsubmit待ちの間にfeature判定が空になり、sprite準備が抜ける不具合を実GPUで発見。material準備に使っていた初期候補参照をpreparationGenerationへ整理し、feature有効判定にも使用。既存active世代があるreloadでは引き続きactiveを優先し、snapshotの公開時点は変更しない。
+- Player/Studioと対象test build成功（build/.codex_bg/spriteas-startup-build.log）。CPU 2/2・81 assertions（spriteas-final-cpu.log）、実GPU named-TLAS全12 section・1/1・1333 assertions（spriteas-final-gpu.log）成功。初回spriteの緑色描画とASより前の実行、既存material/fullscreen/compute/RTの左・右・空TLAS選択を確認。
+- 対照: 一律AS依存を戻せばAS前配置がcycleになり、初期候補のfeature判定を外せばsprite可視pixelが0になる（後者は修正前のspriteas-gpu.logで実測）。個別の追加変異は実施せず、新test target・配布toolは追加しない。
+- 次はfullscreen以外の描画pass・feature所有ノードの編集、worldモード/material queryのGUI、異transform AABB結合など。画面全体の手動確認と性能・配布確認は残る。利用者の希望により、本区切りの統合後はいったん実装停止。
+
+**最新の入口 (2026-09-06、Frame Planドラッグ接続):** procedural asset新規作成はd529cdceへ統合済み。embed再生成修正と、Frame Planのcompute/RT・fullscreen preset pass宛ドラッグ接続が作業ツリーにある。commitは自動承認審査が「実装者はcommitしない」規約を理由に拒否し、統合担当としてのcommit可否を利用者へ確認中。再試行せず機能開発を継続。次はfullscreen以外の描画passやfeature所有ノードの編集範囲、残る制作操作など。学習サンプルは後回し。
+
+**RT7 fullscreen preset pass宛ドラッグ接続 (2026-09-06、未commit):**
+- Frame PlanのShiftドラッグをproject presetのfullscreen passへ接続。既存authoring contextで編集可能性を判定し、共有定義や対象外passを暗黙に保存しない。
+- producer出力と既存input候補の共通集合を表示。既存入力は保持し、Add input後の保存で確定。Refresh後も候補制限を保ち、通常編集またはNew passで解除。旧editPresetPassと共通の開始処理へまとめた。
+- Studioと対象Qt targetのbuild成功（build/.codex_bg/passdrag-build.log）。実マウスの逆方向pass接続、入力候補・既存入力保持・保存payload・Refresh・通常編集への復帰を含む関連23/23成功（passdrag-ui.log）。新test targetは追加せず、runtime変更がないためGPU再実行なし。実エンジン接続下での画面全体の手動操作は未確認。
+
+**最新追加: RT6 rasterの名前付きTLAS選択 (2026-09-06、未commit):**
+- fullscreen/generic raster/output_transformのray_queryにacceleration_structure名のobjectを追加。bool trueはscene全体、false/省略は無効という簡易形として維持。共通parserをtyped pass・graph・編集RPCで使用し、未知のTLAS名はphysical planning前に拒否。
+- 選択名をpass→共有ASと選択TLASの依存→FrameResources::bindGraphicsへ接続。既存per-AS immutable descriptor bundleを再利用し、新しい所有・publication系は追加しない。
+- Studio fullscreen画面にAcceleration structure入力を追加。scene/名前付きの読込、object保存、false解除を既存編集経路へ接続。
+- Player/Studio/対象CPU・GPU・Qt build成功（build/.codex_bg/rasternamed-build.log）。CPU 3/3・132 assertions（rasternamed-cpu.log）、実GPU named-TLAS 1/1・365 assertions（rasternamed-gpu.log、fullscreenからleft/right/emptyを選択してヒット対象を確認）、Qt preset編集1/1（rasternamed-qt.log、bool/object読込・送信・解除）。generic raster/output_transformは共通binding経路を使用するが、今回の専用GPU対照はfullscreen。material/spriteの依存細分化、異transform geometry結合、画面全体手動確認等は残る。commit保留は継続。
+
+**RT6 material passのAS依存・名前付きTLAS選択 (2026-09-06、未commit):**
+- material passにもray_queryを追加。省略/falseはAS依存なし、trueはscene、objectは名前付きTLASを選ぶ。共通parser・typed/JSON graph計画・FrameResourcesのgraphics bindingを使用し、補助sprite等の描画は今回変更しない。
+- materialの受け入れ先passの宣言を初回GraphicsPipelineDescとcache keyへ伝播。graph reloadでは共有handleに紐づく全materialの候補をANDで集約し、未変更material側の制限も保持する。reloadで実handleの許可が変わった場合は、古いcache keyからそのhandleを使い回さない。shader reloadも既存descの許可でAS reflectionを検査する。
+- 初回RT graphは最初のsubmitまでstagedなので、active-onlyな契約参照ではmaterial登録時にbindingsが空になった。RenderingPassContainerのmaterial契約取得だけ、activeがない初回は同じpublicationに属するrenderingSnapshotを使う。snapshot公開APIはactive-onlyのまま、通常reload中はactiveを優先する。初期resource契約も同じ候補から取得し、許可だけを無条件に緩和しない。read-onlyレビューで境界・寿命の具体的な残存不具合なし。
+- 関連CPU named-AS 1/1・33 assertions（build/.codex_bg/materialas-cpu.log）。既存のRT/compute/fullscreenとAS前materialを含むGPU 1/1・454 assertions（materialas-gpu.log）。共有pipeline reloadの未変更側の検査漏れをread-onlyレビューで発見し修正、再レビューで具体的な残存不具合なし。Player/Studio buildはmaterialas-shared-build.log。
+- 最終GPU named-TLAS caseは1/1・868 assertions成功（materialas-final-gpu.log、11 section）。既存RT/compute/fullscreenに加え、AS前のdeferred material描画、forward materialの左・右・空TLAS選択をhalf-float色へ出力し、可視pixelと左右custom index、未宣言拒否を確認。初回staged passの宣言も確認した。最終Player/Studio buildはmaterialas-initial-build.log、test exe最終buildはmaterialas-camera-build.log。doclink check・差分空白検査成功、auditの既知4件は変化なし。
+- 対照: materialのAS依存を一律に戻せばAS前material配置がcycleで落ちる。名前付きbindingをscene固定へ戻せば左/右/空の色が落ちる。宣言許可を常時trueにすれば未宣言拒否が落ちる。初期候補参照を除けば宣言済みmaterialの初回登録が落ちる。個別の変異実行は行っていない。追加fixtureは本番のpelican_core.cpp同様にgraph→sceneの順で起動する。取り込みrouting・既定half-float出力・カメラを製品経路に合わせて修正した。
+- sprite等の補助描画、material専用GUI、共有handleの片側だけを変えるreloadの専用GPU操作は未確認/未対応として残す。共有handleの境界は今回のread-onlyレビューで確認。学習サンプル・配布tool・test targetは追加していない。commit保留は継続。
+
+**RT6異transform triangleのworld-space BLAS結合 (2026-09-06、未commit):**
+- ray layoutのacceleration_structure.triangle_spaceにgeometry（省略時）/worldを追加。worldは各triangle geometryのtransformDataへ変換を渡し、TLASをidentityにする明示指定。異なる個体・componentでも同じscene epoch、mask/flags/custom index、連続q/SBT offsetなら結合する。AABBは従来の条件を維持する。
+- shaderのobject座標はworldになり、ObjectToWorld/WorldToObjectはidentity。元geometry table座標は変更しない。静的keyへ正規化変換を含め、移動はrebuild、変形は同じ座標モード・topologyでrefit。transform入力は既存submission資源に保持し、新しい寿命管理層は作らない。
+- Player/Studio/GPU target build成功（build/.codex_bg/worldblas-instance-build.log）。CPU 1/1・12 assertions（worldblas-cpu.log）、最終GPU 1/1・368 assertions（worldblas-morph-gpu.log、最終test buildはworldblas-morph-build.log）。既存の静的・morph対照に加え、異位置2個体のgeometryモード2 BLAS/worldモード1 BLAS、両ray typeのhit位置・material・record、world静的移動後rebuildと再利用、world morph refitを確認。
+- transformDataを除けばworld hit位置が落ち、TLAS identityを除けば深度/ObjectToWorld対照が落ち、変換keyを除けば移動後のhitとbuild countが落ちる。個体を跨ぐ結合を除けばworldの1 BLAS対照が落ちる。これらは試験の検出対象であり、個別の変異実行は行っていない。最初のglTF node配置fixtureはimport時の頂点変換で異なる実行時transformを表現できなかったため、2個体fixtureへ修正した。
+- AABBの異transform結合、material/spriteのAS依存細分化、GUIによるこの座標モード編集は残る。新test target・配布toolは追加なし。commitは既存の自動承認拒否により保留。
+
+**RT6異transform geometry結合の実装前調査 (2026-09-06、上記実装で更新):**
+- accelerationstructure.cppのBlasGroupはworld_transform一致を条件とする。triangle入力にはtransformDataを設定せず、TLASにはgroup先頭のworld_transformだけを渡す。従って一致判定だけの撤去は後続geometryを誤配置する。
+- 次の実装はtriangle geometryごとのgroup座標への変換入力、変換を含むBLAS再利用key、変換入力bufferのsubmission寿命を一体で扱う必要がある。動的geometryは変換更新とrefit可否も同じkeyで整理する。既存mask/flags/custom index・連続q・SBT strideの結合条件は維持する。
+- arbitrary shaderのobject座標系を暗黙変更する最適化としては導入しない。結合後のgroup座標系と元geometry座標の関係を公開する明示的な結合操作として仕様を具体化してから実装する。AABBはtriangleのtransform入力を流用できないため別のbounds/intersection契約が必要。今回の調査を機能完成として数えない。ソース変更・追加試験なし。
+
+**RT6 rasterのAS依存細分化 (2026-09-06、未commit):**
+- fullscreen/generic raster/output_transformへbool ray_query宣言（省略false）を追加。trueはphysical planning前にAS capabilityと共有AS依存を生成。falseのpassはデータ依存に反しなければ共有AS構築前に配置可能。material/sprite等とrasterの名前付きTLAS選択は残る。
+- GraphicsPipelineDescへallow_ray_queryを渡し、未宣言AS使用を共通graphics builderのreflectionで拒否。通常fullscreen・raster_state付きfullscreen・generic raster登録へ伝播。reloadも保持descから同builderを使用する。既存rt_shadow_mask featureと直書きfixtureへ宣言追加。preset編集はhidden値を保持。
+- Player/Studio build成功（build/.codex_bg/rasteras-build.log）。初回descriptor宣言位置とGPU test JSON初期化のcompileエラーを修正。最終GPU target build成功（rasteras-gpu-build.log / rasteras-test-rebuild.log）。
+- CPU依存/順序4/4・88 assertions（rasteras-cpu.log）、既存feature合成等47/47・911 assertions（rasteras-parser-cpu.log）。実GPU named-TLAS test全5section・1/1・283 assertions（rasteras-final-gpu.log）で初回AS前fullscreenが42を書き、未宣言queryをRenderer初期化で拒否。初回はまだpipelineを構築しないscene loadへ例外を期待したtestを修正。既存embedded query/RT影描画1/1・379 assertions（rasteras-shadow-gpu.log）。新test targetなし。一般materialの依存細分化やraster named-TLAS対応の完了証拠にはしない。commitは上記の保留を維持。
+
+**Studio fullscreen ray query切替 (2026-09-06、未commit):**
+- Use scene ray query checkboxを追加。新規草稿はtrue時に宣言を出力し、preset編集は元値を復元・falseも明示送信して解除できる。編集可能fieldの共通projectionにも追加。
+- edit_preset_passは任意bool ray_queryを許可。省略時は元値を保持し、型違いは拒否。既存candidate/保存/rollback経路を使用する。
+- Player/Studio/対象CPU・Qt build成功（build/.codex_bg/queryui-build.log）。保存CPU 1/1・59 assertions（queryui-cpu.log）、値読込→false切替→送信→refreshを含むQt target全22/22成功（queryui-qt.log）。新しいruntime分岐はないため直前のGPU証拠を再利用。実エンジン接続下の画面全体手動確認は残る。schema確認はqueryui-schema.logを参照。
+
+**Procedural asset削除 (2026-09-06、未commit):**
+- edit_procedural_assetのoperation=deleteを追加。名前と元digestで削除し、aabb/record併記は拒否。作成・編集と同じcandidate保存・runtime publicationを使用する。
+- publication前に削除されたasset名を求め、全解決済みsceneのprocedural component参照を確認。active/inactive sceneの使用中assetはsource保存前に拒否。未使用asset削除後も既存geometryを維持する。
+- StudioのProcedural assetsにDelete assetを追加。名前入り確認後に送信し、新規未保存draftは既存Resetで破棄する。更新・削除のSubmit/Result経路を共通化。画面全体の実エンジン接続下手動確認は残る。
+- Player/Studio/既存CPU・GPU target build成功（build/.codex_bg/assetdelete-build.log）。CPU 1/1・17 assertions（assetdelete-cpu.log）、実GPU/RPC 1/1・298 assertions（assetdelete-gpu.log）。未使用asset削除→再作成→component装着、active参照とinactive参照それぞれの削除拒否、source保持・描画・BLAS再利用を確認。新test targetなし。commit保留は上記と同じ。
+
+**RT7 Frame Planドラッグ接続 (2026-09-06、未commit):**
+- Shift＋左ドラッグで同じgraphのproducerからauthored compute/RT taskへ接続を要求。元task名とproducer.writesを既存Tasks画面へ渡し、出力元resourceだけを候補としてport接続を草稿編集、既存Apply/CAS/compilerで保存する。候補filter後も型判定用catalog全体は保持する。raster宛・自己・group・別graphは対象外。
+- 点線preview、Escape取消、通常drag維持。既存Escapeのgroup退出shortcutも接続gesture取消を優先し、populate/reset前にpreviewを破棄する。既存task editor/API以外の保存経路は追加しない。
+- Studio build成功（build/.codex_bg/nodedrag-build.log）。初回test compileはCatch2複合条件の括弧不足を修正し再build成功（nodedrag-test-build.log）。既存Qt target46件中45件成功、新しい実マウス→widget callback・候補filter・無効相手・取消・位置保持の確認を含む（nodedrag-ui.log）。残る既存stress1件は指定30秒timeout、単独120秒上限で36.96秒・成功（nodedrag-stress.log）。異なる全46件を確認済み。新test targetやGPU検査は追加なし。実エンジン接続下のdialog全体手動操作は未確認。
 
 **Procedural asset新規作成 (2026-09-06):**
 - edit_procedural_assetのoperation:createで未使用名・aabb・recordからaabb_v1定義を作成。初assetの空一覧にも対応し、asset document v1はv2へ更新。重複名拒否、既存CAS・source/runtime publication共用。StudioのNewで選択assetの値をコピー（空なら±1/{}）して草稿作成、Create assetで保存。Refreshは新規草稿と元digestを維持し、Resetで破棄できる。
 - Player/Studio・対象test build成功（build/.codex_bg/assetcreate-build.log）。CPU1/1・10 assertions（assetcreate-cpu.log）でv1空documentから保存・v2化・不正bounds拒否。既存GPU1/1・223 assertions（assetcreate-gpu.log、最終再buildはassetcreate-gpu-build.log）で新規登録、同名拒否、component置換による装着、実hit・独立record・既存AABB編集/rollbackまで成功。GUI手動操作は未確認。
 - 初回の装着テストは未対応の配列全体set操作を使っていたため、既存remove/add transactionへ修正。新asset名でgeometryの順序が変わり、旧テストのscene geometry-table番号=BLAS内番号という偶然の一致を検出。番号体系を分け、各範囲・相互の区別・実recordを検査するよう訂正。新規作成分岐を外すと作成対照が失敗し、重複拒否を外すと同名対照が失敗する。新test targetなし。
 
-**ビルド再生成の調査 (2026-09-06):** commitごとの再configureはcrash symbolsのGit ref依存による意図した更新。別にbattery embedはconfigure_fileが同一内容cppのmtimeを保持し、入力より古い出力として毎build再生成される実害あり。cmake/patch_battery_embed_low_write.cmakeの既存patchへstamp OUTPUT＋cpp BYPRODUCTSを入れる修正が次候補。cppのtouchは再compileを増やすため行わない。まだ修正・検証はしていない。
+**ビルド再生成の修正 (2026-09-06):** commitごとの再configureはcrash symbolsのGit ref依存による意図した更新。別にbattery embedはconfigure_fileが同一内容cppのmtimeを保持し、入力より古い出力として毎build再生成される実害があった。既存low-write patchに生成成功後のfile(TOUCH OUTFILE)を追加し、従来OUTPUT cppを維持。入力が同一内容で更新された場合も一度はcompileするが、それ以後の無駄な再生成は止まる。
+- stamp OUTPUT＋cpp BYPRODUCTS案は小さなMSBuild probeで変更なしbuildが止まった一方、cppだけを削除すると復元せずC1083になる後退を確認し不採用。存在監視targetなどは増やさず、通常の出力時刻を正しく進める方式にした。上記調査時の「cppのtouchは行わない」はこの実測で更新。
+- 実pelican_resources build成功（build/.codex_bg/embed-fix-first.log）。変更なし再buildは生成0・compile0でlibrary mtime保持（embed-fix-repeat.log）。生成cpp1件削除後に同一bytesへ復元しcompile1件（embed-fix-recovery.log）。入力内容を変えずmtimeだけ更新するとcompile1件、次buildは生成0・compile0（embed-fix-touch.log / embed-fix-touch-repeat.log）。入力mtimeは元へ復元。修正前の直近buildにはembed生成86行あった。新test target・配布toolは追加なし。
 
 **RT6/RT7 共有AS前の独立compute (2026-09-06):**
 - 一律の全node→共有AS依存を廃止。computeはray_tracing/ray_query宣言時だけ共有ASと選択先を待つ。通常anchor/copyもデータ依存の範囲で前置可能。raster passと実描画する__anchor_spriteは共有AS後を維持する。

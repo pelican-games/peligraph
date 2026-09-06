@@ -307,8 +307,9 @@ resolveMaterialPipelineRenderingContract(
 static std::string makePipelineKey(
     const MaterialInfo &info,
     const MaterialPipelineRenderingContract
-        &rendering) {
+        &rendering, bool allow_ray_query) {
     std::ostringstream key;
+    key << "ray_query=" << allow_ray_query << ':';
     key << info.vert_shader.value << ':' << info.frag_shader.value << ':'
         << info.skinned << ':'
         << static_cast<int>(info.shader_contract) << ':'
@@ -795,8 +796,9 @@ static GraphicsPipelineDesc makeMaterialPipelineDesc(
     const MaterialPipelineRenderingContract
         &rendering,
     std::vector<ShaderResourceInterfaceBinding>
-        resource_interface) {
+        resource_interface, bool allow_ray_query) {
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = allow_ray_query;
     desc.vert = info.vert_shader;
     desc.frag = info.frag_shader;
     desc.color_formats = rendering.color_formats;
@@ -1917,16 +1919,20 @@ GlobalMaterialId MaterialContainer::registerMaterial(MaterialInfo info) {
     validateMaterialCapabilities(info, rendering);
     auto resource_interface =
         resolveMaterialResourceInterface(info);
+    const auto pass_bindings = GET_MODULE(RenderingPassContainer).materialPassRenderingBindings(
+        info.route, info.shader_contract, info.exact_pass);
+    const bool allow_ray_query = !pass_bindings.empty() && std::all_of(
+        pass_bindings.begin(), pass_bindings.end(), [](const auto &binding) { return binding.ray_query; });
     const auto pipeline_key =
-        makePipelineKey(info, rendering);
+        makePipelineKey(info, rendering, allow_ray_query);
     auto pipeline_it = pipelines.find(pipeline_key);
-    if (pipeline_it == pipelines.end()) {
+    if (pipeline_it == pipelines.end() || GET_MODULE(PipelineFactory).graphicsDesc(pipeline_it->second).allow_ray_query != allow_ray_query) {
         const auto pipeline_handle =
             GET_MODULE(PipelineFactory)
                 .create(makeMaterialPipelineDesc(
                     info, rendering,
-                    resource_interface));
-        pipeline_it = pipelines.emplace(pipeline_key, pipeline_handle).first;
+                    resource_interface, allow_ray_query));
+        pipeline_it = pipelines.insert_or_assign(pipeline_key, pipeline_handle).first;
         if (!default_pipeline) {
             default_pipeline = pipeline_handle;
         }
@@ -3275,6 +3281,7 @@ materialBindingsForGeneration(
             bindings.push_back(
                 MaterialPassRenderingBinding{
                     .pass_name = pass.name,
+                    .ray_query = pass.ray_query,
                     .rasterization_samples =
                         pass.rasterization_samples,
                     .rendering = compiled.rendering,
@@ -3432,6 +3439,8 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
                     material.pipeline_output_states,
             };
             for (const auto &binding : bindings) {
+                if (!binding.ray_query && GET_MODULE(PipelineFactory).pipelineUsesRayQueryFrameSet(material.pipeline))
+                    throw std::runtime_error("Material pass '" + binding.pass_name + "' uses an acceleration structure but does not declare ray_query");
                 if (binding.output_schema !=
                     material.output_schema) {
                     const auto live_schema =
@@ -3496,6 +3505,15 @@ MaterialContainer::prepareRuntimeGenerationReload(
     };
 
     MaterialRuntimeGenerationReloadPlan plan;
+    std::unordered_map<std::uint64_t, bool> pipeline_ray_query;
+    materials.forEach([&](GlobalMaterialId, const InternalMaterialInfo &material) {
+        const auto bindings = materialBindingsForGeneration(
+            generation, material.route, material.shader_contract, material.exact_pass);
+        const bool allowed = !bindings.empty() && std::all_of(
+            bindings.begin(), bindings.end(), [](const auto &binding) { return binding.ray_query; });
+        auto [entry, inserted] = pipeline_ray_query.emplace(material.pipeline.value, allowed);
+        if (!inserted) entry->second = entry->second && allowed;
+    });
     std::vector<MetadataUpdate> metadata_updates;
     auto &pipeline_factory =
         GET_MODULE(PipelineFactory);
@@ -3868,6 +3886,7 @@ MaterialContainer::prepareRuntimeGenerationReload(
 
             auto candidate_pipeline_desc =
                 pipeline_desc;
+            candidate_pipeline_desc.allow_ray_query = pipeline_ray_query.at(material.pipeline.value);
             candidate_pipeline_desc.color_formats =
                 candidate_rendering.color_formats;
             candidate_pipeline_desc.depth_format =

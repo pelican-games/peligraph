@@ -84,7 +84,7 @@ void RenderingPassContainer::setEnabledFeatures(std::vector<std::string> feature
 }
 
 bool RenderingPassContainer::isFeatureEnabled(std::string_view feature_name) const {
-    if (const auto generation = snapshot()) {
+    if (const auto generation = preparationGeneration()) {
         return std::find(
                    generation->enabled_feature_names.begin(),
                    generation->enabled_feature_names.end(),
@@ -127,8 +127,20 @@ RenderingPassContainer::activeGeneration() const noexcept {
     return generation != nullptr ? generation->generation : 0;
 }
 
+std::shared_ptr<const RendererRuntimeGeneration>
+RenderingPassContainer::preparationGeneration() const noexcept {
+    if (const auto active = snapshot()) return active;
+    // Initial RT publication waits for a submitted frame. Resources needed
+    // by that first frame must nevertheless use its prepared pass contracts.
+    const auto publication = runtime_publication.load(std::memory_order_acquire);
+    const auto *runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>();
+    if (publication && runtime && runtime->publicationState() == publication)
+        return runtime->renderingSnapshot();
+    return nullptr;
+}
+
 bool RenderingPassContainer::hasMaterialPasses() const {
-    if (const auto generation = snapshot()) {
+    if (const auto generation = preparationGeneration()) {
         bool found = false;
         visitPublishedRenderingPasses(
             *generation,
@@ -187,6 +199,7 @@ RenderingPassContainer::materialPassRenderingBindings(
                 result.push_back(
                     MaterialPassRenderingBinding{
                         .pass_name = pass.name,
+                        .ray_query = pass.ray_query,
                         .rasterization_samples =
                             pass.rasterization_samples,
                         .rendering =
@@ -377,7 +390,7 @@ RenderingPassContainer::materialPassRenderingBindings(
                     });
             }
         };
-    if (const auto generation = snapshot()) {
+    if (const auto generation = preparationGeneration()) {
         visitPublishedRenderingPasses(
             *generation, collect);
     } else {

@@ -21,6 +21,7 @@ GraphicsPipelineDesc makeSpritePipelineDesc(ShaderBundleId vert, ShaderBundleId 
                                             vk::Format color, vk::Format depth,
                                             vk::SampleCountFlagBits samples) {
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = false;
     desc.vert = vert;
     desc.frag = frag;
     desc.color_formats = {color};

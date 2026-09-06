@@ -868,6 +868,7 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
 }
 
 struct RayQueryAccelerationStructureScope::State {
+    bool triangle_world_space = false;
     struct DeformedBlasKey {
         std::uint64_t source_geometry_id = 0;
         std::uint64_t scene_epoch = 0;
@@ -879,6 +880,7 @@ struct RayQueryAccelerationStructureScope::State {
         std::uint32_t index_offset = 0;
         std::int32_t vertex_offset = 0;
         std::uint32_t vertex_count = 0;
+        bool world_space = false;
         auto operator<=>(const DeformedBlasKey &) const = default;
     };
     std::map<std::vector<DeformedBlasKey>, std::shared_ptr<AccelerationStructureResource>> deformed_blas;
@@ -887,7 +889,7 @@ struct RayQueryAccelerationStructureScope::State {
         RayGeometryKind geometry_kind = RayGeometryKind::triangles;
         std::uint64_t geometry_allocation_id = 0;
         std::uint32_t geometry_flags = 0;
-
+        std::string transform_identity;
         auto operator<=>(const BlasVariantKey &) const = default;
     };
 
@@ -1049,7 +1051,8 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
     std::uint32_t ray_type_count,
     std::uint64_t runtime_generation,
     std::uint64_t ray_tracing_pipeline_generation,
-    std::span<const SceneAccelerationStructureDefinition> named_definitions) {
+    std::span<const SceneAccelerationStructureDefinition> named_definitions,
+    bool triangle_world_space) {
     const auto row_inputs_match = [&] {
         if (active_state_ == nullptr ||
             active_state_->ray_scene_rows == nullptr ||
@@ -1075,6 +1078,7 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
         return true;
     };
     if (active_state_ == nullptr || !active_state_->reusable ||
+        active_state_->triangle_world_space != triangle_world_space ||
         !std::equal(active_state_->named_definitions.begin(), active_state_->named_definitions.end(),
                     named_definitions.begin(), named_definitions.end()) ||
         active_state_->named_tlas.size() != named_definitions.size() ||
@@ -1122,7 +1126,8 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::uint64_t runtime_generation,
     std::uint64_t ray_tracing_pipeline_generation,
     std::shared_ptr<const RaySceneGenerationRoot> generation_root,
-    std::span<const SceneAccelerationStructureDefinition> named_definitions) {
+    std::span<const SceneAccelerationStructureDefinition> named_definitions,
+    bool triangle_world_space) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (!capabilities.ray_query ||
         !capabilities.acceleration_structure ||
@@ -1138,6 +1143,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     const auto classification =
         classifyRayQueryGeometry(instances);
     auto candidate = std::make_shared<State>();
+    candidate->triangle_world_space = triangle_world_space;
     candidate->named_definitions.assign(named_definitions.begin(), named_definitions.end());
     for (const auto index : classification.eligible_instance_indices) {
         if (instances[index].geometry_lease)
@@ -1312,12 +1318,14 @@ RayQueryAccelerationStructureScope::recordFrame(
             const auto &previous = planned_instances[group.plan_indices.back()];
             const auto &first = instances[planned_instances[group.plan_indices.front()].source_index];
             append = first.geometry_kind == source.geometry_kind &&
-                first.authoring_object_id == source.authoring_object_id &&
+                ((triangle_world_space && source.geometry_kind == RayGeometryKind::triangles) ||
+                (first.authoring_object_id == source.authoring_object_id &&
                 first.component_occurrence == source.component_occurrence &&
                 first.instance_index == source.instance_index &&
-                first.instance_generation == source.instance_generation &&
+                first.instance_generation == source.instance_generation)) &&
                 first.scene_epoch == source.scene_epoch &&
-                first.world_transform == source.world_transform &&
+                ((triangle_world_space && source.geometry_kind == RayGeometryKind::triangles) ||
+                 first.world_transform == source.world_transform) &&
                 previous.instance_mask == planned.instance_mask &&
                 previous.instance_flags == planned.instance_flags &&
                 previous.instance_custom_index == planned.instance_custom_index &&
@@ -1329,7 +1337,9 @@ RayQueryAccelerationStructureScope::recordFrame(
         if (!append) groups.emplace_back();
         auto &group = groups.back();
         group.plan_indices.push_back(plan_index);
-        group.key.push_back({source.geometry_kind, source.geometry_allocation_id, planned.geometry_flags});
+        group.key.push_back({source.geometry_kind, source.geometry_allocation_id, planned.geometry_flags,
+            triangle_world_space && source.geometry_kind == RayGeometryKind::triangles
+                ? canonicalTransformIdentity(source.world_transform) : std::string{}});
         group.primitive_count += primitives;
     }
 
@@ -1350,7 +1360,8 @@ RayQueryAccelerationStructureScope::recordFrame(
                 deformed ? source.deformation_source_geometry_id : source.geometry_allocation_id,
                 source.scene_epoch, source.instance_index, source.instance_generation, source.node_index,
                 planned.geometry_flags, source.index_count, source.index_offset,
-                source.vertex_offset, source.vertex_count});
+                source.vertex_offset, source.vertex_count,
+                triangle_world_space && source.geometry_kind == RayGeometryKind::triangles});
         }
         if (can_reuse) {
             const auto existing = active_state_->blas.find(key);
@@ -1368,7 +1379,24 @@ RayQueryAccelerationStructureScope::recordFrame(
         std::vector<vk::AccelerationStructureGeometryKHR> geometries;
         std::vector<vk::AccelerationStructureBuildRangeInfoKHR> ranges;
         std::vector<std::uint32_t> primitive_counts;
-        for (const auto &member : key) {
+        vk::DeviceAddress transform_address = 0;
+        if (triangle_world_space && key.front().geometry_kind == RayGeometryKind::triangles) {
+            std::vector<vk::TransformMatrixKHR> transforms;
+            for (const auto index : group.plan_indices)
+                transforms.push_back(toVulkanTransform(instances[planned_instances[index].source_index].world_transform));
+            auto buffer = allocateAddressedBuffer(vkcore, transforms.size() * sizeof(vk::TransformMatrixKHR),
+                vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR |
+                    vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                vma::MemoryUsage::eAutoPreferDevice, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite, 16);
+            vkcore.writeBuf(buffer.buffer, transforms.data(), buffer.offset, transforms.size() * sizeof(vk::TransformMatrixKHR));
+            transform_address = buffer.address;
+            recorded->transient_buffers.push_back(std::move(buffer.buffer));
+            recordMemoryBarrier(command_buffer, vk::PipelineStageFlagBits::eHost,
+                vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
+                vk::AccessFlagBits::eHostWrite, vk::AccessFlagBits::eShaderRead);
+        }
+        for (std::size_t member_index = 0; member_index < key.size(); ++member_index) {
+            const auto &member = key[member_index];
             const auto &geometry = *unique_geometry.at(member.geometry_allocation_id);
             const vk::GeometryFlagsKHR flags{member.geometry_flags};
             std::uint32_t count = 1;
@@ -1381,7 +1409,8 @@ RayQueryAccelerationStructureScope::recordFrame(
                     vk::AccelerationStructureGeometryDataKHR{vk::AccelerationStructureGeometryTrianglesDataKHR{
                         vk::Format::eR32G32B32Sfloat, vk::DeviceOrHostAddressConstKHR{geometry.gpu.vertex_address},
                         sizeof(CommonVertStruct), geometry.vertex_count - 1, vk::IndexType::eUint32,
-                        vk::DeviceOrHostAddressConstKHR{geometry.gpu.index_address}}}, flags);
+                        vk::DeviceOrHostAddressConstKHR{geometry.gpu.index_address},
+                        vk::DeviceOrHostAddressConstKHR{transform_address ? transform_address + member_index * sizeof(vk::TransformMatrixKHR) : 0}}}, flags);
                 count = geometry.index_count / 3;
             }
             primitive_counts.push_back(count);
@@ -1482,7 +1511,8 @@ RayQueryAccelerationStructureScope::recordFrame(
             RayProfileAccelerationStructureFlagSite::tlas_instance_row,
             planned.q);
         tlas_instances.emplace_back(
-            toVulkanTransform(instance.world_transform),
+            toVulkanTransform(triangle_world_space && instance.geometry_kind == RayGeometryKind::triangles
+                ? glm::mat4{1.0F} : instance.world_transform),
             planned.instance_custom_index,
             planned.instance_mask,
             planned.instance_sbt_record_offset,

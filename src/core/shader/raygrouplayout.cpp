@@ -517,7 +517,7 @@ std::uint8_t parseRayMask(const json &encoded, std::string_view source) {
 
 RayAccelerationStructureDeclaration parseAccelerationStructure(
     const json &encoded, std::string_view source) {
-    requireObjectFields(encoded, {"defaults", "procedural_defaults", "rules"},
+    requireObjectFields(encoded, {"defaults", "procedural_defaults", "rules", "triangle_space"},
                         "acceleration_structure", source);
     if (!encoded.contains("defaults")) {
         rayAsError("ray_as_rule_malformed", source,
@@ -528,6 +528,16 @@ RayAccelerationStructureDeclaration parseAccelerationStructure(
                         {"mask", "instance_flags", "geometry_flags"},
                         "acceleration_structure.defaults", source);
     RayAccelerationStructureDeclaration result;
+    if (const auto space = encoded.find("triangle_space"); space != encoded.end()) {
+        if (!space->is_string())
+            rayAsError("ray_as_rule_malformed", source,
+                       "acceleration_structure.triangle_space must be geometry or world");
+        const auto &name = space->get_ref<const std::string &>();
+        if (name != "geometry" && name != "world")
+            rayAsError("ray_as_rule_malformed", source,
+                       "acceleration_structure.triangle_space must be geometry or world");
+        result.triangle_world_space = name == "world";
+    }
     if (const auto mask = defaults.find("mask"); mask != defaults.end()) {
         result.defaults.mask = parseRayMask(*mask, source);
     }

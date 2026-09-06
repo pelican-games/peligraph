@@ -5,6 +5,7 @@
 #include "../src/project/assetdataformat.hpp"
 #include <catch2/catch_approx.hpp>
 #include <bit>
+#include <glm/gtc/packing.hpp>
 #include <cmath>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <components/predefined.hpp>
@@ -48,6 +49,7 @@
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/renderingpass/renderingpassconfigloader.hpp"
+#include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderer/camera.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/proceduralgeometrycontainer.hpp"
@@ -66,6 +68,7 @@
 #include "gltf_fragment_fixture.hpp"
 #include "morph_fixture.hpp"
 #include "vat_fixture.hpp"
+#include "ktx2_test_writer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -639,7 +642,7 @@ struct Wp380RuntimeCleanup {
     }
 };
 
-void writeRt6MultiGeometryGlb(const std::filesystem::path &path, bool deformed) {
+void writeRt6MultiGeometryGlb(const std::filesystem::path &path, bool deformed, bool distinct_instances = false, int material_side = 0) {
     const auto original = TestMorphFixture::makeGlb();
     std::uint32_t json_size = 0;
     std::memcpy(&json_size, original.data() + 12, sizeof(json_size));
@@ -652,7 +655,7 @@ void writeRt6MultiGeometryGlb(const std::filesystem::path &path, bool deformed) 
     document["materials"].push_back(material);
     for (int side = 0; side < 2; ++side) {
         const auto offset = binary.size();
-        const float center = side == 0 ? -2.0F : 2.0F;
+        const float center = distinct_instances ? 0.0F : (side == 0 ? -2.0F : 2.0F);
         for (const auto &position : std::array{
                 glm::vec3{center - 0.6F, -0.6F, 0.0F}, glm::vec3{center + 0.6F, -0.6F, 0.0F},
                 glm::vec3{center - 0.6F, 0.6F, 0.0F}, glm::vec3{center + 0.6F, 0.6F, 0.0F}})
@@ -671,6 +674,11 @@ void writeRt6MultiGeometryGlb(const std::filesystem::path &path, bool deformed) 
         document["meshes"][0]["primitives"].push_back(part);
     }
     if (!deformed) document["meshes"][0].erase("weights");
+    if (distinct_instances) {
+        const auto parts = document["meshes"][0]["primitives"];
+        document["meshes"][0]["primitives"] = Json::array({parts[material_side]});
+        document.erase("animations");
+    }
     document["buffers"][0]["byteLength"] = binary.size();
     auto json = document.dump();
     while (json.size() % 4) json.push_back(' ');
@@ -691,15 +699,38 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
           "[rt6][multi-geometry][ray-tracing][production][gpu]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     bool deformed = false;
+    bool distinct_instances = false;
+    bool world_space = false;
     SECTION("static mesh") {}
     SECTION("morph mesh refit") { deformed = true; }
+    SECTION("world-space morph mesh refit") { deformed = true; world_space = true; }
+    SECTION("different instance transforms retain separate geometry-space BLAS") { distinct_instances = true; }
+    SECTION("world-space BLAS combines different instance transforms") { distinct_instances = true; world_space = true; }
     setupLogger();
     Wp374aProjectRoot project{"rt6_multi_geometry"};
     writeWp374aProject(project.path, 2, true, true, true,
         Json{{"name", "pelican_ray_instance"}, {"custom_index", 71}}, true);
-    writeRt6MultiGeometryGlb(project.path / "models/chair.glb", deformed);
+    writeRt6MultiGeometryGlb(project.path / "models/chair.glb", deformed, distinct_instances);
+    if (world_space) {
+        auto layout = Json::parse(readWp374aText(project.path / "ray_layout.json"));
+        layout["acceleration_structure"]["triangle_space"] = "world";
+        writeWp374aText(project.path / "ray_layout.json", layout.dump());
+    }
     auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
     scene["scenes"]["main"]["objects"][0]["components"][0]["pos"] = {0.0, 0.0, 8.0};
+    if (distinct_instances) {
+        writeRt6MultiGeometryGlb(project.path / "models/right.glb", false, true, 1);
+        auto assets = Json::parse(readWp374aText(project.path / "assets.json"));
+        assets["models"].push_back({{"name", "chair_right"}, {"path", "models/right.glb"}});
+        writeWp374aText(project.path / "assets.json", assets.dump());
+        auto &objects = scene["scenes"]["main"]["objects"];
+        auto right = objects[0];
+        right["name"] = "Right";
+        right["components"][0]["pos"] = {2.0, 0.0, 8.0};
+        right["components"][1]["model"] = "chair_right";
+        objects[0]["components"][0]["pos"] = {-2.0, 0.0, 8.0};
+        objects.push_back(right);
+    }
     writeWp374aText(project.path / "scene.json", scene.dump());
     const auto feature_path = project.path / "features/wp377_profile_owner.json";
     auto feature = Json::parse(readWp374aText(feature_path));
@@ -728,12 +759,18 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
             ray_type == "primary" ? 100u : 200u, true, false);
         const std::string values = "0u, 0u";
         hit.replace(hit.find(values), values.size(), "gl_GeometryIndexEXT, ray_record.material_index");
+        if (world_space) {
+            const auto begin = hit.find("Payload(", hit.find("void main")) + 8;
+            hit.replace(begin, hit.find(',', begin) - begin,
+                "uint(gl_HitTEXT) + 100u * uint(abs(gl_ObjectToWorldEXT[3].z))");
+        }
         writeWp374aText(project.path / ("shaders/wp366_opaque_" + ray_type + ".rchit"), hit);
     }
     writeWp374aText(feature_path, feature.dump());
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     loadWp374aScene(project.path);
+    std::uint32_t expected_depth = 8;
     const auto sample = [&](bool moved) {
         const auto rows = renderWp374aProductionRows();
         REQUIRE(rows.rows.size() == 2);
@@ -745,23 +782,30 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
             REQUIRE(image.bytes.size() >= 12 * sizeof(std::uint32_t));
             std::array<std::uint32_t, 12> pixels{};
             std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
-            CHECK(pixels[0] == (ray_type == "primary" ? 100u : 200u));
+            CHECK(pixels[0] == (world_space ? expected_depth : (ray_type == "primary" ? 100u : 200u)));
             CHECK(pixels[4] == pixels[0]);
             CHECK(pixels[1] == 71u);
             CHECK(pixels[5] == 71u);
             REQUIRE(pixels[2] < 2u);
             REQUIRE(pixels[6] < 2u);
-            CHECK(pixels[2] != pixels[6]);
-            CHECK(pixels[3] == rows.rows[pixels[2]].material_index);
-            CHECK(pixels[7] == rows.rows[pixels[6]].material_index);
+            if (distinct_instances && !world_space) {
+                CHECK(pixels[2] == 0u);
+                CHECK(pixels[6] == 0u);
+                CHECK(pixels[3] != pixels[7]);
+            } else {
+                CHECK(pixels[2] != pixels[6]);
+                CHECK(pixels[3] == rows.rows[pixels[2]].material_index);
+                CHECK(pixels[7] == rows.rows[pixels[6]].material_index);
+            }
             CHECK((pixels[9] != 0xffffffffu) == moved);
         }
         const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
-        CHECK(diagnostics.active_blas_count == 1);
-        CHECK(diagnostics.tlas_instance_count == 1);
-        CHECK(diagnostics.blas_build_count == 1);
-        REQUIRE(diagnostics.active_blas_inputs.size() == 1);
-        CHECK(diagnostics.active_blas_inputs[0].geometry_count == 2);
+        const auto count = distinct_instances && !world_space ? 2u : 1u;
+        CHECK(diagnostics.active_blas_count == count);
+        CHECK(diagnostics.tlas_instance_count == count);
+        CHECK(diagnostics.blas_build_count == (expected_depth == 8 ? count : count + 1));
+        REQUIRE(diagnostics.active_blas_inputs.size() == count);
+        CHECK(diagnostics.active_blas_inputs[0].geometry_count == (count == 1 ? 2 : 1));
         return diagnostics;
     };
     const auto first = sample(false);
@@ -784,6 +828,18 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
     } else {
         const auto reused = sample(false);
         CHECK(reused.blas_update_count == 0);
+        if (world_space) {
+            for (const auto &object : scene["scenes"]["main"]["objects"]) {
+                const auto entity = GET_MODULE(SceneLoader).objectId(object.at("name").get<std::string>());
+                REQUIRE(entity);
+                auto *transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);
+                REQUIRE(transform);
+                transform->pos.z = 9.0F;
+            }
+            expected_depth = 9;
+            (void)sample(false);
+            (void)sample(false);
+        }
     }
 #else
     SKIP("RT6 multi geometry fixture requires the runtime compiler");
@@ -863,9 +919,25 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
 #if PELICAN_RUNTIME_SHADER_COMPILER
     bool query = false;
     bool before_as = false;
+    bool raster = false;
+    bool undeclared_query = false;
+    bool raster_query = false;
+    bool material_before_as = false;
+    bool sprite_before_as = false;
+    std::optional<std::string> material_query;
+    bool material_undeclared = false;
     SECTION("ray tracing pipeline") {}
     SECTION("compute ray query") { query = true; }
+    SECTION("fullscreen named ray query") { raster_query = true; }
     SECTION("independent compute before first scene AS build") { before_as = true; }
+    SECTION("independent fullscreen before first scene AS build") { before_as = true; raster = true; }
+    SECTION("independent material before first scene AS build") { material_before_as = true; }
+    SECTION("sprite draws before first scene AS build") { sprite_before_as = true; }
+    SECTION("material selects left TLAS") { material_query = "left"; }
+    SECTION("material selects right TLAS") { material_query = "right"; }
+    SECTION("material selects empty TLAS") { material_query = "empty"; }
+    SECTION("material query without declaration is rejected") { material_query = "left"; material_undeclared = true; }
+    SECTION("fullscreen query without declaration is rejected") { before_as = true; raster = true; undeclared_query = true; }
     setupLogger();
     Wp374aProjectRoot project{"rt6_named_tlas"};
     writeWp374aProject(project.path, 2, true, true, true,
@@ -881,12 +953,72 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     right["components"][2]["mask"] = 2;
     right["components"][2]["custom_index"] = 82;
     scene["scenes"]["main"]["objects"] = Json::array({left, right});
+    if (sprite_before_as) {
+        scene["scenes"]["main"]["objects"].push_back({{"name", "Sprite"}, {"components", Json::array({
+            {{"name", "transform"}, {"pos", {0, 0, 4}}, {"rotation", {0, 0, 0, 1}}, {"scale", {1, 1, 1}}},
+            {{"name", "sprite_view"}, {"texture", "sprite_white"}, {"size", {2, 2}}, {"color", {0, 1, 0, 1}}}
+        })}});
+        auto assets = Json::parse(readWp374aText(project.path / "assets.json"));
+        assets["textures"].push_back({{"name", "sprite_white"}, {"path", "textures/sprite.ktx2"}});
+        writeWp374aText(project.path / "assets.json", assets.dump());
+        const std::array<std::array<std::uint8_t, 4>, 1> texels{{{255, 255, 255, 255}}};
+        const auto bytes = TestKtx2::makeRgba8Unorm1x1(0, 0, 1, texels);
+        writeWp374aText(project.path / "textures/sprite.ktx2", {reinterpret_cast<const char *>(bytes.data()), bytes.size()});
+    }
     writeWp374aText(project.path / "scene.json", scene.dump());
     auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
     rendering["scene_acceleration_structures"] = Json::array({
         {{"name", "left"}, {"instance_mask", 1}},
         {{"name", "right"}, {"instance_mask", 2}},
         {{"name", "empty"}, {"instance_mask", 0}}});
+    if (material_before_as)
+        rendering["frame_node_order"] = {{"main_render", {"deferred_geometry", "__scene_acceleration_structure"}}};
+    if (sprite_before_as) {
+        rendering["features"].push_back("engine://features/sprite.json");
+        rendering["frame_node_order"] = {{"main_render", {"__anchor_sprite", "__scene_acceleration_structure"}}};
+    }
+    if (material_query) {
+        auto preset = Json::parse(readWp374aText(std::filesystem::path{__FILE__}.parent_path().parent_path() /
+            "src/core/resources/render_pipelines/hybrid_v1.json"));
+        for (auto &pass : preset["config"]["rendering_passes"][0]["passes"])
+            if (pass["name"] == "forward_opaque" && !material_undeclared)
+                pass["ray_query"] = {{"acceleration_structure", *material_query}};
+        writeWp374aText(project.path / "material_pipeline.json", preset.dump());
+        rendering["pipeline"]["preset"] = "project://material_pipeline.json";
+        auto assets = Json::parse(readWp374aText(project.path / "assets.json"));
+        assets["models"][0]["material_bindings"] = "materials/query.bindings.json";
+        assets["materials"] = Json::array({{{"path", "materials/query.material.json"}}});
+        writeWp374aText(project.path / "assets.json", assets.dump());
+        writeWp374aText(project.path / "materials/query.material.json", Json{
+            {"schema", "pelican.material"}, {"version", 1}, {"materials", Json::array({{
+                {"name", "QueryMaterial"}, {"surface", "project://shaders/query.surface"},
+                {"routing", {{"alpha_mode", "opaque"}, {"double_sided", true}}}
+            }})}}.dump());
+        writeWp374aText(project.path / "materials/query.bindings.json", Json{
+            {"schema", "pelican.material_bindings"}, {"version", 1}, {"model", "project://models/chair.glb"},
+            {"bindings", Json::array({{{"usd_path", "/Query"}, {"mesh", 0}, {"primitive", 0},
+                {"material", "QueryMaterial"}, {"routing", {{"alpha_mode", "opaque"}, {"double_sided", true}}}}})}}.dump());
+        writeWp374aText(project.path / "shaders/query.surface", R"surface(//! pelican.surface v1
+//! language: glsl
+//! render_state: { blend: opaque, cull: none, depth: read_write }
+#extension GL_EXT_ray_query : require
+layout(set=0,binding=6) uniform accelerationStructureEXT queryScene;
+void pelican_surface_v1(in PelicanSurfaceInputV1 i, inout PelicanSurfaceV1 s) {
+    vec2 hits = vec2(0);
+    for (int lane = 0; lane < 2; ++lane) {
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query, queryScene, gl_RayFlagsOpaqueEXT, 255u, vec3(lane == 0 ? -2 : 2,0,0), 0.001, vec3(0,0,1), 100.0);
+        while (rayQueryProceedEXT(query)) {}
+        hits[lane] = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT
+            ? 0.0 : float(rayQueryGetIntersectionInstanceCustomIndexEXT(query, true));
+    }
+    s.base_color = vec4(hits.x, 1.0, hits.y, 1.0);
+}
+vec3 pelican_lighting_v1(in PelicanSurfaceV1 s, in PelicanSurfaceInputV1 i) {
+    return s.base_color.rgb;
+}
+)surface");
+    }
     writeWp374aText(project.path / "hybrid.json", rendering.dump());
     const auto feature_path = project.path / "features/wp377_profile_owner.json";
     auto feature = Json::parse(readWp374aText(feature_path));
@@ -937,12 +1069,58 @@ void main() {
         const std::string opaque = "gl_RayFlagsOpaqueEXT";
         shader.replace(shader.find(opaque), opaque.size(), "gl_RayFlagsNoneEXT");
         writeWp374aText(project.path / ("shaders/" + output + ".rgen"), shader);
+        if (raster_query) {
+            auto raster_target = target;
+            raster_target["name"] = "raster_" + output;
+            raster_target["usage"] = {"COLOR_ATTACHMENT", "TRANSFER_SRC"};
+            feature["render_targets"].push_back(raster_target);
+            const Json pass{{"name", "raster_" + name}, {"type", "fullscreen"},
+                {"ray_query", {{"acceleration_structure", name}}}, {"input", Json::array()},
+                {"output", {{"color", "raster_" + output}, {"depth", nullptr}}},
+                {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/raster_query"}}}};
+            feature["passes"].push_back({{"insert", "before:deferred_geometry"}, {"pass", pass}});
+        }
     }
+    if (raster_query) writeWp374aText(project.path / "shaders/raster_query.frag", R"glsl(#version 460
+#extension GL_EXT_ray_query : require
+layout(set=0,binding=6) uniform accelerationStructureEXT scene;
+layout(location=0) out uvec4 result;
+void main() {
+ int pixel = int(gl_FragCoord.x);
+ float x = pixel == 0 ? -2.0 : (pixel == 1 ? 2.0 : 8.0);
+ rayQueryEXT query;
+ rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 255u, vec3(x,0,0), 0.001, vec3(0,0,1), 4096.0);
+ while (rayQueryProceedEXT(query)) {}
+ uint custom = rayQueryGetIntersectionTypeEXT(query, true) == gl_RayQueryCommittedIntersectionNoneEXT
+   ? 0xffffffffu : rayQueryGetIntersectionInstanceCustomIndexEXT(query, true);
+ result = uvec4(0u, custom, 0u, 0u);
+}
+)glsl");
     if (before_as) {
         auto target = target_template;
         target["name"] = "pre_as_output";
-        target["usage"] = {"STORAGE", "TRANSFER_SRC"};
+        target["usage"] = {raster ? "COLOR_ATTACHMENT" : "STORAGE", "TRANSFER_SRC"};
         feature["render_targets"].push_back(target);
+        if (raster) {
+            const Json pass{
+                {"name", "pre_as_raster"}, {"type", "fullscreen"}, {"input", Json::array()},
+                {"output", {{"color", "pre_as_output"}, {"depth", nullptr}}},
+                {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/pre_as_raster"}}}};
+            feature["passes"].push_back({{"insert", "before:deferred_geometry"}, {"pass", pass}});
+            std::string fragment = "#version 460\nlayout(location=0) out uvec4 result;\nvoid main() { result = uvec4(42u); }\n";
+            if (undeclared_query) fragment = R"glsl(#version 460
+#extension GL_EXT_ray_query : require
+layout(set=0,binding=6) uniform accelerationStructureEXT scene;
+layout(location=0) out uvec4 result;
+void main() {
+ rayQueryEXT query;
+ rayQueryInitializeEXT(query, scene, gl_RayFlagsOpaqueEXT, 255u, vec3(0), 0.001, vec3(0,0,1), 100.0);
+ while(rayQueryProceedEXT(query)) {}
+ result = uvec4(rayQueryGetIntersectionTypeEXT(query, true));
+}
+)glsl";
+            writeWp374aText(project.path / "shaders/pre_as_raster.frag", fragment);
+        } else {
         auto task = feature["compute_tasks"][0];
         task["name"] = "pre_as_compute";
         task.erase("ray_tracing");
@@ -952,28 +1130,84 @@ void main() {
         task["resource_ports"] = {{"pre_as_output", {
             {"resource", "pre_as_output"}, {"access", "storage"}}}};
         feature["compute_tasks"].push_back(task);
-        rendering["frame_node_order"] = {{"main_render", {"pre_as_compute", "__scene_acceleration_structure"}}};
-        writeWp374aText(project.path / "hybrid.json", rendering.dump());
         writeWp374aText(project.path / "shaders/pre_as_compute.comp", R"glsl(#version 460
 #extension GL_GOOGLE_include_directive : require
 #include "pelican_resource_ports.glsl"
 layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
 void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); }
 )glsl");
+        }
+        rendering["frame_node_order"] = {{"main_render", {raster ? "pre_as_raster" : "pre_as_compute", "__scene_acceleration_structure"}}};
+        writeWp374aText(project.path / "hybrid.json", rendering.dump());
     }
     writeWp374aText(feature_path, feature.dump());
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
-    loadWp374aScene(project.path);
+    const auto load = [&] {
+        if (!material_query && !sprite_before_as) {
+            loadWp374aScene(project.path);
+            return;
+        }
+        (void)configureWp374aRuntime(project.path);
+        TestSupport::requireVulkanDevice("RT6 material ray query");
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        (void)GET_MODULE(Renderer);
+        if (material_query) {
+            const auto bindings = GET_MODULE(RenderingPassContainer).materialPassRenderingBindings(
+                MaterialRouteClass::forward_opaque, MaterialShaderContract::forward_scene_color_v1, std::nullopt);
+            REQUIRE_FALSE(bindings.empty());
+            for (const auto &binding : bindings) {
+                CAPTURE(binding.pass_name, binding.ray_query);
+                REQUIRE(binding.ray_query == !material_undeclared);
+            }
+        }
+        test_support::loadScene(GET_MODULE(SceneLoader), "main");
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0F, 0.0F, 0.0F});
+        camera.setDir({0.0F, 0.0F, 1.0F});
+        camera.setUp({0.0F, 1.0F, 0.0F});
+        camera.setNearFar(60.0F, 0.1F, 100.0F);
+    };
+    if (material_undeclared) {
+        CHECK_THROWS_WITH(([&] { load(); (void)renderWp374aProductionRows(); })(),
+            Catch::Matchers::ContainsSubstring("does not declare ray_query"));
+        return;
+    }
+    if (undeclared_query) {
+        load();
+        CHECK_THROWS_WITH(GET_MODULE(Renderer), Catch::Matchers::ContainsSubstring("does not declare ray_query"));
+        return;
+    }
+    load();
     GET_MODULE(Renderer).setExecutionTracingForTesting(true);
     const auto rows = renderWp374aProductionRows();
     REQUIRE(rows.rows.size() == 2);
+    if (material_query || sprite_before_as) {
+        const auto albedo = GET_MODULE(Renderer).readRenderTargetForTesting("lit_color", ImageSubresourceRange{});
+        std::size_t covered = 0;
+        for (std::size_t offset = 0; offset + 7 < albedo.bytes.size(); offset += 8) {
+            std::array<std::uint16_t, 4> pixel;
+            std::memcpy(pixel.data(), albedo.bytes.data() + offset, sizeof(pixel));
+            if (pixel[1] != glm::packHalf1x16(1.0F)) continue;
+            ++covered;
+            CHECK(pixel[0] == glm::packHalf1x16(material_query == "left" ? 71.0F : 0.0F));
+            CHECK(pixel[2] == glm::packHalf1x16(material_query == "right" ? 82.0F : 0.0F));
+        }
+        CHECK(covered > 0);
+    }
     const auto &execution_nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
     REQUIRE(execution_nodes.size() >= 4);
-    const std::size_t as_offset = before_as ? 1 : 0;
-    CHECK(execution_nodes[as_offset].at("name") == "__scene_acceleration_structure");
+    const auto node_position = [&](const std::string &name) {
+        const auto found = std::find_if(execution_nodes.begin(), execution_nodes.end(),
+            [&](const auto &node) { return node.at("name") == name; });
+        REQUIRE(found != execution_nodes.end());
+        return static_cast<std::size_t>(found - execution_nodes.begin());
+    };
+    const std::size_t as_offset = node_position("__scene_acceleration_structure");
+    if (material_before_as) CHECK(node_position("deferred_geometry") < as_offset);
+    if (sprite_before_as) CHECK(node_position("__anchor_sprite") < as_offset);
     if (before_as) {
-        CHECK(execution_nodes[0].at("name") == "pre_as_compute");
+        CHECK(node_position(raster ? "pre_as_raster" : "pre_as_compute") < as_offset);
         const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("pre_as_output", ImageSubresourceRange{});
         REQUIRE(image.bytes.size() >= sizeof(std::uint32_t));
         std::uint32_t pixel = 0;
@@ -982,11 +1216,10 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     }
     for (const auto *name : {"left", "right", "empty"}) {
         CAPTURE(name);
-        const auto node = std::find_if(execution_nodes.begin() + as_offset + 1, execution_nodes.begin() + as_offset + 4,
-            [&](const auto &entry) { return entry.at("name") == std::string{"__scene_acceleration_structure:"} + name; });
-        REQUIRE(node != execution_nodes.begin() + as_offset + 4);
-        CHECK(node->at("kind") == "acceleration_structure");
-        CHECK(node->at("recorded") == true);
+        const auto position = node_position(std::string{"__scene_acceleration_structure:"} + name);
+        CHECK(position > as_offset);
+        CHECK(execution_nodes[position].at("kind") == "acceleration_structure");
+        CHECK(execution_nodes[position].at("recorded") == true);
     }
     for (const std::string name : {"left", "right", "empty"}) {
         CAPTURE(name);
@@ -999,6 +1232,15 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK(pixels[5] == (name == "right" ? 82u : 0xffffffffu));
         CHECK(pixels[9] == 0xffffffffu);
         if (query) CHECK(pixels[0] == 0u);
+        if (raster_query) {
+            const auto raster_image = GET_MODULE(Renderer).readRenderTargetForTesting("raster_rt6_" + name, ImageSubresourceRange{});
+            REQUIRE(raster_image.bytes.size() >= sizeof(pixels));
+            std::memcpy(pixels.data(), raster_image.bytes.data(), sizeof(pixels));
+            CHECK(pixels[0] == 0u);
+            CHECK(pixels[1] == (name == "left" ? 71u : 0xffffffffu));
+            CHECK(pixels[5] == (name == "right" ? 82u : 0xffffffffu));
+            CHECK(pixels[9] == 0xffffffffu);
+        }
     }
     const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
     CHECK(diagnostics.tlas_instance_count == 2);
@@ -6158,6 +6400,7 @@ TEST_CASE("RT6 procedural geometries share one BLAS with independent records",
         }
     scene_json["scenes"]["main"]["objects"][0]["components"].push_back(
         {{"name", "pelican_ray_instance"}, {"custom_index", 71}});
+    scene_json["scenes"]["inactive"] = scene_json["scenes"]["main"];
     writeWp374aText(project.path / "scene.json", scene_json.dump());
     auto layout = Json::parse(readWp374aText(project.path / "ray_layout.json"));
     layout["record"].push_back({{"name", "center"}, {"type", "vec3"}});
@@ -6249,6 +6492,19 @@ void main() {
         REQUIRE(duplicate.at("status") == "rejected");
         CHECK(duplicate.at("error").at("code") == "asset_already_exists");
         CHECK(sample(1.0f).blas_build_count == initial.blas_build_count);
+        const auto remove = [&](const std::string &name) {
+            return finish(runWp374aRpcBytes(*service, rpc_id++, "edit_procedural_asset",
+                {{"operation", "delete"}, {"asset_name", name},
+                 {"base_source_digest", catalog().at("source_digest").at("hex")}}));
+        };
+        const auto deleted = remove("created_sphere");
+        INFO(deleted.dump());
+        REQUIRE(deleted.at("status") == "committed");
+        CHECK(catalog().at("assets").size() == 2);
+        CHECK(Json::parse(readWp374aText(project.path / "assets.json")).at("procedural_geometry").size() == 2);
+        CHECK(sample(1.0f).blas_build_count == initial.blas_build_count);
+        create["base_source_digest"] = catalog().at("source_digest").at("hex");
+        REQUIRE(finish(runWp374aRpcBytes(*service, rpc_id++, "edit_procedural_asset", create)).at("status") == "committed");
         const auto tree = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
         const auto session = runWp374aRpcBytes(*service, rpc_id++, "open_editor_session", {{"display_name", "Create procedural asset"}});
         const auto attached = finishWp374aEdit(*service, rpc_id, session.at("actor_id").get<std::uint64_t>(),
@@ -6265,6 +6521,17 @@ void main() {
             return instance.procedural_asset == "created_sphere";
         }));
         initial = sample(1.0f);
+        const auto source_before_delete = readWp374aText(project.path / "assets.json");
+        for (const auto *name : {"created_sphere", "right_sphere"}) {
+            const auto rejected = remove(name);
+            INFO(rejected.dump());
+            REQUIRE(rejected.at("status") == "rejected");
+            CHECK(rejected.at("error").at("message").get<std::string>().find(
+                name == std::string_view("created_sphere") ? "main" : "inactive") != std::string::npos);
+            CHECK(readWp374aText(project.path / "assets.json") == source_before_delete);
+            CHECK(catalog().at("assets").size() == 3);
+            CHECK(sample(1.0f).blas_build_count == initial.blas_build_count);
+        }
     }
     const auto entity = GET_MODULE(SceneLoader).objectId("Sphere");
     REQUIRE(entity);

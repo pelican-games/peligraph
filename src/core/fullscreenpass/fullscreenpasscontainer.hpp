@@ -67,7 +67,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
                                       std::vector<std::string> shader_defines = {},
                                       vk::SampleCountFlagBits samples =
                                           vk::SampleCountFlagBits::e1,
-                                      GraphicsPipelineViewContract view = {});
+                                      GraphicsPipelineViewContract view = {},
+                                      bool allow_ray_query = true);
     PipelineId registerFullscreenPass(
         std::vector<vk::Format> color_formats,
         std::optional<vk::Format> depth_format,
@@ -79,7 +80,8 @@ DECLARE_MODULE(FullscreenPassContainer) {
         GraphicsPipelineRenderingLocalReadContract
             local_read,
         std::vector<ShaderResourceInterfaceBinding>
-            resource_interface = {});
+            resource_interface = {},
+        bool allow_ray_query = true);
     // Generic procedural raster passes share descriptor ownership and
     // registration lifetime with the legacy fullscreen path. The complete
     // pipeline description is produced by a backend adapter before entering

@@ -6,6 +6,7 @@
 #include <QPointF>
 
 #include <map>
+#include <functional>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -118,6 +119,9 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
                   const std::optional<FramePlanNodeKey> &selected_target,
                   int depth);
     void resetGraph();
+    bool cancelConnectionGesture();
+    std::function<void(const FramePlanNodeKey &, const FramePlanNodeKey &)> connectionRequested;
+    std::function<void(const QString &)> connectionFeedback;
     void setGpuTiming(FramePlanGpuTimingSnapshot snapshot);
 
     // These are the state-changing operations used by the scene's context
@@ -152,6 +156,9 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
 
   protected:
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
+    void mousePressEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseMoveEvent(QGraphicsSceneMouseEvent *event) override;
+    void mouseReleaseEvent(QGraphicsSceneMouseEvent *event) override;
     void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
 
@@ -194,6 +201,10 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     void scheduleSceneRectUpdate();
     void applySceneRectNow();
 
+    std::optional<FramePlanNodeKey> connection_source_;
+    QGraphicsLineItem *connection_line_ = nullptr;
+    bool connection_gesture_ = false;
+    void clearConnectionGesture();
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
 

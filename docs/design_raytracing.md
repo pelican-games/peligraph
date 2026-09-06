@@ -475,9 +475,17 @@ AS nodeごとに、その時点で構築済みのTLASを指すimmutable descript
 submission成功後は最後のbundleとAS集合だけを原子的にactiveへ公開する。
 途中失敗では既存のframe transactionが公開を取り消す。
 AS定義・task接続・node順序は編集RPCから変更でき、consumerと無関係な名前付きASを交互配置できる。
-ASを使わないcompute・通常anchor・copyは、データ依存に反しなければ共有構築より前にも配置できる。
+ASを使わないcompute・material・fullscreen・generic raster・output_transform・sprite・通常anchor・copyは、データ依存に反しなければ共有構築より前にも配置できる。
 computeのray queryはtaskの`ray_query.acceleration_structure`宣言を必須とし、
-未宣言のAS使用をshader reflectionでロード・reload時に拒否する。raster passとsprite描画は共有AS後を維持する。
+未宣言のAS使用をshader reflectionでロード・reload時に拒否する。
+material・fullscreen・generic raster・output_transformはpassの`ray_query: true`でscene全体のqueryを宣言する（省略false）。
+宣言したpassは共有ASを待ち、宣言しないpassのAS使用はgraphics pipelineのreflectionでロード・reload時に拒否する。
+`ray_query: {"acceleration_structure": "actors"}`で名前付きTLASも選べる。
+選択した名前をgraph依存とgraphics descriptor bindingへ同じ値で渡し、未知名はphysical planning前に拒否する。
+共有material pipelineは、そのmaterialを受け入れるすべてのpassが宣言した場合だけAS使用を許可する。
+初回生成・shader reload・render graph reloadへこの条件を渡す。TLAS名はpassごとに異なってよく、描画時に選択する。
+spriteは固定shaderのpipelineでAS使用を禁止し、`__anchor_sprite`への追加AS依存を持たない。
+色・depthのproducer等の既存依存は維持する。他の描画実装の依存条件は変更しない。
 一般のgraph edge編集は未実装。BLAS geometry結合は以下のRT6節に記す。
 
 ### RT6: 名前付きTLASの選択（2026-09-06）
@@ -506,9 +514,9 @@ reuse条件を再評価し、対象集合を更新する。
 
 compute taskは`ray_query: {"acceleration_structure":"actors"}`で同じ名前を選択できる。
 この宣言はray query capabilityとAS構築nodeを有効にする。`scene`の明示指定も可能で、
-宣言省略時の既存compute ray queryとfragment ray queryは`scene`を参照する。
+compute queryは明示宣言が必要で、material/rasterのqueryはbool trueなら`scene`、objectなら指定TLASを参照する。
 `ray_query`は`ray_tracing`と併記できず、`acceleration_structure`以外のキーは受理しない。
-graphでは共通のAS構築nodeが全TLASを用意する。個別ASへの編集・依存表示は後続であり、
+graphでは共有ASと名前付きTLASのnodeを表示し、個別ASの編集とconsumerの依存を扱う。
 複数sceneを同時にロードする機能や任意object predicateの選択まで完了したとは扱わない。
 
 ### RT6: 複数geometry BLAS（2026-09-06）
@@ -534,7 +542,20 @@ AABB bounds変更はgeometry allocationの変更でgroupをrebuildし、record�
 deviceのmaxGeometryCountと総maxPrimitiveCountに達する前にgroupを分割する。
 単独geometry自体がprimitive上限を超える場合は拒否する。
 診断の`geometry_count`はBLAS内のgeometry数、`tlas_instance_count`は結合後の実instance数を示す。
-異なるtransformのgeometryをまとめる操作は残る。
+`acceleration_structure.triangle_space`は省略時`"geometry"`で上記の個体座標系を使う。
+`"world"`を明示するとtriangleごとのworld transformをBLASのtransformDataへ渡し、
+TLAS transformをidentityにする。同じscene epoch・mask・flags・custom indexで、
+qとSBT offsetが連続するtriangleは異なる個体・component間でも結合できる。
+device上限による分割は維持する。AABBの結合・座標系は変更しない。
+
+このモードではhit shaderのobject座標系もworld座標系となり、
+`gl_ObjectToWorldEXT`/`gl_WorldToObjectEXT`はidentityになる。
+geometry tableの元頂点座標は変換しないため、その参照とobject座標を同一視しない。
+`gl_InstanceID`は結合後のTLAS位置であり、元の個体番号として使わない。
+materialとrecordはgeometryごとに保持する。
+静的BLASのkeyに正規化した変換行列を含め、移動時はrebuildする。
+変形BLASは座標モードもrefit keyに含め、同じモード・topologyなら更新できる。
+transform入力bufferはsubmission完了まで保持する。
 
 ### RT7: 名前付きASの編集（2026-09-06）
 

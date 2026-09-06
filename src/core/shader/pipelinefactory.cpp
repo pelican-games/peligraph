@@ -951,6 +951,9 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     const auto ray_query_frame_set =
         shaderReflectionUsesRayQueryFrameSet(
             merged_reflection);
+    if (ray_query_frame_set && !desc.allow_ray_query)
+        throw std::runtime_error(
+            "Raster pass uses the scene acceleration structure but does not declare ray_query: true");
     if (ray_query_frame_set &&
         !GET_MODULE(VulkanManageCore)
              .getRuntimeCapabilities()

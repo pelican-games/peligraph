@@ -1661,6 +1661,7 @@ FramePlanGraphicsScene::~FramePlanGraphicsScene() {
 }
 
 void FramePlanGraphicsScene::resetGraph() {
+    clearConnectionGesture();
     rebuilding_ = true;
     clear();
     selected_node_.reset();
@@ -1801,6 +1802,7 @@ void FramePlanGraphicsScene::pruneGroupState() {
 }
 
 void FramePlanGraphicsScene::renderCurrentGraph() {
+    clearConnectionGesture();
     if (!current_model_) {
         return;
     }
@@ -3027,6 +3029,73 @@ void FramePlanGraphicsScene::contextMenuEvent(
     menu.exec(event->screenPos());
 }
 
+namespace {
+std::optional<FramePlanNodeKey> connectionNodeAt(QGraphicsScene &scene, QPointF point) {
+    auto *item = scene.itemAt(point, QTransform{});
+    while (item) {
+        if (itemKind(*item) == QLatin1String{FramePlanGroupItem}) return std::nullopt;
+        if (itemKind(*item) == QLatin1String{FramePlanNodeItem})
+            return FramePlanNodeKey{item->data(FramePlanGraphRole).toString().toStdString(),
+                                    item->data(FramePlanNameRole).toString().toStdString()};
+        item = item->parentItem();
+    }
+    return std::nullopt;
+}
+}
+
+void FramePlanGraphicsScene::clearConnectionGesture() {
+    delete connection_line_;
+    connection_line_ = nullptr;
+    connection_source_.reset();
+    connection_gesture_ = false;
+}
+
+bool FramePlanGraphicsScene::cancelConnectionGesture() {
+    if (!connection_gesture_) return false;
+    clearConnectionGesture();
+    connection_gesture_ = true; // Consume the pending release.
+    return true;
+}
+
+void FramePlanGraphicsScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
+    if (event->button() != Qt::LeftButton || !(event->modifiers() & Qt::ShiftModifier)) {
+        QGraphicsScene::mousePressEvent(event);
+        return;
+    }
+    clearConnectionGesture();
+    connection_gesture_ = true;
+    connection_source_ = connectionNodeAt(*this, event->scenePos());
+    if (connection_source_) {
+        connection_line_ = addLine(QLineF(event->scenePos(), event->scenePos()), QPen(QColor{70, 150, 240}, 3, Qt::DashLine));
+        connection_line_->setZValue(1000);
+        connection_line_->setAcceptedMouseButtons(Qt::NoButton);
+    }
+    event->accept();
+}
+
+void FramePlanGraphicsScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+    if (!connection_gesture_) { QGraphicsScene::mouseMoveEvent(event); return; }
+    if (connection_line_) connection_line_->setLine(QLineF(connection_line_->line().p1(), event->scenePos()));
+    event->accept();
+}
+
+void FramePlanGraphicsScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    if (!connection_gesture_) { QGraphicsScene::mouseReleaseEvent(event); return; }
+    // Remove the preview before hit-testing the destination underneath it.
+    delete connection_line_;
+    connection_line_ = nullptr;
+    const auto from = connection_source_;
+    const auto to = connectionNodeAt(*this, event->scenePos());
+    clearConnectionGesture();
+    event->accept();
+    if (from && to && from->graph == to->graph && *from != *to) {
+        if (connectionRequested) connectionRequested(*from, *to);
+        else if (connectionFeedback) connectionFeedback(tr("Resource connection editing is unavailable."));
+    } else if (from && connectionFeedback) {
+        connectionFeedback(tr("Drop on a different task or fullscreen pass in the same graph to connect a resource."));
+    }
+}
+
 void FramePlanGraphicsScene::mouseDoubleClickEvent(
     QGraphicsSceneMouseEvent *event) {
     QGraphicsItem *semantic_item = itemAt(event->scenePos(), QTransform{});
@@ -3053,6 +3122,10 @@ void FramePlanGraphicsScene::mouseDoubleClickEvent(
 }
 
 void FramePlanGraphicsScene::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_Escape && cancelConnectionGesture()) {
+        event->accept();
+        return;
+    }
     if (event->key() == Qt::Key_Escape && current_group_scope_) {
         event->accept();
         QMetaObject::invokeMethod(

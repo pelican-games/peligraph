@@ -1,4 +1,5 @@
 #include "passdefinitionjsonparser.hpp"
+#include "../../project/rasterrayquery.hpp"
 #include "materialpassinfojsonparser.hpp"
 #include "passattachmentoptionsjsonparser.hpp"
 #include "passfieldownershipcapabilities.hpp"
@@ -204,6 +205,9 @@ PassDefinition parsePassDefinitionFromJson(const nlohmann::json &pass_json,
     validateMaterialPassAttachments(pass_def, rt_metadata);
 
     parsePassAttachmentOptionsFromJson(pass_def, pass_json);
+    const auto ray_query = parseRasterRayQuery(pass_json);
+    pass_def.ray_query = ray_query.has_value();
+    pass_def.ray_query_acceleration_structure = ray_query.value_or("scene");
     parseFullscreenPassInfoIntoDefinition(pass_def, pass_json);
     if (pass_def.isFullscreen() &&
         pass_json.contains("input_sampling") &&

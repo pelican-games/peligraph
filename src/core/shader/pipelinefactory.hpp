@@ -116,6 +116,7 @@ struct GraphicsPipelineDesc {
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface;
 
+    bool allow_ray_query = true;
     bool operator==(
         const GraphicsPipelineDesc &) const = default;
 };

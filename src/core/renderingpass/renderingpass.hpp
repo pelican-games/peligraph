@@ -483,6 +483,8 @@ struct PassDefinition {
     // object.  An absent declared stage is engine_default iff this is true;
     // programmatically constructed passes use generated provenance instead.
     bool shader_declaration_parsed = false;
+    bool ray_query = false;
+    std::string ray_query_acceleration_structure = "scene";
     std::vector<DeclaredShaderReference> declared_shader_refs;
 
     vk::AttachmentLoadOp color_load_op;

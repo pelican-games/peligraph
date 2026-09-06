@@ -787,7 +787,7 @@ class ComputeTaskDialog final : public QDialog {
 
 public:
   ComputeTaskDialog(EmbeddedViewport &embedded, QWidget *parent, QString task,
-                    std::function<void()> on_committed)
+                    std::function<void()> on_committed, const QStringList &outputs = {})
       : QDialog(parent), viewport(embedded), committed(std::move(on_committed)),
         requested_task(std::move(task)) {
     setAttribute(Qt::WA_DeleteOnClose);
@@ -842,6 +842,12 @@ public:
     connect(update_dispatch, &QPushButton::clicked, this,
             [this] { updateDispatch(); });
     connection_graph = new TaskConnectionGraphics(this);
+    if (!outputs.isEmpty()) {
+      auto *hint = new QLabel(tr("Select a task port group, then an output from the dragged source node. Apply task validates and saves the connection."), this);
+      hint->setWordWrap(true);
+      layout->addWidget(hint);
+      connection_graph->setTargetFilter(outputs);
+    }
     layout->addWidget(connection_graph);
     connection_graph->diagnostic = [this](const QString &message) { notice->setText(message); };
     connection_graph->resourceRebound = [this](const QString &from, const QString &to) {
@@ -2240,10 +2246,14 @@ RenderFeaturesWidget::RenderFeaturesWidget(
 RenderFeaturesWidget::~RenderFeaturesWidget() = default;
 
 void RenderFeaturesWidget::editComputeTask(const QString &name) {
+    editComputeTaskConnection(name, {});
+}
+
+void RenderFeaturesWidget::editComputeTaskConnection(const QString &name, const QStringList &outputs) {
     auto *dialog = new ComputeTaskDialog(impl_->viewport, this, name, [this] {
         impl_->requestRefresh();
         emit renderConfigCommitted();
-    });
+    }, outputs);
     dialog->show();
 }
 

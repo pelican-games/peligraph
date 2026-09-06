@@ -13,6 +13,7 @@
 #include "../src/core/renderingpass/vulkanrendercompilerpackage.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/project/renderconfigdocument.hpp"
+#include "../src/project/rasterrayquery.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -85,6 +86,20 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
         detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, true);
         require_as_nodes();
     }
+    SECTION("declared raster query creates an AS and independent raster can precede it") {
+        graphs[0].nodes[0].ray_query = true;
+        graphs[0].nodes.push_back({.name = "independent", .kind = FramePlanNodeKind::render, .ray_query = false});
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false);
+        CHECK(graphs[0].nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
+        CHECK(graphs[0].nodes[2].after.empty());
+        detail::applyFrameNodeOrder(graphs, {{"main", {"independent", "__scene_acceleration_structure", "draw"}}});
+        const auto plan = planFrameGraph(graphs[0]);
+        CHECK(plan.nodes[0].name == "independent");
+        CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
+        CHECK(plan.nodes[2].name == "draw");
+        detail::applyFrameNodeOrder(graphs, {{"main", {"draw", "__scene_acceleration_structure"}}});
+        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+    }
     SECTION("ray task creates operations") {
         ComputeTaskDefinition task;
         task.name = "trace";
@@ -94,6 +109,13 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
         graphs[0].nodes[0].kind = FramePlanNodeKind::compute;
         detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, false);
         require_as_nodes();
+    }
+    SECTION("fixed sprite shaders can run before AS construction") {
+        graphs[0].nodes.push_back({.name = "__anchor_sprite", .kind = FramePlanNodeKind::anchor});
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true);
+        CHECK(graphs[0].nodes.back().after.empty());
+        detail::applyFrameNodeOrder(graphs, {{"main", {"__anchor_sprite", "__scene_acceleration_structure", "draw"}}});
+        CHECK(planFrameGraph(graphs[0]).nodes[0].name == "__anchor_sprite");
     }
     SECTION("reserved name collision is rejected") {
         graphs[0].nodes[0].name = "__scene_acceleration_structure";
@@ -107,6 +129,24 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         {.name = "main", .nodes = {{.name = "trace", .kind = FramePlanNodeKind::compute}}}};
     const std::vector<SceneAccelerationStructureDefinition> definitions{
         {.name = "actors", .instance_mask = 1}, {.name = "world", .instance_mask = 2}};
+    SECTION("material declaration controls AS placement and selection") {
+        graphs[0] = parseFrameGraphDefinitionFromJson({{"name", "main"}, {"passes", nlohmann::json::array({
+            {{"name", "independent"}, {"type", "material"}, {"material_contract", "deferred_geometry_v1"},
+             {"output", {{"color", {"a", "b", "c", "d", "e"}}, {"depth", "depth"}}}},
+            {{"name", "query"}, {"type", "material"}, {"material_contract", "deferred_geometry_v1"},
+             {"ray_query", {{"acceleration_structure", "actors"}}},
+             {"output", {{"color", {"f", "g", "h", "i", "j"}}, {"depth", "depth2"}}}}
+        })}});
+        REQUIRE(graphs[0].nodes.size() == 2);
+        CHECK(graphs[0].nodes[0].ray_query == false);
+        CHECK(graphs[0].nodes[1].ray_query == true);
+        CHECK(graphs[0].nodes[1].ray_query_acceleration_structure == "actors");
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions);
+        detail::applyFrameNodeOrder(graphs, {{"main", {"independent", "__scene_acceleration_structure", "__scene_acceleration_structure:actors", "query"}}});
+        CHECK(planFrameGraph(graphs[0]).nodes[0].name == "independent");
+        detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}});
+        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+    }
     SECTION("one executable operation per named AS") {
         detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
         REQUIRE(graphs[0].nodes.size() == 4);
@@ -145,6 +185,28 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         graphs[0].nodes[0].name = "__scene_acceleration_structure:actors";
         CHECK_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions),
             Catch::Matchers::ContainsSubstring("Reserved scene acceleration-structure node name"));
+    }
+    SECTION("raster queries select and wait for their named TLAS") {
+        auto &node = graphs[0].nodes[0];
+        node.kind = FramePlanNodeKind::render;
+        node.ray_query = true;
+        node.ray_query_acceleration_structure = *parseRasterRayQuery({{"ray_query", {{"acceleration_structure", "actors"}}}});
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions);
+        CHECK(graphs[0].nodes.back().after == std::vector<std::string>{"__scene_acceleration_structure", "__scene_acceleration_structure:actors"});
+        detail::applyFrameNodeOrder(graphs, {{"main", {"trace", "__scene_acceleration_structure:actors"}}});
+        CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        CHECK(parseRasterRayQuery({{"ray_query", true}}) == "scene");
+        CHECK_FALSE(parseRasterRayQuery({{"ray_query", false}}));
+        for (const auto &bad : nlohmann::json::array({42, "actors", nlohmann::json::object(),
+                 {{"acceleration_structure", ""}}, {{"acceleration_structure", "actors"}, {"extra", 1}}}))
+            CHECK_THROWS(parseRasterRayQuery({{"ray_query", bad}}));
+    }
+    SECTION("unknown raster TLAS is rejected before physical planning") {
+        graphs[0].nodes[0].kind = FramePlanNodeKind::render;
+        graphs[0].nodes[0].ray_query = true;
+        graphs[0].nodes[0].ray_query_acceleration_structure = "missing";
+        CHECK_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, false, definitions),
+            Catch::Matchers::ContainsSubstring("unknown scene acceleration structure"));
     }
 }
 

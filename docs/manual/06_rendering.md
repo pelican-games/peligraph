@@ -991,6 +991,14 @@ ray layoutを使う同じモデル個体のgeometryは、姿勢とinstance設定
 materialやgeometry flagsは個別に保持します。hit shaderの`gl_GeometryIndexEXT`はBLAS内の
 geometry番号で、materialやgeometry tableの参照には対応するshader recordを使います。
 変形する複数geometryもrefit対象です。
+異なる位置・姿勢のtriangle個体もまとめる場合は、ray layoutの
+`acceleration_structure`に`"triangle_space":"world"`を指定します。
+mask・instance flags・custom indexとrecordの並びが結合条件を満たす範囲で、
+world変換を各geometryのBLAS入力へ反映します。省略または`"geometry"`では従来の個体座標系です。
+worldモードのhit shaderではobject座標がworld座標になり、ObjectToWorld/WorldToObjectはidentityです。
+geometry tableの元頂点座標は変わりません。`gl_InstanceID`は結合後の番号です。
+静的個体の移動はBLAS再構築、同じtopologyの変形はrefitで追随します。
+この指定はAABBの座標系や結合条件を変更しません。
 `{"name":"pelican_procedural_geometry","assets":["left_sphere","right_sphere"]}`のように、
 一つのcomponentで複数assetを指定できます。単一指定の`asset`との併記はできません。
 姿勢・instance設定・連続record行の条件を満たせば、
@@ -1007,12 +1015,16 @@ AABB boundsの変更はBLASを再構築し、recordだけの変更ではBLASを�
 recordのshader型照合は現在sceneに装着したassetが対象で、未装着assetは装着時に検査します。
 プレビュー中やrender pipelineの公開待ち中は編集できません。
 新規作成は同じRPCに`operation: "create"`と未使用の`asset_name`、`aabb`、`record`を渡します。
+削除は`operation: "delete"`、`asset_name`、`base_source_digest`を渡し、`aabb`/`record`は指定しません。
+active sceneまたは他の解決済みsceneのcomponentが参照するassetは、保存前に拒否します。
+先にcomponentの参照を外してください。削除も既存の編集結果ticketから確定を確認します。
 `kind`は`aabb_v1`です。最初のprocedural assetを作る場合も使え、asset documentのversion 1は保存時に2へ更新します。
 同名の定義は上書きしません。作成したassetはcomponentの選択候補に入り、装着時にshader recordとの適合性を検査します。
 StudioではRender Featuresの **Procedural assets...** からassetを選び、
 Min/MaxのX・Y・ZとRecord JSONを編集して **Apply** で保存・反映します。
 **New...** で新しい名前を入力すると、選択中のAABB・recordをコピーした草稿を作ります。
 空の一覧ではAABBを±1、recordを空objectとして開始します。編集後に **Create asset** で保存します。
+保存済みassetは **Delete asset** で名前を確認して削除できます。未保存の新規草稿は **Reset selected** で破棄します。
 assetを切り替えても入力内容は保持します。**Refresh / retry** は一覧と編集結果を取得し、
 未保存の草稿とその元の保存世代は保持します。
 **Reset selected** は選択中の草稿だけを、最後に取得した保存済みの値へ戻します。
@@ -1029,7 +1041,19 @@ StudioのRender Features画面から「Scene AS...」を開くと、名前付き
 Frame Planの **Order nodes...** では、名前付きASの構築とconsumerを交互に配置できます。
 例えばleft AS→leftを使うtask→right ASという順序が可能です。
 consumerを自身の接続先ASより前に置く変更は拒否します。ASを使わないcompute・通常anchor・copyは、
-データ依存に反しなければ共有ASより前へ配置できます。raster passとsprite描画は共有AS後に実行します。
+データ依存に反しなければ共有ASより前へ配置できます。
+material・fullscreen・raster・output_transformのshaderでscene全体のray queryを使う場合は、passへ`"ray_query": true`を指定します。
+materialの宣言も省略時はfalseです。ASを読むsurfaceを使う場合は、そのmaterialが描画される各passに宣言してください。
+ASを使わないmaterial passは、他のデータ依存に反しなければAS構築前にも配置できます。
+trueのpassは共有AS構築後に実行し、falseのpassは共有AS前にも配置できます。
+falseでASを使うshaderはロード・shader再読込時に拒否します。
+固定shaderを使うspriteもAS構築を待ちません。色・depthを用意する描画など、通常の依存を満たせば
+Frame Planの`__anchor_sprite`を共有AS構築より前に配置できます。
+Studioのfullscreen pass編集では **Use scene ray query** で切り替え、保存で確定します。
+既存project presetの編集時も元の値を読み込み、チェックを外すとfalseを保存します。
+名前付きTLASを選ぶ場合は`"ray_query": {"acceleration_structure": "actors"}`のように指定します。
+Studioの **Acceleration structure** 欄では`scene`（scene全体）または登録済みTLAS名を入力します。
+passは共有ASと選択したTLASの構築を待ち、そのTLASをquery用descriptorへbindします。未登録名は保存・ロード時に拒否します。
 
 frame graphには、共有BLASとdefault TLASを作る`__scene_acceleration_structure`と、
 名前付きTLASごとの`__scene_acceleration_structure:<name>`が表示されます。
@@ -2400,7 +2424,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
-- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L772))。
+- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L782))。
 
 layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 
@@ -2496,7 +2520,7 @@ scene JSON の `components` に書きます。
 
 ### BLAS variant と `resident_blas_keys` 診断
 
-geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L886))。同じジオメトリでも flags が違えば別 BLAS です。
+geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L888))。同じジオメトリでも flags が違えば別 BLAS です。
 
 プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L803)):
 
@@ -2508,7 +2532,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1419))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1429))。
 
 ## 関連文書
 

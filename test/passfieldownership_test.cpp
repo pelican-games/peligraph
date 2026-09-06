@@ -465,7 +465,7 @@ TEST_CASE(
         actual.emplace_back(field);
     }
     const std::vector<std::string> expected{
-        "name", "type", "input", "output", "shader", "raster_state"};
+        "ray_query", "name", "type", "input", "output", "shader", "raster_state"};
 
     REQUIRE(actual == expected);
     REQUIRE_THROWS_WITH(
