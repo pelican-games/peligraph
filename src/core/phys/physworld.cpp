@@ -605,8 +605,7 @@ Physics::Status PhysWorld::queryOverlapAll(
     std::vector<phys::OverlapHit> &hits) const {
     hits.clear();
     auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
-    const auto *sphere = std::get_if<phys::Sphere>(&shape);
-    if (!meshes.empty() && sphere == nullptr) return Physics::Status::unavailable;
+    if (!meshes.empty() && std::holds_alternative<phys::Capsule>(shape)) return Physics::Status::unavailable;
     const auto colliders = collectColliders();
     std::vector<phys::OverlapHit> result;
     if (!colliders.empty() || meshes.empty()) {
@@ -615,8 +614,8 @@ Physics::Status PhysWorld::queryOverlapAll(
     }
     if (!meshes.empty()) {
         std::vector<phys::OverlapHit> mesh_hits;
-        const auto status = physics_internal::overlapSphereMeshes(
-            *sphere, meshes, identities, metadata, filter, mesh_hits, acceleration);
+        const auto status = physics_internal::overlapMeshes(
+            shape, meshes, identities, metadata, filter, mesh_hits, acceleration);
         if (status != Physics::Status::ok) return status;
         result.insert(result.end(), std::make_move_iterator(mesh_hits.begin()),
                       std::make_move_iterator(mesh_hits.end()));

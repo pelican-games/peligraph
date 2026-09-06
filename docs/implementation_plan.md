@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**Boxと静的meshのoverlap (2026-09-07):**
+- 利用者の「メッシュ物理を区切りまで実装」の許可に基づき、Box overlapをTriangleMesh→provider→PhysWorld→既存公開ServiceV2へ接続。BVHを箱の座標系で絞り、三角形と箱の13分離軸で判定する。接触を含み、回転・非一様scale・反転・shearを扱う。閉じたmeshの内部を充填体とみなす機能ではない。
+- ProviderV3にquery_mesh_box_overlap_allと型付きcallbackを追加。SphereとBoxのfilter・identity・provider結果検査・順序付けはoverlapMeshesで共有。選択中providerを迂回してbuiltinへfallbackしない。ProviderV3構造体を拡張したため利用DLLは現行headerで再ビルドする。
+- Player・runtime_services Debug build成功。既存関連試験とBox追加試験23case/266assertion成功。AABB内だが三角形外のmiss、接触と離隔、回転・変換、公開serviceのhit identity、独自provider結果と不正index拒否を確認。Capsule mesh overlap・sweep・mesh triggerは未実装で、今回のBox完了を区切りとする。provider-only別buildとStudio通し操作は未実施。
+
 **RT専用グラフのwindow output再構築失敗を修正 (2026-09-07):**
 - Studio実接続時に、登録済み標準マテリアルのdeferred_geometry/gbuffer_v1 pass不在を理由にwindow output re-loweringが失敗した。MaterialContainerの互換検査・reload準備で、公開済み世代にも候補にも対応passがないmaterialは既存の非描画状態として保持する。公開済み世代で対応passがあったmaterialのroute削除は引き続き拒否する。
 - PlayerとRT3 production targetのDebug build成功。既存RT4試験の動的record構成をmaterial passなしのRT+present構成へ変更し、標準material登録後の互換検査・reload準備、動的更新・GPU出力・保存を確認。通常構成から全routeを除く候補が両経路で拒否される対照も成功。Studio上での再起動と編集の通し確認は残る。

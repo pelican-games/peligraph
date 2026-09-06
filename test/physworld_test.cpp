@@ -653,6 +653,14 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     REQUIRE(count == 1);
     CHECK(overlap_hit.identity.collider_id == identity.value);
     overlap_query.shape.kind = Physics::ShapeKindV1::box;
+    overlap_query.shape.half_extents = {0.1F, 0.1F, 0.25F};
+    REQUIRE(service.overlap_all(service.context, &overlap_query, &overlap_hit, 1, &count) == Physics::Status::ok);
+    REQUIRE(count == 1);
+    CHECK(overlap_hit.identity.collider_id == identity.value);
+    overlap_query.shape.center.z = 3.3F;
+    REQUIRE(service.overlap_all(service.context, &overlap_query, &overlap_hit, 1, &count) == Physics::Status::ok);
+    CHECK(count == 0);
+    overlap_query.shape.kind = Physics::ShapeKindV1::capsule;
     CHECK(service.overlap_all(service.context, &overlap_query, &overlap_hit, 1, &count) == Physics::Status::unavailable);
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {5, 0, 0};
     hits = world.raycastAll(ray);

@@ -6,6 +6,9 @@
 namespace Pelican::phys { class TriangleMesh; }
 
 namespace Pelican::physics_internal {
+Physics::Status builtinMeshBoxOverlapAll(
+    void *, const Physics::ProviderMeshBoxOverlapQueryV3 *,
+    Physics::ProviderOverlapHitV1 *, std::uint32_t, std::uint32_t *) noexcept;
 
 struct BuiltinMeshQueryContext {
     std::span<const phys::TriangleMesh *const> acceleration;

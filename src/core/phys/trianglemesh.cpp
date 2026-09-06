@@ -9,6 +9,7 @@
 #include <glm/matrix.hpp>
 #include <glm/geometric.hpp>
 #include <glm/vec4.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 namespace Pelican::phys {
 namespace {
@@ -297,6 +298,63 @@ bool TriangleMesh::overlaps(const Sphere &sphere, const glm::mat4 &local_to_worl
                 glm::dot(glm::cross(c - b, projected - b), normal) >= 0 &&
                 glm::dot(glm::cross(a - c, projected - c), normal) >= 0)
                 return true;
+        }
+    }
+    return false;
+}
+
+bool TriangleMesh::overlaps(const Box &box, const glm::mat4 &local_to_world) const {
+    if (nodes_.empty() || !finite(box.center) || !finite(box.half_extents) ||
+        box.half_extents.x < 0 || box.half_extents.y < 0 || box.half_extents.z < 0) return false;
+    const glm::dquat rotation{box.rotation.w, box.rotation.x, box.rotation.y, box.rotation.z};
+    const double length2 = glm::dot(rotation, rotation);
+    if (!std::isfinite(length2) || length2 == 0) return false;
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            if (!std::isfinite(local_to_world[c][r])) return false;
+    if (local_to_world[0][3] != 0 || local_to_world[1][3] != 0 ||
+        local_to_world[2][3] != 0 || local_to_world[3][3] != 1) return false;
+    const glm::dmat4 matrix{local_to_world};
+    const double determinant = glm::determinant(matrix);
+    if (!std::isfinite(determinant) || determinant == 0) return false;
+    const auto inverse_rotation = glm::conjugate(rotation / std::sqrt(length2));
+    const glm::dvec3 center{box.center.x, box.center.y, box.center.z};
+    const glm::dvec3 extent{box.half_extents.x, box.half_extents.y, box.half_extents.z};
+    const auto point = [&](vec3 p) {
+        return inverse_rotation * (glm::dvec3(matrix * glm::dvec4{p.x,p.y,p.z,1}) - center);
+    };
+    const std::array<glm::dvec3, 3> axes{{{1,0,0}, {0,1,0}, {0,0,1}}};
+    const auto intersects = [&](glm::dvec3 a, glm::dvec3 b, glm::dvec3 c) {
+        const auto separated = [&](glm::dvec3 axis) {
+            const double radius = glm::dot(glm::abs(axis), extent);
+            const double pa = glm::dot(a, axis), pb = glm::dot(b, axis), pc = glm::dot(c, axis);
+            return std::min({pa,pb,pc}) > radius || std::max({pa,pb,pc}) < -radius;
+        };
+        for (const auto &axis : axes) if (separated(axis)) return false;
+        const std::array edges{b-a, c-b, a-c};
+        if (separated(glm::cross(edges[0], edges[1]))) return false;
+        for (const auto &edge : edges)
+            for (const auto &axis : axes)
+                if (separated(glm::cross(edge, axis))) return false;
+        return true;
+    };
+    std::array<std::size_t, std::numeric_limits<std::size_t>::digits + 1> stack{};
+    std::size_t size = 1;
+    while (size) {
+        const auto &node = nodes_[stack[--size]];
+        glm::dvec3 low{std::numeric_limits<double>::infinity()}, high{-std::numeric_limits<double>::infinity()};
+        for (int corner = 0; corner < 8; ++corner) {
+            const auto p = point({(corner & 1) ? node.maximum.x : node.minimum.x,
+                (corner & 2) ? node.maximum.y : node.minimum.y,
+                (corner & 4) ? node.maximum.z : node.minimum.z});
+            low = glm::min(low,p); high = glm::max(high,p);
+        }
+        if (glm::any(glm::greaterThan(low, extent)) || glm::any(glm::lessThan(high,-extent))) continue;
+        if (!node.count) { stack[size++] = node.left; stack[size++] = node.right; continue; }
+        for (std::size_t i = node.begin; i < node.begin + node.count; ++i) {
+            const auto triangle = triangles_[i] * 3;
+            if (intersects(point(vertices_[indices_[triangle]]), point(vertices_[indices_[triangle+1]]),
+                           point(vertices_[indices_[triangle+2]]))) return true;
         }
     }
     return false;

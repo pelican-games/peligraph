@@ -183,4 +183,31 @@ TEST_CASE("Triangle mesh sphere overlap resolves faces edges and transformed sur
     CHECK_FALSE(tree.overlaps(Sphere{{53, 0.5F, 2}, 0.1F}, identity));
 }
 
+TEST_CASE("Triangle mesh box overlap separates triangle surfaces from bounds", "[physics][trianglemesh][box-mesh]") {
+    const TriangleMesh mesh(triangle, indices);
+    const glm::mat4 identity{1};
+    Box box{{0.5F,0.5F,2.25F}, {0,0,0,1}, {0.1F,0.1F,0.25F}};
+    CHECK(mesh.overlaps(box, identity));
+    box.center.z = 2.3F;
+    CHECK_FALSE(mesh.overlaps(box, identity));
+    box.center = {1.8F,1.8F,2};
+    CHECK_FALSE(mesh.overlaps(box, identity)); // Inside triangle AABB, outside triangle.
+    box.center = {1,1,2};
+    box.half_extents = {0.5F,0.05F,0.1F};
+    box.rotation = {0,0,0.38268343F,0.92387953F};
+    CHECK(mesh.overlaps(box, identity));
+    box.center = {1.4F,1.4F,2};
+    CHECK_FALSE(mesh.overlaps(box, identity));
+    glm::mat4 transform{1};
+    transform[0][0] = -2; transform[1][0] = 0.5F; transform[2][2] = 3; transform[3][2] = 2;
+    box = Box{{-0.75F,0.5F,8.25F}, {0,0,0,1}, {0.1F,0.1F,0.25F}};
+    CHECK(mesh.overlaps(box, transform));
+    box.center.z = 8.3F;
+    CHECK_FALSE(mesh.overlaps(box, transform));
+    box.rotation = {0,0,0,0};
+    CHECK_FALSE(mesh.overlaps(box, identity));
+    box.rotation = {0,0,0,1}; box.half_extents.x = -1;
+    CHECK_FALSE(mesh.overlaps(box, identity));
+}
+
 } // namespace Pelican::phys
