@@ -528,7 +528,7 @@ bool knownShaderStage(std::string_view value) {
     return value == "vertex" || value == "skinned_vertex" ||
            value == "fragment" || value == "compute" ||
            value == "raygen" || value == "miss" ||
-           value == "closesthit" || value == "anyhit" || value == "callable";
+           value == "closesthit" || value == "anyhit" || value == "intersection" || value == "callable";
 }
 
 Pelican::ShaderSourceStage sourceStageForWireStage(
@@ -544,6 +544,7 @@ Pelican::ShaderSourceStage sourceStageForWireStage(
         return Pelican::ShaderSourceStage::closesthit;
     }
     if (value == "anyhit") return Pelican::ShaderSourceStage::anyhit;
+    if (value == "intersection") return Pelican::ShaderSourceStage::intersection;
     if (value == "callable") return Pelican::ShaderSourceStage::callable;
     throw std::logic_error("unknown validated shader stage");
 }
@@ -590,7 +591,7 @@ FramePlanShaderStage parseShaderStage(
 
     const bool indexed_ray_stage =
         result.stage == "miss" || result.stage == "closesthit" ||
-        result.stage == "anyhit" || result.stage == "callable";
+        result.stage == "anyhit" || result.stage == "intersection" || result.stage == "callable";
     const auto index = value.find("index");
     if (indexed_ray_stage) {
         if (index == value.end()) {
@@ -708,7 +709,7 @@ FramePlanShaderResolution parseShaderResolution(
     requireOnlyFields(
         value,
         {"state", "stages", "hit_slot_count", "closesthit_slots",
-         "anyhit_slots"},
+         "anyhit_slots", "intersection_slots"},
         context);
     result.state = FramePlanShaderResolutionState::resolved;
     const auto &stages = requireArrayField(value, "stages", context);
@@ -729,6 +730,9 @@ FramePlanShaderResolution parseShaderResolution(
         if (stage.stage == "anyhit") {
             throw invalid(std::string{context} +
                           ".stages forbids anyhit; use anyhit_slots");
+        }
+        if (stage.stage == "intersection") {
+            throw invalid(std::string{context} + ".stages forbids intersection; use intersection_slots");
         }
         const auto order = shaderStageOrder(stage.stage);
         if (order < previous_order) {
@@ -770,6 +774,10 @@ FramePlanShaderResolution parseShaderResolution(
     if (value.contains("anyhit_slots") && !has_hit_domain) {
         throw invalid(std::string{context} +
                       ".anyhit_slots requires a physical hit-slot domain");
+    }
+
+    if (value.contains("intersection_slots") && !has_hit_domain) {
+        throw invalid(std::string{context} + ".intersection_slots requires a physical hit-slot domain");
     }
 
     std::set<std::size_t> typed_closesthit_slots;
@@ -849,6 +857,9 @@ FramePlanShaderResolution parseShaderResolution(
         for (const auto &slot : result.closesthit_slots) {
             typed_closesthit_slots.insert(slot.hit_slot);
         }
+    }
+    if (value.contains("intersection_slots")) {
+        parse_slots("intersection_slots", "intersection", result.intersection_slots);
     }
     if (value.contains("anyhit_slots")) {
         parse_slots("anyhit_slots", "anyhit", result.anyhit_slots);

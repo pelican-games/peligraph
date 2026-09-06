@@ -85,6 +85,7 @@ struct FramePlanShaderResolution {
     std::optional<std::size_t> hit_slot_count;
     std::vector<FramePlanHitShaderSlot> closesthit_slots;
     std::vector<FramePlanAnyHitSlot> anyhit_slots;
+    std::vector<FramePlanHitShaderSlot> intersection_slots;
 
     [[nodiscard]] bool resolved() const noexcept {
         return state == FramePlanShaderResolutionState::resolved;

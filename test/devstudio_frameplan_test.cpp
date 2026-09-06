@@ -1308,6 +1308,12 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
          })},
     };
 
+    resolution["intersection_slots"] = Json::array({
+        {{"hit_slot", 4}, {"stage", "intersection"},
+         {"declared_ref", "shaders/sphere"}, {"effective_ref", "shaders/sphere"},
+         {"origin", "authored"}, {"source_open_ref", "project://shaders/sphere.rint"}}
+    });
+
     const auto model = buildFramePlanModel(plan.dump());
     CHECK(model.nodes.front().shader_resolution.hit_slot_count ==
           std::optional<std::size_t>{5});
@@ -1318,6 +1324,17 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
     CHECK(model.nodes.front()
               .shader_resolution.anyhit_slots[1]
               .projection.stage == "anyhit");
+
+    const auto &intersections = model.nodes.front().shader_resolution.intersection_slots;
+    REQUIRE(intersections.size() == 1);
+    CHECK(intersections[0].hit_slot == 4);
+    CHECK(intersections[0].projection.stage == "intersection");
+    CHECK(intersections[0].projection.source_open_ref == "project://shaders/sphere.rint");
+    SECTION("intersection slot must belong to the physical domain") {
+        resolution["intersection_slots"][0]["hit_slot"] = 5;
+        REQUIRE_THROWS_WITH(buildFramePlanModel(plan.dump()),
+                            ContainsSubstring("outside hit_slot_count"));
+    }
 
     auto &slots = resolution["anyhit_slots"];
     SECTION("unknown field is rejected") {

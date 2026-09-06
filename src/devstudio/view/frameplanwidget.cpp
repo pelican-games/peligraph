@@ -1060,7 +1060,7 @@ struct FramePlanWidget::Impl {
             pass_item, owner.tr("Shaders"),
             resolution.stages.size() +
                 resolution.closesthit_slots.size() +
-                resolution.anyhit_slots.size());
+                resolution.anyhit_slots.size() + resolution.intersection_slots.size());
         const auto add_stage = [&](
             const FramePlanShaderStage &stage,
             const QString &stage_name,
@@ -1134,6 +1134,11 @@ struct FramePlanWidget::Impl {
                 QStringLiteral("closesthit[hit_slot=%1]")
                     .arg(static_cast<qulonglong>(slot.hit_slot)),
                 slot.hit_slot);
+        }
+        for (const auto &slot : resolution.intersection_slots) {
+            add_stage(slot.projection,
+                QStringLiteral("intersection[hit_slot=%1]")
+                    .arg(static_cast<qulonglong>(slot.hit_slot)), slot.hit_slot);
         }
         for (const auto &slot : resolution.anyhit_slots) {
             add_stage(
