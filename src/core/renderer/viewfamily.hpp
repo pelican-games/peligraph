@@ -76,6 +76,11 @@ struct RenderViewFamily {
 
 RenderViewFamily makeMainRenderViewFamily(RenderViewParameters view);
 
+// uvec4 header: magic 0x50564d31, view count, family token low/high.
+// Followed by projection * view matrices, four float-bitcast columns per view,
+// in the same order used to render the family layers.
+std::vector<glm::uvec4> packRenderViewFamilyMatrices(const RenderViewFamily &family);
+
 struct RenderViewFamilies {
     std::vector<RenderViewFamily> families;
 

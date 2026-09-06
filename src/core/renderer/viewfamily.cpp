@@ -1,6 +1,7 @@
 #include "viewfamily.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -8,6 +9,27 @@
 #include <utility>
 
 namespace Pelican {
+std::vector<glm::uvec4> packRenderViewFamilyMatrices(const RenderViewFamily &family) {
+    if (family.views.size() > (std::numeric_limits<std::uint32_t>::max() - 1u) / 4u)
+        throw std::overflow_error("view family matrix buffer exceeds uint32 addressing");
+    const auto token = renderViewFamilyToken(family.family_id);
+    std::vector<glm::uvec4> data(1 + family.views.size() * 4);
+    data[0] = {0x50564d31u, static_cast<std::uint32_t>(family.views.size()), token[0], token[1]};
+    std::size_t offset = 1;
+    for (const auto &view : family.views) {
+        const auto matrix = view.projection * view.view;
+        for (glm::length_t column = 0; column < 4; ++column) {
+            for (glm::length_t row = 0; row < 4; ++row) {
+                if (!std::isfinite(matrix[column][row]))
+                    throw std::runtime_error("view family matrix is non-finite");
+                data[offset][row] = std::bit_cast<std::uint32_t>(matrix[column][row]);
+            }
+            ++offset;
+        }
+    }
+    return data;
+}
+
 namespace {
 
 std::set<std::string, std::less<>> validatedViewIds(

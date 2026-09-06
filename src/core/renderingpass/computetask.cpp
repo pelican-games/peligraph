@@ -80,6 +80,9 @@ FrameGraphHostBufferSource parseHostBufferSource(
     if (value == "scene_lights_v2") {
         return FrameGraphHostBufferSource::scene_lights_v2;
     }
+    if (value == "view_family_matrices_v1") {
+        return FrameGraphHostBufferSource::view_family_matrices_v1;
+    }
     if (value == "scene_draw_commands_v1") {
         return FrameGraphHostBufferSource::
             scene_draw_commands_v1;
@@ -1872,6 +1875,8 @@ std::string_view frameGraphHostBufferSourceName(
     switch (source) {
     case FrameGraphHostBufferSource::scene_lights_v2:
         return "scene_lights_v2";
+    case FrameGraphHostBufferSource::view_family_matrices_v1:
+        return "view_family_matrices_v1";
     case FrameGraphHostBufferSource::
         scene_draw_commands_v1:
         return "scene_draw_commands_v1";
@@ -1977,6 +1982,16 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
             definition.command_layout =
                 parseBufferCommandLayout(
                     entry, context);
+        }
+        if (definition.host_source == FrameGraphHostBufferSource::view_family_matrices_v1) {
+            definition.host_view_family = requireString(entry, "view_family", context);
+            if (definition.host_view_family.empty() || definition.command_layout ||
+                definition.size < 16 || definition.size % 16 != 0) {
+                throw std::runtime_error(context +
+                    " view_family_matrices_v1 requires a view_family and a uvec4-aligned data buffer");
+            }
+        } else if (entry.contains("view_family")) {
+            throw std::runtime_error(context + " buffer view_family requires view_family_matrices_v1");
         }
         if (entry.contains("lifetime")) {
             const auto lifetime =

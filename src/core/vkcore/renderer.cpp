@@ -464,6 +464,14 @@ void updateFrameLights(
     }
     constexpr auto source =
         FrameGraphHostBufferSource::scene_lights_v2;
+    for (const auto &target : frame_graph_resources.hostBufferTargets(
+             FrameGraphHostBufferSource::view_family_matrices_v1)) {
+        const auto &definition = frame_graph_resources.definition(target.id);
+        const auto &family = view_families.require(definition.host_view_family);
+        const auto data = packRenderViewFamilyMatrices(family);
+        frame_graph_resources.writeHostBuffer(target.id, std::as_bytes(std::span(data)),
+            FrameGraphResourceContainer::HostBufferPopulation{family.views.size(), family.views.size()});
+    }
     if (!frame_graph_resources
              .hasHostBufferSource(source)) {
         return;

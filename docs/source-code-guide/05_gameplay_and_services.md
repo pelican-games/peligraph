@@ -251,7 +251,7 @@ Action結果はbuttonのpressed/released/held、axis1、axis2、poseです。`po
 - active camera名
 - optional orbit/follow/fly controller定義
 
-加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L109) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L114) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1415)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L503)）です。
+加えて [`discontinuityRevision()`](../../src/core/renderer/camera.hpp#L109) と [`getProjectionSpec()`](../../src/core/renderer/camera.hpp#L114) を公開します。前者はrendererのtemporal reset（[`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L1423)）、後者はXR eye projectionの入力（[`loop.cpp` 内](../../src/core/appflow/loop.cpp#L503)）です。
 
 ### scene cameraロード
 

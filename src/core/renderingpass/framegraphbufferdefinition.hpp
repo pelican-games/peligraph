@@ -10,6 +10,7 @@ namespace Pelican {
 
 enum class FrameGraphHostBufferSource : std::uint8_t {
     scene_lights_v2,
+    view_family_matrices_v1,
     scene_draw_commands_v1,
     scene_draw_bounds_v1,
     scene_draw_segments_v1,
@@ -72,6 +73,8 @@ struct FrameGraphBufferDefinition {
         extent_size;
     std::optional<FrameGraphBufferCommandLayout>
         command_layout;
+    // Required by view_family_matrices_v1; selects the resolved provider family.
+    std::string host_view_family;
 };
 
 } // namespace Pelican

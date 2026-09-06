@@ -23242,6 +23242,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**描画family行列のgraph入力 (2026-09-06):**
+- 利用者方針に従い、影専用frame descriptorの未統合差分は復元可能なpatchへ保存して取り下げた。通常時の最適化済み標準機能は許容し、分解時に設定・接続を引き継ぎ、一体化に依存する最適化を解除する方針をv1文書に記録。
+- bufferのhost_sourceにview_family_matrices_v1、選択子にview_familyを追加。解決済みfamilyのprojection * viewを描画layer順に既存host buffer書込みへ渡す。データはuvec4 header（magic=0x50564d31、view数、family tokenの2要素）と、各行列の4列のfloat bit表現。sizeは明示容量で、不足時は既存書込み境界でエラーにする。影以外のcapture等でも同じresource portから利用可能。
+- Debug view_temporal/runtime_services build成功。行列の積順・view順と既存point/spotの3件81 assertions、buffer宣言の1件18 assertionsが成功。実GPUの読取り・影receiverは未確認で、WP242b完了とはしない。
+- 既存forkはpreset原文コピーであり、featureを独立ノード群に展開する操作は未実装。既存のpass/task/resource編集・複数文書commit経路を再利用できることを限定調査した。
+
 **WP242b surface contract・転送データ形式 (2026-09-06、接続途中):**
 - point_shadow / spot_shadowをfeature-ownedなdepth array入力としてproject合成・runtime parser・shader reflectionへ追加。directionalと同時に受理し、各入力を別のrelationとして保持する。
 - 標準algorithm配下にライトinventory index・kind・matrix offset・array layerを持つ転送表packerを追加。pointは6面、spotは1面の行列を格納する。実際のfamily行列のGPU転送・feature resource・forward/deferred receiverはまだ未接続で、影描画完了とはしない。

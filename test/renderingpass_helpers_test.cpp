@@ -1428,6 +1428,17 @@ TEST_CASE(
           ]
         })json");
 
+    auto matrix_config = nlohmann::json::parse(R"({"buffers":[{
+        "name":"capture_matrices", "size":400,
+        "host_source":"view_family_matrices_v1", "view_family":"$project/capture"
+    }]})");
+    const auto matrix_buffers = parseFrameGraphBufferDefinitionsFromJson(matrix_config);
+    REQUIRE(matrix_buffers.size() == 1);
+    CHECK(matrix_buffers[0].host_view_family == "$project/capture");
+    CHECK(matrix_buffers[0].host_source == FrameGraphHostBufferSource::view_family_matrices_v1);
+    matrix_config["buffers"][0].erase("view_family");
+    CHECK_THROWS(parseFrameGraphBufferDefinitionsFromJson(matrix_config));
+
     const auto buffers =
         parseFrameGraphBufferDefinitionsFromJson(
             config);

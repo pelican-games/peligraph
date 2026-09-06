@@ -26,6 +26,25 @@
 namespace Pelican {
 namespace {
 
+TEST_CASE("graph matrix buffers preserve resolved view order and projection",
+          "[view-family][host-matrices]") {
+    RenderViewFamily family{.family_id = "$project/capture"};
+    for (float x : {2.0f, -3.0f}) {
+        RenderViewParameters view;
+        view.view = glm::translate(glm::mat4(1), glm::vec3(x, 0, 0));
+        view.projection = glm::scale(glm::mat4(1), glm::vec3(4, 1, 1));
+        family.views.push_back(view);
+    }
+    const auto data = packRenderViewFamilyMatrices(family);
+    REQUIRE(data.size() == 9);
+    const auto token = renderViewFamilyToken(family.family_id);
+    CHECK(data[0] == glm::uvec4(0x50564d31u, 2, token[0], token[1]));
+    CHECK(std::bit_cast<float>(data[4].x) == 8.0f);
+    CHECK(std::bit_cast<float>(data[8].x) == -12.0f);
+    family.views[0].view[0][0] = std::numeric_limits<float>::infinity();
+    CHECK_THROWS(packRenderViewFamilyMatrices(family));
+}
+
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 TEST_CASE("punctual shadow data preserves inventory and cube face addressing",
           "[punctual-shadow][shadow-data]") {
