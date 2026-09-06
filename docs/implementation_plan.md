@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**動的callable recordの実行時設定観測 (2026-09-07):**
+- currentFramePlanJsonにtaskごとのruntime_callable_recordsを追加。compiled初期宣言ではなく登録済みComputeTaskContainerの値を取得し、record index・field名・型・offset・値を返す。sourceはruntime_cpu_settingsでありGPU完了値のreadbackではない。Studioでは既存Raw JSONから取得できる。
+- hit/callableのrecord field変換をrayRecordFieldsJsonへ集約。Player・RT3 production targetのDebug build成功、既存RT4 GPU試験1case/48assertion成功。初期override値250とAPI更新直後400の観測、GPU出力407と既存reload・保存経路を確認。GPU完了値の観測と専用表示は未実装。
+
 **タグ付き領域の差し替えをStudioへ接続 (2026-09-06):**
 - Render FeaturesのRegion replacements...からproject presetに宣言された領域と現在のproviderを表示し、edit_region_replacementで選択・解除を保存する。空欄は元ノードの使用を意味し、一般的なコンパイラ最適化は維持する。engine presetは既存Fork presetへ案内する。
 - preset forkと領域編集のRPC要求・結果待機・切断時処理をPresetEditDialogで共有。Studioとfullscreen_pass testのDebug build成功、既存Render Features画面試験成功。保存API自体は既存の検証済み実装を使用し変更していない。新画面の実エンジン接続下操作は未確認。

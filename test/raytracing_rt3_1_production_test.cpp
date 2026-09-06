@@ -6644,6 +6644,18 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     };
     CHECK(marker() == (dynamic_records ? 257u : 207u));
     if (dynamic_records) {
+        const auto observed_increment = [&] {
+            const auto plan = GET_MODULE(Renderer).currentFramePlanJson();
+            const auto &nodes = plan.at("nodes");
+            const auto node = std::find_if(nodes.begin(), nodes.end(), [](const auto &entry) {
+                return entry.value("name", std::string{}) == "wp386_trace";
+            });
+            REQUIRE(node != nodes.end());
+            const auto &observation = node->at("runtime_callable_records");
+            CHECK(observation.at("source") == "runtime_cpu_settings");
+            return observation.at("records").at(1).at("fields").at(0).at("value").template get<std::uint32_t>();
+        };
+        CHECK(observed_increment() == 250u);
         std::size_t pipeline_creates = 0;
         ScopedRayTracingPipelineCreateObserver observer{
             [&](const RayTracingPipelineCreateObservation &) { ++pipeline_creates; }};
@@ -6656,6 +6668,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
 #else
         context.setRayTracingCallableRecord("wp386_trace", 1, Json{{"increment", 400}});
 #endif
+        CHECK(observed_increment() == 400u);
         CHECK(marker() == 407u);
         CHECK_THROWS(context.setRayTracingCallableRecord(
             "missing_ray_task", 1, Json{{"increment", 500}}));

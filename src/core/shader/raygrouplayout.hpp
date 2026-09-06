@@ -314,6 +314,9 @@ struct RaySceneSettingSources {
     std::optional<std::uint32_t> override_row_id;
 };
 
+nlohmann::ordered_json rayRecordFieldsJson(
+    std::span<const RayRecordMemberLayout> members, std::span<const std::byte> data);
+
 struct RaySceneRow {
     RaySceneSettingSources setting_sources;
     std::optional<std::size_t> binding_index;

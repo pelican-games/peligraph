@@ -16,6 +16,47 @@
 
 namespace Pelican {
 
+nlohmann::ordered_json rayRecordFieldsJson(std::span<const RayRecordMemberLayout> members, std::span<const std::byte> data) {
+    auto fields = nlohmann::ordered_json::array();
+    for (const auto &member : members) {
+        std::string_view type;
+        std::size_t count = 1;
+        switch (member.type) {
+        case RayRecordType::i32: type = "i32"; break;
+        case RayRecordType::u32: type = "u32"; break;
+        case RayRecordType::f32: type = "f32"; break;
+        case RayRecordType::vec2: type = "vec2"; count = 2; break;
+        case RayRecordType::vec3: type = "vec3"; count = 3; break;
+        case RayRecordType::vec4: type = "vec4"; count = 4; break;
+        }
+        if (member.offset > data.size() || count * 4 > data.size() - member.offset)
+            throw std::runtime_error("Published ray record schema exceeds row data");
+        const auto *bytes = data.data() + member.offset;
+        nlohmann::ordered_json value;
+        if (member.type == RayRecordType::i32) {
+            std::int32_t number;
+            std::memcpy(&number, bytes, sizeof(number));
+            value = number;
+        } else if (member.type == RayRecordType::u32) {
+            std::uint32_t number;
+            std::memcpy(&number, bytes, sizeof(number));
+            value = number;
+        } else {
+            auto components = nlohmann::ordered_json::array();
+            for (std::size_t index = 0; index < count; ++index) {
+                float number;
+                std::memcpy(&number, bytes + index * sizeof(number), sizeof(number));
+                components.push_back(number);
+            }
+            value = count == 1 ? components.at(0) : components;
+        }
+        fields.push_back({{"name", member.name}, {"type", type},
+                          {"offset", member.offset}, {"value", std::move(value)}});
+    }
+    return fields;
+}
+
+
 MaterialRowIdentity materialRowIdentity(const RaySceneRowInput &row) {
     if (!row.material_document.empty()) {
         return MaterialRowDocumentIdentity{
