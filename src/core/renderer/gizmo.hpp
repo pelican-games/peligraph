@@ -174,6 +174,7 @@ DECLARE_MODULE(Gizmo) {
     struct PipelineRecord {
         PipelineHandle pipeline;
         vk::UniqueDescriptorSet descriptor_set;
+        std::string acceleration_structure = "scene";
     };
 
     vk::Device device;
@@ -212,7 +213,9 @@ DECLARE_MODULE(Gizmo) {
                         ShaderBundleId frag_shader,
                         std::vector<std::string> shader_defines = {},
                         vk::SampleCountFlagBits samples =
-                            vk::SampleCountFlagBits::e1);
+                            vk::SampleCountFlagBits::e1,
+                        bool ray_query = false,
+                        std::string acceleration_structure = "scene");
     void render(vk::CommandBuffer cmd_buf, PassId pass_id,
                 const FrameResources &frame_resources,
                 const std::optional<glm::vec3> &world_position,

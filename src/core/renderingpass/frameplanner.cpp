@@ -785,6 +785,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
                     ? FramePlanNodeKind::output_transform
                     : FramePlanNodeKind::render;
     if (type == RenderPassType::material || type == RenderPassType::fullscreen || type == RenderPassType::raster || type == RenderPassType::debug_draw ||
+        type == RenderPassType::debug_text || type == RenderPassType::gizmo ||
         type == RenderPassType::output_transform) {
         const auto query = parseRasterRayQuery(pass_json);
         node.ray_query = query.has_value();
@@ -1237,7 +1238,8 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     FrameGraphNodeDefinition node;
     node.name = pass.name;
     node.kind = passKind(pass);
-    if (pass.isMaterial() || pass.isFullscreen() || pass.isGenericRaster() || pass.isDebugDraw()) {
+    if (pass.isMaterial() || pass.isFullscreen() || pass.isGenericRaster() || pass.isDebugDraw() ||
+        pass.isDebugText() || pass.isGizmo()) {
         node.ray_query = pass.ray_query;
         node.ray_query_acceleration_structure = pass.ray_query_acceleration_structure;
     }

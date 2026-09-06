@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加は固定/画面連動サイズ混在のsnapshot解析修正とdebug_draw組込みGLSLの登録。debug_drawの明示ray queryとAS非依存描画は `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
+- 最新の追加はdebug_text/gizmoの明示ray queryとAS非依存描画。固定/画面連動サイズ混在のsnapshot解析修正とdebug_draw組込みGLSLは `9e5c363b`、debug_drawの明示ray queryは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**固定/画面連動サイズ混在とdebug_draw組込みshader修正 (2026-09-06):**
+**RT6 debug_text/gizmoのAS宣言 (2026-09-06):**
+- 両passのray_query省略/falseをAS非依存にし、宣言時は指定TLASへ依存してdescriptorを選択する。shader/ray_queryの所有規則をdebug_drawと共有し、JSON/typed graph、runtime登録、pipeline descへ接続した。再読込は保持済みdescを使用する。
+- Player/Studio・CPU/GPU build終了コード0（build/.codex_bg/aux-query-build.log）、fixture修正後GPU buildも成功（aux-query-gpu-build.log）。CPU2件・135 assertions成功（aux-query-cpu.log）。AS前の文字・gizmo描画218 assertions成功（aux-query-gpu-first.log）、最終named-tlas全section 3120 assertions成功（aux-query-gpu-final.log）。左右・空の選択、未宣言query拒否と既存描画を含む。
+- 初回query用文字shaderがatlas bindingを省略しており、固定descriptor書込でVulkanエラー・device lossになった。fixtureを既存フォントinterface保持へ修正した後、単独query（aux-query-gpu-query.log）と上記全sectionが成功。失敗ログはaux-query-gpu.log。
+- 次の実害修正: 補助shaderの固定descriptor契約をGraphicsPipelineDescに保持し、生成/再読込時のmerged reflectionで検証する。DebugDraw/Gizmoはset3 binding0 storage buffer、DebugTextは加えてbinding1の2D combined samplerを要求する。登録時だけの検査ではreloadを守れない。shadow/velocityのAS依存細分化も残る。
+- 対照: named bindingをscene固定へ戻すと左右/空のヒット色が落ち、依存解除を戻すとAS前順序が落ちる。未宣言queryはpipeline生成で拒否。個別変異は未実行。新たな検証framework・配布toolは追加していない。
+
+**固定/画面連動サイズ混在とdebug_draw組込みshader修正 (2026-09-06、9e5c363b):**
 - snapshotのbyte size解析をtarget単位にし、画面extent未確定のtargetだけを保留する。サイズ宣言のない論理graphの検査用途を維持し、確定後の不正形式・ゼロサイズは拒否する。
 - debug_drawのGLSL埋込みとengine resource登録を、既存debug_text/gizmoと揃えた。RTの共通defineがある場合も既存stem解決でソースを選べる。SPIR-Vへdefineを黙って無視する分岐は追加していない。GPU fixtureからproject shaderコピーを除去し、組込みshaderと固定32px targetを使う構成で確認する。
 - Player/Studio・CPU/GPU最終build終了コード0（build/.codex_bg/mixed-extent-final-build.log）。FramePlanner 35件成功（mixed-extent-cpu.log）。GPU named-tlas全section 1910 assertions成功（mixed-extent-gpu.log）、論理graphの判定調整後もAS前debug描画成功（mixed-extent-gpu-final.log）。最初のCPU試験でサイズを持たない論理graphへの過剰検査を検出し修正済み。

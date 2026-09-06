@@ -2376,7 +2376,9 @@ PassId compileDebugTextPass(const PassDefinition &pass_def, DebugTextRuntimeDepe
                                                      dependencies.shader_defines);
     return dependencies.debug_text.registerPass(color_format, vert_shader, frag_shader,
                                                 dependencies.shader_defines,
-                                                pass_def.rasterization_samples);
+                                                pass_def.rasterization_samples,
+                                                pass_def.ray_query,
+                                                pass_def.ray_query_acceleration_structure);
 }
 
 PassId compileGizmoPass(const PassDefinition &pass_def,
@@ -2395,7 +2397,8 @@ PassId compileGizmoPass(const PassDefinition &pass_def,
         dependencies.shader_defines);
     return dependencies.gizmo.registerPass(
         color_format, vert_shader, frag_shader, dependencies.shader_defines,
-        pass_def.rasterization_samples);
+        pass_def.rasterization_samples, pass_def.ray_query,
+        pass_def.ray_query_acceleration_structure);
 }
 
 PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntimeDependencies dependencies) {

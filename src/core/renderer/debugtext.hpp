@@ -8,6 +8,7 @@
 #include "../ui/bitmapfont.hpp"
 #include <glm/glm.hpp>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
@@ -34,6 +35,7 @@ DECLARE_MODULE(DebugText) {
     struct PipelineRecord {
         PipelineHandle pipeline;
         vk::UniqueDescriptorSet descriptor_set;
+        std::string acceleration_structure = "scene";
     };
 
     vk::Device device;
@@ -76,7 +78,9 @@ DECLARE_MODULE(DebugText) {
                         ShaderBundleId frag_shader,
                         std::vector<std::string> shader_defines = {},
                         vk::SampleCountFlagBits samples =
-                            vk::SampleCountFlagBits::e1);
+                            vk::SampleCountFlagBits::e1,
+                        bool ray_query = false,
+                        std::string acceleration_structure = "scene");
     void text(int x, int y, std::string_view value,
               glm::vec4 color = glm::vec4{1.0f}, int scale = 1);
     void clear();

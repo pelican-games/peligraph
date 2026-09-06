@@ -729,13 +729,15 @@ PassId Gizmo::registerPass(vk::Format color_format,
                            ShaderBundleId vert_shader,
                            ShaderBundleId frag_shader,
                            std::vector<std::string> shader_defines,
-                           vk::SampleCountFlagBits samples) {
+                           vk::SampleCountFlagBits samples,
+                           bool ray_query, std::string acceleration_structure) {
     ensureDevice();
     if (next_pass_id == std::numeric_limits<int>::max()) {
         throw std::runtime_error("Gizmo pass handle table is exhausted");
     }
 
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = ray_query;
     desc.vert = vert_shader;
     desc.frag = frag_shader;
     desc.color_formats = {color_format};
@@ -752,7 +754,8 @@ PassId Gizmo::registerPass(vk::Format color_format,
     if (!pipelines
              .emplace(pass_id,
                       PipelineRecord{
-                          GET_MODULE(PipelineFactory).create(desc), {}})
+                          GET_MODULE(PipelineFactory).create(desc), {},
+                          std::move(acceleration_structure)})
              .second) {
         throw std::runtime_error(
             "Gizmo pipeline table changed during registration");
@@ -797,7 +800,8 @@ void Gizmo::render(vk::CommandBuffer cmd_buf, PassId pass_id,
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
                          pipeline_factory.pipeline(found->second.pipeline));
     frame_resources.bindGraphics(
-        cmd_buf, pipeline_factory.layout(found->second.pipeline));
+        cmd_buf, pipeline_factory.layout(found->second.pipeline),
+        found->second.acceleration_structure);
     cmd_buf.bindDescriptorSets(
         vk::PipelineBindPoint::eGraphics,
         pipeline_factory.layout(found->second.pipeline), PELICAN_SET_FREE,

@@ -173,10 +173,14 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}});
         CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
     }
-    SECTION("debug drawing declares its query dependency in JSON and typed graphs") {
+    SECTION("auxiliary drawing declares its query dependency in JSON and typed graphs") {
+      for (const auto type : {RenderPassType::debug_draw, RenderPassType::debug_text, RenderPassType::gizmo}) {
+        const auto type_name = type == RenderPassType::debug_draw ? "debug_draw" :
+                               type == RenderPassType::debug_text ? "debug_text" : "gizmo";
+        INFO(type_name);
         graphs[0] = parseFrameGraphDefinitionFromJson({{"name", "main"}, {"passes", nlohmann::json::array({
-            {{"name", "independent"}, {"type", "debug_draw"}, {"output", {{"color", "a"}, {"depth", nullptr}}}},
-            {{"name", "query"}, {"type", "debug_draw"}, {"ray_query", {{"acceleration_structure", "actors"}}},
+            {{"name", "independent"}, {"type", type_name}, {"output", {{"color", "a"}, {"depth", nullptr}}}},
+            {{"name", "query"}, {"type", type_name}, {"ray_query", {{"acceleration_structure", "actors"}}},
              {"output", {{"color", "b"}, {"depth", nullptr}}}}
         })}});
         REQUIRE(graphs[0].nodes.size() == 2);
@@ -187,10 +191,12 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         typed.name = "main";
         PassDefinition draw;
         draw.name = "independent";
-        draw.pass_type = RenderPassType::debug_draw;
-        draw.pass_info = DebugDrawPassInfo{};
+        draw.pass_type = type;
+        if (type == RenderPassType::debug_draw) draw.pass_info = DebugDrawPassInfo{};
+        else if (type == RenderPassType::debug_text) draw.pass_info = DebugTextPassInfo{};
+        else draw.pass_info = GizmoPassInfo{};
         draw.output_color.emplace_back(GlobalRenderTargetId{0});
-        draw.applyDefaultAttachmentOperations(RenderPassType::debug_draw);
+        draw.applyDefaultAttachmentOperations(type);
         typed.passes.push_back(draw);
         draw.name = "query";
         draw.ray_query = true;
@@ -210,6 +216,7 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
             detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}});
             CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
         }
+      }
     }
     SECTION("one executable operation per named AS") {
         detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);

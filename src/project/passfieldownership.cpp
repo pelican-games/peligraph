@@ -42,7 +42,7 @@ constexpr std::array raster_fields{
     "shader"sv,
 };
 constexpr std::array shader_field{"shader"sv};
-constexpr std::array debug_draw_fields{"shader"sv, "ray_query"sv};
+constexpr std::array auxiliary_raster_fields{"shader"sv, "ray_query"sv};
 constexpr std::array canonical_anchor_fields{"anchor"sv};
 constexpr std::array snapshot_copy_fields{
     "source"sv,
@@ -71,11 +71,11 @@ constexpr std::array ownership_table{
     PassFieldOwnershipEntry{RenderPassType::output_transform,
                             "output_transform"sv, fullscreen_fields},
     PassFieldOwnershipEntry{RenderPassType::debug_draw, "debug_draw"sv,
-                            debug_draw_fields},
+                            auxiliary_raster_fields},
     PassFieldOwnershipEntry{RenderPassType::gizmo, "gizmo"sv,
-                            shader_field},
+                            auxiliary_raster_fields},
     PassFieldOwnershipEntry{RenderPassType::debug_text, "debug_text"sv,
-                            shader_field},
+                            auxiliary_raster_fields},
     PassFieldOwnershipEntry{RenderPassType::shadow_depth, "shadow_depth"sv,
                             shader_field},
     PassFieldOwnershipEntry{RenderPassType::velocity, "velocity"sv,
