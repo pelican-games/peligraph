@@ -3,6 +3,7 @@
 #include "../src/core/renderer/directionalshadowcascade.hpp"
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 #include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
+#include "../src/core/render_algorithms/punctual_shadow/punctualshadowview.hpp"
 #include "../src/core/render_algorithms/planar_reflection/planarreflectionview.hpp"
 #endif
 
@@ -833,6 +834,37 @@ TEST_CASE(
                     },
             }),
         std::invalid_argument);
+}
+
+TEST_CASE("punctual shadow cameras cover point faces and the spot cone",
+          "[view-family][punctual-shadow][render-algorithm]") {
+    const std::array points{PointLight{.position = {2, 3, 4}}, PointLight{.position = {-3, 2, 1}}};
+    const auto point_family = buildPointShadowViewFamily(points, 0.25f, 20.0f);
+    REQUIRE(point_family.views.size() == 12);
+    const std::array<glm::vec3, 6> directions{{{1,0,0},{-1,0,0},{0,1,0},{0,-1,0},{0,0,1},{0,0,-1}}};
+    for (std::size_t index = 0; index < point_family.views.size(); ++index) {
+        const auto &view = point_family.views[index];
+        const auto clip = view.projection * view.view * glm::vec4(
+            points[index / 6].position + directions[index % 6], 1);
+        CHECK(clip.x / clip.w == Catch::Approx(0).margin(1e-5));
+        CHECK(clip.y / clip.w == Catch::Approx(0).margin(1e-5));
+        CHECK(clip.z / clip.w > 0);
+        CHECK(clip.z / clip.w < 1);
+        if (index >= 6) CHECK(view.view_id != point_family.views[index - 6].view_id);
+    }
+    const std::array spots{SpotLight{.position = {2, 3, 4}, .direction = {0, 2, 0}, .outerConeAngle = 30}};
+    const auto spot_family = buildSpotShadowViewFamily(spots, 0.25f, 20.0f);
+    REQUIRE(spot_family.views.size() == 1);
+    const auto &spot = spot_family.views[0];
+    const auto center = spot.projection * spot.view * glm::vec4(spots[0].position + glm::vec3{0, 1, 0}, 1);
+    CHECK(center.x / center.w == Catch::Approx(0).margin(1e-5));
+    CHECK(center.y / center.w == Catch::Approx(0).margin(1e-5));
+    const auto edge = spot.projection * glm::vec4{std::tan(glm::radians(30.0f)), 0, -1, 1};
+    CHECK(edge.x / edge.w == Catch::Approx(1).margin(1e-5));
+    const auto near_clip = spot.projection * glm::vec4{0, 0, -0.25f, 1};
+    const auto far_clip = spot.projection * glm::vec4{0, 0, -20.0f, 1};
+    CHECK(near_clip.z / near_clip.w == Catch::Approx(0).margin(1e-5));
+    CHECK(far_clip.z / far_clip.w == Catch::Approx(1).margin(1e-5));
 }
 #endif
 

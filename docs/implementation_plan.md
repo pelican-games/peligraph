@@ -23249,6 +23249,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - pointのcube 6面cameraはrender_algorithms/cube_capture/cubecaptureview.cppの既存関数を再利用できる。shadow対象のlight・layer・matrixの対応とspot投影は追加が必要。standardrenderalgorithms.cppの登録と既存標準algorithm build境界へ載せ、描画まで接続する。
 - WP242cも1 tap・bias/遮蔽値の固定が現存。先にWP242b、その後にfeature parameter化を進める。今回は調査と再開入口更新のみで、描画機能を実装済みとはしない。
 
+**WP242b point/spot view生成 (2026-09-06、接続途中):**
+- 標準render algorithm配下にpoint/spotのcamera family生成を追加。pointは既存cube cameraを再利用してlight-majorの6面順と個体別view IDを作る。spotは外側コーン半角の2倍をFOVとし、鉛直方向にも有効なupを選ぶ。near/farは呼出側が渡す。spotの有限perspectiveは0 < outerConeAngle < 90度を受理する。
+- **まだpoint/spotの影は描画できない。** 次はstandardrenderalgorithmsのprovider登録、rendererのfamily解決前target layer更新、surface_resourcesのdirectional限定解除、実際のfamily行列からのlight/face対応表、forward/deferred receiverへ接続する。targetはpoint=6×light数、spot=light数のdepth arrayを使い、既存layered shadow drawを再利用する。0灯時の扱いも接続時に確定する。
+- 接続入口: renderer.cppのprepareDirectionalShadowRenderTarget呼出とupdateFrameLights、featurecompose.cppのsurface_resources、materialscreeninputとmaterialpassinfojsonparser、frameresourcesのshadow data binding。clustered receiverではinventory indexを使う。6面をdirectional cascadeとして扱わない。標準algorithm OFFの既存build境界を維持する。
+- view_temporal build成功。新規camera確認1 case / 61 assertions成功。point各面の中心投影、個体別ID、鉛直spotの中心・コーン端・near/farを確認し、向きやFOVを変えると落ちる。GPU描画・OFF構成の実行確認は未実施。
+
 **RT AS設定の適用元表示 (2026-09-06):**
 - row解決時にmask・instance flags・custom index・geometry flagsの適用元を保持し、get_ray_occurrencesのbindingへ実効値とsetting_sourcesを返す。既存InspectorのResolved bindingから読める。
 - engine/layout既定値、procedural geometry既定値、geometry ruleと0始まり行番号、component指定、occurrence overrideと永続行IDを区別する。layout v1のcustom index=qは専用sourceで示す。部分overrideで未指定のfieldはcomponent/defaultの出所を維持し、除去後も元へ戻る。
