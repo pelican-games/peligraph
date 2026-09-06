@@ -1660,6 +1660,9 @@ target_compile_definitions(pelican_test_shaderresolution_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
 )
+if(PELICAN_WITH_PHYSICS AND (PELICAN_WITH_BUILTIN_PHYSICS OR PELICAN_WITH_JOLT_PHYSICS))
+pelican_define_test(trianglemesh_test GROUP runtime_services pelican_core)
+endif()
 if(PELICAN_WITH_PHYSICS AND PELICAN_WITH_BUILTIN_PHYSICS)
 pelican_define_test(physquery_test GROUP runtime_services pelican_core)
 pelican_define_test(physworld_test GROUP runtime_services pelican_core glm)

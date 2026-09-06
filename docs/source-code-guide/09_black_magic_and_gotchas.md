@@ -375,7 +375,7 @@ ID 割当を engine-wide schema として管理する必要がある点は変わ
 cannot unregister component '<name>': dependent ECS system '<sys>' remains
 ```
 
-この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L1925))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
+この 3 つは WP379a で game DLL 公開面から host 専用 header へ移りました([`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13))。game DLL 側は宣言が見えないので build できません。owner を自分で確保する [`allocateRegistrationOwner()`](../../src/core/registrationownerhost.hpp#L13) も同じく host 専用で、game DLL が観測できるのは loader が選んだ [`currentRegistrationOwner()`](../../src/core/userpublic/details/reload/registrationowner.hpp#L65) だけです。これを保つのが build 拒否テスト 2 本(`wp379a_game_dll_rejects_engine_owner` / `wp379a_game_dll_rejects_owner_allocator`、[test/CMakeLists.txt](../../test/CMakeLists.txt#L1928))で、実 SHARED DLL を build して期待した診断で落ちなければ失敗します。
 
 ### custom Component の現状
 
@@ -1517,7 +1517,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [morph metadata と delta](../../src/core/model/vertbufcontainer.cpp#L242) | 2 つの別バッファ | 住所空間の違い | metadata は vertex プール上の `vertex_offset + vertex` で直接索引される固定長配列(static/skinned で別)、delta は free-range で `delta_offset` を確保する共有プール。不変式は `metadata[vertex].delta_offset = delta_offset + vertex` と `delta[target*vertex_count + vertex]` |
 | [`releaseRange()` の merge](../../src/core/model/vertbufcontainer.cpp#L113) | free range の併合 | `std::max` を使う理由 | 判定が `>=` で「隣接」だけでなく**重なり / 内包**も併合対象になるため、後続レンジが直前の併合済みレンジに完全に含まれる場合に末尾を縮めないよう両終端の max を取る |
 | [`allocateRange()`](../../src/core/model/vertbufcontainer.cpp#L95) | free list + high water mark | 2 系統ある理由 | まず free list を first-fit で走査して解放済みレンジを再利用し(**リロード周回でバッファが際限なく伸びるのを防ぐ**)、合う穴が無いときだけ high water mark を進め、そこで初めて `ensure*Capacity` の再確保が起きる |
-| [`content_revision` / `compatibility_revision`](../../src/core/model/modeltemplate.hpp#L148) | 2 本の版 | 分ける理由 | content は毎リロード必ず進む「中身が変わった」印、compatibility はリグレイアウトが変わったときだけ進む「バインドを張り直す必要がある」印。後者だけが staged resource の互換性キーとして公開されるので、**内容だけの更新で依存側の再解決を誘発しない** |
+| [`content_revision` / `compatibility_revision`](../../src/core/model/modeltemplate.hpp#L159) | 2 本の版 | 分ける理由 | content は毎リロード必ず進む「中身が変わった」印、compatibility はリグレイアウトが変わったときだけ進む「バインドを張り直す必要がある」印。後者だけが staged resource の互換性キーとして公開されるので、**内容だけの更新で依存側の再解決を誘発しない** |
 | [importer mapping の安定座標](../../src/core/model/modeltemplate.hpp#L83) | mesh/primitive/node index | 「regrouping を生き延びる」の意味 | ソース GLB 上の**安定座標**で、GPU 側の allocation offset とは意図的に分離されている。再グループ化で offset が変わっても、それらの座標で addressing されたインポータ由来のマテリアル割当はそのまま解決できる |
 | [`publishBatch()`](../../src/core/asset/model.cpp#L425) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L692) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
 | [`DeferredRelease` の `acquire()`](../../src/core/model/vertbufcontainer.cpp#L588) | lease semantics | null のとき何が起きたか | §9.23.4 の `GpuSubmissionLease` と同じ(フェンス完了まで生かす券)。lease が null なら既に回収済み |
@@ -1527,7 +1527,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`deferred_callbacks` の初期化位置](../../src/core/model/vertbufcontainer.cpp#L74) | メンバ初期化順 | なぜその位置か | **未執筆**(根拠がコードにない) |
 | [`Impl` の所有関係](../../src/core/asset/model.cpp#L313) | PayloadTracker / CommitBatch / ModelPayload / PendingCandidate | 誰が誰を持つか | **未執筆**(3 段階 staging の実装詳細) |
 | [`const void*` での payload 追跡](../../src/core/asset/model.cpp#L566) | 型を消した比較 | なぜ型を消すのか | **未執筆**(根拠がコードにない) |
-| [`source_material_index` が optional](../../src/core/model/modeltemplate.hpp#L124) / [bounds](../../src/core/model/modeltemplate.hpp#L70) | 任意性と空間 | bounds は local か world か | **未執筆**。ただし「スキニングは後で現在のパレットから適用」とコメントされているので local space と読める |
+| [`source_material_index` が optional](../../src/core/model/modeltemplate.hpp#L134) / [bounds](../../src/core/model/modeltemplate.hpp#L70) | 任意性と空間 | bounds は local か world か | **未執筆**。ただし「スキニングは後で現在のパレットから適用」とコメントされているので local space と読める |
 | [material bindings のパス解決](../../src/core/asset/model.cpp#L147) | reference からの解決 | fragment を返しうるか | **未執筆**(根拠がコードにない) |
 
 ### 9.23.9 editor journal
@@ -1837,19 +1837,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.17 glTF
 
-#### [`next_generated_material = -2`](../../src/core/model/gltf.cpp#L545) — 負値が生成マテリアルを示す
+#### [`next_generated_material = -2`](../../src/core/model/gltf.cpp#L546) — 負値が生成マテリアルを示す
 
 **分からなくなること**: マテリアル ID に負値が現れる理由。
 
 **答え**: [第3章「-1を空けて負へ伸ばす」](03_project_and_loading.md)が本体です。1 点だけ補うと、[型そのもの](../../src/core/model/gltf.cpp#L521)が `int` で、glTF の material index は 0 以上しか取らず −1 が「マテリアル無し」なので、−2 から負方向へ数えれば単一のキー空間でソース index と絶対に衝突しません。
 
-#### [`resolveFragmentCandidate()`](../../src/core/model/gltf.cpp#L1540) — full_path と alias
+#### [`resolveFragmentCandidate()`](../../src/core/model/gltf.cpp#L1541) — full_path と alias
 
 **分からなくなること**: 2 通りの指定が両方一致したときに、なぜエラーにするのか。
 
 **答え**: `full_path` はシーングラフ上の一意な経路指定、alias は node 名 / mesh 名という短縮指定で、**短縮名は複数の経路に出現しうる**からです。複数一致したらローダが勝手に選ばずエラーにして、呼び出し側にフルパスでの曖昧性解消を要求します(重複フルパス自体はその手前で拒否)。
 
-#### [VRM firstPerson auto の primitive 分割](../../src/core/model/gltf.cpp#L2194) — なぜ分けるしかないのか
+#### [VRM firstPerson auto の primitive 分割](../../src/core/model/gltf.cpp#L2215) — なぜ分けるしかないのか
 
 **分からなくなること**: 三角形単位の可視性を、なぜ primitive を増やして表すのか。
 
@@ -1859,7 +1859,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: GPU 割り当てとの関係。
 
-**答え**: プロセス全体で単調増加する**「不変なモデル世代の identity」**([`morphtarget.hpp` のコメント](../../src/core/model/morphtarget.hpp#L40))で、[ロード完了時に 1 つの `MorphTargetLayout` へ付与](../../src/core/model/gltf.cpp#L2551)されます。リロードでレイアウトが差し替わったことを消費側が検出でき、かつ **GPU 割り当て順に依存しない**同定ができます。
+**答え**: プロセス全体で単調増加する**「不変なモデル世代の identity」**([`morphtarget.hpp` のコメント](../../src/core/model/morphtarget.hpp#L40))で、[ロード完了時に 1 つの `MorphTargetLayout` へ付与](../../src/core/model/gltf.cpp#L2598)されます。リロードでレイアウトが差し替わったことを消費側が検出でき、かつ **GPU 割り当て順に依存しない**同定ができます。
 
 #### [`geometry_allocation_id`](../../src/core/model/modeltemplate.hpp#L98) — 何を識別し、どこで使うか
 
@@ -1869,19 +1869,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [palette 超過](../../src/core/model/gltf.cpp#L2067) | error でなく `skinned=false` | 落とさない理由 | [コメント](../../src/core/model/gltf.cpp#L2068)どおり**「v1 パレット超過のスキンを持つアセットも読み込めなければならない」**(WP38 以前は skin を丸ごと無視していた挙動とのパリティ)。明示的にそのスキンをアニメーションで使った場合だけ `selectSkin` が例外にする |
-| [`transformVertexData()`](../../src/core/model/gltf.cpp#L1659) | morph の有無で normal 正規化を分ける | 正規化しない場合がある理由 | morph がある場合、base normal/tangent を正規化すると**同じ normal_transform を掛けただけの morph delta と線形空間が食い違い、`normal + Σw·delta` の合成が壊れる**ため、非正規化のまま残して合成後にシェーダ側で正規化させる |
-| [`selectSkin()`](../../src/core/model/gltf.cpp#L1340) | 複数 skin を 1 パレットへ | joint_offset の意味 | → [第3章「128枚の結合palette」](03_project_and_loading.md) |
-| [`gltfSurface()`](../../src/core/model/gltf.cpp#L645) | `engine://` surface の解決 | authoring 由来を受けない理由 | ローダは glTF のソース値を運ぶだけで、**routing とラッパ選択は project 側の lowering が行い**、その結果選ばれる `engine://surfaces/openpbr/*.surface` を組み込みリソースから解決・パース・キャッシュする。非 engine 参照は例外 |
-| [`skinnedMaterial()`](../../src/core/model/gltf.cpp#L1968) | skinned variant の複製 | 複製が要る理由 | 同じ glTF マテリアルが skinned / 非 skinned の両方の primitive から参照されうるが、**skinned 側は別 vert shader と `skinned = true` が要る**ため別登録が必要。`local_material_id` をキーに memo 化する |
-| [`authored_reference` があるときだけ IR を計算](../../src/core/model/gltf.cpp#L1887) | normalized_alpha_ir の条件 | 空のままにする理由 | **typed な project / path-resolver 経路だけが authored provenance を持ち、IR の identity は authored reference から作られる**ので、inspection や legacy 直接ロードでは identity を捏造せず空のままにする(→ §9.23.5 の profile 表) |
-| [`selectLoad()`](../../src/core/model/gltf.cpp#L1597) | animation_only | mesh を読まない理由 | animation fragment は **CPU 側のクリップ / スキンデータのみ**を持ち、意図的に無関係な mesh・material・texture・ECS ボーンリソースを一切作らない(`roots` が空なので mesh 経路にも入らない) |
-| [`meshMorphTargetCount()`](../../src/core/model/gltf.cpp#L1130) | 全 primitive で同数を要求 | 揃える理由 | `mesh.weights` / `node.weights` は **mesh 単位で 1 本の配列**で、`appendMorphDefaults` も mesh 単位で 1 つの `morph_weight_offset` ブロックしか確保しないので、primitive ごとに数が違うと 1 本の weight レンジを共有できない。→ [第3章「morphはnode単位で切る」](03_project_and_loading.md) |
-| [morph accessor の sparse 拒否](../../src/core/model/gltf.cpp#L1111) | morph accessor の制限 | 2 つの理由 | sparse は morph target v1 のデコード経路が未実装なので明示拒否。finite 検査は delta が GPU バッファと bounds ソースに入るため、**NaN/Inf が bounds とドローソートを汚染するのを入口で止める** |
-| [`collectNodeOccurrence()`](../../src/core/model/gltf.cpp#L1393) | (node_index, full_path) で重複検出 | DAG を許す理由 | 同一 node が複数の親から参照される再利用を許しつつ、**同じ (node, path) の再訪だけを打ち切る**ため。パスが違えば別インスタンスとして記録され、同じパスでの再帰は 1 回で止まる |
+| [palette 超過](../../src/core/model/gltf.cpp#L2088) | error でなく `skinned=false` | 落とさない理由 | [コメント](../../src/core/model/gltf.cpp#L2089)どおり**「v1 パレット超過のスキンを持つアセットも読み込めなければならない」**(WP38 以前は skin を丸ごと無視していた挙動とのパリティ)。明示的にそのスキンをアニメーションで使った場合だけ `selectSkin` が例外にする |
+| [`transformVertexData()`](../../src/core/model/gltf.cpp#L1660) | morph の有無で normal 正規化を分ける | 正規化しない場合がある理由 | morph がある場合、base normal/tangent を正規化すると**同じ normal_transform を掛けただけの morph delta と線形空間が食い違い、`normal + Σw·delta` の合成が壊れる**ため、非正規化のまま残して合成後にシェーダ側で正規化させる |
+| [`selectSkin()`](../../src/core/model/gltf.cpp#L1341) | 複数 skin を 1 パレットへ | joint_offset の意味 | → [第3章「128枚の結合palette」](03_project_and_loading.md) |
+| [`gltfSurface()`](../../src/core/model/gltf.cpp#L646) | `engine://` surface の解決 | authoring 由来を受けない理由 | ローダは glTF のソース値を運ぶだけで、**routing とラッパ選択は project 側の lowering が行い**、その結果選ばれる `engine://surfaces/openpbr/*.surface` を組み込みリソースから解決・パース・キャッシュする。非 engine 参照は例外 |
+| [`skinnedMaterial()`](../../src/core/model/gltf.cpp#L1969) | skinned variant の複製 | 複製が要る理由 | 同じ glTF マテリアルが skinned / 非 skinned の両方の primitive から参照されうるが、**skinned 側は別 vert shader と `skinned = true` が要る**ため別登録が必要。`local_material_id` をキーに memo 化する |
+| [`authored_reference` があるときだけ IR を計算](../../src/core/model/gltf.cpp#L1888) | normalized_alpha_ir の条件 | 空のままにする理由 | **typed な project / path-resolver 経路だけが authored provenance を持ち、IR の identity は authored reference から作られる**ので、inspection や legacy 直接ロードでは identity を捏造せず空のままにする(→ §9.23.5 の profile 表) |
+| [`selectLoad()`](../../src/core/model/gltf.cpp#L1598) | animation_only | mesh を読まない理由 | animation fragment は **CPU 側のクリップ / スキンデータのみ**を持ち、意図的に無関係な mesh・material・texture・ECS ボーンリソースを一切作らない(`roots` が空なので mesh 経路にも入らない) |
+| [`meshMorphTargetCount()`](../../src/core/model/gltf.cpp#L1131) | 全 primitive で同数を要求 | 揃える理由 | `mesh.weights` / `node.weights` は **mesh 単位で 1 本の配列**で、`appendMorphDefaults` も mesh 単位で 1 つの `morph_weight_offset` ブロックしか確保しないので、primitive ごとに数が違うと 1 本の weight レンジを共有できない。→ [第3章「morphはnode単位で切る」](03_project_and_loading.md) |
+| [morph accessor の sparse 拒否](../../src/core/model/gltf.cpp#L1112) | morph accessor の制限 | 2 つの理由 | sparse は morph target v1 のデコード経路が未実装なので明示拒否。finite 検査は delta が GPU バッファと bounds ソースに入るため、**NaN/Inf が bounds とドローソートを汚染するのを入口で止める** |
+| [`collectNodeOccurrence()`](../../src/core/model/gltf.cpp#L1394) | (node_index, full_path) で重複検出 | DAG を許す理由 | 同一 node が複数の親から参照される再利用を許しつつ、**同じ (node, path) の再訪だけを打ち切る**ため。パスが違えば別インスタンスとして記録され、同じパスでの再帰は 1 回で止まる |
 | [`~LiveGltfResourceSink()`](../../src/core/model/gltf.cpp#L450) / [`finish()`](../../src/core/model/gltf.cpp#L512) | release と finish の排他 | `committed_` の意味 | → §9.22「三段トランザクション」(`committed_` が「もう解放してはいけない」印)。詳細は**未執筆** |
-| [`firstPersonAnnotation()`](../../src/core/model/gltf.cpp#L2007) / [`headRelatedNodes()`](../../src/core/model/gltf.cpp#L2029) | 4 値とメモ化 | 分割の入力 | 上記 VRM 分割の入力。詳細は**未執筆** |
-| [lowering → surface compilation → routing](../../src/core/model/gltf.cpp#L1827) / [named_materials の構築](../../src/core/model/gltf.cpp#L2534) / [VAT テクスチャ](../../src/core/model/gltf.cpp#L723) | 3 段の材質処理 | 段の切れ目 | **未執筆**(→ [第3章「逸脱がforwardへ落とす」](03_project_and_loading.md) が routing 側の一部を扱う) |
+| [`firstPersonAnnotation()`](../../src/core/model/gltf.cpp#L2008) / [`headRelatedNodes()`](../../src/core/model/gltf.cpp#L2030) | 4 値とメモ化 | 分割の入力 | 上記 VRM 分割の入力。詳細は**未執筆** |
+| [lowering → surface compilation → routing](../../src/core/model/gltf.cpp#L1828) / [named_materials の構築](../../src/core/model/gltf.cpp#L2581) / [VAT テクスチャ](../../src/core/model/gltf.cpp#L724) | 3 段の材質処理 | 段の切れ目 | **未執筆**(→ [第3章「逸脱がforwardへ落とす」](03_project_and_loading.md) が routing 側の一部を扱う) |
 
 ### 9.23.18 領域をまたぐ 3 つの規約
 

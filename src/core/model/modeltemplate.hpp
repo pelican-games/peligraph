@@ -118,6 +118,16 @@ struct ModelGpuResources {
     bool released = false;
 };
 
+// Immutable CPU triangles in model space, before per-instance transforms.
+// Kept independently of render variants and GPU allocations.
+struct ModelCollisionMesh {
+    std::uint32_t node_index = 0;
+    std::vector<std::string> node_name_path;
+    std::vector<std::uint32_t> parent_index_path;
+    std::vector<glm::vec3> positions;
+    std::vector<std::uint32_t> indices;
+};
+
 struct ModelTemplate {
     using PrimitiveRefInfo = ModelPrimitiveRefInfo;
 
@@ -134,6 +144,7 @@ struct ModelTemplate {
     };
 
     std::vector<MaterialPrimitives> material_primitives;
+    std::shared_ptr<const std::vector<ModelCollisionMesh>> collision_meshes;
     std::vector<NamedMaterial> named_materials;
     std::shared_ptr<SkeletalModelData> skeletal;
     std::shared_ptr<const MorphTargetLayout> morph_targets;

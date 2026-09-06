@@ -23254,6 +23254,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - Game DLL serviceのraycastはPhysWorld wrapperを通らずphysicsruntimeを呼ぶため、wrapperだけの追加では不足する。provider-only構成のnarrow phase除去を守り、予約済みprovider fieldにpointerを詰めるような迂回はしない。meshを扱うprovider capability/データ所有権から具体化する。
 - 着手時にnode/primitiveのidentity、静的meshのtransform追随、反転transformの法線、rayの片面/両面、overlap/sweep/triggerとの関係を確定する。物理SBTアドレス等の追加観測をこの中核残件の前提条件にはしない。
 
+**P3メッシュCPU基盤・glTF取り込み (2026-09-06、接続途中):**
+- TriangleMeshにimmutable indexed trianglesとmedian BVHを実装。両面の最短ray hit、入力rayのparameter距離、原三角形順の同距離tie、winding由来normalを保持する。無効topology/非有限vertexを拒否し、面積0の三角形はqueryから除外。Builtin/Jolt有効構成だけでコンパイルし、provider-onlyのnarrow phase除去を維持。
+- glTF nodeのflat extrasキーpelican.collision={shape:mesh}を取り込み、node自身のprimitiveをまとめたModelCollisionMeshとしてCPU positions/indicesとnode pathを保持。node変換後・render variant展開前に取得し、GPU資源とは別に所有。非indexed TRIANGLESも明示index化。skin/morph/VAT、非TRIANGLES、無効index、非有限vertex、meshのない宣言node、未対応shapeを拒否する。
+- **まだruntime colliderとしては利用できない。** ModelTemplateのCPU geometryをBVHへ変換する接続、provider capability、PhysWorld/scene publication・reload・編集、overlap/sweep/triggerは残る。convex形状をmeshへ暗黙変換しない。可視meshは現状のまま描画する。
+- Playerと関連test build成功（build/.codex_bg/mesh-foundation-build.log）。BVH CPU4件33 assertions成功（mesh-foundation-cpu.log）。glTF取り込み/fragment4件111 assertions成功（mesh-foundation-regression.log）。不正shape検証のfixtureをprepareのみからinspectまで通すよう訂正し、古いfragment fixture3件に欠けていた標準描画設定を追加した。対照はAABB内triangle miss、非正規化rayのt、node変換と複数primitive index、旧fragment読み込み。個別変異、provider-onlyの別build、runtime mesh collider実行は未実施。
+
 **物理raycast RPC (2026-09-06、dc501247):**
 - design_physics_queries.mdのP3に予定されていたraycast RPCが未接続だったため、PhysWorldの既存closest queryへ接続。有限origin/direction/max_distanceを受け、方向を正規化。名前/距離/位置/法線/collider identityとtrigger/one-way metadataを返す。物理providerや衝突計算の別実装は作らない。メッシュ/BVH/glb extrasの残件は別途照合する。
 - 物理query handlerの登録をまとめ、Playerの本番登録とwire testから共用。実コライダーのhitとtransform変更直後のmiss、ゼロ方向と負距離のinvalidParamsを確認する。

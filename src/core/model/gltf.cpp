@@ -542,6 +542,7 @@ struct InternalGltfLoader {
     std::unordered_map<ModelLocalMaterialId, std::uint32_t> generated_material_sources;
     std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> skinned_material_variants;
     std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
+    std::vector<ModelCollisionMesh> collision_meshes;
     ModelLocalMaterialId next_generated_material = -2;
     std::unordered_map<int, std::uint32_t> skin_joint_offsets;
     std::shared_ptr<SkeletalModelData> skeletal_data;
@@ -2058,6 +2059,26 @@ struct InternalGltfLoader {
                   std::vector<std::string> node_name_path = {},
                   std::vector<std::uint32_t> parent_index_path = {}) {
         const auto &mesh = model.meshes.at(mesh_index);
+        ModelCollisionMesh *collision = nullptr;
+        if (node_index >= 0) {
+            const auto &node = model.nodes.at(node_index);
+            if (node.extras.IsObject()) {
+                const auto *declaration = objectMember(node.extras.Get<tinygltf::Value::Object>(), "pelican.collision");
+                if (declaration) {
+                    if (!declaration->IsObject())
+                        throw std::runtime_error("pelican.collision must be an object with shape mesh");
+                    const auto &fields = declaration->Get<tinygltf::Value::Object>();
+                    const auto *shape = objectMember(fields, "shape");
+                    if (fields.size() != 1 || !shape || !shape->IsString() || shape->Get<std::string>() != "mesh")
+                        throw std::runtime_error("pelican.collision supports only {shape: mesh}");
+                    if (node.skin >= 0)
+                        throw std::runtime_error("Static collision meshes cannot use skin deformation");
+                    collision_meshes.push_back({static_cast<std::uint32_t>(node_index),
+                        node_name_path, parent_index_path, {}, {}});
+                    collision = &collision_meshes.back();
+                }
+            }
+        }
         const auto morph_target_count = meshMorphTargetCount(mesh_index);
         const auto morph_weight_offset =
             appendMorphDefaults(mesh_index, node_index, morph_target_count);
@@ -2222,6 +2243,27 @@ struct InternalGltfLoader {
                 }
             }
             if (!skinned) transformVertexData(dat, world_transform);
+            if (collision) {
+                if ((primitive.mode != -1 && primitive.mode != TINYGLTF_MODE_TRIANGLES) ||
+                    !primitive.targets.empty() || tinyGltfValueToVatMeta(primitive.extras).present)
+                    throw std::runtime_error("Static collision meshes require undeformed TRIANGLES primitives");
+                if (dat.pos.empty() || dat.pos.size() > std::numeric_limits<std::uint32_t>::max() - collision->positions.size())
+                    throw std::runtime_error("Collision mesh has no positions or too many vertices");
+                const auto count = dat.indices.empty() ? dat.pos.size() : dat.indices.size();
+                if (count % 3 != 0)
+                    throw std::runtime_error("Collision mesh triangle index count must be divisible by three");
+                const auto base = static_cast<std::uint32_t>(collision->positions.size());
+                for (const auto &position : dat.pos) {
+                    if (!std::isfinite(position.x) || !std::isfinite(position.y) || !std::isfinite(position.z))
+                        throw std::runtime_error("Collision mesh positions must be finite");
+                    collision->positions.push_back(position);
+                }
+                for (std::size_t i = 0; i < count; ++i) {
+                    const auto index = dat.indices.empty() ? static_cast<std::uint32_t>(i) : dat.indices[i];
+                    if (index >= dat.pos.size()) throw std::runtime_error("Collision mesh index is out of range");
+                    collision->indices.push_back(base + index);
+                }
+            }
             std::vector<std::uint32_t> morph_presence;
             morph_presence.reserve(dat.morph_targets.size());
             for (const auto &target : dat.morph_targets)
@@ -2360,6 +2402,9 @@ struct InternalGltfLoader {
                   std::vector<std::string> name_path = {},
                   std::vector<std::uint32_t> parent_index_path = {}) {
         const auto &node = model.nodes.at(node_index);
+        if (node.mesh < 0 && node.extras.IsObject() &&
+            objectMember(node.extras.Get<tinygltf::Value::Object>(), "pelican.collision"))
+            throw std::runtime_error("pelican.collision requires a mesh on the declaring node");
         if (name_path.empty()) name_path.push_back(node.name);
         const auto world_transform = apply_node_transform ? parent_transform * nodeTransform(node) : parent_transform;
         if (subtree) {
@@ -2513,6 +2558,8 @@ struct InternalGltfLoader {
         }
 
         ModelTemplate m;
+        if (!collision_meshes.empty())
+            m.collision_meshes = std::make_shared<const std::vector<ModelCollisionMesh>>(std::move(collision_meshes));
         for (const auto &[local_material_id, primitive] : tmp_material_primitives) {
             const auto found = resolved_materials.find(local_material_id);
             const auto generated_source =

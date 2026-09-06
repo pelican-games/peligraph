@@ -253,6 +253,9 @@ TEST_CASE("glTF fragments load only the selected object and dependencies", "[glt
               R"json({"schema":"pelican.asset_data","version":1,"models":[{"name":"selected","path":"fragment.glb#mesh/MeshA"}]})json");
 
     FastModuleContainer modules;
+    std::filesystem::create_directories(temp_dir / "passes");
+    writeText(temp_dir / "passes/main_rendering_config.json",
+              R"json({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})json");
     GET_MODULE(PathResolver).setup(temp_dir, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config",
@@ -488,6 +491,9 @@ TEST_CASE("U-USD0b corpus deliveries parse, load, and instantiate their scene fr
               R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
 
     FastModuleContainer modules;
+    std::filesystem::create_directories(temp_dir / "passes");
+    writeText(temp_dir / "passes/main_rendering_config.json",
+              R"json({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})json");
     GET_MODULE(PathResolver).setup(temp_dir, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config",
@@ -576,6 +582,9 @@ TEST_CASE("U-USD0c generated delivery parses material and binding then loads the
               R"json({"schema":"pelican.asset_data","version":1,"models":[]})json");
 
     FastModuleContainer modules;
+    std::filesystem::create_directories(temp_dir / "passes");
+    writeText(temp_dir / "passes/main_rendering_config.json",
+              R"json({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})json");
     GET_MODULE(PathResolver).setup(temp_dir, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{
         {"basic_config",
@@ -917,6 +926,44 @@ TEST_CASE("WP382d imported variants retain every override in the shared ray plan
         REQUIRE(instances.removeModelInstance(id));
     }
     GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("glTF collision declarations retain node-owned CPU triangles", "[gltf][collision-import][gpu]") {
+    setupLogger();
+    const auto temp_dir = std::filesystem::temp_directory_path() /
+        ("pelican_collision_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(temp_dir);
+    const TempDirGuard guard{temp_dir};
+    auto bytes = mutateFixtureGlb(TestGltfFragmentFixture::makeGlb(false, true, false, true),
+        [](nlohmann::json &json) {
+            json["nodes"][1]["extras"] = {{"pelican.collision", {{"shape", "mesh"}}}};
+            json["nodes"][1]["translation"] = {2, 0, 0};
+            auto second = json["meshes"][0]["primitives"][0];
+            second.erase("indices");
+            json["meshes"][0]["primitives"].push_back(second);
+        });
+    const auto path = temp_dir / "collision.glb";
+    { std::ofstream out{path, std::ios::binary}; out.write(reinterpret_cast<const char *>(bytes.data()), bytes.size()); }
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).headless = true;
+    GET_MODULE(EngineLaunchConfig).headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("glTF collision import unavailable");
+    auto &loader = GET_MODULE(GltfLoader);
+    const auto loaded = loader.inspect(loader.prepareGltfBinary(path.string()));
+    REQUIRE(loaded.collision_meshes);
+    REQUIRE(loaded.collision_meshes->size() == 1);
+    const auto &mesh = loaded.collision_meshes->at(0);
+    CHECK(mesh.node_index == 1);
+    CHECK(mesh.positions.size() == 6);
+    CHECK(mesh.indices == std::vector<std::uint32_t>{0, 1, 2, 3, 4, 5});
+    CHECK(mesh.positions.at(0).x == 1.5f);
+    auto invalid = mutateFixtureGlb(bytes, [](nlohmann::json &json) {
+        json["nodes"][1]["extras"]["pelican.collision"]["shape"] = "convex";
+    });
+    const auto bad_path = temp_dir / "invalid.glb";
+    { std::ofstream out{bad_path, std::ios::binary}; out.write(reinterpret_cast<const char *>(invalid.data()), invalid.size()); }
+    CHECK_THROWS_WITH(loader.inspect(loader.prepareGltfBinary(bad_path.string())),
+                      Catch::Matchers::ContainsSubstring("pelican.collision supports only"));
 }
 
 } // namespace Pelican
