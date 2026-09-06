@@ -664,7 +664,7 @@ teardown の最終段は phase で分岐します。
 | frame graph levels | 計算/JSON 出力のみ。runtime は直列 node loop | [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1425) |
 | custom Component public registration | ID macro はあるが安定 public boot hook なし。ただし登録解除 API と重複拒否は入った。解除と engine owner 登録は WP379a で host 専用へ | [`component/registerer.hpp`](../../src/core/userpublic/details/component/registerer.hpp#L78) / [`ecs/enginecomponentregistrar.hpp`](../../src/core/ecs/enginecomponentregistrar.hpp#L13) |
 | behavior attachment | ✅実装済み(WP155 / 162 / 167) | [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L168) |
-| 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L569) |
+| 物理 trigger event | ✅実装済み(WP179) | [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L637) |
 | 編集 RPC(query / snapshot / edit / undo / preview / journal) | ✅実装済み(WP153〜172) | [`editorcommandservice.hpp`](../../src/core/communication/editorcommandservice.hpp#L282) |
 | ImGui inspector / asset browser | ✅実装済み(WP159 / 164 / 167)。ただし `--rpc` / headless / replay / golden / XR では無効 | [`inspector.hpp`](../../src/core/imgui/inspector.hpp#L167) |
 | preview graph(第3 variant) | 🚧実装済みだが CPU 模式ラスタ(WP172)。隔離契約が本体で、見た目の忠実度は保証しない | [`previewgraph.hpp`](../../src/core/renderingpass/previewgraph.hpp#L15) |
@@ -794,7 +794,7 @@ WP144〜WP172 で、変更のプロトコルがコードベース全体で統一
 | ECS 既存値 | `prepareComponentValue()` / `publishComponentValue()` / `rollbackComponentValue()` |
 | model instance | `preflightModelInstance()` → `stageModelInstance()` → `publishModelInstance()` |
 | behavior | [`PreparedBehaviorAttachmentEdits`](../../src/core/gamelogic/behaviorarena.hpp#L118) の `publish()` / `rollback()` / `finish()`(全て `noexcept`) |
-| physics | [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.hpp#L66) → [`publishPrepared()`](../../src/core/phys/physworld.hpp#L73)(`noexcept`) |
+| physics | [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.hpp#L74) → [`publishPrepared()`](../../src/core/phys/physworld.hpp#L81)(`noexcept`) |
 | 編集投影 | [`EditorProjectionPublicationMode{StagedNoexcept, InverseToken}`](../../src/core/loader/editorprojectiontransaction.hpp#L39) |
 
 `EditorProjectionPublicationMode` は「公開をどう戻せる形にしてあるか」の宣言です。`StagedNoexcept` は publish 時点に失敗要因が残らないよう prepare 側へ寄せ切る形、`InverseToken` は publish 後でも `rollback()` が完全な逆操作を復元できる形です。`publish()` / `rollback()` / `finish()` はどちらのモードでも `noexcept` で、`rollback()` は publish 前(prepared 状態を捨てる)・publish 後(逆トークンで戻す)のどちらの経路も allocation-free であることが要求されます([`EditorProjectionAdapter`](../../src/core/loader/editorprojectiontransaction.hpp#L185))。
@@ -1767,11 +1767,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 ### 9.23.15 physics
 
-#### [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L569) — 2-way merge と canonical pair
+#### [`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L637) — 2-way merge と canonical pair
 
 **分からなくなること**: Enter と Exit が同じフレームに混ざったときの発火順。
 
-**答え**: [コメント](../../src/core/phys/physworld.cpp#L618)どおり、両集合を **canonical な (min,max) EntityId ペアでソート済みにして 2-way merge** することで、混在フレームでも全順序が 1 つに決まります。イベントは self/other 視点なので、canonical ペア 1 つから低い側 self・高い側 self の 2 本を emit して両エンティティに届けます。差分の取り方は[第5章「差分は 1 パスのマージ」](05_gameplay_and_services.md)が本体です。
+**答え**: [コメント](../../src/core/phys/physworld.cpp#L686)どおり、両集合を **canonical な (min,max) EntityId ペアでソート済みにして 2-way merge** することで、混在フレームでも全順序が 1 つに決まります。イベントは self/other 視点なので、canonical ペア 1 つから低い側 self・高い側 self の 2 本を emit して両エンティティに届けます。差分の取り方は[第5章「差分は 1 パスのマージ」](05_gameplay_and_services.md)が本体です。
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|

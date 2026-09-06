@@ -228,12 +228,11 @@ Status serviceRaycastAll(void *context, const RaycastQueryV1 *query,
         const auto converted_filter = fromAbi(query->filter);
         const auto *world = FastModuleContainer::tryGet<PhysWorld>();
         if (world == nullptr) return Status::unavailable;
-        const auto colliders = world->collectColliders();
         std::vector<phys::RaycastQueryHit> result;
-        const auto status = physics_internal::raycastAll(
+        const auto status = world->queryRaycastAll(
             phys::Ray{fromAbi(query->ray.origin), fromAbi(query->ray.direction),
                       query->ray.max_distance},
-            colliders, &converted_filter.value, result);
+            &converted_filter.value, result);
         if (status != Status::ok) return status;
         return copyRaycastHits(result, hits, capacity, out_count);
     } catch (const std::bad_alloc &) {

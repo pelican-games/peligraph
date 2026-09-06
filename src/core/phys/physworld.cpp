@@ -303,7 +303,21 @@ PhysWorld::PreparedState PhysWorld::prepareBindings(
             throw std::runtime_error("Duplicate collider object name: " +
                                      binding.identity.name);
         }
-        binding.collider.validate();
+        if (binding.mesh) {
+            const auto &mesh = *binding.mesh;
+            if (mesh.vertices.size() > std::numeric_limits<std::uint32_t>::max() ||
+                mesh.indices.size() > std::numeric_limits<std::uint32_t>::max() ||
+                mesh.indices.size() % 3 != 0)
+                throw std::invalid_argument("Invalid mesh collider topology");
+            for (const auto &v : mesh.vertices)
+                if (!std::isfinite(v.x) || !std::isfinite(v.y) || !std::isfinite(v.z))
+                    throw std::invalid_argument("Nonfinite mesh collider vertex");
+            for (const auto index : mesh.indices)
+                if (index >= mesh.vertices.size())
+                    throw std::invalid_argument("Mesh collider index out of range");
+        } else {
+            binding.collider.validate();
+        }
         if (const auto *object_id =
                 std::get_if<GameObjectId>(&binding.transform_source)) {
             const bool unpublished =
@@ -438,6 +452,7 @@ std::vector<phys::Collider> PhysWorld::collectColliders() const {
     inputs.reserve(bindings.size());
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     for (const auto &binding : bindings) {
+        if (binding.mesh) continue;
         PhysWorldTransform transform;
         if (const auto *object_id = std::get_if<GameObjectId>(&binding.transform_source)) {
             const auto *component = ecs.tryComponent<TransformComponent>(*object_id);
@@ -459,11 +474,65 @@ std::vector<phys::Collider> PhysWorld::collectColliders() const {
     return buildPhysColliders(inputs);
 }
 
+Physics::Status PhysWorld::queryRaycastAll(
+    const phys::Ray &ray, const phys::QueryFilter *filter,
+    std::vector<phys::RaycastQueryHit> &hits) const {
+    hits.clear();
+    std::vector<Physics::TriangleMeshV3> meshes;
+    std::vector<phys::ColliderIdentity> identities;
+    std::vector<phys::ColliderQueryMetadata> metadata;
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    for (const auto &binding : bindings) {
+        if (!binding.mesh) continue;
+        PhysWorldTransform transform;
+        if (const auto *id = std::get_if<GameObjectId>(&binding.transform_source)) {
+            const auto *component = ecs.tryComponent<TransformComponent>(*id);
+            if (component == nullptr) continue;
+            transform = transformFromComponent(*component);
+        } else {
+            transform = std::get<PhysWorldTransform>(binding.transform_source);
+        }
+        validateWorldTransform(transform);
+        const auto matrix = glm::translate(glm::mat4{1}, toGlmVec(transform.pos)) *
+            glm::mat4_cast(normalized(to_glm(transform.rotation))) *
+            glm::scale(glm::mat4{1}, toGlmVec(transform.scale));
+        Physics::TriangleMeshV3 descriptor;
+        descriptor.vertices = binding.mesh->vertices.data();
+        descriptor.vertex_count = static_cast<std::uint32_t>(binding.mesh->vertices.size());
+        descriptor.indices = binding.mesh->indices.data();
+        descriptor.index_count = static_cast<std::uint32_t>(binding.mesh->indices.size());
+        for (int c = 0; c < 4; ++c)
+            for (int r = 0; r < 4; ++r)
+                descriptor.local_to_world[c * 4 + r] = matrix[c][r];
+        meshes.push_back(descriptor);
+        identities.push_back(binding.identity);
+        metadata.push_back(binding.metadata);
+    }
+    const auto colliders = collectColliders();
+    std::vector<phys::RaycastQueryHit> result;
+    // Keep the legacy empty-world availability behavior, but a mesh-only world
+    // does not need a primitive provider.
+    if (!colliders.empty() || meshes.empty()) {
+        const auto status = physics_internal::raycastAll(ray, colliders, filter, result);
+        if (status != Physics::Status::ok) return status;
+    }
+    if (!meshes.empty()) {
+        std::vector<phys::RaycastQueryHit> mesh_hits;
+        const auto status = physics_internal::raycastMeshes(
+            ray, meshes, identities, metadata, filter, mesh_hits);
+        if (status != Physics::Status::ok) return status;
+        result.insert(result.end(), std::make_move_iterator(mesh_hits.begin()),
+                      std::make_move_iterator(mesh_hits.end()));
+        phys::internal::orderRaycastHits(result);
+    }
+    hits = std::move(result);
+    return Physics::Status::ok;
+}
+
 std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
-    const auto colliders = collectColliders();
     std::vector<phys::RaycastQueryHit> hits;
-    const auto status = physics_internal::raycastAll(ray, colliders, &filter, hits);
+    const auto status = queryRaycastAll(ray, &filter, hits);
     if (status == Physics::Status::unavailable) return {};
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider raycast failed with status " +
@@ -474,9 +543,8 @@ std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
 
 std::optional<phys::ObjectRaycastHit> PhysWorld::raycastClosest(
     const phys::Ray &ray) const {
-    const auto colliders = collectColliders();
     std::vector<phys::RaycastQueryHit> hits;
-    const auto status = physics_internal::raycastAll(ray, colliders, nullptr, hits);
+    const auto status = queryRaycastAll(ray, nullptr, hits);
     if (status == Physics::Status::unavailable) return std::nullopt;
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider raycast failed with status " +

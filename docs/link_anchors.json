@@ -1053,7 +1053,7 @@
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/vrmfirstperson.hpp|`vrmfirstperson.hpp` のコメント": "// VRM 1.0 MeshAnnotation.Auto. Original triangle order is retained within",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/vrmfirstperson.hpp|`vrmfirstperson.hpp` 内": "// VRM 1.0 MeshAnnotation.Auto. Original triangle order is retained within",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/model/vrmsemantic.hpp|`VrmFirstPersonMeshAnnotation`": "struct VrmFirstPersonMeshAnnotation {",
-    "docs/source-code-guide/03_project_and_loading.md|../../src/core/phys/physworld.cpp|`PhysWorld::publishPrepared()`": "void PhysWorld::publishPrepared(PreparedState &&prepared,",
+    "docs/source-code-guide/03_project_and_loading.md|../../src/core/phys/physworld.cpp|`PhysWorld::publishPrepared()`": "void PhysWorld::publishPrepared(PreparedState &&prepared) noexcept {",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/renderer/camera.cpp|`Camera::publishPrepared()`": "void Camera::publishPrepared(PreparedSceneState &&prepared,",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/renderer/camera.cpp|`Camera::publishPrepared()`|#1": "void Camera::publishPrepared(PreparedSceneState &&prepared,",
     "docs/source-code-guide/03_project_and_loading.md|../../src/core/renderer/modelinstance.hpp|`ModelInstanceId`": "struct ModelInstanceId {",

@@ -357,7 +357,7 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 >          ^anchor (+1e-5 まで) ^新 anchor    0.100008 を anchor にして連鎖させない
 > ```
 >
-> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L475) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
+> **手がかり**: `queryTieEpsilon` は `shapeCastTieEpsilon` = 1e-5F([`physqueryinternal.hpp` 内](../../src/core/phys/physqueryinternal.hpp#L7))。[`colliderIdentityLess()`](../../src/core/phys/physquerycontract.cpp#L60) は collider_id → entity → shape_ordinal → name の辞書式で、collider_id が一意なのでほぼ 1 段目で決まります。なお [`PhysWorld::raycastClosest(ray)`](../../src/core/phys/physworld.cpp#L544) の `better_legacy_tie` は**この順序ではなく**文字列 id 比較の旧 API 経路で、新旧 2 つの tie-break が並存しています。テストは [`physquery_test.cpp`](../../test/physquery_test.cpp#L352) の "shapeCastAll shares filters and canonical TOI identity ordering" と [微小形状の長距離精度](../../test/physquery_test.cpp#L134)。
 >
 > **不変条件**: 1 回目の comparator に ε を持ち込まない(strict weak ordering を壊さない)。クラスタは必ず先頭要素の生の値にアンカーし、連鎖させない。`orderXxxHits` は provider 側ではなく **host 側で最後に呼ぶ**([`orderOverlapHits` L530](../../src/core/phys/physicsruntime.cpp#L686) / [`orderShapeCastHits` L621](../../src/core/phys/physicsruntime.cpp#L777) / [`orderRaycastHits` L470](../../src/core/phys/physicsruntime.cpp#L539))。provider の列挙順を結果へ漏らさない最後の関門です。
 
@@ -428,20 +428,20 @@ ABI面は [`userpublic/physics/abi_v2.hpp`](../../src/core/userpublic/physics/ab
 
 ### World binding層
 
-[`PhysWorld`](../../src/core/phys/physworld.hpp#L39) はCollider定義とtransform sourceを保存します。sourceは次のvariantです。
+[`PhysWorld`](../../src/core/phys/physworld.hpp#L41) はCollider定義とtransform sourceを保存します。sourceは次のvariantです。
 
 - live `GameObjectId`
 - static `PhysWorldTransform`
 
-queryのたびに [`collectColliders()`](../../src/core/phys/physworld.cpp#L436) がECS transformをresolveし、local collider offset/rotationとworld scaleを合成して純粋`phys::Collider`列を作ります。削除済みentityのbindingはqueryから自然に除外されます。
+queryのたびに [`collectColliders()`](../../src/core/phys/physworld.cpp#L450) がECS transformをresolveし、local collider offset/rotationとworld scaleを合成して純粋`phys::Collider`列を作ります。削除済みentityのbindingはqueryから自然に除外されます。
 
-builtin providerは **broad phase spatial index** を持たず、queryごとに全bindingを走査します。broad phase spatial index とは、BVHやgridのような空間索引で「明らかに当たらないcollider」をまとめて落とす前段のことで、その後に残った少数だけを厳密に判定する（= narrow phase）という二段構えの前半です。builtinにはその前段が無く、[`collectColliders()`](../../src/core/phys/physworld.cpp#L436) が全bindingからcollider列を作り、provider側も渡された配列を先頭から1件ずつ判定します（[`builtinphysicsprovider.cpp` の raycast ループ](../../src/core/phys/builtinphysicsprovider.cpp#L67)）。だから1クエリの計算量がcollider数Nに比例し、大量colliderではO(N)が支配的です。
+builtin providerは **broad phase spatial index** を持たず、queryごとに全bindingを走査します。broad phase spatial index とは、BVHやgridのような空間索引で「明らかに当たらないcollider」をまとめて落とす前段のことで、その後に残った少数だけを厳密に判定する（= narrow phase）という二段構えの前半です。builtinにはその前段が無く、[`collectColliders()`](../../src/core/phys/physworld.cpp#L450) が全bindingからcollider列を作り、provider側も渡された配列を先頭から1件ずつ判定します（[`builtinphysicsprovider.cpp` の raycast ループ](../../src/core/phys/builtinphysicsprovider.cpp#L67)）。だから1クエリの計算量がcollider数Nに比例し、大量colliderではO(N)が支配的です。
 
 ### trigger event ✅実装済み（WP179 / E2）
 
 呼び出し元は専用のゲームSystem `PhysicsTriggerSystem` です（[`PhysicsTriggerSystem`](../../src/core/phys/physworld.cpp#L31)）。orderは `std::numeric_limits<int>::max()` なので、組み込み`BuiltinCameraControllerSystem`（10000）を含む**すべてのゲームSystemの後**に走ります。
 
-[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L569) は、
+[`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L637) は、
 `trigger=true` collider ごとに provider の overlap query を行い、full
 `EntityId` の canonical pair set を前 frame と比較します。pair 全体を sort /
 unique してから sorted merge するため、provider の列挙順には依存しません。
@@ -457,11 +457,11 @@ event は特別な即時 callback ではなく通常のE1 queueへ入り、次�
 typed System/Behavior handlerへ配送されます。trigger query と rigid-body responseは
 独立であり、現在も Jolt は query providerだけです。
 
-> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L569))
+> 🧩 **難所 — 差分は 1 パスのマージ**([`PhysWorld::updateTriggers()`](../../src/core/phys/physworld.cpp#L637))
 >
 > **何をする所か**: trigger collider ごとの overlap 結果から entity ペア集合を作り、前フレームの集合と差分を取って `OverlapEnter` / `OverlapExit` を emit します。
 >
-> **素朴に読むと**: 「集合差分」と言われれば `unordered_set` を 2 つ持って引き算したくなりますが、それでは **emit 順が hash 順**になり決定性が消えます。ここでは (1) ペアを `(min(entity), max(entity))` へ canonical 化し、(2) sort + unique し、(3) **2 本のソート済み列を 1 回のマージで走査**して、Enter と Exit を**同一のペア全順序の中に交互に**出します。素朴に「Exit を全部出してから Enter を全部出す」にすると、同一フレームで A→B の Exit と B→C の Enter が起きたときの相対順序が「フェーズ順」になり、ペア順ではなくなります。canonical 化と unique が無ければ、同じ物理ペアが**両方の trigger から 2 回**、1 entity に複数 collider があれば collider 数だけ重複して出ます。`Status::unavailable` での早期 `return` も重要で、そこで `active_trigger_pairs` を更新しないことが「provider が使えないことは分離した証拠ではない」という不変条件そのものです。逆に [`PhysWorld::clear()`](../../src/core/phys/physworld.cpp#L370) は scene domain reset として **Exit を出さずに**捨てます。この非対称は意図的です。
+> **素朴に読むと**: 「集合差分」と言われれば `unordered_set` を 2 つ持って引き算したくなりますが、それでは **emit 順が hash 順**になり決定性が消えます。ここでは (1) ペアを `(min(entity), max(entity))` へ canonical 化し、(2) sort + unique し、(3) **2 本のソート済み列を 1 回のマージで走査**して、Enter と Exit を**同一のペア全順序の中に交互に**出します。素朴に「Exit を全部出してから Enter を全部出す」にすると、同一フレームで A→B の Exit と B→C の Enter が起きたときの相対順序が「フェーズ順」になり、ペア順ではなくなります。canonical 化と unique が無ければ、同じ物理ペアが**両方の trigger から 2 回**、1 entity に複数 collider があれば collider 数だけ重複して出ます。`Status::unavailable` での早期 `return` も重要で、そこで `active_trigger_pairs` を更新しないことが「provider が使えないことは分離した証拠ではない」という不変条件そのものです。逆に [`PhysWorld::clear()`](../../src/core/phys/physworld.cpp#L384) は scene domain reset として **Exit を出さずに**捨てます。この非対称は意図的です。
 >
 > **骨子**:
 > ```text
@@ -477,7 +477,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ### 編集transaction用のprepare/publish
 
-[`PhysWorld::PreparedState`](../../src/core/phys/physworld.hpp#L48) と [`snapshotPrepared()`](../../src/core/phys/physworld.hpp#L65) / [`prepareBindings()`](../../src/core/phys/physworld.hpp#L66) / [`publishPrepared()`](../../src/core/phys/physworld.hpp#L73)（`noexcept`）は、編集RPCのcollider投影が使うprepare/publishの三点セットです。[第9章](09_black_magic_and_gotchas.md)の編集transaction節を参照してください。
+[`PhysWorld::PreparedState`](../../src/core/phys/physworld.hpp#L56) と [`snapshotPrepared()`](../../src/core/phys/physworld.hpp#L73) / [`prepareBindings()`](../../src/core/phys/physworld.hpp#L74) / [`publishPrepared()`](../../src/core/phys/physworld.hpp#L81)（`noexcept`）は、編集RPCのcollider投影が使うprepare/publishの三点セットです。[第9章](09_black_magic_and_gotchas.md)の編集transaction節を参照してください。
 
 `PELICAN_WITH_PHYSICS=OFF` 用のstubは [`physworld_stub.cpp`](../../src/core/phys/physworld_stub.cpp) で、binding系APIは `PELICAN_WITH_PHYSICS=OFF: PhysWorld collider binding is unavailable` を投げます。
 

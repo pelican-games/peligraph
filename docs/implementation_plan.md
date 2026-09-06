@@ -23265,6 +23265,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3 PhysWorldメッシュ保持・問い合わせ接続 (2026-09-06):**
+- Bindingに共有immutable CPU geometryを持たせ、prepared stateの既存swapによる公開・復元・clearと同じ寿命で保持する。通常shape収集にはmeshを含めない。
+- queryRaycastAllでprimitiveとmeshのprovider結果を統合し、C++のraycastAll/ClosestとGame DLL serviceを同じ入口へ接続。meshのobject transformは問い合わせ時に読み、距離順・filter・identityを維持する。
+- runtime_services build成功、関連28件348 assertions成功（build/.codex_bg/mesh-world-binding-final-test.log）。未公開candidateはhitしない、meshとsphereの距離順、公開serviceでのmesh hit、移動後miss、snapshot復元、filterとclearを確認。共通service接続を戻すと公開APIの2 hitが落ち、transform固定化では移動後missが落ちる。個別変異・OFF構成・シーンからの自動登録は未実行。
+- glTF scene登録、lifecycle/collider編集adapterでの一覧再構築、model reloadとの連動、BVH再利用、mesh overlap/sweep/triggerは残る。現在のBinding接続だけでglTF collision宣言の自動利用が完成したとは扱わない。
+
 **P3メッシュprovider API (2026-09-06):**
 - ProviderV3 / ApiV3を追加。V2 primitive descriptorを内包し、immutable vertex/indexとaffine object transformをcallback中だけ借用するmesh raycastを明示。mesh-only providerも既存のowner登録・activation・解除・共有lockへ統合。
 - 既存filterとidentityを適用し、game mesh provider→engine mesh provider→Builtin/Jolt構成のCPU BVHへdispatch。provider-onlyにはCPU narrow phaseを追加しない。providerの距離・normal・indexを検証し、world位置と元identityを復元する。

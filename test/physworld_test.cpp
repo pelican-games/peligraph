@@ -582,4 +582,66 @@ TEST_CASE("physics raycast RPC uses the live collider world", "[physworld][rpc][
 }
 #endif
 
+TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "[physworld][mesh]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    TransformComponent transform{.pos = {0, 0, 0},
+        .rotation = glm::quat{1, 0, 0, 0}, .scale = {1, 1, 1}};
+    const auto object = GameObjects::add().addComponent<TransformComponent>(transform).finish();
+    auto geometry = std::make_shared<PhysWorld::MeshGeometry>();
+    geometry->vertices = {{-1, -1, 3}, {1, -1, 3}, {0, 1, 3}};
+    geometry->indices = {0, 1, 2};
+    PhysWorld::Binding binding;
+    binding.identity.name = "mesh";
+    binding.transform_source = object;
+    binding.mesh = geometry;
+    auto prepared = world.prepareBindings({binding});
+    const auto identity = prepared.bindings.at(0).identity.collider_id;
+    REQUIRE(world.raycastAll({{0, 0, 0}, {0, 0, 2}, 10}).empty());
+    world.publishPrepared(std::move(prepared));
+    auto saved = world.snapshotPrepared();
+    geometry.reset();
+    const phys::Ray ray{{0, 0, 0}, {0, 0, 2}, 10};
+    auto hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].distance == Catch::Approx(3));
+    CHECK(hits[0].identity.collider_id == identity);
+    CHECK(hits[0].identity.entity == object);
+    ColliderComponent sphere;
+    sphere.shape = "sphere";
+    sphere.radius = 1;
+    world.bindCollider("sphere", sphere, PhysWorldTransform{.pos = {0, 0, 6}});
+    hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 2);
+    CHECK(hits[0].id == "mesh");
+    CHECK(hits[1].distance == Catch::Approx(5));
+    Physics::ApiV2 api;
+    REQUIRE(Physics::getApiV2(Physics::abiVersionV2, &api) == Physics::Status::ok);
+    Physics::ServiceV2 service;
+    REQUIRE(api.get_service(api.context, Physics::serviceVersionV2, &service) == Physics::Status::ok);
+    Physics::RaycastQueryV1 query;
+    query.ray = {{0, 0, 0}, {0, 0, 2}, 10, 0};
+    std::array<Physics::RaycastHitV1, 2> public_hits;
+    std::uint32_t count = 0;
+    REQUIRE(service.raycast_all(service.context, &query, public_hits.data(), 2, &count) == Physics::Status::ok);
+    REQUIRE(count == 2);
+    CHECK(public_hits[0].distance == Catch::Approx(3));
+    GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {5, 0, 0};
+    hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].id == "sphere");
+    world.publishPrepared(std::move(saved));
+    CHECK(world.raycastAll(ray).empty());
+    GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {0, 0, 0};
+    REQUIRE(world.raycastClosest(ray));
+    CHECK(world.raycastClosest(ray)->id == "mesh");
+    phys::QueryFilter filter;
+    filter.mask = 0;
+    CHECK(world.raycastAll(ray, filter).empty());
+    world.clear();
+    CHECK(world.raycastAll(ray).empty());
+}
+
 } // namespace Pelican

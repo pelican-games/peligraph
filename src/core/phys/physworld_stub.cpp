@@ -91,6 +91,13 @@ std::vector<phys::Collider> PhysWorld::collectColliders() const {
     return {};
 }
 
+Physics::Status PhysWorld::queryRaycastAll(
+    const phys::Ray &, const phys::QueryFilter *,
+    std::vector<phys::RaycastQueryHit> &hits) const {
+    hits.clear();
+    return Physics::Status::unavailable;
+}
+
 std::vector<phys::RaycastQueryHit> PhysWorld::raycastAll(
     const phys::Ray &ray, const phys::QueryFilter &filter) const {
     (void)ray;

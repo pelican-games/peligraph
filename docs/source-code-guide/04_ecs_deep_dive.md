@@ -595,7 +595,7 @@ level実行前に、その段に入っている**全System**の`prepare_func`が
 | scene component名 | 実際の所有者 |
 |---|---|
 | `light` | [`LightContainer`](../../src/core/light/lightcontainer.hpp#L29) |
-| `collider` | [`PhysWorld`](../../src/core/phys/physworld.hpp#L39) |
+| `collider` | [`PhysWorld`](../../src/core/phys/physworld.hpp#L41) |
 | `behavior` | [`BehaviorAttachmentArena`](../../src/core/gamelogic/behaviorarena.hpp#L174) |
 
 ### collider

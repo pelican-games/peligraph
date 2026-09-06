@@ -427,7 +427,7 @@ ctx.loadScene("scene_flow_second");   // 予約(名前はその場で検証。�
 
 ## 8.8 物理クエリとトリガー(✅P1/P2/WP107/179)
 
-> **設計決定:** ランタイム物理シミュレーションは「やらない」ではなく「**後**」(2026-07-07 決定)。現在あるのは raycast / overlap / shapeCast の **query world**(collider の配置だけを持ち、問い合わせに答える世界。速度や力を積分して物を動かす step は持たない — [physworld.hpp](../../src/core/phys/physworld.hpp#L39) の公開面はバインドとクエリだけ)。Jolt は query provider として実装済みですが、剛体 step/constraint を持つシミュレーションは未実装です。映像用の破壊・布は Houdini ベイク(transform_seq / VAT)レーンが担当([第5章](05_assets.md))。
+> **設計決定:** ランタイム物理シミュレーションは「やらない」ではなく「**後**」(2026-07-07 決定)。現在あるのは raycast / overlap / shapeCast の **query world**(collider の配置だけを持ち、問い合わせに答える世界。速度や力を積分して物を動かす step は持たない — [physworld.hpp](../../src/core/phys/physworld.hpp#L41) の公開面はバインドとクエリだけ)。Jolt は query provider として実装済みですが、剛体 step/constraint を持つシミュレーションは未実装です。映像用の破壊・布は Houdini ベイク(transform_seq / VAT)レーンが担当([第5章](05_assets.md))。
 
 - collider はシーン JSON のコンポーネントとして定義します([第4章](04_scene_ecs.md) §4.2)。**collider を持つオブジェクトには `name` が必須**です。
 - ゲームコードから:

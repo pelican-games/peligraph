@@ -1,6 +1,7 @@
 #pragma once
 
 #include "physquery.hpp"
+#include "../userpublic/physics/abi_v3.hpp"
 #include "../container.hpp"
 #include "../userpublic/components/collider.hpp"
 #include <details/ecs/entity.hpp>
@@ -8,6 +9,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <memory>
 #include <span>
 #include <string>
 #include <utility>
@@ -38,11 +40,17 @@ std::vector<phys::Collider> buildPhysColliders(std::span<const PhysWorldCollider
 
 DECLARE_MODULE(PhysWorld) {
   public:
+    struct MeshGeometry {
+        std::vector<Physics::Vec3V1> vertices;
+        std::vector<std::uint32_t> indices;
+    };
+
     struct Binding {
         phys::ColliderIdentity identity;
         phys::ColliderQueryMetadata metadata;
         ColliderComponent collider;
         std::variant<GameObjectId, PhysWorldTransform> transform_source;
+        std::shared_ptr<const MeshGeometry> mesh;
     };
 
     struct PreparedState {
@@ -81,6 +89,9 @@ DECLARE_MODULE(PhysWorld) {
                       std::optional<phys::ColliderQueryMetadata> metadata = std::nullopt);
 
     std::vector<phys::Collider> collectColliders() const;
+    Physics::Status queryRaycastAll(const phys::Ray &ray,
+        const phys::QueryFilter *filter,
+        std::vector<phys::RaycastQueryHit> &hits) const;
     std::vector<phys::RaycastQueryHit> raycastAll(
         const phys::Ray &ray, const phys::QueryFilter &filter = {}) const;
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
