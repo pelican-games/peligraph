@@ -59,6 +59,8 @@ struct RayQueryGeometryInstanceSnapshot {
     nlohmann::ordered_json procedural_record =
         nlohmann::ordered_json::object();
     std::uint64_t aabb_buffer_address = 0;
+    std::array<float, 3> aabb_min{};
+    std::array<float, 3> aabb_max{};
     std::uint64_t deformed_vertex_address = 0;
     std::uint64_t deformation_source_geometry_id = 0;
     std::shared_ptr<const void> geometry_lease;
@@ -314,7 +316,8 @@ class RayQueryAccelerationStructureScope {
         std::uint64_t ray_tracing_pipeline_generation = 0,
         std::shared_ptr<const RaySceneGenerationRoot> generation_root = {},
         std::span<const SceneAccelerationStructureDefinition> named_definitions = {},
-        bool triangle_world_space = false);
+        bool triangle_world_space = false,
+        bool procedural_world_space = false);
     std::optional<FrameBuild> tryReuseFrame(
         std::uint64_t geometry_pool_generation,
         std::uint64_t model_rebuild_generation,
@@ -324,7 +327,8 @@ class RayQueryAccelerationStructureScope {
         std::uint64_t runtime_generation,
         std::uint64_t ray_tracing_pipeline_generation,
         std::span<const SceneAccelerationStructureDefinition> named_definitions = {},
-        bool triangle_world_space = false);
+        bool triangle_world_space = false,
+        bool procedural_world_space = false);
 
     const RayQueryAccelerationStructureDiagnostics &
     diagnostics() const noexcept {

@@ -4734,6 +4734,9 @@ void Renderer::renderLogicalFrame(
     const bool triangle_world_space = gpu_owner_scope && gpu_owner_scope->ray_tracing_project &&
         gpu_owner_scope->ray_tracing_project->layout.acceleration_structure &&
         gpu_owner_scope->ray_tracing_project->layout.acceleration_structure->triangle_world_space;
+    const bool procedural_world_space = gpu_owner_scope && gpu_owner_scope->ray_tracing_project &&
+        gpu_owner_scope->ray_tracing_project->layout.acceleration_structure &&
+        gpu_owner_scope->ray_tracing_project->layout.acceleration_structure->procedural_world_space;
     std::optional<
         RayQueryAccelerationStructureScope::FrameBuild>
         acceleration_structure_build;
@@ -4848,7 +4851,7 @@ void Renderer::renderLogicalFrame(
                         *geometry_snapshot, *ray_scene_rows,
                         ray_type_count,
                         runtime_generation->generation,
-                        ray_tracing_pipeline_generation, named_scene_as, triangle_world_space);
+                        ray_tracing_pipeline_generation, named_scene_as, triangle_world_space, procedural_world_space);
                 if (reused) {
                     acceleration_structure_build.emplace(
                         std::move(*reused));
@@ -4901,7 +4904,7 @@ void Renderer::renderLogicalFrame(
                             .usesMaterialAlphaProfile(),
                     runtime_generation->generation,
                     ray_tracing_pipeline_generation,
-                    ray_scene_rows ? generation_root : nullptr, named_scene_as, triangle_world_space));
+                    ray_scene_rows ? generation_root : nullptr, named_scene_as, triangle_world_space, procedural_world_space));
             }
         };
     const auto publish_acceleration_structures = [&](std::uint32_t in_flight_frame_index) {

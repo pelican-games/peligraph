@@ -347,7 +347,7 @@ Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取�
 
 `VK_EXT_descriptor_indexing`(Vulkan 1.2 でコア入り)は、descriptor 配列を「実行時に決まる添字で引く」ための機能群です。`VkDescriptorSetLayoutBindingFlagsCreateInfo` に立てる `VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT` は「配列の一部の要素が未書き込みでも、シェーダがその要素を読まない限り有効」という緩和で、テクスチャ枠を N 個ぶん確保しておいて実際には数個しか埋めない bindless 構成には必須です。関連する緩和に `VARIABLE_DESCRIPTOR_COUNT` と `UPDATE_AFTER_BIND` があり、シェーダ側で非一様な添字を使うには `nonuniformEXT()` が要ります。**外部で引くときの名前**は Vulkan 仕様の "Descriptor Set Layout" 節と拡張名 `VK_EXT_descriptor_indexing` です。
 
-**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L169)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L450)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1155)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
+**使用場所**: [rayMaterialDescriptorBindingFlags()](../../src/core/shader/pipelinefactory.cpp#L169)(3 binding のうちテクスチャ配列にだけ `ePartiallyBound` を立てる) / [PipelineFactory::descriptorSetLayoutKeysFor()](../../src/core/shader/pipelinefactory.cpp#L450)(ray レイアウトのとき set 3 の `binding_flags` にそれを積み、`vk::DescriptorSetLayoutBindingFlagsCreateInfo` として layout 作成へ渡す) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1199)(生成される GLSL 側の `nonuniformEXT(row.texture_index)`)
 
 ### descriptor type の使い分け(combined image sampler / storage image / sampled image + sampler)
 
@@ -379,13 +379,13 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 `VkPhysicalDeviceBufferDeviceAddressFeatures::bufferDeviceAddress`(Vulkan 1.2 コア)を有効にすると、`vkGetBufferDeviceAddress` でバッファの GPU 仮想アドレスを 64bit 整数として取得でき、シェーダから `buffer_reference` でポインタのように辿れます。ただし**アドレスを取る予定のバッファは、作成時に `VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT` を立てておかなければなりません**(後から取ることはできません)。レイトレーシングの BLAS 入力に使うバッファはさらに `VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR` が要ります。得たアドレスに整列要件があるときは `address % alignment` の余りから前方へ寄せるのが定型です。
 
-**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L155) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L780)
+**使用場所**: [geometryBuildInputUsage()](../../src/core/model/vertbufcontainer.cpp#L17)(capability があるときだけ 2 つの usage を足す) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L780)
 
 ### std140 / std430 レイアウト規則
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L377) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L389)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L381) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L393)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -413,7 +413,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L666)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L780)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2175)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L666)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L780)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2243)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -421,7 +421,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1110)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L155)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L96)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1133)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L116)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 
@@ -429,7 +429,7 @@ BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKH
 
 TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE` は「このインスタンスは不透明として扱う」= **any-hit シェーダを呼ばない**、`FORCE_NO_OPAQUE` はその逆です。両方を同時に立てるのは矛盾なので、宣言側で弾く必要があります。any-hit シェーダは交差**候補**ごとに(順不同で、同じ交差に対して複数回)呼ばれ、`ignoreIntersectionEXT` でその候補を棄却します。三角形の hit attribute は組み込みで `vec2` の重心座標(残り 1 成分は `1 - u - v`)、プリミティブ番号は `gl_PrimitiveID` です。したがってアルファ抜きを any-hit で実装している構成で `FORCE_OPAQUE` を立てると、抜きが丸ごと無効になります。
 
-**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1036)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L511) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1155)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
+**使用場所**: [decodeRayInstanceFlags()](../../src/core/loader/componentcodec.cpp#L1036)(`force_opaque` と `force_no_opaque` の同時指定を `conflicting_flags` として拒否) / [validateRayProfileAccelerationStructureFlags()](../../src/core/renderer/accelerationstructure.cpp#L531) / [makeMaterialAlphaAnyHitSource()](../../src/core/shader/raygrouplayout.cpp#L1199)(`hitAttributeEXT vec2` を受け、cutoff 未満で `ignoreIntersectionEXT`)
 
 ### in-flight フレームと GPU 資源の寿命
 
@@ -721,7 +721,7 @@ DLL 境界を越えて渡す構造体は、両側が同じレイアウトでビ�
 
 C++20 の `std::bit_cast<To>(from)` は、同じサイズの型の間でビット列をそのまま読み替えます(`reinterpret_cast` や union 経由と違い未定義動作になりません)。浮動小数点をハッシュやダイジェストに入れるとき必ず問題になるのが `-0.0` で、`-0.0 == +0.0` は true なのにビット列は違うため、素直にバイト化すると「等しい値なのに違うダイジェスト」が出ます。バイト化の直前に `if (v == 0.0f) v = 0.0f;` と書いて符号を落とすのが定型です(NaN も同様にビット表現が一意でないので、そもそも弾くのが安全です)。
 
-**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L137)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L532) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L340)
+**使用場所**: [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L137)(NaN を例外にし、`0.0F` を代入し直してから `bit_cast`) / [canonicalTransformIdentity()](../../src/core/renderer/accelerationstructure.cpp#L552) / [encodeRecord()](../../src/core/shader/raygrouplayout.cpp#L343)
 
 ### 整数オーバーフローの事前検査
 

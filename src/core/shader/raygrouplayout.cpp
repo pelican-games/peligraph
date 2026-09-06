@@ -4,6 +4,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <glm/matrix.hpp>
 #include <limits>
 #include <map>
 #include <nlohmann/json.hpp>
@@ -155,6 +156,8 @@ std::string_view engineRecordFieldName(
         return "geometry_index";
     case RayEngineRecordField::geometry_kind:
         return "geometry_kind";
+    case RayEngineRecordField::procedural_transform:
+        return "procedural_transform";
     }
     return "unknown";
 }
@@ -517,7 +520,7 @@ std::uint8_t parseRayMask(const json &encoded, std::string_view source) {
 
 RayAccelerationStructureDeclaration parseAccelerationStructure(
     const json &encoded, std::string_view source) {
-    requireObjectFields(encoded, {"defaults", "procedural_defaults", "rules", "triangle_space"},
+    requireObjectFields(encoded, {"defaults", "procedural_defaults", "rules", "triangle_space", "procedural_space"},
                         "acceleration_structure", source);
     if (!encoded.contains("defaults")) {
         rayAsError("ray_as_rule_malformed", source,
@@ -528,6 +531,12 @@ RayAccelerationStructureDeclaration parseAccelerationStructure(
                         {"mask", "instance_flags", "geometry_flags"},
                         "acceleration_structure.defaults", source);
     RayAccelerationStructureDeclaration result;
+    if (const auto space = encoded.find("procedural_space"); space != encoded.end()) {
+        if (!space->is_string() || (*space != "geometry" && *space != "world"))
+            rayAsError("ray_as_rule_malformed", source,
+                       "acceleration_structure.procedural_space must be geometry or world");
+        result.procedural_world_space = *space == "world";
+    }
     if (const auto space = encoded.find("triangle_space"); space != encoded.end()) {
         if (!space->is_string())
             rayAsError("ray_as_rule_malformed", source,
@@ -726,7 +735,10 @@ std::uint32_t RayGroupLayout::missIndex(std::string_view name) const {
 
 std::optional<std::uint32_t> RayGroupLayout::engineRecordOffset(
     RayEngineRecordField field) const noexcept {
-    const auto name = engineRecordFieldName(field);
+    if (std::find(engine_record.begin(), engine_record.end(), field) == engine_record.end())
+        return std::nullopt;
+    const auto name = field == RayEngineRecordField::procedural_transform
+                          ? std::string_view{"geometry_to_world_0"} : engineRecordFieldName(field);
     const auto found = std::find_if(
         physical_record.begin(), physical_record.end(),
         [name](const auto &member) { return member.name == name; });
@@ -786,6 +798,9 @@ RayGroupLayout parseRayGroupLayout(
                     "schema must be pelican.ray_group_layout version 1, 2, or 3");
     }
     const auto version = root.at("version").get<std::uint32_t>();
+    if (version < 3 && root.contains("acceleration_structure") &&
+        root.at("acceleration_structure").contains("procedural_space"))
+        layoutError(source_reference, "acceleration_structure.procedural_space requires layout version 3");
     if (version == 1 && root.contains("acceleration_structure")) {
         rayAsError("ray_as_declaration_requires_layout_v2", source_reference,
                    "acceleration_structure requires layout version 2");
@@ -893,6 +908,9 @@ RayGroupLayout parseRayGroupLayout(
                 field = RayEngineRecordField::geometry_index;
             } else if (name == "geometry_kind") {
                 field = RayEngineRecordField::geometry_kind;
+            } else if (name == "procedural_transform") {
+                if (version < 3) layoutError(result.source_reference, "procedural_transform requires layout version 3");
+                field = RayEngineRecordField::procedural_transform;
             } else {
                 throw std::runtime_error(
                     "pelican.ray_engine_record_unknown@1: unknown engine record field '" +
@@ -907,7 +925,8 @@ RayGroupLayout parseRayGroupLayout(
     }
     for (const auto field : {RayEngineRecordField::material_index,
                              RayEngineRecordField::geometry_index,
-                             RayEngineRecordField::geometry_kind}) {
+                             RayEngineRecordField::geometry_kind,
+                             RayEngineRecordField::procedural_transform}) {
         if (requested_engine_fields.contains(field)) {
             result.engine_record.push_back(field);
         }
@@ -928,14 +947,27 @@ RayGroupLayout parseRayGroupLayout(
     if (!record.is_array()) {
         layoutError(result.source_reference, "record must be an array");
     }
+    if (result.acceleration_structure && result.acceleration_structure->procedural_world_space &&
+        !requested_engine_fields.contains(RayEngineRecordField::procedural_transform))
+        layoutError(result.source_reference, "procedural_space world requires engine_record procedural_transform");
     std::uint32_t cursor = 0;
     const TypeFacts engine_facts{RayRecordType::u32, 4, 4, 1};
     for (const auto field : result.engine_record) {
+        if (field == RayEngineRecordField::procedural_transform) {
+            for (const auto *prefix : {"geometry_to_world_", "world_to_geometry_"})
+                for (unsigned row = 0; row < 3; ++row)
+                    result.physical_record.push_back(appendRecordMember(
+                        std::string{prefix} + std::to_string(row), typeFacts("vec4", result.source_reference), cursor));
+            continue;
+        }
         result.physical_record.push_back(appendRecordMember(
             std::string{engineRecordFieldName(field)}, engine_facts,
             cursor));
     }
     result.record = parseRecordMembers(record, cursor, true, result.source_reference);
+    for (const auto &member : result.record)
+        if (std::ranges::any_of(result.physical_record, [&](const auto &engine) { return engine.name == member.name; }))
+            layoutError(result.source_reference, "record name conflicts with engine field: " + member.name);
     result.physical_record.insert(result.physical_record.end(),
                                   result.record.begin(), result.record.end());
     // A struct's std430 base alignment is the maximum member alignment; the
@@ -1006,10 +1038,11 @@ std::string makeRayGroupLayoutVirtualInclude(const RayGroupLayout &layout) {
     source << "#extension GL_EXT_nonuniform_qualifier : require\n";
     source << "#extension GL_EXT_buffer_reference2 : require\n";
     source << "#define PELICAN_RAY_ENGINE_RECORD_MEMBERS \\\n";
-    for (std::size_t index = 0; index < layout.engine_record.size(); ++index) {
-        source << "    uint "
-               << engineRecordFieldName(layout.engine_record[index]) << ';';
-        if (index + 1 != layout.engine_record.size()) source << " \\\n";
+    const auto engine_member_count = layout.physical_record.size() - layout.record.size();
+    for (std::size_t index = 0; index < engine_member_count; ++index) {
+        source << "    " << glslRecordTypeName(layout.physical_record[index].type) << ' '
+               << layout.physical_record[index].name << ';';
+        if (index + 1 != engine_member_count) source << " \\\n";
         else source << '\n';
     }
     if (layout.usesMaterialAlphaProfile()) {
@@ -1025,6 +1058,17 @@ std::string makeRayGroupLayoutVirtualInclude(const RayGroupLayout &layout) {
             else
                 source << '\n';
         }
+    }
+    if (layout.engineRecordOffset(RayEngineRecordField::procedural_transform)) {
+        source << R"glsl(
+#define PELICAN_RAY_HAS_PROCEDURAL_TRANSFORM 1
+#define pelicanProceduralGeometryPosition(record, position) vec3(dot((record).world_to_geometry_0, vec4((position), 1.0)), dot((record).world_to_geometry_1, vec4((position), 1.0)), dot((record).world_to_geometry_2, vec4((position), 1.0)))
+#define pelicanProceduralGeometryDirection(record, direction) vec3(dot((record).world_to_geometry_0.xyz, (direction)), dot((record).world_to_geometry_1.xyz, (direction)), dot((record).world_to_geometry_2.xyz, (direction)))
+#define pelicanProceduralRayOrigin(record) pelicanProceduralGeometryPosition(record, gl_WorldRayOriginEXT)
+#define pelicanProceduralRayDirection(record) pelicanProceduralGeometryDirection(record, gl_WorldRayDirectionEXT)
+#define pelicanProceduralWorldPosition(record, position) vec3(dot((record).geometry_to_world_0, vec4((position), 1.0)), dot((record).geometry_to_world_1, vec4((position), 1.0)), dot((record).geometry_to_world_2, vec4((position), 1.0)))
+#define pelicanProceduralWorldNormal(record, normal) normalize(mat3((record).world_to_geometry_0.xyz, (record).world_to_geometry_1.xyz, (record).world_to_geometry_2.xyz) * (normal))
+)glsl";
     }
     source << "const uint pelican_ray_missing_texture = 0xffffffffu;\n";
     source << "const uint pelican_ray_attribute_normal = 1u;\n";
@@ -1588,6 +1632,30 @@ RaySceneRowSnapshot resolveRaySceneRows(
                   input.alpha_override_uv_offset_scale,
               .alpha_override_uv_rotation =
                   input.alpha_override_uv_rotation});
+        if (const auto offset = layout.engineRecordOffset(RayEngineRecordField::procedural_transform)) {
+            const auto forward = input.geometry_kind == RayGeometryKind::aabbs ? input.world_transform : glm::mat4{1.0F};
+            for (unsigned column = 0; column < 4; ++column)
+                for (unsigned row = 0; row < 4; ++row)
+                    if (!std::isfinite(forward[column][row]))
+                        throw std::runtime_error("pelican.procedural_transform_invalid@1: transform must be finite");
+            if (forward[0][3] != 0.0F || forward[1][3] != 0.0F || forward[2][3] != 0.0F || forward[3][3] != 1.0F)
+                throw std::runtime_error("pelican.procedural_transform_invalid@1: transform must be affine");
+            const auto determinant = glm::determinant(forward);
+            if (!std::isfinite(determinant) || determinant == 0.0F)
+                throw std::runtime_error("pelican.procedural_transform_invalid@1: transform must be invertible");
+            const auto inverse = glm::inverse(forward);
+            std::array<float, 24> encoded{};
+            unsigned index = 0;
+            for (const auto &matrix : {forward, inverse})
+                for (unsigned row = 0; row < 3; ++row)
+                    for (unsigned column = 0; column < 4; ++column) {
+                        const auto value = matrix[column][row];
+                        if (!std::isfinite(value))
+                            throw std::runtime_error("pelican.procedural_transform_invalid@1: inverse transform must be finite");
+                        encoded[index++] = value == 0.0F ? 0.0F : value;
+                    }
+            std::memcpy(resolved.back().record_data.data() + *offset, encoded.data(), sizeof(encoded));
+        }
     }
     if (bindings != nullptr) {
         for (std::size_t index = 0; index < binding_matched.size(); ++index) {

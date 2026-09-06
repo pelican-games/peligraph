@@ -999,6 +999,13 @@ worldモードのhit shaderではobject座標がworld座標になり、ObjectToW
 geometry tableの元頂点座標は変わりません。`gl_InstanceID`は結合後の番号です。
 静的個体の移動はBLAS再構築、同じtopologyの変形はrefitで追随します。
 この指定はAABBの座標系や結合条件を変更しません。
+異なるtransformのAABBも結合する場合は、layout v3で`engine_record`に`"procedural_transform"`を追加し、
+`acceleration_structure`へ`"procedural_space":"world"`を指定します。
+元の座標系で交差を計算するshaderは、`gl_ObjectRayOriginEXT`/`gl_ObjectRayDirectionEXT`の代わりに
+`pelicanProceduralRayOrigin(record)`/`pelicanProceduralRayDirection(record)`を使います。返された方向を正規化しないでください。
+組込み`procedural_sphere`はこの宣言に対応しています。同じassetを使う複数個体でも各transformを保持し、移動に追随します。
+新しいengine recordを宣言するとshader recordのABIが変わるので、`PELICAN_RAY_ENGINE_RECORD_MEMBERS`を使って再コンパイルします。
+未指定のgeometryモードと既存shaderの契約は変わりません。現行material_alpha_v1 profileとの併用は対象外です。
 `{"name":"pelican_procedural_geometry","assets":["left_sphere","right_sphere"]}`のように、
 一つのcomponentで複数assetを指定できます。単一指定の`asset`との併記はできません。
 姿勢・instance設定・連続record行の条件を満たせば、
@@ -2424,7 +2431,7 @@ GUI では ImGui の `Pelican Engine Stats` → `Memory`(heap 別の Size / Usag
 
 - `ray_bindings` だけを書くと `pelican.ray_tracing.bindings_without_layout@1`。
 - `ray_group_layout` があるプロジェクトは**ランタイムシェーダコンパイラ必須**で、`PELICAN_RUNTIME_SHADER_COMPILER=OFF` のビルドでは `pelican.ray_tracing.layout_requires_runtime_compiler@1` になります。
-- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L782))。
+- layout 文書は `pelican.ray_group_layout` の **version 1 か 2 だけ**を受理します([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L794))。
 
 layout の骨格(`acceleration_structure` 以外は v1 / v2 共通):
 
@@ -2502,7 +2509,7 @@ scene JSON の `components` に書きます。
 
 ### AS 規則の material 鍵(✅WP383)
 
-`acceleration_structure.rules[]` は **material identity** で行を選び、その行の `geometry_flags` を差し替えます。identity は 3 種の直和で、**gate(規則を要求するか)と lookup(どの規則に当たるか)が同じ値を見ます**([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L18)):
+`acceleration_structure.rules[]` は **material identity** で行を選び、その行の `geometry_flags` を差し替えます。identity は 3 種の直和で、**gate(規則を要求するか)と lookup(どの規則に当たるか)が同じ値を見ます**([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L19)):
 
 | identity | 成立条件 | selector の書き方 |
 |---|---|---|
@@ -2520,9 +2527,9 @@ scene JSON の `components` に書きます。
 
 ### BLAS variant と `resident_blas_keys` 診断
 
-geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L888))。同じジオメトリでも flags が違えば別 BLAS です。
+geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation_id, geometry_flags)`** の組を鍵にキャッシュされます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L910))。同じジオメトリでも flags が違えば別 BLAS です。
 
-プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L803)):
+プランダンプ(§6.6)の `ray_query_acceleration_structures` に出ます([accelerationstructure.cpp](../../src/core/renderer/accelerationstructure.cpp#L824)):
 
 - `blas_variant_count` — 常駐している variant の数
 - `resident_blas_keys` — variant ごとの `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}`。同じ配列が `active_blas_inputs` というキーにも出ます(同一内容の 2 キー)
@@ -2532,7 +2539,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1429))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1473))。
 
 ## 関連文書
 

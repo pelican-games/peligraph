@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <glm/mat4x4.hpp>
 #include <limits>
 #include <memory>
 #include <nlohmann/json.hpp>
@@ -61,6 +62,7 @@ enum class RayEngineRecordField : std::uint8_t {
     material_index,
     geometry_index,
     geometry_kind,
+    procedural_transform,
 };
 
 enum class RayPortableProfile : std::uint8_t {
@@ -116,6 +118,7 @@ struct RayAsGeometryRule {
 
 struct RayAccelerationStructureDeclaration {
     bool triangle_world_space = false;
+    bool procedural_world_space = false;
     RayAccelerationStructureCanonicalDefaults defaults;
     RayAccelerationStructureCanonicalDefaults procedural_defaults{
         .geometry_flags = rayGeometryOpaque};
@@ -265,6 +268,7 @@ struct RaySceneRowInput {
     nlohmann::ordered_json procedural_record =
         nlohmann::ordered_json::object();
     std::uint64_t aabb_buffer_address = 0;
+    glm::mat4 world_transform{1.0F};
     std::uint64_t authoring_object_id = 0;
     std::optional<RayInstanceComponent> ray_instance;
     std::size_t source_index = 0;

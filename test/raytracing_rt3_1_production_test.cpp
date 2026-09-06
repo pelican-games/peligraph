@@ -6409,6 +6409,87 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
     }
 }
 
+TEST_CASE("RT6 world procedural BLAS combines transformed occurrences of one asset",
+          "[rt6][world-aabb][ray-tracing][production][gpu]") {
+    const bool world = GENERATE(false, true);
+    setupLogger();
+    Wp374aProjectRoot project{"rt6_world_aabb"};
+    writeWp386aProceduralProject(project.path);
+    auto assets = Json::parse(readWp374aText(project.path / "assets.json"));
+    assets["procedural_geometry"][0]["aabb"] = {{"min", {-1.1, -1.1, -1.1}}, {"max", {1.1, 1.1, 1.1}}};
+    assets["procedural_geometry"][0]["record"] = {{"radius", 1.0}, {"center", {0.0, 0.0, 0.0}}};
+    writeWp374aText(project.path / "assets.json", assets.dump());
+    auto scene = Json::parse(readWp374aText(project.path / "scene.json"));
+    auto &objects = scene["scenes"]["main"]["objects"];
+    auto right = objects[0];
+    objects[0]["components"][0]["pos"] = {-2.0, 0.0, 8.0};
+    right["name"] = "Right";
+    right["components"][0]["pos"] = {2.0, 0.0, 8.0};
+    right["components"][0]["scale"] = {-0.75, 1.0, 2.0};
+    right["components"][0]["rotation"] = {0.0, 0.0, 0.3826834324, 0.9238795325};
+    objects.push_back(right);
+    writeWp374aText(project.path / "scene.json", scene.dump());
+    auto layout = Json::parse(readWp374aText(project.path / "ray_layout.json"));
+    layout["engine_record"].push_back("procedural_transform");
+    layout["record"].push_back({{"name", "center"}, {"type", "vec3"}});
+    layout["acceleration_structure"]["procedural_space"] = world ? "world" : "geometry";
+    writeWp374aText(project.path / "ray_layout.json", layout.dump());
+    auto feature = Json::parse(readWp374aText(project.path / "features/wp386_procedural.json"));
+    feature["compute_tasks"][0]["ray_tracing"]["hit_shaders"]["primary"]["sphere"]["intersection"] = "engine://procedural_sphere";
+    writeWp374aText(project.path / "features/wp386_procedural.json", feature.dump());
+    writeWp374aText(project.path / "shaders/wp386.rchit", R"glsl(#version 460
+#extension GL_EXT_ray_tracing : require
+#extension GL_GOOGLE_include_directive : require
+#include "__pelican_ray_group_layout.glsl"
+struct Payload { uint marker; uint q; uint flags; uint tint; };
+layout(location=0) rayPayloadInEXT Payload payload;
+hitAttributeEXT vec2 hit_attribute;
+layout(shaderRecordEXT, std430) buffer SphereRecord {
+    PELICAN_RAY_ENGINE_RECORD_MEMBERS
+    float radius;
+    vec3 center;
+} sphere;
+void main() {
+    payload.marker = 0xaabb6u;
+    payload.q = floatBitsToUint(gl_HitTEXT);
+    payload.flags = gl_GeometryIndexEXT;
+    payload.tint = floatBitsToUint(sphere.radius);
+}
+)glsl");
+    FastModuleContainer modules;
+    Wp380RuntimeCleanup cleanup;
+    loadWp374aScene(project.path);
+    const auto sample = [&](float right_depth) {
+        const auto rows = renderWp374aProductionRows();
+        REQUIRE(rows.rows.size() == 2);
+        CHECK(rows.rows[0].geometry_allocation_id == rows.rows[1].geometry_allocation_id);
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("wp386_out", ImageSubresourceRange{});
+        std::array<std::uint32_t, 12> pixels{};
+        REQUIRE(image.bytes.size() >= sizeof(pixels));
+        std::memcpy(pixels.data(), image.bytes.data(), sizeof(pixels));
+        CHECK(pixels[0] == 0xaabb6u);
+        CHECK(pixels[4] == 0xaabb6u);
+        CHECK(pixels[8] == 0x386au);
+        CHECK(std::abs(std::bit_cast<float>(pixels[1]) - 7.0f) < 0.001f);
+        CHECK(std::abs(std::bit_cast<float>(pixels[5]) - right_depth) < 0.001f);
+        CHECK((pixels[2] != pixels[6]) == world);
+        const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+        CHECK(diagnostics.active_blas_count == 1); // Geometry mode reuses one asset BLAS across two instances.
+        CHECK(diagnostics.tlas_instance_count == (world ? 1 : 2));
+        return diagnostics;
+    };
+    const auto initial = sample(6.0f);
+    CHECK(sample(6.0f).blas_build_count == initial.blas_build_count);
+    const auto entity = GET_MODULE(SceneLoader).objectId("Right");
+    REQUIRE(entity);
+    auto *transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);
+    REQUIRE(transform);
+    transform->pos.z = 10.0f;
+    const auto moved = sample(8.0f);
+    if (world) CHECK(moved.blas_build_count > initial.blas_build_count);
+    CHECK(sample(8.0f).blas_build_count == moved.blas_build_count);
+}
+
 TEST_CASE("RT6 procedural geometries share one BLAS with independent records",
           "[rt6][multi-aabb][ray-tracing][production][gpu]") {
     setupLogger();

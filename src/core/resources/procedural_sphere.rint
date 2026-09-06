@@ -17,6 +17,17 @@ hitAttributeEXT vec2 hit_attribute;
 // Keep scalar operations explicit for the final SPIR-V oracle classification.
 // This reference subset reports the near root for rays originating outside.
 void main() {
+#ifdef PELICAN_RAY_HAS_PROCEDURAL_TRANSFORM
+    vec3 direction = pelicanProceduralRayDirection(sphere);
+    vec3 origin = pelicanProceduralRayOrigin(sphere);
+    float dx = direction.x;
+    float dy = direction.y;
+    float dz = direction.z;
+    float radius = sphere.radius;
+    precise float lx = sphere.center.x - origin.x;
+    precise float ly = sphere.center.y - origin.y;
+    precise float lz = sphere.center.z - origin.z;
+#else
     float dx = gl_ObjectRayDirectionEXT.x;
     float dy = gl_ObjectRayDirectionEXT.y;
     float dz = gl_ObjectRayDirectionEXT.z;
@@ -24,6 +35,7 @@ void main() {
     precise float lx = sphere.center.x - gl_ObjectRayOriginEXT.x;
     precise float ly = sphere.center.y - gl_ObjectRayOriginEXT.y;
     precise float lz = sphere.center.z - gl_ObjectRayOriginEXT.z;
+#endif
     precise float sx = lx * dx;
     precise float sy = ly * dy;
     precise float sz = lz * dz;

@@ -266,6 +266,8 @@ ProceduralGeometryContainer::proceduralRayInstances(const PreparedSceneState *pr
             .procedural_asset = asset->second.declaration.name,
             .procedural_record = asset->second.declaration.record,
             .aabb_buffer_address = asset->second.buffer_address,
+            .aabb_min = asset->second.declaration.aabb_min,
+            .aabb_max = asset->second.declaration.aabb_max,
             .geometry_lease = asset->second.aabb_buffer,
             .world_transform = worldMatrix(transform),
         });
@@ -303,6 +305,8 @@ ProceduralGeometryContainer::preparedRayInstances(
             .procedural_asset = asset.declaration.name,
             .procedural_record = asset.declaration.record,
             .aabb_buffer_address = asset.buffer_address,
+            .aabb_min = asset.declaration.aabb_min,
+            .aabb_max = asset.declaration.aabb_max,
             .geometry_lease = asset.aabb_buffer,
             .world_transform = worldMatrix(transform == transforms.end() ? nullptr : &transform->second),
         });

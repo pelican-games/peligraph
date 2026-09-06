@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <map>
@@ -25,6 +26,25 @@
 namespace Pelican {
 
 namespace {
+
+vk::AabbPositionsKHR worldAabb(const RayQueryGeometryInstanceSnapshot &instance) {
+    std::array<float, 3> lower{}, upper{};
+    for (int axis = 0; axis < 3; ++axis) {
+        double lo = instance.world_transform[3][axis];
+        double hi = lo;
+        for (int component = 0; component < 3; ++component) {
+            const double a = double(instance.world_transform[component][axis]) * instance.aabb_min[component];
+            const double b = double(instance.world_transform[component][axis]) * instance.aabb_max[component];
+            lo += std::min(a, b);
+            hi += std::max(a, b);
+        }
+        lower[axis] = std::nextafter(static_cast<float>(lo), -std::numeric_limits<float>::infinity());
+        upper[axis] = std::nextafter(static_cast<float>(hi), std::numeric_limits<float>::infinity());
+        if (!std::isfinite(lower[axis]) || !std::isfinite(upper[axis]))
+            throw std::runtime_error("procedural world-space AABB exceeds finite float bounds");
+    }
+    return {lower[0], lower[1], lower[2], upper[0], upper[1], upper[2]};
+}
 
 std::string geometryName(
     const RayQueryGeometryInstanceSnapshot &instance) {
@@ -691,6 +711,7 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
             .procedural_asset = instance.procedural_asset,
             .procedural_record = instance.procedural_record,
             .aabb_buffer_address = instance.aabb_buffer_address,
+            .world_transform = instance.world_transform,
             .authoring_object_id =
                 instance.authoring_object_id,
             .ray_instance = std::move(effective_declaration),
@@ -869,6 +890,7 @@ nlohmann::json rayQueryAccelerationStructureDiagnosticsToJson(
 
 struct RayQueryAccelerationStructureScope::State {
     bool triangle_world_space = false;
+    bool procedural_world_space = false;
     struct DeformedBlasKey {
         std::uint64_t source_geometry_id = 0;
         std::uint64_t scene_epoch = 0;
@@ -1052,7 +1074,7 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
     std::uint64_t runtime_generation,
     std::uint64_t ray_tracing_pipeline_generation,
     std::span<const SceneAccelerationStructureDefinition> named_definitions,
-    bool triangle_world_space) {
+    bool triangle_world_space, bool procedural_world_space) {
     const auto row_inputs_match = [&] {
         if (active_state_ == nullptr ||
             active_state_->ray_scene_rows == nullptr ||
@@ -1079,6 +1101,7 @@ RayQueryAccelerationStructureScope::tryReuseFrame(
     };
     if (active_state_ == nullptr || !active_state_->reusable ||
         active_state_->triangle_world_space != triangle_world_space ||
+        active_state_->procedural_world_space != procedural_world_space ||
         !std::equal(active_state_->named_definitions.begin(), active_state_->named_definitions.end(),
                     named_definitions.begin(), named_definitions.end()) ||
         active_state_->named_tlas.size() != named_definitions.size() ||
@@ -1127,7 +1150,7 @@ RayQueryAccelerationStructureScope::recordFrame(
     std::uint64_t ray_tracing_pipeline_generation,
     std::shared_ptr<const RaySceneGenerationRoot> generation_root,
     std::span<const SceneAccelerationStructureDefinition> named_definitions,
-    bool triangle_world_space) {
+    bool triangle_world_space, bool procedural_world_space) {
     const auto &capabilities = vkcore.getRuntimeCapabilities();
     if (!capabilities.ray_query ||
         !capabilities.acceleration_structure ||
@@ -1144,6 +1167,7 @@ RayQueryAccelerationStructureScope::recordFrame(
         classifyRayQueryGeometry(instances);
     auto candidate = std::make_shared<State>();
     candidate->triangle_world_space = triangle_world_space;
+    candidate->procedural_world_space = procedural_world_space;
     candidate->named_definitions.assign(named_definitions.begin(), named_definitions.end());
     for (const auto index : classification.eligible_instance_indices) {
         if (instances[index].geometry_lease)
@@ -1300,6 +1324,9 @@ RayQueryAccelerationStructureScope::recordFrame(
         max_geometry_count_ = properties.maxGeometryCount;
         max_primitive_count_ = properties.maxPrimitiveCount;
     }
+    const auto worldSpace = [&](RayGeometryKind kind) {
+        return kind == RayGeometryKind::triangles ? triangle_world_space : procedural_world_space;
+    };
     struct BlasGroup {
         std::vector<std::size_t> plan_indices;
         std::vector<State::BlasVariantKey> key;
@@ -1318,13 +1345,13 @@ RayQueryAccelerationStructureScope::recordFrame(
             const auto &previous = planned_instances[group.plan_indices.back()];
             const auto &first = instances[planned_instances[group.plan_indices.front()].source_index];
             append = first.geometry_kind == source.geometry_kind &&
-                ((triangle_world_space && source.geometry_kind == RayGeometryKind::triangles) ||
+                (worldSpace(source.geometry_kind) ||
                 (first.authoring_object_id == source.authoring_object_id &&
                 first.component_occurrence == source.component_occurrence &&
                 first.instance_index == source.instance_index &&
                 first.instance_generation == source.instance_generation)) &&
                 first.scene_epoch == source.scene_epoch &&
-                ((triangle_world_space && source.geometry_kind == RayGeometryKind::triangles) ||
+                (worldSpace(source.geometry_kind) ||
                  first.world_transform == source.world_transform) &&
                 previous.instance_mask == planned.instance_mask &&
                 previous.instance_flags == planned.instance_flags &&
@@ -1338,7 +1365,7 @@ RayQueryAccelerationStructureScope::recordFrame(
         auto &group = groups.back();
         group.plan_indices.push_back(plan_index);
         group.key.push_back({source.geometry_kind, source.geometry_allocation_id, planned.geometry_flags,
-            triangle_world_space && source.geometry_kind == RayGeometryKind::triangles
+            worldSpace(source.geometry_kind)
                 ? canonicalTransformIdentity(source.world_transform) : std::string{}});
         group.primitive_count += primitives;
     }
@@ -1380,6 +1407,22 @@ RayQueryAccelerationStructureScope::recordFrame(
         std::vector<vk::AccelerationStructureBuildRangeInfoKHR> ranges;
         std::vector<std::uint32_t> primitive_counts;
         vk::DeviceAddress transform_address = 0;
+        vk::DeviceAddress world_aabb_address = 0;
+        if (procedural_world_space && key.front().geometry_kind == RayGeometryKind::aabbs) {
+            std::vector<vk::AabbPositionsKHR> bounds;
+            for (const auto index : group.plan_indices)
+                bounds.push_back(worldAabb(instances[planned_instances[index].source_index]));
+            auto buffer = allocateAddressedBuffer(vkcore, bounds.size() * sizeof(vk::AabbPositionsKHR),
+                vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR |
+                    vk::BufferUsageFlagBits::eShaderDeviceAddress,
+                vma::MemoryUsage::eAutoPreferDevice, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite, 8);
+            vkcore.writeBuf(buffer.buffer, bounds.data(), buffer.offset, bounds.size() * sizeof(vk::AabbPositionsKHR));
+            world_aabb_address = buffer.address;
+            recorded->transient_buffers.push_back(std::move(buffer.buffer));
+            recordMemoryBarrier(command_buffer, vk::PipelineStageFlagBits::eHost,
+                vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR,
+                vk::AccessFlagBits::eHostWrite, vk::AccessFlagBits::eShaderRead);
+        }
         if (triangle_world_space && key.front().geometry_kind == RayGeometryKind::triangles) {
             std::vector<vk::TransformMatrixKHR> transforms;
             for (const auto index : group.plan_indices)
@@ -1403,7 +1446,9 @@ RayQueryAccelerationStructureScope::recordFrame(
             if (member.geometry_kind == RayGeometryKind::aabbs) {
                 geometries.emplace_back(vk::GeometryTypeKHR::eAabbs,
                     vk::AccelerationStructureGeometryDataKHR{vk::AccelerationStructureGeometryAabbsDataKHR{
-                        vk::DeviceOrHostAddressConstKHR{geometry.gpu.vertex_address}, sizeof(vk::AabbPositionsKHR)}}, flags);
+                        vk::DeviceOrHostAddressConstKHR{world_aabb_address
+                            ? world_aabb_address + member_index * sizeof(vk::AabbPositionsKHR)
+                            : geometry.gpu.vertex_address}, sizeof(vk::AabbPositionsKHR)}}, flags);
             } else {
                 geometries.emplace_back(vk::GeometryTypeKHR::eTriangles,
                     vk::AccelerationStructureGeometryDataKHR{vk::AccelerationStructureGeometryTrianglesDataKHR{
@@ -1438,7 +1483,7 @@ RayQueryAccelerationStructureScope::recordFrame(
             sizes.accelerationStructureSize);
         const auto &first_geometry = *unique_geometry.at(key.front().geometry_allocation_id);
         blas->index_input_address = first_geometry.gpu.index_address;
-        blas->vertex_input_address = first_geometry.gpu.vertex_address;
+        blas->vertex_input_address = world_aabb_address ? world_aabb_address : first_geometry.gpu.vertex_address;
         build_info.dstAccelerationStructure = blas->handle.get();
         recorded->build_targets.push_back(blas);
         recordBuild(command_buffer, vkcore, build_info, ranges,
@@ -1511,7 +1556,7 @@ RayQueryAccelerationStructureScope::recordFrame(
             RayProfileAccelerationStructureFlagSite::tlas_instance_row,
             planned.q);
         tlas_instances.emplace_back(
-            toVulkanTransform(triangle_world_space && instance.geometry_kind == RayGeometryKind::triangles
+            toVulkanTransform(worldSpace(instance.geometry_kind)
                 ? glm::mat4{1.0F} : instance.world_transform),
             planned.instance_custom_index,
             planned.instance_mask,

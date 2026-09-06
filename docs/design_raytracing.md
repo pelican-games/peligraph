@@ -557,6 +557,25 @@ materialとrecordはgeometryごとに保持する。
 変形BLASは座標モードもrefit keyに含め、同じモード・topologyなら更新できる。
 transform入力bufferはsubmission完了まで保持する。
 
+#### 異transform procedural AABBのworld結合
+
+layout v3の`acceleration_structure.procedural_space`は`"geometry"`（省略時）または`"world"`。
+worldは`engine_record`に`"procedural_transform"`を明示したlayoutだけで使う。
+このengine fieldはgeometry→worldとworld→geometryのaffine行列を各3行のvec4として、occurrenceごとのSBTへ格納する。
+追加したlayoutのABIは変わるが、宣言しないlayoutのABIは変わらない。payloadを持つlayout内のgeometry/world切替はAS設定の変更である。
+現行`material_alpha_v1` profileの固定engine-record契約とは併用しない。
+
+worldではlocal AABBを元のworld transformで包むworld AABBへ変換し、TLAS transformをidentityにする。
+mask・flags・custom index、連続q/SBT offset、device上限などの結合条件は三角形と共通で、triangleとの混合BLASは作らない。
+同じassetを複数個体で使っても、SBTは各occurrenceの変換を持つ。移動時は変換を含むkeyでBLASをrebuildし、SBTも同じ世代で更新する。
+world AABB入力bufferはbuild submission完了まで保持する。非有限・特異・非affine変換や有限floatに収まらないboundsは拒否する。
+
+intersection shaderでは`pelicanProceduralRayOrigin(record)`と`pelicanProceduralRayDirection(record)`で元のgeometry座標のrayを取得する。
+directionは正規化せず、`reportIntersectionEXT`へ渡す`t`を元のrayのパラメータとして保つ。
+`pelicanProceduralWorldPosition(record, p)`と`pelicanProceduralWorldNormal(record, n)`は元geometryからworldへの変換に使う。
+helperはgeometryモードでも同じ意味で使用できる。worldモードの`gl_ObjectRay*`はworld座標であり、既存のlocal-ray shaderへ暗黙に適用しない。
+組込み`procedural_sphere.rint`はpayload宣言時にhelperを使う。`PELICAN_RAY_ENGINE_RECORD_MEMBERS`は追加のvec4群も宣言する。
+
 ### RT7: 名前付きASの編集（2026-09-06）
 
 StudioのRender Features内「Scene AS...」でname/maskの追加・変更・削除を行う。
