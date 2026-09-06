@@ -1036,8 +1036,14 @@ std::size_t formatBlockBytes(std::string_view format) {
     return 0;
 }
 
-std::unordered_map<std::string, std::size_t> parseRenderTargetByteSizes(const nlohmann::json &json) {
-    std::unordered_map<std::string, std::size_t> sizes;
+struct RenderTargetByteSizes {
+    std::unordered_map<std::string, std::size_t> resolved;
+    std::unordered_set<std::string> pending_extent;
+    bool has_extent_declarations = false;
+};
+
+RenderTargetByteSizes parseRenderTargetByteSizes(const nlohmann::json &json) {
+    RenderTargetByteSizes sizes;
     if (!json.contains("render_targets") || !json.at("render_targets").is_array()) return sizes;
     std::optional<std::pair<std::size_t, std::size_t>> base_extent;
     for (const auto &target : json.at("render_targets")) {
@@ -1054,6 +1060,8 @@ std::unordered_map<std::string, std::size_t> parseRenderTargetByteSizes(const nl
     for (const auto &target : json.at("render_targets")) {
         if (!target.is_object()) continue;
         const auto name = requireString(target, "name", "render target");
+        sizes.has_extent_declarations |= target.contains("width") ||
+            target.contains("height") || target.contains("extent_scale");
         std::size_t width = 0;
         std::size_t height = 0;
         if (target.contains("width") && target.contains("height")) {
@@ -1064,21 +1072,27 @@ std::unordered_map<std::string, std::size_t> parseRenderTargetByteSizes(const nl
             const auto scale = target.at("extent_scale").get<double>();
             width = static_cast<std::size_t>(base_extent->first * scale);
             height = static_cast<std::size_t>(base_extent->second * scale);
+        } else if (!base_extent && target.contains("extent_scale") &&
+                   target.at("extent_scale").is_number() &&
+                   target.at("extent_scale").get<double>() > 0.0) {
+            sizes.pending_extent.insert(name);
+            continue;
         }
         if (width == 0 || height == 0) continue;
         const auto format = requireString(target, "format", "render target '" + name + "'");
         const auto bytes = formatBlockBytes(format);
-        if (bytes != 0) sizes.emplace(name, width * height * bytes);
+        if (bytes != 0) sizes.resolved.emplace(name, width * height * bytes);
     }
     return sizes;
 }
 
 void assignSnapshotByteSizes(std::vector<FrameGraphNodeDefinition> &nodes,
-                             const std::unordered_map<std::string, std::size_t> &sizes) {
+                             const RenderTargetByteSizes &sizes) {
     for (auto &node : nodes) {
         if (node.kind != FramePlanNodeKind::snapshot_copy) continue;
-        const auto found = sizes.find(node.writes.front());
-        if (found == sizes.end() || found->second == 0) {
+        if (sizes.pending_extent.contains(node.writes.front())) continue;
+        const auto found = sizes.resolved.find(node.writes.front());
+        if (found == sizes.resolved.end() || found->second == 0) {
             throw std::runtime_error("snapshot copy byte size is unavailable for '" +
                                      node.writes.front() + "'");
         }
@@ -1715,7 +1729,9 @@ FrameGraphDefinition parseFrameGraphDefinitionFromJson(const nlohmann::json &gra
     appendNodes(graph.nodes, parseRenderNodes(graph_json, declaration_index));
     appendNodes(graph.nodes, parseComputeNodes(graph_json, declaration_index));
     const auto local_sizes = parseRenderTargetByteSizes(graph_json);
-    if (!local_sizes.empty()) assignSnapshotByteSizes(graph.nodes, local_sizes);
+    if (local_sizes.has_extent_declarations) {
+        assignSnapshotByteSizes(graph.nodes, local_sizes);
+    }
     return graph;
 }
 
@@ -1748,10 +1764,9 @@ std::vector<FrameGraphDefinition> parseFrameGraphDefinitionsFromConfigJson(const
         appendUnique(graph.declared_resources, declared_buffers);
         size_t declaration_index = graph.nodes.size();
         appendNodes(graph.nodes, parseComputeNodes(config_json, declaration_index));
-        // Raw authored configs do not yet contain the resolved display extent.
-        // Preserve an unknown byte size for logical shadow planning; resolved
-        // runtime configs still require every snapshot target to have a size.
-        if (!render_target_sizes.empty()) {
+        // Only targets awaiting the display extent retain an unknown byte size.
+        // Unrelated fixed targets do not make scaled targets resolved.
+        if (render_target_sizes.has_extent_declarations) {
             assignSnapshotByteSizes(graph.nodes, render_target_sizes);
         }
         graphs.push_back(std::move(graph));

@@ -29,6 +29,8 @@ constexpr auto registered_ids =
     "render_pipelines/hybrid_v1.json",
     "debug_draw.frag.spv",
     "debug_draw.vert.spv",
+    "debug_draw.vert",
+    "debug_draw.frag",
     "gizmo.frag",
     "gizmo.frag.spv",
     "gizmo.vert",
@@ -182,6 +184,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("render_pipelines/hybrid_v1.json")
     PELICAN_ENGINE_RESOURCE("debug_draw.frag.spv")
     PELICAN_ENGINE_RESOURCE("debug_draw.vert.spv")
+    PELICAN_ENGINE_RESOURCE("debug_draw.vert")
+    PELICAN_ENGINE_RESOURCE("debug_draw.frag")
     PELICAN_ENGINE_RESOURCE("gizmo.frag")
     PELICAN_ENGINE_RESOURCE("gizmo.frag.spv")
     PELICAN_ENGINE_RESOURCE("gizmo.vert")

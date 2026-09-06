@@ -1045,17 +1045,12 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
         if (debug_query.empty()) rendering["frame_node_order"] = {{"main_render", {"debug_draw", "__scene_acceleration_structure"}}};
         Json debug_feature = Json::parse(R"json({
           "schema":"pelican.render_feature","version":1,"name":"debug_draw",
-          "render_targets":[{"name":"debug_result","extent_scale":1.0,"format":"R8G8B8A8_UNORM",
+          "render_targets":[{"name":"debug_result","extent_scale":1.0,"width":32,"height":32,"format":"R8G8B8A8_UNORM",
                              "format_class":"explicit(R8G8B8A8_UNORM)","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]}],
           "passes":[{"insert":"after:debug_draw","pass":{"name":"debug_draw","type":"debug_draw",
                      "output":{"color":"debug_result","depth":null},
-                     "shader":{"vertex":"project://shaders/debug_draw","fragment":"project://shaders/debug_draw"}}}]
+                     "shader":{"vertex":"engine://debug_draw","fragment":"engine://debug_draw"}}}]
         })json");
-        const auto shader_root = std::filesystem::path{__FILE__}.parent_path().parent_path() / "src/core/resources";
-        for (const auto *stage : {"vert", "frag"}) {
-            const auto filename = std::string{"debug_draw."} + stage;
-            writeWp374aText(project.path / "shaders" / filename, readWp374aText(shader_root / filename));
-        }
         if (!debug_query.empty()) {
             auto &pass = debug_feature["passes"][0]["pass"];
             if (!debug_undeclared) pass["ray_query"] = {{"acceleration_structure", debug_query}};

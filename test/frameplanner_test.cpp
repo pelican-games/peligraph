@@ -1226,6 +1226,48 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
     REQUIRE_FALSE(plan_json.contains("snapshots"));
     REQUIRE_FALSE(plan_json.contains("anchors"));
     requirePlanFixture(plan_json, fixtureRoot() / "plans" / "snapshot_screen_input.json");
+
+    SECTION("fixed targets do not resolve a scaled snapshot extent") {
+        auto mixed = composed.config;
+        mixed["render_targets"].push_back({
+            {"name", "debug_result"}, {"format_class", "data"},
+            {"format", "R8G8B8A8_UNORM"}, {"width", 16}, {"height", 8},
+            {"extent_scale", 1.0},
+        });
+        const auto raw_graphs = parseFrameGraphDefinitionsFromConfigJson(mixed);
+        REQUIRE(raw_graphs.size() == 1);
+        const auto raw_copy = std::find_if(raw_graphs.front().nodes.begin(),
+            raw_graphs.front().nodes.end(), [](const auto &node) {
+                return node.kind == FramePlanNodeKind::snapshot_copy;
+            });
+        REQUIRE(raw_copy != raw_graphs.front().nodes.end());
+        REQUIRE(raw_copy->byte_size == 0);
+
+        auto mixed_resolved = resolveRenderTargetFormatClassesV2(
+            mixed, vk::Format::eB8G8R8A8Srgb, vk::Extent2D{64, 32}, false);
+        const auto resolved_graphs = parseFrameGraphDefinitionsFromConfigJson(mixed_resolved);
+        REQUIRE(resolved_graphs.size() == 1);
+        const auto resolved_copy = std::find_if(resolved_graphs.front().nodes.begin(),
+            resolved_graphs.front().nodes.end(), [](const auto &node) {
+                return node.kind == FramePlanNodeKind::snapshot_copy;
+            });
+        REQUIRE(resolved_copy != resolved_graphs.front().nodes.end());
+        REQUIRE(resolved_copy->byte_size == 64 * 32 * 4);
+
+        auto &targets = mixed_resolved.at("render_targets");
+        const auto snapshot_target = std::find_if(targets.begin(), targets.end(),
+            [](const auto &target) { return target.at("name") == "opaque_color"; });
+        REQUIRE(snapshot_target != targets.end());
+        SECTION("unsupported resolved format remains an error") {
+            (*snapshot_target)["format"] = "unsupported";
+        }
+        SECTION("zero resolved extent remains an error") {
+            (*snapshot_target)["width"] = 0;
+            (*snapshot_target)["height"] = 32;
+        }
+        REQUIRE_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(mixed_resolved),
+            Catch::Matchers::ContainsSubstring("snapshot copy byte size is unavailable"));
+    }
 }
 
 TEST_CASE("canonical C1b frame-plan diff preserves every legacy pass and target field",
