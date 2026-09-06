@@ -479,6 +479,13 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 - `shader_define: true` のスカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
 - 解決結果は frame plan の `feature_instances` に出ます(`--dump-frame-plan` / Plan Viewer で確認可能)。
 
+StudioのRender featuresでrootに指定したfeatureを選び、**Parameters...**を開くと、公開された
+数値・bool・render target・shader assetパラメーターを編集できます。項目のチェックをONにすると
+project側の上書きを指定し、OFFにするとfeatureの既定値へ戻ります。数値は宣言された型・範囲内で入力します。
+ダイアログのOKは変更の準備で、Render featuresの**Apply**で保存・反映します。
+engine内蔵featureでも公開パラメーターは変更でき、featureの元ファイルは書き換えません。
+preset内部だけで選択されたfeatureは、このroot instance編集の対象外です。
+
 単色背景と環境光は preset を変更せず、次の feature 宣言だけで有効になります。
 値を省略したときの非ゼロ既定値は `sky_ambient.json` だけが所有します。feature を外した場合は
 背景 pass と define が消え、LightUBO の環境 radiance は zero になります。

@@ -2641,6 +2641,91 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
     }
 }
 
+TEST_CASE("Feature parameter overrides publish through the shared binder and preserve feature sources",
+          "[render-config-editor][feature-parameters]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto feature = Json::parse(R"json({
+      "schema":"pelican.render_feature","version":1,"name":"editable_parameters",
+      "runtime_shader_compiler":"optional",
+      "parameters":{"schema":"pelican.render_feature_parameters","version":1,
+                    "scalars":[{"name":"strength","type":"float","range":[0,1],"default":0.25}]},
+      "passes":[{"insert":"before:scene_present","pass":{
+        "name":"parameter_probe","type":"fullscreen","input":["gbuffer_normal"],
+        "output":{"color":["lit_color"],"depth":null},"clear_color":["$strength",0,0,1],
+        "shader":{"vertex":"engine://fullscreen","fragment":"engine://fullscreen"}}}]
+    })json");
+    const auto feature_path = project.root / "passes" / "parameters.json";
+    const auto feature_before = feature.dump(2);
+    writeBytes(feature_path, feature_before);
+    auto root = Json::parse(readBytes(project.render_config));
+    const auto index = root.at("features").size();
+    const std::string reference = "project://passes/parameters.json";
+    root["features"].push_back(reference);
+    writeBytes(project.render_config, root.dump(2));
+    const auto root_before = readBytes(project.render_config);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = service->getRenderFeatures(Json::object());
+    const auto &instance = context.at("feature_instances").at(index);
+    CHECK(instance.at("reference") == reference);
+    CHECK(instance.at("parameters") == Json::object());
+    CHECK(instance.at("parameter_schema") == feature.at("parameters"));
+    REQUIRE(instance.at("editable") == true);
+    CHECK(instance.at("removable") == true);
+    Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                 {"operations", Json::array({{{"op", "set_parameters"}, {"index", index},
+                                               {"parameters", {{"strength", 0.75}}}}})}};
+    SECTION("overrides and reset use authored root entries and survive reopen") {
+        for (const auto &parameters : Json::array({Json{{"strength", 0.75}}, Json::object()})) {
+            const auto current = service->getRenderFeatures(Json::object());
+            request["base_source_digest"] = current.at("source_digest").at("hex");
+            request["operations"][0]["parameters"] = parameters;
+            const auto accepted = service->editRenderFeatures(request);
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            root["features"][index] = {{"ref", reference}, {"parameters", parameters}};
+            CHECK(Json::parse(readBytes(project.render_config)) == root);
+            CHECK(readBytes(feature_path) == feature_before);
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            const auto reopened = service->getRenderFeatures(Json::object());
+            CHECK(reopened.at("feature_instances").at(index).at("parameters") == parameters);
+            CHECK(reopened.at("feature_instances").at(index).at("removable") == false);
+            const auto authored = service->getRenderAuthoringContext(Json::object());
+            const auto &passes = authored.at("graphs").at(0).at("passes");
+            const auto pass = std::find_if(passes.begin(), passes.end(), [](const auto &value) { return value.at("name") == "parameter_probe"; });
+            REQUIRE(pass != passes.end());
+            CHECK(pass->at("declaration").at("clear_color")[0] == parameters.value("strength", 0.25));
+            CHECK(service->editRenderFeatures(request).at("error").at("code") == "external_modification");
+        }
+    }
+    SECTION("invalid parameter values are rejected by the binder before source replacement") {
+        request["operations"][0]["parameters"] = {{"strength", 2.0}};
+        const auto accepted = service->editRenderFeatures(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(readBytes(feature_path) == feature_before);
+    }
+    SECTION("parameter publication failure restores the root") {
+        runtime.fail_after_source_commit = true;
+        const auto accepted = service->editRenderFeatures(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        CHECK(result.at("error").at("message") == "injected failure after source replacement");
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(readBytes(feature_path) == feature_before);
+    }
+}
+
 TEST_CASE("Project feature pass edits publish their source and retain the rendering root",
           "[render-config-editor][feature-pass-edit]") {
     for (const auto *type : {"fullscreen", "raster", "material"}) {

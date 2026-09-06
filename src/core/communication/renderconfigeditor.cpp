@@ -491,9 +491,35 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
     requireOnly(params, {}, "get_render_features");
     const auto uneditable_entries =
         document_.uneditableFeatureEntryCount();
+    auto instances = OrderedJson::array();
+    const auto root = Json::parse(document_.bytes());
+    const auto features = root.value("features", Json::array());
+    for (std::size_t index = 0; index < features.size(); ++index) {
+        const auto &entry = features.at(index);
+        OrderedJson instance{{"index", index}, {"reference", ""}, {"parameters", Json::object()},
+                             {"parameter_schema", nullptr}, {"editable", false}, {"removable", entry.is_string()}};
+        try {
+            const auto reference = entry.is_string() ? entry.get<std::string>() : entry.at("ref").get<std::string>();
+            instance["reference"] = reference;
+            if (entry.is_object()) instance["parameters"] = entry.value("parameters", Json::object());
+            std::string bytes;
+            if (reference.starts_with("engine://")) bytes = engineResourceOrThrow(reference.substr(9));
+            else if (dependencies_.resolve_document_path) bytes = readFileBytes(dependencies_.resolve_document_path(reference));
+            else throw std::runtime_error("Project feature document access is unavailable.");
+            const auto feature = Json::parse(bytes);
+            instance["parameter_schema"] = feature.value("parameters", Json(nullptr));
+            if (instance.at("parameter_schema").is_null())
+                instance["reason"] = "This feature does not declare editable parameters.";
+            else instance["editable"] = true;
+        } catch (const std::exception &error) {
+            instance["reason"] = error.what();
+        }
+        instances.push_back(std::move(instance));
+    }
     return {{"source_reference", dependencies_.source_reference},
             {"source_digest", digestJson(document_.sourceDigest())},
             {"features", document_.featureReferences()},
+            {"feature_instances", std::move(instances)},
             {"has_uneditable_feature_entries",
              uneditable_entries != 0},
             {"uneditable_feature_entry_count",
@@ -543,10 +569,30 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
                                        document_.bytes());
             if (!operations->empty()) {
                 const auto &operation = operations->front();
-                requireOnly(operation, {"op", "feature"},
-                            "edit_render_features operation");
                 const auto op = requireString(operation, "op",
                                               "edit_render_features operation");
+                if (op == "set_parameters") {
+                    requireOnly(operation, {"op", "index", "parameters"}, "edit_render_features operation");
+                    if (!operation.contains("index") || !operation.at("index").is_number_integer() || operation.at("index") < 0 ||
+                        !operation.contains("parameters") || !operation.at("parameters").is_object())
+                        return rejection("invalid_feature_parameters", "set_parameters requires a nonnegative index and parameters object");
+                    auto features = Json::parse(candidate.bytes()).value("features", Json::array());
+                    const auto index = operation.at("index").get<std::size_t>();
+                    if (index >= features.size())
+                        return rejection("invalid_feature_parameters", "Feature instance index is out of range");
+                    auto &entry = features.at(index);
+                    const auto &parameters = operation.at("parameters");
+                    if (entry.is_string()) {
+                        if (!parameters.empty()) entry = {{"ref", entry.get<std::string>()}, {"parameters", parameters}};
+                    } else if (entry.is_object() && entry.contains("ref") && entry.at("ref").is_string()) {
+                        entry["parameters"] = parameters;
+                    } else {
+                        return rejection("invalid_feature_parameters", "The selected feature instance has no editable reference");
+                    }
+                    candidate = candidate.withRootValue("features", features.dump(2));
+                    return std::nullopt;
+                }
+                requireOnly(operation, {"op", "feature"}, "edit_render_features operation");
                 const auto feature = requireString(
                     operation, "feature", "edit_render_features operation");
                 if (op == "add") {
@@ -578,7 +624,7 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
                     }
                 } else {
                     throw std::invalid_argument(
-                        "edit_render_features operation op must be 'add' or 'remove'");
+                        "edit_render_features operation op must be 'add', 'remove' or 'set_parameters'");
                 }
             }
 

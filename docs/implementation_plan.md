@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はproject featureの明示的なfullscreen/material/raster pass編集。詳細は下の「RT7 feature所有pass編集」を参照。material contract・routing編集は `8df9fb7e`、AABB geometry/world GUIは `23c8cf68` に統合済み。
+- 最新の追加はroot feature instanceの公開パラメーター編集。詳細は下の「RT7 featureパラメーター編集」を参照。明示feature pass編集は `7af6fd95`、material contract・routing編集は `8df9fb7e` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 feature所有pass編集 (2026-09-06):**
+**RT7 featureパラメーター編集 (2026-09-06):**
+- get_render_featuresにroot features配列のinstance index・reference・authored parameters・parameter_schema・編集可否を追加。既存edit_render_featuresのset_parameters操作で対象entryだけを更新する。string参照は上書き指定時にref/parametersへ変換し、object entryの他フィールドを保持する。feature sourceは変更しない。
+- Render featuresのParametersフォームでfloat/int・bool・render target・shader assetを編集。上書きチェックOFFで既定値へ戻し、OKで準備、Applyで保存する。数値型・範囲をフォームで確認し、参照と最終整合性は既存binder/transactionへ委ねる。編集開始時root digestを保持してindexの再割当てを防ぐ。
+- rootに選択したengine/project featureが対象。preset内部だけのinstanceや生成variantの専用編集は残る。既存のobject feature entry削除制限を維持し、削除可否を別表示する。schema元は保存せず、UI読取後のschema変更は適用時の現行binderで検証する。
+- Player/Studio・対象CPU build成功（build/.codex_bg/feature-parameters-build.log）。対象CPU成功（feature-parameters-cpu.log）：上書き・既定値リセット・保存と再読込、feature source保持、root CAS、不正範囲拒否、保存後失敗の復元と既存feature制御を確認。実GUI操作とGPU描画確認は未実施。
+- 対照: root parameterを候補へ渡さなければ展開後の値確認が落ち、上書き削除を外せば既定値リセットが落ちる。個別変異は未実行。専用検証frameworkやGPU全数の反復は追加していない。
+
+**RT7 feature所有pass編集 (2026-09-06、7af6fd95):**
 - Frame PlanのEdit passからproject featureの明示的なfullscreen/material/raster宣言を既存フォームで編集する。contextにeditable_feature_pass・feature_declaration・feature_source_reference/digestと編集不可理由を追加。保存時はbase_feature_digestを送る。preset用RPCを共用し、元feature文書だけを既存の候補保存・CAS・publicationへ載せる。
 - 編集先は選択graph/nodeのtrusted provenanceから決め、ユーザー入力の保存パスは追加しない。同じfeatureを使うgraphにも変更が及ぶことをフォームで案内する。feature編集ではpreset全体のrouting欄を隠し、RPCでも変更を拒否する。
 - engine内蔵feature、parameters宣言を持つfeature、authored/runtime名が異なる生成variant、対応する明示passがないノードは対象外。生成された接続名を共通の元宣言へ保存しないための境界であり、これらの専用編集は残件。

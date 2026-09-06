@@ -10,6 +10,9 @@
 #include <QDialog>
 #include <QComboBox>
 #include <QSpinBox>
+#include <QCheckBox>
+#include <QDialogButtonBox>
+#include <QScrollArea>
 #include <QFormLayout>
 #include <nlohmann/json.hpp>
 #include <QLineEdit>
@@ -47,6 +50,7 @@ constexpr int ReferenceRole = Qt::UserRole;
 constexpr int FeatureNameRole = Qt::UserRole + 1;
 constexpr int AvailableRole = Qt::UserRole + 2;
 constexpr int UnavailableReasonRole = Qt::UserRole + 3;
+constexpr int InstanceRole = Qt::UserRole + 4;
 
 QString responseError(const QJsonObject &response) {
     const auto error = response.value(QStringLiteral("error"));
@@ -1731,6 +1735,9 @@ struct RenderFeaturesWidget::Impl {
         QString op;
         QString reference;
         QString display_name;
+        int index = -1;
+        QJsonObject parameters;
+        QString base_digest;
     };
 
     RenderFeaturesWidget &owner;
@@ -1739,6 +1746,7 @@ struct RenderFeaturesWidget::Impl {
     QTreeWidget *catalog = nullptr;
     QPushButton *add = nullptr;
     QPushButton *remove = nullptr;
+    QPushButton *parameters = nullptr;
     QPushButton *apply = nullptr;
     QPushButton *refresh = nullptr;
     QLabel *notice = nullptr;
@@ -1782,6 +1790,10 @@ struct RenderFeaturesWidget::Impl {
         remove->setObjectName(
             QStringLiteral("pelican.renderFeatures.remove"));
         remove_row->addWidget(remove);
+        parameters = new QPushButton(owner.tr("Parameters..."), &owner);
+        parameters->setObjectName("pelican.renderFeatures.parameters");
+        remove_row->addWidget(parameters);
+        QObject::connect(parameters, &QPushButton::clicked, &owner, [this] { editParameters(); });
         remove_row->addStretch();
         layout->addLayout(remove_row);
 
@@ -2019,6 +2031,102 @@ struct RenderFeaturesWidget::Impl {
         updateControls();
     }
 
+    void editParameters() {
+        const auto *item = current->currentItem();
+        if (!item) return;
+        const auto instance = item->data(InstanceRole).toJsonObject();
+        const auto display_name = item->text();
+        const auto base_digest = source_digest;
+        if (!instance.value("editable").toBool()) {
+            showInformation(instance.value("reason").toString());
+            return;
+        }
+        QDialog dialog(&owner);
+        dialog.setWindowTitle(owner.tr("Feature parameters: %1").arg(item->text()));
+        dialog.setObjectName("pelican.featureParameters");
+        dialog.resize(560, 480);
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *hint = new QLabel(owner.tr("Enable an override to change its value. Uncheck it to use the feature default. Apply in Render features to save."), &dialog);
+        hint->setWordWrap(true);
+        layout->addWidget(hint);
+        auto *scroll = new QScrollArea(&dialog);
+        scroll->setWidgetResizable(true);
+        auto *body = new QWidget(scroll);
+        auto *form = new QFormLayout(body);
+        scroll->setWidget(body);
+        layout->addWidget(scroll);
+        struct Field { QString name, type; QCheckBox *override_value; QWidget *value; QJsonArray range; };
+        std::vector<Field> fields;
+        const auto schema = instance.value("parameter_schema").toObject();
+        const auto authored = staged && staged->op == "set_parameters" && staged->base_digest == base_digest &&
+            staged->index == instance.value("index").toInt(-1) ? staged->parameters : instance.value("parameters").toObject();
+        for (const auto *category : {"scalars", "render_targets", "shader_assets"}) {
+            for (const auto &encoded : schema.value(category).toArray()) {
+                const auto declaration = encoded.toObject();
+                const auto name = declaration.value("name").toString();
+                const auto type = QString::fromLatin1(category) == "scalars" ? declaration.value("type").toString() : QStringLiteral("string");
+                const auto value = authored.contains(name) ? authored.value(name) : declaration.value("default");
+                auto *enabled = new QCheckBox(name, &dialog);
+                enabled->setChecked(authored.contains(name));
+                QWidget *editor;
+                if (type == "bool") {
+                    auto *check = new QCheckBox(&dialog);
+                    check->setChecked(value.toBool());
+                    editor = check;
+                } else {
+                    auto *line = new QLineEdit(&dialog);
+                    if (value.isString()) line->setText(value.toString());
+                    else if (value.isDouble()) line->setText(QString::number(value.toDouble(), 'g', 17));
+                    line->setPlaceholderText(type == "string" ? owner.tr("Target name or shader reference") : type);
+                    editor = line;
+                }
+                const auto range = declaration.value("range").toArray();
+                editor->setToolTip(range.size() == 2 ? owner.tr("Range: %1 to %2").arg(range[0].toDouble()).arg(range[1].toDouble()) : declaration.value("stage").toString());
+                editor->setObjectName("pelican.featureParameters." + name);
+                editor->setEnabled(enabled->isChecked());
+                QObject::connect(enabled, &QCheckBox::toggled, editor, &QWidget::setEnabled);
+                form->addRow(enabled, editor);
+                fields.push_back({name, type, enabled, editor, range});
+            }
+        }
+        auto *error = new QLabel(&dialog);
+        error->setWordWrap(true);
+        layout->addWidget(error);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        layout->addWidget(buttons);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        QJsonObject edited;
+        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+            edited = authored;
+            for (const auto &field : fields) {
+                if (!field.override_value->isChecked()) { edited.remove(field.name); continue; }
+                if (field.type == "bool") edited[field.name] = static_cast<QCheckBox *>(field.value)->isChecked();
+                else {
+                    const auto text = static_cast<QLineEdit *>(field.value)->text().trimmed();
+                    if (field.type == "string") { edited[field.name] = text; continue; }
+                    bool valid = false;
+                    const double value = text.toDouble(&valid);
+                    if (!valid || !std::isfinite(value) || (field.type == "int" && std::trunc(value) != value) ||
+                        (field.range.size() == 2 && (value < field.range[0].toDouble() || value > field.range[1].toDouble()))) {
+                        error->setText(owner.tr("Enter a valid %1 value for %2 within its declared range.").arg(field.type, field.name));
+                        return;
+                    }
+                    edited[field.name] = value;
+                }
+            }
+            dialog.accept();
+        });
+        if (dialog.exec() != QDialog::Accepted) return;
+        if (source_digest != base_digest || !can_edit) {
+            showError(owner.tr("The feature list changed while editing. Reopen its parameters."));
+            return;
+        }
+        staged = StagedOperation{.op = "set_parameters", .reference = instance.value("reference").toString(),
+            .display_name = display_name, .index = instance.value("index").toInt(-1), .parameters = edited, .base_digest = base_digest};
+        showInformation(owner.tr("Pending parameter changes: %1").arg(display_name));
+        updateControls();
+    }
+
     void stageRemove() {
         const auto selected = current->selectedItems();
         if (selected.isEmpty()) return;
@@ -2043,9 +2151,14 @@ struct RenderFeaturesWidget::Impl {
             {QStringLiteral("op"), staged->op},
             {QStringLiteral("feature"), staged->reference},
         };
+        if (staged->op == "set_parameters") {
+            operation.remove("feature");
+            operation["index"] = staged->index;
+            operation["parameters"] = staged->parameters;
+        }
         QJsonObject params{
             {QStringLiteral("base_source_digest"),
-             source_digest},
+             staged->op == "set_parameters" ? staged->base_digest : source_digest},
             {QStringLiteral("operations"),
              QJsonArray{operation}},
         };
@@ -2146,12 +2259,13 @@ struct RenderFeaturesWidget::Impl {
         source_digest = digest.value(
             QStringLiteral("hex")).toString();
         current->clear();
-        for (const auto value : response.value(
-                 QStringLiteral("features")).toArray()) {
-            const auto reference = value.toString();
-            auto *item = new QListWidgetItem(
-                reference, current);
-            item->setData(ReferenceRole, reference);
+        for (const auto &value : response.value("feature_instances").toArray()) {
+                const auto instance = value.toObject();
+                const auto reference = instance.value("reference").toString();
+                auto *item = new QListWidgetItem(reference, current);
+                item->setData(ReferenceRole, reference);
+                item->setData(InstanceRole, instance);
+                item->setToolTip(instance.value("reason").toString());
         }
         have_current = true;
         if (have_catalog) applyCatalogNamesToCurrent();
@@ -2276,12 +2390,14 @@ struct RenderFeaturesWidget::Impl {
         }
         const bool idle = active_ticket.isEmpty() &&
                           !submit_pending;
+        parameters->setEnabled(can_edit && idle && current->currentItem() &&
+            current->currentItem()->data(InstanceRole).toJsonObject().value("editable").toBool());
         refresh->setEnabled(viewport.rpcReady() && idle);
         current->setEnabled(have_current && idle);
         catalog->setEnabled(have_catalog && idle);
         remove->setEnabled(
             can_edit && idle &&
-            !current->selectedItems().isEmpty());
+            !current->selectedItems().isEmpty() && current->selectedItems().front()->data(InstanceRole).toJsonObject().value("removable").toBool());
         const auto catalog_selection =
             catalog->selectedItems();
         add->setEnabled(
