@@ -35,6 +35,7 @@ struct PlanViewerShaderResolution {
     std::optional<std::size_t> hit_slot_count;
     std::vector<PlanViewerHitShaderSlot> closesthit_slots;
     std::vector<PlanViewerAnyHitSlot> anyhit_slots;
+    std::vector<PlanViewerHitShaderSlot> intersection_slots;
 };
 
 struct PlanViewerNode {

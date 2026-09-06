@@ -250,7 +250,7 @@ PlanViewerShaderResolution readShaderResolution(
     for (auto field = wire.begin(); field != wire.end(); ++field) {
         if (!knownValue(field.key(),
                         {"state", "stages", "hit_slot_count",
-                         "closesthit_slots", "anyhit_slots"})) {
+                         "closesthit_slots", "anyhit_slots", "intersection_slots"})) {
             throw std::runtime_error(
                 "plan viewer resolved shader_resolution has unknown field '" +
                 field.key() + "'");
@@ -479,6 +479,30 @@ PlanViewerShaderResolution readShaderResolution(
             }
             previous = slot.hit_slot;
             result.anyhit_slots.push_back(std::move(slot));
+        }
+    }
+    if (const auto slots = wire.find("intersection_slots"); slots != wire.end()) {
+        if (!has_hit_domain) {
+            throw std::runtime_error("plan viewer intersection_slots requires a physical hit-slot domain");
+        }
+        if (!slots->is_array() || slots->empty()) {
+            throw std::runtime_error(
+                "plan viewer intersection_slots must be a non-empty array");
+        }
+        std::optional<std::size_t> previous;
+        for (const auto &entry : *slots) {
+            auto slot = parseHitShaderSlot(
+                entry, "intersection", ShaderSourceStage::intersection);
+            if (slot.hit_slot >= *result.hit_slot_count) {
+                throw std::runtime_error(
+                    "plan viewer intersection hit_slot is outside hit_slot_count");
+            }
+            if (previous && slot.hit_slot <= *previous) {
+                throw std::runtime_error(
+                    "plan viewer intersection_slots must be strictly increasing");
+            }
+            previous = slot.hit_slot;
+            result.intersection_slots.push_back(std::move(slot));
         }
     }
     return result;
@@ -1034,12 +1058,10 @@ struct PlanViewer::Impl {
                     stage.source_open_reason->c_str());
             }
         }
-        for (const auto &slot :
-             node.shader_resolution.closesthit_slots) {
+        const auto show_hit_slot = [](const PlanViewerHitShaderSlot &slot) {
             const auto &stage = slot.projection;
             const auto label =
-                "closesthit[hit_slot=" +
-                std::to_string(slot.hit_slot) + "]";
+                stage.stage + "[hit_slot=" + std::to_string(slot.hit_slot) + "]";
             ImGui::BulletText("%s  [%s]", label.c_str(),
                               stage.origin.c_str());
             if (stage.declared_ref &&
@@ -1056,28 +1078,10 @@ struct PlanViewer::Impl {
                 ImGui::TextWrapped("  source: <%s>",
                                    stage.source_open_reason->c_str());
             }
-        }
-        for (const auto &slot : node.shader_resolution.anyhit_slots) {
-            const auto &stage = slot.projection;
-            const auto label =
-                "anyhit[hit_slot=" + std::to_string(slot.hit_slot) + "]";
-            ImGui::BulletText("%s  [%s]", label.c_str(),
-                              stage.origin.c_str());
-            if (stage.declared_ref &&
-                *stage.declared_ref != stage.effective_ref) {
-                ImGui::TextWrapped("  declared: %s",
-                                   stage.declared_ref->c_str());
-            }
-            ImGui::TextWrapped("  effective: %s",
-                               stage.effective_ref.c_str());
-            if (stage.source_open_ref) {
-                ImGui::TextWrapped("  source: %s",
-                                   stage.source_open_ref->c_str());
-            } else if (stage.source_open_reason) {
-                ImGui::TextWrapped("  source: <%s>",
-                                   stage.source_open_reason->c_str());
-            }
-        }
+        };
+        for (const auto &slot : node.shader_resolution.closesthit_slots) show_hit_slot(slot);
+        for (const auto &slot : node.shader_resolution.anyhit_slots) show_hit_slot(slot);
+        for (const auto &slot : node.shader_resolution.intersection_slots) show_hit_slot(slot);
         ImGui::SeparatorText("attachment ops");
         if (node.color_load_op.empty() && node.depth_load_op.empty()) ImGui::TextDisabled("not applicable");
         if (!node.color_load_op.empty()) {

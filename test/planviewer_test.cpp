@@ -195,6 +195,12 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
         {"resources", nlohmann::json::array()},
     };
 
+    auto &resolution = plan["nodes"][0]["shader_resolution"];
+    resolution["intersection_slots"] = nlohmann::json::array({
+        {{"hit_slot", std::size_t{3}}, {"stage", "intersection"},
+         {"declared_ref", "shaders/sphere"}, {"effective_ref", "shaders/sphere"},
+         {"origin", "authored"}, {"source_open_ref", "project://shaders/sphere.rint"}}
+    });
     const auto model = buildPlanViewerModel(plan);
     REQUIRE(model.nodes.size() == 1);
     CHECK(model.nodes.front().shader_resolution.hit_slot_count ==
@@ -210,6 +216,15 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
           std::optional<std::string>{
               "project://shaders/filter3.rahit"});
 
+    const auto &intersections = model.nodes.front().shader_resolution.intersection_slots;
+    REQUIRE(intersections.size() == 1);
+    CHECK(intersections[0].hit_slot == 3);
+    CHECK(intersections[0].projection.stage == "intersection");
+    CHECK(intersections[0].projection.source_open_ref == "project://shaders/sphere.rint");
+    SECTION("intersection slot cannot exceed physical domain") {
+        resolution["intersection_slots"][0]["hit_slot"] = std::size_t{4};
+        CHECK_THROWS_WITH(buildPlanViewerModel(plan), Catch::Matchers::ContainsSubstring("outside hit_slot_count"));
+    }
     auto &slots =
         plan["nodes"][0]["shader_resolution"]["anyhit_slots"];
     SECTION("unknown projection field is rejected") {

@@ -23244,7 +23244,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**Studio intersection shader観測 (2026-09-06):**
+**ImGui Plan Viewer intersection対応 (2026-09-06):**
+- Studioと同じintersection_slots受信漏れがImGuiのPlan Viewerにも存在したため、既存の疎hit slot parserで受信し、stage/slot/参照元/実効参照/.rintソースを表示する。closesthit/anyhitの重複描画を共通化してintersectionにも使用する。
+- Player build成功、関連テスト群build成功（build/.codex_bg/intersection-viewer-build.log、intersection-viewer-final-build.log）。Plan Viewer 3件143 assertions成功（intersection-viewer-test.log）。初回は追加テストのCatch matcher名前空間指定不足を修正。対照は既存shaderとintersectionの共存・slot番号・.rint参照保持・範囲外拒否。受信追加を戻せば正常payloadが拒否される。個別変異と実画面操作は未実行。
+
+**Studio intersection shader観測 (2026-09-06、c91c9062):**
 - エンジンが返すintersection_slotsをStudioが未知fieldとして拒否していた。FramePlanModelに疎な物理hit slotの受信を追加し、既存のstage/source検証をintersectionと.rintへ拡張。Frame PlanのShadersにhit slot別のintersectionとOpen操作を追加する。エンジンの描画・RPC payloadは変更しない。
 - RT stage/record/material全体の関連表示が完成したとは扱わない。今回はAABBを含むFrame Planの受信とintersection参照の欠落を修正する範囲。
 - StudioとFrame Planモデルtest build成功（build/.codex_bg/intersection-studio-build.log）、関連16件1396 assertions成功（intersection-studio-test.log）。既存疎slot fixtureにintersectionのslot番号・stage・.rint参照保持と範囲外拒否を追加。受信対応を取り消せば正常payloadが拒否される。個別変異・実GUI操作は未実行。
