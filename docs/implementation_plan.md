@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はUI描画のAS依存解除。詳細は下の「RT6 UIのAS前描画」を参照。preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
+- 最新の追加はdebug_drawの明示ray queryとAS非依存描画。詳細は下の「RT6 debug_drawのAS宣言」を参照。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23243,6 +23243,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 #### 機能別の実装・検証履歴
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
+
+**RT6 debug_drawのAS宣言 (2026-09-06):**
+- debug_draw passのray_query省略/falseはAS非依存、宣言時は指定TLASへ依存する。共通parser・JSON/typed planner・runtime登録・pipeline宣言・pass別descriptor選択へ接続した。再読込は保持済みpipeline descを使用する。
+- Player/Studioと関連CPU/GPUのリンク完了（build/.codex_bg/debug-query-build.log）、GPU最終build終了コード0（debug-query-gpu-build.log）。CPUのAS順序2件・107 assertions成功（debug-query-cpu.log）。GPUのAS前描画125 assertions、関連named-tlas全section 1910 assertions成功（debug-query-gpu-first.log、debug-query-gpu.log）。左右・空TLASのヒット色、未宣言query拒否、後続RT出力も確認した。
+- 対照: AS非依存のloweringを戻せばAS前順序が成立せず、pass別AS bindingをscene固定へ戻せば左右・空のヒット結果が落ちる。allow_ray_query制御を外せば未宣言shaderの拒否が落ちる。個別変異は未実行。配布用toolや検証frameworkは追加していない。
+- 次の修正: 固定サイズtargetと未解決extent_scale targetが混在すると、snapshot byte size判定が前者を全体解決済みと誤認する。未解決targetだけ保留し、解決済みの不正形式・サイズ拒否は維持する。GPU fixtureは画面サイズ連動targetを使用した。またRTの共通defineがある構成では既定debug_drawのSPIR-V参照が拒否されるため、今回の確認はproject GLSLを使用。組込み補助shaderとの共存も残件として扱う。
 
 **RT6 UIのAS前描画 (2026-09-06):**
 - 固定UI shader pipelineでallow_ray_query=falseとし、JSON・typed両FramePlannerでUIをAS非依存とする。出力やcanonical順序の依存は維持し、既存frame_node_orderでAS前へ配置できる。ユーザーshaderを受け取るdebug_draw/debug_text/gizmoやmaterial由来のshadow/velocityには一律適用しない。

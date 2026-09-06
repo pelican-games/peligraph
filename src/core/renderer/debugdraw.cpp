@@ -107,12 +107,14 @@ void DebugDraw::updateDescriptorSet(const PipelineRecord &record, vk::DeviceSize
 PassId DebugDraw::registerPass(vk::Format color_format, ShaderBundleId vert_shader,
                                ShaderBundleId frag_shader,
                                std::vector<std::string> shader_defines,
-                               vk::SampleCountFlagBits samples) {
+                               vk::SampleCountFlagBits samples,
+                               bool ray_query, std::string acceleration_structure) {
     ensureDevice();
     registration_order.reserve(registration_order.size() + 1);
     enabled = true;
 
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = ray_query;
     desc.vert = vert_shader;
     desc.frag = frag_shader;
     desc.color_formats = {color_format};
@@ -135,7 +137,7 @@ PassId DebugDraw::registerPass(vk::Format color_format, ShaderBundleId vert_shad
                  pass_id,
                  PipelineRecord{
                      GET_MODULE(PipelineFactory).create(desc),
-                     {}})
+                     {}, std::move(acceleration_structure)})
              .second) {
         throw std::runtime_error(
             "DebugDraw pipeline table changed during registration");
@@ -179,7 +181,7 @@ void DebugDraw::render(vk::CommandBuffer cmd_buf, PassId pass_id, const FrameRes
     auto &pipeline_factory = GET_MODULE(PipelineFactory);
     cmd_buf.bindPipeline(vk::PipelineBindPoint::eGraphics,
                          pipeline_factory.pipeline(found->second.pipeline));
-    frame_resources.bindGraphics(cmd_buf, pipeline_factory.layout(found->second.pipeline));
+    frame_resources.bindGraphics(cmd_buf, pipeline_factory.layout(found->second.pipeline), found->second.acceleration_structure);
     cmd_buf.bindDescriptorSets(vk::PipelineBindPoint::eGraphics,
                                pipeline_factory.layout(found->second.pipeline),
                                PELICAN_SET_FREE, found->second.descriptor_set.get(), {});

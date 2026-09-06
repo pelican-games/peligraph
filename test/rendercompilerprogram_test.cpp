@@ -173,6 +173,44 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}});
         CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
     }
+    SECTION("debug drawing declares its query dependency in JSON and typed graphs") {
+        graphs[0] = parseFrameGraphDefinitionFromJson({{"name", "main"}, {"passes", nlohmann::json::array({
+            {{"name", "independent"}, {"type", "debug_draw"}, {"output", {{"color", "a"}, {"depth", nullptr}}}},
+            {{"name", "query"}, {"type", "debug_draw"}, {"ray_query", {{"acceleration_structure", "actors"}}},
+             {"output", {{"color", "b"}, {"depth", nullptr}}}}
+        })}});
+        REQUIRE(graphs[0].nodes.size() == 2);
+        CHECK(graphs[0].nodes[0].ray_query == false);
+        CHECK(graphs[0].nodes[1].ray_query == true);
+        CHECK(graphs[0].nodes[1].ray_query_acceleration_structure == "actors");
+        RenderingPassDefinition typed;
+        typed.name = "main";
+        PassDefinition draw;
+        draw.name = "independent";
+        draw.pass_type = RenderPassType::debug_draw;
+        draw.pass_info = DebugDrawPassInfo{};
+        draw.output_color.emplace_back(GlobalRenderTargetId{0});
+        draw.applyDefaultAttachmentOperations(RenderPassType::debug_draw);
+        typed.passes.push_back(draw);
+        draw.name = "query";
+        draw.ray_query = true;
+        draw.ray_query_acceleration_structure = "actors";
+        draw.output_color = {GlobalRenderTargetId{1}};
+        typed.passes.push_back(draw);
+        const auto typed_graph = makeFrameGraphDefinition(typed);
+        for (const auto &lowered : {graphs[0], typed_graph}) {
+            graphs = {lowered};
+            CHECK(graphs[0].nodes[0].ray_query == false);
+            CHECK(graphs[0].nodes[1].ray_query_acceleration_structure == "actors");
+            detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
+            detail::applyFrameNodeOrder(graphs, {{"main", {"independent", "__scene_acceleration_structure", "__scene_acceleration_structure:actors", "query"}}});
+            const auto plan = planFrameGraph(graphs[0]);
+            CHECK(plan.nodes.front().name == "independent");
+            CHECK(plan.nodes.back().name == "query");
+            detail::applyFrameNodeOrder(graphs, {{"main", {"query", "__scene_acceleration_structure:actors"}}});
+            CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+        }
+    }
     SECTION("one executable operation per named AS") {
         detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true, definitions);
         REQUIRE(graphs[0].nodes.size() == 4);

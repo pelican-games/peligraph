@@ -51,6 +51,7 @@
 #include "../src/core/renderingpass/renderingpassconfigloader.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderer/camera.hpp"
+#include "../src/core/renderer/debugdraw.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/renderer/proceduralgeometrycontainer.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
@@ -958,6 +959,9 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     bool material_before_as = false;
     bool sprite_before_as = false;
     bool ui_before_as = false;
+    bool debug_draw_case = false;
+    bool debug_undeclared = false;
+    std::string debug_query;
     std::optional<std::string> material_query;
     bool material_undeclared = false;
     SECTION("ray tracing pipeline") {}
@@ -968,6 +972,11 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     SECTION("independent material before first scene AS build") { material_before_as = true; }
     SECTION("sprite draws before first scene AS build") { sprite_before_as = true; }
     SECTION("UI draws before first scene AS build") { ui_before_as = true; }
+    SECTION("debug lines draw before first scene AS build") { debug_draw_case = true; }
+    SECTION("debug lines query left TLAS") { debug_draw_case = true; debug_query = "left"; }
+    SECTION("debug lines query right TLAS") { debug_draw_case = true; debug_query = "right"; }
+    SECTION("debug lines query empty TLAS") { debug_draw_case = true; debug_query = "empty"; }
+    SECTION("debug lines reject undeclared ray query") { debug_draw_case = true; debug_query = "left"; debug_undeclared = true; }
     SECTION("material selects left TLAS") { material_query = "left"; }
     SECTION("material selects right TLAS") { material_query = "right"; }
     SECTION("material selects empty TLAS") { material_query = "empty"; }
@@ -1030,6 +1039,45 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
              "layout":{"x":{"mode":"fixed","value":16},"y":{"mode":"fixed","value":16}}}
           ]}
         })json");
+    }
+    if (debug_draw_case) {
+        rendering["features"].push_back("project://features/debug_draw.json");
+        if (debug_query.empty()) rendering["frame_node_order"] = {{"main_render", {"debug_draw", "__scene_acceleration_structure"}}};
+        Json debug_feature = Json::parse(R"json({
+          "schema":"pelican.render_feature","version":1,"name":"debug_draw",
+          "render_targets":[{"name":"debug_result","extent_scale":1.0,"format":"R8G8B8A8_UNORM",
+                             "format_class":"explicit(R8G8B8A8_UNORM)","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]}],
+          "passes":[{"insert":"after:debug_draw","pass":{"name":"debug_draw","type":"debug_draw",
+                     "output":{"color":"debug_result","depth":null},
+                     "shader":{"vertex":"project://shaders/debug_draw","fragment":"project://shaders/debug_draw"}}}]
+        })json");
+        const auto shader_root = std::filesystem::path{__FILE__}.parent_path().parent_path() / "src/core/resources";
+        for (const auto *stage : {"vert", "frag"}) {
+            const auto filename = std::string{"debug_draw."} + stage;
+            writeWp374aText(project.path / "shaders" / filename, readWp374aText(shader_root / filename));
+        }
+        if (!debug_query.empty()) {
+            auto &pass = debug_feature["passes"][0]["pass"];
+            if (!debug_undeclared) pass["ray_query"] = {{"acceleration_structure", debug_query}};
+            pass["shader"]["fragment"] = "project://shaders/debug_query";
+            writeWp374aText(project.path / "shaders/debug_query.frag", R"glsl(#version 460
+#extension GL_EXT_ray_query : require
+layout(set=0,binding=6) uniform accelerationStructureEXT queryScene;
+layout(location=0) in vec4 inColor;
+layout(location=0) out vec4 outColor;
+void main() {
+    vec2 hits=vec2(0);
+    for (int lane=0;lane<2;++lane) {
+        rayQueryEXT query;
+        rayQueryInitializeEXT(query,queryScene,gl_RayFlagsOpaqueEXT,255u,vec3(lane==0?-2:2,0,0),0.001,vec3(0,0,1),100.0);
+        while(rayQueryProceedEXT(query)) {}
+        hits[lane]=rayQueryGetIntersectionTypeEXT(query,true)==gl_RayQueryCommittedIntersectionNoneEXT?0.0:1.0;
+    }
+    outColor=vec4(hits.x,1.0,hits.y,1.0);
+}
+)glsl");
+        }
+        writeWp374aText(project.path / "features/debug_draw.json", debug_feature.dump());
     }
     if (material_query) {
         auto preset = Json::parse(readWp374aText(std::filesystem::path{__FILE__}.parent_path().parent_path() /
@@ -1198,7 +1246,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     const auto load = [&] {
-        if (!material_query && !sprite_before_as && !ui_before_as) {
+        if (!material_query && !sprite_before_as && !ui_before_as && !debug_draw_case) {
             loadWp374aScene(project.path);
             return;
         }
@@ -1222,7 +1270,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         camera.setUp({0.0F, 1.0F, 0.0F});
         camera.setNearFar(60.0F, 0.1F, 100.0F);
     };
-    if (material_undeclared) {
+    if (material_undeclared || debug_undeclared) {
         CHECK_THROWS_WITH(([&] { load(); (void)renderWp374aProductionRows(); })(),
             Catch::Matchers::ContainsSubstring("does not declare ray_query"));
         return;
@@ -1234,6 +1282,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     }
     load();
     GET_MODULE(Renderer).setExecutionTracingForTesting(true);
+    if (debug_draw_case) GET_MODULE(DebugDraw).line({-0.8F,0.0F,0.0F},{0.8F,0.0F,0.0F},{0.0F,1.0F,0.0F,1.0F});
     const auto rows = renderWp374aProductionRows();
     REQUIRE(rows.rows.size() == 2);
     if (material_query || sprite_before_as) {
@@ -1260,6 +1309,19 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     const std::size_t as_offset = node_position("__scene_acceleration_structure");
     if (material_before_as) CHECK(node_position("deferred_geometry") < as_offset);
     if (sprite_before_as) CHECK(node_position("__anchor_sprite") < as_offset);
+    if (debug_draw_case) {
+        if (debug_query.empty()) CHECK(node_position("debug_draw") < as_offset);
+        else CHECK(node_position("debug_draw") > node_position("__scene_acceleration_structure:" + debug_query));
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("debug_result", ImageSubresourceRange{});
+        std::size_t covered = 0;
+        for (std::size_t offset=0;offset+3<image.bytes.size();offset+=4) {
+            if(image.bytes[offset+1]!=255) continue;
+            ++covered;
+            CHECK(image.bytes[offset] == (debug_query=="left"?255:0));
+            CHECK(image.bytes[offset+2] == (debug_query=="right"?255:0));
+        }
+        CHECK(covered>0);
+    }
     if (ui_before_as) {
         CHECK(node_position("pelican_ui") < as_offset);
         const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("pre_as_ui", ImageSubresourceRange{});

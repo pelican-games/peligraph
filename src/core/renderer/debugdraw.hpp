@@ -5,6 +5,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/buf.hpp"
 #include <glm/glm.hpp>
+#include <string>
 #include <unordered_map>
 #include <vector>
 #include <vulkan/vulkan.hpp>
@@ -22,6 +23,7 @@ DECLARE_MODULE(DebugDraw) {
     struct PipelineRecord {
         PipelineHandle pipeline;
         vk::UniqueDescriptorSet descriptor_set;
+        std::string acceleration_structure = "scene";
     };
 
     vk::Device device;
@@ -54,7 +56,9 @@ DECLARE_MODULE(DebugDraw) {
                         ShaderBundleId frag_shader,
                         std::vector<std::string> shader_defines = {},
                         vk::SampleCountFlagBits samples =
-                            vk::SampleCountFlagBits::e1);
+                            vk::SampleCountFlagBits::e1,
+                        bool ray_query = false,
+                        std::string acceleration_structure = "scene");
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 color);
     void line(glm::vec3 from_ndc, glm::vec3 to_ndc, glm::vec4 from_color, glm::vec4 to_color);
     void clear();

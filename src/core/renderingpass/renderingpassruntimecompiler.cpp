@@ -2357,7 +2357,9 @@ PassId compileDebugDrawPass(const PassDefinition &pass_def, DebugDrawRuntimeDepe
                                                      dependencies.shader_defines);
     return dependencies.debug_draw.registerPass(color_format, vert_shader, frag_shader,
                                                 dependencies.shader_defines,
-                                                pass_def.rasterization_samples);
+                                                pass_def.rasterization_samples,
+                                                pass_def.ray_query,
+                                                pass_def.ray_query_acceleration_structure);
 }
 
 PassId compileDebugTextPass(const PassDefinition &pass_def, DebugTextRuntimeDependencies dependencies) {
