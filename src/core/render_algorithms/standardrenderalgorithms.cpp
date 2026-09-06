@@ -1,6 +1,7 @@
 #include "standardrenderalgorithms.hpp"
 
 #include "cube_capture/cubecaptureviewprovider.hpp"
+#include "punctual_shadow/punctualshadowviewprovider.hpp"
 #include "planar_reflection/planarreflectionviewprovider.hpp"
 
 namespace Pelican {
@@ -12,6 +13,7 @@ void registerStandardRenderAlgorithmProviders(
         registry);
     registerStandardCubeCaptureViewProvider(
         registry);
+    registerPunctualShadowViewProviders(registry);
 }
 
 } // namespace Pelican

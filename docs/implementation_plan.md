@@ -23255,6 +23255,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 接続入口: renderer.cppのprepareDirectionalShadowRenderTarget呼出とupdateFrameLights、featurecompose.cppのsurface_resources、materialscreeninputとmaterialpassinfojsonparser、frameresourcesのshadow data binding。clustered receiverではinventory indexを使う。6面をdirectional cascadeとして扱わない。標準algorithm OFFの既存build境界を維持する。
 - view_temporal build成功。新規camera確認1 case / 61 assertions成功。point各面の中心投影、個体別ID、鉛直spotの中心・コーン端・near/farを確認し、向きやFOVを変えると落ちる。GPU描画・OFF構成の実行確認は未実施。
 
+**WP242b provider/frame接続 (2026-09-06、接続途中):**
+- 標準algorithmに$shadow/point・$shadow/spot providerを登録。LightContainerのpoint/spot配列をconst spanで参照し、frameのsurface contractとfeatureのnear/farからfamilyを生成する。既定のnear/farをC++へ重複定義しない。
+- family解決前にpoint_shadow/spot_shadow contractのtarget層数をpoint=6×max(1,灯数)、spot=max(1,灯数)へ更新し、既存のfullscreen入力再接続・layout tracker resetへ合流。0灯時は未参照のdummy family/targetを保持する。標準algorithm無効時はprovider・frame hookともコンパイル対象外。
+- **描画機能は引き続き未完。** projectのsurface contract受理、feature resource、light/face行列の転送表、forward/deferred receiverが未接続で、provider登録だけでは影を利用できない。
+- Player・view_temporal build成功。provider登録/camera関連3 cases / 123 assertions成功。target層数変更とdepth描画は未接続のfeature/receiverが揃ってから実GPU確認する。OFF構成は未実行。
+
 **RT AS設定の適用元表示 (2026-09-06):**
 - row解決時にmask・instance flags・custom index・geometry flagsの適用元を保持し、get_ray_occurrencesのbindingへ実効値とsetting_sourcesを返す。既存InspectorのResolved bindingから読める。
 - engine/layout既定値、procedural geometry既定値、geometry ruleと0始まり行番号、component指定、occurrence overrideと永続行IDを区別する。layout v1のcustom index=qは専用sourceで示す。部分overrideで未指定のfieldはcomponent/defaultの出所を維持し、除去後も元へ戻る。

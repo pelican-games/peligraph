@@ -91,6 +91,8 @@ namespace Pelican
 		std::size_t directionalLightCount() const noexcept {
 			return m_DirectionalLights.size();
 		}
+		std::span<const PointLight> pointLights() const noexcept { return m_PointLights; }
+		std::span<const SpotLight> spotLights() const noexcept { return m_SpotLights; }
 		std::optional<float> directionalLightIntensityForTesting(
 			std::string_view name) const noexcept;
 		const BufferWrapper& lightBuffer() const { return m_LightUBO; }

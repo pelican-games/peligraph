@@ -30,6 +30,9 @@
 #include "../renderer/debugtext.hpp"
 #include "../renderer/gizmo.hpp"
 #include "../renderer/directionalshadowviewprovider.hpp"
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+#include "../render_algorithms/punctual_shadow/punctualshadowviewprovider.hpp"
+#endif
 #include "../renderer/viewfamilyproviderregistry.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include "../renderingpass/computetask.hpp"
@@ -5067,10 +5070,15 @@ void Renderer::renderLogicalFrame(
     validateRenderViewFamilies(
         view_families,
         graph_variant_policy);
-    if (prepareDirectionalShadowRenderTarget(
+    bool shadow_targets_changed = prepareDirectionalShadowRenderTarget(
             frame_graph,
             modules.light_container,
-            modules.render_target_container)) {
+            modules.render_target_container);
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    shadow_targets_changed |= preparePunctualShadowRenderTargets(
+        frame_graph, modules.light_container, modules.render_target_container);
+#endif
+    if (shadow_targets_changed) {
         rebindFullscreenInputs(modules);
         render_target_layout_tracker.reset();
     }

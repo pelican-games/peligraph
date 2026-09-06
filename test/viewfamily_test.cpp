@@ -52,8 +52,12 @@ TEST_CASE(
     REQUIRE(
         cube->name ==
         "standard.cube_capture_v1");
+    REQUIRE(providers.find(pointShadowViewFamilyId) != nullptr);
+    REQUIRE(providers.find(spotShadowViewFamilyId) != nullptr);
 #else
     REQUIRE(planar == nullptr);
+    REQUIRE(providers.find("$shadow/point") == nullptr);
+    REQUIRE(providers.find("$shadow/spot") == nullptr);
     REQUIRE(
         providers.find(
             "$capture/cube") ==
