@@ -1870,6 +1870,14 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                  {"fragment", {{"pass_overrides", {{"scene_present", {{"input", Json::array({"scene_depth"})}}}}}}}},
                 {{"name", "inactive_connection"}, {"requires", Json::array({"not_enabled"})},
                  {"fragment", {{"pass_overrides", {{"deferred_lighting", {{"input", Json::array({"scene_depth"})}}}}}}}}});
+            auto integrated_pass = shadow.at("passes").at(0);
+            integrated_pass["insert"] = "after:sky_background";
+            integrated_pass["pass"]["name"] = "integrated_sky";
+            integrated_pass["pass"].erase("regions");
+            shadow["integrations"][0]["fragment"]["passes"] = Json::array({integrated_pass});
+            shadow["integrations"][0]["fragment"]["compute_tasks"] = Json::array({{
+                {"name", "integrated_compute"}, {"shader", "project://shaders/probe"},
+                {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}}});
             writeBytes(project.root / "passes" / "shadow-source.json", shadow.dump(2));
             root["features"][0] = {{"ref", "project://passes/shadow-source.json"}, {"parameters", {{"color_r", 0.7}}}};
             root["features"].erase(1); // The selected local sky replaces the engine sky instance.
@@ -1940,6 +1948,36 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 saved = Json::parse(readBytes(destination));
                 CHECK(saved.at("passes").at(0).at("pass").at("ray_query") == false);
                 CHECK(saved.at("bound_parameters").at("color_r") == 0.7);
+                const auto root_digest = service->getRenderFeatures(Json::object()).at("source_digest").at("hex");
+                auto declaration = integrated_pass.at("pass");
+                const auto integration_edit = service->editPresetPass({
+                    {"base_source_digest", root_digest}, {"base_feature_digest", renderConfigSourceDigest(readBytes(destination))},
+                    {"graph", "main_render"}, {"pass_name", "integrated_sky"}, {"ray_query", false},
+                    {"input", declaration.at("input")}, {"output", declaration.at("output")}, {"shader", declaration.at("shader")}});
+                INFO(integration_edit.dump());
+                REQUIRE(integration_edit.at("status") == "accepted");
+                service->commitPending();
+                REQUIRE(service->getResult({{"ticket", integration_edit.at("ticket")}}).at("committed") == true);
+                const auto task_context = service->getComputeTaskAuthoring(Json::object());
+                REQUIRE(task_context.at("tasks").size() == 1);
+                const auto &task = task_context.at("tasks").at(0);
+                REQUIRE(task.at("editable") == true);
+                auto changed_task = task.at("declaration");
+                changed_task["dispatch"]["groups"] = {2, 1, 1};
+                const auto task_edit = service->editComputeTask({
+                    {"base_source_digest", root_digest}, {"base_task_source_digest", task.at("source_digest").at("hex")},
+                    {"task_name", "integrated_compute"}, {"task", changed_task}});
+                INFO(task_edit.dump());
+                REQUIRE(task_edit.at("status") == "accepted");
+                service->commitPending();
+                REQUIRE(service->getResult({{"ticket", task_edit.at("ticket")}}).at("committed") == true);
+                service.reset();
+                service = makeProjectService(project, resolver, runtime);
+                saved = Json::parse(readBytes(destination));
+                const auto &fragment = saved.at("integrations").at(0).at("fragment");
+                CHECK(fragment.at("passes").at(0).at("pass").at("ray_query") == false);
+                CHECK(fragment.at("compute_tasks").at(0) == changed_task);
+                CHECK(saved.at("passes").at(0).at("pass").at("name") == "sky_background");
             }
             SECTION("failed candidate leaves the owner and destination untouched") {
                 runtime.fail_before_source_commit = true;

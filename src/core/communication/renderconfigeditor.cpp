@@ -46,12 +46,28 @@ OrderedJson *findPresetEditablePass(OrderedJson &preset, const std::string &grap
     return nullptr;
 }
 
-OrderedJson *findFeatureEditablePass(OrderedJson &feature, std::string_view name) {
+OrderedJson &featureSourceFragment(OrderedJson &feature, std::string_view provider) {
+    const auto name = feature.at("name").get<std::string>();
+    if (provider == name) return feature;
+    OrderedJson *found = nullptr;
+    if (auto integrations = feature.find("integrations"); integrations != feature.end()) {
+        for (auto &integration : *integrations) {
+            if (name + "/" + integration.at("name").get<std::string>() != provider) continue;
+            if (found) throw std::runtime_error("The feature has ambiguous integration source declarations");
+            found = &integration.at("fragment");
+        }
+    }
+    if (!found) throw std::runtime_error("The node's feature source fragment is no longer present");
+    return *found;
+}
+
+OrderedJson *findFeatureEditablePass(OrderedJson &feature, std::string_view name, std::string_view provider) {
     if (feature.value("schema", std::string{}) != "pelican.render_feature") return nullptr;
     if (feature.contains("parameters"))
         throw std::runtime_error("Parameterized feature passes must be edited in their source document.");
-    const auto entries = feature.find("passes");
-    if (entries == feature.end() || !entries->is_array()) return nullptr;
+    auto &fragment = featureSourceFragment(feature, provider);
+    const auto entries = fragment.find("passes");
+    if (entries == fragment.end() || !entries->is_array()) return nullptr;
     OrderedJson *found = nullptr;
     for (auto &entry : *entries) {
         if (!entry.is_object() || !entry.contains("pass") || !entry.at("pass").is_object()) continue;
@@ -1143,7 +1159,8 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
                     if (!source->second->authored_name.empty() && source->second->authored_name != name)
                         throw std::runtime_error("Generated feature variants must be edited in their source document.");
                     const auto *declaration = findFeatureEditablePass(feature,
-                        source->second->authored_name.empty() ? name : source->second->authored_name);
+                        source->second->authored_name.empty() ? name : source->second->authored_name,
+                        source->second->provider_feature);
                     if (!declaration) throw std::runtime_error("This node is generated and has no editable pass declaration in its feature.");
                     encoded["editable_feature_pass"] = true;
                     encoded["feature_declaration"] = *declaration;
@@ -1313,6 +1330,7 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
             : from_preset ? context.pipeline_preset->reference : dependencies_.source_reference;
         OrderedJson entry{{"name", name}, {"kind", task.contains("ray_tracing") ? "ray_tracing" : "compute"},
                           {"source_reference", reference}, {"editable", false}, {"declaration", task}};
+        if (from_feature) entry["provider_feature"] = provenance->provider_feature;
         if (reference.starts_with("engine://")) {
             entry["read_only_reason"] = "This task belongs to a shared engine document. Copy it into the project to edit it.";
         } else {
@@ -1320,8 +1338,9 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
                 const auto bytes = reference == dependencies_.source_reference ? document_.bytes()
                     : from_preset && context.pipeline_preset_bytes ? *context.pipeline_preset_bytes
                     : readFileBytes(dependencies_.resolve_document_path(reference));
-                const auto source = OrderedJson::parse(bytes);
-                const auto &config = from_preset ? source.at("config") : source;
+                auto source = OrderedJson::parse(bytes);
+                const auto &config = from_feature ? featureSourceFragment(source, provenance->provider_feature)
+                    : from_preset ? source.at("config") : source;
                 const auto declarations = config.find("compute_tasks");
                 if (declarations == config.end()) throw std::runtime_error("The task is generated, not declared in this document");
                 const auto original = std::find_if(declarations->begin(), declarations->end(),
@@ -1444,7 +1463,9 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
             return rejection("external_modification", "The task source changed while the edit was prepared");
         auto source = OrderedJson::parse(bytes);
         const bool preset = source.value("schema", std::string{}) == "pelican.render_pipeline";
-        auto &config = preset ? source.at("config") : source;
+        auto &config = source.value("schema", std::string{}) == "pelican.render_feature"
+            ? featureSourceFragment(source, selected->at("provider_feature").get<std::string>())
+            : preset ? source.at("config") : source;
         auto &declarations = config.at("compute_tasks");
         const auto original = std::find_if(declarations.begin(), declarations.end(), [&](const auto &entry) { return entry.at("name") == name; });
         if (original == declarations.end()) return rejection("compute_task_not_editable", "The source task is absent");
@@ -1559,6 +1580,7 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         std::string reference;
         std::string bytes;
         std::string authored_name = name;
+        std::string provider;
         if (feature_edit) {
             if (params.contains("material_routing"))
                 return rejection("feature_routing_not_editable", "Material routing belongs to the rendering preset, not a feature pass");
@@ -1573,6 +1595,7 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
                 source->provider_reference.starts_with("engine://"))
                 return rejection("feature_pass_not_editable", "The selected node is not a project feature pass in this graph");
             reference = source->provider_reference;
+            provider = source->provider_feature;
             if (!source->authored_name.empty() && source->authored_name != name)
                 return rejection("feature_pass_not_editable", "Generated feature variants must be edited in their source document");
             if (!source->authored_name.empty()) authored_name = source->authored_name;
@@ -1584,7 +1607,7 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         if (renderConfigSourceDigest(bytes) != preset_digest)
             return rejection("external_modification", "The selected pass source changed since it was read");
         auto preset = OrderedJson::parse(bytes);
-        auto *pass = feature_edit ? findFeatureEditablePass(preset, authored_name) : findPresetEditablePass(preset, graph, name);
+        auto *pass = feature_edit ? findFeatureEditablePass(preset, authored_name, provider) : findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
         if (isEditableAuxiliaryPass(pass->at("type").get<std::string>())) {
             requireOnly(params, {"base_source_digest", "base_preset_digest", "base_feature_digest", "graph", "pass_name", "output", "shader", "ray_query"}, method);

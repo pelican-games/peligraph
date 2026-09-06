@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**integration内のpass/task編集 (2026-09-06):**
+- project featureの編集宣言検索を、合成provenanceのprovider_featureに対応するbase/integration fragmentへ統一。integrationが追加したpassをget_render_authoring_context/edit_preset_passへ、compute taskをget_compute_task_authoring/edit/removeへ接続した。公開RPCの追加やintegration条件の再判定は行わない。
+- Debug render_pipeline/player build成功。関連6件511 assertions成功。root/preset scopeで展開したfeatureのintegration pass編集、compute dispatch変更、保存・再読込を確認し、通常のpass/task編集も成功。元のbase宣言とruntime parametersを保持する。Studioは既存の編集可能性と宣言取得を使うため、新画面は追加していない。
+
 **feature間接続を含む領域解除 (2026-09-06):**
 - 合成処理で実際に適用されたintegration fragmentをauthoring observerへ通知し、選択featureのpass_overrides先を解除対象へ加えた。宣言を独自に走査して条件判定を複製せず、既存requires/requires_passesの結果を使う。surface_resource_contractsに記録された接続先もprovider_refで選別して含める。
 - Debug render_pipeline/player build成功。関連2件58 assertions成功。root/preset両scopeで有効integrationのpresent領域が解除され、無効integrationのlighting領域は残ることを既存の保存・再読込・失敗時保持試験で確認した。surface resource接続先の選別は既存compiled declarationのprovider_ref/consumer名を利用しており、専用GPU経路は追加していない。

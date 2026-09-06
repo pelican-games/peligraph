@@ -491,6 +491,8 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 StudioではRender featuresで対象を選び、**Make editable...**で新しいprojectファイルを指定し、
 **Apply**で保存・参照切替を行います。未適用の変更がある場合は先にApplyしてください。
 展開後の通常passはFrame Planから既存のPass Editorで編集できます。
+有効なintegrationが追加したpassやcompute taskも、出所のintegration fragmentへ保存できます。
+条件判定を編集側でやり直さず、合成結果のprovider情報で元宣言を選びます。
 対象featureが追加・直接上書きするpass、有効なintegrationが上書きするpass、surface resourceの接続先を含む
 タグ付き領域では、差し替えproviderの指定も同じ保存で解除します。無効なintegrationは対象を増やしません。
 対象領域は既存の差し替えregistryが対応するfullscreen pass構成です。
