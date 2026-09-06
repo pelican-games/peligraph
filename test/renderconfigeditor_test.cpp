@@ -2225,7 +2225,59 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
             CHECK(service->editPresetPass(material_request).at("error").at("code") == "external_modification");
         }
     }
-    SECTION("material edits reject missing or invalid query and unrelated pass changes") {
+    SECTION("material connection and attachment edits preserve omitted fields and survive reopen") {
+        auto material = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+            return pass.at("name") == "forward_transparent";
+        });
+        REQUIRE(material != passes.end());
+        const auto patches = Json::array({
+            Json{{"input", Json::array({"gbuffer_albedo"})}},
+            Json{{"output", {{"color", Json::array({"gbuffer_normal"})}, {"depth", "scene_depth"}}}},
+            Json{{"input", Json::array()}}});
+        for (const auto &patch : patches) {
+            const auto current = service->getRenderAuthoringContext(Json::object());
+            Json material_request{
+                {"base_source_digest", current.at("source_digest").at("hex")},
+                {"base_preset_digest", current.at("pipeline_preset").at("source_digest").at("hex")},
+                {"graph", "main_render"}, {"pass_name", "forward_transparent"}};
+            material_request.update(patch);
+            const auto accepted = service->editPresetPass(material_request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            REQUIRE(result.at("source_commit_called") == true);
+            material->update(patch);
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            CHECK(readBytes(project.render_config) == root_before);
+            const auto nodes = runtime.frame_plan.at("nodes");
+            const auto node = std::find_if(nodes.begin(), nodes.end(), [](const auto &value) {
+                return value.at("name") == "forward_transparent";
+            });
+            REQUIRE(node != nodes.end());
+            const bool reads_albedo = std::ranges::find(node->at("reads"), Json("gbuffer_albedo"))
+                                      != node->at("reads").end();
+            CHECK(reads_albedo == !material->at("input").empty());
+            for (const auto &target : material->at("output").at("color")) {
+                CHECK(std::ranges::find(node->at("writes"), target) != node->at("writes").end());
+            }
+            CHECK(std::ranges::find(node->at("writes"), Json("scene_depth")) != node->at("writes").end());
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            CHECK(runtime.frame_plan.at("nodes") == nodes);
+            const auto reopened = service->getRenderAuthoringContext(Json::object());
+            const auto &reopened_passes = reopened.at("graphs").at(0).at("passes");
+            const auto saved = std::find_if(reopened_passes.begin(), reopened_passes.end(), [](const auto &pass) {
+                return pass.at("name") == "forward_transparent";
+            });
+            REQUIRE(saved != reopened_passes.end());
+            CHECK(Json(saved->at("preset_declaration")) == *material);
+        }
+    }
+    SECTION("material edits reject empty requests, invalid query and shader replacement") {
         Json material_request{{"base_source_digest", context.at("source_digest").at("hex")},
                               {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
                               {"graph", "main_render"}, {"pass_name", "deferred_geometry"}};
@@ -2233,11 +2285,52 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
         material_request["ray_query"] = "true";
         CHECK_THROWS(service->editPresetPass(material_request));
         material_request["ray_query"] = true;
-        for (const auto *key : {"input", "output", "shader"}) {
-            auto invalid = material_request;
-            invalid[key] = request.at(key);
-            CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        material_request["shader"] = request.at("shader");
+        CHECK(service->editPresetPass(material_request).at("status") == "rejected");
+        CHECK(readBytes(preset_path) == preset_before);
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
+    SECTION("invalid material input and duplicate attachments fail before preset publication") {
+        const auto patches = Json::array({
+            Json{{"input", Json::array({"missing_target"})}},
+            // Frame graph lowering permits implicit output resources, but its
+            // shared pass-shape policy forbids duplicate color attachments.
+            Json{{"output", {{"color", Json::array({"lit_color", "lit_color"})}, {"depth", "scene_depth"}}}}});
+        for (const auto &patch : patches) {
+            Json material_request{
+                {"base_source_digest", context.at("source_digest").at("hex")},
+                {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                {"graph", "main_render"}, {"pass_name", "forward_transparent"}};
+            material_request.update(patch);
+            const auto accepted = service->editPresetPass(material_request);
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            CHECK(result.at("committed") == false);
+            CHECK(result.value("source_commit_called", false) == false);
+            CHECK(readBytes(preset_path) == preset_before);
+            CHECK(readBytes(project.render_config) == root_before);
+            CHECK(runtime.frame_plan == plan_before);
         }
+    }
+    SECTION("material attachment publication failure restores preset and runtime") {
+        runtime.fail_after_source_commit = true;
+        const Json material_request{
+            {"base_source_digest", context.at("source_digest").at("hex")},
+            {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+            {"graph", "main_render"}, {"pass_name", "forward_transparent"},
+            {"output", {{"color", Json::array({"gbuffer_normal"})}, {"depth", "scene_depth"}}}};
+        const auto accepted = service->editPresetPass(material_request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        // Rejections omit source_commit_called. This injected failure can
+        // only be returned after the runtime's source_commit() completed.
+        CHECK(result.at("error").at("message") == "injected failure after source replacement");
+        CHECK(result.at("committed") == false);
         CHECK(readBytes(preset_path) == preset_before);
         CHECK(readBytes(project.render_config) == root_before);
         CHECK(runtime.frame_plan == plan_before);

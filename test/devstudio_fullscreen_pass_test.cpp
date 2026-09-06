@@ -2337,18 +2337,22 @@ TEST_CASE("Studio edits a preset pass with its source digest and retains hidden 
     }
 }
 
-TEST_CASE("Studio edits only material ray query settings and restores the fullscreen form",
+TEST_CASE("Studio edits material ray query and connections and restores the fullscreen form",
           "[devstudio][fullscreen-pass][preset-pass-edit][material-query-edit]") {
     (void)application();
     const bool named = GENERATE(false, true);
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
-    const Json original{{"name", "material_pass"}, {"type", "material"},
+    Json original{{"name", "material_pass"}, {"type", "material"},
         {"material_contract", "forward_scene_color_v1"},
         {"ray_query", named ? Json{{"acceleration_structure", "actors"}} : Json(false)},
         {"output", {{"color", Json::array({"output"})},
                     {"depth", {{"target", "depth"}, {"load_op", "Load"}}}}}};
+    if (named) {
+        original["input"] = Json::array({"input"});
+        original["output"]["color"] = Json::array({{{"target", "output"}, {"load_op", "Load"}, {"store_op", "Store"}}});
+    }
     const Json graph{{"name", "edit_graph"},
         {"passes", Json::array({{{"name", "material_pass"}, {"declaration", original},
             {"editable_preset_pass", true}, {"preset_declaration", original}}})},
@@ -2357,14 +2361,16 @@ TEST_CASE("Studio edits only material ray query settings and restores the fullsc
         {"pipeline_preset", {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
         {"graphs", Json::array({graph})}};
     authoring.succeed(authoring.requests.back().id, context);
-    const auto plan = minimalFramePlan("edit_graph", Json::array({resource("output")}));
+    const auto plan = minimalFramePlan("edit_graph", Json::array({resource("output"), resource("depth"),
+        resource("replacement"), resource("new_depth"), resource("input"), resource("producer_output")}));
     form.receiveResult(QByteArray::fromStdString(plan.dump()));
-    form.editPresetPass("edit_graph", "material_pass");
+    if (named) form.editPresetPassConnection("edit_graph", "material_pass", {"producer_output"});
+    else form.editPresetPass("edit_graph", "material_pass");
     authoring.succeed(authoring.requests.back().id, context);
     refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
     CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text() == "material");
     CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
-    CHECK(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
+    CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     auto &query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
     auto &scene = required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene");
     auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
@@ -2373,15 +2379,41 @@ TEST_CASE("Studio edits only material ray query settings and restores the fullsc
     scene.setText("   ");
     CHECK_FALSE(save.isEnabled());
     scene.setText(" actors ");
+    auto expected = original;
+    expected["ray_query"] = {{"acceleration_structure", "actors"}};
+    if (named) {
+        auto &candidate = required<QComboBox>(form, "pelican.fullscreenPass.inputTarget");
+        REQUIRE(candidate.count() == 1);
+        CHECK(candidate.itemText(0) == "producer_output");
+        candidate.setCurrentIndex(0);
+        required<QPushButton>(form, "pelican.fullscreenPass.addInput").click();
+        expected["input"].push_back("producer_output");
+        auto &colors = required<QListWidget>(form, "pelican.fullscreenPass.colors");
+        colors.setCurrentRow(0);
+        required<QPushButton>(form, "pelican.fullscreenPass.removeColor").click();
+        auto &color_target = required<QComboBox>(form, "pelican.fullscreenPass.colorTarget");
+        color_target.setCurrentText("replacement");
+        required<QPushButton>(form, "pelican.fullscreenPass.addColor").click();
+        expected["output"]["color"][0]["target"] = "replacement";
+        required<QPlainTextEdit>(form, "pelican.fullscreenPass.colorAttachmentReferences").setPlainText(
+            QString::fromStdString(expected.at("output").at("color").dump()));
+        required<QComboBox>(form, "pelican.fullscreenPass.depthTarget").setCurrentText("new_depth");
+        expected["output"]["depth"]["target"] = "new_depth";
+    }
+    INFO(required<QLabel>(form, "pelican.fullscreenPass.validationSummary").text().toStdString());
+    INFO(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString());
     REQUIRE(save.isEnabled());
     save.click();
     REQUIRE(authoring.requests.back().method == "edit_preset_pass");
     const auto params = Json::parse(QJsonDocument(authoring.requests.back().params).toJson().toStdString());
-    CHECK(params == Json{{"base_source_digest", std::string(64, 'a')},
+    Json expected_params{{"base_source_digest", std::string(64, 'a')},
         {"base_preset_digest", std::string(64, 'b')}, {"graph", "edit_graph"},
-        {"pass_name", "material_pass"}, {"ray_query", {{"acceleration_structure", "actors"}}}});
-    auto expected = original;
-    expected["ray_query"] = params.at("ray_query");
+        {"pass_name", "material_pass"}, {"ray_query", {{"acceleration_structure", "actors"}}}};
+    if (named) {
+        expected_params["input"] = expected.at("input");
+        expected_params["output"] = expected.at("output");
+    }
+    CHECK(params == expected_params);
     CHECK(Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString()) == expected);
     authoring.succeed(authoring.requests.back().id,
         {{"status", "rejected"}, {"error", {{"message", "test rejection"}}}});

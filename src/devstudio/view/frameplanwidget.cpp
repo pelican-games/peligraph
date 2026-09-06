@@ -526,7 +526,7 @@ struct FramePlanWidget::Impl {
             if (from.graph != model->graph || to.graph != model->graph ||
                 producer == model->nodes.end() || consumer == model->nodes.end() ||
                 producer->writes.empty()) {
-                status->setText(owner.tr("Drag from a node with resource outputs to a task or fullscreen preset pass."));
+                status->setText(owner.tr("Drag from a node with resource outputs to a task or editable preset pass."));
                 return;
             }
             QStringList outputs;
@@ -536,7 +536,7 @@ struct FramePlanWidget::Impl {
             else if (consumer->kind == "render" && pass_connection_action)
                 pass_connection_action(QString::fromStdString(model->graph), QString::fromStdString(consumer->name), outputs);
             else
-                status->setText(owner.tr("Select an authored task or fullscreen preset pass as the destination."));
+                status->setText(owner.tr("Select an authored task or editable preset pass as the destination."));
         };
         logical = new FramePlanGraphicsView(logical_scene, logical_splitter);
         logical->setObjectName(QStringLiteral("pelican.framePlanLogicalView"));

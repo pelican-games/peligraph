@@ -1109,9 +1109,11 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         auto *pass = findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not a fullscreen or material pass in the project preset");
         if (pass->at("type") == "material") {
-            requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "ray_query"}, method);
-            if (!params.contains("ray_query"))
-                throw std::invalid_argument("Material pass editing requires ray_query");
+            requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "ray_query"}, method);
+            if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query"))
+                throw std::invalid_argument("Material pass editing requires input, output or ray_query");
+            for (const auto *key : {"input", "output"})
+                if (params.contains(key)) (*pass)[key] = params.at(key);
         } else {
             for (const auto *key : {"input", "output", "shader"}) {
                 if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
