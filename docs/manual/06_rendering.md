@@ -488,7 +488,10 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 `bound_parameters`と`parameters`宣言の併記、および展開済みfeatureへのinstance parameter上書きは拒否します。
 `edit_render_features`の`materialize`操作は、この展開文書の新規保存と選択instanceの参照切替を
 同じtransactionで行います。通常の合成順で確定したresource bindingを使います。
-生成variantの独立化、最適化providerの解除との統合、Studioの分解ボタンはまだ含みません。
+StudioではRender featuresで対象を選び、**Make editable...**で新しいprojectファイルを指定し、
+**Apply**で保存・参照切替を行います。未適用の変更がある場合は先にApplyしてください。
+展開後の通常passはFrame Planから既存のPass Editorで編集できます。
+生成variantの独立化、最適化providerの解除との統合はまだ含みません。
 
 StudioのRender featuresでrootに指定したfeatureを選び、**Parameters...**を開くと、公開された
 数値・bool・render target・shader assetパラメーターを編集できます。項目のチェックをONにすると

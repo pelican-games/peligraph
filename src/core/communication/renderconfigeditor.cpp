@@ -520,6 +520,9 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
             else throw std::runtime_error("Project feature document access is unavailable.");
             const auto feature = Json::parse(bytes);
             instance["feature_document_digest"] = digestJson(renderConfigSourceDigest(bytes));
+            instance["materializable"] = source_editable && !feature.contains("bound_parameters");
+            if (!source_editable) instance["materialize_reason"] = "Fork the engine preset into the project first.";
+            else if (feature.contains("bound_parameters")) instance["materialize_reason"] = "This feature is already materialized in the project.";
             instance["parameter_schema"] = feature.value("parameters", Json(nullptr));
             if (instance.at("parameter_schema").is_null())
                 instance["reason"] = "This feature does not declare editable parameters.";

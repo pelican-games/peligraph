@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**Studioのfeature展開操作 (2026-09-06):**
+- Render featuresにMake editable...を追加。保存先を指定して既存Applyからmaterialize operationを送る。root/preset scope、元feature/preset/rootのdigestを引き継ぎ、既存のticket結果・一覧更新・Frame Plan更新へ接続する。未適用変更を先にApplyさせ、設定変更を展開操作で捨てない。
+- get_render_featuresにmaterializableと理由を追加。engine presetはfork後に操作でき、bound_parametersを持つ展開済み文書では重ねて展開するボタンを無効化する。通常passは保存後の既存Pass Editorで編集できる。生成variantと最適化解除を含む全体分解は別の残件。
+- Debug Studio/playerと既存fullscreen_pass test build成功。Qt offscreenの既存Render features試験2件21 assertions成功（画面構築・catalog表示）。最初の直接起動はQt DLLの検索path不足で終了し、Qt/binとdist_debugを指定して成功。新ダイアログから実エンジンへ接続した一連の手動操作は未確認で、保存側は前段のAPI試験で確認済み。
+
 **feature展開の保存・参照切替 (2026-09-06):**
 - `edit_render_features`に`materialize` operationを追加。root/preset scopeの選択indexを具体化した新規project featureへ置換し、元のinstance parameter指定を除去する。project presetは同じtransactionで保存し、engine presetは既存forkを利用する。`get_render_features`に元feature文書のdigestを公開した。
 - 合成処理にauthoring用observerを設け、実際の順序・resource状態で一度bindした文書を取得する。通常runtimeではobserverを使わない。保存時のdevice/module検査とpublicationは既存candidate経路に任せる。元featureは変更せず、受付時に取得した具体文書を新規保存する。

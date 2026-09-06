@@ -1740,6 +1740,8 @@ struct RenderFeaturesWidget::Impl {
         QString base_digest;
         QString scope;
         QString preset_digest;
+        QString feature_digest;
+        QString destination;
     };
 
     RenderFeaturesWidget &owner;
@@ -1749,6 +1751,7 @@ struct RenderFeaturesWidget::Impl {
     QPushButton *add = nullptr;
     QPushButton *remove = nullptr;
     QPushButton *parameters = nullptr;
+    QPushButton *materialize = nullptr;
     QPushButton *apply = nullptr;
     QPushButton *refresh = nullptr;
     QLabel *notice = nullptr;
@@ -1796,6 +1799,10 @@ struct RenderFeaturesWidget::Impl {
         parameters->setObjectName("pelican.renderFeatures.parameters");
         remove_row->addWidget(parameters);
         QObject::connect(parameters, &QPushButton::clicked, &owner, [this] { editParameters(); });
+        materialize = new QPushButton(owner.tr("Make editable..."), &owner);
+        materialize->setObjectName("pelican.renderFeatures.materialize");
+        remove_row->addWidget(materialize);
+        QObject::connect(materialize, &QPushButton::clicked, &owner, [this] { stageMaterialize(); });
         remove_row->addStretch();
         layout->addLayout(remove_row);
 
@@ -2033,6 +2040,56 @@ struct RenderFeaturesWidget::Impl {
         updateControls();
     }
 
+    void stageMaterialize() {
+        const auto *item = current->currentItem();
+        if (!item || staged) return;
+        const auto instance = item->data(InstanceRole).toJsonObject();
+        if (!instance.value("materializable").toBool()) return;
+        const auto base_digest = source_digest;
+        const auto display_name = item->text();
+        QDialog dialog(&owner);
+        dialog.setObjectName("pelican.featureMaterialize");
+        dialog.setWindowTitle(owner.tr("Make feature editable: %1").arg(display_name));
+        auto *layout = new QVBoxLayout(&dialog);
+        auto *hint = new QLabel(owner.tr("Create a project feature with the current settings resolved into editable declarations. Apply in Render features to save and switch to it."), &dialog);
+        hint->setWordWrap(true);
+        layout->addWidget(hint);
+        auto *form = new QFormLayout;
+        auto *destination = new QLineEdit(&dialog);
+        destination->setObjectName("pelican.featureMaterialize.destination");
+        auto filename = instance.value("reference").toString().section('/', -1);
+        if (filename.endsWith(".json")) filename.chop(5);
+        destination->setText("project://passes/" + filename + "_editable.json");
+        form->addRow(owner.tr("New project file"), destination);
+        layout->addLayout(form);
+        auto *error = new QLabel(&dialog);
+        layout->addWidget(error);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+        layout->addWidget(buttons);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+        QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
+            const auto reference = destination->text().trimmed();
+            if (!reference.startsWith("project://") || reference.size() <= 10 || reference.contains('#')) {
+                error->setText(owner.tr("Enter a new project:// file path."));
+                return;
+            }
+            dialog.accept();
+        });
+        if (dialog.exec() != QDialog::Accepted) return;
+        if (source_digest != base_digest || !can_edit || !have_current) {
+            showError(owner.tr("The feature list changed. Select the feature again."));
+            return;
+        }
+        staged = StagedOperation{.op = "materialize", .reference = instance.value("reference").toString(),
+            .display_name = display_name, .index = instance.value("index").toInt(-1), .base_digest = base_digest,
+            .scope = instance.value("scope").toString("root"),
+            .preset_digest = instance.value("source_digest").toObject().value("hex").toString(),
+            .feature_digest = instance.value("feature_document_digest").toObject().value("hex").toString(),
+            .destination = destination->text().trimmed()};
+        showInformation(owner.tr("Pending editable feature: %1 → %2").arg(display_name, staged->destination));
+        updateControls();
+    }
+
     void editParameters() {
         const auto *item = current->currentItem();
         if (!item) return;
@@ -2156,16 +2213,21 @@ struct RenderFeaturesWidget::Impl {
             {QStringLiteral("op"), staged->op},
             {QStringLiteral("feature"), staged->reference},
         };
-        if (staged->op == "set_parameters") {
+        const bool instance_edit = staged->op == "set_parameters" || staged->op == "materialize";
+        if (instance_edit) {
             operation.remove("feature");
             operation["index"] = staged->index;
-            operation["parameters"] = staged->parameters;
+            if (staged->op == "set_parameters") operation["parameters"] = staged->parameters;
+            else {
+                operation["destination_reference"] = staged->destination;
+                operation["base_feature_digest"] = staged->feature_digest;
+            }
             operation["scope"] = staged->scope;
             if (staged->scope == "preset") operation["base_preset_digest"] = staged->preset_digest;
         }
         QJsonObject params{
             {QStringLiteral("base_source_digest"),
-             staged->op == "set_parameters" ? staged->base_digest : source_digest},
+             instance_edit ? staged->base_digest : source_digest},
             {QStringLiteral("operations"),
              QJsonArray{operation}},
         };
@@ -2403,6 +2465,9 @@ struct RenderFeaturesWidget::Impl {
                           !submit_pending;
         parameters->setEnabled(can_edit && idle && current->currentItem() &&
             current->currentItem()->data(InstanceRole).toJsonObject().value("editable").toBool());
+        const auto instance = current->currentItem() ? current->currentItem()->data(InstanceRole).toJsonObject() : QJsonObject{};
+        materialize->setEnabled(can_edit && idle && have_current && !staged && instance.value("materializable").toBool());
+        materialize->setToolTip(staged ? owner.tr("Apply the pending edit first.") : instance.value("materialize_reason").toString());
         refresh->setEnabled(viewport.rpcReady() && idle);
         current->setEnabled(have_current && idle);
         catalog->setEnabled(have_catalog && idle);
