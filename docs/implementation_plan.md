@@ -214,7 +214,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP241 | skip を名乗る 4 件の GPU テスト失敗 | ✅ 完了（2026-08-01）。broad catch→SKIP を横断除去し、2系統のfixture契約違反を修正。GPU 125/125、SKIP 0 |
 | WP242a | 影を落とせるライトを複数にする | ✅ 完了（2026-08-01）。inventory index 0 固定を解除し、forward/deferred を `pelican_lighting_v1.glsl` へ一本化。GPU gate 126/126 |
 | WP242b | point / spot の shadow view provider | **実装・対象確認済み（2026-09-06）**。標準featureと汎用buffer/resource port経由で照明へ接続。forward/deferred、point全6方向の影を実GPU確認。標準algorithm OFF build/provider境界も確認 |
-| WP242c | 影のフィルタと bias の project 空間化 | **未着手**。単一タップ、bias と遮蔽値がハードコード |
+| WP242c | 影のフィルタと bias の project 空間化 | **実装・対象確認済み（2026-09-06）**。3種の影featureへpcf_radius/bias/strengthを公開し、forward/deferredは共通PCFを使用。設定のGPU効果を確認 |
 | WP243a | occlusion を metallicRoughness の R から読むのをやめる | ✅ 完了（2026-08-01）。set 2 binding 7 を独立 occlusion、custom texture を 8 以降へ移動。glTF 部分選択・project material・SPIR-V link ABI・画素閾値を固定。GPU 126/126、非GPU 945/945 |
 | WP248 | project 封筒 / path 解決の `pelican_project` 化 | ✅ 完了（2026-08-01）。封筒検証と path / asset-store 純ロジックを移し、engine は adapter 化。`pelican_project` 単独リンク境界を常設 |
 
@@ -23241,6 +23241,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**WP242c 完了記録 (2026-09-06):**
+- directional/point/spotのfeatureへpcf_radius（0..2、既定1）、bias（0..0.1、既定0.0015）、strength（0..1、既定0.65）を追加。radiusは1/9/25タップを選ぶ。shader scalar defineは既存feature parameter機構から生成し、GLSLに既定値fallbackを重複させない。
+- sampler adapterまたはresource-portのsample/size関数へ共通PCF kernelを適用。forward/deferredのdirectionalで異なっていた固定bias式を廃止し、全受け側で同じ設定とフィルタを使用する。PCF kernelは個別descriptorを持たず、project shaderからも関数を指定して利用できる。
+- Debug shader_tools/render_pipeline/golden_runtime build成功。関連shader4件70 assertions、feature4件36 assertions、GPU wp242a/b/c計3件356 assertions成功。GPUではpoint/spot各channelに対しstrength0でOFFへ復帰、radius0→2で境界の内外に中間coverage、bias増加で影減少を確認。設定を無視する固定値に戻すと対応する対照が落ちる。既存directionalのforward/deferredとpoint6面も共通kernelへの変更後に成功。
+- shader単体テストの既定値もfeature宣言から読み、テスト側の固定値コピーを避けた。全GPU群の反復はせず、変更した影経路の確認で区切る。標準featureのノード分解操作は引き続き別の残件。
 
 **WP242b 完了記録 (2026-09-06):**
 - 既存point/spotのforward/deferred対照に、pointのみの6方向ON/OFFを追加。scene/light/cameraを同じ剛体回転で変換し、各cube軸へcaster方向を合わせる。各方向の赤画素暗化と対応depth layerへの書込みを要求。1面固定に戻すと別方向の画素確認が落ちる。追加の検証基盤やbyte一致比較は作らない。

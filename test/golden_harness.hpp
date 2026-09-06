@@ -8,6 +8,7 @@ void runTaaDeterminism();
 void runBLayerShadowEquivalence();
 void runMultiLightDirectionalShadows();
 void runPunctualShadows();
+void runShadowFiltering();
 void runPlanarReflection();
 void runGpuDrawIndirect();
 void runGpuOcclusionCulling();

@@ -45,6 +45,33 @@
         ],
         "default": 65552,
         "shader_define": false
+      },
+      {
+        "name": "pcf_radius",
+        "type": "int",
+        "range": [
+          0,
+          2
+        ],
+        "default": 1
+      },
+      {
+        "name": "bias",
+        "type": "float",
+        "range": [
+          0,
+          0.1
+        ],
+        "default": 0.0015
+      },
+      {
+        "name": "strength",
+        "type": "float",
+        "range": [
+          0,
+          1
+        ],
+        "default": 0.65
       }
     ]
   },
@@ -124,13 +151,27 @@
     },
     "forward_opaque": {
       "material_resources": {
-        "point_shadow_texture": {"resource": "point_shadow_map", "view": "family_array", "sampling": {"filter": "nearest", "address": "clamp_to_edge"}},
+        "point_shadow_texture": {
+          "resource": "point_shadow_map",
+          "view": "family_array",
+          "sampling": {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        },
         "point_shadow_matrices": "point_shadow_matrices"
       }
     },
     "forward_transparent": {
       "material_resources": {
-        "point_shadow_texture": {"resource": "point_shadow_map", "view": "family_array", "sampling": {"filter": "nearest", "address": "clamp_to_edge"}},
+        "point_shadow_texture": {
+          "resource": "point_shadow_map",
+          "view": "family_array",
+          "sampling": {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        },
         "point_shadow_matrices": "point_shadow_matrices"
       }
     }

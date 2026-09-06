@@ -3450,7 +3450,8 @@ bool multiLightShadowDeferred(
 }
 
 bool isPunctualShadowGoldenMode(std::string_view mode) {
-    return mode.starts_with("shadow_punctual_face") ||
+    return mode.starts_with("shadow_punctual_filter_") ||
+           mode.starts_with("shadow_punctual_face") ||
            mode == "shadow_punctual_forward_off" ||
            mode == "shadow_punctual_forward_on" ||
            mode == "shadow_punctual_deferred_off" ||
@@ -3527,6 +3528,12 @@ void writePunctualShadowProject(const std::filesystem::path &root,
                 {"ref", "engine://features/shadow_" + std::string{kind} + ".json"},
                 {"parameters", {{"resolution", 128}, {"near_distance", 0.1},
                                  {"far_distance", 20.0}}}});
+            if (mode.starts_with("shadow_punctual_filter_")) {
+                auto &parameters = config["features"].back()["parameters"];
+                parameters["pcf_radius"] = mode == "shadow_punctual_filter_soft_on" ? 2 : 0;
+                parameters["strength"] = mode == "shadow_punctual_filter_zero_on" ? 0.0 : 0.65;
+                parameters["bias"] = mode == "shadow_punctual_filter_bias_on" ? 0.05 : 0.0015;
+            }
         }
         if (face >= 0) {
             writeTextFile(root / "features" / "point_face_probe.json", R"json({
@@ -10826,6 +10833,59 @@ void GoldenHarness::runPunctualShadows() {
     }
 #else
     SKIP("punctual shadows require standard render algorithms and runtime shader compilation");
+#endif
+}
+
+void GoldenHarness::runShadowFiltering() {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto root = sourceRoot() / "test/golden/shadow_b_layer_engine";
+    const auto render = [&](const std::string &mode) {
+        return renderCase(GoldenCase{mode + "_runtime", mode, root, 64, 64}, true).image;
+    };
+    const auto off = render("shadow_punctual_filter_off");
+    const auto hard = render("shadow_punctual_filter_hard_on");
+    const auto soft = render("shadow_punctual_filter_soft_on");
+    const auto zero = render("shadow_punctual_filter_zero_on");
+    const auto biased = render("shadow_punctual_filter_bias_on");
+    for (const auto *image : {&hard, &soft, &zero, &biased}) {
+        REQUIRE(image->pixels.size() == off.pixels.size());
+    }
+    // Red and blue isolate the point and spot receiver paths respectively.
+    for (const auto channel : {0u, 2u}) {
+        std::uint64_t hard_darkening = 0, biased_darkening = 0, zero_error = 0;
+        int maximum_zero_error = 0;
+        std::size_t softened_inside = 0, softened_outside = 0;
+        for (std::size_t offset = channel; offset < off.pixels.size(); offset += 4) {
+            const int baseline = off.pixels[offset];
+            const int hard_value = hard.pixels[offset];
+            const int soft_value = soft.pixels[offset];
+            hard_darkening += static_cast<std::uint64_t>(std::max(0, baseline - hard_value));
+            biased_darkening += static_cast<std::uint64_t>(std::max(0, baseline - biased.pixels[offset]));
+            const int error = std::abs(baseline - zero.pixels[offset]);
+            zero_error += static_cast<std::uint64_t>(error);
+            maximum_zero_error = std::max(maximum_zero_error, error);
+            // Intermediate coverage on both sides of a hard boundary excludes
+            // a uniform strength change masquerading as spatial filtering.
+            softened_inside += baseline - hard_value >= 6 &&
+                               soft_value - hard_value >= 3 && baseline - soft_value >= 3;
+            softened_outside += std::abs(baseline - hard_value) <= 1 &&
+                                hard_value - soft_value >= 3;
+        }
+        INFO((channel == 0 ? "point" : "spot")
+             << " hard darkening=" << hard_darkening << ", biased=" << biased_darkening
+             << ", strength0 error=" << zero_error << ", maximum=" << maximum_zero_error
+             << ", softened inside/outside=" << softened_inside << '/' << softened_outside);
+        REQUIRE(hard_darkening >= 64);
+        REQUIRE(maximum_zero_error <= 2);
+        REQUIRE(zero_error <= off.pixels.size() / 16);
+        REQUIRE(softened_inside >= 2);
+        REQUIRE(softened_outside >= 2);
+        REQUIRE(biased_darkening * 2 < hard_darkening);
+    }
+#else
+    SKIP("shadow filtering requires standard render algorithms and runtime shader compilation");
 #endif
 }
 

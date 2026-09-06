@@ -1,9 +1,12 @@
 #ifndef PELICAN_PUNCTUAL_SHADOW_GLSL
 #define PELICAN_PUNCTUAL_SHADOW_GLSL
+#include "pelican_shadow_filter.glsl"
 
 // Resource-port functions are supplied by the graph, with no fixed descriptor ABI.
 
 #ifdef PELICAN_FEATURE_POINT_SHADOW
+PELICAN_DEFINE_SHADOW_FILTER(pelican_point_shadow_filter,
+    pelican_sample_lod_point_shadow_texture, pelican_size_point_shadow_texture)
 float pelican_point_shadow_visibility(uint index, vec3 world_position) {
     uvec4 header = pelican_load_point_shadow_matrices(0u);
     uint available = pelican_count_point_shadow_matrices();
@@ -22,14 +25,18 @@ float pelican_point_shadow_visibility(uint index, vec3 world_position) {
         vec3 ndc = clip.xyz / clip.w;
         if (!all(greaterThanEqual(ndc, vec3(-1.0, -1.0, 0.0))) ||
             !all(lessThanEqual(ndc, vec3(1.0)))) continue;
-        float depth = pelican_sample_lod_point_shadow_texture(ndc.xy * 0.5 + 0.5, layer, 0.0).r;
-        return ndc.z - 0.0015 <= depth ? 1.0 : 0.35;
+        return pelican_point_shadow_filter(ndc.xy * 0.5 + 0.5, layer, ndc.z,
+            PELICAN_FEATURE_SHADOW_POINT_PCF_RADIUS,
+            PELICAN_FEATURE_SHADOW_POINT_BIAS,
+            PELICAN_FEATURE_SHADOW_POINT_STRENGTH);
     }
     return 1.0;
 }
 #endif
 
 #ifdef PELICAN_FEATURE_SPOT_SHADOW
+PELICAN_DEFINE_SHADOW_FILTER(pelican_spot_shadow_filter,
+    pelican_sample_lod_spot_shadow_texture, pelican_size_spot_shadow_texture)
 float pelican_spot_shadow_visibility(uint index, vec3 world_position) {
     uvec4 header = pelican_load_spot_shadow_matrices(0u);
     uint available = pelican_count_spot_shadow_matrices();
@@ -48,8 +55,10 @@ float pelican_spot_shadow_visibility(uint index, vec3 world_position) {
         vec3 ndc = clip.xyz / clip.w;
         if (!all(greaterThanEqual(ndc, vec3(-1.0, -1.0, 0.0))) ||
             !all(lessThanEqual(ndc, vec3(1.0)))) continue;
-        float depth = pelican_sample_lod_spot_shadow_texture(ndc.xy * 0.5 + 0.5, layer, 0.0).r;
-        return ndc.z - 0.0015 <= depth ? 1.0 : 0.35;
+        return pelican_spot_shadow_filter(ndc.xy * 0.5 + 0.5, layer, ndc.z,
+            PELICAN_FEATURE_SHADOW_SPOT_PCF_RADIUS,
+            PELICAN_FEATURE_SHADOW_SPOT_BIAS,
+            PELICAN_FEATURE_SHADOW_SPOT_STRENGTH);
     }
     return 1.0;
 }
@@ -82,4 +91,3 @@ float pelican_local_shadow_visibility(uint local_index, vec3 world_position) {
 #endif
 }
 #endif
-

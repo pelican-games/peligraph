@@ -79,4 +79,9 @@ TEST_CASE("point and spot shadows darken forward and deferred receiver pixels",
     GoldenHarness::runPunctualShadows();
 }
 
+TEST_CASE("shadow PCF bias and strength change point and spot receiver pixels",
+          "[golden][headless][shadow][wp242c]") {
+    GoldenHarness::runShadowFiltering();
+}
+
 } // namespace Pelican

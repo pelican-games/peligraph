@@ -1105,6 +1105,28 @@ TEST_CASE("punctual shadow features wire graph resources into lighting",
 #endif
 }
 
+TEST_CASE("shadow filter policy comes from feature parameters",
+          "[render-feature][shadow-filter]") {
+    for (const auto kind : {std::string{"directional"}, std::string{"point"}, std::string{"spot"}}) {
+#if !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+        if (kind != "directional") continue;
+#endif
+        const auto composed = composeRenderFeatureConfig(
+            nlohmann::json{
+                {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features", nlohmann::json::array({{
+                    {"ref", "engine://features/shadow_" + kind + ".json"},
+                    {"parameters", {{"pcf_radius", 2}, {"bias", 0.01}, {"strength", 0.0}}}}})}},
+            RenderFeatureComposeDependencies{loadEngineFeature, true});
+        std::string prefix = "PELICAN_FEATURE_SHADOW_" + kind + "_";
+        std::transform(prefix.begin(), prefix.end(), prefix.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        CHECK(std::find(composed.shader_defines.begin(), composed.shader_defines.end(), prefix + "PCF_RADIUS=2") != composed.shader_defines.end());
+        const auto &parameters = composed.feature_instances.back().at("parameters");
+        CHECK(parameters.at("bias") == 0.01);
+        CHECK(parameters.at("strength") == 0.0);
+    }
+}
+
 TEST_CASE(
     "directional shadow contract binds hybrid deferred and forward consumers",
     "[render-feature][shadow][hybrid][wp205]") {

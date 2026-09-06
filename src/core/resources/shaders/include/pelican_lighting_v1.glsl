@@ -15,6 +15,15 @@
 layout(set = PELICAN_SET_PASS_INPUT,
        binding = PELICAN_DIRECTIONAL_SHADOW_BINDING)
     uniform sampler2DArray pelican_directional_shadow_texture;
+#include "pelican_shadow_filter.glsl"
+vec4 pelican_sample_directional_shadow(vec2 uv, uint layer, float lod) {
+    return textureLod(pelican_directional_shadow_texture, vec3(uv, float(layer)), lod);
+}
+ivec2 pelican_size_directional_shadow() {
+    return textureSize(pelican_directional_shadow_texture, 0).xy;
+}
+PELICAN_DEFINE_SHADOW_FILTER(pelican_directional_shadow_filter,
+    pelican_sample_directional_shadow, pelican_size_directional_shadow)
 #endif
 
 #if defined(PELICAN_FEATURE_CLUSTERED_LIGHTING)
@@ -205,17 +214,10 @@ float pelican_shadow(uint light_index, vec3 world_position) {
         return 1.0;
     }
 
-    float stored_depth =
-        texture(
-            pelican_directional_shadow_texture,
-            vec3(
-                shadow_uv,
-                float(shadow_layer)))
-            .r;
-    const float bias = 0.0015;
-    return shadow_ndc.z - bias <= stored_depth
-               ? 1.0
-               : 0.35;
+    return pelican_directional_shadow_filter(shadow_uv, shadow_layer, shadow_ndc.z,
+        PELICAN_FEATURE_SHADOW_DIRECTIONAL_PCF_RADIUS,
+        PELICAN_FEATURE_SHADOW_DIRECTIONAL_BIAS,
+        PELICAN_FEATURE_SHADOW_DIRECTIONAL_STRENGTH);
 #else
     return 1.0;
 #endif

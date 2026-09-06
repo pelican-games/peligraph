@@ -91,6 +91,13 @@ vec3 fresnelSchlick(float cosTheta, vec3 F0) {
 }
 
 #ifdef PELICAN_FEATURE_SHADOW
+#include "pelican_shadow_filter.glsl"
+vec4 pelican_sample_deferred_shadow(vec2 uv, uint layer, float lod) {
+    return textureLod(shadowMapSampler, vec3(uv, float(layer)), lod);
+}
+ivec2 pelican_size_deferred_shadow() { return textureSize(shadowMapSampler, 0).xy; }
+PELICAN_DEFINE_SHADOW_FILTER(pelican_deferred_shadow_filter,
+    pelican_sample_deferred_shadow, pelican_size_deferred_shadow)
 float directionalShadowVisibility(
     uint lightIndex,
     vec3 worldPos,
@@ -106,15 +113,10 @@ float directionalShadowVisibility(
         return 1.0;
     }
 
-    float storedDepth =
-        texture(
-            shadowMapSampler,
-            vec3(
-                shadowUv,
-                float(shadowLayer)))
-            .r;
-    float bias = max(0.0025 * (1.0 - dot(normal, lightDir)), 0.0008);
-    return shadowNdc.z - bias <= storedDepth ? 1.0 : 0.35;
+    return pelican_deferred_shadow_filter(shadowUv, shadowLayer, shadowNdc.z,
+        PELICAN_FEATURE_SHADOW_DIRECTIONAL_PCF_RADIUS,
+        PELICAN_FEATURE_SHADOW_DIRECTIONAL_BIAS,
+        PELICAN_FEATURE_SHADOW_DIRECTIONAL_STRENGTH);
 }
 #endif
 

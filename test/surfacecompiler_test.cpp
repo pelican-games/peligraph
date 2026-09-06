@@ -8,6 +8,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <algorithm>
+#include <cctype>
+#include <nlohmann/json.hpp>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -24,6 +26,24 @@
 
 namespace Pelican {
 namespace {
+
+std::vector<std::string> shadowFeatureDefines(std::vector<std::string> defines) {
+    for (const auto &[flag, kind] : {
+            std::pair{"PELICAN_FEATURE_SHADOW", "directional"},
+            std::pair{"PELICAN_FEATURE_POINT_SHADOW", "point"},
+            std::pair{"PELICAN_FEATURE_SPOT_SHADOW", "spot"}}) {
+        if (std::find(defines.begin(), defines.end(), flag) == defines.end()) continue;
+        const auto feature = nlohmann::json::parse(engineResourceOrThrow(
+            "features/shadow_" + std::string(kind) + ".json"));
+        for (const auto &scalar : feature.at("parameters").at("scalars")) {
+            if (!scalar.value("shader_define", true)) continue;
+            auto name = "PELICAN_FEATURE_SHADOW_" + std::string(kind) + "_" + scalar.at("name").get<std::string>();
+            std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+            defines.push_back(name + "=" + scalar.at("default").dump());
+        }
+    }
+    return defines;
+}
 
 std::filesystem::path fixtureRoot() {
     return std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" /
@@ -160,7 +180,7 @@ TEST_CASE("surface source composition compiles routed main depth and velocity va
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::depth));
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::velocity));
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::depth,
-                                          {"PELICAN_FEATURE_SHADOW"}));
+                                          shadowFeatureDefines({"PELICAN_FEATURE_SHADOW"})));
 
     const auto depth = composeSurfaceShaders(surface, "wp78.surface", SurfacePass::depth);
     REQUIRE(std::find(depth.defines.begin(), depth.defines.end(), "PELICAN_PASS_DEPTH") !=
@@ -179,7 +199,7 @@ TEST_CASE("surface source composition compiles routed main depth and velocity va
     REQUIRE(surfacePassForMaterialRoute(MaterialRouteClass::forward_transparent) ==
             SurfacePass::forward);
     const auto shadow_depth = composeSurfaceShaders(surface, "wp78.surface", SurfacePass::depth,
-                                                    {"PELICAN_FEATURE_SHADOW"});
+                                                    shadowFeatureDefines({"PELICAN_FEATURE_SHADOW"}));
     REQUIRE(std::find(shadow_depth.defines.begin(), shadow_depth.defines.end(),
                       "PELICAN_FEATURE_SHADOW") != shadow_depth.defines.end());
 #endif
@@ -532,7 +552,7 @@ TEST_CASE(
         composeSurfaceShaders(
             surface, "wp78.surface",
             SurfacePass::forward,
-            clustered_shadow_defines);
+            shadowFeatureDefines(clustered_shadow_defines));
 
     REQUIRE(
         clustered.resource_interface.size() ==
@@ -642,7 +662,7 @@ TEST_CASE(
             compiler, surface,
             "wp78.surface",
             SurfacePass::forward,
-            clustered_shadow_defines);
+            shadowFeatureDefines(clustered_shadow_defines));
     requireCompiled(combined_compiled);
     const auto combined_reflection =
         merge(std::array{
@@ -771,8 +791,9 @@ TEST_CASE(
 
 TEST_CASE("punctual shadows compile through graph resource ports",
           "[surface-compiler][punctual-shadow]") {
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
     const auto surface = parseSurfaceFormat(readText(fixtureRoot() / "valid" / "wp78.surface"), "wp78.surface");
-    const std::vector<std::string> defines{"PELICAN_FEATURE_POINT_SHADOW", "PELICAN_FEATURE_SPOT_SHADOW"};
+    const auto defines = shadowFeatureDefines({"PELICAN_FEATURE_POINT_SHADOW", "PELICAN_FEATURE_SPOT_SHADOW"});
     const auto composed = composeSurfaceShaders(surface, "wp78.surface", SurfacePass::forward, defines);
     REQUIRE(composed.resource_interface.size() == 4);
     CHECK(composed.resource_interface[0].port.name == "point_shadow_matrices");
@@ -781,6 +802,9 @@ TEST_CASE("punctual shadows compile through graph resource ports",
     ShaderCompiler compiler;
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::forward, defines));
     requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::deferred_geometry, defines));
+#endif
+#else
+    SKIP("punctual shadow features require standard render algorithms");
 #endif
 }
 
@@ -799,13 +823,13 @@ TEST_CASE("directional shadow extends only the forward pass-input ABI and leaves
         surface, "wp78.surface", SurfacePass::forward);
     const auto shadow = composeSurfaceShaders(
         surface, "wp78.surface", SurfacePass::forward,
-        {feature_define});
+        shadowFeatureDefines({feature_define}));
     const auto deferred_shadow = composeSurfaceShaders(
         surface, "wp78.surface",
-        SurfacePass::deferred_geometry, {feature_define});
+        SurfacePass::deferred_geometry, shadowFeatureDefines({feature_define}));
     const auto depth_shadow = composeSurfaceShaders(
         surface, "wp78.surface", SurfacePass::depth,
-        {feature_define});
+        shadowFeatureDefines({feature_define}));
 
     REQUIRE(std::find(
                 plain.defines.begin(), plain.defines.end(),
@@ -834,7 +858,7 @@ TEST_CASE("directional shadow extends only the forward pass-input ABI and leaves
         "project://shaders/refract.surface");
     const auto refract_shadow = composeSurfaceShaders(
         refract, "project://shaders/refract.surface",
-        SurfacePass::forward, {feature_define});
+        SurfacePass::forward, shadowFeatureDefines({feature_define}));
     REQUIRE(std::find(
                 refract_shadow.defines.begin(),
                 refract_shadow.defines.end(),
@@ -849,7 +873,7 @@ TEST_CASE("directional shadow extends only the forward pass-input ABI and leaves
     requireCompiled(feature_off_before);
     const auto feature_on = compileSurfaceShaders(
         compiler, surface, "wp78.surface",
-        SurfacePass::forward, {feature_define});
+        SurfacePass::forward, shadowFeatureDefines({feature_define}));
     requireCompiled(feature_on);
     const auto feature_off_after = compileSurfaceShaders(
         compiler, surface, "wp78.surface",
@@ -866,10 +890,10 @@ TEST_CASE("directional shadow extends only the forward pass-input ABI and leaves
         surface, "wp78.surface", SurfacePass::forward);
     const auto shadow_bundles = library.loadFromSurface(
         surface, "wp78.surface", SurfacePass::forward,
-        {feature_define});
+        shadowFeatureDefines({feature_define}));
     const auto refract_bundles = library.loadFromSurface(
         refract, "project://shaders/refract.surface",
-        SurfacePass::forward, {feature_define});
+        SurfacePass::forward, shadowFeatureDefines({feature_define}));
 
     const auto find_set_one =
         [](const ShaderReflection &reflection,

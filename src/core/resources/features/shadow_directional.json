@@ -9,27 +9,39 @@
       {
         "name": "cascade_count",
         "type": "int",
-        "range": [1, 8],
+        "range": [
+          1,
+          8
+        ],
         "default": 1
       },
       {
         "name": "resolution",
         "type": "int",
-        "range": [64, 8192],
+        "range": [
+          64,
+          8192
+        ],
         "default": 2048,
         "shader_define": false
       },
       {
         "name": "max_distance",
         "type": "float",
-        "range": [1.0, 10000.0],
+        "range": [
+          1.0,
+          10000.0
+        ],
         "default": 100.0,
         "shader_define": false
       },
       {
         "name": "split_lambda",
         "type": "float",
-        "range": [0.0, 1.0],
+        "range": [
+          0.0,
+          1.0
+        ],
         "default": 0.65,
         "shader_define": false
       },
@@ -38,6 +50,33 @@
         "type": "bool",
         "default": true,
         "shader_define": false
+      },
+      {
+        "name": "pcf_radius",
+        "type": "int",
+        "range": [
+          0,
+          2
+        ],
+        "default": 1
+      },
+      {
+        "name": "bias",
+        "type": "float",
+        "range": [
+          0,
+          0.1
+        ],
+        "default": 0.0015
+      },
+      {
+        "name": "strength",
+        "type": "float",
+        "range": [
+          0,
+          1
+        ],
+        "default": 0.65
       }
     ]
   },
@@ -49,7 +88,10 @@
       "height": "$resolution",
       "format": "D32_SFLOAT",
       "format_class": "data",
-      "usage": ["DEPTH_STENCIL_ATTACHMENT", "SAMPLED"],
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED"
+      ],
       "layers": "$cascade_count"
     }
   ],
@@ -88,5 +130,7 @@
       ]
     }
   ],
-  "shader_defines": ["PELICAN_FEATURE_SHADOW"]
+  "shader_defines": [
+    "PELICAN_FEATURE_SHADOW"
+  ]
 }
