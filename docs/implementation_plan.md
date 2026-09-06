@@ -23244,7 +23244,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**CARRIER-STUDIO 省略fieldの既定値追加 (2026-09-06):**
+**CARRIER-STUDIO geometry候補とoverride表示 (2026-09-06):**
+- InspectorのRay geometry画面にget_ray_occurrencesを接続。geometry/asset/material/eligibility/実効値を表示し、選択候補をpelican_ray_instanceの既存overrides Listへ追加。overrideのcomponent witness/行ID/適用状態/実効値と拒否理由を表示する。既存List編集・CAS・Undo/Redo経路を使用。優先規則全体の説明表示は未実装。
+- 選択・refresh・編集時に候補を無効化し、同revisionでも古い応答を受理しない。別object/曖昧候補/重複追加を拒否。現在のsnapshotから編集宛先を構築する。
+- Studio/Inspector build成功（build/.codex_bg/ray-inspector-final-build.log）。Inspector全体21件1472 assertions成功（ray-inspector-final-test.log）。対照は候補の適格性と選択identity、同revision refresh後の旧応答、既存Listへの要求内容。epoch照合を戻せば古い応答の拒否が落ちる。個別変異と実GUI操作は未実行。描画コード変更はなくGPU試験は反復しない。
+
+**CARRIER-STUDIO 省略fieldの既定値追加 (2026-09-06、062c048f):**
 - Inspectorの未authored fieldへAdd defaultを追加。再帰schemaのdefaultを判定し、flat schemaは既存codecのdefault取得へ委ねる。選択fieldだけinsert_component_fieldへ送り、behavior attachment_index/handleとscene CASを保持。pending・read-only・処理中は追加しない。
 - Studio build成功、対象1件140 assertionsとInspector全体20件1305 assertions成功（build/.codex_bg/inspector-default-focused.log、inspector-default-final.log）。製品の描画変更はなくGPU試験は反復しない。実画面操作は未実施。
 - 初回テストはpending時の空widgetsにfront()してCRT assertion dialogを出した。プロセス終了を確認し、要求fieldのidentityを独立に生成して拒否を確認するfixtureへ修正。製品側のpending制限は変更していない。対照は値を送らず選択fieldだけ挿入することと、authored/pendingの拒否。個別変異は未実行。

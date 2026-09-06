@@ -95,6 +95,15 @@ struct InspectorWidget::Impl {
     QScrollArea *scroll = nullptr;
     QPushButton *refresh_button = nullptr;
     QPushButton *add_component_button = nullptr;
+    QPushButton *ray_occurrences_button = nullptr;
+    QPointer<QDialog> ray_dialog;
+    QTableWidget *ray_entries = nullptr;
+    QTableWidget *ray_overrides = nullptr;
+    QPlainTextEdit *ray_rejections = nullptr;
+    QComboBox *ray_destination = nullptr;
+    QPushButton *ray_add = nullptr;
+    QLabel *ray_notice = nullptr;
+    std::optional<Json> displayed_ray_payload;
     QPointer<QDialog> add_component_dialog;
     QComboBox *component_types = nullptr;
     QLabel *component_description = nullptr;
@@ -167,6 +176,12 @@ struct InspectorWidget::Impl {
         layout->addWidget(add_component_button);
         QObject::connect(add_component_button, &QPushButton::clicked, &owner, [this] {
             openComponentAddDialog();
+        });
+        ray_occurrences_button = new QPushButton(owner.tr("Ray geometry..."), &owner);
+        ray_occurrences_button->setObjectName(QStringLiteral("pelican.inspectorRayGeometry"));
+        layout->addWidget(ray_occurrences_button);
+        QObject::connect(ray_occurrences_button, &QPushButton::clicked, &owner, [this] {
+            openRayOccurrences();
         });
 
         notice_label = new QLabel(&owner);
@@ -624,7 +639,123 @@ struct InspectorWidget::Impl {
         component_description->setText(description);
     }
 
+    void openRayOccurrences() {
+        if (ray_dialog) { ray_dialog->raise(); return; }
+        auto *dialog = new QDialog(&owner);
+        ray_dialog = dialog;
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(owner.tr("Ray geometry and overrides"));
+        dialog->resize(900, 640);
+        auto *layout = new QVBoxLayout(dialog);
+        ray_notice = plainLabel({}, dialog);
+        layout->addWidget(ray_notice);
+        ray_entries = new QTableWidget(0, 6, dialog);
+        ray_entries->setObjectName(QStringLiteral("pelican.rayGeometry.entries"));
+        ray_entries->setHorizontalHeaderLabels({owner.tr("Geometry"), owner.tr("Asset"),
+            owner.tr("Material"), owner.tr("Eligibility"), owner.tr("Effective values"), owner.tr("Occurrence ID")});
+        ray_entries->setSelectionBehavior(QAbstractItemView::SelectRows);
+        ray_entries->setSelectionMode(QAbstractItemView::SingleSelection);
+        ray_entries->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        ray_entries->horizontalHeader()->setStretchLastSection(true);
+        layout->addWidget(ray_entries, 2);
+        layout->addWidget(plainLabel(owner.tr(
+            "Select geometry and a ray_instance destination to add an override. Edit its values in the Inspector list."), dialog));
+        auto *actions = new QHBoxLayout;
+        ray_destination = new QComboBox(dialog);
+        ray_destination->setObjectName(QStringLiteral("pelican.rayGeometry.destination"));
+        actions->addWidget(ray_destination, 1);
+        ray_add = new QPushButton(owner.tr("Add override"), dialog);
+        ray_add->setObjectName(QStringLiteral("pelican.rayGeometry.addOverride"));
+        actions->addWidget(ray_add);
+        auto *refresh = new QPushButton(owner.tr("Refresh"), dialog);
+        actions->addWidget(refresh);
+        layout->addLayout(actions);
+        layout->addWidget(plainLabel(owner.tr("Override sources and applied values"), dialog));
+        ray_overrides = new QTableWidget(0, 5, dialog);
+        ray_overrides->setObjectName(QStringLiteral("pelican.rayGeometry.overrides"));
+        ray_overrides->setHorizontalHeaderLabels({owner.tr("Row ID"), owner.tr("Component source"),
+            owner.tr("Occurrence ID"), owner.tr("Status"), owner.tr("Effective values")});
+        ray_overrides->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        ray_overrides->horizontalHeader()->setStretchLastSection(true);
+        layout->addWidget(ray_overrides, 1);
+        ray_rejections = new QPlainTextEdit(dialog);
+        ray_rejections->setReadOnly(true);
+        ray_rejections->setMaximumHeight(120);
+        ray_rejections->setPlaceholderText(owner.tr("No rejected overrides."));
+        layout->addWidget(ray_rejections);
+        QObject::connect(refresh, &QPushButton::clicked, dialog, [this] {
+            model.requestRayOccurrences(); synchronize(); dispatchRequests();
+        });
+        QObject::connect(ray_entries, &QTableWidget::itemSelectionChanged, dialog, [this] { synchronizeRayDialog(); });
+        QObject::connect(ray_destination, qOverload<int>(&QComboBox::currentIndexChanged), dialog,
+                         [this](int) { synchronizeRayDialog(); });
+        QObject::connect(ray_add, &QPushButton::clicked, dialog, [this] {
+            const auto *item = ray_entries->item(ray_entries->currentRow(), 0);
+            if (!item) return;
+            model.addRayOccurrenceOverride(ray_destination->currentData().toString().toStdString(),
+                                            item->data(Qt::UserRole).toString().toStdString());
+            synchronize(); dispatchRequests();
+        });
+        displayed_ray_payload.reset();
+        model.requestRayOccurrences();
+        synchronize(); dispatchRequests();
+        dialog->open();
+    }
+
+    void synchronizeRayDialog() {
+        if (!ray_dialog) return;
+        const auto &payload = model.rayOccurrences();
+        if (!payload || displayed_ray_payload != payload) {
+            const QSignalBlocker entry_block{ray_entries}, destination_block{ray_destination};
+            displayed_ray_payload = payload;
+            ray_entries->setRowCount(0);
+            ray_overrides->setRowCount(0);
+            ray_destination->clear();
+            ray_rejections->clear();
+            if (payload) {
+                const auto display = [](const Json &value) {
+                    return QString::fromStdString(value.is_string() ? value.get<std::string>()
+                                                                   : value.is_null() ? "—" : value.dump());
+                };
+                for (const auto &entry : payload->at("entries")) {
+                    const int row = ray_entries->rowCount();
+                    ray_entries->insertRow(row);
+                    int column = 0;
+                    for (const auto *key : {"display_name", "asset", "material", "eligibility", "effective", "occurrence_id"})
+                        ray_entries->setItem(row, column++, new QTableWidgetItem(display(entry.value(key, Json{}))));
+                    ray_entries->item(row, 0)->setData(Qt::UserRole, display(entry.value("occurrence_id", Json{})));
+                    ray_entries->item(row, 0)->setData(Qt::UserRole + 1, entry.value("eligibility", Json{}) == "ok");
+                }
+                for (const auto &entry : payload->at("overrides")) {
+                    const int row = ray_overrides->rowCount();
+                    ray_overrides->insertRow(row);
+                    const auto address = entry.value("address", Json::object());
+                    const Json values = Json::array({address.value("row_id", Json{}), address.value("component", Json{}),
+                        entry.value("occurrence_id", Json{}), entry.value("status", Json{}), entry.value("effective", Json{})});
+                    for (int column = 0; column < 5; ++column)
+                        ray_overrides->setItem(row, column, new QTableWidgetItem(display(values.at(column))));
+                }
+                const auto rejected = payload->value("rejected_rows", Json::array());
+                if (!rejected.empty()) ray_rejections->setPlainText(QString::fromStdString(rejected.dump(2)));
+                if (model.snapshot()) for (const auto &component : model.snapshot()->components) {
+                    if (component.name != "pelican_ray_instance") continue;
+                    for (const auto &list : component.lists) if (list.path == "/overrides" && model.canEditList(list.key))
+                        ray_destination->addItem(QString::fromStdString(component.title) +
+                            QStringLiteral(" [%1]").arg(component.component_index), QString::fromStdString(list.key));
+                }
+            }
+        }
+        const auto *selected = ray_entries->item(ray_entries->currentRow(), 0);
+        ray_add->setEnabled(payload && selected && selected->data(Qt::UserRole + 1).toBool() &&
+            model.canEditList(ray_destination->currentData().toString().toStdString()));
+        ray_notice->setText(!model.notice().message.empty() ? QString::fromStdString(model.notice().message)
+            : payload ? owner.tr("Geometry for the selected object. Refresh after edits or model reload.")
+                      : owner.tr("Refresh to load geometry for the current selection."));
+    }
+
     void synchronize() {
+        ray_occurrences_button->setEnabled(model.snapshot().has_value() && !model.busy() && !model.refreshBlocked());
+        synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
         synchronizeComponentAddDialog();
         const InspectorNotice &notice = model.notice();

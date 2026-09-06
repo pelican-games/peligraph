@@ -22,7 +22,7 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 
-次はgeometry occurrence候補選択とoverride適用結果/出所表示を接続する。get_ray_occurrencesの既存payloadはあるがStudioの呼出しが未実装。省略Defaulted fieldのAdd default、Listの追加・削除・行内値編集・IDを保つ移動はRPC/Qt Inspectorへ接続済み。model reload後GPU反映、direct model参照のasset key、別Behaviorの独立Undo、spawn/add→List編集の複合Undo/Redoも修正済み。unpack/destroyの専用追加確認と新画面の実操作は未実施。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
+geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実効値・拒否理由をStudioへ接続済み。次はRT stage/record/materialの結び付きの観測を現行画面・RPCと照合する。優先規則全体の説明表示は未実装。省略Defaulted fieldのAdd default、Listの追加・削除・行内値編集・IDを保つ移動も接続済み。model reload後GPU反映、direct model参照のasset key、別Behaviorの独立Undo、spawn/add→List編集の複合Undo/Redoも修正済み。unpack/destroyの専用追加確認と新画面の実操作は未実施。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
 
 ## 製品の完成条件
 

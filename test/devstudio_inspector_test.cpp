@@ -1352,3 +1352,83 @@ TEST_CASE("Studio Inspector edits schema lists with stable addressed identities"
         CHECK_FALSE(harness.model.canEditList(key));
     }
 }
+
+TEST_CASE("Studio Inspector ray occurrence catalog is tied to the current object snapshot",
+          "[devstudio][inspector][ray-occurrences]") {
+    InspectorHarness harness;
+    harness.open();
+    auto components = componentResult();
+    auto &component = components["components"][1];
+    component["name"] = "pelican_ray_instance";
+    component["authored_json"] = {{"name", "pelican_ray_instance"}};
+    component["schema"] = {{"state", "available"}, {"fields", Json::array()},
+        {"node", {{"tag", "struct"}, {"name", ""}, {"children", Json::array({
+            {{"tag", "list"}, {"name", "overrides"}, {"presence", "defaulted"}, {"children", Json::array({
+                {{"tag", "struct"}, {"name", ""}, {"children", Json::array({
+                    {{"tag", "leaf"}, {"name", "occurrence_id"}, {"type", "string"}, {"presence", "required"}}
+                })}}
+            })}}
+        })}}}};
+    harness.model.requestRefresh();
+    harness.reply(harness.take("scene_tree"), sceneTreeResult());
+    harness.reply(harness.take("get_components"), components);
+    harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
+    REQUIRE(harness.model.snapshot()->components[1].lists.size() == 1);
+    const auto key = harness.model.snapshot()->components[1].lists[0].key;
+    const Json catalog{{"generation", 12}, {"entries", Json::array({
+        {{"occurrence_id", "visible"}, {"display_name", "Mesh / primitive 0"}, {"eligibility", "ok"}, {"authoring_object_id", 41}},
+        {{"occurrence_id", "ambiguous"}, {"eligibility", {{"state", "ambiguous"}}}, {"authoring_object_id", 41}},
+        {{"occurrence_id", "other-object"}, {"eligibility", "ok"}, {"authoring_object_id", 7}}
+    })}, {"overrides", Json::array()}, {"rejected_rows", Json::array()}};
+    CHECK_FALSE(harness.model.addRayOccurrenceOverride(key, "visible"));
+    REQUIRE(harness.model.requestRayOccurrences());
+    const auto request = harness.take("get_ray_occurrences");
+    CHECK(request.params == Json{{"scene_id", "main"}, {"authoring_object_id", 41}});
+    CHECK_FALSE(harness.model.requestRayOccurrences());
+    SECTION("eligible selection uses the existing list edit transaction") {
+        harness.reply(request, catalog);
+        REQUIRE(harness.model.rayOccurrences());
+        CHECK(*harness.model.rayOccurrences() == catalog);
+        CHECK_FALSE(harness.model.addRayOccurrenceOverride(key, "unknown"));
+        CHECK_FALSE(harness.model.addRayOccurrenceOverride(key, "ambiguous"));
+        CHECK_FALSE(harness.model.addRayOccurrenceOverride(key, "other-object"));
+        REQUIRE(harness.model.addRayOccurrenceOverride(key, "visible"));
+        const auto edit = harness.take("edit");
+        CHECK(edit.params.at("base_revision") == 1);
+        const auto &operation = edit.params.at("operations")[0];
+        CHECK(operation.at("op") == "insert_component_field");
+        CHECK(operation.at("address").at("authoring_object_id") == 41);
+        CHECK(operation.at("address").at("component").at("type") == "pelican_ray_instance");
+        CHECK(operation.at("address").at("list_path") == "/overrides");
+        CHECK(operation.at("value") == Json{{"occurrence_id", "visible"}});
+        CHECK_FALSE(harness.model.rayOccurrences());
+    }
+    SECTION("same revision refresh still invalidates an older catalog response") {
+        harness.model.requestRefresh();
+        harness.reply(request, catalog);
+        CHECK_FALSE(harness.model.rayOccurrences());
+        CHECK_FALSE(harness.model.addRayOccurrenceOverride(key, "visible"));
+    }
+    SECTION("malformed catalog rows are rejected before display") {
+        auto invalid = catalog;
+        invalid["overrides"].push_back("not an object");
+        harness.reply(request, invalid);
+        CHECK_FALSE(harness.model.rayOccurrences());
+        CHECK(harness.model.notice().kind == InspectorNoticeKind::Error);
+    }
+    SECTION("selection changes ignore delayed catalog responses") {
+        harness.model.selectObject(OutlinerObjectKey{.scene_id = "main", .declaration_index = 0});
+        harness.reply(request, catalog);
+        CHECK_FALSE(harness.model.rayOccurrences());
+    }
+    SECTION("transport errors and session stop discard the catalog") {
+        harness.model.receiveRpcFailure(request.request_id, "query failed");
+        CHECK_FALSE(harness.model.rayOccurrences());
+        CHECK(harness.model.notice().kind == InspectorNoticeKind::Error);
+        REQUIRE(harness.model.requestRayOccurrences());
+        harness.reply(harness.take("get_ray_occurrences"), catalog);
+        REQUIRE(harness.model.rayOccurrences());
+        harness.model.stopSession();
+        CHECK_FALSE(harness.model.rayOccurrences());
+    }
+}

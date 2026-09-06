@@ -411,6 +411,7 @@ struct InspectorModel::Impl {
         SceneTree,
         Components,
         ComponentAddCandidates,
+        RayOccurrences,
         WatchPoll,
         WatchSync,
         EditSubmit,
@@ -443,6 +444,8 @@ struct InspectorModel::Impl {
         std::string ticket;
         std::string description;
         std::string component_slot;
+        std::uint64_t snapshot_revision = 0;
+        std::uint64_t ray_catalog_epoch = 0;
     };
 
     struct PreviewState {
@@ -468,6 +471,8 @@ struct InspectorModel::Impl {
     bool pending_selection_set = false;
     std::optional<InspectorObjectSnapshot> snapshot;
     std::optional<Json> component_add_candidates;
+    std::optional<Json> ray_occurrences;
+    std::uint64_t ray_catalog_epoch = 0;
     InspectorNotice notice;
     std::uint64_t content_revision = 0;
     std::uint64_t selection_generation = 0;
@@ -492,6 +497,7 @@ struct InspectorModel::Impl {
     }
 
     void clearSnapshot() {
+        invalidateRayOccurrences();
         component_add_candidates.reset();
         if (snapshot) {
             snapshot.reset();
@@ -568,6 +574,7 @@ struct InspectorModel::Impl {
     }
 
     void requestRefresh(bool synchronize_watch) {
+        invalidateRayOccurrences();
         if (!selection) {
             refresh_pending = false;
             refresh_pending_sync = false;
@@ -742,7 +749,13 @@ struct InspectorModel::Impl {
                 {"list_path", list.path}};
     }
 
+    void invalidateRayOccurrences() {
+        ray_occurrences.reset();
+        ++ray_catalog_epoch;
+    }
+
     void enqueueListEdit(Json operations, const InspectorComponentSnapshot &component) {
+        invalidateRayOccurrences();
         queue("edit", Json{{"actor_id", *actor_id}, {"base_revision", snapshot->scene_revision},
             {"operations", std::move(operations)}},
             {.purpose = RequestPurpose::EditSubmit, .selection_generation = selection_generation,
@@ -751,6 +764,7 @@ struct InspectorModel::Impl {
 
     void enqueueEdit(Json operation, std::string description,
                      std::string component_slot) {
+        invalidateRayOccurrences();
         if (!connected || !actor_id || !snapshot) {
             setNotice(InspectorNoticeKind::Error,
                       "The engine editor session is not ready.");
@@ -846,6 +860,7 @@ struct InspectorModel::Impl {
         staged_operations.clear();
         pending_edits.clear();
         snapshot.reset();
+        invalidateRayOccurrences();
         ++content_revision;
         if (selection) {
             setNotice(InspectorNoticeKind::Information,
@@ -1233,6 +1248,7 @@ struct InspectorModel::Impl {
 
         snapshot = parseObject(result);
         component_add_candidates.reset();
+        invalidateRayOccurrences();
         ++content_revision;
         staged_operations.clear();
         refresh_in_flight = false;
@@ -1354,6 +1370,24 @@ struct InspectorModel::Impl {
                           "The object changed. Refresh the Inspector and load component types again.");
             }
             break;
+        case RequestPurpose::RayOccurrences:
+            if (snapshot && snapshot->scene_revision == state.snapshot_revision &&
+                state.ray_catalog_epoch == ray_catalog_epoch && !refresh_in_flight &&
+                !refreshBlocked() && !editPending()) {
+                for (const auto *key : {"entries", "overrides", "rejected_rows"}) {
+                    if (!result.at(key).is_array() ||
+                        !std::all_of(result.at(key).begin(), result.at(key).end(),
+                            [](const auto &row) { return row.is_object(); }))
+                        throw std::runtime_error("Ray occurrence catalog requires arrays of objects.");
+                }
+                for (const auto &row : result.at("overrides")) {
+                    if (!row.contains("address") || !row.at("address").is_object())
+                        throw std::runtime_error("Ray occurrence override requires an address object.");
+                }
+                ray_occurrences = result;
+                setNotice(InspectorNoticeKind::None, {});
+            }
+            break;
         case RequestPurpose::WatchPoll:
         case RequestPurpose::WatchSync:
             handleWatch(state, result);
@@ -1424,6 +1458,10 @@ struct InspectorModel::Impl {
             break;
         case RequestPurpose::ComponentAddCandidates:
             component_add_candidates.reset();
+            break;
+        case RequestPurpose::RayOccurrences:
+            if (state.ray_catalog_epoch != ray_catalog_epoch) return;
+            ray_occurrences.reset();
             break;
         }
         setNotice(InspectorNoticeKind::Error, std::move(message));
@@ -1735,6 +1773,44 @@ bool InspectorModel::insertField(std::string_view field_key) {
     impl_->enqueueEdit(std::move(operation), "Add default " + widget.field_name,
                        widget.component_slot);
     return true;
+}
+
+bool InspectorModel::requestRayOccurrences() {
+    if (!canEdit() || busy() || refreshBlocked() || impl_->refresh_in_flight ||
+        std::any_of(impl_->requests.begin(), impl_->requests.end(), [](const auto &request) {
+            return request.second.purpose == Impl::RequestPurpose::RayOccurrences;
+        })) return false;
+    impl_->invalidateRayOccurrences();
+    impl_->queue("get_ray_occurrences",
+        Json{{"scene_id", impl_->snapshot->scene_id}, {"authoring_object_id", impl_->snapshot->authoring_object_id}},
+        {.purpose = Impl::RequestPurpose::RayOccurrences,
+         .selection_generation = impl_->selection_generation,
+         .snapshot_revision = impl_->snapshot->scene_revision,
+         .ray_catalog_epoch = impl_->ray_catalog_epoch});
+    impl_->setNotice(InspectorNoticeKind::Information, "Loading geometry occurrences...");
+    return true;
+}
+
+const std::optional<Json> &InspectorModel::rayOccurrences() const noexcept {
+    return impl_->ray_occurrences;
+}
+
+bool InspectorModel::addRayOccurrenceOverride(std::string_view list_key, std::string_view occurrence_id) {
+    if (!canEditList(list_key) || !impl_->ray_occurrences || occurrence_id.empty()) return false;
+    const auto [component, list] = impl_->findList(list_key);
+    if (component->name != "pelican_ray_instance" || list->path != "/overrides") return false;
+    const Json requested_id = std::string{occurrence_id};
+    const auto &entries = impl_->ray_occurrences->at("entries");
+    const auto found = std::find_if(entries.begin(), entries.end(), [&](const auto &entry) {
+        return entry.value("occurrence_id", Json{}) == requested_id &&
+            entry.value("eligibility", Json{}) == "ok" &&
+            entry.value("authoring_object_id", Json{}) == impl_->snapshot->authoring_object_id;
+    });
+    if (found == entries.end()) return false;
+    if (std::any_of(list->rows.begin(), list->rows.end(), [&](const auto &row) {
+        return row.value("occurrence_id", Json{}) == requested_id;
+    })) return false;
+    return insertListRow(list_key, {{"occurrence_id", std::string{occurrence_id}}});
 }
 
 bool InspectorModel::canEditList(std::string_view key) const {

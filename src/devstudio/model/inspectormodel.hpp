@@ -151,6 +151,9 @@ class InspectorModel {
     bool insertField(std::string_view field_key);
     bool canRemoveComponent(std::size_t component_index) const noexcept;
     bool canEditList(std::string_view key) const;
+    bool requestRayOccurrences();
+    const std::optional<nlohmann::json> &rayOccurrences() const noexcept;
+    bool addRayOccurrenceOverride(std::string_view list_key, std::string_view occurrence_id);
     bool insertListRow(std::string_view key, nlohmann::json row);
     bool removeListRow(std::string_view key, std::uint32_t row_id);
     bool moveListRow(std::string_view key, std::uint32_t row_id,
