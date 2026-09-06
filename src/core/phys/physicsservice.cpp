@@ -256,10 +256,9 @@ Status serviceOverlapAll(void *context, const OverlapQueryV1 *query,
         const auto converted_filter = fromAbi(query->filter);
         const auto *world = FastModuleContainer::tryGet<PhysWorld>();
         if (world == nullptr) return Status::unavailable;
-        const auto colliders = world->collectColliders();
         std::vector<phys::OverlapHit> result;
-        const auto status = physics_internal::overlapAll(
-            fromAbi(query->shape), colliders, &converted_filter.value, result);
+        const auto status = world->queryOverlapAll(
+            fromAbi(query->shape), &converted_filter.value, result);
         if (status != Status::ok) return status;
         return copyOverlapHits(result, hits, capacity, out_count);
     } catch (const std::bad_alloc &) {

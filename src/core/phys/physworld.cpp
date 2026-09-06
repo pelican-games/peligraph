@@ -488,14 +488,17 @@ std::vector<phys::Collider> PhysWorld::collectColliders() const {
     return buildPhysColliders(inputs);
 }
 
-Physics::Status PhysWorld::queryRaycastAll(
-    const phys::Ray &ray, const phys::QueryFilter *filter,
-    std::vector<phys::RaycastQueryHit> &hits) const {
-    hits.clear();
+namespace {
+struct MeshQueryInputs {
     std::vector<Physics::TriangleMeshV3> meshes;
     std::vector<const phys::TriangleMesh *> acceleration;
     std::vector<phys::ColliderIdentity> identities;
     std::vector<phys::ColliderQueryMetadata> metadata;
+};
+
+MeshQueryInputs collectMeshQueries(std::span<const PhysWorld::Binding> bindings) {
+    MeshQueryInputs result;
+    auto &[meshes, acceleration, identities, metadata] = result;
     auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     for (const auto &binding : bindings) {
         if (!binding.mesh) continue;
@@ -524,6 +527,15 @@ Physics::Status PhysWorld::queryRaycastAll(
         identities.push_back(binding.identity);
         metadata.push_back(binding.metadata);
     }
+    return result;
+}
+} // namespace
+
+Physics::Status PhysWorld::queryRaycastAll(
+    const phys::Ray &ray, const phys::QueryFilter *filter,
+    std::vector<phys::RaycastQueryHit> &hits) const {
+    hits.clear();
+    auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
     const auto colliders = collectColliders();
     std::vector<phys::RaycastQueryHit> result;
     // Keep the legacy empty-world availability behavior, but a mesh-only world
@@ -588,11 +600,36 @@ std::optional<phys::RaycastQueryHit> PhysWorld::raycastClosest(
     return std::move(hits.front());
 }
 
+Physics::Status PhysWorld::queryOverlapAll(
+    const phys::Shape &shape, const phys::QueryFilter *filter,
+    std::vector<phys::OverlapHit> &hits) const {
+    hits.clear();
+    auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
+    const auto *sphere = std::get_if<phys::Sphere>(&shape);
+    if (!meshes.empty() && sphere == nullptr) return Physics::Status::unavailable;
+    const auto colliders = collectColliders();
+    std::vector<phys::OverlapHit> result;
+    if (!colliders.empty() || meshes.empty()) {
+        const auto status = physics_internal::overlapAll(shape, colliders, filter, result);
+        if (status != Physics::Status::ok) return status;
+    }
+    if (!meshes.empty()) {
+        std::vector<phys::OverlapHit> mesh_hits;
+        const auto status = physics_internal::overlapSphereMeshes(
+            *sphere, meshes, identities, metadata, filter, mesh_hits, acceleration);
+        if (status != Physics::Status::ok) return status;
+        result.insert(result.end(), std::make_move_iterator(mesh_hits.begin()),
+                      std::make_move_iterator(mesh_hits.end()));
+        phys::internal::orderOverlapHits(result);
+    }
+    hits = std::move(result);
+    return Physics::Status::ok;
+}
+
 std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
-    const auto colliders = collectColliders();
     std::vector<phys::OverlapHit> hits;
-    const auto status = physics_internal::overlapAll(shape, colliders, &filter, hits);
+    const auto status = queryOverlapAll(shape, &filter, hits);
     if (status == Physics::Status::unavailable) return {};
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider overlap failed with status " +
@@ -626,9 +663,8 @@ std::optional<phys::ShapeCastQueryHit> PhysWorld::shapeCastClosest(
 
 std::vector<std::string> PhysWorld::overlapAll(
     const phys::Shape &shape) const {
-    const auto colliders = collectColliders();
     std::vector<phys::OverlapHit> hits;
-    const auto status = physics_internal::overlapAll(shape, colliders, nullptr, hits);
+    const auto status = queryOverlapAll(shape, nullptr, hits);
     if (status == Physics::Status::unavailable) return {};
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider overlap failed with status " +

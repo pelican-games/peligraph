@@ -23265,6 +23265,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3球mesh overlapのprovider/service接続 (2026-09-06):**
+- ProviderV3へsphere-mesh overlap capabilityを追加し、既存owner/dispatch/identity/filterとBuiltin BVH再利用を通す。PhysWorldのmesh descriptor収集をray/overlapで共有し、C++およびGame DLLのoverlap serviceを同じ問い合わせへ接続する。
+- まだsphereだけがmesh overlapに対応。meshを含むworldでbox/capsuleを問い合わせた場合、公開serviceはunavailableを返す。従来のC++ wrapperはunavailableを空結果へ変換する既存仕様。未対応meshを無視したprimitive部分結果をokとして返さない。triggerとsweepは未接続。
+- 関連build成功。物理30件394 assertions（build/.codex_bg/mesh-overlap-service-cpu.log）、実scene reload1件23 assertions（mesh-overlap-service-scene.log）成功。公開serviceの球接触、miss/self除外、外部providerへの切替、不正index拒否、未対応boxのunavailableを確認。外部dispatchを既定計算に戻すと遠方sphereのfake hitが落ちる。個別変異・OFF/provider-only別buildは未実施。
+- 利用者から実装範囲の質問を受けたため、次はRT・component・制作機能の残件を照合しv1必須と将来項目を分ける。物理だけを連続して拡張せず、台帳の全将来構想をv1の実装対象と解釈しない。
+
 **P3球とメッシュoverlap純計算 (2026-09-06):**
 - TriangleMesh::overlaps(world_sphere, local_to_world)を追加。BVH nodeの変換後boundsで絞り、world-space三角形の面・辺・頂点への距離で接触を判定する。球半径は非一様scale・反転でもworld単位のまま。接線接触を含み、無効入力はfalse。
 - runtime_services build成功、TriangleMesh8件72 assertions成功（build/.codex_bg/mesh-sphere-overlap-test.log）。face/edge/vertex接触と近接miss、bounds内triangle外miss、反転・非一様scale、12三角形のBVH branchを確認。boundsだけでhitにするとtriangle外missが落ちる。個別変異・公開serviceの確認は未実施。

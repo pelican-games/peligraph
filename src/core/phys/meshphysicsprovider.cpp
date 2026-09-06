@@ -8,10 +8,11 @@
 
 namespace Pelican::physics_internal {
 
-Physics::Status builtinMeshRaycastAll(
-    void *context, const Physics::ProviderMeshRaycastQueryV3 *query,
-    Physics::ProviderRaycastHitV1 *hits, std::uint32_t capacity,
-    std::uint32_t *out_count) noexcept {
+namespace {
+template<class Query, class Hit, class Evaluate>
+Physics::Status builtinMeshQuery(
+    void *context, const Query *query, Hit *hits, std::uint32_t capacity,
+    std::uint32_t *out_count, Evaluate evaluate) noexcept {
     using namespace Physics;
     if (query == nullptr || out_count == nullptr ||
         (capacity != 0 && hits == nullptr) || query->reserved != 0 ||
@@ -19,7 +20,7 @@ Physics::Status builtinMeshRaycastAll(
         return Status::invalid_argument;
     *out_count = 0;
     try {
-        std::vector<ProviderRaycastHitV1> result;
+        std::vector<Hit> result;
         for (std::uint32_t index = 0; index < query->collider_count; ++index) {
             const auto &source = query->colliders[index];
             if ((source.vertex_count != 0 && source.vertices == nullptr) ||
@@ -44,13 +45,7 @@ Physics::Status builtinMeshRaycastAll(
             for (int column = 0; column < 4; ++column)
                 for (int row = 0; row < 4; ++row)
                     transform[column][row] = source.local_to_world[column * 4 + row];
-            const auto &ray = query->ray;
-            const auto hit = mesh->raycast(
-                phys::Ray{{ray.origin.x, ray.origin.y, ray.origin.z},
-                          {ray.direction.x, ray.direction.y, ray.direction.z}, ray.max_distance},
-                transform);
-            if (hit) result.push_back(ProviderRaycastHitV1{
-                index, 0, hit->distance, {hit->normal.x, hit->normal.y, hit->normal.z}});
+            if (auto hit = evaluate(*mesh, transform, *query, index)) result.push_back(*hit);
         }
         *out_count = static_cast<std::uint32_t>(result.size());
         if (capacity < result.size()) return Status::buffer_too_small;
@@ -63,6 +58,41 @@ Physics::Status builtinMeshRaycastAll(
     } catch (...) {
         return Status::provider_error;
     }
+}
+
+} // namespace
+
+Physics::Status builtinMeshRaycastAll(
+    void *context, const Physics::ProviderMeshRaycastQueryV3 *query,
+    Physics::ProviderRaycastHitV1 *hits, std::uint32_t capacity,
+    std::uint32_t *out_count) noexcept {
+    return builtinMeshQuery(context, query, hits, capacity, out_count,
+        [](const phys::TriangleMesh &mesh, const glm::mat4 &transform,
+           const Physics::ProviderMeshRaycastQueryV3 &query, std::uint32_t index)
+            -> std::optional<Physics::ProviderRaycastHitV1> {
+            const auto &ray = query.ray;
+            const auto hit = mesh.raycast(
+                phys::Ray{{ray.origin.x, ray.origin.y, ray.origin.z},
+                          {ray.direction.x, ray.direction.y, ray.direction.z}, ray.max_distance},
+                transform);
+            if (!hit) return std::nullopt;
+            return Physics::ProviderRaycastHitV1{
+                index, 0, hit->distance, {hit->normal.x, hit->normal.y, hit->normal.z}};
+        });
+}
+
+Physics::Status builtinMeshSphereOverlapAll(
+    void *context, const Physics::ProviderMeshSphereOverlapQueryV3 *query,
+    Physics::ProviderOverlapHitV1 *hits, std::uint32_t capacity,
+    std::uint32_t *out_count) noexcept {
+    return builtinMeshQuery(context, query, hits, capacity, out_count,
+        [](const phys::TriangleMesh &mesh, const glm::mat4 &transform,
+           const Physics::ProviderMeshSphereOverlapQueryV3 &query, std::uint32_t index)
+            -> std::optional<Physics::ProviderOverlapHitV1> {
+            if (!mesh.overlaps(phys::Sphere{{query.center.x, query.center.y, query.center.z},
+                                           query.radius}, transform)) return std::nullopt;
+            return Physics::ProviderOverlapHitV1{index, 0};
+        });
 }
 
 } // namespace Pelican::physics_internal

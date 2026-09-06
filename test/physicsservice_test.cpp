@@ -859,7 +859,7 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
     provider.base.name_utf8 = "mesh.fake";
     provider.base.name_size = 9;
     provider.base.context = &state;
-    provider.mesh_capability_bits = Physics::query_mesh_raycast_all;
+    provider.mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all;
     provider.mesh_raycast_all = +[](void *context, const Physics::ProviderMeshRaycastQueryV3 *query,
         Physics::ProviderRaycastHitV1 *output, std::uint32_t capacity, std::uint32_t *count) noexcept {
         auto &state = *static_cast<State *>(context);
@@ -871,6 +871,18 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
             output[i].collider_index = i;
             output[i].distance = state.malformed ? -1.0f : 2.0f;
             output[i].normal = {0, 0, 1};
+        }
+        return Physics::Status::ok;
+    };
+    provider.mesh_sphere_overlap_all = +[](void *context,
+        const Physics::ProviderMeshSphereOverlapQueryV3 *query,
+        Physics::ProviderOverlapHitV1 *output, std::uint32_t capacity, std::uint32_t *count) noexcept {
+        auto &state = *static_cast<State *>(context);
+        *count = query->collider_count;
+        if (capacity < *count) return Physics::Status::buffer_too_small;
+        for (std::uint32_t i = 0; i < *count; ++i) {
+            output[i] = {};
+            output[i].collider_index = state.malformed ? query->collider_count : i;
         }
         return Physics::Status::ok;
     };
@@ -892,7 +904,19 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
     filter.mask = 0;
     REQUIRE(query(&filter) == Physics::Status::ok);
     CHECK(hits.empty());
+    std::vector<phys::OverlapHit> overlap_hits;
+    const phys::Sphere distant_sphere{{100, 0, 0}, 1};
+    REQUIRE(physics_internal::overlapSphereMeshes(distant_sphere, meshes, identities,
+        metadata, nullptr, overlap_hits) == Physics::Status::ok);
+    REQUIRE(overlap_hits.size() == 1);
+    CHECK(overlap_hits[0].identity.collider_id.value == 47);
+    REQUIRE(physics_internal::overlapSphereMeshes(distant_sphere, meshes, identities,
+        metadata, &filter, overlap_hits) == Physics::Status::ok);
+    CHECK(overlap_hits.empty());
     state.malformed = true;
+    CHECK(physics_internal::overlapSphereMeshes(distant_sphere, meshes, identities,
+        metadata, nullptr, overlap_hits) == Physics::Status::provider_error);
+    CHECK(overlap_hits.empty());
     CHECK(query() == Physics::Status::provider_error);
     CHECK(hits.empty());
     {

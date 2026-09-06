@@ -118,6 +118,12 @@ std::optional<phys::RaycastQueryHit> PhysWorld::raycastClosest(
     return std::nullopt;
 }
 
+Physics::Status PhysWorld::queryOverlapAll(const phys::Shape &,
+    const phys::QueryFilter *, std::vector<phys::OverlapHit> &hits) const {
+    hits.clear();
+    return Physics::Status::unavailable;
+}
+
 std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
     const phys::Shape &shape, const phys::QueryFilter &filter) const {
     (void)shape;

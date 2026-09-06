@@ -7,6 +7,7 @@ namespace Pelican::Physics {
 inline constexpr std::uint32_t abiVersionV3 = 3;
 inline constexpr std::uint32_t providerVersionV3 = 3;
 inline constexpr std::uint64_t query_mesh_raycast_all = 1ULL << 0U;
+inline constexpr std::uint64_t query_mesh_sphere_overlap_all = 1ULL << 1U;
 
 // Borrowed, immutable memory valid for the callback duration. Explicit index
 // triples describe double-sided triangles. Normals follow transformed winding.
@@ -35,6 +36,20 @@ using ProviderMeshRaycastAllV3Fn = Status (*)(
     void *, const ProviderMeshRaycastQueryV3 *, ProviderRaycastHitV1 *,
     std::uint32_t, std::uint32_t *) noexcept;
 
+// Touching a triangle surface counts as overlap. A closed mesh does not imply
+// a filled volume: a sphere entirely inside without touching has no overlap.
+struct ProviderMeshSphereOverlapQueryV3 {
+    Vec3V1 center{};
+    float radius = 0;
+    const TriangleMeshV3 *colliders = nullptr;
+    std::uint32_t collider_count = 0;
+    std::uint32_t reserved = 0;
+};
+
+using ProviderMeshSphereOverlapAllV3Fn = Status (*)(
+    void *, const ProviderMeshSphereOverlapQueryV3 *, ProviderOverlapHitV1 *,
+    std::uint32_t, std::uint32_t *) noexcept;
+
 struct ProviderV3 {
     std::uint32_t struct_size = sizeof(ProviderV3);
     std::uint32_t version = descriptorVersionV1;
@@ -48,6 +63,7 @@ struct ProviderV3 {
     ProviderV2 base{};
     std::uint64_t mesh_capability_bits = 0;
     ProviderMeshRaycastAllV3Fn mesh_raycast_all = nullptr;
+    ProviderMeshSphereOverlapAllV3Fn mesh_sphere_overlap_all = nullptr;
 };
 
 using RegisterProviderV3Fn = Status (*)(void *, const ProviderV3 *, ProviderHandleV2 *) noexcept;

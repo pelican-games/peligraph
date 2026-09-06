@@ -101,6 +101,8 @@ DECLARE_MODULE(PhysWorld) {
     std::optional<phys::ObjectRaycastHit> raycastClosest(const phys::Ray &ray) const;
     std::optional<phys::RaycastQueryHit> raycastClosest(
         const phys::Ray &ray, const phys::QueryFilter &filter) const;
+    Physics::Status queryOverlapAll(const phys::Shape &shape,
+        const phys::QueryFilter *filter, std::vector<phys::OverlapHit> &hits) const;
     std::vector<phys::OverlapHit> overlapAllHits(
         const phys::Shape &shape, const phys::QueryFilter &filter = {}) const;
     std::vector<phys::ShapeCastQueryHit> shapeCastAll(

@@ -40,6 +40,13 @@ Physics::Status raycastMeshes(
     // External provider callbacks continue to receive only the public payload.
     std::span<const phys::TriangleMesh *const> acceleration = {}) noexcept;
 
+Physics::Status overlapSphereMeshes(
+    const phys::Sphere &sphere, std::span<const Physics::TriangleMeshV3> meshes,
+    std::span<const phys::ColliderIdentity> identities,
+    std::span<const phys::ColliderQueryMetadata> metadata,
+    const phys::QueryFilter *filter, std::vector<phys::OverlapHit> &out_hits,
+    std::span<const phys::TriangleMesh *const> acceleration = {}) noexcept;
+
 Physics::Status raycastAll(const phys::Ray &ray,
                            std::span<const phys::Collider> colliders,
                            const phys::QueryFilter *filter,
