@@ -21,10 +21,10 @@ const ShadowDepthPassContainer::PipelineVariants &requirePipeline(
 
 } // namespace
 
-PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format,
-                                                         ShaderBundleId vert_shader,
-                                                         std::vector<std::string> shader_defines,
-                                                         vk::SampleCountFlagBits samples) {
+PassId ShadowDepthPassContainer::registerShadowDepthPass(
+    vk::Format depth_format, ShaderBundleId vert_shader,
+    std::vector<std::string> shader_defines, vk::SampleCountFlagBits samples,
+    bool ray_query, std::string acceleration_structure) {
     registration_order.reserve(registration_order.size() + 1);
     if (next_pass_id == std::numeric_limits<int>::max()) {
         throw std::runtime_error(
@@ -33,6 +33,7 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
     const auto pass_id = PassId{next_pass_id++};
 
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = ray_query;
     desc.vert = vert_shader;
     desc.frag = std::nullopt;
     desc.depth_format = depth_format;
@@ -55,13 +56,17 @@ PassId ShadowDepthPassContainer::registerShadowDepthPass(vk::Format depth_format
     const auto skinned = GET_MODULE(PipelineFactory).create(desc);
     if (!pipelines
              .emplace(pass_id.value,
-                      PipelineVariants{regular, skinned})
+                      PipelineVariants{regular, skinned, std::move(acceleration_structure)})
              .second) {
         throw std::runtime_error(
             "Shadow depth pipeline table changed during registration");
     }
     registration_order.push_back(pass_id);
     return pass_id;
+}
+
+const std::string &ShadowDepthPassContainer::accelerationStructure(PassId pass_id) const {
+    return requirePipeline(pass_id, pipelines).acceleration_structure;
 }
 
 void ShadowDepthPassContainer::bind(vk::CommandBuffer cmd_buf, PassId pass_id, bool skinned) const {

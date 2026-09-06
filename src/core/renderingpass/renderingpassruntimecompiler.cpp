@@ -2409,7 +2409,9 @@ PassId compileShadowDepthPass(const PassDefinition &pass_def, ShadowDepthRuntime
                                                      dependencies.shader_defines);
     return dependencies.shadow_depth_pass_container.registerShadowDepthPass(depth_rt.format, vert_shader,
                                                                            dependencies.shader_defines,
-                                                                           pass_def.rasterization_samples);
+                                                                           pass_def.rasterization_samples,
+                                                                           pass_def.ray_query,
+                                                                           pass_def.ray_query_acceleration_structure);
 }
 
 PassId compileVelocityPass(const PassDefinition &pass_def,
@@ -2434,7 +2436,8 @@ PassId compileVelocityPass(const PassDefinition &pass_def,
         dependencies.warn_backend_specific_shader_refs, dependencies.shader_defines);
     return dependencies.velocity_pass_container.registerVelocityPass(
         color.format, depth.format, regular_vert, skinned_vert, frag,
-        dependencies.shader_defines, pass_def.rasterization_samples);
+        dependencies.shader_defines, pass_def.rasterization_samples,
+        pass_def.ray_query, pass_def.ray_query_acceleration_structure);
 }
 
 PassId compilePickingPass(const PassDefinition &pass_def,

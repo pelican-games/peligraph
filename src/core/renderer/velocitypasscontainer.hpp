@@ -4,6 +4,7 @@
 #include "../renderingpass/renderingpass.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include <unordered_map>
+#include <string>
 #include <vector>
 #include <vulkan/vulkan.hpp>
 
@@ -11,7 +12,11 @@ namespace Pelican {
 
 DECLARE_MODULE(VelocityPassContainer) {
   public:
-    struct PipelineVariants { PipelineHandle regular; PipelineHandle skinned; };
+    struct PipelineVariants {
+        PipelineHandle regular;
+        PipelineHandle skinned;
+        std::string acceleration_structure = "scene";
+    };
 
   private:
     std::unordered_map<int, PipelineVariants> pipelines;
@@ -29,7 +34,10 @@ DECLARE_MODULE(VelocityPassContainer) {
                                 ShaderBundleId frag,
                                 std::vector<std::string> shader_defines = {},
                                 vk::SampleCountFlagBits samples =
-                                    vk::SampleCountFlagBits::e1);
+                                    vk::SampleCountFlagBits::e1,
+                                bool ray_query = false,
+                                std::string acceleration_structure = "scene");
+    const std::string &accelerationStructure(PassId pass_id) const;
     void bind(vk::CommandBuffer cmd_buf, PassId pass_id, bool skinned = false) const;
     vk::PipelineLayout pipelineLayout(PassId pass_id, bool skinned = false) const;
 

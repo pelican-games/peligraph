@@ -21,7 +21,8 @@ PassId VelocityPassContainer::registerVelocityPass(
     vk::Format color_format, vk::Format depth_format, ShaderBundleId regular_vert,
     ShaderBundleId skinned_vert, ShaderBundleId frag,
     std::vector<std::string> shader_defines,
-    vk::SampleCountFlagBits samples) {
+    vk::SampleCountFlagBits samples,
+    bool ray_query, std::string acceleration_structure) {
     registration_order.reserve(registration_order.size() + 1);
     if (next_pass_id == std::numeric_limits<int>::max()) {
         throw std::runtime_error(
@@ -29,6 +30,7 @@ PassId VelocityPassContainer::registerVelocityPass(
     }
     const auto pass_id = PassId{next_pass_id++};
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = ray_query;
     desc.vert = regular_vert;
     desc.frag = frag;
     desc.color_formats = {color_format};
@@ -49,13 +51,17 @@ PassId VelocityPassContainer::registerVelocityPass(
     const auto skinned = GET_MODULE(PipelineFactory).create(desc);
     if (!pipelines
              .emplace(pass_id.value,
-                      PipelineVariants{regular, skinned})
+                      PipelineVariants{regular, skinned, std::move(acceleration_structure)})
              .second) {
         throw std::runtime_error(
             "Velocity pipeline table changed during registration");
     }
     registration_order.push_back(pass_id);
     return pass_id;
+}
+
+const std::string &VelocityPassContainer::accelerationStructure(PassId pass_id) const {
+    return requirePipeline(pass_id, pipelines).acceleration_structure;
 }
 
 void VelocityPassContainer::bind(vk::CommandBuffer cmd_buf, PassId pass_id,

@@ -403,7 +403,8 @@ void renderShadowDepthDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         const auto pipeline_layout = shadow_depth_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         shadow_depth_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
         vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
-        dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout);
+        dependencies.frame_resources.bindGraphics(cmd_buf, pipeline_layout,
+            shadow_depth_pass_container.accelerationStructure(pass_id));
         instance_container.bindDeformation(cmd_buf, pipeline_layout, draw_call.skinned);
         PushConstantStruct push_constant{};
         push_constant.mvp =
@@ -460,7 +461,8 @@ void renderVelocityDraws(vk::CommandBuffer cmd_buf, PassId pass_id,
         const auto layout = velocity_pass_container.pipelineLayout(pass_id, draw_call.skinned);
         velocity_pass_container.bind(cmd_buf, pass_id, draw_call.skinned);
         dependencies.vert_buf_container.bindVertexBuffer(cmd_buf, draw_call.skinned);
-        dependencies.frame_resources.bindGraphics(cmd_buf, layout);
+        dependencies.frame_resources.bindGraphics(cmd_buf, layout,
+            velocity_pass_container.accelerationStructure(pass_id));
         instances.bindDeformation(cmd_buf, layout, draw_call.skinned);
         cmd_buf.drawIndexedIndirect(indirect->buffer.get(),
                                     indirect_offset_bias + draw_call.offset,

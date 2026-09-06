@@ -174,14 +174,28 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
     }
     SECTION("auxiliary drawing declares its query dependency in JSON and typed graphs") {
-      for (const auto type : {RenderPassType::debug_draw, RenderPassType::debug_text, RenderPassType::gizmo}) {
+      for (const auto type : {RenderPassType::debug_draw, RenderPassType::debug_text, RenderPassType::gizmo,
+                              RenderPassType::shadow_depth, RenderPassType::velocity}) {
         const auto type_name = type == RenderPassType::debug_draw ? "debug_draw" :
-                               type == RenderPassType::debug_text ? "debug_text" : "gizmo";
+                               type == RenderPassType::debug_text ? "debug_text" :
+                               type == RenderPassType::gizmo ? "gizmo" :
+                               type == RenderPassType::shadow_depth ? "shadow_depth" : "velocity";
         INFO(type_name);
+        nlohmann::json output_a = {{"color", "a"}, {"depth", nullptr}};
+        nlohmann::json output_b = {{"color", "b"}, {"depth", nullptr}};
+        const bool geometry = type == RenderPassType::shadow_depth || type == RenderPassType::velocity;
+        if (geometry) {
+            output_a["depth"] = "depth_a";
+            output_b["depth"] = "depth_b";
+        }
+        if (type == RenderPassType::shadow_depth) {
+            output_a["color"] = nullptr;
+            output_b["color"] = nullptr;
+        }
         graphs[0] = parseFrameGraphDefinitionFromJson({{"name", "main"}, {"passes", nlohmann::json::array({
-            {{"name", "independent"}, {"type", type_name}, {"output", {{"color", "a"}, {"depth", nullptr}}}},
+            {{"name", "independent"}, {"type", type_name}, {"output", output_a}},
             {{"name", "query"}, {"type", type_name}, {"ray_query", {{"acceleration_structure", "actors"}}},
-             {"output", {{"color", "b"}, {"depth", nullptr}}}}
+             {"output", output_b}}
         })}});
         REQUIRE(graphs[0].nodes.size() == 2);
         CHECK(graphs[0].nodes[0].ray_query == false);
@@ -194,14 +208,18 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         draw.pass_type = type;
         if (type == RenderPassType::debug_draw) draw.pass_info = DebugDrawPassInfo{};
         else if (type == RenderPassType::debug_text) draw.pass_info = DebugTextPassInfo{};
-        else draw.pass_info = GizmoPassInfo{};
-        draw.output_color.emplace_back(GlobalRenderTargetId{0});
+        else if (type == RenderPassType::gizmo) draw.pass_info = GizmoPassInfo{};
+        else if (type == RenderPassType::shadow_depth) draw.pass_info = ShadowDepthPassInfo{};
+        else draw.pass_info = VelocityPassInfo{};
+        if (type != RenderPassType::shadow_depth) draw.output_color.emplace_back(GlobalRenderTargetId{0});
+        if (geometry) draw.output_depth = GlobalRenderTargetId{2};
         draw.applyDefaultAttachmentOperations(type);
         typed.passes.push_back(draw);
         draw.name = "query";
         draw.ray_query = true;
         draw.ray_query_acceleration_structure = "actors";
-        draw.output_color = {GlobalRenderTargetId{1}};
+        if (type != RenderPassType::shadow_depth) draw.output_color = {GlobalRenderTargetId{1}};
+        if (geometry) draw.output_depth = GlobalRenderTargetId{3};
         typed.passes.push_back(draw);
         const auto typed_graph = makeFrameGraphDefinition(typed);
         for (const auto &lowered : {graphs[0], typed_graph}) {

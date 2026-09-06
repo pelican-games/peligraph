@@ -967,6 +967,9 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     bool debug_bad_atlas = false;
     bool debug_bad_reload = false;
     std::string debug_query;
+    std::string geometry_type;
+    std::string geometry_query;
+    bool geometry_undeclared = false;
     std::optional<std::string> material_query;
     bool material_undeclared = false;
     SECTION("ray tracing pipeline") {}
@@ -994,6 +997,16 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     SECTION("gizmo queries right TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "right"; }
     SECTION("gizmo queries empty TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "empty"; }
     SECTION("gizmo rejects undeclared ray query") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "left"; debug_undeclared = true; }
+    SECTION("shadow depth draws before first scene AS build") { geometry_type = "shadow_depth"; }
+    SECTION("shadow depth queries left TLAS") { geometry_type = "shadow_depth"; geometry_query = "left"; }
+    SECTION("shadow depth queries right TLAS") { geometry_type = "shadow_depth"; geometry_query = "right"; }
+    SECTION("shadow depth queries empty TLAS") { geometry_type = "shadow_depth"; geometry_query = "empty"; }
+    SECTION("shadow depth rejects undeclared query") { geometry_type = "shadow_depth"; geometry_query = "left"; geometry_undeclared = true; }
+    SECTION("velocity draws before first scene AS build") { geometry_type = "velocity"; }
+    SECTION("velocity queries left TLAS") { geometry_type = "velocity"; geometry_query = "left"; }
+    SECTION("velocity queries right TLAS") { geometry_type = "velocity"; geometry_query = "right"; }
+    SECTION("velocity queries empty TLAS") { geometry_type = "velocity"; geometry_query = "empty"; }
+    SECTION("velocity rejects undeclared query") { geometry_type = "velocity"; geometry_query = "left"; geometry_undeclared = true; }
     SECTION("material selects left TLAS") { material_query = "left"; }
     SECTION("material selects right TLAS") { material_query = "right"; }
     SECTION("material selects empty TLAS") { material_query = "empty"; }
@@ -1013,6 +1026,10 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     right["components"][0]["pos"] = {2.0, 0.0, 8.0};
     right["components"][2]["mask"] = 2;
     right["components"][2]["custom_index"] = 82;
+    if (!geometry_type.empty()) {
+        left["components"][0]["rotation"] = {0,1,0,0};
+        right["components"][0]["rotation"] = {0,1,0,0};
+    }
     scene["scenes"]["main"]["objects"] = Json::array({left, right});
     if (sprite_before_as) {
         scene["scenes"]["main"]["objects"].push_back({{"name", "Sprite"}, {"components", Json::array({
@@ -1103,6 +1120,66 @@ void main() {
 )glsl");
         }
         writeWp374aText(project.path / "features/debug_draw.json", debug_feature.dump());
+    }
+    if (!geometry_type.empty()) {
+        rendering["features"].push_back("project://features/geometry_query.json");
+        if (geometry_query.empty()) rendering["frame_node_order"] = {{"main_render", {"geometry_query", "__scene_acceleration_structure"}}};
+        Json geometry_feature = Json::parse(R"json({
+          "schema":"pelican.render_feature","version":1,"name":"geometry_query",
+          "render_targets":[
+            {"name":"geometry_depth","extent_scale":1.0,"format":"D32_SFLOAT","format_class":"data","usage":["DEPTH_STENCIL_ATTACHMENT","SAMPLED"]},
+            {"name":"geometry_color","extent_scale":1.0,"format":"R16G16_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]},
+            {"name":"geometry_depth_readback","extent_scale":1.0,"format":"R32_SFLOAT","format_class":"data","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]}],
+          "passes":[{"insert":"before:post_main","pass":{"name":"geometry_query","type":"velocity",
+            "output":{"color":"geometry_color","depth":"geometry_depth"},"depth_store_op":"store",
+            "shader":{"vertex":"engine://velocity","skinned_vertex":"engine://velocity_skinned","fragment":"engine://velocity"}}}]
+        })json");
+        auto &pass = geometry_feature["passes"][0]["pass"];
+        pass["type"] = geometry_type;
+        if (geometry_type == "shadow_depth") {
+            pass["output"]["color"] = nullptr;
+            pass["shader"] = {{"vertex", "engine://shadow_depth"}};
+        }
+        if (!geometry_query.empty()) {
+            if (!geometry_undeclared) pass["ray_query"] = {{"acceleration_structure", geometry_query}};
+            const std::string query_code = R"glsl(
+layout(set=0,binding=6) uniform accelerationStructureEXT queryScene;
+vec2 queryHits() {
+    vec2 hits=vec2(0);
+    for(int lane=0;lane<2;++lane) {
+        rayQueryEXT q;
+        rayQueryInitializeEXT(q,queryScene,gl_RayFlagsOpaqueEXT,255u,vec3(lane==0?-2:2,0,0),0.001,vec3(0,0,1),100.0);
+        while(rayQueryProceedEXT(q)) {}
+        hits[lane]=rayQueryGetIntersectionTypeEXT(q,true)==gl_RayQueryCommittedIntersectionNoneEXT?0.0:1.0;
+    }
+    return hits;
+}
+)glsl";
+            if (geometry_type == "shadow_depth") {
+                auto vertex = readWp374aText(std::filesystem::path{__FILE__}.parent_path().parent_path() / "src/core/resources/shadow_depth.vert");
+                vertex.insert(vertex.find('\n') + 1, "#extension GL_EXT_ray_query : require\n");
+                vertex.insert(vertex.find("void main()"), query_code);
+                vertex.insert(vertex.rfind('}'), "vec2 hits=queryHits(); gl_Position.z=gl_Position.w*(0.75-0.5*hits.x-0.25*hits.y);\n");
+                writeWp374aText(project.path / "shaders/geometry_query.vert", vertex);
+                pass["shader"]["vertex"] = "project://shaders/geometry_query";
+            } else {
+                writeWp374aText(project.path / "shaders/geometry_query.frag",
+                    "#version 460\n#extension GL_EXT_ray_query : require\n" + query_code +
+                    "layout(location=0) out vec2 outColor; void main(){outColor=queryHits();}\n");
+                pass["shader"]["fragment"] = "project://shaders/geometry_query";
+            }
+        }
+        const Json depth_readback_pass = {
+            {"name", "geometry_depth_readback"}, {"type", "fullscreen"}, {"input", {"geometry_depth"}},
+            {"output", {{"color", "geometry_depth_readback"}, {"depth", nullptr}}},
+            {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/depth_readback"}}}};
+        geometry_feature["passes"].push_back({{"insert", "before:post_main"}, {"pass", depth_readback_pass}});
+        writeWp374aText(project.path / "shaders/depth_readback.frag", R"glsl(#version 460
+layout(set=1,binding=0) uniform sampler2D sourceDepth;
+layout(location=0) out float outDepth;
+void main(){outDepth=texelFetch(sourceDepth,ivec2(gl_FragCoord.xy),0).r;}
+)glsl");
+        writeWp374aText(project.path / "features/geometry_query.json", geometry_feature.dump());
     }
     if (material_query) {
         auto preset = Json::parse(readWp374aText(std::filesystem::path{__FILE__}.parent_path().parent_path() /
@@ -1271,7 +1348,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     const auto load = [&] {
-        if (!material_query && !sprite_before_as && !ui_before_as && !debug_draw_case) {
+        if (!material_query && !sprite_before_as && !ui_before_as && !debug_draw_case && geometry_type.empty()) {
             loadWp374aScene(project.path);
             return;
         }
@@ -1299,7 +1376,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK_THROWS_WITH(load(), Catch::Matchers::ContainsSubstring("Auxiliary descriptor contract"));
         return;
     }
-    if (material_undeclared || debug_undeclared) {
+    if (material_undeclared || debug_undeclared || geometry_undeclared) {
         CHECK_THROWS_WITH(([&] { load(); (void)renderWp374aProductionRows(); })(),
             Catch::Matchers::ContainsSubstring("does not declare ray_query"));
         return;
@@ -1343,6 +1420,37 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     const std::size_t as_offset = node_position("__scene_acceleration_structure");
     if (material_before_as) CHECK(node_position("deferred_geometry") < as_offset);
     if (sprite_before_as) CHECK(node_position("__anchor_sprite") < as_offset);
+    if (!geometry_type.empty()) {
+        if (geometry_query.empty()) CHECK(node_position("geometry_query") < as_offset);
+        else CHECK(node_position("geometry_query") > node_position("__scene_acceleration_structure:" + geometry_query));
+        const auto depth = GET_MODULE(Renderer).readRenderTargetForTesting("geometry_depth_readback", ImageSubresourceRange{});
+        std::size_t covered = 0;
+        for (std::size_t i=0;i+sizeof(float)<=depth.bytes.size();i+=sizeof(float)) {
+            float z=1;
+            std::memcpy(&z,depth.bytes.data()+i,sizeof(z));
+            if (z>=1) continue;
+            ++covered;
+            if (geometry_type=="shadow_depth" && !geometry_query.empty())
+                CHECK(z == Catch::Approx(geometry_query=="left"?0.25:geometry_query=="right"?0.5:0.75).margin(0.0001));
+        }
+        CHECK(covered>0);
+        if (geometry_type=="velocity" && !geometry_query.empty()) {
+            const auto color = GET_MODULE(Renderer).readRenderTargetForTesting("geometry_color", ImageSubresourceRange{});
+            REQUIRE(color.bytes.size() == depth.bytes.size());
+            std::size_t hits=0;
+            for(std::size_t i=0;i+3<color.bytes.size();i+=4) {
+                float z=1;
+                std::memcpy(&z,depth.bytes.data()+i,sizeof(z));
+                if(z>=1) continue;
+                ++hits;
+                std::array<std::uint16_t,2> pixel{};
+                std::memcpy(pixel.data(),color.bytes.data()+i,sizeof(pixel));
+                CHECK(pixel[0]==glm::packHalf1x16(geometry_query=="left"?1.0F:0.0F));
+                CHECK(pixel[1]==glm::packHalf1x16(geometry_query=="right"?1.0F:0.0F));
+            }
+            CHECK(hits>0);
+        }
+    }
     if (debug_draw_case) {
         if (debug_query.empty()) CHECK(node_position(debug_type) < as_offset);
         else CHECK(node_position(debug_type) > node_position("__scene_acceleration_structure:" + debug_query));
