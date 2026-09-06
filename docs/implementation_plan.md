@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**タグ付き領域の差し替え編集 (2026-09-06):**
+- `edit_region_replacement`をeditor service/RPCへ追加。project presetのgraph/regionとprovider名を指定し、`provider:null`でその領域の差し替え要求を除去する。元のpass・設定・接続を保持して、既存candidate compile・digest照合・複数文書保存・publicationへ接続した。contextの各graphに現在のregion_replacementsを公開する。
+- Debug render_pipeline build成功。差し替え編集・既存pass編集・preset forkの関連5件631 assertions成功。選択/解除後の再読込、元構成の保持、古いdigest、存在しない領域、未登録providerで保存/publicationしないことを確認。CPU fixtureは既存の差し替えresolverを通してからframe planを作る。
+- これはタグ付き領域の既存差し替え機構を操作するAPI。標準feature全体のパラメーター確定・ノード展開、Studioでの分解操作は未実装のまま残す。全機能の分解完了や最適化版とのGPU等価性を主張しない。
+
 **WP242c 完了記録 (2026-09-06):**
 - directional/point/spotのfeatureへpcf_radius（0..2、既定1）、bias（0..0.1、既定0.0015）、strength（0..1、既定0.65）を追加。radiusは1/9/25タップを選ぶ。shader scalar defineは既存feature parameter機構から生成し、GLSLに既定値fallbackを重複させない。
 - sampler adapterまたはresource-portのsample/size関数へ共通PCF kernelを適用。forward/deferredのdirectionalで異なっていた固定bias式を廃止し、全受け側で同じ設定とフィルタを使用する。PCF kernelは個別descriptorを持たず、project shaderからも関数を指定して利用できる。

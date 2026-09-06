@@ -359,6 +359,7 @@ class EditorCommandService {
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
+    nlohmann::ordered_json editRegionReplacement(const nlohmann::json &params);
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json getFrameNodeOrder(const nlohmann::json &params) const;
     nlohmann::ordered_json editFrameNodeOrder(const nlohmann::json &params);
@@ -436,6 +437,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params) const;
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params) const;
+    nlohmann::ordered_json editRegionReplacement(const nlohmann::json &params) const;
     nlohmann::ordered_json getComputeTaskAuthoring(const nlohmann::json &params) const;
     nlohmann::ordered_json editComputeTask(const nlohmann::json &params) const;
     nlohmann::ordered_json getProceduralAssets(const nlohmann::json &params) const;

@@ -1507,6 +1507,11 @@ OrderedJson EditorCommandService::editPresetPass(const Json &params) {
     return render_config_editor_->editPresetPass(params);
 }
 
+OrderedJson EditorCommandService::editRegionReplacement(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editRegionReplacement(params);
+}
+
 OrderedJson EditorCommandService::getComputeTaskAuthoring(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->getComputeTaskAuthoring(params);
@@ -2484,6 +2489,11 @@ OrderedJson EditorCommandRpcAdapter::forkRenderPipeline(const Json &params) cons
 OrderedJson EditorCommandRpcAdapter::editPresetPass(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->editPresetPass(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editRegionReplacement(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->editRegionReplacement(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::getComputeTaskAuthoring(const Json &params) const {

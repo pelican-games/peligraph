@@ -9,6 +9,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
+#include "../src/core/renderingpass/subgraphreplacementregistry.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
 #include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
@@ -254,6 +255,9 @@ struct ActualCpuRenderRuntime {
                 target["height"] = 720;
             }
         }
+        SubgraphReplacementRegistry replacements;
+        composition.config = resolveTaggedSubgraphReplacements(
+            composition.config, replacements.snapshot()).config;
         auto graphs = parseFrameGraphDefinitionsFromConfigJson(
             composition.config);
         if (const auto order = composition.config.find("frame_node_order"); order != composition.config.end())
@@ -2280,6 +2284,71 @@ TEST_CASE("Compute task source edits preserve other declarations and reject conf
         request["task"]["name"] = "different";
         REQUIRE(service->editComputeTask(request).at("status") == "rejected");
         REQUIRE(readBytes(source_path) == source_before);
+    }
+}
+
+TEST_CASE("Region replacement selection preserves authored nodes and survives reopen",
+          "[render-config-editor][region-replacement-edit]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    auto &graph = preset["config"]["rendering_passes"][0];
+    auto &passes = graph["passes"];
+    const auto pass = std::find_if(passes.begin(), passes.end(), [](const auto &value) {
+        return value.at("name") == "scene_present";
+    });
+    REQUIRE(pass != passes.end());
+    (*pass)["regions"] = Json::array({"editable.present"});
+    const auto preset_path = project.root / "passes" / "editable.json";
+    writeBytes(preset_path, preset.dump(2));
+    auto root = Json::parse(readBytes(project.render_config));
+    root["pipeline"]["preset"] = "project://passes/editable.json";
+    writeBytes(project.render_config, root.dump(2));
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto make_request = [&](Json provider) {
+        const auto context = service->getRenderAuthoringContext(Json::object());
+        return Json{{"base_source_digest", context.at("source_digest").at("hex")},
+                    {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                    {"graph", "main_render"}, {"region", "editable.present"}, {"provider", provider}};
+    };
+    SECTION("selection and removal retain pass settings and connections") {
+        for (const auto &provider : Json::array({"builtin.identity_v1", nullptr})) {
+            const auto request = make_request(provider);
+            const auto accepted = service->editRegionReplacement(request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            const auto saved = Json::parse(readBytes(preset_path));
+            CHECK(saved.at("config").at("rendering_passes").at(0).at("passes") == passes);
+            CHECK(Json::parse(readBytes(project.render_config)) == root);
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            const auto context = service->getRenderAuthoringContext(Json::object());
+            const auto requests = context.at("graphs").at(0).at("region_replacements");
+            if (provider.is_null()) CHECK(requests.empty());
+            else CHECK(requests == Json::array({{{"region", "editable.present"}, {"provider", provider}}}));
+            CHECK(service->editRegionReplacement(request).at("error").at("code") == "external_modification");
+        }
+    }
+    SECTION("unavailable replacement cannot publish or overwrite the authored graph") {
+        const auto before = readBytes(preset_path);
+        const auto generation = runtime.snapshot.published_generation;
+        const auto accepted = service->editRegionReplacement(make_request("missing.provider"));
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(preset_path) == before);
+        CHECK(runtime.snapshot.published_generation == generation);
+    }
+    SECTION("unknown regions are rejected") {
+        auto request = make_request(nullptr);
+        request["region"] = "missing.region";
+        CHECK(service->editRegionReplacement(request).at("error").at("code") == "region_not_found");
     }
 }
 

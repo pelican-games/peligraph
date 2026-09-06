@@ -175,6 +175,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_preset_pass", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editPresetPass(params); });
     });
+    server.setHandler("edit_region_replacement", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editRegionReplacement(params); });
+    });
     server.setHandler("get_compute_task_authoring", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.getComputeTaskAuthoring(params); });
     });

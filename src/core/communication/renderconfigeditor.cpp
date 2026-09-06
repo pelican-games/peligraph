@@ -1054,6 +1054,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         graphs.push_back({
             {"name", graph.at("name")},
             {"passes", std::move(passes)},
+            {"region_replacements", graph.value("region_replacements", Json::array())},
             {"anchor_candidates", std::move(anchors)},
         });
     }
@@ -1316,6 +1317,74 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
             .expected = {RenderConfigDocumentExistence::present, task_digest}, .bytes = source.dump(2)}};
         return queueRootEdit(base_digest, method,
             [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; }, documents);
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
+}
+
+OrderedJson RenderConfigEditorService::editRegionReplacement(const Json &params) {
+    constexpr auto method = "edit_region_replacement";
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "region", "provider"}, method);
+    const auto base_digest = requireString(params, "base_source_digest", method);
+    const auto preset_digest = requireString(params, "base_preset_digest", method);
+    const auto graph_name = requireString(params, "graph", method);
+    const auto region = requireString(params, "region", method);
+    if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(preset_digest))
+        throw std::invalid_argument("edit_region_replacement requires 64 lowercase hex source digests");
+    if (!params.contains("provider") ||
+        (!params.at("provider").is_null() &&
+         (!params.at("provider").is_string() || params.at("provider").get_ref<const std::string &>().empty())))
+        throw std::invalid_argument("provider must be a non-empty name or null to use the authored nodes");
+    if (!dependencies_.resolve_authoring_context || !dependencies_.normalize_reference || !dependencies_.resolve_document_path)
+        return rejection("method_unavailable", "edit_region_replacement requires the project document resolver");
+    try {
+        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        if (!current.pipeline_preset || !current.pipeline_preset_bytes ||
+            !current.pipeline_preset->reference.starts_with("project://"))
+            return rejection("project_preset_required", "Fork the selected preset into the project before editing region replacements");
+        if (renderConfigSourceDigest(*current.pipeline_preset_bytes) != preset_digest)
+            return rejection("external_modification", "The selected preset changed since it was read");
+        auto preset = OrderedJson::parse(*current.pipeline_preset_bytes);
+        auto &graphs = preset.at("config").at("rendering_passes");
+        auto graph = std::find_if(graphs.begin(), graphs.end(), [&](const auto &value) {
+            return value.at("name") == graph_name;
+        });
+        if (graph == graphs.end())
+            return rejection("render_graph_not_found", "The selected graph is not declared in the project preset");
+        const auto &passes = graph->at("passes");
+        const bool declared = std::any_of(passes.begin(), passes.end(), [&](const auto &pass) {
+            const auto tags = pass.find("regions");
+            return tags != pass.end() && std::find(tags->begin(), tags->end(), region) != tags->end();
+        });
+        if (!declared)
+            return rejection("region_not_found", "The selected region is not declared in the project preset");
+        auto requests = graph->value("region_replacements", OrderedJson::array());
+        const auto request = std::find_if(requests.begin(), requests.end(), [&](const auto &value) {
+            return value.at("region") == region;
+        });
+        // Removing the request restores the authored graph, including edits made
+        // while a replacement was selected. Never materialize provider output here.
+        if (params.at("provider").is_null()) {
+            if (request != requests.end()) requests.erase(request);
+        } else if (request != requests.end()) {
+            (*request)["provider"] = params.at("provider");
+        } else {
+            requests.push_back({{"region", region}, {"provider", params.at("provider")}});
+        }
+        if (requests.empty()) graph->erase("region_replacements");
+        else (*graph)["region_replacements"] = std::move(requests);
+        const auto &reference = current.pipeline_preset->reference;
+        const std::array documents{RenderConfigCandidateDocument{
+            .reference = reference,
+            .normalized_reference = dependencies_.normalize_reference(reference),
+            .path = dependencies_.resolve_document_path(reference),
+            .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present, preset_digest},
+            .bytes = preset.dump(2),
+        }};
+        return queueRootEdit(base_digest, method,
+            [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; },
+            documents, preset_digest);
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what());
     }
