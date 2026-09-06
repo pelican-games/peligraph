@@ -210,6 +210,19 @@ TEST_CASE("Scene collision follows model reload additions changes and removals",
     REQUIRE(entity);
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(*entity).pos = {5, 0, 0};
     CHECK(world.raycastAll(ray).empty());
+    scene.loadTransientGltf("collision.glb", std::string{"temporary"});
+    hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].id == "temporary/mesh");
+    CHECK(hits[0].distance == Catch::Approx(4));
+    CHECK_THROWS(scene.loadTransientGltf("collision.glb", std::string{"temporary"}));
+    REQUIRE(world.raycastAll(ray).size() == 1);
+    test_support::loadScene(scene, "default_scene");
+    hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].id != "temporary/mesh");
+    // The engine drains the previous scene at the next frame boundary.
+    scene.drainRetirementQueue();
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 

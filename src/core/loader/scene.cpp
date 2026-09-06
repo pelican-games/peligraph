@@ -1460,6 +1460,17 @@ std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, 
     auto staged_instance = instances.stageModelInstance(candidate.model);
     const auto model_instance_id = staged_instance.id();
     const auto initial_transform = identityObjectTransform();
+    std::optional<PhysWorld::PreparedState> physics_candidate;
+    if (auto mesh = makeModelPhysicsBinding(candidate.model,
+            name && !name->empty() ? *name : "transient:" + std::to_string(model_instance_id.index),
+            PhysWorldTransform{})) {
+        mesh->runtime_only = true;
+        auto &physics = GET_MODULE(PhysWorld);
+        auto next = physics.snapshotPrepared();
+        next.bindings.push_back(std::move(*mesh));
+        physics_candidate = physics.prepareBindings(std::move(next.bindings));
+    }
+
     transient_models.push_back(std::move(candidate.model));
     candidate.owns_resources = false;
 
@@ -1478,6 +1489,12 @@ std::filesystem::path SceneLoader::loadTransientGltf(std::string_view path_ref, 
 
     // No operation below allocates: this is the single publication point for
     // the entity's slot, draw commands, resources, and optional name.
+    if (physics_candidate) {
+        auto &mesh = physics_candidate->bindings.back();
+        mesh.transform_source = object_id;
+        mesh.identity.entity = object_id;
+        GET_MODULE(PhysWorld).publishPrepared(std::move(*physics_candidate));
+    }
     instances.publishModelInstance(std::move(staged_instance));
     if (staged_binding) {
         staged_binding->mapped().object_id = object_id;

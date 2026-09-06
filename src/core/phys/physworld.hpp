@@ -51,6 +51,7 @@ DECLARE_MODULE(PhysWorld) {
         phys::ColliderQueryMetadata metadata;
         ColliderComponent collider;
         std::variant<GameObjectId, PhysWorldTransform> transform_source;
+        bool runtime_only = false;
         std::shared_ptr<const MeshGeometry> mesh;
         std::shared_ptr<const MeshGeometry> accelerated_source;
         std::shared_ptr<const phys::TriangleMesh> mesh_acceleration;

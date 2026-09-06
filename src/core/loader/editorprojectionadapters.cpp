@@ -84,6 +84,16 @@ void appendModelPhysicsBinding(
     next.push_back(std::move(*binding));
 }
 
+void appendRuntimePhysicsBindings(std::vector<PhysWorld::Binding> &next,
+    const PhysWorld::PreparedState &previous, ECSCoreTemplatePublic &ecs) {
+    for (const auto &binding : previous.bindings) {
+        if (!binding.runtime_only) continue;
+        const auto *entity = std::get_if<GameObjectId>(&binding.transform_source);
+        if (entity && ecs.tryComponent<TransformComponent>(*entity) == nullptr) continue;
+        next.push_back(binding);
+    }
+}
+
 Json proceduralComponents(const ResolvedSceneView *scene) {
     auto components = Json::array();
     if (!scene) return components;
@@ -485,6 +495,7 @@ struct SceneObjectProjectionAdapter::Impl {
                 next.push_back(std::move(binding));
             }
         }
+        appendRuntimePhysicsBindings(next, *old_physics, ecs);
         const std::array unpublished{entity->kind() ==
                                              ECSEntityMutationKind::create
                                          ? entity->entity()
@@ -1393,6 +1404,7 @@ void ColliderProjectionAdapter::prepare(
             next_bindings.push_back(std::move(binding));
         }
     }
+    appendRuntimePhysicsBindings(next_bindings, *impl_->old_state, impl_->ecs);
     impl_->next_state =
         impl_->physics.prepareBindings(std::move(next_bindings));
     impl_->published = false;

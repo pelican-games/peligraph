@@ -477,7 +477,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ### 編集transaction用のprepare/publish
 
-[`PhysWorld::PreparedState`](../../src/core/phys/physworld.hpp#L59) と [`snapshotPrepared()`](../../src/core/phys/physworld.hpp#L76) / [`prepareBindings()`](../../src/core/phys/physworld.hpp#L77) / [`publishPrepared()`](../../src/core/phys/physworld.hpp#L84)（`noexcept`）は、編集RPCのcollider投影が使うprepare/publishの三点セットです。[第9章](09_black_magic_and_gotchas.md)の編集transaction節を参照してください。
+[`PhysWorld::PreparedState`](../../src/core/phys/physworld.hpp#L60) と [`snapshotPrepared()`](../../src/core/phys/physworld.hpp#L77) / [`prepareBindings()`](../../src/core/phys/physworld.hpp#L78) / [`publishPrepared()`](../../src/core/phys/physworld.hpp#L85)（`noexcept`）は、編集RPCのcollider投影が使うprepare/publishの三点セットです。[第9章](09_black_magic_and_gotchas.md)の編集transaction節を参照してください。
 
 `PELICAN_WITH_PHYSICS=OFF` 用のstubは [`physworld_stub.cpp`](../../src/core/phys/physworld_stub.cpp) で、binding系APIは `PELICAN_WITH_PHYSICS=OFF: PhysWorld collider binding is unavailable` を投げます。
 

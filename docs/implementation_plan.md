@@ -23265,6 +23265,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3 runtime-only glTF物理登録 (2026-09-06):**
+- loadTransientGltfでcollision meshの物理candidate/BVHをentity作成前に準備し、entity成功後にtransform参照を設定して既存の単一公開箇所でswapする。失敗時は未公開candidateのRAIIで破棄する。
+- runtime_onlyのmesh bindingを明示し、lifecycle/collider編集の全一覧再構築ではlive entityの分だけ保持する。scene cutoverは従来どおり全一覧置換で破棄する。named importは名前/mesh、匿名importはtransient:instance index/meshを使用する。
+- 関連build成功。実scene import/reload1件23 assertions（build/.codex_bg/mesh-transient-final-scene.log）、物理29件366 assertions（mesh-transient-cpu.log）成功。初回はフレームを回さないfixtureで退役queueが残り終了時停止したため、通常次フレームに行うdrainRetirementQueueを明示し完走を確認。transient登録を戻すと追加後hitが落ちる。個別変異・GUI編集保持の実操作は未実施。
+- これでruntime-only importの初期登録を接続した。runtime-only modelファイルの自動reloadや保存への昇格を実装したという意味ではない。mesh overlap/sweep/triggerと実編集経路の確認は残る。
+
 **P3メッシュBVH再利用 (2026-09-06):**
 - PhysWorldのbinding prepare時にBuiltin/Jolt用immutable BVHを構築し、元geometryと一緒に保持。同じgeometryのcandidateはBVHを共有し、別geometryへ変更されたcandidateでは再構築する。
 - runtimeの内部入力に対応BVHのborrowed spanを追加。filter後のmesh indexに合わせ、既定CPU callbackのcontextで渡す。公開ProviderV3のpayloadや外部providerの選択を変えず、外部callbackへ内部pointerを渡さない。
