@@ -42,7 +42,8 @@ inline void writeBytes(const std::filesystem::path &path, const std::vector<uint
 inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
                                     bool geometry_only = false,
                                     bool project_name_collision = false,
-                                    bool ray_traceable_geometry = false) {
+                                    bool ray_traceable_geometry = false,
+                                    std::optional<float> collision_z = std::nullopt) {
     std::vector<uint8_t> bin;
     for (const float value : {
              -0.5f, -0.5f, 0.0f,
@@ -146,6 +147,10 @@ inline std::vector<uint8_t> makeGlb(bool duplicate_root_names = false,
         }
     }
 
+    if (collision_z) {
+        json["nodes"][1]["extras"] = {{"pelican.collision", {{"shape", "mesh"}}}};
+        json["nodes"][1]["translation"] = {0, 0, *collision_z};
+    }
     auto json_bytes = json.dump();
     while (json_bytes.size() % 4 != 0) {
         json_bytes.push_back(' ');

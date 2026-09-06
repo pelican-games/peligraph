@@ -23265,6 +23265,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3メッシュscene/reload統合確認 (2026-09-06):**
+- 既存modelhotreload testのglTF fixtureへ任意collision node距離を追加。実SceneLoaderで配置し、ReloadServiceから実ファイル変更を反映するケースを追加した。
+- GPUデバイス上で、初期hit距離3→reload後7、collider ID保持、壊れたglTFのrollback後7、collision削除によるmiss、再追加後4、live object移動によるmissを確認。単独1件16 assertions成功（build/.codex_bg/mesh-scene-reload-test.log）。既存model reloadのstress以外も含め7件187 assertions成功（mesh-scene-reload-regression.log）。buildはmesh-scene-reload-build.logで成功。
+- 物理candidateのreload接続を戻すと距離変更・削除が落ち、scene登録を戻すと初期hitが落ちる対照。個別変異、ファイル監視イベント配送そのもの、GUI編集からの確認は未実施。runtime-only transient glTF、BVH再利用、mesh overlap/sweep/triggerは引き続き残る。
+
 **P3モデルcollisionのreload接続 (2026-09-06):**
 - ModelAssetContainerのreload batch prepareで、現在sceneのsimplemodelviewとruntime entityを照合し、更新対象モデルのmesh bindingを物理candidateへ追加・置換・削除する。形状変更で既存collider IDを保ち、collisionなしからの追加にも対応。
 - renderer candidateと同じnoexcept publish内で物理candidateをswap。prepare失敗時にはcandidateを破棄して現在のgeometryを維持する。通常のprimitive colliderは置換しない。

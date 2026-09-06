@@ -1,4 +1,10 @@
 #include "../src/core/asset/model.hpp"
+#include "../src/core/phys/physworld.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "../src/core/ecs/core.hpp"
+#include "../src/core/ecs/predefined/transform.hpp"
+#include "scene_load_test_support.hpp"
+#include <catch2/catch_approx.hpp>
 #include "../src/core/registrationownerhost.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/container.hpp"
@@ -147,6 +153,64 @@ TEST_CASE("Direct model references do not invent logical occurrence asset keys",
     check("named_model", true);
     check(relative, false);
     check(absolute, false);
+}
+
+TEST_CASE("Scene collision follows model reload additions changes and removals",
+          "[model-reload][mesh-scene-reload][gpu]") {
+    setupLogger();
+    auto sandbox = makeSandbox("mesh_scene");
+    const auto glb = sandbox.root / "collision.glb";
+    auto writeMesh = [&](std::optional<float> z) {
+        TestGltfFragmentFixture::detail::writeBytes(glb,
+            TestGltfFragmentFixture::makeGlb(false, true, false, true, z));
+    };
+    writeMesh(3);
+    FastModuleContainer modules;
+    configureProject(sandbox.root, nlohmann::json::array({
+        {{"name", "target_model"}, {"path", "collision.glb"}}
+    }));
+    std::filesystem::create_directories(sandbox.root / "passes");
+    writeText(sandbox.root / "passes/main_rendering_config.json",
+        R"({"pipeline":{"preset":"engine://render_pipelines/hybrid_v1.json"},"features":[]})");
+    writeText(sandbox.root / "scene.json", R"({"schema":"pelican.scene","version":1,
+        "scenes":{"default_scene":{"objects":[{"name":"target","components":[
+        {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"target_model"}]}]}}})");
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &world = GET_MODULE(PhysWorld);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    const phys::Ray ray{{0, 0, 0}, {0, 0, 1}, 10};
+    auto hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].distance == Catch::Approx(3));
+    const auto id = hits[0].identity.collider_id;
+    writeMesh(7);
+    REQUIRE(reload.applyRequestForTesting(modified("collision.glb")));
+    hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].distance == Catch::Approx(7));
+    CHECK(hits[0].identity.collider_id == id);
+    writeText(glb, "broken glTF");
+    REQUIRE_FALSE(reload.applyRequestForTesting(modified("collision.glb")));
+    REQUIRE(world.raycastClosest(ray));
+    CHECK(world.raycastClosest(ray)->distance == Catch::Approx(7));
+    writeMesh(std::nullopt);
+    REQUIRE(reload.applyRequestForTesting(modified("collision.glb")));
+    CHECK(world.raycastAll(ray).empty());
+    writeMesh(4);
+    REQUIRE(reload.applyRequestForTesting(modified("collision.glb")));
+    hits = world.raycastAll(ray);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].distance == Catch::Approx(4));
+    const auto entity = scene.objectId("target");
+    REQUIRE(entity);
+    GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(*entity).pos = {5, 0, 0};
+    CHECK(world.raycastAll(ray).empty());
+    GET_MODULE(VulkanManageCore).waitIdle();
 }
 
 TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]") {
