@@ -23265,6 +23265,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3モデルcollisionのシーン登録 (2026-09-06):**
+- model-spaceへ変換済みの各glTF collision nodeのtrianglesを1つのinstance meshへまとめ、indexを補正。通常colliderと独立したruntime object名/meshのbindingを作る。collision宣言のないモデルには登録しない。
+- scene prepareでモデルのCPU geometryを物理candidateへ保持。lifecycleとcollider編集の全一覧再構築にも同じ変換を接続し、残存instanceのcollider IDを維持する。失敗candidateの公開は行わず、既存prepared publicationを使用。
+- Player/runtime_services build成功。関連28件351 assertions成功（build/.codex_bg/mesh-scene-test.log）。CPU fixtureに複数model collision nodeを渡し、index offsetとgeometryの独立所有、公開serviceと移動を確認。offset追加を戻すと結合index対照が落ちる。個別変異とGPU scene/編集統合試験は未実施。
+- モデルファイルreloadのbatch publicationとの連動、queryごとのBVH再構築の解消、mesh overlap/sweep/triggerは残る。scene登録のGPU実行・編集rollbackを含む統合動作は別途確認が必要。
+
 **P3 PhysWorldメッシュ保持・問い合わせ接続 (2026-09-06):**
 - Bindingに共有immutable CPU geometryを持たせ、prepared stateの既存swapによる公開・復元・clearと同じ寿命で保持する。通常shape収集にはmeshを含めない。
 - queryRaycastAllでprimitiveとmeshのprovider結果を統合し、C++のraycastAll/ClosestとGame DLL serviceを同じ入口へ接続。meshのobject transformは問い合わせ時に読み、距離順・filter・identityを維持する。

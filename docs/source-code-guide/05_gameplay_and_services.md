@@ -471,7 +471,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >       等しいペアは両方進めるだけ(Stay は出さない)
 > ```
 >
-> **手がかり**: ペアの型は `GameObjectId = EntityId{index, generation}` で、`operator<=>` が defaulted です([`entity.hpp` 内](../../src/core/userpublic/details/ecs/entity.hpp#L16))。**generation 込みの全順序**なので id 再利用が混線しません。テストは [`physworld_test.cpp`](../../test/physworld_test.cpp#L500) の "PhysWorld guarantees Exit for destroy and collider removal but not scene reset" ほか [`PhysWorld trigger replay emits only symmetric Enter and Exit deltas`](../../test/physworld_test.cpp#L462) / [`PhysWorld trigger changes use canonical EntityId pair order`](../../test/physworld_test.cpp#L471)。
+> **手がかり**: ペアの型は `GameObjectId = EntityId{index, generation}` で、`operator<=>` が defaulted です([`entity.hpp` 内](../../src/core/userpublic/details/ecs/entity.hpp#L16))。**generation 込みの全順序**なので id 再利用が混線しません。テストは [`physworld_test.cpp`](../../test/physworld_test.cpp#L501) の "PhysWorld guarantees Exit for destroy and collider removal but not scene reset" ほか [`PhysWorld trigger replay emits only symmetric Enter and Exit deltas`](../../test/physworld_test.cpp#L463) / [`PhysWorld trigger changes use canonical EntityId pair order`](../../test/physworld_test.cpp#L472)。
 >
 > **不変条件**: canonical 化 → sort → unique → マージの順を崩さない(マージは両列がソート済み・重複なしであることに全面的に依存しています)。`unavailable` で `active_trigger_pairs` を触らない。`clear()` は Exit を出さない。Enter/Exit は必ず両視点 2 発ずつ、lower-self が先。
 
@@ -990,7 +990,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1112)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1124)）、2つの向きに使います。
 
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L115)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。

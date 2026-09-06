@@ -1,5 +1,6 @@
 #define GLM_ENABLE_EXPERIMENTAL
 #include "editorprojectionadapters.hpp"
+#include "modelphysicsbinding.hpp"
 #include "../renderer/proceduralgeometrycontainer.hpp"
 
 #include "componentcodec.hpp"
@@ -63,6 +64,24 @@ const ResolvedComponent *findResolvedComponent(const ResolvedObject *object,
         if (component.name == component_name) return &component;
     }
     return nullptr;
+}
+
+void appendModelPhysicsBinding(
+    std::vector<PhysWorld::Binding> &next, const ResolvedObject &object,
+    const std::string &identity_name,
+    std::variant<GameObjectId, PhysWorldTransform> transform,
+    const std::unordered_map<std::string, const PhysWorld::Binding *> &old_by_name) {
+    const auto *component = findResolvedComponent(&object, "simplemodelview");
+    if (component == nullptr) return;
+    const auto &data = std::any_cast<const SimpleModelViewCodecData &>(
+        component->requireRuntimeValue());
+    if (data.model.empty()) return;
+    const auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(data.model);
+    auto binding = makeModelPhysicsBinding(model, identity_name, std::move(transform));
+    if (!binding) return;
+    if (const auto old = old_by_name.find(binding->identity.name); old != old_by_name.end())
+        binding->identity.collider_id = old->second->identity.collider_id;
+    next.push_back(std::move(*binding));
 }
 
 Json proceduralComponents(const ResolvedSceneView *scene) {
@@ -433,6 +452,13 @@ struct SceneObjectProjectionAdapter::Impl {
             for (const auto &object : next_scene->objects) {
                 const auto *collider_component =
                     findResolvedComponent(&object, "collider");
+                auto mesh_transform = std::variant<GameObjectId, PhysWorldTransform>{resolvedPhysTransform(object)};
+                if (const auto runtime = entities.find(object.authoring_object_id.value);
+                    runtime != entities.end() && findResolvedComponent(&object, "transform") != nullptr)
+                    mesh_transform = runtime->second;
+                appendModelPhysicsBinding(next, object, runtimeObjectIdentityName(
+                    scene_id, object.authoring_object_id, object.name.value_or(std::string{})),
+                    std::move(mesh_transform), old_by_name);
                 if (collider_component == nullptr) continue;
                 const auto identity_name = runtimeObjectIdentityName(
                     scene_id, object.authoring_object_id,
@@ -1323,6 +1349,13 @@ void ColliderProjectionAdapter::prepare(
         for (const auto &object : scene->objects) {
             const auto *component =
                 findResolvedComponent(&object, "collider");
+            auto mesh_transform = std::variant<GameObjectId, PhysWorldTransform>{resolvedPhysTransform(object)};
+            if (const auto runtime = entities.find(object.authoring_object_id.value);
+                runtime != entities.end() && findResolvedComponent(&object, "transform") != nullptr)
+                mesh_transform = runtime->second;
+            appendModelPhysicsBinding(next_bindings, object, runtimeObjectIdentityName(
+                impl_->scene_id, object.authoring_object_id, object.name.value_or(std::string{})),
+                std::move(mesh_transform), old_by_name);
             if (component == nullptr) continue;
             const auto identity_name = runtimeObjectIdentityName(
                 impl_->scene_id, object.authoring_object_id,

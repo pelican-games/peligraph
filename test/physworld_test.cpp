@@ -4,6 +4,7 @@
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physworld.hpp"
+#include "../src/core/loader/modelphysicsbinding.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/gameobjects.hpp"
 #include "../src/core/userpublic/serialize/jsonarchive.hpp"
@@ -590,19 +591,27 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     TransformComponent transform{.pos = {0, 0, 0},
         .rotation = glm::quat{1, 0, 0, 0}, .scale = {1, 1, 1}};
     const auto object = GameObjects::add().addComponent<TransformComponent>(transform).finish();
-    auto geometry = std::make_shared<PhysWorld::MeshGeometry>();
-    geometry->vertices = {{-1, -1, 3}, {1, -1, 3}, {0, 1, 3}};
-    geometry->indices = {0, 1, 2};
-    PhysWorld::Binding binding;
-    binding.identity.name = "mesh";
-    binding.transform_source = object;
-    binding.mesh = geometry;
+    ModelTemplate model;
+    CHECK_FALSE(makeModelPhysicsBinding(model, "target", object));
+    auto sources = std::make_shared<std::vector<ModelCollisionMesh>>();
+    ModelCollisionMesh source;
+    source.positions = {{-1, -1, 3}, {1, -1, 3}, {0, 1, 3}};
+    source.indices = {0, 1, 2};
+    sources->push_back(source);
+    for (auto &vertex : source.positions) vertex.z = 8;
+    sources->push_back(source);
+    model.collision_meshes = sources;
+    auto generated = makeModelPhysicsBinding(model, "target", object);
+    REQUIRE(generated);
+    CHECK(generated->mesh->indices == std::vector<std::uint32_t>{0, 1, 2, 3, 4, 5});
+    auto binding = std::move(*generated);
     auto prepared = world.prepareBindings({binding});
     const auto identity = prepared.bindings.at(0).identity.collider_id;
     REQUIRE(world.raycastAll({{0, 0, 0}, {0, 0, 2}, 10}).empty());
     world.publishPrepared(std::move(prepared));
     auto saved = world.snapshotPrepared();
-    geometry.reset();
+    model.collision_meshes.reset();
+    sources.reset();
     const phys::Ray ray{{0, 0, 0}, {0, 0, 2}, 10};
     auto hits = world.raycastAll(ray);
     REQUIRE(hits.size() == 1);
@@ -615,7 +624,7 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     world.bindCollider("sphere", sphere, PhysWorldTransform{.pos = {0, 0, 6}});
     hits = world.raycastAll(ray);
     REQUIRE(hits.size() == 2);
-    CHECK(hits[0].id == "mesh");
+    CHECK(hits[0].id == "target/mesh");
     CHECK(hits[1].distance == Catch::Approx(5));
     Physics::ApiV2 api;
     REQUIRE(Physics::getApiV2(Physics::abiVersionV2, &api) == Physics::Status::ok);
@@ -636,7 +645,7 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     CHECK(world.raycastAll(ray).empty());
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {0, 0, 0};
     REQUIRE(world.raycastClosest(ray));
-    CHECK(world.raycastClosest(ray)->id == "mesh");
+    CHECK(world.raycastClosest(ray)->id == "target/mesh");
     phys::QueryFilter filter;
     filter.mask = 0;
     CHECK(world.raycastAll(ray, filter).empty());

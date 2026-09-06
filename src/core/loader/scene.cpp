@@ -1,4 +1,5 @@
 #include "scene.hpp"
+#include "modelphysicsbinding.hpp"
 
 #include "../ecs/predefined/modelview.hpp"
 #include "../ecs/predefined/transform.hpp"
@@ -254,6 +255,7 @@ struct EcsObjectLoad {
     std::vector<ColliderComponent> colliders;
     std::vector<PreparedSceneBehaviorAttachment> behaviors;
     std::optional<ModelInstanceId> prepared_model_instance;
+    std::optional<PhysWorld::Binding> prepared_model_physics;
 };
 
 ColliderComponent loadColliderComponent(const ResolvedComponent &component,
@@ -652,6 +654,9 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
                 auto &model = GET_MODULE(ModelAssetContainer)
                                   .getModelTemplateByName(
                                       model_view.model_name);
+                object.prepared_model_physics = makeModelPhysicsBinding(
+                    model, runtimeObjectIdentityName(request.scene_id,
+                        object.authoring_object_id, object.name), PhysWorldTransform{});
                 auto staged =
                     renderer.stagePreparedSceneModel(renderer_candidate,
                                                      model);
@@ -937,6 +942,13 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
             const bool has_transform =
                 object_id != invalidGameObjectId &&
                 ecs.tryComponent<TransformComponent>(object_id) != nullptr;
+            if (object.prepared_model_physics) {
+                auto binding = *object.prepared_model_physics;
+                binding.transform_source = has_transform
+                    ? std::variant<GameObjectId, PhysWorldTransform>{object_id}
+                    : std::variant<GameObjectId, PhysWorldTransform>{identityPhysWorldTransform()};
+                physics_bindings.push_back(std::move(binding));
+            }
             for (const auto &collider : object.colliders) {
                 const auto identity_name = runtimeObjectIdentityName(
                     request.scene_id, object.authoring_object_id, object.name);
