@@ -23237,7 +23237,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、task接続図):** 名前付きAS交互配置は4ed89516へ統合済み。taskの候補付き接続図を追加し、実Qtクリックによる草稿更新を確認。次はFrame Plan全体のnode間接続、共有ASより前の通常node配置、残る制作操作など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、共有AS前の独立compute):** task接続図は2cde03b9へ統合済み。独立computeを共有AS前に配置するcompiler変更を初frameの実GPUで確認。次はFrame Plan全体のnode間接続、raster passのAS依存細分化、残る制作操作など。学習サンプルは後回し。
+
+**RT6/RT7 共有AS前の独立compute (2026-09-06):**
+- 一律の全node→共有AS依存を廃止。computeはray_tracing/ray_query宣言時だけ共有ASと選択先を待つ。通常anchor/copyもデータ依存の範囲で前置可能。raster passと実描画する__anchor_spriteは共有AS後を維持する。
+- computeのray queryはsceneを使う場合も宣言必須。ComputePipelineDescにtask由来のallow_ray_queryを保持し、初回・shader reload双方のbuildComputePipelineでreflectionとの不一致を拒否。直接pipelineを使う呼出元は自らcommand順序を所有する。rendererの別経路や旧ASへの追加fallbackは作らない。
+- Player/Studio・対象test build成功（build/.codex_bg/preas-build.log）。CPU4/4、82 assertions（preas-cpu.log）。named TLAS GPU1caseのRT/query/独立computeの3section、212 assertions（preas-gpu.log）成功。独立computeを初frame AS前で実行し42をreadback、query宣言を外すRPCは拒否して元source保持、既存RT/query左右hit・AS順序編集も成功。
+- 対照: 一律AS依存を戻せば前置computeがcycleで落ち、AS使用検査を除けば宣言削除RPCの拒否確認が落ちる。選択ASの依存を除けば既存のconsumer前置拒否確認が落ちる。read-onlyレビューでもreload両経路と通常frame descriptorを照合し具体的な欠陥なし。新test target・配布検査toolなし。
 
 **RT7 task接続図 (2026-09-06):**
 - get_compute_task_authoringに合成済み画像・バッファのresources一覧を追加。Tasksはport/alias群と宣言resourceを線で表示し、左group→右resourceのクリックで既存rebindTaskResourcesを呼びJSON草稿を更新。未宣言の接続先はunresolved表示。既知の画像・バッファ間の変更を拒否し、最終ABI検証・保存は既存Apply/CAS/compilerへ委ねる。

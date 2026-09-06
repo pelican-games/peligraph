@@ -291,15 +291,17 @@ void detail::insertSceneAccelerationStructureNodes(
                 return std::find(as_nodes.begin(), as_nodes.end(), node.name) != as_nodes.end();
             }))
             throw std::runtime_error("Reserved scene acceleration-structure node name: " + node_name);
-        // Every node requires the shared scene; named consumers additionally
-        // wait for the particular TLAS selected by their task declaration.
+        // Raster passes can use scene queries through material shaders. Compute
+        // tasks declare their AS dependency; pipeline reflection enforces it.
         for (auto &node : graph.nodes) {
-            node.after.push_back(node_name);
+            if (node.kind == FramePlanNodeKind::render || node.name == "__anchor_sprite")
+                node.after.push_back(node_name);
             if (node.kind != FramePlanNodeKind::compute) continue;
             const auto task = std::find_if(tasks.begin(), tasks.end(), [&](const auto &entry) {
                 return entry.name == node.name;
             });
-            if (task == tasks.end()) continue;
+            if (task == tasks.end() || (!task->ray_tracing && !task->ray_query_acceleration_structure)) continue;
+            node.after.push_back(node_name);
             const auto selected = task->ray_tracing
                 ? task->ray_tracing->acceleration_structure
                 : task->ray_query_acceleration_structure.value_or("scene");

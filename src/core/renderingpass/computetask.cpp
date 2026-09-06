@@ -3151,6 +3151,7 @@ ComputeTaskId ComputeTaskContainer::registerComputeTask(
                 .shader = load_shader(definition.shader),
                 .shader_defines = shader_defines,
                 .resource_interface = resource_interface,
+                .allow_ray_query = definition.ray_query_acceleration_structure.has_value(),
             });
     }
     std::array<std::uint32_t, 3>

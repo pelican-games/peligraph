@@ -982,6 +982,8 @@ RT taskごとに対象の集合を変える場合は、rendering configの`scene
 0は空の集合、省略時は255です。BLASとSBTは共有し、TLASと選択用descriptorを分けます。
 compute shaderのray queryでも、taskへ`"ray_query":{"acceleration_structure":"actors"}`を
 指定して同じ集合を選べます。この宣言でray query用のAS構築も有効になります。
+シーン全体を使うcomputeでも`"ray_query":{"acceleration_structure":"scene"}`を明記します。
+shaderだけがASを使用しtaskの宣言がない場合は、ロード・shader再読み込み時に拒否します。
 詳細は[名前付きTLAS](../design_raytracing.md)を参照してください。
 
 ray layoutを使う同じモデル個体のgeometryは、姿勢とinstance設定が共通でrecord行が連続なら、
@@ -1020,7 +1022,8 @@ StudioのRender Features画面から「Scene AS...」を開くと、名前付き
 元のASへ戻すと、そのtaskの上書き指定を除きます。
 Frame Planの **Order nodes...** では、名前付きASの構築とconsumerを交互に配置できます。
 例えばleft AS→leftを使うtask→right ASという順序が可能です。
-consumerを自身の接続先ASより前に置く変更は拒否します。共有ASは通常nodeより先に構築します。
+consumerを自身の接続先ASより前に置く変更は拒否します。ASを使わないcompute・通常anchor・copyは、
+データ依存に反しなければ共有ASより前へ配置できます。raster passとsprite描画は共有AS後に実行します。
 
 frame graphには、共有BLASとdefault TLASを作る`__scene_acceleration_structure`と、
 名前付きTLASごとの`__scene_acceleration_structure:<name>`が表示されます。

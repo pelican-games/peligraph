@@ -862,8 +862,10 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
           "[rt6][named-tlas][ray-tracing][production][gpu]") {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     bool query = false;
+    bool before_as = false;
     SECTION("ray tracing pipeline") {}
     SECTION("compute ray query") { query = true; }
+    SECTION("independent compute before first scene AS build") { before_as = true; }
     setupLogger();
     Wp374aProjectRoot project{"rt6_named_tlas"};
     writeWp374aProject(project.path, 2, true, true, true,
@@ -936,6 +938,29 @@ void main() {
         shader.replace(shader.find(opaque), opaque.size(), "gl_RayFlagsNoneEXT");
         writeWp374aText(project.path / ("shaders/" + output + ".rgen"), shader);
     }
+    if (before_as) {
+        auto target = target_template;
+        target["name"] = "pre_as_output";
+        target["usage"] = {"STORAGE", "TRANSFER_SRC"};
+        feature["render_targets"].push_back(target);
+        auto task = feature["compute_tasks"][0];
+        task["name"] = "pre_as_compute";
+        task.erase("ray_tracing");
+        task["shader"] = "project://shaders/pre_as_compute";
+        task["dispatch"] = {{"groups", {1, 1, 1}}};
+        task["writes"] = {"pre_as_output"};
+        task["resource_ports"] = {{"pre_as_output", {
+            {"resource", "pre_as_output"}, {"access", "storage"}}}};
+        feature["compute_tasks"].push_back(task);
+        rendering["frame_node_order"] = {{"main_render", {"pre_as_compute", "__scene_acceleration_structure"}}};
+        writeWp374aText(project.path / "hybrid.json", rendering.dump());
+        writeWp374aText(project.path / "shaders/pre_as_compute.comp", R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1, local_size_y=1, local_size_z=1) in;
+void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); }
+)glsl");
+    }
     writeWp374aText(feature_path, feature.dump());
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
@@ -945,12 +970,21 @@ void main() {
     REQUIRE(rows.rows.size() == 2);
     const auto &execution_nodes = GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes");
     REQUIRE(execution_nodes.size() >= 4);
-    CHECK(execution_nodes[0].at("name") == "__scene_acceleration_structure");
+    const std::size_t as_offset = before_as ? 1 : 0;
+    CHECK(execution_nodes[as_offset].at("name") == "__scene_acceleration_structure");
+    if (before_as) {
+        CHECK(execution_nodes[0].at("name") == "pre_as_compute");
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("pre_as_output", ImageSubresourceRange{});
+        REQUIRE(image.bytes.size() >= sizeof(std::uint32_t));
+        std::uint32_t pixel = 0;
+        std::memcpy(&pixel, image.bytes.data(), sizeof(pixel));
+        CHECK(pixel == 42u);
+    }
     for (const auto *name : {"left", "right", "empty"}) {
         CAPTURE(name);
-        const auto node = std::find_if(execution_nodes.begin() + 1, execution_nodes.begin() + 4,
+        const auto node = std::find_if(execution_nodes.begin() + as_offset + 1, execution_nodes.begin() + as_offset + 4,
             [&](const auto &entry) { return entry.at("name") == std::string{"__scene_acceleration_structure:"} + name; });
-        REQUIRE(node != execution_nodes.begin() + 4);
+        REQUIRE(node != execution_nodes.begin() + as_offset + 4);
         CHECK(node->at("kind") == "acceleration_structure");
         CHECK(node->at("recorded") == true);
     }
@@ -977,7 +1011,29 @@ void main() {
     {
         auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
         std::uint64_t rpc_id = 70000;
-        REQUIRE(execution_nodes[1].at("name") == "__scene_acceleration_structure:empty");
+        if (query) {
+            const auto catalog = runWp374aRpcBytes(*service, rpc_id++, "get_compute_task_authoring", Json::object());
+            const auto &tasks = catalog.at("tasks");
+            const auto selected = std::find_if(tasks.begin(), tasks.end(), [](const auto &entry) {
+                return entry.at("name") == "query_left";
+            });
+            REQUIRE(selected != tasks.end());
+            auto changed = selected->at("declaration");
+            changed.erase("ray_query");
+            const auto saved = readWp374aText(feature_path);
+            const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_compute_task", {
+                {"base_source_digest", catalog.at("source_digest").at("hex")},
+                {"base_task_source_digest", selected->at("source_digest").at("hex")},
+                {"task_name", "query_left"}, {"task", changed}});
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPendingEdits();
+            const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            CHECK(result.at("committed") == false);
+            CHECK(result.dump().find("does not declare ray_query") != std::string::npos);
+            CHECK(readWp374aText(feature_path) == saved);
+        }
+        REQUIRE(execution_nodes[as_offset + 1].at("name") == "__scene_acceleration_structure:empty");
         const auto set_as_order = [&](const Json &orders) {
             const auto context = runWp374aRpcBytes(*service, rpc_id++, "get_frame_node_order", Json::object());
             const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_frame_node_order", {

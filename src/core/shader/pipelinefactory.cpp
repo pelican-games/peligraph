@@ -982,6 +982,11 @@ PipelineFactory::PipelineRecord PipelineFactory::buildComputePipeline(const Comp
         desc.resource_interface, reflection);
     const auto ray_query_frame_set =
         shaderReflectionUsesRayQueryFrameSet(reflection);
+    if (ray_query_frame_set && !desc.allow_ray_query) {
+        throw std::runtime_error(
+            "Compute task shader uses a scene acceleration structure but the task "
+            "does not declare ray_query.acceleration_structure");
+    }
     if (ray_query_frame_set &&
         !GET_MODULE(VulkanManageCore)
              .getRuntimeCapabilities()

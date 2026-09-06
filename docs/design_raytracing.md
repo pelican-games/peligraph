@@ -475,7 +475,10 @@ AS nodeごとに、その時点で構築済みのTLASを指すimmutable descript
 submission成功後は最後のbundleとAS集合だけを原子的にactiveへ公開する。
 途中失敗では既存のframe transactionが公開を取り消す。
 AS定義・task接続・node順序は編集RPCから変更でき、consumerと無関係な名前付きASを交互配置できる。
-共有構築より前への通常node移動や一般のgraph edge編集は未実装。BLAS geometry結合は以下のRT6節に記す。
+ASを使わないcompute・通常anchor・copyは、データ依存に反しなければ共有構築より前にも配置できる。
+computeのray queryはtaskの`ray_query.acceleration_structure`宣言を必須とし、
+未宣言のAS使用をshader reflectionでロード・reload時に拒否する。raster passとsprite描画は共有AS後を維持する。
+一般のgraph edge編集は未実装。BLAS geometry結合は以下のRT6節に記す。
 
 ### RT6: 名前付きTLASの選択（2026-09-06）
 

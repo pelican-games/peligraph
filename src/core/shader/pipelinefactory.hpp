@@ -125,6 +125,9 @@ struct ComputePipelineDesc {
     std::vector<std::string> shader_defines;
     std::vector<ShaderResourceInterfaceBinding>
         resource_interface;
+    // Frame-graph tasks disable this unless their declaration orders an AS.
+    // Direct pipeline users own their command ordering themselves.
+    bool allow_ray_query = true;
 };
 
 struct RayTracingPipelineDesc {

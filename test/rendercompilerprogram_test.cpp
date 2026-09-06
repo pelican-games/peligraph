@@ -63,7 +63,10 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
             CHECK(graph.nodes[0].name == "__scene_acceleration_structure");
             CHECK(graph.nodes[0].declaration_index == 0);
             CHECK(graph.nodes[1].declaration_index == 1);
-            CHECK(graph.nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
+            if (graph.nodes[1].kind == FramePlanNodeKind::anchor)
+                CHECK(graph.nodes[1].after.empty());
+            else
+                CHECK(graph.nodes[1].after == std::vector<std::string>{"__scene_acceleration_structure"});
         }
     };
     SECTION("non-ray variant is unchanged") {
@@ -115,7 +118,7 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
             CHECK(nodes[i].after == std::vector<std::string>{nodes[0].name});
             CHECK(nodes[i].declaration_index == i);
         }
-        CHECK(nodes[3].after == std::vector<std::string>{nodes[0].name});
+        CHECK(nodes[3].after.empty());
     }
     SECTION("named consumers can execute before an unrelated TLAS") {
         ComputeTaskDefinition task;
@@ -178,9 +181,21 @@ TEST_CASE("frame node ordering adds constraints without rewriting resource depen
         CHECK(plan.nodes[2].name == "__scene_acceleration_structure:left");
     }
     SECTION("consumer cannot precede AS publication") {
-        detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true);
+        ComputeTaskDefinition task;
+        task.name = "first";
+        task.ray_query_acceleration_structure = "scene";
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true);
         detail::applyFrameNodeOrder(graphs, {{"main", {"first", "__scene_acceleration_structure"}}});
         CHECK_THROWS_WITH(planFrameGraph(graphs[0]), Catch::Matchers::ContainsSubstring("Cycle"));
+    }
+    SECTION("independent compute can precede shared AS construction") {
+        ComputeTaskDefinition task;
+        task.name = "first";
+        detail::insertSceneAccelerationStructureNodes(graphs, {}, {task}, true);
+        detail::applyFrameNodeOrder(graphs, {{"main", {"first", "__scene_acceleration_structure"}}});
+        const auto plan = planFrameGraph(graphs[0]);
+        CHECK(plan.nodes[0].name == "first");
+        CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
     }
     SECTION("partial and empty orders retain unspecified nodes") {
         detail::applyFrameNodeOrder(graphs, {{"main", Json::array()}});
