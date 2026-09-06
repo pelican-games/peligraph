@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はpreset内feature instanceの公開パラメーター編集。詳細は下の「RT7 preset featureパラメーター編集」を参照。root featureパラメーター編集は `ccf086e0`、明示feature pass編集は `7af6fd95` に統合済み。
+- 最新の追加はUI描画のAS依存解除。詳細は下の「RT6 UIのAS前描画」を参照。preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 preset featureパラメーター編集 (2026-09-06):**
+**RT6 UIのAS前描画 (2026-09-06):**
+- 固定UI shader pipelineでallow_ray_query=falseとし、JSON・typed両FramePlannerでUIをAS非依存とする。出力やcanonical順序の依存は維持し、既存frame_node_orderでAS前へ配置できる。ユーザーshaderを受け取るdebug_draw/debug_text/gizmoやmaterial由来のshadow/velocityには一律適用しない。
+- Player/Studio build成功（build/.codex_bg/ui-before-as-build.log）。CPU/GPU対象の最終build成功（ui-before-as-test-build.log、ui-before-as-gpu-build.log）。CPU1/1・60 assertions成功（ui-before-as-cpu.log）。新GPU section1/1・73 assertions成功（ui-before-as-gpu.log）：専用target上の緑UIとUI→AS順序、後続named TLASのヒット結果を確認。関連named-tlas全sectionも成功（ui-before-as-regression.log）。初回GPUはfixtureのextent_scale不足で設定検証に失敗し、補完後成功した。
+- 対照: UIのgraph依存解除を外せばUI→AS順序が成立せず、非query pipeline設定を外せばAS前のdescriptor利用条件を満たさない。個別変異は未実行。
+- 残件再点検: graph_variantsは内部展開結果であり、既存のfeatureパラメーター編集から再生成される。output_transformはlinear-sRGBから表示形式への固定終端（design_color_pipeline.md §0、output_transform.frag）。working-space切替は将来項目で、予定していない汎用generated-node editorを追加しない。残る具体的機能はユーザーshaderを持つ補助描画の宣言・AS依存細分化で、機能全体の目標は継続中。
+
+**RT7 preset featureパラメーター編集 (2026-09-06、c4c40590):**
 - feature一覧へpreset.config.featuresを追加し、scope・所有元source/digestを表示する。project presetは同じParameters画面から変更でき、engine presetはforkが必要な理由を表示する。root/presetの同じindexを混同しないよう、編集中のscopeと文書digestを保持する。
 - set_parametersのpreset scopeは既存の追加文書transactionとpreset CASで保存する。root shadow overrideを新設せず、rootとfeatureの元ファイルを保持する。root/presetのmetadata生成とparameter patchは共通化した。
 - Player/Studio・CPU build成功（build/.codex_bg/preset-parameters-build.log）。対象CPU成功（preset-parameters-cpu.log）：presetへの上書き、リセット、再読込、全文保持とroot不変、stale digest・engine preset編集拒否、既存root編集。実GUI操作・GPU描画は未確認。

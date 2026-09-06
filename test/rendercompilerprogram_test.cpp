@@ -117,6 +117,32 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
         detail::applyFrameNodeOrder(graphs, {{"main", {"__anchor_sprite", "__scene_acceleration_structure", "draw"}}});
         CHECK(planFrameGraph(graphs[0]).nodes[0].name == "__anchor_sprite");
     }
+    SECTION("fixed UI shaders can run before AS construction in both graph lowering paths") {
+        const auto json_graph = parseFrameGraphDefinitionFromJson({{"name", "main"},
+            {"passes", nlohmann::json::array({{{"name", "pelican_ui"}, {"type", "ui"},
+                {"output", {{"color", "swapchain"}, {"depth", nullptr}}}}})}});
+        RenderingPassDefinition typed;
+        typed.name = "main";
+        PassDefinition ui;
+        ui.name = "pelican_ui";
+        ui.pass_type = RenderPassType::ui;
+        ui.pass_info = UiPassInfo{};
+        ui.output_color.emplace_back(swapchainRenderTargetId());
+        ui.applyDefaultAttachmentOperations(RenderPassType::ui);
+        typed.passes.push_back(std::move(ui));
+        for (const auto &lowered : {json_graph, makeFrameGraphDefinition(typed)}) {
+            REQUIRE(lowered.nodes.size() == 1);
+            CHECK(lowered.nodes[0].ray_query == false);
+            graphs = {lowered};
+            detail::insertSceneAccelerationStructureNodes(graphs, {}, {}, true);
+            CHECK(graphs[0].nodes.back().after.empty());
+            detail::applyFrameNodeOrder(graphs, {{"main", {"pelican_ui", "__scene_acceleration_structure"}}});
+            const auto plan = planFrameGraph(graphs[0]);
+            REQUIRE(plan.nodes.size() == 2);
+            CHECK(plan.nodes[0].name == "pelican_ui");
+            CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
+        }
+    }
     SECTION("reserved name collision is rejected") {
         graphs[0].nodes[0].name = "__scene_acceleration_structure";
         REQUIRE_THROWS_WITH(detail::insertSceneAccelerationStructureNodes(graphs, policy, tasks, true),

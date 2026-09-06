@@ -426,6 +426,7 @@ configureWp374aRuntime(
     if (deterministic_seed) {
         basic_config["seed"] = *deterministic_seed;
     }
+    if (std::filesystem::exists(root / "ui.json")) basic_config["ui_config_json"] = "ui.json";
     const auto prefab_path = root / "prefabs" / "wp375a_unit.json";
     if (std::filesystem::exists(prefab_path)) {
         GET_MODULE(ProjectSource).setProjectData(
@@ -956,6 +957,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     bool raster_query = false;
     bool material_before_as = false;
     bool sprite_before_as = false;
+    bool ui_before_as = false;
     std::optional<std::string> material_query;
     bool material_undeclared = false;
     SECTION("ray tracing pipeline") {}
@@ -965,6 +967,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     SECTION("independent fullscreen before first scene AS build") { before_as = true; raster = true; }
     SECTION("independent material before first scene AS build") { material_before_as = true; }
     SECTION("sprite draws before first scene AS build") { sprite_before_as = true; }
+    SECTION("UI draws before first scene AS build") { ui_before_as = true; }
     SECTION("material selects left TLAS") { material_query = "left"; }
     SECTION("material selects right TLAS") { material_query = "right"; }
     SECTION("material selects empty TLAS") { material_query = "empty"; }
@@ -1008,6 +1011,25 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     if (sprite_before_as) {
         rendering["features"].push_back("engine://features/sprite.json");
         rendering["frame_node_order"] = {{"main_render", {"__anchor_sprite", "__scene_acceleration_structure"}}};
+    }
+    if (ui_before_as) {
+        rendering["features"].push_back("project://features/ui.json");
+        rendering["frame_node_order"] = {{"main_render", {"pelican_ui", "__scene_acceleration_structure"}}};
+        writeWp374aText(project.path / "features/ui.json", R"json({
+          "schema":"pelican.render_feature","version":1,"name":"ui",
+          "runtime_shader_compiler":"optional",
+          "render_targets":[{"name":"pre_as_ui","extent_scale":1.0,"width":32,"height":32,"format":"R8G8B8A8_UNORM",
+                             "format_class":"explicit(R8G8B8A8_UNORM)","usage":["COLOR_ATTACHMENT","TRANSFER_SRC"]}],
+          "passes":[{"insert":"after:pelican_ui","pass":{"name":"pelican_ui","type":"ui",
+                     "output":{"color":"pre_as_ui","depth":null}}}]
+        })json");
+        writeWp374aText(project.path / "ui.json", R"json({
+          "schema":"pelican.ui","version":1,"key":"rt6_ui",
+          "root":{"id":"root","type":"panel","children":[
+            {"id":"green","type":"panel","color":[0,255,0,255],
+             "layout":{"x":{"mode":"fixed","value":16},"y":{"mode":"fixed","value":16}}}
+          ]}
+        })json");
     }
     if (material_query) {
         auto preset = Json::parse(readWp374aText(std::filesystem::path{__FILE__}.parent_path().parent_path() /
@@ -1176,7 +1198,7 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     FastModuleContainer modules;
     Wp380RuntimeCleanup cleanup;
     const auto load = [&] {
-        if (!material_query && !sprite_before_as) {
+        if (!material_query && !sprite_before_as && !ui_before_as) {
             loadWp374aScene(project.path);
             return;
         }
@@ -1238,6 +1260,14 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
     const std::size_t as_offset = node_position("__scene_acceleration_structure");
     if (material_before_as) CHECK(node_position("deferred_geometry") < as_offset);
     if (sprite_before_as) CHECK(node_position("__anchor_sprite") < as_offset);
+    if (ui_before_as) {
+        CHECK(node_position("pelican_ui") < as_offset);
+        const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("pre_as_ui", ImageSubresourceRange{});
+        std::size_t green_pixels = 0;
+        for (std::size_t offset = 0; offset + 3 < image.bytes.size(); offset += 4)
+            if (image.bytes[offset] == 0 && image.bytes[offset + 1] == 255 && image.bytes[offset + 2] == 0) ++green_pixels;
+        CHECK(green_pixels > 0);
+    }
     if (before_as) {
         CHECK(node_position(raster ? "pre_as_raster" : "pre_as_compute") < as_offset);
         const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("pre_as_output", ImageSubresourceRange{});

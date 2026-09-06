@@ -790,6 +790,7 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
         node.ray_query = query.has_value();
         node.ray_query_acceleration_structure = query.value_or("scene");
     }
+    if (type == RenderPassType::ui) node.ray_query = false;
     if (type == RenderPassType::raster) {
         node.semantic_dialect =
             "pelican.logical.raster@1";
@@ -1226,6 +1227,7 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
         node.ray_query = pass.ray_query;
         node.ray_query_acceleration_structure = pass.ray_query_acceleration_structure;
     }
+    if (pass.isUi()) node.ray_query = false;
     node.declaration_index = declaration_index;
     node.view_family =
         pass.view_family;

@@ -20,6 +20,7 @@ GraphicsPipelineDesc makeUiPipelineDesc(
     ShaderBundleId vert, ShaderBundleId frag, vk::Format format,
     vk::SampleCountFlagBits samples) {
     GraphicsPipelineDesc desc;
+    desc.allow_ray_query = false;
     desc.vert = vert;
     desc.frag = frag;
     desc.color_formats = {format};
