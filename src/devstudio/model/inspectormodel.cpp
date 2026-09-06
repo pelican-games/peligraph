@@ -16,6 +16,83 @@ namespace {
 
 using Json = nlohmann::json;
 
+std::string escapeJsonPointerSegment(std::string_view segment);
+
+void collectInspectorLists(const Json &node, const Json &authored,
+                           const std::string &path, const std::string &prefix,
+                           std::vector<InspectorListDescriptor> &lists) {
+    if (node.value("tag", "") == "list") {
+        InspectorListDescriptor list{.key = prefix + path, .path = path, .schema = node};
+        const Json::json_pointer pointer{path};
+        if (authored.contains(pointer)) {
+            const auto &value = authored.at(pointer);
+            if (value.is_object() && value.contains("rows") && value.at("rows").is_array())
+                list.rows = value.at("rows");
+        }
+        lists.push_back(std::move(list));
+        return;
+    }
+    if (node.value("tag", "") != "struct") return;
+    for (const auto &child : node.value("children", Json::array()))
+        collectInspectorLists(child, authored, path + "/" + escapeJsonPointerSegment(child.at("name").get<std::string>()), prefix, lists);
+}
+
+bool containsNestedList(const Json &node) {
+    for (const auto &child : node.value("children", Json::array()))
+        if (child.value("tag", "") == "list" || containsNestedList(child)) return true;
+    return false;
+}
+
+void validateListRowKeys(const Json &schema, const Json &row) {
+    if (!row.is_object()) throw std::invalid_argument("A list row must be an object.");
+    const auto children = schema.value("children", Json::array());
+    for (const auto &[key, value] : row.items()) {
+        const auto field = std::find_if(children.begin(), children.end(),
+            [&](const auto &child) { return child.value("name", "") == key; });
+        if (key == "$row" || field == children.end())
+            throw std::invalid_argument("Unknown or reserved list row field: " + key);
+        if (field->value("tag", "") == "struct") validateListRowKeys(*field, value);
+    }
+}
+
+void listRowDiff(const Json &schema, const Json &old_row, const Json &new_row,
+                 const std::string &path, const Json &address, Json &operations) {
+    for (const auto &field : schema.value("children", Json::array())) {
+        const auto name = field.at("name").get<std::string>();
+        const auto leaf_path = path + "/" + escapeJsonPointerSegment(name);
+        const bool had = old_row.contains(name), has = new_row.contains(name);
+        if (field.value("tag", "") == "struct") {
+            listRowDiff(field, had ? old_row.at(name) : Json::object(),
+                        has ? new_row.at(name) : Json::object(), leaf_path, address, operations);
+            continue;
+        }
+        if ((!had && !has) || (had && has && old_row.at(name) == new_row.at(name))) continue;
+        auto leaf_address = address;
+        leaf_address["leaf_path"] = leaf_path;
+        if (!has) {
+            if (field.value("presence", "required") == "required")
+                throw std::invalid_argument("Required list field cannot be removed: " + leaf_path);
+            operations.push_back({{"op", "remove_component_field"}, {"address", leaf_address}});
+        } else {
+            if (!had) {
+                if (!field.contains("default"))
+                    throw std::invalid_argument("List field insertion requires a declared default: " + leaf_path);
+                operations.push_back({{"op", "insert_component_field"}, {"address", leaf_address}});
+                if (new_row.at(name) == field.at("default")) continue;
+            }
+            operations.push_back({{"op", "set_component_value"}, {"address", leaf_address}, {"value", new_row.at(name)}});
+        }
+    }
+}
+
+const Json *findInspectorRow(const InspectorListDescriptor &list, std::uint32_t id) {
+    if (id == 0) return nullptr;
+    for (const auto &row : list.rows)
+        if (row.is_object() && row.contains("$row") && row.at("$row").is_object() &&
+            row.at("$row").value("id", Json{}) == id) return &row;
+    return nullptr;
+}
+
 constexpr std::uint64_t MaximumExactJsonInteger = 9007199254740991ULL;
 
 struct SchemaWidgetRule {
@@ -624,6 +701,31 @@ struct InspectorModel::Impl {
         requestRefresh(true);
     }
 
+    std::pair<const InspectorComponentSnapshot *, const InspectorListDescriptor *>
+    findList(std::string_view key) const {
+        if (snapshot) for (const auto &component : snapshot->components)
+            for (const auto &list : component.lists)
+                if (list.key == key) return {&component, &list};
+        return {nullptr, nullptr};
+    }
+
+    Json listAddress(const InspectorComponentSnapshot &component,
+                     const InspectorListDescriptor &list) const {
+        const auto type = component.name == "behavior"
+            ? component.authored_json.at("type").get<std::string>() : component.name;
+        return {{"authoring_object_id", snapshot->authoring_object_id},
+                {"component", {{"type", type}, {"occurrence", component.component_index},
+                    {"origin", {{"kind", "authored"}, {"authoring_component_index", component.component_index}}}}},
+                {"list_path", list.path}};
+    }
+
+    void enqueueListEdit(Json operations, const InspectorComponentSnapshot &component) {
+        queue("edit", Json{{"actor_id", *actor_id}, {"base_revision", snapshot->scene_revision},
+            {"operations", std::move(operations)}},
+            {.purpose = RequestPurpose::EditSubmit, .selection_generation = selection_generation,
+             .description = "Edit " + component.title + " list", .component_slot = component.name});
+    }
+
     void enqueueEdit(Json operation, std::string description,
                      std::string component_slot) {
         if (!connected || !actor_id || !snapshot) {
@@ -1036,6 +1138,13 @@ struct InspectorModel::Impl {
             } else {
                 parsed.widgets =
                     makeInspectorWidgetPlan(component, object.authoring_object_id);
+            }
+            if (parsed.schema_available && schema.contains("node")) {
+                const auto &authored = parsed.name == "behavior"
+                    ? parsed.authored_json.value("params", Json::object()) : parsed.authored_json;
+                collectInspectorLists(schema.at("node"), authored, "",
+                    object.scene_id + ":" + std::to_string(object.authoring_object_id) + ":" +
+                    std::to_string(object.scene_revision) + ":" + std::to_string(parsed.component_index) + ":", parsed.lists);
             }
             object.components.push_back(std::move(parsed));
         }
@@ -1584,6 +1693,71 @@ bool InspectorModel::commitWidgetValue(std::string_view field_key,
                  : std::string{field_key}),
         widget != nullptr ? widget->component_slot : std::string{});
     return true;
+}
+
+bool InspectorModel::canEditList(std::string_view key) const {
+    if (!canEdit() || busy() || refreshBlocked() || impl_->refresh_in_flight) return false;
+    const auto [component, list] = impl_->findList(key);
+    return component && list && component->editable && !component->pending &&
+        !component->generated && component->schema_available && !containsNestedList(list->schema) &&
+        list->schema.value("children", Json::array()).size() == 1;
+}
+
+bool InspectorModel::insertListRow(std::string_view key, Json row) {
+    if (!canEditList(key)) return false;
+    const auto [component, list] = impl_->findList(key);
+    try {
+        validateListRowKeys(list->schema.at("children")[0], row);
+        impl_->enqueueListEdit(Json::array({{{"op", "insert_component_field"},
+            {"address", impl_->listAddress(*component, *list)}, {"value", std::move(row)},
+            {"position", {{"end", true}}}}}), *component);
+        return true;
+    } catch (const std::exception &error) {
+        impl_->setNotice(InspectorNoticeKind::Error, error.what());
+        return false;
+    }
+}
+
+bool InspectorModel::removeListRow(std::string_view key, std::uint32_t row_id) {
+    if (!canEditList(key)) return false;
+    const auto [component, list] = impl_->findList(key);
+    if (!findInspectorRow(*list, row_id)) return false;
+    auto address = impl_->listAddress(*component, *list);
+    address["row_id"] = row_id;
+    impl_->enqueueListEdit(Json::array({{{"op", "remove_component_field"}, {"address", address}}}), *component);
+    return true;
+}
+
+bool InspectorModel::moveListRow(std::string_view key, std::uint32_t row_id,
+                                std::optional<std::uint32_t> before) {
+    if (!canEditList(key)) return false;
+    const auto [component, list] = impl_->findList(key);
+    if (!findInspectorRow(*list, row_id) || (before && (*before == row_id || !findInspectorRow(*list, *before)))) return false;
+    auto address = impl_->listAddress(*component, *list);
+    address["row_id"] = row_id;
+    impl_->enqueueListEdit(Json::array({{{"op", "move_component_field"}, {"address", address},
+        {"position", before ? Json{{"before", *before}} : Json{{"end", true}}}}}), *component);
+    return true;
+}
+
+bool InspectorModel::editListRow(std::string_view key, std::uint32_t row_id, Json row) {
+    if (!canEditList(key)) return false;
+    const auto [component, list] = impl_->findList(key);
+    const auto *old_row = findInspectorRow(*list, row_id);
+    if (!old_row) return false;
+    try {
+        validateListRowKeys(list->schema.at("children")[0], row);
+        auto address = impl_->listAddress(*component, *list);
+        address["row_id"] = row_id;
+        auto operations = Json::array();
+        listRowDiff(list->schema.at("children")[0], *old_row, row, "", address, operations);
+        if (operations.empty()) return true;
+        impl_->enqueueListEdit(std::move(operations), *component);
+        return true;
+    } catch (const std::exception &error) {
+        impl_->setNotice(InspectorNoticeKind::Error, error.what());
+        return false;
+    }
 }
 
 bool InspectorModel::canRemoveComponent(std::size_t component_index) const noexcept {

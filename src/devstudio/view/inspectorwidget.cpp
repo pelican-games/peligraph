@@ -8,6 +8,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDialog>
+#include <QDialogButtonBox>
 #include <QEvent>
 #include <QFormLayout>
 #include <QFrame>
@@ -123,6 +124,7 @@ struct InspectorWidget::Impl {
     std::vector<std::unique_ptr<TextBinding>> text_bindings;
     std::vector<QWidget *> direct_editors;
     std::vector<std::pair<QPushButton *, std::size_t>> remove_buttons;
+    std::vector<std::pair<QWidget *, std::string>> list_controls;
     std::unordered_map<QObject *, NumericBinding *> numeric_events;
     std::unordered_map<QObject *, TextBinding *> text_events;
 
@@ -650,6 +652,9 @@ struct InspectorWidget::Impl {
         for (const auto &[button, index] : remove_buttons) {
             button->setEnabled(model.canRemoveComponent(index));
         }
+        for (const auto &[control, key] : list_controls) {
+            control->setEnabled(model.canEditList(key));
+        }
         undo_button->setEnabled(model.canUndoRedo());
         redo_button->setEnabled(model.canUndoRedo());
         cancel_preview_button->setEnabled(model.busy() &&
@@ -681,6 +686,7 @@ struct InspectorWidget::Impl {
         text_events.clear();
         direct_editors.clear();
         remove_buttons.clear();
+        list_controls.clear();
         numeric_bindings.clear();
         text_bindings.clear();
     }
@@ -793,7 +799,10 @@ struct InspectorWidget::Impl {
         for (const InspectorWidgetDescriptor &descriptor : component.widgets) {
             addField(*form, group, descriptor);
         }
-        if (component.widgets.empty()) {
+        for (const auto &list : component.lists) {
+            addList(*form, group, list);
+        }
+        if (component.widgets.empty() && component.lists.empty()) {
             auto *json = plainLabel(
                 QString::fromStdString(component.authored_json.dump(2)), group);
             json->setObjectName(QStringLiteral("pelican.inspectorReadOnlyJson"));
@@ -817,6 +826,127 @@ struct InspectorWidget::Impl {
             form->addRow(owner.tr("Runtime (read-only)"), runtime);
         }
         layout.addWidget(group);
+    }
+
+    void editListRowDialog(const InspectorListDescriptor &list,
+                           std::optional<std::uint32_t> row_id, Json value) {
+        if (!model.canEditList(list.key) || !model.snapshot()) return;
+        const auto revision = model.snapshot()->scene_revision;
+        const auto object_id = model.snapshot()->authoring_object_id;
+        const auto scene_id = model.snapshot()->scene_id;
+        auto *dialog = new QDialog(&owner);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setWindowTitle(row_id ? owner.tr("Edit row") : owner.tr("Add row"));
+        dialog->resize(540, 440);
+        auto *layout = new QVBoxLayout(dialog);
+        layout->addWidget(plainLabel(owner.tr(
+            "Enter row values as JSON. Row IDs are managed by the engine."), dialog));
+        auto *editor = new QPlainTextEdit(dialog);
+        editor->setObjectName(QStringLiteral("pelican.inspectorListRowJson"));
+        value.erase("$row");
+        editor->setPlainText(QString::fromStdString(value.dump(2)));
+        layout->addWidget(editor, 1);
+        auto *schema = new QPlainTextEdit(dialog);
+        schema->setReadOnly(true);
+        schema->setMaximumHeight(130);
+        schema->setPlainText(QString::fromStdString(list.schema.dump(2)));
+        layout->addWidget(plainLabel(owner.tr("Available fields and defaults"), dialog));
+        layout->addWidget(schema);
+        auto *notice = plainLabel({}, dialog);
+        layout->addWidget(notice);
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, dialog);
+        layout->addWidget(buttons);
+        QObject::connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
+        QObject::connect(buttons, &QDialogButtonBox::accepted, dialog,
+            [this, dialog, editor, notice, key = list.key, row_id, revision, object_id, scene_id] {
+                const auto &snapshot = model.snapshot();
+                if (!snapshot || snapshot->scene_id != scene_id ||
+                    snapshot->authoring_object_id != object_id || snapshot->scene_revision != revision) {
+                    notice->setText(owner.tr("The scene changed. Close this draft and reopen the row."));
+                    return;
+                }
+                Json row;
+                try {
+                    row = Json::parse(editor->toPlainText().toStdString());
+                    if (!row.is_object() || row.contains("$row")) {
+                        notice->setText(owner.tr("Enter an object containing row values, without $row."));
+                        return;
+                    }
+                } catch (const Json::exception &error) {
+                    notice->setText(QString::fromUtf8(error.what()));
+                    return;
+                }
+                const bool accepted = row_id ? model.editListRow(key, *row_id, row)
+                                             : model.insertListRow(key, row);
+                if (!accepted) {
+                    notice->setText(QString::fromStdString(model.notice().message));
+                    return;
+                }
+                dialog->accept();
+                synchronize();
+                dispatchRequests();
+            });
+        dialog->open();
+    }
+
+    void addList(QFormLayout &form, QWidget *parent, const InspectorListDescriptor &list) {
+        auto *container = new QWidget(parent);
+        auto *layout = new QVBoxLayout(container);
+        layout->setContentsMargins(0, 0, 0, 0);
+        auto *table = new QTableWidget(static_cast<int>(list.rows.size()), 2, container);
+        table->setObjectName(QStringLiteral("pelican.inspectorListRows"));
+        table->setHorizontalHeaderLabels({owner.tr("Row ID"), owner.tr("Values")});
+        table->setSelectionBehavior(QAbstractItemView::SelectRows);
+        table->setSelectionMode(QAbstractItemView::SingleSelection);
+        table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        table->verticalHeader()->hide();
+        table->horizontalHeader()->setStretchLastSection(true);
+        table->setMaximumHeight(180);
+        for (std::size_t i = 0; i < list.rows.size(); ++i) {
+            auto row = list.rows.at(i);
+            const auto id = row.at("$row").at("id").get<std::uint32_t>();
+            row.erase("$row");
+            table->setItem(static_cast<int>(i), 0, new QTableWidgetItem(QString::number(id)));
+            table->setItem(static_cast<int>(i), 1, new QTableWidgetItem(QString::fromStdString(row.dump())));
+        }
+        layout->addWidget(table);
+        auto *buttons = new QHBoxLayout;
+        for (const auto &action : {QStringLiteral("Add"), QStringLiteral("Edit"),
+                                  QStringLiteral("Remove"), QStringLiteral("Up"), QStringLiteral("Down")}) {
+            auto *button = new QPushButton(owner.tr(qPrintable(action)), container);
+            button->setObjectName(QStringLiteral("pelican.inspectorList") + action);
+            buttons->addWidget(button);
+            QObject::connect(button, &QPushButton::clicked, &owner, [this, table, list, action] {
+                if (!model.canEditList(list.key)) return;
+                if (action == QStringLiteral("Add")) {
+                    editListRowDialog(list, std::nullopt, Json::object());
+                    return;
+                }
+                const auto index = table->currentRow();
+                if (index < 0) return;
+                const auto &row = list.rows.at(index);
+                const auto id = row.at("$row").at("id").get<std::uint32_t>();
+                if (action == QStringLiteral("Edit")) {
+                    editListRowDialog(list, id, row);
+                    return;
+                }
+                if (action == QStringLiteral("Remove")) model.removeListRow(list.key, id);
+                else if (action == QStringLiteral("Up") && index > 0) {
+                    model.moveListRow(list.key, id, list.rows.at(index - 1).at("$row").at("id").get<std::uint32_t>());
+                } else if (action == QStringLiteral("Down") && index + 1 < static_cast<int>(list.rows.size())) {
+                    std::optional<std::uint32_t> before;
+                    if (index + 2 < static_cast<int>(list.rows.size()))
+                        before = list.rows.at(index + 2).at("$row").at("id").get<std::uint32_t>();
+                    model.moveListRow(list.key, id, before);
+                }
+                synchronize();
+                dispatchRequests();
+            });
+        }
+        layout->addLayout(buttons);
+        container->setEnabled(model.canEditList(list.key));
+        list_controls.emplace_back(container, list.key);
+        form.addRow(QString::fromStdString(list.path), container);
     }
 
     void addField(QFormLayout &form, QWidget *parent,

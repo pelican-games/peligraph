@@ -1061,7 +1061,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 後に触ったものから先に戻す。既に live へ公開したものを逆トークン/逆 swap で旧世代へ戻すのが *cleanup*、一度も公開していない候補をスコープ終了で捨てるだけなのが *discard* で、後者は「何もしない」のが正しい rollback。
 
-**どこに出るか**: [`scene.cpp` の rollback ラムダ](../../src/core/loader/scene.cpp#L731) は behavior → 候補 swap → renderer → destroyed_entities を `rbegin` から → created_entities を `rbegin` から、の順。ECS は [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229)、behavior arena は [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L639) の失敗時に `activated` を逆順に破棄、シェーダは [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1904) が「今回追加した分だけ」を消し、journal は [子孫を declaration_index 降順に並べてから削除](../../src/core/communication/editorjournal.cpp#L2733)。
+**どこに出るか**: [`scene.cpp` の rollback ラムダ](../../src/core/loader/scene.cpp#L731) は behavior → 候補 swap → renderer → destroyed_entities を `rbegin` から → created_entities を `rbegin` から、の順。ECS は [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229)、behavior arena は [`activate()`](../../src/core/gamelogic/behaviorarena.cpp#L639) の失敗時に `activated` を逆順に破棄、シェーダは [`discard_new_layouts` ラムダ](../../src/core/shader/pipelinefactory.cpp#L1904) が「今回追加した分だけ」を消し、journal は [子孫を declaration_index 降順に並べてから削除](../../src/core/communication/editorjournal.cpp#L2763)。
 
 **読むときの手順**: rollback の本体を読む前に「この参加者は公開済みか」を判定してください。event outbox / rng / pending scene のように**何もしないのが正しい**参加者を「巻き戻し漏れ」と誤読するのが最も多い間違いです。
 
@@ -1536,39 +1536,39 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 同じ表を「展開」と「復元」の両方で使うとき、方向がどこで反転するのか。
 
-**答え**: 表の意味論は §9.23.2 が本体です。反転は [`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L766) が **entries はそのままに direction フラグだけ入れ替える**実装で、`unpack_prefab` = GeneratedToAuthored / `restore_prefab` = AuthoredToGenerated が [journal の整合検査](../../src/core/communication/editorjournal.cpp#L4168)で強制されます。エントリは [`OriginTransitionEntry`](../../src/core/loader/resolvedscene.hpp#L130) の 5 フィールドです。
+**答え**: 表の意味論は §9.23.2 が本体です。反転は [`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L766) が **entries はそのままに direction フラグだけ入れ替える**実装で、`unpack_prefab` = GeneratedToAuthored / `restore_prefab` = AuthoredToGenerated が [journal の整合検査](../../src/core/communication/editorjournal.cpp#L4204)で強制されます。エントリは [`OriginTransitionEntry`](../../src/core/loader/resolvedscene.hpp#L130) の 5 フィールドです。
 
 #### [`attachment_handle` / `attachment_seq` / witness](../../src/core/communication/editorjournal.cpp#L1980) — 3 識別子の主キー
 
 **分からなくなること**: どれが主キーで、どれが照合用なのか。
 
-**答え**: **`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L3100) `journal_integrity_error` です。→ §9.22「identity / canonical key / lease の三層」。
+**答え**: **`attachment_handle` が主キー相当**(runtime arena が採番する不透明な実体ハンドル。0 は無効)、`attachment_seq` は `(object_index<<32)|component_index` の**宣言位置由来の順序キー**、`attachment_identity`(witness)は object / component_index / behavior type / origin から作る**内容照合用の指紋**で、[resolver が返した runtime identity と食い違えば](../../src/core/communication/editorjournal.cpp#L3134) `journal_integrity_error` です。→ §9.22「identity / canonical key / lease の三層」。
 
 #### [`sceneBehaviorAttachmentSeq()`](../../src/core/gamelogic/behaviorarena.cpp#L72) — 存在する関数
 
 **分からなくなること**: journal 側から呼ばれているこの名前が、どこで定義されているのか。
 
-**答え**: **behavior arena 側に実在します**(宣言は [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L165))。`sceneBehaviorAttachmentSeq(object_index, component_index)` は両者が u32 に収まるか検査して上位 / 下位 32bit に詰めた 64bit を返すだけの関数で、journal は [1950 行付近](../../src/core/communication/editorjournal.cpp#L3091)でこれを呼びます。
+**答え**: **behavior arena 側に実在します**(宣言は [`behaviorarena.hpp`](../../src/core/gamelogic/behaviorarena.hpp#L165))。`sceneBehaviorAttachmentSeq(object_index, component_index)` は両者が u32 に収まるか検査して上位 / 下位 32bit に詰めた 64bit を返すだけの関数で、journal は [1950 行付近](../../src/core/communication/editorjournal.cpp#L3125)でこれを呼びます。
 
-#### [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L3861) — kind が競合検出でどう使われるか
+#### [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L3897) — kind が競合検出でどう使われるか
 
 **分からなくなること**: `kind` 文字列が判定にどう効くのか。
 
 **答え**: まず **object 集合・同一 scene 内の name_reservation・declaration_index の交差**で判定し、その後の追加規則として **`component_slot` と `value_field` の組み合わせに限り「同一 object かつ同一 slot」を衝突**とみなします(スロット追加 / 削除と同スロットの値編集を競合扱いにする)。他の kind(prefab_parameter / behavior_params / behavior_attachment / parent_edge / object_existence / object_subtree)は自分が載せた object / index / name フィールド経由で交差判定されます。
 
-#### [パス重複と domain 重複](../../src/core/communication/editorjournal.cpp#L3790) — 両方が要る理由
+#### [パス重複と domain 重複](../../src/core/communication/editorjournal.cpp#L3826) — 両方が要る理由
 
 **分からなくなること**: JSON パスが重ならなければ安全ではないのか。
 
-**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L3955) が両者を OR で結びます。
+**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L3991) が両者を OR で結びます。
 
-#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L4702) — 「active writer history」の意味
+#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L4738) — 「active writer history」の意味
 
 **分からなくなること**: 履歴という名前なのに、undo で要素が消える理由。
 
-**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L4702)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L5084) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L5094) します。
+**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L4738)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L5120) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L5130) します。
 
-#### [`final_authored_index` の連続性](../../src/core/communication/editorjournal.cpp#L4219) — `max()` はスキップではない
+#### [`final_authored_index` の連続性](../../src/core/communication/editorjournal.cpp#L4255) — `max()` はスキップではない
 
 **分からなくなること**: `numeric_limits<size_t>::max()` の明示チェックが「その値をスキップしてよい」と読めてしまう。
 
@@ -1576,14 +1576,14 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [gate_epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L4799) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime)から観測される外部の状態遷移カウンタ**、[`gate_epoch`](../../src/core/communication/editorjournal.cpp#L4718) はその観測が変わるたびに journal 側で増やす**内部の単調エポック**。受理時に両方控え、[コミット時に片方でも食い違えば](../../src/core/communication/editorjournal.cpp#L5186)拒否する |
-| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L4916) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
-| [preview_reservation と preview_lease](../../src/core/communication/editorjournal.cpp#L4709) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L4895) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
-| [unpack の単独 op 強制](../../src/core/communication/editorjournal.cpp#L3276) | batch の形の制限 | なぜ 1 command か | unpack は object subtree 全体を作り替え、その inverse を `origin_transition` 込みの forward/inverse ペアとして**受理時点で確定**させる必要があるため。他 op と混ぜるとこの単一ペアの整合検査が成立しない |
+| [gate_epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L4835) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime)から観測される外部の状態遷移カウンタ**、[`gate_epoch`](../../src/core/communication/editorjournal.cpp#L4754) はその観測が変わるたびに journal 側で増やす**内部の単調エポック**。受理時に両方控え、[コミット時に片方でも食い違えば](../../src/core/communication/editorjournal.cpp#L5222)拒否する |
+| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L4952) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
+| [preview_reservation と preview_lease](../../src/core/communication/editorjournal.cpp#L4745) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L4931) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
+| [unpack の単独 op 強制](../../src/core/communication/editorjournal.cpp#L3311) | batch の形の制限 | なぜ 1 command か | unpack は object subtree 全体を作り替え、その inverse を `origin_transition` 込みの forward/inverse ペアとして**受理時点で確定**させる必要があるため。他 op と混ぜるとこの単一ペアの整合検査が成立しない |
 | [`prefabGeneratedId()`](../../src/project/prefab.cpp#L1060) | gid の生成 | アルゴリズム | ドメイン分離タグ `"pelican.prefab.gid.v1"` / `instance_id` / `component_key` を**長さ前置で連結**したバイト列の SHA-256 の先頭 16 バイトを hex 化し `gid_` を前置する([宣言側コメント](../../src/project/prefab.hpp#L224)= WP361 v4)。component_key は `component.id`、無ければ `component.name` |
 | [`canonicalBehaviorComponent()`](../../src/core/communication/editorjournal.cpp#L271) | behavior だけ codec を通さない | 理由 | behavior attachment は登録済み codec を持つ通常 component ではなく `{name,type,params}` の固定形で、**型登録が DLL 由来で欠けている可能性がある**。未登録でも情報を落とさず保持し、「レジストリが生きている(名前拒否)」と「DLL 不在(pending attachment)」をコミット境界で区別するため |
-| [子孫の降順ソート](../../src/core/communication/editorjournal.cpp#L2733) | prepareDestroy の並べ替え | 降順の理由 | 子孫から順に remove を積む必要があり、降順で削除すれば**削除に伴う後続要素のインデックスずれが未処理分に波及しない**。同時に inverse(restore_objects)が逆順で元の宣言位置に挿し戻せる |
-| [`field_path` の `/name` 禁止](../../src/core/communication/editorjournal.cpp#L2258) | 値編集の対象制限 | なぜ name だけ禁止か | `name` は **component のスロット同一性(と object 名前予約)を決める識別子**なので、値編集経路で書き換えられると slot / domain 計算が破綻する。detail も "field_path must be a JSON pointer and cannot change name" と明言 |
+| [子孫の降順ソート](../../src/core/communication/editorjournal.cpp#L2763) | prepareDestroy の並べ替え | 降順の理由 | 子孫から順に remove を積む必要があり、降順で削除すれば**削除に伴う後続要素のインデックスずれが未処理分に波及しない**。同時に inverse(restore_objects)が逆順で元の宣言位置に挿し戻せる |
+| [`field_path` の `/name` 禁止](../../src/core/communication/editorjournal.cpp#L2288) | 値編集の対象制限 | なぜ name だけ禁止か | `name` は **component のスロット同一性(と object 名前予約)を決める識別子**なので、値編集経路で書き換えられると slot / domain 計算が破綻する。detail も "field_path must be a JSON pointer and cannot change name" と明言 |
 | [`prefabGeneratedMarkerRule`](../../src/core/communication/editorjournal.cpp#L1570) | マーカー削除と body 検証 | 何を消すのか | 上記 gid / OriginTransitionMap と一体。詳細は**未執筆** |
 | [unpack の forward/inverse 整合](../../src/core/communication/editorjournal.cpp#L1640) | commit 時の structural_changes | 何を突き合わせるか | **未執筆**(根拠がコードにない) |
 | [`behaviorAttachmentWitness()`](../../src/core/communication/editorjournal.cpp#L595) | witness の組み立て | generated と authored の分岐 | witness 自体は常に 4 フィールド(`authoring_object_id` / `authored_component_occurrence` / `type` / `origin`)。分岐するのは [`origin` の中身](../../src/core/communication/editorjournal.cpp#L569)で、authored は 2 フィールド(`kind` / `authoring_component_index`)、generated は 6 フィールド(`kind` / `stable_generated_id` / `prefab` / `instance_id` / `component_key` / `digest_sha256`) |
@@ -1591,11 +1591,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [behavior edit の attachment_index](../../src/core/communication/editorjournal.cpp#L1701) | 必須引数 | なぜ必須か | 同一 object に複数の behavior が付くので index なしでは対象が決まらない(→ §9.23.2 の「behavior だけ重複可」) |
 | [`closureJson()`](../../src/core/communication/editorjournal.cpp#L389) | previous/next による linked-list | 宣言順の復元 | → [第3章「closureがidentityを運ぶ」](03_project_and_loading.md) |
 | [`resolvePrefabInstance` の context 引数](../../src/core/communication/editorjournal.cpp#L1273) | scene_id / parameter / json_pointer | 何を運ぶか | **未執筆**(根拠がコードにない) |
-| [replay 時の witness 再検証](../../src/core/communication/editorjournal.cpp#L3176) | rebind | undo/redo で張り替わる理由 | **未執筆**(根拠がコードにない) |
-| [`projection_state->revision() == source.revision()`](../../src/core/communication/editorjournal.cpp#L3288) | incremental update | 判定の意味 | **未執筆**(根拠がコードにない) |
-| [`ReparentPreserve`](../../src/core/communication/editorjournal.cpp#L2788) | Local / World | transform 計算への影響 | → [第3章「preserve-worldの逆算」](03_project_and_loading.md) |
+| [replay 時の witness 再検証](../../src/core/communication/editorjournal.cpp#L3211) | rebind | undo/redo で張り替わる理由 | **未執筆**(根拠がコードにない) |
+| [`projection_state->revision() == source.revision()`](../../src/core/communication/editorjournal.cpp#L3323) | incremental update | 判定の意味 | **未執筆**(根拠がコードにない) |
+| [`ReparentPreserve`](../../src/core/communication/editorjournal.cpp#L2818) | Local / World | transform 計算への影響 | → [第3章「preserve-worldの逆算」](03_project_and_loading.md) |
 | [behavior canonical 化の `old_component` 保持](../../src/core/communication/editorjournal.cpp#L1905) | retain する理由 | 何のために残すか | コメントどおり「`BehaviorParamsPolicy` の既定値は編集可能な authored view の一部なので、field pointer を解決する前に一時オブジェクトへ展開する。その間 `old_component` は inverse / raw 復元のために**逐語のまま**保持する」 |
-| [`domainObjects` / `domainNames` / `domainIndices` の定義](../../src/core/communication/editorjournal.cpp#L3799) ほか(prefab_cas フラグ、generated_id と component_slot の排他、`operationsUsePrefabParameters`、`forceAbort` と preview_boundary、`normalizeBehaviorAttachmentIdentities`、`batchWriteSet` の集約、`coalesce_key`、`finalizeRevertJournal` の逆順再構築) | 競合判定の下請けと journal の細部 | 個々の規則 | **未執筆**(いずれも根拠がコードにない。エラーコードの `@1` は §9.23.18 の契約バージョン) |
+| [`domainObjects` / `domainNames` / `domainIndices` の定義](../../src/core/communication/editorjournal.cpp#L3835) ほか(prefab_cas フラグ、generated_id と component_slot の排他、`operationsUsePrefabParameters`、`forceAbort` と preview_boundary、`normalizeBehaviorAttachmentIdentities`、`batchWriteSet` の集約、`coalesce_key`、`finalizeRevertJournal` の逆順再構築) | 競合判定の下請けと journal の細部 | 個々の規則 | **未執筆**(いずれも根拠がコードにない。エラーコードの `@1` は §9.23.18 の契約バージョン) |
 
 ### 9.23.10 editor command service
 

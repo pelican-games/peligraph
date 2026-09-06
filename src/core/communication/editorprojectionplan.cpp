@@ -144,7 +144,8 @@ EditorCanonicalOperation canonicalOperation(
     const auto op = stringField(wire, "op");
     if (op == "set_component_value" ||
         op == "insert_component_field" ||
-        op == "remove_component_field") {
+        op == "remove_component_field" ||
+        op == "move_component_field") {
         const auto object_id = objectId(wire, "object_id");
         const auto component = stringField(wire, "component_slot");
         const auto scene_id = wire.contains("scene_id")

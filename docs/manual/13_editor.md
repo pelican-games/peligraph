@@ -114,7 +114,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 ### 編集操作(operations)の 9 種
 
 `edit` の `operations[]` には次の 9 種を並べます(正は
-[`editorjournal.cpp` の op 分岐](../../src/core/communication/editorjournal.cpp#L2884))。1 回の `edit` は**全部成功か全部失敗**です。
+[`editorjournal.cpp` の op 分岐](../../src/core/communication/editorjournal.cpp#L2914))。1 回の `edit` は**全部成功か全部失敗**です。
 
 | op | 主なフィールド | 意味 |
 |---|---|---|
@@ -347,7 +347,7 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 - **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
 - **シーン編集**の安定コードは **43 種**です(正は
   [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L46) と、その名前を返す
-  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L4511)。**列挙子の名前とワイヤ上の
+  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L4547)。**列挙子の名前とワイヤ上の
   コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
   - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
   - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**はこれで拒否されます)
@@ -495,7 +495,11 @@ with PelicanRpc(["pelican_player", "--headless", "--rpc", "--project", "mygame"]
 | `not_editable` / `component_unknown@1` の切り分け | ✅WP379/379a |
 | scene load の commit 後 effect 失敗を result で返す | ✅WP380b/380e |
 | game DLL の startup / ロード前診断を status に出す | ✅WP381/381a |
-| 可変長宣言(`List` / `$list`)の**行編集** | 📐未実装(WP382b) |
+| 可変長宣言(`List` / `$list`)の**行編集** | ✅RPCとQt Inspectorの追加・削除・移動・行内field編集 |
+
+Qt Inspectorは再帰schemaのListを行IDと値の一覧で表示します。`Add`で行の値をJSON入力し、`Edit`で選択行の値を変更、`Remove`で削除、`Up`/`Down`で順序を変えます。`$row`や`next_id`を入力する必要はありません。移動は同じ行IDを保持し、通常のUndo/Redoと保存を使用します。省略されたListにも行を追加できます。generated・pending・read-onlyのcomponentとList内部のネストしたListは編集対象外です。
+
+RPCの行移動は `edit.operations` の `move_component_field` を使います。`address`は他の行編集と共通で`row_id`を指定し、`position`は`{"before":行ID}`または`{"end":true}`です。`leaf_path`は指定しません。行の値・ID・採番位置は変わりません。
 
 ## 13.13 シーン遷移とゲームロジックの結果(✅WP378/380b/380e/381/381a)
 

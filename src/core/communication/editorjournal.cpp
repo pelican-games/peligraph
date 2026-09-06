@@ -1805,27 +1805,27 @@ std::pair<std::size_t, std::uint32_t> insertionPosition(
     const auto found = raw.find("position");
     if (found == raw.end()) {
         throw std::invalid_argument(
-            "insert_component_field requires position for a list row");
+            "list row requires position for a list row");
     }
-    requireObject(*found, "insert_component_field position");
+    requireObject(*found, "list row position");
     const bool has_before = found->contains("before");
     const bool has_end = found->contains("end");
     if (has_before == has_end) {
         throw std::invalid_argument(
-            "insert_component_field position requires exactly one of before and end");
+            "list row position requires exactly one of before and end");
     }
     if (has_end) {
-        requireOnly(*found, {"end"}, "insert_component_field position");
+        requireOnly(*found, {"end"}, "list row position");
         if (!found->at("end").is_boolean() ||
             !found->at("end").get<bool>()) {
             throw std::invalid_argument(
-                "insert_component_field position.end must be true");
+                "list row position.end must be true");
         }
         return {list.at("rows").size(), 0};
     }
-    requireOnly(*found, {"before"}, "insert_component_field position");
+    requireOnly(*found, {"before"}, "list row position");
     const auto before = exactU32(found->at("before"),
-                                 "insert_component_field position.before", true);
+                                 "list row position.before", true);
     auto [index, row] = requireRow(list, before, address);
     (void)row;
     return {index, before};
@@ -2189,6 +2189,36 @@ PreparedOperation prepareInsertField(
     return addressedPreparedOperation(
         raw, address, context, next, address.component, address.row_id,
         address.leaf_path);
+}
+
+PreparedOperation prepareMoveField(
+    const Json &raw, const AuthoringSceneDocument &document) {
+    constexpr auto context = "move_component_field";
+    requireOnly(raw, {"op", "address", "position", "attachment_handle", "attachment_seq"}, context);
+    const auto address = requireComponentAddress(raw, document, context, false);
+    (void)requireListSchema(address);
+    if (!address.row_id || !address.leaf_tokens.empty()) {
+        throw std::invalid_argument("move_component_field requires row_id and no leaf_path");
+    }
+    Json next = address.component;
+    auto *list = findListValue(next, address);
+    if (list == nullptr) {
+        editFailure(EditorEditErrorCode::row_envelope_missing,
+                    {{"object", address.object.object_id.value},
+                     {"slot", address.component_name}, {"field_path", address.list_path}},
+                    "RowEnvelopeMissing: list is absent");
+    }
+    const auto [source, row] = requireRow(*list, *address.row_id, address);
+    const auto [destination, before] = insertionPosition(*list, raw, address);
+    auto &rows = list->at("rows");
+    if (before != *address.row_id) {
+        Json moved = row;
+        rows.erase(rows.begin() + static_cast<Json::difference_type>(source));
+        const auto index = destination > source ? destination - 1 : destination;
+        rows.insert(rows.begin() + static_cast<Json::difference_type>(index), std::move(moved));
+    }
+    return addressedPreparedOperation(raw, address, context, next, address.component,
+                                      address.row_id, {}, std::nullopt, raw.at("position"));
 }
 
 PreparedOperation prepareRemoveField(
@@ -2886,6 +2916,8 @@ PreparedOperation prepareRpcOperation(const Json &raw,
         return prepareInsertField(raw, document);
     if (op == "remove_component_field")
         return prepareRemoveField(raw, document);
+    if (op == "move_component_field")
+        return prepareMoveField(raw, document);
     if (op == "add_component")
         return prepareAdd(raw, document, component_exists);
     if (op == "remove_component") return prepareRemove(raw, document);
@@ -3017,7 +3049,8 @@ Json normalizeBehaviorAttachmentIdentities(
         const bool addressed = operation.contains("address") &&
                                (op == "set_component_value" ||
                                 op == "insert_component_field" ||
-                                op == "remove_component_field");
+                                op == "remove_component_field" ||
+                                op == "move_component_field");
         if (addressed) {
             operation.erase("attachment_handle");
             operation.erase("attachment_seq");
@@ -3059,7 +3092,8 @@ Json normalizeBehaviorAttachmentIdentities(
         const bool target_behavior =
             (op == "remove_component" || op == "set_component_value" ||
              op == "insert_component_field" ||
-             op == "remove_component_field") &&
+             op == "remove_component_field" ||
+             op == "move_component_field") &&
             operation.value("component_slot", std::string{}) == "behavior";
         if (!add_behavior && !target_behavior) continue;
 
@@ -3162,7 +3196,8 @@ std::vector<OrderedJson> rebindJournalBehaviorTargets(
         if ((op != "remove_component" &&
              op != "set_component_value" &&
              op != "insert_component_field" &&
-             op != "remove_component_field") ||
+             op != "remove_component_field" &&
+             op != "move_component_field") ||
             operation.value("component_slot", std::string{}) !=
                 "behavior") {
             continue;
@@ -3390,7 +3425,8 @@ EditorProjectionCommand commandFromCanonical(const Json &operation,
     }
     if (op == "set_component_value" ||
         op == "insert_component_field" ||
-        op == "remove_component_field") {
+        op == "remove_component_field" ||
+        op == "move_component_field") {
         const auto object_id = AuthoringObjectId{exactUnsigned(
             operation.at("object_id"), "journal object_id", true)};
         const auto object = requireObjectLocation(document, object_id);

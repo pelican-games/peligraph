@@ -46,6 +46,13 @@ struct InspectorWidgetDescriptor {
     std::optional<std::uint64_t> behavior_attachment_handle;
 };
 
+struct InspectorListDescriptor {
+    std::string key;
+    std::string path;
+    nlohmann::json schema;
+    nlohmann::json rows = nlohmann::json::array();
+};
+
 struct InspectorComponentSnapshot {
     std::string name;
     std::size_t component_index = 0;
@@ -57,6 +64,7 @@ struct InspectorComponentSnapshot {
     bool schema_available = false;
     std::string read_only_reason;
     std::vector<InspectorWidgetDescriptor> widgets;
+    std::vector<InspectorListDescriptor> lists;
     bool generated = false;
     std::optional<std::string> stable_generated_id;
     nlohmann::json generated_source;
@@ -139,6 +147,12 @@ class InspectorModel {
     bool commitWidgetValue(std::string_view field_key,
                            nlohmann::json value);
     bool canRemoveComponent(std::size_t component_index) const noexcept;
+    bool canEditList(std::string_view key) const;
+    bool insertListRow(std::string_view key, nlohmann::json row);
+    bool removeListRow(std::string_view key, std::uint32_t row_id);
+    bool moveListRow(std::string_view key, std::uint32_t row_id,
+                     std::optional<std::uint32_t> before);
+    bool editListRow(std::string_view key, std::uint32_t row_id, nlohmann::json row);
     bool removeComponent(std::size_t component_index);
     bool canRequestComponentAddCandidates() const noexcept;
     bool requestComponentAddCandidates();

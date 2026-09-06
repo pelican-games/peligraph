@@ -23244,7 +23244,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**CARRIER model reload後のGPU状態同期 (2026-09-06):**
+**CARRIER-STUDIO List編集 (2026-09-06):**
+- InspectorModelがschema.nodeからListを列挙し、Qt Inspectorへ行ID/値一覧・Add/Edit/Remove/Up/Downを追加。JSONによる行値編集をschema leaf単位の既存set/insert/remove batchへ分解する。省略Listも表示し、generated/pending/read-only・List内部ネストは編集しない。scene/object/revisionを含むkeyと既存CAS・ticket・refreshを使用し、古いdialogの送信を拒否する。
+- 行移動RPCが未実装だったためmove_component_fieldを追加。既存addressとbefore/endでrow配列だけ並べ替え、ID・値・next_idを保持。behavior witness・canonical projection・journal Undo/Redoへ接続。remove+insertによるIDの再割当ては行わない。JSON pointerのescapeは既存処理を共有する。
+- Player/StudioとInspector build成功。移動core1件12 assertions成功、関連journal/WP382b41件947 assertions成功（build/.codex_bg/list-studio-move.log、list-studio-core-regression.log）。Inspector関連19件1165 assertions成功（list-studio-inspector.log）。実エンジン接続下の画面操作・新List操作の保存再読込は今回未実行。描画コードに変更がなくGPU試験は反復しない。
+- 対照: 並べ替えを戻せば順序が落ち、remove+insertへ置換すればID/next_id保持が落ちる。Inspectorは省略List・optional field差分・選択変更・ID改変拒否を確認。個別変異は未実行。
+- 次はList以外の省略Defaulted fieldのGUI実体化と、geometry occurrence選択/出所表示を現コードと照合する。機能全体の完了は未判定。
+
+**CARRIER model reload後のGPU状態同期 (2026-09-06、51cb9d5e):**
 - rev382c残余#1を修正。publishPreparedSceneはCPU swap後にdirtyだけを立て、triggerUpdateの描画準備前（空inventoryのreturn前）にcurrent skin palette・relative override全slot・absolute header/recordを同期する。CPUから消去されたoverrideはGPUでも消す。成功時だけdirtyを解除し、通常フレームで全uploadを反復しない。direct rebuildの単独absolute uploadはこの共通経路へ統一した。
 - relative overrideのGPU変換を通常publishと共通化。noexcept publishにGPU書込を戻さず、描画前までに後続のanimation更新・rollbackがあれば最終CPU状態を同期する。
 - Player/Studio build成功。既存golden fixtureでskin・relative・absoluteの3モードを描画し、変更の可視効果とwatch reload後の初期状態復帰を確認（1件15 assertions成功、build/.codex_bg/reload-gpu-sync-final.log）。全画像厳密一致ではなく変化した領域の誤差が1/5未満へ戻る対照。テスト登録はgolden_casesだけに置き、共有harnessをリンクする別groupへ重複登録しない。

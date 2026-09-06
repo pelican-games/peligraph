@@ -246,6 +246,34 @@ struct CoordinatorFixture {
     }
 };
 
+TEST_CASE("List row movement preserves identities through undo and redo",
+          "[WP382b][editor][journal][list-move]") {
+    auto codecs = std::vector<ComponentCodec>{componentCodecs().begin(), componentCodecs().end()};
+    codecs.push_back(carrierCodec());
+    testing::ScopedComponentCodecCatalog catalog{std::move(codecs)};
+    CoordinatorFixture fixture{carrierDocument()};
+    const auto before = component(fixture.target);
+    const auto moved = fixture.commit({{"op", "move_component_field"},
+        {"address", address(0, "/rows", 2)}, {"position", {{"before", 1}}}});
+    auto expected = before;
+    std::swap(expected["rows"]["rows"][0], expected["rows"]["rows"][1]);
+    REQUIRE(component(fixture.target) == expected);
+    const auto undone = fixture.undo(moved);
+    REQUIRE(component(fixture.target) == before);
+    fixture.redo(undone);
+    REQUIRE(component(fixture.target) == expected);
+    fixture.commit({{"op", "move_component_field"},
+        {"address", address(0, "/rows", 2)}, {"position", {{"end", true}}}});
+    REQUIRE(component(fixture.target) == before);
+    const auto rejected = fixture.edits.enqueue(
+        {{"actor_id", fixture.actor},
+         {"base_revision", fixture.target.projectionState().revision().value},
+         {"operations", Json::array({{{"op", "move_component_field"},
+             {"address", address(0, "/rows", 2)}, {"position", {{"before", 999}}}}})}});
+    REQUIRE(rejected.at("status") == "rejected");
+    REQUIRE(component(fixture.target) == before);
+}
+
 #if PELICAN_WITH_RPC
 TEST_CASE("WP382b row RPC operations retain raw bytes and journal high water",
           "[WP382b][editor][journal][wire]") {

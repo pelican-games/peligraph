@@ -1180,3 +1180,124 @@ TEST_CASE("Studio adds behavior attachments by catalog key without replacing exi
         CHECK(harness.model.snapshot()->components[1].name == "behavior");
     }
 }
+
+TEST_CASE("Studio Inspector edits schema lists with stable addressed identities",
+          "[devstudio][inspector][list-edit]") {
+    InspectorHarness harness;
+    harness.open();
+    auto components = componentResult();
+    auto &component = components["components"][1];
+    component["name"] = "behavior";
+    component["authored_json"] = {{"name", "behavior"}, {"type", "list_behavior"},
+        {"params", {{"settings", {{"entries", {{"$list", {{"v", 1}, {"next_id", 9}}},
+            {"rows", Json::array({
+                {{"$row", {{"v", 1}, {"id", 3}}}, {"label", "first"}, {"enabled", true}},
+                {{"$row", {{"v", 1}, {"id", 8}}}, {"label", "second"}}
+            })}}}}}}}};
+    const Json row_schema = {{"tag", "struct"}, {"name", ""}, {"children", Json::array({
+        {{"tag", "leaf"}, {"name", "label"}, {"type", "string"}, {"presence", "required"}},
+        {{"tag", "leaf"}, {"name", "enabled"}, {"type", "bool"}, {"presence", "defaulted"}, {"default", false}}
+    })}};
+    const Json list_schema = {{"tag", "list"}, {"name", "entries"}, {"presence", "defaulted"},
+        {"children", Json::array({row_schema})}};
+    component["schema"] = {{"state", "available"}, {"fields", Json::array()},
+        {"node", {{"tag", "struct"}, {"name", ""}, {"children", Json::array({
+            {{"tag", "struct"}, {"name", "settings"}, {"children", Json::array({list_schema})}}
+        })}}}};
+    const auto refresh = [&] {
+        harness.model.requestRefresh();
+        harness.reply(harness.take("scene_tree"), sceneTreeResult());
+        harness.reply(harness.take("get_components"), components);
+        harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
+    };
+    refresh();
+    REQUIRE(harness.model.snapshot());
+    const auto &lists = harness.model.snapshot()->components[1].lists;
+    REQUIRE(lists.size() == 1);
+    CHECK(lists[0].path == "/settings/entries");
+    CHECK(lists[0].rows.size() == 2);
+    const auto key = lists[0].key;
+    REQUIRE(harness.model.canEditList(key));
+    const Json address = {{"authoring_object_id", 41},
+        {"component", {{"type", "list_behavior"}, {"occurrence", 1},
+            {"origin", {{"kind", "authored"}, {"authoring_component_index", 1}}}}},
+        {"list_path", "/settings/entries"}};
+    SECTION("insert preserves address and delegates ID allocation") {
+        REQUIRE(harness.model.insertListRow(key, {{"label", "third"}}));
+        const auto edit = harness.take("edit");
+        CHECK(edit.params.at("base_revision") == 1);
+        CHECK(edit.params.at("operations") == Json::array({
+            {{"op", "insert_component_field"}, {"address", address},
+             {"value", {{"label", "third"}}}, {"position", {{"end", true}}}}
+        }));
+        CHECK_FALSE(harness.model.canEditList(key));
+    }
+    SECTION("remove targets row ID rather than array index") {
+        REQUIRE(harness.model.removeListRow(key, 8));
+        auto expected = address;
+        expected["row_id"] = 8;
+        CHECK(harness.take("edit").params.at("operations") == Json::array({
+            {{"op", "remove_component_field"}, {"address", expected}}
+        }));
+    }
+    SECTION("move uses identity preserving addressed operation") {
+        REQUIRE(harness.model.moveListRow(key, 8, 3));
+        auto expected = address;
+        expected["row_id"] = 8;
+        CHECK(harness.take("edit").params.at("operations") == Json::array({
+            {{"op", "move_component_field"}, {"address", expected}, {"position", {{"before", 3}}}}
+        }));
+    }
+    SECTION("row edit removes optional fields and changes required leaf atomically") {
+        REQUIRE(harness.model.editListRow(key, 3, {{"label", "renamed"}}));
+        const auto operations = harness.take("edit").params.at("operations");
+        REQUIRE(operations.size() == 2);
+        CHECK(operations[0].at("op") == "set_component_value");
+        CHECK(operations[0].at("address").at("leaf_path") == "/label");
+        CHECK(operations[0].at("value") == "renamed");
+        CHECK(operations[1].at("op") == "remove_component_field");
+        CHECK(operations[1].at("address").at("row_id") == 3);
+        CHECK(operations[1].at("address").at("leaf_path") == "/enabled");
+    }
+    SECTION("absent optional leaf inserts its default then sets the requested value") {
+        REQUIRE(harness.model.editListRow(key, 8, {{"label", "second"}, {"enabled", true}}));
+        const auto operations = harness.take("edit").params.at("operations");
+        REQUIRE(operations.size() == 2);
+        CHECK(operations[0].at("op") == "insert_component_field");
+        CHECK(operations[1].at("op") == "set_component_value");
+        CHECK(operations[1].at("value") == true);
+        CHECK(operations[0].at("address") == operations[1].at("address"));
+    }
+    SECTION("missing list remains visible and insertable") {
+        component["authored_json"]["params"]["settings"].erase("entries");
+        refresh();
+        CHECK(harness.model.snapshot()->components[1].lists[0].rows.empty());
+        REQUIRE(harness.model.insertListRow(key, {{"label", "first"}}));
+    }
+    SECTION("invalid identities and reserved fields never submit") {
+        CHECK(harness.model.editListRow(key, 3, {{"label", "first"}, {"enabled", true}}));
+        CHECK_FALSE(harness.model.removeListRow(key, 0));
+        CHECK_FALSE(harness.model.removeListRow(key, 1));
+        CHECK_FALSE(harness.model.moveListRow(key, 3, 3));
+        CHECK_FALSE(harness.model.moveListRow(key, 3, 99));
+        CHECK_FALSE(harness.model.editListRow(key, 3, {{"$row", {{"id", 8}}}, {"label", "first"}}));
+        CHECK_FALSE(harness.model.editListRow(key, 3, {{"unknown", true}}));
+        CHECK(harness.model.takeRpcRequests().empty());
+        const auto field = harness.field("transform", "pos").field_key;
+        REQUIRE(harness.model.beginWidgetEdit(field));
+        CHECK_FALSE(harness.model.canEditList(key));
+    }
+    SECTION("pending and read-only components cannot mutate lists") {
+        component["pending"] = true;
+        refresh();
+        CHECK_FALSE(harness.model.canEditList(key));
+        component["pending"] = false;
+        component["editable"] = false;
+        refresh();
+        CHECK_FALSE(harness.model.insertListRow(key, {{"label", "first"}}));
+    }
+    SECTION("selection refresh invalidates stale list actions") {
+        harness.model.selectObject(OutlinerObjectKey{.scene_id = "main", .declaration_index = 0});
+        CHECK_FALSE(harness.model.canEditList(key));
+    }
+}
