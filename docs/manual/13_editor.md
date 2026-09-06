@@ -236,7 +236,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 | `get_ray_callable_records` | taskごとのCallable schema、shader一覧、元宣言と実効初期値、rootの`source_digest`を返す |
 | `edit_ray_callable_records` | `base_source_digest`と`task_records` objectで初期値の上書き指定全体を置換。既存の編集ticketを返す |
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、material/rasterは`input`・`output`・`ray_query`の1項目以上を編集する。省略項目は保持 |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、materialは`input`・`output`・`ray_query`の1項目以上。rasterはさらに`shader`・`draw`・`raster_state`を部分編集できる。省略項目は保持、rasterの`raster_state: null`は既定状態へ戻す |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
@@ -250,7 +250,9 @@ Refresh sourceで再取得してください。直接記述のrendering config�
 fork後はFrame Planでfullscreen passを選び、**Edit preset pass...**で入出力とshader参照を編集できます。
 material/raster passを選ぶと、Pass Editorで入力・color/depth出力と **Use scene ray query** / **Scene acceleration structure** を編集できます。
 `scene`はシーン全体、それ以外は宣言済みTLAS名を指定します。チェックを外すとqueryを無効にします。
-**Save preset pass**で保存・反映します。materialの描画契約やrouting、rasterのshader・draw・raster_stateは保持します。入力の追加・削除、color出力とdepth対象の変更ができます。
+**Save preset pass**で保存・反映します。materialの描画契約やroutingは保持します。入力の追加・削除、color出力とdepth対象の変更ができます。
+rasterではvertex/fragment shader参照、**Draw settings (JSON)**、**Raster state (JSON, optional)**も編集できます。
+drawは例えば`{"vertex_count":6,"instance_count":2}`で頂点数と個体数を指定します。raster state欄を空にすると明示設定を削除し、既定状態へ戻します。編集しない項目は保持します。
 color attachment objectは表示されるJSON欄で設定を保持・編集します。depth対象の変更は元のload/store等を保持します。
 解決できない入力やTLAS名、描画契約やshaderと矛盾する変更はエンジンが拒否します。
 名前・配置・その他の描画設定は保持します。保存は既存の編集ticketを使い、失敗時はpresetとruntimeを戻します。

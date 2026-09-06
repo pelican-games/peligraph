@@ -1,6 +1,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
 #include "../../project/rasterrayquery.hpp"
+#include "../../project/rasterpass.hpp"
 #include "renderconfigtransaction.hpp"
 
 #include "../loader/engineresources.hpp"
@@ -1089,7 +1090,7 @@ OrderedJson RenderConfigEditorService::changeComputeTask(const Json &params, boo
 
 OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     constexpr auto method = "edit_preset_pass";
-    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "ray_query"}, method);
+    requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "draw", "raster_state", "ray_query"}, method);
     (void)parseRasterRayQuery(params);
     const auto base_digest = requireString(params, "base_source_digest", method);
     const auto preset_digest = requireString(params, "base_preset_digest", method);
@@ -1109,13 +1110,27 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         auto preset = OrderedJson::parse(*current.pipeline_preset_bytes);
         auto *pass = findPresetEditablePass(preset, graph, name);
         if (!pass) return rejection("preset_pass_not_editable", "The selected node is not an editable pass in the project preset");
-        if (pass->at("type") != "fullscreen") {
+        if (pass->at("type") == "raster") {
+            bool changed = false;
+            for (const auto *key : {"input", "output", "shader", "draw", "raster_state", "ray_query"}) {
+                if (!params.contains(key)) continue;
+                changed = true;
+                if (std::string_view{key} == "raster_state" && params.at(key).is_null()) pass->erase(key);
+                else (*pass)[key] = params.at(key);
+            }
+            if (!changed) throw std::invalid_argument("Raster pass editing requires at least one editable field");
+            const auto &output = pass->at("output");
+            const auto &color = output.at("color");
+            (void)parseRasterPassContract(Json(*pass), color.is_array() ? color.size() : 1,
+                output.contains("depth") && !output.at("depth").is_null(), "edit_preset_pass");
+        } else if (pass->at("type") == "material") {
             requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "ray_query"}, method);
             if (!params.contains("input") && !params.contains("output") && !params.contains("ray_query"))
                 throw std::invalid_argument("Pass connection editing requires input, output or ray_query");
             for (const auto *key : {"input", "output"})
                 if (params.contains(key)) (*pass)[key] = params.at(key);
         } else {
+            requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "input", "output", "shader", "ray_query"}, method);
             for (const auto *key : {"input", "output", "shader"}) {
                 if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
                 (*pass)[key] = params.at(key);

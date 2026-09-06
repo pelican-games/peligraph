@@ -23236,14 +23236,22 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
-- `1878a3e0` で文書・開発運用を整理した後、利用者の指示で機能開発を再開。material passのray query編集を `73557204`、入出力編集を `d2f336a5` に統合し、続いてrasterの入出力・query編集をStudio/RPCへ接続した。次は [v1の残件](v1_development_plan.md) から対象を選び、旧worktreeや完了済みWPの再開プロンプトを使用しない。
+- `1878a3e0` で文書・開発運用を整理した後、利用者の指示で機能開発を再開。material passのray query編集を `73557204`、入出力編集を `d2f336a5`、raster接続編集を `2ecb5ae8` に統合し、続いてrasterのshader・draw・state編集をStudio/RPCへ接続した。次は [v1の残件](v1_development_plan.md) から対象を選び、旧worktreeや完了済みWPの再開プロンプトを使用しない。
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 raster passの接続編集 (2026-09-06):**
+**RT7 raster shader/draw/state編集 (2026-09-06):**
+- rasterのedit_preset_passにshader/draw/raster_stateの部分編集を追加。省略項目は保持し、raster_state:nullは明示設定を削除する。既存のcandidate・複数文書CAS・publicationを共用する。materialとfullscreenへraster専用fieldを許可しない。
+- Studioではrasterにshader参照とdraw/state JSON欄を表示する。shaderの他キーを保持し、変更したfieldだけを送る。state欄を空にすると既定状態へ戻る。New passやmaterial選択時にdraw欄を隠し、既存の入力・出力・ray query編集も維持する。
+- draw/stateの判定は共通parseRasterPassContractをUIとRPC preflightで使用する。CPU graph loweringだけではdrawの数値制約を検証しないため、頂点数ゼロ等を保存前に拒否する。この共通parserは本番raster経路でも使用される。
+- Player/Studio/CPU/Qt build成功（build/.codex_bg/raster-draw-build.log）。CPU preset編集は2/2・266 assertions成功（raster-draw-cpu.log）。shader・draw・stateの個別保存、state削除、再読込、他設定保持、無効drawの公開前拒否を確認。
+- 最終Studio/Qt build成功（raster-draw-ui-final-build.log）、Pass Editor Qt対象23/23成功（raster-draw-qt-final.log）。shader変更、draw変更、state削除の送信、頂点数ゼロと空shader時の保存不可、未編集設定保持、Refresh復帰を含む。doclink checkは3869件成功。
+- GPU描画中核・資源寿命は変更せず、既存raster描画の証拠を引き継ぐ。今回GPU再実行と個別変異は行っていない。対照は新field代入を外せば保存・再読込が落ち、state削除を外せば既定状態復帰が落ちる。共通draw検証を外せば頂点数ゼロの保存拒否が落ちる。実エンジン接続下の手動操作と、JSON欄を専用操作部品へ磨く作業は残る。
+
+**RT7 raster passの接続編集 (2026-09-06、2ecb5ae8):**
 - project presetのrasterを編集対象に追加し、input/output/ray_queryの部分変更を既存RPC・候補コンパイル・保存へ接続。shader/draw/raster_state等は保持し、このRPCでのshader変更は拒否する。専用の保存経路や互換分岐は追加しない。
 - Studioのmaterial接続編集を共用し、実際のtypeを保持して共通PassShapePolicyへ渡す。Frame Planドラッグ、入力追加、color/depth対象変更、attachment metadata保持、query/TLAS選択、取得失敗後の再読込に対応。保存ボタンをSave preset passへ統一した。
 - output_transformはcanonicalizePassesが終端に生成し、同名も予約するノードである。project presetの編集対象には追加していない。出力変換の編集要否は既存色管理設定との関係を整理して判断する。

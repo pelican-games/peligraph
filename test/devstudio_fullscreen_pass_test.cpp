@@ -2376,7 +2376,8 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     authoring.succeed(authoring.requests.back().id, context);
     refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
     CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text().toStdString() == pass_type);
-    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden() == (pass_type == "material"));
+    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden() == (pass_type == "material"));
     CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     auto &query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
     auto &scene = required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene");
@@ -2407,6 +2408,20 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
         required<QComboBox>(form, "pelican.fullscreenPass.depthTarget").setCurrentText("new_depth");
         expected["output"]["depth"]["target"] = "new_depth";
     }
+    if (pass_type == "raster" && named) {
+        auto &draw = required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw");
+        draw.setPlainText(R"({"vertex_count":0})");
+        CHECK_FALSE(save.isEnabled());
+        draw.setPlainText(R"({"vertex_count":6,"instance_count":2})");
+        expected["draw"] = {{"vertex_count", 6}, {"instance_count", 2}};
+        auto &fragment = required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment");
+        fragment.clear();
+        CHECK_FALSE(save.isEnabled());
+        fragment.setText("project://custom_fragment");
+        expected["shader"]["fragment"] = "project://custom_fragment";
+        required<QPlainTextEdit>(form, "pelican.fullscreenPass.rasterState").clear();
+        expected.erase("raster_state");
+    }
     INFO(required<QLabel>(form, "pelican.fullscreenPass.validationSummary").text().toStdString());
     INFO(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString());
     REQUIRE(save.isEnabled());
@@ -2419,6 +2434,11 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     if (named) {
         expected_params["input"] = expected.at("input");
         expected_params["output"] = expected.at("output");
+    }
+    if (pass_type == "raster" && named) {
+        expected_params["shader"] = expected.at("shader");
+        expected_params["draw"] = expected.at("draw");
+        expected_params["raster_state"] = nullptr;
     }
     CHECK(params == expected_params);
     CHECK(Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString()) == expected);
@@ -2447,6 +2467,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     CHECK_FALSE(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
     CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     CHECK_FALSE(query.isChecked());
+    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden());
 }
 
 } // namespace PelicanStudio

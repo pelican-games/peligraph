@@ -2366,7 +2366,7 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
     }
 }
 
-TEST_CASE("Project raster preset connection edits retain the draw contract",
+TEST_CASE("Project raster preset edits preserve omitted fields and reopen",
           "[render-config-editor][preset-pass-edit][raster-connections]") {
     TemporaryAnimgraphProject project;
     PathResolver resolver;
@@ -2408,11 +2408,16 @@ TEST_CASE("Project raster preset connection edits retain the draw contract",
     Json request{{"base_source_digest", context.at("source_digest").at("hex")},
                  {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
                  {"graph", "main_render"}, {"pass_name", "raster_probe"}};
-    SECTION("partial connection and query edits preserve other fields and survive reopen") {
+    SECTION("partial raster edits preserve other fields and survive reopen") {
         const auto patches = Json::array({
             Json{{"input", Json::array({"gbuffer_albedo"})}},
             Json{{"output", {{"color", Json::array({"raster_replacement"})}, {"depth", nullptr}}}},
-            Json{{"ray_query", true}}});
+            Json{{"ray_query", true}},
+            Json{{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://scene_present"}}}},
+            Json{{"draw", {{"operation", "direct"}, {"vertex_count", 6}, {"instance_count", 3}, {"first_instance", 4}}}},
+            Json{{"raster_state", {{"topology", "triangle_strip"}, {"cull", "front"},
+                                   {"depth_test", false}, {"depth_write", false}}}},
+            Json{{"raster_state", nullptr}}});
         for (const auto &patch : patches) {
             const auto current = service->getRenderAuthoringContext(Json::object());
             request["base_preset_digest"] = current.at("pipeline_preset").at("source_digest").at("hex");
@@ -2427,6 +2432,8 @@ TEST_CASE("Project raster preset connection edits retain the draw contract",
             INFO(result.dump());
             REQUIRE(result.at("committed") == true);
             raster.update(patch);
+            if (raster.contains("raster_state") && raster.at("raster_state").is_null())
+                raster.erase("raster_state");
             CHECK(Json::parse(readBytes(preset_path)) == preset);
             CHECK(readBytes(project.render_config) == root_before);
             const auto nodes = runtime.frame_plan.at("nodes");
@@ -2448,9 +2455,11 @@ TEST_CASE("Project raster preset connection edits retain the draw contract",
             CHECK(Json(saved->at("preset_declaration")) == raster);
         }
     }
-    SECTION("shader replacement is outside raster connection editing") {
-        request["shader"] = raster.at("shader");
-        CHECK(service->editPresetPass(request).at("status") == "rejected");
+    SECTION("invalid raster draw is rejected before publication") {
+        request["draw"] = {{"operation", "direct"}, {"vertex_count", 0}};
+        const auto result = service->editPresetPass(request);
+        INFO(result.dump());
+        CHECK(result.at("status") == "rejected");
         CHECK(readBytes(preset_path) == preset_before);
         CHECK(readBytes(project.render_config) == root_before);
         CHECK(runtime.frame_plan == plan_before);
