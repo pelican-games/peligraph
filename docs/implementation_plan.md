@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はdebug_text/gizmoの明示ray queryとAS非依存描画。固定/画面連動サイズ混在のsnapshot解析修正とdebug_draw組込みGLSLは `9e5c363b`、debug_drawの明示ray queryは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
+- 最新の追加は補助shaderのdescriptor契約検査。debug_text/gizmoの明示ray queryとAS非依存描画は `ea61aa74`、固定/画面連動サイズ混在のsnapshot解析修正とdebug_draw組込みGLSLは `9e5c363b`、debug_drawの明示ray queryは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT6 debug_text/gizmoのAS宣言 (2026-09-06):**
+**補助shaderのdescriptor契約検査 (2026-09-06):**
+- GraphicsPipelineDescに補助描画の固定descriptor契約を保持し、merged reflectionでVulkan生成前に検査する。debug_draw/gizmoはset3 binding0の単一storage buffer、debug_textは追加でbinding1の単一2D combined samplerを要求する。固定描画側が供給しないset3の追加bindingも拒否する。再読込にも同じdescが使われるため初回登録だけの検査にしない。
+- Player/Studio・GPU build成功（build/.codex_bg/aux-contract-build.log）、試験最終build成功（aux-contract-gpu-build.log）。GPU対象5section・429 assertions成功（aux-contract-gpu-final.log）：atlas欠落の初回拒否、互換性のないreload拒否と旧文字query描画継続、3種の組込み補助描画。初回試験で2フレーム目後の古い実行記録参照を検出し、reload確認を独立して終了するようfixtureを修正した。
+- 対照: 契約検査を外すとatlas欠落の拒否が成立せず、登録時だけに置くとreload拒否が成立しない。個別変異は未実行。今回の変更範囲は対象GPUで確認し、直前に成功済みのnamed-tlas全sectionは反復しない。次はshadow/velocityの明示AS宣言。
+
+**RT6 debug_text/gizmoのAS宣言 (2026-09-06、ea61aa74):**
 - 両passのray_query省略/falseをAS非依存にし、宣言時は指定TLASへ依存してdescriptorを選択する。shader/ray_queryの所有規則をdebug_drawと共有し、JSON/typed graph、runtime登録、pipeline descへ接続した。再読込は保持済みdescを使用する。
 - Player/Studio・CPU/GPU build終了コード0（build/.codex_bg/aux-query-build.log）、fixture修正後GPU buildも成功（aux-query-gpu-build.log）。CPU2件・135 assertions成功（aux-query-cpu.log）。AS前の文字・gizmo描画218 assertions成功（aux-query-gpu-first.log）、最終named-tlas全section 3120 assertions成功（aux-query-gpu-final.log）。左右・空の選択、未宣言query拒否と既存描画を含む。
 - 初回query用文字shaderがatlas bindingを省略しており、固定descriptor書込でVulkanエラー・device lossになった。fixtureを既存フォントinterface保持へ修正した後、単独query（aux-query-gpu-query.log）と上記全sectionが成功。失敗ログはaux-query-gpu.log。

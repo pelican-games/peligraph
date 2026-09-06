@@ -284,6 +284,7 @@ PassId DebugText::registerPass(vk::Format color_format, ShaderBundleId vert_shad
     enabled = true;
 
     GraphicsPipelineDesc desc;
+    desc.auxiliary_descriptor_contract = AuxiliaryDescriptorContract::text_atlas;
     desc.allow_ray_query = ray_query;
     desc.vert = vert_shader;
     desc.frag = frag_shader;

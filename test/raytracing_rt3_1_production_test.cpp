@@ -964,6 +964,8 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     bool debug_draw_case = false;
     std::string debug_type = "debug_draw";
     bool debug_undeclared = false;
+    bool debug_bad_atlas = false;
+    bool debug_bad_reload = false;
     std::string debug_query;
     std::optional<std::string> material_query;
     bool material_undeclared = false;
@@ -985,6 +987,8 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     SECTION("debug text queries right TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "right"; }
     SECTION("debug text queries empty TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "empty"; }
     SECTION("debug text rejects undeclared ray query") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_undeclared = true; }
+    SECTION("debug text rejects missing atlas") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_bad_atlas = true; }
+    SECTION("debug text keeps its pipeline after incompatible reload") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_bad_reload = true; }
     SECTION("gizmo draws before first scene AS build") { debug_draw_case = true; debug_type = "gizmo"; }
     SECTION("gizmo queries left TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "left"; }
     SECTION("gizmo queries right TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "right"; }
@@ -1073,7 +1077,7 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
             auto &pass = debug_feature["passes"][0]["pass"];
             if (!debug_undeclared) pass["ray_query"] = {{"acceleration_structure", debug_query}};
             pass["shader"]["fragment"] = "project://shaders/debug_query";
-            const auto text_define = debug_type == "debug_text" ? "#define DEBUG_TEXT_QUERY\n" : "";
+            const auto text_define = debug_type == "debug_text" && !debug_bad_atlas ? "#define DEBUG_TEXT_QUERY\n" : "";
             writeWp374aText(project.path / "shaders/debug_query.frag", std::string{"#version 460\n"} + text_define + R"glsl(
 #extension GL_EXT_ray_query : require
 #ifdef DEBUG_TEXT_QUERY
@@ -1291,6 +1295,10 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         camera.setUp({0.0F, 1.0F, 0.0F});
         camera.setNearFar(60.0F, 0.1F, 100.0F);
     };
+    if (debug_bad_atlas) {
+        CHECK_THROWS_WITH(load(), Catch::Matchers::ContainsSubstring("Auxiliary descriptor contract"));
+        return;
+    }
     if (material_undeclared || debug_undeclared) {
         CHECK_THROWS_WITH(([&] { load(); (void)renderWp374aProductionRows(); })(),
             Catch::Matchers::ContainsSubstring("does not declare ray_query"));
@@ -1352,6 +1360,32 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
             CHECK(image.bytes[offset+2] == (debug_query=="right"?255:0));
         }
         CHECK(covered>0);
+        if (debug_bad_reload) {
+            const auto shader_path = project.path / "shaders/debug_query.frag";
+            auto incompatible = readWp374aText(shader_path);
+            const std::string directive = "#define DEBUG_TEXT_QUERY\n";
+            const auto offset = incompatible.find(directive);
+            REQUIRE(offset != std::string::npos);
+            incompatible.erase(offset, directive.size());
+            writeWp374aText(shader_path, incompatible);
+            auto prepared = GET_MODULE(ShaderLibrary).prepareReloadAll();
+            std::erase_if(prepared.candidates, [](const auto &candidate) {
+                return candidate.replacement.source_path.filename() != "debug_query.frag";
+            });
+            REQUIRE_FALSE(prepared.candidates.empty());
+            const auto result = GET_MODULE(PipelineFactory).rebuildPrepared(std::move(prepared));
+            CHECK_FALSE(result.committed);
+            CHECK(result.failed_pipelines > 0);
+            CHECK_THAT(result.last_error, Catch::Matchers::ContainsSubstring("Auxiliary descriptor contract"));
+            GET_MODULE(DebugText).text(2, 2, "A", {0,1,0,1});
+            (void)renderWp374aProductionRows();
+            const auto retained = GET_MODULE(Renderer).readRenderTargetForTesting("debug_result", ImageSubresourceRange{});
+            bool retained_hit = false;
+            for (std::size_t i = 0; i + 3 < retained.bytes.size(); i += 4)
+                retained_hit |= retained.bytes[i] == 255 && retained.bytes[i+1] == 255 && retained.bytes[i+2] == 0;
+            CHECK(retained_hit);
+            return;
+        }
     }
     if (ui_before_as) {
         CHECK(node_position("pelican_ui") < as_offset);

@@ -79,6 +79,12 @@ struct GraphicsPipelineColorAttachmentState {
         default;
 };
 
+enum class AuxiliaryDescriptorContract {
+    none,
+    vertex_buffer,
+    text_atlas,
+};
+
 struct GraphicsPipelineDesc {
     ShaderBundleId vert;
     std::optional<ShaderBundleId> frag;
@@ -117,6 +123,9 @@ struct GraphicsPipelineDesc {
         resource_interface;
 
     bool allow_ray_query = true;
+    // Revalidated on reload before replacing layouts used by auxiliary renderers.
+    AuxiliaryDescriptorContract auxiliary_descriptor_contract =
+        AuxiliaryDescriptorContract::none;
     bool operator==(
         const GraphicsPipelineDesc &) const = default;
 };

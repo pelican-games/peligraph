@@ -33,6 +33,39 @@ namespace Pelican {
 
 namespace {
 
+void validateAuxiliaryDescriptorContract(
+    AuxiliaryDescriptorContract contract, const ShaderReflection &reflection) {
+    if (contract == AuxiliaryDescriptorContract::none) return;
+    const bool text = contract == AuxiliaryDescriptorContract::text_atlas;
+    const auto prefix = std::string{"Auxiliary descriptor contract "} +
+        (text ? "text_atlas" : "vertex_buffer") + ": ";
+    for (const auto &binding : reflection.bindings) {
+        if (binding.set == PELICAN_SET_FREE &&
+            binding.binding > (text ? 1u : 0u)) {
+            throw std::runtime_error(prefix + "unsupported set 3 binding " +
+                                     std::to_string(binding.binding));
+        }
+    }
+    const auto require_binding = [&](uint32_t index, vk::DescriptorType type,
+                                     ReflectedImageViewDimension dimension) {
+        const auto found = std::find_if(reflection.bindings.begin(), reflection.bindings.end(),
+            [&](const auto &binding) {
+                return binding.set == PELICAN_SET_FREE && binding.binding == index;
+            });
+        if (found == reflection.bindings.end() || found->type != type ||
+            found->count != 1 || found->image_view_dimension != dimension) {
+            throw std::runtime_error(prefix + "set 3 binding " + std::to_string(index) +
+                " requires one " + vk::to_string(type) +
+                (dimension == ReflectedImageViewDimension::two_d ? " with a 2D image view" : ""));
+        }
+    };
+    require_binding(0, vk::DescriptorType::eStorageBuffer, ReflectedImageViewDimension::none);
+    if (text) {
+        require_binding(1, vk::DescriptorType::eCombinedImageSampler,
+                        ReflectedImageViewDimension::two_d);
+    }
+}
+
 size_t hashCombine(size_t seed, size_t value) {
     return seed ^ (value + 0x9e3779b9u + (seed << 6) + (seed >> 2));
 }
@@ -946,6 +979,7 @@ PipelineFactory::PipelineRecord PipelineFactory::buildGraphicsPipeline(const Gra
     }
     auto merged_reflection = merge(stage_reflections);
     validateGraphicsReflection(desc, merged_reflection);
+    validateAuxiliaryDescriptorContract(desc.auxiliary_descriptor_contract, merged_reflection);
     validateShaderResourceInterfaceReflection(
         desc.resource_interface, merged_reflection);
     const auto ray_query_frame_set =

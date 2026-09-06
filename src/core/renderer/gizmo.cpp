@@ -737,6 +737,7 @@ PassId Gizmo::registerPass(vk::Format color_format,
     }
 
     GraphicsPipelineDesc desc;
+    desc.auxiliary_descriptor_contract = AuxiliaryDescriptorContract::vertex_buffer;
     desc.allow_ray_query = ray_query;
     desc.vert = vert_shader;
     desc.frag = frag_shader;
