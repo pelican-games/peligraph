@@ -82,6 +82,8 @@ P2: collider バインダ + GameContext API + debug 可視化(済) →
 S2D-P/WP107: shapeCast/MTD/filter + Provider ABI V2(済) →
 P3: rpc raycast + メッシュ(BVH)+ glb extras 規約。
 
+2026-09-06: RPC `raycast`を既存PhysWorldへ接続。paramsは`origin`・`direction`（各3数値）と`max_distance`（有限・非負）。方向は正規化する。結果は`hit: null`またはname/distance/position/normal/collider_id/shape_ordinal/trigger/one_wayを持つhit。現在のtransformを問い合わせ、raycast既定のlayer/mask・trigger/one-way包含規則を使用する。P3のメッシュ/BVH/glb extras規約の完了を意味しない。
+
 ## 5. 未決事項
 
 1. 動的 BVH 更新の頻度(v2 は毎フレーム再収集で開始し、計測で判断)

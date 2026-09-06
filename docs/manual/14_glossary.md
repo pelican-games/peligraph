@@ -191,7 +191,7 @@
 
 ## 14.6 テスト・運用・ツールの語
 
-**JSON-RPC(stdio)** — 外部プロセスからエンジンを操作するためのプロトコル。1 行 1 メッセージの JSON を stdin / stdout でやり取りし(改行区切り JSON)、`--rpc` 中は **stdout がプロトコル専用**になります(ログは stderr へ)。エラーコードは JSON-RPC 2.0 の規約(`-32700` parse error など)に従います。初出: [第10章 §10.3](10_tools.md#103-json-rpcstdio-外部制御プロトコル実装済み)。([RpcServer](../../src/core/communication/rpcserver.hpp#L53))
+**JSON-RPC(stdio)** — 外部プロセスからエンジンを操作するためのプロトコル。1 行 1 メッセージの JSON を stdin / stdout でやり取りし(改行区切り JSON)、`--rpc` 中は **stdout がプロトコル専用**になります(ログは stderr へ)。エラーコードは JSON-RPC 2.0 の規約(`-32700` parse error など)に従います。初出: [第10章 §10.3](10_tools.md#103-json-rpcstdio-外部制御プロトコル実装済み)。([RpcServer](../../src/core/communication/rpcserver.hpp#L55))
 
 **ホットリロード(hot reload)** — 実行を止めずに、保存されたファイルを反映すること。対象はシェーダ・`.surface`・テクスチャ・マテリアル値・モデルコンテナ・ゲームロジック DLL で、**シーンは対象外**です。1 つの変更に影響する全バリアントを準備してからフレーム境界で一括公開し、どれか 1 つでも失敗すれば全体を破棄して旧世代を維持します(fail-soft)。初出: [第10章 §10.5](10_tools.md#105-ホットリロードwp9096110147162178)。
 

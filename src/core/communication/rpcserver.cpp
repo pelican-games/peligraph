@@ -64,6 +64,7 @@
 #include <istream>
 #include <iterator>
 #include <limits>
+#include <cmath>
 #include <optional>
 #include <ostream>
 #include <random>
@@ -1176,6 +1177,37 @@ void RpcServer::run() {
 
 namespace internal {
 
+void configurePhysicsRpcHandlers(RpcServer &server, PhysWorld &physics) {
+    server.setHandler("raycast", [&physics](const nlohmann::json &params) {
+        constexpr auto method = "raycast";
+        const auto &object = requireObjectParams(params, method);
+        if (object.size() != 3 || !object.contains("origin") ||
+            !object.contains("direction") || !object.contains("max_distance"))
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                "raycast requires origin, direction and max_distance");
+        const auto origin = requireVec3Field(object, "origin", method);
+        const auto direction = requireVec3Field(object, "direction", method);
+        const auto distance = requireNumberParam(object, "max_distance", method);
+        const double length = std::hypot(double(direction.x), double(direction.y), double(direction.z));
+        if (!std::isfinite(origin.x) || !std::isfinite(origin.y) || !std::isfinite(origin.z) ||
+            !std::isfinite(length) || length == 0 || !std::isfinite(distance) ||
+            distance < 0 || distance > (std::numeric_limits<float>::max)())
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                "raycast requires finite coordinates, a nonzero direction and a nonnegative finite float distance");
+        const phys::Ray ray{{origin.x, origin.y, origin.z},
+            {float(direction.x / length), float(direction.y / length), float(direction.z / length)},
+            float(distance)};
+        const auto hit = physics.raycastClosest(ray, phys::QueryFilter{});
+        if (!hit) return nlohmann::json{{"hit", nullptr}};
+        return nlohmann::json{{"hit", {
+            {"name", hit->identity.name}, {"collider_id", hit->identity.collider_id.value},
+            {"shape_ordinal", hit->identity.shape_ordinal}, {"distance", hit->distance},
+            {"position", {hit->position.x, hit->position.y, hit->position.z}},
+            {"normal", {hit->normal.x, hit->normal.y, hit->normal.z}},
+            {"trigger", hit->metadata.trigger}, {"one_way", hit->metadata.one_way}}}};
+    });
+}
+
 nlohmann::json gameLogicParticipantRpcStatus(
     const watch::ReloadService *reload_service) {
     const auto status = configuredGameLogicStatus();
@@ -1712,6 +1744,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         requireObjectParams(params, "get_frame_plan");
         return modules.renderer.currentFramePlanJson();
     });
+
+    internal::configurePhysicsRpcHandlers(server, modules.physics);
 
     server.setHandler("pick_object", [&modules](const nlohmann::json &params) {
         constexpr auto method = "pick_object";

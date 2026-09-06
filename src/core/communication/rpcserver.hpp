@@ -16,6 +16,8 @@
 
 namespace Pelican {
 
+class PhysWorld;
+
 namespace watch {
 class ReloadService;
 }
@@ -75,6 +77,8 @@ class RpcServer {
 };
 
 namespace internal {
+
+void configurePhysicsRpcHandlers(RpcServer &server, PhysWorld &physics);
 
 struct GameLogicReloadRpcHooks {
     std::function<void()> before_apply;

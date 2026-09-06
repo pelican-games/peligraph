@@ -12,6 +12,8 @@
 #include <catch2/catch_test_macros.hpp>
 #include <nlohmann/json.hpp>
 
+#include "../src/core/communication/rpcserver.hpp"
+#include <sstream>
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -544,5 +546,40 @@ TEST_CASE("PhysWorld guarantees Exit for destroy and collider removal but not sc
     }
     internal::clearPendingEvents();
 }
+
+#if PELICAN_WITH_RPC
+TEST_CASE("physics raycast RPC uses the live collider world", "[physworld][rpc][raycast-rpc]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    const auto entity = createColliderEntity({0, 0, 5});
+    auto collider = ColliderComponent{};
+    collider.radius = 1;
+    world.bindCollider("target", collider, entity);
+    std::istringstream input;
+    std::ostringstream output;
+    RpcServer server{input, output};
+    internal::configurePhysicsRpcHandlers(server, world);
+    using Json = nlohmann::json;
+    auto params = Json{{"origin", {0, 0, 0}}, {"direction", {0, 0, 2}}, {"max_distance", 10}};
+    const auto request = [&] {
+        return Json::parse(server.processLine(Json{{"jsonrpc", "2.0"}, {"id", 1},
+            {"method", "raycast"}, {"params", params}}.dump()));
+    };
+    const auto hit = request().at("result").at("hit");
+    CHECK(hit.at("name") == "target");
+    CHECK(hit.at("distance").get<float>() == Catch::Approx(4));
+    CHECK(hit.at("collider_id").get<std::uint64_t>() != 0);
+    auto &transform = GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(entity);
+    transform.pos = glm::vec3{5, 0, 5};
+    CHECK(request().at("result").at("hit").is_null());
+    params["direction"] = {0, 0, 0};
+    CHECK(request().at("error").at("code") == -32602);
+    params["direction"] = {0, 0, 1};
+    params["max_distance"] = -1;
+    CHECK(request().at("error").at("code") == -32602);
+}
+#endif
 
 } // namespace Pelican

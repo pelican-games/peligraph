@@ -471,7 +471,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 >       等しいペアは両方進めるだけ(Stay は出さない)
 > ```
 >
-> **手がかり**: ペアの型は `GameObjectId = EntityId{index, generation}` で、`operator<=>` が defaulted です([`entity.hpp` 内](../../src/core/userpublic/details/ecs/entity.hpp#L16))。**generation 込みの全順序**なので id 再利用が混線しません。テストは [`physworld_test.cpp`](../../test/physworld_test.cpp#L498) の "PhysWorld guarantees Exit for destroy and collider removal but not scene reset" ほか [`PhysWorld trigger replay emits only symmetric Enter and Exit deltas`](../../test/physworld_test.cpp#L460) / [`PhysWorld trigger changes use canonical EntityId pair order`](../../test/physworld_test.cpp#L469)。
+> **手がかり**: ペアの型は `GameObjectId = EntityId{index, generation}` で、`operator<=>` が defaulted です([`entity.hpp` 内](../../src/core/userpublic/details/ecs/entity.hpp#L16))。**generation 込みの全順序**なので id 再利用が混線しません。テストは [`physworld_test.cpp`](../../test/physworld_test.cpp#L500) の "PhysWorld guarantees Exit for destroy and collider removal but not scene reset" ほか [`PhysWorld trigger replay emits only symmetric Enter and Exit deltas`](../../test/physworld_test.cpp#L462) / [`PhysWorld trigger changes use canonical EntityId pair order`](../../test/physworld_test.cpp#L471)。
 >
 > **不変条件**: canonical 化 → sort → unique → マージの順を崩さない(マージは両列がソート済み・重複なしであることに全面的に依存しています)。`unavailable` で `active_trigger_pairs` を触らない。`clear()` は Exit を出さない。Enter/Exit は必ず両視点 2 発ずつ、lower-self が先。
 
