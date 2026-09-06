@@ -249,6 +249,12 @@ Render Features → **Fork preset...**でコピー元を確認し、`project://p
 project側の設定・feature・RT上書き指定は維持します。元presetかrootが外部変更された場合は、
 Refresh sourceで再取得してください。直接記述のrendering configには対象presetがありません。
 
+Render Features → **Region replacements...**でproject presetのタグ付き領域を選び、
+差し替え先の登録済みprovider名を指定できます。欄を空にして **Apply**すると差し替えを解除し、
+元のノード構成とその編集内容を使います。通常のコンパイラ最適化は維持します。
+engine presetは先に **Fork preset...**でprojectへコピーしてください。
+保存後に別の領域を編集する場合は **Refresh source**で現在の設定を取得します。
+
 Render Featuresの **Scene AS...** にある **Triangle coordinate space** で三角形の座標系を選べます。
 **Geometry space** は個体ごとの変換を使い、**World space** は変換を三角形へ適用して、条件が合う個体を同じBLASへまとめます。
 worldではhit shaderのobject座標系もworldになり、ObjectToWorld/WorldToObjectはidentityになります。procedural AABBは変わりません。

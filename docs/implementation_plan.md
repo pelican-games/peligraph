@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**タグ付き領域の差し替えをStudioへ接続 (2026-09-06):**
+- Render FeaturesのRegion replacements...からproject presetに宣言された領域と現在のproviderを表示し、edit_region_replacementで選択・解除を保存する。空欄は元ノードの使用を意味し、一般的なコンパイラ最適化は維持する。engine presetは既存Fork presetへ案内する。
+- preset forkと領域編集のRPC要求・結果待機・切断時処理をPresetEditDialogで共有。Studioとfullscreen_pass testのDebug build成功、既存Render Features画面試験成功。保存API自体は既存の検証済み実装を使用し変更していない。新画面の実エンジン接続下操作は未確認。
+
 **geometryからRT taskへの移動 (2026-09-06):**
 - Inspector Ray geometryにRelated RT tasks...を追加。選択geometryのgroup_nameと読み込み済みFrame Planのclosest-hit/any-hit/intersection slotのgroup名を照合し、元のtask宣言名で既存Task Editorを開く。複数候補は選択し、Frame Planがなければ取得後に処理する。scene-planとGPU世代の情報を合成しない。
 - Studioとframeplan_graph test build成功。Qt offscreenの既存WP367a試験で、group不一致時はtaskを開かず、一致時はauthored_nameを渡す確認を追加して成功。実エンジンを接続したInspector→Task Editorの一連の画面操作は未確認。

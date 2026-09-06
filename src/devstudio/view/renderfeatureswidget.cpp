@@ -968,11 +968,16 @@ public:
   }
 };
 
-class PresetForkDialog final : public QDialog {
+class PresetEditDialog final : public QDialog {
+public:
+  enum class Mode { Fork, Region };
+private:
+  Mode mode;
   EmbeddedViewport &viewport;
   std::function<void()> on_committed;
   QLabel *notice;
   QLineEdit *destination;
+  QComboBox *regions = nullptr;
   QPushButton *apply;
   QPushButton *refresh;
   QTimer poll;
@@ -982,8 +987,9 @@ class PresetForkDialog final : public QDialog {
   void controls() {
     const bool idle = request_id == 0 && ticket.isEmpty();
     destination->setEnabled(idle);
+    if (regions) regions->setEnabled(idle);
     apply->setEnabled(idle && viewport.rpcReady() && !root_digest.isEmpty() &&
-                      !preset_digest.isEmpty());
+                      !preset_digest.isEmpty() && (!regions || regions->currentIndex() >= 0));
     refresh->setEnabled(viewport.rpcReady() && request_id == 0);
   }
   void request(Request kind, const QString &method,
@@ -1040,6 +1046,36 @@ class PresetForkDialog final : public QDialog {
         if (root_digest.isEmpty() || preset_digest.isEmpty())
           notice->setText(tr("The engine did not provide the source digests "
                              "needed to fork this preset."));
+        if (mode == Mode::Region) {
+          regions->clear();
+          destination->clear();
+          if (!preset["reference"].toString().startsWith(QStringLiteral("project://"))) {
+            preset_digest.clear();
+            notice->setText(tr("Fork the preset into the project before editing region replacements."));
+          } else {
+            for (const auto &graph_value : response->value("graphs").toArray()) {
+              const auto graph = graph_value.toObject();
+              QStringList seen;
+              for (const auto &pass_value : graph["passes"].toArray()) {
+                const auto declaration = pass_value.toObject()["preset_declaration"].toObject();
+                for (const auto &region_value : declaration["regions"].toArray()) {
+                  const auto region = region_value.toString();
+                  if (seen.contains(region)) continue;
+                  seen.push_back(region);
+                  QString provider;
+                  for (const auto &replacement : graph["region_replacements"].toArray()) {
+                    const auto entry = replacement.toObject();
+                    if (entry["region"].toString() == region) provider = entry["provider"].toString();
+                  }
+                  regions->addItem(graph["name"].toString() + QStringLiteral(" / ") + region,
+                    QJsonObject{{"graph", graph["name"]}, {"region", region}, {"provider", provider}});
+                }
+              }
+            }
+            notice->setText(regions->count() ? tr("Choose a tagged region. Leave the provider empty to use its authored nodes. Other compiler optimizations remain enabled.")
+                                            : tr("This preset has no editable tagged regions."));
+          }
+        }
       }
     } else if (request_kind == Request::Fork) {
       if (response->value("status").toString() == "accepted") {
@@ -1059,8 +1095,8 @@ class PresetForkDialog final : public QDialog {
           response->value("committed").toBool()) {
         root_digest.clear();
         preset_digest.clear();
-        notice->setText(
-            tr("Preset copied and selected: %1").arg(committed_reference));
+        notice->setText(mode == Mode::Fork ? tr("Preset copied and selected: %1").arg(committed_reference)
+                                          : tr("Region replacement saved. Refresh to edit another region."));
         on_committed();
       } else
         notice->setText(responseError(*response));
@@ -1069,33 +1105,51 @@ class PresetForkDialog final : public QDialog {
   }
 
 public:
-  PresetForkDialog(EmbeddedViewport &embedded, QWidget *parent,
-                   std::function<void()> committed)
-      : QDialog(parent), viewport(embedded),
+  PresetEditDialog(EmbeddedViewport &embedded, QWidget *parent,
+                   std::function<void()> committed, Mode operation = Mode::Fork)
+      : QDialog(parent), mode(operation), viewport(embedded),
         on_committed(std::move(committed)) {
     setAttribute(Qt::WA_DeleteOnClose);
-    setObjectName(QStringLiteral("pelican.presetFork"));
-    setWindowTitle(tr("Fork preset into project"));
+    setObjectName(mode == Mode::Fork ? QStringLiteral("pelican.presetFork") : QStringLiteral("pelican.regionReplacement"));
+    setWindowTitle(mode == Mode::Fork ? tr("Fork preset into project") : tr("Region replacements"));
     resize(560, 210);
     auto *layout = new QVBoxLayout(this);
     notice = new QLabel(tr("Loading preset..."), this);
     notice->setWordWrap(true);
     layout->addWidget(notice);
-    layout->addWidget(new QLabel(tr("New project preset reference"), this));
+    if (mode == Mode::Region) {
+      regions = new QComboBox(this);
+      regions->setObjectName(QStringLiteral("pelican.regionReplacement.region"));
+      layout->addWidget(regions);
+    }
+    layout->addWidget(new QLabel(mode == Mode::Fork ? tr("New project preset reference") : tr("Replacement provider (empty = authored nodes)"), this));
     destination =
-        new QLineEdit(QStringLiteral("project://pipelines/custom.json"), this);
+        new QLineEdit(mode == Mode::Fork ? QStringLiteral("project://pipelines/custom.json") : QString{}, this);
     destination->setObjectName(
-        QStringLiteral("pelican.presetFork.destination"));
+        mode == Mode::Fork ? QStringLiteral("pelican.presetFork.destination") : QStringLiteral("pelican.regionReplacement.provider"));
     layout->addWidget(destination);
+    if (regions) connect(regions, &QComboBox::currentIndexChanged, this, [this] {
+      destination->setText(regions->currentData().toJsonObject()["provider"].toString());
+      controls();
+    });
     auto *buttons = new QHBoxLayout;
     refresh = new QPushButton(tr("Refresh source"), this);
-    apply = new QPushButton(tr("Fork preset"), this);
-    apply->setObjectName(QStringLiteral("pelican.presetFork.apply"));
+    apply = new QPushButton(mode == Mode::Fork ? tr("Fork preset") : tr("Apply"), this);
+    apply->setObjectName(mode == Mode::Fork ? QStringLiteral("pelican.presetFork.apply") : QStringLiteral("pelican.regionReplacement.apply"));
     buttons->addWidget(refresh);
     buttons->addWidget(apply);
     layout->addLayout(buttons);
     connect(refresh, &QPushButton::clicked, this, [this] { read(); });
     connect(apply, &QPushButton::clicked, this, [this] {
+      if (mode == Mode::Region) {
+        const auto region = regions->currentData().toJsonObject();
+        const auto provider = destination->text().trimmed();
+        request(Request::Fork, QStringLiteral("edit_region_replacement"),
+                {{"base_source_digest", root_digest}, {"base_preset_digest", preset_digest},
+                 {"graph", region["graph"]}, {"region", region["region"]},
+                 {"provider", provider.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(provider)}});
+        return;
+      }
       request(Request::Fork, QStringLiteral("fork_render_pipeline"),
               {{"base_source_digest", root_digest},
                {"base_preset_digest", preset_digest},
@@ -1866,7 +1920,17 @@ struct RenderFeaturesWidget::Impl {
         fork_preset->setObjectName(QStringLiteral("pelican.renderFeatures.forkPreset"));
         actions->addWidget(fork_preset);
         QObject::connect(fork_preset, &QPushButton::clicked, &owner, [this] {
-            auto *dialog = new PresetForkDialog(viewport, &owner, [this] { requestRefresh(); });
+            auto *dialog = new PresetEditDialog(viewport, &owner, [this] { requestRefresh(); });
+            dialog->show();
+        });
+        auto *region_replacements = new QPushButton(owner.tr("Region replacements..."), &owner);
+        region_replacements->setObjectName(QStringLiteral("pelican.renderFeatures.regionReplacements"));
+        actions->addWidget(region_replacements);
+        QObject::connect(region_replacements, &QPushButton::clicked, &owner, [this] {
+            auto *dialog = new PresetEditDialog(viewport, &owner, [this] {
+                requestRefresh();
+                emit owner.renderConfigCommitted();
+            }, PresetEditDialog::Mode::Region);
             dialog->show();
         });
         auto *scene_as = new QPushButton(owner.tr("Scene AS..."), &owner);
