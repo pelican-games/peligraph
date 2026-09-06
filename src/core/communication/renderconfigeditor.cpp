@@ -2,6 +2,7 @@
 #include "renderconfigeditor.hpp"
 #include "../../project/rasterrayquery.hpp"
 #include "../../project/rasterpass.hpp"
+#include "../../project/featurecompose.hpp"
 #include "renderconfigtransaction.hpp"
 
 #include "../loader/engineresources.hpp"
@@ -518,6 +519,7 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
             else if (dependencies_.resolve_document_path) bytes = readFileBytes(dependencies_.resolve_document_path(reference));
             else throw std::runtime_error("Project feature document access is unavailable.");
             const auto feature = Json::parse(bytes);
+            instance["feature_document_digest"] = digestJson(renderConfigSourceDigest(bytes));
             instance["parameter_schema"] = feature.value("parameters", Json(nullptr));
             if (instance.at("parameter_schema").is_null())
                 instance["reason"] = "This feature does not declare editable parameters.";
@@ -569,6 +571,91 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
         features.push_back(std::move(encoded));
     }
     return {{"features", std::move(features)}};
+}
+
+OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::string &base_digest, const Json &operation) {
+    constexpr auto method = "materialize render feature";
+    requireOnly(operation, {"op", "scope", "index", "destination_reference", "base_feature_digest", "base_preset_digest"}, method);
+    const auto scope = operation.value("scope", std::string{"root"});
+    const auto destination = requireString(operation, "destination_reference", method);
+    const auto feature_digest = requireString(operation, "base_feature_digest", method);
+    if ((scope != "root" && scope != "preset") || !operation.contains("index") ||
+        !operation.at("index").is_number_integer() || operation.at("index") < 0)
+        throw std::invalid_argument("materialize requires root/preset scope and a nonnegative feature index");
+    if (!isLowerHexDigest(feature_digest))
+        throw std::invalid_argument("base_feature_digest must be a SHA-256 digest");
+    if (!dependencies_.resolve_authoring_context || !dependencies_.resolve_document_path || !dependencies_.normalize_reference)
+        return rejection("method_unavailable", "Feature materialization requires the project document resolver");
+    if (!destination.starts_with("project://") || destination.find('#') != std::string::npos)
+        return rejection("invalid_feature_destination", "Choose a new project:// feature file");
+    try {
+        const auto documents = currentDocumentSet();
+        const auto current = dependencies_.resolve_authoring_context(documents);
+        auto source = OrderedJson::parse(document_.bytes());
+        std::optional<std::string> preset_digest;
+        if (scope == "preset") {
+            preset_digest = requireString(operation, "base_preset_digest", method);
+            if (!isLowerHexDigest(*preset_digest)) throw std::invalid_argument("base_preset_digest must be a SHA-256 digest");
+            if (!current.pipeline_preset || !current.pipeline_preset_bytes ||
+                !current.pipeline_preset->reference.starts_with("project://"))
+                return rejection("project_preset_required", "Fork the engine preset before materializing its features");
+            if (renderConfigSourceDigest(*current.pipeline_preset_bytes) != *preset_digest)
+                return rejection("external_modification", "The preset changed since it was read");
+            source = OrderedJson::parse(*current.pipeline_preset_bytes);
+        } else if (operation.contains("base_preset_digest")) {
+            throw std::invalid_argument("Root feature materialization does not take base_preset_digest");
+        }
+        auto &config = scope == "preset" ? source.at("config") : source;
+        auto &features = config.at("features");
+        const auto index = operation.at("index").get<std::size_t>();
+        if (index >= features.size()) return rejection("feature_not_found", "Feature instance index is out of range");
+        const auto &entry = features.at(index);
+        const auto reference = entry.is_string() ? entry.get<std::string>() : entry.at("ref").get<std::string>();
+        const auto path = dependencies_.resolve_document_path(destination);
+        if (std::filesystem::exists(path))
+            return rejection("feature_destination_exists", "The destination already exists: " + destination);
+        const auto loader = [&](std::string_view ref) {
+            std::string bytes;
+            if (const auto *candidate = documents.find(dependencies_.normalize_reference(ref))) bytes = candidate->bytes;
+            else if (ref.starts_with("engine://")) bytes = engineResourceOrThrow(ref.substr(9));
+            else bytes = readFileBytes(dependencies_.resolve_document_path(ref));
+            if (ref == reference && renderConfigSourceDigest(bytes) != feature_digest)
+                throw std::runtime_error("The feature document changed since it was read");
+            return bytes;
+        };
+        std::optional<Json> materialized;
+        (void)composeRenderFeatureConfig(Json::parse(document_.bytes()), RenderFeatureComposeDependencies{
+            .load_feature_json = loader,
+            // This authors the currently selected feature. Actual device/module
+            // availability is checked by the existing candidate publication path.
+            .runtime_shader_compiler_enabled = true,
+            .load_pipeline_json = loader,
+            .materialized_feature = [&](std::string_view ref, const Json &feature) {
+                if (ref != reference) return;
+                if (materialized) throw std::runtime_error("Select a uniquely referenced feature instance");
+                materialized = feature;
+            },
+        });
+        if (!materialized) return rejection("feature_not_found", "The selected feature was not composed");
+        features[index] = destination;
+        std::vector<RenderConfigCandidateDocument> additional{{
+            .reference = destination, .normalized_reference = dependencies_.normalize_reference(destination),
+            .path = path, .operation = RenderConfigDocumentOperation::create,
+            .expected = {RenderConfigDocumentExistence::missing, {}}, .bytes = materialized->dump(2)}};
+        if (scope == "preset") {
+            const auto &preset_ref = current.pipeline_preset->reference;
+            additional.push_back({.reference = preset_ref, .normalized_reference = dependencies_.normalize_reference(preset_ref),
+                .path = dependencies_.resolve_document_path(preset_ref), .operation = RenderConfigDocumentOperation::replace,
+                .expected = {RenderConfigDocumentExistence::present, *preset_digest}, .bytes = source.dump(2)});
+        }
+        return queueRootEdit(base_digest, "materialize_render_feature",
+            [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+                if (scope == "root") candidate = candidate.withRootValue("features", features.dump(2));
+                return std::nullopt;
+            }, additional, preset_digest);
+    } catch (const std::exception &error) {
+        return rejection("render_pipeline_preflight_failed", error.what());
+    }
 }
 
 OrderedJson RenderConfigEditorService::editRenderFeatures(
@@ -630,6 +717,9 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
             return rejection("invalid_feature_parameters", error.what());
         }
     }
+
+    if (!operations->empty() && operations->front().value("op", std::string{}) == "materialize")
+        return materializeRenderFeature(base_digest, operations->front());
     return queueRootEdit(base_digest, "edit_render_features",
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             candidate = document_.hasFeaturesArray()

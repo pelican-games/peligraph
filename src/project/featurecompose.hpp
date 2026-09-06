@@ -32,6 +32,10 @@ struct RenderFeatureComposeDependencies {
     // compile/apply path.  Pure project-layer callers may leave it empty.
     std::function<void(std::string_view, const nlohmann::json &)>
         validate_feature;
+    // Authoring-only observer of concrete declarations at the actual binding
+    // position. Runtime compilation leaves this empty.
+    std::function<void(std::string_view, const nlohmann::json &)>
+        materialized_feature;
 };
 
 struct RenderFeatureComposeResult {

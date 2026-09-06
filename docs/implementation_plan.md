@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**feature展開の保存・参照切替 (2026-09-06):**
+- `edit_render_features`に`materialize` operationを追加。root/preset scopeの選択indexを具体化した新規project featureへ置換し、元のinstance parameter指定を除去する。project presetは同じtransactionで保存し、engine presetは既存forkを利用する。`get_render_features`に元feature文書のdigestを公開した。
+- 合成処理にauthoring用observerを設け、実際の順序・resource状態で一度bindした文書を取得する。通常runtimeではobserverを使わない。保存時のdevice/module検査とpublicationは既存candidate経路に任せる。元featureは変更せず、受付時に取得した具体文書を新規保存する。
+- Debug render_pipeline build成功。保存・文書展開の関連2件70 assertions成功。root/preset両scopeで新規保存・参照切替・再読込・既存shadow pass編集、候補失敗時の元文書保持を確認。生成variantの独立化、最適化解除との統合、Studioの分解操作は残る。
+
 **featureパラメーターの文書展開 (2026-09-06):**
 - `materializeRenderFeatureDocument`を追加。既存binderでscalar/target/shader asset参照を具体化し、parameters宣言を除去、生成defineとruntime provider向けbound_parametersを保存可能なfeature文書へ保持する。通常のcomposerで再読込でき、展開済みノードを旧パラメーターで再上書きしない。展開済み文書へのinstance parameter上書きは拒否する。
 - Debug render_pipeline build成功。展開と影設定の関連2件45 assertions成功。directional/point/spotの非既定設定で元の合成結果・defines・runtime parametersを保持し、JSON再読込とノード直接変更を確認した。GPUの実行経路は変更せず、画像比較の追加はしていない。

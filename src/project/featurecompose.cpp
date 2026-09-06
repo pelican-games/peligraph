@@ -2676,6 +2676,16 @@ void appendRequiredCapabilities(
     }
 }
 
+nlohmann::json boundFeatureDocument(nlohmann::json feature,
+    const nlohmann::json &parameters, const std::vector<std::string> &scalar_defines) {
+    std::vector<std::string> defines;
+    appendShaderDefines(defines, feature, "render feature");
+    appendUnique(defines, scalar_defines);
+    if (!defines.empty()) feature["shader_defines"] = std::move(defines);
+    feature["bound_parameters"] = parameters;
+    return feature;
+}
+
 } // namespace
 
 nlohmann::json materializeRenderFeatureDocument(
@@ -2689,12 +2699,7 @@ nlohmann::json materializeRenderFeatureDocument(
     std::vector<std::string> scalar_defines;
     auto feature = bindFeatureParameters(authored_feature, instance_parameters,
         config, name, parameters, scalar_defines);
-    std::vector<std::string> defines;
-    appendShaderDefines(defines, feature, "render feature");
-    appendUnique(defines, scalar_defines);
-    if (!defines.empty()) feature["shader_defines"] = std::move(defines);
-    feature["bound_parameters"] = std::move(parameters);
-    return feature;
+    return boundFeatureDocument(std::move(feature), parameters, scalar_defines);
 }
 
 bool renderFeatureRequiresRuntimeShaderCompiler(
@@ -2829,6 +2834,9 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         const auto feature = bindFeatureParameters(loaded.feature, loaded.instance.parameters,
                                                    composed, loaded.name, resolved_parameters,
                                                    scalar_defines);
+        if (dependencies.materialized_feature)
+            dependencies.materialized_feature(loaded.instance.ref,
+                boundFeatureDocument(feature, resolved_parameters, scalar_defines));
         addRenderTargets(
             composed, feature, target_names,
             loaded.name, loaded.instance.ref,

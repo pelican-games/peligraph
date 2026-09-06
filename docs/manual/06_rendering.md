@@ -486,8 +486,9 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 `bound_parameters` objectとして保持します。これはノードへ再代入するテンプレートではありません。
 展開後はノード宣言やshader define、必要ならprovider用の`bound_parameters`を直接編集します。
 `bound_parameters`と`parameters`宣言の併記、および展開済みfeatureへのinstance parameter上書きは拒否します。
-このC++ APIはパラメーター展開を扱い、feature参照の保存・切替や、生成variantの独立化、
-最適化providerの解除、Studioの分解ボタンはまだ含みません。
+`edit_render_features`の`materialize`操作は、この展開文書の新規保存と選択instanceの参照切替を
+同じtransactionで行います。通常の合成順で確定したresource bindingを使います。
+生成variantの独立化、最適化providerの解除との統合、Studioの分解ボタンはまだ含みません。
 
 StudioのRender featuresでrootに指定したfeatureを選び、**Parameters...**を開くと、公開された
 数値・bool・render target・shader assetパラメーターを編集できます。項目のチェックをONにすると

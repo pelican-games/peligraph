@@ -152,6 +152,7 @@ class RenderConfigEditorService {
 
     GateSnapshot gateSnapshot();
     nlohmann::ordered_json changeComputeTask(const nlohmann::json &params, bool remove);
+    nlohmann::ordered_json materializeRenderFeature(const std::string &base_digest, const nlohmann::json &operation);
     nlohmann::ordered_json queueRootEdit(
         const std::string &base_digest, const std::string &operation,
         const std::function<std::optional<nlohmann::ordered_json>(AuthoredRenderConfigDocument &)> &transform,

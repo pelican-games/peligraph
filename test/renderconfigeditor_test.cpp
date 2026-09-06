@@ -1855,6 +1855,80 @@ TEST_CASE(
 }
 #endif
 
+TEST_CASE("Feature materialization saves the concrete feature and switches its owner atomically",
+          "[render-config-editor][feature-materialize-edit]") {
+    for (const auto scope : {std::string{"root"}, std::string{"preset"}}) {
+        DYNAMIC_SECTION(scope) {
+            TemporaryAnimgraphProject project;
+            PathResolver resolver;
+            resolver.setup(project.root, false);
+            auto root = Json::parse(readBytes(project.render_config));
+            root["features"][0] = {{"ref", "engine://features/shadow_directional.json"}, {"parameters", {{"resolution", 512}}}};
+            const auto preset_path = project.root / "passes" / "editable.json";
+            if (scope == "preset") {
+                auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+                preset["config"]["features"] = root.at("features");
+                writeBytes(preset_path, preset.dump(2));
+                root["features"] = Json::array();
+                root["pipeline"]["preset"] = "project://passes/editable.json";
+            }
+            writeBytes(project.render_config, root.dump(2));
+            const auto owner_path = scope == "root" ? project.render_config : preset_path;
+            const auto owner_before = readBytes(owner_path);
+            const auto destination = project.root / "passes" / "shadow-local.json";
+            ActualCpuRenderRuntime runtime;
+            auto service = makeProjectService(project, resolver, runtime);
+            const auto before = service->getRenderFeatures(Json::object());
+            REQUIRE_FALSE(before.at("feature_instances").empty());
+            const auto &instance = before.at("feature_instances").at(0);
+            Json operation{{"op", "materialize"}, {"scope", scope}, {"index", 0},
+                           {"destination_reference", "project://passes/shadow-local.json"},
+                           {"base_feature_digest", instance.at("feature_document_digest").at("hex")}};
+            if (scope == "preset") operation["base_preset_digest"] = instance.at("source_digest").at("hex");
+            Json request{{"base_source_digest", before.at("source_digest").at("hex")}, {"operations", Json::array({operation})}};
+            SECTION("save and reopen preserve bindings and enable pass editing") {
+                const auto accepted = service->editRenderFeatures(request);
+                INFO(accepted.dump());
+                REQUIRE(accepted.at("status") == "accepted");
+                CHECK_FALSE(std::filesystem::exists(destination));
+                CHECK(readBytes(owner_path) == owner_before);
+                service->commitPending();
+                const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+                INFO(result.dump());
+                REQUIRE(result.at("committed") == true);
+                auto saved = Json::parse(readBytes(destination));
+                CHECK_FALSE(saved.contains("parameters"));
+                CHECK(saved.at("bound_parameters").at("resolution") == 512);
+                const auto owner = Json::parse(readBytes(owner_path));
+                CHECK((scope == "root" ? owner : owner.at("config")).at("features").at(0) == "project://passes/shadow-local.json");
+                service.reset();
+                service = makeProjectService(project, resolver, runtime);
+                const auto context = service->getRenderAuthoringContext(Json::object());
+                const auto edit = service->editPresetPass({
+                    {"base_source_digest", context.at("source_digest").at("hex")},
+                    {"base_feature_digest", renderConfigSourceDigest(readBytes(destination))},
+                    {"graph", "main_render"}, {"pass_name", "shadow_depth"}, {"ray_query", false}});
+                INFO(edit.dump());
+                REQUIRE(edit.at("status") == "accepted");
+                service->commitPending();
+                REQUIRE(service->getResult({{"ticket", edit.at("ticket")}}).at("committed") == true);
+                saved = Json::parse(readBytes(destination));
+                CHECK(saved.at("passes").at(0).at("pass").at("ray_query") == false);
+                CHECK(saved.at("bound_parameters").at("resolution") == 512);
+            }
+            SECTION("failed candidate leaves the owner and destination untouched") {
+                runtime.fail_before_source_commit = true;
+                const auto accepted = service->editRenderFeatures(request);
+                REQUIRE(accepted.at("status") == "accepted");
+                service->commitPending();
+                CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+                CHECK_FALSE(std::filesystem::exists(destination));
+                CHECK(readBytes(owner_path) == owner_before);
+            }
+        }
+    }
+}
+
 TEST_CASE("Pipeline fork saves the original preset and switches the root atomically",
           "[render-config-editor][preset-fork]") {
     TemporaryAnimgraphProject project;
