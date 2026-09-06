@@ -1078,6 +1078,31 @@ TEST_CASE(
 #endif
 }
 
+TEST_CASE("punctual shadow features wire graph resources into lighting",
+          "[render-feature][punctual-shadow]") {
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    const auto combined = composeRenderFeatureConfig(
+        nlohmann::json{
+            {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+            {"features", nlohmann::json::array({"engine://features/shadow_point.json",
+                                               "engine://features/shadow_spot.json"})}},
+        RenderFeatureComposeDependencies{loadEngineFeature, true});
+    CHECK(passByName(combined.config, "point_shadow_depth").at("view_family") == "$shadow/point");
+    CHECK(passByName(combined.config, "spot_shadow_depth").at("view_family") == "$shadow/spot");
+    for (const auto kind : {std::string{"point"}, std::string{"spot"}}) {
+        const auto composed = composeRenderFeatureConfig(
+            nlohmann::json{
+                {"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}},
+                {"features", nlohmann::json::array({"engine://features/shadow_" + kind + ".json"})}},
+            RenderFeatureComposeDependencies{loadEngineFeature, true});
+        const auto &ports = passByName(composed.config, "deferred_lighting").at("resource_ports");
+        CHECK(ports.at(kind + "_shadow_texture").at("view") == "family_array");
+        CHECK(ports.at(kind + "_shadow_matrices").at("element") == "uvec4");
+        CHECK(passByName(composed.config, "forward_opaque").at("material_resources").contains(kind + "_shadow_matrices"));
+    }
+#endif
+}
+
 TEST_CASE(
     "directional shadow contract binds hybrid deferred and forward consumers",
     "[render-feature][shadow][hybrid][wp205]") {

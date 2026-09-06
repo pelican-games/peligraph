@@ -19,9 +19,10 @@ PELICAN_DECLARE_INPUT_5(ssaoSampler);
 PELICAN_DECLARE_INPUT_6(shadowMapSampler);
 #endif
 
-#ifdef PELICAN_FEATURE_CLUSTERED_LIGHTING
+#if defined(PELICAN_FEATURE_CLUSTERED_LIGHTING) || defined(PELICAN_FEATURE_POINT_SHADOW) || defined(PELICAN_FEATURE_SPOT_SHADOW)
 #include "pelican_resource_ports.glsl"
 #endif
+#define PELICAN_PASS_DEFERRED_LIGHTING 1
 #include "pelican_lighting_v1.glsl"
 
 const float PI = 3.14159265359;
@@ -160,6 +161,9 @@ void main() {
         vec3 H = normalize(V + L);
         vec3 radiance =
             light.radiance * light.attenuation;
+#if defined(PELICAN_FEATURE_POINT_SHADOW) || defined(PELICAN_FEATURE_SPOT_SHADOW)
+        radiance *= pelican_local_shadow_visibility(i, worldPos);
+#endif
 #ifdef PELICAN_FEATURE_SHADOW
         radiance *= directionalShadowVisibility(
             i, worldPos, normal, L);
@@ -235,6 +239,9 @@ void main() {
         float distance = length(pelicanLights.pointLights[i].position - worldPos);
         float attenuation = distanceAttenuation(distance, openPbrBase);
         vec3 radiance = pelicanLights.pointLights[i].color * pelicanLights.pointLights[i].intensity * attenuation;
+#ifdef PELICAN_FEATURE_POINT_SHADOW
+        radiance *= pelican_point_shadow_visibility(uint(i), worldPos);
+#endif
         
         // Cook-Torrance BRDF
         float NDF = openPbrBase ? OpenPbrDistributionGGX(normal, H, roughness)
@@ -268,6 +275,9 @@ void main() {
         float distance = length(pelicanLights.spotLights[i].position - worldPos);
         float attenuation = distanceAttenuation(distance, openPbrBase);
         vec3 radiance = pelicanLights.spotLights[i].color * pelicanLights.spotLights[i].intensity * attenuation * spotFactor;
+#ifdef PELICAN_FEATURE_SPOT_SHADOW
+        radiance *= pelican_spot_shadow_visibility(uint(i), worldPos);
+#endif
 
         if (spotFactor > 0.0)
         {

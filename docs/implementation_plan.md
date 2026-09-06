@@ -23242,6 +23242,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**WP242b 標準feature・resource port receiver (2026-09-06、GPU確認前):**
+- shadow_point / shadow_spotを標準algorithmの任意resourceとして追加。深度pass、view_family_matrices_v1 buffer、deferred input/resource_portsとforward material_resourcesを宣言。両featureのpass/資源名を独立させ同時合成できる。
+- forwardの標準lighting portから深度arrayと行列を読み、deferredの通常/clustered照明にも同じGLSL判定を接続。pointは6面から投影範囲内の面を選択、spotは1面。固定descriptorは追加しない。現在は1 tap、bias=.0015、遮蔽=.35で、WP242cのparameter化は後続。
+- surface_resourcesはconsumer selectorを省略したproducer宣言を許可（明示selectorが何にも一致しない場合のエラーは維持）。影view providerの資源特定に使い、実際の照明依存はresource port経路で宣言する。
+- Debug shader_tools/render_pipeline build成功。point/spotのforward実コンパイル・deferred geometry分離は1件11 assertions、両feature同時合成と既存shadow関連は3件26 assertions成功。GPU読取り・実際の影とpoint6面・標準algorithm OFFは未確認で、WP242b完了ではない。専用punctualshadowdata packerは汎用family行列方式で未使用になり、後続で削除する。
+
 **描画family行列のgraph入力 (2026-09-06):**
 - 利用者方針に従い、影専用frame descriptorの未統合差分は復元可能なpatchへ保存して取り下げた。通常時の最適化済み標準機能は許容し、分解時に設定・接続を引き継ぎ、一体化に依存する最適化を解除する方針をv1文書に記録。
 - bufferのhost_sourceにview_family_matrices_v1、選択子にview_familyを追加。解決済みfamilyのprojection * viewを描画layer順に既存host buffer書込みへ渡す。データはuvec4 header（magic=0x50564d31、view数、family tokenの2要素）と、各行列の4列のfloat bit表現。sizeは明示容量で、不足時は既存書込み境界でエラーにする。影以外のcapture等でも同じresource portから利用可能。

@@ -1,0 +1,141 @@
+{
+  "schema": "pelican.render_feature",
+  "version": 1,
+  "name": "shadow_spot",
+  "parameters": {
+    "schema": "pelican.render_feature_parameters",
+    "version": 1,
+    "scalars": [
+      {
+        "name": "resolution",
+        "type": "int",
+        "range": [
+          64,
+          8192
+        ],
+        "default": 1024,
+        "shader_define": false
+      },
+      {
+        "name": "near_distance",
+        "type": "float",
+        "range": [
+          0.001,
+          10000
+        ],
+        "default": 0.1,
+        "shader_define": false
+      },
+      {
+        "name": "far_distance",
+        "type": "float",
+        "range": [
+          0.001,
+          10000
+        ],
+        "default": 100,
+        "shader_define": false
+      },
+      {
+        "name": "matrix_buffer_bytes",
+        "type": "int",
+        "range": [
+          400,
+          16777216
+        ],
+        "default": 65552,
+        "shader_define": false
+      }
+    ]
+  },
+  "render_targets": [
+    {
+      "name": "spot_shadow_map",
+      "extent_scale": 1,
+      "width": "$resolution",
+      "height": "$resolution",
+      "format": "D32_SFLOAT",
+      "format_class": "data",
+      "usage": [
+        "DEPTH_STENCIL_ATTACHMENT",
+        "SAMPLED"
+      ],
+      "layers": 1
+    }
+  ],
+  "buffers": [
+    {
+      "name": "spot_shadow_matrices",
+      "size": "$matrix_buffer_bytes",
+      "lifetime": "persistent",
+      "host_source": "view_family_matrices_v1",
+      "view_family": "$shadow/spot"
+    }
+  ],
+  "passes": [
+    {
+      "insert": "begin",
+      "pass": {
+        "name": "spot_shadow_depth",
+        "type": "shadow_depth",
+        "view_family": "$shadow/spot",
+        "output": {
+          "color": null,
+          "depth": "spot_shadow_map"
+        },
+        "depth_store_op": "store",
+        "shader": {
+          "vertex": "engine://shadow_depth"
+        }
+      }
+    }
+  ],
+  "surface_resources": [
+    {
+      "contract": "spot_shadow",
+      "resource": "spot_shadow_map",
+      "producer": "spot_shadow_depth"
+    }
+  ],
+  "pass_overrides": {
+    "deferred_lighting": {
+      "input": [
+        "spot_shadow_map",
+        "spot_shadow_matrices"
+      ],
+      "resource_ports": {
+        "spot_shadow_texture": {
+          "resource": "spot_shadow_map",
+          "kind": "image",
+          "access": "sampled",
+          "view": "family_array",
+          "sampling": {
+            "filter": "nearest",
+            "address": "clamp_to_edge"
+          }
+        },
+        "spot_shadow_matrices": {
+          "resource": "spot_shadow_matrices",
+          "kind": "buffer",
+          "element": "uvec4",
+          "access": "storage"
+        }
+      }
+    },
+    "forward_opaque": {
+      "material_resources": {
+        "spot_shadow_texture": "spot_shadow_map",
+        "spot_shadow_matrices": "spot_shadow_matrices"
+      }
+    },
+    "forward_transparent": {
+      "material_resources": {
+        "spot_shadow_texture": "spot_shadow_map",
+        "spot_shadow_matrices": "spot_shadow_matrices"
+      }
+    }
+  },
+  "shader_defines": [
+    "PELICAN_FEATURE_SPOT_SHADOW"
+  ]
+}

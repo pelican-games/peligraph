@@ -2212,7 +2212,9 @@ void applySurfaceResourceContracts(
             }
         }
         if (material_consumers.empty() &&
-            fullscreen_consumers.empty()) {
+            fullscreen_consumers.empty() &&
+            (declaration.contains("material_contracts") ||
+             declaration.contains("fullscreen_consumers"))) {
             throw std::runtime_error(
                 context +
                 " did not match any material or fullscreen "

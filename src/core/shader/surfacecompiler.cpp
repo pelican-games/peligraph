@@ -365,6 +365,9 @@ makeSurfaceResourceInterface(
     std::uint32_t first_binding,
     bool clustered_lighting,
     std::span<const std::string> defines) {
+    const auto has_feature = [&](std::string_view name) {
+        return std::find(defines.begin(), defines.end(), name) != defines.end();
+    };
     std::vector<ShaderResourceInterfaceBinding> result;
     result.reserve(
         surface.resource_ports.size() +
@@ -538,6 +541,36 @@ makeSurfaceResourceInterface(
             "light_selection",
             ShaderResourceBufferElement::
                 unsigned_integer);
+    }
+    if (has_feature("PELICAN_PASS_FORWARD")) {
+        for (const auto kind : {std::string{"point"}, std::string{"spot"}}) {
+            if (!has_feature(kind == "point" ? "PELICAN_FEATURE_POINT_SHADOW"
+                                                   : "PELICAN_FEATURE_SPOT_SHADOW")) continue;
+            for (bool image : {false, true}) {
+                const auto name = kind + (image ? "_shadow_texture" : "_shadow_matrices");
+                if (std::any_of(result.begin(), result.end(), [&](const auto &entry) {
+                        return entry.port.name == name;
+                    })) throw std::runtime_error("surface resource port collides with standard shadow: " + name);
+                ShaderResourceInterfaceBinding entry;
+                entry.port.name = name;
+                entry.port.resource = name;
+                entry.port.kind = image ? ShaderResourcePortKind::image : ShaderResourcePortKind::buffer;
+                entry.port.access = image ? ShaderResourcePortAccess::sampled : ShaderResourcePortAccess::storage;
+                entry.port.view = image ? ShaderResourcePortView::family_array : ShaderResourcePortView::shared_2d;
+                entry.port.sampling = {ShaderResourcePortFilter::nearest, ShaderResourcePortAddressMode::clamp_to_edge};
+                if (!image) entry.port.buffer_element = ShaderResourceBufferElement::uvec4;
+                entry.binding = first_binding + static_cast<std::uint32_t>(result.size());
+                entry.descriptor = image ? ShaderResourceDescriptorKind::combined_image_sampler
+                                         : ShaderResourceDescriptorKind::storage_buffer;
+                entry.image_view_dimension = image ? ReflectedImageViewDimension::two_d_array
+                                                   : ReflectedImageViewDimension::none;
+                entry.buffer_element = ShaderResourceBufferElement::uvec4;
+                entry.expected_stages = vk::ShaderStageFlagBits::eFragment;
+                entry.readable = true;
+                entry.writable = false;
+                result.push_back(std::move(entry));
+            }
+        }
     }
     return result;
 }

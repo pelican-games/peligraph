@@ -185,7 +185,15 @@ bool pelican_directional_shadow_projection(
 }
 #endif
 
+#if (defined(PELICAN_PASS_FORWARD) || defined(PELICAN_PASS_DEFERRED_LIGHTING)) && (defined(PELICAN_FEATURE_POINT_SHADOW) || defined(PELICAN_FEATURE_SPOT_SHADOW))
+#include "pelican_punctual_shadow.glsl"
+#endif
+
 float pelican_shadow(uint light_index, vec3 world_position) {
+#if defined(PELICAN_PASS_FORWARD) && (defined(PELICAN_FEATURE_POINT_SHADOW) || defined(PELICAN_FEATURE_SPOT_SHADOW))
+    float local_visibility = pelican_local_shadow_visibility(light_index, world_position);
+    if (local_visibility != 1.0) return local_visibility;
+#endif
 #if defined(PELICAN_FEATURE_SHADOW) && defined(PELICAN_PASS_FORWARD)
     vec3 shadow_ndc;
     vec2 shadow_uv;

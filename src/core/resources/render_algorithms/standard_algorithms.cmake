@@ -4,6 +4,8 @@
 # generic graph/compiler/provider machinery and can supply project shader and
 # source-level ViewFamily implementations.
 set(PELICAN_STANDARD_RENDER_ALGORITHM_RESOURCES
+  features/shadow_point.json
+  features/shadow_spot.json
   render_algorithms/planar_reflection/standard_prefilter.comp
 )
 

@@ -769,6 +769,21 @@ TEST_CASE(
 #endif
 }
 
+TEST_CASE("punctual shadows compile through graph resource ports",
+          "[surface-compiler][punctual-shadow]") {
+    const auto surface = parseSurfaceFormat(readText(fixtureRoot() / "valid" / "wp78.surface"), "wp78.surface");
+    const std::vector<std::string> defines{"PELICAN_FEATURE_POINT_SHADOW", "PELICAN_FEATURE_SPOT_SHADOW"};
+    const auto composed = composeSurfaceShaders(surface, "wp78.surface", SurfacePass::forward, defines);
+    REQUIRE(composed.resource_interface.size() == 4);
+    CHECK(composed.resource_interface[0].port.name == "point_shadow_matrices");
+    CHECK(composed.resource_interface[1].port.view == ShaderResourcePortView::family_array);
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    ShaderCompiler compiler;
+    requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::forward, defines));
+    requireCompiled(compileSurfaceShaders(compiler, surface, "wp78.surface", SurfacePass::deferred_geometry, defines));
+#endif
+}
+
 TEST_CASE("directional shadow extends only the forward pass-input ABI and leaves feature-off stable",
           "[surface-compiler][shadow][wp205]") {
     const auto source =

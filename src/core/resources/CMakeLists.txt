@@ -19,6 +19,7 @@ function(embed_shader file_name)
                 shaders/include/pelican_lighting_v1.glsl
                 shaders/include/pelican_lighting_v2.glsl
                 shaders/include/pelican_shadow_cascade.glsl
+                shaders/include/pelican_punctual_shadow.glsl
                 shaders/include/pelican_skinning.glsl
                 shaders/include/pelican_morph.glsl
                 shaders/include/pelican_vat.glsl
@@ -115,6 +116,7 @@ b_embed(pelican_resources shaders/include/pelican_surface_v1.glsl)
 b_embed(pelican_resources shaders/include/pelican_lighting_v1.glsl)
 b_embed(pelican_resources shaders/include/pelican_lighting_v2.glsl)
 b_embed(pelican_resources shaders/include/pelican_shadow_cascade.glsl)
+b_embed(pelican_resources shaders/include/pelican_punctual_shadow.glsl)
 b_embed(pelican_resources shaders/include/pelican_skinning.glsl)
 b_embed(pelican_resources shaders/include/pelican_morph.glsl)
 b_embed(pelican_resources shaders/include/pelican_vat.glsl)
