@@ -236,7 +236,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 | `get_ray_callable_records` | taskごとのCallable schema、shader一覧、元宣言と実効初期値、rootの`source_digest`を返す |
 | `edit_ray_callable_records` | `base_source_digest`と`task_records` objectで初期値の上書き指定全体を置換。既存の編集ticketを返す |
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、materialは`input`・`output`・`ray_query`の1項目以上を編集する。省略項目は保持 |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、material/rasterは`input`・`output`・`ray_query`の1項目以上を編集する。省略項目は保持 |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
@@ -248,14 +248,15 @@ project側の設定・feature・RT上書き指定は維持します。元preset�
 Refresh sourceで再取得してください。直接記述のrendering configには対象presetがありません。
 
 fork後はFrame Planでfullscreen passを選び、**Edit preset pass...**で入出力とshader参照を編集できます。
-material passを選ぶと、Pass Editorで入力・color/depth出力と **Use scene ray query** / **Scene acceleration structure** を編集できます。
+material/raster passを選ぶと、Pass Editorで入力・color/depth出力と **Use scene ray query** / **Scene acceleration structure** を編集できます。
 `scene`はシーン全体、それ以外は宣言済みTLAS名を指定します。チェックを外すとqueryを無効にします。
-**Save material pass**で保存・反映し、materialの描画契約やroutingは保持します。入力の追加・削除、color出力とdepth対象の変更ができます。
+**Save preset pass**で保存・反映します。materialの描画契約やrouting、rasterのshader・draw・raster_stateは保持します。入力の追加・削除、color出力とdepth対象の変更ができます。
 color attachment objectは表示されるJSON欄で設定を保持・編集します。depth対象の変更は元のload/store等を保持します。
 解決できない入力やTLAS名、描画契約やshaderと矛盾する変更はエンジンが拒否します。
 名前・配置・その他の描画設定は保持します。保存は既存の編集ticketを使い、失敗時はpresetとruntimeを戻します。
 元preset由来の編集可能なpassはauthoring contextに`editable_preset_pass: true`と
 合成前の`preset_declaration`を持ちます。engine共有preset、feature由来pass、生成されたAS/anchor nodeは対象外です。
+終端の`output_transform`もエンジン生成ノードなので、このpreset編集の対象にはなりません。
 **New pass**で新規追加モードへ戻れます。object形式のdepth attachmentはこのフォームでは未対応です。
 
 Render Featuresの **Tasks...** またはFrame Planの **Edit task...** からcompute/RT taskを編集できます。
@@ -277,10 +278,10 @@ Tasksの接続表は`resource_ports`のport名と型・アクセス設定、接�
 Frame Planでは **Shift＋左ドラッグ** で出力元ノードからcompute／RTタスクへ線を引くと、
 そのタスクの編集画面を開きます。出力元が書くresourceだけを候補にして、portグループと接続先を選びます。
 **Apply task**で保存するまでは草稿です。Escapeでドラッグを取り消せます。通常のドラッグは従来どおりノードを移動します。
-project presetのfullscreen/material passへドラッグすると、そのpassの編集画面を開きます。
+project presetのfullscreen/material/raster passへドラッグすると、そのpassの編集画面を開きます。
 入力候補はドラッグ元の出力に絞られます。既存入力は保持され、**Add input**で追加し、保存で確定します。
 適合する出力がない場合は候補なしと表示します。通常の **Edit preset pass** で開き直すと絞り込みを解除します。
-グループ・自身・別graphへの接続は対象外です。共有定義やfullscreen/material以外の描画passは既存の編集制約に従います。
+グループ・自身・別graphへの接続は対象外です。共有定義やfullscreen/material/raster以外の描画passは既存の編集制約に従います。
 接続図には合成後の画像・バッファ候補を表示します。左のportグループを選び、右のresourceをクリックすると接続線とJSON草稿を更新します。
 宣言が見つからない接続先はunresolvedと表示します。既知の画像・バッファ間の変更は図で拒否し、詳細なABI適合性はApply task時にcompilerが検査します。
 接続先を入力し、**Update connections JSON**で草稿へ反映してから**Apply task**で保存します。

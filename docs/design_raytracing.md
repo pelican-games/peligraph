@@ -585,17 +585,18 @@ rootの`pipeline.preset`を同じ保存transactionで切り替える。
 コピーしたpresetは通常のproject資産として残る。任意のnode移動・edge編集はまだ含まない。
 
 project所有presetの既存fullscreen passは`edit_preset_pass`で`input`・`output`・`shader`と任意の`ray_query`を編集する。
-material passは同じRPCで`input`・`output`・`ray_query`を編集する。少なくとも1項目を必須とし、
-省略項目とmaterial routing・描画契約は元宣言を保持する。`ray_query`はboolまたは`acceleration_structure`名のobject。
-materialへの`shader`変更は拒否する。attachmentの明示設定はoutput内で編集し、未変更の設定はStudioが保持する。
+material/raster passは同じRPCで`input`・`output`・`ray_query`を編集する。少なくとも1項目を必須とし、
+省略項目とmaterial routing・描画契約、rasterのshader・draw・raster_stateは元宣言を保持する。`ray_query`はboolまたは`acceleration_structure`名のobject。
+material/rasterへの`shader`変更はこのRPCでは拒否する。attachmentの明示設定はoutput内で編集し、未変更の設定はStudioが保持する。
 対象は合成前presetのgraph/nameで解決し、その他のpass設定は保持する。
 root bytesが変化しない場合もpresetの置換・compiler検査・publicationを実行する。
 rootとpresetのdigestを照合し、保存失敗は既存複数文書transactionで復元する。
-StudioはFrame Planで選択したnodeからPass Editorへ接続する。material選択時はray query・入出力欄を表示し、
+StudioはFrame Planで選択したnodeからPass Editorへ接続する。material/raster選択時はray query・入出力欄を表示し、
 fullscreenのshader欄を隠す。Frame Planの接続ドラッグも同じ入力候補の絞込みへ渡す。
 depthの対象変更は元のattachment objectのtargetだけを置換し、load/store等は保持する。
 入出力の局所検証はpass種別に応じた共通PassShapePolicyを使い、保存時の候補コンパイルで描画契約・TLAS名・material shaderとの適合性を確認する。
 contextの`preset_declaration`をフォームの値に使い、合成後の値を元設定へ逆流させない。
+終端output_transformはfeature合成でエンジンが生成するため、project preset編集の対象へ追加しない。
 
 compute/RT taskは`get_compute_task_authoring`で元宣言と保存先digestを取得し、
 `edit_compute_task`で宣言全体を置換する。名前は維持し、shader/resource_ports/dispatch等は既存compilerで検査する。

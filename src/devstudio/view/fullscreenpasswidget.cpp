@@ -616,14 +616,15 @@ struct FullscreenPassWidget::Impl {
             });
     }
 
-    bool editingMaterialPass() const {
-        return editing_preset_pass && original_preset_pass.value("type", std::string{}) == "material";
+    bool editingConnectionsOnly() const {
+        const auto pass_type = original_preset_pass.value("type", std::string{});
+        return editing_preset_pass && (pass_type == "material" || pass_type == "raster");
     }
 
-    void showMaterialFields(bool material) {
-        type->setText(material ? QStringLiteral("material") : QStringLiteral("fullscreen"));
+    void showPresetFields(bool connections_only) {
+        type->setText(connections_only ? text(original_preset_pass.at("type").get<std::string>()) : QStringLiteral("fullscreen"));
         for (auto *field : std::array<QWidget *, 5>{position, location, vertex_shader, fragment_shader, raster_state})
-            form->setRowVisible(field, !material);
+            form->setRowVisible(field, !connections_only);
         targets->setVisible(true);
         validation->setVisible(true);
     }
@@ -672,30 +673,30 @@ struct FullscreenPassWidget::Impl {
             color_output = std::move(encoded);
         }
 
-        const bool material = editingMaterialPass();
-        Json draft = material ? original_preset_pass : Json::object();
+        const bool connections_only = editingConnectionsOnly();
+        Json draft = connections_only ? original_preset_pass : Json::object();
         draft["name"] = name->text().toStdString();
-        draft["type"] = material ? "material" : "fullscreen";
-        if (material || ray_query->isChecked()) {
+        draft["type"] = connections_only ? original_preset_pass.at("type") : Json("fullscreen");
+        if (connections_only || ray_query->isChecked()) {
             draft["ray_query"] = rayQueryDeclaration();
         }
         const auto selected_inputs = selectedSequence(*inputs);
-        if (!material || draft.contains("input") || !selected_inputs.empty())
+        if (!connections_only || draft.contains("input") || !selected_inputs.empty())
             draft["input"] = selected_inputs;
-        auto output = material ? draft.value("output", Json::object()) : Json::object();
+        auto output = connections_only ? draft.value("output", Json::object()) : Json::object();
         output["color"] = std::move(color_output);
         if (depth->currentIndex() >= 0) {
             auto selected_depth = output.value("depth", Json(nullptr));
             if (selected_depth.is_object()) selected_depth["target"] = depth->currentText().toStdString();
             else selected_depth = depth->currentText().toStdString();
             output["depth"] = std::move(selected_depth);
-        } else if (!material || output.contains("depth")) {
+        } else if (!connections_only || output.contains("depth")) {
             output["depth"] = nullptr;
         }
         draft["output"] = std::move(output);
         // The ownership authority, rather than a Studio-maintained field set,
         // decides whether this type may emit its shader editor value.
-        if (!material && fullscreenOwns("shader")) {
+        if (!connections_only && fullscreenOwns("shader")) {
             draft["shader"] = Json{
                 {"vertex", vertex_shader->text().toStdString()},
                 {"fragment", fragment_shader->text().toStdString()},
@@ -703,7 +704,7 @@ struct FullscreenPassWidget::Impl {
         }
         const auto raster_text =
             raster_state->toPlainText().trimmed();
-        if (!material && fullscreenOwns("raster_state") &&
+        if (!connections_only && fullscreenOwns("raster_state") &&
             !raster_text.isEmpty()) {
             draft["raster_state"] = Json::parse(
                 raster_text.toUtf8().constData());
@@ -830,7 +831,7 @@ struct FullscreenPassWidget::Impl {
 
         const bool required_values_present =
             plan.has_value() && !name->text().trimmed().isEmpty() &&
-            (editingMaterialPass() ||
+            (editingConnectionsOnly() ||
              (!vertex_shader->text().trimmed().isEmpty() &&
               !fragment_shader->text().trimmed().isEmpty()));
         if (!invalid.isEmpty()) {
@@ -851,7 +852,7 @@ struct FullscreenPassWidget::Impl {
                 QStringLiteral("incomplete"));
             validation_summary->setStyleSheet(
                 QStringLiteral("color: #b36b00;"));
-            validation_summary->setText(editingMaterialPass()
+            validation_summary->setText(editingConnectionsOnly()
                 ? owner.tr("Draft is incomplete; load a frame plan and provide a name before copying.")
                 : owner.tr("Draft is incomplete; load a frame plan and provide a name "
                            "and both shader stems before copying."));
@@ -917,7 +918,7 @@ struct FullscreenPassWidget::Impl {
             (void)Pelican::validatePassFieldOwnership(
                 draft, Pelican::PassFieldOwnershipCapabilities{},
                 "pass editor draft");
-            if (!editingMaterialPass() && draft.contains("raster_state")) {
+            if (!editingConnectionsOnly() && draft.contains("raster_state")) {
                 (void)Pelican::parseFullscreenRasterFixedFunctionState(
                     draft, "Fullscreen pass '" +
                                draft.at("name").get<std::string>() + "'");
@@ -942,7 +943,7 @@ struct FullscreenPassWidget::Impl {
             const auto violations = Pelican::evaluatePassShape(
                 shape_policy,
                 Pelican::passShapeObservationFromJson(
-                    editingMaterialPass() ? Pelican::RenderPassType::material : Pelican::RenderPassType::fullscreen,
+                    Pelican::validatePassFieldOwnership(shape_draft, {}, "pass editor draft"),
                     shape_draft, non_image_inputs));
             QStringList violation_names;
             for (const auto &violation : violations) {
@@ -1219,7 +1220,7 @@ struct FullscreenPassWidget::Impl {
                     {"graph", editing_preset_pass->first},
                     {"pass_name", editing_preset_pass->second},
                     {"ray_query", rayQueryDeclaration()}};
-        if (editingMaterialPass()) {
+        if (editingConnectionsOnly()) {
             for (const auto *key : {"input", "output"}) {
                 if (draft.contains(key) && (!original_preset_pass.contains(key) || draft.at(key) != original_preset_pass.at(key)))
                     params[key] = draft.at(key);
@@ -1274,13 +1275,13 @@ struct FullscreenPassWidget::Impl {
       }
       if (!preset_passes.contains(*editing_preset_pass)) {
         authoringError(owner.tr(
-            "This node is not a fullscreen or material pass owned by the project preset."));
+            "This node is not an editable pass owned by the project preset."));
         return;
       }
       const auto &declaration = preset_passes.at(*editing_preset_pass);
-      const bool material = declaration.value("type", std::string{}) == "material";
+      const bool connections_only = declaration.value("type", std::string{}) != "fullscreen";
       const auto output = declaration.value("output", Json::object());
-      if (!material && output.contains("depth") && !output.at("depth").is_null() &&
+      if (!connections_only && output.contains("depth") && !output.at("depth").is_null() &&
           !output.at("depth").is_string()) {
         authoringError(
             owner.tr("This depth attachment requires JSON editing."));
@@ -1289,7 +1290,7 @@ struct FullscreenPassWidget::Impl {
       clearDraft();
       updating = true;
       original_preset_pass = declaration;
-      showMaterialFields(material);
+      showPresetFields(connections_only);
       const auto query = declaration.value("ray_query", Json(false));
       ray_query->setChecked(query.is_object() || (query.is_boolean() && query.get<bool>()));
       ray_query_scene->setText(query.is_object()
@@ -1298,7 +1299,7 @@ struct FullscreenPassWidget::Impl {
       name->setReadOnly(true);
       position->setEnabled(false);
       raster_state->setEnabled(false);
-      if (!material) {
+      if (!connections_only) {
         vertex_shader->setText(text(declaration.at("shader").at("vertex").get<std::string>()));
         fragment_shader->setText(text(declaration.at("shader").at("fragment").get<std::string>()));
       }
@@ -1322,7 +1323,7 @@ struct FullscreenPassWidget::Impl {
       }
       load_edit_requested = false;
       updating = false;
-      save->setText(material ? owner.tr("Save material pass") : owner.tr("Save preset pass"));
+      save->setText(owner.tr("Save preset pass"));
       updateDraft();
     }
 
@@ -1697,7 +1698,7 @@ struct FullscreenPassWidget::Impl {
     void clearDraft() {
         updating = true;
         original_preset_pass = Json::object();
-        showMaterialFields(false);
+        showPresetFields(false);
         name->clear();
         vertex_shader->clear();
         fragment_shader->clear();

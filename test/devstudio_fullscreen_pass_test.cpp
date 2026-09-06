@@ -2337,18 +2337,25 @@ TEST_CASE("Studio edits a preset pass with its source digest and retains hidden 
     }
 }
 
-TEST_CASE("Studio edits material ray query and connections and restores the fullscreen form",
+TEST_CASE("Studio edits material and raster connections and restores the fullscreen form",
           "[devstudio][fullscreen-pass][preset-pass-edit][material-query-edit]") {
     (void)application();
     const bool named = GENERATE(false, true);
+    const std::string pass_type = GENERATE(std::string{"material"}, std::string{"raster"});
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
-    Json original{{"name", "material_pass"}, {"type", "material"},
+    Json original{{"name", "material_pass"}, {"type", pass_type},
         {"material_contract", "forward_scene_color_v1"},
         {"ray_query", named ? Json{{"acceleration_structure", "actors"}} : Json(false)},
         {"output", {{"color", Json::array({"output"})},
                     {"depth", {{"target", "depth"}, {"load_op", "Load"}}}}}};
+    if (pass_type == "raster") {
+        original.erase("material_contract");
+        original["shader"] = {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}};
+        original["draw"] = {{"vertex_count", 3}};
+        original["raster_state"] = {{"cull", "none"}, {"depth_test", true}};
+    }
     if (named) {
         original["input"] = Json::array({"input"});
         original["output"]["color"] = Json::array({{{"target", "output"}, {"load_op", "Load"}, {"store_op", "Store"}}});
@@ -2368,7 +2375,7 @@ TEST_CASE("Studio edits material ray query and connections and restores the full
     else form.editPresetPass("edit_graph", "material_pass");
     authoring.succeed(authoring.requests.back().id, context);
     refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
-    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text() == "material");
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text().toStdString() == pass_type);
     CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
     CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     auto &query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
@@ -2432,7 +2439,7 @@ TEST_CASE("Studio edits material ray query and connections and restores the full
     CHECK_FALSE(save.isEnabled());
     required<QPushButton>(form, "pelican.fullscreenPass.refresh").click();
     refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
-    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text() == "material");
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text().toStdString() == pass_type);
     CHECK(query.isChecked() == named);
     REQUIRE(save.isEnabled());
     required<QPushButton>(form, "pelican.fullscreenPass.new").click();

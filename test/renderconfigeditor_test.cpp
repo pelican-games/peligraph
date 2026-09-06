@@ -2366,6 +2366,107 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
     }
 }
 
+TEST_CASE("Project raster preset connection edits retain the draw contract",
+          "[render-config-editor][preset-pass-edit][raster-connections]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+    for (const auto *name : {"raster_color", "raster_replacement"}) {
+        preset["config"]["render_targets"].push_back({
+            {"name", name}, {"extent_scale", 1.0}, {"format", "R16G16B16A16_SFLOAT"},
+            {"format_class", "data"}, {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}});
+    }
+    auto &passes = preset["config"]["rendering_passes"][0]["passes"];
+    passes.push_back({
+        {"name", "raster_probe"}, {"type", "raster"},
+        {"input", Json::array({"gbuffer_normal"})},
+        {"output", {{"color", Json::array({"raster_color"})}, {"depth", nullptr}}},
+        {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}}},
+        {"draw", {{"operation", "direct"}, {"vertex_count", 3}, {"instance_count", 2}, {"first_instance", 4}}},
+        {"raster_state", {{"cull", "none"}, {"depth_test", false}, {"depth_write", false}}},
+        {"clear_color", Json::array({0.2, 0.3, 0.4, 1.0})}});
+    auto &raster = passes.back();
+    const auto preset_path = project.root / "passes" / "raster.json";
+    writeBytes(preset_path, preset.dump(2));
+    auto root = Json::parse(readBytes(project.render_config));
+    root["pipeline"]["preset"] = "project://passes/raster.json";
+    writeBytes(project.render_config, root.dump(2));
+    const auto root_before = readBytes(project.render_config);
+    const auto preset_before = readBytes(preset_path);
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto context = service->getRenderAuthoringContext(Json::object());
+    const auto &context_passes = context.at("graphs").at(0).at("passes");
+    const auto editable = std::find_if(context_passes.begin(), context_passes.end(), [](const auto &pass) {
+        return pass.at("name") == "raster_probe";
+    });
+    REQUIRE(editable != context_passes.end());
+    REQUIRE(editable->at("editable_preset_pass") == true);
+    REQUIRE(editable->at("preset_declaration") == raster);
+    const auto plan_before = runtime.frame_plan;
+    Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                 {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                 {"graph", "main_render"}, {"pass_name", "raster_probe"}};
+    SECTION("partial connection and query edits preserve other fields and survive reopen") {
+        const auto patches = Json::array({
+            Json{{"input", Json::array({"gbuffer_albedo"})}},
+            Json{{"output", {{"color", Json::array({"raster_replacement"})}, {"depth", nullptr}}}},
+            Json{{"ray_query", true}}});
+        for (const auto &patch : patches) {
+            const auto current = service->getRenderAuthoringContext(Json::object());
+            request["base_preset_digest"] = current.at("pipeline_preset").at("source_digest").at("hex");
+            auto partial = request;
+            partial.update(patch);
+            const auto accepted = service->editPresetPass(partial);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            raster.update(patch);
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            CHECK(readBytes(project.render_config) == root_before);
+            const auto nodes = runtime.frame_plan.at("nodes");
+            const auto node = std::find_if(nodes.begin(), nodes.end(), [](const auto &value) {
+                return value.at("name") == "raster_probe";
+            });
+            REQUIRE(node != nodes.end());
+            CHECK(node->at("reads") == raster.at("input"));
+            CHECK(node->at("writes") == raster.at("output").at("color"));
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            CHECK(runtime.frame_plan.at("nodes") == nodes);
+            const auto reopened = service->getRenderAuthoringContext(Json::object());
+            const auto &reopened_passes = reopened.at("graphs").at(0).at("passes");
+            const auto saved = std::find_if(reopened_passes.begin(), reopened_passes.end(), [](const auto &pass) {
+                return pass.at("name") == "raster_probe";
+            });
+            REQUIRE(saved != reopened_passes.end());
+            CHECK(Json(saved->at("preset_declaration")) == raster);
+        }
+    }
+    SECTION("shader replacement is outside raster connection editing") {
+        request["shader"] = raster.at("shader");
+        CHECK(service->editPresetPass(request).at("status") == "rejected");
+        CHECK(readBytes(preset_path) == preset_before);
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
+    SECTION("duplicate raster attachments cannot replace the source") {
+        request["output"] = {{"color", Json::array({"raster_color", "raster_color"})}, {"depth", nullptr}};
+        const auto accepted = service->editPresetPass(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(preset_path) == preset_before);
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
+}
+
 TEST_CASE(
     "WP334b animgraph preset authored pass appears only after save and purges without an orphan",
     "[render-config-editor][wp334b][integration][preset][overlay][purge]") {

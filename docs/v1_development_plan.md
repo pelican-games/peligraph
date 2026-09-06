@@ -6,7 +6,7 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 
 ## 再開時の入口
 
-- 作業ブランチは `codex/render-target-runtime-slice`。RT・Studio基盤を `96d9cb7e`、embed再生成修正を `b0c000a9`、文書・運用整理を `1878a3e0` に統合。再開後、material passのray query設定を `73557204` に統合し、続いて入出力編集とドラッグ接続をStudio/RPCへ接続した。
+- 作業ブランチは `codex/render-target-runtime-slice`。RT・Studio基盤を `96d9cb7e`、embed再生成修正を `b0c000a9`、文書・運用整理を `1878a3e0` に統合。再開後、material passのray query設定を `73557204`、入出力編集を `d2f336a5` に統合し、続いてrasterの入出力・query編集をStudio/RPCへ接続した。
 - 本書の現況と残件を読み、着手する項目だけ台帳の該当WP・最終差分と `design_raytracing.md` §4-P / §11へ進む。台帳全体や完了履歴を毎回読み直さない。
 - 利用者の最新指示が旧運用記録に優先する。2026-09-06に統合担当としてのcommitを許可済み。実装・影響範囲の確認・記録が揃った単位でcommitし、個別の実装workerは統合担当へ渡す。
 - 同時agentは主担当を含め最大2、fastは使わない。`<作業ディレクトリ>/wp336`、`projects/showcase/`、無関係な `.claude/`・`out/` は触らない。モデル・thinking effort・プラグイン設定は利用者の選択を尊重する。
@@ -17,8 +17,8 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 区分 | 内容 |
 |---|---|
 | 実装済み | callableと動的record・公開API、skin/morph/VATとBLAS refit、3D/間接dispatch、名前付きTLASとASノード、複数geometry BLAS、world triangle結合、AS前のcompute/material/raster/sprite描画 |
-| 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、material passの入出力・ray query/TLAS選択、Frame Planドラッグ接続 |
-| 機能の残り | raster/output_transform等の描画pass・feature所有ノードの編集範囲、material routing/contractの専用編集、worldモードのGUI、異transform AABB結合、その他の補助描画のAS依存細分化 |
+| 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、material/raster passの入出力・ray query/TLAS選択、Frame Planドラッグ接続 |
+| 機能の残り | rasterのshader/draw/state・feature所有ノードの編集範囲、material routing/contractの専用編集、worldモードのGUI、異transform AABB結合、その他の補助描画のAS依存細分化。生成output_transformの編集要否は既存色管理設定との関係を整理して判断 |
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 

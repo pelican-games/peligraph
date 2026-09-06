@@ -23236,14 +23236,22 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
-- `1878a3e0` で文書・開発運用を整理した後、利用者の指示で機能開発を再開。material passのray query編集を `73557204` に統合し、続いて入出力編集とドラッグ接続をStudio/RPCへ接続した。次は [v1の残件](v1_development_plan.md) から対象を選び、旧worktreeや完了済みWPの再開プロンプトを使用しない。
+- `1878a3e0` で文書・開発運用を整理した後、利用者の指示で機能開発を再開。material passのray query編集を `73557204`、入出力編集を `d2f336a5` に統合し、続いてrasterの入出力・query編集をStudio/RPCへ接続した。次は [v1の残件](v1_development_plan.md) から対象を選び、旧worktreeや完了済みWPの再開プロンプトを使用しない。
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 material passの入出力編集 (2026-09-06):**
+**RT7 raster passの接続編集 (2026-09-06):**
+- project presetのrasterを編集対象に追加し、input/output/ray_queryの部分変更を既存RPC・候補コンパイル・保存へ接続。shader/draw/raster_state等は保持し、このRPCでのshader変更は拒否する。専用の保存経路や互換分岐は追加しない。
+- Studioのmaterial接続編集を共用し、実際のtypeを保持して共通PassShapePolicyへ渡す。Frame Planドラッグ、入力追加、color/depth対象変更、attachment metadata保持、query/TLAS選択、取得失敗後の再読込に対応。保存ボタンをSave preset passへ統一した。
+- output_transformはcanonicalizePassesが終端に生成し、同名も予約するノードである。project presetの編集対象には追加していない。出力変換の編集要否は既存色管理設定との関係を整理して判断する。
+- Player/Studio/Qt build成功（build/.codex_bg/raster-connections-build.log）、CPU最終build成功（raster-connections-cpu-build.log）。preset編集CPUは2/2・222 assertions成功（raster-connections-cpu-final.log）。rasterの入力・出力・query個別保存、runtime接続、全preset/root保持、再読込、禁止shaderと重複attachment拒否を確認。
+- Pass Editor Qt対象23/23成功（raster-connections-qt-final.log）。既存material caseをrasterにも適用し、隠したshader/draw/stateの保持とdepth設定を含めて確認。対照はrasterの対象判定撤去でcontext/保存が落ち、草稿をfullscreenとして作り直すとtype・draw/state保持とdepth形状が落ちる。個別変異は実行していない。
+- GPU描画中核・資源寿命は変更していないため既存raster/TLASの証拠を引き継ぎ、GPU再実行なし。手動の実エンジン接続操作、rasterのshader/draw/state専用編集は残る。
+
+**RT7 material passの入出力編集 (2026-09-06、d2f336a5):**
 - edit_preset_passのmaterial編集はinput/output/ray_queryの1項目以上を受理し、省略項目を保持する。shader変更は引き続き拒否。既存のcandidate・compiler・複数文書CASとpublicationを使い、保存経路を増設しない。
 - Studioの共通入出力欄とshape検証をmaterialにも適用し、Frame Planからの入力ドラッグを接続。color attachment JSONを保持・編集でき、depthはtarget変更時に元のload/store等を保持する。materialにはfullscreen用shader必須判定を適用しない。ray queryだけの変更では未指定inputを新設せず、未変更の入出力をRPCへ送らない。
 - Player/Studio build成功（build/.codex_bg/material-connections-build.log、UI最終修正はmaterial-connections-ui-build.log）。CPU preset編集は1/1・171 assertions成功（material-connections-cpu-final.log、最終buildはmaterial-connections-cpu-build.log）。入力追加・削除、出力変更、保存・再読込、他設定保持、未定義入力と重複color拒否、保存後の失敗時のpreset/root/runtime復元を確認。
