@@ -479,6 +479,16 @@ feature は**パラメータ化**できます。`features` 配列は文字列の
 - `shader_define: true` のスカラーは **`PELICAN_FEATURE_<FEATURE名>_<PARAM名>=<値>`** の値付き define に lower され、graphics/fullscreen/computeの全shader recipeへ渡ります(float は 9 桁 round-trip 表記。値を変えるとシェーダキャッシュキーも変わる = 正しく再コンパイル)。
 - 解決結果は frame plan の `feature_instances` に出ます(`--dump-frame-plan` / Plan Viewer で確認可能)。
 
+`materializeRenderFeatureDocument`はfeatureのパラメーターを具体値に展開した文書を返します。
+入力configには、そのfeatureの合成位置で参照できるresource宣言を渡します。
+戻り値は通常の`pelican.render_feature`として保存・再読込でき、`parameters`宣言を除去し、
+生成された値付きdefineを`shader_defines`へ保存します。runtime providerが参照する確定済み設定は
+`bound_parameters` objectとして保持します。これはノードへ再代入するテンプレートではありません。
+展開後はノード宣言やshader define、必要ならprovider用の`bound_parameters`を直接編集します。
+`bound_parameters`と`parameters`宣言の併記、および展開済みfeatureへのinstance parameter上書きは拒否します。
+このC++ APIはパラメーター展開を扱い、feature参照の保存・切替や、生成variantの独立化、
+最適化providerの解除、Studioの分解ボタンはまだ含みません。
+
 StudioのRender featuresでrootに指定したfeatureを選び、**Parameters...**を開くと、公開された
 数値・bool・render target・shader assetパラメーターを編集できます。項目のチェックをONにすると
 project側の上書きを指定し、OFFにするとfeatureの既定値へ戻ります。数値は宣言された型・範囲内で入力します。

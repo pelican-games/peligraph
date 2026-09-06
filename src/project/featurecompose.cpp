@@ -1318,6 +1318,13 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
                                      const std::string &feature_name,
                                      nlohmann::json &resolved_parameters,
                                      std::vector<std::string> &scalar_defines) {
+    if (const auto bound = authored_feature.find("bound_parameters"); bound != authored_feature.end()) {
+        if (!bound->is_object() || authored_feature.contains("parameters") || !instance_parameters.empty())
+            throw std::runtime_error("Materialized render feature '" + feature_name +
+                "' requires a bound_parameters object and does not accept parameter declarations or overrides");
+        resolved_parameters = *bound;
+        return authored_feature;
+    }
     const auto declarations = parseFeatureParameters(authored_feature, feature_name);
     std::unordered_map<std::string, const RenderTargetParameterDeclaration *> by_name;
     for (const auto &declaration : declarations.render_targets) {
@@ -2670,6 +2677,25 @@ void appendRequiredCapabilities(
 }
 
 } // namespace
+
+nlohmann::json materializeRenderFeatureDocument(
+    const nlohmann::json &authored_feature,
+    const nlohmann::json &instance_parameters,
+    const nlohmann::json &config) {
+    const auto name = validateFeatureEnvelope(authored_feature, "materialize");
+    if (!instance_parameters.is_object())
+        throw std::invalid_argument("Render feature instance parameters must be an object");
+    nlohmann::json parameters;
+    std::vector<std::string> scalar_defines;
+    auto feature = bindFeatureParameters(authored_feature, instance_parameters,
+        config, name, parameters, scalar_defines);
+    std::vector<std::string> defines;
+    appendShaderDefines(defines, feature, "render feature");
+    appendUnique(defines, scalar_defines);
+    if (!defines.empty()) feature["shader_defines"] = std::move(defines);
+    feature["bound_parameters"] = std::move(parameters);
+    return feature;
+}
 
 bool renderFeatureRequiresRuntimeShaderCompiler(
     const nlohmann::json &feature,

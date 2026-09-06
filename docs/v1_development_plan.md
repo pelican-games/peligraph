@@ -96,6 +96,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 - 現在のpoint/spot shadowでもこの方針を適用する。clustered lightingの既存graph buffer/resource port経路を参照し、未統合の影専用frame descriptor追加は取り下げた。指定した解決済みview familyの行列をgraph bufferへ公開するhost_sourceを追加。receiver接続と影の実GPU確認はWP242bで完了。
 - 既存forkRenderPipelineはpreset原文のprojectへのコピーと参照切替であり、featureの分解・最適化解除ではない。低層pass/task/resource編集と複数文書保存の経路は再利用できるが、選択featureの設定を確定して独立ノードへ展開する操作は未実装。parameter付きfeatureと生成variantには既存の編集制限も残る。
 - タグ付き領域の既存差し替えは`edit_region_replacement`でproviderを選択・解除できる。解除は元ノードを保持して差し替え要求だけを削除し、保存・再読込後も選択を保持する。これはproject preset向けの編集APIで、標準feature全体の分解やStudioの分解操作は別の残件。
+- パラメーターを具体値へ展開したfeature文書は`materializeRenderFeatureDocument`で生成できる。runtime設定はbound_parametersとして保持する。次は選択instanceの参照切替・保存transactionへ接続し、その後に生成variantや最適化解除、Studio操作を統合する。文書生成APIだけで分解完了とはしない。
 
 1. 入口の残件から具体的な操作を1つ選ぶ。実装済みのRT4/RT5を未着手へ戻さない。
 2. RT6の残る組合せとRT7の編集範囲を進める。GUIは既存runtime・RPC・保存経路へ接続し、別の実行系を作らない。

@@ -55,6 +55,15 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     const nlohmann::json &config,
     const RenderFeatureComposeDependencies &dependencies = {});
 
+// Resolve a feature's parameters into editable declarations. The config must
+// contain the resources visible at this feature's composition position.
+// The returned feature can be serialized and loaded by the normal composer;
+// it retains provider parameters but no longer accepts parameter overrides.
+nlohmann::json materializeRenderFeatureDocument(
+    const nlohmann::json &feature,
+    const nlohmann::json &instance_parameters,
+    const nlohmann::json &config);
+
 inline constexpr std::string_view
     renderFeatureRuntimeCompilerRequiredMessage =
         "render feature には実行時コンパイラが必要です (runtime shader compiler is required)";

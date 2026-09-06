@@ -1105,6 +1105,56 @@ TEST_CASE("punctual shadow features wire graph resources into lighting",
 #endif
 }
 
+TEST_CASE("Materialized shadow features preserve declarations and runtime parameters",
+          "[render-feature][materialize-feature]") {
+    using Json = nlohmann::json;
+    const Json root{{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    const auto base = composeRenderFeatureConfig(root, RenderFeatureComposeDependencies{loadEngineFeature, true});
+    for (const auto &kind : {std::string{"directional"}, std::string{"point"}, std::string{"spot"}}) {
+#if !PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+        if (kind != "directional") continue;
+#endif
+        INFO(kind);
+        const auto reference = "engine://features/shadow_" + kind + ".json";
+        const auto authored = Json::parse(loadEngineFeature(reference));
+        const Json parameters{{"resolution", 512}, {"pcf_radius", 2}, {"bias", 0.01}, {"strength", 0.8}};
+        auto original_root = root;
+        original_root["features"] = Json::array({{{"ref", reference}, {"parameters", parameters}}});
+        const auto original = composeRenderFeatureConfig(original_root, RenderFeatureComposeDependencies{loadEngineFeature, true});
+        auto document = Json::parse(materializeRenderFeatureDocument(authored, parameters, base.config).dump());
+        CHECK_FALSE(document.contains("parameters"));
+        CHECK(document.at("bound_parameters").at("resolution") == 512);
+        CHECK(document.at("render_targets").at(0).at("width") == 512);
+        auto materialized_root = root;
+        materialized_root["features"] = Json::array({"project://features/editable_shadow.json"});
+        const auto compose = [&] {
+            return composeRenderFeatureConfig(materialized_root, RenderFeatureComposeDependencies{
+                [&](std::string_view ref) {
+                    return ref == "project://features/editable_shadow.json" ? document.dump() : loadEngineFeature(ref);
+                }, true});
+        };
+        const auto materialized = compose();
+        CHECK(materialized.config == original.config);
+        CHECK(materialized.shader_defines == original.shader_defines);
+        REQUIRE_FALSE(original.feature_instances.empty());
+        REQUIRE_FALSE(materialized.feature_instances.empty());
+        CHECK(materialized.feature_instances.back().at("parameters") == original.feature_instances.back().at("parameters"));
+        // Direct node edits survive re-composition instead of being rebound to
+        // the old resolution parameter recorded for the runtime provider.
+        document["render_targets"][0]["width"] = 256;
+        document["render_targets"][0]["height"] = 256;
+        const auto edited = compose();
+        const auto name = document.at("render_targets").at(0).at("name");
+        const auto &targets = edited.config.at("render_targets");
+        const auto target = std::find_if(targets.begin(), targets.end(), [&](const auto &value) { return value.at("name") == name; });
+        REQUIRE(target != targets.end());
+        CHECK(target->at("width") == 256);
+        materialized_root["features"] = Json::array({{{"ref", "project://features/editable_shadow.json"}, {"parameters", parameters}}});
+        CHECK_THROWS(compose());
+        CHECK_THROWS(materializeRenderFeatureDocument(document, parameters, base.config));
+    }
+}
+
 TEST_CASE("shadow filter policy comes from feature parameters",
           "[render-feature][shadow-filter]") {
     for (const auto kind : {std::string{"directional"}, std::string{"point"}, std::string{"spot"}}) {

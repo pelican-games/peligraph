@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**featureパラメーターの文書展開 (2026-09-06):**
+- `materializeRenderFeatureDocument`を追加。既存binderでscalar/target/shader asset参照を具体化し、parameters宣言を除去、生成defineとruntime provider向けbound_parametersを保存可能なfeature文書へ保持する。通常のcomposerで再読込でき、展開済みノードを旧パラメーターで再上書きしない。展開済み文書へのinstance parameter上書きは拒否する。
+- Debug render_pipeline build成功。展開と影設定の関連2件45 assertions成功。directional/point/spotの非既定設定で元の合成結果・defines・runtime parametersを保持し、JSON再読込とノード直接変更を確認した。GPUの実行経路は変更せず、画像比較の追加はしていない。
+- これは文書生成用C++ APIで、選択featureの参照切替・transaction保存への接続は次段階。生成variantの独立化・最適化解除との統合・Studio操作も残る。標準feature全体の分解完了とはしない。
+
 **タグ付き領域の差し替え編集 (2026-09-06):**
 - `edit_region_replacement`をeditor service/RPCへ追加。project presetのgraph/regionとprovider名を指定し、`provider:null`でその領域の差し替え要求を除去する。元のpass・設定・接続を保持して、既存candidate compile・digest照合・複数文書保存・publicationへ接続した。contextの各graphに現在のregion_replacementsを公開する。
 - Debug render_pipeline build成功。差し替え編集・既存pass編集・preset forkの関連5件631 assertions成功。選択/解除後の再読込、元構成の保持、古いdigest、存在しない領域、未登録providerで保存/publicationしないことを確認。CPU fixtureは既存の差し替えresolverを通してからframe planを作る。
