@@ -23237,7 +23237,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、名前付きAS交互配置):** procedural asset画面はefed7abbへ統合済み。名前付きAS構築とconsumerの交互配置を追加し実GPU確認。次は視覚的な線での接続、共有ASより前の通常node配置、残る制作操作など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、task接続図):** 名前付きAS交互配置は4ed89516へ統合済み。taskの候補付き接続図を追加し、実Qtクリックによる草稿更新を確認。次はFrame Plan全体のnode間接続、共有ASより前の通常node配置、残る制作操作など。学習サンプルは後回し。
+
+**RT7 task接続図 (2026-09-06):**
+- get_compute_task_authoringに合成済み画像・バッファのresources一覧を追加。Tasksはport/alias群と宣言resourceを線で表示し、左group→右resourceのクリックで既存rebindTaskResourcesを呼びJSON草稿を更新。未宣言の接続先はunresolved表示。既知の画像・バッファ間の変更を拒否し、最終ABI検証・保存は既存Apply/CAS/compilerへ委ねる。
+- 既存接続表も維持。Frame Plan全体のnode間ドラッグeditorを完成させたものではない。
+- Player/Studio・対象test build成功（build/.codex_bg/connectiongraph-build.log）。CPU2/2、64 assertions（connectiongraph-cpu.log）、実Qtクリック1/1（connectiongraph-ui.log）成功。CPU試験のpreset rootに非対応buffersを置いた初回入力をfeature宣言へ修正し、再build後成功。新test targetやGPU検査経路は追加なし。
 
 **RT6/RT7 名前付きASとconsumerの交互配置 (2026-09-06):**
 - compilerの全AS→全通常node依存を廃止。全nodeは共有ASを待ち、名前付きASを選択したRT/query taskはそのASだけを追加で待つ。left AS→left consumer→right ASを既存frame_node_order/RPC/Studioで指定できる。自分のAS前へのconsumer移動はcycle拒否。共有ASより前への通常node移動は未対応。

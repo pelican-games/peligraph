@@ -15,6 +15,8 @@ add_library(pelican_studio_view STATIC
     inspectorwidget.hpp
     proceduralassetdialog.cpp
     proceduralassetdialog.hpp
+    taskconnectiongraphics.cpp
+    taskconnectiongraphics.hpp
     renderfeatureswidget.cpp
     renderfeatureswidget.hpp
 )

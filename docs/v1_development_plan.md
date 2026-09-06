@@ -36,7 +36,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。Studioから初期値の永続編集も接続 | 新しい初期値dialogの実操作確認は残る |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、名前付きTLAS構築とconsumerの交互配置・選択、複数triangle geometry BLAS/refitと、単一componentの複数AABB asset/BLAS結合を実装・実GPU確認 | 共有ASより前への通常node配置、異なるtransformのgeometry結合は残る |
-| RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きAS・task接続・Callable初期値、preset fork、fullscreen pass接続/shader編集を実装。compute/RT taskの宣言編集・追加・削除、dispatchフォーム、port接続表、名前付きASとconsumerの交互順序編集をRPC/Studioへ接続 | 接続先候補一覧、線でのport接続、共有ASより前の通常node配置は残る。新dialogの手動操作は未確認 |
+| RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きAS・task接続・Callable初期値、preset fork、fullscreen pass接続/shader編集を実装。compute/RT taskの宣言編集・追加・削除、dispatchフォーム、port接続表・候補付き接続図、名前付きASとconsumerの交互順序編集をRPC/Studioへ接続 | Frame Plan全体のnode間ドラッグ接続、共有ASより前の通常node配置は残る。接続図のクリック確認済み、新dialog全体の手動操作は未確認 |
 | ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。Inspectorの宣言JSON入力、登録behaviorとparams付き追加、model・texture・procedural asset選択を接続。削除・Undo/Redo・保存は既存journalを使用 | 新フォームの実操作、asset定義編集、代表ゲームでの一連の制作経路は残る |
 
 確認した実装入口: [pipelinefactory.cpp](../src/core/shader/pipelinefactory.cpp)、

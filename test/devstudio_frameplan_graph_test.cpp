@@ -22,6 +22,8 @@
 #include "frameplangraphics.hpp"
 #include "frameplanwidget.hpp"
 #include "jsonrpcrequest.hpp"
+#include "taskconnectiongraphics.hpp"
+#include "taskresourceconnections.hpp"
 
 #include "../src/core/loader/engineresources.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -6237,5 +6239,53 @@ TEST_CASE(
     REQUIRE(finite_rect(logical.sceneRect()));
 }
 
+
+TEST_CASE("Task connection graph reconnects a selected port group and rejects resource kind mismatch",
+          "[studio][task-connection-graph]") {
+    application();
+    TaskConnectionGraphics view;
+    view.resize(900, 300);
+    const std::vector<TaskConnectionGraphics::Resource> resources{
+        {"image_a", "image"}, {"image_b", "image"}, {"args", "buffer"}};
+    Json draft{{"resource_ports", {{"input", "image_a"}, {"alias", "image_a"}}},
+               {"reads", {"image_a"}}};
+    int edits = 0;
+    QString diagnostic;
+    view.resourceRebound = [&](QString from, QString to) {
+        draft = rebindTaskResources(draft, {{from.toStdString(), to.toStdString()}});
+        ++edits;
+        view.setConnections({{to, {"input", "alias"}}}, resources);
+    };
+    view.diagnostic = [&](QString message) { diagnostic = message; };
+    view.setConnections({{"image_a", {"input", "alias"}}, {"missing", {"unresolved_port"}}}, resources);
+    view.show();
+    QApplication::processEvents();
+    const auto click = [&](const QString &name, int side) {
+        QGraphicsItem *target = nullptr;
+        for (auto *item : view.scene()->items()) {
+            if (item->data(TaskConnectionNameRole).toString() == name &&
+                item->data(TaskConnectionSideRole).isValid() &&
+                item->data(TaskConnectionSideRole).toInt() == side) target = item;
+        }
+        REQUIRE(target != nullptr);
+        view.ensureVisible(target);
+        QApplication::processEvents();
+        QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier,
+                          view.mapFromScene(target->sceneBoundingRect().center()));
+    };
+    click("image_b", 2);
+    CHECK(edits == 0);
+    click("image_a", 1);
+    click("args", 2);
+    CHECK(edits == 0);
+    CHECK_FALSE(diagnostic.isEmpty());
+    click("missing", 0);
+    CHECK(edits == 0);
+    click("image_b", 2);
+    REQUIRE(edits == 1);
+    CHECK(draft.at("resource_ports").at("input") == "image_b");
+    CHECK(draft.at("resource_ports").at("alias") == "image_b");
+    CHECK(draft.at("reads") == Json::array({"image_b"}));
+}
 
 } // namespace PelicanStudio

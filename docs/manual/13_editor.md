@@ -269,6 +269,8 @@ indirect bufferとbyte offsetを設定できます。computeは省略時の1×1�
 **Update dispatch JSON**で草稿へ反映し、**Apply task**で保存します。その他のtask設定は保持します。
 
 Tasksの接続表は`resource_ports`のport名と型・アクセス設定、接続先resourceを表示します。
+接続図には合成後の画像・バッファ候補を表示します。左のportグループを選び、右のresourceをクリックすると接続線とJSON草稿を更新します。
+宣言が見つからない接続先はunresolvedと表示します。既知の画像・バッファ間の変更は図で拒否し、詳細なABI適合性はApply task時にcompilerが検査します。
 接続先を入力し、**Update connections JSON**で草稿へ反映してから**Apply task**で保存します。
 同じresourceを使うportは1行にまとめ、関連するreads/writes、read_footprints、間接dispatchのbuffer参照も更新します。
 port名と型・アクセス等は保持するため、groups_from/rays_fromのport指定は変わりません。

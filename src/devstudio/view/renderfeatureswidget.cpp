@@ -2,6 +2,7 @@
 #include "proceduralassetdialog.hpp"
 #include "jsonrpcrequest.hpp"
 #include "taskresourceconnections.hpp"
+#include "taskconnectiongraphics.hpp"
 
 #include "../viewport/embeddedviewport.hpp"
 
@@ -289,6 +290,8 @@ class ComputeTaskDialog final : public QDialog {
   QLineEdit *dispatch_offset;
   QPushButton *update_dispatch;
   QWidget *dispatch_form;
+  TaskConnectionGraphics *connection_graph;
+  std::vector<TaskConnectionGraphics::Resource> resource_catalog;
   QTableWidget *connections;
   QPushButton *update_connections;
   QString connections_source;
@@ -491,6 +494,7 @@ class ComputeTaskDialog final : public QDialog {
     const auto task = Json::parse(connections_source.toStdString(), nullptr, false);
     const QSignalBlocker blocker(connections);
     connections->setRowCount(0);
+    connection_graph->setConnections({}, resource_catalog);
     if (!task.is_object() || !task.contains("resource_ports")) return;
     try {
       (void)rebindTaskResources(task, {});
@@ -505,7 +509,9 @@ class ComputeTaskDialog final : public QDialog {
         }
         aliases[resource].push_back(label);
       }
+      std::vector<TaskConnectionGraphics::PortGroup> groups;
       for (const auto &[resource, ports] : aliases) {
+        groups.push_back({QString::fromStdString(resource), ports});
         const int row = connections->rowCount();
         connections->insertRow(row);
         auto *names = new QTableWidgetItem(ports.join("\n"));
@@ -515,6 +521,7 @@ class ComputeTaskDialog final : public QDialog {
         connections->setItem(row, 1, new QTableWidgetItem(QString::fromStdString(resource)));
       }
       connections->resizeRowsToContents();
+      connection_graph->setConnections(std::move(groups), resource_catalog);
     } catch (const std::exception &) {
       // The JSON editor remains authoritative for malformed declarations.
       connections->setRowCount(0);
@@ -553,6 +560,7 @@ class ComputeTaskDialog final : public QDialog {
                        !root_digest.isEmpty());
     editor->setReadOnly(!idle || !editable);
     connections->setEnabled(idle && editable);
+    connection_graph->setEnabled(idle && editable);
     update_connections->setEnabled(idle && editable && connections->rowCount() > 0);
     dispatch_form->setEnabled(
         idle && editable &&
@@ -696,6 +704,12 @@ class ComputeTaskDialog final : public QDialog {
             requested_task.isEmpty() ? task_box->currentText() : requested_task;
         root_digest = digest;
         tasks = response->value("tasks").toArray();
+        resource_catalog.clear();
+        for (const auto &entry : response->value("resources").toArray()) {
+          const auto resource = entry.toObject();
+          resource_catalog.push_back({resource.value("name").toString(),
+                                      resource.value("kind").toString()});
+        }
         drafts.clear();
         original_declarations.clear();
         if (discard_new_drafts_on_read) {
@@ -827,6 +841,19 @@ public:
             [this] { dispatchFields(); });
     connect(update_dispatch, &QPushButton::clicked, this,
             [this] { updateDispatch(); });
+    connection_graph = new TaskConnectionGraphics(this);
+    layout->addWidget(connection_graph);
+    connection_graph->diagnostic = [this](const QString &message) { notice->setText(message); };
+    connection_graph->resourceRebound = [this](const QString &from, const QString &to) {
+      try {
+        const auto task = Json::parse(editor->toPlainText().toStdString());
+        const auto rebound = rebindTaskResources(task, {{from.toStdString(), to.toStdString()}});
+        editor->setPlainText(QString::fromStdString(rebound.dump(2)));
+        notice->setText(tr("Connection updated in the JSON draft. Apply task to validate and save."));
+      } catch (const std::exception &error) {
+        notice->setText(QString::fromUtf8(error.what()));
+      }
+    };
     connections = new QTableWidget(0, 2, this);
     connections->setObjectName("pelican.computeTasks.connections");
     connections->setHorizontalHeaderLabels({tr("Ports / ABI (fixed)"), tr("Resource")});

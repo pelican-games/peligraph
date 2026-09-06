@@ -954,7 +954,18 @@ OrderedJson RenderConfigEditorService::getComputeTaskAuthoring(const Json &param
         entry["declaration_json"] = entry.at("declaration").dump(2);
         tasks.push_back(std::move(entry));
     }
-    return {{"source_digest", digestJson(document_.sourceDigest())}, {"tasks", std::move(tasks)}};
+    auto resources = OrderedJson::array();
+    for (const auto &[field, kind] : std::array{
+             std::pair{"render_targets", "image"}, std::pair{"buffers", "buffer"}}) {
+        for (const auto &resource : context.config.value(field, Json::array())) {
+            const auto name = resource.is_string() ? resource.get<std::string>()
+                                                   : resource.at("name").get<std::string>();
+            resources.push_back({{"name", name}, {"kind", kind},
+                                 {"declaration_json", resource.dump(2)}});
+        }
+    }
+    return {{"source_digest", digestJson(document_.sourceDigest())}, {"tasks", std::move(tasks)},
+            {"resources", std::move(resources)}};
 }
 
 OrderedJson RenderConfigEditorService::getFrameNodeOrder(const Json &params) const {

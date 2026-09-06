@@ -1957,6 +1957,7 @@ TEST_CASE("Compute task source edits preserve other declarations and reject conf
                     {"dispatch", {{"groups", {1, 1, 1}}}}, {"schedule", "per_frame"}};
     const auto source_path = project.root / "passes" / "compute.json";
     const Json feature{{"schema", "pelican.render_feature"}, {"version", 1}, {"name", "compute_edit"},
+                       {"buffers", Json::array({"project_scratch", {{"name", "feature_args"}, {"size", 16}}})},
                        {"compute_tasks", Json::array({task})}};
     writeBytes(source_path, feature.dump(2));
     auto root = Json::parse(readBytes(project.render_config));
@@ -1972,6 +1973,21 @@ TEST_CASE("Compute task source edits preserve other declarations and reject conf
     REQUIRE(selected.at("editable") == true);
     REQUIRE(selected.at("declaration") == task);
     REQUIRE(Json::parse(selected.at("declaration_json").get<std::string>()) == task);
+    SECTION("connection catalog contains composed images and both buffer declaration forms") {
+        const auto &resources = catalog.at("resources");
+        for (const auto *name : {"project_scratch", "feature_args"}) {
+            const auto found = std::find_if(resources.begin(), resources.end(), [&](const auto &resource) {
+                return resource.at("name") == name;
+            });
+            REQUIRE(found != resources.end());
+            CHECK(found->at("kind") == "buffer");
+            const auto declaration = Json::parse(found->at("declaration_json").template get<std::string>());
+            CHECK((declaration.is_string() ? declaration.get<std::string>() : declaration.at("name").get<std::string>()) == name);
+        }
+        CHECK(std::any_of(resources.begin(), resources.end(), [](const auto &resource) {
+            return resource.at("kind") == "image";
+        }));
+    }
     Json changed = task;
     changed["dispatch"]["groups"] = {2, 3, 1};
     Json request{{"base_source_digest", catalog.at("source_digest").at("hex")},
