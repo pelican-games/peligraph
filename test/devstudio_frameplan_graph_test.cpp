@@ -6196,6 +6196,21 @@ TEST_CASE(
     CHECK(edited_task.isEmpty());
     widget.openTasksForHitGroup(QStringLiteral("surface"));
     CHECK(edited_task == QStringLiteral("source_trace"));
+    wire["nodes"][0]["runtime_callable_records"] = {
+        {"source", "runtime_cpu_settings"},
+        {"records", Json::array({{{"index", 1}, {"fields", Json::array({
+            {{"name", "increment"}, {"type", "u32"}, {"offset", 0}, {"value", 400}}})}}})}};
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    qsizetype record_fields = 0;
+    for (const auto *tree : widget.findChildren<QTreeWidget *>()) {
+        const auto fields = tree->findItems(QStringLiteral("increment (u32, offset 0)"),
+            Qt::MatchExactly | Qt::MatchRecursive, 1);
+        for (const auto *field : fields) {
+            CHECK(field->text(2) == QStringLiteral("400"));
+            ++record_fields;
+        }
+    }
+    CHECK(record_fields == 1);
 }
 
 

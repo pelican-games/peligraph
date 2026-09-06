@@ -282,7 +282,8 @@ task切替や失敗時には入力を保持し、**Refresh**で破棄・再取�
 他の保存が先行した場合は古い入力のまま上書きせず競合になります。
 共有engine文書は読み取り専用です。Frame PlanのEdit taskはcompilerが公開する`authored_name`で元taskを選び、XR用の実行時名からも同じ宣言を開きます。
 
-Frame PlanのRaw JSONにあるRT taskの`runtime_callable_records`は、取得時点のCPU側実行時設定です。
+Frame Planのtask詳細にある **Callable record settings** は、取得時点のCPU側実行時設定です。
+同じ情報はRaw JSONの`runtime_callable_records`にも含まれます。
 record indexごとにフィールド名・型・offset・値を示し、GameContextからの動的変更も含みます。
 `source: runtime_cpu_settings`は次のdispatchで使う設定を意味し、GPU完了時の値のreadbackではありません。
 保存する初期値は引き続きCallable Records画面で編集します。Frame Planを再取得すると観測値を更新できます。

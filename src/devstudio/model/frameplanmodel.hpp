@@ -96,6 +96,20 @@ struct FramePlanShaderResolution {
     bool operator==(const FramePlanShaderResolution &) const = default;
 };
 
+struct FramePlanRecordField {
+    std::string name;
+    std::string type;
+    std::size_t offset = 0;
+    std::string value;
+    bool operator==(const FramePlanRecordField &) const = default;
+};
+
+struct FramePlanCallableRecord {
+    std::size_t index = 0;
+    std::vector<FramePlanRecordField> fields;
+    bool operator==(const FramePlanCallableRecord &) const = default;
+};
+
 struct FramePlanNode {
     std::string name;
     std::string authored_name;
@@ -115,6 +129,8 @@ struct FramePlanNode {
     std::optional<FramePlanMaterialFilter> material_filter;
     std::string material_variant;
     FramePlanShaderResolution shader_resolution;
+    std::string callable_record_source;
+    std::vector<FramePlanCallableRecord> callable_records;
 
     // The public response may publish these directly. Current runtime output
     // carries the same high-level facts in physical_target_plan.attachments;

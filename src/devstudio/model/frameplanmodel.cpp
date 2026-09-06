@@ -953,6 +953,20 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
         node.shader_resolution = parseShaderResolution(
             requireObjectField(value, "shader_resolution", context),
             context + ".shader_resolution");
+        if (const auto observation = value.find("runtime_callable_records"); observation != value.end()) {
+            const auto record_context = context + ".runtime_callable_records";
+            node.callable_record_source = requireStringField(*observation, "source", record_context);
+            for (const auto &record : requireArrayField(*observation, "records", record_context)) {
+                FramePlanCallableRecord entry;
+                entry.index = requireSizeField(record, "index", record_context);
+                for (const auto &field : requireArrayField(record, "fields", record_context)) {
+                    entry.fields.push_back({requireStringField(field, "name", record_context),
+                        requireStringField(field, "type", record_context),
+                        requireSizeField(field, "offset", record_context), field.at("value").dump()});
+                }
+                node.callable_records.push_back(std::move(entry));
+            }
+        }
         if (const auto filter = value.find("material_filter");
             filter != value.end()) {
             node.material_filter =

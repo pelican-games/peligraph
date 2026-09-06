@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**動的callable recordのtask詳細表示 (2026-09-07):**
+- Frame Planモデルでruntime_callable_recordsを受け取り、task詳細のCallable record settingsにrecord番号・field名・型・offset・値を表示する。取得時点のCPU設定でありGPU完了readbackではない旨を併記。再取得時にモデルと表示を更新し、初期値編集とは分離する。
+- Studio・frameplan_graph targetのDebug build成功。既存WP367a画面試験にrecord fieldの表示確認を追加し成功。実エンジン接続下の一連の画面操作は未確認。
+
 **動的callable recordの実行時設定観測 (2026-09-07):**
 - currentFramePlanJsonにtaskごとのruntime_callable_recordsを追加。compiled初期宣言ではなく登録済みComputeTaskContainerの値を取得し、record index・field名・型・offset・値を返す。sourceはruntime_cpu_settingsでありGPU完了値のreadbackではない。Studioでは既存Raw JSONから取得できる。
 - hit/callableのrecord field変換をrayRecordFieldsJsonへ集約。Player・RT3 production targetのDebug build成功、既存RT4 GPU試験1case/48assertion成功。初期override値250とAPI更新直後400の観測、GPU出力407と既存reload・保存経路を確認。GPU完了値の観測と専用表示は未実装。

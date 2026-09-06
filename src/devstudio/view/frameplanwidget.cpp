@@ -1208,6 +1208,19 @@ struct FramePlanWidget::Impl {
             }
 
             addShaderResolution(tree, item, node);
+            if (!node.callable_record_source.empty()) {
+                auto *records = groupItem(item, owner.tr("Callable record settings"), node.callable_records.size());
+                addFact(records, owner.tr("Source"), text(node.callable_record_source));
+                if (node.callable_record_source == "runtime_cpu_settings")
+                    addFact(records, owner.tr("Observation"), owner.tr("CPU settings at refresh time; not GPU completion readback"));
+                for (const auto &record : node.callable_records) {
+                    auto *fields = groupItem(records, owner.tr("Record %1").arg(record.index), record.fields.size());
+                    for (const auto &field : record.fields) {
+                        addFact(fields, QStringLiteral("%1 (%2, offset %3)").arg(text(field.name), text(field.type)).arg(field.offset),
+                                text(field.value));
+                    }
+                }
+            }
 
             addResourceGroup(item, owner.tr("Inputs"), node.reads);
             addResourceGroup(item, owner.tr("History inputs"),
