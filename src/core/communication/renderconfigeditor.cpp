@@ -493,11 +493,14 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
         document_.uneditableFeatureEntryCount();
     auto instances = OrderedJson::array();
     const auto root = Json::parse(document_.bytes());
-    const auto features = root.value("features", Json::array());
+    const auto append_instances = [&](const Json &features, std::string_view scope,
+                                      const std::string &source_reference, const std::string &source_digest,
+                                      bool source_editable) {
     for (std::size_t index = 0; index < features.size(); ++index) {
         const auto &entry = features.at(index);
         OrderedJson instance{{"index", index}, {"reference", ""}, {"parameters", Json::object()},
-                             {"parameter_schema", nullptr}, {"editable", false}, {"removable", entry.is_string()}};
+                             {"parameter_schema", nullptr}, {"editable", false}, {"removable", scope == "root" && entry.is_string()},
+                             {"scope", scope}, {"source_reference", source_reference}, {"source_digest", digestJson(source_digest)}};
         try {
             const auto reference = entry.is_string() ? entry.get<std::string>() : entry.at("ref").get<std::string>();
             instance["reference"] = reference;
@@ -510,11 +513,23 @@ OrderedJson RenderConfigEditorService::getRenderFeatures(
             instance["parameter_schema"] = feature.value("parameters", Json(nullptr));
             if (instance.at("parameter_schema").is_null())
                 instance["reason"] = "This feature does not declare editable parameters.";
+            else if (!source_editable) instance["reason"] = "Fork the engine preset into the project before editing its feature parameters.";
             else instance["editable"] = true;
         } catch (const std::exception &error) {
             instance["reason"] = error.what();
         }
         instances.push_back(std::move(instance));
+    }
+    };
+    append_instances(root.value("features", Json::array()), "root", dependencies_.source_reference, document_.sourceDigest(), true);
+    if (dependencies_.resolve_authoring_context) {
+        const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+        if (current.pipeline_preset && current.pipeline_preset_bytes) {
+            const auto preset = Json::parse(*current.pipeline_preset_bytes);
+            append_instances(preset.at("config").value("features", Json::array()), "preset",
+                             current.pipeline_preset->reference, renderConfigSourceDigest(*current.pipeline_preset_bytes),
+                             current.pipeline_preset->reference.starts_with("project://"));
+        }
     }
     return {{"source_reference", dependencies_.source_reference},
             {"source_digest", digestJson(document_.sourceDigest())},
@@ -561,6 +576,52 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
             "edit_render_features operations must be an array containing at most one element in v1");
     }
 
+    const auto patch_parameters = [&](Json &features, const Json &operation) -> std::optional<OrderedJson> {
+        if (!operation.contains("index") || !operation.at("index").is_number_integer() || operation.at("index") < 0 ||
+            !operation.contains("parameters") || !operation.at("parameters").is_object())
+            return rejection("invalid_feature_parameters", "set_parameters requires a nonnegative index and parameters object");
+        const auto index = operation.at("index").get<std::size_t>();
+        if (!features.is_array() || index >= features.size())
+            return rejection("invalid_feature_parameters", "Feature instance index is out of range");
+        auto &entry = features.at(index);
+        const auto &parameters = operation.at("parameters");
+        if (entry.is_string()) {
+            if (!parameters.empty()) entry = {{"ref", entry.get<std::string>()}, {"parameters", parameters}};
+        } else if (entry.is_object() && entry.contains("ref") && entry.at("ref").is_string()) {
+            entry["parameters"] = parameters;
+        } else return rejection("invalid_feature_parameters", "The selected feature instance has no editable reference");
+        return std::nullopt;
+    };
+    if (!operations->empty() && operations->front().value("op", std::string{}) == "set_parameters" &&
+        operations->front().value("scope", std::string{"root"}) == "preset") {
+        const auto &operation = operations->front();
+        requireOnly(operation, {"op", "scope", "index", "parameters", "base_preset_digest"}, "edit_render_features operation");
+        const auto digest = requireString(operation, "base_preset_digest", "set_parameters");
+        if (!isLowerHexDigest(digest)) throw std::invalid_argument("base_preset_digest must be a SHA-256 digest");
+        try {
+            if (!dependencies_.resolve_authoring_context || !dependencies_.resolve_document_path || !dependencies_.normalize_reference)
+                return rejection("project_preset_required", "Project preset document access is unavailable");
+            const auto current = dependencies_.resolve_authoring_context(currentDocumentSet());
+            if (!current.pipeline_preset || !current.pipeline_preset_bytes ||
+                !current.pipeline_preset->reference.starts_with("project://"))
+                return rejection("project_preset_required", "Fork the selected preset into the project before editing its feature parameters");
+            if (renderConfigSourceDigest(*current.pipeline_preset_bytes) != digest)
+                return rejection("external_modification", "The preset changed since its feature parameters were read");
+            auto preset = OrderedJson::parse(*current.pipeline_preset_bytes);
+            auto features = Json(preset.at("config").value("features", OrderedJson::array()));
+            if (const auto rejected = patch_parameters(features, operation)) return *rejected;
+            preset["config"]["features"] = features;
+            const auto &reference = current.pipeline_preset->reference;
+            const std::array documents{RenderConfigCandidateDocument{
+                .reference = reference, .normalized_reference = dependencies_.normalize_reference(reference),
+                .path = dependencies_.resolve_document_path(reference), .operation = RenderConfigDocumentOperation::replace,
+                .expected = {RenderConfigDocumentExistence::present, digest}, .bytes = preset.dump(2)}};
+            return queueRootEdit(base_digest, "edit_render_features",
+                [](AuthoredRenderConfigDocument &) -> std::optional<OrderedJson> { return std::nullopt; }, documents, digest);
+        } catch (const std::exception &error) {
+            return rejection("invalid_feature_parameters", error.what());
+        }
+    }
     return queueRootEdit(base_digest, "edit_render_features",
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             candidate = document_.hasFeaturesArray()
@@ -572,23 +633,11 @@ OrderedJson RenderConfigEditorService::editRenderFeatures(
                 const auto op = requireString(operation, "op",
                                               "edit_render_features operation");
                 if (op == "set_parameters") {
-                    requireOnly(operation, {"op", "index", "parameters"}, "edit_render_features operation");
-                    if (!operation.contains("index") || !operation.at("index").is_number_integer() || operation.at("index") < 0 ||
-                        !operation.contains("parameters") || !operation.at("parameters").is_object())
-                        return rejection("invalid_feature_parameters", "set_parameters requires a nonnegative index and parameters object");
+                    requireOnly(operation, {"op", "scope", "index", "parameters"}, "edit_render_features operation");
+                    if (operation.value("scope", std::string{"root"}) != "root")
+                        return rejection("invalid_feature_parameters", "Feature parameter scope must be root or preset");
                     auto features = Json::parse(candidate.bytes()).value("features", Json::array());
-                    const auto index = operation.at("index").get<std::size_t>();
-                    if (index >= features.size())
-                        return rejection("invalid_feature_parameters", "Feature instance index is out of range");
-                    auto &entry = features.at(index);
-                    const auto &parameters = operation.at("parameters");
-                    if (entry.is_string()) {
-                        if (!parameters.empty()) entry = {{"ref", entry.get<std::string>()}, {"parameters", parameters}};
-                    } else if (entry.is_object() && entry.contains("ref") && entry.at("ref").is_string()) {
-                        entry["parameters"] = parameters;
-                    } else {
-                        return rejection("invalid_feature_parameters", "The selected feature instance has no editable reference");
-                    }
+                    if (const auto rejected = patch_parameters(features, operation)) return rejected;
                     candidate = candidate.withRootValue("features", features.dump(2));
                     return std::nullopt;
                 }

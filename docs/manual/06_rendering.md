@@ -484,7 +484,8 @@ StudioのRender featuresでrootに指定したfeatureを選び、**Parameters...
 project側の上書きを指定し、OFFにするとfeatureの既定値へ戻ります。数値は宣言された型・範囲内で入力します。
 ダイアログのOKは変更の準備で、Render featuresの**Apply**で保存・反映します。
 engine内蔵featureでも公開パラメーターは変更でき、featureの元ファイルは書き換えません。
-preset内部だけで選択されたfeatureは、このroot instance編集の対象外です。
+preset内のfeatureも一覧に`(preset)`付きで表示します。projectへforkしたpresetなら同じ画面で編集でき、
+保存先はpresetのfeature instanceです。engine内蔵presetは先にFork presetでprojectへコピーしてください。
 
 単色背景と環境光は preset を変更せず、次の feature 宣言だけで有効になります。
 値を省略したときの非ゼロ既定値は `sky_ambient.json` だけが所有します。feature を外した場合は

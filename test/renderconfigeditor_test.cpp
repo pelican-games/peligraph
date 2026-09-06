@@ -2704,6 +2704,53 @@ TEST_CASE("Feature parameter overrides publish through the shared binder and pre
             CHECK(service->editRenderFeatures(request).at("error").at("code") == "external_modification");
         }
     }
+    SECTION("preset-owned parameter overrides and reset preserve the root") {
+        auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+        preset["config"]["features"] = Json::array({reference});
+        const auto preset_path = project.root / "passes" / "parameter_preset.json";
+        writeBytes(preset_path, preset.dump(2));
+        root["features"].erase(index);
+        root["pipeline"]["preset"] = "project://passes/parameter_preset.json";
+        writeBytes(project.render_config, root.dump(2));
+        const auto preset_root_before = readBytes(project.render_config);
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        for (const auto &parameters : Json::array({Json{{"strength", 0.75}}, Json::object()})) {
+            const auto current = service->getRenderFeatures(Json::object());
+            const auto &instances = current.at("feature_instances");
+            const auto selected = std::find_if(instances.begin(), instances.end(), [&](const auto &value) {
+                return value.at("scope") == "preset" && value.at("reference") == reference;
+            });
+            REQUIRE(selected != instances.end());
+            REQUIRE(selected->at("editable") == true);
+            CHECK(selected->at("removable") == false);
+            request["base_source_digest"] = current.at("source_digest").at("hex");
+            request["operations"][0] = {{"op", "set_parameters"}, {"scope", "preset"},
+                {"index", selected->at("index")}, {"parameters", parameters},
+                {"base_preset_digest", selected->at("source_digest").at("hex")}};
+            const auto accepted = service->editRenderFeatures(request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            preset["config"]["features"][0] = {{"ref", reference}, {"parameters", parameters}};
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            CHECK(readBytes(project.render_config) == preset_root_before);
+            CHECK(readBytes(feature_path) == feature_before);
+            CHECK(service->editRenderFeatures(request).at("error").at("code") == "external_modification");
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+        }
+    }
+    SECTION("engine preset parameter mutation requires a project fork") {
+        const auto authored = service->getRenderAuthoringContext(Json::object());
+        request["operations"][0]["scope"] = "preset";
+        request["operations"][0]["base_preset_digest"] = authored.at("pipeline_preset").at("source_digest").at("hex");
+        CHECK(service->editRenderFeatures(request).at("error").at("code") == "project_preset_required");
+        CHECK(readBytes(project.render_config) == root_before);
+    }
     SECTION("invalid parameter values are rejected by the binder before source replacement") {
         request["operations"][0]["parameters"] = {{"strength", 2.0}};
         const auto accepted = service->editRenderFeatures(request);

@@ -1738,6 +1738,8 @@ struct RenderFeaturesWidget::Impl {
         int index = -1;
         QJsonObject parameters;
         QString base_digest;
+        QString scope;
+        QString preset_digest;
     };
 
     RenderFeaturesWidget &owner;
@@ -2059,6 +2061,8 @@ struct RenderFeaturesWidget::Impl {
         std::vector<Field> fields;
         const auto schema = instance.value("parameter_schema").toObject();
         const auto authored = staged && staged->op == "set_parameters" && staged->base_digest == base_digest &&
+            staged->scope == instance.value("scope").toString("root") &&
+            staged->preset_digest == instance.value("source_digest").toObject().value("hex").toString() &&
             staged->index == instance.value("index").toInt(-1) ? staged->parameters : instance.value("parameters").toObject();
         for (const auto *category : {"scalars", "render_targets", "shader_assets"}) {
             for (const auto &encoded : schema.value(category).toArray()) {
@@ -2122,7 +2126,8 @@ struct RenderFeaturesWidget::Impl {
             return;
         }
         staged = StagedOperation{.op = "set_parameters", .reference = instance.value("reference").toString(),
-            .display_name = display_name, .index = instance.value("index").toInt(-1), .parameters = edited, .base_digest = base_digest};
+            .display_name = display_name, .index = instance.value("index").toInt(-1), .parameters = edited, .base_digest = base_digest,
+            .scope = instance.value("scope").toString("root"), .preset_digest = instance.value("source_digest").toObject().value("hex").toString()};
         showInformation(owner.tr("Pending parameter changes: %1").arg(display_name));
         updateControls();
     }
@@ -2155,6 +2160,8 @@ struct RenderFeaturesWidget::Impl {
             operation.remove("feature");
             operation["index"] = staged->index;
             operation["parameters"] = staged->parameters;
+            operation["scope"] = staged->scope;
+            if (staged->scope == "preset") operation["base_preset_digest"] = staged->preset_digest;
         }
         QJsonObject params{
             {QStringLiteral("base_source_digest"),
@@ -2266,6 +2273,8 @@ struct RenderFeaturesWidget::Impl {
                 item->setData(ReferenceRole, reference);
                 item->setData(InstanceRole, instance);
                 item->setToolTip(instance.value("reason").toString());
+                if (instance.value("scope").toString() == "preset")
+                    item->setText(owner.tr("%1 (preset)").arg(reference));
         }
         have_current = true;
         if (have_catalog) applyCatalogNamesToCurrent();
@@ -2332,7 +2341,9 @@ struct RenderFeaturesWidget::Impl {
                 item->data(ReferenceRole).toString();
             const auto name = names.value(reference);
             item->setText(name.isEmpty() ? reference : name);
-            item->setToolTip(reference);
+            const auto instance = item->data(InstanceRole).toJsonObject();
+            if (instance.value("scope").toString() == "preset") item->setText(owner.tr("%1 (preset)").arg(item->text()));
+            item->setToolTip(reference + "\n" + instance.value("source_reference").toString() + "\n" + instance.value("reason").toString());
         }
         if (pending.isEmpty() && active_ticket.isEmpty()) {
             showInformation(owner.tr(

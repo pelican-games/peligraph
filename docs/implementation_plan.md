@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はroot feature instanceの公開パラメーター編集。詳細は下の「RT7 featureパラメーター編集」を参照。明示feature pass編集は `7af6fd95`、material contract・routing編集は `8df9fb7e` に統合済み。
+- 最新の追加はpreset内feature instanceの公開パラメーター編集。詳細は下の「RT7 preset featureパラメーター編集」を参照。root featureパラメーター編集は `ccf086e0`、明示feature pass編集は `7af6fd95` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 featureパラメーター編集 (2026-09-06):**
+**RT7 preset featureパラメーター編集 (2026-09-06):**
+- feature一覧へpreset.config.featuresを追加し、scope・所有元source/digestを表示する。project presetは同じParameters画面から変更でき、engine presetはforkが必要な理由を表示する。root/presetの同じindexを混同しないよう、編集中のscopeと文書digestを保持する。
+- set_parametersのpreset scopeは既存の追加文書transactionとpreset CASで保存する。root shadow overrideを新設せず、rootとfeatureの元ファイルを保持する。root/presetのmetadata生成とparameter patchは共通化した。
+- Player/Studio・CPU build成功（build/.codex_bg/preset-parameters-build.log）。対象CPU成功（preset-parameters-cpu.log）：presetへの上書き、リセット、再読込、全文保持とroot不変、stale digest・engine preset編集拒否、既存root編集。実GUI操作・GPU描画は未確認。
+- 対照: presetを候補へ渡さなければ保存・再読込が落ち、preset digestを外せば競合拒否が落ちる。個別変異は未実行。予定機能全体は未完了で、補助描画AS依存の細分化と生成variant編集範囲を継続する。
+
+**RT7 featureパラメーター編集 (2026-09-06、ccf086e0):**
 - get_render_featuresにroot features配列のinstance index・reference・authored parameters・parameter_schema・編集可否を追加。既存edit_render_featuresのset_parameters操作で対象entryだけを更新する。string参照は上書き指定時にref/parametersへ変換し、object entryの他フィールドを保持する。feature sourceは変更しない。
 - Render featuresのParametersフォームでfloat/int・bool・render target・shader assetを編集。上書きチェックOFFで既定値へ戻し、OKで準備、Applyで保存する。数値型・範囲をフォームで確認し、参照と最終整合性は既存binder/transactionへ委ねる。編集開始時root digestを保持してindexの再割当てを防ぐ。
 - rootに選択したengine/project featureが対象。preset内部だけのinstanceや生成variantの専用編集は残る。既存のobject feature entry削除制限を維持し、削除可否を別表示する。schema元は保存せず、UI読取後のschema変更は適用時の現行binderで検証する。
