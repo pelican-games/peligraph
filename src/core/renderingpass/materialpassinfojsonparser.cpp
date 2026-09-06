@@ -766,8 +766,7 @@ void parseMaterialPassSurfaceResourcesFromJson(
         rt_resolver, rt_metadata);
     for (const auto &binding :
          pass_def.materialInfo().surface_resources) {
-        if (binding.contract.name !=
-            directionalShadowInputContractName) {
+        if (!isFeatureOwnedMaterialPassInputContract(binding.contract.name)) {
             throw std::runtime_error(
                 "material surface resource '" +
                 binding.contract.name +

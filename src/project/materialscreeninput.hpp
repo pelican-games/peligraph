@@ -39,6 +39,8 @@ std::string_view materialPassInputFallbackName(
 
 enum class MaterialPassInputRelationKind : std::uint8_t {
     directional_light_shadow_v1,
+    point_light_shadow_v1,
+    spot_light_shadow_v1,
 };
 
 std::string_view materialPassInputRelationKindName(
@@ -80,6 +82,12 @@ inline constexpr std::string_view directionalShadowInputContractName =
     "directional_shadow";
 inline constexpr std::string_view directionalShadowSamplerName =
     "pelican_directional_shadow_texture";
+inline constexpr std::string_view pointShadowInputContractName = "point_shadow";
+inline constexpr std::string_view spotShadowInputContractName = "spot_shadow";
+inline constexpr std::string_view pointShadowSamplerName = "pelican_point_shadow_texture";
+inline constexpr std::string_view spotShadowSamplerName = "pelican_spot_shadow_texture";
+
+bool isFeatureOwnedMaterialPassInputContract(std::string_view name) noexcept;
 
 MaterialPassInputContract makeBuiltinMaterialPassInputContract(
     const LogicalTypeRegistry &types, std::string_view name);

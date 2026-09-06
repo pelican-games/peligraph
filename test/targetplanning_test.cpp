@@ -583,6 +583,38 @@ TEST_CASE(
         "unexpected sampler");
 }
 
+TEST_CASE("material pass reflection keeps all shadow kinds distinct",
+          "[target-planning][shader-interface][punctual-shadow]") {
+    const auto types = makeBuiltinLogicalTypeRegistry();
+    std::vector<MaterialScreenInputReflectionBinding> reflected;
+    for (const auto name : {directionalShadowSamplerName, pointShadowSamplerName,
+                            spotShadowSamplerName}) {
+        reflected.push_back({
+            .set = 1,
+            .binding = static_cast<std::uint32_t>(reflected.size()),
+            .kind = MaterialScreenInputReflectionKind::combined_image_sampler,
+            .name = std::string(name),
+        });
+    }
+    const auto resolved = resolveMaterialPassInputInterfaceReflection(types, {}, reflected);
+    REQUIRE(resolved.size() == 3);
+    CHECK(resolved[0].name == "directional_shadow");
+    CHECK(resolved[1].name == "point_shadow");
+    CHECK(resolved[2].name == "spot_shadow");
+    CHECK(resolved[1].relation->kind == MaterialPassInputRelationKind::point_light_shadow_v1);
+    CHECK(resolved[2].relation->kind == MaterialPassInputRelationKind::spot_light_shadow_v1);
+    for (const auto &contract : resolved) {
+        CHECK(contract.view_policy == MaterialPassInputViewPolicy::family_array);
+        CHECK(contract.fallback == MaterialPassInputFallback::fully_lit);
+        CHECK_THROWS(makeBuiltinMaterialScreenInputContract(types, contract.name));
+    }
+    reflected.push_back(reflected.back());
+    reflected.back().binding = 3;
+    requireThrowsContaining([&] {
+        (void)resolveMaterialPassInputInterfaceReflection(types, {}, reflected);
+    }, "more than once");
+}
+
 TEST_CASE(
     "material screen input reflection accepts a physical input attachment",
     "[target-planning][shader-interface][local-read][wp220]") {

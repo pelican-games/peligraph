@@ -4,6 +4,7 @@
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
 #include "../src/core/render_algorithms/cube_capture/cubecaptureview.hpp"
 #include "../src/core/render_algorithms/punctual_shadow/punctualshadowview.hpp"
+#include "../src/core/render_algorithms/punctual_shadow/punctualshadowdata.hpp"
 #include "../src/core/render_algorithms/planar_reflection/planarreflectionview.hpp"
 #endif
 
@@ -13,6 +14,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -23,6 +25,41 @@
 
 namespace Pelican {
 namespace {
+
+#if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+TEST_CASE("punctual shadow data preserves inventory and cube face addressing",
+          "[punctual-shadow][shadow-data]") {
+    std::array<glm::mat4, 6> point;
+    for (std::size_t face = 0; face < point.size(); ++face) {
+        point[face] = glm::mat4(1.0f);
+        point[face][3][0] = -float(face + 1);
+    }
+    const std::array spot{glm::mat4(2.0f)};
+    const std::array inputs{
+        PunctualShadowDataInput{8, PunctualShadowKind::spot, 2, spot},
+        PunctualShadowDataInput{3, PunctualShadowKind::point, 6, point},
+    };
+    const auto packed = packPunctualShadowDataV1(inputs);
+    REQUIRE(packed.size() == 31);
+    CHECK(packed[0] == glm::uvec4(0x50505331u, 1, 2, 0));
+    CHECK(packed[1] == glm::uvec4(3, 1, 3, 6));
+    CHECK(packed[2] == glm::uvec4(8, 2, 27, 2));
+    for (std::size_t face = 0; face < point.size(); ++face) {
+        CHECK(std::bit_cast<float>(packed[3 + face * 4 + 3].x) == -float(face + 1));
+    }
+    CHECK(std::bit_cast<float>(packed[27].x) == 2.0f);
+    auto duplicate = inputs;
+    duplicate[1].inventory_index = duplicate[0].inventory_index;
+    CHECK_THROWS_AS(packPunctualShadowDataV1(duplicate), std::invalid_argument);
+    auto missing_face = inputs;
+    missing_face[1].view_projections = std::span(point).first(5);
+    CHECK_THROWS_AS(packPunctualShadowDataV1(missing_face), std::invalid_argument);
+    const auto empty = packPunctualShadowDataV1({});
+    REQUIRE(empty.size() == 1);
+    CHECK(empty[0] == glm::uvec4(0x50505331u, 1, 0, 0));
+}
+
+#endif
 
 TEST_CASE(
     "runtime view-family providers expose a generic optional package boundary",

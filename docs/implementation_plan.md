@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**WP242b surface contract・転送データ形式 (2026-09-06、接続途中):**
+- point_shadow / spot_shadowをfeature-ownedなdepth array入力としてproject合成・runtime parser・shader reflectionへ追加。directionalと同時に受理し、各入力を別のrelationとして保持する。
+- 標準algorithm配下にライトinventory index・kind・matrix offset・array layerを持つ転送表packerを追加。pointは6面、spotは1面の行列を格納する。実際のfamily行列のGPU転送・feature resource・forward/deferred receiverはまだ未接続で、影描画完了とはしない。
+- Debugのview_temporal / project_planningをbuild。既存provider/cubeとpoint/spotの対象4件138 assertions、shader-interfaceの4件31 assertionsが成功。対応表の順序・6面の行列位置を崩すとデータ確認が落ち、入力名の区別を戻すと3種併用の確認が落ちる。GPU描画と標準algorithm OFFは後続の接続時に確認する。
+
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
 **WP242b/cの現行コード照合 (2026-09-06、未実装):**

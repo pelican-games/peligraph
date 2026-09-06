@@ -2067,8 +2067,7 @@ void applySurfaceResourceContracts(
         const auto contract =
             makeBuiltinMaterialPassInputContract(
                 types, contract_name);
-        if (contract.name !=
-            directionalShadowInputContractName) {
+        if (!isFeatureOwnedMaterialPassInputContract(contract.name)) {
             throw std::runtime_error(
                 context +
                 " does not name a public feature-owned "

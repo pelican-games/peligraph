@@ -47,8 +47,17 @@ std::string_view materialPassInputRelationKindName(
     switch (kind) {
     case MaterialPassInputRelationKind::directional_light_shadow_v1:
         return "pelican.light.directional_shadow@1";
+    case MaterialPassInputRelationKind::point_light_shadow_v1:
+        return "pelican.light.point_shadow@1";
+    case MaterialPassInputRelationKind::spot_light_shadow_v1:
+        return "pelican.light.spot_shadow@1";
     }
     throw std::runtime_error("unknown material pass input relation");
+}
+
+bool isFeatureOwnedMaterialPassInputContract(std::string_view name) noexcept {
+    return name == directionalShadowInputContractName || name == pointShadowInputContractName ||
+           name == spotShadowInputContractName;
 }
 
 MaterialPassInputContract makeBuiltinMaterialPassInputContract(
@@ -86,7 +95,7 @@ MaterialPassInputContract makeBuiltinMaterialPassInputContract(
                 MaterialPassInputSampling::nearest_clamp_to_edge,
         };
     }
-    if (name == directionalShadowInputContractName) {
+    if (isFeatureOwnedMaterialPassInputContract(name)) {
         const auto depth = deviceDepthV1(types);
         return {
             .name = std::string{name},
@@ -103,11 +112,16 @@ MaterialPassInputContract makeBuiltinMaterialPassInputContract(
                 MaterialPassInputFallback::fully_lit,
             .relation =
                 MaterialPassInputRelation{
-                    .kind = MaterialPassInputRelationKind::
-                        directional_light_shadow_v1,
+                    .kind = name == pointShadowInputContractName
+                        ? MaterialPassInputRelationKind::point_light_shadow_v1
+                        : name == spotShadowInputContractName
+                            ? MaterialPassInputRelationKind::spot_light_shadow_v1
+                            : MaterialPassInputRelationKind::directional_light_shadow_v1,
                     .light_index = 0,
                     .transform =
-                        "pelican.light.shadow_view_projection@1",
+                        name == directionalShadowInputContractName
+                            ? "pelican.light.shadow_view_projection@1"
+                            : "pelican.light.punctual_shadow_view_projection@1",
                 },
         };
     }
@@ -117,7 +131,7 @@ MaterialPassInputContract makeBuiltinMaterialPassInputContract(
 
 MaterialScreenInputContract makeBuiltinMaterialScreenInputContract(
     const LogicalTypeRegistry &types, std::string_view name) {
-    if (name == directionalShadowInputContractName) {
+    if (isFeatureOwnedMaterialPassInputContract(name)) {
         throw std::runtime_error(
             "material screen input contract '" + std::string{name} +
             "' is feature-owned and cannot be authored by a .surface");
@@ -272,19 +286,22 @@ resolveMaterialPassInputInterfaceReflection(
                 "feature-owned material pass inputs require combined "
                 "image samplers in set 1");
         }
-        if (binding.name == directionalShadowSamplerName) {
+        const std::string_view shadow_contract = binding.name == directionalShadowSamplerName
+            ? directionalShadowInputContractName : binding.name == pointShadowSamplerName
+                ? pointShadowInputContractName : binding.name == spotShadowSamplerName
+                    ? spotShadowInputContractName : std::string_view{};
+        if (!shadow_contract.empty()) {
             if (std::any_of(
                     resolved.begin(), resolved.end(),
-                    [](const auto &contract) {
-                        return contract.name ==
-                               directionalShadowInputContractName;
+                    [shadow_contract](const auto &contract) {
+                        return contract.name == shadow_contract;
                     })) {
                 throw std::runtime_error(
-                    "material shader reflects directional shadow more than once");
+                    "material shader reflects shadow input more than once");
             }
             resolved.push_back(
                 makeBuiltinMaterialPassInputContract(
-                    types, directionalShadowInputContractName));
+                    types, shadow_contract));
             continue;
         }
         throw std::runtime_error(
