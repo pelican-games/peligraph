@@ -474,6 +474,153 @@ bool TriangleMesh::overlaps(const Capsule &capsule, const glm::mat4 &local_to_wo
     return false;
 }
 
+std::optional<ShapeCastHit> TriangleMesh::shapeCast(
+    const Box &box, vec3 delta, const glm::mat4 &local_to_world) const {
+    if (nodes_.empty() || !finite(box.center) || !finite(box.half_extents) || !finite(delta) ||
+        box.half_extents.x < 0 || box.half_extents.y < 0 || box.half_extents.z < 0) return std::nullopt;
+    glm::dquat rotation{box.rotation.w,box.rotation.x,box.rotation.y,box.rotation.z};
+    const double rotation2 = glm::dot(rotation,rotation);
+    if (!std::isfinite(rotation2) || rotation2 == 0) return std::nullopt;
+    rotation /= std::sqrt(rotation2);
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            if (!std::isfinite(local_to_world[c][r])) return std::nullopt;
+    if (local_to_world[0][3] != 0 || local_to_world[1][3] != 0 ||
+        local_to_world[2][3] != 0 || local_to_world[3][3] != 1) return std::nullopt;
+    const glm::dmat4 matrix{local_to_world};
+    const double determinant = glm::determinant(matrix);
+    if (!std::isfinite(determinant) || determinant == 0) return std::nullopt;
+    const auto inverseRotation = glm::conjugate(rotation);
+    const glm::dvec3 center{box.center.x,box.center.y,box.center.z};
+    const glm::dvec3 extent{box.half_extents.x,box.half_extents.y,box.half_extents.z};
+    const auto motion = inverseRotation*glm::dvec3{delta.x,delta.y,delta.z};
+    const auto point = [&](vec3 p) {
+        return inverseRotation*(glm::dvec3(matrix*glm::dvec4{p.x,p.y,p.z,1})-center);
+    };
+    const auto toFloat = [](glm::dvec3 p) { return vec3{static_cast<float>(p.x),static_cast<float>(p.y),static_cast<float>(p.z)}; };
+    const double infinity = std::numeric_limits<double>::infinity();
+    const auto preferred = glm::length(motion) > 0 ? -motion/glm::length(motion) : inverseRotation*glm::dvec3{1,0,0};
+    const auto prefer = [&](glm::dvec3 a, glm::dvec3 b) {
+        const auto aw = rotation*a, bw = rotation*b;
+        return std::array{glm::dot(a,preferred),aw.x,aw.y,aw.z} >
+               std::array{glm::dot(b,preferred),bw.x,bw.y,bw.z};
+    };
+    const auto low = glm::min(glm::dvec3{0},motion)-extent-glm::dvec3(shapeCastContactEpsilon);
+    const auto high = glm::max(glm::dvec3{0},motion)+extent+glm::dvec3(shapeCastContactEpsilon);
+    const std::array<glm::dvec3,3> axes{{{1,0,0},{0,1,0},{0,0,1}}};
+    double nearest = 1;
+    std::size_t bestTriangle = std::numeric_limits<std::size_t>::max();
+    std::optional<ShapeCastHit> result;
+    std::array<std::size_t,std::numeric_limits<std::size_t>::digits+1> stack{};
+    std::size_t size = 1;
+    while (size) {
+        const auto &node = nodes_[stack[--size]];
+        glm::dvec3 boundsLow{infinity}, boundsHigh{-infinity};
+        for (int corner = 0; corner < 8; ++corner) {
+            const auto p = point({(corner&1) ? node.maximum.x : node.minimum.x,
+                                  (corner&2) ? node.maximum.y : node.minimum.y,
+                                  (corner&4) ? node.maximum.z : node.minimum.z});
+            boundsLow = glm::min(boundsLow,p); boundsHigh = glm::max(boundsHigh,p);
+        }
+        if (glm::any(glm::greaterThan(boundsLow,high)) || glm::any(glm::lessThan(boundsHigh,low))) continue;
+        if (!node.count) { stack[size++] = node.left; stack[size++] = node.right; continue; }
+        for (std::size_t i = node.begin; i < node.begin+node.count; ++i) {
+            const auto triangle = triangles_[i];
+            const auto a = point(vertices_[indices_[triangle*3]]);
+            const auto b = point(vertices_[indices_[triangle*3+1]]);
+            const auto c = point(vertices_[indices_[triangle*3+2]]);
+            double entry = -infinity, leave = infinity, initialDepth = infinity;
+            glm::dvec3 entryNormal{0}, contactNormal{0};
+            bool separatingContact = false;
+            // Fixed orientation makes every SAT interval linear in time. Their
+            // intersection is the exact continuous overlap interval, including
+            // edge-edge axes that a swept AABB or face-only cast would miss.
+            const auto interval = [&](glm::dvec3 axis) {
+                const double length = glm::length(axis);
+                if (length == 0) return;
+                axis /= length;
+                const double radius = glm::dot(glm::abs(axis),extent);
+                const double pa = glm::dot(a,axis), pb = glm::dot(b,axis), pc = glm::dot(c,axis);
+                const double lo = std::min({pa,pb,pc})-radius, hi = std::max({pa,pb,pc})+radius;
+                const double velocity = glm::dot(motion,axis);
+                initialDepth = std::min({initialDepth,-lo,hi});
+                const double depth = std::min(-lo,hi);
+                if (depth <= shapeCastContactEpsilon) {
+                    auto normal = -lo < hi ? -axis : axis;
+                    // A zero-width or epsilon-thin interval has two equally
+                    // close sides. Select one using the existing normal tie
+                    // rule, rather than treating both as separating contacts.
+                    if (std::abs(-lo-hi) <= shapeCastTieEpsilon)
+                        normal = prefer(-axis,axis) ? -axis : axis;
+                    if (glm::dot(motion,normal) > 0) separatingContact = true;
+                    if (prefer(normal,contactNormal)) contactNormal = normal;
+                }
+                if (velocity == 0) {
+                    if (lo > 0 || hi < 0) { entry = infinity; leave = -infinity; }
+                    return;
+                }
+                double first = lo/velocity, last = hi/velocity;
+                auto normal = -axis;
+                if (first > last) { std::swap(first,last); normal = axis; }
+                if (first > entry || (first == entry && prefer(normal,entryNormal))) {
+                    entry = first; entryNormal = normal;
+                }
+                leave = std::min(leave,last);
+            };
+            for (const auto &axis : axes) interval(axis);
+            const std::array edges{b-a,c-b,a-c};
+            interval(glm::cross(edges[0],edges[1]));
+            for (const auto &edge : edges)
+                for (const auto &axis : axes) interval(glm::cross(edge,axis));
+            if (initialDepth > shapeCastContactEpsilon)
+                throw std::domain_error("box mesh initial depenetration is unavailable");
+            if (entry > leave || leave < 0 || entry > nearest) continue;
+            double t = std::max(0.0,entry);
+            auto normal = entryNormal;
+            if (initialDepth >= -shapeCastContactEpsilon) {
+                if (separatingContact || glm::dot(motion,contactNormal) >= 0) continue;
+                t = 0; normal = contactNormal;
+            }
+            if (t == nearest && triangle >= bestTriangle) continue;
+            // Clip the triangle against the box at impact. Averaging the
+            // resulting polygon gives a witness on the stationary triangle,
+            // including edge-edge contacts; projecting the box center does not.
+            // A convex triangle clipped by six planes has at most nine vertices.
+            std::array<glm::dvec3,9> polygon{a,b,c}, clipped{};
+            std::size_t count = 3;
+            const auto impact = t*motion;
+            for (int axis = 0; axis < 3 && count != 0; ++axis) {
+                for (int side : {-1,1}) {
+                    std::size_t clippedCount = 0;
+                    if (count == 0) break;
+                    const double bound = extent[axis]+shapeCastContactEpsilon;
+                    auto previous = polygon[count-1];
+                    double previousDistance = side*(previous[axis]-impact[axis])-bound;
+                    for (std::size_t vertex = 0; vertex < count; ++vertex) {
+                        const auto current = polygon[vertex];
+                        const double distance = side*(current[axis]-impact[axis])-bound;
+                        if ((distance <= 0) != (previousDistance <= 0))
+                            clipped[clippedCount++] = previous+(current-previous)*(previousDistance/(previousDistance-distance));
+                        if (distance <= 0) clipped[clippedCount++] = current;
+                        previous = current; previousDistance = distance;
+                    }
+                    polygon.swap(clipped);
+                    count = clippedCount;
+                }
+            }
+            if (count == 0) continue;
+            glm::dvec3 witness{0};
+            for (std::size_t vertex = 0; vertex < count; ++vertex) witness += polygon[vertex];
+            witness /= static_cast<double>(count);
+            const auto position = toFloat(center+rotation*witness), worldNormal = toFloat(rotation*normal);
+            if (!finite(position) || !finite(worldNormal)) continue;
+            nearest = t; bestTriangle = triangle;
+            result = ShapeCastHit{static_cast<float>(t),0,position,worldNormal,false};
+        }
+    }
+    return result;
+}
+
 bool TriangleMesh::overlaps(const Box &box, const glm::mat4 &local_to_world) const {
     if (nodes_.empty() || !finite(box.center) || !finite(box.half_extents) ||
         box.half_extents.x < 0 || box.half_extents.y < 0 || box.half_extents.z < 0) return false;

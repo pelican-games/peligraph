@@ -36,6 +36,7 @@ struct ProviderDispatch {
     Physics::ProviderMeshBoxOverlapAllV3Fn mesh_box_overlap_all = nullptr;
     Physics::ProviderMeshCapsuleOverlapAllV3Fn mesh_capsule_overlap_all = nullptr;
     Physics::ProviderMeshSphereShapeCastAllV3Fn mesh_sphere_shape_cast_all = nullptr;
+    Physics::ProviderMeshBoxShapeCastAllV3Fn mesh_box_shape_cast_all = nullptr;
 };
 
 struct RegisteredProvider {
@@ -355,12 +356,13 @@ Physics::Status invokeMeshProvider(
     BuiltinMeshQueryContext mesh_context{selected.acceleration};
     const ProviderDispatch builtin_mesh{
         .context = &mesh_context,
-        .mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all,
+        .mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all | Physics::query_mesh_box_shape_cast_all,
         .mesh_raycast_all = builtinMeshRaycastAll,
         .mesh_sphere_overlap_all = builtinMeshSphereOverlapAll,
         .mesh_box_overlap_all = builtinMeshBoxOverlapAll,
         .mesh_capsule_overlap_all = builtinMeshCapsuleOverlapAll,
         .mesh_sphere_shape_cast_all = builtinMeshSphereShapeCastAll,
+        .mesh_box_shape_cast_all = builtinMeshBoxShapeCastAll,
     };
     if (dispatch == nullptr) dispatch = &builtin_mesh;
 #endif
@@ -464,13 +466,14 @@ Physics::Status registerProvider(const Physics::ProviderV3 &provider,
         provider.provider_version != Physics::providerVersionV3 ||
         provider.minimum_engine_provider_version > Physics::providerVersionV3 ||
         !validProvider(provider.base, true) ||
-        (provider.mesh_capability_bits & ~(Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all)) != 0 ||
+        (provider.mesh_capability_bits & ~(Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all | Physics::query_mesh_box_shape_cast_all)) != 0 ||
         (provider.mesh_capability_bits == 0 && provider.base.capability_bits == 0) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_raycast_all) != 0 && provider.mesh_raycast_all == nullptr) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_sphere_overlap_all) != 0 && provider.mesh_sphere_overlap_all == nullptr) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_box_overlap_all) != 0 && provider.mesh_box_overlap_all == nullptr) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_capsule_overlap_all) != 0 && provider.mesh_capsule_overlap_all == nullptr) ||
-        ((provider.mesh_capability_bits & Physics::query_mesh_sphere_shape_cast_all) != 0 && provider.mesh_sphere_shape_cast_all == nullptr))
+        ((provider.mesh_capability_bits & Physics::query_mesh_sphere_shape_cast_all) != 0 && provider.mesh_sphere_shape_cast_all == nullptr) ||
+        ((provider.mesh_capability_bits & Physics::query_mesh_box_shape_cast_all) != 0 && provider.mesh_box_shape_cast_all == nullptr))
         return Physics::Status::invalid_argument;
     try {
         auto dispatch = dispatchFor(provider.base);
@@ -480,6 +483,7 @@ Physics::Status registerProvider(const Physics::ProviderV3 &provider,
         dispatch.mesh_box_overlap_all = provider.mesh_box_overlap_all;
         dispatch.mesh_capsule_overlap_all = provider.mesh_capsule_overlap_all;
         dispatch.mesh_sphere_shape_cast_all = provider.mesh_sphere_shape_cast_all;
+        dispatch.mesh_box_shape_cast_all = provider.mesh_box_shape_cast_all;
         return registerProviderDispatch(dispatch, provider.base.name_utf8,
                                          provider.base.name_size, owner, out_handle);
     } catch (const std::bad_alloc &) {
@@ -845,15 +849,28 @@ Physics::Status shapeCastMeshes(
         const auto selected_status = selectMeshes(meshes, identities, metadata, filter, acceleration, selected);
         if (selected_status != Status::ok) return selected_status;
         if (selected.meshes.empty()) return Status::ok;
-        if (query_shape.kind != Physics::ShapeKindV1::sphere) return Status::unavailable;
-        const Physics::ProviderMeshSphereShapeCastQueryV3 query{
-            .center = query_shape.center, .radius = query_shape.radius, .delta = toAbi(delta),
-            .colliders = selected.meshes.data(),
-            .collider_count = static_cast<std::uint32_t>(selected.meshes.size()),
-        };
         std::vector<Physics::ProviderShapeCastHitV2> raw_hits;
-        const auto status = invokeMeshProvider(Physics::query_mesh_sphere_shape_cast_all,
-            &ProviderDispatch::mesh_sphere_shape_cast_all, query, selected, raw_hits);
+        Status status;
+        if (query_shape.kind == Physics::ShapeKindV1::sphere) {
+            const Physics::ProviderMeshSphereShapeCastQueryV3 query{
+                .center = query_shape.center, .radius = query_shape.radius, .delta = toAbi(delta),
+                .colliders = selected.meshes.data(),
+                .collider_count = static_cast<std::uint32_t>(selected.meshes.size()),
+            };
+            status = invokeMeshProvider(Physics::query_mesh_sphere_shape_cast_all,
+                &ProviderDispatch::mesh_sphere_shape_cast_all, query, selected, raw_hits);
+        } else if (query_shape.kind == Physics::ShapeKindV1::box) {
+            const Physics::ProviderMeshBoxShapeCastQueryV3 query{
+                .center = query_shape.center, .rotation = query_shape.rotation,
+                .half_extents = query_shape.half_extents, .delta = toAbi(delta),
+                .colliders = selected.meshes.data(),
+                .collider_count = static_cast<std::uint32_t>(selected.meshes.size()),
+            };
+            status = invokeMeshProvider(Physics::query_mesh_box_shape_cast_all,
+                &ProviderDispatch::mesh_box_shape_cast_all, query, selected, raw_hits);
+        } else {
+            return Status::unavailable;
+        }
         if (status != Status::ok) return status;
         std::vector<bool> seen(selected.meshes.size(), false);
         out_hits.reserve(raw_hits.size());

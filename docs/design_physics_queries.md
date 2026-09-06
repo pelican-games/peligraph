@@ -98,7 +98,11 @@ TOIはdeltaに対する割合、positionはmesh表面、normalは球を表面か
 epsilonを超える初期貫通はbuiltinでは`unavailable`。単一三角形の押し戻しを非凸mesh全体のMTDとして返さない。
 未対応時はprimitiveだけの部分結果も返さない。C++の従来shapeCastAll wrapperはunavailableを空結果へ変換するため、
 状態の判別にはqueryShapeCastAllまたは公開serviceを使う。ProviderV3利用DLLは現行headerで再ビルドする。
-Box/Capsule sweep・mesh全体の初期貫通MTD・mesh triggerは未実装。
+Box sweepも同じ公開serviceへ接続。回転は移動中固定し、箱3軸・三角形法線・辺の外積9軸の
+投影区間が重なる時間帯から最初の接触を求める。衝突時の箱で三角形をclipし、mesh表面上の接触位置を返す。
+ProviderV3の`query_mesh_box_shape_cast_all`と`mesh_box_shape_cast_all`を使用する。
+Sphereと同じ初期接触・初期貫通の制約を持ち、Boxの半寸法はworld単位を保つ。
+Capsule sweep・mesh全体の初期貫通MTD・mesh triggerは未実装。
 
 2026-09-06: RPC `raycast`を既存PhysWorldへ接続。paramsは`origin`・`direction`（各3数値）と`max_distance`（有限・非負）。方向は正規化する。結果は`hit: null`またはname/distance/position/normal/collider_id/shape_ordinal/trigger/one_wayを持つhit。現在のtransformを問い合わせ、raycast既定のlayer/mask・trigger/one-way包含規則を使用する。P3のメッシュ/BVH/glb extras規約の完了を意味しない。
 

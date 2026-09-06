@@ -36,7 +36,7 @@ geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実�
 | RTの観測 | get_ray_occurrencesは同じscene-plan snapshotのrecordフィールド名・型・offset・値、group名、layout/bindings参照と選択行、group/recordの適用元をInspectorへ返す。ASのmask/flags/custom indexは実効値とfieldごとの適用元、geometry rule index・override row IDを表示する。Frame Planのshader slotにgroup/ray名を併記する。geometryのhit groupから読み込み済みFrame Planのtask候補を選び、既存Task Editorへ進む操作を追加。動的callable recordはruntime_callable_recordsでCPU側実行時設定を取得できる（task詳細とRaw JSONに表示）。GPU完了値のreadbackと実GUI操作確認は残る。世代の異なるGPU情報を混ぜない |
 | コンポーネント | Inspectorに追加・削除・Add default・List追加/削除/移動・override候補選択がある。unpack後のList追加をUndoすると採番値の差でunpack Undoが失敗する不具合を修正し、全順序のUndo/Redoと実値変更時の拒否を確認した。destroy/復元を跨ぐList編集のjournal Undo/Redoも確認済み。全componentのruntime再装着や実GUI操作とは区別する |
 | 機能完成後の確認 | 実エンジン接続下の新画面操作、保存・再読み込みを含む制作経路、性能・配布。確認だけのために新しい機能開発を止めたり、広域テストを毎回繰り返したりしない |
-| 物理の現在地 | mesh raycastのscene/import/reload・BVH保持、Sphere・Box・Capsuleのmesh overlapをprovider/serviceへ接続。回転とメッシュの非一様scale・反転・shearを扱い、三角形表面との接触を判定する。Sphere sweepを公開Shape Castへ接続。面・辺・頂点の最初の接触を求める。Box/Capsule sweep・mesh初期貫通MTD・mesh triggerは未完 |
+| 物理の現在地 | mesh raycastのscene/import/reload・BVH保持、Sphere・Box・Capsuleのmesh overlapをprovider/serviceへ接続。回転とメッシュの非一様scale・反転・shearを扱い、三角形表面との接触を判定する。SphereとBoxのsweepを公開Shape Castへ接続。Boxは回転固定の連続SATで最初の接触時刻とmesh表面上の位置を求める。Capsule sweep・mesh初期貫通MTD・mesh triggerは未完 |
 | 後の段階 | 学習サンプル・代表ゲーム・GUI操作感の仕上げ。動的剛体シミュレーションは既存仕様の将来トラック。これらを今の残件探索から自動的に着手対象へ広げない |
 
 今回照合したコードはeditorcommandservice.cppのbinding生成、InspectorのRay geometry表示、inspectormodel.cppのList操作、frameplangraphics.cppの接続編集。表は全機能の完了監査や工数見積りではない。RT観測の次の変更を決めた後はその範囲に絞って実装する。

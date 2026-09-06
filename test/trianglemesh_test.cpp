@@ -34,6 +34,79 @@ TEST_CASE("Triangle mesh raycast tests triangle surfaces, both sides and paramet
     REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 2}, {1, 0, 0}, 10}));
 }
 
+TEST_CASE("Box mesh sweep uses continuous face and edge separation axes",
+          "[physics][trianglemesh][box-mesh-sweep]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    const Box box{{0.5F,0.5F,0},{0,0,0,1},{0.25F,0.25F,0.25F}};
+    const auto face = mesh.shapeCast(box,{0,0,10},identity);
+    REQUIRE(face);
+    REQUIRE(face->time_of_impact == Catch::Approx(0.175F));
+    REQUIRE(face->position.z == Catch::Approx(2));
+    REQUIRE(face->normal.z == Catch::Approx(-1));
+    REQUIRE_FALSE(face->initial_overlap);
+    REQUIRE_FALSE(mesh.shapeCast(box,{0,0,1.7F},identity));
+    const auto endpoint = mesh.shapeCast(box,{0,0,1.75F},identity);
+    REQUIRE(endpoint);
+    REQUIRE(endpoint->time_of_impact == 1);
+    auto backBox = box; backBox.center.z = 4;
+    const auto back = mesh.shapeCast(backBox,{0,0,-4},identity);
+    REQUIRE(back);
+    REQUIRE(back->time_of_impact == Catch::Approx(0.4375F));
+    REQUIRE(back->normal.z == Catch::Approx(1));
+    // All coordinate projections overlap well before the slanted edge does.
+    const Box edgeBox{{2,2,2},{0,0,0,1},{0.25F,0.25F,0.25F}};
+    const auto edge = mesh.shapeCast(edgeBox,{-2,-2,0},identity);
+    REQUIRE(edge);
+    REQUIRE(edge->time_of_impact == Catch::Approx(0.375F));
+    REQUIRE(edge->normal.x == Catch::Approx(1/std::sqrt(2.0F)));
+    REQUIRE(edge->normal.y == Catch::Approx(1/std::sqrt(2.0F)));
+    REQUIRE(edge->position.x+edge->position.y == Catch::Approx(2));
+    auto miss = box; miss.center = {1.5F,1.5F,0};
+    REQUIRE_FALSE(mesh.shapeCast(miss,{0,0,4},identity));
+}
+
+TEST_CASE("Box mesh sweep handles rotated boxes affine meshes and initial contact",
+          "[physics][trianglemesh][box-mesh-sweep]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    const Box rotated{{0.5F,0.5F,0},{0.38268343F,0,0,0.92387953F},{0.1F,0.5F,0.25F}};
+    const auto hit = mesh.shapeCast(rotated,{0,0,4},identity);
+    REQUIRE(hit);
+    REQUIRE(hit->time_of_impact == Catch::Approx((2-0.75F/std::sqrt(2.0F))/4));
+    REQUIRE(hit->position.z == Catch::Approx(2));
+    Box touching{{0.5F,0.5F,1.75F},{0,0,0,1},{0.25F,0.25F,0.25F}};
+    const auto approach = mesh.shapeCast(touching,{0,0,1},identity);
+    REQUIRE(approach);
+    REQUIRE(approach->time_of_impact == 0);
+    REQUIRE_FALSE(mesh.shapeCast(touching,{},identity));
+    REQUIRE_FALSE(mesh.shapeCast(touching,{0,0,-1},identity));
+    REQUIRE_FALSE(mesh.shapeCast(touching,{1,0,0},identity));
+    // At a corner, approaching one constraint while leaving the other is a miss.
+    touching.center = {-0.25F,-0.25F,2};
+    REQUIRE_FALSE(mesh.shapeCast(touching,{1,-1,0},identity));
+    REQUIRE(mesh.shapeCast(touching,{1,1,0},identity));
+    touching.center = {0.5F,0.5F,2};
+    REQUIRE_THROWS_AS(mesh.shapeCast(touching,{},identity),std::domain_error);
+    const Box point{{0.5F,0.5F,2},{0,0,0,1},{0,0,0}};
+    const auto pointContact = mesh.shapeCast(point,{0,0,1},identity);
+    REQUIRE(pointContact);
+    REQUIRE(pointContact->time_of_impact == 0);
+    REQUIRE(pointContact->normal.z == Catch::Approx(-1));
+    REQUIRE_FALSE(mesh.shapeCast(point,{},identity));
+    glm::mat4 transform{1};
+    transform[0][0] = -2; transform[1][0] = 0.5F;
+    transform[2][2] = 3; transform[3][2] = 2;
+    touching.center = {-0.75F,0.5F,10};
+    const auto transformed = mesh.shapeCast(touching,{0,0,-4},transform);
+    REQUIRE(transformed);
+    REQUIRE(transformed->time_of_impact == Catch::Approx(0.4375F));
+    REQUIRE(transformed->position.z == Catch::Approx(8));
+    REQUIRE(transformed->normal.z == Catch::Approx(1));
+    touching.rotation = {0,0,0,0};
+    REQUIRE_FALSE(mesh.shapeCast(touching,{0,0,4},identity));
+}
+
 TEST_CASE("Sphere mesh sweep finds continuous face edge and vertex contacts",
           "[physics][trianglemesh][sphere-mesh-sweep]") {
     const TriangleMesh mesh(triangle,indices);

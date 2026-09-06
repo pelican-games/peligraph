@@ -23242,6 +23242,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**Boxと静的meshのSweep (2026-09-07):**
+- TriangleMesh→ProviderV3→既存Shape Cast公開ServiceV2へBox sweepを接続。回転を固定し、箱3軸・三角形法線・辺の外積9軸の重複時間区間を交差して最初の接触を求める。BVHは箱座標で移動全体を絞る。衝突時の箱で三角形をclipした頂点からmesh表面上の接触位置を求め、clipには固定長配列を使用する。
+- ProviderV3にquery_mesh_box_shape_cast_allとcallbackを追加。filter・identity・primitiveとの統合・結果検査は既存経路を共有する。利用DLLは現行headerで再ビルドする。Sphereと同じく深い初期貫通はunavailable、静止・離反の初期接触はhitなし。ゼロ寸法の投影区間は既存法線tie規約で片側を選ぶ。
+- Player・runtime_services Debug build成功。関連29case/417assertion成功。面・斜め辺・移動終端、回転、mesh非一様scale/反転/shear、広域bounds内のmiss、初期接触/離反/静止/ゼロ寸法、公開serviceの混在順序とfilter、独自providerへのBox値伝達・不正TOI拒否を確認。外積軸を外すと斜め辺への正常なhitを失い、mesh callbackの接続を外すと公開serviceのhit数・identityが落ちる対照。個別変異・provider-only別build・Studio通し操作は未実施。
+- Capsule sweep・mesh初期貫通MTD・mesh triggerは残る。Boxの非貫通開始Sweepを今回の区切りとする。
+
 **Sphereと静的meshのSweep (2026-09-07):**
 - TriangleMesh→ProviderV3→PhysWorld→既存Shape Cast公開ServiceV2へ接続。world単位の球と三角形の面・有限辺・頂点の接触時刻を解析的に求め、移動の離散サンプリングを使わない。BVH絞り込み、両面、非一様scale・反転・shearに対応。primitiveとの結果をTOI順に統合する。
 - ProviderV3へquery_mesh_sphere_shape_cast_allとcallbackを追加。primitive/meshのprovider結果検査を共通化。filterとidentityを保持し、独自providerが未対応ならbuiltinへ迂回しない。利用DLLは現行headerで再ビルドする。

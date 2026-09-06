@@ -17,6 +17,10 @@ Physics::Status builtinMeshSphereShapeCastAll(
     void *, const Physics::ProviderMeshSphereShapeCastQueryV3 *,
     Physics::ProviderShapeCastHitV2 *, std::uint32_t, std::uint32_t *) noexcept;
 
+Physics::Status builtinMeshBoxShapeCastAll(
+    void *, const Physics::ProviderMeshBoxShapeCastQueryV3 *,
+    Physics::ProviderShapeCastHitV2 *, std::uint32_t, std::uint32_t *) noexcept;
+
 struct BuiltinMeshQueryContext {
     std::span<const phys::TriangleMesh *const> acceleration;
 };
