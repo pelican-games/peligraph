@@ -122,7 +122,7 @@ edit 呼び出し ──▶ 受付(前提条件チェック)──▶ {ticket, s
 | `add_component` | `object_id`, `component`(コンポーネント JSON) | コンポーネント追加 |
 | `remove_component` | `object_id`, `component_slot`(behavior は `attachment_index` も必須) | コンポーネント削除 |
 | `get_procedural_assets` | なし | procedural asset宣言と編集元digest |
-| `edit_procedural_asset` | `base_source_digest`, `asset_name`, `aabb`/`record` | 既存procedural assetの編集・保存・runtime反映 |
+| `edit_procedural_asset` | `base_source_digest`, `asset_name`, `aabb`/`record`、新規時は`operation: "create"`と両方の値 | procedural assetの新規作成・編集・保存・runtime反映 |
 | `spawn` | `object`(+ `scene_id`) | オブジェクト生成。ID は engine が採番 |
 | `destroy` | `object_id` | 子孫ごと削除(逆操作用に全 JSON を保存) |
 | `reparent` | `object_id`, `new_parent_id`(null = ルート), `preserve`(`"local"` / `"world"`) | 親子の付け替え |

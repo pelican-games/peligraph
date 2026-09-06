@@ -1,6 +1,7 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
 #include "../src/core/communication/renderconfigeditor.hpp"
+#include "../src/core/communication/proceduralasseteditor.hpp"
 #include "../src/core/communication/renderconfigtransaction.hpp"
 #include "../src/core/communication/rpcserver.hpp"
 #include "../src/core/launchconfig.hpp"
@@ -1945,6 +1946,48 @@ TEST_CASE("Compute task editing resolves direct roots and project presets",
         REQUIRE(service->getResult({{"ticket", removed.at("ticket")}}).at("committed") == true);
         REQUIRE(service->getComputeTaskAuthoring(Json::object()).at("tasks").empty());
         if (use_preset) REQUIRE(readBytes(project.render_config) == root_before);
+    }
+}
+
+TEST_CASE("Procedural asset creation upgrades an empty asset document atomically",
+          "[render-config-editor][procedural-asset-create]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto path = project.root / "created_assets.json";
+    const Json original{{"schema", "pelican.asset_data"}, {"version", 1}, {"models", Json::array()}};
+    writeBytes(path, original.dump());
+    std::string published;
+    ProceduralAssetEditorService service({
+        .reference = "project://created_assets.json",
+        .normalized_reference = resolver.normalizedReference("project://created_assets.json"),
+        .path = path, .project_root = project.root, .source_bytes = original.dump(),
+        .gate = [] { return RenderConfigEditorGateObservation{}; },
+        .apply = [&](std::string_view bytes, const std::function<void()> &commit) {
+            auto next = std::string(bytes);
+            commit();
+            published.swap(next);
+        }});
+    const auto digest = service.get(Json::object()).at("source_digest").at("hex");
+    Json request{{"operation", "create"}, {"base_source_digest", digest}, {"asset_name", "new_sphere"},
+        {"aabb", {{"min", {-1, -1, -1}}, {"max", {1, 1, 1}}}}, {"record", {{"radius", 1}}}};
+    SECTION("first asset is saved and exposed for later editing") {
+        const auto accepted = service.edit(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        CHECK(readBytes(path) == original.dump());
+        service.commitPending();
+        REQUIRE(service.result({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+        CHECK(readBytes(path) == published);
+        const auto saved = Json::parse(published);
+        CHECK(saved.at("version") == 2);
+        CHECK(saved.at("models") == original.at("models"));
+        CHECK(service.get(Json::object()).at("assets")[0].at("kind") == "aabb_v1");
+    }
+    SECTION("invalid bounds do not write or publish") {
+        request["aabb"]["max"] = {-2, -2, -2};
+        CHECK_THROWS(service.edit(request));
+        CHECK(readBytes(path) == original.dump());
+        CHECK(published.empty());
     }
 }
 

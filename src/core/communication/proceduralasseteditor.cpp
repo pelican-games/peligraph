@@ -37,11 +37,16 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::get(const Jso
 ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Json &params) {
     if (!params.is_object()) throw std::invalid_argument("edit_procedural_asset requires an object");
     for (const auto &[key, value] : params.items()) {
-        if (key != "base_source_digest" && key != "asset_name" && key != "aabb" && key != "record")
+        if (key != "base_source_digest" && key != "asset_name" && key != "aabb" && key != "record" && key != "operation")
             throw std::invalid_argument("Unknown procedural asset edit field: " + key);
     }
     const auto digest = params.at("base_source_digest").get<std::string>();
     const auto name = params.at("asset_name").get<std::string>();
+    const auto operation = params.value("operation", std::string{"update"});
+    if (operation != "update" && operation != "create")
+        throw std::invalid_argument("Procedural asset operation must be update or create");
+    if (operation == "create" && (!params.contains("aabb") || !params.contains("record")))
+        throw std::invalid_argument("Creating a procedural asset requires aabb and record");
     if (!params.contains("aabb") && !params.contains("record"))
         throw std::invalid_argument("Provide aabb or record to edit");
     const auto gate = dependencies_.gate();
@@ -50,13 +55,22 @@ ProceduralAssetEditorService::Result ProceduralAssetEditorService::edit(const Js
         digest != renderConfigSourceDigest(readAssetSource(dependencies_.path)))
         return rejectAsset("external_modification", "Asset source changed; reload before editing");
     auto candidate = nlohmann::ordered_json::parse(dependencies_.source_bytes);
+    if (operation == "create" && !candidate.contains("procedural_geometry"))
+        candidate["procedural_geometry"] = nlohmann::ordered_json::array();
     auto &assets = candidate.at("procedural_geometry");
     auto found = std::find_if(assets.begin(), assets.end(), [&](const auto &asset) {
         return asset.at("name").template get<std::string>() == name;
     });
-    if (found == assets.end()) return rejectAsset("asset_not_found", "Unknown procedural asset: " + name);
-    for (const auto *field : {"aabb", "record"})
-        if (params.contains(field)) (*found)[field] = params.at(field);
+    if (operation == "create") {
+        if (found != assets.end()) return rejectAsset("asset_already_exists", "Procedural asset already exists: " + name);
+        assets.push_back({{"name", name}, {"kind", "aabb_v1"},
+                          {"aabb", params.at("aabb")}, {"record", params.at("record")}});
+        candidate["version"] = 2;
+    } else {
+        if (found == assets.end()) return rejectAsset("asset_not_found", "Unknown procedural asset: " + name);
+        for (const auto *field : {"aabb", "record"})
+            if (params.contains(field)) (*found)[field] = params.at(field);
+    }
     (void)parseAssetDataFormatJson(Json(candidate));
     const auto ticket = "procedural-asset-edit-" + std::to_string(next_ticket_++);
     pending_.push_back({ticket, digest, candidate.dump(2) + "\n", gate.transition_epoch});

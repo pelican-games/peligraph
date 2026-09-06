@@ -4,6 +4,7 @@
 #include <QComboBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -24,6 +25,7 @@ struct ProceduralAssetDialog::Impl {
     QString record;
     std::string digest;
     bool dirty = false;
+    bool is_new = false;
   };
   ProceduralAssetDialog &owner;
   EmbeddedViewport &viewport;
@@ -35,6 +37,8 @@ struct ProceduralAssetDialog::Impl {
   QPushButton *apply;
   QPushButton *refresh;
   QPushButton *reset;
+  QPushButton *create;
+  std::string catalog_digest;
   QTimer poll;
   std::map<std::string, Draft> drafts;
   std::map<std::string, Draft> latest;
@@ -50,7 +54,12 @@ struct ProceduralAssetDialog::Impl {
     const bool idle = !request_id && ticket.isEmpty();
     const bool writable = idle && editable && drafts.contains(selected());
     assets->setEnabled(idle);
-    reset->setEnabled(idle && latest.contains(selected()));
+    const auto draft = drafts.find(selected());
+    const bool is_new = draft != drafts.end() && draft->second.is_new;
+    reset->setEnabled(idle && (latest.contains(selected()) || is_new));
+    create->setEnabled(idle && editable && viewport.rpcReady() &&
+                       !catalog_digest.empty());
+    apply->setText(is_new ? owner.tr("Create asset") : owner.tr("Apply"));
     for (auto *field : bounds)
       field->setReadOnly(!writable);
     record->setReadOnly(!writable);
@@ -76,6 +85,38 @@ struct ProceduralAssetDialog::Impl {
                                                : found->second.record);
     loading = false;
     controls();
+  }
+  void newAsset() {
+    bool accepted = false;
+    const auto name =
+        QInputDialog::getText(&owner, owner.tr("New procedural asset"),
+                              owner.tr("Asset name"), QLineEdit::Normal, {},
+                              &accepted)
+            .trimmed()
+            .toStdString();
+    if (!accepted)
+      return;
+    if (name.empty() || drafts.contains(name) || latest.contains(name)) {
+      notice->setText(owner.tr("Choose a nonempty name that is not already "
+                               "saved or used by a draft."));
+      return;
+    }
+    Draft draft;
+    if (const auto found = drafts.find(selected()); found != drafts.end())
+      draft = found->second;
+    else {
+      draft.bounds = {"-1", "-1", "-1", "1", "1", "1"};
+      draft.record = "{}";
+    }
+    draft.digest = catalog_digest;
+    draft.dirty = true;
+    draft.is_new = true;
+    drafts.emplace(name, std::move(draft));
+    assets->addItem(QString::fromStdString(name));
+    assets->setCurrentIndex(assets->findText(QString::fromStdString(name)));
+    show();
+    notice->setText(owner.tr(
+        "New asset draft. Create asset saves it; Reset selected discards it."));
   }
   void request(Request kind, const QString &method,
                const QJsonObject &params = {}) {
@@ -118,10 +159,12 @@ struct ProceduralAssetDialog::Impl {
       const auto data = Json::parse(draft.record.toStdString(), nullptr, false);
       if (!data.is_object())
         throw std::invalid_argument("Record JSON must be a valid object.");
-      const Json params{{"base_source_digest", draft.digest},
-                        {"asset_name", selected()},
-                        {"aabb", aabb},
-                        {"record", data}};
+      Json params{{"base_source_digest", draft.digest},
+                  {"asset_name", selected()},
+                  {"aabb", aabb},
+                  {"record", data}};
+      if (draft.is_new)
+        params["operation"] = "create";
       const auto wire = exactJsonRpcObject(params);
       submitted = selected();
       request(Request::Submit, "edit_procedural_asset", wire);
@@ -170,10 +213,16 @@ struct ProceduralAssetDialog::Impl {
               asset.value("record", Json::object()).dump(2));
           next_latest.emplace(name, draft);
           const auto previous = drafts.find(name);
-          next.emplace(name, previous != drafts.end() && previous->second.dirty
-                                 ? previous->second
-                                 : std::move(draft));
+          next.emplace(
+              name, previous != drafts.end() &&
+                            (previous->second.dirty || previous->second.is_new)
+                        ? previous->second
+                        : std::move(draft));
         }
+        for (const auto &[name, draft] : drafts)
+          if (draft.is_new)
+            next.insert_or_assign(name, draft);
+        catalog_digest = digest;
         const auto previous = assets->currentText();
         drafts = std::move(next);
         latest = std::move(next_latest);
@@ -261,14 +310,18 @@ struct ProceduralAssetDialog::Impl {
     notice->setWordWrap(true);
     layout->addWidget(notice);
     auto *buttons = new QHBoxLayout;
+    create = new QPushButton(owner.tr("New..."), &owner);
+    create->setObjectName("pelican.proceduralAssets.new");
     apply = new QPushButton(owner.tr("Apply"), &owner);
     reset = new QPushButton(owner.tr("Reset selected"), &owner);
     reset->setObjectName("pelican.proceduralAssets.reset");
-    reset->setToolTip(owner.tr("Discard selected asset edits and use the "
-                               "latest successfully refreshed values."));
+    reset->setToolTip(owner.tr(
+        "Discard selected asset edits and use the "
+        "latest successfully refreshed values, or discard a new asset draft."));
     refresh = new QPushButton(owner.tr("Refresh / retry"), &owner);
     apply->setObjectName("pelican.proceduralAssets.apply");
     refresh->setObjectName("pelican.proceduralAssets.refresh");
+    buttons->addWidget(create);
     buttons->addWidget(refresh);
     buttons->addWidget(reset);
     buttons->addWidget(apply);
@@ -277,10 +330,20 @@ struct ProceduralAssetDialog::Impl {
                      [this] { show(); });
     QObject::connect(record, &QPlainTextEdit::textChanged, &owner,
                      [this] { changed(); });
+    QObject::connect(create, &QPushButton::clicked, &owner,
+                     [this] { newAsset(); });
     QObject::connect(reset, &QPushButton::clicked, &owner, [this] {
       const auto found = latest.find(selected());
-      if (found == latest.end())
+      if (found == latest.end()) {
+        const auto draft = drafts.find(selected());
+        if (draft == drafts.end() || !draft->second.is_new)
+          return;
+        drafts.erase(draft);
+        assets->removeItem(assets->currentIndex());
+        show();
+        notice->setText(owner.tr("New asset draft discarded."));
         return;
+      }
       drafts[selected()] = found->second;
       show();
       notice->setText(owner.tr("Selected edits discarded. Values are from the "

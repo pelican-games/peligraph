@@ -1006,11 +1006,17 @@ AABB boundsの変更はBLASを再構築し、recordだけの変更ではBLASを�
 名前・kindや他assetは保持し、ファイル競合・不正record・保存失敗時は現在の描画状態を保持します。
 recordのshader型照合は現在sceneに装着したassetが対象で、未装着assetは装着時に検査します。
 プレビュー中やrender pipelineの公開待ち中は編集できません。
+新規作成は同じRPCに`operation: "create"`と未使用の`asset_name`、`aabb`、`record`を渡します。
+`kind`は`aabb_v1`です。最初のprocedural assetを作る場合も使え、asset documentのversion 1は保存時に2へ更新します。
+同名の定義は上書きしません。作成したassetはcomponentの選択候補に入り、装着時にshader recordとの適合性を検査します。
 StudioではRender Featuresの **Procedural assets...** からassetを選び、
 Min/MaxのX・Y・ZとRecord JSONを編集して **Apply** で保存・反映します。
+**New...** で新しい名前を入力すると、選択中のAABB・recordをコピーした草稿を作ります。
+空の一覧ではAABBを±1、recordを空objectとして開始します。編集後に **Create asset** で保存します。
 assetを切り替えても入力内容は保持します。**Refresh / retry** は一覧と編集結果を取得し、
 未保存の草稿とその元の保存世代は保持します。
 **Reset selected** は選択中の草稿だけを、最後に取得した保存済みの値へ戻します。
+保存済みの定義がない新規草稿は破棄します。
 他のassetの保存によって競合した草稿も自動的に上書き・再送しません。
 
 StudioのRender Features画面から「Scene AS...」を開くと、名前付きTLASの名前とmaskを

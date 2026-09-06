@@ -6202,8 +6202,11 @@ void main() {
         REQUIRE(pixels[1] < 2u);
         REQUIRE(pixels[5] < 2u);
         CHECK(pixels[1] != pixels[5]);
-        CHECK(pixels[2] == pixels[1]);
-        CHECK(pixels[6] == pixels[5]);
+        // Scene geometry-table indices and BLAS-local geometry indices are
+        // independent; asset names can change their relative ordering.
+        CHECK(pixels[2] < 2u);
+        CHECK(pixels[6] < 2u);
+        CHECK(pixels[2] != pixels[6]);
         CHECK(std::bit_cast<float>(pixels[3]) == left_radius);
         CHECK(std::bit_cast<float>(pixels[7]) == 1.25f);
         const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
@@ -6214,7 +6217,7 @@ void main() {
         CHECK(diagnostics.active_blas_inputs[0].geometry_count == 2);
         return diagnostics;
     };
-    const auto initial = sample(1.0f);
+    auto initial = sample(1.0f);
     CHECK(sample(1.0f).blas_build_count == initial.blas_build_count);
     auto service = makeEditorRuntimeService({.render_config_editing = true});
     std::uint64_t rpc_id = 386600;
@@ -6232,6 +6235,37 @@ void main() {
         request["base_source_digest"] = catalog().at("source_digest").at("hex");
         return finish(runWp374aRpcBytes(*service, rpc_id++, "edit_procedural_asset", request));
     };
+    {
+        auto create = Json{{"operation", "create"}, {"asset_name", "created_sphere"},
+            {"aabb", right.at("aabb")}, {"record", right.at("record")},
+            {"base_source_digest", catalog().at("source_digest").at("hex")}};
+        const auto created = finish(runWp374aRpcBytes(*service, rpc_id++, "edit_procedural_asset", create));
+        INFO(created.dump());
+        REQUIRE(created.at("status") == "committed");
+        CHECK(catalog().at("assets").size() == 3);
+        CHECK(Json::parse(GET_MODULE(ProjectBasicConfig).assetDataJson()).at("procedural_geometry").size() == 3);
+        create["base_source_digest"] = catalog().at("source_digest").at("hex");
+        const auto duplicate = runWp374aRpcBytes(*service, rpc_id++, "edit_procedural_asset", create);
+        REQUIRE(duplicate.at("status") == "rejected");
+        CHECK(duplicate.at("error").at("code") == "asset_already_exists");
+        CHECK(sample(1.0f).blas_build_count == initial.blas_build_count);
+        const auto tree = runWp374aRpcBytes(*service, rpc_id++, "scene_tree", Json::object());
+        const auto session = runWp374aRpcBytes(*service, rpc_id++, "open_editor_session", {{"display_name", "Create procedural asset"}});
+        const auto attached = finishWp374aEdit(*service, rpc_id, session.at("actor_id").get<std::uint64_t>(),
+            tree.at("scene_revision").get<std::uint64_t>(), Json::array({
+                {{"op", "remove_component"}, {"object_id", tree.at("objects")[0].at("authoring_object_id")},
+                 {"component_slot", "pelican_procedural_geometry"}},
+                {{"op", "add_component"}, {"object_id", tree.at("objects")[0].at("authoring_object_id")},
+                 {"component", {{"name", "pelican_procedural_geometry"},
+                                {"assets", {"sphere_asset", "created_sphere"}}}}}}));
+        INFO(attached.dump());
+        REQUIRE(attached.at("status") == "committed");
+        const auto instances = GET_MODULE(ProceduralGeometryContainer).proceduralRayInstances();
+        CHECK(std::any_of(instances.begin(), instances.end(), [](const auto &instance) {
+            return instance.procedural_asset == "created_sphere";
+        }));
+        initial = sample(1.0f);
+    }
     const auto entity = GET_MODULE(SceneLoader).objectId("Sphere");
     REQUIRE(entity);
     auto *live_transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);

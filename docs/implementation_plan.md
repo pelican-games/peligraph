@@ -23237,7 +23237,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**最新の入口 (2026-09-06、共有AS前の独立compute):** task接続図は2cde03b9へ統合済み。独立computeを共有AS前に配置するcompiler変更を初frameの実GPUで確認。次はFrame Plan全体のnode間接続、raster passのAS依存細分化、残る制作操作など。学習サンプルは後回し。
+**最新の入口 (2026-09-06、procedural asset新規作成):** 共有AS前の独立computeはd34df9ffへ統合済み。procedural assetの新規作成・component装着を実GPU確認、StudioへNewを接続。次は下記embed再生成修正、Frame Plan全体のnode間接続、残る制作操作など。学習サンプルは後回し。
+
+**Procedural asset新規作成 (2026-09-06):**
+- edit_procedural_assetのoperation:createで未使用名・aabb・recordからaabb_v1定義を作成。初assetの空一覧にも対応し、asset document v1はv2へ更新。重複名拒否、既存CAS・source/runtime publication共用。StudioのNewで選択assetの値をコピー（空なら±1/{}）して草稿作成、Create assetで保存。Refreshは新規草稿と元digestを維持し、Resetで破棄できる。
+- Player/Studio・対象test build成功（build/.codex_bg/assetcreate-build.log）。CPU1/1・10 assertions（assetcreate-cpu.log）でv1空documentから保存・v2化・不正bounds拒否。既存GPU1/1・223 assertions（assetcreate-gpu.log、最終再buildはassetcreate-gpu-build.log）で新規登録、同名拒否、component置換による装着、実hit・独立record・既存AABB編集/rollbackまで成功。GUI手動操作は未確認。
+- 初回の装着テストは未対応の配列全体set操作を使っていたため、既存remove/add transactionへ修正。新asset名でgeometryの順序が変わり、旧テストのscene geometry-table番号=BLAS内番号という偶然の一致を検出。番号体系を分け、各範囲・相互の区別・実recordを検査するよう訂正。新規作成分岐を外すと作成対照が失敗し、重複拒否を外すと同名対照が失敗する。新test targetなし。
+
+**ビルド再生成の調査 (2026-09-06):** commitごとの再configureはcrash symbolsのGit ref依存による意図した更新。別にbattery embedはconfigure_fileが同一内容cppのmtimeを保持し、入力より古い出力として毎build再生成される実害あり。cmake/patch_battery_embed_low_write.cmakeの既存patchへstamp OUTPUT＋cpp BYPRODUCTSを入れる修正が次候補。cppのtouchは再compileを増やすため行わない。まだ修正・検証はしていない。
 
 **RT6/RT7 共有AS前の独立compute (2026-09-06):**
 - 一律の全node→共有AS依存を廃止。computeはray_tracing/ray_query宣言時だけ共有ASと選択先を待つ。通常anchor/copyもデータ依存の範囲で前置可能。raster passと実描画する__anchor_spriteは共有AS後を維持する。
