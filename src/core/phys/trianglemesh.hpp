@@ -28,6 +28,10 @@ class TriangleMesh {
     // singular matrices, and unrepresentable local rays return no hit.
     [[nodiscard]] std::optional<RaycastHit> raycast(
         const Ray &world_ray, const glm::mat4 &local_to_world) const;
+    // Surface overlap, inclusive of tangency. Radius stays in world units
+    // under nonuniform scale/reflection. Invalid inputs return false.
+    [[nodiscard]] bool overlaps(const Sphere &world_sphere,
+                                const glm::mat4 &local_to_world) const;
     [[nodiscard]] std::span<const vec3> vertices() const noexcept { return vertices_; }
     [[nodiscard]] std::span<const std::uint32_t> indices() const noexcept { return indices_; }
     [[nodiscard]] std::size_t triangleCount() const noexcept { return indices_.size() / 3; }

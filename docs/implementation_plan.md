@@ -23265,6 +23265,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3球とメッシュoverlap純計算 (2026-09-06):**
+- TriangleMesh::overlaps(world_sphere, local_to_world)を追加。BVH nodeの変換後boundsで絞り、world-space三角形の面・辺・頂点への距離で接触を判定する。球半径は非一様scale・反転でもworld単位のまま。接線接触を含み、無効入力はfalse。
+- runtime_services build成功、TriangleMesh8件72 assertions成功（build/.codex_bg/mesh-sphere-overlap-test.log）。face/edge/vertex接触と近接miss、bounds内triangle外miss、反転・非一様scale、12三角形のBVH branchを確認。boundsだけでhitにするとtriangle外missが落ちる。個別変異・公開serviceの確認は未実施。
+- 閉曲面の内部充填ではなくtriangle surfaceとのoverlapである。現在は純計算のみで、ProviderV3 / PhysWorld / 公開overlap serviceにはまだ接続していない。box/capsule・sweep・triggerを完成扱いにしない。
+
 **P3 runtime-only glTF物理登録 (2026-09-06):**
 - loadTransientGltfでcollision meshの物理candidate/BVHをentity作成前に準備し、entity成功後にtransform参照を設定して既存の単一公開箇所でswapする。失敗時は未公開candidateのRAIIで破棄する。
 - runtime_onlyのmesh bindingを明示し、lifecycle/collider編集の全一覧再構築ではlive entityの分だけ保持する。scene cutoverは従来どおり全一覧置換で破棄する。named importは名前/mesh、匿名importはtransient:instance index/meshを使用する。

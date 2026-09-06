@@ -7,6 +7,7 @@
 #include <stdexcept>
 
 #include <glm/matrix.hpp>
+#include <glm/geometric.hpp>
 #include <glm/vec4.hpp>
 
 namespace Pelican::phys {
@@ -232,6 +233,73 @@ std::optional<RaycastHit> TriangleMesh::raycast(
     };
     if (!finite(result.position) || !finite(result.normal)) return std::nullopt;
     return result;
+}
+
+bool TriangleMesh::overlaps(const Sphere &sphere, const glm::mat4 &local_to_world) const {
+    if (nodes_.empty() || !finite(sphere.center) || !std::isfinite(sphere.radius) || sphere.radius < 0)
+        return false;
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            if (!std::isfinite(local_to_world[c][r])) return false;
+    if (local_to_world[0][3] != 0 || local_to_world[1][3] != 0 ||
+        local_to_world[2][3] != 0 || local_to_world[3][3] != 1) return false;
+    const glm::dmat4 matrix{local_to_world};
+    const double determinant = glm::determinant(matrix);
+    if (!std::isfinite(determinant) || determinant == 0) return false;
+    const glm::dvec3 center{sphere.center.x, sphere.center.y, sphere.center.z};
+    const double radius2 = static_cast<double>(sphere.radius) * sphere.radius;
+    const auto worldPoint = [&](vec3 p) { return glm::dvec3(matrix * glm::dvec4{p.x, p.y, p.z, 1}); };
+    const auto distance2 = [](glm::dvec3 a, glm::dvec3 b) {
+        const auto d = a - b;
+        return glm::dot(d, d);
+    };
+    const auto edgeDistance2 = [&](glm::dvec3 a, glm::dvec3 b) {
+        const auto edge = b - a;
+        const double length2 = glm::dot(edge, edge);
+        const double t = length2 == 0 ? 0 : std::clamp(glm::dot(center - a, edge) / length2, 0.0, 1.0);
+        return distance2(center, a + t * edge);
+    };
+    std::array<std::size_t, std::numeric_limits<std::size_t>::digits + 1> stack{};
+    std::size_t size = 1;
+    while (size != 0) {
+        const auto &node = nodes_[stack[--size]];
+        glm::dvec3 low{std::numeric_limits<double>::infinity()};
+        glm::dvec3 high{-std::numeric_limits<double>::infinity()};
+        // Conservative world AABB of the transformed node; narrow phase below
+        // uses world triangles so a nonuniform scale never stretches the sphere.
+        for (int corner = 0; corner < 8; ++corner) {
+            const auto p = worldPoint({(corner & 1) ? node.maximum.x : node.minimum.x,
+                (corner & 2) ? node.maximum.y : node.minimum.y,
+                (corner & 4) ? node.maximum.z : node.minimum.z});
+            low = glm::min(low, p);
+            high = glm::max(high, p);
+        }
+        if (distance2(center, glm::clamp(center, low, high)) > radius2) continue;
+        if (node.count == 0) {
+            stack[size++] = node.left;
+            stack[size++] = node.right;
+            continue;
+        }
+        for (std::size_t i = node.begin; i < node.begin + node.count; ++i) {
+            const auto triangle = triangles_[i] * 3;
+            const auto a = worldPoint(vertices_[indices_[triangle]]);
+            const auto b = worldPoint(vertices_[indices_[triangle + 1]]);
+            const auto c = worldPoint(vertices_[indices_[triangle + 2]]);
+            if (std::min({edgeDistance2(a, b), edgeDistance2(b, c), edgeDistance2(c, a)}) <= radius2)
+                return true;
+            const auto normal = glm::cross(b - a, c - a);
+            const double normal2 = glm::dot(normal, normal);
+            if (normal2 == 0) continue;
+            const double height = glm::dot(center - a, normal);
+            if (height * height > radius2 * normal2) continue;
+            const auto projected = center - (height / normal2) * normal;
+            if (glm::dot(glm::cross(b - a, projected - a), normal) >= 0 &&
+                glm::dot(glm::cross(c - b, projected - b), normal) >= 0 &&
+                glm::dot(glm::cross(a - c, projected - c), normal) >= 0)
+                return true;
+        }
+    }
+    return false;
 }
 
 } // namespace Pelican::phys

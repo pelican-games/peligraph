@@ -151,4 +151,36 @@ TEST_CASE("Triangle mesh world queries reject invalid transforms and rays",
                                 transform));
 }
 
+TEST_CASE("Triangle mesh sphere overlap resolves faces edges and transformed surfaces",
+          "[physics][trianglemesh][mesh-overlap]") {
+    const TriangleMesh mesh(triangle, indices);
+    const glm::mat4 identity{1};
+    CHECK(mesh.overlaps(Sphere{{0.5F, 0.5F, 2.5F}, 0.5F}, identity));
+    CHECK_FALSE(mesh.overlaps(Sphere{{0.5F, 0.5F, 2.51F}, 0.5F}, identity));
+    CHECK(mesh.overlaps(Sphere{{1, -0.25F, 2}, 0.25F}, identity));
+    CHECK(mesh.overlaps(Sphere{{-0.5F, 0, 2}, 0.5F}, identity));
+    CHECK_FALSE(mesh.overlaps(Sphere{{1.8F, 1.8F, 2}, 0.1F}, identity));
+    CHECK(mesh.overlaps(Sphere{{0.5F, 0.5F, 2}, 0}, identity));
+    glm::mat4 transform{1};
+    transform[0][0] = -2;
+    transform[1][1] = 3;
+    transform[2][2] = 0.5F;
+    transform[3][2] = 7;
+    CHECK(mesh.overlaps(Sphere{{-0.5F, 0.5F, 8.25F}, 0.25F}, transform));
+    CHECK_FALSE(mesh.overlaps(Sphere{{-0.5F, 0.5F, 8.3F}, 0.25F}, transform));
+    CHECK_FALSE(mesh.overlaps(Sphere{{0, 0, 2}, -1}, identity));
+    CHECK_FALSE(mesh.overlaps(Sphere{{0, 0, 2}, std::numeric_limits<float>::infinity()}, identity));
+    transform[0][0] = 0;
+    CHECK_FALSE(mesh.overlaps(Sphere{{0, 0, 2}, 1}, transform));
+    std::vector<vec3> vertices;
+    std::vector<std::uint32_t> corners;
+    for (std::uint32_t i = 0; i < 12; ++i) {
+        for (auto v : triangle) { v.x += i * 5; vertices.push_back(v); }
+        for (auto index : indices) corners.push_back(i * 3 + index);
+    }
+    const TriangleMesh tree(vertices, corners);
+    CHECK(tree.overlaps(Sphere{{55.5F, 0.5F, 2.25F}, 0.25F}, identity));
+    CHECK_FALSE(tree.overlaps(Sphere{{53, 0.5F, 2}, 0.1F}, identity));
+}
+
 } // namespace Pelican::phys
