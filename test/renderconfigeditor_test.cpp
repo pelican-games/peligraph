@@ -2641,6 +2641,85 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
     }
 }
 
+TEST_CASE("Project feature pass edits publish their source and retain the rendering root",
+          "[render-config-editor][feature-pass-edit]") {
+    for (const auto *type : {"fullscreen", "raster", "material"}) {
+        CAPTURE(type);
+        TemporaryAnimgraphProject project;
+        PathResolver resolver;
+        resolver.setup(project.root, false);
+        Json pass{{"name", "feature_probe"}, {"type", type},
+                  {"input", Json::array({"gbuffer_normal"})},
+                  {"output", {{"color", Json::array({"lit_color"})}, {"depth", nullptr}}}};
+        if (std::string_view{type} == "material") {
+            pass["material_contract"] = "forward_opaque_v1";
+            pass["output"]["depth"] = "scene_depth";
+        } else {
+            pass["shader"] = {{"vertex", "engine://fullscreen"}, {"fragment", "engine://fullscreen"}};
+            if (std::string_view{type} == "raster") pass["draw"] = {{"vertex_count", 3}};
+        }
+        Json feature{{"schema", "pelican.render_feature"}, {"version", 1}, {"name", "editable_probe"},
+                     {"runtime_shader_compiler", "optional"},
+                     {"passes", Json::array({{{"insert", "before:scene_present"}, {"pass", pass}}})}};
+        const auto feature_path = project.root / "passes" / "editable_feature.json";
+        writeBytes(feature_path, feature.dump(2));
+        auto root = Json::parse(readBytes(project.render_config));
+        root["features"].push_back("project://passes/editable_feature.json");
+        writeBytes(project.render_config, root.dump(2));
+        const auto root_before = readBytes(project.render_config);
+        ActualCpuRenderRuntime runtime;
+        auto service = makeProjectService(project, resolver, runtime);
+        const auto context = service->getRenderAuthoringContext(Json::object());
+        const auto &passes = context.at("graphs").at(0).at("passes");
+        const auto editable = std::find_if(passes.begin(), passes.end(), [](const auto &value) { return value.at("name") == "feature_probe"; });
+        REQUIRE(editable != passes.end());
+        REQUIRE(editable->at("editable_feature_pass") == true);
+        CHECK(editable->at("feature_declaration") == pass);
+        CHECK(editable->at("feature_source_reference") == "project://passes/editable_feature.json");
+        Json request{{"base_source_digest", context.at("source_digest").at("hex")},
+                     {"base_feature_digest", editable->at("feature_source_digest").at("hex")},
+                     {"graph", "main_render"}, {"pass_name", "feature_probe"},
+                     {"input", Json::array({"gbuffer_albedo"})}, {"output", pass.at("output")}};
+        if (std::string_view{type} == "fullscreen") request["shader"] = pass.at("shader");
+        auto invalid = request;
+        invalid["material_routing"] = nullptr;
+        CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        invalid = request;
+        invalid["pass_name"] = "__anchor_tonemap";
+        CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        const auto before = readBytes(feature_path);
+        const auto accepted = service->editPresetPass(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        CHECK(readBytes(feature_path) == before);
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        feature["passes"][0]["pass"]["input"] = request.at("input");
+        CHECK(Json::parse(readBytes(feature_path)) == feature);
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(service->editPresetPass(request).at("error").at("code") == "external_modification");
+        service.reset();
+        service = makeProjectService(project, resolver, runtime);
+        const auto reopened = service->getRenderAuthoringContext(Json::object());
+        const auto &reopened_passes = reopened.at("graphs").at(0).at("passes");
+        const auto saved = std::find_if(reopened_passes.begin(), reopened_passes.end(), [](const auto &value) { return value.at("name") == "feature_probe"; });
+        REQUIRE(saved != reopened_passes.end());
+        CHECK(saved->at("feature_declaration") == feature.at("passes")[0].at("pass"));
+        request["base_feature_digest"] = saved->at("feature_source_digest").at("hex");
+        request["input"] = Json::array({"gbuffer_normal"});
+        const auto queued = service->editPresetPass(request);
+        REQUIRE(queued.at("status") == "accepted");
+        const auto external = readBytes(feature_path) + "\n";
+        writeBytes(feature_path, external);
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", queued.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(feature_path) == external);
+        CHECK(readBytes(project.render_config) == root_before);
+    }
+}
+
 TEST_CASE("Project raster preset edits preserve omitted fields and reopen",
           "[render-config-editor][preset-pass-edit][raster-connections]") {
     TemporaryAnimgraphProject project;

@@ -1053,6 +1053,10 @@ Frame Planの **Order nodes...** では、名前付きASの構築とconsumerを�
 例えばleft AS→leftを使うtask→right ASという順序が可能です。
 consumerを自身の接続先ASより前に置く変更は拒否します。ASを使わないcompute・通常anchor・copyは、
 データ依存に反しなければ共有ASより前へ配置できます。
+Frame Planの**Edit pass...**は、project presetに加えてproject内のfeatureファイルが明示的に宣言した
+fullscreen・material・raster passを編集します。featureの保存は元のファイルに反映され、同じfeatureを使うgraphにも適用されます。
+自動生成やパラメーター展開を伴うノード、engine内蔵featureなどは、対応する編集宣言がない理由を表示します。
+
 Studioでprojectへforkしたpresetのmaterial passを編集すると、**Material contract**で描画契約を選択できます。
 **Material settings (JSON)**では対象範囲・tag filter・variant・出力schema/state・resource宣言を編集します。
 欄からキーを除くと、その設定を削除して既定動作へ戻します。入出力接続やray query設定も同時に保存できます。

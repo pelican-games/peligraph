@@ -492,7 +492,7 @@ struct FramePlanWidget::Impl {
             }
             task_edit_action(QString::fromStdString(node->authored_name));
         });
-        auto *edit_pass = new QPushButton(owner.tr("Edit preset pass..."), &owner);
+        auto *edit_pass = new QPushButton(owner.tr("Edit pass..."), &owner);
         edit_pass->setObjectName(QStringLiteral("pelican.framePlanEditPresetPass"));
         toolbar->addWidget(edit_pass);
         QObject::connect(edit_pass, &QPushButton::clicked, &owner, [this] {

@@ -2341,6 +2341,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
           "[devstudio][fullscreen-pass][preset-pass-edit][material-query-edit]") {
     (void)application();
     const bool named = GENERATE(false, true);
+    const bool feature_owned = GENERATE(false, true);
     const std::string pass_type = GENERATE(std::string{"material"}, std::string{"raster"});
     RefreshHarness refresh;
     AuthoringHarness authoring;
@@ -2367,6 +2368,15 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
         {"pipeline_preset", {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
         {"graphs", Json::array({graph})}};
+    if (feature_owned) {
+        auto &entry = context["graphs"][0]["passes"][0];
+        entry["editable_preset_pass"] = false;
+        entry.erase("preset_declaration");
+        entry["editable_feature_pass"] = true;
+        entry["feature_declaration"] = original;
+        entry["feature_source_digest"] = {{"hex", std::string(64, 'c')}};
+        entry["feature_source_reference"] = "project://features/material.json";
+    }
     authoring.succeed(authoring.requests.back().id, context);
     const auto plan = minimalFramePlan("edit_graph", Json::array({resource("output"), resource("depth"),
         resource("replacement"), resource("new_depth"), resource("input"), resource("producer_output")}));
@@ -2378,6 +2388,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text().toStdString() == pass_type);
     CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden() == (pass_type == "material"));
     CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.draw").isHidden() == (pass_type == "material"));
+    CHECK(required<QPlainTextEdit>(form, "pelican.fullscreenPass.materialRouting").isHidden() == (feature_owned || pass_type != "material"));
     CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
     auto &query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
     auto &scene = required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene");
@@ -2441,7 +2452,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     REQUIRE(authoring.requests.back().method == "edit_preset_pass");
     const auto params = Json::parse(QJsonDocument(authoring.requests.back().params).toJson().toStdString());
     Json expected_params{{"base_source_digest", std::string(64, 'a')},
-        {"base_preset_digest", std::string(64, 'b')}, {"graph", "edit_graph"},
+        {feature_owned ? "base_feature_digest" : "base_preset_digest", std::string(64, feature_owned ? 'c' : 'b')}, {"graph", "edit_graph"},
         {"pass_name", "material_pass"}, {"ray_query", {{"acceleration_structure", "actors"}}}};
     if (named) {
         expected_params["input"] = expected.at("input");
@@ -2454,7 +2465,7 @@ TEST_CASE("Studio edits material and raster connections and restores the fullscr
     }
     if (pass_type == "material" && named) {
         expected_params["material_settings"] = {{"material_filter", expected.at("material_filter")}, {"material_contract", "forward_transparent_v1"}};
-        expected_params["material_routing"] = {{"policy", "hybrid_auto_v1"}, {"routes", {{"deferred_geometry", "geometry"}, {"forward_opaque", "opaque"}, {"forward_transparent", "material_pass"}}}};
+        if (!feature_owned) expected_params["material_routing"] = {{"policy", "hybrid_auto_v1"}, {"routes", {{"deferred_geometry", "geometry"}, {"forward_opaque", "opaque"}, {"forward_transparent", "material_pass"}}}};
     }
     CHECK(params == expected_params);
     CHECK(Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString()) == expected);

@@ -190,6 +190,7 @@ struct FullscreenPassWidget::Impl {
     std::map<std::string, std::vector<Anchor>, std::less<>> anchors;
     std::string source_digest, preset_digest;
     std::map<std::pair<std::string, std::string>, Json> preset_passes;
+    std::map<std::pair<std::string, std::string>, Json> feature_pass_info;
     std::optional<std::pair<std::string, std::string>> editing_preset_pass;
     bool load_edit_requested = false;
     Json original_preset_pass = Json::object();
@@ -663,6 +664,17 @@ struct FullscreenPassWidget::Impl {
         return editing_preset_pass && original_preset_pass.value("type", std::string{}) == "material";
     }
 
+    bool editingFeaturePass() const {
+        return editing_preset_pass && feature_pass_info.contains(*editing_preset_pass) &&
+            feature_pass_info.at(*editing_preset_pass).value("editable_feature_pass", false);
+    }
+
+    std::string passSourceDigest() const {
+        if (editingFeaturePass())
+            return feature_pass_info.at(*editing_preset_pass).value("feature_source_digest", Json::object()).value("hex", std::string{});
+        return preset_digest;
+    }
+
     static constexpr std::array materialSettingKeys{
         "material_range", "material_filter", "material_variant", "gpu_draw_source",
         "material_outputs", "material_output_states", "screen_inputs", "surface_resources", "material_resources"};
@@ -686,6 +698,7 @@ struct FullscreenPassWidget::Impl {
         form->setRowVisible(draw, editingRasterPass());
         for (auto *field : std::array<QWidget *, 3>{material_contract, material_settings, material_routing})
             form->setRowVisible(field, editingMaterialPass());
+        form->setRowVisible(material_routing, editingMaterialPass() && !editingFeaturePass());
         targets->setVisible(true);
         validation->setVisible(true);
     }
@@ -793,7 +806,7 @@ struct FullscreenPassWidget::Impl {
             const auto contract = material_contract->currentData().toString();
             if (contract.isEmpty()) draft.erase("material_contract");
             else draft["material_contract"] = contract.toStdString();
-            (void)routingDraft();
+            if (!editingFeaturePass()) (void)routingDraft();
         }
         return draft;
     }
@@ -1207,7 +1220,7 @@ struct FullscreenPassWidget::Impl {
         save->setEnabled(
             authoring_rpc_available && authoring_available && idle &&
             source_digest.size() == 64 &&
-            (editing_preset_pass ? bool(authoring.editPresetPass) && preset_digest.size() == 64 && !load_edit_requested &&
+            (editing_preset_pass ? bool(authoring.editPresetPass) && passSourceDigest().size() == 64 && !load_edit_requested &&
                 preset_passes.contains(*editing_preset_pass) : selected_anchor) &&
             (validation == QStringLiteral("valid") ||
              validation == QStringLiteral("partial")));
@@ -1309,7 +1322,7 @@ struct FullscreenPassWidget::Impl {
       try {
         auto draft = draftJson();
         Json params{{"base_source_digest", source_digest},
-                    {"base_preset_digest", preset_digest},
+                    {editingFeaturePass() ? "base_feature_digest" : "base_preset_digest", passSourceDigest()},
                     {"graph", editing_preset_pass->first},
                     {"pass_name", editing_preset_pass->second},
                     {"ray_query", rayQueryDeclaration()}};
@@ -1324,8 +1337,10 @@ struct FullscreenPassWidget::Impl {
                 for (const auto *key : materialSettingKeys) collect(key);
                 collect("material_contract");
                 if (!settings.empty()) params["material_settings"] = std::move(settings);
-                const auto routing = routingDraft();
-                if (routing != preset_material_routing) params["material_routing"] = routing;
+                if (!editingFeaturePass()) {
+                    const auto routing = routingDraft();
+                    if (routing != preset_material_routing) params["material_routing"] = routing;
+                }
             }
             for (const auto *key : {"input", "output", "shader", "draw", "raster_state"}) {
                 if (draft.contains(key) && (!original_preset_pass.contains(key) || draft.at(key) != original_preset_pass.at(key)))
@@ -1382,8 +1397,10 @@ struct FullscreenPassWidget::Impl {
         return;
       }
       if (!preset_passes.contains(*editing_preset_pass)) {
-        authoringError(owner.tr(
-            "This node is not an editable pass owned by the project preset."));
+        const auto found = feature_pass_info.find(*editing_preset_pass);
+        authoringError(found != feature_pass_info.end()
+            ? text(found->second.value("feature_edit_reason", std::string{"This feature node has no editable project pass declaration."}))
+            : owner.tr("This node has no editable project preset or feature pass declaration."));
         return;
       }
       const auto &declaration = preset_passes.at(*editing_preset_pass);
@@ -1443,7 +1460,10 @@ struct FullscreenPassWidget::Impl {
       }
       load_edit_requested = false;
       updating = false;
-      save->setText(owner.tr("Save preset pass"));
+      save->setText(editingFeaturePass() ? owner.tr("Save feature pass") : owner.tr("Save preset pass"));
+      save->setToolTip(editingFeaturePass()
+          ? owner.tr("Updates %1 wherever this feature is used.").arg(text(feature_pass_info.at(*editing_preset_pass).value("feature_source_reference", std::string{})))
+          : QString{});
       updateDraft();
     }
 
@@ -1510,6 +1530,7 @@ struct FullscreenPassWidget::Impl {
         }
 
         preset_passes.clear();
+        feature_pass_info.clear();
         preset_material_routing = context.value("preset_material_routing", Json(nullptr));
         preset_digest = context.value("pipeline_preset", Json::object()).value("source_digest", Json::object()).value("hex", std::string{});
         decltype(authored_passes) next_passes;
@@ -1548,6 +1569,10 @@ struct FullscreenPassWidget::Impl {
                 const auto pass_name =
                     pass_value.at("name").get<std::string>();
                 if (pass_value.value("editable_preset_pass", false)) preset_passes.emplace(std::pair{graph_name, pass_name}, pass_value.at("preset_declaration"));
+                if (pass_value.contains("feature_edit_reason") || pass_value.value("editable_feature_pass", false))
+                    feature_pass_info.emplace(std::pair{graph_name, pass_name}, pass_value);
+                if (pass_value.value("editable_feature_pass", false))
+                    preset_passes.insert_or_assign(std::pair{graph_name, pass_name}, pass_value.at("feature_declaration"));
                 const Json &declaration =
                     pass_value.contains("declaration")
                         ? pass_value.at("declaration")
@@ -1818,6 +1843,7 @@ struct FullscreenPassWidget::Impl {
 
     void clearDraft() {
         updating = true;
+        save->setToolTip({});
         original_preset_pass = Json::object();
         showPresetFields(false);
         name->clear();
