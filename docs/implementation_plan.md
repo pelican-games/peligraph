@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**feature間接続を含む領域解除 (2026-09-06):**
+- 合成処理で実際に適用されたintegration fragmentをauthoring observerへ通知し、選択featureのpass_overrides先を解除対象へ加えた。宣言を独自に走査して条件判定を複製せず、既存requires/requires_passesの結果を使う。surface_resource_contractsに記録された接続先もprovider_refで選別して含める。
+- Debug render_pipeline/player build成功。関連2件58 assertions成功。root/preset両scopeで有効integrationのpresent領域が解除され、無効integrationのlighting領域は残ることを既存の保存・再読込・失敗時保持試験で確認した。surface resource接続先の選別は既存compiled declarationのprovider_ref/consumer名を利用しており、専用GPU経路は追加していない。
+
 **feature展開と領域差し替え解除の統合 (2026-09-06):**
 - materialize対象が追加・直接pass_overridesするpassのregionsを合成結果から求め、同じgraphの該当region_replacementsだけを保存文書から除去する。root featureでもproject preset側の解除を同じ複数文書transactionへ載せ、別の領域指定は保持。engine preset側を変更する場合は既存forkを要求する。通常のcompiler最適化は止めない。
 - Debug render_pipeline/player build成功。展開保存と領域編集の関連2件58 assertions成功。sky backgroundのfullscreen領域で解除、無関係のpresent領域の保持、root/preset保存・再読込・直接編集・候補失敗時の元文書保持を確認。最初のshadow_depth試験設定はregistryのfullscreen限定仕様に反していたため、対象内のskyへ修正した。registryの対応pass種を拡張した変更ではない。

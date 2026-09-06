@@ -36,6 +36,9 @@ struct RenderFeatureComposeDependencies {
     // position. Runtime compilation leaves this empty.
     std::function<void(std::string_view, const nlohmann::json &)>
         materialized_feature;
+    // Reports only integration fragments whose feature/pass requirements match.
+    std::function<void(std::string_view, const nlohmann::json &)>
+        applied_integration;
 };
 
 struct RenderFeatureComposeResult {

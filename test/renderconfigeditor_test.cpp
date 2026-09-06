@@ -1865,6 +1865,11 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
             auto root = Json::parse(readBytes(project.render_config));
             auto shadow = Json::parse(resolver.loadText("engine://features/sky_ambient.json"));
             shadow["passes"][0]["pass"]["regions"] = Json::array({"region.shadow"});
+            shadow["integrations"] = Json::array({
+                {{"name", "active_connection"}, {"requires", Json::array({"ui"})},
+                 {"fragment", {{"pass_overrides", {{"scene_present", {{"input", Json::array({"scene_depth"})}}}}}}}},
+                {{"name", "inactive_connection"}, {"requires", Json::array({"not_enabled"})},
+                 {"fragment", {{"pass_overrides", {{"deferred_lighting", {{"input", Json::array({"scene_depth"})}}}}}}}}});
             writeBytes(project.root / "passes" / "shadow-source.json", shadow.dump(2));
             root["features"][0] = {{"ref", "project://passes/shadow-source.json"}, {"parameters", {{"color_r", 0.7}}}};
             root["features"].erase(1); // The selected local sky replaces the engine sky instance.
@@ -1873,9 +1878,12 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
             auto &graph = preset["config"]["rendering_passes"][0];
             graph["region_replacements"] = Json::array({
                 {{"region", "region.shadow"}, {"provider", "builtin.identity_v1"}},
-                {{"region", "region.present"}, {"provider", "builtin.identity_v1"}}});
-            for (auto &pass : graph["passes"])
+                {{"region", "region.present"}, {"provider", "builtin.identity_v1"}},
+                {{"region", "region.lighting"}, {"provider", "builtin.identity_v1"}}});
+            for (auto &pass : graph["passes"]) {
                 if (pass.at("name") == "scene_present") pass["regions"] = Json::array({"region.present"});
+                if (pass.at("name") == "deferred_lighting") pass["regions"] = Json::array({"region.lighting"});
+            }
             if (scope == "preset") {
                 preset["config"]["features"] = root.at("features");
                 root["features"] = Json::array();
@@ -1914,7 +1922,7 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 CHECK((scope == "root" ? owner : owner.at("config")).at("features").at(0) == "project://passes/shadow-local.json");
                 const auto saved_preset = Json::parse(readBytes(preset_path));
                 CHECK(saved_preset.at("config").at("rendering_passes").at(0).at("region_replacements") ==
-                    Json::array({{{"region", "region.present"}, {"provider", "builtin.identity_v1"}}}));
+                    Json::array({{{"region", "region.lighting"}, {"provider", "builtin.identity_v1"}}}));
                 service.reset();
                 service = makeProjectService(project, resolver, runtime);
                 const auto context = service->getRenderAuthoringContext(Json::object());

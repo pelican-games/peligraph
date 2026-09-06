@@ -3072,6 +3072,8 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
                 pass_provenance);
             applyPassOverrides(
                 composed, fragment);
+            if (dependencies.applied_integration)
+                dependencies.applied_integration(provider.reference, fragment);
             addFeatureComputeTasks(
                 composed, fragment,
                 task_names,

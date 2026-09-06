@@ -628,6 +628,11 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
             return bytes;
         };
         std::optional<Json> materialized;
+        std::set<std::string> edited_passes;
+        const auto include_overrides = [&](const Json &fragment) {
+            if (const auto overrides = fragment.find("pass_overrides"); overrides != fragment.end())
+                for (const auto &[name, value] : overrides->items()) edited_passes.insert(name);
+        };
         const auto composition = composeRenderFeatureConfig(Json::parse(document_.bytes()), RenderFeatureComposeDependencies{
             .load_feature_json = loader,
             // This authors the currently selected feature. Actual device/module
@@ -639,14 +644,20 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
                 if (materialized) throw std::runtime_error("Select a uniquely referenced feature instance");
                 materialized = feature;
             },
+            .applied_integration = [&](std::string_view ref, const Json &fragment) {
+                if (ref == reference) include_overrides(fragment);
+            },
         });
         if (!materialized) return rejection("feature_not_found", "The selected feature was not composed");
         features[index] = destination;
-        std::set<std::string> edited_passes;
         for (const auto &pass : composition.pass_provenance)
             if (pass.provider_reference == reference) edited_passes.insert(pass.name);
-        if (const auto overrides = materialized->find("pass_overrides"); overrides != materialized->end())
-            for (const auto &[name, value] : overrides->items()) edited_passes.insert(name);
+        include_overrides(*materialized);
+        for (const auto &contract : composition.surface_resource_contracts) {
+            if (contract.at("provider_ref") != reference) continue;
+            for (const auto *field : {"material_consumers", "fullscreen_consumers"})
+                for (const auto &consumer : contract.at(field)) edited_passes.insert(consumer.get<std::string>());
+        }
         std::map<std::string, std::set<std::string>> released_regions;
         for (const auto &graph : composition.config.at("rendering_passes"))
             for (const auto &pass : graph.at("passes")) {
