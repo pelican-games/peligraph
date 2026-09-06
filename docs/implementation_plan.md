@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**CARRIER Behavior fieldの独立Undo (2026-09-06):**
+**CARRIER List編集と生成操作の複合Undo/Redo (2026-09-06):**
+- rev382b-fix残余#1のspawn/add→List挿入→Undo×2→Redo×2を修正。postcondition比較をcomponent単体からobject/components/復元objectsへ展開し、schema上のList高水位を両側の大きい値へ揃えて比較する。raw文書自体を書き換える処理ではなく、row ID・値・その他のfieldは従来どおり比較する。任意JSONのnext_idを一括無視する方式は採用しない。
+- コンポーネント追加とobject生成の両経路で、Redo後の行ID=1・値・next_id=2を確認。対象1件28 assertions、最終journal34件787 assertions、WP382b関連14件260 assertions成功。ログはbuild/.codex_bg/list-creation-undo-{build,test,regression,carrier}.log。描画変更がなくGPU試験は反復しない。
+- 対照: object全体の調整を戻せばspawnのUndoが、片方向比較に戻せば追加のRedo連鎖が拒否される。個別変異は未実行。既存の他actor構造変更拒否・高水位の不正低下拒否も関連範囲に含む。unpack/destroyを含む専用の新試験は今回未追加。
+- 次はrev382cのmodel reload後GPU反映とdirect参照のasset keyを現行経路で確認する。機能全体の完了は未判定。
+
+**CARRIER Behavior fieldの独立Undo (2026-09-06、061e3a74):**
 - rev382b-fix残余#3を修正。legacy insert/remove fieldのvalue_field同士は、両方がattachmentを指定する場合に取り付け位置を区別する。同じ対象の競合とcomponent全体への構造変更の保護は維持する。
 - coordinator経由で別actorの別attachmentへの編集を残したUndoと、同じattachmentへの変更後のundo_conflictを確認。対象1件14 assertions、journal関連33件759 assertions成功（build/.codex_bg/attachment-undo-test.log、attachment-undo-regression.log）。CPU build成功。runtime描画変更がないためGPU試験は反復しない。
 - 対照は同一attachmentの拒否。attachment判定を戻すと独立Undoのacceptedが成立しない。個別変異は未実行。初回buildのテストマクロ不足は既存SECTION形式に修正済み。

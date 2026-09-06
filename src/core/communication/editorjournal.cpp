@@ -3968,25 +3968,53 @@ bool recordOverlaps(const EditorJournalRecord &record,
     return false;
 }
 
+void reconcilePostconditionHighWater(Json &observed, Json &expected,
+                                     AuthoringObjectId object_id) {
+    if (observed.contains("object_id")) {
+        object_id = AuthoringObjectId{observed.at("object_id").get<std::uint64_t>()};
+    }
+    const auto reconcile_component = [object_id](Json &left, Json &right) {
+        const auto name = left.value("name", std::string{});
+        if (name != right.value("name", std::string{}) ||
+            left.value("type", Json{}) != right.value("type", Json{})) return;
+        // Compare allocator state at a common high water. Replay may recreate
+        // an attachment from an older snapshot; row IDs and values still match.
+        validateRawComponentTransition(left, right, object_id, name, true);
+        validateRawComponentTransition(right, left, object_id, name, true);
+    };
+    if (observed.contains("authored_component") && expected.contains("authored_component")) {
+        reconcile_component(observed.at("authored_component"), expected.at("authored_component"));
+    }
+    if (observed.contains("components") && expected.contains("components")) {
+        auto &left = observed.at("components");
+        auto &right = expected.at("components");
+        if (left.size() == right.size()) {
+            for (std::size_t i = 0; i < left.size(); ++i) reconcile_component(left.at(i), right.at(i));
+        }
+    }
+    if (observed.contains("authored_object") && expected.contains("authored_object")) {
+        reconcilePostconditionHighWater(observed.at("authored_object"),
+                                       expected.at("authored_object"), object_id);
+    }
+    if (observed.contains("objects") && expected.contains("objects")) {
+        auto &left = observed.at("objects");
+        auto &right = expected.at("objects");
+        if (left.size() == right.size()) {
+            for (std::size_t i = 0; i < left.size(); ++i) {
+                reconcilePostconditionHighWater(left.at(i), right.at(i), object_id);
+            }
+        }
+    }
+}
+
 bool postconditionsHold(const EditorJournalRecord &record,
                         const AuthoringSceneDocument &document) {
     if (record.commands.size() != record.forward_postconditions.size()) return false;
     for (const auto &command : record.commands) {
-        const auto observed = targetState(Json::array({command.forward}), document);
-        auto expected = command.forward_postcondition;
-        if (observed.contains("authored_component") &&
-            expected.contains("authored_component")) {
-            // Undoing a later insertion leaves its allocator high water behind.
-            // That alone must not invalidate an older command's postcondition;
-            // every authored value and row identity must still match exactly.
-            Json component = expected.at("authored_component");
-            validateRawComponentTransition(
-                observed.at("authored_component"), component,
-                AuthoringObjectId{command.forward.at("object_id")
-                                      .get<std::uint64_t>()},
-                command.forward.at("component_slot").get<std::string>(), true);
-            expected["authored_component"] = std::move(component);
-        }
+        Json observed = targetState(Json::array({command.forward}), document);
+        Json expected = command.forward_postcondition;
+        reconcilePostconditionHighWater(observed, expected, AuthoringObjectId{
+            command.forward.value("object_id", std::uint64_t{})});
         if (observed != expected) {
             return false;
         }

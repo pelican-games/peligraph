@@ -347,7 +347,7 @@ Frame Planの **Order nodes...** で現在のgraphのノードをUp/Downで並�
 - **ただし `edit_render_features` はこの区別に従いません。**フレーム境界の preflight で落ちた場合も `status` は `"rejected"` です。また **追加情報は `payload` の中ではなく `error` の直下**に置かれます。
 - **シーン編集**の安定コードは **43 種**です(正は
   [`EditorEditErrorCode`](../../src/core/communication/editorjournal.hpp#L46) と、その名前を返す
-  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L4483)。**列挙子の名前とワイヤ上の
+  [`editorEditErrorCodeName()`](../../src/core/communication/editorjournal.cpp#L4511)。**列挙子の名前とワイヤ上の
   コード名は一致しません** —— 新しいものは `@1` 付きです)。内訳:
   - 基本 21 種: `stale_revision` / `gate_closed` / `preview_lease_conflict` / `preview_lease_busy` / `not_lease_owner` / `ticket_not_found` / `undo_conflict` / `not_editable` / `schema_violation` / `component_unknown@1` / `duplicate_component` / `missing_component` / `name_conflict` / `parent_not_found` / `closure_unresolvable` / `cycle_detected` / `zero_scale` / `non_finite_transform` / `trs_unrepresentable` / `preserve_missing` / `method_unavailable`
   - preview: `editor_preview_unsupported@1`(✅WP375c。列挙子は `preview_unsupported`。**inactive なシーンの add / remove / reparent プレビュー**はこれで拒否されます)

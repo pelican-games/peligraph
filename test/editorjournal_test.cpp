@@ -1542,6 +1542,56 @@ TEST_CASE("WP382b behavior remove undo preserves the exact authored component",
             authored_component.dump());
 }
 
+TEST_CASE("List editing can undo and redo through attachment creation",
+          "[editor][journal][behavior][list-creation-undo]") {
+    bool spawn = false;
+    SECTION("add component") {}
+    SECTION("spawn object") { spawn = true; }
+    Harness harness;
+    const Json initial{{"name", "behavior"},
+        {"type", "wp382b_journal_list_behavior"},
+        {"params", {{"rows", {{"$list", {{"v", 1}, {"next_id", 1}}},
+                             {"rows", Json::array()}}}}}};
+    const auto created = harness.commit(spawn
+        ? Json{{"op", "spawn"}, {"scene_id", "main"},
+               {"object", {{"name", "ListObject"}, {"components", Json::array({initial})}}}}
+        : Json{{"op", "add_component"}, {"object_id", 4}, {"component", initial}});
+    REQUIRE(created.at("status") == "committed");
+    const auto object_id = spawn ? 5 : 4;
+    const auto component_index = spawn ? 0 : 2;
+    const Json address{{"authoring_object_id", object_id},
+        {"component", {{"type", "wp382b_journal_list_behavior"},
+            {"occurrence", component_index}, {"origin", {{"kind", "authored"},
+                {"authoring_component_index", component_index}}}}}, {"list_path", "/rows"}};
+    const auto inserted = harness.commit({{"op", "insert_component_field"},
+        {"address", address}, {"position", {{"end", true}}},
+        {"value", {{"label", "retained-row"}}}});
+    REQUIRE(inserted.at("status") == "committed");
+    const auto replay = [&](bool redo) {
+        const Json request{{"actor_id", harness.actor},
+            {"base_revision", harness.target.document.revision().value}};
+        const auto accepted = redo ? harness.edits->enqueueRedo(request)
+                                   : harness.edits->enqueueUndo(request);
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        harness.edits->commitPending();
+        const auto result = harness.edits->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("status") == "committed");
+    };
+    replay(false);
+    replay(false);
+    replay(true);
+    replay(true);
+    const auto rows = harness.target.document.rawJson().at("scenes").at("main")
+        .at("objects").at(spawn ? 4 : 3).at("components").at(component_index)
+        .at("params").at("rows");
+    REQUIRE(rows.at("rows").size() == 1);
+    REQUIRE(rows.at("rows").at(0).at("$row").at("id") == 1);
+    REQUIRE(rows.at("rows").at(0).at("label") == "retained-row");
+    REQUIRE(rows.at("$list").at("next_id") == 2);
+}
+
 TEST_CASE("WP382b behavior attachment insertion rejects an older list undo",
           "[WP382b][editor][journal][behavior][list][two-actor]") {
     Harness harness;

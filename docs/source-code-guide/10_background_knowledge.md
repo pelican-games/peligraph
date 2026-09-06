@@ -975,7 +975,7 @@ SPIR-V モジュールは 32bit ワードの列です。先頭 5 ワードがヘ
 
 `/a/b/0` の形でJSON 文書内の 1 か所を指す標準記法が **JSON Pointer(RFC 6901)** です。`/` 区切りの各トークンはオブジェクトのキーか配列の添字で、空文字列のポインタは文書全体を指します。キーに `/` や `~` が含まれる場合のエスケープがあり、**`~0` が `~`、`~1` が `/`** です。復号は RFC 6901 が順序まで規定していて、**先に `~1` → `/`、後から `~0` → `~`** の順でなければなりません。逆順にすると `~01` が `~1`(正解)ではなく `/` になります。nlohmann::json では `json::json_pointer` 型で表現し、`at(pointer)` は不在で例外、`operator[]` は不在の位置を作ってしまう、という違いがあります。エラー報告の「どのフィールドが悪いか」を機械可読に返す用途で広く使われます。
 
-**使用場所**: [prepareSet()](../../src/core/communication/editorjournal.cpp#L2247)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L4327)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L137)(エラーに `/resolver_inputs/<field>` を載せる)
+**使用場所**: [prepareSet()](../../src/core/communication/editorjournal.cpp#L2247)(`Json::json_pointer{field_path}` でフィールド位置を解決) / [parseEditorMutationRequest()](../../src/core/communication/editorjournal.cpp#L4355)(構築できるかだけを検査する) / [appendResolverFloat()](../../src/core/loader/resolvedscene.cpp#L137)(エラーに `/resolver_inputs/<field>` を載せる)
 
 ### nlohmann::json の型判定・キー順・JSON null
 
