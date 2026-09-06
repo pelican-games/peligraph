@@ -6,10 +6,9 @@
 
 namespace Pelican::Physics {
 
-// Physics API/service/provider V2 is the only accepted service surface.
-// The V1 suffixes in this file identify the still-current descriptor and
-// query-payload layouts embedded by that V2 surface; they do not expose a
-// Physics API V1 or ProviderV1 compatibility path.
+// The V1 suffixes identify the current primitive payload layouts used by
+// the V2 service and the additive V3 mesh-provider surface. They do not
+// expose a Physics API V1 or ProviderV1 compatibility path.
 inline constexpr std::uint32_t descriptorVersionV1 = 1;
 inline constexpr std::size_t descriptorHeaderSize = 16;
 inline constexpr std::uint32_t maximumProviderNameBytesV1 = 127;

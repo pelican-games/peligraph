@@ -23265,6 +23265,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**P3メッシュprovider API (2026-09-06):**
+- ProviderV3 / ApiV3を追加。V2 primitive descriptorを内包し、immutable vertex/indexとaffine object transformをcallback中だけ借用するmesh raycastを明示。mesh-only providerも既存のowner登録・activation・解除・共有lockへ統合。
+- 既存filterとidentityを適用し、game mesh provider→engine mesh provider→Builtin/Jolt構成のCPU BVHへdispatch。provider-onlyにはCPU narrow phaseを追加しない。providerの距離・normal・indexを検証し、world位置と元identityを復元する。
+- runtime_services build成功。物理service / TriangleMesh / PhysWorldの27件328 assertions成功（build/.codex_bg/mesh-provider-test.log）。既定CPU hitとfake providerの異なる距離が対照になり、dispatchを既定側へ固定すると後者が落ちる。filter、異常provider hit、所有者による解除も確認。個別変異・physics OFF / provider-only別buildは未実施。
+- PhysWorld prepared mesh bindingsとscene/model reload/編集接続は次。builtin callbackはqueryごとにBVHを作るため、geometry寿命に沿った再利用も残る。シーンのmesh collider、overlap/sweep/triggerの完成とは扱わない。
+
 **P3 object変換付きメッシュ問い合わせ (2026-09-06):**
 - TriangleMesh::raycast(world_ray, local_to_world)を追加。world方向を正規化し、inverse変換後のlocal方向は再正規化せずworld距離のparameterを保持。位置はworld rayから復元し、法線はinverse-transposeとdeterminant符号で変換する。元geometryは変更しない。
 - 有限affine行列を対象にし、特異行列・非affine・非有限入力・表現不能なqueryはhitなし。provider/runtimeへの登録はまだ未実装であり、公開raycast RPCでmeshが使える段階ではない。

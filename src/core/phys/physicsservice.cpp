@@ -2,7 +2,7 @@
 
 #include "physworld.hpp"
 #include "../container.hpp"
-#include "../userpublic/physics/abi_v2.hpp"
+#include "../userpublic/physics/abi_v3.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -335,6 +335,15 @@ Status registerProviderV2(void *context, const ProviderV2 *provider,
     return physics_internal::registerProvider(*provider, owner, *out_handle);
 }
 
+Status registerProviderV3(void *context, const ProviderV3 *provider,
+                          ProviderHandleV2 *out_handle) noexcept {
+    if (context != &service_context_token || provider == nullptr || out_handle == nullptr)
+        return Status::invalid_argument;
+    const auto owner = internal::currentRegistrationOwner();
+    if (owner == internal::engineRegistrationOwner) return Status::wrong_owner;
+    return physics_internal::registerProvider(*provider, owner, *out_handle);
+}
+
 Status unregisterProvider(void *context, ProviderHandleV2 handle) noexcept {
     if (context != &service_context_token) return Status::invalid_argument;
     const auto owner = internal::currentRegistrationOwner();
@@ -362,6 +371,19 @@ Status getApiV2(std::uint32_t client_abi_version, ApiV2 *out_api) noexcept {
     produced.register_provider = registerProviderV2;
     produced.unregister_provider = unregisterProvider;
     std::memcpy(out_api, &produced, std::min<std::size_t>(caller_size, sizeof(produced)));
+    return Status::ok;
+}
+
+Status getApiV3(std::uint32_t client_abi_version, ApiV3 *out_api) noexcept {
+    if (out_api == nullptr || out_api->struct_size < sizeof(ApiV3)) return Status::invalid_argument;
+    if (out_api->version != descriptorVersionV1 || client_abi_version != abiVersionV3)
+        return Status::unsupported_version;
+    if (out_api->reserved0 != 0 || out_api->reserved1 != 0) return Status::reserved_not_zero;
+    ApiV3 produced;
+    const auto status = getApiV2(abiVersionV2, &produced.base);
+    if (status != Status::ok) return status;
+    produced.register_provider_v3 = registerProviderV3;
+    *out_api = produced;
     return Status::ok;
 }
 

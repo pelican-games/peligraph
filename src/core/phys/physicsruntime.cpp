@@ -1,6 +1,9 @@
 #include "physicsruntime.hpp"
 
 #include "physqueryinternal.hpp"
+#if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
+#include "meshphysicsprovider.hpp"
+#endif
 #if PELICAN_WITH_BUILTIN_PHYSICS
 #include "builtinphysicsprovider.hpp"
 #endif
@@ -27,6 +30,8 @@ struct ProviderDispatch {
     Physics::ProviderRaycastAllV1Fn raycast_all = nullptr;
     Physics::ProviderOverlapAllV1Fn overlap_all = nullptr;
     Physics::ProviderShapeCastAllV2Fn shape_cast_all = nullptr;
+    std::uint64_t mesh_capability_bits = 0;
+    Physics::ProviderMeshRaycastAllV3Fn mesh_raycast_all = nullptr;
 };
 
 struct RegisteredProvider {
@@ -90,7 +95,8 @@ ProviderDispatch dispatchFor(const Physics::ProviderV2 &provider) {
 
 const ProviderDispatch *configuredProviderLocked(const Registry &value,
                                                   std::string_view *name = nullptr) {
-    if (const auto *provider = findByOwner(value, internal::engineRegistrationOwner)) {
+    if (const auto *provider = findByOwner(value, internal::engineRegistrationOwner);
+        provider != nullptr && provider->dispatch.capability_bits != 0) {
         if (name != nullptr) *name = provider->name;
         return &provider->dispatch;
     }
@@ -269,7 +275,7 @@ Physics::Status invokeProvider(const ProviderDispatch &provider,
     return Physics::Status::ok;
 }
 
-bool validProvider(const Physics::ProviderV2 &provider) {
+bool validProvider(const Physics::ProviderV2 &provider, bool allow_empty = false) {
     constexpr auto known_capabilities = Physics::builtinQueryCapabilitiesV2;
     if (provider.struct_size < sizeof(Physics::ProviderV2) ||
         provider.version != Physics::descriptorVersionV1 ||
@@ -277,7 +283,7 @@ bool validProvider(const Physics::ProviderV2 &provider) {
         provider.provider_version != Physics::providerVersionV2 ||
         provider.minimum_engine_provider_version > Physics::providerVersionV2 ||
         (provider.capability_bits & ~known_capabilities) != 0 ||
-        provider.capability_bits == 0 || provider.name_utf8 == nullptr ||
+        (!allow_empty && provider.capability_bits == 0) || provider.name_utf8 == nullptr ||
         provider.name_size == 0 ||
         provider.name_size > Physics::maximumProviderNameBytesV1) {
         return false;
@@ -339,6 +345,33 @@ Physics::Status registerProvider(const Physics::ProviderV2 &provider,
     }
 }
 
+Physics::Status registerProvider(const Physics::ProviderV3 &provider,
+                                 internal::RegistrationOwner owner,
+                                 Physics::ProviderHandleV2 &out_handle) noexcept {
+    out_handle = {};
+    if (provider.struct_size < sizeof(Physics::ProviderV3) ||
+        provider.version != Physics::descriptorVersionV1 ||
+        provider.reserved0 != 0 || provider.reserved1 != 0 ||
+        provider.provider_version != Physics::providerVersionV3 ||
+        provider.minimum_engine_provider_version > Physics::providerVersionV3 ||
+        !validProvider(provider.base, true) ||
+        (provider.mesh_capability_bits & ~Physics::query_mesh_raycast_all) != 0 ||
+        (provider.mesh_capability_bits == 0 && provider.base.capability_bits == 0) ||
+        (provider.mesh_capability_bits != 0 && provider.mesh_raycast_all == nullptr))
+        return Physics::Status::invalid_argument;
+    try {
+        auto dispatch = dispatchFor(provider.base);
+        dispatch.mesh_capability_bits = provider.mesh_capability_bits;
+        dispatch.mesh_raycast_all = provider.mesh_raycast_all;
+        return registerProviderDispatch(dispatch, provider.base.name_utf8,
+                                         provider.base.name_size, owner, out_handle);
+    } catch (const std::bad_alloc &) {
+        return Physics::Status::out_of_memory;
+    } catch (...) {
+        return Physics::Status::provider_error;
+    }
+}
+
 Physics::Status unregisterProvider(Physics::ProviderHandleV2 handle,
                                    internal::RegistrationOwner owner) noexcept {
     if (!validHandle(handle)) {
@@ -392,6 +425,129 @@ std::string activeProviderName() {
     std::string_view name;
     (void)configuredProviderLocked(value, &name);
     return std::string{name};
+}
+
+Physics::Status raycastMeshes(
+    const phys::Ray &ray, std::span<const Physics::TriangleMeshV3> meshes,
+    std::span<const phys::ColliderIdentity> identities,
+    std::span<const phys::ColliderQueryMetadata> metadata,
+    const phys::QueryFilter *filter,
+    std::vector<phys::RaycastQueryHit> &out_hits) noexcept {
+    using Physics::Status;
+    out_hits.clear();
+    try {
+        if (meshes.size() != identities.size() || meshes.size() != metadata.size() ||
+            !finite(toAbi(ray.origin)) || !finite(toAbi(ray.direction)) ||
+            !std::isfinite(ray.max_distance) || ray.max_distance < 0.0F)
+            return Status::invalid_argument;
+        if (meshes.size() > std::numeric_limits<std::uint32_t>::max())
+            return Status::out_of_memory;
+        Physics::Vec3V1 direction{};
+        if (!normalized(toAbi(ray.direction), direction)) return Status::ok;
+        std::vector<Physics::TriangleMeshV3> selected;
+        std::vector<std::size_t> source_indices;
+        std::vector<phys::ColliderIdentity> selected_identities;
+        for (std::size_t index = 0; index < meshes.size(); ++index) {
+            phys::Collider identity_proxy;
+            identity_proxy.id = identities[index].name;
+            identity_proxy.identity = identities[index];
+            identity_proxy.metadata = metadata[index];
+            auto identity = phys::effectiveColliderIdentity(identity_proxy);
+            if (filter != nullptr &&
+                !phys::internal::passesQueryFilter(identity_proxy, identity, *filter)) continue;
+            const auto &mesh = meshes[index];
+            if (mesh.reserved0 != 0 || mesh.reserved1 != 0 || mesh.index_count % 3 != 0 ||
+                (mesh.vertex_count != 0 && mesh.vertices == nullptr) ||
+                (mesh.index_count != 0 && mesh.indices == nullptr)) return Status::invalid_argument;
+            for (std::uint32_t vertex = 0; vertex < mesh.vertex_count; ++vertex)
+                if (!finite(mesh.vertices[vertex])) return Status::invalid_argument;
+            for (std::uint32_t corner = 0; corner < mesh.index_count; ++corner)
+                if (mesh.indices[corner] >= mesh.vertex_count) return Status::invalid_argument;
+            for (const auto value : mesh.local_to_world)
+                if (!std::isfinite(value)) return Status::invalid_argument;
+            const auto *m = mesh.local_to_world;
+            if (m[3] != 0.0F || m[7] != 0.0F || m[11] != 0.0F || m[15] != 1.0F)
+                return Status::invalid_argument;
+            const double determinant =
+                static_cast<double>(m[0]) * (static_cast<double>(m[5]) * m[10] - static_cast<double>(m[9]) * m[6]) -
+                static_cast<double>(m[4]) * (static_cast<double>(m[1]) * m[10] - static_cast<double>(m[9]) * m[2]) +
+                static_cast<double>(m[8]) * (static_cast<double>(m[1]) * m[6] - static_cast<double>(m[5]) * m[2]);
+            if (determinant == 0.0 || !std::isfinite(determinant)) return Status::invalid_argument;
+            selected.push_back(mesh);
+            source_indices.push_back(index);
+            selected_identities.push_back(std::move(identity));
+        }
+        const Physics::ProviderMeshRaycastQueryV3 query{
+            .ray = Physics::RayV1{toAbi(ray.origin), direction, ray.max_distance, 0},
+            .colliders = selected.empty() ? nullptr : selected.data(),
+            .collider_count = static_cast<std::uint32_t>(selected.size()),
+        };
+        std::vector<Physics::ProviderRaycastHitV1> raw_hits;
+        {
+            auto &value = registry();
+            std::shared_lock lock{value.mutex};
+            const ProviderDispatch *dispatch = nullptr;
+            if (const auto *game = activeGameProviderLocked(value);
+                game != nullptr && (game->dispatch.mesh_capability_bits & Physics::query_mesh_raycast_all) != 0)
+                dispatch = &game->dispatch;
+            if (dispatch == nullptr) {
+                if (const auto *engine = findByOwner(value, internal::engineRegistrationOwner);
+                    engine != nullptr && (engine->dispatch.mesh_capability_bits & Physics::query_mesh_raycast_all) != 0)
+                    dispatch = &engine->dispatch;
+            }
+#if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
+            static const ProviderDispatch builtin_mesh{
+                .mesh_capability_bits = Physics::query_mesh_raycast_all,
+                .mesh_raycast_all = builtinMeshRaycastAll,
+            };
+            if (dispatch == nullptr) dispatch = &builtin_mesh;
+#endif
+            if (dispatch == nullptr) return Status::unavailable;
+            // invokeProvider uses a single capability domain. The temporary
+            // adapter exposes the separate mesh domain without changing V2.
+            auto invocation = *dispatch;
+            invocation.capability_bits = dispatch->mesh_capability_bits;
+            const auto status = invokeProvider(invocation, Physics::query_mesh_raycast_all,
+                                                dispatch->mesh_raycast_all, query,
+                                                selected.size(), raw_hits);
+            if (status != Status::ok) return status;
+        }
+        std::vector<bool> seen(selected.size(), false);
+        for (const auto &raw : raw_hits) {
+            Physics::Vec3V1 normal{};
+            if (raw.reserved != 0 || raw.collider_index >= selected.size() ||
+                seen[raw.collider_index] || !std::isfinite(raw.distance) ||
+                raw.distance < 0.0F || raw.distance > ray.max_distance + 1.0e-5F ||
+                !normalized(raw.normal, normal)) {
+                out_hits.clear();
+                return Status::provider_error;
+            }
+            const Physics::Vec3V1 position{
+                ray.origin.x + direction.x * raw.distance,
+                ray.origin.y + direction.y * raw.distance,
+                ray.origin.z + direction.z * raw.distance};
+            if (!finite(position)) {
+                out_hits.clear();
+                return Status::provider_error;
+            }
+            seen[raw.collider_index] = true;
+            const auto &identity = selected_identities[raw.collider_index];
+            out_hits.push_back(phys::RaycastQueryHit{
+                identity.name, raw.distance, fromAbi(position), fromAbi(normal),
+                identity, metadata[source_indices[raw.collider_index]]});
+        }
+        phys::internal::orderRaycastHits(out_hits);
+        return Status::ok;
+    } catch (const std::invalid_argument &) {
+        out_hits.clear();
+        return Status::invalid_argument;
+    } catch (const std::bad_alloc &) {
+        out_hits.clear();
+        return Status::out_of_memory;
+    } catch (...) {
+        out_hits.clear();
+        return Status::provider_error;
+    }
 }
 
 Physics::Status raycastAll(const phys::Ray &ray,

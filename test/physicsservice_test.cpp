@@ -4,7 +4,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physicsruntime.hpp"
 #include "../src/core/phys/physworld.hpp"
-#include "../src/core/userpublic/physics/abi_v2.hpp"
+#include "../src/core/userpublic/physics/abi_v3.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -824,6 +824,80 @@ TEST_CASE("PhysicsServiceV2 rejects malformed descriptors and unknown bits",
         internal::ScopedRegistrationOwner owner_scope{owner};
         REQUIRE(api.register_provider(api.context, &provider, &handle) ==
                 Physics::Status::invalid_argument);
+    }
+}
+
+TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner lifecycle",
+          "[physics-service][mesh-provider]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    Physics::ApiV3 api;
+    REQUIRE(Physics::getApiV3(3, &api) == Physics::Status::ok);
+    REQUIRE(api.register_provider_v3);
+    REQUIRE(api.base.get_service);
+    CHECK(Physics::getApiV3(2, &api) == Physics::Status::unsupported_version);
+    const std::array vertices{Physics::Vec3V1{-1, -1, 3}, Physics::Vec3V1{1, -1, 3}, Physics::Vec3V1{0, 1, 3}};
+    const std::array<std::uint32_t, 3> indices{0, 1, 2};
+    Physics::TriangleMeshV3 mesh;
+    mesh.vertices = vertices.data(); mesh.vertex_count = 3;
+    mesh.indices = indices.data(); mesh.index_count = 3;
+    const std::array meshes{mesh};
+    const std::array identities{phys::ColliderIdentity{.collider_id = {47}, .name = "mesh"}};
+    const std::array metadata{phys::ColliderQueryMetadata{}};
+    std::vector<phys::RaycastQueryHit> hits;
+    const phys::Ray ray{{0, 0, 0}, {0, 0, 2}, 10};
+    auto query = [&](const phys::QueryFilter *filter = nullptr) {
+        return physics_internal::raycastMeshes(ray, meshes, identities, metadata, filter, hits);
+    };
+#if PELICAN_WITH_BUILTIN_PHYSICS || PELICAN_WITH_JOLT_PHYSICS
+    REQUIRE(query() == Physics::Status::ok);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].distance == Catch::Approx(3));
+#endif
+    struct State { int calls = 0; bool malformed = false; } state;
+    Physics::ProviderV3 provider;
+    provider.base.name_utf8 = "mesh.fake";
+    provider.base.name_size = 9;
+    provider.base.context = &state;
+    provider.mesh_capability_bits = Physics::query_mesh_raycast_all;
+    provider.mesh_raycast_all = +[](void *context, const Physics::ProviderMeshRaycastQueryV3 *query,
+        Physics::ProviderRaycastHitV1 *output, std::uint32_t capacity, std::uint32_t *count) noexcept {
+        auto &state = *static_cast<State *>(context);
+        ++state.calls;
+        *count = query->collider_count;
+        if (capacity < *count) return Physics::Status::buffer_too_small;
+        for (std::uint32_t i = 0; i < *count; ++i) {
+            output[i] = {};
+            output[i].collider_index = i;
+            output[i].distance = state.malformed ? -1.0f : 2.0f;
+            output[i].normal = {0, 0, 1};
+        }
+        return Physics::Status::ok;
+    };
+    const auto owner = internal::allocateRegistrationOwner();
+    struct Cleanup { internal::RegistrationOwner owner; ~Cleanup() { physics_internal::releaseProviderOwner(owner); } } cleanup{owner};
+    Physics::ProviderHandleV2 handle;
+    {
+        internal::ScopedRegistrationOwner scope{owner};
+        REQUIRE(api.register_provider_v3(api.base.context, &provider, &handle) == Physics::Status::ok);
+    }
+    CHECK(state.calls == 0);
+    physics_internal::activateProviderOwner(owner);
+    REQUIRE(query() == Physics::Status::ok);
+    REQUIRE(hits.size() == 1);
+    CHECK(hits[0].distance == 2);
+    CHECK(hits[0].position.z == 2);
+    CHECK(hits[0].identity.collider_id.value == 47);
+    phys::QueryFilter filter;
+    filter.mask = 0;
+    REQUIRE(query(&filter) == Physics::Status::ok);
+    CHECK(hits.empty());
+    state.malformed = true;
+    CHECK(query() == Physics::Status::provider_error);
+    CHECK(hits.empty());
+    {
+        internal::ScopedRegistrationOwner scope{owner};
+        CHECK(api.base.unregister_provider(api.base.context, handle) == Physics::Status::ok);
     }
 }
 

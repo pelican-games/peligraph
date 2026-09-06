@@ -1,6 +1,7 @@
 if(PELICAN_WITH_PHYSICS)
   if(PELICAN_WITH_BUILTIN_PHYSICS OR PELICAN_WITH_JOLT_PHYSICS)
     target_sources(pelican_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/trianglemesh.cpp)
+    target_sources(pelican_core PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/meshphysicsprovider.cpp)
   endif()
   target_sources(pelican_core PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/physquerycontract.cpp
