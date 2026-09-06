@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加は異transform procedural AABBのworld結合。layout JSONで明示的に有効化し、個体ごとの変換をSBTに保持する。詳細と確認範囲は下の「RT6 異transform procedural AABBのworld結合」を参照。triangle geometry/worldのGUI・保存は `c20a2432` に統合済み。
+- 最新の追加はScene AS画面のAABB geometry/world切替と保存。変換record宣言済みのlayout v3で使用できる。詳細は下の「RT7 AABB worldモードのGUI・保存」を参照。AABB world結合は `7f2a2dc6`、triangle geometry/worldのGUI・保存は `c20a2432` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT6 異transform procedural AABBのworld結合 (2026-09-06):**
+**RT7 AABB worldモードのGUI・保存 (2026-09-06):**
+- Scene AS画面にAABB coordinate spaceを追加。getのprocedural_geometryで値・参照元・編集可否・理由を返し、procedural_spaceと共通base_layout_digestで既存のlayout保存へ接続する。triangle_spaceとの同時変更も一つの候補文書として保存・publicationする。
+- project layout v3かつengine_record procedural_transform宣言済みを編集対象とする。ABIを変える暗黙のrecord追加やshader書換えはしない。未対応layoutは理由を表示し、対応shaderの変換helper使用を案内する。
+- Player/Studio・関連test build成功（build/.codex_bg/aabb-editor-build.log、aabb-editor-cpu-build.log）。CPUのscene-as対象成功（aabb-editor-cpu.log）。両座標系の同時保存、AABBだけの変更、再読込、ABI・他設定の保持、未対応layout拒否と既存CAS・rollbackを確認。GPUは1/1・157 assertions成功（aabb-editor-gpu.log）。本番RPCで両方向の切替と保存、交差距離保持・TLAS個体数の反映を確認。
+- 対照: procedural_spaceを候補layoutへ渡さなければ保存内容・GPUの個体数切替が落ちる。ABIを暗黙変更すればCPUのABI保持が落ちる。個別変異は未実行。実エンジン接続下のGUI手動クリックは未確認。
+
+**RT6 異transform procedural AABBのworld結合 (2026-09-06、7f2a2dc6):**
 - layout v3にprocedural_space:geometry/worldを追加。worldはengine_recordのprocedural_transformを必須とし、元geometry→worldと逆変換の6 vec4を各occurrenceのSBTに保持する。宣言なしのlayout ABIは保持する。geometry/world切替はpayload宣言後のAS設定変更となる。
 - 元AABBとtransformからworld boundsを生成し、identity TLASへ載せる。既存のmask/flags/custom index・連続q/SBT・device上限を満たすAABB同士を結合する。同じassetの異なる個体でも変換を区別し、移動はBLAS keyとSBT行digestへ反映する。build入力bufferは既存submission寿命へ載せる。
 - generated helperはworld rayを元geometryへ戻し、方向を正規化せず`t`を維持する。組込みprocedural_sphereもpayload宣言時に対応する。位置・法線変換helperを追加。非有限・特異・非affine変換とfloat boundsのoverflowは拒否する。現行material_alpha_v1 profileの固定ABIは変更していない。

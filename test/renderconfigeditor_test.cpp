@@ -771,6 +771,54 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
             CHECK(service->editSceneAccelerationStructures(request).at("status") == "rejected");
         }
     }
+    SECTION("procedural and triangle spaces share one layout edit without changing the shader ABI") {
+        layout["engine_record"] = Json::array({"procedural_transform"});
+        writeBytes(layout_path, layout.dump(2));
+        const auto procedural_abi = parseRayGroupLayout(readBytes(layout_path)).digest_sha256;
+        for (const auto *space : {"world", "geometry"}) {
+            const auto current = service->getSceneAccelerationStructures(Json::object());
+            REQUIRE(current.at("procedural_geometry").at("editable") == true);
+            CHECK(current.at("procedural_geometry").at("source_reference") == "ray_layout.json");
+            CHECK(current.at("procedural_geometry").at("source_digest") == current.at("triangle_geometry").at("source_digest"));
+            request["base_source_digest"] = current.at("source_digest").at("hex");
+            request["base_layout_digest"] = current.at("procedural_geometry").at("source_digest").at("hex");
+            request["procedural_space"] = space;
+            // The first edit changes both spaces in one candidate. The second
+            // changes procedural space alone, retaining the triangle choice.
+            if (std::string_view{space} == "geometry") request.erase("triangle_space");
+            const auto accepted = service->editSceneAccelerationStructures(request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            CHECK(Json::parse(readBytes(layout_path)) == layout);
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            layout["acceleration_structure"]["triangle_space"] = "world";
+            layout["acceleration_structure"]["procedural_space"] = space;
+            root["scene_acceleration_structures"] = definitions;
+            root["ray_task_acceleration_structures"] = Json::object();
+            CHECK(Json::parse(readBytes(layout_path)) == layout);
+            CHECK(Json::parse(readBytes(project.render_config)) == root);
+            CHECK(parseRayGroupLayout(readBytes(layout_path)).digest_sha256 == procedural_abi);
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            const auto reopened = service->getSceneAccelerationStructures(Json::object());
+            CHECK(reopened.at("procedural_geometry").at("space") == space);
+            CHECK(reopened.at("triangle_geometry").at("space") == "world");
+        }
+    }
+    SECTION("procedural space editing refuses an absent transform contract") {
+        CHECK(before.at("procedural_geometry").at("editable") == false);
+        CHECK_FALSE(before.at("procedural_geometry").at("reason").get<std::string>().empty());
+        request.erase("triangle_space");
+        request["procedural_space"] = "world";
+        const auto rejected = service->editSceneAccelerationStructures(request);
+        CHECK(rejected.at("error").at("code") == "procedural_space_not_editable");
+        CHECK(readBytes(layout_path) == layout_before);
+        CHECK(readBytes(project.render_config) == source_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
     SECTION("stale layout digest and invalid requests cannot publish") {
         auto stale = request;
         stale["base_layout_digest"] = std::string(64, '0');
@@ -828,7 +876,12 @@ TEST_CASE("scene AS triangle space edits publish the referenced layout atomicall
         writeBytes(layout_path, layout.dump(2));
         const auto current = service->getSceneAccelerationStructures(Json::object());
         REQUIRE(current.at("triangle_geometry").at("editable") == true);
+        CHECK(current.at("procedural_geometry").at("editable") == false);
         request["base_layout_digest"] = current.at("triangle_geometry").at("source_digest").at("hex");
+        auto procedural_request = request;
+        procedural_request.erase("triangle_space");
+        procedural_request["procedural_space"] = "world";
+        CHECK(service->editSceneAccelerationStructures(procedural_request).at("error").at("code") == "procedural_space_not_editable");
         const auto accepted = service->editSceneAccelerationStructures(request);
         REQUIRE(accepted.at("status") == "accepted");
         service->commitPending();

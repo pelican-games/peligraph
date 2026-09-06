@@ -1001,6 +1001,10 @@ geometry tableの元頂点座標は変わりません。`gl_InstanceID`は結合
 この指定はAABBの座標系や結合条件を変更しません。
 異なるtransformのAABBも結合する場合は、layout v3で`engine_record`に`"procedural_transform"`を追加し、
 `acceleration_structure`へ`"procedural_space":"world"`を指定します。
+layout v3で`engine_record`に`procedural_transform`を宣言済みなら、Scene AS画面の
+**AABB coordinate space**からgeometry/worldを切り替えられます。三角形の設定と同時に保存でき、
+既存のshader record配置は保持します。未対応のlayoutは編集不可の理由を表示します。
+シェーダー側も以下の変換helperに対応させてから使用してください。
 元の座標系で交差を計算するshaderは、`gl_ObjectRayOriginEXT`/`gl_ObjectRayDirectionEXT`の代わりに
 `pelicanProceduralRayOrigin(record)`/`pelicanProceduralRayDirection(record)`を使います。返された方向を正規化しないでください。
 組込み`procedural_sphere`はこの宣言に対応しています。同じassetを使う複数個体でも各transformを保持し、移動に追随します。

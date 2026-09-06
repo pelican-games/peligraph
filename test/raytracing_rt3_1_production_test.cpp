@@ -6411,7 +6411,7 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
 
 TEST_CASE("RT6 world procedural BLAS combines transformed occurrences of one asset",
           "[rt6][world-aabb][ray-tracing][production][gpu]") {
-    const bool world = GENERATE(false, true);
+    bool world = GENERATE(false, true);
     setupLogger();
     Wp374aProjectRoot project{"rt6_world_aabb"};
     writeWp386aProceduralProject(project.path);
@@ -6480,6 +6480,26 @@ void main() {
     };
     const auto initial = sample(6.0f);
     CHECK(sample(6.0f).blas_build_count == initial.blas_build_count);
+    auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+    std::uint64_t rpc_id = 72000;
+    for (const bool next_world : {!world, world}) {
+        const auto before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
+        REQUIRE(before.at("procedural_geometry").at("editable") == true);
+        const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_scene_acceleration_structures", {
+            {"base_source_digest", before.at("source_digest").at("hex")},
+            {"definitions", before.at("definitions")}, {"procedural_space", next_world ? "world" : "geometry"},
+            {"base_layout_digest", before.at("procedural_geometry").at("source_digest").at("hex")}});
+        INFO(accepted.dump());
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPendingEdits();
+        (void)renderWp374aProductionRows();
+        const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        world = next_world;
+        (void)sample(6.0f);
+        CHECK(Json::parse(readWp374aText(project.path / "ray_layout.json"))["acceleration_structure"]["procedural_space"] == (world ? "world" : "geometry"));
+    }
     const auto entity = GET_MODULE(SceneLoader).objectId("Right");
     REQUIRE(entity);
     auto *transform = GET_MODULE(ECSCore).getTemplatePublicModule().tryComponent<TransformComponent>(*entity);

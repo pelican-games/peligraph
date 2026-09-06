@@ -91,19 +91,19 @@ OrderedJson digestJson(std::string_view digest) {
     return {{"algorithm", "sha256"}, {"hex", digest}};
 }
 
-struct TriangleGeometryDocument {
+struct GeometrySpaceDocument {
     OrderedJson info{{"space", "geometry"}, {"editable", false},
                      {"source_reference", ""}, {"source_digest", digestJson("")}};
     std::filesystem::path path;
     std::string bytes;
 };
 
-TriangleGeometryDocument triangleGeometryDocument(
-    const Json &config, const RenderConfigEditorDependencies &dependencies) {
-    TriangleGeometryDocument result;
+GeometrySpaceDocument geometrySpaceDocument(
+    const Json &config, const RenderConfigEditorDependencies &dependencies, bool procedural = false) {
+    GeometrySpaceDocument result;
     const auto reference = config.find("ray_group_layout");
     if (reference == config.end()) {
-        result.info["reason"] = "Triangle space requires a project ray group layout version 2 or 3.";
+        result.info["reason"] = "Coordinate space editing requires a project ray group layout.";
         return result;
     }
     try {
@@ -120,9 +120,14 @@ TriangleGeometryDocument triangleGeometryDocument(
         }
         result.info["source_digest"] = digestJson(renderConfigSourceDigest(result.bytes));
         const auto layout = parseRayGroupLayout(result.bytes, source);
-        result.info["space"] = layout.acceleration_structure && layout.acceleration_structure->triangle_world_space
+        result.info["space"] = layout.acceleration_structure && (procedural
+                                   ? layout.acceleration_structure->procedural_world_space
+                                   : layout.acceleration_structure->triangle_world_space)
                                    ? "world" : "geometry";
         if (engine) result.info["reason"] = "Engine ray group layouts cannot be edited here.";
+        else if (procedural && (layout.version < 3 ||
+                 !layout.engineRecordOffset(RayEngineRecordField::procedural_transform)))
+            result.info["reason"] = "AABB space requires layout v3 with engine_record procedural_transform and shaders using the procedural transform helpers.";
         else if (layout.version < 2) result.info["reason"] = "Triangle space requires ray group layout version 2 or 3.";
         else result.info["editable"] = true;
     } catch (const std::exception &error) {
@@ -718,35 +723,43 @@ OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json
     return {{"source_reference", dependencies_.source_reference},
             {"source_digest", digestJson(document_.sourceDigest())},
             {"task_connections", connections},
-            {"triangle_geometry", triangleGeometryDocument(config, dependencies_).info},
+            {"triangle_geometry", geometrySpaceDocument(config, dependencies_).info},
+            {"procedural_geometry", geometrySpaceDocument(config, dependencies_, true).info},
             {"definitions", root.value("scene_acceleration_structures", Json::array())}};
 }
 
 OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Json &params) {
-    requireOnly(params, {"base_source_digest", "definitions", "task_connections", "triangle_space", "base_layout_digest"}, "edit_scene_acceleration_structures");
+    requireOnly(params, {"base_source_digest", "definitions", "task_connections", "triangle_space", "procedural_space", "base_layout_digest"}, "edit_scene_acceleration_structures");
     const auto base_digest = requireString(params, "base_source_digest", "edit_scene_acceleration_structures");
     if (!params.contains("definitions"))
         throw std::invalid_argument("edit_scene_acceleration_structures requires definitions");
     std::vector<RenderConfigCandidateDocument> layout_documents;
-    if (params.contains("triangle_space") != params.contains("base_layout_digest"))
-        return rejection("invalid_triangle_space", "triangle_space and base_layout_digest must be supplied together");
-    if (params.contains("triangle_space")) {
+    const bool edits_space = params.contains("triangle_space") || params.contains("procedural_space");
+    const auto error_code = params.contains("procedural_space") ? "invalid_procedural_space" : "invalid_triangle_space";
+    if (edits_space != params.contains("base_layout_digest"))
+        return rejection(error_code, "Coordinate space edits and base_layout_digest must be supplied together");
+    if (edits_space) {
         try {
-            const auto space = requireString(params, "triangle_space", "edit_scene_acceleration_structures");
             const auto digest = requireString(params, "base_layout_digest", "edit_scene_acceleration_structures");
-            if ((space != "geometry" && space != "world") || !isLowerHexDigest(digest))
-                return rejection("invalid_triangle_space", "triangle_space must be geometry or world and base_layout_digest must be a SHA-256 digest");
+            if (!isLowerHexDigest(digest))
+                return rejection(error_code, "base_layout_digest must be a SHA-256 digest");
             const auto config = dependencies_.resolve_authoring_context
                 ? dependencies_.resolve_authoring_context(currentDocumentSet()).config : Json::parse(document_.bytes());
-            auto layout = triangleGeometryDocument(config, dependencies_);
+            auto layout = geometrySpaceDocument(config, dependencies_, params.contains("procedural_space"));
             if (!layout.info.at("editable").get<bool>())
-                return rejection("triangle_space_not_editable", layout.info.value("reason", std::string{"Ray group layout is not editable"}));
+                return rejection(params.contains("procedural_space") ? "procedural_space_not_editable" : "triangle_space_not_editable", layout.info.value("reason", std::string{"Ray group layout is not editable"}));
             if (layout.info.at("source_digest").at("hex") != digest)
                 return rejection("external_modification", "The ray group layout changed since it was read");
             auto document = OrderedJson::parse(layout.bytes);
             if (!document.contains("acceleration_structure"))
                 document["acceleration_structure"] = {{"defaults", OrderedJson::object()}};
-            document["acceleration_structure"]["triangle_space"] = space;
+            for (const auto *field : {"triangle_space", "procedural_space"}) {
+                if (!params.contains(field)) continue;
+                const auto space = requireString(params, field, "edit_scene_acceleration_structures");
+                if (space != "geometry" && space != "world")
+                    return rejection(error_code, "Coordinate space must be geometry or world");
+                document["acceleration_structure"][field] = space;
+            }
             const auto bytes = document.dump(2);
             const auto reference = layout.info.at("source_reference").get<std::string>();
             (void)parseRayGroupLayout(bytes, reference);
@@ -755,7 +768,7 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
                 .path = layout.path, .operation = RenderConfigDocumentOperation::replace,
                 .expected = {RenderConfigDocumentExistence::present, digest}, .bytes = bytes});
         } catch (const std::exception &error) {
-            return rejection("invalid_triangle_space", error.what());
+            return rejection(error_code, error.what());
         }
     }
     return queueRootEdit(base_digest, "edit_scene_acceleration_structures",

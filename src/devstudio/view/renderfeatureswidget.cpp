@@ -1422,6 +1422,10 @@ class SceneAccelerationStructuresDialog final : public QDialog {
     QTableWidget *connections;
     QLabel *notice;
     QComboBox *triangle_space;
+    QComboBox *procedural_space;
+    QLabel *procedural_source;
+    QString original_procedural_space;
+    bool procedural_editable = false;
     QLabel *triangle_source;
     QString layout_digest;
     QString original_space;
@@ -1440,6 +1444,7 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         const bool busy = request_id != 0 || !ticket.isEmpty();
         table->setEnabled(!busy);
         triangle_space->setEnabled(!busy && geometry_editable && !digest.isEmpty());
+        procedural_space->setEnabled(!busy && procedural_editable && !digest.isEmpty());
         connections->setEnabled(!busy);
         add->setEnabled(!busy);
         remove->setEnabled(!busy);
@@ -1520,6 +1525,10 @@ class SceneAccelerationStructuresDialog final : public QDialog {
             params.insert(QStringLiteral("triangle_space"), triangle_space->currentData().toString());
             params.insert(QStringLiteral("base_layout_digest"), layout_digest);
         }
+        if (procedural_editable && procedural_space->currentData().toString() != original_procedural_space) {
+            params.insert(QStringLiteral("procedural_space"), procedural_space->currentData().toString());
+            params.insert(QStringLiteral("base_layout_digest"), layout_digest);
+        }
         request(Request::Submit, QStringLiteral("edit_scene_acceleration_structures"), params);
     }
     void receive(qint64 id, const QByteArray &bytes) {
@@ -1549,6 +1558,13 @@ class SceneAccelerationStructuresDialog final : public QDialog {
                 triangle_source->setText(geometry_editable
                     ? geometry.value(QStringLiteral("source_reference")).toString()
                     : geometry.value(QStringLiteral("reason")).toString());
+                const auto procedural = response->value(QStringLiteral("procedural_geometry")).toObject();
+                original_procedural_space = procedural.value(QStringLiteral("space")).toString();
+                procedural_editable = procedural.value(QStringLiteral("editable")).toBool();
+                procedural_space->setCurrentIndex(procedural_space->findData(original_procedural_space));
+                procedural_source->setText(procedural_editable
+                    ? procedural.value(QStringLiteral("source_reference")).toString()
+                    : procedural.value(QStringLiteral("reason")).toString());
                 table->setRowCount(0);
                 for (const auto &entry : definitions.toArray()) {
                     const auto definition = entry.toObject();
@@ -1618,6 +1634,20 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         triangle_source->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.triangleSource"));
         triangle_source->setWordWrap(true);
         layout->addWidget(triangle_source);
+        procedural_space = new QComboBox(this);
+        procedural_space->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.proceduralSpace"));
+        procedural_space->addItem(tr("Geometry space (per-instance transforms)"), QStringLiteral("geometry"));
+        procedural_space->addItem(tr("World space (combine transformed AABBs)"), QStringLiteral("world"));
+        auto *procedural_form = new QFormLayout;
+        procedural_form->addRow(tr("AABB coordinate space"), procedural_space);
+        layout->addLayout(procedural_form);
+        auto *procedural_description = new QLabel(tr("World space combines compatible AABB instances. Shaders must use the procedural transform helpers to preserve local intersections. The layout must already declare procedural_transform; changing space preserves the shader record layout."), this);
+        procedural_description->setWordWrap(true);
+        layout->addWidget(procedural_description);
+        procedural_source = new QLabel(this);
+        procedural_source->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.proceduralSource"));
+        procedural_source->setWordWrap(true);
+        layout->addWidget(procedural_source);
         table = new QTableWidget(0, 2, this);
         table->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.table"));
         table->setHorizontalHeaderLabels({tr("Name"), tr("Instance mask (0-255)")});

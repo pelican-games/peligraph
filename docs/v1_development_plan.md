@@ -6,7 +6,7 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 
 ## 再開時の入口
 
-- 作業ブランチは `codex/render-target-runtime-slice`。RT・Studio基盤を `96d9cb7e`、embed再生成修正を `b0c000a9`、文書・運用整理を `1878a3e0` に統合。再開後、material passのray query設定を `73557204`、入出力編集を `d2f336a5`、raster接続編集を `2ecb5ae8`、rasterのshader・draw・state編集を `03ee3b32`、triangle worldモードのGUI・保存を `c20a2432` に統合。続いて異transform AABBのworld結合を実装した（layout JSONで明示指定、専用GUIは未接続）。
+- 作業ブランチは `codex/render-target-runtime-slice`。RT・Studio基盤を `96d9cb7e`、embed再生成修正を `b0c000a9`、文書・運用整理を `1878a3e0` に統合。再開後、material passのray query設定を `73557204`、入出力編集を `d2f336a5`、raster接続編集を `2ecb5ae8`、rasterのshader・draw・state編集を `03ee3b32`、triangle worldモードのGUI・保存を `c20a2432` に統合。続いて異transform AABBのworld結合を実装した（7f2a2dc6）。AABBのgeometry/world切替もScene AS画面へ接続した（変換record宣言済みlayout v3が対象）。
 - 本書の現況と残件を読み、着手する項目だけ台帳の該当WP・最終差分と `design_raytracing.md` §4-P / §11へ進む。台帳全体や完了履歴を毎回読み直さない。
 - 利用者の最新指示が旧運用記録に優先する。2026-09-06に統合担当としてのcommitを許可済み。実装・影響範囲の確認・記録が揃った単位でcommitし、個別の実装workerは統合担当へ渡す。
 - 同時agentは主担当を含め最大2、fastは使わない。`<作業ディレクトリ>/wp336`、`projects/showcase/`、無関係な `.claude/`・`out/` は触らない。モデル・thinking effort・プラグイン設定は利用者の選択を尊重する。
