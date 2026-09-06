@@ -213,7 +213,7 @@ present完了までのresource lifetimeとしてだけ保持する([WSI] §3)。
 | WP240c | project空間 material の宣言と実行時ロード | ✅ 完了（2026-07-31）。glTF producerをloweringへ収束し、strict asset index、常設texture resolver、runtime material登録・binding・hot reloadを接続 |
 | WP241 | skip を名乗る 4 件の GPU テスト失敗 | ✅ 完了（2026-08-01）。broad catch→SKIP を横断除去し、2系統のfixture契約違反を修正。GPU 125/125、SKIP 0 |
 | WP242a | 影を落とせるライトを複数にする | ✅ 完了（2026-08-01）。inventory index 0 固定を解除し、forward/deferred を `pelican_lighting_v1.glsl` へ一本化。GPU gate 126/126 |
-| WP242b | point / spot の shadow view provider | **未着手**。provider は directional 1 種のみ。cube shadow は src/ に存在しない |
+| WP242b | point / spot の shadow view provider | **実装・対象確認済み（2026-09-06）**。標準featureと汎用buffer/resource port経由で照明へ接続。forward/deferred、point全6方向の影を実GPU確認。標準algorithm OFF build/provider境界も確認 |
 | WP242c | 影のフィルタと bias の project 空間化 | **未着手**。単一タップ、bias と遮蔽値がハードコード |
 | WP243a | occlusion を metallicRoughness の R から読むのをやめる | ✅ 完了（2026-08-01）。set 2 binding 7 を独立 occlusion、custom texture を 8 以降へ移動。glTF 部分選択・project material・SPIR-V link ABI・画素閾値を固定。GPU 126/126、非GPU 945/945 |
 | WP248 | project 封筒 / path 解決の `pelican_project` 化 | ✅ 完了（2026-08-01）。封筒検証と path / asset-store 純ロジックを移し、engine は adapter 化。`pelican_project` 単独リンク境界を常設 |
@@ -23241,6 +23241,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**WP242b 完了記録 (2026-09-06):**
+- 既存point/spotのforward/deferred対照に、pointのみの6方向ON/OFFを追加。scene/light/cameraを同じ剛体回転で変換し、各cube軸へcaster方向を合わせる。各方向の赤画素暗化と対応depth layerへの書込みを要求。1面固定に戻すと別方向の画素確認が落ちる。追加の検証基盤やbyte一致比較は作らない。
+- Debug golden_runtime build後、wp242b GPU 1件200 assertions成功。標準algorithm OFFはbuild/.codex_bg/standard_offへ依存ソースを再利用して独立configure/buildし、provider/host-matrices 2件13 assertions成功。通常buildのfeature設定は変更していない。
+- 既存の一括GPU/非GPU反復より後の利用者方針に従い、変更に直接関係する確認を実施。WP242bの機能・6面・OFF境界を確認済みとして区切る。全GPU群や全構成の実行を主張しない。次はWP242cのPCF/bias/遮蔽強度をproject parameterへ移す。ノード分解操作自体の未実装は別の残件として保持。
 
 **WP242b 実GPU照明接続 (2026-09-06):**
 - 既存golden harnessのground/casterを使い、赤point・青spotの影をforward/deferred各ON/OFFの画素差で確認。byte一致を条件にしない。point6視点/spot1視点の実行回数とdepth target層数も確認した。全6方向それぞれの影の画素までは未確認。

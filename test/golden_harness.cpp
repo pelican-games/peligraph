@@ -74,6 +74,7 @@
 
 #include <algorithm>
 #include <tuple>
+#include <glm/gtc/quaternion.hpp>
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -3449,10 +3450,29 @@ bool multiLightShadowDeferred(
 }
 
 bool isPunctualShadowGoldenMode(std::string_view mode) {
-    return mode == "shadow_punctual_forward_off" ||
+    return mode.starts_with("shadow_punctual_face") ||
+           mode == "shadow_punctual_forward_off" ||
            mode == "shadow_punctual_forward_on" ||
            mode == "shadow_punctual_deferred_off" ||
            mode == "shadow_punctual_deferred_on";
+}
+
+int punctualShadowFace(std::string_view mode) {
+    constexpr std::string_view prefix = "shadow_punctual_face";
+    return mode.starts_with(prefix) ? mode.at(prefix.size()) - '0' : -1;
+}
+
+glm::quat punctualShadowRotation(std::string_view mode) {
+    const auto face = punctualShadowFace(mode);
+    if (face < 0) return glm::quat{1.0f, 0.0f, 0.0f, 0.0f};
+    const std::array axes{glm::vec3{1, 0, 0}, glm::vec3{-1, 0, 0},
+                          glm::vec3{0, 1, 0}, glm::vec3{0, -1, 0},
+                          glm::vec3{0, 0, 1}, glm::vec3{0, 0, -1}};
+    REQUIRE(face < static_cast<int>(axes.size()));
+    const auto from = glm::normalize(glm::vec3{2.0f, -2.45f, -1.0f});
+    const auto to = axes[face];
+    const auto axis = glm::cross(from, to);
+    return glm::normalize(glm::quat{1.0f + glm::dot(from, to), axis.x, axis.y, axis.z});
 }
 
 void writePunctualShadowProject(const std::filesystem::path &root,
@@ -3473,15 +3493,47 @@ void writePunctualShadowProject(const std::filesystem::path &root,
          {"direction", {-2.0, -3.0, -1.0}}, {"innerConeAngle", 35.0},
          {"outerConeAngle", 55.0}, {"intensity", 35.0}, {"color", {0.0, 0.0, 1.0}}}
     })}});
+    const auto face = punctualShadowFace(mode);
+    const auto rotation = punctualShadowRotation(mode);
+    if (face >= 0) {
+        const auto rotate_vector = [&](nlohmann::json &value) {
+            const auto rotated = rotation * glm::vec3{
+                value.at(0).get<float>(), value.at(1).get<float>(), value.at(2).get<float>()};
+            value = {rotated.x, rotated.y, rotated.z};
+        };
+        for (auto &object : objects) {
+            for (auto &component : object["components"]) {
+                if (component.at("name") == "transform") {
+                    rotate_vector(component["pos"]);
+                    auto &value = component["rotation"];
+                    const auto orientation = rotation * glm::quat{
+                        value.at(3).get<float>(), value.at(0).get<float>(),
+                        value.at(1).get<float>(), value.at(2).get<float>()};
+                    value = {orientation.x, orientation.y, orientation.z, orientation.w};
+                } else if (component.at("name") == "light") {
+                    rotate_vector(component["position"]);
+                    if (component.contains("direction")) rotate_vector(component["direction"]);
+                }
+            }
+        }
+    }
     writeTextFile(root / "scene.json", scene.dump(2));
     auto config = makeBLayerShadowRenderingConfig("");
     if (mode.ends_with("_on")) {
         config["features"] = nlohmann::json::array();
         for (const auto *kind : {"point", "spot"}) {
+            if (face >= 0 && std::string_view{kind} == "spot") continue;
             config["features"].push_back({
                 {"ref", "engine://features/shadow_" + std::string{kind} + ".json"},
                 {"parameters", {{"resolution", 128}, {"near_distance", 0.1},
                                  {"far_distance", 20.0}}}});
+        }
+        if (face >= 0) {
+            writeTextFile(root / "features" / "point_face_probe.json", R"json({
+                "schema":"pelican.render_feature", "version":1, "name":"point_face_probe",
+                "render_target_overrides":{"point_shadow_map":{"usage":["TRANSFER_SRC"]}}
+            })json");
+            config["features"].push_back("project://features/point_face_probe.json");
         }
     }
     writeTextFile(root / "passes" / "main.json", config.dump(2));
@@ -4743,7 +4795,8 @@ projectPlanarReflectionViewFamilies(
 void renderShadowFrame(
     RenderTarget &render_target,
     bool supply_project_planar_family =
-        false) {
+        false,
+    glm::quat world_rotation = glm::quat{1.0f, 0.0f, 0.0f, 0.0f}) {
     GET_MODULE(ECSPredefinedRegistration).reg();
     test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
     GET_MODULE(ECSCore).update();
@@ -4752,9 +4805,9 @@ void renderShadowFrame(
     auto &camera = GET_MODULE(Camera);
     const glm::vec3 position{0.0f, 2.0f, -4.5f};
     const glm::vec3 target{0.0f, 0.25f, 0.0f};
-    camera.setPos(position);
-    camera.setDir(glm::normalize(target - position));
-    camera.setUp({0.0f, 1.0f, 0.0f});
+    camera.setPos(world_rotation * position);
+    camera.setDir(world_rotation * glm::normalize(target - position));
+    camera.setUp(world_rotation * glm::vec3{0.0f, 1.0f, 0.0f});
 
     auto &renderer = GET_MODULE(Renderer);
 #if PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
@@ -4820,8 +4873,10 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         pipeline.shader_defines.end();
     if (punctual) {
         for (const auto *define : {"PELICAN_FEATURE_POINT_SHADOW", "PELICAN_FEATURE_SPOT_SHADOW"}) {
+            const bool enabled = mode.ends_with("_on") &&
+                (punctualShadowFace(mode) < 0 || std::string_view{define} == "PELICAN_FEATURE_POINT_SHADOW");
             REQUIRE((std::find(pipeline.shader_defines.begin(), pipeline.shader_defines.end(), define) !=
-                     pipeline.shader_defines.end()) == mode.ends_with("_on"));
+                     pipeline.shader_defines.end()) == enabled);
         }
     } else {
     if (has_shadow_define != shadow_enabled) {
@@ -5270,7 +5325,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
 
     renderShadowFrame(
         render_target,
-        planar_reflection_runtime);
+        planar_reflection_runtime,
+        punctualShadowRotation(mode));
     if (mixed_forward_material) {
         const auto program =
             GET_MODULE(
@@ -5534,6 +5590,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
         for (const auto &[family, target, view_count] : {
                  std::tuple{"$shadow/point", "point_shadow_map", 6u},
                  std::tuple{"$shadow/spot", "spot_shadow_map", 1u}}) {
+            if (punctualShadowFace(mode) >= 0 && std::string_view{family} == "$shadow/spot") continue;
             const auto &targets = GET_MODULE(RenderTargetContainer);
             const auto metadata = targets.getMetadata(targets.getRenderTargetIdByName(target));
             REQUIRE(metadata.array_layers == view_count);
@@ -5545,6 +5602,18 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                 ++invocations[view_index];
             }
             for (const auto count : invocations) REQUIRE(count == 1);
+        }
+        if (const auto face = punctualShadowFace(mode); face >= 0) {
+            const auto target = GET_MODULE(RenderTargetContainer).getRenderTargetIdByName("point_shadow_map");
+            const auto bytes = readDepthTargetBytes(target, static_cast<std::uint32_t>(face));
+            std::size_t written = 0;
+            for (std::size_t offset = 0; offset < bytes.size(); offset += sizeof(float)) {
+                float depth;
+                std::memcpy(&depth, bytes.data() + offset, sizeof(depth));
+                written += depth < 0.9999f;
+            }
+            INFO("point face " << face << " written depth pixels=" << written);
+            REQUIRE(written >= 8);
         }
     }
     if (multi_light && shadow_enabled) {
@@ -10725,12 +10794,12 @@ void GoldenHarness::runPunctualShadows() {
     setupLogger();
     requireGoldenVulkanDevice();
     const auto root = sourceRoot() / "test/golden/shadow_b_layer_engine";
-    for (const auto *route : {"forward", "deferred"}) {
-        const auto mode = "shadow_punctual_" + std::string{route};
+    const auto compare = [&](const std::string &mode, bool check_spot) {
         const auto off = renderCase(GoldenCase{mode + "_off_runtime", mode + "_off", root, 64, 64}, true);
         const auto on = renderCase(GoldenCase{mode + "_on_runtime", mode + "_on", root, 64, 64}, true);
         REQUIRE(on.image.pixels.size() == off.image.pixels.size());
         for (const auto channel : {0u, 2u}) {
+            if (channel == 2u && !check_spot) continue;
             std::size_t shadowed_pixels = 0;
             std::uint64_t darkening = 0;
             for (std::size_t offset = channel; offset < on.image.pixels.size(); offset += 4) {
@@ -10741,11 +10810,19 @@ void GoldenHarness::runPunctualShadows() {
                     darkening += static_cast<std::uint64_t>(delta);
                 }
             }
-            INFO(route << ", " << (channel == 0 ? "point" : "spot")
+            INFO(mode << ", " << (channel == 0 ? "point" : "spot")
                  << " shadow pixels=" << shadowed_pixels << ", darkening=" << darkening);
             REQUIRE(shadowed_pixels >= 8);
             REQUIRE(darkening >= 64);
         }
+    };
+    for (const auto *route : {"forward", "deferred"}) {
+        compare("shadow_punctual_" + std::string{route}, true);
+    }
+    // Rigidly rotate the same scene and camera: the occluder/receiver relation
+    // stays fixed while each cubemap face must produce visible red shadows.
+    for (int face = 0; face < 6; ++face) {
+        compare("shadow_punctual_face" + std::to_string(face) + "_forward", false);
     }
 #else
     SKIP("punctual shadows require standard render algorithms and runtime shader compilation");
