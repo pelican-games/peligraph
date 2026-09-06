@@ -23233,6 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
+- 最新の追加はScene AS画面のtriangle geometry/world切替とlayout同時保存。CPU117項目・GPU46項目成功。詳細は下の「RT7 triangle worldモードのGUI・保存」を参照。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23243,7 +23244,15 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 raster shader/draw/state編集 (2026-09-06):**
+**RT7 triangle worldモードのGUI・保存 (2026-09-06):**
+- Scene AS画面にTriangle coordinate spaceのgeometry/world選択を追加。適用時に変更があればtriangle_spaceとbase_layout_digestを既存edit_scene_acceleration_structuresへ送る。getのtriangle_geometryで値・参照元・編集可否・理由を表示する。
+- 参照先のproject ray group layout v2/v3を編集し、他のlayout/AS設定を保持する。rootの定義・接続とlayoutは既存の候補文書overlay・複数文書CAS・publication/rollbackにまとめる。rootの別overrideや専用保存機構は新設しない。
+- worldでは三角形のobject座標系がworldとなること、procedural AABBを変えないことを画面に説明する。engine所有・layout未指定・v1・読込不能は編集不可の理由を表示する。
+- Player/Studio/CPU/GPU対象build成功（build/.codex_bg/world-editor-build.log）。CPUのScene AS対象2/2・117 assertions成功（world-editor-cpu-final.log）。保存・再読込、layout ABIと他設定保持、古いdigest・受付後の外部変更、保存後失敗のroot/layout復元、読取専用とv2初期化を確認。初回は一時フォルダーのmanifest置換がAccess deniedで1件失敗し、同一sourceをsandbox外で再実行して成功した。
+- GPUは既存multi-geometry caseの追加sectionだけを実行し1/1・46 assertions成功（world-editor-gpu.log）。本番RPCでworld→geometry→worldを保存・publicationし、BLAS/TLAS数1→2→1とshader座標8→808→8、layoutファイル反映を確認。全GPU suiteは反復していない。
+- 対照: 候補layoutをoverlayへ渡さなければGPU上のBLAS数/座標切替が落ち、layoutのCAS・復元を外せば競合・rollbackが落ちる。個別変異は未実行。Studioの実エンジン接続下での手動クリック操作は未確認。機能の次候補は異transform AABB結合で、学習サンプルと細かなGUI調整は後回しを継続する。
+
+**RT7 raster shader/draw/state編集 (2026-09-06、03ee3b32):**
 - rasterのedit_preset_passにshader/draw/raster_stateの部分編集を追加。省略項目は保持し、raster_state:nullは明示設定を削除する。既存のcandidate・複数文書CAS・publicationを共用する。materialとfullscreenへraster専用fieldを許可しない。
 - Studioではrasterにshader参照とdraw/state JSON欄を表示する。shaderの他キーを保持し、変更したfieldだけを送る。state欄を空にすると既定状態へ戻る。New passやmaterial選択時にdraw欄を隠し、既存の入力・出力・ray query編集も維持する。
 - draw/stateの判定は共通parseRasterPassContractをUIとRPC preflightで使用する。CPU graph loweringだけではdrawの数値制約を検証しないため、頂点数ゼロ等を保存前に拒否する。この共通parserは本番raster経路でも使用される。

@@ -10,6 +10,7 @@
 #include "../src/core/loader/renderconfigcandidate.hpp"
 #include "../src/core/renderingpass/frameplanner.hpp"
 #include "../src/core/renderingpass/vulkanrendercompilerprogramdetail.hpp"
+#include "../src/core/shader/raygrouplayout.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/featurecompose.hpp"
@@ -706,6 +707,136 @@ TEST_CASE("scene AS edits use render publication and source CAS", "[render-confi
         service->commitPending();
         CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
         CHECK(readBytes(source.path) == external);
+    }
+}
+
+TEST_CASE("scene AS triangle space edits publish the referenced layout atomically",
+          "[render-config-editor][scene-as][triangle-space]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    const auto layout_path = project.root / "ray_layout.json";
+    Json layout{{"schema", "pelican.ray_group_layout"}, {"version", 3},
+                {"ray_types", Json::array({"primary"})}, {"default_group", "surface"},
+                {"groups", Json::array({{{"name", "surface"}, {"type", "triangles"}}})},
+                {"misses", Json::array({{{"name", "sky"}}})},
+                {"record", Json::array({{{"name", "tint"}, {"type", "vec4"}}})},
+                {"acceleration_structure", {{"defaults", {{"mask", 7}, {"geometry_flags", Json::array({"opaque"})}}},
+                                             {"procedural_defaults", {{"geometry_flags", Json::array({"opaque"})}}},
+                                             {"rules", Json::array()}}}};
+    writeBytes(layout_path, layout.dump(2));
+    auto root = Json::parse(readBytes(project.render_config));
+    root["ray_group_layout"] = "ray_layout.json";
+    writeBytes(project.render_config, root.dump(2));
+    const auto source_before = readBytes(project.render_config);
+    const auto layout_before = readBytes(layout_path);
+    const auto abi_before = parseRayGroupLayout(layout_before).digest_sha256;
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto before = service->getSceneAccelerationStructures(Json::object());
+    REQUIRE(before.at("triangle_geometry").at("editable") == true);
+    REQUIRE(before.at("triangle_geometry").at("space") == "geometry");
+    REQUIRE(before.at("triangle_geometry").at("source_reference") == "ray_layout.json");
+    const auto plan_before = runtime.frame_plan;
+    const Json definitions = Json::array({{{"name", "actors"}, {"instance_mask", 1}}});
+    Json request{{"base_source_digest", before.at("source_digest").at("hex")},
+                 {"definitions", definitions}, {"task_connections", Json::object()},
+                 {"triangle_space", "world"},
+                 {"base_layout_digest", before.at("triangle_geometry").at("source_digest").at("hex")}};
+    SECTION("world and geometry edits retain layout ABI and reopen") {
+        for (const auto *space : {"world", "geometry"}) {
+            const auto current = service->getSceneAccelerationStructures(Json::object());
+            request["base_source_digest"] = current.at("source_digest").at("hex");
+            request["base_layout_digest"] = current.at("triangle_geometry").at("source_digest").at("hex");
+            request["triangle_space"] = space;
+            const auto accepted = service->editSceneAccelerationStructures(request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            CHECK(Json::parse(readBytes(layout_path)) == layout);
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            layout["acceleration_structure"]["triangle_space"] = space;
+            root["scene_acceleration_structures"] = definitions;
+            root["ray_task_acceleration_structures"] = Json::object();
+            CHECK(Json::parse(readBytes(layout_path)) == layout);
+            CHECK(Json::parse(readBytes(project.render_config)) == root);
+            CHECK(parseRayGroupLayout(readBytes(layout_path)).digest_sha256 == abi_before);
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            const auto reopened = service->getSceneAccelerationStructures(Json::object());
+            CHECK(reopened.at("definitions") == definitions);
+            CHECK(reopened.at("triangle_geometry").at("space") == space);
+            CHECK(service->editSceneAccelerationStructures(request).at("status") == "rejected");
+        }
+    }
+    SECTION("stale layout digest and invalid requests cannot publish") {
+        auto stale = request;
+        stale["base_layout_digest"] = std::string(64, '0');
+        CHECK(service->editSceneAccelerationStructures(stale).at("error").at("code") == "external_modification");
+        auto incomplete = request;
+        incomplete.erase("base_layout_digest");
+        CHECK(service->editSceneAccelerationStructures(incomplete).at("status") == "rejected");
+        request["triangle_space"] = "object";
+        CHECK(service->editSceneAccelerationStructures(request).at("status") == "rejected");
+        CHECK(readBytes(project.render_config) == source_before);
+        CHECK(readBytes(layout_path) == layout_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
+    SECTION("external layout changes after admission are preserved") {
+        const auto accepted = service->editSceneAccelerationStructures(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        writeBytes(layout_path, layout_before + "\n");
+        service->commitPending();
+        CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
+        CHECK(readBytes(project.render_config) == source_before);
+        CHECK(readBytes(layout_path) == layout_before + "\n");
+        CHECK(runtime.frame_plan == plan_before);
+    }
+    SECTION("publication failure restores root and layout") {
+        runtime.fail_after_source_commit = true;
+        const auto accepted = service->editSceneAccelerationStructures(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        CHECK(result.at("error").at("message") == "injected failure after source replacement");
+        CHECK(result.at("committed") == false);
+        CHECK(readBytes(project.render_config) == source_before);
+        CHECK(readBytes(layout_path) == layout_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
+    SECTION("version one and unreadable layouts remain read only") {
+        layout["version"] = 1;
+        layout.erase("acceleration_structure");
+        layout["groups"][0].erase("type");
+        for (const auto &bytes : {layout.dump(2), std::string{"invalid JSON"}}) {
+            writeBytes(layout_path, bytes);
+            const auto current = service->getSceneAccelerationStructures(Json::object());
+            CHECK(current.at("triangle_geometry").at("editable") == false);
+            CHECK_FALSE(current.at("triangle_geometry").at("reason").get<std::string>().empty());
+            CHECK(service->editSceneAccelerationStructures(request).at("error").at("code") == "triangle_space_not_editable");
+            CHECK(readBytes(layout_path) == bytes);
+            CHECK(readBytes(project.render_config) == source_before);
+        }
+    }
+    SECTION("version two without AS settings gains only default AS settings and the chosen space") {
+        layout["version"] = 2;
+        layout.erase("acceleration_structure");
+        layout["groups"][0].erase("type");
+        writeBytes(layout_path, layout.dump(2));
+        const auto current = service->getSceneAccelerationStructures(Json::object());
+        REQUIRE(current.at("triangle_geometry").at("editable") == true);
+        request["base_layout_digest"] = current.at("triangle_geometry").at("source_digest").at("hex");
+        const auto accepted = service->editSceneAccelerationStructures(request);
+        REQUIRE(accepted.at("status") == "accepted");
+        service->commitPending();
+        const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+        INFO(result.dump());
+        REQUIRE(result.at("committed") == true);
+        layout["acceleration_structure"] = {{"defaults", Json::object()}, {"triangle_space", "world"}};
+        CHECK(Json::parse(readBytes(layout_path)) == layout);
     }
 }
 

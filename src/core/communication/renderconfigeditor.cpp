@@ -91,6 +91,46 @@ OrderedJson digestJson(std::string_view digest) {
     return {{"algorithm", "sha256"}, {"hex", digest}};
 }
 
+struct TriangleGeometryDocument {
+    OrderedJson info{{"space", "geometry"}, {"editable", false},
+                     {"source_reference", ""}, {"source_digest", digestJson("")}};
+    std::filesystem::path path;
+    std::string bytes;
+};
+
+TriangleGeometryDocument triangleGeometryDocument(
+    const Json &config, const RenderConfigEditorDependencies &dependencies) {
+    TriangleGeometryDocument result;
+    const auto reference = config.find("ray_group_layout");
+    if (reference == config.end()) {
+        result.info["reason"] = "Triangle space requires a project ray group layout version 2 or 3.";
+        return result;
+    }
+    try {
+        const auto source = reference->get<std::string>();
+        result.info["source_reference"] = source;
+        const bool engine = source.starts_with("engine://");
+        if (engine) {
+            result.bytes = engineResourceOrThrow(source.substr(9));
+        } else {
+            if (!dependencies.resolve_document_path || !dependencies.normalize_reference)
+                throw std::runtime_error("Project document access is unavailable.");
+            result.path = dependencies.resolve_document_path(source);
+            result.bytes = readFileBytes(result.path);
+        }
+        result.info["source_digest"] = digestJson(renderConfigSourceDigest(result.bytes));
+        const auto layout = parseRayGroupLayout(result.bytes, source);
+        result.info["space"] = layout.acceleration_structure && layout.acceleration_structure->triangle_world_space
+                                   ? "world" : "geometry";
+        if (engine) result.info["reason"] = "Engine ray group layouts cannot be edited here.";
+        else if (layout.version < 2) result.info["reason"] = "Triangle space requires ray group layout version 2 or 3.";
+        else result.info["editable"] = true;
+    } catch (const std::exception &error) {
+        result.info["reason"] = error.what();
+    }
+    return result;
+}
+
 OrderedJson runtimeJson(const RenderConfigRuntimeSnapshot &runtime) {
     return {{"published_generation", runtime.published_generation},
             {"enabled_feature_names", runtime.enabled_feature_names}};
@@ -678,14 +718,46 @@ OrderedJson RenderConfigEditorService::getSceneAccelerationStructures(const Json
     return {{"source_reference", dependencies_.source_reference},
             {"source_digest", digestJson(document_.sourceDigest())},
             {"task_connections", connections},
+            {"triangle_geometry", triangleGeometryDocument(config, dependencies_).info},
             {"definitions", root.value("scene_acceleration_structures", Json::array())}};
 }
 
 OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Json &params) {
-    requireOnly(params, {"base_source_digest", "definitions", "task_connections"}, "edit_scene_acceleration_structures");
+    requireOnly(params, {"base_source_digest", "definitions", "task_connections", "triangle_space", "base_layout_digest"}, "edit_scene_acceleration_structures");
     const auto base_digest = requireString(params, "base_source_digest", "edit_scene_acceleration_structures");
     if (!params.contains("definitions"))
         throw std::invalid_argument("edit_scene_acceleration_structures requires definitions");
+    std::vector<RenderConfigCandidateDocument> layout_documents;
+    if (params.contains("triangle_space") != params.contains("base_layout_digest"))
+        return rejection("invalid_triangle_space", "triangle_space and base_layout_digest must be supplied together");
+    if (params.contains("triangle_space")) {
+        try {
+            const auto space = requireString(params, "triangle_space", "edit_scene_acceleration_structures");
+            const auto digest = requireString(params, "base_layout_digest", "edit_scene_acceleration_structures");
+            if ((space != "geometry" && space != "world") || !isLowerHexDigest(digest))
+                return rejection("invalid_triangle_space", "triangle_space must be geometry or world and base_layout_digest must be a SHA-256 digest");
+            const auto config = dependencies_.resolve_authoring_context
+                ? dependencies_.resolve_authoring_context(currentDocumentSet()).config : Json::parse(document_.bytes());
+            auto layout = triangleGeometryDocument(config, dependencies_);
+            if (!layout.info.at("editable").get<bool>())
+                return rejection("triangle_space_not_editable", layout.info.value("reason", std::string{"Ray group layout is not editable"}));
+            if (layout.info.at("source_digest").at("hex") != digest)
+                return rejection("external_modification", "The ray group layout changed since it was read");
+            auto document = OrderedJson::parse(layout.bytes);
+            if (!document.contains("acceleration_structure"))
+                document["acceleration_structure"] = {{"defaults", OrderedJson::object()}};
+            document["acceleration_structure"]["triangle_space"] = space;
+            const auto bytes = document.dump(2);
+            const auto reference = layout.info.at("source_reference").get<std::string>();
+            (void)parseRayGroupLayout(bytes, reference);
+            layout_documents.push_back({
+                .reference = reference, .normalized_reference = dependencies_.normalize_reference(reference),
+                .path = layout.path, .operation = RenderConfigDocumentOperation::replace,
+                .expected = {RenderConfigDocumentExistence::present, digest}, .bytes = bytes});
+        } catch (const std::exception &error) {
+            return rejection("invalid_triangle_space", error.what());
+        }
+    }
     return queueRootEdit(base_digest, "edit_scene_acceleration_structures",
         [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
             ResolvedRenderPipeline validation;
@@ -715,7 +787,7 @@ OrderedJson RenderConfigEditorService::editSceneAccelerationStructures(const Jso
             }
             candidate = candidate.withRootValue("scene_acceleration_structures", params.at("definitions").dump(2));
             return std::nullopt;
-        });
+        }, layout_documents);
 }
 
 OrderedJson RenderConfigEditorService::getRenderAuthoringContext(

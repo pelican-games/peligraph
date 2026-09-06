@@ -701,11 +701,13 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
     bool deformed = false;
     bool distinct_instances = false;
     bool world_space = false;
+    bool edit_space = false;
     SECTION("static mesh") {}
     SECTION("morph mesh refit") { deformed = true; }
     SECTION("world-space morph mesh refit") { deformed = true; world_space = true; }
     SECTION("different instance transforms retain separate geometry-space BLAS") { distinct_instances = true; }
     SECTION("world-space BLAS combines different instance transforms") { distinct_instances = true; world_space = true; }
+    SECTION("world coordinate space edits publish through the editor") { distinct_instances = true; world_space = true; edit_space = true; }
     setupLogger();
     Wp374aProjectRoot project{"rt6_multi_geometry"};
     writeWp374aProject(project.path, 2, true, true, true,
@@ -810,6 +812,36 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
     };
     const auto first = sample(false);
     CHECK(first.blas_update_count == 0);
+    if (edit_space) {
+        auto service = makeEditorRuntimeService(EditorRuntimeServiceOptions{.render_config_editing = true});
+        std::uint64_t rpc_id = 71000;
+        for (const std::string space : {"geometry", "world"}) {
+            const auto before = runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object());
+            REQUIRE(before.at("triangle_geometry").at("editable") == true);
+            const auto accepted = runWp374aRpcBytes(*service, rpc_id++, "edit_scene_acceleration_structures", {
+                {"base_source_digest", before.at("source_digest").at("hex")},
+                {"definitions", before.at("definitions")}, {"triangle_space", space},
+                {"base_layout_digest", before.at("triangle_geometry").at("source_digest").at("hex")}});
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            service->commitPendingEdits();
+            (void)renderWp374aProductionRows();
+            const auto result = runWp374aRpcBytes(*service, rpc_id++, "get_edit_result", {{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            (void)renderWp374aProductionRows();
+            const auto diagnostics = GET_MODULE(Renderer).rayQueryAccelerationStructureDiagnosticsForTesting();
+            CHECK(diagnostics.active_blas_count == (space == "world" ? 1u : 2u));
+            CHECK(diagnostics.tlas_instance_count == (space == "world" ? 1u : 2u));
+            const auto image = GET_MODULE(Renderer).readRenderTargetForTesting("multi_primary", ImageSubresourceRange{});
+            REQUIRE(image.bytes.size() >= sizeof(std::uint32_t));
+            std::uint32_t value = 0;
+            std::memcpy(&value, image.bytes.data(), sizeof(value));
+            CHECK(value == (space == "world" ? 8u : 808u));
+            CHECK(Json::parse(readWp374aText(project.path / "ray_layout.json"))["acceleration_structure"]["triangle_space"] == space);
+        }
+        return;
+    }
     if (deformed) {
         auto &instances = GET_MODULE(PolygonInstanceContainer);
         const auto inventory = instances.rayQueryGeometryInstances();

@@ -562,6 +562,10 @@ transform入力bufferはsubmission完了まで保持する。
 StudioのRender Features内「Scene AS...」でname/maskの追加・変更・削除を行う。
 `get_scene_acceleration_structures`はrootのdefinitionsとsource digestを返し、
 `edit_scene_acceleration_structures`はbase_source_digestとdefinitions配列を受け取る。
+GUIのTriangle coordinate spaceでgeometry/worldを選択する。getのtriangle_geometryはspace・editable・source_reference・source_digestと編集不可理由を返す。
+editにtriangle_space/base_layout_digestを組で渡すと、参照先のproject ray group layout v2/v3のacceleration_structure.triangle_spaceだけを変更する。
+layoutの他項目は保持し、共通parserで検証する。rootとlayoutは既存の候補文書overlayと複数文書CASで同時保存・publicationし、失敗時に復元する。
+engine所有・layout未指定・v1等は編集不可と理由を表示する。rootへの座標系overrideや別の保存処理は追加しない。
 定義は既存compilerのschemaで検査し、rootの該当JSON値だけを置換する。
 他の設定のbytesを保持し、既存のrender config ticket・candidate compile・複数file保存・
 publication/rollbackを共用する。使用中ASを削除してtask参照が解決できなければ適用しない。

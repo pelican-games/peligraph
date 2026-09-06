@@ -1421,6 +1421,11 @@ class SceneAccelerationStructuresDialog final : public QDialog {
     QTableWidget *table;
     QTableWidget *connections;
     QLabel *notice;
+    QComboBox *triangle_space;
+    QLabel *triangle_source;
+    QString layout_digest;
+    QString original_space;
+    bool geometry_editable = false;
     QPushButton *add;
     QPushButton *remove;
     QPushButton *apply;
@@ -1434,6 +1439,7 @@ class SceneAccelerationStructuresDialog final : public QDialog {
     void controls() {
         const bool busy = request_id != 0 || !ticket.isEmpty();
         table->setEnabled(!busy);
+        triangle_space->setEnabled(!busy && geometry_editable && !digest.isEmpty());
         connections->setEnabled(!busy);
         add->setEnabled(!busy);
         remove->setEnabled(!busy);
@@ -1507,10 +1513,14 @@ class SceneAccelerationStructuresDialog final : public QDialog {
             if (selected != connections->item(i, 0)->data(Qt::UserRole).toString())
                 task_connections.insert(connections->item(i, 0)->text(), selected);
         }
-        request(Request::Submit, QStringLiteral("edit_scene_acceleration_structures"),
-            {{QStringLiteral("base_source_digest"), digest},
+        QJsonObject params{{QStringLiteral("base_source_digest"), digest},
              {QStringLiteral("definitions"), definitions},
-             {QStringLiteral("task_connections"), task_connections}});
+             {QStringLiteral("task_connections"), task_connections}};
+        if (geometry_editable && triangle_space->currentData().toString() != original_space) {
+            params.insert(QStringLiteral("triangle_space"), triangle_space->currentData().toString());
+            params.insert(QStringLiteral("base_layout_digest"), layout_digest);
+        }
+        request(Request::Submit, QStringLiteral("edit_scene_acceleration_structures"), params);
     }
     void receive(qint64 id, const QByteArray &bytes) {
         if (id != request_id || !request_id) return;
@@ -1531,6 +1541,14 @@ class SceneAccelerationStructuresDialog final : public QDialog {
                 notice->setText(tr("The engine did not return an editable scene AS document."));
             } else {
                 digest = next_digest;
+                const auto geometry = response->value(QStringLiteral("triangle_geometry")).toObject();
+                original_space = geometry.value(QStringLiteral("space")).toString();
+                layout_digest = geometry.value(QStringLiteral("source_digest")).toObject().value(QStringLiteral("hex")).toString();
+                geometry_editable = geometry.value(QStringLiteral("editable")).toBool();
+                triangle_space->setCurrentIndex(triangle_space->findData(original_space));
+                triangle_source->setText(geometry_editable
+                    ? geometry.value(QStringLiteral("source_reference")).toString()
+                    : geometry.value(QStringLiteral("reason")).toString());
                 table->setRowCount(0);
                 for (const auto &entry : definitions.toArray()) {
                     const auto definition = entry.toObject();
@@ -1586,6 +1604,20 @@ class SceneAccelerationStructuresDialog final : public QDialog {
         auto *description = new QLabel(tr("Create named scene subsets using instance mask bits. The default scene includes all geometry."), this);
         description->setWordWrap(true);
         layout->addWidget(description);
+        triangle_space = new QComboBox(this);
+        triangle_space->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.triangleSpace"));
+        triangle_space->addItem(tr("Geometry space (per-instance transforms)"), QStringLiteral("geometry"));
+        triangle_space->addItem(tr("World space (combine transformed triangles)"), QStringLiteral("world"));
+        auto *geometry_form = new QFormLayout;
+        geometry_form->addRow(tr("Triangle coordinate space"), triangle_space);
+        layout->addLayout(geometry_form);
+        auto *geometry_description = new QLabel(tr("World space bakes object transforms into triangles so compatible instances can share a BLAS. Triangle object-space shader coordinates become world-space coordinates. Procedural AABBs are unchanged."), this);
+        geometry_description->setWordWrap(true);
+        layout->addWidget(geometry_description);
+        triangle_source = new QLabel(this);
+        triangle_source->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.triangleSource"));
+        triangle_source->setWordWrap(true);
+        layout->addWidget(triangle_source);
         table = new QTableWidget(0, 2, this);
         table->setObjectName(QStringLiteral("pelican.sceneAccelerationStructures.table"));
         table->setHorizontalHeaderLabels({tr("Name"), tr("Instance mask (0-255)")});
