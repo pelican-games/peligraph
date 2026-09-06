@@ -1,6 +1,6 @@
 # 実装指示書 — 完了済み WP アーカイブ
 
-> 未完了 WP・§0 共通規則・運用章は [implementation_plan.md](implementation_plan.md) を参照。本書の WP 本文は active ledger から逐語移動した記録である。
+> 現在の入口は [v1開発方針](v1_development_plan.md)、WP仕様と検証履歴は [implementation_plan.md](implementation_plan.md) を参照。本書のWP本文は台帳から逐語移動した過去の記録であり、旧再開順・運用規則を現在の指示として適用しない。
 
 ## 1. WP 一覧と依存関係
 

@@ -1,12 +1,12 @@
 # 実装指示書(コーディングエージェント向け)
 
-> **2026-09-05 の製品方針:** v1 は RT 機能を十分に完成させ、最新の graphics pipeline をノードで操作・観測・学習できるものとする。RT3〜RT7 を小さなゲームの最小要件だけで削らない。[v1 の完成条件・棚卸し・開発順序](v1_development_plan.md)を参照。作業再開は末尾「未了項目と再開順」の **2026-09-05 現況**から読む。
+> **再開入口 (2026-09-06):** 最初に [v1 の現況・残件・開発運用](v1_development_plan.md) を読み、対象WPの仕様と本書末尾「未了項目と再開順」の現況を確認する。機能の最終統合は `96d9cb7e`。旧履歴の未commit・再開順を現在の状態として扱わない。v1 は RT 機能を十分に完成させ、最新の graphics pipeline をノードで操作・観測・学習できるものとし、RT3〜RT7 を小さなゲームの最小要件だけで削らない。
 
-> 完了済み WP の逐語記録は [implementation_archive.md](implementation_archive.md) を参照。本書は未完了 WP と共通・運用規則だけを扱う。
+> 本書はWP仕様・共通規則と、その変更・検証履歴を扱う。以前に移動した完了WPは [implementation_archive.md](implementation_archive.md) を参照。どちらの履歴も新たな作業指示ではない。現行の対象が必要とする節だけ読み、全履歴を再審議しない。
 
 対象読者: 実装を担当するコーディングエージェント。各 Work Package (WP) は独立に依頼できる単位として書かれている。
 
-設計の正は以下の文書。本書と矛盾したら設計文書を優先し、矛盾を発見したら作業を止めて報告すること。
+設計の参照先は以下。利用者の最新裁定と各WPの確定した最終差分を適用する。履歴の日付だけで古い設計へ戻さない。既存裁定で解決できない仕様矛盾が実装に影響する場合は、その論点を報告し、独立した作業を進める。
 
 - `docs/design_roadmap_renderworld.md` — 全体順序と ECS 境界
 - `docs/design_headless_rendering.md` — ヘッドレス描画の設計(以下 [HL])
@@ -29,18 +29,16 @@ v3(2026-07-02): WP1〜17 完了を受けて WP18(プロジェクト形式)・WP1
 
 ### ビルド・テスト
 
+以下は構成の参照例。現在の確認範囲・並列度・待機方法は [v1開発運用](v1_development_plan.md) に従う。文書だけの変更にbuildを要求したり、過去の全数コマンドを毎回の受け入れ条件に戻したりしない。
+
 ```sh
 cmake . -B build -DCMAKE_PREFIX_PATH=<Qt install path> -DPELICAN_WITH_SPIRV_LINK=ON
 cmake --build ./build --config Debug
-ctest --test-dir ./build -C Debug -j4 --output-on-failure
+ctest --test-dir ./build -C Debug -R '<affected-test-regex>' -j1 --output-on-failure
 ```
 
-- **`-j4` を省かないこと。**直列 674 秒に対し `-j4` で 346 秒(実測、失敗 0)。
-  それ以上上げても伸びないのは `pelican_golden_gpu` の resource lock が
-  27 件の GPU テストを直列化して臨界経路になっているため。
-  **`-j64` では 12 件が失敗し GPU が 10 回 SEGFAULT した**ので、全数は `-j4`〜`-j8` に留めること。
-  内周で速く回したいときは `-LE gpu -j16`(1016 件が約 9 秒)。
-- Qt 不要の作業は `-DSKIP_DEVSTUDIO=ON`。ただし `src/devstudio/` を触る WP では OFF にして両方確かめること
+- GPUは `-j1`。CPUの並列実行は既存resource lockとfixture共有条件に合わせる。過去の件数・所要時間は現在の構成の保証に使わない。
+- `src/devstudio/` の変更はStudioを含む構成で確認する。Qt不要の独立worktreeでは `-DSKIP_DEVSTUDIO=ON` を選べるが、共通コードだけの変更で既存buildを毎回ON/OFFへ切り替えない。
 - **`-DPELICAN_WITH_SPIRV_LINK=ON` を省かないこと。** この option の既定は OFF で
   ([`ci.md`](ci.md) §「experimental SPIR-V linker」)、省くと SPIR-V リンカのテスト 5 件が
   **そもそも登録されない**。CI は ON で回すので、省いたまま「全数緑」と報告すると
@@ -78,13 +76,9 @@ ctest --test-dir ./build -C Debug -j4 --output-on-failure
 
 registry が宣言した連動以外のフラグを対照行で動かしてはならない。
 
-- 完了条件は「ビルド成功 + 全テストグリーン + `git diff --check` クリーン + **文書参照が緑**」
-
-  **(2026-08-19 改訂)全数 GPU 込みを回す頻度を分けること。**
-  内周(実装中・変異確認・受け入れ条件の検査)は **`-LE gpu -j16`** で回す(約 9 秒)。
-  **`-j4` の全数(GPU 込み、約 346 秒)は統合ブランチへマージする直前に 1 回**でよい。
-  GPU・レンダリング・シェーダに触れる WP はこの限りではなく、内周でも GPU を回すこと。
-  `doclink audit` は**文書本文を触った WP**でだけ回す。`check` は常に回す。
+- 完了条件は、対象の実装・必要なbuildと影響範囲の確認・差分空白検査・文書参照確認。実行範囲と既知の失敗を記録し、部分確認を全数成功と呼ばない。
+  利用者の2026-09-05裁定により、全数・全構成の反復を一律の統合条件にしない。変更したGPU経路は実GPUで確認し、実装中は対象case/section、区切りでは関連範囲を選ぶ。
+  `doclink audit` は文書本文を変更したとき、`check` は既存の文書参照の確認に使う。既知の別件を毎回調査し直さず、新しい差分に起因するものを解消する。
 - **新しく書く主張には §4 規約 10(否定対照)を適用すること。**
   機能が効いていることの主張には、効いていない状態を同じテストの中で実行し、
   結果が異なることを主張する。受け入れ条件には
@@ -23237,7 +23231,17 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-**2026-09-06 運用更新:** 利用者が「適切な頻度でコミットしてね」と明示許可。これ以降は本タスクが統合担当として、実装・影響範囲の確認・記録が揃った単位でcommitする。以前のcommit保留は解除。独立したembed再生成修正は `b0c000a9` に保存した。
+#### 現況 (2026-09-06、履歴より優先)
+
+- 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
+- `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
+- 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
+- この区切りで機能開発はいったん停止。追加の依頼は現況文書・開発運用の整理。機能再開の指示を受けたら [v1の残件](v1_development_plan.md) から対象を選び、旧worktreeや完了済みWPの再開プロンプトを使用しない。
+- 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
+
+#### 機能別の実装・検証履歴
+
+以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
 **RT6 spriteのAS前描画 (2026-09-06):**
 - 固定sprite shaderはASを参照しないため、sprite anchorへの一律AS依存を削除。pipelineにallow_ray_query=falseを明示し、color/depth producerへの依存は維持する。
@@ -23246,7 +23250,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 対照: 一律AS依存を戻せばAS前配置がcycleになり、初期候補のfeature判定を外せばsprite可視pixelが0になる（後者は修正前のspriteas-gpu.logで実測）。個別の追加変異は実施せず、新test target・配布toolは追加しない。
 - 次はfullscreen以外の描画pass・feature所有ノードの編集、worldモード/material queryのGUI、異transform AABB結合など。画面全体の手動確認と性能・配布確認は残る。利用者の希望により、本区切りの統合後はいったん実装停止。
 
-**最新の入口 (2026-09-06、Frame Planドラッグ接続):** procedural asset新規作成はd529cdceへ統合済み。embed再生成修正と、Frame Planのcompute/RT・fullscreen preset pass宛ドラッグ接続が作業ツリーにある。commitは自動承認審査が「実装者はcommitしない」規約を理由に拒否し、統合担当としてのcommit可否を利用者へ確認中。再試行せず機能開発を継続。次はfullscreen以外の描画passやfeature所有ノードの編集範囲、残る制作操作など。学習サンプルは後回し。
+**統合前の経過 (2026-09-06、Frame Planドラッグ接続):** 当時はcommitが自動承認審査に拒否され保留していた。その後、利用者の明示許可を受けて `b0c000a9` / `96d9cb7e` に統合済み。現在はcommit確認待ちではない。
 
 **RT7 fullscreen preset pass宛ドラッグ接続 (2026-09-06、未commit):**
 - Frame PlanのShiftドラッグをproject presetのfullscreen passへ接続。既存authoring contextで編集可能性を判定し、共有定義や対象外passを暗黙に保存しない。
@@ -23517,6 +23521,8 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 **2026-09-05 最新の利用者裁定:** 数値検証基盤の拡張は停止。WP386cの残りの区間oracle/generator/任意SPIR-V意味認定を、機能提供やRT4以降の必須条件から外す。未実装を完了にはせず保留とする。まずPlayer/Studioから開けるレイトレ学習サンプルを作り、配置・サイズ・AABB・混在を実際の描画と編集で確認する。その後callableと動的record(RT4)、変形geometry(RT5)、ノード編集へ進む。旧再開順の「386cの数値golden完成後にfeature enable」はこの裁定で更新する。[v1開発方針](v1_development_plan.md)を参照。
 
 #### 2026-09-05 現況(下の再開履歴より優先)
+
+> 2026-09-05時点の履歴。下の番号付き順序は当時のもの。現在の再開先は本節冒頭の2026-09-06現況を参照する。
 
 作業ブランチは `codex/render-target-runtime-slice`、最新の機能着地は `6d25d9e0`(WP386b、WP382dは `4ce4117d`、WP382b-fixは `36ad3444`、WP386aは `b7cb1825`)。
 引き継ぎ入口は `<作業ディレクトリ>/handoff_codex_2026-09-05.md`。本節と各 WP の最終仕様を正とする。

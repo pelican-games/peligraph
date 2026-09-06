@@ -1661,7 +1661,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`isR7Identifier()`](../../src/core/communication/rpcserver.cpp#L236) | "R7" の由来 | R7 とは何か | **外部ツール契約の要求番号 R7**(`docs/external_tools_requirements.md`)「オブジェクト / ジョイント名は `[a-zA-Z0-9_]` のみ」の実装。`docs/design_scene_format.md` と `docs/manual/04_scene_ecs.md` も同じ R7 を参照 |
 | [`RpcServer::run()` の CRLF 除去](../../src/core/communication/rpcserver.cpp#L1166) | framing 契約 | なぜ `\r` を落とすか | 「1 行 = 1 JSON-RPC メッセージ、区切りは `\n`」で、CRLF 出力の相手から来た行末 `\r` を落とすことで Windows クライアントでも同じ契約が成立する。応答は常に `'\n'` 終端 + flush |
 | [逆引き](../../src/core/communication/rpcserver.cpp#L387) / [名前からの変換](../../src/core/communication/rpcserver.cpp#L719) | model_instance → object_id → authoring_object_id | 橋渡しの規則 | 上記 2 つの identity の橋渡し。詳細は**未執筆** |
-| [`ResolutionFailureException`](../../src/core/communication/rpcserver.cpp#L1270) | `failure()` の中身 | 何を表すか | **未執筆**(§9.23.2 の resolver 失敗形式と対) |
+| [`ResolutionFailureException`](../../src/core/loader/resolutionresult.hpp#L176) | `failure()` の中身 | 何を表すか | **未執筆**(§9.23.2 の resolver 失敗形式と対) |
 | [`kbd:` プレフィックス](../../src/core/communication/rpcserver.cpp#L610) | binding 表示 | modal transform との関係 | **未執筆**(根拠がコードにない) |
 | [OpenXR inactive スキーマ](../../src/core/communication/rpcserver.cpp#L84) / [診断](../../src/core/communication/rpcserver.cpp#L1349) | 診断 JSON | スキーマの安定性契約 | **未執筆**(→ §9.23.18) |
 | [frame index と continuous time](../../src/core/communication/rpcserver.cpp#L974) / [replay 開始](../../src/core/communication/rpcserver.cpp#L1556) | どちらが真か、設定順序 | 真の時刻源 | **未執筆**(根拠がコードにない) |
@@ -1801,7 +1801,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 似た 2 つの版チェックが両方要る理由と、anchor が `extern "C"` である理由。
 
-**答え**: `expected_epoch` は「ホスト実行ファイルからインポートされているべき epoch anchor シンボル([`pelican_game_logic_epoch_vN`](../../src/core/userpublic/gamelogic.hpp#L29))」の一致検査で、**DLL が別世代の SDK でビルドされていないこと**を見ます。`host_schema_entrance` は**登録 API の世代(v2/v3)**で、DLL が host より新しい entrance を要求していないかを見ます。ABI 世代と登録スキーマ世代という別軸なので両方要ります。anchor が未装飾の `extern "C"` シンボルなのは、DLL が初期化子の前にホストから解決を強制され、**PE インポートテーブルを読むだけで世代不一致を静的に検出できる**ようにするためです(→ §9.21「raw import 診断は provider-only な旧 DLL の唯一の enforcement」)。
+**答え**: `expected_epoch` は「ホスト実行ファイルからインポートされているべき epoch anchor シンボル([`gameLogicEpochAnchorSymbol`](../../src/core/userpublic/gamelogic.hpp#L23))」の一致検査で、**DLL が別世代の SDK でビルドされていないこと**を見ます。`host_schema_entrance` は**登録 API の世代(v2/v3)**で、DLL が host より新しい entrance を要求していないかを見ます。ABI 世代と登録スキーマ世代という別軸なので両方要ります。anchor が未装飾の `extern "C"` シンボルなのは、DLL が初期化子の前にホストから解決を強制され、**PE インポートテーブルを読むだけで世代不一致を静的に検出できる**ようにするためです(→ §9.21「raw import 診断は provider-only な旧 DLL の唯一の enforcement」)。
 
 #### [`StructFieldRangeDescriptor`](../../src/core/userpublic/details/schema/structfieldschema.hpp#L107) — "constexpr-in-incomplete-owner" 不変式
 
