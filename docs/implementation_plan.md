@@ -23244,7 +23244,17 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**物理raycast RPC (2026-09-06):**
+**公開debugTextの色・倍率 (2026-09-06):**
+- GameContext::debugTextの色/scale指定を既存DebugTextへ接続。既定値は白・等倍、scaleのclampとfeature無効時no-opは既存処理へ委ねる。公開C++関数の引数を拡張したため、game DLLは更新したheader/libraryで再ビルドする。
+- Playerと既存DebugText/UI描画test build成功（build/.codex_bg/debugtext-public-build.log）。既存fixtureをGameContext経由へ変更し、1件7 assertions成功（debugtext-public-test.log）。色・倍率を落とせば既存の描画比較が落ちる。新しい画像認証基盤やテスト行列は追加しない。個別変異は未実行。
+
+**P3メッシュ物理の残件調査 (2026-09-06、実装未着手):**
+- 現行phys::Shape/公開providerのShapeV1はsphere/box/capsuleのみ。glTF loaderもpelican.collisionを取り込んでいない。P3全体は未完了で、raycast RPCだけが接続済み。
+- 入口はgltf.cppのloadNode/loadMesh。CPU collision geometryはrender variantへ展開する前に保持し、ModelTemplateのGPU資源とは別に所有する必要がある。PhysWorldのPreparedState・scene準備/publication・model reload・ColliderProjectionAdapter/階層編集の再構築を一緒に扱う。
+- Game DLL serviceのraycastはPhysWorld wrapperを通らずphysicsruntimeを呼ぶため、wrapperだけの追加では不足する。provider-only構成のnarrow phase除去を守り、予約済みprovider fieldにpointerを詰めるような迂回はしない。meshを扱うprovider capability/データ所有権から具体化する。
+- 着手時にnode/primitiveのidentity、静的meshのtransform追随、反転transformの法線、rayの片面/両面、overlap/sweep/triggerとの関係を確定する。物理SBTアドレス等の追加観測をこの中核残件の前提条件にはしない。
+
+**物理raycast RPC (2026-09-06、dc501247):**
 - design_physics_queries.mdのP3に予定されていたraycast RPCが未接続だったため、PhysWorldの既存closest queryへ接続。有限origin/direction/max_distanceを受け、方向を正規化。名前/距離/位置/法線/collider identityとtrigger/one-way metadataを返す。物理providerや衝突計算の別実装は作らない。メッシュ/BVH/glb extrasの残件は別途照合する。
 - 物理query handlerの登録をまとめ、Playerの本番登録とwire testから共用。実コライダーのhitとtransform変更直後のmiss、ゼロ方向と負距離のinvalidParamsを確認する。
 - Player/関連test build成功（build/.codex_bg/raycast-rpc-build.log）。PhysWorld関連11件103 assertions成功（raycast-rpc-test.log）。物理queryの接続を戻すとRPC hitが返らず、旧transformのコピーへ置換すれば移動後missが落ちる。個別変異・load_gltf経由のRPCシナリオは未実行。GPUを使わないwireと実PhysWorldの確認であり、描画試験は追加しない。

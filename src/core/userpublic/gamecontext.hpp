@@ -96,7 +96,8 @@ class PELICAN_API GameContext {
     void loadScene(std::string_view name) const;
     std::string currentScene() const;
 
-    void debugText(int x, int y, std::string_view text) const;
+    void debugText(int x, int y, std::string_view text,
+                   vec4 color = {1, 1, 1, 1}, int scale = 1) const;
 
     template <class Event> void emit(const Event &event) const {
         internal::getEventRegisterer().emit(event);

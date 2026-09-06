@@ -20,7 +20,7 @@
 | audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L326) |
 | scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L388) |
 | debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L400) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L101) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L102) |
 | settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L404) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。

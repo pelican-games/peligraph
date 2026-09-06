@@ -151,7 +151,7 @@ rpc の `step_frame` も**同一順序**を再現します。「rpc 駆動のテ
 | シーン | `loadScene(name)` / `currentScene()` | §8.7 |
 | 永続化 | `gameSettings()` / `setGameSettings(json)` / `saveSettings()` / `saveData(slot, json)` / `loadData(slot)`→optional / `listSaves()` | §8.12(✅WP65) |
 | ライト | `setDirectionalLightDirection(name, dir)` / `setDirectionalLightIntensity(name, f)` / `setPointLightPosition(name, pos)` / `setSpotLightDirection(name, dir)` — いずれも→bool | ✅WP142。[第4章](04_scene_ecs.md) §4.2 の light をオブジェクト `name` で指す。未知名は例外ではなく **false** が返る |
-| HUD | `debugText(x, y, text)` | debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
+| HUD | `debugText(x, y, text, color, scale)` | colorはRGBA、scaleは整数倍率。省略時は白・等倍。debug_text feature 未参照時は no-op([第7章](07_input_ui.md)) |
 | イベント | `emit(const Event&)` | §8.6 |
 
 アニメーション操作の API は GameContext に**ありません** — クリップは宣言的コンポーネント([第4章](04_scene_ecs.md))、グラフは独立した公開評価器(§8.13)です。評価器を `GameContext` に載せると標準の評価器だけが特権を持ってしまい、「評価器ごと自作できる」という設計が空文になるためです([../design_animation_graph.md](../design_animation_graph.md))。

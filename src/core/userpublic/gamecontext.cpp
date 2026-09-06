@@ -397,8 +397,8 @@ std::string GameContext::currentScene() const {
     return GET_MODULE(SceneLoader).currentScene();
 }
 
-void GameContext::debugText(int x, int y, std::string_view text) const {
-    GET_MODULE(DebugText).text(x, y, text);
+void GameContext::debugText(int x, int y, std::string_view text, vec4 color, int scale) const {
+    GET_MODULE(DebugText).text(x, y, text, {color.x, color.y, color.z, color.w}, scale);
 }
 
 GameContext::Json GameContext::gameSettings() const {
