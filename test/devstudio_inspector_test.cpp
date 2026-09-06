@@ -1181,6 +1181,57 @@ TEST_CASE("Studio adds behavior attachments by catalog key without replacing exi
     }
 }
 
+TEST_CASE("Inspector materializes only the selected omitted default",
+          "[devstudio][inspector][insert-default]") {
+    InspectorHarness harness;
+    harness.open();
+    auto components = componentResult();
+    auto &component = components["components"][1];
+    component["name"] = "behavior";
+    component["authored_json"] = {{"name", "behavior"}, {"type", "default_behavior"}};
+    component["behavior"] = {{"attachment_handle", 901}};
+    component["schema"]["node"] = {{"tag", "struct"}, {"children", Json::array({
+        {{"tag", "leaf"}, {"name", "enabled"}, {"presence", "defaulted"}, {"default", false}}
+    })}};
+    bool allowed = true;
+    SECTION("registered default") {}
+    SECTION("flat schema lets the codec choose its default") { component["schema"].erase("node"); }
+    SECTION("no default literal") {
+        component["schema"]["node"]["children"][0].erase("default");
+        allowed = false;
+    }
+    SECTION("pending component") { component["pending"] = true; allowed = false; }
+    SECTION("already authored") {
+        component["authored_json"]["params"] = {{"enabled", true}};
+        allowed = false;
+    }
+    harness.model.requestRefresh();
+    harness.reply(harness.take("scene_tree"), sceneTreeResult());
+    harness.reply(harness.take("get_components"), components);
+    harness.reply(harness.take("get_scene_revision"), {{"scene_revision", 1}, {"preview_epoch", 0}});
+    REQUIRE(harness.model.snapshot());
+    // Pending components intentionally have no editable widgets. Build the
+    // requested field identity independently to test that submission is denied.
+    const auto descriptors = PelicanStudio::makeInspectorWidgetPlan(component, 41);
+    REQUIRE(descriptors.size() == 1);
+    const auto key = descriptors.front().field_key;
+    REQUIRE(harness.model.canInsertField(key) == allowed);
+    REQUIRE(harness.model.insertField(key) == allowed);
+    if (allowed) {
+        const auto edit = harness.take("edit");
+        REQUIRE(edit.params.at("base_revision") == 1);
+        REQUIRE(edit.params.at("operations") == Json::array({
+            {{"op", "insert_component_field"}, {"object_id", 41},
+             {"component_slot", "behavior"}, {"attachment_index", 1},
+             {"attachment_handle", 901}, {"field_path", "/params/enabled"}}
+        }));
+        REQUIRE_FALSE(harness.model.canInsertField(key));
+        REQUIRE_FALSE(harness.model.snapshot()->components[1].authored_json.contains("params"));
+    } else {
+        REQUIRE(harness.model.takeRpcRequests().empty());
+    }
+}
+
 TEST_CASE("Studio Inspector edits schema lists with stable addressed identities",
           "[devstudio][inspector][list-edit]") {
     InspectorHarness harness;

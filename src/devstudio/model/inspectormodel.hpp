@@ -43,6 +43,7 @@ struct InspectorWidgetDescriptor {
     nlohmann::json value;
     bool authored = false;
     bool value_matches_schema = false;
+    bool default_available = false;
     std::optional<std::uint64_t> behavior_attachment_handle;
 };
 
@@ -146,6 +147,8 @@ class InspectorModel {
                           bool commit_staged = true);
     bool commitWidgetValue(std::string_view field_key,
                            nlohmann::json value);
+    bool canInsertField(std::string_view field_key) const;
+    bool insertField(std::string_view field_key);
     bool canRemoveComponent(std::size_t component_index) const noexcept;
     bool canEditList(std::string_view key) const;
     bool insertListRow(std::string_view key, nlohmann::json row);

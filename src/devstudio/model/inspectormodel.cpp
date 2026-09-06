@@ -18,6 +18,18 @@ using Json = nlohmann::json;
 
 std::string escapeJsonPointerSegment(std::string_view segment);
 
+const Json *inspectorSchemaField(const Json &node, const std::string &path,
+                                 const std::string &target) {
+    if (path == target) return &node;
+    if (node.value("tag", "") != "struct") return nullptr;
+    for (const auto &child : node.at("children")) {
+        const auto next = path + "/" + escapeJsonPointerSegment(child.at("name").get<std::string>());
+        if (target != next && !target.starts_with(next + "/")) continue;
+        if (const auto *found = inspectorSchemaField(child, next, target)) return found;
+    }
+    return nullptr;
+}
+
 void collectInspectorLists(const Json &node, const Json &authored,
                            const std::string &path, const std::string &prefix,
                            std::vector<InspectorListDescriptor> &lists) {
@@ -355,6 +367,17 @@ makeInspectorWidgetPlan(const Json &component,
         descriptor.field_key =
             std::to_string(authoring_object_id) + ":" + component_name + ":" +
             std::to_string(component_index) + ":" + descriptor.json_pointer;
+
+        if (schema.contains("node")) {
+            const auto *node = inspectorSchemaField(schema.at("node"), "",
+                                                    inspectorJsonPointer(field_name));
+            descriptor.default_available = node && node->contains("default") &&
+                node->value("tag", "") != "struct" && node->value("tag", "") != "list";
+        } else {
+            // Flat schemas carry no default literal. The existing insert RPC
+            // derives the selected default from the component codec.
+            descriptor.default_available = true;
+        }
 
         std::visit(
             [&](const auto &range) {
@@ -1692,6 +1715,25 @@ bool InspectorModel::commitWidgetValue(std::string_view field_key,
                  ? widget->component_slot + "." + widget->field_name
                  : std::string{field_key}),
         widget != nullptr ? widget->component_slot : std::string{});
+    return true;
+}
+
+bool InspectorModel::canInsertField(std::string_view field_key) const {
+    if (!canEdit() || busy() || refreshBlocked() || impl_->refresh_in_flight) return false;
+    const auto *widget = impl_->findWidget(field_key);
+    if (!widget || widget->authored || !widget->default_available) return false;
+    const auto *component = impl_->findComponent(*widget);
+    return component && component->editable && !component->pending && !component->generated;
+}
+
+bool InspectorModel::insertField(std::string_view field_key) {
+    if (!canInsertField(field_key)) return false;
+    const auto &widget = *impl_->findWidget(field_key);
+    auto operation = impl_->operationFor(widget, nullptr);
+    operation["op"] = "insert_component_field";
+    operation.erase("value");
+    impl_->enqueueEdit(std::move(operation), "Add default " + widget.field_name,
+                       widget.component_slot);
     return true;
 }
 

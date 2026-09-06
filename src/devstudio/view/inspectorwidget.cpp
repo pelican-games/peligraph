@@ -125,6 +125,7 @@ struct InspectorWidget::Impl {
     std::vector<QWidget *> direct_editors;
     std::vector<std::pair<QPushButton *, std::size_t>> remove_buttons;
     std::vector<std::pair<QWidget *, std::string>> list_controls;
+    std::vector<std::pair<QPushButton *, std::string>> default_buttons;
     std::unordered_map<QObject *, NumericBinding *> numeric_events;
     std::unordered_map<QObject *, TextBinding *> text_events;
 
@@ -655,6 +656,9 @@ struct InspectorWidget::Impl {
         for (const auto &[control, key] : list_controls) {
             control->setEnabled(model.canEditList(key));
         }
+        for (const auto &[button, key] : default_buttons) {
+            button->setEnabled(model.canInsertField(key));
+        }
         undo_button->setEnabled(model.canUndoRedo());
         redo_button->setEnabled(model.canUndoRedo());
         cancel_preview_button->setEnabled(model.busy() &&
@@ -687,6 +691,7 @@ struct InspectorWidget::Impl {
         direct_editors.clear();
         remove_buttons.clear();
         list_controls.clear();
+        default_buttons.clear();
         numeric_bindings.clear();
         text_bindings.clear();
     }
@@ -952,8 +957,21 @@ struct InspectorWidget::Impl {
     void addField(QFormLayout &form, QWidget *parent,
                   const InspectorWidgetDescriptor &descriptor) {
         if (!descriptor.authored) {
-            form.addRow(fieldLabel(descriptor),
-                        plainLabel(owner.tr("Not authored"), parent));
+            if (descriptor.default_available) {
+                auto *button = new QPushButton(owner.tr("Add default"), parent);
+                button->setObjectName(QStringLiteral("pelican.inspectorAddDefault"));
+                const auto key = descriptor.field_key;
+                button->setEnabled(model.canInsertField(key));
+                default_buttons.emplace_back(button, key);
+                QObject::connect(button, &QPushButton::clicked, &owner, [this, key] {
+                    model.insertField(key);
+                    synchronize();
+                    dispatchRequests();
+                });
+                form.addRow(fieldLabel(descriptor), button);
+            } else {
+                form.addRow(fieldLabel(descriptor), plainLabel(owner.tr("Not authored"), parent));
+            }
             return;
         }
         if (!descriptor.value_matches_schema) {

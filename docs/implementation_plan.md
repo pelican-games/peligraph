@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**CARRIER-STUDIO List編集 (2026-09-06):**
+**CARRIER-STUDIO 省略fieldの既定値追加 (2026-09-06):**
+- Inspectorの未authored fieldへAdd defaultを追加。再帰schemaのdefaultを判定し、flat schemaは既存codecのdefault取得へ委ねる。選択fieldだけinsert_component_fieldへ送り、behavior attachment_index/handleとscene CASを保持。pending・read-only・処理中は追加しない。
+- Studio build成功、対象1件140 assertionsとInspector全体20件1305 assertions成功（build/.codex_bg/inspector-default-focused.log、inspector-default-final.log）。製品の描画変更はなくGPU試験は反復しない。実画面操作は未実施。
+- 初回テストはpending時の空widgetsにfront()してCRT assertion dialogを出した。プロセス終了を確認し、要求fieldのidentityを独立に生成して拒否を確認するfixtureへ修正。製品側のpending制限は変更していない。対照は値を送らず選択fieldだけ挿入することと、authored/pendingの拒否。個別変異は未実行。
+- 次はgeometry候補からoverrideを追加する選択画面と適用結果/実効値/対象欠落理由の表示。get_ray_occurrencesのentries/overrides/rejected_rowsを使い、編集は既存List操作へ接続する。返却override.addressのobjectとmutationのauthoring_object_idは異なるため、選択identityから構築する。機能全体は未完了。
+
+**CARRIER-STUDIO List編集 (2026-09-06、68ee52f2):**
 - InspectorModelがschema.nodeからListを列挙し、Qt Inspectorへ行ID/値一覧・Add/Edit/Remove/Up/Downを追加。JSONによる行値編集をschema leaf単位の既存set/insert/remove batchへ分解する。省略Listも表示し、generated/pending/read-only・List内部ネストは編集しない。scene/object/revisionを含むkeyと既存CAS・ticket・refreshを使用し、古いdialogの送信を拒否する。
 - 行移動RPCが未実装だったためmove_component_fieldを追加。既存addressとbefore/endでrow配列だけ並べ替え、ID・値・next_idを保持。behavior witness・canonical projection・journal Undo/Redoへ接続。remove+insertによるIDの再割当ては行わない。JSON pointerのescapeは既存処理を共有する。
 - Player/StudioとInspector build成功。移動core1件12 assertions成功、関連journal/WP382b41件947 assertions成功（build/.codex_bg/list-studio-move.log、list-studio-core-regression.log）。Inspector関連19件1165 assertions成功（list-studio-inspector.log）。実エンジン接続下の画面操作・新List操作の保存再読込は今回未実行。描画コードに変更がなくGPU試験は反復しない。
