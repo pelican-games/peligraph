@@ -201,7 +201,7 @@ flowchart LR
 ```
 
 [`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L134) は Project / Outliner /
-Inspector / Output / Engine Log / Frame Plan / Fullscreen Pass JSON の7パネルを stable object name を持つ dock として作ります。パネルは
+Inspector / Output / Engine Log / Frame Plan / Pass Editor の7パネルを stable object name を持つ dock として作ります。パネルは
 移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
 追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 

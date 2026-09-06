@@ -6,7 +6,7 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 
 ## 再開時の入口
 
-- 作業ブランチは `codex/render-target-runtime-slice`。機能の最終統合は `96d9cb7e`、embed再生成修正は `b0c000a9`。この状態で機能追加をいったん停止し、続く文書・開発運用の整理を実施。機能開発は再開指示待ち。
+- 作業ブランチは `codex/render-target-runtime-slice`。RT・Studio基盤を `96d9cb7e`、embed再生成修正を `b0c000a9`、文書・運用整理を `1878a3e0` に統合。その後、利用者の指示で機能開発を再開し、material passのray query設定をStudio/RPCへ接続した。
 - 本書の現況と残件を読み、着手する項目だけ台帳の該当WP・最終差分と `design_raytracing.md` §4-P / §11へ進む。台帳全体や完了履歴を毎回読み直さない。
 - 利用者の最新指示が旧運用記録に優先する。2026-09-06に統合担当としてのcommitを許可済み。実装・影響範囲の確認・記録が揃った単位でcommitし、個別の実装workerは統合担当へ渡す。
 - 同時agentは主担当を含め最大2、fastは使わない。`<作業ディレクトリ>/wp336`、`projects/showcase/`、無関係な `.claude/`・`out/` は触らない。モデル・thinking effort・プラグイン設定は利用者の選択を尊重する。
@@ -17,12 +17,12 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 区分 | 内容 |
 |---|---|
 | 実装済み | callableと動的record・公開API、skin/morph/VATとBLAS refit、3D/間接dispatch、名前付きTLASとASノード、複数geometry BLAS、world triangle結合、AS前のcompute/material/raster/sprite描画 |
-| 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、Frame Planドラッグ接続 |
-| 機能の残り | fullscreen以外の描画pass・feature所有ノードの編集範囲、worldモード/material queryのGUI、異transform AABB結合、その他の補助描画のAS依存細分化 |
+| 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、material passのray query/TLAS選択、Frame Planドラッグ接続 |
+| 機能の残り | materialの入出力などfullscreen以外の描画pass・feature所有ノードの編集範囲、worldモードのGUI、異transform AABB結合、その他の補助描画のAS依存細分化 |
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 
-機能再開時は描画passの編集範囲から対象を1つ選び、runtimeの実装済み機能を既存GUI/RPCへ接続する。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
+次は描画passの残る編集範囲から対象を1つ選び、runtimeの実装済み機能を既存GUI/RPCへ接続する。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
 
 ## 製品の完成条件
 
@@ -55,7 +55,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT3-2 | static AABB と intersection shader、三角形との混在 | WP386a/b統合済み。球のreport・reload・変更行列、procedural assetの新規作成・bounds/record編集・未使用定義削除RPC・保存・component装着・runtime反映を実GPU確認。専用Studio画面を接続。386cの数値基礎はae29fc98まで保存、追加数値基盤は保留 | 新画面とmixed geometryの実編集操作を確認する。学習サンプルは後回し、数値oracleの完成を次機能の条件にしない |
 | RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。Studioから初期値の永続編集も接続 | 新しい初期値dialogの実操作確認は残る |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
-| RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、名前付きTLAS構築とconsumerの交互配置・選択（compute/RT/material/raster）、共有AS前の独立compute・material・fullscreen/raster・sprite実行、複数triangle geometry BLAS/refit、明示worldモードで異transform個体の結合・移動rebuild・morph refit、単一componentの複数AABB asset/BLAS結合を実装・実GPU確認 | その他の補助描画のAS依存細分化、異transform AABB結合、worldモードとmaterial queryのGUI編集は残る |
+| RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、名前付きTLAS構築とconsumerの交互配置・選択（compute/RT/material/raster）、共有AS前の独立compute・material・fullscreen/raster・sprite実行、複数triangle geometry BLAS/refit、明示worldモードで異transform個体の結合・移動rebuild・morph refit、単一componentの複数AABB asset/BLAS結合を実装・実GPU確認 | その他の補助描画のAS依存細分化、異transform AABB結合、worldモードのGUI編集は残る |
 | RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きAS・task接続・Callable初期値、preset fork、fullscreen pass接続/shader編集を実装。compute/RT taskの宣言編集・追加・削除、dispatchフォーム、候補付き接続図、Frame Planのcompute/RT・fullscreen preset pass宛ドラッグ接続、名前付きASとconsumerの交互順序編集・独立computeの共有AS前配置をRPC/Studioへ接続 | fullscreen以外の描画passやfeature所有ノードの編集範囲は残る。接続図のクリック・ドラッグ確認済み、新dialog全体の実エンジン接続下での手動操作は未確認 |
 | ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。Inspectorの宣言JSON入力、登録behaviorとparams付き追加、model・texture・procedural asset選択を接続。削除・Undo/Redo・保存は既存journalを使用 | 新フォームの実操作、asset定義編集、代表ゲームでの一連の制作経路は残る |
 
@@ -68,7 +68,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 
 ## 開発順序
 
-1. 機能開発の再開指示を受けたら、入口の残件から具体的な操作を1つ選ぶ。実装済みのRT4/RT5を未着手へ戻さない。
+1. 入口の残件から具体的な操作を1つ選ぶ。実装済みのRT4/RT5を未着手へ戻さない。
 2. RT6の残る組合せとRT7の編集範囲を進める。GUIは既存runtime・RPC・保存経路へ接続し、別の実行系を作らない。
 3. 変更する機能と一緒に、関連する責務の重複や不要な旧分岐を整理する。GPU寿命・保存・公開境界の処理は維持する。
 4. 中核機能が揃った段階でGUIの操作感を磨き、学習サンプルと代表ゲームで制作経路・性能・配布を確認して公開条件を閉じる。

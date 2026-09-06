@@ -584,11 +584,14 @@ rootの`pipeline.preset`を同じ保存transactionで切り替える。
 コピー先は未作成の`project://`ファイルに限り、保存失敗時には新規ファイルとroot変更を戻す。
 コピーしたpresetは通常のproject資産として残る。任意のnode移動・edge編集はまだ含まない。
 
-project所有presetの既存fullscreen passは`edit_preset_pass`で`input`・`output`・`shader`を編集する。
+project所有presetの既存fullscreen passは`edit_preset_pass`で`input`・`output`・`shader`と任意の`ray_query`を編集する。
+material passは同じRPCで`ray_query`のみ編集する。boolまたは`acceleration_structure`名のobjectを必須とし、
+materialへの`input`・`output`・`shader`変更は拒否する。material routing・描画契約・attachment設定は元宣言を保持する。
 対象は合成前presetのgraph/nameで解決し、その他のpass設定は保持する。
 root bytesが変化しない場合もpresetの置換・compiler検査・publicationを実行する。
 rootとpresetのdigestを照合し、保存失敗は既存複数文書transactionで復元する。
-StudioはFrame Planで選択したnodeから既存fullscreenフォームへ接続する。
+StudioはFrame Planで選択したnodeからPass Editorへ接続する。material選択時はray queryの有効化と対象TLASだけを表示し、
+fullscreenのshader・attachment編集欄を隠す。保存時の候補コンパイルでTLAS名・material shaderとの適合性を確認する。
 contextの`preset_declaration`をフォームの値に使い、合成後の値を元設定へ逆流させない。
 
 compute/RT taskは`get_compute_task_authoring`で元宣言と保存先digestを取得し、

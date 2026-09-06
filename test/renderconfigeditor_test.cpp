@@ -2184,6 +2184,64 @@ TEST_CASE("Project preset pass edits publish without changing the root document"
         REQUIRE(service->editPresetPass(request).at("status") == "rejected");
         REQUIRE(readBytes(preset_path) == preset_before);
     }
+    SECTION("material query edits preserve the rendering contract and survive reopen") {
+        auto material = std::find_if(passes.begin(), passes.end(), [](const auto &pass) {
+            return pass.at("name") == "deferred_geometry";
+        });
+        REQUIRE(material != passes.end());
+        const auto editable_material = std::find_if(context_passes.begin(), context_passes.end(), [](const auto &pass) {
+            return pass.at("name") == "deferred_geometry";
+        });
+        REQUIRE(editable_material != context_passes.end());
+        REQUIRE(editable_material->at("editable_preset_pass") == true);
+        REQUIRE(editable_material->at("preset_declaration") == *material);
+        for (const auto &query : Json::array({Json(true), Json{{"acceleration_structure", "scene"}}, Json(false)})) {
+            const auto current = service->getRenderAuthoringContext(Json::object());
+            const Json material_request{
+                {"base_source_digest", current.at("source_digest").at("hex")},
+                {"base_preset_digest", current.at("pipeline_preset").at("source_digest").at("hex")},
+                {"graph", "main_render"}, {"pass_name", "deferred_geometry"}, {"ray_query", query}};
+            const auto accepted = service->editPresetPass(material_request);
+            INFO(accepted.dump());
+            REQUIRE(accepted.at("status") == "accepted");
+            const auto before_commit = readBytes(preset_path);
+            CHECK(Json::parse(before_commit) == preset);
+            service->commitPending();
+            const auto result = service->getResult({{"ticket", accepted.at("ticket")}});
+            INFO(result.dump());
+            REQUIRE(result.at("committed") == true);
+            (*material)["ray_query"] = query;
+            CHECK(Json::parse(readBytes(preset_path)) == preset);
+            CHECK(readBytes(project.render_config) == root_before);
+            service.reset();
+            service = makeProjectService(project, resolver, runtime);
+            const auto reopened = service->getRenderAuthoringContext(Json::object());
+            const auto &reopened_passes = reopened.at("graphs").at(0).at("passes");
+            const auto saved = std::find_if(reopened_passes.begin(), reopened_passes.end(), [](const auto &pass) {
+                return pass.at("name") == "deferred_geometry";
+            });
+            REQUIRE(saved != reopened_passes.end());
+            CHECK(Json(saved->at("preset_declaration")) == *material);
+            CHECK(service->editPresetPass(material_request).at("error").at("code") == "external_modification");
+        }
+    }
+    SECTION("material edits reject missing or invalid query and unrelated pass changes") {
+        Json material_request{{"base_source_digest", context.at("source_digest").at("hex")},
+                              {"base_preset_digest", context.at("pipeline_preset").at("source_digest").at("hex")},
+                              {"graph", "main_render"}, {"pass_name", "deferred_geometry"}};
+        CHECK(service->editPresetPass(material_request).at("status") == "rejected");
+        material_request["ray_query"] = "true";
+        CHECK_THROWS(service->editPresetPass(material_request));
+        material_request["ray_query"] = true;
+        for (const auto *key : {"input", "output", "shader"}) {
+            auto invalid = material_request;
+            invalid[key] = request.at(key);
+            CHECK(service->editPresetPass(invalid).at("status") == "rejected");
+        }
+        CHECK(readBytes(preset_path) == preset_before);
+        CHECK(readBytes(project.render_config) == root_before);
+        CHECK(runtime.frame_plan == plan_before);
+    }
     SECTION("an invalid connection fails before source replacement") {
         request["input"] = Json::array({"missing_target"});
         const auto accepted = service->editPresetPass(request);

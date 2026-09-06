@@ -22,6 +22,7 @@
 #include <QByteArray>
 #include <QComboBox>
 #include <QCheckBox>
+#include <QGroupBox>
 #include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -2334,6 +2335,79 @@ TEST_CASE("Studio edits a preset pass with its source digest and retains hidden 
         CHECK(candidate.findText("input") >= 0);
         CHECK(candidate.findText("another_target") >= 0);
     }
+}
+
+TEST_CASE("Studio edits only material ray query settings and restores the fullscreen form",
+          "[devstudio][fullscreen-pass][preset-pass-edit][material-query-edit]") {
+    (void)application();
+    const bool named = GENERATE(false, true);
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    const Json original{{"name", "material_pass"}, {"type", "material"},
+        {"material_contract", "forward_scene_color_v1"},
+        {"ray_query", named ? Json{{"acceleration_structure", "actors"}} : Json(false)},
+        {"output", {{"color", Json::array({"output"})},
+                    {"depth", {{"target", "depth"}, {"load_op", "Load"}}}}}};
+    const Json graph{{"name", "edit_graph"},
+        {"passes", Json::array({{{"name", "material_pass"}, {"declaration", original},
+            {"editable_preset_pass", true}, {"preset_declaration", original}}})},
+        {"anchor_candidates", Json::array({{{"position", 0}, {"insert", "before:material_pass"}}})}};
+    Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
+        {"pipeline_preset", {{"source_digest", {{"hex", std::string(64, 'b')}}}}},
+        {"graphs", Json::array({graph})}};
+    authoring.succeed(authoring.requests.back().id, context);
+    const auto plan = minimalFramePlan("edit_graph", Json::array({resource("output")}));
+    form.receiveResult(QByteArray::fromStdString(plan.dump()));
+    form.editPresetPass("edit_graph", "material_pass");
+    authoring.succeed(authoring.requests.back().id, context);
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text() == "material");
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
+    CHECK(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
+    auto &query = required<QCheckBox>(form, "pelican.fullscreenPass.rayQuery");
+    auto &scene = required<QLineEdit>(form, "pelican.fullscreenPass.rayQueryScene");
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    CHECK(query.isChecked() == named);
+    query.setChecked(true);
+    scene.setText("   ");
+    CHECK_FALSE(save.isEnabled());
+    scene.setText(" actors ");
+    REQUIRE(save.isEnabled());
+    save.click();
+    REQUIRE(authoring.requests.back().method == "edit_preset_pass");
+    const auto params = Json::parse(QJsonDocument(authoring.requests.back().params).toJson().toStdString());
+    CHECK(params == Json{{"base_source_digest", std::string(64, 'a')},
+        {"base_preset_digest", std::string(64, 'b')}, {"graph", "edit_graph"},
+        {"pass_name", "material_pass"}, {"ray_query", {{"acceleration_structure", "actors"}}}});
+    auto expected = original;
+    expected["ray_query"] = params.at("ray_query");
+    CHECK(Json::parse(required<QPlainTextEdit>(form, "pelican.fullscreenPass.json").toPlainText().toStdString()) == expected);
+    authoring.succeed(authoring.requests.back().id,
+        {{"status", "rejected"}, {"error", {{"message", "test rejection"}}}});
+    CHECK(scene.text() == " actors ");
+    query.setChecked(false);
+    REQUIRE(save.isEnabled());
+    save.click();
+    CHECK(authoring.requests.back().params.value("ray_query").toBool(true) == false);
+    authoring.succeed(authoring.requests.back().id,
+        {{"status", "rejected"}, {"error", {{"message", "test rejection"}}}});
+    required<QPushButton>(form, "pelican.fullscreenPass.refresh").click();
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    CHECK_FALSE(query.isChecked()); // Unchanged frame-plan resources preserve the current draft.
+    required<QPushButton>(form, "pelican.fullscreenPass.refresh").click();
+    refresh.fail(refresh.requests.back(), "temporary refresh failure");
+    CHECK_FALSE(save.isEnabled());
+    required<QPushButton>(form, "pelican.fullscreenPass.refresh").click();
+    refresh.succeed(refresh.requests.back(), QByteArray::fromStdString(plan.dump()));
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text() == "material");
+    CHECK(query.isChecked() == named);
+    REQUIRE(save.isEnabled());
+    required<QPushButton>(form, "pelican.fullscreenPass.new").click();
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.type").text() == "fullscreen");
+    CHECK_FALSE(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
+    CHECK_FALSE(required<QGroupBox>(form, "pelican.fullscreenPass.targets").isHidden());
+    CHECK_FALSE(query.isChecked());
 }
 
 } // namespace PelicanStudio

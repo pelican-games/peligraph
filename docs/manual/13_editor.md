@@ -236,7 +236,7 @@ typed な違反は `{code, path(RFC6901), fields, message}`、まだ typed 化�
 | `get_ray_callable_records` | taskごとのCallable schema、shader一覧、元宣言と実効初期値、rootの`source_digest`を返す |
 | `edit_ray_callable_records` | `base_source_digest`と`task_records` objectで初期値の上書き指定全体を置換。既存の編集ticketを返す |
 | `fork_render_pipeline` | `base_source_digest`・`base_preset_digest`・`destination_reference`で選択中presetを新しいprojectファイルへコピーし、rootの参照先も切り替える |
-| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`と`input`・`output`・`shader`、任意の`ray_query`（boolまたは`acceleration_structure`名のobject）でproject所有preset内のfullscreen passを編集する |
+| `edit_preset_pass` | `base_source_digest`・`base_preset_digest`・`graph`・`pass_name`でproject presetのpassを指定。fullscreenは`input`・`output`・`shader`と任意の`ray_query`、materialは必須の`ray_query`のみを編集する |
 | `get_compute_task_authoring` | compute/RT taskの元宣言・編集可否・保存先とdigestを取得する |
 | `edit_compute_task` | `base_source_digest`・`base_task_source_digest`・`task_name`・`task`でtask宣言を置換する。名前は保持する |
 | `add_compute_task` | `base_source_digest`・`destination_reference`・`task`で新規project featureにtaskを作り、rootのfeaturesへ追加する |
@@ -248,6 +248,10 @@ project側の設定・feature・RT上書き指定は維持します。元preset�
 Refresh sourceで再取得してください。直接記述のrendering configには対象presetがありません。
 
 fork後はFrame Planでfullscreen passを選び、**Edit preset pass...**で入出力とshader参照を編集できます。
+material passを選ぶと、Pass Editorで **Use scene ray query** と **Scene acceleration structure** を編集できます。
+`scene`はシーン全体、それ以外は宣言済みTLAS名を指定します。チェックを外すとqueryを無効にします。
+**Save material ray query**で保存・反映し、materialの描画契約や入出力は保持します。未宣言のTLAS名やshaderと矛盾する変更はエンジンが拒否します。
+materialへのドラッグによる入出力変更は未対応です。レイトレ設定には **Edit preset pass...** を使ってください。
 名前・配置・その他の描画設定は保持します。保存は既存の編集ticketを使い、失敗時はpresetとruntimeを戻します。
 元preset由来の編集可能なpassはauthoring contextに`editable_preset_pass: true`と
 合成前の`preset_declaration`を持ちます。engine共有preset、feature由来pass、生成されたAS/anchor nodeは対象外です。

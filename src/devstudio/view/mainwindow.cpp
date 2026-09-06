@@ -238,7 +238,7 @@ void MainWindow::createWorkspace() {
         framePlanReadCapability(*viewport_),
         renderPassAuthoringCapability(*viewport_), this);
     docks_[FullscreenPassDock] = makeDock(
-        this, tr("Fullscreen Pass JSON"),
+        this, tr("Pass Editor"),
         QStringLiteral("pelican.fullscreenPassDock"), fullscreen_pass_);
     fullscreen_pass_->setCommittedAction([this] { frame_plan_->refresh(); });
     connect(render_features_, &RenderFeaturesWidget::renderConfigCommitted, this, [this] { frame_plan_->refresh(); });

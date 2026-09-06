@@ -21,13 +21,14 @@ namespace {
 using Json = nlohmann::json;
 using OrderedJson = nlohmann::ordered_json;
 
-OrderedJson *findPresetFullscreenPass(OrderedJson &preset, const std::string &graph_name,
+OrderedJson *findPresetEditablePass(OrderedJson &preset, const std::string &graph_name,
                                       const std::string &pass_name) {
     for (auto &graph : preset.at("config").at("rendering_passes")) {
         if (graph.at("name") != graph_name) continue;
         for (auto &pass : graph.at("passes")) {
             if (pass.value("name", std::string{}) == pass_name &&
-                pass.value("type", std::string{}) == "fullscreen") return &pass;
+                (pass.value("type", std::string{}) == "fullscreen" ||
+                 pass.value("type", std::string{}) == "material")) return &pass;
         }
     }
     return nullptr;
@@ -769,7 +770,7 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
                 {"declaration", pass},
             };
             auto *preset_pass = editable_preset
-                ? findPresetFullscreenPass(*editable_preset, graph.at("name").get<std::string>(), name)
+                ? findPresetEditablePass(*editable_preset, graph.at("name").get<std::string>(), name)
                 : nullptr;
             encoded["editable_preset_pass"] = preset_pass != nullptr;
             if (preset_pass) encoded["preset_declaration"] = *preset_pass;
@@ -1095,9 +1096,6 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
     const auto name = requireString(params, "pass_name", method);
     if (!isLowerHexDigest(base_digest) || !isLowerHexDigest(preset_digest))
         throw std::invalid_argument("edit_preset_pass requires 64 lowercase hex source digests");
-    for (const auto *key : {"input", "output", "shader"}) {
-        if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
-    }
     if (!dependencies_.resolve_authoring_context || !dependencies_.normalize_reference || !dependencies_.resolve_document_path)
         return rejection("method_unavailable", "edit_preset_pass requires the project document resolver");
     try {
@@ -1108,9 +1106,18 @@ OrderedJson RenderConfigEditorService::editPresetPass(const Json &params) {
         if (renderConfigSourceDigest(*current.pipeline_preset_bytes) != preset_digest)
             return rejection("external_modification", "The selected preset changed since it was read");
         auto preset = OrderedJson::parse(*current.pipeline_preset_bytes);
-        auto *pass = findPresetFullscreenPass(preset, graph, name);
-        if (!pass) return rejection("preset_pass_not_editable", "The selected node is not a fullscreen pass in the project preset");
-        for (const auto *key : {"input", "output", "shader"}) (*pass)[key] = params.at(key);
+        auto *pass = findPresetEditablePass(preset, graph, name);
+        if (!pass) return rejection("preset_pass_not_editable", "The selected node is not a fullscreen or material pass in the project preset");
+        if (pass->at("type") == "material") {
+            requireOnly(params, {"base_source_digest", "base_preset_digest", "graph", "pass_name", "ray_query"}, method);
+            if (!params.contains("ray_query"))
+                throw std::invalid_argument("Material pass editing requires ray_query");
+        } else {
+            for (const auto *key : {"input", "output", "shader"}) {
+                if (!params.contains(key)) throw std::invalid_argument(std::string{method} + " requires " + key);
+                (*pass)[key] = params.at(key);
+            }
+        }
         if (params.contains("ray_query")) (*pass)["ray_query"] = params.at("ray_query");
         const auto &reference = current.pipeline_preset->reference;
         const std::array documents{RenderConfigCandidateDocument{
