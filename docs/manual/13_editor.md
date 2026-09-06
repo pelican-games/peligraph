@@ -508,6 +508,10 @@ geometryを選択すると、mask・instance flags・custom index・geometry fla
 geometry flagsは既定値とtriangleのgeometry rule、proceduralではその既定値から決まります。layout v1のcustom indexはrow qです。
 rule番号とoverride行IDも既存scene-planの出所情報から表示します。GPU値の読み戻しや解決規則の変更ではありません。
 
+`Related RT tasks...`は選択geometryのhit groupを使うtaskを、読み込み済みFrame Planから探します。
+候補が1つならTask Editorへ進み、複数なら選択できます。Frame Plan未取得時は取得後に探します。
+これはgroup名を手掛かりにした移動で、scene-planの値とGPUの動的値を合成する操作ではありません。
+
 `Resolved binding`には確定済みscene rowのhit group index、material参照と名前、material/geometryテーブルindex、geometry flags、recordデータのバイト数を表示します。scene確定時点でテーブルindexが未割当の場合は`null`です。GPU用rowで後から割り当てられる番号や個別taskの物理SBTアドレス、record内の各field値はこの表示には含まれません。
 
 RPCの行移動は `edit.operations` の `move_component_field` を使います。`address`は他の行編集と共通で`row_id`を指定し、`position`は`{"before":行ID}`または`{"end":true}`です。`leaf_path`は指定しません。行の値・ID・採番位置は変わりません。

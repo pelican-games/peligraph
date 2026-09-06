@@ -104,6 +104,8 @@ struct InspectorWidget::Impl {
     QComboBox *ray_destination = nullptr;
     QPushButton *ray_add = nullptr;
     QLabel *ray_notice = nullptr;
+    QPushButton *ray_tasks = nullptr;
+    std::function<void(const QString &)> ray_group_action;
     std::optional<Json> displayed_ray_payload;
     QPointer<QDialog> add_component_dialog;
     QComboBox *component_types = nullptr;
@@ -681,6 +683,12 @@ struct InspectorWidget::Impl {
         ray_add = new QPushButton(owner.tr("Add override"), dialog);
         ray_add->setObjectName(QStringLiteral("pelican.rayGeometry.addOverride"));
         actions->addWidget(ray_add);
+        ray_tasks = new QPushButton(owner.tr("Related RT tasks..."), dialog);
+        ray_tasks->setObjectName(QStringLiteral("pelican.rayGeometry.tasks"));
+        actions->addWidget(ray_tasks);
+        QObject::connect(ray_tasks, &QPushButton::clicked, dialog, [this] {
+            if (ray_group_action) ray_group_action(ray_tasks->property("hitGroup").toString());
+        });
         auto *refresh = new QPushButton(owner.tr("Refresh"), dialog);
         actions->addWidget(refresh);
         layout->addLayout(actions);
@@ -761,10 +769,15 @@ struct InspectorWidget::Impl {
         }
         const auto *selected = ray_entries->item(ray_entries->currentRow(), 0);
         ray_settings->setRowCount(0);
+        ray_tasks->setEnabled(false);
+        ray_tasks->setProperty("hitGroup", QString{});
         const auto selected_row = ray_entries->currentRow();
         if (payload && selected_row >= 0 && static_cast<std::size_t>(selected_row) < payload->at("entries").size()) {
             const auto binding = payload->at("entries").at(selected_row).value("binding", Json{});
             if (binding.is_object()) {
+                const auto group = QString::fromStdString(binding.value("group_name", std::string{}));
+                ray_tasks->setProperty("hitGroup", group);
+                ray_tasks->setEnabled(ray_group_action && !group.isEmpty());
                 const auto sources = binding.value("setting_sources", Json::object());
                 const auto display = [](const Json &value) {
                     return QString::fromStdString(value.is_null() ? "—" : value.is_string() ? value.get<std::string>() : value.dump());
@@ -1483,6 +1496,10 @@ InspectorWidget::InspectorWidget(EmbeddedViewport *viewport, QWidget *parent)
 }
 
 InspectorWidget::~InspectorWidget() = default;
+
+void InspectorWidget::setRayGroupAction(std::function<void(const QString &)> action) {
+    impl_->ray_group_action = std::move(action);
+}
 
 void InspectorWidget::setSelection(
     std::optional<OutlinerObjectKey> selection,

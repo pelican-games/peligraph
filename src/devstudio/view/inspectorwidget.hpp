@@ -6,6 +6,7 @@
 #include <QWidget>
 
 #include <memory>
+#include <functional>
 #include <optional>
 
 class QEvent;
@@ -33,6 +34,7 @@ class InspectorWidget final : public QWidget {
                           nlohmann::json value);
     void finishGizmoEdit(std::string_view field_key, bool commit);
     bool saveScene();
+    void setRayGroupAction(std::function<void(const QString &)> action);
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override;

@@ -6187,6 +6187,15 @@ TEST_CASE(
     (*anyhit_open)->click();
     REQUIRE(opened == std::filesystem::canonical(
                           root / "shaders" / "filter1.rahit"));
+    wire["nodes"][0]["authored_name"] = "source_trace";
+    wire["nodes"][0]["shader_resolution"]["closesthit_slots"][0]["group_name"] = "surface";
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QString edited_task;
+    widget.setTaskEditAction([&](const QString &name) { edited_task = name; });
+    widget.openTasksForHitGroup(QStringLiteral("absent"));
+    CHECK(edited_task.isEmpty());
+    widget.openTasksForHitGroup(QStringLiteral("surface"));
+    CHECK(edited_task == QStringLiteral("source_trace"));
 }
 
 

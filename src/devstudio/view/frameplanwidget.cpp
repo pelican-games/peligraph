@@ -19,6 +19,7 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonObject>
+#include <QInputDialog>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
@@ -43,6 +44,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <utility>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -401,6 +403,7 @@ struct FramePlanWidget::Impl {
     QTreeWidget *materials = nullptr;
     QPlainTextEdit *raw_json = nullptr;
     std::optional<FramePlanModel> model;
+    QString requested_hit_group;
     std::optional<Pelican::ProjectPathResolver> project_resolver;
     FramePlanWidget::ShaderSourceOpenAction shader_source_open_action;
     std::function<void(const QString &, const QString &)> preset_pass_edit_action;
@@ -775,6 +778,7 @@ struct FramePlanWidget::Impl {
     }
 
     void showFailure(const QString &message) {
+        requested_hit_group.clear();
         refresh->setEnabled(viewport.rpcReady());
         tabs->setEnabled(model.has_value());
         status->setStyleSheet(QStringLiteral("color: #d94c3d;"));
@@ -896,6 +900,10 @@ struct FramePlanWidget::Impl {
             }
             target->setEnabled(!targets.empty());
             populate();
+            if (!requested_hit_group.isEmpty()) {
+                const auto group = std::exchange(requested_hit_group, QString{});
+                owner.openTasksForHitGroup(group);
+            }
         } catch (const std::exception &error) {
             showFailure(QString::fromUtf8(error.what()));
         }
@@ -1707,6 +1715,40 @@ void FramePlanWidget::setProjectRoot(
 }
 
 void FramePlanWidget::refresh() { impl_->requestRefresh(); }
+
+void FramePlanWidget::openTasksForHitGroup(const QString &group) {
+    if (group.isEmpty() || !impl_->task_edit_action) return;
+    if (!impl_->model) {
+        impl_->requested_hit_group = group;
+        impl_->requestRefresh();
+        return;
+    }
+    QStringList labels;
+    QStringList authored_names;
+    const auto matches = [&](const auto &hit_entries) {
+        return std::ranges::any_of(hit_entries, [&](const auto &slot) { return text(slot.group_name) == group; });
+    };
+    for (const auto &node : impl_->model->nodes) {
+        if (node.kind != "compute" || node.authored_name.empty()) continue;
+        const auto &shaders = node.shader_resolution;
+        if (!matches(shaders.closesthit_slots) && !matches(shaders.anyhit_slots) && !matches(shaders.intersection_slots)) continue;
+        labels.push_back(text(node.name));
+        authored_names.push_back(text(node.authored_name));
+    }
+    if (labels.empty()) {
+        impl_->status->setText(tr("No RT task using hit group %1 is present in the loaded Frame Plan. Refresh to update it.").arg(group));
+        return;
+    }
+    int index = 0;
+    if (labels.size() > 1) {
+        bool accepted = false;
+        const auto selected = QInputDialog::getItem(this, tr("Related RT tasks"),
+            tr("Tasks using hit group %1 in the loaded Frame Plan").arg(group), labels, 0, false, &accepted);
+        if (!accepted) return;
+        index = labels.indexOf(selected);
+    }
+    if (index >= 0) impl_->task_edit_action(authored_names.at(index));
+}
 
 void FramePlanWidget::setNodeOrderAction(std::function<void(const QString &, const QStringList &, quint64)> action) {
     impl_->node_order_action = std::move(action);

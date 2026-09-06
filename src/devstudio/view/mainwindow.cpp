@@ -246,6 +246,12 @@ void MainWindow::createWorkspace() {
         render_features_->editFrameNodeOrder(graph, names, generation);
     });
     frame_plan_->setTaskEditAction([this](const QString &task) { render_features_->editComputeTask(task); });
+    inspector_->setRayGroupAction([this, render_tabs](const QString &group) {
+        docks_[FramePlanDock]->show();
+        docks_[FramePlanDock]->raise();
+        render_tabs->setCurrentWidget(frame_plan_);
+        frame_plan_->openTasksForHitGroup(group);
+    });
     frame_plan_->setTaskConnectionAction([this](const QString &task, const QStringList &outputs) {
         render_features_->editComputeTaskConnection(task, outputs);
     });

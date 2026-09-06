@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**geometryからRT taskへの移動 (2026-09-06):**
+- Inspector Ray geometryにRelated RT tasks...を追加。選択geometryのgroup_nameと読み込み済みFrame Planのclosest-hit/any-hit/intersection slotのgroup名を照合し、元のtask宣言名で既存Task Editorを開く。複数候補は選択し、Frame Planがなければ取得後に処理する。scene-planとGPU世代の情報を合成しない。
+- Studioとframeplan_graph test build成功。Qt offscreenの既存WP367a試験で、group不一致時はtaskを開かず、一致時はauthored_nameを渡す確認を追加して成功。実エンジンを接続したInspector→Task Editorの一連の画面操作は未確認。
+
 **InspectorのAS設定説明表示 (2026-09-06):**
 - 適用元のRPC出力は既に実装済みだったため、解決処理を再実装せずRay geometryに選択geometryの設定表を追加。mask/instance flags/custom index/geometry flagsの値・適用元・優先順と、該当するoverride行ID/geometry rule番号を表示する。
 - 現行resolverに合わせ、geometry flagsはcomponent/occurrence overrideの対象として説明しない。未指定の継承と明示0の上書き、layout v1 custom index=qを区別する。Studio Debug build成功。表示のみの変更なので新規テストやGPU再試験は追加していない。実データを選択した画面操作は未確認。

@@ -38,6 +38,7 @@ class FramePlanWidget final : public QWidget {
     // widget materializes it with the same pelican_project resolver only when
     // the user presses Open.
     void refresh();
+    void openTasksForHitGroup(const QString &group);
     void setNodeOrderAction(std::function<void(const QString &, const QStringList &, quint64)> action);
     void setTaskConnectionAction(std::function<void(const QString &, const QStringList &)> action);
     void setPresetPassConnectionAction(std::function<void(const QString &, const QString &, const QStringList &)> action);
