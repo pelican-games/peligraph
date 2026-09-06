@@ -25,6 +25,8 @@ struct PlanViewerShaderStage {
 struct PlanViewerHitShaderSlot {
     std::size_t hit_slot = 0;
     PlanViewerShaderStage projection;
+    std::string group_name;
+    std::string ray_type;
 };
 
 using PlanViewerAnyHitSlot = PlanViewerHitShaderSlot;

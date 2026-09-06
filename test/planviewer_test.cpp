@@ -197,7 +197,7 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
 
     auto &resolution = plan["nodes"][0]["shader_resolution"];
     resolution["intersection_slots"] = nlohmann::json::array({
-        {{"hit_slot", std::size_t{3}}, {"stage", "intersection"},
+        {{"hit_slot", std::size_t{3}}, {"stage", "intersection"}, {"group_name", "sphere"}, {"ray_type", "shadow"},
          {"declared_ref", "shaders/sphere"}, {"effective_ref", "shaders/sphere"},
          {"origin", "authored"}, {"source_open_ref", "project://shaders/sphere.rint"}}
     });
@@ -219,6 +219,8 @@ TEST_CASE("WP367 PlanViewer strictly consumes sparse anyhit slots",
     const auto &intersections = model.nodes.front().shader_resolution.intersection_slots;
     REQUIRE(intersections.size() == 1);
     CHECK(intersections[0].hit_slot == 3);
+    CHECK(intersections[0].group_name == "sphere");
+    CHECK(intersections[0].ray_type == "shadow");
     CHECK(intersections[0].projection.stage == "intersection");
     CHECK(intersections[0].projection.source_open_ref == "project://shaders/sphere.rint");
     SECTION("intersection slot cannot exceed physical domain") {

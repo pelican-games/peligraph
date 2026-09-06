@@ -72,6 +72,8 @@ struct FramePlanShaderStage {
 struct FramePlanHitShaderSlot {
     std::size_t hit_slot = 0;
     FramePlanShaderStage projection;
+    std::string group_name;
+    std::string ray_type;
 
     bool operator==(const FramePlanHitShaderSlot &) const = default;
 };

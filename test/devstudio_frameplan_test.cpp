@@ -1309,7 +1309,7 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
     };
 
     resolution["intersection_slots"] = Json::array({
-        {{"hit_slot", 4}, {"stage", "intersection"},
+        {{"hit_slot", 4}, {"stage", "intersection"}, {"group_name", "sphere"}, {"ray_type", "primary"},
          {"declared_ref", "shaders/sphere"}, {"effective_ref", "shaders/sphere"},
          {"origin", "authored"}, {"source_open_ref", "project://shaders/sphere.rint"}}
     });
@@ -1328,6 +1328,8 @@ TEST_CASE("WP367 Studio strictly consumes sparse anyhit slots",
     const auto &intersections = model.nodes.front().shader_resolution.intersection_slots;
     REQUIRE(intersections.size() == 1);
     CHECK(intersections[0].hit_slot == 4);
+    CHECK(intersections[0].group_name == "sphere");
+    CHECK(intersections[0].ray_type == "primary");
     CHECK(intersections[0].projection.stage == "intersection");
     CHECK(intersections[0].projection.source_open_ref == "project://shaders/sphere.rint");
     SECTION("intersection slot must belong to the physical domain") {

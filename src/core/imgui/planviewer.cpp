@@ -128,7 +128,7 @@ PlanViewerHitShaderSlot parseHitShaderSlot(
         if (!knownValue(field.key(),
                         {"stage", "hit_slot", "declared_ref",
                          "effective_ref", "origin", "source_open_ref",
-                         "source_open_reason"})) {
+                         "source_open_reason", "group_name", "ray_type"})) {
             throw std::runtime_error(
                 "plan viewer " + diagnostic + " slot has unknown field '" +
                 field.key() + "'");
@@ -151,6 +151,8 @@ PlanViewerHitShaderSlot parseHitShaderSlot(
 
     PlanViewerHitShaderSlot result;
     result.hit_slot = entry.at("hit_slot").get<std::size_t>();
+    result.group_name = entry.value("group_name", std::string{});
+    result.ray_type = entry.value("ray_type", std::string{});
     auto &stage = result.projection;
     stage.stage = expected_stage;
     stage.effective_ref = entry.at("effective_ref").get<std::string>();
@@ -1060,6 +1062,8 @@ struct PlanViewer::Impl {
         }
         const auto show_hit_slot = [](const PlanViewerHitShaderSlot &slot) {
             const auto &stage = slot.projection;
+            if (!slot.group_name.empty())
+                ImGui::TextWrapped("group: %s / ray: %s", slot.group_name.c_str(), slot.ray_type.c_str());
             const auto label =
                 stage.stage + "[hit_slot=" + std::to_string(slot.hit_slot) + "]";
             ImGui::BulletText("%s  [%s]", label.c_str(),

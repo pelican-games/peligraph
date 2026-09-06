@@ -23277,6 +23277,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 既存RPCテストをresolver経由へ変更し、bindingありと既定値の対照で値・適用元を確認する。
 - Debugのecs_editor・Studio build成功。editor-command 17 cases / 300 assertions成功。resolverのschema転送・binding選択元の保持を取り消すと追加確認が成立しない。procedural入力元分岐はコード確認のみで、実GUI操作・GPU値の検証を含めない。
 
+**RT shader slotのgroup/ray名表示 (2026-09-06):**
+- layoutからtask定義を解決するときにgroup名とray type名を保持し、Frame Planのclosesthit/anyhit/intersection slotへ対応名を出力する。物理slotのgroup-major順を使用し、疎なslot列の表示順から名前を推測しない。
+- StudioのSlots表示とエンジン内Plan Viewerで既存shader参照と併記する。Inspectorのgroup名と照合できるが、geometry選択からtaskを自動選択する操作は追加していない。
+- Studioと対象test build成功。shader-resolution 9 cases / 306 assertions、Plan Viewer 3 / 161、Studio Frame Plan 18 / 1433成功。疎なslotのray名出力と両consumerの名前保持を確認し、名前の出力/読み取りを除くと追加確認が落ちる。layoutからtaskへの名前転送はコード確認、実GUI操作は未確認。
+- 既存shaderテストでcallable stage追加と動的BLAS/名前付きTLAS追加前の期待値を検出し、現行出力へ更新した。
+
 **P3球mesh overlapのprovider/service接続 (2026-09-06):**
 - ProviderV3へsphere-mesh overlap capabilityを追加し、既存owner/dispatch/identity/filterとBuiltin BVH再利用を通す。PhysWorldのmesh descriptor収集をray/overlapで共有し、C++およびGame DLLのoverlap serviceを同じ問い合わせへ接続する。
 - まだsphereだけがmesh overlapに対応。meshを含むworldでbox/capsuleを問い合わせた場合、公開serviceはunavailableを返す。従来のC++ wrapperはunavailableを空結果へ変換する既存仕様。未対応meshを無視したprimitive部分結果をokとして返さない。triggerとsweepは未接続。

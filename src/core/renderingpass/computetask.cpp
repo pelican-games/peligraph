@@ -1287,6 +1287,8 @@ RayTracingTaskShaderDefinition parseLayoutRayTracingShaders(
                                                : nlohmann::json{},
             ShaderStage::raygen, name),
         .uses_group_layout = true,
+        .group_names = layout.groups,
+        .ray_type_names = layout.ray_types,
     };
     if (!pipeline_json.contains("traced_ray_types") ||
         !pipeline_json.at("traced_ray_types").is_array() ||

@@ -205,7 +205,7 @@ TEST_CASE("WP354 publishes the complete 14 pass family plus compute task contrac
             {"imgui", {"resolved", {"vertex", "fragment"}}},
             {"canonical_anchor", {"not_applicable", {}}},
             {"snapshot_copy", {"not_applicable", {}}},
-            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*", "hit_slot_count?", "closesthit_slots[hit_slot]*", "intersection_slots[hit_slot]*", "anyhit_slots[hit_slot]*"}}},
+            {"compute_task", {"resolved", {"compute", "raygen", "miss[index]*", "closesthit[index]*", "callable[index]*", "hit_slot_count?", "closesthit_slots[hit_slot]*", "intersection_slots[hit_slot]*", "anyhit_slots[hit_slot]*"}}},
         };
     for (const auto &contract : contracts) {
         const auto found = expected.find(std::string{contract.family});
@@ -232,6 +232,8 @@ TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
         .raygen = shader("shaders/trace", ShaderStage::raygen),
         .misses = {shader("shaders/miss", ShaderStage::miss)},
         .uses_group_layout = true,
+        .group_names = {"surface"},
+        .ray_type_names = {"primary", "unused", "shadow"},
         .traced_ray_type_indices = {0},
         .hit_shader_slots = {
             shader("shaders/hit0", ShaderStage::closesthit),
@@ -274,6 +276,8 @@ TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
     REQUIRE(closesthit_slots.size() == 2);
     CHECK(closesthit_slots.at(0).at("hit_slot") == 0);
     CHECK(closesthit_slots.at(1).at("hit_slot") == 2);
+    CHECK(closesthit_slots.at(1).at("group_name") == "surface");
+    CHECK(closesthit_slots.at(1).at("ray_type") == "shadow");
     CHECK(closesthit_slots.at(0).at("stage") == "closesthit");
     CHECK(closesthit_slots.at(1).at("source_open_ref") ==
           "project://shaders/hit2.rchit");
@@ -293,7 +297,7 @@ TEST_CASE("WP367 runtime wire projects sparse sorted anyhit occurrences",
         }
         CHECK(fields == std::set<std::string>{
                             "declared_ref", "effective_ref", "hit_slot",
-                            "origin", "source_open_ref", "stage"});
+                            "origin", "source_open_ref", "stage", "group_name", "ray_type"});
     }
     for (const auto &stage : resolution.at("stages")) {
         CHECK(stage.at("stage") != "anyhit");

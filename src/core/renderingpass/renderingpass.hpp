@@ -741,6 +741,8 @@ struct RayTracingTaskShaderDefinition {
     std::shared_ptr<const RayCallableRecordLayout> callable_record_layout;
     std::vector<std::vector<std::byte>> callable_records;
     bool uses_group_layout = false;
+    std::vector<std::string> group_names;
+    std::vector<std::string> ray_type_names;
     std::vector<std::uint32_t> traced_ray_type_indices;
     // H[g,r], group-major. Null slots are materialized as valid generated
     // no-op closest-hit groups for ray types this task never traces.

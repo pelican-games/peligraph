@@ -321,6 +321,11 @@ Json computeShaderResolution(
                 path_resolver);
             encoded.erase("index");
             encoded["hit_slot"] = hit_slot;
+            if (!ray_definition->ray_type_names.empty()) {
+                const auto ray_count = ray_definition->ray_type_names.size();
+                encoded["group_name"] = ray_definition->group_names.at(hit_slot / ray_count);
+                encoded["ray_type"] = ray_definition->ray_type_names.at(hit_slot % ray_count);
+            }
             return encoded;
         };
 

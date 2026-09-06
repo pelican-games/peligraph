@@ -1128,23 +1128,27 @@ struct FramePlanWidget::Impl {
                     : text(stage.stage);
             add_stage(stage, stage_name);
         }
+        const auto slot_name = [](const FramePlanHitShaderSlot &slot) {
+            auto label = text(slot.projection.stage) + QStringLiteral("[hit_slot=%1]")
+                .arg(static_cast<qulonglong>(slot.hit_slot));
+            if (!slot.group_name.empty())
+                label += QStringLiteral(" %1 / %2").arg(text(slot.group_name), text(slot.ray_type));
+            return label;
+        };
         for (const auto &slot : resolution.closesthit_slots) {
             add_stage(
                 slot.projection,
-                QStringLiteral("closesthit[hit_slot=%1]")
-                    .arg(static_cast<qulonglong>(slot.hit_slot)),
+                slot_name(slot),
                 slot.hit_slot);
         }
         for (const auto &slot : resolution.intersection_slots) {
             add_stage(slot.projection,
-                QStringLiteral("intersection[hit_slot=%1]")
-                    .arg(static_cast<qulonglong>(slot.hit_slot)), slot.hit_slot);
+                slot_name(slot), slot.hit_slot);
         }
         for (const auto &slot : resolution.anyhit_slots) {
             add_stage(
                 slot.projection,
-                QStringLiteral("anyhit[hit_slot=%1]")
-                    .arg(static_cast<qulonglong>(slot.hit_slot)),
+                slot_name(slot),
                 slot.hit_slot);
         }
     }

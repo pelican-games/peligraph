@@ -803,7 +803,7 @@ FramePlanShaderResolution parseShaderResolution(
             requireOnlyFields(
                 entry,
                 {"stage", "hit_slot", "declared_ref", "effective_ref",
-                 "origin", "source_open_ref", "source_open_reason"},
+                 "origin", "source_open_ref", "source_open_reason", "group_name", "ray_type"},
                 entry_context);
             const auto hit_slot =
                 optionalSizeField(entry, "hit_slot", entry_context);
@@ -816,6 +816,8 @@ FramePlanShaderResolution parseShaderResolution(
             }
             Json normalized = entry;
             normalized.erase("hit_slot");
+            normalized.erase("group_name");
+            normalized.erase("ray_type");
             normalized["index"] = *hit_slot;
             auto projection = parseShaderStage(normalized, entry_context);
             if (projection.stage != expected_stage) {
@@ -832,6 +834,8 @@ FramePlanShaderResolution parseShaderResolution(
             destination.push_back({
                 .hit_slot = *hit_slot,
                 .projection = std::move(projection),
+                .group_name = entry.value("group_name", std::string{}),
+                .ray_type = entry.value("ray_type", std::string{}),
             });
         }
     };
