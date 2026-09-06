@@ -1863,15 +1863,26 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
             PathResolver resolver;
             resolver.setup(project.root, false);
             auto root = Json::parse(readBytes(project.render_config));
-            root["features"][0] = {{"ref", "engine://features/shadow_directional.json"}, {"parameters", {{"resolution", 512}}}};
+            auto shadow = Json::parse(resolver.loadText("engine://features/sky_ambient.json"));
+            shadow["passes"][0]["pass"]["regions"] = Json::array({"region.shadow"});
+            writeBytes(project.root / "passes" / "shadow-source.json", shadow.dump(2));
+            root["features"][0] = {{"ref", "project://passes/shadow-source.json"}, {"parameters", {{"color_r", 0.7}}}};
+            root["features"].erase(1); // The selected local sky replaces the engine sky instance.
             const auto preset_path = project.root / "passes" / "editable.json";
+            auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
+            auto &graph = preset["config"]["rendering_passes"][0];
+            graph["region_replacements"] = Json::array({
+                {{"region", "region.shadow"}, {"provider", "builtin.identity_v1"}},
+                {{"region", "region.present"}, {"provider", "builtin.identity_v1"}}});
+            for (auto &pass : graph["passes"])
+                if (pass.at("name") == "scene_present") pass["regions"] = Json::array({"region.present"});
             if (scope == "preset") {
-                auto preset = Json::parse(resolver.loadText("engine://render_pipelines/hybrid_v1.json"));
                 preset["config"]["features"] = root.at("features");
-                writeBytes(preset_path, preset.dump(2));
                 root["features"] = Json::array();
-                root["pipeline"]["preset"] = "project://passes/editable.json";
             }
+            writeBytes(preset_path, preset.dump(2));
+            const auto preset_before = readBytes(preset_path);
+            root["pipeline"]["preset"] = "project://passes/editable.json";
             writeBytes(project.render_config, root.dump(2));
             const auto owner_path = scope == "root" ? project.render_config : preset_path;
             const auto owner_before = readBytes(owner_path);
@@ -1898,23 +1909,29 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 REQUIRE(result.at("committed") == true);
                 auto saved = Json::parse(readBytes(destination));
                 CHECK_FALSE(saved.contains("parameters"));
-                CHECK(saved.at("bound_parameters").at("resolution") == 512);
+                CHECK(saved.at("bound_parameters").at("color_r") == 0.7);
                 const auto owner = Json::parse(readBytes(owner_path));
                 CHECK((scope == "root" ? owner : owner.at("config")).at("features").at(0) == "project://passes/shadow-local.json");
+                const auto saved_preset = Json::parse(readBytes(preset_path));
+                CHECK(saved_preset.at("config").at("rendering_passes").at(0).at("region_replacements") ==
+                    Json::array({{{"region", "region.present"}, {"provider", "builtin.identity_v1"}}}));
                 service.reset();
                 service = makeProjectService(project, resolver, runtime);
                 const auto context = service->getRenderAuthoringContext(Json::object());
                 const auto edit = service->editPresetPass({
                     {"base_source_digest", context.at("source_digest").at("hex")},
                     {"base_feature_digest", renderConfigSourceDigest(readBytes(destination))},
-                    {"graph", "main_render"}, {"pass_name", "shadow_depth"}, {"ray_query", false}});
+                    {"graph", "main_render"}, {"pass_name", "sky_background"}, {"ray_query", false},
+                    {"input", saved.at("passes").at(0).at("pass").at("input")},
+                    {"output", saved.at("passes").at(0).at("pass").at("output")},
+                    {"shader", saved.at("passes").at(0).at("pass").at("shader")}});
                 INFO(edit.dump());
                 REQUIRE(edit.at("status") == "accepted");
                 service->commitPending();
                 REQUIRE(service->getResult({{"ticket", edit.at("ticket")}}).at("committed") == true);
                 saved = Json::parse(readBytes(destination));
                 CHECK(saved.at("passes").at(0).at("pass").at("ray_query") == false);
-                CHECK(saved.at("bound_parameters").at("resolution") == 512);
+                CHECK(saved.at("bound_parameters").at("color_r") == 0.7);
             }
             SECTION("failed candidate leaves the owner and destination untouched") {
                 runtime.fail_before_source_commit = true;
@@ -1924,6 +1941,7 @@ TEST_CASE("Feature materialization saves the concrete feature and switches its o
                 CHECK(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == false);
                 CHECK_FALSE(std::filesystem::exists(destination));
                 CHECK(readBytes(owner_path) == owner_before);
+                CHECK(readBytes(preset_path) == preset_before);
             }
         }
     }

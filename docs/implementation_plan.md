@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**feature展開と領域差し替え解除の統合 (2026-09-06):**
+- materialize対象が追加・直接pass_overridesするpassのregionsを合成結果から求め、同じgraphの該当region_replacementsだけを保存文書から除去する。root featureでもproject preset側の解除を同じ複数文書transactionへ載せ、別の領域指定は保持。engine preset側を変更する場合は既存forkを要求する。通常のcompiler最適化は止めない。
+- Debug render_pipeline/player build成功。展開保存と領域編集の関連2件58 assertions成功。sky backgroundのfullscreen領域で解除、無関係のpresent領域の保持、root/preset保存・再読込・直接編集・候補失敗時の元文書保持を確認。最初のshadow_depth試験設定はregistryのfullscreen限定仕様に反していたため、対象内のskyへ修正した。registryの対応pass種を拡張した変更ではない。
+- 前段で次項目に挙げた生成variantの独立化は、調査したXR/preview用の実行variantとfeature分解を混同していた。これを新たな必須機能にせず、現況文書を訂正した。全標準algorithmの内部処理のノード化や、integrationによる他featureへの変更全体まで完了とはしない。
+
 **Studioのfeature展開操作 (2026-09-06):**
 - Render featuresにMake editable...を追加。保存先を指定して既存Applyからmaterialize operationを送る。root/preset scope、元feature/preset/rootのdigestを引き継ぎ、既存のticket結果・一覧更新・Frame Plan更新へ接続する。未適用変更を先にApplyさせ、設定変更を展開操作で捨てない。
 - get_render_featuresにmaterializableと理由を追加。engine presetはfork後に操作でき、bound_parametersを持つ展開済み文書では重ねて展開するボタンを無効化する。通常passは保存後の既存Pass Editorで編集できる。生成variantと最適化解除を含む全体分解は別の残件。

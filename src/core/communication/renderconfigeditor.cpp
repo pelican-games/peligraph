@@ -12,6 +12,7 @@
 #include <array>
 #include <fstream>
 #include <iterator>
+#include <map>
 #include <ranges>
 #include <set>
 #include <stdexcept>
@@ -627,7 +628,7 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
             return bytes;
         };
         std::optional<Json> materialized;
-        (void)composeRenderFeatureConfig(Json::parse(document_.bytes()), RenderFeatureComposeDependencies{
+        const auto composition = composeRenderFeatureConfig(Json::parse(document_.bytes()), RenderFeatureComposeDependencies{
             .load_feature_json = loader,
             // This authors the currently selected feature. Actual device/module
             // availability is checked by the existing candidate publication path.
@@ -641,19 +642,60 @@ OrderedJson RenderConfigEditorService::materializeRenderFeature(const std::strin
         });
         if (!materialized) return rejection("feature_not_found", "The selected feature was not composed");
         features[index] = destination;
+        std::set<std::string> edited_passes;
+        for (const auto &pass : composition.pass_provenance)
+            if (pass.provider_reference == reference) edited_passes.insert(pass.name);
+        if (const auto overrides = materialized->find("pass_overrides"); overrides != materialized->end())
+            for (const auto &[name, value] : overrides->items()) edited_passes.insert(name);
+        std::map<std::string, std::set<std::string>> released_regions;
+        for (const auto &graph : composition.config.at("rendering_passes"))
+            for (const auto &pass : graph.at("passes")) {
+                if (!edited_passes.contains(pass.at("name").get<std::string>())) continue;
+                for (const auto &tag : pass.value("regions", Json::array()))
+                    released_regions[graph.at("name").get<std::string>()].insert(tag.get<std::string>());
+            }
+        const auto release_replacements = [&](OrderedJson &owner_config) {
+            bool changed = false;
+            if (!owner_config.contains("rendering_passes")) return changed;
+            for (auto &graph : owner_config.at("rendering_passes")) {
+                const auto regions = released_regions.find(graph.at("name").get<std::string>());
+                if (regions == released_regions.end() || !graph.contains("region_replacements")) continue;
+                auto &requests = graph.at("region_replacements");
+                for (auto request = requests.begin(); request != requests.end();) {
+                    if (regions->second.contains(request->at("region").get<std::string>())) {
+                        request = requests.erase(request);
+                        changed = true;
+                    } else ++request;
+                }
+                if (requests.empty()) graph.erase("region_replacements");
+            }
+            return changed;
+        };
+        // Persist removal of the selected regions, so later compiles cannot
+        // replace the newly editable nodes with their former fused implementation.
+        const bool root_regions_changed = scope == "root" && release_replacements(source);
+        std::optional<OrderedJson> preset;
+        if (scope == "preset") preset = source;
+        else if (current.pipeline_preset_bytes) preset = OrderedJson::parse(*current.pipeline_preset_bytes);
+        const bool preset_regions_changed = preset && release_replacements(preset->at("config"));
+        if (preset_regions_changed && !current.pipeline_preset->reference.starts_with("project://"))
+            return rejection("project_preset_required", "Fork the engine preset before releasing its region replacements");
+        if (preset_regions_changed && !preset_digest)
+            preset_digest = renderConfigSourceDigest(*current.pipeline_preset_bytes);
         std::vector<RenderConfigCandidateDocument> additional{{
             .reference = destination, .normalized_reference = dependencies_.normalize_reference(destination),
             .path = path, .operation = RenderConfigDocumentOperation::create,
             .expected = {RenderConfigDocumentExistence::missing, {}}, .bytes = materialized->dump(2)}};
-        if (scope == "preset") {
+        if (scope == "preset" || preset_regions_changed) {
             const auto &preset_ref = current.pipeline_preset->reference;
             additional.push_back({.reference = preset_ref, .normalized_reference = dependencies_.normalize_reference(preset_ref),
                 .path = dependencies_.resolve_document_path(preset_ref), .operation = RenderConfigDocumentOperation::replace,
-                .expected = {RenderConfigDocumentExistence::present, *preset_digest}, .bytes = source.dump(2)});
+                .expected = {RenderConfigDocumentExistence::present, *preset_digest}, .bytes = preset->dump(2)});
         }
         return queueRootEdit(base_digest, "materialize_render_feature",
             [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
                 if (scope == "root") candidate = candidate.withRootValue("features", features.dump(2));
+                if (root_regions_changed) candidate = candidate.withRootValue("rendering_passes", source.at("rendering_passes").dump(2));
                 return std::nullopt;
             }, additional, preset_digest);
     } catch (const std::exception &error) {
