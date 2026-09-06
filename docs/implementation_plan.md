@@ -23242,6 +23242,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**WP242b 実GPU照明接続 (2026-09-06):**
+- 既存golden harnessのground/casterを使い、赤point・青spotの影をforward/deferred各ON/OFFの画素差で確認。byte一致を条件にしない。point6視点/spot1視点の実行回数とdepth target層数も確認した。全6方向それぞれの影の画素までは未確認。
+- 実GPU確認で判明したforward material_resourcesのshared_2d解釈を修正し、family_array/nearest/clampをfeatureへ明示。実行pipeline compilerにもproducerのみのtyped宣言を受理させ、汎用resource port側の依存を使えるようにした。
+- 未使用になったpunctualshadowdata専用packer・CMake登録・専用テストを削除。実運用のview_family_matrices_v1 packerと対象確認を残した。
+- Debug golden_runtime/render_pipeline/view_temporal build成功。GPU wp242bは1件50 assertions、pipeline関連3件27 assertions、family関連3件76 assertions成功。point全方向の画素・標準algorithm OFFは後続。WP242b全条件完了とはしない。
+
 **WP242b 標準feature・resource port receiver (2026-09-06、GPU確認前):**
 - shadow_point / shadow_spotを標準algorithmの任意resourceとして追加。深度pass、view_family_matrices_v1 buffer、deferred input/resource_portsとforward material_resourcesを宣言。両featureのpass/資源名を独立させ同時合成できる。
 - forwardの標準lighting portから深度arrayと行列を読み、deferredの通常/clustered照明にも同じGLSL判定を接続。pointは6面から投影範囲内の面を選択、spotは1面。固定descriptorは追加しない。現在は1 tap、bias=.0015、遮蔽=.35で、WP242cのparameter化は後続。

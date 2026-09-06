@@ -1603,11 +1603,8 @@ compileSurfaceResourceContracts(
                     compiled.resource + "'");
             }
         }
-        if (compiled.material_consumers.empty() &&
-            compiled.fullscreen_consumers.empty()) {
-            throw std::runtime_error(
-                context + " has no consumers");
-        }
+        // A provider may publish the typed producer while consumers bind it
+        // through ordinary resource ports instead of surface-input selectors.
         result.push_back(std::move(compiled));
     }
     return result;

@@ -73,6 +73,7 @@
 #include "scene_load_test_support.hpp"
 
 #include <algorithm>
+#include <tuple>
 #include <array>
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -3447,6 +3448,45 @@ bool multiLightShadowDeferred(
            mode == "shadow_multi_deferred_on";
 }
 
+bool isPunctualShadowGoldenMode(std::string_view mode) {
+    return mode == "shadow_punctual_forward_off" ||
+           mode == "shadow_punctual_forward_on" ||
+           mode == "shadow_punctual_deferred_off" ||
+           mode == "shadow_punctual_deferred_on";
+}
+
+void writePunctualShadowProject(const std::filesystem::path &root,
+                                std::string_view mode) {
+    writeShadowProject(root, false);
+    auto scene = nlohmann::json::parse(readTextFile(root / "scene.json"));
+    auto &objects = scene["scenes"]["default_scene"]["objects"];
+    objects.erase(std::remove_if(objects.begin(), objects.end(), [](const auto &object) {
+        return object.value("name", std::string{}) == "Sun";
+    }), objects.end());
+    // Separate channels distinguish each light's shadow in the final image.
+    objects.push_back({{"name", "Point"}, {"components", nlohmann::json::array({
+        {{"name", "light"}, {"type", "point"}, {"position", {-2.0, 3.0, 1.0}},
+         {"intensity", 35.0}, {"color", {1.0, 0.0, 0.0}}}
+    })}});
+    objects.push_back({{"name", "Spot"}, {"components", nlohmann::json::array({
+        {{"name", "light"}, {"type", "spot"}, {"position", {2.0, 3.0, 1.0}},
+         {"direction", {-2.0, -3.0, -1.0}}, {"innerConeAngle", 35.0},
+         {"outerConeAngle", 55.0}, {"intensity", 35.0}, {"color", {0.0, 0.0, 1.0}}}
+    })}});
+    writeTextFile(root / "scene.json", scene.dump(2));
+    auto config = makeBLayerShadowRenderingConfig("");
+    if (mode.ends_with("_on")) {
+        config["features"] = nlohmann::json::array();
+        for (const auto *kind : {"point", "spot"}) {
+            config["features"].push_back({
+                {"ref", "engine://features/shadow_" + std::string{kind} + ".json"},
+                {"parameters", {{"resolution", 128}, {"near_distance", 0.1},
+                                 {"far_distance", 20.0}}}});
+        }
+    }
+    writeTextFile(root / "passes" / "main.json", config.dump(2));
+}
+
 void writeBLayerShadowProject(const std::filesystem::path &root,
                               std::string_view mode) {
     writeShadowProject(root, false);
@@ -4742,7 +4782,10 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
 #if PELICAN_RUNTIME_SHADER_COMPILER
     const bool multi_light =
         isMultiLightShadowGoldenMode(mode);
-    if (multi_light) {
+    const bool punctual = isPunctualShadowGoldenMode(mode);
+    if (punctual) {
+        deferred_material = mode.find("deferred") != std::string_view::npos;
+    } else if (multi_light) {
         deferred_material =
             multiLightShadowDeferred(mode);
     }
@@ -4775,6 +4818,12 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                   pipeline.shader_defines.end(),
                   "PELICAN_FEATURE_SHADOW") !=
         pipeline.shader_defines.end();
+    if (punctual) {
+        for (const auto *define : {"PELICAN_FEATURE_POINT_SHADOW", "PELICAN_FEATURE_SPOT_SHADOW"}) {
+            REQUIRE((std::find(pipeline.shader_defines.begin(), pipeline.shader_defines.end(), define) !=
+                     pipeline.shader_defines.end()) == mode.ends_with("_on"));
+        }
+    } else {
     if (has_shadow_define != shadow_enabled) {
         throw std::runtime_error(
             "B-layer shadow feature define does not match the golden mode");
@@ -4801,6 +4850,8 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
                 "B-layer shadow golden compiled the wrong typed "
                 "surface resource provider");
         }
+    }
+
     }
 
     const auto surface_reference = std::string{
@@ -4909,7 +4960,7 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
     forward_values["emission_color"] =
         nlohmann::json::array(
             {1.0, 0.04, 0.01, 1.0});
-    if (multi_light) {
+    if (multi_light || punctual) {
         auto &values =
             material_json["materials"][0]
                          ["values"];
@@ -5477,6 +5528,23 @@ void renderBLayerShadowFrame(RenderTarget &render_target,
             }
             INFO("cascade layer " << layer);
             REQUIRE(has_written_depth);
+        }
+    }
+    if (punctual && mode.ends_with("_on")) {
+        for (const auto &[family, target, view_count] : {
+                 std::tuple{"$shadow/point", "point_shadow_map", 6u},
+                 std::tuple{"$shadow/spot", "spot_shadow_map", 1u}}) {
+            const auto &targets = GET_MODULE(RenderTargetContainer);
+            const auto metadata = targets.getMetadata(targets.getRenderTargetIdByName(target));
+            REQUIRE(metadata.array_layers == view_count);
+            std::vector<unsigned> invocations(view_count);
+            for (const auto &node : GET_MODULE(Renderer).lastExecutionTraceForTesting().at("nodes")) {
+                if (node.value("view_family", std::string{}) != family) continue;
+                const auto view_index = node.at("view_index").get<std::uint32_t>();
+                REQUIRE(view_index < view_count);
+                ++invocations[view_index];
+            }
+            for (const auto count : invocations) REQUIRE(count == 1);
         }
     }
     if (multi_light && shadow_enabled) {
@@ -6264,6 +6332,7 @@ bool isBLayerShadowGoldenMode(
            mode == "shadow_b_layer_engine" ||
            mode == "shadow_b_layer_project" ||
            mode == "shadow_b_layer_cascaded" ||
+           isPunctualShadowGoldenMode(mode) ||
            isMultiLightShadowGoldenMode(mode);
 }
 
@@ -6557,8 +6626,10 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         GET_MODULE(ProjectSource).setProjectData(makeHdrProjectJson().dump());
     } else if (isBLayerShadowGoldenMode(
                    golden_case.mode)) {
-        writeBLayerShadowProject(temp_dir,
-                                 golden_case.mode);
+        if (isPunctualShadowGoldenMode(golden_case.mode))
+            writePunctualShadowProject(temp_dir, golden_case.mode);
+        else
+            writeBLayerShadowProject(temp_dir, golden_case.mode);
         GET_MODULE(PathResolver).setup(temp_dir, false);
         auto project = makeShadowProjectJson();
         project["basic_config"]
@@ -10646,6 +10717,38 @@ void GoldenHarness::runMultiLightDirectionalShadows() {
 #else
     SKIP("multi-light directional-shadow golden requires "
          "the runtime shader compiler");
+#endif
+}
+
+void GoldenHarness::runPunctualShadows() {
+#if PELICAN_RUNTIME_SHADER_COMPILER && PELICAN_WITH_STANDARD_RENDER_ALGORITHMS
+    setupLogger();
+    requireGoldenVulkanDevice();
+    const auto root = sourceRoot() / "test/golden/shadow_b_layer_engine";
+    for (const auto *route : {"forward", "deferred"}) {
+        const auto mode = "shadow_punctual_" + std::string{route};
+        const auto off = renderCase(GoldenCase{mode + "_off_runtime", mode + "_off", root, 64, 64}, true);
+        const auto on = renderCase(GoldenCase{mode + "_on_runtime", mode + "_on", root, 64, 64}, true);
+        REQUIRE(on.image.pixels.size() == off.image.pixels.size());
+        for (const auto channel : {0u, 2u}) {
+            std::size_t shadowed_pixels = 0;
+            std::uint64_t darkening = 0;
+            for (std::size_t offset = channel; offset < on.image.pixels.size(); offset += 4) {
+                const auto delta = static_cast<int>(off.image.pixels[offset]) -
+                                   static_cast<int>(on.image.pixels[offset]);
+                if (delta >= 3) {
+                    ++shadowed_pixels;
+                    darkening += static_cast<std::uint64_t>(delta);
+                }
+            }
+            INFO(route << ", " << (channel == 0 ? "point" : "spot")
+                 << " shadow pixels=" << shadowed_pixels << ", darkening=" << darkening);
+            REQUIRE(shadowed_pixels >= 8);
+            REQUIRE(darkening >= 64);
+        }
+    }
+#else
+    SKIP("punctual shadows require standard render algorithms and runtime shader compilation");
 #endif
 }
 

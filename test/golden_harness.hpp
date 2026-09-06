@@ -7,6 +7,7 @@ void runProjectionJitterShadow();
 void runTaaDeterminism();
 void runBLayerShadowEquivalence();
 void runMultiLightDirectionalShadows();
+void runPunctualShadows();
 void runPlanarReflection();
 void runGpuDrawIndirect();
 void runGpuOcclusionCulling();

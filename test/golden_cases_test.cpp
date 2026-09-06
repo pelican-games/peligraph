@@ -74,4 +74,9 @@ TEST_CASE("Model watch reload restores visible skin and material defaults",
     GoldenHarness::runModelReloadGpuState();
 }
 
+TEST_CASE("point and spot shadows darken forward and deferred receiver pixels",
+          "[golden][headless][shadow][wp242b]") {
+    GoldenHarness::runPunctualShadows();
+}
+
 } // namespace Pelican

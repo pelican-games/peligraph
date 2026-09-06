@@ -124,13 +124,13 @@
     },
     "forward_opaque": {
       "material_resources": {
-        "point_shadow_texture": "point_shadow_map",
+        "point_shadow_texture": {"resource": "point_shadow_map", "view": "family_array", "sampling": {"filter": "nearest", "address": "clamp_to_edge"}},
         "point_shadow_matrices": "point_shadow_matrices"
       }
     },
     "forward_transparent": {
       "material_resources": {
-        "point_shadow_texture": "point_shadow_map",
+        "point_shadow_texture": {"resource": "point_shadow_map", "view": "family_array", "sampling": {"filter": "nearest", "address": "clamp_to_edge"}},
         "point_shadow_matrices": "point_shadow_matrices"
       }
     }

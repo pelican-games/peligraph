@@ -31,7 +31,7 @@ geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実�
 | 区分 | 現在の判断と次の作業 |
 |---|---|
 | RTの実行機能 | RT4のcallable/動的record、RT5の変形/refit、RT6のdispatch/名前付きAS/geometry結合、RT7のtask/接続編集には実装・統合記録がある。旧記録だけを根拠に再実装しない。残る組合せは具体的な利用操作と現行コードから判断する |
-| 進行中の描画機能 | WP242bのpoint/spot shadow。camera/providerとtarget層数更新に加え、標準featureの深度pass・汎用family行列buffer・照明resource port、forward/deferred receiverを接続した。point/spot同時feature合成とforward shaderコンパイルを確認。次は実GPUで影・6面・照明方式の接続確認と標準algorithm OFF。専用ライト行列packerは汎用buffer方式への切替で未使用となったため整理対象 |
+| 進行中の描画機能 | WP242bのpoint/spot shadow。標準featureの深度pass・汎用family行列buffer・照明resource portを接続。実GPUで赤point/青spotの影をforward/deferred各ON/OFF画素差で確認し、point6視点/spot1視点の実行・層数も確認。残りはpoint全6方向の画素確認と標準algorithm OFF。汎用buffer方式への切替で未使用になった専用ライト行列packerとその専用テストは削除した |
 | その後の描画機能 | WP242cのPCF・bias・遮蔽強度のfeature parameter化。pelican_lighting_v1.glslは現時点で1 tap、bias=0.0015、遮蔽時0.35を固定している。台帳の順序に従いWP242b後に進め、既定値はfeature宣言へ一元化する |
 | RTの観測 | get_ray_occurrencesは同じscene-plan snapshotのrecordフィールド名・型・offset・値、group名、layout/bindings参照と選択行、group/recordの適用元をInspectorへ返す。ASのmask/flags/custom indexは実効値とfieldごとの適用元、geometry rule index・override row IDを表示する。Frame Planのshader slotにgroup/ray名を併記する。geometryからtaskへの選択連動、GPU動的値の観測、実GUI操作確認は残る。世代の異なるGPU情報を混ぜない |
 | コンポーネント | Inspectorに追加・削除・Add default・List追加/削除/移動・override候補選択がある。unpack後のList追加をUndoすると採番値の差でunpack Undoが失敗する不具合を修正し、全順序のUndo/Redoと実値変更時の拒否を確認した。destroy/復元を跨ぐList編集のjournal Undo/Redoも確認済み。全componentのruntime再装着や実GUI操作とは区別する |

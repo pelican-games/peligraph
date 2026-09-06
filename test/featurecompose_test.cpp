@@ -1089,6 +1089,8 @@ TEST_CASE("punctual shadow features wire graph resources into lighting",
         RenderFeatureComposeDependencies{loadEngineFeature, true});
     CHECK(passByName(combined.config, "point_shadow_depth").at("view_family") == "$shadow/point");
     CHECK(passByName(combined.config, "spot_shadow_depth").at("view_family") == "$shadow/spot");
+    const auto compiled = compileComposition(combined);
+    CHECK(compiled.surface_resource_contracts.size() == 2);
     for (const auto kind : {std::string{"point"}, std::string{"spot"}}) {
         const auto composed = composeRenderFeatureConfig(
             nlohmann::json{

@@ -124,13 +124,13 @@
     },
     "forward_opaque": {
       "material_resources": {
-        "spot_shadow_texture": "spot_shadow_map",
+        "spot_shadow_texture": {"resource": "spot_shadow_map", "view": "family_array", "sampling": {"filter": "nearest", "address": "clamp_to_edge"}},
         "spot_shadow_matrices": "spot_shadow_matrices"
       }
     },
     "forward_transparent": {
       "material_resources": {
-        "spot_shadow_texture": "spot_shadow_map",
+        "spot_shadow_texture": {"resource": "spot_shadow_map", "view": "family_array", "sampling": {"filter": "nearest", "address": "clamp_to_edge"}},
         "spot_shadow_matrices": "spot_shadow_matrices"
       }
     }
