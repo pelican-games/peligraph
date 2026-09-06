@@ -3403,6 +3403,7 @@ resolveGenerationShaderInputs(
 
 void MaterialContainer::validateRuntimeGenerationCompatibility(
     const RendererRuntimeGeneration &generation) const {
+    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot();
     materials.forEach(
         [&](GlobalMaterialId material_id,
             const InternalMaterialInfo &material) {
@@ -3412,6 +3413,11 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
                 material.shader_contract,
                 material.exact_pass);
             if (bindings.empty()) {
+                // A registered material need not be drawn by this graph (for
+                // example an RT-only project). Preserve that state, but reject
+                // removal of a route which the published graph did consume.
+                if (previous && materialBindingsForGeneration(*previous, material.route,
+                        material.shader_contract, material.exact_pass).empty()) return;
                 throw std::runtime_error(
                     "render-pipeline candidate has no compatible "
                     "pass for live material " +
@@ -3492,6 +3498,7 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
 MaterialRuntimeGenerationReloadPlan
 MaterialContainer::prepareRuntimeGenerationReload(
     const RendererRuntimeGeneration &generation) {
+    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot();
     struct MetadataUpdate {
         GlobalMaterialId material;
         std::optional<MaterialOutputSchema>
@@ -3576,6 +3583,8 @@ MaterialContainer::prepareRuntimeGenerationReload(
                     material.shader_contract,
                     material.exact_pass);
             if (bindings.empty()) {
+                if (previous && materialBindingsForGeneration(*previous, material.route,
+                        material.shader_contract, material.exact_pass).empty()) return;
                 throw std::runtime_error(
                     "render-pipeline candidate has no compatible "
                     "pass for live material " +

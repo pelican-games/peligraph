@@ -6583,6 +6583,15 @@ TEST_CASE("RT4 callable dispatch selects its SBT record and reloads its implemen
         ray["callable_record"] = Json::array({{{"name", "increment"}, {"type", "u32"}}});
         ray["callable_records"] = Json::array({{{"increment", 100}}, {{"increment", 200}}});
         auto rendering = Json::parse(readWp374aText(project.path / "hybrid.json"));
+        rendering.erase("pipeline");
+        rendering["rendering_passes"] = Json::array({
+            {{"name", "main_render"}, {"passes", Json::array({
+                {{"name", "present"}, {"type", "fullscreen"}, {"input", Json::array()},
+                 {"output", {{"color", {"swapchain"}}, {"depth", nullptr}}},
+                 {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://shaders/rt_present"}}}}
+            })}}});
+        writeWp374aText(project.path / "shaders/rt_present.frag",
+            "#version 450\nlayout(location=0) out vec4 color;\nvoid main() { color = vec4(0,0,0,1); }\n");
         rendering["ray_task_callable_records"] = {{"wp386_trace",
             Json::array({{{"increment", 100}}, {{"increment", 250}}})}};
         writeWp374aText(project.path / "hybrid.json", rendering.dump());
@@ -6643,6 +6652,18 @@ void main() { value += )glsl"} + std::to_string(increment) + "u; }\n";
         return value;
     };
     CHECK(marker() == (dynamic_records ? 257u : 207u));
+    // Interactive startup also registers the standard fallback material. An
+    // RT-only graph does not draw it, including after output re-lowering.
+    (void)GET_MODULE(StandardMaterialResource);
+    const auto published = GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot();
+    REQUIRE(published != nullptr);
+    REQUIRE_NOTHROW(GET_MODULE(MaterialContainer).validateRuntimeGenerationCompatibility(*published));
+    REQUIRE_NOTHROW(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(*published));
+    if (!dynamic_records) {
+        const RendererRuntimeGeneration missing_routes;
+        REQUIRE_THROWS(GET_MODULE(MaterialContainer).validateRuntimeGenerationCompatibility(missing_routes));
+        REQUIRE_THROWS(GET_MODULE(MaterialContainer).prepareRuntimeGenerationReload(missing_routes));
+    }
     if (dynamic_records) {
         const auto observed_increment = [&] {
             const auto plan = GET_MODULE(Renderer).currentFramePlanJson();

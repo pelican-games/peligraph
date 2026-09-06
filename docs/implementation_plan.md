@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**RT専用グラフのwindow output再構築失敗を修正 (2026-09-07):**
+- Studio実接続時に、登録済み標準マテリアルのdeferred_geometry/gbuffer_v1 pass不在を理由にwindow output re-loweringが失敗した。MaterialContainerの互換検査・reload準備で、公開済み世代にも候補にも対応passがないmaterialは既存の非描画状態として保持する。公開済み世代で対応passがあったmaterialのroute削除は引き続き拒否する。
+- PlayerとRT3 production targetのDebug build成功。既存RT4試験の動的record構成をmaterial passなしのRT+present構成へ変更し、標準material登録後の互換検査・reload準備、動的更新・GPU出力・保存を確認。通常構成から全routeを除く候補が両経路で拒否される対照も成功。Studio上での再起動と編集の通し確認は残る。
+
 **動的callable recordのtask詳細表示 (2026-09-07):**
 - Frame Planモデルでruntime_callable_recordsを受け取り、task詳細のCallable record settingsにrecord番号・field名・型・offset・値を表示する。取得時点のCPU設定でありGPU完了readbackではない旨を併記。再取得時にモデルと表示を更新し、初期値編集とは分離する。
 - Studio・frameplan_graph targetのDebug build成功。既存WP367a画面試験にrecord fieldの表示確認を追加し成功。実エンジン接続下の一連の画面操作は未確認。
