@@ -1717,6 +1717,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
             identity << static_cast<char>(byte);
     }
     RaySceneRowSnapshot result;
+    result.record_members = layout.record;
     result.semantic_mode = semantic_mode;
     const auto encoded = identity.str();
     result.identity_digest_sha256 =

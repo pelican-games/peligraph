@@ -659,6 +659,8 @@ struct InspectorWidget::Impl {
         ray_entries->horizontalHeader()->setStretchLastSection(true);
         layout->addWidget(ray_entries, 2);
         layout->addWidget(plainLabel(owner.tr(
+            "Record fields show resolved scene-plan values. Per-frame dynamic record updates are not shown."), dialog));
+        layout->addWidget(plainLabel(owner.tr(
             "Select geometry and a ray_instance destination to add an override. Edit its values in the Inspector list."), dialog));
         auto *actions = new QHBoxLayout;
         ray_destination = new QComboBox(dialog);

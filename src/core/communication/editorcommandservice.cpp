@@ -12,6 +12,7 @@
 #include "../ecs/componentinfo.hpp"
 
 #include <algorithm>
+#include <cstring>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -2061,6 +2062,48 @@ OrderedJson rayOccurrenceJson(const RayOccurrenceCatalogEntry &entry) {
 
 } // namespace
 
+namespace {
+OrderedJson recordFieldsJson(const RaySceneRowSnapshot &snapshot, const RaySceneRow &row) {
+    auto fields = OrderedJson::array();
+    for (const auto &member : snapshot.record_members) {
+        std::string_view type;
+        std::size_t count = 1;
+        switch (member.type) {
+        case RayRecordType::i32: type = "i32"; break;
+        case RayRecordType::u32: type = "u32"; break;
+        case RayRecordType::f32: type = "f32"; break;
+        case RayRecordType::vec2: type = "vec2"; count = 2; break;
+        case RayRecordType::vec3: type = "vec3"; count = 3; break;
+        case RayRecordType::vec4: type = "vec4"; count = 4; break;
+        }
+        if (member.offset > row.record_data.size() || count * 4 > row.record_data.size() - member.offset)
+            throw std::runtime_error("Published ray record schema exceeds row data");
+        const auto *bytes = row.record_data.data() + member.offset;
+        OrderedJson value;
+        if (member.type == RayRecordType::i32) {
+            std::int32_t number;
+            std::memcpy(&number, bytes, sizeof(number));
+            value = number;
+        } else if (member.type == RayRecordType::u32) {
+            std::uint32_t number;
+            std::memcpy(&number, bytes, sizeof(number));
+            value = number;
+        } else {
+            auto components = OrderedJson::array();
+            for (std::size_t index = 0; index < count; ++index) {
+                float number;
+                std::memcpy(&number, bytes + index * sizeof(number), sizeof(number));
+                components.push_back(number);
+            }
+            value = count == 1 ? components.at(0) : components;
+        }
+        fields.push_back({{"name", member.name}, {"type", type},
+                          {"offset", member.offset}, {"value", std::move(value)}});
+    }
+    return fields;
+}
+} // namespace
+
 OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
     const Json &params) const {
     auto entries = OrderedJson::array();
@@ -2085,7 +2128,9 @@ OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
                     {"geometry_index", row.geometry_index == std::numeric_limits<std::uint32_t>::max()
                         ? OrderedJson(nullptr) : OrderedJson(row.geometry_index)},
                     {"geometry_flags", row.geometry_flags},
-                    {"record_bytes", row.record_data.size()}};
+                    {"record_bytes", row.record_data.size()},
+                    {"record_source", "scene_plan"},
+                    {"record_fields", recordFieldsJson(*inventory.plan, row)}};
             }
         }
         entries.push_back(std::move(encoded));

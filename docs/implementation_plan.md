@@ -23265,6 +23265,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
 - serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
 
+**RT recordフィールド観測 (2026-09-06):**
+- RaySceneRowSnapshotにauthored record schemaを保持し、get_ray_occurrences.binding.record_fieldsへname/type/offset/valueを返す。i32/u32/f32/vec2/vec3/vec4をrow bytesから読む。同じsnapshotのschemaを使用し、現在の別layoutを再参照しない。
+- Inspectorの既存Resolved binding表示へ自動的に反映し、record_source=scene_planと説明文で動的recordのGPU実行時値ではないことを明示。engine-owned record fieldは既存material/geometry index表示と分ける。
+- shader stage参照との対応、優先規則の出所表示、動的recordの観測はまだ残る。
+- Debugのecs_editor・Studio build成功。editor-command 17 cases / 286 assertions成功。既存RPCテストで負の整数、小数、std430の余白を含むvec3を確認。RPCの値復元を取り消すと追加検証が成立しない。resolverからのschema転送はコード確認のみ。実GUI操作とGPU動的値の検証はこの結果に含めない。
+
 **P3球mesh overlapのprovider/service接続 (2026-09-06):**
 - ProviderV3へsphere-mesh overlap capabilityを追加し、既存owner/dispatch/identity/filterとBuiltin BVH再利用を通す。PhysWorldのmesh descriptor収集をray/overlapで共有し、C++およびGame DLLのoverlap serviceを同じ問い合わせへ接続する。
 - まだsphereだけがmesh overlapに対応。meshを含むworldでbox/capsuleを問い合わせた場合、公開serviceはunavailableを返す。従来のC++ wrapperはunavailableを空結果へ変換する既存仕様。未対応meshを無視したprimitive部分結果をokとして返さない。triggerとsweepは未接続。

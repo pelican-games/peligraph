@@ -359,6 +359,8 @@ struct RayOccurrenceOverrideResolution {
 };
 
 struct RaySceneRowSnapshot {
+    // Authored schema captured with these row bytes, excluding engine-owned fields.
+    std::vector<RayRecordMemberLayout> record_members;
     std::uint64_t generation = 0;
     RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LegacyNoLayout;
     std::string identity_digest_sha256;

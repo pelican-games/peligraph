@@ -1,3 +1,5 @@
+#include "../src/core/shader/raygrouplayout.hpp"
+#include <cstring>
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorassetqueryruntime.hpp"
 #include "../src/core/loader/pathresolver.hpp"
@@ -400,14 +402,27 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
         .q = 7,
         .authoring_object_id = 1,
     };
+    auto plan = std::make_shared<RaySceneRowSnapshot>();
+    plan->record_members = {{"signed", RayRecordType::i32, 0, 4, 4},
+        {"weight", RayRecordType::f32, 4, 4, 4}, {"color", RayRecordType::vec3, 16, 12, 16}};
+    RaySceneRow row;
+    row.q = 7;
+    row.record_data.resize(32);
+    const std::int32_t signed_value = -12;
+    const float weight = 0.5F;
+    const float color[]{1, 2, 3};
+    std::memcpy(row.record_data.data(), &signed_value, 4);
+    std::memcpy(row.record_data.data() + 4, &weight, 4);
+    std::memcpy(row.record_data.data() + 16, color, 12);
+    plan->rows.push_back(std::move(row));
     const EditorCommandService service{EditorCommandServiceDependencies{
         .document = [&document]() -> const AuthoringSceneDocument & {
             return document;
         },
         .resolved_scene = explicitResolvedProvider(document),
         .current_scene_id = [] { return std::string{"main"}; },
-        .ray_occurrences = [occurrence](std::uint64_t) {
-            return EditorRayOccurrencesResult{.entries = {occurrence},
+        .ray_occurrences = [occurrence, plan](std::uint64_t) {
+            return EditorRayOccurrencesResult{.entries = {occurrence}, .plan = plan,
                                               .authoring_object_id = 1};
         },
         .resolve_ray_occurrence = [occurrence](std::string_view id) {
@@ -426,6 +441,14 @@ TEST_CASE("ray occurrence production RPC exposes inventory and tri-state resolut
     REQUIRE(inventory.at("entries").at(0).at("occurrence_id") ==
             occurrence.occurrence_id);
     REQUIRE(inventory.at("entries").at(0).at("eligibility") == "ok");
+
+    const auto &binding = inventory.at("entries").at(0).at("binding");
+    CHECK(binding.at("record_source") == "scene_plan");
+    REQUIRE(binding.at("record_fields").size() == 3);
+    CHECK(binding.at("record_fields").at(0).at("value") == -12);
+    CHECK(binding.at("record_fields").at(1).at("value") == 0.5);
+    CHECK(binding.at("record_fields").at(2).at("value") == nlohmann::json::array({1, 2, 3}));
+    CHECK(binding.at("record_fields").at(2).at("offset") == 16);
 
     const auto found = rpc.resolveRayOccurrence(
         nlohmann::json{{"occurrence_id", occurrence.occurrence_id}});
