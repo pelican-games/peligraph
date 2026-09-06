@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-06、履歴より優先)
 
-- 最新の追加はshadow_depth/velocityの明示ray queryとAS非依存描画。補助shaderのdescriptor契約検査は `ea05340a`、debug_text/gizmoの明示ray queryは `ea61aa74`、固定/画面連動サイズ混在のsnapshot解析修正とdebug_draw組込みGLSLは `9e5c363b`、debug_drawの明示ray queryは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
+- 最新の追加はpickingの明示ray queryとImGuiのAS非依存化。shadow_depth/velocityは `06e19992`、補助shaderのdescriptor契約検査は `ea05340a`、debug_text/gizmoは `ea61aa74`、サイズ混在解析とdebug_draw組込みGLSLは `9e5c363b`、debug_drawは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
 - `96d9cb7e` は、material/rasterのAS宣言と名前付きTLAS選択、初回spriteを含むAS前描画、world-space triangle BLAS結合、Frame Planドラッグ接続、procedural asset削除を含む。各機能の確認範囲は下の記録を参照し、統合全数を実行したとは扱わない。
 - 利用者が「適切な頻度でコミットしてね」と許可済み。本タスクは統合担当として実装・影響範囲の確認・記録が揃った単位でcommitする。実装workerが独断でcommitしない規約は維持する。
@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT6 shadow_depth/velocityのAS宣言 (2026-09-06):**
+**RT6 pickingのAS宣言とImGui依存解除 (2026-09-06):**
+- pickingにray_query所有・JSON/typed lowering・runtime登録の伝播を追加し、既存VelocityPassContainerのpass別AS bindingを使用する。skinned_vertexの解析は維持。ImGuiは独自ImGui_ImplVulkan描画でframe ASを使わないため、UI同様にplannerで非依存とする。
+- Player/Studio・CPU/GPU build成功（build/.codex_bg/picking-query-build.log）。CPU2件・189 assertions成功（picking-query-cpu.log）：6種の宣言とUI/ImGuiのAS前順序。GPU pickingの5section・432 assertions成功（picking-query-gpu.log）：通常ID描画のAS前実行、左右/空TLASの選択、未宣言query拒否。ImGuiの実ウィンドウ描画は今回未実行。
+- 対照: passのAS伝播を外せばqueryの拒否/選択結果が落ち、依存解除を戻せばAS前順序が成立しない。個別変異は未実行。
+- 編集範囲を現コードと照合: renderconfigeditor.cppのfindPresetEditablePass/findFeatureEditablePassとeditPresetPass、fullscreenpasswidget.cppはfullscreen/material/rasterに限定される。次は6種の補助描画の入出力・shader・ray_queryを既存GUI/RPCへ接続。shadowはvertexのみ、velocity/pickingはskinned_vertexも扱う。material/rasterやfeature元パラメーター編集は完了済みで、生成variant専用editorは新設しない。
+
+**RT6 shadow_depth/velocityのAS宣言 (2026-09-06、06e19992):**
 - 両passにray_queryを追加し、省略/falseをAS非依存にする。宣言時の指定TLASをpass登録に保持してMaterialRendererの実際のbindingへ渡す。JSON/typed planner・共通所有規則・runtime compilerを接続し、regular/skinned pipeline descの両方へ宣言を伝播する。shadowのskinned shaderは既存の固定実装を維持する。
 - Player/Studio・CPU/GPU build成功（build/.codex_bg/geometry-query-build.log）、fixture最終GPU build成功（geometry-query-gpu-build.log）。CPU2件・163 assertions成功（geometry-query-cpu.log）。対象GPU10sectionと既存RTの計11section成功（geometry-query-gpu-first.log:392 assertions、geometry-query-gpu-rest.log:564 assertions）。shadowのvertex queryは深度、velocityのfragment queryはR16G16値で左右/空の選択を確認。AS前の通常描画と未宣言query拒否も成功。
 - GPU fixtureは既存fullscreen経路で深度をR32画像へ写し、読み戻す。最初は非対応の深度直接readbackとvelocity出力形式で失敗し修正、次に片面モデルが背面で消えたためモデルをカメラへ向けた。製品側の出力形式・カリングは変更していない。スキン付きqueryの専用GPU試験は今回未実行。

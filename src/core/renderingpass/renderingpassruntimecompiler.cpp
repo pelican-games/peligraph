@@ -2473,7 +2473,8 @@ PassId compilePickingPass(const PassDefinition &pass_def,
     // picking the render-generation rollback/retirement contract.
     return dependencies.velocity_pass_container.registerVelocityPass(
         color.format, depth.format, regular_vert, skinned_vert, frag,
-        dependencies.shader_defines, pass_def.rasterization_samples);
+        dependencies.shader_defines, pass_def.rasterization_samples,
+        pass_def.ray_query, pass_def.ray_query_acceleration_structure);
 }
 
 } // namespace

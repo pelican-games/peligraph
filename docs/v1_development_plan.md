@@ -18,7 +18,7 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 |---|---|
 | 実装済み | callableと動的record・公開API、skin/morph/VATとBLAS refit、3D/間接dispatch、名前付きTLASとASノード、複数geometry BLAS、world triangle/AABB結合（AABBは明示的な変換recordを使用）、AS前のcompute/material/raster/sprite描画 |
 | 編集経路を実装済み | component追加・削除等、procedural asset作成・編集・未使用定義削除、task宣言/接続/dispatch、Callable初期値、AS順序、fullscreen preset編集、material/raster passの入出力・ray query/TLAS選択、material contract・対象/出力/resource設定・routing表編集、rasterのshader参照・draw/state JSON編集、root/preset feature instanceの公開パラメーター編集、project featureの明示pass編集、Frame Planドラッグ接続、triangle geometry/world切替とlayout同時保存 |
-| 機能の残り | picking/ImGuiのAS依存の扱いを確認する。UIとdebug_draw/debug_text/gizmo/shadow_depth/velocityはAS前描画に対応し、UI以外の5種は明示ray queryで名前付きTLASを選択できる。補助shaderのdescriptor契約不一致は生成/再読込時に拒否する。生成variantは元feature設定から再生成する。output_transformは設計上の固定色変換であり汎用編集は不要（design_color_pipeline.md §0） |
+| 機能の残り | debug_draw/debug_text/gizmo/shadow_depth/velocity/pickingのGUI/RPC編集接続。6種ともruntimeの明示ray query・名前付きTLAS選択とAS前描画に対応済み。UI/ImGuiは固定描画としてAS非依存。補助shaderのdescriptor契約不一致は生成/再読込時に拒否する。生成variantは元feature設定から再生成する。output_transformは固定色変換であり汎用編集は不要（design_color_pipeline.md §0） |
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 
@@ -56,7 +56,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 | RT4 | callable、per-in-flight の動的 record | callable実行・reload、動的recordの宣言・更新・submission寿命管理、GameContext public APIを実装。Studioから初期値の永続編集も接続 | 新しい初期値dialogの実操作確認は残る |
 | RT5 | 変形 geometry の毎 frame rebuild/refit | skin/morph/VAT のcompute変形、初回BLAS buildと以後のrefitを接続。個体別変形・VAT補間のヒット追随、モデル変更時rebuildを実GPU確認 | 出力allocation削減と性能計測は残る。使用中のASを変更しない方式 |
 | RT6 | dispatch 一般化・indirect、AS graph node、複数 TLAS、複数 geometry BLAS | 3D・間接dispatch、名前付きTLAS構築とconsumerの交互配置・選択（compute/RT/material/raster）、共有AS前の独立compute・material・fullscreen/raster・sprite実行、複数triangle geometry BLAS/refit、明示worldモードで異transform個体の結合・移動rebuild・morph refit、単一componentの複数AABB asset/BLAS結合を実装・実GPU確認 | その他の補助描画のAS依存細分化は残る。AABBは明示的なworldモードと変換recordで異transform結合に対応。triangle worldモードはScene AS画面から保存・GPU反映へ接続済み |
-| RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きAS・task接続・Callable初期値、preset fork、fullscreen pass接続/shader編集を実装。compute/RT taskの宣言編集・追加・削除、dispatchフォーム、候補付き接続図、Frame Planのcompute/RT・fullscreen preset pass宛ドラッグ接続、名前付きASとconsumerの交互順序編集・独立computeの共有AS前配置をRPC/Studioへ接続 | fullscreen以外の描画passやfeatureの生成variantの編集範囲は残る。接続図のクリック・ドラッグ確認済み、新dialog全体の実エンジン接続下での手動操作は未確認 |
+| RT7 | ノードの一級化、編集 RPC、fork/CAS | 名前付きAS・task接続・Callable初期値、preset fork、fullscreen/material/rasterの編集、root/preset featureパラメーター編集と生成variant再生成を実装。compute/RT taskの宣言編集・追加・削除、dispatchフォーム、候補付き接続図とドラッグ接続、ASとconsumerの交互順序編集をRPC/Studioへ接続 | 6種の補助描画passは編集対象の型制限によりGUI/RPC未対応。新dialog全体の実エンジン接続下での手動操作は未確認 |
 | ゲーム制作 | component と scene、入力、物理、animation、音、UI、保存、配布 | 各機能の記録は manual/台帳に存在。Inspectorの宣言JSON入力、登録behaviorとparams付き追加、model・texture・procedural asset選択を接続。削除・Undo/Redo・保存は既存journalを使用 | 新フォームの実操作、asset定義編集、代表ゲームでの一連の制作経路は残る |
 
 確認した実装入口: [pipelinefactory.cpp](../src/core/shader/pipelinefactory.cpp)、

@@ -104,7 +104,7 @@ struct FrameGraphNodeDefinition {
     std::size_t byte_size = 0;
     bool raster_geometry = false;
     // Material/fullscreen/generic passes declare queries before physical planning.
-    // Unspecified auxiliary draw implementations retain their AS dependency.
+    // nullopt is reserved for nodes without an explicit raster query policy.
     std::optional<bool> ray_query;
     std::string ray_query_acceleration_structure = "scene";
     RenderResolutionDomain resolution_domain =

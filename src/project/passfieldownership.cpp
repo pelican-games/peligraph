@@ -41,7 +41,6 @@ constexpr std::array raster_fields{
     "raster_state"sv,
     "shader"sv,
 };
-constexpr std::array shader_field{"shader"sv};
 constexpr std::array auxiliary_raster_fields{"shader"sv, "ray_query"sv};
 constexpr std::array canonical_anchor_fields{"anchor"sv};
 constexpr std::array snapshot_copy_fields{
@@ -81,7 +80,7 @@ constexpr std::array ownership_table{
     PassFieldOwnershipEntry{RenderPassType::velocity, "velocity"sv,
                             auxiliary_raster_fields},
     PassFieldOwnershipEntry{RenderPassType::picking, "picking"sv,
-                            shader_field},
+                            auxiliary_raster_fields},
     PassFieldOwnershipEntry{RenderPassType::ui, "ui"sv, {}},
     PassFieldOwnershipEntry{RenderPassType::imgui, "imgui"sv, {}, true},
     PassFieldOwnershipEntry{RenderPassType::canonical_anchor,

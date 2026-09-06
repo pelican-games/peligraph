@@ -118,17 +118,27 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
         CHECK(planFrameGraph(graphs[0]).nodes[0].name == "__anchor_sprite");
     }
     SECTION("fixed UI shaders can run before AS construction in both graph lowering paths") {
+      for (const auto type : {RenderPassType::ui
+#if PELICAN_WITH_IMGUI
+                             , RenderPassType::imgui
+#endif
+                             }) {
+        const auto type_name = type == RenderPassType::ui ? "ui" : "imgui";
+        INFO(type_name);
         const auto json_graph = parseFrameGraphDefinitionFromJson({{"name", "main"},
-            {"passes", nlohmann::json::array({{{"name", "pelican_ui"}, {"type", "ui"},
+            {"passes", nlohmann::json::array({{{"name", "pelican_ui"}, {"type", type_name},
                 {"output", {{"color", "swapchain"}, {"depth", nullptr}}}}})}});
         RenderingPassDefinition typed;
         typed.name = "main";
         PassDefinition ui;
         ui.name = "pelican_ui";
-        ui.pass_type = RenderPassType::ui;
+        ui.pass_type = type;
         ui.pass_info = UiPassInfo{};
+#if PELICAN_WITH_IMGUI
+        if (type == RenderPassType::imgui) ui.pass_info = ImGuiPassInfo{};
+#endif
         ui.output_color.emplace_back(swapchainRenderTargetId());
-        ui.applyDefaultAttachmentOperations(RenderPassType::ui);
+        ui.applyDefaultAttachmentOperations(type);
         typed.passes.push_back(std::move(ui));
         for (const auto &lowered : {json_graph, makeFrameGraphDefinition(typed)}) {
             REQUIRE(lowered.nodes.size() == 1);
@@ -142,6 +152,7 @@ TEST_CASE("scene AS operation follows variant-wide ray requirements", "[renderco
             CHECK(plan.nodes[0].name == "pelican_ui");
             CHECK(plan.nodes[1].name == "__scene_acceleration_structure");
         }
+      }
     }
     SECTION("reserved name collision is rejected") {
         graphs[0].nodes[0].name = "__scene_acceleration_structure";
@@ -175,15 +186,17 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
     }
     SECTION("auxiliary drawing declares its query dependency in JSON and typed graphs") {
       for (const auto type : {RenderPassType::debug_draw, RenderPassType::debug_text, RenderPassType::gizmo,
-                              RenderPassType::shadow_depth, RenderPassType::velocity}) {
+                              RenderPassType::shadow_depth, RenderPassType::velocity, RenderPassType::picking}) {
         const auto type_name = type == RenderPassType::debug_draw ? "debug_draw" :
                                type == RenderPassType::debug_text ? "debug_text" :
                                type == RenderPassType::gizmo ? "gizmo" :
-                               type == RenderPassType::shadow_depth ? "shadow_depth" : "velocity";
+                               type == RenderPassType::shadow_depth ? "shadow_depth" :
+                               type == RenderPassType::velocity ? "velocity" : "picking";
         INFO(type_name);
         nlohmann::json output_a = {{"color", "a"}, {"depth", nullptr}};
         nlohmann::json output_b = {{"color", "b"}, {"depth", nullptr}};
-        const bool geometry = type == RenderPassType::shadow_depth || type == RenderPassType::velocity;
+        const bool geometry = type == RenderPassType::shadow_depth || type == RenderPassType::velocity ||
+                              type == RenderPassType::picking;
         if (geometry) {
             output_a["depth"] = "depth_a";
             output_b["depth"] = "depth_b";
@@ -210,7 +223,8 @@ TEST_CASE("named AS operations depend on shared construction and precede consume
         else if (type == RenderPassType::debug_text) draw.pass_info = DebugTextPassInfo{};
         else if (type == RenderPassType::gizmo) draw.pass_info = GizmoPassInfo{};
         else if (type == RenderPassType::shadow_depth) draw.pass_info = ShadowDepthPassInfo{};
-        else draw.pass_info = VelocityPassInfo{};
+        else if (type == RenderPassType::velocity) draw.pass_info = VelocityPassInfo{};
+        else draw.pass_info = PickingPassInfo{};
         if (type != RenderPassType::shadow_depth) draw.output_color.emplace_back(GlobalRenderTargetId{0});
         if (geometry) draw.output_depth = GlobalRenderTargetId{2};
         draw.applyDefaultAttachmentOperations(type);

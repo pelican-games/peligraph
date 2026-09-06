@@ -1007,6 +1007,11 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     SECTION("velocity queries right TLAS") { geometry_type = "velocity"; geometry_query = "right"; }
     SECTION("velocity queries empty TLAS") { geometry_type = "velocity"; geometry_query = "empty"; }
     SECTION("velocity rejects undeclared query") { geometry_type = "velocity"; geometry_query = "left"; geometry_undeclared = true; }
+    SECTION("picking draws before first scene AS build") { geometry_type = "picking"; }
+    SECTION("picking queries left TLAS") { geometry_type = "picking"; geometry_query = "left"; }
+    SECTION("picking queries right TLAS") { geometry_type = "picking"; geometry_query = "right"; }
+    SECTION("picking queries empty TLAS") { geometry_type = "picking"; geometry_query = "empty"; }
+    SECTION("picking rejects undeclared query") { geometry_type = "picking"; geometry_query = "left"; geometry_undeclared = true; }
     SECTION("material selects left TLAS") { material_query = "left"; }
     SECTION("material selects right TLAS") { material_query = "right"; }
     SECTION("material selects empty TLAS") { material_query = "empty"; }
@@ -1136,6 +1141,11 @@ void main() {
         })json");
         auto &pass = geometry_feature["passes"][0]["pass"];
         pass["type"] = geometry_type;
+        if (geometry_type == "picking") {
+            geometry_feature["render_targets"][1]["format"] = "R32_UINT";
+            pass["shader"] = {{"vertex", "engine://picking"}, {"skinned_vertex", "engine://picking_skinned"},
+                              {"fragment", "engine://picking"}};
+        }
         if (geometry_type == "shadow_depth") {
             pass["output"]["color"] = nullptr;
             pass["shader"] = {{"vertex", "engine://shadow_depth"}};
@@ -1165,7 +1175,9 @@ vec2 queryHits() {
             } else {
                 writeWp374aText(project.path / "shaders/geometry_query.frag",
                     "#version 460\n#extension GL_EXT_ray_query : require\n" + query_code +
-                    "layout(location=0) out vec2 outColor; void main(){outColor=queryHits();}\n");
+                    (geometry_type == "picking"
+                        ? "layout(location=0) out uint outId; void main(){vec2 h=queryHits();outId=uint(h.x)+2u*uint(h.y);}\n"
+                        : "layout(location=0) out vec2 outColor; void main(){outColor=queryHits();}\n"));
                 pass["shader"]["fragment"] = "project://shaders/geometry_query";
             }
         }
@@ -1434,6 +1446,22 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
                 CHECK(z == Catch::Approx(geometry_query=="left"?0.25:geometry_query=="right"?0.5:0.75).margin(0.0001));
         }
         CHECK(covered>0);
+        if (geometry_type=="picking") {
+            const auto color = GET_MODULE(Renderer).readRenderTargetForTesting("geometry_color", ImageSubresourceRange{});
+            REQUIRE(color.bytes.size() == depth.bytes.size());
+            std::size_t picked=0;
+            for(std::size_t i=0;i+sizeof(float)<=depth.bytes.size();i+=sizeof(float)) {
+                float z=1;
+                std::memcpy(&z,depth.bytes.data()+i,sizeof(z));
+                if(z>=1) continue;
+                std::uint32_t id=0;
+                std::memcpy(&id,color.bytes.data()+i,sizeof(id));
+                ++picked;
+                if(geometry_query.empty()) CHECK(id>0);
+                else CHECK(id==(geometry_query=="left"?1u:geometry_query=="right"?2u:0u));
+            }
+            CHECK(picked>0);
+        }
         if (geometry_type=="velocity" && !geometry_query.empty()) {
             const auto color = GET_MODULE(Renderer).readRenderTargetForTesting("geometry_color", ImageSubresourceRange{});
             REQUIRE(color.bytes.size() == depth.bytes.size());

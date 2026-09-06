@@ -787,12 +787,13 @@ FrameGraphNodeDefinition parseRenderNodeFromJson(const nlohmann::json &pass_json
     if (type == RenderPassType::material || type == RenderPassType::fullscreen || type == RenderPassType::raster || type == RenderPassType::debug_draw ||
         type == RenderPassType::debug_text || type == RenderPassType::gizmo ||
         type == RenderPassType::shadow_depth || type == RenderPassType::velocity ||
+        type == RenderPassType::picking ||
         type == RenderPassType::output_transform) {
         const auto query = parseRasterRayQuery(pass_json);
         node.ray_query = query.has_value();
         node.ray_query_acceleration_structure = query.value_or("scene");
     }
-    if (type == RenderPassType::ui) node.ray_query = false;
+    if (type == RenderPassType::ui || type == RenderPassType::imgui) node.ray_query = false;
     if (type == RenderPassType::raster) {
         node.semantic_dialect =
             "pelican.logical.raster@1";
@@ -1240,11 +1241,14 @@ FrameGraphNodeDefinition makeRenderNodeDefinition(const PassDefinition &pass, si
     node.name = pass.name;
     node.kind = passKind(pass);
     if (pass.isMaterial() || pass.isFullscreen() || pass.isGenericRaster() || pass.isDebugDraw() ||
-        pass.isDebugText() || pass.isGizmo() || pass.isShadowDepth() || pass.isVelocity()) {
+        pass.isDebugText() || pass.isGizmo() || pass.isShadowDepth() || pass.isVelocity() || pass.isPicking()) {
         node.ray_query = pass.ray_query;
         node.ray_query_acceleration_structure = pass.ray_query_acceleration_structure;
     }
     if (pass.isUi()) node.ray_query = false;
+#if PELICAN_WITH_IMGUI
+    if (pass.isImGui()) node.ray_query = false;
+#endif
     node.declaration_index = declaration_index;
     node.view_family =
         pass.view_family;
