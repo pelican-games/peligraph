@@ -22,7 +22,7 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 
-次は描画passの残る編集範囲から対象を1つ選び、runtimeの実装済み機能を既存GUI/RPCへ接続する。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
+次はCARRIERの残余を閉じる。別Behaviorのlegacy field編集が独立Undoを妨げる問題は修正・journal 33件成功。spawn/addとList編集を組み合わせたUndo/Redoの高水位、model reload後のGPU反映、direct model参照のasset keyは現行コードと照合して扱う。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
 
 ## 製品の完成条件
 

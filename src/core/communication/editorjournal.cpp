@@ -3885,6 +3885,14 @@ bool structuralDomainsOverlap(const Json &left, const Json &right) {
     };
     if (component_value_domain(left_kind) &&
         component_value_domain(right_kind)) {
+        if (left_kind == "value_field" && right_kind == "value_field" &&
+            left.contains("attachment_index") &&
+            right.contains("attachment_index") &&
+            !left.at("attachment_index").is_null() &&
+            !right.at("attachment_index").is_null() &&
+            left.at("attachment_index") != right.at("attachment_index")) {
+            return false;
+        }
         return same_object() &&
                left.value("slot", std::string{}) ==
                    right.value("slot", std::string{});

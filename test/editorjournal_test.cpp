@@ -1453,6 +1453,57 @@ TEST_CASE("WP382b params insert materializes only the selected default and undo 
                                      "insert_component_field"});
 }
 
+TEST_CASE("Behavior field undo distinguishes separate attachments",
+          "[editor][journal][behavior][attachment-field-undo]") {
+    bool same_attachment = false;
+    SECTION("separate attachments remain independently undoable") {}
+    SECTION("same attachment still conflicts") { same_attachment = true; }
+    Harness harness;
+    REQUIRE(harness.commit({{"op", "add_component"}, {"object_id", 4},
+                            {"component", {{"name", "behavior"},
+                                           {"type", "wp167_journal_behavior"}}}})
+                .at("status") == "committed");
+    const auto actor_a = harness.actor;
+    const auto token_a = harness.reconnect_token;
+    const auto first = harness.commit(
+        {{"op", "insert_component_field"}, {"object_id", 4},
+         {"component_slot", "behavior"}, {"attachment_index", 1},
+         {"field_path", "/params/label"}});
+    REQUIRE(first.at("status") == "committed");
+    const auto [actor_b, token_b] = harness.bindNewActor("other-field-editor");
+    const auto second = harness.edits->enqueue(
+        {{"actor_id", actor_b},
+         {"base_revision", harness.target.document.revision().value},
+         {"operations", Json::array({
+             {{"op", same_attachment ? "remove_component_field" : "insert_component_field"},
+              {"object_id", 4}, {"component_slot", "behavior"},
+              {"attachment_index", same_attachment ? 1 : 2},
+              {"field_path", "/params/label"}}})}});
+    REQUIRE(second.at("status") == "accepted");
+    harness.edits->commitPending();
+    REQUIRE(harness.edits->getResult({{"ticket", second.at("ticket")}})
+                .at("status") == "committed");
+    harness.bind(token_a);
+    const auto undo = harness.edits->enqueueUndo(
+        {{"actor_id", actor_a},
+         {"base_revision", harness.target.document.revision().value},
+         {"transaction_id", first.at("transaction_id")}});
+    INFO(undo.dump());
+    if (same_attachment) {
+        REQUIRE(undo.at("status") == "rejected");
+        REQUIRE(undo.at("error").at("code") == "undo_conflict");
+    } else {
+        REQUIRE(undo.at("status") == "accepted");
+        harness.edits->commitPending();
+        REQUIRE(harness.edits->getResult({{"ticket", undo.at("ticket")}})
+                    .at("status") == "committed");
+        const auto components = harness.target.document.rawJson()
+            .at("scenes").at("main").at("objects").at(3).at("components");
+        REQUIRE_FALSE(components.at(1).contains("params"));
+        REQUIRE(components.at(2).at("params").at("label") == "journal-default");
+    }
+}
+
 TEST_CASE("WP382b behavior remove undo preserves the exact authored component",
           "[WP382b][editor][journal][behavior][raw][remove][undo]") {
     Harness harness;

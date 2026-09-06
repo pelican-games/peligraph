@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**RT7 補助描画のGUI/RPC編集 (2026-09-06):**
+**CARRIER Behavior fieldの独立Undo (2026-09-06):**
+- rev382b-fix残余#3を修正。legacy insert/remove fieldのvalue_field同士は、両方がattachmentを指定する場合に取り付け位置を区別する。同じ対象の競合とcomponent全体への構造変更の保護は維持する。
+- coordinator経由で別actorの別attachmentへの編集を残したUndoと、同じattachmentへの変更後のundo_conflictを確認。対象1件14 assertions、journal関連33件759 assertions成功（build/.codex_bg/attachment-undo-test.log、attachment-undo-regression.log）。CPU build成功。runtime描画変更がないためGPU試験は反復しない。
+- 対照は同一attachmentの拒否。attachment判定を戻すと独立Undoのacceptedが成立しない。個別変異は未実行。初回buildのテストマクロ不足は既存SECTION形式に修正済み。
+- #1のspawn/addとList編集の複合Undo/Redo、rev382cのreload後GPU反映・direct model参照のasset keyは引き続き照合・修正対象。今回の修正をCARRIER全体の完了とは扱わない。
+
+**RT7 補助描画のGUI/RPC編集 (2026-09-06、7e38d8c0):**
 - debug_draw/debug_text/gizmo/shadow_depth/velocity/pickingを、project preset/plain featureの既存編集経路に追加。出力・shader・ray_queryを部分更新し、省略項目・CAS・engine/parameterized featureの制限を維持。shader未指定からの一部overrideは他stageの既定値を保持し、skinned_vertexのnullはoverride削除となる。
 - Studioは元のtype/宣言を保持して出力先とshader/queryを編集する。shadowはfragment/色出力を隠し、velocity/pickingはスキンshader欄を持つ。通常inputを持たない既存形状に従って入力欄を隠し、RPCもinput編集を拒否。depthを使わない補助型の欄も隠す。
 - Player/Studio・CPU/Qt最終build成功（build/.codex_bg/aux-editor-final-build.log、aux-editor-cpu-build.log）。保存/再読込・feature CAS等のCPU成功（aux-editor-cpu.log）、補助6型と既存preset編集のQt3件・365 assertions成功（aux-editor-qt.log）。実エンジンに接続した手動操作は未実行。runtime変更はないため直前に成功済みのGPU描画試験を反復しない。

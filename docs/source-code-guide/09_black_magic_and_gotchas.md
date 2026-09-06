@@ -1536,7 +1536,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: 同じ表を「展開」と「復元」の両方で使うとき、方向がどこで反転するのか。
 
-**答え**: 表の意味論は §9.23.2 が本体です。反転は [`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L766) が **entries はそのままに direction フラグだけ入れ替える**実装で、`unpack_prefab` = GeneratedToAuthored / `restore_prefab` = AuthoredToGenerated が [journal の整合検査](../../src/core/communication/editorjournal.cpp#L4132)で強制されます。エントリは [`OriginTransitionEntry`](../../src/core/loader/resolvedscene.hpp#L130) の 5 フィールドです。
+**答え**: 表の意味論は §9.23.2 が本体です。反転は [`invertOriginTransitionMap()`](../../src/core/loader/resolvedscene.cpp#L766) が **entries はそのままに direction フラグだけ入れ替える**実装で、`unpack_prefab` = GeneratedToAuthored / `restore_prefab` = AuthoredToGenerated が [journal の整合検査](../../src/core/communication/editorjournal.cpp#L4140)で強制されます。エントリは [`OriginTransitionEntry`](../../src/core/loader/resolvedscene.hpp#L130) の 5 フィールドです。
 
 #### [`attachment_handle` / `attachment_seq` / witness](../../src/core/communication/editorjournal.cpp#L1980) — 3 識別子の主キー
 
@@ -1560,15 +1560,15 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **分からなくなること**: JSON パスが重ならなければ安全ではないのか。
 
-**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L3947) が両者を OR で結びます。
+**答え**: [第7章「曖昧な重なり判定」](07_tools_rpc_tests.md)が本体です。1 点だけ補うと、`stablePathsOverlap` は `/authoring_objects/7` と `/authoring_objects/7/...` のような**祖先・子孫関係しか見ない**ので、パス表現が異なるまま同一意味領域に触れる編集(名前予約・declaration_index・同一 slot への異種 op)を取りこぼします。だから [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L3955) が両者を OR で結びます。
 
-#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L4666) — 「active writer history」の意味
+#### [`last_writers`](../../src/core/communication/editorjournal.cpp#L4674) — 「active writer history」の意味
 
 **分からなくなること**: 履歴という名前なのに、undo で要素が消える理由。
 
-**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L4666)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L5048) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L5058) します。
+**答え**: [コメント](../../src/core/communication/editorjournal.cpp#L4674)どおり**その write_set を現在保持している有効な書き手のスタック**であって、積まれた操作の履歴ではありません。よって undo は「取り消された書き手を除去する」操作なので [top を pop](../../src/core/communication/editorjournal.cpp#L5056) し、redo は[新しい transaction を top として push](../../src/core/communication/editorjournal.cpp#L5066) します。
 
-#### [`final_authored_index` の連続性](../../src/core/communication/editorjournal.cpp#L4183) — `max()` はスキップではない
+#### [`final_authored_index` の連続性](../../src/core/communication/editorjournal.cpp#L4191) — `max()` はスキップではない
 
 **分からなくなること**: `numeric_limits<size_t>::max()` の明示チェックが「その値をスキップしてよい」と読めてしまう。
 
@@ -1576,9 +1576,9 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 | 場所 | 何をしている所か | 何が分からなくなるか | 答え / 参照 |
 |---|---|---|---|
-| [gate_epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L4763) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime)から観測される外部の状態遷移カウンタ**、[`gate_epoch`](../../src/core/communication/editorjournal.cpp#L4682) はその観測が変わるたびに journal 側で増やす**内部の単調エポック**。受理時に両方控え、[コミット時に片方でも食い違えば](../../src/core/communication/editorjournal.cpp#L5150)拒否する |
-| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L4880) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
-| [preview_reservation と preview_lease](../../src/core/communication/editorjournal.cpp#L4673) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L4859) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
+| [gate_epoch と transition_epoch](../../src/core/communication/editorjournal.cpp#L4771) | 2 つのエポック | 違い | `transition_epoch` は**ゲート提供側(runtime)から観測される外部の状態遷移カウンタ**、[`gate_epoch`](../../src/core/communication/editorjournal.cpp#L4690) はその観測が変わるたびに journal 側で増やす**内部の単調エポック**。受理時に両方控え、[コミット時に片方でも食い違えば](../../src/core/communication/editorjournal.cpp#L5158)拒否する |
+| [`requireRevertPreconditions()`](../../src/core/communication/editorjournal.cpp#L4888) | undo 前の 3 段検証 | 何を見ているか | → [第7章「undo前提の三段検証」](07_tools_rpc_tests.md) |
+| [preview_reservation と preview_lease](../../src/core/communication/editorjournal.cpp#L4681) | 予約と実効リース | 2 つある理由 | reservation は `open_preview` を受理した瞬間(まだ frame boundary 前)の**先行予約**、lease はプレビュー適用後の**実効リース**。[`requireNoLeaseOverlap()`](../../src/core/communication/editorjournal.cpp#L4867) が両者と新規編集の重複を見て `preview_lease_conflict`。状態機械は[第7章「preview leaseの状態機械」](07_tools_rpc_tests.md) |
 | [unpack の単独 op 強制](../../src/core/communication/editorjournal.cpp#L3276) | batch の形の制限 | なぜ 1 command か | unpack は object subtree 全体を作り替え、その inverse を `origin_transition` 込みの forward/inverse ペアとして**受理時点で確定**させる必要があるため。他 op と混ぜるとこの単一ペアの整合検査が成立しない |
 | [`prefabGeneratedId()`](../../src/project/prefab.cpp#L1060) | gid の生成 | アルゴリズム | ドメイン分離タグ `"pelican.prefab.gid.v1"` / `instance_id` / `component_key` を**長さ前置で連結**したバイト列の SHA-256 の先頭 16 バイトを hex 化し `gid_` を前置する([宣言側コメント](../../src/project/prefab.hpp#L224)= WP361 v4)。component_key は `component.id`、無ければ `component.name` |
 | [`canonicalBehaviorComponent()`](../../src/core/communication/editorjournal.cpp#L271) | behavior だけ codec を通さない | 理由 | behavior attachment は登録済み codec を持つ通常 component ではなく `{name,type,params}` の固定形で、**型登録が DLL 由来で欠けている可能性がある**。未登録でも情報を落とさず保持し、「レジストリが生きている(名前拒否)」と「DLL 不在(pending attachment)」をコミット境界で区別するため |
