@@ -24,6 +24,21 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 
 geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実効値・拒否理由をStudioへ接続済み。次はRT stage/record/materialの結び付きの観測を現行画面・RPCと照合する。優先規則全体の説明表示は未実装。省略Defaulted fieldのAdd default、Listの追加・削除・行内値編集・IDを保つ移動も接続済み。model reload後GPU反映、direct model参照のasset key、別Behaviorの独立Undo、spawn/add→List編集の複合Undo/Redoも修正済み。unpack/destroyの専用追加確認と新画面の実操作は未実施。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
 
+## 現行コードに基づく次の作業（2026-09-06、物理実装の区切り後）
+
+利用者から「機能実装をどこまで行うか」「物理を優先した理由」の確認を受け、物理の連続拡張を止めて開発順を再整理した。これは未実装機能の削除や、v1完成の宣言ではない。台帳の過去の「次は」「未実装」をそのまま現在の作業一覧として扱わない。
+
+| 区分 | 現在の判断と次の作業 |
+|---|---|
+| RTの実行機能 | RT4のcallable/動的record、RT5の変形/refit、RT6のdispatch/名前付きAS/geometry結合、RT7のtask/接続編集には実装・統合記録がある。旧記録だけを根拠に再実装しない。残る組合せは具体的な利用操作と現行コードから判断する |
+| 次に優先する機能 | geometryからshader/record設定の適用結果を追う観測。現行get_ray_occurrencesのbindingはgroup/material参照・index・flags・recordのバイト数を返し、Inspectorへ表示する。recordの値や設定の優先規則全体はこの表示に含まれない。まず既存の解決結果から何を返せるか具体化し、世代の異なるGPU情報を混ぜない |
+| コンポーネント | Inspectorに追加・削除・Add default・List追加/削除/移動・override候補選択がある。これらを未実装へ戻さない。複合Undoやunpack/destroy等は、専用確認がないことと機能がないことを区別する |
+| 機能完成後の確認 | 実エンジン接続下の新画面操作、保存・再読み込みを含む制作経路、性能・配布。確認だけのために新しい機能開発を止めたり、広域テストを毎回繰り返したりしない |
+| 物理の現在地 | mesh raycastのscene/import/reload・BVH保持、sphere mesh overlapのprovider/service接続まで399798baに統合。box/capsule mesh overlap・sweep・trigger等は未完として保持するが、RT観測との優先順位を見直してから再開する |
+| 後の段階 | 学習サンプル・代表ゲーム・GUI操作感の仕上げ。動的剛体シミュレーションは既存仕様の将来トラック。これらを今の残件探索から自動的に着手対象へ広げない |
+
+今回照合したコードはeditorcommandservice.cppのbinding生成、InspectorのRay geometry表示、inspectormodel.cppのList操作、frameplangraphics.cppの接続編集。表は全機能の完了監査や工数見積りではない。RT観測の次の変更を決めた後はその範囲に絞って実装する。
+
 ## 製品の完成条件
 
 目的は、最新のグラフィックスパイプラインをノードベースで分かりやすく学習でき、
