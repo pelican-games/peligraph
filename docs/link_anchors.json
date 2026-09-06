@@ -1978,7 +1978,7 @@
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.cpp|`ray_instance` 分岐": "if (semantic_mode == RayLayoutSemanticMode::LayoutV2 &&",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.cpp|`resolveRaySceneRows()`": "RaySceneRowSnapshot resolveRaySceneRows(",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.cpp|minimum-v2 の instance override": "if (requiresRayLayoutV2(semantic_mode) &&",
-    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.cpp|rule 値の代入": "if (matched != nullptr) geometry_flags = matched->geometry_flags;",
+    "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.cpp|rule 値の代入": "geometry_flags = matched->geometry_flags;",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.hpp|`RayAccelerationStructureDeclaration`": "struct RayAccelerationStructureDeclaration {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.hpp|`RayAsGeometryRule`": "struct RayAsGeometryRule {",
     "docs/source-code-guide/06_rendering_vulkan_shader.md|../../src/core/shader/raygrouplayout.hpp|`RayAsMaterialSelector`": "struct RayAsMaterialSelector {",

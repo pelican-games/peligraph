@@ -1077,7 +1077,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: (a) 内容の同一性を決める canonical key、(b) それを固定長にした digest、(c) 実行時の生存を証明する handle / lease。片方だけでは「内容は同じだが実体が死んでいる」と「実体は生きているが内容が変わった」を区別できない。
 
-**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1793)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L1879) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L838)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournal.cpp#L1980) の 3 本立て。
+**どこに出るか**: RT の行は [3 つの identity を同時に組み立て](../../src/core/renderer/accelerationstructure.cpp#L674)、マテリアル表は [`source_by_handle` と `source_by_key` の 2 名前空間](../../src/core/shader/raygrouplayout.cpp#L1808)を両方照合し、マテリアル側は [`ray_generation` と `ray_lease` の生成](../../src/core/material/materialcontainer.cpp#L1879) の対で答えます。resolver は [`resolverInputsFingerprint()`](../../src/core/loader/resolvedscene.cpp#L838)、editor journal は [`attachment_handle` / `attachment_seq` / `attachment_identity`](../../src/core/communication/editorjournal.cpp#L1980) の 3 本立て。
 
 **読むときの手順**: 「どちらが欠けたときにどのエラーコードになるか」を先に引いてください。三層のどれを検査しているかは、エラー名(`*_stale` / `*_ambiguous` / `*_mismatch`)がほぼそのまま表しています。
 
@@ -1085,7 +1085,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 本番コードの分岐上に注入点を置き、「この分岐を壊すとどのテストが赤くなるか」を名指しできるようにする。manifest の `mutation_id` 列がその索引。
 
-**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L173)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L993)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1700)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L812)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2500)。
+**どこに出るか**: scene load の入口は [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33) と [manifest の `root.import.versioned` 行](../../src/core/loader/sceneparticipantmanifest.cpp#L173)、保存の TOCTOU 窓は [`BeforeReplace` の注入位置](../../src/core/loader/basicconfig.cpp#L993)、SBT は [production branch observer](../../src/core/shader/pipelinefactory.cpp#L1700)、TLAS は [`overrideRayTracingTlasRecordOffsetForTesting`](../../src/core/renderer/accelerationstructure.cpp#L818)、present は [本物の `presentKHR` を呼んでから戻り値だけ差し替える](../../src/core/vkcore/swapchainframetarget.cpp#L2500)。
 
 **読むときの手順**: [第3章「注入口はproductionバイナリに存在しない」](03_project_and_loading.md)を先に読んでください。注入点は「テスト用の別経路」ではなく**本番経路そのもの**で、経路を差し替える方向に直すと A/B が破綻します。
 
@@ -1332,17 +1332,17 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: [第11章「`RaySceneRowInput` の identity 3 種」](11_ray_query_acceleration_structures.md)が本体です。1 点だけ補うと、[コードコメント](../../src/core/renderer/accelerationstructure.cpp#L676)が「instance slot / generation / draw publication ordinal を使うと q が publish 順に依存してしまう」と明記していて、**scene_identity が authored/content 由来だけで作られているのはこの一文が理由**です。
 
-#### [`row.q != canonical_index` の拒否](../../src/core/renderer/accelerationstructure.cpp#L799) — q と record offset
+#### [`row.q != canonical_index` の拒否](../../src/core/renderer/accelerationstructure.cpp#L805) — q と record offset
 
 **分からなくなること**: `q` が何番なのか、SBT のレコード番号とどう繋がるのか。
 
-**答え**: `q` は**正準ソート済み scene row 列の 0 起点連番**そのものです。この検査は TLAS 行が「静的シーンの正準置換」であることを保証し、q を配列添字として SBT / マテリアル表へ読み替えられるようにします。[`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.cpp#L2238) = `q * ray_type_count` は、1 インスタンスあたり ray_type_count 本の hit record を連続確保する前提での先頭 record 番号です。
+**答え**: `q` は**正準ソート済み scene row 列の 0 起点連番**そのものです。この検査は TLAS 行が「静的シーンの正準置換」であることを保証し、q を配列添字として SBT / マテリアル表へ読み替えられるようにします。[`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.cpp#L2253) = `q * ray_type_count` は、1 インスタンスあたり ray_type_count 本の hit record を連続確保する前提での先頭 record 番号です。
 
-#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1702) — 24 ビットの出所
+#### [`index >= (1u << 24u)` の上限](../../src/core/shader/raygrouplayout.cpp#L1716) — 24 ビットの出所
 
 **分からなくなること**: なぜ 2^24 なのか(エンジン都合か Vulkan 都合か)。
 
-**答え**: **Vulkan の `VkAccelerationStructureInstanceKHR::instanceShaderBindingTableRecordOffset` が 24 ビットのビットフィールド**だからです。GPU に載る値は `q * ray_type_count` なのでその積を 2^24−1 で制限し、行数側でも先に弾きます(`pelican.ray_row_count_limit@1`)。**別のフィールドですが**同じ 24 ビット幅の上限が [v2 の custom_index override の 24 ビット検査](../../src/core/shader/raygrouplayout.cpp#L1555) にも掛かります(こちらは `instanceCustomIndex` 側の 24 ビットで、超過は `pelican.ray_instance_field_range@1`)。
+**答え**: **Vulkan の `VkAccelerationStructureInstanceKHR::instanceShaderBindingTableRecordOffset` が 24 ビットのビットフィールド**だからです。GPU に載る値は `q * ray_type_count` なのでその積を 2^24−1 で制限し、行数側でも先に弾きます(`pelican.ray_row_count_limit@1`)。**別のフィールドですが**同じ 24 ビット幅の上限が [v2 の custom_index override の 24 ビット検査](../../src/core/shader/raygrouplayout.cpp#L1567) にも掛かります(こちらは `instanceCustomIndex` 側の 24 ビットで、超過は `pelican.ray_instance_field_range@1`)。
 
 #### [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1473) — 同じ geometry_match_identity に別 binding を許さない
 
@@ -1350,11 +1350,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: geometry_match_identity は「同じ GPU ジオメトリ範囲が同じ transform で置かれている」ことしか意味しません。**物理的に区別できない同一ヒットに異なる group_index / record_data が割り当てられると、どちらのマテリアル束縛が当たるか決められない**ので、`pelican.ray_row_binding_ambiguous@1` で拒否します。
 
-#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L2144) — なぜ `material_index == q` になるか
+#### [profile モードの material_index](../../src/core/shader/raygrouplayout.cpp#L2159) — なぜ `material_index == q` になるか
 
 **分からなくなること**: 通常モードとの表の作り方の違い。
 
-**答え**: profile では alpha override が **scene row ごとに異なり得る**(base_factor_a / uv_offset_scale / uv_rotation を行単位で上書きし、`uses_vertex_color` も行のジオメトリ属性依存)ため、1 行 1 エントリの per-row 表になります。キーが `"row:<q>:<material_reference>"` なので material_index は必然的に q と一致します。通常モードは行固有の上書きが無いので canonical key で参照し、同一マテリアルを 1 エントリに共有化してテーブルを縮めます([表の構築](../../src/core/shader/raygrouplayout.cpp#L1733))。
+**答え**: profile では alpha override が **scene row ごとに異なり得る**(base_factor_a / uv_offset_scale / uv_rotation を行単位で上書きし、`uses_vertex_color` も行のジオメトリ属性依存)ため、1 行 1 エントリの per-row 表になります。キーが `"row:<q>:<material_reference>"` なので material_index は必然的に q と一致します。通常モードは行固有の上書きが無いので canonical key で参照し、同一マテリアルを 1 エントリに共有化してテーブルを縮めます([表の構築](../../src/core/shader/raygrouplayout.cpp#L1748))。
 
 #### [硬コードされた頂点オフセット](../../src/core/shader/raygrouplayout.cpp#L1154) — `10u` / `3u` / `12u` の出所
 
@@ -1362,11 +1362,11 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: [`CommonVertStruct`](../../src/core/model/vertbufcontainer.hpp#L23)(`vec3 pos; vec3 normal; vec4 tangent; vec2 texcoord; vec4 color`、[サイズ 64・offset 0/12/24/40/48 を static_assert で固定](../../src/core/model/vertbufcontainer.hpp#L36))です。バイトオフセットを word 単位に割ると normal = 3、texcoord = 10、color0 = 12 になります。生成側は [`makeRayGroupLayoutVirtualInclude()`](../../src/core/shader/raygrouplayout.cpp#L1023)。
 
-#### [`BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L910) — 一意性と再利用判定
+#### [`BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L916) — 一意性と再利用判定
 
 **分からなくなること**: BLAS のキャッシュキーに transform が入らない理由。
 
-**答え**: BLAS の build 入力は geometry_allocation_id が決める頂点 / インデックス範囲と `VkGeometryFlagsKHR` の 2 つだけで完全に決まるからです(transform は TLAS 側)。[`can_reuse`](../../src/core/renderer/accelerationstructure.cpp#L1269) は `active_state_ != nullptr && !pool_invalidated && !model_invalidated` で、この 2 つの世代は[別カウンタ](../../src/core/renderer/accelerationstructure.cpp#L1227)として診断に出ます。
+**答え**: BLAS の build 入力は geometry_allocation_id が決める頂点 / インデックス範囲と `VkGeometryFlagsKHR` の 2 つだけで完全に決まるからです(transform は TLAS 側)。[`can_reuse`](../../src/core/renderer/accelerationstructure.cpp#L1275) は `active_state_ != nullptr && !pool_invalidated && !model_invalidated` で、この 2 つの世代は[別カウンタ](../../src/core/renderer/accelerationstructure.cpp#L1233)として診断に出ます。
 
 #### [`descriptorSetLayoutKeysFor()` の set 数決定](../../src/core/shader/pipelinefactory.cpp#L491) — reflection と ray_layout の階層
 
@@ -1402,19 +1402,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 |---|---|---|---|
 | [`classifyRayQueryGeometry()`](../../src/core/renderer/accelerationstructure.cpp#L383) | AS 対象の分類 | skin/morph/VAT の変形出力 | skin/morph/VAT は毎フレームの変形頂点から BLAS を構築する。不適格な三角形範囲は除外診断へ出す |
 | [`primitiveCount == 0` の TLAS](../../src/core/renderer/accelerationstructure.cpp#L235) | 空 TLAS の確保 | なぜ確保が要るのか | コメントどおり「Vulkan requires a valid, 16-byte-aligned instances address even when primitiveCount is zero」。非アクティブ 1 件分を必ず確保・書き込み、build 時の primitiveCount は 0 のままにして miss 専用の有効な TLAS にする |
-| [三角形 branch の primitive_count](../../src/core/renderer/accelerationstructure.cpp#L1459) | primitive 数の計算 | 3 で割ってよい前提 | 三角形リスト前提(→ [第10章](10_background_knowledge.md)) |
+| [三角形 branch の primitive_count](../../src/core/renderer/accelerationstructure.cpp#L1465) | primitive 数の計算 | 3 で割ってよい前提 | 三角形リスト前提(→ [第10章](10_background_knowledge.md)) |
 | [`validateRayProfileAccelerationStructureFlags()`](../../src/core/renderer/accelerationstructure.cpp#L531) | eOpaque / eForceOpaque | profile 時の制約 | 両者は「片方でも立つと any-hit が省略され得る」点で等価な不透明化指定。profile 有効時は any-hit でのアルファ判定が必須なので、BLAS geometry でも TLAS instance 行でも**どちらのビットも立っていないこと**を要求し、立っていれば `pelican.ray_profile_opaque_as@1` |
-| [`lowerRayTracingTlasInstancePlan()`](../../src/core/renderer/accelerationstructure.cpp#L751) | ray_scene_rows の有無で分岐 | source_index の役割 | source_index は元の instance 配列への戻り参照。分岐の全体像は**未執筆** |
+| [`lowerRayTracingTlasInstancePlan()`](../../src/core/renderer/accelerationstructure.cpp#L757) | ray_scene_rows の有無で分岐 | source_index の役割 | source_index は元の instance 配列への戻り参照。分岐の全体像は**未執筆** |
 | [`geometryName()`](../../src/core/renderer/accelerationstructure.cpp#L49) | asset/geometry/mesh/primitive/node | 5 階層の意味 | **未執筆**(§9.23.17 の glTF 階層と対) |
-| [`RaySceneRow`](../../src/core/shader/raygrouplayout.hpp#L308) | uint32 max 初期化 | 何を表す値か | 「未解決」の sentinel。詳細は**未執筆** |
+| [`RaySceneRow`](../../src/core/shader/raygrouplayout.hpp#L317) | uint32 max 初期化 | 何を表す値か | 「未解決」の sentinel。詳細は**未執筆** |
 | [`MaterialRowDocumentIdentity`](../../src/core/shader/raygrouplayout.hpp#L286) | document / asset / unavailable | 3 状態の使い分け | → [第11章「`MaterialRowIdentity`: gate と lookup が同じ値を見る」](11_ray_query_acceleration_structures.md) |
-| [`resolveRaySceneRows()` の宣言](../../src/core/shader/raygrouplayout.hpp#L508) | 引数と optional bindings | 何が任意なのか | **未執筆**(根拠がコードにない) |
+| [`resolveRaySceneRows()` の宣言](../../src/core/shader/raygrouplayout.hpp#L518) | 引数と optional bindings | 何が任意なのか | **未執筆**(根拠がコードにない) |
 | [v2 digest から AS 宣言を外すコメント](../../src/core/shader/raygrouplayout.cpp#L833) | ダイジェストの分離 | なぜ AS だけ外すのか | コメントどおり **AS 宣言はシェーダ / SBT の ABI に影響しない**ので、AS だけを変えたときにシェーダ・SBT のダイジェストが動いて不要な再コンパイル / 再構築が起きないよう構造的に分離する(AS 側は独立ダイジェスト) |
-| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1793) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
-| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1856) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
-| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2190) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
-| [`alpha_override_mask`](../../src/core/shader/raygrouplayout.cpp#L2018) | override を行に持つ | material 側でない理由 | override は**マテリアルの改変ではなく「そのインスタンス配置におけるアルファの上書き」**で、同じマテリアルを共有する他の行に波及させてはいけないため、行に持って per-row 表に焼き込む |
-| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L1982) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1820)は WP368a の authored reference 由来であることを要求する |
+| [`source_by_handle` / `source_by_key`](../../src/core/shader/raygrouplayout.cpp#L1808) | 2 名前空間の同時照合 | 両方見る理由 | 前者は(handle, generation, canonical_key)という**ランタイムのマテリアルリース同一性**、後者は**内容由来の正準キー同一性**で、別々に崩れうる(同一世代が違うデータを持つ / 別世代が同じキーに衝突する)。→ §9.22「identity / canonical key / lease の三層」 |
+| [`texture_identity`](../../src/core/shader/raygrouplayout.cpp#L1871) | profile_active での切替 | 参照先が変わる理由 | profile の表は base color 全体ではなく**アルファ専用 IR** を載せるので、テクスチャ参照も MASK のときだけ `alpha_texture_identity` を使い、非 MASK は空にする |
+| [`validateRayProfileGeometryAttributes()`](../../src/core/shader/raygrouplayout.cpp#L2205) | UV0 / COLOR_0 の必須化 | なぜ profile だけ必須か | profile の any-hit はアルファをテクスチャサンプルと頂点カラーから計算するので、texture_index が有効なら TEXCOORD_0 が、`uses_vertex_color` なら COLOR_0 が BLAS ジオメトリ側に実在しなければならない(欠ければ `pelican.ray_geometry_attribute_missing@1`) |
+| [`alpha_override_mask`](../../src/core/shader/raygrouplayout.cpp#L2033) | override を行に持つ | material 側でない理由 | override は**マテリアルの改変ではなく「そのインスタンス配置におけるアルファの上書き」**で、同じマテリアルを共有する他の行に波及させてはいけないため、行に持って per-row 表に焼き込む |
+| [`normalized_*` フィールド](../../src/core/shader/raygrouplayout.cpp#L1997) | 誰が計算したか | 出所 | §9.23.17 の `normalized_alpha_ir`(glTF の material lowering)。[検証側](../../src/core/shader/raygrouplayout.cpp#L1835)は WP368a の authored reference 由来であることを要求する |
 | [material selector の 2 形態(document_material / asset_material)](../../src/core/shader/raygrouplayout.cpp#L617) / [`selectorMatches()`](../../src/core/shader/raygrouplayout.cpp#L428) | document 形式と asset 形式 | 比較方法が違う理由 | **未執筆**(§9.23.7 の canonical key と対) |
 | [engine フィールドの必須化](../../src/core/shader/raygrouplayout.cpp#L926) | profile 有効時 | material_index と geometry_index の両方が要る理由 | **未執筆**(根拠がコードにない) |
 | [`validName()`](../../src/core/shader/raygrouplayout.cpp#L90) | 名前の文字集合 | どこ由来の制約か | 外部ツール契約 R7(`docs/external_tools_requirements.md`)と同系統。→ §9.23.11 |

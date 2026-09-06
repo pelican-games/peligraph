@@ -2135,6 +2135,18 @@ OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
                     {"geometry_index", row.geometry_index == std::numeric_limits<std::uint32_t>::max()
                         ? OrderedJson(nullptr) : OrderedJson(row.geometry_index)},
                     {"geometry_flags", row.geometry_flags},
+                    {"mask", row.instance_mask},
+                    {"instance_flags", row.instance_flags},
+                    {"custom_index", row.instance_custom_index},
+                    {"setting_sources", {
+                        {"mask", row.setting_sources.mask},
+                        {"instance_flags", row.setting_sources.instance_flags},
+                        {"custom_index", row.setting_sources.custom_index},
+                        {"geometry_flags", row.setting_sources.geometry_flags},
+                        {"geometry_rule_index", row.setting_sources.geometry_rule_index
+                            ? OrderedJson(*row.setting_sources.geometry_rule_index) : OrderedJson(nullptr)},
+                        {"override_row_id", row.setting_sources.override_row_id
+                            ? OrderedJson(*row.setting_sources.override_row_id) : OrderedJson(nullptr)}}},
                     {"record_bytes", row.record_data.size()},
                     {"record_source", "scene_plan"},
                     {"record_fields", recordFieldsJson(*inventory.plan, row)}};

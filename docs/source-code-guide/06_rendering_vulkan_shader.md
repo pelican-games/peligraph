@@ -1534,17 +1534,17 @@ layout の版と宣言の有無で、解決値と名前付き拒否は次のよ�
 | # | 入力 | 結果 |
 |---:|---|---|
 | 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L718)) |
-| 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1708)) |
+| 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1722)) |
 | 3 | v1 layout、`acceleration_structure` 有り | parse で [`pelican.ray_as_declaration_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L805)。`ray_as_declaration_requires_layout@1` という code は作られていません(`acceleration_structure` は layout 内の field なので、その構文が存在しない) |
 | 4 | v2 でない layout の row に `pelican_ray_instance` がある | [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L1498)。builtin 宣言側は scene load 時点で[同 code](../../src/core/loader/scene.cpp#L94) |
 | 5 | v2 layout、`acceleration_structure` 無し | 全 row が canonical defaults。**`custom_index` は 0 であって `q` ではありません** |
 | 6 | v2 + `defaults` だけ | `defaults` の4値がそのまま全 row へ |
-| 7 | v2 + material rule が1つ当たる | その row の `geometry_flags` だけが rule 値へ([rule 値の代入](../../src/core/shader/raygrouplayout.cpp#L1544)) |
-| 8 | v2 + rules 有り、row の material identity が `Unavailable` | [`pelican.ray_as_row_material_identity_unavailable@1`](../../src/core/shader/raygrouplayout.cpp#L1533)。黙って defaults へ落としません |
-| 9 | v2 + 2つ以上の rule が一致 | [`pelican.ray_as_rule_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1540) |
-| 10 | v2 以上 + `pelican_ray_instance` の override | field 単位で defaults / rule の上に載る([minimum-v2 の instance override](../../src/core/shader/raygrouplayout.cpp#L1546)) |
+| 7 | v2 + material rule が1つ当たる | その row の `geometry_flags` だけが rule 値へ([rule 値の代入](../../src/core/shader/raygrouplayout.cpp#L1551)) |
+| 8 | v2 + rules 有り、row の material identity が `Unavailable` | [`pelican.ray_as_row_material_identity_unavailable@1`](../../src/core/shader/raygrouplayout.cpp#L1539)。黙って defaults へ落としません |
+| 9 | v2 + 2つ以上の rule が一致 | [`pelican.ray_as_rule_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1546) |
+| 10 | v2 以上 + `pelican_ray_instance` の override | field 単位で defaults / rule の上に載る([minimum-v2 の instance override](../../src/core/shader/raygrouplayout.cpp#L1556)) |
 
-override 側には3つの範囲・整合検査が続きます。`custom_index` が [`rayCustomIndexMaximum`](../../src/core/userpublic/components/rayinstance.hpp#L18)(`0x00ffffff`)を超えると [`pelican.ray_instance_field_range@1`](../../src/core/shader/raygrouplayout.cpp#L1557)、`force_opaque` と `force_no_opaque` を同時に立てると [`pelican.ray_as_conflicting_instance_flags@1`](../../src/core/shader/raygrouplayout.cpp#L1566)、portable alpha profile が有効な layout で `force_opaque` を使うと [`pelican.ray_profile_opaque_as@1`](../../src/core/shader/raygrouplayout.cpp#L1571) です。
+override 側には3つの範囲・整合検査が続きます。`custom_index` が [`rayCustomIndexMaximum`](../../src/core/userpublic/components/rayinstance.hpp#L18)(`0x00ffffff`)を超えると [`pelican.ray_instance_field_range@1`](../../src/core/shader/raygrouplayout.cpp#L1569)、`force_opaque` と `force_no_opaque` を同時に立てると [`pelican.ray_as_conflicting_instance_flags@1`](../../src/core/shader/raygrouplayout.cpp#L1579)、portable alpha profile が有効な layout で `force_opaque` を使うと [`pelican.ray_profile_opaque_as@1`](../../src/core/shader/raygrouplayout.cpp#L1584) です。
 
 > **設計決定:** 自動移行はしません。既存 project は layout を書き換えない限り 1 か「layout 無し」のままで、`custom_index == q` を固定していたテストは **v1 のテストとして残されて**います。v1 と v2 の意味論は [`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L72) として型で運ばれ、immutable な row と TLAS plan まで届きます。
 
@@ -1552,14 +1552,14 @@ override 側には3つの範囲・整合検査が続きます。`custom_index` �
 
 v2 では `gl_InstanceCustomIndexEXT` に出るのは**宣言値**です。`q`(canonical 行番号)は SBT の record base を決める値であって、shader へ公開する識別子ではありません。実装上この2つは同じ `RaySceneRow` に並んでいるので混ざりやすく、テスト側に専用の seam が置かれています。
 
-- [`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.hpp#L525) が SBT 側の `q * R`。
-- [`ScopedRayTracingTlasRecordOffsetOverrideForTesting`](../../src/core/shader/raygrouplayout.hpp#L591) が、TLAS lowering が消費するその値だけを差し替える test-only seam です。コメントが目的を書いています — **TLAS の base が誤って `q` になっていないこと**を、GPU の end-to-end sentinel で証明するためのものです。
+- [`rayTracingInstanceRecordOffset(q, ray_type_count)`](../../src/core/shader/raygrouplayout.hpp#L535) が SBT 側の `q * R`。
+- [`ScopedRayTracingTlasRecordOffsetOverrideForTesting`](../../src/core/shader/raygrouplayout.hpp#L601) が、TLAS lowering が消費するその値だけを差し替える test-only seam です。コメントが目的を書いています — **TLAS の base が誤って `q` になっていないこと**を、GPU の end-to-end sentinel で証明するためのものです。
 
 したがって「row を追加して `q` がずれても宣言した `custom_index` は不変」と「SBT の sentinel は独立に正しい」を、同じ GPU テストで同時に見る形になっています。
 
 ### BLAS variant: 鍵はgeometry列
 
-`geometry_flags` は BLAS の build 入力なので、同じ geometry でも flags が違えば別の BLAS が要ります。cache の鍵は [`State::BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L910) の `(geometry_kind, geometry_allocation_id, geometry_flags)` をgeometry順に並べた列です。1 geometryも同じ列形式で扱います。flagsだけの変更でも古いBLASを再利用しません。
+`geometry_flags` は BLAS の build 入力なので、同じ geometry でも flags が違えば別の BLAS が要ります。cache の鍵は [`State::BlasVariantKey`](../../src/core/renderer/accelerationstructure.cpp#L916) の `(geometry_kind, geometry_allocation_id, geometry_flags)` をgeometry順に並べた列です。1 geometryも同じ列形式で扱います。flagsだけの変更でも古いBLASを再利用しません。
 
 purge は「geometry が消えたら落とす」ではなく、**そのフレームで実際に参照された variant 集合との差分**です。手順は次の形です。
 
@@ -1573,24 +1573,24 @@ for group in groups:
 candidate->blas は参照されたgeometry列の集合と一致する             ← ここが purge
 ```
 
-持ち越しは [`active_state_->blas.find(key)`](../../src/core/renderer/accelerationstructure.cpp#L1394) の一致で決まり、参照されないkeyはcandidateに入りません。commitでcandidateがactiveを置き換えるため、規則のreloadで不要になったvariantはactive集合から除かれます。送信済みの資源はsubmission leaseが保持します。
+持ち越しは [`active_state_->blas.find(key)`](../../src/core/renderer/accelerationstructure.cpp#L1400) の一致で決まり、参照されないkeyはcandidateに入りません。commitでcandidateがactiveを置き換えるため、規則のreloadで不要になったvariantはactive集合から除かれます。送信済みの資源はsubmission leaseが保持します。
 
 ### 診断: `resident_blas_keys`
 
-frame planの`ray_query_acceleration_structures`へ、BLASごとの先頭geometry情報と`geometry_count`が出ます([`rayQueryAccelerationStructureDiagnosticsToJson()`](../../src/core/renderer/accelerationstructure.cpp#L824))。現在、結合した全geometryの一覧はこの診断には出しません。
+frame planの`ray_query_acceleration_structures`へ、BLASごとの先頭geometry情報と`geometry_count`が出ます([`rayQueryAccelerationStructureDiagnosticsToJson()`](../../src/core/renderer/accelerationstructure.cpp#L830))。現在、結合した全geometryの一覧はこの診断には出しません。
 
 | キー | 意味 |
 |---|---|
 | `blas_variant_count` | candidate が持つ BLAS 数(= required variant 数) |
-| [`resident_blas_keys`](../../src/core/renderer/accelerationstructure.cpp#L850) | 各 variant の `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}` |
+| [`resident_blas_keys`](../../src/core/renderer/accelerationstructure.cpp#L856) | 各 variant の `{geometry_allocation_id, geometry_flags, index_device_address, vertex_device_address}` |
 | `active_blas_inputs` | 同じ配列(旧キー名。互換のため両方出ます) |
 | `blas_build_count` / `tlas_build_count` | 実際に build した回数 |
 
-配列は `(allocation_id, geometry_flags)` で [sort](../../src/core/renderer/accelerationstructure.cpp#L1519) されるので、診断の並びはフレーム間で決定的です。「同一 allocation を opaque と mask で共有したら BLAS build が 2 になる」「規則を戻したら variant が消える」を、この2キーで外から確認できます。
+配列は `(allocation_id, geometry_flags)` で [sort](../../src/core/renderer/accelerationstructure.cpp#L1525) されるので、診断の並びはフレーム間で決定的です。「同一 allocation を opaque と mask で共有したら BLAS build が 2 になる」「規則を戻したら variant が消える」を、この2キーで外から確認できます。
 
 ### WP377: SBT と TLAS の frame transaction、および既知の穴
 
-RT の1フレームは、compile → pipeline → SBT → AS record → submit の5点をまたぐ1つの transaction です。各境界にはテスト用の注入点が置かれています([`RayTracingJointTransactionPoint`](../../src/core/shader/raygrouplayout.hpp#L608))。コメントが規範を書いています — **この5点でだけ呼ばれ、throw すれば実際の失敗と同じ rollback ガードを通る**。
+RT の1フレームは、compile → pipeline → SBT → AS record → submit の5点をまたぐ1つの transaction です。各境界にはテスト用の注入点が置かれています([`RayTracingJointTransactionPoint`](../../src/core/shader/raygrouplayout.hpp#L618))。コメントが規範を書いています — **この5点でだけ呼ばれ、throw すれば実際の失敗と同じ rollback ガードを通る**。
 
 | 点 | 呼び出し位置 |
 |---|---|

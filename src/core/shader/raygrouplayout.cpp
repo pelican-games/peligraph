@@ -1517,6 +1517,12 @@ RaySceneRowSnapshot resolveRaySceneRows(
             }
         }
         auto instance_mask = as_defaults.mask;
+        RaySceneSettingSources sources;
+        if (layout.acceleration_structure) {
+            sources.mask = sources.instance_flags = sources.custom_index = "layout_default";
+            sources.geometry_flags = input.geometry_kind == RayGeometryKind::aabbs
+                ? "procedural_default" : "layout_default";
+        }
         auto instance_flags = as_defaults.instance_flags;
         auto instance_custom_index = as_defaults.custom_index;
         auto geometry_flags =
@@ -1541,15 +1547,21 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 }
                 matched = &rule;
             }
-            if (matched != nullptr) geometry_flags = matched->geometry_flags;
+            if (matched != nullptr) {
+                geometry_flags = matched->geometry_flags;
+                sources.geometry_flags = "geometry_rule";
+                sources.geometry_rule_index = static_cast<std::size_t>(matched - as_rules.data());
+            }
         }
         if (requiresRayLayoutV2(semantic_mode) &&
             input.ray_instance) {
             if (input.ray_instance->mask) {
                 instance_mask = *input.ray_instance->mask;
+                sources.mask = "component";
             }
             if (input.ray_instance->instance_flags) {
                 instance_flags = *input.ray_instance->instance_flags;
+                sources.instance_flags = "component";
             }
             if (input.ray_instance->custom_index) {
                 if (*input.ray_instance->custom_index > rayCustomIndexMaximum) {
@@ -1558,6 +1570,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 }
                 instance_custom_index =
                     *input.ray_instance->custom_index;
+                sources.custom_index = "component";
             }
         }
         if ((instance_flags & rayInstanceForceOpaque) != 0 &&
@@ -1590,7 +1603,8 @@ RaySceneRowSnapshot resolveRaySceneRows(
                 "pelican.procedural_group_kind_conflict@1: row geometry kind does not match resolved layout group type");
         }
         resolved.push_back(
-            {.binding_index = chosen ? std::optional<std::size_t>(chosen - bindings->bindings.data()) : std::nullopt,
+            {.setting_sources = sources,
+             .binding_index = chosen ? std::optional<std::size_t>(chosen - bindings->bindings.data()) : std::nullopt,
              .semantic_mode = semantic_mode,
              .geometry_kind = input.geometry_kind,
              .source_index = input.source_index,
@@ -1706,6 +1720,7 @@ RaySceneRowSnapshot resolveRaySceneRows(
         resolved[index].q = static_cast<std::uint32_t>(index);
         if (semantic_mode == RayLayoutSemanticMode::LayoutV1Q) {
             resolved[index].instance_custom_index = resolved[index].q;
+            resolved[index].setting_sources.custom_index = "layout_v1_q";
         }
         identity << resolved[index].scene_identity << '\0'
                  << resolved[index].geometry_identity << '\0'

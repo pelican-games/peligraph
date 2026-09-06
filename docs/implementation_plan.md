@@ -23244,6 +23244,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
+**RT AS設定の適用元表示 (2026-09-06):**
+- row解決時にmask・instance flags・custom index・geometry flagsの適用元を保持し、get_ray_occurrencesのbindingへ実効値とsetting_sourcesを返す。既存InspectorのResolved bindingから読める。
+- engine/layout既定値、procedural geometry既定値、geometry ruleと0始まり行番号、component指定、occurrence overrideと永続行IDを区別する。layout v1のcustom index=qは専用sourceで示す。部分overrideで未指定のfieldはcomponent/defaultの出所を維持し、除去後も元へ戻る。
+- 設定の値・優先順位・GPUへの適用は変更しない。同じscene-planの出所情報であり、GPU実行時値の読み戻しではない。
+- DebugのStudio・対象test build成功。resolver 3 cases / 589 assertions、editor-command 17 / 305成功。明示的なゼロoverrideと指定なし、override削除によるcomponentへの復帰、layout ruleの出所、RPCの既定値出力を確認。適用元の代入を取り消すと追加確認が落ちる。GPU再試験と実GUI操作は未実施。
+
 **unpack後List編集の複合Undo (2026-09-06):**
 - unpack→List行追加→行追加Undoでnext_idだけが進むと、unpack Undoのexpanded component比較とorigin authority比較が拒否する経路を確認。
 - restore_prefabのjournal再生準備でschemaが定めるList採番値だけを現在のauthored componentから繰り上げ、commandとauthorityの両方へ同じ内容を渡す。出所検証の共通比較や行ID・値・attachmentの一致条件は緩和しない。

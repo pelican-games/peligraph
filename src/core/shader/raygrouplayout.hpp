@@ -305,7 +305,17 @@ using MaterialRowIdentity =
 
 MaterialRowIdentity materialRowIdentity(const RaySceneRowInput &row);
 
+struct RaySceneSettingSources {
+    std::string_view mask = "engine_default";
+    std::string_view instance_flags = "engine_default";
+    std::string_view custom_index = "engine_default";
+    std::string_view geometry_flags = "engine_default";
+    std::optional<std::size_t> geometry_rule_index;
+    std::optional<std::uint32_t> override_row_id;
+};
+
 struct RaySceneRow {
+    RaySceneSettingSources setting_sources;
     std::optional<std::size_t> binding_index;
     RayLayoutSemanticMode semantic_mode = RayLayoutSemanticMode::LayoutV1Q;
     RayGeometryKind geometry_kind = RayGeometryKind::triangles;

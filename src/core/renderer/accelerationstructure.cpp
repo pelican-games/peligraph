@@ -742,6 +742,12 @@ RaySceneRowSnapshot resolveRayTracingSceneRows(
         resolution.mask = found->instance_mask;
         resolution.instance_flags = found->instance_flags;
         resolution.custom_index = found->instance_custom_index;
+        const auto &override_value = *source_overrides.at(found->source_index);
+        auto &sources = found->setting_sources;
+        if (override_value.mask) sources.mask = "occurrence_override";
+        if (override_value.instance_flags) sources.instance_flags = "occurrence_override";
+        if (override_value.custom_index) sources.custom_index = "occurrence_override";
+        sources.override_row_id = resolution.row_id;
     }
     result.occurrence_overrides = std::move(override_resolutions);
     return result;

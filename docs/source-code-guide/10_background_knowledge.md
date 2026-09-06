@@ -385,7 +385,7 @@ VMA は Vulkan のメモリタイプ選択とサブアロケーションを引�
 
 GLSL の uniform ブロックは既定で **std140**、storage ブロックは **std430** のレイアウト規則に従います(GLSL 仕様の "Standard Uniform Block Layout" / "Standard Shader Storage Block Layout")。std140 では、スカラーは自身のサイズ、`vec2` は 8、`vec3` と `vec4` は 16 バイト境界に置かれ(`vec3` は**サイズ 12・アラインメント 16**)、**配列の要素と構造体は 16 バイトの倍数へ切り上げられます**。std430 はこの「配列・構造体を 16 へ切り上げる」規則だけが緩み、要素の素のアラインメントがそのまま使われます。C++ 側で同じバイト列を作るには `alignas` を明示し、`offsetof` の `static_assert` で固定するのが定型で、これを怠るとシェーダ側が 1 メンバぶんずれた値を読みます。
 
-**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L387) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L399)
+**使用場所**: [FrameUniformData](../../src/core/renderer/frameresources.hpp#L48)(型自体が `alignas(16)`。vec4 / mat4 のメンバに `alignas(16)`、`vec2` の 2 本には `alignas(8)`、後続の `uint32_t` 4 本には指定なしで自然に 4 バイト刻みに詰まり、直後の offset / `sizeof` の `static_assert` 群がその並びを凍結します) / [RayMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L397) / [RayProfileMaterialTableRow](../../src/core/shader/raygrouplayout.hpp#L409)
 
 **このコードベースでの注意**: レイトレーシング側は「profile 有り/無しで別の行構造体」を用意し、profile が無い構成では以前の ABI をバイト単位で保つようにしてあります。同じ意味の行なのに型が 2 つあるのはそのためです。
 
@@ -413,7 +413,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L699)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2248)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L699)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2263)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -421,7 +421,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 BLAS の三角形ジオメトリ(`VkAccelerationStructureGeometryTrianglesDataKHR`)で間違えやすいのが `maxVertex` で、これは頂点数ではなく「**使用しうる最大の頂点インデックス**」、つまり密な配列なら `vertex_count - 1` です。プリミティブ数は三角形リスト前提で `index_count / 3` を `VkAccelerationStructureBuildRangeInfoKHR::primitiveCount` に渡します。TLAS 側では `VkAccelerationStructureInstanceKHR` の配列を**16 バイト境界**に置く必要があり、instance が 0 件でも「有効なアドレス」を渡さなければならない(null は不可)ため、1 件ぶんの空領域を確保しておくのが定型です。ビルド用の scratch バッファは `VkPhysicalDeviceAccelerationStructurePropertiesKHR::minAccelerationStructureScratchOffsetAlignment` に揃えたアドレスを渡します。
 
-**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1133)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L116)
+**使用場所**: [RayQueryAccelerationStructureScope::recordFrame()](../../src/core/renderer/accelerationstructure.cpp#L1139)(`vertex_count - 1` を maxVertex に、`index_count / 3` を primitiveCount に、instance 0 件でも 1 件ぶん確保) / [recordBuild()](../../src/core/renderer/accelerationstructure.cpp#L175)(scratch の alignment) / [allocateAddressedBuffer()](../../src/core/renderer/accelerationstructure.cpp#L116)
 
 **このコードベースでの注意**: triangles data は名前付きでなく**位置**で集約初期化されているので、format / vertexData / vertexStride / maxVertex / indexType / indexData の順序を知らないと `vertex_count - 1` がどのフィールドか読めません。
 

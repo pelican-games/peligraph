@@ -156,12 +156,18 @@ TEST_CASE("WP374 production row resolver applies both two-level chains",
     CHECK(oak.instance_mask == 127);
     CHECK(oak.instance_flags == rayInstanceTriangleFacingCullDisable);
     CHECK(oak.instance_custom_index == 0);
+    CHECK((oak.setting_sources.mask == "layout_default"));
+    CHECK((oak.setting_sources.geometry_flags == "geometry_rule"));
+    CHECK(oak.setting_sources.geometry_rule_index.has_value());
 
     const auto &pine = rowByAuthor(rows, 102);
     CHECK(pine.geometry_flags == 0);
     CHECK(pine.instance_mask == 3);
     CHECK(pine.instance_flags == rayInstanceTriangleFlipFacing);
     CHECK(pine.instance_custom_index == 0x123456);
+    CHECK((pine.setting_sources.mask == "component"));
+    CHECK((pine.setting_sources.instance_flags == "component"));
+    CHECK((pine.setting_sources.custom_index == "component"));
 
     std::array<RayQueryGeometryInstanceSnapshot, 2> geometry{};
     geometry[0].geometry_allocation_id = 41;
@@ -531,6 +537,13 @@ TEST_CASE("WP382d occurrence rows preserve presence and resolve within their aut
     CHECK(by_source(0).instance_flags == rayInstanceTriangleFlipFacing);
     CHECK(by_source(0).instance_custom_index == 93);
     CHECK(by_source(1).instance_mask == 29);
+    CHECK((by_source(2).setting_sources.mask == "occurrence_override"));
+    CHECK((by_source(2).setting_sources.instance_flags == "occurrence_override"));
+    CHECK((by_source(2).setting_sources.custom_index == "occurrence_override"));
+    CHECK(by_source(2).setting_sources.override_row_id == 1);
+    CHECK((by_source(0).setting_sources.mask == "component"));
+    CHECK((by_source(1).setting_sources.mask == "component"));
+    CHECK_FALSE(by_source(1).setting_sources.override_row_id.has_value());
     REQUIRE(resolved.occurrence_overrides.size() == 3);
     CHECK(resolved.occurrence_overrides[0].q == by_source(2).q);
     CHECK(resolved.occurrence_overrides[2].error == "OccurrenceAbsent");
@@ -545,6 +558,8 @@ TEST_CASE("WP382d occurrence rows preserve presence and resolve within their aut
     CHECK(restored->instance_mask == 17);
     CHECK(restored->instance_flags == rayInstanceTriangleFlipFacing);
     CHECK(restored->instance_custom_index == 93);
+    CHECK((restored->setting_sources.mask == "component"));
+    CHECK_FALSE(restored->setting_sources.override_row_id.has_value());
 
     SECTION("authored override diagnostics survive loss of every geometry") {
         const nlohmann::ordered_json witness = {
