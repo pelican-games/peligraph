@@ -2,6 +2,8 @@
 
 #include "physquery.hpp"
 
+#include <glm/mat4x4.hpp>
+
 #include <cstddef>
 
 namespace Pelican::phys {
@@ -20,6 +22,12 @@ class TriangleMesh {
     // Both sides intersect; normals follow authored winding. Exact distance
     // ties select the earliest source triangle. Invalid rays return no hit.
     [[nodiscard]] std::optional<RaycastHit> raycast(const Ray &ray) const;
+    // World directions are normalized before inverse transformation; distance
+    // and max_distance are world units. Normals match the winding of transformed
+    // vertices, including reflections. Invalid rays, non-finite, non-affine or
+    // singular matrices, and unrepresentable local rays return no hit.
+    [[nodiscard]] std::optional<RaycastHit> raycast(
+        const Ray &world_ray, const glm::mat4 &local_to_world) const;
     [[nodiscard]] std::span<const vec3> vertices() const noexcept { return vertices_; }
     [[nodiscard]] std::span<const std::uint32_t> indices() const noexcept { return indices_; }
     [[nodiscard]] std::size_t triangleCount() const noexcept { return indices_.size() / 3; }

@@ -23260,6 +23260,16 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - **まだruntime colliderとしては利用できない。** ModelTemplateのCPU geometryをBVHへ変換する接続、provider capability、PhysWorld/scene publication・reload・編集、overlap/sweep/triggerは残る。convex形状をmeshへ暗黙変換しない。可視meshは現状のまま描画する。
 - Playerと関連test build成功（build/.codex_bg/mesh-foundation-build.log）。BVH CPU4件33 assertions成功（mesh-foundation-cpu.log）。glTF取り込み/fragment4件111 assertions成功（mesh-foundation-regression.log）。不正shape検証のfixtureをprepareのみからinspectまで通すよう訂正し、古いfragment fixture3件に欠けていた標準描画設定を追加した。対照はAABB内triangle miss、非正規化rayのt、node変換と複数primitive index、旧fragment読み込み。個別変異、provider-onlyの別build、runtime mesh collider実行は未実施。
 
+**P3の次の接続単位 (2026-09-06):**
+- 基盤はe3f6d2a1。object transformを扱うBVH overloadの後、メッシュ入力を明示したprovider拡張→PhysWorldのprepared mesh bindings→glTF scene/model reload/編集participantへ順に接続する。これらが揃うまでコリジョン宣言を実用可能とは扱わない。
+- ProviderV2の登録はversionと既知capabilityを厳密に検査し、ShapeV1にmesh入力は無い。既存reserved fieldへpointerを詰めたり、game providerの選択を無視してPhysWorld wrapperだけでBVHを呼ぶ経路は追加しない。meshのvertex/index・transform・入力寿命を明示する拡張が必要。raycast/overlap/shapeCastの既存primitive機能は維持する。
+- serviceRaycastAllはcollectCollidersからphysicsruntimeを直接呼ぶため、RPC/C++ wrapperだけの接続ではGame DLL serviceに届かない。scene cutover、削除、通常collider編集、階層変更、model reloadの全候補生成でmeshの所有権とidentityを扱う。meshの移動形状やconvex生成は静的mesh colliderと別の要件として整理する。
+
+**P3 object変換付きメッシュ問い合わせ (2026-09-06):**
+- TriangleMesh::raycast(world_ray, local_to_world)を追加。world方向を正規化し、inverse変換後のlocal方向は再正規化せずworld距離のparameterを保持。位置はworld rayから復元し、法線はinverse-transposeとdeterminant符号で変換する。元geometryは変更しない。
+- 有限affine行列を対象にし、特異行列・非affine・非有限入力・表現不能なqueryはhitなし。provider/runtimeへの登録はまだ未実装であり、公開raycast RPCでmeshが使える段階ではない。
+- 関連test build成功（build/.codex_bg/mesh-world-build.log）、BVH関連7件59 assertions成功（mesh-world-test.log）。対照は非一様scale時のworld距離・反転winding法線・斜面のinverse-transpose・元geometry不変。local方向を再正規化すればworld距離が落ち、determinant符号を外せば反転法線が落ちる。個別変異は未実行。CPU query変更のためGPU試験は反復しない。
+
 **物理raycast RPC (2026-09-06、dc501247):**
 - design_physics_queries.mdのP3に予定されていたraycast RPCが未接続だったため、PhysWorldの既存closest queryへ接続。有限origin/direction/max_distanceを受け、方向を正規化。名前/距離/位置/法線/collider identityとtrigger/one-way metadataを返す。物理providerや衝突計算の別実装は作らない。メッシュ/BVH/glb extrasの残件は別途照合する。
 - 物理query handlerの登録をまとめ、Playerの本番登録とwire testから共用。実コライダーのhitとtransform変更直後のmiss、ゼロ方向と負距離のinvalidParamsを確認する。

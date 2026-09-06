@@ -86,4 +86,69 @@ TEST_CASE("Triangle mesh rejects malformed rays without hits", "[physics][triang
                                     {0, 0, std::numeric_limits<float>::infinity()}, 10}));
 }
 
+TEST_CASE("Triangle mesh world queries preserve distance under affine transforms",
+          "[physics][trianglemesh]") {
+    const TriangleMesh mesh(triangle, indices);
+    glm::mat4 transform(1.0F);
+    transform[0][0] = 2.0F;
+    transform[1][1] = 3.0F;
+    transform[2][2] = 4.0F;
+    transform[3] = glm::vec4(5.0F, 6.0F, 7.0F, 1.0F);
+    const auto hit = mesh.raycast(Ray{{5.5F, 6.75F, 10}, {0, 0, 10}, 5}, transform);
+    REQUIRE(hit);
+    REQUIRE(hit->distance == Catch::Approx(5));
+    REQUIRE(hit->position.x == Catch::Approx(5.5F));
+    REQUIRE(hit->position.y == Catch::Approx(6.75F));
+    REQUIRE(hit->position.z == Catch::Approx(15));
+    REQUIRE(hit->normal.z == Catch::Approx(1));
+    REQUIRE_FALSE(mesh.raycast(Ray{{5.5F, 6.75F, 10}, {0, 0, 10}, 4.99F}, transform));
+
+    transform[0][0] = -2.0F;
+    const auto reflected = mesh.raycast(Ray{{4.5F, 6.75F, 10}, {0, 0, 1}, 5}, transform);
+    REQUIRE(reflected);
+    REQUIRE(reflected->normal.z == Catch::Approx(-1));
+    REQUIRE(reflected->distance == Catch::Approx(5));
+    const auto original = mesh.raycast(Ray{{0.25F, 0.25F, 0}, {0, 0, 1}, 2});
+    REQUIRE(original);
+    REQUIRE(original->normal.z == Catch::Approx(1));
+    REQUIRE(original->distance == Catch::Approx(2));
+    REQUIRE(mesh.vertices()[1].x == triangle[1].x);
+    REQUIRE(mesh.indices()[1] == indices[1]);
+}
+
+TEST_CASE("Triangle mesh transforms sloped normals with inverse transpose",
+          "[physics][trianglemesh]") {
+    const std::array<vec3, 3> slope{{{0, 0, 0}, {1, 0, 0}, {0, 1, 1}}};
+    const TriangleMesh mesh(slope, indices);
+    glm::mat4 transform(1.0F);
+    transform[1][1] = 2.0F;
+    const auto hit = mesh.raycast(Ray{{0.25F, 0.5F, -1}, {0, 0, 1}, 2}, transform);
+    REQUIRE(hit);
+    REQUIRE(hit->distance == Catch::Approx(1.25F));
+    REQUIRE(hit->normal.x == Catch::Approx(0).margin(1.0e-6));
+    REQUIRE(hit->normal.y == Catch::Approx(-0.4472135955));
+    REQUIRE(hit->normal.z == Catch::Approx(0.894427191));
+}
+
+TEST_CASE("Triangle mesh world queries reject invalid transforms and rays",
+          "[physics][trianglemesh]") {
+    const TriangleMesh mesh(triangle, indices);
+    const Ray ray{{0.25F, 0.25F, 0}, {0, 0, 1}, 10};
+    glm::mat4 transform(1.0F);
+    transform[0][0] = 0.0F;
+    REQUIRE_FALSE(mesh.raycast(ray, transform));
+    transform = glm::mat4(1.0F);
+    transform[3][1] = std::numeric_limits<float>::infinity();
+    REQUIRE_FALSE(mesh.raycast(ray, transform));
+    transform = glm::mat4(1.0F);
+    transform[0][3] = 0.5F;
+    REQUIRE_FALSE(mesh.raycast(ray, transform));
+    transform = glm::mat4(1.0F);
+    REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 0}, {0, 0, 0}, 10}, transform));
+    REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 0}, {0, 0, 1}, -1}, transform));
+    REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 0},
+                                    {0, 0, std::numeric_limits<float>::quiet_NaN()}, 10},
+                                transform));
+}
+
 } // namespace Pelican::phys

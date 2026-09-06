@@ -6,6 +6,9 @@
 #include <limits>
 #include <stdexcept>
 
+#include <glm/matrix.hpp>
+#include <glm/vec4.hpp>
+
 namespace Pelican::phys {
 namespace {
 
@@ -174,6 +177,61 @@ std::optional<RaycastHit> TriangleMesh::raycast(const Ray &ray) const {
          static_cast<float>(best_normal.y / normal_length),
          static_cast<float>(best_normal.z / normal_length)},
     };
+}
+
+std::optional<RaycastHit> TriangleMesh::raycast(
+    const Ray &world_ray, const glm::mat4 &local_to_world) const {
+    if (!finite(world_ray.origin) || !finite(world_ray.direction) ||
+        !std::isfinite(world_ray.max_distance) || world_ray.max_distance < 0.0F)
+        return std::nullopt;
+    for (int column = 0; column < 4; ++column)
+        for (int row = 0; row < 4; ++row)
+            if (!std::isfinite(local_to_world[column][row])) return std::nullopt;
+    if (local_to_world[0][3] != 0.0F || local_to_world[1][3] != 0.0F ||
+        local_to_world[2][3] != 0.0F || local_to_world[3][3] != 1.0F)
+        return std::nullopt;
+    const double direction_length = std::hypot(
+        static_cast<double>(world_ray.direction.x),
+        static_cast<double>(world_ray.direction.y),
+        static_cast<double>(world_ray.direction.z));
+    if (direction_length == 0.0) return std::nullopt;
+    const glm::dmat4 transform(local_to_world);
+    const double determinant = glm::determinant(transform);
+    if (!std::isfinite(determinant) || determinant == 0.0) return std::nullopt;
+    const auto inverse = glm::inverse(transform);
+    const glm::dvec4 direction{
+        world_ray.direction.x / direction_length,
+        world_ray.direction.y / direction_length,
+        world_ray.direction.z / direction_length, 0.0};
+    const glm::dvec4 origin{world_ray.origin.x, world_ray.origin.y, world_ray.origin.z, 1.0};
+    const auto local_origin = inverse * origin;
+    const auto local_direction = inverse * direction;
+    const Ray local_ray{
+        {static_cast<float>(local_origin.x), static_cast<float>(local_origin.y),
+         static_cast<float>(local_origin.z)},
+        {static_cast<float>(local_direction.x), static_cast<float>(local_direction.y),
+         static_cast<float>(local_direction.z)},
+        world_ray.max_distance,
+    };
+    const auto local_hit = raycast(local_ray);
+    if (!local_hit) return std::nullopt;
+    auto normal = glm::transpose(inverse) * glm::dvec4{
+        local_hit->normal.x, local_hit->normal.y, local_hit->normal.z, 0.0};
+    // A cross product gains determinant sign under a reflection, whereas
+    // inverse-transpose alone preserves the orientation of a normal covector.
+    const double normal_length = std::hypot(normal.x, normal.y, normal.z);
+    if (!std::isfinite(normal_length) || normal_length == 0.0) return std::nullopt;
+    const double divisor = determinant < 0.0 ? -normal_length : normal_length;
+    const auto position = origin + direction * static_cast<double>(local_hit->distance);
+    RaycastHit result{
+        local_hit->distance,
+        {static_cast<float>(position.x), static_cast<float>(position.y),
+         static_cast<float>(position.z)},
+        {static_cast<float>(normal.x / divisor), static_cast<float>(normal.y / divisor),
+         static_cast<float>(normal.z / divisor)},
+    };
+    if (!finite(result.position) || !finite(result.normal)) return std::nullopt;
+    return result;
 }
 
 } // namespace Pelican::phys
