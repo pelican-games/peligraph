@@ -146,6 +146,24 @@ if(dependencies_already_patched EQUAL -1)
   set(contents_changed TRUE)
 endif()
 
+# configure_file keeps the output timestamp when bytes match. The custom
+# command still needs its OUTPUT to become current, or MSBuild runs it forever.
+# Keep the C++ as the actual OUTPUT so missing generated files are rebuilt too.
+set(old_generated_copy [=[configure_file(${INFILE} ${OUTFILE})]=])
+set(new_generated_copy [=[configure_file(${INFILE} ${OUTFILE})
+file(TOUCH "${OUTFILE}")]=])
+string(FIND "${contents}" "${new_generated_copy}" copy_already_patched)
+if(copy_already_patched EQUAL -1)
+  string(FIND "${contents}" "${old_generated_copy}" copy_patch_location)
+  if(copy_patch_location EQUAL -1)
+    message(FATAL_ERROR
+      "battery-embed v1.2.19 generated copy changed; "
+      "review the low-write patch before updating the dependency")
+  endif()
+  string(REPLACE "${old_generated_copy}" "${new_generated_copy}" contents "${contents}")
+  set(contents_changed TRUE)
+endif()
+
 if(contents_changed)
   file(WRITE "${battery_embed_cmake}" "${contents}")
 endif()
