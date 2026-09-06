@@ -99,6 +99,7 @@ struct InspectorWidget::Impl {
     QPointer<QDialog> ray_dialog;
     QTableWidget *ray_entries = nullptr;
     QTableWidget *ray_overrides = nullptr;
+    QTableWidget *ray_settings = nullptr;
     QPlainTextEdit *ray_rejections = nullptr;
     QComboBox *ray_destination = nullptr;
     QPushButton *ray_add = nullptr;
@@ -645,7 +646,7 @@ struct InspectorWidget::Impl {
         ray_dialog = dialog;
         dialog->setAttribute(Qt::WA_DeleteOnClose);
         dialog->setWindowTitle(owner.tr("Ray geometry and overrides"));
-        dialog->resize(900, 640);
+        dialog->resize(1000, 820);
         auto *layout = new QVBoxLayout(dialog);
         ray_notice = plainLabel({}, dialog);
         layout->addWidget(ray_notice);
@@ -658,6 +659,17 @@ struct InspectorWidget::Impl {
         ray_entries->setEditTriggers(QAbstractItemView::NoEditTriggers);
         ray_entries->horizontalHeader()->setStretchLastSection(true);
         layout->addWidget(ray_entries, 2);
+        ray_settings = new QTableWidget(0, 4, dialog);
+        ray_settings->setObjectName(QStringLiteral("pelican.rayGeometry.settingSources"));
+        ray_settings->setHorizontalHeaderLabels({owner.tr("Setting"), owner.tr("Resolved value"),
+            owner.tr("Applied source"), owner.tr("Priority (low → high)")});
+        ray_settings->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        ray_settings->setSelectionMode(QAbstractItemView::NoSelection);
+        ray_settings->horizontalHeader()->setStretchLastSection(true);
+        ray_settings->setMaximumHeight(170);
+        layout->addWidget(ray_settings);
+        layout->addWidget(plainLabel(owner.tr(
+            "Select geometry to inspect its settings. Omitted fields inherit; an explicit zero overrides. Layout v1 uses row q as custom index."), dialog));
         layout->addWidget(plainLabel(owner.tr(
             "Record fields show resolved scene-plan values. Per-frame dynamic record updates are not shown."), dialog));
         layout->addWidget(plainLabel(owner.tr(
@@ -748,6 +760,42 @@ struct InspectorWidget::Impl {
             }
         }
         const auto *selected = ray_entries->item(ray_entries->currentRow(), 0);
+        ray_settings->setRowCount(0);
+        const auto selected_row = ray_entries->currentRow();
+        if (payload && selected_row >= 0 && static_cast<std::size_t>(selected_row) < payload->at("entries").size()) {
+            const auto binding = payload->at("entries").at(selected_row).value("binding", Json{});
+            if (binding.is_object()) {
+                const auto sources = binding.value("setting_sources", Json::object());
+                const auto display = [](const Json &value) {
+                    return QString::fromStdString(value.is_null() ? "—" : value.is_string() ? value.get<std::string>() : value.dump());
+                };
+                for (const auto *field : {"mask", "instance_flags", "custom_index", "geometry_flags"}) {
+                    const int row = ray_settings->rowCount();
+                    ray_settings->insertRow(row);
+                    const auto source = sources.value(field, std::string{});
+                    QString source_label = QString::fromStdString(source);
+                    if (source == "engine_default") source_label = owner.tr("Engine default");
+                    else if (source == "layout_default") source_label = owner.tr("Layout default");
+                    else if (source == "procedural_default") source_label = owner.tr("Procedural geometry default");
+                    else if (source == "component") source_label = owner.tr("ray_instance component");
+                    else if (source == "geometry_rule") source_label = owner.tr("Geometry rule %1 (0-based)").arg(display(sources.value("geometry_rule_index", Json{})));
+                    else if (source == "occurrence_override") source_label = owner.tr("Occurrence override row %1").arg(display(sources.value("override_row_id", Json{})));
+                    else if (source == "layout_v1_q") source_label = owner.tr("Layout v1: row q");
+                    const auto priority = source == "layout_v1_q" ? owner.tr("Row q (layout v1)")
+                        : std::string_view{field} == "geometry_flags"
+                        ? owner.tr("Defaults → matching triangle geometry rule; procedural geometry uses its defaults")
+                        : owner.tr("Defaults → component → occurrence override");
+                    ray_settings->setItem(row, 0, new QTableWidgetItem(QString::fromLatin1(field)));
+                    ray_settings->setItem(row, 1, new QTableWidgetItem(display(binding.value(field, Json{}))));
+                    ray_settings->setItem(row, 2, new QTableWidgetItem(source_label));
+                    auto *priority_item = new QTableWidgetItem(priority);
+                    priority_item->setToolTip(priority);
+                    ray_settings->setItem(row, 3, priority_item);
+                }
+                ray_settings->resizeColumnsToContents();
+                ray_settings->resizeRowsToContents();
+            }
+        }
         ray_add->setEnabled(payload && selected && selected->data(Qt::UserRole + 1).toBool() &&
             model.canEditList(ray_destination->currentData().toString().toStdString()));
         ray_notice->setText(!model.notice().message.empty() ? QString::fromStdString(model.notice().message)

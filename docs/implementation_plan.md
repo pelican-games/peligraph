@@ -23242,6 +23242,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**InspectorのAS設定説明表示 (2026-09-06):**
+- 適用元のRPC出力は既に実装済みだったため、解決処理を再実装せずRay geometryに選択geometryの設定表を追加。mask/instance flags/custom index/geometry flagsの値・適用元・優先順と、該当するoverride行ID/geometry rule番号を表示する。
+- 現行resolverに合わせ、geometry flagsはcomponent/occurrence overrideの対象として説明しない。未指定の継承と明示0の上書き、layout v1 custom index=qを区別する。Studio Debug build成功。表示のみの変更なので新規テストやGPU再試験は追加していない。実データを選択した画面操作は未確認。
+
 **integration内のpass/task編集 (2026-09-06):**
 - project featureの編集宣言検索を、合成provenanceのprovider_featureに対応するbase/integration fragmentへ統一。integrationが追加したpassをget_render_authoring_context/edit_preset_passへ、compute taskをget_compute_task_authoring/edit/removeへ接続した。公開RPCの追加やintegration条件の再判定は行わない。
 - Debug render_pipeline/player build成功。関連6件511 assertions成功。root/preset scopeで展開したfeatureのintegration pass編集、compute dispatch変更、保存・再読込を確認し、通常のpass/task編集も成功。元のbase宣言とruntime parametersを保持する。Studioは既存の編集可能性と宣言取得を使うため、新画面は追加していない。
