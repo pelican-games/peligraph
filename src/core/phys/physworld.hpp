@@ -105,6 +105,8 @@ DECLARE_MODULE(PhysWorld) {
         const phys::QueryFilter *filter, std::vector<phys::OverlapHit> &hits) const;
     std::vector<phys::OverlapHit> overlapAllHits(
         const phys::Shape &shape, const phys::QueryFilter &filter = {}) const;
+    Physics::Status queryShapeCastAll(const phys::Shape &shape, vec3 delta,
+        const phys::QueryFilter *filter, std::vector<phys::ShapeCastQueryHit> &hits) const;
     std::vector<phys::ShapeCastQueryHit> shapeCastAll(
         const phys::Shape &moving_shape, vec3 delta,
         const phys::QueryFilter &filter = {}) const;

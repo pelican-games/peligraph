@@ -90,7 +90,15 @@ Box/Capsule overlapは回転した形状と変換後の三角形表面を判定�
 CapsuleはY軸に沿った半長`half_height`の線分と半径`radius`で表し、rotationで回転する。
 軸線と三角形表面の距離で判定し、非一様scale等はmesh側の三角形へ適用するため半径はworld単位を保つ。
 ProviderV3の`query_mesh_capsule_overlap_all`と`mesh_capsule_overlap_all`を使用する。
-sweep・mesh triggerは未実装。
+Sphere sweepは既存Shape Cast公開serviceへ接続。面・有限辺・頂点との接触時刻を解析的に求め、
+world単位の半径、両面、BVH絞り込み、非一様scale・反転・shearを扱う。
+ProviderV3の`query_mesh_sphere_shape_cast_all`と`mesh_sphere_shape_cast_all`を使用する。
+TOIはdeltaに対する割合、positionはmesh表面、normalは球を表面から離す向き。
+開始時の接触は既存epsilon内で接近中だけTOIゼロとなり、静止・離反中はhitを返さない。
+epsilonを超える初期貫通はbuiltinでは`unavailable`。単一三角形の押し戻しを非凸mesh全体のMTDとして返さない。
+未対応時はprimitiveだけの部分結果も返さない。C++の従来shapeCastAll wrapperはunavailableを空結果へ変換するため、
+状態の判別にはqueryShapeCastAllまたは公開serviceを使う。ProviderV3利用DLLは現行headerで再ビルドする。
+Box/Capsule sweep・mesh全体の初期貫通MTD・mesh triggerは未実装。
 
 2026-09-06: RPC `raycast`を既存PhysWorldへ接続。paramsは`origin`・`direction`（各3数値）と`max_distance`（有限・非負）。方向は正規化する。結果は`hit: null`またはname/distance/position/normal/collider_id/shape_ordinal/trigger/one_wayを持つhit。現在のtransformを問い合わせ、raycast既定のlayer/mask・trigger/one-way包含規則を使用する。P3のメッシュ/BVH/glb extras規約の完了を意味しない。
 

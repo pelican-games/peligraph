@@ -23242,6 +23242,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**Sphereと静的meshのSweep (2026-09-07):**
+- TriangleMesh→ProviderV3→PhysWorld→既存Shape Cast公開ServiceV2へ接続。world単位の球と三角形の面・有限辺・頂点の接触時刻を解析的に求め、移動の離散サンプリングを使わない。BVH絞り込み、両面、非一様scale・反転・shearに対応。primitiveとの結果をTOI順に統合する。
+- ProviderV3へquery_mesh_sphere_shape_cast_allとcallbackを追加。primitive/meshのprovider結果検査を共通化。filterとidentityを保持し、独自providerが未対応ならbuiltinへ迂回しない。利用DLLは現行headerで再ビルドする。
+- 接触epsilon内の初期接触は接近時だけTOIゼロ。深い初期貫通のmesh全体MTDは未実装でbuiltinはunavailableを返す。primitiveだけの部分結果を成功として返さない。従来C++ shapeCastAllのunavailable→空結果仕様は保持し、状態が必要ならqueryShapeCastAllまたは公開serviceを使う。
+- Player・runtime_services Debug build成功。関連35case/140683assertion成功（既存Shape Castの反復検証を含む）。面・辺・頂点・接線、最大移動距離、半径ゼロ、接触/離反、変換、BVH内の最近hitと後続初期貫通検出、公開serviceの混在順序・filter・未対応状態、独自providerの結果と不正TOI拒否を確認。面/辺/頂点の各式を外すと対応contactが落ち、mesh統合を外すと公開APIのhit数・identityが落ちる対照。個別変異、provider-only別build、Studio通し操作は未実施。
+- Box/Capsule sweep・mesh初期貫通MTD・mesh triggerは残る。Sphereの非貫通開始Sweepを今回の区切りとする。
+
 **Capsuleと静的meshのoverlap (2026-09-07):**
 - TriangleMesh→provider→PhysWorld→既存公開ServiceV2へCapsule overlapを接続。world単位の軸線と三角形の距離を、線分と辺の距離・端点の面への射影・面との交差から求める。回転・mesh変換に対応し、接触を含む。Sphereは長さゼロのCapsule経路へ集約した。閉じたmeshの内部を充填体とは扱わない。
 - ProviderV3にquery_mesh_capsule_overlap_allと型付きcallbackを追加。入力検証・filter・identity・provider結果検査は既存overlapMeshesを共有し、Capsuleを無条件unavailableにする旧分岐を除去。構造体拡張に伴い利用DLLは現行headerで再ビルドする。

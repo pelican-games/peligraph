@@ -35,6 +35,7 @@ struct ProviderDispatch {
     Physics::ProviderMeshSphereOverlapAllV3Fn mesh_sphere_overlap_all = nullptr;
     Physics::ProviderMeshBoxOverlapAllV3Fn mesh_box_overlap_all = nullptr;
     Physics::ProviderMeshCapsuleOverlapAllV3Fn mesh_capsule_overlap_all = nullptr;
+    Physics::ProviderMeshSphereShapeCastAllV3Fn mesh_sphere_shape_cast_all = nullptr;
 };
 
 struct RegisteredProvider {
@@ -354,11 +355,12 @@ Physics::Status invokeMeshProvider(
     BuiltinMeshQueryContext mesh_context{selected.acceleration};
     const ProviderDispatch builtin_mesh{
         .context = &mesh_context,
-        .mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all,
+        .mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all,
         .mesh_raycast_all = builtinMeshRaycastAll,
         .mesh_sphere_overlap_all = builtinMeshSphereOverlapAll,
         .mesh_box_overlap_all = builtinMeshBoxOverlapAll,
         .mesh_capsule_overlap_all = builtinMeshCapsuleOverlapAll,
+        .mesh_sphere_shape_cast_all = builtinMeshSphereShapeCastAll,
     };
     if (dispatch == nullptr) dispatch = &builtin_mesh;
 #endif
@@ -420,6 +422,19 @@ Physics::Status registerProviderDispatch(ProviderDispatch dispatch,
     return Physics::Status::ok;
 }
 
+bool validShapeCastHit(const Physics::ProviderShapeCastHitV2 &raw,
+                       Physics::Vec3V1 &unit_normal) {
+    constexpr float epsilon = Physics::shapeCastContactEpsilonV2;
+    const bool initial = (raw.flags & Physics::shape_cast_initial_overlap) != 0;
+    return raw.reserved == 0 && (raw.flags & ~Physics::shape_cast_initial_overlap) == 0 &&
+        std::isfinite(raw.time_of_impact) && raw.time_of_impact >= 0 &&
+        raw.time_of_impact <= 1.0F + epsilon &&
+        std::isfinite(raw.penetration_depth) && raw.penetration_depth >= 0 &&
+        (initial ? (raw.time_of_impact <= epsilon && raw.penetration_depth > epsilon)
+                 : raw.penetration_depth <= epsilon) &&
+        finite(raw.position) && normalized(raw.normal, unit_normal);
+}
+
 } // namespace
 
 Physics::Status registerProvider(const Physics::ProviderV2 &provider,
@@ -449,12 +464,13 @@ Physics::Status registerProvider(const Physics::ProviderV3 &provider,
         provider.provider_version != Physics::providerVersionV3 ||
         provider.minimum_engine_provider_version > Physics::providerVersionV3 ||
         !validProvider(provider.base, true) ||
-        (provider.mesh_capability_bits & ~(Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all)) != 0 ||
+        (provider.mesh_capability_bits & ~(Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all | Physics::query_mesh_sphere_shape_cast_all)) != 0 ||
         (provider.mesh_capability_bits == 0 && provider.base.capability_bits == 0) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_raycast_all) != 0 && provider.mesh_raycast_all == nullptr) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_sphere_overlap_all) != 0 && provider.mesh_sphere_overlap_all == nullptr) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_box_overlap_all) != 0 && provider.mesh_box_overlap_all == nullptr) ||
-        ((provider.mesh_capability_bits & Physics::query_mesh_capsule_overlap_all) != 0 && provider.mesh_capsule_overlap_all == nullptr))
+        ((provider.mesh_capability_bits & Physics::query_mesh_capsule_overlap_all) != 0 && provider.mesh_capsule_overlap_all == nullptr) ||
+        ((provider.mesh_capability_bits & Physics::query_mesh_sphere_shape_cast_all) != 0 && provider.mesh_sphere_shape_cast_all == nullptr))
         return Physics::Status::invalid_argument;
     try {
         auto dispatch = dispatchFor(provider.base);
@@ -463,6 +479,7 @@ Physics::Status registerProvider(const Physics::ProviderV3 &provider,
         dispatch.mesh_sphere_overlap_all = provider.mesh_sphere_overlap_all;
         dispatch.mesh_box_overlap_all = provider.mesh_box_overlap_all;
         dispatch.mesh_capsule_overlap_all = provider.mesh_capsule_overlap_all;
+        dispatch.mesh_sphere_shape_cast_all = provider.mesh_sphere_shape_cast_all;
         return registerProviderDispatch(dispatch, provider.base.name_utf8,
                                          provider.base.name_size, owner, out_handle);
     } catch (const std::bad_alloc &) {
@@ -813,6 +830,63 @@ Physics::Status overlapAll(const phys::Shape &shape,
     }
 }
 
+Physics::Status shapeCastMeshes(
+    const phys::Shape &shape, vec3 delta, std::span<const Physics::TriangleMeshV3> meshes,
+    std::span<const phys::ColliderIdentity> identities,
+    std::span<const phys::ColliderQueryMetadata> metadata,
+    const phys::QueryFilter *filter, std::vector<phys::ShapeCastQueryHit> &out_hits,
+    std::span<const phys::TriangleMesh *const> acceleration) noexcept {
+    using Physics::Status;
+    out_hits.clear();
+    try {
+        const auto query_shape = toAbi(shape);
+        if (!finite(toAbi(delta))) return Status::invalid_argument;
+        SelectedMeshes selected;
+        const auto selected_status = selectMeshes(meshes, identities, metadata, filter, acceleration, selected);
+        if (selected_status != Status::ok) return selected_status;
+        if (selected.meshes.empty()) return Status::ok;
+        if (query_shape.kind != Physics::ShapeKindV1::sphere) return Status::unavailable;
+        const Physics::ProviderMeshSphereShapeCastQueryV3 query{
+            .center = query_shape.center, .radius = query_shape.radius, .delta = toAbi(delta),
+            .colliders = selected.meshes.data(),
+            .collider_count = static_cast<std::uint32_t>(selected.meshes.size()),
+        };
+        std::vector<Physics::ProviderShapeCastHitV2> raw_hits;
+        const auto status = invokeMeshProvider(Physics::query_mesh_sphere_shape_cast_all,
+            &ProviderDispatch::mesh_sphere_shape_cast_all, query, selected, raw_hits);
+        if (status != Status::ok) return status;
+        std::vector<bool> seen(selected.meshes.size(), false);
+        out_hits.reserve(raw_hits.size());
+        for (const auto &raw : raw_hits) {
+            Physics::Vec3V1 unit_normal{};
+            if (raw.collider_index >= selected.meshes.size() || seen[raw.collider_index] ||
+                !validShapeCastHit(raw, unit_normal)) {
+                out_hits.clear();
+                return Status::provider_error;
+            }
+            seen[raw.collider_index] = true;
+            const auto &identity = selected.identities[raw.collider_index];
+            const bool initial = (raw.flags & Physics::shape_cast_initial_overlap) != 0;
+            out_hits.push_back(phys::ShapeCastQueryHit{
+                identity.name, std::clamp(raw.time_of_impact, 0.0F, 1.0F),
+                initial ? raw.penetration_depth : 0.0F,
+                fromAbi(raw.position), fromAbi(unit_normal), initial, identity,
+                metadata[selected.source_indices[raw.collider_index]]});
+        }
+        phys::internal::orderShapeCastHits(out_hits);
+        return Status::ok;
+    } catch (const std::invalid_argument &) {
+        out_hits.clear();
+        return Status::invalid_argument;
+    } catch (const std::bad_alloc &) {
+        out_hits.clear();
+        return Status::out_of_memory;
+    } catch (...) {
+        out_hits.clear();
+        return Status::provider_error;
+    }
+}
+
 Physics::Status shapeCastAll(const phys::Shape &moving_shape, vec3 delta,
                              std::span<const phys::Collider> colliders,
                              const phys::QueryFilter *filter,
@@ -849,30 +923,14 @@ Physics::Status shapeCastAll(const phys::Shape &moving_shape, vec3 delta,
             if (status != Physics::Status::ok) return status;
         }
 
-        constexpr std::uint32_t known_flags =
-            Physics::shape_cast_initial_overlap;
-        constexpr float result_epsilon =
-            Physics::shapeCastContactEpsilonV2;
         std::vector<bool> seen(selected.size(), false);
         out_hits.reserve(raw_hits.size());
         for (const auto &raw : raw_hits) {
             Physics::Vec3V1 unit_normal{};
             const bool initial_overlap =
                 (raw.flags & Physics::shape_cast_initial_overlap) != 0;
-            const bool invalid_initial =
-                initial_overlap &&
-                (raw.time_of_impact > result_epsilon ||
-                 raw.penetration_depth <= result_epsilon);
-            const bool invalid_sweep =
-                !initial_overlap && raw.penetration_depth > result_epsilon;
-            if (raw.reserved != 0 || (raw.flags & ~known_flags) != 0 ||
-                raw.collider_index >= selected.size() || seen[raw.collider_index] ||
-                !std::isfinite(raw.time_of_impact) ||
-                raw.time_of_impact < 0.0F ||
-                raw.time_of_impact > 1.0F + result_epsilon ||
-                !std::isfinite(raw.penetration_depth) ||
-                raw.penetration_depth < 0.0F || invalid_initial || invalid_sweep ||
-                !finite(raw.position) || !normalized(raw.normal, unit_normal)) {
+            if (raw.collider_index >= selected.size() || seen[raw.collider_index] ||
+                !validShapeCastHit(raw, unit_normal)) {
                 out_hits.clear();
                 return Physics::Status::provider_error;
             }

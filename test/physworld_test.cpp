@@ -669,6 +669,35 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     overlap_query.shape.center.z = 3.3F;
     REQUIRE(service.overlap_all(service.context, &overlap_query, &overlap_hit, 1, &count) == Physics::Status::ok);
     CHECK(count == 0);
+    Physics::ShapeCastQueryV2 cast_query;
+    cast_query.shape.kind = Physics::ShapeKindV1::sphere;
+    cast_query.shape.radius = 0.25F;
+    cast_query.delta = {0, 0, 10};
+    std::array<Physics::ShapeCastHitV2, 2> cast_hits;
+    REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
+    REQUIRE(count == 2);
+    CHECK(cast_hits[0].identity.collider_id == identity.value);
+    CHECK(cast_hits[0].time_of_impact == Catch::Approx(0.275F));
+    CHECK(cast_hits[0].position.z == Catch::Approx(3));
+    CHECK(cast_hits[0].normal.z == Catch::Approx(-1));
+    CHECK(cast_hits[1].time_of_impact == Catch::Approx(0.475F));
+    auto cast = world.shapeCastClosest(phys::Sphere{{0, 0, 0}, 0.25F}, {0, 0, 10});
+    REQUIRE(cast);
+    CHECK(cast->identity.collider_id == identity);
+    std::vector<phys::ShapeCastQueryHit> cast_result;
+    REQUIRE(world.queryShapeCastAll(phys::Sphere{{0, 0, 0}, 0.25F}, {0, 0, 10},
+        &self_filter, cast_result) == Physics::Status::ok);
+    REQUIRE(cast_result.size() == 1);
+    CHECK(cast_result[0].id == "sphere");
+    // Do not publish the primitive hit when the mesh query cannot provide MTD.
+    cast_query.shape.center.z = 3;
+    CHECK(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::unavailable);
+    CHECK(world.queryShapeCastAll(phys::Sphere{{0, 0, 3}, 0.25F}, {0, 0, 10},
+        nullptr, cast_result) == Physics::Status::unavailable);
+    CHECK(cast_result.empty());
+    cast_query.shape.kind = Physics::ShapeKindV1::box;
+    cast_query.shape.half_extents = {0.25F, 0.25F, 0.25F};
+    CHECK(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::unavailable);
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {5, 0, 0};
     hits = world.raycastAll(ray);
     REQUIRE(hits.size() == 1);

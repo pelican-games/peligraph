@@ -285,11 +285,9 @@ Status serviceShapeCastAll(void *context, const ShapeCastQueryV2 *query,
         const auto converted_filter = fromAbi(query->filter);
         const auto *world = FastModuleContainer::tryGet<PhysWorld>();
         if (world == nullptr) return Status::unavailable;
-        const auto colliders = world->collectColliders();
         std::vector<phys::ShapeCastQueryHit> result;
-        const auto status = physics_internal::shapeCastAll(
-            fromAbi(query->shape), fromAbi(query->delta), colliders,
-            &converted_filter.value, result);
+        const auto status = world->queryShapeCastAll(
+            fromAbi(query->shape), fromAbi(query->delta), &converted_filter.value, result);
         if (status != Status::ok) return status;
         return copyShapeCastHits(result, hits, capacity, out_count);
     } catch (const std::bad_alloc &) {

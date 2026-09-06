@@ -131,6 +131,12 @@ std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
     return {};
 }
 
+Physics::Status PhysWorld::queryShapeCastAll(const phys::Shape &, vec3,
+    const phys::QueryFilter *, std::vector<phys::ShapeCastQueryHit> &hits) const {
+    hits.clear();
+    return Physics::Status::unavailable;
+}
+
 std::vector<phys::ShapeCastQueryHit> PhysWorld::shapeCastAll(
     const phys::Shape &moving_shape, vec3 delta,
     const phys::QueryFilter &filter) const {

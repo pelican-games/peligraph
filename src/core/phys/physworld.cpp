@@ -636,13 +636,35 @@ std::vector<phys::OverlapHit> PhysWorld::overlapAllHits(
     return hits;
 }
 
+Physics::Status PhysWorld::queryShapeCastAll(
+    const phys::Shape &shape, vec3 delta, const phys::QueryFilter *filter,
+    std::vector<phys::ShapeCastQueryHit> &hits) const {
+    hits.clear();
+    auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
+    const auto colliders = collectColliders();
+    std::vector<phys::ShapeCastQueryHit> result;
+    if (!colliders.empty() || meshes.empty()) {
+        const auto status = physics_internal::shapeCastAll(shape, delta, colliders, filter, result);
+        if (status != Physics::Status::ok) return status;
+    }
+    if (!meshes.empty()) {
+        std::vector<phys::ShapeCastQueryHit> mesh_hits;
+        const auto status = physics_internal::shapeCastMeshes(
+            shape, delta, meshes, identities, metadata, filter, mesh_hits, acceleration);
+        if (status != Physics::Status::ok) return status;
+        result.insert(result.end(), std::make_move_iterator(mesh_hits.begin()),
+                      std::make_move_iterator(mesh_hits.end()));
+        phys::internal::orderShapeCastHits(result);
+    }
+    hits = std::move(result);
+    return Physics::Status::ok;
+}
+
 std::vector<phys::ShapeCastQueryHit> PhysWorld::shapeCastAll(
     const phys::Shape &moving_shape, vec3 delta,
     const phys::QueryFilter &filter) const {
-    const auto colliders = collectColliders();
     std::vector<phys::ShapeCastQueryHit> hits;
-    const auto status = physics_internal::shapeCastAll(
-        moving_shape, delta, colliders, &filter, hits);
+    const auto status = queryShapeCastAll(moving_shape, delta, &filter, hits);
     if (status == Physics::Status::unavailable) return {};
     if (status != Physics::Status::ok) {
         throw std::runtime_error("Physics query provider shape cast failed with status " +

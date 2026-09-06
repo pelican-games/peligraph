@@ -4,6 +4,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cmath>
 #include <limits>
 #include <stdexcept>
 
@@ -31,6 +32,89 @@ TEST_CASE("Triangle mesh raycast tests triangle surfaces, both sides and paramet
     REQUIRE(back->normal.z == Catch::Approx(1));
     REQUIRE(mesh.raycast(Ray{{0, 0, 2}, {0, 0, 1}, 0}));
     REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 2}, {1, 0, 0}, 10}));
+}
+
+TEST_CASE("Sphere mesh sweep finds continuous face edge and vertex contacts",
+          "[physics][trianglemesh][sphere-mesh-sweep]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    const auto face = mesh.shapeCast(Sphere{{0.5F,0.5F,0},0.25F},{0,0,10},identity);
+    REQUIRE(face);
+    REQUIRE(face->time_of_impact == Catch::Approx(0.175F));
+    REQUIRE(face->position.z == Catch::Approx(2));
+    REQUIRE(face->normal.z == Catch::Approx(-1));
+    REQUIRE_FALSE(face->initial_overlap);
+    REQUIRE_FALSE(mesh.shapeCast(Sphere{{0.5F,0.5F,0},0.25F},{0,0,1.7F},identity));
+    const auto back = mesh.shapeCast(Sphere{{0.5F,0.5F,4},0.25F},{0,0,-4},identity);
+    REQUIRE(back);
+    REQUIRE(back->time_of_impact == Catch::Approx(0.4375F));
+    REQUIRE(back->normal.z == Catch::Approx(1));
+    // Edge and vertex paths lie outside the triangle's face projection.
+    const auto edge = mesh.shapeCast(Sphere{{1,-1,2},0.25F},{0,2,0},identity);
+    REQUIRE(edge);
+    REQUIRE(edge->time_of_impact == Catch::Approx(0.375F));
+    REQUIRE(edge->position.y == Catch::Approx(0));
+    REQUIRE(edge->normal.y == Catch::Approx(-1));
+    const auto vertex = mesh.shapeCast(Sphere{{-1,-1,2},0.25F},{2,2,0},identity);
+    REQUIRE(vertex);
+    REQUIRE(vertex->time_of_impact == Catch::Approx((1-0.25F/std::sqrt(2.0F))/2));
+    REQUIRE(vertex->position.x == Catch::Approx(0));
+    REQUIRE(vertex->position.y == Catch::Approx(0));
+    const auto grazing = mesh.shapeCast(Sphere{{-1,-0.25F,2},0.25F},{2,0,0},identity);
+    REQUIRE(grazing);
+    REQUIRE(grazing->time_of_impact == Catch::Approx(0.5F));
+    REQUIRE_FALSE(mesh.shapeCast(Sphere{{1.8F,1.8F,0},0.1F},{0,0,4},identity));
+    const auto point = mesh.shapeCast(Sphere{{0.5F,0.5F,0},0},{0,0,4},identity);
+    REQUIRE(point);
+    REQUIRE(point->time_of_impact == Catch::Approx(0.5F));
+}
+
+TEST_CASE("Sphere mesh sweep preserves contact rules and transformed world radius",
+          "[physics][trianglemesh][sphere-mesh-sweep]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    const Sphere touching{{0.5F,0.5F,1.75F},0.25F};
+    const auto approach = mesh.shapeCast(touching,{0,0,1},identity);
+    REQUIRE(approach);
+    REQUIRE(approach->time_of_impact == 0);
+    REQUIRE_FALSE(mesh.shapeCast(touching,{0,0,-1},identity));
+    REQUIRE_FALSE(mesh.shapeCast(touching,{1,0,0},identity));
+    REQUIRE_FALSE(mesh.shapeCast(touching,{},identity));
+    REQUIRE_THROWS_AS(mesh.shapeCast(Sphere{{0.5F,0.5F,2},0.25F},{0,0,1},identity),std::domain_error);
+    REQUIRE_THROWS_AS(mesh.shapeCast(Sphere{{0.5F,0.5F,2},0.25F},{},identity),std::domain_error);
+    glm::mat4 transform{1};
+    transform[0][0] = -2;
+    transform[1][0] = 0.5F;
+    transform[2][2] = 3;
+    transform[3][2] = 2;
+    const auto transformed = mesh.shapeCast(Sphere{{-0.75F,0.5F,10},0.25F},{0,0,-4},transform);
+    REQUIRE(transformed);
+    REQUIRE(transformed->time_of_impact == Catch::Approx(0.4375F));
+    REQUIRE(transformed->position.z == Catch::Approx(8));
+    REQUIRE(transformed->normal.z == Catch::Approx(1));
+    REQUIRE_FALSE(mesh.shapeCast(Sphere{{0,0,0},-1},{0,0,4},identity));
+    REQUIRE_FALSE(mesh.shapeCast(Sphere{{0,0,0},1},{0,0,std::numeric_limits<float>::infinity()},identity));
+    transform[0][0] = 0;
+    REQUIRE_FALSE(mesh.shapeCast(touching,{0,0,4},transform));
+}
+
+TEST_CASE("Sphere mesh sweep traverses BVH and does not hide later initial penetrations",
+          "[physics][trianglemesh][sphere-mesh-sweep]") {
+    std::vector<vec3> vertices;
+    std::vector<std::uint32_t> triangles;
+    for (int layer = 8; layer >= 1; --layer) {
+        const auto base = static_cast<std::uint32_t>(vertices.size());
+        vertices.push_back({0,0,static_cast<float>(layer)});
+        vertices.push_back({2,0,static_cast<float>(layer)});
+        vertices.push_back({0,2,static_cast<float>(layer)});
+        triangles.insert(triangles.end(),{base,base+1,base+2});
+    }
+    const TriangleMesh mesh(vertices,triangles);
+    const auto nearest = mesh.shapeCast(Sphere{{0.5F,0.5F,0},0.25F},{0,0,10},glm::mat4{1});
+    REQUIRE(nearest);
+    REQUIRE(nearest->time_of_impact == Catch::Approx(0.075F));
+    REQUIRE(nearest->position.z == Catch::Approx(1));
+    REQUIRE_THROWS_AS(mesh.shapeCast(Sphere{{0.5F,0.5F,7},1},{0,0,-10},glm::mat4{1}),std::domain_error);
 }
 
 TEST_CASE("Triangle mesh BVH finds nearest surfaces and resolves source-order ties",

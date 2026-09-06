@@ -51,6 +51,8 @@ Physics::Status builtinMeshQuery(
         if (capacity < result.size()) return Status::buffer_too_small;
         if (!result.empty()) std::copy(result.begin(), result.end(), hits);
         return Status::ok;
+    } catch (const std::domain_error &) {
+        return Status::unavailable;
     } catch (const std::invalid_argument &) {
         return Status::invalid_argument;
     } catch (const std::bad_alloc &) {
@@ -122,6 +124,29 @@ Physics::Status builtinMeshCapsuleOverlapAll(
                     {query.rotation.x, query.rotation.y, query.rotation.z, query.rotation.w},
                     query.half_height, query.radius}, transform)) return std::nullopt;
             return Physics::ProviderOverlapHitV1{index, 0};
+        });
+}
+
+Physics::Status builtinMeshSphereShapeCastAll(
+    void *context, const Physics::ProviderMeshSphereShapeCastQueryV3 *query,
+    Physics::ProviderShapeCastHitV2 *hits, std::uint32_t capacity,
+    std::uint32_t *out_count) noexcept {
+    return builtinMeshQuery(context, query, hits, capacity, out_count,
+        [](const phys::TriangleMesh &mesh, const glm::mat4 &transform,
+           const Physics::ProviderMeshSphereShapeCastQueryV3 &query, std::uint32_t index)
+            -> std::optional<Physics::ProviderShapeCastHitV2> {
+            const auto hit = mesh.shapeCast(
+                phys::Sphere{{query.center.x, query.center.y, query.center.z}, query.radius},
+                {query.delta.x, query.delta.y, query.delta.z}, transform);
+            if (!hit) return std::nullopt;
+            Physics::ProviderShapeCastHitV2 result;
+            result.collider_index = index;
+            result.time_of_impact = hit->time_of_impact;
+            result.penetration_depth = hit->penetration_depth;
+            result.position = {hit->position.x, hit->position.y, hit->position.z};
+            result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
+            result.flags = hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0;
+            return result;
         });
 }
 
