@@ -34,6 +34,8 @@ class TriangleMesh {
                                 const glm::mat4 &local_to_world) const;
     [[nodiscard]] bool overlaps(const Box &world_box,
                                 const glm::mat4 &local_to_world) const;
+    [[nodiscard]] bool overlaps(const Capsule &world_capsule,
+                                const glm::mat4 &local_to_world) const;
     [[nodiscard]] std::span<const vec3> vertices() const noexcept { return vertices_; }
     [[nodiscard]] std::span<const std::uint32_t> indices() const noexcept { return indices_; }
     [[nodiscard]] std::size_t triangleCount() const noexcept { return indices_.size() / 3; }

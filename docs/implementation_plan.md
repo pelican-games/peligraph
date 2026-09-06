@@ -23242,6 +23242,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**Capsuleと静的meshのoverlap (2026-09-07):**
+- TriangleMesh→provider→PhysWorld→既存公開ServiceV2へCapsule overlapを接続。world単位の軸線と三角形の距離を、線分と辺の距離・端点の面への射影・面との交差から求める。回転・mesh変換に対応し、接触を含む。Sphereは長さゼロのCapsule経路へ集約した。閉じたmeshの内部を充填体とは扱わない。
+- ProviderV3にquery_mesh_capsule_overlap_allと型付きcallbackを追加。入力検証・filter・identity・provider結果検査は既存overlapMeshesを共有し、Capsuleを無条件unavailableにする旧分岐を除去。構造体拡張に伴い利用DLLは現行headerで再ビルドする。
+- Player・runtime_services Debug build成功。関連24case/287assertion成功。両端が三角形外の平行軸、半径ゼロで面を貫く軸、半球接触、辺接触、広域bounds内のmiss、回転・変換、公開serviceのidentity、独自providerの結果と不正index拒否を確認。Sphere/Boxの既存回帰も成功。provider-only別buildとStudio通し操作は未実施。sweep・mesh triggerは未実装として残し、Capsule対応を今回の区切りとする。
+
 **Boxと静的meshのoverlap (2026-09-07):**
 - 利用者の「メッシュ物理を区切りまで実装」の許可に基づき、Box overlapをTriangleMesh→provider→PhysWorld→既存公開ServiceV2へ接続。BVHを箱の座標系で絞り、三角形と箱の13分離軸で判定する。接触を含み、回転・非一様scale・反転・shearを扱う。閉じたmeshの内部を充填体とみなす機能ではない。
 - ProviderV3にquery_mesh_box_overlap_allと型付きcallbackを追加。SphereとBoxのfilter・identity・provider結果検査・順序付けはoverlapMeshesで共有。選択中providerを迂回してbuiltinへfallbackしない。ProviderV3構造体を拡張したため利用DLLは現行headerで再ビルドする。

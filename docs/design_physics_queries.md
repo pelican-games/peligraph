@@ -82,12 +82,15 @@ P2: collider バインダ + GameContext API + debug 可視化(済) →
 S2D-P/WP107: shapeCast/MTD/filter + Provider ABI V2(済) →
 P3: rpc raycast + メッシュ(BVH)+ glb extras 規約。
 
-2026-09-07現在: 静的meshのscene/import/reloadとraycast、Sphere/Box overlapを実装済み。
-Box overlapは回転した箱と変換後の三角形表面を判定し、接触も含む。閉じたmeshを充填体とは扱わない。
+2026-09-07現在: 静的meshのscene/import/reloadとraycast、Sphere/Box/Capsule overlapを実装済み。
+Box/Capsule overlapは回転した形状と変換後の三角形表面を判定し、接触も含む。閉じたmeshを充填体とは扱わない。
 既存のoverlap公開serviceを使用し、ProviderV3には`query_mesh_box_overlap_all`と
 `mesh_box_overlap_all`を追加する。入力geometryはcallback中のみ有効な借用データで、
 選択中providerがBox mesh判定に未対応なら`unavailable`を返す。
-Capsule mesh overlap・sweep・mesh triggerは未実装。
+CapsuleはY軸に沿った半長`half_height`の線分と半径`radius`で表し、rotationで回転する。
+軸線と三角形表面の距離で判定し、非一様scale等はmesh側の三角形へ適用するため半径はworld単位を保つ。
+ProviderV3の`query_mesh_capsule_overlap_all`と`mesh_capsule_overlap_all`を使用する。
+sweep・mesh triggerは未実装。
 
 2026-09-06: RPC `raycast`を既存PhysWorldへ接続。paramsは`origin`・`direction`（各3数値）と`max_distance`（有限・非負）。方向は正規化する。結果は`hit: null`またはname/distance/position/normal/collider_id/shape_ordinal/trigger/one_wayを持つhit。現在のtransformを問い合わせ、raycast既定のlayer/mask・trigger/one-way包含規則を使用する。P3のメッシュ/BVH/glb extras規約の完了を意味しない。
 

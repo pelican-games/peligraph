@@ -9,6 +9,7 @@ inline constexpr std::uint32_t providerVersionV3 = 3;
 inline constexpr std::uint64_t query_mesh_raycast_all = 1ULL << 0U;
 inline constexpr std::uint64_t query_mesh_sphere_overlap_all = 1ULL << 1U;
 inline constexpr std::uint64_t query_mesh_box_overlap_all = 1ULL << 2U;
+inline constexpr std::uint64_t query_mesh_capsule_overlap_all = 1ULL << 3U;
 
 // Borrowed, immutable memory valid for the callback duration. Explicit index
 // triples describe double-sided triangles. Normals follow transformed winding.
@@ -64,6 +65,20 @@ using ProviderMeshBoxOverlapAllV3Fn = Status (*)(
     void *, const ProviderMeshBoxOverlapQueryV3 *, ProviderOverlapHitV1 *,
     std::uint32_t, std::uint32_t *) noexcept;
 
+struct ProviderMeshCapsuleOverlapQueryV3 {
+    Vec3V1 center{};
+    QuatV1 rotation{};
+    float half_height = 0;
+    float radius = 0;
+    const TriangleMeshV3 *colliders = nullptr;
+    std::uint32_t collider_count = 0;
+    std::uint32_t reserved = 0;
+};
+
+using ProviderMeshCapsuleOverlapAllV3Fn = Status (*)(
+    void *, const ProviderMeshCapsuleOverlapQueryV3 *, ProviderOverlapHitV1 *,
+    std::uint32_t, std::uint32_t *) noexcept;
+
 struct ProviderV3 {
     std::uint32_t struct_size = sizeof(ProviderV3);
     std::uint32_t version = descriptorVersionV1;
@@ -79,6 +94,7 @@ struct ProviderV3 {
     ProviderMeshRaycastAllV3Fn mesh_raycast_all = nullptr;
     ProviderMeshSphereOverlapAllV3Fn mesh_sphere_overlap_all = nullptr;
     ProviderMeshBoxOverlapAllV3Fn mesh_box_overlap_all = nullptr;
+    ProviderMeshCapsuleOverlapAllV3Fn mesh_capsule_overlap_all = nullptr;
 };
 
 using RegisterProviderV3Fn = Status (*)(void *, const ProviderV3 *, ProviderHandleV2 *) noexcept;

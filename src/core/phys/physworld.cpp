@@ -605,7 +605,6 @@ Physics::Status PhysWorld::queryOverlapAll(
     std::vector<phys::OverlapHit> &hits) const {
     hits.clear();
     auto [meshes, acceleration, identities, metadata] = collectMeshQueries(bindings);
-    if (!meshes.empty() && std::holds_alternative<phys::Capsule>(shape)) return Physics::Status::unavailable;
     const auto colliders = collectColliders();
     std::vector<phys::OverlapHit> result;
     if (!colliders.empty() || meshes.empty()) {

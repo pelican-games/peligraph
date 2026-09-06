@@ -34,6 +34,7 @@ struct ProviderDispatch {
     Physics::ProviderMeshRaycastAllV3Fn mesh_raycast_all = nullptr;
     Physics::ProviderMeshSphereOverlapAllV3Fn mesh_sphere_overlap_all = nullptr;
     Physics::ProviderMeshBoxOverlapAllV3Fn mesh_box_overlap_all = nullptr;
+    Physics::ProviderMeshCapsuleOverlapAllV3Fn mesh_capsule_overlap_all = nullptr;
 };
 
 struct RegisteredProvider {
@@ -353,10 +354,11 @@ Physics::Status invokeMeshProvider(
     BuiltinMeshQueryContext mesh_context{selected.acceleration};
     const ProviderDispatch builtin_mesh{
         .context = &mesh_context,
-        .mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all,
+        .mesh_capability_bits = Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all,
         .mesh_raycast_all = builtinMeshRaycastAll,
         .mesh_sphere_overlap_all = builtinMeshSphereOverlapAll,
         .mesh_box_overlap_all = builtinMeshBoxOverlapAll,
+        .mesh_capsule_overlap_all = builtinMeshCapsuleOverlapAll,
     };
     if (dispatch == nullptr) dispatch = &builtin_mesh;
 #endif
@@ -447,11 +449,12 @@ Physics::Status registerProvider(const Physics::ProviderV3 &provider,
         provider.provider_version != Physics::providerVersionV3 ||
         provider.minimum_engine_provider_version > Physics::providerVersionV3 ||
         !validProvider(provider.base, true) ||
-        (provider.mesh_capability_bits & ~(Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all)) != 0 ||
+        (provider.mesh_capability_bits & ~(Physics::query_mesh_raycast_all | Physics::query_mesh_sphere_overlap_all | Physics::query_mesh_box_overlap_all | Physics::query_mesh_capsule_overlap_all)) != 0 ||
         (provider.mesh_capability_bits == 0 && provider.base.capability_bits == 0) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_raycast_all) != 0 && provider.mesh_raycast_all == nullptr) ||
         ((provider.mesh_capability_bits & Physics::query_mesh_sphere_overlap_all) != 0 && provider.mesh_sphere_overlap_all == nullptr) ||
-        ((provider.mesh_capability_bits & Physics::query_mesh_box_overlap_all) != 0 && provider.mesh_box_overlap_all == nullptr))
+        ((provider.mesh_capability_bits & Physics::query_mesh_box_overlap_all) != 0 && provider.mesh_box_overlap_all == nullptr) ||
+        ((provider.mesh_capability_bits & Physics::query_mesh_capsule_overlap_all) != 0 && provider.mesh_capsule_overlap_all == nullptr))
         return Physics::Status::invalid_argument;
     try {
         auto dispatch = dispatchFor(provider.base);
@@ -459,6 +462,7 @@ Physics::Status registerProvider(const Physics::ProviderV3 &provider,
         dispatch.mesh_raycast_all = provider.mesh_raycast_all;
         dispatch.mesh_sphere_overlap_all = provider.mesh_sphere_overlap_all;
         dispatch.mesh_box_overlap_all = provider.mesh_box_overlap_all;
+        dispatch.mesh_capsule_overlap_all = provider.mesh_capsule_overlap_all;
         return registerProviderDispatch(dispatch, provider.base.name_utf8,
                                          provider.base.name_size, owner, out_handle);
     } catch (const std::bad_alloc &) {
@@ -603,7 +607,6 @@ Physics::Status overlapMeshes(
     out_hits.clear();
     try {
         const auto query_shape = toAbi(shape);
-        if (query_shape.kind == Physics::ShapeKindV1::capsule) return Status::unavailable;
         SelectedMeshes selected;
         const auto selected_status = selectMeshes(meshes, identities, metadata, filter, acceleration, selected);
         if (selected_status != Status::ok) return selected_status;
@@ -617,7 +620,7 @@ Physics::Status overlapMeshes(
             };
             status = invokeMeshProvider(Physics::query_mesh_sphere_overlap_all,
                 &ProviderDispatch::mesh_sphere_overlap_all, query, selected, raw_hits);
-        } else {
+        } else if (query_shape.kind == Physics::ShapeKindV1::box) {
             const Physics::ProviderMeshBoxOverlapQueryV3 query{
                 .center = query_shape.center, .rotation = query_shape.rotation,
                 .half_extents = query_shape.half_extents,
@@ -626,6 +629,15 @@ Physics::Status overlapMeshes(
             };
             status = invokeMeshProvider(Physics::query_mesh_box_overlap_all,
                 &ProviderDispatch::mesh_box_overlap_all, query, selected, raw_hits);
+        } else {
+            const Physics::ProviderMeshCapsuleOverlapQueryV3 query{
+                .center = query_shape.center, .rotation = query_shape.rotation,
+                .half_height = query_shape.half_height, .radius = query_shape.radius,
+                .colliders = selected.meshes.data(),
+                .collider_count = static_cast<std::uint32_t>(selected.meshes.size()),
+            };
+            status = invokeMeshProvider(Physics::query_mesh_capsule_overlap_all,
+                &ProviderDispatch::mesh_capsule_overlap_all, query, selected, raw_hits);
         }
         if (status != Status::ok) return status;
         std::vector<bool> seen(selected.meshes.size(), false);

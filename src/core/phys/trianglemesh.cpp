@@ -237,8 +237,16 @@ std::optional<RaycastHit> TriangleMesh::raycast(
 }
 
 bool TriangleMesh::overlaps(const Sphere &sphere, const glm::mat4 &local_to_world) const {
-    if (nodes_.empty() || !finite(sphere.center) || !std::isfinite(sphere.radius) || sphere.radius < 0)
+    return overlaps(Capsule{sphere.center, {0,0,0,1}, 0, sphere.radius}, local_to_world);
+}
+
+bool TriangleMesh::overlaps(const Capsule &capsule, const glm::mat4 &local_to_world) const {
+    if (nodes_.empty() || !finite(capsule.center) || !std::isfinite(capsule.radius) || capsule.radius < 0)
         return false;
+    if (!std::isfinite(capsule.half_height) || capsule.half_height < 0) return false;
+    const glm::dquat rotation{capsule.rotation.w, capsule.rotation.x, capsule.rotation.y, capsule.rotation.z};
+    const double rotation2 = glm::dot(rotation, rotation);
+    if (!std::isfinite(rotation2) || rotation2 == 0) return false;
     for (int c = 0; c < 4; ++c)
         for (int r = 0; r < 4; ++r)
             if (!std::isfinite(local_to_world[c][r])) return false;
@@ -247,57 +255,78 @@ bool TriangleMesh::overlaps(const Sphere &sphere, const glm::mat4 &local_to_worl
     const glm::dmat4 matrix{local_to_world};
     const double determinant = glm::determinant(matrix);
     if (!std::isfinite(determinant) || determinant == 0) return false;
-    const glm::dvec3 center{sphere.center.x, sphere.center.y, sphere.center.z};
-    const double radius2 = static_cast<double>(sphere.radius) * sphere.radius;
-    const auto worldPoint = [&](vec3 p) { return glm::dvec3(matrix * glm::dvec4{p.x, p.y, p.z, 1}); };
-    const auto distance2 = [](glm::dvec3 a, glm::dvec3 b) {
-        const auto d = a - b;
-        return glm::dot(d, d);
+    const glm::dvec3 center{capsule.center.x, capsule.center.y, capsule.center.z};
+    const auto offset = (rotation / std::sqrt(rotation2)) * glm::dvec3{0, capsule.half_height, 0};
+    const auto start = center - offset, end = center + offset;
+    const auto direction = end - start;
+    const double segment2 = glm::dot(direction, direction);
+    const double radius2 = static_cast<double>(capsule.radius) * capsule.radius;
+    const auto worldPoint = [&](vec3 p) { return glm::dvec3(matrix * glm::dvec4{p.x,p.y,p.z,1}); };
+    const auto squared = [](glm::dvec3 v) { return glm::dot(v,v); };
+    const auto edgeDistance2 = [&](glm::dvec3 point, glm::dvec3 a, glm::dvec3 b) {
+        const auto edge = b-a;
+        const double length2 = squared(edge);
+        const double t = length2 == 0 ? 0 : std::clamp(glm::dot(point-a,edge)/length2,0.0,1.0);
+        return squared(point-a-t*edge);
     };
-    const auto edgeDistance2 = [&](glm::dvec3 a, glm::dvec3 b) {
-        const auto edge = b - a;
-        const double length2 = glm::dot(edge, edge);
-        const double t = length2 == 0 ? 0 : std::clamp(glm::dot(center - a, edge) / length2, 0.0, 1.0);
-        return distance2(center, a + t * edge);
+    const auto segmentEdgeDistance2 = [&](glm::dvec3 a, glm::dvec3 b) {
+        double best = std::min({edgeDistance2(start,a,b), edgeDistance2(end,a,b),
+                               edgeDistance2(a,start,end), edgeDistance2(b,start,end)});
+        const auto edge = b-a, relative = start-a;
+        const double edge2 = squared(edge), product = glm::dot(direction,edge);
+        // Endpoint minima cover parallel/degenerate segments. Otherwise also
+        // consider the interior stationary point of the squared distance.
+        const double denominator = squared(glm::cross(direction,edge));
+        if (denominator > 0) {
+            const double d = glm::dot(direction,relative), e = glm::dot(edge,relative);
+            const double t = (product*e-edge2*d)/denominator;
+            const double u = (segment2*e-product*d)/denominator;
+            if (t >= 0 && t <= 1 && u >= 0 && u <= 1)
+                best = std::min(best,squared(relative+t*direction-u*edge));
+        }
+        return best;
     };
+    const auto touches = [&](glm::dvec3 a, glm::dvec3 b, glm::dvec3 c) {
+        if (std::min({segmentEdgeDistance2(a,b), segmentEdgeDistance2(b,c), segmentEdgeDistance2(c,a)}) <= radius2)
+            return true;
+        const auto normal = glm::cross(b-a,c-a);
+        const double normal2 = squared(normal);
+        if (normal2 == 0) return false;
+        const auto inside = [&](glm::dvec3 p) {
+            return glm::dot(glm::cross(b-a,p-a),normal) >= 0 &&
+                   glm::dot(glm::cross(c-b,p-b),normal) >= 0 &&
+                   glm::dot(glm::cross(a-c,p-c),normal) >= 0;
+        };
+        const double h0 = glm::dot(start-a,normal), h1 = glm::dot(end-a,normal);
+        for (const auto p : {start,end}) {
+            const double height = glm::dot(p-a,normal);
+            if (height*height <= radius2*normal2 && inside(p-(height/normal2)*normal)) return true;
+        }
+        if (h0 != h1) {
+            const double t = h0/(h0-h1);
+            if (t >= 0 && t <= 1 && inside(start+t*direction)) return true;
+        }
+        return false;
+    };
+    const auto query_low = glm::min(start,end)-glm::dvec3(capsule.radius);
+    const auto query_high = glm::max(start,end)+glm::dvec3(capsule.radius);
     std::array<std::size_t, std::numeric_limits<std::size_t>::digits + 1> stack{};
     std::size_t size = 1;
-    while (size != 0) {
+    while (size) {
         const auto &node = nodes_[stack[--size]];
-        glm::dvec3 low{std::numeric_limits<double>::infinity()};
-        glm::dvec3 high{-std::numeric_limits<double>::infinity()};
-        // Conservative world AABB of the transformed node; narrow phase below
-        // uses world triangles so a nonuniform scale never stretches the sphere.
+        glm::dvec3 low{std::numeric_limits<double>::infinity()}, high{-std::numeric_limits<double>::infinity()};
         for (int corner = 0; corner < 8; ++corner) {
             const auto p = worldPoint({(corner & 1) ? node.maximum.x : node.minimum.x,
                 (corner & 2) ? node.maximum.y : node.minimum.y,
                 (corner & 4) ? node.maximum.z : node.minimum.z});
-            low = glm::min(low, p);
-            high = glm::max(high, p);
+            low = glm::min(low,p); high = glm::max(high,p);
         }
-        if (distance2(center, glm::clamp(center, low, high)) > radius2) continue;
-        if (node.count == 0) {
-            stack[size++] = node.left;
-            stack[size++] = node.right;
-            continue;
-        }
+        if (glm::any(glm::greaterThan(low,query_high)) || glm::any(glm::lessThan(high,query_low))) continue;
+        if (!node.count) { stack[size++] = node.left; stack[size++] = node.right; continue; }
         for (std::size_t i = node.begin; i < node.begin + node.count; ++i) {
             const auto triangle = triangles_[i] * 3;
-            const auto a = worldPoint(vertices_[indices_[triangle]]);
-            const auto b = worldPoint(vertices_[indices_[triangle + 1]]);
-            const auto c = worldPoint(vertices_[indices_[triangle + 2]]);
-            if (std::min({edgeDistance2(a, b), edgeDistance2(b, c), edgeDistance2(c, a)}) <= radius2)
-                return true;
-            const auto normal = glm::cross(b - a, c - a);
-            const double normal2 = glm::dot(normal, normal);
-            if (normal2 == 0) continue;
-            const double height = glm::dot(center - a, normal);
-            if (height * height > radius2 * normal2) continue;
-            const auto projected = center - (height / normal2) * normal;
-            if (glm::dot(glm::cross(b - a, projected - a), normal) >= 0 &&
-                glm::dot(glm::cross(c - b, projected - b), normal) >= 0 &&
-                glm::dot(glm::cross(a - c, projected - c), normal) >= 0)
-                return true;
+            if (touches(worldPoint(vertices_[indices_[triangle]]), worldPoint(vertices_[indices_[triangle+1]]),
+                        worldPoint(vertices_[indices_[triangle+2]]))) return true;
         }
     }
     return false;

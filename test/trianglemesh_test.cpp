@@ -210,4 +210,34 @@ TEST_CASE("Triangle mesh box overlap separates triangle surfaces from bounds", "
     CHECK_FALSE(mesh.overlaps(box, identity));
 }
 
+TEST_CASE("Capsule mesh overlap covers segment interior caps edges and transformed triangles", "[physics][trianglemesh][capsule-mesh]") {
+    const TriangleMesh mesh(triangle, indices);
+    const glm::mat4 identity{1};
+    Capsule capsule{{0.5F,0.5F,2.25F}, {0,0,0,1}, 3, 0.25F};
+    CHECK(mesh.overlaps(capsule, identity)); // Parallel segment; both endpoints outside triangle.
+    capsule.center.z = 2.3F;
+    CHECK_FALSE(mesh.overlaps(capsule, identity));
+    capsule = Capsule{{0.5F,0.5F,2}, {0.70710678F,0,0,0.70710678F}, 2, 0};
+    CHECK(mesh.overlaps(capsule, identity)); // Segment crosses face, endpoints far away.
+    capsule.center = {1.8F,1.8F,2};
+    CHECK_FALSE(mesh.overlaps(capsule, identity)); // Inside broad bounds, outside triangle.
+    capsule = Capsule{{0.5F,0.5F,2.75F}, {0.70710678F,0,0,0.70710678F}, 0.5F, 0.25F};
+    CHECK(mesh.overlaps(capsule, identity)); // End cap touches face.
+    capsule.center.z = 2.8F;
+    CHECK_FALSE(mesh.overlaps(capsule, identity));
+    capsule = Capsule{{1,-0.25F,2}, {0,0,0,1}, 0, 0.25F};
+    CHECK(mesh.overlaps(capsule, identity)); // Degenerate segment touches edge.
+    CHECK(mesh.overlaps(capsule, identity) == mesh.overlaps(Sphere{capsule.center,capsule.radius}, identity));
+    glm::mat4 transform{1};
+    transform[0][0] = -2; transform[1][0] = 0.5F; transform[2][2] = 3; transform[3][2] = 2;
+    capsule = Capsule{{-0.75F,0.5F,8.25F}, {0,0,0,1}, 0.1F, 0.25F};
+    CHECK(mesh.overlaps(capsule, transform));
+    capsule.center.z = 8.3F;
+    CHECK_FALSE(mesh.overlaps(capsule, transform));
+    capsule.half_height = -1;
+    CHECK_FALSE(mesh.overlaps(capsule, identity));
+    capsule.half_height = 1; capsule.rotation = {0,0,0,0};
+    CHECK_FALSE(mesh.overlaps(capsule, identity));
+}
+
 } // namespace Pelican::phys

@@ -110,4 +110,19 @@ Physics::Status builtinMeshBoxOverlapAll(
         });
 }
 
+Physics::Status builtinMeshCapsuleOverlapAll(
+    void *context, const Physics::ProviderMeshCapsuleOverlapQueryV3 *query,
+    Physics::ProviderOverlapHitV1 *hits, std::uint32_t capacity,
+    std::uint32_t *out_count) noexcept {
+    return builtinMeshQuery(context, query, hits, capacity, out_count,
+        [](const phys::TriangleMesh &mesh, const glm::mat4 &transform,
+           const Physics::ProviderMeshCapsuleOverlapQueryV3 &query, std::uint32_t index)
+            -> std::optional<Physics::ProviderOverlapHitV1> {
+            if (!mesh.overlaps(phys::Capsule{{query.center.x, query.center.y, query.center.z},
+                    {query.rotation.x, query.rotation.y, query.rotation.z, query.rotation.w},
+                    query.half_height, query.radius}, transform)) return std::nullopt;
+            return Physics::ProviderOverlapHitV1{index, 0};
+        });
+}
+
 } // namespace Pelican::physics_internal
