@@ -1545,8 +1545,10 @@ TEST_CASE("WP382b behavior remove undo preserves the exact authored component",
 TEST_CASE("List editing can undo and redo through attachment creation",
           "[editor][journal][behavior][list-creation-undo]") {
     bool spawn = false;
+    bool destroy = false;
     SECTION("add component") {}
     SECTION("spawn object") { spawn = true; }
+    SECTION("destroy and restore object with edited List") { spawn = true; destroy = true; }
     Harness harness;
     const Json initial{{"name", "behavior"},
         {"type", "wp382b_journal_list_behavior"},
@@ -1579,6 +1581,11 @@ TEST_CASE("List editing can undo and redo through attachment creation",
         INFO(result.dump());
         REQUIRE(result.at("status") == "committed");
     };
+    if (destroy) {
+        REQUIRE(harness.commit({{"op", "destroy"}, {"object_id", object_id}})
+                    .at("status") == "committed");
+        replay(false);
+    }
     replay(false);
     replay(false);
     replay(true);
