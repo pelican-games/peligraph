@@ -22,7 +22,7 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 
-次はCARRIERのmodel reload後GPU反映を修正する。CPU publish後にcurrent skin paletteとmaterial overrideの同期が抜ける現行経路を確認した。direct model参照のasset keyは修正・reload前後の対照成功。別Behaviorの独立Undoと、spawn/add→List編集を組み合わせたUndo/Redoも修正済み（journal34件、WP382b関連14件成功）。unpack/destroyの専用追加確認は未実施。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
+次は残る計画とCARRIER/Studio接続を照合する。model reload後のcurrent skin palette・relative/absolute material overrideは描画前同期へ接続し、3種の描画復帰と既存reload/rollbackが成功。direct model参照のasset key、別Behaviorの独立Undo、spawn/add→List編集を組み合わせたUndo/Redoも修正済み。unpack/destroyの専用追加確認と新画面の実操作は未実施。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
 
 ## 製品の完成条件
 

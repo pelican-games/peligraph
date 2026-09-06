@@ -339,7 +339,7 @@ return { std::max(1u, base.width >> mip), std::max(1u, base.height >> mip) };
 
 Vulkan のシェーダは資源を `layout(set = S, binding = B)` で受け取ります。CPU 側はその (set, binding) に対して `VkWriteDescriptorSet`(`dstSet` / `dstBinding` / `descriptorType` / バッファまたはイメージの情報)を組んで `vkUpdateDescriptorSets` を呼び、set の形そのものは `VkDescriptorSetLayout` が、確保元は `VkDescriptorPool` が持ちます。**仕様上の位置**は Vulkan 仕様 "Resource Descriptors" 章(HTML 版のアンカー `#VkWriteDescriptorSet` / `#VkDescriptorSetLayoutBinding`)です。GLSL 側の数値と C++ 側の数値が一致しているかをコンパイラは検査しないので、両方から読まれる定数表を 1 つ置いてそれを唯一の出所にする、というのが定型になります。
 
-**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L226) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2594)
+**使用場所**: [pelican_sets.glsl の binding 定数](../../src/core/resources/shaders/include/pelican_sets.glsl#L9) / [FrameResources::configureViewCount()](../../src/core/renderer/frameresources.cpp#L110)(`writes[0].dstBinding = PELICAN_FRAME_UBO_BINDING` として同じ定数を使う) / [PolygonInstanceContainer::PolygonInstanceContainer()](../../src/core/renderer/polygoninstancecontainer.cpp#L240) / [ComputeTaskContainer::createDescriptorSet()](../../src/core/renderingpass/computetask.cpp#L2594)
 
 **このコードベースでの注意**: 定数表は GLSL のヘッダ側にあり、C++ からも同じマクロ名で読まれます。番号を動かすときは、シェーダと C++ の両方が同じヘッダを見ていることが前提です。
 
@@ -1112,7 +1112,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2201)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L424)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2229)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L424)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 
@@ -1132,7 +1132,7 @@ mip レベル m の寸法は `max(1, n >> m)` です(2 で割ることを右シ�
 
 ビュー行列 V は world → view の変換なので、その逆 `world_from_view = inverse(V)` は view → world、つまり**カメラの姿勢そのもの**です。列優先の 4×4 では、第 0・1・2 列が**ビュー空間の +X / +Y / +Z 軸**を world 座標で表し、第 3 列がカメラ位置になります。右手座標系のカメラは −Z を向くので、第 2 列は「前」ではなく**後ろ向き**であり、視線ベクトルは `-world_from_view[2]` です(この符号の取り違えが、ソートや背面判定が丸ごと反転するよくある原因です)。ビュー行列が直交かつ一様スケールなら、逆行列は回転部の転置 + 平行移動の付け替えで安く求まりますが、素直に `inverse()` を呼んでも意味は同じです。
 
-**使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L35)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
+**使用場所**: [drawQueueSortView()](../../src/core/renderer/polygoninstancecontainer.cpp#L49)(`inverse(view)` の第 2 列を符号反転して正規化し、描画順のソート軸にする)
 
 ## 10.7 OpenXR ランタイムの作法
 

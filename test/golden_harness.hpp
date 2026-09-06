@@ -21,6 +21,7 @@ void runOpenXrTaaTransition();
 void runVelocityFeature();
 void runSetTimeSkinnedVelocity();
 void runMorphVelocity();
+void runModelReloadGpuState();
 void runGpuTimingIdentity();
 void runGpuTimingRing();
 void runGpuTimingCompute();

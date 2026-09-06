@@ -30,6 +30,20 @@ constexpr size_t maxRenderCommands = 1024;
 constexpr size_t maxDrawSortViews = 2;
 constexpr size_t maxPreparedSecondaryViewFamilyViews = 32;
 
+MaterialInstanceOverrideGpuData materialOverrideGpuData(
+    const MaterialInstanceOverrideFrame &frame) {
+    return {
+        .base_color_factor = frame.current.base_color_factor,
+        .emissive_factor = frame.current.emissive_factor,
+        .uv_offset_scale = glm::vec4{frame.current.uv_offset, frame.current.uv_scale},
+        .uv_rotation_reserved = glm::vec4{frame.current.uv_rotation, 0.0f, 0.0f, 0.0f},
+        .metadata = glm::uvec4{
+            frame.current.mask, frame.instance_generation,
+            static_cast<std::uint32_t>(frame.current_revision),
+            static_cast<std::uint32_t>(frame.current_revision >> 32u)},
+    };
+}
+
 } // namespace
 
 DrawQueueSortView drawQueueSortView(
@@ -509,6 +523,9 @@ void PolygonInstanceContainer::publishPreparedScene(
     material_override_frames.swap(prepared.material_override_frames);
     material_absolute_override_frames.swap(
         prepared.material_absolute_override_frames);
+    // Publication stays noexcept. The next draw synchronizes the final CPU
+    // state, including a rollback or an animation update after publication.
+    published_scene_gpu_dirty = true;
 }
 
 void PolygonInstanceContainer::publishPreparedScene(
@@ -960,6 +977,7 @@ void PolygonInstanceContainer::triggerUpdate() {
 void PolygonInstanceContainer::triggerUpdate(
     const DrawQueueFramePlan &frame_plan) {
     drainSceneRetirements();
+    uploadPublishedSceneState();
     // Clear the published view before compiling the next immutable queue.
     compiled_draw_queue = {};
     prepared_view_family_draws.clear();
@@ -1404,7 +1422,6 @@ void PolygonInstanceContainer::rebuildModelInstances(
     std::span<const ModelInstanceRebuild> replacements) {
     auto prepared = prepareModelInstanceRebuild(replacements);
     publishPreparedScene(std::move(prepared));
-    uploadMaterialAbsoluteOverrides();
 }
 
 std::shared_ptr<const RayScenePlanState>
@@ -1940,23 +1957,34 @@ Animation::Status PolygonInstanceContainer::publishMaterialInstanceOverride(
         next.previous_revision = next.current_revision;
     }
 
-    const MaterialInstanceOverrideGpuData gpu{
-        .base_color_factor = next.current.base_color_factor,
-        .emissive_factor = next.current.emissive_factor,
-        .uv_offset_scale = glm::vec4{next.current.uv_offset,
-                                     next.current.uv_scale},
-        .uv_rotation_reserved = glm::vec4{next.current.uv_rotation, 0.0f,
-                                          0.0f, 0.0f},
-        .metadata = glm::uvec4{
-            next.current.mask, next.instance_generation,
-            static_cast<std::uint32_t>(next.current_revision),
-            static_cast<std::uint32_t>(next.current_revision >> 32u)},
-    };
+    const auto gpu = materialOverrideGpuData(next);
     GET_MODULE(VulkanManageCore).writeBuf(
         material_override_buffer, &gpu,
         sizeof(MaterialInstanceOverrideGpuData) * index, sizeof(gpu));
     material_override_frames.insert_or_assign(index, std::move(next));
     return Animation::Status::ok;
+}
+
+void PolygonInstanceContainer::uploadPublishedSceneState() {
+    if (!published_scene_gpu_dirty) return;
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    for (std::size_t i = 0; i < skin_palettes.size(); ++i) {
+        const auto &palette = skin_palettes[i];
+        if (!palette.empty()) {
+            vkcore.writeBuf(skin_palette_buffer, palette.data(),
+                            sizeof(glm::mat4) * maxSkinJoints * i,
+                            sizeof(glm::mat4) * palette.size());
+        }
+    }
+    // Cleared overrides must also overwrite their former GPU slots.
+    std::vector<MaterialInstanceOverrideGpuData> overrides(maxModelInstances);
+    for (const auto &[index, frame] : material_override_frames) {
+        overrides.at(index) = materialOverrideGpuData(frame);
+    }
+    vkcore.writeBuf(material_override_buffer, overrides.data(), 0,
+                    sizeof(MaterialInstanceOverrideGpuData) * overrides.size());
+    uploadMaterialAbsoluteOverrides();
+    published_scene_gpu_dirty = false;
 }
 
 void PolygonInstanceContainer::uploadMaterialAbsoluteOverrides() {

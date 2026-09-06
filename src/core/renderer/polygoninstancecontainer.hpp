@@ -353,11 +353,13 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     vk::UniqueDescriptorSet static_material_descriptor_set;
     vk::UniqueDescriptorSet skinned_material_descriptor_set;
     std::vector<std::vector<std::uint32_t>> scene_retirement_queue;
+    bool published_scene_gpu_dirty = false;
 
     bool isLive(ModelInstanceId id) const noexcept;
     std::uint32_t requireLive(ModelInstanceId id, const char *api_name) const;
     void resetSlot(std::uint32_t index);
     void uploadMaterialAbsoluteOverrides();
+    void uploadPublishedSceneState();
 
   public:
     struct PreparedSceneState {

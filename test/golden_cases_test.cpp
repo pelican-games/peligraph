@@ -69,4 +69,9 @@ TEST_CASE(
         "segmented graph and shader transactions preserved the published frame");
 }
 
+TEST_CASE("Model watch reload restores visible skin and material defaults",
+          "[golden][headless][gpu][model-reload][reload-gpu-state]") {
+    GoldenHarness::runModelReloadGpuState();
+}
+
 } // namespace Pelican

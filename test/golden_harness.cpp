@@ -13126,4 +13126,95 @@ void GoldenHarness::runFullscreenRebind() {
     std::filesystem::remove_all(temp_dir);
 }
 
+void GoldenHarness::runModelReloadGpuState() {
+    for (const auto *mode : {"skin", "relative", "absolute"}) {
+        CAPTURE(mode);
+        setupLogger();
+        requireGoldenVulkanDevice();
+        FastModuleContainer modules;
+        const auto root = makeTempProjectDir(std::string{"reload_gpu_"} + mode);
+        const bool absolute = std::string_view{mode} == "absolute";
+        const bool skin = std::string_view{mode} == "skin";
+        if (absolute) writeMaterialAbsoluteOverrideProject(root);
+        else writeMaterialInstanceOverrideProject(root);
+        if (skin) TestMorphFixture::writeGlb(root / "assets" / "tint.glb", {.skinned = true});
+        GET_MODULE(PathResolver).setup(root, false);
+        GET_MODULE(ProjectSource).setProjectData(makeFeatureProjectJson().dump());
+        auto &launch = GET_MODULE(EngineLaunchConfig);
+        launch.headless = true;
+        launch.shader_hot_reload = false;
+        launch.headless_extent = vk::Extent2D{goldenWidth, goldenHeight};
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
+        GET_MODULE(ECSCore).update();
+        auto &camera = GET_MODULE(Camera);
+        camera.setPos({0.0f, 0.0f, 3.2f});
+        camera.setDir({0.0f, 0.0f, -1.0f});
+        camera.setUp({0.0f, 1.0f, 0.0f});
+        auto &renderer = GET_MODULE(Renderer);
+        auto &target = GET_MODULE(RenderTarget);
+        renderer.render();
+        const auto baseline = target.readbackLastFrameRGBA8();
+        auto &instances = GET_MODULE(PolygonInstanceContainer);
+        const auto instance = instances.modelInstanceIdForTesting(0);
+        if (skin) {
+            auto palette = instances.currentSkinPaletteForTesting(instance);
+            REQUIRE_FALSE(palette.empty());
+            for (auto &matrix : palette) matrix[3].x += 0.7f;
+            instances.setSkinningPalette(instance, palette);
+        } else if (absolute) {
+            PublishMaterialInstanceAbsoluteOverrideDescV2 frame;
+            frame.instance = instances.animationInstance(instance);
+            frame.frame_revision = 1;
+            frame.source_material_index = 0;
+            frame.values.mask = materialOverrideBaseColor | materialOverrideEmissive;
+            frame.values.base_color_factor = {1.0f, 0.01f, 0.01f, 1.0f};
+            frame.values.emissive_factor = {2.0f, 0.0f, 0.0f, 1.0f};
+            REQUIRE(instances.publishMaterialInstanceAbsoluteOverride(instance, frame) == Animation::Status::ok);
+        } else {
+            PublishMaterialInstanceOverrideDescV1 frame;
+            frame.instance = instances.animationInstance(instance);
+            frame.frame_revision = 1;
+            frame.values.mask = materialOverrideBaseColor | materialOverrideEmissive;
+            frame.values.base_color_factor = {4.0f, 0.01f, 0.01f, 1.0f};
+            frame.values.emissive_factor = {2.0f, 0.0f, 0.0f, 1.0f};
+            REQUIRE(instances.publishMaterialInstanceOverride(instance, frame) == Animation::Status::ok);
+        }
+        renderer.render();
+        const auto changed = target.readbackLastFrameRGBA8();
+        // Select pixels affected by the pose/tint rather than requiring an exact whole image.
+        std::vector<std::size_t> affected;
+        for (std::size_t pixel = 0; pixel < baseline.size(); pixel += 4) {
+            int difference = 0;
+            for (std::size_t channel = 0; channel < 3; ++channel)
+                difference += std::abs(int(baseline[pixel + channel]) - int(changed[pixel + channel]));
+            if (difference > 60) affected.push_back(pixel);
+        }
+        // These fixtures render at 16x16; require a visible region, not a
+        // particular material's projected surface area.
+        REQUIRE(affected.size() >= 8);
+        const auto generation = instances.animationInstance(instance).generation;
+        auto &reload = GET_MODULE(watch::ReloadService);
+        REQUIRE(reload.applyRequestForTesting({
+            .key = watch::makeAssetKey(absolute ? "assets/absolute.glb" : "assets/tint.glb"),
+            .kind = watch::ReloadKind::modified}));
+        REQUIRE(instances.animationInstance(instance).generation != generation);
+        renderer.render();
+        const auto restored = target.readbackLastFrameRGBA8();
+        std::uint64_t changed_error = 0;
+        std::uint64_t restored_error = 0;
+        for (const auto pixel : affected) {
+            for (std::size_t channel = 0; channel < 3; ++channel) {
+                changed_error += std::abs(int(baseline[pixel + channel]) - int(changed[pixel + channel]));
+                restored_error += std::abs(int(baseline[pixel + channel]) - int(restored[pixel + channel]));
+            }
+        }
+        INFO("affected pixels=" << affected.size() << " changed error=" << changed_error
+             << " restored error=" << restored_error);
+        REQUIRE(restored_error < changed_error / 5);
+        GET_MODULE(VulkanManageCore).waitIdle();
+        std::filesystem::remove_all(root);
+    }
+}
+
 } // namespace Pelican

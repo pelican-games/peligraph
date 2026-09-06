@@ -23244,7 +23244,14 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**CARRIER direct model参照のasset key (2026-09-06):**
+**CARRIER model reload後のGPU状態同期 (2026-09-06):**
+- rev382c残余#1を修正。publishPreparedSceneはCPU swap後にdirtyだけを立て、triggerUpdateの描画準備前（空inventoryのreturn前）にcurrent skin palette・relative override全slot・absolute header/recordを同期する。CPUから消去されたoverrideはGPUでも消す。成功時だけdirtyを解除し、通常フレームで全uploadを反復しない。direct rebuildの単独absolute uploadはこの共通経路へ統一した。
+- relative overrideのGPU変換を通常publishと共通化。noexcept publishにGPU書込を戻さず、描画前までに後続のanimation更新・rollbackがあれば最終CPU状態を同期する。
+- Player/Studio build成功。既存golden fixtureでskin・relative・absoluteの3モードを描画し、変更の可視効果とwatch reload後の初期状態復帰を確認（1件15 assertions成功、build/.codex_bg/reload-gpu-sync-final.log）。全画像厳密一致ではなく変化した領域の誤差が1/5未満へ戻る対照。テスト登録はgolden_casesだけに置き、共有harnessをリンクする別groupへ重複登録しない。
+- 既存fragment reload/rig変更/rollback3件89 assertions成功（reload-gpu-sync-regression-final.log）。rig試験の旧「skinnedはAS行なし」をRT5の現行仕様へ更新し、skinned行とqの成立、旧occurrenceのみAbsentを確認。初回描画試験は16x16 fixtureに過大な面積条件を指定していたため修正した。初回失敗ログは保持。
+- 対照: 描画前の同期を外せば古い姿勢・色が残り復帰条件が落ちる。個別変異は未実行。GPU書込失敗注入・実Studio操作は今回未実行。機能全体の完了は未判定で、残る計画とCARRIER/Studio接続の照合を継続する。
+
+**CARRIER direct model参照のasset key (2026-09-06、81b1894c):**
 - rev382c残余#2を修正。ModelDeclarationのasset_keyをoptionalにし、asset表経由だけ論理名を設定する。直接参照のURI/絶対pathを論理名にせず、既存loaderのOccurrenceIdUnrepresentable / asset_key_missingを使用する。直接参照のgeometry読込とwatch reloadは維持する。
 - 同じGLBをasset表・相対node URI・絶対node URIから読込み、reload前後に表経由のID成立と直接参照の名前付き理由を確認。実GPU対象1件37 assertions成功、既存fragment reload/rollback2件53 assertions成功（build/.codex_bg/direct-asset-key-{build,test,regression}.log）。描画画像自体は今回の判定対象ではない。
 - 対照: URIをasset_keyへ戻すと直接参照のasset欠落・診断が落ち、全経路でkeyを省略するとasset表側のIDが落ちる。個別変異は未実行。

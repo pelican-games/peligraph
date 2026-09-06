@@ -333,7 +333,10 @@ TEST_CASE("HR2-G rig layout change advances compatibility and resets temporal st
     REQUIRE(instances.rayAsPlan() != old_ray_plan);
     REQUIRE(instances.rayAsInventory() != old_ray_inventory);
     REQUIRE(instances.rayAsPlan()->generation > old_ray_plan->generation);
-    REQUIRE(instances.rayAsPlan()->rows.empty());
+    // RT5 keeps skinned geometry eligible; only the replaced occurrence's
+    // override becomes absent after this rig change.
+    REQUIRE(instances.rayAsPlan()->rows.size() == 1);
+    REQUIRE(inventory.front().q.has_value());
     REQUIRE(instances.rayAsInventory()->instances.size() == 1);
     REQUIRE(instances.rayAsInventory()->instances.front().skinned);
     REQUIRE(instances.rayAsPlan()->occurrence_overrides.size() == 1);
