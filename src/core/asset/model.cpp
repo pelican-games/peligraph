@@ -71,7 +71,7 @@ void logReleaseReport(std::string_view context,
 }
 
 struct ModelDeclaration {
-    CanonicalModelAssetKey asset_key;
+    std::optional<CanonicalModelAssetKey> asset_key;
     std::string name;
     std::string reference;
     std::filesystem::path path;
@@ -293,7 +293,6 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
                               fragment->path;
     }
     auto declaration = ModelDeclaration{
-        .asset_key = CanonicalModelAssetKey{name},
         .name = std::move(name),
         .reference = std::move(authored_reference),
         .path = std::move(physical),
@@ -480,9 +479,11 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
             }
             material_bindings = found->get<std::string>();
         }
-        declarations.push_back(resolveDeclaration(asset.at("name").get<std::string>(),
-                                                  asset.at("path").get<std::string>(), false,
-                                                  std::move(material_bindings)));
+        auto declaration = resolveDeclaration(asset.at("name").get<std::string>(),
+                                              asset.at("path").get<std::string>(), false,
+                                              std::move(material_bindings));
+        declaration.asset_key = CanonicalModelAssetKey{declaration.name};
+        declarations.push_back(std::move(declaration));
     }
     const auto prepared = parallelPrepareOrdered<PreparedGltf>(
         declarations.size(),

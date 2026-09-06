@@ -103,6 +103,52 @@ template <class T> T animationDescriptor() {
 
 } // namespace
 
+TEST_CASE("Direct model references do not invent logical occurrence asset keys",
+          "[wp382c][model-reload][direct-asset-key][gpu]") {
+    setupLogger();
+    auto sandbox = makeSandbox("direct_asset_key");
+    const auto glb = sandbox.root / "fragment.glb";
+    TestGltfFragmentFixture::writeGlb(glb);
+    FastModuleContainer modules;
+    configureProject(sandbox.root, nlohmann::json::array({
+        {{"name", "named_model"}, {"path", "fragment.glb#node/RootA/Cube"}},
+    }));
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    const std::string relative = "fragment.glb#node/RootA/Cube";
+    const std::string absolute = glb.generic_string() + "#node/RootA/Cube";
+    const auto check = [&](const std::string &reference, bool named) {
+        const auto &model = models.getModelTemplateByName(reference);
+        REQUIRE(primitiveCount(model) > 0);
+        for (const auto &material : model.material_primitives) {
+            for (const auto &primitive : material.primitives) {
+                REQUIRE(primitive.occurrence);
+                const auto &identity = *primitive.occurrence;
+                if (named) {
+                    REQUIRE(identity.asset);
+                    REQUIRE(identity.asset->logical_name == "named_model");
+                    REQUIRE_FALSE(identity.occurrence_id.empty());
+                    REQUIRE_FALSE(identity.error);
+                } else {
+                    REQUIRE_FALSE(identity.asset);
+                    REQUIRE(identity.occurrence_id.empty());
+                    REQUIRE(identity.error);
+                    REQUIRE(identity.error->reason == "asset_key_missing");
+                }
+            }
+        }
+    };
+    check("named_model", true);
+    check(relative, false);
+    check(absolute, false);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    REQUIRE(reload.applyRequestForTesting(modified("fragment.glb")));
+    check("named_model", true);
+    check(relative, false);
+    check(absolute, false);
+}
+
 TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]") {
     setupLogger();
     auto sandbox = makeSandbox("contract");

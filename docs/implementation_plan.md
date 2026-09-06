@@ -23244,7 +23244,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**CARRIER List編集と生成操作の複合Undo/Redo (2026-09-06):**
+**CARRIER direct model参照のasset key (2026-09-06):**
+- rev382c残余#2を修正。ModelDeclarationのasset_keyをoptionalにし、asset表経由だけ論理名を設定する。直接参照のURI/絶対pathを論理名にせず、既存loaderのOccurrenceIdUnrepresentable / asset_key_missingを使用する。直接参照のgeometry読込とwatch reloadは維持する。
+- 同じGLBをasset表・相対node URI・絶対node URIから読込み、reload前後に表経由のID成立と直接参照の名前付き理由を確認。実GPU対象1件37 assertions成功、既存fragment reload/rollback2件53 assertions成功（build/.codex_bg/direct-asset-key-{build,test,regression}.log）。描画画像自体は今回の判定対象ではない。
+- 対照: URIをasset_keyへ戻すと直接参照のasset欠落・診断が落ち、全経路でkeyを省略するとasset表側のIDが落ちる。個別変異は未実行。
+- 次の残余#1は現存を確認: model reload参加経路はpublishPreparedSceneのCPU swapのみ。描画前triggerUpdateにはcurrent skin paletteとrelative/absolute material overrideの同期がなく、direct rebuildにだけabsolute uploadがある。publishでdirtyを立て、描画前の同期へまとめる修正を次に行う。source監査だけで描画後退を実測済みとはしない。
+
+**CARRIER List編集と生成操作の複合Undo/Redo (2026-09-06、e54c6297):**
 - rev382b-fix残余#1のspawn/add→List挿入→Undo×2→Redo×2を修正。postcondition比較をcomponent単体からobject/components/復元objectsへ展開し、schema上のList高水位を両側の大きい値へ揃えて比較する。raw文書自体を書き換える処理ではなく、row ID・値・その他のfieldは従来どおり比較する。任意JSONのnext_idを一括無視する方式は採用しない。
 - コンポーネント追加とobject生成の両経路で、Redo後の行ID=1・値・next_id=2を確認。対象1件28 assertions、最終journal34件787 assertions、WP382b関連14件260 assertions成功。ログはbuild/.codex_bg/list-creation-undo-{build,test,regression,carrier}.log。描画変更がなくGPU試験は反復しない。
 - 対照: object全体の調整を戻せばspawnのUndoが、片方向比較に戻せば追加のRedo連鎖が拒否される。個別変異は未実行。既存の他actor構造変更拒否・高水位の不正低下拒否も関連範囲に含む。unpack/destroyを含む専用の新試験は今回未追加。
