@@ -23244,7 +23244,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 以下は作業時点の経過と証拠を保存した記録。「次は」「最新」「未commit」等はその時点の記述であり、現在の再開指示ではない。現在地は直上の現況を正とする。
 
-**ImGui Plan Viewer intersection対応 (2026-09-06):**
+**Geometryの確定binding観測 (2026-09-06):**
+- get_ray_occurrencesのentryへbindingを追加。公開済みscene planのqからgroup_index/material_index/geometry_index/geometry_flags/record_bytesを取得し、InspectorのRay geometryへ表示。テーブル未割当はnull。taskの物理SBTアドレス・record field値のデコード・優先規則の説明はこの情報には含めない。
+- material_reference/material_nameも表示。初回照合でscene commit直後のindex未割当とGPU側の割当済みindexの違いを確認し、前者は同じ公開snapshot、group/flags/recordサイズは描画rowと照合するよう修正。割当済みGPU indexの観測は残件。
+- StudioとGPU test build成功（build/.codex_bg/ray-binding-verified-build.log）。WP382dの既存occurrence GPU/RPC試験成功（ray-binding-verified-test.log）。初回buildのWindows maxマクロ衝突も修正。対照はrowのqと各返却値の対応であり、binding追加を戻すと該当assertionが落ちる。個別変異と実GUI操作は未実行。
+
+**ImGui Plan Viewer intersection対応 (2026-09-06、f9bf2cd5):**
 - Studioと同じintersection_slots受信漏れがImGuiのPlan Viewerにも存在したため、既存の疎hit slot parserで受信し、stage/slot/参照元/実効参照/.rintソースを表示する。closesthit/anyhitの重複描画を共通化してintersectionにも使用する。
 - Player build成功、関連テスト群build成功（build/.codex_bg/intersection-viewer-build.log、intersection-viewer-final-build.log）。Plan Viewer 3件143 assertions成功（intersection-viewer-test.log）。初回は追加テストのCatch matcher名前空間指定不足を修正。対照は既存shaderとintersectionの共存・slot番号・.rint参照保持・範囲外拒否。受信追加を戻せば正常payloadが拒否される。個別変異と実画面操作は未実行。
 

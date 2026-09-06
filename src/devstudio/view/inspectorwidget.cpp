@@ -649,10 +649,10 @@ struct InspectorWidget::Impl {
         auto *layout = new QVBoxLayout(dialog);
         ray_notice = plainLabel({}, dialog);
         layout->addWidget(ray_notice);
-        ray_entries = new QTableWidget(0, 6, dialog);
+        ray_entries = new QTableWidget(0, 7, dialog);
         ray_entries->setObjectName(QStringLiteral("pelican.rayGeometry.entries"));
         ray_entries->setHorizontalHeaderLabels({owner.tr("Geometry"), owner.tr("Asset"),
-            owner.tr("Material"), owner.tr("Eligibility"), owner.tr("Effective values"), owner.tr("Occurrence ID")});
+            owner.tr("Material"), owner.tr("Eligibility"), owner.tr("Effective values"), owner.tr("Occurrence ID"), owner.tr("Resolved binding")});
         ray_entries->setSelectionBehavior(QAbstractItemView::SelectRows);
         ray_entries->setSelectionMode(QAbstractItemView::SingleSelection);
         ray_entries->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -721,7 +721,7 @@ struct InspectorWidget::Impl {
                     const int row = ray_entries->rowCount();
                     ray_entries->insertRow(row);
                     int column = 0;
-                    for (const auto *key : {"display_name", "asset", "material", "eligibility", "effective", "occurrence_id"})
+                    for (const auto *key : {"display_name", "asset", "material", "eligibility", "effective", "occurrence_id", "binding"})
                         ray_entries->setItem(row, column++, new QTableWidgetItem(display(entry.value(key, Json{}))));
                     ray_entries->item(row, 0)->setData(Qt::UserRole, display(entry.value("occurrence_id", Json{})));
                     ray_entries->item(row, 0)->setData(Qt::UserRole + 1, entry.value("eligibility", Json{}) == "ok");

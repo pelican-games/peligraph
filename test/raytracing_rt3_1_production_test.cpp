@@ -2196,6 +2196,8 @@ TEST_CASE("WP382d authored occurrence masks and custom indices reach the product
     };
     // Read immediately after scene commit, before ECS update or rendering.
     const auto committed_inventory = inventory_query();
+    const auto committed_plan = GET_MODULE(PolygonInstanceContainer).rayAsPlan();
+    REQUIRE(committed_plan);
     REQUIRE(committed_inventory.at("overrides").size() == 2);
     CHECK(committed_inventory.at("rejected_rows").empty());
     for (const auto &row : committed_inventory.at("overrides")) {
@@ -2227,6 +2229,20 @@ TEST_CASE("WP382d authored occurrence masks and custom indices reach the product
         const auto q = entry.at("q").get<std::uint32_t>();
         const auto row = std::ranges::find(overridden.rows, q, &RaySceneRow::q);
         REQUIRE(row != overridden.rows.end());
+        REQUIRE(entry.at("binding").is_object());
+        CHECK(entry.at("binding").at("group_index") == row->group_index);
+        CHECK(entry.at("binding").at("geometry_flags") == row->geometry_flags);
+        CHECK(entry.at("binding").at("record_bytes") == row->record_data.size());
+        const auto committed_row = std::ranges::find(committed_plan->rows, q, &RaySceneRow::q);
+        REQUIRE(committed_row != committed_plan->rows.end());
+        CHECK(entry.at("binding").at("material_reference") == committed_row->material_reference);
+        CHECK(entry.at("binding").at("material_name") == committed_row->material_name);
+        for (const auto &[field, index] : {std::pair{"material_index", committed_row->material_index},
+                                          std::pair{"geometry_index", committed_row->geometry_index}}) {
+            if (index == (std::numeric_limits<std::uint32_t>::max)())
+                CHECK(entry.at("binding").at(field).is_null());
+            else CHECK(entry.at("binding").at(field) == index);
+        }
         CHECK(entry.at("effective").at("mask") == (left ? 1 : 2));
         CHECK(entry.at("effective").at("custom_index") == (left ? 71 : 82));
         CHECK(row->instance_mask == (left ? 1 : 2));

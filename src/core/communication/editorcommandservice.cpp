@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <picosha2.h>
 #include <type_traits>
 #include <utility>
@@ -2064,8 +2065,31 @@ OrderedJson EditorCommandRpcAdapter::getRayOccurrences(
     const Json &params) const {
     auto entries = OrderedJson::array();
     const auto inventory = service_.getRayOccurrences(parseGetComponentsRequest(params));
-    for (const auto &entry : inventory.entries)
-        entries.push_back(rayOccurrenceJson(entry));
+    std::map<std::uint32_t, const RaySceneRow *> rows_by_q;
+    if (inventory.plan) {
+        for (const auto &row : inventory.plan->rows) rows_by_q.emplace(row.q, &row);
+    }
+    for (const auto &entry : inventory.entries) {
+        auto encoded = rayOccurrenceJson(entry);
+        encoded["binding"] = nullptr;
+        if (entry.q) {
+            const auto found = rows_by_q.find(*entry.q);
+            if (found != rows_by_q.end()) {
+                const auto &row = *found->second;
+                encoded["binding"] = {
+                    {"group_index", row.group_index},
+                    {"material_reference", row.material_reference},
+                    {"material_name", row.material_name},
+                    {"material_index", row.material_index == std::numeric_limits<std::uint32_t>::max()
+                        ? OrderedJson(nullptr) : OrderedJson(row.material_index)},
+                    {"geometry_index", row.geometry_index == std::numeric_limits<std::uint32_t>::max()
+                        ? OrderedJson(nullptr) : OrderedJson(row.geometry_index)},
+                    {"geometry_flags", row.geometry_flags},
+                    {"record_bytes", row.record_data.size()}};
+            }
+        }
+        entries.push_back(std::move(encoded));
+    }
     auto overrides = OrderedJson::array();
     auto rejected_rows = OrderedJson::array();
     if (inventory.plan) {
