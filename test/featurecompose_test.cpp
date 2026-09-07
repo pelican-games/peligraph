@@ -4358,6 +4358,19 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         document["nodes"][2]["op"] = "render.raster";
         document["nodes"][2]["parameters"]["draw"] = {{"vertex_count", 3}};
     }
+    SECTION("instance attribute") {
+        document["nodes"][0]["op"] = "render.attribute";
+        document["nodes"][0]["parameters"]["domain"] = "instance";
+        document["nodes"][2]["parameters"]["ports"]["source"]["domain"] = "instance";
+        auto mismatched = document;
+        mismatched["nodes"][2]["parameters"]["ports"]["source"]["domain"] = "vertex";
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
+        mismatched["nodes"][2]["parameters"]["ports"]["source"].erase("domain");
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
+        mismatched = document;
+        mismatched["nodes"][0]["parameters"]["domain"] = "unknown";
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
+    }
     const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
     const auto &config = resolved.normalized_config;
     const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);

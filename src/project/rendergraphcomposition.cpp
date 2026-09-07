@@ -32,7 +32,8 @@ Json lowerRenderGraphDocument(const Json &document) {
     std::function<std::string(const Json &)> resourceName = [&](const Json &endpoint) {
         const auto id = endpoint.at("node").get<std::string>();
         const auto &node = *nodes.at(id);
-        if (node.at("op") == "render.buffer" || node.at("op") == "render.image") return id;
+        if (node.at("op") == "render.buffer" || node.at("op") == "render.attribute" ||
+            node.at("op") == "render.image") return id;
         if (!resolving.insert(id).second)
             throw std::invalid_argument("cyclic render resource connection: " + id);
         auto resource = resourceName(node.at("inputs").at(endpoint.at("port").get<std::string>()));
@@ -42,9 +43,10 @@ Json lowerRenderGraphDocument(const Json &document) {
     for (const auto &node : graph.nodes) {
         auto parameters = node.at("parameters");
         const auto id = node.at("id").get<std::string>();
-        if (node.at("op") == "render.buffer") {
+        if (node.at("op") == "render.buffer" || node.at("op") == "render.attribute") {
             forbid(parameters, {"name"});
             parameters.erase("element");
+            parameters.erase("domain");
             parameters["name"] = id;
             config["buffers"].push_back(std::move(parameters));
             continue;
@@ -72,7 +74,7 @@ Json lowerRenderGraphDocument(const Json &document) {
         if (!after.is_array()) throw std::invalid_argument("render after must be an array");
         for (const auto &[port, declaration] : ports.items()) {
             for (const auto &[key, value] : declaration.items())
-                if (key != "element" && key != "access" && key != "kind" && key != "type" &&
+                if (key != "element" && key != "domain" && key != "access" && key != "kind" && key != "type" &&
                     key != "binding" && key != "view" && key != "sampling" && key != "subresource" &&
                     !(graphics && (key == "attachment" || key == "location")))
                     throw std::invalid_argument("unknown render port setting: " + key);
@@ -80,6 +82,7 @@ Json lowerRenderGraphDocument(const Json &document) {
             const auto producer = endpoint.at("node").get<std::string>();
             const auto resource = resourceName(endpoint);
             if (nodes.at(producer)->at("op") != "render.buffer" &&
+                nodes.at(producer)->at("op") != "render.attribute" &&
                 nodes.at(producer)->at("op") != "render.image" &&
                 std::find(after.begin(), after.end(), producer) == after.end())
                 after.push_back(producer);
@@ -113,6 +116,7 @@ Json lowerRenderGraphDocument(const Json &document) {
             if (access != "read") writes.insert(resource);
             auto binding = declaration;
             binding.erase("type");
+            binding.erase("domain");
             binding["resource"] = resource;
             binding["kind"] = declaration.value("kind", std::string{"buffer"});
             binding["access"] = declaration.value("binding",

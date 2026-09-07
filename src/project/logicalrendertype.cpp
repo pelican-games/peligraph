@@ -564,15 +564,22 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
     registry.registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.event.playback_control@1"),
         LogicalTypeConstructor::stream, {}, {"event"}});
-    registry.registerSchema(SemanticTypeSchema{
-        parseSemanticTypeId("pelican.render.storage_buffer@1"),
-        LogicalTypeConstructor::buffer,
-        {TypeParameterSchema{"element", TypeArgumentRole::identity,
+    const auto buffer_element = TypeParameterSchema{"element", TypeArgumentRole::identity,
             TypeArgumentValueKind::enum_value, std::nullopt,
             {EnumValueId{"float"}, EnumValueId{"vec2"}, EnumValueId{"vec3"}, EnumValueId{"vec4"},
              EnumValueId{"int"}, EnumValueId{"ivec2"}, EnumValueId{"ivec3"}, EnumValueId{"ivec4"},
              EnumValueId{"uint"}, EnumValueId{"uvec2"}, EnumValueId{"uvec3"}, EnumValueId{"uvec4"},
-             EnumValueId{"mat4"}}}}, {"shader_storage"}});
+             EnumValueId{"mat4"}}};
+    registry.registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.render.storage_buffer@1"),
+        LogicalTypeConstructor::buffer, {buffer_element}, {"shader_storage"}});
+    registry.registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.render.attribute@1"),
+        LogicalTypeConstructor::buffer,
+        {buffer_element, TypeParameterSchema{"domain", TypeArgumentRole::identity,
+            TypeArgumentValueKind::enum_value, std::nullopt,
+            {EnumValueId{"vertex"}, EnumValueId{"instance"}, EnumValueId{"material"}}}},
+        {"shader_storage", "attribute"}});
     const auto topology = TypeParameterSchema{
         "topology", TypeArgumentRole::identity,
         TypeArgumentValueKind::enum_value, EnumValueId{"two_d"},

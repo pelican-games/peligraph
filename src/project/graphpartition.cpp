@@ -10,6 +10,9 @@ LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declarat
     const auto element = declaration.at("element").get<std::string>();
     if (!shaderResourceBufferElementFromName(element))
         throw std::invalid_argument("unknown graph buffer element: " + element);
+    if (declaration.contains("domain"))
+        return registry.canonicalize(parseSemanticTypeId("pelican.render.attribute@1"),
+            {{"element", EnumValueId{element}}, {"domain", EnumValueId{declaration.at("domain").get<std::string>()}}});
     return registry.canonicalize(parseSemanticTypeId("pelican.render.storage_buffer@1"),
                                  {{"element", EnumValueId{element}}});
 }
@@ -17,6 +20,8 @@ LogicalType resourceType(const LogicalTypeRegistry &registry, const Json &declar
     const auto kind = declaration.value("kind", std::string{"buffer"});
     if (kind == "buffer") return bufferType(registry, declaration);
     if (kind != "image") throw std::invalid_argument("unknown graph resource kind: " + kind);
+    if (declaration.contains("domain"))
+        throw std::invalid_argument("attribute domains apply to buffer resources, not images");
     const auto &type = declaration.at("type");
     std::vector<LogicalTypeArgumentInput> arguments;
     for (const auto &[name, value] : type.at("arguments").items())
@@ -69,7 +74,11 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         if (const auto found = value_operations.find(op); found != value_operations.end()) return found->second;
         const auto &parameters = node.at("parameters");
         GraphOperationContract contract;
-        if (op == "render.buffer") {
+        if (op == "render.buffer" || op == "render.attribute") {
+            if (op == "render.attribute" && !parameters.contains("domain"))
+                throw std::invalid_argument("render.attribute requires an attribute domain");
+            if (op == "render.buffer" && parameters.contains("domain"))
+                throw std::invalid_argument("attribute domain requires render.attribute");
             contract.outputs.emplace("resource", bufferType(registry, parameters));
             contract.inputs.emplace("value", GraphInputContract{exactLogicalTypePattern(registry, scalar), false});
         } else if (op == "render.image") {
@@ -98,7 +107,7 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         const auto op = node.at("op").get<std::string>();
         auto &partition = value_operations.contains(op) ? result.values : result.rendering;
         auto lowered = node;
-        if (op == "render.buffer" && node.at("inputs").contains("value")) {
+        if ((op == "render.buffer" || op == "render.attribute") && node.at("inputs").contains("value")) {
             auto &parameters = lowered.at("parameters");
             if (parameters.at("element") != "float" ||
                 (parameters.contains("size") && parameters.at("size") != 4) ||

@@ -118,7 +118,9 @@ audio.playbackへ開始/pause/resume/resetを接続し、個体・scene・Graph�
 通常Renderer経由で確認した（音声はnull backend）。typed voice portからvolume/pitchへの接続と、
 新規再生/再開始したframeの値反映も実装した。raster/fullscreen passの共通nodeから既存パスへの
 変換とCPUコンパイルに加え、GPU画素出力とowner不在時の描画scope停止を確認した。
-次はアトリビュートの適用範囲と型付き接続を進める。動的描画nodeは現状scopeを分離して実行し、
+render.attributeのvertex/instance/material domainを型identityとして照合し、既存bufferとshader
+accessorへ渡す入口も追加した。次は対象集合・要素数・添字との対応を進める。
+動的描画nodeは現状scopeを分離して実行し、
 同じowner条件のnode間融合と共通history画像のpreview対応は残件。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。
 sceneごとのgraph選択と、既存scalar音声bindingへのhandle/任意外部inputの自動供給はまだない。

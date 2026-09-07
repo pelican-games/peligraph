@@ -310,6 +310,22 @@ GPU検証は標準scopeを対象とし、カスタムNativeScope providerでの�
 
 ### アトリビュート・シェーダー・反復の扱い
 
+render.attributeはelementとdomain（vertex/instance/material）を持つbuffer資源ノード。
+resource出力の論理型はpelican.render.attribute@1で、domainとelementは型identityに含める。
+compute/fullscreen/rasterのbufferポートも同じelement/domainを宣言して接続する。
+一般のstorage bufferや異なるdomainへ暗黙変換しない。render.bufferへのdomain指定、画像ポートの
+domain指定、不明domainは拒否する。既存LogicalTypeRegistryの照合を使い、別の属性型体系は作らない。
+
+物理化では既存buffer定義・std430の名前付きshader accessorへ変換する。サイズとhost_source等は
+既存buffer契約を使い、scalarのvalue入力を接続した場合は1要素floatのruntime_f32 uploadを生成する。
+保存JSONにはrender.attribute、domain、接続を残し、実行用buffer名やdescriptor bindingを保存しない。
+CPUでinstance/vertex不一致と一般bufferへの誤接続、GPUでinstance属性のscalar入力から
+fullscreen/raster fragmentへの反映・owner停止を確認した。
+
+これはメッシュの既存頂点属性を自動抽出したり、material列挙に合わせて要素を自動割当する実装ではない。
+現段階のdomainは適用範囲の種類で、特定mesh/集合のidentityや要素数を表さない。対象集合の対応、
+要素数の導出、gl_VertexIndex/gl_InstanceIndex等との添字対応は残件。shaderは明示した添字で読む。
+
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
 ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、
 依存・入出力が全体グラフから見えることは両立する。シェーダー参照、設定、

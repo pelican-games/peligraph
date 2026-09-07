@@ -467,7 +467,10 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
         }
         SECTION("graphics attachment write") {
             graphics_path = true;
+            document["nodes"][5]["op"] = "render.attribute";
+            document["nodes"][5]["parameters"]["domain"] = "instance";
             auto &writer = document["nodes"][7];
+            writer["parameters"]["ports"]["source"]["domain"] = "instance";
             writer["op"] = "render.fullscreen";
             writer["parameters"].erase("dispatch");
             writer["parameters"]["pass_set"] = "main_render";
