@@ -104,6 +104,8 @@ class PELICAN_API GameContext {
     // entire buffer must be supplied. Copied now, uploaded before rendering.
     // Returns false for missing buffers or during scene effect staging.
     bool setRenderValues(std::string_view buffer, std::span<const float> values) const;
+    // Full instance/parameter path. nullopt removes the runtime override.
+    bool setGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const;
 
     // Update-thread controls for an attached animation graph. Before its first
     // frame attachment, or after removal, these return not_found. Scene

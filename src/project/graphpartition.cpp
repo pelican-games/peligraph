@@ -63,6 +63,8 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         return contract;
     }});
     GraphExecutionPartitions result;
+    result.values.instance_owners = graph.instance_owners;
+    result.rendering.instance_owners = graph.instance_owners;
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         const auto op = node.at("op").get<std::string>();

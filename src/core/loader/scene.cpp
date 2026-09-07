@@ -1,5 +1,6 @@
 #include "scene.hpp"
 #include "../appflow/enginetime.hpp"
+#include <cmath>
 #include "modelphysicsbinding.hpp"
 
 #include "../ecs/predefined/modelview.hpp"
@@ -1124,6 +1125,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         std::declval<std::optional<SceneId> &>())));
     metadata.commit(phase_trace);
     scene_start_time = candidate_scene_start_time;
+    graph_parameters.clear();
 
     effect_transaction->setRetiredObjects(destroyed_entities);
     behavior_candidate->finish(phase_trace);
@@ -1353,6 +1355,43 @@ void SceneLoader::bindRuntimeObject(AuthoringObjectId authoring_object_id,
     }
     runtime_object_bindings.push_back(
         SceneRuntimeObjectBinding{authoring_object_id, object_id});
+}
+
+bool SceneLoader::ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
+                                    std::string_view parameter) const {
+    const auto *owner = graph.parameterOwner(parameter);
+    if (!owner || owner->scene != currentScene() ||
+        !GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(object)) return false;
+    return std::any_of(runtime_object_bindings.begin(), runtime_object_bindings.end(), [&](const auto &binding) {
+        return binding.object_id == object && binding.authoring_object_id.value == owner->object;
+    });
+}
+
+SceneLoader::GraphParameterOverrides &SceneLoader::synchronizeGraphParameters(
+    const std::shared_ptr<const ValueGraph::Graph> &graph) {
+    std::erase_if(graph_parameters, [](const auto &entry) { return entry.first.expired(); });
+    auto &parameters = graph_parameters[graph];
+    std::erase_if(parameters, [&](const auto &entry) {
+        return !ownsGraphParameter(*graph, entry.second.object, entry.first);
+    });
+    return parameters;
+}
+
+bool SceneLoader::setGraphParameter(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
+                                   std::string_view parameter, std::optional<double> value) {
+    if (value && !std::isfinite(*value)) throw std::invalid_argument("graph parameter must be finite");
+    if (!ownsGraphParameter(*graph, object, parameter)) return false;
+    auto &parameters = synchronizeGraphParameters(graph);
+    if (value) parameters.insert_or_assign(std::string{parameter}, GraphParameterOverride{object, *value});
+    else parameters.erase(std::string{parameter});
+    return true;
+}
+
+ValueGraph::ParameterValues SceneLoader::graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph) {
+    const auto &parameters = synchronizeGraphParameters(graph);
+    ValueGraph::ParameterValues values;
+    for (const auto &[name, parameter] : parameters) values.emplace(name, parameter.value);
+    return values;
 }
 
 std::optional<GameObjectId> SceneLoader::objectId(std::string_view name) const {

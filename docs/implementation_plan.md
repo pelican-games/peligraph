@@ -23248,6 +23248,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**共通graph parameterのGameObject所有と寿命 (2026-09-07):**
+- graph.instance.ownerへscene名とauthoring object IDを保存。展開/partition/ValueGraphで所有情報を保持し、parameterOwnerが最も近いscopeのownerを返す。runtime EntityIdは保存しない。
+- GameContext::setGraphParameter(object, path, optional value)を追加。SceneLoaderの現在のauthoring→runtime対応とECS生存を確認し、別個体/削除済みID/未宣言parameter/曖昧なグラフはfalse。nulloptでoverride解除。effect transaction内の変更は受け付けない。
+- SceneLoaderがGraphの弱参照をキーにoverrideを保持し、通常Rendererがsnapshotをpublishへ渡す。別Graphの同名parameterを分離し、期限切れGraphと削除済み個体の状態は次の取得時に掃除する。scene commit時に全件破棄。新しい描画Graphは保存値から開始し、失敗候補は旧overrideを変えない。
+- Player Debug build成功。curve/animation/scene契約CPU 31case/1517assertion、GPU skeletal 7case/113assertion成功（graph_owner_build.log / graph_owner_cpu.log / graph_owner_gpu.log）。保存owner、別個体拒否、通常Rendererでの動的変更/解除、別Graphとの独立性、削除後の保存値復帰、scene再読込み後の古いID拒否、新個体での変更、描画更新成功/失敗の状態を確認した。
+- 所有者照合を外すと別個体拒否、Graph別の状態分離を外すと並行Graphの対照、削除時のprune/scene commit時のclearを外すとGPU出力/古いIDの対照が落ちる。個別変異は未実施。parameter所有までであり、owner不在時のsubgraph/GPU task停止は未実装（保存値で評価を継続）。動的instance生成/削除、状態/イベント/音声handleの所有は残件。
+
 **共通subgraphの保存parameterと実行時override (2026-09-07):**
 - graph.input.defaultとgraph.instance.parametersを追加。未接続入力はinstanceの値→定義defaultで束縛し、scope付きvalue.parameterへ展開する。接続とparameterの二重指定、不明名、非有限scalarを拒否。通常のport型照合を継続する。
 - Graph::parameterDefaultsで名前/初期値を取得し、evaluate/publishへParameterValuesを渡せる。left/gainのようなinstance pathで個別指定し、その評価だけに適用する。serializeは原文を維持し、実行時overrideを書き戻さない。新しいruntime保存系や専用componentは追加していない。

@@ -5,6 +5,7 @@
 #include <string>
 #include <functional>
 #include "logicalrendertype.hpp"
+#include "graphinstanceowner.hpp"
 
 namespace Pelican {
 
@@ -17,6 +18,7 @@ struct ExpandedGraphDocument {
     nlohmann::json nodes = nlohmann::json::array();
     nlohmann::json outputs = nlohmann::json::object();
     std::map<std::string, GraphNodeOrigin> origins;
+    GraphInstanceOwners instance_owners;
 };
 
 // Backend-independent authoring expansion. The original document remains the

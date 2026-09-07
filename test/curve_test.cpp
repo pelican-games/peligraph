@@ -16,7 +16,13 @@ using Catch::Approx;
 
 TEST_CASE("instance parameters preserve defaults and isolate runtime overrides", "[curve][graph-composition]") {
     auto document = parameterGraphCompositionFixture();
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};
     const Pelican::ValueGraph::Graph graph{document.dump()};
+    REQUIRE(graph.parameterOwner("left/gain") != nullptr);
+    REQUIRE(graph.parameterOwner("left/gain")->scene == "main");
+    REQUIRE(graph.parameterOwner("left/gain")->object == 42);
+    REQUIRE(graph.parameterOwner("right/gain") == nullptr);
+    REQUIRE(graph.parameterOwner("left/missing") == nullptr);
     REQUIRE(nlohmann::json::parse(graph.serialize()) == document);
     REQUIRE(graph.parameterDefaults().at("left/gain") == 2);
     REQUIRE(graph.parameterDefaults().at("right/gain") == 4);

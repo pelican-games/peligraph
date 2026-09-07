@@ -31,8 +31,9 @@ double number(const Json &value) {
     return value.get<double>();
 }
 
-Json lowerScalarGraph(const Json &authored) {
+Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners) {
     const auto expanded = partitionGraphDocument(authored).values;
+    owners = expanded.instance_owners;
     const auto registry = makeBuiltinLogicalTypeRegistry();
     const auto operations = valueGraphOperationContracts(registry);
     Json result{{"schema", "pelican.value_graph"}, {"version", 1},
@@ -80,7 +81,7 @@ Json lowerScalarGraph(const Json &authored) {
 Graph::Graph(std::string_view document) {
     const auto authored = Json::parse(document);
     const auto root = authored.value("schema", std::string{}) == "pelican.graph"
-        ? lowerScalarGraph(authored) : authored;
+        ? lowerScalarGraph(authored, instance_owners_) : authored;
     if (authored.value("schema", std::string{}) == "pelican.graph")
         for (const auto &[output, value] : root.at("outputs").items()) {
             (void)value;
@@ -217,6 +218,18 @@ Graph::Graph(std::string_view document) {
         }
     }
     document_ = authored.dump();
+}
+
+const GraphInstanceOwner *Graph::parameterOwner(std::string_view parameter) const noexcept {
+    if (!parameter_defaults_.contains(parameter)) return nullptr;
+    auto slash = parameter.rfind('/');
+    while (slash != std::string_view::npos) {
+        const auto found = instance_owners_.find(parameter.substr(0, slash));
+        if (found != instance_owners_.end()) return &found->second;
+        if (slash == 0) break;
+        slash = parameter.rfind('/', slash - 1);
+    }
+    return nullptr;
 }
 
 Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters) const {

@@ -15,6 +15,7 @@
 #include "../src/core/log.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
+#include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/scene.hpp"
 #include "scene_load_test_support.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
@@ -440,12 +441,15 @@ TEST_CASE("renderer evaluates the common graph using committed scene time", "[sk
 layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
 void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); }
 )");
-    auto document = mixedGraphCompositionFixture();
+    auto document = parameterGraphCompositionFixture();
     document["nodes"][0]["parameters"]["name"] = "scene_time";
     document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
     writeText(root / "passes/main_rendering_config.json", document.dump());
     writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[]})");
-    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+      {"name":"Left","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]},
+      {"name":"Right","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]}
+    ]}}})");
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
@@ -460,6 +464,14 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     auto &scene = GET_MODULE(SceneLoader);
     test_support::loadScene(scene, "default_scene");
     REQUIRE(scene.sceneStartTime() == 10);
+    const auto left = *scene.objectId("Left");
+    const auto right = *scene.objectId("Right");
+    for (const auto &binding : scene.runtimeObjectBindings()) {
+        if (binding.object_id == left || binding.object_id == right)
+            document["nodes"][binding.object_id == left ? 3 : 4]["owner"] = {
+                {"scene", "default_scene"}, {"object", binding.authoring_object_id.value}};
+    }
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
     auto &renderer = GET_MODULE(Renderer);
     auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto render = [&](double now) {
@@ -473,16 +485,39 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     };
     REQUIRE(render(10.25) == 2.5f);
     REQUIRE(render(10.75) == 5.5f);
+    GameContext context;
+    REQUIRE_FALSE(context.setGraphParameter(right, "left/gain", 3));
+    REQUIRE(context.setGraphParameter(left, "left/gain", 3));
+    REQUIRE(render(10.25) == 3.25f);
+    const auto other_graph = std::make_shared<const ValueGraph::Graph>(document.dump());
+    REQUIRE(scene.setGraphParameter(other_graph, left, "left/gain", 9));
+    REQUIRE(render(10.25) == 3.25f);
+    REQUIRE(scene.graphParameterValues(other_graph).at("left/gain") == 9);
+    REQUIRE(context.setGraphParameter(right, "right/gain", 6));
+    REQUIRE(render(10.25) == 3.25f);
+    REQUIRE(context.setGraphParameter(left, "left/gain", std::nullopt));
+    REQUIRE(render(10.25) == 2.5f);
+    REQUIRE(context.setGraphParameter(left, "left/gain", 4));
+    GameObjects{}.remove(left);
+    REQUIRE_FALSE(context.setGraphParameter(left, "left/gain", 5));
+    REQUIRE(render(10.25) == 2.5f);
+    REQUIRE(context.setGraphParameter(right, "right/gain", 8));
+    time.setTime(10.75);
     test_support::loadScene(scene, "default_scene");
     REQUIRE(scene.sceneStartTime() == 10.75);
     REQUIRE(render(11) == 2.5f);
+    const auto reloaded_left = *scene.objectId("Left");
+    REQUIRE(reloaded_left != left);
+    REQUIRE_FALSE(context.setGraphParameter(left, "left/gain", 3));
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/gain", 3));
+    REQUIRE(render(11) == 3.25f);
     const auto generation = GET_MODULE(RenderingPassContainer).activeGeneration();
     auto invalid = document;
     invalid["nodes"][0]["parameters"]["name"] = "unbound_input";
     REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid.dump()));
     REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
-    REQUIRE(render(11) == 2.5f);
-    document["nodes"][1]["parameters"]["value"] = 4;
+    REQUIRE(render(11) == 3.25f);
+    document["nodes"][3]["parameters"]["gain"] = 4;
     loadRenderGraphVariantsFromConfigData(document.dump());
     REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() > generation);
     REQUIRE(render(11) == 4.0f);

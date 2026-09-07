@@ -2,6 +2,7 @@
 
 #include "animation/curve.hpp"
 #include "export.hpp"
+#include "../../project/graphinstanceowner.hpp"
 #include <handle.hpp>
 #include <functional>
 #include <span>
@@ -31,6 +32,7 @@ class PELICAN_API Graph {
     explicit Graph(std::string_view document);
     const std::string &serialize() const noexcept { return document_; }
     const ParameterValues &parameterDefaults() const noexcept { return parameter_defaults_; }
+    const GraphInstanceOwner *parameterOwner(std::string_view parameter) const noexcept;
     Outputs evaluate(const Inputs &inputs, const ParameterValues &parameters = {}) const;
     // Owner-thread evaluation and explicit service publication. Sound targets
     // are symbolic names, resolved using this instance's live handles.
@@ -45,6 +47,7 @@ class PELICAN_API Graph {
   private:
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters) const;
     ParameterValues parameter_defaults_;
+    GraphInstanceOwners instance_owners_;
     std::vector<std::string> lowered_outputs_;
     enum class Op { input, parameter, constant, add, multiply, curve, playback };
     struct Node {

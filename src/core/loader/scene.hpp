@@ -4,6 +4,7 @@
 #include "../model/modeltemplate.hpp"
 #include "resolvedscene.hpp"
 #include "sceneload.hpp"
+#include "../userpublic/valuegraph.hpp"
 #include <details/ecs/entity.hpp>
 
 #include <array>
@@ -55,6 +56,15 @@ DECLARE_MODULE(SceneLoader) {
     std::optional<SceneId> pending_scene_id;
     bool runtime_only_changes = false;
     double scene_start_time = 0;
+    struct GraphParameterOverride {
+        GameObjectId object;
+        double value;
+    };
+    using GraphParameterOverrides = std::map<std::string, GraphParameterOverride, std::less<>>;
+    std::map<std::weak_ptr<const ValueGraph::Graph>, GraphParameterOverrides, std::owner_less<>> graph_parameters;
+    GraphParameterOverrides &synchronizeGraphParameters(const std::shared_ptr<const ValueGraph::Graph> &graph);
+    bool ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
+                            std::string_view parameter) const;
     std::uint64_t next_authority_epoch = 1;
     std::uint64_t run_nonce = 0;
     SceneLoadFaultInjector *fault_injector = nullptr;
@@ -98,6 +108,9 @@ DECLARE_MODULE(SceneLoader) {
     std::uint64_t runtimeSceneEpoch() const noexcept;
     SceneAuthority activeAuthority() const noexcept;
     double sceneStartTime() const noexcept { return scene_start_time; }
+    bool setGraphParameter(std::shared_ptr<const ValueGraph::Graph> graph,
+                           GameObjectId object, std::string_view parameter, std::optional<double> value);
+    ValueGraph::ParameterValues graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph);
     nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;

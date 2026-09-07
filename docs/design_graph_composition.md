@@ -86,8 +86,27 @@ ParameterValuesを渡して、その評価だけを上書きできる（例: lef
 
 2instanceの異なる保存値、片側だけの上書き、定義defaultへのfallbackを確認。実GPUでも
 上書きによる出力変更と、上書きなしの次回評価で保存値へ戻ることを確認した。
-これはparameterの表現と受渡しであり、GameObjectへの装着、objectの寿命に伴う
-parameter/state管理や通常Rendererへの動的override供給はまだ未実装。
+このparameter表現を使い、以下のobject所有と通常Rendererへのoverride供給を接続した。
+
+### objectに所有されるparameter（2026-09-07）
+
+graph.instance.ownerに`{"scene":"scene名","object":正のauthoring object ID}`を保存する。
+runtimeのEntityIdを保存しない。ネストしたparameterは最も近いowner宣言に属する。
+Graph::parameterOwnerは、存在するparameterに対応する保存上の所有者を返す。
+
+GameContext::setGraphParameter(object, "left/gain", value)で実行時overrideを設定し、
+value=nulloptで解除する。公開中のグラフにparameterがあり、現在sceneのauthoring IDが
+その生存GameObjectへ対応する場合だけ受け付ける。別個体・削除済みID・不明parameter・
+曖昧な複数グラフへの参照はfalse。sceneのeffect transaction内でもfalseとする。
+
+SceneLoaderはグラフごとに弱参照でoverrideを管理する。別グラフの同名parameterは独立し、
+GPU世代退役後も古いGraphを保持し続けない。削除済み個体のoverrideは次の取得/評価時に
+除去し、scene commitでは全件破棄する。新しい描画グラフは保存値から開始し、失敗した
+描画更新では旧グラフのoverrideを維持する。通常Rendererがこのsnapshotをpublishへ渡す。
+
+これはparameterの所有・寿命・受渡しまでの実装。owner不在時にsubgraph全体の評価や
+GPU taskを停止する処理は未実装で、overrideを除去した後は保存値による評価が続く。
+objectごとの動的instance生成/削除、状態付きノード、イベント/音声handleの所有は残件。
 
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
@@ -149,8 +168,9 @@ Graph::publishへ渡すrender writerが、そのframeのbuffer_bindingsで保持
 描画世代更新、未束縛inputを持つ候補失敗後の旧出力維持を確認した。presetと併用する
 共通buffer/compute宣言はpreset展開後に追加する。
 
-現在の所有単位はプロジェクトの共通描画文書と描画世代。sceneごとに別のgraphを選ぶ
-保存形式や、objectへのsubgraph instance装着・個体parameter/stateは未実装。
+現在のグラフ文書の所有単位はプロジェクトと描画世代。上記owner指定による個体parameterの
+所有は実装済み。sceneごとに別のgraphを選ぶ保存形式、objectへの動的なsubgraph instance装着、
+個体stateとscope全体の実行寿命は未実装。
 
 画像port、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
 scene/Studio統合は残件。

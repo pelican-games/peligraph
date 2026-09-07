@@ -5,6 +5,8 @@
 #include "../ecs/core.hpp"
 #include "../ecs/predefined/animationsystem.hpp"
 #include "../renderingpass/computetask.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
 #include "components/predefined.hpp"
 #include "deterministicrng.hpp"
 #if PELICAN_WITH_AUDIO
@@ -395,6 +397,21 @@ bool GameContext::isPlaying(SoundHandle handle) const {
     (void)handle;
     throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "isPlaying is unavailable");
 #endif
+}
+
+bool GameContext::setGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const {
+    if (internal::activeEffectTransaction()) return false;
+    const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>();
+    const auto generation = passes ? passes->snapshot() : nullptr;
+    if (!generation) return false;
+    std::shared_ptr<const ValueGraph::Graph> graph;
+    for (const auto &[id, program] : generation->programs) {
+        const auto &candidate = program.frame_graph.value_graph;
+        if (!candidate || !candidate->parameterOwner(parameter)) continue;
+        if (graph && graph != candidate) return false;
+        graph = candidate;
+    }
+    return graph && GET_MODULE(SceneLoader).setGraphParameter(std::move(graph), object, parameter, value);
 }
 
 bool GameContext::setRenderValues(std::string_view buffer, std::span<const float> values) const {

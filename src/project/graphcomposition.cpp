@@ -68,6 +68,16 @@ class Expander {
             const auto &node = *local.at(id);
             const auto ref = identifier(node.at("definition"));
             if (!definitions.contains(ref)) throw std::invalid_argument("unknown graph definition: " + ref);
+            if (node.contains("owner")) {
+                const auto &owner = node.at("owner");
+                object(owner, "graph owner must be an object");
+                if (owner.size() != 2 || !owner.contains("scene") || !owner.contains("object") ||
+                    !owner.at("scene").is_string() || owner.at("scene").get_ref<const std::string &>().empty() ||
+                    !owner.at("object").is_number_integer() || owner.at("object") <= 0)
+                    throw std::invalid_argument("graph owner requires scene and positive authoring object id");
+                result.instance_owners.emplace(path + id, GraphInstanceOwner{
+                    owner.at("scene").get<std::string>(), owner.at("object").get<std::uint64_t>()});
+            }
             Json bound = Json::object();
             const auto authored_inputs = node.value("inputs", Json::object());
             object(authored_inputs, "instance inputs must be an object");
