@@ -8,6 +8,24 @@
 
 using namespace Pelican;
 
+TEST_CASE("indexed raster contracts retain buffer and range", "[raster-index]") {
+    nlohmann::json document{{"draw", {{"operation", "indexed"}, {"index_buffer", "mesh"},
+        {"index_count", 6}, {"first_index", 3}, {"instance_count", 2}, {"first_instance", 1}}}};
+    const auto contract = parseRasterPassContract(document, 1, false);
+    const auto &draw = std::get<RasterIndexedDrawOperation>(contract.geometry.operation);
+    REQUIRE(draw.index_buffer == "mesh");
+    REQUIRE(draw.index_count == 6);
+    REQUIRE(draw.first_index == 3);
+    REQUIRE(draw.instance_count == 2);
+    REQUIRE(draw.first_instance == 1);
+    REQUIRE(parseRasterPassContract(rasterPassContractToJson(contract), 1, false) == contract);
+    document["draw"]["vertex_count"] = 4;
+    REQUIRE_THROWS(parseRasterPassContract(document, 1, false));
+    document["draw"].erase("vertex_count");
+    document["draw"]["index_count"] = 0;
+    REQUIRE_THROWS(parseRasterPassContract(document, 1, false));
+}
+
 TEST_CASE("generic raster contract canonicalizes portable draw and attachment state") {
     const auto contract = parseRasterPassContract(
         nlohmann::json{
@@ -180,7 +198,7 @@ TEST_CASE("generic raster contract rejects malformed typed operations and state"
             nlohmann::json{
                 {"draw",
                  {
-                     {"operation", "indexed"},
+                     {"operation", "mesh"},
                  }},
             },
             1, false),

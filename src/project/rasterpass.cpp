@@ -6,6 +6,7 @@
 #include <limits>
 #include <sstream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace Pelican {
 namespace {
@@ -176,12 +177,6 @@ RasterGeometryContract parseGeometry(
     const auto draw_context =
         std::string{context} + " draw";
     requireObject(*found, draw_context);
-    requireOnlyFields(
-        *found,
-        {"implementation", "operation", "vertex_count",
-         "instance_count", "first_vertex", "first_instance"},
-        draw_context);
-
     RasterGeometryContract result;
     if (found->contains("implementation")) {
         result.implementation =
@@ -195,12 +190,25 @@ RasterGeometryContract parseGeometry(
                   *found, "operation",
                   draw_context)
             : std::string{"direct"};
+    if (operation == "indexed") {
+        requireOnlyFields(*found, {"implementation", "operation", "index_buffer", "index_count",
+            "instance_count", "first_index", "first_instance"}, draw_context);
+        result.operation = RasterIndexedDrawOperation{
+            .index_buffer = requireString(*found, "index_buffer", draw_context),
+            .index_count = optionalUint32(*found, "index_count", 0, draw_context),
+            .instance_count = optionalUint32(*found, "instance_count", 1, draw_context),
+            .first_index = optionalUint32(*found, "first_index", 0, draw_context),
+            .first_instance = optionalUint32(*found, "first_instance", 0, draw_context)};
+        return result;
+    }
     if (operation != "direct") {
         throw std::runtime_error(
             draw_context +
             " has unsupported typed operation '" +
             operation + "'");
     }
+    requireOnlyFields(*found, {"implementation", "operation", "vertex_count",
+        "instance_count", "first_vertex", "first_instance"}, draw_context);
     result.operation = RasterDirectDrawOperation{
         .vertex_count =
             optionalUint32(
@@ -461,7 +469,10 @@ void validateRasterPassContract(
             " draw implementation");
     std::visit(
         [&](const auto &operation) {
-            if (operation.vertex_count == 0) {
+            if constexpr (std::is_same_v<std::decay_t<decltype(operation)>, RasterIndexedDrawOperation>) {
+                if (operation.index_count == 0 || operation.index_buffer.empty())
+                    throw std::runtime_error(std::string{context} + " indexed draw requires a buffer and non-zero count");
+            } else if (operation.vertex_count == 0) {
                 throw std::runtime_error(
                     std::string{context} +
                     " direct draw vertex_count must be non-zero");
@@ -538,13 +549,18 @@ nlohmann::json rasterPassContractToJson(
     };
     std::visit(
         [&](const auto &operation) {
-            draw["operation"] = "direct";
-            draw["vertex_count"] =
-                operation.vertex_count;
+            if constexpr (std::is_same_v<std::decay_t<decltype(operation)>, RasterIndexedDrawOperation>) {
+                draw["operation"] = "indexed";
+                draw["index_buffer"] = operation.index_buffer;
+                draw["index_count"] = operation.index_count;
+                draw["first_index"] = operation.first_index;
+            } else {
+                draw["operation"] = "direct";
+                draw["vertex_count"] = operation.vertex_count;
+                draw["first_vertex"] = operation.first_vertex;
+            }
             draw["instance_count"] =
                 operation.instance_count;
-            draw["first_vertex"] =
-                operation.first_vertex;
             draw["first_instance"] =
                 operation.first_instance;
         },

@@ -310,7 +310,7 @@ GPU検証は標準scopeを対象とし、カスタムNativeScope providerでの�
 
 ### アトリビュート・シェーダー・反復の扱い
 
-render.attributeはelementとdomain（vertex/instance/material）を持つbuffer資源ノード。
+render.attributeはelementとdomain（vertex/instance/material/index）を持つbuffer資源ノード。
 resource出力の論理型はpelican.render.attribute@1で、domainとelementは型identityに含める。
 compute/fullscreen/rasterのbufferポートも同じelement/domainを宣言して接続する。
 一般のstorage bufferや異なるdomainへ暗黙変換しない。render.bufferへのdomain指定、画像ポートの
@@ -344,8 +344,14 @@ GltfLoader::readIndicesも同じ読出し・依存抽出を使用し、元primit
 外部buffer依存と範囲外拒否をCPUテストで確認した。共通グラフではdomain=index・element=uintの
 render.attributeから使用でき、sourceはasset・mesh・primitiveだけを指定する（semanticは指定しない）。
 通常の候補buffer uploadとshader accessorを使用し、GLB/外部bufferのGPU読出しと保存原文の維持を
-確認した。vertex属性とは型が異なり、誤接続を拒否する。ラスターパスのindexed draw契約と
-native index bufferへの接続は未実装であり、現段階ではshaderから明示的に添字を読めるところまで。
+確認した。vertex属性とは型が異なり、誤接続を拒否する。render.rasterのdraw.index_sourceに
+read port名を指定すると、元attributeのcountとfirst_indexからindex_countを導出し、uint32の
+native index bufferへ接続する。index_count/vertex_count/vertex_source等との二重指定は拒否する。
+保存の正本にはport参照を残す。物理bufferのindex用途とindexed draw契約はコンパイラが生成し、
+候補世代のbuffer IDを既存pass資源と一緒に保持する。再bindでも同じIDを引き継ぐ。
+転送後・compute書込後の同期にindex readを含める。4頂点/6インデックスの後半三角形の画素と
+owner停止・再開をGPUで確認した。非indexed drawへ戻すと確認画素が埋まらない対照設計
+（個別コード変異は未実施）。compute生成インデックスの実画素検証とbase vertex offsetは残件。
 render.attributeのparameters.sourceにasset・mesh・primitive・semanticを指定すると、このAPIから
 countと候補GPU bufferの初期データを取得する。sourceはvertex/index domainに対応し、count/size/host_sourceや
 value入力との併用を拒否する。例は

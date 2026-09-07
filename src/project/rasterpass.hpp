@@ -63,7 +63,7 @@ std::string_view rasterDepthCompareName(
 // The operation is intentionally typed separately from the open
 // implementation id. A replaceable algorithm may emit this operation without
 // teaching the backend about the algorithm itself. More native operation
-// shapes (indexed/indirect/mesh) can be added to this variant later.
+// shapes (indirect/mesh) can be added to this variant later.
 struct RasterDirectDrawOperation {
     std::uint32_t vertex_count = 3;
     std::uint32_t instance_count = 1;
@@ -74,8 +74,18 @@ struct RasterDirectDrawOperation {
         const RasterDirectDrawOperation &) const = default;
 };
 
+struct RasterIndexedDrawOperation {
+    std::string index_buffer;
+    std::uint32_t index_count = 0;
+    std::uint32_t instance_count = 1;
+    std::uint32_t first_index = 0;
+    std::uint32_t first_instance = 0;
+
+    bool operator==(const RasterIndexedDrawOperation &) const = default;
+};
+
 using RasterDrawOperation =
-    std::variant<RasterDirectDrawOperation>;
+    std::variant<RasterDirectDrawOperation, RasterIndexedDrawOperation>;
 
 struct RasterGeometryContract {
     // Open, versioned provenance for the algorithm that produced operation.

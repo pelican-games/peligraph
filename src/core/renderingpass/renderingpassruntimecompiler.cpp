@@ -2312,6 +2312,17 @@ PassId compileGenericRasterPass(
     GraphicsPipelineViewContract view,
     std::uint32_t logical_view_count,
     const CompiledPassRenderingContract &rendering) {
+    const auto *indexed = std::get_if<RasterIndexedDrawOperation>(&pass_def.genericRasterInfo().contract.geometry.operation);
+    if (indexed) {
+        const auto &resources = dependencies.frame_graph_resources;
+        if (std::find(pass_def.input_buffers.begin(), pass_def.input_buffers.end(), indexed->index_buffer) == pass_def.input_buffers.end() ||
+            !resources.hasBuffer(indexed->index_buffer) ||
+            !resources.definition(resources.getBufferIdByName(indexed->index_buffer)).index_buffer)
+            throw std::runtime_error("indexed draw requires a declared index buffer input");
+        const auto available = resources.bufferSize(indexed->index_buffer) / sizeof(std::uint32_t);
+        if (std::uint64_t{indexed->first_index} + indexed->index_count > available)
+            throw std::runtime_error("indexed draw range exceeds index buffer");
+    }
     const auto resource_interface =
         compileFullscreenResourceInterface(
             pass_def, dependencies, view,
@@ -2340,6 +2351,8 @@ PassId compileGenericRasterPass(
                 logical_view_count,
                 resource_interface.view_dimensions);
     }
+    if (indexed) dependencies.fullscreen_pass_container.setIndexBuffer(pass_id,
+        dependencies.frame_graph_resources.getBufferIdByName(indexed->index_buffer));
     return pass_id;
 }
 

@@ -4,6 +4,7 @@
 #include "frameresources.hpp"
 
 #include <algorithm>
+#include <type_traits>
 
 namespace Pelican {
 
@@ -62,7 +63,9 @@ void FullscreenPassRenderer::render(vk::CommandBuffer cmd_buf, PassId pass_id, c
     }
     std::visit(
         [&](const auto &draw) {
-            cmd_buf.draw(
+            if constexpr (std::is_same_v<std::decay_t<decltype(draw)>, RasterIndexedDrawOperation>) {
+                cmd_buf.drawIndexed(draw.index_count, draw.instance_count, draw.first_index, 0, draw.first_instance);
+            } else cmd_buf.draw(
                 draw.vertex_count,
                 draw.instance_count,
                 draw.first_vertex,

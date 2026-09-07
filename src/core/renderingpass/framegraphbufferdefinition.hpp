@@ -76,6 +76,7 @@ struct FrameGraphBufferDefinition {
         command_layout;
     // Required by view_family_matrices_v1; selects the resolved provider family.
     std::string host_view_family;
+    bool index_buffer = false;
 };
 
 } // namespace Pelican

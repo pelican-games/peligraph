@@ -989,7 +989,7 @@ registerRenderingPassConfigVariantsData(
                         command.copyBuffer(staging.buffer.get(), resources.buffer(found->second).buffer.get(),
                             vk::BufferCopy{0, 0, data.bytes.size()});
                         const vk::MemoryBarrier barrier{vk::AccessFlagBits::eTransferWrite,
-                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite};
+                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite | vk::AccessFlagBits::eIndexRead};
                         command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
                             vk::PipelineStageFlagBits::eAllCommands, {}, barrier, {}, {});
                     }, true);

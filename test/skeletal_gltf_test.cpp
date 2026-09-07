@@ -789,6 +789,26 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
                 writer["op"] = "render.raster";
                 writer["parameters"]["draw"] = {{"vertex_count", 3}};
                 writer["parameters"]["draw"]["instance_source"] = "source";
+                SECTION("direct") {}
+                SECTION("indexed mesh") {
+                    TestSkeletalFixture::writeGlb(root / "indices.glb");
+                    writer["parameters"]["draw"].erase("vertex_count");
+                    writer["parameters"]["draw"]["index_source"] = "indices";
+                    writer["parameters"]["shader"]["vertex"] = "shaders/indexed_quad";
+                    writer["parameters"]["ports"]["indices"] = {
+                        {"element", "uint"}, {"domain", "index"}, {"access", "read"}};
+                    writer["inputs"]["indices"] = {{"node", "mesh_indices"}, {"port", "resource"}};
+                    document["nodes"].push_back({{"id", "mesh_indices"}, {"op", "render.attribute"},
+                        {"parameters", {{"element", "uint"}, {"domain", "index"},
+                            {"source", {{"asset", "project://indices.glb"}, {"mesh", 0}, {"primitive", 0}}}}},
+                        {"outputs", {"resource"}}});
+                    writeText(root / "shaders/indexed_quad.vert", R"(
+#version 450
+void main() {
+    const vec2 positions[4] = vec2[4](vec2(1,1), vec2(-1,1), vec2(1,-1), vec2(-1,-1));
+    gl_Position = gl_VertexIndex < 4 ? vec4(positions[gl_VertexIndex], 0, 1) : vec4(4,4,0,1);
+})");
+                }
             }
             for (auto &node : document["nodes"])
                 if (node["id"] == "intermediate") {

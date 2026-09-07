@@ -1000,7 +1000,7 @@ layout transition は単なる状態ラベルではありません。[`makeTrans
 
 ### 現在の image barrier の注意点
 
-compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetask.cpp#L3573) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L179) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp#L3738) で、buffer でなければ return します。
+compute target は [`transitionResourcesForDispatch()`](../../src/core/renderingpass/computetask.cpp#L3577) で `eGeneral` へ遷移します。しかし tracker は old layout と new layout が同じなら [`transition()` から早期 return](../../src/core/vkcore/render_target_layout_tracker.cpp#L179) します。また frame graph の明示 RAW barrier 実装は [`bufferReadAfterWriteBarrier()`](../../src/core/renderingpass/computetask.cpp#L3742) で、buffer でなければ return します。
 
 したがって調査時点では、同じ storage image を `GENERAL` のまま連続 compute task で write → read する場合、graph 上の順序は付きますが、その依存専用の image memory barrier は発行されません。layout が変わる compute → render などとは事情が違います。これは「設定に edge を書けば全 resource の同期も完全」という意味ではない、現在実装上の制約です。
 
@@ -1025,7 +1025,7 @@ compute target は [`transitionResourcesForDispatch()`](../../src/core/rendering
 
 ## 6.8 Compute task
 
-compute の JSON は [`parseComputeTaskDefinitionsFromConfigJson()`](../../src/core/renderingpass/computetask.cpp#L2135) で次へ変換されます。
+compute の JSON は [`parseComputeTaskDefinitionsFromConfigJson()`](../../src/core/renderingpass/computetask.cpp#L2138) で次へ変換されます。
 
 - `shader`: extensionless stem
 - `reads`, `writes`: buffer または concrete render target の名前
@@ -1039,17 +1039,17 @@ descriptor は shader reflection の set 1、すなわち `PELICAN_SET_PASS_INPU
 2. resource が1個だけなら、それを使用。
 3. それ以外は binding の順番と resource 配列の順番を対応。
 
-buffer は storage buffer、render target は storage image でなければ [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2649) が例外にします。task 実行は graphics frame の command buffer 上で pipeline と set 1 を bind し、[`dispatch()`](../../src/core/renderingpass/computetask.cpp#L3651) を記録します。
+buffer は storage buffer、render target は storage image でなければ [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2653) が例外にします。task 実行は graphics frame の command buffer 上で pipeline と set 1 を bind し、[`dispatch()`](../../src/core/renderingpass/computetask.cpp#L3655) を記録します。
 
 ### buffer 宣言の実装済み範囲
 
-[`FrameGraphResourceContainer::registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L2374) は `size > 0` の buffer を一度だけ device local memory に確保します。
+[`FrameGraphResourceContainer::registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L2377) は `size > 0` の buffer を一度だけ device local memory に確保します。
 
 - 文字列だけ、または size 0 の宣言は graph の既知名にはなりますが、実 buffer を確保しません。
 - `lifetime: persistent|transient` は [`parseFrameGraphBufferDefinitionsFromJson()`](../../src/core/renderingpass/computetask.cpp#L1928) で読みますが、登録側は調査時点で `persistent` を参照していません。transient の frame 単位 recycle は未実装です。
 - `dispatch.groups_from: {"port": "..."}` は typed image resource port の選択 mip extent と shader reflection の `local_size` から `ceil(extent / local_size)` を導出します。render target resize と compute shader reload の rebind 時にも再計算されます。
 - `dispatch.local_size` は受理しません。workgroup size の authority は compute shader の `layout(local_size_*=...)` と SPIR-V reflection です。
-- 実行後に group 数を変える API は [`setDispatchGroups()`](../../src/core/renderingpass/computetask.cpp#L3537) です。
+- 実行後に group 数を変える API は [`setDispatchGroups()`](../../src/core/renderingpass/computetask.cpp#L3541) です。
 
 設定 schema に項目があることと、runtime behavior が完成していることを区別して読む必要があります。
 
@@ -1276,7 +1276,7 @@ buffer/image memory は VMA を使います。[`BufferWrapper`](../../src/core/v
 ### 新しい compute resource を増やす
 
 1. planner の resource declaration/known-resource 検証を拡張。
-2. descriptor reflection type と resource object の対応を [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2649) へ追加。
+2. descriptor reflection type と resource object の対応を [`createDescriptorSet()`](../../src/core/renderingpass/computetask.cpp#L2653) へ追加。
 3. resource ごとの正しい access/stage barrier を実装。
 4. resize、hot reload、teardown 時の寿命を定義。
 

@@ -1968,6 +1968,7 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                     : vk::DeviceSize{0},
             .persistent = true,
         };
+        definition.index_buffer = entry.value("index_buffer", false);
         if (entry.contains("size_from_extent")) {
             auto [extent_size, byte_size] =
                 parseExtentDerivedBufferSize(
@@ -1976,6 +1977,8 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                 std::move(extent_size);
             definition.size = byte_size;
         }
+        if (definition.index_buffer && definition.size % sizeof(std::uint32_t) != 0)
+            throw std::runtime_error(context + " index buffer size must be uint32 aligned");
         if (entry.contains("host_source")) {
             definition.host_source =
                 parseHostBufferSource(
@@ -2402,6 +2405,7 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
             vk::BufferUsageFlagBits::eStorageBuffer |
             vk::BufferUsageFlagBits::eTransferSrc |
             vk::BufferUsageFlagBits::eTransferDst;
+        if (definition.index_buffer) usage |= vk::BufferUsageFlagBits::eIndexBuffer;
         if (definition.command_layout) {
             usage |= vk::BufferUsageFlagBits::
                 eIndirectBuffer;
@@ -3750,6 +3754,10 @@ void ComputeTaskContainer::bufferReadAfterWriteBarrier(vk::CommandBuffer cmd_buf
     barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
     const auto &definition =
         resource_container.definition(resource);
+    if (definition.index_buffer && to_kind == FramePlanNodeKind::render) {
+        destination_stage |= vk::PipelineStageFlagBits::eVertexInput;
+        barrier.dstAccessMask |= vk::AccessFlagBits::eIndexRead;
+    }
     const auto indirect_compute =
         to_kind == FramePlanNodeKind::compute &&
         (definition.command_layout == FrameGraphBufferCommandLayout::compute_dispatch ||

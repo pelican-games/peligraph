@@ -47,6 +47,8 @@ Json lowerRenderGraphDocument(const Json &document) {
             if (parameters.contains("source"))
                 throw std::invalid_argument("attribute source must be resolved before render lowering: " + id);
             forbid(parameters, {"name"});
+            if (node.at("op") == "render.attribute" && parameters.at("domain") == "index")
+                parameters["index_buffer"] = true;
             parameters.erase("element");
             parameters.erase("domain");
             parameters.erase("count");
@@ -85,6 +87,14 @@ Json lowerRenderGraphDocument(const Json &document) {
                 draw[count_key] = count - first;
                 draw.erase(source_key);
             };
+            if (draw.contains("index_source")) {
+                forbid(draw, {"vertex_source", "vertex_count", "first_vertex", "index_buffer", "operation"});
+                const auto port = draw.at("index_source").get<std::string>();
+                const auto buffer = resourceName(node.at("inputs").at(port));
+                bind_count("index_source", "index_count", "first_index", "index");
+                draw["operation"] = "indexed";
+                draw["index_buffer"] = buffer;
+            }
             bind_count("vertex_source", "vertex_count", "first_vertex", "vertex");
             bind_count("instance_source", "instance_count", "first_instance", "instance");
         }

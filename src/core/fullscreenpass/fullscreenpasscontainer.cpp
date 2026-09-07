@@ -253,6 +253,10 @@ FullscreenPassContainer::registerRasterPass(
     return pipeline_id;
 }
 
+void FullscreenPassContainer::setIndexBuffer(PassId pass_id, FrameGraphBufferId buffer) {
+    input_textures.at(pass_id.value).index_buffer = buffer;
+}
+
 void FullscreenPassContainer::bindResource(
     vk::CommandBuffer cmd_buf, PassId pass_id,
     RenderPassViewInvocation invocation) {
@@ -265,6 +269,9 @@ void FullscreenPassContainer::bindResource(
     if (it != input_textures.end()) {
         const auto parity = GET_MODULE(RenderTargetContainer).historyFrameIndex();
         const auto &info = it->second;
+        if (info.index_buffer)
+            cmd_buf.bindIndexBuffer(GET_MODULE(FrameGraphResourceContainer).buffer(*info.index_buffer).buffer.get(),
+                0, vk::IndexType::eUint32);
         std::size_t variant_index = 0;
         if (info.view.execution ==
             GraphicsPipelineViewExecution::multiview) {
@@ -842,6 +849,7 @@ void FullscreenPassContainer::rebindInputResources(
         found->second.input_rt_history;
     const auto input_buffers =
         found->second.input_buffer_ids;
+    const auto index_buffer = found->second.index_buffer;
     const auto input_sampling =
         found->second.input_sampling;
     const auto input_views =
@@ -861,6 +869,7 @@ void FullscreenPassContainer::rebindInputResources(
         input_views, view, input_local_reads,
         input_subresources, logical_view_count,
         input_view_dimensions);
+    if (index_buffer) setIndexBuffer(pass_id, *index_buffer);
 }
 
 std::vector<vk::ImageView>

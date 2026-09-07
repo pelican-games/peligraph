@@ -118,13 +118,15 @@ audio.playbackへ開始/pause/resume/resetを接続し、個体・scene・Graph�
 通常Renderer経由で確認した（音声はnull backend）。typed voice portからvolume/pitchへの接続と、
 新規再生/再開始したframeの値反映も実装した。raster/fullscreen passの共通nodeから既存パスへの
 変換とCPUコンパイルに加え、GPU画素出力とowner不在時の描画scope停止を確認した。
-render.attributeのvertex/instance/material domainを型identityとして照合し、既存bufferとshader
+render.attributeのvertex/instance/material/index domainを型identityとして照合し、既存bufferとshader
 accessorへ渡す入口も追加した。countからstd430サイズとraster描画数を導出する接続も実装した。
 GltfLoaderの属性抽出を共通graphのsource参照・count解決・候補buffer uploadへ接続した。
 GPUで複数頂点の属性値とcountを読み、元のsource参照の保存と失敗候補による旧世代維持を確認した。
 属性の実ファイル依存を変更通知へ接続し、同じGLBや`.gltf`の外部bufferをモデルとgraph属性が共有する場合の
 共同更新を実装した。候補失敗時は両方を維持し、buffer参照先の切替に合わせて依存も更新する。
-遅延RT公開時の共有モデル検証、変形後属性・index接続、vertex/instance添字の自動accessorは残件。
+glTFインデックスも共通sourceから読出し、draw.index_sourceからnative indexed drawへ接続した。
+候補世代のbufferを保持し、GPUで後半三角形の画素・owner停止/再開を確認した。
+遅延RT公開時の共有モデル検証、変形後属性、vertex/instance添字の自動accessorは残件。
 動的描画nodeは現状scopeを分離して実行し、
 同じowner条件のnode間融合と共通history画像のpreview対応は残件。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。

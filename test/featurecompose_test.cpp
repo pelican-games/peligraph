@@ -4396,6 +4396,23 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         })}, {"outputs", {{"color", {{"node", "draw"}, {"port", "color"}}}}},
         {"rendering", {{"render_targets", Json::array()}, {"rendering_passes", Json::array()}}}};
     std::uint64_t expected_size = 4;
+    SECTION("index attribute determines indexed draw range") {
+        expected_size = 24;
+        document["nodes"][0]["op"] = "render.attribute";
+        document["nodes"][0]["parameters"] = {{"element", "uint"}, {"domain", "index"}, {"count", 6}};
+        document["nodes"][2]["parameters"]["ports"]["source"] = {
+            {"element", "uint"}, {"domain", "index"}, {"access", "read"}};
+        document["nodes"][2]["op"] = "render.raster";
+        document["nodes"][2]["parameters"]["draw"] = {{"index_source", "source"}, {"first_index", 3}};
+        for (const auto key : {"index_count", "vertex_count", "vertex_source", "index_buffer"}) {
+            auto invalid = document;
+            invalid["nodes"][2]["parameters"]["draw"][key] = 3;
+            REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+        }
+        auto invalid = document;
+        invalid["nodes"][2]["parameters"]["draw"]["first_index"] = 7;
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+    }
     SECTION("fullscreen") {}
     SECTION("raster") {
         document["nodes"][2]["op"] = "render.raster";
@@ -4441,6 +4458,13 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
     const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);
     REQUIRE(config.at("buffers").at(0).at("size") == expected_size);
     if (expected_size == 48) REQUIRE(pass.at("draw").at("vertex_count") == 2);
+    if (expected_size == 24) {
+        REQUIRE(pass.at("draw").at("operation") == "indexed");
+        REQUIRE(pass.at("draw").at("index_buffer") == "data");
+        REQUIRE(pass.at("draw").at("index_count") == 3);
+        REQUIRE(pass.at("draw").at("first_index") == 3);
+        REQUIRE(config.at("buffers").at(0).at("index_buffer") == true);
+    }
     REQUIRE(pass.at("name") == "draw");
     REQUIRE(pass.at("shader").at("fragment") == "project://custom");
     REQUIRE(pass.at("output").at("color") == Json::array({"image"}));

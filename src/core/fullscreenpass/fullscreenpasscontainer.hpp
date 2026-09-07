@@ -46,6 +46,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
         std::vector<FullscreenInputSampling> input_sampling;
         std::vector<bool> input_local_reads;
         std::vector<FrameGraphBufferId> input_buffer_ids;
+        std::optional<FrameGraphBufferId> index_buffer;
         GraphicsPipelineViewContract view;
         std::uint32_t logical_view_count = 1;
         uint64_t binding_revision = 0;
@@ -90,6 +91,7 @@ DECLARE_MODULE(FullscreenPassContainer) {
         GraphicsPipelineDesc desc);
     void bindResource(vk::CommandBuffer cmd_buf, PassId pass_id,
                       RenderPassViewInvocation invocation = {});
+    void setIndexBuffer(PassId pass_id, FrameGraphBufferId buffer);
     void setInputTextures(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
                           const RenderTargetImageViewResolver &rt_views);
     void setInputResources(PassId pass_id, const std::vector<GlobalRenderTargetId> &input_rts,
