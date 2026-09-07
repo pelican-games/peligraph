@@ -150,6 +150,21 @@ CPU上の既存解決・compute/buffer契約検査と、instance間の書込み�
 
 ### 数値と描画の実行分割（2026-09-07）
 
+画像もrender.imageのresource出力で共通graphへ宣言する。parametersのtypeは
+`{"semantic":"pelican.render.color_signal@1","arguments":{"reference":"scene","transfer":"linear","range":"extended"}}`
+のように既存LogicalTypeRegistryのimage型を指定し、残りのformat/extent_scale/usage等は
+既存render target設定へ渡す。保存上の名前はnode idから生成する。物理formatと論理的な
+色/深度の意味は別であり、接続時には後者を既存の型規則で照合する。
+
+render.computeの画像portはkind=image、type、access=read/write/read_writeを持つ。
+binding=storage（既定）またはsampledと、既存のview/sampling/subresource設定を
+shader resource_portsへ渡す。buffer portの省略kindはbufferのまま。画像とbufferの
+取り違え、色のreference/transfer/rangeやtopologyの不一致は暗黙変換しない。
+書込み結果portからの接続は画像でもafterを生成する。派生render targetはpreset展開後に
+追加し、通常の資源登録・shader interface・barrier計画を使用する。
+画像を扱うcomputeのowner停止も共通edgeを通じて伝播する。raster/fullscreen passの
+共通node化とattribute scopeはこの画像resource/compute接続とは別の残件。
+
 [partitionGraphDocument](../src/project/graphpartition.hpp)が全体のport型を照合してから、
 既存の数値評価と描画コンパイルへ渡すnode/outputを分ける。両backendが同じ分割処理を
 使い、未登録operationや領域間の型不一致を、片側で無視する形にしない。
@@ -190,7 +205,7 @@ Graph::publishへ渡すrender writerが、そのframeのbuffer_bindingsで保持
 所有は実装済み。sceneごとに別のgraphを選ぶ保存形式、objectへの動的なsubgraph instance装着、
 個体stateの寿命と動的な資源回収は未実装。数値/computeの生存条件による停止は上記経路で扱う。
 
-画像port、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
+raster/fullscreen画像passの共通node化、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
 scene/Studio統合は残件。
 
 ### アトリビュート・シェーダー・反復の扱い

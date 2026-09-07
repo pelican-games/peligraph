@@ -111,10 +111,11 @@ instanceの保存parameter、定義default、evaluate/publishへの一時overrid
 instance.ownerによるauthoring objectとの対応と、GameContextからのparameter変更を接続した。
 削除/scene再読込み時のoverride破棄、別グラフの独立性も通常Rendererで確認済み。
 ownerの生存状態に沿った数値評価・publish・依存computeの停止と、scene再読込みでの再開を
-通常Rendererへ接続した。次は状態/イベントの所有と画像portの共通化を進める。
+通常Rendererへ接続した。render.imageとcomputeのstorage/sampled画像portも接続済み。
+次は状態/イベントの所有とraster/fullscreen passの共通node化を進める。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。
 sceneごとのgraph選択と音声handle/任意外部inputの自動供給はまだない。
-画像port、feature自体の共通instance化、状態/イベント境界、Studio統合は残件。
+画像pass、feature自体の共通instance化、状態/イベント境界、Studio統合は残件。
 専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
 アトリビュート生成/付与・固有shaderもこの共通表現へ含める。material反復の
 保存粒度は未確定。対象条件/反復本体を定義として保存し、列挙結果を派生にする案を

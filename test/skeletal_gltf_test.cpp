@@ -454,6 +454,30 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     right_probe["inputs"]["source"]["node"] = "right_render";
     right_probe["inputs"]["destination"]["node"] = "right_result";
     document["nodes"].push_back(right_probe);
+    SECTION("buffer compute path") {}
+    SECTION("image compute path") {
+        addGraphImageStage(document);
+        std::string image_load = "imageLoad(pelican_resource_source, ivec2(0)).x";
+        SECTION("storage image read") {}
+        SECTION("sampled image read") {
+            document["nodes"].back()["parameters"]["ports"]["source"]["binding"] = "sampled";
+            image_load = "texelFetch(pelican_resource_source, ivec2(0), 0).x";
+        }
+        writeText(root / "shaders/graph_image_write.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() { imageStore(pelican_resource_destination, ivec2(0), vec4(pelican_load_source(0))); }
+)");
+        writeText(root / "shaders/graph_image_read.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
+)");
+    }
     document["nodes"][0]["parameters"]["name"] = "scene_time";
     document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
     writeText(root / "passes/main_rendering_config.json", document.dump());

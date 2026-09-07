@@ -31,7 +31,7 @@ Json lowerRenderGraphDocument(const Json &document) {
     std::function<std::string(const Json &)> resourceName = [&](const Json &endpoint) {
         const auto id = endpoint.at("node").get<std::string>();
         const auto &node = *nodes.at(id);
-        if (node.at("op") == "render.buffer") return id;
+        if (node.at("op") == "render.buffer" || node.at("op") == "render.image") return id;
         if (!resolving.insert(id).second)
             throw std::invalid_argument("cyclic compute resource connection: " + id);
         auto resource = resourceName(node.at("inputs").at(endpoint.at("port").get<std::string>()));
@@ -48,6 +48,13 @@ Json lowerRenderGraphDocument(const Json &document) {
             config["buffers"].push_back(std::move(parameters));
             continue;
         }
+        if (node.at("op") == "render.image") {
+            forbid(parameters, {"name", "kind"});
+            parameters.erase("type");
+            parameters["name"] = id;
+            config["render_targets"].push_back(std::move(parameters));
+            continue;
+        }
         forbid(parameters, {"name", "reads", "writes", "resource_ports"});
         auto ports = parameters.at("ports");
         parameters.erase("ports");
@@ -60,7 +67,8 @@ Json lowerRenderGraphDocument(const Json &document) {
         if (!after.is_array()) throw std::invalid_argument("compute after must be an array");
         for (const auto &[port, declaration] : ports.items()) {
             for (const auto &[key, value] : declaration.items())
-                if (key != "element" && key != "access")
+                if (key != "element" && key != "access" && key != "kind" && key != "type" &&
+                    key != "binding" && key != "view" && key != "sampling" && key != "subresource")
                     throw std::invalid_argument("unknown compute port setting: " + key);
             const auto &endpoint = node.at("inputs").at(port);
             const auto producer = endpoint.at("node").get<std::string>();
@@ -73,9 +81,13 @@ Json lowerRenderGraphDocument(const Json &document) {
                 throw std::invalid_argument("unknown compute port access: " + access);
             if (access != "write") reads.insert(resource);
             if (access != "read") writes.insert(resource);
-            parameters["resource_ports"][port] = {
-                {"resource", resource}, {"kind", "buffer"},
-                {"element", declaration.at("element")}, {"access", "storage"}};
+            auto binding = declaration;
+            binding.erase("type");
+            binding["resource"] = resource;
+            binding["kind"] = declaration.value("kind", std::string{"buffer"});
+            binding["access"] = declaration.value("binding", std::string{"storage"});
+            binding.erase("binding");
+            parameters["resource_ports"][port] = std::move(binding);
         }
         parameters["reads"] = reads;
         parameters["writes"] = writes;

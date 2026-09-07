@@ -15,6 +15,29 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("common image ports lower typed compute dependencies", "[curve][graph-composition]") {
+    auto document = parameterGraphCompositionFixture();
+    addGraphImageStage(document);
+    const auto lowered = Pelican::lowerRenderGraphDocument(document);
+    REQUIRE(lowered.at("render_targets")[0].at("name") == "intermediate");
+    REQUIRE_FALSE(lowered.at("render_targets")[0].contains("type"));
+    const auto &tasks = lowered.at("compute_tasks");
+    const auto reader = std::find_if(tasks.begin(), tasks.end(), [](const auto &task) { return task.at("name") == "image_probe"; });
+    REQUIRE(reader != tasks.end());
+    REQUIRE(reader->at("after") == nlohmann::json::array({"probe"}));
+    REQUIRE(reader->at("resource_ports").at("source").at("resource") == "intermediate");
+    REQUIRE(reader->at("resource_ports").at("source").at("kind") == "image");
+    const Pelican::ValueGraph::Graph values{document.dump()};
+    REQUIRE(values.evaluate({{"time", 0.25}}).at("left")[0] == 0.5);
+    REQUIRE(nlohmann::json::parse(values.serialize()) == document);
+    auto mismatch = document;
+    mismatch["nodes"].back()["parameters"]["ports"]["source"]["type"]["arguments"]["reference"] = "display";
+    REQUIRE_THROWS(Pelican::lowerRenderGraphDocument(mismatch));
+    mismatch = document;
+    mismatch["nodes"].back()["inputs"]["source"] = {{"node", "render"}, {"port", "resource"}};
+    REQUIRE_THROWS(Pelican::lowerRenderGraphDocument(mismatch));
+}
+
 TEST_CASE("owner scope dependencies cross CPU GPU boundaries without stopping sibling branches", "[curve][graph-composition]") {
     auto document = parameterGraphCompositionFixture();
     document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};

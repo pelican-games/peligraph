@@ -23233,9 +23233,9 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 共通graphの最新到達点: 個体parameterの保存owner・runtime override・削除/scene reload時の破棄に続き、owner不在の数値評価/publish/依存compute停止を通常Rendererへ接続した。alias・入れ子も含め生存条件を共有し、独立枝の継続とscene reloadによる再開を実GPUで確認。次は状態/event所有と画像port共通化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
+- 共通graphの最新到達点: owner不在の数値評価/publish/依存compute停止に続き、render.imageとcomputeのstorage/sampled画像portを通常Rendererへ接続した。数値→buffer→image→buffer、独立枝の継続、owner削除時の停止とscene reloadによる再開を実GPUで確認。次は状態/event所有とraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
 
-- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像port・feature共通instance・状態/イベント・Studio統合は残件。
+- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・image・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像pass・feature共通instance・状態/イベント・Studio統合は残件。
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
@@ -23249,6 +23249,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**共通graphの画像資源/compute port (2026-09-07):**
+- render.imageは既存LogicalTypeRegistryのimage semantic/enum argumentsをtypeに保存し、残りの設定をrender targetへ変換する。compute portはkind=image/typeとread/write/read_writeを照合し、binding/view/sampling/subresourceを既存shader resource契約へ渡す。生成画像はpreset解決後に構成する。
+- 画像の書込み結果portからのedgeも資源解決とafterを生成する。所有scope条件は既存の依存伝播/停止をそのまま使用。raster/fullscreen pass共通node化は未実装。
+- Player Debug build成功。CPU curve/animation/scene 35case/1554assertion、render-feature 48case/965assertion、GPU skeletal 7case/190assertion成功（graph_image_build.log / graph_image_sampled_build.log / graph_image_feature_build.log / graph_image_cpu.log / graph_image_feature_cpu.log / graph_image_gpu.log）。GPUではbuffer経路に加えimage storage読取りとsampled読取りを同じ通常Renderer試験で実行。色reference不一致とimage/buffer誤接続はCPUで拒否。
+- 画像生成を外すと通常Rendererの資源解決が失敗し、読取りshader/descriptor対応を壊すと計算結果が落ちる。書込み→読取りのafter導出はCPU検査と宣言順に依存しないGPU結果で確認。停止条件を途中で失うと削除後のsentinel保持が落ちる。個別変異実行はしていない。array/cube/subresource設定は既存契約へ転送するが今回の共通graph GPU試験はshared 2Dのみ。
 
 **owner不在時の数値/compute実行停止 (2026-09-07):**
 - SceneLoaderがauthoring ownerと現在scene/ECS生存からInactiveScopesを生成し、通常Rendererが同じフレームsnapshotをValueGraphとcompute実行へ供給。sceneなしでは全owner scopeを不在とする。GPU資源とbarrierは世代の計画に残し、該当dispatchのbodyを省く。traceのrecordedに実行有無を記録。

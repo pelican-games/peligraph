@@ -2737,11 +2737,16 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         ? lowerRenderGraphDocument(config) : config;
     auto graph_buffers = nlohmann::json::array();
     auto graph_tasks = nlohmann::json::array();
+    auto graph_targets = nlohmann::json::array();
     if (common_graph) {
         graph_buffers = std::move(native_config.at("buffers"));
         graph_tasks = std::move(native_config.at("compute_tasks"));
         native_config.erase("buffers");
         native_config.erase("compute_tasks");
+        if (native_config.contains("render_targets")) {
+            graph_targets = std::move(native_config.at("render_targets"));
+            native_config.erase("render_targets");
+        }
     }
     const auto preset_resolution = resolveRenderPipelinePreset(
         native_config, dependencies.load_pipeline_json
@@ -2752,6 +2757,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     // declarations. Add the common graph's declarations after preset expansion.
     for (auto &buffer : graph_buffers) resolved_config["buffers"].push_back(std::move(buffer));
     for (auto &task : graph_tasks) resolved_config["compute_tasks"].push_back(std::move(task));
+    for (auto &target : graph_targets) resolved_config["render_targets"].push_back(std::move(target));
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
     const auto authored_source =

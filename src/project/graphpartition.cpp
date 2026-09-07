@@ -13,6 +13,20 @@ LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declarat
     return registry.canonicalize(parseSemanticTypeId("pelican.render.storage_buffer@1"),
                                  {{"element", EnumValueId{element}}});
 }
+LogicalType resourceType(const LogicalTypeRegistry &registry, const Json &declaration) {
+    const auto kind = declaration.value("kind", std::string{"buffer"});
+    if (kind == "buffer") return bufferType(registry, declaration);
+    if (kind != "image") throw std::invalid_argument("unknown graph resource kind: " + kind);
+    const auto &type = declaration.at("type");
+    std::vector<LogicalTypeArgumentInput> arguments;
+    for (const auto &[name, value] : type.at("arguments").items())
+        arguments.push_back({name, EnumValueId{value.get<std::string>()}});
+    const auto result = registry.canonicalize(parseSemanticTypeId(type.at("semantic").get<std::string>()),
+                                               std::move(arguments));
+    if (result.constructor != LogicalTypeConstructor::image)
+        throw std::invalid_argument("graph image requires an image logical type");
+    return result;
+}
 }
 
 GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &registry) {
@@ -48,11 +62,15 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         if (op == "render.buffer") {
             contract.outputs.emplace("resource", bufferType(registry, parameters));
             contract.inputs.emplace("value", GraphInputContract{exactLogicalTypePattern(registry, scalar), false});
+        } else if (op == "render.image") {
+            auto declaration = parameters;
+            declaration["kind"] = "image";
+            contract.outputs.emplace("resource", resourceType(registry, declaration));
         } else if (op == "render.compute") {
             const auto &ports = parameters.at("ports");
             if (!ports.is_object()) throw std::invalid_argument("compute ports must be an object");
             for (const auto &[port, declaration] : ports.items()) {
-                const auto type = bufferType(registry, declaration);
+                const auto type = resourceType(registry, declaration);
                 contract.inputs.emplace(port, GraphInputContract{exactLogicalTypePattern(registry, type)});
                 const auto access = declaration.at("access").get<std::string>();
                 if (access != "read" && access != "write" && access != "read_write")

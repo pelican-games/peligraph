@@ -53,3 +53,23 @@ inline nlohmann::json parameterGraphCompositionFixture() {
     document["nodes"][4]["parameters"] = {{"gain", 4}};
     return document;
 }
+
+inline void addGraphImageStage(nlohmann::json &document) {
+    const nlohmann::json type{{"semantic", "pelican.render.color_signal@1"},
+        {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    document["nodes"].push_back({{"id", "intermediate"}, {"op", "render.image"},
+        {"parameters", {{"type", type}, {"extent_scale", 1.0}, {"format", "R32G32B32A32_SFLOAT"},
+                        {"usage", {"STORAGE", "SAMPLED"}}}}, {"outputs", {"resource"}}});
+    auto &writer = document["nodes"][7];
+    writer["parameters"]["shader"] = "shaders/graph_image_write";
+    writer["parameters"]["ports"]["destination"] = {{"kind", "image"}, {"type", type}, {"access", "write"}};
+    writer["inputs"]["destination"] = {{"node", "intermediate"}, {"port", "resource"}};
+    document["nodes"].push_back({{"id", "image_probe"}, {"op", "render.compute"},
+        {"parameters", {{"shader", "shaders/graph_image_read"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+          {"ports", {{"source", {{"kind", "image"}, {"type", type}, {"access", "read"}}},
+                     {"destination", {{"element", "float"}, {"access", "write"}}}}}}},
+        {"inputs", {{"source", {{"node", "probe"}, {"port", "destination"}}},
+                    {"destination", {{"node", "result"}, {"port", "resource"}}}}},
+        {"outputs", {"destination"}}});
+    document["outputs"]["gpu"] = {{"node", "image_probe"}, {"port", "destination"}};
+}
