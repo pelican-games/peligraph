@@ -246,6 +246,32 @@ stopは時計を解除する。イベント購読・複数再生の重ね合わ�
 接続とrender入力の公開は残件。skeletal poseの専用評価や既存VRMAのimport契約は
 変更しない。
 
+### 数値の接続グラフ（2026-09-07、骨格state machineとは別の文書）
+
+公開`valuegraph.hpp`のValueGraph::Graphは`pelican.value_graph` version 1を
+読み、serializeで接続とカーブ形状を保存する。evaluateへ名前付きdouble入力を
+渡すと、名前付きdouble配列を返す。副作用・内部時計・scene所有は持たない。
+呼出側がEngineTimeやsoundState.position_secondsを入力として渡し、出力を
+setRenderValuesやsetSoundVolume等へ接続する。これらのサービスへの自動装着、
+接続先型の検査、音声イベントの消費、GUIはまだ実装していない。
+
+文書はschema/version/nodes/outputsを持つ。nodesはidが一意の配列、outputsは
+出力名からnode id配列への対応。宣言順によらず依存順を一度構築し、循環と
+存在しない参照を拒否する。評価値は有限のdouble、カーブ補間は既存ScalarCurve。
+
+| op | 入力・設定 | 出力 |
+| --- | --- | --- |
+| input | name: 外部入力名 | 渡された値 |
+| constant | value | 定数 |
+| add | a/b: node id | 和 |
+| multiply | a/b: node id | 積 |
+| curve | time: node id、keys | 任意時刻の補間値 |
+
+curveのkeysはtime/valueと任意のinterpolation（linear/step/cubic）、
+in_tangent/out_tangentを持つ。時間と値の倍率/オフセットはadd/multiplyで
+それぞれ曲線の前後に接続する。再生範囲/ループ/サンプリング設定のノード、
+trigger、pose/物理等の非スカラー型は残件であり、数値グラフ完成とは扱わない。
+
 ## 4. glTF / VRMA の受理(調査 §4.2 — VRM 一級化の要件)
 
 4 段パイプライン: ①コンテナ decode(`.vrma` = glb alias +

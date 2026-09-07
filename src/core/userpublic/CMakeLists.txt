@@ -13,6 +13,7 @@ target_sources(pelican_core PRIVATE
     platformer/charactercontroller2d.cpp
     animation/animgraph.cpp
     animation/curve.cpp
+    valuegraph.cpp
     details/reload/registrationowner.cpp
 )
 

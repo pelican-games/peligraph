@@ -5,6 +5,7 @@
 #include "../src/core/userpublic/components/modelview.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/animation/curve.hpp"
+#include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/container.hpp"
@@ -315,14 +316,20 @@ TEST_CASE("curve samples publish to a runtime float render buffer", "[runtime-re
         return values;
     };
     REQUIRE(read() == std::array<float, 2>{0.0f, 0.0f});
-    const Animation::ScalarCurve curve{{{0, 0}, {1, 1}}};
-    Animation::CurvePlaybackSettings settings;
-    settings.scale = 2;
+    const ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[{"id":"t","op":"input","name":"time"},
+        {"id":"shape","op":"curve","time":"t","keys":[{"time":0,"value":0},{"time":1,"value":1}]},
+        {"id":"gain","op":"constant","value":2},
+        {"id":"scaled","op":"multiply","a":"shape","b":"gain"},
+        {"id":"one","op":"constant","value":1},
+        {"id":"offset","op":"add","a":"scaled","b":"one"}],
+      "outputs":{"curve_values":["scaled","offset"]}})"};
+    const ValueGraph::Graph restored{graph.serialize()};
+    const auto outputs = restored.evaluate({{"time", 0.25}});
     GameContext context;
-    std::array<float, 2> values{
-        static_cast<float>(Animation::sampleCurve(curve, settings, 0.25).value),
-        static_cast<float>(Animation::sampleCurve(curve, settings, 0.75).value)};
-    REQUIRE(context.setRenderValues("curve_values", values));
+    const auto &[output_name, scalars] = *outputs.begin();
+    std::array<float, 2> values{static_cast<float>(scalars[0]), static_cast<float>(scalars[1])};
+    REQUIRE(context.setRenderValues(output_name, values));
     values.fill(99); // Publishing takes a snapshot, not a borrowed pointer.
     REQUIRE(read() == std::array<float, 2>{0.0f, 0.0f});
     resources.uploadRuntimeValues();

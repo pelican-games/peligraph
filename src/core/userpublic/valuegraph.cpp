@@ -1,0 +1,142 @@
+#include "valuegraph.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <nlohmann/json.hpp>
+#include <stdexcept>
+
+namespace Pelican::ValueGraph {
+namespace {
+using Json = nlohmann::json;
+void keys(const Json &object, std::initializer_list<std::string_view> allowed) {
+    if (!object.is_object()) throw std::invalid_argument("value graph requires an object");
+    for (const auto &[key, value] : object.items()) {
+        (void)value;
+        if (std::find(allowed.begin(), allowed.end(), key) == allowed.end())
+            throw std::invalid_argument("unknown value graph field: " + key);
+    }
+}
+std::string name(const Json &value) {
+    if (!value.is_string() || value.get_ref<const std::string &>().empty())
+        throw std::invalid_argument("value graph names must be nonempty strings");
+    return value.get<std::string>();
+}
+double number(const Json &value) {
+    if (!value.is_number() || !std::isfinite(value.get<double>()))
+        throw std::invalid_argument("value graph values must be finite numbers");
+    return value.get<double>();
+}
+}
+
+Graph::Graph(std::string_view document) {
+    const auto root = Json::parse(document);
+    keys(root, {"schema", "version", "nodes", "outputs"});
+    if (root.at("schema") != "pelican.value_graph" || root.at("version") != 1)
+        throw std::invalid_argument("unsupported value graph schema/version");
+    const auto &nodes = root.at("nodes");
+    if (!nodes.is_array()) throw std::invalid_argument("value graph nodes must be an array");
+    std::map<std::string, std::size_t, std::less<>> indices;
+    for (const auto &node : nodes) {
+        auto id = name(node.at("id"));
+        if (!indices.emplace(id, nodes_.size()).second)
+            throw std::invalid_argument("duplicate value graph node: " + id);
+        nodes_.push_back(Node{.id = std::move(id)});
+    }
+    const auto resolve = [&](const Json &reference) {
+        const auto id = name(reference);
+        const auto found = indices.find(id);
+        if (found == indices.end()) throw std::invalid_argument("unknown value graph node: " + id);
+        return found->second;
+    };
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+        const auto &authored = nodes[i];
+        auto &node = nodes_[i];
+        const auto op = name(authored.at("op"));
+        if (op == "input") {
+            keys(authored, {"id", "op", "name"});
+            node.op = Op::input;
+            node.input_name = name(authored.at("name"));
+        } else if (op == "constant") {
+            keys(authored, {"id", "op", "value"});
+            node.op = Op::constant;
+            node.constant = number(authored.at("value"));
+        } else if (op == "add" || op == "multiply") {
+            keys(authored, {"id", "op", "a", "b"});
+            node.op = op == "add" ? Op::add : Op::multiply;
+            node.dependencies = {resolve(authored.at("a")), resolve(authored.at("b"))};
+        } else if (op == "curve") {
+            keys(authored, {"id", "op", "time", "keys"});
+            node.op = Op::curve;
+            node.dependencies = {resolve(authored.at("time"))};
+            const auto &curve_keys = authored.at("keys");
+            if (!curve_keys.is_array()) throw std::invalid_argument("curve keys must be an array");
+            std::vector<Animation::CurveKey> decoded;
+            for (const auto &key : curve_keys) {
+                keys(key, {"time", "value", "interpolation", "in_tangent", "out_tangent"});
+                Animation::CurveKey result;
+                result.time = number(key.at("time"));
+                result.value = number(key.at("value"));
+                result.in_tangent = number(key.value("in_tangent", Json(0.0)));
+                result.out_tangent = number(key.value("out_tangent", Json(0.0)));
+                const auto interpolation = key.value("interpolation", std::string("linear"));
+                if (interpolation == "linear") result.interpolation = Animation::CurveInterpolation::linear;
+                else if (interpolation == "step") result.interpolation = Animation::CurveInterpolation::step;
+                else if (interpolation == "cubic") result.interpolation = Animation::CurveInterpolation::cubic;
+                else throw std::invalid_argument("unknown curve interpolation: " + interpolation);
+                decoded.push_back(result);
+            }
+            node.curve.emplace(std::move(decoded));
+        } else throw std::invalid_argument("unknown value graph operation: " + op);
+    }
+    // Compile once. Declaration order does not constrain connections, and
+    // duplicated edges (for example x*x) remain separate dependencies.
+    std::vector<std::vector<std::size_t>> consumers(nodes_.size());
+    std::vector<std::size_t> pending(nodes_.size());
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+        pending[i] = nodes_[i].dependencies.size();
+        for (const auto source : nodes_[i].dependencies) consumers[source].push_back(i);
+        if (pending[i] == 0) order_.push_back(i);
+    }
+    for (std::size_t cursor = 0; cursor < order_.size(); ++cursor)
+        for (const auto consumer : consumers[order_[cursor]])
+            if (--pending[consumer] == 0) order_.push_back(consumer);
+    if (order_.size() != nodes_.size()) throw std::invalid_argument("value graph contains a cycle");
+    const auto &outputs = root.at("outputs");
+    if (!outputs.is_object()) throw std::invalid_argument("value graph outputs must be an object");
+    for (const auto &[output, references] : outputs.items()) {
+        if (output.empty() || !references.is_array() || references.empty())
+            throw std::invalid_argument("value graph output requires a name and scalar references");
+        for (const auto &reference : references) outputs_[output].push_back(resolve(reference));
+    }
+    document_ = root.dump();
+}
+
+Outputs Graph::evaluate(const Inputs &inputs) const {
+    std::vector<double> values(nodes_.size());
+    for (const auto index : order_) {
+        const auto &node = nodes_[index];
+        auto &value = values[index];
+        switch (node.op) {
+        case Op::input: {
+            const auto found = inputs.find(node.input_name);
+            if (found == inputs.end()) throw std::invalid_argument("missing value graph input: " + node.input_name);
+            value = found->second;
+            break;
+        }
+        case Op::constant: value = node.constant; break;
+        case Op::add: value = values[node.dependencies[0]] + values[node.dependencies[1]]; break;
+        case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
+        case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
+        }
+        if (!std::isfinite(value)) throw std::invalid_argument("non-finite value at graph node: " + node.id);
+    }
+    Outputs result;
+    for (const auto &[name, indices] : outputs_) {
+        auto &output = result[name];
+        output.reserve(indices.size());
+        for (const auto index : indices) output.push_back(values[index]);
+    }
+    return result;
+}
+
+} // namespace Pelican::ValueGraph

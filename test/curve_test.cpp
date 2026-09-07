@@ -1,4 +1,5 @@
 #include "../src/core/userpublic/animation/curve.hpp"
+#include "../src/core/userpublic/valuegraph.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -9,6 +10,31 @@
 
 using namespace Pelican::Animation;
 using Catch::Approx;
+
+TEST_CASE("saved value graphs compose curves and external parameters", "[curve][valuegraph]") {
+    const Pelican::ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[
+        {"id":"result","op":"add","a":"scaled","b":"bias"},
+        {"id":"scaled","op":"multiply","a":"shape","b":"gain"},
+        {"id":"squared","op":"multiply","a":"t","b":"t"},
+        {"id":"shape","op":"curve","time":"t","keys":[
+          {"time":0,"value":0,"interpolation":"cubic","out_tangent":0},
+          {"time":1,"value":1,"in_tangent":2}]},
+        {"id":"t","op":"input","name":"clock"},
+        {"id":"gain","op":"input","name":"gain"},
+        {"id":"bias","op":"constant","value":3}],
+      "outputs":{"values":["result","squared"]}})"};
+    const Pelican::ValueGraph::Graph restored{graph.serialize()};
+    const auto first = restored.evaluate({{"clock", 0.5}, {"gain", 2}});
+    REQUIRE(first.at("values")[0] == Approx(3.5));
+    REQUIRE(first.at("values")[1] == Approx(0.25));
+    REQUIRE(restored.evaluate({{"clock", 0.25}, {"gain", 4}}).at("values")[0] == Approx(3.25));
+    REQUIRE_THROWS(restored.evaluate({{"clock", 0.5}}));
+    REQUIRE_THROWS(Pelican::ValueGraph::Graph(R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[{"id":"x","op":"add","a":"x","b":"x"}],"outputs":{"v":["x"]}})"));
+    REQUIRE_THROWS(Pelican::ValueGraph::Graph(R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[],"outputs":{"v":["missing"]}})"));
+}
 
 TEST_CASE("scalar curves preserve slope units and step key boundaries", "[animation][curve]") {
     // The Hermite segment represents y = (time - 2)^2 over four seconds.

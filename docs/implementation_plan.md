@@ -23246,6 +23246,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**保存可能な数値グラフの基本評価 (2026-09-07):**
+- 公開ValueGraph::Graphへpelican.value_graph文書の読込/保存を追加。input/constant/curve/add/multiplyをnode idで接続し、名前付き配列出力へ集約する。外部時刻/値を毎回渡す純粋評価で、音声・描画等の副作用は呼出側へ分離する。骨格state machineの文法は拡張していない。
+- 宣言順と接続順を分離し、初回に依存順を構築。curveは既存ScalarCurveのstep/linear/cubicと接線を保存する。未宣言参照/循環/欠落入力を拒否し、時間・値の倍率/オフセットは前後のadd/multiplyとして見える構成にする。
+- Player Debug build成功。curve/animgraphは18case/427assertion、実Vulkan対象は4case/73assertion成功。逆順のnode宣言、同一sourceへの2本の接続、cubic形状と外部値の組合せ、保存再読込、循環/参照切れ/入力不足、名前付き出力を既存setRenderValuesへ渡したbuffer内容を確認。multiplyを無効にすると外部gainの対照、依存順を宣言順へ戻すと先頭resultの対照が落ちる。個別変異は未実施。
+- scene自動装着、保存されたサービスbinding、再生設定/triggerノード、非スカラー型、GUIは残件。Vulkan試験はbuffer内容まででshaderによる消費結果は未確認。
+
 **評価済み数値からframe graph bufferへの入力 (2026-09-07):**
 - bufferのhost_sourceにruntime_f32を追加。GameContext::setRenderValuesが宣言全体に一致するfloat配列をCPUへコピーし、rendererの既存host更新位置でwriteHostBufferへ渡す。カーブ専用resourceやshaderは追加せず、既存storage buffer portを使う。初期値はゼロ、次の公開まで保持する。新規登録時に初期化され、旧bufferの値を別登録へ移さない。
 - Player Debug build成功。実Vulkanのskeletal/数値入力対象は4case/73assertion成功。sampleCurveの評価値0.5/1.5を公開し、元配列の変更がstagingへ影響しないこと、upload前は旧値、upload後は評価値、次の更新、未登録名/サイズ不一致を確認。実Vulkan割当をmapして内容を読み、shaderによる演算/描画結果までは検証していない。CPUコピーを外すと元配列変更の対照、uploadを外すと値の対照が落ちる。個別変異は未実施。
