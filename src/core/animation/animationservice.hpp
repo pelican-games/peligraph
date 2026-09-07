@@ -31,6 +31,12 @@ class AnimationServiceRuntime {
                         ModelAssetId logical_asset);
     void registerObject(std::string name, const SkeletalModelData &model,
                         ModelInstanceId renderer_instance);
+    // Retires only this object's sinks/sources. Shared animation assets and
+    // other registered objects remain valid.
+    bool unregisterObject(std::string_view name);
+    // Owner-thread frame boundary: forget lazy scene registrations whose
+    // entity, scene or renderer instance has changed. Resolution is lazy again.
+    void synchronizeSceneObjects();
     // Registers a retargeted .vrma asset in the same named Clip/Cursor
     // vocabulary used by anim_graph. Reload preserves logical identity and
     // advances only this source asset's generation.

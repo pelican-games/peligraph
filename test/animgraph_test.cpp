@@ -202,6 +202,45 @@ TEST_CASE("graph writers can detach and take turns without destroying their eval
     REQUIRE(resumed_b->time_seconds == 0.0);
 }
 
+TEST_CASE("object retirement preserves shared animation resources and permits name reuse",
+          "[animation][animgraph][a2][lifecycle]") {
+    auto model = graphAsset();
+    auto &runtime = animationServiceRuntime();
+    runtime.reset();
+    // Hero is the first representative stored in the shared rig/clip indices.
+    runtime.registerObject("Hero", model);
+    runtime.registerObject("Survivor", model);
+    auto hero = bind(orderedGraph, "Hero", 101);
+    auto survivor = bind(orderedGraph, "Survivor", 102);
+    const auto old_sink = resolveSink("Hero");
+    const auto survivor_sink = resolveSink("Survivor");
+    tick(hero, old_sink, 0.25);
+    tick(survivor, survivor_sink, 0.25);
+    runtime.synchronizeSceneObjects(); // Manual/game registrations are unaffected.
+    REQUIRE(resolveSink("Hero").identity == old_sink.identity);
+    REQUIRE(runtime.unregisterObject("Hero"));
+    REQUIRE_FALSE(runtime.unregisterObject("Hero"));
+    REQUIRE(runtime.runPhases(old_sink, nextRevision()) == Status::invalid_handle);
+    REQUIRE(hero.rebind() == Status::invalid_handle);
+    // Rebind reads shared rig/clip/binding indices after their original
+    // ObjectRecord has gone; its pre-existing cursor remains usable too.
+    tick(survivor, survivor_sink, 0.25);
+    REQUIRE(survivor.rebind() == Status::ok);
+    const auto revision = nextRevision();
+    REQUIRE(survivor.prepareTick(1.0, 0.25, revision) == Status::ok);
+    REQUIRE(runtime.runAllPhases(revision) == Status::ok);
+    REQUIRE(survivor.getStatus().frame_revision == revision);
+
+    runtime.registerObject("Hero", model);
+    const auto new_sink = resolveSink("Hero");
+    REQUIRE(new_sink.identity != old_sink.identity);
+    auto replacement = bind(orderedGraph, "Hero", 103);
+    tick(replacement, new_sink, 0.25);
+    hero.unbind(); // Old handles cannot release the new actor's source.
+    tick(replacement, new_sink, 0.25);
+    REQUIRE_FALSE(replacement.lastPoseBytes().empty());
+}
+
 TEST_CASE("partially resolved graphs can bind after their missing clip is supplied",
           "[animation][animgraph][a2][lifecycle]") {
     auto model = graphAsset();

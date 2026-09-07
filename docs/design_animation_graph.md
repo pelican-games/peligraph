@@ -185,6 +185,12 @@ v1 スコープ = clip state + blend1d + crossfade(調査 §6.1 で条件付き�
 sourceを切り替える基盤であり、ラグドール・剛体シミュレーション・物理ノードや
 `animation.graph`のcomponent装着を実装したという意味ではない。
 
+sceneから解決した音声・描画等への参照は、名前だけを永続的な個体IDとして
+扱わない。アニメーションのscene sinkもscene epoch・entity generation・
+renderer instanceの一致を確認する。消失/差し替え時は当該sinkを退役し、同じ
+モデル資産を使う別個体のclipやposeの所有は維持する。新個体は新しいsinkを
+解決し直す。外部の評価器を暗黙に別個体へ移し替えない。
+
 ### パラメトリックな数値カーブ（2026-09-07）
 
 公開標準ライブラリの`animation/curve.hpp`は、形状・時刻の変換・値の変換・

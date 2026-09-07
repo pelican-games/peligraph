@@ -23246,6 +23246,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**sceneアニメーションsinkの個体寿命追随 (2026-09-07):**
+- AnimationServiceのlazy scene登録にscene epoch/entityを保持し、フレームのECS/game更新後・phase実行前に現在のscene/entity/model instance/modelと照合する。resolve_sinkでも既存名を照合し、古い登録を退役してから再解決する。手動/game登録は自動同期の対象外。
+- unregisterObjectで対象objectのsink/source/instanceを解除。共有assetのrig/clip/binding索引が対象objectを代表としていた場合は残存個体へ参照を付け替え、共有clip cursorは継続する。専属VRMA sourceは退役する。旧sinkと新sinkのidentityを分け、古いEvaluatorのunbindが新個体を解除しない。
+- Player/core_foundation Debug build成功。既存curve/animgraph計17case/421assertion成功。共有assetの最初の代表を削除した後のsurvivor評価/rebind/runAllPhasesと、同名再登録後の新graph評価を確認。代表参照の移譲を外すとsurvivorの再解決が成立せず、旧sinkを残すと旧graphのphase評価が継続する対照。個別変異・実SceneLoader/rendererによる再spawn・専属VRMA退役の実行確認は未実施。
+- animation.graphのcomponent装着・汎用graph間接続は未実装。今回の変更はそのscene寿命の前提を接続するもので、既存graphの状態を別個体へ暗黙に移さず、全体resetも追加しない。
+
 **パラメトリック数値カーブの基本評価 (2026-09-07):**
 - 公開標準ライブラリanimation/curve.hppへScalarCurve・sampleCurve・CurveTriggerClockを追加。形状はstep/linear/cubic Hermiteのキー列、再生側は使用区間・duration・speed/逆再生・once/repeat/ping_pong・scale/offset・delay・sample_intervalを持つ。triggerはrestart/ignore_active、stopで解除。フレーム回数によらず渡された時刻から評価する。
 - 任意時刻の直接sampleと、両端を含むsampleUniformで外部clock/GPU用テーブルの準備に利用できる。補間接線は値/時間の傾き。once完了時は固定間隔に関わらず端値を返す。既存の骨格・VRMAのimport経路は変更していない。

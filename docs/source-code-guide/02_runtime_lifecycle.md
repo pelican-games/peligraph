@@ -374,7 +374,7 @@ ECSCore::update()
 → SceneLoader::applyPendingLoad()
 ```
 
-フェーズ後には `CameraBakeRecorder` が（有効時のみ）フレームを記録します（[framephase.cpp](../../src/core/appflow/framephase.cpp#L180)）。
+フェーズ後には `CameraBakeRecorder` が（有効時のみ）フレームを記録します（[framephase.cpp](../../src/core/appflow/framephase.cpp#L183)）。
 
 ### `freeze_actions` とImGuiゲートの後始末
 

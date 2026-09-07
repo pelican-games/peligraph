@@ -51,6 +51,8 @@ struct AnimationServiceRuntime::Impl {
         const AnimationAsset *asset{};
         ModelAssetId logical_asset{};
         std::optional<ModelInstanceId> renderer_instance;
+        std::optional<GameObjectId> scene_entity;
+        std::uint64_t scene_epoch{};
     };
     struct SinkRecord {
         AnimationSinkHandle handle{};
@@ -607,6 +609,86 @@ struct AnimationServiceRuntime::Impl {
             staged_frame.reset();
     }
 
+    bool unregisterObject(std::string_view name) {
+        const auto found = objects.find(std::string{name});
+        if (found == objects.end()) return false;
+        auto *object = found->second.get();
+        ObjectRecord *replacement = nullptr;
+        for (const auto &[_, candidate] : objects) {
+            if (candidate.get() != object && candidate->asset == object->asset) {
+                replacement = candidate.get();
+                break;
+            }
+        }
+        // These indices use one representative of a shared asset. Do not
+        // invalidate its handles when a different actor still uses it.
+        for (auto it = rigs.begin(); it != rigs.end();) {
+            if (it->second != object) { ++it; continue; }
+            if (replacement) { it->second = replacement; ++it; }
+            else it = rigs.erase(it);
+        }
+        const auto retire_index = [&](auto &index) {
+            for (auto it = index.begin(); it != index.end();) {
+                if (it->second.first != object) { ++it; continue; }
+                if (replacement) { it->second.first = replacement; ++it; }
+                else it = index.erase(it);
+            }
+        };
+        retire_index(clips);
+        retire_index(bindings);
+        for (auto it = vrma_clips.begin(); it != vrma_clips.end();) {
+            if (it->second.object != object) { ++it; continue; }
+            for (auto &[_, cursor] : cursors) {
+                if (cursor.active && cursor.clip.identity == it->first) {
+                    (void)legacy_runtime.destroyCursor(cursor.handle);
+                    cursor.active = false;
+                }
+            }
+            it = vrma_clips.erase(it);
+        }
+        for (auto it = sinks.begin(); it != sinks.end();) {
+            if (it->second.object != object) { ++it; continue; }
+            const auto sink = it->second.handle;
+            const auto instance = it->second.instance;
+            std::erase_if(sources, [&](const auto &entry) {
+                return sameHandle(entry.second.sink, sink);
+            });
+            std::erase_if(instances, [&](const auto &entry) { return entry.second == sink.identity; });
+            std::erase_if(blocked_commits, [&](const auto &entry) {
+                return entry.instance_identity == instance.identity;
+            });
+            it = sinks.erase(it);
+        }
+        if (staged_frame && staged_frame->object == object) staged_frame.reset();
+        objects.erase(found);
+        return true;
+    }
+
+    bool sceneObjectCurrent(const ObjectRecord &object) const {
+        if (!object.scene_entity) return true;
+        if (!FastModuleContainer::isInitialized<SceneLoader>() ||
+            !FastModuleContainer::isInitialized<ECSCore>() ||
+            !FastModuleContainer::isInitialized<ModelAssetContainer>()) return false;
+        auto &scene = GET_MODULE(SceneLoader);
+        if (object.scene_epoch != scene.runtimeSceneEpoch() ||
+            scene.objectId(object.name) != object.scene_entity) return false;
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+        const auto *view = ecs.tryComponent<SimpleModelViewComponent>(*object.scene_entity);
+        if (!view || view->model_instance_id != object.renderer_instance || view->model_name.empty())
+            return false;
+        const auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(view->model_name);
+        return model.skeletal.get() == object.model;
+    }
+
+    void synchronizeSceneObjects() {
+        std::scoped_lock lock{mutex};
+        for (auto it = objects.begin(); it != objects.end();) {
+            auto &object = *it->second;
+            ++it;
+            if (!sceneObjectCurrent(object)) unregisterObject(object.name);
+        }
+    }
+
     bool registerSceneObject(std::string_view name) {
         if (!FastModuleContainer::isInitialized<SceneLoader>() ||
             !FastModuleContainer::isInitialized<ECSCore>() ||
@@ -623,6 +705,9 @@ struct AnimationServiceRuntime::Impl {
         registerObjectLocked(std::string{name}, *model_template.skeletal,
                              *model_view->model_instance_id,
                              model_template.asset_id);
+        auto &object = *objects.at(std::string{name});
+        object.scene_entity = object_id;
+        object.scene_epoch = GET_MODULE(SceneLoader).runtimeSceneEpoch();
         return true;
     }
 
@@ -926,6 +1011,10 @@ struct AnimationServiceRuntime::Impl {
         std::scoped_lock lock{runtime->mutex};
         const auto object_name = std::string{checkedString(desc->object_name, desc->object_name_size)};
         auto object = runtime->objects.find(object_name);
+        if (object != runtime->objects.end() && !runtime->sceneObjectCurrent(*object->second)) {
+            runtime->unregisterObject(object_name);
+            object = runtime->objects.end();
+        }
         if (object == runtime->objects.end() && runtime->registerSceneObject(object_name))
             object = runtime->objects.find(object_name);
         if (object == runtime->objects.end()) return Status::not_found;
@@ -1658,6 +1747,15 @@ void AnimationServiceRuntime::registerObject(
     ModelInstanceId renderer_instance) {
     std::scoped_lock lock{impl_->mutex};
     impl_->registerObjectLocked(std::move(name), model, renderer_instance);
+}
+
+bool AnimationServiceRuntime::unregisterObject(std::string_view name) {
+    std::scoped_lock lock{impl_->mutex};
+    return impl_->unregisterObject(name);
+}
+
+void AnimationServiceRuntime::synchronizeSceneObjects() {
+    impl_->synchronizeSceneObjects();
 }
 
 Status AnimationServiceRuntime::registerVrmaSource(

@@ -1041,8 +1041,8 @@ retarget済みクリップは、`anim_graph` と同じ名前付きClip/Cursor語
 
 | API | 位置 | 役割 |
 |---|---|---|
-| `AnimationServiceRuntime::registerVrmaSource()` | [`animationservice.hpp` 内](../../src/core/animation/animationservice.hpp#L34) | `VrmaRetargetedClip` をobject名 + source名で登録 |
-| `AnimationServiceRuntime::reloadVrmaSource()` | [`registerVrmaSource()`](../../src/core/animation/animationservice.hpp#L37) | 論理identityを保ったまま、そのsource assetのgenerationだけを進める |
+| `AnimationServiceRuntime::registerVrmaSource()` | [`animationservice.hpp` 内](../../src/core/animation/animationservice.hpp#L40) | `VrmaRetargetedClip` をobject名 + source名で登録 |
+| `AnimationServiceRuntime::reloadVrmaSource()` | [`registerVrmaSource()`](../../src/core/animation/animationservice.hpp#L43) | 論理identityを保ったまま、そのsource assetのgenerationだけを進める |
 
 ABI側では [`AnimationClipKindV1`](../../src/core/userpublic/animation/abi_v1.hpp#L98) が `skeletal_clip` / `vrma_retargeted_clip` を区別します。clip descriptorの**加算的な末尾**（[`abi_v1.hpp` 内](../../src/core/userpublic/animation/abi_v1.hpp#L171)）に `profile_version` / `asset_identity` / `asset_generation` / `source_rig_sha256` / `target_rig_sha256` が載り、[`CursorStatusV1`](../../src/core/userpublic/animation/animgraph.hpp#L66) にも同じprovenanceが出ます。
 

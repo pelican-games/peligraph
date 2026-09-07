@@ -170,6 +170,9 @@ void updateFrameState() {
         case FramePhase::update_game:
             modules.ecs.update();
             internal::updateRegisteredGameSystems(game_context);
+            // Retire animation sinks whose scene entity or renderer instance
+            // was replaced before invoking any registered pose callbacks.
+            Animation::animationServiceRuntime().synchronizeSceneObjects();
             if (const auto status =
                     Vrm::applicationServiceRuntime()
                         .ensureStandardPhasesRegistered();
