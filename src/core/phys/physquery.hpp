@@ -125,8 +125,11 @@ struct OverlapHit {
 // center by delta. time_of_impact is in [0, 1], position is on the stationary
 // collider, and normal points in the direction that moves the cast shape out.
 // For an initial penetration deeper than shapeCastContactEpsilon, TOI is zero,
-// initial_overlap is true, and normal * penetration_depth is its MTD. Touching
-// within that epsilon is a TOI-zero hit only while approaching; stationary or
+// initial_overlap is true, and normal * penetration_depth is its MTD. A mesh
+// correction marked approximate_depenetration clears that collider within contact
+// tolerance but is not guaranteed to be the globally shortest translation. Its
+// position is the original contact on the mesh, not necessarily the final contact.
+// Touching within that epsilon is a TOI-zero hit only while approaching; stationary or
 // separating contact is omitted. A zero delta is therefore a depenetration
 // query. Non-finite or negative shape input produces no pure-query result.
 //
@@ -141,6 +144,7 @@ struct ShapeCastHit {
     vec3 position{0.0f, 0.0f, 0.0f};
     vec3 normal{0.0f, 1.0f, 0.0f};
     bool initial_overlap = false;
+    bool approximate_depenetration = false;
 };
 
 struct ShapeCastQueryHit {
@@ -152,6 +156,7 @@ struct ShapeCastQueryHit {
     bool initial_overlap = false;
     ColliderIdentity identity{};
     ColliderQueryMetadata metadata{};
+    bool approximate_depenetration = false;
 };
 
 std::optional<RaycastHit> raycast(const Ray &ray, const Sphere &sphere);

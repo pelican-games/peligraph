@@ -95,7 +95,7 @@ world単位の半径、両面、BVH絞り込み、非一様scale・反転・shea
 ProviderV3の`query_mesh_sphere_shape_cast_all`と`mesh_sphere_shape_cast_all`を使用する。
 TOIはdeltaに対する割合、positionはmesh表面、normalは球を表面から離す向き。
 開始時の接触は既存epsilon内で接近中だけTOIゼロとなり、静止・離反中はhitを返さない。
-epsilonを超える初期貫通はbuiltinでは`unavailable`。単一三角形の押し戻しを非凸mesh全体のMTDとして返さない。
+epsilonを超える初期貫通は、各三角形の押し戻しを求めてmesh全体に対して解消を確認する。
 未対応時はprimitiveだけの部分結果も返さない。C++の従来shapeCastAll wrapperはunavailableを空結果へ変換するため、
 状態の判別にはqueryShapeCastAllまたは公開serviceを使う。ProviderV3利用DLLは現行headerで再ビルドする。
 Box sweepも同じ公開serviceへ接続。回転は移動中固定し、箱3軸・三角形法線・辺の外積9軸の
@@ -106,7 +106,7 @@ Capsule sweepも公開serviceへ接続。回転固定の軸線を三角形側へ
 面・辺・頂点の解析式をSphereと共有する。半長ゼロはSphereと同じ経路を使う。
 prism面の接触点は重心座標で元の三角形上へ戻す。軸中央での接触も扱い、時間の離散サンプリングは使わない。
 ProviderV3の`query_mesh_capsule_shape_cast_all`と`mesh_capsule_shape_cast_all`を使用する。
-prism内部にある初期軸交差は、境界面から離れていてもunavailableにする。半径ゼロの境界接触は外向き法線で
+prism内部にある初期軸交差は、境界面から離れていても押し戻し対象にする。半径ゼロの境界接触は外向き法線で
 接近・離反を区別し、接線方向の初期移動が後続面のhitとして返ることも防ぐ。
 mesh TriggerはSphere/Box/Capsuleとの組み合わせ、およびmesh同士の表面接触に対応する。
 片方以上がtriggerで、相互layer/maskが一致し、異なるentityに属する場合を対象とする。
@@ -117,7 +117,19 @@ mesh同士は両BVHと三角形の分離軸で判定し、共面の離隔を区�
 固定の接触厚みは追加しない。ProviderV3の`query_mesh_mesh_overlap_all`と`mesh_mesh_overlap_all`を使用する。
 モデル形状差し替えでは既存bindingのtrigger/layer/mask/one_wayを保持する。
 mesh Triggerも三角形表面との接触であり、閉じたmesh内部を充填した検知領域とはみなさない。
-内部全体の検知には既存の通常形状Triggerを使用する。mesh全体の初期貫通MTDは未実装。
+内部全体の検知には既存の通常形状Triggerを使用する。
+
+初期押し戻しはSphere/Box/Capsuleに対応する。深い個別接触の補正1回でmesh全体から抜ける場合は
+通常のMTDを返す。複数回の補正・prism境界で最短方向を保証しない場合・保守的な退避には
+`shape_cast_approximate_depenetration`（C++では`approximate_depenetration`）を付ける。
+これは「めり込みを解消するが、凹mesh全体で数学的に最短とは限らない」という区別であり、
+従来のprimitive MTDの契約は変えない。初期衝突なしの近似フラグはprovider_errorとする。
+局所補正が32回で解消しない場合は、meshのworld AABB外への6方向の退避候補から検証済みの最短候補を選ぶ。
+利用側と同じfloatのnormal×depth・座標加算、およびprovider側の法線正規化後の値で再判定し、
+当該meshへの貫通がcontact epsilon以下であることを確認する。表現可能な補正が得られない場合だけunavailable。
+TOIは0、positionは元のmesh接触点。近似時のpositionは補正後も接点であるとは限らない。
+結果は報告したcollider単位であり、他のcolliderまで同時に解消する保証や、移動経路の無衝突保証は持たない。
+任意の凹meshに対する厳密な最短MTDの探索は未実装。実用の初期めり込み解消とは区別する。
 
 2026-09-06: RPC `raycast`を既存PhysWorldへ接続。paramsは`origin`・`direction`（各3数値）と`max_distance`（有限・非負）。方向は正規化する。結果は`hit: null`またはname/distance/position/normal/collider_id/shape_ordinal/trigger/one_wayを持つhit。現在のtransformを問い合わせ、raycast既定のlayer/mask・trigger/one-way包含規則を使用する。P3のメッシュ/BVH/glb extras規約の完了を意味しない。
 

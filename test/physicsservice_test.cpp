@@ -135,6 +135,8 @@ struct FakeShapeProviderState {
         invalid_toi,
         initial_without_depth,
         initial_at_contact_depth,
+        approximate_without_initial,
+        approximate_initial,
         sweep_with_depth,
         unknown_flags,
         non_finite_position,
@@ -207,6 +209,14 @@ Physics::Status fakeShapeCastAll(
         hits[0].flags = Physics::shape_cast_initial_overlap;
         hits[0].time_of_impact = 0.0F;
         hits[0].penetration_depth = Physics::shapeCastContactEpsilonV2;
+        break;
+    case FakeShapeProviderState::Behavior::approximate_without_initial:
+        hits[0].flags = Physics::shape_cast_approximate_depenetration;
+        break;
+    case FakeShapeProviderState::Behavior::approximate_initial:
+        hits[0].flags = Physics::shape_cast_initial_overlap | Physics::shape_cast_approximate_depenetration;
+        hits[0].time_of_impact = 0.0F;
+        hits[0].penetration_depth = 0.25F;
         break;
     case FakeShapeProviderState::Behavior::sweep_with_depth:
         hits[0].penetration_depth = 1.0F;
@@ -440,6 +450,7 @@ TEST_CASE("Jolt provider handles box and capsule queries without exposing Jolt t
         phys::Sphere{{0.5F, 0.0F, 0.0F}, 1.0F}, {});
     REQUIRE(penetration);
     REQUIRE(penetration->initial_overlap);
+    CHECK_FALSE(penetration->approximate_depenetration);
     REQUIRE(penetration->penetration_depth ==
             Catch::Approx(1.5F).margin(2.0e-3F));
     REQUIRE(penetration->normal.x == Catch::Approx(1.0F).margin(2.0e-3F));
@@ -628,6 +639,8 @@ TEST_CASE("PhysicsServiceV2 routes shape casts and contains malformed V2 results
         FakeShapeProviderState::Behavior::invalid_toi,
         FakeShapeProviderState::Behavior::initial_without_depth,
         FakeShapeProviderState::Behavior::initial_at_contact_depth,
+        FakeShapeProviderState::Behavior::approximate_without_initial,
+        FakeShapeProviderState::Behavior::approximate_initial,
         FakeShapeProviderState::Behavior::sweep_with_depth,
         FakeShapeProviderState::Behavior::unknown_flags,
         FakeShapeProviderState::Behavior::non_finite_position,
@@ -858,6 +871,7 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
         int calls = 0;
         bool malformed = false;
         phys::Capsule capsule_cast{};
+        std::uint32_t cast_flags = 0;
     } state;
     Physics::ProviderV3 provider;
     provider.base.name_utf8 = "mesh.fake";
@@ -938,6 +952,11 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
             output[i].collider_index = i;
             output[i].time_of_impact = state.malformed ? -1.0F : 0.5F;
             output[i].normal = {0, 0, -1};
+            output[i].flags = state.cast_flags;
+            if ((state.cast_flags & Physics::shape_cast_initial_overlap) != 0) {
+                output[i].time_of_impact = 0;
+                output[i].penetration_depth = 0.25F;
+            }
         }
         return Physics::Status::ok;
     };
@@ -952,6 +971,11 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
             output[i].collider_index = i;
             output[i].time_of_impact = state.malformed ? -1.0F : query->half_extents.z / query->delta.z;
             output[i].normal = {0, 0, -1};
+            output[i].flags = state.cast_flags;
+            if ((state.cast_flags & Physics::shape_cast_initial_overlap) != 0) {
+                output[i].time_of_impact = 0;
+                output[i].penetration_depth = 0.25F;
+            }
         }
         return Physics::Status::ok;
     };
@@ -969,6 +993,11 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
             output[i].collider_index = i;
             output[i].time_of_impact = state.malformed ? -1.0F : query->radius / query->delta.z;
             output[i].normal = {0, 0, -1};
+            output[i].flags = state.cast_flags;
+            if ((state.cast_flags & Physics::shape_cast_initial_overlap) != 0) {
+                output[i].time_of_impact = 0;
+                output[i].penetration_depth = 0.25F;
+            }
         }
         return Physics::Status::ok;
     };
@@ -1052,6 +1081,25 @@ TEST_CASE("mesh provider API dispatches filtered geometry and preserves owner li
     REQUIRE(physics_internal::shapeCastMeshes(distant_capsule, {0, 0, 4}, meshes,
         identities, metadata, &filter, cast_hits) == Physics::Status::ok);
     CHECK(cast_hits.empty());
+    // Both exact and marked mesh corrections survive provider decoding for all shapes.
+    for (const phys::Shape &shape : std::array<phys::Shape, 3>{distant_sphere, distant_box, distant_capsule}) {
+        for (const bool approximate : {false, true}) {
+            state.cast_flags = Physics::shape_cast_initial_overlap |
+                (approximate ? Physics::shape_cast_approximate_depenetration : 0U);
+            REQUIRE(physics_internal::shapeCastMeshes(shape, {0, 0, 1}, meshes,
+                identities, metadata, nullptr, cast_hits) == Physics::Status::ok);
+            REQUIRE(cast_hits.size() == 1);
+            CHECK(cast_hits[0].initial_overlap);
+            CHECK(cast_hits[0].approximate_depenetration == approximate);
+            CHECK(cast_hits[0].time_of_impact == 0);
+            CHECK(cast_hits[0].penetration_depth == 0.25F);
+        }
+        state.cast_flags = Physics::shape_cast_approximate_depenetration;
+        CHECK(physics_internal::shapeCastMeshes(shape, {0, 0, 1}, meshes,
+            identities, metadata, nullptr, cast_hits) == Physics::Status::provider_error);
+        CHECK(cast_hits.empty());
+    }
+    state.cast_flags = 0;
     state.malformed = true;
     CHECK(physics_internal::overlapMeshMeshes(distant_mesh, meshes, identities,
         metadata, nullptr, overlap_hits) == Physics::Status::provider_error);

@@ -38,8 +38,10 @@ class TriangleMesh {
                                 const glm::mat4 &local_to_world) const;
     // Continuous two-sided surface cast, with world-space radius and delta.
     // Initial touching follows ShapeCastHit's approaching-only rule. Initial
-    // penetration beyond contact epsilon throws domain_error: a nonconvex mesh
-    // depenetration is not a single triangle's MTD. Invalid inputs return no hit.
+    // penetration returns a correction verified against this whole mesh.
+    // Multi-step/conservative exits set approximate_depenetration; they need
+    // not be globally minimal. Only unrepresentable corrections throw
+    // domain_error. Invalid inputs return no hit.
     [[nodiscard]] std::optional<ShapeCastHit> shapeCast(
         const Sphere &world_sphere, vec3 delta,
         const glm::mat4 &local_to_world) const;
@@ -72,6 +74,10 @@ class TriangleMesh {
     std::vector<std::size_t> triangles_;
     std::vector<Node> nodes_;
 
+    std::optional<ShapeCastHit> shapeCastUnresolved(const Capsule &, vec3,
+        const glm::mat4 &) const;
+    std::optional<ShapeCastHit> shapeCastUnresolved(const Box &, vec3,
+        const glm::mat4 &) const;
     std::size_t buildNode(std::size_t begin, std::size_t end);
 };
 

@@ -454,7 +454,11 @@ bool validShapeCastHit(const Physics::ProviderShapeCastHitV2 &raw,
                        Physics::Vec3V1 &unit_normal) {
     constexpr float epsilon = Physics::shapeCastContactEpsilonV2;
     const bool initial = (raw.flags & Physics::shape_cast_initial_overlap) != 0;
-    return raw.reserved == 0 && (raw.flags & ~Physics::shape_cast_initial_overlap) == 0 &&
+    constexpr auto known_flags = Physics::shape_cast_initial_overlap |
+        Physics::shape_cast_approximate_depenetration;
+    const bool approximate = (raw.flags & Physics::shape_cast_approximate_depenetration) != 0;
+    return raw.reserved == 0 && (raw.flags & ~known_flags) == 0 &&
+        (!approximate || initial) &&
         std::isfinite(raw.time_of_impact) && raw.time_of_impact >= 0 &&
         raw.time_of_impact <= 1.0F + epsilon &&
         std::isfinite(raw.penetration_depth) && raw.penetration_depth >= 0 &&
@@ -947,7 +951,8 @@ Physics::Status shapeCastMeshes(
                 identity.name, std::clamp(raw.time_of_impact, 0.0F, 1.0F),
                 initial ? raw.penetration_depth : 0.0F,
                 fromAbi(raw.position), fromAbi(unit_normal), initial, identity,
-                metadata[selected.source_indices[raw.collider_index]]});
+                metadata[selected.source_indices[raw.collider_index]],
+                (raw.flags & Physics::shape_cast_approximate_depenetration) != 0});
         }
         phys::internal::orderShapeCastHits(out_hits);
         return Status::ok;
@@ -1006,6 +1011,7 @@ Physics::Status shapeCastAll(const phys::Shape &moving_shape, vec3 delta,
             const bool initial_overlap =
                 (raw.flags & Physics::shape_cast_initial_overlap) != 0;
             if (raw.collider_index >= selected.size() || seen[raw.collider_index] ||
+                (raw.flags & Physics::shape_cast_approximate_depenetration) != 0 ||
                 !validShapeCastHit(raw, unit_normal)) {
                 out_hits.clear();
                 return Physics::Status::provider_error;
@@ -1022,6 +1028,7 @@ Physics::Status shapeCastAll(const phys::Shape &moving_shape, vec3 delta,
                 initial_overlap,
                 selected_collider.identity,
                 selected_collider.collider->metadata,
+                (raw.flags & Physics::shape_cast_approximate_depenetration) != 0,
             });
         }
         phys::internal::orderShapeCastHits(out_hits);

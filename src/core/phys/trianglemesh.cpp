@@ -5,6 +5,7 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 
 #include <glm/matrix.hpp>
 #include <glm/geometric.hpp>
@@ -54,6 +55,57 @@ bool intersectsBounds(const Ray &ray, vec3 minimum, vec3 maximum, double limit) 
     return true;
 }
 
+bool preferNormal(glm::dvec3 a, glm::dvec3 b, glm::dvec3 motion) {
+    const double length = glm::length(motion);
+    const auto preferred = length > 0 ? -motion/length : glm::dvec3{1,0,0};
+    return std::array{glm::dot(a,preferred),a.x,a.y,a.z} >
+           std::array{glm::dot(b,preferred),b.x,b.y,b.z};
+}
+
+bool preferPenetration(const ShapeCastHit &candidate,
+    const std::optional<ShapeCastHit> &current, glm::dvec3 motion) {
+    if (!current || !current->initial_overlap) return true;
+    if (std::abs(candidate.penetration_depth-current->penetration_depth) <= shapeCastTieEpsilon)
+        return preferNormal({candidate.normal.x,candidate.normal.y,candidate.normal.z},
+                            {current->normal.x,current->normal.y,current->normal.z},motion);
+    return candidate.penetration_depth > current->penetration_depth;
+}
+
+glm::dvec3 trianglePenetrationNormal(glm::dvec3 point,
+    glm::dvec3 a, glm::dvec3 b, glm::dvec3 c, glm::dvec3 motion) {
+    const std::array offsets{a-point,b-point,c-point};
+    glm::dvec3 best{0};
+    const auto consider = [&](glm::dvec3 candidate) {
+        const double length = glm::length(candidate);
+        if (length == 0) return;
+        candidate /= length;
+        for (const auto &offset : offsets) {
+            const double error = 64*std::numeric_limits<double>::epsilon()*glm::dot(glm::abs(candidate),glm::abs(offset));
+            if (glm::dot(candidate,offset) > error) return;
+        }
+        if (glm::dot(best,best) == 0 || preferNormal(candidate,best,motion)) best = candidate;
+    };
+    // At an edge/vertex the minimum-radius exits form a normal cone, not just
+    // the two face normals. Project the preference onto its active planes and
+    // include their intersection rays; world axes resolve a zero preference.
+    const double speed = glm::length(motion);
+    const std::array preferences{speed > 0 ? -motion/speed : glm::dvec3{1,0,0},
+                                glm::dvec3{1,0,0},glm::dvec3{0,1,0},glm::dvec3{0,0,1}};
+    for (const auto &preference : preferences) {
+        consider(preference);
+        for (const auto &offset : offsets) {
+            const double squared = glm::dot(offset,offset);
+            if (squared > 0) consider(preference-offset*(glm::dot(preference,offset)/squared));
+        }
+    }
+    for (std::size_t i = 0; i < offsets.size(); ++i)
+        for (std::size_t j = i+1; j < offsets.size(); ++j) {
+            const auto ray = glm::cross(offsets[i],offsets[j]);
+            consider(ray); consider(-ray);
+        }
+    return best;
+}
+
 struct SphereTriangleStart {
     double distance = std::numeric_limits<double>::infinity();
     glm::dvec3 normal{0};
@@ -62,6 +114,7 @@ struct SphereTriangleStart {
 struct SphereTriangleHit {
     double time;
     glm::dvec3 position, normal;
+    double penetration = 0;
 };
 
 std::optional<SphereTriangleHit> castSphereTriangle(
@@ -102,13 +155,16 @@ std::optional<SphereTriangleHit> castSphereTriangle(
             if (squared(origin-p) < squared(origin-closest)) closest = p;
     }
     const double distance = glm::length(origin-closest);
-    if (radius-distance > shapeCastContactEpsilon)
-        throw std::domain_error("sphere mesh initial depenetration is unavailable");
     auto initialNormal = faceNormal;
     if (distance > 0) initialNormal = (origin-closest)/distance;
-    else if (glm::dot(initialNormal,motion) > 0) initialNormal = -initialNormal;
+    else if (preferNormal(-initialNormal,initialNormal,motion)) initialNormal = -initialNormal;
     if (initialOutwardNormal) initialNormal = *initialOutwardNormal;
     if (initial) *initial = {distance,initialNormal};
+    if (radius-distance > shapeCastContactEpsilon) {
+        if (distance == 0 && !initialOutwardNormal)
+            initialNormal = trianglePenetrationNormal(origin,a,b,c,motion);
+        return SphereTriangleHit{0,closest,initialNormal,radius-distance};
+    }
     if (distance <= radius+shapeCastContactEpsilon) {
         accept(0,closest,initialNormal);
         return result;
@@ -160,6 +216,96 @@ std::optional<SphereTriangleHit> castSphereTriangle(
         }
     }
     return result;
+}
+
+template<class Shape, class Query>
+std::optional<ShapeCastHit> resolveMeshPenetration(const Shape &shape, vec3 delta,
+    vec3 meshLow, vec3 meshHigh, const glm::mat4 &matrix, Query query) {
+    const auto first = query(shape);
+    if (!first || !first->initial_overlap) return first;
+    const glm::dvec3 origin{shape.center.x,shape.center.y,shape.center.z};
+    const glm::dvec3 motion{delta.x,delta.y,delta.z};
+    auto contact = first;
+    Shape moved = shape;
+    auto candidate = *first;
+    const auto encode = [&](glm::dvec3 displacement, bool approximate) {
+        const double length = glm::length(displacement);
+        if (!(length > shapeCastContactEpsilon) || !std::isfinite(length)) return false;
+        candidate = *first;
+        candidate.penetration_depth = static_cast<float>(length);
+        candidate.normal = {static_cast<float>(displacement.x/length),
+                            static_cast<float>(displacement.y/length),
+                            static_cast<float>(displacement.z/length)};
+        candidate.approximate_depenetration = approximate || first->approximate_depenetration;
+        return std::isfinite(candidate.penetration_depth) && finite(candidate.normal);
+    };
+    const auto cleared = [&] {
+        // Validate the same float multiplication/addition exposed to callers,
+        // and the normal after the public provider adapter normalizes it.
+        auto normal = candidate.normal;
+        for (int pass = 0; pass < 2; ++pass) {
+            moved = shape;
+            moved.center.x += normal.x*candidate.penetration_depth;
+            moved.center.y += normal.y*candidate.penetration_depth;
+            moved.center.z += normal.z*candidate.penetration_depth;
+            if (!finite(moved.center)) return false;
+            contact = query(moved);
+            if (contact && contact->initial_overlap) return false;
+            const double length = std::hypot(static_cast<double>(normal.x),
+                                            static_cast<double>(normal.y),static_cast<double>(normal.z));
+            normal = {static_cast<float>(normal.x/length),static_cast<float>(normal.y/length),
+                      static_cast<float>(normal.z/length)};
+        }
+        return true;
+    };
+    // Deepest individual contact is a lower bound on the whole-mesh MTD. If
+    // its one-step correction clears every triangle, it is also sufficient.
+    // Corners may require several projections; those results are marked.
+    for (int iteration = 0; iteration < 32; ++iteration) {
+        const glm::dvec3 position{moved.center.x,moved.center.y,moved.center.z};
+        const glm::dvec3 normal{contact->normal.x,contact->normal.y,contact->normal.z};
+        const auto displacement = position-origin+normal*static_cast<double>(contact->penetration_depth);
+        if (!encode(displacement,iteration != 0)) break;
+        if (cleared()) return candidate;
+        if (!contact || !contact->initial_overlap) break;
+    }
+    // Opposing faces in a tight gap can make local projections oscillate.
+    // Bound work, then use a verified exit from the mesh's world AABB. This is
+    // a conservative correction, never mislabeled as a global minimum.
+    glm::dvec3 low{std::numeric_limits<double>::infinity()}, high{-std::numeric_limits<double>::infinity()};
+    for (int corner = 0; corner < 8; ++corner) {
+        const glm::dvec4 p{(corner&1) ? meshHigh.x : meshLow.x,
+                           (corner&2) ? meshHigh.y : meshLow.y,
+                           (corner&4) ? meshHigh.z : meshLow.z,1};
+        const auto world = glm::dvec3(glm::dmat4{matrix}*p);
+        low = glm::min(low,world); high = glm::max(high,world);
+    }
+    glm::dquat rotation{shape.rotation.w,shape.rotation.x,shape.rotation.y,shape.rotation.z};
+    rotation /= std::sqrt(glm::dot(rotation,rotation));
+    glm::dvec3 extent;
+    if constexpr (std::is_same_v<Shape,Box>) {
+        extent = glm::abs(rotation*glm::dvec3{1,0,0})*static_cast<double>(shape.half_extents.x)+
+                 glm::abs(rotation*glm::dvec3{0,1,0})*static_cast<double>(shape.half_extents.y)+
+                 glm::abs(rotation*glm::dvec3{0,0,1})*static_cast<double>(shape.half_extents.z);
+    } else {
+        extent = glm::abs(rotation*glm::dvec3{0,shape.half_height,0})+glm::dvec3{shape.radius};
+    }
+    std::optional<ShapeCastHit> best;
+    for (int axis = 0; axis < 3; ++axis) {
+        for (int side : {-1,1}) {
+            const double boundary = side > 0 ? high[axis]+extent[axis] : low[axis]-extent[axis];
+            const float destination = std::nextafter(static_cast<float>(boundary),
+                side > 0 ? std::numeric_limits<float>::infinity() : -std::numeric_limits<float>::infinity());
+            glm::dvec3 displacement{0}; displacement[axis] = destination-origin[axis];
+            if (!encode(displacement,true) || !cleared()) continue;
+            if (!best || candidate.penetration_depth < best->penetration_depth-shapeCastTieEpsilon ||
+                (std::abs(candidate.penetration_depth-best->penetration_depth) <= shapeCastTieEpsilon &&
+                 preferNormal({candidate.normal.x,candidate.normal.y,candidate.normal.z},
+                              {best->normal.x,best->normal.y,best->normal.z},motion))) best = candidate;
+        }
+    }
+    if (!best) throw std::domain_error("mesh depenetration is not representable by the query float format");
+    return best;
 }
 
 } // namespace
@@ -351,6 +497,20 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
 
 std::optional<ShapeCastHit> TriangleMesh::shapeCast(
     const Capsule &capsule, vec3 delta, const glm::mat4 &local_to_world) const {
+    if (nodes_.empty()) return std::nullopt;
+    return resolveMeshPenetration(capsule,delta,nodes_[0].minimum,nodes_[0].maximum,local_to_world,
+        [&](const Capsule &value) { return shapeCastUnresolved(value,delta,local_to_world); });
+}
+
+std::optional<ShapeCastHit> TriangleMesh::shapeCast(
+    const Box &box, vec3 delta, const glm::mat4 &local_to_world) const {
+    if (nodes_.empty()) return std::nullopt;
+    return resolveMeshPenetration(box,delta,nodes_[0].minimum,nodes_[0].maximum,local_to_world,
+        [&](const Box &value) { return shapeCastUnresolved(value,delta,local_to_world); });
+}
+
+std::optional<ShapeCastHit> TriangleMesh::shapeCastUnresolved(
+    const Capsule &capsule, vec3 delta, const glm::mat4 &local_to_world) const {
     if (nodes_.empty() || !finite(capsule.center) || !finite(delta) ||
         !std::isfinite(capsule.radius) || capsule.radius < 0) return std::nullopt;
     for (int c = 0; c < 4; ++c)
@@ -424,6 +584,7 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
                 if (glm::dot(normal,centroid-p) > 0) normal = -normal;
                 return normal;
             };
+            double insideDepth = 0;
             if (glm::dot(offset,glm::cross(b-a,c-a)) != 0) {
                 double maximumDistance = -std::numeric_limits<double>::infinity();
                 bool approaching = false, separating = false;
@@ -439,12 +600,11 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
                     }
                 }
                 insidePrism = maximumDistance <= 0;
-                if (insidePrism && radius-maximumDistance > shapeCastContactEpsilon)
-                    throw std::domain_error("capsule mesh initial depenetration is unavailable");
+                if (insidePrism) insideDepth = radius-maximumDistance;
                 // A zero-radius segment touching the prism boundary must move
                 // inward. Unlike a point against a two-sided triangle, moving
                 // away from any active boundary is separating contact.
-                if (insidePrism && (separating || !approaching)) continue;
+                if (insidePrism && insideDepth <= shapeCastContactEpsilon && (separating || !approaching)) continue;
             }
             SphereTriangleStart closestStart;
             double triangleTime = nearest;
@@ -454,28 +614,53 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
                 const auto p = prism[facet[0]], q = prism[facet[1]], r = prism[facet[2]];
                 const auto outward = insidePrism ? outwardNormal(p,q,r) : glm::dvec3{0};
                 SphereTriangleStart initial;
-                const auto hit = castSphereTriangle(origin,motion,radius,p,q,r,
+                auto hit = castSphereTriangle(origin,motion,radius,p,q,r,
                     insidePrism ? &outward : nullptr, &initial);
+                if (insidePrism && insideDepth > shapeCastContactEpsilon) {
+                    const double height = glm::dot(outward,origin-p);
+                    const double depth = radius-height;
+                    if (depth > insideDepth+shapeCastTieEpsilon) continue;
+                    hit = SphereTriangleHit{0,origin-height*outward,outward,depth};
+                }
                 if (initial.distance < closestStart.distance) closestStart = initial;
-                if (!hit || hit->time > triangleTime ||
-                    (hit->time == triangleTime && (triangleHit || triangle >= bestTriangle))) continue;
+                if (!hit) continue;
+                const bool penetration = hit->penetration > shapeCastContactEpsilon;
+                if (!penetration && (triangleHit && triangleHit->initial_overlap)) continue;
+                if (!penetration && (hit->time > triangleTime ||
+                    (hit->time == triangleTime && (triangleHit || triangle >= bestTriangle)))) continue;
                 // Carry barycentric coordinates back to the original triangle:
                 // the prism witness itself is not a point on the mesh.
                 const auto normal = glm::cross(q-p,r-p);
                 const double denominator = glm::dot(normal,normal);
                 const double u = glm::dot(glm::cross(hit->position-p,r-p),normal)/denominator;
                 const double v = glm::dot(glm::cross(q-p,hit->position-p),normal)/denominator;
+                if (insidePrism && insideDepth > shapeCastContactEpsilon &&
+                    (u < -1e-10 || v < -1e-10 || u+v > 1+1e-10)) continue;
                 const auto witness = (1-u-v)*originals[facet[0]%3]+u*originals[facet[1]%3]+v*originals[facet[2]%3];
                 const auto position = toFloat(witness), worldNormal = toFloat(hit->normal);
                 if (!finite(position) || !finite(worldNormal)) continue;
+                const ShapeCastHit candidate{static_cast<float>(hit->time),
+                    static_cast<float>(hit->penetration),position,worldNormal,penetration,
+                    penetration && insidePrism && insideDepth <= radius+shapeCastTieEpsilon};
+                if (penetration && triangleHit && triangleHit->initial_overlap) {
+                    // Inside the prism, choose its minimum exit; outside, the
+                    // closest boundary (largest sphere penetration) is the MTD.
+                    if (insidePrism) {
+                        if (!preferNormal(hit->normal,{triangleHit->normal.x,triangleHit->normal.y,triangleHit->normal.z},motion)) continue;
+                    } else if (!preferPenetration(candidate,triangleHit,motion)) continue;
+                }
                 triangleTime = hit->time;
-                triangleHit = ShapeCastHit{static_cast<float>(hit->time),0,position,worldNormal,false};
+                triangleHit = candidate;
             }
             // The prism is convex: a tangential/separating initial contact
             // cannot become an entering hit at another facet later in the cast.
-            if (closestStart.distance <= radius+shapeCastContactEpsilon &&
+            if (!(triangleHit && triangleHit->initial_overlap) &&
+                closestStart.distance <= radius+shapeCastContactEpsilon &&
                 glm::dot(motion,closestStart.normal) >= 0) continue;
             if (triangleHit) {
+                if (triangleHit->initial_overlap) {
+                    if (!preferPenetration(*triangleHit,result,motion)) continue;
+                } else if (result && result->initial_overlap) continue;
                 nearest = triangleTime;
                 bestTriangle = triangle;
                 result = triangleHit;
@@ -662,7 +847,7 @@ bool TriangleMesh::overlaps(const Capsule &capsule, const glm::mat4 &local_to_wo
     return false;
 }
 
-std::optional<ShapeCastHit> TriangleMesh::shapeCast(
+std::optional<ShapeCastHit> TriangleMesh::shapeCastUnresolved(
     const Box &box, vec3 delta, const glm::mat4 &local_to_world) const {
     if (nodes_.empty() || !finite(box.center) || !finite(box.half_extents) || !finite(delta) ||
         box.half_extents.x < 0 || box.half_extents.y < 0 || box.half_extents.z < 0) return std::nullopt;
@@ -718,7 +903,9 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
             const auto b = point(vertices_[indices_[triangle*3+1]]);
             const auto c = point(vertices_[indices_[triangle*3+2]]);
             double entry = -infinity, leave = infinity, initialDepth = infinity;
-            glm::dvec3 entryNormal{0}, contactNormal{0};
+            glm::dvec3 entryNormal{0}, contactNormal{0}, initialNormal{0};
+            std::array<std::pair<double,glm::dvec3>,26> planes{};
+            std::size_t planeCount = 0;
             bool separatingContact = false;
             // Fixed orientation makes every SAT interval linear in time. Their
             // intersection is the exact continuous overlap interval, including
@@ -731,7 +918,12 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
                 const double pa = glm::dot(a,axis), pb = glm::dot(b,axis), pc = glm::dot(c,axis);
                 const double lo = std::min({pa,pb,pc})-radius, hi = std::max({pa,pb,pc})+radius;
                 const double velocity = glm::dot(motion,axis);
-                initialDepth = std::min({initialDepth,-lo,hi});
+                for (int side : {-1,1}) {
+                    const double depth = side < 0 ? -lo : hi;
+                    const auto normal = static_cast<double>(side)*axis;
+                    initialDepth = std::min(initialDepth,depth);
+                    planes[planeCount++] = {depth,normal};
+                }
                 const double depth = std::min(-lo,hi);
                 if (depth <= shapeCastContactEpsilon) {
                     auto normal = -lo < hi ? -axis : axis;
@@ -760,23 +952,31 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
             interval(glm::cross(edges[0],edges[1]));
             for (const auto &edge : edges)
                 for (const auto &axis : axes) interval(glm::cross(edge,axis));
-            if (initialDepth > shapeCastContactEpsilon)
-                throw std::domain_error("box mesh initial depenetration is unavailable");
-            if (entry > leave || leave < 0 || entry > nearest) continue;
-            double t = std::max(0.0,entry);
-            auto normal = entryNormal;
-            if (initialDepth >= -shapeCastContactEpsilon) {
+            double correctionDepth = initialDepth;
+            bool selectedPlane = false;
+            for (std::size_t plane = 0; plane < planeCount; ++plane) {
+                const auto &[depth,normal] = planes[plane];
+                if (depth <= initialDepth+shapeCastTieEpsilon && (!selectedPlane || prefer(normal,initialNormal))) {
+                    correctionDepth = depth; initialNormal = normal; selectedPlane = true;
+                }
+            }
+            const bool penetration = initialDepth > shapeCastContactEpsilon;
+            if (!penetration && (entry > leave || leave < 0 || entry > nearest)) continue;
+            double t = penetration ? 0 : std::max(0.0,entry);
+            auto normal = penetration ? initialNormal : entryNormal;
+            if (!penetration && initialDepth >= -shapeCastContactEpsilon) {
                 if (separatingContact || glm::dot(motion,contactNormal) >= 0) continue;
                 t = 0; normal = contactNormal;
             }
-            if (t == nearest && triangle >= bestTriangle) continue;
+            if (!penetration && ((result && result->initial_overlap) ||
+                (t == nearest && triangle >= bestTriangle))) continue;
             // Clip the triangle against the box at impact. Averaging the
             // resulting polygon gives a witness on the stationary triangle,
             // including edge-edge contacts; projecting the box center does not.
             // A convex triangle clipped by six planes has at most nine vertices.
             std::array<glm::dvec3,9> polygon{a,b,c}, clipped{};
             std::size_t count = 3;
-            const auto impact = t*motion;
+            const auto impact = penetration ? correctionDepth*normal : t*motion;
             for (int axis = 0; axis < 3 && count != 0; ++axis) {
                 for (int side : {-1,1}) {
                     std::size_t clippedCount = 0;
@@ -802,8 +1002,11 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
             witness /= static_cast<double>(count);
             const auto position = toFloat(center+rotation*witness), worldNormal = toFloat(rotation*normal);
             if (!finite(position) || !finite(worldNormal)) continue;
+            const ShapeCastHit candidate{static_cast<float>(t),
+                penetration ? static_cast<float>(correctionDepth) : 0,position,worldNormal,penetration};
+            if (penetration && !preferPenetration(candidate,result,{delta.x,delta.y,delta.z})) continue;
             nearest = t; bestTriangle = triangle;
-            result = ShapeCastHit{static_cast<float>(t),0,position,worldNormal,false};
+            result = candidate;
         }
     }
     return result;

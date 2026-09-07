@@ -1023,7 +1023,7 @@ game DLL 境界の v2 record は「凍結」と書かれていますが、実際
 | [`BehaviorRegistration`](../../src/core/userpublic/details/behavior/registerer.hpp#L50) | `sizeof(FrozenBehaviorRegistrationV2Layout)` と一致 |
 | [`EventTypeRegistration`](../../src/core/userpublic/details/event/registerer.hpp#L54) | `sizeof(FrozenEventTypeRegistrationV2Layout)` と一致 |
 
-`BehaviorRegistration` の `create` と `destroy` のように**同じ大きさの隣接 field を入れ替えても `static_assert` は通ります**。古い DLL は入れ替え前の順で書き込み、host は入れ替え後の順で読むので、症状は「関数ポインタが 1 つずれて呼ばれる」という追いにくい形になります。台帳の裁定は `sizeof` + `alignof` + **全 field の `offsetof`** へ移すこと(WP382a-fix。起票済み・未着地)で、既に同じ形を採っている面もあります(例: [`offsetof(ProviderV2, shape_cast_all) == offsetof(ProviderV2, overlap_all) + sizeof(...)`](../../src/core/userpublic/physics/abi_v2.hpp#L162))。ここを触るときは「大きさが変わらないから安全」と読まないでください。
+`BehaviorRegistration` の `create` と `destroy` のように**同じ大きさの隣接 field を入れ替えても `static_assert` は通ります**。古い DLL は入れ替え前の順で書き込み、host は入れ替え後の順で読むので、症状は「関数ポインタが 1 つずれて呼ばれる」という追いにくい形になります。台帳の裁定は `sizeof` + `alignof` + **全 field の `offsetof`** へ移すこと(WP382a-fix。起票済み・未着地)で、既に同じ形を採っている面もあります(例: [`offsetof(ProviderV2, shape_cast_all) == offsetof(ProviderV2, overlap_all) + sizeof(...)`](../../src/core/userpublic/physics/abi_v2.hpp#L170))。ここを触るときは「大きさが変わらないから安全」と読まないでください。
 
 ### raw import 診断は provider-only な旧 DLL の唯一の enforcement
 

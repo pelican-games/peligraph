@@ -110,6 +110,7 @@ std::vector<ShapeCastQueryHit> shapeCastAll(
             hit->initial_overlap,
             identity,
             collider.metadata,
+            hit->approximate_depenetration,
         });
     }
 

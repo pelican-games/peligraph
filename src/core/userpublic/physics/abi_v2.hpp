@@ -13,12 +13,19 @@ inline constexpr float shapeCastTieEpsilonV2 = 1.0e-5F;
 
 enum ShapeCastHitFlagBitsV2 : std::uint32_t {
     shape_cast_initial_overlap = 1U << 0U,
+    // Valid only with initial_overlap: a mesh correction that clears penetration
+    // within contact tolerance, without guaranteeing the globally shortest MTD.
+    // This applies to the reported collider only; position is an original contact
+    // on its mesh and need not remain a contact after applying the correction.
+    shape_cast_approximate_depenetration = 1U << 1U,
 };
 
 // The shape orientation is fixed. Its center moves from the encoded start pose
 // by delta, and returned time_of_impact values are fractions in [0, 1]. A zero
-// delta requests initial-overlap MTD results only. Penetrations no deeper than
-// shapeCastContactEpsilonV2 use touching semantics. Equal-depth MTD candidates
+// delta requests initial-overlap corrections only. Unmarked corrections are
+// MTDs; marked mesh corrections follow shape_cast_approximate_depenetration.
+// Penetrations no deeper than shapeCastContactEpsilonV2 use touching semantics.
+// Equal-depth MTD candidates
 // within shapeCastTieEpsilonV2 maximize the lexicographic key
 // (dot(normal, preferred), normal.x, normal.y, normal.z), where preferred is
 // normalized(-delta), or +X for zero delta.
@@ -55,7 +62,8 @@ struct ProviderShapeCastQueryV2 {
 
 struct ProviderShapeCastHitV2 {
     // At most one result may be returned for each input collider. For initial
-    // overlap, normal * penetration_depth is the MTD for the moving shape.
+    // overlap, normal * penetration_depth is its MTD unless the mesh result
+    // carries shape_cast_approximate_depenetration.
     std::uint32_t collider_index = 0;
     std::uint32_t flags = 0;
     float time_of_impact = 0.0F;

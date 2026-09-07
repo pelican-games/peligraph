@@ -23242,6 +23242,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**meshの初期めり込み解消 (2026-09-07):**
+- Sphere/Box/CapsuleのShape Castで、初期貫通を無条件unavailableにする分岐を置き換えた。三角形/軸線prism/Box SATの個別押し戻しから深い接触を解消し、返す補正をmesh全体へ再適用して検証する。1回で解消する通常MTDと、複数面への補正・一部prism境界・world AABB外への退避をAPIのapproximate_depenetrationで区別する。Sphereが頂点上にある場合はnormal coneも使い、既存の優先方向を適用する。
+- 狭い隙間など局所補正が往復する場合は32回で打ち切り、6方向のAABB外候補から検証済みの最短候補を返す。利用側と同じfloatのnormal×depth・座標加算、およびproviderによる法線正規化後の値で深い貫通が残らないことを確認する。表現可能な補正が得られない場合だけunavailable。近似時のpositionは元のmesh接触点で、補正後の接点とは限らない。
+- ABI V2の既存flagsへshape_cast_approximate_depenetrationを追加。C++ hitの末尾にもboolを追加し、mesh provider→runtime→公開Serviceへ伝播。初期衝突を伴わない近似フラグ、およびprimitive providerの近似フラグを拒否する。従来primitive MTDの意味を弱めない。現行header利用コードは再ビルドする。
+- Player・runtime_services Debug build成功。関連49case/937assertion成功。単一面の深さ・法線/優先方向、頂点、変換、Capsule軸中央の交差・半径ゼロ、角の複数面、狭い隙間の退避、返したfloat補正の適用後の解消を確認。公開Serviceでも角の補正量・近似フラグ・補正後の解消を確認し、providerフラグの正常/異常系と既存mesh Trigger/Overlap/Sweepも成功。
+- 全meshの再判定を外すと角で他面への貫通が残り、保守的な退避を外すと狭い隙間で補正が完了しない対照。個別変異・provider-only別build・Studio実操作・性能計測は未実施。結果はcollider単位であり、別colliderも含めた同時解消や補正経路の無衝突は保証しない。**実用の初期解消を実装したが、任意の凹meshに対する厳密な最短MTD探索は未実装**。近似を最短として偽装しない契約を明記して、今回の区切りとする。
+
 **mesh Trigger (2026-09-07):**
 - PhysWorldの既存OverlapEnter/OverlapExitへSphere/Box/Capsule対meshとmesh対meshを接続。どちら側がtriggerでも相互layer/mask・自己entity除外を適用し、entityペアで重複除去する。接触中は既存ペアを保持し、Stayイベントは追加しない。判定失敗時は部分的なEnter/Exitを出さず、unavailable時は以前のペアを維持する。
 - mesh同士の接触判定は両BVHと三角形の分離軸を使用し、共面の辺法線も含める。変換後の共面誤判定を修正し、共通原点の投影と倍精度演算に応じた誤差だけを考慮する。閉じたmeshの内部充填は行わない。ProviderV3にquery_mesh_mesh_overlap_all/callbackを追加し、入力側・対象側とも保持済みBVHを渡す。overlap結果の復元・検査は既存経路と共通化。利用DLLは現行headerで再ビルドする。

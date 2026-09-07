@@ -145,7 +145,8 @@ Physics::Status builtinMeshSphereShapeCastAll(
             result.penetration_depth = hit->penetration_depth;
             result.position = {hit->position.x, hit->position.y, hit->position.z};
             result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
-            result.flags = hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0;
+            result.flags = (hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0U) |
+                (hit->approximate_depenetration ? Physics::shape_cast_approximate_depenetration : 0U);
             return result;
         });
 }
@@ -170,7 +171,8 @@ Physics::Status builtinMeshBoxShapeCastAll(
             result.penetration_depth = hit->penetration_depth;
             result.position = {hit->position.x, hit->position.y, hit->position.z};
             result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
-            result.flags = hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0;
+            result.flags = (hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0U) |
+                (hit->approximate_depenetration ? Physics::shape_cast_approximate_depenetration : 0U);
             return result;
         });
 }
@@ -195,7 +197,8 @@ Physics::Status builtinMeshCapsuleShapeCastAll(
             result.penetration_depth = hit->penetration_depth;
             result.position = {hit->position.x, hit->position.y, hit->position.z};
             result.normal = {hit->normal.x, hit->normal.y, hit->normal.z};
-            result.flags = hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0;
+            result.flags = (hit->initial_overlap ? Physics::shape_cast_initial_overlap : 0U) |
+                (hit->approximate_depenetration ? Physics::shape_cast_approximate_depenetration : 0U);
             return result;
         });
 }

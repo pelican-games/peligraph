@@ -19,7 +19,7 @@
 
 **D0** — 「エディタに特権 API を作らない」という設計決定の記号。編集操作はまず JSON-RPC メソッドとして定義され、エンジン内蔵の ImGui インスペクタも外部の Python クライアントも Qt Studio も**同じ関数**を呼びます。Studio がエンジン内部へリンクしていないことはビルドレベルのテスト(`test/run_devstudio_boundary_negative.cmake`)で守られます。初出: [第13章 §13.1](13_editor.md#131-全体像--何ができるようになったか)。
 
-**ABI(Application Binary Interface)** — 別々にコンパイルされたバイナリが呼び合うときの、関数名・引数の並び・構造体レイアウトの約束。pelican2 では「ゲーム DLL の ABI」(登録入口の名前と epoch anchor)、「physics provider ABI」、「material output ABI」など、**DLL や shader をまたぐ境界ごと**にこの語が出ます。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([abi_v2.hpp:83](../../src/core/userpublic/physics/abi_v2.hpp#L83))
+**ABI(Application Binary Interface)** — 別々にコンパイルされたバイナリが呼び合うときの、関数名・引数の並び・構造体レイアウトの約束。pelican2 では「ゲーム DLL の ABI」(登録入口の名前と epoch anchor)、「physics provider ABI」、「material output ABI」など、**DLL や shader をまたぐ境界ごと**にこの語が出ます。初出: [第8章 ゲーム DLL の ABI](08_gameplay.md#ゲーム-dll-の-abiwp381381a382a)。([abi_v2.hpp:83](../../src/core/userpublic/physics/abi_v2.hpp#L91))
 
 **決定的 / 決定性(deterministic)** — 同じビルド・同じプロジェクト・同じ入力なら、何度実行しても**同じ結果**になること。pelican2 ではフレームループの固定順序・入力のフレーム頭スナップショット・システム順(order → 名前辞書順)・イベントの次フレーム配送・物理のタイブレーク・固定シードの PCG32・ヘッドレスの固定ステップ(dt = 1/fps)の 8 要素で作ります。ウィンドウモードは実測 dt なので厳密なリプレイはヘッドレスで行います。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。
 
@@ -125,11 +125,11 @@
 
 **PCG32(permuted congruential generator)** — 高速で周期が長い擬似乱数生成器の一種。pelican2 は `std::mt19937` + `std::uniform_*` を**使わず**(処理系によって出る列が違うため)、PCG32 を分布まで自前実装しています。既定シードは 0 固定で、毎回変えたいゲームは自分で種を入れます。初出: [第8章 §8.10](08_gameplay.md#810-決定性--なぜ毎回同じ結果になるのか)。([deterministicrng.cpp:14](../../src/core/userpublic/deterministicrng.cpp#L14))
 
-**provider(プロバイダ)** — ある機能の**実装を差し替えられる口**。物理クエリでは Builtin / Jolt / ゲーム DLL の provider を capability 単位で差し替えられ(選択はビルド時)、描画では view family や draw の供給者を差し替えられます。クエリの順序やタイブレークの契約は provider ではなく**エンジンが所有する**ので、差し替えても結果の並びは変わりません。初出: [第8章 §8.8](08_gameplay.md#88-物理クエリとトリガーp1p2wp107179)。([ProviderV2](../../src/core/userpublic/physics/abi_v2.hpp#L83))
+**provider(プロバイダ)** — ある機能の**実装を差し替えられる口**。物理クエリでは Builtin / Jolt / ゲーム DLL の provider を capability 単位で差し替えられ(選択はビルド時)、描画では view family や draw の供給者を差し替えられます。クエリの順序やタイブレークの契約は provider ではなく**エンジンが所有する**ので、差し替えても結果の並びは変わりません。初出: [第8章 §8.8](08_gameplay.md#88-物理クエリとトリガーp1p2wp107179)。([ProviderV2](../../src/core/userpublic/physics/abi_v2.hpp#L91))
 
 **GJK / EPA** — 凸形状どうしの当たり判定の定番アルゴリズム。GJK は 2 つの形状の差(ミンコフスキー差)の中で原点までの最近点を反復で探し、**離れているか / 距離はいくらか**を出します。貫通しているときは GJK だけでは深さが出ないので、EPA(expanding polytope algorithm)が GJK の残した単体を膨らませて押し出す深さと向きを求めます。pelican2 は両方を自前で実装しており、GJK 反復は 40 回上限です。初出: [source-code-guide 第5章 §5.7](../source-code-guide/05_gameplay_and_services.md#57-physics)。([physquerysweep.cpp:20](../../src/core/phys/physquerysweep.cpp#L20) / [penetration()](../../src/core/phys/physquerysweep.cpp#L657))
 
-**MTD(minimum translation distance)** — 既に食い込んでいる 2 つの形状を、**最小の移動量で引き離す**ベクトル。`shapeCast` が初期重なりを返したとき、`normal * penetration_depth` がこれにあたります。同点になったときは「移動の逆向きを優先し、その後 world x/y/z」で固定して決定性を保ちます。初出: [第8章 §8.8](08_gameplay.md#88-物理クエリとトリガーp1p2wp107179)。
+**MTD(minimum translation distance)** — 既に食い込んでいる 2 つの形状を、**最小の移動量で引き離す**ベクトル。`shapeCast`が初期重なりを返したとき、`normal * penetration_depth`がこれにあたります。ただしmeshの`approximate_depenetration`付き結果は、めり込みを解消する補正であり、最短とは限りません。同点になったときは「移動の逆向きを優先し、その後 world x/y/z」で固定して決定性を保ちます。初出: [第8章 §8.8](08_gameplay.md#88-物理クエリとトリガーp1p2wp107179)。
 
 **matrix palette(マトリクスパレット)** — スキニングで使う**ボーン行列の配列**。頂点は「どのボーンをどれだけ参照するか」を持ち、シェーダはこの配列から行列を引いて頂点を変形します。pelican2 では glTF の skin ごとの範囲が結合パレットを過不足なく覆うことを検証します。初出: [source-code-guide 第3章](../source-code-guide/03_project_and_loading.md)。([buildSkinPalette()](../../src/core/animation/animationjobs.cpp#L403))
 

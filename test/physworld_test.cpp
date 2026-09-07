@@ -18,6 +18,7 @@
 #include "../src/core/communication/rpcserver.hpp"
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 #include <array>
 #include <cstdint>
 #include <limits>
@@ -927,15 +928,26 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
         &self_filter, cast_result) == Physics::Status::ok);
     REQUIRE(cast_result.size() == 1);
     CHECK(cast_result[0].id == "sphere");
-    // Do not publish the primitive hit when the mesh query cannot provide MTD.
+    // Initial mesh corrections coexist with later primitive sweep hits.
     cast_query.shape.center.z = 3;
-    CHECK(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::unavailable);
-    CHECK(world.queryShapeCastAll(phys::Sphere{{0, 0, 3}, 0.25F}, {0, 0, 10},
-        nullptr, cast_result) == Physics::Status::unavailable);
-    CHECK(cast_result.empty());
+    REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
+    REQUIRE(count == 2);
+    CHECK(cast_hits[0].identity.collider_id == identity.value);
+    CHECK(cast_hits[0].flags == Physics::shape_cast_initial_overlap);
+    CHECK(cast_hits[0].time_of_impact == 0);
+    CHECK(cast_hits[0].penetration_depth == Catch::Approx(0.25F));
+    CHECK(cast_hits[0].normal.z == Catch::Approx(-1));
+    REQUIRE(world.queryShapeCastAll(phys::Sphere{{0, 0, 3}, 0.25F}, {0, 0, 10},
+        nullptr, cast_result) == Physics::Status::ok);
+    REQUIRE(cast_result.size() == 2);
+    CHECK(cast_result[0].initial_overlap);
+    CHECK_FALSE(cast_result[0].approximate_depenetration);
     cast_query.shape.kind = Physics::ShapeKindV1::box;
     cast_query.shape.half_extents = {0.25F, 0.25F, 0.25F};
-    CHECK(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::unavailable);
+    REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
+    REQUIRE(count == 2);
+    CHECK(cast_hits[0].flags == Physics::shape_cast_initial_overlap);
+    CHECK(cast_hits[0].penetration_depth == Catch::Approx(0.25F));
     cast_query.shape.center.z = 0;
     REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
     REQUIRE(count == 2);
@@ -980,10 +992,15 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
     CHECK(count == 0);
     cast_query.shape.center = {0, 0, 3};
-    CHECK(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::unavailable);
-    CHECK(world.queryShapeCastAll(phys::Capsule{{0, 0, 3}, {0, 0, 0, 1}, 0.5F, 0.25F},
-        {0, 0, 10}, nullptr, cast_result) == Physics::Status::unavailable);
-    CHECK(cast_result.empty());
+    REQUIRE(service.shape_cast_all(service.context, &cast_query, cast_hits.data(), 2, &count) == Physics::Status::ok);
+    REQUIRE(count == 2);
+    CHECK(cast_hits[0].flags == Physics::shape_cast_initial_overlap);
+    CHECK(cast_hits[0].penetration_depth == Catch::Approx(0.25F));
+    REQUIRE(world.queryShapeCastAll(phys::Capsule{{0, 0, 3}, {0, 0, 0, 1}, 0.5F, 0.25F},
+        {0, 0, 10}, nullptr, cast_result) == Physics::Status::ok);
+    REQUIRE(cast_result.size() == 2);
+    CHECK(cast_result[0].initial_overlap);
+    CHECK_FALSE(cast_result[0].approximate_depenetration);
     GET_MODULE(ECSCore).getTemplatePublicModule().component<TransformComponent>(object).pos = {5, 0, 0};
     hits = world.raycastAll(ray);
     REQUIRE(hits.size() == 1);
@@ -998,6 +1015,45 @@ TEST_CASE("Prepared mesh bindings share raycast service and track transforms", "
     CHECK(world.raycastAll(ray, filter).empty());
     world.clear();
     CHECK(world.raycastAll(ray).empty());
+}
+
+TEST_CASE("Mesh corner depenetration survives the public service round trip", "[physworld][mesh][mesh-depenetration]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    const auto object = createColliderEntity({0, 0, 0});
+    auto geometry = std::make_shared<PhysWorld::MeshGeometry>();
+    geometry->vertices = {{0, -5, -5}, {0, 5, -5}, {0, 0, 5},
+                          {-5, -5, 0}, {5, -5, 0}, {0, 5, 0}};
+    geometry->indices = {0, 1, 2, 3, 4, 5};
+    PhysWorld::Binding binding;
+    binding.identity.name = "corner";
+    binding.transform_source = object;
+    binding.mesh = std::move(geometry);
+    world.publishPrepared(world.prepareBindings({binding}));
+    Physics::ApiV2 api;
+    REQUIRE(Physics::getApiV2(Physics::abiVersionV2, &api) == Physics::Status::ok);
+    Physics::ServiceV2 service;
+    REQUIRE(api.get_service(api.context, Physics::serviceVersionV2, &service) == Physics::Status::ok);
+    Physics::ShapeCastQueryV2 query;
+    query.shape.kind = Physics::ShapeKindV1::sphere;
+    query.shape.center = {0.1F, 0, 0.1F};
+    query.shape.radius = 0.25F;
+    Physics::ShapeCastHitV2 hit;
+    std::uint32_t count = 0;
+    REQUIRE(service.shape_cast_all(service.context, &query, &hit, 1, &count) == Physics::Status::ok);
+    REQUIRE(count == 1);
+    CHECK(hit.flags == (Physics::shape_cast_initial_overlap | Physics::shape_cast_approximate_depenetration));
+    CHECK(hit.time_of_impact == 0);
+    CHECK(hit.penetration_depth == Catch::Approx(std::sqrt(0.15F*0.15F*2)));
+    CHECK(hit.normal.x*hit.penetration_depth == Catch::Approx(0.15F));
+    CHECK(hit.normal.z*hit.penetration_depth == Catch::Approx(0.15F));
+    query.shape.center.x += hit.normal.x*hit.penetration_depth;
+    query.shape.center.y += hit.normal.y*hit.penetration_depth;
+    query.shape.center.z += hit.normal.z*hit.penetration_depth;
+    REQUIRE(service.shape_cast_all(service.context, &query, &hit, 1, &count) == Physics::Status::ok);
+    CHECK(count == 0);
 }
 
 TEST_CASE("Model collision replacements prepare additions removals and stable identities", "[physworld][mesh-reload]") {

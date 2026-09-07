@@ -84,8 +84,8 @@ using ProviderMeshCapsuleOverlapAllV3Fn = Status (*)(
     std::uint32_t, std::uint32_t *) noexcept;
 
 // Same contact/TOI semantics as ShapeCastQueryV2. Triangle surfaces are not
-// filled solids. Builtin queries return unavailable for initial penetration:
-// a general nonconvex mesh does not have a per-triangle MTD.
+// filled solids. Initial penetration yields a verified correction for the whole
+// reported mesh; nonminimal corrections carry shape_cast_approximate_depenetration.
 struct ProviderMeshSphereShapeCastQueryV3 {
     Vec3V1 center{};
     float radius = 0;

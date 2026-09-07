@@ -14,6 +14,22 @@ namespace {
 constexpr std::array<vec3, 3> triangle{{{0, 0, 2}, {2, 0, 2}, {0, 2, 2}}};
 constexpr std::array<std::uint32_t, 3> indices{0, 1, 2};
 
+template<class Shape>
+ShapeCastHit requireMeshCorrection(const TriangleMesh &mesh, Shape shape, vec3 delta,
+                                  const glm::mat4 &transform) {
+    const auto hit = mesh.shapeCast(shape,delta,transform);
+    REQUIRE(hit);
+    REQUIRE(hit->initial_overlap);
+    REQUIRE(hit->time_of_impact == 0);
+    REQUIRE(hit->penetration_depth > shapeCastContactEpsilon);
+    shape.center.x += hit->normal.x*hit->penetration_depth;
+    shape.center.y += hit->normal.y*hit->penetration_depth;
+    shape.center.z += hit->normal.z*hit->penetration_depth;
+    const auto after = mesh.shapeCast(shape,{},transform);
+    REQUIRE_FALSE((after && after->initial_overlap));
+    return *hit;
+}
+
 } // namespace
 
 TEST_CASE("Triangle mesh raycast tests triangle surfaces, both sides and parameter bounds",
@@ -32,6 +48,62 @@ TEST_CASE("Triangle mesh raycast tests triangle surfaces, both sides and paramet
     REQUIRE(back->normal.z == Catch::Approx(1));
     REQUIRE(mesh.raycast(Ray{{0, 0, 2}, {0, 0, 1}, 0}));
     REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 2}, {1, 0, 0}, 10}));
+}
+
+TEST_CASE("Mesh initial depenetration returns exact single-surface corrections",
+          "[physics][trianglemesh][mesh-depenetration]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    const auto sphere = requireMeshCorrection(mesh,Sphere{{0.5F,0.5F,2.1F},0.25F},{},identity);
+    REQUIRE(sphere.penetration_depth == Catch::Approx(0.15F));
+    REQUIRE(sphere.normal.z == Catch::Approx(1));
+    REQUIRE_FALSE(sphere.approximate_depenetration);
+    const auto preferred = requireMeshCorrection(mesh,Sphere{{0.5F,0.5F,2},0.25F},{0,0,1},identity);
+    REQUIRE(preferred.normal.z == Catch::Approx(-1));
+    REQUIRE_FALSE(preferred.approximate_depenetration);
+    const auto vertex = requireMeshCorrection(mesh,Sphere{{2,0,2},0.25F},{},identity);
+    REQUIRE(vertex.normal.x == Catch::Approx(1));
+    REQUIRE(vertex.penetration_depth == Catch::Approx(0.25F));
+    REQUIRE_FALSE(vertex.approximate_depenetration);
+    const auto box = requireMeshCorrection(mesh,Box{{0.5F,0.5F,2.1F},{0,0,0,1},{0.1F,0.1F,0.25F}},{},identity);
+    REQUIRE(box.penetration_depth == Catch::Approx(0.15F));
+    REQUIRE(box.position.z == Catch::Approx(2));
+    REQUIRE_FALSE(box.approximate_depenetration);
+    const auto capsule = requireMeshCorrection(mesh,Capsule{{0.5F,0.5F,2.1F},{0,0,0,1},3,0.25F},{},identity);
+    REQUIRE(capsule.penetration_depth == Catch::Approx(0.15F));
+    REQUIRE(capsule.position.z == Catch::Approx(2));
+    REQUIRE_FALSE(capsule.approximate_depenetration);
+    glm::mat4 transform{1};
+    transform[0][0] = -2; transform[1][0] = 0.5F; transform[2][2] = 3; transform[3][2] = 2;
+    const auto transformed = requireMeshCorrection(mesh,Sphere{{-0.75F,0.5F,8.1F},0.25F},{},transform);
+    REQUIRE(transformed.penetration_depth == Catch::Approx(0.15F));
+    REQUIRE(transformed.position.z == Catch::Approx(8));
+}
+
+TEST_CASE("Mesh depenetration resolves corners and opposing surfaces without claiming global MTD",
+          "[physics][trianglemesh][mesh-depenetration]") {
+    const std::array<vec3,6> corner{{{-10,-10,0},{10,-10,0},{0,10,0},
+                                   {0,-10,-10},{0,10,-10},{0,0,10}}};
+    const std::array<std::uint32_t,6> topology{0,1,2,3,4,5};
+    const TriangleMesh mesh(corner,topology);
+    const glm::mat4 identity{1};
+    const auto sphere = requireMeshCorrection(mesh,Sphere{{0.1F,0,0.1F},0.25F},{},identity);
+    REQUIRE(sphere.approximate_depenetration);
+    REQUIRE(sphere.penetration_depth == Catch::Approx(std::sqrt(2.0F)*0.15F));
+    REQUIRE(sphere.normal.x > 0);
+    REQUIRE(sphere.normal.z > 0);
+    const auto box = requireMeshCorrection(mesh,Box{{0.1F,0,0.1F},{0,0,0,1},{0.25F,0.25F,0.25F}},{},identity);
+    REQUIRE(box.approximate_depenetration);
+    const auto capsule = requireMeshCorrection(mesh,Capsule{{0.1F,0,0.1F},{0,0,0,1},0.5F,0.25F},{},identity);
+    REQUIRE(capsule.approximate_depenetration);
+    const std::array<vec3,6> gap{{{-10,-10,0},{10,-10,0},{0,10,0},
+                                {-10,-10,0.4F},{10,-10,0.4F},{0,10,0.4F}}};
+    const auto fallback = requireMeshCorrection(TriangleMesh{gap,topology},Sphere{{0,0,0.1F},0.25F},{},identity);
+    REQUIRE(fallback.approximate_depenetration);
+    REQUIRE(fallback.normal.z == Catch::Approx(-1));
+    REQUIRE(fallback.penetration_depth == Catch::Approx(0.35F));
+    // Original mesh contact, rather than the AABB exit location, is retained.
+    REQUIRE(fallback.position.z == 0);
 }
 
 TEST_CASE("Mesh surface overlap distinguishes coplanar disjoint and crossing triangles",
@@ -147,9 +219,9 @@ TEST_CASE("Capsule mesh sweep preserves rotated caps transforms and contact sema
     // The axis crosses the triangle while its endpoints and the center-to-prism
     // boundary distances are all larger than the radius.
     capsule.center.z = 2; capsule.half_height = 2; capsule.radius = 0.1F;
-    REQUIRE_THROWS_AS(mesh.shapeCast(capsule,{},identity),std::domain_error);
+    requireMeshCorrection(mesh,capsule,{},identity);
     capsule.radius = 0;
-    REQUIRE_THROWS_AS(mesh.shapeCast(capsule,{0,0,1},identity),std::domain_error);
+    requireMeshCorrection(mesh,capsule,{0,0,1},identity);
     capsule.center.z = 0; capsule.half_height = 0.5F;
     const auto segment = mesh.shapeCast(capsule,{0,0,4},identity);
     REQUIRE(segment);
@@ -237,7 +309,7 @@ TEST_CASE("Box mesh sweep handles rotated boxes affine meshes and initial contac
     REQUIRE_FALSE(mesh.shapeCast(touching,{1,-1,0},identity));
     REQUIRE(mesh.shapeCast(touching,{1,1,0},identity));
     touching.center = {0.5F,0.5F,2};
-    REQUIRE_THROWS_AS(mesh.shapeCast(touching,{},identity),std::domain_error);
+    requireMeshCorrection(mesh,touching,{},identity);
     const Box point{{0.5F,0.5F,2},{0,0,0,1},{0,0,0}};
     const auto pointContact = mesh.shapeCast(point,{0,0,1},identity);
     REQUIRE(pointContact);
@@ -303,8 +375,8 @@ TEST_CASE("Sphere mesh sweep preserves contact rules and transformed world radiu
     REQUIRE_FALSE(mesh.shapeCast(touching,{0,0,-1},identity));
     REQUIRE_FALSE(mesh.shapeCast(touching,{1,0,0},identity));
     REQUIRE_FALSE(mesh.shapeCast(touching,{},identity));
-    REQUIRE_THROWS_AS(mesh.shapeCast(Sphere{{0.5F,0.5F,2},0.25F},{0,0,1},identity),std::domain_error);
-    REQUIRE_THROWS_AS(mesh.shapeCast(Sphere{{0.5F,0.5F,2},0.25F},{},identity),std::domain_error);
+    requireMeshCorrection(mesh,Sphere{{0.5F,0.5F,2},0.25F},{0,0,1},identity);
+    requireMeshCorrection(mesh,Sphere{{0.5F,0.5F,2},0.25F},{},identity);
     glm::mat4 transform{1};
     transform[0][0] = -2;
     transform[1][0] = 0.5F;
@@ -337,7 +409,7 @@ TEST_CASE("Sphere mesh sweep traverses BVH and does not hide later initial penet
     REQUIRE(nearest);
     REQUIRE(nearest->time_of_impact == Catch::Approx(0.075F));
     REQUIRE(nearest->position.z == Catch::Approx(1));
-    REQUIRE_THROWS_AS(mesh.shapeCast(Sphere{{0.5F,0.5F,7},1},{0,0,-10},glm::mat4{1}),std::domain_error);
+    requireMeshCorrection(mesh,Sphere{{0.5F,0.5F,7},1},{0,0,-10},glm::mat4{1});
 }
 
 TEST_CASE("Triangle mesh BVH finds nearest surfaces and resolves source-order ties",

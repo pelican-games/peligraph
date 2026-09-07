@@ -203,9 +203,8 @@ Status copyShapeCastHits(const std::vector<phys::ShapeCastQueryHit> &source,
             .penetration_depth = source[index].penetration_depth,
             .position = toAbi(source[index].position),
             .normal = toAbi(source[index].normal),
-            .flags = source[index].initial_overlap
-                         ? shape_cast_initial_overlap
-                         : 0U,
+            .flags = (source[index].initial_overlap ? shape_cast_initial_overlap : 0U) |
+                (source[index].approximate_depenetration ? shape_cast_approximate_depenetration : 0U),
         };
     }
     return Status::ok;
