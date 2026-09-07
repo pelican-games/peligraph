@@ -133,7 +133,13 @@ class Expander {
         const auto &outputs = document.at("outputs");
         object(outputs, "graph outputs must be an object");
         Json exposed = Json::object();
-        for (const auto &[port, endpoint] : outputs.items()) exposed[identifier(port)] = resolve(endpoint);
+        for (const auto &[port, endpoint] : outputs.items()) {
+            auto resolved = resolve(endpoint);
+            // Even an input-to-output alias is unavailable when its instance
+            // is inactive. Keep that boundary until dependency compilation.
+            if (!path.empty()) resolved["$scopes"].push_back(path.substr(0, path.size() - 1));
+            exposed[identifier(port)] = std::move(resolved);
+        }
         return exposed;
     }
 };
@@ -147,6 +153,46 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
     Expander expander{definitions};
     expander.result.outputs = expander.scope(document, "", "", Json::object(),
                                             document.value("parameters", Json::object()));
+    auto &result = expander.result;
+    const auto addAncestors = [&](std::set<std::string> &scopes, std::string_view path) {
+        for (const auto &[scope, owner] : result.instance_owners) {
+            if (path == scope || (path.starts_with(scope) && path.size() > scope.size() && path[scope.size()] == '/'))
+                scopes.insert(scope);
+        }
+    };
+    const auto takeScopes = [&](Json &endpoint, std::set<std::string> &scopes) {
+        if (const auto found = endpoint.find("$scopes"); found != endpoint.end()) {
+            for (const auto &scope : *found) addAncestors(scopes, scope.get_ref<const std::string &>());
+            endpoint.erase(found);
+        }
+    };
+    std::map<std::string, std::vector<std::string>> consumers;
+    for (auto &node : result.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        auto &scopes = result.node_scopes[id];
+        addAncestors(scopes, id);
+        for (auto &[port, endpoint] : node.at("inputs").items()) {
+            takeScopes(endpoint, scopes);
+            consumers[endpoint.at("node").get<std::string>()].push_back(id);
+        }
+    }
+    // Propagate once per newly discovered node/scope pair. Declaration order
+    // and duplicate edges do not affect the result.
+    std::vector<std::pair<std::string, std::string>> pending;
+    for (const auto &[id, scopes] : result.node_scopes)
+        for (const auto &scope : scopes) pending.emplace_back(id, scope);
+    for (std::size_t i = 0; i < pending.size(); ++i) {
+        const auto [id, scope] = pending[i];
+        for (const auto &consumer : consumers[id])
+            if (result.node_scopes.at(consumer).insert(scope).second)
+                pending.emplace_back(consumer, scope);
+    }
+    for (auto &[port, endpoint] : result.outputs.items()) {
+        auto &scopes = result.output_scopes[port];
+        takeScopes(endpoint, scopes);
+        const auto &source = result.node_scopes.at(endpoint.at("node").get<std::string>());
+        scopes.insert(source.begin(), source.end());
+    }
     return std::move(expander.result);
 }
 

@@ -1,6 +1,7 @@
 #include "../src/core/userpublic/animation/curve.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/graphpartition.hpp"
 #include "../src/project/rendergraphcomposition.hpp"
 #include "graph_composition_fixture.hpp"
 
@@ -13,6 +14,55 @@
 
 using namespace Pelican::Animation;
 using Catch::Approx;
+
+TEST_CASE("owner scope dependencies cross CPU GPU boundaries without stopping sibling branches", "[curve][graph-composition]") {
+    auto document = parameterGraphCompositionFixture();
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};
+    const auto partitions = Pelican::partitionGraphDocument(document);
+    const std::set<std::string> left{"left"};
+    REQUIRE(partitions.values.node_scopes.at("left/shape") == left);
+    REQUIRE(partitions.values.node_scopes.at("$upload/render") == left);
+    REQUIRE(partitions.rendering.node_scopes.at("render") == left);
+    REQUIRE(partitions.rendering.node_scopes.at("probe") == left);
+    REQUIRE(partitions.rendering.output_scopes.at("gpu") == left);
+    REQUIRE(partitions.values.node_scopes.at("clock").empty());
+    REQUIRE(partitions.values.node_scopes.at("right/scaled").empty());
+    REQUIRE(partitions.rendering.node_scopes.at("result").empty());
+}
+
+TEST_CASE("nested passthrough instances retain lifetime boundaries after alias expansion", "[curve][graph-composition]") {
+    const auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+      "definitions":{
+        "alias":{"nodes":[{"id":"input","op":"graph.input"}],
+                 "outputs":{"value":{"node":"input","port":"value"}}},
+        "wrapper":{"nodes":[{"id":"input","op":"graph.input"},
+          {"id":"child","op":"graph.instance","definition":"alias",
+           "owner":{"scene":"main","object":2},
+           "inputs":{"input":{"node":"input","port":"value"}}}],
+          "outputs":{"value":{"node":"child","port":"value"}}}},
+      "nodes":[
+        {"id":"source","op":"value.constant","parameters":{"value":3},"outputs":["value"]},
+        {"id":"outer","op":"graph.instance","definition":"wrapper",
+         "owner":{"scene":"main","object":1},
+         "inputs":{"input":{"node":"source","port":"value"}}},
+        {"id":"consumer","op":"value.add","inputs":{
+          "a":{"node":"outer","port":"value"},"b":{"node":"outer","port":"value"}},"outputs":["value"]}],
+      "outputs":{"alias":{"node":"outer","port":"value"},
+                 "sum":{"node":"consumer","port":"value"},
+                 "direct":{"node":"source","port":"value"}}})");
+    const auto graph = Pelican::expandGraphDocument(document);
+    const std::set<std::string> owners{"outer", "outer/child"};
+    REQUIRE(graph.nodes.size() == 2);
+    REQUIRE(graph.node_scopes.at("source").empty());
+    REQUIRE(graph.node_scopes.at("consumer") == owners);
+    REQUIRE(graph.output_scopes.at("alias") == owners);
+    REQUIRE(graph.output_scopes.at("sum") == owners);
+    REQUIRE(graph.output_scopes.at("direct").empty());
+    REQUIRE(graph.outputs.at("alias") == nlohmann::json{{"node", "source"}, {"port", "value"}});
+    const Pelican::ValueGraph::Graph values{document.dump()};
+    REQUIRE(values.evaluate({}).at("sum")[0] == 6);
+    REQUIRE(nlohmann::json::parse(values.serialize()) == document);
+}
 
 TEST_CASE("instance parameters preserve defaults and isolate runtime overrides", "[curve][graph-composition]") {
     auto document = parameterGraphCompositionFixture();

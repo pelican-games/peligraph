@@ -23233,6 +23233,8 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
+- 共通graphの最新到達点: `a20ee5ca`で個体parameterの保存owner・runtime override・削除/scene reload時の破棄を通常Rendererへ接続済み。続いて展開/partitionにowner scope依存を保持し、alias・入れ子・数値→GPU境界の生存条件をコンパイル可能にした。次はこの条件をruntimeで評価し、数値publishと依存GPU処理の停止へ接続する。停止・動的instance装着・個体state/event所有は未了。以下の旧「個体parameterは未了」という記述はこの到達点で更新する。
+
 - 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・compute構成に続き、4f566ea1で混在文書の数値→buffer→GPU shader消費を接続。通常Rendererの自動評価、描画世代と数値処理の同時更新、scene読込み時刻の供給も実GPUで確認した。現在の所有はプロジェクト共通描画文書/描画世代であり、scene別graphや個体別parameter/stateは未了。次はobjectごとのsubgraph instance装着・parameter/state所有を共通モデルへ接続する。画像port・feature共通instance・状態/イベント・Studioも残件。
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
@@ -23247,6 +23249,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**共通graphの実行scope依存コンパイル (2026-09-07):**
+- ExpandedGraphDocumentにnode_scopes/output_scopesを追加。owner付きの全祖先scopeと入力元の依存を保持し、下流だけへ伝播する。入力→出力aliasだけのinstanceでも境界を消さず、展開endpointから派生metadataへ移す。保存原文は不変。
+- partitionの数値/GPU双方へ保持し、生成upload sinkもbufferと同じ条件を使用する。runtimeでの生存判定・評価/dispatch停止は次の残件。
+- CPU 33case/1534assertion成功（graph_scope_plan_build.log / graph_scope_plan_cpu.log）。既存値評価に加え、所有者付き枝からGPU出力までの伝播、共有入力/兄弟/独立bufferの独立性、別ownerの入れ子alias、同じ入力への重複edge、保存原文維持を確認。祖先条件・alias境界・生成sinkへの転送のいずれを削っても対応assertionが落ちる構成。GPU実行コードは今回未変更であり、dispatch停止を検証したものではない。
 
 **共通graph parameterのGameObject所有と寿命 (2026-09-07):**
 - graph.instance.ownerへscene名とauthoring object IDを保存。展開/partition/ValueGraphで所有情報を保持し、parameterOwnerが最も近いscopeのownerを返す。runtime EntityIdは保存しない。

@@ -85,13 +85,16 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
                 {"parameters", {{"target", id}}},
                 {"inputs", {{"value", node.at("inputs").at("value")}}}, {"outputs", Json::array()}});
             result.values.origins.emplace(sink_id, graph.origins.at(id));
+            result.values.node_scopes.emplace(sink_id, graph.node_scopes.at(id));
         }
         partition.nodes.push_back(std::move(lowered));
         partition.origins.emplace(id, graph.origins.at(id));
+        partition.node_scopes.emplace(id, graph.node_scopes.at(id));
     }
     for (const auto &[port, endpoint] : graph.outputs.items()) {
         auto &partition = output_types.at(port) == scalar ? result.values : result.rendering;
         partition.outputs[port] = endpoint;
+        partition.output_scopes.emplace(port, graph.output_scopes.at(port));
     }
     return result;
 }

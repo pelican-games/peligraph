@@ -108,6 +108,13 @@ GPU世代退役後も古いGraphを保持し続けない。削除済み個体の
 GPU taskを停止する処理は未実装で、overrideを除去した後は保存値による評価が続く。
 objectごとの動的instance生成/削除、状態付きノード、イベント/音声handleの所有は残件。
 
+実行停止への準備として、展開結果にnode_scopes/output_scopesを追加した。各nodeと公開出力が
+必要とするowner scopeを、親scopeと入力依存からコンパイル時に求める。子に別ownerがあっても
+親の生存条件を外さず、依存先へ伝播する。入力をそのまま公開出力へ渡すだけのinstanceも、
+alias展開で生存条件を消さない。共有入力の生成元や独立した兄弟へ逆向きには伝播しない。
+数値→bufferの生成upload sinkとGPU側partitionにも同じ条件を保持する。これは派生metadataで、
+保存JSONに展開結果を追加しない。runtimeで条件を評価して処理を止める接続は引き続き未実装。
+
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
 [lowerRenderGraphDocument](../src/project/rendergraphcomposition.hpp)を既存の

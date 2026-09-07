@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <string>
 #include <functional>
+#include <set>
 #include "logicalrendertype.hpp"
 #include "graphinstanceowner.hpp"
 
@@ -19,6 +20,10 @@ struct ExpandedGraphDocument {
     nlohmann::json outputs = nlohmann::json::object();
     std::map<std::string, GraphNodeOrigin> origins;
     GraphInstanceOwners instance_owners;
+    // Required live instance scopes, including dependencies crossing an alias.
+    // Derived metadata; never written into the authoring document.
+    std::map<std::string, std::set<std::string>> node_scopes;
+    std::map<std::string, std::set<std::string>> output_scopes;
 };
 
 // Backend-independent authoring expansion. The original document remains the
