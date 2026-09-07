@@ -192,7 +192,9 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
         {"components":[
           {"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
           {"name":"simplemodelview","model":"character"},
-          {"name":"animation","graph":"turn.json"}]}
+          {"name":"animation","graph":"turn.json","parameters":{
+            "$list":{"v":1,"next_id":2},
+            "rows":[{"$row":{"id":1,"v":1},"parameter":"go","value":1}]}}]}
       ]}}})");
     auto &service = Animation::animationServiceRuntime();
     service.reset();
@@ -237,6 +239,9 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
     REQUIRE_FALSE(scene.objectName(unnamed));
     const auto unnamed_instance = *ecs.tryComponent<SimpleModelViewComponent>(unnamed)->model_instance_id;
     REQUIRE(instances.currentAnimationRevisionForTesting(unnamed_instance) == time.frameIndex());
+    // Shared graph, different authored initial values: only the named actor turns.
+    REQUIRE(std::abs(instances.currentSkinPaletteForTesting(unnamed_instance)[0][0][1]) < 0.0001f);
+    REQUIRE(std::abs(instances.currentSkinPaletteForTesting(instance)[0][0][1]) > 0.1f);
 
     GameContext context;
     const auto turn_palette = instances.currentSkinPaletteForTesting(instance);

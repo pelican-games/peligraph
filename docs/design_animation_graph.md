@@ -176,8 +176,12 @@ v1 スコープ = clip state + blend1d + crossfade(調査 §6.1 で条件付き�
 sceneのanimation componentは`{"name":"animation","graph":"graphs/walk.json"}`
 で既存pelican.anim_graph文書を参照する。clipとの併記は不可。graphの各stateが
 時計を持つため、componentのspeed/loop/start_timeはclip選択時だけ受理する。
-graphのparameter初期値は参照文書のparametersを使う。個体別の初期値overrideは
-まだ追加していない。
+graphのparameter初期値は参照文書のparametersを使い、componentの任意の
+`parameters` Listで個体別に上書きできる。各行は`parameter`（宣言済みの名前）と
+`value`（有限の数値）を持つ。既存の`$list`/`$row`形式で行identityを保存し、
+名前の重複と空名は拒否する。clip選択時にはparametersを指定できない。
+上書き値はbind前に適用する。保存されたListの編集は再装着を行い、graph文書の
+初期状態から再開する。実行時のsetParameterは保存値を変更しない。
 
 ECSのclip評価はgraph選択行を評価せず、owner threadで登録/解除・prepareTickを
 行ってから既存animation phaseを実行する。clip/graphはEngineTimeのframeIndexを

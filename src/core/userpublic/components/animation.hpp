@@ -2,8 +2,19 @@
 
 #include <cstdint>
 #include <string>
+#include "../details/schema/structfieldschema.hpp"
 
 namespace Pelican {
+
+struct AnimationParameterOverride {
+    std::string parameter;
+    double value{};
+    static constexpr auto schema = structFields(
+        componentPolicy("animation_parameter"),
+        required(field<&AnimationParameterOverride::parameter>("parameter")),
+        required(field<&AnimationParameterOverride::value>("value")));
+    bool operator==(const AnimationParameterOverride &) const = default;
+};
 
 struct AnimationComponent {
     std::string clip;
@@ -12,14 +23,8 @@ struct AnimationComponent {
     double start_time = 0.0;
     // Select one source. Graph states own their playback clocks.
     std::string graph;
+    std::optional<List<AnimationParameterOverride>> parameters;
 
-    template <class T> void ref(T &ar) {
-        ar.prop("clip", clip);
-        ar.prop("speed", speed);
-        ar.prop("loop", loop);
-        ar.prop("start_time", start_time);
-        ar.prop("graph", graph);
-    }
 };
 
 } // namespace Pelican

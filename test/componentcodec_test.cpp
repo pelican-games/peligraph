@@ -340,6 +340,18 @@ TEST_CASE("animation graph authoring roundtrips one source without clip clock fi
     const Json clip{{"name", "animation"}, {"clip", "Walk"},
                     {"speed", 1.0}, {"loop", true}, {"start_time", 0.0}};
     CHECK(Json(canonicalThroughRuntime(codec, clip)) == clip);
+    auto with_parameters = authored;
+    with_parameters["parameters"] = Json::parse(R"({"$list":{"v":1,"next_id":2},
+        "rows":[{"$row":{"id":1,"v":1},"parameter":"speed","value":0.75}]})");
+    CHECK(Json(canonicalThroughRuntime(codec, with_parameters)) == with_parameters);
+    auto duplicate = with_parameters;
+    duplicate["parameters"]["rows"].push_back(duplicate["parameters"]["rows"][0]);
+    duplicate["parameters"]["rows"][1]["$row"]["id"] = 2;
+    duplicate["parameters"]["$list"]["next_id"] = 3;
+    CHECK_THROWS(decodeOrThrow(codec, duplicate));
+    auto clip_parameters = clip;
+    clip_parameters["parameters"] = with_parameters["parameters"];
+    CHECK_THROWS(decodeOrThrow(codec, clip_parameters));
 }
 
 TEST_CASE("every component codec rejects invalid type range and unknown key fixtures",

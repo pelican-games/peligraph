@@ -25,6 +25,7 @@ namespace Pelican {
 struct AnimationSystemState {
     struct GraphBinding {
         std::string reference;
+        std::optional<List<AnimationParameterOverride>> parameters;
         std::string object_name;
         bool owns_registration{};
         ModelInstanceId instance;
@@ -172,6 +173,7 @@ void AnimationSystem::updateGraphs() {
         if (!replace) {
             const auto &old = *found->second;
             replace = old.reference != animation->graph || old.modified != modified ||
+                old.parameters != animation->parameters ||
                 old.epoch != epoch || old.instance != *view->model_instance_id ||
                 old.object_name != object_name;
             if (!replace && old.model != model.skeletal.get()) {
@@ -186,6 +188,7 @@ void AnimationSystem::updateGraphs() {
             state->graphs.erase(entity);
             auto binding = std::make_unique<AnimationSystemState::GraphBinding>();
             binding->reference = animation->graph;
+            binding->parameters = animation->parameters;
             binding->object_name = object_name;
             binding->instance = *view->model_instance_id;
             binding->model = model.skeletal.get();
@@ -197,6 +200,10 @@ void AnimationSystem::updateGraphs() {
                 binding->owns_registration = true;
             }
             binding->evaluator = std::make_unique<AnimationGraph::EvaluatorV1>(std::move(document), object_name);
+            if (binding->parameters)
+                for (const auto &row : binding->parameters->rows)
+                    if (binding->evaluator->setParameter(row.value.parameter, row.value.value) != Animation::Status::ok)
+                        throw std::runtime_error("animation graph parameter override failed: " + row.value.parameter);
             if (binding->evaluator->bind() != Animation::Status::ok)
                 throw std::runtime_error("animation graph bind failed: " + binding->evaluator->lastError());
             found = state->graphs.emplace(entity, std::move(binding)).first;

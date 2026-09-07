@@ -91,6 +91,7 @@ struct ColliderSchemaFields {
 struct AnimationSchemaFields {
     std::optional<std::string> clip;
     std::optional<std::string> graph;
+    List<AnimationParameterOverride> parameters;
     double speed = 1.0;
     bool loop = true;
     double start_time = 0.0;
@@ -175,6 +176,7 @@ inline constexpr auto animation_schema = structFields(
     componentPolicy("animation"),
     optionalOverride(field<&AnimationSchemaFields::clip>("clip")),
     optionalOverride(field<&AnimationSchemaFields::graph>("graph")),
+    defaulted(field<&AnimationSchemaFields::parameters>("parameters")),
     defaulted(field<&AnimationSchemaFields::speed>("speed", frange(0.0, 1.0e12)), 1.0),
     defaulted(field<&AnimationSchemaFields::loop>("loop"), true),
     defaulted(field<&AnimationSchemaFields::start_time>("start_time", frange(0.0, 1.0e12), "second"), 0.0));
@@ -984,13 +986,26 @@ ComponentCodecValue projectCollider(const void *source) {
 ComponentCodecValue decodeAnimation(const Json &json) {
     requireObjectAndName(json, "animation");
     requireClosed(json, "animation",
-                  std::array<std::string_view, 6>{"name", "clip", "graph", "speed", "loop", "start_time"});
+                  std::array<std::string_view, 7>{"name", "clip", "graph", "parameters", "speed", "loop", "start_time"});
     if (json.contains("clip") == json.contains("graph"))
         codecError(StructFieldErrorCode::OutOfRange, "animation",
                    "requires exactly one of clip or graph");
     AnimationComponent result;
     if (json.contains("graph")) {
         result.graph = readString(json.at("graph"), "animation.graph", true);
+        AnimationSchemaFields fields;
+        if (json.contains("parameters")) {
+            internal::decodeStructObject(Json{{"parameters", json.at("parameters")}},
+                                        fields, animation_schema, "animation");
+            result.parameters = std::move(fields.parameters);
+        }
+        if (result.parameters) {
+            std::set<std::string> names;
+            for (const auto &row : result.parameters->rows)
+                if (row.value.parameter.empty() || !names.insert(row.value.parameter).second)
+                    codecError(StructFieldErrorCode::OutOfRange, "animation.parameters",
+                               "requires nonempty unique parameter names");
+        }
         for (const auto *field : {"speed", "loop", "start_time"}) {
             if (json.contains(field))
                 codecError(StructFieldErrorCode::UnknownField, std::string{"animation."} + field,
@@ -998,6 +1013,8 @@ ComponentCodecValue decodeAnimation(const Json &json) {
         }
         return result;
     }
+    if (json.contains("parameters"))
+        codecError(StructFieldErrorCode::UnknownField, "animation.parameters", "requires a graph");
     result.clip = readString(requireField(json, "animation", "clip"), "animation.clip", true);
     result.speed = json.contains("speed") ? readDouble(json.at("speed"), "animation.speed", 0.0, false) : 1.0;
     result.start_time = json.contains("start_time")
@@ -1013,7 +1030,18 @@ OrderedJson encodeAnimation(const ComponentCodecValue &value) {
     if (data.clip.empty() == data.graph.empty())
         codecError(StructFieldErrorCode::OutOfRange, "animation",
                    "requires exactly one of clip or graph");
-    if (!data.graph.empty()) return OrderedJson{{"name", "animation"}, {"graph", data.graph}};
+    if (!data.graph.empty()) {
+        OrderedJson result{{"name", "animation"}, {"graph", data.graph}};
+        if (data.parameters) {
+            AnimationSchemaFields fields;
+            fields.parameters = *data.parameters;
+            result["parameters"] = internal::encodeStructObject(fields, animation_schema, "animation").at("parameters");
+            (void)decodeAnimation(Json(result));
+        }
+        return result;
+    }
+    if (data.parameters)
+        codecError(StructFieldErrorCode::UnknownField, "animation.parameters", "requires a graph");
     if (data.loop > 1U) codecError(StructFieldErrorCode::OutOfRange, "animation.loop", "must be boolean runtime state");
     return OrderedJson{{"name", "animation"}, {"clip", data.clip}, {"speed", data.speed},
                        {"loop", data.loop != 0}, {"start_time", data.start_time}};

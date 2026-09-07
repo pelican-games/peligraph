@@ -23235,7 +23235,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
-- animation componentのgraph装着を実装。clip XOR graphの保存、既存EvaluatorV1のphase登録/解除・tick、GameContextのparameter/state操作を接続し、clip切替・個体削除・scene reloadを確認した。個体別初期parameter override、graph assetのscene準備時検証・編集失敗時の状態復元、GUI・汎用graph間接続は残件。同一instanceのmodel rebind・graph更新時刻・setTime通知の経路は個別実行未確認。VRMA自動監視は別残件。
+- animation componentのgraph装着は `bff9e540` に統合。clip XOR graphの保存、既存EvaluatorV1のphase登録/解除・tick、GameContextのparameter/state操作を接続し、clip切替・個体削除・scene reloadを確認した。個体別初期parameter overrideをparameters Listの保存・bind前適用へ追加。graph assetのscene準備時検証・編集失敗時の状態復元、GUI・汎用graph間接続は残件。同一instanceのmodel rebind・graph更新時刻・setTime通知の経路は個別実行未確認。VRMA自動監視は別残件。
 
 - 6種の補助描画のGUI/RPC編集も統合済み。picking/ImGuiのAS対応は `aad939ab`、shadow_depth/velocityは `06e19992`、補助shaderのdescriptor契約検査は `ea05340a`、debug_text/gizmoは `ea61aa74`、サイズ混在解析とdebug_draw組込みGLSLは `9e5c363b`、debug_drawは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
@@ -23245,6 +23245,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**animation graphの個体別初期parameter (2026-09-07):**
+- componentのparametersに既存List形式でparameter/value行を保存する。同じgraph assetを複製せず、bind前に個体別の値を適用する。省略時はgraph文書の既定値。保存されたListの変更で再装着し、実行中のGameContext操作は保存値へ書き戻さない。
+- 空名・重複名・clipへのparameters指定はcodecで拒否する。存在しないparameterと非有限値は既存EvaluatorのsetParameter契約を使う。Listに対応しないAnimationComponentの旧ref経路を削除し、既存builtin component codecで読み書きする。
+- Player Debug build成功。現行ecs_editorグループのcomponent-codecは11case/1017assertion、実Vulkanのskeletal対象は3case/64assertion成功。Listの保存往復・重複名拒否、同じgraphの2体に既定値/overrideを適用したroot姿勢の差を確認。override適用を外すと非回転の個体の検査が落ちる対照であり、個別変異は未実施。保存List編集による再装着の経路は実装までで個別実行未確認。
 
 **scene componentから既存animation graphを装着 (2026-09-07):**
 - animation codecにclip XOR graphを接続し、graph参照を保存する。graph_reserved拒否とその旧corpus項目を削除。graph時のspeed/loop/start_timeは各stateの時計と競合するため受理しない。初期parameterはgraph文書の値を使う。
