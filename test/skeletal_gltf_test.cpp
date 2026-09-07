@@ -21,6 +21,11 @@
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/util.hpp"
+#include "../src/core/renderer/frameresources.hpp"
+#include "../src/core/shader/shaderlibrary.hpp"
+#include "../src/core/renderingpass/rendertargetcontainer.hpp"
+#include "../src/project/featurecompose.hpp"
 #include "skeletal_fixture.hpp"
 #include "graph_composition_fixture.hpp"
 #include "vulkan_test_support.hpp"
@@ -365,6 +370,54 @@ TEST_CASE("common graph public ports reach a render buffer", "[skeletal][graph-c
     float value{};
     std::memcpy(&value, bytes.data(), sizeof(value));
     REQUIRE(value == 0.5f);
+    vkcore.waitIdle();
+}
+
+TEST_CASE("mixed graph publishes scalar values consumed by a compute shader", "[skeletal][graph-composition]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_graph_compute_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "shaders");
+    const TempDir guard{root};
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); }
+)");
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(EngineLaunchConfig).headless = true;
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    const ValueGraph::Graph authored{mixedGraphCompositionFixture().dump()};
+    const ValueGraph::Graph graph{authored.serialize()};
+    const auto config = composeRenderFeatureConfig(nlohmann::json::parse(graph.serialize())).config;
+    auto &resources = GET_MODULE(FrameGraphResourceContainer);
+    resources.registerBuffers(parseFrameGraphBufferDefinitionsFromJson(config));
+    auto &tasks = GET_MODULE(ComputeTaskContainer);
+    const auto definitions = parseComputeTaskDefinitionsFromConfigJson(config);
+    REQUIRE(definitions.size() == 1);
+    const auto task = tasks.registerComputeTask(definitions[0], ComputeTaskRuntimeDependencies{
+        GET_MODULE(ShaderLibrary), GET_MODULE(PathResolver), GET_MODULE(RenderTargetContainer), resources});
+    auto &frames = GET_MODULE(FrameResources);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto run = [&](double time) {
+        REQUIRE(graph.publish(GameContext{}, {{"time", time}}).applied == 1);
+        resources.uploadRuntimeValues();
+        GET_MODULE(VulkanUtils).executeOneTimeCmd([&](vk::CommandBuffer cmd) {
+            tasks.dispatch(cmd, task, frames);
+            const vk::MemoryBarrier barrier{vk::AccessFlagBits::eShaderWrite, vk::AccessFlagBits::eHostRead};
+            cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader, vk::PipelineStageFlagBits::eHost,
+                                {}, barrier, {}, {});
+        }, true);
+        const auto bytes = vkcore.readBuf(resources.buffer("result"), sizeof(float));
+        float value{};
+        std::memcpy(&value, bytes.data(), sizeof(value));
+        return value;
+    };
+    REQUIRE(run(0.25) == 2.5f);
+    REQUIRE(run(0.75) == 5.5f);
     vkcore.waitIdle();
 }
 

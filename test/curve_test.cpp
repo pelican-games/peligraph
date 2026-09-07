@@ -1,6 +1,7 @@
 #include "../src/core/userpublic/animation/curve.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/rendergraphcomposition.hpp"
 #include "graph_composition_fixture.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -12,6 +13,22 @@
 
 using namespace Pelican::Animation;
 using Catch::Approx;
+
+TEST_CASE("mixed graph keeps one document for scalar and render execution", "[curve][graph-composition]") {
+    auto document = mixedGraphCompositionFixture();
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    REQUIRE(nlohmann::json::parse(graph.serialize()) == document);
+    const auto values = graph.evaluate({{"time", 0.25}});
+    REQUIRE(values.size() == 2);
+    REQUIRE(values.at("left")[0] == Approx(0.5));
+    const auto rendering = Pelican::lowerRenderGraphDocument(document);
+    REQUIRE(rendering.at("buffers")[0].at("name") == "render");
+    REQUIRE(rendering.at("buffers")[0].at("size") == 4);
+    REQUIRE(rendering.at("buffers")[0].at("host_source") == "runtime_f32");
+    document["nodes"][5]["parameters"]["element"] = "uint";
+    REQUIRE_THROWS_AS(Pelican::ValueGraph::Graph(document.dump()), std::invalid_argument);
+    REQUIRE_THROWS_AS(Pelican::lowerRenderGraphDocument(document), std::invalid_argument);
+}
 
 TEST_CASE("common graph contracts check types across instance boundaries", "[curve][graph-composition]") {
     using namespace Pelican;

@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通authoringのinstance展開・数値backendへの接続は0b136a7d、既存LogicalTypeRegistryによるport照合は4edd1dbbで実装。続いてrender.buffer/render.computeを既存描画composeへ接続し、書込み結果portから完了依存を生成した。既存の描画用compiled graphをauthoring正本へ転用しない。次は数値/描画混在文書の実行分割と数値→buffer→shader消費を通す。画像port・featureの共通instance化・scene・Studioへの統合は未了。
+- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通authoringのinstance展開は0b136a7d、port型照合は4edd1dbb、buffer/computeの描画compose接続は4e9e6406で実装。続いて混在文書の実行分割と、1個のfloatの数値→buffer→GPU shader消費を接続して実出力を確認した。既存の描画用compiled graphをauthoring正本へ転用しない。次は共通文書の所有/評価をscene/frameへ接続する。画像port・featureの共通instance化・状態/イベント・Studioへの統合は未了。
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
@@ -23247,6 +23247,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**混在graphの数値→buffer→GPU shader消費を接続 (2026-09-07):**
+- project/graphpartitionへ全体型照合後の数値/描画実行分割を追加し、ValueGraphとrender composeで共用。既存のoperation契約を移し、領域ごとの二重管理を減らした。公開出力は型に従って分け、serializeは共通原文を保つ。
+- render.bufferのvalue入力から、1個のfloat用runtime_f32 bufferと既存publish sinkを生成する。資源名・size/host_source・内部sinkは派生情報。element/size/host_sourceが転送境界と矛盾する指定を拒否する。vector/struct転送は未実装。
+- Player Debug build成功。curve/animgraph 22case/461assertion、render-feature 48case/965assertion、GPU skeletal 6case/81assertion成功（mixed_graph_build.log / mixed_graph_values.log / mixed_graph_render.log / mixed_graph_gpu.log）。GPUはスキップなし、Vulkan synchronization validation有効。共通文書を再読込してpublish→upload→既存ComputeTaskContainerで実dispatchし、入力time=0.25/0.75に対するshader計算結果2.5/5.5をreadBufで確認した。
+- 生成sinkを外すとpublish件数/実出力、uploadを外すとshader結果、接続先を誤るとtyped contractまたは実出力の対照が落ちる。個別変異は未実施。GPUテストの初回は不要なコンパイル条件によってskipされたため、runtime shader必須の対象に合わせて条件を除き実行し直した。
+- 直接APIによる一経路の確認であり、scene所有・装着/解除・毎frameの自動評価や通常Renderer経由の統合は残件。次はその所有/評価経路を接続する。画像/attribute/feature共通instance/Studioも引き続き未了。
 
 **共通graphのbuffer/computeを既存描画コンパイラへ接続 (2026-09-07):**
 - composeRenderFeatureConfigがpelican.graphを受け、render.buffer/render.computeを共通instance展開・型照合後に既存buffers/compute_tasksへ変換する。shader参照/dispatchとportのelement/accessを保存し、資源名・reads/writes・resource_ports・計算結果への完了依存は接続から生成。shader_storage buffer型は既存LogicalTypeRegistryへ登録する。

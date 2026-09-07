@@ -91,9 +91,28 @@ composeRenderFeatureConfigへ接続した。pelican.graphを渡すと、共通in
   入口。ここにbuffers/compute_tasksを重複宣言しない。生成configは保存の正本に戻さない。
 
 CPU上の既存解決・compute/buffer契約検査と、instance間の書込み→読込みの実行順を確認。
-共通文書を使ったGPU dispatchとshader出力は未確認。画像port、attributeの適用範囲、
-feature自体の共通instance化、数値/音声nodeと描画nodeの混在文書の実行分割、scene/Studio
-統合は残件。現段階の数値backendと描画backendは、それぞれ未対応opを拒否する。
+続いて、混在文書の数値→buffer→GPU computeの経路も以下の範囲で接続した。
+
+### 数値と描画の実行分割（2026-09-07）
+
+[partitionGraphDocument](../src/project/graphpartition.hpp)が全体のport型を照合してから、
+既存の数値評価と描画コンパイルへ渡すnode/outputを分ける。両backendが同じ分割処理を
+使い、未登録operationや領域間の型不一致を、片側で無視する形にしない。
+
+render.bufferのvalue入力にscalarを接続すると、size=4・host_source=runtime_f32の
+float bufferと既存render.scalarによるpublish sinkを派生させる。バッファ名を接続側へ
+手書きせず、instance展開後のidで対応づける。この境界は現在1個のfloat用であり、
+別element/size/host_sourceとの組合せは拒否する。vector/structの転送は今後の拡張。
+入力のないbufferは既存の宣言方法を維持する。
+
+ValueGraph::Graphは共通原文を保存し、evaluateには数値の公開出力だけを返す。
+生成したsink/転送設定やGPU resource出力を数値の公開出力へ混ぜない。同じserialize結果を
+描画composeへ渡せる。publish→既存upload→ComputeTaskContainerのdispatchを実GPUで
+実行し、2つの入力でshaderの計算結果が2.5/5.5に変化することを読み戻して確認した。
+テストは直接dispatchするため、scene自動装着/毎frameの評価登録まで完了とはしない。
+
+画像port、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
+scene/Studio統合は残件。
 
 ### アトリビュート・シェーダー・反復の扱い
 

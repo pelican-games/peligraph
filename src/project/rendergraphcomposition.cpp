@@ -1,6 +1,7 @@
 #include "rendergraphcomposition.hpp"
-#include "graphcomposition.hpp"
-#include "shaderresourceport.hpp"
+#include "graphpartition.hpp"
+
+#include <algorithm>
 
 #include <stdexcept>
 #include <set>
@@ -8,13 +9,6 @@
 namespace Pelican {
 namespace {
 using Json = nlohmann::json;
-LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declaration) {
-    const auto element = declaration.at("element").get<std::string>();
-    if (!shaderResourceBufferElementFromName(element))
-        throw std::invalid_argument("unknown graph buffer element: " + element);
-    return registry.canonicalize(parseSemanticTypeId("pelican.render.storage_buffer@1"),
-                                 {{"element", EnumValueId{element}}});
-}
 void forbid(const Json &parameters, std::initializer_list<const char *> fields) {
     if (!parameters.is_object()) throw std::invalid_argument("render node parameters must be an object");
     for (const auto field : fields)
@@ -24,28 +18,7 @@ void forbid(const Json &parameters, std::initializer_list<const char *> fields) 
 }
 
 Json lowerRenderGraphDocument(const Json &document) {
-    const auto graph = expandGraphDocument(document);
-    const auto registry = makeBuiltinLogicalTypeRegistry();
-    validateGraphPorts(graph, registry, GraphOperationContractResolver{[&](const Json &node) {
-        const auto op = node.at("op").get<std::string>();
-        const auto &parameters = node.at("parameters");
-        GraphOperationContract contract;
-        if (op == "render.buffer") {
-            contract.outputs.emplace("resource", bufferType(registry, parameters));
-        } else if (op == "render.compute") {
-            const auto &ports = parameters.at("ports");
-            if (!ports.is_object()) throw std::invalid_argument("compute ports must be an object");
-            for (const auto &[port, declaration] : ports.items()) {
-                const auto type = bufferType(registry, declaration);
-                contract.inputs.emplace(port, GraphInputContract{
-                    exactLogicalTypePattern(registry, type)});
-                if (declaration.at("access") != "read") contract.outputs.emplace(port, type);
-            }
-        } else {
-            throw std::invalid_argument("unsupported render graph operation: " + op);
-        }
-        return contract;
-    }});
+    const auto graph = partitionGraphDocument(document).rendering;
     auto config = document.value("rendering", Json::object());
     // Existing global settings, presets and image passes can coexist during
     // migration, but buffer/compute declarations have one authoring owner.

@@ -1,6 +1,6 @@
 #include "valuegraph.hpp"
 #include "gamecontext.hpp"
-#include "../../project/graphcomposition.hpp"
+#include "../../project/graphpartition.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -32,25 +32,9 @@ double number(const Json &value) {
 }
 
 Json lowerScalarGraph(const Json &authored) {
-    const auto expanded = expandGraphDocument(authored);
+    const auto expanded = partitionGraphDocument(authored).values;
     const auto registry = makeBuiltinLogicalTypeRegistry();
-    const auto scalar = registry.canonicalize(parseSemanticTypeId("pelican.value.scalar@1"));
-    const GraphInputContract required{exactLogicalTypePattern(registry, scalar)};
-    const GraphInputContract optional{required.accepted_type, false};
-    const std::map<std::string, LogicalType> output{{"value", scalar}};
-    const GraphOperationContracts operations{
-        {"value.input", {{}, output}}, {"value.constant", {{}, output}},
-        {"value.add", {{{"a", required}, {"b", required}}, output}},
-        {"value.multiply", {{{"a", required}, {"b", required}}, output}},
-        {"value.curve", {{{"time", required}}, output}},
-        {"value.playback", {{{"elapsed", required}, {"source_begin", optional},
-            {"source_end", optional}, {"duration", optional}, {"speed", optional},
-            {"delay", optional}, {"sample_interval", optional}}, output}},
-        {"render.scalar", {{{"value", required}}, {}}},
-        {"audio.volume", {{{"value", required}}, {}}},
-        {"audio.pitch", {{{"value", required}}, {}}},
-    };
-    validateGraphPorts(expanded, registry, operations);
+    const auto operations = valueGraphOperationContracts(registry);
     Json result{{"schema", "pelican.value_graph"}, {"version", 1},
                 {"nodes", Json::array()}, {"outputs", Json::object()}, {"bindings", Json::array()}};
     const auto source = [](const Json &endpoint) {
