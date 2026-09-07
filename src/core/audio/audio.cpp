@@ -261,6 +261,7 @@ class Audio::Backend {
     virtual bool isPlaying(std::uint64_t voice_id) const = 0;
     virtual void setVolume(std::uint64_t voice_id, float volume) = 0;
     virtual void setPitch(std::uint64_t voice_id, float pitch) = 0;
+    virtual void setPaused(std::uint64_t voice_id, bool paused) = 0;
     virtual SoundPlaybackState state(std::uint64_t voice_id) const = 0;
     virtual std::size_t voiceCount() const noexcept = 0;
 };
@@ -297,6 +298,11 @@ class NullAudioBackend final : public Audio::Backend {
     void setPitch(std::uint64_t voice_id, float pitch) override {
         playing.at(voice_id).pitch = pitch;
     }
+    void setPaused(std::uint64_t voice_id, bool paused) override {
+        auto &state = playing.at(voice_id);
+        state.paused = paused;
+        state.playing = !paused;
+    }
     SoundPlaybackState state(std::uint64_t voice_id) const override {
         return playing.at(voice_id);
     }
@@ -313,6 +319,7 @@ class MiniaudioBackend final : public Audio::Backend {
         ma_sound sound{};
         bool buffer_initialized = false;
         bool sound_initialized = false;
+        bool paused = false;
 
         MiniaudioVoice() = default;
         MiniaudioVoice(const MiniaudioVoice &) = delete;
@@ -413,6 +420,14 @@ class MiniaudioBackend final : public Audio::Backend {
     void setPitch(std::uint64_t voice_id, float pitch) override {
         ma_sound_set_pitch(&voices.at(voice_id)->sound, pitch);
     }
+    void setPaused(std::uint64_t voice_id, bool paused) override {
+        auto &voice = *voices.at(voice_id);
+        if (voice.paused == paused) return;
+        const auto result = paused ? ma_sound_stop(&voice.sound) : ma_sound_start(&voice.sound);
+        if (result != MA_SUCCESS)
+            throw std::runtime_error(maErrorMessage(paused ? "ma_sound_stop" : "ma_sound_start", result));
+        voice.paused = paused;
+    }
 
     SoundPlaybackState state(std::uint64_t voice_id) const override {
         auto &voice = *voices.at(voice_id);
@@ -420,6 +435,7 @@ class MiniaudioBackend final : public Audio::Backend {
         result.pitch = ma_sound_get_pitch(&voice.sound);
         result.effective_volume = ma_sound_get_volume(&voice.sound);
         result.playing = ma_sound_is_playing(&voice.sound) == MA_TRUE;
+        result.paused = voice.paused;
         ma_uint64 cursor{};
         if (ma_sound_get_cursor_in_pcm_frames(&voice.sound, &cursor) == MA_SUCCESS)
             result.position_seconds = static_cast<double>(cursor) / voice.decoded->sample_rate;
@@ -620,6 +636,14 @@ std::optional<SoundPlaybackState> Audio::soundState(SoundHandle handle) const {
     auto result = backend->state(found->second.backend_id);
     result.volume = found->second.volume;
     return result;
+}
+
+bool Audio::setSoundPaused(SoundHandle handle, bool paused) {
+    const auto found = voices.find(handle);
+    if (found == voices.end() || found->second.backend_id == 0 || backend->isFinished(found->second.backend_id))
+        return false;
+    backend->setPaused(found->second.backend_id, paused);
+    return true;
 }
 
 void Audio::update() {

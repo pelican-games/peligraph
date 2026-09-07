@@ -143,11 +143,30 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
     REQUIRE(context.soundState(first)->effective_volume == 0.0625f);
     REQUIRE(context.soundState(second)->effective_volume == 0.25f);
 
+    const auto next_handle = GET_MODULE(Audio).nextHandleForTesting();
+    REQUIRE(context.setSoundPaused(first, true));
+    REQUIRE(context.setSoundPaused(first, true));
+    REQUIRE_FALSE(context.isPlaying(first));
+    REQUIRE(context.soundState(first)->paused);
+    REQUIRE(context.isPlaying(second));
+    GET_MODULE(Audio).update();
+    REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 2);
+    REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 2);
+    REQUIRE(context.soundState(first)->pitch == 1.5f);
+    REQUIRE(context.setSoundPaused(first, false));
+    REQUIRE(context.setSoundPaused(first, false));
+    REQUIRE(context.isPlaying(first));
+    REQUIRE_FALSE(context.soundState(first)->paused);
+    REQUIRE(context.soundState(first)->effective_volume == 0.0625f);
+    REQUIRE(GET_MODULE(Audio).nextHandleForTesting() == next_handle);
+    REQUIRE(context.setSoundPaused(first, true));
+
     context.stopSound(first);
     REQUIRE_FALSE(context.isPlaying(first));
     REQUIRE_FALSE(context.soundState(first));
     REQUIRE_FALSE(context.setSoundVolume(first, 1.0f));
     REQUIRE_FALSE(context.setSoundPitch(first, 1.0f));
+    REQUIRE_FALSE(context.setSoundPaused(first, false));
     const auto stopped = graph.publish(context, {{"gain", 1}, {"pitch", 1}}, {{"voice", first}});
     REQUIRE(stopped.applied == 0);
     REQUIRE(stopped.unavailable.size() == 2);

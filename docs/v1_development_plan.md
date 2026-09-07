@@ -115,6 +115,8 @@ ownerの生存状態に沿った数値評価・publish・依存computeの停止�
 個体別EvaluationStateとvalue.trigger_clockの開始/一時停止/再開/resetも通常Rendererへ接続した。
 型付き再生イベントのsource/時計consumerと時刻付きキューも通常Rendererへ接続した。
 次は音声等のevent sinkとraster/fullscreen passの共通node化を進める。
+音声sinkの前提となるsetSoundPausedとpaused状態を追加し、同じvoiceの一時停止/再開を
+null backendで確認した。eventから音声への自動接続とownerに連動したvoice解放は残件。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。
 sceneごとのgraph選択と音声handle/任意外部inputの自動供給はまだない。
 画像pass、feature自体の共通instance化、時計以外の状態/イベント境界、Studio統合は残件。

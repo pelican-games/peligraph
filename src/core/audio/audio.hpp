@@ -56,6 +56,7 @@ DECLARE_MODULE(Audio) {
     bool isPlaying(SoundHandle handle) const;
     bool setSoundVolume(SoundHandle handle, float volume);
     bool setSoundPitch(SoundHandle handle, float pitch);
+    bool setSoundPaused(SoundHandle handle, bool paused);
     std::optional<SoundPlaybackState> soundState(SoundHandle handle) const;
 
     // Effect-transaction seam. Decoding and all engine-side capacity are

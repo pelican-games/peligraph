@@ -23250,6 +23250,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**音声voiceの一時停止/再開 (2026-09-07):**
+- GameContext/AudioにsetSoundPaused(handle, bool)、SoundPlaybackStateにpausedを追加。null/miniaudio両backendが既存voiceを止め/再開し、handle・音量・pitchを保持する。miniaudioのcursorをseekし直さず、stop/startを使用する。同じpaused値の設定は再開始しない。破棄済み/準備中/終端voiceへの変更はfalse。effect transaction内は既存voice変更と同じfalse。
+- 音声の回収条件は既存の終端判定を維持し、paused専用の回収例外は追加しない。stopSoundはpaused voiceも破棄する。共通graphのaudio event sinkとowner寿命への接続は次の残件。
+- Player Debug build成功。audio/effect 12case/456assertion成功（audio_pause_build.log / audio_pause_final_build.log / audio_pause_cpu.log）。null backendでpause中のupdate後も両registryにvoiceが残ること、兄弟voiceの継続、volume/pitch保持、同一handleでresume、pausedからのstop後のresume拒否を確認。pauseでvoiceを破棄する変更はregistry数/状態取得で、resumeでvoiceを作り直す変更はhandle採番で落ちる。個別変異実行は未実施。実deviceのcursor保持・聴感・遅延は未検証。
+
 **型付き再生イベントのキューと配送 (2026-09-07):**
 - LogicalTypeRegistryにpelican.event.playback_control@1（stream）を追加。event.playback.eventsからvalue.event_clock.eventsへ通常のedgeで接続し、数値との誤接続を拒否。時計の経過秒は既存curve/playbackへ接続する。Graph::evaluateは数値出力だけを返す。
 - Graph::emitEventはstateへstart/pause/resume/resetを時刻付きで蓄積。timestamp順、同時刻は到着順。consumerごとに独立した未処理列を持ち、未来分を保持して成功評価時に消費する。owner消失/交代、不在scope、scene commitで時計と一緒に破棄。GameContext::emitGraphEventは生存ownerを確認してscene経過秒を付ける。既存parameter APIとのGraph検索を共通化した。

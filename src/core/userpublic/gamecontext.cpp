@@ -458,6 +458,15 @@ std::optional<SoundPlaybackState> GameContext::soundState(SoundHandle handle) co
 #endif
 }
 
+bool GameContext::setSoundPaused(SoundHandle handle, bool paused) const {
+    if (internal::activeEffectTransaction()) return false;
+#if PELICAN_WITH_AUDIO
+    return GET_MODULE(Audio).setSoundPaused(handle, paused);
+#else
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setSoundPaused is unavailable");
+#endif
+}
+
 void GameContext::loadScene(std::string_view name) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         effect->loadScene(name);

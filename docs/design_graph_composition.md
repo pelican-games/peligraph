@@ -167,6 +167,12 @@ effect transaction内は受け付けない。Graph検索はparameter操作と共
 キューは既存EvaluationStateに所有され、owner交代/不在scope/scene commitで時計と一緒に破棄する。
 音声の再生/停止sink、物理stepイベントとの接続、eventの合流/条件分岐や任意payloadは残件。
 
+音声sinkへの準備として、GameContext::setSoundPaused(handle, bool)を追加した。
+一時停止/再開は同じvoiceとcursorを使い、soundState.pausedで状態を区別する。
+stopSoundは従来どおりvoiceを破棄し、破棄済みhandleのresumeはfalse。音量/pitchと
+バス設定は保持する。scene effect transaction内は既存のvoice変更APIと同じくfalseを返す。
+このAPIだけで共通graphのeventから音声への自動接続やowner連動の解放が完成するわけではない。
+
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
 [lowerRenderGraphDocument](../src/project/rendergraphcomposition.hpp)を既存の

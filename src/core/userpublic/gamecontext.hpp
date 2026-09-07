@@ -100,6 +100,7 @@ class PELICAN_API GameContext {
     // scene effect staging or for absent handles; invalid values throw.
     bool setSoundVolume(SoundHandle handle, float volume) const;
     bool setSoundPitch(SoundHandle handle, float pitch) const;
+    bool setSoundPaused(SoundHandle handle, bool paused) const;
     std::optional<SoundPlaybackState> soundState(SoundHandle handle) const;
     // Publishes float32 values for a declared runtime_f32 render buffer. The
     // entire buffer must be supplied. Copied now, uploaded before rendering.
