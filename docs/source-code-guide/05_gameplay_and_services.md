@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L23) が主要サービスを薄く包みます。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L24) が主要サービスを薄く包みます。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -18,10 +18,10 @@
 | camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L303) |
 | 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L307) |
 | audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L327) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L399) |
-| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L411) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L109) |
-| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L415) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L425) |
+| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L437) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L115) |
+| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L441) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -31,7 +31,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L51) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L52) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
@@ -532,7 +532,7 @@ typed System/Behavior handlerへ配送されます。trigger query と rigid-bod
 
 ## 5.9 Audio
 
-公開型は [`Audio`](../../src/core/audio/audio.hpp#L23) です。
+公開型は [`Audio`](../../src/core/audio/audio.hpp#L24) です。
 
 ### backend interface
 
@@ -545,13 +545,13 @@ headlessでもplay/stop/isPlayingの状態遷移は模倣されるため、ゲ�
 
 ### decodeとvoice
 
-[`Audio::playSound()`](../../src/core/audio/audio.cpp#L449) は`PathResolver`でbytesを読み、WAVをfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。現公開playは全てSE busです。
+[`Audio::playSound()`](../../src/core/audio/audio.cpp#L473) は`PathResolver`でbytesを読み、WAVをfloat sampleへdecodeし、backend voice IDを型付き`SoundHandle`へ包みます。現公開playは全てSE busです。
 
 busはmaster/bgm/seで、実効音量はmaster×個別busです。設定変更時はlive voice全てへ再適用します。
 
 ### prepare / commit の縫い目と provisional handle ✅実装済み
 
-`playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L56)）。
+`playSound()` 自身が4本の小さなAPIの合成になっています（ヘッダのコメントが規範 — 「decodeとエンジン側の容量はcommit前に全部用意し、backend呼び出しだけを失敗しうるflushに残す」、[`audio.hpp` 内](../../src/core/audio/audio.hpp#L61)）。
 
 ```text
 prepareSound(path)     # PathResolver + WAV decode。shared_ptr を作るのはここ
@@ -560,11 +560,11 @@ prepareVoiceSlot(h)    # voices への emplace(= ノード確保)まで。backen
 commitPreparedPlay(h)  # backend->play() の後、既存ノードへ scalar を代入するだけ
 ```
 
-この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L507)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L271)）。
+この分割が効くのは §3.5 の effect transaction 経由のときです。`playSound()` が返す `SoundHandle` は **transaction中はまだ鳴っていない予約**で、実際の `backend->play()` は flush で走ります。`commitPreparedPlay()` が最後にやるのは `slot->second.backend_id = backend_id` の1代入だけなので、確保に伴う失敗が commit 後に起きません（[そのコメント](../../src/core/audio/audio.cpp#L531)）。predicate側もoutboxを見ます — transaction中の `isPlaying()` は、outboxに play があれば `true`、stop があれば `false`、どちらも無ければ実 backend へ問い合わせます（[`PreparedEffectTransaction::isPlaying()`](../../src/core/loader/effecttransaction.cpp#L271)）。
 
 `next_handle` のcursorは **rollbackしません**。manifestが `audio.handle_cursor` を `non_rollback` / `u64-gap-named-v1` として明示的に持っている（§3.5 の 7）のはこのためで、失敗した load が消費した番号は欠番として残ります。番号の再利用でハンドルが別の音を指すより、穴が空くほうが安全、という選択です。
 
-失敗の非対称も見ておく価値があります。[`commitPreparedStop()`](../../src/core/audio/audio.cpp#L512) は `voices` から**先に**eraseしてから `backend->destroy()` を呼び、destroyが投げたら「backend voiceが残っているかもしれない」と明記したログ（`audio_stop_failed@1`）を出して投げ直します。エンジン側の帳簿は必ず一貫させ、backend側の取りこぼしは診断で見せる、という向きです。
+失敗の非対称も見ておく価値があります。[`commitPreparedStop()`](../../src/core/audio/audio.cpp#L536) は `voices` から**先に**eraseしてから `backend->destroy()` を呼び、destroyが投げたら「backend voiceが残っているかもしれない」と明記したログ（`audio_stop_failed@1`）を出して投げ直します。エンジン側の帳簿は必ず一貫させ、backend側の取りこぼしは診断で見せる、という向きです。
 
 ## 5.10 Persistence
 

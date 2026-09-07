@@ -396,6 +396,32 @@ bool GameContext::isPlaying(SoundHandle handle) const {
 #endif
 }
 
+bool GameContext::setSoundVolume(SoundHandle handle, float volume) const {
+    if (internal::activeEffectTransaction()) return false;
+#if PELICAN_WITH_AUDIO
+    return GET_MODULE(Audio).setSoundVolume(handle, volume);
+#else
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setSoundVolume is unavailable");
+#endif
+}
+
+bool GameContext::setSoundPitch(SoundHandle handle, float pitch) const {
+    if (internal::activeEffectTransaction()) return false;
+#if PELICAN_WITH_AUDIO
+    return GET_MODULE(Audio).setSoundPitch(handle, pitch);
+#else
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "setSoundPitch is unavailable");
+#endif
+}
+
+std::optional<SoundPlaybackState> GameContext::soundState(SoundHandle handle) const {
+#if PELICAN_WITH_AUDIO
+    return GET_MODULE(Audio).soundState(handle);
+#else
+    throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "soundState is unavailable");
+#endif
+}
+
 void GameContext::loadScene(std::string_view name) const {
     if (auto *effect = internal::activeEffectTransaction()) {
         effect->loadScene(name);

@@ -3,6 +3,7 @@
 #include "components/localtransform.hpp"
 #include "components/spriteview.hpp"
 #include "animation/abi_v1.hpp"
+#include "audio.hpp"
 #include "export.hpp"
 #include "events.hpp"
 #include "gameobjects.hpp"
@@ -93,6 +94,11 @@ class PELICAN_API GameContext {
     void setBusVolume(std::string_view bus, float volume) const;
     float busVolume(std::string_view bus) const;
     bool isPlaying(SoundHandle handle) const;
+    // Update-thread controls for existing voices. Mutations return false during
+    // scene effect staging or for absent handles; invalid values throw.
+    bool setSoundVolume(SoundHandle handle, float volume) const;
+    bool setSoundPitch(SoundHandle handle, float pitch) const;
+    std::optional<SoundPlaybackState> soundState(SoundHandle handle) const;
 
     // Update-thread controls for an attached animation graph. Before its first
     // frame attachment, or after removal, these return not_found. Scene

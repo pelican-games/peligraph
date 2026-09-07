@@ -260,19 +260,20 @@ class Audio::Backend {
     virtual bool isFinished(std::uint64_t voice_id) const = 0;
     virtual bool isPlaying(std::uint64_t voice_id) const = 0;
     virtual void setVolume(std::uint64_t voice_id, float volume) = 0;
+    virtual void setPitch(std::uint64_t voice_id, float pitch) = 0;
+    virtual SoundPlaybackState state(std::uint64_t voice_id) const = 0;
     virtual std::size_t voiceCount() const noexcept = 0;
 };
 
 class NullAudioBackend final : public Audio::Backend {
     std::uint64_t next_voice = 1;
-    std::unordered_map<std::uint64_t, bool> playing;
+    std::unordered_map<std::uint64_t, SoundPlaybackState> playing;
 
   public:
     std::uint64_t play(std::shared_ptr<const DecodedSound> sound, float volume) override {
         (void)sound;
-        (void)volume;
         const auto id = next_voice++;
-        playing.emplace(id, true);
+        playing.emplace(id, SoundPlaybackState{.effective_volume = volume, .playing = true});
         return id;
     }
 
@@ -286,12 +287,18 @@ class NullAudioBackend final : public Audio::Backend {
 
     bool isPlaying(std::uint64_t voice_id) const override {
         const auto it = playing.find(voice_id);
-        return it != playing.end() && it->second;
+        return it != playing.end() && it->second.playing;
     }
 
     void setVolume(std::uint64_t voice_id, float volume) override {
-        (void)voice_id;
-        (void)volume;
+        playing.at(voice_id).effective_volume = volume;
+    }
+
+    void setPitch(std::uint64_t voice_id, float pitch) override {
+        playing.at(voice_id).pitch = pitch;
+    }
+    SoundPlaybackState state(std::uint64_t voice_id) const override {
+        return playing.at(voice_id);
     }
 
     std::size_t voiceCount() const noexcept override {
@@ -403,6 +410,22 @@ class MiniaudioBackend final : public Audio::Backend {
         }
     }
 
+    void setPitch(std::uint64_t voice_id, float pitch) override {
+        ma_sound_set_pitch(&voices.at(voice_id)->sound, pitch);
+    }
+
+    SoundPlaybackState state(std::uint64_t voice_id) const override {
+        auto &voice = *voices.at(voice_id);
+        SoundPlaybackState result;
+        result.pitch = ma_sound_get_pitch(&voice.sound);
+        result.effective_volume = ma_sound_get_volume(&voice.sound);
+        result.playing = ma_sound_is_playing(&voice.sound) == MA_TRUE;
+        ma_uint64 cursor{};
+        if (ma_sound_get_cursor_in_pcm_frames(&voice.sound, &cursor) == MA_SUCCESS)
+            result.position_seconds = static_cast<double>(cursor) / voice.decoded->sample_rate;
+        return result;
+    }
+
     std::size_t voiceCount() const noexcept override {
         return voices.size();
     }
@@ -442,7 +465,8 @@ float Audio::effectiveVolume(AudioBus bus) const {
 void Audio::updateVoiceVolumes() {
     for (const auto &[handle, voice] : voices) {
         (void)handle;
-        backend->setVolume(voice.backend_id, effectiveVolume(voice.bus));
+        if (voice.backend_id != 0)
+            backend->setVolume(voice.backend_id, voice.volume * effectiveVolume(voice.bus));
     }
 }
 
@@ -569,6 +593,33 @@ bool Audio::isPlaying(SoundHandle handle) const {
     const auto it = voices.find(handle);
     return it != voices.end() && it->second.backend_id != 0 &&
            backend->isPlaying(it->second.backend_id);
+}
+
+bool Audio::setSoundVolume(SoundHandle handle, float volume) {
+    if (!std::isfinite(volume) || volume < 0.0f)
+        throw std::invalid_argument("Audio voice volume must be finite and non-negative");
+    const auto found = voices.find(handle);
+    if (found == voices.end() || found->second.backend_id == 0) return false;
+    backend->setVolume(found->second.backend_id, volume * effectiveVolume(found->second.bus));
+    found->second.volume = volume;
+    return true;
+}
+
+bool Audio::setSoundPitch(SoundHandle handle, float pitch) {
+    if (!std::isfinite(pitch) || pitch <= 0.0f)
+        throw std::invalid_argument("Audio voice pitch must be finite and positive");
+    const auto found = voices.find(handle);
+    if (found == voices.end() || found->second.backend_id == 0) return false;
+    backend->setPitch(found->second.backend_id, pitch);
+    return true;
+}
+
+std::optional<SoundPlaybackState> Audio::soundState(SoundHandle handle) const {
+    const auto found = voices.find(handle);
+    if (found == voices.end() || found->second.backend_id == 0) return std::nullopt;
+    auto result = backend->state(found->second.backend_id);
+    result.volume = found->second.volume;
+    return result;
 }
 
 void Audio::update() {

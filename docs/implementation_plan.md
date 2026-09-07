@@ -23246,6 +23246,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**音声voiceの個別制御とsource時計照会 (2026-09-07):**
+- GameContext/AudioにsetSoundVolume・setSoundPitch・soundStateを追加。個別gainをvoiceで保持し、バス更新時も個別値×SE×masterをbackendへ渡す。pitchはminiaudioの再生速度/音程倍率であり、時間伸縮とは別。soundStateは個別値・実効音量・再生中状態・任意のsource cursor秒を返す。停止/未登録handleは状態なし、変更はfalse。
+- miniaudioは元音声のPCM cursorとsample rateから秒へ変換する。デバイス提示時刻/出力遅延補正は含めない。null backendは個別値を保持するが時計を捏造せずposition_secondsなし。scene effect staging中の新規変更APIはfalseで、stage内の予約操作は未実装。
+- Player Debug build成功。core_diagnosticsのaudio/effectは12case/438assertion成功。null backendで2voice間の独立性、個別gainとバス積、後続バス変更で個別gainを保持すること、停止後の状態/変更、無効値拒否を確認。個別gainの積を外すとバス変更後の対照が落ちる。個別変異・実デバイスでの聴取/時計精度確認は未実施。既存effect transactionのrollback/flush等も対象に含めた。ノードからの型付き接続・イベント消費は残件。
+
 **animation graphの個体別初期parameter (2026-09-07):**
 - componentのparametersに既存List形式でparameter/value行を保存する。同じgraph assetを複製せず、bind前に個体別の値を適用する。省略時はgraph文書の既定値。保存されたListの変更で再装着し、実行中のGameContext操作は保存値へ書き戻さない。
 - 空名・重複名・clipへのparameters指定はcodecで拒否する。存在しないparameterと非有限値は既存EvaluatorのsetParameter契約を使う。Listに対応しないAnimationComponentの旧ref経路を削除し、既存builtin component codecで読み書きする。

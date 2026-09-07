@@ -120,9 +120,25 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
 
     REQUIRE_NOTHROW(context.setBusVolume("master", 0.75f));
     REQUIRE_NOTHROW(context.setBusVolume("se", 0.5f));
+    REQUIRE(context.setSoundVolume(first, 0.25f));
+    REQUIRE(context.setSoundPitch(first, 1.5f));
+    const auto state = context.soundState(first);
+    REQUIRE(state);
+    REQUIRE(state->volume == 0.25f);
+    REQUIRE(state->pitch == 1.5f);
+    REQUIRE(state->effective_volume == 0.09375f);
+    REQUIRE_FALSE(state->position_seconds);
+    REQUIRE(context.soundState(second)->volume == 1.0f);
+    REQUIRE(context.soundState(second)->pitch == 1.0f);
+    context.setBusVolume("master", 0.5f);
+    REQUIRE(context.soundState(first)->effective_volume == 0.0625f);
+    REQUIRE(context.soundState(second)->effective_volume == 0.25f);
 
     context.stopSound(first);
     REQUIRE_FALSE(context.isPlaying(first));
+    REQUIRE_FALSE(context.soundState(first));
+    REQUIRE_FALSE(context.setSoundVolume(first, 1.0f));
+    REQUIRE_FALSE(context.setSoundPitch(first, 1.0f));
     REQUIRE(context.isPlaying(second));
     REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 1);
     REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 1);
@@ -169,6 +185,8 @@ TEST_CASE("GameContext audio reports invalid inputs", "[audio]") {
                         Catch::Matchers::ContainsSubstring("Unknown audio bus"));
     REQUIRE_THROWS_WITH(context.setBusVolume("se", -0.1f),
                         Catch::Matchers::ContainsSubstring("finite non-negative"));
+    REQUIRE_THROWS(context.setSoundVolume(SoundHandle{}, -1.0f));
+    REQUIRE_THROWS(context.setSoundPitch(SoundHandle{}, 0.0f));
 }
 
 } // namespace Pelican

@@ -2,6 +2,7 @@
 
 #include "../container.hpp"
 #include "../handle.hpp"
+#include "../userpublic/audio.hpp"
 
 #include <array>
 #include <cstddef>
@@ -32,6 +33,7 @@ DECLARE_MODULE(Audio) {
     struct Voice {
         AudioBus bus = AudioBus::Se;
         std::uint64_t backend_id = 0;
+        float volume = 1.0f;
     };
 
     std::unique_ptr<Backend> backend;
@@ -52,6 +54,9 @@ DECLARE_MODULE(Audio) {
     void setBusVolume(std::string_view bus, float volume);
     float busVolume(std::string_view bus) const;
     bool isPlaying(SoundHandle handle) const;
+    bool setSoundVolume(SoundHandle handle, float volume);
+    bool setSoundPitch(SoundHandle handle, float pitch);
+    std::optional<SoundPlaybackState> soundState(SoundHandle handle) const;
 
     // Effect-transaction seam. Decoding and all engine-side capacity are
     // prepared before commit; backend calls remain in the fallible flush.
