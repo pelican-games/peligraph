@@ -65,6 +65,13 @@ class PELICAN_API Graph {
         std::uint32_t target;
     };
     const std::map<std::string, MorphWeightSource> &morphSources() const noexcept { return morph_sources_; }
+    struct RenderBufferBinding {
+        std::string target;
+        std::size_t element_count;
+    };
+    // Static output shape; inspecting bindings does not evaluate live inputs.
+    std::vector<RenderBufferBinding> renderBufferBindings() const;
+    std::set<std::string> inputNames() const;
     bool nodeActive(std::string_view node, const InactiveScopes &inactive) const;
     // The graph must outlive its state. Separate states evaluate independently.
     EvaluationState createState() const { return EvaluationState{this}; }

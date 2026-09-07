@@ -7,6 +7,7 @@ target_sources(pelican_core PRIVATE
     framegraphruntime.cpp
     gizmopassinfojsonparser.cpp
     graphtransformregistry.cpp
+    graphinputs.cpp
     renderstrategyregistry.cpp
     rendercompilerprogram.cpp
     vulkanrendercompilerprogram.cpp

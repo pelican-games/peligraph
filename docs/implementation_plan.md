@@ -23233,6 +23233,8 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
+- 2026-09-08 グラフ責務整理: SceneLoaderの所有者→現個体解決を共通化し、時計・モーフの値収集をcollectGraphInputsへ分離。候補構築時のダミー値によるpublishを削除し、入力名・出力要素数・runtime_f32バッファとの一致を宣言から検査する。実フレームの欠落入力・数値検査は維持。Playerビルド、CPU curve 18件/187 assertions・render-feature 50件/1052 assertions、GPU skeletal 11件/998 assertions成功。追加した出力先欠落・サイズ不一致の候補拒否と旧世代/描画維持はgraph-live-morph 1件/24 assertions成功。ログはbuild/.codex_bg/graph_responsibility_{build,curve,cpu,gpu,binding_gpu}.log。形状検査を外すと拒否確認、旧個体へ固定すると再生成後のモーフ値確認が落ちる対照設計（個別コード変異未実施）。新たな供給元registryや互換経路は追加しない。
+
 - 属性sourceの共同再読込み: 属性の本体/使用buffer依存を変更通知へ接続。同じGLBのモデルとgraph属性は明示的なcompanion関係で通知を共有し、モデル候補と資源台帳の事前準備を描画公開へ接続した。片方の失敗では両方を維持する。無関係なbuffer/imageは属性依存から除外する。公開hook中のマテリアル旧世代照合をsnapshotへ修正し、publication mutexの再入デッドロックも解消。renderer.cppはMSVCのCOFF section上限に達したため、その翻訳単位だけ/bigobjを指定。
 - 共同再読込み検証: Playerビルド、CPU `[wp98],[reload-participant]` 14件/7100 assertions、GPU `[skeletal]` 10件/733 assertions、通常モデル `[model-reload]` 8件/1199 assertions成功（graph_joint_reload_checked_cpu.log / graph_joint_reload_checked_gpu.log / graph_joint_reload_models_gpu.log）。変更通知後の属性値とmodel revision、モデル準備後の注入失敗・不正rigでの双方維持、修復後の再更新を確認。model公開を除くとrevision確認が落ち、属性転送を除くと5.2/6.4出力が落ちる対照（個別コード変異未実施、候補失敗注入は実行済み）。通知はReloadService入口へ投入。native OS watcherと遅延RT公開を伴う共有モデル更新は今回未検証。
 - 外部buffer共有の接続: PreparedGltf::dataFiles（本体/外部buffer）を通常モデルの資源台帳と通知用indexへ登録し、候補公開時に依存も一括更新。モデル単独の複数通知も一つのgroupへまとめる。現在の文書に不要となったbufferの削除通知で先に拒否しない。assetKeyForFileへモデル/描画の実パス変換を共通化し、用途のなくなった全ファイル一覧sourceFiles APIを除去した。

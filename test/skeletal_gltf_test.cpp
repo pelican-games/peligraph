@@ -518,6 +518,20 @@ void main() {
     weight(initial, 0.5f, 1);
     REQUIRE_FALSE(instances.morphWeight(initial, 0, 1));
     REQUIRE(std::abs(render() - 0.7f) < 0.00001f);
+    const auto generation = GET_MODULE(RenderingPassContainer).activeGeneration();
+    auto invalid_binding = document;
+    invalid_binding["nodes"].push_back({{"id", "bad_sink"}, {"op", "render.scalar"},
+        {"inputs", {{"value", {{"node", "model"}, {"port", "value"}}}}},
+        {"parameters", {{"target", "missing_buffer"}}}, {"outputs", nlohmann::json::array()}});
+    REQUIRE_THROWS_WITH(loadRenderGraphVariantsFromConfigData(invalid_binding.dump()),
+        Catch::Matchers::ContainsSubstring("unbound frame graph output: missing_buffer"));
+    invalid_binding["nodes"].push_back({{"id", "missing_buffer"}, {"op", "render.buffer"},
+        {"parameters", {{"size", 8}, {"element", "float"}, {"host_source", "runtime_f32"}}},
+        {"outputs", {"resource"}}});
+    REQUIRE_THROWS_WITH(loadRenderGraphVariantsFromConfigData(invalid_binding.dump()),
+        Catch::Matchers::ContainsSubstring("incompatible frame graph output buffer: missing_buffer"));
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
+    REQUIRE(std::abs(render() - 0.7f) < 0.00001f);
     weight(initial, 0.75f, 2);
     REQUIRE(std::abs(render() - 1.2f) < 0.00001f);
     GameObjects{}.remove(*object);

@@ -368,9 +368,9 @@ x値0.7/3.7と、不正target候補の失敗後に3.7を維持することを確
 所有者付きgraph.instance内のvalue.morph_weight（parameters.node/target）から、所有個体の
 現在モーフウェイトをscalarとして読む。nodeはglTF node index、targetはそのmeshのtarget index。
 既存MorphTargetLayoutでweight offsetへ解決し、GPU slotやModelInstanceIdは保存しない。
-毎フレームSceneLoaderが現在の所有個体へ解決する。所有者不在時は既存scope停止に従い、
+毎フレームcollectGraphInputsがSceneLoaderの所有個体解決を使って値を収集する。所有者不在時は既存scope停止に従い、
 所有者が存在しても該当モデル/targetがない場合は入力を利用不可として報告する。
-候補のdry runは出力bindingの形だけを検査し、外部入力には検証値0を使用する。実フレームで
+候補では入力名と出力bindingの要素数を宣言から検査し、値の評価やpublishは行わない。実フレームで
 欠落値を0へ置換することはない。共同モデルreloadにおける参照の候補世代検証は未実装。
 GPUで個体ウェイト0.5/0.75による合成位置0.7/1.2、個体削除後の停止、scene再読込み後の
 初期値-0.3と新個体ウェイト2による3.7を確認した。今回の区切りはこの接続まで。

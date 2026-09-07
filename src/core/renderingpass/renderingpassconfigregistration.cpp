@@ -1,6 +1,6 @@
 #include "renderingpassconfigregistration.hpp"
+#include "graphinputs.hpp"
 #include "../userpublic/valuegraph.hpp"
-#include "../userpublic/gamecontext.hpp"
 #include "../model/gltf.hpp"
 #include "../../project/graphpartition.hpp"
 #if PELICAN_WITH_AUDIO
@@ -1013,24 +1013,16 @@ registerRenderingPassConfigVariantsData(
                         }
                     }
                 }
-                auto validation_state = value_graph->createState();
-                ValueGraph::Inputs validation_inputs{{"time", 0}, {"delta_time", 0}, {"scene_time", 0}};
-                // This dry run checks binding shape, before a scene/model candidate
-                // is published. Live morph inputs are resolved anew for every frame.
-                for (const auto &[node, source] : value_graph->morphSources())
-                    validation_inputs["$morph/" + node] = 0;
-                const auto bindings = value_graph->publish(GameContext{},
-                    validation_inputs, {},
-                    [&](std::string_view name, std::span<const float> values) {
-                        const auto found = program.buffer_bindings.find(std::string{name});
-                        if (found == program.buffer_bindings.end()) return false;
-                        const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
-                        return buffer.host_source == FrameGraphHostBufferSource::runtime_f32 &&
-                               buffer.size == values.size_bytes();
-                    }, {}, {}, &validation_state, {},
-                    [](std::string_view) { return std::optional<SoundHandle>{}; });
-                if (!bindings.unavailable.empty())
-                    throw std::runtime_error("unbound frame graph output: " + bindings.unavailable.front());
+                validateGraphInputs(*value_graph);
+                for (const auto &binding : value_graph->renderBufferBindings()) {
+                    const auto found = program.buffer_bindings.find(binding.target);
+                    if (found == program.buffer_bindings.end())
+                        throw std::runtime_error("unbound frame graph output: " + binding.target);
+                    const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
+                    if (buffer.host_source != FrameGraphHostBufferSource::runtime_f32 ||
+                        buffer.size != binding.element_count * sizeof(float))
+                        throw std::runtime_error("incompatible frame graph output buffer: " + binding.target);
+                }
             }
         }
         program_preparations.insert(

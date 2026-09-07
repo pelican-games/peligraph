@@ -474,6 +474,21 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
     return result;
 }
 
+std::vector<Graph::RenderBufferBinding> Graph::renderBufferBindings() const {
+    std::vector<RenderBufferBinding> result;
+    for (const auto &binding : bindings_)
+        if (binding.type == Target::render_buffer)
+            result.push_back({binding.target, outputs_.at(binding.output).size()});
+    return result;
+}
+
+std::set<std::string> Graph::inputNames() const {
+    std::set<std::string> result;
+    for (const auto &node : nodes_)
+        if (node.op == Op::input) result.insert(node.input_name);
+    return result;
+}
+
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
                              const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,

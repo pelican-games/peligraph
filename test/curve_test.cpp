@@ -15,6 +15,31 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("graph binding shapes are available without live input evaluation", "[curve][graph-composition]") {
+    const Pelican::ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[{"id":"live","op":"input","name":"external"},
+        {"id":"one","op":"constant","value":1}],
+      "outputs":{"pair":["live","one"],"volume":["live"]},
+      "bindings":[{"output":"pair","kind":"render_buffer","target":"values"},
+        {"output":"volume","kind":"sound_volume","target":"voice"}]})"};
+    REQUIRE_THROWS(graph.evaluate({}));
+    REQUIRE(graph.inputNames() == std::set<std::string>{"external"});
+    const auto bindings = graph.renderBufferBindings();
+    REQUIRE(bindings.size() == 1);
+    REQUIRE(bindings[0].target == "values");
+    REQUIRE(bindings[0].element_count == 2);
+    REQUIRE(graph.evaluate({{"external", 3}}).at("pair") == std::vector<double>{3, 1});
+
+    auto document = parameterGraphCompositionFixture();
+    addGraphTriggerClock(document);
+    const Pelican::ValueGraph::Graph stateful{document.dump()};
+    REQUIRE_THROWS(stateful.evaluate({{"time", 0}}));
+    const auto lowered = stateful.renderBufferBindings();
+    REQUIRE(lowered.size() == 1);
+    REQUIRE(lowered[0].target == "render");
+    REQUIRE(lowered[0].element_count == 1);
+}
+
 TEST_CASE("typed playback events queue independently for consumers and preserve timestamp order", "[curve][graph-composition]") {
     auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
       "nodes":[{"id":"commands","op":"event.playback","outputs":["events"]},

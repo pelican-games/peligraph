@@ -1372,31 +1372,16 @@ SceneLoader::GraphRuntime::~GraphRuntime() {
 #endif
 }
 
-void SceneLoader::populateGraphInputs(const ValueGraph::Graph &graph, ValueGraph::Inputs &inputs) const {
-    if (graph.morphSources().empty()) return;
-    const auto inactive = inactiveGraphScopes(graph);
-    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
-    for (const auto &[node, source] : graph.morphSources()) {
-        if (!graph.nodeActive(node, inactive)) continue;
-        const auto binding = std::find_if(runtime_object_bindings.begin(), runtime_object_bindings.end(),
-            [&](const auto &entry) { return entry.authoring_object_id.value == source.owner.object; });
-        if (binding == runtime_object_bindings.end())
-            throw std::runtime_error("graph morph owner is unavailable: " + node);
-        const auto *model = ecs.tryComponent<SimpleModelViewComponent>(binding->object_id);
-        const auto weight = model && model->model_instance_id
-            ? GET_MODULE(PolygonInstanceContainer).morphWeight(*model->model_instance_id, source.node, source.target)
-            : std::nullopt;
-        if (!weight) throw std::runtime_error("graph morph target is unavailable: " + node);
-        inputs["$morph/" + node] = *weight;
-    }
+std::optional<GameObjectId> SceneLoader::graphOwnerObject(const GraphInstanceOwner &owner) const {
+    if (owner.scene != currentScene()) return std::nullopt;
+    for (const auto &binding : runtime_object_bindings)
+        if (binding.authoring_object_id.value == owner.object &&
+            GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(binding.object_id)) return binding.object_id;
+    return std::nullopt;
 }
 
 bool SceneLoader::ownsGraphOwner(const GraphInstanceOwner *owner, GameObjectId object) const {
-    if (!owner || owner->scene != currentScene() ||
-        !GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(object)) return false;
-    return std::any_of(runtime_object_bindings.begin(), runtime_object_bindings.end(), [&](const auto &binding) {
-        return binding.object_id == object && binding.authoring_object_id.value == owner->object;
-    });
+    return owner && graphOwnerObject(*owner) == object;
 }
 
 SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
@@ -1405,13 +1390,7 @@ SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
     auto &runtime = graph_runtime.try_emplace(graph, *graph).first->second;
     std::map<std::string, GameObjectId> owners;
     for (const auto &[scope, owner] : graph->instanceOwners()) {
-        if (owner.scene != currentScene()) continue;
-        for (const auto &binding : runtime_object_bindings)
-            if (binding.authoring_object_id.value == owner.object &&
-                GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(binding.object_id)) {
-                owners.emplace(scope, binding.object_id);
-                break;
-            }
+        if (const auto object = graphOwnerObject(owner)) owners.emplace(scope, *object);
     }
     ValueGraph::InactiveScopes changed;
     for (const auto &[scope, object] : runtime.owners) {
@@ -1509,13 +1488,8 @@ void SceneLoader::updateGraphRuntime() {
 
 ValueGraph::InactiveScopes SceneLoader::inactiveGraphScopes(const ValueGraph::Graph &graph) const {
     ValueGraph::InactiveScopes inactive;
-    const auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
     for (const auto &[scope, owner] : graph.instanceOwners()) {
-        const bool live = owner.scene == currentScene() &&
-            std::any_of(runtime_object_bindings.begin(), runtime_object_bindings.end(), [&](const auto &binding) {
-                return binding.authoring_object_id.value == owner.object && ecs.isAlive(binding.object_id);
-            });
-        if (!live) inactive.insert(scope);
+        if (!graphOwnerObject(owner)) inactive.insert(scope);
     }
     return inactive;
 }
