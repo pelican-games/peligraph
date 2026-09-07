@@ -486,7 +486,7 @@ material・fullscreen・generic raster・output_transformはpassの`ray_query: t
 初回生成・shader reload・render graph reloadへこの条件を渡す。TLAS名はpassごとに異なってよく、描画時に選択する。
 spriteは固定shaderのpipelineでAS使用を禁止し、`__anchor_sprite`への追加AS依存を持たない。
 色・depthのproducer等の既存依存は維持する。他の描画実装の依存条件は変更しない。
-一般のgraph edge編集は未実装。BLAS geometry結合は以下のRT6節に記す。
+taskのresource portと編集可能な描画passの入力接続はFrame Planのドラッグから編集・保存できる。AS依存は宣言から導出し、実行順の追加制約はOrder nodesで編集する。任意の依存edgeを直接書き換える機能とは区別する。BLAS geometry結合は以下のRT6節に記す。
 
 ### RT6: 名前付きTLASの選択（2026-09-06）
 
@@ -605,7 +605,7 @@ rootの`pipeline.preset`を同じ保存transactionで切り替える。
 `pipeline_preset.source_digest`から取得する。受付時と保存時に元presetを照合する。
 コピー対象はfeature合成前の文書で、rootのsettings・features・RT上書き指定は保持する。
 コピー先は未作成の`project://`ファイルに限り、保存失敗時には新規ファイルとroot変更を戻す。
-コピーしたpresetは通常のproject資産として残る。任意のnode移動・edge編集はまだ含まない。
+コピーしたpresetは通常のproject資産として残る。fork自体は文書の複製と参照切替であり、接続・順序変更は後述の編集操作で行う。
 
 project所有presetの既存fullscreen passは`edit_preset_pass`で`input`・`output`・`shader`と任意の`ray_query`を編集する。
 material/raster passは同じRPCで`input`・`output`・`ray_query`を編集する。少なくとも1項目を必須とし、
@@ -626,7 +626,7 @@ compute/RT taskは`get_compute_task_authoring`で元宣言と保存先digestを�
 `edit_compute_task`で宣言全体を置換する。名前は維持し、shader/resource_ports/dispatch等は既存compilerで検査する。
 provenanceからproject feature・project preset・直接記述rootを解決し、engine所有文書は読み取り専用。
 rootとtask元ファイルのCAS、candidate document overlay、保存・GPU publication/rollbackは既存処理を共用する。
-StudioのTasks詳細画面とFrame Plan選択から呼び出す。視覚的なport接続操作・node配置編集は別途残る。
+StudioのTasks詳細画面とFrame Plan選択から呼び出す。Frame Planのportドラッグも既存の接続編集へ渡す。実行順は後述のOrder nodesで編集し、画面上の配置とは区別する。
 Frame Planは`authored_name`で元taskを特定し、variant接尾辞の推測をしない。
 Tasksのdispatchフォームはgroups/rays・画像port由来・indirectを草稿のdispatchへ反映する。
 `declaration_json`は元宣言の整数値をQtの数値変換に通さず草稿へ渡す文字列で、保存は既存のtask置換を使う。

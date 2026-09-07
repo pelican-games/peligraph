@@ -1,6 +1,6 @@
 # v1 の完成条件と開発順序
 
-2026-09-06 更新。利用者が確定した製品方針と、開発再開時に必要な現況をまとめる。
+2026-09-07 更新。利用者が確定した製品方針と、開発再開時に必要な現況をまとめる。
 WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_plan.md)。
 本書は機能を削減する裁定や、未実装 WP の仕様を新設するものではない。
 
@@ -22,9 +22,9 @@ WP の仕様・検証履歴の正本は [implementation_plan.md](implementation_
 | 操作・性能の残確認 | 新dialog全体の実エンジン接続下操作、保存・再読込を含む制作経路、複合undo等の既存レビュー残余、動的ASの確保コストと性能計測、配布物 |
 | 後で行うもの | 学習サンプルと代表ゲーム。WP386cの追加数値oracle整備は保留であり、機能開発の必須条件に戻さない |
 
-geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実効値・拒否理由をStudioへ接続済み。次はRT stage/record/materialの結び付きの観測を現行画面・RPCと照合する。AS設定の実効値・適用元・優先順をgeometry選択時に項目別表示する処理を追加。実GUI操作の確認は残る。省略Defaulted fieldのAdd default、Listの追加・削除・行内値編集・IDを保つ移動も接続済み。model reload後GPU反映、direct model参照のasset key、別Behaviorの独立Undo、spawn/add→List編集の複合Undo/Redoも修正済み。unpack/destroyの専用追加確認と新画面の実操作は未実施。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
+geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実効値・拒否理由をStudioへ接続済み。RT stage/record/materialの観測、AS設定の実効値・適用元・優先順、Callableの実行時CPU設定も接続済み。省略Defaulted fieldのAdd default、Listの追加・削除・行内値編集・IDを保つ移動も接続済み。model reload後GPU反映、direct model参照のasset key、別Behaviorの独立Undo、spawn/add→List編集、unpack/destroyを跨ぐUndo/Redoも修正・確認済み。新画面の実GUI操作は残る。上表は実装率や残工数の積算ではない。個々の証拠と未確認範囲は下表・台帳に従う。
 
-## 現行コードに基づく次の作業（2026-09-06、物理実装の区切り後）
+## 現行コードに基づく次の作業（2026-09-07、物理実装の区切り後）
 
 利用者から「機能実装をどこまで行うか」「物理を優先した理由」の確認を受け、物理の連続拡張を止めて開発順を再整理した。これは未実装機能の削除や、v1完成の宣言ではない。台帳の過去の「次は」「未実装」をそのまま現在の作業一覧として扱わない。
 
@@ -39,7 +39,11 @@ geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実�
 | 物理の現在地 | mesh raycastのscene/import/reload・BVH保持、Sphere・Box・Capsuleのmesh overlapをprovider/serviceへ接続。回転とメッシュの非一様scale・反転・shearを扱い、三角形表面との接触を判定する。Sphere・Box・Capsuleのsweepを公開Shape Castへ接続。Boxは連続SAT、Capsuleは軸線を三角形側へ移してSphereと解析式を共有し、回転固定の最初の接触時刻とmesh表面上の位置を求める。mesh Triggerを通常形状との組み合わせ・mesh同士の表面接触へ接続。Enter/Exit・相互filter・設定の保持に対応。Sphere/Box/Capsuleの初期めり込み解消も接続し、mesh全体に対して補正量を検証する。最短性を保証しない補正は近似フラグで区別する。任意の凹meshの厳密最短MTD探索は未実装 |
 | 後の段階 | 学習サンプル・代表ゲーム・GUI操作感の仕上げ。動的剛体シミュレーションは既存仕様の将来トラック。これらを今の残件探索から自動的に着手対象へ広げない |
 
-今回照合したコードはeditorcommandservice.cppのbinding生成、InspectorのRay geometry表示、inspectormodel.cppのList操作、frameplangraphics.cppの接続編集。表は全機能の完了監査や工数見積りではない。RT観測の次の変更を決めた後はその範囲に絞って実装する。
+今回の再照合ではRT設計書に残っていたport接続・順序編集の未実装表記を現行実装へ訂正した。RT4〜RT7の主要機能を再実装する根拠はなく、GPU readbackや追加数値oracleを次の必須機能にはしない。表は全機能の完了監査や工数見積りではない。
+
+コンポーネント側で確認できた実機能の不足は、[アニメーショングラフ設計](design_animation_graph.md) §3の`clip XOR graph`をscene宣言から使う経路。componentcodec.cppは`animation.graph`を拒否し、AnimationSystemはclipを直接評価する。一方、公開EvaluatorV1にはbind/rebind・パラメーター変更・phase評価がある。次の実装対象はこの既存評価器への装着経路とし、新しい評価器は作らない。graphの参照・初期パラメーターを保存し、componentの追加・変更・削除とscene/model reloadに追随させる。既存clip系との二重pose書込みを避け、評価器の登録・解除とtickをowner threadの既存phaseへ接続するところまでを一単位とする。現時点では未実装。
+
+VRMAの自動ファイル監視も過去の未了記録にあるが、既存register/reload APIはdecoded clipを受けるため、source pathの所有と監視の接続が必要。graph装着より先に別の監視基盤を追加しない。物理の厳密最短MTD、サンプル、GUI仕上げへこの作業を広げない。
 
 ## 製品の完成条件
 
