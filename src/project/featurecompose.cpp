@@ -1,4 +1,5 @@
 #include "featurecompose.hpp"
+#include "rendergraphcomposition.hpp"
 #include "featurejitter.hpp"
 #include "materialscreeninput.hpp"
 #include "renderresourcename.hpp"
@@ -2731,8 +2732,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         throw std::runtime_error("Rendering config must be an object");
     }
 
+    const auto native_config = config.value("schema", std::string{}) == "pelican.graph"
+        ? lowerRenderGraphDocument(config) : config;
     const auto preset_resolution = resolveRenderPipelinePreset(
-        config, dependencies.load_pipeline_json
+        native_config, dependencies.load_pipeline_json
                     ? dependencies.load_pipeline_json
                     : dependencies.load_feature_json);
     auto resolved_config = preset_resolution.config;

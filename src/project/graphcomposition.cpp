@@ -117,14 +117,24 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
 std::map<std::string, LogicalType> validateGraphPorts(
     const ExpandedGraphDocument &graph, const LogicalTypeRegistry &registry,
     const GraphOperationContracts &operations) {
-    std::map<std::string, const GraphOperationContract *> nodes;
+    return validateGraphPorts(graph, registry, GraphOperationContractResolver{
+        [&](const Json &node) {
+            const auto op = node.at("op").get<std::string>();
+            const auto found = operations.find(op);
+            if (found == operations.end())
+                throw std::invalid_argument("unknown graph operation: " + node.at("id").get<std::string>() + " (" + op + ")");
+            return found->second;
+        }});
+}
+
+std::map<std::string, LogicalType> validateGraphPorts(
+    const ExpandedGraphDocument &graph, const LogicalTypeRegistry &registry,
+    const GraphOperationContractResolver &resolve) {
+    std::map<std::string, GraphOperationContract> nodes;
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
-        const auto op = node.at("op").get<std::string>();
-        const auto found = operations.find(op);
-        if (found == operations.end())
-            throw std::invalid_argument("unknown graph operation: " + id + " (" + op + ")");
-        if (!nodes.emplace(id, &found->second).second)
+        const auto [found, inserted] = nodes.emplace(id, resolve(node));
+        if (!inserted)
             throw std::invalid_argument("duplicate expanded graph node: " + id);
         std::set<std::string> ports;
         const auto &outputs = node.at("outputs");
@@ -142,13 +152,13 @@ std::map<std::string, LogicalType> validateGraphPorts(
         const auto id = endpoint.at("node").get<std::string>();
         const auto port = endpoint.at("port").get<std::string>();
         const auto node = nodes.find(id);
-        if (node == nodes.end() || !node->second->outputs.contains(port))
+        if (node == nodes.end() || !node->second.outputs.contains(port))
             throw std::invalid_argument("unknown graph source: " + id + "." + port);
-        return node->second->outputs.at(port);
+        return node->second.outputs.at(port);
     };
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
-        const auto &contract = *nodes.at(id);
+        const auto &contract = nodes.at(id);
         const auto &inputs = node.at("inputs");
         object(inputs, "graph inputs must be an object");
         for (const auto &[port, endpoint] : inputs.items()) {

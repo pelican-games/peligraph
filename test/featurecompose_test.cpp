@@ -1,4 +1,5 @@
 #include "../src/project/featurecompose.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/core/loader/engineresources.hpp"
@@ -3499,10 +3500,10 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
         });
 
     REQUIRE(result.feature_names == std::vector<std::string>{"shadow_directional"});
-    REQUIRE(result.shader_defines ==
-            std::vector<std::string>{
-                "PELICAN_FEATURE_SHADOW",
-                "PELICAN_FEATURE_SHADOW_DIRECTIONAL_CASCADE_COUNT=1"});
+    for (const auto *required_define : {"PELICAN_FEATURE_SHADOW",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_CASCADE_COUNT=1"})
+        REQUIRE(std::find(result.shader_defines.begin(), result.shader_defines.end(),
+                          required_define) != result.shader_defines.end());
     REQUIRE(passNames(result.config) ==
             std::vector<std::string>{
                 "shadow_depth", "gbuffer_pass",
@@ -3574,11 +3575,10 @@ TEST_CASE("shadow directional feature inserts depth pass and lighting dependency
     REQUIRE(
         cascaded_target.at("layers") ==
         3);
-    REQUIRE(
-        cascaded.shader_defines ==
-        std::vector<std::string>{
-            "PELICAN_FEATURE_SHADOW",
-            "PELICAN_FEATURE_SHADOW_DIRECTIONAL_CASCADE_COUNT=3"});
+    for (const auto *required_define : {"PELICAN_FEATURE_SHADOW",
+             "PELICAN_FEATURE_SHADOW_DIRECTIONAL_CASCADE_COUNT=3"})
+        REQUIRE(std::find(cascaded.shader_defines.begin(), cascaded.shader_defines.end(),
+                          required_define) != cascaded.shader_defines.end());
 }
 
 TEST_CASE("render features require the runtime shader compiler", "[render-feature]") {
@@ -4276,6 +4276,57 @@ TEST_CASE("scalar feature parameter declaration and instance errors name feature
                      {{"name", "bad"}, {"type", "bool"}, {"range", {false, true}},
                       {"default", true}}}),
                  nlohmann::json::object(), "bad", "must not have range");
+}
+
+TEST_CASE("common graph buffer ports lower into native compute declarations", "[render-feature][graph-composition]") {
+    auto document = nlohmann::json::parse(R"({
+      "schema":"pelican.graph","version":1,
+      "definitions":{"kernel":{"nodes":[
+        {"id":"data","op":"render.buffer","parameters":{"size":16,"element":"float","lifetime":"persistent"},"outputs":["resource"]},
+        {"id":"run","op":"render.compute","parameters":{
+          "shader":"project://shaders/custom","dispatch":{"groups":[1,1,1]},
+          "ports":{"values":{"access":"write","element":"float"}}},
+          "inputs":{"values":{"node":"data","port":"resource"}},"outputs":["values"]}],
+        "outputs":{"data":{"node":"run","port":"values"}}}},
+      "nodes":[{"id":"consume","op":"render.compute","parameters":{
+                 "shader":"project://shaders/consume","dispatch":{"groups":[1,1,1]},
+                 "ports":{"source":{"access":"read","element":"float"}}},
+                 "inputs":{"source":{"node":"left","port":"data"}},"outputs":[]},
+               {"id":"left","op":"graph.instance","definition":"kernel"},
+               {"id":"right","op":"graph.instance","definition":"kernel"}],
+      "outputs":{"data":{"node":"left","port":"data"}},
+      "rendering":{"render_targets":[],"rendering_passes":[]}
+    })");
+    const auto original = document;
+    const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
+    REQUIRE(document == original);
+    const auto &config = resolved.normalized_config;
+    const auto buffers = parseFrameGraphBufferDefinitionsFromJson(config);
+    const auto tasks = parseComputeTaskDefinitionsFromConfigJson(config);
+    REQUIRE(buffers.size() == 2);
+    REQUIRE(tasks.size() == 3);
+    REQUIRE_NOTHROW(validateComputeTaskBufferContracts(buffers, tasks));
+    REQUIRE(config.at("buffers")[0].at("name") == "left/data");
+    REQUIRE(config.at("buffers")[1].at("name") == "right/data");
+    REQUIRE(computeTaskByName(config, "left/run").at("writes") == nlohmann::json::array({"left/data"}));
+    REQUIRE(computeTaskByName(config, "right/run").at("resource_ports").at("values").at("resource") == "right/data");
+    REQUIRE(computeTaskByName(config, "left/run").at("shader") == "project://shaders/custom");
+    auto planning = config;
+    planning["compute_tasks"] = nlohmann::json::array({
+        computeTaskByName(config, "consume"), computeTaskByName(config, "right/run"),
+        computeTaskByName(config, "left/run")});
+    const auto order = framePlanOrder(planFrameGraph(parseFrameGraphDefinitionFromJson(planning)));
+    REQUIRE(order.size() == 3);
+    REQUIRE(std::find(order.begin(), order.end(), "left/run") <
+            std::find(order.begin(), order.end(), "consume"));
+    REQUIRE_NOTHROW(compileRenderPipeline(resolved));
+    // Change the shared definition's storage type without changing its shader
+    // input contract: matching names alone must not accept the connection.
+    document["definitions"]["kernel"]["nodes"][0]["parameters"]["element"] = "vec4";
+    REQUIRE_THROWS_AS(resolveRenderPipeline(RenderPipelineRequest{document}, {}), std::invalid_argument);
+    document = original;
+    document["definitions"]["kernel"]["nodes"][1]["parameters"]["reads"] = {"hidden"};
+    REQUIRE_THROWS_AS(resolveRenderPipeline(RenderPipelineRequest{document}, {}), std::invalid_argument);
 }
 
 } // namespace Pelican

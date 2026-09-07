@@ -3,6 +3,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <functional>
 #include "logicalrendertype.hpp"
 
 namespace Pelican {
@@ -31,11 +32,16 @@ struct GraphOperationContract {
     std::map<std::string, LogicalType> outputs;
 };
 using GraphOperationContracts = std::map<std::string, GraphOperationContract>;
+using GraphOperationContractResolver =
+    std::function<GraphOperationContract(const nlohmann::json &)>;
 
 // Checks expanded edges, including edges crossing instance boundaries. Operation
 // providers own contracts; authoring cannot override an operation's output type.
 std::map<std::string, LogicalType> validateGraphPorts(
     const ExpandedGraphDocument &graph, const LogicalTypeRegistry &registry,
     const GraphOperationContracts &operations);
+std::map<std::string, LogicalType> validateGraphPorts(
+    const ExpandedGraphDocument &graph, const LogicalTypeRegistry &registry,
+    const GraphOperationContractResolver &resolve);
 
 } // namespace Pelican

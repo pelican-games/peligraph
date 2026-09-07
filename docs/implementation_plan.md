@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通authoringのinstance展開・数値backendへの接続は0b136a7dで実装し、続いて既存LogicalTypeRegistryによるport照合を接続した。既存の描画用compiled graphをauthoring正本へ転用しない。次は既存render featureの参照解決/展開を共通authoringへ接続し、resourceと型付き入出力を表す。全領域・scene・Studioへの統合は未了。
+- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通authoringのinstance展開・数値backendへの接続は0b136a7d、既存LogicalTypeRegistryによるport照合は4edd1dbbで実装。続いてrender.buffer/render.computeを既存描画composeへ接続し、書込み結果portから完了依存を生成した。既存の描画用compiled graphをauthoring正本へ転用しない。次は数値/描画混在文書の実行分割と数値→buffer→shader消費を通す。画像port・featureの共通instance化・scene・Studioへの統合は未了。
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
@@ -23247,6 +23247,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**共通graphのbuffer/computeを既存描画コンパイラへ接続 (2026-09-07):**
+- composeRenderFeatureConfigがpelican.graphを受け、render.buffer/render.computeを共通instance展開・型照合後に既存buffers/compute_tasksへ変換する。shader参照/dispatchとportのelement/accessを保存し、資源名・reads/writes・resource_ports・計算結果への完了依存は接続から生成。shader_storage buffer型は既存LogicalTypeRegistryへ登録する。
+- write/read_write portは同名の書込み結果出力を持つ。buffer自体の参照と区別する。実際に宣言順を逆にした確認で資源参照だけでは順序が保証されないことを検出し、結果portからafter依存を生成する形へ修正した。この生成を取り消すと書込み→読込み順序の対照が落ちる。
+- Player Debug build成功。render-feature 48case/965assertion、curve/animgraph 21case/453assertion成功（common_render_graph_build.log / common_render_graph_cpu.log / common_render_graph_values.log）。2instanceのbuffer独立性、subgraph出力経由の接続、element不一致と隠れたreads指定の拒否、通常のresolve/compileとcompute/buffer契約検査、逆宣言順でのframe planningを確認。共通文書を使ったGPU dispatch・shader出力は未確認。
+- 既存shadowテストのdefine配列完全一致2箇所が、実装済みPCF/bias/strength設定追加に追随していなかったため、当該テストが必要とするshadow/cascade defineの存在確認へ変更。影の実装は変更していない。
+- root.renderingは既存全体設定・preset/feature参照・画像passを残す移行用入口。画像port、attributeの適用範囲、featureそのものの共通instance化、数値/描画混在文書の実行分割、scene/Studio統合は未了。全体グラフ統合完了とは扱わない。
 
 **共通graph portを既存の型体系へ接続 (2026-09-07):**
 - operation提供側の入力pattern/必須性と出力型を使い、instance展開後のedgeをLogicalTypeRegistryで照合する。数値backendのvalue.*、render.scalar/audio.volume/audio.pitchへ実接続。scalarのsemanticを登録し、型定義や生成結果をauthoringへ複製しない。

@@ -71,6 +71,30 @@ Studioのコンポーネント表示は、同じモデルのscopeによる抽出
 
 ## コンパイルと実行
 
+### 共通authoringから計算シェーダーへ（2026-09-07）
+
+[lowerRenderGraphDocument](../src/project/rendergraphcomposition.hpp)を既存の
+composeRenderFeatureConfigへ接続した。pelican.graphを渡すと、共通instanceを展開して
+以下のnodeを既存buffers/compute_tasksへ変換し、通常のpreset/feature構成へ渡す。
+
+- render.buffer: parametersに既存buffer設定（size/lifetime/host_source等）とelementを
+  保存し、resource出力を公開する。nameはinstance pathとnode idから生成する。
+- render.compute: parametersに既存shader参照/dispatch設定とportsを保存する。
+  portsは名前ごとにelementとaccess（read/write/read_write）を持ち、同名のinputsで
+  bufferのresource出力またはcomputeの書込み結果へ接続する。write/read_writeのportは
+  同名の出力を公開し、そこへの接続から完了依存も生成する。buffer自体の参照と書込み後の
+  参照を区別し、宣言順で意味を変えない。公開したsubgraphの出力も接続可能。
+- storage_bufferの型引数elementを既存LogicalTypeRegistryで照合する。reads/writesと
+  shader resource_portsはedgeとaccessから生成し、別途の手書きを拒否する。
+  同じbufferへの複数portは読み書き一覧では一つにまとめる。
+- rootのrenderingは既存の全体設定・preset/feature参照・画像passを保持できる移行用の
+  入口。ここにbuffers/compute_tasksを重複宣言しない。生成configは保存の正本に戻さない。
+
+CPU上の既存解決・compute/buffer契約検査と、instance間の書込み→読込みの実行順を確認。
+共通文書を使ったGPU dispatchとshader出力は未確認。画像port、attributeの適用範囲、
+feature自体の共通instance化、数値/音声nodeと描画nodeの混在文書の実行分割、scene/Studio
+統合は残件。現段階の数値backendと描画backendは、それぞれ未対応opを拒否する。
+
 ### アトリビュート・シェーダー・反復の扱い
 
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・

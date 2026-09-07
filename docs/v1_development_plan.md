@@ -102,8 +102,10 @@ project/graphcompositionへ共通形式の定義/instance/port展開を追加し
 数値backendへ接続した。保存は元の共通文書を保ち、生成bindingは派生結果とする。
 共通portは既存LogicalTypeRegistryへ接続し、数値operationと描画/音声scalar sinkの
 入力契約を照合する。既存render authoring全体/scene/Studioとの統合は未了。
-次は既存render featureの参照解決/展開を共通authoringへ接続し、resourceと型付き
-入出力を表す。専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
+render.buffer/render.computeの資源・型付き入出力を既存compose入口へ接続した。
+計算結果portへの接続から完了依存を生成する。画像port、feature自体の共通instance化、
+数値/描画の混在文書からの実行分割は残件。次はこの混在・実行境界を接続し、共通文書の
+数値→buffer→shader消費を通す。専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
 アトリビュート生成/付与・固有shaderもこの共通表現へ含める。material反復の
 保存粒度は未確定。対象条件/反復本体を定義として保存し、列挙結果を派生にする案を
 設計へ記録したが、汎用foreach文法や全件展開保存を先行実装しない。

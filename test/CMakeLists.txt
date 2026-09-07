@@ -2471,7 +2471,8 @@ target_compile_definitions(pelican_test_gpudrawtiming_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
-pelican_define_test(featurecompose_test GROUP render_pipeline pelican_core)
+pelican_define_test(featurecompose_test GROUP render_pipeline pelican_core
+                    VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
 target_compile_definitions(pelican_test_featurecompose_test PRIVATE
     PELICAN_RUNTIME_SHADER_COMPILER=$<BOOL:${PELICAN_RUNTIME_SHADER_COMPILER}>
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"

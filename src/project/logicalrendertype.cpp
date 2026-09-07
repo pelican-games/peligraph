@@ -558,6 +558,15 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
     registry.registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.value.scalar@1"),
         LogicalTypeConstructor::value, {}, {"numeric"}});
+    registry.registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.render.storage_buffer@1"),
+        LogicalTypeConstructor::buffer,
+        {TypeParameterSchema{"element", TypeArgumentRole::identity,
+            TypeArgumentValueKind::enum_value, std::nullopt,
+            {EnumValueId{"float"}, EnumValueId{"vec2"}, EnumValueId{"vec3"}, EnumValueId{"vec4"},
+             EnumValueId{"int"}, EnumValueId{"ivec2"}, EnumValueId{"ivec3"}, EnumValueId{"ivec4"},
+             EnumValueId{"uint"}, EnumValueId{"uvec2"}, EnumValueId{"uvec3"}, EnumValueId{"uvec4"},
+             EnumValueId{"mat4"}}}}, {"shader_storage"}});
     const auto topology = TypeParameterSchema{
         "topology", TypeArgumentRole::identity,
         TypeArgumentValueKind::enum_value, EnumValueId{"two_d"},
