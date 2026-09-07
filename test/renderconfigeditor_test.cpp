@@ -1,6 +1,7 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
 #include "../src/core/communication/renderconfigeditor.hpp"
+#include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/core/communication/proceduralasseteditor.hpp"
 #include "../src/core/communication/renderconfigtransaction.hpp"
 #include "../src/core/communication/rpcserver.hpp"
@@ -610,6 +611,77 @@ TEST_CASE("Callable editor normalizes one shader and rejects invalid record valu
     CHECK(rejected.at("status") == "rejected");
     CHECK(rejected.at("error").at("code") == "invalid_callable_records");
     CHECK(Json::parse(readBytes(source.path)) == config);
+}
+
+TEST_CASE("owned graph instances attach and detach through source publication", "[render-config-editor][graph-attachment]") {
+    const Json unit{{"nodes", Json::array({
+        {{"id", "gain"}, {"op", "graph.input"}, {"default", 2}},
+        {{"id", "buffer"}, {"op", "render.buffer"},
+         {"inputs", {{"value", {{"node", "gain"}, {"port", "value"}}}}},
+         {"parameters", {{"element", "float"}}}, {"outputs", {"resource"}}}})},
+        {"outputs", {{"value", {{"node", "gain"}, {"port", "value"}}}}}};
+    const Json original{{"schema", "pelican.graph"}, {"version", 1}, {"definitions", {{"unit", unit}}},
+        {"nodes", Json::array()}, {"outputs", Json::object()}, {"rendering", Json::parse(emptyHybridConfig())}};
+    TemporaryConfig source{original.dump(2)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    auto service = makeService(source, runtime);
+    const auto instance = [](const char *id, int object, double gain) {
+        return Json{{"id", id}, {"op", "graph.instance"}, {"definition", "unit"},
+            {"owner", {{"scene", "main"}, {"object", object}}}, {"parameters", {{"gain", gain}}}};
+    };
+    const auto edit = [&](Json attach, Json detach = Json::array()) {
+        return service->editGraphInstances({{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+            {"attach", std::move(attach)}, {"detach", std::move(detach)}});
+    };
+    const auto commit = [&](const nlohmann::ordered_json &submission) {
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        return service->getResult({{"ticket", submission.at("ticket")}});
+    };
+    const auto left = instance("left", 1, 3);
+    const auto right = instance("right", 2, 7);
+    REQUIRE(commit(edit(Json::array({left, right}))).at("committed") == true);
+    const auto attached = Json::parse(readBytes(source.path));
+    REQUIRE(attached.at("definitions") == original.at("definitions"));
+    REQUIRE(attached.at("rendering") == original.at("rendering"));
+    const ValueGraph::Graph values{attached.dump()};
+    REQUIRE(values.parameterDefaults().at("left/gain") == 3);
+    REQUIRE(values.parameterDefaults().at("right/gain") == 7);
+    REQUIRE(values.renderBufferBindings().size() == 2);
+    const auto generation = runtime.snapshot.published_generation;
+    const auto saved = readBytes(source.path);
+    SECTION("detach saves and reopens with the sibling intact") {
+        service = makeService(source, runtime);
+        REQUIRE(service->getGraphInstances(Json::object()).at("instances") == Json::array({left, right}));
+        REQUIRE(commit(edit(Json::array(), Json::array({"left"}))).at("committed") == true);
+        const auto remaining = Json::parse(readBytes(source.path));
+        REQUIRE(remaining.at("nodes") == Json::array({right}));
+        const ValueGraph::Graph next{remaining.dump()};
+        REQUIRE(next.renderBufferBindings().size() == 1);
+        REQUIRE(next.renderBufferBindings()[0].target == "right/buffer");
+    }
+    SECTION("invalid definitions owners duplicates and dangling references preserve the source") {
+        auto invalid = instance("other", 3, 4);
+        invalid["definition"] = "missing";
+        REQUIRE(edit(Json::array({invalid})).at("status") == "rejected");
+        invalid = instance("other", 0, 4);
+        REQUIRE(edit(Json::array({invalid})).at("status") == "rejected");
+        REQUIRE(edit(Json::array({left})).at("status") == "rejected");
+        REQUIRE(edit(Json::array(), Json::array({"missing"})).at("status") == "rejected");
+        auto dependent = instance("dependent", 3, 4);
+        dependent.erase("parameters");
+        dependent["inputs"] = {{"gain", {{"node", "left"}, {"port", "value"}}}};
+        REQUIRE(commit(edit(Json::array({dependent}))).at("committed") == true);
+        REQUIRE(edit(Json::array(), Json::array({"left"})).at("status") == "rejected");
+        REQUIRE(Json::parse(readBytes(source.path)).at("nodes").size() == 3);
+    }
+    SECTION("runtime failure rolls back a detached source") {
+        runtime.fail_after_source_commit = true;
+        REQUIRE(commit(edit(Json::array(), Json::array({"left"}))).at("committed") == false);
+        REQUIRE(readBytes(source.path) == saved);
+        REQUIRE(runtime.snapshot.published_generation == generation);
+    }
 }
 
 TEST_CASE("scene AS edits use render publication and source CAS", "[render-config-editor][rt7][scene-as]") {

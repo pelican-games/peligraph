@@ -187,6 +187,12 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("edit_frame_node_order", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editFrameNodeOrder(params); });
     });
+    server.setHandler("get_graph_instances", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.getGraphInstances(params); });
+    });
+    server.setHandler("edit_graph_instances", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.editGraphInstances(params); });
+    });
     server.setHandler("edit_compute_task", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editComputeTask(params); });
     });

@@ -3,6 +3,7 @@
 #include "../../project/rasterrayquery.hpp"
 #include "../../project/rasterpass.hpp"
 #include "../../project/featurecompose.hpp"
+#include "../../project/graphpartition.hpp"
 #include "renderconfigtransaction.hpp"
 
 #include "../loader/engineresources.hpp"
@@ -1376,6 +1377,37 @@ OrderedJson RenderConfigEditorService::getFrameNodeOrder(const Json &params) con
     return {{"source_digest", digestJson(document_.sourceDigest())},
             {"published_generation", dependencies_.runtime_snapshot().published_generation},
             {"orders", Json::parse(document_.bytes()).value("frame_node_order", Json::object())}};
+}
+
+OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) const {
+    requireOnly(params, {}, "get_graph_instances");
+    const auto root = Json::parse(document_.bytes());
+    auto instances = Json::array();
+    if (root.value("schema", std::string{}) == "pelican.graph")
+        for (const auto &node : root.at("nodes"))
+            if (node.at("op") == "graph.instance") instances.push_back(node);
+    return {{"source_reference", dependencies_.source_reference},
+        {"source_digest", digestJson(document_.sourceDigest())},
+        {"instances", std::move(instances)}, {"definitions", root.value("definitions", Json::object())}};
+}
+
+OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
+    constexpr auto method = "edit_graph_instances";
+    requireOnly(params, {"base_source_digest", "attach", "detach"}, method);
+    const auto digest = requireString(params, "base_source_digest", method);
+    const auto attached = params.value("attach", Json::array());
+    const auto detached = params.value("detach", Json::array());
+    return queueRootEdit(digest, method,
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            try {
+                const auto edited = Pelican::editGraphInstances(Json::parse(candidate.bytes()), attached, detached);
+                (void)partitionGraphDocument(edited);
+                candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
+                return std::nullopt;
+            } catch (const std::exception &error) {
+                return rejection("invalid_graph_attachment", error.what());
+            }
+        });
 }
 
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {

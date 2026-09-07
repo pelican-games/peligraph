@@ -30,6 +30,11 @@ struct ExpandedGraphDocument {
 // source of truth; expanded IDs and provenance are derived, not saved back.
 ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 
+// Edit owned root instances in the authoring document. References to removed
+// instances must be removed explicitly; unrelated nodes and definitions survive.
+nlohmann::json editGraphInstances(const nlohmann::json &document,
+    const nlohmann::json &attachments, const nlohmann::json &detachments);
+
 struct GraphInputContract {
     LogicalTypePattern accepted_type;
     bool required = true;

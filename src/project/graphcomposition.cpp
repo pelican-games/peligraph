@@ -262,4 +262,27 @@ std::map<std::string, LogicalType> validateGraphPorts(
     return outputs;
 }
 
+nlohmann::json editGraphInstances(const Json &document, const Json &attachments, const Json &detachments) {
+    if (!attachments.is_array() || !detachments.is_array())
+        throw std::invalid_argument("graph attachments and detachments must be arrays");
+    auto candidate = document;
+    auto &nodes = candidate.at("nodes");
+    std::set<std::string> removed;
+    for (const auto &value : detachments) {
+        const auto id = identifier(value);
+        if (!removed.insert(id).second) throw std::invalid_argument("duplicate graph detachment: " + id);
+        const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) { return node.at("id") == id; });
+        if (found == nodes.end() || found->at("op") != "graph.instance" || !found->contains("owner"))
+            throw std::invalid_argument("graph detachment requires an owned root instance: " + id);
+        nodes.erase(found);
+    }
+    for (const auto &instance : attachments) {
+        if (!instance.is_object() || instance.value("op", std::string{}) != "graph.instance" || !instance.contains("owner"))
+            throw std::invalid_argument("graph attachment requires an owned graph.instance");
+        nodes.push_back(instance);
+    }
+    (void)expandGraphDocument(candidate);
+    return candidate;
+}
+
 } // namespace Pelican

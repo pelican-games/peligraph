@@ -1527,6 +1527,16 @@ OrderedJson EditorCommandService::editFrameNodeOrder(const Json &params) {
     return render_config_editor_->editFrameNodeOrder(params);
 }
 
+OrderedJson EditorCommandService::getGraphInstances(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getGraphInstances(params);
+}
+
+OrderedJson EditorCommandService::editGraphInstances(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editGraphInstances(params);
+}
+
 OrderedJson EditorCommandService::editComputeTask(const Json &params) {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->editComputeTask(params);
@@ -2467,6 +2477,15 @@ OrderedJson EditorCommandRpcAdapter::getFrameNodeOrder(const Json &params) const
 OrderedJson EditorCommandRpcAdapter::editFrameNodeOrder(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->editFrameNodeOrder(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getGraphInstances(const Json &params) const {
+    return service_.getGraphInstances(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editGraphInstances(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->editGraphInstances(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::editComputeTask(const Json &params) const {

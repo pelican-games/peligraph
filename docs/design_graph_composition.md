@@ -469,6 +469,16 @@ GPU uploadや音声への反映は既存サービスへ渡す境界処理とし�
 
 ## 移行順と確認する結果
 
+### 個体への装着編集（2026-09-08）
+
+`get_graph_instances`は全体文書のroot instance・definitions・source digestを返す。
+`edit_graph_instances`は`base_source_digest`、`attach`（owner付きgraph.instance配列）、
+`detach`（root instance ID配列）を受け取り、既存の描画候補・source CAS・保存transactionで公開する。
+追加と解除は一つの候補にまとめられる。残るnodeから解除したinstanceへの参照があれば拒否し、
+接続や定義を暗黙に消さない。保存の正本は既存の全体グラフのnodesで、別component形式は作らない。
+CPUの実描画コンパイラを通して、二個体の独立parameter、解除・保存・再読込、候補失敗時の
+source/描画世代保持を確認した。実行中の兄弟の再生状態・音声voiceを新世代へ引き継ぐ処理は次工程。
+
 1. 既存authoringの参照解決・feature展開の入口を確認し、共通のscope/instanceと
    port/edgeを置く位置を決める。数値グラフの専用scene componentを先に追加しない。
    共通のID・型・接続表を既存機構と重複させないことを、変更対象の型で示す。

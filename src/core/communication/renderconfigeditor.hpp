@@ -170,6 +170,8 @@ class RenderConfigEditorService {
         RenderConfigRuntimeApplyResult applied) noexcept;
 
   public:
+    nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
+    nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);
