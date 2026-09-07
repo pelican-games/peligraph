@@ -42,6 +42,52 @@ Studioのコンポーネント表示は、同じモデルのscopeによる抽出
 
 ## コンパイルと実行
 
+### アトリビュート・シェーダー・反復の扱い
+
+アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
+ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、
+依存・入出力が全体グラフから見えることは両立する。シェーダー参照、設定、
+読み書きするアトリビュートの型・適用範囲は正本に残す。
+
+アトリビュートは頂点・instance・material等のどの要素に属する値かを区別する。
+同名のfloatという理由だけで異なる要素数/適用範囲を接続しない。既存の型照合に
+必要な意味を追加する位置を確認し、コンポーネントごとの特例にしない。
+
+マテリアル反復の保存粒度は利用者が検討中であり、以下は実装前の暫定案とする。
+
+- authoringで指定した対象集合/選択条件・反復本体・公開入出力を保存する。
+- 実行時に列挙されたmaterial一覧、生成draw/dispatch、物理buffer割当は派生結果。
+  Studioでは観察可能にしても、通常保存の正本へ全件を複製しない。
+- 反復ごとに作る資源、反復間で共有する資源、前回反復から受け取る値は意味が
+  異なる。独立な集合処理と順序依存の反復を区別する。
+- 明示的に展開して編集した場合は、展開後の構成を正本へ保存する。
+  折り畳み表示の解除だけでは構成を変えない。対象集合が後で変化したときに
+  展開済み構成へ自動で個体を足すかは、保存方針と合わせて決める。
+
+この段階で汎用foreach文法や、全マテリアルを列挙して保存する経路を追加しない。
+
+### 既存authoringとの接点（ソース確認済み）
+
+[composeRenderFeatureConfig](../src/project/featurecompose.hpp)はpreset参照を解決し、
+featureを構成したconfigとfeature_instances、pass/resource provenanceを返す。
+materialized_feature observerは実際のparameter binding位置の具体化結果を通知する。
+これらを共通の出自追跡へ接続する候補とし、別の展開処理を先に複製しない。
+
+materializeRenderFeatureDocumentはbindFeatureParametersからboundFeatureDocumentを
+生成する処理であり、汎用のサブグラフinstance展開やmaterial反復展開ではない。
+現機能をそのまま「全体グラフをコンポーネント別に表示できる」とは扱わない。
+
+[materiallowering](../src/project/materiallowering.hpp)はmaterial/surfaceの定義を
+shader契約・値/texture binding等へ変換し、core/materialでruntimeへ適用する。
+この変換結果の資源identityや列挙を、authoring上の反復の定義と混同しない。
+
+共通化の入口はproject側のauthoring参照解決/構成に置き、既存render向けのconfigと
+数値等の実行計画を派生させる方向で具体化する。どの既存構造へscope/instanceを
+追加するかは、まだ実装で確定していない。CompiledLogicalRenderGraphのnode kindを
+増やすだけの変更では、編集・保存の正本を統一したことにはならない。
+
+### 実行領域への変換
+
 共通の編集表現から参照解決・型照合・境界の確認を行い、各実行領域へ変換する。
 既存の描画コンパイラ、骨格Evaluator、数値評価、音声サービスを実行先として
 再利用する。各領域のコンパイル結果をStudioの正本として保存しない。

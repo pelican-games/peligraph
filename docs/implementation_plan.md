@@ -23248,6 +23248,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**全体グラフ共通化のauthoring接点確認 (2026-09-07):**
+- 利用者の追加観点であるattribute生成/付与・固有shaderを共通化設計へ含めた。material反復のJSON保存粒度は未確定と明記し、対象条件/反復本体と実行時列挙結果を区別する暫定案を記録した。
+- featurecomposeのpreset解決→parameter binding→config構成とprovenance/observerを確認。materializeRenderFeatureDocumentはparameter具体化であり、汎用subgraph/material反復の展開ではない。materialloweringのshader契約・値/textureへの変換も、authoring反復と区別する。
+- 入口候補をproject側のauthoring構成へ絞った。scope/instanceの実装位置と共通化そのものは未確定・未実装。コード変更がないためbuild/実行試験は反復しない。
+
 **数値グラフの音声・描画出力binding保存 (2026-09-07):**
 - bindingsにoutput/kind/targetを保存し、Graph::publishが評価値を既存GameContextのrender buffer/voice volume/voice pitchへ渡す。音声は論理名を実行中SoundHandleへ対応付け、handle自体を文書に保存しない。単一出力から複数接続先への分配を受理し、同じkind/targetへの二重writerと音声の複数要素出力は拒否する。
 - 全出力のfloat32変換・音声値域を反映前に確認する。未登録/停止済みtargetとeffect staging中は適用件数・unavailableとして返す。他のtargetへの反映は継続できる。backend例外やbufferサイズ不一致時に先行反映を戻すtransactionは追加しない。

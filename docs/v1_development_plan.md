@@ -100,6 +100,9 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 現在のValueGraph・bindingsとanimation componentは実装済みだが共通化は未了。
 次は既存authoringの参照解決/feature展開との接点を具体化し、数値→描画の一経路を
 共通port/edgeへ接続する。専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
+アトリビュート生成/付与・固有shaderもこの共通表現へ含める。material反復の
+保存粒度は未確定。対象条件/反復本体を定義として保存し、列挙結果を派生にする案を
+設計へ記録したが、汎用foreach文法や全件展開保存を先行実装しない。
 
 ### グラフ間のデータ接続（2026-09-07 利用者要望、未実装）
 
