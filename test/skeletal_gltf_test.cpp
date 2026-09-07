@@ -393,7 +393,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     GET_MODULE(PathResolver).setup(root, false);
     GET_MODULE(EngineLaunchConfig).headless = true;
     TestSupport::requireVulkanDevice("Vulkan unavailable");
-    const ValueGraph::Graph authored{mixedGraphCompositionFixture().dump()};
+    const ValueGraph::Graph authored{parameterGraphCompositionFixture().dump()};
     const ValueGraph::Graph graph{authored.serialize()};
     const auto config = composeRenderFeatureConfig(nlohmann::json::parse(graph.serialize())).config;
     auto &resources = GET_MODULE(FrameGraphResourceContainer);
@@ -405,8 +405,8 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
         GET_MODULE(ShaderLibrary), GET_MODULE(PathResolver), GET_MODULE(RenderTargetContainer), resources});
     auto &frames = GET_MODULE(FrameResources);
     auto &vkcore = GET_MODULE(VulkanManageCore);
-    const auto run = [&](double time) {
-        REQUIRE(graph.publish(GameContext{}, {{"time", time}}).applied == 1);
+    const auto run = [&](double time, const ValueGraph::ParameterValues &parameters = ValueGraph::ParameterValues{}) {
+        REQUIRE(graph.publish(GameContext{}, {{"time", time}}, {}, {}, parameters).applied == 1);
         resources.uploadRuntimeValues();
         GET_MODULE(VulkanUtils).executeOneTimeCmd([&](vk::CommandBuffer cmd) {
             tasks.dispatch(cmd, task, frames);
@@ -421,6 +421,8 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     };
     REQUIRE(run(0.25) == 2.5f);
     REQUIRE(run(0.75) == 5.5f);
+    REQUIRE(run(0.25, {{"left/gain", 4}}) == 4.0f);
+    REQUIRE(run(0.25) == 2.5f);
     vkcore.waitIdle();
 }
 

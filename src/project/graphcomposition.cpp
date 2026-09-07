@@ -1,6 +1,7 @@
 #include "graphcomposition.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <set>
 #include <stdexcept>
@@ -27,7 +28,7 @@ class Expander {
     explicit Expander(const Json &definitions) : definitions(definitions) {}
 
     Json scope(const Json &document, const std::string &path,
-               const std::string &definition, const Json &arguments) {
+               const std::string &definition, const Json &arguments, const Json &parameters) {
         const auto &nodes = document.at("nodes");
         if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
         std::map<std::string, const Json *> local;
@@ -41,8 +42,22 @@ class Expander {
             (void)endpoint;
             if (!inputs.contains(input)) throw std::invalid_argument("unknown subgraph input: " + input);
         }
-        for (const auto &input : inputs)
-            if (!arguments.contains(input)) throw std::invalid_argument("unconnected subgraph input: " + input);
+        object(parameters, "instance parameters must be an object");
+        for (const auto &[parameter, value] : parameters.items()) {
+            if (!inputs.contains(parameter)) throw std::invalid_argument("unknown subgraph parameter: " + parameter);
+            if (arguments.contains(parameter)) throw std::invalid_argument("subgraph input also bound as parameter: " + parameter);
+        }
+        Json defaults = Json::object();
+        for (const auto &input : inputs) {
+            if (arguments.contains(input)) continue;
+            const auto &node = *local.at(input);
+            if (!parameters.contains(input) && !node.contains("default"))
+                throw std::invalid_argument("unconnected subgraph input: " + input);
+            const auto &value = parameters.contains(input) ? parameters.at(input) : node.at("default");
+            if (!value.is_number() || !std::isfinite(value.get<double>()))
+                throw std::invalid_argument("subgraph parameter must be a finite scalar: " + input);
+            defaults[input] = value;
+        }
         std::map<std::string, Json> instances;
         std::set<std::string> active_instances;
         std::function<Json(const Json &)> resolve;
@@ -58,7 +73,8 @@ class Expander {
             object(authored_inputs, "instance inputs must be an object");
             for (const auto &[port, endpoint] : authored_inputs.items()) bound[port] = resolve(endpoint);
             if (!active_definitions.insert(ref).second) throw std::invalid_argument("recursive graph definition: " + ref);
-            auto outputs = scope(definitions.at(ref), path + id + "/", ref, bound);
+            auto outputs = scope(definitions.at(ref), path + id + "/", ref, bound,
+                                 node.value("parameters", Json::object()));
             active_definitions.erase(ref);
             active_instances.erase(id);
             return instances.emplace(id, std::move(outputs)).first->second;
@@ -71,7 +87,8 @@ class Expander {
             const auto &node = *found->second;
             if (node.at("op") == "graph.input") {
                 if (port != "value") throw std::invalid_argument("graph input output port must be value");
-                return arguments.at(id);
+                return arguments.contains(id) ? arguments.at(id)
+                    : Json{{"node", path + id}, {"port", "value"}};
             }
             if (node.at("op") == "graph.instance") {
                 const auto &outputs = instantiate(id);
@@ -84,7 +101,15 @@ class Expander {
             return Json{{"node", path + id}, {"port", port}};
         };
         for (const auto &[id, node] : local) {
-            if (node->at("op") == "graph.input") continue;
+            if (node->at("op") == "graph.input") {
+                if (defaults.contains(id)) {
+                    result.nodes.push_back({{"id", path + id}, {"op", "value.parameter"},
+                        {"parameters", {{"name", path + id}, {"default", defaults.at(id)}}},
+                        {"inputs", Json::object()}, {"outputs", {"value"}}});
+                    result.origins.emplace(path + id, GraphNodeOrigin{path, definition, id});
+                }
+                continue;
+            }
             if (node->at("op") == "graph.instance") { (void)instantiate(id); continue; }
             auto expanded = *node;
             expanded["id"] = path + id;
@@ -110,7 +135,8 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
     const auto definitions = document.value("definitions", Json::object());
     object(definitions, "graph definitions must be an object");
     Expander expander{definitions};
-    expander.result.outputs = expander.scope(document, "", "", Json::object());
+    expander.result.outputs = expander.scope(document, "", "", Json::object(),
+                                            document.value("parameters", Json::object()));
     return std::move(expander.result);
 }
 

@@ -44,3 +44,12 @@ inline nlohmann::json mixedGraphCompositionFixture() {
     document["rendering"] = {{"render_targets", Json::array()}, {"rendering_passes", Json::array()}};
     return document;
 }
+
+inline nlohmann::json parameterGraphCompositionFixture() {
+    auto document = mixedGraphCompositionFixture();
+    document["definitions"]["scaled_curve"]["nodes"][1]["default"] = 1;
+    for (const auto index : {3, 4}) document["nodes"][index]["inputs"].erase("gain");
+    document["nodes"][3]["parameters"] = {{"gain", 2}};
+    document["nodes"][4]["parameters"] = {{"gain", 4}};
+    return document;
+}

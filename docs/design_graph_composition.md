@@ -71,6 +71,24 @@ Studioのコンポーネント表示は、同じモデルのscopeによる抽出
 
 ## コンパイルと実行
 
+### インスタンスの入力パラメーター（2026-09-07）
+
+graph.inputはdefaultに有限のscalarを持てる。graph.instanceのparametersは公開入力名から
+scalarへの対応で、定義を複製せずに個別の値を保存する。接続を与えた入力はedgeを使い、
+未接続入力はinstance.parameters、次にgraph.input.defaultを使う。どれもなければ未接続
+エラー。同じ入力へのedgeとparameterの二重指定、不明parameter名は拒否する。
+rootにもparametersを指定できる。buffer/image等へのliteral変換を暗黙に追加しない。
+
+literalで束縛した入力は、展開時にinstance pathを名前とするvalue.parameterへ変換する。
+ValueGraph::Graph::parameterDefaults()で有効な名前と初期値を取得でき、evaluate/publishへ
+ParameterValuesを渡して、その評価だけを上書きできる（例: left/gain）。不明名や非有限値は
+拒否し、Graph本体とserialize結果は変更しない。通常Rendererは保存値を使用する。
+
+2instanceの異なる保存値、片側だけの上書き、定義defaultへのfallbackを確認。実GPUでも
+上書きによる出力変更と、上書きなしの次回評価で保存値へ戻ることを確認した。
+これはparameterの表現と受渡しであり、GameObjectへの装着、objectの寿命に伴う
+parameter/state管理や通常Rendererへの動的override供給はまだ未実装。
+
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
 [lowerRenderGraphDocument](../src/project/rendergraphcomposition.hpp)を既存の

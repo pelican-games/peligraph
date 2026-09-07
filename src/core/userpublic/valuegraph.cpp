@@ -112,6 +112,13 @@ Graph::Graph(std::string_view document) {
             keys(authored, {"id", "op", "name"});
             node.op = Op::input;
             node.input_name = name(authored.at("name"));
+        } else if (op == "parameter") {
+            keys(authored, {"id", "op", "name", "default"});
+            node.op = Op::parameter;
+            node.input_name = name(authored.at("name"));
+            node.constant = number(authored.at("default"));
+            if (!parameter_defaults_.emplace(node.input_name, node.constant).second)
+                throw std::invalid_argument("duplicate value graph parameter: " + node.input_name);
         } else if (op == "constant") {
             keys(authored, {"id", "op", "value"});
             node.op = Op::constant;
@@ -212,13 +219,17 @@ Graph::Graph(std::string_view document) {
     document_ = authored.dump();
 }
 
-Outputs Graph::evaluate(const Inputs &inputs) const {
-    auto result = evaluateInternal(inputs);
+Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters) const {
+    auto result = evaluateInternal(inputs, parameters);
     for (const auto &output : lowered_outputs_) result.erase(output);
     return result;
 }
 
-Outputs Graph::evaluateInternal(const Inputs &inputs) const {
+Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &parameters) const {
+    for (const auto &[name, value] : parameters) {
+        if (!parameter_defaults_.contains(name)) throw std::invalid_argument("unknown graph parameter: " + name);
+        if (!std::isfinite(value)) throw std::invalid_argument("graph parameter must be finite: " + name);
+    }
     std::vector<double> values(nodes_.size());
     for (const auto index : order_) {
         const auto &node = nodes_[index];
@@ -231,6 +242,11 @@ Outputs Graph::evaluateInternal(const Inputs &inputs) const {
             break;
         }
         case Op::constant: value = node.constant; break;
+        case Op::parameter: {
+            const auto found = parameters.find(node.input_name);
+            value = found == parameters.end() ? node.constant : found->second;
+            break;
+        }
         case Op::add: value = values[node.dependencies[0]] + values[node.dependencies[1]]; break;
         case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
         case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
@@ -254,8 +270,9 @@ Outputs Graph::evaluateInternal(const Inputs &inputs) const {
 }
 
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
-                             const SoundBindings &sounds, const RenderValueWriter &render_writer) const {
-    const auto outputs = evaluateInternal(inputs);
+                             const SoundBindings &sounds, const RenderValueWriter &render_writer,
+                             const ParameterValues &parameters) const {
+    const auto outputs = evaluateInternal(inputs, parameters);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
     prepared.reserve(bindings_.size());

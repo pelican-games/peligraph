@@ -23248,6 +23248,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**共通subgraphの保存parameterと実行時override (2026-09-07):**
+- graph.input.defaultとgraph.instance.parametersを追加。未接続入力はinstanceの値→定義defaultで束縛し、scope付きvalue.parameterへ展開する。接続とparameterの二重指定、不明名、非有限scalarを拒否。通常のport型照合を継続する。
+- Graph::parameterDefaultsで名前/初期値を取得し、evaluate/publishへParameterValuesを渡せる。left/gainのようなinstance pathで個別指定し、その評価だけに適用する。serializeは原文を維持し、実行時overrideを書き戻さない。新しいruntime保存系や専用componentは追加していない。
+- Player Debug build成功、curve/animgraph 23case/472assertion、GPU skeletal 7case/95assertion成功（graph_parameters_build.log / graph_parameters_cpu.log / graph_parameters_gpu.log）。2instanceの保存値、片側変更の独立性、定義default、二重指定/不明名/非有限値拒否、GPU出力の2.5→overrideで4.0→overrideなしで2.5を確認。
+- scopeによるparameter名分離を外すと2instanceの対照、評価overrideを外すとCPU/GPU出力、上書きをGraph本体へ残すと次回の保存値復帰が落ちる。個別変異は未実施。object装着/寿命に沿ったparameter/state所有と通常Rendererへの動的override供給は引き続き残件。
+
 **通常Rendererの共通数値graph自動評価とscene時計 (2026-09-07):**
 - ValueGraphをCompiledFrameGraphExecutionに保持し、描画世代の準備・公開・破棄と同じ所有へ接続。候補の入力/出力と転送先bufferの存在・host_source・sizeを公開前に確認。Graph::publishのrender writerとstageRuntimeValuesのID入口を使い、そのframeが保持するbuffer_bindingsへ転送する。
 - Rendererのupload直前にtime/delta_time/scene_timeを与えて評価する。scene開始時刻はSceneLoaderのmetadata commit後だけ更新し、別グラフ保存系や専用componentを増やさない。現段階の所有はプロジェクト共通描画文書/描画世代であり、sceneごとのgraph選択や個体別state/parameterは未実装。

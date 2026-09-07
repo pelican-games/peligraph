@@ -15,6 +15,7 @@ namespace Pelican { class GameContext; }
 namespace Pelican::ValueGraph {
 
 using Inputs = std::map<std::string, double, std::less<>>;
+using ParameterValues = Inputs;
 using Outputs = std::map<std::string, std::vector<double>, std::less<>>;
 using SoundBindings = std::map<std::string, SoundHandle, std::less<>>;
 using RenderValueWriter = std::function<bool(std::string_view, std::span<const float>)>;
@@ -29,7 +30,8 @@ class PELICAN_API Graph {
   public:
     explicit Graph(std::string_view document);
     const std::string &serialize() const noexcept { return document_; }
-    Outputs evaluate(const Inputs &inputs) const;
+    const ParameterValues &parameterDefaults() const noexcept { return parameter_defaults_; }
+    Outputs evaluate(const Inputs &inputs, const ParameterValues &parameters = {}) const;
     // Owner-thread evaluation and explicit service publication. Sound targets
     // are symbolic names, resolved using this instance's live handles.
     // Missing/stopped targets are reported; other bindings can still apply.
@@ -37,12 +39,14 @@ class PELICAN_API Graph {
     // generation instead of the current global resource name table.
     PublishResult publish(const GameContext &context, const Inputs &inputs,
                           const SoundBindings &sounds = {},
-                          const RenderValueWriter &render_writer = {}) const;
+                          const RenderValueWriter &render_writer = {},
+                          const ParameterValues &parameters = {}) const;
 
   private:
-    Outputs evaluateInternal(const Inputs &inputs) const;
+    Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters) const;
+    ParameterValues parameter_defaults_;
     std::vector<std::string> lowered_outputs_;
-    enum class Op { input, constant, add, multiply, curve, playback };
+    enum class Op { input, parameter, constant, add, multiply, curve, playback };
     struct Node {
         std::string id;
         Op op{};

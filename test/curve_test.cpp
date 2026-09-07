@@ -14,6 +14,28 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("instance parameters preserve defaults and isolate runtime overrides", "[curve][graph-composition]") {
+    auto document = parameterGraphCompositionFixture();
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    REQUIRE(nlohmann::json::parse(graph.serialize()) == document);
+    REQUIRE(graph.parameterDefaults().at("left/gain") == 2);
+    REQUIRE(graph.parameterDefaults().at("right/gain") == 4);
+    const auto values = graph.evaluate({{"time", 0.25}}, {{"left/gain", 3}});
+    REQUIRE(values.at("left")[0] == Approx(0.75));
+    REQUIRE(values.at("right")[0] == Approx(1));
+    REQUIRE(graph.evaluate({{"time", 0.25}}).at("left")[0] == Approx(0.5));
+    REQUIRE_THROWS_AS(graph.evaluate({{"time", 0.25}}, {{"gain", 3}}), std::invalid_argument);
+    REQUIRE_THROWS_AS(graph.evaluate({{"time", 0.25}}, {{"left/gain", std::numeric_limits<double>::infinity()}}), std::invalid_argument);
+    document["nodes"][3].erase("parameters");
+    const Pelican::ValueGraph::Graph fallback{document.dump()};
+    REQUIRE(fallback.evaluate({{"time", 0.25}}).at("left")[0] == Approx(0.25));
+    document["nodes"][3]["parameters"] = {{"typo", 2}};
+    REQUIRE_THROWS_AS(Pelican::ValueGraph::Graph(document.dump()), std::invalid_argument);
+    document = parameterGraphCompositionFixture();
+    document["nodes"][3]["inputs"]["gain"] = {{"node", "two"}, {"port", "value"}};
+    REQUIRE_THROWS_AS(Pelican::ValueGraph::Graph(document.dump()), std::invalid_argument);
+}
+
 TEST_CASE("mixed graph keeps one document for scalar and render execution", "[curve][graph-composition]") {
     auto document = mixedGraphCompositionFixture();
     const Pelican::ValueGraph::Graph graph{document.dump()};

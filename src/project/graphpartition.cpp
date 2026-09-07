@@ -22,6 +22,7 @@ GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &
     const std::map<std::string, LogicalType> output{{"value", scalar}};
     return {
         {"value.input", {{}, output}}, {"value.constant", {{}, output}},
+        {"value.parameter", {{}, output}},
         {"value.add", {{{"a", required}, {"b", required}}, output}},
         {"value.multiply", {{{"a", required}, {"b", required}}, output}},
         {"value.curve", {{{"time", required}}, output}},
