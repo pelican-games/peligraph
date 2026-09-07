@@ -12,6 +12,7 @@ target_sources(pelican_core PRIVATE
     sprite/spriteworld.cpp
     platformer/charactercontroller2d.cpp
     animation/animgraph.cpp
+    animation/curve.cpp
     details/reload/registrationowner.cpp
 )
 

@@ -1212,6 +1212,7 @@ pelican_define_test(vrmaretarget_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animation_probe_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animation_jobs_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animgraph_test GROUP core_foundation pelican_core glm)
+pelican_define_test(curve_test GROUP core_foundation pelican_core)
 pelican_define_test(vrmasource_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator
                     VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_animation_probe_test PRIVATE

@@ -23246,6 +23246,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**パラメトリック数値カーブの基本評価 (2026-09-07):**
+- 公開標準ライブラリanimation/curve.hppへScalarCurve・sampleCurve・CurveTriggerClockを追加。形状はstep/linear/cubic Hermiteのキー列、再生側は使用区間・duration・speed/逆再生・once/repeat/ping_pong・scale/offset・delay・sample_intervalを持つ。triggerはrestart/ignore_active、stopで解除。フレーム回数によらず渡された時刻から評価する。
+- 任意時刻の直接sampleと、両端を含むsampleUniformで外部clock/GPU用テーブルの準備に利用できる。補間接線は値/時間の傾き。once完了時は固定間隔に関わらず端値を返す。既存の骨格・VRMAのimport経路は変更していない。
+- Player/core_foundation Debug build成功。curve5件と既存animgraph11件の計16case/385assertion成功。非単位区間のcubic、stepのキー境界、使用範囲/出力倍率/逆再生/折返し、遅延・再開始・完了後の再トリガー、固定間隔の時刻再評価とLUT両端を確認。cubicの区間幅係数を外すと放物線の対照が落ち、再トリガーの待機期間を除くと遅延中のignore試験が落ちる。個別変異は未実施。doclink3869件成功。
+- asset保存/GUI/node接続、複数再生の重ね合わせ、GPU upload/補間、render graph入力への公開は未実装。通常の浮動小数演算であり、極端な倍率等に対する有限出力保証は追加していない。animation.graphのcomponent装着とscene object寿命の残件も維持する。
+- 利用者から音声もグラフ接続対象とする要望。再生/停止イベント、音量/ピッチの連続値、音声clockの入力をv1計画へ追加。既存公開APIはplaySound/stopSound/setBusVolume/isPlaying等。voiceパラメーター・clock照会とノード配線は別途実装する。
+
 **アニメーショングラフの明示解除と装着失敗の回収 (2026-09-07):**
 - 公開EvaluatorV1へunbindを追加。phase/cursor/sourceを解放し、評価器とパラメーターを保持したまま別writerへ切り替えられる。状態・時計・前回pose・未評価tickは解除し、bindで初期状態から再開する。世代更新時に状態を保持するrebindの意味は変更しない。
 - bind完了前の失敗をscope cleanupで回収。作成中stateを先に所有配列へ置き、cursor格納容量を取得前に確保するため、同state内の後続clip解決失敗でも既存cursorを回収する。成功時は以前のlastErrorも消す。

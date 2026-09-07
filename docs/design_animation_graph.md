@@ -185,6 +185,31 @@ v1 スコープ = clip state + blend1d + crossfade(調査 §6.1 で条件付き�
 sourceを切り替える基盤であり、ラグドール・剛体シミュレーション・物理ノードや
 `animation.graph`のcomponent装着を実装したという意味ではない。
 
+### パラメトリックな数値カーブ（2026-09-07）
+
+公開標準ライブラリの`animation/curve.hpp`は、形状・時刻の変換・値の変換・
+トリガーを分離する。ScalarCurveは昇順のキーを保持し、各区間の左キーが
+step/linear/cubic Hermiteを選ぶ。接線は値/カーブ時間の傾き。範囲外は端値、
+キー1個は定数とする。`sample(time)`は状態を変更せず任意時刻で評価できる。
+
+CurvePlaybackSettingsのsource_begin/endは形状の使用区間、durationは速度1で
+区間を通過する秒数。speedの絶対値で速さ、符号で方向を指定する。wrapは
+once/repeat/ping_pong。scale/offsetは補間後の値へ適用し、形状を変更しない。
+repeatのちょうど周期境界は開始値、ping_pongの折返しは端値。onceは終了値を
+保持しcompletedを返す。遅延中は開始値を返すがactiveではない。
+
+sample_interval=0は連続評価。正値は遅延後の経過秒を原点とするサンプル保持で、
+呼出フレーム数によらない。onceの完了ではサンプル間隔に関わらず終了値を返す。
+`sampleUniform(begin,end,count)`は両端を含むCPU側の等間隔テーブルを生成する。
+GPU upload・LUTのGPU補間はこの関数には含めない。
+
+CurveTriggerClockは外部イベントの時刻をtriggerへ渡して開始する。再トリガーは
+restartまたはignore_active。待機中もignore対象に含め、完了後は再開始できる。
+stopは時計を解除する。イベント購読・複数再生の重ね合わせは呼出側の責務で、
+この段階では専用ノードやUIを追加しない。形状/設定のasset保存、汎用ノードへの
+接続とrender入力の公開は残件。skeletal poseの専用評価や既存VRMAのimport契約は
+変更しない。
+
 ## 4. glTF / VRMA の受理(調査 §4.2 — VRM 一級化の要件)
 
 4 段パイプライン: ①コンテナ decode(`.vrma` = glb alias +
