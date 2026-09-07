@@ -15,6 +15,26 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("trigger clocks keep evaluation state separate and reset inactive scopes", "[curve][graph-composition]") {
+    auto document = parameterGraphCompositionFixture();
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};
+    addGraphTriggerClock(document);
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    auto state = graph.createState();
+    auto other = graph.createState();
+    REQUIRE_THROWS(graph.evaluate({{"time", 10}}));
+    const Pelican::ValueGraph::ParameterValues fire{{"left/fire", 1}};
+    REQUIRE(graph.evaluate({{"time", 10}}, fire, {}, &state).at("left")[0] == 0);
+    REQUIRE(graph.evaluate({{"time", 10.25}}, fire, {}, &state).at("left")[0] == 0.5);
+    REQUIRE(graph.evaluate({{"time", 10.25}}, fire, {}, &state).at("left")[0] == 0.5);
+    REQUIRE(graph.evaluate({{"time", 10.25}}, fire, {}, &other).at("left")[0] == 0);
+    REQUIRE(graph.evaluate({{"time", 10.5}}, fire, {"left"}, &state).at("right")[0] == 0);
+    REQUIRE(graph.evaluate({{"time", 10.75}}, fire, {}, &state).at("left")[0] == 0);
+    const Pelican::ValueGraph::Graph another{document.dump()};
+    REQUIRE_THROWS(another.evaluate({{"time", 11}}, fire, {}, &state));
+    REQUIRE(nlohmann::json::parse(graph.serialize()) == document);
+}
+
 TEST_CASE("common image ports lower typed compute dependencies", "[curve][graph-composition]") {
     auto document = parameterGraphCompositionFixture();
     addGraphImageStage(document);

@@ -5233,20 +5233,18 @@ void Renderer::renderLogicalFrame(
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
     ValueGraph::InactiveScopes inactive_graph_scopes;
     if (frame_graph.value_graph) {
-        auto *scene = FastModuleContainer::tryGet<SceneLoader>();
-        if (scene) inactive_graph_scopes = scene->inactiveGraphScopes(*frame_graph.value_graph);
-        else for (const auto &[scope, owner] : frame_graph.value_graph->instanceOwners())
-            inactive_graph_scopes.insert(scope);
+        auto &scene = GET_MODULE(SceneLoader);
+        inactive_graph_scopes = scene.inactiveGraphScopes(*frame_graph.value_graph);
         const ValueGraph::Inputs inputs{
             {"time", engine_time.now()}, {"delta_time", engine_time.dt()},
-            {"scene_time", engine_time.now() - (scene ? scene->sceneStartTime() : 0.0)}};
+            {"scene_time", engine_time.now() - scene.sceneStartTime()}};
         const auto published = frame_graph.value_graph->publish(GameContext{}, inputs, {},
             [&](std::string_view name, std::span<const float> values) {
                 const auto found = frame_graph.buffer_bindings.find(std::string{name});
                 return found != frame_graph.buffer_bindings.end() &&
                     modules.frame_graph_resources.stageRuntimeValues(found->second, values);
-            }, scene ? scene->graphParameterValues(frame_graph.value_graph) : ValueGraph::ParameterValues{},
-            inactive_graph_scopes);
+            }, scene.graphParameterValues(frame_graph.value_graph),
+            inactive_graph_scopes, &scene.graphEvaluationState(frame_graph.value_graph));
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
     }

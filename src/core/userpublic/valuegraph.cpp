@@ -141,6 +141,20 @@ Graph::Graph(std::string_view document) {
             keys(authored, {"id", "op", "a", "b"});
             node.op = op == "add" ? Op::add : Op::multiply;
             node.dependencies = {resolve(authored.at("a")), resolve(authored.at("b"))};
+        } else if (op == "trigger_clock") {
+            keys(authored, {"id", "op", "time", "trigger", "paused", "reset"});
+            node.op = Op::trigger_clock;
+            node.dependencies = {resolve(authored.at("time")), resolve(authored.at("trigger"))};
+            const auto optionalInput = [&](const char *field, bool &connected, double &literal) {
+                const auto found = authored.find(field);
+                if (found == authored.end()) return;
+                if (found->is_string()) {
+                    connected = true;
+                    node.dependencies.push_back(resolve(*found));
+                } else literal = number(*found);
+            };
+            optionalInput("paused", node.has_pause, node.pause_default);
+            optionalInput("reset", node.has_reset, node.reset_default);
         } else if (op == "playback") {
             keys(authored, {"id", "op", "elapsed", "source_begin", "source_end",
                             "duration", "speed", "delay", "sample_interval", "wrap"});
@@ -248,14 +262,22 @@ const GraphInstanceOwner *Graph::parameterOwner(std::string_view parameter) cons
 bool Graph::nodeActive(std::string_view node, const InactiveScopes &inactive) const {
     return active(node_scopes_, node, inactive);
 }
+void Graph::resetState(EvaluationState &state, const InactiveScopes &scopes) const {
+    if (state.graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
+    std::erase_if(state.triggers_, [&](const auto &entry) { return !nodeActive(nodes_[entry.first].id, scopes); });
+}
 
-Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive) const {
-    auto result = evaluateInternal(inputs, parameters, inactive);
+Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive,
+                        EvaluationState *state) const {
+    auto result = evaluateInternal(inputs, parameters, inactive, state);
     for (const auto &output : lowered_outputs_) result.erase(output);
     return result;
 }
 
-Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive) const {
+Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive,
+                                EvaluationState *state) const {
+    if (state && state->graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
+    auto triggers = state ? state->triggers_ : std::map<std::size_t, EvaluationState::Trigger>{};
     for (const auto &[name, value] : parameters) {
         if (!parameter_defaults_.contains(name)) throw std::invalid_argument("unknown graph parameter: " + name);
         if (!std::isfinite(value)) throw std::invalid_argument("graph parameter must be finite: " + name);
@@ -263,7 +285,10 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
     std::vector<double> values(nodes_.size());
     for (const auto index : order_) {
         const auto &node = nodes_[index];
-        if (!nodeActive(node.id, inactive)) continue;
+        if (!nodeActive(node.id, inactive)) {
+            triggers.erase(index);
+            continue;
+        }
         auto &value = values[index];
         switch (node.op) {
         case Op::input: {
@@ -281,6 +306,23 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         case Op::add: value = values[node.dependencies[0]] + values[node.dependencies[1]]; break;
         case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
         case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
+        case Op::trigger_clock: {
+            if (!state) throw std::invalid_argument("trigger clock requires evaluation state: " + node.id);
+            auto &trigger = triggers[index];
+            const auto time = values[node.dependencies[0]];
+            const bool high = values[node.dependencies[1]] != 0;
+            const bool paused = (node.has_pause ? values[node.dependencies[2]] : node.pause_default) != 0;
+            const bool reset = (node.has_reset ? values[node.dependencies[2 + node.has_pause]] : node.reset_default) != 0;
+            if (reset) trigger.clock.stop();
+            else {
+                if (high && !trigger.high) trigger.clock.trigger(time);
+                if (paused) trigger.clock.pause(time);
+                else trigger.clock.resume(time);
+            }
+            trigger.high = high;
+            value = trigger.clock.elapsed(time);
+            break;
+        }
         case Op::playback: {
             auto settings = node.playback;
             for (std::size_t i = 0; i < node.playback_inputs.size(); ++i)
@@ -298,13 +340,14 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         output.reserve(indices.size());
         for (const auto index : indices) output.push_back(values[index]);
     }
+    if (state) state->triggers_ = std::move(triggers);
     return result;
 }
 
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
-                             const ParameterValues &parameters, const InactiveScopes &inactive) const {
-    const auto outputs = evaluateInternal(inputs, parameters, inactive);
+                             const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state) const {
+    const auto outputs = evaluateInternal(inputs, parameters, inactive, state);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
     prepared.reserve(bindings_.size());

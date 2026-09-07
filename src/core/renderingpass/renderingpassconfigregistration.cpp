@@ -929,6 +929,7 @@ registerRenderingPassConfigVariantsData(
         for (auto &program : variant_programs) {
             program.value_graph = value_graph;
             if (value_graph) {
+                auto validation_state = value_graph->createState();
                 const auto bindings = value_graph->publish(GameContext{},
                     {{"time", 0}, {"delta_time", 0}, {"scene_time", 0}}, {},
                     [&](std::string_view name, std::span<const float> values) {
@@ -937,7 +938,7 @@ registerRenderingPassConfigVariantsData(
                         const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
                         return buffer.host_source == FrameGraphHostBufferSource::runtime_f32 &&
                                buffer.size == values.size_bytes();
-                    });
+                    }, {}, {}, &validation_state);
                 if (!bindings.unavailable.empty())
                     throw std::runtime_error("unbound frame graph output: " + bindings.unavailable.front());
             }

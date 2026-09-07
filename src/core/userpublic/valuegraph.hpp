@@ -28,8 +28,20 @@ struct PublishResult {
     std::vector<std::string> unavailable;
 };
 
-// Immutable scalar dataflow. Inputs supply clocks or other external values;
-// evaluation does not advance a clock or perform side effects.
+class Graph;
+class EvaluationState {
+    friend class Graph;
+    explicit EvaluationState(const Graph *graph) : graph_(graph) {}
+    const Graph *graph_;
+    struct Trigger {
+        Animation::CurveTriggerClock clock;
+        bool high{};
+    };
+    std::map<std::size_t, Trigger> triggers_;
+};
+
+// Immutable scalar dataflow. Stateful nodes update an explicit EvaluationState;
+// evaluate never publishes values to external services.
 class PELICAN_API Graph {
   public:
     explicit Graph(std::string_view document);
@@ -38,8 +50,11 @@ class PELICAN_API Graph {
     const GraphInstanceOwner *parameterOwner(std::string_view parameter) const noexcept;
     const GraphInstanceOwners &instanceOwners() const noexcept { return instance_owners_; }
     bool nodeActive(std::string_view node, const InactiveScopes &inactive) const;
+    // The graph must outlive its state. Separate states evaluate independently.
+    EvaluationState createState() const { return EvaluationState{this}; }
+    void resetState(EvaluationState &state, const InactiveScopes &scopes) const;
     Outputs evaluate(const Inputs &inputs, const ParameterValues &parameters = {},
-                     const InactiveScopes &inactive = {}) const;
+                     const InactiveScopes &inactive = {}, EvaluationState *state = nullptr) const;
     // Owner-thread evaluation and explicit service publication. Sound targets
     // are symbolic names, resolved using this instance's live handles.
     // Missing/stopped targets are reported; other bindings can still apply.
@@ -49,17 +64,17 @@ class PELICAN_API Graph {
                           const SoundBindings &sounds = {},
                           const RenderValueWriter &render_writer = {},
                           const ParameterValues &parameters = {},
-                          const InactiveScopes &inactive = {}) const;
+                          const InactiveScopes &inactive = {}, EvaluationState *state = nullptr) const;
 
   private:
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters,
-                             const InactiveScopes &inactive) const;
+                             const InactiveScopes &inactive, EvaluationState *state) const;
     ParameterValues parameter_defaults_;
     GraphInstanceOwners instance_owners_;
     ScopeDependencies node_scopes_;
     ScopeDependencies output_scopes_;
     std::vector<std::string> lowered_outputs_;
-    enum class Op { input, parameter, constant, add, multiply, curve, playback };
+    enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock };
     struct Node {
         std::string id;
         Op op{};
@@ -69,6 +84,10 @@ class PELICAN_API Graph {
         std::optional<Animation::ScalarCurve> curve;
         Animation::CurvePlaybackSettings playback;
         std::vector<double Animation::CurvePlaybackSettings::*> playback_inputs;
+        bool has_pause{};
+        bool has_reset{};
+        double pause_default{};
+        double reset_default{};
     };
     std::string document_;
     std::vector<Node> nodes_;

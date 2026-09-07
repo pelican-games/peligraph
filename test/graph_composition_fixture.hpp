@@ -54,6 +54,18 @@ inline nlohmann::json parameterGraphCompositionFixture() {
     return document;
 }
 
+inline void addGraphTriggerClock(nlohmann::json &document) {
+    auto &nodes = document["definitions"]["scaled_curve"]["nodes"];
+    nodes[2]["inputs"]["time"] = {{"node", "playhead"}, {"port", "value"}};
+    for (const auto *name : {"fire", "paused", "reset"})
+        nodes.push_back({{"id", name}, {"op", "graph.input"}, {"default", 0}});
+    nodes.push_back({{"id", "playhead"}, {"op", "value.trigger_clock"},
+        {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+                    {"trigger", {{"node", "fire"}, {"port", "value"}}},
+                    {"paused", {{"node", "paused"}, {"port", "value"}}},
+                    {"reset", {{"node", "reset"}, {"port", "value"}}}}}, {"outputs", {"value"}}});
+}
+
 inline void addGraphImageStage(nlohmann::json &document) {
     const nlohmann::json type{{"semantic", "pelican.render.color_signal@1"},
         {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};

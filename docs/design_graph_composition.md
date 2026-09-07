@@ -126,6 +126,28 @@ inactive引数で同じ条件を指定でき、省略時は従来どおり全sco
 root.rendering内に手書きしたnative passの暗黙の資源参照は共通edgeではなく、このscope伝播の
 対象外。画像passの共通化、状態/eventの停止・解放、GPU資源の個体別回収は引き続き残件。
 
+### 個体別のトリガー時計（2026-09-07）
+
+value.trigger_clockはtime/triggerのscalar入力とvalue（経過秒）出力を持つ。triggerの
+0→非0で開始/再開始し、非0を保持している間は再開始しない。任意のpaused入力で時計を
+止め、解除時は停止時間を除外して続ける。resetが非0なら開始前へ戻す。resetが優先し、
+解除後もtriggerが非0のままなら再開始しない。paused/resetは省略時0でliteralも使用できる。
+経過秒は既存value.playbackやvalue.curveへ接続し、再生範囲/速度/サンプリングや形状と分離する。
+
+Graph本体は不変。createStateで作ったEvaluationStateをevaluate/publishへ渡して保持し、
+別stateは時計と立上がり検出状態を共有しない。stateよりGraphを長生きさせる。別Graphの
+stateの流用は拒否する。不在scopeの時計は破棄し、再有効化時は未開始から評価する。
+数値評価が失敗した場合は時計の更新を確定しない。publish先の反映失敗までを含む
+複数サービスのtransactionを追加したものではない。
+
+SceneLoaderは既存のGraph弱参照ごとのruntime表でparameterと評価状態を一緒に所有する。
+ownerのruntime objectが消失/交代したscopeの状態を破棄し、scene commitで全stateを破棄する。
+通常Rendererが保持stateを供給し、描画候補の事前検査には使い捨てstateを使うため、失敗候補で
+公開中の再生をリセットしない。CurveTriggerClockのelapsed/pause/resumeを再利用する。
+
+これはscalar信号の立上がりによる時計。フレーム間の複数イベントをキューで保存する機能、
+型付きevent port、音声再生/停止イベント、物理step間のイベント受渡しは引き続き未実装。
+
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
 [lowerRenderGraphDocument](../src/project/rendergraphcomposition.hpp)を既存の

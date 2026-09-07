@@ -61,8 +61,14 @@ DECLARE_MODULE(SceneLoader) {
         double value;
     };
     using GraphParameterOverrides = std::map<std::string, GraphParameterOverride, std::less<>>;
-    std::map<std::weak_ptr<const ValueGraph::Graph>, GraphParameterOverrides, std::owner_less<>> graph_parameters;
-    GraphParameterOverrides &synchronizeGraphParameters(const std::shared_ptr<const ValueGraph::Graph> &graph);
+    struct GraphRuntime {
+        explicit GraphRuntime(const ValueGraph::Graph &graph) : evaluation(graph.createState()) {}
+        GraphParameterOverrides parameters;
+        ValueGraph::EvaluationState evaluation;
+        std::map<std::string, GameObjectId> owners;
+    };
+    std::map<std::weak_ptr<const ValueGraph::Graph>, GraphRuntime, std::owner_less<>> graph_runtime;
+    GraphRuntime &synchronizeGraphRuntime(const std::shared_ptr<const ValueGraph::Graph> &graph);
     bool ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
                             std::string_view parameter) const;
     std::uint64_t next_authority_epoch = 1;
@@ -112,6 +118,7 @@ DECLARE_MODULE(SceneLoader) {
                            GameObjectId object, std::string_view parameter, std::optional<double> value);
     ValueGraph::ParameterValues graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph);
     ValueGraph::InactiveScopes inactiveGraphScopes(const ValueGraph::Graph &graph) const;
+    ValueGraph::EvaluationState &graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph);
     nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;

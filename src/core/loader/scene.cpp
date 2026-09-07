@@ -1125,7 +1125,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
         std::declval<std::optional<SceneId> &>())));
     metadata.commit(phase_trace);
     scene_start_time = candidate_scene_start_time;
-    graph_parameters.clear();
+    graph_runtime.clear();
 
     effect_transaction->setRetiredObjects(destroyed_entities);
     behavior_candidate->finish(phase_trace);
@@ -1367,31 +1367,53 @@ bool SceneLoader::ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectI
     });
 }
 
-SceneLoader::GraphParameterOverrides &SceneLoader::synchronizeGraphParameters(
+SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
     const std::shared_ptr<const ValueGraph::Graph> &graph) {
-    std::erase_if(graph_parameters, [](const auto &entry) { return entry.first.expired(); });
-    auto &parameters = graph_parameters[graph];
+    std::erase_if(graph_runtime, [](const auto &entry) { return entry.first.expired(); });
+    auto &runtime = graph_runtime.try_emplace(graph, *graph).first->second;
+    std::map<std::string, GameObjectId> owners;
+    for (const auto &[scope, owner] : graph->instanceOwners()) {
+        if (owner.scene != currentScene()) continue;
+        for (const auto &binding : runtime_object_bindings)
+            if (binding.authoring_object_id.value == owner.object &&
+                GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(binding.object_id)) {
+                owners.emplace(scope, binding.object_id);
+                break;
+            }
+    }
+    ValueGraph::InactiveScopes changed;
+    for (const auto &[scope, object] : runtime.owners) {
+        const auto next = owners.find(scope);
+        if (next == owners.end() || next->second != object) changed.insert(scope);
+    }
+    graph->resetState(runtime.evaluation, changed);
+    runtime.owners = std::move(owners);
+    auto &parameters = runtime.parameters;
     std::erase_if(parameters, [&](const auto &entry) {
         return !ownsGraphParameter(*graph, entry.second.object, entry.first);
     });
-    return parameters;
+    return runtime;
 }
 
 bool SceneLoader::setGraphParameter(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
                                    std::string_view parameter, std::optional<double> value) {
     if (value && !std::isfinite(*value)) throw std::invalid_argument("graph parameter must be finite");
     if (!ownsGraphParameter(*graph, object, parameter)) return false;
-    auto &parameters = synchronizeGraphParameters(graph);
+    auto &parameters = synchronizeGraphRuntime(graph).parameters;
     if (value) parameters.insert_or_assign(std::string{parameter}, GraphParameterOverride{object, *value});
     else parameters.erase(std::string{parameter});
     return true;
 }
 
 ValueGraph::ParameterValues SceneLoader::graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph) {
-    const auto &parameters = synchronizeGraphParameters(graph);
+    const auto &parameters = synchronizeGraphRuntime(graph).parameters;
     ValueGraph::ParameterValues values;
     for (const auto &[name, parameter] : parameters) values.emplace(name, parameter.value);
     return values;
+}
+
+ValueGraph::EvaluationState &SceneLoader::graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph) {
+    return synchronizeGraphRuntime(graph).evaluation;
 }
 
 ValueGraph::InactiveScopes SceneLoader::inactiveGraphScopes(const ValueGraph::Graph &graph) const {

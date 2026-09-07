@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 共通graphの最新到達点: owner不在の数値評価/publish/依存compute停止に続き、render.imageとcomputeのstorage/sampled画像portを通常Rendererへ接続した。数値→buffer→image→buffer、独立枝の継続、owner削除時の停止とscene reloadによる再開を実GPUで確認。次は状態/event所有とraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
+- 共通graphの最新到達点: owner停止、render.image/storage・sampled画像portに続き、個体別EvaluationStateとvalue.trigger_clockを通常Rendererへ接続。信号の立上がりで開始し、一時停止/再開/reset、scene reloadでの状態破棄をbuffer/image経路の実GPU出力で確認。次は型付きevent受渡しとraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
 
 - 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・image・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像pass・feature共通instance・状態/イベント・Studio統合は残件。
 
@@ -23249,6 +23249,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**個体別トリガー時計と実行状態 (2026-09-07):**
+- value.trigger_clockはtime/trigger入力、任意paused/reset入力、経過秒value出力を持つ。0→非0で開始/再開始し、保持中は再開始しない。reset優先、解除後の保持triggerでは再開せず、新しい立上がりを待つ。既存CurveTriggerClockへelapsed/pause/resumeを追加し再利用。
+- Graphは不変、createStateで作るEvaluationStateに時計と立上がり検出を分離。異Graphへのstate流用は拒否。不在scopeとowner runtime objectの消失/交代で該当時計を破棄。SceneLoaderの既存弱参照runtime表へparameterと一緒に保持し、scene commitで破棄。候補の検査は一時stateで行い、旧世代の再生を変更しない。
+- Player Debug build成功。CPU 36case/1563assertion、GPU skeletal 7case/256assertion成功（graph_trigger_build.log / graph_trigger_cpu.log / graph_trigger_gpu.log）。独立state、同時刻の重複評価、inactiveからの未開始復帰をCPUで確認。通常Rendererでは開始後の1→4、pause中4の保持、resume後7、reset後1、再trigger後4、scene reload後1をbuffer/storage画像/sampled画像の全経路で確認。失敗候補の後も再生位置7を維持した。
+- 立上がり検出を外すと保持trigger時の時間経過が落ちる。pauseの開始時刻補正を外すと再開直後の4保持が落ちる。reload後の出力確認だけでは時刻リセットとの相互作用があるため、state破棄処理単独の変異検出は主張しない。個別変異実行は未実施。複数イベントのキュー、型付きevent port、音声/物理イベントの受渡しは未了。build後のvaluegraph.hpp変更はコメントの訂正のみ。
 
 **共通graphの画像資源/compute port (2026-09-07):**
 - render.imageは既存LogicalTypeRegistryのimage semantic/enum argumentsをtypeに保存し、残りの設定をrender targetへ変換する。compute portはkind=image/typeとread/write/read_writeを照合し、binding/view/sampling/subresourceを既存shader resource契約へ渡す。生成画像はpreset解決後に構成する。

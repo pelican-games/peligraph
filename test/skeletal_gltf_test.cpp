@@ -569,6 +569,31 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     loadRenderGraphVariantsFromConfigData(document.dump());
     REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() > generation);
     REQUIRE(render(11) == 4.0f);
+    addGraphTriggerClock(document);
+    loadRenderGraphVariantsFromConfigData(document.dump());
+    REQUIRE(render(12) == 1);
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/fire", 1));
+    REQUIRE(render(12) == 1);
+    REQUIRE(render(12.25) == 4);
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/paused", 1));
+    REQUIRE(render(12.25) == 4);
+    REQUIRE(render(12.75) == 4);
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/paused", 0));
+    REQUIRE(render(12.75) == 4);
+    REQUIRE(render(13) == 7);
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid.dump()));
+    REQUIRE(render(13) == 7);
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/reset", 1));
+    REQUIRE(render(13) == 1);
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/reset", 0));
+    REQUIRE(render(13.25) == 1); // A held trigger does not restart after reset.
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/fire", 0));
+    REQUIRE(render(13.25) == 1);
+    REQUIRE(context.setGraphParameter(reloaded_left, "left/fire", 1));
+    REQUIRE(render(13.25) == 1);
+    REQUIRE(render(13.5) == 4);
+    test_support::loadScene(scene, "default_scene");
+    REQUIRE(render(14) == 1);
 }
 
 } // namespace Pelican

@@ -106,15 +106,31 @@ bool CurveTriggerClock::trigger(double time, CurveRetrigger policy) {
     if (policy != CurveRetrigger::restart && policy != CurveRetrigger::ignore_active)
         throw std::invalid_argument("unknown curve retrigger policy");
     if (triggered_ && policy == CurveRetrigger::ignore_active &&
-        (settings_.wrap != CurveWrap::once || time - started_ < settings_.delay ||
-         progress(settings_, time - started_ - settings_.delay) < 1)) return false;
+        (settings_.wrap != CurveWrap::once || elapsed(time) < settings_.delay ||
+         progress(settings_, elapsed(time) - settings_.delay) < 1)) return false;
     started_ = time;
     triggered_ = true;
+    paused_at_.reset();
     return true;
+}
+void CurveTriggerClock::pause(double time) {
+    finite(time);
+    if (triggered_ && !paused_at_) paused_at_ = time;
+}
+void CurveTriggerClock::resume(double time) {
+    finite(time);
+    if (paused_at_) {
+        started_ += time - *paused_at_;
+        paused_at_.reset();
+    }
+}
+double CurveTriggerClock::elapsed(double time) const {
+    finite(time);
+    return triggered_ ? paused_at_.value_or(time) - started_ : 0.0;
 }
 CurveSample CurveTriggerClock::sample(const ScalarCurve &curve, double time) const {
     finite(time);
-    auto result = sampleCurve(curve, settings_, triggered_ ? time - started_ : 0.0);
+    auto result = sampleCurve(curve, settings_, elapsed(time));
     if (!triggered_) { result.active = false; result.completed = false; }
     return result;
 }

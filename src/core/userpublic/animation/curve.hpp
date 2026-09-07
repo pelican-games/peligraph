@@ -2,6 +2,7 @@
 
 #include "../export.hpp"
 #include <span>
+#include <optional>
 #include <vector>
 
 namespace Pelican::Animation {
@@ -69,12 +70,16 @@ class PELICAN_API CurveTriggerClock {
   public:
     explicit CurveTriggerClock(CurvePlaybackSettings settings = {});
     bool trigger(double time, CurveRetrigger policy = CurveRetrigger::restart);
-    void stop() noexcept { triggered_ = false; }
+    void stop() noexcept { triggered_ = false; paused_at_.reset(); }
+    void pause(double time);
+    void resume(double time);
+    double elapsed(double time) const;
     CurveSample sample(const ScalarCurve &curve, double time) const;
   private:
     CurvePlaybackSettings settings_;
     double started_{};
     bool triggered_{};
+    std::optional<double> paused_at_;
 };
 
 } // namespace Pelican::Animation
