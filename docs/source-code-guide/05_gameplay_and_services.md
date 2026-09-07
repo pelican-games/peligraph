@@ -673,7 +673,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 >
 > **不変条件**: 1 フェーズ実行につき staged frame は 1 枚。staged frame の palette は必ず自前バッファで、呼び出し側のポインタを保持しない。`pose_accessed` が立ったら palette は必ず作り直す(最適化するなら「書き込みがあったか」を別途追跡することになり、読み取り専用 acquire との区別を ABI へ足す必要があります)。
 
-> 🧩 **難所 — 割り込みとスナップショット**([`Impl::evaluate()`](../../src/core/userpublic/animation/animgraph.cpp#L711) / [`chooseTransition()`](../../src/core/userpublic/animation/animgraph.cpp#L671))
+> 🧩 **難所 — 割り込みとスナップショット**([`Impl::evaluate()`](../../src/core/userpublic/animation/animgraph.cpp#L714) / [`chooseTransition()`](../../src/core/userpublic/animation/animgraph.cpp#L674))
 >
 > **何をする所か**: 1 tick 分のグラフ評価です。現在のポーズを作り、遷移判定を行い、必要なら遷移を開始 / 前進させ、local→model→palette を経て publish します。
 >
@@ -691,7 +691,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 > 4. 遷移を新規開始していなければ elapsed += dt
 > ```
 >
-> **手がかり**: `next.source_is_snapshot = transition.has_value()` — 「遷移中からの割り込みだけ」がスナップショットを持ちます(待機状態からの遷移は source が実 state なので不要)。`states[target].phase = 0.0` により、同 tick の exit→enter でクロックが必ず 0 に戻ります。`chooseTransition()` の `static TransitionV1 forced_transition;` は**関数ローカル static** を毎回上書きしてポインタを返す形で、安全なのは `duration = 0.0` を必ず設定していて、呼び出し側が duration 0 の枝で即座に state を切り替え `transition` に**保存しない**からです。forced に duration を持たせる改造をすると、次の `forceState()` で書き換わる生きたポインタになります。テストは [`animgraph_test.cpp`](../../test/animgraph_test.cpp#L164) の "interrupt materializes one snapshot and alpha zero output is byte identical"、[即時切替とクロック復帰](../../test/animgraph_test.cpp#L208)、[遷移選択の優先順位](../../test/animgraph_test.cpp#L138)。
+> **手がかり**: `next.source_is_snapshot = transition.has_value()` — 「遷移中からの割り込みだけ」がスナップショットを持ちます(待機状態からの遷移は source が実 state なので不要)。`states[target].phase = 0.0` により、同 tick の exit→enter でクロックが必ず 0 に戻ります。`chooseTransition()` の `static TransitionV1 forced_transition;` は**関数ローカル static** を毎回上書きしてポインタを返す形で、安全なのは `duration = 0.0` を必ず設定していて、呼び出し側が duration 0 の枝で即座に state を切り替え `transition` に**保存しない**からです。forced に duration を持たせる改造をすると、次の `forceState()` で書き換わる生きたポインタになります。テストは [`animgraph_test.cpp`](../../test/animgraph_test.cpp#L229) の "interrupt materializes one snapshot and alpha zero output is byte identical"、[即時切替とクロック復帰](../../test/animgraph_test.cpp#L273)、[遷移選択の優先順位](../../test/animgraph_test.cpp#L138)。
 >
 > **不変条件**: スナップショットは 1 遷移につき 1 枚(多段割り込みで積み増さない)。`alpha == 0` の出力はスナップショット byte と完全一致。遷移を開始した tick では `elapsed` を進めない。`chooseTransition()` が返す forced 用ポインタを duration 0 の即時経路以外で保持しない。
 

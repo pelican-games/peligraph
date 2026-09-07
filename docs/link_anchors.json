@@ -3594,7 +3594,7 @@
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/animation/abi_v1.hpp|`PELICAN_ANIM_HANDLE`": "#define PELICAN_ANIM_HANDLE(name) \\",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/animation/abi_v1.hpp|`getApiV1()`": "PELICAN_API Status getApiV1(std::uint32_t client_abi_version, ApiV1 *out_api) noexcept;",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/animation/abi_v1.hpp|`isValid()`": "template <class T> constexpr bool isValid(T handle) noexcept {",
-    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/animation/animgraph.cpp|`EvaluatorV1::rebind()`": "Status rebind() {",
+    "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/animation/animgraph.cpp|`EvaluatorV1::rebind()`": "Status EvaluatorV1::rebind() { return impl_->rebind(); }",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/behavior.hpp|`invalidBehaviorAttachmentHandle{}`": "inline constexpr BehaviorAttachmentHandle invalidBehaviorAttachmentHandle{};",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/details/behavior/registerer.hpp|`BehaviorRegistration`": "struct BehaviorRegistration {",
     "docs/source-code-guide/09_black_magic_and_gotchas.md|../../src/core/userpublic/details/behavior/registerer.hpp|`PELICAN_REGISTER_BEHAVIOR(Type, stable_name, schema_version)`": "#define PELICAN_REGISTER_BEHAVIOR(Type, stable_name, schema_version) \\",

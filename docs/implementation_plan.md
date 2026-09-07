@@ -23246,6 +23246,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**アニメーショングラフの明示解除と装着失敗の回収 (2026-09-07):**
+- 公開EvaluatorV1へunbindを追加。phase/cursor/sourceを解放し、評価器とパラメーターを保持したまま別writerへ切り替えられる。状態・時計・前回pose・未評価tickは解除し、bindで初期状態から再開する。世代更新時に状態を保持するrebindの意味は変更しない。
+- bind完了前の失敗をscope cleanupで回収。作成中stateを先に所有配列へ置き、cursor格納容量を取得前に確保するため、同state内の後続clip解決失敗でも既存cursorを回収する。成功時は以前のlastErrorも消す。
+- Playerとcore_foundation Debug build成功、既存animgraph全11case/325assertion成功。競合writerの装着拒否後も旧writerが動くこと、明示解除後の交代と再装着、パラメーター保持/時計初期化、後続clip欠落をmodel reloadで補った後の再試行を確認。解除を外すとwriter交代がauthority_conflictで失敗する。回収漏れの個別変異・メモリ計測は未実施。doclink checkは3869件成功。
+- animation.graphのcomponent装着は未実装。接続前に、AnimationServiceの名前によるscene object cacheをentity/scene epoch/renderer instanceの変更へ追随させる必要がある。現行resolve_sinkは既存名を再解決しないため、評価器再生成だけでは同名再spawn等を扱えない。外部Evaluatorを巻き込む全面resetではなく対象objectの登録更新/解除を検討する。
+- 利用者の追加要望として、アニメーション・物理のノード合成と、カーブ/姿勢/物理結果からrender graph入力への型付き接続をv1開発計画へ記録。今回実装したのはwriter解除の基盤であり、物理ノード・剛体シミュレーション・graph間接続を完成としない。
+
 **meshの初期めり込み解消 (2026-09-07):**
 - Sphere/Box/CapsuleのShape Castで、初期貫通を無条件unavailableにする分岐を置き換えた。三角形/軸線prism/Box SATの個別押し戻しから深い接触を解消し、返す補正をmesh全体へ再適用して検証する。1回で解消する通常MTDと、複数面への補正・一部prism境界・world AABB外への退避をAPIのapproximate_depenetrationで区別する。Sphereが頂点上にある場合はnormal coneも使い、既存の優先方向を適用する。
 - 狭い隙間など局所補正が往復する場合は32回で打ち切り、6方向のAABB外候補から検証済みの最短候補を返す。利用側と同じfloatのnormal×depth・座標加算、およびproviderによる法線正規化後の値で深い貫通が残らないことを確認する。表現可能な補正が得られない場合だけunavailable。近似時のpositionは元のmesh接触点で、補正後の接点とは限らない。

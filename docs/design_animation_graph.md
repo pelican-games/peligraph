@@ -171,6 +171,20 @@ v1 スコープ = clip state + blend1d + crossfade(調査 §6.1 で条件付き�
   所有するショットでは extract-only、graph 所有時は apply — source
   authority ごとの policy(暗黙の二重 writer を作らない)
 
+### 評価器の装着と解除（2026-09-07）
+
+`EvaluatorV1::unbind()`はphase登録・clip cursor・skeletal sourceの所有を
+解放し、評価器を破棄せず別sourceへwriterを渡せる。反復呼出しは無害。
+パラメーター値は保持し、状態・clip時計・遷移・未評価tick・前回poseは解除する。
+再開には`bind()`を使い、初期状態から評価する。モデル世代変更時に進行中の
+状態を保持する既存`rebind()`とは別の操作。装着途中の失敗でも取得済み資源を
+解放し、既存の別writerを奪わない。
+
+物理とアニメーションのノード合成では、poseの評価・衝突問い合わせ／物理更新・
+最終反映を分離し、固定時間刻みと表示用補間の境界を明示する。この解除操作は
+sourceを切り替える基盤であり、ラグドール・剛体シミュレーション・物理ノードや
+`animation.graph`のcomponent装着を実装したという意味ではない。
+
 ## 4. glTF / VRMA の受理(調査 §4.2 — VRM 一級化の要件)
 
 4 段パイプライン: ①コンテナ decode(`.vrma` = glb alias +

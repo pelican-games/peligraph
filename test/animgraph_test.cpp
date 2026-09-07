@@ -161,6 +161,71 @@ TEST_CASE("transition decision is force sequence then priority then declaration 
     }
 }
 
+TEST_CASE("graph writers can detach and take turns without destroying their evaluators",
+          "[animation][animgraph][a2][lifecycle]") {
+    auto model = graphAsset();
+    auto &runtime = animationServiceRuntime();
+    runtime.reset();
+    runtime.registerObject("Hero", model);
+    internal::ScopedRegistrationOwner owner_scope{101};
+    EvaluatorV1 first{parseDocumentV1(orderedGraph), "Hero"};
+    EvaluatorV1 second{parseDocumentV1(orderedGraph), "Hero"};
+    REQUIRE(first.bind() == Status::ok);
+    const auto sink = resolveSink("Hero");
+    REQUIRE(first.setParameter("go", 1.0) == Status::ok);
+    tick(first, sink, 0.25);
+    REQUIRE(first.getStatus().current_state == "B");
+    REQUIRE(second.bind() == Status::authority_conflict);
+    REQUIRE_FALSE(second.bound());
+    // A failed competing bind must leave the current writer usable.
+    tick(first, sink, 0.25);
+    REQUIRE(first.getStatus().current_state == "B");
+    first.unbind();
+    first.unbind();
+    REQUIRE_FALSE(first.bound());
+    REQUIRE(first.lastPoseBytes().empty());
+    REQUIRE(first.prepareTick(1.0, 0.25, nextRevision()) == Status::invalid_handle);
+    REQUIRE(second.bind() == Status::ok);
+    REQUIRE(second.lastError().empty());
+    tick(second, sink, 0.25);
+    REQUIRE(second.getStatus().current_state == "A");
+    REQUIRE_FALSE(second.lastPoseBytes().empty());
+    second.unbind();
+    REQUIRE(first.bind() == Status::ok);
+    tick(first, sink, 0.0);
+    // The parameter survives detachment, but the old B clip clock does not.
+    REQUIRE(first.getStatus().current_state == "B");
+    const auto resumed = first.getStatus();
+    const auto resumed_b = std::find_if(resumed.cursors.begin(), resumed.cursors.end(),
+                                       [](const auto &cursor) { return cursor.clip == "B"; });
+    REQUIRE(resumed_b != resumed.cursors.end());
+    REQUIRE(resumed_b->time_seconds == 0.0);
+}
+
+TEST_CASE("partially resolved graphs can bind after their missing clip is supplied",
+          "[animation][animgraph][a2][lifecycle]") {
+    auto model = graphAsset();
+    auto &runtime = animationServiceRuntime();
+    runtime.reset();
+    runtime.registerObject("Hero", model);
+    internal::ScopedRegistrationOwner owner_scope{101};
+    const auto graph = R"({"schema":"pelican.anim_graph","version":1,
+      "parameters":{"speed":0},"initial_state":"blend",
+      "states":[{"name":"blend","type":"blend1d","parameter":"speed",
+      "clips":[{"clip":"A","threshold":0},{"clip":"Missing","threshold":1}]}]})";
+    EvaluatorV1 evaluator{parseDocumentV1(graph), "Hero"};
+    REQUIRE(evaluator.bind() == Status::not_found);
+    REQUIRE_FALSE(evaluator.bound());
+    REQUIRE(evaluator.lastError().find("Missing") != std::string::npos);
+    auto replacement = graphAsset();
+    replacement.clips.back().name = "Missing";
+    runtime.reloadAsset(&model, &replacement);
+    REQUIRE(evaluator.bind() == Status::ok);
+    REQUIRE(evaluator.lastError().empty());
+    tick(evaluator, resolveSink("Hero"), 0.25);
+    REQUIRE_FALSE(evaluator.lastPoseBytes().empty());
+}
+
 TEST_CASE("interrupt materializes one snapshot and alpha zero output is byte identical",
           "[animation][animgraph][a2][interrupt]") {
     constexpr auto graph = R"json({

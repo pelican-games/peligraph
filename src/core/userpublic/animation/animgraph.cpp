@@ -331,7 +331,6 @@ struct EvaluatorV1::Impl {
     ~Impl() { unbind(); }
 
     void unbind() noexcept {
-        if (!is_bound) return;
         if (isValid(phase_registration) && service.unregister_phase) {
             auto request = descriptor<UnregisterAnimationPhaseDescV1>();
             request.owner = owner;
@@ -351,7 +350,11 @@ struct EvaluatorV1::Impl {
             request.source = source;
             (void)service.release_source(service.context, &request);
         }
+        phase_registration = {};
+        source = {};
+        states.clear();
         is_bound = false;
+        resetClockState();
     }
 
     Status fail(Status status, std::string message) {
@@ -1042,6 +1045,12 @@ struct EvaluatorV1::Impl {
 
     Status bind() {
         if (is_bound) return Status::ok;
+        // Binding acquires resources incrementally. Roll back on both status
+        // failures and exceptions, before a later bind can acquire them again.
+        struct PendingBinding {
+            Impl &impl;
+            ~PendingBinding() { if (!impl.is_bound) impl.unbind(); }
+        } pending{*this};
         api = descriptor<ApiV1>();
         if (const auto status = getApiV1(abiVersionV1, &api); status != Status::ok)
             return fail(status, "getApiV1 failed");
@@ -1077,8 +1086,11 @@ struct EvaluatorV1::Impl {
         joint_count = layout_request.joint_count; palette_count = layout_request.palette_count;
 
         states.clear();
+        states.reserve(document.states.size());
         for (const auto &definition : document.states) {
-            RuntimeState state; state.definition = &definition;
+            auto &state = states.emplace_back();
+            state.definition = &definition;
+            state.clips.reserve(definition.clips.size());
             for (const auto &node : definition.clips) {
                 RuntimeClip clip; clip.node = node;
                 auto resolve = descriptor<ResolveAnimationClipDescV1>();
@@ -1098,7 +1110,6 @@ struct EvaluatorV1::Impl {
                 clip.cursor = cursor.cursor;
                 state.clips.push_back(std::move(clip));
             }
-            states.push_back(std::move(state));
         }
         if (const auto status = ensureApplicationService(states);
             status != Status::ok)
@@ -1122,6 +1133,7 @@ struct EvaluatorV1::Impl {
             return fail(status, "phase registration failed");
         phase_registration = registration.registration_handle;
         is_bound = true;
+        error.clear();
         return Status::ok;
     }
 };
@@ -1132,6 +1144,7 @@ EvaluatorV1::~EvaluatorV1() = default;
 EvaluatorV1::EvaluatorV1(EvaluatorV1 &&) noexcept = default;
 EvaluatorV1 &EvaluatorV1::operator=(EvaluatorV1 &&) noexcept = default;
 Status EvaluatorV1::bind() { return impl_->bind(); }
+void EvaluatorV1::unbind() noexcept { impl_->unbind(); }
 Status EvaluatorV1::rebind() { return impl_->rebind(); }
 bool EvaluatorV1::bound() const noexcept { return impl_->is_bound; }
 Status EvaluatorV1::prepareTick(double absolute_time, double delta_seconds, std::uint64_t frame_revision) {

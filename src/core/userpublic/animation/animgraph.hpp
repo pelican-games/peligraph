@@ -103,6 +103,10 @@ class PELICAN_API EvaluatorV1 {
     // Resolves the object and clips, claims the skeletal sink, and registers a
     // base-pose phase callback through AnimationServiceV1.
     Animation::Status bind();
+    // Releases the phase callback, cursors and skeletal writer so another
+    // source can take over. Parameters survive; bind starts fresh clip clocks.
+    // Safe to call repeatedly, including after a failed bind.
+    void unbind() noexcept;
     // Re-resolves an asset after stale_generation without resetting graph
     // parameters, state clocks, transition snapshots, source, or phase.
     Animation::Status rebind();
