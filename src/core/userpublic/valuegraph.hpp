@@ -34,6 +34,8 @@ class PELICAN_API Graph {
                           const SoundBindings &sounds = {}) const;
 
   private:
+    Outputs evaluateInternal(const Inputs &inputs) const;
+    std::vector<std::string> lowered_outputs_;
     enum class Op { input, constant, add, multiply, curve, playback };
     struct Node {
         std::string id;

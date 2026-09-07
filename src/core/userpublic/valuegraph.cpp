@@ -1,5 +1,6 @@
 #include "valuegraph.hpp"
 #include "gamecontext.hpp"
+#include "../../project/graphcomposition.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -29,10 +30,62 @@ double number(const Json &value) {
         throw std::invalid_argument("value graph values must be finite numbers");
     return value.get<double>();
 }
+
+Json lowerScalarGraph(const Json &authored) {
+    const auto expanded = expandGraphDocument(authored);
+    Json result{{"schema", "pelican.value_graph"}, {"version", 1},
+                {"nodes", Json::array()}, {"outputs", Json::object()}, {"bindings", Json::array()}};
+    const auto source = [](const Json &endpoint) {
+        if (endpoint.at("port") != "value")
+            throw std::invalid_argument("scalar backend requires a value output port");
+        return endpoint.at("node");
+    };
+    for (const auto &[output, endpoint] : expanded.outputs.items())
+        result["outputs"][output] = Json::array({source(endpoint)});
+    for (const auto &node : expanded.nodes) {
+        const auto op = name(node.at("op"));
+        const auto parameters = node.value("parameters", Json::object());
+        const auto &inputs = node.at("inputs");
+        if (op == "render.scalar" || op == "audio.volume" || op == "audio.pitch") {
+            keys(parameters, {"target"});
+            keys(inputs, {"value"});
+            if (node.at("outputs") != Json::array())
+                throw std::invalid_argument("service sink must not declare outputs");
+            const auto output = "$binding/" + name(node.at("id"));
+            if (result["outputs"].contains(output)) throw std::invalid_argument("reserved graph output: " + output);
+            result["outputs"][output] = Json::array({source(inputs.at("value"))});
+            result["bindings"].push_back({{"output", output},
+                {"kind", op == "render.scalar" ? "render_buffer" : op == "audio.volume" ? "sound_volume" : "sound_pitch"},
+                {"target", name(parameters.at("target"))}});
+            continue;
+        }
+        if (!op.starts_with("value.") || node.at("outputs") != Json::array({"value"}))
+            throw std::invalid_argument("unsupported scalar backend operation: " + op);
+        if (!parameters.is_object()) throw std::invalid_argument("node parameters must be an object");
+        Json lowered = parameters;
+        if (lowered.contains("id") || lowered.contains("op"))
+            throw std::invalid_argument("node parameters cannot replace id/op");
+        lowered["id"] = node.at("id");
+        lowered["op"] = op.substr(6);
+        for (const auto &[port, endpoint] : inputs.items()) {
+            if (lowered.contains(port)) throw std::invalid_argument("input also defined as a parameter: " + port);
+            lowered[port] = source(endpoint);
+        }
+        result["nodes"].push_back(std::move(lowered));
+    }
+    return result;
+}
 }
 
 Graph::Graph(std::string_view document) {
-    const auto root = Json::parse(document);
+    const auto authored = Json::parse(document);
+    const auto root = authored.value("schema", std::string{}) == "pelican.graph"
+        ? lowerScalarGraph(authored) : authored;
+    if (authored.value("schema", std::string{}) == "pelican.graph")
+        for (const auto &[output, value] : root.at("outputs").items()) {
+            (void)value;
+            if (!authored.at("outputs").contains(output)) lowered_outputs_.push_back(output);
+        }
     keys(root, {"schema", "version", "nodes", "outputs", "bindings"});
     if (root.at("schema") != "pelican.value_graph" || root.at("version") != 1)
         throw std::invalid_argument("unsupported value graph schema/version");
@@ -156,10 +209,16 @@ Graph::Graph(std::string_view document) {
             bindings_.push_back(std::move(decoded));
         }
     }
-    document_ = root.dump();
+    document_ = authored.dump();
 }
 
 Outputs Graph::evaluate(const Inputs &inputs) const {
+    auto result = evaluateInternal(inputs);
+    for (const auto &output : lowered_outputs_) result.erase(output);
+    return result;
+}
+
+Outputs Graph::evaluateInternal(const Inputs &inputs) const {
     std::vector<double> values(nodes_.size());
     for (const auto index : order_) {
         const auto &node = nodes_[index];
@@ -196,7 +255,7 @@ Outputs Graph::evaluate(const Inputs &inputs) const {
 
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds) const {
-    const auto outputs = evaluate(inputs);
+    const auto outputs = evaluateInternal(inputs);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
     prepared.reserve(bindings_.size());

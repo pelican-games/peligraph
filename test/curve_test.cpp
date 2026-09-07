@@ -1,5 +1,7 @@
 #include "../src/core/userpublic/animation/curve.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
+#include "../src/project/graphcomposition.hpp"
+#include "graph_composition_fixture.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -10,6 +12,30 @@
 
 using namespace Pelican::Animation;
 using Catch::Approx;
+
+TEST_CASE("common graph instances share definitions but preserve scope and connections", "[curve][graph-composition]") {
+    const auto document = nlohmann::json::parse(graphCompositionFixture);
+    const auto expanded = Pelican::expandGraphDocument(document);
+    REQUIRE(expanded.origins.at("left/shape").instance_path == "left/");
+    REQUIRE(expanded.origins.at("right/shape").definition == "scaled_curve");
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    REQUIRE(nlohmann::json::parse(graph.serialize()) == document);
+    const auto output = Pelican::ValueGraph::Graph{graph.serialize()}.evaluate({{"time", 0.25}});
+    REQUIRE(output.size() == 2);
+    REQUIRE(output.at("left")[0] == Approx(0.5));
+    REQUIRE(output.at("right")[0] == Approx(1.0));
+    auto edited = document;
+    edited["nodes"][1]["parameters"]["value"] = 3;
+    const auto changed = Pelican::ValueGraph::Graph{edited.dump()}.evaluate({{"time", 0.25}});
+    REQUIRE(changed.at("left")[0] == Approx(0.75));
+    REQUIRE(changed.at("right")[0] == Approx(1.0));
+    auto invalid = document;
+    invalid["nodes"][3]["inputs"].erase("gain");
+    REQUIRE_THROWS(Pelican::expandGraphDocument(invalid));
+    invalid = document;
+    invalid["nodes"][5]["inputs"]["value"]["port"] = "missing";
+    REQUIRE_THROWS(Pelican::expandGraphDocument(invalid));
+}
 
 TEST_CASE("playback nodes map dynamic timing independently of curve shape", "[curve][valuegraph]") {
     const Pelican::ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,

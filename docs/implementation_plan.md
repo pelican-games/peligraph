@@ -23248,6 +23248,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**共通authoringのsubgraph instance展開を数値backendへ接続 (2026-09-07):**
+- 検証結果: curve/animgraph 20case/446assertion、実Vulkan対象5case/76assertion成功。
+- project/graphcompositionへpelican.graph文書のdefinitions/nodes/outputsとgraph.instance/graph.inputの展開を追加。通常のnode/port参照で境界を接続し、instance pathで派生node idを分離、originsで定義と元nodeを追跡する。操作の意味をproject側の展開へ埋め込まない。
+- ValueGraphが共通形式を既存の数値計算へ変換する。value.*とrender.scalar/audio.volume/audio.pitchを受け、サービスsinkは既存の反映経路へ変換。serializeは原文の定義・instance・接続を残し、内部生成bindingは保存・公開出力へ漏らさない。
+- Player Debug build成功。同一定義の2instance、別々のgain入力、保存再読込と原文維持、出自追跡、未接続入力/不明出力拒否、公開port経由の実Vulkan buffer反映を確認。instance入力の対応付けを共有すると2個体の対照、sink反映を外すとbuffer内容の対照が落ちる。個別変異は未実施。状態を持つ個体の独立性やshader消費結果までは検証していない。
+- 共通化の最初の実装。既存render authoringの取込み、LogicalTypeRegistryによる全領域型照合、外部定義asset参照、scene所有/自動実行、Studio表示・編集は残件。render scalarのtargetは既存buffer名であり、render resource全体の正本統合は未了。
+
 **全体グラフ共通化のauthoring接点確認 (2026-09-07):**
 - 利用者の追加観点であるattribute生成/付与・固有shaderを共通化設計へ含めた。material反復のJSON保存粒度は未確定と明記し、対象条件/反復本体と実行時列挙結果を区別する暫定案を記録した。
 - featurecomposeのpreset解決→parameter binding→config構成とprovenance/observerを確認。materializeRenderFeatureDocumentはparameter具体化であり、汎用subgraph/material反復の展開ではない。materialloweringのshader契約・値/textureへの変換も、authoring反復と区別する。

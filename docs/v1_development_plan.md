@@ -98,6 +98,9 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 同じ編集モデルのサブグラフinstanceとして保存し、Studioだけ表示を分ける。
 既存CompiledLogicalRenderGraphは描画用の派生結果であり、編集の正本に転用しない。
 現在のValueGraph・bindingsとanimation componentは実装済みだが共通化は未了。
+project/graphcompositionへ共通形式の定義/instance/port展開を追加し、ValueGraphの
+数値backendへ接続した。保存は元の共通文書を保ち、生成bindingは派生結果とする。
+既存render authoring/型体系/scene/Studioとの統合は未了。
 次は既存authoringの参照解決/feature展開との接点を具体化し、数値→描画の一経路を
 共通port/edgeへ接続する。専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
 アトリビュート生成/付与・固有shaderもこの共通表現へ含める。material反復の

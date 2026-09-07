@@ -22,6 +22,7 @@
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "skeletal_fixture.hpp"
+#include "graph_composition_fixture.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -344,6 +345,26 @@ TEST_CASE("curve samples publish to a runtime float render buffer", "[runtime-re
     auto invalid = declaration;
     invalid["buffers"][0]["size"] = 6;
     REQUIRE_THROWS(parseFrameGraphBufferDefinitionsFromJson(invalid));
+    vkcore.waitIdle();
+}
+
+TEST_CASE("common graph public ports reach a render buffer", "[skeletal][graph-composition]") {
+    setupLogger();
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).headless = true;
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    auto &resources = GET_MODULE(FrameGraphResourceContainer);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    resources.registerBuffers(parseFrameGraphBufferDefinitionsFromJson(nlohmann::json::parse(
+        R"({"buffers":[{"name":"scoped_value","size":4,"host_source":"runtime_f32"}]})")));
+    const ValueGraph::Graph graph{graphCompositionFixture};
+    const ValueGraph::Graph restored{graph.serialize()};
+    REQUIRE(restored.publish(GameContext{}, {{"time", 0.25}}).applied == 1);
+    resources.uploadRuntimeValues();
+    const auto bytes = vkcore.readBuf(resources.buffer("scoped_value"), sizeof(float));
+    float value{};
+    std::memcpy(&value, bytes.data(), sizeof(value));
+    REQUIRE(value == 0.5f);
     vkcore.waitIdle();
 }
 

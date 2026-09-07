@@ -22,6 +22,29 @@
 
 ## 正本とインスタンス
 
+### 最初の実装範囲（2026-09-07）
+
+[graphcomposition](../src/project/graphcomposition.hpp)へ`pelican.graph` version 1の
+サブグラフ展開を追加した。rootはdefinitions/nodes/outputsを持ち、definitions内の
+定義もnodes/outputsを持つ。これはcommon authoringの入口であり、まだ既存の
+render pipeline authoring全体やStudioへ統合したものではない。
+
+- primitive nodeはid/op/inputs/parameters/outputsを持つ。inputsはport名から
+  `{node, port}`への対応、outputsは公開port名の配列。実行操作の意味はbackendが扱う。
+- graph.instanceはdefinition名とinputsを持ち、定義の公開出力を通常のportとして
+  接続する。定義のgraph.input nodeのidが公開入力名で、そのvalue出力へ置換する。
+- 展開後はinstance pathでnode idを区別し、originsにinstance/definition/nodeを
+  保持する。原文の定義・instance・接続は変更しない。外部ファイル定義の解決は未実装。
+- ValueGraph::Graphがこの形式を受け、value.* primitiveを既存の数値評価へ変換する。
+  render.scalar/audio.volume/audio.pitchは通常のvalue入力portを持つsinkで、既存の
+  サービス反映へ変換する。serializeは共通形式の原文構造を残し、生成bindingを保存しない。
+  evaluateの公開出力にも生成binding用の内部出力を混ぜない。
+
+この段階のbackendはscalar出力portを検査するが、LogicalTypeRegistryによる全領域の
+型照合、汎用resource宣言、既存render featureの取込み、scene所有/状態、Studioの
+scope表示は残件。render.scalarのtarget名は既存render bufferを参照する境界であり、
+すべてのrender resourceを同じauthoring文書へ統合したという意味ではない。
+
 編集対象は一つの論理的な接続モデルとする。一つのJSONファイルへ全内容を
 埋め込むことは要求しない。再利用する定義は別assetに置けるが、参照を解決した
 ノード・ポート・接続・インスタンスparameterの意味は全体を通して一意にする。
