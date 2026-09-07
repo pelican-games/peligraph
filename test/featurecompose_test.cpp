@@ -4353,6 +4353,7 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
              {"inputs", {{"source", {{"node", "draw"}, {"port", "color"}}}}}, {"outputs", Json::array()}}
         })}, {"outputs", {{"color", {{"node", "draw"}, {"port", "color"}}}}},
         {"rendering", {{"render_targets", Json::array()}, {"rendering_passes", Json::array()}}}};
+    std::uint64_t expected_size = 4;
     SECTION("fullscreen") {}
     SECTION("raster") {
         document["nodes"][2]["op"] = "render.raster";
@@ -4361,6 +4362,8 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
     SECTION("instance attribute") {
         document["nodes"][0]["op"] = "render.attribute";
         document["nodes"][0]["parameters"]["domain"] = "instance";
+        document["nodes"][0]["parameters"].erase("size");
+        document["nodes"][0]["parameters"]["count"] = 1;
         document["nodes"][2]["parameters"]["ports"]["source"]["domain"] = "instance";
         auto mismatched = document;
         mismatched["nodes"][2]["parameters"]["ports"]["source"]["domain"] = "vertex";
@@ -4370,10 +4373,32 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         mismatched = document;
         mismatched["nodes"][0]["parameters"]["domain"] = "unknown";
         REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
+        mismatched = document;
+        mismatched["nodes"][0]["parameters"]["count"] = 0;
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
+        mismatched["nodes"][0]["parameters"]["count"] = -1;
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
+    }
+    SECTION("vertex attribute determines draw range") {
+        expected_size = 48;
+        document["nodes"][0]["op"] = "render.attribute";
+        document["nodes"][0]["parameters"].erase("size");
+        document["nodes"][0]["parameters"]["element"] = "vec3";
+        document["nodes"][0]["parameters"]["domain"] = "vertex";
+        document["nodes"][0]["parameters"]["count"] = 3;
+        document["nodes"][2]["parameters"]["ports"]["source"]["domain"] = "vertex";
+        document["nodes"][2]["parameters"]["ports"]["source"]["element"] = "vec3";
+        document["nodes"][2]["op"] = "render.raster";
+        document["nodes"][2]["parameters"]["draw"] = {{"vertex_source", "source"}, {"first_vertex", 1}};
+        auto invalid_count = document;
+        invalid_count["nodes"][2]["parameters"]["draw"]["vertex_count"] = 2;
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid_count}, {}));
     }
     const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
     const auto &config = resolved.normalized_config;
     const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);
+    REQUIRE(config.at("buffers").at(0).at("size") == expected_size);
+    if (expected_size == 48) REQUIRE(pass.at("draw").at("vertex_count") == 2);
     REQUIRE(pass.at("name") == "draw");
     REQUIRE(pass.at("shader").at("fragment") == "project://custom");
     REQUIRE(pass.at("output").at("color") == Json::array({"image"}));

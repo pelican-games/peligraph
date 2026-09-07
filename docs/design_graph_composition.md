@@ -316,15 +316,23 @@ compute/fullscreen/rasterのbufferポートも同じelement/domainを宣言し�
 一般のstorage bufferや異なるdomainへ暗黙変換しない。render.bufferへのdomain指定、画像ポートの
 domain指定、不明domainは拒否する。既存LogicalTypeRegistryの照合を使い、別の属性型体系は作らない。
 
-物理化では既存buffer定義・std430の名前付きshader accessorへ変換する。サイズとhost_source等は
-既存buffer契約を使い、scalarのvalue入力を接続した場合は1要素floatのruntime_f32 uploadを生成する。
+物理化では既存buffer定義・std430の名前付きshader accessorへ変換する。countに正の要素数を指定し、
+sizeはcount×std430 array strideから導出する。vec3もstrideは16 byte、mat4は64 byte。
+sizeとの二重指定、0/負数、サイズ積のoverflowを拒否する。host_source等は既存buffer契約を使い、
+scalarのvalue入力を接続した場合はcount=1・floatのruntime_f32 uploadを生成する。
 保存JSONにはrender.attribute、domain、接続を残し、実行用buffer名やdescriptor bindingを保存しない。
 CPUでinstance/vertex不一致と一般bufferへの誤接続、GPUでinstance属性のscalar入力から
 fullscreen/raster fragmentへの反映・owner停止を確認した。
 
 これはメッシュの既存頂点属性を自動抽出したり、material列挙に合わせて要素を自動割当する実装ではない。
-現段階のdomainは適用範囲の種類で、特定mesh/集合のidentityや要素数を表さない。対象集合の対応、
-要素数の導出、gl_VertexIndex/gl_InstanceIndex等との添字対応は残件。shaderは明示した添字で読む。
+現段階のdomainは適用範囲の種類で、特定mesh/集合のidentityを表さない。対象集合からの要素数・
+属性データの抽出は残件。shaderは明示した添字で読み、既存pelican_count_<port>()で要素数を取得できる。
+rasterのdraw.vertex_source/draw.instance_sourceへread属性port名を指定すると、対応domainを検査して
+vertex_count/instance_countを導出する。first_vertex/first_instanceを指定した場合はcountから差し引く。
+手書きcountとの二重指定、開始位置の範囲外、uint32の描画範囲を超える属性は拒否する。
+保存にはsource port参照を残す。GPUでは1要素instance属性のcount取得と描画数接続、CPUでは
+3要素vec3の48 byte配置とfirst_vertex=1からの2頂点描画を確認した。複数instance/vertexの自動添字
+accessorや、material集合からのdraw分割を今回追加したものではない。
 
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
 ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、

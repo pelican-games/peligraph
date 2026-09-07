@@ -2,6 +2,7 @@
 #include "shaderresourceport.hpp"
 
 #include <stdexcept>
+#include <limits>
 
 namespace Pelican {
 namespace {
@@ -107,6 +108,20 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         const auto op = node.at("op").get<std::string>();
         auto &partition = value_operations.contains(op) ? result.values : result.rendering;
         auto lowered = node;
+        if (op == "render.attribute") {
+            auto &parameters = lowered.at("parameters");
+            const auto &count = parameters.at("count");
+            const auto stride = shaderResourceBufferElementStride(
+                *shaderResourceBufferElementFromName(parameters.at("element").get<std::string>()));
+            if (!count.is_number_integer() ||
+                (count.is_number_integer() && !count.is_number_unsigned() && count.get<std::int64_t>() <= 0) ||
+                count.get<std::uint64_t>() == 0 ||
+                count.get<std::uint64_t>() > (std::numeric_limits<std::uint64_t>::max)() / stride)
+                throw std::invalid_argument("attribute count must be positive and fit its buffer size: " + id);
+            if (parameters.contains("size"))
+                throw std::invalid_argument("attribute size is derived from count and element: " + id);
+            parameters["size"] = count.get<std::uint64_t>() * stride;
+        }
         if ((op == "render.buffer" || op == "render.attribute") && node.at("inputs").contains("value")) {
             auto &parameters = lowered.at("parameters");
             if (parameters.at("element") != "float" ||

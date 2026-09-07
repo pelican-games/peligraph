@@ -469,6 +469,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
             graphics_path = true;
             document["nodes"][5]["op"] = "render.attribute";
             document["nodes"][5]["parameters"]["domain"] = "instance";
+            document["nodes"][5]["parameters"]["count"] = 1;
             auto &writer = document["nodes"][7];
             writer["parameters"]["ports"]["source"]["domain"] = "instance";
             writer["op"] = "render.fullscreen";
@@ -483,6 +484,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
             SECTION("raster") {
                 writer["op"] = "render.raster";
                 writer["parameters"]["draw"] = {{"vertex_count", 3}};
+                writer["parameters"]["draw"]["instance_source"] = "source";
             }
             for (auto &node : document["nodes"])
                 if (node["id"] == "intermediate") {
@@ -493,7 +495,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
 #extension GL_GOOGLE_include_directive : enable
 #include "pelican_resource_ports.glsl"
 layout(location=0) out vec4 color;
-void main() { color = vec4(pelican_load_source(0)); }
+void main() { color = vec4(pelican_count_source() == 1u ? pelican_load_source(0) : -100.0); }
 )");
         }
         writeText(root / "shaders/graph_image_write.comp", R"(

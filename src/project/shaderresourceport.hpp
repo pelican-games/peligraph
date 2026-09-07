@@ -69,6 +69,9 @@ std::optional<ShaderResourceBufferElement>
 shaderResourceBufferElementFromName(
     std::string_view name);
 
+// Array stride for the std430 values[] emitted by the shader interface.
+std::uint32_t shaderResourceBufferElementStride(ShaderResourceBufferElement element);
+
 enum class ShaderResourcePortKind : std::uint8_t {
     automatic,
     image,

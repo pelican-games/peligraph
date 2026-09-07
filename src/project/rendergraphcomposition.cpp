@@ -47,6 +47,7 @@ Json lowerRenderGraphDocument(const Json &document) {
             forbid(parameters, {"name"});
             parameters.erase("element");
             parameters.erase("domain");
+            parameters.erase("count");
             parameters["name"] = id;
             config["buffers"].push_back(std::move(parameters));
             continue;
@@ -63,6 +64,28 @@ Json lowerRenderGraphDocument(const Json &document) {
         if (graphics) forbid(parameters, {"type", "input", "output"});
         auto ports = parameters.at("ports");
         parameters.erase("ports");
+        if (node.at("op") == "render.raster" && parameters.contains("draw")) {
+            auto &draw = parameters.at("draw");
+            const auto bind_count = [&](const char *source_key, const char *count_key,
+                                        const char *first_key, const char *domain) {
+                if (!draw.contains(source_key)) return;
+                if (draw.contains(count_key))
+                    throw std::invalid_argument(std::string("draw count is derived from attribute: ") + count_key);
+                const auto port = draw.at(source_key).get<std::string>();
+                const auto &attribute = *nodes.at(resourceName(node.at("inputs").at(port)));
+                if (attribute.at("op") != "render.attribute" ||
+                    attribute.at("parameters").at("domain") != domain || ports.at(port).at("access") != "read")
+                    throw std::invalid_argument(std::string("draw source requires a readable ") + domain + " attribute");
+                const auto count = attribute.at("parameters").at("count").get<std::uint64_t>();
+                const auto first = draw.value(first_key, std::uint64_t{0});
+                if (first > count || count > (std::numeric_limits<std::uint32_t>::max)())
+                    throw std::invalid_argument("attribute range exceeds direct draw limits");
+                draw[count_key] = count - first;
+                draw.erase(source_key);
+            };
+            bind_count("vertex_source", "vertex_count", "first_vertex", "vertex");
+            bind_count("instance_source", "instance_count", "first_instance", "instance");
+        }
         parameters["name"] = id;
         parameters["reads"] = Json::array();
         parameters["writes"] = Json::array();

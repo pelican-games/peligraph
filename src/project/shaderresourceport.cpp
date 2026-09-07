@@ -6,6 +6,25 @@
 
 namespace Pelican {
 
+std::uint32_t shaderResourceBufferElementStride(ShaderResourceBufferElement element) {
+    switch (element) {
+    case ShaderResourceBufferElement::floating:
+    case ShaderResourceBufferElement::integer:
+    case ShaderResourceBufferElement::unsigned_integer: return 4;
+    case ShaderResourceBufferElement::vec2:
+    case ShaderResourceBufferElement::ivec2:
+    case ShaderResourceBufferElement::uvec2: return 8;
+    case ShaderResourceBufferElement::vec3:
+    case ShaderResourceBufferElement::vec4:
+    case ShaderResourceBufferElement::ivec3:
+    case ShaderResourceBufferElement::ivec4:
+    case ShaderResourceBufferElement::uvec3:
+    case ShaderResourceBufferElement::uvec4: return 16;
+    case ShaderResourceBufferElement::mat4: return 64;
+    }
+    throw std::invalid_argument("unknown shader buffer element");
+}
+
 namespace {
 
 bool identifierCharacter(char value, bool first) {
