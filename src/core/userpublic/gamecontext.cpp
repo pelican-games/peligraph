@@ -4,6 +4,7 @@
 #include "../build_features.hpp"
 #include "../ecs/core.hpp"
 #include "../ecs/predefined/animationsystem.hpp"
+#include "../renderingpass/computetask.hpp"
 #include "components/predefined.hpp"
 #include "deterministicrng.hpp"
 #if PELICAN_WITH_AUDIO
@@ -394,6 +395,11 @@ bool GameContext::isPlaying(SoundHandle handle) const {
     (void)handle;
     throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "isPlaying is unavailable");
 #endif
+}
+
+bool GameContext::setRenderValues(std::string_view buffer, std::span<const float> values) const {
+    if (internal::activeEffectTransaction()) return false;
+    return GET_MODULE(FrameGraphResourceContainer).stageRuntimeValues(buffer, values);
 }
 
 bool GameContext::setSoundVolume(SoundHandle handle, float volume) const {

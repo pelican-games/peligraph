@@ -4,6 +4,8 @@
 #include "../src/core/userpublic/components/animation.hpp"
 #include "../src/core/userpublic/components/modelview.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
+#include "../src/core/userpublic/animation/curve.hpp"
+#include "../src/core/renderingpass/computetask.hpp"
 #include "../src/core/asset/model.hpp"
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/core.hpp"
@@ -25,6 +27,8 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
 #include <cmath>
+#include <array>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <nlohmann/json.hpp>
@@ -291,6 +295,48 @@ TEST_CASE("authored animation graphs publish and release real scene model poses"
     frame();
     REQUIRE(instances.currentSkinPaletteForTesting(new_instance) != reloaded_palette);
     GET_MODULE(VulkanManageCore).waitIdle();
+}
+
+TEST_CASE("curve samples publish to a runtime float render buffer", "[runtime-render-values][skeletal]") {
+    setupLogger();
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).headless = true;
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    auto &resources = GET_MODULE(FrameGraphResourceContainer);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto declaration = nlohmann::json::parse(R"({"buffers":[
+        {"name":"curve_values","size":8,"host_source":"runtime_f32"}]})");
+    resources.registerBuffers(parseFrameGraphBufferDefinitionsFromJson(declaration));
+    resources.uploadRuntimeValues();
+    const auto read = [&] {
+        const auto bytes = vkcore.readBuf(resources.buffer("curve_values"), 8);
+        std::array<float, 2> values;
+        std::memcpy(values.data(), bytes.data(), bytes.size());
+        return values;
+    };
+    REQUIRE(read() == std::array<float, 2>{0.0f, 0.0f});
+    const Animation::ScalarCurve curve{{{0, 0}, {1, 1}}};
+    Animation::CurvePlaybackSettings settings;
+    settings.scale = 2;
+    GameContext context;
+    std::array<float, 2> values{
+        static_cast<float>(Animation::sampleCurve(curve, settings, 0.25).value),
+        static_cast<float>(Animation::sampleCurve(curve, settings, 0.75).value)};
+    REQUIRE(context.setRenderValues("curve_values", values));
+    values.fill(99); // Publishing takes a snapshot, not a borrowed pointer.
+    REQUIRE(read() == std::array<float, 2>{0.0f, 0.0f});
+    resources.uploadRuntimeValues();
+    REQUIRE(read() == std::array<float, 2>{0.5f, 1.5f});
+    REQUIRE_FALSE(context.setRenderValues("missing", values));
+    REQUIRE_THROWS(context.setRenderValues("curve_values", std::span{values}.first(1)));
+    values = {2.0f, 0.0f};
+    REQUIRE(context.setRenderValues("curve_values", values));
+    resources.uploadRuntimeValues();
+    REQUIRE(read() == values);
+    auto invalid = declaration;
+    invalid["buffers"][0]["size"] = 6;
+    REQUIRE_THROWS(parseFrameGraphBufferDefinitionsFromJson(invalid));
+    vkcore.waitIdle();
 }
 
 } // namespace Pelican

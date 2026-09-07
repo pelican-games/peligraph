@@ -96,6 +96,7 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 アニメーションと物理をノードで組み合わせ、その出力をレンダリンググラフの入力へ接続できるようにする。専用エフェクトごとの隠れた転送処理ではなく、既存resource port/bufferの仕組みへ型付きデータとして公開する。描画・compute・RTの各consumerが同じ出力を参照でき、保存・再読込後も接続を保持することを完成条件とする。
 
 - アニメーション: 評価済みの数値カーブ・姿勢/行列を公開する。キーフレーム自体をGPUで補間したい用途には、時間・値・補間方式を持つカーブ資産の入力も区別して扱う。
+- 描画への数値入力: bufferの`host_source: "runtime_f32"`とGameContext::setRenderValuesでfloat配列を公開する経路を追加。既存storage buffer portをconsumerへ接続できる。CPU側でコピーし、rendererの既存host更新位置で転送する。未設定はゼロ、公開後は次の更新まで保持し、サイズは宣言全体との一致を要求する。これはC++からの入力経路であり、保存可能なカーブノード/グラフ配線は残件。
 - カーブの設定は形状と再生を分離する。使用区間・再生時間・速度/逆再生・ループ/往復、値の倍率/オフセット、開始トリガー/遅延/再トリガー、連続/固定間隔/LUT解像度を組み合わせる。公開C++のScalarCurve・sampleCurve・CurveTriggerClockで基本評価を実装。ノード/asset保存/GUIへの接続と複数トリガーの重ね合わせは未実装であり、一括機能を提供する場合も各処理へ分解できる構成を保つ。
 - 物理: transform・速度等の状態と、接触等のイベント列を区別する。イベントを描画フレームごとに重複消費せず、固定stepと描画補間の関係を明示する。現在未実装の剛体シミュレーションを実装済みとはしない。
 - 音声（追加要望）: グラフのイベントから再生/停止、連続値から音量/ピッチ等を操作する。GameContextの既存playSound/stopSound/setBusVolumeに、個別voiceのsetSoundVolume/setSoundPitchとsoundStateを追加。音量は個別値×バス×masterを維持する。再生位置はminiaudioのsource cursor秒であり、デバイスから聞こえる時刻ではない。null backendは時計なしを返す。新しい変更APIはupdate thread向けでscene effect staging中はfalseを返す。stage内の設定予約とグラフとの型付き接続、同一イベントの重複消費防止は未実装。

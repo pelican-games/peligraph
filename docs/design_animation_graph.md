@@ -230,6 +230,15 @@ sample_interval=0は連続評価。正値は遅延後の経過秒を原点とす
 `sampleUniform(begin,end,count)`は両端を含むCPU側の等間隔テーブルを生成する。
 GPU upload・LUTのGPU補間はこの関数には含めない。
 
+CPU評価値の描画入力には、frame graphのbufferへ`host_source: "runtime_f32"`を
+宣言し、GameContext::setRenderValues(buffer, float配列)で公開できる。sizeは
+4バイトの倍数で、command_layoutは指定しない。配列全体をCPUでコピーし、
+rendererのhost buffer更新位置で転送する。初期値はゼロ、次の公開まで値を保持する。
+存在しないbufferとscene effect staging中はfalse、source種別やサイズの不一致は
+例外とする。buffer再登録後は新しい初期値となる。既存のstorage buffer portへ
+接続するため、カーブ専用のshaderや隠れた転送先は追加しない。描画consumer側の
+float配列レイアウトは宣言サイズに合わせる。ノード資産としての接続保存は残件。
+
 CurveTriggerClockは外部イベントの時刻をtriggerへ渡して開始する。再トリガーは
 restartまたはignore_active。待機中もignore対象に含め、完了後は再開始できる。
 stopは時計を解除する。イベント購読・複数再生の重ね合わせは呼出側の責務で、

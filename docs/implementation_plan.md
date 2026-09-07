@@ -23246,6 +23246,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**評価済み数値からframe graph bufferへの入力 (2026-09-07):**
+- bufferのhost_sourceにruntime_f32を追加。GameContext::setRenderValuesが宣言全体に一致するfloat配列をCPUへコピーし、rendererの既存host更新位置でwriteHostBufferへ渡す。カーブ専用resourceやshaderは追加せず、既存storage buffer portを使う。初期値はゼロ、次の公開まで保持する。新規登録時に初期化され、旧bufferの値を別登録へ移さない。
+- Player Debug build成功。実Vulkanのskeletal/数値入力対象は4case/73assertion成功。sampleCurveの評価値0.5/1.5を公開し、元配列の変更がstagingへ影響しないこと、upload前は旧値、upload後は評価値、次の更新、未登録名/サイズ不一致を確認。実Vulkan割当をmapして内容を読み、shaderによる演算/描画結果までは検証していない。CPUコピーを外すと元配列変更の対照、uploadを外すと値の対照が落ちる。個別変異は未実施。
+- C++からの数値入力経路まで。保存可能なカーブノード・型付きグラフ接続・イベント消費・GUI配線は残件。scene effect staging中は公開せずfalse。配列/行列を高位型として公開する契約とGPU側のカーブ補間も残る。
+
 **音声voiceの個別制御とsource時計照会 (2026-09-07):**
 - GameContext/AudioにsetSoundVolume・setSoundPitch・soundStateを追加。個別gainをvoiceで保持し、バス更新時も個別値×SE×masterをbackendへ渡す。pitchはminiaudioの再生速度/音程倍率であり、時間伸縮とは別。soundStateは個別値・実効音量・再生中状態・任意のsource cursor秒を返す。停止/未登録handleは状態なし、変更はfalse。
 - miniaudioは元音声のPCM cursorとsample rateから秒へ変換する。デバイス提示時刻/出力遅延補正は含めない。null backendは個別値を保持するが時計を捏造せずposition_secondsなし。scene effect staging中の新規変更APIはfalseで、stage内の予約操作は未実装。

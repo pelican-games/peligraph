@@ -77,6 +77,7 @@ FrameGraphHostBufferSource parseHostBufferSource(
     std::string_view context) {
     const auto value =
         requireString(entry, "host_source", context);
+    if (value == "runtime_f32") return FrameGraphHostBufferSource::runtime_f32;
     if (value == "scene_lights_v2") {
         return FrameGraphHostBufferSource::scene_lights_v2;
     }
@@ -1873,6 +1874,8 @@ ComputeDispatchDefinition parseDispatch(
 std::string_view frameGraphHostBufferSourceName(
     FrameGraphHostBufferSource source) {
     switch (source) {
+    case FrameGraphHostBufferSource::runtime_f32:
+        return "runtime_f32";
     case FrameGraphHostBufferSource::scene_lights_v2:
         return "scene_lights_v2";
     case FrameGraphHostBufferSource::view_family_matrices_v1:
@@ -1983,6 +1986,9 @@ std::vector<FrameGraphBufferDefinition> parseFrameGraphBufferDefinitionsFromJson
                 parseBufferCommandLayout(
                     entry, context);
         }
+        if (definition.host_source == FrameGraphHostBufferSource::runtime_f32 &&
+            (definition.command_layout || definition.size % sizeof(float) != 0))
+            throw std::runtime_error(context + " runtime_f32 requires a float-aligned data buffer");
         if (definition.host_source == FrameGraphHostBufferSource::view_family_matrices_v1) {
             definition.host_view_family = requireString(entry, "view_family", context);
             if (definition.host_view_family.empty() || definition.command_layout ||
@@ -2420,8 +2426,14 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
             ("frame_graph/buffer/" +
              definition.name)
                 .c_str());
-        const auto id = buffers.reg(
-            BufferRecord{definition, std::move(buffer)});
+        BufferRecord record{definition, std::move(buffer)};
+        if (definition.host_source == FrameGraphHostBufferSource::runtime_f32) {
+            if (definition.command_layout || definition.size % sizeof(float) != 0)
+                throw std::invalid_argument("runtime_f32 requires a float-aligned data buffer");
+            record.runtime_values.resize(definition.size / sizeof(float), 0.0f);
+            record.runtime_values_dirty = true;
+        }
+        const auto id = buffers.reg(std::move(record));
         try {
             if (!name_to_id.emplace(definition.name, id).second) {
                 throw std::runtime_error(
@@ -2438,6 +2450,29 @@ void FrameGraphResourceContainer::registerBuffers(const std::vector<FrameGraphBu
 
 bool FrameGraphResourceContainer::hasBuffer(std::string_view name) const {
     return isValidFrameGraphBufferId(getBufferIdByName(name));
+}
+
+bool FrameGraphResourceContainer::stageRuntimeValues(std::string_view name, std::span<const float> values) {
+    const auto id = getBufferIdByName(name);
+    if (!isValidFrameGraphBufferId(id)) return false;
+    auto &record = buffers.get(id);
+    if (record.definition.host_source != FrameGraphHostBufferSource::runtime_f32)
+        throw std::invalid_argument("runtime values require host_source runtime_f32");
+    if (values.size_bytes() != record.definition.size)
+        throw std::invalid_argument("runtime values must fill the declared float buffer");
+    std::copy(values.begin(), values.end(), record.runtime_values.begin());
+    record.runtime_values_dirty = true;
+    return true;
+}
+
+void FrameGraphResourceContainer::uploadRuntimeValues() {
+    for (const auto id : registration_order) {
+        if (!buffers.contains(id)) continue;
+        auto &record = buffers.get(id);
+        if (!record.runtime_values_dirty) continue;
+        writeHostBuffer(id, std::as_bytes(std::span{record.runtime_values}));
+        record.runtime_values_dirty = false;
+    }
 }
 
 bool FrameGraphResourceContainer::hasBuffer(

@@ -14,6 +14,7 @@ enum class FrameGraphHostBufferSource : std::uint8_t {
     scene_draw_commands_v1,
     scene_draw_bounds_v1,
     scene_draw_segments_v1,
+    runtime_f32,
 };
 
 std::string_view frameGraphHostBufferSourceName(

@@ -11,7 +11,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | 形 | 代表 | 意味 | この形が要る理由 |
 |---|---|---|---|
 | process module | [`DECLARE_MODULE`](../../src/core/container.hpp#L15) | process 中に遅延生成される実質 singleton。`GET_MODULE(T)` で取得 | 実装が「1個しか無い」資源(device、window、ECS world)を、引数で持ち回らずに取れるようにするため |
-| public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L24) | game code に内部 module を直接見せない、状態を持たない/薄い value façade | ゲームコードが engine 内部の型に compile 時依存しないようにするため(DLL 境界を細く保つ) |
+| public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L25) | game code に内部 module を直接見せない、状態を持たない/薄い value façade | ゲームコードが engine 内部の型に compile 時依存しないようにするため(DLL 境界を細く保つ) |
 | abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L90) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 | 実装の選択が**実行時に**決まる(`--headless` / `--xr`)ので、compile 時の分岐では書けないため |
 | tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L321) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch | 種類が JSON 形式として**固定で列挙できる**ので、派生を後から足せる継承より、全種の網羅を強制できる variant が合うため |
 | type-erased callback table | [`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L41) | 任意 Component の construct/destroy/relocate/JSON 操作を function pointer 化 | 受け取る側(ECS storage)が型 `T` を知らないまま構築・破棄・移動をしなければならないため |
@@ -127,7 +127,7 @@ project game code が最優先で参照する層です。内部の `GET_MODULE` 
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `GameContext` | public value façade | [`gamecontext.hpp`](../../src/core/userpublic/gamecontext.hpp#L22) | [`gamecontext.cpp`](../../src/core/userpublic/gamecontext.cpp#L1) | time、input、entity、camera、physics(raycast/overlap/shapeCast + `QueryFilter`)、sprite、**light**([`setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.hpp#L52))、pose action、audio、save、RNG を統一 API で公開 |
+| `GameContext` | public value façade | [`gamecontext.hpp`](../../src/core/userpublic/gamecontext.hpp#L23) | [`gamecontext.cpp`](../../src/core/userpublic/gamecontext.cpp#L1) | time、input、entity、camera、physics(raycast/overlap/shapeCast + `QueryFilter`)、sprite、**light**([`setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.hpp#L53))、pose action、audio、save、RNG を統一 API で公開 |
 | `Behavior` | **仮想基底**(唯一の例外) | [`behavior.hpp`](../../src/core/userpublic/behavior.hpp#L60) | [`behaviorarena.cpp`](../../src/core/gamelogic/behaviorarena.cpp) | `onInit` / `onUpdate` / `onDestroy(noexcept)` |
 | `BehaviorContext` | `GameContext` 派生 | [`BehaviorContext`](../../src/core/userpublic/behavior.hpp#L24) | 同左 | `self()` / `attachment()` / `attachmentSeq()` / `params<T>()` と遅延 create/remove |
 | `BehaviorAttachmentHandle` | typed handle | [`BehaviorAttachmentHandle()`](../../src/core/userpublic/behavior.hpp#L13) | 同左 | attachment identity(`attachment_seq` と対) |
@@ -226,7 +226,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L97) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4716) / [`render()`](../../src/core/vkcore/renderer.cpp#L5888) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
+| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L97) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4716) / [`render()`](../../src/core/vkcore/renderer.cpp#L5889) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
 | `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替。**flat** は「XR でない通常の 1 画面(ウィンドウまたは headless の 1 枚)」を指すこのリポジトリの語で、**XR composition** は OpenXR ランタイムへ両眼ぶんのレイヤを渡して合成させる側です。同じ frame graph をどちらの出口へ流すかの違いになります |
 | `RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、`$main`+named secondary family集合、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`CompiledRenderPipeline`](../../src/core/renderingpass/previewgraph.hpp#L15) / [coordinated family 側の注記](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |
@@ -248,8 +248,8 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 | `RenderTargetNameResolver` | adaptor | [`rendertargetnameresolver.hpp`](../../src/core/renderingpass/rendertargetnameresolver.hpp#L11) | [`rendertargetnameresolver.cpp`](../../src/core/renderingpass/rendertargetnameresolver.cpp#L1) | JSON target 名→typed ID |
 | `RenderTargetMetadataResolver` | adaptor | [`rendertargetmetadataresolver.hpp`](../../src/core/renderingpass/rendertargetmetadataresolver.hpp#L11) | [`rendertargetmetadataresolver.cpp`](../../src/core/renderingpass/rendertargetmetadataresolver.cpp#L1) | target ID→format/extent/usage |
 | `RenderTargetImageViewResolver` | adaptor | [`rendertargetimageviewresolver.hpp`](../../src/core/renderingpass/rendertargetimageviewresolver.hpp#L10) | [`rendertargetimageviewresolver.cpp`](../../src/core/renderingpass/rendertargetimageviewresolver.cpp#L1) | target ID→current image view |
-| `FrameGraphResourceContainer` | module/GPU owner | [`computetask.hpp`](../../src/core/renderingpass/computetask.hpp#L94) | [`registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L2368) | named storage buffers と descriptor info |
-| `ComputeTaskContainer` | module/runtime registry | [`computetask.hpp`](../../src/core/renderingpass/computetask.hpp#L115) | [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2918) | compute pipeline、descriptor、dispatch group、barrier |
+| `FrameGraphResourceContainer` | module/GPU owner | [`computetask.hpp`](../../src/core/renderingpass/computetask.hpp#L94) | [`registerBuffers()`](../../src/core/renderingpass/computetask.cpp#L2374) | named storage buffers と descriptor info |
+| `ComputeTaskContainer` | module/runtime registry | [`computetask.hpp`](../../src/core/renderingpass/computetask.hpp#L115) | [`registerComputeTask()`](../../src/core/renderingpass/computetask.cpp#L2953) | compute pipeline、descriptor、dispatch group、barrier |
 | `RenderPassExecutor` | module/executor | [`render_pass_executor.hpp`](../../src/core/vkcore/render_pass_executor.hpp#L22) | [`execute()`](../../src/core/vkcore/render_pass_executor.cpp#L314) | layout transition、Dynamic Rendering scope、variant dispatch |
 | `RenderTargetLayoutTracker` | state helper | [`render_target_layout_tracker.hpp`](../../src/core/vkcore/render_target_layout_tracker.hpp#L12) | [`transition()`](../../src/core/vkcore/render_target_layout_tracker.cpp#L126) | concrete offscreen image の現在 layout を `(rt_id, surface)` 単位で frame 間追跡 |
 

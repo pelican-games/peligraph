@@ -5223,6 +5223,7 @@ void Renderer::renderLogicalFrame(
     }
     observed_time_set_revision = time_set_revision;
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
+    modules.frame_graph_resources.uploadRuntimeValues();
     updateFrameLights(
         modules.light_container,
         modules.frame_graph_resources,

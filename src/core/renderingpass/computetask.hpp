@@ -142,6 +142,8 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     struct BufferRecord {
         FrameGraphBufferDefinition definition;
         BufferWrapper buffer;
+        std::vector<float> runtime_values;
+        bool runtime_values_dirty = false;
         std::optional<HostBufferPopulation>
             host_population;
     };
@@ -170,6 +172,9 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
 
     void registerBuffers(const std::vector<FrameGraphBufferDefinition> &definitions);
     bool hasBuffer(std::string_view name) const;
+    // Owner-thread staging; upload at the renderer's existing host-write phase.
+    bool stageRuntimeValues(std::string_view name, std::span<const float> values);
+    void uploadRuntimeValues();
     bool hasBuffer(FrameGraphBufferId id) const;
     FrameGraphBufferId getBufferIdByName(std::string_view name) const;
     const BufferWrapper &buffer(std::string_view name) const;

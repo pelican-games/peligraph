@@ -15,6 +15,7 @@
 #include <filesystem>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -99,6 +100,10 @@ class PELICAN_API GameContext {
     bool setSoundVolume(SoundHandle handle, float volume) const;
     bool setSoundPitch(SoundHandle handle, float pitch) const;
     std::optional<SoundPlaybackState> soundState(SoundHandle handle) const;
+    // Publishes float32 values for a declared runtime_f32 render buffer. The
+    // entire buffer must be supplied. Copied now, uploaded before rendering.
+    // Returns false for missing buffers or during scene effect staging.
+    bool setRenderValues(std::string_view buffer, std::span<const float> values) const;
 
     // Update-thread controls for an attached animation graph. Before its first
     // frame attachment, or after removal, these return not_found. Scene
