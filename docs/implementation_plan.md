@@ -23233,9 +23233,9 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 共通graphの最新到達点: `a20ee5ca`で個体parameterの保存owner・runtime override・削除/scene reload時の破棄を通常Rendererへ接続済み。続いて展開/partitionにowner scope依存を保持し、alias・入れ子・数値→GPU境界の生存条件をコンパイル可能にした。次はこの条件をruntimeで評価し、数値publishと依存GPU処理の停止へ接続する。停止・動的instance装着・個体state/event所有は未了。以下の旧「個体parameterは未了」という記述はこの到達点で更新する。
+- 共通graphの最新到達点: 個体parameterの保存owner・runtime override・削除/scene reload時の破棄に続き、owner不在の数値評価/publish/依存compute停止を通常Rendererへ接続した。alias・入れ子も含め生存条件を共有し、独立枝の継続とscene reloadによる再開を実GPUで確認。次は状態/event所有と画像port共通化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
 
-- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・compute構成に続き、4f566ea1で混在文書の数値→buffer→GPU shader消費を接続。通常Rendererの自動評価、描画世代と数値処理の同時更新、scene読込み時刻の供給も実GPUで確認した。現在の所有はプロジェクト共通描画文書/描画世代であり、scene別graphや個体別parameter/stateは未了。次はobjectごとのsubgraph instance装着・parameter/state所有を共通モデルへ接続する。画像port・feature共通instance・状態/イベント・Studioも残件。
+- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像port・feature共通instance・状態/イベント・Studio統合は残件。
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
@@ -23249,6 +23249,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**owner不在時の数値/compute実行停止 (2026-09-07):**
+- SceneLoaderがauthoring ownerと現在scene/ECS生存からInactiveScopesを生成し、通常Rendererが同じフレームsnapshotをValueGraphとcompute実行へ供給。sceneなしでは全owner scopeを不在とする。GPU資源とbarrierは世代の計画に残し、該当dispatchのbodyを省く。traceのrecordedに実行有無を記録。
+- ValueGraphは不在scope依存のnodeを評価せず、公開outputとsink反映を省く。停止はunavailable扱いにしない。手動evaluate/publishもinactive引数を受ける。独立枝は継続し、scene reload後は保存値で再開。native passの手書き資源参照・状態/event・動的な資源回収は対象外。
+- Player Debug build成功。CPU 34case/1544assertion、GPU skeletal 7case/120assertion成功（graph_scope_runtime_build.log / graph_scope_runtime_cpu.log / graph_scope_runtime_gpu.log）。削除後に入力buffer=9と出力buffer=-17が保持され、別枝は5.5→13と更新されることを実GPUで確認。CPUは所有者付き未供給inputの評価省略、入れ子の親/子いずれの不在によるalias出力省略を確認。
+- dispatch停止を外すと出力sentinel保持が落ち、publish停止を外すと入力sentinel保持が落ちる。全graphを停止させる変更は兄弟のGPU出力で落ちる。既存のscene reload/成功・失敗generation切替も同じGPU試験で通過。個別変異実行は行っていない。
 
 **共通graphの実行scope依存コンパイル (2026-09-07):**
 - ExpandedGraphDocumentにnode_scopes/output_scopesを追加。owner付きの全祖先scopeと入力元の依存を保持し、下流だけへ伝播する。入力→出力aliasだけのinstanceでも境界を消さず、展開endpointから派生metadataへ移す。保存原文は不変。

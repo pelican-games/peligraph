@@ -1452,7 +1452,8 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                                   authored_schedule = {},
                               const std::function<void(
                                   const LogicalFrameNodeInvocation &)>
-                                  &prepare_invocation = {}) {
+                                  &prepare_invocation = {},
+                              const ValueGraph::InactiveScopes &inactive_graph_scopes = {}) {
     std::vector<LogicalFrameNodeInvocation>
         fallback_schedule;
     if (authored_schedule.empty() &&
@@ -2109,14 +2110,18 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             modules.compute_task_container.transitionResourcesForDispatch(
                 render_ctx.cmd_buf, task.task_id, modules.render_target_container, modules.vk_utils,
                 layout_tracker);
-            modules.compute_task_container.dispatch(
-                render_ctx.cmd_buf, task.task_id,
-                modules.frame_resources,
-                scheduled.view_index);
+            const bool active = !frame_graph.value_graph ||
+                frame_graph.value_graph->nodeActive(execution_node.name, inactive_graph_scopes);
+            if (active)
+                modules.compute_task_container.dispatch(
+                    render_ctx.cmd_buf, task.task_id,
+                    modules.frame_resources,
+                    scheduled.view_index);
             if (node_trace != nullptr) {
                 node_trace->push_back(computeNodeTrace(task, node_index, frame_graph,
                                                        modules.render_target_container,
                                                        layout_tracker));
+                node_trace->back()["recorded"] = active;
             }
         } else if (execution_node.kind == FramePlanNodeKind::anchor) {
             if (node_trace != nullptr) {
@@ -2379,7 +2384,8 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                             std::uint32_t logical_view_count,
                             bool per_view_sort,
                             std::span<const LogicalFrameNodeInvocation>
-                                authored_schedule = {}) {
+                                authored_schedule = {},
+                            const ValueGraph::InactiveScopes &inactive_graph_scopes = {}) {
     const auto &main_state =
         requireRenderViewFamilyExecutionState(
             view_family_states,
@@ -2552,7 +2558,7 @@ void executeRenderingPasses(const FrameRenderContext &render_ctx,
                              graph_variant, default_view_index,
                              logical_view_count,
                              authored_schedule,
-                             prepare_invocation);
+                             prepare_invocation, inactive_graph_scopes);
 }
 
 void rebindFullscreenInputs(RenderFrameModules &modules) {
@@ -5225,8 +5231,12 @@ void Renderer::renderLogicalFrame(
     }
     observed_time_set_revision = time_set_revision;
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
+    ValueGraph::InactiveScopes inactive_graph_scopes;
     if (frame_graph.value_graph) {
         auto *scene = FastModuleContainer::tryGet<SceneLoader>();
+        if (scene) inactive_graph_scopes = scene->inactiveGraphScopes(*frame_graph.value_graph);
+        else for (const auto &[scope, owner] : frame_graph.value_graph->instanceOwners())
+            inactive_graph_scopes.insert(scope);
         const ValueGraph::Inputs inputs{
             {"time", engine_time.now()}, {"delta_time", engine_time.dt()},
             {"scene_time", engine_time.now() - (scene ? scene->sceneStartTime() : 0.0)}};
@@ -5235,7 +5245,8 @@ void Renderer::renderLogicalFrame(
                 const auto found = frame_graph.buffer_bindings.find(std::string{name});
                 return found != frame_graph.buffer_bindings.end() &&
                     modules.frame_graph_resources.stageRuntimeValues(found->second, values);
-            }, scene ? scene->graphParameterValues(frame_graph.value_graph) : ValueGraph::ParameterValues{});
+            }, scene ? scene->graphParameterValues(frame_graph.value_graph) : ValueGraph::ParameterValues{},
+            inactive_graph_scopes);
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
     }
@@ -5611,7 +5622,7 @@ void Renderer::renderLogicalFrame(
             renderPipelineGraphVariantName(
                 graph_variant_policy.variant),
             0, view_count, per_view_sort,
-            logical_frame_schedule);
+            logical_frame_schedule, inactive_graph_scopes);
         if (external_depth_submission_active) {
             recordExternalDepthExport(
                 render_ctx,
@@ -5746,7 +5757,7 @@ void Renderer::renderLogicalFrame(
                                view_index,
                                view_count,
                                per_view_sort,
-                               per_view_schedule);
+                               per_view_schedule, inactive_graph_scopes);
         if (external_depth_submission_active) {
             recordExternalDepthExport(
                 render_ctx,

@@ -111,6 +111,7 @@ DECLARE_MODULE(SceneLoader) {
     bool setGraphParameter(std::shared_ptr<const ValueGraph::Graph> graph,
                            GameObjectId object, std::string_view parameter, std::optional<double> value);
     ValueGraph::ParameterValues graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph);
+    ValueGraph::InactiveScopes inactiveGraphScopes(const ValueGraph::Graph &graph) const;
     nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;

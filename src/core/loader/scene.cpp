@@ -1394,6 +1394,19 @@ ValueGraph::ParameterValues SceneLoader::graphParameterValues(std::shared_ptr<co
     return values;
 }
 
+ValueGraph::InactiveScopes SceneLoader::inactiveGraphScopes(const ValueGraph::Graph &graph) const {
+    ValueGraph::InactiveScopes inactive;
+    const auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    for (const auto &[scope, owner] : graph.instanceOwners()) {
+        const bool live = owner.scene == currentScene() &&
+            std::any_of(runtime_object_bindings.begin(), runtime_object_bindings.end(), [&](const auto &binding) {
+                return binding.authoring_object_id.value == owner.object && ecs.isAlive(binding.object_id);
+            });
+        if (!live) inactive.insert(scope);
+    }
+    return inactive;
+}
+
 std::optional<GameObjectId> SceneLoader::objectId(std::string_view name) const {
     const auto found = object_bindings.find(std::string{name});
     if (found == object_bindings.end() ||

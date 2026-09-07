@@ -104,8 +104,7 @@ GPU世代退役後も古いGraphを保持し続けない。削除済み個体の
 除去し、scene commitでは全件破棄する。新しい描画グラフは保存値から開始し、失敗した
 描画更新では旧グラフのoverrideを維持する。通常Rendererがこのsnapshotをpublishへ渡す。
 
-これはparameterの所有・寿命・受渡しまでの実装。owner不在時にsubgraph全体の評価や
-GPU taskを停止する処理は未実装で、overrideを除去した後は保存値による評価が続く。
+owner不在時の処理停止は、以下のscope依存と通常Rendererのフレーム評価へ接続する。
 objectごとの動的instance生成/削除、状態付きノード、イベント/音声handleの所有は残件。
 
 実行停止への準備として、展開結果にnode_scopes/output_scopesを追加した。各nodeと公開出力が
@@ -113,7 +112,19 @@ objectごとの動的instance生成/削除、状態付きノード、イベン�
 親の生存条件を外さず、依存先へ伝播する。入力をそのまま公開出力へ渡すだけのinstanceも、
 alias展開で生存条件を消さない。共有入力の生成元や独立した兄弟へ逆向きには伝播しない。
 数値→bufferの生成upload sinkとGPU側partitionにも同じ条件を保持する。これは派生metadataで、
-保存JSONに展開結果を追加しない。runtimeで条件を評価して処理を止める接続は引き続き未実装。
+保存JSONに展開結果を追加しない。
+
+通常RendererはSceneLoaderから不在scopeの集合をフレームごとに取得し、数値publishと
+各viewのcompute実行で共有する。sceneがない場合もowner付きscopeは不在として扱う。
+ValueGraphは不在scopeに依存するnodeを評価せず、その公開出力を返さず、音声/描画sinkへの
+反映も行わない。停止を出力先の故障としてunavailableへ報告しない。手動evaluate/publishは
+inactive引数で同じ条件を指定でき、省略時は従来どおり全scopeを有効とする。
+
+共通graphのrender.computeは同じ依存条件でdispatchを停止する。資源やbarrierの計画は維持し、
+停止した出力bufferは既存の内容を保持する。後続の共通graph consumerも停止条件を受けるため、
+停止値を新しい結果として消費しない。scene再読込みでownerが再び存在すれば保存値から再開する。
+root.rendering内に手書きしたnative passの暗黙の資源参照は共通edgeではなく、このscope伝播の
+対象外。画像passの共通化、状態/eventの停止・解放、GPU資源の個体別回収は引き続き残件。
 
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
@@ -177,7 +188,7 @@ Graph::publishへ渡すrender writerが、そのframeのbuffer_bindingsで保持
 
 現在のグラフ文書の所有単位はプロジェクトと描画世代。上記owner指定による個体parameterの
 所有は実装済み。sceneごとに別のgraphを選ぶ保存形式、objectへの動的なsubgraph instance装着、
-個体stateとscope全体の実行寿命は未実装。
+個体stateの寿命と動的な資源回収は未実装。数値/computeの生存条件による停止は上記経路で扱う。
 
 画像port、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
 scene/Studio統合は残件。

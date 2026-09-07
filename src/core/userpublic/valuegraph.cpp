@@ -31,9 +31,21 @@ double number(const Json &value) {
     return value.get<double>();
 }
 
-Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners) {
-    const auto expanded = partitionGraphDocument(authored).values;
+bool active(const ScopeDependencies &dependencies, std::string_view name, const InactiveScopes &inactive) {
+    if (inactive.empty()) return true;
+    const auto found = dependencies.find(std::string{name});
+    return found == dependencies.end() || std::none_of(found->second.begin(), found->second.end(),
+        [&](const auto &scope) { return inactive.contains(scope); });
+}
+
+Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
+                      ScopeDependencies &node_scopes, ScopeDependencies &output_scopes) {
+    auto partitions = partitionGraphDocument(authored);
+    const auto &expanded = partitions.values;
     owners = expanded.instance_owners;
+    node_scopes = std::move(partitions.rendering.node_scopes);
+    node_scopes.insert(expanded.node_scopes.begin(), expanded.node_scopes.end());
+    output_scopes = expanded.output_scopes;
     const auto registry = makeBuiltinLogicalTypeRegistry();
     const auto operations = valueGraphOperationContracts(registry);
     Json result{{"schema", "pelican.value_graph"}, {"version", 1},
@@ -57,6 +69,7 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners) {
             const auto output = "$binding/" + name(node.at("id"));
             if (result["outputs"].contains(output)) throw std::invalid_argument("reserved graph output: " + output);
             result["outputs"][output] = Json::array({source(inputs.at("value"))});
+            output_scopes[output] = node_scopes.at(name(node.at("id")));
             result["bindings"].push_back({{"output", output},
                 {"kind", op == "render.scalar" ? "render_buffer" : op == "audio.volume" ? "sound_volume" : "sound_pitch"},
                 {"target", name(parameters.at("target"))}});
@@ -81,7 +94,7 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners) {
 Graph::Graph(std::string_view document) {
     const auto authored = Json::parse(document);
     const auto root = authored.value("schema", std::string{}) == "pelican.graph"
-        ? lowerScalarGraph(authored, instance_owners_) : authored;
+        ? lowerScalarGraph(authored, instance_owners_, node_scopes_, output_scopes_) : authored;
     if (authored.value("schema", std::string{}) == "pelican.graph")
         for (const auto &[output, value] : root.at("outputs").items()) {
             (void)value;
@@ -232,13 +245,17 @@ const GraphInstanceOwner *Graph::parameterOwner(std::string_view parameter) cons
     return nullptr;
 }
 
-Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters) const {
-    auto result = evaluateInternal(inputs, parameters);
+bool Graph::nodeActive(std::string_view node, const InactiveScopes &inactive) const {
+    return active(node_scopes_, node, inactive);
+}
+
+Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive) const {
+    auto result = evaluateInternal(inputs, parameters, inactive);
     for (const auto &output : lowered_outputs_) result.erase(output);
     return result;
 }
 
-Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &parameters) const {
+Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive) const {
     for (const auto &[name, value] : parameters) {
         if (!parameter_defaults_.contains(name)) throw std::invalid_argument("unknown graph parameter: " + name);
         if (!std::isfinite(value)) throw std::invalid_argument("graph parameter must be finite: " + name);
@@ -246,6 +263,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
     std::vector<double> values(nodes_.size());
     for (const auto index : order_) {
         const auto &node = nodes_[index];
+        if (!nodeActive(node.id, inactive)) continue;
         auto &value = values[index];
         switch (node.op) {
         case Op::input: {
@@ -275,6 +293,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
     }
     Outputs result;
     for (const auto &[name, indices] : outputs_) {
+        if (!active(output_scopes_, name, inactive)) continue;
         auto &output = result[name];
         output.reserve(indices.size());
         for (const auto index : indices) output.push_back(values[index]);
@@ -284,14 +303,16 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
 
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
-                             const ParameterValues &parameters) const {
-    const auto outputs = evaluateInternal(inputs, parameters);
+                             const ParameterValues &parameters, const InactiveScopes &inactive) const {
+    const auto outputs = evaluateInternal(inputs, parameters, inactive);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
     prepared.reserve(bindings_.size());
     for (const auto &binding : bindings_) {
         auto &values = prepared.emplace_back();
-        for (const auto value : outputs.at(binding.output)) {
+        const auto output = outputs.find(binding.output);
+        if (output == outputs.end()) continue;
+        for (const auto value : output->second) {
             if (std::abs(value) > (std::numeric_limits<float>::max)())
                 throw std::out_of_range("graph output exceeds float32 range: " + binding.output);
             values.push_back(static_cast<float>(value));
@@ -302,6 +323,7 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
     }
     PublishResult result;
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
+        if (prepared[i].empty()) continue;
         const auto &binding = bindings_[i];
         bool applied = false;
         if (binding.type == Target::render_buffer)

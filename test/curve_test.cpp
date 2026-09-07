@@ -28,6 +28,12 @@ TEST_CASE("owner scope dependencies cross CPU GPU boundaries without stopping si
     REQUIRE(partitions.values.node_scopes.at("clock").empty());
     REQUIRE(partitions.values.node_scopes.at("right/scaled").empty());
     REQUIRE(partitions.rendering.node_scopes.at("result").empty());
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    const auto values = graph.evaluate({{"time", 0.25}}, {}, {"left"});
+    REQUIRE_FALSE(values.contains("left"));
+    REQUIRE(values.at("right")[0] == 1);
+    REQUIRE_FALSE(graph.nodeActive("probe", {"left"}));
+    REQUIRE(graph.nodeActive("probe", {}));
 }
 
 TEST_CASE("nested passthrough instances retain lifetime boundaries after alias expansion", "[curve][graph-composition]") {
@@ -61,7 +67,25 @@ TEST_CASE("nested passthrough instances retain lifetime boundaries after alias e
     REQUIRE(graph.outputs.at("alias") == nlohmann::json{{"node", "source"}, {"port", "value"}});
     const Pelican::ValueGraph::Graph values{document.dump()};
     REQUIRE(values.evaluate({}).at("sum")[0] == 6);
+    for (const auto &scope : {"outer", "outer/child"}) {
+        const auto inactive = values.evaluate({}, {}, {scope});
+        REQUIRE(inactive.size() == 1);
+        REQUIRE(inactive.at("direct")[0] == 3);
+    }
     REQUIRE(nlohmann::json::parse(values.serialize()) == document);
+}
+
+TEST_CASE("inactive owned nodes are not evaluated", "[curve][graph-composition]") {
+    auto document = parameterGraphCompositionFixture();
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};
+    document["definitions"]["left_only"] = document["definitions"]["scaled_curve"];
+    document["nodes"][3]["definition"] = "left_only";
+    document["definitions"]["left_only"]["nodes"].push_back({
+        {"id", "external"}, {"op", "value.input"},
+        {"parameters", {{"name", "not_supplied"}}}, {"outputs", {"value"}}});
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    REQUIRE_THROWS_AS(graph.evaluate({{"time", 0.25}}), std::invalid_argument);
+    REQUIRE(graph.evaluate({{"time", 0.25}}, {}, {"left"}).at("right")[0] == 1);
 }
 
 TEST_CASE("instance parameters preserve defaults and isolate runtime overrides", "[curve][graph-composition]") {

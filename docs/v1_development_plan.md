@@ -110,8 +110,9 @@ render.buffer/render.computeの資源・型付き入出力を既存compose入口
 instanceの保存parameter、定義default、evaluate/publishへの一時overrideは実装した。
 instance.ownerによるauthoring objectとの対応と、GameContextからのparameter変更を接続した。
 削除/scene再読込み時のoverride破棄、別グラフの独立性も通常Rendererで確認済み。
-次はownerの生存状態に沿った実行scopeの有効/無効と、状態/イベントの所有を接続する。
-現段階ではownerを失ったparameterは保存値へ戻り、subgraph全体の実行停止は行わない。
+ownerの生存状態に沿った数値評価・publish・依存computeの停止と、scene再読込みでの再開を
+通常Rendererへ接続した。次は状態/イベントの所有と画像portの共通化を進める。
+停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。
 sceneごとのgraph選択と音声handle/任意外部inputの自動供給はまだない。
 画像port、feature自体の共通instance化、状態/イベント境界、Studio統合は残件。
 専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
