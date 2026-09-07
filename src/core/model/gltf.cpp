@@ -270,7 +270,13 @@ struct PreparedGltf::Impl {
     bool scene_node_instance = false;
     VrmSemanticDecodeResult vrm;
     std::optional<CanonicalModelAssetKey> asset_key;
+    std::vector<std::filesystem::path> source_files;
 };
+
+const std::vector<std::filesystem::path> &PreparedGltf::sourceFiles() const {
+    if (!impl) throw std::invalid_argument("cannot inspect sources of an empty prepared glTF");
+    return impl->source_files;
+}
 
 namespace {
 
@@ -293,6 +299,16 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     prepared->fragment = std::move(fragment);
     prepared->asset_key = std::move(asset_key);
     tinygltf::TinyGLTF loader;
+    loader.SetFsCallbacks({
+        tinygltf::FileExists, tinygltf::ExpandFilePath,
+        [prepared](std::vector<unsigned char> *bytes, std::string *error,
+                   const std::string &filename, void *) {
+            if (!tinygltf::ReadWholeFile(bytes, error, filename, nullptr)) return false;
+            const auto path = std::filesystem::weakly_canonical(std::filesystem::path{filename});
+            auto &files = prepared->source_files;
+            if (std::find(files.begin(), files.end(), path) == files.end()) files.push_back(path);
+            return true;
+        }, tinygltf::WriteWholeFile, tinygltf::GetFileSizeInBytes, nullptr});
     GltfInternal::EncodedImages encoded_images;
     loader.SetImageLoader(GltfInternal::retainEncodedImage, &encoded_images);
     const auto loaded = binary

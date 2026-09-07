@@ -351,6 +351,14 @@ CPU検証は2instanceへの展開、sourceとcountの二重指定拒否、未使
 通常Rendererでは4頂点の要素数と異なる2頂点の値をcomputeで読出し、serializeに元文書が残ること、
 欠落semanticの候補失敗後も旧世代とGPU出力が維持されることを確認した。
 
+再読込み接続用に、PreparedGltf::sourceFilesはTinyGLTFの実ファイル読込み経路から依存を取得する。
+glTF本体、外部buffer/imageを含み、埋込みdata URIはファイル依存を追加しない。URIからパスを別途
+推測せず、読まれたパスを正規化・重複排除する。候補構築時にattribute_source_filesとして描画世代へ
+移し、保存JSONやGPU転送後のCPU属性コピーには依存しない。
+監視イベントへの接続はまだ未了。現ReloadServiceは1ファイルに複数participantがclaimsすると拒否するため、
+同じglTFをModelAssetContainerとgraph属性が共有する場合は、モデルと描画候補を一つの更新単位として
+準備・公開する経路が必要。rendererのwatched_sourcesへ追加するだけではこの共有ケースを満たさない。
+
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
 ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、
 依存・入出力が全体グラフから見えることは両立する。シェーダー参照、設定、

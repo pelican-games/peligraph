@@ -26,6 +26,9 @@ class PreparedGltf {
 
   public:
     PreparedGltf() = default;
+    // Files actually read while preparing this snapshot, including external
+    // buffers/images. Embedded data URIs do not add filesystem dependencies.
+    const std::vector<std::filesystem::path> &sourceFiles() const;
 };
 
 // Provenance-bearing logical reference supplied by the project/path resolver.

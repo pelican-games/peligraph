@@ -72,6 +72,8 @@ TEST_CASE("prepared glTF attributes use shader array layout without GPU allocati
     FastModuleContainer modules;
     auto &loader = GET_MODULE(GltfLoader);
     const auto prepared = loader.prepareGltfBinary((root / "character.glb").string());
+    REQUIRE(prepared.sourceFiles() == std::vector<std::filesystem::path>{
+        std::filesystem::weakly_canonical(root / "character.glb")});
     using Element = ShaderResourceBufferElement;
     const auto positions = loader.readAttribute(prepared, 0, 0, "POSITION", Element::vec3);
     REQUIRE(positions.element == Element::vec3);
@@ -100,6 +102,39 @@ TEST_CASE("prepared glTF attributes use shader array layout without GPU allocati
     REQUIRE_THROWS(loader.readAttribute(PreparedGltf{}, 0, 0, "POSITION", Element::vec3));
     REQUIRE(FastModuleContainer::tryGet<VulkanManageCore>() == nullptr);
     REQUIRE(FastModuleContainer::tryGet<StandardMaterialResource>() == nullptr);
+}
+
+TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[skeletal][graph-attribute]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_gltf_sources_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const TempDir guard{root};
+    const std::array<float, 6> positions{-1, 0, 0, 2, 0, 0};
+    {
+        std::ofstream binary{root / "positions data.bin", std::ios::binary};
+        binary.write(reinterpret_cast<const char *>(positions.data()), sizeof(positions));
+    }
+    writeText(root / "mesh.gltf", R"({"asset":{"version":"2.0"},
+      "buffers":[{"uri":"positions%20data.bin","byteLength":24}],
+      "bufferViews":[{"buffer":0,"byteLength":24}],
+      "accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],
+      "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]})");
+    FastModuleContainer modules;
+    const auto &loader = GET_MODULE(GltfLoader);
+    const auto prepared = loader.prepareGltf((root / "mesh.gltf").string());
+    REQUIRE(prepared.sourceFiles() == std::vector<std::filesystem::path>{
+        std::filesystem::weakly_canonical(root / "mesh.gltf"),
+        std::filesystem::weakly_canonical(root / "positions data.bin")});
+    const auto attribute = loader.readAttribute(prepared, 0, 0, "POSITION", ShaderResourceBufferElement::vec3);
+    REQUIRE(attribute.count == 2);
+    std::array<float, 8> values{};
+    REQUIRE(attribute.bytes.size() == sizeof(values));
+    std::memcpy(values.data(), attribute.bytes.data(), attribute.bytes.size());
+    REQUIRE(values[0] == -1);
+    REQUIRE(values[4] == 2);
+    REQUIRE_THROWS(PreparedGltf{}.sourceFiles());
+    REQUIRE(FastModuleContainer::tryGet<VulkanManageCore>() == nullptr);
 }
 
 TEST_CASE("common graph glTF source supplies counted GPU shader attributes", "[skeletal][graph-attribute-runtime]") {
@@ -152,6 +187,9 @@ void main() {
     const auto generation = GET_MODULE(RenderingPassContainer).snapshot();
     REQUIRE(generation);
     REQUIRE_FALSE(generation->programs.empty());
+    const auto &source_files = generation->programs.begin()->second.frame_graph.attribute_source_files;
+    REQUIRE(source_files == std::vector<std::filesystem::path>{
+        std::filesystem::weakly_canonical(root / "character.glb")});
     const auto graph = generation->programs.begin()->second.frame_graph.value_graph;
     REQUIRE(graph);
     REQUIRE(nlohmann::json::parse(graph->serialize()) == document);
@@ -164,6 +202,17 @@ void main() {
     const auto retained = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float));
     std::memcpy(&value, retained.data(), sizeof(value));
     REQUIRE(std::abs(value - 4.6f) < 0.00001f);
+    TestSkeletalFixture::writeGlb(root / "replacement.glb");
+    auto replacement = document;
+    replacement["nodes"][5]["parameters"]["source"]["asset"] = "project://replacement.glb";
+    REQUIRE_NOTHROW(loadRenderGraphVariantsFromConfigData(replacement.dump()));
+    const auto next = GET_MODULE(RenderingPassContainer).snapshot();
+    REQUIRE(next != generation);
+    REQUIRE_FALSE(next->programs.empty());
+    REQUIRE(next->programs.begin()->second.frame_graph.attribute_source_files ==
+        std::vector<std::filesystem::path>{std::filesystem::weakly_canonical(root / "replacement.glb")});
+    REQUIRE(source_files == std::vector<std::filesystem::path>{
+        std::filesystem::weakly_canonical(root / "character.glb")});
 }
 
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {

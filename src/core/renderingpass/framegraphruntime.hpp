@@ -11,6 +11,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -64,6 +65,9 @@ struct CompiledFrameGraphExecution {
         buffer_bindings;
     std::vector<FrameGraphExecutionNode> nodes;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
+    // Resolved dependencies of the attribute snapshot owned by this program.
+    // Runtime metadata only; never copied into the authored graph document.
+    std::vector<std::filesystem::path> attribute_source_files;
 };
 
 struct CompiledRenderProgram {
@@ -126,6 +130,7 @@ struct RenderPipelineProgramPreparation {
         buffer_bindings;
     std::optional<RenderingPassId> rendering_pass_id;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
+    std::vector<std::filesystem::path> attribute_source_files;
 };
 
 class PreparedRendererRuntimeGeneration {

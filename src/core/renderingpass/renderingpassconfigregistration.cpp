@@ -816,6 +816,7 @@ registerRenderingPassConfigVariantsData(
             vulkan_core.getRuntimeCapabilities(),
         };
     std::map<std::string, GltfAttributeData> attribute_data;
+    std::set<std::filesystem::path> attribute_source_files;
     auto resolved_rendering_data = rendering_pass_data;
     if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
         std::map<std::string, PreparedGltf> sources;
@@ -832,6 +833,8 @@ registerRenderingPassConfigVariantsData(
                         throw std::invalid_argument("attribute source requires a glTF asset: " + asset);
                     found = sources.emplace(asset, extension == ".glb"
                         ? loader.prepareGltfBinary(path.string()) : loader.prepareGltf(path.string())).first;
+                    const auto &files = found->second.sourceFiles();
+                    attribute_source_files.insert(files.begin(), files.end());
                 }
                 auto data = loader.readAttribute(found->second,
                     source.at("mesh").get<std::uint32_t>(), source.at("primitive").get<std::uint32_t>(),
@@ -991,6 +994,7 @@ registerRenderingPassConfigVariantsData(
                 }
             }
             program.value_graph = value_graph;
+            program.attribute_source_files.assign(attribute_source_files.begin(), attribute_source_files.end());
             if (value_graph) {
                 if (program.target_plan) {
                     const std::set<std::string> no_scopes;

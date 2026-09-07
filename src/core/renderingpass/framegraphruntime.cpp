@@ -476,6 +476,7 @@ FrameGraphRuntimeContainer::prepareGeneration(
             std::move(program.render_target_bindings),
             std::move(program.buffer_bindings));
         execution.value_graph = std::move(program.value_graph);
+        execution.attribute_source_files = std::move(program.attribute_source_files);
         candidate->programs.insert_or_assign(
             rendering_pass_id,
             CompiledRenderProgram{
