@@ -11,9 +11,12 @@ LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declarat
     const auto element = declaration.at("element").get<std::string>();
     if (!shaderResourceBufferElementFromName(element))
         throw std::invalid_argument("unknown graph buffer element: " + element);
-    if (declaration.contains("domain"))
+    if (declaration.contains("domain")) {
+        if (declaration.at("domain") == "index" && element != "uint")
+            throw std::invalid_argument("index attributes require uint elements");
         return registry.canonicalize(parseSemanticTypeId("pelican.render.attribute@1"),
             {{"element", EnumValueId{element}}, {"domain", EnumValueId{declaration.at("domain").get<std::string>()}}});
+    }
     return registry.canonicalize(parseSemanticTypeId("pelican.render.storage_buffer@1"),
                                  {{"element", EnumValueId{element}}});
 }
@@ -111,15 +114,19 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         if (op == "render.attribute" && lowered.at("parameters").contains("source")) {
             const auto &parameters = lowered.at("parameters");
             const auto &source = parameters.at("source");
-            if (parameters.at("domain") != "vertex" || parameters.contains("count") ||
+            const bool indices = parameters.at("domain") == "index";
+            if ((!indices && parameters.at("domain") != "vertex") || parameters.contains("count") ||
                 parameters.contains("size") || parameters.contains("host_source") ||
                 !node.at("inputs").empty())
-                throw std::invalid_argument("sourced attribute requires vertex domain and derives its data/count: " + id);
-            if (!source.is_object() || source.size() != 4)
-                throw std::invalid_argument("attribute source requires asset, mesh, primitive and semantic: " + id);
-            for (const auto key : {"asset", "semantic"})
+                throw std::invalid_argument("sourced attribute requires vertex/index domain and derives its data/count: " + id);
+            if (!source.is_object() || source.size() != (indices ? 3 : 4) ||
+                (indices && source.contains("semantic")))
+                throw std::invalid_argument("attribute source requires asset, mesh, primitive and a semantic only for vertex attributes: " + id);
+            for (const auto key : {"asset", "semantic"}) {
+                if (indices && std::string_view{key} == "semantic") continue;
                 if (!source.at(key).is_string() || source.at(key).get_ref<const std::string &>().empty())
                     throw std::invalid_argument("attribute source requires nonempty names: " + id);
+            }
             for (const auto key : {"mesh", "primitive"}) {
                 const auto &value = source.at(key);
                 if (!value.is_number_integer() ||

@@ -341,10 +341,13 @@ mesh/primitive index・semantic（POSITION等）・出力elementを指定し、�
 vec3のarray paddingは0で埋める。GPU・標準materialを初期化せず、全meshのCPUコピーを常駐させない。
 GltfLoader::readIndicesも同じ読出し・依存抽出を使用し、元primitiveのインデックスをuint32へ変換する。
 非indexed primitiveは明示的に拒否し、POSITION要素数を超えるindexも拒否する。8/16bit入力、
-外部buffer依存と範囲外拒否をCPUテストで確認した。共通グラフのindex source宣言、
-ラスターパスのindexed draw契約とGPU接続は未実装であり、このAPIだけでは描画経路は変わらない。
+外部buffer依存と範囲外拒否をCPUテストで確認した。共通グラフではdomain=index・element=uintの
+render.attributeから使用でき、sourceはasset・mesh・primitiveだけを指定する（semanticは指定しない）。
+通常の候補buffer uploadとshader accessorを使用し、GLB/外部bufferのGPU読出しと保存原文の維持を
+確認した。vertex属性とは型が異なり、誤接続を拒否する。ラスターパスのindexed draw契約と
+native index bufferへの接続は未実装であり、現段階ではshaderから明示的に添字を読めるところまで。
 render.attributeのparameters.sourceにasset・mesh・primitive・semanticを指定すると、このAPIから
-countと候補GPU bufferの初期データを取得する。sourceはvertex domain専用で、count/size/host_sourceや
+countと候補GPU bufferの初期データを取得する。sourceはvertex/index domainに対応し、count/size/host_sourceや
 value入力との併用を拒否する。例は
 `{"element":"vec3","domain":"vertex","source":{"asset":"project://character.glb","mesh":0,"primitive":0,"semantic":"POSITION"}}`。
 使用中の定義instanceだけを解決し、元のJSONはsource参照を保持する。派生countはコンパイラ用文書へ

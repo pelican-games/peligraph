@@ -834,7 +834,10 @@ registerRenderingPassConfigVariantsData(
                     found = sources.emplace(asset, extension == ".glb"
                         ? loader.prepareGltfBinary(path.string()) : loader.prepareGltf(path.string())).first;
                 }
-                auto data = loader.readAttribute(found->second,
+                auto data = parameters.at("domain") == "index"
+                    ? loader.readIndices(found->second,
+                        source.at("mesh").get<std::uint32_t>(), source.at("primitive").get<std::uint32_t>())
+                    : loader.readAttribute(found->second,
                     source.at("mesh").get<std::uint32_t>(), source.at("primitive").get<std::uint32_t>(),
                     source.at("semantic").get<std::string>(),
                     *shaderResourceBufferElementFromName(parameters.at("element").get<std::string>()));

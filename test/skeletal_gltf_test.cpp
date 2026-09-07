@@ -336,6 +336,34 @@ void main() {
     REQUIRE(next->programs.begin()->second.frame_graph.attribute_source_files ==
         std::vector<std::filesystem::path>{std::filesystem::weakly_canonical(root / "replacement.glb")});
     REQUIRE(source_files == expected_sources);
+    replacement["nodes"][5]["parameters"] = {{"element", "uint"}, {"domain", "index"},
+        {"source", {{"asset", "project://" + source_file}, {"mesh", 0}, {"primitive", 0}}}};
+    replacement["nodes"][7]["parameters"]["ports"]["source"] = {
+        {"element", "uint"}, {"domain", "index"}, {"access", "read"}};
+    writeText(root / "shaders/index_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    pelican_store_destination(0, float(pelican_count_source() + pelican_load_source(5)));
+})");
+    replacement["nodes"][7]["parameters"]["shader"] = "shaders/index_probe";
+    REQUIRE_NOTHROW(loadRenderGraphVariantsFromConfigData(replacement.dump()));
+    REQUIRE(std::abs(rendered() - 9.0f) < 0.00001f);
+    const auto indexed = GET_MODULE(RenderingPassContainer).snapshot();
+    REQUIRE(indexed);
+    REQUIRE_FALSE(indexed->programs.empty());
+    const auto &indexed_graph = indexed->programs.begin()->second.frame_graph;
+    REQUIRE(indexed_graph.value_graph);
+    REQUIRE(nlohmann::json::parse(indexed_graph.value_graph->serialize()) == replacement);
+    auto invalid_index = replacement;
+    invalid_index["nodes"][5]["parameters"]["element"] = "float";
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid_index.dump()));
+    invalid_index = replacement;
+    invalid_index["nodes"][7]["parameters"]["ports"]["source"]["domain"] = "vertex";
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid_index.dump()));
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == indexed);
 }
 
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {

@@ -578,7 +578,7 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
         LogicalTypeConstructor::buffer,
         {buffer_element, TypeParameterSchema{"domain", TypeArgumentRole::identity,
             TypeArgumentValueKind::enum_value, std::nullopt,
-            {EnumValueId{"vertex"}, EnumValueId{"instance"}, EnumValueId{"material"}}}},
+            {EnumValueId{"vertex"}, EnumValueId{"instance"}, EnumValueId{"material"}, EnumValueId{"index"}}}},
         {"shader_storage", "attribute"}});
     const auto topology = TypeParameterSchema{
         "topology", TypeArgumentRole::identity,
