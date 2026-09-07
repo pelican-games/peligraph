@@ -25,7 +25,12 @@ Physics::Status builtinMeshCapsuleShapeCastAll(
     void *, const Physics::ProviderMeshCapsuleShapeCastQueryV3 *,
     Physics::ProviderShapeCastHitV2 *, std::uint32_t, std::uint32_t *) noexcept;
 
+Physics::Status builtinMeshMeshOverlapAll(
+    void *, const Physics::ProviderMeshMeshOverlapQueryV3 *,
+    Physics::ProviderOverlapHitV1 *, std::uint32_t, std::uint32_t *) noexcept;
+
 struct BuiltinMeshQueryContext {
+    const phys::TriangleMesh *query_acceleration = nullptr;
     std::span<const phys::TriangleMesh *const> acceleration;
 };
 

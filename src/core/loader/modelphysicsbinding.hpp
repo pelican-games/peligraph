@@ -47,6 +47,7 @@ inline void replaceModelPhysicsBinding(
     if (old != bindings.end()) {
         if (replacement) {
             replacement->identity.collider_id = old->identity.collider_id;
+            replacement->metadata = old->metadata;
             *old = std::move(*replacement);
         } else {
             bindings.erase(old);

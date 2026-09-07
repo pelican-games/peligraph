@@ -4,6 +4,8 @@
 #include "../src/core/ecs/core.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/phys/physworld.hpp"
+#include "../src/core/phys/physicsruntime.hpp"
+#include "../src/core/registrationownerhost.hpp"
 #include "../src/core/loader/modelphysicsbinding.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/gameobjects.hpp"
@@ -109,6 +111,18 @@ GameObjectId createColliderEntity(vec3 position) {
     return GameObjects::add()
         .addComponent<TransformComponent>(transform)
         .finish();
+}
+
+PhysWorld::Binding meshTriggerBinding(GameObjectId entity, bool trigger) {
+    auto geometry = std::make_shared<PhysWorld::MeshGeometry>();
+    geometry->vertices = {{-2, -2, 0}, {2, -2, 0}, {0, 2, 0}};
+    geometry->indices = {0, 1, 2};
+    PhysWorld::Binding binding;
+    binding.identity.name = "trigger-mesh";
+    binding.transform_source = entity;
+    binding.metadata.trigger = trigger;
+    binding.mesh = std::move(geometry);
+    return binding;
 }
 
 std::vector<std::uint8_t> runTriggerReplay() {
@@ -548,6 +562,230 @@ TEST_CASE("PhysWorld guarantees Exit for destroy and collider removal but not sc
     internal::clearPendingEvents();
 }
 
+TEST_CASE("Mesh triggers track primitive shapes and emit one symmetric pair delta",
+          "[physworld][trigger][mesh-trigger]") {
+    ensureLogger();
+    for (const auto *shape : {"sphere", "box", "capsule"}) {
+        for (const int trigger_mode : {1, 2, 3}) {
+            DYNAMIC_SECTION(shape << " trigger mode " << trigger_mode) {
+                internal::clearPendingEvents();
+                FastModuleContainer modules;
+                GET_MODULE(ECSPredefinedRegistration).reg();
+                auto &world = GET_MODULE(PhysWorld);
+                GameContext ctx;
+                const auto mesh_entity = createColliderEntity({0, 0, 0});
+                const auto primitive_entity = createColliderEntity({0, 0, 2});
+                world.publishPrepared(world.prepareBindings({
+                    meshTriggerBinding(mesh_entity, (trigger_mode & 1) != 0)}));
+                ColliderComponent collider;
+                collider.shape = shape;
+                collider.radius = 0.25F;
+                collider.half_extents = {0.25F, 0.25F, 0.25F};
+                collider.half_height = 0.5F;
+                collider.trigger = (trigger_mode & 2) != 0;
+                world.bindCollider("primitive", collider, primitive_entity);
+                world.updateTriggers(ctx);
+                REQUIRE(drainTriggerEvents().empty());
+
+                auto &transform = GET_MODULE(ECSCore).getTemplatePublicModule()
+                    .component<TransformComponent>(primitive_entity);
+                transform.pos.z = 0.2F;
+                world.updateTriggers(ctx);
+                const std::vector<TriggerEventRecord> enters{
+                    {true, mesh_entity, primitive_entity},
+                    {true, primitive_entity, mesh_entity}};
+                REQUIRE(drainTriggerEvents() == enters);
+                REQUIRE(world.activeTriggerPairCountForTesting() == 1);
+                // Additional collider contacts between the same entities are not events.
+                world.bindCollider("second-primitive", collider, primitive_entity);
+                world.updateTriggers(ctx);
+                REQUIRE(drainTriggerEvents().empty());
+
+                GET_MODULE(ECSCore).getTemplatePublicModule()
+                    .component<TransformComponent>(mesh_entity).pos.x = 10;
+                world.updateTriggers(ctx);
+                const std::vector<TriggerEventRecord> exits{
+                    {false, mesh_entity, primitive_entity},
+                    {false, primitive_entity, mesh_entity}};
+                REQUIRE(drainTriggerEvents() == exits);
+                REQUIRE(world.activeTriggerPairCountForTesting() == 0);
+                world.updateTriggers(ctx);
+                REQUIRE(drainTriggerEvents().empty());
+                internal::clearPendingEvents();
+            }
+        }
+    }
+}
+
+TEST_CASE("Mesh trigger eligibility respects both masks trigger flags and entity identity",
+          "[physworld][trigger][mesh-trigger]") {
+    ensureLogger();
+    internal::clearPendingEvents();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    GameContext ctx;
+    const auto mesh_entity = createColliderEntity({0, 0, 0});
+    auto primitive_entity = createColliderEntity({0, 0, 0});
+    auto mesh = meshTriggerBinding(mesh_entity, true);
+    mesh.metadata.layer = 2;
+    mesh.metadata.mask = 4;
+    ColliderComponent collider;
+    collider.radius = 0.25F;
+    collider.layer = 4;
+    collider.mask = 2;
+    SECTION("mesh mask excludes primitive") { mesh.metadata.mask = 1; }
+    SECTION("primitive mask excludes mesh") { collider.mask = 1; }
+    SECTION("neither collider is a trigger") { mesh.metadata.trigger = false; }
+    SECTION("same entity has no self events") { primitive_entity = mesh_entity; }
+    world.publishPrepared(world.prepareBindings({std::move(mesh)}));
+    world.bindCollider("primitive", collider, primitive_entity);
+    world.updateTriggers(ctx);
+    CHECK(drainTriggerEvents().empty());
+    CHECK(world.activeTriggerPairCountForTesting() == 0);
+    internal::clearPendingEvents();
+}
+
+TEST_CASE("Mesh trigger replacement preserves contacts and removal emits Exit",
+          "[physworld][trigger][mesh-trigger]") {
+    ensureLogger();
+    internal::clearPendingEvents();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    GameContext ctx;
+    const auto mesh_entity = createColliderEntity({0, 0, 0});
+    const auto primitive_entity = createColliderEntity({0, 0, 0});
+    world.publishPrepared(world.prepareBindings({meshTriggerBinding(mesh_entity, true)}));
+    world.bindCollider("primitive", ColliderComponent{}, primitive_entity);
+    world.updateTriggers(ctx);
+    REQUIRE(drainTriggerEvents().size() == 2);
+
+    SECTION("geometry replacement keeps a continuing entity pair") {
+        auto state = world.snapshotPrepared();
+        for (auto &binding : state.bindings) {
+            if (!binding.mesh) continue;
+            auto geometry = std::make_shared<PhysWorld::MeshGeometry>(*binding.mesh);
+            geometry->vertices[0].x = -3;
+            binding.mesh = std::move(geometry);
+        }
+        world.publishPrepared(world.prepareBindings(std::move(state.bindings)));
+        world.updateTriggers(ctx);
+        REQUIRE(drainTriggerEvents().empty());
+        REQUIRE(world.activeTriggerPairCountForTesting() == 1);
+        state = world.snapshotPrepared();
+        std::erase_if(state.bindings, [](const auto &binding) { return bool(binding.mesh); });
+        world.publishPrepared(world.prepareBindings(std::move(state.bindings)));
+    }
+    SECTION("destroying mesh entity ends the pair") {
+        REQUIRE(GameObjects::remove(mesh_entity));
+    }
+    world.updateTriggers(ctx);
+    const std::vector<TriggerEventRecord> exits{
+        {false, mesh_entity, primitive_entity},
+        {false, primitive_entity, mesh_entity}};
+    CHECK(drainTriggerEvents() == exits);
+    CHECK(world.activeTriggerPairCountForTesting() == 0);
+    internal::clearPendingEvents();
+}
+
+TEST_CASE("Mesh pairs emit Trigger deltas for coplanar and transverse surface contacts",
+          "[physworld][trigger][mesh-trigger]") {
+    ensureLogger();
+    internal::clearPendingEvents();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    GameContext ctx;
+    const auto first_entity = createColliderEntity({0, 0, 0});
+    const auto second_entity = createColliderEntity({0, 0, 0});
+    auto first = meshTriggerBinding(first_entity, false);
+    auto second = meshTriggerBinding(second_entity, true);
+    second.identity.name = "second-mesh";
+    SECTION("coplanar surfaces") {}
+    SECTION("transverse surfaces with both trigger flags") {
+        first.metadata.trigger = true;
+        auto geometry = std::make_shared<PhysWorld::MeshGeometry>();
+        geometry->vertices = {{0, -1, -1}, {0, 1, -1}, {0, 0, 1}};
+        geometry->indices = {0, 1, 2};
+        second.mesh = std::move(geometry);
+    }
+    world.publishPrepared(world.prepareBindings({std::move(first), std::move(second)}));
+    world.updateTriggers(ctx);
+    const std::vector<TriggerEventRecord> enters{
+        {true, first_entity, second_entity},
+        {true, second_entity, first_entity}};
+    REQUIRE(drainTriggerEvents() == enters);
+    REQUIRE(world.activeTriggerPairCountForTesting() == 1);
+    world.updateTriggers(ctx);
+    REQUIRE(drainTriggerEvents().empty());
+    GET_MODULE(ECSCore).getTemplatePublicModule()
+        .component<TransformComponent>(second_entity).pos.x = 10;
+    world.updateTriggers(ctx);
+    const std::vector<TriggerEventRecord> exits{
+        {false, first_entity, second_entity},
+        {false, second_entity, first_entity}};
+    CHECK(drainTriggerEvents() == exits);
+    CHECK(world.activeTriggerPairCountForTesting() == 0);
+    internal::clearPendingEvents();
+}
+
+TEST_CASE("Unavailable mesh provider preserves Trigger state until a successful update",
+          "[physworld][trigger][mesh-trigger]") {
+    ensureLogger();
+    internal::clearPendingEvents();
+    FastModuleContainer modules;
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &world = GET_MODULE(PhysWorld);
+    GameContext ctx;
+    const auto mesh_entity = createColliderEntity({0, 0, 0});
+    const auto primitive_entity = createColliderEntity({0, 0, 0});
+    world.publishPrepared(world.prepareBindings({meshTriggerBinding(mesh_entity, true)}));
+    world.bindCollider("primitive", ColliderComponent{}, primitive_entity);
+    world.updateTriggers(ctx);
+    REQUIRE(drainTriggerEvents().size() == 2);
+
+    Physics::ApiV3 api;
+    REQUIRE(Physics::getApiV3(3, &api) == Physics::Status::ok);
+    Physics::ProviderV3 provider;
+    provider.base.name_utf8 = "trigger.unavailable";
+    provider.base.name_size = 19;
+    provider.mesh_capability_bits = Physics::query_mesh_sphere_overlap_all;
+    provider.mesh_sphere_overlap_all = +[](void *,
+        const Physics::ProviderMeshSphereOverlapQueryV3 *,
+        Physics::ProviderOverlapHitV1 *, std::uint32_t, std::uint32_t *count) noexcept {
+        *count = 0;
+        return Physics::Status::unavailable;
+    };
+    const auto owner = internal::allocateRegistrationOwner();
+    struct Cleanup {
+        internal::RegistrationOwner owner;
+        ~Cleanup() { physics_internal::releaseProviderOwner(owner); }
+    } cleanup{owner};
+    Physics::ProviderHandleV2 handle;
+    {
+        internal::ScopedRegistrationOwner scope{owner};
+        REQUIRE(api.register_provider_v3(api.base.context, &provider, &handle) == Physics::Status::ok);
+    }
+    physics_internal::activateProviderOwner(owner);
+    GET_MODULE(ECSCore).getTemplatePublicModule()
+        .component<TransformComponent>(primitive_entity).pos.z = 10;
+    world.updateTriggers(ctx);
+    REQUIRE(drainTriggerEvents().empty());
+    REQUIRE(world.activeTriggerPairCountForTesting() == 1);
+    {
+        internal::ScopedRegistrationOwner scope{owner};
+        REQUIRE(api.base.unregister_provider(api.base.context, handle) == Physics::Status::ok);
+    }
+    world.updateTriggers(ctx);
+    const std::vector<TriggerEventRecord> exits{
+        {false, mesh_entity, primitive_entity},
+        {false, primitive_entity, mesh_entity}};
+    CHECK(drainTriggerEvents() == exits);
+    CHECK(world.activeTriggerPairCountForTesting() == 0);
+    internal::clearPendingEvents();
+}
+
 #if PELICAN_WITH_RPC
 TEST_CASE("physics raycast RPC uses the live collider world", "[physworld][rpc][raycast-rpc]") {
     ensureLogger();
@@ -776,6 +1014,8 @@ TEST_CASE("Model collision replacements prepare additions removals and stable id
     model.collision_meshes = sources;
     auto bindings = world.snapshotPrepared().bindings;
     replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
+    bindings.at(0).metadata = {.layer = 0b0010U, .mask = 0b0101U,
+        .trigger = true, .one_way = true};
     auto candidate = world.prepareBindings(std::move(bindings));
     const auto id = candidate.bindings.at(0).identity.collider_id;
     const auto acceleration = candidate.bindings.at(0).mesh_acceleration;
@@ -794,6 +1034,10 @@ TEST_CASE("Model collision replacements prepare additions removals and stable id
     replaceModelPhysicsBinding(bindings, model, "target", PhysWorldTransform{});
     candidate = world.prepareBindings(std::move(bindings));
     CHECK(candidate.bindings.at(0).identity.collider_id == id);
+    CHECK(candidate.bindings.at(0).metadata.layer == 0b0010U);
+    CHECK(candidate.bindings.at(0).metadata.mask == 0b0101U);
+    CHECK(candidate.bindings.at(0).metadata.trigger);
+    CHECK(candidate.bindings.at(0).metadata.one_way);
     REQUIRE(candidate.bindings.at(0).mesh_acceleration);
     CHECK(candidate.bindings.at(0).mesh_acceleration != acceleration);
     CHECK(world.raycastClosest(ray)->distance == Catch::Approx(3));

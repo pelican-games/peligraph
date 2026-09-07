@@ -34,6 +34,63 @@ TEST_CASE("Triangle mesh raycast tests triangle surfaces, both sides and paramet
     REQUIRE_FALSE(mesh.raycast(Ray{{0, 0, 2}, {1, 0, 0}, 10}));
 }
 
+TEST_CASE("Mesh surface overlap distinguishes coplanar disjoint and crossing triangles",
+          "[physics][trianglemesh][mesh-mesh]") {
+    const TriangleMesh mesh(triangle,indices);
+    const glm::mat4 identity{1};
+    REQUIRE(mesh.overlaps(mesh,identity,identity));
+    const std::array<vec3,3> outside{{{2,2,2},{1.2F,2,2},{2,1.2F,2}}};
+    const TriangleMesh disjoint(outside,indices);
+    REQUIRE_FALSE(mesh.overlaps(disjoint,identity,identity));
+    const std::array<vec3,3> corner{{{2,0,2},{3,0,2},{2,1,2}}};
+    REQUIRE(mesh.overlaps(TriangleMesh{corner,indices},identity,identity));
+    const std::array<vec3,3> vertical{{{0.5F,0.5F,0},{0.5F,0.5F,4},{0.5F,2,2}}};
+    const TriangleMesh crossing(vertical,indices);
+    REQUIRE(mesh.overlaps(crossing,identity,identity));
+    REQUIRE(crossing.overlaps(mesh,identity,identity));
+    glm::mat4 moved{1}; moved[3][2] = 1;
+    REQUIRE_FALSE(mesh.overlaps(mesh,identity,moved));
+    glm::mat4 affine{1}; affine[0][0] = -2; affine[1][0] = 0.5F; affine[2][2] = 3;
+    REQUIRE(mesh.overlaps(crossing,affine,affine));
+    REQUIRE_FALSE(mesh.overlaps(disjoint,affine,affine));
+    affine[0][0] = 0;
+    REQUIRE_FALSE(mesh.overlaps(crossing,identity,affine));
+    const std::array<vec3,3> large{{{-2,-2,0},{2,-2,0},{0,2,0}}};
+    const std::array<vec3,3> small{{{-0.5F,-0.5F,0},{0.5F,-0.5F,0},{0,0.5F,0}}};
+    const glm::mat4 oblique{
+        {0.4801348448F,-0.4433494210F,0.3377121091F,0},
+        {0.1238247231F,-0.2965221107F,0.9353231788F,0},
+        {-0.5623118877F,-0.3789917231F,1.591636658F,0},
+        {-1.985923052F,1.444981217F,0.9950938821F,1}};
+    REQUIRE(TriangleMesh{large,indices}.overlaps(TriangleMesh{small,indices},oblique,oblique));
+    // A real gap remains a miss; arithmetic tolerance is not contact padding.
+    auto gap = oblique;
+    gap[3] += 0.00001F*gap[2];
+    REQUIRE_FALSE(TriangleMesh{large,indices}.overlaps(TriangleMesh{small,indices},oblique,gap));
+    REQUIRE_FALSE(mesh.overlaps(TriangleMesh{{},{}},identity,identity));
+}
+
+TEST_CASE("Mesh surface overlap traverses both BVHs and does not imply volume containment",
+          "[physics][trianglemesh][mesh-mesh]") {
+    std::vector<vec3> vertices;
+    std::vector<std::uint32_t> triangles;
+    for (int layer = 1; layer <= 8; ++layer) {
+        const auto base = static_cast<std::uint32_t>(vertices.size());
+        vertices.insert(vertices.end(),{{0,0,static_cast<float>(layer)},
+            {2,0,static_cast<float>(layer)},{0,2,static_cast<float>(layer)}});
+        triangles.insert(triangles.end(),{base,base+1,base+2});
+    }
+    const TriangleMesh layers(vertices,triangles);
+    glm::mat4 shifted{1}; shifted[3][2] = 7;
+    REQUIRE(layers.overlaps(layers,glm::mat4{1},shifted));
+    shifted[3][2] = 8;
+    REQUIRE_FALSE(layers.overlaps(layers,glm::mat4{1},shifted));
+    const std::array<vec3,4> tetra{{{0,0,0},{4,0,0},{0,4,0},{0,0,4}}};
+    const std::array<std::uint32_t,12> faces{0,1,2,0,3,1,0,2,3,1,3,2};
+    const std::array<vec3,3> inner{{{0.5F,0.5F,0.5F},{1,0.5F,0.5F},{0.5F,1,0.5F}}};
+    REQUIRE_FALSE(TriangleMesh{tetra,faces}.overlaps(TriangleMesh{inner,indices},glm::mat4{1},glm::mat4{1}));
+}
+
 TEST_CASE("Capsule mesh sweep catches body face edge and vertex contacts",
           "[physics][trianglemesh][capsule-mesh-sweep]") {
     const TriangleMesh mesh(triangle,indices);

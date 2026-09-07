@@ -108,7 +108,16 @@ prism面の接触点は重心座標で元の三角形上へ戻す。軸中央で
 ProviderV3の`query_mesh_capsule_shape_cast_all`と`mesh_capsule_shape_cast_all`を使用する。
 prism内部にある初期軸交差は、境界面から離れていてもunavailableにする。半径ゼロの境界接触は外向き法線で
 接近・離反を区別し、接線方向の初期移動が後続面のhitとして返ることも防ぐ。
-mesh全体の初期貫通MTD・mesh triggerは未実装。
+mesh TriggerはSphere/Box/Capsuleとの組み合わせ、およびmesh同士の表面接触に対応する。
+片方以上がtriggerで、相互layer/maskが一致し、異なるentityに属する場合を対象とする。
+既存のOverlapEnter/OverlapExitを両entityへ通知し、継続中はペアを保持する（Stay通知は追加しない）。
+同一entityペアの複数bindingはまとめ、全問い合わせの成功後にイベントを確定する。
+providerがunavailableなら以前のペアを保持し、見かけのExitを生成しない。
+mesh同士は両BVHと三角形の分離軸で判定し、共面の離隔を区別する。world変換の丸め誤差だけを考慮し、
+固定の接触厚みは追加しない。ProviderV3の`query_mesh_mesh_overlap_all`と`mesh_mesh_overlap_all`を使用する。
+モデル形状差し替えでは既存bindingのtrigger/layer/mask/one_wayを保持する。
+mesh Triggerも三角形表面との接触であり、閉じたmesh内部を充填した検知領域とはみなさない。
+内部全体の検知には既存の通常形状Triggerを使用する。mesh全体の初期貫通MTDは未実装。
 
 2026-09-06: RPC `raycast`を既存PhysWorldへ接続。paramsは`origin`・`direction`（各3数値）と`max_distance`（有限・非負）。方向は正規化する。結果は`hit: null`またはname/distance/position/normal/collider_id/shape_ordinal/trigger/one_wayを持つhit。現在のtransformを問い合わせ、raycast既定のlayer/mask・trigger/one-way包含規則を使用する。P3のメッシュ/BVH/glb extras規約の完了を意味しない。
 

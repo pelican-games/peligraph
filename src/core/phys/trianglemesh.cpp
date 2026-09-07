@@ -485,6 +485,87 @@ std::optional<ShapeCastHit> TriangleMesh::shapeCast(
     return result;
 }
 
+bool TriangleMesh::overlaps(const TriangleMesh &other,
+    const glm::mat4 &local_to_world, const glm::mat4 &other_to_world) const {
+    if (nodes_.empty() || other.nodes_.empty()) return false;
+    const auto valid = [](const glm::mat4 &m) {
+        for (int c = 0; c < 4; ++c)
+            for (int r = 0; r < 4; ++r)
+                if (!std::isfinite(m[c][r])) return false;
+        const double determinant = glm::determinant(glm::dmat4{m});
+        return m[0][3] == 0 && m[1][3] == 0 && m[2][3] == 0 && m[3][3] == 1 &&
+               std::isfinite(determinant) && determinant != 0;
+    };
+    if (!valid(local_to_world) || !valid(other_to_world)) return false;
+    const glm::dmat4 firstMatrix{local_to_world}, secondMatrix{other_to_world};
+    const auto point = [](vec3 p, const glm::dmat4 &m) { return glm::dvec3(m*glm::dvec4{p.x,p.y,p.z,1}); };
+    const auto bounds = [&](const Node &node, const glm::dmat4 &matrix) {
+        glm::dvec3 low{std::numeric_limits<double>::infinity()}, high{-std::numeric_limits<double>::infinity()};
+        for (int corner = 0; corner < 8; ++corner) {
+            const auto p = point({(corner&1) ? node.maximum.x : node.minimum.x,
+                                  (corner&2) ? node.maximum.y : node.minimum.y,
+                                  (corner&4) ? node.maximum.z : node.minimum.z},matrix);
+            low = glm::min(low,p); high = glm::max(high,p);
+        }
+        return std::pair{low,high};
+    };
+    const auto triangle = [&](const TriangleMesh &mesh, std::size_t index, const glm::dmat4 &matrix) {
+        const auto base = mesh.triangles_[index]*3;
+        return std::array{point(mesh.vertices_[mesh.indices_[base]],matrix),
+                          point(mesh.vertices_[mesh.indices_[base+1]],matrix),
+                          point(mesh.vertices_[mesh.indices_[base+2]],matrix)};
+    };
+    const auto intersect = [](const auto &a, const auto &b) {
+        const auto separated = [&](glm::dvec3 axis) {
+            const std::array pa{0.0,glm::dot(a[1]-a[0],axis),glm::dot(a[2]-a[0],axis)};
+            const std::array pb{glm::dot(b[0]-a[0],axis),glm::dot(b[1]-a[0],axis),glm::dot(b[2]-a[0],axis)};
+            // Shared-origin projections avoid translation cancellation. Allow
+            // only floating arithmetic roundoff from transformed coordinates,
+            // not a fixed world-space thickness for the triangle surface.
+            double magnitude = 0;
+            for (const auto &p : a) magnitude = std::max(magnitude,glm::dot(glm::abs(p),glm::abs(axis)));
+            for (const auto &p : b) magnitude = std::max(magnitude,glm::dot(glm::abs(p),glm::abs(axis)));
+            const double error = 64*std::numeric_limits<double>::epsilon()*magnitude;
+            return *std::min_element(pa.begin(),pa.end()) > *std::max_element(pb.begin(),pb.end())+error ||
+                   *std::min_element(pb.begin(),pb.end()) > *std::max_element(pa.begin(),pa.end())+error;
+        };
+        const std::array ea{a[1]-a[0],a[2]-a[1],a[0]-a[2]};
+        const std::array eb{b[1]-b[0],b[2]-b[1],b[0]-b[2]};
+        const auto na = glm::cross(ea[0],ea[1]), nb = glm::cross(eb[0],eb[1]);
+        if (separated(na) || separated(nb)) return false;
+        for (const auto &x : ea)
+            for (const auto &y : eb) if (separated(glm::cross(x,y))) return false;
+        // For coplanar triangles the edge-edge axes collapse to their normal;
+        // include in-plane edge normals to distinguish disjoint surfaces.
+        for (const auto &edge : ea) if (separated(glm::cross(na,edge))) return false;
+        for (const auto &edge : eb) if (separated(glm::cross(nb,edge))) return false;
+        return true;
+    };
+    // Split one median tree at a time. At most the sum of their depths is live.
+    std::array<std::pair<std::size_t,std::size_t>,2*std::numeric_limits<std::size_t>::digits+1> pending{};
+    std::size_t count = 1;
+    while (count) {
+        const auto [first,second] = pending[--count];
+        const auto &a = nodes_[first], &b = other.nodes_[second];
+        const auto [aLow,aHigh] = bounds(a,firstMatrix);
+        const auto [bLow,bHigh] = bounds(b,secondMatrix);
+        const auto magnitude = glm::max(glm::max(glm::abs(aLow),glm::abs(aHigh)),
+                                         glm::max(glm::abs(bLow),glm::abs(bHigh)));
+        const auto error = 64*std::numeric_limits<double>::epsilon()*magnitude;
+        if (glm::any(glm::greaterThan(aLow,bHigh+error)) || glm::any(glm::greaterThan(bLow,aHigh+error))) continue;
+        if (a.count == 0) {
+            pending[count++] = {a.left,second}; pending[count++] = {a.right,second}; continue;
+        }
+        if (b.count == 0) {
+            pending[count++] = {first,b.left}; pending[count++] = {first,b.right}; continue;
+        }
+        for (std::size_t i = a.begin; i < a.begin+a.count; ++i)
+            for (std::size_t j = b.begin; j < b.begin+b.count; ++j)
+                if (intersect(triangle(*this,i,firstMatrix),triangle(other,j,secondMatrix))) return true;
+    }
+    return false;
+}
+
 bool TriangleMesh::overlaps(const Sphere &sphere, const glm::mat4 &local_to_world) const {
     return overlaps(Capsule{sphere.center, {0,0,0,1}, 0, sphere.radius}, local_to_world);
 }

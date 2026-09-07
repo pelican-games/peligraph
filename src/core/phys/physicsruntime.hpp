@@ -47,6 +47,14 @@ Physics::Status overlapMeshes(
     const phys::QueryFilter *filter, std::vector<phys::OverlapHit> &out_hits,
     std::span<const phys::TriangleMesh *const> acceleration = {}) noexcept;
 
+Physics::Status overlapMeshMeshes(
+    const Physics::TriangleMeshV3 &shape, std::span<const Physics::TriangleMeshV3> meshes,
+    std::span<const phys::ColliderIdentity> identities,
+    std::span<const phys::ColliderQueryMetadata> metadata,
+    const phys::QueryFilter *filter, std::vector<phys::OverlapHit> &out_hits,
+    std::span<const phys::TriangleMesh *const> acceleration = {},
+    const phys::TriangleMesh *query_acceleration = nullptr) noexcept;
+
 Physics::Status shapeCastMeshes(
     const phys::Shape &shape, vec3 delta, std::span<const Physics::TriangleMeshV3> meshes,
     std::span<const phys::ColliderIdentity> identities,

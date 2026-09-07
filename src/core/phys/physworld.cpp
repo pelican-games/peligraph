@@ -708,46 +708,65 @@ std::vector<std::string> PhysWorld::overlapAll(
 
 void PhysWorld::updateTriggers(GameContext &ctx) {
     const auto colliders = collectColliders();
+    const auto meshes = collectMeshQueries(bindings);
+    MeshQueryInputs meshTriggers;
+    for (std::size_t i = 0; i < meshes.meshes.size(); ++i) {
+        if (!meshes.metadata[i].trigger || !meshes.identities[i].entity) continue;
+        meshTriggers.meshes.push_back(meshes.meshes[i]);
+        meshTriggers.acceleration.push_back(meshes.acceleration[i]);
+        meshTriggers.identities.push_back(meshes.identities[i]);
+        meshTriggers.metadata.push_back(meshes.metadata[i]);
+    }
     std::vector<TriggerPair> current_pairs;
-
-    for (const auto &trigger : colliders) {
-        if (!trigger.metadata.trigger || !trigger.identity.entity.has_value()) {
-            continue;
-        }
-
-        const phys::QueryFilter filter{
-            .layer = trigger.metadata.layer,
-            .mask = trigger.metadata.mask,
-            .include_triggers = true,
-            .include_one_way = true,
-            .self = trigger.identity.collider_id,
-            .self_entity = trigger.identity.entity,
-        };
-        std::vector<phys::OverlapHit> hits;
-        const auto status = physics_internal::overlapAll(
-            trigger.shape, colliders, &filter, hits);
-        if (status == Physics::Status::unavailable) {
-            // Provider unavailability says nothing about physical separation.
-            // Preserve the last known set rather than manufacture Exit events.
-            return;
-        }
-        if (status != Physics::Status::ok) {
-            throw std::runtime_error(
-                "Physics trigger overlap failed with status " +
-                std::to_string(static_cast<std::uint32_t>(status)));
-        }
-
+    const auto filterFor = [](const phys::ColliderIdentity &identity,
+                              const phys::ColliderQueryMetadata &metadata) {
+        return phys::QueryFilter{
+            .layer = metadata.layer, .mask = metadata.mask,
+            .include_triggers = true, .include_one_way = true,
+            .self = identity.collider_id, .self_entity = identity.entity};
+    };
+    const auto append = [&](const phys::ColliderIdentity &source,
+                            const std::vector<phys::OverlapHit> &hits) {
         for (const auto &hit : hits) {
-            if (!hit.identity.entity.has_value() ||
-                *hit.identity.entity == *trigger.identity.entity) {
-                continue;
-            }
-            const auto first = std::min(*trigger.identity.entity,
-                                        *hit.identity.entity);
-            const auto second = std::max(*trigger.identity.entity,
-                                         *hit.identity.entity);
-            current_pairs.emplace_back(first, second);
+            if (!hit.identity.entity || *hit.identity.entity == *source.entity) continue;
+            current_pairs.emplace_back(std::min(*source.entity,*hit.identity.entity),
+                                       std::max(*source.entity,*hit.identity.entity));
         }
+    };
+    const auto available = [](Physics::Status status) {
+        // No separation can be inferred from a temporarily unavailable provider.
+        // Emit nothing until every query has succeeded, preserving active pairs.
+        if (status == Physics::Status::unavailable) return false;
+        if (status != Physics::Status::ok)
+            throw std::runtime_error("Physics trigger overlap failed with status " +
+                std::to_string(static_cast<std::uint32_t>(status)));
+        return true;
+    };
+    for (const auto &collider : colliders) {
+        if (!collider.identity.entity) continue;
+        const auto filter = filterFor(collider.identity,collider.metadata);
+        std::vector<phys::OverlapHit> hits;
+        if (collider.metadata.trigger) {
+            if (!available(physics_internal::overlapAll(collider.shape,colliders,&filter,hits))) return;
+            append(collider.identity,hits);
+        }
+        // Reverse the geometric query for mesh triggers: the primitive stays
+        // the query shape, while reciprocal filtering makes pair eligibility
+        // independent of which collider carries the trigger flag.
+        const auto &targets = collider.metadata.trigger ? meshes : meshTriggers;
+        if (targets.meshes.empty()) continue;
+        if (!available(physics_internal::overlapMeshes(collider.shape,targets.meshes,
+            targets.identities,targets.metadata,&filter,hits,targets.acceleration))) return;
+        append(collider.identity,hits);
+    }
+    for (std::size_t i = 0; i < meshTriggers.meshes.size(); ++i) {
+        const auto &identity = meshTriggers.identities[i];
+        const auto filter = filterFor(identity,meshTriggers.metadata[i]);
+        std::vector<phys::OverlapHit> hits;
+        if (!available(physics_internal::overlapMeshMeshes(meshTriggers.meshes[i],meshes.meshes,
+            meshes.identities,meshes.metadata,&filter,hits,meshes.acceleration,
+            meshTriggers.acceleration[i]))) return;
+        append(identity,hits);
     }
 
     std::sort(current_pairs.begin(), current_pairs.end());

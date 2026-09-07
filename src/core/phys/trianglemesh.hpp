@@ -49,6 +49,10 @@ class TriangleMesh {
     [[nodiscard]] std::optional<ShapeCastHit> shapeCast(
         const Capsule &world_capsule, vec3 delta,
         const glm::mat4 &local_to_world) const;
+    // Inclusive surface intersection, including coplanar triangles. Closed
+    // meshes do not imply filled-volume containment.
+    [[nodiscard]] bool overlaps(const TriangleMesh &other,
+        const glm::mat4 &local_to_world, const glm::mat4 &other_to_world) const;
     [[nodiscard]] std::span<const vec3> vertices() const noexcept { return vertices_; }
     [[nodiscard]] std::span<const std::uint32_t> indices() const noexcept { return indices_; }
     [[nodiscard]] std::size_t triangleCount() const noexcept { return indices_.size() / 3; }

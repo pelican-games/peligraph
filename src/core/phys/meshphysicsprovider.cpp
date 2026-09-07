@@ -200,4 +200,36 @@ Physics::Status builtinMeshCapsuleShapeCastAll(
         });
 }
 
+Physics::Status builtinMeshMeshOverlapAll(
+    void *context, const Physics::ProviderMeshMeshOverlapQueryV3 *query,
+    Physics::ProviderOverlapHitV1 *hits, std::uint32_t capacity,
+    std::uint32_t *out_count) noexcept {
+    const auto *cached = static_cast<const BuiltinMeshQueryContext *>(context);
+    const phys::TriangleMesh *queryMesh = cached ? cached->query_acceleration : nullptr;
+    std::optional<phys::TriangleMesh> temporary;
+    return builtinMeshQuery(context,query,hits,capacity,out_count,
+        [&](const phys::TriangleMesh &mesh, const glm::mat4 &transform,
+            const Physics::ProviderMeshMeshOverlapQueryV3 &query, std::uint32_t index)
+            -> std::optional<Physics::ProviderOverlapHitV1> {
+            const auto &source = query.shape;
+            if (queryMesh == nullptr) {
+                if (source.reserved0 != 0 || source.reserved1 != 0 ||
+                    (source.vertex_count != 0 && source.vertices == nullptr) ||
+                    (source.index_count != 0 && source.indices == nullptr))
+                    throw std::invalid_argument("Invalid mesh overlap query geometry");
+                std::vector<vec3> vertices;
+                vertices.reserve(source.vertex_count);
+                for (std::uint32_t i = 0; i < source.vertex_count; ++i)
+                    vertices.push_back({source.vertices[i].x,source.vertices[i].y,source.vertices[i].z});
+                temporary.emplace(vertices,std::span{source.indices,source.index_count});
+                queryMesh = &*temporary;
+            }
+            glm::mat4 queryTransform;
+            for (int c = 0; c < 4; ++c)
+                for (int r = 0; r < 4; ++r) queryTransform[c][r] = source.local_to_world[c*4+r];
+            if (!queryMesh->overlaps(mesh,queryTransform,transform)) return std::nullopt;
+            return Physics::ProviderOverlapHitV1{index,0};
+        });
+}
+
 } // namespace Pelican::physics_internal

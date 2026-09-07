@@ -23242,6 +23242,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**mesh Trigger (2026-09-07):**
+- PhysWorldの既存OverlapEnter/OverlapExitへSphere/Box/Capsule対meshとmesh対meshを接続。どちら側がtriggerでも相互layer/mask・自己entity除外を適用し、entityペアで重複除去する。接触中は既存ペアを保持し、Stayイベントは追加しない。判定失敗時は部分的なEnter/Exitを出さず、unavailable時は以前のペアを維持する。
+- mesh同士の接触判定は両BVHと三角形の分離軸を使用し、共面の辺法線も含める。変換後の共面誤判定を修正し、共通原点の投影と倍精度演算に応じた誤差だけを考慮する。閉じたmeshの内部充填は行わない。ProviderV3にquery_mesh_mesh_overlap_all/callbackを追加し、入力側・対象側とも保持済みBVHを渡す。overlap結果の復元・検査は既存経路と共通化。利用DLLは現行headerで再ビルドする。
+- モデル形状のreplaceModelPhysicsBindingでtrigger/layer/mask/one_wayを失わないよう修正。prepared更新・移動・削除後の接触状態の変化を同じイベント処理で扱う。glTFのmesh Trigger authoring UIを追加したという意味ではない。
+- Player・runtime_services Debug build成功。関連38case/619assertion成功。3形状×triggerの片側/両側、同entity/重複binding、filter、接触継続・移動・geometry差し替え・削除、provider unavailableからの復帰、独自mesh providerと不正index拒否を確認。mesh同士は共面離隔/点接触/交差、両BVH、内部包含のみの非接触、反転・shear・斜め変換後の共面接触と実在する隙間を確認した。
+- メッシュ問い合わせを外すとEnter/Exitが発生せず、共面の辺法線を外すとAABB内で離れた三角形を接触扱いにする対照。個別変異・provider-only別build・実ファイル監視/Studio通し操作・性能計測は未実施。mesh全体の初期貫通MTDは未実装として残し、Triggerを今回の区切りとする。
+
 **Capsuleと静的meshのSweep (2026-09-07):**
 - TriangleMesh→ProviderV3→既存Shape Cast公開ServiceV2へCapsule sweepを接続。回転固定の軸線を三角形側へ移したprismの境界に対してSphere Sweepを行う。Sphereの面・辺・頂点の解析式を共通関数へ抽出し、半長ゼロも同じ経路へ集約。prismは固定長配列で扱い、一時mesh/BVHの生成や時間サンプリングを使わない。接触点はprism面の重心座標から元の三角形上へ戻す。
 - ProviderV3へquery_mesh_capsule_shape_cast_allとcallbackを追加。radius・half_height・正規化rotationを転送し、filter・identity・結果検査・primitiveとの統合を共有。利用DLLは現行headerで再ビルドする。prism内部の初期軸交差を検出し、mesh全体のMTDとして未実装の深い初期貫通はunavailableを維持する。
