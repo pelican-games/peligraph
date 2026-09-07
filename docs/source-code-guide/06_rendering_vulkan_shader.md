@@ -1594,7 +1594,7 @@ RT の1フレームは、compile → pipeline → SBT → AS record → submit �
 
 | 点 | 呼び出し位置 |
 |---|---|
-| `after_compile` / `after_pipeline` | [registration 側](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L892) / [同](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1107) |
+| `after_compile` / `after_pipeline` | [registration 側](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L893) / [同](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1108) |
 | `after_sbt` | [`createRayTracingSceneShaderBindingTables()` の直後](../../src/core/vkcore/renderer.cpp#L4955) |
 | `after_as_record` | [`recordFrame()` の直後](../../src/core/vkcore/renderer.cpp#L4955) |
 | `submit` | [logical frame の締め](../../src/core/vkcore/renderer.cpp#L5842) |

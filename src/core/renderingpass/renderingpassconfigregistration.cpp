@@ -840,7 +840,8 @@ registerRenderingPassConfigVariantsData(
                     : loader.readAttribute(found->second,
                     source.at("mesh").get<std::uint32_t>(), source.at("primitive").get<std::uint32_t>(),
                     source.at("semantic").get<std::string>(),
-                    *shaderResourceBufferElementFromName(parameters.at("element").get<std::string>()));
+                    *shaderResourceBufferElementFromName(parameters.at("element").get<std::string>()),
+                    source.contains("morph_target") ? std::optional{source.at("morph_target").get<std::uint32_t>()} : std::nullopt);
                 const auto count = data.count;
                 attribute_source_files.insert(data.source_files.begin(), data.source_files.end());
                 attribute_data.emplace(std::string{node}, std::move(data));

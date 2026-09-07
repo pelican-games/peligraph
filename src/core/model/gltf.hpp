@@ -83,7 +83,8 @@ DECLARE_MODULE(GltfLoader) {
     // Uses the prepared source document; no geometry/material GPU allocations.
     GltfAttributeData readAttribute(const PreparedGltf &prepared,
         std::uint32_t mesh, std::uint32_t primitive, std::string_view semantic,
-        ShaderResourceBufferElement element) const;
+        ShaderResourceBufferElement element,
+        std::optional<std::uint32_t> morph_target = std::nullopt) const;
     // Indexed primitives only. Converts glTF unsigned index widths to uint32.
     GltfAttributeData readIndices(const PreparedGltf &prepared,
         std::uint32_t mesh, std::uint32_t primitive) const;

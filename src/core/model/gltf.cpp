@@ -2742,13 +2742,25 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared,
 
 GltfAttributeData GltfLoader::readAttribute(const PreparedGltf &prepared,
     std::uint32_t mesh, std::uint32_t primitive, std::string_view semantic,
-    ShaderResourceBufferElement element) const {
+    ShaderResourceBufferElement element, std::optional<std::uint32_t> morph_target) const {
     if (!prepared.impl) throw std::invalid_argument("cannot read an attribute from an empty prepared glTF");
     const auto &source = prepared.impl->model.meshes.at(mesh).primitives.at(primitive);
-    const auto accessor = source.attributes.find(std::string{semantic});
-    if (accessor == source.attributes.end())
+    const auto &attributes = morph_target ? source.targets.at(*morph_target) : source.attributes;
+    const auto accessor = attributes.find(std::string{semantic});
+    if (accessor == attributes.end())
         throw std::invalid_argument("glTF primitive has no attribute: " + std::string{semantic});
-    return readAccessor(prepared, accessor->second, element);
+    auto result = readAccessor(prepared, accessor->second, element);
+    if (morph_target) {
+        if (semantic != "POSITION" && semantic != "NORMAL" && semantic != "TANGENT")
+            throw std::invalid_argument("unsupported glTF morph target semantic");
+        if (element != ShaderResourceBufferElement::vec3)
+            throw std::invalid_argument("glTF morph target attributes require vec3 elements");
+        const auto base = source.attributes.find(std::string{semantic});
+        if (base == source.attributes.end() ||
+            result.count != prepared.impl->model.accessors.at(base->second).count)
+            throw std::invalid_argument("glTF morph target count must match its base attribute");
+    }
+    return result;
 }
 
 GltfAttributeData GltfLoader::readIndices(const PreparedGltf &prepared,

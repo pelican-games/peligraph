@@ -105,6 +105,22 @@ TEST_CASE("prepared glTF attributes use shader array layout without GPU allocati
     REQUIRE(indices.source_files == positions.source_files);
     REQUIRE_THROWS(loader.readIndices(PreparedGltf{}, 0, 0));
     REQUIRE_THROWS(loader.readIndices(prepared, 1, 0));
+    TestSkeletalFixture::writeGltf(root / "morph.gltf", "morph.bin", {.morph_target = true});
+    const auto morph = loader.prepareGltf((root / "morph.gltf").string());
+    const auto delta = loader.readAttribute(morph, 0, 0, "POSITION", Element::vec3, 0);
+    REQUIRE(delta.count == positions.count);
+    REQUIRE(delta.bytes.size() == positions.bytes.size());
+    std::memcpy(values.data(), delta.bytes.data(), delta.bytes.size());
+    REQUIRE(values[0] == 2.0f);
+    REQUIRE(values[3] == 0.0f);
+    REQUIRE_THROWS(loader.readAttribute(morph, 0, 0, "POSITION", Element::vec3, 1));
+    REQUIRE_THROWS(loader.readAttribute(morph, 0, 0, "POSITION", Element::vec4, 0));
+    auto malformed_morph = nlohmann::json::parse(std::ifstream{root / "morph.gltf"});
+    const auto delta_accessor = malformed_morph["meshes"][0]["primitives"][0]["targets"][0]["POSITION"].get<int>();
+    malformed_morph["accessors"][delta_accessor]["count"] = 3;
+    writeText(root / "morph.gltf", malformed_morph.dump());
+    REQUIRE_THROWS(loader.readAttribute(loader.prepareGltf((root / "morph.gltf").string()),
+        0, 0, "POSITION", Element::vec3, 0));
     REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "POSITION", Element::vec2));
     REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "POSITION", Element::ivec3));
     REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "JOINTS_0", Element::ivec4));
@@ -364,6 +380,50 @@ void main() {
     invalid_index["nodes"][7]["parameters"]["ports"]["source"]["domain"] = "vertex";
     REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid_index.dump()));
     REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == indexed);
+    TestSkeletalFixture::writeGltf(root / "morph.gltf", "morph.bin", {.morph_target = true});
+    auto morphed = document;
+    morphed["nodes"][5]["parameters"]["source"]["asset"] = "project://morph.gltf";
+    auto delta = morphed["nodes"][5];
+    delta["id"] = "morph_delta";
+    delta["parameters"]["source"]["morph_target"] = 0;
+    morphed["nodes"].push_back(delta);
+    morphed["nodes"].push_back({{"id", "morph_weight"}, {"op", "value.constant"},
+        {"parameters", {{"value", 0.5}}}, {"outputs", {"value"}}});
+    morphed["nodes"].push_back({{"id", "weight_buffer"}, {"op", "render.buffer"},
+        {"parameters", {{"element", "float"}}},
+        {"inputs", {{"value", {{"node", "morph_weight"}, {"port", "value"}}}}}, {"outputs", {"resource"}}});
+    auto &morph_compute = morphed["nodes"][7];
+    morph_compute["parameters"]["shader"] = "shaders/morph_probe";
+    morph_compute["parameters"]["ports"]["delta"] = {{"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
+    morph_compute["parameters"]["ports"]["weight"] = {{"element", "float"}, {"access", "read"}};
+    morph_compute["inputs"]["delta"] = {{"node", "morph_delta"}, {"port", "resource"}};
+    morph_compute["inputs"]["weight"] = {{"node", "weight_buffer"}, {"port", "resource"}};
+    writeText(root / "shaders/morph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    vec3 position = pelican_load_source(0) + pelican_load_delta(0) * pelican_load_weight(0);
+    pelican_store_destination(0, position.x);
+})");
+    REQUIRE_NOTHROW(loadRenderGraphVariantsFromConfigData(morphed.dump()));
+    REQUIRE(std::abs(rendered() - 0.7f) < 0.00001f);
+    const auto morph_generation = GET_MODULE(RenderingPassContainer).snapshot();
+    REQUIRE(morph_generation);
+    REQUIRE_FALSE(morph_generation->programs.empty());
+    REQUIRE(morph_generation->programs.begin()->second.frame_graph.value_graph);
+    REQUIRE(nlohmann::json::parse(morph_generation->programs.begin()->second.frame_graph.value_graph->serialize()) == morphed);
+    for (auto &node : morphed["nodes"])
+        if (node["id"] == "morph_weight") node["parameters"]["value"] = 2.0;
+    REQUIRE_NOTHROW(loadRenderGraphVariantsFromConfigData(morphed.dump()));
+    REQUIRE(std::abs(rendered() - 3.7f) < 0.00001f);
+    const auto retained_morph = GET_MODULE(RenderingPassContainer).snapshot();
+    for (auto &node : morphed["nodes"])
+        if (node["id"] == "morph_delta") node["parameters"]["source"]["morph_target"] = 1;
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(morphed.dump()));
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == retained_morph);
+    REQUIRE(std::abs(rendered() - 3.7f) < 0.00001f);
 }
 
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {

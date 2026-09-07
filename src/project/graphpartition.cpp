@@ -115,11 +115,13 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
             const auto &parameters = lowered.at("parameters");
             const auto &source = parameters.at("source");
             const bool indices = parameters.at("domain") == "index";
+            const bool morph = source.contains("morph_target");
             if ((!indices && parameters.at("domain") != "vertex") || parameters.contains("count") ||
                 parameters.contains("size") || parameters.contains("host_source") ||
                 !node.at("inputs").empty())
                 throw std::invalid_argument("sourced attribute requires vertex/index domain and derives its data/count: " + id);
-            if (!source.is_object() || source.size() != (indices ? 3 : 4) ||
+            if (!source.is_object() || source.size() != (indices ? 3 : (morph ? 5 : 4)) ||
+                (indices && morph) ||
                 (indices && source.contains("semantic")))
                 throw std::invalid_argument("attribute source requires asset, mesh, primitive and a semantic only for vertex attributes: " + id);
             for (const auto key : {"asset", "semantic"}) {
@@ -127,7 +129,8 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
                 if (!source.at(key).is_string() || source.at(key).get_ref<const std::string &>().empty())
                     throw std::invalid_argument("attribute source requires nonempty names: " + id);
             }
-            for (const auto key : {"mesh", "primitive"}) {
+            for (const auto key : {"mesh", "primitive", "morph_target"}) {
+                if (std::string_view{key} == "morph_target" && !morph) continue;
                 const auto &value = source.at(key);
                 if (!value.is_number_integer() ||
                     (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||

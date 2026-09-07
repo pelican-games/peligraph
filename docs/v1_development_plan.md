@@ -129,6 +129,8 @@ glTFインデックスも共通sourceから読出し、draw.index_sourceからna
 rasterの頂点shaderではvertex/instance属性の引数なしloadを追加し、glTFの頂点と
 first_instance=1のcompute生成属性を使ったGPU画素出力を確認した。
 遅延RT公開時の共有モデル検証、変形後属性は残件。
+モーフ差分はsource.morph_targetから属性portへ読み出せる。通常computeでのウェイト合成と
+不正target時の旧世代維持をGPU確認済み。個体のアニメーション状態・スキニング結果との接続は残る。
 動的描画nodeは現状scopeを分離して実行し、
 同じowner条件のnode間融合と共通history画像のpreview対応は残件。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。

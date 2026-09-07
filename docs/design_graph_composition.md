@@ -360,6 +360,13 @@ render.attributeのparameters.sourceにasset・mesh・primitive・semanticを指
 countと候補GPU bufferの初期データを取得する。sourceはvertex/index domainに対応し、count/size/host_sourceや
 value入力との併用を拒否する。例は
 `{"element":"vec3","domain":"vertex","source":{"asset":"project://character.glb","mesh":0,"primitive":0,"semantic":"POSITION"}}`。
+vertex sourceにmorph_target（uint32のtarget index）を追加すると、そのtargetのPOSITION/NORMAL/TANGENT
+差分をvec3として読み出す。既存readAttributeのアクセサーデコード・外部buffer依存を共有し、
+base属性と要素数が合わないtargetを拒否する。保存にはtarget参照を残し、ウェイトの適用は
+既存value/buffer/compute接続で記述できる。GPUでbase + delta * weightを計算し、weight=0.5/2.0の
+x値0.7/3.7と、不正target候補の失敗後に3.7を維持することを確認した。
+これはモーフを共通ノードで組み立てる入口であり、個体のanimation componentが持つウェイトや
+スキニング済みGPU出力を参照する接続は未実装。
 使用中の定義instanceだけを解決し、元のJSONはsource参照を保持する。派生countはコンパイラ用文書へ
 渡し、データは各候補が保持するbuffer IDへ転送する。同じassetのprepareは候補構築中に共有する。
 これは構築時のスナップショットで、変更通知から新しい描画候補を構築して更新する。

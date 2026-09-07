@@ -19,6 +19,7 @@ struct Options {
     bool omit_scenes = false;
     bool invalid_default_scene = false;
     float position_scale = 1.0f;
+    bool morph_target = false;
 };
 
 namespace detail {
@@ -77,6 +78,8 @@ inline std::vector<std::uint8_t> makeGlb(Options options) {
     const int time_accessor = add(times, 5126, "SCALAR");
     const int rotation_accessor = add(rotations, 5126, "VEC4");
     const int translation_accessor = add(translations, 5126, "VEC3");
+    const int morph_accessor = options.morph_target
+        ? add(std::vector<glm::vec3>(4, glm::vec3{2, 0, 0}), 5126, "VEC3") : -1;
 
     nlohmann::json animations = nlohmann::json::array({
         {{"name", "Turn"},
@@ -104,6 +107,8 @@ inline std::vector<std::uint8_t> makeGlb(Options options) {
         {"animations", animations}, {"bufferViews", views}, {"accessors", accessors},
         {"buffers", {{{"byteLength", bin.size()}}}},
     };
+    if (options.morph_target)
+        json["meshes"][0]["primitives"][0]["targets"] = nlohmann::json::array({{{"POSITION", morph_accessor}}});
     if (options.invalid_animation_accessor) {
         json["animations"][0]["samplers"][0]["input"] =
             static_cast<int>(accessors.size()) + 7;
