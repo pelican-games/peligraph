@@ -248,28 +248,9 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
         if (canonical_error)
             throw std::runtime_error("failed to normalize model path: " + parsed.path);
 
-        const auto keyUnder = [&](const std::filesystem::path &root,
-                                  std::string_view mount) -> std::optional<watch::AssetKey> {
-            std::error_code relative_error;
-            const auto relative = std::filesystem::relative(physical, root, relative_error);
-            if (relative_error || relative.empty() || relative.is_absolute()) return std::nullopt;
-            for (const auto &component : relative)
-                if (component == "..") return std::nullopt;
-            return watch::makeAssetKey(mount, relative);
-        };
-        for (const auto &store : resolver.stores()) {
-            if (const auto key = keyUnder(store.root, store.mount)) {
-                container_key = *key;
-                break;
-            }
-        }
-        if (container_key.path.empty()) {
-            const auto key = keyUnder(resolver.projectRoot(), {});
-            if (!key)
-                throw std::runtime_error("model path is outside watched project stores: " +
-                                         physical.string());
-            container_key = *key;
-        }
+        const auto key = watch::assetKeyForFile(resolver, physical);
+        if (!key) throw std::runtime_error("model path is outside watched project stores: " + physical.string());
+        container_key = *key;
     } else {
         const auto resolved = resolver.resolveExistingFileReference(reference);
         if (const auto *path = std::get_if<std::filesystem::path>(&resolved)) {
@@ -312,6 +293,15 @@ ModelDeclaration resolveDeclaration(std::string name, std::string reference,
     return declaration;
 }
 
+std::vector<watch::AssetKey> modelDependencies(const ModelDeclaration &declaration,
+                                              const PreparedGltf &prepared) {
+    std::set<watch::AssetKey> keys{declaration.container_key};
+    const auto &resolver = GET_MODULE(PathResolver);
+    for (const auto &file : prepared.dataFiles())
+        if (auto key = watch::assetKeyForFile(resolver, file)) keys.insert(std::move(*key));
+    return {keys.begin(), keys.end()};
+}
+
 } // namespace
 
 struct ModelAssetContainer::Impl {
@@ -321,6 +311,7 @@ struct ModelAssetContainer::Impl {
     struct CommitBatch;
     struct ModelPayload {
         std::string name;
+        std::vector<watch::AssetKey> dependencies;
         ModelTemplate candidate;
         std::set<std::string> occurrence_ids;
         std::set<std::string> ambiguous_occurrence_ids;
@@ -340,6 +331,7 @@ struct ModelAssetContainer::Impl {
         watch::LogicalResourceRef logical;
         std::shared_ptr<const void> live_payload;
         bool declared = false;
+        std::vector<watch::AssetKey> dependencies;
     };
     struct CommitBatch {
         struct Installation {
@@ -354,6 +346,7 @@ struct ModelAssetContainer::Impl {
         std::vector<std::string> names;
         std::map<std::string, std::shared_ptr<ModelPayload>> staged_payloads;
         std::vector<Installation> installs;
+        std::map<watch::AssetKey, std::set<std::string>> source_index;
         std::optional<PolygonInstanceContainer::PreparedSceneState>
             renderer_candidate;
         std::optional<PhysWorld::PreparedState> physics_candidate;
@@ -370,7 +363,7 @@ struct ModelAssetContainer::Impl {
     };
 
     std::unordered_map<std::string, Record> records;
-    std::map<watch::AssetKey, std::set<std::string>> by_container;
+    std::map<watch::AssetKey, std::set<std::string>> by_source;
     watch::ReloadCoordinator *coordinator = nullptr;
     std::shared_ptr<PayloadTracker> tracker = std::make_shared<PayloadTracker>();
     std::uint64_t next_asset_identity = 1;
@@ -405,13 +398,13 @@ struct ModelAssetContainer::Impl {
         auto payload = makePayload(record.declaration.name);
         record.logical = coordinator->registry().declareResource(
             std::string{modelTemplateTable}, logicalModelSource(record.declaration.name), payload,
-            {record.declaration.container_key}, record.model.compatibility_revision,
+            record.dependencies, record.model.compatibility_revision,
             fileBytes(record.declaration.path));
         record.live_payload = std::move(payload);
         record.declared = true;
     }
 
-    void add(ModelDeclaration declaration, ModelTemplate &&model) {
+    void add(ModelDeclaration declaration, ModelTemplate &&model, std::vector<watch::AssetKey> dependencies) {
         if (records.contains(declaration.name))
             throw std::runtime_error("duplicate model asset name: " + declaration.name);
         model.asset_id = ModelAssetId{next_asset_identity++};
@@ -419,11 +412,10 @@ struct ModelAssetContainer::Impl {
         model.content_revision = 1;
         model.compatibility_revision = 0;
         const auto name = declaration.name;
-        const auto key = declaration.container_key;
         auto [found, inserted] = records.emplace(
-            name, Record{std::move(declaration), std::move(model), {}, {}, false});
+            name, Record{std::move(declaration), std::move(model), {}, {}, false, std::move(dependencies)});
         if (!inserted) throw std::runtime_error("failed to register model asset: " + name);
-        by_container[key].insert(name);
+        for (const auto &key : found->second.dependencies) by_source[key].insert(name);
         declare(found->second);
     }
 
@@ -453,7 +445,9 @@ struct ModelAssetContainer::Impl {
                 std::move(install.payload->candidate);
             install.payload->owns_candidate = false;
             install.record->live_payload = std::move(install.registry_payload);
+            install.record->dependencies = std::move(install.payload->dependencies);
         }
+        by_source.swap(batch->source_index);
         // The animation rig generation advances inside the same commit that
         // swaps the templates: one publish, one generation step. Handles that
         // named the retired rig answer stale_generation from here on.
@@ -506,8 +500,9 @@ ModelAssetContainer::ModelAssetContainer() : impl_{std::make_unique<Impl>()} {
                 GltfAuthoredAssetReference{declarations[index].reference});
             try {
                 applyDeclarationBindings(model, declarations[index]);
+                auto dependencies = modelDependencies(declarations[index], prepared[index]);
                 impl_->add(std::move(declarations[index]),
-                           std::move(model));
+                           std::move(model), std::move(dependencies));
             } catch (...) {
                 const auto original = std::current_exception();
                 auto report = releaseReportFromException(original);
@@ -542,10 +537,11 @@ ModelTemplate &ModelAssetContainer::getModelTemplateByName(const std::string &na
     if (!parsed.fragment) throw std::out_of_range("unknown model asset: " + name);
     auto declaration = resolveDeclaration(name, name, true);
     auto prepared = prepareDeclaration(declaration);
+    auto dependencies = modelDependencies(declaration, prepared);
     auto model = GET_MODULE(GltfLoader).commit(
         std::move(prepared),
         GltfAuthoredAssetReference{declaration.reference});
-    impl_->add(std::move(declaration), std::move(model));
+    impl_->add(std::move(declaration), std::move(model), std::move(dependencies));
     return impl_->records.at(name).model;
 }
 
@@ -557,7 +553,7 @@ void ModelAssetContainer::attachReloadCoordinator(watch::ReloadCoordinator &coor
 }
 
 bool ModelAssetContainer::handlesReload(const watch::AssetKey &key) const {
-    return impl_->by_container.contains(key);
+    return impl_->by_source.contains(key);
 }
 
 bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
@@ -570,20 +566,19 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
 watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
     std::span<const watch::ReloadRequest> requests, watch::ReloadCoordinator &coordinator) {
     if (&coordinator != impl_->coordinator) throw std::runtime_error("model reload coordinator mismatch");
-    std::map<std::string, watch::ReloadRequest> affected;
+    std::set<std::string> affected;
     for (const auto &request : requests) {
-        const auto found = impl_->by_container.find(request.key);
-        if (found == impl_->by_container.end()) throw std::runtime_error("untracked model reload source");
-        for (const auto &name : found->second) affected.emplace(name, request);
+        const auto found = impl_->by_source.find(request.key);
+        if (found == impl_->by_source.end()) throw std::runtime_error("untracked model reload source");
+        affected.insert(found->second.begin(), found->second.end());
     }
 
     auto batch = std::make_shared<Impl::CommitBatch>();
-    for (const auto &[name, request] : affected) batch->names.push_back(name);
+    batch->names.assign(affected.begin(), affected.end());
     auto pending = std::make_shared<std::map<std::string, Impl::PendingCandidate>>();
     const auto snapshot = coordinator.registry().snapshot();
     watch::ReloadTransactionGroup group{"model templates"};
     for (const auto &name : batch->names) {
-        const auto &request = affected.at(name);
         auto &record = impl_->records.at(name);
         const auto current = snapshot.find(record.logical);
         if (!current) throw std::runtime_error("model logical resource is stale: " + name);
@@ -591,9 +586,9 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
         group.add(watch::ReloadActor{
             .name = "model template " + name,
             .target = record.logical,
-            .parse = [request, declaration = record.declaration, pending, name] {
-                if (request.kind == watch::ReloadKind::removed)
-                    throw std::runtime_error("model file is missing: " + declaration.path.string());
+            .parse = [declaration = record.declaration, pending, name] {
+                // The current document decides which files are needed. A
+                // removed former buffer may have been replaced in this batch.
                 pending->at(name).prepared = prepareDeclaration(declaration);
             },
             .validate = [this, pending, name] {
@@ -627,6 +622,7 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
                 auto candidate_occurrences = occurrenceIds(item.preview);
                 auto candidate_ambiguous =
                     ambiguousOccurrenceIds(item.preview);
+                auto dependencies = modelDependencies(record.declaration, item.prepared);
                 auto model = GET_MODULE(GltfLoader).commit(
                     item.prepared,
                     GltfAuthoredAssetReference{
@@ -640,6 +636,7 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
                                                (item.rig_changed ? 1u : 0u);
                 auto payload = impl_->makePayload(name);
                 payload->candidate = std::move(model);
+                payload->dependencies = std::move(dependencies);
                 payload->occurrence_ids =
                     std::move(candidate_occurrences);
                 payload->ambiguous_occurrence_ids =
@@ -648,13 +645,14 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
                 payload->owns_candidate = true;
                 batch->staged_payloads[name] = payload;
                 return watch::StagedResourceData{
-                    payload, {record.declaration.container_key},
+                    payload, payload->dependencies,
                     payload->candidate.compatibility_revision,
                     fileBytes(record.declaration.path)};
             },
         });
     }
     group.setPreparePublish([this, batch] {
+        batch->source_index = impl_->by_source;
         batch->installs.clear();
         batch->installs.reserve(batch->names.size());
         std::vector<ModelInstanceRebuild> rebuilds;
@@ -668,6 +666,12 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
             if (!payload || !payload->owns_candidate)
                 throw std::runtime_error(
                     "model reload candidate batch is incomplete");
+            for (const auto &key : record.dependencies) {
+                auto found = batch->source_index.find(key);
+                found->second.erase(name);
+                if (found->second.empty()) batch->source_index.erase(found);
+            }
+            for (const auto &key : payload->dependencies) batch->source_index[key].insert(name);
             rebuilds.push_back(
                 {record.model.asset_id, &payload->candidate});
             batch->installs.push_back(

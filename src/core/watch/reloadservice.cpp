@@ -637,9 +637,12 @@ void ReloadService::ensureBuiltInParticipants() {
                 .claims = [models](const ReloadRequest &request) {
                     return models->handlesReload(request.key);
                 },
-                .enqueue = [models](const ReloadRequest &request,
-                                    ReloadCoordinator &coordinator) {
-                    return models->enqueueReload(request, coordinator);
+                .apply_batch = [this, models](std::span<const ReloadRequest> requests) {
+                    const auto before = transactions_.status();
+                    transactions_.enqueue(models->makeReloadGroup(requests, transactions_));
+                    transactions_.applyFrame(retireSink());
+                    const auto after = transactions_.status();
+                    return after.failed == before.failed && after.applied > before.applied;
                 },
                 .retire = [models](std::shared_ptr<const void> payload,
                                    ReloadCoordinator &coordinator) noexcept {

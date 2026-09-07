@@ -351,9 +351,9 @@ CPU検証は2instanceへの展開、sourceとcountの二重指定拒否、未使
 通常Rendererでは4頂点の要素数と異なる2頂点の値をcomputeで読出し、serializeに元文書が残ること、
 欠落semanticの候補失敗後も旧世代とGPU出力が維持されることを確認した。
 
-再読込み接続用に、PreparedGltf::sourceFilesはTinyGLTFの実ファイル読込み経路から依存を取得する。
-glTF本体、外部buffer/imageを含み、埋込みdata URIはファイル依存を追加しない。URIからパスを別途
-推測せず、読まれたパスを正規化・重複排除する。readAttributeのsource_filesは本体と使用bufferだけを
+再読込み接続用に、PreparedGltf::dataFilesはglTF本体と外部bufferの依存を取得する。画像はtextureの
+再読込みに任せ、埋込みdata URIはファイル依存を追加しない。URIからパスを別途推測せず、読まれた
+パスを正規化・重複排除する。readAttributeのsource_filesは本体と使用bufferだけを
 選び、無関係なbuffer/imageの編集で描画を再構築しない。外部bufferのファイル読込み時のbyte storageを
 TinyGLTFのmove/swap後のbufferと対応付け、prepare完了時にはbuffer indexとpathだけを保持する。
 候補構築時にattribute_source_filesとして描画世代へ移し、保存JSONやCPU属性コピーには依存しない。
@@ -365,8 +365,13 @@ prepareと公開へ分離し、描画候補の最終公開hookで資源台帳も
 モデル候補もrollbackする。マテリアルの旧世代照合は公開済みsnapshotを使い、公開mutexを再取得しない。
 実GPUでGLB変更通知後の属性出力とmodel revision、候補検査失敗時の双方維持・修復後の再更新を確認した。
 変更通知はReloadServiceのテスト入口から投入しており、native OS watcherの通知発生自体は今回の検証外。
-通常モデルの監視は現状container file単位なので、`.gltf`の外部bufferをモデルと属性が共有する場合の
-モデル側依存追跡は残件。遅延RT公開を伴う共有モデル更新も今回のGPU検証範囲には含めない。
+通常モデルもdataFilesの外部buffer依存を資源台帳と通知用indexへ登録する。候補の公開時に両方を
+差し替え、失敗時は旧依存を維持する。通常モデルだけの場合も同一batchを一つのreload groupへまとめる。
+削除通知だけで先に拒否せず、現在のglTFが参照するファイルを読むので、本体の変更と旧bufferの削除を
+同時に受け取っても新bufferへ切り替えられる。GLB/glTF・モデル/属性で共通のassetKeyForFileを使う。
+実GPUで外部buffer変更による両者の更新、旧依存の解除、必要bufferの削除時の維持と復旧を確認した。
+準備段階の全ファイル一覧APIは利用先がなくなったため除去し、モデル/属性の必要な依存だけを保持する。
+遅延RT公開を伴う共有モデル更新は今回のGPU検証範囲には含めない。
 
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
 ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、

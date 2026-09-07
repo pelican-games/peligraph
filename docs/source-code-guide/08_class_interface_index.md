@@ -69,7 +69,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `JobSystem` | singleton service | [`job_system.hpp`](../../src/core/job_system.hpp#L15) | [`job_system.cpp`](../../src/core/job_system.cpp#L1) | ECS system job の worker 実行と synchronization |
 | `Profiler` / `ScopedLogTimer` | helper | [`profiler.hpp`](../../src/core/profiler.hpp#L9) | [`profiler.cpp`](../../src/core/profiler.cpp#L1) | scope duration を log へ記録 |
 
-`watch::ReloadService` の下には hot reload 基盤の部品として [`FileWatcher`](../../src/core/watch/filewatcher.hpp#L48)、[`ContentDigestState`](../../src/core/watch/contentdigest.hpp#L57)、[`AssetKey`](../../src/core/watch/assetkey.hpp#L12)、[`ReloadGate`](../../src/core/watch/reloadgate.hpp)、[`ReloadQueue`](../../src/core/watch/reloadqueue.hpp#L26)、[`ReloadCoordinator`](../../src/core/watch/reloadtransaction.hpp#L196) があります。
+`watch::ReloadService` の下には hot reload 基盤の部品として [`FileWatcher`](../../src/core/watch/filewatcher.hpp#L48)、[`ContentDigestState`](../../src/core/watch/contentdigest.hpp#L57)、[`AssetKey`](../../src/core/watch/assetkey.hpp#L15)、[`ReloadGate`](../../src/core/watch/reloadgate.hpp)、[`ReloadQueue`](../../src/core/watch/reloadqueue.hpp#L26)、[`ReloadCoordinator`](../../src/core/watch/reloadtransaction.hpp#L196) があります。
 
 1 frame の共有関数は class ではなく [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L129) です。入力、pre-update、game、post-update、scene transition の5 phase を通常 loop と RPC が共用します。
 
@@ -226,7 +226,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L97) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4771) / [`render()`](../../src/core/vkcore/renderer.cpp#L5966) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
+| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L97) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4769) / [`render()`](../../src/core/vkcore/renderer.cpp#L5955) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
 | `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替。**flat** は「XR でない通常の 1 画面(ウィンドウまたは headless の 1 枚)」を指すこのリポジトリの語で、**XR composition** は OpenXR ランタイムへ両眼ぶんのレイヤを渡して合成させる側です。同じ frame graph をどちらの出口へ流すかの違いになります |
 | `RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、`$main`+named secondary family集合、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`CompiledRenderPipeline`](../../src/core/renderingpass/previewgraph.hpp#L15) / [coordinated family 側の注記](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |

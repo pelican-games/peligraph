@@ -1,8 +1,23 @@
 #include "assetkey.hpp"
+#include "../loader/pathresolver.hpp"
 
 #include <stdexcept>
 
 namespace Pelican::watch {
+std::optional<AssetKey> assetKeyForFile(const PathResolver &resolver,
+                                      const std::filesystem::path &file) {
+    const auto physical = std::filesystem::weakly_canonical(file);
+    const auto under = [&](const std::filesystem::path &root, std::string_view mount) -> std::optional<AssetKey> {
+        const auto relative = physical.lexically_relative(std::filesystem::weakly_canonical(root));
+        if (relative.empty() || relative.is_absolute()) return std::nullopt;
+        for (const auto &part : relative) if (part == "..") return std::nullopt;
+        return makeAssetKey(mount, relative);
+    };
+    for (const auto &store : resolver.stores())
+        if (auto key = under(store.root, store.mount)) return key;
+    return under(resolver.projectRoot(), {});
+}
+
 namespace {
 
 std::string utf8Generic(const std::filesystem::path &path) {

@@ -4,6 +4,9 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <optional>
+
+namespace Pelican { class PathResolver; }
 
 namespace Pelican::watch {
 
@@ -21,6 +24,10 @@ AssetKey makeAssetKey(std::string_view logical_mount,
                       const std::filesystem::path &relative_path,
                       std::string_view fragment = {});
 std::string assetKeyString(const AssetKey &key);
+// Map a physical file through the same store precedence as project loading.
+// Files outside the watched stores/project have no watcher identity.
+std::optional<AssetKey> assetKeyForFile(const PathResolver &resolver,
+                                      const std::filesystem::path &file);
 
 } // namespace Pelican::watch
 

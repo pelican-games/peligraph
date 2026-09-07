@@ -146,4 +146,16 @@ inline void writeGlb(const std::filesystem::path &path, bool cubic = false) {
 inline void writeGlb(const std::filesystem::path &path, Options options) {
     detail::write(path, makeGlb(options));
 }
+inline void writeGltf(const std::filesystem::path &path, const std::string &buffer_file,
+                      Options options = {}) {
+    const auto glb = makeGlb(options);
+    std::uint32_t json_size{};
+    std::memcpy(&json_size, glb.data() + 12, sizeof(json_size));
+    auto document = nlohmann::json::parse(glb.begin() + 20, glb.begin() + 20 + json_size);
+    document["buffers"][0]["uri"] = buffer_file;
+    detail::write(path.parent_path() / buffer_file,
+                  {glb.begin() + 28 + json_size, glb.end()});
+    std::ofstream file{path, std::ios::binary};
+    file << document.dump();
+}
 } // namespace Pelican::TestSkeletalFixture

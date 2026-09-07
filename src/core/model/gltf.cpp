@@ -270,13 +270,14 @@ struct PreparedGltf::Impl {
     bool scene_node_instance = false;
     VrmSemanticDecodeResult vrm;
     std::optional<CanonicalModelAssetKey> asset_key;
-    std::vector<std::filesystem::path> source_files;
     std::map<int, std::filesystem::path> buffer_source_files;
 };
 
-const std::vector<std::filesystem::path> &PreparedGltf::sourceFiles() const {
-    if (!impl) throw std::invalid_argument("cannot inspect sources of an empty prepared glTF");
-    return impl->source_files;
+std::vector<std::filesystem::path> PreparedGltf::dataFiles() const {
+    if (!impl) throw std::invalid_argument("cannot inspect data files of an empty prepared glTF");
+    std::set<std::filesystem::path> files{std::filesystem::weakly_canonical(impl->source_path)};
+    for (const auto &[index, file] : impl->buffer_source_files) files.insert(file);
+    return {files.begin(), files.end()};
 }
 
 namespace {
@@ -306,12 +307,10 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     std::map<const unsigned char *, std::filesystem::path> read_files;
     loader.SetFsCallbacks({
         tinygltf::FileExists, tinygltf::ExpandFilePath,
-        [prepared, &read_files](std::vector<unsigned char> *bytes, std::string *error,
+        [&read_files](std::vector<unsigned char> *bytes, std::string *error,
                    const std::string &filename, void *) {
             if (!tinygltf::ReadWholeFile(bytes, error, filename, nullptr)) return false;
             const auto path = std::filesystem::weakly_canonical(std::filesystem::path{filename});
-            auto &files = prepared->source_files;
-            if (std::find(files.begin(), files.end(), path) == files.end()) files.push_back(path);
             read_files[bytes->data()] = path;
             return true;
         }, tinygltf::WriteWholeFile, tinygltf::GetFileSizeInBytes, nullptr});

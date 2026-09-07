@@ -210,19 +210,8 @@ std::set<watch::AssetKey> renderPipelineWatchSources(
     const auto &pipeline =
         *program->frame_graph.render_pipeline;
     const auto &resolver = GET_MODULE(PathResolver);
-    for (const auto &file : program->frame_graph.attribute_source_files) {
-        const auto addUnder = [&](const std::filesystem::path &root, std::string_view mount) {
-            const auto relative = file.lexically_relative(std::filesystem::weakly_canonical(root));
-            if (relative.empty() || relative.is_absolute()) return false;
-            for (const auto &part : relative) if (part == "..") return false;
-            result.insert(watch::makeAssetKey(mount, relative));
-            return true;
-        };
-        bool mapped = false;
-        for (const auto &store : resolver.stores())
-            if (addUnder(store.root, store.mount)) { mapped = true; break; }
-        if (!mapped) (void)addUnder(resolver.projectRoot(), {});
-    }
+    for (const auto &file : program->frame_graph.attribute_source_files)
+        if (auto key = watch::assetKeyForFile(resolver, file)) result.insert(std::move(*key));
     if (pipeline.pipeline_preset) {
         append(pipeline.pipeline_preset->reference);
     }

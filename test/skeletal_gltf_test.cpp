@@ -73,7 +73,7 @@ TEST_CASE("prepared glTF attributes use shader array layout without GPU allocati
     FastModuleContainer modules;
     auto &loader = GET_MODULE(GltfLoader);
     const auto prepared = loader.prepareGltfBinary((root / "character.glb").string());
-    REQUIRE(prepared.sourceFiles() == std::vector<std::filesystem::path>{
+    REQUIRE(prepared.dataFiles() == std::vector<std::filesystem::path>{
         std::filesystem::weakly_canonical(root / "character.glb")});
     using Element = ShaderResourceBufferElement;
     const auto positions = loader.readAttribute(prepared, 0, 0, "POSITION", Element::vec3);
@@ -125,7 +125,7 @@ TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[
     FastModuleContainer modules;
     const auto &loader = GET_MODULE(GltfLoader);
     const auto prepared = loader.prepareGltf((root / "mesh.gltf").string());
-    REQUIRE(prepared.sourceFiles() == std::vector<std::filesystem::path>{
+    REQUIRE(prepared.dataFiles() == std::vector<std::filesystem::path>{
         std::filesystem::weakly_canonical(root / "mesh.gltf"),
         std::filesystem::weakly_canonical(root / "positions data.bin"),
         std::filesystem::weakly_canonical(root / "unused.bin")});
@@ -139,21 +139,28 @@ TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[
     std::memcpy(values.data(), attribute.bytes.data(), attribute.bytes.size());
     REQUIRE(values[0] == -1);
     REQUIRE(values[4] == 2);
-    REQUIRE_THROWS(PreparedGltf{}.sourceFiles());
+    REQUIRE_THROWS(PreparedGltf{}.dataFiles());
     REQUIRE(FastModuleContainer::tryGet<VulkanManageCore>() == nullptr);
 }
 
 TEST_CASE("common graph glTF source supplies counted GPU shader attributes", "[skeletal][graph-attribute-runtime]") {
     bool shared_model = false;
+    bool external_buffer = false;
     SECTION("graph source only") {}
     SECTION("shared model and graph source") { shared_model = true; }
+    SECTION("shared model and external buffer") { shared_model = true; external_buffer = true; }
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /
         ("pelican_graph_source_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root / "shaders");
     std::filesystem::create_directories(root / "passes");
     const TempDir guard{root};
-    TestSkeletalFixture::writeGlb(root / "character.glb");
+    const std::string source_file = external_buffer ? "character.gltf" : "character.glb";
+    const auto write_source = [&](TestSkeletalFixture::Options options = {}) {
+        if (external_buffer) TestSkeletalFixture::writeGltf(root / source_file, "character.bin", options);
+        else TestSkeletalFixture::writeGlb(root / source_file, options);
+    };
+    write_source();
     writeText(root / "shaders/graph_probe.comp", R"(
 #version 450
 #extension GL_GOOGLE_include_directive : enable
@@ -168,13 +175,13 @@ void main() {
     attribute["op"] = "render.attribute";
     attribute.erase("inputs");
     attribute["parameters"] = {{"element", "vec3"}, {"domain", "vertex"},
-        {"source", {{"asset", "project://character.glb"}, {"mesh", 0}, {"primitive", 0}, {"semantic", "POSITION"}}}};
+        {"source", {{"asset", "project://" + source_file}, {"mesh", 0}, {"primitive", 0}, {"semantic", "POSITION"}}}};
     document["nodes"][7]["parameters"]["ports"]["source"] = {
         {"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
     document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
     writeText(root / "passes/main_rendering_config.json", document.dump());
     writeText(root / "assets.json", nlohmann::json{{"schema", "pelican.asset_data"}, {"version", 1},
-        {"models", shared_model ? nlohmann::json::array({{{"name", "character"}, {"path", "character.glb"}}})
+        {"models", shared_model ? nlohmann::json::array({{{"name", "character"}, {"path", source_file}}})
                                 : nlohmann::json::array()}}.dump());
     writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})");
     FastModuleContainer modules;
@@ -199,8 +206,10 @@ void main() {
     REQUIRE(generation);
     REQUIRE_FALSE(generation->programs.empty());
     const auto &source_files = generation->programs.begin()->second.frame_graph.attribute_source_files;
-    REQUIRE(source_files == std::vector<std::filesystem::path>{
-        std::filesystem::weakly_canonical(root / "character.glb")});
+    std::vector<std::filesystem::path> expected_sources{std::filesystem::weakly_canonical(root / source_file)};
+    if (external_buffer) expected_sources.push_back(std::filesystem::weakly_canonical(root / "character.bin"));
+    std::sort(expected_sources.begin(), expected_sources.end());
+    REQUIRE(source_files == expected_sources);
     const auto graph = generation->programs.begin()->second.frame_graph.value_graph;
     REQUIRE(graph);
     REQUIRE(nlohmann::json::parse(graph->serialize()) == document);
@@ -216,8 +225,8 @@ void main() {
     auto &reload = GET_MODULE(watch::ReloadService);
     auto &models = GET_MODULE(ModelAssetContainer);
     const auto revision = shared_model ? models.contentRevisionForTesting("character") : 0;
-    const watch::ReloadRequest changed{.key = watch::makeAssetKey("character.glb")};
-    TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{.position_scale = 2});
+    const watch::ReloadRequest changed{.key = watch::makeAssetKey(external_buffer ? "character.bin" : source_file)};
+    write_source(TestSkeletalFixture::Options{.position_scale = 2});
     REQUIRE(reload.applyRequestForTesting(changed));
     const auto updated = GET_MODULE(RenderingPassContainer).snapshot();
     REQUIRE(updated != generation);
@@ -231,7 +240,7 @@ void main() {
     };
     REQUIRE(std::abs(rendered() - 5.2f) < 0.00001f);
     if (shared_model) REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
-    TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{.position_scale = 3});
+    write_source(TestSkeletalFixture::Options{.position_scale = 3});
     {
         watch::ScopedRenderPipelineCompanionReloadObserver fail_after_model_prepare{
             [](auto) { throw std::runtime_error("reject coordinated candidate"); }};
@@ -241,16 +250,53 @@ void main() {
     REQUIRE(std::abs(rendered() - 5.2f) < 0.00001f);
     if (shared_model) {
         REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
-        TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{
+        write_source(TestSkeletalFixture::Options{
             .invalid_inverse_bind_buffer_view = true, .position_scale = 3});
         REQUIRE_FALSE(reload.applyRequestForTesting(changed));
         REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == updated);
         REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
     }
-    TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{.position_scale = 4});
+    write_source(TestSkeletalFixture::Options{.position_scale = 4});
     REQUIRE(reload.applyRequestForTesting(changed));
     REQUIRE(std::abs(rendered() - 6.4f) < 0.00001f);
     if (shared_model) REQUIRE(models.contentRevisionForTesting("character") == revision + 2);
+    if (external_buffer) {
+        REQUIRE(models.handlesReload(changed.key));
+        TestSkeletalFixture::writeGltf(root / source_file, "replacement.bin", {.position_scale = 5});
+        const auto before_switch = GET_MODULE(RenderingPassContainer).snapshot();
+        {
+            watch::ScopedRenderPipelineCompanionReloadObserver reject_new_dependencies{
+                [](auto) { throw std::runtime_error("reject buffer source switch"); }};
+            REQUIRE_FALSE(reload.applyRequestForTesting({.key = watch::makeAssetKey(source_file)}));
+        }
+        REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == before_switch);
+        REQUIRE(models.contentRevisionForTesting("character") == revision + 2);
+        REQUIRE(models.handlesReload(changed.key));
+        REQUIRE_FALSE(models.handlesReload(watch::makeAssetKey("replacement.bin")));
+        REQUIRE(std::abs(rendered() - 6.4f) < 0.00001f);
+        std::filesystem::remove(root / "character.bin");
+        const std::array changes{
+            watch::ReloadRequest{.key = watch::makeAssetKey(source_file)},
+            watch::ReloadRequest{.key = changed.key, .kind = watch::ReloadKind::removed}};
+        REQUIRE(reload.applyRequestsForTesting(changes) == std::vector<bool>{true, true});
+        REQUIRE(std::abs(rendered() - 7.0f) < 0.00001f);
+        REQUIRE(models.contentRevisionForTesting("character") == revision + 3);
+        REQUIRE_FALSE(models.handlesReload(changed.key));
+        const watch::ReloadRequest replacement_change{.key = watch::makeAssetKey("replacement.bin")};
+        REQUIRE(models.handlesReload(replacement_change.key));
+        const auto switched = GET_MODULE(RenderingPassContainer).snapshot();
+        REQUIRE(reload.applyRequestForTesting(changed)); // Former dependency is no longer claimed.
+        REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == switched);
+        std::filesystem::remove(root / "replacement.bin");
+        REQUIRE_FALSE(reload.applyRequestForTesting({.key = replacement_change.key, .kind = watch::ReloadKind::removed}));
+        REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == switched);
+        REQUIRE(models.contentRevisionForTesting("character") == revision + 3);
+        REQUIRE(models.handlesReload(replacement_change.key));
+        TestSkeletalFixture::writeGltf(root / source_file, "replacement.bin", {.position_scale = 6});
+        REQUIRE(reload.applyRequestForTesting(replacement_change));
+        REQUIRE(std::abs(rendered() - 7.6f) < 0.00001f);
+        REQUIRE(models.contentRevisionForTesting("character") == revision + 4);
+    }
     TestSkeletalFixture::writeGlb(root / "replacement.glb");
     auto replacement = document;
     replacement["nodes"][5]["parameters"]["source"]["asset"] = "project://replacement.glb";
@@ -260,8 +306,7 @@ void main() {
     REQUIRE_FALSE(next->programs.empty());
     REQUIRE(next->programs.begin()->second.frame_graph.attribute_source_files ==
         std::vector<std::filesystem::path>{std::filesystem::weakly_canonical(root / "replacement.glb")});
-    REQUIRE(source_files == std::vector<std::filesystem::path>{
-        std::filesystem::weakly_canonical(root / "character.glb")});
+    REQUIRE(source_files == expected_sources);
 }
 
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {

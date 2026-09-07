@@ -226,6 +226,46 @@ TEST_CASE("Scene collision follows model reload additions changes and removals",
     GET_MODULE(VulkanManageCore).waitIdle();
 }
 
+TEST_CASE("Model external buffer dependencies change with one batched publication",
+          "[model-reload][external-buffer][gpu]") {
+    setupLogger();
+    auto sandbox = makeSandbox("external_buffer");
+    const auto document = sandbox.root / "model.gltf";
+    TestSkeletalFixture::writeGltf(document, "first.bin");
+    FastModuleContainer modules;
+    configureProject(sandbox.root, nlohmann::json::array({{{"name", "model"}, {"path", "model.gltf"}}}));
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    (void)GET_MODULE(StandardMaterialResource);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    const auto identity = models.assetIdForTesting("model");
+    REQUIRE(models.handlesReload(watch::makeAssetKey("first.bin")));
+    TestSkeletalFixture::writeGltf(document, "second.bin", {.position_scale = 2});
+    std::filesystem::remove(sandbox.root / "first.bin");
+    const std::array changed{
+        modified("model.gltf"), watch::ReloadRequest{.key = watch::makeAssetKey("first.bin"),
+                                                   .kind = watch::ReloadKind::removed}};
+    REQUIRE(reload.applyRequestsForTesting(changed) == std::vector<bool>{true, true});
+    REQUIRE(models.contentRevisionForTesting("model") == 2);
+    REQUIRE(models.assetIdForTesting("model") == identity);
+    REQUIRE_FALSE(models.handlesReload(watch::makeAssetKey("first.bin")));
+    REQUIRE(models.handlesReload(watch::makeAssetKey("second.bin")));
+    const auto current = reload.transactions().registry().snapshot();
+    REQUIRE(current.reverseDependents(watch::makeAssetKey("first.bin")).empty());
+    REQUIRE(current.reverseDependents(watch::makeAssetKey("second.bin")).size() == 1);
+    TestSkeletalFixture::writeGltf(document, "third.bin", {.invalid_inverse_bind_buffer_view = true});
+    REQUIRE_FALSE(reload.applyRequestForTesting(modified("model.gltf")));
+    REQUIRE(models.contentRevisionForTesting("model") == 2);
+    REQUIRE(models.handlesReload(watch::makeAssetKey("second.bin")));
+    REQUIRE_FALSE(models.handlesReload(watch::makeAssetKey("third.bin")));
+    TestSkeletalFixture::writeGltf(document, "third.bin", {.position_scale = 3});
+    REQUIRE(reload.applyRequestForTesting(modified("model.gltf")));
+    REQUIRE(models.contentRevisionForTesting("model") == 3);
+    REQUIRE_FALSE(models.handlesReload(watch::makeAssetKey("second.bin")));
+    REQUIRE(models.handlesReload(watch::makeAssetKey("third.bin")));
+    REQUIRE(current.reverseDependents(watch::makeAssetKey("second.bin")).size() == 1);
+}
+
 TEST_CASE("HR2-G fragment and rig reload contract", "[wp110][model-reload][gpu]") {
     setupLogger();
     auto sandbox = makeSandbox("contract");
