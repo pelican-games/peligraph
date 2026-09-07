@@ -569,6 +569,8 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     loadRenderGraphVariantsFromConfigData(document.dump());
     REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() > generation);
     REQUIRE(render(11) == 4.0f);
+    auto event_document = document;
+    addGraphEventClock(event_document);
     addGraphTriggerClock(document);
     loadRenderGraphVariantsFromConfigData(document.dump());
     REQUIRE(render(12) == 1);
@@ -594,6 +596,28 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(render(13.5) == 4);
     test_support::loadScene(scene, "default_scene");
     REQUIRE(render(14) == 1);
+    loadRenderGraphVariantsFromConfigData(event_document.dump());
+    const auto event_left = *scene.objectId("Left");
+    const auto event_right = *scene.objectId("Right");
+    using Command = Animation::CurvePlaybackCommand;
+    REQUIRE_FALSE(context.emitGraphEvent(event_right, "left/commands", Command::start));
+    REQUIRE_FALSE(context.emitGraphEvent(event_left, "missing", Command::start));
+    REQUIRE(context.emitGraphEvent(event_left, "left/commands", Command::start));
+    REQUIRE(render(14) == 1);
+    time.setTime(14.125);
+    REQUIRE(context.emitGraphEvent(event_left, "left/commands", Command::pause));
+    time.setTime(14.5);
+    REQUIRE(context.emitGraphEvent(event_left, "left/commands", Command::resume));
+    REQUIRE(render(14.75) == 5.5);
+    REQUIRE(render(14.75) == 5.5);
+    REQUIRE(render(15) == 8.5);
+    REQUIRE(context.emitGraphEvent(event_left, "left/commands", Command::reset));
+    REQUIRE(render(15.25) == 1);
+    REQUIRE(context.emitGraphEvent(event_left, "left/commands", Command::start));
+    test_support::loadScene(scene, "default_scene");
+    REQUIRE_FALSE(context.emitGraphEvent(event_left, "left/commands", Command::start));
+    REQUIRE(render(17) == 1);
+    REQUIRE(render(18.25) == 1); // A retired scene's queued start must not fire later.
 }
 
 } // namespace Pelican

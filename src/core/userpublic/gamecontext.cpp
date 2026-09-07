@@ -399,19 +399,32 @@ bool GameContext::isPlaying(SoundHandle handle) const {
 #endif
 }
 
-bool GameContext::setGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const {
-    if (internal::activeEffectTransaction()) return false;
+namespace {
+std::shared_ptr<const ValueGraph::Graph> graphForOwnedInput(std::string_view input, auto ownerOf) {
     const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>();
     const auto generation = passes ? passes->snapshot() : nullptr;
-    if (!generation) return false;
+    if (!generation) return {};
     std::shared_ptr<const ValueGraph::Graph> graph;
     for (const auto &[id, program] : generation->programs) {
         const auto &candidate = program.frame_graph.value_graph;
-        if (!candidate || !candidate->parameterOwner(parameter)) continue;
-        if (graph && graph != candidate) return false;
+        if (!candidate || !(candidate.get()->*ownerOf)(input)) continue;
+        if (graph && graph != candidate) return {};
         graph = candidate;
     }
+    return graph;
+}
+}
+
+bool GameContext::setGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const {
+    if (internal::activeEffectTransaction()) return false;
+    auto graph = graphForOwnedInput(parameter, &ValueGraph::Graph::parameterOwner);
     return graph && GET_MODULE(SceneLoader).setGraphParameter(std::move(graph), object, parameter, value);
+}
+
+bool GameContext::emitGraphEvent(GameObjectId object, std::string_view input, Animation::CurvePlaybackCommand command) const {
+    if (internal::activeEffectTransaction()) return false;
+    auto graph = graphForOwnedInput(input, &ValueGraph::Graph::eventOwner);
+    return graph && GET_MODULE(SceneLoader).emitGraphEvent(std::move(graph), object, input, command);
 }
 
 bool GameContext::setRenderValues(std::string_view buffer, std::span<const float> values) const {

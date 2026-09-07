@@ -113,7 +113,8 @@ instance.ownerによるauthoring objectとの対応と、GameContextからのpar
 ownerの生存状態に沿った数値評価・publish・依存computeの停止と、scene再読込みでの再開を
 通常Rendererへ接続した。render.imageとcomputeのstorage/sampled画像portも接続済み。
 個体別EvaluationStateとvalue.trigger_clockの開始/一時停止/再開/resetも通常Rendererへ接続した。
-次は型付きイベントの受渡しとraster/fullscreen passの共通node化を進める。
+型付き再生イベントのsource/時計consumerと時刻付きキューも通常Rendererへ接続した。
+次は音声等のevent sinkとraster/fullscreen passの共通node化を進める。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。
 sceneごとのgraph選択と音声handle/任意外部inputの自動供給はまだない。
 画像pass、feature自体の共通instance化、時計以外の状態/イベント境界、Studio統合は残件。

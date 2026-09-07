@@ -38,6 +38,11 @@ class EvaluationState {
         bool high{};
     };
     std::map<std::size_t, Trigger> triggers_;
+    struct Event {
+        double time;
+        Animation::CurvePlaybackCommand command;
+    };
+    std::map<std::size_t, std::vector<Event>> pending_;
 };
 
 // Immutable scalar dataflow. Stateful nodes update an explicit EvaluationState;
@@ -48,11 +53,14 @@ class PELICAN_API Graph {
     const std::string &serialize() const noexcept { return document_; }
     const ParameterValues &parameterDefaults() const noexcept { return parameter_defaults_; }
     const GraphInstanceOwner *parameterOwner(std::string_view parameter) const noexcept;
+    const GraphInstanceOwner *eventOwner(std::string_view input) const noexcept;
     const GraphInstanceOwners &instanceOwners() const noexcept { return instance_owners_; }
     bool nodeActive(std::string_view node, const InactiveScopes &inactive) const;
     // The graph must outlive its state. Separate states evaluate independently.
     EvaluationState createState() const { return EvaluationState{this}; }
     void resetState(EvaluationState &state, const InactiveScopes &scopes) const;
+    bool emitEvent(EvaluationState &state, std::string_view input,
+                   Animation::CurvePlaybackCommand command, double time) const;
     Outputs evaluate(const Inputs &inputs, const ParameterValues &parameters = {},
                      const InactiveScopes &inactive = {}, EvaluationState *state = nullptr) const;
     // Owner-thread evaluation and explicit service publication. Sound targets
@@ -67,6 +75,7 @@ class PELICAN_API Graph {
                           const InactiveScopes &inactive = {}, EvaluationState *state = nullptr) const;
 
   private:
+    const GraphInstanceOwner *scopeOwner(std::string_view node) const noexcept;
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters,
                              const InactiveScopes &inactive, EvaluationState *state) const;
     ParameterValues parameter_defaults_;
@@ -74,7 +83,8 @@ class PELICAN_API Graph {
     ScopeDependencies node_scopes_;
     ScopeDependencies output_scopes_;
     std::vector<std::string> lowered_outputs_;
-    enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock };
+    enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock, event_input, event_clock };
+    std::map<std::string, std::vector<std::size_t>, std::less<>> event_consumers_;
     struct Node {
         std::string id;
         Op op{};

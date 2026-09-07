@@ -56,11 +56,17 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
         return endpoint.at("node");
     };
     for (const auto &[output, endpoint] : expanded.outputs.items())
-        result["outputs"][output] = Json::array({source(endpoint)});
+        if (endpoint.at("port") != "events")
+            result["outputs"][output] = Json::array({source(endpoint)});
     for (const auto &node : expanded.nodes) {
         const auto op = name(node.at("op"));
         const auto parameters = node.value("parameters", Json::object());
         const auto &inputs = node.at("inputs");
+        if (op == "event.playback") {
+            keys(parameters, {});
+            result["nodes"].push_back({{"id", node.at("id")}, {"op", "event_input"}});
+            continue;
+        }
         for (const auto &[port, contract] : operations.at(op).inputs)
             if (!contract.required && parameters.contains(port))
                 (void)number(parameters.at(port)); // References belong in typed input edges.
@@ -83,7 +89,7 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
         lowered["op"] = op.substr(6);
         for (const auto &[port, endpoint] : inputs.items()) {
             if (lowered.contains(port)) throw std::invalid_argument("input also defined as a parameter: " + port);
-            lowered[port] = source(endpoint);
+            lowered[port] = op == "value.event_clock" && port == "events" ? endpoint.at("node") : source(endpoint);
         }
         result["nodes"].push_back(std::move(lowered));
     }
@@ -141,6 +147,14 @@ Graph::Graph(std::string_view document) {
             keys(authored, {"id", "op", "a", "b"});
             node.op = op == "add" ? Op::add : Op::multiply;
             node.dependencies = {resolve(authored.at("a")), resolve(authored.at("b"))};
+        } else if (op == "event_input") {
+            keys(authored, {"id", "op"});
+            node.op = Op::event_input;
+            event_consumers_.emplace(node.id, std::vector<std::size_t>{});
+        } else if (op == "event_clock") {
+            keys(authored, {"id", "op", "time", "events"});
+            node.op = Op::event_clock;
+            node.dependencies = {resolve(authored.at("time")), resolve(authored.at("events"))};
         } else if (op == "trigger_clock") {
             keys(authored, {"id", "op", "time", "trigger", "paused", "reset"});
             node.op = Op::trigger_clock;
@@ -202,6 +216,17 @@ Graph::Graph(std::string_view document) {
             node.curve.emplace(std::move(decoded));
         } else throw std::invalid_argument("unknown value graph operation: " + op);
     }
+    for (std::size_t i = 0; i < nodes_.size(); ++i) {
+        const auto &node = nodes_[i];
+        for (std::size_t input = 0; input < node.dependencies.size(); ++input)
+            if (nodes_[node.dependencies[input]].op == Op::event_input &&
+                !(node.op == Op::event_clock && input == 1))
+                throw std::invalid_argument("event stream cannot be used as a scalar input");
+        if (node.op != Op::event_clock) continue;
+        const auto &source = nodes_[node.dependencies[1]];
+        if (source.op != Op::event_input) throw std::invalid_argument("event clock requires an event source");
+        event_consumers_.at(source.id).push_back(i);
+    }
     // Compile once. Declaration order does not constrain connections, and
     // duplicated edges (for example x*x) remain separate dependencies.
     std::vector<std::vector<std::size_t>> consumers(nodes_.size());
@@ -220,7 +245,12 @@ Graph::Graph(std::string_view document) {
     for (const auto &[output, references] : outputs.items()) {
         if (output.empty() || !references.is_array() || references.empty())
             throw std::invalid_argument("value graph output requires a name and scalar references");
-        for (const auto &reference : references) outputs_[output].push_back(resolve(reference));
+        for (const auto &reference : references) {
+            const auto index = resolve(reference);
+            if (nodes_[index].op == Op::event_input)
+                throw std::invalid_argument("event stream cannot be returned as a scalar output");
+            outputs_[output].push_back(index);
+        }
     }
     if (const auto bindings = root.find("bindings"); bindings != root.end()) {
         if (!bindings->is_array()) throw std::invalid_argument("value graph bindings must be an array");
@@ -249,6 +279,12 @@ Graph::Graph(std::string_view document) {
 
 const GraphInstanceOwner *Graph::parameterOwner(std::string_view parameter) const noexcept {
     if (!parameter_defaults_.contains(parameter)) return nullptr;
+    return scopeOwner(parameter);
+}
+const GraphInstanceOwner *Graph::eventOwner(std::string_view input) const noexcept {
+    return event_consumers_.contains(input) ? scopeOwner(input) : nullptr;
+}
+const GraphInstanceOwner *Graph::scopeOwner(std::string_view parameter) const noexcept {
     auto slash = parameter.rfind('/');
     while (slash != std::string_view::npos) {
         const auto found = instance_owners_.find(parameter.substr(0, slash));
@@ -265,6 +301,28 @@ bool Graph::nodeActive(std::string_view node, const InactiveScopes &inactive) co
 void Graph::resetState(EvaluationState &state, const InactiveScopes &scopes) const {
     if (state.graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
     std::erase_if(state.triggers_, [&](const auto &entry) { return !nodeActive(nodes_[entry.first].id, scopes); });
+    std::erase_if(state.pending_, [&](const auto &entry) { return !nodeActive(nodes_[entry.first].id, scopes); });
+}
+bool Graph::emitEvent(EvaluationState &state, std::string_view input,
+                      Animation::CurvePlaybackCommand command, double time) const {
+    if (state.graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
+    if (!std::isfinite(time)) throw std::invalid_argument("event time must be finite");
+    switch (command) {
+    case Animation::CurvePlaybackCommand::start:
+    case Animation::CurvePlaybackCommand::pause:
+    case Animation::CurvePlaybackCommand::resume:
+    case Animation::CurvePlaybackCommand::reset: break;
+    default: throw std::invalid_argument("unknown playback event command");
+    }
+    const auto found = event_consumers_.find(input);
+    if (found == event_consumers_.end()) return false;
+    for (const auto consumer : found->second) {
+        auto &queue = state.pending_[consumer];
+        const auto position = std::upper_bound(queue.begin(), queue.end(), time,
+            [](double time, const auto &event) { return time < event.time; });
+        queue.insert(position, {time, command});
+    }
+    return true;
 }
 
 Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive,
@@ -278,6 +336,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
                                 EvaluationState *state) const {
     if (state && state->graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
     auto triggers = state ? state->triggers_ : std::map<std::size_t, EvaluationState::Trigger>{};
+    auto pending = state ? state->pending_ : std::map<std::size_t, std::vector<EvaluationState::Event>>{};
     for (const auto &[name, value] : parameters) {
         if (!parameter_defaults_.contains(name)) throw std::invalid_argument("unknown graph parameter: " + name);
         if (!std::isfinite(value)) throw std::invalid_argument("graph parameter must be finite: " + name);
@@ -287,6 +346,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         const auto &node = nodes_[index];
         if (!nodeActive(node.id, inactive)) {
             triggers.erase(index);
+            pending.erase(index);
             continue;
         }
         auto &value = values[index];
@@ -306,6 +366,26 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         case Op::add: value = values[node.dependencies[0]] + values[node.dependencies[1]]; break;
         case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
         case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
+        case Op::event_input: break;
+        case Op::event_clock: {
+            if (!state) throw std::invalid_argument("event clock requires evaluation state: " + node.id);
+            auto &clock = triggers[index].clock;
+            const auto time = values[node.dependencies[0]];
+            auto &queue = pending[index];
+            const auto end = std::upper_bound(queue.begin(), queue.end(), time,
+                [](double time, const auto &event) { return time < event.time; });
+            for (auto event = queue.begin(); event != end; ++event) {
+                switch (event->command) {
+                case Animation::CurvePlaybackCommand::start: clock.trigger(event->time); break;
+                case Animation::CurvePlaybackCommand::pause: clock.pause(event->time); break;
+                case Animation::CurvePlaybackCommand::resume: clock.resume(event->time); break;
+                case Animation::CurvePlaybackCommand::reset: clock.stop(); break;
+                }
+            }
+            queue.erase(queue.begin(), end);
+            value = clock.elapsed(time);
+            break;
+        }
         case Op::trigger_clock: {
             if (!state) throw std::invalid_argument("trigger clock requires evaluation state: " + node.id);
             auto &trigger = triggers[index];
@@ -340,7 +420,10 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         output.reserve(indices.size());
         for (const auto index : indices) output.push_back(values[index]);
     }
-    if (state) state->triggers_ = std::move(triggers);
+    if (state) {
+        state->triggers_ = std::move(triggers);
+        state->pending_ = std::move(pending);
+    }
     return result;
 }
 

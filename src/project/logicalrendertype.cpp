@@ -559,6 +559,9 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
         parseSemanticTypeId("pelican.value.scalar@1"),
         LogicalTypeConstructor::value, {}, {"numeric"}});
     registry.registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.event.playback_control@1"),
+        LogicalTypeConstructor::stream, {}, {"event"}});
+    registry.registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.storage_buffer@1"),
         LogicalTypeConstructor::buffer,
         {TypeParameterSchema{"element", TypeArgumentRole::identity,

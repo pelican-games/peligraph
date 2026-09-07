@@ -66,6 +66,7 @@ PELICAN_API CurveSample sampleCurve(const ScalarCurve &curve,
                                    double elapsed);
 
 enum class CurveRetrigger { restart, ignore_active };
+enum class CurvePlaybackCommand { start, pause, resume, reset };
 class PELICAN_API CurveTriggerClock {
   public:
     explicit CurveTriggerClock(CurvePlaybackSettings settings = {});

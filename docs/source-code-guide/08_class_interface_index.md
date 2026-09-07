@@ -11,7 +11,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | 形 | 代表 | 意味 | この形が要る理由 |
 |---|---|---|---|
 | process module | [`DECLARE_MODULE`](../../src/core/container.hpp#L15) | process 中に遅延生成される実質 singleton。`GET_MODULE(T)` で取得 | 実装が「1個しか無い」資源(device、window、ECS world)を、引数で持ち回らずに取れるようにするため |
-| public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L25) | game code に内部 module を直接見せない、状態を持たない/薄い value façade | ゲームコードが engine 内部の型に compile 時依存しないようにするため(DLL 境界を細く保つ) |
+| public façade | [`GameContext`](../../src/core/userpublic/gamecontext.hpp#L26) | game code に内部 module を直接見せない、状態を持たない/薄い value façade | ゲームコードが engine 内部の型に compile 時依存しないようにするため(DLL 境界を細く保つ) |
 | abstract interface | [`IFrameTarget`](../../src/core/vkcore/frametarget.hpp#L254)、[`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp#L90) | window swapchain と headless target、flat と XR composition を virtual dispatch で交換 | 実装の選択が**実行時に**決まる(`--headless` / `--xr`)ので、compile 時の分岐では書けないため |
 | tagged union | [`PassInfo`](../../src/core/renderingpass/renderingpass.hpp#L321) | 閉じた種類集合を `std::variant` と `visit`/type test で dispatch | 種類が JSON 形式として**固定で列挙できる**ので、派生を後から足せる継承より、全種の網羅を強制できる variant が合うため |
 | type-erased callback table | [`ComponentInfo`](../../src/core/ecs/componentinfo.hpp#L41) | 任意 Component の construct/destroy/relocate/JSON 操作を function pointer 化 | 受け取る側(ECS storage)が型 `T` を知らないまま構築・破棄・移動をしなければならないため |
@@ -127,7 +127,7 @@ project game code が最優先で参照する層です。内部の `GET_MODULE` 
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `GameContext` | public value façade | [`gamecontext.hpp`](../../src/core/userpublic/gamecontext.hpp#L23) | [`gamecontext.cpp`](../../src/core/userpublic/gamecontext.cpp#L1) | time、input、entity、camera、physics(raycast/overlap/shapeCast + `QueryFilter`)、sprite、**light**([`setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.hpp#L53))、pose action、audio、save、RNG を統一 API で公開 |
+| `GameContext` | public value façade | [`gamecontext.hpp`](../../src/core/userpublic/gamecontext.hpp#L24) | [`gamecontext.cpp`](../../src/core/userpublic/gamecontext.cpp#L1) | time、input、entity、camera、physics(raycast/overlap/shapeCast + `QueryFilter`)、sprite、**light**([`setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.hpp#L54))、pose action、audio、save、RNG を統一 API で公開 |
 | `Behavior` | **仮想基底**(唯一の例外) | [`behavior.hpp`](../../src/core/userpublic/behavior.hpp#L60) | [`behaviorarena.cpp`](../../src/core/gamelogic/behaviorarena.cpp) | `onInit` / `onUpdate` / `onDestroy(noexcept)` |
 | `BehaviorContext` | `GameContext` 派生 | [`BehaviorContext`](../../src/core/userpublic/behavior.hpp#L24) | 同左 | `self()` / `attachment()` / `attachmentSeq()` / `params<T>()` と遅延 create/remove |
 | `BehaviorAttachmentHandle` | typed handle | [`BehaviorAttachmentHandle()`](../../src/core/userpublic/behavior.hpp#L13) | 同左 | attachment identity(`attachment_seq` と対) |

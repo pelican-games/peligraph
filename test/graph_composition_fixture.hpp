@@ -66,6 +66,15 @@ inline void addGraphTriggerClock(nlohmann::json &document) {
                     {"reset", {{"node", "reset"}, {"port", "value"}}}}}, {"outputs", {"value"}}});
 }
 
+inline void addGraphEventClock(nlohmann::json &document) {
+    auto &nodes = document["definitions"]["scaled_curve"]["nodes"];
+    nodes[2]["inputs"]["time"] = {{"node", "playhead"}, {"port", "value"}};
+    nodes.push_back({{"id", "commands"}, {"op", "event.playback"}, {"outputs", {"events"}}});
+    nodes.push_back({{"id", "playhead"}, {"op", "value.event_clock"},
+        {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+                    {"events", {{"node", "commands"}, {"port", "events"}}}}}, {"outputs", {"value"}}});
+}
+
 inline void addGraphImageStage(nlohmann::json &document) {
     const nlohmann::json type{{"semantic", "pelican.render.color_signal@1"},
         {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};

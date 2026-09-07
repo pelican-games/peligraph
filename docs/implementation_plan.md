@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 共通graphの最新到達点: owner停止、render.image/storage・sampled画像portに続き、個体別EvaluationStateとvalue.trigger_clockを通常Rendererへ接続。信号の立上がりで開始し、一時停止/再開/reset、scene reloadでの状態破棄をbuffer/image経路の実GPU出力で確認。次は型付きevent受渡しとraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
+- 共通graphの最新到達点: owner停止、画像port、個体別時計に続き、event.playback/value.event_clockと時刻付きキューを通常Rendererへ接続。描画間のpause/resume、別個体の送信拒否、scene切替時の未処理event破棄をbuffer/image経路で確認。次は音声等のevent sinkとraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
 
 - 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・image・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像pass・feature共通instance・状態/イベント・Studio統合は残件。
 
@@ -23249,6 +23249,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**型付き再生イベントのキューと配送 (2026-09-07):**
+- LogicalTypeRegistryにpelican.event.playback_control@1（stream）を追加。event.playback.eventsからvalue.event_clock.eventsへ通常のedgeで接続し、数値との誤接続を拒否。時計の経過秒は既存curve/playbackへ接続する。Graph::evaluateは数値出力だけを返す。
+- Graph::emitEventはstateへstart/pause/resume/resetを時刻付きで蓄積。timestamp順、同時刻は到着順。consumerごとに独立した未処理列を持ち、未来分を保持して成功評価時に消費する。owner消失/交代、不在scope、scene commitで時計と一緒に破棄。GameContext::emitGraphEventは生存ownerを確認してscene経過秒を付ける。既存parameter APIとのGraph検索を共通化した。
+- Player Debug build成功。CPU 37case/1578assertion、GPU skeletal 7case/301assertion成功（graph_event_build.log / graph_event_gpu_build.log / graph_event_cpu.log / graph_event_gpu.log）。CPUではconsumerの時刻差、未来event保持、逆の到着順、同時刻reset→start、型不一致を確認。GPUでは描画間pause/resumeの5.5、継続8.5、reset後1、scene切替後に十分時刻を進めても未処理startが発火しないことを確認。buffer/storage画像/sampled画像で同じ経路を通した。
+- consumer共通のキューを先行consumerだけで消費すると遅い時計の結果が落ち、timestamp順の整列を外すとpause/resumeの時間補正が落ちる。sceneのキュー破棄経路を失うと切替後の遅延発火を検出する。個別変異実行は未実施。過去へのevent履歴再生、任意payload、合流/条件分岐、音声/物理のevent sinkは未了。
 
 **個体別トリガー時計と実行状態 (2026-09-07):**
 - value.trigger_clockはtime/trigger入力、任意paused/reset入力、経過秒value出力を持つ。0→非0で開始/再開始し、保持中は再開始しない。reset優先、解除後の保持triggerでは再開せず、新しい立上がりを待つ。既存CurveTriggerClockへelapsed/pause/resumeを追加し再利用。

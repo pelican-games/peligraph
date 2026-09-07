@@ -34,11 +34,15 @@ GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &
     const GraphInputContract required{exactLogicalTypePattern(registry, scalar)};
     const GraphInputContract optional{required.accepted_type, false};
     const std::map<std::string, LogicalType> output{{"value", scalar}};
+    const auto event = registry.canonicalize(parseSemanticTypeId("pelican.event.playback_control@1"));
     return {
         {"value.input", {{}, output}}, {"value.constant", {{}, output}},
         {"value.parameter", {{}, output}},
         {"value.trigger_clock", {{{"time", required}, {"trigger", required},
             {"paused", optional}, {"reset", optional}}, output}},
+        {"event.playback", {{}, {{"events", event}}}},
+        {"value.event_clock", {{{"time", required},
+            {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, output}},
         {"value.add", {{{"a", required}, {"b", required}}, output}},
         {"value.multiply", {{{"a", required}, {"b", required}}, output}},
         {"value.curve", {{{"time", required}}, output}},
@@ -112,7 +116,9 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         partition.node_scopes.emplace(id, graph.node_scopes.at(id));
     }
     for (const auto &[port, endpoint] : graph.outputs.items()) {
-        auto &partition = output_types.at(port) == scalar ? result.values : result.rendering;
+        const auto type = output_types.at(port).constructor;
+        auto &partition = type == LogicalTypeConstructor::image || type == LogicalTypeConstructor::buffer
+            ? result.rendering : result.values;
         partition.outputs[port] = endpoint;
         partition.output_scopes.emplace(port, graph.output_scopes.at(port));
     }

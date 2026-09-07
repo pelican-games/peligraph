@@ -3,6 +3,7 @@
 #include "components/localtransform.hpp"
 #include "components/spriteview.hpp"
 #include "animation/abi_v1.hpp"
+#include "animation/curve.hpp"
 #include "audio.hpp"
 #include "export.hpp"
 #include "events.hpp"
@@ -106,6 +107,7 @@ class PELICAN_API GameContext {
     bool setRenderValues(std::string_view buffer, std::span<const float> values) const;
     // Full instance/parameter path. nullopt removes the runtime override.
     bool setGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const;
+    bool emitGraphEvent(GameObjectId object, std::string_view input, Animation::CurvePlaybackCommand command) const;
 
     // Update-thread controls for an attached animation graph. Before its first
     // frame attachment, or after removal, these return not_found. Scene

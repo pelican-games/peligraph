@@ -4,7 +4,7 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L25) が主要サービスを薄く包みます。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L26) が主要サービスを薄く包みます。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
@@ -18,10 +18,10 @@
 | camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L306) |
 | 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L310) |
 | audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L330) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L448) |
-| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L460) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L122) |
-| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L464) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L461) |
+| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L473) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L124) |
+| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L477) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
@@ -31,7 +31,7 @@ class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport�
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L53) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L54) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;

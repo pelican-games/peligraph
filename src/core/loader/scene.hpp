@@ -71,6 +71,7 @@ DECLARE_MODULE(SceneLoader) {
     GraphRuntime &synchronizeGraphRuntime(const std::shared_ptr<const ValueGraph::Graph> &graph);
     bool ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
                             std::string_view parameter) const;
+    bool ownsGraphOwner(const GraphInstanceOwner *owner, GameObjectId object) const;
     std::uint64_t next_authority_epoch = 1;
     std::uint64_t run_nonce = 0;
     SceneLoadFaultInjector *fault_injector = nullptr;
@@ -119,6 +120,8 @@ DECLARE_MODULE(SceneLoader) {
     ValueGraph::ParameterValues graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph);
     ValueGraph::InactiveScopes inactiveGraphScopes(const ValueGraph::Graph &graph) const;
     ValueGraph::EvaluationState &graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph);
+    bool emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
+                        std::string_view input, Animation::CurvePlaybackCommand command);
     nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;

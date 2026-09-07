@@ -15,6 +15,39 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("typed playback events queue independently for consumers and preserve timestamp order", "[curve][graph-composition]") {
+    auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+      "nodes":[{"id":"commands","op":"event.playback","outputs":["events"]},
+        {"id":"time","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
+        {"id":"lag","op":"value.input","parameters":{"name":"lag"},"outputs":["value"]},
+        {"id":"a","op":"value.event_clock","inputs":{"time":{"node":"time","port":"value"},
+          "events":{"node":"commands","port":"events"}},"outputs":["value"]},
+        {"id":"b","op":"value.event_clock","inputs":{"time":{"node":"lag","port":"value"},
+          "events":{"node":"commands","port":"events"}},"outputs":["value"]}],
+      "outputs":{"a":{"node":"a","port":"value"},"b":{"node":"b","port":"value"}}})");
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    auto state = graph.createState();
+    using Command = CurvePlaybackCommand;
+    REQUIRE(graph.emitEvent(state, "commands", Command::start, 10.125));
+    const auto evaluate = [&](double time, double lag) { return graph.evaluate({{"time", time}, {"lag", lag}}, {}, {}, &state); };
+    REQUIRE(evaluate(10, 10).at("a")[0] == 0);
+    const auto first = evaluate(10.5, 10);
+    REQUIRE(first.at("a")[0] == 0.375);
+    REQUIRE(first.at("b")[0] == 0);
+    REQUIRE(evaluate(10.75, 10.5).at("b")[0] == 0.375);
+    REQUIRE(graph.emitEvent(state, "commands", Command::resume, 11));
+    REQUIRE(graph.emitEvent(state, "commands", Command::pause, 10.75));
+    REQUIRE(evaluate(11.25, 11.25).at("a")[0] == 0.875);
+    REQUIRE(evaluate(11.25, 11.25).at("b")[0] == 0.875);
+    REQUIRE(graph.emitEvent(state, "commands", Command::reset, 11.25));
+    REQUIRE(graph.emitEvent(state, "commands", Command::start, 11.25));
+    REQUIRE(evaluate(11.5, 11.5).at("a")[0] == 0.25);
+    REQUIRE_FALSE(graph.emitEvent(state, "missing", Command::start, 12));
+    REQUIRE_THROWS(graph.emitEvent(state, "commands", Command::start, std::numeric_limits<double>::infinity()));
+    document["nodes"][3]["inputs"]["events"] = {{"node", "time"}, {"port", "value"}};
+    REQUIRE_THROWS(Pelican::ValueGraph::Graph(document.dump()));
+}
+
 TEST_CASE("trigger clocks keep evaluation state separate and reset inactive scopes", "[curve][graph-composition]") {
     auto document = parameterGraphCompositionFixture();
     document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};

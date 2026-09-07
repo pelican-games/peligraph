@@ -1359,7 +1359,10 @@ void SceneLoader::bindRuntimeObject(AuthoringObjectId authoring_object_id,
 
 bool SceneLoader::ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
                                     std::string_view parameter) const {
-    const auto *owner = graph.parameterOwner(parameter);
+    return ownsGraphOwner(graph.parameterOwner(parameter), object);
+}
+
+bool SceneLoader::ownsGraphOwner(const GraphInstanceOwner *owner, GameObjectId object) const {
     if (!owner || owner->scene != currentScene() ||
         !GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(object)) return false;
     return std::any_of(runtime_object_bindings.begin(), runtime_object_bindings.end(), [&](const auto &binding) {
@@ -1414,6 +1417,13 @@ ValueGraph::ParameterValues SceneLoader::graphParameterValues(std::shared_ptr<co
 
 ValueGraph::EvaluationState &SceneLoader::graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph) {
     return synchronizeGraphRuntime(graph).evaluation;
+}
+
+bool SceneLoader::emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
+                                std::string_view input, Animation::CurvePlaybackCommand command) {
+    if (!ownsGraphOwner(graph->eventOwner(input), object)) return false;
+    return graph->emitEvent(synchronizeGraphRuntime(graph).evaluation, input, command,
+                            GET_MODULE(EngineTime).now() - scene_start_time);
 }
 
 ValueGraph::InactiveScopes SceneLoader::inactiveGraphScopes(const ValueGraph::Graph &graph) const {

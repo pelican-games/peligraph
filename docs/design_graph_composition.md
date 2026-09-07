@@ -145,8 +145,27 @@ ownerのruntime objectが消失/交代したscopeの状態を破棄し、scene c
 通常Rendererが保持stateを供給し、描画候補の事前検査には使い捨てstateを使うため、失敗候補で
 公開中の再生をリセットしない。CurveTriggerClockのelapsed/pause/resumeを再利用する。
 
-これはscalar信号の立上がりによる時計。フレーム間の複数イベントをキューで保存する機能、
-型付きevent port、音声再生/停止イベント、物理step間のイベント受渡しは引き続き未実装。
+この時計はscalar信号の立上がりを扱う。別途、次の型付きイベント時計を用意する。
+
+### 再生制御イベントの受渡し（2026-09-07）
+
+event.playbackのevents出力はpelican.event.playback_control@1（stream）を持つ。
+value.event_clockはeventsとscalarのtimeを入力し、経過秒valueを出力する。数値入力とeventは
+暗黙変換しない。共通instanceの公開portにも通常のedgeとして接続できる。Graph::evaluateの
+返り値は数値出力のみで、eventのroot公開portを数値配列へ変換しない。保存文書には公開portを残す。
+
+Graph::emitEvent(state, source_node_path, command, time)でstart/pause/resume/resetをキューへ
+追加する。timestamp順、同時刻なら到着順に処理する。各consumer時計に独立して配送し、
+時計のtimeを超えたイベントは保持する。消費したイベントは成功した評価時に取り除く。
+一方のconsumerが先に進んでも他方の未来イベントを消さない。評価失敗時は時計とキューを保持する。
+既に消費済みの過去へ戻ってイベント履歴を再生する機構ではない。
+
+GameContext::emitGraphEvent(object, source_node_path, command)は現在sceneの経過秒を付ける。
+この経路ではevent_clock.timeへscene_timeを接続する。手動APIは入力timeと同じ時間座標で
+timestampを渡す。生存owner・現在Graph・source宣言を確認し、別個体/古いID/不明sourceや
+effect transaction内は受け付けない。Graph検索はparameter操作と共用する。
+キューは既存EvaluationStateに所有され、owner交代/不在scope/scene commitで時計と一緒に破棄する。
+音声の再生/停止sink、物理stepイベントとの接続、eventの合流/条件分岐や任意payloadは残件。
 
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
