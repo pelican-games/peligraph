@@ -49,6 +49,15 @@ struct CurveSample {
     bool completed{};
 };
 
+struct CurveTimeSample {
+    double source_time{};
+    bool active{};
+    bool completed{};
+};
+// Time mapping only; scale and offset belong to the later value transform.
+PELICAN_API CurveTimeSample mapCurveTime(const CurvePlaybackSettings &settings,
+                                        double elapsed);
+
 // Stateless evaluation supports both a trigger clock and externally supplied
 // time. Negative elapsed time/delay returns the initial value but is inactive.
 PELICAN_API CurveSample sampleCurve(const ScalarCurve &curve,

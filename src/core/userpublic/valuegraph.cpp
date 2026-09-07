@@ -64,6 +64,29 @@ Graph::Graph(std::string_view document) {
             keys(authored, {"id", "op", "a", "b"});
             node.op = op == "add" ? Op::add : Op::multiply;
             node.dependencies = {resolve(authored.at("a")), resolve(authored.at("b"))};
+        } else if (op == "playback") {
+            keys(authored, {"id", "op", "elapsed", "source_begin", "source_end",
+                            "duration", "speed", "delay", "sample_interval", "wrap"});
+            node.op = Op::playback;
+            node.dependencies = {resolve(authored.at("elapsed"))};
+            using Settings = Animation::CurvePlaybackSettings;
+            const std::pair<std::string_view, double Settings::*> fields[] = {
+                {"source_begin", &Settings::source_begin}, {"source_end", &Settings::source_end},
+                {"duration", &Settings::duration}, {"speed", &Settings::speed},
+                {"delay", &Settings::delay}, {"sample_interval", &Settings::sample_interval}};
+            for (const auto &[field, member] : fields) {
+                const auto found = authored.find(field);
+                if (found == authored.end()) continue;
+                if (found->is_string()) {
+                    node.dependencies.push_back(resolve(*found));
+                    node.playback_inputs.push_back(member);
+                } else node.playback.*member = number(*found);
+            }
+            const auto wrap = authored.value("wrap", std::string("once"));
+            if (wrap == "once") node.playback.wrap = Animation::CurveWrap::once;
+            else if (wrap == "repeat") node.playback.wrap = Animation::CurveWrap::repeat;
+            else if (wrap == "ping_pong") node.playback.wrap = Animation::CurveWrap::ping_pong;
+            else throw std::invalid_argument("unknown playback wrap: " + wrap);
         } else if (op == "curve") {
             keys(authored, {"id", "op", "time", "keys"});
             node.op = Op::curve;
@@ -127,6 +150,13 @@ Outputs Graph::evaluate(const Inputs &inputs) const {
         case Op::add: value = values[node.dependencies[0]] + values[node.dependencies[1]]; break;
         case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
         case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
+        case Op::playback: {
+            auto settings = node.playback;
+            for (std::size_t i = 0; i < node.playback_inputs.size(); ++i)
+                settings.*node.playback_inputs[i] = values[node.dependencies[i + 1]];
+            value = Animation::mapCurveTime(settings, values[node.dependencies[0]]).source_time;
+            break;
+        }
         }
         if (!std::isfinite(value)) throw std::invalid_argument("non-finite value at graph node: " + node.id);
     }

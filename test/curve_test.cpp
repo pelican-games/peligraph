@@ -11,6 +11,30 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("playback nodes map dynamic timing independently of curve shape", "[curve][valuegraph]") {
+    const Pelican::ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[
+        {"id":"shape","op":"curve","time":"phase","keys":[{"time":2,"value":0},{"time":6,"value":1}]},
+        {"id":"phase","op":"playback","elapsed":"clock","source_begin":2,"source_end":6,
+          "duration":"duration","speed":"speed","delay":0.25,"sample_interval":0.5,"wrap":"ping_pong"},
+        {"id":"clock","op":"input","name":"time"},
+        {"id":"duration","op":"input","name":"duration"},
+        {"id":"speed","op":"input","name":"speed"}],
+      "outputs":{"value":["shape"],"source_time":["phase"]}})"};
+    const Pelican::ValueGraph::Graph restored{graph.serialize()};
+    const auto evaluate = [&](double time, double duration, double speed) {
+        return restored.evaluate({{"time", time}, {"duration", duration}, {"speed", speed}});
+    };
+    REQUIRE(evaluate(1, 2, 1).at("source_time")[0] == Approx(3));
+    REQUIRE(evaluate(1, 2, 1).at("value")[0] == Approx(0.25));
+    REQUIRE(evaluate(1, 4, 1).at("value")[0] == Approx(0.125));
+    REQUIRE(evaluate(1, 2, -1).at("value")[0] == Approx(0.75));
+    REQUIRE(evaluate(0.1, 2, 1).at("value")[0] == Approx(0));
+    REQUIRE(evaluate(3.25, 2, 1).at("value")[0] == Approx(0.5));
+    REQUIRE_THROWS(evaluate(1, 0, 1));
+    REQUIRE_THROWS(evaluate(1, 2, 0));
+}
+
 TEST_CASE("saved value graphs compose curves and external parameters", "[curve][valuegraph]") {
     const Pelican::ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
       "nodes":[

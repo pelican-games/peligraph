@@ -10,14 +10,19 @@ namespace {
 void finite(double value) {
     if (!std::isfinite(value)) throw std::invalid_argument("curve values must be finite");
 }
-void validate(const CurvePlaybackSettings &s) {
+void validateTime(const CurvePlaybackSettings &s) {
     for (double value : {s.source_begin, s.source_end, s.duration, s.speed,
-                         s.delay, s.scale, s.offset, s.sample_interval}) finite(value);
+                         s.delay, s.sample_interval}) finite(value);
     if (s.source_end < s.source_begin || s.duration <= 0 || s.speed == 0 ||
         s.delay < 0 || s.sample_interval < 0)
         throw std::invalid_argument("invalid curve playback range, duration, speed or sampling interval");
     if (s.wrap != CurveWrap::once && s.wrap != CurveWrap::repeat && s.wrap != CurveWrap::ping_pong)
         throw std::invalid_argument("unknown curve wrap mode");
+}
+void validate(const CurvePlaybackSettings &s) {
+    validateTime(s);
+    finite(s.scale);
+    finite(s.offset);
 }
 double progress(const CurvePlaybackSettings &s, double local_time) {
     const auto result = std::max(0.0, local_time) / s.duration * std::abs(s.speed);
@@ -68,8 +73,8 @@ std::vector<double> ScalarCurve::sampleUniform(double begin, double end, unsigne
     return result;
 }
 
-CurveSample sampleCurve(const ScalarCurve &curve, const CurvePlaybackSettings &s, double elapsed) {
-    validate(s);
+CurveTimeSample mapCurveTime(const CurvePlaybackSettings &s, double elapsed) {
+    validateTime(s);
     finite(elapsed);
     const auto raw_progress = progress(s, elapsed - s.delay);
     const bool waiting = elapsed < s.delay;
@@ -85,7 +90,14 @@ CurveSample sampleCurve(const ScalarCurve &curve, const CurvePlaybackSettings &s
     }
     if (s.speed < 0) phase = 1.0 - phase;
     const auto source_time = std::lerp(s.source_begin, s.source_end, phase);
-    return {source_time, curve.sample(source_time) * s.scale + s.offset, !waiting && !completed, completed};
+    return {source_time, !waiting && !completed, completed};
+}
+
+CurveSample sampleCurve(const ScalarCurve &curve, const CurvePlaybackSettings &s, double elapsed) {
+    finite(s.scale);
+    finite(s.offset);
+    const auto time = mapCurveTime(s, elapsed);
+    return {time.source_time, curve.sample(time.source_time) * s.scale + s.offset, time.active, time.completed};
 }
 
 CurveTriggerClock::CurveTriggerClock(CurvePlaybackSettings settings) : settings_(settings) { validate(settings_); }

@@ -23246,6 +23246,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**数値グラフの再生時間変換ノード (2026-09-07):**
+- playbackノードへelapsed入力、source_begin/end・duration・speed・delay・sample_intervalの定数/他node参照、wrapのonce/repeat/ping_pongを追加。出力はカーブ上の時刻で、既存curveノードへ接続する。時間変換を公開mapCurveTimeへ分離し、sampleCurve・graphで共用する。値のscale/offsetは後段add/multiplyの責務。
+- Player Debug build成功。curve/animgraphは19case/435assertion成功。保存再読込したgraphで使用区間2..6、外部duration変更、逆再生、遅延、往復、固定間隔保持と不正duration/speedを確認。duration入力の反映を外すと再生時間変更の対照、sample_intervalを外すと保持時刻の対照が落ちる。個別変異は未実施。CPU時間演算の変更なのでGPU試験は反復していない。
+- 各評価時のelapsedを現在設定で写像する。速度変更を積分する時計・triggerイベント・scene自動装着・サービスbinding・GUIは未実装。active/completedはmapCurveTimeのC++出力にあり、イベントノードへの接続は残件。
+
 **保存可能な数値グラフの基本評価 (2026-09-07):**
 - 公開ValueGraph::Graphへpelican.value_graph文書の読込/保存を追加。input/constant/curve/add/multiplyをnode idで接続し、名前付き配列出力へ集約する。外部時刻/値を毎回渡す純粋評価で、音声・描画等の副作用は呼出側へ分離する。骨格state machineの文法は拡張していない。
 - 宣言順と接続順を分離し、初回に依存順を構築。curveは既存ScalarCurveのstep/linear/cubicと接線を保存する。未宣言参照/循環/欠落入力を拒否し、時間・値の倍率/オフセットは前後のadd/multiplyとして見える構成にする。

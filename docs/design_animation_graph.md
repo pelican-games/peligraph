@@ -265,12 +265,21 @@ setRenderValuesやsetSoundVolume等へ接続する。これらのサービスへ
 | constant | value | 定数 |
 | add | a/b: node id | 和 |
 | multiply | a/b: node id | 積 |
+| playback | elapsed: node id、使用区間・duration・speed・delay・sample_interval・wrap | カーブ上の時刻 |
 | curve | time: node id、keys | 任意時刻の補間値 |
 
 curveのkeysはtime/valueと任意のinterpolation（linear/step/cubic）、
 in_tangent/out_tangentを持つ。時間と値の倍率/オフセットはadd/multiplyで
-それぞれ曲線の前後に接続する。再生範囲/ループ/サンプリング設定のノード、
-trigger、pose/物理等の非スカラー型は残件であり、数値グラフ完成とは扱わない。
+それぞれ曲線の前後に接続する。
+
+playbackのsource_begin/source_end/duration/speed/delay/sample_intervalは
+数値定数または参照node idの文字列で指定する。省略時はCurvePlaybackSettingsの
+既定値、wrapはonce/repeat/ping_pongの文字列。出力をcurveのtimeへ接続する。
+設定は各評価時に解決し、既存sampleCurveと共有するmapCurveTimeで変換する。
+速度やdurationの変更時にはその入力値で現在のelapsedを再評価するため、
+速度変更を積分する時計とは異なる。graphは状態を保持せず、triggerによる経過
+時刻の生成はまだ呼出側の責務。active/completedをイベントへ変換するノード、
+pose/物理等の非スカラー型は残件であり、数値グラフ完成とは扱わない。
 
 ## 4. glTF / VRMA の受理(調査 §4.2 — VRM 一級化の要件)
 

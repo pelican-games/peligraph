@@ -22,7 +22,7 @@ class PELICAN_API Graph {
     Outputs evaluate(const Inputs &inputs) const;
 
   private:
-    enum class Op { input, constant, add, multiply, curve };
+    enum class Op { input, constant, add, multiply, curve, playback };
     struct Node {
         std::string id;
         Op op{};
@@ -30,6 +30,8 @@ class PELICAN_API Graph {
         double constant{};
         std::vector<std::size_t> dependencies;
         std::optional<Animation::ScalarCurve> curve;
+        Animation::CurvePlaybackSettings playback;
+        std::vector<double Animation::CurvePlaybackSettings::*> playback_inputs;
     };
     std::string document_;
     std::vector<Node> nodes_;
