@@ -56,7 +56,7 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
         return endpoint.at("node");
     };
     for (const auto &[output, endpoint] : expanded.outputs.items())
-        if (endpoint.at("port") != "events")
+        if (endpoint.at("port") != "events" && endpoint.at("port") != "voice")
             result["outputs"][output] = Json::array({source(endpoint)});
     for (const auto &node : expanded.nodes) {
         const auto op = name(node.at("op"));
@@ -82,13 +82,17 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
                 (void)number(parameters.at(port)); // References belong in typed input edges.
         if (op == "render.scalar" || op == "audio.volume" || op == "audio.pitch") {
             keys(parameters, {"target"});
+            const bool voice = inputs.contains("voice");
+            if (voice && parameters.contains("target"))
+                throw std::invalid_argument("audio binding cannot specify both voice and target");
             const auto output = "$binding/" + name(node.at("id"));
             if (result["outputs"].contains(output)) throw std::invalid_argument("reserved graph output: " + output);
             result["outputs"][output] = Json::array({source(inputs.at("value"))});
             output_scopes[output] = node_scopes.at(name(node.at("id")));
             result["bindings"].push_back({{"output", output},
                 {"kind", op == "render.scalar" ? "render_buffer" : op == "audio.volume" ? "sound_volume" : "sound_pitch"},
-                {"target", name(parameters.at("target"))}});
+                {"target", voice ? name(inputs.at("voice").at("node")) : name(parameters.at("target"))},
+                {"voice", voice}});
             continue;
         }
         if (!parameters.is_object()) throw std::invalid_argument("node parameters must be an object");
@@ -271,7 +275,7 @@ Graph::Graph(std::string_view document) {
         if (!bindings->is_array()) throw std::invalid_argument("value graph bindings must be an array");
         std::set<std::pair<std::string, std::string>> targets;
         for (const auto &binding : *bindings) {
-            keys(binding, {"output", "kind", "target"});
+            keys(binding, {"output", "kind", "target", "voice"});
             Binding decoded;
             decoded.output = name(binding.at("output"));
             decoded.target = name(binding.at("target"));
@@ -280,6 +284,9 @@ Graph::Graph(std::string_view document) {
             else if (decoded.kind == "sound_volume") decoded.type = Target::sound_volume;
             else if (decoded.kind == "sound_pitch") decoded.type = Target::sound_pitch;
             else throw std::invalid_argument("unknown value graph binding kind: " + decoded.kind);
+            decoded.voice = binding.value("voice", false);
+            if (decoded.voice && (decoded.type == Target::render_buffer || !audio_sources_.contains(decoded.target)))
+                throw std::invalid_argument("voice binding requires an audio playback producer");
             const auto output = outputs_.find(decoded.output);
             if (output == outputs_.end()) throw std::invalid_argument("binding references unknown output: " + decoded.output);
             if (decoded.type != Target::render_buffer && output->second.size() != 1)
@@ -455,7 +462,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
                              const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,
-                             const AudioEventWriter &audio_writer) const {
+                             const AudioEventWriter &audio_writer, const SoundResolver &sound_resolver) const {
     const auto outputs = evaluateInternal(inputs, parameters, inactive, state);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
@@ -495,10 +502,19 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         if (binding.type == Target::render_buffer)
             applied = render_writer ? render_writer(binding.target, prepared[i])
                                     : context.setRenderValues(binding.target, prepared[i]);
-        else if (const auto sound = sounds.find(binding.target); sound != sounds.end()) {
+        else if (binding.voice && sound_resolver) {
+            const auto sound = sound_resolver(binding.target);
+            // A connected producer can exist before start, or after reset/end.
+            if (!sound) continue;
             applied = binding.type == Target::sound_volume
-                ? context.setSoundVolume(sound->second, prepared[i][0])
-                : context.setSoundPitch(sound->second, prepared[i][0]);
+                ? context.setSoundVolume(*sound, prepared[i][0])
+                : context.setSoundPitch(*sound, prepared[i][0]);
+        } else if (!binding.voice) {
+            const auto sound = sounds.find(binding.target);
+            if (sound != sounds.end())
+                applied = binding.type == Target::sound_volume
+                    ? context.setSoundVolume(sound->second, prepared[i][0])
+                    : context.setSoundPitch(sound->second, prepared[i][0]);
         }
         if (applied) ++result.applied;
         else result.unavailable.push_back(binding.kind + ":" + binding.target);

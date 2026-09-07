@@ -193,7 +193,13 @@ Graph弱参照の失効でvoiceを停止する。共通frame updateが寿命整�
 graphがないフレームでも退役したvoiceを回収する。Audio moduleが先に破棄された場合は、その
 teardownによるvoice解放を利用し、新しいAudio moduleをcleanup中に作らない。graphSoundは現在の
 handleを照会でき、既存GameContextの音量/pitch操作にも使える。
-音量/pitchを新規voiceへ同じframeで自動結線するtyped sound port、音声位置のgraph入力、GUIは残件。
+audio.playbackのvoice出力はpelican.audio.voice@1で、audio.volume/audio.pitchの任意voice入力へ
+接続する。value入力はscalarのまま。voice接続とparameters.targetの二重指定は拒否し、
+接続を省略した場合のtargetは外部のSoundBindingsを参照する。
+通常Rendererはイベント反映後にSceneLoaderから現在のvoiceを解決し、新規再生/再開始した
+同じframeにもvolume/pitchを適用する。未再生・reset後・終了済みでvoiceがない場合は反映しない。
+候補の事前検査では音声を生成せず値を検査する。voiceは数値出力へ変換せず、JSONにhandleを保存しない。
+音声位置のgraph入力とGUIは残件。
 
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 

@@ -24,6 +24,7 @@ using Outputs = std::map<std::string, std::vector<double>, std::less<>>;
 using SoundBindings = std::map<std::string, SoundHandle, std::less<>>;
 using RenderValueWriter = std::function<bool(std::string_view, std::span<const float>)>;
 using AudioEventWriter = std::function<bool(std::string_view, Animation::CurvePlaybackCommand)>;
+using SoundResolver = std::function<std::optional<SoundHandle>(std::string_view)>;
 struct PublishResult {
     std::size_t applied{};
     std::vector<std::string> unavailable;
@@ -75,7 +76,8 @@ class PELICAN_API Graph {
                           const RenderValueWriter &render_writer = {},
                           const ParameterValues &parameters = {},
                           const InactiveScopes &inactive = {}, EvaluationState *state = nullptr,
-                          const AudioEventWriter &audio_writer = {}) const;
+                          const AudioEventWriter &audio_writer = {},
+                          const SoundResolver &sound_resolver = {}) const;
 
   private:
     const GraphInstanceOwner *scopeOwner(std::string_view node) const noexcept;
@@ -114,6 +116,7 @@ class PELICAN_API Graph {
         std::string target;
         std::string kind;
         Target type{};
+        bool voice{};
     };
     std::vector<Binding> bindings_;
 };

@@ -23233,7 +23233,8 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 共通graphの最新到達点: owner停止、画像port、時計/eventキューに続き、audio.playbackとvoice所有を通常Rendererへ接続。再生/pause/resume/reset、owner削除/scene切替/Graph退役時の解放、音声asset不正候補の拒否を確認（描画はGPU、音声はnull backend）。次はraster/fullscreen passの共通node化とtyped sound port。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
+- 共通graphの最新到達点: owner停止、画像port、時計/eventキューに続き、audio.playbackとvoice所有を通常Rendererへ接続。typed voice portからvolume/pitchへ接続し、新規再生/再開始したframeにも値を反映する。再生/pause/resume/reset、owner削除/scene切替/Graph退役時の解放、音声asset不正候補の拒否を確認（描画はGPU、音声はnull backend）。次はraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
+- typed voice portの検証: Playerビルド、CPU `[audio],[effect]` 13件/467 assertions、GPU `[skeletal]` 7件/421 assertions成功。未再生時の評価、左右の異なるvolume/pitch、再開始時の更新値、型不一致とtarget二重指定の拒否を確認。イベント前の固定handleだけを解決すると新規再生frameの値確認が落ちる対照を設けた（個別変異は未実施）。ログはbuild/.codex_bg/graph_voice_cpu.logとgraph_voice_gpu_final.log。音声はnull backend。
 
 - 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・image・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像pass・feature共通instance・状態/イベント・Studio統合は残件。
 

@@ -556,6 +556,9 @@ void LogicalTypeRegistry::requireCanonical(const LogicalType &type) const {
 LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
     LogicalTypeRegistry registry;
     registry.registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.audio.voice@1"),
+        LogicalTypeConstructor::value, {}, {"voice"}});
+    registry.registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.value.scalar@1"),
         LogicalTypeConstructor::value, {}, {"numeric"}});
     registry.registerSchema(SemanticTypeSchema{

@@ -626,7 +626,13 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     event_document["definitions"]["scaled_curve"]["nodes"].push_back({
         {"id", "sound"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://tone.wav"}}},
         {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
-                    {"events", {{"node", "commands"}, {"port", "events"}}}}}, {"outputs", nlohmann::json::array()}});
+                    {"events", {{"node", "commands"}, {"port", "events"}}}}}, {"outputs", {"voice"}}});
+    for (const auto *op : {"audio.volume", "audio.pitch"})
+        event_document["definitions"]["scaled_curve"]["nodes"].push_back({
+            {"id", op}, {"op", op}, {"parameters", nlohmann::json::object()},
+            {"inputs", {{"value", {{"node", "gain"}, {"port", "value"}}},
+                        {"voice", {{"node", "sound"}, {"port", "voice"}}}}},
+            {"outputs", nlohmann::json::array()}});
     loadRenderGraphVariantsFromConfigData(event_document.dump());
     auto sound_graph = GET_MODULE(RenderingPassContainer).snapshot()->programs.begin()->second.frame_graph.value_graph;
     const auto requireSound = [&](const auto &graph, const char *node) {
@@ -636,6 +642,16 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     };
     const auto sound_left = *scene.objectId("Left");
     const auto sound_right = *scene.objectId("Right");
+    REQUIRE(context.setGraphParameter(sound_left, "left/gain", 3));
+    (void)render(18.25);
+    REQUIRE_FALSE(scene.graphSound(sound_graph, "left/sound"));
+    auto wrong_voice = event_document;
+    wrong_voice["definitions"]["scaled_curve"]["nodes"].back()["inputs"]["voice"] =
+        {{"node", "gain"}, {"port", "value"}};
+    REQUIRE_THROWS(ValueGraph::Graph{wrong_voice.dump()});
+    auto double_target = event_document;
+    double_target["definitions"]["scaled_curve"]["nodes"].back()["parameters"]["target"] = "external";
+    REQUIRE_THROWS(ValueGraph::Graph{double_target.dump()});
     REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::start));
     REQUIRE(context.emitGraphEvent(sound_right, "right/commands", Command::start));
     (void)render(18.25);
@@ -644,6 +660,12 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(left_voice != right_voice);
     REQUIRE(context.isPlaying(left_voice));
     REQUIRE(context.isPlaying(right_voice));
+    REQUIRE(context.soundState(left_voice));
+    REQUIRE(context.soundState(right_voice));
+    REQUIRE(context.soundState(left_voice)->volume == 3.0f);
+    REQUIRE(context.soundState(left_voice)->pitch == 3.0f);
+    REQUIRE(context.soundState(right_voice)->volume == 4.0f);
+    REQUIRE(context.soundState(right_voice)->pitch == 4.0f);
     REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::pause));
     (void)render(18.5);
     REQUIRE(context.soundState(left_voice));
@@ -655,12 +677,17 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::reset));
     (void)render(19);
     REQUIRE_FALSE(context.soundState(left_voice));
+    REQUIRE(context.setGraphParameter(sound_left, "left/gain", 6));
     REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::start));
     (void)render(19.25);
     const auto restarted_voice = requireSound(sound_graph, "left/sound");
     REQUIRE(restarted_voice != left_voice);
+    REQUIRE(context.soundState(restarted_voice));
+    REQUIRE(context.soundState(restarted_voice)->volume == 6.0f);
+    REQUIRE(context.soundState(restarted_voice)->pitch == 6.0f);
     auto bad_audio = event_document;
-    bad_audio["definitions"]["scaled_curve"]["nodes"].back()["parameters"]["asset"] = "project://missing.wav";
+    for (auto &node : bad_audio["definitions"]["scaled_curve"]["nodes"])
+        if (node["id"] == "sound") node["parameters"]["asset"] = "project://missing.wav";
     REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(bad_audio.dump()));
     REQUIRE(context.isPlaying(restarted_voice));
     GameObjects{}.remove(sound_left);

@@ -5247,6 +5247,8 @@ void Renderer::renderLogicalFrame(
             inactive_graph_scopes, &scene.graphEvaluationState(frame_graph.value_graph),
             [&](std::string_view node, Animation::CurvePlaybackCommand command) {
                 return scene.applyGraphAudioEvent(frame_graph.value_graph, node, command);
+            }, [&](std::string_view node) {
+                return scene.graphSound(frame_graph.value_graph, node);
             });
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());

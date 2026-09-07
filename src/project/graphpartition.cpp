@@ -35,6 +35,8 @@ GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &
     const GraphInputContract optional{required.accepted_type, false};
     const std::map<std::string, LogicalType> output{{"value", scalar}};
     const auto event = registry.canonicalize(parseSemanticTypeId("pelican.event.playback_control@1"));
+    const auto voice = registry.canonicalize(parseSemanticTypeId("pelican.audio.voice@1"));
+    const GraphInputContract optional_voice{exactLogicalTypePattern(registry, voice), false};
     return {
         {"value.input", {{}, output}}, {"value.constant", {{}, output}},
         {"value.parameter", {{}, output}},
@@ -44,7 +46,7 @@ GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &
         {"value.event_clock", {{{"time", required},
             {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, output}},
         {"audio.playback", {{{"time", required},
-            {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, {}}},
+            {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, {{"voice", voice}}}},
         {"value.add", {{{"a", required}, {"b", required}}, output}},
         {"value.multiply", {{{"a", required}, {"b", required}}, output}},
         {"value.curve", {{{"time", required}}, output}},
@@ -52,8 +54,8 @@ GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &
             {"source_end", optional}, {"duration", optional}, {"speed", optional},
             {"delay", optional}, {"sample_interval", optional}}, output}},
         {"render.scalar", {{{"value", required}}, {}}},
-        {"audio.volume", {{{"value", required}}, {}}},
-        {"audio.pitch", {{{"value", required}}, {}}},
+        {"audio.volume", {{{"value", required}, {"voice", optional_voice}}, {}}},
+        {"audio.pitch", {{{"value", required}, {"voice", optional_voice}}, {}}},
     };
 }
 

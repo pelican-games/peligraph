@@ -949,7 +949,8 @@ registerRenderingPassConfigVariantsData(
                         const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
                         return buffer.host_source == FrameGraphHostBufferSource::runtime_f32 &&
                                buffer.size == values.size_bytes();
-                    }, {}, {}, &validation_state);
+                    }, {}, {}, &validation_state, {},
+                    [](std::string_view) { return std::optional<SoundHandle>{}; });
                 if (!bindings.unavailable.empty())
                     throw std::runtime_error("unbound frame graph output: " + bindings.unavailable.front());
             }
