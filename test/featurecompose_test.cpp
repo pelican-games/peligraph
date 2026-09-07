@@ -4329,4 +4329,57 @@ TEST_CASE("common graph buffer ports lower into native compute declarations", "[
     REQUIRE_THROWS_AS(resolveRenderPipeline(RenderPipelineRequest{document}, {}), std::invalid_argument);
 }
 
+TEST_CASE("common graphics ports retain shaders and order attachment consumers", "[render-feature][graph-composition]") {
+    using Json = nlohmann::json;
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+        {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    Json document{{"schema", "pelican.graph"}, {"version", 1},
+        {"nodes", Json::array({
+            {{"id", "data"}, {"op", "render.buffer"},
+             {"parameters", {{"size", 4}, {"element", "float"}, {"host_source", "runtime_f32"}}}, {"outputs", {"resource"}}},
+            {{"id", "image"}, {"op", "render.image"},
+             {"parameters", {{"type", type}, {"format", "R32G32B32A32_SFLOAT"}, {"extent_scale", 1.0}}}, {"outputs", {"resource"}}},
+            {{"id", "draw"}, {"op", "render.fullscreen"},
+             {"parameters", {{"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "project://custom"}}},
+                 {"color_load_op", "dont_care"},
+                 {"ports", {{"source", {{"element", "float"}, {"access", "read"}}},
+                            {"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                       {"attachment", "color"}, {"location", 0}}}}}}},
+             {"inputs", {{"source", {{"node", "data"}, {"port", "resource"}}},
+                         {"color", {{"node", "image"}, {"port", "resource"}}}}}, {"outputs", {"color"}}},
+            {{"id", "consume"}, {"op", "render.compute"},
+             {"parameters", {{"shader", "project://consume"}, {"dispatch", {{"groups", {1, 1, 1}}}},
+                 {"ports", {{"source", {{"kind", "image"}, {"type", type}, {"access", "read"}, {"binding", "sampled"}}}}}}},
+             {"inputs", {{"source", {{"node", "draw"}, {"port", "color"}}}}}, {"outputs", Json::array()}}
+        })}, {"outputs", {{"color", {{"node", "draw"}, {"port", "color"}}}}},
+        {"rendering", {{"render_targets", Json::array()}, {"rendering_passes", Json::array()}}}};
+    SECTION("fullscreen") {}
+    SECTION("raster") {
+        document["nodes"][2]["op"] = "render.raster";
+        document["nodes"][2]["parameters"]["draw"] = {{"vertex_count", 3}};
+    }
+    const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
+    const auto &config = resolved.normalized_config;
+    const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);
+    REQUIRE(pass.at("name") == "draw");
+    REQUIRE(pass.at("shader").at("fragment") == "project://custom");
+    REQUIRE(pass.at("output").at("color") == Json::array({"image"}));
+    REQUIRE(pass.at("resource_ports").at("source").at("resource") == "data");
+    REQUIRE(computeTaskByName(config, "consume").at("after") == Json::array({"draw"}));
+    auto planning = config;
+    planning["passes"] = config.at("rendering_passes").at(0).at("passes");
+    const auto order = framePlanOrder(planFrameGraph(parseFrameGraphDefinitionFromJson(planning)));
+    REQUIRE(std::find(order.begin(), order.end(), "draw") < std::find(order.begin(), order.end(), "consume"));
+    REQUIRE_NOTHROW(compileRenderPipeline(resolved));
+    auto invalid = document;
+    invalid["nodes"][2]["parameters"]["ports"]["color"]["location"] = 1;
+    REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+    invalid = document;
+    invalid["nodes"][2]["parameters"]["output"] = {{"color", "hidden"}};
+    REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+    invalid = document;
+    invalid["nodes"][2]["inputs"]["color"] = {{"node", "data"}, {"port", "resource"}};
+    REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+}
+
 } // namespace Pelican

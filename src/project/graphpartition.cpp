@@ -76,9 +76,9 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
             auto declaration = parameters;
             declaration["kind"] = "image";
             contract.outputs.emplace("resource", resourceType(registry, declaration));
-        } else if (op == "render.compute") {
+        } else if (op == "render.compute" || op == "render.fullscreen" || op == "render.raster") {
             const auto &ports = parameters.at("ports");
-            if (!ports.is_object()) throw std::invalid_argument("compute ports must be an object");
+            if (!ports.is_object()) throw std::invalid_argument("render ports must be an object");
             for (const auto &[port, declaration] : ports.items()) {
                 const auto type = resourceType(registry, declaration);
                 contract.inputs.emplace(port, GraphInputContract{exactLogicalTypePattern(registry, type)});

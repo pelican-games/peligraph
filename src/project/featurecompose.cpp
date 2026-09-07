@@ -2738,6 +2738,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     auto graph_buffers = nlohmann::json::array();
     auto graph_tasks = nlohmann::json::array();
     auto graph_targets = nlohmann::json::array();
+    auto graph_passes = nlohmann::json::array();
     if (common_graph) {
         graph_buffers = std::move(native_config.at("buffers"));
         graph_tasks = std::move(native_config.at("compute_tasks"));
@@ -2746,6 +2747,10 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         if (native_config.contains("render_targets")) {
             graph_targets = std::move(native_config.at("render_targets"));
             native_config.erase("render_targets");
+        }
+        if (native_config.contains("rendering_passes")) {
+            graph_passes = std::move(native_config.at("rendering_passes"));
+            native_config.erase("rendering_passes");
         }
     }
     const auto preset_resolution = resolveRenderPipelinePreset(
@@ -2758,6 +2763,14 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     for (auto &buffer : graph_buffers) resolved_config["buffers"].push_back(std::move(buffer));
     for (auto &task : graph_tasks) resolved_config["compute_tasks"].push_back(std::move(task));
     for (auto &target : graph_targets) resolved_config["render_targets"].push_back(std::move(target));
+    for (auto &family : graph_passes) {
+        auto &families = ensureArray(resolved_config, "rendering_passes");
+        const auto found = std::find_if(families.begin(), families.end(), [&](const auto &candidate) {
+            return candidate.at("name") == family.at("name");
+        });
+        if (found == families.end()) families.push_back(std::move(family));
+        else for (auto &pass : family.at("passes")) (*found)["passes"].push_back(std::move(pass));
+    }
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
     const auto authored_source =

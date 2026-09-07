@@ -283,6 +283,22 @@ Graph::publishへ渡すrender writerが、そのframeのbuffer_bindingsで保持
 raster/fullscreen画像passの共通node化、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
 scene/Studio統合は残件。
 
+### fullscreen/rasterの共通authoring（2026-09-07）
+
+render.fullscreen/render.rasterを共通ノードから既存の描画パスへ変換する入口を追加した。
+parameters.shader、draw、raster_state、load/store設定は既存コンパイラで扱う。
+parameters.pass_setは所属する描画パス集合（省略時main）で、preset解決後の同名集合へ合成する。
+parameters.portsのreadポートはcomputeと同じ型宣言と接続を持つ。画像のbindingは省略時sampled、
+bufferはstorage。write画像ポートはattachment=colorと0始まりの連続したlocation、または
+attachment=depthを指定する。出力ポートはそのアタッチメント画像を表す。
+name/input/output/resource_portsは接続から生成し、手書きによる二重指定を拒否する。
+パス出力を読む後続compute/描画パスにはafter依存を生成する。展開済みパスを保存の正本にしない。
+
+CPUでfullscreen/rasterの両方を既存compileRenderPipelineまで確認した。GPUの実画素確認と、
+owner不在時に描画本体・clear等を停止する経路の統合はまだ完了していない。
+computeの停止処理だけでは、融合されたrendering scopeやNativeScopeの停止を保証できないため、
+そこを次の実装対象とする。個体の寿命に依存する描画パスを完成済みとは扱わない。
+
 ### アトリビュート・シェーダー・反復の扱い
 
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
