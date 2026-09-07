@@ -40,8 +40,14 @@ render pipeline authoring全体やStudioへ統合したものではない。
   サービス反映へ変換する。serializeは共通形式の原文構造を残し、生成bindingを保存しない。
   evaluateの公開出力にも生成binding用の内部出力を混ぜない。
 
-この段階のbackendはscalar出力portを検査するが、LogicalTypeRegistryによる全領域の
-型照合、汎用resource宣言、既存render featureの取込み、scene所有/状態、Studioの
+共通port照合は既存LogicalTypeRegistryを使う。operation提供側が入力の型patternと
+必須性、出力の具体型を定義し、展開後のinstance間edgeも同じ規則で照合する。
+数値backendのvalue.*と描画/音声scalar sinkはpelican.value.scalar@1を使用する。
+型不一致・不明port・必須入力欠落をコンパイル前に拒否し、暗黙変換は追加しない。
+playbackの動的設定もinputsへ接続し、parametersは数値literalとして扱う。
+型定義は保存文書へ複製せず、公開出力の型は接続元から求める。
+
+全領域のoperation契約、汎用resource宣言、既存render featureの取込み、scene所有/状態、Studioの
 scope表示は残件。render.scalarのtarget名は既存render bufferを参照する境界であり、
 すべてのrender resourceを同じauthoring文書へ統合したという意味ではない。
 

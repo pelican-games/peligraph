@@ -33,6 +33,24 @@ double number(const Json &value) {
 
 Json lowerScalarGraph(const Json &authored) {
     const auto expanded = expandGraphDocument(authored);
+    const auto registry = makeBuiltinLogicalTypeRegistry();
+    const auto scalar = registry.canonicalize(parseSemanticTypeId("pelican.value.scalar@1"));
+    const GraphInputContract required{exactLogicalTypePattern(registry, scalar)};
+    const GraphInputContract optional{required.accepted_type, false};
+    const std::map<std::string, LogicalType> output{{"value", scalar}};
+    const GraphOperationContracts operations{
+        {"value.input", {{}, output}}, {"value.constant", {{}, output}},
+        {"value.add", {{{"a", required}, {"b", required}}, output}},
+        {"value.multiply", {{{"a", required}, {"b", required}}, output}},
+        {"value.curve", {{{"time", required}}, output}},
+        {"value.playback", {{{"elapsed", required}, {"source_begin", optional},
+            {"source_end", optional}, {"duration", optional}, {"speed", optional},
+            {"delay", optional}, {"sample_interval", optional}}, output}},
+        {"render.scalar", {{{"value", required}}, {}}},
+        {"audio.volume", {{{"value", required}}, {}}},
+        {"audio.pitch", {{{"value", required}}, {}}},
+    };
+    validateGraphPorts(expanded, registry, operations);
     Json result{{"schema", "pelican.value_graph"}, {"version", 1},
                 {"nodes", Json::array()}, {"outputs", Json::object()}, {"bindings", Json::array()}};
     const auto source = [](const Json &endpoint) {
@@ -46,11 +64,11 @@ Json lowerScalarGraph(const Json &authored) {
         const auto op = name(node.at("op"));
         const auto parameters = node.value("parameters", Json::object());
         const auto &inputs = node.at("inputs");
+        for (const auto &[port, contract] : operations.at(op).inputs)
+            if (!contract.required && parameters.contains(port))
+                (void)number(parameters.at(port)); // References belong in typed input edges.
         if (op == "render.scalar" || op == "audio.volume" || op == "audio.pitch") {
             keys(parameters, {"target"});
-            keys(inputs, {"value"});
-            if (node.at("outputs") != Json::array())
-                throw std::invalid_argument("service sink must not declare outputs");
             const auto output = "$binding/" + name(node.at("id"));
             if (result["outputs"].contains(output)) throw std::invalid_argument("reserved graph output: " + output);
             result["outputs"][output] = Json::array({source(inputs.at("value"))});
@@ -59,8 +77,6 @@ Json lowerScalarGraph(const Json &authored) {
                 {"target", name(parameters.at("target"))}});
             continue;
         }
-        if (!op.starts_with("value.") || node.at("outputs") != Json::array({"value"}))
-            throw std::invalid_argument("unsupported scalar backend operation: " + op);
         if (!parameters.is_object()) throw std::invalid_argument("node parameters must be an object");
         Json lowered = parameters;
         if (lowered.contains("id") || lowered.contains("op"))

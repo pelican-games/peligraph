@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通化自体は未実装で、既存の描画用compiled graphをauthoring正本へ転用しない。次は既存authoring/feature展開の入口とscope/port/edgeの共通化位置を確認し、数値→描画の一経路を通す。
+- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通authoringのinstance展開・数値backendへの接続は0b136a7dで実装し、続いて既存LogicalTypeRegistryによるport照合を接続した。既存の描画用compiled graphをauthoring正本へ転用しない。次は既存render featureの参照解決/展開を共通authoringへ接続し、resourceと型付き入出力を表す。全領域・scene・Studioへの統合は未了。
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
@@ -23247,6 +23247,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**共通graph portを既存の型体系へ接続 (2026-09-07):**
+- operation提供側の入力pattern/必須性と出力型を使い、instance展開後のedgeをLogicalTypeRegistryで照合する。数値backendのvalue.*、render.scalar/audio.volume/audio.pitchへ実接続。scalarのsemanticを登録し、型定義や生成結果をauthoringへ複製しない。
+- playbackの動的設定はinputsへ統一。共通形式のparameters内に文字列参照を書いて照合を迂回する経路を拒否する。既存value_graph文法の処理は変更しない。
+- Player Debug build成功、curve/animgraph 21case/453assertion成功（common_graph_types_build.log / common_graph_types_cpu.log）。同一fixtureのscalar接続は通し、一方のinstance入力のみ画像producerへ変えると接続元/接続先を示して拒否。edge型照合を外すとこの対照が落ちる。動的durationの評価と隠れた文字列参照拒否も確認。個別変異・GPU再実行は未実施（転送処理は変更なし）。
+- 全領域のoperation契約、既存render authoring/resourceの取込み、scene所有とStudio編集は引き続き残件。
 
 **共通authoringのsubgraph instance展開を数値backendへ接続 (2026-09-07):**
 - 検証結果: curve/animgraph 20case/446assertion、実Vulkan対象5case/76assertion成功。

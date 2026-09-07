@@ -555,6 +555,9 @@ void LogicalTypeRegistry::requireCanonical(const LogicalType &type) const {
 
 LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
     LogicalTypeRegistry registry;
+    registry.registerSchema(SemanticTypeSchema{
+        parseSemanticTypeId("pelican.value.scalar@1"),
+        LogicalTypeConstructor::value, {}, {"numeric"}});
     const auto topology = TypeParameterSchema{
         "topology", TypeArgumentRole::identity,
         TypeArgumentValueKind::enum_value, EnumValueId{"two_d"},

@@ -13,6 +13,51 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("common graph contracts check types across instance boundaries", "[curve][graph-composition]") {
+    using namespace Pelican;
+    auto document = nlohmann::json::parse(graphCompositionFixture);
+    const auto registry = makeBuiltinLogicalTypeRegistry();
+    const auto scalar = registry.canonicalize(parseSemanticTypeId("pelican.value.scalar@1"));
+    const GraphInputContract input{exactLogicalTypePattern(registry, scalar)};
+    const std::map<std::string, LogicalType> outputs{{"value", scalar}};
+    GraphOperationContracts contracts{
+        {"value.input", {{}, outputs}}, {"value.constant", {{}, outputs}},
+        {"value.curve", {{{"time", input}}, outputs}},
+        {"value.multiply", {{{"a", input}, {"b", input}}, outputs}},
+        {"render.scalar", {{{"value", input}}, {}}},
+    };
+    REQUIRE(validateGraphPorts(expandGraphDocument(document), registry, contracts).at("left") == scalar);
+    // Only one instance receives this producer. Matching port names must not let
+    // an image through its scalar input; removing edge type matching loses this check.
+    document["nodes"][1]["op"] = "test.image";
+    contracts.emplace("test.image", GraphOperationContract{{}, {{"value", sceneLinearHdrV1(registry)}}});
+    try {
+        validateGraphPorts(expandGraphDocument(document), registry, contracts);
+        FAIL("image connected to scalar input was accepted");
+    } catch (const std::invalid_argument &error) {
+        const std::string message = error.what();
+        REQUIRE(message.find("left/scaled.b") != std::string::npos);
+        REQUIRE(message.find("two.value") != std::string::npos);
+    }
+    document = nlohmann::json::parse(graphCompositionFixture);
+    document["nodes"][2]["outputs"].push_back("unused");
+    REQUIRE_THROWS_AS(ValueGraph::Graph(document.dump()), std::invalid_argument);
+    document = nlohmann::json::parse(graphCompositionFixture);
+    document["definitions"]["scaled_curve"]["nodes"][3]["inputs"].erase("b");
+    REQUIRE_THROWS_AS(ValueGraph::Graph(document.dump()), std::invalid_argument);
+    document = nlohmann::json::parse(graphCompositionFixture);
+    document["nodes"].push_back({{"id", "play"}, {"op", "value.playback"},
+        {"inputs", {{"elapsed", {{"node", "clock"}, {"port", "value"}}},
+                    {"duration", {{"node", "two"}, {"port", "value"}}}}},
+        {"outputs", {"value"}}});
+    document["outputs"]["play"] = {{"node", "play"}, {"port", "value"}};
+    REQUIRE(ValueGraph::Graph(document.dump()).evaluate({{"time", 0.5}}).at("play")[0] == Approx(0.25));
+    // A parameter string must not create a dependency invisible to port checking.
+    document["nodes"].back()["inputs"].erase("duration");
+    document["nodes"].back()["parameters"] = {{"duration", "two"}};
+    REQUIRE_THROWS_AS(ValueGraph::Graph(document.dump()), std::invalid_argument);
+}
+
 TEST_CASE("common graph instances share definitions but preserve scope and connections", "[curve][graph-composition]") {
     const auto document = nlohmann::json::parse(graphCompositionFixture);
     const auto expanded = Pelican::expandGraphDocument(document);

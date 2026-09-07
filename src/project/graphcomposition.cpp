@@ -114,4 +114,60 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
     return std::move(expander.result);
 }
 
+std::map<std::string, LogicalType> validateGraphPorts(
+    const ExpandedGraphDocument &graph, const LogicalTypeRegistry &registry,
+    const GraphOperationContracts &operations) {
+    std::map<std::string, const GraphOperationContract *> nodes;
+    for (const auto &node : graph.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        const auto op = node.at("op").get<std::string>();
+        const auto found = operations.find(op);
+        if (found == operations.end())
+            throw std::invalid_argument("unknown graph operation: " + id + " (" + op + ")");
+        if (!nodes.emplace(id, &found->second).second)
+            throw std::invalid_argument("duplicate expanded graph node: " + id);
+        std::set<std::string> ports;
+        const auto &outputs = node.at("outputs");
+        if (!outputs.is_array()) throw std::invalid_argument("graph outputs must be an array: " + id);
+        for (const auto &port : outputs) {
+            const auto name = port.get<std::string>();
+            if (!found->second.outputs.contains(name) || !ports.insert(name).second)
+                throw std::invalid_argument("invalid graph output: " + id + "." + name);
+        }
+        if (ports.size() != found->second.outputs.size())
+            throw std::invalid_argument("missing graph output: " + id);
+        for (const auto &[port, type] : found->second.outputs) registry.requireCanonical(type);
+    }
+    const auto sourceType = [&](const Json &endpoint) -> const LogicalType & {
+        const auto id = endpoint.at("node").get<std::string>();
+        const auto port = endpoint.at("port").get<std::string>();
+        const auto node = nodes.find(id);
+        if (node == nodes.end() || !node->second->outputs.contains(port))
+            throw std::invalid_argument("unknown graph source: " + id + "." + port);
+        return node->second->outputs.at(port);
+    };
+    for (const auto &node : graph.nodes) {
+        const auto id = node.at("id").get<std::string>();
+        const auto &contract = *nodes.at(id);
+        const auto &inputs = node.at("inputs");
+        object(inputs, "graph inputs must be an object");
+        for (const auto &[port, endpoint] : inputs.items()) {
+            const auto input = contract.inputs.find(port);
+            if (input == contract.inputs.end())
+                throw std::invalid_argument("unknown graph input: " + id + "." + port);
+            const auto match = matchLogicalType(registry, sourceType(endpoint), input->second.accepted_type);
+            if (match.status != LogicalTypeMatchStatus::exact)
+                throw std::invalid_argument("graph type mismatch at " + id + "." + port +
+                    " from " + endpoint.at("node").get<std::string>() + "." +
+                    endpoint.at("port").get<std::string>() + ": " + match.reason_code);
+        }
+        for (const auto &[port, input] : contract.inputs)
+            if (input.required && !inputs.contains(port))
+                throw std::invalid_argument("unconnected graph input: " + id + "." + port);
+    }
+    std::map<std::string, LogicalType> outputs;
+    for (const auto &[port, endpoint] : graph.outputs.items()) outputs.emplace(port, sourceType(endpoint));
+    return outputs;
+}
+
 } // namespace Pelican
