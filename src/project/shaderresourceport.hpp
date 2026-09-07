@@ -94,6 +94,10 @@ struct ShaderResourcePortSampling {
 // resource_ports annotate resources already declared by reads/writes/input.
 // They never create graph edges. A string entry is the compact
 // {"resource": "..."} form; the object form selects access/view/sampling.
+enum class ShaderResourceAttributeDomain : std::uint8_t {
+    vertex, instance, material, index,
+};
+
 struct ShaderResourcePortDefinition {
     std::string name;
     std::string resource;
@@ -111,6 +115,7 @@ struct ShaderResourcePortDefinition {
     ShaderResourcePortSampling sampling;
     // Omitted preserves the established mip-0/default-view behavior.
     std::optional<ImageSubresourceRange> subresource;
+    std::optional<ShaderResourceAttributeDomain> domain;
 
     bool operator==(
         const ShaderResourcePortDefinition &) const = default;

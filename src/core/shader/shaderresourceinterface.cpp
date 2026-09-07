@@ -387,6 +387,13 @@ void writeBufferAccessors(
         stream << element << " pelican_load_" << name
                << "(uint index) { return " << variable
                << ".values[index]; }\n";
+        if (binding.port.domain == ShaderResourceAttributeDomain::vertex ||
+            binding.port.domain == ShaderResourceAttributeDomain::instance) {
+            stream << "#if defined(PELICAN_SURFACE_STAGE_VERTEX)\n"
+                   << element << " pelican_load_" << name << "() { return pelican_load_" << name
+                   << "(uint(" << (binding.port.domain == ShaderResourceAttributeDomain::vertex
+                       ? "gl_VertexIndex" : "gl_InstanceIndex") << ")); }\n#endif\n";
+        }
     }
     if (binding.writable) {
         stream << "void pelican_store_" << name

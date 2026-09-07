@@ -325,13 +325,17 @@ CPUでinstance/vertex不一致と一般bufferへの誤接続、GPUでinstance属
 fullscreen/raster fragmentへの反映・owner停止を確認した。
 
 現段階のdomainは適用範囲の種類で、特定mesh/集合のidentityを表さない。material列挙に合わせた
-要素割当は残件。shaderは明示した添字で読み、既存pelican_count_<port>()で要素数を取得できる。
+要素割当は残件。既存pelican_load_<port>(index)とpelican_count_<port>()に加え、rasterの頂点
+shaderではvertex/instance属性に引数なしのpelican_load_<port>()を生成する。domainをnative portへ
+保持し、vertexはgl_VertexIndex、instanceはgl_InstanceIndexで読む。後者はfirst_instanceを含む。
+fragment/computeでは引数なし版を生成しない。fragmentへ必要な値は明示したvaryingで渡す。
+GPUではglTFの4頂点/6indexと、computeが生成した2要素のinstance属性のfirst_instance=1を確認。
+添字を常に0へ戻すと形状または出力値が変わる対照設計（個別コード変異は未実施）。
 rasterのdraw.vertex_source/draw.instance_sourceへread属性port名を指定すると、対応domainを検査して
 vertex_count/instance_countを導出する。first_vertex/first_instanceを指定した場合はcountから差し引く。
 手書きcountとの二重指定、開始位置の範囲外、uint32の描画範囲を超える属性は拒否する。
 保存にはsource port参照を残す。GPUでは1要素instance属性のcount取得と描画数接続、CPUでは
-3要素vec3の48 byte配置とfirst_vertex=1からの2頂点描画を確認した。複数instance/vertexの自動添字
-accessorや、material集合からのdraw分割を今回追加したものではない。
+3要素vec3の48 byte配置とfirst_vertex=1からの2頂点描画を確認した。material集合からのdraw分割は残件。
 
 属性ソース接続の下準備として、GltfLoader::readAttributeを追加した。PreparedGltfと元文書の
 mesh/primitive index・semantic（POSITION等）・出力elementを指定し、要素数とstd430 bytesを取得する。

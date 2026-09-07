@@ -126,7 +126,9 @@ GPUで複数頂点の属性値とcountを読み、元のsource参照の保存と
 共同更新を実装した。候補失敗時は両方を維持し、buffer参照先の切替に合わせて依存も更新する。
 glTFインデックスも共通sourceから読出し、draw.index_sourceからnative indexed drawへ接続した。
 候補世代のbufferを保持し、GPUで後半三角形の画素・owner停止/再開を確認した。
-遅延RT公開時の共有モデル検証、変形後属性、vertex/instance添字の自動accessorは残件。
+rasterの頂点shaderではvertex/instance属性の引数なしloadを追加し、glTFの頂点と
+first_instance=1のcompute生成属性を使ったGPU画素出力を確認した。
+遅延RT公開時の共有モデル検証、変形後属性は残件。
 動的描画nodeは現状scopeを分離して実行し、
 同じowner条件のnode間融合と共通history画像のpreview対応は残件。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。

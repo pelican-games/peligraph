@@ -784,6 +784,8 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
             writer["parameters"]["ports"]["destination"]["attachment"] = "color";
             writer["parameters"]["ports"]["destination"]["location"] = 0;
             writer["parameters"]["color_load_op"] = "clear";
+            std::string fragment_input;
+            std::string fragment_value = "pelican_count_source() == 1u ? pelican_load_source(0) : -100.0";
             SECTION("fullscreen") {}
             SECTION("raster") {
                 writer["op"] = "render.raster";
@@ -794,19 +796,53 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
                     TestSkeletalFixture::writeGlb(root / "indices.glb");
                     writer["parameters"]["draw"].erase("vertex_count");
                     writer["parameters"]["draw"]["index_source"] = "indices";
+                    writer["parameters"]["draw"]["first_instance"] = 1;
+                    writer["inputs"]["source"] = {{"node", "prepare_instances"}, {"port", "destination"}};
                     writer["parameters"]["shader"]["vertex"] = "shaders/indexed_quad";
                     writer["parameters"]["ports"]["indices"] = {
                         {"element", "uint"}, {"domain", "index"}, {"access", "read"}};
                     writer["inputs"]["indices"] = {{"node", "mesh_indices"}, {"port", "resource"}};
+                    writer["parameters"]["ports"]["positions"] = {
+                        {"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
+                    writer["inputs"]["positions"] = {{"node", "mesh_positions"}, {"port", "resource"}};
+                    fragment_input = "layout(location=0) flat in float instance_value;\n";
+                    fragment_value = "instance_value";
+                    document["nodes"].push_back({{"id", "instance_values"}, {"op", "render.attribute"},
+                        {"parameters", {{"element", "float"}, {"domain", "instance"}, {"count", 2}}},
+                        {"outputs", {"resource"}}});
+                    document["nodes"].push_back({{"id", "prepare_instances"}, {"op", "render.compute"},
+                        {"parameters", {{"shader", "shaders/prepare_instances"}, {"dispatch", {{"groups", {1,1,1}}}},
+                            {"ports", {{"source", {{"element", "float"}, {"domain", "instance"}, {"access", "read"}}},
+                                       {"destination", {{"element", "float"}, {"domain", "instance"}, {"access", "write"}}}}}}},
+                        {"inputs", {{"source", {{"node", "render"}, {"port", "resource"}}},
+                                    {"destination", {{"node", "instance_values"}, {"port", "resource"}}}}},
+                        {"outputs", {"destination"}}});
+                    writeText(root / "shaders/prepare_instances.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    pelican_store_destination(0, -100.0);
+    pelican_store_destination(1, pelican_load_source(0));
+})");
                     document["nodes"].push_back({{"id", "mesh_indices"}, {"op", "render.attribute"},
                         {"parameters", {{"element", "uint"}, {"domain", "index"},
                             {"source", {{"asset", "project://indices.glb"}, {"mesh", 0}, {"primitive", 0}}}}},
                         {"outputs", {"resource"}}});
+                    document["nodes"].push_back({{"id", "mesh_positions"}, {"op", "render.attribute"},
+                        {"parameters", {{"element", "vec3"}, {"domain", "vertex"},
+                            {"source", {{"asset", "project://indices.glb"}, {"mesh", 0}, {"primitive", 0}, {"semantic", "POSITION"}}}}},
+                        {"outputs", {"resource"}}});
                     writeText(root / "shaders/indexed_quad.vert", R"(
 #version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location=0) flat out float instance_value;
 void main() {
-    const vec2 positions[4] = vec2[4](vec2(1,1), vec2(-1,1), vec2(1,-1), vec2(-1,-1));
-    gl_Position = gl_VertexIndex < 4 ? vec4(positions[gl_VertexIndex], 0, 1) : vec4(4,4,0,1);
+    vec3 position = pelican_load_positions();
+    gl_Position = vec4(-position.x / 0.3, 1.0 - position.y, 0, 1);
+    instance_value = pelican_load_source();
 })");
                 }
             }
@@ -819,8 +855,7 @@ void main() {
 #extension GL_GOOGLE_include_directive : enable
 #include "pelican_resource_ports.glsl"
 layout(location=0) out vec4 color;
-void main() { color = vec4(pelican_count_source() == 1u ? pelican_load_source(0) : -100.0); }
-)");
+)" + fragment_input + "void main() { color = vec4(" + fragment_value + "); }\n");
         }
         writeText(root / "shaders/graph_image_write.comp", R"(
 #version 450

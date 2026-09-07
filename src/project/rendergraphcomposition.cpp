@@ -151,7 +151,6 @@ Json lowerRenderGraphDocument(const Json &document) {
             if (access != "read") writes.insert(resource);
             auto binding = declaration;
             binding.erase("type");
-            binding.erase("domain");
             binding["resource"] = resource;
             binding["kind"] = declaration.value("kind", std::string{"buffer"});
             binding["access"] = declaration.value("binding",

@@ -419,6 +419,7 @@ parseShaderResourcePortDefinitions(
             if (field.key() != "resource" &&
                 field.key() != "kind" &&
                 field.key() != "element" &&
+                field.key() != "domain" &&
                 field.key() != "access" &&
                 field.key() != "view" &&
                 field.key() != "sampling" &&
@@ -455,6 +456,19 @@ parseShaderResourcePortDefinitions(
                 object, kind, port_context);
         const auto access =
             parseAccess(object, port_context);
+        std::optional<ShaderResourceAttributeDomain> domain;
+        if (object.contains("domain")) {
+            if (kind != ShaderResourcePortKind::buffer || !element)
+                throw std::runtime_error(port_context + " attribute domains require typed buffer ports");
+            const auto value = object.at("domain").get<std::string>();
+            if (value == "vertex") domain = ShaderResourceAttributeDomain::vertex;
+            else if (value == "instance") domain = ShaderResourceAttributeDomain::instance;
+            else if (value == "material") domain = ShaderResourceAttributeDomain::material;
+            else if (value == "index") domain = ShaderResourceAttributeDomain::index;
+            else throw std::runtime_error(port_context + " has unknown attribute domain: " + value);
+            if (domain == ShaderResourceAttributeDomain::index && element != ShaderResourceBufferElement::unsigned_integer)
+                throw std::runtime_error(port_context + " index attributes require uint elements");
+        }
         const auto view =
             parseView(object, port_context);
         const auto written = contains(writes, resource);
@@ -516,6 +530,7 @@ parseShaderResourcePortDefinitions(
                 .sampling =
                     parseSampling(object, port_context),
                 .subresource = subresource,
+                .domain = domain,
             });
     }
 
