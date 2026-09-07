@@ -940,6 +940,20 @@ registerRenderingPassConfigVariantsData(
         for (auto &program : variant_programs) {
             program.value_graph = value_graph;
             if (value_graph) {
+                if (program.target_plan) {
+                    const std::set<std::string> no_scopes;
+                    for (const auto &scope : program.target_plan->scopes) {
+                        const std::set<std::string> *activation = nullptr;
+                        for (const auto &node : scope.nodes) {
+                            const auto found = value_graph->scopeDependencies().find(node);
+                            const auto &dependencies = found == value_graph->scopeDependencies().end()
+                                ? no_scopes : found->second;
+                            if (activation && *activation != dependencies)
+                                throw std::runtime_error("physical scope combines different graph owner lifetimes: " + scope.id);
+                            activation = &dependencies;
+                        }
+                    }
+                }
                 auto validation_state = value_graph->createState();
                 const auto bindings = value_graph->publish(GameContext{},
                     {{"time", 0}, {"delta_time", 0}, {"scene_time", 0}}, {},

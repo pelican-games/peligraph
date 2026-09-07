@@ -1616,6 +1616,29 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                         physical_scope->id);
             }
         }
+        if (frame_graph.value_graph &&
+            !frame_graph.value_graph->nodeActive(execution_node.name, inactive_graph_scopes)) {
+            // Physical scopes have a single owner-lifetime condition, checked
+            // at publication. Skip before beginning a scope: begin can clear
+            // attachments even when no draw command is recorded.
+            if (modules.render_timing != nullptr) {
+                for (const auto range : {GpuTimingSubrange::barriers, GpuTimingSubrange::body}) {
+                    if (begins_recorded_node)
+                        modules.render_timing->writeNodeSubrangeStart(render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                    if (ends_recorded_node)
+                        modules.render_timing->writeNodeSubrangeEnd(render_ctx.cmd_buf,
+                            static_cast<std::uint32_t>(timing_query_index), range);
+                }
+            }
+            if (node_trace != nullptr)
+                node_trace->push_back({{"name", execution_node.name},
+                    {"kind", framePlanNodeKindName(execution_node.kind)}, {"order", node_index},
+                    {"recorded", false}, {"view_index", scheduled.view_index},
+                    {"logical_view_count", scheduled.logical_view_count}});
+            completed_nodes[node_index] = 1;
+            continue;
+        }
         const CompiledPass *render_pass =
             execution_node.kind ==
                     FramePlanNodeKind::render
@@ -2110,10 +2133,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
             modules.compute_task_container.transitionResourcesForDispatch(
                 render_ctx.cmd_buf, task.task_id, modules.render_target_container, modules.vk_utils,
                 layout_tracker);
-            const bool active = !frame_graph.value_graph ||
-                frame_graph.value_graph->nodeActive(execution_node.name, inactive_graph_scopes);
-            if (active)
-                modules.compute_task_container.dispatch(
+            modules.compute_task_container.dispatch(
                     render_ctx.cmd_buf, task.task_id,
                     modules.frame_resources,
                     scheduled.view_index);
@@ -2121,7 +2141,7 @@ void executePlannedFrameGraph(const FrameRenderContext &render_ctx,
                 node_trace->push_back(computeNodeTrace(task, node_index, frame_graph,
                                                        modules.render_target_container,
                                                        layout_tracker));
-                node_trace->back()["recorded"] = active;
+                node_trace->back()["recorded"] = true;
             }
         } else if (execution_node.kind == FramePlanNodeKind::anchor) {
             if (node_trace != nullptr) {

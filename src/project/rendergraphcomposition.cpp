@@ -136,6 +136,8 @@ Json lowerRenderGraphDocument(const Json &document) {
             parameters["type"] = node.at("op") == "render.fullscreen" ? "fullscreen" : "raster";
             const auto family = parameters.value("pass_set", std::string{"main"});
             parameters.erase("pass_set");
+            if (!graph.node_scopes.at(id).empty())
+                config["target_planning"]["graphs"][family]["nodes"][id]["isolate"] = true;
             auto &families = config["rendering_passes"];
             if (families.is_null()) families = Json::array();
             auto found = std::find_if(families.begin(), families.end(), [&](const Json &candidate) {

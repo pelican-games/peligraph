@@ -57,6 +57,7 @@ class PELICAN_API Graph {
     const GraphInstanceOwner *parameterOwner(std::string_view parameter) const noexcept;
     const GraphInstanceOwner *eventOwner(std::string_view input) const noexcept;
     const GraphInstanceOwners &instanceOwners() const noexcept { return instance_owners_; }
+    const ScopeDependencies &scopeDependencies() const noexcept { return node_scopes_; }
     const std::map<std::string, std::string> &audioSources() const noexcept { return audio_sources_; }
     bool nodeActive(std::string_view node, const InactiveScopes &inactive) const;
     // The graph must outlive its state. Separate states evaluate independently.

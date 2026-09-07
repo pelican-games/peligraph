@@ -121,7 +121,7 @@ ValueGraphは不在scopeに依存するnodeを評価せず、その公開出力�
 反映も行わない。停止を出力先の故障としてunavailableへ報告しない。手動evaluate/publishは
 inactive引数で同じ条件を指定でき、省略時は従来どおり全scopeを有効とする。
 
-共通graphのrender.computeは同じ依存条件でdispatchを停止する。資源やbarrierの計画は維持し、
+共通graphのrender.computeは同じ依存条件でdispatchを停止する。資源の計画は維持し、
 停止した出力bufferは既存の内容を保持する。後続の共通graph consumerも停止条件を受けるため、
 停止値を新しい結果として消費しない。scene再読込みでownerが再び存在すれば保存値から再開する。
 root.rendering内に手書きしたnative passの暗黙の資源参照は共通edgeではなく、このscope伝播の
@@ -294,10 +294,19 @@ attachment=depthを指定する。出力ポートはそのアタッチメント�
 name/input/output/resource_portsは接続から生成し、手書きによる二重指定を拒否する。
 パス出力を読む後続compute/描画パスにはafter依存を生成する。展開済みパスを保存の正本にしない。
 
-CPUでfullscreen/rasterの両方を既存compileRenderPipelineまで確認した。GPUの実画素確認と、
-owner不在時に描画本体・clear等を停止する経路の統合はまだ完了していない。
-computeの停止処理だけでは、融合されたrendering scopeやNativeScopeの停止を保証できないため、
-そこを次の実装対象とする。個体の寿命に依存する描画パスを完成済みとは扱わない。
+CPUでfullscreen/rasterの両方を既存compileRenderPipelineまで確認し、通常Rendererでも
+scalar buffer→fragment shader→color attachment→compute読戻しの実画素を確認した。
+hybrid_v1の既存集合名はmain_renderなので、そこへ追加する場合はpass_setに明示する。
+
+ownerに依存する描画ノードには既存target_planningのisolate制約を派生させる。現在は同じownerの
+描画同士もscope融合を行わない。物理scopeの全nodeでowner依存集合が等しいことを公開前に確認し、
+明示的な物理プランも異なる寿命のnodeを一つのscopeへまとめられない。
+通常Rendererはscope開始前に不在nodeを停止し、clear・draw・dispatch・資源遷移を行わない。
+実行記録はrecorded=falseを示す。fullscreen/rasterの両方で個体削除後の未記録と対象画像の
+undefined layout（アタッチメント遷移なし）、独立した兄弟の継続、scene再読込み後の再開を確認した。
+GPU検証は標準scopeを対象とし、カスタムNativeScope providerでの停止は未検証。
+一時画像の前frame内容は保証しない。履歴画像を使う共通グラフは既存previewのhistory拒否が残っており、
+今回の実装でhistory画像のpreview対応や永続画像値の保証を追加したものではない。
 
 ### アトリビュート・シェーダー・反復の扱い
 

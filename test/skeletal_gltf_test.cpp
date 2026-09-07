@@ -455,6 +455,7 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     right_probe["inputs"]["source"]["node"] = "right_render";
     right_probe["inputs"]["destination"]["node"] = "right_result";
     document["nodes"].push_back(right_probe);
+    bool graphics_path = false;
     SECTION("buffer compute path") {}
     SECTION("image compute path") {
         addGraphImageStage(document);
@@ -463,6 +464,34 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
         SECTION("sampled image read") {
             document["nodes"].back()["parameters"]["ports"]["source"]["binding"] = "sampled";
             image_load = "texelFetch(pelican_resource_source, ivec2(0), 0).x";
+        }
+        SECTION("graphics attachment write") {
+            graphics_path = true;
+            auto &writer = document["nodes"][7];
+            writer["op"] = "render.fullscreen";
+            writer["parameters"].erase("dispatch");
+            writer["parameters"]["pass_set"] = "main_render";
+            writer["parameters"]["shader"] = {{"vertex", "engine://fullscreen"},
+                                                 {"fragment", "shaders/graph_image_write"}};
+            writer["parameters"]["ports"]["destination"]["attachment"] = "color";
+            writer["parameters"]["ports"]["destination"]["location"] = 0;
+            writer["parameters"]["color_load_op"] = "clear";
+            SECTION("fullscreen") {}
+            SECTION("raster") {
+                writer["op"] = "render.raster";
+                writer["parameters"]["draw"] = {{"vertex_count", 3}};
+            }
+            for (auto &node : document["nodes"])
+                if (node["id"] == "intermediate") {
+                    node["parameters"]["usage"].push_back("COLOR_ATTACHMENT");
+                }
+            writeText(root / "shaders/graph_image_write.frag", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location=0) out vec4 color;
+void main() { color = vec4(pelican_load_source(0)); }
+)");
         }
         writeText(root / "shaders/graph_image_write.comp", R"(
 #version 450
@@ -510,6 +539,7 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     }
     GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
     auto &renderer = GET_MODULE(Renderer);
+    renderer.setExecutionTracingForTesting(true);
     auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto read = [&](const char *buffer) {
         const auto bytes = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer(buffer), sizeof(float));
@@ -547,6 +577,22 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(render(10.25) == -17);
     REQUIRE(read("render") == 9);
     REQUIRE(read("right_result") == 5.5f);
+    if (graphics_path) {
+        const auto &trace = renderer.lastExecutionTraceForTesting();
+        const auto &view = trace.contains("view_family") ? trace.at("view_family") : trace;
+        const auto &nodes = view.at("nodes");
+        const auto probe = std::find_if(nodes.begin(), nodes.end(), [](const auto &node) {
+            return node.at("name") == "probe";
+        });
+        REQUIRE(probe != nodes.end());
+        REQUIRE_FALSE(probe->at("recorded").template get<bool>());
+        const auto &layouts = view.at("final_layouts");
+        const auto intermediate = std::find_if(layouts.begin(), layouts.end(), [](const auto &entry) {
+            return entry.at("resource") == "intermediate";
+        });
+        REQUIRE(intermediate != layouts.end());
+        REQUIRE(intermediate->at("layout") == "undefined");
+    }
     REQUIRE(scene.graphParameterValues(other_graph).empty());
     REQUIRE(context.setGraphParameter(right, "right/gain", 8));
     REQUIRE(render(10.5) == -17);

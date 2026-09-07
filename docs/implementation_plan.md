@@ -23233,9 +23233,10 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 共通graphの最新到達点: owner停止、画像port、時計/eventキューに続き、audio.playbackとvoice所有を通常Rendererへ接続。typed voice portからvolume/pitchへ接続し、新規再生/再開始したframeにも値を反映する。再生/pause/resume/reset、owner削除/scene切替/Graph退役時の解放、音声asset不正候補の拒否を確認（描画はGPU、音声はnull backend）。次はraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
+- 共通graphの最新到達点: owner停止、画像port、時計/eventキュー、audio.playbackとvoice所有を通常Rendererへ接続。typed voice portからvolume/pitchへ接続し、新規再生/再開始したframeにも値を反映する。raster/fullscreenの共通nodeもGPU出力とowner停止まで確認した。次はアトリビュートの適用範囲と型付き接続。動的instance装着・個体別GPU資源回収・scene別graph選択、同一owner描画のscope融合、共通history画像のpreview対応は未了。
 - typed voice portの検証: Playerビルド、CPU `[audio],[effect]` 13件/467 assertions、GPU `[skeletal]` 7件/421 assertions成功。未再生時の評価、左右の異なるvolume/pitch、再開始時の更新値、型不一致とtarget二重指定の拒否を確認。イベント前の固定handleだけを解決すると新規再生frameの値確認が落ちる対照を設けた（個別変異は未実施）。ログはbuild/.codex_bg/graph_voice_cpu.logとgraph_voice_gpu_final.log。音声はnull backend。
-- 共通描画passの入口: render.fullscreen/render.rasterの型付き入力、color/depth attachment出力、shader/draw/state保持、pass_setへの合成と後続依存を追加。CPU `[render-feature]` 49件/985 assertions成功（graph_pass_cpu3.log）。shader保持、attachment資源名、after、実行順、compileRenderPipelineと不正接続拒否を確認。型照合を外すとbufferをcolorへ結ぶ拒否確認、after生成を外すと明示依存の確認が落ちる（個別変異は未実施）。GPU実画素とowner不在時の描画scope停止は次の未了項目であり、描画ノードの統合完了とは扱わない。
+- 共通描画pass: render.fullscreen/render.rasterの型付き入力、color/depth attachment出力、shader/draw/state保持、pass_setへの合成と後続依存を追加。CPU `[render-feature]` 49件/985 assertions成功（graph_draw_final_cpu.log）。通常Rendererでもscalar→fragment→color画像→compute読戻しを確認した。owner付き描画nodeを既存isolate制約で分離し、物理scope内のowner依存一致を公開前に検査する。停止判定をscope開始前に統一し、clear/draw/dispatch/遷移を停止する。
+- 共通描画passのGPU検証: Playerビルド、`[skeletal]` 7件/653 assertions成功（graph_draw_trace_gpu.log）。fullscreen/rasterの両方で画素値、owner削除時のrecorded=falseと画像layout未遷移、兄弟継続、scene再開を確認。停止判定を外すと未記録確認が落ち、停止前にアタッチメント遷移するとundefined確認が落ちる（個別変異は未実施）。カスタムNativeScope providerの停止は未検証。同一owner nodeのscope融合、共通history画像のpreview対応、属性の適用範囲は残件。一時画像の前frame内容保持は保証しない。
 
 - 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・image・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像pass・feature共通instance・状態/イベント・Studio統合は残件。
 
