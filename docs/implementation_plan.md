@@ -23233,6 +23233,8 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
+- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通化自体は未実装で、既存の描画用compiled graphをauthoring正本へ転用しない。次は既存authoring/feature展開の入口とscope/port/edgeの共通化位置を確認し、数値→描画の一経路を通す。
+
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
 - animation componentのgraph装着は `bff9e540` に統合。clip XOR graphの保存、既存EvaluatorV1のphase登録/解除・tick、GameContextのparameter/state操作を接続し、clip切替・個体削除・scene reloadを確認した。個体別初期parameter overrideをparameters Listの保存・bind前適用へ追加。graph assetのscene準備時検証・編集失敗時の状態復元、GUI・汎用graph間接続は残件。同一instanceのmodel rebind・graph更新時刻・setTime通知の経路は個別実行未確認。VRMA自動監視は別残件。

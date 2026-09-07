@@ -248,6 +248,9 @@ stopは時計を解除する。イベント購読・複数再生の重ね合わ�
 
 ### 数値の接続グラフ（2026-09-07、骨格state machineとは別の文書）
 
+以下は現在の実装。次の拡張は[全体グラフの共通化方針](design_graph_composition.md)
+を優先する。専用component/独立した接続の正本を増やす形で自動装着を追加しない。
+
 公開`valuegraph.hpp`のValueGraph::Graphは`pelican.value_graph` version 1を
 読み、serializeで接続とカーブ形状を保存する。evaluateへ名前付きdouble入力を
 渡すと、名前付きdouble配列を返す。evaluateは副作用を持たず、内部時計・scene所有も持たない。

@@ -91,6 +91,16 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 
 ## 開発順序
 
+### 全体グラフを正本にする（2026-09-07、直近の方針）
+
+コンポーネント固有のグラフを別系統として増やす進め方を見直す。
+[全体グラフとコンポーネント表示の共通化](design_graph_composition.md)を参照し、
+同じ編集モデルのサブグラフinstanceとして保存し、Studioだけ表示を分ける。
+既存CompiledLogicalRenderGraphは描画用の派生結果であり、編集の正本に転用しない。
+現在のValueGraph・bindingsとanimation componentは実装済みだが共通化は未了。
+次は既存authoringの参照解決/feature展開との接点を具体化し、数値→描画の一経路を
+共通port/edgeへ接続する。専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
+
 ### グラフ間のデータ接続（2026-09-07 利用者要望、未実装）
 
 アニメーションと物理をノードで組み合わせ、その出力をレンダリンググラフの入力へ接続できるようにする。専用エフェクトごとの隠れた転送処理ではなく、既存resource port/bufferの仕組みへ型付きデータとして公開する。描画・compute・RTの各consumerが同じ出力を参照でき、保存・再読込後も接続を保持することを完成条件とする。
