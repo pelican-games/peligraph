@@ -1,4 +1,4 @@
-﻿# 第8章 クラス・インターフェース索引
+# 第8章 クラス・インターフェース索引
 
 [索引へ戻る](README.md) / [前章](07_tools_rpc_tests.md) / [次章](09_black_magic_and_gotchas.md)
 
@@ -37,7 +37,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `...Adapter` | 既存サービスを別の呼び出し面へ橋渡し | 変換するのは**呼び方**であって中身ではありません。`EditorCommandRpcAdapter` は JSON-RPC の 1 行を typed な `EditorCommandService` の呼び出しへ、`EditorCommandImGuiFakeAdapter` は ImGui の操作を同じ呼び出しへ写します。**同じサービス**を複数面へ出し、面ごとに別実装を持たないための型です |
 | `...Token` | 世代付きの取り消し可能な引換券 | `RegistrationToken` / `ECSArchetypeMigrationToken`。**保持しているだけで有効とは限りません** — 相手側が `unregisterComponent(token)` されていたり、DLL reload で owner の世代が進んでいたりすると、同じ値を持ったまま失効します。使う直前に照合するのが前提の型です |
 | `Prepared...` | throw しうる準備が済んだ **未公開**の候補 | `publish()` は no-fail、`rollback()` は `noexcept`。名前が付く3段は「prepare で失敗しうる仕事を全部終える → publish は差し替えるだけ → 失敗経路は rollback」 |
-| `Staged...` | 全割り当てが済み、公開が単一 no-fail 操作になった候補 | `StagedModelInstance`。`Prepared...` と同じ三点セットの一員で、こちらは **確保が 1 つ残らず済んでいる**(公開時に `new` も `push_back` も走らない)ことまで名前で言っています。この語義の出典は型のすぐ上の[ヘッダコメント](../../src/core/renderer/polygoninstancecontainer.hpp#L254)で、`A fully allocated CPU candidate for one model instance. Staging performs all capacity checks and allocations without changing the live instance/command inventories. publishModelInstance() is the single no-fail publication point.` と書いてあります。ただしこれは `StagedModelInstance` 1 型についての規範で、他の `Staged...`(例: [`StagedResource`](../../src/core/watch/reloadtransaction.hpp#L64) は [`ResourceRegistry::publish()`](../../src/core/watch/reloadtransaction.hpp#L90) へ渡す値)まで含めて 2 語の使い分けを定めた文書は見つかっていません(未確認) |
+| `Staged...` | 全割り当てが済み、公開が単一 no-fail 操作になった候補 | `StagedModelInstance`。`Prepared...` と同じ三点セットの一員で、こちらは **確保が 1 つ残らず済んでいる**(公開時に `new` も `push_back` も走らない)ことまで名前で言っています。この語義の出典は型のすぐ上の[ヘッダコメント](../../src/core/renderer/polygoninstancecontainer.hpp#L254)で、`A fully allocated CPU candidate for one model instance. Staging performs all capacity checks and allocations without changing the live instance/command inventories. publishModelInstance() is the single no-fail publication point.` と書いてあります。ただしこれは `StagedModelInstance` 1 型についての規範で、他の `Staged...`(例: [`StagedResource`](../../src/core/watch/reloadtransaction.hpp#L64) は [`ResourceRegistry::publish()`](../../src/core/watch/reloadtransaction.hpp#L101) へ渡す値)まで含めて 2 語の使い分けを定めた文書は見つかっていません(未確認) |
 
 `Prepared...` / `Staged...` / `...Token` の 3 つは、[第9章](09_black_magic_and_gotchas.md)で扱う **prepare / publish(noexcept) / rollback(noexcept) の三点セット** という共通プロトコルの現れです。ECS、レンダラ、behavior、シーン保存、編集投影のすべてで同じ形が使われます。
 
@@ -69,7 +69,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `JobSystem` | singleton service | [`job_system.hpp`](../../src/core/job_system.hpp#L15) | [`job_system.cpp`](../../src/core/job_system.cpp#L1) | ECS system job の worker 実行と synchronization |
 | `Profiler` / `ScopedLogTimer` | helper | [`profiler.hpp`](../../src/core/profiler.hpp#L9) | [`profiler.cpp`](../../src/core/profiler.cpp#L1) | scope duration を log へ記録 |
 
-`watch::ReloadService` の下には hot reload 基盤の部品として [`FileWatcher`](../../src/core/watch/filewatcher.hpp#L48)、[`ContentDigestState`](../../src/core/watch/contentdigest.hpp#L57)、[`AssetKey`](../../src/core/watch/assetkey.hpp#L12)、[`ReloadGate`](../../src/core/watch/reloadgate.hpp)、[`ReloadQueue`](../../src/core/watch/reloadqueue.hpp#L26)、[`ReloadCoordinator`](../../src/core/watch/reloadtransaction.hpp#L164) があります。
+`watch::ReloadService` の下には hot reload 基盤の部品として [`FileWatcher`](../../src/core/watch/filewatcher.hpp#L48)、[`ContentDigestState`](../../src/core/watch/contentdigest.hpp#L57)、[`AssetKey`](../../src/core/watch/assetkey.hpp#L12)、[`ReloadGate`](../../src/core/watch/reloadgate.hpp)、[`ReloadQueue`](../../src/core/watch/reloadqueue.hpp#L26)、[`ReloadCoordinator`](../../src/core/watch/reloadtransaction.hpp#L196) があります。
 
 1 frame の共有関数は class ではなく [`updateFrameState()`](../../src/core/appflow/framephase.cpp#L129) です。入力、pre-update、game、post-update、scene transition の5 phase を通常 loop と RPC が共用します。
 
@@ -101,7 +101,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `VrmaClip` 群 | pure document | [`vrmaanimation.hpp`](../../src/core/model/vrmaanimation.hpp#L87) | header + decoder | `.vrma` decode 結果(body / expression / gaze チャンネル + provenance) |
 | `decodeVrmaAnimation()` / `loadVrmaAnimation()` | free function | [`vrmadecoder.hpp` 内](../../src/core/loader/vrmadecoder.hpp#L25) / [`loadVrmaAnimation()`](../../src/core/loader/vrmadecoder.hpp#L32) | [`vrmadecoder.cpp`](../../src/core/loader/vrmadecoder.cpp) | `.vrma` GLB decode。拡張子ゲートと content hash |
 | `VrmaRetargetProfile` / `retargetVrmaClip()`(retarget = ある骨格向けに作られたアニメーションを、骨構成や rest 姿勢が違う別の骨格で再生できるよう変換すること) | 版付き profile | [`VrmaRetargetProfile`](../../src/core/animation/vrmaretarget.hpp#L67) / [`retargetVrmaClip()`](../../src/core/animation/vrmaretarget.hpp#L124) | [`vrmaretarget.cpp`](../../src/core/animation/vrmaretarget.cpp) | target-rig-local な不変中間クリップ。**`AnimationSource` ではない** |
-| `ModelAssetContainer` | module/catalog | [`asset/model.hpp`](../../src/core/asset/model.hpp#L22) | [`model.cpp`](../../src/core/asset/model.cpp#L1) | asset data の model name と `ModelTemplate` を管理 |
+| `ModelAssetContainer` | module/catalog | [`asset/model.hpp`](../../src/core/asset/model.hpp#L24) | [`model.cpp`](../../src/core/asset/model.cpp#L1) | asset data の model name と `ModelTemplate` を管理 |
 | `GltfLoader` | module/loader | [`gltf.hpp`](../../src/core/model/gltf.hpp#L15) | [`gltf.cpp`](../../src/core/model/gltf.cpp#L1) | tinygltf Model を geometry/material/model template へ変換。`.vrm` も受理 |
 | `ModelTemplate` | value graph | [`ModelTemplate`](../../src/core/model/modeltemplate.hpp#L131) | [`gltf load`](../../src/core/model/gltf.cpp#L1) | primitive range、material、skin/VAT metadata を持つ再配置可能 model 定義 |
 | `LoadedImage` | value | [`imageloader.hpp`](../../src/core/loader/imageloader.hpp#L18) | [`imageloader.cpp`](../../src/core/loader/imageloader.cpp#L1) | stb/TinyEXR decode 後の pixels、extent、format |
@@ -226,7 +226,7 @@ Component value は [`LocalTransformComponent`](../../src/core/userpublic/compon
 
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
-| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L97) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4744) / [`render()`](../../src/core/vkcore/renderer.cpp#L5939) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
+| `Renderer` | module/orchestrator | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp#L97) | [`renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4771) / [`render()`](../../src/core/vkcore/renderer.cpp#L5966) | hot reload、graph variant、logical frame(multi-view)、trace を束ねる |
 | `ILogicalFrameTarget` / `RenderGraphVariant` | abstract interface / value | [`renderer.hpp`](../../src/core/vkcore/renderer.hpp) | flat=`FlatLogicalFrameTarget`(renderer.cpp内部)、XR=`XrCompositionTarget` | logical frameの描画先とflat/`#xr` graph切替。**flat** は「XR でない通常の 1 画面(ウィンドウまたは headless の 1 枚)」を指すこのリポジトリの語で、**XR composition** は OpenXR ランタイムへ両眼ぶんのレイヤを渡して合成させる側です。同じ frame graph をどちらの出口へ流すかの違いになります |
 | `RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies` / `TemporalViewFamilyHistory` | pure values | [`viewfamily.hpp`](../../src/core/renderer/viewfamily.hpp) | [`viewfamily.cpp`](../../src/core/renderer/viewfamily.cpp) | provider-owned non-jittered view、`$main`+named secondary family集合、stable identity、family projection modifier、ID-keyed temporal matrix |
 | `PreviewGraphProgram` / `precompilePreviewGraph()` | data-only graph | [`CompiledRenderPipeline`](../../src/core/renderingpass/previewgraph.hpp#L15) / [coordinated family 側の注記](../../src/core/renderingpass/previewgraph.hpp#L27) | [`previewgraph.cpp`](../../src/core/renderingpass/previewgraph.cpp) | 第3の graph variant。`RenderingPassId` を持たず `renderLogicalFrame` を通らない |

@@ -27,3 +27,8 @@ target_sources(pelican_core PRIVATE
     vulkanvalidation.cpp
     vma_impl.cpp
 )
+
+# This translation unit exceeds COFF's 16-bit section count in MSVC Debug.
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/renderer.cpp"
+    TARGET_DIRECTORY pelican_core APPEND PROPERTY COMPILE_OPTIONS
+    "$<$<CXX_COMPILER_ID:MSVC>:/bigobj>")

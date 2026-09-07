@@ -345,19 +345,28 @@ value入力との併用を拒否する。例は
 `{"element":"vec3","domain":"vertex","source":{"asset":"project://character.glb","mesh":0,"primitive":0,"semantic":"POSITION"}}`。
 使用中の定義instanceだけを解決し、元のJSONはsource参照を保持する。派生countはコンパイラ用文書へ
 渡し、データは各候補が保持するbuffer IDへ転送する。同じassetのprepareは候補構築中に共有する。
-これは構築時のスナップショットで、asset更新の自動監視、安定したmesh occurrence参照、変形後の
-属性・index展開は未接続。ソース変更の反映には描画候補の再構築が必要。
+これは構築時のスナップショットで、変更通知から新しい描画候補を構築して更新する。
+安定したmesh occurrence参照、変形後の属性・index展開は未接続。
 CPU検証は2instanceへの展開、sourceとcountの二重指定拒否、未使用定義を解決しないことを確認。
 通常Rendererでは4頂点の要素数と異なる2頂点の値をcomputeで読出し、serializeに元文書が残ること、
 欠落semanticの候補失敗後も旧世代とGPU出力が維持されることを確認した。
 
 再読込み接続用に、PreparedGltf::sourceFilesはTinyGLTFの実ファイル読込み経路から依存を取得する。
 glTF本体、外部buffer/imageを含み、埋込みdata URIはファイル依存を追加しない。URIからパスを別途
-推測せず、読まれたパスを正規化・重複排除する。候補構築時にattribute_source_filesとして描画世代へ
-移し、保存JSONやGPU転送後のCPU属性コピーには依存しない。
-監視イベントへの接続はまだ未了。現ReloadServiceは1ファイルに複数participantがclaimsすると拒否するため、
-同じglTFをModelAssetContainerとgraph属性が共有する場合は、モデルと描画候補を一つの更新単位として
-準備・公開する経路が必要。rendererのwatched_sourcesへ追加するだけではこの共有ケースを満たさない。
+推測せず、読まれたパスを正規化・重複排除する。readAttributeのsource_filesは本体と使用bufferだけを
+選び、無関係なbuffer/imageの編集で描画を再構築しない。外部bufferのファイル読込み時のbyte storageを
+TinyGLTFのmove/swap後のbufferと対応付け、prepare完了時にはbuffer indexとpathだけを保持する。
+候補構築時にattribute_source_filesとして描画世代へ移し、保存JSONやCPU属性コピーには依存しない。
+
+この依存をrendererのwatched_sourcesへ接続した。同じGLBをモデルと属性が共有する場合は、明示した
+companion関係により1通知を両担当へ渡す。無関係な担当の重複は拒否する。既存モデルreload groupを
+prepareと公開へ分離し、描画候補の最終公開hookで資源台帳も事前構築してから、両方を公開する。
+台帳ロックは最終公開境界だけで保持し、次frameやGPU完了を待ちながら保持しない。失敗・破棄では
+モデル候補もrollbackする。マテリアルの旧世代照合は公開済みsnapshotを使い、公開mutexを再取得しない。
+実GPUでGLB変更通知後の属性出力とmodel revision、候補検査失敗時の双方維持・修復後の再更新を確認した。
+変更通知はReloadServiceのテスト入口から投入しており、native OS watcherの通知発生自体は今回の検証外。
+通常モデルの監視は現状container file単位なので、`.gltf`の外部bufferをモデルと属性が共有する場合の
+モデル側依存追跡は残件。遅延RT公開を伴う共有モデル更新も今回のGPU検証範囲には含めない。
 
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
 ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、

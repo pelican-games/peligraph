@@ -20,6 +20,7 @@
 #include "scene_load_test_support.hpp"
 #include "../src/core/material/standardmaterialresource.hpp"
 #include "../src/core/model/gltf.hpp"
+#include "../src/core/watch/reloadservice.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
 #include "../src/core/vkcore/renderer.hpp"
@@ -115,8 +116,9 @@ TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[
         std::ofstream binary{root / "positions data.bin", std::ios::binary};
         binary.write(reinterpret_cast<const char *>(positions.data()), sizeof(positions));
     }
+    writeText(root / "unused.bin", "data");
     writeText(root / "mesh.gltf", R"({"asset":{"version":"2.0"},
-      "buffers":[{"uri":"positions%20data.bin","byteLength":24}],
+      "buffers":[{"uri":"positions%20data.bin","byteLength":24},{"uri":"unused.bin","byteLength":4}],
       "bufferViews":[{"buffer":0,"byteLength":24}],
       "accessors":[{"bufferView":0,"componentType":5126,"count":2,"type":"VEC3"}],
       "meshes":[{"primitives":[{"attributes":{"POSITION":0}}]}]})");
@@ -125,8 +127,12 @@ TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[
     const auto prepared = loader.prepareGltf((root / "mesh.gltf").string());
     REQUIRE(prepared.sourceFiles() == std::vector<std::filesystem::path>{
         std::filesystem::weakly_canonical(root / "mesh.gltf"),
-        std::filesystem::weakly_canonical(root / "positions data.bin")});
+        std::filesystem::weakly_canonical(root / "positions data.bin"),
+        std::filesystem::weakly_canonical(root / "unused.bin")});
     const auto attribute = loader.readAttribute(prepared, 0, 0, "POSITION", ShaderResourceBufferElement::vec3);
+    REQUIRE(attribute.source_files == std::vector<std::filesystem::path>{
+        std::filesystem::weakly_canonical(root / "mesh.gltf"),
+        std::filesystem::weakly_canonical(root / "positions data.bin")});
     REQUIRE(attribute.count == 2);
     std::array<float, 8> values{};
     REQUIRE(attribute.bytes.size() == sizeof(values));
@@ -138,6 +144,9 @@ TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[
 }
 
 TEST_CASE("common graph glTF source supplies counted GPU shader attributes", "[skeletal][graph-attribute-runtime]") {
+    bool shared_model = false;
+    SECTION("graph source only") {}
+    SECTION("shared model and graph source") { shared_model = true; }
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /
         ("pelican_graph_source_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -164,7 +173,9 @@ void main() {
         {"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
     document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
     writeText(root / "passes/main_rendering_config.json", document.dump());
-    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[]})");
+    writeText(root / "assets.json", nlohmann::json{{"schema", "pelican.asset_data"}, {"version", 1},
+        {"models", shared_model ? nlohmann::json::array({{{"name", "character"}, {"path", "character.glb"}}})
+                                : nlohmann::json::array()}}.dump());
     writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})");
     FastModuleContainer modules;
     GET_MODULE(PathResolver).setup(root, false);
@@ -202,6 +213,44 @@ void main() {
     const auto retained = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float));
     std::memcpy(&value, retained.data(), sizeof(value));
     REQUIRE(std::abs(value - 4.6f) < 0.00001f);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    const auto revision = shared_model ? models.contentRevisionForTesting("character") : 0;
+    const watch::ReloadRequest changed{.key = watch::makeAssetKey("character.glb")};
+    TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{.position_scale = 2});
+    REQUIRE(reload.applyRequestForTesting(changed));
+    const auto updated = GET_MODULE(RenderingPassContainer).snapshot();
+    REQUIRE(updated != generation);
+    const auto rendered = [&] {
+        renderer.render();
+        vkcore.waitIdle();
+        const auto data = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float));
+        float result{};
+        std::memcpy(&result, data.data(), sizeof(result));
+        return result;
+    };
+    REQUIRE(std::abs(rendered() - 5.2f) < 0.00001f);
+    if (shared_model) REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+    TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{.position_scale = 3});
+    {
+        watch::ScopedRenderPipelineCompanionReloadObserver fail_after_model_prepare{
+            [](auto) { throw std::runtime_error("reject coordinated candidate"); }};
+        REQUIRE_FALSE(reload.applyRequestForTesting(changed));
+    }
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == updated);
+    REQUIRE(std::abs(rendered() - 5.2f) < 0.00001f);
+    if (shared_model) {
+        REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+        TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{
+            .invalid_inverse_bind_buffer_view = true, .position_scale = 3});
+        REQUIRE_FALSE(reload.applyRequestForTesting(changed));
+        REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == updated);
+        REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+    }
+    TestSkeletalFixture::writeGlb(root / "character.glb", TestSkeletalFixture::Options{.position_scale = 4});
+    REQUIRE(reload.applyRequestForTesting(changed));
+    REQUIRE(std::abs(rendered() - 6.4f) < 0.00001f);
+    if (shared_model) REQUIRE(models.contentRevisionForTesting("character") == revision + 2);
     TestSkeletalFixture::writeGlb(root / "replacement.glb");
     auto replacement = document;
     replacement["nodes"][5]["parameters"]["source"]["asset"] = "project://replacement.glb";

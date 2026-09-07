@@ -122,10 +122,9 @@ render.attributeのvertex/instance/material domainを型identityとして照合�
 accessorへ渡す入口も追加した。countからstd430サイズとraster描画数を導出する接続も実装した。
 GltfLoaderの属性抽出を共通graphのsource参照・count解決・候補buffer uploadへ接続した。
 GPUで複数頂点の属性値とcountを読み、元のsource参照の保存と失敗候補による旧世代維持を確認した。
-source assetの自動監視・変形後属性・index接続、vertex/instance添字の自動accessorは残件。
-再読込み用の実ファイル依存（外部buffer等を含む）は取得し、描画世代へ保持するようにした。
-次はモデルとgraph属性が同じファイルを共有する際の更新単位を接続する。現ReloadServiceは複数claimsを
-拒否するため、rendererの監視一覧へ足すだけでは不十分。自動監視完了とは扱わない。
+属性の実ファイル依存を変更通知へ接続し、同じGLBをモデルとgraph属性が共有する場合の共同更新を実装した。
+候補失敗時は両方を維持し、監視は本体と使用bufferに限定する。`.gltf`の外部bufferを共有する通常モデル側の
+依存追跡、遅延RT公開時の共有モデル検証、変形後属性・index接続、vertex/instance添字の自動accessorは残件。
 動的描画nodeは現状scopeを分離して実行し、
 同じowner条件のnode間融合と共通history画像のpreview対応は残件。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。

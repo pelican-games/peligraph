@@ -41,6 +41,7 @@ struct GltfAttributeData {
     ShaderResourceBufferElement element;
     std::uint64_t count;
     std::vector<std::byte> bytes;
+    std::vector<std::filesystem::path> source_files;
 };
 
 class ModelResourceReleaseException : public std::runtime_error {

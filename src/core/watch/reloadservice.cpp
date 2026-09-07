@@ -320,6 +320,17 @@ bool ReloadService::applyShaderReloadBatch(
     return runtime.committed;
 }
 
+std::unique_ptr<PreparedReloadTransaction> ReloadService::prepareRenderPipelineModelReload(
+    std::span<const ReloadRequest> requests) {
+    auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+    if (!models) return {};
+    std::vector<ReloadRequest> model_requests;
+    for (const auto &request : requests)
+        if (models->handlesReload(request.key)) model_requests.push_back(request);
+    if (model_requests.empty()) return {};
+    return transactions_.prepare(models->makeReloadGroup(model_requests, transactions_), retireSink());
+}
+
 void ReloadService::applyRenderPipelineCompanionReload(
     const RendererRuntimeGeneration &generation,
     std::span<const ReloadRequest>
@@ -355,6 +366,8 @@ void ReloadService::applyRenderPipelineCompanionReload(
                 request.key);
             continue;
         }
+        if (const auto *models = FastModuleContainer::tryGet<ModelAssetContainer>();
+            models && models->handlesReload(request.key)) continue;
         throw std::runtime_error(
             "coordinated render-pipeline reload received "
             "an unsupported companion request: " +
@@ -829,6 +842,14 @@ std::vector<bool> ReloadService::applyRequests(
     ensureBuiltInParticipants();
     std::vector<bool> results(requests.size(), true);
     std::vector<ReloadParticipant *> claimants(requests.size(), nullptr);
+    std::vector<bool> shared_claims(requests.size(), false);
+    const auto accepts = [](const ReloadParticipant &owner, const ReloadParticipant &other,
+                            const ReloadRequest &request) {
+        return owner.apply_with_companions &&
+            std::find(owner.companion_participants.begin(), owner.companion_participants.end(), other.name) !=
+                owner.companion_participants.end() &&
+            (!owner.companion_claims || owner.companion_claims(other.name, request));
+    };
     for (std::size_t index = 0; index < requests.size(); ++index) {
         const auto &request = requests[index];
         for (auto &participant : participants_) {
@@ -854,6 +875,15 @@ std::vector<bool> ReloadService::applyRequests(
             }
             if (!claimed) continue;
             if (claimants[index] != nullptr) {
+                if (accepts(*claimants[index], participant, request)) {
+                    shared_claims[index] = true;
+                    continue;
+                }
+                if (!shared_claims[index] && accepts(participant, *claimants[index], request)) {
+                    shared_claims[index] = true;
+                    claimants[index] = &participant;
+                    continue;
+                }
                 if (logger) {
                     LOG_ERROR(logger, "reload request '{}' is claimed by both '{}' and '{}'",
                               assetKeyString(request.key), claimants[index]->name,
@@ -884,6 +914,7 @@ std::vector<bool> ReloadService::applyRequests(
             if (claimants[index] == &participant) {
                 owned_indices.push_back(index);
                 owned_batch.push_back(requests[index]);
+                if (shared_claims[index]) companion_batch.push_back(requests[index]);
                 continue;
             }
             const auto named = std::find(

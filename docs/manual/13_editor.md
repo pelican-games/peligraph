@@ -571,7 +571,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
 - 試行済みなら `reload.runtime.game_logic` の内容(`configured` / `loaded` / `reloading` /
   `pending` / `source_busy_retries` / `generation` / `systems` / `source` / `loaded_copy` /
   `domain_error` / `error_code` / `error_fields`)がそのまま入ります
-  ([reloadservice.cpp](../../src/core/watch/reloadservice.cpp#L586))。
+  ([reloadservice.cpp](../../src/core/watch/reloadservice.cpp#L599))。
 - 未試行なら `{error_code, error_fields}` の 2 鍵だけで、値は起動時に保存された失敗です。
   成功すると `error_code` は `null` に戻ります(clear される)。
 - `reload_game_logic` の失敗も同じ語彙で、`error.data` が `{error_code, error_fields}` です。

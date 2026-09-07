@@ -246,8 +246,26 @@ ResourceSnapshot ResourceRegistry::snapshot() const {
 
 std::vector<std::shared_ptr<const void>> ResourceRegistry::publish(
     const std::vector<StagedResource> &resources) {
+    return preparePublish(resources)->publish();
+}
+
+ResourceRegistry::PreparedPublication::PreparedPublication(ResourceRegistry &registry)
+    : registry_{registry}, lock_{registry.write_mutex_} {}
+
+ResourceRegistry::PreparedPublication::~PreparedPublication() {
+    if (lock_.owns_lock()) lock_.unlock();
+}
+
+std::vector<std::shared_ptr<const void>> ResourceRegistry::PreparedPublication::publish() noexcept {
+    registry_.state_.store(std::move(next_));
+    lock_.unlock();
+    return std::move(retired_);
+}
+
+std::unique_ptr<ResourceRegistry::PreparedPublication> ResourceRegistry::preparePublish(
+    const std::vector<StagedResource> &resources) {
     if (resources.empty()) throw std::runtime_error("reload transaction has no resources");
-    std::scoped_lock lock{write_mutex_};
+    auto publication = std::unique_ptr<PreparedPublication>{new PreparedPublication{*this}};
     auto next = std::make_shared<ResourceRegistryState>(*state_.load());
     std::set<LogicalResourceRef> unique;
     for (const auto &resource : resources) {
@@ -275,8 +293,9 @@ std::vector<std::shared_ptr<const void>> ResourceRegistry::publish(
         next->live_bytes += record.live_bytes;
         addEdges(*next, resource.target, record.dependencies);
     }
-    state_.store(std::shared_ptr<const ResourceRegistryState>{std::move(next)});
-    return retired;
+    publication->next_ = std::move(next);
+    publication->retired_ = std::move(retired);
+    return publication;
 }
 
 ReloadTransactionGroup::ReloadTransactionGroup(std::string name) : name_{std::move(name)} {
@@ -316,8 +335,57 @@ void ReloadCoordinator::recordFailure(std::string path, std::string message) {
 
 bool ReloadCoordinator::execute(ReloadTransactionGroup &group, const RetireSink &retire) {
     const auto started = std::chrono::steady_clock::now();
-    bool publication_prepared = false;
+    const auto name = group.name_;
     try {
+        auto prepared = prepare(std::move(group), retire);
+        prepared->preparePublication();
+        prepared->commit();
+        {
+            std::scoped_lock lock{mutex_};
+            ++status_.applied;
+        }
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        if (logger) LOG_INFO(logger, "reload: {} ok ({}ms)", name, elapsed);
+        return true;
+    } catch (const std::exception &error) {
+        recordFailure(name, error.what());
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - started).count();
+        if (logger) LOG_WARNING(logger, "reload: {} failed ({}ms): {}", name, elapsed, error.what());
+        return false;
+    }
+}
+
+PreparedReloadTransaction::PreparedReloadTransaction(ReloadTransactionGroup group)
+    : group_{std::move(group)} {}
+
+PreparedReloadTransaction::~PreparedReloadTransaction() {
+    // Release the registry lock before domain rollback releases resources.
+    publication_.reset();
+    if (prepared_ && group_.rollback_) group_.rollback_->invoke();
+}
+
+void PreparedReloadTransaction::commit() noexcept {
+    auto retired = publication_->publish();
+    publication_.reset();
+    if (group_.publish_) group_.publish_->invoke();
+    prepared_ = false;
+    if (retire_) for (auto &payload : retired) retire_(std::move(payload));
+}
+
+void PreparedReloadTransaction::preparePublication() {
+    publication_ = registry_->preparePublish(resources_);
+}
+
+std::unique_ptr<PreparedReloadTransaction> ReloadCoordinator::prepare(
+    ReloadTransactionGroup group, const RetireSink &retire) {
+    auto prepared = std::unique_ptr<PreparedReloadTransaction>{new PreparedReloadTransaction{std::move(group)}};
+    prepared->retire_ = retire;
+    prepared->registry_ = &registry_;
+    auto &transaction = prepared->group_;
+    {
+        auto &group = transaction;
         if (group.actors_.empty()) throw std::runtime_error("reload transaction group is empty");
         for (auto &actor : group.actors_) if (actor.parse) actor.parse();
         for (auto &actor : group.actors_) if (actor.validate) actor.validate();
@@ -336,30 +404,12 @@ bool ReloadCoordinator::execute(ReloadTransactionGroup &group, const RetireSink 
         ordered.reserve(staged.size());
         for (const auto index : order) ordered.push_back(std::move(staged[index]));
         if (group.prepare_publish_) {
-            publication_prepared = true;
+            prepared->prepared_ = true;
             group.prepare_publish_();
         }
-        auto retired = registry_.publish(ordered);
-        if (group.publish_) group.publish_->invoke();
-        publication_prepared = false;
-        if (retire) for (auto &payload : retired) retire(std::move(payload));
-        {
-            std::scoped_lock lock{mutex_};
-            ++status_.applied;
-        }
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started).count();
-        if (logger) LOG_INFO(logger, "reload: {} ok ({}ms)", group.name_, elapsed);
-        return true;
-    } catch (const std::exception &error) {
-        if (publication_prepared && group.rollback_)
-            group.rollback_->invoke();
-        recordFailure(group.name_, error.what());
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - started).count();
-        if (logger) LOG_WARNING(logger, "reload: {} failed ({}ms): {}", group.name_, elapsed, error.what());
-        return false;
+        prepared->resources_ = std::move(ordered);
     }
+    return prepared;
 }
 
 } // namespace Pelican::watch

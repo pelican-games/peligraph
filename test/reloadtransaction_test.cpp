@@ -46,6 +46,34 @@ TEST_CASE("AssetKey is canonical project identity plus fragment", "[wp98][assetk
     REQUIRE_THROWS(makeAssetKey("C:\\physical\\override.bin"));
 }
 
+TEST_CASE("Prepared reload can join another publication without exposing intermediate resources", "[wp98][reload-prepare]") {
+    ReloadCoordinator coordinator;
+    const auto ref = coordinator.registry().declareResource("models", makeAssetKey("mesh.glb"), number(1));
+    int domain = 1;
+    bool rolled_back = false;
+    const auto group = [&] {
+        ReloadTransactionGroup result{"paired"};
+        result.add(replace(ref, 2));
+        result.setPreparePublish([] {});
+        result.setPublish([&]() noexcept { domain = 2; });
+        result.setRollback([&]() noexcept { rolled_back = true; });
+        return result;
+    };
+    {
+        auto candidate = coordinator.prepare(group());
+        candidate->preparePublication();
+        REQUIRE(*coordinator.registry().snapshot().find(ref)->payloadAs<int>() == 1);
+        REQUIRE(domain == 1);
+    }
+    REQUIRE(rolled_back);
+    REQUIRE(*coordinator.registry().snapshot().find(ref)->payloadAs<int>() == 1);
+    auto candidate = coordinator.prepare(group());
+    candidate->preparePublication();
+    candidate->commit();
+    REQUIRE(*coordinator.registry().snapshot().find(ref)->payloadAs<int>() == 2);
+    REQUIRE(domain == 2);
+}
+
 TEST_CASE("Logical identity survives 1000 commits and generation changes only on slot reuse",
           "[wp98][identity]") {
     ReloadCoordinator coordinator;
@@ -416,6 +444,9 @@ TEST_CASE(
 TEST_CASE(
     "ReloadService gives one batch owner selected companion requests atomically",
     "[wp222][reload-participant][batch][companions]") {
+    bool shared = false;
+    SECTION("separate files") {}
+    SECTION("shared file") { shared = true; }
     if (!logger) setupLogger();
     ReloadService service;
     const auto graph =
@@ -452,8 +483,8 @@ TEST_CASE(
     service.registerParticipant(ReloadParticipant{
         .name = "fake.pipeline",
         .claims =
-            [graph](const ReloadRequest &request) {
-                return request.key == graph;
+            [graph, shader, shared](const ReloadRequest &request) {
+                return request.key == graph || (shared && request.key == shader);
             },
         .apply_batch =
             [&standalone_graph_applies](
@@ -502,7 +533,7 @@ TEST_CASE(
     REQUIRE(standalone_graph_applies == 0);
     REQUIRE(coordinated_applies == 1);
     REQUIRE(coordinated_owned ==
-            std::vector<AssetKey>{graph});
+            (shared ? std::vector<AssetKey>{shader, graph} : std::vector<AssetKey>{graph}));
     REQUIRE(coordinated_companions ==
             std::vector<AssetKey>{shader});
     REQUIRE(standalone_assets ==

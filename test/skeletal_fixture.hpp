@@ -18,6 +18,7 @@ struct Options {
     bool truncated_inverse_bind_view = false;
     bool omit_scenes = false;
     bool invalid_default_scene = false;
+    float position_scale = 1.0f;
 };
 
 namespace detail {
@@ -50,8 +51,9 @@ inline std::vector<std::uint8_t> makeGlb(Options options) {
         return static_cast<int>(accessors.size() - 1);
     };
 
-    const std::vector<glm::vec3> positions{{-0.3f, 0.0f, 0.0f}, {0.3f, 0.0f, 0.0f},
-                                           {-0.3f, 2.0f, 0.0f}, {0.3f, 2.0f, 0.0f}};
+    const auto x = 0.3f * options.position_scale;
+    const std::vector<glm::vec3> positions{{-x, 0.0f, 0.0f}, {x, 0.0f, 0.0f},
+                                           {-x, 2.0f, 0.0f}, {x, 2.0f, 0.0f}};
     const std::vector<glm::vec3> normals(4, glm::vec3{0.0f, 0.0f, 1.0f});
     const std::vector<glm::vec2> uvs{{0, 0}, {1, 0}, {0, 1}, {1, 1}};
     const std::vector<glm::u16vec4> joints{{0, 0, 0, 0}, {0, 0, 0, 0},

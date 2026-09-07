@@ -833,14 +833,13 @@ registerRenderingPassConfigVariantsData(
                         throw std::invalid_argument("attribute source requires a glTF asset: " + asset);
                     found = sources.emplace(asset, extension == ".glb"
                         ? loader.prepareGltfBinary(path.string()) : loader.prepareGltf(path.string())).first;
-                    const auto &files = found->second.sourceFiles();
-                    attribute_source_files.insert(files.begin(), files.end());
                 }
                 auto data = loader.readAttribute(found->second,
                     source.at("mesh").get<std::uint32_t>(), source.at("primitive").get<std::uint32_t>(),
                     source.at("semantic").get<std::string>(),
                     *shaderResourceBufferElementFromName(parameters.at("element").get<std::string>()));
                 const auto count = data.count;
+                attribute_source_files.insert(data.source_files.begin(), data.source_files.end());
                 attribute_data.emplace(std::string{node}, std::move(data));
                 return count;
             });

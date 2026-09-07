@@ -271,6 +271,7 @@ struct PreparedGltf::Impl {
     VrmSemanticDecodeResult vrm;
     std::optional<CanonicalModelAssetKey> asset_key;
     std::vector<std::filesystem::path> source_files;
+    std::map<int, std::filesystem::path> buffer_source_files;
 };
 
 const std::vector<std::filesystem::path> &PreparedGltf::sourceFiles() const {
@@ -299,14 +300,19 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     prepared->fragment = std::move(fragment);
     prepared->asset_key = std::move(asset_key);
     tinygltf::TinyGLTF loader;
+    // TinyGLTF swaps/moves the file byte vectors into model buffers. Associate
+    // their storage with the actual file read only during this parse, then keep
+    // buffer indices and paths; no pointer identity escapes the preparation.
+    std::map<const unsigned char *, std::filesystem::path> read_files;
     loader.SetFsCallbacks({
         tinygltf::FileExists, tinygltf::ExpandFilePath,
-        [prepared](std::vector<unsigned char> *bytes, std::string *error,
+        [prepared, &read_files](std::vector<unsigned char> *bytes, std::string *error,
                    const std::string &filename, void *) {
             if (!tinygltf::ReadWholeFile(bytes, error, filename, nullptr)) return false;
             const auto path = std::filesystem::weakly_canonical(std::filesystem::path{filename});
             auto &files = prepared->source_files;
             if (std::find(files.begin(), files.end(), path) == files.end()) files.push_back(path);
+            read_files[bytes->data()] = path;
             return true;
         }, tinygltf::WriteWholeFile, tinygltf::GetFileSizeInBytes, nullptr});
     GltfInternal::EncodedImages encoded_images;
@@ -319,6 +325,11 @@ std::shared_ptr<PreparedGltf::Impl> prepareGltfImpl(std::string path,
     if (!loaded) {
         throw std::runtime_error("failed to load gltf file : " + prepared->source_path +
                                  (prepared->error.empty() ? std::string{} : " (" + prepared->error + ")"));
+    }
+    for (std::size_t index = 0; index < prepared->model.buffers.size(); ++index) {
+        const auto &buffer = prepared->model.buffers[index];
+        if (buffer.uri.empty() || buffer.uri.starts_with("data:")) continue;
+        prepared->buffer_source_files.emplace(static_cast<int>(index), read_files.at(buffer.data.data()));
     }
     GltfInternal::decodeImagesInParallel(prepared->model, encoded_images);
     prepared->vrm = decodeVrmSemantic(prepared->model, prepared->source_path);
@@ -2757,6 +2768,11 @@ GltfAttributeData GltfLoader::readAttribute(const PreparedGltf &prepared,
         if (values.size() > (std::numeric_limits<std::size_t>::max)() / stride)
             throw std::overflow_error("glTF attribute byte size overflows");
         GltfAttributeData result{element, values.size(), std::vector<std::byte>(values.size() * stride)};
+        result.source_files.push_back(std::filesystem::weakly_canonical(prepared.impl->source_path));
+        const auto view = prepared.impl->model.accessors.at(accessor->second).bufferView;
+        const auto buffer = prepared.impl->model.bufferViews.at(view).buffer;
+        if (const auto found = prepared.impl->buffer_source_files.find(buffer);
+            found != prepared.impl->buffer_source_files.end()) result.source_files.push_back(found->second);
         for (std::size_t i = 0; i < values.size(); ++i)
             std::memcpy(result.bytes.data() + i * stride, &values[i], sizeof(T));
         return result;

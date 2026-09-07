@@ -107,6 +107,7 @@ bool Renderer::hasPendingRenderPipelinePublication() const noexcept {
 // candidate/source callback are gone by the time the submitted frame commits.
 struct RenderPipelinePublicationTransaction {
     std::vector<watch::ReloadRequest> companion_requests;
+    std::unique_ptr<watch::PreparedReloadTransaction> model_reload;
     std::optional<RenderConfigCandidateDocumentSet> candidate_documents;
     std::function<void()> source_commit;
     RenderPipelineAuthoringCompletion completion;
@@ -208,6 +209,20 @@ std::set<watch::AssetKey> renderPipelineWatchSources(
     }
     const auto &pipeline =
         *program->frame_graph.render_pipeline;
+    const auto &resolver = GET_MODULE(PathResolver);
+    for (const auto &file : program->frame_graph.attribute_source_files) {
+        const auto addUnder = [&](const std::filesystem::path &root, std::string_view mount) {
+            const auto relative = file.lexically_relative(std::filesystem::weakly_canonical(root));
+            if (relative.empty() || relative.is_absolute()) return false;
+            for (const auto &part : relative) if (part == "..") return false;
+            result.insert(watch::makeAssetKey(mount, relative));
+            return true;
+        };
+        bool mapped = false;
+        for (const auto &store : resolver.stores())
+            if (addUnder(store.root, store.mount)) { mapped = true; break; }
+        if (!mapped) (void)addUnder(resolver.projectRoot(), {});
+    }
     if (pipeline.pipeline_preset) {
         append(pipeline.pipeline_preset->reference);
     }
@@ -3042,6 +3057,7 @@ void Renderer::installRenderPipelineReloadParticipant() {
                         error);
                 },
             .companion_participants = {
+                std::string{watch::modelReloadParticipantName},
                 std::string{
                     watch::shaderReloadParticipantName},
                 std::string{
@@ -3050,6 +3066,9 @@ void Renderer::installRenderPipelineReloadParticipant() {
             .companion_claims =
                 [](std::string_view participant,
                    const watch::ReloadRequest &request) {
+                    if (participant == watch::modelReloadParticipantName) {
+                        return true; // The model participant already claimed this request.
+                    }
                     if (participant ==
                         watch::
                             shaderReloadParticipantName) {
@@ -3367,6 +3386,7 @@ bool Renderer::reloadRenderPipelineFromDisk(
             }
         };
         const auto rollback = [this, transaction]() noexcept {
+            transaction->model_reload.reset();
             if (transaction->finalized) return;
             if (transaction->failure.empty()) {
                 transaction->failure =
@@ -3405,6 +3425,8 @@ bool Renderer::reloadRenderPipelineFromDisk(
                     const RendererRuntimeGeneration
                         &generation) {
                     try {
+                        transaction->model_reload = reload_service->prepareRenderPipelineModelReload(
+                            transaction->companion_requests);
                         reload_service
                             ->applyRenderPipelineCompanionReload(
                                 generation,
@@ -3449,6 +3471,7 @@ bool Renderer::reloadRenderPipelineFromDisk(
                                 flat->second);
                         transaction->generation =
                             generation.generation;
+                        if (transaction->model_reload) transaction->model_reload->preparePublication();
                     } catch (const std::exception &caught) {
                         transaction->failure = caught.what();
                         throw;
@@ -3488,6 +3511,10 @@ bool Renderer::reloadRenderPipelineFromDisk(
             [transaction, publish](
                 const RendererRuntimeGeneration
                     &generation) noexcept {
+                if (transaction->model_reload) {
+                    transaction->model_reload->commit();
+                    transaction->model_reload.reset();
+                }
                 transaction->generation = generation.generation;
                 transaction->runtime_published = true;
                 publish();

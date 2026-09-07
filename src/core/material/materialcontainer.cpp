@@ -3403,7 +3403,7 @@ resolveGenerationShaderInputs(
 
 void MaterialContainer::validateRuntimeGenerationCompatibility(
     const RendererRuntimeGeneration &generation) const {
-    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot();
+    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
     materials.forEach(
         [&](GlobalMaterialId material_id,
             const InternalMaterialInfo &material) {
@@ -3498,7 +3498,9 @@ void MaterialContainer::validateRuntimeGenerationCompatibility(
 MaterialRuntimeGenerationReloadPlan
 MaterialContainer::prepareRuntimeGenerationReload(
     const RendererRuntimeGeneration &generation) {
-    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).renderingSnapshot();
+    // Called inside the renderer publication hook: compare against the live
+    // generation without reacquiring its publication mutex or selecting itself.
+    const auto previous = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
     struct MetadataUpdate {
         GlobalMaterialId material;
         std::optional<MaterialOutputSchema>

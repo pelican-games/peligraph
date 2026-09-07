@@ -562,16 +562,28 @@ bool ModelAssetContainer::handlesReload(const watch::AssetKey &key) const {
 
 bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
                                         watch::ReloadCoordinator &coordinator) {
+    if (!handlesReload(request.key)) return false;
+    coordinator.enqueue(makeReloadGroup(std::span{&request, std::size_t{1}}, coordinator));
+    return true;
+}
+
+watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
+    std::span<const watch::ReloadRequest> requests, watch::ReloadCoordinator &coordinator) {
     if (&coordinator != impl_->coordinator) throw std::runtime_error("model reload coordinator mismatch");
-    const auto affected = impl_->by_container.find(request.key);
-    if (affected == impl_->by_container.end()) return false;
+    std::map<std::string, watch::ReloadRequest> affected;
+    for (const auto &request : requests) {
+        const auto found = impl_->by_container.find(request.key);
+        if (found == impl_->by_container.end()) throw std::runtime_error("untracked model reload source");
+        for (const auto &name : found->second) affected.emplace(name, request);
+    }
 
     auto batch = std::make_shared<Impl::CommitBatch>();
-    batch->names.assign(affected->second.begin(), affected->second.end());
+    for (const auto &[name, request] : affected) batch->names.push_back(name);
     auto pending = std::make_shared<std::map<std::string, Impl::PendingCandidate>>();
     const auto snapshot = coordinator.registry().snapshot();
-    watch::ReloadTransactionGroup group{"model " + watch::assetKeyString(request.key)};
+    watch::ReloadTransactionGroup group{"model templates"};
     for (const auto &name : batch->names) {
+        const auto &request = affected.at(name);
         auto &record = impl_->records.at(name);
         const auto current = snapshot.find(record.logical);
         if (!current) throw std::runtime_error("model logical resource is stale: " + name);
@@ -726,8 +738,7 @@ bool ModelAssetContainer::enqueueReload(const watch::ReloadRequest &request,
         batch->installs.clear();
         batch->staged_payloads.clear();
     });
-    coordinator.enqueue(std::move(group));
-    return true;
+    return group;
 }
 
 bool ModelAssetContainer::retireReloadPayload(

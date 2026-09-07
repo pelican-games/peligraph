@@ -71,6 +71,17 @@ struct StagedResource {
 
 class ResourceRegistry {
   public:
+    class PreparedPublication {
+        friend class ResourceRegistry;
+        ResourceRegistry &registry_;
+        std::unique_lock<std::mutex> lock_;
+        std::shared_ptr<const ResourceRegistryState> next_;
+        std::vector<std::shared_ptr<const void>> retired_;
+        explicit PreparedPublication(ResourceRegistry &registry);
+      public:
+        ~PreparedPublication();
+        std::vector<std::shared_ptr<const void>> publish() noexcept;
+    };
     ResourceRegistry();
     ~ResourceRegistry();
     ResourceRegistry(const ResourceRegistry &) = delete;
@@ -88,6 +99,9 @@ class ResourceRegistry {
     // immutable snapshot. The returned old payloads are the DeletionQueue
     // connection point for GPU-backed handlers.
     std::vector<std::shared_ptr<const void>> publish(const std::vector<StagedResource> &resources);
+    // Holds the publication lock until commit/destruction. Prepare this only at
+    // the final publication boundary, never while waiting for another frame.
+    std::unique_ptr<PreparedPublication> preparePublish(const std::vector<StagedResource> &resources);
 
   private:
     mutable std::mutex write_mutex_;
@@ -124,6 +138,7 @@ struct ReloadActor {
 };
 
 class ReloadTransactionGroup {
+    friend class PreparedReloadTransaction;
     struct NoexceptActionBase {
         virtual ~NoexceptActionBase() = default;
         virtual void invoke() noexcept = 0;
@@ -161,6 +176,23 @@ class ReloadTransactionGroup {
     std::unique_ptr<NoexceptActionBase> rollback_;
 };
 
+class PreparedReloadTransaction {
+    friend class ReloadCoordinator;
+    ReloadTransactionGroup group_;
+    std::unique_ptr<ResourceRegistry::PreparedPublication> publication_;
+    ResourceRegistry *registry_ = nullptr;
+    std::vector<StagedResource> resources_;
+    std::function<void(std::shared_ptr<const void>)> retire_;
+    bool prepared_ = false;
+    explicit PreparedReloadTransaction(ReloadTransactionGroup group);
+  public:
+    ~PreparedReloadTransaction();
+    // Final fallible step; holds the registry lock through commit/destruction.
+    void preparePublication();
+    // All fallible work, including registry allocation, has already completed.
+    void commit() noexcept;
+};
+
 class ReloadCoordinator {
   public:
     // GPU handlers adapt this to DeletionQueue::defer. The sink is a
@@ -170,6 +202,8 @@ class ReloadCoordinator {
     ResourceRegistry &registry() noexcept { return registry_; }
     const ResourceRegistry &registry() const noexcept { return registry_; }
     void enqueue(ReloadTransactionGroup group);
+    std::unique_ptr<PreparedReloadTransaction> prepare(
+        ReloadTransactionGroup group, const RetireSink &retire = {});
     // Called once at the frame-start apply phase. Each group is atomic; an
     // unrelated failing group does not prevent later groups from running.
     std::size_t applyFrame(const RetireSink &retire = {});

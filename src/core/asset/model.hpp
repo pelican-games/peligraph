@@ -7,11 +7,13 @@
 #include <memory>
 #include <nlohmann/json_fwd.hpp>
 #include <string>
+#include <span>
 
 namespace Pelican::watch {
 struct AssetKey;
 struct ReloadRequest;
 class ReloadCoordinator;
+class ReloadTransactionGroup;
 } // namespace Pelican::watch
 
 namespace Pelican {
@@ -35,6 +37,8 @@ DECLARE_MODULE(ModelAssetContainer) {
     bool handlesReload(const watch::AssetKey &key) const;
     bool enqueueReload(const watch::ReloadRequest &request,
                        watch::ReloadCoordinator &coordinator);
+    watch::ReloadTransactionGroup makeReloadGroup(std::span<const watch::ReloadRequest> requests,
+                                                 watch::ReloadCoordinator &coordinator);
     bool retireReloadPayload(std::shared_ptr<const void> payload,
                              watch::ReloadCoordinator &coordinator) noexcept;
 

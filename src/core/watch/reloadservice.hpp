@@ -108,6 +108,8 @@ struct ReloadParticipant {
     // A batch owner may absorb selected requests claimed by other named
     // participants so all affected domains publish one generation. The owner
     // still needs apply_batch for ordinary standalone batches.
+    // A source claimed by both owner and an accepted companion is delivered in
+    // both spans of one coordinated call; unrelated ambiguous claims fail.
     std::vector<std::string> companion_participants;
     std::function<bool(
         std::string_view,
@@ -160,6 +162,8 @@ DECLARE_MODULE(ReloadService) {
         const RendererRuntimeGeneration &generation,
         std::span<const ReloadRequest>
             companion_requests);
+    std::unique_ptr<PreparedReloadTransaction> prepareRenderPipelineModelReload(
+        std::span<const ReloadRequest> requests);
 
   private:
     struct RuntimeParticipantStatus {
