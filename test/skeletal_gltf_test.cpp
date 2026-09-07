@@ -21,6 +21,9 @@
 #include "../src/core/model/gltf.hpp"
 #include "../src/core/renderer/polygoninstancecontainer.hpp"
 #include "../src/core/vkcore/core.hpp"
+#include "../src/core/vkcore/renderer.hpp"
+#include "../src/core/vkcore/renderer_config.hpp"
+#include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/vkcore/util.hpp"
 #include "../src/core/renderer/frameresources.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
@@ -419,6 +422,68 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     REQUIRE(run(0.25) == 2.5f);
     REQUIRE(run(0.75) == 5.5f);
     vkcore.waitIdle();
+}
+
+TEST_CASE("renderer evaluates the common graph using committed scene time", "[skeletal][graph-composition]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_graph_frame_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "shaders");
+    std::filesystem::create_directories(root / "passes");
+    const TempDir guard{root};
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); }
+)");
+    auto document = mixedGraphCompositionFixture();
+    document["nodes"][0]["parameters"]["name"] = "scene_time";
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})");
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    auto &time = GET_MODULE(EngineTime);
+    time.setTime(10);
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    REQUIRE(scene.sceneStartTime() == 10);
+    auto &renderer = GET_MODULE(Renderer);
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    const auto render = [&](double now) {
+        time.setTime(now);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto bytes = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float));
+        float value{};
+        std::memcpy(&value, bytes.data(), sizeof(value));
+        return value;
+    };
+    REQUIRE(render(10.25) == 2.5f);
+    REQUIRE(render(10.75) == 5.5f);
+    test_support::loadScene(scene, "default_scene");
+    REQUIRE(scene.sceneStartTime() == 10.75);
+    REQUIRE(render(11) == 2.5f);
+    const auto generation = GET_MODULE(RenderingPassContainer).activeGeneration();
+    auto invalid = document;
+    invalid["nodes"][0]["parameters"]["name"] = "unbound_input";
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid.dump()));
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
+    REQUIRE(render(11) == 2.5f);
+    document["nodes"][1]["parameters"]["value"] = 4;
+    loadRenderGraphVariantsFromConfigData(document.dump());
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() > generation);
+    REQUIRE(render(11) == 4.0f);
 }
 
 } // namespace Pelican

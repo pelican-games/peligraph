@@ -2732,13 +2732,26 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
         throw std::runtime_error("Rendering config must be an object");
     }
 
-    const auto native_config = config.value("schema", std::string{}) == "pelican.graph"
+    const bool common_graph = config.value("schema", std::string{}) == "pelican.graph";
+    auto native_config = common_graph
         ? lowerRenderGraphDocument(config) : config;
+    auto graph_buffers = nlohmann::json::array();
+    auto graph_tasks = nlohmann::json::array();
+    if (common_graph) {
+        graph_buffers = std::move(native_config.at("buffers"));
+        graph_tasks = std::move(native_config.at("compute_tasks"));
+        native_config.erase("buffers");
+        native_config.erase("compute_tasks");
+    }
     const auto preset_resolution = resolveRenderPipelinePreset(
         native_config, dependencies.load_pipeline_json
                     ? dependencies.load_pipeline_json
                     : dependencies.load_feature_json);
     auto resolved_config = preset_resolution.config;
+    // Preset roots accept settings and feature references, not concrete resource
+    // declarations. Add the common graph's declarations after preset expansion.
+    for (auto &buffer : graph_buffers) resolved_config["buffers"].push_back(std::move(buffer));
+    for (auto &task : graph_tasks) resolved_config["compute_tasks"].push_back(std::move(task));
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
     const auto authored_source =

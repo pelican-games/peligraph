@@ -109,7 +109,30 @@ ValueGraph::Graphは共通原文を保存し、evaluateには数値の公開出�
 生成したsink/転送設定やGPU resource出力を数値の公開出力へ混ぜない。同じserialize結果を
 描画composeへ渡せる。publish→既存upload→ComputeTaskContainerのdispatchを実GPUで
 実行し、2つの入力でshaderの計算結果が2.5/5.5に変化することを読み戻して確認した。
-テストは直接dispatchするため、scene自動装着/毎frameの評価登録まで完了とはしない。
+この直接dispatchの確認に続き、下記の通常Renderer経路も接続した。
+
+### 描画世代に保持する数値処理とscene時計（2026-09-07）
+
+共通文書から作ったValueGraphをCompiledFrameGraphExecutionへ保持し、既存の描画世代の
+準備/公開と一緒に切り替える。公開前に入力・出力値とbufferの存在/host_source/サイズを
+検査する。失敗した候補は公開中の数値処理と描画資源を置き換えない。
+
+通常Rendererはruntime_f32のupload直前に評価する。入力はtime（EngineTime.now）、
+delta_time（EngineTime.dt）、scene_time（nowから最後に成功したscene読込み時刻を引いた値）。
+scene開始時刻はSceneLoaderのmetadata commit後に更新する。setTimeによる時刻変更は
+これらの計算にも反映する。scene_timeはアニメーション専用の独立時計ではない。
+
+Graph::publishへ渡すrender writerが、そのframeのbuffer_bindingsで保持するIDへ転送する。
+更新後のグローバル名検索へ戻らず、古い世代を保持するframeの資源対応を維持する。
+音声handleの自動解決や任意外部inputの供給はまだないため、未束縛の入力/出力を含む
+自動実行候補は公開前に拒否する。手動Graph APIのsound/inputs供給は維持する。
+
+通常Rendererでの実GPU出力、scene再読込みによるscene_timeリセット、数値変更を含む
+描画世代更新、未束縛inputを持つ候補失敗後の旧出力維持を確認した。presetと併用する
+共通buffer/compute宣言はpreset展開後に追加する。
+
+現在の所有単位はプロジェクトの共通描画文書と描画世代。sceneごとに別のgraphを選ぶ
+保存形式や、objectへのsubgraph instance装着・個体parameter/stateは未実装。
 
 画像port、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
 scene/Studio統合は残件。

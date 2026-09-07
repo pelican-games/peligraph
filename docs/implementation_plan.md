@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。ValueGraphの専用scene component追加は未着手のまま進め方を変更。共通authoringのinstance展開は0b136a7d、port型照合は4edd1dbb、buffer/computeの描画compose接続は4e9e6406で実装。続いて混在文書の実行分割と、1個のfloatの数値→buffer→GPU shader消費を接続して実出力を確認した。既存の描画用compiled graphをauthoring正本へ転用しない。次は共通文書の所有/評価をscene/frameへ接続する。画像port・featureの共通instance化・状態/イベント・Studioへの統合は未了。
+- 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・compute構成に続き、4f566ea1で混在文書の数値→buffer→GPU shader消費を接続。通常Rendererの自動評価、描画世代と数値処理の同時更新、scene読込み時刻の供給も実GPUで確認した。現在の所有はプロジェクト共通描画文書/描画世代であり、scene別graphや個体別parameter/stateは未了。次はobjectごとのsubgraph instance装着・parameter/state所有を共通モデルへ接続する。画像port・feature共通instance・状態/イベント・Studioも残件。
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
@@ -23247,6 +23247,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**通常Rendererの共通数値graph自動評価とscene時計 (2026-09-07):**
+- ValueGraphをCompiledFrameGraphExecutionに保持し、描画世代の準備・公開・破棄と同じ所有へ接続。候補の入力/出力と転送先bufferの存在・host_source・sizeを公開前に確認。Graph::publishのrender writerとstageRuntimeValuesのID入口を使い、そのframeが保持するbuffer_bindingsへ転送する。
+- Rendererのupload直前にtime/delta_time/scene_timeを与えて評価する。scene開始時刻はSceneLoaderのmetadata commit後だけ更新し、別グラフ保存系や専用componentを増やさない。現段階の所有はプロジェクト共通描画文書/描画世代であり、sceneごとのgraph選択や個体別state/parameterは未実装。
+- 通常Rendererの実GPU確認で、共通bufferをpreset解決前に追加するとpreset root検査に拒否される問題を検出。共通buffer/computeの追加をpreset展開後へ移した。
+- Player Debug build成功。GPU skeletal 7case/91assertion成功: scene_time=0.25/0.75に対応する2.5/5.5、scene再読込みで2.5へ戻ること、不正inputを含む候補の拒否と世代番号/旧出力維持、gain更新後の世代更新と4.0出力を確認。数値/animation/scene契約CPUは30case/1501assertion、render-featureは48case/965assertion成功。frame_graph_values_*ログを参照。
+- 自動評価を外すとGPU出力、scene開始時刻の更新を外すと再読込み後の出力、数値処理の世代切替を外すとgain更新後の出力の対照が落ちる。個別変異は未実施。XRの共通グラフ実行、GUIからの更新、scene loadの注入失敗時時計は個別未検証。自動実行で未束縛の音声handle/任意inputは候補拒否し、手動APIは維持する。
 
 **混在graphの数値→buffer→GPU shader消費を接続 (2026-09-07):**
 - project/graphpartitionへ全体型照合後の数値/描画実行分割を追加し、ValueGraphとrender composeで共用。既存のoperation契約を移し、領域ごとの二重管理を減らした。公開出力は型に従って分け、serializeは共通原文を保つ。

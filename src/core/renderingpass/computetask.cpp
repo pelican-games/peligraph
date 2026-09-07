@@ -2453,8 +2453,11 @@ bool FrameGraphResourceContainer::hasBuffer(std::string_view name) const {
 }
 
 bool FrameGraphResourceContainer::stageRuntimeValues(std::string_view name, std::span<const float> values) {
-    const auto id = getBufferIdByName(name);
-    if (!isValidFrameGraphBufferId(id)) return false;
+    return stageRuntimeValues(getBufferIdByName(name), values);
+}
+
+bool FrameGraphResourceContainer::stageRuntimeValues(FrameGraphBufferId id, std::span<const float> values) {
+    if (!isValidFrameGraphBufferId(id) || !buffers.contains(id)) return false;
     auto &record = buffers.get(id);
     if (record.definition.host_source != FrameGraphHostBufferSource::runtime_f32)
         throw std::invalid_argument("runtime values require host_source runtime_f32");

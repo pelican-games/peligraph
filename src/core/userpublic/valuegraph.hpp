@@ -3,6 +3,8 @@
 #include "animation/curve.hpp"
 #include "export.hpp"
 #include <handle.hpp>
+#include <functional>
+#include <span>
 #include <map>
 #include <optional>
 #include <string>
@@ -15,6 +17,7 @@ namespace Pelican::ValueGraph {
 using Inputs = std::map<std::string, double, std::less<>>;
 using Outputs = std::map<std::string, std::vector<double>, std::less<>>;
 using SoundBindings = std::map<std::string, SoundHandle, std::less<>>;
+using RenderValueWriter = std::function<bool(std::string_view, std::span<const float>)>;
 struct PublishResult {
     std::size_t applied{};
     std::vector<std::string> unavailable;
@@ -30,8 +33,11 @@ class PELICAN_API Graph {
     // Owner-thread evaluation and explicit service publication. Sound targets
     // are symbolic names, resolved using this instance's live handles.
     // Missing/stopped targets are reported; other bindings can still apply.
+    // A renderer may supply a writer resolving names against its retained
+    // generation instead of the current global resource name table.
     PublishResult publish(const GameContext &context, const Inputs &inputs,
-                          const SoundBindings &sounds = {}) const;
+                          const SoundBindings &sounds = {},
+                          const RenderValueWriter &render_writer = {}) const;
 
   private:
     Outputs evaluateInternal(const Inputs &inputs) const;

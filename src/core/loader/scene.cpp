@@ -1,4 +1,5 @@
 #include "scene.hpp"
+#include "../appflow/enginetime.hpp"
 #include "modelphysicsbinding.hpp"
 
 #include "../ecs/predefined/modelview.hpp"
@@ -569,6 +570,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     bool procedural_published = false;
     bool light_published = false;
     bool candidates_published = false;
+    double candidate_scene_start_time = 0;
 
     const auto fail = [&](SceneLoadPhase phase,
                           std::exception_ptr error) -> SceneLoadResult {
@@ -604,6 +606,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
             throw std::runtime_error("scene not found: " + request.scene_id);
         }
         internal::validateResolvedSceneFeatureBindings(*scene);
+        candidate_scene_start_time = GET_MODULE(EngineTime).now();
         const bool has_procedural = std::any_of(
             scene->objects.begin(), scene->objects.end(), [](const auto &object) {
                 return std::any_of(
@@ -1120,6 +1123,7 @@ SceneLoadResult SceneLoader::load(SceneLoadRequest request) {
     static_assert(noexcept(std::declval<std::optional<SceneId> &>().swap(
         std::declval<std::optional<SceneId> &>())));
     metadata.commit(phase_trace);
+    scene_start_time = candidate_scene_start_time;
 
     effect_transaction->setRetiredObjects(destroyed_entities);
     behavior_candidate->finish(phase_trace);

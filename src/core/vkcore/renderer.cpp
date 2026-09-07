@@ -1,4 +1,6 @@
 #include "renderer.hpp"
+#include "../userpublic/valuegraph.hpp"
+#include "../userpublic/gamecontext.hpp"
 #include "../renderer/camera.hpp"
 #include "accelerationstructure.hpp"
 #include "../renderer/fullscreenpassrenderer.hpp"
@@ -5223,6 +5225,20 @@ void Renderer::renderLogicalFrame(
     }
     observed_time_set_revision = time_set_revision;
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
+    if (frame_graph.value_graph) {
+        const auto *scene = FastModuleContainer::tryGet<SceneLoader>();
+        const ValueGraph::Inputs inputs{
+            {"time", engine_time.now()}, {"delta_time", engine_time.dt()},
+            {"scene_time", engine_time.now() - (scene ? scene->sceneStartTime() : 0.0)}};
+        const auto published = frame_graph.value_graph->publish(GameContext{}, inputs, {},
+            [&](std::string_view name, std::span<const float> values) {
+                const auto found = frame_graph.buffer_bindings.find(std::string{name});
+                return found != frame_graph.buffer_bindings.end() &&
+                    modules.frame_graph_resources.stageRuntimeValues(found->second, values);
+            });
+        if (!published.unavailable.empty())
+            throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
+    }
     modules.frame_graph_resources.uploadRuntimeValues();
     updateFrameLights(
         modules.light_container,

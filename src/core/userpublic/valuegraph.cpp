@@ -254,7 +254,7 @@ Outputs Graph::evaluateInternal(const Inputs &inputs) const {
 }
 
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
-                             const SoundBindings &sounds) const {
+                             const SoundBindings &sounds, const RenderValueWriter &render_writer) const {
     const auto outputs = evaluateInternal(inputs);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
@@ -275,7 +275,8 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         const auto &binding = bindings_[i];
         bool applied = false;
         if (binding.type == Target::render_buffer)
-            applied = context.setRenderValues(binding.target, prepared[i]);
+            applied = render_writer ? render_writer(binding.target, prepared[i])
+                                    : context.setRenderValues(binding.target, prepared[i]);
         else if (const auto sound = sounds.find(binding.target); sound != sounds.end()) {
             applied = binding.type == Target::sound_volume
                 ? context.setSoundVolume(sound->second, prepared[i][0])

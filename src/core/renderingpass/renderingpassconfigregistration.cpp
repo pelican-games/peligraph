@@ -1,4 +1,6 @@
 #include "renderingpassconfigregistration.hpp"
+#include "../userpublic/valuegraph.hpp"
+#include "../userpublic/gamecontext.hpp"
 #include "../shader/raygrouplayout.hpp"
 #include "computetask.hpp"
 #include "../../project/renderpipeline.hpp"
@@ -836,6 +838,10 @@ registerRenderingPassConfigVariantsData(
             effectiveRenderCompilerProgram(
                 dependencies.front().options),
             compiler_input);
+    std::shared_ptr<const ValueGraph::Graph> value_graph;
+    if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
+        value_graph = std::make_shared<const ValueGraph::Graph>(rendering_pass_data.dump());
+    }
     if (ray_tracing_project != nullptr) {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_compile);
@@ -920,6 +926,22 @@ registerRenderingPassConfigVariantsData(
                 pass_implementation_providers,
                 native_scope_providers,
                 results[index]);
+        for (auto &program : variant_programs) {
+            program.value_graph = value_graph;
+            if (value_graph) {
+                const auto bindings = value_graph->publish(GameContext{},
+                    {{"time", 0}, {"delta_time", 0}, {"scene_time", 0}}, {},
+                    [&](std::string_view name, std::span<const float> values) {
+                        const auto found = program.buffer_bindings.find(std::string{name});
+                        if (found == program.buffer_bindings.end()) return false;
+                        const auto &buffer = dependencies[index].frame_graph_resources.definition(found->second);
+                        return buffer.host_source == FrameGraphHostBufferSource::runtime_f32 &&
+                               buffer.size == values.size_bytes();
+                    });
+                if (!bindings.unavailable.empty())
+                    throw std::runtime_error("unbound frame graph output: " + bindings.unavailable.front());
+            }
+        }
         program_preparations.insert(
             program_preparations.end(),
             std::make_move_iterator(

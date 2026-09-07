@@ -193,7 +193,7 @@ pelican2/
    `overflow` を立てる = **順序の観測を黙って捨てない**)、5 つの
    [`SceneLoadRoot`](../../src/core/loader/sceneload.hpp#L82)(startup / rpc / pending / import v1 / v2)、
    import 側の [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L276)。
-2. [`scene.cpp`](../../src/core/loader/scene.cpp#L524) の `SceneLoader::load` —— executor 本体。
+2. [`scene.cpp`](../../src/core/loader/scene.cpp#L525) の `SceneLoader::load` —— executor 本体。
    phase は `prepare → early_publish → publish → activate → commit_metadata → retire → flush → finish` で、
    **記録するのは executor ではなく各 participant** です(WP380c/d)。
 3. [`effecttransaction.hpp`](../../src/core/loader/effecttransaction.hpp#L27) —— behavior が

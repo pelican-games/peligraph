@@ -54,6 +54,7 @@ DECLARE_MODULE(SceneLoader) {
     std::vector<ModelTemplate> transient_models;
     std::optional<SceneId> pending_scene_id;
     bool runtime_only_changes = false;
+    double scene_start_time = 0;
     std::uint64_t next_authority_epoch = 1;
     std::uint64_t run_nonce = 0;
     SceneLoadFaultInjector *fault_injector = nullptr;
@@ -96,6 +97,7 @@ DECLARE_MODULE(SceneLoader) {
     }
     std::uint64_t runtimeSceneEpoch() const noexcept;
     SceneAuthority activeAuthority() const noexcept;
+    double sceneStartTime() const noexcept { return scene_start_time; }
     nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;

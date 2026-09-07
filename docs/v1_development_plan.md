@@ -105,7 +105,10 @@ project/graphcompositionへ共通形式の定義/instance/port展開を追加し
 render.buffer/render.computeの資源・型付き入出力を既存compose入口へ接続した。
 計算結果portへの接続から完了依存を生成する。混在文書の実行分割と、bufferのvalue入力を
 通じた数値→runtime_f32→GPU compute消費も接続し、実結果を読み戻して確認した。
-現在の転送境界は1個のfloat用。次は共通文書の所有と評価をscene/frameへ接続する。
+現在の転送境界は1個のfloat用。数値処理を描画世代に保持し、通常Rendererで自動評価する
+経路とscene読込み時刻の供給を接続した。更新失敗時の旧世代維持も実GPUで確認済み。
+次はobjectごとのsubgraph instance装着・parameter/state所有を共通モデルへ接続する。
+sceneごとのgraph選択と音声handle/任意外部inputの自動供給はまだない。
 画像port、feature自体の共通instance化、状態/イベント境界、Studio統合は残件。
 専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
 アトリビュート生成/付与・固有shaderもこの共通表現へ含める。material反復の

@@ -174,6 +174,7 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     bool hasBuffer(std::string_view name) const;
     // Owner-thread staging; upload at the renderer's existing host-write phase.
     bool stageRuntimeValues(std::string_view name, std::span<const float> values);
+    bool stageRuntimeValues(FrameGraphBufferId id, std::span<const float> values);
     void uploadRuntimeValues();
     bool hasBuffer(FrameGraphBufferId id) const;
     FrameGraphBufferId getBufferIdByName(std::string_view name) const;

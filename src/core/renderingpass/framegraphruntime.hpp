@@ -20,6 +20,7 @@
 #include <vector>
 
 namespace Pelican {
+namespace ValueGraph { class Graph; }
 
 class PreparedVulkanNativeScopeGraph;
 
@@ -62,6 +63,7 @@ struct CompiledFrameGraphExecution {
     std::unordered_map<std::string, FrameGraphBufferId>
         buffer_bindings;
     std::vector<FrameGraphExecutionNode> nodes;
+    std::shared_ptr<const ValueGraph::Graph> value_graph;
 };
 
 struct CompiledRenderProgram {
@@ -123,6 +125,7 @@ struct RenderPipelineProgramPreparation {
     std::unordered_map<std::string, FrameGraphBufferId>
         buffer_bindings;
     std::optional<RenderingPassId> rendering_pass_id;
+    std::shared_ptr<const ValueGraph::Graph> value_graph;
 };
 
 class PreparedRendererRuntimeGeneration {
