@@ -23246,6 +23246,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 機能別の実装・検証履歴
 
+**数値グラフの音声・描画出力binding保存 (2026-09-07):**
+- bindingsにoutput/kind/targetを保存し、Graph::publishが評価値を既存GameContextのrender buffer/voice volume/voice pitchへ渡す。音声は論理名を実行中SoundHandleへ対応付け、handle自体を文書に保存しない。単一出力から複数接続先への分配を受理し、同じkind/targetへの二重writerと音声の複数要素出力は拒否する。
+- 全出力のfloat32変換・音声値域を反映前に確認する。未登録/停止済みtargetとeffect staging中は適用件数・unavailableとして返す。他のtargetへの反映は継続できる。backend例外やbufferサイズ不一致時に先行反映を戻すtransactionは追加しない。
+- Player Debug build成功。curve/animgraphは19case/436assertion、audio/effectは12case/440assertion、実Vulkan対象は4case/74assertion成功。保存再読込した音声bindingのvolume/pitch反映・停止後の未適用、保存されたrender target名への値転送、音声出力の要素数拒否を確認。publishのservice呼出を外すと音声個別値とbuffer内容の対照が落ちる。個別変異・実音声device聴取・shader消費結果は未確認。
+- scene自動装着/定期実行、triggerと再生/停止イベント、非スカラー型、GUIは残件。連続値のpublishで音声の新規再生は行わない。
+
 **数値グラフの再生時間変換ノード (2026-09-07):**
 - playbackノードへelapsed入力、source_begin/end・duration・speed・delay・sample_intervalの定数/他node参照、wrapのonce/repeat/ping_pongを追加。出力はカーブ上の時刻で、既存curveノードへ接続する。時間変換を公開mapCurveTimeへ分離し、sampleCurve・graphで共用する。値のscale/offsetは後段add/multiplyの責務。
 - Player Debug build成功。curve/animgraphは19case/435assertion成功。保存再読込したgraphで使用区間2..6、外部duration変更、逆再生、遅延、往復、固定間隔保持と不正duration/speedを確認。duration入力の反映を外すと再生時間変更の対照、sample_intervalを外すと保持時刻の対照が落ちる。個別変異は未実施。CPU時間演算の変更なのでGPU試験は反復していない。

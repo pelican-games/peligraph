@@ -250,12 +250,13 @@ stopは時計を解除する。イベント購読・複数再生の重ね合わ�
 
 公開`valuegraph.hpp`のValueGraph::Graphは`pelican.value_graph` version 1を
 読み、serializeで接続とカーブ形状を保存する。evaluateへ名前付きdouble入力を
-渡すと、名前付きdouble配列を返す。副作用・内部時計・scene所有は持たない。
+渡すと、名前付きdouble配列を返す。evaluateは副作用を持たず、内部時計・scene所有も持たない。
 呼出側がEngineTimeやsoundState.position_secondsを入力として渡し、出力を
-setRenderValuesやsetSoundVolume等へ接続する。これらのサービスへの自動装着、
-接続先型の検査、音声イベントの消費、GUIはまだ実装していない。
+setRenderValuesやsetSoundVolume等へ接続する。保存したbindingsを使う場合は
+publish(context, inputs, sounds)で評価と反映を行う。sceneへの自動装着、
+音声イベントの消費、GUIはまだ実装していない。
 
-文書はschema/version/nodes/outputsを持つ。nodesはidが一意の配列、outputsは
+文書はschema/version/nodes/outputsと任意のbindingsを持つ。nodesはidが一意の配列、outputsは
 出力名からnode id配列への対応。宣言順によらず依存順を一度構築し、循環と
 存在しない参照を拒否する。評価値は有限のdouble、カーブ補間は既存ScalarCurve。
 
@@ -280,6 +281,15 @@ playbackのsource_begin/source_end/duration/speed/delay/sample_intervalは
 速度変更を積分する時計とは異なる。graphは状態を保持せず、triggerによる経過
 時刻の生成はまだ呼出側の責務。active/completedをイベントへ変換するノード、
 pose/物理等の非スカラー型は残件であり、数値グラフ完成とは扱わない。
+
+bindingsは`{"output":"出力名","kind":"render_buffer","target":"buffer名"}`
+等の配列。kindはrender_buffer/sound_volume/sound_pitchを受理する。音声の出力は
+要素1個に限定し、targetはpublishへ渡すSoundBindingsの論理名で解決する。
+一つの出力を複数の接続先へ分配できるが、同じkind/targetへの二重指定は拒否する。
+publishは全数値をfloat32へ変換してから反映する。停止・未登録の接続先や
+effect staging中は適用せず、PublishResultのapplied/unavailableで結果を返す。
+接続先のサイズ不一致やbackend例外では、それ以前の反映を巻き戻す契約ではない。
+再生/停止イベントはここに含めず、連続値の反映で新しい音声を生成しない。
 
 ## 4. glTF / VRMA の受理(調査 §4.2 — VRM 一級化の要件)
 

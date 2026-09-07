@@ -323,20 +323,21 @@ TEST_CASE("curve samples publish to a runtime float render buffer", "[runtime-re
         {"id":"scaled","op":"multiply","a":"shape","b":"gain"},
         {"id":"one","op":"constant","value":1},
         {"id":"offset","op":"add","a":"scaled","b":"one"}],
-      "outputs":{"curve_values":["scaled","offset"]}})"};
+      "outputs":{"values":["scaled","offset"]},
+      "bindings":[{"output":"values","kind":"render_buffer","target":"curve_values"}]})"};
     const ValueGraph::Graph restored{graph.serialize()};
-    const auto outputs = restored.evaluate({{"time", 0.25}});
     GameContext context;
-    const auto &[output_name, scalars] = *outputs.begin();
-    std::array<float, 2> values{static_cast<float>(scalars[0]), static_cast<float>(scalars[1])};
-    REQUIRE(context.setRenderValues(output_name, values));
-    values.fill(99); // Publishing takes a snapshot, not a borrowed pointer.
+    ValueGraph::Inputs inputs{{"time", 0.25}};
+    const auto published = restored.publish(context, inputs);
+    REQUIRE(published.applied == 1);
+    REQUIRE(published.unavailable.empty());
+    inputs["time"] = 99; // Already published values are a snapshot.
     REQUIRE(read() == std::array<float, 2>{0.0f, 0.0f});
     resources.uploadRuntimeValues();
     REQUIRE(read() == std::array<float, 2>{0.5f, 1.5f});
+    std::array<float, 2> values{2.0f, 0.0f};
     REQUIRE_FALSE(context.setRenderValues("missing", values));
     REQUIRE_THROWS(context.setRenderValues("curve_values", std::span{values}.first(1)));
-    values = {2.0f, 0.0f};
     REQUIRE(context.setRenderValues("curve_values", values));
     resources.uploadRuntimeValues();
     REQUIRE(read() == values);

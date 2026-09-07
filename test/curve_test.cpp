@@ -58,6 +58,9 @@ TEST_CASE("saved value graphs compose curves and external parameters", "[curve][
       "nodes":[{"id":"x","op":"add","a":"x","b":"x"}],"outputs":{"v":["x"]}})"));
     REQUIRE_THROWS(Pelican::ValueGraph::Graph(R"({"schema":"pelican.value_graph","version":1,
       "nodes":[],"outputs":{"v":["missing"]}})"));
+    REQUIRE_THROWS(Pelican::ValueGraph::Graph(R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[{"id":"x","op":"constant","value":1}],"outputs":{"v":["x","x"]},
+      "bindings":[{"output":"v","kind":"sound_volume","target":"voice"}]})"));
 }
 
 TEST_CASE("scalar curves preserve slope units and step key boundaries", "[animation][curve]") {

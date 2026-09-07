@@ -1,7 +1,10 @@
 #include "valuegraph.hpp"
+#include "gamecontext.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <set>
 #include <nlohmann/json.hpp>
 #include <stdexcept>
 
@@ -30,7 +33,7 @@ double number(const Json &value) {
 
 Graph::Graph(std::string_view document) {
     const auto root = Json::parse(document);
-    keys(root, {"schema", "version", "nodes", "outputs"});
+    keys(root, {"schema", "version", "nodes", "outputs", "bindings"});
     if (root.at("schema") != "pelican.value_graph" || root.at("version") != 1)
         throw std::invalid_argument("unsupported value graph schema/version");
     const auto &nodes = root.at("nodes");
@@ -131,6 +134,28 @@ Graph::Graph(std::string_view document) {
             throw std::invalid_argument("value graph output requires a name and scalar references");
         for (const auto &reference : references) outputs_[output].push_back(resolve(reference));
     }
+    if (const auto bindings = root.find("bindings"); bindings != root.end()) {
+        if (!bindings->is_array()) throw std::invalid_argument("value graph bindings must be an array");
+        std::set<std::pair<std::string, std::string>> targets;
+        for (const auto &binding : *bindings) {
+            keys(binding, {"output", "kind", "target"});
+            Binding decoded;
+            decoded.output = name(binding.at("output"));
+            decoded.target = name(binding.at("target"));
+            decoded.kind = name(binding.at("kind"));
+            if (decoded.kind == "render_buffer") decoded.type = Target::render_buffer;
+            else if (decoded.kind == "sound_volume") decoded.type = Target::sound_volume;
+            else if (decoded.kind == "sound_pitch") decoded.type = Target::sound_pitch;
+            else throw std::invalid_argument("unknown value graph binding kind: " + decoded.kind);
+            const auto output = outputs_.find(decoded.output);
+            if (output == outputs_.end()) throw std::invalid_argument("binding references unknown output: " + decoded.output);
+            if (decoded.type != Target::render_buffer && output->second.size() != 1)
+                throw std::invalid_argument("audio binding requires one scalar output");
+            if (!targets.emplace(decoded.kind, decoded.target).second)
+                throw std::invalid_argument("duplicate value graph target: " + decoded.target);
+            bindings_.push_back(std::move(decoded));
+        }
+    }
     document_ = root.dump();
 }
 
@@ -165,6 +190,40 @@ Outputs Graph::evaluate(const Inputs &inputs) const {
         auto &output = result[name];
         output.reserve(indices.size());
         for (const auto index : indices) output.push_back(values[index]);
+    }
+    return result;
+}
+
+PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
+                             const SoundBindings &sounds) const {
+    const auto outputs = evaluate(inputs);
+    // Convert and validate every value before changing any service.
+    std::vector<std::vector<float>> prepared;
+    prepared.reserve(bindings_.size());
+    for (const auto &binding : bindings_) {
+        auto &values = prepared.emplace_back();
+        for (const auto value : outputs.at(binding.output)) {
+            if (std::abs(value) > (std::numeric_limits<float>::max)())
+                throw std::out_of_range("graph output exceeds float32 range: " + binding.output);
+            values.push_back(static_cast<float>(value));
+        }
+        if ((binding.type == Target::sound_volume && values[0] < 0) ||
+            (binding.type == Target::sound_pitch && values[0] <= 0))
+            throw std::invalid_argument("invalid audio graph output: " + binding.output);
+    }
+    PublishResult result;
+    for (std::size_t i = 0; i < bindings_.size(); ++i) {
+        const auto &binding = bindings_[i];
+        bool applied = false;
+        if (binding.type == Target::render_buffer)
+            applied = context.setRenderValues(binding.target, prepared[i]);
+        else if (const auto sound = sounds.find(binding.target); sound != sounds.end()) {
+            applied = binding.type == Target::sound_volume
+                ? context.setSoundVolume(sound->second, prepared[i][0])
+                : context.setSoundPitch(sound->second, prepared[i][0]);
+        }
+        if (applied) ++result.applied;
+        else result.unavailable.push_back(binding.kind + ":" + binding.target);
     }
     return result;
 }

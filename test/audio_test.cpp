@@ -4,6 +4,7 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
+#include "../src/core/userpublic/valuegraph.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -120,8 +121,16 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
 
     REQUIRE_NOTHROW(context.setBusVolume("master", 0.75f));
     REQUIRE_NOTHROW(context.setBusVolume("se", 0.5f));
-    REQUIRE(context.setSoundVolume(first, 0.25f));
-    REQUIRE(context.setSoundPitch(first, 1.5f));
+    const ValueGraph::Graph authored{R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[{"id":"gain","op":"input","name":"gain"},
+               {"id":"pitch","op":"input","name":"pitch"}],
+      "outputs":{"volume":["gain"],"rate":["pitch"]},
+      "bindings":[{"output":"volume","kind":"sound_volume","target":"voice"},
+                  {"output":"rate","kind":"sound_pitch","target":"voice"}]})"};
+    const ValueGraph::Graph graph{authored.serialize()};
+    const auto published = graph.publish(context, {{"gain", 0.25}, {"pitch", 1.5}}, {{"voice", first}});
+    REQUIRE(published.applied == 2);
+    REQUIRE(published.unavailable.empty());
     const auto state = context.soundState(first);
     REQUIRE(state);
     REQUIRE(state->volume == 0.25f);
@@ -139,6 +148,9 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
     REQUIRE_FALSE(context.soundState(first));
     REQUIRE_FALSE(context.setSoundVolume(first, 1.0f));
     REQUIRE_FALSE(context.setSoundPitch(first, 1.0f));
+    const auto stopped = graph.publish(context, {{"gain", 1}, {"pitch", 1}}, {{"voice", first}});
+    REQUIRE(stopped.applied == 0);
+    REQUIRE(stopped.unavailable.size() == 2);
     REQUIRE(context.isPlaying(second));
     REQUIRE(GET_MODULE(Audio).voiceCountForTesting() == 1);
     REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 1);
