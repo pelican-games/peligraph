@@ -2748,7 +2748,29 @@ GltfAttributeData GltfLoader::readAttribute(const PreparedGltf &prepared,
     const auto accessor = source.attributes.find(std::string{semantic});
     if (accessor == source.attributes.end())
         throw std::invalid_argument("glTF primitive has no attribute: " + std::string{semantic});
-    const auto component = prepared.impl->model.accessors.at(accessor->second).componentType;
+    return readAccessor(prepared, accessor->second, element);
+}
+
+GltfAttributeData GltfLoader::readIndices(const PreparedGltf &prepared,
+    std::uint32_t mesh, std::uint32_t primitive) const {
+    if (!prepared.impl) throw std::invalid_argument("cannot read indices from an empty prepared glTF");
+    const auto &source = prepared.impl->model.meshes.at(mesh).primitives.at(primitive);
+    if (source.indices < 0) throw std::invalid_argument("glTF primitive is not indexed");
+    auto result = readAccessor(prepared, source.indices, ShaderResourceBufferElement::unsigned_integer);
+    const auto position = source.attributes.find("POSITION");
+    if (position == source.attributes.end()) throw std::invalid_argument("indexed glTF primitive has no POSITION attribute");
+    const auto count = prepared.impl->model.accessors.at(position->second).count;
+    for (std::size_t i = 0; i < result.count; ++i) {
+        std::uint32_t index;
+        std::memcpy(&index, result.bytes.data() + i * sizeof(index), sizeof(index));
+        if (index >= count) throw std::invalid_argument("glTF index exceeds vertex count");
+    }
+    return result;
+}
+
+GltfAttributeData GltfLoader::readAccessor(const PreparedGltf &prepared, int accessor,
+    ShaderResourceBufferElement element) const {
+    const auto component = prepared.impl->model.accessors.at(accessor).componentType;
     const bool signed_output = element == ShaderResourceBufferElement::integer ||
         element == ShaderResourceBufferElement::ivec2 || element == ShaderResourceBufferElement::ivec3 ||
         element == ShaderResourceBufferElement::ivec4;
@@ -2762,13 +2784,13 @@ GltfAttributeData GltfLoader::readAttribute(const PreparedGltf &prepared,
         throw std::invalid_argument("integer graph attributes require integer source components with matching signedness");
     GltfAccessorReader loader{prepared.impl->model, prepared.impl->source_path};
     const auto pack = [&]<int type, class T>() {
-        const auto values = loader.getDataFromAccessor<type, T>(accessor->second);
+        const auto values = loader.getDataFromAccessor<type, T>(accessor);
         const auto stride = shaderResourceBufferElementStride(element);
         if (values.size() > (std::numeric_limits<std::size_t>::max)() / stride)
             throw std::overflow_error("glTF attribute byte size overflows");
         GltfAttributeData result{element, values.size(), std::vector<std::byte>(values.size() * stride)};
         result.source_files.push_back(std::filesystem::weakly_canonical(prepared.impl->source_path));
-        const auto view = prepared.impl->model.accessors.at(accessor->second).bufferView;
+        const auto view = prepared.impl->model.accessors.at(accessor).bufferView;
         const auto buffer = prepared.impl->model.bufferViews.at(view).buffer;
         if (const auto found = prepared.impl->buffer_source_files.find(buffer);
             found != prepared.impl->buffer_source_files.end()) result.source_files.push_back(found->second);

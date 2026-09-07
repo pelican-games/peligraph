@@ -95,6 +95,16 @@ TEST_CASE("prepared glTF attributes use shader array layout without GPU allocati
     std::memcpy(joint_values.data(), joints.bytes.data(), joints.bytes.size());
     REQUIRE(joint_values[0] == 0);
     REQUIRE(joint_values[8] == 1);
+    const auto indices = loader.readIndices(prepared, 0, 0);
+    REQUIRE(indices.element == Element::unsigned_integer);
+    REQUIRE(indices.count == 6);
+    REQUIRE(indices.bytes.size() == 24);
+    std::array<std::uint32_t, 6> index_values;
+    std::memcpy(index_values.data(), indices.bytes.data(), indices.bytes.size());
+    REQUIRE(index_values == std::array<std::uint32_t, 6>{0, 1, 2, 2, 1, 3});
+    REQUIRE(indices.source_files == positions.source_files);
+    REQUIRE_THROWS(loader.readIndices(PreparedGltf{}, 0, 0));
+    REQUIRE_THROWS(loader.readIndices(prepared, 1, 0));
     REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "POSITION", Element::vec2));
     REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "POSITION", Element::ivec3));
     REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "JOINTS_0", Element::ivec4));
@@ -139,6 +149,25 @@ TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[
     std::memcpy(values.data(), attribute.bytes.data(), attribute.bytes.size());
     REQUIRE(values[0] == -1);
     REQUIRE(values[4] == 2);
+    REQUIRE_THROWS(loader.readIndices(prepared, 0, 0));
+    auto indexed_document = nlohmann::json::parse(std::ifstream{root / "mesh.gltf"});
+    indexed_document["bufferViews"].push_back({{"buffer", 1}, {"byteLength", 4}});
+    indexed_document["accessors"].push_back({{"bufferView", 1}, {"componentType", 5121},
+        {"count", 3}, {"type", "SCALAR"}});
+    indexed_document["meshes"][0]["primitives"][0]["indices"] = 1;
+    writeText(root / "mesh.gltf", indexed_document.dump());
+    writeText(root / "unused.bin", std::string{"\0\1\2\0", 4});
+    REQUIRE_THROWS(loader.readIndices(loader.prepareGltf((root / "mesh.gltf").string()), 0, 0));
+    writeText(root / "unused.bin", std::string{"\0\1\0\0", 4});
+    const auto indices = loader.readIndices(loader.prepareGltf((root / "mesh.gltf").string()), 0, 0);
+    REQUIRE(indices.count == 3);
+    REQUIRE(indices.bytes.size() == 12);
+    std::array<std::uint32_t, 3> index_values;
+    std::memcpy(index_values.data(), indices.bytes.data(), indices.bytes.size());
+    REQUIRE(index_values == std::array<std::uint32_t, 3>{0, 1, 0});
+    REQUIRE(indices.source_files == std::vector<std::filesystem::path>{
+        std::filesystem::weakly_canonical(root / "mesh.gltf"),
+        std::filesystem::weakly_canonical(root / "unused.bin")});
     REQUIRE_THROWS(PreparedGltf{}.dataFiles());
     REQUIRE(FastModuleContainer::tryGet<VulkanManageCore>() == nullptr);
 }

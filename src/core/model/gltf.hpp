@@ -59,7 +59,8 @@ class ModelResourceReleaseException : public std::runtime_error {
 };
 
 DECLARE_MODULE(GltfLoader) {
-    
+    GltfAttributeData readAccessor(const PreparedGltf &prepared, int accessor,
+        ShaderResourceBufferElement element) const;
 
   public:
     GltfLoader();
@@ -83,6 +84,9 @@ DECLARE_MODULE(GltfLoader) {
     GltfAttributeData readAttribute(const PreparedGltf &prepared,
         std::uint32_t mesh, std::uint32_t primitive, std::string_view semantic,
         ShaderResourceBufferElement element) const;
+    // Indexed primitives only. Converts glTF unsigned index widths to uint32.
+    GltfAttributeData readIndices(const PreparedGltf &prepared,
+        std::uint32_t mesh, std::uint32_t primitive) const;
     ModelTemplate commit(
         PreparedGltf prepared,
         std::optional<GltfAuthoredAssetReference> authored_reference =

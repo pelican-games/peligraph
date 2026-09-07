@@ -339,6 +339,10 @@ mesh/primitive index・semantic（POSITION等）・出力elementを指定し、�
 同じGltfAccessorReaderでstride/正規化整数/範囲を解釈し、疎アクセサー等の既存未対応は維持する。
 整数出力には符号の一致する整数componentを要求し、float→integerの暗黙変換を行わない。
 vec3のarray paddingは0で埋める。GPU・標準materialを初期化せず、全meshのCPUコピーを常駐させない。
+GltfLoader::readIndicesも同じ読出し・依存抽出を使用し、元primitiveのインデックスをuint32へ変換する。
+非indexed primitiveは明示的に拒否し、POSITION要素数を超えるindexも拒否する。8/16bit入力、
+外部buffer依存と範囲外拒否をCPUテストで確認した。共通グラフのindex source宣言、
+ラスターパスのindexed draw契約とGPU接続は未実装であり、このAPIだけでは描画経路は変わらない。
 render.attributeのparameters.sourceにasset・mesh・primitive・semanticを指定すると、このAPIから
 countと候補GPU bufferの初期データを取得する。sourceはvertex domain専用で、count/size/host_sourceや
 value入力との併用を拒否する。例は
