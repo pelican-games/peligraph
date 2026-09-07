@@ -108,7 +108,26 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         const auto op = node.at("op").get<std::string>();
         auto &partition = value_operations.contains(op) ? result.values : result.rendering;
         auto lowered = node;
-        if (op == "render.attribute") {
+        if (op == "render.attribute" && lowered.at("parameters").contains("source")) {
+            const auto &parameters = lowered.at("parameters");
+            const auto &source = parameters.at("source");
+            if (parameters.at("domain") != "vertex" || parameters.contains("count") ||
+                parameters.contains("size") || parameters.contains("host_source") ||
+                !node.at("inputs").empty())
+                throw std::invalid_argument("sourced attribute requires vertex domain and derives its data/count: " + id);
+            if (!source.is_object() || source.size() != 4)
+                throw std::invalid_argument("attribute source requires asset, mesh, primitive and semantic: " + id);
+            for (const auto key : {"asset", "semantic"})
+                if (!source.at(key).is_string() || source.at(key).get_ref<const std::string &>().empty())
+                    throw std::invalid_argument("attribute source requires nonempty names: " + id);
+            for (const auto key : {"mesh", "primitive"}) {
+                const auto &value = source.at(key);
+                if (!value.is_number_integer() ||
+                    (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
+                    value.get<std::uint64_t>() > (std::numeric_limits<std::uint32_t>::max)())
+                    throw std::invalid_argument("attribute source index must fit uint32: " + id);
+            }
+        } else if (op == "render.attribute") {
             auto &parameters = lowered.at("parameters");
             const auto &count = parameters.at("count");
             const auto stride = shaderResourceBufferElementStride(
@@ -150,6 +169,36 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         partition.outputs[port] = endpoint;
         partition.output_scopes.emplace(port, graph.output_scopes.at(port));
     }
+    return result;
+}
+
+Json resolveGraphAttributeSources(const Json &document, const GraphAttributeSourceResolver &resolve) {
+    const auto graph = partitionGraphDocument(document).rendering;
+    auto result = document;
+    // Definitions may have several instances; each expanded resource receives
+    // data, while its one authored declaration receives the derived count once.
+    std::map<std::pair<std::string, std::string>, std::uint64_t> counts;
+    for (const auto &node : graph.nodes) {
+        const auto &parameters = node.at("parameters");
+        if (node.at("op") != "render.attribute" || !parameters.contains("source")) continue;
+        const auto id = node.at("id").get<std::string>();
+        const auto count = resolve(id, parameters);
+        const auto &origin = graph.origins.at(id);
+        const auto [found, inserted] = counts.emplace(std::pair{origin.definition, origin.node}, count);
+        if (!inserted) {
+            if (found->second != count)
+                throw std::invalid_argument("shared attribute source resolved inconsistent counts: " + id);
+            continue;
+        }
+        auto &scope = origin.definition.empty() ? result : result.at("definitions").at(origin.definition);
+        for (auto &authored : scope.at("nodes"))
+            if (authored.at("id") == origin.node) {
+                authored["parameters"].erase("source");
+                authored["parameters"]["count"] = count;
+                break;
+            }
+    }
+    (void)partitionGraphDocument(result); // Validate resolved count/stride overflow too.
     return result;
 }
 }

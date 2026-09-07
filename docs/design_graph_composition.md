@@ -324,9 +324,8 @@ scalarのvalue入力を接続した場合はcount=1・floatのruntime_f32 upload
 CPUでinstance/vertex不一致と一般bufferへの誤接続、GPUでinstance属性のscalar入力から
 fullscreen/raster fragmentへの反映・owner停止を確認した。
 
-これはメッシュの既存頂点属性を自動抽出したり、material列挙に合わせて要素を自動割当する実装ではない。
-現段階のdomainは適用範囲の種類で、特定mesh/集合のidentityを表さない。対象集合からの要素数・
-属性データの抽出は残件。shaderは明示した添字で読み、既存pelican_count_<port>()で要素数を取得できる。
+現段階のdomainは適用範囲の種類で、特定mesh/集合のidentityを表さない。material列挙に合わせた
+要素割当は残件。shaderは明示した添字で読み、既存pelican_count_<port>()で要素数を取得できる。
 rasterのdraw.vertex_source/draw.instance_sourceへread属性port名を指定すると、対応domainを検査して
 vertex_count/instance_countを導出する。first_vertex/first_instanceを指定した場合はcountから差し引く。
 手書きcountとの二重指定、開始位置の範囲外、uint32の描画範囲を超える属性は拒否する。
@@ -340,7 +339,17 @@ mesh/primitive index・semantic（POSITION等）・出力elementを指定し、�
 同じGltfAccessorReaderでstride/正規化整数/範囲を解釈し、疎アクセサー等の既存未対応は維持する。
 整数出力には符号の一致する整数componentを要求し、float→integerの暗黙変換を行わない。
 vec3のarray paddingは0で埋める。GPU・標準materialを初期化せず、全meshのCPUコピーを常駐させない。
-このAPIを共通graphのsource記述・count解決・候補buffer uploadへ接続する作業はまだ未了。
+render.attributeのparameters.sourceにasset・mesh・primitive・semanticを指定すると、このAPIから
+countと候補GPU bufferの初期データを取得する。sourceはvertex domain専用で、count/size/host_sourceや
+value入力との併用を拒否する。例は
+`{"element":"vec3","domain":"vertex","source":{"asset":"project://character.glb","mesh":0,"primitive":0,"semantic":"POSITION"}}`。
+使用中の定義instanceだけを解決し、元のJSONはsource参照を保持する。派生countはコンパイラ用文書へ
+渡し、データは各候補が保持するbuffer IDへ転送する。同じassetのprepareは候補構築中に共有する。
+これは構築時のスナップショットで、asset更新の自動監視、安定したmesh occurrence参照、変形後の
+属性・index展開は未接続。ソース変更の反映には描画候補の再構築が必要。
+CPU検証は2instanceへの展開、sourceとcountの二重指定拒否、未使用定義を解決しないことを確認。
+通常Rendererでは4頂点の要素数と異なる2頂点の値をcomputeで読出し、serializeに元文書が残ること、
+欠落semanticの候補失敗後も旧世代とGPU出力が維持されることを確認した。
 
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
 ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、

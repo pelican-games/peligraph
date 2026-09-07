@@ -102,6 +102,70 @@ TEST_CASE("prepared glTF attributes use shader array layout without GPU allocati
     REQUIRE(FastModuleContainer::tryGet<StandardMaterialResource>() == nullptr);
 }
 
+TEST_CASE("common graph glTF source supplies counted GPU shader attributes", "[skeletal][graph-attribute-runtime]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_graph_source_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "shaders");
+    std::filesystem::create_directories(root / "passes");
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGlb(root / "character.glb");
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    pelican_store_destination(0, float(pelican_count_source()) +
+        pelican_load_source(1).x - pelican_load_source(0).x);
+})");
+    auto document = parameterGraphCompositionFixture();
+    auto &attribute = document["nodes"][5];
+    attribute["op"] = "render.attribute";
+    attribute.erase("inputs");
+    attribute["parameters"] = {{"element", "vec3"}, {"domain", "vertex"},
+        {"source", {{"asset", "project://character.glb"}, {"mesh", 0}, {"primitive", 0}, {"semantic", "POSITION"}}}};
+    document["nodes"][7]["parameters"]["ports"]["source"] = {
+        {"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[]}}})");
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
+    auto &renderer = GET_MODULE(Renderer);
+    renderer.render();
+    auto &vkcore = GET_MODULE(VulkanManageCore);
+    vkcore.waitIdle();
+    const auto bytes = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float));
+    float value{};
+    std::memcpy(&value, bytes.data(), sizeof(value));
+    REQUIRE(std::abs(value - 4.6f) < 0.00001f);
+    const auto generation = GET_MODULE(RenderingPassContainer).snapshot();
+    REQUIRE(generation);
+    REQUIRE_FALSE(generation->programs.empty());
+    const auto graph = generation->programs.begin()->second.frame_graph.value_graph;
+    REQUIRE(graph);
+    REQUIRE(nlohmann::json::parse(graph->serialize()) == document);
+    auto bad = document;
+    bad["nodes"][5]["parameters"]["source"]["semantic"] = "MISSING";
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(bad.dump()));
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == generation);
+    renderer.render();
+    vkcore.waitIdle();
+    const auto retained = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float));
+    std::memcpy(&value, retained.data(), sizeof(value));
+    REQUIRE(std::abs(value - 4.6f) < 0.00001f);
+}
+
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /

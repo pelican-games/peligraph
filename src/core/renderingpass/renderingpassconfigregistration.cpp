@@ -1,6 +1,8 @@
 #include "renderingpassconfigregistration.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../userpublic/gamecontext.hpp"
+#include "../model/gltf.hpp"
+#include "../../project/graphpartition.hpp"
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
 #endif
@@ -36,6 +38,7 @@
 #include "../renderer/velocitypasscontainer.hpp"
 #include "../shader/pipelinefactory.hpp"
 #include "../vkcore/core.hpp"
+#include "../vkcore/util.hpp"
 #include "../vkcore/rendertarget.hpp"
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
@@ -812,8 +815,35 @@ registerRenderingPassConfigVariantsData(
                 enabled_device_extensions.end()},
             vulkan_core.getRuntimeCapabilities(),
         };
+    std::map<std::string, GltfAttributeData> attribute_data;
+    auto resolved_rendering_data = rendering_pass_data;
+    if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
+        std::map<std::string, PreparedGltf> sources;
+        resolved_rendering_data = resolveGraphAttributeSources(rendering_pass_data,
+            [&](std::string_view node, const nlohmann::json &parameters) {
+                const auto &source = parameters.at("source");
+                const auto asset = source.at("asset").get<std::string>();
+                auto found = sources.find(asset);
+                auto &loader = GET_MODULE(GltfLoader);
+                if (found == sources.end()) {
+                    const auto path = dependencies.front().runtime.path_resolver.resolveExistingFile(asset);
+                    const auto extension = path.extension().string();
+                    if (extension != ".glb" && extension != ".gltf")
+                        throw std::invalid_argument("attribute source requires a glTF asset: " + asset);
+                    found = sources.emplace(asset, extension == ".glb"
+                        ? loader.prepareGltfBinary(path.string()) : loader.prepareGltf(path.string())).first;
+                }
+                auto data = loader.readAttribute(found->second,
+                    source.at("mesh").get<std::uint32_t>(), source.at("primitive").get<std::uint32_t>(),
+                    source.at("semantic").get<std::string>(),
+                    *shaderResourceBufferElementFromName(parameters.at("element").get<std::string>()));
+                const auto count = data.count;
+                attribute_data.emplace(std::string{node}, std::move(data));
+                return count;
+            });
+    }
     const RenderCompilerProgramInput compiler_input{
-        .rendering_config = rendering_pass_data,
+        .rendering_config = resolved_rendering_data,
         .source_name =
             "rendering pass registration",
         .path_resolver =
@@ -928,6 +958,7 @@ registerRenderingPassConfigVariantsData(
         program_preparations;
     std::optional<std::vector<std::string>>
         enabled_feature_names;
+    std::set<FrameGraphBufferId> uploaded_attributes;
     for (std::size_t index = 0;
          index < dependencies.size(); ++index) {
         auto variant_programs =
@@ -938,6 +969,27 @@ registerRenderingPassConfigVariantsData(
                 native_scope_providers,
                 results[index]);
         for (auto &program : variant_programs) {
+            for (const auto &[name, data] : attribute_data) {
+                const auto found = program.buffer_bindings.find(name);
+                if (found == program.buffer_bindings.end())
+                    throw std::runtime_error("unbound graph attribute source: " + name);
+                auto &resources = dependencies[index].frame_graph_resources;
+                if (resources.bufferSize(found->second) != data.bytes.size())
+                    throw std::runtime_error("graph attribute source buffer size mismatch: " + name);
+                if (uploaded_attributes.insert(found->second).second) {
+                    const auto staging = vulkan_core.allocBuf(data.bytes.size(), vk::BufferUsageFlagBits::eTransferSrc,
+                        vma::MemoryUsage::eAuto, vma::AllocationCreateFlagBits::eHostAccessSequentialWrite);
+                    vulkan_core.writeBuf(staging, data.bytes.data(), 0, data.bytes.size());
+                    GET_MODULE(VulkanUtils).executeOneTimeCmd([&](vk::CommandBuffer command) {
+                        command.copyBuffer(staging.buffer.get(), resources.buffer(found->second).buffer.get(),
+                            vk::BufferCopy{0, 0, data.bytes.size()});
+                        const vk::MemoryBarrier barrier{vk::AccessFlagBits::eTransferWrite,
+                            vk::AccessFlagBits::eShaderRead | vk::AccessFlagBits::eShaderWrite};
+                        command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+                            vk::PipelineStageFlagBits::eAllCommands, {}, barrier, {}, {});
+                    }, true);
+                }
+            }
             program.value_graph = value_graph;
             if (value_graph) {
                 if (program.target_plan) {

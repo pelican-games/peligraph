@@ -44,6 +44,8 @@ Json lowerRenderGraphDocument(const Json &document) {
         auto parameters = node.at("parameters");
         const auto id = node.at("id").get<std::string>();
         if (node.at("op") == "render.buffer" || node.at("op") == "render.attribute") {
+            if (parameters.contains("source"))
+                throw std::invalid_argument("attribute source must be resolved before render lowering: " + id);
             forbid(parameters, {"name"});
             parameters.erase("element");
             parameters.erase("domain");

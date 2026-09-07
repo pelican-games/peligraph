@@ -120,8 +120,9 @@ audio.playbackへ開始/pause/resume/resetを接続し、個体・scene・Graph�
 変換とCPUコンパイルに加え、GPU画素出力とowner不在時の描画scope停止を確認した。
 render.attributeのvertex/instance/material domainを型identityとして照合し、既存bufferとshader
 accessorへ渡す入口も追加した。countからstd430サイズとraster描画数を導出する接続も実装した。
-GltfLoaderにもGPUを使わない属性抽出APIを追加した。次はその結果を共通graphのsource参照・
-count解決・候補buffer uploadへ接続し、vertex/instance添字での読出しを進める。
+GltfLoaderの属性抽出を共通graphのsource参照・count解決・候補buffer uploadへ接続した。
+GPUで複数頂点の属性値とcountを読み、元のsource参照の保存と失敗候補による旧世代維持を確認した。
+source assetの自動監視・変形後属性・index接続、vertex/instance添字の自動accessorは残件。
 動的描画nodeは現状scopeを分離して実行し、
 同じowner条件のnode間融合と共通history画像のpreview対応は残件。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。

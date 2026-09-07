@@ -1,4 +1,6 @@
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/graphpartition.hpp"
+#include "../src/project/rendergraphcomposition.hpp"
 #include "../src/core/renderingpass/computetask.hpp"
 #include "../src/project/renderfeatureoverlay.hpp"
 #include "../src/project/renderpipeline.hpp"
@@ -4327,6 +4329,46 @@ TEST_CASE("common graph buffer ports lower into native compute declarations", "[
     document = original;
     document["definitions"]["kernel"]["nodes"][1]["parameters"]["reads"] = {"hidden"};
     REQUIRE_THROWS_AS(resolveRenderPipeline(RenderPipelineRequest{document}, {}), std::invalid_argument);
+}
+
+TEST_CASE("attribute sources resolve instances without changing authored definitions", "[render-feature][graph-attribute]") {
+    using Json = nlohmann::json;
+    const auto document = Json::parse(R"({"schema":"pelican.graph","version":1,
+      "definitions":{"mesh":{"nodes":[{"id":"position","op":"render.attribute",
+        "parameters":{"element":"vec3","domain":"vertex","source":{
+          "asset":"project://character.glb","mesh":0,"primitive":0,"semantic":"POSITION"}},
+        "outputs":["resource"]}],"outputs":{"vertices":{"node":"position","port":"resource"}}}},
+      "nodes":[{"id":"left","op":"graph.instance","definition":"mesh"},
+               {"id":"right","op":"graph.instance","definition":"mesh"}],
+      "outputs":{"positions":{"node":"left","port":"vertices"}}})");
+    std::set<std::string> resolved;
+    const auto compiled = resolveGraphAttributeSources(document, [&](std::string_view id, const Json &parameters) {
+        resolved.insert(std::string{id});
+        REQUIRE(parameters.at("source").at("semantic") == "POSITION");
+        return 4;
+    });
+    REQUIRE(resolved == std::set<std::string>{"left/position", "right/position"});
+    const auto config = lowerRenderGraphDocument(compiled);
+    REQUIRE(config.at("buffers").size() == 2);
+    REQUIRE(config.at("buffers")[0].at("size") == 64);
+    REQUIRE(config.at("buffers")[1].at("size") == 64);
+    REQUIRE(document.at("definitions").at("mesh").at("nodes")[0].at("parameters").contains("source"));
+    REQUIRE_FALSE(document.at("definitions").at("mesh").at("nodes")[0].at("parameters").contains("count"));
+    REQUIRE_THROWS(lowerRenderGraphDocument(document));
+    REQUIRE_THROWS(resolveGraphAttributeSources(document, [](auto, const auto &) { return 0; }));
+    auto bad = document;
+    bad["definitions"]["mesh"]["nodes"][0]["parameters"]["count"] = 4;
+    REQUIRE_THROWS(partitionGraphDocument(bad));
+    bad = document;
+    bad["definitions"]["mesh"]["nodes"][0]["parameters"]["source"]["mesh"] = -1;
+    REQUIRE_THROWS(partitionGraphDocument(bad));
+    bad = document;
+    bad["definitions"]["unused"] = bad["definitions"]["mesh"];
+    bad["definitions"]["unused"]["nodes"][0]["parameters"]["source"]["asset"] = "missing.glb";
+    REQUIRE_NOTHROW(resolveGraphAttributeSources(bad, [](auto, const auto &parameters) {
+        REQUIRE(parameters.at("source").at("asset") == "project://character.glb");
+        return 4;
+    }));
 }
 
 TEST_CASE("common graphics ports retain shaders and order attachment consumers", "[render-feature][graph-composition]") {
