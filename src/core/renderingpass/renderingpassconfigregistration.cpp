@@ -1014,8 +1014,13 @@ registerRenderingPassConfigVariantsData(
                     }
                 }
                 auto validation_state = value_graph->createState();
+                ValueGraph::Inputs validation_inputs{{"time", 0}, {"delta_time", 0}, {"scene_time", 0}};
+                // This dry run checks binding shape, before a scene/model candidate
+                // is published. Live morph inputs are resolved anew for every frame.
+                for (const auto &[node, source] : value_graph->morphSources())
+                    validation_inputs["$morph/" + node] = 0;
                 const auto bindings = value_graph->publish(GameContext{},
-                    {{"time", 0}, {"delta_time", 0}, {"scene_time", 0}}, {},
+                    validation_inputs, {},
                     [&](std::string_view name, std::span<const float> values) {
                         const auto found = program.buffer_bindings.find(std::string{name});
                         if (found == program.buffer_bindings.end()) return false;

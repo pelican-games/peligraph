@@ -426,6 +426,114 @@ void main() {
     REQUIRE(std::abs(rendered() - 3.7f) < 0.00001f);
 }
 
+TEST_CASE("owned common graph reads live model morph weights", "[skeletal][graph-live-morph]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_live_morph_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::create_directories(root / "shaders");
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGlb(root / "character.glb", {.morph_target = true});
+    auto document = parameterGraphCompositionFixture();
+    document["definitions"]["live_weight"] = {
+        {"nodes", {{{"id", "weight"}, {"op", "value.morph_weight"},
+            {"parameters", {{"node", 0}, {"target", 0}}}, {"outputs", {"value"}}}}},
+        {"outputs", {{"value", {{"node", "weight"}, {"port", "value"}}}}}};
+    for (const auto id : {"base", "delta"}) {
+        nlohmann::json source{{"asset", "project://character.glb"}, {"mesh", 0}, {"primitive", 0}, {"semantic", "POSITION"}};
+        if (std::string_view{id} == "delta") source["morph_target"] = 0;
+        document["nodes"].push_back({{"id", id}, {"op", "render.attribute"},
+            {"parameters", {{"element", "vec3"}, {"domain", "vertex"}, {"source", source}}}, {"outputs", {"resource"}}});
+        document["nodes"][7]["parameters"]["ports"][id] = {{"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
+        document["nodes"][7]["inputs"][id] = {{"node", id}, {"port", "resource"}};
+    }
+    document["nodes"].push_back({{"id", "model"}, {"op", "graph.instance"}, {"definition", "live_weight"},
+        {"owner", {{"scene", "default_scene"}, {"object", 1}}}});
+    document["nodes"][5]["inputs"]["value"] = {{"node", "model"}, {"port", "value"}};
+    REQUIRE(ValueGraph::Graph{document.dump()}.morphSources().size() == 1);
+    auto invalid_source = document;
+    invalid_source["nodes"].back().erase("owner");
+    REQUIRE_THROWS(ValueGraph::Graph{invalid_source.dump()});
+    invalid_source = document;
+    invalid_source["definitions"]["live_weight"]["nodes"][0]["parameters"]["target"] = -1;
+    REQUIRE_THROWS(ValueGraph::Graph{invalid_source.dump()});
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    vec3 position = pelican_load_base(0) + pelican_load_delta(0) * pelican_load_source(0);
+    pelican_store_destination(0, position.x);
+}
+)");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.glb"}]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+      {"name":"Character","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"character"}]}
+    ]}}})");
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16,16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    GET_MODULE(ECSCore).update();
+    const auto object = scene.objectId("Character");
+    REQUIRE(object);
+    for (const auto &binding : scene.runtimeObjectBindings())
+        if (binding.object_id == *object) document["nodes"].back()["owner"]["object"] = binding.authoring_object_id.value;
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    const auto instance_for = [&](GameObjectId id) {
+        const auto *model = ecs.tryComponent<SimpleModelViewComponent>(id);
+        REQUIRE(model);
+        REQUIRE(model->model_instance_id);
+        return *model->model_instance_id;
+    };
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto initial = instance_for(*object);
+    const auto weight = [&](ModelInstanceId id, float value, std::uint64_t revision) {
+        REQUIRE(instances.publishMorphWeightFrame(id, PublishMorphWeightFrameDescV1{
+            .layout_generation = instances.morphLayoutGenerationForTesting(id),
+            .frame_revision = revision, .weights = &value, .weight_count = 1}) == Animation::Status::ok);
+    };
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto render = [&] {
+        renderer.render();
+        core.waitIdle();
+        const auto bytes = core.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float));
+        float value;
+        std::memcpy(&value, bytes.data(), sizeof(value));
+        return value;
+    };
+    weight(initial, 0.5f, 1);
+    REQUIRE_FALSE(instances.morphWeight(initial, 0, 1));
+    REQUIRE(std::abs(render() - 0.7f) < 0.00001f);
+    weight(initial, 0.75f, 2);
+    REQUIRE(std::abs(render() - 1.2f) < 0.00001f);
+    GameObjects{}.remove(*object);
+    REQUIRE_FALSE(instances.morphWeight(initial, 0, 0));
+    REQUIRE_NOTHROW(render());
+    test_support::loadScene(scene, "default_scene");
+    GET_MODULE(ECSCore).update();
+    const auto reloaded = scene.objectId("Character");
+    REQUIRE(reloaded);
+    const auto replacement = instance_for(*reloaded);
+    REQUIRE(replacement != initial);
+    REQUIRE(std::abs(render() + 0.3f) < 0.00001f);
+    weight(replacement, 2.0f, 1);
+    REQUIRE(std::abs(render() - 3.7f) < 0.00001f);
+}
+
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /

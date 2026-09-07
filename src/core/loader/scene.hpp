@@ -98,6 +98,7 @@ DECLARE_MODULE(SceneLoader) {
   public:
     SceneLoader();
     ~SceneLoader();
+    void populateGraphInputs(const ValueGraph::Graph &graph, ValueGraph::Inputs &inputs) const;
 
     SceneLoadResult load(SceneLoadRequest request);
     void requestLoad(SceneId scene_id);

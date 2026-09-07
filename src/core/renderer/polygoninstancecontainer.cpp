@@ -1857,6 +1857,20 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
     return Animation::Status::ok;
 }
 
+std::optional<float> PolygonInstanceContainer::morphWeight(
+    ModelInstanceId id, std::uint32_t node, std::uint32_t target) const {
+    if (!isLive(id)) return std::nullopt;
+    const auto &layout = morph_layouts[id.index];
+    if (!layout) return std::nullopt;
+    for (const auto &primitive : layout->primitives) {
+        if (primitive.node_index != node) continue;
+        for (const auto &delta : primitive.delta_ranges)
+            if (delta.target_index == target)
+                return morph_weight_frames[id.index].current.at(primitive.weight_offset + target);
+    }
+    return std::nullopt;
+}
+
 Animation::Status PolygonInstanceContainer::publishMorphWeightFrame(
     ModelInstanceId id, const PublishMorphWeightFrameDescV1 &frame) {
     constexpr auto minimum =

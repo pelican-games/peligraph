@@ -59,6 +59,12 @@ class PELICAN_API Graph {
     const GraphInstanceOwners &instanceOwners() const noexcept { return instance_owners_; }
     const ScopeDependencies &scopeDependencies() const noexcept { return node_scopes_; }
     const std::map<std::string, std::string> &audioSources() const noexcept { return audio_sources_; }
+    struct MorphWeightSource {
+        GraphInstanceOwner owner;
+        std::uint32_t node;
+        std::uint32_t target;
+    };
+    const std::map<std::string, MorphWeightSource> &morphSources() const noexcept { return morph_sources_; }
     bool nodeActive(std::string_view node, const InactiveScopes &inactive) const;
     // The graph must outlive its state. Separate states evaluate independently.
     EvaluationState createState() const { return EvaluationState{this}; }
@@ -91,6 +97,7 @@ class PELICAN_API Graph {
     std::vector<std::string> lowered_outputs_;
     enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock, event_input, event_clock, audio_playback };
     std::map<std::string, std::string> audio_sources_;
+    std::map<std::string, MorphWeightSource> morph_sources_;
     std::vector<std::size_t> audio_nodes_;
     std::map<std::string, std::vector<std::size_t>, std::less<>> event_consumers_;
     struct Node {

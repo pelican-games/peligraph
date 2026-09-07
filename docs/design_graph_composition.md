@@ -365,8 +365,16 @@ vertex sourceにmorph_target（uint32のtarget index）を追加すると、そ�
 base属性と要素数が合わないtargetを拒否する。保存にはtarget参照を残し、ウェイトの適用は
 既存value/buffer/compute接続で記述できる。GPUでbase + delta * weightを計算し、weight=0.5/2.0の
 x値0.7/3.7と、不正target候補の失敗後に3.7を維持することを確認した。
-これはモーフを共通ノードで組み立てる入口であり、個体のanimation componentが持つウェイトや
-スキニング済みGPU出力を参照する接続は未実装。
+所有者付きgraph.instance内のvalue.morph_weight（parameters.node/target）から、所有個体の
+現在モーフウェイトをscalarとして読む。nodeはglTF node index、targetはそのmeshのtarget index。
+既存MorphTargetLayoutでweight offsetへ解決し、GPU slotやModelInstanceIdは保存しない。
+毎フレームSceneLoaderが現在の所有個体へ解決する。所有者不在時は既存scope停止に従い、
+所有者が存在しても該当モデル/targetがない場合は入力を利用不可として報告する。
+候補のdry runは出力bindingの形だけを検査し、外部入力には検証値0を使用する。実フレームで
+欠落値を0へ置換することはない。共同モデルreloadにおける参照の候補世代検証は未実装。
+GPUで個体ウェイト0.5/0.75による合成位置0.7/1.2、個体削除後の停止、scene再読込み後の
+初期値-0.3と新個体ウェイト2による3.7を確認した。今回の区切りはこの接続まで。
+スキニング済みGPU出力の直接参照とアニメーショングラフ全体の共通化は別工程。
 使用中の定義instanceだけを解決し、元のJSONはsource参照を保持する。派生countはコンパイラ用文書へ
 渡し、データは各候補が保持するbuffer IDへ転送する。同じassetのprepareは候補構築中に共有する。
 これは構築時のスナップショットで、変更通知から新しい描画候補を構築して更新する。

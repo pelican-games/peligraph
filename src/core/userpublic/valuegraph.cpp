@@ -142,7 +142,22 @@ Graph::Graph(std::string_view document) {
         const auto &authored = nodes[i];
         auto &node = nodes_[i];
         const auto op = name(authored.at("op"));
-        if (op == "input") {
+        if (op == "morph_weight") {
+            keys(authored, {"id", "op", "node", "target"});
+            const auto *owner = scopeOwner(node.id);
+            if (!owner) throw std::invalid_argument("morph weight source requires an owned graph instance");
+            const auto index = [&](const char *key) {
+                const auto &value = authored.at(key);
+                if (!value.is_number_integer() ||
+                    (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
+                    value.get<std::uint64_t>() > (std::numeric_limits<std::uint32_t>::max)())
+                    throw std::invalid_argument("morph weight source index must fit uint32");
+                return value.get<std::uint32_t>();
+            };
+            node.op = Op::input;
+            node.input_name = "$morph/" + node.id;
+            morph_sources_.emplace(node.id, MorphWeightSource{*owner, index("node"), index("target")});
+        } else if (op == "input") {
             keys(authored, {"id", "op", "name"});
             node.op = Op::input;
             node.input_name = name(authored.at("name"));

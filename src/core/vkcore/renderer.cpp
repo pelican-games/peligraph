@@ -5271,9 +5271,10 @@ void Renderer::renderLogicalFrame(
     if (frame_graph.value_graph) {
         auto &scene = GET_MODULE(SceneLoader);
         inactive_graph_scopes = scene.inactiveGraphScopes(*frame_graph.value_graph);
-        const ValueGraph::Inputs inputs{
+        ValueGraph::Inputs inputs{
             {"time", engine_time.now()}, {"delta_time", engine_time.dt()},
             {"scene_time", engine_time.now() - scene.sceneStartTime()}};
+        scene.populateGraphInputs(*frame_graph.value_graph, inputs);
         const auto published = frame_graph.value_graph->publish(GameContext{}, inputs, {},
             [&](std::string_view name, std::span<const float> values) {
                 const auto found = frame_graph.buffer_bindings.find(std::string{name});

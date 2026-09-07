@@ -502,6 +502,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
                                              const Animation::PublishAnimationFrameDescV1 &frame);
     Animation::Status publishMorphWeightFrame(
         ModelInstanceId id, const PublishMorphWeightFrameDescV1 &frame);
+    std::optional<float> morphWeight(ModelInstanceId id, std::uint32_t node,
+                                     std::uint32_t target) const;
     Animation::Status publishMaterialInstanceOverride(
         ModelInstanceId id, const PublishMaterialInstanceOverrideDescV1 &frame);
     Animation::Status publishMaterialInstanceAbsoluteOverride(

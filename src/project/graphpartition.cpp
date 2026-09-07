@@ -49,6 +49,7 @@ GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &
     return {
         {"value.input", {{}, output}}, {"value.constant", {{}, output}},
         {"value.parameter", {{}, output}},
+        {"value.morph_weight", {{}, output}},
         {"value.trigger_clock", {{{"time", required}, {"trigger", required},
             {"paused", optional}, {"reset", optional}}, output}},
         {"event.playback", {{}, {{"events", event}}}},

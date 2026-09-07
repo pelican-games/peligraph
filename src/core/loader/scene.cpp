@@ -1372,6 +1372,25 @@ SceneLoader::GraphRuntime::~GraphRuntime() {
 #endif
 }
 
+void SceneLoader::populateGraphInputs(const ValueGraph::Graph &graph, ValueGraph::Inputs &inputs) const {
+    if (graph.morphSources().empty()) return;
+    const auto inactive = inactiveGraphScopes(graph);
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    for (const auto &[node, source] : graph.morphSources()) {
+        if (!graph.nodeActive(node, inactive)) continue;
+        const auto binding = std::find_if(runtime_object_bindings.begin(), runtime_object_bindings.end(),
+            [&](const auto &entry) { return entry.authoring_object_id.value == source.owner.object; });
+        if (binding == runtime_object_bindings.end())
+            throw std::runtime_error("graph morph owner is unavailable: " + node);
+        const auto *model = ecs.tryComponent<SimpleModelViewComponent>(binding->object_id);
+        const auto weight = model && model->model_instance_id
+            ? GET_MODULE(PolygonInstanceContainer).morphWeight(*model->model_instance_id, source.node, source.target)
+            : std::nullopt;
+        if (!weight) throw std::runtime_error("graph morph target is unavailable: " + node);
+        inputs["$morph/" + node] = *weight;
+    }
+}
+
 bool SceneLoader::ownsGraphOwner(const GraphInstanceOwner *owner, GameObjectId object) const {
     if (!owner || owner->scene != currentScene() ||
         !GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(object)) return false;
