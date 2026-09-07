@@ -517,242 +517,9 @@ class LiveGltfResourceSink final : public GltfResourceSink {
 
 } // namespace
 
-struct InternalGltfLoader {
-    using ModelLocalMaterialId = int;
-
-    GltfResourceSink &resources;
-    StandardMaterialResource &std_mat;
-    tinygltf::Model &model;
-    std::string source_path;
-    std::optional<std::string> authored_reference;
-    std::optional<CanonicalModelAssetKey> asset_key;
-    std::optional<AssetFragmentRef> fragment;
-    bool scene_node_instance = false;
-    std::shared_ptr<const VrmSemanticData> vrm_semantic;
-    bool compile_surface_shaders = false;
-    std::vector<std::string>
-        material_shader_defines;
-    MaterialSurfaceCatalog gltf_surfaces;
-    std::vector<std::optional<GlobalMaterialId>> material_map;
-    std::vector<MaterialInfo> material_infos;
-    std::vector<std::optional<MaterialVariantRouting>>
-        material_routings;
-    std::vector<std::optional<GlobalTextureId>> texture_map;
-    std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
-    std::unordered_map<ModelLocalMaterialId, std::uint32_t> generated_material_sources;
-    std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> skinned_material_variants;
-    std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
-    std::vector<ModelCollisionMesh> collision_meshes;
-    ModelLocalMaterialId next_generated_material = -2;
-    std::unordered_map<int, std::uint32_t> skin_joint_offsets;
-    std::shared_ptr<SkeletalModelData> skeletal_data;
-    std::shared_ptr<MorphTargetLayout> morph_target_layout =
-        std::make_shared<MorphTargetLayout>();
-    std::optional<std::vector<std::uint8_t>> head_related_nodes;
-
-    enum class FirstPersonAnnotation {
-        automatic,
-        both,
-        first_person_only,
-        third_person_only,
-    };
-
-    struct NodeOccurrence {
-        int node_index = -1;
-        std::string full_path;
-        std::vector<std::string> name_path;
-        std::vector<std::uint32_t> parent_index_path;
-        glm::mat4 parent_transform{1.0f};
-    };
-
-    struct FragmentCandidate {
-        int object_index = -1;
-        int node_index = -1;
-        std::string full_path;
-        std::vector<std::string> aliases;
-        std::vector<std::string> name_path;
-        std::vector<std::uint32_t> parent_index_path;
-        glm::mat4 parent_transform{1.0f};
-    };
-
-    struct RootSelection {
-        int node_index = -1;
-        int mesh_index = -1;
-        glm::mat4 parent_transform{1.0f};
-        bool subtree = true;
-        bool apply_node_transform = true;
-        std::vector<std::string> name_path;
-        std::vector<std::uint32_t> parent_index_path;
-    };
-
-    struct LoadSelection {
-        bool whole_model = false;
-        std::vector<RootSelection> roots;
-        std::optional<int> material_only;
-        std::optional<int> animation_only;
-    };
-
-    uint8_t toUnorm8(double value) {
-        return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
-    }
-
-    float toUnormFloat(double value) {
-        return static_cast<float>(toUnorm8(value)) / 255.0f;
-    }
-
-    double vectorValueOr(const std::vector<double> &values, size_t index, double fallback) {
-        return index < values.size() ? values[index] : fallback;
-    }
-
-    GlobalTextureId registerSolidTexture(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
-        std::array<uint8_t, 4 * 16> data{};
-        for (size_t i = 0; i < 16; ++i) {
-            data[i * 4 + 0] = r;
-            data[i * 4 + 1] = g;
-            data[i * 4 + 2] = b;
-            data[i * 4 + 3] = a;
-        }
-        return resources.registerTexture(vk::Extent3D{4, 4, 1}, data.data(),
-                                         vk::Format::eR8G8B8A8Unorm, data.size());
-    }
-
-    GlobalTextureId metallicRoughnessTextureForMaterial(const tinygltf::Material &material) {
-        const auto texture_index = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
-        if (texture_index >= 0) {
-            return texture_map.at(texture_index).value();
-        }
-
-        return registerSolidTexture(
-            255, 255, 255);
-    }
-
-    GlobalTextureId occlusionTextureForMaterial(
-        const tinygltf::Material &material) const {
-        const auto texture_index = material.occlusionTexture.index;
-        return texture_index >= 0
-                   ? texture_map.at(texture_index).value()
-                   : std_mat.occlusionDefaultTexture();
-    }
-
-    GlobalTextureId emissiveTextureForMaterial(const tinygltf::Material &material) {
-        const auto texture_index = material.emissiveTexture.index;
-        if (texture_index >= 0) {
-            return texture_map.at(texture_index).value();
-        }
-
-        return std_mat.whiteTexture();
-    }
-
-    const SurfaceFormatDocument &gltfSurface(
-        std::string_view reference) {
-        const auto existing =
-            gltf_surfaces.find(
-                std::string{reference});
-        if (existing != gltf_surfaces.end()) {
-            return existing->second;
-        }
-        constexpr std::string_view engine_prefix =
-            "engine://";
-        if (!reference.starts_with(
-                engine_prefix)) {
-            throw std::runtime_error(
-                "glTF lowering selected non-engine surface '" +
-                std::string{reference} + "'");
-        }
-        const auto source =
-            engineResourceOrThrow(
-                reference.substr(
-                    engine_prefix.size()));
-        auto [inserted, _] =
-            gltf_surfaces.emplace(
-                std::string{reference},
-                parseSurfaceFormat(
-                    source, reference));
-        return inserted->second;
-    }
-
-#if PELICAN_WITH_VAT
-    std::vector<VatBufferViewInfo> vatBufferViewInfos() const {
-        std::vector<VatBufferViewInfo> infos;
-        infos.reserve(model.bufferViews.size());
-        for (size_t i = 0; i < model.bufferViews.size(); ++i) {
-            const auto &view = model.bufferViews[i];
-            infos.push_back(VatBufferViewInfo{
-                .index = static_cast<int>(i),
-                .buffer = view.buffer,
-                .byte_offset = view.byteOffset,
-                .byte_length = view.byteLength,
-            });
-        }
-        return infos;
-    }
-
-    const std::byte *bufferViewData(const VatBufferViewSpan &span, size_t required_bytes) const {
-        if (span.buffer < 0 || span.buffer >= static_cast<int>(model.buffers.size())) {
-            throw std::runtime_error("pelican.vat references invalid buffer index");
-        }
-        const auto &buffer = model.buffers[span.buffer];
-        if (span.byte_offset > buffer.data.size() || required_bytes > buffer.data.size() - span.byte_offset) {
-            throw std::runtime_error("pelican.vat bufferView range exceeds GLB buffer data");
-        }
-        return reinterpret_cast<const std::byte *>(buffer.data.data() + span.byte_offset);
-    }
-
-    GlobalTextureId registerVatTexture(const VatBufferViewSpan &span, uint32_t vertex_count,
-                                       uint32_t frame_count, size_t required_bytes) const {
-        const auto *data = bufferViewData(span, required_bytes);
-        return resources.registerTexture(vk::Extent3D{vertex_count, frame_count, 1}, data,
-                                         vk::Format::eR16G16B16A16Sfloat, required_bytes);
-    }
-
-    MaterialInfo materialInfoForPrimitive(int local_material_id) const {
-        if (local_material_id >= 0) {
-            return material_infos.at(local_material_id);
-        }
-
-        return MaterialInfo{
-            .vert_shader = std_mat.standardVertShader(),
-            .frag_shader = std_mat.standardFragShader(),
-            .base_color_texture = std_mat.whiteTexture(),
-            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
-            .normal_texture = std_mat.normalDefaultTexture(),
-            .emissive_texture = std_mat.emissiveDefaultTexture(),
-            .occlusion_texture = std_mat.occlusionDefaultTexture(),
-        };
-    }
-
-    ModelLocalMaterialId registerVatMaterial(int local_material_id, const VatPrimitiveInfo &vat,
-                                             const ModelTemplate::PrimitiveRefInfo &primitive_info) {
-        const auto required_bytes = vatTextureBytes(vat);
-        auto material_info = materialInfoForPrimitive(local_material_id);
-        const auto position_texture =
-            registerVatTexture(vat.position_view, vat.vertex_count, vat.frame_count, required_bytes);
-        const auto normal_texture =
-            vat.normal_view ? registerVatTexture(*vat.normal_view, vat.vertex_count, vat.frame_count,
-                                                 required_bytes)
-                            : std_mat.normalDefaultTexture();
-
-        material_info.vert_shader = std_mat.vatVertShader();
-        material_info.vat = MaterialInfo::VatPlaybackInfo{
-            .position_texture = position_texture,
-            .normal_texture = normal_texture,
-            .bounds_min = vat.bounds_min,
-            .bounds_max = vat.bounds_max,
-            .fps = static_cast<float>(vat.fps),
-            .frame_count = vat.frame_count,
-            .base_vertex = primitive_info.vert_offset,
-            .loop = vat.loop,
-            .has_normal = vat.normal_view.has_value(),
-        };
-
-        const auto generated_material = next_generated_material--;
-        resolved_materials[generated_material] = resources.registerMaterial(material_info);
-        generated_material_sources[generated_material] =
-            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
-                                   : noSourceMaterialIndex;
-        return generated_material;
-    }
-#endif
+struct GltfAccessorReader {
+    const tinygltf::Model &model;
+    const std::string &source_path;
 
     template <class InType, class OutType>
     std::vector<OutType> readComponentByType(const unsigned char *p_data,
@@ -1092,6 +859,249 @@ struct InternalGltfLoader {
         throw std::runtime_error(
             context + " has unsupported component type " +
             std::to_string(accessor.componentType));
+    }
+
+};
+
+struct InternalGltfLoader {
+    using ModelLocalMaterialId = int;
+
+    GltfResourceSink &resources;
+    StandardMaterialResource &std_mat;
+    tinygltf::Model &model;
+    std::string source_path;
+    std::optional<std::string> authored_reference;
+    std::optional<CanonicalModelAssetKey> asset_key;
+    std::optional<AssetFragmentRef> fragment;
+    bool scene_node_instance = false;
+    std::shared_ptr<const VrmSemanticData> vrm_semantic;
+    bool compile_surface_shaders = false;
+    std::vector<std::string>
+        material_shader_defines;
+    MaterialSurfaceCatalog gltf_surfaces;
+    std::vector<std::optional<GlobalMaterialId>> material_map;
+    std::vector<MaterialInfo> material_infos;
+    std::vector<std::optional<MaterialVariantRouting>>
+        material_routings;
+    std::vector<std::optional<GlobalTextureId>> texture_map;
+    std::unordered_map<ModelLocalMaterialId, GlobalMaterialId> resolved_materials;
+    std::unordered_map<ModelLocalMaterialId, std::uint32_t> generated_material_sources;
+    std::unordered_map<ModelLocalMaterialId, ModelLocalMaterialId> skinned_material_variants;
+    std::unordered_map<ModelLocalMaterialId, std::vector<ModelTemplate::PrimitiveRefInfo>> tmp_material_primitives;
+    std::vector<ModelCollisionMesh> collision_meshes;
+    ModelLocalMaterialId next_generated_material = -2;
+    std::unordered_map<int, std::uint32_t> skin_joint_offsets;
+    std::shared_ptr<SkeletalModelData> skeletal_data;
+    std::shared_ptr<MorphTargetLayout> morph_target_layout =
+        std::make_shared<MorphTargetLayout>();
+    std::optional<std::vector<std::uint8_t>> head_related_nodes;
+
+    enum class FirstPersonAnnotation {
+        automatic,
+        both,
+        first_person_only,
+        third_person_only,
+    };
+
+    struct NodeOccurrence {
+        int node_index = -1;
+        std::string full_path;
+        std::vector<std::string> name_path;
+        std::vector<std::uint32_t> parent_index_path;
+        glm::mat4 parent_transform{1.0f};
+    };
+
+    struct FragmentCandidate {
+        int object_index = -1;
+        int node_index = -1;
+        std::string full_path;
+        std::vector<std::string> aliases;
+        std::vector<std::string> name_path;
+        std::vector<std::uint32_t> parent_index_path;
+        glm::mat4 parent_transform{1.0f};
+    };
+
+    struct RootSelection {
+        int node_index = -1;
+        int mesh_index = -1;
+        glm::mat4 parent_transform{1.0f};
+        bool subtree = true;
+        bool apply_node_transform = true;
+        std::vector<std::string> name_path;
+        std::vector<std::uint32_t> parent_index_path;
+    };
+
+    struct LoadSelection {
+        bool whole_model = false;
+        std::vector<RootSelection> roots;
+        std::optional<int> material_only;
+        std::optional<int> animation_only;
+    };
+
+    uint8_t toUnorm8(double value) {
+        return static_cast<uint8_t>(std::lround(std::clamp(value, 0.0, 1.0) * 255.0));
+    }
+
+    float toUnormFloat(double value) {
+        return static_cast<float>(toUnorm8(value)) / 255.0f;
+    }
+
+    double vectorValueOr(const std::vector<double> &values, size_t index, double fallback) {
+        return index < values.size() ? values[index] : fallback;
+    }
+
+    GlobalTextureId registerSolidTexture(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+        std::array<uint8_t, 4 * 16> data{};
+        for (size_t i = 0; i < 16; ++i) {
+            data[i * 4 + 0] = r;
+            data[i * 4 + 1] = g;
+            data[i * 4 + 2] = b;
+            data[i * 4 + 3] = a;
+        }
+        return resources.registerTexture(vk::Extent3D{4, 4, 1}, data.data(),
+                                         vk::Format::eR8G8B8A8Unorm, data.size());
+    }
+
+    GlobalTextureId metallicRoughnessTextureForMaterial(const tinygltf::Material &material) {
+        const auto texture_index = material.pbrMetallicRoughness.metallicRoughnessTexture.index;
+        if (texture_index >= 0) {
+            return texture_map.at(texture_index).value();
+        }
+
+        return registerSolidTexture(
+            255, 255, 255);
+    }
+
+    GlobalTextureId occlusionTextureForMaterial(
+        const tinygltf::Material &material) const {
+        const auto texture_index = material.occlusionTexture.index;
+        return texture_index >= 0
+                   ? texture_map.at(texture_index).value()
+                   : std_mat.occlusionDefaultTexture();
+    }
+
+    GlobalTextureId emissiveTextureForMaterial(const tinygltf::Material &material) {
+        const auto texture_index = material.emissiveTexture.index;
+        if (texture_index >= 0) {
+            return texture_map.at(texture_index).value();
+        }
+
+        return std_mat.whiteTexture();
+    }
+
+    const SurfaceFormatDocument &gltfSurface(
+        std::string_view reference) {
+        const auto existing =
+            gltf_surfaces.find(
+                std::string{reference});
+        if (existing != gltf_surfaces.end()) {
+            return existing->second;
+        }
+        constexpr std::string_view engine_prefix =
+            "engine://";
+        if (!reference.starts_with(
+                engine_prefix)) {
+            throw std::runtime_error(
+                "glTF lowering selected non-engine surface '" +
+                std::string{reference} + "'");
+        }
+        const auto source =
+            engineResourceOrThrow(
+                reference.substr(
+                    engine_prefix.size()));
+        auto [inserted, _] =
+            gltf_surfaces.emplace(
+                std::string{reference},
+                parseSurfaceFormat(
+                    source, reference));
+        return inserted->second;
+    }
+
+#if PELICAN_WITH_VAT
+    std::vector<VatBufferViewInfo> vatBufferViewInfos() const {
+        std::vector<VatBufferViewInfo> infos;
+        infos.reserve(model.bufferViews.size());
+        for (size_t i = 0; i < model.bufferViews.size(); ++i) {
+            const auto &view = model.bufferViews[i];
+            infos.push_back(VatBufferViewInfo{
+                .index = static_cast<int>(i),
+                .buffer = view.buffer,
+                .byte_offset = view.byteOffset,
+                .byte_length = view.byteLength,
+            });
+        }
+        return infos;
+    }
+
+    const std::byte *bufferViewData(const VatBufferViewSpan &span, size_t required_bytes) const {
+        if (span.buffer < 0 || span.buffer >= static_cast<int>(model.buffers.size())) {
+            throw std::runtime_error("pelican.vat references invalid buffer index");
+        }
+        const auto &buffer = model.buffers[span.buffer];
+        if (span.byte_offset > buffer.data.size() || required_bytes > buffer.data.size() - span.byte_offset) {
+            throw std::runtime_error("pelican.vat bufferView range exceeds GLB buffer data");
+        }
+        return reinterpret_cast<const std::byte *>(buffer.data.data() + span.byte_offset);
+    }
+
+    GlobalTextureId registerVatTexture(const VatBufferViewSpan &span, uint32_t vertex_count,
+                                       uint32_t frame_count, size_t required_bytes) const {
+        const auto *data = bufferViewData(span, required_bytes);
+        return resources.registerTexture(vk::Extent3D{vertex_count, frame_count, 1}, data,
+                                         vk::Format::eR16G16B16A16Sfloat, required_bytes);
+    }
+
+    MaterialInfo materialInfoForPrimitive(int local_material_id) const {
+        if (local_material_id >= 0) {
+            return material_infos.at(local_material_id);
+        }
+
+        return MaterialInfo{
+            .vert_shader = std_mat.standardVertShader(),
+            .frag_shader = std_mat.standardFragShader(),
+            .base_color_texture = std_mat.whiteTexture(),
+            .metallic_roughness_texture = std_mat.metallicRoughnessDefaultTexture(),
+            .normal_texture = std_mat.normalDefaultTexture(),
+            .emissive_texture = std_mat.emissiveDefaultTexture(),
+            .occlusion_texture = std_mat.occlusionDefaultTexture(),
+        };
+    }
+
+    ModelLocalMaterialId registerVatMaterial(int local_material_id, const VatPrimitiveInfo &vat,
+                                             const ModelTemplate::PrimitiveRefInfo &primitive_info) {
+        const auto required_bytes = vatTextureBytes(vat);
+        auto material_info = materialInfoForPrimitive(local_material_id);
+        const auto position_texture =
+            registerVatTexture(vat.position_view, vat.vertex_count, vat.frame_count, required_bytes);
+        const auto normal_texture =
+            vat.normal_view ? registerVatTexture(*vat.normal_view, vat.vertex_count, vat.frame_count,
+                                                 required_bytes)
+                            : std_mat.normalDefaultTexture();
+
+        material_info.vert_shader = std_mat.vatVertShader();
+        material_info.vat = MaterialInfo::VatPlaybackInfo{
+            .position_texture = position_texture,
+            .normal_texture = normal_texture,
+            .bounds_min = vat.bounds_min,
+            .bounds_max = vat.bounds_max,
+            .fps = static_cast<float>(vat.fps),
+            .frame_count = vat.frame_count,
+            .base_vertex = primitive_info.vert_offset,
+            .loop = vat.loop,
+            .has_normal = vat.normal_view.has_value(),
+        };
+
+        const auto generated_material = next_generated_material--;
+        resolved_materials[generated_material] = resources.registerMaterial(material_info);
+        generated_material_sources[generated_material] =
+            local_material_id >= 0 ? static_cast<std::uint32_t>(local_material_id)
+                                   : noSourceMaterialIndex;
+        return generated_material;
+    }
+#endif
+
+    template <int expected_type, class T> std::vector<T> getDataFromAccessor(int accessor_index) {
+        return GltfAccessorReader{model, source_path}.getDataFromAccessor<expected_type, T>(accessor_index);
     }
 
     std::vector<glm::vec3> readMorphDeltaAccessor(
@@ -2702,6 +2712,55 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared,
         }
         throw;
     }
+}
+
+GltfAttributeData GltfLoader::readAttribute(const PreparedGltf &prepared,
+    std::uint32_t mesh, std::uint32_t primitive, std::string_view semantic,
+    ShaderResourceBufferElement element) const {
+    if (!prepared.impl) throw std::invalid_argument("cannot read an attribute from an empty prepared glTF");
+    const auto &source = prepared.impl->model.meshes.at(mesh).primitives.at(primitive);
+    const auto accessor = source.attributes.find(std::string{semantic});
+    if (accessor == source.attributes.end())
+        throw std::invalid_argument("glTF primitive has no attribute: " + std::string{semantic});
+    const auto component = prepared.impl->model.accessors.at(accessor->second).componentType;
+    const bool signed_output = element == ShaderResourceBufferElement::integer ||
+        element == ShaderResourceBufferElement::ivec2 || element == ShaderResourceBufferElement::ivec3 ||
+        element == ShaderResourceBufferElement::ivec4;
+    const bool unsigned_output = element == ShaderResourceBufferElement::unsigned_integer ||
+        element == ShaderResourceBufferElement::uvec2 || element == ShaderResourceBufferElement::uvec3 ||
+        element == ShaderResourceBufferElement::uvec4;
+    if ((signed_output && component != TINYGLTF_COMPONENT_TYPE_BYTE &&
+            component != TINYGLTF_COMPONENT_TYPE_SHORT && component != TINYGLTF_COMPONENT_TYPE_INT) ||
+        (unsigned_output && component != TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE &&
+            component != TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT && component != TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT))
+        throw std::invalid_argument("integer graph attributes require integer source components with matching signedness");
+    GltfAccessorReader loader{prepared.impl->model, prepared.impl->source_path};
+    const auto pack = [&]<int type, class T>() {
+        const auto values = loader.getDataFromAccessor<type, T>(accessor->second);
+        const auto stride = shaderResourceBufferElementStride(element);
+        if (values.size() > (std::numeric_limits<std::size_t>::max)() / stride)
+            throw std::overflow_error("glTF attribute byte size overflows");
+        GltfAttributeData result{element, values.size(), std::vector<std::byte>(values.size() * stride)};
+        for (std::size_t i = 0; i < values.size(); ++i)
+            std::memcpy(result.bytes.data() + i * stride, &values[i], sizeof(T));
+        return result;
+    };
+    switch (element) {
+    case ShaderResourceBufferElement::floating: return pack.template operator()<TINYGLTF_TYPE_SCALAR, float>();
+    case ShaderResourceBufferElement::vec2: return pack.template operator()<TINYGLTF_TYPE_VEC2, glm::vec2>();
+    case ShaderResourceBufferElement::vec3: return pack.template operator()<TINYGLTF_TYPE_VEC3, glm::vec3>();
+    case ShaderResourceBufferElement::vec4: return pack.template operator()<TINYGLTF_TYPE_VEC4, glm::vec4>();
+    case ShaderResourceBufferElement::integer: return pack.template operator()<TINYGLTF_TYPE_SCALAR, std::int32_t>();
+    case ShaderResourceBufferElement::ivec2: return pack.template operator()<TINYGLTF_TYPE_VEC2, glm::ivec2>();
+    case ShaderResourceBufferElement::ivec3: return pack.template operator()<TINYGLTF_TYPE_VEC3, glm::ivec3>();
+    case ShaderResourceBufferElement::ivec4: return pack.template operator()<TINYGLTF_TYPE_VEC4, glm::ivec4>();
+    case ShaderResourceBufferElement::unsigned_integer: return pack.template operator()<TINYGLTF_TYPE_SCALAR, std::uint32_t>();
+    case ShaderResourceBufferElement::uvec2: return pack.template operator()<TINYGLTF_TYPE_VEC2, glm::uvec2>();
+    case ShaderResourceBufferElement::uvec3: return pack.template operator()<TINYGLTF_TYPE_VEC3, glm::uvec3>();
+    case ShaderResourceBufferElement::uvec4: return pack.template operator()<TINYGLTF_TYPE_VEC4, glm::uvec4>();
+    case ShaderResourceBufferElement::mat4: return pack.template operator()<TINYGLTF_TYPE_MAT4, glm::mat4>();
+    }
+    throw std::invalid_argument("unknown glTF attribute element type");
 }
 
 ModelTemplate GltfLoader::inspect(const PreparedGltf &prepared) const {

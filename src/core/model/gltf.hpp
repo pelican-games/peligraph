@@ -5,7 +5,9 @@
 #include "modeltemplate.hpp"
 #include "occurrenceidentity.hpp"
 #include "modelresourcerelease.hpp"
+#include "../../project/shaderresourceport.hpp"
 #include <memory>
+#include <cstddef>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -30,6 +32,12 @@ class PreparedGltf {
 // A filesystem path is intentionally not implicitly convertible to this type.
 struct GltfAuthoredAssetReference {
     std::string value;
+};
+
+struct GltfAttributeData {
+    ShaderResourceBufferElement element;
+    std::uint64_t count;
+    std::vector<std::byte> bytes;
 };
 
 class ModelResourceReleaseException : public std::runtime_error {
@@ -66,6 +74,11 @@ DECLARE_MODULE(GltfLoader) {
     // with synthetic draw handles and is suitable for reload compatibility
     // checks only.
     ModelTemplate inspect(const PreparedGltf &prepared) const;
+    // Read source mesh coordinates, before node transforms, morphing or skinning.
+    // Uses the prepared source document; no geometry/material GPU allocations.
+    GltfAttributeData readAttribute(const PreparedGltf &prepared,
+        std::uint32_t mesh, std::uint32_t primitive, std::string_view semantic,
+        ShaderResourceBufferElement element) const;
     ModelTemplate commit(
         PreparedGltf prepared,
         std::optional<GltfAuthoredAssetReference> authored_reference =

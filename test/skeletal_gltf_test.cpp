@@ -62,6 +62,46 @@ AssetFragmentRef animationFragment(std::string name) {
 }
 } // namespace
 
+TEST_CASE("prepared glTF attributes use shader array layout without GPU allocation", "[gltf][skeletal][graph-attribute]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_graph_attribute_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root);
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGlb(root / "character.glb");
+    FastModuleContainer modules;
+    auto &loader = GET_MODULE(GltfLoader);
+    const auto prepared = loader.prepareGltfBinary((root / "character.glb").string());
+    using Element = ShaderResourceBufferElement;
+    const auto positions = loader.readAttribute(prepared, 0, 0, "POSITION", Element::vec3);
+    REQUIRE(positions.element == Element::vec3);
+    REQUIRE(positions.count == 4);
+    REQUIRE(positions.bytes.size() == 64);
+    std::array<float, 16> values;
+    std::memcpy(values.data(), positions.bytes.data(), positions.bytes.size());
+    REQUIRE(values[0] == -0.3f);
+    REQUIRE(values[4] == 0.3f);
+    REQUIRE(values[3] == 0.0f);
+    REQUIRE(values[7] == 0.0f);
+    REQUIRE(values[11] == 0.0f);
+    REQUIRE(values[15] == 0.0f);
+    const auto joints = loader.readAttribute(prepared, 0, 0, "JOINTS_0", Element::uvec4);
+    REQUIRE(joints.count == 4);
+    REQUIRE(joints.bytes.size() == 64);
+    std::array<std::uint32_t, 16> joint_values;
+    std::memcpy(joint_values.data(), joints.bytes.data(), joints.bytes.size());
+    REQUIRE(joint_values[0] == 0);
+    REQUIRE(joint_values[8] == 1);
+    REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "POSITION", Element::vec2));
+    REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "POSITION", Element::ivec3));
+    REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "JOINTS_0", Element::ivec4));
+    REQUIRE_THROWS(loader.readAttribute(prepared, 0, 0, "MISSING", Element::vec3));
+    REQUIRE_THROWS(loader.readAttribute(prepared, 1, 0, "POSITION", Element::vec3));
+    REQUIRE_THROWS(loader.readAttribute(PreparedGltf{}, 0, 0, "POSITION", Element::vec3));
+    REQUIRE(FastModuleContainer::tryGet<VulkanManageCore>() == nullptr);
+    REQUIRE(FastModuleContainer::tryGet<StandardMaterialResource>() == nullptr);
+}
+
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /

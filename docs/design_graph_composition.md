@@ -334,6 +334,14 @@ vertex_count/instance_countを導出する。first_vertex/first_instanceを指�
 3要素vec3の48 byte配置とfirst_vertex=1からの2頂点描画を確認した。複数instance/vertexの自動添字
 accessorや、material集合からのdraw分割を今回追加したものではない。
 
+属性ソース接続の下準備として、GltfLoader::readAttributeを追加した。PreparedGltfと元文書の
+mesh/primitive index・semantic（POSITION等）・出力elementを指定し、要素数とstd430 bytesを取得する。
+元のローカル属性であり、node変換・morph・skin変形やindex展開は適用しない。従来のモデル読込と
+同じGltfAccessorReaderでstride/正規化整数/範囲を解釈し、疎アクセサー等の既存未対応は維持する。
+整数出力には符号の一致する整数componentを要求し、float→integerの暗黙変換を行わない。
+vec3のarray paddingは0で埋める。GPU・標準materialを初期化せず、全meshのCPUコピーを常駐させない。
+このAPIを共通graphのsource記述・count解決・候補buffer uploadへ接続する作業はまだ未了。
+
 アトリビュートの生成/付与と固有シェーダーも、同じ編集グラフのノード・資源・
 ポートとして表す方向とする。コード本体を外部shader assetへ置くことと、
 依存・入出力が全体グラフから見えることは両立する。シェーダー参照、設定、
