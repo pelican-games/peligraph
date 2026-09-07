@@ -67,6 +67,16 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
             result["nodes"].push_back({{"id", node.at("id")}, {"op", "event_input"}});
             continue;
         }
+        if (op == "audio.playback") {
+            keys(parameters, {"asset"});
+            const auto id = name(node.at("id"));
+            result["nodes"].push_back({{"id", id}, {"op", "audio_playback"},
+                {"asset", name(parameters.at("asset"))}, {"time", source(inputs.at("time"))},
+                {"events", inputs.at("events").at("node")}});
+            const auto output = "$audio_time/" + id;
+            output_scopes[output] = node_scopes.at(id);
+            continue;
+        }
         for (const auto &[port, contract] : operations.at(op).inputs)
             if (!contract.required && parameters.contains(port))
                 (void)number(parameters.at(port)); // References belong in typed input edges.
@@ -151,9 +161,14 @@ Graph::Graph(std::string_view document) {
             keys(authored, {"id", "op"});
             node.op = Op::event_input;
             event_consumers_.emplace(node.id, std::vector<std::size_t>{});
-        } else if (op == "event_clock") {
-            keys(authored, {"id", "op", "time", "events"});
-            node.op = Op::event_clock;
+        } else if (op == "event_clock" || op == "audio_playback") {
+            if (op == "event_clock") keys(authored, {"id", "op", "time", "events"});
+            else {
+                keys(authored, {"id", "op", "time", "events", "asset"});
+                audio_sources_.emplace(node.id, name(authored.at("asset")));
+                audio_nodes_.push_back(i);
+            }
+            node.op = op == "event_clock" ? Op::event_clock : Op::audio_playback;
             node.dependencies = {resolve(authored.at("time")), resolve(authored.at("events"))};
         } else if (op == "trigger_clock") {
             keys(authored, {"id", "op", "time", "trigger", "paused", "reset"});
@@ -220,9 +235,9 @@ Graph::Graph(std::string_view document) {
         const auto &node = nodes_[i];
         for (std::size_t input = 0; input < node.dependencies.size(); ++input)
             if (nodes_[node.dependencies[input]].op == Op::event_input &&
-                !(node.op == Op::event_clock && input == 1))
+                !((node.op == Op::event_clock || node.op == Op::audio_playback) && input == 1))
                 throw std::invalid_argument("event stream cannot be used as a scalar input");
-        if (node.op != Op::event_clock) continue;
+        if (node.op != Op::event_clock && node.op != Op::audio_playback) continue;
         const auto &source = nodes_[node.dependencies[1]];
         if (source.op != Op::event_input) throw std::invalid_argument("event clock requires an event source");
         event_consumers_.at(source.id).push_back(i);
@@ -273,6 +288,12 @@ Graph::Graph(std::string_view document) {
                 throw std::invalid_argument("duplicate value graph target: " + decoded.target);
             bindings_.push_back(std::move(decoded));
         }
+    }
+    for (const auto index : audio_nodes_) {
+        const auto output = "$audio_time/" + nodes_[index].id;
+        if (authored.at("outputs").contains(output)) throw std::invalid_argument("reserved graph output: " + output);
+        outputs_[output] = {index};
+        lowered_outputs_.push_back(output);
     }
     document_ = authored.dump();
 }
@@ -367,6 +388,10 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
         case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
         case Op::event_input: break;
+        case Op::audio_playback:
+            if (!state) throw std::invalid_argument("audio playback requires evaluation state: " + node.id);
+            value = values[node.dependencies[0]];
+            break;
         case Op::event_clock: {
             if (!state) throw std::invalid_argument("event clock requires evaluation state: " + node.id);
             auto &clock = triggers[index].clock;
@@ -429,7 +454,8 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
 
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
-                             const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state) const {
+                             const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,
+                             const AudioEventWriter &audio_writer) const {
     const auto outputs = evaluateInternal(inputs, parameters, inactive, state);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
@@ -448,6 +474,20 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
             throw std::invalid_argument("invalid audio graph output: " + binding.output);
     }
     PublishResult result;
+    for (const auto index : audio_nodes_) {
+        const auto &node = nodes_[index];
+        const auto time = outputs.find("$audio_time/" + node.id);
+        if (time == outputs.end()) continue;
+        auto &queue = state->pending_[index];
+        while (!queue.empty() && queue.front().time <= time->second[0]) {
+            if (!audio_writer || !audio_writer(node.id, queue.front().command)) {
+                result.unavailable.push_back("audio.playback:" + node.id);
+                break;
+            }
+            queue.erase(queue.begin());
+            ++result.applied;
+        }
+    }
     for (std::size_t i = 0; i < bindings_.size(); ++i) {
         if (prepared[i].empty()) continue;
         const auto &binding = bindings_[i];

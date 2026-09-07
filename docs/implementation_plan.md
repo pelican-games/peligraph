@@ -23233,7 +23233,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 #### 現況 (2026-09-07、履歴より優先)
 
-- 共通graphの最新到達点: owner停止、画像port、個体別時計に続き、event.playback/value.event_clockと時刻付きキューを通常Rendererへ接続。描画間のpause/resume、別個体の送信拒否、scene切替時の未処理event破棄をbuffer/image経路で確認。次は音声等のevent sinkとraster/fullscreen passの共通node化。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
+- 共通graphの最新到達点: owner停止、画像port、時計/eventキューに続き、audio.playbackとvoice所有を通常Rendererへ接続。再生/pause/resume/reset、owner削除/scene切替/Graph退役時の解放、音声asset不正候補の拒否を確認（描画はGPU、音声はnull backend）。次はraster/fullscreen passの共通node化とtyped sound port。動的instance装着・個体別GPU資源回収・scene別graph選択は未了。
 
 - 直近の利用者方針は、コンポーネントを全体グラフ内のサブグラフinstanceとして記述し、Studioでは同じデータの表示を分ける構成。[共通化設計](design_graph_composition.md)を先に読む。専用ValueGraphComponentは追加しない。共通instance/型照合/buffer・image・compute構成、数値→GPU転送、通常Rendererの自動評価、描画世代と数値処理の同時更新、scene時計は接続済み。画像pass・feature共通instance・状態/イベント・Studio統合は残件。
 
@@ -23249,6 +23249,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**共通graphの音声event sinkとvoice寿命 (2026-09-07):**
+- audio.playbackはasset参照、scalar time、playback_control eventsを受ける。publishのAudioEventWriterへcommandを渡し、成功分だけキューから除く。false/例外時は失敗eventと後続を保持し、成功済みを繰り返さない。evaluate単独は音声を操作しない。
+- 通常RendererからSceneLoaderへ接続。GraphRuntimeがnodeごとのvoiceを所有し、startで置換、pause/resumeで同一voiceを操作、resetで停止する。owner消失/交代、scene commit、Graph弱参照失効で解放。共通frame処理のupdateGraphRuntimeからも整理し、common graphを描画しない時にも回収する。graphSoundでhandle照会可能。候補公開前に音声assetをprepareSoundで検査する。
+- Player Debug build成功。audio/effect 13case/467assertion、curve/animation/scene 37case/1578assertion、GPU skeletal 7case/379assertion成功（graph_audio_final_build.log / graph_audio_gpu_build.log / graph_audio_cpu.log / graph_audio_foundation.log / graph_audio_gpu.log）。CPUはstart成功→pause失敗→pauseだけ再試行を確認。通常Rendererでは二つのvoiceの独立性、pause/resume/reset/restart、owner削除、scene切替、Graph弱参照失効での解放、不正asset候補後の旧voice維持を確認。GPU試験内の音声はnull backend。実deviceの時刻精度/聴感は未検証。
+- 成功分の消費を外すとCPUのstart回数が増え、ownerによる解放を外すと片方削除後の状態なし確認が落ちる。GraphRuntime destructorの解放を外すとscene切替/弱参照失効後のvoice確認が落ちる。個別変異実行は未実施。typed sound portによる新規voiceへのvolume/pitch同frame接続、source cursorのgraph入力、sample精度の音声予約、GUIは残件。
 
 **音声voiceの一時停止/再開 (2026-09-07):**
 - GameContext/AudioにsetSoundPaused(handle, bool)、SoundPlaybackStateにpausedを追加。null/miniaudio両backendが既存voiceを止め/再開し、handle・音量・pitchを保持する。miniaudioのcursorをseekし直さず、stop/startを使用する。同じpaused値の設定は再開始しない。破棄済み/準備中/終端voiceへの変更はfalse。effect transaction内は既存voice変更と同じfalse。

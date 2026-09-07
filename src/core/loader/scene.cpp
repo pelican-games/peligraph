@@ -1,6 +1,9 @@
 #include "scene.hpp"
 #include "../appflow/enginetime.hpp"
 #include <cmath>
+#if PELICAN_WITH_AUDIO
+#include "../audio/audio.hpp"
+#endif
 #include "modelphysicsbinding.hpp"
 
 #include "../ecs/predefined/modelview.hpp"
@@ -1362,6 +1365,13 @@ bool SceneLoader::ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectI
     return ownsGraphOwner(graph.parameterOwner(parameter), object);
 }
 
+SceneLoader::GraphRuntime::~GraphRuntime() {
+#if PELICAN_WITH_AUDIO
+    if (auto *audio = FastModuleContainer::tryGet<Audio>())
+        for (const auto &[node, sound] : sounds) audio->stopSound(sound);
+#endif
+}
+
 bool SceneLoader::ownsGraphOwner(const GraphInstanceOwner *owner, GameObjectId object) const {
     if (!owner || owner->scene != currentScene() ||
         !GET_MODULE(ECSCore).getTemplatePublicModule().isAlive(object)) return false;
@@ -1390,6 +1400,16 @@ SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
         if (next == owners.end() || next->second != object) changed.insert(scope);
     }
     graph->resetState(runtime.evaluation, changed);
+#if PELICAN_WITH_AUDIO
+    if (auto *audio = FastModuleContainer::tryGet<Audio>())
+        std::erase_if(runtime.sounds, [&](const auto &entry) {
+            if (!graph->nodeActive(entry.first, changed)) {
+                audio->stopSound(entry.second);
+                return true;
+            }
+            return !audio->soundState(entry.second);
+        });
+#endif
     runtime.owners = std::move(owners);
     auto &parameters = runtime.parameters;
     std::erase_if(parameters, [&](const auto &entry) {
@@ -1424,6 +1444,48 @@ bool SceneLoader::emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph,
     if (!ownsGraphOwner(graph->eventOwner(input), object)) return false;
     return graph->emitEvent(synchronizeGraphRuntime(graph).evaluation, input, command,
                             GET_MODULE(EngineTime).now() - scene_start_time);
+}
+
+bool SceneLoader::applyGraphAudioEvent(const std::shared_ptr<const ValueGraph::Graph> &graph,
+                                     std::string_view node, Animation::CurvePlaybackCommand command) {
+#if PELICAN_WITH_AUDIO
+    const auto source = graph->audioSources().find(std::string{node});
+    if (source == graph->audioSources().end() || !graph->nodeActive(node, inactiveGraphScopes(*graph))) return false;
+    auto &sounds = synchronizeGraphRuntime(graph).sounds;
+    auto &audio = GET_MODULE(Audio);
+    const auto existing = sounds.find(node);
+    if (command == Animation::CurvePlaybackCommand::start) {
+        const auto sound = audio.playSound(source->second);
+        if (existing != sounds.end()) {
+            audio.stopSound(existing->second);
+            existing->second = sound;
+        } else sounds.emplace(std::string{node}, sound);
+    } else if (existing != sounds.end()) {
+        if (command == Animation::CurvePlaybackCommand::reset) {
+            audio.stopSound(existing->second);
+            sounds.erase(existing);
+        } else audio.setSoundPaused(existing->second, command == Animation::CurvePlaybackCommand::pause);
+    }
+    return true;
+#else
+    return false;
+#endif
+}
+
+std::optional<SoundHandle> SceneLoader::graphSound(const std::shared_ptr<const ValueGraph::Graph> &graph,
+                                                std::string_view node) const {
+    const auto runtime = graph_runtime.find(graph);
+    if (runtime == graph_runtime.end()) return std::nullopt;
+    const auto sound = runtime->second.sounds.find(node);
+    return sound == runtime->second.sounds.end() ? std::nullopt : std::optional{sound->second};
+}
+
+void SceneLoader::updateGraphRuntime() {
+    std::erase_if(graph_runtime, [](const auto &entry) { return entry.first.expired(); });
+    std::vector<std::shared_ptr<const ValueGraph::Graph>> graphs;
+    for (const auto &[weak, runtime] : graph_runtime)
+        if (auto graph = weak.lock()) graphs.push_back(std::move(graph));
+    for (const auto &graph : graphs) (void)synchronizeGraphRuntime(graph);
 }
 
 ValueGraph::InactiveScopes SceneLoader::inactiveGraphScopes(const ValueGraph::Graph &graph) const {

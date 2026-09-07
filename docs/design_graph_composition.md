@@ -105,7 +105,8 @@ GPU世代退役後も古いGraphを保持し続けない。削除済み個体の
 描画更新では旧グラフのoverrideを維持する。通常Rendererがこのsnapshotをpublishへ渡す。
 
 owner不在時の処理停止は、以下のscope依存と通常Rendererのフレーム評価へ接続する。
-objectごとの動的instance生成/削除、状態付きノード、イベント/音声handleの所有は残件。
+時計・再生event・音声voiceの所有は以下の実装で扱う。objectごとの動的instance生成/削除と、
+それ以外の状態付き処理は残件。
 
 実行停止への準備として、展開結果にnode_scopes/output_scopesを追加した。各nodeと公開出力が
 必要とするowner scopeを、親scopeと入力依存からコンパイル時に求める。子に別ownerがあっても
@@ -165,13 +166,34 @@ GameContext::emitGraphEvent(object, source_node_path, command)は現在sceneの�
 timestampを渡す。生存owner・現在Graph・source宣言を確認し、別個体/古いID/不明sourceや
 effect transaction内は受け付けない。Graph検索はparameter操作と共用する。
 キューは既存EvaluationStateに所有され、owner交代/不在scope/scene commitで時計と一緒に破棄する。
-音声の再生/停止sink、物理stepイベントとの接続、eventの合流/条件分岐や任意payloadは残件。
+物理stepイベントとの接続、eventの合流/条件分岐や任意payloadは残件。
 
 音声sinkへの準備として、GameContext::setSoundPaused(handle, bool)を追加した。
 一時停止/再開は同じvoiceとcursorを使い、soundState.pausedで状態を区別する。
 stopSoundは従来どおりvoiceを破棄し、破棄済みhandleのresumeはfalse。音量/pitchと
 バス設定は保持する。scene effect transaction内は既存のvoice変更APIと同じくfalseを返す。
-このAPIだけで共通graphのeventから音声への自動接続やowner連動の解放が完成するわけではない。
+このAPIを使い、以下のaudio.playbackへ接続した。
+
+### 音声のイベントsinkとvoice所有（2026-09-07）
+
+audio.playbackはparameters.assetに音声asset参照を持ち、time（scalar）とevents
+（playback_control stream）を受ける。startで新しいvoiceを開始し、同じnodeの古いvoiceを
+置き換える。pause/resumeは同じvoiceを操作し、resetで停止/解放する。voiceがないときの
+pause/resume/resetは消費して何もしない。これは端末の音声時計へのsample精度の予約ではなく、
+graphのtimeに到達したイベントをpublish時に反映する。時計consumerと音声sinkは同じeventを
+独立して受け取れる。
+
+Graphはasset参照と時刻の計算を保持し、publishのAudioEventWriterへnode名とcommandを渡す。
+成功したeventだけを消費し、false/例外になったeventとその後続を保持する。先に成功したeventを
+再配送しない。Graph::evaluateだけでは音声を操作しない。通常RendererはSceneLoaderのwriterへ
+接続し、描画候補の公開前にAudio::prepareSoundでassetを検査する。audioなしbuildは音声sinkを拒否する。
+
+SceneLoaderの既存GraphRuntimeがnodeごとのSoundHandleを所有する。owner交代/消失、scene commit、
+Graph弱参照の失効でvoiceを停止する。共通frame updateが寿命整理を呼ぶため、Rendererにcommon
+graphがないフレームでも退役したvoiceを回収する。Audio moduleが先に破棄された場合は、その
+teardownによるvoice解放を利用し、新しいAudio moduleをcleanup中に作らない。graphSoundは現在の
+handleを照会でき、既存GameContextの音量/pitch操作にも使える。
+音量/pitchを新規voiceへ同じframeで自動結線するtyped sound port、音声位置のgraph入力、GUIは残件。
 
 ### 共通authoringから計算シェーダーへ（2026-09-07）
 
@@ -241,7 +263,7 @@ scene開始時刻はSceneLoaderのmetadata commit後に更新する。setTimeに
 
 Graph::publishへ渡すrender writerが、そのframeのbuffer_bindingsで保持するIDへ転送する。
 更新後のグローバル名検索へ戻らず、古い世代を保持するframeの資源対応を維持する。
-音声handleの自動解決や任意外部inputの供給はまだないため、未束縛の入力/出力を含む
+既存scalar音声bindingへのhandle自動解決や任意外部inputの供給はまだないため、未束縛の入力/出力を含む
 自動実行候補は公開前に拒否する。手動Graph APIのsound/inputs供給は維持する。
 
 通常Rendererでの実GPU出力、scene再読込みによるscene_timeリセット、数値変更を含む

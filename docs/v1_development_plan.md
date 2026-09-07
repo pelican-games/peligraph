@@ -114,11 +114,11 @@ ownerの生存状態に沿った数値評価・publish・依存computeの停止�
 通常Rendererへ接続した。render.imageとcomputeのstorage/sampled画像portも接続済み。
 個体別EvaluationStateとvalue.trigger_clockの開始/一時停止/再開/resetも通常Rendererへ接続した。
 型付き再生イベントのsource/時計consumerと時刻付きキューも通常Rendererへ接続した。
-次は音声等のevent sinkとraster/fullscreen passの共通node化を進める。
-音声sinkの前提となるsetSoundPausedとpaused状態を追加し、同じvoiceの一時停止/再開を
-null backendで確認した。eventから音声への自動接続とownerに連動したvoice解放は残件。
+audio.playbackへ開始/pause/resume/resetを接続し、個体・scene・Graphの寿命に沿ったvoice解放を
+通常Renderer経由で確認した（音声はnull backend）。次はraster/fullscreen passの共通node化と、
+新しいvoiceへのvolume/pitch接続を扱うtyped sound portを進める。
 停止時もGPU資源は描画世代が保持する。動的instance装着や個体単位の資源回収は未了。
-sceneごとのgraph選択と音声handle/任意外部inputの自動供給はまだない。
+sceneごとのgraph選択と、既存scalar音声bindingへのhandle/任意外部inputの自動供給はまだない。
 画像pass、feature自体の共通instance化、時計以外の状態/イベント境界、Studio統合は残件。
 専用ValueGraphComponentや新しいkind分岐の追加は先行しない。
 アトリビュート生成/付与・固有shaderもこの共通表現へ含める。material反復の

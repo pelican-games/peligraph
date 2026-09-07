@@ -195,6 +195,7 @@ void updateFrameState() {
             break;
         }
     });
+    modules.scene_loader.updateGraphRuntime();
     if (auto *camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>())
         camera_bake->recordFrame();
 }

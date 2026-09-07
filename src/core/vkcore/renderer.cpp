@@ -5244,7 +5244,10 @@ void Renderer::renderLogicalFrame(
                 return found != frame_graph.buffer_bindings.end() &&
                     modules.frame_graph_resources.stageRuntimeValues(found->second, values);
             }, scene.graphParameterValues(frame_graph.value_graph),
-            inactive_graph_scopes, &scene.graphEvaluationState(frame_graph.value_graph));
+            inactive_graph_scopes, &scene.graphEvaluationState(frame_graph.value_graph),
+            [&](std::string_view node, Animation::CurvePlaybackCommand command) {
+                return scene.applyGraphAudioEvent(frame_graph.value_graph, node, command);
+            });
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
     }

@@ -1,6 +1,9 @@
 #include "renderingpassconfigregistration.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../userpublic/gamecontext.hpp"
+#if PELICAN_WITH_AUDIO
+#include "../audio/audio.hpp"
+#endif
 #include "../shader/raygrouplayout.hpp"
 #include "computetask.hpp"
 #include "../../project/renderpipeline.hpp"
@@ -841,6 +844,14 @@ registerRenderingPassConfigVariantsData(
     std::shared_ptr<const ValueGraph::Graph> value_graph;
     if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
         value_graph = std::make_shared<const ValueGraph::Graph>(rendering_pass_data.dump());
+        if (!value_graph->audioSources().empty()) {
+#if PELICAN_WITH_AUDIO
+            for (const auto &[node, asset] : value_graph->audioSources())
+                (void)GET_MODULE(Audio).prepareSound(asset);
+#else
+            throw std::runtime_error("audio graph requires PELICAN_WITH_AUDIO");
+#endif
+        }
     }
     if (ray_tracing_project != nullptr) {
         injectRayTracingJointTransactionPoint(

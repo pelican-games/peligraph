@@ -43,6 +43,8 @@ GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &
         {"event.playback", {{}, {{"events", event}}}},
         {"value.event_clock", {{{"time", required},
             {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, output}},
+        {"audio.playback", {{{"time", required},
+            {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, {}}},
         {"value.add", {{{"a", required}, {"b", required}}, output}},
         {"value.multiply", {{{"a", required}, {"b", required}}, output}},
         {"value.curve", {{{"time", required}}, output}},

@@ -63,9 +63,13 @@ DECLARE_MODULE(SceneLoader) {
     using GraphParameterOverrides = std::map<std::string, GraphParameterOverride, std::less<>>;
     struct GraphRuntime {
         explicit GraphRuntime(const ValueGraph::Graph &graph) : evaluation(graph.createState()) {}
+        ~GraphRuntime();
+        GraphRuntime(const GraphRuntime &) = delete;
+        GraphRuntime &operator=(const GraphRuntime &) = delete;
         GraphParameterOverrides parameters;
         ValueGraph::EvaluationState evaluation;
         std::map<std::string, GameObjectId> owners;
+        ValueGraph::SoundBindings sounds;
     };
     std::map<std::weak_ptr<const ValueGraph::Graph>, GraphRuntime, std::owner_less<>> graph_runtime;
     GraphRuntime &synchronizeGraphRuntime(const std::shared_ptr<const ValueGraph::Graph> &graph);
@@ -122,6 +126,11 @@ DECLARE_MODULE(SceneLoader) {
     ValueGraph::EvaluationState &graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph);
     bool emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
                         std::string_view input, Animation::CurvePlaybackCommand command);
+    bool applyGraphAudioEvent(const std::shared_ptr<const ValueGraph::Graph> &graph,
+                             std::string_view node, Animation::CurvePlaybackCommand command);
+    std::optional<SoundHandle> graphSound(const std::shared_ptr<const ValueGraph::Graph> &graph,
+                                        std::string_view node) const;
+    void updateGraphRuntime();
     nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;

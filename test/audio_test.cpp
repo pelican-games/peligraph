@@ -180,6 +180,38 @@ TEST_CASE("GameContext audio play state works with null backend", "[audio]") {
     REQUIRE(GET_MODULE(Audio).backendVoiceCountForTesting() == 0);
 }
 
+TEST_CASE("graph audio events acknowledge only successful deliveries", "[audio][graph-composition]") {
+    const ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
+      "nodes":[{"id":"events","op":"event_input"},
+        {"id":"time","op":"input","name":"time"},
+        {"id":"sound","op":"audio_playback","time":"time","events":"events","asset":"tone.wav"}],
+      "outputs":{}})"};
+    auto state = graph.createState();
+    using Command = Animation::CurvePlaybackCommand;
+    REQUIRE(graph.emitEvent(state, "events", Command::start, 0));
+    REQUIRE(graph.emitEvent(state, "events", Command::pause, 0));
+    unsigned starts = 0, pauses = 0;
+    const auto first = graph.publish(GameContext{}, {{"time", 0}}, {}, {}, {}, {}, &state,
+        [&](std::string_view node, Command command) {
+            REQUIRE(std::string{node} == "sound");
+            if (command == Command::start) { ++starts; return true; }
+            return false;
+        });
+    REQUIRE(first.applied == 1);
+    REQUIRE(first.unavailable.size() == 1);
+    const auto retry = graph.publish(GameContext{}, {{"time", 0}}, {}, {}, {}, {}, &state,
+        [&](std::string_view, Command command) {
+            if (command == Command::start) ++starts;
+            if (command == Command::pause) ++pauses;
+            return true;
+        });
+    REQUIRE(retry.applied == 1);
+    REQUIRE(retry.unavailable.empty());
+    REQUIRE(starts == 1);
+    REQUIRE(pauses == 1);
+    REQUIRE(graph.publish(GameContext{}, {{"time", 1}}, {}, {}, {}, {}, &state).applied == 0);
+}
+
 TEST_CASE("Stopped audio voices do not accumulate in either registry", "[audio]") {
     ensureLogger();
     Sandbox sandbox;

@@ -2526,7 +2526,7 @@ layout(無し / v1 / v2)× `acceleration_structure` 宣言 × `pelican_ray_insta
 | 9 | v2 | 有 | 無 | 成功 |
 | 10 | v2 | 有 | 有 | 成功 |
 
-2 と 4 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L59))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
+2 と 4 は scene load 時の検査です([scene.cpp](../../src/core/loader/scene.cpp#L62))。**ゲーム DLL が `pelican_ray_instance` という名前のコンポーネントを自分で登録している場合は素通しします** — 名前の所有者が外部なら、組み込みの規則を当てないためです。
 
 ### `pelican_ray_instance` コンポーネント
 

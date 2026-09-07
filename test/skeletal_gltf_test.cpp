@@ -25,6 +25,7 @@
 #include "../src/core/vkcore/renderer.hpp"
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
+#include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/vkcore/util.hpp"
 #include "../src/core/renderer/frameresources.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
@@ -618,6 +619,63 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE_FALSE(context.emitGraphEvent(event_left, "left/commands", Command::start));
     REQUIRE(render(17) == 1);
     REQUIRE(render(18.25) == 1); // A retired scene's queued start must not fire later.
+#if PELICAN_WITH_AUDIO
+    const unsigned char wav[]{'R','I','F','F',44,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,
+        1,0,1,0,64,31,0,0,128,62,0,0,2,0,16,0,'d','a','t','a',8,0,0,0,0,0,0,0,0,0,0,0};
+    writeText(root / "tone.wav", {reinterpret_cast<const char *>(wav), sizeof(wav)});
+    event_document["definitions"]["scaled_curve"]["nodes"].push_back({
+        {"id", "sound"}, {"op", "audio.playback"}, {"parameters", {{"asset", "project://tone.wav"}}},
+        {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+                    {"events", {{"node", "commands"}, {"port", "events"}}}}}, {"outputs", nlohmann::json::array()}});
+    loadRenderGraphVariantsFromConfigData(event_document.dump());
+    auto sound_graph = GET_MODULE(RenderingPassContainer).snapshot()->programs.begin()->second.frame_graph.value_graph;
+    const auto requireSound = [&](const auto &graph, const char *node) {
+        const auto sound = scene.graphSound(graph, node);
+        REQUIRE(sound);
+        return *sound;
+    };
+    const auto sound_left = *scene.objectId("Left");
+    const auto sound_right = *scene.objectId("Right");
+    REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::start));
+    REQUIRE(context.emitGraphEvent(sound_right, "right/commands", Command::start));
+    (void)render(18.25);
+    const auto left_voice = requireSound(sound_graph, "left/sound");
+    const auto right_voice = requireSound(sound_graph, "right/sound");
+    REQUIRE(left_voice != right_voice);
+    REQUIRE(context.isPlaying(left_voice));
+    REQUIRE(context.isPlaying(right_voice));
+    REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::pause));
+    (void)render(18.5);
+    REQUIRE(context.soundState(left_voice));
+    REQUIRE(context.soundState(left_voice)->paused);
+    REQUIRE(context.isPlaying(right_voice));
+    REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::resume));
+    (void)render(18.75);
+    REQUIRE(context.isPlaying(left_voice));
+    REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::reset));
+    (void)render(19);
+    REQUIRE_FALSE(context.soundState(left_voice));
+    REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::start));
+    (void)render(19.25);
+    const auto restarted_voice = requireSound(sound_graph, "left/sound");
+    REQUIRE(restarted_voice != left_voice);
+    auto bad_audio = event_document;
+    bad_audio["definitions"]["scaled_curve"]["nodes"].back()["parameters"]["asset"] = "project://missing.wav";
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(bad_audio.dump()));
+    REQUIRE(context.isPlaying(restarted_voice));
+    GameObjects{}.remove(sound_left);
+    scene.updateGraphRuntime();
+    REQUIRE_FALSE(context.soundState(restarted_voice));
+    REQUIRE(context.isPlaying(right_voice));
+    test_support::loadScene(scene, "default_scene");
+    REQUIRE_FALSE(context.soundState(right_voice));
+    auto temporary_graph = std::make_shared<const ValueGraph::Graph>(event_document.dump());
+    REQUIRE(scene.applyGraphAudioEvent(temporary_graph, "right/sound", Command::start));
+    const auto temporary_voice = requireSound(temporary_graph, "right/sound");
+    temporary_graph.reset();
+    scene.updateGraphRuntime();
+    REQUIRE_FALSE(context.soundState(temporary_voice));
+#endif
 }
 
 } // namespace Pelican
