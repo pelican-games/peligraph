@@ -1361,6 +1361,12 @@ std::optional<GameObjectId> SceneLoader::objectId(std::string_view name) const {
     return found->second.object_id;
 }
 
+std::optional<std::string> SceneLoader::objectName(GameObjectId object) const {
+    for (const auto &[name, binding] : object_bindings)
+        if (binding.object_id == object) return name;
+    return std::nullopt;
+}
+
 bool SceneLoader::hasObjectTransform(std::string_view name) const {
     return objectId(name).has_value();
 }

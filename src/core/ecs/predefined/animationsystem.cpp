@@ -2,30 +2,67 @@
 
 #include "../../animation/animationjobs.hpp"
 #include "../../animation/animationprobe.hpp"
+#include "../../animation/animationservice.hpp"
+#include "../../userpublic/animation/animgraph.hpp"
+#include "../../registrationownerhost.hpp"
+#include "../core.hpp"
+#include "../../loader/scene.hpp"
 #include "../../appflow/enginetime.hpp"
 #include "../../asset/model.hpp"
 #include "../../loader/pathresolver.hpp"
 #include "../../model/skeletalanimation.hpp"
 #include "../../renderer/polygoninstancecontainer.hpp"
 
-#include <atomic>
 #include <filesystem>
 #include <stdexcept>
 #include <variant>
 #include <vector>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace Pelican {
 
 struct AnimationSystemState {
+    struct GraphBinding {
+        std::string reference;
+        std::string object_name;
+        bool owns_registration{};
+        ModelInstanceId instance;
+        const SkeletalModelData *model{};
+        std::uint64_t epoch{};
+        std::uint64_t time_set_revision{};
+        std::filesystem::file_time_type modified;
+        std::unique_ptr<AnimationGraph::EvaluatorV1> evaluator;
+        ~GraphBinding() {
+            evaluator.reset();
+            if (owns_registration)
+                Animation::animationServiceRuntime().unregisterObject(object_name);
+        }
+    };
     Animation::AnimationAssetRegistry assets;
-    std::atomic_uint64_t next_frame_revision{1};
+    std::vector<EntityId> candidates;
+    std::unordered_map<EntityId, std::unique_ptr<GraphBinding>> graphs;
+
+    AnimationGraph::EvaluatorV1 *currentEvaluator(EntityId entity) const {
+        const auto found = graphs.find(entity);
+        if (found == graphs.end()) return nullptr;
+        const auto *animation = GET_MODULE(ECSCore).getTemplatePublicModule()
+            .tryComponent<AnimationComponent>(entity);
+        if (!animation || animation->graph != found->second->reference) return nullptr;
+        return found->second->evaluator.get();
+    }
 };
 
 AnimationSystem::AnimationSystem() : state{std::make_unique<AnimationSystemState>()} {}
 AnimationSystem::~AnimationSystem() = default;
 
-void AnimationSystem::prepareEcsWorkerDependencies(bool has_matching_chunks) {
-    if (!has_matching_chunks) return;
+void AnimationSystem::prepareEcsWorkerDependencies(DependencyQuery chunks) {
+    state->candidates.clear();
+    for (const auto &chunk : chunks) {
+        const auto entities = std::get<EntityId *>(chunk.components);
+        state->candidates.insert(state->candidates.end(), entities, entities + chunk.count);
+    }
+    if (chunks.empty()) return;
     engine_time = &GET_MODULE(EngineTime);
     instances = &GET_MODULE(PolygonInstanceContainer);
     models = &GET_MODULE(ModelAssetContainer);
@@ -41,11 +78,12 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
     auto animations = std::get<AnimationComponent *>(components);
     auto model_views = std::get<SimpleModelViewComponent *>(components);
     const auto time = engine_time->now();
-    const auto frame_revision = state->next_frame_revision.fetch_add(1, std::memory_order_relaxed);
+    const auto frame_revision = engine_time->frameIndex();
     thread_local Animation::ProbeRuntime pose_runtime;
     const auto arena = pose_runtime.beginFrame(frame_revision);
     if (!Animation::isValid(arena)) throw std::runtime_error("animation pose arena is unavailable on this thread");
     for (size_t i = 0; i < count; ++i) {
+        if (!animations[i].graph.empty()) continue;
         if (!model_views[i].model_instance_id) continue;
         auto &model = models->getModelTemplateByName(model_views[i].model_name);
         if (!model.skeletal) {
@@ -106,6 +144,83 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
         status = instances->publishAnimationFrame(*model_views[i].model_instance_id, publish);
         if (status != Animation::Status::ok) throw std::runtime_error("failed to publish animation frame");
     }
+}
+
+void AnimationSystem::updateGraphs() {
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto &scene = GET_MODULE(SceneLoader);
+    auto &time = GET_MODULE(EngineTime);
+    auto &service = Animation::animationServiceRuntime();
+    internal::ScopedRegistrationOwner owner{internal::engineRegistrationOwner};
+    std::unordered_set<EntityId> live;
+    for (const auto entity : state->candidates) {
+        const auto *animation = ecs.tryComponent<AnimationComponent>(entity);
+        const auto *view = ecs.tryComponent<SimpleModelViewComponent>(entity);
+        if (!animation || animation->graph.empty() || !view || !view->model_instance_id) continue;
+        live.insert(entity);
+        auto &model = GET_MODULE(ModelAssetContainer).getModelTemplateByName(view->model_name);
+        if (!model.skeletal) throw std::runtime_error("animation graph requires a skinned model");
+        auto &resolver = GET_MODULE(PathResolver);
+        const auto path = resolver.resolveExistingFile(animation->graph);
+        const auto modified = std::filesystem::last_write_time(path);
+        auto found = state->graphs.find(entity);
+        const auto epoch = scene.runtimeSceneEpoch();
+        const auto named = scene.objectName(entity);
+        const auto object_name = named.value_or("__animation_component:" +
+            std::to_string(epoch) + ":" + toString(entity));
+        bool replace = found == state->graphs.end();
+        if (!replace) {
+            const auto &old = *found->second;
+            replace = old.reference != animation->graph || old.modified != modified ||
+                old.epoch != epoch || old.instance != *view->model_instance_id ||
+                old.object_name != object_name;
+            if (!replace && old.model != model.skeletal.get()) {
+                if (old.evaluator->rebind() != Animation::Status::ok) replace = true;
+                else found->second->model = model.skeletal.get();
+            }
+        }
+        if (replace) {
+            // Parse before releasing the previous writer. A malformed edited
+            // asset must not silently discard the existing graph state.
+            auto document = AnimationGraph::parseDocumentV1(resolver.loadText(animation->graph));
+            state->graphs.erase(entity);
+            auto binding = std::make_unique<AnimationSystemState::GraphBinding>();
+            binding->reference = animation->graph;
+            binding->object_name = object_name;
+            binding->instance = *view->model_instance_id;
+            binding->model = model.skeletal.get();
+            binding->epoch = epoch;
+            binding->modified = modified;
+            binding->time_set_revision = time.timeSetRevision();
+            if (!named) {
+                service.registerObject(object_name, *model.skeletal, *view->model_instance_id);
+                binding->owns_registration = true;
+            }
+            binding->evaluator = std::make_unique<AnimationGraph::EvaluatorV1>(std::move(document), object_name);
+            if (binding->evaluator->bind() != Animation::Status::ok)
+                throw std::runtime_error("animation graph bind failed: " + binding->evaluator->lastError());
+            found = state->graphs.emplace(entity, std::move(binding)).first;
+        }
+        auto &binding = *found->second;
+        if (binding.time_set_revision != time.timeSetRevision()) {
+            const auto status = binding.evaluator->notify(Animation::AnimationNotificationKind::set_time, time.now());
+            if (status != Animation::Status::ok) throw std::runtime_error("animation graph clock reset failed");
+            binding.time_set_revision = time.timeSetRevision();
+        }
+        if (binding.evaluator->prepareTick(time.now(), time.dt(), time.frameIndex()) != Animation::Status::ok)
+            throw std::runtime_error("animation graph tick preparation failed");
+    }
+    std::erase_if(state->graphs, [&](const auto &entry) { return !live.contains(entry.first); });
+}
+
+Animation::Status AnimationSystem::setGraphParameter(EntityId entity, std::string_view name, double value) {
+    const auto evaluator = state->currentEvaluator(entity);
+    return evaluator ? evaluator->setParameter(name, value) : Animation::Status::not_found;
+}
+
+Animation::Status AnimationSystem::forceGraphState(EntityId entity, std::string_view name) {
+    const auto evaluator = state->currentEvaluator(entity);
+    return evaluator ? evaluator->forceState(name) : Animation::Status::not_found;
 }
 
 } // namespace Pelican

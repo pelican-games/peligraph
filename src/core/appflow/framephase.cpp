@@ -4,6 +4,7 @@
 #include "../audio/audio.hpp"
 #endif
 #include "../ecs/core.hpp"
+#include "../ecs/predefined/animationsystem.hpp"
 #include "../gamelogic/behaviorarena.hpp"
 #include "../loader/scene.hpp"
 #include "../os/inputstate.hpp"
@@ -173,6 +174,7 @@ void updateFrameState() {
             // Retire animation sinks whose scene entity or renderer instance
             // was replaced before invoking any registered pose callbacks.
             Animation::animationServiceRuntime().synchronizeSceneObjects();
+            GET_MODULE(AnimationSystem).updateGraphs();
             if (const auto status =
                     Vrm::applicationServiceRuntime()
                         .ensureStandardPhasesRegistered();

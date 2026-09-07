@@ -101,6 +101,7 @@ DECLARE_MODULE(SceneLoader) {
         return pending_scene_id;
     }
     std::optional<GameObjectId> objectId(std::string_view name) const;
+    std::optional<std::string> objectName(GameObjectId object) const;
     bool hasObjectTransform(std::string_view name) const;
     SceneObjectTransform objectTransform(std::string_view name) const;
     void applyObjectTransform(std::string_view name, const SceneObjectTransform &transform);

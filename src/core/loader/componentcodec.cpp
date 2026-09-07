@@ -89,7 +89,8 @@ struct ColliderSchemaFields {
 };
 
 struct AnimationSchemaFields {
-    std::string clip;
+    std::optional<std::string> clip;
+    std::optional<std::string> graph;
     double speed = 1.0;
     bool loop = true;
     double start_time = 0.0;
@@ -172,7 +173,8 @@ inline constexpr auto collider_schema = structFields(
 
 inline constexpr auto animation_schema = structFields(
     componentPolicy("animation"),
-    required(field<&AnimationSchemaFields::clip>("clip")),
+    optionalOverride(field<&AnimationSchemaFields::clip>("clip")),
+    optionalOverride(field<&AnimationSchemaFields::graph>("graph")),
     defaulted(field<&AnimationSchemaFields::speed>("speed", frange(0.0, 1.0e12)), 1.0),
     defaulted(field<&AnimationSchemaFields::loop>("loop"), true),
     defaulted(field<&AnimationSchemaFields::start_time>("start_time", frange(0.0, 1.0e12), "second"), 0.0));
@@ -207,7 +209,6 @@ const auto simple_model_view_fields = materializeSchema(simple_model_view_schema
 const auto camera_fields = materializeSchema(camera_schema);
 const auto light_fields = materializeSchema(light_schema);
 const auto collider_fields = materializeSchema(collider_schema);
-const auto animation_fields = materializeSchema(animation_schema);
 const auto sprite_fields = materializeSchema(sprite_schema);
 
 const std::array ray_instance_fields{
@@ -982,13 +983,21 @@ ComponentCodecValue projectCollider(const void *source) {
 
 ComponentCodecValue decodeAnimation(const Json &json) {
     requireObjectAndName(json, "animation");
-    if (json.contains("graph")) {
-        legacyReject("animation.graph_reserved",
-                     "animation: reserved v1 key 'graph' is not supported");
-    }
     requireClosed(json, "animation",
-                  std::array<std::string_view, 5>{"name", "clip", "speed", "loop", "start_time"});
+                  std::array<std::string_view, 6>{"name", "clip", "graph", "speed", "loop", "start_time"});
+    if (json.contains("clip") == json.contains("graph"))
+        codecError(StructFieldErrorCode::OutOfRange, "animation",
+                   "requires exactly one of clip or graph");
     AnimationComponent result;
+    if (json.contains("graph")) {
+        result.graph = readString(json.at("graph"), "animation.graph", true);
+        for (const auto *field : {"speed", "loop", "start_time"}) {
+            if (json.contains(field))
+                codecError(StructFieldErrorCode::UnknownField, std::string{"animation."} + field,
+                           "is clip-only; graph states define their playback clocks");
+        }
+        return result;
+    }
     result.clip = readString(requireField(json, "animation", "clip"), "animation.clip", true);
     result.speed = json.contains("speed") ? readDouble(json.at("speed"), "animation.speed", 0.0, false) : 1.0;
     result.start_time = json.contains("start_time")
@@ -1001,6 +1010,10 @@ ComponentCodecValue decodeAnimation(const Json &json) {
 
 OrderedJson encodeAnimation(const ComponentCodecValue &value) {
     const auto &data = codecValue<AnimationComponent>(value, "animation");
+    if (data.clip.empty() == data.graph.empty())
+        codecError(StructFieldErrorCode::OutOfRange, "animation",
+                   "requires exactly one of clip or graph");
+    if (!data.graph.empty()) return OrderedJson{{"name", "animation"}, {"graph", data.graph}};
     if (data.loop > 1U) codecError(StructFieldErrorCode::OutOfRange, "animation.loop", "must be boolean runtime state");
     return OrderedJson{{"name", "animation"}, {"clip", data.clip}, {"speed", data.speed},
                        {"loop", data.loop != 0}, {"start_time", data.start_time}};
@@ -1294,7 +1307,6 @@ void swapEcsEditorToken(ComponentEditorSwapToken &erased,
 }
 
 constexpr std::array legacy_branch_descriptors{
-    LegacyBranchDescriptor{"animation.graph_reserved", "decodeAnimation"},
     LegacyBranchDescriptor{"animation.schema_validation", "decodeAnimation"},
     LegacyBranchDescriptor{"camera.schema_validation", "decodeCamera"},
     LegacyBranchDescriptor{"collider.boolean_type", "ColliderComponent"},
@@ -1400,7 +1412,7 @@ const std::array codecs{
     ComponentCodec{"animation", ComponentCodecRuntimeKind::Ecs,
                    EditorProjectionPolicy::EcsCodec,
                    decodeResult<decodeAnimation>,
-                    encodeAnimation, []() -> const SchemaNode & { static const auto node = SchemaNode::fromFlat(fieldSpan(animation_fields)); return node; },
+                    encodeAnimation, []() -> const SchemaNode & { static constexpr auto node = internal::materializeSchemaNode(animation_schema); return node; },
                    applyAnimation, projectAnimation,
                    prepareEcsEditorSwap<AnimationComponent>,
                    swapEcsEditorToken<AnimationComponent>},

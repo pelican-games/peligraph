@@ -41,7 +41,7 @@ geometry occurrence候補選択とoverrideのcomponent/行・適用状態・実�
 
 今回の再照合ではRT設計書に残っていたport接続・順序編集の未実装表記を現行実装へ訂正した。RT4〜RT7の主要機能を再実装する根拠はなく、GPU readbackや追加数値oracleを次の必須機能にはしない。表は全機能の完了監査や工数見積りではない。
 
-コンポーネント側で確認できた実機能の不足は、[アニメーショングラフ設計](design_animation_graph.md) §3の`clip XOR graph`をscene宣言から使う経路。componentcodec.cppは`animation.graph`を拒否し、AnimationSystemはclipを直接評価する。一方、公開EvaluatorV1にはbind/rebind・パラメーター変更・phase評価がある。次の実装対象はこの既存評価器への装着経路とし、新しい評価器は作らない。graphの参照・初期パラメーターを保存し、componentの追加・変更・削除とscene/model reloadに追随させる。既存clip系との二重pose書込みを避け、評価器の登録・解除とtickをowner threadの既存phaseへ接続するところまでを一単位とする。現時点では未実装。
+コンポーネントからの[アニメーショングラフ](design_animation_graph.md)装着を実装。sceneの`clip XOR graph`宣言・graph参照の保存、既存EvaluatorV1のowner threadでの登録/解除・tick、GameContextのパラメーター変更/状態切替を接続した。clipとの切替、名前付き/名前なしobject、削除・scene reloadを実機で確認。初期値はgraph文書のparametersを使い、個体別overrideの保存は未実装。同一instanceのmodel rebind・graphファイル更新・setTime通知は実装したが個別試験は未実施。graph assetのscene準備時検証と編集失敗時の状態復元、GUI・汎用graph間接続は残件。
 
 VRMAの自動ファイル監視も過去の未了記録にあるが、既存register/reload APIはdecoded clipを受けるため、source pathの所有と監視の接続が必要。graph装着より先に別の監視基盤を追加しない。物理の厳密最短MTD、サンプル、GUI仕上げへこの作業を広げない。
 

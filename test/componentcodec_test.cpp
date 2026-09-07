@@ -310,6 +310,38 @@ TEST_CASE("collider trigger is an additive default-false boolean schema field",
     REQUIRE_FALSE(canonical.at("trigger").get<bool>());
 }
 
+TEST_CASE("animation graph authoring roundtrips one source without clip clock fields",
+          "[component-codec][animation][graph]") {
+    using Json = nlohmann::json;
+    const auto &codec = requireComponentCodec("animation");
+    const Json authored{{"name", "animation"}, {"graph", "graphs/locomotion.json"}};
+    const auto decoded = decodeOrThrow(codec, authored);
+    AnimationComponent runtime;
+    codec.applyRuntime(decoded, &runtime);
+    CHECK(runtime.clip.empty());
+    CHECK(runtime.graph == "graphs/locomotion.json");
+    CHECK(Json(codec.encodeCanonical(codec.projectRuntime(&runtime))) == authored);
+    const auto &schema = codec.schemaNode();
+    CHECK(std::string{schema.at(schema.childIndex(0, 0)).name} == "clip");
+    CHECK(std::string{schema.at(schema.childIndex(0, 1)).name} == "graph");
+    CHECK(schema.at(schema.childIndex(0, 0)).presence == StructFieldPresence::OptionalOverride);
+    CHECK(schema.at(schema.childIndex(0, 1)).presence == StructFieldPresence::OptionalOverride);
+    for (const auto &fields : std::vector<Json>{
+             Json::object(), {{"graph", ""}}, {{"graph", 4}},
+             {{"clip", "Walk"}, {"graph", "walk.json"}},
+             {{"graph", "walk.json"}, {"speed", 1.0}},
+             {{"graph", "walk.json"}, {"loop", true}},
+             {{"graph", "walk.json"}, {"start_time", 0.0}}}) {
+        auto invalid = fields;
+        invalid["name"] = "animation";
+        CHECK_THROWS(decodeOrThrow(codec, invalid));
+    }
+    // Existing clip documents retain their exact canonical shape.
+    const Json clip{{"name", "animation"}, {"clip", "Walk"},
+                    {"speed", 1.0}, {"loop", true}, {"start_time", 0.0}};
+    CHECK(Json(canonicalThroughRuntime(codec, clip)) == clip);
+}
+
 TEST_CASE("every component codec rejects invalid type range and unknown key fixtures",
           "[component-codec][invalid][wp151]") {
     std::unordered_set<std::string> covered;

@@ -49,7 +49,7 @@ void ECSPredefinedRegistration::reg() {
                                 SimpleModelViewComponent>(
             GET_MODULE(SimpleModelViewUpdateSystem), {});
     const auto animation_system =
-        ecs.registerSystemForce<AnimationSystem, AnimationComponent, SimpleModelViewComponent>(
+        ecs.registerSystemForce<AnimationSystem, EntityId, AnimationComponent, SimpleModelViewComponent>(
         GET_MODULE(AnimationSystem), {model_update_system});
     const auto model_transform_system =
         ecs.registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(

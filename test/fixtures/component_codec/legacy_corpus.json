@@ -1,5 +1,4 @@
 [
-  {"legacy_branch_id":"animation.graph_reserved","codec":"animation","authored":{"name":"animation","graph":{}}},
   {"legacy_branch_id":"animation.schema_validation","codec":"animation","authored":{"name":"animation","future":1}},
   {"legacy_branch_id":"camera.schema_validation","codec":"camera","authored":{"name":"camera","future":1}},
   {"legacy_branch_id":"collider.boolean_type","codec":"collider","authored":{"name":"collider","trigger":1}},

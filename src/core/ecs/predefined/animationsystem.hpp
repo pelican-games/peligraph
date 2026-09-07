@@ -3,6 +3,8 @@
 #include "../../container.hpp"
 #include <components/animation.hpp>
 #include <components/modelview.hpp>
+#include <components/predefined.hpp>
+#include <animation/animgraph.hpp>
 #include <details/ecs/coretemplate.hpp>
 #include <memory>
 
@@ -22,11 +24,15 @@ DECLARE_MODULE(AnimationSystem) {
     PathResolver *path_resolver = nullptr;
 
   public:
-    using QueryComponents = std::tuple<AnimationComponent *, SimpleModelViewComponent *>;
+    using QueryComponents = std::tuple<EntityId *, AnimationComponent *, SimpleModelViewComponent *>;
+    using DependencyQuery = std::span<ChunkView<EntityId, AnimationComponent, SimpleModelViewComponent>>;
     AnimationSystem();
     ~AnimationSystem();
-    void prepareEcsWorkerDependencies(bool has_matching_chunks);
+    void prepareEcsWorkerDependencies(DependencyQuery chunks);
     void process(QueryComponents components, size_t count);
+    void updateGraphs();
+    Animation::Status setGraphParameter(EntityId entity, std::string_view name, double value);
+    Animation::Status forceGraphState(EntityId entity, std::string_view name);
 };
 
 } // namespace Pelican

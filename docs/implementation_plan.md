@@ -23235,7 +23235,7 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 - meshのOverlap/Sweep/Trigger/初期めり込み解消は `0c81002e` まで統合済み。物理はここで区切り、RT・componentへ戻す。任意の凹meshの厳密最短MTDは次の必須項目にしない。
 - RT4〜RT7の実行・接続・順序編集とcomponentのList/Defaulted/Undoを再照合。今回の限定照合ではRTの新たな実行機能欠落は確定せず、設計書のport接続未実装等の古い記述を訂正した。GUI通し操作・性能・配布が未確認であることを、機能そのものの未実装と混同しない。
-- 次の具体的な機能対象はanimation componentのgraph装着。design_animation_graph.md §3のclip XOR graphに対し、現行componentcodecはgraphを拒否し、AnimationSystemはclip直接評価のみ。公開EvaluatorV1は存在する。既存評価器を使い、宣言/初期パラメーターの保存とcomponent追加・変更・削除、scene/model reload、owner threadのphase登録/解除・tick、clipとの単一writerを含めて接続する。まだ実装済みとは扱わない。VRMA自動監視は別残件であり、この単位に混ぜない。
+- animation componentのgraph装着を実装。clip XOR graphの保存、既存EvaluatorV1のphase登録/解除・tick、GameContextのparameter/state操作を接続し、clip切替・個体削除・scene reloadを確認した。個体別初期parameter override、graph assetのscene準備時検証・編集失敗時の状態復元、GUI・汎用graph間接続は残件。同一instanceのmodel rebind・graph更新時刻・setTime通知の経路は個別実行未確認。VRMA自動監視は別残件。
 
 - 6種の補助描画のGUI/RPC編集も統合済み。picking/ImGuiのAS対応は `aad939ab`、shadow_depth/velocityは `06e19992`、補助shaderのdescriptor契約検査は `ea05340a`、debug_text/gizmoは `ea61aa74`、サイズ混在解析とdebug_draw組込みGLSLは `9e5c363b`、debug_drawは `3db130ca` に統合済み。UI描画のAS依存解除は `a408414a`、preset featureパラメーター編集は `c4c40590`、root featureパラメーター編集は `ccf086e0` に統合済み。
 - 作業ブランチは `codex/render-target-runtime-slice`。procedural asset新規作成は `d529cdce`、embed再生成修正は `b0c000a9`、その後のRT・Studio機能群は `96d9cb7e` に統合済み。下記の「未commit」「commit保留」は当時の記録で、現在は解消している。
@@ -23245,6 +23245,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 - 文書・運用整理では、v1文書を短い入口にし、古い再開順・commit待ち・全数反復の指示との混同を解消した。build待ちの短周期確認・ログの大量読込み・重複調査を減らす手順と、コードの整理候補を記録。誤ったsource参照3件を修正し、doclink checkは3869件成功、auditは既知の別repo識別子 `bindPelicanScene` 1件のみ。source変更がないためbuild/GPU試験は実行しない。
 
 #### 機能別の実装・検証履歴
+
+**scene componentから既存animation graphを装着 (2026-09-07):**
+- animation codecにclip XOR graphを接続し、graph参照を保存する。graph_reserved拒否とその旧corpus項目を削除。graph時のspeed/loop/start_timeは各stateの時計と競合するため受理しない。初期parameterはgraph文書の値を使う。
+- AnimationSystemがowner threadでEvaluatorV1を所有し、既存phaseへprepareTickを渡す。clip/graphの公開revisionをEngineTime.frameIndexへ揃え、切替時の二重writerを解除する。名前のない個体にはcomponent所有の登録を用意する。GameContextからparameter/stateを操作でき、component削除/graph参照変更直後には古い評価器へ操作を渡さない。
+- Player Debug build成功。component-codecは11case/1014assertion、実Vulkanのskeletal対象は3case/62assertion成功。名前付き/名前なし個体のpalette公開、parameter遷移/forceState、clip往復切替、個体削除・scene再読込を確認。Turnはroot回転、Stepはtip移動という対照を使い、parameter/state操作を無効にするとroot姿勢の検査が落ちる。個別変異は未実施。描画結果の画像比較やRT readbackは行っていない。
+- 個体別初期parameter override・GUI・汎用graph間接続は未実装。model rebind・ファイルmtime更新・setTime通知は経路実装までで個別試験未実施。graph解析はframe装着時であり、scene準備段階での検証や再bind失敗時の旧状態復元は残る。
 
 **sceneアニメーションsinkの個体寿命追随 (2026-09-07):**
 - AnimationServiceのlazy scene登録にscene epoch/entityを保持し、フレームのECS/game更新後・phase実行前に現在のscene/entity/model instance/modelと照合する。resolve_sinkでも既存名を照合し、古い登録を退役してから再解決する。手動/game登録は自動同期の対象外。

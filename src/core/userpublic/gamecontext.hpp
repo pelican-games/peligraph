@@ -2,6 +2,7 @@
 
 #include "components/localtransform.hpp"
 #include "components/spriteview.hpp"
+#include "animation/abi_v1.hpp"
 #include "export.hpp"
 #include "events.hpp"
 #include "gameobjects.hpp"
@@ -92,6 +93,12 @@ class PELICAN_API GameContext {
     void setBusVolume(std::string_view bus, float volume) const;
     float busVolume(std::string_view bus) const;
     bool isPlaying(SoundHandle handle) const;
+
+    // Update-thread controls for an attached animation graph. Before its first
+    // frame attachment, or after removal, these return not_found. Scene
+    // activation/destruction transactions return phase_order_error.
+    Animation::Status setAnimationGraphParameter(GameObjectId object, std::string_view name, double value) const;
+    Animation::Status forceAnimationGraphState(GameObjectId object, std::string_view state) const;
 
     void loadScene(std::string_view name) const;
     std::string currentScene() const;

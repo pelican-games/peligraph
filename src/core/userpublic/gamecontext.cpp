@@ -3,6 +3,7 @@
 #include "../appflow/enginetime.hpp"
 #include "../build_features.hpp"
 #include "../ecs/core.hpp"
+#include "../ecs/predefined/animationsystem.hpp"
 #include "components/predefined.hpp"
 #include "deterministicrng.hpp"
 #if PELICAN_WITH_AUDIO
@@ -332,6 +333,16 @@ SoundHandle GameContext::playSound(std::string_view path) const {
 #else
     throwBuildFeatureDisabled("PELICAN_WITH_AUDIO", "playSound is unavailable");
 #endif
+}
+
+Animation::Status GameContext::setAnimationGraphParameter(GameObjectId object, std::string_view name, double value) const {
+    if (internal::activeEffectTransaction()) return Animation::Status::phase_order_error;
+    return GET_MODULE(AnimationSystem).setGraphParameter(object, name, value);
+}
+
+Animation::Status GameContext::forceAnimationGraphState(GameObjectId object, std::string_view state) const {
+    if (internal::activeEffectTransaction()) return Animation::Status::phase_order_error;
+    return GET_MODULE(AnimationSystem).forceGraphState(object, state);
 }
 
 void GameContext::stopSound(SoundHandle handle) const {

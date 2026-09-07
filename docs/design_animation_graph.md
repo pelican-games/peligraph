@@ -173,6 +173,24 @@ v1 スコープ = clip state + blend1d + crossfade(調査 §6.1 で条件付き�
 
 ### 評価器の装着と解除（2026-09-07）
 
+sceneのanimation componentは`{"name":"animation","graph":"graphs/walk.json"}`
+で既存pelican.anim_graph文書を参照する。clipとの併記は不可。graphの各stateが
+時計を持つため、componentのspeed/loop/start_timeはclip選択時だけ受理する。
+graphのparameter初期値は参照文書のparametersを使う。個体別の初期値overrideは
+まだ追加していない。
+
+ECSのclip評価はgraph選択行を評価せず、owner threadで登録/解除・prepareTickを
+行ってから既存animation phaseを実行する。clip/graphはEngineTimeのframeIndexを
+共用する。名前付きobjectはscene sinkを使い、名前のないobjectはcomponent所有の
+内部登録を使う。削除/clip切替/scene epoch変更で旧評価器を解除する。
+graph参照またはファイル更新時刻の変更で再装着し、同じinstanceのmodel更新は
+既存rebindを試みる。engineのsetTimeはgraphの時計resetへ渡す。
+
+GameContextのsetAnimationGraphParameterとforceAnimationGraphStateは装着済み
+graphへ操作を渡す。初回frame装着前や解除後はnot_found、scene activate/destroyの
+effect transaction中はphase_order_errorで、旧live graphを変更しない。
+これらは実行時操作であり、文書の初期値を保存し直すAPIではない。
+
 `EvaluatorV1::unbind()`はphase登録・clip cursor・skeletal sourceの所有を
 解放し、評価器を破棄せず別sourceへwriterを渡せる。反復呼出しは無害。
 パラメーター値は保持し、状態・clip時計・遷移・未評価tick・前回poseは解除する。
@@ -181,9 +199,8 @@ v1 スコープ = clip state + blend1d + crossfade(調査 §6.1 で条件付き�
 解放し、既存の別writerを奪わない。
 
 物理とアニメーションのノード合成では、poseの評価・衝突問い合わせ／物理更新・
-最終反映を分離し、固定時間刻みと表示用補間の境界を明示する。この解除操作は
-sourceを切り替える基盤であり、ラグドール・剛体シミュレーション・物理ノードや
-`animation.graph`のcomponent装着を実装したという意味ではない。
+最終反映を分離し、固定時間刻みと表示用補間の境界を明示する。component装着は
+上記の経路で実装したが、ラグドール・剛体シミュレーション・物理ノードは残件。
 
 sceneから解決した音声・描画等への参照は、名前だけを永続的な個体IDとして
 扱わない。アニメーションのscene sinkもscene epoch・entity generation・

@@ -4,34 +4,34 @@
 
 ## 5.1 `GameContext`は公開ファサード
 
-ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L22) が主要サービスを薄く包みます。
+ゲームSystemが直接`GET_MODULE()`へ依存しなくて済むよう、[`GameContext`](../../src/core/userpublic/gamecontext.hpp#L23) が主要サービスを薄く包みます。
 
 | API群 | 委譲先 | 実装へジャンプ |
 |---|---|---|
-| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L29) |
-| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L57) |
-| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L69) |
-| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L81) |
-| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L94) |
-| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L165) |
-| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L212) |
-| camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L302) |
-| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L306) |
-| audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L326) |
-| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L388) |
-| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L400) |
-| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L102) |
-| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L404) |
+| Action入力（`actionPose()`含む） | `Actions` / `InputActionsRuntime` | [`gamecontext.cpp` 内](../../src/core/userpublic/gamecontext.cpp#L30) |
+| 時刻（`frameIndex()`含む） | `EngineTime` | [`GameContext::time()`](../../src/core/userpublic/gamecontext.cpp#L58) |
+| ログ | quill logger | [`GameContext::logInfo()`](../../src/core/userpublic/gamecontext.cpp#L70) |
+| object/transform | `GameObjects` | [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L82) |
+| sprite（`createSpriteObject`/`spriteView`/`setSpriteView`/`setSpriteTexture`） | `GameObjects` / sprite runtime | [`GameContext::createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L95) |
+| light（`setDirectionalLightDirection`/`setDirectionalLightIntensity`/`setPointLightPosition`/`setSpotLightDirection`） | `LightContainer` | [`GameContext::setDirectionalLightDirection()`](../../src/core/userpublic/gamecontext.cpp#L166) |
+| physics query（`raycastAll`/`raycastClosest(filter)`/`overlapAllHits`/`shapeCastAll`/`shapeCastClosest` + [`phys::QueryFilter`](../../src/core/phys/physquery.hpp#L76)） | physics service | [`GameContext::raycastAll()`](../../src/core/userpublic/gamecontext.cpp#L213) |
+| camera | `Camera` | [`GameContext::setCamera()`](../../src/core/userpublic/gamecontext.cpp#L303) |
+| 乱数（`setSeed`/`seed()`） | `DeterministicRng` | [`GameContext::random()`](../../src/core/userpublic/gamecontext.cpp#L307) |
+| audio | `Audio`またはfeature disabled error | [`GameContext::playSound()`](../../src/core/userpublic/gamecontext.cpp#L327) |
+| scene遷移 | `SceneLoader::requestLoad` | [`GameContext::loadScene()`](../../src/core/userpublic/gamecontext.cpp#L399) |
+| debug text | `DebugText` | [`GameContext::debugText()`](../../src/core/userpublic/gamecontext.cpp#L411) |
+| event | event registry | [`emit()`](../../src/core/userpublic/gamecontext.hpp#L109) |
+| settings/save | `Persistence` | [`GameContext::gameSettings()`](../../src/core/userpublic/gamecontext.cpp#L415) |
 
 class全体が [`PELICAN_API`](../../src/core/userpublic/export.hpp) でexport修飾されています。game DLL境界を越えて使われるためです。
 
-`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L139) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
+`GameContext`自体は状態を持ちません。実体は [`updateFrameState()` のローカル変数1個](../../src/core/appflow/framephase.cpp#L140) で、フレームごとに作られてフレームを抜けると消えます（= 自動記憶域。ヒープにも moduleにも置かれていません）。5フェーズの各所へは参照として渡るだけなので、Systemが`GameContext*`を保存しても次フレームには無効になります。
 
 上の表は**通常フレームでの**委譲先です。**scene load transaction** は、scene の読み込みを prepare から finish までの1つの取引として扱う [第3章 §3.5 の 3](03_project_and_loading.md) の executor のことで、「開いている間」はその段の列を実行中という意味です（[用語集](../manual/14_glossary.md)）。開いている間（behaviorの `onInit` / `onDestroy` や、component JSON loaderから呼ばれた場合）は、同じAPIの行き先がcandidateやoutboxへ差し替わり、一部は拒否されます。分類とその根拠は §5.15 にまとめてあります。
 
 ### ライト操作API ✅実装済み（WP142 / LIGHT0）
 
-[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L50) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
+[`gamecontext.hpp` 内](../../src/core/userpublic/gamecontext.hpp#L51) の4本は、scene定義済みライトを**名前で引いて**更新します。いずれも `[[nodiscard]] bool` を返し、その名前のライトが無ければ`false`です。委譲先は [`LightContainer`](../../src/core/light/lightcontainer.hpp) の同名setterです。
 
 ```cpp
 [[nodiscard]] bool setDirectionalLightDirection(std::string_view name, vec3 direction) const;
@@ -741,7 +741,7 @@ class PELICAN_API Behavior {
 > behavior boundary. A deferred create has no live EntityId yet and
 > therefore returns invalidGameObjectId.
 
-WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L81) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L94) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1588) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
+WP380e 以降、遅延は `BehaviorContext` の override だけの性質ではありません。基底の [`GameContext::createObject()`](../../src/core/userpublic/gamecontext.cpp#L82) / [`createSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L95) 自身が [`internal::behaviorCallbackActive()`](../../src/core/gamelogic/behaviorarena.cpp#L1588) を見て、behavior callback の中なら arena へ defer し `invalidGameObjectId` を返します。つまり behavior から `GameContext` として呼んでも即時生成には落ちません（`removeObject` は両者とも [`GameObjects::remove()`](../../src/core/userpublic/gameobjects.cpp#L32) 経由で、遅延するかは同関数の [`routeBehaviorObjectRemoval()`](../../src/core/userpublic/gameobjects.cpp#L41) が決めます）。
 
 ### 登録マクロ
 
@@ -986,13 +986,13 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 `reject` だけがthrowです。[`GameObjects::create()`](../../src/core/userpublic/gameobjects.cpp#L14) は「transactionが開いている、かつ behavior callback中ではない」ときに [`SceneTransactionMutationRejected`](../../src/core/userpublic/gameobjects.hpp#L20) を投げます。behavior callback中なら別のエラー（`logic_error`。`BehaviorContext` を使え）になるので、2つの理由が混ざりません。`removeAll()` だけは behavior callback かどうかに関係なく、transactionが開いていれば拒否します（[その分岐](../../src/core/userpublic/gameobjects.cpp#L48)）。
 
-**deferの入口は `BehaviorContext` だけではありません。** `GameContext::createObject()` / `createSpriteObject()` は基底クラスのままでも、behavior callback中なら [`deferCreateObject()`](../../src/core/userpublic/gamecontext.cpp#L83) / [`deferCreateSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L98) へ回ります。`behavior.hpp` のコメントが規範です — 「`BehaviorContext` からでも、その `GameContext` 基底からでも、behavior callback中の構造変更は次のbehavior境界で適用される。deferされたcreateにはまだ live な `EntityId` が無いので `invalidGameObjectId` を返す」（[そのコメント](../../src/core/userpublic/behavior.hpp#L50)）。基底の側だけ素通りだと、`ctx` を `GameContext&` で受け取るヘルパ関数経由で即時createができてしまいます。
+**deferの入口は `BehaviorContext` だけではありません。** `GameContext::createObject()` / `createSpriteObject()` は基底クラスのままでも、behavior callback中なら [`deferCreateObject()`](../../src/core/userpublic/gamecontext.cpp#L84) / [`deferCreateSpriteObject()`](../../src/core/userpublic/gamecontext.cpp#L99) へ回ります。`behavior.hpp` のコメントが規範です — 「`BehaviorContext` からでも、その `GameContext` 基底からでも、behavior callback中の構造変更は次のbehavior境界で適用される。deferされたcreateにはまだ live な `EntityId` が無いので `invalidGameObjectId` を返す」（[そのコメント](../../src/core/userpublic/behavior.hpp#L50)）。基底の側だけ素通りだと、`ctx` を `GameContext&` で受け取るヘルパ関数経由で即時createができてしまいます。
 
 ### 退役済みobjectのsnapshot view
 
 `retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1124)）、2つの向きに使います。
 
-- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L115)）。だから `onDestroy` から自分の最後のtransformを読めます。
+- **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L116)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
 
 `onDestroy` の間だけ phase を切り替えるのが [`EffectDestroyScope`](../../src/core/loader/effecttransaction.cpp#L748) で、使うのは [`BehaviorAttachmentArena::destroyInstance()` の中の1行](../../src/core/gamelogic/behaviorarena.cpp#L993) の1箇所です。phase が `destroy` の間は、各sinkのcatch節が**例外を診断へ変換して飲みます**（それ以外の phase では `throw` し直します — 例えば [`playSound()` の catch](../../src/core/loader/effecttransaction.cpp#L156)）。`onDestroy` が `noexcept` である以上、そこから投げれば `std::terminate` なので、「捨てる」ではなく「記録して返る」に倒してあります。同じ理由で `loadScene()` も phase で分かれ、`destroy` 中は [`requestLoadDuringRetire()`](../../src/core/loader/effecttransaction.cpp#L448) 経由になり、拒否されれば `scene_retire_load_rejected@1` が記録されます。

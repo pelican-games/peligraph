@@ -4,7 +4,6 @@ Generated from `componentCodecLegacyBranches()`; edit the production registry an
 
 | legacy_branch_id | producer |
 |---|---|
-| `animation.graph_reserved` | `decodeAnimation` |
 | `animation.schema_validation` | `decodeAnimation` |
 | `camera.schema_validation` | `decodeCamera` |
 | `collider.boolean_type` | `ColliderComponent` |
