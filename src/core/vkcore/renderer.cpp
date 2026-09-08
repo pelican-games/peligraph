@@ -109,6 +109,7 @@ bool Renderer::hasPendingRenderPipelinePublication() const noexcept {
 struct RenderPipelinePublicationTransaction {
     std::vector<watch::ReloadRequest> companion_requests;
     std::unique_ptr<watch::PreparedReloadTransaction> model_reload;
+    std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer> graph_runtime_transfer;
     std::optional<RenderConfigCandidateDocumentSet> candidate_documents;
     std::function<void()> source_commit;
     RenderPipelineAuthoringCompletion completion;
@@ -3592,6 +3593,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
                 !transaction->runtime_published) {
                 return;
             }
+            if (transaction->graph_runtime_transfer) transaction->graph_runtime_transfer->commit();
             std::string post_commit_error;
             auto variants =
                 std::move(*transaction->variants);
@@ -3721,6 +3723,17 @@ Renderer::applyRenderPipelineAuthoringCandidate(
                             generation, flat->second);
                     transaction->generation =
                         generation.generation;
+                    // Capture the latest CPU state at publication, including
+                    // updates made while a ray-layout candidate was staged.
+                    const auto previous = GET_MODULE(RenderingPassContainer).snapshot();
+                    const auto new_program = generation.programs.find(flat->second);
+                    std::shared_ptr<const ValueGraph::Graph> old_graph;
+                    if (previous)
+                        if (const auto old = previous->programs.find(flat_rendering_pass_id); old != previous->programs.end())
+                            old_graph = old->second.frame_graph.value_graph;
+                    if (!transaction->completion_required && new_program != generation.programs.end())
+                        transaction->graph_runtime_transfer = GET_MODULE(SceneLoader).prepareGraphRuntimeTransfer(
+                            old_graph, new_program->second.frame_graph.value_graph);
                     transaction->source_commit();
                 } catch (const std::exception &caught) {
                     transaction->failure = caught.what();
@@ -5269,6 +5282,23 @@ void Renderer::renderLogicalFrame(
     observed_time_set_revision = time_set_revision;
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
     ValueGraph::InactiveScopes inactive_graph_scopes;
+    std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer> staged_graph_transfer;
+    std::vector<std::pair<std::string, Animation::CurvePlaybackCommand>> staged_audio_events;
+    struct StagedAudioValue {
+        std::string node;
+        ValueGraph::AudioValueKind kind;
+        float value;
+    };
+    std::vector<StagedAudioValue> staged_audio_values;
+    if (staged_runtime_generation != 0) {
+        auto &scene = GET_MODULE(SceneLoader);
+        const auto previous = GET_MODULE(RenderingPassContainer).snapshot();
+        std::shared_ptr<const ValueGraph::Graph> old_graph;
+        if (previous)
+            if (const auto old = previous->programs.find(flat_rendering_pass_id); old != previous->programs.end())
+                old_graph = old->second.frame_graph.value_graph;
+        staged_graph_transfer = scene.prepareGraphRuntimeTransfer(old_graph, frame_graph.value_graph);
+    }
     if (frame_graph.value_graph) {
         auto &scene = GET_MODULE(SceneLoader);
         inactive_graph_scopes = scene.inactiveGraphScopes(*frame_graph.value_graph);
@@ -5279,13 +5309,22 @@ void Renderer::renderLogicalFrame(
                 const auto found = frame_graph.buffer_bindings.find(std::string{name});
                 return found != frame_graph.buffer_bindings.end() &&
                     modules.frame_graph_resources.stageRuntimeValues(found->second, values);
-            }, scene.graphParameterValues(frame_graph.value_graph),
-            inactive_graph_scopes, &scene.graphEvaluationState(frame_graph.value_graph),
+            }, staged_graph_transfer ? staged_graph_transfer->parameters() : scene.graphParameterValues(frame_graph.value_graph),
+            inactive_graph_scopes, staged_graph_transfer ? &staged_graph_transfer->evaluation() : &scene.graphEvaluationState(frame_graph.value_graph),
             [&](std::string_view node, Animation::CurvePlaybackCommand command) {
+                if (staged_graph_transfer) {
+                    staged_audio_events.emplace_back(node, command);
+                    return true;
+                }
                 return scene.applyGraphAudioEvent(frame_graph.value_graph, node, command);
             }, [&](std::string_view node) {
                 return scene.graphSound(frame_graph.value_graph, node);
-            });
+            }, staged_graph_transfer ? ValueGraph::AudioValueWriter{
+                [&](std::string_view node, bool voice, ValueGraph::AudioValueKind kind, float value) {
+                    if (!voice) return false;
+                    staged_audio_values.push_back({std::string{node}, kind, value});
+                    return true;
+                }} : ValueGraph::AudioValueWriter{});
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
     }
@@ -5858,6 +5897,7 @@ void Renderer::renderLogicalFrame(
         if (ray_plan_publication)
             modules.instance_container.publishRayScenePlan(ray_plan_publication);
         if (staged_runtime_generation != 0) {
+            if (staged_graph_transfer) staged_graph_transfer->commit();
             if (!modules.frame_graph_runtime
                      .publishStagedGeneration(
                          staged_runtime_generation)) {
@@ -5868,6 +5908,19 @@ void Renderer::renderLogicalFrame(
     };
     static_assert(noexcept(publish_frame_generation()));
     publish_frame_generation();
+    if (staged_graph_transfer) {
+        auto &scene = GET_MODULE(SceneLoader);
+        for (const auto &[node, command] : staged_audio_events)
+            if (!scene.applyGraphAudioEvent(frame_graph.value_graph, node, command))
+                throw std::runtime_error("published graph audio event is unavailable: " + node);
+        for (const auto &value : staged_audio_values)
+            if (const auto sound = scene.graphSound(frame_graph.value_graph, value.node)) {
+                const GameContext context;
+                const bool applied = value.kind == ValueGraph::AudioValueKind::volume
+                    ? context.setSoundVolume(*sound, value.value) : context.setSoundPitch(*sound, value.value);
+                if (!applied) throw std::runtime_error("published graph voice is unavailable: " + value.node);
+            }
+    }
     if (staged_runtime_generation != 0) {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_publication);

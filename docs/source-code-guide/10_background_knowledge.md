@@ -413,7 +413,7 @@ GLSL の uniform ブロックは既定で **std140**、storage ブロックは *
 
 `VK_KHR_ray_tracing_pipeline` のパイプラインは、ステージ配列(`pStages`)とグループ配列(`pGroups`)の 2 段でできています。グループは `GENERAL`(raygen / miss / callable)と `TRIANGLES_HIT_GROUP`(closest hit + 任意の any hit)などの種類を持ち、各グループは pStages 内の添字を指します。**グループの並び順がそのまま SBT(Shader Binding Table)の並び順**になります。`vkGetRayTracingShaderGroupHandlesKHR` で取れる不透明ハンドルは 1 個あたり `shaderGroupHandleSize` バイト、SBT の 1 レコードは `shaderGroupHandleAlignment` に、raygen / miss / hit / callable の**各領域の先頭アドレスは `shaderGroupBaseAlignment`** に揃える必要があります(いずれも `VkPhysicalDeviceRayTracingPipelinePropertiesKHR`)。`vkCmdTraceRaysKHR` に渡す 4 つの `VkStridedDeviceAddressRegionKHR` はこの stride で読まれます。
 
-**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L699)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2304)
+**使用場所**: [PipelineFactory::createRayTracingPipeline()](../../src/core/shader/pipelinefactory.cpp#L699)(stage 配列と group 配列を組む) / [PipelineFactory::createRayTracingShaderBindingTable()](../../src/core/shader/pipelinefactory.cpp#L813)(ハンドルを領域ごとに詰め、確保したアドレスの余りから base alignment へ寄せる) / [packRayTracingHitTable()](../../src/core/shader/raygrouplayout.cpp#L2309)
 
 **このコードベースでの注意**: base alignment を満たすために `total_size + (base_alignment - 1)` を確保し、実アドレスの余りから内部オフセットを決めています。確保したバッファの先頭が揃っている保証は無い、という前提での書き方です。
 
@@ -435,7 +435,7 @@ TLAS の各 instance は `VkGeometryInstanceFlagsKHR` を持ち、`FORCE_OPAQUE`
 
 GPU に投入したコマンドバッファは、対応する fence が signal されるまで「まだ実行中かもしれない」ものです。そのコマンドバッファが参照している資源(バッファ・イメージ・acceleration structure・SBT・descriptor set)は、その間は破棄も上書きもできません。CPU が先へ進むために同じ資源を N セット用意して添字で回すのが in-flight frame で、この N はスワップチェーンのイメージ枚数とは**別の数**です。破棄を「fence 完了後」まで遅らせる仕組み(遅延解放キュー)と、フレームが掴んだ資源を型を消して握っておく仕組み(lease)を組むのが定型になります。
 
-**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4770) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
+**使用場所**: [Renderer::renderLogicalFrame()](../../src/core/vkcore/renderer.cpp#L4774) / [GpuSubmissionLease](../../src/core/vkcore/frametarget.hpp#L53) / [DeletionQueueCore::flushAll()](../../src/core/vkcore/deletionqueue.cpp#L88)
 
 ## 10.2 glTF / 3D アセット形式の仕様
 
@@ -611,7 +611,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「途中で失敗したら、それまでの副作用を取り消す」を例外安全に書く定型です。ローカルなガード型のデストラクタに巻き戻し処理を書き、正常系の最後で「もう巻き戻さない」印(commit / dismiss と呼ばれることが多い)を立ててガードを無効化します。こうすると、途中のどの `throw` からでも巻き戻しが走り、成功経路でだけ走りません(`std::scope_exit` / `scope_fail` は C++ 標準ライブラリ拡張の同種の道具です)。ガードに「そもそも何もしていない」状態を表す番兵(世代番号が 0、ハンドルが無効など)を持たせて、staging 前に抜けたときに巻き戻しを飛ばす形もよく使われます。
 
-**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L2921) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L2936) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
+**使用場所**: [LogicalFrameAbortGuard](../../src/core/vkcore/renderer.cpp#L2922) / [StagedRuntimeRollbackGuard](../../src/core/vkcore/renderer.cpp#L2937) / [ConstructionScope](../../src/core/container.hpp#L174)(構築中スタックの pop を必ず走らせる) / [VertBufContainer::addPrimitiveAllocation()](../../src/core/model/vertbufcontainer.cpp#L390)(`catch (...)` で確保済みの範囲を返す)
 
 ### double-checked locking と acquire / release
 

@@ -2581,7 +2581,7 @@ geometry flags は行ごとに変わるので、BLAS は **`(geometry_allocation
 
 ### 移植プロファイルとの相互作用
 
-layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1514))。
+layout に `"portable_profile": "material_alpha_v1"` がある場合、`force_opaque` を持つことになった行は `pelican.ray_profile_opaque_as@1` で拒否されます(alpha を any-hit 側で評価するプロファイルと矛盾するため)。AS 宣言の `defaults` 由来でも `pelican_ray_instance` 由来でも同じです([raygrouplayout.cpp](../../src/core/shader/raygrouplayout.cpp#L1519))。
 
 ## 関連文書
 

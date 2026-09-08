@@ -1486,6 +1486,56 @@ void SceneLoader::updateGraphRuntime() {
     for (const auto &graph : graphs) (void)synchronizeGraphRuntime(graph);
 }
 
+std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer> SceneLoader::prepareGraphRuntimeTransfer(
+    const std::shared_ptr<const ValueGraph::Graph> &previous,
+    const std::shared_ptr<const ValueGraph::Graph> &next) {
+    if (previous == next) return {};
+    auto prepared = std::unique_ptr<PreparedGraphRuntimeTransfer>(new PreparedGraphRuntimeTransfer(*this, previous));
+    if (!next) return prepared;
+    auto &runtime = prepared->prepared_.try_emplace(next, *next).first->second;
+    for (const auto &[scope, owner] : next->instanceOwners())
+        if (const auto object = graphOwnerObject(owner)) runtime.owners.emplace(scope, *object);
+    if (!previous || !graph_runtime.contains(previous)) return prepared;
+    auto &old = synchronizeGraphRuntime(previous);
+    auto transferred = next->transferState(*previous, old.evaluation);
+    runtime.evaluation = std::move(transferred.state);
+    ValueGraph::InactiveScopes changed;
+    for (const auto &[scope, object] : old.owners) {
+        const auto current = runtime.owners.find(scope);
+        if (current == runtime.owners.end() || current->second != object) changed.insert(scope);
+    }
+    next->resetState(runtime.evaluation, changed);
+    for (const auto &[name, parameter] : old.parameters)
+        if (transferred.retained_parameters.contains(name) && ownsGraphParameter(*next, parameter.object, name))
+            runtime.parameters.emplace(name, parameter);
+    for (const auto &[node, sound] : old.sounds)
+        if (transferred.retained_nodes.contains(node) && next->nodeActive(node, changed))
+            prepared->retained_sounds_.emplace(node, sound);
+    return prepared;
+}
+
+ValueGraph::ParameterValues SceneLoader::PreparedGraphRuntimeTransfer::parameters() const {
+    ValueGraph::ParameterValues values;
+    for (const auto &[name, parameter] : prepared_.begin()->second.parameters) values.emplace(name, parameter.value);
+    return values;
+}
+
+ValueGraph::EvaluationState &SceneLoader::PreparedGraphRuntimeTransfer::evaluation() {
+    return prepared_.begin()->second.evaluation;
+}
+
+void SceneLoader::PreparedGraphRuntimeTransfer::commit() noexcept {
+    if (committed_) return;
+    const auto old = scene_.graph_runtime.find(previous_);
+    if (old != scene_.graph_runtime.end()) {
+        for (const auto &[node, sound] : retained_sounds_) old->second.sounds.erase(node);
+        if (!prepared_.empty()) prepared_.begin()->second.sounds.swap(retained_sounds_);
+        scene_.graph_runtime.erase(old);
+    }
+    scene_.graph_runtime.merge(prepared_);
+    committed_ = true;
+}
+
 ValueGraph::InactiveScopes SceneLoader::inactiveGraphScopes(const ValueGraph::Graph &graph) const {
     ValueGraph::InactiveScopes inactive;
     for (const auto &[scope, owner] : graph.instanceOwners()) {

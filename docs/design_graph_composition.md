@@ -277,8 +277,9 @@ Graph::publishへ渡すrender writerが、そのframeのbuffer_bindingsで保持
 共通buffer/compute宣言はpreset展開後に追加する。
 
 現在のグラフ文書の所有単位はプロジェクトと描画世代。上記owner指定による個体parameterの
-所有は実装済み。sceneごとに別のgraphを選ぶ保存形式、objectへの動的なsubgraph instance装着、
-個体stateの寿命と動的な資源回収は未実装。数値/computeの生存条件による停止は上記経路で扱う。
+所有とroot instanceの装着編集・公開時の状態引き継ぎは実装済み（後述「個体への装着編集」）。
+scene別のgraph選択、GUIの装着操作、個体削除だけで停止scopeのGPU資源を回収する経路は未実装。
+数値/computeの生存条件による停止は上記経路で扱う。
 
 raster/fullscreen画像passの共通node化、attributeの適用範囲、feature自体の共通instance化、状態/イベントの実行境界、
 scene/Studio統合は残件。
@@ -477,7 +478,18 @@ GPU uploadや音声への反映は既存サービスへ渡す境界処理とし�
 追加と解除は一つの候補にまとめられる。残るnodeから解除したinstanceへの参照があれば拒否し、
 接続や定義を暗黙に消さない。保存の正本は既存の全体グラフのnodesで、別component形式は作らない。
 CPUの実描画コンパイラを通して、二個体の独立parameter、解除・保存・再読込、候補失敗時の
-source/描画世代保持を確認した。実行中の兄弟の再生状態・音声voiceを新世代へ引き継ぐ処理は次工程。
+source/描画世代保持を確認した。通常Rendererでも追加個体のGPU bufferへの値供給、解除後の
+名前解決解除・voice停止と、兄弟parameter/voiceの保持を確認した。
+
+Graph::transferStateは展開後ID、ノード宣言、上流依存、所有者が一致するノードだけを新しい
+EvaluationStateへ写す。変更したノードと依存先は初期化する。parameter名とnode IDは別に扱う。
+SceneLoaderのPreparedGraphRuntimeTransferは候補準備時にはvoiceを借用し、公開成功時に
+所有権を移す。解除したinstanceのvoiceは停止し、GPU資源は既存描画世代の退役に従う。
+レイトレの遅延公開では候補フレームの開始時に最新の旧状態から準備し、通常のruntime表へ
+候補を先に登録しない。音声event/volume/pitchはsubmissionと世代公開の成功後に反映する。
+source公開失敗時の旧voice・未処理event保持、再試行後のpause/resumeとGPU値を実RTで確認した。
+共通グラフのrendering内にあるray_group_layout/ray_bindingsも起動・scene準備・描画候補の共通入口で読む。
+GUIの装着操作、個体削除だけで停止scopeのGPU資源を回収する経路、scene別のgraph選択は残件。
 
 1. 既存authoringの参照解決・feature展開の入口を確認し、共通のscope/instanceと
    port/edgeを置く位置を決める。数値グラフの専用scene componentを先に追加しない。

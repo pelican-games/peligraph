@@ -15,6 +15,53 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("graph state transfer follows stable nodes dependencies and owners", "[curve][graph-composition]") {
+    auto document = parameterGraphCompositionFixture();
+    document["nodes"].push_back({{"id", "custom_control"}, {"op", "value.parameter"},
+        {"parameters", {{"name", "left/custom"}, {"default", 3}}}, {"outputs", {"value"}}});
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 1}};
+    document["nodes"][4]["owner"] = {{"scene", "main"}, {"object", 2}};
+    addGraphEventClock(document);
+    const Pelican::ValueGraph::Graph previous{document.dump()};
+    auto state = previous.createState();
+    REQUIRE(previous.emitEvent(state, "left/commands", CurvePlaybackCommand::start, 10));
+    REQUIRE(previous.emitEvent(state, "right/commands", CurvePlaybackCommand::start, 10));
+    REQUIRE(previous.evaluate({{"time", 10.25}}, {}, {}, &state).at("left")[0] == 0.5);
+    REQUIRE(previous.emitEvent(state, "left/commands", CurvePlaybackCommand::pause, 10.5));
+    SECTION("node reorder and sibling attachment preserve elapsed time and queued events") {
+        auto extra = document["nodes"][4];
+        extra["id"] = "extra";
+        document["nodes"].insert(document["nodes"].begin(), extra);
+        std::reverse(document["nodes"].begin(), document["nodes"].end());
+        const Pelican::ValueGraph::Graph next{document.dump()};
+        auto transfer = next.transferState(previous, state);
+        REQUIRE(transfer.retained_nodes.contains("left/playhead"));
+        REQUIRE(transfer.retained_nodes.contains("custom_control"));
+        REQUIRE(transfer.retained_parameters.contains("left/custom"));
+        REQUIRE_FALSE(transfer.retained_nodes.contains("extra/playhead"));
+        const auto output = next.evaluate({{"time", 10.75}}, {}, {}, &transfer.state);
+        REQUIRE(output.at("left")[0] == 1);
+        REQUIRE(output.at("right")[0] == 3);
+        REQUIRE(previous.evaluate({{"time", 10.75}}, {}, {}, &state).at("left")[0] == 1);
+    }
+    SECTION("changed owner does not inherit its old clock") {
+        document["nodes"][3]["owner"]["object"] = 3;
+        const Pelican::ValueGraph::Graph next{document.dump()};
+        auto transfer = next.transferState(previous, state);
+        REQUIRE_FALSE(transfer.retained_nodes.contains("left/playhead"));
+        REQUIRE(transfer.retained_nodes.contains("right/playhead"));
+        REQUIRE(next.evaluate({{"time", 10.75}}, {}, {}, &transfer.state).at("left")[0] == 0);
+    }
+    SECTION("changed upstream input invalidates dependent clocks") {
+        document["nodes"][0]["parameters"]["name"] = "scene_time";
+        const Pelican::ValueGraph::Graph next{document.dump()};
+        auto transfer = next.transferState(previous, state);
+        REQUIRE_FALSE(transfer.retained_nodes.contains("left/playhead"));
+        REQUIRE_FALSE(transfer.retained_nodes.contains("right/playhead"));
+        REQUIRE(next.evaluate({{"scene_time", 10.75}}, {}, {}, &transfer.state).at("left")[0] == 0);
+    }
+}
+
 TEST_CASE("graph binding shapes are available without live input evaluation", "[curve][graph-composition]") {
     const Pelican::ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
       "nodes":[{"id":"live","op":"input","name":"external"},

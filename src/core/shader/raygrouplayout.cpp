@@ -1454,13 +1454,18 @@ RayBindings parseRayBindings(
 
 std::shared_ptr<const RayTracingProjectConfig>
 loadRayTracingProjectConfig(
-    const json &authored_root,
+    const json &document,
     const std::function<std::string(std::string_view)> &load_document,
     bool runtime_shader_compiler_enabled) {
-    if (!authored_root.is_object()) {
+    if (!document.is_object()) {
         throw std::runtime_error(
             "pelican.ray_tracing.root_invalid@1: rendering config root must be an object");
     }
+    const json empty = json::object();
+    const auto &authored_root = document.value("schema", std::string{}) == "pelican.graph"
+        ? (document.contains("rendering") ? document.at("rendering") : empty) : document;
+    if (!authored_root.is_object())
+        throw std::runtime_error("pelican.ray_tracing.root_invalid@1: graph rendering settings must be an object");
     const auto has_layout = authored_root.contains("ray_group_layout");
     const auto has_bindings = authored_root.contains("ray_bindings");
     if (!has_layout) {

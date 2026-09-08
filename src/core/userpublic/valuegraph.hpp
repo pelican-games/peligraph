@@ -25,6 +25,8 @@ using SoundBindings = std::map<std::string, SoundHandle, std::less<>>;
 using RenderValueWriter = std::function<bool(std::string_view, std::span<const float>)>;
 using AudioEventWriter = std::function<bool(std::string_view, Animation::CurvePlaybackCommand)>;
 using SoundResolver = std::function<std::optional<SoundHandle>(std::string_view)>;
+enum class AudioValueKind { volume, pitch };
+using AudioValueWriter = std::function<bool(std::string_view, bool, AudioValueKind, float)>;
 struct PublishResult {
     std::size_t applied{};
     std::vector<std::string> unavailable;
@@ -75,6 +77,13 @@ class PELICAN_API Graph {
     bool nodeActive(std::string_view node, const InactiveScopes &inactive) const;
     // The graph must outlive its state. Separate states evaluate independently.
     EvaluationState createState() const { return EvaluationState{this}; }
+    struct StateTransfer {
+        EvaluationState state;
+        std::set<std::string> retained_nodes;
+        std::set<std::string> retained_parameters;
+    };
+    // Preserve only unchanged nodes whose dependencies and owners also match.
+    StateTransfer transferState(const Graph &previous, const EvaluationState &state) const;
     void resetState(EvaluationState &state, const InactiveScopes &scopes) const;
     bool emitEvent(EvaluationState &state, std::string_view input,
                    Animation::CurvePlaybackCommand command, double time) const;
@@ -91,7 +100,8 @@ class PELICAN_API Graph {
                           const ParameterValues &parameters = {},
                           const InactiveScopes &inactive = {}, EvaluationState *state = nullptr,
                           const AudioEventWriter &audio_writer = {},
-                          const SoundResolver &sound_resolver = {}) const;
+                          const SoundResolver &sound_resolver = {},
+                          const AudioValueWriter &audio_value_writer = {}) const;
 
   private:
     const GraphInstanceOwner *scopeOwner(std::string_view node) const noexcept;

@@ -230,7 +230,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L100) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
-入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3883))。
+入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3896))。
 
 ```text
 get_frame_plan 応答 = pelican.frame_plan v1
@@ -646,7 +646,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | pure parser/value | [`sceneformat_test.cpp`](../../test/sceneformat_test.cpp#L109)、[`materialformat_test.cpp`](../../test/materialformat_test.cpp#L104)、[`jsonrpc_test.cpp`](../../test/jsonrpc_test.cpp#L33) | schema、型変換、error 文言。GPU 不要 |
 | subsystem unit | [`ecs_lifecycle_test.cpp`](../../test/ecs_lifecycle_test.cpp#L204)、[`inputstate_test.cpp`](../../test/inputstate_test.cpp#L9)、[`deletionqueue_test.cpp`](../../test/deletionqueue_test.cpp#L30) | lifecycle、generation、frame 境界、遅延破棄 |
-| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L87)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
+| headless runtime | [`headless_render_test.cpp`](../../test/headless_render_test.cpp#L90)、[`vulkan_headless_test.cpp`](../../test/vulkan_headless_test.cpp#L13) | window なし Vulkan、render/readback |
 | process integration | [`run_rpc_headless.cmake`](../../test/run_rpc_headless.cmake#L1)、[`run_compute_headless.cmake`](../../test/run_compute_headless.cmake#L1)、devcli scripts | 実 executable、stdin/stdout、filesystem、終了 code |
 
 ### 執筆時点以降に増えた主なテスト群

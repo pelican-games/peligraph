@@ -378,7 +378,7 @@ flowchart LR
 > > one view before the next sequential view begins. This is required to keep a
 > > native dynamic-rendering scope open across all of its nodes.
 >
-> ここでいう scope を「開く / 閉じる」は、この scheduler ではなくコマンド記録側で起きます。scheduler が作る各 [`LogicalFrameNodeInvocation`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L22) は `scope_node_index` / `scope_node_count` を持ち、[`beginsScopeExecution()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L42)(= `scope_node_index == 0`)の invocation で `Renderer` が [`beginRenderingScope()`](../../src/core/vkcore/renderer.cpp#L1976)、[`endsScopeExecution()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L45)(= `scope_node_index + 1 == scope_node_count`)の invocation で [`endRenderingScope()`](../../src/core/vkcore/renderer.cpp#L2099) を呼びます。つまり fused scope は **(scope, execution=view) の組ごとに 1 回開いて 1 回閉じ**、その間にその scope の node が全部記録されます。
+> ここでいう scope を「開く / 閉じる」は、この scheduler ではなくコマンド記録側で起きます。scheduler が作る各 [`LogicalFrameNodeInvocation`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L22) は `scope_node_index` / `scope_node_count` を持ち、[`beginsScopeExecution()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L42)(= `scope_node_index == 0`)の invocation で `Renderer` が [`beginRenderingScope()`](../../src/core/vkcore/renderer.cpp#L1977)、[`endsScopeExecution()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L45)(= `scope_node_index + 1 == scope_node_count`)の invocation で [`endRenderingScope()`](../../src/core/vkcore/renderer.cpp#L2100) を呼びます。つまり fused scope は **(scope, execution=view) の組ごとに 1 回開いて 1 回閉じ**、その間にその scope の node が全部記録されます。
 >
 > もう 1 つが **main と secondary の検査の非対称**です。`$main` の scope は plan 側の `view_execution` / `view_count` / `execution_count` / `view_mask` が**すべて整合していないと例外**([`$main` 側の検査](../../src/core/renderingpass/viewexecutionscheduler.hpp#L232))。対して secondary family の scope は **必ず single-view のテンプレート 1 個**でなければならず、実 view 数は runtime の family cardinality が `sequential` へ展開します([secondary 側の検査](../../src/core/renderingpass/viewexecutionscheduler.hpp#L255))。したがって「shadow cascade 4 枚が物理プランに焼かれている」は誤りで、物理プランは shadow が何カスケードかを**知りません**。この非対称(main は plan が決める / secondary は runtime が決める)を知らないと「同じ scope なのに検査が違う」が読めません。
 >
@@ -470,7 +470,7 @@ C writes color   => 自動では B -> C や A -> C を追加しない
 >
 > **何をする所か**: resource ごとの「直前の writer → 後続 reader」から自動 edge と RAW barrier を作り、そのあとで **すべての順序 edge**(`after` / `before` 由来を含む)を走査して、from が書き to が読む resource に barrier を足します。
 >
-> **素朴に読むと**: 罠が 3 つ重なっています。第一に `addBarriersForOrderedResourceEdges()` は `for (const auto &edge : planner_edges.edges)` と、**要素を追加しうる関数を呼びながら同じ vector を range-for しています**。安全なのは偶然ではなく、走査対象がすでに `exists[from][to] == true` の edge だけなので `addEdge()` の `push_back` に到達しないからです。ここに「新しい edge を張る」処理を足すと、その場で iterator 無効化 → UB になります。第二に、だからこそ [`addDataEdge()`](../../src/core/renderingpass/frameplanner.cpp#L1516) の barrier 重複チェックが要ります(自動 RAW edge は `buildEdges` で 1 度積まれ、同じ組がここでもう 1 度来る)。第三に barrier は plan 上の順序を前提にした index へ落ちるので、登録時([`framegraphruntime.cpp` 内](../../src/core/renderingpass/framegraphruntime.cpp#L187))と毎フレーム実行時([`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L761))で **同じ不変条件を二重チェック**します。
+> **素朴に読むと**: 罠が 3 つ重なっています。第一に `addBarriersForOrderedResourceEdges()` は `for (const auto &edge : planner_edges.edges)` と、**要素を追加しうる関数を呼びながら同じ vector を range-for しています**。安全なのは偶然ではなく、走査対象がすでに `exists[from][to] == true` の edge だけなので `addEdge()` の `push_back` に到達しないからです。ここに「新しい edge を張る」処理を足すと、その場で iterator 無効化 → UB になります。第二に、だからこそ [`addDataEdge()`](../../src/core/renderingpass/frameplanner.cpp#L1516) の barrier 重複チェックが要ります(自動 RAW edge は `buildEdges` で 1 度積まれ、同じ組がここでもう 1 度来る)。第三に barrier は plan 上の順序を前提にした index へ落ちるので、登録時([`framegraphruntime.cpp` 内](../../src/core/renderingpass/framegraphruntime.cpp#L187))と毎フレーム実行時([`renderer.cpp` 内](../../src/core/vkcore/renderer.cpp#L762))で **同じ不変条件を二重チェック**します。
 >
 > **骨子**:
 > ```text
@@ -509,7 +509,7 @@ C writes color   => 自動では B -> C や A -> C を追加しない
 
 ### level は現在「診断情報」
 
-[`computeLevels()`](../../src/core/renderingpass/frameplanner.cpp#L1680) は依存段数を計算し、同 level の node を `FramePlan::levels` へ入れます。ただし実行側の [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1443) は `frame_graph.nodes` を一本の loop で順番に実行します。したがって level は現在、plan の説明・検査、および将来の並列化余地を示す値であり、同 level が実際に並列実行されるわけではありません。
+[`computeLevels()`](../../src/core/renderingpass/frameplanner.cpp#L1680) は依存段数を計算し、同 level の node を `FramePlan::levels` へ入れます。ただし実行側の [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1444) は `frame_graph.nodes` を一本の loop で順番に実行します。したがって level は現在、plan の説明・検査、および将来の並列化余地を示す値であり、同 level が実際に並列実行されるわけではありません。
 
 > 🧩 **難所 — level は order で回す**([`computeLevels()`](../../src/core/renderingpass/frameplanner.cpp#L1680))
 >
@@ -529,7 +529,7 @@ C writes color   => 自動では B -> C や A -> C を追加しない
 
 ### 計画と実行 ID の結合
 
-planner は名前しか知りません。[`FrameGraphRuntimeContainer::registerExecutionPlan()`](../../src/core/renderingpass/framegraphruntime.cpp#L733) が各 plan node の名前を `CompiledRenderingPass::passes` / `compute_tasks` から探し、実配列 index と incoming barrier を持つ `CompiledFrameGraphExecution` を作ります。実行時には plan と実行 node の name/kind がまだ一致しているかも [`executePlannedFrameGraph()` 冒頭](../../src/core/vkcore/renderer.cpp#L1599) で再確認します。
+planner は名前しか知りません。[`FrameGraphRuntimeContainer::registerExecutionPlan()`](../../src/core/renderingpass/framegraphruntime.cpp#L733) が各 plan node の名前を `CompiledRenderingPass::passes` / `compute_tasks` から探し、実配列 index と incoming barrier を持つ `CompiledFrameGraphExecution` を作ります。実行時には plan と実行 node の name/kind がまだ一致しているかも [`executePlannedFrameGraph()` 冒頭](../../src/core/vkcore/renderer.cpp#L1600) で再確認します。
 
 なお現在の frame graph 定義には、history 付き render target の前フレーム面を読む入力(`history_read`、fixture は [`fixtures/frameplanner/plans/history_read.json`](../../test/fixtures/frameplanner/plans/history_read.json))と、`snapshot_copy` node(frameplanner.cpp#L160-L164)も入ります。
 
@@ -553,7 +553,7 @@ planner は名前しか知りません。[`FrameGraphRuntimeContainer::registerE
 
 ## 6.4 logical frame: `renderLogicalFrame()` と `render()` の1フレーム
 
-WP128 で描画の中心は **logical frame** になりました。フレームグラフを GPU コマンドへ変換するのは [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4770) で、flat 画面用の [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L5955) はその 1-view アダプタです。
+WP128 で描画の中心は **logical frame** になりました。フレームグラフを GPU コマンドへ変換するのは [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4774) で、flat 画面用の [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6008) はその 1-view アダプタです。
 
 ```text
 Renderer::render()                    … flat 用アダプタ(#L1417)
@@ -600,15 +600,15 @@ logical frame には不変条件があり、破ると例外になります。**�
 
 | 文言 | 条件 | 投げる場所 |
 |---|---|---|
-| `Renderer logical frame requires a compiled render pipeline` | 現在の `RenderingPassId` に compile 済み pipeline が無い | [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4770) |
+| `Renderer logical frame requires a compiled render pipeline` | 現在の `RenderingPassId` に compile 済み pipeline が無い | [`Renderer::renderLogicalFrame()`](../../src/core/vkcore/renderer.cpp#L4774) |
 | `render view family ... requires at least one view` | family の `views` が空 | [`viewfamily.cpp` 内](../../src/core/renderer/viewfamily.cpp#L43) |
 | `render view family ... contains a view without a stable view_id` | provider が view identity を供給しない | [`viewfamily.cpp` 内](../../src/core/renderer/viewfamily.cpp#L57) |
 | `render view family ... contains duplicate view_id` | 同じ family 内の identity が重複 | [`viewfamily.cpp` 内](../../src/core/renderer/viewfamily.cpp#L62) |
 | `compiled frame graph node ... requires unavailable view family` | pass/task の `view_family` に対応する provider が無い | [`viewfamilyproviderregistry.cpp` 内](../../src/core/renderer/viewfamilyproviderregistry.cpp#L116) |
 | `secondary view-family physical scope must be a single-view template` | secondary family の scope が single-view テンプレートでない | [`buildLogicalFrameViewFamilySchedule()`](../../src/core/renderingpass/viewexecutionscheduler.hpp#L111) |
-| `Renderer logical-frame views must share one in-flight frame index` | 全 view で in-flight index が同一 | [in-flight index の検査](../../src/core/vkcore/renderer.cpp#L5749) |
-| `Renderer logical-frame v1 requires equal per-view extents` | 全 view で extent が同一 | [per-view extent の検査](../../src/core/vkcore/renderer.cpp#L5753) |
-| `Renderer logical-frame target format does not match the compiled flat graph` | target color format が compile 済み graph と一致 | [flat graph との format 一致検査](../../src/core/vkcore/renderer.cpp#L5760) |
+| `Renderer logical-frame views must share one in-flight frame index` | 全 view で in-flight index が同一 | [in-flight index の検査](../../src/core/vkcore/renderer.cpp#L5788) |
+| `Renderer logical-frame v1 requires equal per-view extents` | 全 view で extent が同一 | [per-view extent の検査](../../src/core/vkcore/renderer.cpp#L5792) |
+| `Renderer logical-frame target format does not match the compiled flat graph` | target color format が compile 済み graph と一致 | [flat graph との format 一致検査](../../src/core/vkcore/renderer.cpp#L5799) |
 
 描画先の抽象は [`ILogicalFrameTarget`](../../src/core/vkcore/renderer.hpp)(`beginLogicalFrame` / `beginView` / `endView` / `endLogicalFrame`)です。view入力は
 [`RenderViewParameters` / `RenderViewFamily` / `RenderViewFamilies`](../../src/core/renderer/viewfamily.hpp)が運びます。
@@ -616,16 +616,16 @@ logical frame には不変条件があり、破ると例外になります。**�
 実装はflatが`FlatLogicalFrameTarget`(renderer.cpp内部、`RenderTarget`を包む)、XRが
 [`OpenXr::XrCompositionTarget`](../../src/core/openxr/openxrcompositiontarget.hpp)です。
 
-各 node の実行は [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1443) です。node ごとに以下をします。
+各 node の実行は [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1444) です。node ごとに以下をします。
 
 1. incoming buffer barrier を発行する。
-2. GPU timing が有効なら `barriers` subrange の timestamp を記録する([barriers subrange の記録](../../src/core/vkcore/renderer.cpp#L1831))。
+2. GPU timing が有効なら `barriers` subrange の timestamp を記録する([barriers subrange の記録](../../src/core/vkcore/renderer.cpp#L1832))。
 3. render node なら `RenderPassExecutor::execute()`、compute node なら resource transition と `dispatch()` を呼ぶ。
-4. `body` subrange の終了 timestamp を記録する([flat graph との format 一致検査](../../src/core/vkcore/renderer.cpp#L5760))。
+4. `body` subrange の終了 timestamp を記録する([flat graph との format 一致検査](../../src/core/vkcore/renderer.cpp#L5799))。
 
 `--gpu-labels` 有効時は 1〜4 全体が debug-utils のコマンドラベルで囲まれます(§6.16)。
 
-> 🧩 **難所 — sprite anchor の逆順スキャン**([`executePlannedFrameGraph()` の anchor 分岐](../../src/core/vkcore/renderer.cpp#L2155))
+> 🧩 **難所 — sprite anchor の逆順スキャン**([`executePlannedFrameGraph()` の anchor 分岐](../../src/core/vkcore/renderer.cpp#L2156))
 >
 > **何をする所か**: `__anchor_sprite` に到達したとき、**それより前に実行済みの render node を後ろから辿って** color / depth の attachment を借り、その場で sprite を描きます。
 >
@@ -641,7 +641,7 @@ logical frame には不変条件があり、破ると例外になります。**�
 > どちらか欠ける → throw / extent 一致検査 → layout 遷移 → SpriteRenderer::render
 > ```
 >
-> **手がかり**: rendering scope は `SpriteRenderer::render()` 側が `beginRendering` / `endRendering` を持つので、ここでは開きません。sprite feature 自体は [`sprite.json`](../../src/core/resources/features/sprite.json) のとおり pass を 1 つも持たない名前だけの feature で、描画の実体はこの分岐にあります。[`plannedTimingNodes()`](../../src/core/vkcore/renderer.cpp#L1249) の `anchor_has_work` も `__anchor_sprite` だけ特別扱いで、「anchor は仕事をしない node」という前提の例外が 2 か所に散っています。
+> **手がかり**: rendering scope は `SpriteRenderer::render()` 側が `beginRendering` / `endRendering` を持つので、ここでは開きません。sprite feature 自体は [`sprite.json`](../../src/core/resources/features/sprite.json) のとおり pass を 1 つも持たない名前だけの feature で、描画の実体はこの分岐にあります。[`plannedTimingNodes()`](../../src/core/vkcore/renderer.cpp#L1250) の `anchor_has_work` も `__anchor_sprite` だけ特別扱いで、「anchor は仕事をしない node」という前提の例外が 2 か所に散っています。
 >
 > **不変条件**: anchor は plan が定めた位置で実行されること(plan と実行配列の一致は毎フレーム検査されます)。借りた attachment の layout 遷移を自前で行う責任がこの分岐にあります。
 
@@ -863,7 +863,7 @@ virtual std::vector<uint8_t> readbackLastFrameRGBA8() = 0;
 
 かつての `render_begin()` / `try_render_begin()` / `render_end()` / `consumeExtentChanged()` は **もうありません**。取得は `beginFrame()` 1 本に畳まれ、blocking と zero-wait は引数 [`FrameBeginMode`](../../src/core/vkcore/frametarget.hpp#L138) で選びます。戻り値は bool ではなく [`FrameBeginResult`](../../src/core/vkcore/frametarget.hpp#L203) で、`disposition`(`ready` / `unavailable` / `device_rebuild_required` / `fatal`)と `reason`([`FrameUnavailableReason`](../../src/core/vkcore/frametarget.hpp#L150))を分けて返します。「今フレームは描かない」は `unavailable` であって描画失敗ではありません。取得したフレームは `submit()` か `abandon()` のどちらかで必ず手放し、`beginFrame()` に渡す `GpuSubmissionLease` が GPU resource の寿命を握ります(§6.11)。`FrameTargetCaps` も [`OutputCompileFacts compile_facts` 1 個だけ](../../src/core/vkcore/frametarget.hpp#L46)になりました。
 
-このうち `consumeExtentChanged()` だけは **1 対 1 の後継がありません**。「前回から extent が変わったか」を frame target に尋ねてフラグを消費する口そのものが消え、extent は毎フレーム `FrameRenderContext` の値として無条件に返るだけになりました([extent を返すフィールド](../../src/core/vkcore/frametarget.hpp#L40))。変化したかどうかを決めるのは Renderer 側で、[自分が覚えている前フレームの extent](../../src/core/vkcore/renderer.hpp#L160) と取得したフレームの extent を毎回比べます([view 0 での比較](../../src/core/vkcore/renderer.cpp#L5719))。frame target 側に「変わった」という状態は残らないので、判定は毎フレーム作り直されます。変わっていた場合の処置は §6.7 です。
+このうち `consumeExtentChanged()` だけは **1 対 1 の後継がありません**。「前回から extent が変わったか」を frame target に尋ねてフラグを消費する口そのものが消え、extent は毎フレーム `FrameRenderContext` の値として無条件に返るだけになりました([extent を返すフィールド](../../src/core/vkcore/frametarget.hpp#L40))。変化したかどうかを決めるのは Renderer 側で、[自分が覚えている前フレームの extent](../../src/core/vkcore/renderer.hpp#L160) と取得したフレームの extent を毎回比べます([view 0 での比較](../../src/core/vkcore/renderer.cpp#L5758))。frame target 側に「変わった」という状態は残らないので、判定は毎フレーム作り直されます。変わっていた場合の処置は §6.7 です。
 
 [`RenderTarget`](../../src/core/vkcore/rendertarget.hpp#L18) がこの interface を所有し、[`createFrameTarget()`](../../src/core/vkcore/rendertarget.cpp#L15) で実装を選びます。
 
@@ -968,20 +968,20 @@ frame target の color/depth と、frame graph 設定で宣言する offscreen t
 >
 > **不変条件**: 1 layer の family array も canonical layered view を使うこと(同じ範囲の subresource view を重複生成しない)。`family_array` を宣言していない port view を array 化しないこと。descriptor の `view_dimension` と `descriptor_dimension` を同時に決めること。
 
-extent が変わったフレームでは [`handleFrameTargetResize()`](../../src/core/vkcore/renderer.cpp#L2663) が呼ばれます。**ただし window 出力はここで resize されません。** この関数が最初にするのは [`windowOutputFactsChanged()`](../../src/core/vkcore/renderer.cpp#L2639) の判定で、window target の `OutputCompileFacts` が publish 済み世代のものとずれていれば `OutputRelowerRequired` を投げます([その throw](../../src/core/vkcore/renderer.cpp#L2677))。[`OutputCompileFacts`](../../src/core/vkcore/outputcompilefacts.hpp#L20) は `extent` を含むので、**window では「extent だけ変わった」も必ずこちらへ倒れます**。コメントが規範です。
+extent が変わったフレームでは [`handleFrameTargetResize()`](../../src/core/vkcore/renderer.cpp#L2664) が呼ばれます。**ただし window 出力はここで resize されません。** この関数が最初にするのは [`windowOutputFactsChanged()`](../../src/core/vkcore/renderer.cpp#L2640) の判定で、window target の `OutputCompileFacts` が publish 済み世代のものとずれていれば `OutputRelowerRequired` を投げます([その throw](../../src/core/vkcore/renderer.cpp#L2678))。[`OutputCompileFacts`](../../src/core/vkcore/outputcompilefacts.hpp#L20) は `extent` を含むので、**window では「extent だけ変わった」も必ずこちらへ倒れます**。コメントが規範です。
 
 > Window output resources, descriptors, pipelines, and compile facts are
 > one renderer generation. Even an extent-only change is re-lowered
 > through the normal all-or-nothing configuration transaction instead of
 > mutating live targets beneath the frame's immutable generation.
 
-例外を受けるのは [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L5955) のリトライループです([再 lower して retry する所](../../src/core/vkcore/renderer.cpp#L5982))。[`relowerRenderPipelineForCurrentOutput()`](../../src/core/vkcore/renderer.cpp#L3216) が rendering config から graph variant を lower し直して新しい世代を publish し、`internal_render_extent` を現在の出力サイズへ入れ直してからフレームを再試行します。試行は **2 回まで**(`attempt < 2`)で、2 周目でも facts がずれていれば `"window output compile facts changed during re-lowering"` で止まります — 黙って古い世代のまま描き続けません。
+例外を受けるのは [`Renderer::render()`](../../src/core/vkcore/renderer.cpp#L6008) のリトライループです([再 lower して retry する所](../../src/core/vkcore/renderer.cpp#L6035))。[`relowerRenderPipelineForCurrentOutput()`](../../src/core/vkcore/renderer.cpp#L3217) が rendering config から graph variant を lower し直して新しい世代を publish し、`internal_render_extent` を現在の出力サイズへ入れ直してからフレームを再試行します。試行は **2 回まで**(`attempt < 2`)で、2 周目でも facts がずれていれば `"window output compile facts changed during re-lowering"` で止まります — 黙って古い世代のまま描き続けません。
 
 したがって `handleFrameTargetResize()` の本体が走るのは **window でない logical target(現状は OpenXR とテスト用 target)だけ**で、内容は次の 4 つです。
 
 - [`prepareForExtent()`](../../src/core/renderingpass/rendertargetcontainer.cpp#L765) が新しい base extent 一式の**候補を丸ごと 1 個**作る(現物の image / view はまだ差し替えない)。
 - [`publishPreparedExtent()`](../../src/core/renderingpass/rendertargetcontainer.cpp#L995) がその候補を **1 回の publish** で反映する。候補を作った時点から registry が動いていれば `"render target extent candidate is stale"` で弾かれます。
-- [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2589) が fullscreen pass の input descriptor を新しい image view へ rebind する。
+- [`rebindFullscreenInputs()`](../../src/core/vkcore/renderer.cpp#L2590) が fullscreen pass の input descriptor を新しい image view へ rebind する。
 - layout tracker を reset する。
 
 戻り値 `true` は「in-place の resize を実際に行った」の意味で、受けた呼び出し元が temporal history を落として `internal_render_extent` を更新します。この 2 段構え(候補作成と publish を分ける / stale なら例外)は [`headless_render_test.cpp`](../../test/headless_render_test.cpp) の "typed image subresources execute a two-stage depth pyramid and rebind after resize" が固定しています。
@@ -1282,7 +1282,7 @@ buffer/image memory は VMA を使います。[`BufferWrapper`](../../src/core/v
 
 ### 画面が真っ黒なときの読む順
 
-1. [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3883) で node 順と reads/writes を確認。
+1. [`currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3896) で node 順と reads/writes を確認。
 2. [`RenderPassExecutor::execute()`](../../src/core/vkcore/render_pass_executor.cpp#L314) で target layout と attachment を確認。
 3. [`renderDynamicPassDrawCalls()`](../../src/core/vkcore/render_pass_dispatch.cpp#L177) で意図した variant に入ったか確認。
 4. shader bundle の `log` と reflection を確認。
@@ -1389,7 +1389,7 @@ RAII ラッパは [`ScopedCommandDebugLabel`](../../src/core/vkcore/debugutils.h
 frame/<logical_frame>/graph/<variant>/view/<view_index>/node/<ordinal>:<kind>:<name>
 ```
 
-各 node はさらに `barriers` と `body` の 2 つの子ラベルへ分割されます。これを行うのは [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1443) が node ごとに直接作る 3 つの [`ScopedCommandDebugLabel`](../../src/core/vkcore/debugutils.hpp#L73)(node / `barriers` / `body`。[barriers subrange の記録](../../src/core/vkcore/renderer.cpp#L1831))で、render node と compute node は同じ loop 内のこの 1 か所を共有します。テンプレート [`recordDebugLabeledNode()`](../../src/core/vkcore/debugutils.hpp#L98) は同じ規約をテストから検証するためのもので、`renderer.cpp` からは呼ばれません([test/debugutils_test.cpp](../../test/debugutils_test.cpp#L94))。XR mirror の中間コピーだけは別地点でラベル付けされます([`recordXrMirrorIntermediate()`](../../src/core/vkcore/renderer.cpp#L2698))。
+各 node はさらに `barriers` と `body` の 2 つの子ラベルへ分割されます。これを行うのは [`executePlannedFrameGraph()`](../../src/core/vkcore/renderer.cpp#L1444) が node ごとに直接作る 3 つの [`ScopedCommandDebugLabel`](../../src/core/vkcore/debugutils.hpp#L73)(node / `barriers` / `body`。[barriers subrange の記録](../../src/core/vkcore/renderer.cpp#L1832))で、render node と compute node は同じ loop 内のこの 1 か所を共有します。テンプレート [`recordDebugLabeledNode()`](../../src/core/vkcore/debugutils.hpp#L98) は同じ規約をテストから検証するためのもので、`renderer.cpp` からは呼ばれません([test/debugutils_test.cpp](../../test/debugutils_test.cpp#L94))。XR mirror の中間コピーだけは別地点でラベル付けされます([`recordXrMirrorIntermediate()`](../../src/core/vkcore/renderer.cpp#L2699))。
 
 > **設計決定:** このラベル文字列は「見やすさのためのおまけ」ではなく **診断識別子の正規形** です。GPU timing のサンプル名も同じ関数から派生するため(§6.17)、RenderDoc の event ツリーと `get_status.gpu_timing` の行を文字列一致で突き合わせられます。ラベル形式を変えるときは両方の契約を同時に変えることになります。
 
@@ -1475,7 +1475,7 @@ fixture は [`test/fixtures/gpu_timing_attribution.json`](../../test/fixtures/gp
 > Literal WP172 ownership inventory.  The order is part of the diagnostic
 > contract and is deliberately shared by RPC, tests, and the design report.
 
-12 行の各エントリが `request-local` / `explicitly suppressed` / `read-only` のいずれかに分類され、DeletionQueue、RenderTargetContainer history、`PolygonInstanceContainer` の前フレーム状態、`Renderer` の temporal history、swapchain / XR mirror などが **明示的に抑止されている** ことを列挙します。`Renderer` 側の対応は [`previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3789) です。
+12 行の各エントリが `request-local` / `explicitly suppressed` / `read-only` のいずれかに分類され、DeletionQueue、RenderTargetContainer history、`PolygonInstanceContainer` の前フレーム状態、`Renderer` の temporal history、swapchain / XR mirror などが **明示的に抑止されている** ことを列挙します。`Renderer` 側の対応は [`previewIsolationStateJson()`](../../src/core/vkcore/renderer.cpp#L3802) です。
 
 > 🧩 **難所 — 圧縮しない zlib を書く**([`zlibStored()`](../../src/core/vkcore/previewexecutor.cpp#L42) / [`crc32()`](../../src/core/vkcore/previewexecutor.cpp#L22) / [`appendChunk()`](../../src/core/vkcore/previewexecutor.cpp#L33))
 >
@@ -1525,7 +1525,7 @@ flag の語彙は Vulkan の operand bit そのものです([`rayInstanceTriangl
 
 ### 優先順位は `defaults < material rule < instance override`
 
-解決は [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1514) の1関数に閉じています。行ごとに defaults を置き、v2 かつ rule があれば `geometry_flags` だけを上書きし、v2 かつ `pelican_ray_instance` があれば **field 単位で** mask / instance_flags / custom_index を上書きします。`RayInstanceComponent` の3つが `std::optional` なのはこのためで、「authored の空配列 `instance_flags: []` は本物の override、component 全体が空なら codec が拒否」という規則がヘッダのコメントに書いてあります([`RayInstanceComponent` 直前](../../src/core/userpublic/components/rayinstance.hpp#L65))。
+解決は [`resolveRaySceneRows()`](../../src/core/shader/raygrouplayout.cpp#L1519) の1関数に閉じています。行ごとに defaults を置き、v2 かつ rule があれば `geometry_flags` だけを上書きし、v2 かつ `pelican_ray_instance` があれば **field 単位で** mask / instance_flags / custom_index を上書きします。`RayInstanceComponent` の3つが `std::optional` なのはこのためで、「authored の空配列 `instance_flags: []` は本物の override、component 全体が空なら codec が拒否」という規則がヘッダのコメントに書いてあります([`RayInstanceComponent` 直前](../../src/core/userpublic/components/rayinstance.hpp#L65))。
 
 ### 10 状態
 
@@ -1534,17 +1534,17 @@ layout の版と宣言の有無で、解決値と名前付き拒否は次のよ�
 | # | 入力 | 結果 |
 |---:|---|---|
 | 1 | layout 自体が無い(`LegacyNoLayout`) | row snapshot を作らず、TLAS は legacy: custom index は **登録順の連番**、mask/flags は canonical defaults([`lowerRayTracingTlasInstancePlan()` の legacy 分岐](../../src/core/renderer/accelerationstructure.cpp#L718)) |
-| 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1763)) |
+| 2 | v1 layout、`acceleration_structure` 無し | `custom_index = q`。v1 の ABI をそのまま維持([`LayoutV1Q` の代入](../../src/core/shader/raygrouplayout.cpp#L1768)) |
 | 3 | v1 layout、`acceleration_structure` 有り | parse で [`pelican.ray_as_declaration_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L846)。`ray_as_declaration_requires_layout@1` という code は作られていません(`acceleration_structure` は layout 内の field なので、その構文が存在しない) |
-| 4 | v2 でない layout の row に `pelican_ray_instance` がある | [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L1539)。builtin 宣言側は scene load 時点で[同 code](../../src/core/loader/scene.cpp#L99) |
+| 4 | v2 でない layout の row に `pelican_ray_instance` がある | [`pelican.ray_instance_requires_layout_v2@1`](../../src/core/shader/raygrouplayout.cpp#L1544)。builtin 宣言側は scene load 時点で[同 code](../../src/core/loader/scene.cpp#L99) |
 | 5 | v2 layout、`acceleration_structure` 無し | 全 row が canonical defaults。**`custom_index` は 0 であって `q` ではありません** |
 | 6 | v2 + `defaults` だけ | `defaults` の4値がそのまま全 row へ |
-| 7 | v2 + material rule が1つ当たる | その row の `geometry_flags` だけが rule 値へ([rule 値の代入](../../src/core/shader/raygrouplayout.cpp#L1592)) |
-| 8 | v2 + rules 有り、row の material identity が `Unavailable` | [`pelican.ray_as_row_material_identity_unavailable@1`](../../src/core/shader/raygrouplayout.cpp#L1580)。黙って defaults へ落としません |
-| 9 | v2 + 2つ以上の rule が一致 | [`pelican.ray_as_rule_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1587) |
-| 10 | v2 以上 + `pelican_ray_instance` の override | field 単位で defaults / rule の上に載る([minimum-v2 の instance override](../../src/core/shader/raygrouplayout.cpp#L1597)) |
+| 7 | v2 + material rule が1つ当たる | その row の `geometry_flags` だけが rule 値へ([rule 値の代入](../../src/core/shader/raygrouplayout.cpp#L1597)) |
+| 8 | v2 + rules 有り、row の material identity が `Unavailable` | [`pelican.ray_as_row_material_identity_unavailable@1`](../../src/core/shader/raygrouplayout.cpp#L1585)。黙って defaults へ落としません |
+| 9 | v2 + 2つ以上の rule が一致 | [`pelican.ray_as_rule_ambiguous@1`](../../src/core/shader/raygrouplayout.cpp#L1592) |
+| 10 | v2 以上 + `pelican_ray_instance` の override | field 単位で defaults / rule の上に載る([minimum-v2 の instance override](../../src/core/shader/raygrouplayout.cpp#L1602)) |
 
-override 側には3つの範囲・整合検査が続きます。`custom_index` が [`rayCustomIndexMaximum`](../../src/core/userpublic/components/rayinstance.hpp#L18)(`0x00ffffff`)を超えると [`pelican.ray_instance_field_range@1`](../../src/core/shader/raygrouplayout.cpp#L1610)、`force_opaque` と `force_no_opaque` を同時に立てると [`pelican.ray_as_conflicting_instance_flags@1`](../../src/core/shader/raygrouplayout.cpp#L1620)、portable alpha profile が有効な layout で `force_opaque` を使うと [`pelican.ray_profile_opaque_as@1`](../../src/core/shader/raygrouplayout.cpp#L1625) です。
+override 側には3つの範囲・整合検査が続きます。`custom_index` が [`rayCustomIndexMaximum`](../../src/core/userpublic/components/rayinstance.hpp#L18)(`0x00ffffff`)を超えると [`pelican.ray_instance_field_range@1`](../../src/core/shader/raygrouplayout.cpp#L1615)、`force_opaque` と `force_no_opaque` を同時に立てると [`pelican.ray_as_conflicting_instance_flags@1`](../../src/core/shader/raygrouplayout.cpp#L1625)、portable alpha profile が有効な layout で `force_opaque` を使うと [`pelican.ray_profile_opaque_as@1`](../../src/core/shader/raygrouplayout.cpp#L1630) です。
 
 > **設計決定:** 自動移行はしません。既存 project は layout を書き換えない限り 1 か「layout 無し」のままで、`custom_index == q` を固定していたテストは **v1 のテストとして残されて**います。v1 と v2 の意味論は [`RayLayoutSemanticMode`](../../src/core/shader/raygrouplayout.hpp#L72) として型で運ばれ、immutable な row と TLAS plan まで届きます。
 
@@ -1595,13 +1595,13 @@ RT の1フレームは、compile → pipeline → SBT → AS record → submit �
 | 点 | 呼び出し位置 |
 |---|---|
 | `after_compile` / `after_pipeline` | [registration 側](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L893) / [同](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1105) |
-| `after_sbt` | [`createRayTracingSceneShaderBindingTables()` の直後](../../src/core/vkcore/renderer.cpp#L4956) |
-| `after_as_record` | [`recordFrame()` の直後](../../src/core/vkcore/renderer.cpp#L4956) |
-| `submit` | [logical frame の締め](../../src/core/vkcore/renderer.cpp#L5842) |
+| `after_sbt` | [`createRayTracingSceneShaderBindingTables()` の直後](../../src/core/vkcore/renderer.cpp#L4969) |
+| `after_as_record` | [`recordFrame()` の直後](../../src/core/vkcore/renderer.cpp#L4969) |
+| `submit` | [logical frame の締め](../../src/core/vkcore/renderer.cpp#L5881) |
 
-AS の公開は submission が成功した後です。[`FrameBuild`](../../src/core/vkcore/accelerationstructure.hpp#L254) は publication token で、コマンドと資源は即座に lease されるものの、新しい BLAS/TLAS の集合が active になるのは [`acceleration_structure_build->commit()`](../../src/core/vkcore/renderer.cpp#L5853) を通った後だけです。
+AS の公開は submission が成功した後です。[`FrameBuild`](../../src/core/vkcore/accelerationstructure.hpp#L254) は publication token で、コマンドと資源は即座に lease されるものの、新しい BLAS/TLAS の集合が active になるのは [`acceleration_structure_build->commit()`](../../src/core/vkcore/renderer.cpp#L5892) を通った後だけです。
 
-> ✅ **WP384 で閉じた穴(`rev377a` #1)**: 以前は `recordFrame()` の前後で SBT と TLAS descriptor を `FrameResources` に先に書いていたため、`after_as_record` / `submit` の失敗で却下世代の SBT が active に残りました。いまは frame 中の候補を [`FrameResources::FramePublication`](../../src/core/renderer/frameresources.cpp#L403)(immutable な `RtDescriptorBundle` の候補)に束ね、target の三相 `submitLogicalFrame()` → publication callback(noexcept、[renderer.cpp の publication](../../src/core/vkcore/renderer.cpp#L4818) で RT state・staged runtime・bundle を 1 回で flip)→ `publishLogicalFrame()` の中央でだけ active を切り替えます。失敗時は候補の destructor が捨てるだけで、active は旧世代のまま(戻す処理が要らない設計)。却下 candidate は最初の実 submit 成功で seal された `DeletionQueue` の batch の fence で退役します。受け入れは各 fault 点直後の active SBT / TLAS 同一性と、再利用 frame で GPU が新世代を読むこと(`headless_render_test.cpp` の WP384 節)。
+> ✅ **WP384 で閉じた穴(`rev377a` #1)**: 以前は `recordFrame()` の前後で SBT と TLAS descriptor を `FrameResources` に先に書いていたため、`after_as_record` / `submit` の失敗で却下世代の SBT が active に残りました。いまは frame 中の候補を [`FrameResources::FramePublication`](../../src/core/renderer/frameresources.cpp#L403)(immutable な `RtDescriptorBundle` の候補)に束ね、target の三相 `submitLogicalFrame()` → publication callback(noexcept、[renderer.cpp の publication](../../src/core/vkcore/renderer.cpp#L4831) で RT state・staged runtime・bundle を 1 回で flip)→ `publishLogicalFrame()` の中央でだけ active を切り替えます。失敗時は候補の destructor が捨てるだけで、active は旧世代のまま(戻す処理が要らない設計)。却下 candidate は最初の実 submit 成功で seal された `DeletionQueue` の batch の fence で退役します。受け入れは各 fault 点直後の active SBT / TLAS 同一性と、再利用 frame で GPU が新世代を読むこと(`headless_render_test.cpp` の WP384 節)。
 
 ---
 

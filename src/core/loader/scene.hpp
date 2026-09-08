@@ -71,7 +71,8 @@ DECLARE_MODULE(SceneLoader) {
         std::map<std::string, GameObjectId> owners;
         ValueGraph::SoundBindings sounds;
     };
-    std::map<std::weak_ptr<const ValueGraph::Graph>, GraphRuntime, std::owner_less<>> graph_runtime;
+    using GraphRuntimes = std::map<std::weak_ptr<const ValueGraph::Graph>, GraphRuntime, std::owner_less<>>;
+    GraphRuntimes graph_runtime;
     GraphRuntime &synchronizeGraphRuntime(const std::shared_ptr<const ValueGraph::Graph> &graph);
     bool ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
                             std::string_view parameter) const;
@@ -132,6 +133,10 @@ DECLARE_MODULE(SceneLoader) {
     std::optional<SoundHandle> graphSound(const std::shared_ptr<const ValueGraph::Graph> &graph,
                                         std::string_view node) const;
     void updateGraphRuntime();
+    class PreparedGraphRuntimeTransfer;
+    std::unique_ptr<PreparedGraphRuntimeTransfer> prepareGraphRuntimeTransfer(
+        const std::shared_ptr<const ValueGraph::Graph> &previous,
+        const std::shared_ptr<const ValueGraph::Graph> &next);
     nlohmann::ordered_json diagnosticsStatusJson() const;
     const std::optional<SceneId> &pendingSceneForTesting() const noexcept {
         return pending_scene_id;
@@ -143,6 +148,23 @@ DECLARE_MODULE(SceneLoader) {
     void applyObjectTransform(std::string_view name, const SceneObjectTransform &transform);
     std::filesystem::path loadTransientGltf(std::string_view path_ref, const std::optional<std::string> &name);
     bool hasRuntimeOnlyChanges() const noexcept { return runtime_only_changes; }
+};
+
+class SceneLoader::PreparedGraphRuntimeTransfer {
+    friend class SceneLoader;
+    PreparedGraphRuntimeTransfer(SceneLoader &scene, std::shared_ptr<const ValueGraph::Graph> previous)
+        : scene_(scene), previous_(std::move(previous)) {}
+    SceneLoader &scene_;
+    std::shared_ptr<const ValueGraph::Graph> previous_;
+    GraphRuntimes prepared_;
+    // Borrowed until publication. Destroying a rejected candidate cannot stop
+    // voices still owned by the old runtime.
+    ValueGraph::SoundBindings retained_sounds_;
+    bool committed_ = false;
+  public:
+    ValueGraph::ParameterValues parameters() const;
+    ValueGraph::EvaluationState &evaluation();
+    void commit() noexcept;
 };
 
 } // namespace Pelican

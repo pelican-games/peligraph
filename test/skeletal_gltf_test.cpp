@@ -32,6 +32,7 @@
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
 #include "../src/project/featurecompose.hpp"
+#include "../src/project/graphcomposition.hpp"
 #include "skeletal_fixture.hpp"
 #include "graph_composition_fixture.hpp"
 #include "vulkan_test_support.hpp"
@@ -1258,6 +1259,58 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(context.soundState(left_voice)->pitch == 3.0f);
     REQUIRE(context.soundState(right_voice)->volume == 4.0f);
     REQUIRE(context.soundState(right_voice)->pitch == 4.0f);
+    auto attachment_document = event_document;
+    auto extra_unit = attachment_document["definitions"]["scaled_curve"];
+    extra_unit["nodes"].push_back({{"id", "gpu"}, {"op", "render.buffer"},
+        {"parameters", {{"element", "float"}}},
+        {"inputs", {{"value", {{"node", "gain"}, {"port", "value"}}}}}, {"outputs", {"resource"}}});
+    attachment_document["definitions"]["extra_unit"] = extra_unit;
+    auto extra = attachment_document["nodes"][4];
+    extra["id"] = "extra";
+    extra["definition"] = "extra_unit";
+    attachment_document = editGraphInstances(attachment_document, nlohmann::json::array({extra}), nlohmann::json::array());
+    const auto apply_attachment = [&](const nlohmann::json &candidate, bool fail_source) {
+        const auto reference = GET_MODULE(ProjectBasicConfig).renderingConfigReference();
+        const auto normalized = GET_MODULE(PathResolver).normalizedReference(reference);
+        const auto path = root / "passes/main_rendering_config.json";
+        const auto bytes = candidate.dump();
+        return renderer.applyRenderPipelineAuthoringCandidate(RenderConfigCandidateDocumentSet{normalized,
+            {{.reference = reference, .normalized_reference = normalized, .path = path,
+              .operation = RenderConfigDocumentOperation::replace,
+              .expected = {RenderConfigDocumentExistence::present,
+                  renderConfigSourceDigest(GET_MODULE(ProjectBasicConfig).renderingConfigJson())}, .bytes = bytes}}},
+            [&, bytes, path] {
+                if (fail_source) throw std::runtime_error("injected graph source failure");
+                writeText(path, bytes);
+            });
+    };
+    const auto old_generation = GET_MODULE(RenderingPassContainer).activeGeneration();
+    const auto rejected_attachment = apply_attachment(attachment_document, true);
+    REQUIRE_FALSE(rejected_attachment.committed);
+    REQUIRE(rejected_attachment.error.find("injected graph source failure") != std::string::npos);
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == old_generation);
+    REQUIRE(context.isPlaying(left_voice));
+    REQUIRE(context.isPlaying(right_voice));
+    const auto attached = apply_attachment(attachment_document, false);
+    INFO(attached.error);
+    REQUIRE(attached.committed);
+    sound_graph = GET_MODULE(RenderingPassContainer).snapshot()->programs.begin()->second.frame_graph.value_graph;
+    REQUIRE(requireSound(sound_graph, "left/sound") == left_voice);
+    REQUIRE(requireSound(sound_graph, "right/sound") == right_voice);
+    REQUIRE(scene.graphParameterValues(sound_graph).at("left/gain") == 3);
+    (void)render(18.25);
+    REQUIRE(read("extra/gpu") == 4);
+    REQUIRE(context.emitGraphEvent(sound_right, "extra/commands", Command::start));
+    (void)render(18.25);
+    const auto extra_voice = requireSound(sound_graph, "extra/sound");
+    REQUIRE(context.isPlaying(extra_voice));
+    attachment_document = editGraphInstances(attachment_document, nlohmann::json::array(), nlohmann::json::array({"extra"}));
+    REQUIRE(apply_attachment(attachment_document, false).committed);
+    sound_graph = GET_MODULE(RenderingPassContainer).snapshot()->programs.begin()->second.frame_graph.value_graph;
+    REQUIRE(requireSound(sound_graph, "left/sound") == left_voice);
+    REQUIRE(requireSound(sound_graph, "right/sound") == right_voice);
+    REQUIRE_THROWS(GET_MODULE(FrameGraphResourceContainer).buffer("extra/gpu"));
+    REQUIRE_FALSE(context.soundState(extra_voice));
     REQUIRE(context.emitGraphEvent(sound_left, "left/commands", Command::pause));
     (void)render(18.5);
     REQUIRE(context.soundState(left_voice));

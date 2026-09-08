@@ -341,6 +341,52 @@ const GraphInstanceOwner *Graph::scopeOwner(std::string_view parameter) const no
 bool Graph::nodeActive(std::string_view node, const InactiveScopes &inactive) const {
     return active(node_scopes_, node, inactive);
 }
+
+Graph::StateTransfer Graph::transferState(const Graph &previous, const EvaluationState &state) const {
+    if (state.graph_ != &previous) throw std::invalid_argument("evaluation state belongs to a different graph");
+    const auto definitions = [](const Graph &graph) {
+        auto document = Json::parse(graph.serialize());
+        if (document.at("schema") == "pelican.graph") {
+            GraphInstanceOwners owners;
+            ScopeDependencies nodes, outputs;
+            document = lowerScalarGraph(document, owners, nodes, outputs);
+        }
+        std::map<std::string, Json> result;
+        for (const auto &node : document.at("nodes")) result.emplace(name(node.at("id")), node);
+        return result;
+    };
+    const auto old_definitions = definitions(previous);
+    const auto new_definitions = definitions(*this);
+    std::map<std::string, std::size_t> old_indices;
+    for (std::size_t index = 0; index < previous.nodes_.size(); ++index)
+        old_indices.emplace(previous.nodes_[index].id, index);
+    StateTransfer result{createState(), {}, {}};
+    const std::set<std::string> no_scopes;
+    const auto scopes = [&](const Graph &graph, const std::string &id) -> const auto & {
+        const auto found = graph.node_scopes_.find(id);
+        return found == graph.node_scopes_.end() ? no_scopes : found->second;
+    };
+    for (const auto index : order_) {
+        const auto &node = nodes_[index];
+        const auto old = old_indices.find(node.id);
+        if (old == old_indices.end() || old_definitions.at(node.id) != new_definitions.at(node.id)) continue;
+        const auto &owners = scopes(*this, node.id);
+        if (owners != scopes(previous, node.id) || std::any_of(owners.begin(), owners.end(), [&](const auto &scope) {
+            return instance_owners_.at(scope) != previous.instance_owners_.at(scope);
+        })) continue;
+        if (std::any_of(node.dependencies.begin(), node.dependencies.end(), [&](auto dependency) {
+            return !result.retained_nodes.contains(nodes_[dependency].id);
+        })) continue;
+        result.retained_nodes.insert(node.id);
+        if (node.op == Op::parameter) result.retained_parameters.insert(node.input_name);
+        if (const auto trigger = state.triggers_.find(old->second); trigger != state.triggers_.end())
+            result.state.triggers_.emplace(index, trigger->second);
+        if (const auto events = state.pending_.find(old->second); events != state.pending_.end())
+            result.state.pending_.emplace(index, events->second);
+    }
+    return result;
+}
+
 void Graph::resetState(EvaluationState &state, const InactiveScopes &scopes) const {
     if (state.graph_ != this) throw std::invalid_argument("evaluation state belongs to a different graph");
     std::erase_if(state.triggers_, [&](const auto &entry) { return !nodeActive(nodes_[entry.first].id, scopes); });
@@ -492,7 +538,8 @@ std::set<std::string> Graph::inputNames() const {
 PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
                              const SoundBindings &sounds, const RenderValueWriter &render_writer,
                              const ParameterValues &parameters, const InactiveScopes &inactive, EvaluationState *state,
-                             const AudioEventWriter &audio_writer, const SoundResolver &sound_resolver) const {
+                             const AudioEventWriter &audio_writer, const SoundResolver &sound_resolver,
+                             const AudioValueWriter &audio_value_writer) const {
     const auto outputs = evaluateInternal(inputs, parameters, inactive, state);
     // Convert and validate every value before changing any service.
     std::vector<std::vector<float>> prepared;
@@ -532,7 +579,11 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
         if (binding.type == Target::render_buffer)
             applied = render_writer ? render_writer(binding.target, prepared[i])
                                     : context.setRenderValues(binding.target, prepared[i]);
-        else if (binding.voice && sound_resolver) {
+        else if (audio_value_writer) {
+            applied = audio_value_writer(binding.target, binding.voice,
+                binding.type == Target::sound_volume ? AudioValueKind::volume : AudioValueKind::pitch,
+                prepared[i][0]);
+        } else if (binding.voice && sound_resolver) {
             const auto sound = sound_resolver(binding.target);
             // A connected producer can exist before start, or after reset/end.
             if (!sound) continue;

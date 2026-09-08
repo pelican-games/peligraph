@@ -3,6 +3,9 @@
 #include "../src/core/container.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/basicconfig.hpp"
+#include "../src/core/loader/scene.hpp"
+#include "../src/core/userpublic/valuegraph.hpp"
+#include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/imageloader.hpp"
@@ -11086,6 +11089,136 @@ TEST_CASE(
 #else
     SUCCEED(
         "RT1a GPU oracle shaders require the runtime compiler; compiler-OFF parent SPIR-V hashes are covered by the CPU gate");
+#endif
+}
+
+TEST_CASE("common graph state survives staged ray pipeline publication", "[headless][gpu][graph-transfer-rt]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    const auto temp_dir = makeTempProjectDir();
+    try {
+        FastModuleContainer modules;
+        writeRt1bLayoutProject(temp_dir);
+        writeTextFile(temp_dir / "ray_bindings.json", R"({"schema":"pelican.ray_bindings","version":1,"bindings":[]})");
+        const auto config_path = temp_dir / "hybrid.json";
+        auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+          "nodes":[{"id":"time","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
+            {"id":"commands","op":"event.playback","outputs":["events"]},
+            {"id":"clock","op":"value.event_clock","inputs":{"time":{"node":"time","port":"value"},
+              "events":{"node":"commands","port":"events"}},"outputs":["value"]},
+            {"id":"clock_buffer","op":"render.buffer","parameters":{"element":"float"},
+              "inputs":{"value":{"node":"clock","port":"value"}},"outputs":["resource"]}],
+          "outputs":{"elapsed":{"node":"clock","port":"value"}}})");
+        document["rendering"] = nlohmann::json::parse(readTextFile(config_path));
+        // Existing RT tasks remain a feature, while the common graph derives
+        // its own CPU-to-GPU buffers from connections.
+        auto &rendering = document["rendering"];
+        const nlohmann::json rt_feature{{"schema", "pelican.render_feature"}, {"version", 1},
+            {"name", "rt_probe"}, {"compute_tasks", rendering.at("compute_tasks")}};
+        writeTextFile(temp_dir / "rt_probe.json", rt_feature.dump());
+        rendering.erase("compute_tasks");
+        rendering["features"] = {"project://rt_probe.json"};
+#if PELICAN_WITH_AUDIO
+        const unsigned char wav[]{'R','I','F','F',44,0,0,0,'W','A','V','E','f','m','t',' ',16,0,0,0,
+            1,0,1,0,64,31,0,0,128,62,0,0,2,0,16,0,'d','a','t','a',8,0,0,0,0,0,0,0,0,0,0,0};
+        writeTextFile(temp_dir / "tone.wav", std::string(reinterpret_cast<const char *>(wav), sizeof(wav)));
+        document["nodes"].push_back({{"id", "voice"}, {"op", "audio.playback"},
+            {"parameters", {{"asset", "project://tone.wav"}}},
+            {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+                        {"events", {{"node", "commands"}, {"port", "events"}}}}}, {"outputs", {"voice"}}});
+#endif
+        writeTextFile(config_path, document.dump());
+        configureRayQueryTestRuntime(temp_dir);
+        auto &vkcore = GET_MODULE(VulkanManageCore);
+        if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) SKIP("ray tracing pipeline unavailable");
+        auto &renderer = GET_MODULE(Renderer);
+        GET_MODULE(PolygonInstanceContainer).placeModelInstance(GET_MODULE(ModelAssetContainer).getModelTemplateByName("tree"));
+        auto &scene = GET_MODULE(SceneLoader);
+        auto &time = GET_MODULE(EngineTime);
+        auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+        time.setTime(10);
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE(runtime.snapshot());
+        const auto graph = runtime.snapshot()->programs.begin()->second.frame_graph.value_graph;
+        REQUIRE(graph);
+        REQUIRE(graph->emitEvent(scene.graphEvaluationState(graph), "commands", Animation::CurvePlaybackCommand::start, 10));
+        time.setTime(10.25);
+        renderer.render();
+        vkcore.waitIdle();
+        const auto read_clock = [&] {
+            const auto bytes = vkcore.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("clock_buffer"), sizeof(float));
+            float value{};
+            std::memcpy(&value, bytes.data(), sizeof(value));
+            return value;
+        };
+        REQUIRE(read_clock() == 0.25f);
+#if PELICAN_WITH_AUDIO
+        const auto voice = scene.graphSound(graph, "voice");
+        REQUIRE(voice);
+        REQUIRE(GameContext{}.isPlaying(*voice));
+#endif
+        document["nodes"].push_back({{"id", "extra"}, {"op", "value.constant"},
+            {"parameters", {{"value", 1}}}, {"outputs", {"value"}}});
+        const auto apply = [&](bool fail) {
+            const auto reference = GET_MODULE(ProjectBasicConfig).renderingConfigReference();
+            const auto key = GET_MODULE(PathResolver).normalizedReference(reference);
+            const auto bytes = document.dump();
+            return renderer.applyRenderPipelineAuthoringCandidate(RenderConfigCandidateDocumentSet{key,
+                {{.reference = reference, .normalized_reference = key, .path = config_path,
+                  .operation = RenderConfigDocumentOperation::replace,
+                  .expected = {RenderConfigDocumentExistence::present, renderConfigSourceDigest(readTextFile(config_path))},
+                  .bytes = bytes}}}, [config_path, bytes, fail] {
+                    if (fail) throw std::runtime_error("injected staged graph source failure");
+                    writeTextFile(config_path, bytes);
+                });
+        };
+        const auto generation = runtime.activeGeneration();
+        const auto source = readTextFile(config_path);
+        REQUIRE(apply(true).staged);
+        // The event arrives after staging, before the candidate frame starts.
+        REQUIRE(graph->emitEvent(scene.graphEvaluationState(graph), "commands", Animation::CurvePlaybackCommand::pause, 10.5));
+        time.setTime(10.75);
+        REQUIRE_THROWS_WITH(renderer.render(), Catch::Matchers::ContainsSubstring("injected staged graph source failure"));
+        REQUIRE(runtime.activeGeneration() == generation);
+        REQUIRE(runtime.stagedGeneration() == 0);
+        REQUIRE(readTextFile(config_path) == source);
+#if PELICAN_WITH_AUDIO
+        REQUIRE(GameContext{}.soundState(*voice));
+        REQUIRE_FALSE(GameContext{}.soundState(*voice)->paused);
+#endif
+        REQUIRE(apply(false).staged);
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE(runtime.activeGeneration() > generation);
+        REQUIRE(read_clock() == 0.5f);
+        const auto next = runtime.snapshot()->programs.begin()->second.frame_graph.value_graph;
+        REQUIRE(next != graph);
+#if PELICAN_WITH_AUDIO
+        REQUIRE(scene.graphSound(next, "voice") == voice);
+        REQUIRE(GameContext{}.soundState(*voice));
+        REQUIRE(GameContext{}.soundState(*voice)->paused);
+#endif
+        REQUIRE(next->emitEvent(scene.graphEvaluationState(next), "commands", Animation::CurvePlaybackCommand::resume, 10.75));
+        time.setTime(11);
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE(read_clock() == 0.75f);
+        document = document.at("rendering");
+        REQUIRE(apply(false).staged);
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE_FALSE(runtime.snapshot()->programs.begin()->second.frame_graph.value_graph);
+#if PELICAN_WITH_AUDIO
+        REQUIRE_FALSE(GameContext{}.soundState(*voice));
+#endif
+    } catch (...) {
+        std::filesystem::remove_all(temp_dir);
+        throw;
+    }
+    std::filesystem::remove_all(temp_dir);
+#else
+    SKIP("runtime shader compiler unavailable");
 #endif
 }
 

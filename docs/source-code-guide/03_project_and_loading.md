@@ -320,7 +320,7 @@ prepare（失敗可）
 
 副作用の失敗は例外ではなく [`CommittedWithEffectFailure`](../../src/core/loader/sceneload.hpp#L175) として `SceneLoadResult` に載り、**扱いは root ごと**です: startup は [`LOG_ERROR`](../../src/core/userpublic/pelican_core.cpp#L141)、pending も [`LOG_ERROR`](../../src/core/loader/scene.cpp#L1242)、rpc の `load_scene` は [`response["effect_errors"]`](../../src/core/communication/rpcserver.cpp#L1673) として JSON で返し（失敗が無ければ空配列）、import は [`SceneImportResult`](../../src/core/loader/sceneload.hpp#L276) にそのまま入れて呼び手へ渡します。いずれも `committed` であることは変わりません（scene は載っている）。
 
-transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L1628) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
+transient glTF 経路（`load_gltf`）は executor を通らず、従来どおり [`GameObjects::createWithComponents()`](../../src/core/loader/scene.cpp#L1678) の populate callback で作ります（§3.8 の「`load_gltf` はトランザクション」）。
 
 ### 4. authored local TRSのworld投影
 
@@ -395,11 +395,11 @@ bindingは生ポインタを保持しません。アクセス時に`tryComponent
 
 判定のヘルパは [`sceneLoadMutationEnabled()`](../../src/core/loader/sceneloadfault.cpp#L33)（injectorが`nullptr`なら常に偽）と、rootごとの切断を引く [`sceneLoadRootDisconnected()`](../../src/core/loader/sceneloadfault.cpp#L41) で、後者は [`root_mutations`](../../src/core/loader/sceneloadfault.cpp#L16) の表で `SceneLoadRoot` からmutation IDを引きます。加えて `rollbackScene*()` の3本は、**わざと間違ったrollback**（outboxをflushしてしまう / RNG候補を公開してしまう / pending sceneを入れ替えてしまう）を実装したもので、ヘッダのコメントがそう宣言しています（[`sceneloadfault.hpp` 内](../../src/core/loader/sceneloadfault.hpp#L20)）。「正しい実装を消して赤を見る」のではなく、「間違った実装を名前付きで用意して、テストがそれを選ぶ」形です。
 
-> 🧩 **難所 — 注入口はproductionバイナリに存在しない**([`SceneLoader::fault_injector`](../../src/core/loader/scene.hpp#L81) / [`test/sceneloadfault_testing.cpp`](../../test/sceneloadfault_testing.cpp#L5))
+> 🧩 **難所 — 注入口はproductionバイナリに存在しない**([`SceneLoader::fault_injector`](../../src/core/loader/scene.hpp#L82) / [`test/sceneloadfault_testing.cpp`](../../test/sceneloadfault_testing.cpp#L5))
 >
-> **何をする所か**: fault injectorをloaderへ差す唯一の口です。差し口はメンバ変数 `fault_injector` と、staticな既定値 [`default_fault_injector_for_testing`](../../src/core/loader/scene.hpp#L83) の2つで、後者はconstructorが各インスタンスへコピーします（[constructorの初期化子](../../src/core/loader/scene.cpp#L163)）。
+> **何をする所か**: fault injectorをloaderへ差す唯一の口です。差し口はメンバ変数 `fault_injector` と、staticな既定値 [`default_fault_injector_for_testing`](../../src/core/loader/scene.hpp#L84) の2つで、後者はconstructorが各インスタンスへコピーします（[constructorの初期化子](../../src/core/loader/scene.cpp#L163)）。
 >
-> **素朴に読むと**: 「テスト専用のsetterがproductionヘッダに宣言されている」ので、出荷バイナリにも入っていそうに見えます。実際には**宣言だけ**で、定義は `src/` の外の [`test/sceneloadfault_testing.cpp`](../../test/sceneloadfault_testing.cpp#L5) にしかありません。ヘッダ側は `namespace test_support` の2関数を前方宣言し、`SceneLoader` がそれを [`friend`](../../src/core/loader/scene.hpp#L87) にするだけです。したがって production の `pelican_core` をリンクしても、シンボルはどこにも現れません — 「無効化されている」ではなく「**存在しない**」が正確です。既定値がnullptrなので、production経路の `sceneLoadMutationEnabled()` は最初の `injector != nullptr` で必ず偽になります。
+> **素朴に読むと**: 「テスト専用のsetterがproductionヘッダに宣言されている」ので、出荷バイナリにも入っていそうに見えます。実際には**宣言だけ**で、定義は `src/` の外の [`test/sceneloadfault_testing.cpp`](../../test/sceneloadfault_testing.cpp#L5) にしかありません。ヘッダ側は `namespace test_support` の2関数を前方宣言し、`SceneLoader` がそれを [`friend`](../../src/core/loader/scene.hpp#L88) にするだけです。したがって production の `pelican_core` をリンクしても、シンボルはどこにも現れません — 「無効化されている」ではなく「**存在しない**」が正確です。既定値がnullptrなので、production経路の `sceneLoadMutationEnabled()` は最初の `injector != nullptr` で必ず偽になります。
 >
 > **骨子**:
 > ```text
@@ -579,13 +579,13 @@ API面の主な変化は次の通りです。
 
 ### `load_gltf` はトランザクション（WP144）
 
-RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L1559) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
+RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L1609) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
 
-1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1573)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
+1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1623)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
 2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2831) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L428) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
 3. [`commit()`](../../src/core/model/gltf.cpp#L2676) でGPU資源を確保し、`stageModelInstance()` でstagingします。
 4. エンティティ生成がthrowしたら `releaseModelGpuResources()` して `transient_models.pop_back()` します。
-5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1639)）。
+5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1689)）。
 
 ```cpp
 // No operation below allocates: this is the single publication point for
@@ -593,7 +593,7 @@ RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core
 instances.publishModelInstance(std::move(staged_instance));
 ```
 
-`SceneLoader` には [`transient_models`](../../src/core/loader/scene.hpp#L55) / [`runtime_only_changes`](../../src/core/loader/scene.hpp#L57) / [`releaseTransientModels()`](../../src/core/loader/scene.hpp#L96) / [`hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L145) が追加されています。`runtime_only_changes` は編集RPC側で「これはruntime専用の変更なので保存できない」と判定するために使います。
+`SceneLoader` には [`transient_models`](../../src/core/loader/scene.hpp#L55) / [`runtime_only_changes`](../../src/core/loader/scene.hpp#L57) / [`releaseTransientModels()`](../../src/core/loader/scene.hpp#L97) / [`hasRuntimeOnlyChanges()`](../../src/core/loader/scene.hpp#L150) が追加されています。`runtime_only_changes` は編集RPC側で「これはruntime専用の変更なので保存できない」と判定するために使います。
 
 ## 3.9 その他の純粋形式
 
