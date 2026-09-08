@@ -575,6 +575,7 @@ compileDefaultLogicalVariant(
                     return std::move(generated.config);
                 },
             .validate_feature = input.validate_feature,
+            .inactive_graph_scopes = input.inactive_graph_scopes,
         };
     if (request.artifact ==
         RenderCompilerProgramArtifact::

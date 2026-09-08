@@ -1087,6 +1087,7 @@ ResolvedRenderPipeline resolveRenderPipeline(
                 return config;
             },
             .validate_feature = dependencies.validate_feature,
+            .inactive_graph_scopes = dependencies.inactive_graph_scopes,
         });
 
     validatePassFieldOwnershipInConfig(

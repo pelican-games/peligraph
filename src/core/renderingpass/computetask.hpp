@@ -176,6 +176,9 @@ DECLARE_MODULE(FrameGraphResourceContainer) {
     bool stageRuntimeValues(std::string_view name, std::span<const float> values);
     bool stageRuntimeValues(FrameGraphBufferId id, std::span<const float> values);
     void uploadRuntimeValues();
+    // Copy persistent contents into private replacement buffers. The caller
+    // supplies unchanged declarations and retains both renderer generations.
+    void copyBufferState(const std::vector<std::pair<FrameGraphBufferId, FrameGraphBufferId>> &copies);
     bool hasBuffer(FrameGraphBufferId id) const;
     FrameGraphBufferId getBufferIdByName(std::string_view name) const;
     const BufferWrapper &buffer(std::string_view name) const;

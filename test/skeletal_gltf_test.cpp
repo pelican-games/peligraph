@@ -28,6 +28,7 @@
 #include "../src/core/renderingpass/renderingpasscontainer.hpp"
 #include "../src/core/renderingpass/framegraphruntime.hpp"
 #include "../src/core/vkcore/util.hpp"
+#include "../src/core/vkcore/deletionqueue.hpp"
 #include "../src/core/renderer/frameresources.hpp"
 #include "../src/core/shader/shaderlibrary.hpp"
 #include "../src/core/renderingpass/rendertargetcontainer.hpp"
@@ -1086,6 +1087,10 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     }
     GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
     auto &renderer = GET_MODULE(Renderer);
+    const auto install_graph = [&](const nlohmann::json &candidate) {
+        loadRenderGraphVariantsFromConfigData(candidate.dump());
+        GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(candidate.dump());
+    };
     renderer.setExecutionTracingForTesting(true);
     auto &vkcore = GET_MODULE(VulkanManageCore);
     const auto read = [&](const char *buffer) {
@@ -1115,6 +1120,10 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(context.setGraphParameter(left, "left/gain", std::nullopt));
     REQUIRE(render(10.25) == 2.5f);
     REQUIRE(context.setGraphParameter(left, "left/gain", 4));
+    auto held_generation = GET_MODULE(RenderingPassContainer).snapshot();
+    auto &graph_buffers = GET_MODULE(FrameGraphResourceContainer);
+    const auto retired_input = graph_buffers.getBufferIdByName("render");
+    const auto source_before_removal = GET_MODULE(ProjectBasicConfig).renderingConfigJson();
     GameObjects{}.remove(left);
     REQUIRE_FALSE(context.setGraphParameter(left, "left/gain", 5));
     const std::array<float, 1> sentinel{-17};
@@ -1122,8 +1131,17 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(context.setRenderValues("result", sentinel));
     REQUIRE(context.setRenderValues("render", input_sentinel));
     REQUIRE(render(10.25) == -17);
-    REQUIRE(read("render") == 9);
+    REQUIRE_FALSE(graph_buffers.hasBuffer("render"));
+    REQUIRE(graph_buffers.hasBuffer(retired_input)); // The old frame still owns its exact GPU record.
+    REQUIRE(GET_MODULE(ProjectBasicConfig).renderingConfigJson() == source_before_removal);
     REQUIRE(read("right_result") == 5.5f);
+    held_generation.reset();
+    // Cycle the in-flight slots so their old generation leases retire too.
+    for (int frame = 0; frame < 3; ++frame) (void)render(10.25);
+    GET_MODULE(DeletionQueue).flushAll();
+    REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
+    REQUIRE_FALSE(graph_buffers.hasBuffer(retired_input));
+    const auto reclaimed_generation = GET_MODULE(RenderingPassContainer).activeGeneration();
     if (graphics_path) {
         const auto &trace = renderer.lastExecutionTraceForTesting();
         const auto &view = trace.contains("view_family") ? trace.at("view_family") : trace;
@@ -1131,23 +1149,25 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
         const auto probe = std::find_if(nodes.begin(), nodes.end(), [](const auto &node) {
             return node.at("name") == "probe";
         });
-        REQUIRE(probe != nodes.end());
-        REQUIRE_FALSE(probe->at("recorded").template get<bool>());
+        REQUIRE(probe == nodes.end());
         const auto &layouts = view.at("final_layouts");
         const auto intermediate = std::find_if(layouts.begin(), layouts.end(), [](const auto &entry) {
             return entry.at("resource") == "intermediate";
         });
-        REQUIRE(intermediate != layouts.end());
-        REQUIRE(intermediate->at("layout") == "undefined");
+        REQUIRE(intermediate == layouts.end());
     }
     REQUIRE(scene.graphParameterValues(other_graph).empty());
     REQUIRE(context.setGraphParameter(right, "right/gain", 8));
     REQUIRE(render(10.5) == -17);
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == reclaimed_generation);
     REQUIRE(read("right_result") == 13);
     time.setTime(10.75);
     test_support::loadScene(scene, "default_scene");
     REQUIRE(scene.sceneStartTime() == 10.75);
     REQUIRE(render(11) == 2.5f);
+    REQUIRE(graph_buffers.hasBuffer("render"));
+    REQUIRE(graph_buffers.getBufferIdByName("render") != retired_input);
+    REQUIRE(GET_MODULE(ProjectBasicConfig).renderingConfigJson() == source_before_removal);
     const auto reloaded_left = *scene.objectId("Left");
     REQUIRE(reloaded_left != left);
     REQUIRE_FALSE(context.setGraphParameter(left, "left/gain", 3));
@@ -1156,17 +1176,17 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     const auto generation = GET_MODULE(RenderingPassContainer).activeGeneration();
     auto invalid = document;
     invalid["nodes"][0]["parameters"]["name"] = "unbound_input";
-    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid.dump()));
+    REQUIRE_THROWS(install_graph(invalid));
     REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
     REQUIRE(render(11) == 3.25f);
     document["nodes"][3]["parameters"]["gain"] = 4;
-    loadRenderGraphVariantsFromConfigData(document.dump());
+    install_graph(document);
     REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() > generation);
     REQUIRE(render(11) == 4.0f);
     auto event_document = document;
     addGraphEventClock(event_document);
     addGraphTriggerClock(document);
-    loadRenderGraphVariantsFromConfigData(document.dump());
+    install_graph(document);
     REQUIRE(render(12) == 1);
     REQUIRE(context.setGraphParameter(reloaded_left, "left/fire", 1));
     REQUIRE(render(12) == 1);
@@ -1177,7 +1197,7 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(context.setGraphParameter(reloaded_left, "left/paused", 0));
     REQUIRE(render(12.75) == 4);
     REQUIRE(render(13) == 7);
-    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid.dump()));
+    REQUIRE_THROWS(install_graph(invalid));
     REQUIRE(render(13) == 7);
     REQUIRE(context.setGraphParameter(reloaded_left, "left/reset", 1));
     REQUIRE(render(13) == 1);
@@ -1188,9 +1208,11 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     REQUIRE(context.setGraphParameter(reloaded_left, "left/fire", 1));
     REQUIRE(render(13.25) == 1);
     REQUIRE(render(13.5) == 4);
+    const auto before_replacement = graph_buffers.getBufferIdByName("render");
     test_support::loadScene(scene, "default_scene");
     REQUIRE(render(14) == 1);
-    loadRenderGraphVariantsFromConfigData(event_document.dump());
+    REQUIRE(graph_buffers.getBufferIdByName("render") != before_replacement);
+    install_graph(event_document);
     const auto event_left = *scene.objectId("Left");
     const auto event_right = *scene.objectId("Right");
     using Command = Animation::CurvePlaybackCommand;
@@ -1226,7 +1248,7 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
             {"inputs", {{"value", {{"node", "gain"}, {"port", "value"}}},
                         {"voice", {{"node", "sound"}, {"port", "voice"}}}}},
             {"outputs", nlohmann::json::array()}});
-    loadRenderGraphVariantsFromConfigData(event_document.dump());
+    install_graph(event_document);
     auto sound_graph = GET_MODULE(RenderingPassContainer).snapshot()->programs.begin()->second.frame_graph.value_graph;
     const auto requireSound = [&](const auto &graph, const char *node) {
         const auto sound = scene.graphSound(graph, node);
@@ -1333,7 +1355,7 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     auto bad_audio = event_document;
     for (auto &node : bad_audio["definitions"]["scaled_curve"]["nodes"])
         if (node["id"] == "sound") node["parameters"]["asset"] = "project://missing.wav";
-    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(bad_audio.dump()));
+    REQUIRE_THROWS(install_graph(bad_audio));
     REQUIRE(context.isPlaying(restarted_voice));
     GameObjects{}.remove(sound_left);
     scene.updateGraphRuntime();

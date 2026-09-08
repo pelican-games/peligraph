@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <set>
 #include <nlohmann/json.hpp>
 #include <span>
 #include <string>
@@ -95,6 +96,8 @@ struct RenderCompilerProgramInput {
         variants;
     std::function<void(std::string_view, const nlohmann::json &)>
         validate_feature;
+    // Runtime owner availability; never part of the authored JSON document.
+    std::set<std::string> inactive_graph_scopes;
 };
 
 struct RenderCompilerProgramVariantOutput {

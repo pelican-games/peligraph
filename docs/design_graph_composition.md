@@ -489,7 +489,24 @@ SceneLoaderのPreparedGraphRuntimeTransferは候補準備時にはvoiceを借用
 候補を先に登録しない。音声event/volume/pitchはsubmissionと世代公開の成功後に反映する。
 source公開失敗時の旧voice・未処理event保持、再試行後のpause/resumeとGPU値を実RTで確認した。
 共通グラフのrendering内にあるray_group_layout/ray_bindingsも起動・scene準備・描画候補の共通入口で読む。
-GUIの装着操作、個体削除だけで停止scopeのGPU資源を回収する経路、scene別のgraph選択は残件。
+Inspectorの装着一覧・追加・解除は既存RPCを使い、選択個体のsceneと保存object IDへ接続する。
+初期parameterは有限のscalarとして入力し、保存競合時も草稿を残してsourceを再取得できる。
+通信・ticket・選択世代はGraphAttachmentModelが管理する。選択変更後の古い読取結果を使わず、
+送信済みの編集は確定結果まで追跡する。コンポーネント専用の保存形式は追加しない。
+
+個体の停止・再生成は、描画世代が保持するscopeごとの実行時object IDとの差分で検出する。
+次のフレーム境界で有効なGPU宣言だけを再コンパイルし、旧世代の使用が終わってから資源を解放する。
+停止scopeに依存する処理も除外するが、共有資源や独立した兄弟の処理は残す。
+after/beforeだけの順序参照はデータ依存と区別し、実行しなくなった共通ノードへの順序参照を外す。
+再生成した個体には新しい資源を用意する。削除と再生成の間に描画がなくても実行時IDの変更を検出する。
+同一の文書・依存JSONから再構築する場合、継続するbufferのGPU内容と未送信host値を候補へ移す。
+交換された所有者に依存するbufferへは古い値を移さない。画像・temporal historyは既存の描画再構築と同じく初期化する。
+
+所有者変更の再構築には公開済みrootとコンパイル時に読んだ依存JSONを使い、未反映のディスク編集を取り込まない。
+shader・glTF・audioの実アセットは既存の資源ローダーに従う。装着情報や停止状態をファイルへ書き戻さない。
+失敗時は旧世代を保持し、同じ世代・所有者集合で毎フレーム再試行しない。所有者変更または明示的な再公開で再試行できる。
+SceneLoaderのグラフ状態処理はscenegraphruntime.cppへ分け、候補音声の蓄積・公開も状態引継ぎ側にまとめた。
+scene別のgraph選択、全体グラフとscope表示で同一接続を編集するUIは残件。
 
 1. 既存authoringの参照解決・feature展開の入口を確認し、共通のscope/instanceと
    port/edgeを置く位置を決める。数値グラフの専用scene componentを先に追加しない。

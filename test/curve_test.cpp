@@ -184,6 +184,34 @@ TEST_CASE("owner scope dependencies cross CPU GPU boundaries without stopping si
     REQUIRE(graph.nodeActive("probe", {}));
 }
 
+TEST_CASE("GPU lowering omits inactive owner dependencies and keeps shared resources", "[curve][graph-composition]") {
+    auto document = parameterGraphCompositionFixture();
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};
+    auto ordered = document["nodes"][7];
+    ordered["id"] = "ordered";
+    ordered["inputs"]["source"] = {{"node", "result"}, {"port", "resource"}};
+    ordered["parameters"]["after"] = {"probe"};
+    document["nodes"].push_back(ordered);
+    const auto original = document;
+    const auto active = Pelican::lowerRenderGraphDocument(document);
+    const auto inactive = Pelican::lowerRenderGraphDocument(document, {"left"});
+    const auto named = [](const auto &config, const char *kind, const char *name) {
+        const auto &entries = config.at(kind);
+        return std::any_of(entries.begin(), entries.end(), [&](const auto &entry) { return entry.at("name") == name; });
+    };
+    REQUIRE(named(active, "buffers", "render"));
+    REQUIRE(named(active, "compute_tasks", "probe"));
+    REQUIRE_FALSE(named(inactive, "buffers", "render"));
+    REQUIRE_FALSE(named(inactive, "compute_tasks", "probe"));
+    REQUIRE(named(inactive, "buffers", "result"));
+    const auto &tasks = inactive.at("compute_tasks");
+    const auto ordered_task = std::find_if(tasks.begin(), tasks.end(), [](const auto &task) { return task.at("name") == "ordered"; });
+    REQUIRE(ordered_task != tasks.end());
+    REQUIRE(ordered_task->at("after").empty());
+    REQUIRE(Pelican::lowerRenderGraphDocument(document) == active);
+    REQUIRE(document == original);
+}
+
 TEST_CASE("nested passthrough instances retain lifetime boundaries after alias expansion", "[curve][graph-composition]") {
     const auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
       "definitions":{

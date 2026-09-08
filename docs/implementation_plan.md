@@ -23231,7 +23231,13 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-#### 現況 (2026-09-07、履歴より優先)
+#### 現況 (2026-09-08、履歴より優先)
+
+- 最終関連CPU回帰: 保存RPC・描画定義のrender-config-editor/render-feature 89件/2653 assertions成功（graph_ownership_editor_build.log / graph_ownership_editor_final.log）。二個体への装着・片方の解除・保存再読込と、保存競合/不正参照の拒否を既存テストで再確認。doclinkは3869件正常・stale/unresolved 0、git diff --check成功。
+- 個体削除時のGPU資源回収と再生成を接続。scopeの所有者・依存から停止する描画宣言を除外し、実行時object IDの変更をフレーム境界で一括検出して既存の候補公開経路へ渡す。全体グラフの保存文書は変更しない。公開済みroot/依存JSONを使い、未反映のディスク編集を所有者更新へ混入させない。同じ失敗入力を毎フレーム再コンパイルしない。継続するbufferのGPU内容・未送信host値、兄弟のparameter・再生状態・voiceを維持する。画像・temporal historyは既存の描画世代再構築と同じく初期化する。
+- 回収の検証: Studio/Playerビルド、CPU curve 20件/221 assertions、通常GPU skeletal 11件/1182 assertions、RT遅延公開1件/45 assertions成功（build/.codex_bg/graph_ownership_build5.log / graph_ownership_curve_final.log / graph_ownership_gpu_final.log / graph_ownership_rt_final.log）。旧世代参照中の実buffer保持、フレーム完了・旧世代解放・DeletionQueue処理後の実buffer消失、再生成後の新bufferと描画再開を確認。RT submit失敗でも旧世代・保存内容・voiceを維持し、明示再試行で回収できる。停止node除外を戻すと実buffer回収確認、状態copyを除くと共有bufferの値保持、世代寿命を短絡すると旧ID保持確認が落ちる対照設計（個別コード変異未実施）。SceneLoaderのグラフ状態をscenegraphruntime.cppへ分離し、所有者解決とparameter変換を共通化。候補音声の蓄積・公開をPreparedGraphRuntimeTransferへ集約した。以下の過去記録にあるGUI装着・個体削除時GPU回収の未了記述は、この記録と次項で解消済み。
+
+- Inspectorのグラフ装着GUIを `b302a71c` に統合。選択個体のscene/authoring object IDで装着一覧を表示し、定義・初期scalar parameterを指定した追加と解除を既存RPCへ接続。GraphAttachmentModelが通信・ticket・選択世代を管理し、Widgetは表示と入力を担当する。保存競合時は草稿を保持してsourceを再取得できる。Studio/Playerビルド、モデル5件/106 assertions、Widget1件/34 assertions成功（graph_ownership_build4.log / graph_ownership_model.log / graph_ownership_widget.log）。初期値3.5e-12、二個体の識別、古い応答の無視、確定前の二重送信防止、解除と競合後の再送信を確認。全体ノード編集UIとscene別graph選択は別の残件。
 
 - 2026-09-08 装着更新時の状態引き継ぎ: Graphの宣言・上流依存・ownerが一致するnodeをIDで対応づけ、clock/event待ち行列とparameterを保持。parameter名とnode IDは区別する。Sceneのprivate候補はvoiceを借用し、公開成功時だけ所有権を移す。RT遅延公開は候補フレーム開始時の最新状態を使い、音声event/valueをsubmit・世代公開後へ延期する。候補失敗時は旧状態とvoiceを維持。共通グラフのrendering内にあるray_group_layout/ray_bindingsの読み込みも共通入口へ接続した。
 - 状態引き継ぎの確認: Playerビルド、CPU curve 19件/212 assertions、GPU skeletal 11件/1134 assertions、実RT遅延公開1件/26 assertions成功（graph_transfer_curve_final.log / graph_transfer_gpu.log / graph_transfer_rt_final_gpu.log）。ノード配列変更、owner・上流変更、独立parameter名、兄弟のvoice/parameter保持、追加GPU bufferの値と解除時の名前解決解除・voice停止を確認。RTではstaging後のpause受信、source失敗後の旧voice・イベント保持、再試行後のGPU値0.5とresume後0.75、共通グラフ全体を外した際の音声停止を確認。従来RT1b transactionも4490 assertions成功（graph_transfer_rt_gpu.logは新規fixtureの未解決selector失敗を含む途中ログであり、全体成功ではない。新規fixtureは修正後のfinalログを参照）。状態コピーを除くと経過値/voice確認、音声を先行反映すると失敗時のpause不変確認が落ちる対照設計（個別コード変異未実施）。次はGUIの装着経路、個体削除時の停止GPU資源回収、scene別graph選択。これらを装着RPCの完了に含めない。

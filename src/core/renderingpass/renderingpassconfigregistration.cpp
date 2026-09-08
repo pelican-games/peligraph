@@ -3,6 +3,7 @@
 #include "../userpublic/valuegraph.hpp"
 #include "../model/gltf.hpp"
 #include "../../project/graphpartition.hpp"
+#include "../loader/scene.hpp"
 #if PELICAN_WITH_AUDIO
 #include "../audio/audio.hpp"
 #endif
@@ -786,12 +787,16 @@ registerRenderingPassConfigVariantsData(
     constexpr bool runtime_shader_compiler_enabled =
         false;
 #endif
+    RenderGraphDocumentSnapshot loaded_documents;
     const auto load_root_document =
-        [&dependencies](std::string_view reference) {
-            if (dependencies.front().options.load_document) {
-                return dependencies.front().options.load_document(reference);
-            }
-            return dependencies.front().runtime.path_resolver.loadText(reference);
+        [&dependencies, &loaded_documents](std::string_view reference) {
+            const auto &paths = dependencies.front().runtime.path_resolver;
+            if (const auto found = loaded_documents.find(reference); found != loaded_documents.end())
+                return found->second;
+            auto bytes = dependencies.front().options.load_document
+                ? dependencies.front().options.load_document(reference) : paths.loadText(reference);
+            loaded_documents.emplace(std::string{reference}, bytes);
+            return bytes;
         };
     const auto ray_tracing_project =
         loadRayTracingProjectConfig(
@@ -817,6 +822,17 @@ registerRenderingPassConfigVariantsData(
         };
     std::map<std::string, GltfAttributeData> attribute_data;
     std::set<std::filesystem::path> attribute_source_files;
+    std::shared_ptr<const ValueGraph::Graph> value_graph;
+    ValueGraph::InactiveScopes inactive_graph_scopes;
+    std::map<std::string, GameObjectId> graph_owner_objects;
+    if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
+        value_graph = std::make_shared<const ValueGraph::Graph>(rendering_pass_data.dump());
+        if (auto *scene = FastModuleContainer::tryGet<SceneLoader>()) {
+            graph_owner_objects = scene->graphOwnerObjects(*value_graph);
+            for (const auto &[scope, owner] : value_graph->instanceOwners())
+                if (!graph_owner_objects.contains(scope)) inactive_graph_scopes.insert(scope);
+        }
+    }
     auto resolved_rendering_data = rendering_pass_data;
     if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
         std::map<std::string, PreparedGltf> sources;
@@ -848,6 +864,8 @@ registerRenderingPassConfigVariantsData(
                 return count;
             });
     }
+    // Keep common authoring intact through preset/feature validation. Runtime
+    // availability filters only its derived GPU declarations during composition.
     const RenderCompilerProgramInput compiler_input{
         .rendering_config = resolved_rendering_data,
         .source_name =
@@ -855,8 +873,7 @@ registerRenderingPassConfigVariantsData(
         .path_resolver =
             dependencies.front()
                 .runtime.path_resolver,
-        .load_document =
-            dependencies.front().options.load_document,
+        .load_document = load_root_document,
         .runtime_shader_compiler_enabled =
             runtime_shader_compiler_enabled,
         .ray_tracing_project = ray_tracing_project,
@@ -871,15 +888,15 @@ registerRenderingPassConfigVariantsData(
         .validate_feature =
             dependencies.front()
                 .options.validate_render_feature,
+        .inactive_graph_scopes = inactive_graph_scopes,
     };
     auto compiler_output =
         runRenderCompilerProgram(
             effectiveRenderCompilerProgram(
                 dependencies.front().options),
             compiler_input);
-    std::shared_ptr<const ValueGraph::Graph> value_graph;
-    if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
-        value_graph = std::make_shared<const ValueGraph::Graph>(rendering_pass_data.dump());
+    const auto source_documents = std::make_shared<const RenderGraphDocumentSnapshot>(std::move(loaded_documents));
+    if (value_graph) {
         if (!value_graph->audioSources().empty()) {
 #if PELICAN_WITH_AUDIO
             for (const auto &[node, asset] : value_graph->audioSources())
@@ -976,6 +993,7 @@ registerRenderingPassConfigVariantsData(
                 results[index]);
         for (auto &program : variant_programs) {
             for (const auto &[name, data] : attribute_data) {
+                if (!value_graph->nodeActive(name, inactive_graph_scopes)) continue;
                 const auto found = program.buffer_bindings.find(name);
                 if (found == program.buffer_bindings.end())
                     throw std::runtime_error("unbound graph attribute source: " + name);
@@ -997,6 +1015,9 @@ registerRenderingPassConfigVariantsData(
                 }
             }
             program.value_graph = value_graph;
+            program.inactive_graph_scopes = inactive_graph_scopes;
+            program.graph_owner_objects = graph_owner_objects;
+            program.source_documents = source_documents;
             program.attribute_source_files.assign(attribute_source_files.begin(), attribute_source_files.end());
             if (value_graph) {
                 if (program.target_plan) {
@@ -1015,6 +1036,7 @@ registerRenderingPassConfigVariantsData(
                 }
                 validateGraphInputs(*value_graph);
                 for (const auto &binding : value_graph->renderBufferBindings()) {
+                    if (!value_graph->nodeActive(binding.target, inactive_graph_scopes)) continue;
                     const auto found = program.buffer_bindings.find(binding.target);
                     if (found == program.buffer_bindings.end())
                         throw std::runtime_error("unbound frame graph output: " + binding.target);
@@ -1038,6 +1060,35 @@ registerRenderingPassConfigVariantsData(
             enabled_feature_names =
                 results[index].feature_names;
         }
+    }
+    // Owner-only changes preserve persistent buffer contents, including host
+    // values staged since the last frame. Ordinary authoring edits retain
+    // their existing resource initialization semantics.
+    const auto previous_generation = first.frame_graph_runtime.snapshot();
+    if (value_graph && previous_generation) {
+        std::unordered_map<FrameGraphBufferId, FrameGraphBufferId, FrameGraphBufferId::Hash> copied;
+        for (const auto &program : program_preparations) {
+            const auto old_id = previous_generation->name_to_id.find(program.rendering_pass.name);
+            if (old_id == previous_generation->name_to_id.end()) continue;
+            const auto &old = previous_generation->programs.at(old_id->second).frame_graph;
+            if (!old.value_graph || old.value_graph->serialize() != value_graph->serialize() ||
+                !old.source_documents || *old.source_documents != *source_documents ||
+                (old.inactive_graph_scopes == inactive_graph_scopes && old.graph_owner_objects == graph_owner_objects)) continue;
+            ValueGraph::InactiveScopes replaced_owners;
+            for (const auto &[scope, object] : old.graph_owner_objects) {
+                const auto next = graph_owner_objects.find(scope);
+                if (next == graph_owner_objects.end() || next->second != object) replaced_owners.insert(scope);
+            }
+            for (const auto &[name, destination] : program.buffer_bindings) {
+                if (!value_graph->nodeActive(name, replaced_owners)) continue;
+                const auto source = old.buffer_bindings.find(name);
+                if (source != old.buffer_bindings.end() && source->second != destination)
+                    copied.emplace(destination, source->second);
+            }
+        }
+        std::vector<std::pair<FrameGraphBufferId, FrameGraphBufferId>> copies;
+        for (const auto &[destination, source] : copied) copies.emplace_back(source, destination);
+        first.frame_graph_resources.copyBufferState(copies);
     }
     const auto output_facts =
         first.runtime.render_target.caps()

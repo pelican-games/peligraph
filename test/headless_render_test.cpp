@@ -4,6 +4,8 @@
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/scene.hpp"
+#include "../src/core/ecs/predefined.hpp"
+#include "scene_load_test_support.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/loader/projectsrc.hpp"
@@ -11131,9 +11133,26 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         configureRayQueryTestRuntime(temp_dir);
         auto &vkcore = GET_MODULE(VulkanManageCore);
         if (!vkcore.getRuntimeCapabilities().ray_tracing_pipeline) SKIP("ray tracing pipeline unavailable");
+        writeTextFile(temp_dir / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+            {"name":"GraphOwner","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]}]}
+        ]}}})");
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        auto &scene = GET_MODULE(SceneLoader);
+        test_support::loadScene(scene, "default_scene");
+        const auto owner = scene.objectId("GraphOwner");
+        REQUIRE(owner);
+        REQUIRE_FALSE(scene.runtimeObjectBindings().empty());
+        document["definitions"]["owned_buffer"] = {{"nodes", nlohmann::json::array({
+            {{"id", "gain"}, {"op", "graph.input"}, {"default", 7}},
+            {{"id", "gpu"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}}},
+                {"inputs", {{"value", {{"node", "gain"}, {"port", "value"}}}}}, {"outputs", {"resource"}}}
+        })}, {"outputs", nlohmann::json::object()}};
+        document["nodes"].push_back({{"id", "owned"}, {"op", "graph.instance"}, {"definition", "owned_buffer"},
+            {"owner", {{"scene", "default_scene"}, {"object", scene.runtimeObjectBindings().front().authoring_object_id.value}}}});
+        writeTextFile(config_path, document.dump());
+        GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
         auto &renderer = GET_MODULE(Renderer);
         GET_MODULE(PolygonInstanceContainer).placeModelInstance(GET_MODULE(ModelAssetContainer).getModelTemplateByName("tree"));
-        auto &scene = GET_MODULE(SceneLoader);
         auto &time = GET_MODULE(EngineTime);
         auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
         time.setTime(10);
@@ -11204,6 +11223,59 @@ TEST_CASE("common graph state survives staged ray pipeline publication", "[headl
         renderer.render();
         vkcore.waitIdle();
         REQUIRE(read_clock() == 0.75f);
+        // Owner-only recompilation uses the same staged RT publication path.
+        auto &buffers = GET_MODULE(FrameGraphResourceContainer);
+        auto held = runtime.snapshot();
+        const auto owned_buffer = buffers.getBufferIdByName("owned/gpu");
+        REQUIRE(buffers.hasBuffer(owned_buffer));
+        const auto before_owner_removal = readTextFile(config_path);
+        const auto feature_path = temp_dir / "rt_probe.json";
+        const auto published_feature = readTextFile(feature_path);
+        writeTextFile(feature_path, "uncommitted invalid feature JSON");
+        GameObjects{}.remove(*owner);
+        const auto before_failure = runtime.activeGeneration();
+        {
+            const ScopedRayTracingJointTransactionInjector injector{
+                [](RayTracingJointTransactionPoint point) {
+                    if (point == RayTracingJointTransactionPoint::submit)
+                        throw std::runtime_error("injected owner GPU publication failure");
+                }};
+            REQUIRE_THROWS_WITH(renderer.render(), Catch::Matchers::ContainsSubstring("injected owner GPU publication failure"));
+        }
+        REQUIRE(runtime.activeGeneration() == before_failure);
+        REQUIRE(buffers.hasBuffer("owned/gpu"));
+        REQUIRE(readTextFile(config_path) == before_owner_removal);
+        REQUIRE(readTextFile(feature_path) == "uncommitted invalid feature JSON");
+        writeTextFile(feature_path, published_feature);
+        // Explicit authored retry is available after a failed automatic attempt.
+        REQUIRE(apply(false).staged);
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE_FALSE(buffers.hasBuffer("owned/gpu"));
+        REQUIRE(buffers.hasBuffer(owned_buffer));
+        REQUIRE(read_clock() == 0.75f);
+#if PELICAN_WITH_AUDIO
+        REQUIRE(scene.graphSound(runtime.snapshot()->programs.begin()->second.frame_graph.value_graph, "voice") == voice);
+#endif
+        held.reset();
+        for (int frame = 0; frame < 3; ++frame) renderer.render();
+        vkcore.waitIdle();
+        GET_MODULE(DeletionQueue).flushAll();
+        REQUIRE_FALSE(buffers.hasBuffer(owned_buffer));
+        REQUIRE(GET_MODULE(DeletionQueue).pendingCountForTesting() == 0);
+        const auto owner_free_generation = runtime.activeGeneration();
+        renderer.render();
+        REQUIRE(runtime.activeGeneration() == owner_free_generation);
+        test_support::loadScene(scene, "default_scene");
+        GET_MODULE(PolygonInstanceContainer).placeModelInstance(GET_MODULE(ModelAssetContainer).getModelTemplateByName("tree"));
+        renderer.render();
+        vkcore.waitIdle();
+        REQUIRE(buffers.hasBuffer("owned/gpu"));
+        const auto restored = vkcore.readBuf(buffers.buffer("owned/gpu"), sizeof(float));
+        float restored_value{};
+        std::memcpy(&restored_value, restored.data(), sizeof(float));
+        REQUIRE(restored_value == 7);
+        REQUIRE(readTextFile(config_path) == before_owner_removal);
         document = document.at("rendering");
         REQUIRE(apply(false).staged);
         renderer.render();

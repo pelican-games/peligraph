@@ -24,6 +24,7 @@ target_sources(pelican_core PRIVATE
     sceneparticipantmanifest.cpp
     effecttransaction.cpp
     scene.cpp
+    scenegraphruntime.cpp
     vrmadecoder.cpp
 )
 target_link_libraries(pelican_core PRIVATE

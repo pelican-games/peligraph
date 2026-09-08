@@ -18,7 +18,8 @@ void forbid(const Json &parameters, std::initializer_list<const char *> fields) 
 }
 }
 
-Json lowerRenderGraphDocument(const Json &document) {
+Json lowerRenderGraphDocument(const Json &document,
+    const std::set<std::string> &inactive_scopes) {
     const auto graph = partitionGraphDocument(document).rendering;
     auto config = document.value("rendering", Json::object());
     // Existing global settings, presets and image passes can coexist during
@@ -28,6 +29,12 @@ Json lowerRenderGraphDocument(const Json &document) {
     config["compute_tasks"] = Json::array();
     std::map<std::string, const Json *> nodes;
     for (const auto &node : graph.nodes) nodes.emplace(node.at("id").get<std::string>(), &node);
+    const auto inactive = [&](const std::string &id) {
+        const auto found = graph.node_scopes.find(id);
+        return found != graph.node_scopes.end() &&
+            std::any_of(found->second.begin(), found->second.end(),
+                [&](const auto &scope) { return inactive_scopes.contains(scope); });
+    };
     std::set<std::string> resolving;
     std::function<std::string(const Json &)> resourceName = [&](const Json &endpoint) {
         const auto id = endpoint.at("node").get<std::string>();
@@ -41,8 +48,19 @@ Json lowerRenderGraphDocument(const Json &document) {
         return resource;
     };
     for (const auto &node : graph.nodes) {
-        auto parameters = node.at("parameters");
         const auto id = node.at("id").get<std::string>();
+        if (inactive(id)) continue;
+        auto parameters = node.at("parameters");
+        // Ordering is not a data dependency: an active task need not wait for
+        // a task that no longer executes. Unknown names still reach validation.
+        for (const auto *key : {"after", "before"}) {
+            if (!parameters.contains(key)) continue;
+            auto &order = parameters.at(key);
+            if (!order.is_array()) throw std::invalid_argument("render ordering must be an array");
+            order.erase(std::remove_if(order.begin(), order.end(), [&](const Json &name) {
+                return inactive(name.get<std::string>());
+            }), order.end());
+        }
         if (node.at("op") == "render.buffer" || node.at("op") == "render.attribute") {
             if (parameters.contains("source"))
                 throw std::invalid_argument("attribute source must be resolved before render lowering: " + id);

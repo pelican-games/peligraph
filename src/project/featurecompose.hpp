@@ -5,6 +5,7 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -39,6 +40,7 @@ struct RenderFeatureComposeDependencies {
     // Reports only integration fragments whose feature/pass requirements match.
     std::function<void(std::string_view, const nlohmann::json &)>
         applied_integration;
+    std::set<std::string> inactive_graph_scopes;
 };
 
 struct RenderFeatureComposeResult {

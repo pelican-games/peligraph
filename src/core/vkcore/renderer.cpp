@@ -3214,6 +3214,56 @@ void Renderer::installRenderPipelineReloadParticipant() {
         });
 }
 
+void Renderer::synchronizeGraphGpuOwnership() {
+    auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+    if (runtime.stagedGeneration() != 0) return;
+    const auto generation = runtime.snapshot();
+    const auto *program = generation ? generation->find(flat_rendering_pass_id) : nullptr;
+    if (!program || !program->frame_graph.value_graph) return;
+    const auto owners = GET_MODULE(SceneLoader).graphOwnerObjects(*program->frame_graph.value_graph);
+    ValueGraph::InactiveScopes inactive;
+    for (const auto &[scope, owner] : program->frame_graph.value_graph->instanceOwners())
+        if (!owners.contains(scope)) inactive.insert(scope);
+    if (owners == program->frame_graph.graph_owner_objects &&
+        inactive == program->frame_graph.inactive_graph_scopes) return;
+    // A failed candidate is retried when ownership or the authored generation
+    // changes, not on every frame with the same invalid configuration.
+    if (graph_ownership_attempt_generation == generation->generation &&
+        graph_ownership_attempt_objects == owners) return;
+    graph_ownership_attempt_generation = generation->generation;
+    graph_ownership_attempt_objects = owners;
+
+    auto &config = GET_MODULE(ProjectBasicConfig);
+    auto &paths = GET_MODULE(PathResolver);
+    const auto reference = config.renderingConfigReference();
+    const auto normalized = paths.normalizedReference(reference);
+    const auto bytes = config.renderingConfigJson();
+    std::vector<RenderConfigCandidateDocument> documents;
+    std::set<std::string> included_documents;
+    const auto append_document = [&](const std::string &ref, const std::string &key, const std::string &text) {
+        if (!included_documents.insert(key).second) return;
+        const auto resolved = paths.resolveProjectRef(ref);
+        std::filesystem::path path;
+        if (const auto *file = std::get_if<std::filesystem::path>(&resolved)) path = *file;
+        else if (const auto *fragment = std::get_if<ResolvedPathFragment>(&resolved)) path = fragment->path;
+        else return; // engine:// JSON is immutable within the running engine.
+        documents.push_back({.reference = ref, .normalized_reference = key, .path = std::move(path),
+            .operation = RenderConfigDocumentOperation::replace,
+            .expected = {RenderConfigDocumentExistence::present, renderConfigSourceDigest(text)}, .bytes = text});
+    };
+    append_document(reference, normalized, bytes);
+    if (program->frame_graph.source_documents)
+        for (const auto &[ref, text] : *program->frame_graph.source_documents)
+            append_document(ref, paths.normalizedReference(ref), text);
+    // Recompile the published root and dependency JSON, including documents
+    // removed or changed on disk. This runtime update never writes sources.
+    // Shader and binary assets continue through their own resource loaders.
+    const auto result = applyRenderPipelineAuthoringCandidate(
+        RenderConfigCandidateDocumentSet{normalized, std::move(documents)}, [] {});
+    if (!result.committed && !result.staged && logger)
+        LOG_WARNING(logger, "graph GPU ownership update failed: {}", result.error);
+}
+
 void Renderer::relowerRenderPipelineForCurrentOutput() {
     auto variants =
         loadRenderGraphVariantsFromConfigWithStartupFeatureOverlays();
@@ -4783,6 +4833,7 @@ void Renderer::renderLogicalFrame(
 void Renderer::renderLogicalFrame(
     ILogicalFrameTarget &target,
     const RenderViewFamilies &view_families) {
+    synchronizeGraphGpuOwnership();
     auto &deletion_queue = resolveFrameDeletionQueue();
 
     auto modules = resolveRenderFrameModules();
@@ -5283,13 +5334,6 @@ void Renderer::renderLogicalFrame(
     observed_camera_discontinuity_revision = camera_discontinuity_revision;
     ValueGraph::InactiveScopes inactive_graph_scopes;
     std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer> staged_graph_transfer;
-    std::vector<std::pair<std::string, Animation::CurvePlaybackCommand>> staged_audio_events;
-    struct StagedAudioValue {
-        std::string node;
-        ValueGraph::AudioValueKind kind;
-        float value;
-    };
-    std::vector<StagedAudioValue> staged_audio_values;
     if (staged_runtime_generation != 0) {
         auto &scene = GET_MODULE(SceneLoader);
         const auto previous = GET_MODULE(RenderingPassContainer).snapshot();
@@ -5302,6 +5346,9 @@ void Renderer::renderLogicalFrame(
     if (frame_graph.value_graph) {
         auto &scene = GET_MODULE(SceneLoader);
         inactive_graph_scopes = scene.inactiveGraphScopes(*frame_graph.value_graph);
+        // Reactivation may still be awaiting a successful GPU publication.
+        inactive_graph_scopes.insert(frame_graph.inactive_graph_scopes.begin(),
+                                     frame_graph.inactive_graph_scopes.end());
         const auto inputs = collectGraphInputs(*frame_graph.value_graph, scene,
             inactive_graph_scopes, engine_time.now(), engine_time.dt());
         const auto published = frame_graph.value_graph->publish(GameContext{}, inputs, {},
@@ -5312,18 +5359,14 @@ void Renderer::renderLogicalFrame(
             }, staged_graph_transfer ? staged_graph_transfer->parameters() : scene.graphParameterValues(frame_graph.value_graph),
             inactive_graph_scopes, staged_graph_transfer ? &staged_graph_transfer->evaluation() : &scene.graphEvaluationState(frame_graph.value_graph),
             [&](std::string_view node, Animation::CurvePlaybackCommand command) {
-                if (staged_graph_transfer) {
-                    staged_audio_events.emplace_back(node, command);
-                    return true;
-                }
+                if (staged_graph_transfer)
+                    return staged_graph_transfer->stageAudioEvent(node, command);
                 return scene.applyGraphAudioEvent(frame_graph.value_graph, node, command);
             }, [&](std::string_view node) {
                 return scene.graphSound(frame_graph.value_graph, node);
             }, staged_graph_transfer ? ValueGraph::AudioValueWriter{
                 [&](std::string_view node, bool voice, ValueGraph::AudioValueKind kind, float value) {
-                    if (!voice) return false;
-                    staged_audio_values.push_back({std::string{node}, kind, value});
-                    return true;
+                    return staged_graph_transfer->stageAudioValue(node, voice, kind, value);
                 }} : ValueGraph::AudioValueWriter{});
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
@@ -5908,19 +5951,7 @@ void Renderer::renderLogicalFrame(
     };
     static_assert(noexcept(publish_frame_generation()));
     publish_frame_generation();
-    if (staged_graph_transfer) {
-        auto &scene = GET_MODULE(SceneLoader);
-        for (const auto &[node, command] : staged_audio_events)
-            if (!scene.applyGraphAudioEvent(frame_graph.value_graph, node, command))
-                throw std::runtime_error("published graph audio event is unavailable: " + node);
-        for (const auto &value : staged_audio_values)
-            if (const auto sound = scene.graphSound(frame_graph.value_graph, value.node)) {
-                const GameContext context;
-                const bool applied = value.kind == ValueGraph::AudioValueKind::volume
-                    ? context.setSoundVolume(*sound, value.value) : context.setSoundPitch(*sound, value.value);
-                if (!applied) throw std::runtime_error("published graph voice is unavailable: " + value.node);
-            }
-    }
+    if (staged_graph_transfer) staged_graph_transfer->publishAudio(frame_graph.value_graph);
     if (staged_runtime_generation != 0) {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::after_publication);

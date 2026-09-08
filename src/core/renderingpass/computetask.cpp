@@ -2456,6 +2456,34 @@ bool FrameGraphResourceContainer::hasBuffer(std::string_view name) const {
     return isValidFrameGraphBufferId(getBufferIdByName(name));
 }
 
+void FrameGraphResourceContainer::copyBufferState(
+    const std::vector<std::pair<FrameGraphBufferId, FrameGraphBufferId>> &copies) {
+    if (copies.empty()) return;
+    for (const auto &[source, destination] : copies) {
+        const auto &old = buffers.get(source);
+        auto &next = buffers.get(destination);
+        if (old.definition.size != next.definition.size ||
+            old.definition.host_source != next.definition.host_source)
+            throw std::logic_error("graph buffer state transfer requires unchanged declarations");
+        next.runtime_values = old.runtime_values;
+        next.runtime_values_dirty = old.runtime_values_dirty;
+        next.host_population = old.host_population;
+    }
+    GET_MODULE(VulkanUtils).executeOneTimeCmd([&](vk::CommandBuffer command) {
+        const vk::MemoryBarrier before{vk::AccessFlagBits::eMemoryWrite,
+            vk::AccessFlagBits::eTransferRead | vk::AccessFlagBits::eTransferWrite};
+        command.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
+            vk::PipelineStageFlagBits::eTransfer, {}, before, {}, {});
+        for (const auto &[source, destination] : copies)
+            command.copyBuffer(buffer(source).buffer.get(), buffer(destination).buffer.get(),
+                vk::BufferCopy{0, 0, bufferSize(source)});
+        const vk::MemoryBarrier after{vk::AccessFlagBits::eTransferWrite,
+            vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite};
+        command.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eAllCommands, {}, after, {}, {});
+    }, true);
+}
+
 bool FrameGraphResourceContainer::stageRuntimeValues(std::string_view name, std::span<const float> values) {
     return stageRuntimeValues(getBufferIdByName(name), values);
 }

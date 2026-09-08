@@ -17,6 +17,7 @@
 #include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -210,6 +211,7 @@ struct RenderPipelineResolveDependencies {
         resolve_render_strategy;
     std::function<void(std::string_view, const nlohmann::json &)>
         validate_feature;
+    std::set<std::string> inactive_graph_scopes;
 };
 
 struct ResolvedRenderPipeline {

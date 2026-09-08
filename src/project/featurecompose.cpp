@@ -2734,7 +2734,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
 
     const bool common_graph = config.value("schema", std::string{}) == "pelican.graph";
     auto native_config = common_graph
-        ? lowerRenderGraphDocument(config) : config;
+        ? lowerRenderGraphDocument(config, dependencies.inactive_graph_scopes) : config;
     auto graph_buffers = nlohmann::json::array();
     auto graph_tasks = nlohmann::json::array();
     auto graph_targets = nlohmann::json::array();

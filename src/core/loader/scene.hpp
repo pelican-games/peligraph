@@ -100,6 +100,7 @@ DECLARE_MODULE(SceneLoader) {
     SceneLoader();
     ~SceneLoader();
     std::optional<GameObjectId> graphOwnerObject(const GraphInstanceOwner &owner) const;
+    std::map<std::string, GameObjectId> graphOwnerObjects(const ValueGraph::Graph &graph) const;
 
     SceneLoadResult load(SceneLoadRequest request);
     void requestLoad(SceneId scene_id);
@@ -160,10 +161,20 @@ class SceneLoader::PreparedGraphRuntimeTransfer {
     // Borrowed until publication. Destroying a rejected candidate cannot stop
     // voices still owned by the old runtime.
     ValueGraph::SoundBindings retained_sounds_;
+    struct AudioValue {
+        std::string node;
+        ValueGraph::AudioValueKind kind;
+        float value;
+    };
+    std::vector<std::pair<std::string, Animation::CurvePlaybackCommand>> audio_events_;
+    std::vector<AudioValue> audio_values_;
     bool committed_ = false;
   public:
     ValueGraph::ParameterValues parameters() const;
     ValueGraph::EvaluationState &evaluation();
+    bool stageAudioEvent(std::string_view node, Animation::CurvePlaybackCommand command);
+    bool stageAudioValue(std::string_view node, bool voice, ValueGraph::AudioValueKind kind, float value);
+    void publishAudio(const std::shared_ptr<const ValueGraph::Graph> &graph);
     void commit() noexcept;
 };
 

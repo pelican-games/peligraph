@@ -8,6 +8,7 @@
 #include "rendertarget.hpp"
 #include "../../project/imagesubresource.hpp"
 #include "../../project/renderconfigdocument.hpp"
+#include <details/ecs/entity.hpp>
 #include <nlohmann/json.hpp>
 #include <glm/glm.hpp>
 #include <cstddef>
@@ -16,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -178,6 +180,9 @@ DECLARE_MODULE(Renderer) {
     const TemporalViewFamilyHistory &activeTemporalHistory() const;
     void installRenderPipelineReloadParticipant();
     void relowerRenderPipelineForCurrentOutput();
+    void synchronizeGraphGpuOwnership();
+    std::uint64_t graph_ownership_attempt_generation = 0;
+    std::map<std::string, GameObjectId> graph_ownership_attempt_objects;
     bool reloadRenderPipelineFromDisk(
         std::string &error,
         std::span<const watch::ReloadRequest>
