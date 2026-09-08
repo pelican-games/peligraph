@@ -363,6 +363,7 @@ if(TARGET pelican_studio_view)
 endif()
 
 if(TARGET pelican_studio_inspector_model)
+  pelican_define_test(devstudio_graphattachment_test pelican_studio_inspector_model)
   pelican_define_test(devstudio_inspector_test
     pelican_studio_inspector_model
     pelican_studio_gizmo_model

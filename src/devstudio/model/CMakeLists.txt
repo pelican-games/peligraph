@@ -10,6 +10,8 @@ target_link_libraries(pelican_studio_outliner PUBLIC pelican_project)
 add_library(pelican_studio_inspector_model STATIC
     inspectormodel.cpp
     inspectormodel.hpp
+    graphattachmentmodel.cpp
+    graphattachmentmodel.hpp
 )
 
 set_target_properties(pelican_studio_inspector_model PROPERTIES CXX_STANDARD 20)

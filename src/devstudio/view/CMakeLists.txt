@@ -13,6 +13,8 @@ add_library(pelican_studio_view STATIC
     fullscreenpasswidget.hpp
     inspectorwidget.cpp
     inspectorwidget.hpp
+    graphattachmentwidget.cpp
+    graphattachmentwidget.hpp
     proceduralassetdialog.cpp
     proceduralassetdialog.hpp
     taskconnectiongraphics.cpp

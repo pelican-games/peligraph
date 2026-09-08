@@ -1,6 +1,7 @@
 #include "fullscreenpasswidget.hpp"
 #include "mainwindow.hpp"
 #include "renderfeatureswidget.hpp"
+#include "graphattachmentwidget.hpp"
 #include "../src/devstudio/model/frameplanmodel.hpp"
 
 #include "passfieldownership.hpp"
@@ -23,6 +24,7 @@
 #include <QComboBox>
 #include <QCheckBox>
 #include <QGroupBox>
+#include <QDialog>
 #include <QDir>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -116,7 +118,7 @@ QString displayPath(const std::filesystem::path &path) {
 }
 
 template <typename Widget>
-Widget &required(FullscreenPassWidget &form, const char *object_name) {
+Widget &required(QWidget &form, const char *object_name) {
     auto *result = form.findChild<Widget *>(QString::fromLatin1(object_name));
     if (result == nullptr) {
         throw std::runtime_error(std::string{"missing widget "} + object_name);
@@ -2561,6 +2563,83 @@ TEST_CASE("Studio edits auxiliary shader and query fields without changing pass 
     required<QPushButton>(form, "pelican.fullscreenPass.new").click();
     CHECK(skin.isHidden());
     CHECK_FALSE(required<QLineEdit>(form, "pelican.fullscreenPass.shader.fragment").isHidden());
+}
+
+TEST_CASE("Inspector graph panel authors attachments and preserves rejected drafts", "[studio][graph-attachment][widget]") {
+    (void)application();
+    GraphAttachmentWidget panel;
+    struct Request { quint64 id; QString method; QJsonObject params; };
+    std::vector<Request> requests;
+    QObject::connect(&panel, &GraphAttachmentWidget::rpcRequested, &panel,
+        [&](quint64 id, const QString &method, const QJsonObject &params) {
+            requests.push_back({id, method, params});
+        });
+    const auto reply = [&](const Json &response) {
+        REQUIRE_FALSE(requests.empty());
+        panel.receiveRpcResult(requests.back().id, QByteArray::fromStdString(response.dump()));
+    };
+    auto context = Json{{"source_digest", {{"hex", "source-a"}}},
+        {"definitions", {{"unit", {{"nodes", Json::array({
+            {{"id", "gain"}, {"op", "graph.input"}, {"default", 2.0}}})}}}}},
+        {"instances", Json::array({
+            {{"id", "left"}, {"definition", "unit"}, {"owner", {{"scene", "main"}, {"object", 41}}}},
+            {{"id", "right"}, {"definition", "unit"}, {"owner", {{"scene", "main"}, {"object", 73}}}}})}};
+    panel.setConnected(true);
+    panel.setOwner(GraphAttachmentOwner{"main", 41});
+    REQUIRE(requests.size() == 1);
+    REQUIRE(requests.back().method == "get_graph_instances");
+    reply(context);
+    auto &list = required<QListWidget>(panel, "pelican.graphAttachments");
+    REQUIRE(list.count() == 1);
+    REQUIRE(list.item(0)->text().startsWith("left"));
+    required<QPushButton>(panel, "pelican.graphAttach").click();
+    auto &dialog = required<QDialog>(panel, "pelican.graphAttachmentDialog");
+    auto &name = required<QLineEdit>(dialog, "pelican.graphInstanceId");
+    name.setText("extra");
+    required<QLineEdit>(dialog, "pelican.graphParameter.gain").setText("3.5e-12");
+    auto &save = required<QPushButton>(dialog, "pelican.graphAttachSave");
+    save.click();
+    REQUIRE(requests.back().method == "edit_graph_instances");
+    const auto payload = Json::parse(QJsonDocument(requests.back().params).toJson().toStdString());
+    REQUIRE(payload.at("attach").at(0).at("owner") == Json{{"scene", "main"}, {"object", 41}});
+    REQUIRE(payload.at("attach").at(0).at("parameters").at("gain") == 3.5e-12);
+    REQUIRE_FALSE(save.isEnabled());
+    const auto count = requests.size();
+    save.click();
+    REQUIRE(requests.size() == count);
+    reply({{"status", "rejected"}, {"error", {{"code", "external_modification"}, {"message", "Source changed"}}}});
+    REQUIRE(save.isEnabled());
+    REQUIRE(name.text() == "extra");
+    REQUIRE(required<QLabel>(dialog, "pelican.graphDraftNotice").text().contains("external_modification"));
+    required<QPushButton>(dialog, "pelican.graphDraftRefresh").click();
+    REQUIRE(requests.back().method == "get_graph_instances");
+    context["source_digest"]["hex"] = "source-after-conflict";
+    reply(context);
+    REQUIRE(name.text() == "extra");
+    REQUIRE(required<QLineEdit>(dialog, "pelican.graphParameter.gain").text() == "3.5e-12");
+    save.click();
+    REQUIRE(requests.back().params.value("base_source_digest").toString() == "source-after-conflict");
+    reply({{"status", "accepted"}, {"ticket", "ticket-1"}});
+    REQUIRE(requests.back().method == "get_edit_result");
+    reply({{"status", "committed"}});
+    REQUIRE_FALSE(dialog.isVisible());
+    REQUIRE(requests.back().method == "get_graph_instances");
+    context["instances"].push_back(payload.at("attach").at(0));
+    context["source_digest"]["hex"] = "source-b";
+    reply(context);
+    REQUIRE(list.count() == 2);
+    list.setCurrentRow(0);
+    required<QPushButton>(panel, "pelican.graphDetach").click();
+    const auto detach = Json::parse(QJsonDocument(requests.back().params).toJson().toStdString());
+    REQUIRE(detach.at("detach") == Json::array({"left"}));
+    REQUIRE(detach.at("base_source_digest") == "source-b");
+    panel.setOwner(GraphAttachmentOwner{"main", 73});
+    REQUIRE(list.count() == 0);
+    reply({{"status", "accepted"}, {"ticket", "ticket-2"}});
+    reply({{"status", "committed"}});
+    reply(context);
+    REQUIRE(list.count() == 1);
+    REQUIRE(list.item(0)->text().startsWith("right"));
 }
 
 } // namespace PelicanStudio

@@ -1,4 +1,5 @@
 #include "inspectorwidget.hpp"
+#include "graphattachmentwidget.hpp"
 
 #include "../model/inspectormodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -90,6 +91,8 @@ struct InspectorWidget::Impl {
     InspectorWidget &owner;
     EmbeddedViewport &viewport;
     InspectorModel model;
+    GraphAttachmentWidget *graph_attachments = nullptr;
+    QHash<qint64, quint64> graph_transport_requests;
     QLabel *selection_label = nullptr;
     QLabel *notice_label = nullptr;
     QScrollArea *scroll = nullptr;
@@ -186,6 +189,17 @@ struct InspectorWidget::Impl {
         QObject::connect(ray_occurrences_button, &QPushButton::clicked, &owner, [this] {
             openRayOccurrences();
         });
+        graph_attachments = new GraphAttachmentWidget(&owner);
+        layout->addWidget(graph_attachments);
+        QObject::connect(graph_attachments, &GraphAttachmentWidget::rpcRequested, &owner,
+            [this](quint64 id, const QString &method, const QJsonObject &params) {
+                QString error;
+                const auto transport_id = viewport.requestRpc(method, params, &error);
+                if (transport_id)
+                    graph_transport_requests.insert(transport_id, id);
+                else
+                    graph_attachments->receiveRpcFailure(id, error);
+            });
 
         notice_label = new QLabel(&owner);
         notice_label->setObjectName(QStringLiteral("pelican.inspectorNotice"));
@@ -240,6 +254,8 @@ struct InspectorWidget::Impl {
         QObject::connect(&viewport, &EmbeddedViewport::engineRpcBecameAvailable,
                          &owner, [this] {
                              transport_requests.clear();
+                             graph_transport_requests.clear();
+                             graph_attachments->setConnected(true);
                              model.startSession();
                              synchronize();
                              dispatchRequests();
@@ -248,6 +264,8 @@ struct InspectorWidget::Impl {
             &viewport, &EmbeddedViewport::engineRpcBecameUnavailable, &owner,
             [this](const QString &message) {
                 transport_requests.clear();
+                graph_transport_requests.clear();
+                graph_attachments->setConnected(false);
                 model.stopSession(message.toStdString());
                 synchronize();
             });
@@ -255,6 +273,13 @@ struct InspectorWidget::Impl {
             &viewport, &EmbeddedViewport::inspectorRpcSucceeded, &owner,
             [this](qint64 transport_request_id,
                    const QByteArray &result_json) {
+                const auto graph_pending = graph_transport_requests.find(transport_request_id);
+                if (graph_pending != graph_transport_requests.end()) {
+                    const auto id = graph_pending.value();
+                    graph_transport_requests.erase(graph_pending);
+                    graph_attachments->receiveRpcResult(id, result_json);
+                    return;
+                }
                 const auto pending =
                     transport_requests.find(transport_request_id);
                 if (pending == transport_requests.end()) {
@@ -273,6 +298,13 @@ struct InspectorWidget::Impl {
         QObject::connect(
             &viewport, &EmbeddedViewport::inspectorRpcFailed, &owner,
             [this](qint64 transport_request_id, const QString &message) {
+                const auto graph_pending = graph_transport_requests.find(transport_request_id);
+                if (graph_pending != graph_transport_requests.end()) {
+                    const auto id = graph_pending.value();
+                    graph_transport_requests.erase(graph_pending);
+                    graph_attachments->receiveRpcFailure(id, message);
+                    return;
+                }
                 const auto pending =
                     transport_requests.find(transport_request_id);
                 if (pending == transport_requests.end()) {
@@ -291,6 +323,7 @@ struct InspectorWidget::Impl {
         rebuildProperties();
         synchronize();
         if (viewport.rpcReady()) {
+            graph_attachments->setConnected(true);
             model.startSession();
             dispatchRequests();
         }
@@ -817,6 +850,10 @@ struct InspectorWidget::Impl {
     }
 
     void synchronize() {
+        const auto &snapshot = model.snapshot();
+        graph_attachments->setOwner(snapshot && snapshot->authoring_object_id != 0
+            ? std::optional<GraphAttachmentOwner>{{snapshot->scene_id, snapshot->authoring_object_id}}
+            : std::nullopt);
         ray_occurrences_button->setEnabled(model.snapshot().has_value() && !model.busy() && !model.refreshBlocked());
         synchronizeRayDialog();
         add_component_button->setEnabled(model.canRequestComponentAddCandidates());
