@@ -113,7 +113,7 @@ cleaners: [B, A]
 
 > 🧩 **難所 — generation は 0 を跨がない**([`ResourceGenerationLedger`](../../src/core/animation/animationserviceabi.hpp#L40) / [`isValid()`](../../src/core/userpublic/animation/abi_v1.hpp#L48))
 >
-> **何をする所か**: animation ABI ハンドルの世代を進めます。`if (++x == 0) ++x;` という同じ 3 語が [`animationservice.cpp`](../../src/core/animation/animationservice.cpp#L721) だけで 7 か所に現れます。
+> **何をする所か**: animation ABI ハンドルの世代を進めます。`if (++x == 0) ++x;` という同じ 3 語が [`animationservice.cpp`](../../src/core/animation/animationservice.cpp#L722) だけで 7 か所に現れます。
 >
 > **素朴に読むと**: `isValid()` が `identity != 0 && generation != 0 && reserved == 0` で判定するので、**generation 0 は「無効ハンドル」の予約値**です。予約値とは、値域の中の 1 つを通常の意味から外し、「特別な状態」を表すためだけに取っておくことを指します。0 が選ばれている効果ははっきりしていて、`memset` やゼロ初期化で作った struct が**そのまま無効**として読まれます(この ABI は §9.2 の `struct_size` 交渉のとおり、呼び出し側にゼロ初期化を要求します)。1 を予約値にするとゼロ初期化した handle が有効に見えてしまいます。**この選択の理由を書いた設計文書は見つかっていません(未確認)** — ここに書いたのは実装から読み取れる帰結です。`uint32` の世代が一周して 0 に戻ると、生きているリソースのハンドルが突然「無効」になる — `if (++x == 0) ++x;` はその 1 値だけを飛ばすイディオムですが、1 行に畳まれているので「なぜ 2 回インクリメントするのか」がコードからは読めません。もう 1 段深いのが `ResourceGenerationLedger` で、リソースが消えたあとも **identity を消さずに世代だけ覚え続けます**([`tombstone()`](../../src/core/animation/animationserviceabi.cpp#L36) は世代を 1 進めて `remember()` する)。これが無いと消えたリソースのハンドルは「そんな identity は知らない」= `invalid_handle` に落ちますが、`invalid_handle` は「そのハンドルは初めからおかしい」、`stale_generation` は「正しかったが古い」で、**呼び出し側の回復経路が違います**。tombstone を外すと、モデルの hot reload のたびに [`EvaluatorV1::rebind()`](../../src/core/userpublic/animation/animgraph.cpp#L1148) での再解決ができなくなり、anim graph がパラメータもクロックも遷移も失います。
 >
@@ -128,7 +128,7 @@ cleaners: [B, A]
 > rig の解決 = ledger.validate() ∧ sameHandle() ∧ アセット側 atomic == handle.generation
 > ```
 >
-> **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L176) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationservice.cpp#L140) という別表へ退避されます。テストは [`animgraph_test.cpp` 内](../../test/animgraph_test.cpp#L467)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp` 内](../../test/animation_jobs_test.cpp#L330)。
+> **手がかり**: [`resolveRigResource()`](../../src/core/animation/animationservice.cpp#L177) は世代を **2 系統**で照合します — ledger の記録と、アセット側の `generation_state->current.load()` です。前者は「サービスが知っている世代」、後者は「アセットが実際に進めた世代」で、reload の途中では一時的に食い違い得ます(片方だけ見ると差し替え途中のアセットを掴みます)。pose だけは arena 所有でリソース台帳に載らないため、[`stale_poses`](../../src/core/animation/animationservice.cpp#L141) という別表へ退避されます。テストは [`animgraph_test.cpp` 内](../../test/animgraph_test.cpp#L467)(reload 後に各 API が `stale_generation` を返し、`rebind()` が graph 状態を保つ)、[`animation_jobs_test.cpp` 内](../../test/animation_jobs_test.cpp#L330)。
 >
 > **不変条件**: generation 0 を有効値として外へ出さない。消えたリソースの identity を ledger から**消さない**(tombstone を残す)。`invalid_handle` と `stale_generation` の使い分けを崩さない。
 
@@ -137,19 +137,19 @@ cleaners: [B, A]
 `ModelInstanceId` は 3 フィールドの比較可能な値型で、`toString()` は `"index:generation@scene_epoch"` を返します([`toString()`](../../src/core/renderer/modelinstance.hpp#L21))。
 
 - **identity は `PolygonInstanceContainer` から [`ModelInstanceSlots`](../../src/core/renderer/modelinstanceslots.hpp#L14) へ切り出されました。** `index` / `generation` / `scene_epoch` を持っているのはこの class で、`PolygonInstanceContainer` 側にはもう `scene_epoch` も世代表もありません(`instance_slots` メンバ越しに問い合わせます)。
-- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L83) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L946)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L63) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
+- `scene_epoch` が進むのは [`ModelInstanceSlots::clearPrepared()`](../../src/core/renderer/modelinstanceslots.cpp#L83) の **1 か所だけ** で、これは [`PolygonInstanceContainer::clear()`](../../src/core/renderer/polygoninstancecontainer.cpp#L957)(scene clear / 再ロード)から呼ばれます。個別 slot が死んで再利用されるときに進むのは [`ModelInstanceSlots::retire()`](../../src/core/renderer/modelinstanceslots.cpp#L63) が上げる slot generation の方です。いずれも animation generation や model asset content revision からは独立です。
 - `clear()` 自体も §9.17 の prepare/publish 形です。epoch 枯渇(`scene epoch exhausted`)を投げうる検査は [`ModelInstanceSlots::prepareClear()`](../../src/core/renderer/modelinstanceslots.cpp#L74) が先に済ませ、実際の書き換えは `noexcept` の `clearPrepared()` が行います。`clear()` を読むときはこの 2 段を 1 つの操作として読んでください。
-- 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L490)。
-- [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L434) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
+- 生存確認は [`isModelInstanceAlive(id)`](../../src/core/renderer/polygoninstancecontainer.hpp#L493)。
+- [`removeModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L437) は `void` ではなく **`bool`** を返します。戻り値を無視すると「消したつもりで消えていない」を見逃します。
 - `instanceCountForTesting()` は **live 数** を返すよう変わり、スロット総数は `slotCountForTesting()` です。両者の差は空きスロットです。
 
-登録は 3 段階に分かれました(WP144 / TRANSIENT0)。[`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L428)(Vulkan 資源確保前の容量拒否)→ [`stageModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L429) → [`publishModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L432)(`noexcept`、**唯一の no-fail 公開点**)です。詳細は §9.17。
+登録は 3 段階に分かれました(WP144 / TRANSIENT0)。[`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L431)(Vulkan 資源確保前の容量拒否)→ [`stageModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L432) → [`publishModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L435)(`noexcept`、**唯一の no-fail 公開点**)です。詳細は §9.17。
 
-> 🧩 **難所 — `struct_size` の 3 段ルール**([`getApiV1()`](../../src/core/animation/animationservice.cpp#L1825) / [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L15))
+> 🧩 **難所 — `struct_size` の 3 段ルール**([`getApiV1()`](../../src/core/animation/animationservice.cpp#L1836) / [`validateDescriptor()`](../../src/core/animation/animationserviceabi.hpp#L15))
 >
 > **何をする所か**: 別々にコンパイルされた DLL とエンジンの間で、C の plain struct を版下位互換のまま受け渡します。呼び出し側が `struct_size` を書き、エンジンが自分の知る分だけを書き戻します。
 >
-> **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1825) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1686) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1850))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1168) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L38)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`descriptor()`](../../test/animation_abi_dll_test.cpp#L42))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
+> **素朴に読むと**: `validateDescriptor(*desc)` がほぼ全 API の頭に並ぶので「サイズは常に交渉されている」と読んでしまいますが、実際には **3 種類の異なるルールが混ざっています**。交渉の入口 3 本([`getApiV1`](../../src/core/animation/animationservice.cpp#L1836) / [`Impl::getService`](../../src/core/animation/animationservice.cpp#L1697) / [`getPoseStagingServiceV1`](../../src/core/animation/animationservice.cpp#L1861))は `sizeof(DescriptorHeaderV1)` = 16 バイトしか要求せず、加算的テールを持つ [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1176) は凍結プレフィクスの長さを手書きし、**それ以外は既定の `sizeof(T)`(= エンジン側の現在サイズ)を下限**として要求します(検査は [`struct_size < minimum`](../../src/core/animation/animationserviceabi.hpp#L17) の下限比較だけなので、大きすぎる `struct_size` は弾かれません。[`ProbeRuntime` 側の同名関数](../../src/core/animation/animationprobe.cpp#L38)は既定が `headerSize` である点も別物です)。つまり既存 descriptor の末尾にフィールドを足すと、古い DLL は即 `invalid_argument` です — 「加算的だから安全」という一般則はこのコードベースでは成り立ちません。書き戻しは `memcpy(out, &produced, min(caller_size, sizeof(produced)))` で **エンジンは呼び出し側のテールをゼロ埋めしません**から、呼び出し側は descriptor を必ずゼロ初期化してから使う必要があります(テストの `descriptor<T>()`、[`descriptor()`](../../test/animation_abi_dll_test.cpp#L42))。成功後の `out->struct_size` は**エンジンの `sizeof`** に上書きされるので、自分が確保したバッファ長として再利用しないでください。
 >
 > **骨子**:
 > ```text
@@ -164,7 +164,7 @@ cleaners: [B, A]
 >
 > **手がかり**: 版数の軸が 3 本あります — `version`(descriptor のレイアウト版)、`engine_abi_version` / `service_version`(関数表の意味論の版)、`capability_bits`(機能単位)。`reserved0/1 != 0` を `reserved_not_zero` で弾くのは、新しい ABI の呼び出し側が古いエンジンに当たったことを検出するためです。[`getApiV1()`](../../src/core/userpublic/animation/abi_v1.hpp#L653) の `static_assert` は 2 つのサイズと 4 か所のオフセットだけを固定しており、**それ以外のフィールド順はコンパイラが何も守ってくれません**。テストは [`old and new animation header DLLs preserve the frozen prefix`](../../test/animation_abi_dll_test.cpp#L73)(凍結プレフィクス)/ [`old-client new-engine and new-client old-engine negotiate additively`](../../test/animation_abi_dll_test.cpp#L103)(old-client と new-engine の双方向)で、`storage[caller_size]` の番兵によって越境書き込みが無いことを検査しています。
 >
-> **不変条件**: 既存フィールドの順序・型・サイズを変えない(追加は末尾のみ)。末尾に足したら、その descriptor を読む側の `minimum` を凍結プレフィクスのサイズへ明示的に下げる(前例は engine 側で 5 か所 — [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1168) と、同じ descriptor を検証する `ProbeRuntime` 側の [advanceCursor](../../src/core/animation/animationprobe.cpp#L256)(desc / result の 2 つ)/ [publishAnimationFrame](../../src/core/animation/animationprobe.cpp#L448) / [advanceTemporalHistoryAfterRender](../../src/core/animation/animationprobe.cpp#L467)。片側だけ直すと取りこぼします)。書き戻しは必ず `min(caller_size, sizeof(produced))` にする。ABI 面の関数は `noexcept` を保ち、例外を `Status` へ変換する。
+> **不変条件**: 既存フィールドの順序・型・サイズを変えない(追加は末尾のみ)。末尾に足したら、その descriptor を読む側の `minimum` を凍結プレフィクスのサイズへ明示的に下げる(前例は engine 側で 5 か所 — [`getClipMetadata`](../../src/core/animation/animationservice.cpp#L1176) と、同じ descriptor を検証する `ProbeRuntime` 側の [advanceCursor](../../src/core/animation/animationprobe.cpp#L256)(desc / result の 2 つ)/ [publishAnimationFrame](../../src/core/animation/animationprobe.cpp#L448) / [advanceTemporalHistoryAfterRender](../../src/core/animation/animationprobe.cpp#L467)。片側だけ直すと取りこぼします)。書き戻しは必ず `min(caller_size, sizeof(produced))` にする。ABI 面の関数は `noexcept` を保ち、例外を `Status` へ変換する。
 
 ## 9.3 `PELICAN_REGISTER_EVENT` / `PELICAN_REGISTER_SYSTEM` / `PELICAN_REGISTER_BEHAVIOR`
 
@@ -593,7 +593,7 @@ pipeline、image view、buffer などは、CPU では旧 object に見えても 
 2. [`leaseForNextSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L63) がその batch を握る [`GpuSubmissionLease`](../../src/core/vkcore/frametarget.hpp#L53)(実体は `shared_ptr<const void>`)を返す。
 3. [`confirmSubmission()`](../../src/core/vkcore/deletionqueue.cpp#L78) が次の submission 用に新しい batch へ切り替える。
 
-**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L5100) → [`target.endLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L5786) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5637) です。
+**破棄が走るのは lease の最後の参照が消えた瞬間**です。frame target は [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/frametarget.hpp#L223) に in-flight slot ごとに lease を持ち、その slot の completion fence を待ってから [`complete(slot)`](../../src/core/vkcore/offscreenframetarget.cpp#L178) で手放します。`Renderer` 側の 3 点は [`deletion_queue.leaseForNextSubmission()`](../../src/core/vkcore/renderer.cpp#L5100) → [`target.endLogicalFrame(submission_lease)`](../../src/core/vkcore/renderer.cpp#L5787) → [submission 確定の呼び出し](../../src/core/vkcore/renderer.cpp#L5638) です。
 
 つまり「何 frame 後に消えるか」を数えるコードは deletion queue からは消えました([`DeletionQueueCore`](../../src/core/vkcore/deletionqueue.hpp#L17) は `in_flight_frames_num` を一度も参照しません)。ただし定数そのものは健在で、[`in_flight_frames_num`](../../src/core/vkcore/rendertarget.hpp#L16) は frame target の command buffer 配列や [`GpuSubmissionLeaseSlots`](../../src/core/vkcore/offscreenframetarget.hpp#L17)、[`FrameResources::configureViewCount()`](../../src/core/renderer/frameresources.cpp#L110) の descriptor slot 数、swapchain / OpenXR / ImGui の image count など `src/` 全体で 27 か所に残っています — lease slot 専用の定数ではありません。hot reload の [`replacePipeline()`](../../src/core/shader/pipelinefactory.cpp#L1357) が代表的な defer 元です。
 
@@ -1045,7 +1045,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: 失敗しうる作業(確保・検証・容量チェック・id 採番)を prepare に全部集め、publish を `noexcept` の swap 列にして「公開後は失敗しない」を型で固定し、finish は「もう巻き戻さない」と決まってから初めて破棄・`deinit` を行う。
 
-**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L529) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L538) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L286)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L375)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L595)。
+**どこに出るか**: loader は [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L529) が prepare → early_publish → publish → activate → commit_metadata の 5 段。ECS は [`ECSArchetypeMigrationAdapter`](../../src/core/ecs/archetypemigration.hpp#L45) のヘッダコメントが「Publication must not fail」を宣言し、**公開済みの実体**に `cb_deinit` を呼ぶのは [`finishPublished()`](../../src/core/ecs/archetypemigration.cpp#L352) とその逆手順の [`rollbackPublished()`](../../src/core/ecs/archetypemigration.cpp#L229) だけ(未公開の候補側は `discardPrepared()` / `deinitializeStaged()` / `rollbackCreate()` が担当する)。描画は [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L541) が容量検査と確保、物理は [`PhysWorld::prepareBindings()`](../../src/core/phys/physworld.cpp#L286)、behavior は [`PreparedBehaviorAttachmentEdits::publish()`](../../src/core/gamelogic/behaviorarena.cpp#L375)、アセットは [`model.cpp` の validate/stage](../../src/core/asset/model.cpp#L595)。
 
 **読むときの手順**: まず `publish` の宣言に `noexcept` が付いているかを見て、付いていれば「この関数より前に全ての失敗が済んでいる」と読み替えます。次に、その関数が触るメンバが *candidate* 側か *live* 側かを 1 つずつ確かめてください。
 
@@ -1069,7 +1069,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **形**: index(= スロット)は再利用するが generation は再利用しない。index と generation を**対で持てば**、古いハンドルが新しい実体を指す ABA を必ず検出できます。持ち方は 1 語の 64bit に詰める形([`LogicalAssetId`](../../src/core/watch/reloadtransaction.hpp#L21))と、フィールドを分けて scene epoch まで足す形([`ModelInstanceId`](../../src/core/renderer/modelinstance.hpp#L11))の両方があります。index を伴わない単調カウンタ(`ray_generation` / `geometry_address_generation`)は形が違い、ハンドルの ABA ではなく「手元のスナップショットが古いか」の判定に使います。
 
-**どこに出るか**: 論理アセットは [`makeLogicalAssetId()`](../../src/core/watch/reloadtransaction.cpp#L19) が `(generation << 32) | index`、entity は [`prepareCreate()` の `reuses_id`](../../src/core/ecs/archetypemigration.cpp#L1029)、描画インスタンスは [`stagePreparedSceneModel()` の `nextId`](../../src/core/renderer/polygoninstancecontainer.cpp#L538)、マテリアルは [`ray_generation` の採番](../../src/core/material/materialcontainer.cpp#L1879)、ジオメトリのデバイスアドレスは [`geometry_address_generation`](../../src/core/model/vertbufcontainer.cpp#L321)。
+**どこに出るか**: 論理アセットは [`makeLogicalAssetId()`](../../src/core/watch/reloadtransaction.cpp#L19) が `(generation << 32) | index`、entity は [`prepareCreate()` の `reuses_id`](../../src/core/ecs/archetypemigration.cpp#L1029)、描画インスタンスは [`stagePreparedSceneModel()` の `nextId`](../../src/core/renderer/polygoninstancecontainer.cpp#L541)、マテリアルは [`ray_generation` の採番](../../src/core/material/materialcontainer.cpp#L1879)、ジオメトリのデバイスアドレスは [`geometry_address_generation`](../../src/core/model/vertbufcontainer.cpp#L321)。
 
 **読むときの手順**: [第4章「generation 0 を跨がない台帳」](04_ecs_deep_dive.md)を先に読み、そのうえで「この世代は何が変わったら進むのか」を軸ごとに分けてください。scene epoch・slot generation・content revision・compatibility revision は**互いに独立**で、1 本だと思って読むと必ず外します(→ §9.2)。
 
@@ -1141,7 +1141,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [static_assert 群](../../src/core/loader/scene.cpp#L1015) | commit tail の `noexcept` 固定 | 20 個の表明が何を守るか | → §9.22「`noexcept` なコミットテール」 |
 | [`PendingSceneTransactionScope`](../../src/core/loader/scene.cpp#L187) | thread_local + RAII の ambient context | なぜ引数で渡さないのか | early publication が呼ぶ**全 game-DLL callback**に同じ transaction-local な effect を観測させるため。`requestLoad()` は `active_pending_scene_transaction->loader == this` を見て live ではなく candidate へ書く |
 | [run_nonce の初期化](../../src/core/loader/scene.cpp#L165) | `ticks ^ pointer`、0 を回避 | なぜ 0 を避けるのか | 0 は既定構築の `SceneAuthority{}`(= まだ何も commit していない)に予約されている |
-| [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L538) と publish の分離 | 容量検査 + 確保 / 挿入 | なぜ 2 つに割るのか | stage が `ModelInstanceId` を返す失敗しうる側で、loader は公開前にその id を `SimpleModelViewComponent` へ書く必要があるから |
+| [`stagePreparedSceneModel()`](../../src/core/renderer/polygoninstancecontainer.cpp#L541) と publish の分離 | 容量検査 + 確保 / 挿入 | なぜ 2 つに割るのか | stage が `ModelInstanceId` を返す失敗しうる側で、loader は公開前にその id を `SimpleModelViewComponent` へ書く必要があるから |
 | [`SceneLoadRequest`](../../src/core/loader/sceneload.hpp#L223) の Borrowed / Owned | 入口ごとの所有形 | 2 形態がある理由 | Borrowed は commit 済み projection の読み直し(metadata は複製されるだけ)、Owned は import root で未公開の候補を token ごと所有し、失敗時は token を捨てるだけ |
 | [`MetadataCommitToken`](../../src/core/loader/sceneload.hpp#L196) | opaque pointer | なぜ中身を隠すのか | 呼び手が「document だけ」「projection だけ」を公開できないようにするため。唯一の commit は `SceneMetadataState` 全体の swap |
 | [transform → localtransform 自動挿入](../../src/core/loader/scene.cpp#L376) | 親子を持つ object への補完 | なぜ codec が component を足すのか | authored なのは local TRS、runtime の読み手は world の `TransformComponent`、codec が `LocalTransformComponent` を自動で足すのは親子を持つ object だけ — この食い違いを埋める唯一の経路 |
@@ -1273,19 +1273,19 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 
 **答え**: 実所有者は `current_batch` と [`SubmissionLeaseBundle`](../../src/core/vkcore/deletionqueue.hpp#L67) で、キュー自身は weak 参照しか持ちません。submit 失敗でリースが捨てられた場合や、フレームターゲットがフェンス完了後にリースを解放した場合、batch は自動で消えます。`flushAll` の `lock()` はその**既に解放済みバッチ**で失敗し、エントリを erase します。
 
-#### [`stagePreparedSceneModel()` の reuse 判定](../../src/core/renderer/polygoninstancecontainer.cpp#L538) — スロット再利用と世代
+#### [`stagePreparedSceneModel()` の reuse 判定](../../src/core/renderer/polygoninstancecontainer.cpp#L541) — スロット再利用と世代
 
 **分からなくなること**: 「再利用」と「新規確保」をどこで見分けているのか。
 
 **答え**: `instance_slots.nextId(size)` は空きスロットがあればその index を、無ければ現在サイズを返すので、`index != model_instances_data.size()` が再利用、等しければ新規確保です。これで reserve 量や `animation_generations` の引き継ぎを切り替えます。ID の generation は再利用スロットを指す古いハンドルを無効化するためのもので、scene epoch とは別軸です(→ §9.2「`ModelInstanceId` の落とし穴」)。
 
-#### [`uploadMaterialAbsoluteOverrides()`](../../src/core/renderer/polygoninstancecontainer.cpp#L2004) — instance_identity が 1-indexed
+#### [`uploadMaterialAbsoluteOverrides()`](../../src/core/renderer/polygoninstancecontainer.cpp#L2042) — instance_identity が 1-indexed
 
 **分からなくなること**: なぜ添字を 1 つずらすのか。
 
-**答え**: header は `maxModelInstances` 個の密配列で `headers[instance_identity - 1]` として索引します。**0 は「オーバーライド無し / 未設定」の sentinel** なので、`instance_identity == 0` は範囲外として例外になります。morph frame identity([`instance_identity = index + 1`](../../src/core/renderer/polygoninstancecontainer.cpp#L576))も同じ 1-indexed 規約です。
+**答え**: header は `maxModelInstances` 個の密配列で `headers[instance_identity - 1]` として索引します。**0 は「オーバーライド無し / 未設定」の sentinel** なので、`instance_identity == 0` は範囲外として例外になります。morph frame identity([`instance_identity = index + 1`](../../src/core/renderer/polygoninstancecontainer.cpp#L579))も同じ 1-indexed 規約です。
 
-#### [phase × sort_view_index の直積](../../src/core/renderer/polygoninstancecontainer.cpp#L1097) — variants を事前展開する目的
+#### [phase × sort_view_index の直積](../../src/core/renderer/polygoninstancecontainer.cpp#L1108) — variants を事前展開する目的
 
 **分からなくなること**: なぜフレーム中に選ぶのではなく、全組み合わせを先に作るのか。
 
@@ -1298,7 +1298,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [jitter の 2 値](../../src/core/vkcore/renderer.cpp#L775) | `view_projection_jittered` と `jitter_ndc` | なぜ両方要るのか | 前者はラスタライズ時にサブピクセルオフセットを掛ける行列、後者はシェーダが速度ベクトルや TAA リプロジェクションでそのオフセットを打ち消すための生の量。→ [第6章「ジッタは w 倍で足す」](06_rendering_vulkan_shader.md) |
 | [`windowOutputFactsChanged()`](../../src/core/vkcore/renderer.cpp#L2640) | fingerprint と compile_facts | 二重比較の理由 | `compile_fingerprint` は安価な一致判定用ハッシュで先に比較し、加えて実体も比較して**ハッシュ衝突と fingerprint 未包含フィールドの差分**を取りこぼさない二段確認 |
 | [companion 3 点セット](../../src/core/vkcore/renderer.cpp#L3051) | companion_participants / claims / apply_with_companions | 3 つの役割 | companion が「一緒に取り込む他参加者(shader / material)」を宣言し、claims が所有リクエストを判定し、apply_with_companions が 1 回で処理する。グラフ・シェーダ・マテリアル値の変更が**同一トランザクション**として一括成否になることを保証(→ §9.23.12) |
-| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L5806) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
+| [`view_index == 0` の `triggerUpdate`](../../src/core/vkcore/renderer.cpp#L5807) | GPU 状態の凍結点 | なぜ 1 回だけか | コメント "Object, skin, morph, and material-override GPU state is frozen after target acquisition and before the first view records" のとおり、**同一論理フレームの全 view が同じインスタンス / 描画キュー状態を見る**ことを保証するため |
 | [`LogicalFrameAbortGuard`](../../src/core/vkcore/renderer.cpp#L2922) | 2 つの RAII ガード | 何が違うのか | 前者は例外離脱時に必ず `abortLogicalFrame()`。後者は `generation != 0` のときだけ runtime を保持し、`complete()` されずに壊れたら rollback する |
 | [record / end の分離](../../src/core/vkcore/renderer.cpp#L2022) | `latest_scene_color/depth` の追跡 | 役割分離の理由 | **未執筆**(根拠がコードにない) |
 | [sprite anchor の layer 計算](../../src/core/vkcore/renderer.cpp#L2156) / [snapshot copy の layer](../../src/core/vkcore/renderer.cpp#L2301) | sequential layer の選択 | いつ view_index が層になるか | sequential 実行で、かつ対象の `array_layers` が view 数以上(snapshot copy 側は source が layered)のときだけ `scheduled.view_index` を層として使い、それ以外は 0。ただし swapchain 出力の color だけは `view_index` をそのまま層として引く。逆順スキャンの理由は[第6章「sprite anchor の逆順スキャン」](06_rendering_vulkan_shader.md) |
@@ -1309,7 +1309,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`native_scope_has_work`](../../src/core/vkcore/renderer.cpp#L1217) | 空スコープの判定 | 判定基準 | **未執筆**(根拠がコードにない) |
 | [staged 世代の遷移](../../src/core/vkcore/renderer.cpp#L3366) と [`after_publish`](../../src/core/vkcore/renderer.cpp#L3552) | finalized / ready / runtime_published | 対称性 | 上記「`transaction->generation == 0`」と同じ世代機構。個々の遷移表は**未執筆** |
 | [`graph_variant_policy`](../../src/core/vkcore/renderer.cpp#L5203) | variant と view family の方針 | RenderGraphVariant との対応 | **未執筆**(根拠がコードにない) |
-| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5609) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
+| [`configureExternalDepthSubmission()`](../../src/core/vkcore/renderer.cpp#L5610) | XR への depth 提出 | true でも export が null になりうる | **未執筆**(§9.23.14 の OpenXR depth submission と対) |
 | [family / view ごとの jitter と reset epoch](../../src/core/vkcore/renderer.cpp#L3880) | トレース出力 | なぜ family/view ごとに追うのか | **未執筆**(根拠がコードにない) |
 | [RT 無しの空 diagnostics](../../src/core/vkcore/renderer.cpp#L4114) | `ray_query_acceleration_structures` | 空になる条件 | **未執筆**(根拠がコードにない) |
 | [`sequential_count < count` の拒否](../../src/core/renderer/frameresources.cpp#L116) | スロット数の下限 | 何を保証するか | in-flight frame ごとに sequential_count 個のスロットを確保するので、**main family の全 view が自分専用の frame/resolution UBO スロットを持つ**(view 同士の UBO 別名衝突の防止) |
@@ -1317,12 +1317,12 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [multiview のスロット分離](../../src/core/renderer/frameresources.hpp#L117) | seq / multiview の別配列 | last_data が vector になる理由 | **未執筆**(上記スロット確保と対で書く必要がある) |
 | [RT SBT のリース](../../src/core/renderer/frameresources.cpp#L386) / [RT descriptor bundle の publication](../../src/core/renderer/frameresources.cpp#L403) | 世代の保持と二重 bind | 何を指しているのか | **未執筆**(根拠がコードにない) |
 | [`SubmissionLeaseBundle`](../../src/core/vkcore/deletionqueue.hpp#L67) | 入れ子リースの upstream | 完了順序 | **未執筆**(根拠がコードにない) |
-| [`declaration_ordinal`](../../src/core/renderer/polygoninstancecontainer.cpp#L680) | 単調増加の宣言順 | 単調性が要る理由 | `DrawQueueBuilder` 側の[一意性検査](../../src/core/renderer/drawqueuebuilder.cpp#L504)(重複したら拒否)を満たし、`stableOrderKey` の**最後の要素=同点時の決定的なタイブレーク(宣言順)**になる |
-| [`prepareSceneReplacement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L471) / [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L703) | 次フレーム回収 | いつ実際に解放されるか | **未執筆**(manifest の `next-frame-retirement-queue` 語彙と対で書く必要がある) |
-| [`canRebuildModelInstances()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1203) | 再構築前の容量計算 | 何を数えているか | **未執筆**(根拠がコードにない) |
-| [world_bounds / history / `resetTemporalHistory()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1181) | 前フレーム状態 | lazy 更新の条件 | **未執筆**(TAA / モーションベクタ用。→ [第6章「epoch ペアが reset 信号」](06_rendering_vulkan_shader.md)) |
-| [VRM transaction の `noexcept` rollback ラムダ](../../src/core/renderer/polygoninstancecontainer.cpp#L2164) | `noexcept` な巻き戻し | なぜ投げないのか | → §9.22「三段トランザクション」「`noexcept` なコミットテール」 |
-| [alpha override の優先順位](../../src/core/renderer/polygoninstancecontainer.cpp#L1503) | 絶対 / 相対の合成 | どちらが勝つか | **未執筆**(§9.23.5 の per-row 表と対) |
+| [`declaration_ordinal`](../../src/core/renderer/polygoninstancecontainer.cpp#L686) | 単調増加の宣言順 | 単調性が要る理由 | `DrawQueueBuilder` 側の[一意性検査](../../src/core/renderer/drawqueuebuilder.cpp#L504)(重複したら拒否)を満たし、`stableOrderKey` の**最後の要素=同点時の決定的なタイブレーク(宣言順)**になる |
+| [`prepareSceneReplacement()`](../../src/core/renderer/polygoninstancecontainer.cpp#L473) / [`drainSceneRetirements()`](../../src/core/renderer/polygoninstancecontainer.cpp#L709) | 次フレーム回収 | いつ実際に解放されるか | **未執筆**(manifest の `next-frame-retirement-queue` 語彙と対で書く必要がある) |
+| [`canRebuildModelInstances()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1214) | 再構築前の容量計算 | 何を数えているか | **未執筆**(根拠がコードにない) |
+| [world_bounds / history / `resetTemporalHistory()`](../../src/core/renderer/polygoninstancecontainer.cpp#L1192) | 前フレーム状態 | lazy 更新の条件 | **未執筆**(TAA / モーションベクタ用。→ [第6章「epoch ペアが reset 信号」](06_rendering_vulkan_shader.md)) |
+| [VRM transaction の `noexcept` rollback ラムダ](../../src/core/renderer/polygoninstancecontainer.cpp#L2202) | `noexcept` な巻き戻し | なぜ投げないのか | → §9.22「三段トランザクション」「`noexcept` なコミットテール」 |
+| [alpha override の優先順位](../../src/core/renderer/polygoninstancecontainer.cpp#L1520) | 絶対 / 相対の合成 | どちらが勝つか | **未執筆**(§9.23.5 の per-row 表と対) |
 
 ### 9.23.5 RT(acceleration structure・SBT・oracle)
 
@@ -1519,7 +1519,7 @@ Linux 側にこの reader はありません。`RTLD_NOW` が解決に失敗し�
 | [`allocateRange()`](../../src/core/model/vertbufcontainer.cpp#L95) | free list + high water mark | 2 系統ある理由 | まず free list を first-fit で走査して解放済みレンジを再利用し(**リロード周回でバッファが際限なく伸びるのを防ぐ**)、合う穴が無いときだけ high water mark を進め、そこで初めて `ensure*Capacity` の再確保が起きる |
 | [`content_revision` / `compatibility_revision`](../../src/core/model/modeltemplate.hpp#L159) | 2 本の版 | 分ける理由 | content は毎リロード必ず進む「中身が変わった」印、compatibility はリグレイアウトが変わったときだけ進む「バインドを張り直す必要がある」印。後者だけが staged resource の互換性キーとして公開されるので、**内容だけの更新で依存側の再解決を誘発しない** |
 | [importer mapping の安定座標](../../src/core/model/modeltemplate.hpp#L83) | mesh/primitive/node index | 「regrouping を生き延びる」の意味 | ソース GLB 上の**安定座標**で、GPU 側の allocation offset とは意図的に分離されている。再グループ化で offset が変わっても、それらの座標で addressing されたインポータ由来のマテリアル割当はそのまま解決できる |
-| [`publishBatch()`](../../src/core/asset/model.cpp#L423) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L760) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
+| [`publishBatch()`](../../src/core/asset/model.cpp#L423) / [`retireReloadPayload()`](../../src/core/asset/model.cpp#L764) | 公開と退役 | 逆にできない理由 | WP382c では renderer の rebuild を prepare し、participant の publish で template と instance を新世代へ張り替える。旧 payload は coordinator の退役経路から GPU resource の遅延解放へ渡す。旧 primitive レンジを公開前に解放すると、生きた draw の参照を壊しうる |
 | [`DeferredRelease` の `acquire()`](../../src/core/model/vertbufcontainer.cpp#L588) | lease semantics | null のとき何が起きたか | §9.23.4 の `GpuSubmissionLease` と同じ(フェンス完了まで生かす券)。lease が null なら既に回収済み |
 | [`deferOldBuffer()`](../../src/core/model/vertbufcontainer.cpp#L135) | 旧バッファの遅延破棄 | いつ drain されるか | DeletionQueue(submission fence 完了時)。→ §9.12 |
 | [例外時の morph range](../../src/core/model/vertbufcontainer.cpp#L390) | 部分 cleanup | 解放されない範囲がある | **未執筆**(`vertex_allocated` フラグの cleanup 範囲を確かめる必要がある) |

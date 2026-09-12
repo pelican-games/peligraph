@@ -709,8 +709,12 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
                     // Active graph references must remain valid through this
                     // model publication. Topology changes require detaching
                     // affected graphs before replacing their model geometry.
-                    for (const auto &[id, program] : generation->programs)
+                    for (const auto &[id, program] : generation->programs) {
                         validateGraphDeformedAttributes(program.frame_graph.deformed_attributes, geometry);
+                        for (const auto &replacement : rebuilds)
+                            validateGraphPoseAttributesForModel(program.frame_graph.pose_attributes,
+                                replacement.asset_id, *replacement.replacement);
+                    }
                 }
             }
         }

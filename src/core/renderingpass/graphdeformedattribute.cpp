@@ -1,12 +1,7 @@
 #include "graphdeformedattribute.hpp"
 #include "framegraphruntime.hpp"
 #include "computetask.hpp"
-#include "../asset/model.hpp"
 #include "../loader/scene.hpp"
-#include "../loader/pathresolver.hpp"
-#include "../ecs/core.hpp"
-#include "../userpublic/components/predefined.hpp"
-#include "../ecs/predefined/modelview.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
 #include "../model/vertbufcontainer.hpp"
 #include <set>
@@ -16,18 +11,9 @@ namespace Pelican {
 namespace {
 std::optional<std::size_t> resolveAttribute(const GraphDeformedAttribute &attribute,
     const std::vector<RayQueryGeometryInstanceSnapshot> &geometry) {
-    const auto &scene = GET_MODULE(SceneLoader);
-    const auto &paths = GET_MODULE(PathResolver);
-    const auto object = scene.graphOwnerObject(attribute.owner);
-    if (!object) return std::nullopt;
-    const auto *model = GET_MODULE(ECSCore).getTemplatePublicModule()
-        .tryComponent<SimpleModelViewComponent>(*object);
-    if (!model || !model->model_instance_id)
-        throw std::runtime_error("deformed attribute owner has no model: " + attribute.resource);
-    const auto &model_template = GET_MODULE(ModelAssetContainer).getModelTemplateByName(model->model_name);
-    if (paths.normalizedReference(model_template.authored_asset_reference) != paths.normalizedReference(attribute.asset))
-        throw std::runtime_error("deformed attribute asset differs from its owner model: " + attribute.resource);
-    const auto identity = *model->model_instance_id;
+    const auto source = resolveGraphModelSource(attribute.owner, attribute.asset, attribute.resource);
+    if (!source) return std::nullopt;
+    const auto identity = source->instance;
     std::optional<std::size_t> match;
     for (std::size_t i = 0; i < geometry.size(); ++i) {
         const auto &candidate = geometry[i];

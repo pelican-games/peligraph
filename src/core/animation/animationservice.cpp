@@ -78,6 +78,7 @@ struct AnimationServiceRuntime::Impl {
     struct PoseRecord {
         PoseViewV1 view{};
         std::uint64_t arena_identity{};
+        std::vector<Matrix4fV1> model_matrices;
     };
     struct CursorRecord {
         CursorHandle handle{};
@@ -874,11 +875,17 @@ struct AnimationServiceRuntime::Impl {
     static Impl *self(void *context) { return static_cast<Impl *>(context); }
 
     Status publishToSink(SinkRecord &sink, PublishAnimationFrameDescV1 &frame) {
+        const auto *model = findPose(frame.model_pose);
+        const std::span<const Matrix4fV1> matrices = model
+            ? std::span<const Matrix4fV1>{model->model_matrices} : std::span<const Matrix4fV1>{};
+        const std::span<const std::uint32_t> mapping = matrices.empty()
+            ? std::span<const std::uint32_t>{}
+            : std::span<const std::uint32_t>{sink.object->asset->rig.original_to_layout};
         const auto status =
             sink.object->renderer_instance &&
                     FastModuleContainer::isInitialized<PolygonInstanceContainer>()
                 ? GET_MODULE(PolygonInstanceContainer)
-                      .publishAnimationFrame(*sink.object->renderer_instance, frame)
+                      .publishAnimationFrame(*sink.object->renderer_instance, frame, matrices, mapping)
                 : legacy_runtime.publishAnimationFrame(frame);
         if (status == Status::ok) sink.reset_history = false;
         return status;
@@ -909,6 +916,7 @@ struct AnimationServiceRuntime::Impl {
                     *staged.object->asset, model_matrices, staged.palette);
                 status != Status::ok)
                 return status;
+            model->model_matrices = std::move(model_matrices);
         }
         staged.frame.palette = staged.palette.empty() ? nullptr
                                                        : staged.palette.data();
@@ -1427,14 +1435,17 @@ struct AnimationServiceRuntime::Impl {
         desc->model_matrix_count = required;
         if (desc->model_matrix_capacity < required || !desc->model_matrices) return Status::buffer_too_small;
         PoseViewV1 *model_view = nullptr;
+        PoseRecord *model{};
         if (isValid(desc->model_pose)) {
-            PoseRecord *model{};
             if (const auto status = runtime->resolvePose(desc->model_pose, model); status != Status::ok)
                 return status;
             model_view = &model->view;
         }
-        return localToModel(object->asset->rig, local->view,
-                            {desc->model_matrices, desc->model_matrix_capacity}, model_view);
+        const auto status = localToModel(object->asset->rig, local->view,
+            {desc->model_matrices, desc->model_matrix_capacity}, model_view);
+        if (status == Status::ok && model)
+            model->model_matrices.assign(desc->model_matrices, desc->model_matrices + required);
+        return status;
     }
 
     static Status buildPalette(void *context, BuildSkinPaletteDescV1 *desc) {

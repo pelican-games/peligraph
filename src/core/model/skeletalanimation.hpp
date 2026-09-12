@@ -56,10 +56,12 @@ struct SkeletalModelData {
 
 // Evaluates glTF-local hierarchy data without creating ECS entities for joints.
 // The returned matrices are indexed exactly like JOINTS_0.
+// Optional hierarchy matrices use original glTF node indices, before inverse bind.
 std::vector<glm::mat4> evaluateSkinPalette(const SkeletalModelData &model,
                                            const SkeletalAnimationClip *clip,
                                            double engine_time, double speed,
-                                           bool loop, double start_time);
+                                           bool loop, double start_time,
+                                           std::vector<glm::mat4> *node_matrices = nullptr);
 
 const SkeletalAnimationClip &findAnimationClip(const SkeletalModelData &model,
                                                const std::string &name);

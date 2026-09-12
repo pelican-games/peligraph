@@ -2,6 +2,7 @@
 #include "graphinputs.hpp"
 #include "../userpublic/valuegraph.hpp"
 #include "../model/gltf.hpp"
+#include "../model/skeletalanimation.hpp"
 #include "../../project/graphpartition.hpp"
 #include "../loader/scene.hpp"
 #if PELICAN_WITH_AUDIO
@@ -822,6 +823,7 @@ registerRenderingPassConfigVariantsData(
         };
     std::map<std::string, GltfAttributeData> attribute_data;
     std::vector<GraphDeformedAttribute> deformed_attributes;
+    std::vector<GraphPoseAttribute> pose_attributes;
     std::set<std::filesystem::path> attribute_source_files;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
     ValueGraph::InactiveScopes inactive_graph_scopes;
@@ -837,6 +839,7 @@ registerRenderingPassConfigVariantsData(
     auto resolved_rendering_data = rendering_pass_data;
     if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
         std::map<std::string, PreparedGltf> sources;
+        std::map<std::string, ModelTemplate> inspected_models;
         resolved_rendering_data = resolveGraphAttributeSources(rendering_pass_data,
             [&](std::string_view node, const nlohmann::json &parameters) {
                 const auto &source = parameters.at("source");
@@ -850,6 +853,21 @@ registerRenderingPassConfigVariantsData(
                         throw std::invalid_argument("attribute source requires a glTF asset: " + asset);
                     found = sources.emplace(asset, extension == ".glb"
                         ? loader.prepareGltfBinary(path.string()) : loader.prepareGltf(path.string())).first;
+                }
+                if (source.contains("pose_node")) {
+                    const auto source_node = source.at("pose_node").get<std::uint32_t>();
+                    auto inspected = inspected_models.find(asset);
+                    if (inspected == inspected_models.end())
+                        inspected = inspected_models.emplace(asset, loader.inspect(found->second)).first;
+                    const auto &rig = inspected->second.skeletal;
+                    if (!rig || source_node >= rig->nodes.size())
+                        throw std::invalid_argument("pose attribute source has no skeletal node");
+                    const auto *owner = value_graph->scopeOwner(node);
+                    if (!owner) throw std::invalid_argument("pose attribute requires an owned graph instance");
+                    pose_attributes.push_back({std::string{node}, *owner, asset, source_node});
+                    const auto files = found->second.dataFiles();
+                    attribute_source_files.insert(files.begin(), files.end());
+                    return std::uint64_t{1};
                 }
                 auto data = parameters.at("domain") == "index"
                     ? loader.readIndices(found->second,
@@ -876,6 +894,7 @@ registerRenderingPassConfigVariantsData(
             });
     }
     validateGraphDeformedAttributes(deformed_attributes);
+    validateGraphPoseAttributes(pose_attributes);
 
     // Keep common authoring intact through preset/feature validation. Runtime
     // availability filters only its derived GPU declarations during composition.
@@ -1031,6 +1050,9 @@ registerRenderingPassConfigVariantsData(
             program.inactive_graph_scopes = inactive_graph_scopes;
             program.graph_owner_objects = graph_owner_objects;
             program.source_documents = source_documents;
+            for (const auto &attribute : pose_attributes)
+                if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
+                    program.pose_attributes.push_back(attribute);
             for (const auto &attribute : deformed_attributes)
                 if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
                     program.deformed_attributes.push_back(attribute);

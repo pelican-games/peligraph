@@ -78,7 +78,8 @@ glm::mat4 worldMatrix(std::size_t node, const std::vector<SkeletonNodeRestPose> 
 std::vector<glm::mat4> evaluateSkinPalette(const SkeletalModelData &model,
                                            const SkeletalAnimationClip *clip,
                                            double engine_time, double speed,
-                                           bool loop, double start_time) {
+                                           bool loop, double start_time,
+                                           std::vector<glm::mat4> *node_matrices) {
     if (model.joint_nodes.size() != model.inverse_bind_matrices.size()) {
         throw std::runtime_error("glTF skin joint/inverse bind matrix count mismatch");
     }
@@ -118,6 +119,7 @@ std::vector<glm::mat4> evaluateSkinPalette(const SkeletalModelData &model,
         }
         palette.push_back(world[static_cast<std::size_t>(joint)] * model.inverse_bind_matrices[i]);
     }
+    if (node_matrices) *node_matrices = std::move(world);
     return palette;
 }
 

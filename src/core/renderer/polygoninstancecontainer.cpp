@@ -400,6 +400,7 @@ struct StagedModelInstance::Impl {
     std::uint64_t authoring_object_id = 0;
     glm::mat4 model_matrix{1.0F};
     std::vector<glm::mat4> skin_palette;
+    std::vector<glm::mat4> animation_node_matrices;
     ModelAssetId asset_id{};
     std::shared_ptr<const SourceMaterialInitialValueTable> material_initial_values;
     std::shared_ptr<const VrmSemanticData> vrm_semantic;
@@ -446,6 +447,7 @@ PolygonInstanceContainer::snapshotPreparedScene() const {
         .previous_model_instances_data = previous_model_instances_data,
         .model_history_valid = model_history_valid,
         .skin_palettes = skin_palettes,
+        .animation_node_matrices = animation_node_matrices,
         .previous_skin_palettes = previous_skin_palettes,
         .animation_revisions = animation_revisions,
         .previous_animation_revisions = previous_animation_revisions,
@@ -503,6 +505,7 @@ void PolygonInstanceContainer::publishPreparedScene(
         prepared.previous_model_instances_data);
     model_history_valid.swap(prepared.model_history_valid);
     skin_palettes.swap(prepared.skin_palettes);
+    animation_node_matrices.swap(prepared.animation_node_matrices);
     previous_skin_palettes.swap(prepared.previous_skin_palettes);
     animation_revisions.swap(prepared.animation_revisions);
     previous_animation_revisions.swap(prepared.previous_animation_revisions);
@@ -564,7 +567,7 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     if (model.skeletal) {
         staged->skin_palette =
             evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false,
-                                0.0);
+                                0.0, &staged->animation_node_matrices);
         if (staged->skin_palette.size() > maxSkinJoints) {
             throw std::runtime_error("Skin palette exceeds 128 joints");
         }
@@ -605,6 +608,7 @@ StagedModelInstance PolygonInstanceContainer::stagePreparedSceneModel(
     prepared.previous_model_instances_data.reserve(capacity);
     prepared.model_history_valid.reserve(capacity);
     prepared.skin_palettes.reserve(capacity);
+    prepared.animation_node_matrices.reserve(capacity);
     prepared.previous_skin_palettes.reserve(capacity);
     prepared.animation_revisions.reserve(capacity);
     prepared.previous_animation_revisions.reserve(capacity);
@@ -644,6 +648,7 @@ void PolygonInstanceContainer::publishPreparedSceneModel(
             candidate.model_matrix);
         prepared.model_history_valid.push_back(false);
         prepared.skin_palettes.push_back(std::move(candidate.skin_palette));
+        prepared.animation_node_matrices.push_back(std::move(candidate.animation_node_matrices));
         prepared.previous_skin_palettes.emplace_back();
         prepared.animation_revisions.push_back(0);
         prepared.previous_animation_revisions.push_back(0);
@@ -662,6 +667,7 @@ void PolygonInstanceContainer::publishPreparedSceneModel(
         prepared.previous_model_instances_data[index] = candidate.model_matrix;
         prepared.model_history_valid[index] = false;
         prepared.skin_palettes[index] = std::move(candidate.skin_palette);
+        prepared.animation_node_matrices[index] = std::move(candidate.animation_node_matrices);
         prepared.previous_skin_palettes[index].clear();
         prepared.animation_revisions[index] = 0;
         prepared.previous_animation_revisions[index] = 0;
@@ -765,7 +771,8 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
 
     if (model.skeletal) {
         staged->skin_palette =
-            evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false, 0.0);
+            evaluateSkinPalette(*model.skeletal, nullptr, 0.0, 1.0, false, 0.0,
+                                &staged->animation_node_matrices);
         if (staged->skin_palette.size() > maxSkinJoints)
             throw std::runtime_error("Skin palette exceeds 128 joints");
     }
@@ -807,6 +814,7 @@ StagedModelInstance PolygonInstanceContainer::stageModelInstance(const ModelTemp
     previous_model_instances_data.reserve(instance_capacity);
     model_history_valid.reserve(instance_capacity);
     skin_palettes.reserve(instance_capacity);
+    animation_node_matrices.reserve(instance_capacity);
     previous_skin_palettes.reserve(instance_capacity);
     animation_revisions.reserve(instance_capacity);
     previous_animation_revisions.reserve(instance_capacity);
@@ -853,6 +861,7 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         previous_model_instances_data.push_back(candidate.model_matrix);
         model_history_valid.push_back(false);
         skin_palettes.push_back(std::move(candidate.skin_palette));
+        animation_node_matrices.push_back(std::move(candidate.animation_node_matrices));
         previous_skin_palettes.emplace_back();
         animation_revisions.push_back(0);
         previous_animation_revisions.push_back(0);
@@ -871,6 +880,7 @@ void PolygonInstanceContainer::publishModelInstance(StagedModelInstance staged) 
         previous_model_instances_data[index] = candidate.model_matrix;
         model_history_valid[index] = false;
         skin_palettes[index] = std::move(candidate.skin_palette);
+        animation_node_matrices[index] = std::move(candidate.animation_node_matrices);
         previous_skin_palettes[index].clear();
         animation_revisions[index] = 0;
         previous_animation_revisions[index] = 0;
@@ -904,6 +914,7 @@ void PolygonInstanceContainer::resetSlot(std::uint32_t index) {
     previous_model_instances_data[index] = glm::identity<glm::mat4>();
     model_history_valid[index] = false;
     skin_palettes[index].clear();
+    animation_node_matrices[index].clear();
     previous_skin_palettes[index].clear();
     animation_revisions[index] = 0;
     previous_animation_revisions[index] = 0;
@@ -1254,6 +1265,7 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
         prepared.previous_model_instances_data;
     auto &model_history_valid = prepared.model_history_valid;
     auto &skin_palettes = prepared.skin_palettes;
+    auto &animation_node_matrices = prepared.animation_node_matrices;
     auto &previous_skin_palettes = prepared.previous_skin_palettes;
     auto &animation_revisions = prepared.animation_revisions;
     auto &previous_animation_revisions =
@@ -1272,12 +1284,14 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
         prepared.material_absolute_override_frames;
     std::unordered_map<std::uint64_t, const ModelTemplate *> by_asset;
     std::unordered_map<std::uint64_t, std::vector<glm::mat4>> rest_palettes;
+    std::unordered_map<std::uint64_t, std::vector<glm::mat4>> rest_node_matrices;
     for (const auto &replacement : replacements) {
         by_asset.emplace(replacement.asset_id.value, replacement.replacement);
         auto &palette = rest_palettes[replacement.asset_id.value];
+        auto &node_matrices = rest_node_matrices[replacement.asset_id.value];
         if (replacement.replacement->skeletal) {
             palette = evaluateSkinPalette(*replacement.replacement->skeletal, nullptr,
-                                          0.0, 1.0, false, 0.0);
+                                          0.0, 1.0, false, 0.0, &node_matrices);
         }
     }
 
@@ -1312,6 +1326,7 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
                                 : &GET_MODULE(MaterialContainer);
 
     auto next_skin_palettes = skin_palettes;
+    auto next_node_matrices = animation_node_matrices;
     auto next_previous_skin_palettes = previous_skin_palettes;
     auto next_animation_revisions = animation_revisions;
     auto next_previous_animation_revisions = previous_animation_revisions;
@@ -1347,6 +1362,7 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
 
         const auto &rest_palette = rest_palettes.at(model_asset_ids[instance].value);
         next_skin_palettes[instance] = rest_palette;
+        next_node_matrices[instance] = rest_node_matrices.at(model_asset_ids[instance].value);
         next_previous_skin_palettes[instance] = rest_palette;
         next_animation_revisions[instance] = 0;
         next_previous_animation_revisions[instance] = 0;
@@ -1383,6 +1399,7 @@ PolygonInstanceContainer::prepareModelInstanceRebuild(
     draw_inventory = std::move(rebuilt);
     next_draw_declaration_ordinal = next_declaration_ordinal;
     skin_palettes = std::move(next_skin_palettes);
+    animation_node_matrices = std::move(next_node_matrices);
     previous_skin_palettes = std::move(next_previous_skin_palettes);
     animation_revisions = std::move(next_animation_revisions);
     previous_animation_revisions = std::move(next_previous_animation_revisions);
@@ -1810,6 +1827,8 @@ void PolygonInstanceContainer::setSkinningPalette(ModelInstanceId id,
     GET_MODULE(VulkanManageCore).writeBuf(skin_palette_buffer, palette.data(),
                                          sizeof(glm::mat4) * maxSkinJoints * index,
                                          sizeof(glm::mat4) * palette.size());
+    // A palette-only override does not provide the evaluated node hierarchy.
+    animation_node_matrices[index].clear();
 }
 
 Animation::InstanceHandle PolygonInstanceContainer::animationInstance(ModelInstanceId id) const {
@@ -1819,7 +1838,9 @@ Animation::InstanceHandle PolygonInstanceContainer::animationInstance(ModelInsta
 }
 
 Animation::Status PolygonInstanceContainer::publishAnimationFrame(
-    ModelInstanceId id, const Animation::PublishAnimationFrameDescV1 &frame) {
+    ModelInstanceId id, const Animation::PublishAnimationFrameDescV1 &frame,
+    std::span<const Animation::Matrix4fV1> model_matrices,
+    std::span<const std::uint32_t> original_to_layout) {
     constexpr auto minimum = offsetof(Animation::PublishAnimationFrameDescV1, root_delta) +
                              sizeof(Animation::RootDeltaV1);
     if (frame.struct_size < minimum) return Animation::Status::invalid_argument;
@@ -1840,6 +1861,14 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
         frame.frame_revision <= animation_revisions[index])
         return Animation::Status::duplicate_revision;
 
+    if (model_matrices.size() != original_to_layout.size())
+        return Animation::Status::invalid_argument;
+    std::vector<glm::mat4> node_matrices(original_to_layout.size());
+    for (std::size_t source = 0; source < original_to_layout.size(); ++source) {
+        const auto layout = original_to_layout[source];
+        if (layout >= model_matrices.size()) return Animation::Status::invalid_argument;
+        std::memcpy(&node_matrices[source], &model_matrices[layout], sizeof(glm::mat4));
+    }
     std::vector<glm::mat4> palette(frame.palette_count);
     if (!palette.empty()) std::memcpy(palette.data(), frame.palette, palette.size() * sizeof(glm::mat4));
     if (!palette.empty()) {
@@ -1848,6 +1877,7 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
                                              sizeof(glm::mat4) * palette.size());
     }
     skin_palettes[index] = std::move(palette);
+    animation_node_matrices[index] = std::move(node_matrices);
     animation_revisions[index] = frame.frame_revision;
     if (previous_animation_revisions[index] == 0 ||
         (frame.flags & (Animation::commit_reset_history | Animation::commit_discontinuity)) != 0) {
@@ -1855,6 +1885,14 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
         previous_animation_revisions[index] = frame.frame_revision;
     }
     return Animation::Status::ok;
+}
+
+std::optional<glm::mat4> PolygonInstanceContainer::animationNodeMatrix(
+    ModelInstanceId id, std::uint32_t source_node) const {
+    if (!isLive(id)) return std::nullopt;
+    const auto &matrices = animation_node_matrices[id.index];
+    if (source_node >= matrices.size()) return std::nullopt;
+    return matrices[source_node];
 }
 
 std::optional<float> PolygonInstanceContainer::morphWeight(

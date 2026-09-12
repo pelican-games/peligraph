@@ -498,6 +498,10 @@ TEST_CASE("bone lookAt stays staged through phase 300 and commits one final pale
     REQUIRE(palette.size() == 4);
     REQUIRE(std::abs(glm::dot(glm::quat_cast(palette[2]), expected)) ==
             Catch::Approx(1.0f));
+    const auto node_pose = instances.animationNodeMatrix(polygon, 2);
+    REQUIRE(node_pose);
+    REQUIRE(std::abs(glm::dot(glm::quat_cast(*node_pose), expected)) ==
+            Catch::Approx(1.0f));
 
     GET_MODULE(VulkanManageCore).waitIdle();
     applicationServiceRuntime().reset();

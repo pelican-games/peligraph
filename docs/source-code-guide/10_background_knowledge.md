@@ -1112,7 +1112,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2243)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L427)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2281)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L427)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 

@@ -311,6 +311,8 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     BufferWrapper previous_model_data_buffer;
     vk::Device device;
     std::vector<std::vector<glm::mat4>> skin_palettes;
+    // Evaluated model-space hierarchy, indexed by original glTF node.
+    std::vector<std::vector<glm::mat4>> animation_node_matrices;
     std::vector<std::vector<glm::mat4>> previous_skin_palettes;
     std::vector<std::uint64_t> animation_revisions;
     std::vector<std::uint64_t> previous_animation_revisions;
@@ -374,6 +376,7 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         std::vector<glm::mat4> previous_model_instances_data;
         std::vector<bool> model_history_valid;
         std::vector<std::vector<glm::mat4>> skin_palettes;
+        std::vector<std::vector<glm::mat4>> animation_node_matrices;
         std::vector<std::vector<glm::mat4>> previous_skin_palettes;
         std::vector<std::uint64_t> animation_revisions;
         std::vector<std::uint64_t> previous_animation_revisions;
@@ -499,7 +502,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     modelInstanceIdAt(std::uint32_t index) const;
     Animation::InstanceHandle animationInstance(ModelInstanceId id) const;
     Animation::Status publishAnimationFrame(ModelInstanceId id,
-                                             const Animation::PublishAnimationFrameDescV1 &frame);
+                                             const Animation::PublishAnimationFrameDescV1 &frame,
+                                             std::span<const Animation::Matrix4fV1> model_matrices = {},
+                                             std::span<const std::uint32_t> original_to_layout = {});
+    std::optional<glm::mat4> animationNodeMatrix(ModelInstanceId id, std::uint32_t source_node) const;
     Animation::Status publishMorphWeightFrame(
         ModelInstanceId id, const PublishMorphWeightFrameDescV1 &frame);
     std::optional<float> morphWeight(ModelInstanceId id, std::uint32_t node,

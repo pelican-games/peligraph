@@ -8,6 +8,46 @@
 namespace Pelican {
 namespace {
 using Json = nlohmann::json;
+void validateAttributeSource(const Json &node, bool owned) {
+    const auto id = node.at("id").get<std::string>();
+    const auto &parameters = node.at("parameters");
+    const auto &source = parameters.at("source");
+    if (!source.is_object() || parameters.contains("count") || parameters.contains("size") ||
+        parameters.contains("host_source") || !node.at("inputs").empty())
+        throw std::invalid_argument("sourced attribute derives its data and count: " + id);
+    const auto index = [&](const char *key) {
+        const auto &value = source.at(key);
+        if (!value.is_number_integer() ||
+            (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
+            value.get<std::uint64_t>() > (std::numeric_limits<std::uint32_t>::max)())
+            throw std::invalid_argument("attribute source index must fit uint32: " + id);
+    };
+    if (!source.at("asset").is_string() || source.at("asset").get_ref<const std::string &>().empty())
+        throw std::invalid_argument("attribute source requires a nonempty asset: " + id);
+    if (source.contains("pose_node")) {
+        if (source.size() != 2 || parameters.at("element") != "mat4" || parameters.at("domain") != "instance")
+            throw std::invalid_argument("pose source requires asset/pose_node and an instance mat4: " + id);
+        if (!owned) throw std::invalid_argument("pose attribute requires an owned graph instance: " + id);
+        index("pose_node");
+        return;
+    }
+    const bool indices = parameters.at("domain") == "index";
+    const bool morph = source.contains("morph_target");
+    const bool deformed = source.contains("deformed_node");
+    if ((!indices && parameters.at("domain") != "vertex") ||
+        source.size() != (indices ? 3 : ((morph || deformed) ? 5 : 4)) ||
+        (deformed && (indices || morph || parameters.at("element") != "vec3" ||
+            (source.at("semantic") != "POSITION" && source.at("semantic") != "NORMAL"))) ||
+        (indices && (morph || source.contains("semantic"))))
+        throw std::invalid_argument("attribute source requires asset, mesh, primitive and a vertex semantic: " + id);
+    if (!indices && (!source.at("semantic").is_string() || source.at("semantic").get_ref<const std::string &>().empty()))
+        throw std::invalid_argument("attribute source requires a nonempty semantic: " + id);
+    if (deformed && !owned) throw std::invalid_argument("deformed attribute requires an owned graph instance: " + id);
+    index("mesh");
+    index("primitive");
+    if (morph) index("morph_target");
+    if (deformed) index("deformed_node");
+}
 LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declaration) {
     const auto element = declaration.at("element").get<std::string>();
     if (!shaderResourceBufferElementFromName(element))
@@ -114,38 +154,9 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
         auto &partition = value_operations.contains(op) ? result.values : result.rendering;
         auto lowered = node;
         if (op == "render.attribute" && lowered.at("parameters").contains("source")) {
-            const auto &parameters = lowered.at("parameters");
-            const auto &source = parameters.at("source");
-            const bool indices = parameters.at("domain") == "index";
-            const bool morph = source.contains("morph_target");
-            const bool deformed = source.contains("deformed_node");
-            if ((!indices && parameters.at("domain") != "vertex") || parameters.contains("count") ||
-                parameters.contains("size") || parameters.contains("host_source") ||
-                !node.at("inputs").empty())
-                throw std::invalid_argument("sourced attribute requires vertex/index domain and derives its data/count: " + id);
-            if (!source.is_object() || source.size() != (indices ? 3 : ((morph || deformed) ? 5 : 4)) ||
-                (deformed && (indices || morph || parameters.at("element") != "vec3" ||
-                    (source.at("semantic") != "POSITION" && source.at("semantic") != "NORMAL"))) ||
-                (indices && morph) ||
-                (indices && source.contains("semantic")))
-                throw std::invalid_argument("attribute source requires asset, mesh, primitive and a semantic only for vertex attributes: " + id);
-            for (const auto key : {"asset", "semantic"}) {
-                if (indices && std::string_view{key} == "semantic") continue;
-                if (!source.at(key).is_string() || source.at(key).get_ref<const std::string &>().empty())
-                    throw std::invalid_argument("attribute source requires nonempty names: " + id);
-            }
-            if (deformed && std::none_of(graph.node_scopes.at(id).begin(), graph.node_scopes.at(id).end(),
-                [&](const auto &scope) { return graph.instance_owners.contains(scope); }))
-                throw std::invalid_argument("deformed attribute requires an owned graph instance: " + id);
-            for (const auto key : {"mesh", "primitive", "morph_target", "deformed_node"}) {
-                if (std::string_view{key} == "morph_target" && !morph) continue;
-                if (std::string_view{key} == "deformed_node" && !deformed) continue;
-                const auto &value = source.at(key);
-                if (!value.is_number_integer() ||
-                    (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||
-                    value.get<std::uint64_t>() > (std::numeric_limits<std::uint32_t>::max)())
-                    throw std::invalid_argument("attribute source index must fit uint32: " + id);
-            }
+            const bool owned = std::any_of(graph.node_scopes.at(id).begin(), graph.node_scopes.at(id).end(),
+                [&](const auto &scope) { return graph.instance_owners.contains(scope); });
+            validateAttributeSource(lowered, owned);
         } else if (op == "render.attribute") {
             auto &parameters = lowered.at("parameters");
             const auto &count = parameters.at("count");
@@ -214,6 +225,8 @@ Json resolveGraphAttributeSources(const Json &document, const GraphAttributeSour
             if (authored.at("id") == origin.node) {
                 authored["parameters"].erase("source");
                 authored["parameters"]["count"] = count;
+                if (parameters.at("source").contains("pose_node"))
+                    authored["parameters"]["host_source"] = "runtime_f32";
                 break;
             }
     }

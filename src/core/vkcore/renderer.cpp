@@ -5379,6 +5379,7 @@ void Renderer::renderLogicalFrame(
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
     }
+    stageGraphPoseAttributes(frame_graph);
     modules.frame_graph_resources.uploadRuntimeValues();
     updateFrameLights(
         modules.light_container,

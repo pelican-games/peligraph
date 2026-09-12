@@ -142,7 +142,8 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
         publish.palette_count = static_cast<std::uint32_t>(palette.size());
         publish.frame_revision = frame_revision;
         publish.root_delta.rotation.w = 1.0f;
-        status = instances->publishAnimationFrame(*model_views[i].model_instance_id, publish);
+        status = instances->publishAnimationFrame(*model_views[i].model_instance_id, publish,
+                                                   model_matrices, asset.rig.original_to_layout);
         if (status != Animation::Status::ok) throw std::runtime_error("failed to publish animation frame");
     }
 }

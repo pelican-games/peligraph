@@ -15,6 +15,40 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("pose attributes derive a matrix upload without changing their source", "[curve][graph-pose-attribute]") {
+    using Json = nlohmann::json;
+    const auto document = Json::parse(R"({"schema":"pelican.graph","version":1,
+      "definitions":{"pose":{"nodes":[{"id":"bone","op":"render.attribute","parameters":{
+        "element":"mat4","domain":"instance","source":{"asset":"project://actor.gltf","pose_node":2}},
+        "outputs":["resource"]}],"outputs":{"matrix":{"node":"bone","port":"resource"}}}},
+      "nodes":[{"id":"actor","op":"graph.instance","definition":"pose","owner":{"scene":"main","object":1}}],
+      "outputs":{"pose":{"node":"actor","port":"matrix"}}})");
+    auto input = document;
+    const auto resolved = Pelican::resolveGraphAttributeSources(input,
+        [](auto, const Json &parameters) -> std::uint64_t {
+            REQUIRE(parameters["source"]["pose_node"] == 2);
+            return 1;
+        });
+    REQUIRE(input == document);
+    const auto lowered = Pelican::lowerRenderGraphDocument(resolved);
+    REQUIRE(lowered["buffers"][0]["size"] == 64);
+    REQUIRE(lowered["buffers"][0]["host_source"] == "runtime_f32");
+    auto &parameters = input["definitions"]["pose"]["nodes"][0]["parameters"];
+    for (const auto &invalid : Json::array({-1, 0.5, "2", true, std::uint64_t{1} << 32})) {
+        parameters["source"]["pose_node"] = invalid;
+        REQUIRE_THROWS(Pelican::partitionGraphDocument(input));
+    }
+    const Json invalid_parameters{{"element", "vec4"}, {"domain", "vertex"}, {"count", 1}, {"host_source", "runtime_f32"}};
+    for (const auto &[key, value] : invalid_parameters.items()) {
+        auto invalid = document;
+        invalid["definitions"]["pose"]["nodes"][0]["parameters"][key] = value;
+        REQUIRE_THROWS(Pelican::partitionGraphDocument(invalid));
+    }
+    input = document;
+    input["nodes"][0].erase("owner");
+    REQUIRE_THROWS(Pelican::partitionGraphDocument(input));
+}
+
 TEST_CASE("deformed attribute sources require owned typed vertex declarations", "[curve][graph-deformed-attribute]") {
     using Json = nlohmann::json;
     auto document = Json::parse(R"({"schema":"pelican.graph","version":1,

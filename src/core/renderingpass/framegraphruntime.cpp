@@ -480,6 +480,7 @@ FrameGraphRuntimeContainer::prepareGeneration(
         execution.graph_owner_objects = std::move(program.graph_owner_objects);
         execution.source_documents = std::move(program.source_documents);
         execution.deformed_attributes = std::move(program.deformed_attributes);
+        execution.pose_attributes = std::move(program.pose_attributes);
         execution.attribute_source_files = std::move(program.attribute_source_files);
         candidate->programs.insert_or_assign(
             rendering_pass_id,

@@ -391,6 +391,19 @@ POSITION/NORMALのvec3属性を対象とし、morph_targetとの併用は拒否�
 これらのトポロジー変更は対象グラフを解除してモデルを更新し、再装着する。RTの遅延公開時にも
 未公開モデルの頂点列と旧個体のskin/morph状態を混ぜないための境界であり、自動移行は未実装。
 アニメーショングラフ全体の共通化は別工程。
+
+同じ所有者付きrender.attributeで、sourceを`{"asset":"project://character.gltf","pose_node":2}`とすると、
+元glTFノードの評価済みモデル空間行列を取得できる。element=mat4・domain=instanceとし、count=1と
+runtime_f32の転送先はコンパイラが導出する。保存文書へcountやGPU slotを追加しない。
+行列はcolumn-majorのmat4で、inverse bind適用前の階層姿勢を表す。個体のworld transformは含まない。
+ボーンに限定せず、読み込んだSkeletalModelDataに含まれるノードを参照できる。
+通常clip評価とAnimationServiceのlocalToModel結果を、成功した姿勢公開と同時に元ノード順で保存する。
+後処理フェーズがローカル姿勢を変更した場合も再計算後の値を使用する。描画側でclipを再評価せず、
+全アニメーションフェーズの完了後・GPU consumer実行前に既存のruntime_f32転送へ渡す。
+初期値はrest pose、削除・slot再利用・scene再読込み・model rebuildで姿勢の寿命を更新する。
+パレットだけを直接設定するAPIから任意ノードの姿勢は復元しない。その場合は姿勢を未公開として扱い、
+pose属性の装着候補を公開前に拒否する。モデル候補から参照ノードが消える場合も旧モデルと描画世代を保持する。
+所有者からモデルへの解決は変形後属性と共通化し、属性sourceの入力検査も種類ごとの一つの入口へ整理した。
 使用中の定義instanceだけを解決し、元のJSONはsource参照を保持する。派生countはコンパイラ用文書へ
 渡し、データは各候補が保持するbuffer IDへ転送する。同じassetのprepareは候補構築中に共有する。
 これは構築時のスナップショットで、変更通知から新しい描画候補を構築して更新する。

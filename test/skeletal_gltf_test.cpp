@@ -728,6 +728,182 @@ void main() {
     REQUIRE(nlohmann::json::parse(final_generation->programs.begin()->second.frame_graph.value_graph->serialize()) == document);
 }
 
+TEST_CASE("owned graph pose attributes expose evaluated model-space nodes", "[skeletal][graph-pose-attribute]") {
+    setupLogger();
+    bool animation_graph = false;
+    SECTION("animation component clip") {}
+    SECTION("animation graph phase publication") { animation_graph = true; }
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_pose_attribute_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::create_directories(root / "shaders");
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin");
+    auto document = parameterGraphCompositionFixture();
+    document["definitions"]["pose"] = nlohmann::json::parse(R"({
+      "nodes":[
+        {"id":"tip","op":"render.attribute","parameters":{"element":"mat4","domain":"instance",
+          "source":{"asset":"project://character.gltf","pose_node":2}},"outputs":["resource"]},
+        {"id":"model","op":"render.attribute","parameters":{"element":"mat4","domain":"instance",
+          "source":{"asset":"project://character.gltf","pose_node":0}},"outputs":["resource"]}],
+      "outputs":{"tip":{"node":"tip","port":"resource"},"model":{"node":"model","port":"resource"}}})");
+    document["nodes"][5] = {{"id", "render"}, {"op", "graph.instance"}, {"definition", "pose"},
+        {"owner", {{"scene", "default_scene"}, {"object", 1}}}};
+    document["nodes"][6]["parameters"]["size"] = 16;
+    auto &probe = document["nodes"][7];
+    probe["parameters"]["ports"].erase("source");
+    probe["inputs"].erase("source");
+    for (const auto *port : {"tip", "model"}) {
+        probe["parameters"]["ports"][port] = {{"element", "mat4"}, {"domain", "instance"}, {"access", "read"}};
+        probe["inputs"][port] = {{"node", "render"}, {"port", port}};
+    }
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    mat4 tip = pelican_load_tip(0);
+    pelican_store_destination(0, tip[3].x);
+    pelican_store_destination(1, tip[3].y);
+    pelican_store_destination(2, tip[0].y);
+    pelican_store_destination(3, pelican_load_model(0)[0].x);
+}
+)");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "turn.json", R"({"schema":"pelican.anim_graph","version":1,
+      "parameters":{},"initial_state":"turn","states":[{"name":"turn","type":"clip","clip":"Turn","loop":false}],"transitions":[]})");
+    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+      {"name":"Character","components":[{"name":"transform","pos":[10,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"character"}]}
+    ]}}})");
+    scene_document["scenes"]["default_scene"]["objects"][0]["components"].push_back(animation_graph
+        ? nlohmann::json{{"name", "animation"}, {"graph", "turn.json"}}
+        : nlohmann::json{{"name", "animation"}, {"clip", "character.gltf#animation/Turn"}, {"loop", false}});
+    writeText(root / "scene.json", scene_document.dump());
+    auto &service = Animation::animationServiceRuntime();
+    service.reset();
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16,16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 0.25);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto instance_for = [&](GameObjectId id) {
+        const auto *model = ecs.tryComponent<SimpleModelViewComponent>(id);
+        REQUIRE(model);
+        REQUIRE(model->model_instance_id);
+        return *model->model_instance_id;
+    };
+    const auto object = scene.objectId("Character");
+    REQUIRE(object);
+    for (const auto &binding : scene.runtimeObjectBindings())
+        if (binding.object_id == *object) document["nodes"][5]["owner"]["object"] = binding.authoring_object_id.value;
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    const auto animate = [&] {
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        service.synchronizeSceneObjects();
+        GET_MODULE(AnimationSystem).updateGraphs();
+        REQUIRE(service.runAllPhases(time.frameIndex()) == Animation::Status::ok);
+        scene.applyPendingLoad();
+    };
+    animate();
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto render = [&] {
+        renderer.render();
+        core.waitIdle();
+        const auto bytes = core.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float) * 4);
+        std::array<float, 4> values;
+        std::memcpy(values.data(), bytes.data(), sizeof(values));
+        return values;
+    };
+    const auto verify_pose = [&](GameObjectId owner) {
+        const auto id = instance_for(owner);
+        const auto &palette = instances.currentSkinPaletteForTesting(id);
+        REQUIRE(palette.size() == 2);
+        const auto tip = instances.animationNodeMatrix(id, 2);
+        REQUIRE(tip);
+        // TipJoint's inverse bind removes its y=1 rest translation from the
+        // palette. The graph must expose that hierarchy translation instead.
+        const auto expected = palette[0] * glm::vec4{0, 1, 0, 1};
+        REQUIRE(std::abs((*tip)[3].x - expected.x) < 0.00001f);
+        REQUIRE(std::abs((*tip)[3].y - expected.y) < 0.00001f);
+        REQUIRE_FALSE(instances.animationNodeMatrix(id, 99));
+        const auto values = render();
+        const std::array expected_values{expected.x, expected.y, palette[0][0].y, 1.0f};
+        for (std::size_t i = 0; i < values.size(); ++i)
+            REQUIRE(std::abs(values[i] - expected_values[i]) < 0.00001f);
+        return values;
+    };
+    animate();
+    const auto initial = instance_for(*object);
+    const auto first = verify_pose(*object);
+    animate();
+    const auto second = verify_pose(*object);
+    REQUIRE(first != second);
+    const auto generation = GET_MODULE(RenderingPassContainer).activeGeneration();
+    auto invalid = document;
+    invalid["definitions"]["pose"]["nodes"][0]["parameters"]["source"]["pose_node"] = 99;
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid.dump()));
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
+    REQUIRE(render() == second);
+    GameObjects{}.remove(*object);
+    REQUIRE_FALSE(instances.animationNodeMatrix(initial, 2));
+    REQUIRE(render() == second);
+    test_support::loadScene(scene, "default_scene");
+    animate();
+    const auto replacement = scene.objectId("Character");
+    REQUIRE(replacement);
+    REQUIRE(instance_for(*replacement) != initial);
+    verify_pose(*replacement);
+    auto &reload = GET_MODULE(watch::ReloadService);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    const auto revision = models.contentRevisionForTesting("character");
+    const watch::ReloadRequest changed{.key = watch::makeAssetKey("character.gltf")};
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin", {.position_scale = 2});
+    REQUIRE(reload.applyRequestForTesting(changed));
+    REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+    animate();
+    const auto after_reload = verify_pose(*replacement);
+    const auto before_failure = GET_MODULE(RenderingPassContainer).snapshot();
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin", {.position_scale = 3});
+    {
+        watch::ScopedRenderPipelineCompanionReloadObserver fail_after_model_prepare{
+            [](auto) { throw std::runtime_error("reject pose attribute companion"); }};
+        REQUIRE_FALSE(reload.applyRequestForTesting(changed));
+    }
+    REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == before_failure);
+    REQUIRE(render() == after_reload);
+    // Palette-only publications cannot describe arbitrary hierarchy nodes.
+    // Reject attachment before publishing a graph with unavailable pose data.
+    const auto current = instance_for(*replacement);
+    const auto palette_only = instances.currentSkinPaletteForTesting(current);
+    instances.setSkinningPalette(current, palette_only);
+    REQUIRE_FALSE(instances.animationNodeMatrix(current, 2));
+    REQUIRE_THROWS_WITH(loadRenderGraphVariantsFromConfigData(document.dump()),
+        Catch::Matchers::ContainsSubstring("no published node matrix"));
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == before_failure);
+    animate();
+    verify_pose(*replacement);
+    REQUIRE(nlohmann::json::parse(std::ifstream{root / "passes/main_rendering_config.json"}) == document);
+    service.reset();
+}
+
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /
