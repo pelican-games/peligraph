@@ -2959,6 +2959,7 @@ class StagedRuntimeRollbackGuard {
 
 struct LogicalFrameSubmissionResources {
     std::shared_ptr<const RendererRuntimeGeneration> runtime_generation;
+    std::vector<RayQueryGeometryInstanceSnapshot> deformed_geometry;
     // The descriptor bundle contains the raw TLAS handle. Keep the immutable
     // AS State that owns that handle in the exact same fence-backed lease.
     std::shared_ptr<const void> rt_state;
@@ -4885,6 +4886,13 @@ void Renderer::renderLogicalFrame(
     auto submission_resources =
         std::make_shared<LogicalFrameSubmissionResources>();
     submission_resources->runtime_generation = runtime_generation;
+    const auto record_graph_deformation = [&](vk::CommandBuffer command) {
+        if (program->frame_graph.deformed_attributes.empty()) return;
+        auto &geometry = submission_resources->deformed_geometry;
+        geometry = modules.instance_container.rayQueryGeometryInstances();
+        recordGraphDeformedAttributes(command, program->frame_graph, geometry,
+            acceleration_structures != nullptr);
+    };
     const auto record_acceleration_structures =
         [&](vk::CommandBuffer command_buffer,
             std::uint32_t in_flight_frame_index) {
@@ -4897,11 +4905,11 @@ void Renderer::renderLogicalFrame(
                         .prepareNonRayTracingPublication());
                 return;
             }
-            auto triangle_instances =
-                modules.instance_container
-                    .rayQueryGeometryInstances();
-            modules.instance_container.recordRayDeformation(
-                command_buffer, triangle_instances);
+            auto triangle_instances = submission_resources->deformed_geometry.empty()
+                ? modules.instance_container.rayQueryGeometryInstances()
+                : submission_resources->deformed_geometry;
+            modules.instance_container.recordGeometryDeformation(
+                command_buffer, triangle_instances, true);
             auto procedural_instances =
                 GET_MODULE(ProceduralGeometryContainer)
                     .proceduralRayInstances();
@@ -5669,6 +5677,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+        record_graph_deformation(render_ctx.cmd_buf);
         if (acceleration_structures == nullptr)
             record_scene_as(render_ctx, "__scene_acceleration_structure");
         capture_picking_model_instances();
@@ -5815,6 +5824,7 @@ void Renderer::renderLogicalFrame(
                 .material_filters =
                     material_draw_filters,
             });
+            record_graph_deformation(render_ctx.cmd_buf);
             if (acceleration_structures == nullptr)
                 record_scene_as(render_ctx, "__scene_acceleration_structure");
             capture_picking_model_instances();

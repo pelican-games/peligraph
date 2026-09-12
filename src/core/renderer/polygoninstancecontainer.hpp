@@ -516,9 +516,10 @@ DECLARE_MODULE(PolygonInstanceContainer) {
         Animation::InstanceHandle instance) const;
     void bindDeformation(vk::CommandBuffer cmd_buf, vk::PipelineLayout pipeline_layout,
                          bool skinned) const;
-    void recordRayDeformation(
+    void recordGeometryDeformation(
         vk::CommandBuffer cmd_buf,
-        std::vector<RayQueryGeometryInstanceSnapshot> &instances);
+        std::vector<RayQueryGeometryInstanceSnapshot> &instances,
+        bool for_acceleration_structures);
     void bindMaterialInstanceResources(vk::CommandBuffer cmd_buf,
                                        vk::PipelineLayout pipeline_layout,
                                        bool skinned) const;

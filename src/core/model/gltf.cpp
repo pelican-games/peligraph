@@ -2740,6 +2740,12 @@ ModelTemplate GltfLoader::commit(PreparedGltf prepared,
     }
 }
 
+void GltfLoader::validateMeshNode(const PreparedGltf &prepared, std::uint32_t node, std::uint32_t mesh) const {
+    if (!prepared.impl || node >= prepared.impl->model.nodes.size() ||
+        prepared.impl->model.nodes[node].mesh != static_cast<int>(mesh))
+        throw std::invalid_argument("deformed attribute node does not reference its source mesh");
+}
+
 GltfAttributeData GltfLoader::readAttribute(const PreparedGltf &prepared,
     std::uint32_t mesh, std::uint32_t primitive, std::string_view semantic,
     ShaderResourceBufferElement element, std::optional<std::uint32_t> morph_target) const {

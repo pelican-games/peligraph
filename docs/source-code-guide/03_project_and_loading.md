@@ -21,7 +21,7 @@ Runtime object
 | project.json封筒 | [`parseProjectEnvelopeText()`](../../src/project/projectformat.cpp#L122) | [`ProjectBasicConfig::ProjectBasicConfig()`](../../src/core/loader/basicconfig.cpp#L633) |
 | path参照 | [`ProjectPathResolver`](../../src/project/projectpathresolver.hpp#L69) | [`PathResolver`](../../src/core/loader/pathresolver.hpp#L9)（module寿命、ログ、engine resource注入） |
 | scene | [`normalizeSceneDataJson()`](../../src/project/sceneformat.cpp#L203) | [`SceneLoader::load()`](../../src/core/loader/scene.cpp#L529) |
-| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2728) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1297) |
+| render feature | [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2728) | [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1313) |
 | JSON-RPC | [`parseJsonRpcRequest()`](../../src/project/jsonrpc.cpp#L148) | [`RpcServer`](../../src/core/communication/rpcserver.hpp#L55) |
 | asset manifest | [`parse/generate/verify`](../../src/project/assetsmanifest.hpp#L60) | [`verifyAssetsAtStartup()`](../../src/core/loader/assetsverification.cpp#L11) |
 | material/surface | [`parseMaterialFormatJson()`](../../src/project/materialformat.cpp#L744)、[`parseSurfaceFormat()`](../../src/project/surfaceformat.cpp#L1239) | runtime接続済み（WP116〜117, 122）。`.surface`は [`surfacecompiler`](../../src/core/shader/surfacecompiler.cpp) でGLSL/SPIR-V化されpipelineへ。`.material.json`は [`lowerMaterial()`](../../src/project/materiallowering.hpp#L140) → [`registerReloadableMaterialValuesFile()`](../../src/core/material/materialcontainer.hpp#L345) |
@@ -439,14 +439,14 @@ sceneのcomponent名から型への変換は [`ComponentInfoManager`](../../src/
 
 ## 3.8 Asset modelから描画instanceまで
 
-[`ModelAssetContainer`](../../src/core/asset/model.hpp#L24) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2861) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2850) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L267)）。`.vrm` がglTFと同列なのは別形式だからではなく、**VRMがバイナリglTF（GLB）コンテナそのもの**だからです — 拡張が増えているだけなので、同じbinary loader経路がそのまま読みます（受理判定の直前のコメントがそう書いています）。VRM固有の意味（humanoid bone / expression / lookAt / firstPerson）は、読み込んだglTF拡張から後段の [`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) がデコードします。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2856) が使われます。
+[`ModelAssetContainer`](../../src/core/asset/model.hpp#L24) は`asset_data.json.models`を読み、拡張子に応じて [`GltfLoader::loadGltf()`](../../src/core/model/gltf.cpp#L2867) / [`loadGltfBinary()`](../../src/core/model/gltf.cpp#L2856) を呼び、名前から`ModelTemplate`へmapします。受理拡張子は`.glb`/`.gltf`に加え **`.vrm`** です（[asset/model.cpp](../../src/core/asset/model.cpp#L268)）。`.vrm` がglTFと同列なのは別形式だからではなく、**VRMがバイナリglTF（GLB）コンテナそのもの**だからです — 拡張が増えているだけなので、同じbinary loader経路がそのまま読みます（受理判定の直前のコメントがそう書いています）。VRM固有の意味（humanoid bone / expression / lookAt / firstPerson）は、読み込んだglTF拡張から後段の [`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) がデコードします。glTF scene fragmentの抽出には [`loadGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2862) が使われます。
 
 これらの `loadGltf*()` は、現在は三段APIのラッパです（[`gltf.hpp`](../../src/core/model/gltf.hpp#L67)）。
 
 | 段 | 関数 | 性質 |
 |---|---|---|
 | prepare | [`prepareGltf()`](../../src/core/model/gltf.cpp#L2656) / [`prepareGltfBinary()`](../../src/core/model/gltf.cpp#L2649) / [`prepareGltfBinarySceneNode()`](../../src/core/model/gltf.cpp#L2663) | ファイル読み取りとparseまで |
-| inspect | [`inspect()`](../../src/core/model/gltf.cpp#L2831) | **副作用なし**の候補パス。fragment解決と検証だけ |
+| inspect | [`inspect()`](../../src/core/model/gltf.cpp#L2837) | **副作用なし**の候補パス。fragment解決と検証だけ |
 | commit | [`commit()`](../../src/core/model/gltf.cpp#L2676) | GPU資源を確保して `ModelTemplate` を作る |
 
 glTFロードの大まかな変換は次です。
@@ -462,7 +462,7 @@ tinygltf Model
 
 執筆基準時点から要素が増えています。VRM semanticデコード（[`vrmsemantic.hpp`](../../src/core/model/vrmsemantic.hpp) — humanoid bone / expression / lookAt / firstPerson、WP111）、morph target（[`morphtarget.hpp`](../../src/core/model/morphtarget.hpp)、WP121）、skeletal animation（[`skeletalanimation.hpp`](../../src/core/model/skeletalanimation.hpp)）、KTX2テクスチャ（[`loader/ktx2.hpp`](../../src/core/loader/ktx2.hpp)、BC5/BC7 fixtureあり）、atlas asset（[`asset/atlasasset.hpp`](../../src/core/asset/atlasasset.hpp) + [`renderer/atlasassetresource.hpp`](../../src/core/renderer/atlasassetresource.hpp)）です。モデルのhot reload（HR2-G、WP110）に伴い、世代管理は [`MaterialContainer::releaseModelResources()`](../../src/core/material/materialcontainer.hpp#L334) が担います。この API は `[[nodiscard]]` で、返り値の [`ReleaseReport`](../../src/core/model/modelresourcerelease.hpp#L36) は固定容量 8 の `ReleaseError`（`{stage, code, index}`。`index` は実 ID）と、9 件目以降を数える `overflow_count` だけを持ち、報告のために確保しません。[`releaseModelResources()` の本体](../../src/core/material/materialcontainer.cpp#L2455) は material も texture も resource 1 件ずつ try で囲むので、1 件の失敗で後続の返却が止まりません。同期経路は失敗を例外（`ModelResourceReleaseException`）に載せて運び、[`releaseErrorStatus()`](../../src/core/loader/scene.cpp#L212) が stage 名の列（溢れた分は `overflow:N`）へ畳んで [`PreCommitFailure::release_errors`](../../src/core/loader/sceneload.hpp#L143) に入れます。呼び元へ report を返せない destructor / deferred release / retirement queue / teardown の各経路は [`ReleaseErrorSink::record()`](../../src/core/model/modelresourcerelease.cpp#L11)（log + `release_errors` / `overflow_count` の累積カウンタ。[`status()`](../../src/core/model/modelresourcerelease.cpp#L28) で読めます）へ渡します（WP380d）。
 
-失敗したときに**誰が解放するか**も、この API の一部です（WP380a-fix）。`ModelAssetContainer` は §3.5 の 3 のとおり participant ではなく warm cache なので、scene load が失敗しても cache は戻りません。ただし「戻さない」と「作りかけを残す」は別です。[constructor](../../src/core/asset/model.cpp#L471) は宣言を1件ずつ commit していき、途中で投げたときに二段で GPU 資源を返します — 内側の catch が**その1件**（[`releaseModelGpuResources(model, false)`](../../src/core/asset/model.cpp#L759)）、外側の catch が**それまでに登録済みの全件**（[`impl_->releaseAllModels()`](../../src/core/asset/model.cpp#L520)）です。どちらも report が空でなければ `ModelResourceReleaseException` に載せ替えて投げ直します。加えて `Impl` の [destructor](../../src/core/asset/model.cpp#L383) と、公開前の reload candidate を持つ [`ModelPayload` の destructor](../../src/core/asset/model.cpp#L322) が `ReleaseErrorSink` 経由で同じ解放を行います。**公開されなかった `ModelAssetContainer` は cache になりません**（moduleとして `__ready()` が立たない。§2.2）ので、部分状態を再利用するより資源を戻すほうが正しい、という選択です。
+失敗したときに**誰が解放するか**も、この API の一部です（WP380a-fix）。`ModelAssetContainer` は §3.5 の 3 のとおり participant ではなく warm cache なので、scene load が失敗しても cache は戻りません。ただし「戻さない」と「作りかけを残す」は別です。[constructor](../../src/core/asset/model.cpp#L472) は宣言を1件ずつ commit していき、途中で投げたときに二段で GPU 資源を返します — 内側の catch が**その1件**（[`releaseModelGpuResources(model, false)`](../../src/core/asset/model.cpp#L771)）、外側の catch が**それまでに登録済みの全件**（[`impl_->releaseAllModels()`](../../src/core/asset/model.cpp#L521)）です。どちらも report が空でなければ `ModelResourceReleaseException` に載せ替えて投げ直します。加えて `Impl` の [destructor](../../src/core/asset/model.cpp#L384) と、公開前の reload candidate を持つ [`ModelPayload` の destructor](../../src/core/asset/model.cpp#L323) が `ReleaseErrorSink` 経由で同じ解放を行います。**公開されなかった `ModelAssetContainer` は cache になりません**（moduleとして `__ready()` が立たない。§2.2）ので、部分状態を再利用するより資源を戻すほうが正しい、という選択です。
 
 同じ WP の残り半分は**順序**です。起動経路では render graph の検証と公開が scene の prepare より**前**にあります（[`(void)GET_MODULE(Renderer)`](../../src/core/userpublic/pelican_core.cpp#L130) とその上のコメント。§2.1 の 10番）。この2つが逆だと、rendering config が壊れているプロジェクトでも先に model を upload してしまい、(a) 利用者が最初に見る fatal が material route の失敗ではなく morph 頂点 pool の容量超過にすり替わり、(b) 同一プロセスでの再試行ごとに pool の offset が積み上がります。順序と解放は独立した2つの性質で、片方だけ戻すともう片方のテストが落ちます。
 
@@ -582,7 +582,7 @@ API面の主な変化は次の通りです。
 RPCの `load_gltf` が使う [`SceneLoader::loadTransientGltf()`](../../src/core/loader/scene.cpp#L1425) は、「**割り当てを全部公開の前に済ませ、公開点を1箇所に絞る**」形で書かれています。
 
 1. 名前bindingのhash nodeを先に `extract()`(C++17のnode handle — 連想コンテナから要素をノードごと切り離して持ち出すAPI。取り出したノードを戻す `insert()` は確保を伴いません)して確保（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1439)）。コメント通り、エンティティ生成後にこのnodeを差し込む操作は割り当てを伴わないため、トランザクションを分割できません。
-2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2831) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L428) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
+2. `prepareGltf*()` → [`inspect()`](../../src/core/model/gltf.cpp#L2837) の副作用なし候補パス → [`preflightModelInstance()`](../../src/core/renderer/polygoninstancecontainer.hpp#L428) で、**model固有のVulkan資源を1つも確保する前に**容量超過を拒否します。
 3. [`commit()`](../../src/core/model/gltf.cpp#L2676) でGPU資源を確保し、`stageModelInstance()` でstagingします。
 4. エンティティ生成がthrowしたら `releaseModelGpuResources()` して `transient_models.pop_back()` します。
 5. 単一公開点（[`scene.cpp` 内](../../src/core/loader/scene.cpp#L1505)）。
@@ -639,7 +639,7 @@ instances.publishModelInstance(std::move(staged_instance));
 
 [`composeRenderFeatureConfig()`](../../src/project/featurecompose.cpp#L2728) はfeature JSONを順番に読み、render target、buffer、pass、compute taskを追加し、限定的なoverrideを適用します。名前衝突、曖昧anchor、未知override fieldは即時エラーです。shader defineも重複排除して集約します。
 
-runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1297) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L434) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
+runtime側の入口は [`registerRenderGraphVariantFamilyFromJsonData()`](../../src/core/renderingpass/renderingpassconfigregistration.cpp#L1313) です。[`loadRenderGraphVariantsFromConfigData()`](../../src/core/vkcore/renderer_config.cpp#L434) が `ProjectBasicConfig::renderingConfigJson()` の文字列と起動ターゲットの実extentを渡し、flat（OpenXR有効時は `#xr` も）とpreviewを **1回の登録トランザクション** として受け取ります。
 
 起動主体が feature を足す公開面は `pelican_player --feature-overlay <uri>` です。文書の厳密な
 v1 検証と加算は [`applyRenderFeatureOverlays()`](../../src/project/renderfeatureoverlay.cpp#L119) が担当し、

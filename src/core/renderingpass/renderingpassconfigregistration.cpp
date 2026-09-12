@@ -821,6 +821,7 @@ registerRenderingPassConfigVariantsData(
             vulkan_core.getRuntimeCapabilities(),
         };
     std::map<std::string, GltfAttributeData> attribute_data;
+    std::vector<GraphDeformedAttribute> deformed_attributes;
     std::set<std::filesystem::path> attribute_source_files;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
     ValueGraph::InactiveScopes inactive_graph_scopes;
@@ -859,11 +860,23 @@ registerRenderingPassConfigVariantsData(
                     *shaderResourceBufferElementFromName(parameters.at("element").get<std::string>()),
                     source.contains("morph_target") ? std::optional{source.at("morph_target").get<std::uint32_t>()} : std::nullopt);
                 const auto count = data.count;
+                if (source.contains("deformed_node")) {
+                    const auto source_node = source.at("deformed_node").get<std::uint32_t>();
+                    loader.validateMeshNode(found->second, source_node, source.at("mesh").get<std::uint32_t>());
+                    const auto *owner = value_graph->scopeOwner(node);
+                    if (!owner) throw std::invalid_argument("deformed attribute requires an owned graph instance");
+                    deformed_attributes.push_back({std::string{node}, *owner, asset, source_node,
+                        source.at("mesh").get<std::uint32_t>(), source.at("primitive").get<std::uint32_t>(),
+                        source.at("semantic") == "POSITION" ? 0u : 12u, count});
+                }
                 attribute_source_files.insert(data.source_files.begin(), data.source_files.end());
-                attribute_data.emplace(std::string{node}, std::move(data));
+                if (!source.contains("deformed_node"))
+                    attribute_data.emplace(std::string{node}, std::move(data));
                 return count;
             });
     }
+    validateGraphDeformedAttributes(deformed_attributes);
+
     // Keep common authoring intact through preset/feature validation. Runtime
     // availability filters only its derived GPU declarations during composition.
     const RenderCompilerProgramInput compiler_input{
@@ -1018,6 +1031,9 @@ registerRenderingPassConfigVariantsData(
             program.inactive_graph_scopes = inactive_graph_scopes;
             program.graph_owner_objects = graph_owner_objects;
             program.source_documents = source_documents;
+            for (const auto &attribute : deformed_attributes)
+                if (value_graph->nodeActive(attribute.resource, inactive_graph_scopes))
+                    program.deformed_attributes.push_back(attribute);
             program.attribute_source_files.assign(attribute_source_files.begin(), attribute_source_files.end());
             if (value_graph) {
                 if (program.target_plan) {

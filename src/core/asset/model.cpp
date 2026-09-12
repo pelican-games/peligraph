@@ -11,6 +11,7 @@
 #include "../model/gltf.hpp"
 #include "../parallel_prepare.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
 #include "../startup.hpp"
 #include "../watch/assetkey.hpp"
 #include "../watch/reloadqueue.hpp"
@@ -699,9 +700,20 @@ watch::ReloadTransactionGroup ModelAssetContainer::makeReloadGroup(
             throw std::runtime_error(
                 "model occurrence catalog generation exhausted");
         if (auto *instances =
-                FastModuleContainer::tryGet<PolygonInstanceContainer>())
+                FastModuleContainer::tryGet<PolygonInstanceContainer>()) {
             batch->renderer_candidate =
                 instances->prepareModelInstanceRebuild(rebuilds);
+            if (const auto *runtime = FastModuleContainer::tryGet<FrameGraphRuntimeContainer>()) {
+                if (const auto generation = runtime->snapshot()) {
+                    const auto geometry = instances->rayQueryGeometryInstances(&*batch->renderer_candidate);
+                    // Active graph references must remain valid through this
+                    // model publication. Topology changes require detaching
+                    // affected graphs before replacing their model geometry.
+                    for (const auto &[id, program] : generation->programs)
+                        validateGraphDeformedAttributes(program.frame_graph.deformed_attributes, geometry);
+                }
+            }
+        }
         auto *physics = FastModuleContainer::tryGet<PhysWorld>();
         const auto *loader = FastModuleContainer::tryGet<SceneLoader>();
         const auto *config = FastModuleContainer::tryGet<ProjectBasicConfig>();

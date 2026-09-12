@@ -61,6 +61,9 @@ struct RayQueryGeometryInstanceSnapshot {
     std::uint64_t aabb_buffer_address = 0;
     std::array<float, 3> aabb_min{};
     std::array<float, 3> aabb_max{};
+    // CommonVertStruct layout, starting at vertex zero. geometry_lease owns
+    // this frame's buffer; the address is populated only for AS consumers.
+    vk::Buffer deformed_vertex_buffer;
     std::uint64_t deformed_vertex_address = 0;
     std::uint64_t deformation_source_geometry_id = 0;
     std::shared_ptr<const void> geometry_lease;

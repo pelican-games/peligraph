@@ -23231,7 +23231,11 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 ### 未了項目と再開順
 
-#### 現況 (2026-09-08、履歴より優先)
+#### 現況 (2026-09-12、履歴より優先)
+
+- 2026-09-12 変形後GPU属性の接続: 所有者付きrender.attributeのsource.deformed_nodeでglTF node/mesh/primitiveを指定し、既存skin/morph/VATカーネルのPOSITION/NORMALをvec3 vertex portへ接続。assetと所有モデルを照合し、保存にはGPU IDを残さない。skin/morphのGPU更新後・最初のconsumer前に要求primitiveを一度だけ変形し、位置/法線とASで出力を共有する。非RT経路ではAS/BDA用途を要求せず、GPU内の属性転送とsubmission leaseで寿命を管理。不要な変形前属性の初期uploadは省いた。参照解決・GPU転送をgraphdeformedattribute.cppへ分け、既存RT専用関数をrecordGeometryDeformationへ統合した。
+- 検証: Player/Studioビルド、CPU curve 21件/240 assertions、通常描画・AS併用を含むskeletal 12件/1332 assertions、既存RT 3件/94 assertions成功（build/.codex_bg/graph_deformed_build3.log / graph_deformed_cpu.log / graph_deformed_skeletal_final.log / graph_deformed_rt_final.log）。新規GPUケースはモーフ連続変更、骨格による位置/法線変換、配列stride、world transform適用前の値、個体削除・再生成、外部buffer付きglTFの共同reload、準備後の注入失敗と旧世代/モデルrevision/GPU値/保存文書維持を確認。AS併用では実BLAS構築も確認。変形dispatch/属性転送を除くと位置・法線確認、所有者の再解決を除くと再生成確認が落ちる対照設計（個別コード変異未実施）。doclink 3869件正常・stale/unresolved 0。
+- 変形属性の残る境界: 装着中の頂点数・参照node/primitiveの構成変更は公開前に拒否し、対象graph解除→モデル更新→再装着で扱う。モデル候補から参照meshが消える場合も候補側のgeometryで検査して旧世代を維持する。RT遅延公開前の候補モデルを使ったトポロジー変更の自動移行は未実装。アニメーショングラフ全体の共通化、任意のoccurrence selector、変形後indexの生成は今回の範囲外。以下の過去記録にある「スキニング済みGPU属性参照」「変形後属性」の未了記述は、上記POSITION/NORMALの範囲で解消済み。
 
 - 最終関連CPU回帰: 保存RPC・描画定義のrender-config-editor/render-feature 89件/2653 assertions成功（graph_ownership_editor_build.log / graph_ownership_editor_final.log）。二個体への装着・片方の解除・保存再読込と、保存競合/不正参照の拒否を既存テストで再確認。doclinkは3869件正常・stale/unresolved 0、git diff --check成功。
 - 個体削除時のGPU資源回収と再生成を接続。scopeの所有者・依存から停止する描画宣言を除外し、実行時object IDの変更をフレーム境界で一括検出して既存の候補公開経路へ渡す。全体グラフの保存文書は変更しない。公開済みroot/依存JSONを使い、未反映のディスク編集を所有者更新へ混入させない。同じ失敗入力を毎フレーム再コンパイルしない。継続するbufferのGPU内容・未送信host値、兄弟のparameter・再生状態・voiceを維持する。画像・temporal historyは既存の描画世代再構築と同じく初期化する。

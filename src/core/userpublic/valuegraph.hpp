@@ -103,8 +103,8 @@ class PELICAN_API Graph {
                           const SoundResolver &sound_resolver = {},
                           const AudioValueWriter &audio_value_writer = {}) const;
 
-  private:
     const GraphInstanceOwner *scopeOwner(std::string_view node) const noexcept;
+  private:
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters,
                              const InactiveScopes &inactive, EvaluationState *state) const;
     ParameterValues parameter_defaults_;

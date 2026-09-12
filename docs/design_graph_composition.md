@@ -375,11 +375,27 @@ x値0.7/3.7と、不正target候補の失敗後に3.7を維持することを確
 欠落値を0へ置換することはない。共同モデルreloadにおける参照の候補世代検証は未実装。
 GPUで個体ウェイト0.5/0.75による合成位置0.7/1.2、個体削除後の停止、scene再読込み後の
 初期値-0.3と新個体ウェイト2による3.7を確認した。今回の区切りはこの接続まで。
-スキニング済みGPU出力の直接参照とアニメーショングラフ全体の共通化は別工程。
+所有者付きinstanceのvertex属性は、sourceにdeformed_node（glTF node index）を指定して
+現在のGPU変形結果を参照できる。asset/mesh/primitiveは元資産の参照を維持する。
+例は`{"asset":"project://character.glb","mesh":0,"primitive":0,"semantic":"POSITION","deformed_node":0}`。
+POSITION/NORMALのvec3属性を対象とし、morph_targetとの併用は拒否する。出力は既存の変形カーネルの
+頂点空間（個体のworld transform適用前）で、モーフ・骨格・VATを同じ処理から取得する。
+元ファイルのnode→mesh、所有個体のmodel参照と現在のprimitive occurrenceを照合し、
+実行時のmodel instance IDやGPUアドレスを保存しない。
+個体・skin・morphのGPU更新後、最初のグラフconsumerより前に、要求されたprimitiveだけを変形する。
+同じprimitiveの位置・法線とRTは一つの変形出力を共有する。頂点列から既存std430属性bufferへの
+転送はGPU内で行い、CPU readbackを挟まない。非RTの描画ではAS/BDA機能を要求しない。
+変形出力のleaseは論理フレームのsubmission完了まで保持する。停止ownerの資源回収と再生成には
+既存のグラフ所有者更新を使用し、モデル更新には属性sourceの共同reload経路を使用する。
+現時点では、装着中の頂点数や参照node/primitiveを変更するモデル更新を公開前に拒否する。
+これらのトポロジー変更は対象グラフを解除してモデルを更新し、再装着する。RTの遅延公開時にも
+未公開モデルの頂点列と旧個体のskin/morph状態を混ぜないための境界であり、自動移行は未実装。
+アニメーショングラフ全体の共通化は別工程。
 使用中の定義instanceだけを解決し、元のJSONはsource参照を保持する。派生countはコンパイラ用文書へ
 渡し、データは各候補が保持するbuffer IDへ転送する。同じassetのprepareは候補構築中に共有する。
 これは構築時のスナップショットで、変更通知から新しい描画候補を構築して更新する。
-安定したmesh occurrence参照、変形後の属性・index展開は未接続。
+変形後属性はownerとasset/node/mesh/primitiveの参照で接続する。任意のoccurrence selectorや
+変形後のindex展開は追加していない。
 CPU検証は2instanceへの展開、sourceとcountの二重指定拒否、未使用定義を解決しないことを確認。
 通常Rendererでは4頂点の要素数と異なる2頂点の値をcomputeで読出し、serializeに元文書が残ること、
 欠落semanticの候補失敗後も旧世代とGPU出力が維持されることを確認した。

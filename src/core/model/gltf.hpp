@@ -79,6 +79,7 @@ DECLARE_MODULE(GltfLoader) {
     // with synthetic draw handles and is suitable for reload compatibility
     // checks only.
     ModelTemplate inspect(const PreparedGltf &prepared) const;
+    void validateMeshNode(const PreparedGltf &prepared, std::uint32_t node, std::uint32_t mesh) const;
     // Read source mesh coordinates, before node transforms, morphing or skinning.
     // Uses the prepared source document; no geometry/material GPU allocations.
     GltfAttributeData readAttribute(const PreparedGltf &prepared,

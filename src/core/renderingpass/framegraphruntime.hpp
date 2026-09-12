@@ -8,6 +8,7 @@
 #include "../container.hpp"
 #include "../vkcore/outputcompilefacts.hpp"
 #include <details/ecs/entity.hpp>
+#include "graphdeformedattribute.hpp"
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -75,6 +76,7 @@ struct CompiledFrameGraphExecution {
     std::set<std::string> inactive_graph_scopes;
     std::map<std::string, GameObjectId> graph_owner_objects;
     std::shared_ptr<const RenderGraphDocumentSnapshot> source_documents;
+    std::vector<GraphDeformedAttribute> deformed_attributes;
     // Resolved dependencies of the attribute snapshot owned by this program.
     // Runtime metadata only; never copied into the authored graph document.
     std::vector<std::filesystem::path> attribute_source_files;
@@ -143,6 +145,7 @@ struct RenderPipelineProgramPreparation {
     std::set<std::string> inactive_graph_scopes;
     std::map<std::string, GameObjectId> graph_owner_objects;
     std::shared_ptr<const RenderGraphDocumentSnapshot> source_documents;
+    std::vector<GraphDeformedAttribute> deformed_attributes;
     std::vector<std::filesystem::path> attribute_source_files;
 };
 

@@ -550,6 +550,184 @@ void main() {
     REQUIRE(std::abs(render() - 3.7f) < 0.00001f);
 }
 
+TEST_CASE("owned graph attributes read current GPU deformation and survive owner replacement", "[skeletal][graph-deformed-attribute]") {
+    setupLogger();
+    bool ray_query = false;
+    SECTION("ordinary graph consumers") {}
+    SECTION("graph consumers share deformation with scene AS") { ray_query = true; }
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_deformed_attribute_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::create_directories(root / "shaders");
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin", {.morph_target = true});
+    auto document = parameterGraphCompositionFixture();
+    document["definitions"]["geometry"] = nlohmann::json::parse(R"({
+      "nodes":[
+        {"id":"position","op":"render.attribute","parameters":{"element":"vec3","domain":"vertex",
+          "source":{"asset":"project://character.gltf","mesh":0,"primitive":0,"semantic":"POSITION","deformed_node":0}},"outputs":["resource"]},
+        {"id":"normal","op":"render.attribute","parameters":{"element":"vec3","domain":"vertex",
+          "source":{"asset":"project://character.gltf","mesh":0,"primitive":0,"semantic":"NORMAL","deformed_node":0}},"outputs":["resource"]}],
+      "outputs":{"position":{"node":"position","port":"resource"},"normal":{"node":"normal","port":"resource"}}})");
+    document["nodes"][5] = {{"id", "render"}, {"op", "graph.instance"}, {"definition", "geometry"},
+        {"owner", {{"scene", "default_scene"}, {"object", 1}}}};
+    document["nodes"][6]["parameters"]["size"] = 16;
+    auto &probe = document["nodes"][7];
+    probe["parameters"]["ports"]["source"] = {{"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
+    probe["parameters"]["ports"]["normal"] = probe["parameters"]["ports"]["source"];
+    probe["inputs"]["source"] = {{"node", "render"}, {"port", "position"}};
+    probe["inputs"]["normal"] = {{"node", "render"}, {"port", "normal"}};
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    if (ray_query)
+        document["rendering"]["target_planning"]["graphs"]["main_render"]["required_capabilities"] =
+            nlohmann::json::array({"pelican.vulkan.ray_query@1"});
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    pelican_store_destination(0, pelican_load_source(0).x);
+    pelican_store_destination(1, pelican_load_source(1).x);
+    pelican_store_destination(2, pelican_load_normal(0).y);
+    pelican_store_destination(3, pelican_load_normal(0).z);
+}
+)");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+      {"name":"Character","components":[{"name":"transform","pos":[10,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"character"}]}
+    ]}}})");
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16,16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    GET_MODULE(ECSCore).update();
+    const auto object = scene.objectId("Character");
+    REQUIRE(object);
+    for (const auto &binding : scene.runtimeObjectBindings())
+        if (binding.object_id == *object) document["nodes"][5]["owner"]["object"] = binding.authoring_object_id.value;
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    const auto instance_for = [&](GameObjectId id) {
+        const auto *model = ecs.tryComponent<SimpleModelViewComponent>(id);
+        REQUIRE(model);
+        REQUIRE(model->model_instance_id);
+        return *model->model_instance_id;
+    };
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto initial = instance_for(*object);
+    const auto weight = [&](ModelInstanceId id, float value, std::uint64_t revision) {
+        REQUIRE(instances.publishMorphWeightFrame(id, PublishMorphWeightFrameDescV1{
+            .layout_generation = instances.morphLayoutGenerationForTesting(id),
+            .frame_revision = revision, .weights = &value, .weight_count = 1}) == Animation::Status::ok);
+    };
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto render = [&] {
+        renderer.render();
+        core.waitIdle();
+        const auto bytes = core.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float) * 4);
+        std::array<float, 4> values;
+        std::memcpy(values.data(), bytes.data(), sizeof(values));
+        return values;
+    };
+    const auto expect = [&](std::array<float, 4> expected) {
+        const auto actual = render();
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+            INFO("GPU deformation result " << i);
+            REQUIRE(std::abs(actual[i] - expected[i]) < 0.00001f);
+        }
+    };
+    weight(initial, 0.5f, 1);
+    expect({0.7f, 1.3f, 0.0f, 1.0f});
+    if (ray_query) {
+        const auto diagnostics = renderer.rayQueryAccelerationStructureDiagnosticsForTesting();
+        REQUIRE(diagnostics.requested);
+        REQUIRE(diagnostics.active_blas_count > 0);
+    }
+    weight(initial, 0.75f, 2);
+    expect({1.2f, 1.8f, 0.0f, 1.0f});
+    const auto skin = glm::translate(glm::mat4{1}, glm::vec3{1, 0, 0}) *
+        glm::rotate(glm::mat4{1}, glm::radians(90.0f), glm::vec3{1, 0, 0});
+    const std::array palette{skin, skin};
+    instances.setSkinningPalette(initial, palette);
+    expect({2.2f, 2.8f, -1.0f, 0.0f});
+    const auto generation = GET_MODULE(RenderingPassContainer).activeGeneration();
+    const auto active_programs = GET_MODULE(RenderingPassContainer).snapshot();
+    REQUIRE(active_programs);
+    REQUIRE_FALSE(active_programs->programs.empty());
+    auto invalid_count = active_programs->programs.begin()->second.frame_graph.deformed_attributes;
+    REQUIRE_FALSE(invalid_count.empty());
+    REQUIRE(invalid_count.front().expected_count > 0);
+    --invalid_count.front().expected_count;
+    REQUIRE_THROWS_WITH(validateGraphDeformedAttributes(invalid_count),
+        Catch::Matchers::ContainsSubstring("count"));
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
+    auto invalid = document;
+    invalid["definitions"]["geometry"]["nodes"][0]["parameters"]["source"]["deformed_node"] = 99;
+    REQUIRE_THROWS(loadRenderGraphVariantsFromConfigData(invalid.dump()));
+    REQUIRE(GET_MODULE(RenderingPassContainer).activeGeneration() == generation);
+    expect({2.2f, 2.8f, -1.0f, 0.0f});
+    GameObjects{}.remove(*object);
+    expect({2.2f, 2.8f, -1.0f, 0.0f});
+    test_support::loadScene(scene, "default_scene");
+    GET_MODULE(ECSCore).update();
+    const auto reloaded = scene.objectId("Character");
+    REQUIRE(reloaded);
+    const auto replacement = instance_for(*reloaded);
+    REQUIRE(replacement != initial);
+    expect({-0.3f, 0.3f, 0.0f, 1.0f});
+    weight(replacement, 2.0f, 1);
+    expect({3.7f, 4.3f, 0.0f, 1.0f});
+    auto &reload = GET_MODULE(watch::ReloadService);
+    auto &models = GET_MODULE(ModelAssetContainer);
+    const auto revision = models.contentRevisionForTesting("character");
+    const watch::ReloadRequest changed{.key = watch::makeAssetKey("character.gltf")};
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin", {.position_scale = 2, .morph_target = true});
+    REQUIRE(reload.applyRequestForTesting(changed));
+    REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+    const auto current_instance = instance_for(*reloaded);
+    const std::array identity_palette{glm::mat4{1}, glm::mat4{1}};
+    instances.setSkinningPalette(current_instance, identity_palette);
+    weight(current_instance, 0.5f, 2);
+    expect({0.4f, 1.6f, 0.0f, 1.0f});
+    const auto before_failed_reload = GET_MODULE(RenderingPassContainer).snapshot();
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin", {.position_scale = 3, .morph_target = true});
+    {
+        watch::ScopedRenderPipelineCompanionReloadObserver fail_after_model_prepare{
+            [](auto) { throw std::runtime_error("reject deformed attribute companion"); }};
+        REQUIRE_FALSE(reload.applyRequestForTesting(changed));
+    }
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == before_failed_reload);
+    REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+    expect({0.4f, 1.6f, 0.0f, 1.0f});
+    // A valid source node can disappear from the model's selected scene.
+    // Reject the model candidate before publishing broken graph references.
+    auto detached_mesh = nlohmann::json::parse(std::ifstream{root / "character.gltf"});
+    detached_mesh["scenes"][0]["nodes"] = nlohmann::json::array({1});
+    writeText(root / "character.gltf", detached_mesh.dump());
+    REQUIRE_FALSE(reload.applyRequestForTesting(changed));
+    REQUIRE(GET_MODULE(RenderingPassContainer).snapshot() == before_failed_reload);
+    REQUIRE(models.contentRevisionForTesting("character") == revision + 1);
+    expect({0.4f, 1.6f, 0.0f, 1.0f});
+    REQUIRE(nlohmann::json::parse(std::ifstream{root / "passes/main_rendering_config.json"}) == document);
+    const auto final_generation = GET_MODULE(RenderingPassContainer).snapshot();
+    REQUIRE(final_generation);
+    REQUIRE_FALSE(final_generation->programs.empty());
+    REQUIRE(final_generation->programs.begin()->second.frame_graph.value_graph);
+    REQUIRE(nlohmann::json::parse(final_generation->programs.begin()->second.frame_graph.value_graph->serialize()) == document);
+}
+
 TEST_CASE("glTF skin and clips connect to animation component without ECS bones", "[gltf][skeletal]") {
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /

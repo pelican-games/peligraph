@@ -15,6 +15,63 @@
 using namespace Pelican::Animation;
 using Catch::Approx;
 
+TEST_CASE("deformed attribute sources require owned typed vertex declarations", "[curve][graph-deformed-attribute]") {
+    using Json = nlohmann::json;
+    auto document = Json::parse(R"({"schema":"pelican.graph","version":1,
+      "definitions":{"geometry":{"nodes":[
+        {"id":"position","op":"render.attribute","parameters":{"element":"vec3","domain":"vertex",
+          "source":{"asset":"project://character.glb","mesh":0,"primitive":0,"semantic":"POSITION","deformed_node":0}},"outputs":["resource"]}],
+        "outputs":{"position":{"node":"position","port":"resource"}}}},
+      "nodes":[{"id":"model","op":"graph.instance","definition":"geometry","owner":{"scene":"main","object":1}}],
+      "outputs":{"position":{"node":"model","port":"position"}}})");
+    const auto original = document;
+    const auto parameters = [](Json &value) -> Json & {
+        return value["definitions"]["geometry"]["nodes"][0]["parameters"];
+    };
+    SECTION("resolution derives counts without changing authored source") {
+        std::size_t calls = 0;
+        const auto resolved = Pelican::resolveGraphAttributeSources(document,
+            [&](std::string_view id, const Json &source_parameters) -> std::uint64_t {
+                REQUIRE(std::string{id} == "model/position");
+                REQUIRE(source_parameters == parameters(document));
+                ++calls;
+                return 4;
+            });
+        REQUIRE(calls == 1);
+        REQUIRE(document == original);
+        const auto &derived = resolved["definitions"]["geometry"]["nodes"][0]["parameters"];
+        REQUIRE(derived["count"] == 4);
+        REQUIRE_FALSE(derived.contains("source"));
+        parameters(document)["source"]["semantic"] = "NORMAL";
+        REQUIRE_NOTHROW(Pelican::partitionGraphDocument(document));
+        parameters(document)["source"]["deformed_node"] = std::numeric_limits<std::uint32_t>::max();
+        REQUIRE_NOTHROW(Pelican::partitionGraphDocument(document));
+    }
+    SECTION("indices must be uint32 integers") {
+        for (const auto &invalid : Json::array({-1, 0.5, "0", true, std::uint64_t{1} << 32})) {
+            parameters(document)["source"]["deformed_node"] = invalid;
+            REQUIRE_THROWS(Pelican::partitionGraphDocument(document));
+        }
+    }
+    SECTION("only current position and normal vertex vec3 are supported") {
+        const Json invalid_parameters{{"element", "vec4"}, {"domain", "instance"}, {"count", 4}};
+        for (const auto &[key, value] : invalid_parameters.items()) {
+            auto invalid = document;
+            parameters(invalid)[key] = value;
+            REQUIRE_THROWS(Pelican::partitionGraphDocument(invalid));
+        }
+        parameters(document)["source"]["semantic"] = "TANGENT";
+        REQUIRE_THROWS(Pelican::partitionGraphDocument(document));
+        document = original;
+        parameters(document)["source"]["morph_target"] = 0;
+        REQUIRE_THROWS(Pelican::partitionGraphDocument(document));
+    }
+    SECTION("an owned instance selects the live model") {
+        document["nodes"][0].erase("owner");
+        REQUIRE_THROWS(Pelican::partitionGraphDocument(document));
+    }
+}
+
 TEST_CASE("graph state transfer follows stable nodes dependencies and owners", "[curve][graph-composition]") {
     auto document = parameterGraphCompositionFixture();
     document["nodes"].push_back({{"id", "custom_control"}, {"op", "value.parameter"},

@@ -2,6 +2,7 @@
 #include "shaderresourceport.hpp"
 
 #include <stdexcept>
+#include <algorithm>
 #include <limits>
 
 namespace Pelican {
@@ -117,11 +118,14 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
             const auto &source = parameters.at("source");
             const bool indices = parameters.at("domain") == "index";
             const bool morph = source.contains("morph_target");
+            const bool deformed = source.contains("deformed_node");
             if ((!indices && parameters.at("domain") != "vertex") || parameters.contains("count") ||
                 parameters.contains("size") || parameters.contains("host_source") ||
                 !node.at("inputs").empty())
                 throw std::invalid_argument("sourced attribute requires vertex/index domain and derives its data/count: " + id);
-            if (!source.is_object() || source.size() != (indices ? 3 : (morph ? 5 : 4)) ||
+            if (!source.is_object() || source.size() != (indices ? 3 : ((morph || deformed) ? 5 : 4)) ||
+                (deformed && (indices || morph || parameters.at("element") != "vec3" ||
+                    (source.at("semantic") != "POSITION" && source.at("semantic") != "NORMAL"))) ||
                 (indices && morph) ||
                 (indices && source.contains("semantic")))
                 throw std::invalid_argument("attribute source requires asset, mesh, primitive and a semantic only for vertex attributes: " + id);
@@ -130,8 +134,12 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
                 if (!source.at(key).is_string() || source.at(key).get_ref<const std::string &>().empty())
                     throw std::invalid_argument("attribute source requires nonempty names: " + id);
             }
-            for (const auto key : {"mesh", "primitive", "morph_target"}) {
+            if (deformed && std::none_of(graph.node_scopes.at(id).begin(), graph.node_scopes.at(id).end(),
+                [&](const auto &scope) { return graph.instance_owners.contains(scope); }))
+                throw std::invalid_argument("deformed attribute requires an owned graph instance: " + id);
+            for (const auto key : {"mesh", "primitive", "morph_target", "deformed_node"}) {
                 if (std::string_view{key} == "morph_target" && !morph) continue;
+                if (std::string_view{key} == "deformed_node" && !deformed) continue;
                 const auto &value = source.at(key);
                 if (!value.is_number_integer() ||
                     (!value.is_number_unsigned() && value.get<std::int64_t>() < 0) ||

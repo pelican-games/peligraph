@@ -39,7 +39,7 @@ static_assert(offsetof(DeformationJob, vat) == 28);
 static_assert(offsetof(DeformationJob, vat_bounds_min_frame_count) == 32);
 static_assert(offsetof(DeformationJob, time) == 80);
 
-// The scene inventory retains this object until the submitted frame completes.
+// The frame's geometry snapshots retain this object until submission completes.
 // Keeping the pool and pipeline here also covers reload and aborted publication.
 struct DeformedGeometry {
     std::shared_ptr<RayDeformationPipeline> pipeline;
@@ -89,18 +89,19 @@ std::shared_ptr<RayDeformationPipeline> createPipeline(vk::Device device) {
 
 } // namespace
 
-void PolygonInstanceContainer::recordRayDeformation(
+void PolygonInstanceContainer::recordGeometryDeformation(
     vk::CommandBuffer cmd_buf,
-    std::vector<RayQueryGeometryInstanceSnapshot> &instances) {
+    std::vector<RayQueryGeometryInstanceSnapshot> &instances,
+    bool for_acceleration_structures) {
     auto &core = GET_MODULE(VulkanManageCore);
     auto &geometry = GET_MODULE(VertBufContainer);
     const auto device = core.getDevice();
     bool dispatched = false;
     for (auto &instance : instances) {
-        if (instance.geometry_kind != RayGeometryKind::triangles ||
+        if (instance.deformed_vertex_buffer ||
+            instance.geometry_kind != RayGeometryKind::triangles ||
             (!instance.vat_deformed && !instance.skinned && !instance.morph_deformed) ||
-            instance.vertex_count == 0 || instance.vertex_offset < 0 ||
-            instance.index_count == 0 || instance.index_count % 3u != 0)
+            instance.vertex_count == 0 || instance.vertex_offset < 0)
             continue;
         if (!ray_deformation_pipeline)
             ray_deformation_pipeline = createPipeline(device);
@@ -108,11 +109,15 @@ void PolygonInstanceContainer::recordRayDeformation(
         auto output = std::make_shared<DeformedGeometry>();
         output->pipeline = ray_deformation_pipeline;
         output->source_lease = instance.geometry_lease;
+        vk::BufferUsageFlags output_usage =
+            vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eTransferSrc;
+        if (for_acceleration_structures)
+            output_usage |= vk::BufferUsageFlagBits::eShaderDeviceAddress |
+                vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR;
         output->vertices = core.allocBuf(
             vk::DeviceSize{instance.vertex_count} * sizeof(CommonVertStruct),
-            vk::BufferUsageFlagBits::eStorageBuffer |
-                vk::BufferUsageFlagBits::eShaderDeviceAddress |
-                vk::BufferUsageFlagBits::eAccelerationStructureBuildInputReadOnlyKHR,
+            output_usage,
             vma::MemoryUsage::eAutoPreferDevice, {});
         const std::array pool_size{
             vk::DescriptorPoolSize{vk::DescriptorType::eStorageBuffer, 9},
@@ -179,21 +184,28 @@ void PolygonInstanceContainer::recordRayDeformation(
         cmd_buf.pushConstants(ray_deformation_pipeline->layout.get(),
             vk::ShaderStageFlagBits::eCompute, 0, sizeof(job), &job);
         cmd_buf.dispatch((instance.vertex_count + 63u) / 64u, 1, 1);
-        instance.deformed_vertex_address = device.getBufferAddress(
-            vk::BufferDeviceAddressInfo{output->vertices.buffer.get()});
+        instance.deformed_vertex_buffer = output->vertices.buffer.get();
+        if (for_acceleration_structures)
+            instance.deformed_vertex_address = device.getBufferAddress(
+                vk::BufferDeviceAddressInfo{instance.deformed_vertex_buffer});
         instance.deformation_source_geometry_id = instance.geometry_allocation_id;
         instance.geometry_allocation_id = geometry.reserveGeometryAllocationId();
         instance.geometry_lease = std::move(output);
         dispatched = true;
     }
     if (dispatched) {
+        vk::AccessFlags consumer_access = vk::AccessFlagBits::eTransferRead |
+            vk::AccessFlagBits::eShaderRead;
+        vk::PipelineStageFlags consumer_stages = vk::PipelineStageFlagBits::eAllCommands;
+        if (for_acceleration_structures) {
+            consumer_access |= vk::AccessFlagBits::eAccelerationStructureReadKHR;
+            consumer_stages |= vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR;
+        }
         const vk::MemoryBarrier barrier{
             vk::AccessFlagBits::eShaderWrite,
-            vk::AccessFlagBits::eAccelerationStructureReadKHR |
-                vk::AccessFlagBits::eShaderRead};
+            consumer_access};
         cmd_buf.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
-            vk::PipelineStageFlagBits::eAccelerationStructureBuildKHR |
-                vk::PipelineStageFlagBits::eAllCommands,
+            consumer_stages,
             {}, barrier, {}, {});
     }
 }

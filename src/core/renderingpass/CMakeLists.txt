@@ -8,6 +8,7 @@ target_sources(pelican_core PRIVATE
     gizmopassinfojsonparser.cpp
     graphtransformregistry.cpp
     graphinputs.cpp
+    graphdeformedattribute.cpp
     renderstrategyregistry.cpp
     rendercompilerprogram.cpp
     vulkanrendercompilerprogram.cpp

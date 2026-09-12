@@ -181,7 +181,7 @@
 
 **IBL(image-based lighting)** — 環境を写した画像から、拡散・鏡面の環境光を作るライティング手法。**pelican2 では未実装**です(WP32 は番号予約のみ)。同梱の `sky_ambient.json` は単色の環境光であって IBL ではありません。初出: [第11章 §11.1](11_status.md#111-wp-全台帳)。
 
-**AS / BLAS / TLAS(加速構造)** — レイトレーシングで「レイがどの三角形に当たるか」を高速に絞るための木構造。**BLAS**(bottom-level)は 1 つのジオメトリの中身、**TLAS**(top-level)は BLAS のインスタンスを世界に並べた表で、**AS** はその総称です。pelican2 の AS は**静的ジオメトリ専用**で、transform を動かしても BLAS は無効化されません(TLAS の行が変わるだけ)。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L122))
+**AS / BLAS / TLAS(加速構造)** — レイトレーシングで「レイがどの三角形に当たるか」を高速に絞るための木構造。**BLAS**(bottom-level)は 1 つのジオメトリの中身、**TLAS**(top-level)は BLAS のインスタンスを世界に並べた表で、**AS** はその総称です。pelican2 の AS は**静的ジオメトリ専用**で、transform を動かしても BLAS は無効化されません(TLAS の行が変わるだけ)。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([accelerationstructure.hpp:69](../../src/core/vkcore/accelerationstructure.hpp#L125))
 
 **SBT(shader binding table)** — レイトレーシングパイプラインで、「どのレイがどのシェーダ(raygen / miss / closest-hit)に当たるか」を引くための表。`ray_group_layout` の `ray_types` / `groups` / `misses` / `record` がこの表の形を決めます。`acceleration_structure` は SBT の入力ではないので、layout の digest からは取り除いて計算されます。初出: [第6章 §6.15](06_rendering.md#615-レイトレーシングの宣言層--ray-layout-v1--v2-と-pelican_ray_instancert3-1--wp374374a377379383)。([RayTracingSceneShaderBindingTables](../../src/core/shader/pipelinefactory.hpp#L186))
 
