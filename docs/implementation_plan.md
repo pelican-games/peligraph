@@ -23230,6 +23230,20 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 4. table使用時のreuse阻害はrev384既知残余のまま。現行digestを比較する時点を整理し、判定を消すだけの修正はしない。layout無し経路のGPU寿命破壊は未実測であり確定欠陥と呼ばない(当該入力は今回load時に拒否)。
 
 
+
+#### R0 完了記録(統合側。2026-09-17、`36e8115f` + inventory `4d80f284`)
+
+- **基準取り**(`<作業ディレクトリ>/baseline_0916/`): HEAD `fc48b30d` で 1864 件中 29 件が赤(9/6〜9/12 の実装が全数を回さずに積まれていた)。分類は `triage.md`。
+- **6 クラスタを Opus 6 本で並列修正**(各 worktree、production の変更は最小):
+  - C1 skeletal / 共通グラフ GPU(5): 空 SECTION 4 件に assertion を書く。`set_time` harness は 9/7 の「公開 revision = frameIndex」変更(`bff9e540`)に追随して `advance()` を足す(production の temporal history reset を消す変異で赤)
+  - C2 RT の production AS(5): RT5 で skin / morph / VAT が AS 対象になった override matrix、WP382d で named reject が load 時に出るようになった 2 件、RT6 の空 SECTION 2 件。すべて test 側
+  - C3 fixture と資源(8 → 7 + golden): resource registry の 9 id(9/6 の 6 commit 由来)、WP364 の cache key(`engineShaderUniverseSha256` が全 GLSL を畳む)、public API manifest に 5 mutator(`refuse.transaction-scope`)、scene extract test に `main_rendering_config.json`、hybrid preset test は rename でなく define で reload を印す、空 SECTION 2 件
+  - C4 エディタ(5): 空 SECTION 4 件を `GENERATE` に、**production 1 件**: fullscreen pass editor が `clearDraft()` で save の tooltip を毎回消していた(`7af6fd95`)
+  - C5 物理と SEGFAULT(3): 空 SECTION 2 件、**production 1 件**: `currentFramePlanJson()` が `GET_MODULE(ComputeTaskContainer)` で Vulkan を bootstrap し CPU test で null logger を踏んだ(`9f4e324b`)→ `tryGet`
+  - C6 corpus と gate(3): `raytracing_demo` の `catalog_smoke.json`(負対照から閾値 350 / 0.5)、WP357 の census 35 → 36(`present` に blend 無し、規則は不変)、projection gate に `punctualshadowview.cpp` を登録
+- **golden**: 影 3 枚(PCF、境界 1 pixel)と trace の `recorded`、skeletal toon harness の `advance()`。TAA harness に `advance()` を入れると jitter の位相が変わり golden が全部動くので入れない(検証済み)。inventory manifest を再生成
+- **副産物(記録)**: primary の shader source 9 本が非正規の改行で cache key が worktree と違った(正規化済み。hash が改行に依存するのは R1 の候補)/ worktree では smoke が未登録(`SKIP_DEVSTUDIO=ON` 固定)/ `atomicReplace` の間欠 `Access is denied`(修正候補付き)/ `setTime` だけの呼び手が animation frame を公開できない(O-1 の裁定)/ `looks_mutating` が `Animation::Status` 戻りを getter 扱いにする(public API gate の穴)/ RT6 world procedural BLAS は -j4 で flake、直列で緑
+- **着地**: W1 391 / 391(GPU 込み直列)、全数 1864 中 1863 緑 + RT6 flake 1(直列緑)。**基準は緑**。
 ### AG-0: 共通グラフの module 登録契約と purge ゲート(v0「往復」の段 1)
 
 **§4 規則 11 中段(`src/project` の純粋層 + core の backend 接続。出荷物の挙動は「未登録の op / 型を名前付きで拒否する」だけ変わる)。実装者: Claude(Fable + Opus subagent。codex は上限中)。検証: 統合側変異 + Claude。見積: 小〜中。**
