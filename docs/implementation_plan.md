@@ -23348,6 +23348,17 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 5. `PELICAN_WITH_ANIMATION=OFF`: build が通り、共通グラフの既存 test(value / render / audio)が緑、pose を使う文書は `graph.operation_unregistered@1`。production に animation の symbol が無い(dumpbin gate)
 6. 出荷 4 project bytes 不変、既存 animation test(`[skeletal]`、VRM、anim graph)無変更で緑
 
+#### 実装時の裁定(2026-09-17、Fable。実装 `agent/ag1a` `b59276e3`)
+
+- `GraphExecutionDomain` に **`animation`** を追加(values / rendering / animation の三分岐)。値 → pose の結合点は partition が発行する `$pose/<node>/<port>` の values 側 output で、pose 側はそれを animation phase の直前に **専用の `EvaluationState` で同 frame に 1 回**評価して読む。renderer 側の値評価と合わせて **values partition は 1 frame に 2 回評価される**(入力が同じなので値は同じ。状態を持つ node は 2 つの state を並走させる)。1 回にまとめる(renderer が pose の結果を再利用)のは R1 の整理候補
+- `pose.transform` は attach 時に名前付きで拒否(root transform を書く publication が ABI に無く、`object_transform` sink は同じ renderer instance を返すので二重書きになる)。**AG-2 の root motion で開く**
+- `pose.retarget` は pose 段では provenance の検査(入力 pose の layout = attachment の layout)だけ。profile の適用は今日どおり clip 焼き込み側(`VrmaRetargetedClip`)。毎 frame の再 retarget は無い
+- **`pose.state_machine` の pose 出力は自分の owner の `pose.skeletal` 以外へ繋げない**(`pose.sink_conflict@1`)。包んだ `EvaluatorV1` が sink の writer を持つため、`state_machine → blend` は v1 では書けない(書けるようにするには evaluator の出力を staged pose として読む経路が要る。記録)
+- `events` port は契約だけ(`pose.state_machine` の `events` 入力と `state_events` 出力)。animation node に event を繋ぐと `pose operations read scalar inputs only` で拒否(黙って無視しない)。**AG-1b で接続**
+- `pose.clip_sample` の rig 検証は attach 時(`resolveGraphModelSource`)。compile 時は文字列一致のみ。sink の owner は名前付き scene object に限る(unnamed は attach 時の named error)
+- `PELICAN_WITH_ANIMATION` は `cmake/pelican_feature_registry.cmake` に `SMOKE_ID animation` で登録(台帳の機械生成表に 1 行)。OFF で外れるもの: `src/core/animation/*`、`EvaluatorV1`、`AnimationSystem`、pose module。残るもの: `abi_v1.hpp` 以下の凍結ヘッダと `getApiV1` / `getPoseStagingServiceV1` / `Vrm::getApplicationServiceV1` の交渉入口(`unsupported_version` を返す stub。出荷 project の game DLL が link するため)。**skinning compute(`polygoninstancecontainer` の palette、`ray_deform.comp`、`skinned.vert`)は OFF でも残る**(姿勢を受け取る側)。dumpbin: ON 4384 / OFF 0 件、`run_build_units_smoke.cmake` に `verify_animation_absent()` + `run_animation_smoke()`
+- 既存の穴(記録): `test/raytracing_rt3_1_production_test.cpp:1696` の TEST_CASE は `PELICAN_RUNTIME_SHADER_COMPILER` だけで囲まれ、`PELICAN_WITH_RPC=OFF` で `makeEditorRuntimeService` を参照して build が落ちる(RPC OFF 構成の test target 1 つ。R1 で `#if PELICAN_WITH_RPC` を足す)
+
 #### やらないこと
 
 正本の一本化(AG-1b)/ root motion(AG-2)/ N-way blend の専用 op / layer・additive・IK / timeline view(AG-3)/ 物理 → pose。
