@@ -23412,40 +23412,54 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 - `pose.state_machine` の `events` / `state_events` 契約は削除(AG-1b。event は v0 の後)
 - 評価の向きの宣言(同 frame 内で pose は scalar を読み逆向きは無い)はそのまま
 
-### P-1: パラメータの供給元(mode)と由来 —— まず `graph.instance` の入力だけ(v0「往復」の段 3)
 
-**§4 規則 11 中段(pass 文書の編集 RPC と journal、Studio の Inspector)。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、2026-09-17、24 件、`<作業ディレクトリ>/dr_p1.md`)で草稿の前提が 2 つ誤り、範囲が広すぎると判定 → v2。第 2 巡は起票前に 1 回。見積: 中。**
-**規範: `v1_development_plan.md` P-1、`design_graph_composition.md`(instance の入力 parameter: **edge > parameters > default、二重指定は拒否**、装着編集)、`design_devstudio_direction.md` §0.5(D0)。前提: AG-0 統合済み。**
+### P-1: パラメータの供給元(mode)と由来 —— `graph.instance` の入力を、Inspector とグラフの同じ edge で(v0「往復」の段 3。v3 = 最終)
 
-#### 前提の訂正(第 1 巡が確認した事実)
+**§4 規則 11 中段(pass 文書の編集 op、Studio の Inspector、publish 経路の値の退避)。実装者: Claude(Fable + Opus)。設計レビューは 2 巡(`<作業ディレクトリ>/dr_p1.md` 24 件、`<作業ディレクトリ>/dr_p1_r2.md` 17 件)で打ち切り。残余はコードレビューへ。見積: 中〜大。**
+**規範: `v1_development_plan.md` P-1、`design_graph_composition.md`(instance の入力 parameter、装着編集)、`design_devstudio_direction.md` §0.5(D0)。前提: AG-0 統合済み。**
 
-- `get_status` に実効値も適用元も無い([rpcserver.cpp:1329](../src/core/communication/rpcserver.cpp#L1329) 以下)。実効値を返すのは `get_ray_occurrences`(RT の occurrence だけ)
-- feature parameter は compose 時の `$name` 置換と shader define で、runtime 値を持たない([featurecompose.cpp:1450](../src/project/featurecompose.cpp#L1450))。`render.scalar` は名前付き GPU buffer を書く別機構で feature parameter を指さない → **feature parameter に mode を出す欄は無い**
-- `edit_graph_instances` は `attach`(`op == "graph.instance"` + `owner`)と `detach` だけ([graphcomposition.cpp:307](../src/project/graphcomposition.cpp#L307))。primitive node の追加 / 削除、`inputs` の書き換え、`definitions` の編集を行う RPC は無い
-- `graph.instance` の入力 parameter の mode 意味論(edge > parameters > default、二重指定拒否)は **既に実装済み**
-- edge は pass 文書、component の固定値は scene 文書で、CAS(`base_source_digest` / `SceneRevision`)も undo(journal に graph の op は 0)も別系統
-- `graph.instance.owner` の authoring object id は load 時の宣言順連番で、保存 → 再読込を跨ぐと別個体を指しうる([authoringscenedocument.cpp:38](../src/core/loader/authoringscenedocument.cpp#L38)、解決は線形走査 [scenegraphruntime.cpp:33](../src/core/loader/scenegraphruntime.cpp#L33))。`design_object_identity.md` の ID-1〜4 は未実装(**既知の穴。P-1 では広げない**)
+#### 第 2 巡が確認した事実(v2 の訂正)
 
-#### 決定(v2)
+- `edit_graph_instances` の `queueRootEdit` は非同期で、同一 frame の 2 本目は commit 時 CAS で `stale_source_digest`([renderconfigeditor.cpp:2252](../src/devstudio/view/renderconfigeditor.cpp#L2252))→ 1 操作は 1 op 列で原子的に送る必要がある
+- edge と `parameters` の二重指定は拒否([graphcomposition.cpp:48](../src/project/graphcomposition.cpp#L48))、default の無い入力は `parameters` を消すと外せない(:54)。Studio が作る instance は全入力に `parameters` を書く([graphattachmentmodel.cpp:164](../src/devstudio/model/graphattachmentmodel.cpp#L164))
+- journal の undo stack は actor 単位で、record は `SceneRevision` しか持たない([editorjournal.cpp:4762](../src/core/communication/editorjournal.cpp#L4762))。render config の commit は非同期で失敗しうる
+- 評価値は `evaluateInternal` のローカルで、どこにも残らない([valuegraph.cpp:439](../src/core/userpublic/valuegraph.cpp#L439))。RPC からの再評価は時計を進め event を二重消費する
+- event は rendering 側の state にしか届かない([scenegraphruntime.cpp:102](../src/core/loader/scenegraphruntime.cpp#L102))
+- Inspector に既存 instance の parameter 編集欄は無い(tooltip だけ。編集は新規 Attach ダイアログ)。`get_graph_instances` は mode の材料(edge / parameters / default)を既に全部返す
+- 出荷 4 project に `pelican.graph` 文書は無い。GUI を実 widget で駆動する test の前例はある([devstudio_fullscreen_pass_test.cpp:2568](../test/devstudio_fullscreen_pass_test.cpp#L2568))
 
-1. **範囲は `graph.instance` の入力 parameter だけ**。component の欄(書き込み口が無く、宣言 schema v3 に欄を足すと game DLL の ABI と fingerprint が動く)は **P-1b** として別起票。feature parameter は「やらないこと」(欄が無い)
-2. **pass 文書の編集 op を足す**: `edit_graph_document{base_source_digest, ops: [add_node{node}, remove_node{id}, set_input{node, port, source: {node, port} | null}]}`。`edit_graph_instances` と同じ authoring transaction と CAS を通り、**journal の op**(domain `render_config`、`edit_graph_instances` も同じ domain に載せる)として undo / redo できる。scene の journal と混ぜない(2 文書 2 CAS は事実として受け入れ、同じ journal の別 domain として並ぶ)
-3. **mode の定義**: instance の入力 port X が「接続」= 展開後 X への edge がある、「固定値」= `parameters` に値がある、「既定」= どちらも無い。Inspector 側に接続表は持たない(既存の意味論をそのまま表示する)
-4. **導線 3 つ**(Inspector の instance parameter 欄): 「曲線で制御」= `edit_graph_document` 1 回で `value.playback` + `value.curve` + `set_input` を張る(`parameters` の同名は同じ op で消す。二重指定拒否のため)/ 「別の出力に接続」= `set_input` / 「供給元を開く」= edge の元 node が乗る scope のグラフ表示へ。接続中の欄は読み取り専用(一方向)
-5. **由来**: 新 RPC `get_graph_values{instance}` が、その instance の各入力 port について `{mode, value, source: {node, port} | null, generation, scene_time}` を返す(renderer 側の値評価 = 描画世代の値。AG-1a の pose 用 2 回目評価は返さない: 同じ入力から同じ値になる契約なので 1 つで足りる)。Inspector は接続中の欄に現在値と由来を表示
-6. **変更時の扱い**: v0 の範囲では全 port が `value`(共通グラフの port は毎 frame 変えてよい)なので分類の欄は足さない。AG-0 の `parameter_change` はそのまま(P-1b と O-1 で使う)
+#### 裁定(第 2 巡の「起票前に決めること」8 件)
+
+1. **journal には載せない**。pass 文書の編集は今日どおり render authoring transaction(CAS `base_source_digest`)で行い、undo は v0 では持たない(記録: journal の型一般化が先行 WP。R 群)
+2. **二重指定の拒否を優先順に緩める**: `edge > parameters > default`。`parameters` は接続を外したときの戻り値として残す(消さない)。「default の無い入力が外せない」問題はこれで消える。`design_graph_composition.md` の「二重指定は拒否」を訂正(同じ commit で)
+3. **由来は publish 経路で退避**: renderer 側の値評価が publish するとき、instance ごとの入力 port の実効値 `{value, source: connected{node, port} | parameter | default | override, generation}` を **snapshot に書き、RPC はそれを読む**(再評価しない)。`generation` は描画世代番号。「同じ入力から同じ値」の語は撤回(pose 側の値は返さない、と明記)
+4. **既存 instance の parameter 編集 UI を P-1 に含める**: Inspector の装着一覧に、instance ごとの入力 port 一覧(mode / 現在値 / 由来)と、固定値の編集、3 導線
+5. **「曲線で制御」の node 集合を固定**: `value.input{name: "scene_time"}`(既存の scene 時計供給)→ `value.playback{elapsed ← scene_time}` → `value.curve{time ← playback, keys: 既定 2 点}` → `set_input(instance.X ← curve.value)`。曲線の編集は `set_node_parameters{node, parameters}` op(汎用)で行う(専用 UI は AG-3)
+6. **受け入れは fixture project で取る**(出荷 project に graph 文書が無い事実を書く)。出荷 project への graph 追加は P-2 の学習サンプルで
+7. **op と named code の最小集合**: `edit_graph_document{base_source_digest, ops: [add_node, remove_node, set_input, set_node_parameters]}`(1 RPC で原子的)。code: `graph.node_duplicate@1` / `graph.node_missing@1` / `graph.input_unknown@1` / `graph.output_referenced@1`(outputs か instance が参照する node の削除)/ `graph.definition_immutable@1`(v0 では definition 内は編集不可)。**catalog RPC `get_graph_catalog`**(AG-0 の `catalog()`)も P-1 に含める
+8. **実行時上書き(`setGraphParameter`)は 4 つ目の mode `override`** として由来に出す。接続された入力の override は無効(`graph.override_shadowed@1` を `setGraphParameter` が返す。黙って消えない)
+
+#### 決定(v3)
+
+1. 範囲は `graph.instance` の入力 port だけ(component 欄は P-1b、feature parameter は欄が無い)
+2. `edit_graph_document`(裁定 7)。definition 内と instance path 越しの node は編集不可(v0)
+3. mode = `connected`(展開後に X へ入る edge)/ `parameter` / `default` / `override`(裁定 2・8)
+4. 導線 3 つ(裁定 5): 「曲線で制御」「別の出力に接続」「供給元を開く」(scope 表示へ飛ぶだけ。edge 編集 UI は AG-3)
+5. 由来 = publish 経路の snapshot を `get_graph_values{instance}` が返す(裁定 3)
+6. `get_graph_catalog`(裁定 7)
 
 #### 受け入れ(§4 規約 10)
 
-1. Studio の Inspector で「曲線で制御」→ RPC の `edit_graph_document` 1 回と **同じ bytes** の pass 文書になる(GUI 専用操作が無い)。undo で元に戻り、redo で戻る(journal の op として)
-2. グラフ表示で edge を消す(`set_input null`)→ Inspector の欄が固定値(`parameters`)か既定に戻る。Inspector に接続表を持たせる変異(edge を消しても「接続」表示が残る)で落ちる
-3. `parameters` と edge の両方がある文書 → 既存の named reject(今日どおり)。「曲線で制御」が `parameters` を消さない変異で落ちる
-4. `get_graph_values` の値が renderer の描画世代の評価値と一致し、source が展開後の edge と一致。由来を消す変異で落ちる
-5. D0(Studio は project + RPC のみ)、RPC OFF build、`SKIP_DEVSTUDIO` 両構成、出荷 4 project bytes 不変
+1. fixture project(graph 文書 + 装着 1 つ)で、Inspector の「曲線で制御」→ `edit_graph_document` 1 回と **同じ bytes**(GUI を実 widget で駆動)。同じ op 列を RPC で送った文書と一致
+2. edge を `set_input null` で外す → `get_graph_instances` の mode が `parameter` に戻り、値が `parameters` の値になる(消していないので戻れる。今日 = 二重指定で拒否されるか default 無しで外せない)
+3. `get_graph_values` の値が publish 時の snapshot と一致し、RPC を何度呼んでも trigger clock が進まない(今日 = 値が残らない / 再評価で進む)。snapshot を消す変異で落ちる
+4. 接続された入力への `setGraphParameter` → `graph.override_shadowed@1`(今日 = 黙って消える)
+5. `get_graph_catalog` が 4 module(value / audio / render / pose)を返す(OFF では 3)
+6. D0、RPC OFF build、`SKIP_DEVSTUDIO` 両構成、出荷 4 project bytes 不変
 
 #### やらないこと
 
-component 欄(P-1b: 書き込み口 `set_component_value` の欄単位化、宣言 schema の `change` 欄、scene sink)/ feature parameter / 双方向 bind / 式言語 / owner id の永続化(ID-1〜4。別 WP)/ scope 表示での edge 編集 UI の全面(AG-3)。
+journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内の編集 / 曲線の専用 UI と scope 表示での edge 編集(AG-3)/ 双方向 bind / owner id の永続化(別 WP)。
 
 ### 未了項目と再開順
 
