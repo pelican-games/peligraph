@@ -4396,6 +4396,39 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         })}, {"outputs", {{"color", {{"node", "draw"}, {"port", "color"}}}}},
         {"rendering", {{"render_targets", Json::array()}, {"rendering_passes", Json::array()}}}};
     std::uint64_t expected_size = 4;
+    const auto verify = [&]() {
+        const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
+        const auto &config = resolved.normalized_config;
+        const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);
+        REQUIRE(config.at("buffers").at(0).at("size") == expected_size);
+        if (expected_size == 48) REQUIRE(pass.at("draw").at("vertex_count") == 2);
+        if (expected_size == 24) {
+            REQUIRE(pass.at("draw").at("operation") == "indexed");
+            REQUIRE(pass.at("draw").at("index_buffer") == "data");
+            REQUIRE(pass.at("draw").at("index_count") == 3);
+            REQUIRE(pass.at("draw").at("first_index") == 3);
+            REQUIRE(config.at("buffers").at(0).at("index_buffer") == true);
+        }
+        REQUIRE(pass.at("name") == "draw");
+        REQUIRE(pass.at("shader").at("fragment") == "project://custom");
+        REQUIRE(pass.at("output").at("color") == Json::array({"image"}));
+        REQUIRE(pass.at("resource_ports").at("source").at("resource") == "data");
+        REQUIRE(computeTaskByName(config, "consume").at("after") == Json::array({"draw"}));
+        auto planning = config;
+        planning["passes"] = config.at("rendering_passes").at(0).at("passes");
+        const auto order = framePlanOrder(planFrameGraph(parseFrameGraphDefinitionFromJson(planning)));
+        REQUIRE(std::find(order.begin(), order.end(), "draw") < std::find(order.begin(), order.end(), "consume"));
+        REQUIRE_NOTHROW(compileRenderPipeline(resolved));
+        auto invalid = document;
+        invalid["nodes"][2]["parameters"]["ports"]["color"]["location"] = 1;
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+        invalid = document;
+        invalid["nodes"][2]["parameters"]["output"] = {{"color", "hidden"}};
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+        invalid = document;
+        invalid["nodes"][2]["inputs"]["color"] = {{"node", "data"}, {"port", "resource"}};
+        REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+    };
     SECTION("index attribute determines indexed draw range") {
         expected_size = 24;
         document["nodes"][0]["op"] = "render.attribute";
@@ -4412,11 +4445,13 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         auto invalid = document;
         invalid["nodes"][2]["parameters"]["draw"]["first_index"] = 7;
         REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
+        verify();
     }
-    SECTION("fullscreen") {}
+    SECTION("fullscreen") { verify(); }
     SECTION("raster") {
         document["nodes"][2]["op"] = "render.raster";
         document["nodes"][2]["parameters"]["draw"] = {{"vertex_count", 3}};
+        verify();
     }
     SECTION("instance attribute") {
         document["nodes"][0]["op"] = "render.attribute";
@@ -4437,6 +4472,7 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
         mismatched["nodes"][0]["parameters"]["count"] = -1;
         REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{mismatched}, {}));
+        verify();
     }
     SECTION("vertex attribute determines draw range") {
         expected_size = 48;
@@ -4452,38 +4488,8 @@ TEST_CASE("common graphics ports retain shaders and order attachment consumers",
         auto invalid_count = document;
         invalid_count["nodes"][2]["parameters"]["draw"]["vertex_count"] = 2;
         REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid_count}, {}));
+        verify();
     }
-    const auto resolved = resolveRenderPipeline(RenderPipelineRequest{document}, {});
-    const auto &config = resolved.normalized_config;
-    const auto &pass = config.at("rendering_passes").at(0).at("passes").at(0);
-    REQUIRE(config.at("buffers").at(0).at("size") == expected_size);
-    if (expected_size == 48) REQUIRE(pass.at("draw").at("vertex_count") == 2);
-    if (expected_size == 24) {
-        REQUIRE(pass.at("draw").at("operation") == "indexed");
-        REQUIRE(pass.at("draw").at("index_buffer") == "data");
-        REQUIRE(pass.at("draw").at("index_count") == 3);
-        REQUIRE(pass.at("draw").at("first_index") == 3);
-        REQUIRE(config.at("buffers").at(0).at("index_buffer") == true);
-    }
-    REQUIRE(pass.at("name") == "draw");
-    REQUIRE(pass.at("shader").at("fragment") == "project://custom");
-    REQUIRE(pass.at("output").at("color") == Json::array({"image"}));
-    REQUIRE(pass.at("resource_ports").at("source").at("resource") == "data");
-    REQUIRE(computeTaskByName(config, "consume").at("after") == Json::array({"draw"}));
-    auto planning = config;
-    planning["passes"] = config.at("rendering_passes").at(0).at("passes");
-    const auto order = framePlanOrder(planFrameGraph(parseFrameGraphDefinitionFromJson(planning)));
-    REQUIRE(std::find(order.begin(), order.end(), "draw") < std::find(order.begin(), order.end(), "consume"));
-    REQUIRE_NOTHROW(compileRenderPipeline(resolved));
-    auto invalid = document;
-    invalid["nodes"][2]["parameters"]["ports"]["color"]["location"] = 1;
-    REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
-    invalid = document;
-    invalid["nodes"][2]["parameters"]["output"] = {{"color", "hidden"}};
-    REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
-    invalid = document;
-    invalid["nodes"][2]["inputs"]["color"] = {{"node", "data"}, {"port", "resource"}};
-    REQUIRE_THROWS(resolveRenderPipeline(RenderPipelineRequest{invalid}, {}));
 }
 
 } // namespace Pelican

@@ -824,16 +824,21 @@ TEST_CASE("WP382d imported variants retain every override in the shared ray plan
         std::vector<ImporterVariantV1> variants;
         bool eligible;
     };
+    // RT5 builds ray geometry from skin, morph and VAT deformation, so every
+    // importer variant now carries an AS row and a resolved occurrence.  The
+    // ineligible path (geometry that no BLAS can take) stays covered by
+    // "row-only declarations retain ineligible targets as diagnostics" in
+    // raytracing_rt3_1_test.cpp.
     std::vector<VariantCase> cases{
         {"static.glb", {ImporterVariantV1::none, ImporterVariantV1::none}, true},
-        {"skinned.glb", {ImporterVariantV1::skinned}, false},
-        {"morph.glb", {ImporterVariantV1::morph_expanded}, false},
+        {"skinned.glb", {ImporterVariantV1::skinned}, true},
+        {"morph.glb", {ImporterVariantV1::morph_expanded}, true},
         {"split.vrm", {ImporterVariantV1::vrm_split_both,
-                       ImporterVariantV1::vrm_split_third_person_only}, false},
+                       ImporterVariantV1::vrm_split_third_person_only}, true},
     };
 #if PELICAN_WITH_VAT
     TestVatFixture::writeTinyVatGlb(root / "vat.glb");
-    cases.push_back({"vat.glb", {ImporterVariantV1::vat_deformed}, false});
+    cases.push_back({"vat.glb", {ImporterVariantV1::vat_deformed}, true});
 #endif
     FastModuleContainer modules;
     auto &launch = GET_MODULE(EngineLaunchConfig);

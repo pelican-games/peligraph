@@ -635,16 +635,30 @@ TEST_CASE("Mesh trigger eligibility respects both masks trigger flags and entity
     collider.radius = 0.25F;
     collider.layer = 4;
     collider.mask = 2;
-    SECTION("mesh mask excludes primitive") { mesh.metadata.mask = 1; }
-    SECTION("primitive mask excludes mesh") { collider.mask = 1; }
-    SECTION("neither collider is a trigger") { mesh.metadata.trigger = false; }
-    SECTION("same entity has no self events") { primitive_entity = mesh_entity; }
-    world.publishPrepared(world.prepareBindings({std::move(mesh)}));
-    world.bindCollider("primitive", collider, primitive_entity);
-    world.updateTriggers(ctx);
-    CHECK(drainTriggerEvents().empty());
-    CHECK(world.activeTriggerPairCountForTesting() == 0);
-    internal::clearPendingEvents();
+    const auto expectNoTriggerPair = [&] {
+        world.publishPrepared(world.prepareBindings({std::move(mesh)}));
+        world.bindCollider("primitive", collider, primitive_entity);
+        world.updateTriggers(ctx);
+        CHECK(drainTriggerEvents().empty());
+        CHECK(world.activeTriggerPairCountForTesting() == 0);
+        internal::clearPendingEvents();
+    };
+    SECTION("mesh mask excludes primitive") {
+        mesh.metadata.mask = 1;
+        expectNoTriggerPair();
+    }
+    SECTION("primitive mask excludes mesh") {
+        collider.mask = 1;
+        expectNoTriggerPair();
+    }
+    SECTION("neither collider is a trigger") {
+        mesh.metadata.trigger = false;
+        expectNoTriggerPair();
+    }
+    SECTION("same entity has no self events") {
+        primitive_entity = mesh_entity;
+        expectNoTriggerPair();
+    }
 }
 
 TEST_CASE("Mesh trigger replacement preserves contacts and removal emits Exit",
@@ -703,32 +717,37 @@ TEST_CASE("Mesh pairs emit Trigger deltas for coplanar and transverse surface co
     auto first = meshTriggerBinding(first_entity, false);
     auto second = meshTriggerBinding(second_entity, true);
     second.identity.name = "second-mesh";
-    SECTION("coplanar surfaces") {}
+    const auto expectEnterThenExitOnSeparation = [&] {
+        world.publishPrepared(world.prepareBindings({std::move(first), std::move(second)}));
+        world.updateTriggers(ctx);
+        const std::vector<TriggerEventRecord> enters{
+            {true, first_entity, second_entity},
+            {true, second_entity, first_entity}};
+        REQUIRE(drainTriggerEvents() == enters);
+        REQUIRE(world.activeTriggerPairCountForTesting() == 1);
+        world.updateTriggers(ctx);
+        REQUIRE(drainTriggerEvents().empty());
+        GET_MODULE(ECSCore).getTemplatePublicModule()
+            .component<TransformComponent>(second_entity).pos.x = 10;
+        world.updateTriggers(ctx);
+        const std::vector<TriggerEventRecord> exits{
+            {false, first_entity, second_entity},
+            {false, second_entity, first_entity}};
+        CHECK(drainTriggerEvents() == exits);
+        CHECK(world.activeTriggerPairCountForTesting() == 0);
+        internal::clearPendingEvents();
+    };
+    SECTION("coplanar surfaces") {
+        expectEnterThenExitOnSeparation();
+    }
     SECTION("transverse surfaces with both trigger flags") {
         first.metadata.trigger = true;
         auto geometry = std::make_shared<PhysWorld::MeshGeometry>();
         geometry->vertices = {{0, -1, -1}, {0, 1, -1}, {0, 0, 1}};
         geometry->indices = {0, 1, 2};
         second.mesh = std::move(geometry);
+        expectEnterThenExitOnSeparation();
     }
-    world.publishPrepared(world.prepareBindings({std::move(first), std::move(second)}));
-    world.updateTriggers(ctx);
-    const std::vector<TriggerEventRecord> enters{
-        {true, first_entity, second_entity},
-        {true, second_entity, first_entity}};
-    REQUIRE(drainTriggerEvents() == enters);
-    REQUIRE(world.activeTriggerPairCountForTesting() == 1);
-    world.updateTriggers(ctx);
-    REQUIRE(drainTriggerEvents().empty());
-    GET_MODULE(ECSCore).getTemplatePublicModule()
-        .component<TransformComponent>(second_entity).pos.x = 10;
-    world.updateTriggers(ctx);
-    const std::vector<TriggerEventRecord> exits{
-        {false, first_entity, second_entity},
-        {false, second_entity, first_entity}};
-    CHECK(drainTriggerEvents() == exits);
-    CHECK(world.activeTriggerPairCountForTesting() == 0);
-    internal::clearPendingEvents();
 }
 
 TEST_CASE("Unavailable mesh provider preserves Trigger state until a successful update",

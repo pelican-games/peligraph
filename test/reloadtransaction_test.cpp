@@ -3,6 +3,7 @@
 #include "../src/core/log.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <nlohmann/json.hpp>
 
 #include <array>
@@ -444,9 +445,12 @@ TEST_CASE(
 TEST_CASE(
     "ReloadService gives one batch owner selected companion requests atomically",
     "[wp222][reload-participant][batch][companions]") {
-    bool shared = false;
-    SECTION("separate files") {}
-    SECTION("shared file") { shared = true; }
+    // The two variants only select which requests the owner claims; every
+    // assertion lives in the shared body below.  Sections that carry no
+    // assertion of their own are rejected by `-w NoAssertions`, so the choice
+    // is a generator run, not a section.
+    const bool shared = GENERATE(false, true);
+    CAPTURE(shared);
     if (!logger) setupLogger();
     ReloadService service;
     const auto graph =

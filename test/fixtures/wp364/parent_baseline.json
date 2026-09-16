@@ -9,10 +9,10 @@
     "rt_shadow_mask_pipeline.rchit.spv": "3b9e8f34bde222c9e67bc7d8b125799332be62d195faffc19955124918468d3d"
   },
   "compiler_on_cache_key": {
-    "rt_shadow_mask.frag": "def9d740ae563cbeaf3f84a2525e838a530cb7498f2b9266fc0943aef299f1ee",
-    "rt_shadow_mask_pipeline.rgen": "c328d9ed09d72fdcd2eefaa8bbb817db351b6325b2562d4d5ef0a97aeb10c433",
-    "rt_shadow_mask_pipeline.rmiss": "a2f5120e341a514a551c49903b7992e57cdd3e481f144dfb3f01cb6402c8018e",
-    "rt_shadow_mask_pipeline.rchit": "e410c4b4758d88f59cc87af89364c48107926ee14da12b6759f717bbb79b9e50"
+    "rt_shadow_mask.frag": "46c07c17a05b93798c23526fbea2b943cfd673ae926b13f44fd10ea1fd5bdc9c",
+    "rt_shadow_mask_pipeline.rgen": "f37eb2cd6b3e10fff3e5cc84fe3d68f091d4862f5e66a6c47eba237fe622a5c1",
+    "rt_shadow_mask_pipeline.rmiss": "4c8d8cf1e0abdac878712144e34da0800408e69e2524bf78552151a6d44a20ec",
+    "rt_shadow_mask_pipeline.rchit": "897f1dfe1a3feab3a54350e1382e3a4131c065749ed4cb09a949ec575e8c6cd4"
   },
   "frame_plan_projection": {
     "schema": "pelican.frame_plan",

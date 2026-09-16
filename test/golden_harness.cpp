@@ -4657,6 +4657,7 @@ void renderSkeletalToonFrame(RenderTarget &render_target) {
 #if PELICAN_RUNTIME_SHADER_COMPILER
     auto &time = GET_MODULE(EngineTime);
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    time.advance();
     time.setTime(0.5);
 
     const auto example = sourceRoot() / "projects" / "example";
@@ -12539,6 +12540,10 @@ void GoldenHarness::runSetTimeSkinnedVelocity() {
 
     auto &time = GET_MODULE(EngineTime);
     time.setup(EngineTime::Mode::fixed_step, 1.0 / 60.0);
+    // The clip publication revision is EngineTime::frameIndex (2026-09-07), so each
+    // rendered frame has to be a distinct engine frame.  setTime immediately after
+    // advance keeps the sampled time and delta of this harness unchanged.
+    time.advance();
     time.setTime(0.0);
     GET_MODULE(ECSPredefinedRegistration).reg();
     test_support::loadScene(GET_MODULE(SceneLoader), "default_scene");
@@ -12558,12 +12563,14 @@ void GoldenHarness::runSetTimeSkinnedVelocity() {
     auto &instances = GET_MODULE(PolygonInstanceContainer);
     const auto instance = instances.modelInstanceIdForTesting(0);
     const auto model_before = instances.currentModelMatrixForTesting(instance);
+    time.advance();
     time.setTime(0.5);
     GET_MODULE(ECSCore).update();
     renderer.render();
     const auto first_seek_signal = maximumVelocitySignal(render_target.readbackLastFrameRGBA8());
     const auto model_after = instances.currentModelMatrixForTesting(instance);
 
+    time.advance();
     time.setTime(1.0);
     GET_MODULE(ECSCore).update();
     renderer.render();

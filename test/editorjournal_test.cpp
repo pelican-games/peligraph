@@ -5,6 +5,7 @@
 #include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
@@ -1455,9 +1456,13 @@ TEST_CASE("WP382b params insert materializes only the selected default and undo 
 
 TEST_CASE("Behavior field undo distinguishes separate attachments",
           "[editor][journal][behavior][attachment-field-undo]") {
-    bool same_attachment = false;
-    SECTION("separate attachments remain independently undoable") {}
-    SECTION("same attachment still conflicts") { same_attachment = true; }
+    // WP382b-fix acceptance 3: separate attachments edited by separate actors
+    // stay independently undoable, while the same attachment still conflicts.
+    // Both variants assert in the shared body below, so the choice is a
+    // generator run: an assertionless section is rejected by
+    // `-w NoAssertions`.
+    const bool same_attachment = GENERATE(false, true);
+    CAPTURE(same_attachment);
     Harness harness;
     REQUIRE(harness.commit({{"op", "add_component"}, {"object_id", 4},
                             {"component", {{"name", "behavior"},
@@ -1544,11 +1549,15 @@ TEST_CASE("WP382b behavior remove undo preserves the exact authored component",
 
 TEST_CASE("List editing can undo and redo through attachment creation",
           "[editor][journal][behavior][list-creation-undo]") {
-    bool spawn = false;
-    bool destroy = false;
-    SECTION("add component") {}
-    SECTION("spawn object") { spawn = true; }
-    SECTION("destroy and restore object with edited List") { spawn = true; destroy = true; }
+    // The three routes into the attachment differ only in how the component is
+    // created; every assertion lives in the shared body below, so they are
+    // generator runs rather than assertionless sections.
+    const std::string variant =
+        GENERATE(std::string{"add component"}, std::string{"spawn object"},
+                 std::string{"destroy and restore object with edited List"});
+    CAPTURE(variant);
+    const bool spawn = variant != "add component";
+    const bool destroy = variant == "destroy and restore object with edited List";
     Harness harness;
     const Json initial{{"name", "behavior"},
         {"type", "wp382b_journal_list_behavior"},

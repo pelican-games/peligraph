@@ -652,7 +652,7 @@ TEST_CASE(
     "[wp353][wp357][fullscreen][manifest][canonical]") {
     const auto entries =
         shippingFullscreenManifestEntries();
-    REQUIRE(entries.size() == 35);
+    REQUIRE(entries.size() == 36);
 
     std::vector<std::string> identities;
     identities.reserve(entries.size());
@@ -677,6 +677,7 @@ TEST_CASE(
         "projects/example/passes/main_rendering_config.json::lighting_pass",
         "projects/example/passes/main_rendering_config.json::ssao_blur_pass",
         "projects/example/passes/main_rendering_config.json::ssao_pass",
+        "projects/raytracing_demo/rendering.json::present",
         "projects/sprite_demo/passes/main.json::lighting_pass",
         "projects/vrm_xr_demo/passes/main.json::lighting_pass",
         "projects/vrm_xr_demo/passes/main.json::ssao_clear",
@@ -721,7 +722,7 @@ TEST_CASE(
             entries.begin(), entries.end(),
             [](const auto &entry) {
                 return !entry.pass.contains("raster_state");
-            }) == 32);
+            }) == 33);
     constexpr FullscreenDrawCommand parent_command{
         6, 1, 0, 0};
     for (const auto &entry : entries) {
@@ -852,7 +853,7 @@ TEST_CASE(
     }
 
     // output_transform is engine-generated and deliberately remains a
-    // separate invariant set from the 35 authored fullscreen entries.
+    // separate invariant set from the 36 authored fullscreen entries.
     const auto output_transforms =
         generatedOutputTransformSet();
     REQUIRE(output_transforms.size() == 1);

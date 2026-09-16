@@ -3970,20 +3970,26 @@ nlohmann::json Renderer::currentFramePlanJson() const {
     result["runtime_generation"] = generation->generation;
     // CPU-side runtime settings at query time, not a completed GPU submission.
     // Use registered task definitions: compiled declarations retain initial values.
-    for (const auto &compiled : program->rendering_pass.compute_tasks) {
-        const auto &definition = GET_MODULE(ComputeTaskContainer).definition(compiled.task_id);
-        const auto &ray = definition.ray_tracing;
-        if (!ray || !ray->callable_record_layout) continue;
-        auto records = nlohmann::json::array();
-        for (std::size_t index = 0; index < ray->callable_records.size(); ++index) {
-            records.push_back({{"index", index}, {"fields", rayRecordFieldsJson(
-                ray->callable_record_layout->members, ray->callable_records[index])}});
-        }
-        for (auto &node : result["nodes"]) {
-            if (node.at("kind") == "compute" && node.at("name") == compiled.definition.name) {
-                node["runtime_callable_records"] = {{"source", "runtime_cpu_settings"},
-                    {"records", std::move(records)}};
-                break;
+    // Only an already-created container is queried: this is a read-only
+    // projection and must not construct GPU modules, so the CPU-only frame plan
+    // seam stays free of them. Without the container no task is registered and
+    // there are no runtime settings to overlay.
+    if (const auto *compute_tasks = FastModuleContainer::tryGet<ComputeTaskContainer>()) {
+        for (const auto &compiled : program->rendering_pass.compute_tasks) {
+            const auto &definition = compute_tasks->definition(compiled.task_id);
+            const auto &ray = definition.ray_tracing;
+            if (!ray || !ray->callable_record_layout) continue;
+            auto records = nlohmann::json::array();
+            for (std::size_t index = 0; index < ray->callable_records.size(); ++index) {
+                records.push_back({{"index", index}, {"fields", rayRecordFieldsJson(
+                    ray->callable_record_layout->members, ray->callable_records[index])}});
+            }
+            for (auto &node : result["nodes"]) {
+                if (node.at("kind") == "compute" && node.at("name") == compiled.definition.name) {
+                    node["runtime_callable_records"] = {{"source", "runtime_cpu_settings"},
+                        {"records", std::move(records)}};
+                    break;
+                }
             }
         }
     }

@@ -11,6 +11,7 @@
 #include "authoringscenetestsupport.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 
 #include <nlohmann/json.hpp>
 
@@ -1193,15 +1194,26 @@ TEST_CASE("Inspector materializes only the selected omitted default",
     component["schema"]["node"] = {{"tag", "struct"}, {"children", Json::array({
         {{"tag", "leaf"}, {"name", "enabled"}, {"presence", "defaulted"}, {"default", false}}
     })}};
+    // Each variant only shapes the component the shared body then exercises;
+    // the assertions are common to all of them, so these are generator runs.
+    // An assertionless section is rejected by `-w NoAssertions`.
+    const std::string variant = GENERATE(
+        std::string{"registered default"},
+        std::string{"flat schema lets the codec choose its default"},
+        std::string{"no default literal"},
+        std::string{"pending component"},
+        std::string{"already authored"});
+    CAPTURE(variant);
     bool allowed = true;
-    SECTION("registered default") {}
-    SECTION("flat schema lets the codec choose its default") { component["schema"].erase("node"); }
-    SECTION("no default literal") {
+    if (variant == "flat schema lets the codec choose its default") {
+        component["schema"].erase("node");
+    } else if (variant == "no default literal") {
         component["schema"]["node"]["children"][0].erase("default");
         allowed = false;
-    }
-    SECTION("pending component") { component["pending"] = true; allowed = false; }
-    SECTION("already authored") {
+    } else if (variant == "pending component") {
+        component["pending"] = true;
+        allowed = false;
+    } else if (variant == "already authored") {
         component["authored_json"]["params"] = {{"enabled", true}};
         allowed = false;
     }

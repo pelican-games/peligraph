@@ -301,6 +301,65 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
+      "signature": "bool setSoundVolume(SoundHandle handle,float volume)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool setSoundPitch(SoundHandle handle,float pitch)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool setSoundPaused(SoundHandle handle,bool paused)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "std::optional<SoundPlaybackState>soundState(SoundHandle handle)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool setRenderValues(std::string_view buffer,std::span<const float>values)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool setGraphParameter(GameObjectId object,std::string_view parameter,std::optional<double>value)const",
+      "classification": "mutator",
+      "manifest": "refuse.transaction-scope"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "bool emitGraphEvent(GameObjectId object,std::string_view input,Animation::CurvePlaybackCommand command)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "Animation::Status setAnimationGraphParameter(GameObjectId object,std::string_view name,double value)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
+      "signature": "Animation::Status forceAnimationGraphState(GameObjectId object,std::string_view state)const",
+      "classification": "getter"
+    },
+    {
+      "header": "src/core/userpublic/gamecontext.hpp",
+      "class": "GameContext",
       "signature": "void loadScene(std::string_view name)const",
       "classification": "mutator",
       "manifest": "covered.pending-scene"
@@ -314,7 +373,7 @@
     {
       "header": "src/core/userpublic/gamecontext.hpp",
       "class": "GameContext",
-      "signature": "void debugText(int x,int y,std::string_view text)const",
+      "signature": "void debugText(int x,int y,std::string_view text,vec4 color = {1,1,1,1},int scale = 1)const",
       "classification": "mutator",
       "manifest": "nonparticipant.frame-lifetime"
     },

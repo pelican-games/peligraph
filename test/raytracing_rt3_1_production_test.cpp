@@ -706,12 +706,10 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
     bool distinct_instances = false;
     bool world_space = false;
     bool edit_space = false;
-    SECTION("static mesh") {}
-    SECTION("morph mesh refit") { deformed = true; }
-    SECTION("world-space morph mesh refit") { deformed = true; world_space = true; }
-    SECTION("different instance transforms retain separate geometry-space BLAS") { distinct_instances = true; }
-    SECTION("world-space BLAS combines different instance transforms") { distinct_instances = true; world_space = true; }
-    SECTION("world coordinate space edits publish through the editor") { distinct_instances = true; world_space = true; edit_space = true; }
+    // Catch2 runs with -w NoAssertions, which fails any section that asserts
+    // nothing.  Each case therefore runs the body it selects instead of only
+    // setting flags for a body that follows the selection.
+    const auto runCase = [&] {
     setupLogger();
     Wp374aProjectRoot project{"rt6_multi_geometry"};
     writeWp374aProject(project.path, 2, true, true, true,
@@ -877,6 +875,13 @@ TEST_CASE("RT6 multiple geometry BLAS preserve per-geometry records and refit",
             (void)sample(false);
         }
     }
+    };
+    SECTION("static mesh") { runCase(); }
+    SECTION("morph mesh refit") { deformed = true; runCase(); }
+    SECTION("world-space morph mesh refit") { deformed = true; world_space = true; runCase(); }
+    SECTION("different instance transforms retain separate geometry-space BLAS") { distinct_instances = true; runCase(); }
+    SECTION("world-space BLAS combines different instance transforms") { distinct_instances = true; world_space = true; runCase(); }
+    SECTION("world coordinate space edits publish through the editor") { distinct_instances = true; world_space = true; edit_space = true; runCase(); }
 #else
     SKIP("RT6 multi geometry fixture requires the runtime compiler");
 #endif
@@ -972,51 +977,10 @@ TEST_CASE("RT6 named TLAS tasks select independent scene subsets with shared rec
     bool geometry_undeclared = false;
     std::optional<std::string> material_query;
     bool material_undeclared = false;
-    SECTION("ray tracing pipeline") {}
-    SECTION("compute ray query") { query = true; }
-    SECTION("fullscreen named ray query") { raster_query = true; }
-    SECTION("independent compute before first scene AS build") { before_as = true; }
-    SECTION("independent fullscreen before first scene AS build") { before_as = true; raster = true; }
-    SECTION("independent material before first scene AS build") { material_before_as = true; }
-    SECTION("sprite draws before first scene AS build") { sprite_before_as = true; }
-    SECTION("UI draws before first scene AS build") { ui_before_as = true; }
-    SECTION("debug lines draw before first scene AS build") { debug_draw_case = true; }
-    SECTION("debug lines query left TLAS") { debug_draw_case = true; debug_query = "left"; }
-    SECTION("debug lines query right TLAS") { debug_draw_case = true; debug_query = "right"; }
-    SECTION("debug lines query empty TLAS") { debug_draw_case = true; debug_query = "empty"; }
-    SECTION("debug lines reject undeclared ray query") { debug_draw_case = true; debug_query = "left"; debug_undeclared = true; }
-    SECTION("debug text draws before first scene AS build") { debug_draw_case = true; debug_type = "debug_text"; }
-    SECTION("debug text queries left TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; }
-    SECTION("debug text queries right TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "right"; }
-    SECTION("debug text queries empty TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "empty"; }
-    SECTION("debug text rejects undeclared ray query") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_undeclared = true; }
-    SECTION("debug text rejects missing atlas") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_bad_atlas = true; }
-    SECTION("debug text keeps its pipeline after incompatible reload") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_bad_reload = true; }
-    SECTION("gizmo draws before first scene AS build") { debug_draw_case = true; debug_type = "gizmo"; }
-    SECTION("gizmo queries left TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "left"; }
-    SECTION("gizmo queries right TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "right"; }
-    SECTION("gizmo queries empty TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "empty"; }
-    SECTION("gizmo rejects undeclared ray query") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "left"; debug_undeclared = true; }
-    SECTION("shadow depth draws before first scene AS build") { geometry_type = "shadow_depth"; }
-    SECTION("shadow depth queries left TLAS") { geometry_type = "shadow_depth"; geometry_query = "left"; }
-    SECTION("shadow depth queries right TLAS") { geometry_type = "shadow_depth"; geometry_query = "right"; }
-    SECTION("shadow depth queries empty TLAS") { geometry_type = "shadow_depth"; geometry_query = "empty"; }
-    SECTION("shadow depth rejects undeclared query") { geometry_type = "shadow_depth"; geometry_query = "left"; geometry_undeclared = true; }
-    SECTION("velocity draws before first scene AS build") { geometry_type = "velocity"; }
-    SECTION("velocity queries left TLAS") { geometry_type = "velocity"; geometry_query = "left"; }
-    SECTION("velocity queries right TLAS") { geometry_type = "velocity"; geometry_query = "right"; }
-    SECTION("velocity queries empty TLAS") { geometry_type = "velocity"; geometry_query = "empty"; }
-    SECTION("velocity rejects undeclared query") { geometry_type = "velocity"; geometry_query = "left"; geometry_undeclared = true; }
-    SECTION("picking draws before first scene AS build") { geometry_type = "picking"; }
-    SECTION("picking queries left TLAS") { geometry_type = "picking"; geometry_query = "left"; }
-    SECTION("picking queries right TLAS") { geometry_type = "picking"; geometry_query = "right"; }
-    SECTION("picking queries empty TLAS") { geometry_type = "picking"; geometry_query = "empty"; }
-    SECTION("picking rejects undeclared query") { geometry_type = "picking"; geometry_query = "left"; geometry_undeclared = true; }
-    SECTION("material selects left TLAS") { material_query = "left"; }
-    SECTION("material selects right TLAS") { material_query = "right"; }
-    SECTION("material selects empty TLAS") { material_query = "empty"; }
-    SECTION("material query without declaration is rejected") { material_query = "left"; material_undeclared = true; }
-    SECTION("fullscreen query without declaration is rejected") { before_as = true; raster = true; undeclared_query = true; }
+    // Catch2 runs with -w NoAssertions, which fails any section that asserts
+    // nothing.  Each case therefore runs the body it selects instead of only
+    // setting flags for a body that follows the selection.
+    const auto runCase = [&] {
     setupLogger();
     Wp374aProjectRoot project{"rt6_named_tlas"};
     writeWp374aProject(project.path, 2, true, true, true,
@@ -1688,6 +1652,52 @@ void main() { imageStore(pelican_resource_pre_as_output, ivec2(0), uvec4(42u)); 
         CHECK(runWp374aRpcBytes(*service, rpc_id++, "get_scene_acceleration_structures", Json::object()) == before);
     }
 #endif
+    };
+    SECTION("ray tracing pipeline") { runCase(); }
+    SECTION("compute ray query") { query = true; runCase(); }
+    SECTION("fullscreen named ray query") { raster_query = true; runCase(); }
+    SECTION("independent compute before first scene AS build") { before_as = true; runCase(); }
+    SECTION("independent fullscreen before first scene AS build") { before_as = true; raster = true; runCase(); }
+    SECTION("independent material before first scene AS build") { material_before_as = true; runCase(); }
+    SECTION("sprite draws before first scene AS build") { sprite_before_as = true; runCase(); }
+    SECTION("UI draws before first scene AS build") { ui_before_as = true; runCase(); }
+    SECTION("debug lines draw before first scene AS build") { debug_draw_case = true; runCase(); }
+    SECTION("debug lines query left TLAS") { debug_draw_case = true; debug_query = "left"; runCase(); }
+    SECTION("debug lines query right TLAS") { debug_draw_case = true; debug_query = "right"; runCase(); }
+    SECTION("debug lines query empty TLAS") { debug_draw_case = true; debug_query = "empty"; runCase(); }
+    SECTION("debug lines reject undeclared ray query") { debug_draw_case = true; debug_query = "left"; debug_undeclared = true; runCase(); }
+    SECTION("debug text draws before first scene AS build") { debug_draw_case = true; debug_type = "debug_text"; runCase(); }
+    SECTION("debug text queries left TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; runCase(); }
+    SECTION("debug text queries right TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "right"; runCase(); }
+    SECTION("debug text queries empty TLAS") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "empty"; runCase(); }
+    SECTION("debug text rejects undeclared ray query") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_undeclared = true; runCase(); }
+    SECTION("debug text rejects missing atlas") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_bad_atlas = true; runCase(); }
+    SECTION("debug text keeps its pipeline after incompatible reload") { debug_draw_case = true; debug_type = "debug_text"; debug_query = "left"; debug_bad_reload = true; runCase(); }
+    SECTION("gizmo draws before first scene AS build") { debug_draw_case = true; debug_type = "gizmo"; runCase(); }
+    SECTION("gizmo queries left TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "left"; runCase(); }
+    SECTION("gizmo queries right TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "right"; runCase(); }
+    SECTION("gizmo queries empty TLAS") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "empty"; runCase(); }
+    SECTION("gizmo rejects undeclared ray query") { debug_draw_case = true; debug_type = "gizmo"; debug_query = "left"; debug_undeclared = true; runCase(); }
+    SECTION("shadow depth draws before first scene AS build") { geometry_type = "shadow_depth"; runCase(); }
+    SECTION("shadow depth queries left TLAS") { geometry_type = "shadow_depth"; geometry_query = "left"; runCase(); }
+    SECTION("shadow depth queries right TLAS") { geometry_type = "shadow_depth"; geometry_query = "right"; runCase(); }
+    SECTION("shadow depth queries empty TLAS") { geometry_type = "shadow_depth"; geometry_query = "empty"; runCase(); }
+    SECTION("shadow depth rejects undeclared query") { geometry_type = "shadow_depth"; geometry_query = "left"; geometry_undeclared = true; runCase(); }
+    SECTION("velocity draws before first scene AS build") { geometry_type = "velocity"; runCase(); }
+    SECTION("velocity queries left TLAS") { geometry_type = "velocity"; geometry_query = "left"; runCase(); }
+    SECTION("velocity queries right TLAS") { geometry_type = "velocity"; geometry_query = "right"; runCase(); }
+    SECTION("velocity queries empty TLAS") { geometry_type = "velocity"; geometry_query = "empty"; runCase(); }
+    SECTION("velocity rejects undeclared query") { geometry_type = "velocity"; geometry_query = "left"; geometry_undeclared = true; runCase(); }
+    SECTION("picking draws before first scene AS build") { geometry_type = "picking"; runCase(); }
+    SECTION("picking queries left TLAS") { geometry_type = "picking"; geometry_query = "left"; runCase(); }
+    SECTION("picking queries right TLAS") { geometry_type = "picking"; geometry_query = "right"; runCase(); }
+    SECTION("picking queries empty TLAS") { geometry_type = "picking"; geometry_query = "empty"; runCase(); }
+    SECTION("picking rejects undeclared query") { geometry_type = "picking"; geometry_query = "left"; geometry_undeclared = true; runCase(); }
+    SECTION("material selects left TLAS") { material_query = "left"; runCase(); }
+    SECTION("material selects right TLAS") { material_query = "right"; runCase(); }
+    SECTION("material selects empty TLAS") { material_query = "empty"; runCase(); }
+    SECTION("material query without declaration is rejected") { material_query = "left"; material_undeclared = true; runCase(); }
+    SECTION("fullscreen query without declaration is rejected") { before_as = true; raster = true; undeclared_query = true; runCase(); }
 #else
     SKIP("RT6 named TLAS fixture requires the runtime compiler");
 #endif
@@ -2852,11 +2862,14 @@ TEST_CASE(
     TestGltfFragmentFixture::writeGlb(project.path / "models" / "chair.glb",
                                       false, true, false, true);
     auto layout = wp374aLayout(2, true);
-    layout["acceleration_structure"]["rules"] =
-        accelerationDeclaration().at("rules");
     writeWp374aText(project.path / "ray_layout.json", layout.dump(2));
 
     FastModuleContainer modules;
+    // WP382d resolves the shared AS plan inside scene prepare, so a layout
+    // that already declares AS rules rejects this fixture before the scene is
+    // published.  Open the scene with the rule-free layout to observe the
+    // producer chain, then declare the rule that makes the Unavailable
+    // identity observable in the resolver below.
     loadWp374aScene(project.path);
     GET_MODULE(ECSCore).update();
     const auto snapshots =
@@ -2872,6 +2885,9 @@ TEST_CASE(
     // Drive the same production AS snapshot lowering used by the renderer.
     // It performs the static classification and constructs RaySceneRowInput
     // from the PIC snapshot before calling resolveRaySceneRows.
+    layout["acceleration_structure"]["rules"] =
+        accelerationDeclaration().at("rules");
+    writeWp374aText(project.path / "ray_layout.json", layout.dump(2));
     auto &config = GET_MODULE(ProjectBasicConfig);
     auto &paths = GET_MODULE(PathResolver);
     const auto rendering = loadRenderingPassConfigJsonFromString(
@@ -3797,14 +3813,17 @@ TEST_CASE(
                 true);
 
             FastModuleContainer modules;
-            loadWp374aScene(project.path);
             if (force_opaque) {
+                // WP382d resolves the shared AS plan inside scene prepare, so
+                // the profile row guard is reached at load, not at the first
+                // render.  The rejected load rolls back and leaves no rows.
                 CHECK_THROWS_WITH(
-                    renderWp374aProductionRows(),
+                    loadWp374aScene(project.path),
                     ContainsSubstring(
                         "pelican.ray_profile_opaque_as@1") &&
                         ContainsSubstring("force_opaque"));
             } else {
+                loadWp374aScene(project.path);
                 const auto rows = renderWp374aProductionRows();
                 REQUIRE_FALSE(rows.rows.empty());
                 for (const auto &row : rows.rows) {

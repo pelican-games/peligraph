@@ -521,9 +521,7 @@ struct FullscreenPassWidget::Impl {
         save = new QPushButton(owner.tr("Save authored pass"), &owner);
         save->setObjectName(
             QStringLiteral("pelican.fullscreenPass.save"));
-        save->setToolTip(owner.tr(
-            "Calls add_authored_pass with the current engine digest and "
-            "anchor."));
+        save->setToolTip(authoredPassSaveToolTip());
         remove_fragment = new QComboBox(&owner);
         remove_fragment->setObjectName(
             QStringLiteral("pelican.fullscreenPass.removeFragment"));
@@ -690,6 +688,15 @@ struct FullscreenPassWidget::Impl {
     bool editingFeaturePass() const {
         return editing_preset_pass && feature_pass_info.contains(*editing_preset_pass) &&
             feature_pass_info.at(*editing_preset_pass).value("editable_feature_pass", false);
+    }
+
+    // WP334b: the save button names the engine domain operation it calls, in
+    // every draft state.  Per-draft notes are appended to this line, never
+    // written over it.
+    QString authoredPassSaveToolTip() const {
+        return owner.tr(
+            "Calls add_authored_pass with the current engine digest and "
+            "anchor.");
     }
 
     std::string passSourceDigest() const {
@@ -1528,8 +1535,9 @@ struct FullscreenPassWidget::Impl {
       updating = false;
       save->setText(editingFeaturePass() ? owner.tr("Save feature pass") : owner.tr("Save preset pass"));
       save->setToolTip(editingFeaturePass()
-          ? owner.tr("Updates %1 wherever this feature is used.").arg(text(feature_pass_info.at(*editing_preset_pass).value("feature_source_reference", std::string{})))
-          : QString{});
+          ? authoredPassSaveToolTip() + QStringLiteral("\n") +
+                owner.tr("Updates %1 wherever this feature is used.").arg(text(feature_pass_info.at(*editing_preset_pass).value("feature_source_reference", std::string{})))
+          : authoredPassSaveToolTip());
       updateDraft();
     }
 
@@ -1909,7 +1917,7 @@ struct FullscreenPassWidget::Impl {
 
     void clearDraft() {
         updating = true;
-        save->setToolTip({});
+        save->setToolTip(authoredPassSaveToolTip());
         original_preset_pass = Json::object();
         showPresetFields(false);
         name->clear();

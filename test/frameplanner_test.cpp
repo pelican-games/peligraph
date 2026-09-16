@@ -1260,13 +1260,15 @@ TEST_CASE("snapshot plan node reports copy bytes and screen input read dependenc
         REQUIRE(snapshot_target != targets.end());
         SECTION("unsupported resolved format remains an error") {
             (*snapshot_target)["format"] = "unsupported";
+            REQUIRE_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(mixed_resolved),
+                Catch::Matchers::ContainsSubstring("snapshot copy byte size is unavailable"));
         }
         SECTION("zero resolved extent remains an error") {
             (*snapshot_target)["width"] = 0;
             (*snapshot_target)["height"] = 32;
+            REQUIRE_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(mixed_resolved),
+                Catch::Matchers::ContainsSubstring("snapshot copy byte size is unavailable"));
         }
-        REQUIRE_THROWS_WITH(parseFrameGraphDefinitionsFromConfigJson(mixed_resolved),
-            Catch::Matchers::ContainsSubstring("snapshot copy byte size is unavailable"));
     }
 }
 

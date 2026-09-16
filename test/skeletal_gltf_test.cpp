@@ -193,9 +193,19 @@ TEST_CASE("prepared glTF dependencies retain resolved external buffer files", "[
 TEST_CASE("common graph glTF source supplies counted GPU shader attributes", "[skeletal][graph-attribute-runtime]") {
     bool shared_model = false;
     bool external_buffer = false;
-    SECTION("graph source only") {}
-    SECTION("shared model and graph source") { shared_model = true; }
-    SECTION("shared model and external buffer") { shared_model = true; external_buffer = true; }
+    SECTION("graph source only") {
+        REQUIRE_FALSE(shared_model);
+        REQUIRE_FALSE(external_buffer);
+    }
+    SECTION("shared model and graph source") {
+        shared_model = true;
+        REQUIRE_FALSE(external_buffer);
+    }
+    SECTION("shared model and external buffer") {
+        shared_model = true;
+        external_buffer = true;
+        REQUIRE(shared_model);
+    }
     setupLogger();
     const auto root = std::filesystem::temp_directory_path() /
         ("pelican_graph_source_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
@@ -553,8 +563,11 @@ void main() {
 TEST_CASE("owned graph attributes read current GPU deformation and survive owner replacement", "[skeletal][graph-deformed-attribute]") {
     setupLogger();
     bool ray_query = false;
-    SECTION("ordinary graph consumers") {}
-    SECTION("graph consumers share deformation with scene AS") { ray_query = true; }
+    SECTION("ordinary graph consumers") { REQUIRE_FALSE(ray_query); }
+    SECTION("graph consumers share deformation with scene AS") {
+        ray_query = true;
+        REQUIRE(ray_query);
+    }
     const auto root = std::filesystem::temp_directory_path() /
         ("pelican_deformed_attribute_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root / "passes");
@@ -731,8 +744,11 @@ void main() {
 TEST_CASE("owned graph pose attributes expose evaluated model-space nodes", "[skeletal][graph-pose-attribute]") {
     setupLogger();
     bool animation_graph = false;
-    SECTION("animation component clip") {}
-    SECTION("animation graph phase publication") { animation_graph = true; }
+    SECTION("animation component clip") { REQUIRE_FALSE(animation_graph); }
+    SECTION("animation graph phase publication") {
+        animation_graph = true;
+        REQUIRE(animation_graph);
+    }
     const auto root = std::filesystem::temp_directory_path() /
         ("pelican_pose_attribute_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root / "passes");
@@ -1298,14 +1314,23 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
     right_probe["inputs"]["destination"]["node"] = "right_result";
     document["nodes"].push_back(right_probe);
     bool graphics_path = false;
-    SECTION("buffer compute path") {}
+    SECTION("buffer compute path") {
+        REQUIRE(document["outputs"]["gpu"]["node"].get<std::string>() == "probe");
+        REQUIRE_FALSE(graphics_path);
+    }
     SECTION("image compute path") {
         addGraphImageStage(document);
         std::string image_load = "imageLoad(pelican_resource_source, ivec2(0)).x";
-        SECTION("storage image read") {}
+        SECTION("storage image read") {
+            const auto &source = document["nodes"].back()["parameters"]["ports"]["source"];
+            REQUIRE(source["kind"].get<std::string>() == "image");
+            REQUIRE_FALSE(source.contains("binding"));
+        }
         SECTION("sampled image read") {
             document["nodes"].back()["parameters"]["ports"]["source"]["binding"] = "sampled";
             image_load = "texelFetch(pelican_resource_source, ivec2(0), 0).x";
+            REQUIRE(document["nodes"].back()["parameters"]["ports"]["source"]["binding"]
+                        .get<std::string>() == "sampled");
         }
         SECTION("graphics attachment write") {
             graphics_path = true;
@@ -1324,12 +1349,15 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
             writer["parameters"]["color_load_op"] = "clear";
             std::string fragment_input;
             std::string fragment_value = "pelican_count_source() == 1u ? pelican_load_source(0) : -100.0";
-            SECTION("fullscreen") {}
+            SECTION("fullscreen") { REQUIRE(writer["op"].get<std::string>() == "render.fullscreen"); }
             SECTION("raster") {
                 writer["op"] = "render.raster";
                 writer["parameters"]["draw"] = {{"vertex_count", 3}};
                 writer["parameters"]["draw"]["instance_source"] = "source";
-                SECTION("direct") {}
+                SECTION("direct") {
+                    REQUIRE(writer["op"].get<std::string>() == "render.raster");
+                    REQUIRE(writer["parameters"]["draw"]["vertex_count"].get<int>() == 3);
+                }
                 SECTION("indexed mesh") {
                     TestSkeletalFixture::writeGlb(root / "indices.glb");
                     writer["parameters"]["draw"].erase("vertex_count");
@@ -1343,6 +1371,9 @@ void main() { pelican_store_destination(0, pelican_load_source(0) * 3.0 + 1.0); 
                     writer["parameters"]["ports"]["positions"] = {
                         {"element", "vec3"}, {"domain", "vertex"}, {"access", "read"}};
                     writer["inputs"]["positions"] = {{"node", "mesh_positions"}, {"port", "resource"}};
+                    // Assert before the pushes below, which can reseat the `writer` reference.
+                    REQUIRE_FALSE(writer["parameters"]["draw"].contains("vertex_count"));
+                    REQUIRE(writer["parameters"]["draw"]["index_source"].get<std::string>() == "indices");
                     fragment_input = "layout(location=0) flat in float instance_value;\n";
                     fragment_value = "instance_value";
                     document["nodes"].push_back({{"id", "instance_values"}, {"op", "render.attribute"},

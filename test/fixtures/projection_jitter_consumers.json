@@ -416,6 +416,12 @@
       "needles": ["buildPlanarReflectionViewFamily(", "tryBuildObliqueNearPlaneProjectionZO(", "reflected_projection"]
     },
     {
+      "source": "src/core/render_algorithms/punctual_shadow/punctualshadowview.cpp",
+      "consumer": "shadow",
+      "role": "Point and spot light-space shadow view-family provider",
+      "needles": ["RenderViewFamily buildPointShadowViewFamily(", "RenderViewFamily buildSpotShadowViewFamily(", "buildCubeCaptureViewFamily({lights[index].position, near_distance, far_distance})", ".projection = glm::perspectiveRH_ZO("]
+    },
+    {
       "source": "src/core/renderer/directionalshadowcascade.cpp",
       "consumer": "shadow",
       "role": "Stable source-view frustum feeds light-space cascade projections",

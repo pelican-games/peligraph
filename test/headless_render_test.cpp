@@ -7478,8 +7478,13 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
             nlohmann::json::parse(
                 engineResourceOrThrow(
                     "features/shadow_directional.json"));
-        reloaded_shadow_feature["name"] =
-            "shadow_directional_reloaded";
+        // The feature name is the prefix of the scalar shader defines that
+        // engine shaders spell out literally
+        // (PELICAN_FEATURE_SHADOW_DIRECTIONAL_PCF_RADIUS and friends in
+        // fullscreen.frag), so a reloaded copy has to keep its name. Mark the
+        // recomposition with an extra define instead.
+        reloaded_shadow_feature["shader_defines"].push_back(
+            "PELICAN_FEATURE_SHADOW_DIRECTIONAL_RELOADED");
         writeTextFile(
             temp_dir / "features" /
                 "shadow_directional.json",
@@ -7517,12 +7522,12 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(
             std::find(
                 renderer.previewGraphProgram()
-                    .render_pipeline->feature_names.begin(),
+                    .render_pipeline->shader_defines.begin(),
                 renderer.previewGraphProgram()
-                    .render_pipeline->feature_names.end(),
-                "shadow_directional_reloaded") !=
+                    .render_pipeline->shader_defines.end(),
+                "PELICAN_FEATURE_SHADOW_DIRECTIONAL_RELOADED") !=
             renderer.previewGraphProgram()
-                .render_pipeline->feature_names.end());
+                .render_pipeline->shader_defines.end());
 
         const auto reloaded_main_id =
             reloaded_generation->name_to_id.at(
@@ -7615,12 +7620,12 @@ TEST_CASE("hybrid_v1 preset registers and renders a headless frame",
         REQUIRE(
             std::find(
                 renderer.previewGraphProgram()
-                    .render_pipeline->feature_names.begin(),
+                    .render_pipeline->shader_defines.begin(),
                 renderer.previewGraphProgram()
-                    .render_pipeline->feature_names.end(),
-                "shadow_directional_reloaded") !=
+                    .render_pipeline->shader_defines.end(),
+                "PELICAN_FEATURE_SHADOW_DIRECTIONAL_RELOADED") !=
             renderer.previewGraphProgram()
-                .render_pipeline->feature_names.end());
+                .render_pipeline->shader_defines.end());
         REQUIRE(previous_generation->find(
                     main_render_id) != nullptr);
         REQUIRE(previous_generation->gpu_arena
