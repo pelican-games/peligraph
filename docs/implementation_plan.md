@@ -23314,6 +23314,12 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 
 pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1)/ 変更時の扱いの GUI(P-1)/ RPC の catalog(P-1)/ package manifest のファイル形式(X-1)。
 
+#### AG-0 完了記録(統合側。2026-09-17、`adb73793`)
+
+- 実装(Opus、`agent/ag0` `a49e6898`): 決定 1〜6 すべて。受け入れ 6 件を変異で赤確認(未登録 op / 未登録型 / 二重登録 / 静的表の復活 = 二重登録で赤 / backend の named reject(値・描画)/ test-only module の production 混入 = dumpbin gate で赤 / catalog の evaluation 分類)。OFF 構成(`SKIP_DEVSTUDIO=OFF`、`PELICAN_WITH_RPC=OFF`)build 成功、出荷 4 project bytes 不変
+- 統合側: W1(worktree、gate 家族込み直列)緑、全数 **1869 / 1869**(AG-0 の test 5 件増)。着地時の docs 追従で CLI の usage 行のリンクを再 anchor(`3817eebe`)
+- 記録: 実装時の裁定(上)。コードレビュー(codex)は枠が戻ってから rev_ag0 として掛ける
+
 ### AG-1a: pose module —— `pelican.pose@1` を共通グラフの登録型にし、既存の評価器を node で包む(v0「往復」の段 2a)
 
 **§4 規則 11 上段(animation の実行と ABI、共通グラフの型、scene の装着経路を触る)。実装者: Claude(Fable + Opus)。仕様レビュー 1 巡(pose の ABI と単一 writer の裁定)。見積: 中。**
