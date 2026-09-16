@@ -134,7 +134,7 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 | **AG-3 観測と view** | 定義を見ているのか特定 instance の評価結果を見ているのかを UI で区別。時間軸 view(まず読み取り)。anim graph の state / event を `get_status` で | GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路 |
 | **R 群(整理・操作感・サンプル・凍結)** | 「同じ接続に二つの正本」の撤去(旧 `pelican.value_graph` の bindings 文書、component 固有 graph の残骸、到達不能な legacy 分岐)。新 dialog の実操作と複合 undo。学習サンプルは概念 1 つに 1 個、代表ゲームは制作経路の全項目を 1 本。凍結一覧と v0 tag | 表の各行を「撤去 / 維持(理由)」で閉じる。サンプルと代表ゲームが smoke corpus に入る |
 
-進捗(置換更新): **基準は 2026-09-17 `36e8115f` で緑**。**AG-0 着地 `adb73793`**、**AG-1a 着地 `5bc79586`**。AG-1b は設計レビュー 2 巡で「一本化」を v0 では撤回し、v3 = pose graph 経路の parity(loop / speed / start_time、位相ずれ、状態移送)+ owner 単位の排他 + OFF build の fail-fast に確定(event は v0 の後)。**P-1 着地 `b960edf7`**(全数 1883 緑)。AG-1b は着地中。P-2 は設計レビューで前提誤認 7 件と代理条件が出て、v2 で依存順の 4 本 + 送り(共有部品の公開、出荷 project の `pelican.graph` root、posegraph_demo、外部定義参照)に割った。まず P-2a-1(anchor 明示 → ハードコード撤去 → Bloom の feature 化、画素不変)。
+進捗(置換更新): **基準は 2026-09-17 `36e8115f` で緑**。**AG-0 着地 `adb73793`**、**AG-1a 着地 `5bc79586`**。AG-1b は設計レビュー 2 巡で「一本化」を v0 では撤回し、v3 = pose graph 経路の parity(loop / speed / start_time、位相ずれ、状態移送)+ owner 単位の排他 + OFF build の fail-fast に確定(event は v0 の後)。**P-1 着地 `b960edf7`**(全数 1883 緑)。AG-1b は着地中。P-2 は設計レビュー 2 巡で打ち切り、v3 = 1a(anchor 明示と撤去)/ 1b(Bloom の feature 化と oracle の付け替え)/ 1c(define 化と materialize 後の編集)/ P-2a-2(runtime 値)+ 送り(共有部品の公開、出荷 project の `pelican.graph` root、posegraph_demo、外部定義参照、hdr on の Bloom)。まず 1a。
 
 #### 部品の 3 操作(Houdini HDA を参照)
 

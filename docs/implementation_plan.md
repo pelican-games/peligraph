@@ -23494,58 +23494,65 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 
 
-### P-2: 往復のパイロット —— Bloom を部品にする(v0「往復」の段 4。v2 = 依存順に割る)
 
-**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、2026-09-18、22 件 + 事実誤認 7、`<作業ディレクトリ>/dr_p2.md`)で草稿の受け入れが代理条件だらけと判定 → v2 で依存順に 4 本 + 送りに割る。第 2 巡は P-2a-1 / P-2a-2 だけに 1 回。**
-**規範: `v1_development_plan.md` P-2 と「部品の 3 操作」、`docs/manual/06_rendering.md`。事実の一覧: `<作業ディレクトリ>/facts_p2.md` は第 1 巡で 7 件訂正された(下)。**
+### P-2: 往復のパイロット —— Bloom を部品にする(v0「往復」の段 4。v3 = 最終、3 本に割る)
 
-#### 前提の訂正(第 1 巡が確認)
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー 2 巡(`<作業ディレクトリ>/dr_p2.md` 22 件 + 事実誤認 7、`<作業ディレクトリ>/dr_p2_r2.md` 致命 2 + 大 9)で打ち切り。残余はコードレビューへ。v3 は 1a / 1b / 1c に割り、**hdr on の Bloom は射程外(記録)**。**
+**規範: `v1_development_plan.md` P-2 と「部品の 3 操作」、`docs/manual/06_rendering.md`。事実: `<作業ディレクトリ>/facts_p2.md`(7 件訂正済み)+ 第 2 巡の確認。**
 
-- AG-1b は **未着地**(`agent/ag1b`、着地中)。作業ブランチの `pose.clip_sample` は `time` だけで、`time` は **required**(未接続は `unconnected graph input` で拒否。runtime の fallback は到達不能)
-- `user://` の root は `%APPDATA%/pelican/<project.json の name>` で **project 名ごと**。別 project からは見えない。しかも render authoring transaction は書き先を project root 内に限る([renderconfigtransaction.cpp:425](../src/core/communication/renderconfigtransaction.cpp#L425))。project 名を跨ぐ唯一の既存手段は `--user-dir`
-- `example` の Bloom RT の authored `format` は無視され、`format_class: "scene"` が hdr off = `B8G8R8A8_SRGB`、hdr on = `R16G16B16A16_SFLOAT` に上書きする([rendertargetjsonparser.cpp:219](../src/core/renderingpass/rendertargetjsonparser.cpp#L219))。`UpsampleBlend_N` の出力は 1 段上(`_3 → V_2`、`_2 → V_1`、`_1 → V_0`)
-- [featurecompose.cpp:218](../src/project/featurecompose.cpp#L218) の `Bloom_` 接頭辞判定は `example` では死んでいる(9 本とも `format_class` を明示)。生きているのは golden fixture 側([golden_harness.cpp:1974](../test/golden_harness.cpp#L1974) の `hdr_on` / `hdr_off` が anchor 無し・format_class 無しで Bloom pass を書く)。bucket 判定(:278)は `passWritesSwapchain` も見る
-- **`example` を描く golden は無い**(`test/golden/` の 50 case は合成 scene)。`example` を実際に描くのは `project_catalog_smoke` の閾値検査だけ。`example` の config は 14 個の e2e test に丸ごとコピーされている
-- **`test/golden_bloom_upsample_harness.cpp`(WP357 の物理 oracle)は `example` の config を pass 名で読む**(`wp357ShippingPass("UpsampleBlend_3")` …)。pass を feature に移すとこの oracle が死ぬ
-- `get_render_features` と `materialize` は root 直下の `features` を読む。root を `pelican.graph` にすると `rendering` 配下になり Features dock が空になる → 「root scope の materialize」と「root を `pelican.graph` に」は排他
-- feature の buffer / RT 名は prefix されない(engine 内部名がそのまま公開名になる)。feature の `passes` は静的配列で段数の可変は書けない。materialize すると parameter 面(`scalars`)は消える。`shader_define: false` の scalar は `shadow_directional.json` で RT 寸法に 4 つ使われている
-- authored pass は `canonical_anchor` を持てる(前例 [devstudio_frameplan_graph_test.cpp:668](../test/devstudio_frameplan_graph_test.cpp#L668))。feature の pass は `canonicalizePasses` の **後**に挿入される
-- 壊せなかった(= 草稿のこの部分は正しい): feature は `raster_state` と per-attachment `{target, load_op}` を書ける / 13 pass を 1 anchor に挿入しても順序は保たれる / feature は `buffers{host_source: runtime_f32}` を宣言できる / `render.scalar{target}` は feature 宣言の buffer 名を指せる(GPU 未確認)
+#### 前提(2 巡で確認した事実。v2 の訂正を含む)
 
-#### P-2a-1: ハードコード撤去と Bloom の feature 化(画素不変が唯一の受け入れ)
+- **`example` の Bloom 13 pass は既に tolerance 0 の golden 2 つで固定されている**: `skeletal_toon` と `usd0b_static_geometry` が `example` の config を copy_file して描く([golden_harness.cpp:1710](../test/golden_harness.cpp#L1710)、:1744)、`canonical_frame_plan_trace.txt:20,42` と `renderer_execution_traces.json` も 13 pass を持つ。**新しい golden は要らない**(v2 決定 1 は撤回)
+- hdr on では `prepareHdrSceneOutput`([featurecompose.cpp:568](../src/project/featurecompose.cpp#L568))が `canonicalizePasses` の **前**に「swapchain / display を書く scene pass」を要求し、feature の pass はその **後**(:2884)に挿さる。`example` で swapchain を書く authored pass は `FinalBloomComposite` 1 本 → **Bloom を feature に移すと hdr on の compose が throw する**。hdr on は `features` に `hdr.json` を足すことでしか起きず、`example` は hdr off
+- `canonical_anchor` は 1 値。`post_ldr`(bucket 3)は `tonemap`(2)の後、hdr on では `post_main`(1)。1 つの config で hdr on / off 両対応は書けない
+- bucket 判定([featurecompose.cpp:278](../src/project/featurecompose.cpp#L278))の撤去は実行順を変えず画素に出ない見込み。画素で赤になるのは `format_class` 分岐(:216-218)だけで、それも `hdr_on` / `hdr_off` の合成 fixture([golden_harness.cpp:1974](../test/golden_harness.cpp#L1974))でのみ。撤去後は分岐が消えるので再現不能 → **durable な対照は `canonical_frame_plan_trace.txt`**(bucket が変われば trace の順序が変わる)
+- feature 化で追随が要る資産は 14 e2e(config の丸コピーで作業ゼロ)ではなく **8 つ**: `passfieldownership_test.cpp:650-679` の 36 identity 表 / `frameplanner_test.cpp:1018-1024` の example plan fixture と :1027 の 2 つ目の WP357 oracle / `devstudio_fullscreen_pass_test.cpp` の 3 箇所(`example_frame_plan.json` 168 KB)/ `golden_harness.cpp:8664` の SSAO golden / `featurecompose_test.cpp:3062-3086` の TAA・overlay 重ね test(feature 適用順)/ golden 2 種 + trace(不変のはず)/ `golden_bloom_upsample_harness.cpp`(pass 4 本 + RT 4 本 + production probe)
+- `threshold` / `knee` / `intensity` を define にすると、同じ shader を使う `hdr_on` / `hdr_off` の合成 fixture は define を持たないので compile が落ちる。リポジトリの前例は `#error` 方式で `#ifndef` 既定値の前例は無い
+- feature の shader は buffer を **`resource_ports` の port 名**で読む(`$` は feature JSON 内の置換記法で shader には届かない)。`set_parameters` は必ず再保存 → 再 compose。materialize 後の `bound_parameters` は出力専用で、編集は 3 箇所の改修が要る。`edit_graph_document` は `pelican.graph` root 必須
+- 壊せなかった: feature の `render_targets` は `Bloom_*` の名前と `extent_scale` を保てる / `insert{after: post_ldr}` 1 つで 13 pass の順序が保たれる / shader は全部 `engine://` で移設不要 / 展開前の feature 文書から `raster_state` は読める
 
-1. **golden を先に作る**: `example` の `main_rendering_config.json` を **そのまま**読む golden case `example_bloom`(hdr off / on の 2 つ)を `test/golden/` に追加し、現在の画素を固定する。以後の全変更はこの 2 枚に対して bytes 不変
-2. **anchor の明示**: `example` の 13 pass に `"canonical_anchor": "post_ldr"`(hdr on では `post_main`。今日の bucket 判定と同じ結果になる方)を書き足す。`golden_harness.cpp:1974` の `hdr_on` / `hdr_off` fixture も同じく anchor と `format_class` を明示する。その上で [featurecompose.cpp:278](../src/project/featurecompose.cpp#L278) と :218 の名前判定を消す(消した後に生きている分岐 = anchor 分岐。撤去前に `hdr_on` / `hdr_off` の golden で赤になることを先に確かめる)
-3. **Bloom を `engine://features/bloom.json` へ**: 13 pass + 9 RT を feature の `passes[].insert{anchor}` と `render_targets`(`format_class: scene`、`extent_scale`)に移す。parameter は `threshold`(float [0,4] 0.4)/ `knee`(float [0,1] 0.7)/ `intensity`(float [0,8] 2.0)を **define** で(`levels` は削除: 段数は materialize 後の手編集で示す)。`example` は `features: ["engine://features/bloom.json"]` の 1 行に(**出荷 project の意図した変更**。14 個の e2e が config をコピーしているので、それらも同じ 1 行に追随)
-4. **WP357 oracle の付け替え**: `golden_bloom_upsample_harness.cpp` が `engine://features/bloom.json` の pass を名前で読むようにする(oracle は殺さない)
-5. **部品の 3 操作**: 「内部を見る」= `get_render_features` の pass 一覧(参照は engine のまま)/ 「project 用に派生」= root scope の `materialize`(`example` は preset 無しなので root scope)→ 派生 feature の段数を 2 に手編集 → 画素が変わり engine の `bloom.json` は不変 / 「共有部品として公開」は **P-2a-3 に送る**
+#### P-2a-1a: anchor の明示とハードコード撤去(小。hdr off)
 
-受け入れ(§4 規約 10):
-1. `example_bloom`(hdr off / on)の golden が 2・3 の各段で bytes 不変。名前判定を消す前に anchor を書かないと `hdr_on` / `hdr_off` の golden が赤(撤去が生きている分岐を指す対照)
-2. `set_parameters{threshold}` → 画素が変わる(define の再 compose)。`bloom.json` を消すと `example` は `unknown_render_feature`
-3. `materialize` → 派生の段数編集で画素が変わり、`bloom.json` の bytes は不変
-4. WP357 oracle(`golden_bloom_upsample_test`)が feature の pass を読んで緑。oracle を config 名読みに戻す変異で `WP357 shipping pass not found`
-5. `example` 以外の出荷 3 project bytes 不変。`example` と 14 e2e の変更は commit message で意図を明記
+1. `example` の 13 pass に `"canonical_anchor": "post_ldr"` を書き足す(hdr off の今日の bucket と同じ)。`hdr_on` / `hdr_off` の合成 fixture([golden_harness.cpp:1974](../test/golden_harness.cpp#L1974))にも anchor と `format_class: scene` を明示
+2. [featurecompose.cpp:278](../src/project/featurecompose.cpp#L278) の Bloom 名判定と :216-218 の `Bloom_` 接頭辞判定を消す。残るのは anchor 分岐(:266-272)と `passWritesSwapchain`
+3. hdr on の Bloom(`post_main` 側)は **射程外**: `example` は hdr off。hdr on で Bloom を使う構成は「`hdr.json` と組み合わせる時に anchor を `post_main` に書く」ことを manual に 1 行(記録)
 
-#### P-2a-2: feature parameter の runtime 値(P-2a-1 の後)
+受け入れ: `skeletal_toon` / `usd0b_static_geometry` の golden と `canonical_frame_plan_trace.txt` が bytes 不変 / `hdr_on` / `hdr_off` golden 不変 / **対照**: 1 を入れずに 2 だけ行うと `canonical_frame_plan_trace.txt` の順序が変わる(実測してから 1 を入れる。撤去が生きている分岐を指す証拠)/ authored pass の `canonical_anchor` が無い Bloom 名の pass は、撤去後は他の pass と同じ規則(bucket 0)で並ぶ = 名前の特権が消えたことを trace で示す
 
-1. scalar 宣言に **`binding: "define" | "buffer"`**(既定 `define`)を足す(`shader_define: false` の意味は変えない: それは「define にしない」だけで、`shadow_directional` の RT 寸法は今日どおり)。`binding: buffer` の scalar は feature が宣言する `buffers[]{host_source: runtime_f32}` の 1 本(feature 名で prefix した名前 `<feature>.<name>`)の初期値になり、shader は `$<name>` の buffer を読む
-2. `render.scalar{target: "<feature>.<name>"}` で共通グラフから毎 frame 書ける。materialize は parameter 面を保つ(`bound_parameters` に binding を残し、buffer 宣言も残す。D10)
-3. Bloom の `intensity` を `binding: buffer` に変え、composite shader を buffer 読みに
-4. 「使う → 手続き化する」は **posegraph_demo(P-2b)側**で行う(描画の大域 parameter に owner は意味が無く、Inspector の導線は owner 付き instance にしか出ない。D23)。ここでは RPC(`edit_graph_document`)で `value.curve → render.scalar{target: "bloom.intensity"}` を張って画素が毎 frame 変わることを GPU で確認する
+#### P-2a-1b: Bloom を `engine://features/bloom.json` に(中〜大。P-2a-1a の後)
 
-受け入れ: `set_parameters{intensity}` が再 compose 無しで画素を変える(define に戻す変異で「再 compose 無し」が落ちる)/ `render.scalar` から繋いだ曲線で毎 frame 変わる(GPU)/ materialize 後も `intensity` が編集できる / 既存 7 feature の `shader_define: false` の挙動不変 / golden `example_bloom` は既定値で bytes 不変
+1. 13 pass + 9 RT を feature の `passes[].insert{after: post_ldr}` と `render_targets`(名前・`extent_scale`・`format_class: scene` をそのまま)に移す。**parameter はまだ宣言しない**(define 化は 1c)。shader は `engine://` のまま
+2. `example` は `features: ["engine://features/bloom.json", "engine://features/ui.json"]`(**出荷 project の意図した変更**。順序は今日の pass 順を保つ方)
+3. 追随: 上の 8 資産。特に WP357 oracle(`golden_bloom_upsample_harness.cpp` と `frameplanner_test.cpp:1027`)は **展開前の feature 文書**から pass / RT / `raster_state` を名前で読む形に付け替える(oracle は殺さない)。`passfieldownership_test.cpp` の identity 表は `src/core/resources/features/bloom.json::<pass>` に
+4. 部品の 3 操作: 「内部を見る」= `get_render_features` の pass 一覧(参照は engine)/ 「project 用に派生」= root scope の `materialize`(`example` は preset 無し)→ 派生 feature の段数を 2 に手編集 → 画素が変わり engine の `bloom.json` は不変 / 「共有部品として公開」は送り(P-2a-3)
 
-#### 送り(別 WP。ここでは起票しない)
+受け入れ: golden 2 種 + trace が bytes 不変 / `bloom.json` を消すと `example` は `unknown_render_feature` / WP357 oracle 2 本が feature の pass を読んで緑(config 名読みに戻す変異で `WP357 shipping pass not found`)/ materialize → 派生の段数編集で画素が変わり `bloom.json` 不変 / `example` 以外の出荷 3 project bytes 不変
 
-- **P-2a-3 共有部品の公開**: `user://` は project 名ごとで共有に使えない。`--user-dir` を共有 root として受け入れに使うか、X-1 の package manifest で決める。transaction の書き先制限(project root 内)も触る
-- **P-2a-4 出荷 project の `pelican.graph` root**: `features` の在処、RPC 3 本、14 e2e。単独で大。posegraph_demo(P-2b)はこれが要る
-- **P-2b posegraph_demo**: 前提 = AG-1b 着地 + P-2a-4。定義 `walk_run{input: weight}` に `time ← value.input{name: scene_time}` を明記、owner は scene の先頭 object 1 つ(id の脆さは既知の穴)、`PELICAN_WITH_ANIMATION=OFF` では project が `requires: ["animation"]` を宣言して smoke が名前付きで skip
-- **P-2b-2 `copy_definition` と外部定義参照**: `definitions` の書き戻し、instance の付け替え op、外部定義の digest、`declaredInstanceInputs` の fail-silent(D19)を含む
+#### P-2a-1c: Bloom の parameter(define)と materialize 後の編集(中。1b の後)
+
+1. `bloom.json` に `scalars`: `threshold`(float [0,4] 0.4)/ `knee`(float [0,1] 0.7)/ `intensity`(float [0,8] 2.0)。shader は `PELICAN_FEATURE_BLOOM_*` の define を読み、**define が無ければ `#error`**(前例どおり)。`hdr_on` / `hdr_off` の合成 fixture は `shader_defines` で同じ値を与える(`#ifndef` 既定値は作らない)
+2. materialize 後も parameter を編集できる: `bound_parameters` を出力専用から編集面に(3 箇所: 読み・`set_parameters`・Studio の表示)。materialize は `scalars` を落とさず `bound_parameters` に値を持つ形
+
+受け入れ: `set_parameters{threshold}` → 画素が変わる(define の再 compose)/ 既定値で golden 不変 / materialize 後に `intensity` を変えると画素が変わる(今日 = 効かない)/ fixture の shader_defines を消すと `#error` で名前付きに落ちる
+
+#### P-2a-2: feature parameter の runtime 値(1c の後。GPU の曲線確認は P-2a-4 の後)
+
+1. scalar 宣言に `binding: "define" | "buffer"`(既定 `define`。`shader_define: false` の意味は変えない)。`binding: buffer` の scalar は feature が宣言する `buffers[]{host_source: runtime_f32}` 1 本の初期値になり、buffer 名は `<feature>.<name>`、shader は **`resource_ports` の port**で読む
+2. `render.scalar{target: "<feature>.<name>"}` で共通グラフから毎 frame 書ける。materialize は binding と buffer 宣言を保つ
+3. Bloom の `intensity` を `binding: buffer` に
+4. **受け入れ**: `set_parameters{intensity}` が buffer の初期値を変えて画素が変わる(再 compose はする。「再 compose 無し」は撤回)/ 既存 7 feature の挙動不変 / golden 不変 / **共通グラフからの毎 frame 駆動(GPU)は `pelican.graph` root が要るので P-2a-4 の後に受け入れる**(記録)
+
+#### 送り(別 WP)
+
+- **P-2a-3 共有部品の公開**(`user://` は project 名ごと。`--user-dir` か X-1 の manifest で決める。transaction の書き先制限を触る)
+- **P-2a-4 出荷 project の `pelican.graph` root**(`features` の在処、RPC 3 本、e2e)。posegraph_demo と P-2a-2 の GPU 受け入れの前提
+- **P-2b posegraph_demo**(前提 = AG-1b + P-2a-4。`time ← value.input{scene_time}`、owner は先頭 object、OFF は `requires: ["animation"]` で smoke が名前付き skip)
+- **P-2b-2 `copy_definition` と外部定義参照**
+- **hdr on の Bloom**(swapchain writer の規則と anchor の 2 値問題)
 
 #### やらないこと
 
-feature JSON ↔ `pelican.graph` の相互変換 / `levels` parameter / 曲線の専用 UI(AG-3)/ 2D。
+新しい golden の追加(既存 2 つで足りる)/ `levels` / feature JSON ↔ `pelican.graph` 変換 / 曲線の専用 UI(AG-3)/ 2D。
 
 ### 未了項目と再開順
 
