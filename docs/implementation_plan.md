@@ -23408,6 +23408,14 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 4. 同 owner に component の clip 装着と pose graph 装着 → `pose.sink_conflict@1`(今日 = graph 装着は検出、clip 装着は黙って二重書き)。writer token を消すと二重書きになり golden で落ちる
 5. 出荷 4 project bytes 不変。既存 animation test(`[skeletal]`、anim graph、VRM)無変更で緑。`PELICAN_WITH_RPC=OFF` build
 
+#### 実装時の裁定(2026-09-18、Fable。実装 `agent/ag1b`)
+
+- 決定 1 の位相ずれは service 側で直した: `sample_pose_at` の `time_seconds` を **絶対 clip 時刻**に統一し、`samplePoseAt(..., t - clip.start, 1.0, wrap = false, 0.0, …)` で二重 wrap をやめる(第 2 巡の選択肢 (ii)。`abi_v1.hpp` は不変)。`speed / start_time / loop` の既定値は `posegraphmodule.cpp` の 2 関数が唯一の所在で、契約と backend が同じものを読む
+- 決定 2: `pose_scalars` は `SceneLoader::GraphRuntime::pose_evaluation` に移し、renderer 側と同じ `synchronizeGraphRuntime` / `prepareGraphRuntimeTransfer` で reset / transfer。`PoseGraphRuntime::retireUnreferenced()` は **死んでいた**(attachment が `shared_ptr` を持つので weak_ptr が expire せず、退役した世代が object を claim し続けていた)→ `retainOnly(live)` に置換し、これが移送 API を兼ねる(退役する attachment の `EvaluatorV1` を donor として保持し、owner + node id + anim_graph 文書が一致すれば `rebind()` で採用)。`SinkTrace` に現在 state 名を足した(cursor の「現在」印は `StatusTraceV1` に無く、`animgraph.hpp` は凍結面なので載せない)
+- 決定 4: `publishAnimationFrame(id, writer, frame, …)` に writer token(slot の generation 付き)。同 revision の別 writer は `authority_conflict`、同 writer の 2 回目は `duplicate_revision`。clip 経路と service sink がそれぞれ名乗る。**台帳の「今日 = clip 装着は黙って二重書き」は誤り**: AG-1a の文書レベルの proxy(`component_writer`)が既に拒否していた。弱かったのは proxy が唯一の砦だったことで、token を消す変異で proxy が盲目になり黙って二重書きになる(実測)
+- `pose.clip_sample` は `parameters` object を **必須**にした(factory が `node.at("parameters")`。契約の締め付け。in-tree に無 parameter の node は無い)
+- **既知の穴(記録)**: (a) 同一 process で live renderer のまま `SceneLoader::load` を 2 回呼ぶと `load` 内(次に `~SceneLoader`)で hang する(13 分超、CPU 10 s)。既存 test に live renderer 下の scene 再読込は無い。AG-1b の差分はその経路を触っていないが無関係の証明は無い。**単独 WP の候補**(「放棄された scene transaction の teardown hang」の記録と同根か要確認)。受け入れ 2 の対照は「文書を変えた再公開では initial state」に置換した / (b) `test/raytracing_rt3_1_production_test.cpp:1796` の `runWp374aRpcBytes` が `#if PELICAN_WITH_RPC` の外(既記録)/ (c) worktree の GPU で `VRMA-I0 …` / `gizmo feature draws …` / `WP386a procedural participant …` の 3 件が SEGFAULT(AG-1b 前の `c2c43170` でも再現)。primary の全数(`b960edf7`)では緑だったので **worktree 環境依存の疑い**。着地の全数で確認する
+
 #### やらないこと
 
 正本 / runtime 経路の一本化(v0 の後)/ event(v0 の後)/ root motion(AG-2)/ 無名 object の pose graph 装着(記録: service 登録は ECS 側にしか無い)/ layer・additive / timeline view(AG-3)。
