@@ -1,9 +1,11 @@
 #include "../src/core/userpublic/animation/curve.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/graphmodule.hpp"
 #include "../src/project/graphpartition.hpp"
 #include "../src/project/rendergraphcomposition.hpp"
 #include "graph_composition_fixture.hpp"
+#include "graphtestopaquemodule.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
@@ -466,6 +468,166 @@ TEST_CASE("common graph instances share definitions but preserve scope and conne
     invalid = document;
     invalid["nodes"][5]["inputs"]["value"]["port"] = "missing";
     REQUIRE_THROWS(Pelican::expandGraphDocument(invalid));
+}
+
+namespace {
+// Operations and a type that exist only in the test-only module. Expanded nodes
+// are visited in id order, so "emit" is the first one a registry resolves.
+nlohmann::json opaqueModuleDocument() {
+    return nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+      "nodes":[{"id":"emit","op":"test.emit","outputs":["token"]},
+               {"id":"use","op":"test.consume","outputs":[],
+                "inputs":{"token":{"node":"emit","port":"token"}}}],
+      "outputs":{}})");
+}
+}
+
+TEST_CASE("a module brings its own type and operations to the common graph",
+          "[curve][graph-composition][graph-module]") {
+    using namespace Pelican;
+    const auto document = opaqueModuleDocument();
+    auto registered = makeBuiltinGraphModuleRegistry();
+    registerTestOpaqueGraphModule(registered);
+    REQUIRE(registered.typeRegistry().contains(parseSemanticTypeId("pelican.test.token@1")));
+    const auto partitions = partitionGraphDocument(document, registered);
+    REQUIRE(partitions.values.nodes.size() == 2);
+    REQUIRE(partitions.rendering.nodes.empty());
+    // Purging the module leaves the document rejected by name, not by prose and
+    // not silently.
+    try {
+        partitionGraphDocument(document, makeBuiltinGraphModuleRegistry());
+        FAIL("an unregistered operation was accepted");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.operation_unregistered@1");
+        REQUIRE(error.detail().at("op") == "test.emit");
+        REQUIRE(error.detail().at("node") == "emit");
+    }
+    // Registering the operations without their type is a different name.
+    auto without_type = makeBuiltinGraphModuleRegistry();
+    registerTestOpaqueGraphModule(without_type, TestOpaqueModuleTypes::omitted);
+    try {
+        partitionGraphDocument(document, without_type);
+        FAIL("an unregistered output type was accepted");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.type_unregistered@1");
+        REQUIRE(error.detail().at("type") == "pelican.test.token@1");
+        REQUIRE(error.detail().at("node") == "emit");
+    }
+    // The test module is not global state: production keeps its own registry.
+    REQUIRE_NOTHROW(partitionGraphDocument(nlohmann::json::parse(graphCompositionFixture)));
+}
+
+TEST_CASE("the registering module decides which domain evaluates an operation",
+          "[curve][graph-composition][graph-module]") {
+    using namespace Pelican;
+    const auto operations = [](const ExpandedGraphDocument &partition) {
+        std::set<std::string> result;
+        for (const auto &node : partition.nodes) result.insert(node.at("op").get<std::string>());
+        return result;
+    };
+    // The publication sink is a pelican.render operation that runs with the
+    // values it uploads, so the partition follows the declaration and not the
+    // operation's name.
+    const auto scalars = partitionGraphDocument(nlohmann::json::parse(graphCompositionFixture));
+    REQUIRE(operations(scalars.values).contains("render.scalar"));
+    REQUIRE(scalars.rendering.nodes.empty());
+    const auto mixed = partitionGraphDocument(mixedGraphCompositionFixture());
+    REQUIRE(operations(mixed.rendering) ==
+            std::set<std::string>{"render.buffer", "render.compute"});
+    REQUIRE(operations(mixed.values) ==
+            std::set<std::string>{"value.constant", "value.curve", "value.input",
+                                  "value.multiply", "render.scalar"});
+}
+
+TEST_CASE("one operation has exactly one registering module",
+          "[curve][graph-composition][graph-module]") {
+    using namespace Pelican;
+    // Every operation the retired static contract table listed. Reviving that
+    // table as a second registration is a named rejection, so the registry
+    // cannot end up with two sources of truth for one operation.
+    const std::vector<std::pair<std::string, std::string>> retired_static_table{
+        {"value.input", "pelican.value"}, {"value.constant", "pelican.value"},
+        {"value.parameter", "pelican.value"}, {"value.morph_weight", "pelican.value"},
+        {"value.trigger_clock", "pelican.value"}, {"event.playback", "pelican.value"},
+        {"value.event_clock", "pelican.value"}, {"value.add", "pelican.value"},
+        {"value.multiply", "pelican.value"}, {"value.curve", "pelican.value"},
+        {"value.playback", "pelican.value"}, {"audio.playback", "pelican.audio"},
+        {"audio.volume", "pelican.audio"}, {"audio.pitch", "pelican.audio"},
+        {"render.scalar", "pelican.render"}};
+    for (const auto &[op, owner] : retired_static_table) {
+        auto registry = makeBuiltinGraphModuleRegistry();
+        const GraphModuleManifest revived{"pelican.retired_static_table", 1,
+            "the contract table this registry replaced", {},
+            {{op, GraphOperationRegistration{}}}, {}};
+        try {
+            registry.registerModule(revived);
+            FAIL("a second module registered " + op);
+        } catch (const GraphRegistryError &error) {
+            REQUIRE(error.code() == "graph.operation_duplicate@1");
+            REQUIRE(error.detail().at("op") == op);
+            REQUIRE(error.detail().at("first_module") == owner);
+            REQUIRE(error.detail().at("second_module") == "pelican.retired_static_table");
+        }
+        // A rejected manifest leaves no half-registered module behind.
+        REQUIRE_FALSE(registry.contains("test.emit"));
+        REQUIRE_NOTHROW(registerTestOpaqueGraphModule(registry));
+    }
+    auto registry = makeBuiltinGraphModuleRegistry();
+    registerTestOpaqueGraphModule(registry);
+    try {
+        registerTestOpaqueGraphModule(registry);
+        FAIL("a namespace was registered twice");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.module_duplicate@1");
+        REQUIRE(error.detail().at("namespace") == "pelican.test.opaque");
+    }
+    // Discovery does not depend on registration order: the module registered
+    // last still appears in namespace order.
+    std::vector<std::string> namespaces;
+    const auto catalog = registry.catalog();
+    for (const auto &module : catalog.at("modules"))
+        namespaces.push_back(module.at("namespace").get<std::string>());
+    REQUIRE(namespaces == std::vector<std::string>{"pelican.audio", "pelican.render",
+                                                   "pelican.test.opaque", "pelican.value"});
+}
+
+TEST_CASE("a registered operation without a backend is rejected by name",
+          "[curve][graph-composition][graph-module]") {
+    using namespace Pelican;
+    auto registry = makeBuiltinGraphModuleRegistry();
+    registerTestOpaqueGraphModule(registry);
+    try {
+        const ValueGraph::Graph graph{R"({"schema":"pelican.graph","version":1,
+            "nodes":[{"id":"emit","op":"test.emit","outputs":["token"]}],"outputs":{}})",
+            registry};
+        FAIL("an operation with no value backend was compiled");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.operation_unexecutable@1");
+        REQUIRE(error.detail().at("backend") == "pelican.value_graph");
+        REQUIRE(error.detail().at("op") == "emit");
+        REQUIRE(error.detail().at("node") == "emit");
+    }
+    // A saved backend document reaches the same dispatch.
+    try {
+        const ValueGraph::Graph graph{R"({"schema":"pelican.value_graph","version":1,
+            "nodes":[{"id":"n","op":"opaque"}],"outputs":{}})"};
+        FAIL("an unexecutable backend operation was compiled");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.operation_unexecutable@1");
+        REQUIRE(error.detail().at("op") == "opaque");
+        REQUIRE(error.detail().at("node") == "n");
+    }
+    try {
+        lowerRenderGraphDocument(nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+            "nodes":[{"id":"draw","op":"test.draw","parameters":{},"outputs":[]}],"outputs":{}})"),
+            {}, registry);
+        FAIL("an operation with no render backend was lowered");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.operation_unexecutable@1");
+        REQUIRE(error.detail().at("backend") == "pelican.render");
+        REQUIRE(error.detail().at("op") == "test.draw");
+        REQUIRE(error.detail().at("node") == "draw");
+    }
 }
 
 TEST_CASE("playback nodes map dynamic timing independently of curve shape", "[curve][valuegraph]") {

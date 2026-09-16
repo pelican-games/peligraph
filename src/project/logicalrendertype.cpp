@@ -553,27 +553,33 @@ void LogicalTypeRegistry::requireCanonical(const LogicalType &type) const {
     }
 }
 
-LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
-    LogicalTypeRegistry registry;
-    registry.registerSchema(SemanticTypeSchema{
-        parseSemanticTypeId("pelican.audio.voice@1"),
-        LogicalTypeConstructor::value, {}, {"voice"}});
-    registry.registerSchema(SemanticTypeSchema{
-        parseSemanticTypeId("pelican.value.scalar@1"),
-        LogicalTypeConstructor::value, {}, {"numeric"}});
-    registry.registerSchema(SemanticTypeSchema{
-        parseSemanticTypeId("pelican.event.playback_control@1"),
-        LogicalTypeConstructor::stream, {}, {"event"}});
+std::vector<SemanticTypeSchema> builtinValueTypeSchemas() {
+    return {SemanticTypeSchema{parseSemanticTypeId("pelican.value.scalar@1"),
+                               LogicalTypeConstructor::value, {}, {"numeric"}}};
+}
+
+std::vector<SemanticTypeSchema> builtinAudioTypeSchemas() {
+    return {SemanticTypeSchema{parseSemanticTypeId("pelican.audio.voice@1"),
+                               LogicalTypeConstructor::value, {}, {"voice"}},
+            SemanticTypeSchema{parseSemanticTypeId("pelican.event.playback_control@1"),
+                               LogicalTypeConstructor::stream, {}, {"event"}}};
+}
+
+std::vector<SemanticTypeSchema> builtinRenderTypeSchemas() {
+    std::vector<SemanticTypeSchema> schemas;
+    const auto registerSchema = [&schemas](SemanticTypeSchema schema) {
+        schemas.push_back(std::move(schema));
+    };
     const auto buffer_element = TypeParameterSchema{"element", TypeArgumentRole::identity,
             TypeArgumentValueKind::enum_value, std::nullopt,
             {EnumValueId{"float"}, EnumValueId{"vec2"}, EnumValueId{"vec3"}, EnumValueId{"vec4"},
              EnumValueId{"int"}, EnumValueId{"ivec2"}, EnumValueId{"ivec3"}, EnumValueId{"ivec4"},
              EnumValueId{"uint"}, EnumValueId{"uvec2"}, EnumValueId{"uvec3"}, EnumValueId{"uvec4"},
              EnumValueId{"mat4"}}};
-    registry.registerSchema(SemanticTypeSchema{
+    registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.storage_buffer@1"),
         LogicalTypeConstructor::buffer, {buffer_element}, {"shader_storage"}});
-    registry.registerSchema(SemanticTypeSchema{
+    registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.attribute@1"),
         LogicalTypeConstructor::buffer,
         {buffer_element, TypeParameterSchema{"domain", TypeArgumentRole::identity,
@@ -585,7 +591,7 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
         TypeArgumentValueKind::enum_value, EnumValueId{"two_d"},
         {EnumValueId{"two_d"}, EnumValueId{"two_d_array"},
          EnumValueId{"cube"}, EnumValueId{"volume"}}};
-    registry.registerSchema(SemanticTypeSchema{
+    registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.color_signal@1"),
         LogicalTypeConstructor::image,
         {TypeParameterSchema{"range", TypeArgumentRole::identity,
@@ -600,7 +606,7 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
                              {EnumValueId{"linear"},
                               EnumValueId{"output_encoded"}}}},
         {"color_like"}});
-    registry.registerSchema(SemanticTypeSchema{
+    registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.depth@1"),
         LogicalTypeConstructor::image,
         {TypeParameterSchema{"representation", TypeArgumentRole::identity,
@@ -612,16 +618,24 @@ LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
                              {EnumValueId{"projection"}, EnumValueId{"view"}}},
          topology},
         {"depth_like"}});
-    registry.registerSchema(SemanticTypeSchema{
+    registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.legacy_opaque_image@1"),
         LogicalTypeConstructor::image,
         {},
         {"legacy_untyped"}});
-    registry.registerSchema(SemanticTypeSchema{
+    registerSchema(SemanticTypeSchema{
         parseSemanticTypeId("pelican.render.legacy_opaque_resource@1"),
         LogicalTypeConstructor::value,
         {},
         {"legacy_untyped"}});
+    return schemas;
+}
+
+LogicalTypeRegistry makeBuiltinLogicalTypeRegistry() {
+    LogicalTypeRegistry registry;
+    for (const auto &group : {builtinValueTypeSchemas(), builtinAudioTypeSchemas(),
+                              builtinRenderTypeSchemas()})
+        for (const auto &schema : group) registry.registerSchema(schema);
     return registry;
 }
 

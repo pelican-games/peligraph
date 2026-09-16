@@ -2,6 +2,10 @@ if(NOT DEFINED PRODUCTION_ARCHIVE OR NOT EXISTS "${PRODUCTION_ARCHIVE}")
   message(FATAL_ERROR "pelican_core production archive is missing: ${PRODUCTION_ARCHIVE}")
 endif()
 
+if(NOT DEFINED PROJECT_ARCHIVE OR NOT EXISTS "${PROJECT_ARCHIVE}")
+  message(FATAL_ERROR "pelican_project production archive is missing: ${PROJECT_ARCHIVE}")
+endif()
+
 if(NOT DEFINED WP380C_DUMPBIN OR NOT EXISTS "${WP380C_DUMPBIN}")
   message(FATAL_ERROR "dumpbin is missing: ${WP380C_DUMPBIN}")
 endif()
@@ -12,6 +16,14 @@ execute_process(
   ERROR_VARIABLE dump_error)
 if(NOT dump_result EQUAL 0)
   message(FATAL_ERROR "dumpbin failed (${dump_result}): ${dump_error}")
+endif()
+execute_process(
+  COMMAND "${WP380C_DUMPBIN}" /symbols "${PROJECT_ARCHIVE}"
+  RESULT_VARIABLE project_dump_result
+  OUTPUT_VARIABLE project_symbols
+  ERROR_VARIABLE project_dump_error)
+if(NOT project_dump_result EQUAL 0)
+  message(FATAL_ERROR "dumpbin failed (${project_dump_result}): ${project_dump_error}")
 endif()
 
 string(FIND "${symbols}" "SceneLoadFaultInjectorForTesting" setter_index)
@@ -25,6 +37,26 @@ foreach(test_source IN ITEMS "${SCENE_FAULT_TEST_SOURCE}" "${MODEL_RELEASE_FAULT
   string(FIND "${PRODUCTION_SOURCES}" "${test_source}" source_index)
   if(NOT source_index EQUAL -1)
     message(FATAL_ERROR "test-only fault source leaked into pelican_core: ${test_source}")
+  endif()
+endforeach()
+
+# AG-0: the test-only graph module proves a module can be purged. It must never
+# be part of a shipped archive, by symbol or by source.
+foreach(archive_symbols IN ITEMS "${symbols}" "${project_symbols}")
+  string(FIND "${archive_symbols}" "registerTestOpaqueGraphModule" module_index)
+  if(NOT module_index EQUAL -1)
+    message(FATAL_ERROR "test-only graph module leaked into a production archive")
+  endif()
+  string(FIND "${archive_symbols}" "pelican.test.opaque" namespace_index)
+  if(NOT namespace_index EQUAL -1)
+    message(FATAL_ERROR "test-only graph module namespace leaked into a production archive")
+  endif()
+endforeach()
+foreach(production_sources IN ITEMS "${PRODUCTION_SOURCES}" "${PROJECT_SOURCES}")
+  string(FIND "${production_sources}" "${GRAPH_TEST_MODULE_SOURCE}" source_index)
+  if(NOT source_index EQUAL -1)
+    message(FATAL_ERROR
+      "test-only graph module source leaked into production: ${GRAPH_TEST_MODULE_SOURCE}")
   endif()
 endforeach()
 

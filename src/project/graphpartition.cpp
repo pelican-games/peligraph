@@ -48,101 +48,22 @@ void validateAttributeSource(const Json &node, bool owned) {
     if (morph) index("morph_target");
     if (deformed) index("deformed_node");
 }
-LogicalType bufferType(const LogicalTypeRegistry &registry, const Json &declaration) {
-    const auto element = declaration.at("element").get<std::string>();
-    if (!shaderResourceBufferElementFromName(element))
-        throw std::invalid_argument("unknown graph buffer element: " + element);
-    if (declaration.contains("domain")) {
-        if (declaration.at("domain") == "index" && element != "uint")
-            throw std::invalid_argument("index attributes require uint elements");
-        return registry.canonicalize(parseSemanticTypeId("pelican.render.attribute@1"),
-            {{"element", EnumValueId{element}}, {"domain", EnumValueId{declaration.at("domain").get<std::string>()}}});
-    }
-    return registry.canonicalize(parseSemanticTypeId("pelican.render.storage_buffer@1"),
-                                 {{"element", EnumValueId{element}}});
-}
-LogicalType resourceType(const LogicalTypeRegistry &registry, const Json &declaration) {
-    const auto kind = declaration.value("kind", std::string{"buffer"});
-    if (kind == "buffer") return bufferType(registry, declaration);
-    if (kind != "image") throw std::invalid_argument("unknown graph resource kind: " + kind);
-    if (declaration.contains("domain"))
-        throw std::invalid_argument("attribute domains apply to buffer resources, not images");
-    const auto &type = declaration.at("type");
-    std::vector<LogicalTypeArgumentInput> arguments;
-    for (const auto &[name, value] : type.at("arguments").items())
-        arguments.push_back({name, EnumValueId{value.get<std::string>()}});
-    const auto result = registry.canonicalize(parseSemanticTypeId(type.at("semantic").get<std::string>()),
-                                               std::move(arguments));
-    if (result.constructor != LogicalTypeConstructor::image)
-        throw std::invalid_argument("graph image requires an image logical type");
-    return result;
-}
-}
-
-GraphOperationContracts valueGraphOperationContracts(const LogicalTypeRegistry &registry) {
-    const auto scalar = registry.canonicalize(parseSemanticTypeId("pelican.value.scalar@1"));
-    const GraphInputContract required{exactLogicalTypePattern(registry, scalar)};
-    const GraphInputContract optional{required.accepted_type, false};
-    const std::map<std::string, LogicalType> output{{"value", scalar}};
-    const auto event = registry.canonicalize(parseSemanticTypeId("pelican.event.playback_control@1"));
-    const auto voice = registry.canonicalize(parseSemanticTypeId("pelican.audio.voice@1"));
-    const GraphInputContract optional_voice{exactLogicalTypePattern(registry, voice), false};
-    return {
-        {"value.input", {{}, output}}, {"value.constant", {{}, output}},
-        {"value.parameter", {{}, output}},
-        {"value.morph_weight", {{}, output}},
-        {"value.trigger_clock", {{{"time", required}, {"trigger", required},
-            {"paused", optional}, {"reset", optional}}, output}},
-        {"event.playback", {{}, {{"events", event}}}},
-        {"value.event_clock", {{{"time", required},
-            {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, output}},
-        {"audio.playback", {{{"time", required},
-            {"events", GraphInputContract{exactLogicalTypePattern(registry, event)}}}, {{"voice", voice}}}},
-        {"value.add", {{{"a", required}, {"b", required}}, output}},
-        {"value.multiply", {{{"a", required}, {"b", required}}, output}},
-        {"value.curve", {{{"time", required}}, output}},
-        {"value.playback", {{{"elapsed", required}, {"source_begin", optional},
-            {"source_end", optional}, {"duration", optional}, {"speed", optional},
-            {"delay", optional}, {"sample_interval", optional}}, output}},
-        {"render.scalar", {{{"value", required}}, {}}},
-        {"audio.volume", {{{"value", required}, {"voice", optional_voice}}, {}}},
-        {"audio.pitch", {{{"value", required}, {"voice", optional_voice}}, {}}},
-    };
 }
 
 GraphExecutionPartitions partitionGraphDocument(const Json &document) {
+    return partitionGraphDocument(document, builtinGraphModuleRegistry());
+}
+
+GraphExecutionPartitions partitionGraphDocument(const Json &document,
+                                                const GraphModuleRegistry &modules) {
     const auto graph = expandGraphDocument(document);
-    const auto registry = makeBuiltinLogicalTypeRegistry();
-    const auto value_operations = valueGraphOperationContracts(registry);
-    const auto scalar = registry.canonicalize(parseSemanticTypeId("pelican.value.scalar@1"));
+    const auto &registry = modules.typeRegistry();
+    // The module that registered an operation also declares which domain runs
+    // it, so this partition never needs to know an operation's name.
+    std::map<std::string, GraphExecutionDomain> domains;
     const auto output_types = validateGraphPorts(graph, registry, GraphOperationContractResolver{[&](const Json &node) {
-        const auto op = node.at("op").get<std::string>();
-        if (const auto found = value_operations.find(op); found != value_operations.end()) return found->second;
-        const auto &parameters = node.at("parameters");
-        GraphOperationContract contract;
-        if (op == "render.buffer" || op == "render.attribute") {
-            if (op == "render.attribute" && !parameters.contains("domain"))
-                throw std::invalid_argument("render.attribute requires an attribute domain");
-            if (op == "render.buffer" && parameters.contains("domain"))
-                throw std::invalid_argument("attribute domain requires render.attribute");
-            contract.outputs.emplace("resource", bufferType(registry, parameters));
-            contract.inputs.emplace("value", GraphInputContract{exactLogicalTypePattern(registry, scalar), false});
-        } else if (op == "render.image") {
-            auto declaration = parameters;
-            declaration["kind"] = "image";
-            contract.outputs.emplace("resource", resourceType(registry, declaration));
-        } else if (op == "render.compute" || op == "render.fullscreen" || op == "render.raster") {
-            const auto &ports = parameters.at("ports");
-            if (!ports.is_object()) throw std::invalid_argument("render ports must be an object");
-            for (const auto &[port, declaration] : ports.items()) {
-                const auto type = resourceType(registry, declaration);
-                contract.inputs.emplace(port, GraphInputContract{exactLogicalTypePattern(registry, type)});
-                const auto access = declaration.at("access").get<std::string>();
-                if (access != "read" && access != "write" && access != "read_write")
-                    throw std::invalid_argument("unknown compute port access: " + access);
-                if (access != "read") contract.outputs.emplace(port, type);
-            }
-        } else throw std::invalid_argument("unknown graph operation: " + op);
+        auto contract = modules.resolveOperation(node);
+        domains.insert_or_assign(node.at("id").get<std::string>(), contract.domain);
         return contract;
     }});
     GraphExecutionPartitions result;
@@ -151,7 +72,7 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document) {
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         const auto op = node.at("op").get<std::string>();
-        auto &partition = value_operations.contains(op) ? result.values : result.rendering;
+        auto &partition = domains.at(id) == GraphExecutionDomain::values ? result.values : result.rendering;
         auto lowered = node;
         if (op == "render.attribute" && lowered.at("parameters").contains("source")) {
             const bool owned = std::any_of(graph.node_scopes.at(id).begin(), graph.node_scopes.at(id).end(),

@@ -13,7 +13,7 @@
 #include <string_view>
 #include <vector>
 
-namespace Pelican { class GameContext; }
+namespace Pelican { class GameContext; class GraphModuleRegistry; }
 namespace Pelican::ValueGraph {
 
 using Inputs = std::map<std::string, double, std::less<>>;
@@ -54,6 +54,9 @@ class EvaluationState {
 class PELICAN_API Graph {
   public:
     explicit Graph(std::string_view document);
+    // Compile against a specific set of registered modules. Production uses the
+    // built-in registry; a caller that added or removed a module passes its own.
+    Graph(std::string_view document, const GraphModuleRegistry &modules);
     const std::string &serialize() const noexcept { return document_; }
     const ParameterValues &parameterDefaults() const noexcept { return parameter_defaults_; }
     const GraphInstanceOwner *parameterOwner(std::string_view parameter) const noexcept;
@@ -107,6 +110,9 @@ class PELICAN_API Graph {
   private:
     Outputs evaluateInternal(const Inputs &inputs, const ParameterValues &parameters,
                              const InactiveScopes &inactive, EvaluationState *state) const;
+    // The modules this graph compiled against; they must outlive it, and
+    // re-lowering the saved document uses the same set.
+    const GraphModuleRegistry *modules_ = nullptr;
     ParameterValues parameter_defaults_;
     GraphInstanceOwners instance_owners_;
     ScopeDependencies node_scopes_;

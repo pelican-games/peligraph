@@ -1,5 +1,6 @@
 #include "valuegraph.hpp"
 #include "gamecontext.hpp"
+#include "../../project/graphmodule.hpp"
 #include "../../project/graphpartition.hpp"
 
 #include <algorithm>
@@ -38,16 +39,15 @@ bool active(const ScopeDependencies &dependencies, std::string_view name, const 
         [&](const auto &scope) { return inactive.contains(scope); });
 }
 
-Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
+Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
+                      GraphInstanceOwners &owners,
                       ScopeDependencies &node_scopes, ScopeDependencies &output_scopes) {
-    auto partitions = partitionGraphDocument(authored);
+    auto partitions = partitionGraphDocument(authored, modules);
     const auto &expanded = partitions.values;
     owners = expanded.instance_owners;
     node_scopes = std::move(partitions.rendering.node_scopes);
     node_scopes.insert(expanded.node_scopes.begin(), expanded.node_scopes.end());
     output_scopes = expanded.output_scopes;
-    const auto registry = makeBuiltinLogicalTypeRegistry();
-    const auto operations = valueGraphOperationContracts(registry);
     Json result{{"schema", "pelican.value_graph"}, {"version", 1},
                 {"nodes", Json::array()}, {"outputs", Json::object()}, {"bindings", Json::array()}};
     const auto source = [](const Json &endpoint) {
@@ -77,7 +77,7 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
             output_scopes[output] = node_scopes.at(id);
             continue;
         }
-        for (const auto &[port, contract] : operations.at(op).inputs)
+        for (const auto &[port, contract] : modules.resolveOperation(node).inputs)
             if (!contract.required && parameters.contains(port))
                 (void)number(parameters.at(port)); // References belong in typed input edges.
         if (op == "render.scalar" || op == "audio.volume" || op == "audio.pitch") {
@@ -100,7 +100,8 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
         if (lowered.contains("id") || lowered.contains("op"))
             throw std::invalid_argument("node parameters cannot replace id/op");
         lowered["id"] = node.at("id");
-        lowered["op"] = op.substr(6);
+        // The backend names an operation without its module namespace.
+        lowered["op"] = op.substr(op.find('.') + 1);
         for (const auto &[port, endpoint] : inputs.items()) {
             if (lowered.contains(port)) throw std::invalid_argument("input also defined as a parameter: " + port);
             lowered[port] = op == "value.event_clock" && port == "events" ? endpoint.at("node") : source(endpoint);
@@ -111,10 +112,12 @@ Json lowerScalarGraph(const Json &authored, GraphInstanceOwners &owners,
 }
 }
 
-Graph::Graph(std::string_view document) {
+Graph::Graph(std::string_view document) : Graph(document, builtinGraphModuleRegistry()) {}
+
+Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : modules_(&modules) {
     const auto authored = Json::parse(document);
     const auto root = authored.value("schema", std::string{}) == "pelican.graph"
-        ? lowerScalarGraph(authored, instance_owners_, node_scopes_, output_scopes_) : authored;
+        ? lowerScalarGraph(authored, modules, instance_owners_, node_scopes_, output_scopes_) : authored;
     if (authored.value("schema", std::string{}) == "pelican.graph")
         for (const auto &[output, value] : root.at("outputs").items()) {
             (void)value;
@@ -248,7 +251,12 @@ Graph::Graph(std::string_view document) {
                 decoded.push_back(result);
             }
             node.curve.emplace(std::move(decoded));
-        } else throw std::invalid_argument("unknown value graph operation: " + op);
+        } else {
+            // A contract can exist without a backend that runs it; say so by
+            // name instead of calling the operation unknown.
+            throw GraphRegistryError("graph.operation_unexecutable@1",
+                {{"node", node.id}, {"op", op}, {"backend", "pelican.value_graph"}});
+        }
     }
     for (std::size_t i = 0; i < nodes_.size(); ++i) {
         const auto &node = nodes_[i];
@@ -349,7 +357,7 @@ Graph::StateTransfer Graph::transferState(const Graph &previous, const Evaluatio
         if (document.at("schema") == "pelican.graph") {
             GraphInstanceOwners owners;
             ScopeDependencies nodes, outputs;
-            document = lowerScalarGraph(document, owners, nodes, outputs);
+            document = lowerScalarGraph(document, *graph.modules_, owners, nodes, outputs);
         }
         std::map<std::string, Json> result;
         for (const auto &node : document.at("nodes")) result.emplace(name(node.at("id")), node);

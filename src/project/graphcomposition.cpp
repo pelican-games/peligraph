@@ -196,6 +196,37 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
     return std::move(expander.result);
 }
 
+GraphRegistryError::GraphRegistryError(std::string code, nlohmann::json detail)
+    : std::runtime_error(code + " " + detail.dump()), code_(std::move(code)),
+      detail_(std::move(detail)) {}
+
+std::string_view graphExecutionDomainName(GraphExecutionDomain domain) {
+    switch (domain) {
+    case GraphExecutionDomain::values: return "values";
+    case GraphExecutionDomain::rendering: return "rendering";
+    }
+    throw std::invalid_argument("unknown graph execution domain");
+}
+
+std::string_view graphOperationEvaluationName(GraphOperationEvaluation evaluation) {
+    switch (evaluation) {
+    case GraphOperationEvaluation::direct: return "direct";
+    case GraphOperationEvaluation::replay: return "replay";
+    case GraphOperationEvaluation::baked: return "baked";
+    case GraphOperationEvaluation::recorded: return "recorded";
+    }
+    throw std::invalid_argument("unknown graph operation evaluation");
+}
+
+std::string_view graphParameterChangeName(GraphParameterChange change) {
+    switch (change) {
+    case GraphParameterChange::value: return "value";
+    case GraphParameterChange::recompile: return "recompile";
+    case GraphParameterChange::rebuild: return "rebuild";
+    }
+    throw std::invalid_argument("unknown graph parameter change");
+}
+
 std::map<std::string, LogicalType> validateGraphPorts(
     const ExpandedGraphDocument &graph, const LogicalTypeRegistry &registry,
     const GraphOperationContracts &operations) {
@@ -204,7 +235,8 @@ std::map<std::string, LogicalType> validateGraphPorts(
             const auto op = node.at("op").get<std::string>();
             const auto found = operations.find(op);
             if (found == operations.end())
-                throw std::invalid_argument("unknown graph operation: " + node.at("id").get<std::string>() + " (" + op + ")");
+                throw GraphRegistryError("graph.operation_unregistered@1",
+                    {{"node", node.at("id").get<std::string>()}, {"op", op}});
             return found->second;
         }});
 }

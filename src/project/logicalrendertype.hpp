@@ -149,6 +149,11 @@ class LogicalTypeRegistry {
     void requireCanonical(const LogicalType &type) const;
 };
 
+// The schemas each built-in graph module brings. The registry below registers
+// all of them; a module registers only its own, so the defaults live once.
+std::vector<SemanticTypeSchema> builtinValueTypeSchemas();
+std::vector<SemanticTypeSchema> builtinAudioTypeSchemas();
+std::vector<SemanticTypeSchema> builtinRenderTypeSchemas();
 LogicalTypeRegistry makeBuiltinLogicalTypeRegistry();
 LogicalType sceneLinearHdrV1(const LogicalTypeRegistry &registry);
 LogicalType displayLinearV1(const LogicalTypeRegistry &registry);

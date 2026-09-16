@@ -19,8 +19,8 @@ void forbid(const Json &parameters, std::initializer_list<const char *> fields) 
 }
 
 Json lowerRenderGraphDocument(const Json &document,
-    const std::set<std::string> &inactive_scopes) {
-    const auto graph = partitionGraphDocument(document).rendering;
+    const std::set<std::string> &inactive_scopes, const GraphModuleRegistry &modules) {
+    const auto graph = partitionGraphDocument(document, modules).rendering;
     auto config = document.value("rendering", Json::object());
     // Existing global settings, presets and image passes can coexist during
     // migration, but buffer/compute declarations have one authoring owner.
@@ -50,6 +50,14 @@ Json lowerRenderGraphDocument(const Json &document,
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         if (inactive(id)) continue;
+        // A contract can be registered without a backend that runs it. Say so
+        // by name instead of lowering an unknown operation as if it were a pass.
+        static const std::set<std::string> lowerable{"render.buffer", "render.attribute",
+            "render.image", "render.compute", "render.fullscreen", "render.raster"};
+        if (!lowerable.contains(node.at("op").get<std::string>()))
+            throw GraphRegistryError("graph.operation_unexecutable@1",
+                {{"node", id}, {"op", node.at("op").get<std::string>()},
+                 {"backend", "pelican.render"}});
         auto parameters = node.at("parameters");
         // Ordering is not a data dependency: an active task need not wait for
         // a task that no longer executes. Unknown names still reach validation.

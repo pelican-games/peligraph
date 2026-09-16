@@ -8,6 +8,7 @@ target_sources(pelican_cli PRIVATE
   bakecameracommand.cpp
   distconfig.cpp
   gltfsceneextract.cpp
+  graphcatalogcommand.cpp
   importcommand.cpp
   materialcommand.cpp
   processrunner.cpp

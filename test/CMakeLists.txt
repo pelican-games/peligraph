@@ -1214,6 +1214,9 @@ pelican_define_test(animation_probe_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animation_jobs_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animgraph_test GROUP core_foundation pelican_core glm)
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
+# The test-only graph module lives with the test that needs it; the production
+# archives are checked for its symbol below.
+target_sources(pelican_test_curve_test PRIVATE graphtestopaquemodule.cpp)
 pelican_define_test(vrmasource_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator
                     VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_animation_probe_test PRIVATE
@@ -1818,8 +1821,11 @@ if(WIN32)
         NAME wp380c_production_has_no_fault_setter_symbol
         COMMAND ${CMAKE_COMMAND}
             -DPRODUCTION_ARCHIVE=$<TARGET_FILE:pelican_core>
+            -DPROJECT_ARCHIVE=$<TARGET_FILE:pelican_project>
             -DWP380C_DUMPBIN=${wp380c_toolchain_bin}/dumpbin.exe
             -DPRODUCTION_SOURCES="$<JOIN:$<TARGET_PROPERTY:pelican_core,SOURCES>,|>"
+            -DPROJECT_SOURCES="$<JOIN:$<TARGET_PROPERTY:pelican_project,SOURCES>,|>"
+            -DGRAPH_TEST_MODULE_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/graphtestopaquemodule.cpp
             -DSCENE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/sceneloadfault_testing.cpp
             -DMODEL_RELEASE_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/modelreleasefault_testing.cpp
             -DMODEL_RELOAD_FAULT_TEST_SOURCE=${CMAKE_CURRENT_SOURCE_DIR}/modelreloadfault_testing.cpp
@@ -2406,6 +2412,13 @@ add_test(
         -DSURFACE=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/surface_format/valid/wp116_mask_double.surface
         -DMATERIAL=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/material_format/valid/wp116_mask_double.json
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_dump_lowered_material.cmake
+)
+
+add_test(
+    NAME devcli_graph_catalog
+    COMMAND ${CMAKE_COMMAND}
+        -DCLI=$<TARGET_FILE:pelican_cli>
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_graph_catalog.cmake
 )
 
 add_test(
