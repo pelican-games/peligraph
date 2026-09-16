@@ -551,7 +551,7 @@ scene のロードは 1 つのトランザクションになりました([第4�
   「シーンは切り替わったが、`onInit` が呼んだ `playSound` / `saveData` / `setBusVolume` の一部が失敗した」
   ことを表すのが `effect_errors` で、**空配列なら全部成功**です。
 - 1 要素は `{api, error_code, error_fields, phase}` の 4 鍵ちょうどです(正は
-  [`effectErrorsJson()`](../../src/core/loader/scene.cpp#L480))。`api` は
+  [`effectErrorsJson()`](../../src/core/loader/scene.cpp#L497))。`api` は
   `playSound` / `saveData` / `loadScene` などの**公開 API 名**、`phase` は
   `activate` / `destroy` / `flush` の 3 値、`error_fields` はコードごとに決まった固定の鍵
   (`{path, reason}` / `{slot, reason}` / `{bus, reason}` / `{dropped}` など。正は

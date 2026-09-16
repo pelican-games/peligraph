@@ -605,7 +605,7 @@ C++20 の `auto operator<=>(const T &) const = default;` は、宣言順にメ�
 
 「いま実行中のトランザクション」「いま登録中のオブザーバ」のような、呼び出しの深いところまで届けたい文脈を、引数で引き回さずに参照するためのイディオムです。名前空間スコープの `thread_local` なポインタに現在値を置き、その差し替えを RAII クラス(コンストラクタで `std::exchange` して旧値を保存、デストラクタで書き戻す)に閉じ込めます。RAII にしておけば例外で抜けても必ず前の値に戻り、入れ子も正しく動きます。`thread_local` なのでスレッドごとに独立し、別スレッドの実行中トランザクションを踏むことがありません。素の大域変数 + 手書きの復元にすると、途中の `return` や例外で復元を飛ばした瞬間に「終わったはずのトランザクションが実行中に見える」壊れ方をします。
 
-**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L187) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L18) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L23)
+**使用場所**: [PendingSceneTransactionScope](../../src/core/loader/scene.cpp#L204) / [thread_local な active_effect_transaction の宣言](../../src/core/loader/effecttransaction.cpp#L18) / [ScopedRenderPipelineCompanionReloadObserver のコンストラクタ](../../src/core/watch/reloadservice.cpp#L23)
 
 ### スコープガード(巻き戻しをデストラクタに置き、成功時に無効化する)
 
@@ -653,7 +653,7 @@ C++ のムーブは、移動元を「有効だが未規定の状態」にしま�
 
 `std::any` は「任意の 1 個のコピー可能な値」を型を隠して保持する箱で、取り出しは `std::any_cast<T>` です。型が違えば `std::bad_any_cast` を投げます(ポインタ版は null を返します)。異なるコーデックが返す異種の値を 1 つのコンテナで運ぶような場面で、共通の基底クラスを作らずに済ませる手段になります。取り出し側は必ず失敗しうるので、`bad_any_cast` をその境界の例外契約(たとえば `std::invalid_argument`)へ翻訳しておくと、呼び出し側が 1 種類の失敗だけを見ればよくなります。
 
-**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L370)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L286)
+**使用場所**: [codecValue()](../../src/core/loader/componentcodec.cpp#L370)(`any_cast` の失敗を `invalid_argument` に翻訳) / [prepareSceneBindings()](../../src/core/loader/scene.cpp#L303)
 
 ### Result 型で例外型を境界の外に出さない
 
@@ -1112,7 +1112,7 @@ IEEE 754 では NaN を含む順序比較(`<`, `<=`, `>`, `>=`, `==`)はすべ�
 
 親の world 変換から子の local を復元するときは、この逆を逆順に当てます — 並進を引き、親回転の逆を掛け、親スケールで割る。スケールで割る以上、**成分が 0 に近い親スケールでは逆算が発散します**ので、閾値を置いて拒否するのが定石です。非一様スケールと回転が混ざると local の scale が一意に決まらない(せん断が生じる)ことにも注意が要ります。
 
-**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2281)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L427)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
+**使用場所**: [PolygonInstanceContainer::prepareTrs()](../../src/core/renderer/polygoninstancecontainer.cpp#L2316)(合成側) / [projectTransform()](../../src/core/loader/componentcodec.cpp#L427)(逆算側、`invertible_epsilon` で 0 スケールを拒否)
 
 ### 法線の変換は transpose(inverse(M))
 

@@ -651,7 +651,7 @@ audioと同じく、persistenceも「用意」と「書き込み」に割れて�
 >
 > **不変条件**: `parents[i] < i`(root は -1)。`localToModel()` の 1 パスがこれに依存します。`layout_to_original` と `original_to_layout` は互いの逆写像なので、片方だけ触らないこと。
 
-> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1652) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L894))
+> 🧩 **難所 — publish しない publish**([`publishFromSource()`](../../src/core/animation/animationservice.cpp#L1664) / [`commitStagedFrame()`](../../src/core/animation/animationservice.cpp#L897))
 >
 > **何をする所か**: anim graph が `base_pose_and_root_modifier` フェーズで publish したフレームを、その場では renderer へ流さず 1 枚だけ staging し、全フェーズ終了後に `commitStagedFrame()` が 1 回だけ publish します。
 >
@@ -990,7 +990,7 @@ JSON変換は [`structfieldjson.hpp`](../../src/core/userpublic/details/schema/s
 
 ### 退役済みobjectのsnapshot view
 
-`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1133)）、2つの向きに使います。
+`retire` 段の `onDestroy` は、**もう live ではない**object idを持っています。そこで transaction は破棄tokenの列を借りて保持し（[`setRetiredObjects()`](../../src/core/loader/scene.cpp#L1150)）、2つの向きに使います。
 
 - **読み**: [`retiredComponent(id, component_id)`](../../src/core/loader/effecttransaction.cpp#L462) が destroy token の中のcomponentを返し、`GameContext::localTransform()` / `spriteView()` がそれを**先に**引きます（[`GameContext::localTransform()`](../../src/core/userpublic/gamecontext.cpp#L119)）。だから `onDestroy` から自分の最後のtransformを読めます。
 - **書き**: [`rejectRetiredMutation(api, id)`](../../src/core/loader/effecttransaction.cpp#L473) が同じ列を引き、当たれば `SceneRetiredObjectMutationRejected` を診断へ1件積んで `true` を返します。呼び手のsetterは `false` を返すだけで**throwしません**（`onDestroy` は `noexcept` です）。
