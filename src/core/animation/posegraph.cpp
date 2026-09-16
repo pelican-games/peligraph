@@ -81,6 +81,9 @@ void PoseGraph::compile(const Json &authored, const GraphModuleRegistry &modules
         case PoseGraphOp::clip_sample:
             compiled.rig = requiredName(parameters, "rig", id);
             compiled.clip = requiredName(parameters, "clip", id);
+            compiled.speed = poseClipSampleNumber(parameters, "speed", 1.0, id);
+            compiled.start_time = poseClipSampleNumber(parameters, "start_time", 0.0, id);
+            compiled.loop = poseClipSampleLoop(parameters, id);
             break;
         case PoseGraphOp::state_machine:
             compiled.rig = requiredName(parameters, "rig", id);

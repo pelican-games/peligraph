@@ -25,5 +25,13 @@ void registerPoseGraphModule(GraphModuleRegistry &registry);
 // backend reads the same list, so ports and parameters cannot drift apart.
 std::vector<std::string> poseStateMachineParameterPorts(const nlohmann::json &document,
                                                         const std::string &node);
+// The playback parameters of a pose.clip_sample node, with the only copy of
+// their defaults. The contract validates them here and the animation backend
+// reads them through the same two functions, so a node cannot mean one thing to
+// the catalog and another to the evaluator. `speed` defaults to 1, `start_time`
+// to 0 and `loop` to true -- the same three the animation component carries.
+double poseClipSampleNumber(const nlohmann::json &parameters, const char *key, double fallback,
+                            const std::string &node);
+bool poseClipSampleLoop(const nlohmann::json &parameters, const std::string &node);
 
 } // namespace Pelican

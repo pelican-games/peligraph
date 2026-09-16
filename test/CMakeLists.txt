@@ -1230,6 +1230,10 @@ pelican_define_test(posegraph_test GROUP core_foundation pelican_core glm)
 target_compile_definitions(pelican_test_animation_probe_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+else()
+# The OFF build's own acceptance: a scene that animates is refused by name at
+# prepare, and the scene that was already live survives the refusal.
+pelican_define_test(animation_off_scene_test GROUP core_foundation pelican_core)
 endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
 # The test-only graph module lives with the test that needs it; the production

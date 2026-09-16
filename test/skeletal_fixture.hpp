@@ -20,6 +20,11 @@ struct Options {
     bool invalid_default_scene = false;
     float position_scale = 1.0f;
     bool morph_target = false;
+    // Shifts every keyframe time, so the clips this asset carries begin at
+    // `animation_time_offset` instead of 0. glTF clip bounds are the keyframe
+    // times themselves, so this is the only way to get a clip whose start is
+    // not 0 -- which is what most authored assets actually look like.
+    float animation_time_offset = 0.0f;
 };
 
 namespace detail {
@@ -63,7 +68,8 @@ inline std::vector<std::uint8_t> makeGlb(Options options) {
     const std::vector<std::uint16_t> indices{0, 1, 2, 2, 1, 3};
     const std::vector<glm::mat4> inverse_bind{
         glm::mat4{1.0f}, glm::translate(glm::mat4{1.0f}, glm::vec3{0.0f, -1.0f, 0.0f})};
-    const std::vector<float> times{0.0f, 1.0f, 2.0f};
+    const auto offset = options.animation_time_offset;
+    const std::vector<float> times{0.0f + offset, 1.0f + offset, 2.0f + offset};
     const float s = 0.7071067811865475f;
     const std::vector<glm::vec4> rotations{{0, 0, 0, 1}, {0, 0, s, s}, {0, 0, 1, 0}};
     const std::vector<glm::vec3> translations{{0, 1, 0}, {1, 1, 0}, {2, 1, 0}};

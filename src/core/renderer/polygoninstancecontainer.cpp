@@ -1837,8 +1837,27 @@ Animation::InstanceHandle PolygonInstanceContainer::animationInstance(ModelInsta
             animation_generations[id.index], 0};
 }
 
+std::string_view animationFrameWriterName(AnimationFrameWriterKind kind) noexcept {
+    switch (kind) {
+    case AnimationFrameWriterKind::animation_component_clip: return "animation component";
+    case AnimationFrameWriterKind::animation_source: return "animation source";
+    case AnimationFrameWriterKind::none: break;
+    }
+    return "nobody";
+}
+
+AnimationFrameWriter PolygonInstanceContainer::animationFrameWriter(ModelInstanceId id) const {
+    if (!isLive(id)) return {};
+    const auto found = animation_frame_writers.find(id.index);
+    if (found == animation_frame_writers.end() ||
+        found->second.generation != animation_generations[id.index])
+        return {};
+    return found->second.writer;
+}
+
 Animation::Status PolygonInstanceContainer::publishAnimationFrame(
-    ModelInstanceId id, const Animation::PublishAnimationFrameDescV1 &frame,
+    ModelInstanceId id, AnimationFrameWriter writer,
+    const Animation::PublishAnimationFrameDescV1 &frame,
     std::span<const Animation::Matrix4fV1> model_matrices,
     std::span<const std::uint32_t> original_to_layout) {
     constexpr auto minimum = offsetof(Animation::PublishAnimationFrameDescV1, root_delta) +
@@ -1852,6 +1871,20 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
     if (!Animation::isValid(frame.instance) || frame.instance.identity != expected.identity)
         return Animation::Status::invalid_handle;
     if (frame.instance.generation != expected.generation) return Animation::Status::stale_generation;
+    // A second, different writer inside one frame revision is refused as soon
+    // as the instance is known -- before anything about the frame it brought is
+    // looked at, and before any of this instance's state is touched -- so the
+    // two poses cannot race and the later one cannot silently replace the
+    // earlier one. The same writer publishing twice is still
+    // duplicate_revision, which is a different mistake and keeps its own name.
+    const auto owner = animation_frame_writers.find(index);
+    if (owner != animation_frame_writers.end() &&
+        owner->second.generation == expected.generation &&
+        owner->second.writer.kind != AnimationFrameWriterKind::none &&
+        owner->second.writer.frame_revision == frame.frame_revision &&
+        (owner->second.writer.kind != writer.kind ||
+         owner->second.writer.identity != writer.identity))
+        return Animation::Status::authority_conflict;
     if (!Animation::isValid(frame.local_pose) || !Animation::isValid(frame.model_pose) ||
         frame.frame_revision == 0 || (frame.palette_count != 0 && frame.palette == nullptr) ||
         frame.palette_count > maxSkinJoints ||
@@ -1879,6 +1912,8 @@ Animation::Status PolygonInstanceContainer::publishAnimationFrame(
     skin_palettes[index] = std::move(palette);
     animation_node_matrices[index] = std::move(node_matrices);
     animation_revisions[index] = frame.frame_revision;
+    animation_frame_writers[index] = AnimationFrameWriterRecord{expected.generation,
+        AnimationFrameWriter{writer.kind, writer.identity, frame.frame_revision}};
     if (previous_animation_revisions[index] == 0 ||
         (frame.flags & (Animation::commit_reset_history | Animation::commit_discontinuity)) != 0) {
         previous_skin_palettes[index] = skin_palettes[index];

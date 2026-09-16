@@ -60,7 +60,7 @@ Json stateMachineDocument(bool escape_the_sink) {
         {"parameters", {{"rig", "models/hero.glb"}, {"graph", animGraphDocument()}}},
         {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
                     {"speed", {{"node", "speed"}, {"port", "value"}}}}},
-        {"outputs", {"pose", "state_events"}}});
+        {"outputs", {"pose"}}});
     nodes.push_back(Json::parse(R"({"id":"out","op":"pose.skeletal",
       "inputs":{"pose":{"node":"brain","port":"pose"}},"outputs":[]})"));
     if (escape_the_sink)
@@ -133,9 +133,82 @@ TEST_CASE("the pose catalog publishes its own types and sinks", "[posegraph][gra
     REQUIRE(sinks == std::set<std::string>{"pose.skeletal", "pose.transform"});
     for (const auto &operation : pose->at("operations")) {
         REQUIRE(operation.at("domain") == "animation");
-        if (operation.at("op") == "pose.state_machine")
+        std::set<std::string> inputs;
+        for (const auto &input : operation.value("inputs", nlohmann::ordered_json::array()))
+            inputs.insert(input.at("port").get<std::string>());
+        std::set<std::string> outputs;
+        for (const auto &output : operation.value("outputs", nlohmann::ordered_json::array()))
+            outputs.insert(output.at("port").get<std::string>());
+        if (operation.at("op") == "pose.state_machine") {
             REQUIRE(operation.at("evaluation") == "replay");
+            // No `events` input and no `state_events` output: nothing can emit
+            // an event out of a pose operation, so the catalog does not offer a
+            // port that cannot be connected.
+            REQUIRE_FALSE(inputs.contains("events"));
+            REQUIRE(outputs == std::set<std::string>{"pose"});
+        }
     }
+    // The pose.state_machine node used above resolves to the same port set the
+    // catalog declares -- and refuses an `events` edge because the port is not
+    // there, rather than accepting one and dropping it.
+    const auto resolved = builtinGraphModuleRegistry().resolveOperation(
+        Json{{"id", "brain"}, {"op", "pose.state_machine"},
+             {"parameters", {{"rig", "models/hero.glb"}, {"graph", animGraphDocument()}}}});
+    REQUIRE_FALSE(resolved.inputs.contains("events"));
+    REQUIRE(resolved.inputs.contains("time"));
+    REQUIRE(resolved.inputs.contains("speed"));
+    REQUIRE(resolved.outputs.size() == 1);
+    REQUIRE(resolved.outputs.contains("pose"));
+}
+
+TEST_CASE("a clip sample carries the component's playback parameters",
+          "[posegraph][graph-module]") {
+    using namespace Pelican;
+    // speed / start_time / loop are node parameters of pose.clip_sample, with
+    // the same defaults the animation component has. The contract validates
+    // them, so an unusable value is named at composition instead of reaching a
+    // frame.
+    const auto node = [](Json parameters) {
+        return Json{{"id", "walk"}, {"op", "pose.clip_sample"}, {"parameters", std::move(parameters)}};
+    };
+    const Json base{{"rig", "models/hero.glb"}, {"clip", "Walk"}};
+    REQUIRE_NOTHROW(builtinGraphModuleRegistry().resolveOperation(node(base)));
+    auto full = base;
+    full["speed"] = 2.0;
+    full["start_time"] = 0.5;
+    full["loop"] = false;
+    REQUIRE_NOTHROW(builtinGraphModuleRegistry().resolveOperation(node(full)));
+    auto bad_loop = base;
+    bad_loop["loop"] = 1;
+    REQUIRE_THROWS_AS(builtinGraphModuleRegistry().resolveOperation(node(bad_loop)),
+                      std::invalid_argument);
+    auto bad_speed = base;
+    bad_speed["speed"] = "fast";
+    REQUIRE_THROWS_AS(builtinGraphModuleRegistry().resolveOperation(node(bad_speed)),
+                      std::invalid_argument);
+
+    // The backend reads the same three through the same two functions, so a
+    // node cannot mean one thing to the catalog and another to the evaluator.
+    auto nodes = clipSampleChain();
+    nodes[1]["parameters"]["speed"] = 2.0;
+    nodes[1]["parameters"]["start_time"] = 0.25;
+    nodes[1]["parameters"]["loop"] = false;
+    const Animation::PoseGraph graph{poseInstanceDocument(nodes)};
+    const Animation::PoseGraphNode *sampler = nullptr;
+    for (const auto &candidate : graph.nodes())
+        if (candidate.op == Animation::PoseGraphOp::clip_sample) sampler = &candidate;
+    REQUIRE(sampler != nullptr);
+    REQUIRE(sampler->speed == 2.0);
+    REQUIRE(sampler->start_time == 0.25);
+    REQUIRE_FALSE(sampler->loop);
+    // The defaults live in one place: an unparameterised node reports them.
+    const Animation::PoseGraph plain{poseInstanceDocument(clipSampleChain())};
+    for (const auto &candidate : plain.nodes())
+        if (candidate.op == Animation::PoseGraphOp::clip_sample) {
+            REQUIRE(candidate.speed == 1.0);
+            REQUIRE(candidate.start_time == 0.0);
+            REQUIRE(candidate.loop);
+        }
 }
 
 TEST_CASE("one object has one pose writer", "[posegraph][graph-module]") {

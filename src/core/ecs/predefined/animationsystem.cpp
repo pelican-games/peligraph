@@ -25,6 +25,7 @@
 #include <variant>
 #include <vector>
 #include <map>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -51,18 +52,6 @@ struct AnimationSystemState {
     Animation::AnimationAssetRegistry assets;
     std::vector<EntityId> candidates;
     std::unordered_map<EntityId, std::unique_ptr<GraphBinding>> graphs;
-
-    // The pose feed evaluates the same document with its own state, so its
-    // clocks advance once per frame without touching the rendering evaluation.
-    std::map<std::weak_ptr<const ValueGraph::Graph>, ValueGraph::EvaluationState,
-             std::owner_less<std::weak_ptr<const ValueGraph::Graph>>> pose_scalars;
-
-    ValueGraph::EvaluationState &poseScalarState(const std::shared_ptr<const ValueGraph::Graph> &graph) {
-        std::erase_if(pose_scalars, [](const auto &entry) { return entry.first.expired(); });
-        const auto found = pose_scalars.find(graph);
-        if (found != pose_scalars.end()) return found->second;
-        return pose_scalars.emplace(graph, graph->createState()).first->second;
-    }
 
     AnimationGraph::EvaluatorV1 *currentEvaluator(EntityId entity) const {
         const auto found = graphs.find(entity);
@@ -162,8 +151,17 @@ void AnimationSystem::process(QueryComponents components, size_t count) {
         publish.palette_count = static_cast<std::uint32_t>(palette.size());
         publish.frame_revision = frame_revision;
         publish.root_delta.rotation.w = 1.0f;
-        status = instances->publishAnimationFrame(*model_views[i].model_instance_id, publish,
-                                                   model_matrices, asset.rig.original_to_layout);
+        // The clip path writes the container directly, so it says who it is:
+        // a pose graph reaching the same object this frame is then a named
+        // conflict instead of a second pose landing on top of this one.
+        status = instances->publishAnimationFrame(*model_views[i].model_instance_id,
+                                                   {AnimationFrameWriterKind::animation_component_clip,
+                                                    animationComponentClipWriter},
+                                                   publish, model_matrices,
+                                                   asset.rig.original_to_layout);
+        if (status == Animation::Status::authority_conflict)
+            throw std::runtime_error("another writer already published this object's pose this frame: " +
+                                     animations[i].clip);
         if (status != Animation::Status::ok) throw std::runtime_error("failed to publish animation frame");
     }
 }
@@ -245,9 +243,19 @@ void AnimationSystem::updateGraphs() {
 void AnimationSystem::updatePoseGraphs() {
 #if PELICAN_WITH_ANIMATION
     auto &runtime = Animation::poseGraphRuntime();
-    runtime.retireUnreferenced();
     const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>();
     const auto generation = passes ? passes->snapshot() : nullptr;
+    // The pose graphs of the programs that are published right now. Anything
+    // else the runtime still holds belongs to a generation that is gone; it is
+    // released before this pass attaches, so a retired state machine cannot
+    // still be claiming the object its replacement is about to claim.
+    std::set<const Animation::PoseGraph *> live;
+    if (generation)
+        for (const auto &[id, program] : generation->programs) {
+            (void)id;
+            if (program.frame_graph.pose_graph) live.insert(program.frame_graph.pose_graph.get());
+        }
+    runtime.retainOnly(live);
     if (!generation) return;
     auto &scene = GET_MODULE(SceneLoader);
     auto &time = GET_MODULE(EngineTime);
@@ -280,24 +288,33 @@ void AnimationSystem::updatePoseGraphs() {
             (void)resolveGraphModelSource(instance, rig, node);
         };
         frame.component_writer = [&](const GraphInstanceOwner &instance) {
-            // Either component source -- clip or graph -- already writes this
-            // object's pose. AG-1b converts the component path to a graph
-            // instance; until then the two cannot share one object.
+            // Not "the object carries an animation component" but "the clip
+            // path has already published this object's frame this revision".
+            // The ECS update runs before the animation phases, so by the time a
+            // pose graph is synchronized the writer token is already on the
+            // instance; a graph sink on the same object is pose.sink_conflict@1
+            // rather than a second pose landing on top of the first.
             const auto object = scene.graphOwnerObject(instance);
             if (!object || !ecs.isAlive(*object)) return false;
-            const auto *animation = ecs.tryComponent<AnimationComponent>(*object);
-            return animation != nullptr && (!animation->clip.empty() || !animation->graph.empty());
+            const auto *view = ecs.tryComponent<SimpleModelViewComponent>(*object);
+            if (!view || !view->model_instance_id) return false;
+            const auto writer = GET_MODULE(PolygonInstanceContainer)
+                                    .animationFrameWriter(*view->model_instance_id);
+            return writer.kind == AnimationFrameWriterKind::animation_component_clip &&
+                   writer.frame_revision == time.frameIndex();
         };
         // The scalars this frame, from the values partition of the same
-        // document. A separate evaluation state advances once per frame with
-        // the same inputs, so pose and rendering read the same numbers without
-        // either one advancing the other's clocks.
+        // document. A separate evaluation state -- owned by the scene beside
+        // the rendering one, so both survive a graph generation change or
+        // neither does -- advances once per frame with the same inputs, so pose
+        // and rendering read the same numbers without either one advancing the
+        // other's clocks.
         auto inactive = scene.inactiveGraphScopes(*value_graph);
         inactive.insert(program.frame_graph.inactive_graph_scopes.begin(),
                         program.frame_graph.inactive_graph_scopes.end());
         const auto &scalar_outputs = pose_graph->scalarOutputs();
         if (!scalar_outputs.empty()) {
-            auto &evaluation = state->poseScalarState(value_graph);
+            auto &evaluation = scene.poseGraphEvaluationState(value_graph);
             const auto inputs = collectGraphInputs(*value_graph, scene, inactive, time.now(), time.dt());
             const auto outputs = value_graph->evaluateLowered(inputs,
                 scene.graphParameterValues(value_graph), inactive, &evaluation);

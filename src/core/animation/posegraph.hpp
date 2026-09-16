@@ -32,6 +32,11 @@ struct PoseGraphNode {
     std::string rig;     // clip_sample / state_machine: the model asset
     std::string clip;    // clip_sample
     std::string profile; // retarget
+    // clip_sample playback, the same three the animation component carries. The
+    // defaults live in posegraphmodule.hpp; nothing re-states them here.
+    double speed = 1.0;
+    double start_time = 0.0;
+    bool loop = true;
     nlohmann::json state_machine;
     // Declaration order, so a port and its parameter cannot drift apart.
     std::vector<std::string> parameter_ports;

@@ -885,7 +885,10 @@ struct AnimationServiceRuntime::Impl {
             sink.object->renderer_instance &&
                     FastModuleContainer::isInitialized<PolygonInstanceContainer>()
                 ? GET_MODULE(PolygonInstanceContainer)
-                      .publishAnimationFrame(*sink.object->renderer_instance, frame, matrices, mapping)
+                      .publishAnimationFrame(*sink.object->renderer_instance,
+                          {AnimationFrameWriterKind::animation_source,
+                           sink.active_source.identity},
+                          frame, matrices, mapping)
                 : legacy_runtime.publishAnimationFrame(frame);
         if (status == Status::ok) sink.reset_history = false;
         return status;
@@ -1339,7 +1342,16 @@ struct AnimationServiceRuntime::Impl {
         PoseRecord *pose{};
         if (const auto status = runtime->resolvePose(desc->output_pose, pose); status != Status::ok)
             return status;
-        return samplePoseAt(*clip->first->asset, clip->second, desc->time_seconds, 1.0, true, 0.0, pose->view);
+        // `time_seconds` is the absolute clip time the caller already decided
+        // on. Whoever owns the loop policy -- a pose.clip_sample node, an
+        // animation graph cursor -- has wrapped or clamped it; wrapping here a
+        // second time would fold a clamped final frame back to the clip's start
+        // and would shift the phase of every clip whose keyframes do not begin
+        // at 0. samplePoseAt is asked for that exact time and nothing else.
+        const auto begin = clip->second != nullptr && clip->second->source != nullptr
+            ? static_cast<double>(clip->second->source->start) : 0.0;
+        return samplePoseAt(*clip->first->asset, clip->second, desc->time_seconds - begin,
+                            1.0, false, 0.0, pose->view);
     }
 
     static Status sampleAnimationSource(

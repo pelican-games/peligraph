@@ -62,12 +62,20 @@ DECLARE_MODULE(SceneLoader) {
     };
     using GraphParameterOverrides = std::map<std::string, GraphParameterOverride, std::less<>>;
     struct GraphRuntime {
-        explicit GraphRuntime(const ValueGraph::Graph &graph) : evaluation(graph.createState()) {}
+        explicit GraphRuntime(const ValueGraph::Graph &graph)
+            : evaluation(graph.createState()), pose_evaluation(graph.createState()) {}
         ~GraphRuntime();
         GraphRuntime(const GraphRuntime &) = delete;
         GraphRuntime &operator=(const GraphRuntime &) = delete;
         GraphParameterOverrides parameters;
         ValueGraph::EvaluationState evaluation;
+        // The pose feed evaluates the same document with its own state, so its
+        // clocks advance once per frame without touching the rendering
+        // evaluation. It lives here, beside the rendering state, so a graph
+        // generation change carries both or neither -- one half surviving a
+        // republish while the other restarts at 0 would make the same node
+        // produce two different values in one frame.
+        ValueGraph::EvaluationState pose_evaluation;
         std::map<std::string, GameObjectId> owners;
         ValueGraph::SoundBindings sounds;
     };
@@ -128,6 +136,9 @@ DECLARE_MODULE(SceneLoader) {
     ValueGraph::ParameterValues graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph);
     ValueGraph::InactiveScopes inactiveGraphScopes(const ValueGraph::Graph &graph) const;
     ValueGraph::EvaluationState &graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph);
+    // The animation partition's own evaluation state for the same document.
+    ValueGraph::EvaluationState &poseGraphEvaluationState(
+        const std::shared_ptr<const ValueGraph::Graph> &graph);
     bool emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
                         std::string_view input, Animation::CurvePlaybackCommand command);
     bool applyGraphAudioEvent(const std::shared_ptr<const ValueGraph::Graph> &graph,

@@ -1809,7 +1809,7 @@ TEST_CASE("a pose graph drives an object's skeletal sink", "[skeletal][graph-pos
                   "initial_state":"idle"})")}}},
             {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
                         {"speed", {{"node", "speed"}, {"port", "value"}}}}},
-            {"outputs", {"pose", "state_events"}}});
+            {"outputs", {"pose"}}});
         // The value side of the same document decides when the state machine
         // leaves `idle`; today only GameContext could do that.
         document["nodes"].insert(document["nodes"].begin() + 3,
@@ -1981,6 +1981,395 @@ void main() {
         const bool moved = std::abs(observed.back()[0]) > 0.9f;
         REQUIRE(moved == connect_parameter);
     }
+    service.reset();
+    Animation::poseGraphRuntime().clear();
+}
+
+// AG-1b acceptance 1. Two individuals in one scene carry the same clip with the
+// same playback parameters: one through the animation component, one through a
+// pose graph in the pass document. Both poses reach the GPU as instance
+// attributes and are read back from the same compute dispatch, so the frames
+// compared are the frames that were drawn.
+TEST_CASE("one clip poses the same whichever way it is attached", "[skeletal][graph-pose-parity]") {
+    setupLogger();
+    const auto mode = GENERATE(as<std::string>{}, "looping", "clamped", "shifted playback",
+                               "clip that does not begin at zero",
+                               "clamped clip that does not begin at zero");
+    CAPTURE(mode);
+    const bool loop = mode != "clamped" && mode != "clamped clip that does not begin at zero";
+    const double speed = mode == "shifted playback" ? 1.5 : 1.0;
+    const double start_time = mode == "shifted playback" ? 0.75 : 0.0;
+    const float clip_offset = mode.ends_with("does not begin at zero") ? 3.0f : 0.0f;
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_pose_parity_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::create_directories(root / "shaders");
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin",
+                                   {.animation_time_offset = clip_offset});
+
+    const nlohmann::json attribute{{"id", "tip"}, {"op", "render.attribute"},
+        {"parameters", {{"element", "mat4"}, {"domain", "instance"},
+            {"source", {{"asset", "project://character.gltf"}, {"pose_node", 2}}}}},
+        {"outputs", {"resource"}}};
+    auto document = parameterGraphCompositionFixture();
+    // The component-driven individual only reads its pose out; nothing in this
+    // definition writes a sink, so the component stays its single writer.
+    document["definitions"]["view"] = {{"nodes", nlohmann::json::array({attribute})},
+        {"outputs", {{"tip", {{"node", "tip"}, {"port", "resource"}}}}}};
+    nlohmann::json posed_nodes = nlohmann::json::array();
+    posed_nodes.push_back(nlohmann::json::parse(R"({"id":"time","op":"graph.input"})"));
+    posed_nodes.push_back(attribute);
+    posed_nodes.push_back(nlohmann::json{{"id", "source"}, {"op", "pose.clip_sample"},
+        {"parameters", {{"rig", "project://character.gltf"}, {"clip", "Turn"},
+                        {"speed", speed}, {"loop", loop}, {"start_time", start_time}}},
+        {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}}}}, {"outputs", {"pose"}}});
+    posed_nodes.push_back(nlohmann::json::parse(R"({"id":"out","op":"pose.skeletal",
+      "inputs":{"pose":{"node":"source","port":"pose"}},"outputs":[]})"));
+    document["definitions"]["posed"] = {{"nodes", std::move(posed_nodes)},
+        {"outputs", {{"tip", {{"node", "tip"}, {"port", "resource"}}}}}};
+
+    document["nodes"][5] = {{"id", "component_view"}, {"op", "graph.instance"},
+        {"definition", "view"}, {"owner", {{"scene", "default_scene"}, {"object", 1}}},
+        {"inputs", nlohmann::json::object()}};
+    document["nodes"][6]["parameters"]["size"] = 16;
+    auto &probe = document["nodes"][7];
+    probe["parameters"]["ports"].erase("source");
+    probe["inputs"].erase("source");
+    for (const auto *port : {"component", "posed"}) {
+        probe["parameters"]["ports"][port] = {{"element", "mat4"}, {"domain", "instance"}, {"access", "read"}};
+    }
+    probe["inputs"]["component"] = {{"node", "component_view"}, {"port", "tip"}};
+    probe["inputs"]["posed"] = {{"node", "pose_view"}, {"port", "tip"}};
+    document["nodes"].push_back({{"id", "pose_view"}, {"op", "graph.instance"},
+        {"definition", "posed"}, {"owner", {{"scene", "default_scene"}, {"object", 2}}},
+        {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}}});
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    mat4 component = pelican_load_component(0);
+    mat4 posed = pelican_load_posed(0);
+    pelican_store_destination(0, component[3].x);
+    pelican_store_destination(1, component[3].y);
+    pelican_store_destination(2, posed[3].x);
+    pelican_store_destination(3, posed[3].y);
+}
+)");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    nlohmann::json animation_component{{"name", "animation"},
+        {"clip", "character.gltf#animation/Turn"}, {"loop", loop},
+        {"speed", speed}, {"start_time", start_time}};
+    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+      {"name":"Component","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"character"}]},
+      {"name":"Posed","components":[{"name":"transform","pos":[4,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"character"}]}]}}})");
+    scene_document["scenes"]["default_scene"]["objects"][0]["components"].push_back(animation_component);
+    writeText(root / "scene.json", scene_document.dump());
+
+    auto &service = Animation::animationServiceRuntime();
+    service.reset();
+    Animation::poseGraphRuntime().clear();
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto &time = GET_MODULE(EngineTime);
+    // The observed window straddles the clip's end: it opens inside the clip
+    // and closes well past it, so a clamp that is not applied shows up as a
+    // wrap back to the first keyframe.
+    time.setup(EngineTime::Mode::fixed_step, 0.5);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto component_object = scene.objectId("Component");
+    const auto posed_object = scene.objectId("Posed");
+    REQUIRE(component_object);
+    REQUIRE(posed_object);
+    for (const auto &binding : scene.runtimeObjectBindings()) {
+        if (binding.object_id == *component_object)
+            document["nodes"][5]["owner"]["object"] = binding.authoring_object_id.value;
+        if (binding.object_id == *posed_object)
+            document["nodes"].back()["owner"]["object"] = binding.authoring_object_id.value;
+    }
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    const auto animate = [&] {
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        service.synchronizeSceneObjects();
+        GET_MODULE(AnimationSystem).updateGraphs();
+        REQUIRE(service.runAllPhases(time.frameIndex()) == Animation::Status::ok);
+        scene.applyPendingLoad();
+    };
+    const auto *component_view = ecs.tryComponent<SimpleModelViewComponent>(*component_object);
+    const auto *posed_view = ecs.tryComponent<SimpleModelViewComponent>(*posed_object);
+    REQUIRE(component_view);
+    REQUIRE(posed_view);
+    REQUIRE(component_view->model_instance_id);
+    REQUIRE(posed_view->model_instance_id);
+    animate();
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    animate();
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto render = [&] {
+        renderer.render();
+        core.waitIdle();
+        const auto bytes = core.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float) * 4);
+        std::array<float, 4> values;
+        std::memcpy(values.data(), bytes.data(), sizeof(values));
+        return values;
+    };
+    std::vector<std::array<float, 4>> observed;
+    for (int frame = 0; frame < 8; ++frame) {
+        animate();
+        const auto component_matrix = instances.animationNodeMatrix(*component_view->model_instance_id, 2);
+        const auto posed_matrix = instances.animationNodeMatrix(*posed_view->model_instance_id, 2);
+        REQUIRE(component_matrix);
+        REQUIRE(posed_matrix);
+        const auto values = render();
+        // What the GPU read is what each path published this frame.
+        REQUIRE(std::abs(values[0] - (*component_matrix)[3].x) < 0.00001f);
+        REQUIRE(std::abs(values[1] - (*component_matrix)[3].y) < 0.00001f);
+        REQUIRE(std::abs(values[2] - (*posed_matrix)[3].x) < 0.00001f);
+        REQUIRE(std::abs(values[3] - (*posed_matrix)[3].y) < 0.00001f);
+        // ... and the two attachments agree, frame for frame.
+        INFO("frame " << frame << " time " << time.now());
+        REQUIRE(std::abs(values[0] - values[2]) < 0.00001f);
+        REQUIRE(std::abs(values[1] - values[3]) < 0.00001f);
+        observed.push_back(values);
+    }
+    // AG-1b acceptance 4, the publish side. Both attachments left a writer
+    // token on the instance they wrote, naming which of the two kinds of writer
+    // it was -- the component's direct publish, or a claimed animation source.
+    const auto component_writer = instances.animationFrameWriter(*component_view->model_instance_id);
+    const auto posed_writer = instances.animationFrameWriter(*posed_view->model_instance_id);
+    REQUIRE(component_writer.kind == AnimationFrameWriterKind::animation_component_clip);
+    REQUIRE(posed_writer.kind == AnimationFrameWriterKind::animation_source);
+    REQUIRE(component_writer.frame_revision == time.frameIndex());
+    REQUIRE(posed_writer.frame_revision == time.frameIndex());
+    // A different writer reaching the same instance in the same revision is
+    // refused before anything about the frame it brought is even read, so it
+    // cannot land on top of the pose that is already there.
+    Animation::PublishAnimationFrameDescV1 intruder{};
+    intruder.struct_size = sizeof(intruder);
+    intruder.version = Animation::descriptorVersionV1;
+    intruder.instance = instances.animationInstance(*component_view->model_instance_id);
+    intruder.frame_revision = time.frameIndex();
+    intruder.root_delta.rotation.w = 1.0f;
+    REQUIRE(instances.publishAnimationFrame(*component_view->model_instance_id,
+                {AnimationFrameWriterKind::animation_source, 7}, intruder) ==
+            Animation::Status::authority_conflict);
+    // The writer that owns the revision is not refused by the same rule: it
+    // gets as far as its own frame being validated.
+    REQUIRE(instances.publishAnimationFrame(*component_view->model_instance_id,
+                {AnimationFrameWriterKind::animation_component_clip, animationComponentClipWriter}, intruder) ==
+            Animation::Status::invalid_argument);
+    // Nor is a different writer in the next revision: a handover between frames
+    // is legitimate, only sharing one frame is not.
+    intruder.frame_revision = time.frameIndex() + 1;
+    REQUIRE(instances.publishAnimationFrame(*component_view->model_instance_id,
+                {AnimationFrameWriterKind::animation_source, 7}, intruder) ==
+            Animation::Status::invalid_argument);
+
+    // The window really covers the interesting part of the clip: the pose moves,
+    // and a clamped clip ends up standing still on its final frame while a
+    // looping one comes back round.
+    REQUIRE(observed.front() != observed.back());
+    if (!loop) {
+        REQUIRE(observed[observed.size() - 2] == observed.back());
+        // 180 degrees about z at the clip's last keyframe: x mirrors, and the
+        // wrap this test would see instead returns to the first keyframe.
+        REQUIRE(std::abs(observed.back()[2] - observed.front()[2]) > 0.5f);
+    }
+    service.reset();
+    Animation::poseGraphRuntime().clear();
+}
+
+// AG-1b acceptance 2. A parameter edit is not a reason to forget where a state
+// machine is. The instance parameter travels the runtime override path, so the
+// program is not rebuilt at all; when the document itself is republished the
+// new generation adopts the evaluator instead of constructing a fresh one.
+TEST_CASE("editing a parameter does not send a state machine back to its initial state",
+          "[skeletal][graph-pose-state-transfer]") {
+    setupLogger();
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_pose_state_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::create_directories(root / "shaders");
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin");
+    const auto state_machine_document = nlohmann::json::parse(R"({"schema":"pelican.anim_graph","version":1,
+      "parameters":{"jump":0,"tune":0},
+      "states":[{"name":"move","type":"clip","clip":"Turn","loop":true},
+                {"name":"jump","type":"clip","clip":"Step","loop":true}],
+      "transitions":[{"from":"move","to":"jump",
+        "conditions":[{"parameter":"jump","op":">","value":0.5}]}],
+      "initial_state":"move"})");
+    auto document = parameterGraphCompositionFixture();
+    nlohmann::json nodes = nlohmann::json::array();
+    nodes.push_back(nlohmann::json::parse(R"({"id":"time","op":"graph.input"})"));
+    // Declared with a default and left unconnected by the instance, so the
+    // composition lowers it to a value.parameter the scene can override at
+    // runtime -- the path a parameter edit actually takes.
+    nodes.push_back(nlohmann::json::parse(R"({"id":"jump","op":"graph.input","default":0})"));
+    nodes.push_back(nlohmann::json::parse(R"({"id":"tune","op":"graph.input","default":0})"));
+    nodes.push_back(nlohmann::json{{"id", "tip"}, {"op", "render.attribute"},
+        {"parameters", {{"element", "mat4"}, {"domain", "instance"},
+            {"source", {{"asset", "project://character.gltf"}, {"pose_node", 2}}}}},
+        {"outputs", {"resource"}}});
+    nodes.push_back(nlohmann::json{{"id", "brain"}, {"op", "pose.state_machine"},
+        {"parameters", {{"rig", "project://character.gltf"}, {"graph", state_machine_document}}},
+        {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+                    {"jump", {{"node", "jump"}, {"port", "value"}}},
+                    {"tune", {{"node", "tune"}, {"port", "value"}}}}},
+        {"outputs", {"pose"}}});
+    nodes.push_back(nlohmann::json::parse(R"({"id":"out","op":"pose.skeletal",
+      "inputs":{"pose":{"node":"brain","port":"pose"}},"outputs":[]})"));
+    document["definitions"]["posed"] = {{"nodes", std::move(nodes)},
+        {"outputs", {{"tip", {{"node", "tip"}, {"port", "resource"}}}}}};
+    document["nodes"][5] = {{"id", "hero"}, {"op", "graph.instance"},
+        {"definition", "posed"}, {"owner", {{"scene", "default_scene"}, {"object", 1}}},
+        {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}}};
+    document["nodes"][6]["parameters"]["size"] = 16;
+    auto &probe = document["nodes"][7];
+    probe["parameters"]["ports"].erase("source");
+    probe["inputs"].erase("source");
+    probe["parameters"]["ports"]["tip"] = {{"element", "mat4"}, {"domain", "instance"}, {"access", "read"}};
+    probe["inputs"]["tip"] = {{"node", "hero"}, {"port", "tip"}};
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    mat4 tip = pelican_load_tip(0);
+    pelican_store_destination(0, tip[3].x);
+    pelican_store_destination(1, tip[3].y);
+    pelican_store_destination(2, tip[3].z);
+    pelican_store_destination(3, tip[0].x);
+}
+)");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    writeText(root / "scene.json", R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+      {"name":"Hero","components":[{"name":"transform","pos":[0,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"character"}]}]}}})");
+
+    auto &service = Animation::animationServiceRuntime();
+    service.reset();
+    Animation::poseGraphRuntime().clear();
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 0.25);
+    const auto object = scene.objectId("Hero");
+    REQUIRE(object);
+    for (const auto &binding : scene.runtimeObjectBindings())
+        if (binding.object_id == *object)
+            document["nodes"][5]["owner"]["object"] = binding.authoring_object_id.value;
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto tick = [&] {
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        service.synchronizeSceneObjects();
+        GET_MODULE(AnimationSystem).updateGraphs();
+        REQUIRE(service.runAllPhases(time.frameIndex()) == Animation::Status::ok);
+        scene.applyPendingLoad();
+    };
+    const auto animate = [&] {
+        tick();
+        renderer.render();
+        core.waitIdle();
+    };
+    const auto traced = [&] {
+        const auto trace = Animation::poseGraphRuntime().trace();
+        REQUIRE(trace.size() == 1);
+        return trace.front();
+    };
+    const auto valueGraph = [&]() -> std::shared_ptr<const ValueGraph::Graph> {
+        const auto passes = GET_MODULE(RenderingPassContainer).snapshot();
+        REQUIRE(passes);
+        for (const auto &[id, program] : passes->programs) {
+            (void)id;
+            if (program.frame_graph.value_graph) return program.frame_graph.value_graph;
+        }
+        FAIL("the published program has no value graph");
+        return {};
+    };
+    tick();
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    tick();
+    for (int frame = 0; frame < 4; ++frame) animate();
+    REQUIRE(traced().state == "move");
+
+    // Leaving the initial state is what makes the rest of this test mean
+    // something: the parameter edit below must not undo it.
+    REQUIRE(scene.setGraphParameter(valueGraph(), *object, "hero/jump", 1.0));
+    for (int frame = 0; frame < 4; ++frame) animate();
+    REQUIRE(traced().state == "jump");
+
+    // A second parameter edit. The override path does not rebuild the program,
+    // so the attachment -- and the evaluator inside it -- is the same object.
+    REQUIRE(scene.setGraphParameter(valueGraph(), *object, "hero/tune", 0.5));
+    animate();
+    REQUIRE(traced().state == "jump");
+
+    // Now the document itself changes. A new program generation compiles a new
+    // pose graph, and the state machine is handed over rather than rebuilt.
+    const auto previous_graph = valueGraph();
+    document["nodes"][2]["parameters"]["value"] = 5;
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    loadRenderGraphVariantsFromConfigData(document.dump());
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    for (int frame = 0; frame < 8 && valueGraph() == previous_graph; ++frame) animate();
+    // The generation really did change: this is a different compiled document,
+    // not the same one still running.
+    REQUIRE(valueGraph() != previous_graph);
+    REQUIRE(traced().state == "jump");
+
+    // Control: the handover is by identity, not a blanket "keep whatever was
+    // running". Republish with a different state machine document and the node
+    // is a different machine, so it starts where its own document says.
+    const auto carried_graph = valueGraph();
+    // Drop the override first: the machine has no way back to `move`, so what
+    // the control sees can only come from a machine that was started afresh.
+    REQUIRE(scene.setGraphParameter(carried_graph, *object, "hero/jump", std::nullopt));
+    animate();
+    REQUIRE(traced().state == "jump");
+    auto edited = state_machine_document;
+    edited["states"].push_back(nlohmann::json::parse(
+        R"({"name":"land","type":"clip","clip":"Turn","loop":false})"));
+    document["definitions"]["posed"]["nodes"][4]["parameters"]["graph"] = edited;
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    loadRenderGraphVariantsFromConfigData(document.dump());
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    for (int frame = 0; frame < 10; ++frame) animate();
+    REQUIRE(valueGraph() != carried_graph);
+    REQUIRE(traced().state == "move");
     service.reset();
     Animation::poseGraphRuntime().clear();
 }

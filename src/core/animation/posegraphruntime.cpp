@@ -100,8 +100,28 @@ struct PoseGraphRuntime::Impl {
         SinkTrace trace;
     };
 
+    // A wrapped state machine whose attachment retired, waiting for the
+    // attachment that replaces it. It is still bound -- that is the point: it
+    // keeps its state and its claim on the object until either the next
+    // generation adopts it or the next retirement pass releases it.
+    struct Donor {
+        GraphInstanceOwner owner;
+        std::string node;
+        Json document;
+        std::unique_ptr<AnimationGraph::EvaluatorV1> evaluator;
+    };
+
     std::map<const PoseGraph *, std::vector<std::unique_ptr<Attachment>>> attachments;
     std::map<const PoseGraph *, std::weak_ptr<const PoseGraph>> published;
+    std::vector<Donor> donors;
+
+    // The evaluator kept aside for this owner, if any. Callers either adopt it
+    // or erase it; a donor that stays behind keeps claiming its object.
+    std::vector<Donor>::iterator donorFor(const GraphInstanceOwner &owner) {
+        return std::find_if(donors.begin(), donors.end(), [&](const Donor &donor) {
+            return donor.owner.scene == owner.scene && donor.owner.object == owner.object;
+        });
+    }
 
     static Status phase(void *user, const AnimationPhaseContextV1 *context) noexcept;
 
@@ -267,11 +287,29 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
         if (compiled.op == PoseGraphOp::state_machine) {
             // The wrapped evaluator is the writer for its own object; the graph
             // declares that intent with the sink and claims nothing itself.
-            binding.evaluator = std::make_unique<AnimationGraph::EvaluatorV1>(
-                AnimationGraph::parseDocumentV1(compiled.state_machine.dump()), *object);
-            if (const auto status = binding.evaluator->bind(); status != Status::ok)
-                throw std::runtime_error("pose.state_machine bind failed for " + compiled.id + ": " +
-                                         binding.evaluator->lastError());
+            // An evaluator kept aside from the previous generation is still
+            // bound and still claims this object, so it is re-resolved rather
+            // than bound again: rebind() keeps the state, the clip clocks and
+            // the transition it was in the middle of. A donor whose node id or
+            // wrapped document no longer matches is a different machine -- it
+            // is released here, before the fresh one claims the same object.
+            const auto donor = donorFor(compiled.owner);
+            const bool adopt = donor != donors.end() && donor->node == compiled.id &&
+                               donor->document == compiled.state_machine;
+            if (adopt) {
+                binding.evaluator = std::move(donor->evaluator);
+                donors.erase(donor);
+                if (const auto status = binding.evaluator->rebind(); status != Status::ok)
+                    throw std::runtime_error("pose.state_machine rebind failed for " + compiled.id +
+                                             ": " + binding.evaluator->lastError());
+            } else {
+                if (donor != donors.end()) donors.erase(donor);
+                binding.evaluator = std::make_unique<AnimationGraph::EvaluatorV1>(
+                    AnimationGraph::parseDocumentV1(compiled.state_machine.dump()), *object);
+                if (const auto status = binding.evaluator->bind(); status != Status::ok)
+                    throw std::runtime_error("pose.state_machine bind failed for " + compiled.id + ": " +
+                                             binding.evaluator->lastError());
+            }
             attachment.evaluator_writes = true;
             continue;
         }
@@ -294,6 +332,10 @@ void PoseGraphRuntime::Impl::bind(Attachment &attachment, const PoseGraphFrame &
 
     const auto &sink_node = graph.nodes()[attachment.sink];
     if (!attachment.evaluator_writes) {
+        // Nothing in this chain adopted the previous generation's writer for
+        // this object, and this attachment is about to become that writer:
+        // release it rather than claim against it.
+        if (const auto stale = donorFor(attachment.owner); stale != donors.end()) donors.erase(stale);
         auto claim = descriptor<ClaimAnimationSourceDescV1>();
         claim.owner = attachment.service_owner;
         claim.sink = attachment.sink_handle;
@@ -398,8 +440,16 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
                 return status;
             auto sample = descriptor<SamplePoseAtDescV1>();
             sample.clip = binding.clip;
-            sample.time_seconds = canonicalTime(scalar(node, "time", attachment.time),
-                binding.metadata.start_seconds, binding.metadata.end_seconds, true);
+            // The same arithmetic the animation component runs (sampleTime in
+            // animationjobs.cpp): shift by start_time, scale by speed, then wrap
+            // or clamp inside the clip's own [start, end]. The result is the
+            // absolute clip time, which is what sample_pose_at now takes -- the
+            // service no longer wraps a second time, so a clip whose keyframes
+            // do not begin at 0 keeps its phase.
+            sample.time_seconds = canonicalTime(
+                (scalar(node, "time", attachment.time) - node.start_time) * node.speed +
+                    binding.metadata.start_seconds,
+                binding.metadata.start_seconds, binding.metadata.end_seconds, node.loop);
             sample.output_pose = produced.view.pose;
             if (const auto status = service.sample_pose_at(service.context, &sample); status != Status::ok)
                 return status;
@@ -424,6 +474,8 @@ Status PoseGraphRuntime::Impl::evaluate(Attachment &attachment) {
             produced.view = staged.local_pose;
             produced.layout = staged.local_pose.layout;
             poses.emplace(index, produced);
+            // The deterministic record of what the evaluator did this frame.
+            attachment.trace.state = binding.evaluator->getStatus().current_state;
             break;
         }
         case PoseGraphOp::blend: {
@@ -540,26 +592,40 @@ void PoseGraphRuntime::clear() noexcept {
     }
     impl_->attachments.clear();
     impl_->published.clear();
+    impl_->donors.clear();
 }
 
-void PoseGraphRuntime::retireUnreferenced() noexcept {
-    for (auto entry = impl_->published.begin(); entry != impl_->published.end();) {
-        if (!entry->second.expired()) {
+void PoseGraphRuntime::retainOnly(const std::set<const PoseGraph *> &live) noexcept {
+    // Anything the previous pass set aside and nobody adopted belongs to a
+    // generation that is gone for good. Releasing it here, before this pass
+    // harvests, bounds the wait at exactly one pass.
+    impl_->donors.clear();
+    for (auto entry = impl_->attachments.begin(); entry != impl_->attachments.end();) {
+        if (live.contains(entry->first)) {
             ++entry;
             continue;
         }
-        const auto found = impl_->attachments.find(entry->first);
-        if (found != impl_->attachments.end()) {
-            for (auto &attachment : found->second) impl_->unbind(*attachment);
-            impl_->attachments.erase(found);
+        for (auto &attachment : entry->second) {
+            // Take the wrapped state machines out before unbinding: they stay
+            // bound, keeping their state and their claim, so the attachment
+            // that replaces them can adopt rather than start over. unbind()
+            // would release exactly what is worth keeping.
+            for (auto &[node, binding] : attachment->bindings) {
+                if (!binding.evaluator) continue;
+                const auto &compiled = attachment->graph->nodes()[node];
+                impl_->donors.push_back(Impl::Donor{compiled.owner, compiled.id,
+                                                    compiled.state_machine,
+                                                    std::move(binding.evaluator)});
+            }
+            impl_->unbind(*attachment);
         }
-        entry = impl_->published.erase(entry);
+        impl_->published.erase(entry->first);
+        entry = impl_->attachments.erase(entry);
     }
 }
 
 void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph,
                                    const PoseGraphFrame &frame) {
-    retireUnreferenced();
     if (!graph || graph->empty()) return;
     impl_->published.insert_or_assign(graph.get(), graph);
     auto &list = impl_->attachments[graph.get()];
@@ -580,8 +646,9 @@ void PoseGraphRuntime::synchronize(const std::shared_ptr<const PoseGraph> &graph
             attachment->object_name.clear();
             continue;
         }
-        // An animation component already writing this object is the same
-        // conflict as a second sink; AG-1b removes the component path.
+        // The animation component's clip path already published this object's
+        // frame this revision. That is the same conflict as a second sink: two
+        // ways of attaching a pose never share one owner.
         if (frame.component_writer && frame.component_writer(attachment->owner))
             PoseGraph::raiseSinkConflict(attachment->owner, "animation component",
                                          graph->nodes()[attachment->sink].id);

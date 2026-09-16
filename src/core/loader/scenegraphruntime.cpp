@@ -61,6 +61,7 @@ SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
         if (next == owners.end() || next->second != object) changed.insert(scope);
     }
     graph->resetState(runtime.evaluation, changed);
+    graph->resetState(runtime.pose_evaluation, changed);
 #if PELICAN_WITH_AUDIO
     if (auto *audio = FastModuleContainer::tryGet<Audio>())
         std::erase_if(runtime.sounds, [&](const auto &entry) {
@@ -110,6 +111,11 @@ void SceneLoader::publishGraphValues(ValueGraph::PublishedInstanceInputs snapsho
 
 ValueGraph::EvaluationState &SceneLoader::graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph) {
     return synchronizeGraphRuntime(graph).evaluation;
+}
+
+ValueGraph::EvaluationState &SceneLoader::poseGraphEvaluationState(
+    const std::shared_ptr<const ValueGraph::Graph> &graph) {
+    return synchronizeGraphRuntime(graph).pose_evaluation;
 }
 
 bool SceneLoader::emitGraphEvent(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
@@ -173,12 +179,17 @@ std::unique_ptr<SceneLoader::PreparedGraphRuntimeTransfer> SceneLoader::prepareG
     auto &old = synchronizeGraphRuntime(previous);
     auto transferred = next->transferState(*previous, old.evaluation);
     runtime.evaluation = std::move(transferred.state);
+    // The animation partition reads the same document through its own state.
+    // Both halves cross a generation change together; leaving one behind would
+    // restart the pose side's clocks while the rendering side kept running.
+    runtime.pose_evaluation = next->transferState(*previous, old.pose_evaluation).state;
     ValueGraph::InactiveScopes changed;
     for (const auto &[scope, object] : old.owners) {
         const auto current = runtime.owners.find(scope);
         if (current == runtime.owners.end() || current->second != object) changed.insert(scope);
     }
     next->resetState(runtime.evaluation, changed);
+    next->resetState(runtime.pose_evaluation, changed);
     for (const auto &[name, parameter] : old.parameters)
         if (transferred.retained_parameters.contains(name) && ownsGraphParameter(*next, parameter.object, name))
             runtime.parameters.emplace(name, parameter);

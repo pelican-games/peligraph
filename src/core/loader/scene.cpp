@@ -61,6 +61,23 @@ namespace Pelican {
 
 void internal::validateResolvedSceneFeatureBindings(
     const ResolvedSceneView &scene) {
+#if !PELICAN_WITH_ANIMATION
+    // Without the animation module nothing evaluates an animation component,
+    // so the object would be drawn in its rest pose forever. Say so at prepare
+    // -- the codec still decodes and encodes the component, so an OFF build's
+    // tools can still read and save the scene -- and let the load's own
+    // rollback keep whatever scene was already live.
+    for (const auto &object : scene.objects) {
+        for (const auto &component : object.components) {
+            if (component.name != "animation") continue;
+            throw std::runtime_error(
+                "animation.module_unavailable@1: this build has PELICAN_WITH_ANIMATION=OFF, "
+                "so the animation component on object '" +
+                object.name.value_or(std::to_string(object.authoring_object_id.value)) +
+                "' cannot be evaluated");
+        }
+    }
+#endif
     const auto *ray_layout =
         FastModuleContainer::tryGet<RayLayoutRuntimeState>();
     const auto ray_mode = ray_layout != nullptr && ray_layout->configured()

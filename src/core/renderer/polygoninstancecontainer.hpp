@@ -37,6 +37,35 @@ struct RayScenePlanState {
     std::shared_ptr<const RaySceneRowSnapshot> resolved_rows;
 };
 
+// Who published an instance's animation frame this revision. The animation
+// component's clip path writes this container directly from the ECS update;
+// everything else reaches the same slot through an AnimationServiceV1 source.
+// Two different writers inside one frame revision are a conflict that is named,
+// never a silent overwrite of one pose by the other.
+enum class AnimationFrameWriterKind : std::uint32_t {
+    none = 0,
+    animation_component_clip = 1,
+    animation_source = 2,
+};
+
+struct AnimationFrameWriter {
+    AnimationFrameWriterKind kind = AnimationFrameWriterKind::none;
+    // Tells two writers of the same kind apart -- the claimed source handle for
+    // an animation source. One object carries at most one animation component,
+    // so the clip path needs no further identity.
+    std::uint64_t identity = 0;
+    // Filled in by the container when it accepts a publish; a caller leaves it
+    // at 0, because the revision it is publishing for is in the frame itself.
+    std::uint64_t frame_revision = 0;
+};
+
+// The animation component's clip path is one writer per object, so it needs no
+// identity beyond its kind.
+constexpr std::uint64_t animationComponentClipWriter = 1;
+
+// The name a single-writer conflict reports for a writer kind.
+std::string_view animationFrameWriterName(AnimationFrameWriterKind kind) noexcept;
+
 class PolygonInstanceContainer;
 namespace test_support {
 // WP382c fault seam. The counter it writes is a production field and the
@@ -317,6 +346,15 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::vector<std::uint64_t> animation_revisions;
     std::vector<std::uint64_t> previous_animation_revisions;
     std::vector<std::uint32_t> animation_generations;
+    // Slot -> who published its animation frame, with the instance generation
+    // the record was written for. A retired slot bumps that generation, so a
+    // record left behind by the previous occupant can never be mistaken for the
+    // current one and needs no separate teardown.
+    struct AnimationFrameWriterRecord {
+        std::uint32_t generation = 0;
+        AnimationFrameWriter writer;
+    };
+    std::unordered_map<std::uint32_t, AnimationFrameWriterRecord> animation_frame_writers;
     RendererInternal::ModelInstanceSlots instance_slots;
     std::vector<ModelAssetId> model_asset_ids;
     std::vector<std::uint64_t> ray_authoring_object_ids;
@@ -501,10 +539,17 @@ DECLARE_MODULE(PolygonInstanceContainer) {
     std::optional<ModelInstanceId>
     modelInstanceIdAt(std::uint32_t index) const;
     Animation::InstanceHandle animationInstance(ModelInstanceId id) const;
-    Animation::Status publishAnimationFrame(ModelInstanceId id,
+    // `writer` names who is publishing. A second writer on the same instance in
+    // the same frame revision is Animation::Status::authority_conflict; the
+    // caller that sees it names the conflict. There is no unattributed publish:
+    // every caller says which writer it is.
+    Animation::Status publishAnimationFrame(ModelInstanceId id, AnimationFrameWriter writer,
                                              const Animation::PublishAnimationFrameDescV1 &frame,
                                              std::span<const Animation::Matrix4fV1> model_matrices = {},
                                              std::span<const std::uint32_t> original_to_layout = {});
+    // Who last published this instance's animation frame, and for which frame
+    // revision. A retired or re-used slot reports no writer.
+    AnimationFrameWriter animationFrameWriter(ModelInstanceId id) const;
     std::optional<glm::mat4> animationNodeMatrix(ModelInstanceId id, std::uint32_t source_node) const;
     Animation::Status publishMorphWeightFrame(
         ModelInstanceId id, const PublishMorphWeightFrameDescV1 &frame);
