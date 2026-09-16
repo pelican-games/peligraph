@@ -23416,6 +23416,12 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 - `pose.clip_sample` は `parameters` object を **必須**にした(factory が `node.at("parameters")`。契約の締め付け。in-tree に無 parameter の node は無い)
 - **既知の穴(記録)**: (a) 同一 process で live renderer のまま `SceneLoader::load` を 2 回呼ぶと `load` 内(次に `~SceneLoader`)で hang する(13 分超、CPU 10 s)。既存 test に live renderer 下の scene 再読込は無い。AG-1b の差分はその経路を触っていないが無関係の証明は無い。**単独 WP の候補**(「放棄された scene transaction の teardown hang」の記録と同根か要確認)。受け入れ 2 の対照は「文書を変えた再公開では initial state」に置換した / (b) `test/raytracing_rt3_1_production_test.cpp:1796` の `runWp374aRpcBytes` が `#if PELICAN_WITH_RPC` の外(既記録)/ (c) worktree の GPU で `VRMA-I0 …` / `gizmo feature draws …` / `WP386a procedural participant …` の 3 件が SEGFAULT(AG-1b 前の `c2c43170` でも再現)。primary の全数(`b960edf7`)では緑だったので **worktree 環境依存の疑い**。着地の全数で確認する
 
+#### AG-1b 完了記録(統合側。2026-09-18、`945ad8aa`)
+
+- 実装(Opus、`agent/ag1b`): 決定 1〜6。受け入れ 1・2・4 を変異で赤確認(wrap を戻す → clamped / offset clip で姿勢差 / donor の採用を消す → state が initial に戻る / writer token を消す → proxy が盲目になり黙って二重書き)。OFF 構成は別 build で `[animation-off]` 緑。非 GPU 1463 緑
+- 統合側: worktree が Ninja で configure されていて素の環境の build が壊れた(標準ヘッダ不在 60 error → 古い exe で SEGFAULT 24 件)→ VS generator で configure し直し。W1 は RT6 named TLAS の **既知の間欠 `Access is denied`** で 3 回止まり 4 回目で緑。全数 **1886 件中 1885 緑 + 同じ間欠 1 件**(primary で直列再実行して緑)。この間欠は `agent/r1-atomic`(POSIX rename)で修正中
+- 記録: 実装時の裁定(上)。コードレビュー(codex)は枠が戻ってから rev_ag1b
+
 #### やらないこと
 
 正本 / runtime 経路の一本化(v0 の後)/ event(v0 の後)/ root motion(AG-2)/ 無名 object の pose graph 装着(記録: service 登録は ECS 側にしか無い)/ layer・additive / timeline view(AG-3)。
