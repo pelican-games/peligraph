@@ -23370,6 +23370,38 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 正本の一本化(AG-1b)/ root motion(AG-2)/ N-way blend の専用 op / layer・additive・IK / timeline view(AG-3)/ 物理 → pose。
 
 
+
+### AG-1b: 装着の正本を一本化し、event を port に流す(v0「往復」の段 2b。草稿)
+
+**§4 規則 11 上段(scene 形式の意味、装着経路、journal / undo、event の境界)。実装者: Claude(Fable + Opus)。仕様レビュー 1 巡。見積: 中〜大。**
+**規範: `v1_development_plan.md` AG-1、`design_animation_graph.md` §3(source と所有権)・「評価器の装着と解除」、`design_graph_composition.md`(instance の owner、再生制御 event の受渡し)。前提: AG-1a(pose module)統合済み。**
+
+#### 今日の対照
+
+- 姿勢の装着は animation component(`{clip XOR graph, parameters[$list], speed, loop, start_time}`、[componentcodec.cpp](../src/core/loader/componentcodec.cpp) の `AnimationSchemaFields`)、それ以外の装着は `graph.instance`。同じ owner に両方があると AG-1a は `pose.sink_conflict@1` で拒否する(暫定)
+- `pose.state_machine` の `events` 入力と `state_events` 出力は契約だけで、繋ぐと `pose operations read scalar inputs only`
+- clip の annotation / event は評価器の外に出ない。GameContext の `emitGraphEvent` は共通グラフの queue へ、`setAnimationGraphParameter` は評価器へ、と入口が 2 つ
+
+#### 決定
+
+1. **animation component は「`graph.instance` の糖衣」になる**: 読込時に 1 回、`{clip}` → `graph.instance{definition: "pelican.pose.clip", inputs: {…}, parameters: {speed, loop, start_time}}`(定義は engine 同梱の `pelican.graph` 文書: `pose.clip_sample → pose.skeletal`)、`{graph, parameters}` → `graph.instance{definition: <その anim_graph を包む state_machine 定義>, parameters: {…}}` に変換して root の instance 列へ置く。**変換後の instance が正本**で、component 自体は保存文書に残る(利用者の書きやすさ)が、runtime と journal は instance を見る。両方を手で書いて食い違えば `animation.attachment_conflict@1`(黙って片方を勝たせない)
+2. **保存は元の形を保つ**: component で書いた装着は component として保存し(raw 非上書き δ)、`graph.instance` で書いた装着は instance として保存する。journal の `set_component_value` で component の `parameters` 行を変えると、対応する instance の parameter が変わる(同じ edge / 同じ CAS domain)。undo は raw を復元する(WP382b-fix の契約)
+3. **event を port に流す**: `pose.state_machine` の `state_events` 出力(state 遷移、clip annotation の event)は `pelican.event.playback_control@1` と同じ typed event 型(名前付きの `pelican.event.animation@1{kind: state_enter | state_exit | clip_marker, name, time}`)で、`value.event_clock` / `audio.playback` / 別の `pose.state_machine` の `events` 入力に繋げる。`events` 入力は評価器の `notify()` に 1 tick 1 回で渡す(順序は queue の到着順、同 tick の重複は消費しない)
+4. **入口の一本化**: GameContext の `setAnimationGraphParameter` / `forceAnimationGraphState` は `setGraphParameter` / `emitGraphEvent`(owner の instance の parameter / event port)に委譲する(旧 API は残すが実装は 1 つ。deprecate の印は docs に)
+5. **旧文法の並走は無し**: `clip XOR graph` の意味を「instance への変換」に固定し、変換できない組み合わせ(`clip` + `parameters` 等)は今日どおり codec で名前付き拒否。scene の version は上げない(意味は変わらず、正本の置き場が変わるだけ)
+
+#### 受け入れ(§4 規約 10)
+
+1. component で `graph` を装着した scene と、同じ内容を `graph.instance` で書いた scene が **同じ instance 列**に展開され、GPU の評価済み姿勢属性が一致する。両方書いて食い違う fixture は `animation.attachment_conflict@1`
+2. component の `parameters` 行を journal で変える → 姿勢が変わり、undo で raw bytes が戻る(今日 = 変えられるが instance が無い)。変換を消すと component 装着が動かない
+3. `state_events` を `audio.playback` に繋いだ fixture: state 遷移で音が鳴る(null backend の voice 生成を観測)。edge を消すと鳴らない。`events` 入力に別 graph の event を繋いだ fixture: 遷移条件の bool parameter を event が立てる
+4. `setAnimationGraphParameter` と `setGraphParameter` が同じ instance の同じ parameter を変える(2 経路で同じ姿勢)。委譲を消すと片方だけ効く
+5. 出荷 4 project(animgraph_demo / vrm_xr_demo の component 装着)の bytes 不変、姿勢の golden 不変。`PELICAN_WITH_ANIMATION=OFF` build
+
+#### やらないこと
+
+root motion(AG-2)/ layer・additive / timeline view(AG-3)/ 2D / `state_machine → blend`(AG-1a の裁定、記録のまま)。
+
 ### P-1: パラメータの供給元(mode)と由来 —— Inspector の欄と共通グラフの edge を同じ正本にする(v0「往復」の段 3。草稿)
 
 **§4 規則 11 中段(RPC と Studio の面。core は `get_status` の実効値と parameter 宣言の欄だけ)。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(mode の正本と D0)。見積: 中。**
