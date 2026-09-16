@@ -23352,6 +23352,39 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 
 正本の一本化(AG-1b)/ root motion(AG-2)/ N-way blend の専用 op / layer・additive・IK / timeline view(AG-3)/ 物理 → pose。
 
+
+### P-1: パラメータの供給元(mode)と由来 —— Inspector の欄と共通グラフの edge を同じ正本にする(v0「往復」の段 3。草稿)
+
+**§4 規則 11 中段(RPC と Studio の面。core は `get_status` の実効値と parameter 宣言の欄だけ)。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(mode の正本と D0)。見積: 中。**
+**規範: `v1_development_plan.md` P-1、`design_graph_composition.md`(instance の入力 parameter、object に所有される parameter)、`design_devstudio_direction.md` §0.5(D0)。前提: AG-0(`parameter_change` の欄)統合済み。AG-1 とは独立(pose の欄も同じ mode を使う)。**
+
+#### 今日の対照
+
+- Inspector の component 欄は固定値だけ(`set_component_value`)。値を共通グラフから供給するには、別画面で `graph.instance` を装着し、`render.scalar` / `render.buffer` の target 名を手で合わせる
+- feature parameter は `edit_render_features` の define 編集と materialize、runtime の値は `render.scalar`(共通グラフ)か `setRenderValues`(コード)。3 経路が別の画面と別の語彙
+- `get_status` は RT の実効値と適用元(WP382d)を返すが、共通グラフの評価値には「どの instance のどの port が、どの時計で」が無い
+- parameter 宣言に「変更時の扱い」は無い(AG-0 で `parameter_change` の欄だけ予約)
+
+#### 決定
+
+1. **mode は文書の edge で表す**(新しい保存形式を足さない)。欄 X が「接続」mode = 全体文書に `{node: <owner の instance の sink>, port: X} ← {node, port}` の edge がある、と定義する。sink は既存の `render.scalar`(feature / pass の parameter)と、component 欄向けに新設する **`scene.parameter` sink**(`{owner, component, field}` を target に持つ。`domain: values`、`parameter_change: value`)。Inspector の「接続」表示はこの edge の有無から導く(Inspector 側に接続表を持たない)
+2. **導線は 3 つ**(Inspector の欄の横): 「曲線で制御」= `value.curve` + `value.playback` + edge を 1 つの `edit_graph_instances` で生成 / 「別の出力に接続」= 既存 node の出力 port を選んで edge / 「供給元を開く」= edge の元 node が乗る scope のグラフ表示へ。接続中の欄は読み取り専用(一方向。双方向 bind は採らない)
+3. **変更時の扱い**を parameter 宣言に持たせる: component の宣言 schema(v3 の field)と feature parameter の宣言に `change: value | recompile | rebuild`。既定は `value`。`recompile`(shader define)と `rebuild`(format、接続構造、AS 構成)の欄は **接続不可**で、Inspector は導線を出さず、RPC で edge を張ろうとすると `graph.parameter_not_connectable@1{field, change}`
+4. **由来**: `get_status` の実効値に `{instance, node, port, clock: {generation, scene_time}}` を載せる(共通グラフの評価値ごと)。Inspector の欄は接続中に「現在値 + 由来(instance / port / 時計)」を表示する
+5. **同じ edge の別 view**: グラフ画面で edge を消せば欄は固定値(最後に評価した値ではなく、文書の固定値)に戻る。Inspector で「接続を外す」= edge を消す `edit_graph_instances`。両方とも CAS(`base_source_digest`)を通る
+
+#### 受け入れ(§4 規約 10)
+
+1. GUI で「曲線で制御」→ 全体文書に `value.curve` / `value.playback` / edge が生え、RPC の `get_graph_instances` が同じものを返す。同じ操作列を RPC だけで行った文書と **bytes 一致**(GUI 専用操作が無い)
+2. グラフ画面で edge を消す → Inspector の欄が固定値に戻る。Inspector 側に接続表を持たせる変異(edge を消しても「接続」表示が残る)で落ちる
+3. `change: recompile` の欄に RPC で edge → `graph.parameter_not_connectable@1`。分類を消す変異で通ってしまい落ちる
+4. 接続中の欄の由来が `get_status` の実効値と一致(instance / port / 時計)。由来を消す変異で落ちる
+5. D0: Studio は `src/project` と RPC だけで動く(link 検査は既存)。RPC OFF build、`SKIP_DEVSTUDIO` 両構成
+
+#### やらないこと
+
+双方向 bind / 式言語 / feature 自体の共通 instance 化 / Bloom の往復(P-2)/ 時間軸 view(AG-3)。
+
 ### 未了項目と再開順
 
 #### 現況 (2026-09-12、履歴より優先)
