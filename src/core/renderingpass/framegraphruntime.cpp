@@ -476,6 +476,9 @@ FrameGraphRuntimeContainer::prepareGeneration(
             std::move(program.render_target_bindings),
             std::move(program.buffer_bindings));
         execution.value_graph = std::move(program.value_graph);
+#if PELICAN_WITH_ANIMATION
+        execution.pose_graph = std::move(program.pose_graph);
+#endif
         execution.inactive_graph_scopes = std::move(program.inactive_graph_scopes);
         execution.graph_owner_objects = std::move(program.graph_owner_objects);
         execution.source_documents = std::move(program.source_documents);

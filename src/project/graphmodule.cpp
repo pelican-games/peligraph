@@ -1,5 +1,8 @@
 #include "graphmodule.hpp"
 #include "shaderresourceport.hpp"
+#if PELICAN_WITH_ANIMATION
+#include "posegraphmodule.hpp"
+#endif
 
 #include <algorithm>
 #include <memory>
@@ -117,7 +120,7 @@ OrderedJson operationJson(const std::string &op, const GraphOperationRegistratio
                        {"evaluation", std::string{graphOperationEvaluationName(contract.evaluation)}},
                        {"change", std::move(change)},
                        {"sink", sink}};
-    if (registration.factory) {
+    if (registration.factory && contract.inputs.empty() && contract.outputs.empty()) {
         // The ports follow the authored parameters; resolving a node yields them.
         result["ports"] = "parameter_dependent";
         return result;
@@ -326,6 +329,12 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             render("render.compute"), render("render.fullscreen"), render("render.raster"),
         },
         {"render.scalar"}});
+#if PELICAN_WITH_ANIMATION
+    // A module registers the same way whether the engine brings it or not; a
+    // build without the animation backend simply never calls this, and a
+    // document naming a pose operation is rejected as graph.operation_unregistered@1.
+    registerPoseGraphModule(registry);
+#endif
     return registry;
 }
 

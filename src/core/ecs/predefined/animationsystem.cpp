@@ -12,11 +12,19 @@
 #include "../../loader/pathresolver.hpp"
 #include "../../model/skeletalanimation.hpp"
 #include "../../renderer/polygoninstancecontainer.hpp"
+#if PELICAN_WITH_ANIMATION
+#include "../../animation/posegraphruntime.hpp"
+#endif
+#include "../../renderingpass/framegraphruntime.hpp"
+#include "../../renderingpass/graphinputs.hpp"
+#include "../../renderingpass/graphmodelsource.hpp"
+#include "../../renderingpass/renderingpasscontainer.hpp"
 
 #include <filesystem>
 #include <stdexcept>
 #include <variant>
 #include <vector>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -43,6 +51,18 @@ struct AnimationSystemState {
     Animation::AnimationAssetRegistry assets;
     std::vector<EntityId> candidates;
     std::unordered_map<EntityId, std::unique_ptr<GraphBinding>> graphs;
+
+    // The pose feed evaluates the same document with its own state, so its
+    // clocks advance once per frame without touching the rendering evaluation.
+    std::map<std::weak_ptr<const ValueGraph::Graph>, ValueGraph::EvaluationState,
+             std::owner_less<std::weak_ptr<const ValueGraph::Graph>>> pose_scalars;
+
+    ValueGraph::EvaluationState &poseScalarState(const std::shared_ptr<const ValueGraph::Graph> &graph) {
+        std::erase_if(pose_scalars, [](const auto &entry) { return entry.first.expired(); });
+        const auto found = pose_scalars.find(graph);
+        if (found != pose_scalars.end()) return found->second;
+        return pose_scalars.emplace(graph, graph->createState()).first->second;
+    }
 
     AnimationGraph::EvaluatorV1 *currentEvaluator(EntityId entity) const {
         const auto found = graphs.find(entity);
@@ -219,6 +239,77 @@ void AnimationSystem::updateGraphs() {
             throw std::runtime_error("animation graph tick preparation failed");
     }
     std::erase_if(state->graphs, [&](const auto &entry) { return !live.contains(entry.first); });
+    updatePoseGraphs();
+}
+
+void AnimationSystem::updatePoseGraphs() {
+#if PELICAN_WITH_ANIMATION
+    auto &runtime = Animation::poseGraphRuntime();
+    runtime.retireUnreferenced();
+    const auto *passes = FastModuleContainer::tryGet<RenderingPassContainer>();
+    const auto generation = passes ? passes->snapshot() : nullptr;
+    if (!generation) return;
+    auto &scene = GET_MODULE(SceneLoader);
+    auto &time = GET_MODULE(EngineTime);
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    internal::ScopedRegistrationOwner owner{internal::engineRegistrationOwner};
+    for (const auto &[id, program] : generation->programs) {
+        (void)id;
+        const auto &pose_graph = program.frame_graph.pose_graph;
+        const auto &value_graph = program.frame_graph.value_graph;
+        if (!pose_graph || pose_graph->empty() || !value_graph) continue;
+        Animation::PoseGraphFrame frame;
+        frame.time = time.now();
+        frame.delta_seconds = time.dt();
+        frame.frame_revision = time.frameIndex();
+        frame.time_set_revision = time.timeSetRevision();
+        frame.object_name = [&](const GraphInstanceOwner &instance) -> std::optional<std::string> {
+            const auto object = scene.graphOwnerObject(instance);
+            if (!object) return std::nullopt;
+            const auto named = scene.objectName(*object);
+            // A pose sink writes a named scene sink. An unnamed object has no
+            // stable identity to hand a writer to; say so instead of inventing one.
+            if (!named)
+                throw std::runtime_error("pose sink requires a named scene object");
+            return named;
+        };
+        frame.verify_rig = [&](const GraphInstanceOwner &instance, const std::string &rig,
+                               const std::string &node) {
+            // resolveGraphModelSource already names the mismatch between a
+            // graph's declared asset and the owner's live model.
+            (void)resolveGraphModelSource(instance, rig, node);
+        };
+        frame.component_writer = [&](const GraphInstanceOwner &instance) {
+            // Either component source -- clip or graph -- already writes this
+            // object's pose. AG-1b converts the component path to a graph
+            // instance; until then the two cannot share one object.
+            const auto object = scene.graphOwnerObject(instance);
+            if (!object || !ecs.isAlive(*object)) return false;
+            const auto *animation = ecs.tryComponent<AnimationComponent>(*object);
+            return animation != nullptr && (!animation->clip.empty() || !animation->graph.empty());
+        };
+        // The scalars this frame, from the values partition of the same
+        // document. A separate evaluation state advances once per frame with
+        // the same inputs, so pose and rendering read the same numbers without
+        // either one advancing the other's clocks.
+        auto inactive = scene.inactiveGraphScopes(*value_graph);
+        inactive.insert(program.frame_graph.inactive_graph_scopes.begin(),
+                        program.frame_graph.inactive_graph_scopes.end());
+        const auto &scalar_outputs = pose_graph->scalarOutputs();
+        if (!scalar_outputs.empty()) {
+            auto &evaluation = state->poseScalarState(value_graph);
+            const auto inputs = collectGraphInputs(*value_graph, scene, inactive, time.now(), time.dt());
+            const auto outputs = value_graph->evaluateLowered(inputs,
+                scene.graphParameterValues(value_graph), inactive, &evaluation);
+            for (const auto &name : scalar_outputs) {
+                const auto found = outputs.find(name);
+                if (found == outputs.end() || found->second.empty()) continue;
+                frame.scalars.emplace(name, found->second.front());
+            }
+        }
+        runtime.synchronize(pose_graph, frame);
+    }
+#endif
 }
 
 Animation::Status AnimationSystem::setGraphParameter(EntityId entity, std::string_view name, double value) {

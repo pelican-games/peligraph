@@ -819,7 +819,7 @@ Windows の実行イメージ(PE)は先頭に DOS スタブ、続いて `PE\0\0`
 
 POSIX と違い、Windows ではファイルを開くときに「他のプロセスに何を許すか」を `CreateFileW` の `dwShareMode` で宣言します。`FILE_SHARE_READ` だけを渡すと「他プロセスの読みは許すが、書きと削除は許さない」という意味になり、逆に**自分が開いている間に他プロセスが書こうとすると失敗する**ようにもなります。ビルド中の DLL のように書き手がいるファイルを開こうとすると `ERROR_SHARING_VIOLATION`(32)か `ERROR_LOCK_VIOLATION`(33)が返るので、この 2 つを「まだ書き込み中だから少し待って再試行」の合図として使えます。ハンドルを開けたこと自体が短時間のロックになるため、判定用に開いたハンドルは RAII で確実に閉じます。
 
-**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L124)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L152)(2 つのエラーコードを「書き手が生きている」と解釈)
+**使用場所**: [SourceReadLease](../../src/core/gamelogic/gamelogicreload.cpp#L128)(`FILE_SHARE_READ` のみで開き、デストラクタで `CloseHandle`) / [sourceWriterIsActive()](../../src/core/gamelogic/gamelogicreload.cpp#L156)(2 つのエラーコードを「書き手が生きている」と解釈)
 
 **このコードベースでの注意**: 定数名は `ERROR_SHARING_VIOLATION` / `ERROR_LOCK_VIOLATION` です(`FILE_LOCK_VIOLATION` という名前の定数はありません)。再試行の回数は `sourceBusyRetryLimit` で 3 回に制限されています。
 
@@ -827,19 +827,19 @@ POSIX と違い、Windows ではファイルを開くときに「他のプロセ
 
 「その PID のプロセスがまだ生きているか」は、OS ごとに別の API になり、しかも**エラーが必ずしも「居ない」を意味しません**。POSIX の `kill(pid, 0)` はシグナルを送らずに存在確認だけを行い、`0` なら存在、`errno == EPERM`(権限が無い)も**存在する**の意味です。Windows の `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, ...)` は他ユーザーのプロセスに対して `ERROR_ACCESS_DENIED` を返しますが、これも存在の証拠です。したがって両方とも「アクセス拒否は生存扱い、見つからないときだけ死亡扱い」に倒すのが安全側です。PID の型も `DWORD` と `pid_t` で違うので、跨いで持ち回るときは `std::uint64_t` のような共通表現に正規化します。
 
-**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L160) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L104)
+**使用場所**: [processIsAlive()](../../src/core/gamelogic/gamelogicreload.cpp#L164) / [currentProcessId()](../../src/core/gamelogic/gamelogicreload.cpp#L108)
 
 ### 動的ライブラリのエラー取得(GetLastError と dlerror)
 
 `LoadLibraryW` / `GetProcAddress` が失敗したときの理由は Windows では `GetLastError()` の数値コードで、POSIX の `dlopen` / `dlsym` では `dlerror()` の文字列で得ます。両者の性質はかなり違い、`GetLastError()` はスレッドごとの「直前の失敗コード」で成功時にクリアされるとは限らない一方、`dlerror()` は**読み出すとクリアされる**ので 2 回目は null が返ります(そのため戻り値を必ず一度だけ保存します)。また `GetLastError()` から得たメッセージ文字列はマシンのロケールに従うため、そのまま JSON や UTF-8 のログへ載せるとエンコーディングが混ざります。数値コードだけを載せて文字列は自前で組む、という割り切りがよく使われます。
 
-**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L87)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
+**使用場所**: [platformLoadError()](../../src/core/gamelogic/gamelogicreload.cpp#L91)(Windows は数値コードから英文を組み、POSIX は `dlerror()` の文字列を 1 度だけ読む)
 
 ### std::filesystem の canonical / weakly_canonical とルート名
 
 `std::filesystem::canonical(p)` は実在するパスしか正規化できず、存在しなければ例外(または `error_code`)になります。対して `weakly_canonical(p)` は「存在する先頭部分だけを解決し、残りは字句的に正規化する」ので、これから作るファイルのパスにも使えます。Windows 固有の落とし穴が**ルート名**で、`path::has_root_name()` は `C:` や `\\server` の有無を返します。`C:\dir`(ルート名 + ルートディレクトリ)は絶対パスですが、`C:dir` は「ドライブ C の**カレントディレクトリ**からの相対」であり、しかも `current_path()` がドライブごとに存在するため、プロセスのカレントだけでは決まりません。この曖昧な形は受け付けずに拒否するのが安全です。
 
-**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1038) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1030) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L982) / [resolveDeclaration()](../../src/core/asset/model.cpp#L230)
+**使用場所**: [weaklyCanonicalOrAbsolute()](../../src/core/communication/rpcserver.cpp#L1038) / [absoluteCapturePath()](../../src/core/communication/rpcserver.cpp#L1030) / [projectRootString()](../../src/core/communication/rpcserver.cpp#L982) / [resolveDeclaration()](../../src/core/asset/model.cpp#L232)
 
 ## 10.5 アルゴリズムとデータ処理の定番
 

@@ -19,8 +19,10 @@
 #include "../userpublic/userinput.hpp"
 #include "enginetime.hpp"
 #include "../watch/reloadservice.hpp"
+#if PELICAN_WITH_ANIMATION
 #include "../animation/animationservice.hpp"
 #include "../animation/vrmapplication.hpp"
+#endif
 #if PELICAN_WITH_IMGUI
 #include "../imgui/imguiruntime.hpp"
 #include "../imgui/imguisystem.hpp"
@@ -171,6 +173,7 @@ void updateFrameState() {
         case FramePhase::update_game:
             modules.ecs.update();
             internal::updateRegisteredGameSystems(game_context);
+#if PELICAN_WITH_ANIMATION
             // Retire animation sinks whose scene entity or renderer instance
             // was replaced before invoking any registered pose callbacks.
             Animation::animationServiceRuntime().synchronizeSceneObjects();
@@ -187,6 +190,7 @@ void updateFrameState() {
                 status != Animation::Status::ok) {
                 throw std::runtime_error("animation phase evaluation failed");
             }
+#endif
             modules.seq_player.update(modules.engine_time.now());
             modules.scene_loader.applyPendingLoad();
             break;

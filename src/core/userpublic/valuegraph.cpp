@@ -336,14 +336,7 @@ const GraphInstanceOwner *Graph::eventOwner(std::string_view input) const noexce
     return event_consumers_.contains(input) ? scopeOwner(input) : nullptr;
 }
 const GraphInstanceOwner *Graph::scopeOwner(std::string_view parameter) const noexcept {
-    auto slash = parameter.rfind('/');
-    while (slash != std::string_view::npos) {
-        const auto found = instance_owners_.find(parameter.substr(0, slash));
-        if (found != instance_owners_.end()) return &found->second;
-        if (slash == 0) break;
-        slash = parameter.rfind('/', slash - 1);
-    }
-    return nullptr;
+    return graphInstanceOwnerOf(instance_owners_, parameter);
 }
 
 bool Graph::nodeActive(std::string_view node, const InactiveScopes &inactive) const {
@@ -427,6 +420,11 @@ Outputs Graph::evaluate(const Inputs &inputs, const ParameterValues &parameters,
     auto result = evaluateInternal(inputs, parameters, inactive, state);
     for (const auto &output : lowered_outputs_) result.erase(output);
     return result;
+}
+
+Outputs Graph::evaluateLowered(const Inputs &inputs, const ParameterValues &parameters,
+                               const InactiveScopes &inactive, EvaluationState *state) const {
+    return evaluateInternal(inputs, parameters, inactive, state);
 }
 
 Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &parameters, const InactiveScopes &inactive,

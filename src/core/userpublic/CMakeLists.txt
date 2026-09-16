@@ -11,11 +11,14 @@ target_sources(pelican_core PRIVATE
     sprite/pixelpolicy.cpp
     sprite/spriteworld.cpp
     platformer/charactercontroller2d.cpp
-    animation/animgraph.cpp
     animation/curve.cpp
     valuegraph.cpp
     details/reload/registrationowner.cpp
 )
+
+if(PELICAN_WITH_ANIMATION)
+target_sources(pelican_core PRIVATE animation/animgraph.cpp)
+endif()
 
 add_subdirectory(serialize)
 add_subdirectory(components)

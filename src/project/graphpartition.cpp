@@ -69,10 +69,33 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
     GraphExecutionPartitions result;
     result.values.instance_owners = graph.instance_owners;
     result.rendering.instance_owners = graph.instance_owners;
+    result.animation.instance_owners = graph.instance_owners;
+    const auto domain_partition = [&result](GraphExecutionDomain domain) -> ExpandedGraphDocument & {
+        switch (domain) {
+        case GraphExecutionDomain::values: return result.values;
+        case GraphExecutionDomain::rendering: return result.rendering;
+        case GraphExecutionDomain::animation: return result.animation;
+        }
+        throw std::invalid_argument("unknown graph execution domain");
+    };
     for (const auto &node : graph.nodes) {
         const auto id = node.at("id").get<std::string>();
         const auto op = node.at("op").get<std::string>();
-        auto &partition = domains.at(id) == GraphExecutionDomain::values ? result.values : result.rendering;
+        auto &partition = domain_partition(domains.at(id));
+        // An animation node reads this frame's scalars through the values
+        // partition. Publishing the edge as an output is the whole coupling:
+        // the animation phase never writes a value back.
+        if (domains.at(id) == GraphExecutionDomain::animation)
+            for (const auto &[port, endpoint] : node.at("inputs").items()) {
+                if (domains.at(endpoint.at("node").get<std::string>()) != GraphExecutionDomain::values ||
+                    endpoint.at("port") != "value")
+                    continue; // Only scalars cross; typed streams wait for their own pass.
+                const auto output = graphAnimationScalarOutput(id, port);
+                if (graph.outputs.contains(output))
+                    throw std::invalid_argument("reserved graph output: " + output);
+                result.values.outputs[output] = endpoint;
+                result.values.output_scopes.emplace(output, graph.node_scopes.at(id));
+            }
         auto lowered = node;
         if (op == "render.attribute" && lowered.at("parameters").contains("source")) {
             const bool owned = std::any_of(graph.node_scopes.at(id).begin(), graph.node_scopes.at(id).end(),
@@ -115,12 +138,18 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
     }
     for (const auto &[port, endpoint] : graph.outputs.items()) {
         const auto type = output_types.at(port).constructor;
-        auto &partition = type == LogicalTypeConstructor::image || type == LogicalTypeConstructor::buffer
+        const auto producer = domains.at(endpoint.at("node").get<std::string>());
+        auto &partition = producer == GraphExecutionDomain::animation ? result.animation
+            : type == LogicalTypeConstructor::image || type == LogicalTypeConstructor::buffer
             ? result.rendering : result.values;
         partition.outputs[port] = endpoint;
         partition.output_scopes.emplace(port, graph.output_scopes.at(port));
     }
     return result;
+}
+
+std::string graphAnimationScalarOutput(std::string_view node, std::string_view port) {
+    return "$pose/" + std::string{node} + "/" + std::string{port};
 }
 
 Json resolveGraphAttributeSources(const Json &document, const GraphAttributeSourceResolver &resolve) {

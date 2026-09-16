@@ -143,6 +143,13 @@ pelican_register_feature(
   SMOKE_ID rpc
 )
 pelican_register_feature(
+  NAME PELICAN_WITH_ANIMATION
+  DESCRIPTION "Enable the skeletal animation evaluator and the pelican.pose graph module"
+  BASELINE ON
+  CONTRAST OFF
+  SMOKE_ID animation
+)
+pelican_register_feature(
   NAME PELICAN_WITH_SEQPLAYER
   DESCRIPTION "Enable transform sequence playback"
   BASELINE ON

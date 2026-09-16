@@ -3,7 +3,9 @@
 #include "behaviorarena.hpp"
 #include "gamelogicimports.hpp"
 
+#if PELICAN_WITH_ANIMATION
 #include "../animation/animationservice.hpp"
+#endif
 #if PELICAN_WITH_PHYSICS
 #include "../phys/physicsruntime.hpp"
 #endif
@@ -50,7 +52,9 @@ void releaseGameLogicRegistrations(RegistrationOwner owner) noexcept {
     // Live behavior instances and their callbacks must be gone while the owner
     // DLL is still loaded. Registry entries are erased only afterwards.
     releaseBehaviorOwner(owner);
+#if PELICAN_WITH_ANIMATION
     Animation::releaseAnimationOwner(owner);
+#endif
     render_policy_internal::releaseProviderOwner(owner);
     render_pass_internal::releaseProviderOwner(owner);
     render_subgraph_internal::releaseProviderOwner(owner);

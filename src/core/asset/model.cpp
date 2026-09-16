@@ -4,7 +4,9 @@
 #include "../loader/componentcodec.hpp"
 #include "../loader/authoringscenedocument.hpp"
 
+#if PELICAN_WITH_ANIMATION
 #include "../animation/animationservice.hpp"
+#endif
 #include "../loader/basicconfig.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../material/projectmaterialasset.hpp"
@@ -456,8 +458,13 @@ struct ModelAssetContainer::Impl {
             const auto *previous = install.retired_skeletal;
             const auto *replacement = install.record->model.skeletal.get();
             if (!previous && !replacement) continue;
+#if PELICAN_WITH_ANIMATION
             Animation::animationServiceRuntime().reloadAsset(
                 install.record->model.asset_id, previous, replacement);
+#else
+            (void)previous;
+            (void)replacement;
+#endif
         }
         catalog_added.swap(batch->added);
         catalog_removed.swap(batch->removed);

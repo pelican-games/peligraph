@@ -826,10 +826,19 @@ registerRenderingPassConfigVariantsData(
     std::vector<GraphPoseAttribute> pose_attributes;
     std::set<std::filesystem::path> attribute_source_files;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
+#if PELICAN_WITH_ANIMATION
+    std::shared_ptr<const Animation::PoseGraph> pose_graph;
+#endif
     ValueGraph::InactiveScopes inactive_graph_scopes;
     std::map<std::string, GameObjectId> graph_owner_objects;
     if (rendering_pass_data.value("schema", std::string{}) == "pelican.graph") {
         value_graph = std::make_shared<const ValueGraph::Graph>(rendering_pass_data.dump());
+#if PELICAN_WITH_ANIMATION
+        // The same authored document, partitioned the other way. Compiling it
+        // here is the fail-fast point for a second writer or a blend across
+        // layouts; nothing reaches a frame that this rejected.
+        pose_graph = std::make_shared<const Animation::PoseGraph>(rendering_pass_data);
+#endif
         if (auto *scene = FastModuleContainer::tryGet<SceneLoader>()) {
             graph_owner_objects = scene->graphOwnerObjects(*value_graph);
             for (const auto &[scope, owner] : value_graph->instanceOwners())
@@ -1047,6 +1056,9 @@ registerRenderingPassConfigVariantsData(
                 }
             }
             program.value_graph = value_graph;
+#if PELICAN_WITH_ANIMATION
+            program.pose_graph = pose_graph;
+#endif
             program.inactive_graph_scopes = inactive_graph_scopes;
             program.graph_owner_objects = graph_owner_objects;
             program.source_documents = source_documents;

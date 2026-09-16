@@ -880,6 +880,86 @@ function(run_exr_smoke)
     clean_successful_build("${exr_build_dir}")
 endfunction()
 
+function(verify_animation_absent build_dir)
+    # The animation unit's own translation units must not be compiled at all.
+    # animation_disabled.cpp is the frozen negotiation surface and stays.
+    file(GLOB_RECURSE build_metadata LIST_DIRECTORIES false
+        "${build_dir}/build.ninja"
+        "${build_dir}/*.vcxproj"
+        "${build_dir}/*DependInfo.cmake"
+        "${build_dir}/compile_commands.json"
+    )
+    foreach(metadata IN LISTS build_metadata)
+        file(READ "${metadata}" contents)
+        if(contents MATCHES "(animationservice|animationjobs|animationprobe|animationserviceabi|vrmapplication|vrmaretarget|posegraph|posegraphruntime)[.]cpp" OR
+           contents MATCHES "animation[/\\]animgraph[.]cpp")
+            message(FATAL_ERROR "PELICAN_WITH_ANIMATION=OFF still compiles an animation source: ${metadata}")
+        endif()
+    endforeach()
+
+    file(GLOB_RECURSE artifacts LIST_DIRECTORIES false "${build_dir}/*")
+    foreach(artifact IN LISTS artifacts)
+        get_filename_component(name "${artifact}" NAME)
+        string(TOLOWER "${name}" lower_name)
+        if(lower_name MATCHES "^(animationservice|animationjobs|animationprobe|animationserviceabi|vrmapplication|vrmaretarget|posegraph|posegraphruntime|animgraph)[.](obj|o)$")
+            message(FATAL_ERROR "PELICAN_WITH_ANIMATION=OFF emitted an animation object: ${artifact}")
+        endif()
+    endforeach()
+
+    if(WIN32)
+        find_program(DUMPBIN_EXECUTABLE dumpbin)
+        if(NOT DUMPBIN_EXECUTABLE)
+            file(GLOB dumpbin_candidates
+                "C:/Program Files (x86)/Microsoft Visual Studio/2022/BuildTools/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
+                "C:/Program Files/Microsoft Visual Studio/2022/*/VC/Tools/MSVC/*/bin/Hostx64/x64/dumpbin.exe"
+            )
+            if(dumpbin_candidates)
+                list(SORT dumpbin_candidates ORDER DESCENDING)
+                list(GET dumpbin_candidates 0 DUMPBIN_EXECUTABLE)
+            endif()
+        endif()
+        if(NOT DUMPBIN_EXECUTABLE)
+            message(FATAL_ERROR "dumpbin is required for the animation OFF symbol check")
+        endif()
+
+        file(GLOB_RECURSE symbol_artifacts LIST_DIRECTORIES false
+            "${build_dir}/*pelican_core.lib"
+        )
+        foreach(symbol_artifact IN LISTS symbol_artifacts)
+            execute_process(
+                COMMAND "${DUMPBIN_EXECUTABLE}" /symbols "${symbol_artifact}"
+                RESULT_VARIABLE dumpbin_result
+                OUTPUT_VARIABLE symbols
+                ERROR_VARIABLE dumpbin_error
+            )
+            if(NOT dumpbin_result EQUAL 0)
+                message(FATAL_ERROR "dumpbin failed for ${symbol_artifact}: ${dumpbin_error}")
+            endif()
+            if(symbols MATCHES "animationServiceRuntime" OR
+               symbols MATCHES "EvaluatorV1@AnimationGraph" OR
+               symbols MATCHES "registerPoseGraphModule" OR
+               symbols MATCHES "PoseGraphRuntime@Animation" OR
+               symbols MATCHES "applicationServiceRuntime@Vrm" OR
+               symbols MATCHES "retargetVrmaClip")
+                message(FATAL_ERROR "PELICAN_WITH_ANIMATION=OFF retained animation symbols in ${symbol_artifact}")
+            endif()
+        endforeach()
+    endif()
+endfunction()
+
+function(run_animation_smoke)
+    configure_and_build("animation" "PELICAN_WITH_ANIMATION" animation_build_dir)
+    verify_animation_absent("${animation_build_dir}")
+    # The common graph keeps working without the module: the value, render and
+    # audio tests are in this binary, and the catalog test asserts by name that
+    # pelican.pose is gone.
+    find_built_executable(
+        "${animation_build_dir}" "pelican_test_group_core_foundation" animation_graph_test)
+    run_process("animation_common_graph" TRUE "${animation_graph_test}"
+        "[graph-composition],[graph-module],[valuegraph],[curve]")
+    clean_successful_build("${animation_build_dir}")
+endfunction()
+
 function(run_rpc_smoke)
     configure_and_build("rpc" "PELICAN_WITH_RPC" rpc_build_dir)
     find_built_executable("${rpc_build_dir}" "pelican_player" rpc_player)
@@ -1009,6 +1089,10 @@ function(run_registered_feature_smoke feature_name)
     elseif(feature_name STREQUAL "PELICAN_WITH_RPC")
         if(NOT dry_run)
             run_rpc_smoke()
+        endif()
+    elseif(feature_name STREQUAL "PELICAN_WITH_ANIMATION")
+        if(NOT dry_run)
+            run_animation_smoke()
         endif()
     elseif(feature_name STREQUAL "PELICAN_WITH_SEQPLAYER")
         if(NOT dry_run)

@@ -340,12 +340,22 @@ SoundHandle GameContext::playSound(std::string_view path) const {
 
 Animation::Status GameContext::setAnimationGraphParameter(GameObjectId object, std::string_view name, double value) const {
     if (internal::activeEffectTransaction()) return Animation::Status::phase_order_error;
+#if PELICAN_WITH_ANIMATION
     return GET_MODULE(AnimationSystem).setGraphParameter(object, name, value);
+#else
+    (void)object; (void)name; (void)value;
+    return Animation::Status::not_found;
+#endif
 }
 
 Animation::Status GameContext::forceAnimationGraphState(GameObjectId object, std::string_view state) const {
     if (internal::activeEffectTransaction()) return Animation::Status::phase_order_error;
+#if PELICAN_WITH_ANIMATION
     return GET_MODULE(AnimationSystem).forceGraphState(object, state);
+#else
+    (void)object; (void)state;
+    return Animation::Status::not_found;
+#endif
 }
 
 void GameContext::stopSound(SoundHandle handle) const {

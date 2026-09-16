@@ -10,6 +10,9 @@
 #include <details/ecs/entity.hpp>
 #include "graphdeformedattribute.hpp"
 #include "graphmodelsource.hpp"
+#if PELICAN_WITH_ANIMATION
+#include "../animation/posegraph.hpp"
+#endif
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -73,6 +76,11 @@ struct CompiledFrameGraphExecution {
         buffer_bindings;
     std::vector<FrameGraphExecutionNode> nodes;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
+#if PELICAN_WITH_ANIMATION
+    // The animation partition of the same document. Evaluated in the animation
+    // phase, one step earlier in the frame than value_graph.
+    std::shared_ptr<const Animation::PoseGraph> pose_graph;
+#endif
     // Owner scopes omitted from this generation's GPU compilation.
     std::set<std::string> inactive_graph_scopes;
     std::map<std::string, GameObjectId> graph_owner_objects;
@@ -144,6 +152,9 @@ struct RenderPipelineProgramPreparation {
         buffer_bindings;
     std::optional<RenderingPassId> rendering_pass_id;
     std::shared_ptr<const ValueGraph::Graph> value_graph;
+#if PELICAN_WITH_ANIMATION
+    std::shared_ptr<const Animation::PoseGraph> pose_graph;
+#endif
     std::set<std::string> inactive_graph_scopes;
     std::map<std::string, GameObjectId> graph_owner_objects;
     std::shared_ptr<const RenderGraphDocumentSnapshot> source_documents;

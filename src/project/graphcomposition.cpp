@@ -204,6 +204,7 @@ std::string_view graphExecutionDomainName(GraphExecutionDomain domain) {
     switch (domain) {
     case GraphExecutionDomain::values: return "values";
     case GraphExecutionDomain::rendering: return "rendering";
+    case GraphExecutionDomain::animation: return "animation";
     }
     throw std::invalid_argument("unknown graph execution domain");
 }

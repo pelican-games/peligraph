@@ -1043,16 +1043,16 @@ TEST_CASE("WP381 shipped project game DLLs import the anchor and load",
           "[game-logic-abi][wp381]") {
     setupLogger();
     const auto host = executableName();
-    const std::array projects{
-        std::pair{std::string{"example"},
-                  fixture(PELICAN_WP381_PROJECT_EXAMPLE)},
-        std::pair{std::string{"animgraph_demo"},
-                  fixture(PELICAN_WP381_PROJECT_ANIMGRAPH)},
-        std::pair{std::string{"sprite_demo"},
-                  fixture(PELICAN_WP381_PROJECT_SPRITE)},
-        std::pair{std::string{"vrm_xr_demo"},
-                  fixture(PELICAN_WP381_PROJECT_VRM_XR)},
+    std::vector<std::pair<std::string, std::filesystem::path>> projects{
+        {std::string{"example"}, fixture(PELICAN_WP381_PROJECT_EXAMPLE)},
+        {std::string{"sprite_demo"}, fixture(PELICAN_WP381_PROJECT_SPRITE)},
     };
+#ifdef PELICAN_WP381_PROJECT_ANIMGRAPH
+    // These two call the SDK evaluator, so they ship only where the animation
+    // unit is built.
+    projects.emplace_back("animgraph_demo", fixture(PELICAN_WP381_PROJECT_ANIMGRAPH));
+    projects.emplace_back("vrm_xr_demo", fixture(PELICAN_WP381_PROJECT_VRM_XR));
+#endif
 
     for (const auto &[name, path] : projects) {
         CAPTURE(name, path);

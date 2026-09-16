@@ -774,7 +774,13 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
       PELICAN_WP381_ABI_FIXTURE TRUE)
   endforeach()
 
-  foreach(wp381_project IN ITEMS example animgraph_demo sprite_demo vrm_xr_demo)
+  # animgraph_demo and vrm_xr_demo call the SDK evaluator, so they are shipped
+  # projects only where the animation unit is built.
+  set(wp381_projects example sprite_demo)
+  if(PELICAN_WITH_ANIMATION)
+    set(wp381_projects example animgraph_demo sprite_demo vrm_xr_demo)
+  endif()
+  foreach(wp381_project IN LISTS wp381_projects)
     string(REPLACE "_" "-" wp381_project_role "${wp381_project}")
     set(wp381_project_target pelican_wp381_project_${wp381_project})
     if(wp381_project STREQUAL "example")
@@ -809,9 +815,7 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     PELICAN_WP381_REVERSE_A="$<TARGET_FILE:pelican_wp381_reverse_a>"
     PELICAN_WP381_REVERSE_B="$<TARGET_FILE:pelican_wp381_reverse_b>"
     PELICAN_WP381_PROJECT_EXAMPLE="$<TARGET_FILE:pelican_wp381_project_example>"
-    PELICAN_WP381_PROJECT_ANIMGRAPH="$<TARGET_FILE:pelican_wp381_project_animgraph_demo>"
     PELICAN_WP381_PROJECT_SPRITE="$<TARGET_FILE:pelican_wp381_project_sprite_demo>"
-    PELICAN_WP381_PROJECT_VRM_XR="$<TARGET_FILE:pelican_wp381_project_vrm_xr_demo>"
     PELICAN_WP381_STALE_SOURCE_DEPENDENCIES="${wp381_stale_source_dependencies}"
     PELICAN_WP381_CURRENT_USERPUBLIC="${CMAKE_SOURCE_DIR}/src/core/userpublic"
     PELICAN_WP382A_FROZEN_V2="$<TARGET_FILE:pelican_wp382a_frozen_v2>"
@@ -832,6 +836,12 @@ if(WIN32 AND COMMAND pelican_configure_game_logic_target)
     PELICAN_WP382A_V3_COMPONENT_VOCABULARY="$<TARGET_FILE:pelican_wp382a_v3_component_vocabulary>"
     PELICAN_WP382A_V3_COMPONENT_PRESENCE="$<TARGET_FILE:pelican_wp382a_v3_component_presence>"
   )
+  if(PELICAN_WITH_ANIMATION)
+    target_compile_definitions(pelican_test_game_logic_abi_test PRIVATE
+      PELICAN_WP381_PROJECT_ANIMGRAPH="$<TARGET_FILE:pelican_wp381_project_animgraph_demo>"
+      PELICAN_WP381_PROJECT_VRM_XR="$<TARGET_FILE:pelican_wp381_project_vrm_xr_demo>"
+    )
+  endif()
 
   get_filename_component(wp381_msvc_tool_dir "${CMAKE_LINKER}" DIRECTORY)
   add_test(
@@ -1209,21 +1219,28 @@ target_compile_definitions(pelican_test_vrmsemantic_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 pelican_define_test(vrmadecoder_test GROUP core_foundation pelican_core tinygltf picosha2)
+# The animation unit's own tests exist only when it is built. The common-graph
+# tests beside them (value / render / audio) stay in the group either way.
+if(PELICAN_WITH_ANIMATION)
 pelican_define_test(vrmaretarget_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animation_probe_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animation_jobs_test GROUP core_foundation pelican_core glm)
 pelican_define_test(animgraph_test GROUP core_foundation pelican_core glm)
+pelican_define_test(posegraph_test GROUP core_foundation pelican_core glm)
+target_compile_definitions(pelican_test_animation_probe_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
 # The test-only graph module lives with the test that needs it; the production
 # archives are checked for its symbol below.
 target_sources(pelican_test_curve_test PRIVATE graphtestopaquemodule.cpp)
+if(PELICAN_WITH_ANIMATION)
 pelican_define_test(vrmasource_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator
                     VulkanMemoryAllocator-Hpp glm)
-target_compile_definitions(pelican_test_animation_probe_test PRIVATE
-    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
-)
+endif()
 
-if(WIN32)
+if(WIN32 AND PELICAN_WITH_ANIMATION)
   add_library(pelican_animation_abi_old SHARED fixtures/animation_abi/old_client.cpp)
   add_library(pelican_animation_abi_new SHARED fixtures/animation_abi/new_client.cpp)
   add_library(pelican_animation_public_evaluator SHARED fixtures/animation_abi/public_evaluator.cpp)
@@ -1509,9 +1526,11 @@ target_compile_definitions(pelican_test_gltf_fragment_test PRIVATE
 )
 pelican_define_test(gltfimage_test pelican_core tinygltf)
 pelican_define_test(wp382c_occurrence_test pelican_core glm)
+if(PELICAN_WITH_ANIMATION)
 pelican_define_test(modelhotreload_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_sources(pelican_test_modelhotreload_test PRIVATE
     modelreloadfault_testing.cpp)
+endif()
 pelican_define_test(model_resource_release_test GPU pelican_core
     VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_sources(pelican_test_model_resource_release_test PRIVATE
@@ -1525,15 +1544,19 @@ pelican_define_test(subgraphreplacementregistry_test GROUP renderer_registry pel
 pelican_define_test(graphtransformregistry_test GROUP renderer_registry pelican_core)
 pelican_define_test(renderstrategyregistry_test GROUP renderer_registry pelican_core)
 pelican_define_test(modelinstance_slotmap_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+if(PELICAN_WITH_ANIMATION)
 pelican_define_test(skeletal_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
                     pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 pelican_define_test(morph_gltf_test GROUP skeletal_gltf_runtime GPU RUNTIME_SHADER
                     pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
+endif()
 pelican_define_test(vrmfirstperson_test pelican_core glm)
+if(PELICAN_WITH_ANIMATION)
 pelican_define_test(vrm_xr_demo_test GPU RUNTIME_SHADER pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 target_compile_definitions(pelican_test_vrm_xr_demo_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+endif()
 pelican_define_test(materialinstanceoverride_test GPU pelican_core VulkanMemoryAllocator VulkanMemoryAllocator-Hpp glm)
 # SceneLoader roundtrip case が Vulkan instance を要求するため GPU
 # (validation layer なしの CI runner では ErrorLayerNotPresent)。
@@ -2193,6 +2216,7 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_modal_transform_record_replay.cmake
     )
     pelican_gpu_test_properties(modal_transform_record_replay_player 180)
+    if(PELICAN_WITH_ANIMATION)
     add_executable(
         pelican_test_vrm_xr_demo_player
         ${CMAKE_SOURCE_DIR}/src/player/main.cpp
@@ -2214,6 +2238,7 @@ if(PELICAN_WITH_RPC)
             -P ${CMAKE_CURRENT_SOURCE_DIR}/run_vrm_xr_demo_rpc.cmake
     )
     pelican_gpu_test_properties(vrm_xr_demo_rpc_player 180)
+    endif()
     add_test(
         NAME rpc_headless_player
         COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
@@ -2418,6 +2443,7 @@ add_test(
     NAME devcli_graph_catalog
     COMMAND ${CMAKE_COMMAND}
         -DCLI=$<TARGET_FILE:pelican_cli>
+        -DWITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_graph_catalog.cmake
 )
 

@@ -1,6 +1,7 @@
 #include "../src/core/appflow/enginetime.hpp"
 #include "../src/core/animation/animationservice.hpp"
 #include "../src/core/ecs/predefined/animationsystem.hpp"
+#include "../src/core/animation/posegraphruntime.hpp"
 #include "../src/core/userpublic/components/animation.hpp"
 #include "../src/core/userpublic/components/modelview.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
@@ -39,6 +40,7 @@
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <chrono>
 #include <cmath>
@@ -1755,6 +1757,226 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     scene.updateGraphRuntime();
     REQUIRE_FALSE(context.soundState(temporary_voice));
 #endif
+}
+
+// AG-1a: the pose itself travels on a common-graph port. The object carries no
+// animation component here; a pose.clip_sample or pose.state_machine node
+// inside an owned graph instance is the only writer of its skeletal sink, and
+// the evaluated pose is read back through the GPU pose attribute.
+TEST_CASE("a pose graph drives an object's skeletal sink", "[skeletal][graph-pose-sink]") {
+    setupLogger();
+    // Generated rather than sectioned: every case below runs the same body, so
+    // no case can end up as a section that asserts nothing.
+    const auto mode = GENERATE(as<std::string>{}, "clip sample", "state machine",
+                               "state machine without the parameter edge",
+                               "animation component already writes the object");
+    CAPTURE(mode);
+    const bool state_machine = mode.starts_with("state machine");
+    const bool connect_parameter = mode != "state machine without the parameter edge";
+    const bool component_writer = mode == "animation component already writes the object";
+    const auto root = std::filesystem::temp_directory_path() /
+        ("pelican_pose_sink_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::filesystem::create_directories(root / "passes");
+    std::filesystem::create_directories(root / "shaders");
+    const TempDir guard{root};
+    TestSkeletalFixture::writeGltf(root / "character.gltf", "character.bin");
+    auto document = parameterGraphCompositionFixture();
+    auto nodes = nlohmann::json::parse(R"([
+      {"id":"time","op":"graph.input"},
+      {"id":"tip","op":"render.attribute","parameters":{"element":"mat4","domain":"instance",
+        "source":{"asset":"project://character.gltf","pose_node":2}},"outputs":["resource"]},
+      {"id":"model","op":"render.attribute","parameters":{"element":"mat4","domain":"instance",
+        "source":{"asset":"project://character.gltf","pose_node":0}},"outputs":["resource"]},
+      {"id":"out","op":"pose.skeletal","inputs":{"pose":{"node":"source","port":"pose"}},
+       "outputs":[]}])");
+    nlohmann::json instance_inputs{{"time", {{"node", "clock"}, {"port", "value"}}}};
+    if (state_machine) {
+        nodes.push_back(nlohmann::json::parse(R"({"id":"speed","op":"graph.input","default":0})"));
+        nodes.push_back(nlohmann::json{{"id", "source"}, {"op", "pose.state_machine"},
+            {"parameters", {{"rig", "project://character.gltf"},
+                {"graph", nlohmann::json::parse(R"({"schema":"pelican.anim_graph","version":1,
+                  "parameters":{"speed":0},
+                  "states":[{"name":"idle","type":"clip","clip":"Turn","loop":true},
+                            {"name":"walk","type":"clip","clip":"Step","loop":true}],
+                  "transitions":[{"from":"idle","to":"walk",
+                    "conditions":[{"parameter":"speed","op":">","value":0.5}]}],
+                  "initial_state":"idle"})")}}},
+            {"inputs", {{"time", {{"node", "time"}, {"port", "value"}}},
+                        {"speed", {{"node", "speed"}, {"port", "value"}}}}},
+            {"outputs", {"pose", "state_events"}}});
+        // The value side of the same document decides when the state machine
+        // leaves `idle`; today only GameContext could do that.
+        document["nodes"].insert(document["nodes"].begin() + 3,
+            nlohmann::json::parse(R"({"id":"gate","op":"value.curve",
+              "inputs":{"time":{"node":"clock","port":"value"}},
+              "parameters":{"keys":[{"time":0,"value":0},{"time":0.4,"value":0},
+                                    {"time":0.6,"value":1},{"time":40,"value":1}]},
+              "outputs":["value"]})"));
+        if (connect_parameter)
+            instance_inputs["speed"] = {{"node", "gate"}, {"port", "value"}};
+        else
+            nodes.back()["inputs"].erase("speed");
+    } else {
+        nodes.push_back(nlohmann::json::parse(R"({"id":"source","op":"pose.clip_sample",
+          "parameters":{"rig":"project://character.gltf","clip":"Turn"},
+          "inputs":{"time":{"node":"time","port":"value"}},"outputs":["pose"]})"));
+    }
+    document["definitions"]["pose"] = {{"nodes", std::move(nodes)},
+        {"outputs", {{"tip", {{"node", "tip"}, {"port", "resource"}}},
+                     {"model", {{"node", "model"}, {"port", "resource"}}}}}};
+    const auto instance_index = state_machine ? 6 : 5;
+    document["nodes"][instance_index] = {{"id", "render"}, {"op", "graph.instance"},
+        {"definition", "pose"}, {"owner", {{"scene", "default_scene"}, {"object", 1}}},
+        {"inputs", instance_inputs}};
+    document["nodes"][instance_index + 1]["parameters"]["size"] = 16;
+    auto &probe = document["nodes"][instance_index + 2];
+    probe["parameters"]["ports"].erase("source");
+    probe["inputs"].erase("source");
+    for (const auto *port : {"tip", "model"}) {
+        probe["parameters"]["ports"][port] = {{"element", "mat4"}, {"domain", "instance"}, {"access", "read"}};
+        probe["inputs"][port] = {{"node", "render"}, {"port", port}};
+    }
+    document["rendering"] = {{"pipeline", {{"preset", "engine://render_pipelines/hybrid_v1.json"}}}};
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    writeText(root / "shaders/graph_probe.comp", R"(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(local_size_x=1,local_size_y=1,local_size_z=1) in;
+void main() {
+    mat4 tip = pelican_load_tip(0);
+    pelican_store_destination(0, tip[3].x);
+    pelican_store_destination(1, tip[3].y);
+    pelican_store_destination(2, tip[0].y);
+    pelican_store_destination(3, pelican_load_model(0)[0].x);
+}
+)");
+    writeText(root / "assets.json", R"({"schema":"pelican.asset_data","version":1,"models":[{"name":"character","path":"character.gltf"}]})");
+    // No animation component: the graph is the only thing that can pose this
+    // object, so anything the attribute shows came through the pose port.
+    auto scene_document = nlohmann::json::parse(R"({"schema":"pelican.scene","version":1,"scenes":{"default_scene":{"objects":[
+      {"name":"Character","components":[{"name":"transform","pos":[10,0,0],"rotation":[0,0,0,1],"scale":[1,1,1]},
+        {"name":"simplemodelview","model":"character"}]}]}}})");
+    if (component_writer)
+        scene_document["scenes"]["default_scene"]["objects"][0]["components"].push_back(
+            nlohmann::json{{"name", "animation"},
+                           {"clip", "character.gltf#animation/Turn"}, {"loop", false}});
+    writeText(root / "scene.json", scene_document.dump());
+    auto &service = Animation::animationServiceRuntime();
+    service.reset();
+    Animation::poseGraphRuntime().clear();
+    FastModuleContainer modules;
+    GET_MODULE(PathResolver).setup(root, false);
+    GET_MODULE(ProjectSource).setSourceByData(nlohmann::json{{"basic_config", {
+        {"scene_data_json", "scene.json"}, {"asset_data_json", "assets.json"}}}}.dump());
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    launch.headless = true;
+    launch.headless_extent = vk::Extent2D{16, 16};
+    TestSupport::requireVulkanDevice("Vulkan unavailable");
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &scene = GET_MODULE(SceneLoader);
+    test_support::loadScene(scene, "default_scene");
+    auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+    auto &time = GET_MODULE(EngineTime);
+    time.setup(EngineTime::Mode::fixed_step, 0.25);
+    auto &instances = GET_MODULE(PolygonInstanceContainer);
+    const auto object = scene.objectId("Character");
+    REQUIRE(object);
+    for (const auto &binding : scene.runtimeObjectBindings())
+        if (binding.object_id == *object)
+            document["nodes"][instance_index]["owner"]["object"] = binding.authoring_object_id.value;
+    writeText(root / "passes/main_rendering_config.json", document.dump());
+    const auto animate = [&] {
+        time.advance();
+        GET_MODULE(ECSCore).update();
+        service.synchronizeSceneObjects();
+        GET_MODULE(AnimationSystem).updateGraphs();
+        REQUIRE(service.runAllPhases(time.frameIndex()) == Animation::Status::ok);
+        scene.applyPendingLoad();
+    };
+    const auto *view = ecs.tryComponent<SimpleModelViewComponent>(*object);
+    REQUIRE(view);
+    REQUIRE(view->model_instance_id);
+    const auto instance = *view->model_instance_id;
+    // Before the graph is published nothing writes the sink: the attribute
+    // still reports the rest pose, which is what the acceptance control
+    // reproduces by removing the sink.
+    animate();
+    const auto rest = instances.animationNodeMatrix(instance, 2);
+    REQUIRE(rest);
+    GET_MODULE(ProjectBasicConfig).publishRenderingConfigJson(document.dump());
+    animate();
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto render = [&] {
+        renderer.render();
+        core.waitIdle();
+        const auto bytes = core.readBuf(GET_MODULE(FrameGraphResourceContainer).buffer("result"), sizeof(float) * 4);
+        std::array<float, 4> values;
+        std::memcpy(values.data(), bytes.data(), sizeof(values));
+        return values;
+    };
+    if (component_writer) {
+        // The component already writes this object's pose. The graph's sink on
+        // the same object is named, not silently a second writer. Attachment
+        // happens once the published program reaches the animation tick, so the
+        // rejection is expected within the first few frames.
+        std::string code;
+        std::string second;
+        for (int frame = 0; frame < 6 && code.empty(); ++frame) {
+            try {
+                animate();
+                renderer.render();
+                core.waitIdle();
+            } catch (const GraphRegistryError &error) {
+                code = error.code();
+                second = error.detail().at("second").get<std::string>();
+                REQUIRE(error.detail().at("first") == "animation component");
+            }
+        }
+        REQUIRE(code == "pose.sink_conflict@1");
+        REQUIRE(second == "render/out");
+        service.reset();
+        Animation::poseGraphRuntime().clear();
+        return;
+    }
+    // Every observation below is the GPU-side attribute, filled from the pose
+    // the graph published this frame.
+    std::vector<std::array<float, 4>> observed;
+    bool left_rest = false;
+    for (int frame = 0; frame < 6; ++frame) {
+        animate();
+        const auto matrix = instances.animationNodeMatrix(instance, 2);
+        REQUIRE(matrix);
+        left_rest = left_rest || *matrix != *rest;
+        const auto values = render();
+        REQUIRE(std::abs(values[0] - (*matrix)[3].x) < 0.00001f);
+        REQUIRE(std::abs(values[1] - (*matrix)[3].y) < 0.00001f);
+        observed.push_back(values);
+    }
+    REQUIRE(left_rest);
+    // Determinism: one evaluation per frame revision, and the trace names the
+    // node that produced the pose together with the layout generation it was
+    // produced for.
+    const auto trace = Animation::poseGraphRuntime().trace();
+    REQUIRE(trace.size() == 1);
+    REQUIRE(trace.front().sink == "render/out");
+    REQUIRE(trace.front().node == "render/source");
+    REQUIRE(trace.front().frame_revision == time.frameIndex());
+    REQUIRE(trace.front().layout_identity != 0);
+    REQUIRE(trace.front().layout_generation != 0);
+    // The individual follows the clip: the pose is not frozen at the rest pose
+    // the sink-less document leaves behind.
+    REQUIRE(observed.front() != observed.back());
+
+    if (state_machine) {
+        // `Step` translates TipJoint away from the rest x=0; `Turn` only rotates
+        // RootJoint, so how far x travels says which state is running.
+        const bool moved = std::abs(observed.back()[0]) > 0.9f;
+        REQUIRE(moved == connect_parameter);
+    }
+    service.reset();
+    Animation::poseGraphRuntime().clear();
 }
 
 } // namespace Pelican

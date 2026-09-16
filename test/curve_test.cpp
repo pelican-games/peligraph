@@ -587,8 +587,55 @@ TEST_CASE("one operation has exactly one registering module",
     const auto catalog = registry.catalog();
     for (const auto &module : catalog.at("modules"))
         namespaces.push_back(module.at("namespace").get<std::string>());
-    REQUIRE(namespaces == std::vector<std::string>{"pelican.audio", "pelican.render",
-                                                   "pelican.test.opaque", "pelican.value"});
+    std::vector<std::string> expected{"pelican.audio", "pelican.render",
+                                      "pelican.test.opaque", "pelican.value"};
+#if PELICAN_WITH_ANIMATION
+    expected.insert(expected.begin() + 1, "pelican.pose");
+#endif
+    REQUIRE(namespaces == expected);
+}
+
+TEST_CASE("a build without the animation unit rejects a pose document by name",
+          "[curve][graph-composition][graph-module]") {
+    using namespace Pelican;
+    // The same document either way. Whether pelican.pose is registered is the
+    // only difference PELICAN_WITH_ANIMATION makes to the common graph, so this
+    // is the OFF build's observation and the ON build's contrast.
+    const auto document = nlohmann::json::parse(R"({"schema":"pelican.graph","version":1,
+      "definitions":{"pose":{"nodes":[
+        {"id":"time","op":"graph.input"},
+        {"id":"walk","op":"pose.clip_sample","parameters":{"rig":"m.glb","clip":"Walk"},
+         "inputs":{"time":{"node":"time","port":"value"}},"outputs":["pose"]},
+        {"id":"out","op":"pose.skeletal","inputs":{"pose":{"node":"walk","port":"pose"}},
+         "outputs":[]}],"outputs":{}}},
+      "nodes":[
+        {"id":"clock","op":"value.input","parameters":{"name":"time"},"outputs":["value"]},
+        {"id":"hero","op":"graph.instance","definition":"pose",
+         "owner":{"scene":"scenes/main","object":7},
+         "inputs":{"time":{"node":"clock","port":"value"}}}],
+      "outputs":{}})");
+#if PELICAN_WITH_ANIMATION
+    REQUIRE(builtinGraphModuleRegistry().contains("pose.clip_sample"));
+    REQUIRE(builtinGraphModuleRegistry().isSink("pose.skeletal"));
+    const auto partitions = partitionGraphDocument(document);
+    REQUIRE(partitions.animation.nodes.size() == 2);
+#else
+    REQUIRE_FALSE(builtinGraphModuleRegistry().contains("pose.clip_sample"));
+    try {
+        partitionGraphDocument(document);
+        FAIL("a pose document was accepted without the animation unit");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.operation_unregistered@1");
+        // Expanded nodes resolve in id order, so the first pose operation the
+        // registry has never heard of is the one it names.
+        REQUIRE(error.detail().at("op") == "pose.skeletal");
+        REQUIRE(error.detail().at("node") == "hero/out");
+    }
+#endif
+    // The value, render and audio sides of the common graph are unaffected
+    // either way.
+    REQUIRE_NOTHROW(partitionGraphDocument(nlohmann::json::parse(graphCompositionFixture)));
+    REQUIRE_NOTHROW(ValueGraph::Graph{graphCompositionFixture});
 }
 
 TEST_CASE("a registered operation without a backend is rejected by name",

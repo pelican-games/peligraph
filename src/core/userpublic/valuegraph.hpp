@@ -92,6 +92,13 @@ class PELICAN_API Graph {
                    Animation::CurvePlaybackCommand command, double time) const;
     Outputs evaluate(const Inputs &inputs, const ParameterValues &parameters = {},
                      const InactiveScopes &inactive = {}, EvaluationState *state = nullptr) const;
+    // The same evaluation, keeping the outputs lowering added rather than the
+    // authored ones alone: the publication sinks and the scalars an
+    // animation-domain node consumes this frame. A caller that reads one of
+    // those runs before the sinks do, so the feed stays one-way.
+    Outputs evaluateLowered(const Inputs &inputs, const ParameterValues &parameters = {},
+                            const InactiveScopes &inactive = {},
+                            EvaluationState *state = nullptr) const;
     // Owner-thread evaluation and explicit service publication. Sound targets
     // are symbolic names, resolved using this instance's live handles.
     // Missing/stopped targets are reported; other bindings can still apply.

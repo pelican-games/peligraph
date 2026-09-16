@@ -58,8 +58,10 @@ struct GraphInputContract {
 };
 // Which execution domain evaluates an operation. Declared by the module that
 // registers it, so adding a CPU value operation does not mean teaching the
-// partition a new operation name.
-enum class GraphExecutionDomain : std::uint8_t { values, rendering };
+// partition a new operation name. `animation` runs inside the animation phase,
+// one step earlier in the same frame than `values`, so a pose operation reads
+// this frame's scalars and never the other way round.
+enum class GraphExecutionDomain : std::uint8_t { values, rendering, animation };
 std::string_view graphExecutionDomainName(GraphExecutionDomain domain);
 // How a result is produced across evaluations. Recorded here and published in
 // the module catalog; checking it belongs to the evaluation-order work.

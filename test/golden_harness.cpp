@@ -5833,6 +5833,7 @@ void renderMaterialAbsoluteOverrideFrame(RenderTarget &render_target) {
     (void)render_target;
 }
 
+#if PELICAN_WITH_ANIMATION
 Animation::InstanceHandle resolveExpressionInstance(
     Animation::AnimationServiceV1 &service, std::string_view object_name) {
     Animation::ResolveAnimationSinkDescV1 sink{};
@@ -5944,6 +5945,7 @@ void renderVrmExpressionFrame(RenderTarget &render_target, bool enabled) {
     Animation::animationServiceRuntime().reset();
     (void)render_target;
 }
+#endif
 
 void renderSpriteFrame(RenderTarget &render_target, std::string_view mode) {
     GET_MODULE(ECSPredefinedRegistration).reg();
@@ -6843,8 +6845,13 @@ RenderedCase renderCase(const GoldenCase &golden_case, bool gpu_labels = false,
         renderShadowFrame(render_target);
     } else if (golden_case.mode == "vrm_expression_off" ||
                golden_case.mode == "vrm_expression_on") {
+#if PELICAN_WITH_ANIMATION
         renderVrmExpressionFrame(render_target,
                                  golden_case.mode == "vrm_expression_on");
+#else
+        // The VRM expression golden needs the animation unit to pose the model.
+        FAIL("PELICAN_WITH_ANIMATION=OFF cannot render a VRM expression golden");
+#endif
     } else if (golden_case.mode == "material_absolute_override") {
         renderMaterialAbsoluteOverrideFrame(render_target);
     } else if (golden_case.mode == "feature_compose") {

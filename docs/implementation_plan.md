@@ -63,6 +63,7 @@ ctest --test-dir ./build -C Debug -R '<affected-test-regex>' -j1 --output-on-fai
 | `PELICAN_WITH_VAT` | `ON` | `OFF` | — |
 | `PELICAN_WITH_EXR` | `ON` | `OFF` | — |
 | `PELICAN_WITH_RPC` | `ON` | `OFF` | — |
+| `PELICAN_WITH_ANIMATION` | `ON` | `OFF` | — |
 | `PELICAN_WITH_SEQPLAYER` | `ON` | `OFF` | — |
 | `PELICAN_WITH_IMGUI` | `ON` | `OFF` | — |
 | `PELICAN_WITH_PHYSICS` | `ON` | `OFF` | `PELICAN_WITH_JOLT_PHYSICS=OFF`<br>`PELICAN_WITH_BUILTIN_PHYSICS=OFF` |

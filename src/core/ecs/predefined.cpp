@@ -48,13 +48,17 @@ void ECSPredefinedRegistration::reg() {
         ecs.registerSystemForce<SimpleModelViewUpdateSystem, EntityId,
                                 SimpleModelViewComponent>(
             GET_MODULE(SimpleModelViewUpdateSystem), {});
-    const auto animation_system =
+    // Without the animation unit nothing poses a skinned model, so the system
+    // is absent rather than present and inert; the component still loads.
+    std::vector<SystemId> model_transform_dependencies{local_transform_system, model_update_system};
+#if PELICAN_WITH_ANIMATION
+    model_transform_dependencies.push_back(
         ecs.registerSystemForce<AnimationSystem, EntityId, AnimationComponent, SimpleModelViewComponent>(
-        GET_MODULE(AnimationSystem), {model_update_system});
+            GET_MODULE(AnimationSystem), {model_update_system}));
+#endif
     const auto model_transform_system =
         ecs.registerSystemForce<SimpleModelViewTransformSystem, TransformComponent, SimpleModelViewComponent>(
-            GET_MODULE(SimpleModelViewTransformSystem),
-            {local_transform_system, model_update_system, animation_system});
+            GET_MODULE(SimpleModelViewTransformSystem), std::move(model_transform_dependencies));
     const auto camera_system = ecs.registerSystemForce<CameraSystem, TransformComponent, CameraComponent>(
         GET_MODULE(CameraSystem), {local_transform_system, model_transform_system});
     ecs.registerSystemForce<SpriteViewRenderSystem, EntityId, TransformComponent, SpriteViewComponent>(
