@@ -23287,6 +23287,15 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 5. 決定 6: `graph-catalog` の JSON が 3 namespace と全 op を含み、決定 5 の欄を持つ。`value.trigger_clock` の evaluation が `replay`
 6. 出荷 4 project の bytes 不変、`SKIP_DEVSTUDIO` 両構成、RPC OFF build
 
+#### 実装時の裁定(2026-09-16、Fable。実装 `agent/ag0` `a49e6898`)
+
+- 契約に **`domain`(values / rendering)** の欄を足す。今日の partition は op 名の照合で backend を決めており、manifest に「どの backend が評価するか」の欄が無いと module が CPU 値 op を持ち込めない。factory が返す分類は registration の宣言で上書きし、catalog が嘘をつかない
+- 名前付き code を 3 つ追加: `graph.type_duplicate@1` / `graph.sink_unregistered@1` / `graph.module_unnamed@1`(fail-fast)
+- `ValueGraph::Graph(document, modules)` と `lowerRenderGraphDocument(document, inactive, modules)` の overload(test module を global 状態なしで通すため)。`Graph` は registry への `const*` を保持し、registry は Graph より長生きが要る(header に明記)
+- renderer の lowering は未知 op を pass として通していたので、lowerable の allow-list を置き `graph.operation_unexecutable@1{backend: "pelican.render"}` に
+- `event.playback` の evaluation は `direct`(状態は queue 側が持つ)。per-parameter の `change` は built-in では空(render.* の parameter 名は authored 次第)。O-1 / P-1 で詰める
+- 統合側の赤(29 件、`<作業ディレクトリ>/baseline_0916/`)は AG-0 の面外で、R0 として別に処理する。AG-0 の着地は R0 の後
+
 #### やらないこと
 
 pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1)/ 変更時の扱いの GUI(P-1)/ RPC の catalog(P-1)/ package manifest のファイル形式(X-1)。
