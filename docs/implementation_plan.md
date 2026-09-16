@@ -23519,6 +23519,8 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 受け入れ: `skeletal_toon` / `usd0b_static_geometry` の golden と `canonical_frame_plan_trace.txt` が bytes 不変 / `hdr_on` / `hdr_off` golden 不変 / **対照**: 1 を入れずに 2 だけ行うと `canonical_frame_plan_trace.txt` の順序が変わる(実測してから 1 を入れる。撤去が生きている分岐を指す証拠)/ authored pass の `canonical_anchor` が無い Bloom 名の pass は、撤去後は他の pass と同じ規則(bucket 0)で並ぶ = 名前の特権が消えたことを trace で示す
 
+実装時の裁定(2026-09-18、`agent/p2a1a`): 対照の実測は **trace が赤、画素は緑**(`hdr_off` で `HighLuminanceExtraction` が scene bucket に落ち、`Bloom_Threshold_RT` が SRGB → UNORM。`renderer_execution_traces.json` が捕まえ、`wp73_rgba8_hashes.json` と PNG は通った)。以後の P-2a の受け入れは「画素不変」に加えて **`canonical_frame_plan_trace.txt` と `renderer_execution_traces.json` の不変**を書く。`canonicalBucket` には **3 つ目の名前判定 `lighting_pass`**(:274-276)が残る(`example_renderingpass_data.json:67-70` の `lighting_pass` が swapchain を書くので死んでいない。射程外、記録)。受け入れ文の「bucket 0」は誤りで、anchor 無しの pass は **scene bucket**(`__anchor_sprite` より前)に並ぶ。
+
 #### P-2a-1b: Bloom を `engine://features/bloom.json` に(中〜大。P-2a-1a の後)
 
 1. 13 pass + 9 RT を feature の `passes[].insert{after: post_ldr}` と `render_targets`(名前・`extent_scale`・`format_class: scene` をそのまま)に移す。**parameter はまだ宣言しない**(define 化は 1c)。shader は `engine://` のまま
