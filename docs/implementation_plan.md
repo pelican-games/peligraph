@@ -23562,6 +23562,33 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 
 新しい golden の追加(既存 2 つで足りる)/ `levels` / feature JSON ↔ `pelican.graph` 変換 / 曲線の専用 UI(AG-3)/ 2D。
 
+
+### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
+
+**§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
+
+#### 今日の対照
+
+- commit は `manifest.json` を `status: "committed"` に **上書き**する([renderconfigtransaction.cpp:576](../src/core/communication/renderconfigtransaction.cpp#L576) `writeManifest(directory, manifest, true)` → `atomicReplace`)。recovery は `manifest.json` の `status == "committed"` を見て残作業を片付ける(:403-409)
+- 上書きは POSIX rename でも飽和負荷で間欠に `Access is denied`(interleaved A/B で 24/704)。`atomicCreate`(hard link の排他 create)は「名前を取る」だけで上書きしないので、この故障を **構造で**避けられる
+
+#### 決定
+
+1. commit の durable な決定は **`committed` という別 file**(内容: prepared manifest の digest + 時刻)を `atomicCreate` で作ることで表す。`manifest.json` は prepared のまま上書きしない。recovery は `committed` の存在(かつ digest が `manifest.json` と一致)を「committed」と読み、無ければ「prepared(rollback)」。digest 不一致は `render_authoring_manifest_mismatch@1` で名前付き拒否(黙って rollback しない)
+2. 移行: 旧形式(`manifest.json` の `status: "committed"`)の transaction ディレクトリが残っていれば recovery は今日どおり読む(**読み取りだけ**の互換。書き手は新形式のみ。未リリースなので次の slice で読み取り互換を消してよい = 記録)
+3. `atomicReplace` は commit 経路から外れる(残る呼び手は receipt / cleanup。そこは間欠が起きても transaction の決定に影響しない位置か確認し、影響するなら同じ手で create に寄せる)
+
+#### 受け入れ(§4 規約 10)
+
+1. commit 経路に `atomicReplace` の呼び出しが無い(replace の route counter が commit の test で 0)。`committed` を `atomicReplace` で書く変異(旧形式)に戻すと counter が増えて落ちる
+2. R1 の飽和負荷 test(`renderconfigtransactionreplace_test.cpp` の商 commit 経路の 40 commit × 並列 read)を **704 round の interleaved** で回して `Access is denied` が 0(今日 = 24/704)。committed marker を上書きに戻す変異で再発
+3. recovery: `committed` あり → 残作業を片付けて cleanup / `committed` なし(prepared)→ rollback / digest 不一致 → named reject / 旧形式(`status: committed`)→ 今日どおり。crash 注入(commit の各 step で process を止める fixture)で 4 経路とも
+4. 既存の `-R "authoring|transaction|renderconfig"` 緑、RT6 named TLAS ×3 直列緑、非 GPU 全数
+
+#### やらないこと
+
+transaction の他の形式変更 / receipt の形式 / 旧形式の書き手復活。
+
 ### 未了項目と再開順
 
 #### 現況 (2026-09-12、履歴より優先)
