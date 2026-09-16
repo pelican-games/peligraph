@@ -23474,6 +23474,12 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 - `PELICAN_WITH_RPC=OFF` で `test/raytracing_rt3_1_production_test.cpp` が落ちる既知の穴(AG-1a の裁定に記録済み)は P-1 以前から
 - **着地 gate**: 新 test 名 `instance inputs …` / `instance parameters …` は従来の family regex に当たらない。P-1 の gate に足した
 
+#### P-1 完了記録(統合側。2026-09-17、`b960edf7`)
+
+- 実装(Opus、`agent/p1`): 裁定 1〜8 と決定 1〜6 すべて。受け入れ 1〜4 を変異で赤確認(GUI の導線を消す / curve の点数を変えて bytes 不一致 / 二重指定の拒否を戻す / snapshot の退避を空に / `override_shadowed` を `return false` に)。非 GPU 1621 緑、関連 159 緑、GPU graph 系 17 緑。`design_graph_composition.md` の「二重指定は拒否」の段落を優先順に訂正
+- 統合側: W1 緑、全数 **1883 / 1883**。着地時の docs 追従 48 行
+- 記録: 実装時の裁定(上)。コードレビュー(codex)は枠が戻ってから rev_p1
+
 #### やらないこと
 
 journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内の編集 / 曲線の専用 UI と scope 表示での edge 編集(AG-3)/ 双方向 bind / owner id の永続化(別 WP)。
