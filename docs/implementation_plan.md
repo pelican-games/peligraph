@@ -23463,6 +23463,17 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 5. `get_graph_catalog` が 4 module(value / audio / render / pose)を返す(OFF では 3)
 6. D0、RPC OFF build、`SKIP_DEVSTUDIO` 両構成、出荷 4 project bytes 不変
 
+#### 実装時の裁定(2026-09-17、Fable。実装 `agent/p1`)
+
+- 導線は **4 つ**(決定 4 の 3 つ + 「接続を外す」= `set_input null`)。受け入れ 2 の戻し方を GUI から駆動するため
+- `edit_graph_document` は project 層の `editGraphDocument(document, ops)`(候補文書に順に適用し最後に 1 回 expand)。`editGraphInstances` は owner の 2 ガードだけ残して同じ ops に翻訳(検証を 2 度書かない)。**副作用**: `add_node` / `remove_node` で owner 付き `graph.instance` を直接足す / 消すと、その 2 ガードを迂回できる。code を 6 つ目に増やさず記録(Studio はこの経路を使わない。コードレビューで裁定)
+- 由来の snapshot は `SceneLoader` 上の「最後に publish した 1 枠」(`publishGraphValues` / `graphValues`、scene clear で破棄)。今日 renderer は frame に 1 つの value graph しか publish しないので足りる。複数になれば後勝ち(記録)
+- scalar な instance 入力 port は values partition の `$value/<scope>/<port>` 出力に昇格(AG-1a の `$pose/` と同じ流儀)。`get_graph_values` は root instance の port だけ(nested owned instance は未対応)
+- 「供給元を開く」は producer を signal と notice で名指すだけ(scope 表示は AG-3)
+- 整数値の JSON 往復: GUI の ops は `QJsonObject` を通るので `3.0` が wire 上 `3` になり、手書き ops との bytes 比較が変わる(P-1 が作った性質ではない)。fixture は `2.5` で測定。R 群で number の正準化を検討(記録)
+- `PELICAN_WITH_RPC=OFF` で `test/raytracing_rt3_1_production_test.cpp` が落ちる既知の穴(AG-1a の裁定に記録済み)は P-1 以前から
+- **着地 gate**: 新 test 名 `instance inputs …` / `instance parameters …` は従来の family regex に当たらない。P-1 の gate に足した
+
 #### やらないこと
 
 journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内の編集 / 曲線の専用 UI と scope 表示での edge 編集(AG-3)/ 双方向 bind / owner id の永続化(別 WP)。
