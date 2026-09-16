@@ -23484,6 +23484,49 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 
 journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内の編集 / 曲線の専用 UI と scope 表示での edge 編集(AG-3)/ 双方向 bind / owner id の永続化(別 WP)。
 
+
+### P-2: 往復のパイロット —— Bloom を部品にして持ち出し、姿勢の blend を曲線で駆動する(v0「往復」の段 4。草稿)
+
+**§4 規則 11 上段(標準 feature の新設、compose のハードコード撤去、出荷 project の意図した変更、`user://` の運用、新 project)。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(Opus)。2 つの WP に割る。見積: 大。**
+**規範: `v1_development_plan.md` P-2 と「部品の 3 操作」、`design_graph_composition.md`、`docs/manual/06_rendering.md`。前提: P-1 統合済み(`b960edf7`)、AG-1b 統合済み。事実の一覧: `<作業ディレクトリ>/facts_p2.md`(2026-09-18、Explore)。**
+
+#### 前提(確認した事実)
+
+- **Bloom は標準 feature ではない**。`projects/example/passes/main_rendering_config.json` に 13 pass + 9 RT で手書き([:248](../projects/example/passes/main_rendering_config.json#L248) 〜)。しきい値 / 膝 / 重み / 強度は shader 内の `const`(`bloom_highpass.frag:12-13`、`bloom_blur_h.frag:12`、`bloom_composite.frag:15`)。compose 側は pass 名でハードコード([featurecompose.cpp:278](../src/project/featurecompose.cpp#L278) の bucket、[:218](../src/project/featurecompose.cpp#L218) の format_class)
+- 部品の操作の入口: `fork_render_pipeline`(preset 原文を project へコピー、`project://` 必須)、`edit_render_features` の `materialize`(parameter を具体値に展開して project へ、同時に region replacement を解除)、`edit_region_replacement`、`set_parameters`。「開いただけで materialize される」経路は無い。「共有部品として保存する」入口は無い。`example` は preset を持たない直接記述の config なので fork / materialize が使えない
+- feature parameter は `scalars`(float / int / bool、range、default、`shader_define` 既定 true)で compose 時に `$name` 置換 + define。runtime 値は無い。`description` / 単位 / step は宣言に無い
+- 共通グラフ → pass の lowering は fullscreen / raster / image / compute / buffer / attribute のみ。per-attachment の `{target, load_op}` は出せない(pass 単位の `color_load_op` へ読み替え要)。feature JSON ↔ `pelican.graph` の変換経路は無い。`definitions` は同一文書内だけ
+- scheme は `engine://` / `project://` / `user://` の 3 つ。**`user://` は利用者ディレクトリ配下で project 名を跨いで解決できる**(`defaultUserRoot(project_id)`。project 名ごとの root なので、別 project から同じ file を見るには root の規則を確認)。別 project を参照する scheme は無い
+- pose: `pose.blend` の `weight` は scalar port、`pose.clip_sample` は AG-1b で `speed / loop / start_time` を持つ。P-1 の「曲線で制御」は `graph.instance` の入力 port にだけ効く(node の port には効かない)。`pose.*` を使う project は無い
+- `projects/` は 5 つ。`raytracing_demo` だけが「読む順序」と「何を変えると何が起きるか」を README に持つ学習 demo の形
+
+#### P-2a: Bloom を部品にする(先)
+
+1. **標準 feature `engine://features/bloom.json`** を新設: `example` の 13 pass + 9 RT を feature の `passes[].insert`(`after: post_main` 相当の canonical anchor)と `render_targets` に移し、parameter を `scalars` で宣言: `threshold`(float [0,4] 0.4)/ `knee`(float [0,1] 0.7)/ `intensity`(float [0,8] 2.0)/ `levels`(int [1,4] 4。段数)。`threshold` / `knee` / `levels` は define、**`intensity` は runtime**(feature が `render.buffer{host_source: runtime_f32}` を 1 本宣言し composite shader が読む。`shader_define: false` の scalar は buffer の初期値になる、という新しい対応を feature に足す。**これが「値だけ更新できる」parameter の feature 側の器**で、P-1 の `render.scalar` から繋げる)
+2. **compose のハードコード撤去**: bucket と format_class は feature の宣言(`insert` の anchor と `render_targets.format_class`)から決め、[featurecompose.cpp:278](../src/project/featurecompose.cpp#L278) / [:218](../src/project/featurecompose.cpp#L218) の Bloom 名判定を消す(第二の流儀を残さない)。`example` の手書き 13 pass を `features: ["engine://features/bloom.json"]` の 1 行に置き換える(**出荷 project の意図した変更**: golden は再取得し、画素は変えない = 同じ shader・同じ RT)
+3. **部品の 3 操作を Bloom で通す**: 「内部を見る」= `get_render_features` の pass 一覧と Frame Plan(参照は engine のまま)/ 「project 用に派生」= `materialize`(`example` は preset 無しなので **root scope の materialize** を使う。今日ある)→ 派生 feature の pass を編集(例: 段数を 2 に)→ 元の engine feature は不変 / 「共有部品として公開」= **`user://features/<name>.json` へ保存する op `publish`** を `edit_render_features` に足す(`destination_reference` に `user://` を許す。`user://` の root は project 名を跨いで同じ場所になる規則を確認して決める)→ 別の空 project が `features: ["user://features/<name>.json"]` で使える
+4. 「使う → 手続き化する」: `example` の root に `graph.instance`(定義: `value.curve → render.scalar{target: bloom の intensity buffer}`)を置き、Inspector の「曲線で制御」で intensity が時間で変わる(P-1 の受け入れの実物)
+
+受け入れ(§4 規約 10):
+1. `example` の golden(bytes)が Bloom の feature 化の前後で不変(同じ shader、同じ RT、同じ順序)。ハードコードを消す変異は bucket が変わって golden で落ちる
+2. `set_parameters{intensity}` → 画素が変わる(define ではなく buffer)。`render.scalar` から繋いだ曲線で毎 frame 変わる(GPU)。buffer を define に戻す変異で「毎 frame」が落ちる
+3. `materialize` → 派生 feature の段数を 2 に編集 → 画素が変わり、engine の `bloom.json` は不変(bytes)
+4. `publish` → `user://` に保存 → 別の空 project(fixture)が同じ画素を出す(smoke)。`user://` の解決を消すと named reject
+5. 出荷 4 project のうち `example` 以外の bytes 不変。`example` の変更は commit message で意図を明記
+
+#### P-2b: 姿勢の blend を曲線で駆動する学習 project(後)
+
+1. 新 project `projects/posegraph_demo`(`animgraph_demo` の glb と Walk / Run を再利用。README は `raytracing_demo` の形: 読む順序と「何を変えると何が起きるか」)
+2. root config は `pelican.graph`: 定義 `walk_run{ input: weight } = clip_sample(Walk) + clip_sample(Run) → blend(weight) → skeletal`、owner 付き `graph.instance` 1 つ。Inspector の「曲線で制御」を `weight` に掛ける(P-1 の導線がそのまま効く: instance の入力 port だから)
+3. 「開く」= `get_graph_instances` の定義と Frame Plan / 「派生」= definition を複製して編集(P-1 の `edit_graph_document` は definition 内を編集不可なので、**definition の複製 op `copy_definition`** を足す)/ 「公開」= `pelican.graph` の `definitions` を `user://graphs/<name>.json` に置き、`graph.instance.definition` が **`user://` 参照**を受け付ける(今日は同一文書内のみ。`identifier()` が `/` を拒否するので参照の形は `{ "ref": "user://…", "name": "…" }`)
+4. `catalog_smoke.json` を負対照から決める(`raytracing_demo` と同じ手順)
+
+受け入れ: 学習 project が smoke corpus で緑 / 曲線で `weight` を動かすと GPU の姿勢属性が Walk と Run の間で動く(edge を消すと止まる)/ `copy_definition` → 編集 → 元の定義は不変 / `user://graphs/` の定義を別 project が使える(named reject の対照)。
+
+#### やらないこと
+
+feature JSON ↔ `pelican.graph` の相互変換 / 曲線の専用 UI(AG-3)/ per-attachment load_op の lowering(必要なら P-2a で pass 単位に読み替え)/ 2D / マーケットプレイス。
+
 ### 未了項目と再開順
 
 #### 現況 (2026-09-12、履歴より優先)
