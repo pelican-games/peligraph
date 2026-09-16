@@ -23299,6 +23299,45 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 #### やらないこと
 
 pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1)/ 変更時の扱いの GUI(P-1)/ RPC の catalog(P-1)/ package manifest のファイル形式(X-1)。
+
+### AG-1a: pose module —— `pelican.pose@1` を共通グラフの登録型にし、既存の評価器を node で包む(v0「往復」の段 2a)
+
+**§4 規則 11 上段(animation の実行と ABI、共通グラフの型、scene の装着経路を触る)。実装者: Claude(Fable + Opus)。仕様レビュー 1 巡(pose の ABI と単一 writer の裁定)。見積: 中。**
+**規範: `v1_development_plan.md` AG-1、`design_animation_graph.md` §1(機構語彙、§1-5 の commit と temporal history)、§3(source と所有権、単一 writer と handoff)、`design_graph_composition.md`。前提: AG-0(`agent/ag0` `a49e6898`: `GraphModuleRegistry` / `GraphModuleManifest{name_space, version, description, types, operations, sinks}` / `GraphOperationContract{inputs, outputs, domain, evaluation, parameter_change}` / `makeBuiltinGraphModuleRegistry()` / `ValueGraph::Graph(document, modules)` / `lowerRenderGraphDocument(document, inactive, modules)`)統合済み。**
+
+#### 今日の対照
+
+- 姿勢は共通グラフの型ではない。`render.attribute` の source `{asset, pose_node}` は「AnimationService が公開した行列を属性として読む」出口で、姿勢そのものを port で運んでいない
+- state machine(`EvaluatorV1`)は animation component から直接装着され、共通グラフの node ではない。parameter は GameContext からだけ
+- 単一 writer と handoff(§3)は AnimationService の sink 単位で実装済み(scene sink / component 所有)。graph 側から sink を指定する経路は無い
+
+#### 決定
+
+1. **module `pelican.pose`**(`GraphModuleManifest{name_space: "pelican.pose", version: 1}` を `makeBuiltinGraphModuleRegistry()` の隣の `registerPoseGraphModule(registry)` で登録。`PELICAN_WITH_ANIMATION` OFF では `src/core/animation` を build せず登録もされないので、pose を使う文書は `graph.operation_unregistered@1`。`domain` は新設の **`animation`**(animation phase で評価する。values / rendering と別)
+   - 型 `pelican.pose@1`: opaque。port を流れるのは **`{stage handle, PoseLayout generation, frame revision}`** で bytes ではない(`pose_staging_v1` の `PoseStageHandle` を包む)。layout 世代が違う接続は評価時に `pose.layout_mismatch@1`
+   - 型 `pelican.rig@1`: rig の identity(model asset + skeleton digest)。`clip_sample` / `state_machine` は rig を parameter として持ち、出力 pose の layout を決める
+2. **op**(契約は registry、backend は core の animation)
+   - `pose.clip_sample { rig, clip } (time: scalar) → pose`。`evaluation: direct`
+   - `pose.blend (a: pose, b: pose, weight: scalar) → pose`。N-way は blend の連結で表す(v1 は 2 入力)。`direct`
+   - `pose.state_machine { rig, graph: <pelican.anim_graph 文書> } (time: scalar, parameters: scalar…(宣言名ごとの入力 port), events: event) → pose, root_motion(AG-2 で追加), state_events: event`。既存 `EvaluatorV1` を包む。文法は増やさない(v2 予約キーは今日どおり拒否)。`evaluation: replay`
+   - `pose.retarget { profile } (pose: pose) → pose`。既存 VRMA retarget を包む。`direct`
+   - sink `pose.skeletal { }(pose: pose)`: owner の個体の skeletal sink へ書く。sink `pose.transform { }(pose: pose)`: owner の transform へ(root のみ)。**owner 1 個につき sink 1 本**(単一 writer)。2 本目は `pose.sink_conflict@1{owner, first, second}`
+3. **評価順**: 共通グラフの値評価(既存の描画世代内)ではなく、**animation phase**(既存の `prepareTick` → phase modifier → publish)の中で pose op を評価する。scalar 入力は同 frame の値評価結果を読む(値 → pose の一方向。pose → 値は AG-2 の root_motion まで無し)。決定性: 同 frame の同 tick で 1 回、trace に node id と layout 世代
+4. **既存装着との関係(AG-1b までの暫定)**: animation component の `graph` 装着は今日どおり動く。同じ owner に component の装着と `pose.skeletal` sink の両方があれば `pose.sink_conflict@1`(黙って二重 writer にしない)。AG-1b で component 側を `graph.instance` に変換する
+
+#### 受け入れ(§4 規約 10)
+
+1. `pose.clip_sample → pose.skeletal` だけの graph.instance を owner に装着 → 個体の姿勢が clip に追随(GPU の評価済み姿勢属性で観測。今日 = 型が無く文書が拒否される)。sink を消すと動かない
+2. `pose.state_machine` の parameter port に `value.curve` を接続 → state 遷移が起きる(今日 = GameContext からしか変えられない)。value port の edge を消すと遷移しない
+3. layout 世代の違う pose を `pose.blend` に繋ぐ fixture → `pose.layout_mismatch@1`。検査を消すと bytes が混ざる(golden で赤)
+4. 同一 owner に sink 2 本 → `pose.sink_conflict@1`。component 装着 + sink も同じ
+5. `PELICAN_WITH_ANIMATION=OFF`: build が通り、共通グラフの既存 test(value / render / audio)が緑、pose を使う文書は `graph.operation_unregistered@1`。production に animation の symbol が無い(dumpbin gate)
+6. 出荷 4 project bytes 不変、既存 animation test(`[skeletal]`、VRM、anim graph)無変更で緑
+
+#### やらないこと
+
+正本の一本化(AG-1b)/ root motion(AG-2)/ N-way blend の専用 op / layer・additive・IK / timeline view(AG-3)/ 物理 → pose。
+
 ### 未了項目と再開順
 
 #### 現況 (2026-09-12、履歴より優先)
