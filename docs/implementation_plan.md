@@ -23428,37 +23428,41 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 - 評価の向きの宣言は「同 frame 内」に限る。frame を跨ぐ animation → values の event 辺は AG-1b-2 で開く
 - `pose.state_machine` の `events` / `state_events` の型は `pelican.event.animation@1`(AG-1b-2 で登録。今日 `playback_control@1` で登録している契約は AG-1b-2 で差し替える)
 
-### P-1: パラメータの供給元(mode)と由来 —— Inspector の欄と共通グラフの edge を同じ正本にする(v0「往復」の段 3。草稿)
 
-**§4 規則 11 中段(RPC と Studio の面。core は `get_status` の実効値と parameter 宣言の欄だけ)。実装者: Claude(Fable + Opus)。設計レビュー 1 巡(mode の正本と D0)。見積: 中。**
-**規範: `v1_development_plan.md` P-1、`design_graph_composition.md`(instance の入力 parameter、object に所有される parameter)、`design_devstudio_direction.md` §0.5(D0)。前提: AG-0(`parameter_change` の欄)統合済み。AG-1 とは独立(pose の欄も同じ mode を使う)。**
+### P-1: パラメータの供給元(mode)と由来 —— まず `graph.instance` の入力だけ(v0「往復」の段 3)
 
-#### 今日の対照
+**§4 規則 11 中段(pass 文書の編集 RPC と journal、Studio の Inspector)。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、2026-09-17、24 件、`<作業ディレクトリ>/dr_p1.md`)で草稿の前提が 2 つ誤り、範囲が広すぎると判定 → v2。第 2 巡は起票前に 1 回。見積: 中。**
+**規範: `v1_development_plan.md` P-1、`design_graph_composition.md`(instance の入力 parameter: **edge > parameters > default、二重指定は拒否**、装着編集)、`design_devstudio_direction.md` §0.5(D0)。前提: AG-0 統合済み。**
 
-- Inspector の component 欄は固定値だけ(`set_component_value`)。値を共通グラフから供給するには、別画面で `graph.instance` を装着し、`render.scalar` / `render.buffer` の target 名を手で合わせる
-- feature parameter は `edit_render_features` の define 編集と materialize、runtime の値は `render.scalar`(共通グラフ)か `setRenderValues`(コード)。3 経路が別の画面と別の語彙
-- `get_status` は RT の実効値と適用元(WP382d)を返すが、共通グラフの評価値には「どの instance のどの port が、どの時計で」が無い
-- parameter 宣言に「変更時の扱い」は無い(AG-0 で `parameter_change` の欄だけ予約)
+#### 前提の訂正(第 1 巡が確認した事実)
 
-#### 決定
+- `get_status` に実効値も適用元も無い([rpcserver.cpp:1329](../src/core/communication/rpcserver.cpp#L1329) 以下)。実効値を返すのは `get_ray_occurrences`(RT の occurrence だけ)
+- feature parameter は compose 時の `$name` 置換と shader define で、runtime 値を持たない([featurecompose.cpp:1450](../src/project/featurecompose.cpp#L1450))。`render.scalar` は名前付き GPU buffer を書く別機構で feature parameter を指さない → **feature parameter に mode を出す欄は無い**
+- `edit_graph_instances` は `attach`(`op == "graph.instance"` + `owner`)と `detach` だけ([graphcomposition.cpp:307](../src/project/graphcomposition.cpp#L307))。primitive node の追加 / 削除、`inputs` の書き換え、`definitions` の編集を行う RPC は無い
+- `graph.instance` の入力 parameter の mode 意味論(edge > parameters > default、二重指定拒否)は **既に実装済み**
+- edge は pass 文書、component の固定値は scene 文書で、CAS(`base_source_digest` / `SceneRevision`)も undo(journal に graph の op は 0)も別系統
+- `graph.instance.owner` の authoring object id は load 時の宣言順連番で、保存 → 再読込を跨ぐと別個体を指しうる([authoringscenedocument.cpp:38](../src/core/loader/authoringscenedocument.cpp#L38)、解決は線形走査 [scenegraphruntime.cpp:33](../src/core/loader/scenegraphruntime.cpp#L33))。`design_object_identity.md` の ID-1〜4 は未実装(**既知の穴。P-1 では広げない**)
 
-1. **mode は文書の edge で表す**(新しい保存形式を足さない)。欄 X が「接続」mode = 全体文書に `{node: <owner の instance の sink>, port: X} ← {node, port}` の edge がある、と定義する。sink は既存の `render.scalar`(feature / pass の parameter)と、component 欄向けに新設する **`scene.parameter` sink**(`{owner, component, field}` を target に持つ。`domain: values`、`parameter_change: value`)。Inspector の「接続」表示はこの edge の有無から導く(Inspector 側に接続表を持たない)
-2. **導線は 3 つ**(Inspector の欄の横): 「曲線で制御」= `value.curve` + `value.playback` + edge を 1 つの `edit_graph_instances` で生成 / 「別の出力に接続」= 既存 node の出力 port を選んで edge / 「供給元を開く」= edge の元 node が乗る scope のグラフ表示へ。接続中の欄は読み取り専用(一方向。双方向 bind は採らない)
-3. **変更時の扱い**を parameter 宣言に持たせる: component の宣言 schema(v3 の field)と feature parameter の宣言に `change: value | recompile | rebuild`。既定は `value`。`recompile`(shader define)と `rebuild`(format、接続構造、AS 構成)の欄は **接続不可**で、Inspector は導線を出さず、RPC で edge を張ろうとすると `graph.parameter_not_connectable@1{field, change}`
-4. **由来**: `get_status` の実効値に `{instance, node, port, clock: {generation, scene_time}}` を載せる(共通グラフの評価値ごと)。Inspector の欄は接続中に「現在値 + 由来(instance / port / 時計)」を表示する
-5. **同じ edge の別 view**: グラフ画面で edge を消せば欄は固定値(最後に評価した値ではなく、文書の固定値)に戻る。Inspector で「接続を外す」= edge を消す `edit_graph_instances`。両方とも CAS(`base_source_digest`)を通る
+#### 決定(v2)
+
+1. **範囲は `graph.instance` の入力 parameter だけ**。component の欄(書き込み口が無く、宣言 schema v3 に欄を足すと game DLL の ABI と fingerprint が動く)は **P-1b** として別起票。feature parameter は「やらないこと」(欄が無い)
+2. **pass 文書の編集 op を足す**: `edit_graph_document{base_source_digest, ops: [add_node{node}, remove_node{id}, set_input{node, port, source: {node, port} | null}]}`。`edit_graph_instances` と同じ authoring transaction と CAS を通り、**journal の op**(domain `render_config`、`edit_graph_instances` も同じ domain に載せる)として undo / redo できる。scene の journal と混ぜない(2 文書 2 CAS は事実として受け入れ、同じ journal の別 domain として並ぶ)
+3. **mode の定義**: instance の入力 port X が「接続」= 展開後 X への edge がある、「固定値」= `parameters` に値がある、「既定」= どちらも無い。Inspector 側に接続表は持たない(既存の意味論をそのまま表示する)
+4. **導線 3 つ**(Inspector の instance parameter 欄): 「曲線で制御」= `edit_graph_document` 1 回で `value.playback` + `value.curve` + `set_input` を張る(`parameters` の同名は同じ op で消す。二重指定拒否のため)/ 「別の出力に接続」= `set_input` / 「供給元を開く」= edge の元 node が乗る scope のグラフ表示へ。接続中の欄は読み取り専用(一方向)
+5. **由来**: 新 RPC `get_graph_values{instance}` が、その instance の各入力 port について `{mode, value, source: {node, port} | null, generation, scene_time}` を返す(renderer 側の値評価 = 描画世代の値。AG-1a の pose 用 2 回目評価は返さない: 同じ入力から同じ値になる契約なので 1 つで足りる)。Inspector は接続中の欄に現在値と由来を表示
+6. **変更時の扱い**: v0 の範囲では全 port が `value`(共通グラフの port は毎 frame 変えてよい)なので分類の欄は足さない。AG-0 の `parameter_change` はそのまま(P-1b と O-1 で使う)
 
 #### 受け入れ(§4 規約 10)
 
-1. GUI で「曲線で制御」→ 全体文書に `value.curve` / `value.playback` / edge が生え、RPC の `get_graph_instances` が同じものを返す。同じ操作列を RPC だけで行った文書と **bytes 一致**(GUI 専用操作が無い)
-2. グラフ画面で edge を消す → Inspector の欄が固定値に戻る。Inspector 側に接続表を持たせる変異(edge を消しても「接続」表示が残る)で落ちる
-3. `change: recompile` の欄に RPC で edge → `graph.parameter_not_connectable@1`。分類を消す変異で通ってしまい落ちる
-4. 接続中の欄の由来が `get_status` の実効値と一致(instance / port / 時計)。由来を消す変異で落ちる
-5. D0: Studio は `src/project` と RPC だけで動く(link 検査は既存)。RPC OFF build、`SKIP_DEVSTUDIO` 両構成
+1. Studio の Inspector で「曲線で制御」→ RPC の `edit_graph_document` 1 回と **同じ bytes** の pass 文書になる(GUI 専用操作が無い)。undo で元に戻り、redo で戻る(journal の op として)
+2. グラフ表示で edge を消す(`set_input null`)→ Inspector の欄が固定値(`parameters`)か既定に戻る。Inspector に接続表を持たせる変異(edge を消しても「接続」表示が残る)で落ちる
+3. `parameters` と edge の両方がある文書 → 既存の named reject(今日どおり)。「曲線で制御」が `parameters` を消さない変異で落ちる
+4. `get_graph_values` の値が renderer の描画世代の評価値と一致し、source が展開後の edge と一致。由来を消す変異で落ちる
+5. D0(Studio は project + RPC のみ)、RPC OFF build、`SKIP_DEVSTUDIO` 両構成、出荷 4 project bytes 不変
 
 #### やらないこと
 
-双方向 bind / 式言語 / feature 自体の共通 instance 化 / Bloom の往復(P-2)/ 時間軸 view(AG-3)。
+component 欄(P-1b: 書き込み口 `set_component_value` の欄単位化、宣言 schema の `change` 欄、scene sink)/ feature parameter / 双方向 bind / 式言語 / owner id の永続化(ID-1〜4。別 WP)/ scope 表示での edge 編集 UI の全面(AG-3)。
 
 ### 未了項目と再開順
 
@@ -23482,6 +23486,7 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 - 2026-09-08 装着更新時の状態引き継ぎ: Graphの宣言・上流依存・ownerが一致するnodeをIDで対応づけ、clock/event待ち行列とparameterを保持。parameter名とnode IDは区別する。Sceneのprivate候補はvoiceを借用し、公開成功時だけ所有権を移す。RT遅延公開は候補フレーム開始時の最新状態を使い、音声event/valueをsubmit・世代公開後へ延期する。候補失敗時は旧状態とvoiceを維持。共通グラフのrendering内にあるray_group_layout/ray_bindingsの読み込みも共通入口へ接続した。
 - 状態引き継ぎの確認: Playerビルド、CPU curve 19件/212 assertions、GPU skeletal 11件/1134 assertions、実RT遅延公開1件/26 assertions成功（graph_transfer_curve_final.log / graph_transfer_gpu.log / graph_transfer_rt_final_gpu.log）。ノード配列変更、owner・上流変更、独立parameter名、兄弟のvoice/parameter保持、追加GPU bufferの値と解除時の名前解決解除・voice停止を確認。RTではstaging後のpause受信、source失敗後の旧voice・イベント保持、再試行後のGPU値0.5とresume後0.75、共通グラフ全体を外した際の音声停止を確認。従来RT1b transactionも4490 assertions成功（graph_transfer_rt_gpu.logは新規fixtureの未解決selector失敗を含む途中ログであり、全体成功ではない。新規fixtureは修正後のfinalログを参照）。状態コピーを除くと経過値/voice確認、音声を先行反映すると失敗時のpause不変確認が落ちる対照設計（個別コード変異未実施）。次はGUIの装着経路、個体削除時の停止GPU資源回収、scene別graph選択。これらを装着RPCの完了に含めない。
 
+- **`graph.instance.owner` の authoring object id は保存 → 再読込を跨ぐと別個体を指しうる**(2026-09-17、P-1 の設計レビューで確認): id は load 時の宣言順連番([authoringscenedocument.cpp:38](../src/core/loader/authoringscenedocument.cpp#L38))、解決は線形走査で、ずれた先に生きた object があれば黙ってそれに適用([scenegraphruntime.cpp:33](../src/core/loader/scenegraphruntime.cpp#L33))。`design_object_identity.md` の ID-1〜4(永続 id)が未実装。共通グラフの装着は AG-1a 以降ここに乗っているので、**scene に object を挿入して保存すると装着先がずれる**。永続 object id は X-1 / R 群の前に単独 WP で(記録)。
 - **`setTime` だけで engine を駆動する headless 呼び手は animation frame を公開できない**(2026-09-16、R0 の C1 で判明): `bff9e540` で clip / graph の公開 revision を `EngineTime::frameIndex()` に揃えたため、`advance()` を呼ばない呼び手では revision が 0 のままで、`PolygonInstanceContainer::publishAnimationFrame`(`polygoninstancecontainer.cpp:1856`)が `frame_revision == 0` を拒否する。1 engine frame 内の 2 回の ECS update も `duplicate_revision` になる。set_time の golden harness は `advance()` を足して直した(test 側)。裁定候補: `frameIndex() == 0` を有効な最初の frame とするか、`setTime` が frame を進める契約にするか。O-1(オフライン出力の時間モデル)で決める(記録)。
 - **render authoring transaction の `atomicReplace` が `Access is denied` で間欠的に失敗する**(2026-09-16、R0 の C2 で再測。台帳の :22204 / :23224 に「原因未確定」で 2 回記録済み): `renderconfigtransaction.cpp:88` の committed marker `writeManifest(..., true)` → `atomicReplace`(`CreateHardLinkW` + `MoveFileExW(REPLACE_EXISTING|WRITE_THROUGH)`)。同一 worktree で 45 section 中 7 / 1 / 0 とばらつき、生の呼び出し列 1500 回の再生では 0 回、engine の `FileWatcher` は当該 test では未起動、Defender の real-time protection は ON。**修正候補**: `SetFileInformationByHandle(FileRenameInfoEx, FILE_RENAME_POSIX_SEMANTICS)`(open handle があっても置換できる)への置換。transaction の primitive を変えるので単独 WP(R1 の整理候補)。
 - 2026-09-08 共通graph装着の保存経路: get_graph_instances/edit_graph_instancesを既存編集RPCへ追加。全体文書のroot graph.instanceへowner/definition/inputs/parametersを保存し、複数attach/detachを一つの描画候補・source CASへ渡す。重複・不正owner・未知定義・解除後の参照残留を拒否。Playerビルド、render-config-editor/render-feature 89件/2653 assertions成功（graph_attachment_build.log / graph_attachment_cpu.log）。二個体の初期parameter、保存再読込、片方の解除、source置換後の失敗から旧文書と世代へのrollbackを確認。次は実行中の兄弟のclock/event/parameter/voice引き継ぎとGPU経路。GUIの装着操作と個体削除時のGPU資源回収はまだ未完。
