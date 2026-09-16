@@ -1,4 +1,5 @@
 #include "scene.hpp"
+#include "../../project/graphcomposition.hpp"
 #include "../appflow/enginetime.hpp"
 #include "../ecs/core.hpp"
 #include "../userpublic/gamecontext.hpp"
@@ -81,7 +82,16 @@ SceneLoader::GraphRuntime &SceneLoader::synchronizeGraphRuntime(
 bool SceneLoader::setGraphParameter(std::shared_ptr<const ValueGraph::Graph> graph, GameObjectId object,
                                    std::string_view parameter, std::optional<double> value) {
     if (value && !std::isfinite(*value)) throw std::invalid_argument("graph parameter must be finite");
-    if (!ownsGraphParameter(*graph, object, parameter)) return false;
+    if (!ownsGraphParameter(*graph, object, parameter)) {
+        // An edge supplies this port, so the expansion left no value.parameter
+        // for an override to land on. Say so by name rather than reporting the
+        // same `false` as an unknown parameter: the override is not applied and
+        // must not disappear quietly.
+        if (ownsGraphOwner(graph->shadowedParameterOwner(parameter), object))
+            throw GraphRegistryError("graph.override_shadowed@1",
+                {{"parameter", std::string{parameter}}});
+        return false;
+    }
     auto &parameters = synchronizeGraphRuntime(graph).parameters;
     if (value) parameters.insert_or_assign(std::string{parameter}, GraphParameterOverride{object, *value});
     else parameters.erase(std::string{parameter});
@@ -91,6 +101,11 @@ bool SceneLoader::setGraphParameter(std::shared_ptr<const ValueGraph::Graph> gra
 ValueGraph::ParameterValues SceneLoader::graphParameterValues(std::shared_ptr<const ValueGraph::Graph> graph) {
     const auto &parameters = synchronizeGraphRuntime(graph).parameters;
     return parameterValues(parameters);
+}
+
+void SceneLoader::publishGraphValues(ValueGraph::PublishedInstanceInputs snapshot) {
+    snapshot.published = true;
+    graph_values = std::move(snapshot);
 }
 
 ValueGraph::EvaluationState &SceneLoader::graphEvaluationState(const std::shared_ptr<const ValueGraph::Graph> &graph) {

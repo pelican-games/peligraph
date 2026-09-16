@@ -74,9 +74,11 @@ Studioのコンポーネント表示は、同じモデルのscopeによる抽出
 ### インスタンスの入力パラメーター（2026-09-07）
 
 graph.inputはdefaultに有限のscalarを持てる。graph.instanceのparametersは公開入力名から
-scalarへの対応で、定義を複製せずに個別の値を保存する。接続を与えた入力はedgeを使い、
-未接続入力はinstance.parameters、次にgraph.input.defaultを使う。どれもなければ未接続
-エラー。同じ入力へのedgeとparameterの二重指定、不明parameter名は拒否する。
+scalarへの対応で、定義を複製せずに個別の値を保存する。供給元の優先順は
+edge > parameters > default で、どれもなければ未接続エラー。edgeのある入力の
+parametersは矛盾ではなく、edgeを外したときに戻る値として保持する（消さない。消すと
+defaultを持たない入力はedgeを二度と外せなくなる）。値としての妥当性は使われない側も
+検査し、不明parameter名は拒否する。
 rootにもparametersを指定できる。buffer/image等へのliteral変換を暗黙に追加しない。
 
 literalで束縛した入力は、展開時にinstance pathを名前とするvalue.parameterへ変換する。

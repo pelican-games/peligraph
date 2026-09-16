@@ -23,6 +23,9 @@ class GraphAttachmentWidget final : public QWidget {
 
   signals:
     void rpcRequested(quint64 id, const QString &method, const QJsonObject &params);
+    // The producer of a connected input, for a scope view to select. v0 has
+    // no such view yet, so the panel also names it in its notice.
+    void sourceRevealRequested(const QString &node, const QString &port);
 };
 
 } // namespace PelicanStudio

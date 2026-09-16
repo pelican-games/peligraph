@@ -1497,6 +1497,12 @@ void main() { pelican_store_destination(0, )" + image_load + R"( * 3.0 + 1.0); }
     GameContext context;
     REQUIRE_FALSE(context.setGraphParameter(right, "left/gain", 3));
     REQUIRE(context.setGraphParameter(left, "left/gain", 3));
+    // An edge supplies left/time, so the expansion left no parameter for an
+    // override to land on. That is said by name rather than through the same
+    // false an unknown parameter returns -- the override does not go quiet.
+    REQUIRE_THROWS_AS(context.setGraphParameter(left, "left/time", 1), Pelican::GraphRegistryError);
+    // Ownership still decides first: another object gets the plain refusal.
+    REQUIRE_FALSE(context.setGraphParameter(right, "left/time", 1));
     REQUIRE(render(10.25) == 3.25f);
     const auto other_graph = std::make_shared<const ValueGraph::Graph>(document.dump());
     REQUIRE(scene.setGraphParameter(other_graph, left, "left/gain", 9));

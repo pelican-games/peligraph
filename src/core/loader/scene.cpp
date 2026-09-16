@@ -1302,6 +1302,9 @@ void SceneLoader::clearRuntimeScene() {
     internal::preDestroyAllBehaviorObjects();
     object_bindings.clear();
     runtime_object_bindings.clear();
+    // The values a previous scene drew say nothing about this one, and nothing
+    // republishes them until a frame is actually drawn.
+    graph_values = {};
     if (auto *seq_player = FastModuleContainer::tryGet<SeqPlayer>()) {
         seq_player->releaseInstancesForSceneLoad();
     }

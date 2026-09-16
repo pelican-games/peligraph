@@ -1,0 +1,32 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "gain_curve": {
+      "nodes": [
+        {"id": "gain", "op": "graph.input", "default": 2},
+        {"id": "bias", "op": "graph.input"},
+        {"id": "sum", "op": "value.add",
+         "inputs": {"a": {"node": "gain", "port": "value"},
+                    "b": {"node": "bias", "port": "value"}},
+         "outputs": ["value"]},
+        {"id": "buffer", "op": "render.buffer",
+         "inputs": {"value": {"node": "sum", "port": "value"}},
+         "parameters": {"element": "float"},
+         "outputs": ["resource"]}
+      ],
+      "outputs": {"value": {"node": "sum", "port": "value"}}
+    }
+  },
+  "nodes": [
+    {"id": "clock", "op": "value.input", "parameters": {"name": "scene_time"}, "outputs": ["value"]},
+    {"id": "left", "op": "graph.instance", "definition": "gain_curve",
+     "owner": {"scene": "main", "object": 41},
+     "parameters": {"gain": 2.5, "bias": 5}}
+  ],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {"preset": "engine://render_pipelines/hybrid_v1.json"},
+    "features": []
+  }
+}

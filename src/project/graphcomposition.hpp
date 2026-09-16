@@ -32,6 +32,33 @@ struct GraphNodeOrigin {
     std::string definition;
     std::string node;
 };
+// Where one instance input port takes its value from. A connected port leaves
+// no node of its own behind in the expansion -- the consumer inside the
+// definition points straight at the outer producer -- so the answer is read
+// from the authoring document while it is still being expanded, never from the
+// expanded nodes. `edge > parameters > default` is the order; a `parameters`
+// entry under an edge is kept as the value the port returns to when the edge
+// goes away.
+enum class GraphInstanceInputSource : std::uint8_t { connected, parameter, defaulted };
+std::string_view graphInstanceInputSourceName(GraphInstanceInputSource source);
+struct GraphInstanceInput {
+    // Instance path without a trailing slash, e.g. `left` or `outer/left`.
+    std::string scope;
+    // The definition's graph.input id, e.g. `gain`.
+    std::string port;
+    GraphInstanceInputSource source = GraphInstanceInputSource::defaulted;
+    // Expanded endpoint producing this port's value: the outer producer when
+    // connected, the generated value.parameter otherwise.
+    nlohmann::json endpoint;
+    // The value.parameter name for parameter/defaulted; empty when connected.
+    // (Which is also the name the port would have had, spelled `scope/port`.)
+    std::string parameter;
+    // Live instance scopes this port's value depends on, like node_scopes.
+    std::set<std::string> scopes;
+};
+// Keyed by `scope + "/" + port`, which is exactly the value.parameter name an
+// unconnected port receives.
+using GraphInstanceInputs = std::map<std::string, GraphInstanceInput>;
 struct ExpandedGraphDocument {
     nlohmann::json nodes = nlohmann::json::array();
     nlohmann::json outputs = nlohmann::json::object();
@@ -41,14 +68,30 @@ struct ExpandedGraphDocument {
     // Derived metadata; never written into the authoring document.
     std::map<std::string, std::set<std::string>> node_scopes;
     std::map<std::string, std::set<std::string>> output_scopes;
+    GraphInstanceInputs instance_inputs;
 };
 
 // Backend-independent authoring expansion. The original document remains the
 // source of truth; expanded IDs and provenance are derived, not saved back.
 ExpandedGraphDocument expandGraphDocument(const nlohmann::json &document);
 
+// Apply an ordered op list to the root `nodes` array of an authoring document.
+// `ops` is an array of
+//   {"op":"add_node","node":{...}}
+//   {"op":"remove_node","node":"<id>"}
+//   {"op":"set_input","node":"<id>","port":"<port>","source":{"node","port"}|null}
+//   {"op":"set_node_parameters","node":"<id>","parameters":{...}}
+// applied in order to one candidate document, which is expanded once at the
+// end: either every op lands or the document is rejected whole. Failures that
+// an editor must tell apart are named -- graph.node_duplicate@1 /
+// graph.node_missing@1 / graph.input_unknown@1 / graph.output_referenced@1 /
+// graph.definition_immutable@1 -- as GraphRegistryError.
+nlohmann::json editGraphDocument(const nlohmann::json &document, const nlohmann::json &ops);
+
 // Edit owned root instances in the authoring document. References to removed
 // instances must be removed explicitly; unrelated nodes and definitions survive.
+// Expressed as editGraphDocument ops, so the two entry points cannot disagree
+// about what a valid edit is.
 nlohmann::json editGraphInstances(const nlohmann::json &document,
     const nlohmann::json &attachments, const nlohmann::json &detachments);
 

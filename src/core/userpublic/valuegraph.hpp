@@ -3,6 +3,7 @@
 #include "animation/curve.hpp"
 #include "export.hpp"
 #include "../../project/graphinstanceowner.hpp"
+#include <cstdint>
 #include <handle.hpp>
 #include <functional>
 #include <span>
@@ -27,9 +28,43 @@ using AudioEventWriter = std::function<bool(std::string_view, Animation::CurvePl
 using SoundResolver = std::function<std::optional<SoundHandle>(std::string_view)>;
 enum class AudioValueKind { volume, pitch };
 using AudioValueWriter = std::function<bool(std::string_view, bool, AudioValueKind, float)>;
+// Where an instance input port's value came from in one evaluation.
+// `connected` is an edge in the authoring document; `parameter` and `default`
+// are the document's stored scalar and the definition's declared default;
+// `overridden` is a live setGraphParameter on top of one of those two. An edge
+// removes the parameter the override would have written, so the two never
+// combine -- setGraphParameter says so by name instead of going quiet.
+enum class InstanceInputSource : std::uint8_t { connected, parameter, defaulted, overridden };
+std::string_view instanceInputSourceName(InstanceInputSource source);
+struct InstanceInputValue {
+    InstanceInputSource source = InstanceInputSource::defaulted;
+    double value{};
+    // connected: the producing node and port. Otherwise empty.
+    std::string node;
+    std::string port;
+    // parameter/default/overridden: the value.parameter name. Otherwise empty.
+    std::string parameter;
+};
+// Keyed by `<instance path>/<port>`.
+using InstanceInputValues = std::map<std::string, InstanceInputValue, std::less<>>;
 struct PublishResult {
     std::size_t applied{};
     std::vector<std::string> unavailable;
+    // What this evaluation actually fed each instance input port. Filled by the
+    // publishing pass so a tool can read the drawn generation's values without
+    // evaluating the graph a second time -- a second evaluation would advance
+    // the clocks and consume the events (see EvaluationState).
+    InstanceInputValues instance_inputs;
+};
+// The same values, stamped with the draw generation that produced them, as one
+// engine-owned snapshot a tool can read.
+struct PublishedInstanceInputs {
+    bool published = false;
+    // RendererRuntimeGeneration::generation: the version of the graph structure.
+    std::uint64_t generation = 0;
+    // EngineTime::frameIndex(): the frame that evaluated these values.
+    std::uint64_t frame = 0;
+    InstanceInputValues inputs;
 };
 
 class Graph;
@@ -70,6 +105,22 @@ class PELICAN_API Graph {
         std::uint32_t target;
     };
     const std::map<std::string, MorphWeightSource> &morphSources() const noexcept { return morph_sources_; }
+    // One instance input port and the lowered output carrying its value.
+    struct InstanceInputBinding {
+        std::string key;    // "<instance path>/<port>"
+        std::string output; // the lowered output this graph publishes for it
+        InstanceInputSource source = InstanceInputSource::defaulted;
+        std::string node;
+        std::string port;
+        std::string parameter;
+    };
+    const std::vector<InstanceInputBinding> &instanceInputs() const noexcept { return instance_inputs_; }
+    // True when `parameter` names an instance input port that an edge supplies.
+    // Such a port has no value.parameter node, so an override cannot reach it.
+    bool parameterShadowed(std::string_view parameter) const noexcept;
+    // The owner of a shadowed port, so a caller can tell "an edge took this
+    // over" apart from "no such parameter" without knowing either graph.
+    const GraphInstanceOwner *shadowedParameterOwner(std::string_view parameter) const noexcept;
     struct RenderBufferBinding {
         std::string target;
         std::size_t element_count;
@@ -125,6 +176,8 @@ class PELICAN_API Graph {
     ScopeDependencies node_scopes_;
     ScopeDependencies output_scopes_;
     std::vector<std::string> lowered_outputs_;
+    std::vector<InstanceInputBinding> instance_inputs_;
+    std::set<std::string, std::less<>> shadowed_parameters_;
     enum class Op { input, parameter, constant, add, multiply, curve, playback, trigger_clock, event_input, event_clock, audio_playback };
     std::map<std::string, std::string> audio_sources_;
     std::map<std::string, MorphWeightSource> morph_sources_;

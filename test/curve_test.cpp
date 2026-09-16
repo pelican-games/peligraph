@@ -1,4 +1,5 @@
 #include "../src/core/userpublic/animation/curve.hpp"
+#include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/project/graphcomposition.hpp"
 #include "../src/project/graphmodule.hpp"
@@ -12,7 +13,9 @@
 
 #include <cmath>
 #include <limits>
+#include <span>
 #include <stdexcept>
+#include <string>
 
 using namespace Pelican::Animation;
 using Catch::Approx;
@@ -381,8 +384,106 @@ TEST_CASE("instance parameters preserve defaults and isolate runtime overrides",
     document["nodes"][3]["parameters"] = {{"typo", 2}};
     REQUIRE_THROWS_AS(Pelican::ValueGraph::Graph(document.dump()), std::invalid_argument);
     document = parameterGraphCompositionFixture();
-    document["nodes"][3]["inputs"]["gain"] = {{"node", "two"}, {"port", "value"}};
-    REQUIRE_THROWS_AS(Pelican::ValueGraph::Graph(document.dump()), std::invalid_argument);
+    document["nodes"][3]["inputs"]["gain"] = {{"node", "four"}, {"port", "value"}};
+    // edge > parameters > default. A stored value under an edge is not a
+    // contradiction: it is what the port goes back to, so it is kept rather
+    // than refused -- without it an input whose definition declares no default
+    // could never be disconnected again.
+    const Pelican::ValueGraph::Graph connected{document.dump()};
+    REQUIRE(connected.evaluate({{"time", 0.25}}).at("left")[0] == Approx(1.0));
+    REQUIRE_FALSE(connected.parameterDefaults().contains("left/gain"));
+    REQUIRE(connected.parameterShadowed("left/gain"));
+    REQUIRE_FALSE(connected.parameterShadowed("right/gain"));
+    REQUIRE(connected.shadowedParameterOwner("right/gain") == nullptr);
+    document["nodes"][3]["inputs"].erase("gain");
+    REQUIRE(Pelican::ValueGraph::Graph(document.dump()).evaluate({{"time", 0.25}}).at("left")[0] == Approx(0.5));
+    // The value under an edge is still checked, so disconnecting cannot land
+    // on something the expansion would then refuse.
+    document["nodes"][3]["inputs"]["gain"] = {{"node", "four"}, {"port", "value"}};
+    document["nodes"][3]["parameters"]["gain"] = "two";
+    REQUIRE_THROWS_AS(Pelican::expandGraphDocument(document), std::invalid_argument);
+}
+
+TEST_CASE("instance inputs name their supply and the value a publication used",
+          "[curve][graph-composition]") {
+    using Json = nlohmann::json;
+    auto document = parameterGraphCompositionFixture();
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};
+    const auto expanded = Pelican::expandGraphDocument(document);
+    // Read from the authoring document: a connected port leaves no node behind
+    // in the expansion, so it cannot be recovered from the expanded nodes.
+    REQUIRE(expanded.instance_inputs.at("left/time").source ==
+            Pelican::GraphInstanceInputSource::connected);
+    REQUIRE(expanded.instance_inputs.at("left/time").endpoint.at("node") == "clock");
+    REQUIRE(expanded.instance_inputs.at("left/gain").source ==
+            Pelican::GraphInstanceInputSource::parameter);
+    REQUIRE(expanded.instance_inputs.at("left/gain").parameter == "left/gain");
+    document["definitions"]["scaled_curve"]["nodes"][1]["default"] = 1;
+    document["nodes"][4]["parameters"].erase("gain");
+    REQUIRE(Pelican::expandGraphDocument(document).instance_inputs.at("right/gain").source ==
+            Pelican::GraphInstanceInputSource::defaulted);
+
+    document = parameterGraphCompositionFixture();
+    document["nodes"][3]["owner"] = {{"scene", "main"}, {"object", 42}};
+    const Pelican::ValueGraph::Graph graph{document.dump()};
+    const auto published = graph.publish(Pelican::GameContext{}, {{"time", 0.25}}, {},
+        [](std::string_view, std::span<const float>) { return true; }, {{"left/gain", 3}});
+    REQUIRE(published.unavailable.empty());
+    const auto &inputs = published.instance_inputs;
+    REQUIRE(inputs.at("left/time").source == Pelican::ValueGraph::InstanceInputSource::connected);
+    REQUIRE(inputs.at("left/time").node == "clock");
+    REQUIRE(inputs.at("left/time").value == Approx(0.25));
+    // A run-time override is a fourth origin, reported rather than hidden
+    // behind the document's own number.
+    REQUIRE(inputs.at("left/gain").source == Pelican::ValueGraph::InstanceInputSource::overridden);
+    REQUIRE(inputs.at("left/gain").value == Approx(3));
+    REQUIRE(inputs.at("right/gain").source == Pelican::ValueGraph::InstanceInputSource::parameter);
+    REQUIRE(inputs.at("right/gain").value == Approx(4));
+}
+
+TEST_CASE("graph document ops apply together or not at all", "[curve][graph-composition]") {
+    using Json = nlohmann::json;
+    const auto document = parameterGraphCompositionFixture();
+    const auto code = [&](const Json &ops) {
+        try {
+            (void)Pelican::editGraphDocument(document, ops);
+        } catch (const Pelican::GraphRegistryError &error) {
+            return error.code();
+        }
+        return std::string{"<accepted>"};
+    };
+    const Json curve{{"id", "shaper"}, {"op", "value.curve"},
+        {"inputs", {{"time", {{"node", "clock"}, {"port", "value"}}}}},
+        {"parameters", {{"keys", Json::array({Json{{"time", 0}, {"value", 1}},
+                                              Json{{"time", 1}, {"value", 1}}})}}},
+        {"outputs", Json::array({"value"})}};
+    const auto edited = Pelican::editGraphDocument(document, Json::array({
+        Json{{"op", "add_node"}, {"node", curve}},
+        Json{{"op", "set_input"}, {"node", "left"}, {"port", "gain"},
+             {"source", {{"node", "shaper"}, {"port", "value"}}}}}));
+    REQUIRE(edited.at("nodes").back() == curve);
+    REQUIRE(edited.at("nodes")[3].at("inputs").at("gain") ==
+            Json{{"node", "shaper"}, {"port", "value"}});
+    // The stored value survives the edge, so set_input null is the way back.
+    REQUIRE(edited.at("nodes")[3].at("parameters").at("gain") == 2);
+    const auto restored = Pelican::editGraphDocument(edited, Json::array({
+        Json{{"op", "set_input"}, {"node", "left"}, {"port", "gain"}, {"source", nullptr}}}));
+    REQUIRE_FALSE(restored.at("nodes")[3].at("inputs").contains("gain"));
+    REQUIRE(restored.at("nodes")[3].at("parameters").at("gain") == 2);
+
+    CHECK(code(Json::array({Json{{"op", "add_node"}, {"node", {{"id", "clock"}, {"op", "value.constant"},
+        {"parameters", {{"value", 1}}}, {"outputs", Json::array({"value"})}}}}})) == "graph.node_duplicate@1");
+    CHECK(code(Json::array({Json{{"op", "remove_node"}, {"node", "absent"}}})) == "graph.node_missing@1");
+    CHECK(code(Json::array({Json{{"op", "remove_node"}, {"node", "clock"}}})) == "graph.output_referenced@1");
+    CHECK(code(Json::array({Json{{"op", "set_input"}, {"node", "left"}, {"port", "absent"},
+        {"source", {{"node", "clock"}, {"port", "value"}}}}})) == "graph.input_unknown@1");
+    CHECK(code(Json::array({Json{{"op", "set_node_parameters"}, {"node", "shape"},
+        {"parameters", Json::object()}}})) == "graph.definition_immutable@1");
+    CHECK(code(Json::array({Json{{"op", "set_input"}, {"node", "left/shape"}, {"port", "time"},
+        {"source", {{"node", "clock"}, {"port", "value"}}}}})) == "graph.definition_immutable@1");
+    // A valid op ahead of an invalid one writes nothing.
+    CHECK(code(Json::array({Json{{"op", "add_node"}, {"node", curve}},
+        Json{{"op", "remove_node"}, {"node", "absent"}}})) == "graph.node_missing@1");
 }
 
 TEST_CASE("mixed graph keeps one document for scalar and render execution", "[curve][graph-composition]") {

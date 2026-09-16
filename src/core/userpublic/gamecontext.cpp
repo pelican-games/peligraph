@@ -428,6 +428,10 @@ std::shared_ptr<const ValueGraph::Graph> graphForOwnedInput(std::string_view inp
 bool GameContext::setGraphParameter(GameObjectId object, std::string_view parameter, std::optional<double> value) const {
     if (internal::activeEffectTransaction()) return false;
     auto graph = graphForOwnedInput(parameter, &ValueGraph::Graph::parameterOwner);
+    // A port an edge supplies has no parameter at all, so the lookup above
+    // finds nothing. Look again for the shadowed port so SceneLoader can refuse
+    // it by name instead of returning the same false as an unknown parameter.
+    if (!graph) graph = graphForOwnedInput(parameter, &ValueGraph::Graph::shadowedParameterOwner);
     return graph && GET_MODULE(SceneLoader).setGraphParameter(std::move(graph), object, parameter, value);
 }
 

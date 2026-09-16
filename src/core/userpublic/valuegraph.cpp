@@ -39,12 +39,30 @@ bool active(const ScopeDependencies &dependencies, std::string_view name, const 
         [&](const auto &scope) { return inactive.contains(scope); });
 }
 
+InstanceInputSource instanceInputSourceOf(GraphInstanceInputSource source) {
+    switch (source) {
+    case GraphInstanceInputSource::connected: return InstanceInputSource::connected;
+    case GraphInstanceInputSource::parameter: return InstanceInputSource::parameter;
+    case GraphInstanceInputSource::defaulted: return InstanceInputSource::defaulted;
+    }
+    throw std::invalid_argument("unknown graph instance input source");
+}
+
 Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
                       GraphInstanceOwners &owners,
-                      ScopeDependencies &node_scopes, ScopeDependencies &output_scopes) {
+                      ScopeDependencies &node_scopes, ScopeDependencies &output_scopes,
+                      std::vector<Graph::InstanceInputBinding> &instance_inputs) {
     auto partitions = partitionGraphDocument(authored, modules);
     const auto &expanded = partitions.values;
     owners = expanded.instance_owners;
+    for (const auto &[key, input] : expanded.instance_inputs)
+        instance_inputs.push_back(Graph::InstanceInputBinding{key, graphInstanceInputOutput(key),
+            instanceInputSourceOf(input.source),
+            input.source == GraphInstanceInputSource::connected
+                ? input.endpoint.at("node").get<std::string>() : std::string{},
+            input.source == GraphInstanceInputSource::connected
+                ? input.endpoint.at("port").get<std::string>() : std::string{},
+            input.parameter});
     node_scopes = std::move(partitions.rendering.node_scopes);
     node_scopes.insert(expanded.node_scopes.begin(), expanded.node_scopes.end());
     output_scopes = expanded.output_scopes;
@@ -117,7 +135,10 @@ Graph::Graph(std::string_view document) : Graph(document, builtinGraphModuleRegi
 Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : modules_(&modules) {
     const auto authored = Json::parse(document);
     const auto root = authored.value("schema", std::string{}) == "pelican.graph"
-        ? lowerScalarGraph(authored, modules, instance_owners_, node_scopes_, output_scopes_) : authored;
+        ? lowerScalarGraph(authored, modules, instance_owners_, node_scopes_, output_scopes_,
+                           instance_inputs_) : authored;
+    for (const auto &binding : instance_inputs_)
+        if (binding.source == InstanceInputSource::connected) shadowed_parameters_.insert(binding.key);
     if (authored.value("schema", std::string{}) == "pelican.graph")
         for (const auto &[output, value] : root.at("outputs").items()) {
             (void)value;
@@ -339,6 +360,24 @@ const GraphInstanceOwner *Graph::scopeOwner(std::string_view parameter) const no
     return graphInstanceOwnerOf(instance_owners_, parameter);
 }
 
+bool Graph::parameterShadowed(std::string_view parameter) const noexcept {
+    return shadowed_parameters_.contains(parameter);
+}
+
+const GraphInstanceOwner *Graph::shadowedParameterOwner(std::string_view parameter) const noexcept {
+    return parameterShadowed(parameter) ? scopeOwner(parameter) : nullptr;
+}
+
+std::string_view instanceInputSourceName(InstanceInputSource source) {
+    switch (source) {
+    case InstanceInputSource::connected: return "connected";
+    case InstanceInputSource::parameter: return "parameter";
+    case InstanceInputSource::defaulted: return "default";
+    case InstanceInputSource::overridden: return "override";
+    }
+    throw std::invalid_argument("unknown instance input source");
+}
+
 bool Graph::nodeActive(std::string_view node, const InactiveScopes &inactive) const {
     return active(node_scopes_, node, inactive);
 }
@@ -350,7 +389,8 @@ Graph::StateTransfer Graph::transferState(const Graph &previous, const Evaluatio
         if (document.at("schema") == "pelican.graph") {
             GraphInstanceOwners owners;
             ScopeDependencies nodes, outputs;
-            document = lowerScalarGraph(document, *graph.modules_, owners, nodes, outputs);
+            std::vector<Graph::InstanceInputBinding> instance_inputs;
+            document = lowerScalarGraph(document, *graph.modules_, owners, nodes, outputs, instance_inputs);
         }
         std::map<std::string, Json> result;
         for (const auto &node : document.at("nodes")) result.emplace(name(node.at("id")), node);
@@ -564,6 +604,18 @@ PublishResult Graph::publish(const GameContext &context, const Inputs &inputs,
             throw std::invalid_argument("invalid audio graph output: " + binding.output);
     }
     PublishResult result;
+    // Keep the drawn generation's instance input values before any service is
+    // touched. An inactive instance publishes no output, so its ports are
+    // absent rather than stale.
+    for (const auto &binding : instance_inputs_) {
+        const auto found = outputs.find(binding.output);
+        if (found == outputs.end() || found->second.empty()) continue;
+        InstanceInputValue value{binding.source, found->second.front(), binding.node,
+                                 binding.port, binding.parameter};
+        if (binding.source != InstanceInputSource::connected && parameters.contains(binding.parameter))
+            value.source = InstanceInputSource::overridden;
+        result.instance_inputs.emplace(binding.key, std::move(value));
+    }
     for (const auto index : audio_nodes_) {
         const auto &node = nodes_[index];
         const auto time = outputs.find("$audio_time/" + node.id);

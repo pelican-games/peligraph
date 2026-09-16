@@ -73,6 +73,7 @@ DECLARE_MODULE(SceneLoader) {
     };
     using GraphRuntimes = std::map<std::weak_ptr<const ValueGraph::Graph>, GraphRuntime, std::owner_less<>>;
     GraphRuntimes graph_runtime;
+    ValueGraph::PublishedInstanceInputs graph_values;
     GraphRuntime &synchronizeGraphRuntime(const std::shared_ptr<const ValueGraph::Graph> &graph);
     bool ownsGraphParameter(const ValueGraph::Graph &graph, GameObjectId object,
                             std::string_view parameter) const;
@@ -133,6 +134,12 @@ DECLARE_MODULE(SceneLoader) {
                              std::string_view node, Animation::CurvePlaybackCommand command);
     std::optional<SoundHandle> graphSound(const std::shared_ptr<const ValueGraph::Graph> &graph,
                                         std::string_view node) const;
+    // What the last published draw generation fed each instance input port.
+    // Written by the publishing pass; read-only afterwards. Evaluating the
+    // graph again to answer the question would advance its clocks and consume
+    // its events, so a reader reports the value that was drawn, or none.
+    void publishGraphValues(ValueGraph::PublishedInstanceInputs snapshot);
+    const ValueGraph::PublishedInstanceInputs &graphValues() const noexcept { return graph_values; }
     void updateGraphRuntime();
     class PreparedGraphRuntimeTransfer;
     std::unique_ptr<PreparedGraphRuntimeTransfer> prepareGraphRuntimeTransfer(

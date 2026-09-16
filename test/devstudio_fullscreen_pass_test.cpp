@@ -4,6 +4,7 @@
 #include "graphattachmentwidget.hpp"
 #include "../src/devstudio/model/frameplanmodel.hpp"
 
+#include "graphcomposition.hpp"
 #include "passfieldownership.hpp"
 #include "passshapepolicy.hpp"
 #include "renderpipeline.hpp"
@@ -2640,6 +2641,110 @@ TEST_CASE("Inspector graph panel authors attachments and preserves rejected draf
     reply(context);
     REQUIRE(list.count() == 1);
     REQUIRE(list.item(0)->text().startsWith("right"));
+}
+
+TEST_CASE("Inspector instance inputs show their supply and switch one to a curve",
+          "[studio][graph-attachment][graph-instance-inputs][widget]") {
+    (void)application();
+    GraphAttachmentWidget panel;
+    struct Request { quint64 id; QString method; QJsonObject params; };
+    std::vector<Request> requests;
+    QObject::connect(&panel, &GraphAttachmentWidget::rpcRequested, &panel,
+        [&](quint64 id, const QString &method, const QJsonObject &params) {
+            requests.push_back({id, method, params});
+        });
+    const auto reply = [&](const Json &response) {
+        REQUIRE_FALSE(requests.empty());
+        panel.receiveRpcResult(requests.back().id, QByteArray::fromStdString(response.dump()));
+    };
+    const auto lastParams = [&] {
+        return Json::parse(QJsonDocument(requests.back().params).toJson().toStdString());
+    };
+    // The same document the engine-side acceptance runs on.
+    const auto fixture = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" / "fixtures" /
+        "graph_instance_inputs" / "passes" / "main.json";
+    std::ifstream input{fixture, std::ios::binary};
+    REQUIRE(input.is_open());
+    const auto document = Json::parse(std::string{std::istreambuf_iterator<char>{input},
+                                                  std::istreambuf_iterator<char>{}});
+    Json instances = Json::array();
+    for (const auto &node : document.at("nodes"))
+        if (node.at("op") == "graph.instance") instances.push_back(node);
+    const Json context{{"source_digest", {{"hex", std::string(64, 'a')}}},
+        {"definitions", document.at("definitions")}, {"nodes", document.at("nodes")},
+        {"instances", instances}};
+
+    panel.setConnected(true);
+    panel.setOwner(GraphAttachmentOwner{"main", 41});
+    REQUIRE(requests.back().method == "get_graph_instances");
+    reply(context);
+    auto &list = required<QListWidget>(panel, "pelican.graphAttachments");
+    REQUIRE(list.count() == 1);
+    list.setCurrentRow(0);
+    // Selecting an attachment asks for what the drawn generation used. It is a
+    // report, so it must not make the panel busy.
+    REQUIRE(requests.back().method == "get_graph_values");
+    REQUIRE(lastParams().at("instance") == "left");
+    CHECK(required<QPushButton>(panel, "pelican.graphAttach").isEnabled());
+    reply({{"instance", "left"}, {"published", true}, {"generation", 4}, {"frame", 8},
+        {"inputs", Json::array({
+            {{"port", "gain"}, {"value", 2.5}, {"source", "parameter"}, {"parameter", "left/gain"}},
+            {{"port", "bias"}, {"value", 5.0}, {"source", "parameter"}, {"parameter", "left/bias"}}})}});
+    CHECK(required<QLabel>(panel, "pelican.graphPort.mode.gain").text() == "parameter");
+    CHECK(required<QLabel>(panel, "pelican.graphPort.live.gain").text().contains("parameter"));
+    CHECK(required<QLineEdit>(panel, "pelican.graphPort.value.gain").text().startsWith("2.5"));
+    CHECK_FALSE(required<QPushButton>(panel, "pelican.graphPort.disconnect.gain").isEnabled());
+
+    // The affordance has to be on the widget: a model that grew the ability
+    // without a control to reach it leaves this button missing.
+    required<QPushButton>(panel, "pelican.graphPort.curve.gain").click();
+    REQUIRE(requests.back().method == "edit_graph_document");
+    const auto emitted = lastParams();
+    CHECK(emitted.at("base_source_digest") == std::string(64, 'a'));
+
+    // The op list the panel produced and the same op list written by hand must
+    // reach the same document, byte for byte -- node IDs and curve keys and all.
+    const Json expected_ops = Json::array({
+        {{"op", "add_node"}, {"node", {{"id", "left__gain_playback"}, {"op", "value.playback"},
+            {"inputs", {{"elapsed", {{"node", "clock"}, {"port", "value"}}}}},
+            {"outputs", Json::array({"value"})}}}},
+        {{"op", "add_node"}, {"node", {{"id", "left__gain_curve"}, {"op", "value.curve"},
+            {"inputs", {{"time", {{"node", "left__gain_playback"}, {"port", "value"}}}}},
+            {"parameters", {{"keys", Json::array({Json{{"time", 0}, {"value", 2.5}},
+                                                  Json{{"time", 1}, {"value", 2.5}}})}}},
+            {"outputs", Json::array({"value"})}}}},
+        {{"op", "set_input"}, {"node", "left"}, {"port", "gain"},
+         {"source", {{"node", "left__gain_curve"}, {"port", "value"}}}}});
+    const auto from_panel = Pelican::editGraphDocument(document, emitted.at("ops"));
+    const auto from_rpc = Pelican::editGraphDocument(document, expected_ops);
+    REQUIRE(from_panel.at("nodes").dump(2) == from_rpc.at("nodes").dump(2));
+    // The stored value is still there, so the port has a way back.
+    REQUIRE(from_panel.at("nodes")[1].at("parameters").at("gain") == 2.5);
+
+    // Once the edit lands, the row reads "connected" and offers the way back.
+    reply({{"status", "accepted"}, {"ticket", "ticket-1"}});
+    REQUIRE(requests.back().method == "get_edit_result");
+    reply({{"status", "committed"}});
+    REQUIRE(requests.back().method == "get_graph_instances");
+    Json connected = context;
+    connected["nodes"] = from_panel.at("nodes");
+    connected["instances"] = Json::array();
+    for (const auto &node : connected.at("nodes"))
+        if (node.at("op") == "graph.instance") connected["instances"].push_back(node);
+    connected["source_digest"]["hex"] = std::string(64, 'b');
+    reply(connected);
+    REQUIRE(requests.back().method == "get_graph_values");
+    reply({{"instance", "left"}, {"published", true}, {"generation", 5}, {"frame", 9},
+        {"inputs", Json::array({{{"port", "gain"}, {"value", 2.5}, {"source", "connected"},
+            {"connected", {{"node", "left__gain_curve"}, {"port", "value"}}}}})}});
+    CHECK(required<QLabel>(panel, "pelican.graphPort.mode.gain").text() == "connected");
+    auto &disconnect = required<QPushButton>(panel, "pelican.graphPort.disconnect.gain");
+    REQUIRE(disconnect.isEnabled());
+    disconnect.click();
+    REQUIRE(requests.back().method == "edit_graph_document");
+    REQUIRE(lastParams().at("ops") == Json::array({
+        {{"op", "set_input"}, {"node", "left"}, {"port", "gain"}, {"source", nullptr}}}));
+    REQUIRE(lastParams().at("base_source_digest") == std::string(64, 'b'));
 }
 
 } // namespace PelicanStudio

@@ -15,6 +15,12 @@ struct GraphExecutionPartitions {
 // The scalar output name the values partition publishes for one animation-node
 // input port. Both sides spell it here.
 std::string graphAnimationScalarOutput(std::string_view node, std::string_view port);
+// The scalar output name the values partition publishes for one instance input
+// port, keyed as ExpandedGraphDocument::instance_inputs is. Reading what a
+// drawn frame used starts here: a connected port has no node of its own, so it
+// is only observable once the expansion names it as an output. Both sides spell
+// it here.
+std::string graphInstanceInputOutput(std::string_view input);
 // Validate the entire authored graph before separating execution domains.
 // Connected scalar buffer inputs become CPU publication sinks and host buffers.
 // Every operation comes from a registered module; the overload taking a registry

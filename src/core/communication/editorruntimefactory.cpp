@@ -2054,6 +2054,10 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                     feature_document);
                             });
                     },
+                    // Read what the draw path published; never evaluate again.
+                    .graph_values = [runtime] {
+                        return runtime->modules.scene_loader.graphValues();
+                    },
                 });
         }
     }

@@ -3,6 +3,7 @@
 #include "../../project/renderconfigdocument.hpp"
 #include "../../project/renderpipeline.hpp"
 #include "renderconfigtransaction.hpp"
+#include "../userpublic/valuegraph.hpp"
 #include "../vkcore/renderer_config.hpp"
 
 #include <cstdint>
@@ -85,6 +86,10 @@ struct RenderConfigEditorDependencies {
         const RenderConfigCandidateDocumentSet &)>
         resolve_authoring_context;
     std::function<std::vector<RenderFeatureCatalogEntry>()> feature_catalog;
+    // The instance input values the last published draw generation used. Left
+    // unset outside a running engine, and then no values are reported: the
+    // service never evaluates a graph of its own to fill the gap.
+    std::function<ValueGraph::PublishedInstanceInputs()> graph_values;
 };
 
 // Engine-owned render-authoring document/ticket service. Feature toggles edit
@@ -172,6 +177,9 @@ class RenderConfigEditorService {
   public:
     nlohmann::ordered_json getGraphInstances(const nlohmann::json &params) const;
     nlohmann::ordered_json editGraphInstances(const nlohmann::json &params);
+    nlohmann::ordered_json editGraphDocument(const nlohmann::json &params);
+    nlohmann::ordered_json getGraphValues(const nlohmann::json &params) const;
+    nlohmann::ordered_json getGraphCatalog(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
     nlohmann::ordered_json editPresetPass(const nlohmann::json &params);

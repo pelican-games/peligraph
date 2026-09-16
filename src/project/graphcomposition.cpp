@@ -45,7 +45,11 @@ class Expander {
         object(parameters, "instance parameters must be an object");
         for (const auto &[parameter, value] : parameters.items()) {
             if (!inputs.contains(parameter)) throw std::invalid_argument("unknown subgraph parameter: " + parameter);
-            if (arguments.contains(parameter)) throw std::invalid_argument("subgraph input also bound as parameter: " + parameter);
+            // edge > parameters > default. A parameter under an edge is not a
+            // contradiction: it is the value the port returns to when the edge
+            // is removed, so it is still checked, just not used.
+            if (!value.is_number() || !std::isfinite(value.get<double>()))
+                throw std::invalid_argument("subgraph parameter must be a finite scalar: " + parameter);
         }
         Json defaults = Json::object();
         for (const auto &input : inputs) {
@@ -57,6 +61,25 @@ class Expander {
             if (!value.is_number() || !std::isfinite(value.get<double>()))
                 throw std::invalid_argument("subgraph parameter must be a finite scalar: " + input);
             defaults[input] = value;
+        }
+        // Record the supply of every instance input port while both halves are
+        // still in hand. The root document's own parameters are not an
+        // instance's, so they are left out.
+        if (!path.empty()) {
+            const auto scope = path.substr(0, path.size() - 1);
+            for (const auto &input : inputs) {
+                GraphInstanceInput record{scope, input};
+                if (arguments.contains(input)) {
+                    record.source = GraphInstanceInputSource::connected;
+                    record.endpoint = arguments.at(input);
+                } else {
+                    record.source = parameters.contains(input) ? GraphInstanceInputSource::parameter
+                                                              : GraphInstanceInputSource::defaulted;
+                    record.endpoint = Json{{"node", path + input}, {"port", "value"}};
+                    record.parameter = path + input;
+                }
+                result.instance_inputs.emplace(path + input, std::move(record));
+            }
         }
         std::map<std::string, Json> instances;
         std::set<std::string> active_instances;
@@ -193,6 +216,15 @@ ExpandedGraphDocument expandGraphDocument(const Json &document) {
         const auto &source = result.node_scopes.at(endpoint.at("node").get<std::string>());
         scopes.insert(source.begin(), source.end());
     }
+    // A port's value is unavailable when its own instance is, not only when its
+    // producer is; an outer producer carries none of the instance's scopes.
+    for (auto &[key, input] : result.instance_inputs) {
+        (void)key;
+        takeScopes(input.endpoint, input.scopes);
+        addAncestors(input.scopes, input.scope);
+        const auto &source = result.node_scopes.at(input.endpoint.at("node").get<std::string>());
+        input.scopes.insert(source.begin(), source.end());
+    }
     return std::move(expander.result);
 }
 
@@ -295,11 +327,152 @@ std::map<std::string, LogicalType> validateGraphPorts(
     return outputs;
 }
 
+std::string_view graphInstanceInputSourceName(GraphInstanceInputSource source) {
+    switch (source) {
+    case GraphInstanceInputSource::connected: return "connected";
+    case GraphInstanceInputSource::parameter: return "parameter";
+    case GraphInstanceInputSource::defaulted: return "default";
+    }
+    throw std::invalid_argument("unknown graph instance input source");
+}
+
+namespace {
+// Only the root `nodes` array is editable in v0. A node inside a definition,
+// or named across an instance path, is refused by name rather than reported as
+// missing, because the two call for different fixes.
+Json &locateRootNode(Json &nodes, const Json &definitions, const std::string &id) {
+    if (id.find('/') != std::string::npos)
+        throw GraphRegistryError("graph.definition_immutable@1",
+            {{"node", id}, {"reason", "instance_path"}});
+    const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const Json &node) {
+        return node.contains("id") && node.at("id") == id;
+    });
+    if (found != nodes.end()) return *found;
+    for (const auto &[definition, body] : definitions.items())
+        for (const auto &node : body.value("nodes", Json::array()))
+            if (node.value("id", std::string{}) == id)
+                throw GraphRegistryError("graph.definition_immutable@1",
+                    {{"node", id}, {"definition", definition}});
+    throw GraphRegistryError("graph.node_missing@1", {{"node", id}});
+}
+
+std::string opNodeName(const Json &value) {
+    if (!value.is_string() || value.get_ref<const std::string &>().empty())
+        throw std::invalid_argument("graph document op requires a nonempty node id");
+    return value.get<std::string>();
+}
+
+// The declared inputs of an instance's definition. Empty when the definition is
+// unknown: the expansion names that failure itself.
+std::set<std::string> declaredInstanceInputs(const Json &node, const Json &definitions) {
+    std::set<std::string> declared;
+    const auto reference = node.value("definition", std::string{});
+    if (!definitions.contains(reference)) return declared;
+    for (const auto &entry : definitions.at(reference).value("nodes", Json::array()))
+        if (entry.value("op", std::string{}) == "graph.input")
+            declared.insert(entry.value("id", std::string{}));
+    return declared;
+}
+
+void requireInstancePort(const Json &node, const Json &definitions, const std::string &port) {
+    if (node.value("op", std::string{}) != "graph.instance") return;
+    const auto declared = declaredInstanceInputs(node, definitions);
+    if (declared.empty() || declared.contains(port)) return;
+    throw GraphRegistryError("graph.input_unknown@1",
+        {{"node", node.at("id")}, {"definition", node.value("definition", std::string{})},
+         {"port", port}});
+}
+} // namespace
+
+nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
+    if (!ops.is_array()) throw std::invalid_argument("graph document ops must be an array");
+    auto candidate = document;
+    auto &nodes = candidate.at("nodes");
+    if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
+    const auto definitions = candidate.value("definitions", Json::object());
+    object(definitions, "graph definitions must be an object");
+    for (const auto &operation : ops) {
+        object(operation, "graph document op must be an object");
+        const auto kind = operation.value("op", std::string{});
+        if (kind == "add_node") {
+            const auto &node = operation.at("node");
+            object(node, "add_node requires a node object");
+            const auto id = opNodeName(node.at("id"));
+            if (id.find('/') != std::string::npos)
+                throw GraphRegistryError("graph.definition_immutable@1",
+                    {{"node", id}, {"reason", "instance_path"}});
+            if (std::any_of(nodes.begin(), nodes.end(), [&](const Json &existing) {
+                    return existing.contains("id") && existing.at("id") == id;
+                }))
+                throw GraphRegistryError("graph.node_duplicate@1", {{"node", id}});
+            nodes.push_back(node);
+        } else if (kind == "remove_node") {
+            const auto id = opNodeName(operation.at("node"));
+            (void)locateRootNode(nodes, definitions, id);
+            // items() borrows its container, so the object has to outlive the
+            // loop rather than be a temporary from value().
+            const auto outputs = candidate.value("outputs", Json::object());
+            for (const auto &[port, endpoint] : outputs.items())
+                if (endpoint.is_object() && endpoint.value("node", std::string{}) == id)
+                    throw GraphRegistryError("graph.output_referenced@1",
+                        {{"node", id}, {"output", port}});
+            for (const auto &node : nodes) {
+                if (!node.contains("id") || node.at("id") == id) continue;
+                const auto inputs = node.value("inputs", Json::object());
+                for (const auto &[port, endpoint] : inputs.items())
+                    if (endpoint.is_object() && endpoint.value("node", std::string{}) == id)
+                        throw GraphRegistryError("graph.output_referenced@1",
+                            {{"node", id}, {"consumer", node.at("id")}, {"port", port}});
+            }
+            nodes.erase(std::find_if(nodes.begin(), nodes.end(), [&](const Json &node) {
+                return node.contains("id") && node.at("id") == id;
+            }));
+        } else if (kind == "set_input") {
+            const auto id = opNodeName(operation.at("node"));
+            const auto port = identifier(operation.at("port"));
+            auto &node = locateRootNode(nodes, definitions, id);
+            requireInstancePort(node, definitions, port);
+            const auto &source = operation.at("source");
+            if (source.is_null()) {
+                if (const auto inputs = node.find("inputs"); inputs != node.end()) {
+                    inputs->erase(port);
+                    if (inputs->empty()) node.erase("inputs");
+                }
+            } else {
+                object(source, "set_input source must be an object or null");
+                if (source.size() != 2 || !source.contains("node") || !source.contains("port"))
+                    throw std::invalid_argument("set_input source requires exactly node and port");
+                (void)identifier(source.at("node"));
+                (void)identifier(source.at("port"));
+                node["inputs"][port] = source;
+            }
+        } else if (kind == "set_node_parameters") {
+            const auto id = opNodeName(operation.at("node"));
+            const auto &parameters = operation.at("parameters");
+            object(parameters, "set_node_parameters requires a parameters object");
+            auto &node = locateRootNode(nodes, definitions, id);
+            for (const auto &[name, value] : parameters.items()) {
+                (void)value;
+                requireInstancePort(node, definitions, name);
+            }
+            if (parameters.empty()) node.erase("parameters");
+            else node["parameters"] = parameters;
+        } else {
+            throw std::invalid_argument("unknown graph document op: " + kind);
+        }
+    }
+    // One expansion at the end: every op landed, or the document is refused
+    // whole and the caller's document is untouched.
+    (void)expandGraphDocument(candidate);
+    return candidate;
+}
+
 nlohmann::json editGraphInstances(const Json &document, const Json &attachments, const Json &detachments) {
     if (!attachments.is_array() || !detachments.is_array())
         throw std::invalid_argument("graph attachments and detachments must be arrays");
-    auto candidate = document;
-    auto &nodes = candidate.at("nodes");
+    const auto &nodes = document.at("nodes");
+    if (!nodes.is_array()) throw std::invalid_argument("graph nodes must be an array");
+    auto ops = Json::array();
     std::set<std::string> removed;
     for (const auto &value : detachments) {
         const auto id = identifier(value);
@@ -307,15 +480,14 @@ nlohmann::json editGraphInstances(const Json &document, const Json &attachments,
         const auto found = std::find_if(nodes.begin(), nodes.end(), [&](const auto &node) { return node.at("id") == id; });
         if (found == nodes.end() || found->at("op") != "graph.instance" || !found->contains("owner"))
             throw std::invalid_argument("graph detachment requires an owned root instance: " + id);
-        nodes.erase(found);
+        ops.push_back({{"op", "remove_node"}, {"node", id}});
     }
     for (const auto &instance : attachments) {
         if (!instance.is_object() || instance.value("op", std::string{}) != "graph.instance" || !instance.contains("owner"))
             throw std::invalid_argument("graph attachment requires an owned graph.instance");
-        nodes.push_back(instance);
+        ops.push_back({{"op", "add_node"}, {"node", instance}});
     }
-    (void)expandGraphDocument(candidate);
-    return candidate;
+    return editGraphDocument(document, ops);
 }
 
 } // namespace Pelican

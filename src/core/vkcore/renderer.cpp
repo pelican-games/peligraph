@@ -5365,7 +5365,7 @@ void Renderer::renderLogicalFrame(
                                      frame_graph.inactive_graph_scopes.end());
         const auto inputs = collectGraphInputs(*frame_graph.value_graph, scene,
             inactive_graph_scopes, engine_time.now(), engine_time.dt());
-        const auto published = frame_graph.value_graph->publish(GameContext{}, inputs, {},
+        auto published = frame_graph.value_graph->publish(GameContext{}, inputs, {},
             [&](std::string_view name, std::span<const float> values) {
                 const auto found = frame_graph.buffer_bindings.find(std::string{name});
                 return found != frame_graph.buffer_bindings.end() &&
@@ -5384,6 +5384,13 @@ void Renderer::renderLogicalFrame(
                 }} : ValueGraph::AudioValueWriter{});
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
+        // Keep what this generation actually fed each instance input port. A
+        // reader that evaluated the graph again would advance its clocks and
+        // consume its events, so the values leave the draw path here or not at
+        // all.
+        scene.publishGraphValues({.generation = runtime_generation->generation,
+                                  .frame = engine_time.frameIndex(),
+                                  .inputs = std::move(published.instance_inputs)});
     }
     stageGraphPoseAttributes(frame_graph);
     modules.frame_graph_resources.uploadRuntimeValues();

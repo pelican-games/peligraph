@@ -1537,6 +1537,21 @@ OrderedJson EditorCommandService::editGraphInstances(const Json &params) {
     return render_config_editor_->editGraphInstances(params);
 }
 
+OrderedJson EditorCommandService::editGraphDocument(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->editGraphDocument(params);
+}
+
+OrderedJson EditorCommandService::getGraphValues(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getGraphValues(params);
+}
+
+OrderedJson EditorCommandService::getGraphCatalog(const Json &params) const {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->getGraphCatalog(params);
+}
+
 OrderedJson EditorCommandService::editComputeTask(const Json &params) {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->editComputeTask(params);
@@ -2486,6 +2501,19 @@ OrderedJson EditorCommandRpcAdapter::getGraphInstances(const Json &params) const
 OrderedJson EditorCommandRpcAdapter::editGraphInstances(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->editGraphInstances(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::editGraphDocument(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->editGraphDocument(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getGraphValues(const Json &params) const {
+    return service_.getGraphValues(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::getGraphCatalog(const Json &params) const {
+    return service_.getGraphCatalog(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::editComputeTask(const Json &params) const {

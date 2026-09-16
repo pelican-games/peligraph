@@ -136,6 +136,23 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
         partition.origins.emplace(id, graph.origins.at(id));
         partition.node_scopes.emplace(id, graph.node_scopes.at(id));
     }
+    // Publish every scalar instance input port as an output of the values
+    // partition. Without this the effective value of a connected port is not
+    // observable anywhere: the expansion inlines the outer producer into the
+    // consumer and leaves no node to read.
+    for (const auto &[key, input] : graph.instance_inputs) {
+        const auto producer = input.endpoint.at("node").get<std::string>();
+        const auto domain = domains.find(producer);
+        if (domain == domains.end() || domain->second != GraphExecutionDomain::values ||
+            input.endpoint.at("port") != "value")
+            continue; // Only scalars; a typed stream waits for its own pass.
+        const auto output = graphInstanceInputOutput(key);
+        if (graph.outputs.contains(output))
+            throw std::invalid_argument("reserved graph output: " + output);
+        result.values.outputs[output] = input.endpoint;
+        result.values.output_scopes.emplace(output, input.scopes);
+        result.values.instance_inputs.emplace(key, input);
+    }
     for (const auto &[port, endpoint] : graph.outputs.items()) {
         const auto type = output_types.at(port).constructor;
         const auto producer = domains.at(endpoint.at("node").get<std::string>());
@@ -150,6 +167,10 @@ GraphExecutionPartitions partitionGraphDocument(const Json &document,
 
 std::string graphAnimationScalarOutput(std::string_view node, std::string_view port) {
     return "$pose/" + std::string{node} + "/" + std::string{port};
+}
+
+std::string graphInstanceInputOutput(std::string_view input) {
+    return "$value/" + std::string{input};
 }
 
 Json resolveGraphAttributeSources(const Json &document, const GraphAttributeSourceResolver &resolve) {

@@ -1,6 +1,7 @@
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/communication/editorrpchandlers.hpp"
 #include "../src/core/communication/renderconfigeditor.hpp"
+#include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/core/communication/proceduralasseteditor.hpp"
 #include "../src/core/communication/renderconfigtransaction.hpp"
@@ -30,6 +31,7 @@
 #include <memory>
 #include <nlohmann/json.hpp>
 #include <set>
+#include <span>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -427,7 +429,8 @@ class TemporaryAnimgraphProject {
 
 std::unique_ptr<RenderConfigEditorService> makeService(
     TemporaryConfig &source, ActualCpuRenderRuntime &runtime,
-    std::function<RenderConfigEditorGateObservation()> gate = {}) {
+    std::function<RenderConfigEditorGateObservation()> gate = {},
+    std::function<ValueGraph::PublishedInstanceInputs()> graph_values = {}) {
     if (!gate) {
         gate = [] {
             return RenderConfigEditorGateObservation{};
@@ -458,6 +461,7 @@ std::unique_ptr<RenderConfigEditorService> makeService(
                             name, document);
                     });
             },
+            .graph_values = std::move(graph_values),
         });
 }
 
@@ -681,6 +685,178 @@ TEST_CASE("owned graph instances attach and detach through source publication", 
         REQUIRE(commit(edit(Json::array(), Json::array({"left"}))).at("committed") == false);
         REQUIRE(readBytes(source.path) == saved);
         REQUIRE(runtime.snapshot.published_generation == generation);
+    }
+}
+
+TEST_CASE("instance inputs change supply atomically and report what was drawn",
+          "[render-config-editor][graph-instance-inputs]") {
+    // No shipped project has a pelican.graph document, so the acceptance is
+    // taken on a fixture: a definition with one defaulted and one undefaulted
+    // input, and one owned attachment that stores both.
+    const auto fixture_path = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "test" /
+        "fixtures" / "graph_instance_inputs" / "passes" / "main.json";
+    TemporaryConfig source{readBytes(fixture_path)};
+    ActualCpuRenderRuntime runtime;
+    runtime.initialize(readBytes(source.path));
+    // The snapshot the draw path leaves behind, produced by really publishing
+    // the document under test. The service never evaluates a graph itself.
+    ValueGraph::PublishedInstanceInputs snapshot;
+    ValueGraph::ParameterValues overrides;
+    std::size_t evaluations = 0;
+    const auto draw = [&] {
+        const ValueGraph::Graph graph{readBytes(source.path)};
+        auto state = graph.createState();
+        auto published = graph.publish(GameContext{},
+            {{"time", 0.5}, {"delta_time", 0.5}, {"scene_time", 0.5}}, {},
+            [](std::string_view, std::span<const float>) { return true; },
+            overrides, {}, &state);
+        ++evaluations;
+        snapshot = {.published = true, .generation = 7, .frame = 11,
+                    .inputs = std::move(published.instance_inputs)};
+    };
+    draw();
+    auto service = makeService(source, runtime, {}, [&] { return snapshot; });
+    const auto edit = [&](Json ops) {
+        return service->editGraphDocument(
+            {{"base_source_digest", service->getGraphInstances(Json::object()).at("source_digest").at("hex")},
+             {"ops", std::move(ops)}});
+    };
+    const auto commit = [&](const nlohmann::ordered_json &submission) {
+        REQUIRE(submission.at("status") == "accepted");
+        service->commitPending();
+        return service->getResult({{"ticket", submission.at("ticket")}});
+    };
+    const auto instance = [&] {
+        const auto instances = service->getGraphInstances(Json::object()).at("instances");
+        REQUIRE(instances.size() == 1);
+        return instances.at(0);
+    };
+    const auto portValue = [&](const char *port) {
+        const auto values = service->getGraphValues({{"instance", "left"}});
+        for (const auto &entry : values.at("inputs"))
+            if (entry.at("port") == port) return entry;
+        FAIL("no reported value for " + std::string{port});
+        return nlohmann::ordered_json{};
+    };
+
+    SECTION("a stored value is reported with its origin and does not move when read") {
+        const auto values = service->getGraphValues({{"instance", "left"}});
+        REQUIRE(values.at("published") == true);
+        REQUIRE(values.at("generation") == 7);
+        REQUIRE(values.at("frame") == 11);
+        REQUIRE(values.at("inputs").size() == 2);
+        REQUIRE(portValue("gain").at("value") == 2.5);
+        REQUIRE(portValue("gain").at("source") == "parameter");
+        REQUIRE(portValue("gain").at("parameter") == "left/gain");
+        REQUIRE(portValue("bias").at("value") == 5);
+        // Reading is a map lookup. Only the draw path evaluates, so no number
+        // of reads can advance a clock or consume an event.
+        const auto drawn = evaluations;
+        for (int i = 0; i < 5; ++i) (void)service->getGraphValues({{"instance", "left"}});
+        REQUIRE(evaluations == drawn);
+        // A run-time override is a fourth origin, not a fourth kind of value.
+        overrides = {{"left/gain", 9}};
+        draw();
+        REQUIRE(portValue("gain").at("value") == 9);
+        REQUIRE(portValue("gain").at("source") == "override");
+    }
+
+    SECTION("control with a curve lands as one op list and comes back off it") {
+        // The four ops the Inspector's "control with a curve" sends: reuse the
+        // document's scene clock, a playback, a constant two-key curve, and the
+        // edge itself. One call, so one ticket and one CAS.
+        Json ops = Json::array();
+        Json playback{{"id", "left__gain_playback"}, {"op", "value.playback"},
+            {"inputs", {{"elapsed", {{"node", "clock"}, {"port", "value"}}}}},
+            {"outputs", Json::array({"value"})}};
+        Json curve{{"id", "left__gain_curve"}, {"op", "value.curve"},
+            {"inputs", {{"time", {{"node", "left__gain_playback"}, {"port", "value"}}}}},
+            {"parameters", {{"keys", Json::array({Json{{"time", 0}, {"value", 2.5}},
+                                                  Json{{"time", 1}, {"value", 2.5}}})}}},
+            {"outputs", Json::array({"value"})}};
+        ops.push_back({{"op", "add_node"}, {"node", playback}});
+        ops.push_back({{"op", "add_node"}, {"node", curve}});
+        ops.push_back({{"op", "set_input"}, {"node", "left"}, {"port", "gain"},
+                       {"source", {{"node", "left__gain_curve"}, {"port", "value"}}}});
+        REQUIRE(commit(edit(ops)).at("committed") == true);
+        const auto connected = instance();
+        REQUIRE(connected.at("inputs").at("gain") ==
+                Json{{"node", "left__gain_curve"}, {"port", "value"}});
+        // The stored value was not removed, so there is a way back.
+        REQUIRE(connected.at("parameters").at("gain") == 2.5);
+        draw();
+        REQUIRE(portValue("gain").at("source") == "connected");
+        REQUIRE(portValue("gain").at("connected").at("node") == "left__gain_curve");
+        REQUIRE(portValue("gain").at("value") == 2.5);
+
+        // Removing the edge puts the port back on its stored value.
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_input"}, {"node", "left"},
+            {"port", "gain"}, {"source", nullptr}}}))).at("committed") == true);
+        // The last edge left with the object that held it.
+        REQUIRE_FALSE(instance().value("inputs", Json::object()).contains("gain"));
+        draw();
+        REQUIRE(portValue("gain").at("source") == "parameter");
+        REQUIRE(portValue("gain").at("value") == 2.5);
+
+        // The same for the input the definition gives no default: the stored
+        // value is the only way back, and it is still there.
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_input"}, {"node", "left"},
+            {"port", "bias"}, {"source", {{"node", "left__gain_curve"}, {"port", "value"}}}}})))
+                .at("committed") == true);
+        REQUIRE(commit(edit(Json::array({Json{{"op", "set_input"}, {"node", "left"},
+            {"port", "bias"}, {"source", nullptr}}}))).at("committed") == true);
+        REQUIRE(instance().at("parameters").at("bias") == 5);
+    }
+
+    SECTION("a rejected op writes nothing and is named") {
+        const auto saved = readBytes(source.path);
+        const auto reject = [&](Json ops, const char *code) {
+            const auto result = edit(std::move(ops));
+            REQUIRE(result.at("status") == "rejected");
+            CHECK(result.at("error").at("code") == code);
+            CHECK(readBytes(source.path) == saved);
+        };
+        reject(Json::array({Json{{"op", "add_node"}, {"node", {{"id", "clock"}, {"op", "value.constant"},
+            {"parameters", {{"value", 1}}}, {"outputs", Json::array({"value"})}}}}}),
+            "graph.node_duplicate@1");
+        reject(Json::array({Json{{"op", "remove_node"}, {"node", "absent"}}}), "graph.node_missing@1");
+        reject(Json::array({Json{{"op", "set_input"}, {"node", "left"}, {"port", "missing"},
+            {"source", {{"node", "clock"}, {"port", "value"}}}}}), "graph.input_unknown@1");
+        // A node another node still reads cannot be removed silently, even
+        // when the reader was added by an earlier op in the same list.
+        reject(Json::array({Json{{"op", "add_node"}, {"node", {{"id", "later"}, {"op", "value.playback"},
+                {"inputs", {{"elapsed", {{"node", "clock"}, {"port", "value"}}}}},
+                {"outputs", Json::array({"value"})}}}},
+            Json{{"op", "remove_node"}, {"node", "clock"}}}),
+            "graph.output_referenced@1");
+        // Inside a definition, and across an instance path, is out of range.
+        reject(Json::array({Json{{"op", "set_node_parameters"}, {"node", "sum"},
+            {"parameters", Json::object()}}}), "graph.definition_immutable@1");
+        reject(Json::array({Json{{"op", "set_input"}, {"node", "left/sum"}, {"port", "a"},
+            {"source", {{"node", "clock"}, {"port", "value"}}}}}), "graph.definition_immutable@1");
+        // The whole list is one transaction: the first op is valid on its own
+        // and must still leave nothing behind.
+        reject(Json::array({Json{{"op", "add_node"}, {"node", {{"id", "spare"}, {"op", "value.constant"},
+                {"parameters", {{"value", 1}}}, {"outputs", Json::array({"value"})}}}},
+            Json{{"op", "remove_node"}, {"node", "absent"}}}), "graph.node_missing@1");
+        REQUIRE(readBytes(source.path) == saved);
+    }
+
+    SECTION("the operation catalog reaches the editor over the same service") {
+        const auto catalog = service->getGraphCatalog(Json::object());
+        REQUIRE(catalog.at("schema") == "pelican.graph_catalog");
+        std::vector<std::string> namespaces;
+        for (const auto &module : catalog.at("modules"))
+            namespaces.push_back(module.at("namespace").get<std::string>());
+        CHECK(containsName(namespaces, "pelican.value"));
+        CHECK(containsName(namespaces, "pelican.audio"));
+        CHECK(containsName(namespaces, "pelican.render"));
+#if PELICAN_WITH_ANIMATION
+        CHECK(containsName(namespaces, "pelican.pose"));
+        CHECK(namespaces.size() == 4);
+#else
+        CHECK(namespaces.size() == 3);
+#endif
     }
 }
 

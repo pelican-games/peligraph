@@ -1383,12 +1383,20 @@ OrderedJson RenderConfigEditorService::getGraphInstances(const Json &params) con
     requireOnly(params, {}, "get_graph_instances");
     const auto root = Json::parse(document_.bytes());
     auto instances = Json::array();
-    if (root.value("schema", std::string{}) == "pelican.graph")
-        for (const auto &node : root.at("nodes"))
+    auto nodes = Json::array();
+    if (root.value("schema", std::string{}) == "pelican.graph") {
+        nodes = root.at("nodes");
+        for (const auto &node : nodes)
             if (node.at("op") == "graph.instance") instances.push_back(node);
+    }
     return {{"source_reference", dependencies_.source_reference},
         {"source_digest", digestJson(document_.sourceDigest())},
-        {"instances", std::move(instances)}, {"definitions", root.value("definitions", Json::object())}};
+        {"instances", std::move(instances)},
+        // The whole root array too: an editor that connects an input has to
+        // name a producer that is already there, and has to avoid an id that
+        // is already taken.
+        {"nodes", std::move(nodes)},
+        {"definitions", root.value("definitions", Json::object())}};
 }
 
 OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
@@ -1408,6 +1416,67 @@ OrderedJson RenderConfigEditorService::editGraphInstances(const Json &params) {
                 return rejection("invalid_graph_attachment", error.what());
             }
         });
+}
+
+OrderedJson RenderConfigEditorService::editGraphDocument(const Json &params) {
+    constexpr auto method = "edit_graph_document";
+    requireOnly(params, {"base_source_digest", "ops"}, method);
+    const auto digest = requireString(params, "base_source_digest", method);
+    if (!params.contains("ops") || !params.at("ops").is_array())
+        return rejection("invalid_graph_document", "Provide an array of graph document ops");
+    const auto &ops = params.at("ops");
+    // One ticket, one CAS, one candidate: the same queue edit_graph_instances
+    // uses, so two edits in the same frame cannot both win.
+    return queueRootEdit(digest, method,
+        [&](AuthoredRenderConfigDocument &candidate) -> std::optional<OrderedJson> {
+            try {
+                const auto edited = Pelican::editGraphDocument(Json::parse(candidate.bytes()), ops);
+                (void)partitionGraphDocument(edited);
+                candidate = candidate.withRootValue("nodes", edited.at("nodes").dump(2));
+                return std::nullopt;
+            } catch (const GraphRegistryError &error) {
+                return rejection(error.code(), error.what(),
+                                 OrderedJson::parse(error.detail().dump()));
+            } catch (const std::exception &error) {
+                return rejection("invalid_graph_document", error.what());
+            }
+        });
+}
+
+OrderedJson RenderConfigEditorService::getGraphValues(const Json &params) const {
+    constexpr auto method = "get_graph_values";
+    requireOnly(params, {"instance"}, method);
+    const auto instance = requireString(params, "instance", method);
+    // Read the publishing pass's snapshot. Evaluating the graph here would
+    // advance its clocks and consume its events, so an unpublished graph
+    // reports no values rather than freshly invented ones.
+    const auto snapshot = dependencies_.graph_values ? dependencies_.graph_values()
+                                                     : ValueGraph::PublishedInstanceInputs{};
+    const auto prefix = instance + "/";
+    auto inputs = OrderedJson::array();
+    for (const auto &[key, value] : snapshot.inputs) {
+        if (!key.starts_with(prefix)) continue;
+        const auto port = key.substr(prefix.size());
+        if (port.empty() || port.find('/') != std::string::npos) continue; // A nested instance's port.
+        OrderedJson entry{{"port", port}, {"value", value.value},
+            {"source", std::string{ValueGraph::instanceInputSourceName(value.source)}}};
+        if (value.source == ValueGraph::InstanceInputSource::connected)
+            entry["connected"] = OrderedJson{{"node", value.node}, {"port", value.port}};
+        else
+            entry["parameter"] = value.parameter;
+        inputs.push_back(std::move(entry));
+    }
+    return {{"source_digest", digestJson(document_.sourceDigest())},
+            {"instance", instance},
+            {"published", snapshot.published},
+            {"generation", snapshot.generation},
+            {"frame", snapshot.frame},
+            {"inputs", std::move(inputs)}};
+}
+
+OrderedJson RenderConfigEditorService::getGraphCatalog(const Json &params) const {
+    requireOnly(params, {}, "get_graph_catalog");
+    return builtinGraphModuleRegistry().catalog();
 }
 
 OrderedJson RenderConfigEditorService::editFrameNodeOrder(const Json &params) {
