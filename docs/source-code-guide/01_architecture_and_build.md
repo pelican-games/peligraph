@@ -8,7 +8,7 @@ Pelican2のコードは、最初から個々のクラスを読むより、次の
 
 | 領域 | 役割 | 主な入口 |
 |---|---|---|
-| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L536)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L12)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
+| 実行ファイル | 引数を読み、ライブラリを起動する | [`src/player/main.cpp`](../../src/player/main.cpp#L536)、[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L13)、[`src/devstudio/main.cpp`](../../src/devstudio/main.cpp#L5)、[`src/spvlink/main.cpp`](../../src/spvlink/main.cpp#L1)（オフラインSPIR-VリンカCLI、[`spvlink.hpp`](../../src/core/shader/spvlink.hpp)を使用） |
 | 純粋ロジック | JSONやテキスト形式のパース・検証・合成。Vulkan不要 | [`src/project/CMakeLists.txt`](../../src/project/CMakeLists.txt#L1) |
 | エンジン本体 | ECS、入力、scene、描画、音声、物理、保存、RPC | [`src/core/CMakeLists.txt`](../../src/core/CMakeLists.txt) |
 | ゲーム/検証 | プロジェクト固有コード、fixture、単体・結合・golden test | [`projects/example/code/playercontrol.cpp`](../../projects/example/code/playercontrol.cpp#L1)、[`test/CMakeLists.txt`](../../test/CMakeLists.txt#L70) |
@@ -53,7 +53,7 @@ flowchart TD
 
 ### `pelican_schema_leaf` と `pelican_schema_core_adapter`
 
-宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L110) / [`Node`](../../src/schema/schema.hpp#L127) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L59)）。
+宣言は [`src/schema/CMakeLists.txt`](../../src/schema/CMakeLists.txt#L1) です。依存は `nlohmann_json` だけの STATIC ライブラリで、[`src/schema/schema.hpp`](../../src/schema/schema.hpp#L16) の `Pelican::Schema` 名前空間だけを持ちます。`FieldType` / [`FieldPresence`](../../src/schema/schema.hpp#L110) / [`Node`](../../src/schema/schema.hpp#L127) が、descriptor が core から project / Studio 側へ渡るときの**プロジェクト所有の再帰 wire モデル**です（`Node` 直前のコメントが規範）。ここでいう wire モデルとは、**層やプロセスの境界を越えて受け渡すためだけに定義した表現**のことです（配線の上を流れる形、という含み）。core 側の `SchemaNode` をそのまま渡さず、境界の手前で必ずこの型へ変換するので、core の内部型が project / Studio 側の型に染み出しません。`pelican_project` は PUBLIC にリンクします（[`target_link_libraries(pelican_project PUBLIC nlohmann_json pelican_schema_leaf PRIVATE picosha2)`](../../src/project/CMakeLists.txt#L60)）。
 
 core 側からこの葉を使うための橋が [`pelican_schema_core_adapter`](../../src/core/communication/CMakeLists.txt#L1) で、`schemavocabularyadapter` 1 対だけを持つ別 STATIC ターゲットです。`pelican_core` へは PRIVATE にリンクされ（[同 L20](../../src/core/communication/CMakeLists.txt#L20)）、この 1 ターゲットだけが `/we4061 /we4062`（GCC/Clang では `-Wswitch-enum -Werror=switch-enum`）で **enum の網羅を error に上げて**います。ここでいう網羅とは、`switch` が対象 enum の全列挙子を `case` で明示的に書いているか、という意味です（MSVC の C4061 は `default` があっても未記述の列挙子を、C4062 は `default` が無い場合を指摘します）。語彙の追加が黙って落ちないようにするための局所設定です。
 
@@ -84,7 +84,7 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 ### `pelican_cli`
 
-[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`project`、`dump-lowered-material`、`vrm` の7種です（[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L12) の分岐と [usage文字列](../../src/devcli/main.cpp#L35)）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
+[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`project`、`dump-lowered-material`、`vrm` の7種です（[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L13) の分岐と [usage文字列](../../src/devcli/main.cpp#L35)）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
 
 `project init` が書き出す雛形は、[`templateFiles()`](../../src/devcli/projectinit.cpp#L268) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。
 
@@ -384,9 +384,9 @@ fault injection の setter のように「テストからだけ触れて、製�
 
 | 条件 | 見るもの |
 |---|---|
-| test-only source が製品ターゲットに混ざっていない | `pelican_core` の `SOURCES` プロパティと test 側 TU のパス照合（[SOURCES の照合](../../test/run_wp380c_no_production_fault_setter.cmake#L25)） |
-| production header に setter の**定義**が無い | `scene.hpp` / `vertbufcontainer.hpp` を正規表現 `set[A-Za-z0-9_]*ForTesting[A-Za-z0-9_]*` + 実引数 + `{` で検査（[同 L36](../../test/run_wp380c_no_production_fault_setter.cmake#L37)） |
-| archive に symbol が無い | `dumpbin /symbols` の出力から4つの setter 名を探す（[同 L43](../../test/run_wp380c_no_production_fault_setter.cmake#L44)） |
+| test-only source が製品ターゲットに混ざっていない | `pelican_core` の `SOURCES` プロパティと test 側 TU のパス照合（[SOURCES の照合](../../test/run_wp380c_no_production_fault_setter.cmake#L37)） |
+| production header に setter の**定義**が無い | `scene.hpp` / `vertbufcontainer.hpp` を正規表現 `set[A-Za-z0-9_]*ForTesting[A-Za-z0-9_]*` + 実引数 + `{` で検査（[同 L36](../../test/run_wp380c_no_production_fault_setter.cmake#L69)） |
+| archive に symbol が無い | `dumpbin /symbols` の出力から4つの setter 名を探す（[同 L43](../../test/run_wp380c_no_production_fault_setter.cmake#L76)） |
 
 3条件が要るのは、1条件ずつでは抜け道が残るからです。symbol 検査だけでは header inline（symbol が出ない）を通し、source 検査だけでは別名の setter を通します。この gate 自体は Windows（`dumpbin` のある構成）でのみ登録されます。
 
