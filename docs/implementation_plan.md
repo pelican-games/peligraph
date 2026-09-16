@@ -23373,61 +23373,44 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 
 
 
-### AG-1b: 装着の runtime 経路を一本化し、event を port に流す(v0「往復」の段 2b)
 
-**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、2026-09-17、19 件、`<作業ディレクトリ>/dr_ag1b.md`)で草稿の決定 1〜5 が全部壊れたので v2 に書き直し、2 つの WP に割る。第 2 巡は AG-1b-1 の起票前に 1 回。**
-**規範: `v1_development_plan.md` AG-1、`design_animation_graph.md` §3・「評価器の装着と解除」、`design_graph_composition.md`。前提: AG-1a 統合済み。**
+### AG-1b: pose graph 経路を component 経路と同じ挙動に揃え、owner 単位で排他する(v0「往復」の段 2b。v3 = 最終)
 
-#### 前提の訂正(第 1 巡が確認した事実)
+**§4 規則 11 中段(animation の runtime と scene の prepare。文書形式と ABI は変えない)。実装者: Claude(Fable + Opus)。設計レビューは 2 巡(`<作業ディレクトリ>/dr_ag1b.md` 19 件、`<作業ディレクトリ>/dr_ag1b_r2.md` 15 件)で打ち切り。残余はコードレビューへ。見積: 中。**
+**規範: `v1_development_plan.md` AG-1、`design_animation_graph.md` §3、`design_graph_composition.md`。前提: AG-1a 統合済み(`5bc79586`)。**
 
-- `graph.instance` は **rendering pass 文書**(`pelican.graph` の root)にあり、scene 文書に instance 列は無い([renderingpassconfigregistration.cpp:834](../src/core/renderingpass/renderingpassconfigregistration.cpp#L834)、[graphcomposition.cpp:149](../src/project/graphcomposition.cpp#L149))。scene の CAS(`SceneRevision`)と pass 文書の CAS(`base_source_digest`)は別で、共通の版番号は無い([editorjournal.hpp:226](../src/core/communication/editorjournal.hpp#L226))
-- `graph.instance` の `parameters` は有限 scalar だけ、`definition` は同一文書内([graphcomposition.cpp:58](../src/project/graphcomposition.cpp#L58)、:70)
-- `pose.clip_sample` の入力は `time` 1 本で、runtime は loop を true に固定([posegraphruntime.cpp:401](../src/core/animation/posegraphruntime.cpp#L401))。今日の component 経路は `loop == false` で clamp する([animationjobs.cpp:68](../src/core/animation/animationjobs.cpp#L68))
-- event の実体は `{time, CurvePlaybackCommand}` の 4 値([valuegraph.hpp:45](../src/core/userpublic/valuegraph.hpp#L45))で名前を運べない。`AnimationNotificationKind` は凍結 ABI の 5 値([abi_v1.hpp:111](../src/core/userpublic/animation/abi_v1.hpp#L111))
-- AG-1a の宣言「pose は同 frame の scalar を読み、逆向きは無い」([graphcomposition.hpp:60](../src/project/graphcomposition.hpp#L60))
-- 出荷 project の scene に animation component は **1 件も無い**(demo は game code が `EvaluatorV1` を直接作る)
+#### 裁定の変更(第 2 巡の結論)
 
-#### AG-1b-1: 装着の runtime 経路の一本化(先)
+草稿(v1)の「正本の一本化」と v2 の「runtime 経路の一本化(derived instance の合成、ECS clip 経路の撤去)」は **v0 では撤回**する。理由(第 2 巡が確認した事実): `PoseGraph` の生成点は pass 文書の program だけで scene prepare で合成しても評価される場所が無い(carrier 不在)/ clip 経路は service を通さず `publishAnimationFrame` を直接呼ぶので撤去しても衝突で検出できない / 無名 object の service 登録は ECS 側にしか無い / `EvaluatorV1` の状態を写す API が `PoseGraphRuntime` に無い / event は node 出力から出す機構自体が無く、pose 側と renderer 側で values の評価位置が違うので「次 frame」が一意に定義できない。
 
-「正本」は変えない: component で書いた装着は component が保存の正本、pass 文書の `graph.instance` はそれが正本。変えるのは **runtime の経路**で、今日 2 本ある(ECS の clip 評価 + `EvaluatorV1` の直接装着 / `PoseGraphRuntime`)を 1 本にする。
+**v0 の裁定**: 姿勢の装着には **2 つの書き方**(animation component / pass 文書の `graph.instance` + `pose.*`)があり、runtime 経路も 2 本。両者は **同じ owner に共存しない**(`pose.sink_conflict@1`)ことで「二重 writer」を作らない。これは「同じ接続に二つの正本」ではなく「別の装着方式の排他」であり、v0 の約束はそのまま満たす。一本化は v0 の後に、carrier(scene が持つ derived program)と `EvaluatorV1` の状態移送 API を先に置いてから(記録)。
 
-1. **derived instance の合成**: SceneLoader の prepare(と component 追加の editor projection / effect)が animation component から、`graph.instance` と同じ展開結果の型(`PoseGraph` の compile 入力)を **合成**する。文書には書かない(保存は元の形)。`{clip, speed, loop, start_time}` → `pose.clip_sample{clip, speed, loop, start_time} → pose.skeletal`、`{graph, parameters[$list]}` → `pose.state_machine{graph}`(parameters は instance parameter の override として渡す。定義に値を埋めない → 編集で状態が初期化されない)
-2. **`pose.clip_sample` に node parameter `speed` / `loop` / `start_time` を足す**(node parameter は JSON literal なので bool 可)。`loop == false` は今日どおり clamp(`animationjobs.cpp:68` と同じ規則)。AG-1a の裁定に追記
-3. **ECS の clip 評価と `EvaluatorV1` の直接装着を撤去**し、`AnimationSystem` は derived instance を `PoseGraphRuntime` に attach する(publish 経路が 1 本になるので、受け入れ「一致」は 2 経路の比較ではなく **旧経路の golden との一致**で取る)
-4. **衝突**: 同じ owner に component と pass 文書の pose sink の両方 → scene prepare で `animation.attachment_conflict@1{owner}`(owner だけを比べる。値は比べない)。今日の `pose.sink_conflict@1` はそのまま(二重 writer の最後の砦)
-5. **無名 object**: derived instance の sink owner は component 所有の登録(今日の無名 object の経路)を使えるよう、`pose.skeletal` の owner 解決を拡張(AG-1a の「名前付きだけ」の制約を外す)
-6. **`PELICAN_WITH_ANIMATION=OFF`**: animation component を含む scene は `animation.module_unavailable@1` で名前付き拒否(今日は「読めるが動かない」= fail-silent。これを直す)
-7. **runtime 追加 / 削除**: `add_component` / `remove_component`(RPC、GameContext)で derived instance の合成 / detach を同じ経路で行う。scene prepare 専用にしない
-8. **journal**: `set_component_value` で `parameters` 行を変える → editor projection が derived instance の parameter override を更新し、`transferState` で時計と状態を引き継ぐ。undo は raw を戻す(WP382b-fix の契約)。CAS は scene 側 1 本
-9. **GameContext**: `setAnimationGraphParameter` / `forceAnimationGraphState` は derived instance の parameter / 状態を変える実装に(名前 = anim_graph の宣言名)。`setGraphParameter` は pass 文書 instance 用のまま。**2 つの API は対象が違う**(委譲はしない。記録)
-10. **owner identity**: derived instance の owner は component と同じ `AuthoringObjectId`(load 1 回で安定)。prefab unpack / 複製 / undo restore は component と同じ規則に従う(instance を別に保存しないので、識別の弱さは増えない)
+#### 決定(v3)
 
-受け入れ(§4 規約 10):
+1. **`pose.clip_sample` の parity**: node parameter `speed`(既定 1)/ `loop`(既定 true)/ `start_time`(既定 0)を足し、`PoseGraphRuntime` は `loop == false` のとき service を **wrap 無しで**呼ぶ(`animationservice.cpp:1342` の `samplePoseAt(..., wrap = true, …)` を loop に従わせる。cursor ABI は触らない)。同時に、`canonicalTime` が絶対 clip 時刻を返すのに `sampleTime` が `+begin` する **既存の位相ずれ**(`clip.start != 0` の clip。[posegraphruntime.cpp:401](../src/core/animation/posegraphruntime.cpp#L401) → [animationjobs.cpp:284](../src/core/animation/animationjobs.cpp#L284))を直す
+2. **parameter 編集で状態を失わない**: pose 側の scalar 状態(`pose_scalars`、[animationsystem.cpp:56](../src/core/ecs/predefined/animationsystem.cpp#L56))を `prepareGraphRuntimeTransfer`([scenegraphruntime.cpp:149](../src/core/loader/scenegraphruntime.cpp#L149))の対象に入れ、`PoseGraphRuntime` に **attachment 単位の状態移送**(owner + node id が一致する `EvaluatorV1` を新 program へ `rebind()` で引き継ぐ)を足す。instance parameter の変更は既存の `setGraphParameter` / `graphParameterValues`([scenegraphruntime.cpp:79](../src/core/loader/scenegraphruntime.cpp#L79))の override 経路を使い、program を作り直さない
+3. **OFF build の fail-fast**: `PELICAN_WITH_ANIMATION=OFF` で animation component を含む scene は **scene prepare** で `animation.module_unavailable@1`(codec ではない: codec は OFF でも tool が scene を読むために残す)。prepare 失敗なので rollback 契約に乗る
+4. **排他の完全化**: 今日の `component_writer` 判定([posegraphruntime.cpp:585](../src/core/animation/posegraphruntime.cpp#L585))は clip / graph の非空だけを見る。**同じ owner の clip 経路(service を通らない直接 publish)と pose graph 経路**が同 frame に両方 publish しないことを、`publishAnimationFrame` 側で **owner ごとの writer token**(frame revision 付き)で検査し、2 本目を `pose.sink_conflict@1` で拒否する(黙って二重書きしない)
+5. **GameContext**: `setAnimationGraphParameter` / `forceAnimationGraphState` は component 経路の評価器に、`setGraphParameter` は pass 文書 instance に。**2 つの API は対象が違う**(委譲しない。docs に明記)
+6. **event(旧 AG-1b-2)は v0 の後**: 必要な機構(node 出力からの event 発行、`EvaluationState::Event` の名前 payload、pose 側と renderer 側の評価位置の統一)を `design_graph_composition.md` の残件に追記し、着手しない。`pose.state_machine` の `events` / `state_events` 契約は **削除**(存在するのに繋げない契約を残さない。AG-1a の裁定を訂正)
 
-1. 新 fixture(component で clip 装着、`loop: true` と `loop: false` の 2 つ)の GPU 評価済み姿勢属性が、**AG-1b-1 前の経路で取った golden と一致**(clamp を含む)。`loop == false` の clamp を消すと落ちる
-2. component で graph 装着 + `parameters` 行の fixture: 姿勢が parameter に追随。journal で行を変えると姿勢が変わり、undo で raw bytes が戻り、**state machine の状態が初期化されない**(`transferState`)。引き継ぎを消すと state が initial に戻って落ちる
-3. 同 owner に component と pass instance → `animation.attachment_conflict@1`。無名 object の component 装着が動く(今日 = AG-1a の pose graph 経路では動かない)
-4. OFF build で animation component の scene → `animation.module_unavailable@1`(今日 = 読めて動かない)。拒否を消すと黙って rest pose で落ちる(golden 比較)
-5. `add_component` で runtime に animation component を足す → 姿勢が動く。`remove_component` → 止まる(今日 = `sink_conflict` を踏むか変換されない)
-6. 出荷 4 project の bytes 不変(component 装着は無いので golden は動かない)。旧経路(ECS clip 評価、`EvaluatorV1` 直接装着)の code が残っていないことを **旧経路を復活させると二重 writer で `pose.sink_conflict@1` になる**形で示す
+#### 受け入れ(§4 規約 10)
 
-やらないこと: event(AG-1b-2)/ root motion(AG-2)/ Studio の装着 GUI の二重の整理(AG-3)/ pass 文書 instance の scene への移動(しない)。
+1. `pose.clip_sample{loop: false}` の pose graph 装着と、同じ clip を `loop: false` の component で装着した個体の GPU 評価済み姿勢属性が **同一 frame 列で一致**(clamp 後の最終 frame まで)。`start != 0` の clip fixture で位相が一致(今日 = pose graph 側だけずれる)。wrap を loop に従わせる変更を消すと落ちる
+2. instance parameter を `setGraphParameter` で変えても `pose.state_machine` の現在 state と clip cursor が保たれる(今日 = program 再生成で initial に戻る経路がある)。状態移送を消すと state が initial に戻って落ちる。scene 再読込では初期化される(対照)
+3. OFF build: animation component を含む scene の load が `animation.module_unavailable@1` で prepare 失敗し、旧 scene が保たれる(rollback)。今日 = 読めて動かない
+4. 同 owner に component の clip 装着と pose graph 装着 → `pose.sink_conflict@1`(今日 = graph 装着は検出、clip 装着は黙って二重書き)。writer token を消すと二重書きになり golden で落ちる
+5. 出荷 4 project bytes 不変。既存 animation test(`[skeletal]`、anim graph、VRM)無変更で緑。`PELICAN_WITH_RPC=OFF` build
 
-#### AG-1b-2: event を port に流す(後。着手前の 3 裁定)
+#### やらないこと
 
-第 1 巡が示した独立の破綻 5 つ(向き / payload / 型 id / ABI / 循環)は、先に裁定を置かないと設計にならない。ここに裁定を置き、実装は AG-1b-1 の後。
+正本 / runtime 経路の一本化(v0 の後)/ event(v0 の後)/ root motion(AG-2)/ 無名 object の pose graph 装着(記録: service 登録は ECS 側にしか無い)/ layer・additive / timeline view(AG-3)。
 
-- **向き(D5)**: AG-1a の宣言は「**同 frame 内**では pose は scalar を読み逆向きは無い」と読み替える。animation → values の辺は **次 frame に届く**(1 frame の遅延を契約に明記。`state_events` は animation phase の末尾で publish され、values partition は次 frame の評価で読む)。これで compile 時の循環(A → events → B → events → A)は遅延で切れ、検出は不要。決定性: 同 frame の event は `(source node id, 発生順)` で順序付け
-- **payload(D6)と型 id(D7)**: 新しい型 `pelican.event.animation@1{kind: state_enter | state_exit | clip_marker, name, time}` を pose module が登録する(`state_events` の型)。既存の `pelican.event.playback_control@1` は変えない。**変換 node `event.animation_to_playback{name → command}`**(`pelican.value` 側)で `audio.playback` / `value.event_clock` に繋ぐ(registry の exact 一致を守る)。`design_graph_composition.md` の残件「任意 payload」はこの 1 型で閉じる(汎用 payload は作らない)
-- **入力側(D8)**: `events` 入力は評価器の `notify()`(凍結 ABI)には渡さない。**event 名と同名の bool parameter を 1 tick だけ 1 にする**(`setParameter` の既存経路。anim_graph v1 の「bool の一回性 consume は利用者責務」をこの port が肩代わりする)。ABI は変えない
-- 受け入れは AG-1b-2 の起票時に(`state_events → animation_to_playback → audio.playback` で音が鳴る、遅延 1 frame の観測、edge を消すと鳴らない、順序の決定性)
+#### AG-1a の裁定への追記
 
-#### AG-1a の裁定への追記(第 1 巡の指摘)
-
-- `pose.clip_sample` は node parameter `speed / loop / start_time` を持つ(AG-1b-1 で追加。今日は `time` だけ)
-- 評価の向きの宣言は「同 frame 内」に限る。frame を跨ぐ animation → values の event 辺は AG-1b-2 で開く
-- `pose.state_machine` の `events` / `state_events` の型は `pelican.event.animation@1`(AG-1b-2 で登録。今日 `playback_control@1` で登録している契約は AG-1b-2 で差し替える)
-
+- `pose.clip_sample` は node parameter `speed / loop / start_time` を持つ(AG-1b で追加)
+- `pose.state_machine` の `events` / `state_events` 契約は削除(AG-1b。event は v0 の後)
+- 評価の向きの宣言(同 frame 内で pose は scalar を読み逆向きは無い)はそのまま
 
 ### P-1: パラメータの供給元(mode)と由来 —— まず `graph.instance` の入力だけ(v0「往復」の段 3)
 

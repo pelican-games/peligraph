@@ -125,7 +125,7 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 | 段 | 内容 | 閉じ方 |
 |---|---|---|
 | **AG-0 登録契約と purge** ✅ `adb73793` | module が型(opaque handle + identity + 世代)・op(`GraphOperationContracts`)・sink を登録する契約を明文化。animation を外した build で共通グラフが compile・評価・描画できる | `PELICAN_WITH_ANIMATION` OFF の build と test。未登録の型・op を使う文書は `graph.type_unregistered@1` 等で名前付き拒否 |
-| **AG-1 pose モジュールと正本の一本化**(1a ✅ `5bc79586`、1b は v2 でレビュー中) | `pelican.pose@1` を登録型(port を流れるのは handle と layout 世代、bytes ではない)、`clip_sample` / `blend` / `state_machine`(既存 `pelican.anim_graph` を包む 1 ノード、文法は増やさない)/ `retarget` の op、skeletal と transform の sink。animation component の `clip XOR graph` を `graph.instance` に一本化(読込時 1 回変換、旧文法の並走は無し)。parameter は value port、遷移と clip event は typed event | 同一 scene で clip / graph / value port 駆動 → 評価済み姿勢属性の GPU 値が変わる。保存 → 再読込で同一。value port を消すと GameContext 経由だけになる |
+| **AG-1 pose モジュールと正本の一本化**(1a ✅ `5bc79586`、1b は v3 = parity + 排他。一本化は v0 の後) | `pelican.pose@1` を登録型(port を流れるのは handle と layout 世代、bytes ではない)、`clip_sample` / `blend` / `state_machine`(既存 `pelican.anim_graph` を包む 1 ノード、文法は増やさない)/ `retarget` の op、skeletal と transform の sink。animation component の `clip XOR graph` を `graph.instance` に一本化(読込時 1 回変換、旧文法の並走は無し)。parameter は value port、遷移と clip event は typed event | 同一 scene で clip / graph / value port 駆動 → 評価済み姿勢属性の GPU 値が変わる。保存 → 再読込で同一。value port を消すと GameContext 経由だけになる |
 | **P-1 パラメータ mode と由来** | Inspector の欄に mode(固定値 / 接続)と導線(曲線で制御 / 別の出力に接続 / 供給元を開く)。「接続」は共通グラフの edge そのもの(Inspector と graph は同じ edge の別 view)。parameter 宣言に「変更時の扱い」を持たせる。`get_status` の実効値に instance・port・時計を載せる | GUI で「曲線で制御」→ 文書に `value.curve` / `value.playback` と edge が生える。graph 側で edge を消すと欄が固定値に戻る。分類「値だけ」以外の欄は接続不可と表示され、RPC でも拒否 |
 | **P-2 往復のパイロット 2 本** | (a) Bloom: 使う → 供給元を接続 → 内部を見る(参照を保つ)→ このプロジェクト用に派生 → 共有部品として保存 → 別プロジェクトで使う。(b) 曲線駆動の blend: 姿勢部品で同じ往復(AG-1 の受け入れを兼ねる) | 「内部を見る」で materialize されない(標準部品の更新を受け続ける)。派生後は元を変えない。保存した部品が別プロジェクトで同じ出力 |
 | **AG-2 root motion** | `state_machine` / `clip_sample` の出力 port(移動量・回転量)。評価順 animation → root motion → movement → physics query → publish を 1 か所に固定 | root motion を持つ clip で個体が移動、出力を消すと動かない |
@@ -134,7 +134,7 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 | **AG-3 観測と view** | 定義を見ているのか特定 instance の評価結果を見ているのかを UI で区別。時間軸 view(まず読み取り)。anim graph の state / event を `get_status` で | GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路 |
 | **R 群(整理・操作感・サンプル・凍結)** | 「同じ接続に二つの正本」の撤去(旧 `pelican.value_graph` の bindings 文書、component 固有 graph の残骸、到達不能な legacy 分岐)。新 dialog の実操作と複合 undo。学習サンプルは概念 1 つに 1 個、代表ゲームは制作経路の全項目を 1 本。凍結一覧と v0 tag | 表の各行を「撤去 / 維持(理由)」で閉じる。サンプルと代表ゲームが smoke corpus に入る |
 
-進捗(置換更新): **基準(旧 R0)は 2026-09-17 `36e8115f` で緑**(29 件が赤 → 6 クラスタで修正、全数 1864 緑)。**AG-0 着地 `adb73793`**(全数 1869 緑)。**AG-1a 着地 `5bc79586`**(全数は確認中)。AG-1b は設計レビュー第 1 巡で草稿の前提が崩れ(instance は pass 文書にある、`clip_sample` に loop が無い、event の payload と凍結 ABI)、v2 で AG-1b-1(runtime 経路の一本化)と AG-1b-2(event、3 裁定を先置き)に分割、第 2 巡中。P-1 は草稿起票済み、設計レビュー中。
+進捗(置換更新): **基準は 2026-09-17 `36e8115f` で緑**。**AG-0 着地 `adb73793`**、**AG-1a 着地 `5bc79586`**。AG-1b は設計レビュー 2 巡で「一本化」を v0 では撤回し、v3 = pose graph 経路の parity(loop / speed / start_time、位相ずれ、状態移送)+ owner 単位の排他 + OFF build の fail-fast に確定(event は v0 の後)。P-1 は v2(`graph.instance` の入力だけ)で第 2 巡中。
 
 #### 部品の 3 操作(Houdini HDA を参照)
 
