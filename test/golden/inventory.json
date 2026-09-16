@@ -302,7 +302,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "e6ef792d6117283936513e061c71b7be41541463f560ef8dadef9bcf009132e1",
+      "expected_png_sha256": "903c5447fc9ae2a11ba5a377b3d01b39110f082ae995b639d1b07359495a8e2c",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -336,7 +336,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "e6ef792d6117283936513e061c71b7be41541463f560ef8dadef9bcf009132e1",
+      "expected_png_sha256": "903c5447fc9ae2a11ba5a377b3d01b39110f082ae995b639d1b07359495a8e2c",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
@@ -370,7 +370,7 @@
         "expected.png",
         "tolerance.json"
       ],
-      "expected_png_sha256": "36e3027298af3c7001013d1f79ab58bb440cf116c3149e390f0f08e38a40cb0b",
+      "expected_png_sha256": "d3ee0840617e5c90afa61346fb1a951acd6d394f5da52ba2569497e3da794b94",
       "tolerance": true,
       "vat": "on_and_off",
       "traces": [
