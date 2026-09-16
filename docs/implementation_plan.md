@@ -23374,6 +23374,12 @@ pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1
 
 
 
+#### AG-1a 完了記録(統合側。2026-09-17、`5bc79586`)
+
+- 実装(Opus、`agent/ag1a` `b59276e3` → 作業ブランチ merge `44e224d5`): 決定 1〜4 + `PELICAN_WITH_ANIMATION`。受け入れ 1〜4 を変異で赤確認(publish を消す → GPU 姿勢が rest のまま / `setParameter` の同期を消す → value port で遷移しない / rig 比較を消す → layout が混ざる / writer の重複判定を消す → 二重 publish = `duplicate_revision`)。OFF 構成: dumpbin で animation の symbol ON 4384 / OFF 0、共通グラフ test 緑、pose 文書は `graph.operation_unregistered@1`。`SKIP_DEVSTUDIO=OFF` / `PELICAN_WITH_RPC=OFF` build(後者の既存の未ガード test target 1 つは記録)
+- 統合側: merge の衝突 8 file は AG-0 の二重(内容同一)、`skeletal_gltf_test.cpp` は R0 の assertion と AG-1a の case が自動 merge。W1 緑、全数 **1876 件中 1875 緑 + `Studio receives the running example fatal text …` 1 件は -j4 の flake(直列で緑、45.9 s)**
+- 記録: 実装時の裁定(上)と AG-1b v3 での追記(`clip_sample` の speed / loop / start_time、`events` 契約の削除)。コードレビュー(codex)は枠が戻ってから rev_ag1a
+
 ### AG-1b: pose graph 経路を component 経路と同じ挙動に揃え、owner 単位で排他する(v0「往復」の段 2b。v3 = 最終)
 
 **§4 規則 11 中段(animation の runtime と scene の prepare。文書形式と ABI は変えない)。実装者: Claude(Fable + Opus)。設計レビューは 2 巡(`<作業ディレクトリ>/dr_ag1b.md` 19 件、`<作業ディレクトリ>/dr_ag1b_r2.md` 15 件)で打ち切り。残余はコードレビューへ。見積: 中。**
