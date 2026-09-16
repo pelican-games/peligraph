@@ -91,6 +91,72 @@ RT3〜RT7 は v1 の対象候補として全て残す。AS の graph node 化は
 
 ## 開発順序
 
+### v0 の約束と「往復」(2026-09-16、Fable 提案。利用者と方向を確認済み、細部は未確定)
+
+2026-09-15 の「アニメーショングラフの区切りと v1 洗練」を、利用者の製品思想([pelican_vision.md](pelican_vision.md))と外部リサーチ(Houdini HDA / TouchDesigner / Gaffer / Falcor / Hydra・MaterialX / Blender Simulation Zone / VS Code manifest)を踏まえて書き直したもの。
+v0 は機能の総数ではなく、**約束する制作体験**で切る。
+
+**pelican の中心**: シーン・資産・時間・機能の接続を制作物の正本として持ち、GUI でもコードでもエージェントでも同じ編集ができる。描画方式や高度な機能は、その正本を壊さずに交換・分解・除去できる。
+利用者から見た一本の流れは **使う → 手続き化する → 開く → コードで変える → 再び部品にする** で、v0 で最も完成させる価値があるのはこの往復。
+
+#### v0 の約束(4 シナリオ。各行の右が受け入れの形)
+
+| シナリオ | 内容 | 受け入れ(§4 規約 10) |
+|---|---|---|
+| **作る** | 用意された scene から、異なる時計で動く対象と、グラフで制御される parameter を作る | GUI の操作列と RPC の呼び出し列が **同じ文書 bytes** になる。片方だけの操作が無い |
+| **出力する** | 同じ scene をリアルタイムで動かし、対応範囲を明示したうえで指定時刻または replay からオフライン出力する | 指定時刻 t の連番出力が決定的(2 回で bytes 一致)。対応外のノードは名前付きで拒否され、近似や省略をしない |
+| **拡張して持ち出す** | 標準部品を派生させ、グラフまたはコードを変更し、別の空プロジェクトで再利用する | 本体ツリーの外にあるテンプレート repo が公開 SDK と文書形式だけで build・実行できる。内部ヘッダや手作業を要求しない |
+| **外す・失敗させる** | モジュールを外した構成が成立し、依存が欠ける作品は名前付きで拒否される。失敗した reload で旧世代が壊れない | `PELICAN_WITH_*` OFF の build と test。欠落依存の named reject。既存の rollback / 世代 test |
+
+#### v0 で凍結するもの / 広く約束しないもの
+
+| 領域 | 凍結する | v0 では約束しない |
+|---|---|---|
+| 文書・編集 | 型と port の意味、接続の正本(edge)、永続 ID、CAS と undo の基本契約、schema version の分離(文書 / op の意味 / package / native ABI は別の番号) | 保存の内部最適化、コンパイラの実装 |
+| 共通グラフ | definition と instance の関係、owner、値・状態・イベントの区別、**ノードの評価分類**(直接評価 / 初期状態からの replay / ベイク済み / 記録が無ければ不可) | 全 domain の高度な最適化、全種類の完全な seek |
+| パラメータ | 固定値と一方向の供給元の一貫した操作、現在値と供給元(instance・port・時計)の観測、**変更時の扱い**(値だけ / 再コンパイル / 再構築)の宣言 | 任意の式言語、双方向 bind |
+| 描画 | 同じ scene を使う、対象を限定したラスタとオフライン RT の完成経路。共通に使える部分と renderer profile を要求する部分の明示 | 全 RT 機能の方式間互換、映画向け機能の網羅 |
+| 拡張 | package manifest の最小形(名前空間と版、必要な engine / SDK、依存、提供する型・op・部品、必要 GPU 機能、説明)、登録契約(型 / op / sink)、purge ゲート | native ABI の永久互換、稼働中の任意 module の unload |
+
+「一つのグラフモデル」は意味の共通化であり、一枚のキャンバスではない。Studio は制作対象 / 関係 / 時間 / 実行結果の view に分け、同じ正本を見る。authoring graph と展開・コンパイル済みの実行グラフは混同せず、Frame Plan から元の feature・node・コードへ戻れるようにする(生成結果を第二の正本にしない)。
+
+#### 段(順序。R 群は前段の後)
+
+| 段 | 内容 | 閉じ方 |
+|---|---|---|
+| **AG-0 登録契約と purge** | module が型(opaque handle + identity + 世代)・op(`GraphOperationContracts`)・sink を登録する契約を明文化。animation を外した build で共通グラフが compile・評価・描画できる | `PELICAN_WITH_ANIMATION` OFF の build と test。未登録の型・op を使う文書は `graph.type_unregistered@1` 等で名前付き拒否 |
+| **AG-1 pose モジュールと正本の一本化** | `pelican.pose@1` を登録型(port を流れるのは handle と layout 世代、bytes ではない)、`clip_sample` / `blend` / `state_machine`(既存 `pelican.anim_graph` を包む 1 ノード、文法は増やさない)/ `retarget` の op、skeletal と transform の sink。animation component の `clip XOR graph` を `graph.instance` に一本化(読込時 1 回変換、旧文法の並走は無し)。parameter は value port、遷移と clip event は typed event | 同一 scene で clip / graph / value port 駆動 → 評価済み姿勢属性の GPU 値が変わる。保存 → 再読込で同一。value port を消すと GameContext 経由だけになる |
+| **P-1 パラメータ mode と由来** | Inspector の欄に mode(固定値 / 接続)と導線(曲線で制御 / 別の出力に接続 / 供給元を開く)。「接続」は共通グラフの edge そのもの(Inspector と graph は同じ edge の別 view)。parameter 宣言に「変更時の扱い」を持たせる。`get_status` の実効値に instance・port・時計を載せる | GUI で「曲線で制御」→ 文書に `value.curve` / `value.playback` と edge が生える。graph 側で edge を消すと欄が固定値に戻る。分類「値だけ」以外の欄は接続不可と表示され、RPC でも拒否 |
+| **P-2 往復のパイロット 2 本** | (a) Bloom: 使う → 供給元を接続 → 内部を見る(参照を保つ)→ このプロジェクト用に派生 → 共有部品として保存 → 別プロジェクトで使う。(b) 曲線駆動の blend: 姿勢部品で同じ往復(AG-1 の受け入れを兼ねる) | 「内部を見る」で materialize されない(標準部品の更新を受け続ける)。派生後は元を変えない。保存した部品が別プロジェクトで同じ出力 |
+| **AG-2 root motion** | `state_machine` / `clip_sample` の出力 port(移動量・回転量)。評価順 animation → root motion → movement → physics query → publish を 1 か所に固定 | root motion を持つ clip で個体が移動、出力を消すと動かない |
+| **O-1 オフライン出力** | 指定時刻 t の決定的評価と連番出力(CLI)。評価分類を各ノードが宣言し、replay が要るノードには初期状態からの replay、記録が要るノードには named reject。**状態を進めることと、状態から値を読むことを分ける**(1 frame を複数回サンプルしても game 状態と音 event が進まない) | 同 t の 2 回出力で bytes 一致。状態付きノードに時刻だけ渡した出力は拒否される |
+| **X-1 持ち出し** | 本体ツリー外のテンプレート repo(graph / feature パックが主力、native 拡張は SDK とビルド条件を固定)。package manifest とカタログ(Studio 検索・CLI 一覧・エージェント向け) | シナリオ「拡張して持ち出す」の test |
+| **AG-3 観測と view** | 定義を見ているのか特定 instance の評価結果を見ているのかを UI で区別。時間軸 view(まず読み取り)。anim graph の state / event を `get_status` で | GUI から 装着 → 編集 → 観測 → 保存 → 再読込 を 1 経路 |
+| **R 群(整理・操作感・サンプル・凍結)** | 「同じ接続に二つの正本」の撤去(旧 `pelican.value_graph` の bindings 文書、component 固有 graph の残骸、到達不能な legacy 分岐)。新 dialog の実操作と複合 undo。学習サンプルは概念 1 つに 1 個、代表ゲームは制作経路の全項目を 1 本。凍結一覧と v0 tag | 表の各行を「撤去 / 維持(理由)」で閉じる。サンプルと代表ゲームが smoke corpus に入る |
+
+#### 部品の 3 操作(Houdini HDA を参照)
+
+- **内部を見る**: 参照関係を保ったまま、構成・値・コードを確認する。開いただけで materialize しない。
+- **このプロジェクト用に派生させる**: 独立した定義を作り、元の標準部品を変更しない(既存の fork / materialize / 区域差し替えをこの語彙に揃える)。
+- **共有部品として公開する**: 公開する入出力と依存関係を整理し、再利用可能な単位にする。
+- prefab / graph definition / render feature を同じ文書形式に潰さない。「公開インターフェースを持つ再利用部品」としての操作感だけを揃える。
+- 最適化版と分解版は、公開される設定と意味の契約を一つにし、実行実装を複数にする。利用者が内部を書き換えたら元の高速実装を無条件に使わない。コードノードはコードノードのまま残り、入出力・副作用・ソースが見える。
+
+#### module と package
+
+- **module** = 型・op・sink を登録する実行上の単位。**package** = 文書・shader・コード・説明・サンプル・依存関係をまとめて配る単位。package はコードを持たなくてよい(「プラグイン = DLL」にしない)。
+- 公開の種類: graph・機能パック(最初の主力)/ native 拡張 module(SDK とビルド条件を固定、再ビルド許容)/ 外部ツール連携と編集支援(文書形式と公開 RPC を境界に、実行コアから分離)。
+- 標準部品は本体 repo で共同開発するが、登録契約・依存・purge test は外部拡張と同じ境界を通す。実験的なものは Labs 相当の公開単位。外部拡張テンプレートだけは別 repo で成立させる。導入は固定 revision からの展開で足り、作品が使った部品の版を固定できることを優先する。
+- パージ可能と稼働中 unload は別。v0 はビルド時に外せることと起動時の依存検証を保証し、hot reload は寿命管理を検証した種類に限る。
+
+#### やらない(v0 の後、またはパージ可能モジュールとして)
+
+双方向 bind / 任意の式言語 / layer・additive・IK・手付け / 2D ノード集(instanced raster + compute + attribute buffer の副機能群)/ 映像向け合成ノード / timeline 文書(時間軸は view)/ 物理 → graph 入力 / native ABI の永久互換 / 任意 module の unload / マーケットプレイスと細分化された repo 群。
+
+#### 参照先(照合用。断定ではない)
+
+部品化 = Houdini Digital Asset(内部展開、parameter promotion、編集許可と定義への復帰)。パラメータ操作 = TouchDesigner の Parameter Mode と Component Time。シーンと評価 = Gaffer の Box / Reference / Context。描画拡張 = NVIDIA Falcor(`reflect()` と `execute()` の分離、Mogwai)。描画方式の境界 = Hydra の scene index / filter / render delegate、MaterialX の NodeDef と実装の分離。状態と時間 = Blender Simulation Zone(前状態・キャッシュ・ベイクの境界)。登録と発見 = VS Code の extension manifest と contribution point。コード側の説明をノードへ反映 = vvvv。
+
 ### 全体グラフを正本にする（2026-09-07、直近の方針）
 
 コンポーネント固有のグラフを別系統として増やす進め方を見直す。
