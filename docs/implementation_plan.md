@@ -23229,6 +23229,67 @@ uniform / 非一様 scale の golden(engine は受理、golden 外)/ 楕円体�
 3. record型不整合はWP382dのscene prepare → 共通AS plan → record encodeで読み込み時に拒否される。WP386bのproduction対照でも描画前の `pelican.ray_binding_record_invalid@1` を確認済み。検査経路の追加は不要。生成anyhitのproceduralへの誤適用はWP386b worktreeで修正・検証済み、統合は未了。
 4. table使用時のreuse阻害はrev384既知残余のまま。現行digestを比較する時点を整理し、判定を消すだけの修正はしない。layout無し経路のGPU寿命破壊は未実測であり確定欠陥と呼ばない(当該入力は今回load時に拒否)。
 
+
+### AG-0: 共通グラフの module 登録契約と purge ゲート(v0「往復」の段 1)
+
+**§4 規則 11 中段(`src/project` の純粋層 + core の backend 接続。出荷物の挙動は「未登録の op / 型を名前付きで拒否する」だけ変わる)。実装者: Claude(Fable + Opus subagent。codex は上限中)。検証: 統合側変異 + Claude。見積: 小〜中。**
+**規範: `v1_development_plan.md`「v0 の約束と『往復』」AG-0、`design_graph_composition.md`。前提: 共通グラフ `pelican.graph` v1(`expandGraphDocument` / `validateGraphPorts` / `partitionGraphDocument`)統合済み。**
+
+#### 今日の対照(§4 規約 10。実測は HEAD `f8d0c09b`)
+
+- op の契約は **静的な表** [`valueGraphOperationContracts()`](../src/project/graphpartition.cpp#L82)(value.* / event.* / audio.* / render.scalar)と、[`partitionGraphDocument()`](../src/project/graphpartition.cpp#L116) の resolver に **ハードコードされた `render.*` の分岐**。module が op を足す入口は無い
+- 型は [`makeBuiltinLogicalTypeRegistry()`](../src/project/logicalrendertype.hpp#L152) の built-in だけ(`registerSchema` の呼び手は [logicalrendertype.cpp](../src/project/logicalrendertype.cpp) 内の 9 箇所のみ)。module が型を足す入口は無い
+- 未知の op は `std::invalid_argument("unknown graph operation: …")`(散文)。未知の型は `LogicalTypeRegistry::schema()` の例外(散文)。名前付き code(`name@1`)が無い
+- core 側の実行 backend([valuegraph.cpp:251](../src/core/userpublic/valuegraph.cpp#L251) `unknown value graph operation`)も op 名の switch で、「契約はあるが backend が無い op」を区別しない
+- module の manifest(名前空間・版・提供する型 / op / sink・説明)は存在しない。build option の登録簿は [cmake/pelican_feature_registry.cmake](../cmake/pelican_feature_registry.cmake) にあるが、共通グラフの op と対応していない
+
+観測(機能が無いとき): 新しい op や型は `graphpartition.cpp` を書き換えないと足せず、外した module の op を含む文書は散文の例外で落ちる(名前付き拒否ではない)。
+
+#### 決定
+
+##### 決定 1: `GraphModuleRegistry`(`src/project`、純粋層)
+
+- `GraphModuleManifest { namespace(例 "pelican.value"), version(u32), description, types: [SemanticTypeSchema…], operations: map<op名, GraphOperationContract | GraphOperationContractFactory(parameters → contract)>, sinks: [op名…] }`。op 名は `<namespace の末尾>.<name>` を強制しない(既存名 `value.add` / `render.buffer` / `audio.volume` を維持)が、**同じ op 名の二重登録は `graph.operation_duplicate@1{op, first_module, second_module}`**、同じ namespace の二重登録は `graph.module_duplicate@1`
+- `GraphModuleRegistry` は `registerModule(manifest)` と `resolveOperation(node) → contract`、`typeRegistry() → const LogicalTypeRegistry&`(module の型を `registerSchema` で足した registry)、`catalog() → json`(manifest の一覧。発見用)を持つ。**登録順に依存しない**(catalog は namespace 順、契約の照合結果は登録順で変わらない)
+- 未登録の op: `graph.operation_unregistered@1{node, op}`。未登録の型を output に持つ契約: `graph.type_unregistered@1{node, type}`。既存の散文例外をこの 2 つに置換する(散文の `unknown graph operation` を残さない)
+- 例外型は `GraphRegistryError : std::runtime_error` に `code`(`name@1`)と `detail`(json)を持たせる。既存の `PrefabError` と同じ形
+
+##### 決定 2: 既存の op を 3 つの built-in module に移す(挙動は不変)
+
+- `pelican.value`(value.* / event.* / value.trigger_clock / value.event_clock)、`pelican.audio`(audio.playback / audio.volume / audio.pitch と型 `pelican.audio.voice@1` / `pelican.event.playback_control@1`)、`pelican.render`(render.scalar / render.buffer / render.attribute / render.image / render.compute / render.fullscreen / render.raster。`render.*` の parameter 依存の契約は **factory** として登録)
+- `valueGraphOperationContracts()` と `partitionGraphDocument()` の resolver は registry から引く形に置換し、静的表とハードコード分岐を消す(第二の流儀を残さない)。`makeBuiltinGraphModuleRegistry()` が 3 module を登録した registry を返し、既存の全呼び手(ValueGraph::Graph、partition、scene の graph runtime、Studio の型照合)がそれを使う
+- 受け入れ: 既存の graph 系 test(`[render-feature]`、`[wp98]`、`[skeletal]` の graph 分、`graph_composition_fixture` を使うもの)が **無変更で緑**。出荷 4 project の bytes 不変
+
+##### 決定 3: 実行 backend の「契約はあるが実装が無い」を名前付きに
+
+- core 側の backend(ValueGraph の評価、renderer の lowering、audio)は op 名で dispatch する構造を保つが、末尾の散文例外を `graph.operation_unexecutable@1{node, op, backend}` に置換する(契約の登録と backend の存在は別。test-only module はこれで区別される)
+
+##### 決定 4: purge ゲート = test-only module
+
+- test は `pelican.test.opaque` module(型 `pelican.test.token@1`(opaque、constructor は scalar 扱い)、op `test.emit → token`、op `test.consume(token)`)を **test の中で** registry に足し、それを使う `pelican.graph` 文書が expand → validate → partition を通ることを確認する。次に **module を足さない registry** で同じ文書を通し、`graph.operation_unregistered@1` になることを REQUIRE(named reject で、散文でも黙殺でもない)。型だけ未登録(op は登録、output 型が無い)の変異で `graph.type_unregistered@1`
+- production には test module の symbol が無いこと(既存の `dumpbin` gate `wp380c_production_has_no_fault_setter_symbol` の対象に `registerTestOpaqueGraphModule` を足す)
+- `PELICAN_WITH_ANIMATION` の build option は **AG-1a で**(pose module の境界ができた時に、その module の登録を option で外す。AG-0 では animation を触らない)
+
+##### 決定 5: manifest に「評価分類」と「変更時の扱い」の欄を予約する
+
+- `GraphOperationContract` に `evaluation: direct | replay | baked | recorded`(既定 `direct`)と、parameter ごとの `change: value | recompile | rebuild`(既定 `value`)を足す。**AG-0 では値を保持して catalog に出すだけ**(検査は O-1 / P-1 で)。既存 op の分類: value.* は `direct`、`value.trigger_clock` / `value.event_clock` / `audio.playback` は `replay`(状態を持つ)。render.* の parameter は `rebuild`
+
+##### 決定 6: catalog を CLI から出す
+
+- `pelican_devcli graph-catalog`(既存 devcli の sub command)が built-in registry の `catalog()` を JSON で出す(namespace / version / description / 型 / op と契約 / sink / evaluation / change)。RPC への露出は P-1
+
+#### 受け入れ(§4 規約 10)
+
+1. 決定 4 の test-only module: 登録あり → 通る、登録なし → `graph.operation_unregistered@1`(今日 = 散文の `invalid_argument`)。registry から `resolveOperation` の未登録分岐を消す変異で落ちる
+2. 二重登録: 同名 op を 2 module で登録 → `graph.operation_duplicate@1`。検査を消す変異で落ちる
+3. 決定 2: 既存 graph test が無変更で緑。`graphpartition.cpp` に `render.*` の分岐と静的表が残っていないことを `grep` ではなく **「静的表を復活させると二重登録で落ちる」** で示す(op を 2 経路で登録した状態が named reject になる)
+4. 決定 3: 契約だけ登録した op を ValueGraph::Graph に評価させる → `graph.operation_unexecutable@1`(今日 = `unknown value graph operation`)
+5. 決定 6: `graph-catalog` の JSON が 3 namespace と全 op を含み、決定 5 の欄を持つ。`value.trigger_clock` の evaluation が `replay`
+6. 出荷 4 project の bytes 不変、`SKIP_DEVSTUDIO` 両構成、RPC OFF build
+
+#### やらないこと
+
+pose module(AG-1a)/ animation の build option(AG-1a)/ 評価分類の検査(O-1)/ 変更時の扱いの GUI(P-1)/ RPC の catalog(P-1)/ package manifest のファイル形式(X-1)。
 ### 未了項目と再開順
 
 #### 現況 (2026-09-12、履歴より優先)
