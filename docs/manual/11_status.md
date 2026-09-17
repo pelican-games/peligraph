@@ -429,6 +429,7 @@ v0 は「**装着 → 編集 → 観測 → 保存 → 再読込**の往復を�
 | N-8 | Frame Plan のノード編集 | 済(`6c71c5af`) | canvas から接続 / 切断 / 帯 / 追加 / 削除を既存 RPC の丸ごと置換で、配置は `layout.frame_plan` に。legacy root の 4 project は配置を保存できない(磨きの一覧) | Frame Plan も図の上で編集できる([第13章](13_editor.md)) |
 | Q-2 | Studio の応答性 | 済(`cb76c164`) | 計測(`<作業ディレクトリ>/q2_perf_report.md`)→ idle RPC 56 → 0.5/秒、`get_frame_plan` 1 回 parse、canvas の background / grid cache(パン 1.9×)。最大要因は Debug build(Release で 6〜19×)。project を開いた直後の固まりは embed の `SetWindowLongPtr` 待ちと診断(Q-4) | 触った時の待ちが減る([第13章](13_editor.md)) |
 | Q-3 | 帯の editor が勝手に閉じる欠陥の修正 | 済(`9be4113f`) | editor を開くと engine 窓 → main window の focus 移動で Qt が 1 loop だけ inactive になり、その `FocusOut` で古い値を commit していた(Alt-Tab でも同じ)。activation / popup の `FocusOut` は無視、再描画は editor を carry して再 open | 打った値が消えない([第13章](13_editor.md)) |
+| Q-4 | project open の固まりと Frame Plan の fill | 済(`0547c0ac`) | 埋め込みを engine の窓 thread の応答まで待つ(UI thread の停止 Debug 17 s → 34 ms)、期限は engine の最後の log から数えて load 中は殺さない、Frame Plan 到着 → 表示 349 → 192 ms、Frame Plan の帯 editor に Q-3 の規則 | 開いた直後から触れる([第13章](13_editor.md)) |
 
 この 25 行のほかに **R-2(操作感)** があります —— これは**実装のない裁定**で、「render config 編集の複合 undo は v0 では約束しない」を決めたものです(下の §11.3「v0 で約束しないもの」)。
 

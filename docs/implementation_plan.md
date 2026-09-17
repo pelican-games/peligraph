@@ -24311,6 +24311,36 @@ Vulkan validation は原因ではない(headless `step_frame` +34% のみ)。
 
 完了記録(2026-09-18、`9be4113f`): `graphcanvaswidget.{cpp,hpp}`(focus reason の guard、`CarriedInlineEdit` / `carryInlineEdit` / `restoreInlineEdit`)、scene test 2 case。
 
+### Q-4: project を開いた直後の固まり —— 埋め込みが engine の窓 thread を待たない(Q-2 の診断から。利用者指摘「もっさり」の残り)
+
+**§4 規則 11 下段(Studio 内、viewport の 2 file)。実装者: Claude(Opus)。**
+
+#### 診断(Q-2、実測)
+- `EmbeddedViewport::discoverEngineWindow()`([embeddedviewport.cpp:547](../src/devstudio/viewport/embeddedviewport.cpp#L547))→ `NativeWindowHost::embed()` の `SetWindowLongPtrW(GWL_STYLE)`([nativewindowhost.cpp:42](../src/devstudio/viewport/nativewindowhost.cpp#L42)、呼び出し :134)は engine 窓の thread に `WM_STYLECHANGING / CHANGED` を **send** し、その thread が message を pump するまで **UI thread が block** する。engine は main loop 開始(`loop.cpp:390`)まで pump しないので、block 長 = model load の残り時間(窓は 0.19 s で見えるのに `SendMessageW(WM_NULL)` が 14.8 s 後に返る = `starting main loop` の瞬間。Release でも 1.1〜1.4 s)
+- `rpc_ready_` は `embed()` が返った瞬間に立つので、`wait_engine` は数えすら始められない。`WindowDiscoveryTimeoutMs = 15000` を過ぎると `process_.kill()`([embeddedviewport.cpp:533](../src/devstudio/viewport/embeddedviewport.cpp#L533))で engine を殺す → 単純に embed を遅らせると Debug の example(15 s)は timeout で殺される
+
+#### 決定
+1. **embed は「engine の窓 thread が pump している」ことを確かめてから**: 窓を見つけたら `SendMessageTimeoutW(hwnd, WM_NULL, …, SMTO_ABORTIFHUNG | SMTO_NORMAL, 0〜50 ms)` を UI thread の timer で周期的に打ち、応答したときに `embed()` を呼ぶ。それまでは窓を **見えない位置 / 親無し**で置くのではなく、engine 窓の上に「Loading… `<project>`(engine の起動中)」の overlay label を Studio 側で描く(engine の窓自体はまだ Studio の子でないので、viewport panel の中に label を出す)
+2. **timeout の再基準化**: `WindowDiscoveryTimeoutMs` は「窓が見つかるまで」にだけ効かせ、「見つかったが pump していない」状態は別の timer(`EngineLoadTimeoutMs`、既定 120 s。process が生きていて stderr が進んでいる間は延長)にする。kill するのは process が死んだ / 応答も log も止まったときだけ。文言: 「engine の起動を待っています(n 秒)」「engine が n 秒応答しないので停止しました」
+3. `rpc_ready_` は embed 後 + RPC の最初の応答で立てる(今日どおりの意味に戻す)
+4. **計測**: Q-2 の方法で project open の UI thread block 時間(`SendMessageW(WM_NULL)` の往復と、Studio の event loop の最大停止時間 = `QElapsedTimer` を 16 ms timer で監視して最大 gap を取る)を before / after、Debug と Release、`example` と `playground_pose` で
+5. **Frame Plan の `populate()`**(Q-2 の残り 85%): 計測して上位 2 つを直す(tree 6 本の fill を差分更新に、scene 再構築を item 再利用に)。到着 → 表示 380 ms(Debug)を目標 200 ms 以下
+
+#### 受け入れ
+1. widget test(offscreen、engine は fixture process): 窓が見つかっても pump しない間は `embed()` が呼ばれず label が出る、pump したら embed して label が消える(対照: 待ちを外す変異で `embed()` が即時に呼ばれる)/ pump しないまま `EngineLoadTimeoutMs` を過ぎ、stderr も止まっていれば kill と文言(対照: log が進んでいれば延長)
+2. 実測: project open 中の UI thread の最大停止が Debug で ≤ 100 ms(before 14.8 s)、Release で ≤ 50 ms(before 1.1〜1.4 s)
+3. `populate()` 到着 → 表示 ≤ 200 ms(Debug、playground_pose)、Frame Plan 既存 test 全数緑
+4. `wait_engine` シナリオが example でも通る(before: 180 s で ready にならなかった)。既存 Studio test 全数緑、非 GPU 全数緑、シナリオ 10 本緑
+
+#### やらないこと
+engine 側の起動短縮 / Studio 起動の並列化 / 別 thread の RPC。
+
+6. **Frame Plan の inline editor(N-8)の鏡像の欠陥**(Q-3 が発見): `FramePlanGraphicsScene::renderCurrentGraph`(`frameplangraphics.cpp:1977-1980`)は再描画のたびに `closeInlineEditor()` を無条件に呼び、打った文字を捨てる。`FocusOut` の扱いも無く(`beginInlineEdit` は `returnPressed` だけ)、Escape も無い。Q-3 の Graph 側と同じ規則(activation / popup の FocusOut は無視、本物の focus 移動で commit、Escape で取消、再描画では carry して再 open)に揃える。test は Q-3 の 2 case の Frame Plan 版。
+
+実装時の裁定(2026-09-18、`agent/n2`): attach は純関数の policy(`engineattach.{hpp,cpp}`、`EngineAttachPolicy::decide(window_present, now_ms)` → `search_window` / `give_up_no_window` / `probe_window` / `give_up_no_response`)。probe は `SendMessageTimeoutW(WM_NULL, SMTO_ABORTIFHUNG | SMTO_NORMAL, 10 ms)`(最初の 1 s は 25 ms 周期、以後 150 ms)。**両方の期限は engine の最後の log 行から数える**(`EngineProcess::outputReceived` → `engineSpoke`)ので load 中の engine は殺さない(log が動いている限り待つ = 上限無し、記録)。`rpc_ready_` は embed 後の最初の `get_status` の返事で立てる(embed で立てない)。`engine_stop_reason_` で意図した停止の理由を exit code に上書きされないようにした。`PELICAN_STUDIO_ENGINE_LOAD_TIMEOUT_MS` で 120 s を上書き可(test で give-up 経路に届くため)。**残る 0.2〜0.55 s** は `SetParent` + resize の瞬間に engine が swapchain を作り直す時間(engine 側、範囲外)。Studio が埋め込み窓を 2 回 resize する(footer の高さ変化)のは Studio 側で消せる(記録)。populate: `raw_json` は engine の bytes をそのまま持ち JSON tab が前面のときだけ整形、tree 7 本の先頭列を fill 中だけ `Interactive` にして 1 回で測る(`TreeFillGuard`)。Frame Plan editor: `closeInlineEditor` の teardown で filter に FocusOut が飛び別の editor に commit していた → filter を先に外す / **Escape は `pelican.framePlanLeaveGroup` の shortcut が先に取っていた** → action が開いている edit を先に取り消す。**穴**: scene の別所 click で編集が捨てられる(N-8 の経路、記録)/ `GraphCanvasScene::closeEditor` に同じ teardown の疑い(記録)/ attach 後の初回 fill 0.25〜0.5 s(Graph repopulate と outliner)。
+
+完了記録(2026-09-18、`0547c0ac`): project open 中の UI thread 最大停止(automation 経由で `text` を連打して計測): Debug `playground_pose` **2203 → 34 ms**、Debug `example` **17065 → 34 ms**(embed の瞬間だけ 464 / 553 ms)、Release 598 → <20 ms、1326 → <20 ms。Loading の notice(`pelican.viewportLoadingNotice`)が load 中「(n s)」を数える。Frame Plan 到着 → 表示 **349 → 192 ms**(Debug、playground_pose)。test: viewport test(gate を外す変異で label が出ず silence test が 1200 s 固まる = 固まりの再現 / log を生存とみなさない変異で起動中の engine を殺す / embed で ready にする変異で `rpcReady` が偽陽性)、Frame Plan graph test(focus 規則 / carry / Escape の 3 変異で赤)、raw JSON tab の test。非 GPU 全数 1747/1747、シナリオ 9/10(赤は Q-3 が無い tree のため。着地時に Q-3 と merge)。driver `<作業ディレクトリ>/bench/q4open.py` `q4pop.py` `q4win.py`。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**

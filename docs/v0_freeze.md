@@ -312,6 +312,7 @@ CMake 側で 2 つ目の表を作らないため、語彙の置き場は 1 箇�
 | N-8 Frame Plan のノード編集 | `6c71c5af` |
 | Q-2 Studio の応答性(idle polling / parse 1 回 / canvas cache) | `cb76c164` |
 | Q-3 帯の inline editor の focus 規則(窓の瞬きで閉じない) | `9be4113f` |
+| Q-4 project open の固まり(embed の待ち方)/ Frame Plan fill / Frame Plan editor 規則 | `0547c0ac` |
 
 ## 6. v0.1.0 tag の手順(2026-09-17: engine 側の全数 1947 / 1947 緑 @ `83645084`。tag は Studio 側(N 系 / AG-3b)が入り利用者が v0 を閉じるまで打たない)
 
