@@ -83,16 +83,20 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <QEnterEvent>
 #include <QMouseEvent>
 #include <QScrollBar>
+#include <QFocusEvent>
+#include <QGraphicsProxyWidget>
 #include <QPainterPath>
 #include <QPen>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QSpinBox>
 #include <QSignalSpy>
 #include <QStringList>
 #include <QTest>
 #include <QTemporaryDir>
 #include <QTimer>
+#include <QTabWidget>
 #include <QTreeWidget>
 #include <QWheelEvent>
 
@@ -7301,6 +7305,219 @@ TEST_CASE("N-8 the in-place band replaces one shader stem and nothing else",
           declaration.at("shader").at("vertex"));
     CHECK(sent.at("output") == declaration.at("output"));
     CHECK(sent.at("input") == Json::array());
+}
+
+namespace {
+
+// The editor reports its decision from the event loop, and the commit it asks
+// for is queued again from there: two turns, not one.
+void settle() {
+    QApplication::processEvents();
+    QApplication::processEvents();
+}
+
+// The line edit that is open over a band, reached the way the scene holds it:
+// through the proxy item, not through the widget tree.
+QLineEdit *inlineEditorWidget(QGraphicsScene &value) {
+    for (QGraphicsItem *item : value.items()) {
+        auto *proxy = dynamic_cast<QGraphicsProxyWidget *>(item);
+        if (proxy == nullptr) continue;
+        if (auto *edit = qobject_cast<QLineEdit *>(proxy->widget()))
+            return edit;
+    }
+    return nullptr;
+}
+
+// A key, sent to the widget rather than to the window: the editor is inside a
+// graphics proxy, which is not something the test keyboard can aim at.
+void typeKey(QWidget *widget, int key) {
+    REQUIRE(widget != nullptr);
+    QKeyEvent event{QEvent::KeyPress, key, Qt::NoModifier};
+    QApplication::sendEvent(widget, &event);
+    settle();
+}
+
+// Open the band editor the way a user does.
+void clickBand(EditingFixture &fixture, const QString &node,
+               const QString &field) {
+    QGraphicsItem *band = bandItem(fixture.logical(), node, field);
+    REQUIRE(band != nullptr);
+    auto &view = logicalView(fixture.widget);
+    view.fitInView(band->sceneBoundingRect().adjusted(-200, -200, 200, 200),
+                   Qt::KeepAspectRatio);
+    QApplication::processEvents();
+    const QPoint at = view.mapFromScene(band->sceneBoundingRect().center());
+    REQUIRE(view.viewport()->rect().contains(at));
+    QTest::mouseClick(view.viewport(), Qt::LeftButton, Qt::NoModifier, at);
+    QApplication::processEvents();
+}
+
+} // namespace
+
+// Q-4. The raw reply is laid out for reading only while somebody is reading
+// it. What must not change is what the tab shows when it is opened.
+TEST_CASE("The Frame Plan raw JSON tab shows the reply it is opened on",
+          "[devstudio][frame-plan][q4]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    auto *raw = fixture.widget.findChild<QPlainTextEdit *>(
+        QStringLiteral("pelican.framePlanRawJson"));
+    auto *tabs = fixture.widget.findChild<QTabWidget *>(
+        QStringLiteral("pelican.framePlanTabs"));
+    REQUIRE(raw != nullptr);
+    REQUIRE(tabs != nullptr);
+    // A plan arrived, and nobody has opened this tab: nothing was laid out.
+    REQUIRE(raw->toPlainText().isEmpty());
+
+    int index = -1;
+    for (int tab = 0; tab < tabs->count(); ++tab)
+        if (tabs->widget(tab) == raw) index = tab;
+    REQUIRE(index >= 0);
+    tabs->setCurrentIndex(index);
+    settle();
+    const QString shown = raw->toPlainText();
+    REQUIRE_FALSE(shown.isEmpty());
+    REQUIRE(Json::parse(shown.toStdString()) == fixture.wire);
+
+    // And a reply arriving while it is the tab in front reaches it.
+    auto next = fixture.wire;
+    next["runtime_generation"] = 4242;
+    fixture.widget.receiveResult(QByteArray::fromStdString(next.dump()));
+    settle();
+    REQUIRE(Json::parse(raw->toPlainText().toStdString()) == next);
+}
+
+// Q-4, the mirror of Q-3's defect on the Frame Plan side. The band editor used
+// to end on Enter and on nothing else -- no Escape, and no focus rule at all --
+// while on Windows the Studio blinks inactive for one trip through the event
+// loop whenever the keyboard moves between the embedded engine viewport's
+// native window and the main window. Qt reports that blink as
+// FocusOut(ActiveWindowFocusReason).
+TEST_CASE("A Frame Plan band editor survives the window going inactive, and "
+          "still ends when the focus really leaves it",
+          "[devstudio][frame-plan][q4][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    auto &logical = fixture.logical();
+    clickBand(fixture, QStringLiteral("wp343_mixed_a"),
+              QStringLiteral("shader.fragment"));
+    REQUIRE(logical.editingInline());
+    logical.setInlineEditText(QStringLiteral("project://shaders/tint.frag"));
+    QLineEdit *editing = inlineEditorWidget(logical);
+    REQUIRE(editing != nullptr);
+
+    // The application went to the back and came forward again. Nothing about
+    // the edit changed.
+    QFocusEvent away{QEvent::FocusOut, Qt::ActiveWindowFocusReason};
+    QApplication::sendEvent(editing, &away);
+    settle();
+    REQUIRE(logical.editingInline());
+    REQUIRE(logical.inlineEditText() ==
+            QStringLiteral("project://shaders/tint.frag"));
+    REQUIRE(inlineEditorWidget(logical) == editing);
+    REQUIRE(fixture.recorder.submits == 0);
+
+    // A popup taking the keyboard is the same kind of loan.
+    QFocusEvent popup{QEvent::FocusOut, Qt::PopupFocusReason};
+    QApplication::sendEvent(editing, &popup);
+    settle();
+    REQUIRE(logical.editingInline());
+    REQUIRE(fixture.recorder.submits == 0);
+
+    SECTION("Escape abandons what was typed") {
+        // Escape reaches this panel as its own shortcut -- the one that leaves
+        // a group -- so that is where it has to be answered while a band is
+        // open. Sending the key to the line edit would not even reach it: the
+        // shortcut map takes it first.
+        auto *escape = fixture.widget.findChild<QAction *>(
+            QStringLiteral("pelican.framePlanLeaveGroup"));
+        REQUIRE(escape != nullptr);
+        REQUIRE(escape->shortcut() == QKeySequence{Qt::Key_Escape});
+        escape->trigger();
+        settle();
+        REQUIRE_FALSE(logical.editingInline());
+        REQUIRE(fixture.recorder.submits == 0);
+        // And with nothing open it is the group key again.
+        REQUIRE(logical.property("pelicanCurrentGroupScope").toString().isEmpty());
+        escape->trigger();
+        settle();
+        REQUIRE(fixture.recorder.submits == 0);
+    }
+
+    SECTION("the control: the focus really leaving is a person saying done") {
+        QFocusEvent elsewhere{QEvent::FocusOut, Qt::MouseFocusReason};
+        QApplication::sendEvent(editing, &elsewhere);
+        settle();
+        REQUIRE_FALSE(logical.editingInline());
+        REQUIRE(fixture.recorder.submits == 1);
+        const auto sent = Json::parse(
+            QJsonDocument(fixture.recorder.params).toJson().toStdString());
+        CHECK(sent.at("shader").at("fragment") ==
+              "project://shaders/tint.frag");
+    }
+}
+
+// The other half: `renderCurrentGraph` used to call closeInlineEditor()
+// unconditionally, so any redraw under an open editor threw away what was
+// being typed -- and the Frame Plan is redrawn by a plan reply, a theme
+// switch, and an authoring-context reply, all of which can arrive mid-edit.
+TEST_CASE("A redraw under an open Frame Plan band editor re-opens it with "
+          "what was typed",
+          "[devstudio][frame-plan][q4][canvas-edit]") {
+    application();
+    EditingFixture fixture;
+    fixture.open();
+    auto &logical = fixture.logical();
+    clickBand(fixture, QStringLiteral("wp343_mixed_a"),
+              QStringLiteral("shader.fragment"));
+    REQUIRE(logical.editingInline());
+    logical.setInlineEditText(QStringLiteral("project://shaders/carry.frag"));
+
+    // A frame-plan reply arriving while somebody is typing.
+    fixture.widget.receiveResult(
+        QByteArray::fromStdString(fixture.wire.dump()));
+    settle();
+    REQUIRE(logical.editingInline());
+    REQUIRE(logical.inlineEditText() ==
+            QStringLiteral("project://shaders/carry.frag"));
+    // The editor is over the band this draw made, not a dangling proxy from
+    // the old one, and Enter still reaches it.
+    QLineEdit *reopened = inlineEditorWidget(logical);
+    REQUIRE(reopened != nullptr);
+    REQUIRE(fixture.recorder.submits == 0);
+    typeKey(reopened, Qt::Key_Return);
+    REQUIRE_FALSE(logical.editingInline());
+    REQUIRE(fixture.recorder.submits == 1);
+    const auto sent = Json::parse(
+        QJsonDocument(fixture.recorder.params).toJson().toStdString());
+    CHECK(sent.at("shader").at("fragment") == "project://shaders/carry.frag");
+
+    // The control: a draw that no longer offers that field has nothing to open
+    // over, and the edit ends there rather than hanging on a band that is gone.
+    REQUIRE(fixture.recorder.result);
+    fixture.recorder.result(
+        fixture.recorder.context_id,
+        QByteArray::fromStdString(mixedAuthoringContext(fixture.graph).dump()));
+    QApplication::processEvents();
+    clickBand(fixture, QStringLiteral("wp343_mixed_a"),
+              QStringLiteral("shader.fragment"));
+    REQUIRE(logical.editingInline());
+    auto without = mixedAuthoringContext(fixture.graph);
+    for (auto &pass : without.at("graphs").at(0).at("passes")) {
+        pass["editable_preset_pass"] = false;
+        pass.erase("preset_declaration");
+    }
+    fixture.widget.receiveResult(
+        QByteArray::fromStdString(fixture.wire.dump()));
+    QApplication::processEvents();
+    fixture.recorder.result(fixture.recorder.context_id,
+                            QByteArray::fromStdString(without.dump()));
+    QApplication::processEvents();
+    REQUIRE(bandItem(logical, QStringLiteral("wp343_mixed_a"),
+                     QStringLiteral("shader.fragment")) == nullptr);
+    REQUIRE_FALSE(logical.editingInline());
 }
 
 TEST_CASE("N-8 add and delete reach the right form and the right RPC",

@@ -353,12 +353,24 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::optional<FramePlanEdgeSelection> selected_edge_;
     struct InlineEditor;
     std::unique_ptr<InlineEditor> inline_editor_;
+    // Q-4. An open in-place editor, said in terms that outlive the items it
+    // sits on. A redraw deletes every item, the editor's proxy included, so
+    // the editor is opened again over the new ones rather than taken out from
+    // under the person typing into it -- and what they had typed comes with it.
+    struct CarriedInlineEdit {
+        FramePlanNodeKey node;
+        QString field;
+        QString text;
+    };
     QAction *add_pass_action_ = nullptr;
     QAction *add_task_action_ = nullptr;
     std::optional<FramePlanNodeKey> context_node_;
     void clearConnectionGesture();
     void applyEdgeSelection();
     void closeInlineEditor();
+    // The two halves of carrying an editor across a redraw.
+    [[nodiscard]] std::optional<CarriedInlineEdit> carryInlineEdit() const;
+    void restoreInlineEdit(const CarriedInlineEdit &carried);
     bool rebuilding_ = false;
     bool scene_rect_update_queued_ = false;
     // The theme table's registration, dropped in the destructor.

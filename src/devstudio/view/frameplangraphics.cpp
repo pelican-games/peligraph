@@ -15,6 +15,7 @@
 #include <QGraphicsSceneContextMenuEvent>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
+#include <QFocusEvent>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLineEdit>
@@ -1975,8 +1976,12 @@ void FramePlanGraphicsScene::pruneGroupState() {
 
 void FramePlanGraphicsScene::renderCurrentGraph() {
     clearConnectionGesture();
-    // The editor is a widget in the scene; a redraw deletes every item, so it
-    // has to go first or its proxy is deleted twice.
+    // Q-4. The editor is a widget in the scene; a redraw deletes every item,
+    // so it has to go first or its proxy is deleted twice. What it was and
+    // what it held is taken down with it and opened again over the bands this
+    // draw produces: a refresh, a theme switch or a reply arriving mid-edit is
+    // not a reason to throw away what somebody is in the middle of typing.
+    const auto carried = rebuilding_ ? std::nullopt : carryInlineEdit();
     closeInlineEditor();
     if (!current_model_) {
         return;
@@ -2161,6 +2166,9 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         publishBarrierCoverage(*this, barrier_coverage);
         publish_group_properties();
         publishStateProperties();
+        // The editor goes back over the band it was on, if this draw
+        // still has one.
+        if (carried) restoreInlineEdit(*carried);
         return;
     }
 
@@ -2949,6 +2957,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     publishBarrierCoverage(*this, barrier_coverage);
     publish_group_properties();
     publishStateProperties();
+    if (carried) restoreInlineEdit(*carried);
 }
 
 bool FramePlanGraphicsScene::collapseGroup(const QString &group_id) {
@@ -3474,6 +3483,61 @@ std::optional<FramePlanEdgeSelection> edgeAt(QGraphicsScene &scene,
 }
 } // namespace
 
+namespace {
+
+// Q-4, the Graph canvas's rule (Q-3) applied to the Frame Plan's own band
+// editor. Enter confirms, Escape abandons, and losing the focus confirms the
+// way a spreadsheet cell does -- except when what was lost is the window
+// rather than the focus. The decision is reported back rather than acted on
+// here: the widget being watched is still dispatching the event that produced
+// it, so it cannot be deleted from inside this call.
+class FramePlanInlineEditFilter final : public QObject {
+  public:
+    using Done = std::function<void(bool commit)>;
+
+    explicit FramePlanInlineEditFilter(Done done) : done_{std::move(done)} {}
+
+  protected:
+    bool eventFilter(QObject *watched, QEvent *event) override {
+        if (event->type() == QEvent::KeyPress) {
+            auto *key = static_cast<QKeyEvent *>(event);
+            if (key->key() == Qt::Key_Escape) {
+                finish(false);
+                return true;
+            }
+            if (key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) {
+                finish(true);
+                return true;
+            }
+        } else if (event->type() == QEvent::FocusOut) {
+            // Losing the focus to another widget is a person saying "done
+            // here". Losing the *window* is not: these two reasons are Qt
+            // saying the whole application went to the back, or that a popup
+            // took the keyboard for a moment. On Windows the embedded engine
+            // viewport's native window hands the keyboard back and forth with
+            // the main window, and that blink arrives here as exactly this
+            // event -- which is how a band the user had just opened used to
+            // close itself before anything could be typed into it.
+            const auto reason = static_cast<QFocusEvent *>(event)->reason();
+            if (reason != Qt::ActiveWindowFocusReason &&
+                reason != Qt::PopupFocusReason) {
+                finish(true);
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+  private:
+    void finish(bool commit) {
+        if (!done_) return;
+        auto done = std::exchange(done_, {});
+        done(commit);
+    }
+    Done done_;
+};
+
+} // namespace
+
 // The line edit that sits over one band while it is being retyped. It is a
 // widget in the scene rather than a dialog: the value is one string, and a
 // dialog for one string is a place to lose the drawing.
@@ -3482,6 +3546,7 @@ struct FramePlanGraphicsScene::InlineEditor {
     QString field;
     QGraphicsProxyWidget *proxy = nullptr;
     QLineEdit *edit = nullptr;
+    std::unique_ptr<FramePlanInlineEditFilter> filter;
 };
 
 bool FramePlanGraphicsScene::editingInline() const noexcept {
@@ -3507,7 +3572,19 @@ void FramePlanGraphicsScene::closeInlineEditor() {
     // Closing usually happens from inside the line edit's own returnPressed,
     // so the widget must outlive this call. Taking the proxy out of the scene
     // first is what keeps a later clear() from deleting it a second time.
-    if (editor->edit != nullptr) editor->edit->disconnect(this);
+    if (editor->edit != nullptr) {
+        editor->edit->disconnect(this);
+        // Q-4. Taking the proxy out of the scene takes the keyboard focus off
+        // the line edit, and that arrives at the filter as an ordinary focus
+        // move -- which would commit an edit this call is in the middle of
+        // ending, over whatever editor is open by the time the queued commit
+        // runs. The editor being taken down is not the editor reporting that
+        // it ended.
+        if (editor->filter) {
+            editor->edit->removeEventFilter(editor->filter.get());
+            editor->filter.reset();
+        }
+    }
     removeItem(editor->proxy);
     editor->proxy->deleteLater();
 }
@@ -3560,11 +3637,42 @@ bool FramePlanGraphicsScene::beginInlineEdit(const FramePlanNodeKey &node,
     const QRectF bounds = band->sceneBoundingRect();
     editor->proxy->setGeometry(bounds);
     editor->proxy->setZValue(1200.0);
-    connect(editor->edit, &QLineEdit::returnPressed, this,
-            [this] { commitInlineEdit(); });
+    // Q-4. Enter used to be the only way out of this editor. Escape, and a
+    // focus move that really is one, now end it too -- and the window blinking
+    // does not.
+    editor->filter = std::make_unique<FramePlanInlineEditFilter>(
+        [this](bool commit) {
+            // The widget is still dispatching the event that ended the edit.
+            QMetaObject::invokeMethod(
+                this,
+                [this, commit] {
+                    if (commit) commitInlineEdit();
+                    else cancelInlineEdit();
+                },
+                Qt::QueuedConnection);
+        });
+    editor->edit->installEventFilter(editor->filter.get());
     inline_editor_ = std::move(editor);
     inline_editor_->edit->setFocus();
     return true;
+}
+
+std::optional<FramePlanGraphicsScene::CarriedInlineEdit>
+FramePlanGraphicsScene::carryInlineEdit() const {
+    if (!inline_editor_) return std::nullopt;
+    return CarriedInlineEdit{inline_editor_->node, inline_editor_->field,
+                             inlineEditText()};
+}
+
+void FramePlanGraphicsScene::restoreInlineEdit(
+    const CarriedInlineEdit &carried) {
+    // A band the draw no longer holds simply has nothing to open over, and
+    // the edit ends there -- the one case where a redraw may take it away.
+    if (!beginInlineEdit(carried.node, carried.field)) return;
+    setInlineEditText(carried.text);
+    if (inline_editor_ && inline_editor_->edit != nullptr) {
+        inline_editor_->edit->setFocus(Qt::OtherFocusReason);
+    }
 }
 
 void FramePlanGraphicsScene::clearConnectionGesture() {

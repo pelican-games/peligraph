@@ -101,6 +101,24 @@ NativeWindowHandle NativeWindowHost::findTopLevelWindow(qint64 process_id) noexc
     return asHandle(search.visible_window);
 }
 
+bool NativeWindowHost::windowThreadAnswers(NativeWindowHandle window_handle,
+                                           int timeout_ms) noexcept {
+    HWND window = asHwnd(window_handle);
+    if (!IsWindow(window)) {
+        return false;
+    }
+    DWORD_PTR reply = 0;
+    // WM_NULL is the cheapest question there is: the receiving thread does
+    // nothing but take it off its queue, which is precisely the fact being
+    // asked about. SMTO_ABORTIFHUNG returns immediately once Windows has
+    // marked the thread as not answering, so the long middle of a load costs
+    // nothing; the timeout only bounds the short window before that.
+    return SendMessageTimeoutW(window, WM_NULL, 0, 0,
+                               SMTO_ABORTIFHUNG | SMTO_NORMAL,
+                               static_cast<UINT>(std::max(1, timeout_ms)),
+                               &reply) != 0;
+}
+
 bool NativeWindowHost::embed(NativeWindowHandle child_handle, NativeWindowHandle parent_handle,
                              const QSize &pixel_extent, QString *error) {
     HWND child = asHwnd(child_handle);
@@ -320,6 +338,7 @@ void unsupported(QString *error) {
 
 bool NativeWindowHost::isSupported() noexcept { return false; }
 NativeWindowHandle NativeWindowHost::findTopLevelWindow(qint64) noexcept { return 0; }
+bool NativeWindowHost::windowThreadAnswers(NativeWindowHandle, int) noexcept { return false; }
 bool NativeWindowHost::embed(NativeWindowHandle, NativeWindowHandle, const QSize &, QString *error) {
     unsupported(error);
     return false;

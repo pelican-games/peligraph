@@ -1,4 +1,5 @@
 #include "embeddedviewport.hpp"
+#include "engineattach.hpp"
 #include "enginelogbuffer.hpp"
 #include "engineprocess.hpp"
 #include "viewportgeometry.hpp"
@@ -9,6 +10,8 @@
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
+#include <QDir>
+#include <QElapsedTimer>
 #include <QEventLoop>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -20,6 +23,7 @@
 #include <QTimer>
 #include <QWidget>
 
+#include <functional>
 #include <limits>
 #include <memory>
 
@@ -253,6 +257,253 @@ TEST_CASE("Embedded viewport stays horizontally collapsible with visible layout 
         REQUIRE(viewport.minimumSizeHint().width() == 1);
     }
 }
+
+// Q-4. The rules for waiting, with time supplied rather than spent. Every
+// number the panel shows and every reason it has to stop an engine comes from
+// this one object, so this is where the "never kill an engine that is still
+// loading" rule is either kept or broken.
+TEST_CASE("The attach policy waits for a window, then for its thread, and "
+          "gives up only on silence",
+          "[devstudio][viewport][q4][attach]") {
+    SECTION("no window, and an engine that has stopped saying anything") {
+        EngineAttachPolicy policy{15000, 120000};
+        policy.engineStarted(0);
+        REQUIRE(policy.decide(false, 14999).step ==
+                EngineAttachStep::search_window);
+        REQUIRE(policy.decide(false, 14999).next_interval_ms ==
+                EngineWindowSearchIntervalMs);
+        REQUIRE(policy.decide(false, 15000).step ==
+                EngineAttachStep::give_up_no_window);
+        REQUIRE(policy.decide(false, 15000).next_interval_ms == 0);
+    }
+
+    SECTION("the control: an engine writing its log is starting, not stuck") {
+        EngineAttachPolicy policy{15000, 120000};
+        policy.engineStarted(0);
+        // One line at a time, all the way past the budget. `example` in a
+        // Debug build needs more than fifteen seconds to reach the point where
+        // its window becomes visible, and it logs the whole way.
+        for (qint64 now = 1000; now <= 60000; now += 1000) {
+            policy.engineSpoke(now);
+            REQUIRE(policy.decide(false, now + 999).step ==
+                    EngineAttachStep::search_window);
+        }
+        // And the moment it does stop, the budget starts from there.
+        REQUIRE(policy.decide(false, 60000 + 14999).step ==
+                EngineAttachStep::search_window);
+        REQUIRE(policy.decide(false, 60000 + 15000).step ==
+                EngineAttachStep::give_up_no_window);
+    }
+
+    SECTION("a window that is there but not yet answering") {
+        EngineAttachPolicy policy{15000, 5000};
+        policy.engineStarted(0);
+        REQUIRE_FALSE(policy.windowSeen());
+        const auto first = policy.decide(true, 200);
+        REQUIRE(first.step == EngineAttachStep::probe_window);
+        REQUIRE(policy.windowSeen());
+        REQUIRE(first.waiting_ms == 0);
+        // Eager at first, so a small project embeds promptly; then backed off,
+        // so a long load does not pay for a probe every 25 ms.
+        REQUIRE(first.next_interval_ms == EngineWindowProbeIntervalMs);
+        REQUIRE(policy.decide(true, 200 + EngineWindowProbeEagerMs)
+                    .next_interval_ms == EngineWindowProbeBackoffMs);
+        const auto later = policy.decide(true, 4200);
+        REQUIRE(later.step == EngineAttachStep::probe_window);
+        REQUIRE(later.waiting_ms == 4000);
+        // Silence since the window appeared, past the load budget.
+        const auto given_up = policy.decide(true, 5200);
+        REQUIRE(given_up.step == EngineAttachStep::give_up_no_response);
+        REQUIRE(given_up.silent_ms == 5000);
+        REQUIRE(given_up.next_interval_ms == 0);
+    }
+
+    SECTION("the control: a window that is silent while its engine is not") {
+        EngineAttachPolicy policy{15000, 5000};
+        policy.engineStarted(0);
+        REQUIRE(policy.decide(true, 200).step ==
+                EngineAttachStep::probe_window);
+        for (qint64 now = 1200; now <= 30000; now += 1000) {
+            policy.engineSpoke(now);
+            REQUIRE(policy.decide(true, now + 999).step ==
+                    EngineAttachStep::probe_window);
+        }
+        // The waiting figure the panel shows is still measured from the
+        // window, not from the last line.
+        REQUIRE(policy.decide(true, 30200).waiting_ms == 30000);
+        REQUIRE(policy.decide(true, 35000).step ==
+                EngineAttachStep::give_up_no_response);
+    }
+}
+
+#ifdef Q_OS_WIN
+
+namespace {
+
+// Pump Qt until the question answers yes, or until the time is up. Returns how
+// long it took, or -1: the widget tests below are about *when* things happen,
+// so the time is part of the answer.
+qint64 pumpUntil(const std::function<bool()> &ready, int timeout_ms) {
+    QElapsedTimer elapsed;
+    elapsed.start();
+    while (elapsed.elapsed() < timeout_ms) {
+        if (ready()) return elapsed.elapsed();
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 5);
+    }
+    return ready() ? elapsed.elapsed() : -1;
+}
+
+QLabel *namedLabel(EmbeddedViewport &viewport, const char *name) {
+    return viewport.findChild<QLabel *>(QString::fromLatin1(name));
+}
+
+class EngineFixtureEnvironment {
+  public:
+    EngineFixtureEnvironment(int pump_delay_ms, int heartbeat_ms,
+                             int rpc_delay_ms, int load_timeout_ms) {
+        qputenv("PELICAN_STUDIO_PLAYER", fixtureExecutable().toUtf8());
+        qputenv("PELICAN_WP173_CHILD_MODE", "viewport-window");
+        qputenv("PELICAN_Q4_PUMP_DELAY_MS",
+                QByteArray::number(pump_delay_ms));
+        qputenv("PELICAN_Q4_HEARTBEAT_MS", QByteArray::number(heartbeat_ms));
+        qputenv("PELICAN_Q4_RPC_DELAY_MS", QByteArray::number(rpc_delay_ms));
+        qputenv("PELICAN_STUDIO_ENGINE_LOAD_TIMEOUT_MS",
+                QByteArray::number(load_timeout_ms));
+        qunsetenv("PELICAN_STUDIO_PLAYER_ARGUMENTS");
+    }
+
+    ~EngineFixtureEnvironment() {
+        qunsetenv("PELICAN_STUDIO_PLAYER");
+        qunsetenv("PELICAN_WP173_CHILD_MODE");
+        qunsetenv("PELICAN_Q4_PUMP_DELAY_MS");
+        qunsetenv("PELICAN_Q4_HEARTBEAT_MS");
+        qunsetenv("PELICAN_Q4_RPC_DELAY_MS");
+        qunsetenv("PELICAN_STUDIO_ENGINE_LOAD_TIMEOUT_MS");
+    }
+};
+
+} // namespace
+
+// Q-4. The freeze this work is about, end to end. The fixture engine puts up a
+// real top-level window in a few milliseconds and then takes no message at all
+// for a second and a half -- exactly what pelican_player does while it loads a
+// project. Re-parenting it during that time is what used to hold Studio's UI
+// thread for the whole of the remaining load (2.2 s on `playground_pose`,
+// 17 s on `example`, in a Debug build).
+TEST_CASE("The engine window is embedded only once its own thread takes "
+          "messages, and the panel says so meanwhile",
+          "[devstudio][viewport][q4][attach][process]") {
+    EngineFixtureEnvironment fixture{/*pump_delay_ms=*/1500,
+                                     /*heartbeat_ms=*/0,
+                                     /*rpc_delay_ms=*/700,
+                                     /*load_timeout_ms=*/60000};
+    int argument_count = 1;
+    char application_name[] = "pelican_viewport_attach_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    EmbeddedViewport viewport;
+    viewport.resize(320, 200);
+    QLabel *loading = namedLabel(viewport, "pelican.viewportLoadingNotice");
+    QLabel *status = namedLabel(viewport, "pelican.viewportStatus");
+    REQUIRE(loading != nullptr);
+    REQUIRE(status != nullptr);
+    REQUIRE(loading->isHidden());
+
+    viewport.openProject(QDir::tempPath());
+    // The window appears almost at once, and the panel starts saying that the
+    // engine is still starting.
+    REQUIRE(pumpUntil([&] { return !loading->isHidden(); }, 10000) >= 0);
+    REQUIRE(loading->text().contains(QStringLiteral("engine")));
+    REQUIRE(status->text().contains(QStringLiteral("Waiting for the engine")));
+    // Nothing has been re-parented: this is the whole point.
+    REQUIRE_FALSE(viewport.engineWindowEmbedded());
+
+    QElapsedTimer since_window;
+    since_window.start();
+    // And it stays that way while the fixture is "loading". A mutation that
+    // drops the wait embeds here instead, in the first tick.
+    REQUIRE(pumpUntil([&] { return viewport.engineWindowEmbedded(); }, 700) < 0);
+    REQUIRE_FALSE(loading->isHidden());
+
+    const qint64 embedded_ms =
+        pumpUntil([&] { return viewport.engineWindowEmbedded(); }, 20000);
+    REQUIRE(embedded_ms >= 0);
+    REQUIRE(since_window.elapsed() >= 700);
+    // The notice goes away with the thing it was standing in for.
+    REQUIRE(loading->isHidden());
+
+    // The window moving is not the engine answering: the fixture waits another
+    // 700 ms before it will reply to anything, and Studio calls itself ready
+    // only when it has a reply.
+    REQUIRE_FALSE(viewport.rpcReady());
+    REQUIRE(pumpUntil([&] { return viewport.rpcReady(); }, 20000) >= 0);
+}
+
+// The other half of the rule: an engine that never answers is stopped, but
+// only when it has also stopped writing its log.
+TEST_CASE("An engine that goes silent is stopped, and one that is still "
+          "logging is waited for",
+          "[devstudio][viewport][q4][attach][process]") {
+    int argument_count = 1;
+    char application_name[] = "pelican_viewport_silence_test";
+    char *arguments[] = {application_name};
+    QApplication application{argument_count, arguments};
+
+    SECTION("silent past the load budget: stopped, and told why") {
+        EngineFixtureEnvironment fixture{/*pump_delay_ms=*/600000,
+                                         /*heartbeat_ms=*/0,
+                                         /*rpc_delay_ms=*/0,
+                                         /*load_timeout_ms=*/800};
+        EmbeddedViewport viewport;
+        viewport.resize(320, 200);
+        QLabel *loading = namedLabel(viewport, "pelican.viewportLoadingNotice");
+        QLabel *status = namedLabel(viewport, "pelican.viewportStatus");
+        REQUIRE(loading != nullptr);
+        REQUIRE(status != nullptr);
+
+        viewport.openProject(QDir::tempPath());
+        REQUIRE(pumpUntil([&] { return !loading->isHidden(); }, 10000) >= 0);
+        REQUIRE(pumpUntil(
+                    [&] {
+                        return status->text().contains(
+                            QStringLiteral("did not answer"));
+                    },
+                    15000) >= 0);
+        REQUIRE_FALSE(viewport.engineWindowEmbedded());
+        // The exit notice does not overwrite the reason with an exit code.
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 200);
+        REQUIRE(status->text().contains(QStringLiteral("did not answer")));
+        REQUIRE(loading->isHidden());
+    }
+
+    SECTION("the control: the same silence, with the log still moving") {
+        EngineFixtureEnvironment fixture{/*pump_delay_ms=*/600000,
+                                         /*heartbeat_ms=*/100,
+                                         /*rpc_delay_ms=*/0,
+                                         /*load_timeout_ms=*/800};
+        EmbeddedViewport viewport;
+        viewport.resize(320, 200);
+        QLabel *loading = namedLabel(viewport, "pelican.viewportLoadingNotice");
+        QLabel *status = namedLabel(viewport, "pelican.viewportStatus");
+        REQUIRE(loading != nullptr);
+        REQUIRE(status != nullptr);
+
+        viewport.openProject(QDir::tempPath());
+        REQUIRE(pumpUntil([&] { return !loading->isHidden(); }, 10000) >= 0);
+        // Four times the budget later it is still being waited for.
+        REQUIRE(pumpUntil(
+                    [&] {
+                        return status->text().contains(
+                            QStringLiteral("did not answer"));
+                    },
+                    3500) < 0);
+        REQUIRE_FALSE(loading->isHidden());
+        REQUIRE(status->text().contains(QStringLiteral("Waiting for the engine")));
+    }
+}
+
+#endif
 
 TEST_CASE("Forced engine child exit leaves the viewport process owner reusable",
           "[devstudio][viewport][process]") {

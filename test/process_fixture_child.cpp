@@ -5,6 +5,16 @@
 #include <string_view>
 #include <thread>
 
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 namespace {
 
 std::string childMode() {
@@ -48,9 +58,124 @@ const char *envelopeTrickyResult() {
     return R"json({"text":"a\"b{}[],:","nested":[{"}":"]"}],"n":1.5,"b":true})json";
 }
 
+int environmentInteger(const char *name, int fallback) {
+#ifdef _WIN32
+    char *buffer = nullptr;
+    std::size_t size = 0;
+    if (_dupenv_s(&buffer, &size, name) != 0 || buffer == nullptr)
+        return fallback;
+    const std::string value{buffer};
+    std::free(buffer);
+#else
+    const char *raw = std::getenv(name);
+    if (raw == nullptr) return fallback;
+    const std::string value{raw};
+#endif
+    try {
+        return std::stoi(value);
+    } catch (...) {
+        return fallback;
+    }
+}
+
+void answerRpcOnStandardInput() {
+    std::string request;
+    while (std::getline(std::cin, request)) {
+        const long long id = rpcIntegerField(request, "id");
+        std::cout << "{\"id\":" << id
+                  << ",\"jsonrpc\":\"2.0\",\"result\":{\"contract\":1}}\n"
+                  << std::flush;
+    }
+}
+
+#ifdef _WIN32
+
+// Q-4. What the engine does to Studio, in one fixture: a real top-level window
+// that is visible almost at once, on a thread that does not take a single
+// message until its "project" has finished loading. Re-parenting such a window
+// blocks the caller for the rest of that load, which is the freeze Q-4 is
+// about; with the wait in place nothing is re-parented until this process
+// starts pumping.
+LRESULT CALLBACK fixtureWindowProc(HWND window, UINT message, WPARAM wparam,
+                                   LPARAM lparam) {
+    if (message == WM_CLOSE || message == WM_DESTROY) {
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(window, message, wparam, lparam);
+}
+
+int runViewportWindowFixture() {
+    // Qt runs per-monitor aware, and NativeWindowHost refuses to embed across
+    // a DPI-awareness boundary. Match it, or the test would measure that
+    // refusal instead of the wait.
+    using SetAwareness = BOOL(WINAPI *)(void *);
+    if (auto *set_awareness = reinterpret_cast<SetAwareness>(GetProcAddress(
+            GetModuleHandleW(L"user32.dll"),
+            "SetProcessDpiAwarenessContext"))) {
+        set_awareness(reinterpret_cast<void *>(static_cast<intptr_t>(-4)));
+    }
+
+    WNDCLASSEXW window_class{};
+    window_class.cbSize = sizeof(WNDCLASSEXW);
+    window_class.lpfnWndProc = fixtureWindowProc;
+    window_class.hInstance = GetModuleHandleW(nullptr);
+    window_class.lpszClassName = L"PelicanQ4EngineFixture";
+    if (RegisterClassExW(&window_class) == 0) return 6;
+    // Off every monitor: the fixture's window is a fact about HWNDs, not
+    // something anybody should have flashed at them during a test run.
+    HWND window = CreateWindowExW(
+        0, window_class.lpszClassName, L"pelican fixture engine",
+        WS_OVERLAPPEDWINDOW, -32000, -32000, 320, 200, nullptr, nullptr,
+        window_class.hInstance, nullptr);
+    if (window == nullptr) return 7;
+    ShowWindow(window, SW_SHOWNOACTIVATE);
+    std::cout << "viewport-window-ready\n" << std::flush;
+
+    // The load. Not one message is taken off the queue for this long -- and
+    // the heartbeat, when asked for, is the engine writing its log while it
+    // loads: the thing that must stop Studio from calling it unresponsive.
+    const int pump_delay_ms = environmentInteger("PELICAN_Q4_PUMP_DELAY_MS", 0);
+    const int heartbeat_ms = environmentInteger("PELICAN_Q4_HEARTBEAT_MS", 0);
+    const auto deadline =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{pump_delay_ms};
+    auto next_heartbeat = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (heartbeat_ms > 0 &&
+            std::chrono::steady_clock::now() >= next_heartbeat) {
+            std::cerr << "fixture-engine-loading\n" << std::flush;
+            next_heartbeat = std::chrono::steady_clock::now() +
+                             std::chrono::milliseconds{heartbeat_ms};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+
+    // A window that has started pumping has not necessarily answered an RPC.
+    // The delay is what separates the two facts for the test that says which
+    // one Studio calls "ready".
+    const int rpc_delay_ms = environmentInteger("PELICAN_Q4_RPC_DELAY_MS", 0);
+    std::thread{[rpc_delay_ms] {
+        std::this_thread::sleep_for(std::chrono::milliseconds{rpc_delay_ms});
+        answerRpcOnStandardInput();
+    }}.detach();
+    MSG message{};
+    while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        TranslateMessage(&message);
+        DispatchMessageW(&message);
+    }
+    return 0;
+}
+
+#endif
+
 } // namespace
 
 int main(int argc, char *argv[]) {
+#ifdef _WIN32
+    if (childMode() == "viewport-window") {
+        return runViewportWindowFixture();
+    }
+#endif
     if (childMode() == "viewport-hang") {
         std::cout << "viewport-hang-ready\n" << std::flush;
         for (;;) std::this_thread::sleep_for(std::chrono::seconds{1});

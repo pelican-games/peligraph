@@ -906,7 +906,14 @@ FramePlanModel buildFramePlanModel(std::string_view response_json) {
     FramePlanModel model;
     model.profile = "runtime";
     model.response_bytes = response_json.size();
-    model.raw_json = root.dump(2);
+    // Q-4. The reply exactly as it arrived. Laying it out for reading is a
+    // quarter of a megabyte of string building that only the raw-JSON tab ever
+    // looks at, and it used to be paid on every reply, before that tab had been
+    // opened even once. The escape hatch keeps every key the model does not
+    // know; it just keeps them in the bytes the engine sent rather than in a
+    // re-serialization of them. Reading is where the laying-out belongs, and
+    // that is where FramePlanWidget now does it.
+    model.raw_json.assign(response_json.data(), response_json.size());
     model.graph = requireStringField(root, "graph", "root");
     if (model.graph.empty()) {
         throw invalid("graph must not be empty");

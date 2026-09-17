@@ -25,8 +25,6 @@
 namespace PelicanStudio {
 namespace {
 
-constexpr int WindowDiscoveryIntervalMs = 25;
-constexpr int WindowDiscoveryTimeoutMs = 15000;
 constexpr int DiagnosticsIntervalMs = 200;
 constexpr int GracefulShutdownTimeoutMs = 2000;
 constexpr int MinimumLiveViewportExtent = 1;
@@ -129,6 +127,19 @@ QString defaultPlayerPath() {
     return QFileInfo(candidates.back()).absoluteFilePath();
 }
 
+// How long an engine may load in silence before Studio stops it. The default
+// is generous on purpose; the override exists for the machines and the
+// projects that are slower still, and it is what makes the give-up path
+// reachable in a test without waiting two minutes for it.
+int configuredEngineLoadTimeoutMs() {
+    bool valid = false;
+    const int configured =
+        qEnvironmentVariable("PELICAN_STUDIO_ENGINE_LOAD_TIMEOUT_MS")
+            .trimmed()
+            .toInt(&valid);
+    return valid && configured > 0 ? configured : EngineLoadTimeoutMs;
+}
+
 QString awarenessName(int awareness) {
     switch (awareness) {
     case 0: return QStringLiteral("unaware");
@@ -174,6 +185,7 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     auto *surface = new NativeViewportSurface(this);
     native_host_ = surface;
     surface->extent_changed = [this]() {
+        layoutEngineLoadingNotice();
         requestEmbeddedWindowResize(ViewportExtentChangeKind::resize);
     };
     surface->device_pixel_ratio_changed = [this]() {
@@ -181,6 +193,17 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     };
     surface->focus_requested = [this]() { focusEmbeddedWindow(); };
     layout->addWidget(native_host_, 1);
+
+    // Q-4. A plain child of the surface rather than a row of the panel's
+    // layout: the surface must stay collapsible to one pixel, and this notice
+    // must sit where the engine's picture will be, not above or below it.
+    loading_notice_ = new QLabel(native_host_);
+    loading_notice_->setObjectName(
+        QStringLiteral("pelican.viewportLoadingNotice"));
+    loading_notice_->setAlignment(Qt::AlignCenter);
+    loading_notice_->setWordWrap(true);
+    loading_notice_->setStyleSheet(QStringLiteral("color: #d6d6d6;"));
+    loading_notice_->hide();
 
     auto *footer = new QWidget(this);
     auto *footer_layout = new QHBoxLayout(footer);
@@ -214,8 +237,11 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     layout->addWidget(picking_notice_);
     layout->addWidget(gizmo_notice_);
 
+    engine_load_timeout_ms_ = configuredEngineLoadTimeoutMs();
+    attach_policy_ = EngineAttachPolicy{EngineWindowDiscoveryTimeoutMs,
+                                        engine_load_timeout_ms_};
     window_discovery_timer_ = new QTimer(this);
-    window_discovery_timer_->setInterval(WindowDiscoveryIntervalMs);
+    window_discovery_timer_->setInterval(EngineWindowSearchIntervalMs);
     diagnostics_timer_ = new QTimer(this);
     diagnostics_timer_->setInterval(DiagnosticsIntervalMs);
     pointer_focus_timer_ = new QTimer(this);
@@ -240,7 +266,9 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         restart_button_->setEnabled(false);
         stop_button_->setEnabled(true);
         status_->setText(tr("Engine PID %1 started; waiting for its window...").arg(process_id));
-        window_discovery_elapsed_.restart();
+        engine_clock_.restart();
+        attach_policy_.engineStarted(0);
+        window_discovery_timer_->setInterval(EngineWindowSearchIntervalMs);
         window_discovery_timer_->start();
         discoverEngineWindow();
     });
@@ -257,18 +285,26 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
                 last_primary_pointer_position_.reset();
                 setEngineInputActive(false);
                 rpc_ready_ = false;
+                readiness_request_ = 0;
                 child_window_ = 0;
+                setEngineLoadingNotice({});
                 last_requested_extent_ = {};
                 native_host_->update();
                 restart_button_->setText(tr("Restart Engine"));
                 restart_button_->setEnabled(true);
                 stop_button_->setEnabled(false);
                 const QString exit_kind = exit_status == QProcess::CrashExit ? tr("crashed") : tr("exited");
+                // When Studio stopped this engine on purpose, the reason it
+                // stopped it is the thing worth reading. The exit code of a
+                // process Studio killed says only that Studio killed it.
                 status_->setText(
-                    tr("Engine PID %1 %2 (code %3). Pelican Studio is still running.")
-                        .arg(process_id)
-                        .arg(exit_kind)
-                        .arg(exit_code));
+                    engine_stop_reason_.isEmpty()
+                        ? tr("Engine PID %1 %2 (code %3). Pelican Studio is "
+                             "still running.")
+                              .arg(process_id)
+                              .arg(exit_kind)
+                              .arg(exit_code)
+                        : engine_stop_reason_);
                 const auto failure =
                     engine_failure_model_.finishRun(exit_code);
                 if (!shutting_down_) {
@@ -297,6 +333,8 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
         last_primary_pointer_position_.reset();
         setEngineInputActive(false);
         rpc_ready_ = false;
+        readiness_request_ = 0;
+        setEngineLoadingNotice({});
         restart_button_->setText(tr("Retry Engine"));
         restart_button_->setEnabled(true);
         stop_button_->setEnabled(false);
@@ -307,6 +345,15 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     });
     connect(&process_, &EngineProcess::outputReceived,
             this, &EmbeddedViewport::engineOutputReceived);
+    // An engine that is writing its log is an engine that is loading, not one
+    // that has stopped answering. Every line it writes pushes both give-up
+    // deadlines out, so neither of them can end a slow project's startup.
+    connect(&process_, &EngineProcess::outputReceived, this,
+            [this](const QString &) {
+                attach_policy_.engineSpoke(engine_clock_.isValid()
+                                               ? engine_clock_.elapsed()
+                                               : 0);
+            });
     connect(&process_, &EngineProcess::standardErrorReceived, this,
             [this](const QString &output) {
                 engine_failure_model_.appendStandardError(output);
@@ -314,6 +361,12 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
             });
     connect(&process_, &EngineProcess::rpcResultReceived, this,
             [this](qint64 request_id, const QByteArray &result_json) {
+                // Q-4: the readiness probe is Studio's own question and is
+                // nobody else's answer to receive.
+                if (request_id != 0 && request_id == readiness_request_) {
+                    markRpcReady();
+                    return;
+                }
                 // Passed straight through. The reply was walked once by
                 // EngineProcess and is parsed once by whichever model wants
                 // its contents; nothing in between takes a copy of it as a
@@ -327,6 +380,13 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
     connect(&process_, &EngineProcess::rpcErrorReceived, this,
             [this](qint64 request_id, int code, const QString &message,
                    const QJsonValue &) {
+                // An engine that refuses the probe still answered it: what the
+                // readiness probe establishes is that the RPC loop is running,
+                // not that this particular method exists.
+                if (request_id != 0 && request_id == readiness_request_) {
+                    markRpcReady();
+                    return;
+                }
                 if (!pending_pick_requests_.remove(request_id)) {
                     emit inspectorRpcFailed(
                         request_id,
@@ -341,6 +401,12 @@ EmbeddedViewport::EmbeddedViewport(QWidget *parent) : QWidget(parent), process_(
             });
     connect(&process_, &EngineProcess::rpcTransportFailed, this,
             [this](qint64 request_id, const QString &message) {
+                if (request_id != 0 && request_id == readiness_request_) {
+                    // The transport, not the engine, failed. There is nothing
+                    // left to be ready for; the process signals will say so.
+                    readiness_request_ = 0;
+                    return;
+                }
                 if (!pending_pick_requests_.remove(request_id)) {
                     emit inspectorRpcFailed(request_id, message);
                     return;
@@ -482,6 +548,9 @@ void EmbeddedViewport::startEngine() {
 
     child_window_ = 0;
     rpc_ready_ = false;
+    readiness_request_ = 0;
+    engine_stop_reason_.clear();
+    setEngineLoadingNotice({});
     last_requested_extent_ = {};
     resize_timer_->stop();
     resize_coalescer_.reset();
@@ -524,23 +593,60 @@ void EmbeddedViewport::discoverEngineWindow() {
         return;
     }
 
-    const NativeWindowHandle window = NativeWindowHost::findTopLevelWindow(process_.processId());
-    if (window == 0) {
-        if (window_discovery_elapsed_.elapsed() >= WindowDiscoveryTimeoutMs) {
-            window_discovery_timer_->stop();
-            status_->setText(tr("The engine started, but no native window appeared within 15 seconds."));
-            process_.kill();
-        }
-        return;
+    const qint64 now_ms = engine_clock_.isValid() ? engine_clock_.elapsed() : 0;
+    const NativeWindowHandle window =
+        NativeWindowHost::findTopLevelWindow(process_.processId());
+    const EngineAttachDecision decision =
+        attach_policy_.decide(window != 0, now_ms);
+    if (decision.next_interval_ms > 0 &&
+        decision.next_interval_ms != window_discovery_timer_->interval()) {
+        window_discovery_timer_->setInterval(decision.next_interval_ms);
     }
 
+    switch (decision.step) {
+    case EngineAttachStep::search_window:
+        return;
+    case EngineAttachStep::give_up_no_window:
+        abandonEngine(tr("The engine started but showed no window, and wrote "
+                         "nothing for %1 seconds. It was stopped.")
+                          .arg(decision.silent_ms / 1000));
+        return;
+    case EngineAttachStep::give_up_no_response:
+        abandonEngine(tr("The engine did not answer for %1 seconds. "
+                         "It was stopped.")
+                          .arg(decision.silent_ms / 1000));
+        return;
+    case EngineAttachStep::probe_window:
+        break;
+    }
+
+    // The window is up; its thread is still inside the project load. Say so,
+    // and ask again on the next tick. Re-parenting it now would send
+    // WM_STYLECHANGING to that thread and wait for it -- which is exactly the
+    // freeze this is here to avoid.
+    setEngineLoadingNotice(
+        tr("Loading %1...\nThe engine is still starting (%2 s).")
+            .arg(QDir(project_root_).dirName())
+            .arg(decision.waiting_ms / 1000));
+    status_->setText(tr("Waiting for the engine to finish starting (%1 s)...")
+                         .arg(decision.waiting_ms / 1000));
+    if (!NativeWindowHost::windowThreadAnswers(window,
+                                               EngineWindowProbeTimeoutMs)) {
+        return;
+    }
+    attachEngineWindow(window);
+}
+
+void EmbeddedViewport::attachEngineWindow(NativeWindowHandle window) {
     const NativeWindowHandle host = static_cast<NativeWindowHandle>(native_host_->winId());
     const QSize pixel_extent =
         embeddedViewportPixelExtent(native_host_->size(), native_host_->devicePixelRatioF());
     QString error;
     if (!NativeWindowHost::embed(window, host, pixel_extent, &error)) {
         window_discovery_timer_->stop();
+        setEngineLoadingNotice({});
         status_->setText(error);
+        engine_stop_reason_ = error;
         NativeWindowHost::requestClose(window);
         const qint64 stopping_process_id = process_.processId();
         QTimer::singleShot(GracefulShutdownTimeoutMs, this, [this, stopping_process_id]() {
@@ -553,15 +659,61 @@ void EmbeddedViewport::discoverEngineWindow() {
     last_requested_extent_ = pixel_extent;
     resize_coalescer_.reset(pixel_extent);
     window_discovery_timer_->stop();
+    setEngineLoadingNotice({});
     diagnostics_timer_->start();
     pointer_button_was_down_ = false;
     primary_pointer_was_down_ = false;
     primary_pointer_owned_ = false;
     last_primary_pointer_position_.reset();
     pointer_focus_timer_->start();
+    // Q-4. The window moving is not the engine answering. Ask it one question
+    // and let its reply be what makes Studio call the engine ready, so that
+    // "ready" means the same thing it says: editor RPC will be served.
+    readiness_request_ =
+        process_.requestRpc(QStringLiteral("get_status"), QJsonObject{});
+    updateDiagnostics();
+}
+
+void EmbeddedViewport::markRpcReady() {
+    readiness_request_ = 0;
+    if (rpc_ready_) {
+        return;
+    }
     rpc_ready_ = true;
     emit engineRpcBecameAvailable();
-    updateDiagnostics();
+}
+
+void EmbeddedViewport::abandonEngine(const QString &reason) {
+    window_discovery_timer_->stop();
+    setEngineLoadingNotice({});
+    engine_stop_reason_ = reason;
+    status_->setText(reason);
+    process_.kill();
+}
+
+void EmbeddedViewport::setEngineLoadingNotice(const QString &message) {
+    if (loading_notice_ == nullptr) {
+        return;
+    }
+    if (message.isEmpty()) {
+        loading_notice_->clear();
+        loading_notice_->hide();
+        return;
+    }
+    if (loading_notice_->text() == message && loading_notice_->isVisible()) {
+        return;
+    }
+    loading_notice_->setText(message);
+    layoutEngineLoadingNotice();
+    loading_notice_->show();
+    loading_notice_->raise();
+}
+
+void EmbeddedViewport::layoutEngineLoadingNotice() {
+    if (loading_notice_ == nullptr || native_host_ == nullptr) {
+        return;
+    }
+    loading_notice_->setGeometry(native_host_->rect());
 }
 
 void EmbeddedViewport::requestEmbeddedWindowResize(ViewportExtentChangeKind kind) {
