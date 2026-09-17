@@ -171,7 +171,7 @@
 
 **SSAO(screen-space ambient occlusion)** — 深度と法線から「くぼみの暗さ」を画面空間で近似する定番手法。pelican2 では feature ではなく**同梱シェーダ**(`engine://ssao` / `engine://ssao_blur`)で、プロジェクトの rendering config が自分でパスを組みます。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([ssao.frag](../../src/core/resources/ssao.frag))
 
-**bloom(ブルーム)** — 明るい部分をにじませて眩しさを表現する後処理。SSAO と同じく feature ではなく同梱シェーダ群(`bloom_highpass` / `bloom_blur_h` / `bloom_blur_v` / `bloom_upsample` / `bloom_composite`)で、パスの組み方はプロジェクト側です。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([bloom_highpass.frag](../../src/core/resources/bloom_highpass.frag))
+**bloom(ブルーム)** — 明るい部分をにじませて眩しさを表現する後処理。P-2a-1b(`a1233ddd`)から同梱 feature `engine://features/bloom.json`(13 pass + 9 RT を `post_ldr` の後に挿入。shader は `bloom_highpass` / `bloom_blur_h` / `bloom_blur_v` / `bloom_upsample` / `bloom_composite`)。しきい値・膝・強度の parameter は P-2a-1c で宣言します。初出: [第6章 §6.4](06_rendering.md#64-シェーダ基盤shader-freedom-kit-wp101519--m2bwp70)。([bloom_highpass.frag](../../src/core/resources/bloom_highpass.frag))
 
 **TAA(temporal anti-aliasing)** — 毎フレーム少しずらして描いた結果を、前フレームの履歴と混ぜてジャギーを消す手法。pelican2 では `taa.json` feature が resolve + composite の 2 パスと jitter provider を持ちます。履歴・速度・jitter はユーザー空間側の道具立てで、エンジンは機構だけを持ちます。初出: [第6章 標準 TAA](06_rendering.md#標準-taawp113)。
 
