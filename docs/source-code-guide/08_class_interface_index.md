@@ -46,7 +46,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | 名前 | 形 | 宣言 | 主実装 | 責務 |
 |---|---|---|---|---|
 | `PelicanCore` | public façade | [`pelican_core.hpp`](../../src/core/userpublic/pelican_core.hpp#L8) | [`run()`](../../src/core/userpublic/pelican_core.cpp#L83) | settings から runtime 全体を起動し、loop と teardown を囲む |
-| `EngineLaunchConfig` | module | [`launchconfig.hpp`](../../src/core/launchconfig.hpp#L26) | [`player main` で設定](../../src/player/main.cpp#L546) | headless、RPC、XR mode、game logic DLL、record/replay など起動時値 |
+| `EngineLaunchConfig` | module | [`launchconfig.hpp`](../../src/core/launchconfig.hpp#L26) | [`player main` で設定](../../src/player/main.cpp#L603) | headless、RPC、XR mode、game logic DLL、record/replay など起動時値 |
 | `StartupMetrics` | module | [`startup.hpp`](../../src/core/startup.hpp#L21) | [`startup.cpp`](../../src/core/startup.cpp) | 起動段階の計測 |
 | `XrActivationDecision` / `resolveXrActivation()` | pure decision | [`xractivation.hpp`](../../src/core/xractivation.hpp#L31) | [同 header](../../src/core/xractivation.hpp#L89) | headless/RPC/replay の forced-off と discovery hook から XR 起動可否を決定 |
 | `gameLogicAbiVersion` / `pelican_game_logic_epoch_v2` / `initializeConfiguredGameLogic()` | game DLL 境界 | [`gamelogic.hpp`](../../src/core/userpublic/gamelogic.hpp#L21) | [`gamelogicreload.cpp`](../../src/core/gamelogic/gamelogicreload.cpp#L873) | game DLL(`pelican_game_logic`)の epoch anchor、raw import 診断、ロード・ホットリロード |
@@ -57,7 +57,7 @@ Pelican の「interface」は pure virtual class だけではありません。�
 | `CameraBakeRecorder` | module | [`camerabake.hpp`](../../src/core/playback/camerabake.hpp#L17) | [`camerabake.cpp`](../../src/core/playback/camerabake.cpp) | replay 実行から camera パスを記録(`--bake-camera-output`) |
 | `parallelPrepareOrdered()` | free function | [`parallel_prepare.hpp`](../../src/core/parallel_prepare.hpp#L20) | header only | 順序保証付き並列 prepare(model ロード等) |
 | `FastModuleContainer` | module 基盤 | [`container.hpp`](../../src/core/container.hpp#L53) | [`get()`](../../src/core/container.hpp#L149) | 型ごとの static `optional<T>` を lazy construct し、local container 終了時に登録の逆順で reset |
-| `Loop` | module/orchestrator | [`loop.hpp`](../../src/core/appflow/loop.hpp#L7) | [`Loop::run()`](../../src/core/appflow/loop.cpp#L342) | windowed、windowed+XR、windowed+RPC、headless 固定フレーム、headless RPC の 5 経路を選び frame を進める |
+| `Loop` | module/orchestrator | [`loop.hpp`](../../src/core/appflow/loop.hpp#L7) | [`Loop::run()`](../../src/core/appflow/loop.cpp#L343) | windowed、windowed+XR、windowed+RPC、headless 固定フレーム、headless RPC の 5 経路を選び frame を進める |
 | `EngineTime` | module | [`enginetime.hpp`](../../src/core/appflow/enginetime.hpp#L10) | [`setup/advance`](../../src/core/appflow/enginetime.cpp#L16) | realtime/fixed-step の time、dt、frame index |
 | `FramerateAdjust` | module | [`framerate.hpp`](../../src/core/appflow/framerate.hpp#L7) | [`framerate.cpp`](../../src/core/appflow/framerate.cpp#L1) | window mode の frame pacing |
 | `RuntimeTeardownGuard` | RAII guard | [`teardown.hpp`](../../src/core/appflow/teardown.hpp#L68) | [`teardown.cpp`](../../src/core/appflow/teardown.cpp) | ECS、physics、GPU instance、deletion queue を依存順に明示解放 |
