@@ -23567,6 +23567,69 @@ journal / undo(R 群)/ component 欄(P-1b)/ feature parameter / definition 内�
 新しい golden の追加(既存 2 つで足りる)/ `levels` / feature JSON ↔ `pelican.graph` 変換 / 曲線の専用 UI(AG-3)/ 2D。
 
 
+
+### AG-2: root motion —— clip の根の移動を個体の transform に渡す(v0「作る」の段 5。v2)
+
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、`<作業ディレクトリ>/dr_ag2.md`: 致命 5 / 大 10)で v1 の「第二の sink」「pose handle の sideband」「dt からの差分」を全部撤回 → v2。第 2 巡 1 回で打ち切り。事実: `<作業ディレクトリ>/facts_ag2.md`。**
+
+#### 前提(第 1 巡で検算済み)
+- root motion の抽出は無い。`pose.transform` sink は bind で必ず throw([posegraphruntime.cpp:261-267](../src/core/animation/posegraphruntime.cpp#L261))。`root_delta` は 3 経路とも identity で、受け側は読まない。`SidebandPolicy` は死んでいる(`blendPoses` は読まない)。
+- **1 owner 1 sink**: 単一 writer 規則([posegraph.cpp:159-172](../src/core/animation/posegraph.cpp#L159))と runtime の attachment / claim_source / arena / staged frame の 4 点が owner 単位で、sink を 2 本にするには形を変える必要がある(AG-1a 裁定「`object_transform` sink は同じ renderer instance を返すので二重書き」)。→ **sink は増やさない**。
+- `pose.clip_sample` は無状態で cursor を持たない([posegraphruntime.cpp:444-453](../src/core/animation/posegraphruntime.cpp#L444))。`retainOnly` は `EvaluatorV1` しか運ばない。`rebuild` の parameter を触ると node は作り直される。
+- layout は全 glTF node の topological 順、index 0 = parent −1 の最上位祖先(`Character`)。凍結 ABI(`abi_v1.hpp`)からは root の layout index も rest pose も取れない。**追加面は `pose_staging_v1.hpp`**(`resolve_source_node` の前例: glTF node index → layout index)。
+- `GameObjects::setLocalTransform`([gameobjects.cpp:67-90](../src/core/userpublic/gameobjects.cpp#L67))は Local を書き Transform を mirror し `setTrs` を押す。`LocalTransformComponent` が無い個体では **false を返して何もしない**。親付き個体は次 frame に `LocalTransformSystem` が world を再合成する(同 frame は local を world として描く = 1 frame ずれ)。effect transaction 中は throw。
+- `runAllPhases` は sink ごとに 5 phase を回す。`Impl::phase` は `base_pose_and_root_modifier` 以外を拒否する。
+- parity test([skeletal_gltf_test.cpp:1993](../test/skeletal_gltf_test.cpp#L1993))は component 経路と `pose.clip_sample` の姿勢一致を 5 mode で assert する。
+- `test/skeletal_fixture.hpp` の `writeGltf` は 18 file が共有し、`clips.size() == 2` を assert する test がある([skeletal_gltf_test.cpp:974](../test/skeletal_gltf_test.cpp#L974))。
+
+#### 決定
+1. **port も sink も型も増やさない。** `pose.clip_sample` の node parameter `root_motion: "none" | "extract"`(既定 `none`)と `root_node`(glTF node index、`extract` で必須)を足す。`extract` の node は **`pose.skeletal` sink に直接(`pose.retarget` を挟むのは可)繋がっていなければならず**、`pose.blend` / `pose.state_machine` の上流にあると compile で **`pose.root_motion_unsupported@1`**。`root_node` が無い / 範囲外 / layout に無いは **`pose.root_node_unknown@1`**。
+2. **差分は unwrapped time の差で取る(seek と wrap を区別する)。** node の時刻写像 u = (time − start_time)·speed + start_seconds を **canonical 化する前**の値で扱い、R(u) = loops(u)·(root(end) − root(start)) + root(canonical(u))(loop 無しは root(clamp(u)))。delta = R(u_cur) − R(u_prev)。これで speed < 0、1 frame に複数周、境界ちょうども 1 式。状態は attachment × node の `u_prev`(無ければ初回 = delta 0)。`time_set_revision` の変化(set_time 通知)で `u_prev` を捨てる(その frame は delta 0 = seek は移動ではない)。`value.curve` の keyframe 跳びや parameter 編集による `time` の跳びは **移動として扱う**(記録: 不連続を知らせる信号がこの経路に無い。cut を作るなら set_time)。rebuild(parameter 編集)後は `u_prev` 無しからやり直す(記録)。
+3. **pin**: staged pose の `root_node` の layout index(`pose_staging_v1` の `resolve_source_node`)の **translation を root(start_seconds) に固定**する(rest ではなく clip 先頭の値。rotation は触らない = 回転量の抽出は v0 射程外、記録)。root(t) の取得は `pose_staging_v1.hpp` に additive な entry `sample_source_node_translation{clip, time, source_node}` を 1 本足す(凍結 ABI `abi_v1.hpp` は不変)。
+4. **適用は同じ phase callback の中、stage の直前**: `Impl::evaluate` で sample → 2 の delta → 3 の pin → **owner の Local に加算**(`local.pos += local.rotation * delta`、scale は掛けない、記録)→ stage → commit。順序はこの 1 関数に固定(「animation → root motion → publish」。movement / physics step は engine に無いので v0 では並べない、記録)。書き方は `GameObjects::setLocalTransform` を直接呼ぶ(transform の writer は `claim_source` の外。game system と両方が書くと交互に勝つ穴を **記録**、AG-1b の writer token の transform 版は v0 後)。`LocalTransformComponent` が無い owner は attach 時に **`pose.root_motion_no_transform@1`**(黙って無効にしない)。effect transaction 中の throw は phase の `callback_failed` として frame を止める(fail-fast、記録)。親付き owner の 1 frame ずれは記録。
+5. **評価分類**: `extract` の node は状態を持つので **`replay`**。op 登録は `direct` のまま、factory が per-node で `replay` に**引き上げる**ことを `resolveOperation` が許す(引き下げは **`graph.evaluation_relaxed@1`**)。O-1 はこの per-node 契約を読む。
+6. **既存契約の不変**: 既定 `none` で pose / golden / parity / catalog dump(`run_devcli_graph_catalog.cmake` の whitelist)bytes 不変。parity の保証は「`root_motion == none` のとき」に**狭まる**ことを裁定として記録し、parity test に `extract` は入れない。fixture は共有 `writeGltf` を触らず **別 builder**(`test/root_motion_fixture.hpp`: `Character(0) → RootJoint(1) → TipJoint(2)`、clip `Advance` = node 0 translation (0,0,0)→(2,0,0) を 1 s、loop)。出荷 4 project bytes 不変。`PELICAN_WITH_ANIMATION=OFF` build 不変。
+
+#### 受け入れ(§4 規約 10。production 経路 = scene load → ECS → animation service → GPU 属性)
+1. `clip_sample{Advance, root_motion: extract, root_node: 0} → pose.skeletal`、owner は `transform + local_transform + simplemodelview`。fixed_step 1/60 × 30 frame → owner の local pos.x = 1.0 ± 1e-4、かつ `render.attribute{pose_node: 0}` で読む model 行列の translation.x = 0 ± 1e-4(pin)。**対照(GENERATE `none`)**: pos.x = 0、model translation.x = 1.0 ± 1e-4(その場でずれる = 今日)。
+2. 90 frame → pos.x = 3.0 ± 1e-3(60 frame 目の wrap を跨いで連続)。**対照**: loops(u) の項を消す変異で 1.0 付近に落ちる。`speed: -1` で 30 frame → −1.0。`speed: 2.5` で 60 frame → 5.0。
+3. 30 frame 後に `setTime(0.25)` → 次の 1 frame で pos.x が 1.0 ± 2/60(seek で跳ばない)。**対照**: revision で `u_prev` を捨てない変異で pos.x が ≈ 0.53 に跳ぶ。
+4. 名前付き拒否 3 種(`pose.root_motion_unsupported@1` = blend 上流 / `pose.root_node_unknown@1` / `pose.root_motion_no_transform@1`)。`graph.evaluation_relaxed@1` は test module の factory で。
+5. factory 解決後の契約が `extract` で `replay`、`none` で `direct`。catalog dump は不変。
+6. 既存 `posegraph_test` / `skeletal_gltf_test` / golden(skeletal 系)bytes 不変。OFF build。
+
+#### やらないこと
+sink の追加 / `root_delta` port / state_machine・blend の root motion / 回転量 / movement・physics step / transform の writer token / VRMA hips の自動解釈 / Studio UI。
+
+### O-1: オフライン出力 —— 指定時刻 t の決定的評価と連番出力(v0「出力する」の段 6。v2)
+
+**§4 規則 11 上段。実装者: Claude(Fable + Opus)。設計レビュー第 1 巡(Opus、`<作業ディレクトリ>/dr_o1.md`: 致命 3 / 大 6)で v1 の jump 経路と複数 t を撤回 → v2。第 2 巡は行わない(利用者指示: 進めて後でテスト)。事実: `<作業ディレクトリ>/facts_o1.md`。**
+
+#### 前提(第 1 巡で検算済み)
+- headless loop は `advance(); updateFrameState(); render(); capture` を `--frames` 回([loop.cpp:404-429](../src/core/appflow/loop.cpp#L404))。絶対 t の flag は無い。`pelican_cli` は描けない。
+- **graph の state を進めるのは `render()` の中の `publish`**([renderer.cpp:5359-5385](../src/core/vkcore/renderer.cpp#L5359)。`scene.graphEvaluationState()` の production 呼び手はここだけ)。`updateFrameState()` だけを回しても clock は進まない。`render_frame`(RPC)も publish で state を書き戻し audio を鳴らす。同 t の再評価が同じ結果を返すのは **冪等だから**(`curve_test.cpp:229-230`)であって「進めない」からではない。
+- `advance()` は `current_time += dt`、`setTime(t)` は上書きして `time_set_revision` を上げる(renderer は temporal history を reset)。jitter phase は frame_index の関数。
+- 評価分類は catalog に出るだけで消費者が無い。`baked` / `recorded` を宣言する op は無い。game code のリテラル `EvaluatorV1`(`animgraph_demo`)と animation component の `pelican.anim_graph` 経路は分類を持たない。
+- `Graph::evaluate(state=nullptr)` の production 呼び手は 0(test のみ)。stateless の拒否は無名 `invalid_argument` 3 箇所。
+- `pelican.value_graph` schema の直書き経路([valuegraph.cpp:137-142](../src/core/userpublic/valuegraph.cpp#L137)、`:205-219`)があり、新しい列挙器は `partitionGraphDocument` の二重化になる。
+
+#### 決定
+1. **`pelican_player --at <t>`(秒、1 run に 1 つ)**。`--frames` と排他(**`offline.mode_conflict@1`**)、負や非数は **`offline.time_invalid@1`**、`--render-out` 必須(`%d` token 付きなら index 1)。手順: k = floor(t·fps + 1e-9) 回の **通常 frame**(advance → updateFrameState → render、capture 無し)→ t が格子上(|t − k/fps| < 1e-9)なら **もう 1 frame 通常に進めて capture**(= `--frames k+1` の最後の 1 枚と bytes 一致、これが `--frames` との oracle)/ 格子外なら `setTime(t)` → `updateFrameState()` → `render()` → capture(temporal history は reset される。`--frames` とは比較しない)。stderr に 1 行 `offline: t=<t> replay=<k> sample=<grid|off_grid>`。**jump(replay 省略)は v0 では無い**(記録: game code と component 経路の状態が分類に映らないので、常に 0 から進める)。複数 t は run を分ける(`pelican_cli render` で player を t ごとに spawn する形は送り)。
+2. **評価分類の消費者**: 新しい列挙器は書かず、`partitionGraphDocument` が node の契約を引く既存の場所で **文書ごとの最大分類**(direct < replay < baked < recorded)を composed 結果に持たせる(`pelican.value_graph` 直書き経路も同じ関数を通す)。`--at` の起動時に scene の全 graph 文書の分類を集め、`recorded` があれば **`offline.evaluation_recorded@1`**(op と node id)。`baked` は `direct` と同じ(記録)。`replay` は 1 の replay で満たされる(v0 では分類で手順は変わらない。記録: jump を入れる時の gate)。
+3. **名前の統一**: `valuegraph.cpp` の stateless 拒否 3 箇所を **`graph.evaluation_requires_state@1`**(op と node id)に。production 呼び手は無い(記録。名前の統一であって受け入れの主ではない)。
+4. **「読む」は publish の snapshot**: `get_graph_values` の `PublishedInstanceInputs` が v0 の「状態から値を読む」経路(再評価しない)。`render_frame` は再描画であって読みではない。row の「1 frame を複数回サンプルしても進まない」は **同 t の再評価が冪等**であることで満たし、audio は publish 時に queue を drain するので 2 回目は鳴らない(初回は鳴る。headless の音の扱いは記録)。真の read-only render は v0 後(記録)。
+
+#### 受け入れ(§4 規約 10)
+1. `value.trigger_clock` の出力を色に繋いだ fixture project を `--at 0.5 --fps 30` で **2 run** → PNG bytes 一致、かつ `--frames 16` の 16 枚目と bytes 一致(格子)。**対照**: replay を `render()` 抜き(advance + updateFrameState のみ)にする変異で clock が進まず色が変わる(第 1 巡の致命 1 の形そのもの)。
+2. `--at 0.52 --fps 30` を 2 run → bytes 一致、stderr `replay=15 sample=off_grid`。
+3. `offline.mode_conflict@1`(`--at` + `--frames`)、`offline.time_invalid@1`(`--at -1`)。
+4. test module に `evaluation: recorded` の op を足した文書 → `offline.evaluation_recorded@1`(unit。player は builtin registry なので end-to-end は無い、記録)。`pelican.value_graph` 直書き文書でも分類が出る。
+5. RPC: `step_frame ×3 → render_frame + capture ×2` → bytes 一致、`get_graph_values` 一致。**対照**: 2 回目を `step_frame` にすると両方変わる。
+6. `Graph::evaluate(nullptr)` で clock 3 op が `graph.evaluation_requires_state@1`。
+7. 既存 headless 連番、golden、catalog smoke、input replay test bytes 不変。
+
+#### やらないこと
+jump / 複数 t / EXR / 音のオフライン出力 / `pelican_cli` の描画 subcommand / baked の実装 / read-only render / game code・component 経路の分類。
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
