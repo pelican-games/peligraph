@@ -139,7 +139,7 @@ v0 は機能の総数ではなく、**約束する制作体験**で切る。
 #### v0 の残り(2026-09-18 夜、engine 側 + Studio 側の 1 枚。置換更新)
 
 ## Studio 側(別 session pelican2-3e が所有、予定順)
-1. N-3 Frame Plan が共有の node 描画(heading + 型付き socket 行)を採用 + zoom / pan / fit(両 canvas)— 実装中(`<作業ディレクトリ>/n3_spec.md`)
+1. N-3 Frame Plan が共有の node 描画(heading + 型付き socket 行)を採用 + zoom / pan / fit(両 canvas)— 実装中(`<作業ディレクトリ>/n3_spec.md`) **→ 着地 `dd088c2a`**
 2. Q-1 Studio automation surface(`pelican_studio --automation <pipe>`: list/click/drag/type/key/text/wait/wait_engine/rpc/open_project/screenshot、driver `tools/studio_drive.py`、cmake test `studio_scenario_*`(GPU lane)、最初の scenario は graph_read / graph_edit_roundtrip)— 実装中(`<作業ディレクトリ>/q1_spec.md`)。利用者の裁定: GUI の検証は AI がこの面で行い、人は使い勝手だけを見る **→ 着地 `06829720`**(初回の実 GUI 往復で Enter の保存漏れを発見・修正。Opus が driver を回して緑 / 赤を判定できることを実演)
 3. N-5 Studio theme light/dark(StudioTheme JSON preset、View menu、QSettings、canvas は色を theme から)— N-3 の後(`<作業ディレクトリ>/n5_spec.md`)
 4. N-4 auto-layout(Sugiyama: longest-path layer、dummy node、barycenter、"Auto layout" menu、Qt 無し unit test で交差 / 重なりの指標)— N-3 の後(`<作業ディレクトリ>/n4_spec.md`)

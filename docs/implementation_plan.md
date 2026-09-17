@@ -24019,6 +24019,37 @@ undo / 複数選択・矩形選択 / コピー & ペースト / `copy_definition
 
 完了記録(2026-09-18、`06829720`): `src/devstudio/automation/{automationserver, automationcommands}`(static lib、Qt6::Network + Qt6::Test。flag 無しでは構築しない)、`--automation <名前>`、命令 `list / click / double_click / drag / key / type / text / wait / wait_engine / rpc / open_project / screenshot / quit`、名前付き error `automation.widget_missing@1` ほか 9 種、`tools/studio_drive.py`(uv、stdlib のみ、`report.json` に verdict / step 要約 / 失敗理由 + 送受信 + screenshot)、`test/run_studio_scenario.cmake`(fixture を temp に 2 複製)、fixture `test/fixtures/studio_automation_graph/`、シナリオ `graph_read`(14 step、9 s)/ `graph_edit_roundtrip`(19 step、16 s、実 engine)。対照: node 数を 1 ずらす変異で step 8 が赤 / `setNodeParameter` を止める変異で step 10 の wait_timeout。非 GPU 全数 1674/1674。GPU lease の inventory gate 通過(264 gpu test)。**Opus agent が driver を回して report を読み「緑」と「変異は step 8 で赤(理由付き)」を返した = AI だけで GUI の動作確認が閉じる**(利用者指示)。
 
+### N-3: Frame Plan のノードを共通グラフと同じ見た目に(利用者レビュー 3 巡目、2026-09-18「frame plan も似たような方が良い」)
+
+**§4 規則 11 下段(Studio 内。Frame Plan の操作・RPC・model は不変、描画だけ)。実装者: Claude(Opus)。**
+
+#### 前提
+- Frame Plan(`frameplangraphics.cpp`)の node は角丸四角(anchor は菱形)+ ラベル、辺は node 縁同士、ラベル付き。Shift ドラッグで task へ接続、右クリック menu、group の折り畳み / 展開(breadcrumb)、GPU 計時の表示、`session_node_positions_`、`devstudio_frameplan_graph_test`(46 case、2126 assertions)と `devstudio_fullscreen_pass_test`(26 case)が形と操作を固定している
+- 共通部品 `nodegraphics`(N-1b): 見出し帯 + 出力欄 + 入力欄、`socketStyleFor(type)`、`socketPath`、`curveGeometryBetween`、既定表 `graph_socket_styles.json`
+- Frame Plan の node の「port」= pass が読む resource(入力)と書く target(出力)、task の入出力 buffer。resource の種類(image / buffer / acceleration structure / swapchain)は model にある(`FramePlanModel` の resource kind。要確認)
+
+#### 決定
+1. Frame Plan の node を **同じ 3 段の形**にする: 見出し帯(色 = `sourceColor` の今日の規則: project / feature / engine)に pass 名を太字、型(fullscreen / raster / compute / rt / anchor / group)を薄く。出力欄 = 書く target(右端にソケット)、入力欄 = 読む resource(左端にソケット)。anchor node は見出し帯だけ(菱形の見出しは捨て、型名で表す)。group は見出し帯 + 「n nodes」の 1 行
+2. **ソケットの型** = resource の種類。`graph_socket_styles.json` に `frame_plan.image` / `frame_plan.buffer` / `frame_plan.acceleration_structure` / `frame_plan.swapchain` / `frame_plan.history` を足す(形で区別: image = 丸、buffer = 四角、AS = 菱形、swapchain = 六角、history = 二重丸に近い縁太)。解決は同じ `socketStyleFor`
+3. **辺** = 出力ソケット → 入力ソケット(ソケット中心)。辺のラベルは消す(resource 名は行に出る)。**Shift ドラッグ接続はソケットから始めても node からでも同じ挙動**(既存の `taskconnectiongraphics` の起点判定にソケットを足す)。選択 node に触れる辺を明るく
+4. **操作は不変**: 右クリック menu、double-click、group の折り畳み / 展開、breadcrumb、Order nodes、Edit task、GPU 計時の overlay、`session_node_positions_`、convex hull proposal。位置の key は変えない
+5. **test**: `devstudio_frameplan_graph_test` / `devstudio_fullscreen_pass_test` は **操作と model の assertion を変えず**に緑にする。形(座標・高さ・item 数)を直接 assert している箇所だけ新しい形に合わせ、変えた assertion を一覧で報告(挙動不変の対照 = 変えた assertion が全部「形」であること)。scene test を 1 case 足す: pass node に見出し + resource の行 + 型別ソケット、辺の端点 = ソケット中心
+
+6. **ズーム / パン / fit(Graph と Frame Plan の両方、共有部品)**: ホイールでカーソル中心にズーム(0.25〜3 倍)、中ボタン(または Space + 左)ドラッグでパン、`F` キーと右クリック menu「Fit view」で内容全体を表示、scope 切替と project を開いた直後は自動 fit。倍率とスクロール位置はセッション内(scope ごと)
+
+#### 受け入れ
+1. scene test(Qt offscreen): fixture の frame plan で pass node が 3 段、入力行 = 読む resource、出力行 = 書く target、ソケットの形が種類ごと、辺の端点がソケット中心。対照: ソケットを node 縁に戻す変異で赤 / 既定表から `frame_plan.*` を消すと全部 fallback(白の丸)
+2. `devstudio_frameplan_graph_test` / `devstudio_fullscreen_pass_test` 全数緑(変えた assertion は形だけ、一覧)/ 非 GPU 全数緑
+3. scene test: ホイールで transform の倍率が変わりカーソル位置が不動 / `F` で内容が view に収まる / scope 切替で自動 fit。対照: fit を外す変異で scope 切替後の view rect が内容と交わらない
+4. 実物: example と posegraph_demo の Frame Plan と Graph を目視(利用者)
+
+#### やらないこと
+Frame Plan と Graph の統合キャンバス / Frame Plan の操作変更 / 位置の永続化 / 著作キャンバスの再設計。
+
+実装時の裁定(2026-09-18、`agent/n1`): ズーム上限は仕様の 3 ではなく **4.0**(WP318 の既存 test が Frame Plan のホイール上限を 4.0 で固定。上限は操作であって見た目ではないので既存 test を優先。両キャンバスで共通)。「カーソル位置が不動」は画素ではなく `transformationAnchor() == AnchorUnderMouse` で assert(offscreen では `QCursor::pos` 依存で 3 回に 1 回落ちる。flaky を出荷しない)。行の並びは resource **名順**(WP318 が入力配列の順序を無視することを固定している。宣言順を出すなら model に安定 index が要る、記録)。AS ソケットは `usage` に `ACCELERATION_STRUCTURE` を含む resource から引くが出荷 plan には無く、実データでは未検証(記録)。`FramePlanNodeMaximumWidth = 360` で長い名前は中略(tooltip に全名)。Graph の右クリックは「Add node… / Fit view」の 2 段になった(1 click 増、test 無し、記録)。Frame Plan の zoom / scroll は graph + group scope で key され、target や depth の変更では refit しない(`F` で回復、記録)。
+
+完了記録(2026-09-18、`dd088c2a`): `nodegraphics` に `SocketStyle::outline_width` と共有の `NodeCanvasView`(カーソル中心ホイールズーム 0.25〜4.0、中ボタン / Space+左のパン、`F` = fit、`showScope()` = 未見の scope は fit・再訪は復元)、`frameplangraphics` の node を見出し帯 + GPU 計時行 + 出力行 + 入力行に、`framePlanSocketFacts()`(resource 種別 → `frame_plan.image / buffer / acceleration_structure / swapchain / history`、`graph_socket_styles.json` に 5 entry 追加)、ソケット間の辺配線、辺ラベルは tooltip へ、選択で無関係の辺を薄く、context menu「Fit view」、`frameplanwidget` と `graphcanvaswidget` は同じ view を使う。test: `devstudio_frameplan_graph_test` に 4 case 追加(3 段 / 型別ソケット / 辺の端点 = ソケット中心 / zoom・pan・fit)、対照 4 種(辺を node 矩形に戻す / `frame_plan.*` を表から消す / 未見 scope を fit しない / ソケット起点の drag を止める)で赤を実測。**変えた既存 assertion は全部 appearance**(quotient の drop 一覧に sub-item を追加 / 「shape 1 + label 1」→「shape 1 + label ≥1」×11 / 辺ラベル text → tooltip / WP318 drag test の label 期待を撤去 / Shift drag の request 数 1→2 はソケット起点の gesture が先に増えたため)。model / RPC / 位置 key / group / breadcrumb / 計時 / convex hull の assertion は不変。Frame Plan 50/50、fullscreen 26/26、非 GPU 全数 1678/1678。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
