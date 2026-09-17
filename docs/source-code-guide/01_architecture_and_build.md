@@ -84,7 +84,7 @@ playerは `ENABLE_EXPORTS` と `/WHOLEARCHIVE:pelican_core` でSDKシンボル�
 
 ### `pelican_cli`
 
-[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の7種です（[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14) の分岐と [usage文字列](../../src/devcli/main.cpp#L39)）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
+[`src/devcli/CMakeLists.txt`](../../src/devcli/CMakeLists.txt#L1) が作る配布支援CLIです。サブコマンドは `assets`、`bake-camera`、`import`、`dist-config`、`package`(X-1: install / list / inspect)、`project`、`dump-lowered-material`、`vrm`、`graph-catalog`(共通グラフの module / op / 型の一覧、AG-0) の7種です（[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14) の分岐と [usage文字列](../../src/devcli/main.cpp#L43)）。Vulkan実行時全体ではなく `pelican_project` と必要な純粋処理を中心にリンクします。
 
 `project init` が書き出す雛形は、[`templateFiles()`](../../src/devcli/projectinit.cpp#L273) が返すファイル名と文字列定数の対で全量が決まります。「新規プロジェクトの既定形」を知りたいときはここだけ読めば足ります。
 
