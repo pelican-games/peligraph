@@ -2438,8 +2438,12 @@ pelican_define_test(importmanifest_test GROUP project_formats pelican_project)
 pelican_define_test(importrules_test GROUP project_formats pelican_project)
 pelican_define_test(assetdataformat_test GROUP project_formats pelican_project)
 pelican_define_test(projectformat_test GROUP project_formats pelican_project)
+pelican_define_test(packagemanifest_test GROUP project_formats pelican_project)
 target_compile_definitions(pelican_test_importrules_test PRIVATE PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+target_compile_definitions(pelican_test_packagemanifest_test PRIVATE
     PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
@@ -2653,6 +2657,26 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_project_init.cmake
 )
 pelican_gpu_test_properties(devcli_project_init_command ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+
+# X-1: install a package into a freshly created project and drive it through
+# the catalog, the editor RPC and the GPU.  The code half needs a player
+# configured against a temporary project, so it lives in the unregistered
+# run_package_template_smoke.cmake instead.
+# The catalog and the uninstall are observed over the editor RPC, so the whole
+# script needs an --rpc player.
+if(PELICAN_WITH_RPC)
+    add_test(
+        NAME package_install_smoke
+        COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+            -DCLI=$<TARGET_FILE:pelican_cli>
+            -DPLAYER=$<TARGET_FILE:pelican_player>
+            -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+            -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/package_install
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_package_install_smoke.cmake
+    )
+    pelican_gpu_test_properties(package_install_smoke 300)
+endif()
 
 add_test(
     NAME animgraph_demo_preset_headless_player

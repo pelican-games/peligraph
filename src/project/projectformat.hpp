@@ -29,6 +29,11 @@ struct ProjectEnvelopeParseResult {
     std::vector<std::string> warnings;
 };
 
+// Compares dotted numeric versions ("X.Y.Z").  One rule for every
+// `engine_min_version` in the tree: project.json reads it here, and so does a
+// package manifest.  Throws std::runtime_error for a malformed version.
+int compareProjectVersions(std::string_view lhs, std::string_view rhs);
+
 ProjectEnvelopeParseResult
 parseProjectEnvelopeJson(const nlohmann::json &project,
                          const ProjectEnvelopeParseOptions &options = {});

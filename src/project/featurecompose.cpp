@@ -842,6 +842,37 @@ std::string upperIdentifier(std::string_view value, const std::string &feature_n
     return result;
 }
 
+// X-1: a vendored package feature carries its namespace in the document name
+// (`acme.glowkit.glow`), because every place that compares feature names reads
+// that field.  The shader define prefix is the one consumer that needs an
+// identifier, so the dots become underscores here:
+// PELICAN_FEATURE_ACME_GLOWKIT_GLOW_.
+std::string upperFeatureNameIdentifier(std::string_view value,
+                                       const std::string &feature_name) {
+    std::string result;
+    result.reserve(value.size());
+    std::size_t begin = 0;
+    while (true) {
+        const auto dot = value.find('.', begin);
+        const auto segment = value.substr(
+            begin, dot == std::string_view::npos ? std::string_view::npos
+                                                 : dot - begin);
+        if (!isIdentifier(segment)) {
+            throw std::runtime_error(
+                "render feature '" + feature_name +
+                "' name must be dot-separated identifiers when scalar parameters are declared");
+        }
+        result.append(segment);
+        if (dot == std::string_view::npos) break;
+        result.push_back('_');
+        begin = dot + 1;
+    }
+    std::transform(result.begin(), result.end(), result.begin(), [](char ch) {
+        return static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+    });
+    return result;
+}
+
 FeatureParameterDeclarations parseFeatureParameters(
     const nlohmann::json &feature, const std::string &feature_name) {
     if (!feature.contains("parameters")) {
@@ -1462,7 +1493,7 @@ nlohmann::json bindFeatureParameters(const nlohmann::json &authored_feature,
     const auto feature_define_prefix = declarations.scalars.empty()
                                            ? std::string{}
                                            : "PELICAN_FEATURE_" +
-                                                 upperIdentifier(feature_name, feature_name) + "_";
+                                                 upperFeatureNameIdentifier(feature_name, feature_name) + "_";
     std::unordered_map<std::string, nlohmann::json>
         scalar_bindings;
     scalar_bindings.reserve(

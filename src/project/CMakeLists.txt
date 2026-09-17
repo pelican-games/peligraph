@@ -25,6 +25,7 @@ add_library(pelican_project
     materiallowering.cpp
     materialformat.cpp
     openpbrmapping.cpp
+    packagemanifest.cpp
     passfieldownership.cpp
     passshapepolicy.cpp
     physicaltargetplanwire.cpp

@@ -204,7 +204,12 @@ constexpr std::string_view ui_overlay_json = R"json({
 }
 )json";
 
-constexpr std::string_view code_cmake = "pelican_game_sources(game.cpp)\n";
+// X-1: pelican_packages() builds every package vendored under packages/ that
+// ships code.  It comes after pelican_game_sources so the game logic DLL those
+// objects join already exists.
+constexpr std::string_view code_cmake =
+    "pelican_game_sources(game.cpp)\n"
+    "pelican_packages()\n";
 
 constexpr std::string_view game_cpp = R"cpp(#include <gamecontext.hpp>
 #include <gamesystem.hpp>

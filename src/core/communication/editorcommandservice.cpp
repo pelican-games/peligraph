@@ -1507,6 +1507,22 @@ OrderedJson EditorCommandService::importRenderFeature(const Json &params) {
     return render_config_editor_->importRenderFeature(params);
 }
 
+OrderedJson EditorCommandService::installPackage(const Json &params) {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->installPackage(params);
+}
+
+OrderedJson EditorCommandService::uninstallPackage(const Json &params) {
+    if (!render_config_editor_) {
+        throw std::logic_error(
+            "render config editor service is unavailable");
+    }
+    return render_config_editor_->uninstallPackage(params);
+}
+
 OrderedJson EditorCommandService::getRenderAuthoringContext(
     const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
@@ -2499,6 +2515,20 @@ OrderedJson EditorCommandRpcAdapter::importRenderFeature(const Json &params) con
         throw std::logic_error("editor RPC adapter is read-only");
     }
     return mutable_service_->importRenderFeature(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::installPackage(const Json &params) const {
+    if (!mutable_service_) {
+        throw std::logic_error("editor RPC adapter is read-only");
+    }
+    return mutable_service_->installPackage(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::uninstallPackage(const Json &params) const {
+    if (!mutable_service_) {
+        throw std::logic_error("editor RPC adapter is read-only");
+    }
+    return mutable_service_->uninstallPackage(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::forkRenderPipeline(const Json &params) const {

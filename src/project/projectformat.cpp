@@ -31,7 +31,22 @@ std::vector<int> parseVersion(std::string_view version) {
     return parts;
 }
 
-int compareVersions(std::string_view lhs, std::string_view rhs) {
+std::optional<std::string> optionalNonEmptyString(const nlohmann::json &object,
+                                                  std::string_view key) {
+    const auto found = object.find(std::string{key});
+    if (found == object.end() || !found->is_string()) {
+        return std::nullopt;
+    }
+    auto value = found->get<std::string>();
+    if (value.empty()) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+} // namespace
+
+int compareProjectVersions(std::string_view lhs, std::string_view rhs) {
     auto lhs_parts = parseVersion(lhs);
     auto rhs_parts = parseVersion(rhs);
     const auto count = std::max(lhs_parts.size(), rhs_parts.size());
@@ -47,21 +62,6 @@ int compareVersions(std::string_view lhs, std::string_view rhs) {
     }
     return 0;
 }
-
-std::optional<std::string> optionalNonEmptyString(const nlohmann::json &object,
-                                                  std::string_view key) {
-    const auto found = object.find(std::string{key});
-    if (found == object.end() || !found->is_string()) {
-        return std::nullopt;
-    }
-    auto value = found->get<std::string>();
-    if (value.empty()) {
-        return std::nullopt;
-    }
-    return value;
-}
-
-} // namespace
 
 ProjectEnvelopeParseResult
 parseProjectEnvelopeJson(const nlohmann::json &project,
@@ -99,7 +99,7 @@ parseProjectEnvelopeJson(const nlohmann::json &project,
 
     result.envelope.engine_min_version =
         project.at("engine_min_version").get<std::string>();
-    if (compareVersions(*result.envelope.engine_min_version,
+    if (compareProjectVersions(*result.envelope.engine_min_version,
                         options.current_engine_version) <= 0) {
         return result;
     }

@@ -94,6 +94,7 @@ pelican の JSON は先頭 2 キー `schema` / `version` で「どの形式の�
 | `engine_min_version` | 任意 | `"X.Y.Z"`。エンジン現行版(`0.1.0`)より新しければ起動拒否。`--ignore-engine-version` で WARN に降格可 |
 | `basic_config` | 任意 | 省略したキーは既定値で埋まる(次節) |
 | `asset_stores` | 任意 | asset store 宣言(§3.4) |
+| `packages` | 任意 | install 済み package の記録 `{namespace, package_version, sha256}` の配列(§3.11)。`pelican_cli package install` が書く |
 
 ### basic_config と「3 段合成」
 
@@ -392,6 +393,153 @@ struct CarrierParams {
 保存でこの形は往復します。エンコードは `$list` → `rows` の順、各行は `$row` → authored フィールドの順に書き出します([structfieldjson.hpp](../../src/core/userpublic/details/schema/structfieldjson.hpp#L643))。
 
 > WP382dで`pelican_ray_instance.overrides`が`List`の利用者になりました。geometryごとの上書きを行ID付きで保存し、行を削除するとobject/layoutの値へ戻ります([第6章](06_rendering.md) §6.15)。
+
+## 3.11 package — 本体ツリーの外から持ち込む(✅WP X-1)
+
+> **設計決定:** 外から持ち込んだ部品は **project に複製(vendoring)してから使う**。engine は project の外を探しません。`packages/<namespace>/` に丸ごと複製し、`project.json.packages` に `{namespace, package_version, sha256}` を記録します。複製元を消してもプロジェクトは動きます。
+
+### package とは
+
+**package** は `package.json`(エンベロープ `pelican.package` v1)を持つ 1 つのディレクトリです。本体ツリーのどこにも置く必要がなく、別 repo として配布できます。雛形は [test/fixtures/package_template/](../../test/fixtures/package_template/) にあります。
+
+```json
+{
+  "schema": "pelican.package",
+  "version": 1,
+  "namespace": "acme.glowkit",
+  "package_version": "1.0.0",
+  "description": "...",
+  "requires": {
+    "engine_min_version": "0.1.0",
+    "sdk_abi": 2,
+    "capabilities": []
+  },
+  "dependencies": [{"namespace": "acme.base", "package_version": "1.0.0"}],
+  "provides": {
+    "features": ["features/glow.json"],
+    "graphs": ["graphs/pulse.json"],
+    "components": [],
+    "code": true
+  }
+}
+```
+
+| フィールド | 必須? | 検証・意味 |
+|---|---|---|
+| `schema` / `version` | **必須** | `"pelican.package"` / `1` ちょうど |
+| `namespace` | **必須** | `.` 区切りの識別子(`[A-Za-z_][A-Za-z0-9_]*`)。複製先ディレクトリ名になり、feature 名の前置詞にもなる |
+| `package_version` | **必須** | `"X.Y.Z"` |
+| `description` | 任意 | 文字列 |
+| `requires.engine_min_version` | **必須** | `"X.Y.Z"`。`project.json` と同じ規則で比較する([projectformat.cpp](../../src/project/projectformat.cpp) の `compareProjectVersions`) |
+| `requires.sdk_abi` | code を持つときのみ**必須** | 整数。engine の `PELICAN_GAME_LOGIC_ABI_VERSION`(現在 **2**)と一致しなければ install で拒否 |
+| `requires.capabilities` | 任意 | 文字列配列(記録のみ。GPU capability の強制は feature 側の `required_capabilities`) |
+| `dependencies` | 任意 | `{namespace, package_version}` の配列。install 時に「その namespace が install 済みか」だけを見る |
+| `provides.features` / `graphs` / `components` | 任意 | package 内の**相対パス**。`..`・絶対・`\`・スキーム付きは名前付き拒否 |
+| `provides.code` | 任意 | `true` なら `code/CMakeLists.txt` を持つ |
+
+未知のキーは読み飛ばさず `package_manifest_invalid` で拒否します(`pelican.import` と同じ厳しさ)。`project.json` の寛容さ(未知キーは読み飛ばし)とは意図的に違います。
+
+### install — project への複製
+
+```sh
+pelican_cli package install <package dir> --project <project dir>
+pelican_cli package list    --project <project dir>
+pelican_cli package inspect <package dir>
+```
+
+エディタ経路では RPC `install_package{source_dir}` / `uninstall_package{namespace}` が同じことをします(`source_dir` は project の外の絶対パス)。
+
+検査は**複製の前に全部**走り、どれも名前付きで拒否されます。
+
+| 拒否名 | いつ |
+|---|---|
+| `package_manifest_missing` | `package.json` が無い |
+| `package_manifest_invalid` | エンベロープ・型・未知キー・重複 |
+| `package_namespace_invalid` | `namespace` が `.` 区切り識別子でない |
+| `package_path_invalid` | `provides` のパスが相対でない / `..` を含む / スキーム付き |
+| `package_engine_too_new` | `requires.engine_min_version` が engine より新しい |
+| `package_sdk_abi_mismatch` | `requires.sdk_abi` が engine の SDK epoch と違う |
+| `package_dependency_missing` | `dependencies` の namespace が未 install(列挙する) |
+| `package_feature_invalid` | `provides.features` の文書が `pelican.render_feature` v1 でない / `name` が無い / `name` が識別子でない / 名前が package 内で重複 |
+| `package_already_installed` | 同じ namespace がもう入っている |
+| `package_source_inside_project` | RPC に project 内のディレクトリを渡した(それは `project://` で参照するもの) |
+| `package_in_use` | uninstall しようとしたが `project://packages/<ns>/...` への参照が残っている(列挙する) |
+| `package_not_installed` | uninstall 対象が無い |
+| `package_digest_mismatch` | 複製後の再計算が食い違った |
+
+複製は `packages/<namespace>.tmp-<pid>` に書いてから rename します。中断しても半端な `packages/<namespace>/` は残りません。
+
+### namespace は「文書の中」に入る
+
+feature 名を比べる場所は catalog だけではありません。合成時の無音 dedupe・`integrations[].requires` の完全一致・`== "hdr"` の直値比較は、どれも**文書の `name` フィールド**を読みます([featurecompose.cpp](../../src/project/featurecompose.cpp))。そこで install は複製した feature 文書の `name` を書き換えます。
+
+```
+features/glow.json   "name": "glow"   →   packages/acme.glowkit/features/glow.json   "name": "acme.glowkit.glow"
+```
+
+shader define の前置詞も同じ名前から作られるので、`.` は `_` に写ります。
+
+```
+PELICAN_FEATURE_ACME_GLOWKIT_GLOW_<PARAM>
+```
+
+engine 同梱 shader は `PELICAN_FEATURE_BLOOM_THRESHOLD` のように**自分の名前で define を要求する**ものがあります。名前が変わる以上、そういう shader を package の feature から使い回すことはできません。雛形の `glow.json` が define を要求しない engine shader だけを使っているのはそのためです。
+
+### 使う
+
+複製先を `project://` で参照します。
+
+```json
+{
+  "pipeline": { "preset": "engine://render_pipelines/hybrid_v1.json" },
+  "features": [
+    "engine://features/shadow_directional.json",
+    "project://packages/acme.glowkit/features/glow.json"
+  ]
+}
+```
+
+`list_render_features` は engine 同梱の集合に加えて install 済み package の feature を返します。各エントリは `source` を持ち、値は `"engine"` か `"package"` です。package 側の列挙は**絶対に例外を投げません**。壊れた package 文書は `available: false` と `unavailable_reason` になるだけで、エディタサービスの構築は成功します(利用者が持ち込んだ bytes で project が開けなくなる、を構造で塞いでいます)。
+
+`provides.graphs` は複製先を示すだけです。graph の `definitions` は**同一文書内でしか参照できません**(`identifier()` が `/` を拒否するので、file 参照は構造的に書けません。[graphcomposition.cpp](../../src/project/graphcomposition.cpp))。使いたい定義は project 自身の graph 文書へ複写してください。`get_graph_catalog` は package を見ません(catalog に載るのは組み込み module だけ、記録)。
+
+### code を持つ package
+
+`code/CMakeLists.txt` は `pelican_package_sources(...)` を呼びます。ホスト project 側の `code/CMakeLists.txt` は `pelican_packages()` を 1 行呼ぶだけです(`pelican_cli project init` の雛形はこの 2 行を最初から書きます)。
+
+```cmake
+# <project>/code/CMakeLists.txt
+pelican_game_sources(game.cpp)
+pelican_packages()
+```
+
+```cmake
+# <project>/packages/acme.glowkit/code/CMakeLists.txt
+pelican_package_sources(system.cpp)
+```
+
+- `pelican_packages()` は `<project>/packages/*/code/CMakeLists.txt` を探して `add_subdirectory(<絶対パス> <binary dir>)` します。project の `code/CMakeLists.txt` は `src/player` から `include()` されるので、相対パスでは本体ツリー側を探してしまいます。
+- **`pelican_game_sources(...)` より後に呼びます。** package のオブジェクトは project の game logic DLL に合流します(package ごとの DLL は作りません)。先に呼ぶと `pelican_packages() has to come after pelican_game_sources(...)` で止まります。
+- `pelican_package_sources()` が作るのは OBJECT ライブラリで、その engine 側 include パスは**公開 SDK だけ**です。`src/core` は載りません。
+
+> **判定であって約束ではない:** project 自身の `code/` には `src/core`(内部ヘッダ全部)が無条件に載ります。package だけは載りません。だから package のソースに `#include "vkcore/renderer.hpp"` と書くと **コンパイルエラー**になります。「公開 SDK だけで build できる」はこの 1 点で判定されています([run_package_template_smoke.cmake](../../test/run_package_template_smoke.cmake) の対照 1)。
+>
+> 公開 SDK の中身は `PELICAN_AUTO_STAGE_SDK` が配布するものと同じ集合です —— `src/core/userpublic/**`、`src/core/ecs/**`、`handle.hpp`、`phys/physquery.hpp`。実体は build ツリーに生成される転送ヘッダ 1 枚ずつで、本物のヘッダはその場に残ります。
+
+`requires.sdk_abi` は install 時の早期拒否であって、本物の gate ではありません。本物の gate は DLL ロード時に loader が解決する epoch シンボル(`pelican_game_logic_epoch_v2`)です。
+
+### uninstall
+
+RPC `uninstall_package{namespace}` は `packages/<ns>/` を消し、`project.json.packages` から entry を落とします。rendering config(root 文書)かその preset のどこかに `project://packages/<ns>/` で始まる文字列が残っていれば、**何も消さずに** `package_in_use` で拒否し、残っている参照を列挙します。
+
+### 記録(v0 で閉じていないこと)
+
+- `project.json` の `packages` を読むのは package 経路だけです。`ProjectEnvelope` は lossy なので、将来 envelope から `project.json` を書き出す writer を作ると `packages` が消えます。
+- catalog に載るのは **engine 同梱 + install 済み package** だけです。project 内の素の `project://features/*.json`(出荷 `raytracing_demo/features/spheres.json` を含む)は今日も載りません。
+- pass 名・render target 名には namespace が付きません。同じ pass 名を持つ package が 2 つ入ると合成で衝突します。
+- `sha256` は `package list` が再計算して照合します。エンジン起動時には照合しません。
+- `provides.components` は複製されるだけで、engine 側の消費者はまだありません(P-2a-3 の `pelican.render_component` は `import_render_feature` が読みます)。
+- shader を持ち込む package は未対応です(feature が `engine://` shader だけを参照できる範囲)。
 
 ## 関連文書
 

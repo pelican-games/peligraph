@@ -1,0 +1,19 @@
+{
+  "schema": "pelican.package",
+  "version": 1,
+  "namespace": "acme.glowkit",
+  "package_version": "1.0.0",
+  "description": "A starter Pelican package: one render feature, one graph document and one game system.",
+  "requires": {
+    "engine_min_version": "0.1.0",
+    "sdk_abi": 2,
+    "capabilities": []
+  },
+  "dependencies": [],
+  "provides": {
+    "features": ["features/glow.json"],
+    "graphs": ["graphs/pulse.json"],
+    "components": [],
+    "code": true
+  }
+}

@@ -27,6 +27,11 @@ struct RenderFeatureCatalogEntry {
     bool requires_runtime_module = false;
     bool available = false;
     std::string unavailable_reason;
+    // X-1: where the document came from.  "engine" for the shared set built
+    // into the binary, "package" for one vendored under
+    // `project://packages/<namespace>/`.  The catalog is engine + package and
+    // nothing else; a loose `project://features/*.json` stays off it.
+    std::string source = "engine";
 
     bool operator==(const RenderFeatureCatalogEntry &) const = default;
 };
@@ -214,6 +219,11 @@ class RenderConfigEditorService {
         const nlohmann::json &params);
     nlohmann::ordered_json importRenderFeature(
         const nlohmann::json &params);
+    // X-1: vendor a package directory into `project://packages/<namespace>/`
+    // and take it back out.  Neither touches `code/`; the CMake side finds a
+    // vendored package by directory.
+    nlohmann::ordered_json installPackage(const nlohmann::json &params);
+    nlohmann::ordered_json uninstallPackage(const nlohmann::json &params);
     nlohmann::ordered_json getRenderAuthoringContext(
         const nlohmann::json &params) const;
     nlohmann::ordered_json addAuthoredPass(
@@ -235,5 +245,24 @@ std::vector<RenderFeatureCatalogEntry>
 enumerateEngineRenderFeatureDocuments(
     const std::function<RenderFeatureRuntimeAvailability(
         std::string_view, const nlohmann::json &)> &availability);
+
+// X-1: the feature documents every installed package provides.  Unlike the
+// engine enumerator this one never throws: a package is bytes a user brought
+// in, and a broken one must not stop the editor service from being
+// constructed.  Every failure becomes one entry with `available: false` and an
+// `unavailable_reason`.
+std::vector<RenderFeatureCatalogEntry>
+enumeratePackageRenderFeatureDocuments(
+    const std::filesystem::path &project_root,
+    const std::function<RenderFeatureRuntimeAvailability(
+        std::string_view, const nlohmann::json &)> &availability) noexcept;
+
+// Engine documents first, then packages, with a package entry that would
+// collide with a name already in the set reported as unavailable instead of
+// throwing.
+std::vector<RenderFeatureCatalogEntry>
+composeRenderFeatureCatalog(
+    std::vector<RenderFeatureCatalogEntry> engine_entries,
+    std::vector<RenderFeatureCatalogEntry> package_entries);
 
 } // namespace Pelican

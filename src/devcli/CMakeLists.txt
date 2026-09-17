@@ -11,6 +11,7 @@ target_sources(pelican_cli PRIVATE
   graphcatalogcommand.cpp
   importcommand.cpp
   materialcommand.cpp
+  packagecommand.cpp
   processrunner.cpp
   projectinit.cpp
   rulesimport.cpp

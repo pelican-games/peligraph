@@ -2045,14 +2045,28 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 .pipeline_preset_bytes = std::move(preset_bytes),
                             };
                         },
-                    .feature_catalog = [] {
-                        return enumerateEngineRenderFeatureDocuments(
-                            [](std::string_view feature_name,
-                               const nlohmann::json &feature_document) {
-                                return currentRenderFeatureRuntimeAvailability(
-                                    feature_name,
-                                    feature_document);
-                            });
+                    // X-1: the catalog is the engine's own set plus the
+                    // documents installed packages provide.  The package half
+                    // is evaluated with the same availability rule and never
+                    // throws, so bytes a user brought in cannot stop this
+                    // service from being constructed.
+                    .feature_catalog = [runtime] {
+                        const std::function<
+                            RenderFeatureRuntimeAvailability(
+                                std::string_view, const nlohmann::json &)>
+                            availability =
+                                [](std::string_view feature_name,
+                                   const nlohmann::json &feature_document) {
+                                    return currentRenderFeatureRuntimeAvailability(
+                                        feature_name, feature_document);
+                                };
+                        return composeRenderFeatureCatalog(
+                            enumerateEngineRenderFeatureDocuments(
+                                availability),
+                            enumeratePackageRenderFeatureDocuments(
+                                runtime->modules.path_resolver
+                                    .projectRoot(),
+                                availability));
                     },
                     // Read what the draw path published; never evaluate again.
                     .graph_values = [runtime] {

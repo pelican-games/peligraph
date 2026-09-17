@@ -1,0 +1,21 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "definitions": {
+    "pulse": {
+      "nodes": [
+        {"id": "rate", "op": "graph.input", "default": 2.0},
+        {"id": "clock", "op": "value.input",
+         "parameters": {"name": "scene_time"},
+         "outputs": ["value"]},
+        {"id": "phase", "op": "value.multiply",
+         "inputs": {"a": {"node": "clock", "port": "value"},
+                    "b": {"node": "rate", "port": "value"}},
+         "outputs": ["value"]}
+      ],
+      "outputs": {"value": {"node": "phase", "port": "value"}}
+    }
+  },
+  "nodes": [],
+  "outputs": {}
+}

@@ -357,6 +357,8 @@ class EditorCommandService {
     nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params);
     nlohmann::ordered_json exportRenderFeature(const nlohmann::json &params);
     nlohmann::ordered_json importRenderFeature(const nlohmann::json &params);
+    nlohmann::ordered_json installPackage(const nlohmann::json &params);
+    nlohmann::ordered_json uninstallPackage(const nlohmann::json &params);
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params);
@@ -443,6 +445,8 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json editRenderFeatures(const nlohmann::json &params) const;
     nlohmann::ordered_json exportRenderFeature(const nlohmann::json &params) const;
     nlohmann::ordered_json importRenderFeature(const nlohmann::json &params) const;
+    nlohmann::ordered_json installPackage(const nlohmann::json &params) const;
+    nlohmann::ordered_json uninstallPackage(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayCallableRecords(const nlohmann::json &params) const;
     nlohmann::ordered_json getSceneAccelerationStructures(const nlohmann::json &params) const;
     nlohmann::ordered_json forkRenderPipeline(const nlohmann::json &params) const;

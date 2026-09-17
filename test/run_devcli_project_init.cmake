@@ -74,6 +74,23 @@ foreach(forbidden_member IN ITEMS render_targets rendering_passes)
     endif()
 endforeach()
 
+# X-1: the generated build glue calls pelican_packages(), and it calls it
+# after pelican_game_sources(...) -- package objects join the game logic DLL,
+# so the order is part of the expectation and not an accident of formatting.
+file(READ "${project_dir}/code/CMakeLists.txt" code_cmake)
+string(FIND "${code_cmake}" "pelican_game_sources(game.cpp)" game_sources_at)
+string(FIND "${code_cmake}" "pelican_packages()" packages_at)
+if(game_sources_at EQUAL -1)
+    message(FATAL_ERROR "generated code/CMakeLists.txt does not build game.cpp\n${code_cmake}")
+endif()
+if(packages_at EQUAL -1)
+    message(FATAL_ERROR "generated code/CMakeLists.txt does not call pelican_packages()\n${code_cmake}")
+endif()
+if(packages_at LESS game_sources_at)
+    message(FATAL_ERROR
+        "pelican_packages() has to come after pelican_game_sources(...)\n${code_cmake}")
+endif()
+
 file(READ "${project_dir}/.gitattributes" gitattributes)
 foreach(line IN ITEMS "*.glb -text" "*.vrm -text" "*.png -text" "*.wav -text" "*.spv -text")
     string(FIND "${gitattributes}" "${line}" found_at)

@@ -1,5 +1,6 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
+#include "../../project/packagemanifest.hpp"
 #include "../../project/rendercomponent.hpp"
 #include "../../project/rasterrayquery.hpp"
 #include "../../project/rasterpass.hpp"
@@ -415,6 +416,97 @@ enumerateEngineRenderFeatureDocuments(
     return result;
 }
 
+std::vector<RenderFeatureCatalogEntry>
+enumeratePackageRenderFeatureDocuments(
+    const std::filesystem::path &project_root,
+    const std::function<RenderFeatureRuntimeAvailability(
+        std::string_view, const Json &)> &availability) noexcept {
+    std::vector<RenderFeatureCatalogEntry> result;
+    if (project_root.empty() || !availability) return result;
+    std::vector<InstalledPackage> installed;
+    try {
+        installed = readInstalledPackages(project_root);
+    } catch (...) {
+        // A project with no project.json, or one the editor cannot read, has
+        // no packages.  The catalog is still built.
+        return result;
+    }
+    for (const auto &package : installed) {
+        std::vector<PackageFeatureDocument> documents;
+        try {
+            documents = readPackageFeatureDocuments(project_root,
+                                                    package.name_space);
+        } catch (const std::exception &error) {
+            result.push_back(RenderFeatureCatalogEntry{
+                .name = package.name_space,
+                .reference = packageReferencePrefix(package.name_space),
+                .requires_runtime_module = false,
+                .available = false,
+                .unavailable_reason = error.what(),
+                .source = "package",
+            });
+            continue;
+        } catch (...) {
+            continue;
+        }
+        for (auto &document : documents) {
+            RenderFeatureCatalogEntry entry{
+                .name = document.name,
+                .reference = document.reference,
+                .requires_runtime_module = false,
+                .available = false,
+                .unavailable_reason = document.error,
+                .source = "package",
+            };
+            if (document.error.empty()) {
+                try {
+                    const auto parsed = Json::parse(document.bytes);
+                    entry.requires_runtime_module =
+                        renderFeatureRequiresRuntimeModule(entry.name);
+                    auto evaluated = availability(entry.name, parsed);
+                    entry.available = evaluated.available;
+                    entry.unavailable_reason =
+                        evaluated.available
+                            ? std::string{}
+                            : (evaluated.unavailable_reason.empty()
+                                   ? std::string{
+                                         "the engine reported no reason"}
+                                   : evaluated.unavailable_reason);
+                } catch (const std::exception &error) {
+                    entry.available = false;
+                    entry.unavailable_reason = error.what();
+                } catch (...) {
+                    entry.available = false;
+                    entry.unavailable_reason =
+                        "unknown package feature failure";
+                }
+            }
+            result.push_back(std::move(entry));
+        }
+    }
+    std::ranges::sort(result, {}, &RenderFeatureCatalogEntry::name);
+    return result;
+}
+
+std::vector<RenderFeatureCatalogEntry>
+composeRenderFeatureCatalog(
+    std::vector<RenderFeatureCatalogEntry> engine_entries,
+    std::vector<RenderFeatureCatalogEntry> package_entries) {
+    std::set<std::string, std::less<>> names;
+    for (const auto &entry : engine_entries) names.insert(entry.name);
+    for (auto &entry : package_entries) {
+        if (!names.insert(entry.name).second) {
+            // The engine enumerator throws on a duplicate.  A package cannot
+            // be allowed to do that, so the later entry is reported instead.
+            entry.available = false;
+            entry.unavailable_reason =
+                "another render feature already uses this name: " + entry.name;
+        }
+        engine_entries.push_back(std::move(entry));
+    }
+    return engine_entries;
+}
+
 RenderConfigEditorService::RenderConfigEditorService(
     RenderConfigEditorDependencies dependencies)
     : dependencies_{std::move(dependencies)},
@@ -660,6 +752,7 @@ OrderedJson RenderConfigEditorService::listRenderFeatures(
             {"requires_runtime_module", entry.requires_runtime_module},
             {"hot_add_supported", entry.available},
             {"available", entry.available},
+            {"source", entry.source},
         };
         if (!entry.available) {
             encoded["unavailable_reason"] =
@@ -975,6 +1068,112 @@ OrderedJson RenderConfigEditorService::importRenderFeature(const Json &params) {
         return rejection(error.code(), error.what());
     } catch (const std::exception &error) {
         return rejection("render_pipeline_preflight_failed", error.what());
+    }
+}
+
+namespace {
+
+// Every string value in the document, wherever it sits.  A reference into a
+// package can live in `features`, in a preset pass, in a shader asset binding
+// or in an override, so the scan is structural and not field-by-field.
+void collectPackageReferences(const Json &value, const std::string &prefix,
+                              std::set<std::string> &found) {
+    if (value.is_string()) {
+        const auto &text = value.get_ref<const std::string &>();
+        if (text.starts_with(prefix)) found.insert(text);
+        return;
+    }
+    if (value.is_object() || value.is_array()) {
+        for (const auto &child : value)
+            collectPackageReferences(child, prefix, found);
+    }
+}
+
+} // namespace
+
+OrderedJson RenderConfigEditorService::installPackage(const Json &params) {
+    constexpr auto method = "install_package";
+    requireOnly(params, {"source_dir"}, method);
+    const auto source_dir = requireString(params, "source_dir", method);
+    if (dependencies_.project_root.empty()) {
+        return rejection("method_unavailable",
+                         "Package install requires a project root");
+    }
+    try {
+        const std::filesystem::path source{source_dir};
+        if (!source.is_absolute()) {
+            return rejection(
+                "package_manifest_invalid",
+                "source_dir must be an absolute path to a package directory");
+        }
+        if (isWithinDirectory(dependencies_.project_root, source)) {
+            return rejection(
+                "package_source_inside_project",
+                "A package that already lives in the project is referenced "
+                "with project://, not installed");
+        }
+        const auto result =
+            Pelican::installPackage(source, dependencies_.project_root);
+        // The catalog is rebuilt so the new documents are visible without
+        // reopening the project.
+        if (dependencies_.feature_catalog)
+            feature_catalog_ = dependencies_.feature_catalog();
+        return {{"status", "installed"},
+                {"namespace", result.manifest.name_space},
+                {"package_version", result.manifest.package_version},
+                {"sha256", result.sha256},
+                {"feature_references", result.feature_references},
+                {"feature_names", result.feature_names}};
+    } catch (const PackageError &error) {
+        OrderedJson details;
+        if (!error.names().empty()) details["names"] = error.names();
+        return rejection(error.code(), error.what(), std::move(details));
+    } catch (const std::exception &error) {
+        return rejection("package_manifest_invalid", error.what());
+    }
+}
+
+OrderedJson RenderConfigEditorService::uninstallPackage(const Json &params) {
+    constexpr auto method = "uninstall_package";
+    requireOnly(params, {"namespace"}, method);
+    const auto name_space = requireString(params, "namespace", method);
+    if (dependencies_.project_root.empty()) {
+        return rejection("method_unavailable",
+                         "Package uninstall requires a project root");
+    }
+    try {
+        const auto prefix = packageReferencePrefix(name_space);
+        std::set<std::string> in_use;
+        collectPackageReferences(Json::parse(document_.bytes()), prefix,
+                                 in_use);
+        if (dependencies_.resolve_authoring_context) {
+            try {
+                const auto current =
+                    dependencies_.resolve_authoring_context(
+                        currentDocumentSet());
+                if (current.pipeline_preset_bytes) {
+                    collectPackageReferences(
+                        Json::parse(*current.pipeline_preset_bytes), prefix,
+                        in_use);
+                }
+            } catch (const std::exception &) {
+                // A config that does not compose still has to be able to drop
+                // the package that broke it: the lexical scan above already
+                // covered the root document.
+            }
+        }
+        Pelican::uninstallPackage(
+            dependencies_.project_root, name_space,
+            std::vector<std::string>{in_use.begin(), in_use.end()});
+        if (dependencies_.feature_catalog)
+            feature_catalog_ = dependencies_.feature_catalog();
+        return {{"status", "uninstalled"}, {"namespace", name_space}};
+    } catch (const PackageError &error) {
+        OrderedJson details;
+        if (!error.names().empty()) details["references"] = error.names();
+        return rejection(error.code(), error.what(), std::move(details));
+    } catch (const std::exception &error) {
+        return rejection("package_manifest_invalid", error.what());
     }
 }
 

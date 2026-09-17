@@ -169,6 +169,12 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("import_render_feature", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.importRenderFeature(params); });
     });
+    server.setHandler("install_package", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.installPackage(params); });
+    });
+    server.setHandler("uninstall_package", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.uninstallPackage(params); });
+    });
     server.setHandler("edit_render_features", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.editRenderFeatures(params); });
     });
