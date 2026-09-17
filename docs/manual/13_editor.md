@@ -509,11 +509,11 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 ### Studio のノードキャンバス(Graph タブ)
 
 **置き場所**: `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)にある 3 枚目のタブ「Graph」です
-([タブの追加](../../src/devstudio/view/mainwindow.cpp#L251))。dock は増えていません。起動時から開いておきたい場合は
+([タブの追加](../../src/devstudio/view/mainwindow.cpp#L260))。dock は増えていません。起動時から開いておきたい場合は
 `pelican_studio --project <dir> --tab graph`([第10章](10_tools.md) §10.7)。
 
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
-`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2648))。
+`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2664))。
 その下に必要なときだけ 1 行の notice が出ます。本体は左がキャンバス、右が選択ノードの詳細表(`Field` / `Value`)で、
 詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます。
 
@@ -527,13 +527,13 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
    `<from>.<port> -> <to>.<port>  (select and press Delete to cut)` です。
 4. **ソケットの形が型です** —— 色だけでなく形(`circle` / `diamond` / `square` / `hexagon`)でも型を表します。
    決め方は 1 か所で、**モジュールが自分の型 schema に書いた `display{}` → Studio の既定表 → traits → `unknown`**
-   の順([解決順](../../src/devstudio/view/nodegraphics.hpp#L143)、入口は [`socketStyleFor()`](../../src/devstudio/view/nodegraphics.hpp#L145))。
+   の順([解決順](../../src/devstudio/view/nodegraphics.hpp#L146)、入口は [`socketStyleFor()`](../../src/devstudio/view/nodegraphics.hpp#L148))。
    既定表の中はさらに 2 段で、**型名の完全一致 → `prefixes` の前方一致**です([nodegraphics.cpp:126](../../src/devstudio/view/nodegraphics.cpp#L135)) ——
    だから `pelican.render.` のような名前空間まるごとに 1 行で形を与えられます。既定表は
    [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1)(`pelican.studio.socket_styles` v1)で、
    **新しい型に形を与えるのに C++ を触る必要はありません** —— この JSON に名前を 1 行足すだけです。
 5. **右の詳細表** —— `label` / `type` / `domain` / `evaluation` / `id` / `sink` と、あれば `definition` /
-   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L3090))。
+   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L3101))。
    port の型が宣言されていなければ `(not declared)`、カタログをまだ取れていなければ `domain` / `evaluation` が
    `(catalog not fetched)` です。入力行の tooltip は、その port を**カタログが宣言した**(`declared by the catalog`)のか、
    **文書から読んだ**(`read from the document`)のかを区別します。
@@ -566,18 +566,18 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 revision が変わって消えたノードの位置は捨てられます。初期配置は最長経路による段組みで、辺は必ず左から右へ進みます。
 
 **ズーム・パン・fit は 2 つのキャンバスで同じです(N-3)。**ホイールはカーソルの下の点を動かさずに拡大・縮小し、
-倍率は **0.25〜4.0** で止まります([ホイール](../../src/devstudio/view/nodegraphics.cpp#L537))。パンは**中ボタン**ドラッグ、
-または **Space を押しながら左**ドラッグ([判定](../../src/devstudio/view/nodegraphics.cpp#L638))。**`F`** キーと
+倍率は **0.25〜4.0** で止まります([ホイール](../../src/devstudio/view/nodegraphics.cpp#L575))。パンは**中ボタン**ドラッグ、
+または **Space を押しながら左**ドラッグ([判定](../../src/devstudio/view/nodegraphics.cpp#L676))。**`F`** キーと
 右クリックメニューの **Fit view** で内容全体が view に収まります(Graph タブの右クリックは「Add node... / Fit view」の
 2 項目です。[メニュー](../../src/devstudio/view/graphcanvaswidget.cpp#L2013))。この 3 つの操作は共有部品
-[`NodeCanvasView`](../../src/devstudio/view/nodegraphics.hpp#L195) が 1 か所で持っていて、**Graph タブも Frame Plan の
+[`NodeCanvasView`](../../src/devstudio/view/nodegraphics.hpp#L198) が 1 か所で持っていて、**Graph タブも Frame Plan の
 Logical graph も同じ view** です。**まだ見ていない scope は自動で fit** され、戻ってきた scope は離れたときの倍率と
-スクロール位置に復帰します([`showScope()`](../../src/devstudio/view/nodegraphics.cpp#L611)) —— 倍率も位置も文書には
+スクロール位置に復帰します([`showScope()`](../../src/devstudio/view/nodegraphics.cpp#L649)) —— 倍率も位置も文書には
 書かない、セッション内の状態です。値の帯やラベルを編集している最中の `F` はただの文字です(開いている editor が
-キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L679))。
+キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L717))。
 
 **テーマはライトとダークの 2 つです(✅N-5)。**切り替えは **View ▸ Theme ▸ Light / Dark**
-([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L412))で、**再起動は要りません** —— 選んだ名前は
+([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L450))で、**再起動は要りません** —— 選んだ名前は
 QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に残り、次に開いた窓は
 そのテーマで始まります。追随するのは **Graph タブと Frame Plan の両方のキャンバス**で、背景・grid・辺・
 ノードの body と縁・見出しの字・値の帯の色をテーマの表から引き直して描き直します。**ソケットの型別の色だけは
@@ -597,7 +597,7 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L26) に
 ([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は「汎用の RPC メソッド」を表現できない形をしていて、
 `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` / `get_edit_result` の
 5 つだけを名前で持ちます。それ以外を要求すると `The graph canvas cannot issue <method>.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2936))。キャンバスから preset を fork したり pass を触ったりは
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2947))。キャンバスから preset を fork したり pass を触ったりは
 **できない**、というのが型で保証されています。
 
 ### Studio の自動化面(`--automation`)
@@ -715,10 +715,10 @@ properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L229) の `pe
 1. **Control with a curve** —— 前節のノード集合を作って繋ぎます(`edit_graph_document`)。
 2. **Connect to another output** —— `Connect input` ダイアログで別ノードの出力を選び、**Connect** で `set_input`。
 3. **Open the source** —— Graph タブを前に出し、その producer を選択します
-   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L269))。接続されていない port で押すと
+   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L278))。接続されていない port で押すと
    「これは開ける供給元を持たない、保存された値だ」と notice が出ます。
 4. **Disconnect** —— `set_input{null}`。**mode が `connected` のときだけ押せます**
-   ([有効化](../../src/devstudio/view/graphattachmentwidget.cpp#L252))。他の 3 つは常に押せます。
+   ([有効化](../../src/devstudio/view/graphattachmentwidget.cpp#L261))。他の 3 つは常に押せます。
 
 値の欄を書き換えて focus を外すと `set_node_parameters` が飛びます(`parameters` 全体を読み、その port だけ
 差し替えて送ります)。**この GUI の操作はどれも、同じ ops を手で送ったときと同じバイト列になります** ——

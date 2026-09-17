@@ -300,19 +300,19 @@ widget ごとに**名前の付いた少数の関数だけを持つ struct** へ�
 漏れ出すことが構造上ありません。`FramePlanWidget` と `RenderFeaturesWidget` は歴史的な理由で
 `EmbeddedViewport *` を直接受け取ります(絞り込みはこの 2 つには入っていません)。
 
-[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L137) は Project / Outliner /
+[`MainWindow::MainWindow()`](../../src/devstudio/view/mainwindow.cpp#L146) は Project / Outliner /
 Inspector / Output / Engine Log / Frame Plan / Pass Editor の7パネルを stable object name を持つ dock として作ります。パネルは
 移動、float、タブ化でき、`View > Panels` から再表示できます。シェル責務は Widgets に固定し、QML を
 追加する場合も `QQuickWidget` に載せた葉パネルの内部だけに限定します。
 
 **Frame Plan dock の中身は 3 枚の tab を持つ `QTabWidget`** です(object name `pelican.renderTools`)。
 `FramePlanWidget` / `RenderFeaturesWidget` / `GraphCanvasWidget` がこの順で入ります
-([構築](../../src/devstudio/view/mainwindow.cpp#L246))。**Graph は新しい dock ではありません** ——
+([構築](../../src/devstudio/view/mainwindow.cpp#L255))。**Graph は新しい dock ではありません** ——
 ソースのコメントが理由です: dock を 1 つ増やすことは「見失う場所」を 1 つ増やすことで、3 つの tab は
 同じレンダー設定を別の角度から見ているだけだからです。
 
 tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_plan|render_features|graph` で、
-[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L587)は `MainWindow` の static 関数にあり、
+[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L625)は `MainWindow` の static 関数にあり、
 **window を作る前**に [`main.cpp`](../../src/devstudio/main.cpp#L36) が綴りを検査して、未知なら console に
 理由を出して **exit 2** します。適用は `openProject()` の**後**です([順序](../../src/devstudio/view/uimain.cpp#L62))
 —— project を開くとその project の tool layout が復元され、前面の tab が変わるためです。
@@ -320,7 +320,7 @@ tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_pla
 中央の [`EmbeddedViewport`](../../src/devstudio/viewport/embeddedviewport.hpp#L28) は
 `pelican_player` を [`EngineProcess`](../../src/devstudio/viewport/engineprocess.hpp#L24) で別 process
 として起動・監視し、実 render window を Qt の native host HWND へ再親付けします。
-[`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L33) が Windows style、parent、
+[`NativeWindowHost`](../../src/devstudio/viewport/nativewindowhost.hpp#L38) が Windows style、parent、
 focus、physical-pixel resize だけを扱い、renderer や swapchain を直接再生成しません。したがって
 resize は player の通常の GLFW framebuffer callback から既存の Surface/Swapchain epoch 経路へ
 入ります。通常の resize は最後の寸法イベントから 50 ms 静止するまで native child を凍結し、
@@ -339,7 +339,7 @@ process 終了時も pending request を失敗にするため、入力 pipe や 
 は UTF-8 換算 1 MiB の末尾だけを保持し、通常は最古の途中行も捨てます。この大きさは診断用の長い
 履歴を残しながら、model と `QPlainTextEdit` に複製される text の常駐量を長時間起動でも制限するため
 です。単一の巨大行だけでも末尾を残し、UTF-8 の途中 byte から復号しません。上限規則と両 stream の
-到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L100) が view 表示なしで検査します。
+到達は [`devstudio_viewport_test.cpp`](../../test/devstudio_viewport_test.cpp#L102) が view 表示なしで検査します。
 
 読む前に、応答の階層だけ掴んでおきます。`get_frame_plan` の 1 応答の中に、名前の層と物理の層が入れ子で
 入っています([組み立ては `Renderer::currentFramePlanJson()`](../../src/core/vkcore/renderer.cpp#L3947))。
@@ -387,12 +387,12 @@ save の文言が **Save preset**(feature 由来なら **Save feature**)に変�
 同一 graph の名前衝突・target 名／`frame_target` を Studio 単独で検査し、target usage や shader stem 解決は
 軸名付きの `Not checked` として残します。**ファイルは engine が書きます。**
 
-[`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp#L21) はその model を **9 枚の tool tab** に投影します ——
+[`FramePlanWidget`](../../src/devstudio/view/frameplanwidget.hpp#L22) はその model を **9 枚の tool tab** に投影します ——
 Logical graph / Passes / Resources / Physical plan / Decisions / Backends / Barriers / Materials / Raw JSON
-([登録](../../src/devstudio/view/frameplanwidget.cpp#L703))。tab は掴んで並べ替えられ、その順序は保存されます。
+([登録](../../src/devstudio/view/frameplanwidget.cpp#L709))。tab は掴んで並べ替えられ、その順序は保存されます。
 **読み取り専用でもありません**: toolbar に **Order nodes...** / **Edit task...** / **Edit pass...** があり、
 `Shift-drag: connect resources` のラベルどおり **Shift + 左ドラッグ**で出力元から task / preset pass へ線を引くと、
-その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L438))。保存自体は
+その編集画面が開きます([toolbar](../../src/devstudio/view/frameplanwidget.cpp#L444))。保存自体は
 `RenderFeaturesWidget` と `FullscreenPassWidget` が持つ編集 RPC を通ります。
 初期状態は順序、名前、種別、入力、出力の pass 行だけで、
 attachment ops、resource use、material filter、前後 barrier は折りたたみ配下です。filter も全 tree の
@@ -411,21 +411,21 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L446))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L453))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
 **どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L877))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
 **同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L1002))。
 種の定数は後で本物の producer を繋いでも自動では消えません(記録された穴)。
 
-[`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L32) は
+[`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L35) は
 `frameplangraphics.cpp` から**共有部分を抜き出した**ものです。`MovableNodeItem`、`CurveGeometry` と
 `curveGeometry(Between)`、`routeLogicalBundle` / `rerouteConnectedBundles`、`findNodeItem` /
 `findEndpointArtifact`、`nodePath` / `roundedEntityPath`、配置定数、そして
-[`longestPathColumns()`](../../src/devstudio/view/nodegraphics.hpp#L187)(model に依存しない最長経路の段組み)です。
+[`longestPathColumns()`](../../src/devstudio/view/nodegraphics.hpp#L190)(model に依存しない最長経路の段組み)です。
 item data の role 番号は **Frame Plan が既に公開していた値のまま**で、挙動を変えないための選択です。
 N-1b でソケットの語彙が加わりました: [`SocketShape` / `SocketStyle` / `socketStyleFor()` /
-`socketPath()`](../../src/devstudio/view/nodegraphics.hpp#L114)。型を形でも表すのは、**利用者が型を足せるキャンバスでは
+`socketPath()`](../../src/devstudio/view/nodegraphics.hpp#L117)。型を形でも表すのは、**利用者が型を足せるキャンバスでは
 色相が足りない**からで、形は色覚と暗いテーマの両方を越えます。解決順は 1 箇所に集約されていて、
 (i) catalog の型 schema が宣言した `display{}` → (ii) Studio の既定表 → (iii) traits → (iv) `unknown` です。
 既定表は [`resources/graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1)
@@ -452,7 +452,7 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2648))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L2664))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
@@ -462,7 +462,7 @@ node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, nod
 engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2904))。規範は struct の宣言そのもの
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2915))。規範は struct の宣言そのもの
 ([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L40))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
@@ -503,7 +503,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L638) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L676) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L120) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -541,7 +541,7 @@ Inspector の properties の下には [`GraphAttachmentWidget`](../../src/devstu
 載ります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L203))。`Attached graphs` グループ
 (list + **Attach...** / **Detach** / **Refresh**)と `Instance inputs` グループ(port ごとに mode / 著作値 /
 実測値と 4 つのボタン)で、object name は `pelican.graphAttachments` /
-`pelican.graphPort.<kind>.<port>` の規則です([構築](../../src/devstudio/view/graphattachmentwidget.cpp#L53))。
+`pelican.graphPort.<kind>.<port>` の規則です([構築](../../src/devstudio/view/graphattachmentwidget.cpp#L54))。
 [`GraphAttachmentModel`](../../src/devstudio/model/graphattachmentmodel.hpp) が Qt 非依存の相方で、
 mode は**文書から**決めます(edge があれば `connected`、なければ `parameter` か `default`)
 ([判定](../../src/devstudio/model/graphattachmentmodel.cpp#L327)) —— 展開結果から読まないのは、
@@ -674,7 +674,7 @@ Studio の target を必要としません)。
   ([L476](../../test/devstudio_frameplan_test.cpp#L476) / [L588](../../test/devstudio_frameplan_test.cpp#L588) /
   [L686](../../test/devstudio_frameplan_test.cpp#L686) / L689 / L722–L724 / L793 / L841)と
   `devstudio_frameplan_graph_test.cpp` の **2 箇所**
-  ([L5210](../../test/devstudio_frameplan_graph_test.cpp#L5212) / [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5898))で、
+  ([L5210](../../test/devstudio_frameplan_graph_test.cpp#L5257) / [L5896](../../test/devstudio_frameplan_graph_test.cpp#L5943))で、
   多い方は graph test ではなく frameplan test です。同じ commit で `devstudio_*` の 4 テストが
   **読みだけで編集され、実行されていない**ことも同じ完了記録 `d236822b` の申告で(Studio 無しの
   worktree では走らないため、primary の全数で見る、という運用です)、本章で実行を確かめてはいません。
