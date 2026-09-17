@@ -243,15 +243,17 @@ VRM 表情・light animation まで。**物理 query・音・save/load・UI 操�
 | `looks_mutating` gate | `### WP386: RT3-2` |
 | `PELICAN_WITH_RPC=OFF` build で落ちる test(`raytracing_rt3_1_production_test.cpp` の `#if`) | `### AG-1a:` / `### R-1:`(安い穴) |
 | Studio が raytracing_demo を開けない(`renderer.cpp`) | `### WP386: RT3-2` |
-| temp dir を共有する `renderconfigeditor` 6 件が並列で赤 | `### O-1:` / `### R-1:`(安い穴) |
-| export の `.tmp-<pid>` が残る | `### P-2a-3:` / `### R-1:`(安い穴) |
-| `structfieldjson.hpp` の呼び手無し複製 | `### R-1:`(安い穴) |
+| temp dir を共有する `renderconfigeditor` 6 件が並列で赤 — R-1 で per-process temp root(flake は再現せず。真の候補は `gpu_lease_run.cpp:94` が lease log を消さないこと: `%TEMP%` に 3358 個)| `### O-1:` / `### R-1:`(安い穴) |
+| export の `.tmp-<pid>` が残る — **R-1 で閉じた**(次の export が掃除)| `### P-2a-3:` / `### R-1:`(安い穴) |
+| `structfieldjson.hpp` の呼び手無し複製 — **R-1 で閉じた** | `### R-1:`(安い穴) |
 | shader source の改行と cache key | `### WP386: RT3-2` |
 | preset + graph root の `region_replacements` | `### P-2a-4a:` / `### P-2a-3:` |
 | `--start-time` の `llround` overflow(≈1e17 s。今日は起きない) | `### O-1:` |
 | **`requires` は test 時の sweep しか読まない**: `PELICAN_TEST_PROJECTS_DIR` を向けた `PELICAN_WITH_ANIMATION=OFF` build は、skip される project の game logic DLL を configure 時に作り、link に失敗する(下の段落) | `### R-3:` |
 | `dist_debug/` が source tree 直下なので、同じ worktree の ON build と OFF build が `pelican_cli` / `pelican_studio` を上書きし合う(catalog の module 数を取り違える) | `### R-3:` |
 
+| `pelican_studio` が window close で exit 139(SIGSEGV)する(X button でも `CloseMainWindow` でも。実害は `pelican_player.exe` の孤児化。別 session の GUI backlog、未調査)| GUI session の報告(N-1b / N-2) |
+| `test/gpu_lease_run.cpp:94` が GPU lease の log を消さず `%TEMP%` に `pelican_gpu_lease_v1.<pid>.log` が数千個積もる(R-1 の temp dir flake の真の候補)| `### R-1:` の完了記録 |
 **`requires` を読まない configure 時の game logic 目標**(R-3 で見つけ、R-3 では直さない)。
 corpus の game logic DLL 目標は `test/CMakeLists.txt` の
 `file(GLOB_RECURSE pelican_catalog_project_manifests CONFIGURE_DEPENDS ... "${pelican_catalog_projects_dir}/*/project.json")`
@@ -284,16 +286,16 @@ CMake 側で 2 つ目の表を作らないため、語彙の置き場は 1 箇�
 | P-2a-1c define 化と materialize 後の編集 | `9e4081b4` |
 | P-2a-2 runtime 値(`binding: buffer`) | `62f09ce0` |
 | P-2a-3 + P-2a-4a 共有部品の公開 / graph root の `rendering` 節 | `5100be5f` |
-| P-2a-4b 出荷 project の graph root | 着地待ち |
+| P-2a-4b 出荷 project の graph root | `d236822b`(+ Studio hotfix `2f2aadce`)|
 | P-2b posegraph_demo と `requires` | `393f9d30` |
 | O-1 オフライン出力(`--start-time`) | `405cd319` |
 | X-1 持ち出し(package) | `3f72b71d` |
 | R1-2 committed marker | `edf4bd43` |
-| R-1 撤去 / 維持の表と安い穴 | 着地待ち |
+| R-1 撤去 / 維持の表と安い穴 | `aa56a1af` |
 | N-1 共通グラフの読み取りキャンバス | `2c6828e4` |
 | N-1b 見出しとソケット欄 | `373f62ee` |
 | N-2 canvas の編集 op | `02a3d285` |
-| R-3 サンプル索引と本文書 | 着地待ち |
+| R-3 サンプル索引と本文書 | `979b40f7` |
 
 ## 6. v0.1.0 tag の手順
 
