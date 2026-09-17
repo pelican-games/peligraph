@@ -10,7 +10,7 @@
 
 ## 7.1 `pelican_cli` の全体像
 
-[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L14) は第1引数を見て7系統へそのまま dispatch します。
+[`src/devcli/main.cpp`](../../src/devcli/main.cpp#L15) は第1引数を見て7系統へそのまま dispatch します。
 
 ```text
 pelican_cli
@@ -42,7 +42,7 @@ command ごとに独立した `run...Command(argc, argv)` を持つ構成で、�
 
 ## 7.2 `project init`: 実行可能な最小 project の生成器
 
-[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L290) は、空であることを確認した directory に template file 群を書きます。template の一覧は [`templateFiles()`](../../src/devcli/projectinit.cpp#L268) にあります。
+[`runProjectInitCommand()`](../../src/devcli/projectinit.cpp#L295) は、空であることを確認した directory に template file 群を書きます。template の一覧は [`templateFiles()`](../../src/devcli/projectinit.cpp#L273) にあります。
 
 主な生成物は次です。
 
@@ -438,7 +438,7 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 
 #### 編集系(29) ✅実装済み(WP153〜WP172)
 
-すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L396) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L282) です。
+すべて [`EditorCommandRpcAdapter`](../../src/core/communication/editorcommandservice.hpp#L398) へ委譲され、実体は [`EditorCommandService`](../../src/core/communication/editorcommandservice.hpp#L282) です。
 
 | method | 実装行 | 概要 |
 |---|---|---|
@@ -458,12 +458,12 @@ DPI 追従値です。応答は同じ計算で使った `content_scale` を明�
 | `open_preview` / `update_preview` / `commit_preview` / `abort_preview` | [lease 発行](../../src/core/communication/editorrpchandlers.cpp#L148) 〜 [lease 破棄](../../src/core/communication/editorrpchandlers.cpp#L157) | preview ticket(lease)の発行・更新・確定・破棄 |
 | `get_render_features` | [feature 構成取得](../../src/core/communication/editorrpchandlers.cpp#L160) | authored feature 構成と編集 token を返す |
 | `list_render_features` | [feature catalog](../../src/core/communication/editorrpchandlers.cpp#L163) | 追加可能な render feature の catalog を返す |
-| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L172) | render feature 構成を編集する |
+| `edit_render_features` | [feature 編集](../../src/core/communication/editorrpchandlers.cpp#L178) | render feature 構成を編集する |
 | `get_scene_acceleration_structures` / `edit_scene_acceleration_structures` | 名前付きASの取得・編集 | AS定義とdigestを取得し、既存render config ticketで変更・保存する |
-| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L175) | authored pass 編集に必要な target / resource context を返す |
-| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L241) | authored pass を追加する |
-| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L244) | authored pass を削除する |
-| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L247) / [preview 結果](../../src/core/communication/rpcserver.cpp#L1558) | 非同期結果取得 |
+| `get_render_authoring_context` | [authoring context](../../src/core/communication/editorrpchandlers.cpp#L181) | authored pass 編集に必要な target / resource context を返す |
+| `add_authored_pass` | [pass 追加](../../src/core/communication/editorrpchandlers.cpp#L247) | authored pass を追加する |
+| `remove_authored_pass` | [pass 削除](../../src/core/communication/editorrpchandlers.cpp#L250) | authored pass を削除する |
+| `get_edit_result` / `get_preview_result` | [edit 結果](../../src/core/communication/editorrpchandlers.cpp#L253) / [preview 結果](../../src/core/communication/rpcserver.cpp#L1558) | 非同期結果取得 |
 | `query_journal` | [journal 照会](../../src/core/communication/rpcserver.cpp#L1561) | ジャーナル照会 |
 
 > 🧩 **難所 — 曖昧な重なり判定**([`stablePathsOverlap()`](../../src/core/communication/editorjournal.cpp#L3846) / [`structuralDomainsOverlap()`](../../src/core/communication/editorjournal.cpp#L3917) / [`recordOverlaps()`](../../src/core/communication/editorjournal.cpp#L4011))
@@ -636,7 +636,7 @@ cmake_parse_arguments(PELICAN_TEST
 |---|---|---|
 | `pelican_define_test()` | Catch2 executable。`GPU` フラグで `gpu` | 任意で `gpu` |
 | `add_test()` 直書き | cmake / ps1 script による process integration | 個別に `set_tests_properties` |
-| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2940) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
+| [`pelican_define_python_test()`](../../test/CMakeLists.txt#L2964) | Python gate(contract / golden inventory / skip policy / rpc smoke) | 常に `python`(+ 必要なら `gpu`) |
 
 3 本目は `PELICAN_PYTHON_TESTS`(既定 **OFF**、他に `AUTO` / `ON`)が有効なときだけ登録されます。CPU gate の workflow が configure に `-DPELICAN_PYTHON_TESTS=ON` を渡しているのはこのためで、手元の既定 configure では **これらのテストは CTest に存在しません**。`pelican_rpc_smoke` だけは `LABELS "gpu;python"` なので、CPU gate ではなく GPU gate の側に入ります。
 
@@ -912,7 +912,7 @@ with PelicanRpc("projects/example") as rpc:
 
 engine 内蔵の開発者 UI に、読み取り専用の [`AssetBrowserPanel`](../../src/core/imgui/assetbrowser.hpp#L36) と schema 駆動の [`InspectorPanel`](../../src/core/imgui/inspector.hpp#L167) が加わりました。表示は `ImGuiSystem` のメニュー `Asset Browser` / `Inspector` から切り替えます([`imguisystem.cpp` 内](../../src/core/imgui/imguisystem.cpp#L373))。
 
-> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L482) が用意されています。コメントが規範です。
+> **設計決定:** **両パネルとも `EditorCommandService` を経由します。** RPC とまったく同じ typed サービスを呼ぶのが設計上の要点で、そのために [`EditorCommandImGuiFakeAdapter`](../../src/core/communication/editorcommandservice.hpp#L486) が用意されています。コメントが規範です。
 >
 > The ImGui WP consumes the same typed service. This fake is deliberately kept
 > free of ImGui headers so equivalence is testable in the CPU-only suite.
