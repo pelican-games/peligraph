@@ -2699,7 +2699,7 @@ op は **module** が登録します。登録済み module はエンジンに 4 
 
 `evaluation` はノード単位で **強い方へ上げられます**(引き下げは採られません)。実物は `pose.clip_sample` で、`root_motion: "extract"` を書いたノードだけが `direct` → `replay` に上がります([posegraphmodule.cpp:179](../../src/project/posegraphmodule.cpp#L179))。v0 で実際に現れるのは `direct` と `replay` の 2 つだけで、`baked` / `recorded` を宣言する同梱 op はありません。
 
-`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L123))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L434))。
+`ports` は `declared`(op が固定のポート一覧を持つ)か `parameter_dependent`(ノード自身の書きぶりから決まる)です。catalog が `parameter_dependent` と書く条件は「factory を持ち、**かつ宣言コントラクトの `inputs` / `outputs` が両方とも空**」で([graphmodule.cpp:123](../../src/project/graphmodule.cpp#L123))、これに当たるのは **`render.*` の 6 本だけ**です。`pose.state_machine` は包む文書に従ってポートが増えますが、`pose` 出力を宣言しているので catalog の `ports` は **`declared`** です —— 増えた入力ポートは解決後にしか見えません。Studio のキャンバスもこのフィールドで分岐します([graphcanvasmodel.cpp:434](../../src/devstudio/model/graphcanvasmodel.cpp#L705))。
 
 ### op 一覧
 

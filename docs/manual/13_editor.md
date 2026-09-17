@@ -508,11 +508,11 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 ### Studio のノードキャンバス(Graph タブ)
 
 **置き場所**: `View > Panels > Frame Plan` の dock(`pelican.framePlanDock`)にある 3 枚目のタブ「Graph」です
-([タブの追加](../../src/devstudio/view/mainwindow.cpp#L246))。dock は増えていません。起動時から開いておきたい場合は
+([タブの追加](../../src/devstudio/view/mainwindow.cpp#L250))。dock は増えていません。起動時から開いておきたい場合は
 `pelican_studio --project <dir> --tab graph`([第10章](10_tools.md) §10.7)。
 
 **上段の操作列**(左から): `Scope:` のコンボ(`root` と definition 名)、その右のパンくず、右端に
-`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L1560))。
+`Values from:` のコンボ、`Refresh`([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L1776))。
 その下に必要なときだけ 1 行の notice が出ます。本体は左がキャンバス、右が選択ノードの詳細表(`Field` / `Value`)で、
 詳細表の上に `Label:` の入力欄・**Rename**・**Add node...** が並びます。
 
@@ -534,7 +534,7 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
    [`graph_socket_styles.json`](../../src/devstudio/resources/graph_socket_styles.json#L1)(`pelican.studio.socket_styles` v1)で、
    **新しい型に形を与えるのに C++ を触る必要はありません** —— この JSON に名前を 1 行足すだけです。
 5. **右の詳細表** —— `label` / `type` / `domain` / `evaluation` / `id` / `sink` と、あれば `definition` /
-   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L1912))。
+   `parameters` / `inputs` / `outputs`([組み立て](../../src/devstudio/view/graphcanvaswidget.cpp#L2187))。
    port の型が宣言されていなければ `(not declared)`、カタログをまだ取れていなければ `domain` / `evaluation` が
    `(catalog not fetched)` です。入力行の tooltip は、その port を**カタログが宣言した**(`declared by the catalog`)のか、
    **文書から読んだ**(`read from the document`)のかを区別します。
@@ -551,12 +551,12 @@ Inspector の導線(次節)は専用の RPC を持たず、**普通の `ops` を
 | ノードを選んで `Delete` | `remove_node` |
 
 型が合わないソケットには吸着しません —— **どちらかの型が宣言されていなければ通し、両方宣言されていれば
-同じ型のときだけ**通します([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L602))。
+同じ型のときだけ**通します([判定](../../src/devstudio/model/graphcanvasmodel.cpp#L884))。
 
 ⚠ **2 つの注意。**
 (1) **必須の scalar 入力を持つ op を足すと、種の定数も一緒に足されます。**未接続の必須入力を持つ文書は engine が
 受け取らないので、パレットは必須の scalar 入力ごとに `value.constant` を**同じ ops 列で先に**足し、そこへ繋いだ
-状態のノードを作ります([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L694))。1 操作 1 チケットは保たれます。
+状態のノードを作ります([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L976))。1 操作 1 チケットは保たれます。
 後で本物の producer を繋いでも、**この定数は自動では消えません**(手で消します)。
 (2) **必須入力の切断は送られ、engine が断ります。**Studio は黙って定数を挿し直したりしません ——
 `set_input{null}` をそのまま送り、`unconnected graph input` の拒否を notice に出します。値を持つ instance の port は
@@ -569,7 +569,7 @@ revision が変わって消えたノードの位置は捨てられます。初�
 倍率は **0.25〜4.0** で止まります([ホイール](../../src/devstudio/view/nodegraphics.cpp#L537))。パンは**中ボタン**ドラッグ、
 または **Space を押しながら左**ドラッグ([判定](../../src/devstudio/view/nodegraphics.cpp#L638))。**`F`** キーと
 右クリックメニューの **Fit view** で内容全体が view に収まります(Graph タブの右クリックは「Add node... / Fit view」の
-2 項目です。[メニュー](../../src/devstudio/view/graphcanvaswidget.cpp#L1148))。この 3 つの操作は共有部品
+2 項目です。[メニュー](../../src/devstudio/view/graphcanvaswidget.cpp#L1193))。この 3 つの操作は共有部品
 [`NodeCanvasView`](../../src/devstudio/view/nodegraphics.hpp#L195) が 1 か所で持っていて、**Graph タブも Frame Plan の
 Logical graph も同じ view** です。**まだ見ていない scope は自動で fit** され、戻ってきた scope は離れたときの倍率と
 スクロール位置に復帰します([`showScope()`](../../src/devstudio/view/nodegraphics.cpp#L611)) —— 倍率も位置も文書には
@@ -577,7 +577,7 @@ Logical graph も同じ view** です。**まだ見ていない scope は自動�
 キーボードを持ちます。[条件](../../src/devstudio/view/nodegraphics.cpp#L679))。
 
 **テーマはライトとダークの 2 つです(✅N-5)。**切り替えは **View ▸ Theme ▸ Light / Dark**
-([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L365))で、**再起動は要りません** —— 選んだ名前は
+([メニューの構築](../../src/devstudio/view/mainwindow.cpp#L369))で、**再起動は要りません** —— 選んだ名前は
 QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L25) に残り、次に開いた窓は
 そのテーマで始まります。追随するのは **Graph タブと Frame Plan の両方のキャンバス**で、背景・grid・辺・
 ノードの body と縁・見出しの字・値の帯の色をテーマの表から引き直して描き直します。**ソケットの型別の色だけは
@@ -588,10 +588,10 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L25) に
 **Auto layout(✅N-4)**: Graph と Frame Plan の右クリック menu「Auto layout」(`pelican.graphCanvas.autoLayout` / `pelican.framePlan.autoLayout`)で、その scope の手置き位置を捨てて層配置(最長経路の列、辺は lane を通って node を横切らない、列内の並びは重心法、行は最小間隔で重ならない)に戻します。動かした node は通常の refresh では保持されます。中ボタンのパンは描画が view に収まっていても動きます。
 
 **このタブが出せる RPC は 5 本だけです。**`GraphCanvasReadCapability`
-([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L20))は「汎用の RPC メソッド」を表現できない形をしていて、
+([定義](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31))は「汎用の RPC メソッド」を表現できない形をしていて、
 `get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` / `get_edit_result` の
 5 つだけを名前で持ちます。それ以外を要求すると `The graph canvas cannot issue <method>.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L1768))。キャンバスから preset を fork したり pass を触ったりは
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2041))。キャンバスから preset を fork したり pass を触ったりは
 **できない**、というのが型で保証されています。
 
 ### Studio の自動化面(`--automation`)
@@ -615,20 +615,20 @@ QSettings の [`studio/theme`](../../src/devstudio/view/studiotheme.cpp#L25) に
 チャネルは**逐次**で、命令の実行中に次の行が来たら `automation.busy@1` で断ります
 ([判定](../../src/devstudio/automation/automationserver.cpp#L102))。認証はありません(flag を付けたときだけ開く口です)。
 
-**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1473)):
+**命令は 20 個**です([一覧](../../src/devstudio/automation/automationcommands.cpp#L1593)):
 `list` / `click` / `double_click` / `drag` / `wheel` / `move` / `press` / `release` / `key` / `type` / `text` /
 `action` / `menu_list` / `view_state` / `wait` / `wait_engine` / `rpc` /
 `open_project` / `screenshot` / `quit`。`rpc` は `EmbeddedViewport` 経由で engine へ送り、応答をそのまま返します。
 イベントは `QTest` の合成なので、**窓が前面にあるかどうかに依存しません**。拒否は名前付きで、
 `automation.widget_missing@1` / `bad_request@1` / `unknown_command@1` / `engine_not_ready@1` / `rpc_failed@1` /
 `wait_timeout@1` / `screenshot_failed@1` / `project_failed@1` / `busy@1` / `command_threw@1` の 10 種です
-([定数](../../src/devstudio/automation/automationcommands.cpp#L56))。
+([定数](../../src/devstudio/automation/automationcommands.cpp#L60))。
 
 **指し方は objectName です。**キャンバスの中に描かれたもの(ノード、ソケット、値の帯、その場編集の editor)は
 widget ではないので、`<view の objectName>::<種類>#<ノード id>[/<port>]` の合成名で指します ——
-例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L95))。
+例: `pelican.graphCanvasView::graph_value_pill#left/gain`([名前の生成](../../src/devstudio/automation/automationcommands.cpp#L99))。
 `list` は widget 名と合成名の両方を返すので、**ソースを読まずに一覧からシナリオを書けます**。
-`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます([経路](../../src/devstudio/automation/automationcommands.cpp#L238))。
+`type` / `key` / `text` は item が抱えている埋め込み widget へ届きます([経路](../../src/devstudio/automation/automationcommands.cpp#L242))。
 
 **✅Q-1b で 7 個増えました** —— `wheel` / `move` / `press` / `release` と `action` / `menu_list` / `view_state` です
 (`drag` は `button` を取れるようになりました)。`press` / `move` / `release` は「いまどの button を押しているか」を
@@ -678,7 +678,7 @@ drag で動かし、`view_state` で結果を読む)、`menu_actions`(popup を�
 **この面が最初の往復で本物のバグを見つけました。**値の帯を click → type → Enter すると「Graph change saved.」と
 出るのに古い値が保存される —— `QDoubleSpinBox` の `keyboardTracking=false` と、editor の filter が Enter を先に
 消費する組合せで、scene test の合成 Enter では通っていました。修正は `commitInlineEdit()` で `interpretText()` を
-呼ぶことです([修正](../../src/devstudio/view/graphcanvaswidget.cpp#L1399)) —— **`--automation` 無しでも挙動が変わる
+呼ぶことです([修正](../../src/devstudio/view/graphcanvaswidget.cpp#L1444)) —— **`--automation` 無しでも挙動が変わる
 唯一の変更**で、手で編集したときの取りこぼしもこれで直っています。
 
 ### Inspector のグラフ装着
@@ -709,7 +709,7 @@ properties は [:219](../../src/devstudio/view/inspectorwidget.cpp#L219) の `pe
 1. **Control with a curve** —— 前節のノード集合を作って繋ぎます(`edit_graph_document`)。
 2. **Connect to another output** —— `Connect input` ダイアログで別ノードの出力を選び、**Connect** で `set_input`。
 3. **Open the source** —— Graph タブを前に出し、その producer を選択します
-   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L264))。接続されていない port で押すと
+   ([繋ぎ込み](../../src/devstudio/view/mainwindow.cpp#L268))。接続されていない port で押すと
    「これは開ける供給元を持たない、保存された値だ」と notice が出ます。
 4. **Disconnect** —— `set_input{null}`。**mode が `connected` のときだけ押せます**
    ([有効化](../../src/devstudio/view/graphattachmentwidget.cpp#L252))。他の 3 つは常に押せます。

@@ -294,7 +294,7 @@ flowchart LR
 
 図の右下の 3 つが **capability struct** です。`EmbeddedViewport` の「任意のメソッドを送れる」面を、
 widget ごとに**名前の付いた少数の関数だけを持つ struct** へ絞ってから渡します
-([`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L20) /
+([`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31) /
 [`RenderPassAuthoringCapability`](../../src/devstudio/view/renderpassauthoringcapability.hpp#L19) /
 `FramePlanReadCapability`)。**汎用の RPC メソッドを表現できない型**なので、その widget から別の面が
 漏れ出すことが構造上ありません。`FramePlanWidget` と `RenderFeaturesWidget` は歴史的な理由で
@@ -307,12 +307,12 @@ Inspector / Output / Engine Log / Frame Plan / Pass Editor の7パネルを stab
 
 **Frame Plan dock の中身は 3 枚の tab を持つ `QTabWidget`** です(object name `pelican.renderTools`)。
 `FramePlanWidget` / `RenderFeaturesWidget` / `GraphCanvasWidget` がこの順で入ります
-([構築](../../src/devstudio/view/mainwindow.cpp#L241))。**Graph は新しい dock ではありません** ——
+([構築](../../src/devstudio/view/mainwindow.cpp#L245))。**Graph は新しい dock ではありません** ——
 ソースのコメントが理由です: dock を 1 つ増やすことは「見失う場所」を 1 つ増やすことで、3 つの tab は
 同じレンダー設定を別の角度から見ているだけだからです。
 
 tab は CLI から選べます。`pelican_studio --project <dir> --tab frame_plan|render_features|graph` で、
-[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L540)は `MainWindow` の static 関数にあり、
+[名前の一覧](../../src/devstudio/view/mainwindow.cpp#L544)は `MainWindow` の static 関数にあり、
 **window を作る前**に [`main.cpp`](../../src/devstudio/main.cpp#L36) が綴りを検査して、未知なら console に
 理由を出して **exit 2** します。適用は `openProject()` の**後**です([順序](../../src/devstudio/view/uimain.cpp#L62))
 —— project を開くとその project の tool layout が復元され、前面の tab が変わるためです。
@@ -405,17 +405,17 @@ attachment ops、resource use、material filter、前後 barrier は折りたた
 
 ### 共通グラフの 3 層(N-1 / N-1b / N-2)
 
-[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L123) は **Qt に依存しません**。
+[`GraphCanvasModel`](../../src/devstudio/model/graphcanvasmodel.hpp#L167) は **Qt に依存しません**。
 `GraphAttachmentModel` と同じ「request / read の 2 slot」形で、呼び手が `takeRpcRequests()` を drain し、
 好きな transport で送り、`receiveRpcResult()` / `receiveRpcFailure()` で答えを戻します。slot が 2 つあるのは、
 **値の問い合わせが次の文書再取得を待たせないため**で、遅れて届いた古い答えは捨てられます。
 提供するのは scope 一覧(`root` + definition 名)、scope ごとの node と edge、root scope の `graph.instance` へ
 重ねる値の overlay、そして `contentRevision()` / `reportRevision()` の 2 つの世代です
-([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L255))。編集側は 6 つの操作
+([宣言](../../src/devstudio/model/graphcanvasmodel.hpp#L416))。編集側は 6 つの操作
 (`connectInput` / `disconnectInput` / `setNodeParameter` / `removeNode` / `setNodeLabel` / `addNode`)で、
-**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L585))。
+**どれも 1 回で 1 つの `edit_graph_document`** になります([submitOps](../../src/devstudio/model/graphcanvasmodel.cpp#L867))。
 `addNodeOps()` だけは複数 op を返します —— 必須の scalar 入力を持つ操作は、未接続のままでは engine が受け取らないので、
-**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L694))。
+**同じ ops 列で `value.constant` を先に足して**そこへ繋ぎます([生成](../../src/devstudio/model/graphcanvasmodel.cpp#L976))。
 種の定数は後で本物の producer を繋いでも自動では消えません(記録された穴)。
 
 [`view/nodegraphics.{hpp,cpp}`](../../src/devstudio/view/nodegraphics.hpp#L32) は
@@ -444,7 +444,7 @@ heading_text, dim_text, pill_bg}, domain_tint, source_tint}` で、描画側は�
 (`pelican.studio.themes` v1、`light` / `dark` の 2 preset で既定は `dark`)なので、3 つ目のテーマを足すのに
 C++ は要りません。切り替えの通知は Qt signal ではなく**素の関数リスト**
 ([理由はヘッダのコメント](../../src/devstudio/view/studiotheme.hpp#L68)) —— scene test が view の `.cpp` を
-moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L402)、
+moc 無しで compile するためで、`GraphCanvasWidget` は [repopulate](../../src/devstudio/view/graphcanvaswidget.cpp#L408)、
 Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphics.cpp#L1774) で追随します
 (item は作られた時の色を抱えるので、描き直す以外に追随する道がありません)。**ソケットの型別の fill だけは
 テーマから引きません** —— 型の識別色は `graph_socket_styles.json` のままで、テーマが決めるのは縁と
@@ -452,18 +452,18 @@ Frame Plan は [グラフの再描画](../../src/devstudio/view/frameplangraphic
 
 [`GraphCanvasWidget`](../../src/devstudio/view/graphcanvaswidget.hpp) と `GraphCanvasScene` が view です。
 上段は `Scope:` の combo とパンくず、`Values from:` の combo、`Refresh`
-([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L1560))、本体は左がキャンバス、右が
+([構築](../../src/devstudio/view/graphcanvaswidget.cpp#L1776))、本体は左がキャンバス、右が
 `Field` / `Value` の詳細表です。node は見出し帯 + 出力欄 + 入力欄の 3 段で、見出しの三角はソケット欄を
 折り畳みます(折り畳むと辺は見出し帯の左右中央 1 点へ集まります)。編集はすべて**即時**で Apply ボタンがなく、
 ソケット間ドラッグ = `set_input`、辺の `Delete` = `set_input{null}`、値の帯のその場編集 =
 `set_node_parameters`、見出しの double-click = `set_node_label`、右クリックの palette = `add_node`、
 node の `Delete` = `remove_node` です。位置と折り畳みは `(scope, node id)` を鍵にした**セッション内の状態**で、
 文書には書かず、revision で消えた node の分は捨てられます。
-engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L20) が
+engine へ出せるのは [`GraphCanvasReadCapability`](../../src/devstudio/view/graphcanvasreadcapability.hpp#L31) が
 名前で持つ 5 つ(`get_graph_instances` / `get_graph_catalog` / `get_graph_values` / `edit_graph_document` /
 `get_edit_result`)だけで、それ以外は `The graph canvas cannot issue %1.` になります
-([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L1747))。規範は struct の宣言そのもの
-([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L29))で、その上の宣言コメントは
+([分配](../../src/devstudio/view/graphcanvaswidget.cpp#L2009))。規範は struct の宣言そのもの
+([メンバ 5 本](../../src/devstudio/view/graphcanvasreadcapability.hpp#L40))で、その上の宣言コメントは
 **読みを 3 つと数えたまま**です —— メンバは `requestGraphInstances` / `requestGraphCatalog` /
 `requestGraphValues` / `requestEditResult` の 4 読み + `requestEditGraphDocument` の 1 編集なので、
 数えるならコメントではなくメンバを数えてください。コメントのうち今も正しいのは後半です。
@@ -503,7 +503,7 @@ project と scene 文書を開き、scene と object の木を作ります。obj
 `(scene_id, declaration_index)` で、無名 object の表示名だけを engine と共有する
 `pelican://scene/<id>/authoring-object/<n>` 規則から作ります。
 
-[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L591) は model の索引を Qt item の
+[`MainWindow::populateOutliner()`](../../src/devstudio/view/mainwindow.cpp#L595) は model の索引を Qt item の
 data role に保持して Outliner dock へ写すだけです。project 読み込みと 2 scene・46/2 object、無名
 object の非圧縮、親子投影は [`devstudio_outliner_test.cpp`](../../test/devstudio_outliner_test.cpp#L120) が
 GUI なしで検査します。RPC の `scene_tree` / `get_components` も 0 始まりの
@@ -588,17 +588,17 @@ link せず、link の輪ができません。
 
 protocol は**改行区切り JSON 1 行 = 1 命令**で、`{id, cmd, ...}` に `{id, ok, result}` か
 `{id, ok:false, error:{code, message}}` を返します([組み立て](../../src/devstudio/automation/automationserver.cpp#L18))。
-命令は 20 個([一覧](../../src/devstudio/automation/automationcommands.cpp#L1473))、拒否は 10 種の名前付きコード
-([定数](../../src/devstudio/automation/automationcommands.cpp#L56))。`quit` は**答えてから**イベントループを畳み
+命令は 20 個([一覧](../../src/devstudio/automation/automationcommands.cpp#L1593))、拒否は 10 種の名前付きコード
+([定数](../../src/devstudio/automation/automationcommands.cpp#L60))。`quit` は**答えてから**イベントループを畳み
 ([順序](../../src/devstudio/automation/automationserver.cpp#L110))、`rpc` と `wait` 系は入れ子のイベントループを
 回すので、実行中に届いた次の行は `automation.busy@1` で断ります
 ([逐次](../../src/devstudio/automation/automationserver.cpp#L102)) —— 割り込ませて状態を混ぜるより、正直に断る側です。
 指す名前は widget の `objectName` か、キャンバスの中に描かれたものの合成名
-`<view>::<kind>#<node>[/<port>]`([生成](../../src/devstudio/automation/automationcommands.cpp#L95))で、`list` が
+`<view>::<kind>#<node>[/<port>]`([生成](../../src/devstudio/automation/automationcommands.cpp#L99))で、`list` が
 両方を publish します。`type` / `key` / `text` は `QGraphicsProxyWidget` が抱える埋め込み widget へ直接届くので、
-**どの窓が activate されているかに依存しません**([理由](../../src/devstudio/automation/automationcommands.cpp#L234))。
+**どの窓が activate されているかに依存しません**([理由](../../src/devstudio/automation/automationcommands.cpp#L238))。
 `text` は描かれた字ではなく item が data role に入れた値を優先します
-([優先](../../src/devstudio/automation/automationcommands.cpp#L250))。
+([優先](../../src/devstudio/automation/automationcommands.cpp#L254))。
 
 driver は [`tools/studio_drive.py`](../../tools/studio_drive.py#L876)(stdlib のみ)。シナリオ JSON の step を順に送り、
 `rpc_equals` / `text_equals` / `visible` / `list_count` / `screenshot` の期待を検査し、`verdict` / `summary` /
