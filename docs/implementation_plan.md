@@ -23838,6 +23838,36 @@ jump / 複数 t / EXR / 音のオフライン出力 / `pelican_cli` の描画 su
 
 完了記録(2026-09-18、`2c6828e4`): model `graphcanvasmodel`、共有部品 `nodegraphics`、view `graphcanvaswidget` + `GraphCanvasScene`、`graphcanvasreadcapability`、`pelican.renderTools` の 3 枚目 tab「Graph」、`pelican_studio --project <dir> --tab frame_plan|render_features|graph`。test: `devstudio_graphcanvas_test`(model、139 assertions、対照 = definitions 無し / catalog 無し / overlay 撤去の変異)、`devstudio_graphcanvas_scene_test`(Qt offscreen、62 assertions、対照 = column 固定 / 位置保持撤去 / prune 撤去 / double-click 撤去の変異)。Frame Plan の既存 test(`devstudio_frameplan_graph_test` 2133 / `devstudio_fullscreen_pass_test` 803)は抽出後も全数緑。着地 gate は build + Studio 系の非 GPU test(速度優先の運用)。実物: `<作業ディレクトリ>/playground`(`example` を `pelican.graph` root に変換した repo 外の project)を `--project` で開き、root と 2 定義が描けることを目視。**Studio は `projects/raytracing_demo` を開けない**(engine が `Renderer logical frame requires a compiled render pipeline` で exit 1。既知の穴、R 群候補、実装セッションが記録済み)。
 
+### N-1b: ノードの見た目 —— 見出し(型名 + ラベル)とソケット欄を分ける(利用者レビュー 1 巡目、2026-09-18)
+
+**§4 規則 11 下段(Studio 内で閉じる。engine は node の任意 field `label` を通すことだけ確認)。実装者: Claude(Opus)。規範: 利用者が示した Blender の Principled BSDF ノード(見出し帯 / 右上に出力ソケット / 左に入力ソケット、行ごとに名前と値 / 折り畳み)。**
+
+#### 利用者の指摘(そのまま)
+- ノードが全体的にただの角丸四角なのを変えたい
+- 元のノードタイプの名前と、そのノードに変更可能なラベルを付けられるようにしたい。ラベルと、入出力を接続するソケット欄を分けたい
+- ソケットはしっかり表示されるようにしてほしい
+
+#### 決定
+1. **node item を 3 段に**: (a) **見出し帯**(domain 色。左に折り畳み矢印(v0 は飾り)、**ラベル**を太字、その右または下に **型名 `op`** を小さく薄く。ラベルは node の `label` field があればそれ、無ければ `id`)/ (b) **出力ソケット欄**(右寄せの行。各行 = port 名 + 右端にソケットの丸)/ (c) **入力ソケット欄**(左寄せの行。各行 = 左端にソケットの丸 + port 名。未接続で値がある port(instance の parameter / default、または node `parameters` に同名がある場合)は Blender と同じく行の右側に値を薄い帯で表示。接続済みは名前だけ)。高さは行数で決まる
+2. **ソケット = 型の表現**(利用者指示 2026-09-18: 色だけでなく形でも型を表す。カスタム性を上げる): 見た目は `SocketStyle{shape: circle | diamond | square | hexagon, fill, outline, size}` で表し、**1 か所の解決関数 `socketStyleFor(type)`**(`nodegraphics`)が決める。優先順: (i) catalog の型 schema に `display{shape, color}` があればそれ(module が自分の型の見た目を宣言できる。`schemaJson`(graphmodule.cpp:94-120)に任意 field を additive で足す。宣言の無い型には出さない)/ (ii) Studio 既定表(JSON 1 file を Studio resources に置き、増やすのに C++ を触らない。初期値: `pelican.value.scalar@1` = 灰の丸、`pelican.pose@1` = 橙の菱形、`pelican.rig@1` = 橙の四角、resource / buffer / image 系 = 青の丸、未知 = 白の丸)/ (iii) traits からの推定(opaque = 菱形)。辺は**ソケットの中心**から出入りする(node の縁ではない)。ソケットは node の外縁に半分はみ出す(Blender と同じ)
+3. **辺**: 出力ソケット → 入力ソケットのベジェ。辺のラベル(`value → time`)は消す(ソケット名が行に出るので不要)。選択中の node に触れる辺だけ明るくする
+4. **`label` field**: 文書の node に任意 `label`(string)を許す。engine の loader / compose / `edit_graph_document` が unknown key として拒否しないことを確認し、拒否するなら N-2 で `set_node_label` op を足す前提で **N-1b では表示だけ**(編集は N-2)
+5. **右 pane**: 見出しに「ラベル(読み取り)/ 型 / domain / evaluation」の順、下に port 表(名前・型・source・値)
+6. Frame Plan は触らない(共有部品 `nodegraphics` に足す形。Frame Plan が使う関数の挙動は不変)
+
+#### 受け入れ
+1. scene test: `gain_curve` scope で `sum` node に見出し(`socketStyleFor` の test: 既定表の型は表どおり、`display` 付き catalog は宣言優先、未知は白の丸。対照: 既定表の JSON を空にすると全部が fallback になる)(ラベル `sum`、型 `value.add`)、入力行 `a` `b` にソケット、出力行 `value` にソケットがあり、辺 `gain.value → sum.a` の始点 / 終点がそれぞれのソケット中心と一致する(座標 assert)。対照: ソケット位置を node 縁に戻す変異で落ちる
+2. root scope で `helmet_pulse` の入力行 `gain` / `bias` に値(2.5 / 0.5)と source が出て、`time` は接続済みなので値無し。`label` を持つ node は見出しがラベル、型名は `op`(fixture に `label` を 1 つ足す)
+3. `devstudio_frameplan_graph_test` / `devstudio_fullscreen_pass_test` 全数不変
+4. 実物: playground を開いて目視(利用者)
+
+#### やらないこと
+ラベルの編集(N-2)/ 折り畳みの動作 / Frame Plan の見た目変更 / ソケットのドラッグ接続(N-2)。
+
+実装時の裁定(2026-09-18、`agent/n1`): catalog の型 schema に `display{shape, color}` を載せる engine 側は **見送り**(型宣言は `SemanticTypeSchema`(`logicalrendertype.hpp:108`)で、`graphmodule.{hpp,cpp}` の外に及ぶ)。Studio 側の解決順 (i) は実装済みで、宣言が来れば何も変えずに効く(scene test が宣言付き catalog で「宣言が表に勝つ」ことを assert)。`graph.input` / `graph.instance` は catalog に無い構造 op なので、`graph.input` の出力型は Studio 側の規則(scalar)で与えた(composition とずれても検出できない、記録)。値の帯の source は文書由来の値を `stored` と表記(`get_graph_values` の 4 語とは別。publish を見ていないものを publish と言わないため)。node 面から `definition` 名が消えた(右 pane にはある)/ 長い名前は省略されない / 折り畳み矢印は飾り → いずれも N-2 で扱う。
+
+完了記録(2026-09-18、`373f62ee`): `nodegraphics` に `SocketShape` / `SocketStyle` / `socketStyleFor` / `socketPath` / `curveGeometryBetween` と既定表の読み込み、`graphcanvaswidget` の node item を見出し帯 + 出力欄 + 入力欄に、`src/devstudio/resources/graph_socket_styles.json`(既定表。型を足すのは JSON 編集)、`pelican_studio_resources` の embed proxy。test: scene test に 3 case(解決順 / 見出しとソケット中心 = 辺の端点 / 値の帯)、対照 5 種(既定表を空に / 辺を node 縁に戻す / 宣言を無視 / 見出しを id に / 接続済みを無視)で赤を実測、`renderconfigeditor_test` に「`label` が loader と commit を通る」節、fixture `test/fixtures/graph_node_visuals/`。Frame Plan 系 3 test 不変、非 GPU 全数 1646/1646。実物は playground で目視(利用者レビュー 2 巡目 → N-2 の 3 指摘)。
+
 ### R1-2: committed marker は生きた file を上書きせず、排他 create で別 file に置く(R 群の整理。`atomicReplace` の間欠故障の残り半分)
 
 **§4 規則 11 中段(render authoring transaction の形式と recovery)。実装者: Claude(Opus)。設計レビューは省略(R1 の POSIX rename `agent/r1-atomic` の報告 `<作業ディレクトリ>/…` の分析が根拠。範囲が 1 file の transaction 形式)。見積: 小〜中。**
