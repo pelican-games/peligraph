@@ -3062,6 +3062,7 @@
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`discovery_signature`": "set(discovery_signature",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)` + `find_program(... uv)`": "if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`if(PELICAN_WITH_RPC)` の中だけ": "if(PELICAN_WITH_RPC)",
+    "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`package_install_smoke` の登録は `if(PELICAN_WITH_RPC)` の中": "NAME package_install_smoke",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`packagemanifest_test`": "pelican_define_test(packagemanifest_test GROUP project_formats pelican_project)",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`pelican_define_python_test()`": "function(pelican_define_python_test test_name script)",
     "docs/source-code-guide/07_tools_rpc_tests.md|../../test/CMakeLists.txt|`pelican_define_test()`": "function(pelican_define_test source_name)",
