@@ -498,6 +498,27 @@ struct FramePlanWidget::Impl {
         // "Fit view" is offered by the scene's context menu, but only the view
         // can carry it out.
         logical_scene->fitViewRequested = [this] { logical->fitView(); };
+        // N-4: the canvas menu's two placement entries live as long as the
+        // panel does and are named, so `action` fires them by name without
+        // opening a popup -- which a command that owes a reply cannot do.
+        auto *auto_layout = new QAction(QStringLiteral("Auto layout"), &owner);
+        auto_layout->setObjectName(
+            QStringLiteral("pelican.framePlan.autoLayout"));
+        owner.addAction(auto_layout);
+        QObject::connect(auto_layout, &QAction::triggered, &owner,
+                         [this] { logical_scene->autoLayout(); });
+        auto *fit_view = new QAction(QStringLiteral("Fit view"), &owner);
+        fit_view->setObjectName(QStringLiteral("pelican.framePlan.fitView"));
+        fit_view->setShortcut(QKeySequence{Qt::Key_F});
+        // The key itself belongs to the view, which knows that "F" typed into
+        // an in-place editor is a letter. The entry carries the binding so the
+        // menu can show it; the context is the panel itself, which never holds
+        // the keyboard, so the shortcut cannot take a keystroke off an editor.
+        fit_view->setShortcutContext(Qt::WidgetShortcut);
+        owner.addAction(fit_view);
+        QObject::connect(fit_view, &QAction::triggered, &owner,
+                         [this] { logical->fitView(); });
+        logical_scene->setMenuActions(auto_layout, fit_view);
         auto *leave_group = new QAction(&owner);
         leave_group->setObjectName(
             QStringLiteral("pelican.framePlanLeaveGroup"));

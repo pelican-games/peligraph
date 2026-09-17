@@ -38,6 +38,12 @@ inline constexpr int NodeGraphGraphRole = Qt::UserRole + 3061;
 inline constexpr int NodeGraphNameRole = Qt::UserRole + 3062;
 inline constexpr int NodeGraphFromNameRole = Qt::UserRole + 3067;
 inline constexpr int NodeGraphToNameRole = Qt::UserRole + 3068;
+// The bend points the automatic layout gave this edge, in scene coordinates,
+// as a QVariantList of QPointF. An edge that flies over a column is drawn
+// through them so it never crosses a node it has nothing to do with. The
+// moment a person drags either end, the bends are dropped: the layout no
+// longer speaks for an edge whose ends the user has placed by hand.
+inline constexpr int NodeGraphBendsRole = Qt::UserRole + 3059;
 
 inline constexpr qreal NodeGraphNodeWidth = 240.0;
 inline constexpr qreal NodeGraphNodeHeight = 64.0;
@@ -89,6 +95,18 @@ CurveGeometry curveGeometry(const QRectF &from, const QRectF &to);
 // a point on the node's edge, so an edge that leaves one has no rectangle to
 // be clipped against: it starts and ends where the socket is drawn.
 CurveGeometry curveGeometryBetween(const QPointF &start, const QPointF &tip);
+
+// The same curve, made to pass through the bend points the layout chose. Each
+// leg is one cubic with horizontal handles, so a bend inside a column draws as
+// a level line and only the gaps between columns slope -- which is what keeps
+// a long edge off the nodes it flies over.
+CurveGeometry curveGeometryThrough(const QPointF &start,
+                                   const QVector<QPointF> &bends,
+                                   const QPointF &tip);
+
+// The bends an edge item carries, read back off NodeGraphBendsRole.
+QVector<QPointF> nodeGraphBends(const QGraphicsItem &item);
+void setNodeGraphBends(QGraphicsItem &item, const QVector<QPointF> &bends);
 
 // A socket says what type flows through it, by shape as well as by colour: a
 // canvas the user can add types to cannot spend a hue per type, and shape
@@ -194,6 +212,10 @@ class NodeCanvasView : public QGraphicsView {
     // Put the whole content on screen, within the zoom clamp.
     void fitView();
 
+    // Move the view by this many pixels, the way the held middle button does.
+    // Public so a test can drive the gesture without a desktop.
+    void panBy(const QPointF &pixels);
+
     // The canvas is now showing this scope. A scope seen for the first time
     // (which includes the first draw after a project is opened) is fitted; one
     // being returned to gets back the zoom and scroll it was left at.
@@ -217,6 +239,7 @@ class NodeCanvasView : public QGraphicsView {
   private:
     struct ViewState {
         QTransform transform;
+        QRectF room;
         int horizontal = 0;
         int vertical = 0;
     };
@@ -224,6 +247,11 @@ class NodeCanvasView : public QGraphicsView {
     void applyZoom(qreal requested);
     void publishZoom(qreal scale, const QString &boundary);
     void rememberScope();
+    // Keep the view's own scene rect big enough that there is always somewhere
+    // to pan to. QGraphicsView centres a scene rect that fits the viewport, and
+    // that centring cancels a translated transform exactly -- which is why a
+    // pan on a small graph used to do nothing at all.
+    void growPanRoom();
 
     ZoomObserver zoom_observer_;
     std::map<QString, ViewState> session_views_;

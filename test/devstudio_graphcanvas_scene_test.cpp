@@ -15,7 +15,10 @@
 #include <QGraphicsProxyWidget>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
+#include <QGraphicsView>
 #include <QKeyEvent>
+#include <QRectF>
+#include <QScrollBar>
 #include <QWidget>
 #include <QPointF>
 #include <QString>
@@ -1327,4 +1330,92 @@ TEST_CASE("A theme table that says nothing leaves the built-in dark values",
     PelicanStudio::resetStudioThemeTable();
     REQUIRE(PelicanStudio::setCurrentStudioTheme(
         PelicanStudio::defaultStudioThemeName()));
+}
+
+// N-4: "Auto layout" throws away the positions the user moved in this scope
+// and places the scope again. It is session state, so it reaches neither the
+// document nor the other scopes.
+TEST_CASE("Auto layout drops the moved positions of this scope only",
+          "[devstudio][graph-canvas][scene][layout]") {
+    (void)application();
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    model.setConnected(true);
+    answer(model, connectedDocument());
+    scene.setModel(&model);
+
+    QGraphicsItem *left = nodeItem(scene, QStringLiteral("left"));
+    REQUIRE(left != nullptr);
+    const QPointF laid_out = left->pos();
+    left->setPos(laid_out + QPointF{240.0, 310.0});
+    REQUIRE(nodeItem(scene, QStringLiteral("left"))->pos() != laid_out);
+
+    // A refresh keeps it (N-1's promise, unchanged).
+    model.refresh();
+    answer(model, connectedDocument());
+    scene.repopulate();
+    REQUIRE(nodeItem(scene, QStringLiteral("left"))->pos() != laid_out);
+
+    // Move a node inside a definition too, then come back out: auto layout in
+    // the root must not touch what was moved in another scope.
+    REQUIRE(model.enterInstance("left"));
+    scene.repopulate();
+    QGraphicsItem *sum = nodeItem(scene, QStringLiteral("sum"));
+    REQUIRE(sum != nullptr);
+    const QPointF definition_laid_out = sum->pos();
+    const QPointF definition_moved = definition_laid_out + QPointF{70.0, 30.0};
+    sum->setPos(definition_moved);
+    REQUIRE(model.leaveScope());
+    scene.repopulate();
+
+    scene.autoLayout();
+    REQUIRE(nodeItem(scene, QStringLiteral("left"))->pos() == laid_out);
+    // The document said nothing about any of this.
+    REQUIRE(model.takeRpcRequests().empty());
+
+    REQUIRE(model.enterInstance("left"));
+    scene.repopulate();
+    REQUIRE(nodeItem(scene, QStringLiteral("sum"))->pos() == definition_moved);
+    scene.autoLayout();
+    REQUIRE(nodeItem(scene, QStringLiteral("sum"))->pos() ==
+            definition_laid_out);
+}
+
+// N-3 carried this over: the middle-button pan used to move the scroll bars,
+// and a drawing that already fits the view has nothing to scroll -- so the
+// canvas decided for the user where they were allowed to look. The pan moves
+// the view itself now, and `center` (what `view_state` publishes) is the
+// reading that answers for it either way.
+TEST_CASE("A pan moves the view even when the whole drawing fits",
+          "[devstudio][graph-canvas][scene][pan]") {
+    (void)application();
+    QGraphicsScene scene;
+    // Far smaller than the viewport below: there is nothing to scroll.
+    scene.addRect(QRectF{0.0, 0.0, 40.0, 30.0});
+    scene.setSceneRect(QRectF{0.0, 0.0, 40.0, 30.0});
+    PelicanStudio::NodeCanvasView view{&scene};
+    view.resize(600, 400);
+    view.show();
+    QCoreApplication::processEvents();
+
+    REQUIRE(std::abs(view.transform().m11() - 1.0) < 0.000001);
+    REQUIRE(view.horizontalScrollBar()->minimum() ==
+            view.horizontalScrollBar()->maximum());
+
+    const QPointF before = view.mapToScene(view.viewport()->rect().center());
+    view.panBy(QPointF{-120.0, -60.0});
+    QCoreApplication::processEvents();
+    const QPointF after = view.mapToScene(view.viewport()->rect().center());
+    // Dragging left looks further right: the centre of the viewport lands on a
+    // bigger scene x than it did.
+    REQUIRE(after.x() > before.x() + 60.0);
+    REQUIRE(after.y() > before.y() + 20.0);
+    // And the zoom is untouched: a pan is not a zoom.
+    REQUIRE(std::abs(view.transform().m11() - 1.0) < 0.000001);
+
+    // A fit puts the drawing back and takes the room the pan opened away.
+    view.fitView();
+    QCoreApplication::processEvents();
+    const QRectF visible = view.mapToScene(view.viewport()->rect()).boundingRect();
+    REQUIRE(visible.contains(QRectF{0.0, 0.0, 40.0, 30.0}));
 }

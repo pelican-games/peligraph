@@ -16,6 +16,7 @@
 #include <utility>
 #include <vector>
 
+class QAction;
 class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
 class QKeyEvent;
@@ -160,6 +161,14 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // The scene's context menu offers "Fit view"; only the view can perform
     // it, so the owner wires this to the view that shows this scene.
     std::function<void()> fitViewRequested;
+    // "Auto layout" (N-4): drop the positions moved by hand in this graph and
+    // place it again. Positions are editor session state, so this changes
+    // nothing the engine or the document knows about.
+    void autoLayout();
+    // The two menu entries the owner named. A named QAction can be fired by
+    // the automation surface without opening a popup, so the scene is handed
+    // the entries rather than building a throwaway one per right-click.
+    void setMenuActions(QAction *auto_layout, QAction *fit_view);
     void setGpuTiming(FramePlanGpuTimingSnapshot snapshot);
 
     // These are the state-changing operations used by the scene's context
@@ -232,6 +241,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
         QString message;
     };
     std::optional<ConvexHullProposalState> convex_hull_proposal_;
+    QAction *auto_layout_action_ = nullptr;
+    QAction *fit_view_action_ = nullptr;
     QString group_feedback_;
     // Never call this from inside itemChange: changing the scene rect makes
     // the view update, which moves the dragged item, which re-enters

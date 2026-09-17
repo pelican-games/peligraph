@@ -379,6 +379,19 @@ if(TARGET pelican_studio_gizmo_model)
   pelican_define_test(devstudio_gizmo_test pelican_studio_gizmo_model)
 endif()
 
+# N-4: the shared node placement. No Qt at all -- a placement is arithmetic
+# over boxes and a relation, and this test judges the numbers on the same three
+# fixtures the two canvases actually draw.
+pelican_define_test(devstudio_nodelayout_test)
+target_sources(pelican_test_devstudio_nodelayout_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp)
+target_include_directories(pelican_test_devstudio_nodelayout_test PRIVATE
+  ${CMAKE_SOURCE_DIR}/src/devstudio/view)
+target_compile_definitions(pelican_test_devstudio_nodelayout_test PRIVATE
+  PELICAN_TEST_POSEGRAPH_GRAPH="${CMAKE_SOURCE_DIR}/projects/posegraph_demo/passes/main.json"
+  PELICAN_TEST_NODE_VISUALS_GRAPH="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/graph_node_visuals/passes/main.json"
+  PELICAN_TEST_FRAME_PLAN_FIXTURE="${CMAKE_CURRENT_SOURCE_DIR}/fixtures/devstudio/example_frame_plan.json")
+
 pelican_define_test(schema_vocabulary_test
   pelican_project
   pelican_schema_core_adapter
@@ -439,6 +452,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_engine_failure_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp)
   target_link_libraries(pelican_test_devstudio_engine_failure_test PRIVATE
     pelican_studio_resources)
@@ -472,6 +486,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplanwidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/frameplangraphics.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/taskconnectiongraphics.cpp
   )
@@ -499,6 +514,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   target_sources(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodegraphics.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/nodelayout.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/studiotheme.cpp
   )
   target_link_libraries(pelican_test_devstudio_graphcanvas_scene_test PRIVATE

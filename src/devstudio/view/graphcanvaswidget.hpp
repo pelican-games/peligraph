@@ -15,6 +15,7 @@
 #include <string>
 #include <utility>
 
+class QAction;
 class QGraphicsSceneContextMenuEvent;
 class QGraphicsSceneMouseEvent;
 class QKeyEvent;
@@ -125,6 +126,15 @@ class GraphCanvasScene final : public QGraphicsScene {
     }
     void selectNode(const std::string &id);
 
+    // "Auto layout" (N-4): throw away the positions the user moved in this
+    // scope and place it again. Positions are session state, so this undoes
+    // nothing in the document and reaches no other scope.
+    void autoLayout();
+    // The two menu entries the owner named. A named QAction can be fired by
+    // the automation surface without driving a popup, so the scene is handed
+    // the entries rather than inventing a throwaway one per right-click.
+    void setMenuActions(QAction *auto_layout, QAction *fit_view);
+
     // Folding is session state, filed exactly like a moved position: the
     // document says nothing about how a node is being looked at.
     [[nodiscard]] bool collapsed(const std::string &id) const;
@@ -184,6 +194,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::optional<PendingConnection> pending_connection_;
     QGraphicsPathItem *pending_edge_ = nullptr;
     std::unique_ptr<InlineEditor> editor_;
+    QAction *auto_layout_action_ = nullptr;
+    QAction *fit_view_action_ = nullptr;
     QPointF context_position_;
     // Where the next added node goes, when the palette was opened over empty
     // canvas rather than beside a selected node.

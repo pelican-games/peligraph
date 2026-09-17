@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_canvas_zoom_pan",
-  "description": "N-3's half of canvas_zoom_pan: the Graph canvas zooms on the wheel, fits to F, and pans on a held middle button. This file is not registered as a test -- CTest globs test/studio_scenarios/*.json and this directory is one level down. Move it up when NodeCanvasView lands and the steps below should pass as written; nothing in it depends on anything Q-1b did not already ship.",
+  "description": "N-3's half of canvas_zoom_pan: the Graph canvas zooms on the wheel, fits to F, and pans on a held middle button. N-4 adds the first pan: at scale 1 the whole drawing still fits the view, which is exactly the case the old scroll-bar pan could not move -- there was nothing to scroll, so the canvas decided for the user where they were allowed to look.",
   "tab": "graph",
   "probe_no_automation": false,
   "steps": [
@@ -28,6 +28,47 @@
       "path": "scale",
       "value": 1.0,
       "remember": "scale_start"
+    },
+    {
+      "label": "where the canvas is looking while the drawing still fits it",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "center[0]",
+      "remember": "center_unzoomed"
+    },
+    {
+      "label": "hold the middle button and drag at scale 1",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView",
+        "point": [
+          200,
+          150
+        ]
+      },
+      "to": {
+        "name": "pelican.graphCanvasView",
+        "point": [
+          80,
+          150
+        ]
+      },
+      "button": "middle",
+      "steps": 8
+    },
+    {
+      "label": "N-4's pan moved the view even though there was nothing to scroll",
+      "expect": "result",
+      "command": {
+        "cmd": "view_state",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "center[0]",
+      "op": "gt",
+      "value_of": "center_unzoomed"
     },
     {
       "label": "two wheel notches forward over the canvas, so the drawing outgrows the view",

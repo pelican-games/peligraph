@@ -264,6 +264,58 @@ CurveGeometry curveGeometry(const QRectF &from, const QRectF &to) {
     return CurveGeometry{std::move(path), std::move(arrow), label_center};
 }
 
+QVector<QPointF> nodeGraphBends(const QGraphicsItem &item) {
+    QVector<QPointF> bends;
+    for (const QVariant &point : item.data(NodeGraphBendsRole).toList())
+        bends.push_back(point.toPointF());
+    return bends;
+}
+
+void setNodeGraphBends(QGraphicsItem &item, const QVector<QPointF> &bends) {
+    QVariantList stored;
+    stored.reserve(bends.size());
+    for (const QPointF &point : bends) stored.push_back(point);
+    item.setData(NodeGraphBendsRole, stored);
+}
+
+CurveGeometry curveGeometryThrough(const QPointF &start,
+                                   const QVector<QPointF> &bends,
+                                   const QPointF &tip) {
+    QVector<QPointF> stops;
+    stops.push_back(start);
+    for (const QPointF &bend : bends) stops.push_back(bend);
+    stops.push_back(tip);
+
+    QPainterPath path{stops.front()};
+    QPointF last_control = stops.front();
+    for (int leg = 0; leg + 1 < stops.size(); ++leg) {
+        const QPointF from = stops[leg];
+        const QPointF to = stops[leg + 1];
+        // Horizontal handles: a leg between two bends in the same column has
+        // the same y at both ends and comes out as a level line, so the slope
+        // lives in the gaps, where no node does.
+        const qreal reach =
+            std::max<qreal>(16.0, std::abs(to.x() - from.x()) * 0.42);
+        const QPointF control_one = from + QPointF{reach, 0.0};
+        const QPointF control_two = to - QPointF{reach, 0.0};
+        path.cubicTo(control_one, control_two, to);
+        last_control = control_two;
+    }
+
+    QLineF tangent{last_control, tip};
+    if (tangent.length() < 0.001) tangent = QLineF{start, tip};
+    if (tangent.length() < 0.001)
+        tangent = QLineF{QPointF{0.0, 0.0}, QPointF{1.0, 0.0}};
+    const QPointF unit{tangent.dx() / tangent.length(),
+                       tangent.dy() / tangent.length()};
+    const QPointF perpendicular{-unit.y(), unit.x()};
+    const QPointF base = tip - unit * 10.0;
+    QPolygonF arrow;
+    arrow << tip << base + perpendicular * 4.5 << base - perpendicular * 4.5;
+    const QPointF label_center = path.pointAtPercent(0.5);
+    return CurveGeometry{std::move(path), std::move(arrow), label_center};
+}
+
 CurveGeometry curveGeometryBetween(const QPointF &start, const QPointF &tip) {
     // Both tangents point outward, the way a node editor draws them: an edge
     // that has to double back loops rather than cutting through the nodes.
@@ -353,8 +405,16 @@ void routeLogicalBundle(QGraphicsScene &scene, QGraphicsPathItem &edge,
         return;
     }
 
+    const QVector<QPointF> bends = nodeGraphBends(edge);
     const CurveGeometry geometry =
-        curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect());
+        bends.isEmpty()
+            ? curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect())
+            : curveGeometryThrough(
+                  QPointF{from->sceneBoundingRect().right(),
+                          from->sceneBoundingRect().center().y()},
+                  bends,
+                  QPointF{to->sceneBoundingRect().left(),
+                          to->sceneBoundingRect().center().y()});
     edge.setPath(geometry.path);
     if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(
             findEndpointArtifact(scene, kinds.arrow, graph, from_name,
@@ -382,6 +442,10 @@ void rerouteConnectedBundles(QGraphicsScene &scene,
             continue;
         }
         if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item)) {
+            // One end has just been placed by hand, so the bends the automatic
+            // layout chose for this edge are about a drawing that no longer
+            // exists. Drop them and let the direct curve take over.
+            edge->setData(NodeGraphBendsRole, QVariant{});
             routeLogicalBundle(scene, *edge, kinds);
         }
     }
@@ -482,6 +546,39 @@ void NodeCanvasView::wheelEvent(QWheelEvent *event) {
     event->accept();
 }
 
+void NodeCanvasView::growPanRoom() {
+    if (scene() == nullptr) return;
+    const QRectF visible = mapToScene(viewport()->rect()).boundingRect();
+    if (visible.width() <= 0.0 || visible.height() <= 0.0) return;
+    QRectF room = scene()->sceneRect().united(visible);
+    // One viewport of slack on every side. With the view's scene rect strictly
+    // larger than the viewport, QGraphicsView stops centring it -- and only
+    // then does moving the view actually move what is on screen.
+    room.adjust(-visible.width(), -visible.height(), visible.width(),
+                visible.height());
+    if (sceneRect() != room) setSceneRect(room);
+}
+
+void NodeCanvasView::panBy(const QPointF &pixels) {
+    const qreal scale = transform().m11();
+    if (scale <= 0.0 || viewport() == nullptr) return;
+    // The pan moves the view, not the scroll bars. Two things make that work
+    // for a drawing that already fits the viewport -- the case the scroll bars
+    // could not move at all, because there was nothing to scroll, so the
+    // canvas decided for the user where they were allowed to look.
+    //
+    // The first is the room (see growPanRoom). The second is that where the
+    // view looks is then *set*, not nudged: QGraphicsView restores its centre
+    // point after every change to the transform, so translating the transform
+    // is undone before it is ever painted, and a scroll bar at the end of its
+    // range refuses to move further. Naming the point the view is to look at
+    // is the one instruction neither of those can quietly ignore.
+    growPanRoom();
+    const QPointF centre = mapToScene(viewport()->rect().center());
+    centerOn(centre - pixels / scale);
+    growPanRoom();
+}
+
 void NodeCanvasView::fitView() {
     if (scene() == nullptr) return;
     QRectF content = scene()->itemsBoundingRect();
@@ -489,6 +586,8 @@ void NodeCanvasView::fitView() {
         content.height() <= 0.0)
         return;
     content.adjust(-24.0, -24.0, 24.0, 24.0);
+    // A fit is about the content, so the room a pan opened up goes away first.
+    setSceneRect(QRectF{});
     fitInView(content, Qt::KeepAspectRatio);
     // fitInView answers with whatever scale the content needs; the clamp is
     // still the clamp, so a huge graph stops shrinking at the minimum.
@@ -505,7 +604,7 @@ void NodeCanvasView::fitView() {
 void NodeCanvasView::rememberScope() {
     if (!scope_known_) return;
     session_views_[scope_] =
-        ViewState{transform(), horizontalScrollBar()->value(),
+        ViewState{transform(), sceneRect(), horizontalScrollBar()->value(),
                   verticalScrollBar()->value()};
 }
 
@@ -527,6 +626,9 @@ void NodeCanvasView::showScope(const QString &scope) {
         rememberScope();
         return;
     }
+    // The room a pan opened up is part of where the user was looking: without
+    // it the restored scroll values mean something else.
+    setSceneRect(seen->second.room);
     setTransform(seen->second.transform);
     horizontalScrollBar()->setValue(seen->second.horizontal);
     verticalScrollBar()->setValue(seen->second.vertical);
@@ -558,9 +660,7 @@ void NodeCanvasView::mouseMoveEvent(QMouseEvent *event) {
     const QPoint position = event->position().toPoint();
     const QPoint delta = position - pan_origin_;
     pan_origin_ = position;
-    horizontalScrollBar()->setValue(horizontalScrollBar()->value() -
-                                    delta.x());
-    verticalScrollBar()->setValue(verticalScrollBar()->value() - delta.y());
+    panBy(QPointF{delta});
     event->accept();
 }
 

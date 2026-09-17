@@ -573,3 +573,38 @@ TEST_CASE("Q-1b: list carries the shortcut a widget owns",
     CHECK(canvases.at(0).toObject().value(QStringLiteral("shortcut")).toString() ==
           QString{});
 }
+
+// N-4: what a canvas says about its own automatic placement. The scene
+// publishes the numbers once per draw; the command is the reading, so a
+// scenario can ask a live window how tangled the drawing is rather than
+// leaving a reader to judge a screenshot.
+TEST_CASE("N-4: layout_stats reads what the placement achieved",
+          "[devstudio][automation][n4]") {
+    Fixture fixture;
+    CHECK(automationCommandNames().contains(QStringLiteral("layout_stats")));
+
+    // Nothing published yet: "nobody has drawn" is not "nothing crosses".
+    const QJsonObject empty =
+        fixture.result(QStringLiteral("layout_stats"), centreOfCanvas());
+    CHECK(empty.value(QStringLiteral("crossings")).toDouble() == -1.0);
+
+    fixture.canvas->scene()->setProperty("pelicanLayoutCrossings",
+                                         static_cast<qulonglong>(7));
+    fixture.canvas->scene()->setProperty("pelicanLayoutOverlaps",
+                                         static_cast<qulonglong>(0));
+    fixture.canvas->scene()->setProperty("pelicanLayoutNodes",
+                                         static_cast<qulonglong>(12));
+    const QJsonObject drawn =
+        fixture.result(QStringLiteral("layout_stats"), centreOfCanvas());
+    CHECK(drawn.value(QStringLiteral("crossings")).toDouble() == 7.0);
+    CHECK(drawn.value(QStringLiteral("overlaps")).toDouble() == 0.0);
+    CHECK(drawn.value(QStringLiteral("nodes")).toDouble() == 12.0);
+
+    // A widget that draws no scene is not a canvas, and says so.
+    const AutomationReply refused = fixture.run(
+        QStringLiteral("layout_stats"),
+        QJsonObject{{QStringLiteral("name"),
+                     QStringLiteral("pelican.testRefresh")}});
+    CHECK_FALSE(refused.ok);
+    CHECK(refused.code == QStringLiteral("automation.bad_request@1"));
+}

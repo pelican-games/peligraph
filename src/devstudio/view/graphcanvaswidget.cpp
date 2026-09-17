@@ -1,5 +1,6 @@
 #include "graphcanvaswidget.hpp"
 
+#include "nodelayout.hpp"
 #include "studiotheme.hpp"
 
 #include <QAbstractSpinBox>
@@ -261,10 +262,19 @@ void routeGraphCanvasEdge(QGraphicsScene &scene, QGraphicsPathItem &edge) {
                            edge.data(GraphCanvasToPortRole).toString(),
                            QStringLiteral("input"));
 
+    const QPointF start = from_socket != nullptr
+                              ? from_socket->sceneBoundingRect().center()
+                              : QPointF{from->sceneBoundingRect().right(),
+                                        from->sceneBoundingRect().center().y()};
+    const QPointF tip = to_socket != nullptr
+                            ? to_socket->sceneBoundingRect().center()
+                            : QPointF{to->sceneBoundingRect().left(),
+                                      to->sceneBoundingRect().center().y()};
+    const QVector<QPointF> bends = nodeGraphBends(edge);
     const CurveGeometry geometry =
-        from_socket != nullptr && to_socket != nullptr
-            ? curveGeometryBetween(from_socket->sceneBoundingRect().center(),
-                                   to_socket->sceneBoundingRect().center())
+        !bends.isEmpty() ? curveGeometryThrough(start, bends, tip)
+        : from_socket != nullptr && to_socket != nullptr
+            ? curveGeometryBetween(start, tip)
             : curveGeometry(from->sceneBoundingRect(), to->sceneBoundingRect());
     edge.setPath(geometry.path);
     if (auto *arrow = dynamic_cast<QGraphicsPolygonItem *>(findEndpointArtifact(
@@ -282,8 +292,12 @@ void rerouteGraphCanvasEdges(QGraphicsScene &scene, const std::string &scope,
             (item->data(NodeGraphFromNameRole).toString() != expected_node &&
              item->data(NodeGraphToNameRole).toString() != expected_node))
             continue;
-        if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item))
+        if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item)) {
+            // An end has just been placed by hand: the lane the layout kept
+            // for this edge is about a drawing that no longer exists.
+            edge->setData(NodeGraphBendsRole, QVariant{});
             routeGraphCanvasEdge(scene, *edge);
+        }
     }
 }
 
@@ -371,6 +385,20 @@ void GraphCanvasScene::toggleCollapsed(const std::string &id) {
     setCollapsed(id, !collapsed(id));
 }
 
+void GraphCanvasScene::autoLayout() {
+    if (model_ == nullptr) return;
+    const std::string scope = model_->currentScope();
+    std::erase_if(session_node_positions_, [&](const auto &entry) {
+        return entry.first.first == scope;
+    });
+    repopulate();
+}
+
+void GraphCanvasScene::setMenuActions(QAction *auto_layout, QAction *fit_view) {
+    auto_layout_action_ = auto_layout;
+    fit_view_action_ = fit_view;
+}
+
 void GraphCanvasScene::repopulate() {
     const StudioTheme &theme = currentStudioTheme();
     ++rebuild_generation_;
@@ -401,14 +429,6 @@ void GraphCanvasScene::repopulate() {
     const auto nodes = model_->nodes();
     const auto edges = model_->edges();
 
-    std::set<std::string, std::less<>> visible;
-    for (const auto &node : nodes) visible.insert(node.id);
-    std::vector<NodeGraphEdgeKey> relation;
-    relation.reserve(edges.size());
-    for (const auto &edge : edges)
-        relation.push_back(NodeGraphEdgeKey{edge.from_node, edge.to_node});
-    const auto columns = longestPathColumns(relation, visible);
-
     QFont label_font;
     label_font.setPointSizeF(label_font.pointSizeF() - 0.5);
     QFont detail_font = label_font;
@@ -421,76 +441,114 @@ void GraphCanvasScene::repopulate() {
     const qreal top = model_->breadcrumb().size() > 1
                           ? NodeGraphBreadcrumbHeight + 18.0
                           : 0.0;
-    std::map<std::string, QGraphicsPathItem *, std::less<>> items;
-    // A node's height now follows its port count, so a fixed row pitch would
-    // overlap a tall node with the one under it. Each column advances by what
-    // it has actually placed.
-    std::map<int, qreal> column_cursor;
-    for (const auto &node : nodes) {
-        const QString node_name = qtext(node.id);
-        const QString heading = qtext(node.heading());
-        const QString type_name = qtext(node.op);
-
-        // The rows first: the node is as wide as its widest row and as tall as
-        // the number of ports, the way a socket list has to be.
-        struct DrawnRow {
-            QString port;
-            QString label;
-            QString type;
-            SocketStyle style;
-            RowValue value;
-            bool connected = false;
-            bool declared = false;
-        };
+    // The rows of every node first. A node is as wide as its widest row and as
+    // tall as its socket list, and the automatic placement cannot be asked
+    // where a thing goes before it is told how big the thing is -- which is
+    // why the drawing loop below is a second pass rather than the only one.
+    struct DrawnRow {
+        QString port;
+        QString label;
+        QString type;
+        SocketStyle style;
+        RowValue value;
+        bool connected = false;
+        bool declared = false;
+    };
+    struct DrawnNode {
+        const GraphCanvasNode *node = nullptr;
         std::vector<DrawnRow> outputs;
         std::vector<DrawnRow> inputs;
+        qreal width = 0.0;
+        qreal height = 0.0;
+        bool folded = false;
+    };
+    std::vector<DrawnNode> drawn;
+    drawn.reserve(nodes.size());
+    for (const auto &node : nodes) {
+        DrawnNode entry;
+        entry.node = &node;
         for (const auto &output : node.outputs)
-            outputs.push_back(DrawnRow{
+            entry.outputs.push_back(DrawnRow{
                 qtext(output.port), qtext(output.port), qtext(output.type),
                 socketStyleFor(graphCanvasSocketFacts(*model_, output.type)),
                 {}, false, false});
         for (const auto &port : node.inputs)
-            inputs.push_back(DrawnRow{
+            entry.inputs.push_back(DrawnRow{
                 qtext(port.port), qtext(port.port), qtext(port.type),
                 socketStyleFor(graphCanvasSocketFacts(*model_, port.type)),
                 rowValue(port), port.connected, port.declared});
 
         qreal width = GraphCanvasNodeMinimumWidth;
-        width = std::max(width, 18.0 + heading_metrics.horizontalAdvance(heading) +
-                                    12.0 + row_metrics.horizontalAdvance(type_name) +
-                                    14.0);
-        for (const auto &row : outputs)
+        width = std::max(width,
+                         18.0 + heading_metrics.horizontalAdvance(
+                                    qtext(node.heading())) +
+                             12.0 +
+                             row_metrics.horizontalAdvance(qtext(node.op)) +
+                             14.0);
+        for (const auto &row : entry.outputs)
             width = std::max(width,
                              row_metrics.horizontalAdvance(row.label) + 34.0);
-        for (const auto &row : inputs) {
+        for (const auto &row : entry.inputs) {
             qreal needed = row_metrics.horizontalAdvance(row.label) + 34.0;
             if (row.value.shown())
                 needed += row_metrics.horizontalAdvance(pillText(row.value)) + 24.0;
             width = std::max(width, needed);
         }
-        width = std::min(width, GraphCanvasNodeMaximumWidth);
+        entry.width = std::min(width, GraphCanvasNodeMaximumWidth);
 
         // A folded node is its heading band and nothing else: the rows are not
         // drawn small, they are not drawn.
-        const bool folded = collapsed(node.id);
-        const qreal rows_top = GraphCanvasHeaderHeight + GraphCanvasSectionPadding;
-        const auto row_count = static_cast<qreal>(outputs.size() + inputs.size());
-        const qreal height =
-            folded ? GraphCanvasHeaderHeight
-                   : rows_top + row_count * GraphCanvasSocketRowHeight +
-                         GraphCanvasSectionPadding;
+        entry.folded = collapsed(node.id);
+        const auto row_count =
+            static_cast<qreal>(entry.outputs.size() + entry.inputs.size());
+        entry.height =
+            entry.folded
+                ? GraphCanvasHeaderHeight
+                : GraphCanvasHeaderHeight + GraphCanvasSectionPadding +
+                      row_count * GraphCanvasSocketRowHeight +
+                      GraphCanvasSectionPadding;
+        drawn.push_back(std::move(entry));
+    }
 
-        const auto column_entry = columns.find(node.id);
-        const int column = column_entry == columns.end() ? 0 : column_entry->second;
-        const auto placed = column_cursor.find(column);
-        if (placed == column_cursor.end())
-            column_cursor.emplace(
-                column,
-                top + (column % 2 == 1 ? NodeGraphStaggerOffset * 0.25 : 0.0));
-        auto &cursor = column_cursor.at(column);
-        const QPointF laid_out{
-            column * (NodeGraphNodeWidth + NodeGraphHorizontalGap), cursor};
-        cursor += height + NodeGraphVerticalGap;
+    // N-4: one shared, Qt-free placement for both node canvases. It is what
+    // decides the columns as well, so the column a node publishes and the
+    // column its position came from cannot drift apart.
+    std::vector<LayoutNode> layout_nodes;
+    layout_nodes.reserve(drawn.size());
+    for (const DrawnNode &entry : drawn)
+        layout_nodes.push_back(
+            LayoutNode{entry.node->id, entry.width, entry.height});
+    std::vector<LayoutEdge> layout_edges;
+    layout_edges.reserve(edges.size());
+    for (const auto &edge : edges)
+        layout_edges.push_back(LayoutEdge{edge.from_node, edge.to_node});
+    LayoutOptions layout_options;
+    layout_options.horizontal_gap = NodeGraphHorizontalGap;
+    layout_options.vertical_gap = NodeGraphVerticalGap;
+    layout_options.origin_y = top;
+    const NodeGraphLayout layout =
+        layoutNodeGraph(layout_nodes, layout_edges, layout_options);
+
+    std::map<std::string, QGraphicsPathItem *, std::less<>> items;
+    for (const DrawnNode &entry : drawn) {
+        const GraphCanvasNode &node = *entry.node;
+        const std::vector<DrawnRow> &outputs = entry.outputs;
+        const std::vector<DrawnRow> &inputs = entry.inputs;
+        const qreal width = entry.width;
+        const qreal height = entry.height;
+        const bool folded = entry.folded;
+        const qreal rows_top = GraphCanvasHeaderHeight + GraphCanvasSectionPadding;
+        const QString node_name = qtext(node.id);
+        const QString heading = qtext(node.heading());
+        const QString type_name = qtext(node.op);
+
+        const auto column_entry = layout.columns.find(node.id);
+        const int column =
+            column_entry == layout.columns.end() ? 0 : column_entry->second;
+        const auto box = layout.boxes.find(node.id);
+        const QPointF laid_out =
+            box == layout.boxes.end() ? QPointF{0.0, top}
+                                      : QPointF{box->second.x, box->second.y};
         const auto position_key = std::pair{scope, node.id};
         QPointF position = laid_out;
         if (const auto retained = session_node_positions_.find(position_key);
@@ -705,10 +763,22 @@ void GraphCanvasScene::repopulate() {
     }
 
     const QFontMetricsF metrics{detail_font};
-    for (const auto &edge : edges) {
+    for (std::size_t index = 0; index < edges.size(); ++index) {
+        const auto &edge = edges[index];
         if (!items.contains(edge.from_node) || !items.contains(edge.to_node)) continue;
         auto *line = new QGraphicsPathItem;
         addItem(line);
+        // An edge that flies over a column follows the lane the layout kept
+        // for it, so it passes between the nodes it flies over rather than
+        // through them. An end that has been dragged loses the lane again.
+        if (index < layout.bends.size() && !layout.bends[index].empty() &&
+            !session_node_positions_.contains({scope, edge.from_node}) &&
+            !session_node_positions_.contains({scope, edge.to_node})) {
+            QVector<QPointF> bends;
+            for (const LayoutPoint &point : layout.bends[index])
+                bends.push_back(QPointF{point.x, point.y});
+            setNodeGraphBends(*line, bends);
+        }
         line->setZValue(0.0);
         line->setPen(QPen{theme.canvas.edge, 1.6});
         line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasEdgeItem));
@@ -800,6 +870,16 @@ void GraphCanvasScene::repopulate() {
     setProperty("pelicanGraphNodeCount", static_cast<qulonglong>(nodes.size()));
     setProperty("pelicanGraphEdgeCount", static_cast<qulonglong>(edges.size()));
     setProperty("pelicanGraphNotice", qtext(model_->notice().message));
+    // What the automatic placement achieved, so `layout_stats` can ask a live
+    // window how tangled it is rather than a reader having to look at it.
+    setProperty("pelicanLayoutCrossings",
+                static_cast<qulonglong>(layout.crossings));
+    setProperty("pelicanLayoutOverlaps",
+                static_cast<qulonglong>(layoutOverlaps(layout.boxes)));
+    setProperty("pelicanLayoutNodes",
+                static_cast<qulonglong>(layout.boxes.size()));
+    setProperty("pelicanLayoutReversedEdges",
+                static_cast<qulonglong>(layout.reversed_edges.size()));
     rebuilding_ = false;
     applySceneRectNow();
     if (repopulated) repopulated();
@@ -1051,7 +1131,20 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
                 Qt::QueuedConnection);
         });
     }
-    if (fitViewRequested) {
+    // The two entries the owner named are the same objects the automation
+    // surface fires: a scenario must not have to open a popup to reach them.
+    if (auto_layout_action_ != nullptr) {
+        menu.addAction(auto_layout_action_);
+    } else {
+        QAction *automatic = menu.addAction(QObject::tr("Auto layout"));
+        QObject::connect(automatic, &QAction::triggered, this, [this] {
+            QMetaObject::invokeMethod(
+                this, [this] { autoLayout(); }, Qt::QueuedConnection);
+        });
+    }
+    if (fit_view_action_ != nullptr) {
+        menu.addAction(fit_view_action_);
+    } else if (fitViewRequested) {
         QAction *fit = menu.addAction(QObject::tr("Fit view"));
         fit->setShortcut(QKeySequence{Qt::Key_F});
         QObject::connect(fit, &QAction::triggered, this, [this] {
@@ -1452,6 +1545,8 @@ struct GraphCanvasWidget::Impl {
     QLineEdit *label_edit = nullptr;
     QPushButton *apply_label = nullptr;
     QPushButton *add_node = nullptr;
+    QAction *auto_layout_action = nullptr;
+    QAction *fit_view_action = nullptr;
     QHash<qint64, quint64> transport_requests;
     std::uint64_t rendered_content = std::numeric_limits<std::uint64_t>::max();
     std::uint64_t rendered_report = std::numeric_limits<std::uint64_t>::max();
@@ -1489,6 +1584,28 @@ struct GraphCanvasWidget::Impl {
         scene = new GraphCanvasScene(&view);
         canvas = new NodeCanvasView(scene, splitter);
         canvas->setObjectName(QStringLiteral("pelican.graphCanvasView"));
+        // The canvas menu's two entries live for as long as the tab does, and
+        // are named: `action` fires a QAction by name without opening a popup,
+        // which a command that owes a reply on the wire cannot do.
+        auto_layout_action = new QAction(QObject::tr("Auto layout"), &view);
+        auto_layout_action->setObjectName(
+            QStringLiteral("pelican.graphCanvas.autoLayout"));
+        view.addAction(auto_layout_action);
+        QObject::connect(auto_layout_action, &QAction::triggered, &view,
+                         [this] { scene->autoLayout(); });
+        fit_view_action = new QAction(QObject::tr("Fit view"), &view);
+        fit_view_action->setObjectName(
+            QStringLiteral("pelican.graphCanvas.fitView"));
+        fit_view_action->setShortcut(QKeySequence{Qt::Key_F});
+        // The key itself belongs to the view, which knows that "F" typed into
+        // an in-place editor is a letter. The entry carries the binding so the
+        // menu can show it; the context is the panel itself, which never holds
+        // the keyboard, so the shortcut cannot take a keystroke off an editor.
+        fit_view_action->setShortcutContext(Qt::WidgetShortcut);
+        view.addAction(fit_view_action);
+        QObject::connect(fit_view_action, &QAction::triggered, &view,
+                         [this] { canvas->fitView(); });
+        scene->setMenuActions(auto_layout_action, fit_view_action);
         canvas->setDragMode(QGraphicsView::RubberBandDrag);
         canvas->setRenderHint(QPainter::Antialiasing, true);
         // Delete has to reach the scene, and a right-click on the canvas has to

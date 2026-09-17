@@ -1,0 +1,110 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_auto_layout",
+  "description": "N-4: the Graph canvas places itself. A node is dragged off its place, the canvas menu's 'Auto layout' entry is fired by name (a QAction, so no popup has to be driven), and the node comes back to exactly where the placement put it. The last step asks the live window how tangled the drawing is.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas has drawn the owned instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the menu entry exists, is named, and is switched on",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "pelican.graphCanvas.autoLayout"
+      },
+      "path": "widgets[0].enabled",
+      "value": true
+    },
+    {
+      "label": "where the placement put the instance",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_node#left"
+      },
+      "path": "widgets[0].scene[1]",
+      "remember": "laid_out_y"
+    },
+    {
+      "label": "drag the instance well away from it",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_node_header#left"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_node_header#left",
+        "point": [
+          70,
+          240
+        ]
+      },
+      "steps": 6
+    },
+    {
+      "label": "it is somewhere else now",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_node#left"
+      },
+      "path": "widgets[0].scene[1]",
+      "op": "ne",
+      "value_of": "laid_out_y"
+    },
+    {
+      "label": "fire the canvas menu's Auto layout by name",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "the instance is back where the placement puts it",
+      "expect": "result",
+      "command": {
+        "cmd": "list",
+        "pattern": "graph_node#left"
+      },
+      "path": "widgets[0].scene[1]",
+      "op": "eq",
+      "value_of": "laid_out_y"
+    },
+    {
+      "label": "and the drawing the placement chose crosses nothing",
+      "expect": "result",
+      "command": {
+        "cmd": "layout_stats",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "crossings",
+      "value": 0
+    },
+    {
+      "label": "nothing overlaps either",
+      "expect": "result",
+      "command": {
+        "cmd": "layout_stats",
+        "name": "pelican.graphCanvasView"
+      },
+      "path": "overlaps",
+      "value": 0
+    },
+    {
+      "label": "a picture of the placed canvas for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_auto_layout.png"
+    }
+  ]
+}

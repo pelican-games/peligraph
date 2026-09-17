@@ -1,5 +1,6 @@
 #include "frameplangraphics.hpp"
 
+#include "nodelayout.hpp"
 #include "studiotheme.hpp"
 
 #include <QAction>
@@ -270,10 +271,19 @@ void routeFramePlanBundle(QGraphicsScene &scene, QGraphicsPathItem &edge) {
         }
     }
 
+    const QPointF start = from_socket != nullptr
+                              ? from_socket->sceneBoundingRect().center()
+                              : QPointF{from->sceneBoundingRect().right(),
+                                        from->sceneBoundingRect().center().y()};
+    const QPointF tip = to_socket != nullptr
+                            ? to_socket->sceneBoundingRect().center()
+                            : QPointF{to->sceneBoundingRect().left(),
+                                      to->sceneBoundingRect().center().y()};
+    const QVector<QPointF> bends = nodeGraphBends(edge);
     const CurveGeometry geometry =
-        from_socket != nullptr && to_socket != nullptr
-            ? curveGeometryBetween(from_socket->sceneBoundingRect().center(),
-                                   to_socket->sceneBoundingRect().center())
+        !bends.isEmpty() ? curveGeometryThrough(start, bends, tip)
+        : from_socket != nullptr && to_socket != nullptr
+            ? curveGeometryBetween(start, tip)
             : curveGeometry(from->sceneBoundingRect(),
                             to->sceneBoundingRect());
     edge.setPath(geometry.path);
@@ -294,8 +304,10 @@ void rerouteFramePlanBundles(QGraphicsScene &scene, const std::string &graph,
             (item->data(FramePlanFromNameRole).toString() != expected_node &&
              item->data(FramePlanToNameRole).toString() != expected_node))
             continue;
-        if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item))
+        if (auto *edge = dynamic_cast<QGraphicsPathItem *>(item)) {
+            edge->setData(NodeGraphBendsRole, QVariant{});
             routeFramePlanBundle(scene, *edge);
+        }
     }
 }
 
@@ -2349,17 +2361,45 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         });
     }
 
-    std::map<std::string, QGraphicsPathItem *, std::less<>> node_items;
-    std::size_t displayed_column = 0;
-    qreal column_x = 0.0;
+    // N-4: the shared, Qt-free placement. The Frame Plan keeps its own column
+    // rule -- a collapsed group sits at the minimum column of its visible
+    // members, a boundary stub one column outside the window -- and hands it
+    // over, so only the ordering inside a column, the vertical coordinate and
+    // the lanes long edges travel in are the layout's to choose.
+    const auto entitySize = [&](const VisibleEntity &entity) {
+        if (entity.group) return std::pair{GroupWidth, GroupHeight};
+        if (entity.boundary_stub)
+            return std::pair{BoundaryStubWidth, BoundaryStubHeight};
+        const NodeBodyLayout body =
+            nodeBodyLayout(model, *nodes_by_name.at(entity.key));
+        return std::pair{body.width, body.height};
+    };
+    std::vector<LayoutNode> layout_nodes;
+    layout_nodes.reserve(entities.size());
     for (const auto &[level, level_entities] : levels) {
         (void)level;
-        static constexpr std::array<qreal, 4> WavePhases{0.0, 1.0, 2.0,
-                                                         1.0};
-        const qreal wave =
-            WavePhases[displayed_column % WavePhases.size()] * StaggerOffset;
-        qreal row_y = wave;
-        qreal widest_entity = 0.0;
+        for (const VisibleEntity *entity : level_entities) {
+            const auto [width, height] = entitySize(*entity);
+            layout_nodes.push_back(LayoutNode{entity->key, width, height});
+        }
+    }
+    std::vector<LayoutEdge> layout_edges;
+    layout_edges.reserve(bundles.size());
+    for (const auto &[endpoints, records] : bundles) {
+        (void)records;
+        layout_edges.push_back(LayoutEdge{endpoints.first, endpoints.second});
+    }
+    LayoutOptions layout_options;
+    layout_options.horizontal_gap = HorizontalGap;
+    layout_options.vertical_gap = VerticalGap;
+    for (const auto &[key, entity] : entities)
+        layout_options.columns.emplace(key, entity.source_column);
+    const NodeGraphLayout layout =
+        layoutNodeGraph(layout_nodes, layout_edges, layout_options);
+
+    std::map<std::string, QGraphicsPathItem *, std::less<>> node_items;
+    for (const auto &[level, level_entities] : levels) {
+        (void)level;
         for (VisibleEntity *entity : level_entities) {
             // A node is as tall as the resources it touches, so the row pitch
             // is what this entity actually needs rather than one constant.
@@ -2376,7 +2416,6 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                     ? GroupHeight
                     : entity->boundary_stub ? BoundaryStubHeight
                                             : body.height;
-            widest_entity = std::max(widest_entity, width);
             const std::string position_kind =
                 entity->group ? FramePlanGroupItem : FramePlanNodeItem;
             const std::string stable_identity =
@@ -2388,7 +2427,11 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
             // points left to right for expanded nodes. A collapsed group's
             // source column is the minimum source column of its visible
             // members, the explicit WP341 quotient-layout rule.
-            QPointF position{column_x, row_y};
+            const auto placed = layout.boxes.find(entity->key);
+            QPointF position =
+                placed == layout.boxes.end()
+                    ? QPointF{0.0, 0.0}
+                    : QPointF{placed->second.x, placed->second.y};
             if (!entity->boundary_stub) {
                 if (const auto retained =
                         session_node_positions_.find(position_key);
@@ -2579,10 +2622,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                             sourceColor(entity->source), gpu_timing_);
                 node_items.emplace(node.name, item);
             }
-            row_y += height + VerticalGap;
         }
-        column_x += widest_entity + HorizontalGap;
-        ++displayed_column;
     }
 
     std::size_t bundle_order = 0;
@@ -2611,6 +2651,22 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         edge->setData(FramePlanBundleOrderRole,
                       static_cast<qulonglong>(bundle_order));
         edge->setData(FramePlanCurveRole, true);
+        // The lane the layout kept for a bundle that flies over a column, so
+        // it passes between those nodes rather than across them. An end the
+        // user has dragged loses the lane (rerouteFramePlanBundles clears it).
+        if (bundle_order < layout.bends.size() &&
+            !layout.bends[bundle_order].empty() &&
+            !session_node_positions_.contains(
+                std::tuple{model.graph, std::string{FramePlanNodeItem},
+                           endpoints.first}) &&
+            !session_node_positions_.contains(
+                std::tuple{model.graph, std::string{FramePlanNodeItem},
+                           endpoints.second})) {
+            QVector<QPointF> bends;
+            for (const LayoutPoint &point : layout.bends[bundle_order])
+                bends.push_back(QPointF{point.x, point.y});
+            setNodeGraphBends(*edge, bends);
+        }
 
         std::vector<std::string> identities;
         for (const auto &record : records) {
@@ -2789,6 +2845,16 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                 static_cast<qulonglong>(model.dependencies.size()));
     setProperty("pelicanVisibleItemCount",
                 static_cast<qulonglong>(entities.size()));
+    // What the automatic placement achieved, so `layout_stats` can ask a live
+    // window how tangled the drawing is.
+    setProperty("pelicanLayoutCrossings",
+                static_cast<qulonglong>(layout.crossings));
+    setProperty("pelicanLayoutOverlaps",
+                static_cast<qulonglong>(layoutOverlaps(layout.boxes)));
+    setProperty("pelicanLayoutNodes",
+                static_cast<qulonglong>(layout.boxes.size()));
+    setProperty("pelicanLayoutReversedEdges",
+                static_cast<qulonglong>(layout.reversed_edges.size()));
     setProperty("pelicanPhysicalResourceCount",
                 static_cast<qulonglong>(physical_overlay.resource_count));
     setProperty("pelicanAdoptedAliasCount",
@@ -3043,6 +3109,21 @@ bool FramePlanGraphicsScene::removeSessionGroup(const QString &group_id) {
     return true;
 }
 
+void FramePlanGraphicsScene::autoLayout() {
+    if (!current_model_) return;
+    const std::string graph = current_model_->graph;
+    std::erase_if(session_node_positions_, [&](const auto &entry) {
+        return std::get<0>(entry.first) == graph;
+    });
+    renderCurrentGraph();
+}
+
+void FramePlanGraphicsScene::setMenuActions(QAction *auto_layout,
+                                            QAction *fit_view) {
+    auto_layout_action_ = auto_layout;
+    fit_view_action_ = fit_view;
+}
+
 void FramePlanGraphicsScene::contextMenuEvent(
     QGraphicsSceneContextMenuEvent *event) {
     QGraphicsItem *semantic_item = itemAt(event->scenePos(), QTransform{});
@@ -3054,16 +3135,17 @@ void FramePlanGraphicsScene::contextMenuEvent(
         }
         semantic_item = semantic_item->parentItem();
     }
-    if (semantic_item == nullptr || current_group_scope_) {
-        QGraphicsScene::contextMenuEvent(event);
-        return;
-    }
-
-    const QString kind = itemKind(*semantic_item);
-    const QString group_id =
-        semantic_item->data(FramePlanGroupIdRole).toString();
     QMenu menu;
-    if (kind == QLatin1String{FramePlanNodeItem}) {
+    // Everything a node or a group answers for needs one under the cursor.
+    // The two placement entries at the bottom do not: they are about the
+    // canvas, so a right-click on empty ground still offers them.
+    const bool on_entity = semantic_item != nullptr && !current_group_scope_;
+    const QString kind =
+        on_entity ? itemKind(*semantic_item) : QString{};
+    const QString group_id =
+        on_entity ? semantic_item->data(FramePlanGroupIdRole).toString()
+                  : QString{};
+    if (on_entity && kind == QLatin1String{FramePlanNodeItem}) {
         const FramePlanNodeKey clicked{
             semantic_item->data(FramePlanGraphRole).toString().toStdString(),
             semantic_item->data(FramePlanNameRole).toString().toStdString(),
@@ -3090,7 +3172,7 @@ void FramePlanGraphicsScene::contextMenuEvent(
     }
 
     const std::vector<GroupDefinition> groups =
-        current_model_
+        on_entity && current_model_
             ? discoverGroups(*current_model_, session_groups_)
             : std::vector<GroupDefinition>{};
     const GroupDefinition *group =
@@ -3098,7 +3180,7 @@ void FramePlanGraphicsScene::contextMenuEvent(
     const bool session_group =
         group != nullptr && session_groups_.contains(group->state_key);
 
-    if (kind == QLatin1String{FramePlanGroupItem}) {
+    if (on_entity && kind == QLatin1String{FramePlanGroupItem}) {
         QAction *expand = menu.addAction(QStringLiteral("Expand group"));
         connect(expand, &QAction::triggered, this,
                 [this, group_id] {
@@ -3143,8 +3225,21 @@ void FramePlanGraphicsScene::contextMenuEvent(
                         Qt::QueuedConnection);
                 });
     }
-    if (fitViewRequested) {
-        if (!menu.actions().isEmpty()) menu.addSeparator();
+    if (!menu.actions().isEmpty()) menu.addSeparator();
+    // The same two objects the automation surface fires by name, so a scenario
+    // reaches them without driving a popup.
+    if (auto_layout_action_ != nullptr) {
+        menu.addAction(auto_layout_action_);
+    } else {
+        QAction *automatic = menu.addAction(QStringLiteral("Auto layout"));
+        connect(automatic, &QAction::triggered, this, [this] {
+            QMetaObject::invokeMethod(
+                this, [this] { autoLayout(); }, Qt::QueuedConnection);
+        });
+    }
+    if (fit_view_action_ != nullptr) {
+        menu.addAction(fit_view_action_);
+    } else if (fitViewRequested) {
         QAction *fit = menu.addAction(QStringLiteral("Fit view"));
         fit->setShortcut(QKeySequence{Qt::Key_F});
         connect(fit, &QAction::triggered, this, [this] {

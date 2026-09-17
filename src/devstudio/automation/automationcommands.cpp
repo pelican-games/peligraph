@@ -931,6 +931,47 @@ AutomationReply commandViewState(const AutomationHost &host,
     });
 }
 
+// What the automatic placement achieved on the scene a named view shows. The
+// scene publishes it once per draw (counting it is free -- the ordering stage
+// counts crossings anyway), so a scenario can ask a live window how tangled
+// the drawing is instead of a reader having to look at a screenshot.
+AutomationReply commandLayoutStats(const AutomationHost &host,
+                                   const QJsonObject &request) {
+    const QString name = request.value(QStringLiteral("name")).toString();
+    if (name.isEmpty())
+        return AutomationReply::failure(BadRequest,
+                                        QStringLiteral("name is required"));
+    const Target target = resolveTarget(host, name);
+    if (!target.valid())
+        return AutomationReply::failure(
+            WidgetMissing,
+            QStringLiteral("no widget or drawn item is named \"%1\"").arg(name));
+    QGraphicsView *view = target.view;
+    if (view == nullptr || view->scene() == nullptr)
+        return AutomationReply::failure(
+            BadRequest,
+            QStringLiteral("\"%1\" is not a QGraphicsView showing a scene")
+                .arg(name));
+    const QGraphicsScene &scene = *view->scene();
+    // A scene that has not drawn yet answers -1 rather than 0: "nothing
+    // crosses" and "nobody has asked yet" are different answers.
+    const auto number = [](const QVariant &value) {
+        return value.isValid() ? static_cast<double>(value.toULongLong())
+                               : -1.0;
+    };
+    return AutomationReply::success(QJsonObject{
+        {QStringLiteral("name"), name},
+        {QStringLiteral("crossings"),
+         number(scene.property("pelicanLayoutCrossings"))},
+        {QStringLiteral("overlaps"),
+         number(scene.property("pelicanLayoutOverlaps"))},
+        {QStringLiteral("nodes"),
+         number(scene.property("pelicanLayoutNodes"))},
+        {QStringLiteral("reversed_edges"),
+         number(scene.property("pelicanLayoutReversedEdges"))},
+    });
+}
+
 AutomationReply commandMenuList(const AutomationHost &host,
                                 const QJsonObject &request) {
     QWidget *root = nullptr;
@@ -1437,6 +1478,7 @@ QStringList automationCommandNames() {
             QStringLiteral("key"),          QStringLiteral("type"),
             QStringLiteral("text"),         QStringLiteral("action"),
             QStringLiteral("menu_list"),    QStringLiteral("view_state"),
+            QStringLiteral("layout_stats"),
             QStringLiteral("wait"),         QStringLiteral("wait_engine"),
             QStringLiteral("rpc"),          QStringLiteral("open_project"),
             QStringLiteral("screenshot"),   QStringLiteral("quit")};
@@ -1463,6 +1505,8 @@ AutomationReply runAutomationCommand(const AutomationHost &host,
         return commandMenuList(host, request);
     if (command == QLatin1String("view_state"))
         return commandViewState(host, request);
+    if (command == QLatin1String("layout_stats"))
+        return commandLayoutStats(host, request);
     if (command == QLatin1String("key")) return commandKey(host, request);
     if (command == QLatin1String("type")) return commandType(host, request);
     if (command == QLatin1String("text")) return commandText(host, request);

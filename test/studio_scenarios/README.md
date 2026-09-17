@@ -147,6 +147,7 @@ window the desktop happens to have activated.
 | `action`       | `name` \| `text`, `menu?` -- fires one menu or toolbar entry  |
 | `menu_list`    | `name?` (scope to one widget), `pattern?` -- the entries, with `text`, `shortcut`, `enabled`, `checked`, `menu` |
 | `view_state`   | `name` -- a QGraphicsView's `scale`, `transform`, `center`, `scroll`, `visible_scene`, `viewport` |
+| `layout_stats` | `name` -- what the automatic placement achieved on the scene a QGraphicsView shows: `crossings`, `overlaps`, `nodes`, `reversed_edges` |
 | `wait`         | `name`, one of `visible` / `text` / `contains` / `missing`, `timeout_ms?` |
 | `wait_engine`  | `timeout_ms?` -- until the viewport answers editor RPC         |
 | `rpc`          | `method`, `params?`, `timeout_ms?` -- straight to the engine   |
@@ -248,5 +249,19 @@ machine decided to activate.
 `pending/` is globbed by nothing: CTest registers `studio_scenarios/*.json` and
 stops there. A scenario written against a change that has not landed yet waits
 in `pending/` with a note saying what it is waiting for, and is moved up one
-directory when that arrives. `pending/graph_canvas_zoom_pan.json` is waiting for
-N-3's zoom and pan on the Graph canvas; every command it uses exists today.
+directory when that arrives. Nothing is waiting there at the moment.
+
+## What a canvas says about its own placement
+
+`layout_stats` reads what the automatic placement (N-4) achieved on the scene a
+named view is showing: how many pairs of edges cross, how many pairs of nodes
+overlap, how many nodes were placed, and how many edges a cycle forced to be
+drawn backwards. The scene publishes these once per draw -- counting the
+crossings is free, because the stage that minimises them counts them anyway --
+so a scenario can ask a live window how tangled the drawing is instead of a
+reader having to judge a screenshot. `graph_auto_layout` is the example.
+
+The two entries of a canvas's own context menu are named QActions, so `action`
+fires them without a popup: `pelican.graphCanvas.autoLayout`,
+`pelican.graphCanvas.fitView`, `pelican.framePlan.autoLayout` and
+`pelican.framePlan.fitView`.
