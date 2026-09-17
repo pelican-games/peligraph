@@ -47,6 +47,12 @@ class MainWindow : public QMainWindow {
     static QStringList renderToolsTabIds();
     // Bring one of them to the front, showing the dock that holds them.
     bool showRenderToolsTab(const QString &id);
+    // The engine viewport this window drives. Read-only handle for the
+    // launcher, which hands it to the test-automation channel so a scenario can
+    // ask the running engine the same questions the panels ask it.
+    [[nodiscard]] EmbeddedViewport *engineViewport() const noexcept {
+        return viewport_;
+    }
 
   protected:
     void closeEvent(QCloseEvent *event) override;

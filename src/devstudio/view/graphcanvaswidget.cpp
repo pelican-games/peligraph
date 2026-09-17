@@ -1,5 +1,6 @@
 #include "graphcanvaswidget.hpp"
 
+#include <QAbstractSpinBox>
 #include <QBrush>
 #include <QByteArray>
 #include <QCheckBox>
@@ -1254,6 +1255,13 @@ bool GraphCanvasScene::commitInlineEdit() {
     const auto node = editor_->node;
     const auto port = editor_->port;
     const auto value_kind = editor_->value_kind;
+    // A spin box with keyboard tracking off holds the value it was given until
+    // something asks it to read what was typed -- normally the Return key or
+    // losing focus. The editor's filter consumes Return before the spin box
+    // sees it, so ask here: otherwise Enter reports "saved" and stores the
+    // number the user just replaced.
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(editor_->widget))
+        spin->interpretText();
     const auto text = editorText(editor_->widget);
     closeEditor();
     if (kind == InlineEditor::Kind::label) {

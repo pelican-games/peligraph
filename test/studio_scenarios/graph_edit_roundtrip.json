@@ -1,0 +1,124 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_edit_roundtrip",
+  "description": "Edit a stored graph value on the canvas the way a person does -- click the pill, type, Enter -- and follow the number until it comes back out of a project the engine has re-read from disk.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas has drawn the owned instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the stored gain starts at 2.5",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.gain",
+      "value": 2.5
+    },
+    {
+      "label": "the pill shows the stored value before the edit",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "value": "2.5"
+    },
+    {
+      "label": "click the gain pill, which opens the editor over it",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain"
+    },
+    {
+      "label": "the editor opened over the pill",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "type the new value",
+      "cmd": "type",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "text": "3.75"
+    },
+    {
+      "label": "Enter commits the edit",
+      "cmd": "key",
+      "name": "pelican.graphCanvasView::graph_inline_editor#left/gain",
+      "sequence": "Return"
+    },
+    {
+      "label": "the canvas reports the change saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the running engine now holds 3.75",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.gain",
+      "value": 3.75
+    },
+    {
+      "label": "open a second, untouched copy of the same fixture",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the switched-to engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the untouched copy still reads 2.5, so the value is not a memory of this session",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.gain",
+      "value": 2.5
+    },
+    {
+      "label": "come back to the edited project, which the engine re-reads from disk",
+      "cmd": "open_project",
+      "dir": "{project}"
+    },
+    {
+      "label": "the re-read engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the edit survived the round trip through disk",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[1].parameters.gain",
+      "value": 3.75
+    },
+    {
+      "label": "and the canvas draws the value it read back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "contains": "3.75",
+      "timeout_ms": 120000
+    },
+    {
+      "label": "a picture of the Graph tab for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_edit_roundtrip_canvas.png"
+    }
+  ]
+}

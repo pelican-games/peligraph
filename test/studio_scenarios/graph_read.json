@@ -1,0 +1,89 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_read",
+  "description": "Open a pelican.graph project in a real Studio window with a real engine behind it, and check that what the Graph tab drew is what the engine says the document holds.",
+  "tab": "graph",
+  "probe_no_automation": true,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab is the one on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvas",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "list answers with objectNames",
+      "expect": "list_count",
+      "pattern": "pelican.graphCanvasRefresh",
+      "value": 1
+    },
+    {
+      "label": "an objectName nothing carries is refused, by code",
+      "cmd": "text",
+      "name": "pelican.thereIsNoSuchWidget",
+      "expect_error": "automation.widget_missing@1"
+    },
+    {
+      "label": "the canvas has drawn the owned instance",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "the canvas is showing the root scope",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasBreadcrumb",
+      "value": "root"
+    },
+    {
+      "label": "the canvas drew two nodes",
+      "expect": "list_count",
+      "pattern": "pelican.graphCanvasView::graph_node#",
+      "value": 2
+    },
+    {
+      "label": "the engine holds the same two root nodes",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes.$len",
+      "value": 2
+    },
+    {
+      "label": "the engine reports one definition",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.$len",
+      "value": 1
+    },
+    {
+      "label": "the definition the instance names is the one that is there",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "instances[0].definition",
+      "value": "gain_curve"
+    },
+    {
+      "label": "the stored gain is on the pill the canvas drew",
+      "expect": "text_equals",
+      "name": "pelican.graphCanvasView::graph_value_pill#left/gain",
+      "value": "2.5"
+    },
+    {
+      "label": "a picture of the Graph tab for the reader of this report",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "graph_read_canvas.png"
+    }
+  ]
+}

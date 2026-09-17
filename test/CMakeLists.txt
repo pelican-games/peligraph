@@ -2724,6 +2724,45 @@ if(NOT SKIP_DEVSTUDIO)
     pelican_gpu_test_properties(vulkan_validation_runtime_player 600)
 endif()
 
+# Q-1: the Studio scenarios. Each `test/studio_scenarios/<name>.json` becomes
+# one `studio_scenario_<name>` test: a real Studio window, the real engine
+# behind it, and tools/studio_drive.py driving the GUI over the `--automation`
+# channel. They live in the GPU lane and take the lease, because the window they
+# drive embeds a running player. (`QT_QPA_PLATFORM=offscreen` is deliberately
+# not set: a window that is never realised embeds nothing.)
+if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
+    find_program(PELICAN_UV_EXECUTABLE uv)
+    if(PELICAN_UV_EXECUTABLE)
+        file(GLOB pelican_studio_scenario_files CONFIGURE_DEPENDS
+            "${CMAKE_CURRENT_SOURCE_DIR}/studio_scenarios/*.json")
+        foreach(pelican_studio_scenario IN LISTS pelican_studio_scenario_files)
+            get_filename_component(pelican_studio_scenario_name
+                "${pelican_studio_scenario}" NAME_WE)
+            add_test(
+                NAME studio_scenario_${pelican_studio_scenario_name}
+                COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+                    -DSTUDIO=$<TARGET_FILE:pelican_studio>
+                    -DPLAYER=$<TARGET_FILE:pelican_player>
+                    -DDRIVER=${CMAKE_SOURCE_DIR}/tools/studio_drive.py
+                    -DSCENARIO=${pelican_studio_scenario}
+                    -DFIXTURE_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_automation_graph
+                    -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/studio_scenarios
+                    -DUV=${PELICAN_UV_EXECUTABLE}
+                    -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>
+                    -P ${CMAKE_CURRENT_SOURCE_DIR}/run_studio_scenario.cmake
+            )
+            set_property(TEST studio_scenario_${pelican_studio_scenario_name}
+                APPEND PROPERTY LABELS studio_scenario)
+            pelican_gpu_test_properties(
+                studio_scenario_${pelican_studio_scenario_name}
+                ${PELICAN_GPU_INTRINSIC_TIMEOUT_DEFAULT})
+        endforeach()
+    else()
+        message(STATUS
+            "uv was not found: the studio_scenario_* tests are not registered")
+    endif()
+endif()
+
 add_executable(pelican_test_png_nonuniform_check png_nonuniform_check.cpp)
 set_target_properties(pelican_test_png_nonuniform_check PROPERTIES CXX_STANDARD 20)
 target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)

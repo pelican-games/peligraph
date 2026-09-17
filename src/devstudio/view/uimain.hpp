@@ -12,6 +12,10 @@ struct LaunchOptions {
     // A render-tools tab to bring to the front: one of the ids
     // isRenderToolsTab() accepts.
     std::string tab;
+    // The local socket name the test-automation channel listens on. Empty --
+    // which is every shipping launch -- means no channel is opened at all: the
+    // server object is never constructed, so the socket does not exist.
+    std::string automation;
 };
 
 // Whether `name` is a render-tools tab id the window can show. The caller

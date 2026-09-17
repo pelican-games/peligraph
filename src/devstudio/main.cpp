@@ -13,6 +13,11 @@ int main(int argc, char *argv[]) {
         .metavar("name")
         .help("bring one render-tools tab to the front: " +
               PelicanStudio::renderToolsTabList());
+    program.add_argument("--automation")
+        .default_value(std::string{})
+        .metavar("name")
+        .help("open the test-automation channel on this local socket name "
+              "(newline-delimited JSON; nothing is opened without this flag)");
 
     try {
         program.parse_args(argc, argv);
@@ -25,6 +30,7 @@ int main(int argc, char *argv[]) {
     PelicanStudio::LaunchOptions options;
     options.project = program.get<std::string>("--project");
     options.tab = program.get<std::string>("--tab");
+    options.automation = program.get<std::string>("--automation");
     // A misspelled tab has to fail on the console. Opening the window and
     // showing whatever happened to be in front would look like it worked.
     if (!options.tab.empty() && !PelicanStudio::isRenderToolsTab(options.tab)) {

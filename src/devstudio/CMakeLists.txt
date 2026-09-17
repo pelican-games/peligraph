@@ -1,6 +1,7 @@
 include(view/ui_depended_setup.cmake)
 
 add_subdirectory(viewport)
+add_subdirectory(automation)
 
 add_library(pelican_studio_layout STATIC
     layoutpreset.cpp

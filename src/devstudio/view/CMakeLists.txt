@@ -42,6 +42,7 @@ target_link_libraries(pelican_studio_view
         Qt6::Widgets
     PRIVATE
         pelican_project
+        pelican_studio_automation
         pelican_studio_layout
         pelican_studio_viewport
         pelican_studio_outliner
